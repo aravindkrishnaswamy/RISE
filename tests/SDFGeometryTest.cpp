@@ -15,10 +15,13 @@
 #include <cmath>
 #include <vector>
 #include <limits>
+#include <mutex>
+#include <string>
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Interfaces/ILogPriv.h"		// degenerate-part warning capture
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/FiniteMath.h"	// Test 36d's finite-bbox assertion (-Ofast-resistant)
@@ -34,6 +37,56 @@ static void Check( bool cond, const char* name )
 	if( cond ) { ++passCount; }
 	else { ++failCount; std::cout << "  FAIL: " << name << std::endl; }
 }
+
+// A minimal ILogPrinter that records every message containing `needle`.  Same
+// shape (and the same reasoning) as ObjectMirrorTest's / CstSourceInstanceTest's:
+// ParsePartLines' degenerate-shape-parameters diagnostic is a WARNING, not a
+// parse failure (the part still parses and composes -- see the superellipsoid
+// exponent clamp it sits next to), so it is invisible to a `ParsePartLines`
+// bool return and has to be observed on the log itself.
+class CapturingLogPrinter : public virtual RISE::ILogPrinter, public virtual RISE::Implementation::Reference
+{
+public:
+	explicit CapturingLogPrinter( std::string needle ) : mNeedle( std::move( needle ) ) {}
+
+	void Print( const RISE::LogEvent& event ) override
+	{
+		const std::string msg( event.szMessage );
+		if( msg.find( mNeedle ) != std::string::npos ) {
+			std::lock_guard<std::mutex> lk( mMutex );
+			mMatches.push_back( msg );
+		}
+	}
+	void Flush() override {}
+
+	int MatchCount() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return static_cast<int>( mMatches.size() );
+	}
+	std::string LastMatch() const
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		return mMatches.empty() ? std::string() : mMatches.back();
+	}
+	void Clear()
+	{
+		std::lock_guard<std::mutex> lk( mMutex );
+		mMatches.clear();
+	}
+
+protected:
+	~CapturingLogPrinter() override {}
+
+private:
+	std::string                mNeedle;
+	mutable std::mutex         mMutex;
+	std::vector<std::string>   mMatches;
+};
+
+// Installed once in main(), before any test runs (see the CapturingLogPrinter
+// comment above for why this can't just check ParsePartLines' return value).
+static CapturingLogPrinter* g_degenerateShapeWarn = 0;
 
 static bool IsClose( Scalar a, Scalar b, Scalar eps = 2e-3 ) { return std::fabs(a-b) <= eps; }
 static Scalar Len( const Vector3& v ) { return std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z); }
@@ -908,6 +961,130 @@ static void TestParsePartLines()
 		Check( match, "parsed parts hit-identical to directly-constructed parts" );
 		safe_release( gp );
 		safe_release( gd );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 20b: DEGENERATE SHAPE PARAMETERS.  The `part` grammar's <a b c>
+// are the primitive's own shape parameters (verified against primDist's
+// switch in SDFGeometry.cpp); <sx sy sz> is a separate, pre-transform
+// SCALE.  An authoring slip seen in the wild puts a shape's SIZE into
+// <sx sy sz> and leaves <a b c> at its default 0 0 0 -- e.g. "this box
+// is 2x1x3" written into the scale slot -- which collapses the part to
+// a single point.  ParsePartLines WARNS (does not reject) when a part's
+// shape parameters are the exact zero-critical combination primDist
+// collapses to a point, per-primitive, and must NOT warn when the same
+// all-zero <a b c> is a DIFFERENT valid primitive (roundbox with
+// round > 0 is an exact sphere; torus with only the ring radius at 0 is
+// an exact sphere) -- both cases are exercised below.
+//////////////////////////////////////////////////////////////////////
+static void TestDegenerateShapeParamsWarn()
+{
+	std::cout << "Test 20b: degenerate <a b c> parts warn (scale-slot authoring slip)" << std::endl;
+
+	auto ParseOneAndCheck = [&]( const char* line, bool expectWarn, const char* label )
+	{
+		g_degenerateShapeWarn->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines( line, "<test>", parts ),
+		       ( std::string(label) + ": still parses (warn, don't fail)" ).c_str() );
+		Check( parts.size() == 1, ( std::string(label) + ": still yields the one part" ).c_str() );
+		if( expectWarn ) {
+			Check( g_degenerateShapeWarn->MatchCount() == 1,
+			       ( std::string(label) + ": degenerate-shape warning fires exactly once" ).c_str() );
+		} else {
+			Check( g_degenerateShapeWarn->MatchCount() == 0,
+			       ( std::string(label) + ": no warning -- this combination is a valid, non-degenerate primitive" ).c_str() );
+		}
+	};
+
+	// The reported bug, reproduced exactly: a box whose <a b c> are all 0
+	// because its half-extents went into <sx sy sz> instead.
+	ParseOneAndCheck( "box union 0  0 0 0  0 0 0  2 1 3  0 0 0  0\n", true,
+		"box with <a b c> = 0 0 0 (size left in the scale slot)" );
+	// The same box authored correctly does not warn.
+	ParseOneAndCheck( "box union 0  0 0 0  0 0 0  1 1 1  2 1 3  0\n", false,
+		"box with real half-extents in <a b c>" );
+
+	// sphere: the single critical param is `a`.
+	ParseOneAndCheck( "sphere union 0  0 0 0  0 0 0  1 1 1  0 0 0  0\n", true,
+		"sphere with a = 0" );
+	ParseOneAndCheck( "sphere union 0  0 0 0  0 0 0  1 1 1  2.5 0 0  0\n", false,
+		"sphere with a > 0" );
+
+	// roundbox: a=b=c=0 with round=0 is a genuine point; a=b=c=0 with
+	// round > 0 is an EXACT sphere of radius `round` (sdRoundBox's
+	// shrink-then-inflate), and must not warn.
+	ParseOneAndCheck( "roundbox union 0  0 0 0  0 0 0  1 1 1  0 0 0  0\n", true,
+		"roundbox with a b c round all 0" );
+	ParseOneAndCheck( "roundbox union 0  0 0 0  0 0 0  1 1 1  0 0 0  1.5\n", false,
+		"roundbox with a b c = 0 but round > 0 (a valid sphere)" );
+
+	// cylinder: needs BOTH radius and half-height zero to fully collapse.
+	ParseOneAndCheck( "cylinder union 0  0 0 0  0 0 0  1 1 1  0 0 0  0\n", true,
+		"cylinder with radius and half-height both 0" );
+	ParseOneAndCheck( "cylinder union 0  0 0 0  0 0 0  1 1 1  0 3 0  0\n", false,
+		"cylinder with radius 0 but half-height > 0" );
+
+	// torus: R=0 alone is an EXACT sphere of radius `b` (sdTorusY collapses
+	// to sdSphere); only R=0 AND rr=0 is the genuine point.
+	ParseOneAndCheck( "torus union 0  0 0 0  0 0 0  1 1 1  0 0 0  0\n", true,
+		"torus with ring and tube radius both 0" );
+	ParseOneAndCheck( "torus union 0  0 0 0  0 0 0  1 1 1  0 1.2 0  0\n", false,
+		"torus with ring radius 0 but tube radius > 0 (a valid sphere)" );
+
+	// capsule: radius and half-length both 0.
+	ParseOneAndCheck( "capsule union 0  0 0 0  0 0 0  1 1 1  0 0 0  0\n", true,
+		"capsule with radius and half-length both 0" );
+	ParseOneAndCheck( "capsule union 0  0 0 0  0 0 0  1 1 1  0.8 2 0  0\n", false,
+		"capsule with real radius and half-length" );
+
+	// roundcone: base radius, tip radius, and length all 0.
+	ParseOneAndCheck( "roundcone union 0  0 0 0  0 0 0  1 1 1  0 0 0  0\n", true,
+		"roundcone with base radius, tip radius, and length all 0" );
+	ParseOneAndCheck( "roundcone union 0  0 0 0  0 0 0  1 1 1  0.5 0.2 2  0\n", false,
+		"roundcone with real base/tip radius and length" );
+
+	// superellipsoid: radius `a` is the critical param (b/c are exponents,
+	// already covered by TestSuperellipsoidExponentClamp / GrammarAndBounds).
+	ParseOneAndCheck( "superellipsoid union 0  0 0 0  0 0 0  1 1 1  0 1 1  0\n", true,
+		"superellipsoid with a = 0" );
+
+	// The warning names the part (index + primitive keyword) and the
+	// scale-slot hypothesis, so an author can act on it without re-deriving
+	// which of several parts is the offender.
+	{
+		g_degenerateShapeWarn->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		const char* src =
+			"sphere union 0  0 0 0  0 0 0  1 1 1  1.0 0 0  0\n"		// part 0: fine
+			"box smin 0.2  1 0 0  0 0 0  2 1 3  0 0 0  0\n";			// part 1: degenerate
+		Check( SDFGeometry::ParsePartLines( src, "<test>", parts ), "mixed source still parses" );
+		Check( parts.size() == 2, "mixed source yields 2 parts" );
+		Check( g_degenerateShapeWarn->MatchCount() == 1, "exactly the degenerate second part warns" );
+		const std::string msg = g_degenerateShapeWarn->LastMatch();
+		Check( msg.find( "part 1" ) != std::string::npos, "warning names the 0-based part index (`part 1`)" );
+		Check( msg.find( "box" ) != std::string::npos, "warning names the primitive (`box`)" );
+		Check( msg.find( "scale slot" ) != std::string::npos, "warning names the likely slip (the scale slot)" );
+	}
+
+	// End to end: the degenerate part still COMPOSES into a real (if
+	// pathological) SDFGeometry rather than crashing or refusing to build --
+	// this is a WARN, not a hard failure, all the way through.
+	{
+		g_degenerateShapeWarn->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines(
+			"box union 0  0 0 0  0 0 0  2 1 3  0 0 0  0\n", "<test>", parts ),
+			"end-to-end: degenerate part line still parses" );
+		SDFGeometry* g = new SDFGeometry( parts, 256, 0.0 );
+		BoundingBox bb = g->GenerateBoundingBox();
+		const Scalar diag = std::sqrt(
+			(bb.ur.x-bb.ll.x)*(bb.ur.x-bb.ll.x) +
+			(bb.ur.y-bb.ll.y)*(bb.ur.y-bb.ll.y) +
+			(bb.ur.z-bb.ll.z)*(bb.ur.z-bb.ll.z) );
+		Check( diag < 0.1, "end-to-end: the degenerate part's bbox is (near-)a point, matching the reported symptom" );
+		safe_release( g );
 	}
 }
 
@@ -2902,6 +3079,18 @@ int main()
 {
 	std::cout << "SDFGeometryTest" << std::endl;
 	std::cout << "===============" << std::endl;
+
+	// Installed for the whole run, before any test: Test 20b counts
+	// ParsePartLines' degenerate-shape-parameters advisory, which is a
+	// WARNING (the part still parses) and so never shows up in a
+	// ParsePartLines bool return or in `parts` itself.
+	{
+		CapturingLogPrinter* owned = new CapturingLogPrinter( "has degenerate shape parameters" );
+		RISE::GlobalLogPriv()->AddPrinter( owned );
+		g_degenerateShapeWarn = owned;   // AddPrinter addref'd it; keep a raw read handle
+		safe_release( owned );           // drop OUR construction ref (safe_release nulls its arg)
+	}
+
 	TestSphereMatchesAnalytic();
 	TestBoxMatchesAnalytic();
 	TestSmoothMin();
@@ -2926,6 +3115,7 @@ int main()
 	TestNEEIntegrandClosedForm();
 	TestNEEIntegrandAnalyticControl();
 	TestParsePartLines();
+	TestDegenerateShapeParamsWarn();
 	TestFirstOpRule();
 	TestMissedComponentDetector();
 	TestCorrectedSamplingArea();
