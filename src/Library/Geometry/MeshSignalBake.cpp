@@ -15,6 +15,7 @@
 #include "MeshSignalBake.h"
 #include "../Utilities/OrthonormalBasis3D.h"
 #include "../Utilities/FiniteMath.h"
+#include "../Utilities/RTime.h"
 #include "../Interfaces/ILog.h"
 #include <cmath>
 #include <mutex>
@@ -111,6 +112,13 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 
 	out.assign( verts.size(), 0.0f );
 
+	// One line per bake, at Info.  A bake is a one-time cost the user did
+	// not ask for explicitly (they wrote `occlusion(0.05)` in a material,
+	// not "bake now"), so it has to be visible when it happens and how long
+	// it took -- the same courtesy the SSS point-set build extends.
+	Timer timer;
+	timer.start();
+
 	for( size_t vi = 0; vi < verts.size(); ++vi ) {
 		const Vector3& nRaw = normals[vi];
 		const Scalar nLen2 = nRaw.x*nRaw.x + nRaw.y*nRaw.y + nRaw.z*nRaw.z;
@@ -193,6 +201,18 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 		if( v > Scalar(1) ) v = Scalar(1);
 		out[vi] = static_cast<float>( v );
 	}
+
+	timer.stop();
+	// eLog_Event, not eLog_Info, and deliberately louder than the BVH /
+	// area-CDF builds around it: those are part of loading ANY scene,
+	// whereas this is a seconds-scale cost the user triggered IMPLICITLY by
+	// writing `occlusion(0.05)` in a material.  A cost nobody asked for by
+	// name should say so, and the number is what makes the trade
+	// (bake once vs. read per sample) checkable rather than assumed.
+	GlobalLog()->PrintEx( eLog_Event,
+		"MeshSignalBake:: baked per-vertex %s over %u vertices x %d rays in %u ms",
+		( kind == eOcclusion ) ? "OCCLUSION" : "THICKNESS",
+		(unsigned)verts.size(), kRayCount, timer.getInterval() );
 
 	return true;
 }
