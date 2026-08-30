@@ -3277,6 +3277,151 @@ namespace RISE
 				int         objectCount = 0;     //!< how many `standard_object`s bind this material
 			};
 
+			//! GEOMETRY_SHADING_SIGNALS_DESIGN sec 11/13 (2026-08-30): ONE material
+			//! that `add_wear` can rewrite into the census-proven curvature wear
+			//! composition -- the qualifying unit SHARED by design-note condition L
+			//! (which PRICES the rewrite) and `AgentSession::AddWear` (which
+			//! PERFORMS it), exactly as MicrosurfaceMaterial_ is shared by
+			//! condition D and VaryMaterial.
+			//!
+			//! WHAT "QUALIFIES" MEANS, and why each clause is here:
+			//!   (a) the kind carries COLOUR-pipe slots (ColorMaterialSlotsByKind_),
+			//!       spells at least one out, and EVERY spelled-out one classifies
+			//!       Constant -- the same flat-colour test condition H makes.  A
+			//!       material whose albedo already varies has nothing this verb
+			//!       should overwrite.
+			//!   (b) its PRIMARY colour slot binds a `uniformcolor_painter` whose
+			//!       `color` is a readable RGB triple in the default (Rec.709
+			//!       linear) colourspace.  The composition BANDS AROUND THE VALUE
+			//!       ALREADY THERE (the vary_material contract), so a base it
+			//!       cannot read is a base it must not invent -- a blackbody or
+			//!       spectral painter, or a non-default `colorspace`, drops the
+			//!       material out rather than being guessed at.
+			//!   (c) at least one `standard_object` binds it whose geometry chunk
+			//!       is NOT in the curv-barren family (CurvBarrenGeometryKind_).
+			//!       `curv` reads a genuine 0 on planars and reads 0 as ABSENCE on
+			//!       the patch stubs, so on a document whose every bound object is
+			//!       one of those the whole composition would collapse to the base
+			//!       colour -- a silent no-op dressed as a success.
+			//!   (d) nothing it already references reads `curv` / `occlusion` /
+			//!       `thickness`.  A material that already keys off the geometry
+			//!       signals has been worn by hand (or by a previous call), and
+			//!       re-wearing it would stack two wear passes.
+			struct WearMaterial_
+			{
+				int         itemIndex = -1;      //!< top-level Document item index of the material chunk
+				std::string name;                //!< its `name`
+				std::string kind;                //!< its chunk keyword
+				int         objectCount = 0;     //!< how many `standard_object`s bind this material
+				//! The ONE colour slot AddWear rebinds, and the constant RGB it
+				//! carries today (the band's centre).  Never empty for a
+				//! qualifying material.
+				std::string colorSlot;
+				std::string colorPainter;        //!< the uniformcolor_painter chunk that slot names today
+				double      baseR = 0.0, baseG = 0.0, baseB = 0.0;
+				//! The primary microsurface slot(s) AddWear ALSO rebinds when the
+				//! material happens to carry a readable constant one -- empty (and
+				//! `hasRoughness` false) for a kind with no microsurface slot at
+				//! all, or one whose microsurface already varies.  Not part of
+				//! qualification: a lambertian has no roughness to wear and is
+				//! still a perfectly good colour-wear target.
+				std::vector<std::string> roughnessSlots;
+				double      roughness = 0.0;
+				bool        hasRoughness = false;
+				//! One representative geometry chunk KIND from clause (c), for the
+				//! success message to name ("the wear reads on `sdf_geometry`").
+				std::string curvGeometryKind;
+			};
+
+			//! Clause (c)'s geometry test, stated as the NEGATIVE (the barren set)
+			//! rather than an allowlist of curv-bearing kinds -- deliberately, so a
+			//! geometry kind added later defaults to "assume it curves" and merely
+			//! risks a weak mask, instead of defaulting to "refuse" and silently
+			//! removing this verb from a scene built on the new kind.
+			//!
+			//! The set comes from the `curv` descriptor's own quality paragraph
+			//! (ChunkParserRegistry.cpp's expression_painter / scalar_painter
+			//! text, audited 2026-08-30) plus the geometry sources it describes:
+			//!   - `bezierpatch_geometry` / `bilinearpatch_geometry` write
+			//!     dndu = dndv = 0 as STUBS (BezierPatchGeometry.cpp:409,
+			//!     BilinearPatchGeometry.cpp:404) -- 0 as ABSENCE, the one item
+			//!     design sec 13 Phase 4 names as an outright falsehood to fix.
+			//!   - `infiniteplane_geometry`, `circulardisk_geometry`,
+			//!     `box_geometry`, `clippedplane_geometry` are genuinely PLANAR:
+			//!     0 is the true answer everywhere a ray can land (a box's edges
+			//!     are measure-zero, so an edge-wear mask on a crate really does
+			//!     read nothing -- refusing is the honest outcome, not a gap).
+			//!   - `cartesian_disk_geometry` is a flat tessellated sheet: a
+			//!     triangle mesh, so occlusion() bakes on it, but its normal field
+			//!     is constant and `curv` is 0 across every face.
+			//! Everything else -- the analytic curved primitives, the SDF family,
+			//! every mesh family, and the generated forms (sweep/lathe/skin/
+			//! displaced/hair/path_instances) -- carries a real normal field.
+			bool CurvBarrenGeometryKind_( const std::string& geometryKind )
+			{
+				return geometryKind == "bezierpatch_geometry"   ||
+				       geometryKind == "bilinearpatch_geometry" ||
+				       geometryKind == "infiniteplane_geometry" ||
+				       geometryKind == "circulardisk_geometry"  ||
+				       geometryKind == "cartesian_disk_geometry" ||
+				       geometryKind == "clippedplane_geometry"  ||
+				       geometryKind == "box_geometry";
+			}
+
+			//! Clause (b)'s "which colour slot is the ALBEDO".
+			//!
+			//! `ColorMaterialSlotsByKind_` hands back a kind's colour slots in
+			//! DESCRIPTOR order, which already puts the albedo first on every
+			//! material kind in the vocabulary today (ggx `rd` before `rs`,
+			//! cooktorrance the same, pbr `base_color`, lambertian/orennayar
+			//! `reflectance`).  Relying on that order ALONE would be relying on a
+			//! coincidence of descriptor authoring, so the preference list below
+			//! decides first and descriptor order is only the fallback -- the
+			//! difference matters the day someone reorders a descriptor's params
+			//! for readability and silently moves this verb onto a specular tint.
+			//! Lower index wins; a name not on the list scores past the end.
+			int WearAlbedoSlotRank_( const std::string& slotName )
+			{
+				static const char* const kPreferred[] = {
+					"base_color", "reflectance", "rd", "albedo", "diffuse", "color"
+				};
+				for( int i = 0; i < static_cast<int>( sizeof( kPreferred ) / sizeof( kPreferred[0] ) ); ++i )
+					if( slotName == kPreferred[i] ) return i;
+				return 1000;
+			}
+
+			//! Clause (d)'s test, run over ONE referenced chunk's body text: does
+			//! it read any of the three geometry signals?  A whole-word-ish match
+			//! on `curv` (which also covers `curvR`) plus the two arg-taking
+			//! builtins.  Over-matching here can only make this verb DECLINE a
+			//! material a human already textured, which is the safe direction.
+			bool WearBodyReadsGeometrySignals_( const std::string& body )
+			{
+				static const char* const kSignals[] = { "curv", "occlusion", "thickness" };
+				for( const char* sigName : kSignals ) {
+					const std::string sig( sigName );
+					const std::size_t n = sig.size();
+					std::size_t at = body.find( sig );
+					while( at != std::string::npos ) {
+						const bool leftOk = ( at == 0 ) ||
+							!( std::isalnum( static_cast<unsigned char>( body[at - 1] ) ) || body[at - 1] == '_' );
+						const std::size_t after = at + n;
+						// `curv` must not match inside `curvature_of_my_param`; it
+						// MUST still match `curvR`, so an immediately-following
+						// capital R is allowed through.
+						const bool rightOk = ( after >= body.size() ) ||
+							!( std::isalnum( static_cast<unsigned char>( body[after] ) ) || body[after] == '_' ) ||
+							( body[after] == 'R' &&
+							  ( after + 1 >= body.size() ||
+							    !( std::isalnum( static_cast<unsigned char>( body[after + 1] ) ) ||
+							       body[after + 1] == '_' ) ) );
+						if( leftOk && rightOk ) return true;
+						at = body.find( sig, at + 1 );
+					}
+				}
+				return false;
+			}
+
 			//! Condition D's gate: how many all-constant-microsurface materials it
 			//! takes before the note names `vary_material`.
 			//!
@@ -4325,6 +4470,22 @@ namespace RISE
 				return best;
 			}
 
+			//! `add_wear`'s twin of SelectMaterialToVary_ just above, and
+			//! deliberately the IDENTICAL rule (most objects bound, ties broken
+			//! lexicographically by name) rather than a second private notion of
+			//! prominence: design-note condition L NAMES the material a bare
+			//! `add_wear` call takes, so the two must be one function.
+			const WearMaterial_* SelectMaterialToWear_( const std::vector<WearMaterial_>& mats )
+			{
+				const WearMaterial_* best = nullptr;
+				for( const WearMaterial_& m : mats ) {
+					if( !best ) { best = &m; continue; }
+					if( m.objectCount > best->objectCount ) { best = &m; continue; }
+					if( m.objectCount == best->objectCount && m.name < best->name ) best = &m;
+				}
+				return best;
+			}
+
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused (binding-aware as of adoption-polish item 3)
@@ -4338,6 +4499,7 @@ namespace RISE
 				bool conditionI = false;   //!< materials-realism item 4: briefed-vs-bound (glass/liquid-NAMED but opaque-bound) mismatch
 				bool conditionJ = false;   //!< the blend-scale law (db9a88a9): an sdf_geometry smin joint whose k dissolves the part it joins
 				bool conditionK = false;   //!< GPT slice item 4: a low-roughness metallic material coexists with a strongly saturated env dome
+				bool conditionL = false;   //!< GEOMETRY_SHADING_SIGNALS sec 11: a flat-colour material on curv-bearing geometry -- `add_wear`'s note half
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -4462,7 +4624,49 @@ namespace RISE
 				//! the clause text.  Only meaningful when conditionK is true.
 				std::string envDomePainterName;
 				double      envDomeSaturation = 0.0;
+
+				//! GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): EVERY material
+				//! that clears WearMaterial_'s four clauses, in DOCUMENT order.
+				//! Condition L reads it through kWearCandidateGate; AgentSession::
+				//! AddWear reads it whole -- the MicrosurfaceMaterial_ /
+				//! constantMicrosurfaceMaterials arrangement one condition over,
+				//! and for the same reason: the note must not be able to advertise
+				//! a call the verb then declines to make.
+				std::vector<WearMaterial_> wearCandidateMaterials;
+				//! Why each material that HAS colour slots but did NOT qualify was
+				//! turned down (name -> one clause-shaped reason).  Populated for
+				//! the declined only; the VERB reads it to answer a named
+				//! `material` argument with the actual rule rather than the generic
+				//! "nothing qualifies" text, which is the difference between a
+				//! refusal a model can act on and one it can only retry.
+				std::map<std::string, std::string> wearDeclineReasons;
+				//! Condition L's chosen material (the one the clause names, and the
+				//! one a bare `add_wear` call takes): most objects bound, ties
+				//! broken lexicographically.  Empty when L is silent.
+				std::string addWearName;
+				std::string addWearKind;
+				std::string addWearGeometryKind;
+				int         wearCandidateCount = 0;
+				//! Condition L's bounded "still untouched" list, most-referenced
+				//! first (ties by name) -- the same display-only copy
+				//! roughnessFlattestNames/colorFlattestNames are, and for the same
+				//! reason: wearCandidateMaterials stays in DOCUMENT order because
+				//! SelectMaterialToWear_ and the verb read it that way.
+				std::vector<std::string> wearCandidateNames;
 			};
+
+			//! Condition L's gate: how many wear candidates it takes before the
+			//! note names `add_wear`.
+			//!
+			//! THREE, matching kConstantMicrosurfaceGate exactly and for its
+			//! reason: one or two flat-colour props is a small scene or a
+			//! deliberate pair of plastics, three is the point at which "every
+			//! surface in this scene is one flat colour on real curved geometry"
+			//! is a fair description.  Sharing the number with condition D is
+			//! deliberate -- both advisories complain that the same document is
+			//! untextured, and two private thresholds for one complaint is how a
+			//! note starts contradicting its sibling.
+			static const int kWearCandidateGate = 3;
 
 			//! Condition C's gate: how many hand-authored copies of ONE
 			//! geometry it takes before the note names `source` / `count_u`.
@@ -4693,6 +4897,23 @@ namespace RISE
 				return CountDistinctNumericLiterals_( body ) >= kParamErosionLiteralGate;
 			}
 
+			//! GEOMETRY_SHADING_SIGNALS sec 11: an expression chunk's whole BODY
+			//! as one string -- every `def` line plus the final `expr` /
+			//! `expression`, in document order.  Condition L clause (d) greps it
+			//! for the geometry-signal names; ParamErosionFires_ just above builds
+			//! the identical string for its own literal count, and this exists
+			//! rather than a second inline loop so "what is a body" has one
+			//! definition.  `param` lines are deliberately NOT part of it: a param
+			//! carries only a number, and its NAME could coincidentally contain
+			//! "curv" without the body ever reading the signal.
+			std::string ExpressionBodyText_( const NodeRef& chunkItem, const std::string& finalKey )
+			{
+				std::string body;
+				for( const std::string& def : ChunkParamOccurrences_( chunkItem, "def" ) ) body += def + "\n";
+				for( const std::string& fin : ChunkParamOccurrences_( chunkItem, finalKey ) ) body += fin + "\n";
+				return body;
+			}
+
 			//! 88 S5: forward declarations of two value-parsing primitives whose
 			//! DEFINITIONS live further down this file, alongside
 			//! collapse_to_instances' fitting helpers (they were written for that
@@ -4892,6 +5113,28 @@ namespace RISE
 				                          std::map<std::string, std::string> params; };
 				std::vector<PendingMaterial_> pendingMaterials;
 
+				// -- Condition L accumulators (GEOMETRY_SHADING_SIGNALS sec 11,
+				// 2026-08-30): `add_wear`'s qualifying scan.  Collected in this
+				// SAME single walk and resolved afterwards, for condition D's
+				// reason -- a material's qualification depends on the geometry its
+				// objects bind, and objects always come later than the material
+				// under the declare-before-use convention.
+				std::map<std::string, std::string>               geometryKindByName;    // geometry chunk name -> its keyword
+				std::map<std::string, std::string>               objectGeometryByName;  // standard_object name -> its `geometry`
+				std::map<std::string, std::string>               objectSourceByName;    // standard_object name -> its `source`
+				std::map<std::string, std::vector<std::string> > materialObjectNames;   // material name -> the objects binding it
+				//! `colorspace` as authored on each uniformcolor_painter (absent
+				//! when the chunk omits it, which is the Rec.709-linear default).
+				//! Condition L clause (b) needs it: an RGB triple authored in some
+				//! OTHER space is not the number to paste into an
+				//! `expression_painter` body, whose output IS Rec.709 linear.
+				std::map<std::string, std::string>               uniformColorSpaces;
+				//! Every Painter/Function chunk's expression BODY text (def lines
+				//! plus the final expr/expression), for clause (d)'s
+				//! already-reads-the-signals test.  Only the two expression forms
+				//! carry a body at all, so the map stays small.
+				std::map<std::string, std::string>               expressionBodies;
+
 				// -- Condition K accumulators (GPT slice item 4, 2026-08-24) --
 				// the env-reflection advisory: a low-roughness metallic
 				// material coexisting with a strongly saturated environment
@@ -4961,10 +5204,34 @@ namespace RISE
 						// minted copies on purpose: prominence here is a proxy for
 						// "how much of the frame is this material", and one chunk
 						// standing for six posts is still one binding decision.
+						// (Condition L) The object's own identity and what it binds,
+						// so the wear scan can ask "does anything carrying this
+						// material sit on geometry with a real normal field".
+						// Recorded for EVERY standard_object, including the ones
+						// with no `geometry` of their own (an instancing chunk
+						// names a `source` instead, and the resolution pass below
+						// follows that link).
+						{
+							const std::map<std::string, std::string>::const_iterator onm = pm.find( "name" );
+							const std::string objName = ( onm != pm.end() ) ? onm->second : std::string();
+							if( !objName.empty() ) {
+								const std::map<std::string, std::string>::const_iterator g = pm.find( "geometry" );
+								if( g != pm.end() && !g->second.empty() && g->second != "none" )
+									objectGeometryByName[objName] = g->second;
+								const std::map<std::string, std::string>::const_iterator src = pm.find( "source" );
+								if( src != pm.end() && !src->second.empty() && src->second != "none" )
+									objectSourceByName[objName] = src->second;
+							}
+						}
 						{
 							const std::map<std::string, std::string>::const_iterator mat = pm.find( "material" );
 							if( mat != pm.end() && !mat->second.empty() && mat->second != "none" ) {
 								++materialObjectCounts[mat->second];
+								{
+									const std::map<std::string, std::string>::const_iterator onm2 = pm.find( "name" );
+									if( onm2 != pm.end() && !onm2->second.empty() )
+										materialObjectNames[mat->second].push_back( onm2->second );
+								}
 								// Materials-realism item 4: (object name,
 								// material name) pairs, for the briefed-vs-
 								// bound mismatch scan below -- an object can
@@ -5022,6 +5289,10 @@ namespace RISE
 							// literals at all in this sense.
 							if( pm.count( "expression" ) && ParamErosionFires_( item, "expression" ) )
 								c.paramErodedChunkNames.push_back( nm->second );
+							// (Condition L clause (d)) The body text, for the
+							// already-reads-the-geometry-signals test.
+							if( pm.count( "expression" ) )
+								expressionBodies[nm->second] = ExpressionBodyText_( item, "expression" );
 						}
 						continue;
 					}
@@ -5037,6 +5308,10 @@ namespace RISE
 						double rC = 0, gC = 0, bC = 0;
 						if( !nm.empty() && std::sscanf( colorStr.c_str(), "%lf %lf %lf", &rC, &gC, &bC ) == 3 )
 							uniformColorPainters[nm] = { rC, gC, bC };
+						// (Condition L) The space those three numbers were authored
+						// in -- see uniformColorSpaces' own doc for why the wear
+						// scan has to look.
+						if( !nm.empty() ) uniformColorSpaces[nm] = ChunkParamString_( item, "colorspace" );
 						// NOT `continue;` -- review-round catch: an EARLIER
 						// draft of this branch continued here, which skipped
 						// the generic `d->category == ChunkCategory::Painter`
@@ -5117,6 +5392,15 @@ namespace RISE
 					    role == "displaced_geometry" ) {
 						hasAdvancedGeometry = true;
 						++c.geometryCensus[role];
+						// (Condition L) name -> kind, so the wear scan can ask what
+						// a bound object's geometry actually is.  Recorded on BOTH
+						// geometry branches of this walk (here and at the generic
+						// `d->category == ChunkCategory::Geometry` test below),
+						// because this branch `continue`s past that one.
+						{
+							const std::string gnm = ChunkParamString_( item, "name" );
+							if( !gnm.empty() ) geometryKindByName[gnm] = role;
+						}
 						// Fix 2 (2026-08-24): the blend-scale law, scoped to
 						// literal `sdf_geometry` chunks only -- `skeleton_geometry`
 						// is a DIFFERENT role at this CST-item level (it only
@@ -5160,7 +5444,13 @@ namespace RISE
 
 					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
 					if( !d ) continue;
-					if( d->category == ChunkCategory::Geometry ) ++c.geometryCensus[role];
+					if( d->category == ChunkCategory::Geometry ) {
+						++c.geometryCensus[role];
+						// (Condition L) name -> kind; the advanced-geometry branch
+						// above records the same pair for the kinds it intercepts.
+						const std::string gnm = ChunkParamString_( item, "name" );
+						if( !gnm.empty() ) geometryKindByName[gnm] = role;
+					}
 
 					// (88 S5) Two more per-chunk censuses, both registry-resolved
 					// off the descriptor category rather than a private keyword
@@ -5176,6 +5466,10 @@ namespace RISE
 							// here; it `continue`s before this point).
 							if( role == "expression_painter" && ParamErosionFires_( item, "expr" ) )
 								c.paramErodedChunkNames.push_back( pname );
+							// (Condition L clause (d)) The body text, for the
+							// already-reads-the-geometry-signals test.
+							if( role == "expression_painter" )
+								expressionBodies[pname] = ExpressionBodyText_( item, "expr" );
 						}
 						continue;
 					}
@@ -5611,6 +5905,199 @@ namespace RISE
 				               !c.roughnessCoverageSatisfied &&
 				               !c.varyMaterialName.empty();
 
+				// (GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30) Condition L's
+				// resolution pass -- ONE predicate, read by the note AND by
+				// AgentSession::AddWear, the same discipline conditions C/D/J
+				// follow.  WearMaterial_'s own doc states the four clauses; this
+				// loop is where they are evaluated, and it records a REASON for
+				// every material that had colour slots and still did not qualify,
+				// so a named `add_wear {material:...}` can answer with the rule it
+				// actually tripped instead of the generic nothing-qualifies text.
+				{
+					// Clause (c)'s helper: follow an object's `source` link (an
+					// instancing chunk names a source object rather than a
+					// geometry of its own) to whatever geometry it ultimately
+					// stands on.  Bounded, so a `source` cycle in a malformed
+					// document cannot hang the design-note scan -- a cycle simply
+					// resolves to "no geometry", which drops the object out of the
+					// evidence rather than deciding anything.
+					auto geometryKindOfObject = [&]( const std::string& objectName ) -> std::string {
+						std::string cur = objectName;
+						for( int hop = 0; hop < 8 && !cur.empty(); ++hop ) {
+							const std::map<std::string, std::string>::const_iterator g =
+								objectGeometryByName.find( cur );
+							if( g != objectGeometryByName.end() ) {
+								const std::map<std::string, std::string>::const_iterator k =
+									geometryKindByName.find( g->second );
+								return ( k != geometryKindByName.end() ) ? k->second : std::string();
+							}
+							const std::map<std::string, std::string>::const_iterator s =
+								objectSourceByName.find( cur );
+							if( s == objectSourceByName.end() ) break;
+							cur = s->second;
+						}
+						return std::string();
+					};
+
+					for( const PendingMaterial_& pm : pendingMaterials ) {
+						const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+							ColorMaterialSlotsByKind_().find( pm.kind );
+						if( slotsIt == ColorMaterialSlotsByKind_().end() ) continue;   // no colour opinion: not this note's business
+
+						// -- clause (a): spelled out, and every spelled-out colour
+						// slot classifies Constant.
+						bool anySpelled = false, allConstant = true;
+						std::vector<std::pair<std::string, std::string> > constantSlots;   // (slot, painter name)
+						for( const std::string& slotName : slotsIt->second ) {
+							const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
+							if( v == pm.params.end() ) continue;
+							anySpelled = true;
+							if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+								allConstant = false;
+							else
+								constantSlots.push_back( std::make_pair( slotName, v->second ) );
+						}
+						if( !anySpelled ) continue;   // no colour opinion at all
+						if( !allConstant ) {
+							c.wearDeclineReasons[pm.name] =
+								"its colour already varies across the surface (or binds something this cannot "
+								"read) -- there is nothing flat here to wear";
+							continue;
+						}
+
+						// -- clause (b): a READABLE base, in the default space.
+						std::string bestSlot, bestPainter;
+						int bestRank = 1000000;
+						bool sawUnreadableBase = false;
+						for( const std::pair<std::string, std::string>& sp : constantSlots ) {
+							const std::map<std::string, std::array<double, 3> >::const_iterator u =
+								uniformColorPainters.find( sp.second );
+							if( u == uniformColorPainters.end() ) { sawUnreadableBase = true; continue; }
+							const std::map<std::string, std::string>::const_iterator cs =
+								uniformColorSpaces.find( sp.second );
+							if( cs != uniformColorSpaces.end() && !cs->second.empty() &&
+							    cs->second != "Rec709RGB_Linear" ) { sawUnreadableBase = true; continue; }
+							const int rank = WearAlbedoSlotRank_( sp.first );
+							if( rank < bestRank ) { bestRank = rank; bestSlot = sp.first; bestPainter = sp.second; }
+						}
+						if( bestSlot.empty() ) {
+							c.wearDeclineReasons[pm.name] = sawUnreadableBase
+								? std::string( "its colour slot binds a painter whose RGB this cannot read as a plain "
+								               "Rec.709-linear triple (a blackbody_painter, a spectral_painter, or a "
+								               "uniformcolor_painter in another `colorspace`) -- there is no base to band "
+								               "around" )
+								: std::string( "no colour slot on it resolves to a painter chunk at all" );
+							continue;
+						}
+
+						// -- clause (d): not already wearing the geometry signals.
+						bool alreadyWorn = false;
+						for( const std::pair<const std::string, std::string>& kv : pm.params ) {
+							if( kv.first == "name" ) continue;
+							const std::map<std::string, std::string>::const_iterator b =
+								expressionBodies.find( kv.second );
+							if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) ) {
+								alreadyWorn = true;
+								break;
+							}
+						}
+						if( alreadyWorn ) {
+							c.wearDeclineReasons[pm.name] =
+								"it already binds an expression that reads `curv` / `occlusion` / `thickness` -- "
+								"this surface has been worn once already, and a second pass would stack two wear "
+								"layers rather than deepen one";
+							continue;
+						}
+
+						// -- clause (c): at least one bound object on geometry with
+						// a real normal field.
+						std::string curvKind;
+						bool sawBarrenOnly = false;
+						{
+							const std::map<std::string, std::vector<std::string> >::const_iterator ob =
+								materialObjectNames.find( pm.name );
+							if( ob != materialObjectNames.end() ) {
+								for( const std::string& objName : ob->second ) {
+									const std::string gk = geometryKindOfObject( objName );
+									if( gk.empty() ) continue;
+									if( CurvBarrenGeometryKind_( gk ) ) { sawBarrenOnly = true; continue; }
+									curvKind = gk;
+									break;
+								}
+							}
+						}
+						if( curvKind.empty() ) {
+							c.wearDeclineReasons[pm.name] = sawBarrenOnly
+								? std::string( "every object bound to it sits on planar or patch geometry, where `curv` "
+								               "is 0 everywhere a ray can land -- a curvature wear mask would render "
+								               "exactly the flat colour that is there now" )
+								: std::string( "no `standard_object` binds it to a geometry this scan can identify" );
+							continue;
+						}
+
+						WearMaterial_ w;
+						w.itemIndex        = pm.itemIndex;
+						w.name             = pm.name;
+						w.kind             = pm.kind;
+						w.colorSlot        = bestSlot;
+						w.colorPainter     = bestPainter;
+						w.curvGeometryKind = curvKind;
+						{
+							const std::array<double, 3>& rgb = uniformColorPainters.find( bestPainter )->second;
+							w.baseR = rgb[0]; w.baseG = rgb[1]; w.baseB = rgb[2];
+						}
+						{
+							const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( pm.name );
+							w.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
+						}
+						// The microsurface HALF is opportunistic, never part of
+						// qualification: condition D's own already-computed list is
+						// the single source of truth for "does this material carry
+						// a readable constant roughness", so add_wear can never
+						// disagree with vary_material about what a roughness slot
+						// is.  A lambertian (no microsurface at all) simply gets
+						// the colour half.
+						for( const MicrosurfaceMaterial_& ms : c.constantMicrosurfaceMaterials ) {
+							if( ms.name != pm.name ) continue;
+							if( ms.roughness > 0.0 ) {
+								w.roughnessSlots = ms.roughnessSlots;
+								w.roughness      = ms.roughness;
+								w.hasRoughness   = true;
+							}
+							break;
+						}
+						c.wearCandidateMaterials.push_back( w );
+					}
+				}
+				c.wearCandidateCount = static_cast<int>( c.wearCandidateMaterials.size() );
+				{
+					std::vector<WearMaterial_> sorted = c.wearCandidateMaterials;
+					std::sort( sorted.begin(), sorted.end(),
+						[]( const WearMaterial_& a, const WearMaterial_& b ) {
+							if( a.objectCount != b.objectCount ) return a.objectCount > b.objectCount;
+							return a.name < b.name;
+						} );
+					for( const WearMaterial_& m : sorted ) c.wearCandidateNames.push_back( m.name );
+				}
+				{
+					const WearMaterial_* pick = SelectMaterialToWear_( c.wearCandidateMaterials );
+					if( pick ) {
+						c.addWearName         = pick->name;
+						c.addWearKind         = pick->kind;
+						c.addWearGeometryKind = pick->curvGeometryKind;
+					}
+				}
+				// Condition L's gate.  Volume on the CANDIDATE count (not on
+				// eligibility the way D/H measure coverage): unlike roughness or
+				// flat-albedo, "has this material been worn" has no partial
+				// reading -- a material either keys off the geometry signals or it
+				// does not, and clause (d) already removes the ones that do, so the
+				// candidate list IS the unfixed set and shrinks by one on every
+				// successful call.  That is the self-disarm this note needs, and it
+				// is exactly the disarm materials-realism item 1 found the OLD
+				// binary "does anything vary anywhere" test lacked.
+				c.conditionL = c.wearCandidateCount >= kWearCandidateGate && !c.addWearName.empty();
+
 				// (88) Condition C: the LARGEST qualifying group wins, so the
 				// note names one concrete geometry rather than a list.  The
 				// `distinctTransforms` requirement is what makes the clause's
@@ -5891,6 +6378,46 @@ namespace RISE
 					"(read_skill {\"name\":\"procedural-textures\"}).";
 			}
 
+			//! GEOMETRY_SHADING_SIGNALS sec 11's whole clause, condition L --
+			//! SHARED by the note builder and the diagnostic builder, the
+			//! FormatConstantMicrosurfaceClause_ pattern exactly.
+			//!
+			//! IT NAMES A VERB, and the census is why.  The 2026-08-29 run
+			//! (design sec 11's CENSUS RUN block) delivered the `curv` descriptor
+			//! text to 6/6 trajectories and the worked patina example to every
+			//! gpt run, and got adoption in 1 of 6: gemini once, gpt never, with
+			//! position proxies (`P.z` thresholds) shipped in its place.  That is
+			//! the same profile doc 88 measured before `vary_material` -- advice
+			//! plus a worked example against a typing prior -- and the same
+			//! answer: state ONE call rather than a rewrite to hand-author.
+			std::string FormatWearCandidatesClause_( int candidateCount,
+			                                         const std::vector<std::string>& candidateNames,
+			                                         const std::string& materialName,
+			                                         const std::string& materialKind,
+			                                         const std::string& geometryKind )
+			{
+				return std::to_string( candidateCount ) + " material" +
+					( candidateCount == 1 ? std::string() : std::string( "s" ) ) + " (" +
+					FormatBoundedNameList_( candidateNames ) + ") " +
+					( candidateCount == 1 ? std::string( "paints" ) : std::string( "paint" ) ) +
+					" one flat colour onto geometry that genuinely curves -- so the form is there and "
+					"nothing reads it. Real surfaces wear where the FORM catches (edges brighten, "
+					"crevices darken); that is a statement about CURVATURE, not about a world axis, and a "
+					"`P.z` threshold cannot say it. `add_wear` writes that composition for you: call it "
+					"with NO ARGUMENTS and it takes `" + materialName + "` (" + materialKind + ", on " +
+					geometryKind + "), adds an `expression_painter` whose edge mask is "
+					"`clamp(curv*k + noise, 0, 1)` and whose crevice mask is `clamp(-curv*k + noise, 0, 1)` "
+					"deepened by `occlusion()`, and mixes an edge tint and a patina tint BANDED AROUND THE "
+					"COLOUR ALREADY THERE -- plus a matching roughness field where the material carries "
+					"one. ONE call, ONE undo step, every knob a named `param` with a min/max you can "
+					"retune with propose_patch. Pass `material` to choose a different one. It REFUSES -- "
+					"changing nothing, costing one call -- when nothing qualifies, when the material is "
+					"already worn, or when every object bound to it sits on planar geometry where `curv` "
+					"is 0. For the hand-authored form of the same idiom read_skill "
+					"{\"name\":\"materials-and-media-basics\"}. If a clean, unweathered look is the point, "
+					"this is fine -- ignore and do not churn.";
+			}
+
 			//! Materials-realism item 4's whole clause, SHARED by the note
 			//! builder and the diagnostic builder.  Names the mismatched
 			//! object(s) and the transmissive alternatives; hedges the claim
@@ -5971,7 +6498,7 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI && !c.conditionJ && !c.conditionK ) return std::string();
+				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -6049,6 +6576,11 @@ namespace RISE
 					note += " " + FormatEnvReflectionClause_( c.envReflectionMaterialNames,
 					                                          c.envDomePainterName, c.envDomeSaturation );
 				}
+				if( c.conditionL ) {
+					note += " " + FormatWearCandidatesClause_( c.wearCandidateCount, c.wearCandidateNames,
+					                                          c.addWearName, c.addWearKind,
+					                                          c.addWearGeometryKind );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -6085,7 +6617,7 @@ namespace RISE
 				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
-				    !c.conditionI && !c.conditionJ && !c.conditionK ) return;
+				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -6234,6 +6766,20 @@ namespace RISE
 					d.message  = FormatEnvReflectionClause_( c.envReflectionMaterialNames,
 					                                        c.envDomePainterName, c.envDomeSaturation ) +
 						kSelfDisarm;
+					out.push_back( d );
+				}
+				if( c.conditionL ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_UNWORN_MATERIALS;
+					// SHARED formatter -- cannot drift from the note's L
+					// clause.  No kSelfDisarm, for condition C/D's reason: the
+					// clause carries its OWN targeted "if a clean, unweathered
+					// look is the point" escape, so BOTH carriers get one and
+					// neither carries two.
+					d.message  = FormatWearCandidatesClause_( c.wearCandidateCount, c.wearCandidateNames,
+					                                         c.addWearName, c.addWearKind,
+					                                         c.addWearGeometryKind );
 					out.push_back( d );
 				}
 			}
@@ -33558,6 +34104,568 @@ namespace RISE
 				out.message += " -- " + std::to_string( out.remainingCount ) +
 					" more flagged material" + ( out.remainingCount == 1 ? std::string() : std::string( "s" ) ) +
 					" beyond the cap of " + std::to_string( kVaryMaterialBatchCap ) + ": call again";
+			return out;
+		}
+
+		//==============================================================
+		// GEOMETRY_SHADING_SIGNALS_DESIGN sec 11 / sec 13 Phase 4
+		// (2026-08-30) -- add_wear.
+		//
+		// The VERB half of design-note condition L, and the fourth
+		// application of the collapse_to_instances / vary_material shape
+		// to a deficit that advice demonstrably cannot move.
+		//
+		// THE DEFICIT IS MEASURED, not suspected: design sec 11's CENSUS
+		// RUN block records 1/6 adoption of `curv` across two providers
+		// after the descriptor text was delivered 6/6 and the worked
+		// patina example was READ in every gpt run, with `P.z` position
+		// proxies shipped in its place.  The cause is a typing prior
+		// ("masks are made of positions"), the same shape doc 88 measured
+		// for "roughness is a number" -- and the same answer: ONE CALL
+		// the model can make.
+		//
+		// THE CONTRACT IS "BAND AROUND WHAT IS ALREADY THERE", inherited
+		// verbatim from vary_material: the tints it mixes toward are
+		// DERIVED IN THE EXPRESSION from the material's own authored
+		// colour, and the roughness band comes from VaryBandFor_ -- the
+		// literal function vary_material uses.  So the surface it
+		// produces is the surface the author asked for plus wear, never
+		// a different material, and never a hardcoded verdigris green
+		// that would only ever suit bronze.
+		//==============================================================
+		namespace
+		{
+			//! The DETERMINISTIC per-material knobs, hashed from the material's
+			//! NAME through the same FNV-1a the material scaffold and
+			//! vary_material use -- no wall-clock, no PRNG state, no
+			//! document-order dependence -- so two runs of this verb on the same
+			//! document produce byte-identical text.  Distinct WORD salts (never
+			//! a numbered scheme) per ScaffoldFnv1a64's own caveat.
+			double WearBreakupScaleFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "wear_breakupscale", 3.0, 9.0 );
+			}
+			double WearGrimeScaleFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "wear_grimescale", 1.4, 4.5 );
+			}
+			double WearSeedFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "wear_seed", 0.0, 100.0 );
+			}
+
+			//! THE ONE WEAR-MASK RECIPE, emitted into BOTH chunks this verb
+			//! writes so the colour and the roughness read the SAME two masks at
+			//! every point (a surface whose crevices darken but do not roughen is
+			//! the tell of two independent wear passes).  Byte-identical `param`
+			//! and `def` lines, one `seed`, so the two chunks agree by
+			//! construction rather than by careful editing.
+			//!
+			//! THE `occlusion(0.08)` RADIUS IS A LITERAL, DELIBERATELY, and is the
+			//! ONE number here that is not a `param`.  ExpressionEval.h's compiler
+			//! emits the `kFnOcclusionDynR` twin for any radius argument it cannot
+			//! prove is exactly one numeric literal, and that twin reads the
+			//! NEUTRAL fallback (1.0, unoccluded) on every indexed triangle mesh
+			//! -- so promoting the radius to a `param` would silently delete the
+			//! cavity term on the whole mesh family while still LOOKING
+			//! art-directable.  The GAIN is a param, which is the knob that
+			//! actually shapes the look; the radius is a mechanism constant.
+			//!
+			//! `mix(vec3,vec3,scalar)` and `vec3 * scalar` are the two typed forms
+			//! this body relies on; `clamp` is scalar-only in this VM, which is
+			//! why every clamp below sits on a mask and the tint arithmetic is
+			//! kept inside [0,1] by construction (a desaturate is a mix between
+			//! two in-gamut colours; a lift is a mix toward white; a darken is a
+			//! multiply by a 0..1 param) rather than by a vec3 clamp that does not
+			//! exist.
+			std::string BuildWearMaskPreludeText( double breakupScale, double grimeScale, double seed )
+			{
+				std::string t;
+				t += "\tparam\t\t\tedge_wear 2.5 min 0 max 12 step 0.1 label \"Edge wear strength\"\n";
+				t += "\tparam\t\t\tcrevice_grime 3.5 min 0 max 12 step 0.1 label \"Crevice grime strength\"\n";
+				t += "\tparam\t\t\tbreakup_amp 0.35 min 0 max 1 step 0.01 label \"Noise breakup amount\"\n";
+				t += "\tparam\t\t\tbreakup_scale " + MicrosurfaceFmt_( breakupScale ) +
+					" min 0.1 max 40 step 0.1 label \"Edge noise scale\"\n";
+				t += "\tparam\t\t\tgrime_scale " + MicrosurfaceFmt_( grimeScale ) +
+					" min 0.1 max 40 step 0.1 label \"Grime noise scale\"\n";
+				t += "\tparam\t\t\tcavity_gain 1.2 min 0 max 4 step 0.05 label \"Cavity deepening\"\n";
+				t += "\tseed\t\t\t" + MicrosurfaceFmt_( seed ) + "\n";
+				t += "\tdef\t\t\t\tjitter vec3(seed, seed*1.7, seed*2.3)\n";
+				t += "\tdef\t\t\t\twear_mask clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)\n";
+				t += "\tdef\t\t\t\tcrevice_raw clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)\n";
+				t += "\tdef\t\t\t\tcavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))\n";
+				t += "\tdef\t\t\t\tcrevice_mask clamp(crevice_raw*cavity_boost, 0, 1)\n";
+				return t;
+			}
+
+			//! The COLOUR half: one `expression_painter` whose final `expr` is the
+			//! mix-of-mixes design sec 11 names.  `base_r/g/b` are params carrying
+			//! the material's OWN authored colour, so the value that was already
+			//! there stays retunable by name after the uniformcolor_painter it
+			//! used to bind is superseded.
+			std::string BuildWearColorPainterText( const std::string& chunkName,
+			                                       double baseR, double baseG, double baseB,
+			                                       double breakupScale, double grimeScale, double seed )
+			{
+				std::string t = "expression_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tparam\t\t\tbase_r " + MicrosurfaceFmt_( baseR ) + " min 0 max 1 step 0.005 label \"Base colour R\"\n";
+				t += "\tparam\t\t\tbase_g " + MicrosurfaceFmt_( baseG ) + " min 0 max 1 step 0.005 label \"Base colour G\"\n";
+				t += "\tparam\t\t\tbase_b " + MicrosurfaceFmt_( baseB ) + " min 0 max 1 step 0.005 label \"Base colour B\"\n";
+				t += "\tparam\t\t\tedge_desat 0.45 min 0 max 1 step 0.01 label \"Edge desaturation\"\n";
+				t += "\tparam\t\t\tedge_lift 0.30 min 0 max 1 step 0.01 label \"Edge lift toward white\"\n";
+				t += "\tparam\t\t\tpatina_desat 0.35 min 0 max 1 step 0.01 label \"Patina desaturation\"\n";
+				t += "\tparam\t\t\tpatina_darken 0.35 min 0 max 1 step 0.01 label \"Patina darkening\"\n";
+				t += BuildWearMaskPreludeText( breakupScale, grimeScale, seed );
+				t += "\tdef\t\t\t\tbase vec3(base_r, base_g, base_b)\n";
+				t += "\tdef\t\t\t\tlum dot(base, vec3(0.2126, 0.7152, 0.0722))\n";
+				t += "\tdef\t\t\t\tgrey vec3(lum, lum, lum)\n";
+				t += "\tdef\t\t\t\tedge_tint mix(mix(base, grey, edge_desat), vec3(1, 1, 1), edge_lift)\n";
+				t += "\tdef\t\t\t\tpatina_tint mix(base, grey, patina_desat) * patina_darken\n";
+				t += "\texpr\t\t\tmix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The MICROSURFACE half: the same two masks driving roughness --
+			//! POLISHED on the worn edges (a rubbed edge is smoother than the
+			//! field around it) and CRUSTED in the crevices.  `lo`/`hi` come from
+			//! VaryBandFor_, the function vary_material uses, so the two verbs
+			//! cannot grow two different ideas of a safe roughness band.
+			//!
+			//! `asColourPipe` carries the identical `pbr_metallic_roughness_material`
+			//! exception BuildRoughnessFieldScalarPainterText documents -- see that
+			//! function's own `asColourPipe` doc comment for the traced evidence.
+			std::string BuildWearRoughnessPainterText( const std::string& chunkName,
+			                                           double lo, double base, double hi,
+			                                           double breakupScale, double grimeScale, double seed,
+			                                           bool asColourPipe )
+			{
+				const double sliderMax = ( hi > 1.0 ) ? hi : 1.0;
+				std::string t = asColourPipe ? "expression_painter\n{\n" : "scalar_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tparam\t\t\trough_base " + MicrosurfaceFmt_( base ) +
+					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Unworn roughness\"\n";
+				t += "\tparam\t\t\trough_polished " + MicrosurfaceFmt_( lo ) +
+					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Rubbed-edge roughness\"\n";
+				t += "\tparam\t\t\trough_crusted " + MicrosurfaceFmt_( hi ) +
+					" min 0.001 max " + MicrosurfaceFmt_( sliderMax ) + " step 0.005 label \"Crevice roughness\"\n";
+				t += BuildWearMaskPreludeText( breakupScale, grimeScale, seed );
+				t += asColourPipe
+					? "\texpr\t\t\tmix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)\n"
+					: "\texpression\t\tmix(mix(rough_base, rough_polished, wear_mask), rough_crusted, crevice_mask)\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! Collision-safe chunk naming, the same 64-attempt shape
+			//! VaryMaterial uses.  Returns empty when every candidate is taken.
+			std::string WearMintChunkName_( const RISE::Cst::Document& doc,
+			                                const std::string& materialName, const char* suffix,
+			                                const std::vector<std::string>& alsoTaken )
+			{
+				for( int attempt = 0; attempt < 64; ++attempt ) {
+					const std::string cand = materialName + suffix +
+						( attempt ? std::to_string( attempt + 1 ) : std::string() );
+					if( !CollapseNameIsUsable_( cand ) )      continue;
+					if( CollapseNameTaken_( doc, cand ) )      continue;
+					bool clash = false;
+					for( const std::string& t : alsoTaken ) if( t == cand ) { clash = true; break; }
+					if( clash ) continue;
+					return cand;
+				}
+				return std::string();
+			}
+		}
+
+		AgentSession::AgentAddWearResult AgentSession::AddWear(
+			const std::string& material, const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
+			// capture point -- see ProposePatch's / VaryMaterial's copy of this
+			// line for the rule.
+			CaptureHeadRevisionSnapshot_();
+			AgentAddWearResult out;
+			// S1 (2026-08-11): folds a phase give-up notice into out.message
+			// whichever return fires -- see BuildPlanGiveUpFold_'s doc.
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE; the commit re-checks it, so the
+			// candidate can never land on a head that moved underneath it.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "add_wear refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"add_wear refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			// ---- (2) THE SHARED PREDICATE.  The same
+			// ComputeDesignNoteConditionsFromDoc_ scan design-note condition L
+			// reads, so the note can never advertise this call and then have it
+			// edit a different material.  What this verb does NOT inherit is L's
+			// kWearCandidateGate volume gate: this is a deliberate call about a
+			// named (or most-prominent) material, and one worn hero does not make
+			// the other two props any less flat.
+			const DesignNoteConditions_ cond = ComputeDesignNoteConditionsFromDoc_( headDoc );
+			out.qualifyingMaterials = cond.wearCandidateCount;
+
+			const WearMaterial_* pick = nullptr;
+			if( !material.empty() ) {
+				for( const WearMaterial_& m : cond.wearCandidateMaterials )
+					if( m.name == material ) { pick = &m; break; }
+				if( !pick ) {
+					// THREE distinct answers, because they need three different
+					// corrections: the name is not a chunk at all; the name is a
+					// chunk this scan formed an opinion about and turned down for
+					// a specific rule; or the name is a chunk with no colour slots
+					// for this verb to read.
+					const std::map<std::string, std::string>::const_iterator why =
+						cond.wearDeclineReasons.find( material );
+					if( why != cond.wearDeclineReasons.end() ) {
+						out.message = "add_wear refused: `" + material + "` does not qualify -- " +
+							why->second + ". Call it with no arguments to take the most prominent "
+							"material that DOES qualify -- document unchanged";
+					}
+					else {
+						const bool exists = ( RISE::Cst::DocFindByNameAnyRole( headDoc, material ) ? true : false );
+						out.message = exists
+							? ( "add_wear refused: `" + material + "` exists but carries no colour slot this "
+							    "can read -- it needs a material kind with a colour-pipe slot (base_color / "
+							    "reflectance / rd / ...) spelled out and bound to a uniformcolor_painter. Call "
+							    "it with no arguments to take the most prominent material that DOES qualify -- "
+							    "document unchanged" )
+							: ( "add_wear refused: no chunk named `" + material + "` is in this document -- "
+							    "`material` must name a material chunk (read_document to see the names), or omit "
+							    "it entirely to take the most prominent qualifying material -- document "
+							    "unchanged" );
+					}
+					return out;
+				}
+			}
+			else {
+				pick = SelectMaterialToWear_( cond.wearCandidateMaterials );
+				if( !pick ) {
+					out.message = "add_wear refused: no material in this document is a flat, readable colour "
+						"on geometry that curves -- it needs a material whose colour slot is bound to a "
+						"uniformcolor_painter (not already varying, not a blackbody/spectral painter) and "
+						"whose objects sit on something with a real normal field (an sdf_geometry, a mesh, a "
+						"sphere/ellipsoid/torus/cylinder -- NOT a plane, disk, box or patch, where `curv` is "
+						"0 everywhere). Every material here is either already worn, already varying, "
+						"unreadable, or planar-only. Author such a material first, or bind an "
+						"`expression_painter` reading `curv` by hand (read_skill "
+						"{\"name\":\"materials-and-media-basics\"}) -- document unchanged";
+					return out;
+				}
+			}
+
+			out.material     = pick->name;
+			out.materialKind = pick->kind;
+			out.geometryKind = pick->curvGeometryKind;
+			out.boundObjects = pick->objectCount;
+			out.baseR = pick->baseR; out.baseG = pick->baseG; out.baseB = pick->baseB;
+			if( pick->hasRoughness ) out.previousRoughness = pick->roughness;
+
+			// ---- (3) Name the chunk(s) (collision-safe, and mutually
+			// collision-safe: both names are minted against the SAME document, so
+			// the second must also avoid the first).
+			std::vector<std::string> minted;
+			const std::string colorFieldName = WearMintChunkName_( headDoc, pick->name, "_wear", minted );
+			if( colorFieldName.empty() ) {
+				out.message = "add_wear refused: could not derive an unused chunk name from `" +
+					pick->name + "` -- rename or remove the colliding `" + pick->name +
+					"_wear*` chunks and retry -- document unchanged";
+				return out;
+			}
+			minted.push_back( colorFieldName );
+
+			std::string roughFieldName;
+			if( pick->hasRoughness ) {
+				roughFieldName = WearMintChunkName_( headDoc, pick->name, "_wearrough", minted );
+				if( roughFieldName.empty() ) {
+					out.message = "add_wear refused: could not derive an unused chunk name from `" +
+						pick->name + "` -- rename or remove the colliding `" + pick->name +
+						"_wearrough*` chunks and retry -- document unchanged";
+					return out;
+				}
+				minted.push_back( roughFieldName );
+			}
+
+			// The MICROSURFACE chunk's kind -- MicrosurfaceKindUsesColourPipe_ is
+			// the SAME predicate vary_material and the design note read, so all
+			// three can never disagree about which manager a roughness field lands
+			// in.  Declared at this scope because the External-authority refusal
+			// message below names it too.
+			const bool roughColourPipe = MicrosurfaceKindUsesColourPipe_( pick->kind );
+			const std::string roughChunkKind = roughColourPipe ? "expression_painter" : "scalar_painter";
+
+			const double breakupScale = WearBreakupScaleFor_( pick->name );
+			const double grimeScale   = WearGrimeScaleFor_( pick->name );
+			const double seed         = WearSeedFor_( pick->name );
+
+			// `colorPainter` / `roughnessPainter` / the rebound slot lists stay
+			// LOCAL until the commit is known to have landed -- vary_material's
+			// rule, for its reason: those fields describe what IS in the document,
+			// and a caller that believed them after a refusal would go looking for
+			// chunks that were never written.
+			std::vector<std::string> reboundRoughSlots;
+
+			// ---- (4) Rebind the slots, THEN splice the field chunks in ahead of
+			// the material.  That order is load-bearing in both halves, exactly as
+			// it is in VaryMaterial: the param edits are addressed by the material
+			// chunk's NodeId taken BEFORE any structural change, and the splices
+			// land at the material's own item index, which puts every declaration
+			// BEFORE its consumer.
+			RISE::Cst::Document work = headDoc;
+			{
+				const RISE::Cst::NodeId matId = RISE::Cst::DocNodeIdAt( work, pick->itemIndex );
+				if( !matId ) {
+					out.message = "add_wear refused: internal -- `" + pick->name +
+						"` could not be re-resolved in the document; nothing changed";
+					return out;
+				}
+				work = RISE::Cst::DocSetParamValue( work, matId, pick->colorSlot, 0, colorFieldName );
+				// DocSetParamValue is documented to return `doc` UNCHANGED when
+				// the chunk or param is absent -- a silent no-op -- so the rebind
+				// is READ BACK rather than assumed.  Without this the verb could
+				// splice a field chunk nothing points at and report success.
+				{
+					const RISE::Cst::NodeRef matRef = RISE::Cst::DocResolveNodeId( work, matId );
+					const std::string bound = RISE::Cst::ParamValueAtOccurrence( matRef, pick->colorSlot, 0 );
+					if( bound.find( colorFieldName ) == std::string::npos ) {
+						out.message = "add_wear refused: internal -- rebinding `" + pick->colorSlot + "` on `" +
+							pick->name + "` did not take; document unchanged";
+						return out;
+					}
+				}
+				for( const std::string& slot : pick->roughnessSlots ) {
+					work = RISE::Cst::DocSetParamValue( work, matId, slot, 0, roughFieldName );
+					const RISE::Cst::NodeRef matRef = RISE::Cst::DocResolveNodeId( work, matId );
+					const std::string bound = RISE::Cst::ParamValueAtOccurrence( matRef, slot, 0 );
+					if( bound.find( roughFieldName ) == std::string::npos ) {
+						out.message = "add_wear refused: internal -- rebinding `" + slot + "` on `" +
+							pick->name + "` did not take; document unchanged";
+						return out;
+					}
+					reboundRoughSlots.push_back( slot );
+				}
+
+				// Splice the colour field first; the roughness field then goes in
+				// at the SAME index, which lands it AHEAD of the colour one.  Both
+				// end up before the material, which is all the derive-in-order rule
+				// requires, and neither references the other.
+				{
+					const int before = RISE::Cst::DocItemCount( work );
+					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
+						BuildWearColorPainterText( colorFieldName, pick->baseR, pick->baseG, pick->baseB,
+						                           breakupScale, grimeScale, seed ) );
+					if( RISE::Cst::DocItemCount( work ) == before ) {
+						out.message = "add_wear refused: internal -- the generated `expression_painter` chunk "
+							"did not parse; nothing changed";
+						return out;
+					}
+				}
+				if( pick->hasRoughness ) {
+					double lo = 0.0, hi = 0.0;
+					VaryBandFor_( pick->roughness, lo, hi );
+					const int before = RISE::Cst::DocItemCount( work );
+					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
+						BuildWearRoughnessPainterText( roughFieldName, lo, pick->roughness, hi,
+						                               breakupScale, grimeScale, seed, roughColourPipe ) );
+					if( RISE::Cst::DocItemCount( work ) == before ) {
+						out.message = "add_wear refused: internal -- the generated `" + roughChunkKind +
+							"` chunk did not parse; nothing changed";
+						return out;
+					}
+				}
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "add_wear refused: internal -- the candidate document serialized to "
+					"nothing; document unchanged";
+				return out;
+			}
+
+			// ---- (5) S1 (2026-08-11) the CROSS-ELEMENT arm, over the material.
+			// Deliberately AFTER the candidate build, per CheckBuildPlanGate_'s
+			// rule: a call refused for having nothing to wear must not ALSO burn
+			// one of the three shared phase-refusal slots.
+			{
+				const std::string clause = CheckElementWindowForEdit_( "add_wear", pick->name,
+				                                                       &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (6) COMMIT: ONE whole-document swap, ONE dry-run-guarded
+			// re-derive, ONE head bump, ONE undo step -- the SAME composite
+			// primitive vary_material / collapse_to_instances /
+			// replace_geometry_scaffold use.  That is what makes "one undoable
+			// unit" true: both inserted painters and every rebound slot land
+			// together or not at all, so a Cmd-Z can never leave a material
+			// pointing at a chunk that is no longer there.
+			AgentChunkResult commit;
+			commit.name = pick->name;
+			commit.kind = pick->kind;
+
+			if( mAuthority == AgentAuthority::External ) {
+				// NO STAGING PATH, and this MIRRORS vary_material rather than
+				// inventing a shape: an AgentProposal replays ONE of the four
+				// AgentProposalKind verbs, and a composite whole-document swap is
+				// none of them.  Document byte-identical, and the refusal names the
+				// staged steps that DO exist.
+				out.message = "add_wear refused: this session is External-authority, and this verb has no "
+					"staged-proposal form (it is ONE composite document swap, not a single chunk edit an "
+					"Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk an "
+					"`expression_painter { expr ... }` wear field, then propose_patch `" + pick->colorSlot +
+					"` on `" + pick->name + "` to its name" +
+					( pick->hasRoughness
+						? ( ", and the same again with a `" + roughChunkKind + "` for `" +
+						    pick->roughnessSlots[0] + "`" )
+						: std::string() ) +
+					" -- document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( pick->name.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "add_wear" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "add_wear refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else {
+				// HEADLESS (direct-Job).  Same conflict gate the controller applies
+				// under its lock: the candidate is committed against exactly the
+				// head it was computed from, or not at all.
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"add_wear refused: the head moved (revision %llu) while the rewrite was being "
+						"composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "add_wear" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 )      { commit.applied = true;  commit.status = "applied"; }
+				else if( code == 3 ) { commit.applied = false; commit.status = "diagnosed"; }
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (7) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			// The chunk/slot fields are PUBLISHED only once the commit actually
+			// touched the document -- the same gate the attribution bookkeeping
+			// below uses.  `material` / `materialKind` / `base*` / `geometryKind`
+			// / `qualifying` stay set either way: those describe the DOCUMENT as
+			// it stands, which is a fact regardless of the outcome.
+			if( ResultMutatedDocument_( commit ) ) {
+				out.colorSlot        = pick->colorSlot;
+				out.colorPainter     = colorFieldName;
+				out.roughnessSlots   = reboundRoughSlots;
+				out.roughnessPainter = roughFieldName;
+			}
+
+			{
+				std::string m;
+				if( commit.applied ) {
+					m = "`" + pick->name + "` (" + pick->kind + ") now wears: its " + pick->colorSlot +
+						" is bound to `" + colorFieldName + "`, an expression_painter mixing an edge tint "
+						"and a patina tint over the " + MicrosurfaceFmt_( pick->baseR ) + " " +
+						MicrosurfaceFmt_( pick->baseG ) + " " + MicrosurfaceFmt_( pick->baseB ) +
+						" that was there, keyed on `curv` (convex = edge, concave = crevice) and deepened "
+						"by occlusion";
+					if( !reboundRoughSlots.empty() ) {
+						std::string slots;
+						for( const std::string& s : reboundRoughSlots ) {
+							if( !slots.empty() ) slots += "/";
+							slots += s;
+						}
+						m += "; its " + slots + " is bound to `" + roughFieldName + "`, a " + roughChunkKind +
+							" reading the SAME masks -- polished on the edges, rougher in the crevices, "
+							"banded around the " + MicrosurfaceFmt_( pick->roughness ) + " that was there";
+					}
+					m += ". The signal reads because this material's objects sit on " + pick->curvGeometryKind +
+						". ONE full re-derive, ONE undo step. Retune it with propose_patch on the named "
+						"params (edge_wear, crevice_grime, cavity_gain, breakup_amp, the base_r/g/b and the "
+						"tint knobs) or the `seed`; `" + pick->colorPainter + "` is now referenced by one "
+						"less slot -- remove_chunk it if nothing else uses it. The same idiom applies to "
+						"every other material in the scene.";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "add_wear NOT a clean success: the Document was mutated and the live managers were "
+						"replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+				}
+				else {
+					m = "add_wear rejected (NOTHING changed): the candidate document would not derive "
+						"-- head unchanged";
+				}
+				// The commit layer's wording belongs to the whole-document-swap
+				// primitive this verb SHARES with replace_geometry_scaffold, so it
+				// says "geometry replacement" -- bracketed and attributed rather
+				// than reworded, because the derive diagnostic it carries is the
+				// useful half.
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
+			// This verb rewrites the document itself instead of routing through
+			// InsertChunk, so nothing else records attribution for the chunks it
+			// landed.  `diagnosed` counts, per ResultMutatedDocument_: code 3 DID
+			// mutate.
+			if( ResultMutatedDocument_( commit ) ) {
+				AttributeChunkToActiveElement_( colorFieldName, "expression_painter" );
+				if( !roughFieldName.empty() )
+					AttributeChunkToActiveElement_( roughFieldName, roughChunkKind );
+			}
+
 			return out;
 		}
 

@@ -6347,6 +6347,119 @@ namespace RISE
 			AgentFixBlendScaleResult FixBlendScale( const std::string& target = std::string(),
 			                                        const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md sec 11 / sec 13 Phase 4
+			//! (2026-08-30): what add_wear did, or the reason it declined.
+			//!
+			//! `ok` follows the AgentVaryMaterialResult / AgentCollapseResult /
+			//! AgentFixBlendScaleResult convention EXACTLY: true once the request
+			//! was well-formed AND reached a commit-stage disposition, so `status`
+			//! carries the real outcome ("applied"/"rejected"/"diagnosed"/
+			//! "conflict").  Every PRE-COMMIT refusal -- nothing qualifies, a named
+			//! material that is not a candidate, a name collision, an
+			//! External-authority session -- leaves `ok` false and `status` EMPTY
+			//! with the whole reason in `message`, and leaves the document, the
+			//! head version, the history and the proposal queue byte-identical.
+			struct AgentAddWearResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material that now wears
+				std::string materialKind;    //!< its chunk keyword
+				std::string colorSlot;       //!< the colour slot repointed at the wear field (empty unless the commit landed)
+				std::string colorPainter;    //!< the `expression_painter` minted for colour (ditto)
+				//! The microsurface slot(s) ALSO repointed, and the
+				//! scalar_painter/expression_painter minted for them -- empty when
+				//! the material carries no readable constant roughness (a
+				//! lambertian, say), which is not a refusal: the colour half is
+				//! the verb's core and the roughness half is opportunistic.
+				std::vector<std::string> roughnessSlots;
+				std::string roughnessPainter;
+				double      previousRoughness = 0.0;
+				//! The constant RGB the composition was banded around -- a fact
+				//! about the DOCUMENT, so set on refusals that got far enough to
+				//! read it, exactly as `previousRoughness` is on vary_material.
+				double      baseR = 0.0, baseG = 0.0, baseB = 0.0;
+				//! One representative geometry kind the chosen material's objects
+				//! sit on, so the caller can see WHY the signal will read.
+				std::string geometryKind;
+				int         qualifyingMaterials = 0;   //!< how many materials the shared predicate found
+				int         boundObjects = 0;          //!< how many standard_objects bind the chosen material
+			};
+
+			//! GEOMETRY_SHADING_SIGNALS sec 11's C-VERB escalation, and the VERB
+			//! half of design-note condition L: rewrite ONE material into the
+			//! census-proven CURVATURE WEAR composition -- edges lightened, crevices
+			//! darkened and deepened by ambient occlusion, both broken up by noise,
+			//! all of it banded around the colour that is already there.
+			//!
+			//! WHY A VERB AND NOT MORE ADVICE.  Design sec 11's CENSUS RUN
+			//! (2026-08-29) is the measurement: the `curv` descriptor text reached
+			//! 6/6 trajectories through `read_schema`, the worked patina example in
+			//! `materials-and-media-basics` was READ in every gpt run, and adoption
+			//! was 1 of 6 -- gemini once (textbook), gpt never, shipping `P.z`
+			//! position proxies in its place.  That is the identical profile doc 88
+			//! measured for spatially-varying roughness before `vary_material`
+			//! existed: a typing prior ("masks are made of positions") that prose
+			//! and worked examples do not override.  The pre-committed escalation
+			//! rule for a census miss is a verb, and this is that verb.
+			//!
+			//! ZERO REQUIRED ARGUMENTS, for vary_material's reason: a verb that
+			//! first asks the model to pick a material reintroduces exactly the
+			//! decision the advice already failed to get made.  Called bare it
+			//! takes the material condition L names -- most `standard_object`s
+			//! bound, ties broken lexicographically -- so the advice and the call
+			//! are one act, over ONE shared predicate
+			//! (ComputeDesignNoteConditionsFromDoc_'s `wearCandidateMaterials`).
+			//!
+			//! WHAT IT WRITES.  One `expression_painter` spliced in AHEAD of the
+			//! material (declare-before-use) holding
+			//! `mix(mix(base, edge_tint, wear_mask), patina_tint, crevice_mask)`,
+			//! where `wear_mask = clamp(curv*k_w + a*fbm(P*f,4,0.5,2.0), 0, 1)` and
+			//! `crevice_mask` is its `-curv` twin multiplied by an
+			//! `occlusion(0.08)`-derived cavity boost and re-clamped to [0,1].
+			//! `edge_tint` and `patina_tint` are DERIVED FROM THE BASE in the
+			//! expression itself (desaturate + lift toward white; desaturate +
+			//! darken), never hardcoded verdigris -- so the verb works on wood,
+			//! stone and painted steel as well as on bronze.  When the material
+			//! ALSO carries a readable constant microsurface, a second chunk
+			//! (`scalar_painter`, or `expression_painter` for the one colour-pipe
+			//! kind) rebinds it to the SAME two masks: smoother on the edges,
+			//! rougher in the crevices, banded by VaryBandFor_ -- the identical
+			//! band rule vary_material uses, deliberately shared.
+			//!
+			//! Every art-directable number is a named `param` with min/max/step/
+			//! label (doc 88 P5 Tier 1).  The ONE deliberate exception is the
+			//! `occlusion(0.08)` radius, which must stay a NUMERIC LITERAL: the
+			//! expression compiler emits the `...DynR` twin for any radius it
+			//! cannot prove literal (ExpressionEval.h's `literalRadiusArg`), and
+			//! that twin reads the NEUTRAL fallback on every triangle mesh -- so a
+			//! `param`-bound radius would silently disable the cavity term on the
+			//! whole mesh family.  Field scales and `seed` are hashed from the
+			//! MATERIAL NAME (FNV-1a, no clock, no PRNG state), so two runs on the
+			//! same document produce BYTE-IDENTICAL text.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: no material
+			//! whose colour is a readable flat constant on curv-bearing geometry;
+			//! a named `material` that is not such a material (the message
+			//! distinguishes "no such chunk" from the specific rule it tripped --
+			//! already varying, an unreadable base, already worn, planar-only
+			//! geometry); an underivable candidate; a name collision.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the same
+			//! commit path VaryMaterial / CollapseToInstances /
+			//! ReplaceGeometryScaffold use, and for the same reason it has no
+			//! staged-proposal form under External authority (there is no
+			//! AgentProposalKind an Owner could approve card-by-card for a
+			//! composite swap).
+			AgentAddWearResult AddWear( const std::string& material = std::string(),
+			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
 			//! reason it declined.
 			//!

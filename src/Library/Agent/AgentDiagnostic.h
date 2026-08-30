@@ -310,6 +310,22 @@ namespace RISE
 			//! deliberate look, unlike condition J's geometric-scale
 			//! fact), same bounded-list formatting as its siblings.
 			static const char* const DESIGN_ENV_REFLECTION = "DESIGN_ENV_REFLECTION";
+			//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md sec 11 / sec 13 Phase 4
+			//! (2026-08-30), condition L: at least kWearCandidateGate (3)
+			//! materials paint ONE flat, readable constant colour onto
+			//! geometry with a real normal field -- the form is there and
+			//! nothing reads it.  Its message NAMES `add_wear`, the C-VERB
+			//! escalation the 2026-08-29 census earned: descriptor text
+			//! reached 6/6 trajectories and the worked patina example every
+			//! gpt run, for 1/6 adoption and `P.z` position proxies in its
+			//! place -- the same advice-fails-a-typing-prior profile that
+			//! preceded `vary_material`.  Fires off the SAME predicate
+			//! AgentSession::AddWear uses to pick what to rewrite (see
+			//! WearMaterial_'s four clauses), so the note can never advertise
+			//! a call the verb then declines.  Severity::Info; the clause
+			//! carries its own targeted anti-churn escape, so no generic
+			//! self-disarm suffix is appended (condition C/D's rule).
+			static const char* const DESIGN_UNWORN_MATERIALS = "DESIGN_UNWORN_MATERIALS";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a
