@@ -78,6 +78,24 @@ namespace
 		ctx.curvR = H;
 		ctx.curv  = H * ri.derivatives.scaleHint;
 	}
+
+	//! Hands the expression VM the hit's geometry-signal channel -- the
+	//! provider back-pointer plus the object-space (point, normal) to query
+	//! it at (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1).  SHARED by both
+	//! BuildContext twins for the same anti-drift reason PopulateCurvature
+	//! is.
+	//!
+	//! A straight copy, and deliberately so: NOTHING is computed here.
+	//! `occlusion()` / `thickness()` are arg-taking builtins evaluated only
+	//! if the body calls them, so the expensive part (the SDF estimators)
+	//! stays behind the call, not in front of the painter -- which is the
+	//! whole reason these two need no consumption gate while `curv` does
+	//! (design doc §6.2).  On geometry that publishes no provider the copied
+	//! channel is empty, and the builtins return their neutral values.
+	inline void PopulateSignals( const RayIntersectionGeometric& ri, ExprEvalContext& ctx )
+	{
+		ctx.signals = ri.signals;
+	}
 }
 
 ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric& ri ) const
@@ -96,6 +114,7 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	ctx.fw = ri.txFootprint.valid ? ri.txFootprint.worldWidth : Scalar(0);
 	ctx.time = m_time;
 	PopulateCurvature( ri, ctx );
+	PopulateSignals( ri, ctx );
 	return ctx;
 }
 
@@ -214,6 +233,7 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	ctx.fw = ri.txFootprint.valid ? ri.txFootprint.worldWidth : Scalar(0);
 	ctx.time = Scalar(0);		// not exposed on this pipe -- see class doc comment
 	PopulateCurvature( ri, ctx );
+	PopulateSignals( ri, ctx );
 	return ctx;
 }
 

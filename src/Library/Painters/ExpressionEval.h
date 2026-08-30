@@ -80,6 +80,19 @@
 //              detail; fw==0 (the default, and the only value pre-S9)
 //              reproduces the un-faded sum exactly; worley_f1/f2/f2f1/
 //              id(v,jitter)->s; cellhash(s)
+//              GEOMETRY SIGNALS (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+//              Phase 2): occlusion(radius)->s in [0,1], 1 = unoccluded;
+//              thickness(radius)->s in [0,1], 1 = thick.  `radius` is a
+//              FRACTION of the hit geometry's characteristic size (its
+//              bounding-box diagonal), so occlusion(0.05) reads as "5 %
+//              of the object" on any scene scale.  Both are LAZY -- they
+//              cost nothing unless the body calls them -- and they answer
+//              only on geometry that publishes an ISurfaceSignalProvider
+//              (the SDF family today; meshes in Phase 3).  Anywhere else,
+//              and for any radius <= 0, they return their documented
+//              NEUTRAL values (occlusion 1 = unoccluded, thickness 1 =
+//              thick), the same honest-absence convention fw and curv
+//              use.  A LITERAL radius <= 0 is a COMPILE error.
 //              ->s.  ramp(t, pos0,val0, pos1,val1, ...)->(scalar or
 //              vec3, matching the stop values) -- variadic, >=2 stops,
 //              clamped ends, positions checked ascending at compile
@@ -107,6 +120,7 @@
 #include "../Utilities/Math3D/Math3D.h"	// Scalar, Vector3
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/ProceduralNoiseCore.h"
+#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness() dispatch channel
 
 namespace RISE
 {
@@ -135,6 +149,27 @@ namespace RISE
 			//! and are therefore invariant under bump / normal maps.
 			Scalar	curv;
 			Scalar	curvR;
+
+			//! The `occlusion()` / `thickness()` dispatch channel for THIS
+			//! hit (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1) -- the
+			//! geometry's signal provider plus the object-space point and
+			//! normal to query it at.
+			//!
+			//! Unlike every field above it, this is NOT bound into an env
+			//! slot: these are ARG-TAKING BUILTINS, evaluated lazily when
+			//! the body calls them, not context variables computed up
+			//! front.  It is threaded to the evaluator as a separate
+			//! `const SurfaceSignalInfo*` alongside `env` (see Eval /
+			//! RunAny / CallFunc), which is what keeps the compiled
+			//! program itself stateless and `const`: nothing per-hit is
+			//! ever stored on the program, so one program stays safe to
+			//! evaluate from every render thread at once.
+			//!
+			//! Default-constructed (no provider) reads as the honest
+			//! "this surface publishes no signals" and the builtins return
+			//! their neutral values -- so an expression is evaluable
+			//! exactly as before wherever no geometry answers.
+			SurfaceSignalInfo	signals;
 
 			ExprEvalContext() :
 				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0), curv(0), curvR(0)
@@ -193,6 +228,26 @@ namespace RISE
 				Compiled() : writeSlot(-1), type(kScalar) {}
 			};
 
+			//! One `occlusion(...)` / `thickness(...)` CALL SITE in this
+			//! program, recorded at compile time (design doc §7.1's
+			//! constant-radius contract, whose consumer is Phase 3's baked
+			//! mesh path).
+			//!
+			//! `radiusIsLiteral` is TRUE only when the radius argument was a
+			//! bare numeric literal (optionally signed) -- see
+			//! Builder::PeekLiteralScalarArg for exactly how narrow that
+			//! claim is.  FALSE never means "not constant"; it means "this
+			//! compiler did not prove it constant", which the baked path must
+			//! treat as dynamic (and therefore, per §7.1's mismatch contract,
+			//! answer with the signal's neutral fallback rather than
+			//! substituting the baked radius).
+			struct SignalRadiusCall
+			{
+				int    fn;				//!< kFnOcclusion or kFnThickness
+				bool   radiusIsLiteral;
+				Scalar radiusLiteral;	//!< meaningful only when radiusIsLiteral
+			};
+
 			//! Slot / stack / parse-depth caps -- a compiled program is
 			//! rejected at build time if it would exceed them, so Eval can use
 			//! fixed stack-allocated buffers (no per-call heap, no overflow).
@@ -201,6 +256,16 @@ namespace RISE
 			static const int kMaxParseDepth = 200;	//!< recursive-descent nesting
 			static const int kMaxOctaves    = NoiseCore::kMaxOctaves;
 			static const int kMaxRampStops  = 64;
+
+			//! Function ids of the two GEOMETRY-DERIVED SIGNAL builtins
+			//! (design doc Phase 2).  Named constants rather than bare
+			//! numbers because three places must agree on them -- the FnSig
+			//! table, CallFunc's cases, and ParseCall's per-argument
+			//! literal-radius validation -- and a silent mismatch between
+			//! them would mis-route a call to a different builtin.  They
+			//! continue the scalar-returning id band (cellhash = 50).
+			static const int kFnOcclusion   = 51;
+			static const int kFnThickness   = 52;
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
 			//!   u=0, v=1, P=2..4, Po=5..7, N=8..10, fw=kContextSlotFw(11),
 			//!   time=kContextSlotTime(12), curv=kContextSlotCurv(13),
@@ -253,9 +318,12 @@ namespace RISE
 			Scalar Eval( const Scalar u, const Scalar v ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0) );
+				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0 );
 				Scalar out[3];
-				RunAny( m_final, env, out );
+				// No hit record here, so no signal provider: occlusion() /
+				// thickness() fall back to their neutral values, exactly as
+				// the zero context vars above do.
+				RunAny( m_final, env, out, 0 );
 				return out[0];
 			}
 
@@ -264,9 +332,9 @@ namespace RISE
 			Scalar Eval( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
 				Scalar out[3];
-				RunAny( m_final, env, out );
+				RunAny( m_final, env, out, &ctx.signals );
 				return out[0];
 			}
 
@@ -277,9 +345,9 @@ namespace RISE
 			Vector3 EvalVec3( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
 				Scalar out[3];
-				RunAny( m_final, env, out );
+				RunAny( m_final, env, out, &ctx.signals );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
 				return Vector3( out[0], out[0], out[0] );
 			}
@@ -315,6 +383,24 @@ namespace RISE
 				return UsesContextVar( kContextSlotCurv ) || UsesContextVar( kContextSlotCurvR );
 			}
 
+			//! Does this program call `occlusion()` or `thickness()`
+			//! anywhere -- final expression or any `def` stage?  Resolved at
+			//! COMPILE time, same as UsesContextVar.
+			//!
+			//! Unlike UsesSurfaceCurvature this is NOT wired to a cost gate:
+			//! the per-hit provider install is a pointer plus six scalars and
+			//! the estimators are lazy by construction, so there is nothing
+			//! to gate (see SurfaceSignalInfo's own doc for the full
+			//! argument).  It exists for introspection and for Phase 3's bake
+			//! trigger, which genuinely does need to know up front.
+			bool UsesSurfaceSignals() const { return !m_signalCalls.empty(); }
+
+			//! Every `occlusion()` / `thickness()` call site, in parse order
+			//! (def stages first, in registration order, then the final
+			//! expression).  Phase 3's baked mesh path reads this to decide
+			//! WHICH radius to bake and whether it may answer at all.
+			const std::vector<SignalRadiusCall>& SurfaceSignalCalls() const { return m_signalCalls; }
+
 			//! Number of compiled `def` stages (registration order == the
 			//! chunk's `def` line order, since AddDef pushes onto m_defs in
 			//! call order and Builder::Finalize copies it verbatim).  0 for
@@ -346,7 +432,7 @@ namespace RISE
 			{
 				if( defIdx < 0 || (size_t)defIdx >= m_defs.size() ) return false;
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, defIdx );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, defIdx );
 				const Compiled& d = m_defs[ (size_t)defIdx ];
 				if( d.type == kVec3 ) {
 					outVal = Vector3( env[ d.writeSlot+0 ], env[ d.writeSlot+1 ], env[ d.writeSlot+2 ] );
@@ -464,6 +550,9 @@ namespace RISE
 					// Accumulated by ParseAtom across every Compile() this Builder
 					// ran, so it covers `def` stages as well as the final expr.
 					out.m_ctxUsedMask = m_ctxUsed;
+					// Same accumulate-across-every-Compile discipline as m_ctxUsed:
+					// covers `def` stage bodies as well as the final expression.
+					out.m_signalCalls = m_sigCalls;
 					out.m_initEnv.assign( m_names.size(), Scalar(0) );
 					for( std::map<int,Scalar>::const_iterator it = m_init.begin(); it != m_init.end(); ++it ) {
 						out.m_initEnv[ it->first ] = it->second;
@@ -516,6 +605,13 @@ namespace RISE
 				//! ExpressionProgram's own -- which is a hard compile error, not a
 				//! silent shadow, but a confusing one.)
 				unsigned int m_ctxUsed;
+				//! Every occlusion()/thickness() call site compiled by THIS
+				//! builder, in parse order; copied into the program by Finalize
+				//! as m_signalCalls.  (Named differently from the program-side
+				//! field for exactly the reason m_ctxUsed is -- Builder is a
+				//! nested class, and a same-named member would collide with the
+				//! enclosing ExpressionProgram's own.)
+				std::vector<ExpressionProgram::SignalRadiusCall> m_sigCalls;
 
 				void SetError( const std::string& msg, ptrdiff_t offset ) { m_error = msg; m_errorOffset = offset; }
 
@@ -627,6 +723,15 @@ namespace RISE
 						{"worley_f1",46,2,{V,S,S,S},S}, {"worley_f2",47,2,{V,S,S,S},S},
 						{"worley_f2f1",48,2,{V,S,S,S},S}, {"worley_id",49,2,{V,S,S,S},S},
 						{"cellhash",50,1,{S,S,S,S},S},
+						// geometry-derived shading signals -- one scalar
+						// argument, the query radius as a FRACTION of the hit
+						// geometry's characteristic size (design doc Phase 2).
+						// Gated on EnableContextVars in ParseCall for the same
+						// reason P/N/curv are gated in ParseAtom: they are
+						// surface queries, and expression_function2d's frozen
+						// UV-only contract must not grow them.
+						{"occlusion",ExpressionProgram::kFnOcclusion,1,{S,S,S,S},S},
+						{"thickness",ExpressionProgram::kFnThickness,1,{S,S,S,S},S},
 						// vec3-returning
 						{"cross",60,2,{V,V,S,S},V}, {"normalize",61,1,{V,S,S,S},V},
 					};
@@ -1018,6 +1123,35 @@ namespace RISE
 					const FnSig* sig = FindSig( name );
 					if( !sig ) { SetError( "unknown function `" + name + "`", (ptrdiff_t)nameOff ); return false; }
 
+					// GEOMETRY-DERIVED SIGNAL BUILTINS (design doc Phase 2).
+					// Gated on the same EnableContextVars flag that gates
+					// P/Po/N/fw/time/curv in ParseAtom, and for the same
+					// reason: these are SURFACE queries, and
+					// expression_function2d is a frozen UV-only contract
+					// (design doc §14 item 7) that must not grow them.  A
+					// dedicated diagnostic rather than "unknown function",
+					// because the name IS real -- it is the surface that
+					// doesn't have one.
+					const bool isSignalFn = ( sig->id == ExpressionProgram::kFnOcclusion ||
+					                          sig->id == ExpressionProgram::kFnThickness );
+					if( isSignalFn && !m_contextVarsEnabled ) {
+						SetError( "`" + name + "()` needs the 3D surface context -- available in expression_painter "
+							"and scalar_painter { expression ... }, not in expression_function2d (a UV-only field)",
+							(ptrdiff_t)nameOff );
+						return false;
+					}
+
+					// CONSTANT-RADIUS GROUNDWORK for Phase 3 (design doc
+					// §7.1): a baked mesh field can only answer ONE radius, so
+					// the baked path needs to know at COMPILE time whether the
+					// radius argument is a constant.  Phase 2 records the
+					// cheap half -- "is it a bare numeric literal, and what
+					// is its value" -- per call site; resolving a
+					// `param`/`def` NAME back to a compile-time constant is
+					// explicitly Phase-3 work and is NOT attempted here.
+					bool literalRadiusArg = false;
+					Scalar literalRadiusVal = Scalar(0);
+
 					int scalarArity = 0;
 					int got = 0;
 					if( Cur().t != Tok::RP ) {
@@ -1039,6 +1173,14 @@ namespace RISE
 							const bool literalOctaveArg = ( ( sig->id==43 || sig->id==44 || sig->id==45 ) && got==1 && Cur().t==Tok::Num &&
 								m_pos+1 < m_toks->size() && ( (*m_toks)[m_pos+1].t == Tok::Comma || (*m_toks)[m_pos+1].t == Tok::RP ) );
 							const Scalar literalOctaveVal = literalOctaveArg ? Cur().num : Scalar(0);
+							// Same "is this argument EXACTLY one numeric
+							// literal" discipline as the octave check above,
+							// widened by one token so a leading sign counts
+							// (`occlusion(-0.1)` must be REJECTED at compile
+							// time, and `-0.1` tokenizes as Op then Num).
+							if( isSignalFn && got == 0 ) {
+								literalRadiusArg = PeekLiteralScalarArg( literalRadiusVal );
+							}
 							VType at;
 							if( !ParseCmp( at ) ) return false;
 							if( got < sig->nArgs ) {
@@ -1051,6 +1193,22 @@ namespace RISE
 									SetError( std::string(name) + "() octaves must be between 1 and " + std::to_string(ExpressionProgram::kMaxOctaves), (ptrdiff_t)argOff );
 									return false;
 								}
+								// A literal radius that isn't strictly positive
+								// has no meaning for either signal and is
+								// almost always a units mistake (a world
+								// length typed where a FRACTION belongs, then
+								// negated).  Catch it here rather than let it
+								// silently degrade to the neutral fallback at
+								// render time -- a flat mask that "works" is
+								// the expensive failure.  A COMPUTED radius is
+								// still checked at runtime, by
+								// SurfaceSignalInfo::RadiusUsable.
+								if( literalRadiusArg && got == 0 && !( literalRadiusVal > Scalar(0) ) ) {
+									SetError( std::string(name) + "() radius must be > 0 -- it is a FRACTION of the "
+										"object's own size (0.05 = 5% of its bounding-box diagonal), not a world length",
+										(ptrdiff_t)argOff );
+									return false;
+								}
 							}
 							++got;
 							if( Cur().t == Tok::Comma ) { Advance(); continue; }
@@ -1061,7 +1219,55 @@ namespace RISE
 					if( Cur().t != Tok::RP ) { SetError( "missing ) in " + name + "()", (ptrdiff_t)CurOff() ); return false; }
 					Advance();
 					EmitFuncCall( sig->id, scalarArity, sig->ret == kVec3 );
+					if( isSignalFn ) {
+						// Recorded ONLY here, on the branch that actually
+						// emitted the call -- a body that mentions the name
+						// without calling it, or one that failed to parse,
+						// must not register.  Accumulates across every
+						// Compile() this Builder runs, so the list covers
+						// `def` stage bodies as well as the final expression,
+						// in parse order.
+						ExpressionProgram::SignalRadiusCall rec;
+						rec.fn = sig->id;
+						rec.radiusIsLiteral = literalRadiusArg;
+						rec.radiusLiteral = literalRadiusArg ? literalRadiusVal : Scalar(0);
+						m_sigCalls.push_back( rec );
+					}
 					outType = sig->ret;
+					return true;
+				}
+
+				//! Is the argument starting at the CURRENT token exactly one
+				//! numeric literal (with an optional leading sign) -- i.e. is
+				//! the token after it `,` or `)`?  Does NOT consume anything;
+				//! the caller still parses the argument normally.
+				//!
+				//! Deliberately narrow, and narrower than "is this argument
+				//! constant": `2*0.05` and `param r 0.05` are both genuinely
+				//! constant and both report false here.  That is the honest
+				//! boundary of what a token peek can prove, and Phase 3 --
+				//! which needs the full `param`/`def` constant resolution for
+				//! the baked-mesh precondition (design doc §7.1) -- is where
+				//! the rest belongs.  Reporting false is always SAFE: it means
+				//! "treat the radius as dynamic", which is correct behaviour,
+				//! just not the fastest.
+				bool PeekLiteralScalarArg( Scalar& outVal ) const
+				{
+					size_t i = m_pos;
+					if( i >= m_toks->size() ) return false;
+					Scalar sign = Scalar(1);
+					const Tok& t0 = (*m_toks)[i];
+					if( t0.t == Tok::Op && ( t0.s == "-" || t0.s == "+" ) ) {
+						if( t0.s == "-" ) sign = Scalar(-1);
+						++i;
+					}
+					if( i >= m_toks->size() || (*m_toks)[i].t != Tok::Num ) return false;
+					const Scalar val = (*m_toks)[i].num;
+					++i;
+					if( i >= m_toks->size() ) return false;
+					const Tok::T after = (*m_toks)[i].t;
+					if( after != Tok::Comma && after != Tok::RP ) return false;
+					outVal = sign * val;
 					return true;
 				}
 
@@ -1174,6 +1380,10 @@ namespace RISE
 			//! bit i set == the var whose first env slot is i.  See
 			//! UsesContextVar().
 			unsigned int m_ctxUsedMask;
+			//! Compile-time record of every occlusion()/thickness() call site
+			//! (design doc 7.1's constant-radius contract).  See
+			//! SurfaceSignalCalls().
+			std::vector<SignalRadiusCall> m_signalCalls;
 			std::vector<Scalar> m_initEnv;
 			std::vector<Compiled> m_defs;
 			Compiled m_final;
@@ -1195,7 +1405,7 @@ namespace RISE
 			//! treated as "run all", matching Eval's normal full-program
 			//! behaviour (EvalDefStage itself never passes such a value; this
 			//! is a defensive fallback, not a documented caller contract).
-			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time, const Scalar curv, const Scalar curvR, int stopAfterDef = -1 ) const
+			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time, const Scalar curv, const Scalar curvR, const SurfaceSignalInfo* pSignals, int stopAfterDef = -1 ) const
 			{
 				const size_t n = m_initEnv.size();
 				for( size_t i = 0; i < n; ++i ) env[i] = m_initEnv[i];
@@ -1211,7 +1421,7 @@ namespace RISE
 					? (size_t)stopAfterDef + 1 : m_defs.size();
 				for( size_t i = 0; i < defLimit; ++i ) {
 					Scalar out[3];
-					RunAny( m_defs[i], env, out );
+					RunAny( m_defs[i], env, out, pSignals );
 					const int w = ( m_defs[i].type == kVec3 ) ? 3 : 1;
 					for( int c = 0; c < w; ++c ) env[ m_defs[i].writeSlot + c ] = out[c];
 				}
@@ -1238,7 +1448,12 @@ namespace RISE
 				return (int)v;
 			}
 
-			static Scalar CallFunc( int fn, const Scalar* a, Scalar fw )
+			//! `pSignals` is the per-eval geometry-signal channel (0 when the
+			//! caller has no hit record).  It is a PARAMETER, never program
+			//! state: the compiled program stays stateless and `const`, so one
+			//! program is still safe to evaluate concurrently on many threads.
+			//! Every pre-Phase-2 builtin ignores it.
+			static Scalar CallFunc( int fn, const Scalar* a, Scalar fw, const SurfaceSignalInfo* pSignals )
 			{
 				switch( fn )
 				{
@@ -1301,12 +1516,35 @@ namespace RISE
 					return NoiseCore::WorleyIdOf( cx, cy, cz );
 				}
 				case 50: return NoiseCore::CellHash( a[0] );
+				// --- geometry-derived shading signals (design doc Phase 2) ---
+				// Both take ONE argument: a query radius expressed as a
+				// FRACTION of the hit geometry's characteristic size (its
+				// bounding-box diagonal), so `occlusion(0.05)` means "5 % of
+				// the object" and reads identically at any scene scale and on
+				// any instance of the same geometry.
+				//
+				// The whole answer -- provider-absent fallback, unusable
+				// radius, provider refusal, non-finite guard and the [0,1]
+				// clamp -- lives in SurfaceSignalInfo so the VM, and any
+				// future non-VM consumer, cannot disagree about the
+				// conventions.  A null `pSignals` (Eval(u,v), or a hit on
+				// geometry that publishes no provider) yields the neutral
+				// value, exactly like `fw`'s honest 0.
+				case kFnOcclusion:
+					return pSignals ? pSignals->Occlusion( a[0] ) : SurfaceSignalInfo::NeutralOcclusion();
+				case kFnThickness:
+					return pSignals ? pSignals->Thickness( a[0] ) : SurfaceSignalInfo::NeutralThickness();
 				default: return Scalar(0);
 				}
 			}
 
-			static void CallFuncVec3( int fn, const Scalar* a, Scalar* out )
+			//! Vec3-returning half of the dispatch.  Carries `pSignals` for
+			//! symmetry with CallFunc so a future vec3-valued geometry signal
+			//! (bent normals are the obvious Phase-4 candidate) needs no
+			//! signature churn; no builtin in this switch reads it today.
+			static void CallFuncVec3( int fn, const Scalar* a, Scalar* out, const SurfaceSignalInfo* pSignals )
 			{
+				(void)pSignals;
 				switch( fn )
 				{
 				case 60:	// cross(a,b)
@@ -1335,7 +1573,7 @@ namespace RISE
 		private:
 			// Runs a compiled program on `env`, writing its result (1 or 3
 			// scalars, per c.type) into `out[0..]`.
-			static void RunAny( const Compiled& c, const Scalar* env, Scalar* out )
+			static void RunAny( const Compiled& c, const Scalar* env, Scalar* out, const SurfaceSignalInfo* pSignals )
 			{
 				Scalar stack[ kStackCap ];
 				int sp = 0;
@@ -1362,7 +1600,7 @@ namespace RISE
 					{
 						const int ar = in.arity;
 						sp -= ar;
-						stack[sp] = CallFunc( in.fn, &stack[sp], env[ kContextSlotFw ] );
+						stack[sp] = CallFunc( in.fn, &stack[sp], env[ kContextSlotFw ], pSignals );
 						++sp;
 					} break;
 					case Compiled::kFuncV3:
@@ -1370,7 +1608,7 @@ namespace RISE
 						const int ar = in.arity;
 						sp -= ar;
 						Scalar out3[3];
-						CallFuncVec3( in.fn, &stack[sp], out3 );
+						CallFuncVec3( in.fn, &stack[sp], out3, pSignals );
 						stack[sp] = out3[0]; stack[sp+1] = out3[1]; stack[sp+2] = out3[2];
 						sp += 3;
 					} break;
