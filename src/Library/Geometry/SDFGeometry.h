@@ -31,6 +31,7 @@
 
 #include "Geometry.h"
 #include "../Interfaces/IFunction2D.h"	// heightfield mode field source (addref'd)
+#include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness() dispatch (design doc Phase 2)
 #include <vector>
 #include <cstddef>		// std::size_t (NumParts() et al.) -- <vector> is not required to declare it
 #include <mutex>		// std::once_flag for the lazily-built surface-sampling structure
@@ -40,7 +41,18 @@ namespace RISE
 {
 	namespace Implementation
 	{
-		class SDFGeometry : public Geometry
+		//! Also an ISurfaceSignalProvider: the distance field it already
+		//! carries answers `occlusion(radius)` and `thickness(radius)`
+		//! DIRECTLY, with no rays, no bake, no scene access and no locks --
+		//! which is why the SDF family is the one this arc lights up first
+		//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2).  Meshes reach the
+		//! same two builtin names in Phase 3 through the same interface, out
+		//! of a per-vertex bake.
+		//! NOTE the plain (non-virtual, non-refcounted) second base: a
+		//! provider pointer is a borrowed back-pointer whose lifetime is the
+		//! geometry's, never an owning handle -- nothing deletes through it,
+		//! so there is no diamond and no refcount to share.
+		class SDFGeometry : public Geometry, public ISurfaceSignalProvider
 		{
 		public:
 			//! Primitive shapes (all centred at the part local origin).
@@ -266,12 +278,42 @@ namespace RISE
 			Scalar              m_hfLip         = 2;	//!< Lipschitz bound sqrt(1+maxslope^2) for safe sphere-tracing
 
 		public:
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const;
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest() const { return true; }
+			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin
+			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2).
+			//!
+			//! Evans-style 5-tap cavity estimator: step OUT along the normal
+			//! at geometrically increasing distances and compare each step
+			//! length against what the field says the distance to the surface
+			//! actually is there.  On a convex body (or a plane) the two agree
+			//! and the result is 1; inside a crevice the field reports LESS
+			//! than the step, and the shortfall -- weighted so each octave
+			//! contributes equally, near taps dominating -- is the occlusion.
+			//!
+			//! ~6 Map() evaluations, each O(#parts).  No rays, no locks, no
+			//! scene access: this sees THIS field only, which is exactly the
+			//! object-local self-signal v1 scopes (§8).
+			//!
+			//! `radiusFraction` is a fraction of m_diagonal (this geometry's
+			//! bounding-box diagonal), so the answer is invariant across
+			//! instances at different world scales.
+			bool ComputeOcclusion( const Point3& ptObject, const Vector3& nObject,
+				const Scalar radiusFraction, Scalar& outValue ) const override;
+
+			//! ISurfaceSignalProvider -- the `thickness(radius)` builtin.
+			//! Marches INWARD along -n to the far zero crossing and normalizes
+			//! by the query radius: a slab of width w read at radius R gives
+			//! min(w/R, 1), and anything at least as thick as the query radius
+			//! reads a flat 1.  The SDF family is the one that has "distance
+			//! to the other side" genuinely in hand.
+			bool ComputeThickness( const Point3& ptObject, const Vector3& nObject,
+				const Scalar radiusFraction, Scalar& outValue ) const override;
+
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override;
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest() const override { return true; }
 
 			//! Tessellates the SDF via marching tetrahedra.  `detail` = cells along
 			//! the longest bbox axis (clamped to [8, 512]; expect ~detail^2 * 4
@@ -284,7 +326,7 @@ namespace RISE
 				VerticesListType&      vertices,
 				NormalsListType&       normals,
 				TexCoordsListType&     coords,
-				const unsigned int     detail ) const;
+				const unsigned int     detail ) const override;
 
 			//! TRUE first-class area-light support: UniformRandomPoint / GetArea are
 			//! backed by a lazily-built tessellation of the field (Jacobian-weighted
@@ -303,10 +345,10 @@ namespace RISE
 			//! a higher sampling_detail; the build-time warning names the first
 			//! missed location.
 			//! NB: first call may build the sampling structure (thread-safe).
-			inline bool CanBeAreaLight() const { return GetArea() > 0 && SuspectedMissedFeatureCells() == 0; }
+			inline bool CanBeAreaLight() const override { return GetArea() > 0 && SuspectedMissedFeatureCells() == 0; }
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea() const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea() const override;
 
 			//! Number of authored SDF primitives folded into this geometry's
 			//! field.  Exact and blend-independent (unlike GetArea(), which a
@@ -359,9 +401,9 @@ namespace RISE
 			// zero stays registered but GetArea()->0 is guarded at the consumers
 			// (no divide-by-zero).  Keep emissive SDFs non-degenerate at t=0, or
 			// animate only non-emissive SDFs, for clean NEE.
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData();
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData() override;
 		};
 	}
 }

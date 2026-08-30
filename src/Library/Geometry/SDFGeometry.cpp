@@ -1026,6 +1026,139 @@ Scalar SDFGeometry::DivergenceOfUnitNormal( const Point3& y, const Vector3& n, c
 	return RISE::IsFiniteDouble( static_cast<double>( div ) ) ? div : Scalar(0);
 }
 
+//////////////////////////////////////////////////////////////////////
+// ISurfaceSignalProvider -- PHASE-2 geometry-derived shading signals
+// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2).
+//
+// Both are pure const functions of the field: no rays, no scene access,
+// no locks, no mutable state.  Every render thread calls them
+// concurrently on one shared geometry.
+//
+// Both are LAZY by construction -- they run only when an expression
+// actually calls `occlusion()` / `thickness()`, which is why neither
+// needs the up-front consumption gate `curv` requires.
+//////////////////////////////////////////////////////////////////////
+
+namespace
+{
+	//! Number of cavity taps.  Five is the Evans/IQ figure and is not
+	//! arbitrary: with the geometric tap spacing below it covers three
+	//! octaves of scale around the query radius, which is the range over
+	//! which a contact-shadow term reads as one continuous signal rather
+	//! than as banding.
+	const int kOcclusionTaps = 5;
+}
+
+bool SDFGeometry::ComputeOcclusion( const Point3& ptObject, const Vector3& nObject,
+	const Scalar radiusFraction, Scalar& outValue ) const
+{
+	// REFUSE rather than fabricate.  The caller (SurfaceSignalInfo) already
+	// screens a non-finite / non-positive radius; this is the field-side
+	// half: a degenerate bbox has no characteristic length to take a
+	// fraction OF, so there is no honest answer to give.
+	if( !( m_diagonal > Scalar(0) ) || !( radiusFraction > Scalar(0) ) ) {
+		return false;
+	}
+
+	// Query radius in this geometry's own object-space units.  The tap
+	// distances are a fraction OF it, so the whole estimator is
+	// scale-relative and the result is transform-invariant.
+	const Scalar R = radiusFraction * m_diagonal;
+	if( !RISE::IsFiniteDouble( static_cast<double>( R ) ) || !( R > Scalar(0) ) ) {
+		return false;
+	}
+
+	// The reported hit sits INSIDE the +-m_eps sphere-trace band rather than
+	// exactly on the zero set, so Map(p) is a small residual, not 0.
+	// Subtracting it below removes that bias from every tap -- without this,
+	// a tiny query radius on a large object would read the band residual as
+	// occlusion and darken a perfectly convex surface.
+	const Scalar d0 = Map( ptObject );
+
+	// occ = SUM w_i * (h_i - d_i) / SUM w_i * h_i, with
+	//   h_i = R * 2^(i-N)   (geometrically increasing: R/16 .. R)
+	//   w_i = 2^(1-i)       (near taps weighted most -- contact occlusion)
+	// The chosen pair makes every w_i*h_i equal (R/16 each here), so each
+	// octave contributes the same share of the normalizer and the estimator
+	// has no preferred scale within [R/16, R].
+	//
+	// Both ends are exact and meaningful:
+	//   * a plane or a convex body has d_i == h_i for every tap (an SDF's
+	//     value at p + h*n is exactly h there) -> occ = 0 -> ao = 1;
+	//   * a point whose every tap lands ON the surface (d_i == 0), i.e. a
+	//     fully enclosed pocket, gives occ = 1 -> ao = 0.
+	Scalar num = Scalar(0);
+	Scalar den = Scalar(0);
+	Scalar h   = R;
+	Scalar w   = Scalar(1);
+	for( int i = 0; i < kOcclusionTaps; ++i ) {
+		h *= Scalar(0.5);
+	}
+	// h is now R * 2^-N; walk outward, halving the weight each step.
+	for( int i = 0; i < kOcclusionTaps; ++i ) {
+		h *= Scalar(2);
+		const Point3 tap( ptObject.x + nObject.x*h, ptObject.y + nObject.y*h, ptObject.z + nObject.z*h );
+		const Scalar d = Map( tap ) - d0;
+		num += w * ( h - d );
+		den += w * h;
+		w *= Scalar(0.5);
+	}
+
+	if( !( den > Scalar(0) ) ) {
+		return false;
+	}
+
+	Scalar ao = Scalar(1) - ( num / den );
+	if( !RISE::IsFiniteDouble( static_cast<double>( ao ) ) ) {
+		return false;
+	}
+	// A conservative (Lipschitz-scaled) part distance can under-report the
+	// true distance, and a concave pocket can drive the sum past 1, so clamp
+	// -- the interface promises [0,1] and the consumer's own clamp must never
+	// be the only one.
+	if( ao < Scalar(0) ) ao = Scalar(0);
+	if( ao > Scalar(1) ) ao = Scalar(1);
+	outValue = ao;
+	return true;
+}
+
+bool SDFGeometry::ComputeThickness( const Point3& ptObject, const Vector3& nObject,
+	const Scalar radiusFraction, Scalar& outValue ) const
+{
+	if( !( m_diagonal > Scalar(0) ) || !( radiusFraction > Scalar(0) ) ) {
+		return false;
+	}
+	const Scalar R = radiusFraction * m_diagonal;
+	if( !RISE::IsFiniteDouble( static_cast<double>( R ) ) || !( R > Scalar(0) ) ) {
+		return false;
+	}
+
+	// Straight INWARD from the hit, to the far side.  March() is the same
+	// sphere-trace the intersector uses, including its step-off for a ray
+	// that starts ON the surface -- which is exactly our situation, so the
+	// far crossing it finds is the exit face, never the entry we started on.
+	const Vector3 inward( -nObject.x, -nObject.y, -nObject.z );
+	Scalar tExit = Scalar(0);
+	if( !March( ptObject, inward, Scalar(0), R, tExit ) ) {
+		// No far side within the query radius: the solid is at least as thick
+		// as we asked about.  That is a MEASUREMENT, not an absence -- report
+		// the saturated 1 rather than refusing, so `thickness(0.02)` reads a
+		// flat 1 across a wall's face instead of falling back to the neutral
+		// value by accident.
+		outValue = Scalar(1);
+		return true;
+	}
+
+	Scalar t = tExit / R;
+	if( !RISE::IsFiniteDouble( static_cast<double>( t ) ) ) {
+		return false;
+	}
+	if( t < Scalar(0) ) t = Scalar(0);
+	if( t > Scalar(1) ) t = Scalar(1);
+	outValue = t;
+	return true;
+}
+
 // March along (o + t*dir), dir UNIT, from tStart up to t1, to the next surface.
 bool SDFGeometry::March( const Point3& o, const Vector3& dir, const Scalar tStart, const Scalar t1, Scalar& tHit ) const
 {
@@ -1238,6 +1371,26 @@ void SDFGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	// one relaxed atomic load and nothing else.  `derivatives.valid` stays
 	// FALSE -- there is no dpdu/dpdv here to be valid -- and `curvatureValid`
 	// is deliberately independent of it for that reason.
+	// PHASE-2 GEOMETRY-DERIVED SHADING SIGNALS: publish the query channel
+	// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.1).  A pointer and two
+	// vectors, in THIS geometry's own object space -- deliberately NOT
+	// transformed by Object::IntersectRay, because both signals are
+	// dimensionless and the provider expects its own frame.
+	//
+	// UNGATED, unlike the curvature block below, and that asymmetry is the
+	// point: this stamp performs no field evaluation at all, whereas the
+	// curvature FD costs ~18 Map() calls.  The expensive half of THIS
+	// feature -- ComputeOcclusion / ComputeThickness -- runs only if an
+	// expression calls the builtin, so laziness already delivers the
+	// "costs nothing when unused" guarantee that curvature needs a counter
+	// for.  See SurfaceSignalInfo's own doc for the full argument.
+	//
+	// `n` is the outward field gradient regardless of which face was hit,
+	// which is what both estimators want.
+	ri.signals.pProvider = this;
+	ri.signals.ptObject  = hp;
+	ri.signals.nObject   = n;
+
 	if( SurfaceCurvatureDemand::Any() ) {
 		ri.derivatives.scaleHint = m_diagonal;
 		const Scalar div = DivergenceOfUnitNormal( hp, n, CurvatureFDStep() );
