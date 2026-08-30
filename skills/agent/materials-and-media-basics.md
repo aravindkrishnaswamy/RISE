@@ -658,10 +658,21 @@ grime: it returns `[0,1]` with 1 = thick, so `1 - thickness(0.1)` is a
 THIN-region mask — bind it into a subsurface tint or an SSS-style rim
 term and a creature's ears, fins, or a leaf's edge light up first, which
 a curvature-only edge mask cannot do because curv has no notion of wall
-thickness.  Like `occlusion`, it is exact only on the volumetric SDF
-family (`sdf_geometry` / `skeleton_geometry`) and reads the neutral 1
-(thick) everywhere else — including a heightfield-mode SDF — so an
-unsupported geometry stays inert rather than lighting up.
+thickness.
+
+Both signals are answered by two geometry families, by different means.
+The volumetric SDF family (`sdf_geometry` / `skeleton_geometry`)
+evaluates them live from its distance field and takes a DYNAMIC radius —
+any expression you like.  Indexed triangle meshes answer from a
+per-vertex field BAKED on the first query that asks for that radius (the
+bake logs its own cost) and interpolated over the hit triangle
+afterwards, so on a mesh the radius must be a LITERAL: a computed one
+reads the neutral value rather than quietly borrowing a table baked at
+another scale, and only a handful of distinct literal radii per signal
+per mesh are baked before the rest read neutral too.  Everything else —
+the analytic primitives, non-indexed meshes, and a heightfield-mode SDF —
+reads the neutral 1 (unoccluded / thick), so an unsupported geometry
+stays inert rather than lighting up.
 
 ## A one-call route to a wired varied material
 
