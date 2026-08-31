@@ -1072,15 +1072,31 @@ static void TestWireSurface()
 //       shells above.
 //   (h) THE P1 REGRESSION: a thin, elongated sdf_geometry cylinder part
 //       (radius 0.05, half-height 3) with a light 2 units off its SIDE
-//       (laterally, off the thin radius) -> does NOT fire.  Fails against
-//       the pre-fix SDFGeometryLocalBounds_, which broadcast the part's
-//       isotropic reach radius (~3.0) onto every axis and would have
-//       falsely claimed containment.
+//       (laterally, off the thin radius) -> does NOT fire.  Originally a
+//       regression against the pre-fix SDFGeometryLocalBounds_, which
+//       broadcast the part's isotropic reach radius (~3.0) onto every axis
+//       and would have falsely claimed containment.  That hand-rolled
+//       reader is GONE (2026-08-30: condition M reads the derived scene),
+//       so (h) and (h2) now pin the SAME per-axis / signed-scale behaviour
+//       through the REAL SDFGeometry::ComputeBounds -- which is the point:
+//       the property is a fact about the engine, not about a port of it.
 //   (i) SMALLEST-VOLUME TIE-BREAK: two nested opaque box shells both
 //       enclose the light -> the finding names the SMALLER (inner) one,
 //       never the outer.
 //   (j) an analytic-kind shell beyond box_geometry (sphere_geometry) also
 //       fires.
+//   (k) THE MEASURED BLIND SPOT (2026-08-30): a multi-piece element -- a
+//       container root, an opaque shell with `parent <root>`, and a
+//       `shape_light` with `parent <root>` inside it -> fires, names the
+//       shell.  Impossible before condition M read the derived scene: the
+//       document-side scan excluded every `parent`-bearing object and every
+//       parented area light, which is EVERY piece of every element
+//       `build_element` writes.  Carries M13 too -- the shape_light's own
+//       derived emissive object trivially contains its own centre and must
+//       never be named as the shell.
+//   (l) THE GEOMETRY-KIND GAP (2026-08-30): a `lathe_geometry` vessel
+//       around an interior omni -> fires.  lathe was outside the old
+//       analytic allowlist entirely, so no lathe shell could ever be seen.
 //----------------------------------------------------------------------
 
 //! `ggx_material` with an explicit (possibly empty) `emissive` binding.
@@ -1401,6 +1417,79 @@ static void TestEnclosedLightShellNote()
 		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
 		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
 		Check( d != nullptr, "M10: a sphere_geometry shell (an analytic kind besides box) also fires" );
+	}
+
+	// (k) THE MEASURED BLIND SPOT -- the reason condition M was reworked to
+	//     read the derived scene at all.  A MULTI-PIECE ELEMENT, exactly as
+	//     `build_element` writes one: a container root, then every piece
+	//     carrying `parent <root>`.  The shipped document-side scan excluded
+	//     any object with a `parent` (it could not resolve a scene-graph
+	//     chain by hand) and any rect/shape light with one (their `center` is
+	//     LOCAL to the parent), so on a harness-authored scene it saw NOTHING
+	//     -- a live p3 altar run rendered an opaque shell around a shape_light
+	//     the harness's own light audit measured at ZERO luminance and this
+	//     condition stayed silent.  Both pieces here are parented, and the
+	//     root sits at x=5, so BOTH the shell's box and the light's point are
+	//     wrong unless the parent transform is composed.
+	//
+	//     This case also carries (M13): a shape_light derives to an emissive
+	//     OBJECT of its own name, which trivially contains its own centre --
+	//     the finding must name the SHELL, never that fixture.
+	{
+		std::string body = Preamble();
+		body += "standard_object\n{\n\tname lantern_root\n\tposition 5 0 0\n}\n\n";
+		body += Box( "shell_box", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += "standard_object\n{\n\tname obj_shell\n\tgeometry shell_box\n\tmaterial mat_shell\n"
+		        "\tparent lantern_root\n\tposition 0 0 0\n}\n\n";
+		body += "shape_light\n{\n\tname lantern_flame\n\tparent lantern_root\n\tshape sphere\n"
+		        "\tcenter 0 0 0\n\tsize 0.2\n\texitance 500\n\tcolor 1 0.8 0.6\n}\n\n";
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr,
+		       "M11 MONEY: a PARENTED opaque shell enclosing a PARENTED shape_light FIRES -- the "
+		       "multi-piece-element shape every harness-authored scene has, and the exact case the "
+		       "document-side scan was structurally blind to" );
+		if( d ) {
+			Check( d->message.find( "sits inside `obj_shell`" ) != std::string::npos,
+			       "M11: it names the parented SHELL as the enclosure..." );
+			Check( d->message.find( "sits inside `lantern_flame`" ) == std::string::npos,
+			       "M13 MONEY: ...and NEVER the light's own derived emissive fixture, which trivially "
+			       "contains its own centre" );
+			Check( d->message.find( "`shape_light lantern_flame`" ) != std::string::npos,
+			       "M11: ...and names the light by its authored kind and name" );
+		}
+	}
+
+	// (l) THE GEOMETRY-KIND GAP: a lathe_geometry vessel (a closed profile of
+	//     revolution -- r=0 at both ends, so a watertight vase) around an
+	//     interior omni.  lathe was OUTSIDE the old scan's analytic allowlist
+	//     (box/sphere/ellipsoid/cylinder/torus/sdf), so no lathe shell could
+	//     ever fire; the derived scene has a real box for it, as it does for
+	//     every other geometry kind.
+	{
+		std::string body = Preamble();
+		body += "lathe_geometry\n{\n\tname vessel\n"
+		        "\tprofile_point 0 -2\n"
+		        "\tprofile_point 1.5 -1\n"
+		        "\tprofile_point 1.8 0\n"
+		        "\tprofile_point 1.5 1\n"
+		        "\tprofile_point 0 2\n"
+		        "\taxis y\n\tsweep_degrees 360\n\tn_radial 24\n}\n\n";
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_vessel", "vessel", "mat_shell", 0 );
+		body += OmniAtOrigin( "candle" );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d != nullptr,
+		       "M12 MONEY: a lathe_geometry vessel enclosing an omni FIRES -- a geometry kind the old "
+		       "analytic allowlist could not size at all" );
+		if( d ) {
+			Check( d->message.find( "sits inside `obj_vessel`" ) != std::string::npos,
+			       "M12: ...and names the lathe object" );
+		}
 	}
 }
 
