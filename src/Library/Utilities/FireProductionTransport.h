@@ -127,6 +127,56 @@ namespace RISE
 		std::array<std::vector<float>,3> advectionRateKGPerM2S2;
 	};
 
+	//! Strict-binary32 owner surface for the four scalar stages used by the
+	//! isolated full-FCT diagnostic: donor/MC pair, r60 shared alpha, source-
+	//! inclusive scalar commit, and the periodic D_i I_i commuting witness.
+	//! Cell tuples are component-major [9][cells].  Flux tuples are
+	//! component-major over the packed x/y/z primal faces.
+	struct FireProductionScalarFCTRequest
+	{
+		FireProductionProjectionShape shape;
+		float timeStepS;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::vector<float> beginning;
+		std::vector<float> sourceDelta;
+		std::array<std::vector<float>,3> frozenVelocityMPerS;
+		std::array<float,9> ambient;
+		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		std::size_t nullity;
+		std::vector<float> nullspaceBasis;
+		std::vector<float> coordinateProjector;
+		std::array<float,14> enthalpyBoundsJPerKG;
+		float feasibilityFactor;
+		float assemblyReserveFactor;
+
+		FireProductionScalarFCTRequest() : timeStepS(0.0f),nullity(0u),
+			feasibilityFactor(0.0f),assemblyReserveFactor(0.0f)
+		{
+			boundary.fill(FireProductionProjectionWall);ambient.fill(0.0f);
+			enthalpyBoundsJPerKG.fill(0.0f);
+		}
+	};
+
+	struct FireProductionScalarFCTResult
+	{
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<float> lowFlux;
+		std::vector<float> fluxDelta;
+		std::vector<float> lowState;
+		std::vector<float> limiterRatio;
+		std::array<std::vector<float>,3> sharedFaceAlpha;
+		std::vector<float> accepted;
+		std::array<std::vector<float>,3> acceptedGasFluxKGPerM2S;
+		float maximumCommutingResidualKGPerM3;
+		bool commutingIdentityAvailable;
+
+		FireProductionScalarFCTResult() : maximumCommutingResidualKGPerM3(0.0f),
+			commutingIdentityAvailable(false)
+		{
+			packedFaceOffset.fill(0u);
+		}
+	};
+
 	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
 	using FireProductionPeriodicDualMomentumResult=FireProductionDualMomentumResult;
 
@@ -291,6 +341,11 @@ namespace RISE
 	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
 		const FireProductionCompatibleFCTMomentumRequest& request,
 		FireProductionCompatibleFCTMomentumResult& result,
+		std::string* error=0 );
+
+	bool EvaluateFireProductionScalarFCTCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTResult& result,
 		std::string* error=0 );
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The

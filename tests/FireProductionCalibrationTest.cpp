@@ -4683,6 +4683,216 @@ int main()
 		periodicFCTResult.advectionRateKGPerM2S2[0][periodicX1],
 		"compatible FCT bootstrap refuses malformed identity inputs and detects an all-high limiter mutant");
 
+	// Full scalar FCT bootstrap.  The synthetic one-coordinate nullspace uses
+	// B=(1/2,1/2) and coordinate projector 2, so rho-total and CH4 reconstruct
+	// together with exact dyadic arithmetic while all nine tuple rows traverse
+	// the same donor/MC, shared-alpha, source-commit stages.
+	RISE::FireProductionScalarFCTRequest scalarFCT;
+	scalarFCT.shape=periodicFCT32.shape;scalarFCT.timeStepS=0.25f;
+	scalarFCT.boundary.fill(RISE::FireProductionProjectionPeriodic);
+	const std::size_t scalarCells=scalarFCT.shape.CellCount();
+	scalarFCT.beginning.assign(9u*scalarCells,0.0f);
+	scalarFCT.sourceDelta.assign(9u*scalarCells,0.0f);
+	const float scalarPattern[4]={1.0f,1.25f,1.5f,1.25f};
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+		for(std::size_t x=0u;x<4u;++x){
+			const std::size_t cell=(z*4u+y)*4u+x;
+			scalarFCT.beginning[cell]=scalarPattern[x];
+			scalarFCT.beginning[scalarCells+cell]=scalarPattern[x];
+		}
+	scalarFCT.sourceDelta[0u]=0.125f;
+	scalarFCT.sourceDelta[scalarCells]=0.125f;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(scalarFCT.shape,axis);
+		scalarFCT.frozenVelocityMPerS[axis].assign(faces,axis==0u?1.0f:0.0f);
+	}
+	for(unsigned int side=0u;side<6u;++side){
+		const std::size_t faces=side<2u?scalarFCT.shape.ny*scalarFCT.shape.nz:
+			(side<4u?scalarFCT.shape.nx*scalarFCT.shape.nz:
+				scalarFCT.shape.nx*scalarFCT.shape.ny);
+		scalarFCT.pressureOpenInflow[side].assign(faces,0u);
+	}
+	scalarFCT.ambient[0]=1.0f;scalarFCT.ambient[1]=1.0f;
+	scalarFCT.nullity=1u;scalarFCT.nullspaceBasis.assign(8u,0.0f);
+	scalarFCT.nullspaceBasis[0]=0.5f;scalarFCT.nullspaceBasis[1]=0.5f;
+	scalarFCT.coordinateProjector.assign(1u,2.0f);
+	scalarFCT.feasibilityFactor=1.0f/1024.0f;
+	scalarFCT.assemblyReserveFactor=1.0f/2048.0f;
+	RISE::FireProductionScalarFCTResult scalarFCTResult;
+	const bool scalarFCTOK=RISE::EvaluateFireProductionScalarFCTCPU(
+		scalarFCT,scalarFCTResult,&error);
+	const std::size_t scalarAllFaces=scalarFCTOK?scalarFCTResult.lowFlux.size()/9u:0u;
+	const std::size_t scalarFace2=productionFaceIndex(scalarFCT.shape,0u,2u,0u,0u);
+	const std::size_t scalarPackedFace2=scalarFCTResult.packedFaceOffset[0]+scalarFace2;
+	bool allScalarAlphaOne=scalarFCTOK;
+	for(unsigned int axis=0u;axis<3u&&allScalarAlphaOne;++axis)
+		for(const float alpha:scalarFCTResult.sharedFaceAlpha[axis])
+			allScalarAlphaOne=allScalarAlphaOne&&alpha==1.0f;
+	Check(scalarFCTOK&&allScalarAlphaOne&&scalarFCTResult.fluxDelta[
+		scalarPackedFace2]==0.125f&&scalarFCTResult.fluxDelta[
+		scalarAllFaces+scalarPackedFace2]==0.125f&&
+		scalarFCTResult.commutingIdentityAvailable&&
+		scalarFCTResult.maximumCommutingResidualKGPerM3==0.0f,
+		"strict fp32 scalar FCT reconstructs the dyadic nullspace, shares alpha, and commutes exactly");
+
+	RISE::FireProductionScalarFCTRequest noSourceScalarFCT=scalarFCT;
+	noSourceScalarFCT.sourceDelta.assign(9u*scalarCells,0.0f);
+	RISE::FireProductionScalarFCTResult noSourceScalarResult;
+	const bool noSourceScalarOK=RISE::EvaluateFireProductionScalarFCTCPU(
+		noSourceScalarFCT,noSourceScalarResult,&error);
+	Check(noSourceScalarOK&&scalarFCTResult.accepted[0u]-
+		noSourceScalarResult.accepted[0u]==0.125f&&
+		scalarFCTResult.accepted[scalarCells]-
+		noSourceScalarResult.accepted[scalarCells]==0.125f,
+		"scalar FCT commit includes the frozen source exactly once");
+	// Live-oracle bootstrap: a constant dyadic tuple makes the physical record's
+	// binary64 nullspace arithmetic collapse exactly to zero slope.  Production
+	// publication face x+1 corresponds to the periodic oracle's upper face x.
+	RISE::FireProductionScalarFCTRequest constantScalarFCT=scalarFCT;
+	constantScalarFCT.sourceDelta.assign(9u*scalarCells,0.0f);
+	for(std::size_t cell=0u;cell<scalarCells;++cell){
+		constantScalarFCT.beginning[cell]=1.0f;
+		constantScalarFCT.beginning[scalarCells+cell]=1.0f;
+	}
+	for(std::size_t component=2u;component<9u;++component)
+		std::fill(constantScalarFCT.beginning.begin()+component*scalarCells,
+			constantScalarFCT.beginning.begin()+(component+1u)*scalarCells,0.0f);
+	RISE::FireProductionScalarFCTResult constantScalarResult;
+	const bool constantScalarOK=RISE::EvaluateFireProductionScalarFCTCPU(
+		constantScalarFCT,constantScalarResult,&error);
+	RISE::FireProductionScalarFCTRequest openScalarFCT=constantScalarFCT;
+	openScalarFCT.boundary={{RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionPressureOpen,RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionWall,RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionWall}};
+	openScalarFCT.pressureOpenInflow[1].assign(16u,1u);
+	openScalarFCT.ambient[0]=2.0f;openScalarFCT.ambient[1]=2.0f;
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+		openScalarFCT.frozenVelocityMPerS[0][productionFaceIndex(
+			openScalarFCT.shape,0u,4u,y,z)]=-1.0f;
+	RISE::FireProductionScalarFCTResult openScalarResult;
+	const bool openScalarOK=RISE::EvaluateFireProductionScalarFCTCPU(
+		openScalarFCT,openScalarResult,&error);
+	const std::size_t openScalarWall=productionFaceIndex(openScalarFCT.shape,0u,0u,0u,0u);
+	const std::size_t openScalarInflow=productionFaceIndex(openScalarFCT.shape,0u,4u,0u,0u);
+	const std::size_t openScalarAllFaces=openScalarOK?openScalarResult.lowFlux.size()/9u:0u;
+	Check(openScalarOK&&openScalarResult.lowFlux[openScalarWall]==0.0f&&
+		openScalarResult.fluxDelta[openScalarWall]==0.0f&&
+		openScalarResult.lowFlux[openScalarInflow]==-2.0f&&
+		openScalarResult.lowFlux[openScalarAllFaces+openScalarInflow]==-2.0f&&
+		openScalarResult.fluxDelta[openScalarInflow]==0.0f,
+		"scalar FCT donor pair applies wall zero-flux and pressure-open inflow ghosts exactly");
+	std::vector<RISE::FireSim::ConservativeVector> constantOracleState(scalarCells);
+	for(RISE::FireSim::ConservativeVector& state:constantOracleState){state[0]=1.0;state[1]=1.0;}
+	RISE::FireSim::PeriodicMACField constantOracleVelocity;
+	for(unsigned int axis=0u;axis<3u;++axis)constantOracleVelocity.component[axis].assign(
+		scalarCells,axis==0u?1.0:0.0);
+	std::vector<double> constantTemperature(scalarCells,300.0),constantZero(scalarCells,0.0);
+	RISE::FireSim::PeriodicFluxPair3D constantOraclePair;
+	const RISE::FireSimulationMethaneRecord& physicalRecord=
+		RISE::FireSimulationMethaneRecord::PhysicalV1();
+	const bool constantOracleOK=RISE::FireSim::BuildPeriodicFluxPair3D(
+		periodicOracleShape,constantOracleState,constantTemperature,constantOracleVelocity,
+		constantZero,constantZero,physicalRecord,physicalRecord,constantOraclePair,&error);
+	bool constantPairExact=constantScalarOK&&constantOracleOK;
+	for(unsigned int axis=0u;axis<3u&&constantPairExact;++axis)
+		for(std::size_t z=0u;z<4u&&constantPairExact;++z)
+			for(std::size_t y=0u;y<4u&&constantPairExact;++y)
+				for(std::size_t x=0u;x<4u&&constantPairExact;++x){
+					const std::size_t oracleFace=(z*4u+y)*4u+x;
+					std::size_t px=x,py=y,pz=z;
+					if(axis==0u)++px;if(axis==1u)++py;if(axis==2u)++pz;
+					const std::size_t productionFace=productionFaceIndex(
+						constantScalarFCT.shape,axis,px,py,pz);
+					const std::size_t packed=constantScalarResult.packedFaceOffset[axis]+
+						productionFace;
+					for(std::size_t component=0u;component<9u&&constantPairExact;++component){
+						const double low=constantOraclePair.low[axis][oracleFace][component];
+						const double delta=constantOraclePair.high[axis][oracleFace][component]-low;
+						constantPairExact=sameDoubleBits(static_cast<double>(constantScalarResult.
+							lowFlux[component*constantScalarResult.lowFlux.size()/9u+packed]),low)&&
+							sameDoubleBits(static_cast<double>(constantScalarResult.fluxDelta[
+							component*constantScalarResult.fluxDelta.size()/9u+packed]),delta);
+					}
+				}
+	Check(constantPairExact,
+		"strict fp32 donor/MC pair is word-exact to the live periodic oracle on the dyadic collapse");
+
+	// The production PPM dose and an evolving carrier are rejected operator
+	// mutations: this fixture must distinguish both from the frozen MC/FCT form.
+	RISE::FireProductionRemapRequest ppmMutation;
+	ppmMutation.lineLength=4u;ppmMutation.lineCount=1u;ppmMutation.componentCount=1u;
+	ppmMutation.cellWidthM=1.0f;ppmMutation.timeStepS=scalarFCT.timeStepS;
+	ppmMutation.boundary=RISE::FireProductionRemapPeriodic;
+	ppmMutation.values.assign(scalarPattern,scalarPattern+4u);
+	ppmMutation.faceVelocityMPerS.assign(5u,1.0f);
+	RISE::FireProductionRemapResult ppmMutationResult;
+	const bool ppmMutationOK=RISE::RemapFireProductionCPU(
+		ppmMutation,ppmMutationResult,&error);
+	bool ppmDistinguished=false;
+	for(std::size_t face=0u;face<4u&&ppmMutationOK;++face){
+		const std::size_t productionFace=productionFaceIndex(scalarFCT.shape,0u,
+			face+1u,0u,0u);
+		const std::size_t packed=scalarFCTResult.packedFaceOffset[0]+productionFace;
+		const float fctDose=scalarFCT.timeStepS*(scalarFCTResult.lowFlux[packed]+
+			scalarFCTResult.sharedFaceAlpha[0][productionFace]*
+			scalarFCTResult.fluxDelta[packed]);
+		ppmDistinguished=ppmDistinguished||ppmMutationResult.faceFluxes[face]!=fctDose;
+	}
+	RISE::FireProductionCompatibleFCTMomentumRequest frozenCarrierFCT;
+	frozenCarrierFCT.shape=scalarFCT.shape;frozenCarrierFCT.boundary=scalarFCT.boundary;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(scalarFCT.shape,axis);
+		frozenCarrierFCT.lowGasFluxKGPerM2S[axis].assign(faces,0.0f);
+		frozenCarrierFCT.highGasFluxKGPerM2S[axis].assign(faces,0.0f);
+		frozenCarrierFCT.sharedFaceAlpha[axis]=scalarFCTResult.sharedFaceAlpha[axis];
+		frozenCarrierFCT.frozenVelocityMPerS[axis]=scalarFCT.frozenVelocityMPerS[axis];
+		for(std::size_t face=0u;face<faces;++face){
+			const std::size_t packed=scalarFCTResult.packedFaceOffset[axis]+face;
+			for(std::size_t component=1u;component<=6u;++component){
+				frozenCarrierFCT.lowGasFluxKGPerM2S[axis][face]+=
+					scalarFCTResult.lowFlux[component*scalarFCTResult.lowFlux.size()/9u+packed];
+				frozenCarrierFCT.highGasFluxKGPerM2S[axis][face]+=
+					scalarFCTResult.lowFlux[component*scalarFCTResult.lowFlux.size()/9u+packed]+
+					scalarFCTResult.fluxDelta[component*scalarFCTResult.fluxDelta.size()/9u+packed];
+			}
+		}
+	}
+	RISE::FireProductionCompatibleFCTMomentumResult frozenCarrierRate,evolvingCarrierRate;
+	const bool frozenCarrierOK=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		frozenCarrierFCT,frozenCarrierRate,&error);
+	RISE::FireProductionCompatibleFCTMomentumRequest evolvingCarrierFCT=frozenCarrierFCT;
+	evolvingCarrierFCT.frozenVelocityMPerS[0][scalarFace2]=2.0f;
+	const bool evolvingCarrierOK=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		evolvingCarrierFCT,evolvingCarrierRate,&error);
+	bool evolvingCarrierDistinguished=false;
+	for(unsigned int axis=0u;axis<3u;++axis)
+		for(std::size_t face=0u;face<frozenCarrierRate.advectionRateKGPerM2S2[axis].size();++face)
+			evolvingCarrierDistinguished=evolvingCarrierDistinguished||
+				frozenCarrierRate.advectionRateKGPerM2S2[axis][face]!=
+				evolvingCarrierRate.advectionRateKGPerM2S2[axis][face];
+	Check(ppmMutationOK&&ppmDistinguished&&frozenCarrierOK&&evolvingCarrierOK&&
+		evolvingCarrierDistinguished,
+		"scalar FCT bootstrap detects the rejected PPM-dose and evolving-carrier mutations");
+
+	RISE::FireProductionScalarFCTRequest malformedScalarFCT=scalarFCT;
+	malformedScalarFCT.nullspaceBasis.pop_back();
+	RISE::FireProductionScalarFCTResult refusedScalarFCT;
+	refusedScalarFCT.accepted.assign(1u,123.0f);
+	const bool badBasisRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
+		malformedScalarFCT,refusedScalarFCT,&error)&&refusedScalarFCT.accepted.empty();
+	malformedScalarFCT=scalarFCT;malformedScalarFCT.sourceDelta.pop_back();
+	const bool badSourceRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
+		malformedScalarFCT,refusedScalarFCT,&error);
+	malformedScalarFCT=scalarFCT;malformedScalarFCT.pressureOpenInflow[0][0]=2u;
+	const bool badInflowRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
+		malformedScalarFCT,refusedScalarFCT,&error);
+	malformedScalarFCT=scalarFCT;malformedScalarFCT.frozenVelocityMPerS[0].back()=-0.0f;
+	const bool badVelocitySeamRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
+		malformedScalarFCT,refusedScalarFCT,&error);
+	Check(badBasisRefused&&badSourceRefused&&badInflowRefused&&badVelocitySeamRefused,
+		"scalar FCT stages fail closed on malformed certificate, source, inflow, and seam identity");
+
 	RISE::FireProductionDualMomentumRequest dual32;
 	dual32.shape=cell32.shape;dual32.timeStepS=cell32.timeStepS;
 	dual32.ambientDensityKGPerM3=1.0f;dual32.boundary=cell32.boundary;

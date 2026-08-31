@@ -1637,4 +1637,401 @@ namespace RISE
 			return false;
 		}
 	}
+
+	bool EvaluateFireProductionScalarFCTCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTResult& result, std::string* error )
+	{
+		result=FireProductionScalarFCTResult();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			constexpr std::size_t components=9u,inequalities=11u;
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!std::isfinite(1.0f/shape.cellWidthM)||
+				!(request.timeStepS>0.0f)||!std::isfinite(request.timeStepS)||
+				request.nullity==0u||request.nullity>8u||
+				request.nullspaceBasis.size()!=8u*request.nullity||
+				request.coordinateProjector.size()!=request.nullity*request.nullity||
+				!std::isfinite(request.feasibilityFactor)||request.feasibilityFactor<=0.0f||
+				!std::isfinite(request.assemblyReserveFactor)||
+				request.assemblyReserveFactor<0.0f||
+				request.assemblyReserveFactor>request.feasibilityFactor)
+				return Fail(error,"scalar FCT shape, schedule, or certificate is invalid");
+			const std::size_t cells=shape.CellCount();
+			if(request.beginning.size()!=components*cells||
+				request.sourceDelta.size()!=components*cells)
+				return Fail(error,"scalar FCT cell tuple shape is invalid");
+			auto sideFaceCount=[&](const unsigned int side){return side<2u?shape.ny*shape.nz:
+				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);};
+			bool allPeriodic=true;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))) return Fail(error,
+					"scalar FCT boundary pairing is invalid");
+				allPeriodic=allPeriodic&&lower==FireProductionProjectionPeriodic;
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if(request.frozenVelocityMPerS[axis].size()!=faces)
+					return Fail(error,"scalar FCT velocity shape is invalid");
+				if(lower==FireProductionProjectionPeriodic&&
+					!PeriodicFaceSeamBitEqual(shape,request.frozenVelocityMPerS[axis],axis))
+					return Fail(error,"scalar FCT periodic velocity seam is invalid");
+			}
+			for(unsigned int side=0u;side<6u;++side){
+				if(request.pressureOpenInflow[side].size()!=sideFaceCount(side))
+					return Fail(error,"scalar FCT inflow shape is invalid");
+				for(const unsigned char value:request.pressureOpenInflow[side])if(value>1u)
+					return Fail(error,"scalar FCT inflow value is invalid");
+			}
+			for(const float value:request.beginning)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT beginning is nonfinite");
+			for(const float value:request.sourceDelta)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT source is nonfinite");
+			for(const float value:request.ambient)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT ambient tuple is nonfinite");
+			for(const float value:request.nullspaceBasis)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT nullspace basis is nonfinite");
+			for(const float value:request.coordinateProjector)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT coordinate projector is nonfinite");
+			for(const float value:request.enthalpyBoundsJPerKG)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT enthalpy bound is nonfinite");
+
+			FireProductionScalarFCTResult computed;
+			computed.packedFaceOffset[0]=0u;
+			computed.packedFaceOffset[1]=FireProductionProjectionFaceCount(shape,0u);
+			computed.packedFaceOffset[2]=computed.packedFaceOffset[1]+
+				FireProductionProjectionFaceCount(shape,1u);
+			const std::size_t allFaces=computed.packedFaceOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			std::uint64_t outputBytes=0u;
+			const std::uint64_t outputValues=2u*components*allFaces+
+				2u*components*cells+inequalities*cells+4u*allFaces;
+			if(!AddBytes(outputValues,sizeof(float),outputBytes)||
+				outputBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"scalar FCT output exceeds two GiB");
+			computed.lowFlux.assign(components*allFaces,0.0f);
+			computed.fluxDelta.assign(components*allFaces,0.0f);
+			auto sideIndex=[&](const unsigned int side,const std::size_t x,
+				const std::size_t y,const std::size_t z){return side<2u?z*shape.ny+y:
+				(side<4u?z*shape.nx+x:y*shape.nx+x);};
+			auto stageValue=[&](const std::size_t component,std::size_t x,std::size_t y,
+				std::size_t z,const unsigned int axis,const int shift){
+				const int coordinate=static_cast<int>(AxisCoordinate(axis,x,y,z))+shift;
+				const int extent=static_cast<int>(AxisCoordinateExtent(shape,axis));
+				if(coordinate>=0&&coordinate<extent){SetAxisCoordinate(axis,
+					static_cast<std::size_t>(coordinate),x,y,z);return request.beginning[
+					component*cells+CellIndex(shape,x,y,z)];}
+				const unsigned int side=2u*axis+(coordinate>=extent?1u:0u);
+				if(request.boundary[side]==FireProductionProjectionPeriodic){
+					SetAxisCoordinate(axis,coordinate<0?AxisCoordinateExtent(shape,axis)-1u:0u,
+						x,y,z);return request.beginning[component*cells+CellIndex(shape,x,y,z)];}
+				SetAxisCoordinate(axis,coordinate<0?0u:AxisCoordinateExtent(shape,axis)-1u,
+					x,y,z);
+				const float interior=request.beginning[component*cells+CellIndex(shape,x,y,z)];
+				return request.boundary[side]==FireProductionProjectionPressureOpen&&
+					request.pressureOpenInflow[side][sideIndex(side,x,y,z)]!=0u?
+					request.ambient[component]:interior;
+			};
+			auto mc=[](const float backward,const float forward){
+				if(backward*forward<=0.0f)return 0.0f;
+				const float centered=0.5f*(backward+forward);
+				const float sign=centered<0.0f?-1.0f:1.0f;
+				return sign*std::min(std::fabs(centered),2.0f*std::min(
+					std::fabs(backward),std::fabs(forward)));
+			};
+			auto massSlope=[&](const std::size_t component,const std::size_t x,
+				const std::size_t y,const std::size_t z,const unsigned int axis){
+				std::array<float,8> coordinateSlope={{}};
+				for(std::size_t basis=0u;basis<request.nullity;++basis){
+					float backward=0.0f,forward=0.0f;
+					for(std::size_t row=0u;row<8u;++row){
+						const float center=request.beginning[row*cells+CellIndex(shape,x,y,z)];
+						const float coefficient=request.nullspaceBasis[
+							row*request.nullity+basis];
+						backward+=coefficient*(center-stageValue(row,x,y,z,axis,-1));
+						forward+=coefficient*(stageValue(row,x,y,z,axis,1)-center);
+					}
+					coordinateSlope[basis]=mc(backward,forward);
+				}
+				float slope=0.0f;
+				for(std::size_t basis=0u;basis<request.nullity;++basis){
+					float projected=0.0f;
+					for(std::size_t column=0u;column<request.nullity;++column)
+						projected+=request.coordinateProjector[
+							basis*request.nullity+column]*coordinateSlope[column];
+					slope+=request.nullspaceBasis[component*request.nullity+basis]*projected;
+				}
+				return slope;
+			};
+			for(std::size_t component=0u;component<components;++component)
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t extent=AxisCoordinateExtent(shape,axis);
+					const std::size_t xEnd=shape.nx+(axis==0u?1u:0u);
+					const std::size_t yEnd=shape.ny+(axis==1u?1u:0u);
+					const std::size_t zEnd=shape.nz+(axis==2u?1u:0u);
+					for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+						for(std::size_t x=0u;x<xEnd;++x){
+							const std::size_t face=FaceIndex(shape,axis,x,y,z);
+							const std::size_t packed=computed.packedFaceOffset[axis]+face;
+							const std::size_t output=component*allFaces+packed;
+							const std::size_t coordinate=AxisCoordinate(axis,x,y,z);
+							const float velocity=request.frozenVelocityMPerS[axis][face];
+							if((coordinate==0u||coordinate==extent)&&request.boundary[
+								2u*axis+(coordinate==extent?1u:0u)]==
+								FireProductionProjectionWall)continue;
+							if((coordinate==0u||coordinate==extent)&&request.boundary[
+								2u*axis+(coordinate==extent?1u:0u)]!=
+								FireProductionProjectionPeriodic){
+								const int donorShift=velocity>=0.0f?-1:0;
+								const float donor=stageValue(component,x,y,z,axis,donorShift);
+								computed.lowFlux[output]=velocity*donor;continue;
+							}
+							const std::size_t rightCoordinate=coordinate==extent?0u:coordinate;
+							const std::size_t leftCoordinate=rightCoordinate==0u?extent-1u:
+								rightCoordinate-1u;
+							std::size_t lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;
+							SetAxisCoordinate(axis,leftCoordinate,lx,ly,lz);
+							SetAxisCoordinate(axis,rightCoordinate,rx,ry,rz);
+							const bool fromLeft=velocity>=0.0f;
+							const std::size_t dx=fromLeft?lx:rx,dy=fromLeft?ly:ry,
+								dz=fromLeft?lz:rz;
+							const float donor=request.beginning[
+								component*cells+CellIndex(shape,dx,dy,dz)];
+							const float slope=component<8u?massSlope(component,dx,dy,dz,axis):
+								mc(donor-stageValue(component,dx,dy,dz,axis,-1),
+									stageValue(component,dx,dy,dz,axis,1)-donor);
+							const float high=donor+(fromLeft?0.5f:-0.5f)*slope;
+							computed.lowFlux[output]=velocity*donor;
+							computed.fluxDelta[output]=velocity*(high-donor);
+						}
+				}
+
+			auto packedCellFace=[&](const std::size_t cell,const unsigned int axis,
+				const bool upper){std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
+					z=cell/(shape.nx*shape.ny);
+				if(upper)SetAxisCoordinate(axis,AxisCoordinate(axis,x,y,z)+1u,x,y,z);
+				return computed.packedFaceOffset[axis]+FaceIndex(shape,axis,x,y,z);
+			};
+			auto inequalityValue=[&](const float* value,const std::size_t inequality){
+				if(inequality==0u)return -value[0];
+				if(inequality==1u){
+					float closure=value[0];
+					for(std::size_t species=0u;species<7u;++species)
+						closure-=value[1u+species];
+					return closure;
+				}
+				if(inequality<9u)return -value[inequality-1u];
+				if(inequality==9u){
+					float lower=-value[8];
+					for(std::size_t species=0u;species<7u;++species)
+						lower+=request.enthalpyBoundsJPerKG[species]*value[1u+species];
+					return lower;
+				}
+				float upper=value[8];for(std::size_t species=0u;species<7u;++species)
+					upper-=request.enthalpyBoundsJPerKG[7u+species]*value[1u+species];
+				return upper;
+			};
+			computed.lowState.assign(components*cells,0.0f);
+			std::array<std::vector<float>,6> correction;
+			for(auto& direction:correction)direction.assign(components*cells,0.0f);
+			const float scale=request.timeStepS/shape.cellWidthM;
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+				component<components;++component){
+				float low=request.beginning[component*cells+cell]+
+					request.sourceDelta[component*cells+cell];
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t lower=packedCellFace(cell,axis,false);
+					const std::size_t upper=packedCellFace(cell,axis,true);
+					low+=scale*(computed.lowFlux[component*allFaces+lower]-
+						computed.lowFlux[component*allFaces+upper]);
+					correction[2u*axis][component*cells+cell]=scale*
+						computed.fluxDelta[component*allFaces+lower];
+					correction[2u*axis+1u][component*cells+cell]=-scale*
+						computed.fluxDelta[component*allFaces+upper];
+				}
+				if(!std::isfinite(low))return Fail(error,"scalar FCT low state is nonfinite");
+				computed.lowState[component*cells+cell]=low;
+			}
+			computed.limiterRatio.assign(inequalities*cells,1.0f);
+			for(std::size_t inequality=0u;inequality<inequalities;++inequality)
+				for(std::size_t cell=0u;cell<cells;++cell){
+					std::array<float,9> low={{}};std::array<std::array<float,9>,6> local={{}};
+					for(std::size_t component=0u;component<components;++component){
+						low[component]=computed.lowState[component*cells+cell];
+						for(unsigned int direction=0u;direction<6u;++direction)
+							local[direction][component]=correction[direction][component*cells+cell];
+					}
+					float rowScale=0.0f;
+					for(std::size_t component=0u;component<components;++component){
+						float lower=low[component],upper=low[component];
+						for(unsigned int direction=0u;direction<6u;++direction){
+							const float delta=local[direction][component];
+							if(delta<0.0f)lower+=delta;else upper+=delta;
+						}
+						const float minimum=lower<=0.0f&&upper>=0.0f?0.0f:
+							std::min(std::fabs(lower),std::fabs(upper));
+						if(inequality<9u){if(component<8u)rowScale+=minimum;}
+						else if(component==8u)rowScale+=minimum;
+						else if(component>0u&&component<8u)rowScale+=(std::fabs(
+							request.enthalpyBoundsJPerKG[component-1u])+std::fabs(
+							request.enthalpyBoundsJPerKG[7u+component-1u]))*minimum;
+					}
+					rowScale=std::max(1.0f,rowScale);float requested=0.0f;
+					for(unsigned int direction=0u;direction<6u;++direction)requested+=
+						std::max(0.0f,inequalityValue(local[direction].data(),inequality));
+					const float budget=std::max(0.0f,(request.feasibilityFactor-
+						request.assemblyReserveFactor)*rowScale-
+						inequalityValue(low.data(),inequality));
+					const float ratio=requested>0.0f?std::min(1.0f,budget/requested):1.0f;
+					if(!std::isfinite(ratio)||ratio<0.0f||ratio>1.0f)return Fail(error,
+						"scalar FCT limiter ratio is invalid");
+					computed.limiterRatio[inequality*cells+cell]=ratio;
+				}
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faceCount=FireProductionProjectionFaceCount(shape,axis);
+				computed.sharedFaceAlpha[axis].assign(faceCount,1.0f);
+				const std::size_t extent=AxisCoordinateExtent(shape,axis);
+				const std::size_t xEnd=shape.nx+(axis==0u?1u:0u),
+					yEnd=shape.ny+(axis==1u?1u:0u),zEnd=shape.nz+(axis==2u?1u:0u);
+				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+					for(std::size_t x=0u;x<xEnd;++x){
+						const std::size_t face=FaceIndex(shape,axis,x,y,z);
+						const std::size_t packed=computed.packedFaceOffset[axis]+face;
+						const std::size_t coordinate=AxisCoordinate(axis,x,y,z);
+						const bool periodic=request.boundary[2u*axis]==
+							FireProductionProjectionPeriodic;
+						const bool haveLeft=periodic||coordinate>0u;
+						const bool haveRight=periodic||coordinate<extent;
+						std::size_t lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;
+						SetAxisCoordinate(axis,coordinate?coordinate-1u:extent-1u,lx,ly,lz);
+						SetAxisCoordinate(axis,coordinate==extent?0u:coordinate,rx,ry,rz);
+						const std::size_t left=haveLeft?CellIndex(shape,lx,ly,lz):0u;
+						const std::size_t right=haveRight?CellIndex(shape,rx,ry,rz):0u;
+						float accepted=1.0f;std::array<float,9> faceCorrection={{}};
+						for(std::size_t inequality=0u;inequality<inequalities;++inequality){
+							for(std::size_t component=0u;component<components;++component)
+								faceCorrection[component]=-scale*computed.fluxDelta[
+									component*allFaces+packed];
+							if(haveLeft&&inequalityValue(faceCorrection.data(),inequality)>0.0f)
+								accepted=std::min(accepted,computed.limiterRatio[
+									inequality*cells+left]);
+							for(float& value:faceCorrection)value=-value;
+							if(haveRight&&inequalityValue(faceCorrection.data(),inequality)>0.0f)
+								accepted=std::min(accepted,computed.limiterRatio[
+									inequality*cells+right]);
+						}
+						if(!std::isfinite(accepted)||accepted<0.0f||accepted>1.0f)
+							return Fail(error,"scalar FCT shared alpha is invalid");
+						computed.sharedFaceAlpha[axis][face]=accepted;
+					}
+			}
+			computed.accepted=computed.lowState;
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+				component<components;++component){
+				float value=computed.lowState[component*cells+cell];
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t lower=packedCellFace(cell,axis,false);
+					const std::size_t upper=packedCellFace(cell,axis,true);
+					value+=scale*(computed.sharedFaceAlpha[axis][lower-
+						computed.packedFaceOffset[axis]]*computed.fluxDelta[
+						component*allFaces+lower]-computed.sharedFaceAlpha[axis][upper-
+						computed.packedFaceOffset[axis]]*computed.fluxDelta[
+						component*allFaces+upper]);
+				}
+				if(!std::isfinite(value))return Fail(error,"scalar FCT accepted state is nonfinite");
+				computed.accepted[component*cells+cell]=value;
+			}
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<float,9> value={{}};float rowScale=1.0f;
+				for(std::size_t component=0u;component<components;++component){
+					value[component]=computed.accepted[component*cells+cell];
+					rowScale+=std::fabs(value[component]);
+				}
+				for(std::size_t inequality=0u;inequality<inequalities;++inequality){
+					const float excess=inequalityValue(value.data(),inequality);
+					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale)
+						return Fail(error,"scalar FCT accepted state exceeds r60 envelope");
+				}
+			}
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				computed.acceptedGasFluxKGPerM2S[axis].assign(faces,0.0f);
+				for(std::size_t face=0u;face<faces;++face){
+					const std::size_t packed=computed.packedFaceOffset[axis]+face;
+					float gas=0.0f;for(std::size_t component=1u;component<=6u;++component)
+						gas+=computed.lowFlux[component*allFaces+packed]+
+							computed.sharedFaceAlpha[axis][face]*computed.fluxDelta[
+								component*allFaces+packed];
+					if(!std::isfinite(gas))return Fail(error,"scalar FCT accepted gas flux is nonfinite");
+					computed.acceptedGasFluxKGPerM2S[axis][face]=gas;
+				}
+			}
+
+			computed.commutingIdentityAvailable=allPeriodic;
+			if(allPeriodic){
+				std::vector<float> baseGas(cells,0.0f),acceptedGas(cells,0.0f);
+				for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;
+					component<=6u;++component){baseGas[cell]+=request.beginning[component*cells+cell]+
+						request.sourceDelta[component*cells+cell];
+					acceptedGas[cell]+=computed.accepted[component*cells+cell];}
+				for(unsigned int component=0u;component<3u;++component)
+					for(std::size_t z=0u;z<shape.nz;++z)for(std::size_t y=0u;y<shape.ny;++y)
+						for(std::size_t x=0u;x<shape.nx;++x){
+							const std::size_t normal=AxisCoordinate(component,x,y,z);
+							const std::size_t extent=AxisCoordinateExtent(shape,component);
+							std::size_t px=x,py=y,pz=z;
+							SetAxisCoordinate(component,normal?normal-1u:extent-1u,px,py,pz);
+							const std::size_t previousCell=CellIndex(shape,px,py,pz);
+							const std::size_t currentCell=CellIndex(shape,x,y,z);
+							float dualDivergence=0.0f;
+							for(unsigned int derivative=0u;derivative<3u;++derivative){
+								const std::size_t position=AxisCoordinate(derivative,x,y,z);
+								auto restrictedFlux=[&](const std::size_t derivativeBoundary){
+									if(derivative==component){
+										const std::size_t derivativeExtent=AxisCoordinateExtent(
+											shape,derivative);
+										const std::size_t canonical=derivativeBoundary==derivativeExtent?
+											0u:derivativeBoundary;
+										const std::size_t previous=canonical?canonical-1u:
+											derivativeExtent-1u;
+										std::size_t firstX=x,firstY=y,firstZ=z,
+											secondX=x,secondY=y,secondZ=z;
+										SetAxisCoordinate(derivative,previous,firstX,firstY,firstZ);
+										SetAxisCoordinate(derivative,canonical,secondX,secondY,secondZ);
+										return 0.5f*(computed.acceptedGasFluxKGPerM2S[derivative][
+											FaceIndex(shape,derivative,firstX,firstY,firstZ)]+
+											computed.acceptedGasFluxKGPerM2S[derivative][
+											FaceIndex(shape,derivative,secondX,secondY,secondZ)]);
+									}
+									std::size_t lowerX=px,lowerY=py,lowerZ=pz,
+										upperX=x,upperY=y,upperZ=z;
+									SetAxisCoordinate(derivative,derivativeBoundary,
+										lowerX,lowerY,lowerZ);
+									SetAxisCoordinate(derivative,derivativeBoundary,
+										upperX,upperY,upperZ);
+									return 0.5f*(computed.acceptedGasFluxKGPerM2S[derivative][
+										FaceIndex(shape,derivative,lowerX,lowerY,lowerZ)]+
+										computed.acceptedGasFluxKGPerM2S[derivative][
+										FaceIndex(shape,derivative,upperX,upperY,upperZ)]);
+								};
+								dualDivergence+=(restrictedFlux(position+1u)-
+									restrictedFlux(position))/shape.cellWidthM;
+							}
+							const float dualAccepted=0.5f*(baseGas[previousCell]+baseGas[currentCell])-
+								request.timeStepS*dualDivergence;
+							const float restrictedAccepted=0.5f*(acceptedGas[previousCell]+
+								acceptedGas[currentCell]);
+							computed.maximumCommutingResidualKGPerM3=std::max(
+								computed.maximumCommutingResidualKGPerM3,
+								std::fabs(restrictedAccepted-dualAccepted));
+						}
+			}
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarFCTResult();
+			FailWithoutThrow(error,"scalar FCT allocation failed");return false;}
+	}
 }
