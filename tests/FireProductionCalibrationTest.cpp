@@ -4410,6 +4410,12 @@ int main()
 		std::memcpy(&secondBits,&second,sizeof(secondBits));
 		return firstBits==secondBits;
 	};
+	auto sameFloatBits=[]( const float first, const float second ) {
+		std::uint32_t firstBits=0u,secondBits=0u;
+		std::memcpy(&firstBits,&first,sizeof(firstBits));
+		std::memcpy(&secondBits,&second,sizeof(secondBits));
+		return firstBits==secondBits;
+	};
 	RISE::FireProductionCompatibleFCTMomentumRequest openFCT32;
 	openFCT32.shape.nx=4u;openFCT32.shape.ny=4u;openFCT32.shape.nz=4u;
 	openFCT32.shape.cellWidthM=0.5f;
@@ -4624,10 +4630,11 @@ int main()
 					periodicFCT32.shape,axis,lx,ly,lz);
 				const std::size_t high=productionFaceIndex(
 					periodicFCT32.shape,axis,hx,hy,hz);
-				periodicFCTExact=periodicFCTResult.acceptedGasFluxKGPerM2S[axis][low]==
-					periodicFCTResult.acceptedGasFluxKGPerM2S[axis][high]&&
-					periodicFCTResult.advectionRateKGPerM2S2[axis][low]==
-					periodicFCTResult.advectionRateKGPerM2S2[axis][high];
+				periodicFCTExact=sameFloatBits(
+					periodicFCTResult.acceptedGasFluxKGPerM2S[axis][low],
+					periodicFCTResult.acceptedGasFluxKGPerM2S[axis][high])&&
+					sameFloatBits(periodicFCTResult.advectionRateKGPerM2S2[axis][low],
+					periodicFCTResult.advectionRateKGPerM2S2[axis][high]);
 			}
 	}
 	const std::size_t periodicX0=productionFaceIndex(periodicFCT32.shape,0u,0u,1u,1u);
@@ -4650,6 +4657,12 @@ int main()
 	const bool badSeamRefused=!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
 		malformedFCT,refusedFCT,&error);
 	malformedFCT=periodicFCT32;
+	malformedFCT.lowGasFluxKGPerM2S[1][productionFaceIndex(
+		malformedFCT.shape,1u,0u,4u,0u)]=-0.0f;
+	const bool signedZeroSeamRefused=
+		!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+			malformedFCT,refusedFCT,&error);
+	malformedFCT=periodicFCT32;
 	malformedFCT.boundary[2]=RISE::FireProductionProjectionWall;
 	malformedFCT.boundary[3]=RISE::FireProductionProjectionWall;
 	const bool hybridRefused=!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
@@ -4664,8 +4677,9 @@ int main()
 	RISE::FireProductionCompatibleFCTMomentumResult allHighResult;
 	const bool allHighComputed=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
 		allHighFCT,allHighResult,&error);
-	Check(invalidAlphaRefused&&badSeamRefused&&hybridRefused&&badPhysicalShapeRefused&&
-		allHighComputed&&allHighResult.advectionRateKGPerM2S2[0][periodicX1]!=
+	Check(invalidAlphaRefused&&badSeamRefused&&signedZeroSeamRefused&&hybridRefused&&
+		badPhysicalShapeRefused&&allHighComputed&&
+		allHighResult.advectionRateKGPerM2S2[0][periodicX1]!=
 		periodicFCTResult.advectionRateKGPerM2S2[0][periodicX1],
 		"compatible FCT bootstrap refuses malformed identity inputs and detects an all-high limiter mutant");
 

@@ -1172,6 +1172,298 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 				}
 			}
 
+			// Isolated r183 candidate source. Ordinary production does not compile or
+			// create these pipelines; only the explicit diagnostic owner below can
+			// instantiate this library.
+			static const char* FCTHeunSource()
+		{
+			return R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+struct FCTParams {
+ uint nx;uint ny;uint nz;uint cells;uint components;uint inequalities;uint nullity;uint reserved;
+ uint boundary[6];uint sideOffset[6];float dx;float dt;float feasibility;float assemblyReserve;
+};
+inline uint fct_cell(constant FCTParams& p,uint x,uint y,uint z){return (z*p.ny+y)*p.nx+x;}
+inline uint fct_extent(constant FCTParams& p,uint a){return a==0u?p.nx:(a==1u?p.ny:p.nz);}
+inline uint fct_face_count(constant FCTParams& p,uint a){return a==0u?(p.nx+1u)*p.ny*p.nz:
+ (a==1u?p.nx*(p.ny+1u)*p.nz:p.nx*p.ny*(p.nz+1u));}
+inline uint fct_face_offset(constant FCTParams& p,uint a){return a==0u?0u:
+ (a==1u?fct_face_count(p,0u):fct_face_count(p,0u)+fct_face_count(p,1u));}
+inline uint fct_all_faces(constant FCTParams& p){return fct_face_count(p,0u)+
+ fct_face_count(p,1u)+fct_face_count(p,2u);}
+inline uint fct_face(constant FCTParams& p,uint a,uint x,uint y,uint z){return a==0u?
+ (z*p.ny+y)*(p.nx+1u)+x:(a==1u?(z*(p.ny+1u)+y)*p.nx+x:(z*p.ny+y)*p.nx+x);}
+inline uint fct_packed_face(constant FCTParams& p,uint a,uint x,uint y,uint z){return
+ fct_face_offset(p,a)+fct_face(p,a,x,y,z);}
+inline uint fct_coordinate(uint a,uint x,uint y,uint z){return a==0u?x:(a==1u?y:z);}
+inline void fct_set_coordinate(uint a,uint v,thread uint& x,thread uint& y,thread uint& z){
+ if(a==0u)x=v;else if(a==1u)y=v;else z=v;}
+inline void fct_decode_face(constant FCTParams& p,uint packed,thread uint& a,
+ thread uint& x,thread uint& y,thread uint& z){
+ uint n0=fct_face_count(p,0u),n1=fct_face_count(p,1u);a=packed<n0?0u:(packed<n0+n1?1u:2u);
+ uint local=packed-fct_face_offset(p,a);if(a==0u){x=local%(p.nx+1u);uint r=local/(p.nx+1u);
+  y=r%p.ny;z=r/p.ny;}else if(a==1u){x=local%p.nx;uint r=local/p.nx;
+  y=r%(p.ny+1u);z=r/(p.ny+1u);}else{x=local%p.nx;uint r=local/p.nx;
+  y=r%p.ny;z=r/p.ny;}}
+inline uint fct_side_index(constant FCTParams& p,uint side,uint x,uint y,uint z){
+ return p.sideOffset[side]+(side<2u?z*p.ny+y:(side<4u?z*p.nx+x:y*p.nx+x));}
+inline float fct_stage_value(device const float* q,device const float* ambient,
+ device const uchar* inflow,constant FCTParams& p,uint component,uint x,uint y,uint z,
+ uint axis,int shift){
+ int coordinate=int(fct_coordinate(axis,x,y,z))+shift,intExtent=int(fct_extent(p,axis));
+ if(coordinate>=0&&coordinate<intExtent){fct_set_coordinate(axis,uint(coordinate),x,y,z);
+  return q[component*p.cells+fct_cell(p,x,y,z)];}
+ uint side=2u*axis+(coordinate>=intExtent?1u:0u),kind=p.boundary[side];
+ if(kind==0u){uint wrapped=coordinate<0?fct_extent(p,axis)-1u:0u;
+  fct_set_coordinate(axis,wrapped,x,y,z);return q[component*p.cells+fct_cell(p,x,y,z)];}
+ uint nearest=coordinate<0?0u:fct_extent(p,axis)-1u;fct_set_coordinate(axis,nearest,x,y,z);
+ float interior=q[component*p.cells+fct_cell(p,x,y,z)];
+ return kind==1u&&inflow[fct_side_index(p,side,x,y,z)]!=0u?ambient[component]:interior;
+}
+inline float fct_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;
+ float centered=0.5f*(backward+forward),sign=centered<0.0f?-1.0f:1.0f;
+ return sign*min(abs(centered),2.0f*min(abs(backward),abs(forward)));}
+inline float fct_mass_slope(device const float* q,device const float* ambient,
+ device const uchar* inflow,device const float* basis,device const float* coordinateProjector,
+ constant FCTParams& p,uint component,uint cellX,uint cellY,uint cellZ,uint axis){
+ float coordinateSlope[8];for(uint b=0u;b<8u;++b)coordinateSlope[b]=0.0f;
+ for(uint b=0u;b<p.nullity;++b){float backward=0.0f,forward=0.0f;
+  for(uint row=0u;row<8u;++row){float center=q[row*p.cells+fct_cell(p,cellX,cellY,cellZ)];
+   float previous=fct_stage_value(q,ambient,inflow,p,row,cellX,cellY,cellZ,axis,-1);
+   float next=fct_stage_value(q,ambient,inflow,p,row,cellX,cellY,cellZ,axis,1);
+   float coefficient=basis[row*p.nullity+b];backward+=coefficient*(center-previous);
+   forward+=coefficient*(next-center);}coordinateSlope[b]=fct_mc(backward,forward);}
+ float result=0.0f;for(uint b=0u;b<p.nullity;++b){float projected=0.0f;
+  for(uint column=0u;column<p.nullity;++column)
+   projected+=coordinateProjector[b*p.nullity+column]*coordinateSlope[column];
+  result+=basis[component*p.nullity+b]*projected;}return result;
+}
+kernel void fct_build_flux_pair(device const float* q [[buffer(0)]],
+ device const float* ux [[buffer(1)]],device const float* uy [[buffer(2)]],
+ device const float* uz [[buffer(3)]],device const float* ambient [[buffer(4)]],
+ device const uchar* inflow [[buffer(5)]],device const float* basis [[buffer(6)]],
+ device const float* coordinateProjector [[buffer(7)]],device float* low [[buffer(8)]],
+ device float* delta [[buffer(9)]],constant FCTParams& p [[buffer(10)]],
+ uint gid [[thread_position_in_grid]]){
+ uint all=fct_all_faces(p),total=p.components*all;if(gid>=total)return;uint component=gid/all;
+ uint packed=gid-component*all,axis,x,y,z;fct_decode_face(p,packed,axis,x,y,z);
+ uint coordinate=fct_coordinate(axis,x,y,z),extent=fct_extent(p,axis);
+ device const float* velocity=axis==0u?ux:(axis==1u?uy:uz);float u=velocity[packed-fct_face_offset(p,axis)];
+ if((coordinate==0u||coordinate==extent)&&p.boundary[2u*axis+(coordinate==extent?1u:0u)]==2u){
+  low[gid]=0.0f;delta[gid]=0.0f;return;}
+ if((coordinate==0u||coordinate==extent)&&p.boundary[2u*axis+(coordinate==extent?1u:0u)]!=0u){
+  int donorShift=u>=0.0f?-1:0;uint bx=x,by=y,bz=z;if(coordinate==extent)donorShift=u>=0.0f?-1:0;
+  float donor=fct_stage_value(q,ambient,inflow,p,component,bx,by,bz,axis,donorShift);
+  low[gid]=u*donor;delta[gid]=0.0f;return;}
+ uint rightCoordinate=coordinate==extent?0u:coordinate;
+ uint leftCoordinate=rightCoordinate==0u?extent-1u:rightCoordinate-1u;
+ uint lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;fct_set_coordinate(axis,leftCoordinate,lx,ly,lz);
+ fct_set_coordinate(axis,rightCoordinate,rx,ry,rz);bool fromLeft=u>=0.0f;
+ uint dx=fromLeft?lx:rx,dy=fromLeft?ly:ry,dz=fromLeft?lz:rz;
+ float donor=q[component*p.cells+fct_cell(p,dx,dy,dz)],slope=component<8u?
+  fct_mass_slope(q,ambient,inflow,basis,coordinateProjector,p,component,dx,dy,dz,axis):
+  fct_mc(donor-fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,-1),
+   fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor);
+ float high=donor+(fromLeft?0.5f:-0.5f)*slope;low[gid]=u*donor;delta[gid]=u*(high-donor);
+}
+inline float fct_inequality(thread const float* value,uint inequality,device const float* enthalpy){
+ if(inequality==0u)return-value[0];if(inequality==1u){float result=value[0];
+  for(uint species=0u;species<7u;++species)result-=value[1u+species];return result;}
+ if(inequality<9u)return-value[inequality-1u];if(inequality==9u){float result=-value[8];
+  for(uint species=0u;species<7u;++species)result+=enthalpy[species]*value[1u+species];return result;}
+ float result=value[8];for(uint species=0u;species<7u;++species)
+  result-=enthalpy[7u+species]*value[1u+species];return result;
+}
+inline uint fct_cell_face(constant FCTParams& p,uint cell,uint axis,bool upper){
+ uint x=cell%p.nx,y=(cell/p.nx)%p.ny,z=cell/(p.nx*p.ny);
+ if(upper)fct_set_coordinate(axis,fct_coordinate(axis,x,y,z)+1u,x,y,z);
+ return fct_packed_face(p,axis,x,y,z);}
+kernel void fct_build_ratios(device const float* beginning [[buffer(0)]],
+ device const float* sourceDelta [[buffer(1)]],device const float* lowFlux [[buffer(2)]],
+ device const float* fluxDelta [[buffer(3)]],device const float* enthalpyBounds [[buffer(4)]],
+ device float* lowState [[buffer(5)]],device float* ratio [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],constant FCTParams& p [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
+ uint total=p.cells*p.inequalities;if(gid>=total)return;uint inequality=gid/p.cells,cell=gid-inequality*p.cells;
+ uint all=fct_all_faces(p);float low[9],correction[6][9],scale=p.dt/p.dx;
+ for(uint component=0u;component<9u;++component){low[component]=beginning[component*p.cells+cell]+
+  sourceDelta[component*p.cells+cell];for(uint axis=0u;axis<3u;++axis){uint lower=fct_cell_face(p,cell,axis,false);
+  uint upper=fct_cell_face(p,cell,axis,true);low[component]+=scale*(lowFlux[component*all+lower]-
+   lowFlux[component*all+upper]);correction[2u*axis][component]=scale*fluxDelta[component*all+lower];
+  correction[2u*axis+1u][component]=-scale*fluxDelta[component*all+upper];}
+  if(!isfinite(low[component]))atomic_fetch_or_explicit(failure,1u,memory_order_relaxed);
+  if(inequality==0u)lowState[component*p.cells+cell]=low[component];}
+ float rowScale=0.0f;for(uint component=0u;component<9u;++component){float lower=low[component],upper=low[component];
+  for(uint direction=0u;direction<6u;++direction){float d=correction[direction][component];
+   if(d<0.0f)lower+=d;else upper+=d;}float minimum=lower<=0.0f&&upper>=0.0f?0.0f:min(abs(lower),abs(upper));
+  if(inequality<9u){if(component<8u)rowScale+=minimum;}else if(component==8u)rowScale+=minimum;
+  else if(component>0u&&component<8u)rowScale+=(abs(enthalpyBounds[component-1u])+
+   abs(enthalpyBounds[7u+component-1u]))*minimum;}rowScale=max(1.0f,rowScale);
+ float requested=0.0f;for(uint direction=0u;direction<6u;++direction)
+  requested+=max(0.0f,fct_inequality(correction[direction],inequality,enthalpyBounds));
+ float budget=max(0.0f,(p.feasibility-p.assemblyReserve)*rowScale-
+  fct_inequality(low,inequality,enthalpyBounds));float value=requested>0.0f?min(1.0f,budget/requested):1.0f;
+ if(!isfinite(value)||value<0.0f||value>1.0f)atomic_fetch_or_explicit(failure,2u,memory_order_relaxed);
+ ratio[inequality*p.cells+cell]=clamp(value,0.0f,1.0f);
+}
+kernel void fct_build_face_alpha(device const float* fluxDelta [[buffer(0)]],
+ device const float* ratio [[buffer(1)]],device const float* enthalpyBounds [[buffer(2)]],
+ device float* alpha [[buffer(3)]],device atomic_uint* failure [[buffer(4)]],
+ constant FCTParams& p [[buffer(5)]],
+ uint gid [[thread_position_in_grid]]){
+ uint all=fct_all_faces(p);if(gid>=all)return;uint axis,x,y,z;fct_decode_face(p,gid,axis,x,y,z);
+ uint coordinate=fct_coordinate(axis,x,y,z),extent=fct_extent(p,axis);float accepted=1.0f,scale=p.dt/p.dx;
+ bool periodic=p.boundary[2u*axis]==0u;uint leftCoordinate=coordinate?coordinate-1u:extent-1u;
+ uint rightCoordinate=coordinate==extent?0u:coordinate;bool haveLeft=periodic||coordinate>0u;
+ bool haveRight=periodic||coordinate<extent;uint lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;
+ fct_set_coordinate(axis,leftCoordinate,lx,ly,lz);fct_set_coordinate(axis,rightCoordinate,rx,ry,rz);
+ uint left=haveLeft?fct_cell(p,lx,ly,lz):0u,right=haveRight?fct_cell(p,rx,ry,rz):0u;
+ float correction[9];for(uint inequality=0u;inequality<p.inequalities;++inequality){
+  for(uint component=0u;component<9u;++component)correction[component]=
+   -scale*fluxDelta[component*all+gid];
+  if(haveLeft&&fct_inequality(correction,inequality,enthalpyBounds)>0.0f)
+   accepted=min(accepted,ratio[inequality*p.cells+left]);
+  for(uint component=0u;component<9u;++component)correction[component]=-
+   correction[component];
+  if(haveRight&&fct_inequality(correction,inequality,enthalpyBounds)>0.0f)
+   accepted=min(accepted,ratio[inequality*p.cells+right]);
+ }
+ if(!isfinite(accepted)||accepted<0.0f||accepted>1.0f)
+  atomic_fetch_or_explicit(failure,4u,memory_order_relaxed);
+ alpha[gid]=clamp(accepted,0.0f,1.0f);
+}
+kernel void fct_commit_scalar(device const float* lowState [[buffer(0)]],
+ device const float* fluxDelta [[buffer(1)]],device const float* alpha [[buffer(2)]],
+ device const float* enthalpyBounds [[buffer(3)]],device float* accepted [[buffer(4)]],
+ device atomic_uint* failure [[buffer(5)]],constant FCTParams& p [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid>=p.cells)return;uint all=fct_all_faces(p);float value[9],scale=p.dt/p.dx;
+ for(uint component=0u;component<9u;++component){value[component]=lowState[component*p.cells+gid];
+  for(uint axis=0u;axis<3u;++axis){uint lower=fct_cell_face(p,gid,axis,false);
+   uint upper=fct_cell_face(p,gid,axis,true);value[component]+=scale*(
+    alpha[lower]*fluxDelta[component*all+lower]-alpha[upper]*fluxDelta[component*all+upper]);}
+  accepted[component*p.cells+gid]=value[component];
+  if(!isfinite(value[component]))atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);}
+ for(uint inequality=0u;inequality<p.inequalities;++inequality){float rowScale=1.0f;
+  for(uint component=0u;component<9u;++component)rowScale+=abs(value[component]);
+  float excess=fct_inequality(value,inequality,enthalpyBounds);
+  if(!isfinite(excess)||excess>p.feasibility*rowScale)
+   atomic_fetch_or_explicit(failure,16u,memory_order_relaxed);}
+}
+inline float fct_accepted_gas(device const float* low,device const float* delta,
+ device const float* alpha,constant FCTParams& p,uint axis,uint x,uint y,uint z){
+ uint packed=fct_packed_face(p,axis,x,y,z),all=fct_all_faces(p),coordinate=fct_coordinate(axis,x,y,z);
+ uint extent=fct_extent(p,axis);if(p.boundary[2u*axis]==0u&&coordinate==extent){
+  fct_set_coordinate(axis,0u,x,y,z);packed=fct_packed_face(p,axis,x,y,z);}
+ float gas=0.0f;for(uint component=1u;component<=6u;++component)
+  gas+=low[component*all+packed]+alpha[packed]*delta[component*all+packed];return gas;
+}
+inline float fct_velocity(device const float* ux,device const float* uy,device const float* uz,
+ constant FCTParams& p,uint component,uint x,uint y,uint z){device const float* values=
+ component==0u?ux:(component==1u?uy:uz);return values[fct_face(p,component,x,y,z)];}
+inline bool fct_prescribed(constant FCTParams& p,uint side){return p.boundary[side]==2u;}
+kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
+ device const float* delta [[buffer(1)]],device const float* alpha [[buffer(2)]],
+ device const float* ux [[buffer(3)]],device const float* uy [[buffer(4)]],
+ device const float* uz [[buffer(5)]],device float* rate [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],constant FCTParams& p [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
+ uint all=fct_all_faces(p);if(gid>=all)return;uint component,x,y,z;
+ fct_decode_face(p,gid,component,x,y,z);uint normal=fct_coordinate(component,x,y,z);
+ uint componentExtent=fct_extent(p,component),normalCount=componentExtent+1u;
+ bool anyPeriodic=false,allPeriodic=true;for(uint axis=0u;axis<3u;++axis){
+  bool axisPeriodic=p.boundary[2u*axis]==0u&&p.boundary[2u*axis+1u]==0u;
+  anyPeriodic=anyPeriodic||axisPeriodic;allPeriodic=allPeriodic&&axisPeriodic;}
+ if(anyPeriodic&&!allPeriodic){atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);
+  rate[gid]=0.0f;return;}
+ if(allPeriodic){
+  if(normal==componentExtent){fct_set_coordinate(component,0u,x,y,z);normal=0u;}
+  float divergence=0.0f;for(uint derivative=0u;derivative<3u;++derivative){
+   uint componentCoordinate=fct_coordinate(component,x,y,z);
+   uint derivativeCoordinate=fct_coordinate(derivative,x,y,z);
+   uint nextComponent=componentCoordinate+1u==componentExtent?0u:componentCoordinate+1u;
+   uint previousDerivative=derivativeCoordinate?derivativeCoordinate-1u:
+    fct_extent(p,derivative)-1u;
+   uint nextDerivative=derivativeCoordinate+1u==fct_extent(p,derivative)?0u:
+    derivativeCoordinate+1u;
+   uint ncx=x,ncy=y,ncz=z,pdx=x,pdy=y,pdz=z,ncpdx=x,ncpdy=y,ncpdz=z,
+    ndx=x,ndy=y,ndz=z;
+   fct_set_coordinate(component,nextComponent,ncx,ncy,ncz);
+   fct_set_coordinate(derivative,previousDerivative,pdx,pdy,pdz);
+   ncpdx=ncx;ncpdy=ncy;ncpdz=ncz;
+   fct_set_coordinate(derivative,previousDerivative,ncpdx,ncpdy,ncpdz);
+   fct_set_coordinate(derivative,nextDerivative,ndx,ndy,ndz);
+   float upper=0.0f,lower=0.0f;if(derivative==component){
+    upper=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,x,y,z)+
+     fct_accepted_gas(low,delta,alpha,p,derivative,ncx,ncy,ncz))*(
+     fct_velocity(ux,uy,uz,p,component,x,y,z)+
+     fct_velocity(ux,uy,uz,p,component,ncx,ncy,ncz));
+    lower=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,pdx,pdy,pdz)+
+     fct_accepted_gas(low,delta,alpha,p,derivative,x,y,z))*(
+     fct_velocity(ux,uy,uz,p,component,pdx,pdy,pdz)+
+     fct_velocity(ux,uy,uz,p,component,x,y,z));
+   }else{
+    upper=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,x,y,z)+
+     fct_accepted_gas(low,delta,alpha,p,derivative,ncx,ncy,ncz))*(
+     fct_velocity(ux,uy,uz,p,component,x,y,z)+
+     fct_velocity(ux,uy,uz,p,component,ndx,ndy,ndz));
+    lower=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,pdx,pdy,pdz)+
+     fct_accepted_gas(low,delta,alpha,p,derivative,ncpdx,ncpdy,ncpdz))*(
+     fct_velocity(ux,uy,uz,p,component,pdx,pdy,pdz)+
+     fct_velocity(ux,uy,uz,p,component,x,y,z));
+   }divergence+=(upper-lower)/p.dx;
+  }
+  if(!isfinite(divergence))atomic_fetch_or_explicit(failure,32u,memory_order_relaxed);
+  rate[gid]=divergence;return;
+ }
+ float divergence=0.0f;for(uint derivative=0u;derivative<3u;++derivative){
+  if(derivative==component){uint previous=normal?normal-1u:normal;
+   uint next=normal+1u<normalCount?normal+1u:normal;uint px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+   fct_set_coordinate(component,previous,px,py,pz);fct_set_coordinate(component,next,nx,ny,nz);
+   float upper=0.25f*(fct_accepted_gas(low,delta,alpha,p,component,x,y,z)+
+    fct_accepted_gas(low,delta,alpha,p,component,nx,ny,nz))*(
+    fct_velocity(ux,uy,uz,p,component,x,y,z)+fct_velocity(ux,uy,uz,p,component,nx,ny,nz));
+   float lower=0.25f*(fct_accepted_gas(low,delta,alpha,p,component,px,py,pz)+
+    fct_accepted_gas(low,delta,alpha,p,component,x,y,z))*(
+    fct_velocity(ux,uy,uz,p,component,px,py,pz)+fct_velocity(ux,uy,uz,p,component,x,y,z));
+   float normalScale=normal==0u||normal+1u==normalCount?2.0f:1.0f;
+   divergence+=normalScale*(upper-lower)/p.dx;
+  }else{uint derivativeExtent=fct_extent(p,derivative),position=fct_coordinate(derivative,x,y,z);
+   uint componentLower=normal?normal-1u:0u,componentUpper=normal<componentExtent?normal:componentExtent-1u;
+   uint llx=x,lly=y,llz=z,lux=x,luy=y,luz=z,ulx=x,uly=y,ulz=z,uux=x,uuy=y,uuz=z;
+   fct_set_coordinate(component,componentLower,llx,lly,llz);
+   fct_set_coordinate(component,componentUpper,lux,luy,luz);
+   fct_set_coordinate(component,componentLower,ulx,uly,ulz);
+   fct_set_coordinate(component,componentUpper,uux,uuy,uuz);
+   fct_set_coordinate(derivative,position,llx,lly,llz);
+   fct_set_coordinate(derivative,position,lux,luy,luz);
+   fct_set_coordinate(derivative,position+1u,ulx,uly,ulz);
+   fct_set_coordinate(derivative,position+1u,uux,uuy,uuz);
+   uint previous=position?position-1u:position,next=min(position+1u,derivativeExtent-1u);
+   if(p.boundary[2u*derivative]==0u){previous=position?position-1u:derivativeExtent-1u;
+    next=position+1u==derivativeExtent?0u:position+1u;}
+   uint px=x,py=y,pz=z,nx=x,ny=y,nz=z;fct_set_coordinate(derivative,previous,px,py,pz);
+   fct_set_coordinate(derivative,next,nx,ny,nz);
+   float lowerMass=fct_accepted_gas(low,delta,alpha,p,derivative,llx,lly,llz)+
+    fct_accepted_gas(low,delta,alpha,p,derivative,lux,luy,luz);
+   float upperMass=fct_accepted_gas(low,delta,alpha,p,derivative,ulx,uly,ulz)+
+    fct_accepted_gas(low,delta,alpha,p,derivative,uux,uuy,uuz);
+   float lower=0.25f*lowerMass*(fct_velocity(ux,uy,uz,p,component,px,py,pz)+
+    fct_velocity(ux,uy,uz,p,component,x,y,z));
+   float upper=0.25f*upperMass*(fct_velocity(ux,uy,uz,p,component,x,y,z)+
+    fct_velocity(ux,uy,uz,p,component,nx,ny,nz));
+   if(position==0u&&fct_prescribed(p,2u*derivative))lower=0.0f;
+   if(position+1u==derivativeExtent&&fct_prescribed(p,2u*derivative+1u))upper=0.0f;
+   divergence+=(upper-lower)/p.dx;}}
+ bool boundaryFace=normal==0u||normal==componentExtent;if(boundaryFace){uint side=2u*component+
+  (normal==componentExtent?1u:0u);if(fct_prescribed(p,side))divergence=0.0f;}
+ if(!isfinite(divergence))atomic_fetch_or_explicit(failure,32u,memory_order_relaxed);
+ rate[gid]=divergence;
+}
+)METAL";
+		}
+
 			bool Valid() const
 			{
 				return device&&queue&&reconstruct&&scan&&flux&&update&&extractGasMassDose&&
@@ -1187,9 +1479,65 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			}
 		};
 
+		struct FCTHeunMetalContext
+		{
+			id<MTLDevice> device;
+			id<MTLCommandQueue> queue;
+			id<MTLComputePipelineState> buildFluxPair;
+			id<MTLComputePipelineState> buildRatios;
+			id<MTLComputePipelineState> buildFaceAlpha;
+			id<MTLComputePipelineState> commitScalar;
+			id<MTLComputePipelineState> compatibleStageRate;
+			std::string error;
+
+			FCTHeunMetalContext() : device(nil),queue(nil),buildFluxPair(nil),buildRatios(nil),
+				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil)
+			{
+				@autoreleasepool {
+					device=MTLCreateSystemDefaultDevice();
+					if(!device){error="production FCT-Heun diagnostic has no Metal device";return;}
+					MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
+					if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
+					else{error="production FCT-Heun diagnostic requires Metal safe math mode";return;}
+					NSError* metalError=nil;
+					NSString* source=[NSString stringWithUTF8String:MetalRemapContext::FCTHeunSource()];
+					id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&metalError];
+					if(!library){error=MetalError("production FCT-Heun diagnostic library compilation failed",
+						metalError);return;}
+					auto makePipeline=[&](const char* name)->id<MTLComputePipelineState>{
+						id<MTLFunction> function=[library newFunctionWithName:
+							[NSString stringWithUTF8String:name]];
+						return function?[device newComputePipelineStateWithFunction:function
+							error:&metalError]:nil;};
+					buildFluxPair=makePipeline("fct_build_flux_pair");
+					buildRatios=makePipeline("fct_build_ratios");
+					buildFaceAlpha=makePipeline("fct_build_face_alpha");
+					commitScalar=makePipeline("fct_commit_scalar");
+					compatibleStageRate=makePipeline("fct_compatible_stage_rate");
+					if(!buildFluxPair||!buildRatios||!buildFaceAlpha||!commitScalar||
+						!compatibleStageRate){error=MetalError(
+						"production FCT-Heun diagnostic pipeline creation failed",metalError);return;}
+					queue=[device newCommandQueue];
+					if(!queue)error="production FCT-Heun diagnostic command queue allocation failed";
+				}
+			}
+
+			bool Valid() const
+			{
+				return device&&queue&&buildFluxPair&&buildRatios&&buildFaceAlpha&&commitScalar&&
+					compatibleStageRate&&error.empty();
+			}
+		};
+
 		MetalRemapContext& Context()
 		{
 			static MetalRemapContext context;
+			return context;
+		}
+
+		FCTHeunMetalContext& FCTHeunContext()
+		{
+			static FCTHeunMetalContext context;
 			return context;
 		}
 
@@ -4037,6 +4385,99 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			~ScopedDiagnostic(){CompatibleMomentumDiagnosticActive=false;}
 		} scoped;
 		return AttemptFireProductionResidentStepMetal(request,result,structuredError);
+	}
+
+	bool AttemptFireProductionFCTHeunDiagnosticMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionFCTHeunDiagnosticResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionFCTHeunDiagnosticResult();
+		constexpr std::uint32_t operatorVersion=1u;
+		constexpr std::uint64_t operatorIdentity=UINT64_C(0x6633746865756e31);
+		const FireProductionProjectionShape& shape=request.force.shape;
+		auto sameShape=[](const FireProductionProjectionShape& first,
+			const FireProductionProjectionShape& second) {
+			return first.nx==second.nx&&first.ny==second.ny&&first.nz==second.nz&&
+				first.cellWidthM==second.cellWidthM;
+		};
+		if(!sameShape(shape,request.cellTransport.shape)||
+			!sameShape(shape,request.dualTransport.shape)||
+			request.force.timeStepS!=request.cellTransport.timeStepS||
+			request.force.timeStepS!=request.dualTransport.timeStepS||
+			request.force.boundary!=request.cellTransport.boundary||
+			request.force.boundary!=request.dualTransport.boundary||
+			request.cellTransport.componentCount!=9u||
+			request.cellTransport.retainAcceptedGasMassDose) {
+			if(structuredError)*structuredError=
+				"production FCT-Heun diagnostic ownership metadata is invalid";
+			return false;
+		}
+		std::string validationError;
+		if(!ValidateFireProductionFrozenForceRequest(request.force,&validationError)||
+			!ValidateFireProductionCellPalindromeRequest(request.cellTransport,&validationError)||
+			!ValidateFireProductionCompatibleDualMomentumRequest(request.dualTransport,
+				&validationError)) {
+			if(structuredError)*structuredError=validationError.empty()?
+				"production FCT-Heun diagnostic operand validation failed":validationError;
+			return false;
+		}
+		const std::size_t cells=shape.CellCount();
+		if(request.cellSourceIncrement.size()!=9u*cells||
+			request.divergenceTargetPerS.size()!=cells||
+			request.restorationDivergenceTargetPerS.size()!=cells) {
+			if(structuredError)*structuredError=
+				"production FCT-Heun diagnostic source shape is invalid";
+			return false;
+		}
+		bool anyPeriodic=false,allPeriodic=true;
+		for(unsigned int axis=0u;axis<3u;++axis) {
+			const bool periodic=request.force.boundary[2u*axis]==
+				FireProductionProjectionPeriodic;
+			anyPeriodic=anyPeriodic||periodic;allPeriodic=allPeriodic&&periodic;
+			if(request.momentumSourceIncrement[axis].size()!=
+				FireProductionProjectionFaceCount(shape,axis)) {
+				if(structuredError)*structuredError=
+					"production FCT-Heun diagnostic momentum-source shape is invalid";
+				return false;
+			}
+		}
+		if(anyPeriodic&&!allPeriodic) {
+			if(structuredError)*structuredError=
+				"production FCT-Heun diagnostic hybrid periodic topology has no authoritative oracle";
+			return false;
+		}
+		for(unsigned int axis=0u;axis<3u;++axis)for(const float increment:
+			request.momentumSourceIncrement[axis]) {
+			std::uint32_t bits=0u;std::memcpy(&bits,&increment,sizeof(bits));
+			if(bits!=0u) {
+				if(structuredError)*structuredError=
+					"production FCT-Heun diagnostic momentum source is not positive zero";
+				return false;
+			}
+		}
+		const std::uint64_t beginningCommits=MetalCommandCommitCount;
+		FCTHeunMetalContext& context=FCTHeunContext();
+		if(!context.Valid()) {
+			if(structuredError)*structuredError=context.error.empty()?
+				"production FCT-Heun diagnostic context is invalid":context.error;
+			return false;
+		}
+		if(MetalCommandCommitCount!=beginningCommits) {
+			if(structuredError)*structuredError=
+				"production FCT-Heun diagnostic scaffold performed Metal work";
+			return false;
+		}
+		result.operatorVersion=operatorVersion;
+		result.operatorIdentity=operatorIdentity;
+		result.phase=FireProductionFCTHeunDiagnosticPhase::ScaffoldReady;
+		result.pipelineIdentityComplete=true;
+		// Phase 1 deliberately publishes no accepted state.  The stage owner must
+		// bind the working-set certificate, alpha digests, three projection gates,
+		// and commuting residual before this API may become executable.
+		if(structuredError)*structuredError=
+			"production FCT-Heun diagnostic phase-1 scaffold is not executable";
+		return false;
 	}
 
 	bool AdvanceFireProductionResidentStepMetal(

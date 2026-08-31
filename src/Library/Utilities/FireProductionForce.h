@@ -858,6 +858,62 @@ namespace RISE
 		FireProductionResidentStepResult& rejectedOrAcceptedResult,
 		std::string* error=0 );
 
+	//! Identity-bearing status for the isolated full-FCT projected-Heun transport
+	//! candidate.  This type deliberately has no accepted-manifold token: a
+	//! diagnostic trajectory may not confer ordinary-production authority.
+	enum class FireProductionFCTHeunDiagnosticPhase : std::uint8_t
+	{
+		Unavailable=0u,
+		ScaffoldReady=1u,
+		Preflight=2u,
+		R0=3u,
+		PredictorFCT=4u,
+		R1=5u,
+		HeunFCT=6u,
+		R2=7u,
+		Accepted=8u
+	};
+
+	struct FireProductionFCTHeunDiagnosticResult
+	{
+		std::uint32_t operatorVersion;
+		std::uint64_t operatorIdentity;
+		FireProductionFCTHeunDiagnosticPhase phase;
+		std::uint32_t fluxPairBuildCount;
+		std::uint32_t fctSolveCount;
+		std::uint32_t compatibleStageMask;
+		std::uint32_t residentProjectionInvocationCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t alphaPredictorIdentity;
+		std::uint64_t alphaHeunIdentity;
+		float maximumCommutingResidual;
+		bool pipelineIdentityComplete;
+		bool predictorAdmissible;
+		bool heunAdmissible;
+		bool commutingIdentityPassed;
+		bool accepted;
+
+		FireProductionFCTHeunDiagnosticResult() : operatorVersion(0u),operatorIdentity(0u),
+			phase(FireProductionFCTHeunDiagnosticPhase::Unavailable),fluxPairBuildCount(0u),
+			fctSolveCount(0u),compatibleStageMask(0u),residentProjectionInvocationCount(0u),
+			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
+			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			alphaPredictorIdentity(0u),alphaHeunIdentity(0u),maximumCommutingResidual(0.0f),
+			pipelineIdentityComplete(false),predictorAdmissible(false),heunAdmissible(false),
+			commutingIdentityPassed(false),accepted(false) {}
+	};
+
+	//! Explicit phase-1 diagnostic seam for the coefficient-free §3.7 transport
+	//! candidate.  It is never selected by the ordinary resident-step owner and
+	//! remains fail-closed until every status identity and stage gate is wired.
+	bool AttemptFireProductionFCTHeunDiagnosticMetal(
+		const FireProductionResidentStepRequest& request,
+		FireProductionFCTHeunDiagnosticResult& result,
+		std::string* error=0 );
+
 	//! Thread-local observed Metal commits, exposed only to bind fail-before-work
 	//! owner gates. Unsupported builds return zero.
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount();

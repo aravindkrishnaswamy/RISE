@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <new>
 
@@ -391,6 +392,30 @@ namespace RISE
 			if( axis==2u ) for( std::size_t y=0u;y<shape.ny;++y )
 				for( std::size_t x=0u;x<shape.nx;++x )
 					if( !SamePeriodicFaceValue(values[FaceIndex(shape,axis,x,y,0u)],
+						values[FaceIndex(shape,axis,x,y,shape.nz)]) ) return false;
+			return true;
+		}
+
+		bool PeriodicFaceSeamBitEqual( const FireProductionProjectionShape& shape,
+			const std::vector<float>& values, unsigned int axis )
+		{
+			auto equal=[]( const float first, const float second ) {
+				std::uint32_t firstBits=0u,secondBits=0u;
+				std::memcpy(&firstBits,&first,sizeof(firstBits));
+				std::memcpy(&secondBits,&second,sizeof(secondBits));
+				return firstBits==secondBits;
+			};
+			if( axis==0u ) for( std::size_t z=0u;z<shape.nz;++z )
+				for( std::size_t y=0u;y<shape.ny;++y )
+					if( !equal(values[FaceIndex(shape,axis,0u,y,z)],
+						values[FaceIndex(shape,axis,shape.nx,y,z)]) ) return false;
+			if( axis==1u ) for( std::size_t z=0u;z<shape.nz;++z )
+				for( std::size_t x=0u;x<shape.nx;++x )
+					if( !equal(values[FaceIndex(shape,axis,x,0u,z)],
+						values[FaceIndex(shape,axis,x,shape.ny,z)]) ) return false;
+			if( axis==2u ) for( std::size_t y=0u;y<shape.ny;++y )
+				for( std::size_t x=0u;x<shape.nx;++x )
+					if( !equal(values[FaceIndex(shape,axis,x,y,0u)],
 						values[FaceIndex(shape,axis,x,y,shape.nz)]) ) return false;
 			return true;
 		}
@@ -1406,13 +1431,14 @@ namespace RISE
 						!std::isfinite(velocity) ) return Fail(error,
 						"compatible FCT momentum face value is invalid");
 				}
-				if( allPeriodic&&(!PeriodicFaceSeamEqual(shape,
+				if( allPeriodic&&(!PeriodicFaceSeamBitEqual(shape,
 					request.lowGasFluxKGPerM2S[axis],axis)||
-					!PeriodicFaceSeamEqual(shape,request.highGasFluxKGPerM2S[axis],axis)||
-					!PeriodicFaceSeamEqual(shape,request.sharedFaceAlpha[axis],axis)||
-					!PeriodicFaceSeamEqual(shape,request.frozenVelocityMPerS[axis],axis)||
+					!PeriodicFaceSeamBitEqual(shape,request.highGasFluxKGPerM2S[axis],axis)||
+					!PeriodicFaceSeamBitEqual(shape,request.sharedFaceAlpha[axis],axis)||
+					!PeriodicFaceSeamBitEqual(shape,request.frozenVelocityMPerS[axis],axis)||
 					(!request.physicalGasFluxKGPerM2S[axis].empty()&&
-					 !PeriodicFaceSeamEqual(shape,request.physicalGasFluxKGPerM2S[axis],axis))) )
+					 !PeriodicFaceSeamBitEqual(shape,
+						request.physicalGasFluxKGPerM2S[axis],axis))) )
 					return Fail(error,"compatible FCT momentum periodic seam is invalid");
 				allFaces+=faces;
 			}
