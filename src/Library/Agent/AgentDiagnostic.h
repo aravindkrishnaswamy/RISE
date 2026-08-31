@@ -337,12 +337,14 @@ namespace RISE
 			//!
 			//! Fires on >= 1 instance (unlike condition L's gate of three --
 			//! one enclosed light already IS the failure) of: a POSITIONAL
-			//! light (`omni_light` / `spot_light` position, `rect_light` /
-			//! `shape_light` unparented center -- `ambient_light`,
-			//! `directional_light` and `hosek_wilkie_skylight` carry no world
-			//! point and are never candidates) whose world position falls
-			//! inside the world-space bounding box of a `standard_object`
-			//! bound to an OPAQUE material.  "Opaque" reuses
+			//! light (`omni_light` / `spot_light` -- the light manager's own
+			//! `ILight::position()`; `rect_light` / `shape_light` -- the
+			//! emissive object each derives to, at its world-box centre,
+			//! PARENTED ONES INCLUDED.  `ambient_light`, `directional_light`
+			//! and `hosek_wilkie_skylight` carry no world point and are never
+			//! candidates) whose world position falls inside the world-space
+			//! bounding box of an OBJECT bound to an OPAQUE material.
+			//! "Opaque" reuses
 			//! OpaqueReflectionOnlyMaterialKinds_ VERBATIM -- the exact
 			//! classification condition I already owns (no transmission
 			//! marker AND not a genuine emitter) -- so a `translucent_material`
@@ -351,13 +353,25 @@ namespace RISE
 			//! from being flagged as the blocking shell for the same reason a
 			//! luminaire is excluded from condition I's opaque set.
 			//!
-			//! The bbox is read STATICALLY off Document text (position/scale,
-			//! no rotation -- a parented, sourced, count_u/count_v-repeated or
-			//! rotated `standard_object`, or a geometry kind outside the small
-			//! analytic allowlist -- box/sphere/ellipsoid/cylinder/torus/
-			//! sdf_geometry -- is simply never added as a candidate, which can
-			//! only make this MISS an enclosure, never invent one).  A
-			//! candidate whose bbox ALSO contains the scene's camera is
+			//! The bbox comes from the LIVE DERIVED SCENE
+			//! (`IObject::getBoundingBox()` on the object manager's realized
+			//! entries), NOT from Document text.  The shipped first cut read it
+			//! statically and had to disqualify any object carrying `parent`,
+			//! which made it structurally inert on harness-authored scenes --
+			//! `build_element` parents every piece of a multi-piece element --
+			//! and it could only size six analytic geometry kinds.  Reading the
+			//! derived scene composes the whole parent chain, covers EVERY
+			//! geometry kind (lathe / mesh / CSG included) and gets rotations
+			//! exact.  The MATERIAL classification stays document-side (the
+			//! scene holds an IMaterial, not the authored keyword) and joins to
+			//! the scene by name; an object whose material this scan cannot
+			//! name -- a machine-minted instancing copy, a synthesized light
+			//! fixture -- is never a candidate, which can only make this MISS
+			//! an enclosure, never invent one.  A light's OWN derived fixture
+			//! object is likewise never selected as its shell.  Objects with a
+			//! non-finite or degenerate box (an infinite ground plane, a
+			//! transform-only container node, a flat panel) are dropped: they
+			//! have no interior.  A candidate whose bbox ALSO contains the scene's camera is
 			//! skipped (a room/skybox shell, not a one-light lantern).  When
 			//! more than one opaque candidate contains the light, the
 			//! SMALLEST-volume one is named (the actual shell, not an
@@ -376,6 +390,16 @@ namespace RISE
 			//! refusal). HEDGED as a bounding-box containment test, not a
 			//! watertight-geometry one -- an open or concave shell can
 			//! register as "enclosing" too.
+			//!
+			//! REQUIRES A DERIVED SCENE.  A caller computing the design-note
+			//! conditions WITHOUT one (the four verb call sites, which read
+			//! conditions C/D/L only) gets this condition SILENT, never a
+			//! crash and never a guess.  All three carriers that surface it do
+			//! have one: `ValidateText` reuses the throwaway job its derive
+			//! step already built, the render-result note reads the live
+			//! session job, and the stateless `ComputeDesignNote(text)` wrapper
+			//! derives its own throwaway -- so the note and the diagnostic can
+			//! never disagree about whether this fired on the same bytes.
 			static const char* const DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material

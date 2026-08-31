@@ -62,6 +62,7 @@
 #include "../Geometry/SDFGeometry.h"        // Arc 83 fix round (2026-08-14, F1): the not-area-sampled reason only names `sampling_detail` when the geometry really is an sdf_geometry -- the same dynamic_cast idiom as CSGObject.h below
 #include "../Interfaces/IGeometryManager.h" // Arc 80 (2026-08-12, live-manager fallback extended 2026-08-13): TargetIsFormBearing_'s defensive fallback asks the live scene whether a name is a geometry when the Document does not carry it; the primary answer walks the retained CST head (a READ of the document already parsed once at load, not a re-parse)
 #include "../Interfaces/IMaterialManager.h" // Arc 82 (2026-08-12): PopulateScene asks the live scene whether the material a repeat names already exists
+#include "../Interfaces/ILightManager.h"    // Condition M (2026-08-30): the derived scene's hack lights, name-keyed, for ILight::position()
 #include "../Interfaces/IEnumCallback.h"    // Toolkit slice 3a (objectmap): EnumerateItemNames collector
 #include "../Utilities/Color/ColorUtils.h"  // Toolkit slice 3a (objectmap): SRGBTransferFunctionInverse for the linear pre-image; transitively pulls in Color.h's COLOR_SPACE enum (external review P2 fix: resolved output colour space)
 #include "../Painters/ExpressionEval.h"     // External review P2 fix: ExpressionProgram -- reuse the SAME public expr(...) evaluator Cst.cpp's derive-time resolver is built on, so ResolveBeautyDisplayTransform_ can resolve an expr(...)-valued `exposure` param instead of silently strtod'ing it to 0
@@ -1088,7 +1089,8 @@ namespace RISE
 			//! namespace (see AttachParamEditRejectionIssues's forward
 			//! declaration further down for the identical pattern), so this and
 			//! the later definition refer to the same symbol.
-			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase = false );
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase = false,
+			                               IJobPriv* derivedJob = nullptr );
 
 			//! Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
 			//! arc.md sec 7's LUMINAIRE_NULL_GEOMETRY entry; 76-...-log.md sec 3's
@@ -3046,8 +3048,10 @@ namespace RISE
 				}
 			}
 
-			throwaway->release();
-			throwaway = nullptr;
+			// NOTE the throwaway job is NOT released here: step (d) below hands
+			// it to the design-note scan as condition M's live derived scene (the
+			// realized objects' world boxes, the lights' world positions, the
+			// active camera).  Released just before the return instead.
 
 			// (c) map each coarse derive message -> a structured diagnostic
 			// with best-effort byte-offset localization (see file header).
@@ -3153,7 +3157,13 @@ namespace RISE
 			// condition G's phase gate: suppress it while an element is
 			// actively mid-build -- see AppendDesignDiagnostics_'s and this
 			// function's own `inPiecesPhase` doc.
-			AppendDesignDiagnostics_( candidateDoc, out, inPiecesPhase );
+			// (Condition M) `throwaway` IS the scene this candidate text
+			// derives to -- exactly what the condition needs, already built by
+			// step (b), so validate pays no second derive for it.
+			AppendDesignDiagnostics_( candidateDoc, out, inPiecesPhase, throwaway );
+
+			throwaway->release();
+			throwaway = nullptr;
 
 			return out;
 		}
@@ -4493,87 +4503,94 @@ namespace RISE
 				return best;
 			}
 
-			//! Forward declaration -- defined much further down this file
-			//! (AgentSession::ElementWorldBounds_'s own anonymous-namespace
-			//! neighbourhood), needed here (and by SimpleGeometryLocalBounds_
-			//! below) before that point in translation order.  ONE unnamed
-			//! namespace spans this whole file regardless of how many times it
-			//! is closed and reopened, so this and that definition are the
-			//! same entity.
-			bool ParseVec3_( const std::string& s, double out[3] );
-
 			//======================================================================
 			// Condition M (2026-08-30): the "emissive-on-opaque-shell" translucency
 			// fake.  See AgentDiagnosticCode::DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL's
 			// own doc for the full failure description and the classification
 			// rules; the structs below are this scan's per-item records.
+			//
+			// REWORKED SAME DAY, ON MEASURED EVIDENCE, to take its GEOMETRIC
+			// inputs from the LIVE DERIVED SCENE rather than from the document
+			// text.  The shipped document-side scan placed each candidate shell
+			// by hand (`position + scale * local`, a per-kind analytic local
+			// bound, no rotation) and therefore had to disqualify any object
+			// carrying `parent` -- which made it STRUCTURALLY INERT on every
+			// harness-authored scene, because `build_element` parents every
+			// piece of a multi-piece element (`parent <element>_root`).  A live
+			// p3 run rendered an opaque shell enclosing a shape_light that the
+			// harness's own light audit measured at ZERO luminance, and this
+			// condition could not see it.  Reading the derived scene fixes that
+			// and three other limitations at once: world boxes are already
+			// composed through the whole parent chain, EVERY geometry kind has
+			// one (lathe / mesh / CSG included, not just the six analytic kinds
+			// the old allowlist could size), rotations are exact, and the two
+			// hand-rolled bbox reimplementations (a port of SDFGeometry's own
+			// primLocalAABB, and a per-kind literal-param reader) are gone --
+			// the engine's real ComputeBounds is now the single source of truth.
+			//
+			// WHAT STAYED DOCUMENT-SIDE, and why: the material-kind opacity
+			// classification (OpaqueReflectionOnlyMaterialKinds_) and the
+			// varying-emissive test (ClassifyColorBinding_) are facts about
+			// AUTHORED TEXT, not about realized geometry -- the derived scene
+			// holds an IMaterial, not the keyword the author typed.  Scene
+			// entities are name-keyed exactly as document chunks are, so the
+			// two halves join on the name.
 			//======================================================================
 
-			//! ONE positional light this static scan can place: a literal
-			//! world-space point read straight off the chunk's own params.
-			//! `omni_light`/`spot_light`'s `position` is documented world-space
-			//! unconditionally; `rect_light`/`shape_light`'s `center` is
-			//! world-space ONLY when unparented (their own descriptor text) --
-			//! a parented one is never added (see the scan site's own comment
-			//! for why resolving an arbitrary parent chain is out of scope
-			//! here).  `ambient_light` (uniform everywhere), `directional_light`
-			//! (a direction, no point) and `hosek_wilkie_skylight` (a global sky
+			//! ONE realized object's WORLD-space axis-aligned bound, read
+			//! straight off the derived scene (`IObject::getBoundingBox()` --
+			//! the SAME accessor AgentSession::ElementWorldBounds_ reports
+			//! element extents through).  Already composed through the object's
+			//! whole parent chain and through whatever rotation/mirror/matrix
+			//! its chunk carried, so condition M no longer has any transform
+			//! arithmetic of its own to get wrong.
+			struct SceneObjectBox_
+			{
+				std::string name;
+				double      lo[3] = { 0.0, 0.0, 0.0 };
+				double      hi[3] = { 0.0, 0.0, 0.0 };
+			};
+
+			//! Condition M's LIVE-SCENE half: every realized object's world box,
+			//! every non-hack light's world position, and the active camera's.
+			//! Built by CollectDerivedSceneFacts_ below from a DERIVED job;
+			//! absent (a null pointer at the compute site) when the caller has
+			//! no derived scene, in which case condition M is simply SILENT --
+			//! see ComputeDesignNoteConditionsFromDoc_'s `derivedJob` parameter.
+			struct DerivedSceneFacts_
+			{
+				std::vector<SceneObjectBox_>                 objectBoxes;
+				std::map<std::string, std::array<double, 3> > lightPositions;   //!< light-manager name -> ILight::position()
+				bool                                         haveCameraPos = false;
+				double                                       cameraPos[3]  = { 0.0, 0.0, 0.0 };
+
+				const SceneObjectBox_* FindObject( const std::string& n ) const
+				{
+					for( const SceneObjectBox_& b : objectBoxes ) if( b.name == n ) return &b;
+					return nullptr;
+				}
+			};
+
+			//! ONE positional light condition M will test, as the DOCUMENT names
+			//! it.  The KIND is the authored keyword (what the clause prints and
+			//! what decides where the world position comes from); the POSITION
+			//! comes from the derived scene, never from the chunk's own params:
+			//!   * `omni_light` / `spot_light` -> the light manager's entry of
+			//!     the same name, `ILight::position()`.
+			//!   * `rect_light` / `shape_light` -> PARSE-TIME SUGAR that derives
+			//!     to an emissive OBJECT of the same name (see their Finalize in
+			//!     ChunkParserRegistry.cpp -- the chunk's own name becomes the
+			//!     object's), so the position is that object's world-box CENTRE.
+			//!     Parented ones now come along for free, which the shipped
+			//!     document-side scan could not do.
+			//! `ambient_light` (uniform everywhere), `directional_light` (a
+			//! direction, no point) and `hosek_wilkie_skylight` (a global sky
 			//! dome) are never entered at all -- "skip directional/environment"
 			//! from this condition's own spec.
 			struct PositionalLightCandidate_
 			{
 				std::string name;
 				std::string kind;            //!< "omni_light" / "spot_light" / "rect_light" / "shape_light"
-				double      pos[3] = { 0.0, 0.0, 0.0 };
-			};
-
-			//! ONE `standard_object` simple enough for this scan to place its
-			//! local geometry bound in world space with plain arithmetic:
-			//! `position + scale * local`, no rotation.  Deliberately NEVER
-			//! populated for an object that carries `parent` / `source` /
-			//! `count_u` / `count_v` (an arbitrary scene-graph composition or
-			//! instancing multiplier this static scan cannot resolve cheaply),
-			//! `orientation` / `quaternion` / `matrix` (a rotated local bound
-			//! needs a rotation matrix this scan does not build), or `mirror`
-			//! (P2a, review-round M: `standard_object`'s own local-geometry
-			//! reflection, applied BEFORE `position`/`scale` -- for an
-			//! asymmetric local bound, e.g. an off-centre sdf_geometry part
-			//! list, it moves the true bounds to the opposite side of the
-			//! origin; a no-op for symmetric kinds, but this scan has no way
-			//! to tell those apart without re-deriving the geometry, so it
-			//! disqualifies unconditionally, false-negative-only like every
-			//! other entry in this list) -- an object failing any test is
-			//! simply never added, which can only make
-			//! condition M MISS an enclosure, never invent one.  `csg_object`
-			//! is a DIFFERENT top-level chunk role (category Object, no single
-			//! `geometry` reference) and is likewise never added here -- its
-			//! bound is the union/intersection/difference of two further
-			//! objects' own bounds, which is not "cheap" in this scan's sense;
-			//! skipped rather than approximated.
-			struct EnclosureCandidate_
-			{
-				std::string name;
-				std::string geometryName;
-				std::string materialName;
-				double      position[3] = { 0.0, 0.0, 0.0 };
-				double      scale[3]    = { 1.0, 1.0, 1.0 };
-			};
-
-			//! ONE geometry chunk's LOCAL (object-space) axis-aligned bound, for
-			//! the small set of kinds this scan can size without deriving the
-			//! scene.  An ALLOWLIST -- the OPPOSITE of CurvBarrenGeometryKind_'s
-			//! blocklist choice just above -- because a wrong "this shape
-			//! contains the light" claim is a much higher-stakes mistake than a
-			//! wrong "this reads no curvature": every geometry kind NOT handled
-			//! by SimpleGeometryLocalBounds_ / SDFGeometryLocalBounds_ below
-			//! (every mesh family, sweep/lathe/skin/displaced/hair/
-			//! path_instances, the planar/patch stubs) is simply never entered
-			//! into the map that carries this, which again can only make
-			//! condition M MISS an enclosure, never invent one.
-			struct GeometryLocalBounds_
-			{
-				double lo[3] = { 0.0, 0.0, 0.0 };
-				double hi[3] = { 0.0, 0.0, 0.0 };
 			};
 
 			//! Condition M's ONE finding: a positional light enclosed by an
@@ -4588,192 +4605,99 @@ namespace RISE
 				bool        shellHasVaryingEmissive = false;
 			};
 
-			//! Local bound reader for the analytic geometry kinds condition M
-			//! supports.  Reads the SAME literal params the real chunk parsers
-			//! do (box_geometry width/height/depth, sphere_geometry radius,
-			//! ellipsoid_geometry radii, cylinder_geometry axis/radius/height,
-			//! torus_geometry majorradius/minorratio); a missing or non-numeric
-			//! param falls back to the parser's own documented default rather
-			//! than refusing, exactly as each Finalize does.  Returns false
-			//! (leaving `out` untouched) for any other kind, INCLUDING
-			//! sdf_geometry -- that one is handled separately by
-			//! SDFGeometryLocalBounds_ below, off the already-parsed Part list
-			//! the blend-scale scan built, rather than re-parsing here.
-			bool SimpleGeometryLocalBounds_( const std::string& kind, const NodeRef& item, GeometryLocalBounds_& out )
-			{
-				auto dbl = [&]( const char* pname, double def ) -> double {
-					const std::string s = ChunkParamString_( item, pname );
-					return ( !s.empty() && LooksNumeric( s ) ) ? std::strtod( s.c_str(), nullptr ) : def;
-				};
-				if( kind == "box_geometry" ) {
-					const double hw = dbl( "width", 1.0 ) * 0.5;
-					const double hh = dbl( "height", 1.0 ) * 0.5;
-					const double hd = dbl( "depth", 1.0 ) * 0.5;
-					out.lo[0] = -hw; out.lo[1] = -hh; out.lo[2] = -hd;
-					out.hi[0] =  hw; out.hi[1] =  hh; out.hi[2] =  hd;
-					return true;
-				}
-				if( kind == "sphere_geometry" ) {
-					const double r = dbl( "radius", 1.0 );
-					for( int k = 0; k < 3; ++k ) { out.lo[k] = -r; out.hi[k] = r; }
-					return true;
-				}
-				if( kind == "ellipsoid_geometry" ) {
-					double radii[3] = { 1.0, 1.0, 1.0 };
-					ParseVec3_( ChunkParamString_( item, "radii" ), radii );
-					for( int k = 0; k < 3; ++k ) { out.lo[k] = -radii[k]; out.hi[k] = radii[k]; }
-					return true;
-				}
-				if( kind == "cylinder_geometry" ) {
-					const double r  = dbl( "radius", 1.0 );
-					const double hh = dbl( "height", 1.0 ) * 0.5;
-					const std::string axisStr = ChunkParamString_( item, "axis" );
-					const char axis = axisStr.empty() ? 'x' : axisStr[0];
-					double half[3] = { r, r, r };
-					if( axis == 'x' ) half[0] = hh;
-					else if( axis == 'y' ) half[1] = hh;
-					else half[2] = hh;
-					for( int k = 0; k < 3; ++k ) { out.lo[k] = -half[k]; out.hi[k] = half[k]; }
-					return true;
-				}
-				if( kind == "torus_geometry" ) {
-					const double majorR = dbl( "majorradius", 1.0 );
-					const double minorR = dbl( "minorratio", 0.3 ) * majorR;
-					const double reach  = majorR + minorR;   // ring in local XZ, around Y -- SDFPrim::ePrimTorus's own comment
-					out.lo[0] = -reach; out.lo[1] = -minorR; out.lo[2] = -reach;
-					out.hi[0] =  reach; out.hi[1] =  minorR; out.hi[2] =  reach;
-					return true;
-				}
-				return false;
-			}
-
-			//! P1 fix (review-round M, 2026-08-30): ONE primitive's local
-			//! (object-space-of-the-part, BEFORE scale/rotation/translation)
-			//! per-AXIS half-extents -- a straight port of SDFGeometry.cpp's
-			//! own primLocalAABB (~lines 440-524), NOT SDFPartReachRadius_'s
-			//! isotropic envelope radius.  SDFPartReachRadius_ answers "how
-			//! far can this part reach from `pos` on ANY axis" (a sphere,
-			//! deliberately broadcast to every axis so the blend-scale
-			//! proximity gate never has to know which axis a neighbour sits
-			//! on) -- exactly wrong for a containment box, where an
-			//! elongated part (e.g. a cylinder radius 0.05 half-height 3)
-			//! would inflate to a 3x3x3 cube and read "encloses" a light
-			//! that is nowhere near its thin lateral extent.  This function
-			//! is used ONLY by SDFGeometryLocalBounds_ below; the proximity
-			//! gate keeps using SDFPartReachRadius_ untouched.
+			//! Condition M's LIVE-SCENE reader: every realized object's world
+			//! box, every hack-light's world position, and the active camera's
+			//! location, off a DERIVED job.  This function is the whole of
+			//! condition M's geometry -- there is deliberately no second,
+			//! document-side notion of "where this object is" left in this file
+			//! for it to drift from (see the condition's own block comment
+			//! above for what that drift cost).
 			//!
-			//! Every branch here is bit-for-bit the same formula
-			//! primLocalAABB uses for that primitive (superellipsoid folds
-			//! into the sphere row for the identical reason
-			//! SDFPartEnvelopeRadius_ documents: b/c are shape EXPONENTS,
-			//! not extents).  `round` only widens roundbox, matching
-			//! primLocalAABB's own scope for it.
-			void SDFPartLocalAABB_( const RISE::Implementation::SDFGeometry::Part& pt, double lmin[3], double lmax[3] )
+			//! THREE FILTERS, all false-negative-only:
+			//!   * WORLD-VISIBLE only.  87's container nodes (a `standard_object`
+			//!     with no `geometry`, a pure transform) and CSG operands (whose
+			//!     composite is the thing a ray lands on) are ObjectManager items
+			//!     but are not surfaces -- the SAME IsWorldVisible() gate
+			//!     FormatRenderableObjectNames and the objectmap palette apply.
+			//!   * FINITE and NON-DEGENERATE only.  An unbounded box (an infinite
+			//!     ground plane, whose extent overflows to inf) or a zero one (a
+			//!     container's) can neither enclose anything meaningfully nor be
+			//!     compared by volume, so it is dropped HERE rather than guarded
+			//!     at every later use.  `hi - lo` must be finite AND strictly
+			//!     positive on all three axes: a flat panel has no interior for a
+			//!     light to sit in, and a zero-volume box would otherwise always
+			//!     win the smallest-volume tie-break.
+			//!   * A light whose position is not finite is skipped for the same
+			//!     reason.
+			//!
+			//! READ-ONLY on the job: nothing here mutates the scene, and it runs
+			//! where its callers already run (validate, or a render's own tail
+			//! under the park), so it takes no locks of its own.
+			DerivedSceneFacts_ CollectDerivedSceneFacts_( IJobPriv& job )
 			{
-				using SDFGeometry = RISE::Implementation::SDFGeometry;
-				if( pt.type == SDFGeometry::ePrimBox || pt.type == SDFGeometry::ePrimRoundBox ) {
-					const Scalar r  = ( pt.type == SDFGeometry::ePrimRoundBox ) ? std::max( pt.round, Scalar( 0 ) ) : Scalar( 0 );
-					const Scalar ex = std::max( pt.a, r ), ey = std::max( pt.b, r ), ez = std::max( pt.c, r );
-					lmin[0] = -ex; lmin[1] = -ey; lmin[2] = -ez;
-					lmax[0] =  ex; lmax[1] =  ey; lmax[2] =  ez;
-					return;
-				}
-				Scalar rx, ry0, ry1, rz;
-				switch( pt.type ) {
-					case SDFGeometry::ePrimSphere:
-					case SDFGeometry::ePrimSuperellipsoid:
-						rx = rz = pt.a; ry0 = -pt.a; ry1 = pt.a;
-						break;
-					case SDFGeometry::ePrimCylinder:
-						rx = rz = pt.a; ry0 = -pt.b; ry1 = pt.b;
-						break;
-					case SDFGeometry::ePrimTorus:
-						rx = rz = pt.a + pt.b; ry0 = -pt.b; ry1 = pt.b;
-						break;
-					case SDFGeometry::ePrimCapsule: {
-						const Scalar hh = std::fabs( pt.b );   // primLocalAABB's own negative-b half-height fix
-						rx = rz = pt.a; ry0 = -( hh + pt.a ); ry1 = hh + pt.a;
-						break;
-					}
-					case SDFGeometry::ePrimRoundCone:
-						rx = rz = std::max( pt.a, pt.b );
-						ry0 = std::min( -pt.a, pt.c - pt.b );
-						ry1 = std::max(  pt.a, pt.c + pt.b );
-						break;
-					default:   // unreachable: every known SDFPrim is handled above
-						rx = rz = pt.a; ry0 = -pt.a; ry1 = pt.a;
-						break;
-				}
-				lmin[0] = -rx; lmin[1] = ry0; lmin[2] = -rz;
-				lmax[0] =  rx; lmax[1] =  ry1; lmax[2] =  rz;
-			}
+				DerivedSceneFacts_ facts;
 
-			//! sdf_geometry's local bound: the union, across every parsed Part,
-			//! of that part's OWN object-space AABB -- true per-axis extents
-			//! (SDFPartLocalAABB_, the primLocalAABB port above) scaled by the
-			//! part's per-axis `scale` (magnitude only; a negative-scale mirror
-			//! changes which way the part faces, not how far it reaches), then
-			//! rotated through the part's own rotation columns (cx/cy/cz) via
-			//! an 8-corner transform, then translated by `pos` -- the SAME
-			//! corner-transform shape ComputeBounds' own `worldAABB` lambda in
-			//! SDFGeometry.cpp uses (scale -> rotate -> translate), so a
-			//! rotated part gets an EXACT axis-aligned bound of its rotated
-			//! box, not a broadcast radius.  This REPLACES an earlier form
-			//! that unioned a CUBE of half-width SDFPartReachRadius_(part) on
-			//! every axis -- a spherical envelope broadcast to all three axes,
-			//! which massively over-claims containment for any elongated or
-			//! flattened primitive (P1, review-round M: a cylinder radius 0.05
-			//! half-height 3 read "encloses" a light 2 units off its side).
-			//! Still IGNORES op semantics (subtract/intersect can only ever
-			//! shrink the true solid below this per-part union, and a smin
-			//! blend can bulge slightly beyond a lone part's own box) --
-			//! exactly as the pre-fix version did, and exactly the safe
-			//! direction per this struct's own doc: any looseness here can
-			//! only make condition M MISS an enclosure, never invent one, and
-			//! is bounded by ONE part's own extent rather than a whole scene's
-			//! worth of reach.  An empty part list returns the zero-
-			//! initialized (degenerate, origin-only) bound.
-			GeometryLocalBounds_ SDFGeometryLocalBounds_( const std::vector<RISE::Implementation::SDFGeometry::Part>& parts )
-			{
-				GeometryLocalBounds_ out;
-				bool any = false;
-				for( const RISE::Implementation::SDFGeometry::Part& pt : parts ) {
-					double lmin[3], lmax[3];
-					SDFPartLocalAABB_( pt, lmin, lmax );
-					// SIGNED scale, magnitude-floored -- matching ComputeBounds'
-					// worldAABB lambda (SDFGeometry.cpp).  fabs() here would be a
-					// bug: six primitive boxes are origin-symmetric so sign is a
-					// no-op, but roundcone's is NOT (ry0 != -ry1 when c != 0), and
-					// a negative per-part scale component (legit mirroring; the
-					// parser preserves sign) must reflect the bound to the other
-					// side of the origin.  The min/max fold over the 8 corners
-					// absorbs the sign correctly.
-					const double sx = ( std::fabs( pt.scale.x ) > 1e-9 ) ? pt.scale.x : 1e-9;
-					const double sy = ( std::fabs( pt.scale.y ) > 1e-9 ) ? pt.scale.y : 1e-9;
-					const double sz = ( std::fabs( pt.scale.z ) > 1e-9 ) ? pt.scale.z : 1e-9;
-					const double xs[2] = { lmin[0] * sx, lmax[0] * sx };
-					const double ys[2] = { lmin[1] * sy, lmax[1] * sy };
-					const double zs[2] = { lmin[2] * sz, lmax[2] * sz };
-					for( int ix = 0; ix < 2; ++ix )
-					for( int iy = 0; iy < 2; ++iy )
-					for( int iz = 0; iz < 2; ++iz ) {
-						const double vx = xs[ix], vy = ys[iy], vz = zs[iz];
-						const double w[3] = {
-							pt.cx.x * vx + pt.cy.x * vy + pt.cz.x * vz + pt.pos.x,
-							pt.cx.y * vx + pt.cy.y * vy + pt.cz.y * vz + pt.pos.y,
-							pt.cx.z * vx + pt.cy.z * vy + pt.cz.z * vz + pt.pos.z
-						};
+				struct NameCollector_ : public IEnumCallback<const char*>
+				{
+					std::vector<std::string> names;
+					bool operator()( const char* const& n ) override
+					{
+						if( n ) names.push_back( std::string( n ) );
+						return true;
+					}
+				};
+
+				if( IObjectManager* objMgr = job.GetObjects() ) {
+					NameCollector_ collector;
+					objMgr->EnumerateItemNames( collector );
+					for( const std::string& n : collector.names ) {
+						IObjectPriv* obj = objMgr->GetItem( n.c_str() );
+						if( !obj ) continue;
+						const IObject* o = static_cast<const IObject*>( obj );
+						if( !o->IsWorldVisible() ) continue;
+						const BoundingBox bb = o->getBoundingBox();
+						SceneObjectBox_ box;
+						box.name  = n;
+						box.lo[0] = bb.ll.x; box.lo[1] = bb.ll.y; box.lo[2] = bb.ll.z;
+						box.hi[0] = bb.ur.x; box.hi[1] = bb.ur.y; box.hi[2] = bb.ur.z;
+						bool usable = true;
 						for( int k = 0; k < 3; ++k ) {
-							if( !any ) { out.lo[k] = w[k]; out.hi[k] = w[k]; }
-							else {
-								if( w[k] < out.lo[k] ) out.lo[k] = w[k];
-								if( w[k] > out.hi[k] ) out.hi[k] = w[k];
-							}
+							if( !RISE::IsFiniteDouble( box.lo[k] ) || !RISE::IsFiniteDouble( box.hi[k] ) ) { usable = false; break; }
+							const double extent = box.hi[k] - box.lo[k];
+							if( !RISE::IsFiniteDouble( extent ) || extent <= 0.0 ) { usable = false; break; }
 						}
-						any = true;
+						if( usable ) facts.objectBoxes.push_back( box );
 					}
 				}
-				return out;
+
+				if( ILightManager* lightMgr = job.GetLights() ) {
+					NameCollector_ collector;
+					lightMgr->EnumerateItemNames( collector );
+					for( const std::string& n : collector.names ) {
+						ILightPriv* lp = lightMgr->GetItem( n.c_str() );
+						if( !lp ) continue;
+						const Point3 p = static_cast<const ILight*>( lp )->position();
+						if( !RISE::IsFiniteDouble( p.x ) || !RISE::IsFiniteDouble( p.y ) ||
+						    !RISE::IsFiniteDouble( p.z ) ) continue;
+						const std::array<double, 3> a = { { p.x, p.y, p.z } };
+						facts.lightPositions[n] = a;
+					}
+				}
+
+				if( IScenePriv* scene = job.GetScene() ) {
+					if( const ICamera* cam = scene->GetCamera() ) {
+						const Point3 loc = cam->GetLocation();
+						if( RISE::IsFiniteDouble( loc.x ) && RISE::IsFiniteDouble( loc.y ) &&
+						    RISE::IsFiniteDouble( loc.z ) ) {
+							facts.haveCameraPos = true;
+							facts.cameraPos[0]  = loc.x;
+							facts.cameraPos[1]  = loc.y;
+							facts.cameraPos[2]  = loc.z;
+						}
+					}
+				}
+
+				return facts;
 			}
 
 			//! Condition M's whole clause, SHARED by the note builder and the
@@ -5428,7 +5352,24 @@ namespace RISE
 			//! (lack of) phase gating elsewhere.  Defaults false so the two
 			//! phase-blind callers below (VaryMaterial's material census)
 			//! need no change.
-			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc, bool inPiecesPhase = false )
+			//!
+			//! `derivedJob` (condition M, 2026-08-30) is the LIVE DERIVED SCENE
+			//! this document produced -- the object manager's world boxes, the
+			//! light manager's world positions, the active camera.  Condition M
+			//! is the only condition that needs realized geometry, and it is
+			//! SIMPLY ABSENT when this is null: every other condition reads the
+			//! document alone and is unaffected.  NEVER CRASHES on a scene-less
+			//! call -- the four verb call sites (CollapseToInstances,
+			//! VaryMaterial, AddWear and its sibling) deliberately pass nothing,
+			//! because they read conditions C/D/L only and deriving a throwaway
+			//! job for them would be pure cost.  The three carriers that DO
+			//! surface condition M all have one: ValidateText derives a
+			//! throwaway job already (its (b) step), RenderCore_ holds the live
+			//! `mJob`, and the stateless ComputeDesignNote(text) wrapper derives
+			//! its own throwaway exactly as ValidateText does -- so the note and
+			//! the diagnostic carriers cannot disagree about whether M fired.
+			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc, bool inPiecesPhase = false,
+			                                                          IJobPriv* derivedJob = nullptr )
 			{
 				DesignNoteConditions_ c;
 				bool hasAdvancedGeometry = false;
@@ -5487,7 +5428,6 @@ namespace RISE
 				// walk, resolved afterwards for condition L's own reason: a
 				// light and the object that might enclose it can appear in
 				// either document order.
-				std::map<std::string, GeometryLocalBounds_> geometryLocalBoundsByName;   // geometry chunk name -> local AABB (supported kinds only)
 				//! material name -> (kind, full param map).  Unconditional --
 				//! EVERY Material-category chunk, not just the pendingMaterials
 				//! subset (which is filtered to kinds carrying a microsurface/
@@ -5495,10 +5435,17 @@ namespace RISE
 				//! to some other Material kind never comes back "unknown" just
 				//! because that kind fell outside pendingMaterials' own filter.
 				std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > > materialByName;
-				std::vector<EnclosureCandidate_>       enclosureCandidates;   // standard_objects simple enough to place in world space; see EnclosureCandidate_'s own doc
-				std::vector<PositionalLightCandidate_> positionalLights;      // omni/spot/unparented-rect/unparented-shape lights with a resolvable world position
-				bool   haveCameraWorldPos = false;
-				double cameraWorldPos[3]  = { 0.0, 0.0, 0.0 };
+				//! OBJECT name -> the material it binds, for EVERY Object-category
+				//! chunk (`standard_object` AND `csg_object`, which carries its own
+				//! `material` override).  This is the join key between the derived
+				//! scene's realized objects -- which know their world box but not
+				//! the KEYWORD their material was authored with -- and the
+				//! document-side opacity classification.  An object whose name is
+				//! not in here (a machine-minted instancing copy, a `rect_light`'s
+				//! synthesized fixture) is never a shell candidate: this scan will
+				//! not claim "opaque" about a material it cannot name.
+				std::map<std::string, std::string>    objectMaterialByName;
+				std::vector<PositionalLightCandidate_> positionalLights;      // omni/spot/rect/shape lights, in DOCUMENT order; positions come from the derived scene
 
 				// -- Condition C accumulators (88) -------------------------
 				// Keyed by the object's BINDING signature (every param except
@@ -5576,6 +5523,11 @@ namespace RISE
 								const std::map<std::string, std::string>::const_iterator src = pm.find( "source" );
 								if( src != pm.end() && !src->second.empty() && src->second != "none" )
 									objectSourceByName[objName] = src->second;
+								// (Condition M) The scene-to-document join key --
+								// see objectMaterialByName's own doc.
+								const std::map<std::string, std::string>::const_iterator omat = pm.find( "material" );
+								if( omat != pm.end() && !omat->second.empty() && omat->second != "none" )
+									objectMaterialByName[objName] = omat->second;
 							}
 						}
 						{
@@ -5625,33 +5577,6 @@ namespace RISE
 							}
 							g.geometry = geo->second;
 							if( !g.distinctTransforms && xform != g.firstTransform ) g.distinctTransforms = true;
-						}
-
-						// (Condition M) A candidate ENCLOSING shell -- only when
-						// this object is simple enough to place in world space
-						// with plain arithmetic; see EnclosureCandidate_'s own
-						// doc for exactly what disqualifies one.  A disqualified
-						// object is simply never added.  Fresh `material`/`name`
-						// lookups: the ones the earlier nested blocks above used
-						// are scoped to those blocks and are not visible here.
-						{
-							const std::map<std::string, std::string>::const_iterator mat2 = pm.find( "material" );
-							const std::map<std::string, std::string>::const_iterator nm2  = pm.find( "name" );
-							if( geo != pm.end() && !geo->second.empty() && geo->second != "none" &&
-							    mat2 != pm.end() && !mat2->second.empty() && mat2->second != "none" &&
-							    nm2 != pm.end() && !nm2->second.empty() &&
-							    !pm.count( "parent" ) && !pm.count( "source" ) &&
-							    !pm.count( "count_u" ) && !pm.count( "count_v" ) &&
-							    !pm.count( "orientation" ) && !pm.count( "quaternion" ) && !pm.count( "matrix" ) &&
-							    !pm.count( "mirror" ) ) {   // P2a: reflects local geometry pre-transform; would move an asymmetric local bound to the wrong side of the origin
-								EnclosureCandidate_ ec;
-								ec.name         = nm2->second;
-								ec.geometryName = geo->second;
-								ec.materialName = mat2->second;
-								ParseVec3_( ChunkParamString_( item, "position" ), ec.position );   // absent/malformed -> stays the documented (0,0,0) default
-								ParseVec3_( ChunkParamString_( item, "scale" ),    ec.scale );       // absent/malformed -> stays the documented (1,1,1) default
-								enclosureCandidates.push_back( ec );
-							}
 						}
 						continue;
 					}
@@ -5747,34 +5672,22 @@ namespace RISE
 						// pendingMaterials logic every other material kind
 						// does, further down this loop.
 					}
-					// (Condition M) Every POSITIONAL light -- one with a literal
-					// world-space point this static scan can read.  ambient_light
-					// (uniform everywhere), directional_light (a direction, no
-					// position) and hosek_wilkie_skylight (a global sky dome) are
-					// never entered here at all, which IS "skip directional/
-					// environment" from this condition's own spec.
-					if( role == "omni_light" || role == "spot_light" ) {
+					// (Condition M) Every POSITIONAL light, by NAME and authored
+					// KIND -- the position itself comes from the derived scene in
+					// the resolution pass below, so a `parent`-bearing
+					// rect_light/shape_light is now included (it was skipped when
+					// this scan had to read `center` as an unresolved local-space
+					// point).  ambient_light (uniform everywhere),
+					// directional_light (a direction, no position) and
+					// hosek_wilkie_skylight (a global sky dome) are never entered
+					// here at all, which IS "skip directional/environment" from
+					// this condition's own spec.
+					if( role == "omni_light" || role == "spot_light" ||
+					    role == "rect_light" || role == "shape_light" ) {
 						PositionalLightCandidate_ L;
 						L.name = ChunkParamString_( item, "name" );
 						L.kind = role;
-						ParseVec3_( ChunkParamString_( item, "position" ), L.pos );   // absent/malformed -> stays the documented (0,0,0) default
 						if( !L.name.empty() ) positionalLights.push_back( L );
-					} else if( role == "rect_light" || role == "shape_light" ) {
-						// `center` is LOCAL to `parent` when one is bound (their
-						// own descriptor text) -- this static scan has no cheap
-						// way to resolve an arbitrary object's world transform
-						// (the SAME reason a `parent`-bearing standard_object is
-						// never added as an enclosure candidate above), so a
-						// parented area/shape light is skipped rather than tested
-						// against an unresolved local-space point.
-						const std::string parent = ChunkParamString_( item, "parent" );
-						if( parent.empty() || parent == "none" ) {
-							PositionalLightCandidate_ L;
-							L.name = ChunkParamString_( item, "name" );
-							L.kind = role;
-							ParseVec3_( ChunkParamString_( item, "center" ), L.pos );
-							if( !L.name.empty() ) positionalLights.push_back( L );
-						}
 					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
 					// form here for the same reason the other three do -- it
@@ -5847,10 +5760,6 @@ namespace RISE
 									     ScanSdfGeometryBlendScaleOffenders_( geoName, parts ) ) {
 										c.blendScaleOffenders.push_back( off.formattedLine );
 									}
-									// (Condition M) sdf_geometry's own local bound, off
-									// the SAME already-parsed Part list.
-									if( !geoName.empty() )
-										geometryLocalBoundsByName[geoName] = SDFGeometryLocalBounds_( parts );
 								}
 							}
 						}
@@ -5859,23 +5768,16 @@ namespace RISE
 
 					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
 					if( !d ) continue;
-					// (Condition M) The scene's camera world position, off
-					// whichever Camera-category chunk names one (`location` --
-					// AddCameraCommonParams' shared param, world-space when the
-					// camera itself carries no further transform, which none
-					// of this scene language's camera kinds do).  A later
-					// camera wins, matching "last chunk of a kind wins"
-					// elsewhere in this scan; a camera with no parseable
-					// `location` (an administrative `scene_options`/
-					// `camera_defaults` chunk, or a theta/phi-positioned one)
-					// simply leaves the room-box heuristic unavailable rather
-					// than guessing a position.
-					if( d->category == ChunkCategory::Camera ) {
-						double p[3];
-						if( ParseVec3_( ChunkParamString_( item, "location" ), p ) ) {
-							haveCameraWorldPos = true;
-							cameraWorldPos[0] = p[0]; cameraWorldPos[1] = p[1]; cameraWorldPos[2] = p[2];
-						}
+					// (Condition M) The scene-to-document join key for the
+					// Object-category chunks the `standard_object` branch above
+					// never reaches -- `csg_object`, which carries its own
+					// `material` override and whose derived composite DOES have a
+					// real world box.  See objectMaterialByName's own doc.
+					if( d->category == ChunkCategory::Object ) {
+						const std::string onm  = ChunkParamString_( item, "name" );
+						const std::string omat = ChunkParamString_( item, "material" );
+						if( !onm.empty() && !omat.empty() && omat != "none" )
+							objectMaterialByName[onm] = omat;
 					}
 					if( d->category == ChunkCategory::Geometry ) {
 						++c.geometryCensus[role];
@@ -5883,14 +5785,6 @@ namespace RISE
 						// above records the same pair for the kinds it intercepts.
 						const std::string gnm = ChunkParamString_( item, "name" );
 						if( !gnm.empty() ) geometryKindByName[gnm] = role;
-						// (Condition M) The analytic kinds' local bound -- see
-						// SimpleGeometryLocalBounds_'s own doc for exactly which
-						// kinds and why every other one is left unentered.
-						if( !gnm.empty() ) {
-							GeometryLocalBounds_ glb;
-							if( SimpleGeometryLocalBounds_( role, item, glb ) )
-								geometryLocalBoundsByName[gnm] = glb;
-						}
 					}
 
 					// (88 S5) Two more per-chunk censuses, both registry-resolved
@@ -6558,83 +6452,124 @@ namespace RISE
 				c.conditionL = c.wearCandidateCount >= kWearCandidateGate && !c.addWearName.empty();
 
 				// (2026-08-30) Condition M's resolution pass -- the "emissive-
-				// on-opaque-shell" translucency fake.  For every positional
-				// light, test every enclosure candidate whose geometry has a
-				// known local bound and whose material classifies OPAQUE
-				// (OpaqueReflectionOnlyMaterialKinds_ -- owned by condition I,
-				// reused VERBATIM: no transmission marker AND not a genuine
-				// emitter, exactly "blocks light and is not the fixture
-				// itself" -- a lambertian_luminaire_material "flame" standing
-				// in for the light is excluded here for free, never flagged
-				// as the shell it sits inside).  Every candidate here already
-				// carries no rotation/parent/source/count_u/count_v (see
-				// EnclosureCandidate_'s own doc), so `position + scale *
-				// local` places its bound in world space exactly.
-				for( const PositionalLightCandidate_& L : positionalLights ) {
-					const EnclosureCandidate_* best = nullptr;
-					double bestVolume = 0.0;
-					for( const EnclosureCandidate_& ec : enclosureCandidates ) {
-						const std::map<std::string, GeometryLocalBounds_>::const_iterator gb =
-							geometryLocalBoundsByName.find( ec.geometryName );
-						if( gb == geometryLocalBoundsByName.end() ) continue;   // unsupported geometry kind -- never guess
+				// on-opaque-shell" translucency fake.  GEOMETRY COMES FROM THE
+				// DERIVED SCENE (see the condition's block comment at the top of
+				// this file for the measured reason it no longer comes from the
+				// document); MATERIAL CLASSIFICATION stays document-side, joined
+				// to the scene by name.
+				//
+				// SILENT WITHOUT A SCENE.  A caller with no derived job (the four
+				// verb call sites) simply never enters this block, so condition M
+				// is absent rather than wrong -- never a crash, never a guess.
+				// The whole scene read is also skipped when the document declares
+				// no positional light at all, which is the common case and the
+				// one where enumerating every object's bounding box would be pure
+				// cost.
+				if( derivedJob && !positionalLights.empty() ) {
+					const DerivedSceneFacts_ scene = CollectDerivedSceneFacts_( *derivedJob );
 
-						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator mat =
-							materialByName.find( ec.materialName );
-						if( mat == materialByName.end() ) continue;
-						if( !OpaqueReflectionOnlyMaterialKinds_().count( mat->second.first ) ) continue;
-
-						double wlo[3], whi[3];
-						for( int k = 0; k < 3; ++k ) {
-							const double a = ec.position[k] + ec.scale[k] * gb->second.lo[k];
-							const double b = ec.position[k] + ec.scale[k] * gb->second.hi[k];
-							wlo[k] = std::min( a, b ); whi[k] = std::max( a, b );
+					for( const PositionalLightCandidate_& L : positionalLights ) {
+						// WHERE THE LIGHT IS.  omni/spot are hack lights the light
+						// manager holds by name; rect_light/shape_light are
+						// parse-time sugar that derives to an emissive OBJECT of
+						// the same name, so their point is that object's world-box
+						// centre.  Either lookup failing (a light the derive
+						// refused, a name collision) skips this light rather than
+						// placing it at a guessed origin.
+						double lpos[3];
+						const bool isHackLight = ( L.kind == "omni_light" || L.kind == "spot_light" );
+						if( isHackLight ) {
+							const std::map<std::string, std::array<double, 3> >::const_iterator lp =
+								scene.lightPositions.find( L.name );
+							if( lp == scene.lightPositions.end() ) continue;
+							lpos[0] = lp->second[0]; lpos[1] = lp->second[1]; lpos[2] = lp->second[2];
+						} else {
+							const SceneObjectBox_* fixture = scene.FindObject( L.name );
+							if( !fixture ) continue;
+							for( int k = 0; k < 3; ++k ) lpos[k] = 0.5 * ( fixture->lo[k] + fixture->hi[k] );
 						}
-						bool inside = true;
-						for( int k = 0; k < 3; ++k )
-							if( L.pos[k] < wlo[k] || L.pos[k] > whi[k] ) { inside = false; break; }
-						if( !inside ) continue;
 
-						// Room-box heuristic: an "enclosure" that also contains
-						// the camera is a scene-encompassing volume (a room
-						// shell, a skybox interior), not the one-light-in-a-
-						// shell failure this condition targets -- skip it
-						// rather than flag the whole set.
-						if( haveCameraWorldPos ) {
-							bool containsCamera = true;
+						const SceneObjectBox_* best          = nullptr;
+						std::string            bestMaterial;
+						double                 bestVolume    = 0.0;
+						for( const SceneObjectBox_& ob : scene.objectBoxes ) {
+							// THE LIGHT'S OWN FIXTURE IS NEVER ITS SHELL.  A
+							// rect_light/shape_light derives to an object of the
+							// light's own name; that object trivially contains its
+							// own centre, and naming it would be nonsense.  (Its
+							// synthesized `<name>__mat` luminaire material is not a
+							// document chunk either, so the material join below
+							// would drop it anyway -- this is the explicit guard, so
+							// the property does not depend on that accident.)
+							if( ob.name == L.name ) continue;
+
+							// OPACITY, document-side.  OpaqueReflectionOnlyMaterialKinds_
+							// is owned by condition I and reused VERBATIM: no
+							// transmission marker AND not a genuine emitter, exactly
+							// "blocks light and is not the fixture itself" -- so a
+							// lambertian_luminaire_material "flame" standing in for
+							// the light is excluded for free, never flagged as the
+							// shell it sits inside.  An object whose material this
+							// scan cannot NAME (a machine-minted instancing copy, a
+							// synthesized fixture) is skipped: no name, no claim.
+							const std::map<std::string, std::string>::const_iterator om =
+								objectMaterialByName.find( ob.name );
+							if( om == objectMaterialByName.end() ) continue;
+							const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator mat =
+								materialByName.find( om->second );
+							if( mat == materialByName.end() ) continue;
+							if( !OpaqueReflectionOnlyMaterialKinds_().count( mat->second.first ) ) continue;
+
+							bool inside = true;
 							for( int k = 0; k < 3; ++k )
-								if( cameraWorldPos[k] < wlo[k] || cameraWorldPos[k] > whi[k] ) { containsCamera = false; break; }
-							if( containsCamera ) continue;
-						}
+								if( lpos[k] < ob.lo[k] || lpos[k] > ob.hi[k] ) { inside = false; break; }
+							if( !inside ) continue;
 
-						// Multiple enclosing objects: the SMALLEST-volume one
-						// wins -- the actual shell, not an outer room or
-						// backdrop that also happens to contain the light.
-						const double volume = ( whi[0] - wlo[0] ) * ( whi[1] - wlo[1] ) * ( whi[2] - wlo[2] );
-						if( !best || volume < bestVolume ) { best = &ec; bestVolume = volume; }
-					}
-					if( !best ) continue;
+							// Room-box heuristic: an "enclosure" that also contains
+							// the camera is a scene-encompassing volume (a room
+							// shell, a skybox interior), not the one-light-in-a-
+							// shell failure this condition targets -- skip it
+							// rather than flag the whole set.
+							if( scene.haveCameraPos ) {
+								bool containsCamera = true;
+								for( int k = 0; k < 3; ++k )
+									if( scene.cameraPos[k] < ob.lo[k] || scene.cameraPos[k] > ob.hi[k] ) { containsCamera = false; break; }
+								if( containsCamera ) continue;
+							}
 
-					EnclosedLightFinding_ f;
-					f.lightName         = L.name;
-					f.lightKind         = L.kind;
-					f.shellObjectName   = best->name;
-					f.shellMaterialName = best->materialName;
-					{
-						// The sharper second sentence: the shell's own material
-						// ALSO binds a spatially-varying `emissive` (the SAME
-						// Constant/varying classifier condition H/L already use
-						// for a colour slot) -- the aggravated case, a painted
-						// glow impersonating the transmitted light it blocks.
-						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator mat =
-							materialByName.find( best->materialName );
-						if( mat != materialByName.end() ) {
-							const std::map<std::string, std::string>::const_iterator ev = mat->second.second.find( "emissive" );
-							if( ev != mat->second.second.end() && !ev->second.empty() && ev->second != "none" &&
-							    ClassifyColorBinding_( ev->second, painterKinds ) != MicrosurfaceBinding_::Constant )
-								f.shellHasVaryingEmissive = true;
+							// Multiple enclosing objects: the SMALLEST-volume one
+							// wins -- the actual shell, not an outer room or
+							// backdrop that also happens to contain the light.
+							// Every box here is finite and strictly positive on all
+							// three axes (CollectDerivedSceneFacts_'s own filter), so
+							// this product is finite and the comparison is total.
+							const double volume = ( ob.hi[0] - ob.lo[0] ) * ( ob.hi[1] - ob.lo[1] ) * ( ob.hi[2] - ob.lo[2] );
+							if( !best || volume < bestVolume ) { best = &ob; bestMaterial = om->second; bestVolume = volume; }
 						}
+						if( !best ) continue;
+
+						EnclosedLightFinding_ f;
+						f.lightName         = L.name;
+						f.lightKind         = L.kind;
+						f.shellObjectName   = best->name;
+						f.shellMaterialName = bestMaterial;
+						{
+							// The sharper second sentence: the shell's own material
+							// ALSO binds a spatially-varying `emissive` (the SAME
+							// Constant/varying classifier condition H/L already use
+							// for a colour slot) -- the aggravated case, a painted
+							// glow impersonating the transmitted light it blocks.
+							const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator mat =
+								materialByName.find( bestMaterial );
+							if( mat != materialByName.end() ) {
+								const std::map<std::string, std::string>::const_iterator ev = mat->second.second.find( "emissive" );
+								if( ev != mat->second.second.end() && !ev->second.empty() && ev->second != "none" &&
+								    ClassifyColorBinding_( ev->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+									f.shellHasVaryingEmissive = true;
+							}
+						}
+						c.enclosedLightFindings.push_back( f );
 					}
-					c.enclosedLightFindings.push_back( f );
 				}
 				c.conditionM = !c.enclosedLightFindings.empty();
 
@@ -7038,9 +6973,13 @@ namespace RISE
 			//! wasted-turn loop).  RENDER-RESULT PATH ONLY as of sec 9's P2.b
 			//! (validate no longer attaches this string -- see
 			//! AppendDesignDiagnostics_ below, its validate-side sibling).
-			std::string ComputeDesignNoteFromDoc_( const Document& doc, bool inPiecesPhase = false )
+			//! `derivedJob` rides straight through to
+			//! ComputeDesignNoteConditionsFromDoc_ -- condition M's live-scene
+			//! half; null means M is silent.  See that function's own doc.
+			std::string ComputeDesignNoteFromDoc_( const Document& doc, bool inPiecesPhase = false,
+			                                       IJobPriv* derivedJob = nullptr )
 			{
-				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
@@ -7161,9 +7100,10 @@ namespace RISE
 			//! RenderCore_, plus the ComputeDesignNote text wrapper) is
 			//! untouched; see that function's doc for why validate no longer
 			//! calls it.
-			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase )
+			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase,
+			                               IJobPriv* derivedJob )
 			{
-				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase );
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
@@ -7370,7 +7310,25 @@ namespace RISE
 		std::string AgentSession::ComputeDesignNote( const std::string& documentText, bool inPiecesPhase )
 		{
 			if( documentText.empty() ) return std::string();
-			return ComputeDesignNoteFromDoc_( RISE::Cst::ParseToCst( documentText ), inPiecesPhase );
+			const Document doc = RISE::Cst::ParseToCst( documentText );
+
+			// (Condition M, 2026-08-30) Derive a THROWAWAY job -- never a
+			// session's -- exactly as ValidateText's (b) step does, so this
+			// carrier sees the same realized geometry the diagnostic carrier
+			// does.  Without it condition M would be silent here and LOUD in
+			// validate on the same bytes, which is precisely the two-carriers-
+			// disagree failure the shared-scan arrangement exists to prevent.
+			// A job that cannot be created (or a text that fails to derive)
+			// degrades to the document-only conditions rather than refusing:
+			// every OTHER condition is a pure document fact and stays correct.
+			IJobPriv* throwaway = nullptr;
+			if( !RISE_CreateJobPriv( &throwaway ) || !throwaway )
+				return ComputeDesignNoteFromDoc_( doc, inPiecesPhase );
+
+			RISE::Cst::DeriveToJob( doc, *throwaway, nullptr );
+			const std::string note = ComputeDesignNoteFromDoc_( doc, inPiecesPhase, throwaway );
+			throwaway->release();
+			return note;
 		}
 
 		namespace
@@ -23567,7 +23525,7 @@ namespace RISE
 					// this closure.  See designNoteLocal's declaration above.
 					if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
 						designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc,
-							BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces );
+							BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces, mJob );
 					publishCompletedToLastRender();
 					return;
 				}
@@ -24054,7 +24012,7 @@ namespace RISE
 				// (both re-enter the controller) from inside this closure.
 				if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
 					designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc,
-						BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces );
+						BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces, mJob );
 				publishCompletedToLastRender();
 			};
 
