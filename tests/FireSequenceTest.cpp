@@ -3066,8 +3066,8 @@ namespace
 							FireStateProducerPrecision::Binary32);
 						represented.temperatureK=stagedTemperature[cell];
 						std::string cellError;
-						if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(represented),
-							represented.temperatureK,represented.sensibleEnergyJPerM3,&cellError)){
+						if(!SignedMixtureSensibleEnergy(represented,represented.temperatureK,fuel,
+							represented.sensibleEnergyJPerM3,&cellError)){
 							stagedValid[cell]=0u;return;
 						}
 						represented.sensibleEnergyJPerM3=static_cast<double>(static_cast<float>(
@@ -3076,7 +3076,19 @@ namespace
 					});
 					const auto invalid=std::find(stagedValid.begin(),stagedValid.end(),0u);
 					if(invalid!=stagedValid.end()){
-						lastAdvanceError="production source staging failed Binary32 canonicalization";
+						const std::size_t cell=static_cast<std::size_t>(invalid-stagedValid.begin());
+						MethaneCellState represented=FromConservativeVector(staged[cell],
+							FireStateProducerPrecision::Binary32);
+						represented.temperatureK=stagedTemperature[cell];
+						std::string cellError;double representedEnergy=0.0;
+						SignedMixtureSensibleEnergy(represented,represented.temperatureK,fuel,
+							representedEnergy,&cellError);
+						std::ostringstream sourceFailure;sourceFailure<<std::setprecision(17)
+							<<"production source staging failed Binary32 canonicalization cell="<<cell
+							<<" error="<<cellError<<" rho_total="<<staged[cell][0]<<" species="
+							<<staged[cell][1]<<','<<staged[cell][2]<<','<<staged[cell][3]<<','
+							<<staged[cell][4]<<','<<staged[cell][5]<<','<<staged[cell][6]<<','
+							<<staged[cell][7];lastAdvanceError=sourceFailure.str();
 						stagedOK=false;
 					}
 					if(!stagedOK){trialStep*=0.5;error.clear();continue;}
@@ -5744,8 +5756,8 @@ namespace
 		for(std::size_t cell=0u;cell<shape.CellCount();++cell){
 			MethaneCellState represented=FromConservativeVector(staged[cell],
 				FireStateProducerPrecision::Binary32);represented.temperatureK=stagedTemperature[cell];
-			if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(represented),
-				represented.temperatureK,represented.sensibleEnergyJPerM3,&error))return 100;
+			if(!SignedMixtureSensibleEnergy(represented,represented.temperatureK,fuel,
+				represented.sensibleEnergyJPerM3,&error))return 100;
 			represented.sensibleEnergyJPerM3=static_cast<double>(static_cast<float>(
 				represented.sensibleEnergyJPerM3));packetBeginning[cell]=represented;
 		}
