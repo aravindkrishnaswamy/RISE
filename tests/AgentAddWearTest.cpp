@@ -1615,6 +1615,393 @@ static void TestEnclosedLightShellNote()
 	}
 }
 
+//----------------------------------------------------------------------
+// Condition N (2026-08-30): the DIM HERO LIGHT -- DESIGN_DIM_HERO_LIGHT.
+// Condition M's sibling, and here for M's reason: both ride the SAME
+// ComputeDesignNoteConditionsFromDoc_ scan and the same carriers this
+// file already exercises, and N's own M-SUPPRESSION rule can only be
+// tested where M's fixtures are.
+//
+// WHAT IS DIFFERENT ABOUT IT, and therefore what these cases have to
+// pin: N's input is a MEASUREMENT held in SESSION STATE, not a fact
+// recomputable from the bytes.  So every case drives the cache through
+// the same public seam `light_scene`'s own measurement pass calls
+// (AgentSession::RecordLightSoloMeasurements) and then reads the note
+// through a SESSION carrier (AgentSession::Validate), never the
+// stateless text-only one -- which N1c pins as deliberately SILENT.
+//
+// Cases:
+//   (a) N1  FIRES: a shape_light authored at `exitance 5000` whose
+//       cached solo audit measured it at 1.9% of the scene's measured
+//       light total -- the motivating trajectory's own numbers (1.3
+//       against a 67.9 all-lights frame).  Both numbers in the clause,
+//       byte-identical across the two carriers, and SILENT through the
+//       cache-less static carrier.
+//   (b) N2  VALIDITY: the light's chunk is edited (exitance 5000 ->
+//       6000) -> the cached entry is dropped and the note goes silent.
+//       A stale measurement never speaks.
+//   (c) N3  HEALTHY SHARE: the same light measured at 30% -> silent.
+//   (d) N4  AUTHORED FAINT: an `omni_light power 0.1` measured at 0.5%
+//       -> silent (a deliberate whisper is not a bug).  N4b is its
+//       companion positive: the SAME fixture at `power 5` and the SAME
+//       measured share DOES fire, so the only thing separating them is
+//       clause (ii).
+//   (e) N5  M-SUPPRESSION: one light both enclosed by an opaque shell
+//       (M fires) and dim in the cache -> M present, N ABSENT.  M says
+//       WHY it is dark; N alone would only say "it is dark".
+//   (f) N6  DELETED LIGHT: the cached light's chunk is gone from the
+//       document -> silent, no crash (the orphaned entry cannot match
+//       a chunk that is not there).
+//   (g) N7  INTEGRATION: the REAL `light_scene` path -- enumeration,
+//       build, N solo renders -- populates the cache itself, with the
+//       right kind and the chunk's verbatim bytes, and records ONLY the
+//       four positional kinds.
+//----------------------------------------------------------------------
+
+//! A `shape_light` -- the one-chunk area-light form the motivating
+//! trajectory's lantern candle took, and condition N's headline case.
+static std::string ShapeLightAt( const std::string& name, double exitance, const char* center )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", exitance );
+	return "shape_light\n{\n\tname " + name + "\n\tshape sphere\n\tcenter " + center +
+	       "\n\tsize 0.15\n\texitance " + buf + "\n\tcolor 1 0.9 0.7\n}\n\n";
+}
+
+//! An `omni_light` with an explicit `power`, for clause (ii)'s pair.
+static std::string OmniPowerAt( const std::string& name, double power, const char* position )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", power );
+	return "omni_light\n{\n\tname " + name + "\n\tpower " + buf +
+	       "\n\tcolor 1 1 1\n\tposition " + position + "\n}\n\n";
+}
+
+//! A lit slab, so every fixture has something for the lights to fall on
+//! and derives/renders like a real scene.
+static std::string DimLightSlab()
+{
+	return Box( "slab", 1.0 ) + Ggx( "mat_slab", "pnt_bronze", "0.3" ) +
+	       Obj( "obj_slab", "slab", "mat_slab", 0 );
+}
+
+//! Drive ONE solo audit into `sess` through the SAME public seam
+//! `light_scene`'s measurement pass calls.  `dim*` is the light under
+//! test; `bright*` is the rest of the scene's light, present so the
+//! soloed total is positive (an all-black audit records nothing at all,
+//! by design) and so the share under test is a real fraction of
+//! something.  The bright entry is deliberately the Preamble's
+//! DIRECTIONAL key: it is soloable and it feeds the total, but it is not
+//! one of the four positional kinds, so it must get no cache record.
+static void RecordSoloAudit( Agent::AgentSession& sess, const std::string& dimName,
+                             double dimLuma, double dimShare )
+{
+	Agent::AgentSession::AgentLightSceneResult r;
+	r.ok                = true;
+	r.allLightsMeanLuma = 67.9;
+
+	Agent::AgentSession::AgentLightContribution dim;
+	dim.name               = dimName;
+	dim.kind               = "emissive object";
+	dim.soloed             = true;
+	dim.meanLuma           = dimLuma;
+	dim.shareOfSoloedTotal = dimShare;
+	r.contributions.push_back( dim );
+
+	Agent::AgentSession::AgentLightContribution bright;
+	bright.name               = "key";
+	bright.kind               = "light";
+	bright.soloed             = true;
+	bright.meanLuma           = 66.6;
+	bright.shareOfSoloedTotal = 1.0 - dimShare;
+	r.contributions.push_back( bright );
+
+	sess.RecordLightSoloMeasurements( r );
+	r.contributions.clear();
+}
+
+//! A canned two-answer completer, the AgentChunkCrudTest arc-81 helper's
+//! shape: answer 0 is the source enumeration, answer 1 the build, and the
+//! last answer repeats if a repair retry asks again.
+static Agent::AgentSession::AgentTextCompleter MakeCannedCompleter( std::vector<std::string> answers )
+{
+	Agent::AgentSession::AgentTextCompleter c;
+	c.supported    = true;
+	c.providerName = "mock";
+	c.modelId      = "mock-lighting-1";
+	auto shared = std::make_shared<std::vector<std::string> >( std::move( answers ) );
+	auto count  = std::make_shared<int>( 0 );
+	c.complete = [shared, count]( const std::string& ) -> Agent::AgentSession::AgentTextCompletionOutcome
+	{
+		Agent::AgentSession::AgentTextCompletionOutcome o;
+		if( shared->empty() ) { o.error = "no canned answer"; return o; }
+		const std::size_t idx = ( static_cast<std::size_t>( *count ) < shared->size() )
+			? static_cast<std::size_t>( *count ) : shared->size() - 1;
+		++( *count );
+		o.ok   = true;
+		o.text = ( *shared )[idx];
+		return o;
+	};
+	return c;
+}
+
+static void TestDimHeroLightNote()
+{
+	std::printf( "N: the design note -- the dim hero light (authored bright, measured dark)\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCode  = "DESIGN_DIM_HERO_LIGHT";
+	const char* const kCodeM = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+
+	// The motivating trajectory's own figures: a 1.3 mean-luma solo against
+	// a 67.9 all-lights frame, i.e. 1.9% of the measured light total.
+	const double kDimLuma  = 1.3;
+	const double kDimShare = 1.3 / 67.9;
+
+	// (a) N1: FIRES, with BOTH numbers, on both carriers, and only with a
+	//     cache.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n1.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N1 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			Check( hasCode( sess->Validate( body ), kCode ) == nullptr,
+			       "N1 BEFORE any measurement the note is silent -- nothing has been measured, so "
+			       "there is nothing for it to speak from" );
+
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( body );
+			const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+			Check( d != nullptr,
+			       "N1 MONEY: a light authored at exitance 5000 whose own solo audit measured it at "
+			       "1.9% of the scene's light total FIRES -- the measurement rides the note carrier "
+			       "instead of dying in one turn's result text" );
+			if( d ) {
+				Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+				       "N1 it is an Info-severity ADVISORY" );
+				Check( d->message.find( "lantern_candle" ) != std::string::npos,
+				       "N1 it NAMES the light" );
+				Check( d->message.find( "exitance 5000" ) != std::string::npos,
+				       "N1 MONEY: ...quotes what the author WROTE" );
+				Check( d->message.find( "1.9%" ) != std::string::npos,
+				       "N1 MONEY: ...and what the audit MEASURED -- the mismatch between the two IS "
+				       "the finding, and either number alone reads as an opinion" );
+				Check( d->message.find( "not reaching the scene" ) != std::string::npos,
+				       "N1 ...states the consequence" );
+				Check( d->message.find( "re-run light_scene" ) != std::string::npos,
+				       "N1 ...and the action, including the re-measure" );
+				Check( d->message.find( "edits ELSEWHERE" ) != std::string::npos,
+				       "N1 MONEY: ...and HEDGES honestly -- the cached figure tracks this light's own "
+				       "chunk and nothing else, which is the one thing the validity key cannot cover" );
+
+				const std::string note = Agent::AgentSession::ComputeDesignNote(
+					body, false, &sess->LightSoloMeasurements() );
+				Check( note.find( d->message ) != std::string::npos,
+				       "N1 MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the "
+				       "render-result note -- one shared formatter, two carriers" );
+			}
+
+			// N1c: the documented limitation, pinned rather than assumed.
+			Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+			       "N1c MONEY: the STATELESS text-only carrier is SILENT on N -- it holds no session "
+			       "and therefore no measurement, and a condition whose input the caller does not "
+			       "have must be absent, never guessed" );
+			Check( Agent::AgentSession::ComputeDesignNote( body ).find( "light_scene's own solo" ) ==
+			       std::string::npos,
+			       "N1c ...and so is the stateless note wrapper, on the same bytes" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (b) N2: VALIDITY.  The measurement was taken against `exitance 5000`;
+	//     retune the light and the entry is dropped SILENTLY rather than
+	//     quoting a number the document no longer says.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n2.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N2 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			Check( hasCode( sess->Validate( body ), kCode ) != nullptr,
+			       "N2 the un-edited document still fires (the control for the case below)" );
+
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+			Check( hasCode( sess->Validate( edited ), kCode ) == nullptr,
+			       "N2 MONEY: editing the light's own chunk DROPS the cached measurement -- a stale "
+			       "figure never speaks, and the note goes silent until light_scene re-measures" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (c) N3: a HEALTHY share is not a finding.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n3.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N3 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+			Check( hasCode( sess->Validate( body ), kCode ) == nullptr,
+			       "N3 MONEY: a light measured at 30% of the scene's light total is WORKING -- a note "
+			       "that fires on a working light is how this family loses the right to be read" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (d) N4/N4b: clause (ii), both directions.  Same geometry, same
+	//     measured share -- only the AUTHORED intensity differs.
+	{
+		const std::string faint = Preamble() + DimLightSlab() +
+			OmniPowerAt( "candle", 0.1, "0 3 0" );
+		const std::string tmpF = TempPath( "addwear_dim_n4.RISEscene" );
+		Job* pJobF = LoadScene( faint, tmpF );
+		Check( pJobF != nullptr, "N4 faint fixture derives" );
+		if( pJobF ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobF );
+			RecordSoloAudit( *sess, "candle", 0.3, 0.005 );
+			Check( hasCode( sess->Validate( faint ), kCode ) == nullptr,
+			       "N4 MONEY: a light AUTHORED at power 0.1 measuring 0.5% is a deliberate whisper "
+			       "doing exactly what it was asked to -- never a finding" );
+			pJobF->release();
+			std::remove( tmpF.c_str() );
+		}
+
+		const std::string bright = Preamble() + DimLightSlab() +
+			OmniPowerAt( "candle", 5.0, "0 3 0" );
+		const std::string tmpB = TempPath( "addwear_dim_n4b.RISEscene" );
+		Job* pJobB = LoadScene( bright, tmpB );
+		Check( pJobB != nullptr, "N4b bright fixture derives" );
+		if( pJobB ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobB );
+			RecordSoloAudit( *sess, "candle", 0.3, 0.005 );
+			// NAMED, not a temporary: `hasCode` hands back a pointer INTO the
+			// vector, so binding the call inline would leave `d` dangling the
+			// moment the full expression ends.
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( bright );
+			const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+			Check( d != nullptr,
+			       "N4b MONEY: the SAME fixture at power 5 and the SAME 0.5% share DOES fire -- the "
+			       "only thing separating N4 from N4b is the authored intensity, which is exactly "
+			       "what clause (ii) claims to test" );
+			if( d ) Check( d->message.find( "power 5" ) != std::string::npos,
+			               "N4b ...and the clause quotes the omni's `power`, not an `exitance` it "
+			               "does not have" );
+			pJobB->release();
+			std::remove( tmpB.c_str() );
+		}
+	}
+
+	// (e) N5: M-SUPPRESSION.  One light, both enclosed and dim.
+	{
+		std::string body = Preamble();
+		body += Box( "shell", 4.0 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		body += ShapeLightAt( "lantern_candle", 5000.0, "0 0 0" );
+		const std::string tmp = TempPath( "addwear_dim_n5.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N5 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( body );
+			Check( hasCode( diags, kCodeM ) != nullptr,
+			       "N5 condition M fires on the enclosed light" );
+			Check( hasCode( diags, kCode ) == nullptr,
+			       "N5 MONEY: condition N is SUPPRESSED for the same light -- M already names it AND "
+			       "says why it is dark, and N alone would add only \"it is dark, find out why\"" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (f) N6: the cached light's chunk is GONE.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n6.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N6 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::string deleted = Preamble() + DimLightSlab();
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( deleted );
+			Check( hasCode( diags, kCode ) == nullptr,
+			       "N6 MONEY: a cache entry whose light chunk no longer exists is SILENT, not a crash "
+			       "and not a note about a light that is not there -- the orphan simply never matches" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (g) N7: THE REAL PATH.  `light_scene` -- enumeration, build, its own
+	//     solo renders -- must be what populates the cache; a seam only the
+	//     tests call would be a condition that never fires in production.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n7.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N7 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			sess->SetTextCompleter( MakeCannedCompleter( {
+				"a warm candle burning inside the lantern\n",
+				"rect_light\n{\n\tname lit_panel\n\tcenter 0 3 1\n\tsize 2 1\n"
+				"\tfacing 0 -1 0\n\texitance 40\n\tcolor 1 1 1\n}\n" } ) );
+
+			const Agent::AgentSession::AgentLightSceneResult r = sess->LightScene();
+			Check( r.ok, "N7 light_scene completes" );
+			Check( r.soloedCount >= 1, "N7 and it soloed at least one light" );
+
+			const Agent::AgentSession::AgentLightSoloMeasurementMap& cache =
+				sess->LightSoloMeasurements();
+			const Agent::AgentSession::AgentLightSoloMeasurementMap::const_iterator it =
+				cache.find( "lantern_candle" );
+			Check( it != cache.end(),
+			       "N7 MONEY: the REAL light_scene measurement pass wrote the cache itself -- the "
+			       "seam the cases above drive is the one production calls, not a test-only door" );
+			if( it != cache.end() ) {
+				Check( it->second.kind == "shape_light",
+				       "N7 ...with the AUTHORED chunk keyword, joined by name to the emissive object "
+				       "the shape_light derives to" );
+				Check( it->second.chunkText.find( "exitance 5000" ) != std::string::npos,
+				       "N7 ...and the chunk's VERBATIM bytes as the validity key" );
+				Check( it->second.intensityParam == "exitance" &&
+				       it->second.authoredIntensity == 5000.0,
+				       "N7 ...and the authored intensity it was measured against" );
+			}
+			Check( cache.find( "key" ) == cache.end(),
+			       "N7 MONEY: the Preamble's DIRECTIONAL light is soloed and reported exactly as "
+			       "before but gets NO record -- condition N's scope is the four positional kinds, "
+			       "and nothing outside it is cached for a condition that would never read it" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "AgentAddWearTest -- GEOMETRY_SHADING_SIGNALS sec 11: add_wear\n" );
@@ -1629,6 +2016,7 @@ int main()
 	TestNote();
 	TestWireSurface();
 	TestEnclosedLightShellNote();
+	TestDimHeroLightNote();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }
