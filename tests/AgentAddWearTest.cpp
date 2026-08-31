@@ -1656,6 +1656,13 @@ static void TestEnclosedLightShellNote()
 //       build, N solo renders -- populates the cache itself, with the
 //       right kind and the chunk's verbatim bytes, and records ONLY the
 //       four positional kinds.
+//   (h) N8  MERGE-PRESERVE (P2, 2026-08-30): a SECOND audit that solos a
+//       DIFFERENT light and never attempts the first must not erase the
+//       first light's still-valid cached measurement -- the shape a
+//       capped or partially-failed MeasureLightContributions_ pass
+//       produces for every light it never got to.  Validity is
+//       unaffected by the merge: editing the preserved light's own chunk
+//       still drops it, exactly as N2 pins for a freshly-recorded entry.
 //----------------------------------------------------------------------
 
 //! A `shape_light` -- the one-chunk area-light form the motivating
@@ -1996,6 +2003,64 @@ static void TestDimHeroLightNote()
 			       "N7 MONEY: the Preamble's DIRECTIONAL light is soloed and reported exactly as "
 			       "before but gets NO record -- condition N's scope is the four positional kinds, "
 			       "and nothing outside it is cached for a condition that would never read it" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (h) N8 (P2, 2026-08-30): MERGE-PRESERVE across subset audits.  A
+	//     second audit that solos a DIFFERENT light and never attempts the
+	//     first must not erase the first light's still-valid cached
+	//     measurement -- MeasureLightContributions_ itself produces exactly
+	//     this shape whenever the render cap or a mid-pass failure limits
+	//     it to a subset, and RecordLightSoloMeasurements used to
+	//     `clear()` unconditionally before repopulating only what THIS
+	//     pass soloed.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" ) +
+			ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+		const std::string tmp = TempPath( "addwear_dim_n8.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "N8 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// First audit solos ONLY lantern_candle (A), dim.
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			Check( hasCode( sess->Validate( body ), kCode ) != nullptr,
+			       "N8 setup: A fires after its own audit" );
+
+			// Second audit solos ONLY lantern_candle_b (B), measured HEALTHY
+			// (30%, well clear of the gate) so B never itself qualifies for
+			// N and cannot be confused with A in the checks below.  A is not
+			// in this result AT ALL, exactly the shape a capped or
+			// partially-failed MeasureLightContributions_ pass produces for
+			// the lights it never got to.
+			RecordSoloAudit( *sess, "lantern_candle_b", 20.0, 0.30 );
+
+			const Agent::AgentSession::AgentLightSoloMeasurementMap& cache =
+				sess->LightSoloMeasurements();
+			Check( cache.find( "lantern_candle" ) != cache.end(),
+			       "N8 MONEY: A's cache entry SURVIVES a later audit that never attempted it -- "
+			       "merge-preserve, not blind replace" );
+			Check( cache.find( "lantern_candle_b" ) != cache.end(),
+			       "N8 ...and B's fresh measurement from this audit is recorded too" );
+
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( body );
+			Check( hasCode( diags, kCode ) != nullptr,
+			       "N8 MONEY: N still fires for A off the PRESERVED entry, even though the most "
+			       "recent audit never soloed it" );
+
+			// Validity is unaffected by the merge: editing A's own chunk
+			// still drops its (preserved) entry, exactly as N2 pins.
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" ) +
+				ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+			Check( hasCode( sess->Validate( edited ), kCode ) == nullptr,
+			       "N8 ...and a preserved entry is still just as subject to the validity key -- "
+			       "editing A's chunk drops it exactly as N2 pins for a freshly-recorded one" );
+
 			pJob->release();
 			std::remove( tmp.c_str() );
 		}

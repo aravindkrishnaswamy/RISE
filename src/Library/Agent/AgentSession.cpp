@@ -7653,7 +7653,8 @@ namespace RISE
 			// every OTHER condition is a pure document fact and stays correct.
 			IJobPriv* throwaway = nullptr;
 			if( !RISE_CreateJobPriv( &throwaway ) || !throwaway )
-				return ComputeDesignNoteFromDoc_( doc, inPiecesPhase, nullptr, soloCache );
+				// M and N speak together or not at all -- an N finding M cannot vet may double-speak an enclosed light.
+				return ComputeDesignNoteFromDoc_( doc, inPiecesPhase, nullptr, nullptr );
 
 			RISE::Cst::DeriveToJob( doc, *throwaway, nullptr );
 			const std::string note = ComputeDesignNoteFromDoc_( doc, inPiecesPhase, throwaway, soloCache );
@@ -30121,33 +30122,60 @@ namespace RISE
 
 		void AgentSession::RecordLightSoloMeasurements( const AgentLightSceneResult& measured )
 		{
-			// REPLACE, never merge.  A fresh audit solos every soloable light in
-			// the scene, so anything the previous map held for a light this one
-			// measured is superseded, and anything it held for a light this one
-			// did NOT measure describes a scene that has since changed.  Keeping
-			// either would be exactly the stale measurement the validity key
-			// exists to refuse.
-			mLightSoloMeasurements.clear();
-
-			// NOTHING WAS MEASURED.  `shareOfSoloedTotal` is a fraction of the
-			// SUM of the soloed mean lumas, so an audit whose solos all came
-			// back black leaves every share at 0.0 -- which does not mean "every
-			// light contributes nothing", it means the measurement did not
-			// happen (a scene that would not render, a camera facing away).
-			// Recording that would make condition N fire on every light in the
-			// document off a number nobody measured.
-			double soloTotal = 0.0;
-			for( std::size_t i = 0; i < measured.contributions.size(); ++i )
-				if( measured.contributions[i].soloed ) soloTotal += measured.contributions[i].meanLuma;
-			if( !( soloTotal > 0.0 ) ) return;
-
-			// The VALIDITY KEY comes from the LIVE document, read directly (the
-			// arc-82 CollectPopulationStock_ convention) rather than through
-			// ReadDocumentSnapshot, which re-enters the controller.  No document,
-			// no key, no record: a measurement this session cannot tie to
-			// specific authored bytes must not be able to speak later.
+			// MERGE-PRESERVE, not replace.  The old comment here claimed "a
+			// fresh audit solos every soloable light in the scene" -- false:
+			// MeasureLightContributions_ measures a SUBSET whenever the scene
+			// exceeds kLightSceneMaxSolos, whenever one solo render fails (every
+			// light after it is skipped with the same inherited reason), or
+			// whenever the all-lights reference itself never produced a
+			// readable frame (nothing gets soloed at all).  The real invariant
+			// is: this audit is authoritative ONLY for the names it just
+			// measured (`soloed == true` below).  For every other name, a
+			// prior record is not "a scene that has since changed" -- it is a
+			// still-valid measurement this pass simply never attempted, and
+			// blowing it away would be exactly the false negative condition N
+			// exists to avoid (a dim hero light going unflagged because an
+			// unrelated audit ran out of solo budget).
+			//
+			// So: snapshot the previous map, clear the live one, then re-admit
+			// every previous entry this audit did not just measure PROVIDED its
+			// chunk still exists in the live document with byte-identical text.
+			// That chunk-text comparison is the exact validity key condition N
+			// itself re-checks before speaking, so re-admitting a match here is
+			// safe by construction -- we are not extending trust any further
+			// than the consumer already extends on its own.
 			const RISE::Cst::Document* doc = mJob ? mJob->GetCstDocument() : nullptr;
-			if( !doc ) return;
+			if( !doc ) return;   // no live document to key against; leave the cache untouched.
+
+			double soloTotal = 0.0;
+			std::set<std::string> justMeasured;
+			for( std::size_t i = 0; i < measured.contributions.size(); ++i ) {
+				if( !measured.contributions[i].soloed ) continue;
+				soloTotal += measured.contributions[i].meanLuma;
+				justMeasured.insert( measured.contributions[i].name );
+			}
+
+			AgentLightSoloMeasurementMap previous;
+			previous.swap( mLightSoloMeasurements );   // mLightSoloMeasurements is now empty
+			for( AgentLightSoloMeasurementMap::const_iterator it = previous.begin();
+			     it != previous.end(); ++it ) {
+				if( justMeasured.count( it->first ) ) continue;   // superseded below, if it lands
+				RISE::Cst::NodeRef node = FindChunkByRoleAndName_( *doc, it->second.kind, it->first );
+				if( !node ) continue;                              // chunk gone: no longer valid
+				if( RISE::Cst::SerializeNode( node ) != it->second.chunkText ) continue;   // edited: stale
+				mLightSoloMeasurements.insert( *it );
+			}
+
+			// NOTHING WAS MEASURED THIS PASS.  `shareOfSoloedTotal` is a
+			// fraction of the SUM of the soloed mean lumas, so an audit whose
+			// solos all came back black leaves every share at 0.0 -- which does
+			// not mean "every light contributes nothing", it means the
+			// measurement did not happen (a scene that would not render, a
+			// camera facing away).  Recording THAT would make condition N fire
+			// on every light in the document off a number nobody measured --
+			// but the carry-forward above has already happened, so bailing here
+			// only skips adding fresh data, it does not touch what survived.
+			if( !( soloTotal > 0.0 ) ) return;
 
 			//! Defensive bound only.  An audit measures at most
 			//! kLightSceneMaxSolos lights, so this cap is unreachable in
