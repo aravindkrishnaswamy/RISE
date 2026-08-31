@@ -4599,7 +4599,8 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			request.divergenceTargetPerS.size()!=cells||
 			request.restorationDivergenceTargetPerS.size()!=cells||
 			request.beginningManifoldDeviationPerCell.size()!=cells||
-			!ValidateFireProductionCellSourceIncrement(request.cellSourceIncrement,cells,false,
+			!ValidateFireProductionCellSourceIncrement(request.cellSourceIncrement,cells,
+				request.monitorManifoldDiagnostics,
 				&validationError))return fail(validationError.empty()?
 				"production single-stage FCT source shape is invalid":validationError.c_str());
 		bool anyPeriodic=false,allPeriodic=true;

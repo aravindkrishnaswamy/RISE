@@ -1069,6 +1069,7 @@ namespace
 		bool forceZeroSourceForTest=false;
 		bool productionMetal=false;
 		bool compatibleMomentumDiagnostic=false;
+		bool singleStageFCTDiagnostic=false;
 		std::filesystem::path temporalSnapshotDirectory;
 		double temporalSnapshotCadenceS=0.0;
 		double maximumProductionSourceStepS=0.0;
@@ -2431,6 +2432,11 @@ namespace
 			const RISE::FireProductionAcceptedManifoldObservation& acceptedObservation,
 			MethaneRunCheckpoint& state,std::string& error,
 			unsigned int temperatureWorkerCount);
+		bool ApplyProductionResultUnchecked(
+			const RISE::FireProductionResidentStepResult& production,
+			MethaneRunCheckpoint& state,std::string& error,
+			bool enforceOracleEOSValidityDetector,
+			unsigned int temperatureWorkerCount);
 	}
 #if defined(RISE_ENABLE_OPENVDB)
 	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
@@ -2773,6 +2779,10 @@ namespace
 		const std::array<double,3> productionOnsetVelocityThresholds={{15.0,30.0,60.0}};
 		std::array<bool,3> productionOnsetThresholdCaptured={{false,false,false}};
 		bool productionOnsetStopReached=false;
+		std::array<std::vector<unsigned char>,6> singleStageFCTAcceptedInflow;
+		for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
+			shape.ny*shape.nz:(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+			singleStageFCTAcceptedInflow[side].assign(count,0u);}
 		if(!persistence.productionOnsetDiagnosticDirectory.empty()){
 			std::error_code onsetDirectoryError;
 			std::filesystem::create_directories(
@@ -3201,10 +3211,46 @@ namespace
 						profileStageStart=std::chrono::steady_clock::now();
 						solverPhase="production resident attempt";
 						RISE::FireProductionResidentStepResult production;
+						RISE::FireProductionSingleStageFCTDiagnosticResult singleStageFCT;
 						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
 						for(;;){
 							const auto wallStart=std::chrono::steady_clock::now();
-							attemptComputed=persistence.compatibleMomentumDiagnostic?
+							if(persistence.singleStageFCTDiagnostic){
+								RISE::FireProductionSingleStageFCTBoundaryState boundaryState;
+								boundaryState.pressureOpenInflow=singleStageFCTAcceptedInflow;
+								boundaryState.statePayloadIdentity=
+									RISE::FireProductionAcceptedStatePayloadDigestFast(
+										request.force.shape,request.cellTransport.conservativeValues,
+										request.force.beginningMomentumKGPerM2S,
+										request.cellTransport.frozenVelocityMPerS);
+								attemptComputed=RISE::SealFireProductionSingleStageFCTBoundaryState(
+									request.force.shape,request.force.boundary,boundaryState,&error)&&
+									RISE::AttemptFireProductionSingleStageFCTDiagnosticMetal(
+										request,boundaryState,singleStageFCT,&error);
+								if(attemptComputed){
+									production.conservativeValues=singleStageFCT.conservativeValues;
+									production.physicalProjection=singleStageFCT.physicalProjection;
+									production.projection=singleStageFCT.projection;
+									production.forceSchedule=singleStageFCT.forceSchedule;
+									production.forceDiagnostics=singleStageFCT.forceDiagnostics;
+									production.residentProjectionInvocationCount=
+										singleStageFCT.residentProjectionInvocationCount;
+									production.interstageFullGridTransferCount=
+										singleStageFCT.interstageFullGridTransferCount;
+									production.terminalStagingCount=singleStageFCT.terminalStagingCount;
+									production.combinedCertifiedWorkingSetBytes=
+										singleStageFCT.certifiedWorkingSetBytes;
+									production.combinedActualMetalAllocationBytes=
+										singleStageFCT.actualMetalAllocationBytes;
+									production.representedTimeStepS=request.force.timeStepS;
+									production.manifoldDynamicsBoundPassed=true;
+									production.manifoldDiagnosticsMonitored=true;
+									production.manifoldPlateauPassed=true;
+									production.conservativeProducerPrecision=
+										FireStateProducerPrecision::Binary32;
+									production.acceptedShape=request.force.shape;
+								}
+							}else attemptComputed=persistence.compatibleMomentumDiagnostic?
 								RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
 									request,production,&error):
 								RISE::AttemptFireProductionResidentStepMetal(request,production,&error);
@@ -3216,7 +3262,8 @@ namespace
 								production.residentProjectionInvocationCount==2u;
 							const RISE::FireProductionProjectionResult& retryProjection=
 								twoProjectionAttempt?production.physicalProjection:production.projection;
-							if(retryProjection.validationPassed||production.HasAcceptedManifoldToken())break;
+							if(persistence.singleStageFCTDiagnostic||retryProjection.validationPassed||
+								production.HasAcceptedManifoldToken())break;
 							const double pre=retryProjection.
 								maximumPreProjectionResidualPerS;
 							const double post=retryProjection.
@@ -3238,8 +3285,12 @@ namespace
 						}
 						unsigned int nextCandidate=0u;double nextTimeStepS=0.0;
 						const RISE::FireProductionResidentStepAttemptDisposition disposition=
-							RISE::ClassifyFireProductionResidentStepAttempt(
-								reduction,production,nextCandidate,nextTimeStepS);
+							persistence.singleStageFCTDiagnostic?
+								(attemptComputed&&singleStageFCT.accepted?
+									RISE::FireProductionResidentStepAttemptDisposition::Accepted:
+									RISE::FireProductionResidentStepAttemptDisposition::Rejected):
+								RISE::ClassifyFireProductionResidentStepAttempt(
+									reduction,production,nextCandidate,nextTimeStepS);
 						if(!persistence.productionOnsetDiagnosticDirectory.empty()&&
 							disposition!=RISE::FireProductionResidentStepAttemptDisposition::Accepted){
 							std::ofstream retryTrajectory(persistence.productionOnsetDiagnosticDirectory/
@@ -3320,7 +3371,8 @@ namespace
 							std::string physicalOnlyError;
 							const bool requestRetainedPhysicalProjection=
 								!persistence.productionOnsetDiagnosticDirectory.empty()||
-								persistence.compatibleMomentumDiagnostic;
+								persistence.compatibleMomentumDiagnostic||
+								persistence.singleStageFCTDiagnostic;
 							const bool restorationModeClear=
 								std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")==nullptr;
 							const bool retainedPhysicalIsTerminal=requestRetainedPhysicalProjection&&
@@ -3643,13 +3695,19 @@ namespace
 						}
 						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted){
 							RISE::FireProductionAcceptedManifoldObservation observation;
-							advancedOK=RISE::PublishFireProductionAcceptedManifoldObservation(
+							advancedOK=persistence.singleStageFCTDiagnostic?
+								FireProductionDyadicCalibration::ApplyProductionResultUnchecked(
+									production,productionState,error,false,workerCount):
+								(RISE::PublishFireProductionAcceptedManifoldObservation(
 									static_cast<double>(production.representedTimeStepS),production,
 									observation,&error)&&
 								FireProductionDyadicCalibration::ApplyAcceptedProductionResult(
-									production,observation,productionState,error,workerCount);
+									production,observation,productionState,error,workerCount));
 							if(advancedOK){
-								productionManifoldObservation=observation;
+								if(persistence.singleStageFCTDiagnostic){
+									productionManifoldObservation=FireProductionAcceptedManifoldObservation();
+									singleStageFCTAcceptedInflow=singleStageFCT.projection.pressureOpenInflow;
+								}else productionManifoldObservation=observation;
 								advanced.conservative.resize(productionState.states.size());
 								acceptedProductionTemperatureK.resize(productionState.states.size());
 								ParallelFireSlices(productionState.states.size(),workerCount,
@@ -6063,11 +6121,19 @@ namespace
 		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
-		persistence.compatibleMomentumDiagnostic=true;
+		persistence.singleStageFCTDiagnostic=
+			std::getenv("RISE_FIRE_SINGLE_STAGE_FCT_ONSET")!=nullptr;
+		persistence.compatibleMomentumDiagnostic=!persistence.singleStageFCTDiagnostic;
 		persistence.checkpointPath=outputDirectory/"latest.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoints";
 		persistence.checkpointCadenceWallS=120.0;
+		if(persistence.singleStageFCTDiagnostic){
+			persistence.checkpointPath.clear();
+			persistence.finalCheckpointPath.clear();
+			persistence.retainedCheckpointDirectory.clear();
+			persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		}
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.productionOnsetStopVelocityMPerS=60.0;
 		if(const char* resumeCheckpoint=std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")){
@@ -6110,9 +6176,12 @@ namespace
 		std::ofstream summary(summaryPath,std::ios::trunc);
 		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v2\n"
 			<<"resolution_tier "<<resolutionTier<<"\n"
-			<<"operator_mode compatible_momentum_diagnostic\n"
+			<<"operator_mode "<<(persistence.singleStageFCTDiagnostic?
+				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic")<<"\n"
 			<<"compatible_momentum_diagnostic "<<
 				(persistence.compatibleMomentumDiagnostic?1:0)<<"\n"
+			<<"single_stage_fct_diagnostic "<<
+				(persistence.singleStageFCTDiagnostic?1:0)<<"\n"
 			<<"producer_build_id "<<producerBuildId<<"\n"
 			<<"producer_executable_sha256 "<<producerExecutableDigest<<"\n"
 			<<"target_time_s "<<targetTimeS<<"\n"
@@ -6126,6 +6195,8 @@ namespace
 				persistence.productionOnsetStopVelocityMPerS<<"\n"
 			<<"stop_reason "<<(reachedTarget?"target_time_reached":
 				"velocity_threshold_crossing")<<"\n"
+			<<"checkpoint_authority "<<(persistence.singleStageFCTDiagnostic?
+				"tokenless_diagnostic_unavailable":"ordinary_accepted_state")<<"\n"
 			<<"final_checkpoint_sha256 "<<
 				DigestFile(outputDirectory/"final.checkpoint")<<"\n";
 		for(const unsigned int threshold:{15u,30u,60u}){
@@ -6138,14 +6209,18 @@ namespace
 				"_column_sha256 "<<DigestFile(budget.string()+".column.csv")<<"\n";
 		}
 		summary.close();
-		if(!summary||!persistence.compatibleMomentumDiagnostic||DigestFile(trajectory).empty()||
+		if(!summary||(!persistence.compatibleMomentumDiagnostic&&
+			!persistence.singleStageFCTDiagnostic)||DigestFile(trajectory).empty()||
 			DigestFile(retryTrajectory).empty()||
-			DigestFile(outputDirectory/"final.checkpoint").empty())return 94;
+			(!persistence.singleStageFCTDiagnostic&&
+			 DigestFile(outputDirectory/"final.checkpoint").empty()))return 94;
 		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN%s tier=%.0f target=%.17g time=%.17g steps=%zu "
-			"wall_s=%.17g operator=compatible_momentum_diagnostic build=%s trajectory=%s "
+			"wall_s=%.17g operator=%s build=%s trajectory=%s "
 			"summary=%s\n",reachedTarget?"":"_STOP",resolutionTier,targetTimeS,
 			result.simulatedTimeS,
-			result.acceptedTimeStepHistoryS.size(),wallS,producerBuildId.c_str(),
+			result.acceptedTimeStepHistoryS.size(),wallS,persistence.singleStageFCTDiagnostic?
+				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic",
+			producerBuildId.c_str(),
 			DigestFile(trajectory).c_str(),DigestFile(summaryPath).c_str());
 		return reachedTarget?0:95;
 #endif
