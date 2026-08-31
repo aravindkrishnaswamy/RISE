@@ -1437,4 +1437,632 @@ namespace RISE
 			return false;
 		}
 	}
+
+	namespace
+	{
+		void OwnerHashByte(std::uint64_t& hash,const unsigned char value)
+		{
+			hash^=static_cast<std::uint64_t>(value);hash*=UINT64_C(1099511628211);
+		}
+
+		void OwnerHashUInt64(std::uint64_t& hash,const std::uint64_t value)
+		{
+			for(unsigned int byte=0u;byte<8u;++byte)
+				OwnerHashByte(hash,static_cast<unsigned char>((value>>(8u*byte))&0xffu));
+		}
+
+		void OwnerHashFloat(std::uint64_t& hash,const float value)
+		{
+			std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));
+			OwnerHashUInt64(hash,bits);
+		}
+
+		void OwnerHashFloats(std::uint64_t& hash,const std::vector<float>& values)
+		{
+			OwnerHashUInt64(hash,values.size());
+			for(const float value:values)OwnerHashFloat(hash,value);
+		}
+
+		bool SameOwnerShape(const FireProductionProjectionShape& a,
+			const FireProductionProjectionShape& b)
+		{
+			return a.nx==b.nx&&a.ny==b.ny&&a.nz==b.nz&&a.cellWidthM==b.cellWidthM;
+		}
+
+		bool SameOwnerFloatBits(const std::vector<float>& a,const std::vector<float>& b)
+		{
+			if(a.size()!=b.size())return false;
+			for(std::size_t i=0u;i<a.size();++i)
+				if(std::memcmp(&a[i],&b[i],sizeof(float))!=0)return false;
+			return true;
+		}
+
+		bool EmptyOwnerStageArrays(const FireProductionProjectedHeunOwnerRequest& request)
+		{
+			if(!request.scalarContract.beginning.empty()||
+				!request.scalarContract.sourceDelta.empty()||
+				!request.physicalContract.conservativeValues.empty()||
+				!request.physicalContract.temperatureK.empty()||
+				!request.physicalContract.diffusivityM2PerS.empty()||
+				!request.physicalContract.conductivityWPerMK.empty()||
+				!request.forceContract.cellGasDensityKGPerM3.empty()||
+				!request.forceContract.molecularKinematicViscosityM2PerS.empty())return false;
+			for(unsigned int axis=0u;axis<3u;++axis)if(
+				!request.scalarContract.frozenVelocityMPerS[axis].empty()||
+				!request.physicalContract.frozenVelocityMPerS[axis].empty()||
+				!request.forceContract.faceDensityKGPerM3[axis].empty()||
+				!request.forceContract.beginningMomentumKGPerM2S[axis].empty())return false;
+			for(unsigned int side=0u;side<6u;++side)if(
+				!request.scalarContract.pressureOpenInflow[side].empty()||
+				!request.physicalContract.pressureOpenInflow[side].empty())return false;
+			return true;
+		}
+
+		bool OwnerGasDensity(const FireProductionProjectionShape& shape,
+			const std::vector<float>& state,std::vector<float>& result)
+		{
+			const std::size_t cells=shape.CellCount();
+			if(state.size()!=9u*cells)return false;
+			result.assign(cells,0.0f);
+			for(std::size_t cell=0u;cell<cells;++cell){
+				float density=0.0f;
+				for(std::size_t component=1u;component<=6u;++component)
+					density+=std::max(state[component*cells+cell],0.0f);
+				if(!std::isfinite(density)||!(density>0.0f))return false;
+				result[cell]=density;
+			}
+			return true;
+		}
+
+		std::uint64_t OwnerProjectionIdentity(const std::uint64_t targetIdentity,
+			const FireProductionProjectionResult& projection)
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE projected-Heun projected candidate v1";
+			for(const unsigned char byte:domain)OwnerHashByte(hash,byte);
+			OwnerHashUInt64(hash,targetIdentity);
+			for(unsigned int axis=0u;axis<3u;++axis){
+				OwnerHashFloats(hash,projection.momentumKGPerM2S[axis]);
+				OwnerHashFloats(hash,projection.velocityMPerS[axis]);
+			}
+			for(unsigned int side=0u;side<6u;++side){
+				OwnerHashUInt64(hash,projection.pressureOpenInflow[side].size());
+				for(const unsigned char value:projection.pressureOpenInflow[side])
+					OwnerHashByte(hash,value);
+			}
+			return hash;
+		}
+
+		std::uint64_t OwnerCandidateIdentity(const std::uint64_t attemptIdentity,
+			const FireProductionProjectedHeunStage stage,
+			const std::uint64_t parentCandidateIdentity,
+			const std::uint64_t fluxIdentity,
+			const std::vector<float>& candidate,
+			const std::array<std::vector<float>,3>& alpha)
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE projected-Heun accepted candidate v1";
+			for(const unsigned char byte:domain)OwnerHashByte(hash,byte);
+			OwnerHashUInt64(hash,attemptIdentity);
+			OwnerHashUInt64(hash,static_cast<std::uint8_t>(stage));
+			OwnerHashUInt64(hash,parentCandidateIdentity);OwnerHashUInt64(hash,fluxIdentity);
+			OwnerHashFloats(hash,candidate);
+			for(const std::vector<float>& axis:alpha)OwnerHashFloats(hash,axis);
+			return hash;
+		}
+
+		bool OwnerCompatibleMomentum(
+			const FireProductionScalarHeunFluxStage& stage,
+			const FireProductionScalarFCTResult& scalar,
+			const std::array<std::vector<float>,3>& velocity,
+			FireProductionCompatibleFCTMomentumResult& result,std::string* error)
+		{
+			FireProductionCompatibleFCTMomentumRequest request;
+			request.shape=stage.compositeFluxPair.shape;
+			request.boundary=stage.compositeFluxPair.boundary;
+			request.lowGasFluxKGPerM2S=stage.advectiveGasLowFluxKGPerM2S;
+			request.highGasFluxKGPerM2S=stage.advectiveGasFluxDeltaKGPerM2S;
+			request.physicalGasFluxKGPerM2S=stage.physicalGasFluxKGPerM2S;
+			request.sharedFaceAlpha=scalar.sharedFaceAlpha;
+			request.frozenVelocityMPerS=velocity;
+			return EvaluateFireProductionCompatibleFCTMomentumDeltaCPU(request,result,error);
+		}
+	}
+
+	FireProductionProjectedHeunCPUOwner::FireProductionProjectedHeunCPUOwner() :
+		state_(State::Empty) {}
+
+	bool FireProductionProjectedHeunCPUOwner::Begin(
+		const FireProductionProjectedHeunOwnerRequest& request,std::string* error)
+	{
+		if(state_!=State::Empty)return Fail(error,
+			"projected-Heun owner has already begun");
+		try {
+			const FireProductionProjectionShape& shape=request.source.Shape();
+			const std::size_t cells=shape.CellCount();
+			if(!FireProductionFrozenSourcePacketSealMatches(request.source,error)||
+				request.attemptIdentity==0u||request.attemptIdentity!=request.source.AttemptIdentity()||
+				!SameOwnerShape(request.scalarContract.shape,shape)||
+				!SameOwnerShape(request.physicalContract.shape,shape)||
+				!SameOwnerShape(request.forceContract.shape,shape)||
+				request.scalarContract.timeStepS!=request.source.TimeStepS()||
+				request.forceContract.timeStepS!=request.source.TimeStepS()||
+				request.scalarContract.boundary!=request.physicalContract.boundary||
+				request.scalarContract.boundary!=request.forceContract.boundary||
+				request.beginningConservativeValues.size()!=9u*cells||
+				!EmptyOwnerStageArrays(request)||
+				!std::isfinite(request.projectionTolerancePerS)||
+				request.projectionTolerancePerS<0.0f||
+				!std::isfinite(request.endpointVelocityToleranceMPerS)||
+				request.endpointVelocityToleranceMPerS<0.0f||
+				request.maximumPicardIterations<2u||request.maximumPicardIterations>64u)
+				return Fail(error,"projected-Heun owner request is malformed");
+			for(std::size_t component=0u;component<9u;++component)
+				if(request.scalarContract.ambient[component]!=
+					request.physicalContract.ambient[component])return Fail(error,
+						"projected-Heun owner ambient contract differs");
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if(request.beginningMomentumKGPerM2S[axis].size()!=faces)return Fail(error,
+					"projected-Heun owner beginning momentum shape is invalid");
+				for(const float value:request.beginningMomentumKGPerM2S[axis])
+					if(!std::isfinite(value))return Fail(error,
+						"projected-Heun owner beginning momentum is nonfinite");
+			}
+			request_=request;work_=FireProductionProjectedHeunOwnerResult();
+			predictor_.clear();for(auto& axis:predictorMomentum_)axis.clear();
+			for(auto& axis:heunMomentum_)axis.clear();state_=State::Begun;
+			if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){return Fail(error,
+			"projected-Heun owner begin allocation failed");}
+	}
+
+	bool FireProductionProjectedHeunCPUOwner::SolveCoupledStage(
+		const FireProductionProjectedHeunStage stage,const std::vector<float>& state,
+		const std::vector<float>& temperatureK,
+		const std::array<std::vector<float>,3>& provisionalMomentum,
+		const std::uint64_t parentCandidateIdentity,
+		const FireProductionProjectedHeunTransportProvider& provider,
+		const FireProductionScalarHeunFluxStage* firstStage,
+		std::vector<float>& acceptedCandidate,
+		FireProductionProjectedHeunCoupledStageResult& result,std::string* error)
+	{
+		acceptedCandidate.clear();result=FireProductionProjectedHeunCoupledStageResult();
+		try {
+			const FireProductionProjectionShape& shape=request_.source.Shape();
+			const std::size_t cells=shape.CellCount();
+			const bool r0=stage==FireProductionProjectedHeunStage::R0;
+			const bool r1=stage==FireProductionProjectedHeunStage::R1;
+			if((!r0&&!r1)||state.size()!=9u*cells||temperatureK.size()!=cells||
+				parentCandidateIdentity==0u||(r0!=(firstStage==0)))return Fail(error,
+					"projected-Heun coupled-stage protocol is invalid");
+			for(unsigned int axis=0u;axis<3u;++axis)if(
+				provisionalMomentum[axis].size()!=FireProductionProjectionFaceCount(shape,axis))
+				return Fail(error,"projected-Heun coupled-stage momentum shape is invalid");
+
+			auto projectionRequest=[&](const FireProductionScalarProjectionTargetSeal* target,
+				const FireProductionProjectionResult* prior){
+				FireProductionProjectionRequest projection;
+				projection.shape=shape;projection.timeStepS=request_.source.TimeStepS();
+				projection.ambientDensityKGPerM3=request_.forceContract.ambientDensityKGPerM3;
+				projection.boundary=request_.scalarContract.boundary;
+				OwnerGasDensity(shape,state,projection.gasDensityKGPerM3);
+				projection.provisionalMomentumKGPerM2S=provisionalMomentum;
+				if(!target)projection.divergenceTargetPerS.assign(cells,0.0f);
+				if(prior){
+					projection.openClassificationMode=
+						FireProductionProjectionUseSealedOpenClassification;
+					projection.sealedPressureOpenInflow=prior->pressureOpenInflow;
+				}else projection.openClassificationMode=
+					FireProductionProjectionDeriveOpenClassification;
+				return projection;
+			};
+
+			auto buildStage=[&](const FireProductionProjectionResult& projection,
+				const std::uint64_t targetIdentity,
+				FireProductionProjectedHeunTransportCoefficients& coefficients,
+				FireProductionScalarFCTRequest& scalar,
+				FireProductionScalarPhysicalFluxPrerequisiteRequest& physical,
+				FireProductionScalarHeunFluxStage& flux,
+				FireProductionNonpressureMomentumRHSResult& nonpressure)->bool{
+				const std::uint64_t projectionIdentity=
+					OwnerProjectionIdentity(targetIdentity,projection);
+				FireProductionProjectedHeunTransportContext context;
+				context.stage=stage;context.attemptIdentity=request_.attemptIdentity;
+				context.parentCandidateIdentity=parentCandidateIdentity;
+				context.projectionIdentity=projectionIdentity;
+				context.conservativeValues=&state;context.temperatureK=&temperatureK;
+				context.projectedVelocityMPerS=&projection.velocityMPerS;
+				coefficients=FireProductionProjectedHeunTransportCoefficients();
+				if(!provider.Evaluate(context,coefficients,error))return false;
+				if(coefficients.stage!=stage||
+					coefficients.attemptIdentity!=request_.attemptIdentity||
+					coefficients.parentCandidateIdentity!=parentCandidateIdentity||
+					coefficients.projectionIdentity!=projectionIdentity||
+					coefficients.diffusivityM2PerS.size()!=cells||
+					coefficients.conductivityWPerMK.size()!=cells||
+					coefficients.molecularKinematicViscosityM2PerS.size()!=cells)
+					return Fail(error,"projected-Heun transport publication lineage differs");
+				for(std::size_t cell=0u;cell<cells;++cell)if(
+					!std::isfinite(coefficients.diffusivityM2PerS[cell])||
+					coefficients.diffusivityM2PerS[cell]<0.0f||
+					!std::isfinite(coefficients.conductivityWPerMK[cell])||
+					coefficients.conductivityWPerMK[cell]<0.0f||
+					!std::isfinite(coefficients.molecularKinematicViscosityM2PerS[cell])||
+					coefficients.molecularKinematicViscosityM2PerS[cell]<0.0f)return Fail(error,
+						"projected-Heun transport coefficient is invalid");
+				scalar=request_.scalarContract;scalar.beginning=state;
+				scalar.sourceDelta=request_.source.SourceDelta();
+				scalar.frozenVelocityMPerS=projection.velocityMPerS;
+				scalar.pressureOpenInflow=projection.pressureOpenInflow;
+				physical=request_.physicalContract;physical.conservativeValues=state;
+				physical.temperatureK=temperatureK;
+				physical.diffusivityM2PerS=coefficients.diffusivityM2PerS;
+				physical.conductivityWPerMK=coefficients.conductivityWPerMK;
+				physical.frozenVelocityMPerS=projection.velocityMPerS;
+				physical.pressureOpenInflow=projection.pressureOpenInflow;
+				const FireProductionScalarHeunFluxRole fluxRole=r0?
+					FireProductionScalarHeunFluxRole::R0:FireProductionScalarHeunFluxRole::R1;
+				if(!ComposeFireProductionScalarHeunFluxStageCPU(request_.attemptIdentity,
+					fluxRole,scalar,physical,flux,error))return false;
+				FireProductionNonpressureMomentumRHSRequest force;
+				force.force=request_.forceContract;
+				force.force.cellGasDensityKGPerM3=projectionRequest(0,0).gasDensityKGPerM3;
+				force.force.molecularKinematicViscosityM2PerS=
+					coefficients.molecularKinematicViscosityM2PerS;
+				force.force.faceDensityKGPerM3=projection.faceDensityKGPerM3;
+				force.force.beginningMomentumKGPerM2S=projection.momentumKGPerM2S;
+				force.cellGasPhaseSourceRateKGPerM3S.assign(cells,0.0f);
+				for(std::size_t cell=0u;cell<cells;++cell){
+					float rate=0.0f;for(std::size_t component=1u;component<=6u;++component)
+						rate+=request_.source.SourceDelta()[component*cells+cell]/
+							request_.source.TimeStepS();
+					force.cellGasPhaseSourceRateKGPerM3S[cell]=rate;
+				}
+				return EvaluateFireProductionNonpressureMomentumRHSCPU(force,nonpressure,error);
+			};
+
+			FireProductionProjectionRequest firstProjectionRequest=projectionRequest(0,0);
+			if(firstProjectionRequest.gasDensityKGPerM3.size()!=cells)return Fail(error,
+				"projected-Heun gas density is invalid");
+			FireProductionProjectionResult firstProjection;
+			if(!ProjectFireProductionCPU(firstProjectionRequest,firstProjection,error))return false;
+			FireProductionProjectedHeunTransportCoefficients firstCoefficients;
+			FireProductionScalarFCTRequest firstScalar;
+			FireProductionScalarPhysicalFluxPrerequisiteRequest firstPhysical;
+			FireProductionScalarHeunFluxStage firstFlux;
+			FireProductionNonpressureMomentumRHSResult firstNonpressure;
+			if(!buildStage(firstProjection,0u,firstCoefficients,firstScalar,firstPhysical,
+				firstFlux,firstNonpressure))return false;
+			FireProductionScalarDivergenceTargetSeal base;
+			if(!ComposeFireProductionBaseDivergenceTargetCPU(request_.attemptIdentity,
+				r0?FireProductionScalarDivergenceTargetRole::R0Base:
+					FireProductionScalarDivergenceTargetRole::R1Base,
+				firstScalar,firstPhysical,request_.source,base,error))return false;
+			FireProductionScalarProjectionTargetSeal target;
+			if(!ComposeFireProductionInitialProjectionTargetCPU(base,target,error))return false;
+
+			FireProductionProjectionResult priorProjection;
+			FireProductionProjectedHeunTransportCoefficients priorCoefficients;
+			bool havePrior=false;
+			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
+				++iteration){
+				FireProductionProjectionRequest projection=projectionRequest(&target,
+					havePrior?&priorProjection:0);
+				FireProductionProjectionResult projected;
+				if(!ProjectFireProductionScalarTargetCPU(std::move(projection),target,
+					projected,error))return false;
+				FireProductionProjectedHeunTransportCoefficients coefficients;
+				FireProductionScalarFCTRequest scalar;
+				FireProductionScalarPhysicalFluxPrerequisiteRequest physical;
+				FireProductionScalarHeunFluxStage flux;
+				FireProductionNonpressureMomentumRHSResult nonpressure;
+				if(!buildStage(projected,target.TargetIdentity(),coefficients,scalar,physical,
+					flux,nonpressure))return false;
+				FireProductionScalarFCTResult scalarAcceptance;
+				FireProductionScalarHeunFluxStage averaged;
+				std::uint64_t fluxIdentity=flux.compositionIdentity;
+				if(r0){
+					if(!SolveFireProductionScalarFCTFluxPairCPU(scalar,
+						flux.compositeFluxPair,scalarAcceptance,error))return false;
+				}else {
+					if(!AverageFireProductionScalarHeunFluxStagesCPU(*firstStage,flux,
+						averaged,error))return false;
+					FireProductionScalarFCTRequest heunRequest=scalar;
+					heunRequest.beginning=request_.beginningConservativeValues;
+					if(!SolveFireProductionScalarFCTFluxPairCPU(
+						heunRequest,averaged.compositeFluxPair,
+						scalarAcceptance,error))return false;
+					fluxIdentity=averaged.compositionIdentity;
+				}
+				const std::vector<float>& candidate=scalarAcceptance.accepted;
+				const std::uint64_t candidateIdentity=OwnerCandidateIdentity(
+					request_.attemptIdentity,stage,parentCandidateIdentity,fluxIdentity,
+					candidate,scalarAcceptance.sharedFaceAlpha);
+				FireProductionScalarProjectionTargetSeal corrected;
+				if(!FireProductionProjectedHeunTargetAuthority::Correct(target,
+					candidate,candidateIdentity,corrected,error))return false;
+				float targetResidual=0.0f,momentumResidual=0.0f,coefficientResidual=0.0f;
+				for(std::size_t cell=0u;cell<cells;++cell)targetResidual=std::max(
+					targetResidual,std::fabs(corrected.TargetPerS()[cell]-target.TargetPerS()[cell]));
+				if(havePrior){
+					for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;
+						face<projected.momentumKGPerM2S[axis].size();++face)
+						momentumResidual=std::max(momentumResidual,std::fabs(
+							projected.momentumKGPerM2S[axis][face]-
+							priorProjection.momentumKGPerM2S[axis][face])/shape.cellWidthM);
+					for(std::size_t cell=0u;cell<cells;++cell)coefficientResidual=std::max({
+						coefficientResidual,std::fabs(coefficients.diffusivityM2PerS[cell]-
+							priorCoefficients.diffusivityM2PerS[cell]),std::fabs(
+							coefficients.conductivityWPerMK[cell]-
+							priorCoefficients.conductivityWPerMK[cell]),std::fabs(
+							coefficients.molecularKinematicViscosityM2PerS[cell]-
+							priorCoefficients.molecularKinematicViscosityM2PerS[cell])});
+				}
+				const float residual=std::max({targetResidual,momentumResidual,
+					coefficientResidual});
+				result.picardResidualPerS.push_back(residual);
+				if(havePrior&&residual<=request_.projectionTolerancePerS){
+					acceptedCandidate=candidate;
+					result.stage=stage;result.projection=std::move(projected);
+					result.flux=std::move(flux);result.scalarAcceptance=std::move(scalarAcceptance);
+					result.nonpressure=std::move(nonpressure);result.target=std::move(corrected);
+					result.parentCandidateIdentity=parentCandidateIdentity;
+					result.acceptedCandidateIdentity=candidateIdentity;
+					result.acceptedIterationCount=iteration+1u;
+					if(error)error->clear();return true;
+				}
+				target=std::move(corrected);priorProjection=std::move(projected);
+				priorCoefficients=std::move(coefficients);havePrior=true;
+			}
+			return Fail(error,"projected-Heun coupled Picard stage did not converge");
+		} catch(const std::bad_alloc&){
+			acceptedCandidate.clear();result=FireProductionProjectedHeunCoupledStageResult();
+			return Fail(error,"projected-Heun coupled-stage allocation failed");
+		}
+	}
+
+	bool FireProductionProjectedHeunCPUOwner::SolveR0(
+		const FireProductionProjectedHeunTransportProvider& provider,std::string* error)
+	{
+		if(state_!=State::Begun)return Fail(error,
+			"projected-Heun R0 is out of order");
+		try {
+			FireProductionProjectedHeunCoupledStageResult r0;
+			std::vector<float> predictor;
+			if(!SolveCoupledStage(FireProductionProjectedHeunStage::R0,
+				request_.beginningConservativeValues,request_.source.BeginningTemperatureK(),
+				request_.beginningMomentumKGPerM2S,request_.source.PacketIdentity(),provider,0,
+				predictor,r0,error))return false;
+			FireProductionScalarEOSAcceptanceRequest eosRequest;
+			eosRequest.shape=request_.source.Shape();eosRequest.timeStepS=request_.source.TimeStepS();
+			eosRequest.attemptIdentity=request_.attemptIdentity;
+			eosRequest.stage=FireProductionScalarEOSStage::QStar;
+			eosRequest.producerPrecision=FireStateProducerPrecision::Binary32;
+			eosRequest.methaneRecordId=request_.source.MethaneRecordId();
+			eosRequest.caseRecordEnvelope=request_.caseRecordEnvelope;
+			eosRequest.conservativeValues=predictor;
+			FireProductionScalarEOSAcceptanceResult predictorEOS;
+			if(!EvaluateFireProductionScalarEOSAcceptanceCPU(eosRequest,predictorEOS,error))
+				return false;
+			FireProductionCompatibleFCTMomentumResult advection;
+			if(!OwnerCompatibleMomentum(r0.flux,r0.scalarAcceptance,
+				r0.projection.velocityMPerS,advection,error))return false;
+			std::array<std::vector<float>,3> predictorMomentum;
+			const float dt=request_.source.TimeStepS();
+			for(unsigned int axis=0u;axis<3u;++axis){
+				predictorMomentum[axis].resize(request_.beginningMomentumKGPerM2S[axis].size());
+				for(std::size_t face=0u;face<predictorMomentum[axis].size();++face){
+					const float value=request_.beginningMomentumKGPerM2S[axis][face]+dt*(
+						r0.nonpressure.combinedMomentumRateKGPerM2S2[axis][face]-
+						advection.advectionRateKGPerM2S2[axis][face]);
+					if(!std::isfinite(value))return Fail(error,
+						"projected-Heun R0 provisional momentum overflowed");
+					predictorMomentum[axis][face]=value;
+				}
+			}
+			work_.r0=std::move(r0);work_.predictorEOS=std::move(predictorEOS);
+			predictor_=std::move(predictor);predictorMomentum_=std::move(predictorMomentum);
+			state_=State::R0Complete;if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){return Fail(error,
+			"projected-Heun R0 allocation failed");}
+	}
+
+	bool FireProductionProjectedHeunCPUOwner::SolveR1(
+		const FireProductionProjectedHeunTransportProvider& provider,std::string* error)
+	{
+		if(state_!=State::R0Complete)return Fail(error,
+			"projected-Heun R1 is out of order");
+		try {
+			FireProductionProjectedHeunCoupledStageResult r1;
+			std::vector<float> committed;
+			if(!SolveCoupledStage(FireProductionProjectedHeunStage::R1,predictor_,
+				work_.predictorEOS.temperatureK,predictorMomentum_,
+				work_.r0.acceptedCandidateIdentity,provider,&work_.r0.flux,committed,r1,error))
+				return false;
+			FireProductionScalarHeunFluxStage averaged;
+			if(!AverageFireProductionScalarHeunFluxStagesCPU(work_.r0.flux,r1.flux,
+				averaged,error))return false;
+			FireProductionScalarFCTRequest heunRequest=request_.scalarContract;
+			heunRequest.beginning=request_.beginningConservativeValues;
+			heunRequest.sourceDelta=request_.source.SourceDelta();
+			heunRequest.frozenVelocityMPerS=work_.r0.projection.velocityMPerS;
+			heunRequest.pressureOpenInflow=work_.r0.projection.pressureOpenInflow;
+			FireProductionScalarHeunSolveResult heunSolve;
+			if(!SolveFireProductionScalarHeunFluxStageCPU(request_.attemptIdentity,heunRequest,
+				averaged,heunSolve,error)||!SameOwnerFloatBits(heunSolve.scalar.accepted,committed))
+				return Fail(error,"projected-Heun R1 terminal alpha lineage differs");
+			FireProductionScalarEOSAcceptanceRequest eosRequest;
+			eosRequest.shape=request_.source.Shape();eosRequest.timeStepS=request_.source.TimeStepS();
+			eosRequest.attemptIdentity=request_.attemptIdentity;
+			eosRequest.stage=FireProductionScalarEOSStage::QNPlus1;
+			eosRequest.producerPrecision=FireStateProducerPrecision::Binary32;
+			eosRequest.methaneRecordId=request_.source.MethaneRecordId();
+			eosRequest.caseRecordEnvelope=request_.caseRecordEnvelope;
+			eosRequest.conservativeValues=committed;
+			FireProductionScalarEOSAcceptanceResult committedEOS;
+			if(!EvaluateFireProductionScalarEOSAcceptanceCPU(eosRequest,committedEOS,error))
+				return false;
+			FireProductionCompatibleFCTMomentumResult advection0,advection1;
+			if(!EvaluateFireProductionCompatibleHeunMomentumCPU(work_.r0.flux,heunSolve,
+				work_.r0.projection.velocityMPerS,advection0,error)||
+				!EvaluateFireProductionCompatibleHeunMomentumCPU(r1.flux,heunSolve,
+					r1.projection.velocityMPerS,advection1,error))return false;
+			std::array<std::vector<float>,3> heunMomentum;
+			const float halfDt=0.5f*request_.source.TimeStepS();
+			for(unsigned int axis=0u;axis<3u;++axis){
+				heunMomentum[axis].resize(request_.beginningMomentumKGPerM2S[axis].size());
+				for(std::size_t face=0u;face<heunMomentum[axis].size();++face){
+					const float value=request_.beginningMomentumKGPerM2S[axis][face]+halfDt*(
+						work_.r0.nonpressure.combinedMomentumRateKGPerM2S2[axis][face]+
+						r1.nonpressure.combinedMomentumRateKGPerM2S2[axis][face]-
+						advection0.advectionRateKGPerM2S2[axis][face]-
+						advection1.advectionRateKGPerM2S2[axis][face]);
+					if(!std::isfinite(value))return Fail(error,
+						"projected-Heun Heun provisional momentum overflowed");
+					heunMomentum[axis][face]=value;
+				}
+			}
+			work_.r1=std::move(r1);work_.averagedFlux=std::move(averaged);
+			work_.heunSolve=std::move(heunSolve);work_.committedEOS=std::move(committedEOS);
+			work_.conservativeValues=std::move(committed);heunMomentum_=std::move(heunMomentum);
+			state_=State::R1Complete;if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){return Fail(error,
+			"projected-Heun R1 allocation failed");}
+	}
+
+	bool FireProductionProjectedHeunCPUOwner::SolveR2(
+		const FireProductionProjectedHeunTransportProvider& provider,
+		FireProductionProjectedHeunOwnerResult& result,std::string* error)
+	{
+		result=FireProductionProjectedHeunOwnerResult();
+		if(state_!=State::R1Complete)return Fail(error,
+			"projected-Heun R2 is out of order");
+		try {
+			const FireProductionProjectionShape& shape=request_.source.Shape();
+			const std::size_t cells=shape.CellCount();
+			FireProductionScalarProjectionTargetSeal endpointTarget;
+			if(!FireProductionProjectedHeunTargetAuthority::HeunBase(
+				work_.averagedFlux,work_.conservativeValues,work_.committedEOS.temperatureK,
+				request_.source,endpointTarget,error))return false;
+			FireProductionProjectionRequest projection;
+			projection.shape=shape;projection.timeStepS=request_.source.TimeStepS();
+			projection.ambientDensityKGPerM3=request_.forceContract.ambientDensityKGPerM3;
+			projection.boundary=request_.scalarContract.boundary;
+			if(!OwnerGasDensity(shape,work_.conservativeValues,projection.gasDensityKGPerM3))
+				return Fail(error,"projected-Heun R2 gas density is invalid");
+			projection.provisionalMomentumKGPerM2S=heunMomentum_;
+			projection.openClassificationMode=
+				FireProductionProjectionUseSealedOpenClassification;
+			projection.openHeadMode=FireProductionProjectionUseSealedOpenHead;
+			projection.outputClassificationMode=
+				FireProductionProjectionDeriveEndpointOpenClassification;
+			projection.endpointVelocityToleranceMPerS=request_.endpointVelocityToleranceMPerS;
+			for(unsigned int side=0u;side<6u;++side){
+				const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+				const std::size_t firstCount=axis==0u?shape.ny:shape.nx;
+				const std::size_t secondCount=axis==2u?shape.ny:shape.nz;
+				const std::size_t count=firstCount*secondCount;
+				projection.sealedPressureOpenInflow[side]=
+					work_.r1.projection.pressureOpenInflow[side];
+				if(projection.sealedPressureOpenInflow[side].size()!=count)
+					return Fail(error,"projected-Heun R2 open classification shape differs");
+				projection.sealedPressureOpenDynamicPressurePa[side].assign(count,0.0f);
+				if(projection.boundary[side]!=FireProductionProjectionPressureOpen)continue;
+				for(std::size_t second=0u;second<secondCount;++second)
+					for(std::size_t first=0u;first<firstCount;++first){
+						std::size_t x=0u,y=0u,z=0u;
+						if(axis==0u){x=positive?shape.nx:0u;y=first;z=second;}
+						if(axis==1u){x=first;y=positive?shape.ny:0u;z=second;}
+						if(axis==2u){x=first;y=second;z=positive?shape.nz:0u;}
+						const std::size_t face=axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
+							(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:
+								(z*shape.ny+y)*shape.nx+x);
+						const float u0=work_.r0.projection.velocityMPerS[axis][face];
+						const float u1=work_.r1.projection.velocityMPerS[axis][face];
+						const float rho0=work_.r0.projection.faceDensityKGPerM3[axis][face];
+						const float rho1=work_.r1.projection.faceDensityKGPerM3[axis][face];
+						const std::size_t boundaryFace=second*firstCount+first;
+						const float head=0.25f*((work_.r0.projection.pressureOpenInflow[
+							side][boundaryFace]?rho0*u0*u0:0.0f)+
+							(work_.r1.projection.pressureOpenInflow[side][boundaryFace]?
+								rho1*u1*u1:0.0f));
+						if(!std::isfinite(head))return Fail(error,
+							"projected-Heun R2 open head is nonfinite");
+						projection.sealedPressureOpenDynamicPressurePa[side][boundaryFace]=head;
+					}
+			}
+			FireProductionProjectionResult projected;
+			if(!ProjectFireProductionScalarTargetCPU(std::move(projection),endpointTarget,
+				projected,error))return false;
+			const std::uint64_t projectionIdentity=
+				OwnerProjectionIdentity(endpointTarget.TargetIdentity(),projected);
+			FireProductionProjectedHeunTransportContext context;
+			context.stage=FireProductionProjectedHeunStage::R2;
+			context.attemptIdentity=request_.attemptIdentity;
+			context.parentCandidateIdentity=work_.r1.acceptedCandidateIdentity;
+			context.projectionIdentity=projectionIdentity;
+			context.conservativeValues=&work_.conservativeValues;
+			context.temperatureK=&work_.committedEOS.temperatureK;
+			context.projectedVelocityMPerS=&projected.velocityMPerS;
+			FireProductionProjectedHeunTransportCoefficients coefficients;
+			if(!provider.Evaluate(context,coefficients,error))return false;
+			if(coefficients.stage!=FireProductionProjectedHeunStage::R2||
+				coefficients.attemptIdentity!=request_.attemptIdentity||
+				coefficients.parentCandidateIdentity!=work_.r1.acceptedCandidateIdentity||
+				coefficients.projectionIdentity!=projectionIdentity||
+				coefficients.diffusivityM2PerS.size()!=cells||
+				coefficients.conductivityWPerMK.size()!=cells||
+				coefficients.molecularKinematicViscosityM2PerS.size()!=cells)
+				return Fail(error,"projected-Heun R2 transport lineage differs");
+			FireProductionScalarPhysicalFluxPrerequisiteRequest physical=
+				request_.physicalContract;
+			physical.conservativeValues=work_.conservativeValues;
+			physical.temperatureK=work_.committedEOS.temperatureK;
+			physical.diffusivityM2PerS=coefficients.diffusivityM2PerS;
+			physical.conductivityWPerMK=coefficients.conductivityWPerMK;
+			physical.frozenVelocityMPerS=projected.velocityMPerS;
+			physical.pressureOpenInflow=projected.pressureOpenInflow;
+			FireProductionScalarPhysicalFluxPrerequisiteResult endpointFlux;
+			if(!BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(physical,
+				endpointFlux,error))return false;
+			FireProductionNonpressureMomentumRHSRequest force;
+			force.force=request_.forceContract;
+			if(!OwnerGasDensity(shape,work_.conservativeValues,
+				force.force.cellGasDensityKGPerM3))return Fail(error,
+					"projected-Heun R2 force density is invalid");
+			force.force.molecularKinematicViscosityM2PerS=
+				coefficients.molecularKinematicViscosityM2PerS;
+			force.force.faceDensityKGPerM3=projected.faceDensityKGPerM3;
+			force.force.beginningMomentumKGPerM2S=projected.momentumKGPerM2S;
+			force.cellGasPhaseSourceRateKGPerM3S.assign(cells,0.0f);
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;
+				component<=6u;++component)force.cellGasPhaseSourceRateKGPerM3S[cell]+=
+					request_.source.SourceDelta()[component*cells+cell]/request_.source.TimeStepS();
+			FireProductionNonpressureMomentumRHSResult endpointRHS;
+			if(!EvaluateFireProductionNonpressureMomentumRHSCPU(force,endpointRHS,error))return false;
+			work_.r2.stage=FireProductionProjectedHeunStage::R2;
+			work_.r2.projection=std::move(projected);work_.r2.nonpressure=std::move(endpointRHS);
+			work_.r2.target=std::move(endpointTarget);
+			work_.r2.parentCandidateIdentity=work_.r1.acceptedCandidateIdentity;
+			work_.r2.acceptedCandidateIdentity=work_.r1.acceptedCandidateIdentity;
+			work_.r2.acceptedIterationCount=1u;
+			work_.momentumKGPerM2S=work_.r2.projection.momentumKGPerM2S;
+			work_.velocityMPerS=work_.r2.projection.velocityMPerS;
+			work_.stepAveragePressurePa=work_.r2.projection.pressurePa;
+			std::uint64_t ownerIdentity=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE complete projected-Heun CPU owner v1";
+			for(const unsigned char byte:domain)OwnerHashByte(ownerIdentity,byte);
+			OwnerHashUInt64(ownerIdentity,request_.attemptIdentity);
+			OwnerHashUInt64(ownerIdentity,work_.r0.acceptedCandidateIdentity);
+			OwnerHashUInt64(ownerIdentity,work_.r1.acceptedCandidateIdentity);
+			OwnerHashUInt64(ownerIdentity,work_.r2.target.TargetIdentity());
+			OwnerHashFloats(ownerIdentity,work_.conservativeValues);
+			for(const std::vector<float>& axis:work_.momentumKGPerM2S)
+				OwnerHashFloats(ownerIdentity,axis);
+			work_.ownerIdentity=ownerIdentity;work_.accepted=true;
+			state_=State::Complete;result=work_;if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){return Fail(error,
+			"projected-Heun R2 allocation failed");}
+	}
 }

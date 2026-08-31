@@ -125,6 +125,56 @@ def transform(text: str, name: str, suffix: str) -> str:
     # Decimal and hexadecimal floating literals use the same expression tree;
     # only their storage suffix changes.
     text = re.sub(r"(?<=[0-9])f\b", "", text)
+    # Calibration alone may translate an already authenticated binary32 source
+    # packet into binary64 storage.  The live header exposes no such importer;
+    # this template exists only in the mechanically generated mirror so the full
+    # owner, rather than disconnected kernels, can be compared at matched inputs.
+    if name == "FireProductionTransport" and suffix == ".h":
+        anchor = "\t\tbool IsSealed() const { return sealed_; }\n\t};\n\n\t//! Recomputes every published-content"
+        if text.count(anchor) != 1:
+            raise RuntimeError("frozen source seal calibration-import seam changed")
+        importer = """\t\tbool IsSealed() const { return sealed_; }
+		template<class Binary32Seal>
+		static FireProductionFrozenSourcePacketSeal CalibrationImport(
+			const Binary32Seal& source )
+		{
+			FireProductionFrozenSourcePacketSeal result;
+			result.shape_.nx=source.Shape().nx;result.shape_.ny=source.Shape().ny;
+			result.shape_.nz=source.Shape().nz;
+			result.shape_.cellWidthM=static_cast<double>(source.Shape().cellWidthM);
+			result.timeStepS_=static_cast<double>(source.TimeStepS());
+			result.beginningTimeS_=source.BeginningTimeS();
+			result.attemptIdentity_=source.AttemptIdentity();
+			result.methaneRecordId_=source.MethaneRecordId();
+			result.transportRecordId_=source.TransportRecordId();
+			result.opacityRecordId_=source.OpacityRecordId();
+			result.caseRecordId_=source.CaseRecordId();
+			result.beginningTemperatureK_.assign(source.BeginningTemperatureK().begin(),
+				source.BeginningTemperatureK().end());
+			result.sourceDelta_.assign(source.SourceDelta().begin(),source.SourceDelta().end());
+			result.divergenceTargetPerS_.assign(source.DivergenceTargetPerS().begin(),
+				source.DivergenceTargetPerS().end());
+			result.reactedFuelKGPerM3_=source.ReactedFuelKGPerM3();
+			result.oxidizedCarbonKGPerM3_=source.OxidizedCarbonKGPerM3();
+			result.grossCarbonFormedKGPerM3_=source.GrossCarbonFormedKGPerM3();
+			result.gasHeatReleaseWPerM3_=source.GasHeatReleaseWPerM3();
+			result.sootHeatReleaseWPerM3_=source.SootHeatReleaseWPerM3();
+			result.pilotEnergyDeltaJPerM3_=source.PilotEnergyDeltaJPerM3();
+			result.pilotExpansionIntegral_=source.PilotExpansionIntegral();
+			result.radiativeCoolingWPerM3_=source.RadiativeCoolingWPerM3();
+			result.radiationBeta_=source.RadiationBeta();
+			result.radiationGamma_=source.RadiationGamma();
+			result.radiationEscapeFactor_=source.RadiationEscapeFactor();
+			result.maximumScaledExpansion_=source.MaximumScaledExpansion();
+			result.beginningStateIdentity_=source.BeginningStateIdentity();
+			result.reactionControlIdentity_=source.ReactionControlIdentity();
+			result.sourceInputIdentity_=source.SourceInputIdentity();
+			result.FinalizeIdentities();return result;
+		}
+	};
+
+	//! Recomputes every published-content"""
+        text = text.replace(anchor, importer)
     if suffix == ".h":
         guards = {
             "FireProductionAdvection": "FIREPRODUCTIONADVECTION_",

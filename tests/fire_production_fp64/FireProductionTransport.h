@@ -25,6 +25,9 @@ namespace RISEFireProductionFP64
 {
 	struct FireProductionFrozenMethaneSourceRequest;
 	class FireProductionFrozenSourcePacketSeal;
+	class FireProductionProjectedHeunCPUOwner;
+	class FireProductionProjectedHeunTargetAuthority;
+	struct FireProductionScalarHeunFluxStage;
 	namespace FireSim
 	{
 		//! Complete declaration prevents a client from defining a counterfeit friend
@@ -434,6 +437,43 @@ namespace RISEFireProductionFP64
 		std::uint64_t PacketContentIdentity() const { return packetContentIdentity_; }
 		std::uint64_t PacketIdentity() const { return packetIdentity_; }
 		bool IsSealed() const { return sealed_; }
+		template<class Binary32Seal>
+		static FireProductionFrozenSourcePacketSeal CalibrationImport(
+			const Binary32Seal& source )
+		{
+			FireProductionFrozenSourcePacketSeal result;
+			result.shape_.nx=source.Shape().nx;result.shape_.ny=source.Shape().ny;
+			result.shape_.nz=source.Shape().nz;
+			result.shape_.cellWidthM=static_cast<double>(source.Shape().cellWidthM);
+			result.timeStepS_=static_cast<double>(source.TimeStepS());
+			result.beginningTimeS_=source.BeginningTimeS();
+			result.attemptIdentity_=source.AttemptIdentity();
+			result.methaneRecordId_=source.MethaneRecordId();
+			result.transportRecordId_=source.TransportRecordId();
+			result.opacityRecordId_=source.OpacityRecordId();
+			result.caseRecordId_=source.CaseRecordId();
+			result.beginningTemperatureK_.assign(source.BeginningTemperatureK().begin(),
+				source.BeginningTemperatureK().end());
+			result.sourceDelta_.assign(source.SourceDelta().begin(),source.SourceDelta().end());
+			result.divergenceTargetPerS_.assign(source.DivergenceTargetPerS().begin(),
+				source.DivergenceTargetPerS().end());
+			result.reactedFuelKGPerM3_=source.ReactedFuelKGPerM3();
+			result.oxidizedCarbonKGPerM3_=source.OxidizedCarbonKGPerM3();
+			result.grossCarbonFormedKGPerM3_=source.GrossCarbonFormedKGPerM3();
+			result.gasHeatReleaseWPerM3_=source.GasHeatReleaseWPerM3();
+			result.sootHeatReleaseWPerM3_=source.SootHeatReleaseWPerM3();
+			result.pilotEnergyDeltaJPerM3_=source.PilotEnergyDeltaJPerM3();
+			result.pilotExpansionIntegral_=source.PilotExpansionIntegral();
+			result.radiativeCoolingWPerM3_=source.RadiativeCoolingWPerM3();
+			result.radiationBeta_=source.RadiationBeta();
+			result.radiationGamma_=source.RadiationGamma();
+			result.radiationEscapeFactor_=source.RadiationEscapeFactor();
+			result.maximumScaledExpansion_=source.MaximumScaledExpansion();
+			result.beginningStateIdentity_=source.BeginningStateIdentity();
+			result.reactionControlIdentity_=source.ReactionControlIdentity();
+			result.sourceInputIdentity_=source.SourceInputIdentity();
+			result.FinalizeIdentities();return result;
+		}
 	};
 
 	//! Recomputes every published-content and parent identity.  It cannot mint a
@@ -543,6 +583,7 @@ namespace RISEFireProductionFP64
 			FireProductionScalarProjectionTargetSeal&,std::string* );
 		friend bool FireProductionScalarProjectionTargetSealMatches(
 			const FireProductionScalarProjectionTargetSeal&,std::string* );
+		friend class FireProductionProjectedHeunTargetAuthority;
 
 		FireProductionProjectionShape shape_;
 		double timeStepS_;
@@ -551,13 +592,17 @@ namespace RISEFireProductionFP64
 		std::array<FireProductionProjectionBoundary,6> boundary_;
 		std::vector<double> targetPerS_;
 		std::uint64_t baseTargetIdentity_;
+		std::uint64_t parentTargetIdentity_;
+		std::uint64_t acceptedCandidateIdentity_;
+		std::uint32_t correctionIteration_;
 		std::uint64_t targetIdentity_;
 		bool sealed_;
 
 	public:
 		FireProductionScalarProjectionTargetSeal() : timeStepS_(0.0),
 			attemptIdentity_(0u),role_(static_cast<FireProductionScalarDivergenceTargetRole>(0u)),
-			baseTargetIdentity_(0u),targetIdentity_(0u),sealed_(false)
+			baseTargetIdentity_(0u),parentTargetIdentity_(0u),
+			acceptedCandidateIdentity_(0u),correctionIteration_(0u),targetIdentity_(0u),sealed_(false)
 			{ boundary_.fill(FireProductionProjectionWall); }
 
 		const FireProductionProjectionShape& Shape() const { return shape_; }
@@ -568,6 +613,10 @@ namespace RISEFireProductionFP64
 			{ return boundary_; }
 		const std::vector<double>& TargetPerS() const { return targetPerS_; }
 		std::uint64_t BaseTargetIdentity() const { return baseTargetIdentity_; }
+		std::uint64_t ParentTargetIdentity() const { return parentTargetIdentity_; }
+		std::uint64_t AcceptedCandidateIdentity() const
+			{ return acceptedCandidateIdentity_; }
+		std::uint32_t CorrectionIteration() const { return correctionIteration_; }
 		std::uint64_t TargetIdentity() const { return targetIdentity_; }
 		bool IsSealed() const { return sealed_; }
 	};
@@ -575,6 +624,27 @@ namespace RISEFireProductionFP64
 	bool FireProductionScalarProjectionTargetSealMatches(
 		const FireProductionScalarProjectionTargetSeal& seal,
 		std::string* error=0 );
+
+	//! Owner-private r70 target authority.  Only the complete projected-Heun
+	//! owner may call its methods; no public function can attach an arbitrary
+	//! state to a projection target or mint accepted-step authority.
+	class FireProductionProjectedHeunTargetAuthority
+	{
+		friend class FireProductionProjectedHeunCPUOwner;
+			static bool Correct(
+				const FireProductionScalarProjectionTargetSeal& current,
+				const std::vector<double>& acceptedCandidate,
+				std::uint64_t acceptedCandidateIdentity,
+				FireProductionScalarProjectionTargetSeal& result,
+				std::string* error );
+			static bool HeunBase(
+				const FireProductionScalarHeunFluxStage& averagedStage,
+				const std::vector<double>& committedConservativeValues,
+				const std::vector<double>& committedTemperatureK,
+				const FireProductionFrozenSourcePacketSeal& source,
+				FireProductionScalarProjectionTargetSeal& result,
+				std::string* error );
+	};
 
 	//! CPU projection primitive for an authenticated initial target. The request is
 	//! consumed by value so its target slot can be filled without copying the
@@ -828,6 +898,14 @@ namespace RISEFireProductionFP64
 	//! All-periodic and all-nonperiodic topologies are supported.  Hybrid
 	//! periodic/open topology is rejected until it has an authoritative oracle.
 	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,
+		std::string* error=0 );
+
+	//! Direct-delta calibration seam used by the projected-Heun owner before the
+	//! final average has an identity-bearing solve.  `highGasFlux` carries
+	//! DeltaPhi, matching the retained stage bytes without reconstruction.
+	bool EvaluateFireProductionCompatibleFCTMomentumDeltaCPU(
 		const FireProductionCompatibleFCTMomentumRequest& request,
 		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );

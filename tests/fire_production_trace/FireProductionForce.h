@@ -176,6 +176,154 @@ namespace RISEFireProductionTrace
 		FireProductionNonpressureMomentumRHSResult& result,
 		std::string* error=0 );
 
+	//! Ordered stages of the complete Section 3.7 projected-Heun owner.  These
+	//! values are identity-bearing protocol ordinals, not interchangeable labels.
+	enum class FireProductionProjectedHeunStage : std::uint8_t
+	{
+		R0=1u,
+		R1=2u,
+		R2=3u
+	};
+
+	struct FireProductionProjectedHeunTransportContext
+	{
+		FireProductionProjectedHeunStage stage;
+		std::uint64_t attemptIdentity;
+		std::uint64_t parentCandidateIdentity;
+		std::uint64_t projectionIdentity;
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>* conservativeValues;
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>* temperatureK;
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>* projectedVelocityMPerS;
+
+		FireProductionProjectedHeunTransportContext() :
+			stage(static_cast<FireProductionProjectedHeunStage>(0u)),attemptIdentity(0u),
+			parentCandidateIdentity(0u),projectionIdentity(0u),conservativeValues(0),temperatureK(0),
+			projectedVelocityMPerS(0) {}
+	};
+
+	//! Stage transport publication.  The echoed protocol lineage is checked
+	//! before any coefficient can enter f_N, A-hat, or the next Picard iterate.
+	struct FireProductionProjectedHeunTransportCoefficients
+	{
+		FireProductionProjectedHeunStage stage;
+		std::uint64_t attemptIdentity;
+		std::uint64_t parentCandidateIdentity;
+		std::uint64_t projectionIdentity;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> diffusivityM2PerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> conductivityWPerMK;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> molecularKinematicViscosityM2PerS;
+
+		FireProductionProjectedHeunTransportCoefficients() :
+			stage(static_cast<FireProductionProjectedHeunStage>(0u)),attemptIdentity(0u),
+			parentCandidateIdentity(0u),projectionIdentity(0u) {}
+	};
+
+	class FireProductionProjectedHeunTransportProvider
+	{
+	public:
+		virtual ~FireProductionProjectedHeunTransportProvider() {}
+		virtual bool Evaluate(
+			const FireProductionProjectedHeunTransportContext& context,
+			FireProductionProjectedHeunTransportCoefficients& result,
+			std::string* error=0 ) const=0;
+	};
+
+	//! Raw step inputs plus invariant scalar/force contracts.  State-, velocity-,
+	//! target-, classification-, coefficient-, and force-owned arrays in the
+	//! template requests must be empty: the owner fills them from the immediately
+	//! preceding authenticated publication.
+	struct FireProductionProjectedHeunOwnerRequest
+	{
+		std::uint64_t attemptIdentity;
+		FireProductionFrozenSourcePacketSeal source;
+		RISE::RISECBOR64::Bytes caseRecordEnvelope;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> beginningConservativeValues;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> beginningMomentumKGPerM2S;
+		FireProductionScalarFCTRequest scalarContract;
+		FireProductionScalarPhysicalFluxPrerequisiteRequest physicalContract;
+		FireProductionFrozenForceRequest forceContract;
+		FireProductionRoundoffTrace::TraceFloat projectionTolerancePerS;
+		FireProductionRoundoffTrace::TraceFloat endpointVelocityToleranceMPerS;
+		std::uint32_t maximumPicardIterations;
+
+		FireProductionProjectedHeunOwnerRequest() : attemptIdentity(0u),
+			projectionTolerancePerS(0.0f),endpointVelocityToleranceMPerS(0.0f),
+			maximumPicardIterations(64u) {}
+	};
+
+	struct FireProductionProjectedHeunCoupledStageResult
+	{
+		FireProductionProjectedHeunStage stage;
+		FireProductionProjectionResult projection;
+		FireProductionScalarHeunFluxStage flux;
+		FireProductionScalarFCTResult scalarAcceptance;
+		FireProductionNonpressureMomentumRHSResult nonpressure;
+		FireProductionScalarProjectionTargetSeal target;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> picardResidualPerS;
+		std::uint64_t parentCandidateIdentity;
+		std::uint64_t acceptedCandidateIdentity;
+		std::uint32_t acceptedIterationCount;
+
+		FireProductionProjectedHeunCoupledStageResult() :
+			stage(static_cast<FireProductionProjectedHeunStage>(0u)),
+			parentCandidateIdentity(0u),acceptedCandidateIdentity(0u),
+			acceptedIterationCount(0u) {}
+	};
+
+	struct FireProductionProjectedHeunOwnerResult
+	{
+		std::vector<FireProductionRoundoffTrace::TraceFloat> conservativeValues;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> momentumKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> velocityMPerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> stepAveragePressurePa;
+		FireProductionScalarEOSAcceptanceResult predictorEOS;
+		FireProductionScalarEOSAcceptanceResult committedEOS;
+		FireProductionScalarHeunFluxStage averagedFlux;
+		FireProductionScalarHeunSolveResult heunSolve;
+		FireProductionProjectedHeunCoupledStageResult r0,r1,r2;
+		std::uint64_t ownerIdentity;
+		bool accepted;
+
+		FireProductionProjectedHeunOwnerResult() : ownerIdentity(0u),accepted(false) {}
+	};
+
+	//! Stateful CPU calibration owner for R0 -> R1 -> R2.  Each method accepts
+	//! exactly one next stage.  Failure is atomic and leaves the owner in its
+	//! prior protocol state, making stale-candidate and out-of-order refusal
+	//! observable without exposing a target-minting function.
+	class FireProductionProjectedHeunCPUOwner
+	{
+	public:
+		FireProductionProjectedHeunCPUOwner();
+		bool Begin(const FireProductionProjectedHeunOwnerRequest& request,
+			std::string* error=0);
+		bool SolveR0(const FireProductionProjectedHeunTransportProvider& provider,
+			std::string* error=0);
+		bool SolveR1(const FireProductionProjectedHeunTransportProvider& provider,
+			std::string* error=0);
+		bool SolveR2(const FireProductionProjectedHeunTransportProvider& provider,
+			FireProductionProjectedHeunOwnerResult& result,std::string* error=0);
+	private:
+		enum class State : std::uint8_t { Empty=0u,Begun=1u,R0Complete=2u,
+			R1Complete=3u,Complete=4u };
+		State state_;
+		FireProductionProjectedHeunOwnerRequest request_;
+		FireProductionProjectedHeunOwnerResult work_;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> predictor_;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> predictorMomentum_;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunMomentum_;
+		bool SolveCoupledStage(FireProductionProjectedHeunStage stage,
+			const std::vector<FireProductionRoundoffTrace::TraceFloat>& state,
+			const std::vector<FireProductionRoundoffTrace::TraceFloat>& temperatureK,
+			const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& provisionalMomentum,
+			std::uint64_t parentCandidateIdentity,
+			const FireProductionProjectedHeunTransportProvider& provider,
+			const FireProductionScalarHeunFluxStage* firstStage,
+			std::vector<FireProductionRoundoffTrace::TraceFloat>& acceptedCandidate,
+			FireProductionProjectedHeunCoupledStageResult& result,
+			std::string* error);
+	};
+
 	bool FireProductionNonpressureMomentumRHSWorkingSetBytes(
 		const FireProductionProjectionShape& shape,
 		std::uint64_t& bytes );

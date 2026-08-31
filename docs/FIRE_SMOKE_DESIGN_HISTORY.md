@@ -4778,3 +4778,38 @@ it was already tried and refuted here.
   tier-10 onset follow, then the r170/readmission re-derivation and tier-10
   queue. Renders and simulations remain sequential. Manifest SHA:
   `c5dcaacd6c5f858fbaefaaa611c02fe213481a2dbde0ba45355c67b3a7ee42d5`.
+
+- **r190 complete CPU R0/R1/R2 owner (2026-08-31):** moves the r70
+  correction into the only scope that possesses its real parent.  The owner
+  starts from raw `Q^n`, `M^n`, the opaque r186 source packet, and invariant
+  scalar/force contracts.  Every Picard iteration first projects the fixed
+  stage provisional momentum, then requests transport coefficients against an
+  identity containing that exact projection, rebuilds donor/MC plus physical
+  flux, solves the applicable shared limiter, and only then mints the next
+  target.  The target-chain v2 identity binds its parent target, the exact
+  accepted-candidate identity, and the correction ordinal.  The correcting
+  authority is private and friends only the complete owner; there is still no
+  standalone public r70 producer.
+
+  R0 publishes `Q*` through the Q-star EOS gate and assembles
+  `M*dagger=M^n+dt(A0-D_i K0)` from the projected force-inclusive stage.  R1
+  averages all 30 retained flux fields, solves one fresh Heun alpha against
+  `Q^n`, publishes `Q^{n+1}` through the endpoint EOS gate, and assembles
+  `M^{n+1,dagger}` from the separately evaluated R0/R1 compatible rates.  R2
+  derives its physical target from the accepted averaged `f_N`, consumes the
+  time-averaged pressure-open head with each stage's inflow class, performs no
+  scalar update, and publishes the endpoint projected momentum, velocity, and
+  step-average pressure.  Source dose is applied exactly once by the scalar
+  solves; R2 is diagnostic/projection-only.
+
+  The staged API refuses R1 or R2 out of order.  A provider replaying the first
+  projection identity into a later iteration and a provider forging the
+  candidate parent both refuse before their coefficients enter a flux or force
+  evaluation.  The uniform sealed witness executes both coupled stages and R2,
+  retains correction ordinals and candidate identities, and agrees with the
+  generated binary64 owner within the recorded binary32 roundoff margin.  The
+  binary64 source import exists only in the generated calibration header; the
+  live source seal remains non-importable.  Metal encoding and run evidence are
+  deliberately not claimed on this non-Metal host.  The sealed r189 host
+  manifest remains binding: tier 8 full-window spectrum and movie first, then
+  the device kernel sweep and tier-10 onset campaign.

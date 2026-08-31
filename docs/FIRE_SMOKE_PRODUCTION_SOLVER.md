@@ -5190,6 +5190,46 @@ the HDR container check (`nclc` primaries 9, transfer 16, matrix 9) rather than
 trusting codec tags alone.  The manifest SHA is
 `c5dcaacd6c5f858fbaefaaa611c02fe213481a2dbde0ba45355c67b3a7ee42d5`.
 
+### 7.56w Complete CPU projected-Heun owner (r190)
+
+r190 closes the host-independent R0/R1/R2 ownership rung.  The central
+authority correction is intentionally not an API: only
+`FireProductionProjectedHeunCPUOwner` can call it.  A target-chain child stores
+the exact parent-target identity, accepted-candidate identity, and correction
+iteration in addition to its base lineage.  Closed domains remove the constant
+correction mode whenever no pressure-open face exists; this covers mixed
+wall/periodic closed topologies rather than the earlier all-periodic shortcut.
+
+The owner is a strict protocol state machine. `Begin` accepts the opaque frozen
+source packet, beginning state and momentum, case envelope, and empty dynamic
+slots in the invariant FCT/physical/force contracts. `SolveR0` and `SolveR1`
+perform projection, projection-bound coefficient publication, flux composition,
+scalar acceptance, r70 correction, and coupled convergence in that order.  The
+coefficient provider must echo stage, attempt, immediate candidate parent, and
+exact projection identity; a stale but otherwise finite coefficient field has
+no authority.  R0 produces EOS-gated `Q*` and force-inclusive `M*dagger`. R1
+uses the R0 flux as the other parent, solves a fresh shared alpha on the averaged
+30-field tuple, EOS-gates `Q^{n+1}`, and evaluates compatible R0/R1 momentum
+rates separately with that alpha.
+
+`SolveR2` derives the endpoint target from the accepted averaged physical flux
+and the frozen source target, rather than substituting R1's target. It applies
+the pinned stage-averaged Bernoulli head only for the corresponding R0/R1 inflow
+classes, derives the endpoint class inside the projection, performs no scalar
+commit, and returns projected `M^{n+1}`, endpoint velocity, and step-average
+pressure. The endpoint physical-flux and force evaluations still run as
+diagnostics, so R2 cannot silently bypass a malformed transport publication.
+
+The RED battery covers R1-before-R0, R2-before-R1, stale projected-candidate
+identity, forged parent lineage, and public inability to mint or mutate a
+target.  The accepted uniform witness reaches R2 with both r70 chains bound to
+their internally produced candidates.  A mechanically generated binary64
+owner consumes the same authenticated source content through a calibration-only
+importer and agrees within `32 epsilon_32`; the live binary32 header contains no
+import seam.  No Metal run is claimed.  When the worker returns, the r189
+manifest still runs tier 8 first and sends its movie before the device kernel
+sweep and tier-10 onset verdict.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

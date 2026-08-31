@@ -271,7 +271,7 @@ namespace RISEFireProductionTrace
 			const FireProductionScalarProjectionTargetSeal& seal )
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
-			static const char domain[]="RISE scalar authenticated projection target CPU v1";
+			static const char domain[]="RISE scalar authenticated projection target CPU v2";
 			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
 			HashEOSUInt64(hash,seal.Shape().nx);HashEOSUInt64(hash,seal.Shape().ny);
 			HashEOSUInt64(hash,seal.Shape().nz);HashEOSFloat(hash,seal.Shape().cellWidthM);
@@ -280,6 +280,9 @@ namespace RISEFireProductionTrace
 			for(const FireProductionProjectionBoundary value:seal.Boundary())
 				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
 			HashEOSUInt64(hash,seal.BaseTargetIdentity());
+			HashEOSUInt64(hash,seal.ParentTargetIdentity());
+			HashEOSUInt64(hash,seal.AcceptedCandidateIdentity());
+			HashEOSUInt64(hash,seal.CorrectionIteration());
 			HashFluxValues(hash,seal.TargetPerS());
 			return hash;
 		}
@@ -2602,7 +2605,9 @@ namespace RISEFireProductionTrace
 			!(seal.TimeStepS()>0.0f)||!std::isfinite(seal.TimeStepS())||
 			seal.AttemptIdentity()==0u||!ValidDivergenceTargetRole(seal.Role())||
 			!ValidProjectionBoundaryTopology(seal.Boundary())||
-			seal.TargetPerS().size()!=shape.CellCount()||seal.BaseTargetIdentity()==0u)
+			seal.TargetPerS().size()!=shape.CellCount()||seal.BaseTargetIdentity()==0u||
+			((seal.CorrectionIteration()==0u)!=(seal.ParentTargetIdentity()==0u))||
+			((seal.CorrectionIteration()==0u)!=(seal.AcceptedCandidateIdentity()==0u)))
 			return Fail(error,
 				"scalar projection-target seal is malformed");
 		for(const FireProductionRoundoffTrace::TraceFloat value:seal.TargetPerS())if(!std::isfinite(value)||
@@ -2632,6 +2637,8 @@ namespace RISEFireProductionTrace
 			computed.attemptIdentity_=base.AttemptIdentity();computed.role_=base.Role();
 			computed.boundary_=base.Boundary();computed.targetPerS_=base.TargetPerS();
 			computed.baseTargetIdentity_=base.TargetIdentity();
+			computed.parentTargetIdentity_=0u;computed.acceptedCandidateIdentity_=0u;
+			computed.correctionIteration_=0u;
 			computed.sealed_=true;
 			computed.targetIdentity_=ScalarProjectionTargetIdentity(computed);
 			if(!FireProductionScalarProjectionTargetSealMatches(computed,error))return false;
@@ -2640,6 +2647,153 @@ namespace RISEFireProductionTrace
 			result=FireProductionScalarProjectionTargetSeal();
 			FailWithoutThrow(error,"scalar initial projection-target allocation failed");
 			return false;
+		}
+	}
+
+	bool FireProductionProjectedHeunTargetAuthority::Correct(
+		const FireProductionScalarProjectionTargetSeal& current,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& acceptedCandidate,
+		const std::uint64_t acceptedCandidateIdentity,
+		FireProductionScalarProjectionTargetSeal& result,std::string* error )
+	{
+		result=FireProductionScalarProjectionTargetSeal();
+		try {
+			if(!FireProductionScalarProjectionTargetSealMatches(current,error)||
+				acceptedCandidateIdentity==0u||
+				current.CorrectionIteration()==std::numeric_limits<std::uint32_t>::max()||
+				acceptedCandidate.size()!=9u*current.Shape().CellCount())return Fail(error,
+					"projected-Heun r70 candidate lineage is invalid");
+			const RISE::FireSimulationMethaneRecord& record=
+				RISE::FireSimulationMethaneRecord::PhysicalV1();
+			const std::size_t cells=current.Shape().CellCount();
+			std::vector<double> correction(cells,0.0);
+			double mean=0.0;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<double,9> tuple={{}};
+				for(std::size_t component=0u;component<9u;++component)
+					tuple[component]=static_cast<double>(
+						acceptedCandidate[component*cells+cell]);
+				double volumeRatio=0.0;
+				if(!record.AcceptedConservativeVolumeRatioByComponentOrder(tuple.data(),
+					tuple.size(),RISE::FireStateProducerPrecision::Binary32,volumeRatio,error))return false;
+				correction[cell]=(volumeRatio-1.0)/static_cast<double>(current.TimeStepS());
+				if(!std::isfinite(correction[cell]))return Fail(error,
+					"projected-Heun r70 candidate correction is nonfinite");
+				mean+=correction[cell];
+			}
+			bool pressureOpen=false;
+			for(const FireProductionProjectionBoundary value:current.Boundary())
+				pressureOpen=pressureOpen||value==FireProductionProjectionPressureOpen;
+			if(!pressureOpen)mean/=static_cast<double>(cells);else mean=0.0;
+			FireProductionScalarProjectionTargetSeal computed;
+			computed.shape_=current.Shape();computed.timeStepS_=current.TimeStepS();
+			computed.attemptIdentity_=current.AttemptIdentity();computed.role_=current.Role();
+			computed.boundary_=current.Boundary();computed.targetPerS_.resize(cells);
+			computed.baseTargetIdentity_=current.BaseTargetIdentity();
+			computed.parentTargetIdentity_=current.TargetIdentity();
+			computed.acceptedCandidateIdentity_=acceptedCandidateIdentity;
+			computed.correctionIteration_=current.CorrectionIteration()+1u;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				FireProductionRoundoffTrace::TraceFloat value=static_cast<FireProductionRoundoffTrace::TraceFloat>(static_cast<double>(current.TargetPerS()[cell])+
+					correction[cell]-mean);
+				if(!std::isfinite(value))return Fail(error,
+					"projected-Heun r70 target overflowed");
+				if(value==0.0f)value=0.0f;
+				computed.targetPerS_[cell]=value;
+			}
+			computed.sealed_=true;
+			computed.targetIdentity_=ScalarProjectionTargetIdentity(computed);
+			if(!FireProductionScalarProjectionTargetSealMatches(computed,error))return false;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){
+			result=FireProductionScalarProjectionTargetSeal();
+			return Fail(error,"projected-Heun r70 target allocation failed");
+		}
+	}
+
+	bool FireProductionProjectedHeunTargetAuthority::HeunBase(
+		const FireProductionScalarHeunFluxStage& averagedStage,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& committedConservativeValues,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& committedTemperatureK,
+		const FireProductionFrozenSourcePacketSeal& source,
+		FireProductionScalarProjectionTargetSeal& result,std::string* error )
+	{
+		result=FireProductionScalarProjectionTargetSeal();
+		try {
+			if(!ValidScalarHeunFluxStage(averagedStage,error)||
+				averagedStage.role!=FireProductionScalarHeunFluxRole::HeunAverage||
+				!FireProductionFrozenSourcePacketSealMatches(source,error))return Fail(error,
+					"projected-Heun endpoint target parent is invalid");
+			const FireProductionProjectionShape& shape=averagedStage.compositeFluxPair.shape;
+			const std::size_t cells=shape.CellCount();
+			if(source.AttemptIdentity()!=averagedStage.attemptIdentity||
+				source.TimeStepS()!=averagedStage.compositeFluxPair.timeStepS||
+				!SameProjectionShape(source.Shape(),shape)||
+				committedConservativeValues.size()!=9u*cells||
+				committedTemperatureK.size()!=cells)return Fail(error,
+					"projected-Heun endpoint target lineage differs");
+			const std::size_t allFaces=averagedStage.compositeFluxPair.packedFaceOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			const RISE::FireSimulationMethaneRecord& record=
+				RISE::FireSimulationMethaneRecord::PhysicalV1();
+			FireProductionScalarProjectionTargetSeal computed;
+			computed.shape_=shape;computed.timeStepS_=source.TimeStepS();
+			computed.attemptIdentity_=source.AttemptIdentity();
+			computed.role_=FireProductionScalarDivergenceTargetRole::R1Base;
+			computed.boundary_=averagedStage.compositeFluxPair.boundary;
+			computed.targetPerS_.assign(cells,0.0f);
+			std::uint64_t baseHash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE projected-Heun endpoint base target v1";
+			for(const unsigned char byte:domain)HashEOSByte(baseHash,byte);
+			HashEOSUInt64(baseHash,averagedStage.compositionIdentity);
+			HashEOSUInt64(baseHash,source.PacketIdentity());
+			HashFluxValues(baseHash,committedConservativeValues);
+			HashFluxValues(baseHash,committedTemperatureK);
+			computed.baseTargetIdentity_=baseHash;
+			computed.parentTargetIdentity_=0u;computed.acceptedCandidateIdentity_=0u;
+			computed.correctionIteration_=0u;
+			const double inverseWidth=1.0/static_cast<double>(shape.cellWidthM);
+			for(std::size_t z=0u;z<shape.nz;++z)for(std::size_t y=0u;y<shape.ny;++y)
+				for(std::size_t x=0u;x<shape.nx;++x){
+					const std::size_t cell=CellIndex(shape,x,y,z);
+					std::array<double,9> state={{}},rate={{}};
+					for(std::size_t component=0u;component<9u;++component)
+						state[component]=static_cast<double>(
+							committedConservativeValues[component*cells+cell]);
+					for(unsigned int axis=0u;axis<3u;++axis){
+						std::size_t rx=x,ry=y,rz=z;
+						if(axis==0u)++rx;else if(axis==1u)++ry;else ++rz;
+						const std::size_t left=averagedStage.compositeFluxPair.packedFaceOffset[axis]+
+							FaceIndex(shape,axis,x,y,z);
+						const std::size_t right=averagedStage.compositeFluxPair.packedFaceOffset[axis]+
+							FaceIndex(shape,axis,rx,ry,rz);
+						for(std::size_t component=0u;component<8u;++component)
+							rate[component]+=inverseWidth*(static_cast<double>(
+								averagedStage.physicalMassFluxKGPerM2S[component*allFaces+left])-
+								static_cast<double>(averagedStage.physicalMassFluxKGPerM2S[
+									component*allFaces+right]));
+						rate[8u]+=inverseWidth*(static_cast<double>(
+							averagedStage.physicalEnergyFluxWPerM2[left])-static_cast<double>(
+							averagedStage.physicalEnergyFluxWPerM2[right]));
+					}
+					double physicalPerS=0.0;
+					if(!record.DivergenceFromDiscreteRateByComponentOrder(state.data(),state.size(),
+						rate.data(),rate.size(),static_cast<double>(committedTemperatureK[cell]),
+						RISE::FireStateProducerPrecision::Binary32,physicalPerS,error))return false;
+					FireProductionRoundoffTrace::TraceFloat target=static_cast<FireProductionRoundoffTrace::TraceFloat>(physicalPerS+
+						static_cast<double>(source.DivergenceTargetPerS()[cell]));
+					if(!std::isfinite(target))return Fail(error,
+						"projected-Heun endpoint target is nonfinite");
+					if(target==0.0f)target=0.0f;
+					computed.targetPerS_[cell]=target;
+				}
+			computed.sealed_=true;
+			computed.targetIdentity_=ScalarProjectionTargetIdentity(computed);
+			if(!FireProductionScalarProjectionTargetSealMatches(computed,error))return false;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){
+			result=FireProductionScalarProjectionTargetSeal();
+			return Fail(error,"projected-Heun endpoint target allocation failed");
 		}
 	}
 
@@ -3217,6 +3371,14 @@ namespace RISEFireProductionTrace
 	{
 		return EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
 			request,false,result,error);
+	}
+
+	bool EvaluateFireProductionCompatibleFCTMomentumDeltaCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
+	{
+		return EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
+			request,true,result,error);
 	}
 
 	bool EvaluateFireProductionCompatibleHeunMomentumCPU(

@@ -23,6 +23,9 @@ namespace RISE
 {
 	struct FireProductionFrozenMethaneSourceRequest;
 	class FireProductionFrozenSourcePacketSeal;
+	class FireProductionProjectedHeunCPUOwner;
+	class FireProductionProjectedHeunTargetAuthority;
+	struct FireProductionScalarHeunFluxStage;
 	namespace FireSim
 	{
 		//! Complete declaration prevents a client from defining a counterfeit friend
@@ -541,6 +544,7 @@ namespace RISE
 			FireProductionScalarProjectionTargetSeal&,std::string* );
 		friend bool FireProductionScalarProjectionTargetSealMatches(
 			const FireProductionScalarProjectionTargetSeal&,std::string* );
+		friend class FireProductionProjectedHeunTargetAuthority;
 
 		FireProductionProjectionShape shape_;
 		float timeStepS_;
@@ -549,13 +553,17 @@ namespace RISE
 		std::array<FireProductionProjectionBoundary,6> boundary_;
 		std::vector<float> targetPerS_;
 		std::uint64_t baseTargetIdentity_;
+		std::uint64_t parentTargetIdentity_;
+		std::uint64_t acceptedCandidateIdentity_;
+		std::uint32_t correctionIteration_;
 		std::uint64_t targetIdentity_;
 		bool sealed_;
 
 	public:
 		FireProductionScalarProjectionTargetSeal() : timeStepS_(0.0f),
 			attemptIdentity_(0u),role_(static_cast<FireProductionScalarDivergenceTargetRole>(0u)),
-			baseTargetIdentity_(0u),targetIdentity_(0u),sealed_(false)
+			baseTargetIdentity_(0u),parentTargetIdentity_(0u),
+			acceptedCandidateIdentity_(0u),correctionIteration_(0u),targetIdentity_(0u),sealed_(false)
 			{ boundary_.fill(FireProductionProjectionWall); }
 
 		const FireProductionProjectionShape& Shape() const { return shape_; }
@@ -566,6 +574,10 @@ namespace RISE
 			{ return boundary_; }
 		const std::vector<float>& TargetPerS() const { return targetPerS_; }
 		std::uint64_t BaseTargetIdentity() const { return baseTargetIdentity_; }
+		std::uint64_t ParentTargetIdentity() const { return parentTargetIdentity_; }
+		std::uint64_t AcceptedCandidateIdentity() const
+			{ return acceptedCandidateIdentity_; }
+		std::uint32_t CorrectionIteration() const { return correctionIteration_; }
 		std::uint64_t TargetIdentity() const { return targetIdentity_; }
 		bool IsSealed() const { return sealed_; }
 	};
@@ -573,6 +585,27 @@ namespace RISE
 	bool FireProductionScalarProjectionTargetSealMatches(
 		const FireProductionScalarProjectionTargetSeal& seal,
 		std::string* error=0 );
+
+	//! Owner-private r70 target authority.  Only the complete projected-Heun
+	//! owner may call its methods; no public function can attach an arbitrary
+	//! state to a projection target or mint accepted-step authority.
+	class FireProductionProjectedHeunTargetAuthority
+	{
+		friend class FireProductionProjectedHeunCPUOwner;
+			static bool Correct(
+				const FireProductionScalarProjectionTargetSeal& current,
+				const std::vector<float>& acceptedCandidate,
+				std::uint64_t acceptedCandidateIdentity,
+				FireProductionScalarProjectionTargetSeal& result,
+				std::string* error );
+			static bool HeunBase(
+				const FireProductionScalarHeunFluxStage& averagedStage,
+				const std::vector<float>& committedConservativeValues,
+				const std::vector<float>& committedTemperatureK,
+				const FireProductionFrozenSourcePacketSeal& source,
+				FireProductionScalarProjectionTargetSeal& result,
+				std::string* error );
+	};
 
 	//! CPU projection primitive for an authenticated initial target. The request is
 	//! consumed by value so its target slot can be filled without copying the
@@ -826,6 +859,14 @@ namespace RISE
 	//! All-periodic and all-nonperiodic topologies are supported.  Hybrid
 	//! periodic/open topology is rejected until it has an authoritative oracle.
 	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,
+		std::string* error=0 );
+
+	//! Direct-delta calibration seam used by the projected-Heun owner before the
+	//! final average has an identity-bearing solve.  `highGasFlux` carries
+	//! DeltaPhi, matching the retained stage bytes without reconstruction.
+	bool EvaluateFireProductionCompatibleFCTMomentumDeltaCPU(
 		const FireProductionCompatibleFCTMomentumRequest& request,
 		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );
