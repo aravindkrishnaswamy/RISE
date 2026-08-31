@@ -2108,6 +2108,27 @@ static void TestDimHeroLightNote()
 //       identically inside the render-result note, and both stateless
 //       (no-cache) carriers are silent -- N's own carrier-parity
 //       contract, unchanged for O.
+//   (h) O8  RETENTION P1 (2026-08-31, condition-O review, the reviewer's
+//       own live probe): seed A's qualified dim measurement, edit A's
+//       chunk through the REAL mutating path (ProposePatch, not a
+//       hand-built candidate string) so O fires, then drive a SECOND
+//       RecordLightSoloMeasurements that solos ONLY the unrelated light
+//       B -- A is not attempted at all.  O must STILL fire for A off
+//       the SAME recorded numbers (and N must still be absent) --
+//       before the fix, the merge-preserve pass keyed retention on
+//       chunk-text byte match, so this unrelated audit silently dropped
+//       A's stale-by-edit entry and BOTH N and O went silent on a light
+//       that was never re-measured: the exact unverified-glow failure O
+//       exists to prevent.  Then a REAL re-measure of A, healthy,
+//       disarms both -- the fix does not defeat the legitimate disarm
+//       path, only the accidental one.
+//   (i) O9  RETENTION, AUDIT-TIME DELETION: A's chunk is removed via
+//       RemoveChunk (the real mutating path) and THEN an audit runs
+//       (soloing only B) -- the retention pass itself drops A's now-
+//       orphaned entry (existence, not byte match, is the key, and a
+//       gone chunk fails either key), so O is silent afterwards with no
+//       crash.  O5's own case, reconfirmed at audit time rather than
+//       only at read time.
 //----------------------------------------------------------------------
 
 static void TestDimLightRemeasureNote()
@@ -2346,6 +2367,120 @@ static void TestDimLightRemeasureNote()
 			Check( hasCode( diags, kCodeN ) == nullptr,
 			       "O6 ...and N is silent too, for the same kind-mismatch reason its own validity check "
 			       "already covers" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (h) O8 (P1 regression, 2026-08-31): the retention pass must not let
+	//     an UNRELATED audit erase a stale-by-edit entry.  Every other O
+	//     case above drives the "edit" by handing an alternate candidate
+	//     STRING to the stateless Validate(text) overload -- the
+	//     session's own live document (what RecordLightSoloMeasurements
+	//     actually keys retention against) never changes.  This case
+	//     mutates the REAL document via ProposePatch, which is the only
+	//     way to exercise the merge-preserve pass's own retention key at
+	//     all.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" ) +
+			ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o8.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "O8 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+
+			// Seed A's qualified dim measurement.
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			// Edit A's OWN chunk for real -- the session's live document
+			// now differs from what RecordSoloAudit measured against.
+			Agent::AgentSetPatch p;
+			p.target = "lantern_candle";
+			p.kind   = "shape_light";
+			p.param  = "exitance";
+			p.value  = "6000";
+			Check( sess->ProposePatch( p ).applied, "O8 setup: the edit to A's own chunk lands" );
+
+			const std::string afterEdit = sess->ReadDocument();
+			Check( hasCode( sess->Validate( afterEdit ), kCodeO ) != nullptr,
+			       "O8 setup: O fires right after the edit, against the REAL mutated document (O1's "
+			       "own case, reconfirmed here because O8 needs the live document actually changed)" );
+
+			// A SECOND audit that solos ONLY B -- A is not attempted at
+			// all, exactly the shape a capped or partially-failed
+			// MeasureLightContributions_ pass produces for a light it
+			// never got to (N8's own scenario, now checked against O).
+			RecordSoloAudit( *sess, "lantern_candle_b", 20.0, 0.30 );
+
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( afterEdit );
+			Check( hasCode( diags, kCodeO ) != nullptr,
+			       "O8 MONEY (the P1): O STILL fires for A after an audit that solos only the UNRELATED "
+			       "light B -- the stale-by-edit entry survives an audit that never touched it. Before "
+			       "the fix, merge-preserve keyed retention on chunk-text byte match, so this unrelated "
+			       "audit silently dropped A's entry and BOTH N and O went silent on a light that was "
+			       "never re-measured -- the exact unverified-glow failure O exists to prevent" );
+			Check( hasCode( diags, kCodeN ) == nullptr,
+			       "O8 ...and N is still absent -- the surviving entry is still keyed to A's ORIGINAL "
+			       "(pre-edit) chunk text, so N's own byte-match check at read time still fails it" );
+			if( const Agent::AgentDiagnostic* d = hasCode( diags, kCodeO ) ) {
+				Check( d->message.find( "lantern_candle_b" ) == std::string::npos,
+				       "O8 ...naming A, not the light the unrelated audit actually soloed" );
+				Check( d->message.find( "1.9%" ) != std::string::npos &&
+				       d->message.find( "exitance 5000" ) != std::string::npos,
+				       "O8 MONEY: ...and still quoting A's RECORDED (pre-edit) numbers -- the surviving "
+				       "entry is the SAME snapshot from before the unrelated audit ran, not something "
+				       "that audit fabricated" );
+			}
+
+			// The legitimate disarm path still works: a REAL re-measure
+			// of A (not just an unrelated audit) replaces the surviving
+			// entry, and a healthy result silences both.
+			RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+			const std::vector<Agent::AgentDiagnostic> healthy = sess->Validate( afterEdit );
+			Check( hasCode( healthy, kCodeO ) == nullptr,
+			       "O8 ...re-measuring A for real disarms O -- the fresh entry is validly keyed to the "
+			       "edited chunk" );
+			Check( hasCode( healthy, kCodeN ) == nullptr,
+			       "O8 ...and N stays silent too -- the fresh measurement is healthy" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (i) O9: audit-time deletion.  A's chunk is removed via RemoveChunk
+	//     (the real mutating path) and THEN an audit runs, soloing only
+	//     B -- the retention pass itself must drop A's now-orphaned entry
+	//     (existence, not byte match, is the key: a gone chunk fails
+	//     either one), matching O5's read-time silence with an audit-time
+	//     check of the same fact.
+	{
+		const std::string body = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" ) +
+			ShapeLightAt( "lantern_candle_b", 5000.0, "2 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o9.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "O9 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			Check( sess->RemoveChunk( "lantern_candle", "shape_light" ).applied,
+			       "O9 setup: A's chunk is removed" );
+
+			// An audit that solos only B runs AFTER the deletion.
+			RecordSoloAudit( *sess, "lantern_candle_b", 20.0, 0.30 );
+
+			const Agent::AgentSession::AgentLightSoloMeasurementMap& cache = sess->LightSoloMeasurements();
+			Check( cache.find( "lantern_candle" ) == cache.end(),
+			       "O9 MONEY: the retention pass drops A's orphaned entry once an audit actually runs "
+			       "after the deletion -- there is no live chunk of any kind left to key against" );
+
+			const std::string afterDelete = sess->ReadDocument();
+			Check( hasCode( sess->Validate( afterDelete ), kCodeO ) == nullptr,
+			       "O9 ...and O is silent afterwards, no crash" );
 			pJob->release();
 			std::remove( tmp.c_str() );
 		}

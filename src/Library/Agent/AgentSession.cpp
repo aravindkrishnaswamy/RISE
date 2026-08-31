@@ -30326,13 +30326,29 @@ namespace RISE
 			// exists to avoid (a dim hero light going unflagged because an
 			// unrelated audit ran out of solo budget).
 			//
-			// So: snapshot the previous map, clear the live one, then re-admit
-			// every previous entry this audit did not just measure PROVIDED its
-			// chunk still exists in the live document with byte-identical text.
-			// That chunk-text comparison is the exact validity key condition N
-			// itself re-checks before speaking, so re-admitting a match here is
-			// safe by construction -- we are not extending trust any further
-			// than the consumer already extends on its own.
+			// RETENTION KEY (revised 2026-08-31, condition O's own forensic):
+			// a chunk-text BYTE-MATCH requirement here was correct back when
+			// N was the only reader -- a stale-by-edit entry never spoke, so
+			// dropping it early cost nothing.  Condition O now depends on
+			// exactly those stale-by-edit entries: it fires when a light was
+			// a qualified dim finding AND its chunk has since changed, i.e.
+			// precisely the case byte-match retention was throwing away.  A
+			// scene edit that solos only OTHER lights (the 16-solo cap, or a
+			// mid-pass failure cascade) must not be able to erase evidence O
+			// needs about a light this pass never touched.
+			//
+			// So the key here is narrowed to EXISTENCE + KIND, not byte
+			// identity: snapshot the previous map, clear the live one, then
+			// re-admit every previous entry this audit did not just measure
+			// PROVIDED a chunk of the SAME kind still exists in the live
+			// document under that name.  Chunk gone, or the name now names a
+			// different kind of chunk, drops the entry -- there is nothing
+			// left for either consumer to key against.  This does not
+			// fabricate freshness: N and O each re-check the chunk text
+			// THEMSELVES at read time (N requires it match the recorded
+			// snapshot before speaking; O requires it differ), so retention
+			// only decides whether an entry survives to be judged, never what
+			// it is judged to say.
 			const RISE::Cst::Document* doc = mJob ? mJob->GetCstDocument() : nullptr;
 			if( !doc ) return;   // no live document to key against; leave the cache untouched.
 
@@ -30350,8 +30366,7 @@ namespace RISE
 			     it != previous.end(); ++it ) {
 				if( justMeasured.count( it->first ) ) continue;   // superseded below, if it lands
 				RISE::Cst::NodeRef node = FindChunkByRoleAndName_( *doc, it->second.kind, it->first );
-				if( !node ) continue;                              // chunk gone: no longer valid
-				if( RISE::Cst::SerializeNode( node ) != it->second.chunkText ) continue;   // edited: stale
+				if( !node ) continue;   // chunk gone, or now a different kind: no longer valid
 				mLightSoloMeasurements.insert( *it );
 			}
 

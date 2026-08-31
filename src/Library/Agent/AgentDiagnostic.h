@@ -529,9 +529,22 @@ namespace RISE
 			//! the fresh measurement is healthy and BOTH N and O fall silent;
 			//! if it did not, N fires again on the fresh (now validly-keyed)
 			//! low share and O is silent (there is no longer anything stale to
-			//! nudge).  Either branch, re-running `light_scene` is what ENDS
-			//! this condition -- it can never be satisfied by further editing
-			//! alone, only by measuring again.
+			//! nudge).  Either branch, re-running `light_scene` on THIS light
+			//! is what ENDS this condition -- as of the 2026-08-31 retention
+			//! fix in `RecordLightSoloMeasurements` (AgentSession.cpp), an
+			//! audit that solos other lights and never touches this one can no
+			//! longer end it by accident: the stale-by-edit entry now survives
+			//! any audit that does not re-measure this specific light, keyed
+			//! on the chunk merely EXISTING with the same kind rather than on
+			//! byte-identical text (byte identity is still checked, just at
+			//! read time by N and O themselves, not at retention time).  The
+			//! one other way out is deleting the light (or re-authoring its
+			//! name as a different light kind): the entry then has no live
+			//! chunk to key against and is dropped, which is not "measuring
+			//! again" but is the same "nothing left to nudge" case (2) above
+			//! already treats as silent -- an author who removes the light
+			//! has, in the sense this condition cares about, also resolved
+			//! it.
 			//!
 			//! REQUIRES SESSION STATE, exactly like N: the stateless text-only
 			//! carriers (`ValidateText`, `ComputeDesignNote` called with no
