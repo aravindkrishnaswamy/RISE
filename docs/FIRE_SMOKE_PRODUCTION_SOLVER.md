@@ -5149,6 +5149,47 @@ The r70 accepted-candidate correction, terminal verification, projection
 command, Metal implementation, complete R0/R1/R2 owner, onset rerun, and all
 tier-10 deliverables remain blocked.
 
+### 7.56v Authenticated projection-target chain and Metal-host manifest (r189)
+
+r189 closes the initial CPU projection-consumer prerequisite without promoting
+a single projection to accepted-step authority.  The r188 base seal now retains
+the exact boundary topology of the stage whose physical flux produced it and
+includes all six boundary classes in its identity.  The base publication may
+enter projection only after it is wrapped as iteration zero of an opaque target
+chain; the wrapper inherits topology and accepts no caller boundary argument.
+This closes the valid-but-different topology hole found in review.
+
+The new CPU projection consumer takes its request by value, requires the raw
+`divergenceTargetPerS` slot to be empty, verifies the complete seal and exact
+shape/step/boundary match, and only then fills the slot and invokes the existing
+projection oracle.  A matched-input comparison is bit-identical in pressure,
+velocity, momentum, and residual diagnostics.  A preauthored target on this
+capability, a valid but different topology, and an unsealed base parent all
+refuse with an empty result. The older raw projection function remains public
+as a calibration oracle; it is not an accepted-step capability, so r189 makes
+no repository-wide claim that arbitrary callers cannot invoke it.
+
+Review rejected an attempted standalone r70 child-target producer. An r184 EOS
+result proves that a state is admissible, but does not prove that it was created
+by the immediately preceding projection/flux iteration. Permitting it here
+would admit a stale, internally valid Picard candidate. Therefore r70
+correction, closed-nullspace compatibility (no pressure-open face, not merely
+all-periodic), terminal verification, active-set acceptance, R2 endpoint
+authority, and accepted-step publication all remain owned by the complete
+R0/R1/R2 owner, which is the next host-independent rung. The Metal projection
+consumer also cannot be live-validated on this host because no Metal device is
+available.
+
+The separately SHA-bound r189 Metal-host manifest records that no device run
+occurred here and makes Track A bindingly first when the M4 worker returns:
+tier 8 from zero through the full window, full spectrum, preview-primary
+animation and immediate delivery.  Only then do the device kernel sweep and
+tier-10 onset run, followed by regression re-derivation and the tier-10 queue.
+All simulations and renders are sequential.  The animation stage also carries
+the HDR container check (`nclc` primaries 9, transfer 16, matrix 9) rather than
+trusting codec tags alone.  The manifest SHA is
+`c5dcaacd6c5f858fbaefaaa611c02fe213481a2dbde0ba45355c67b3a7ee42d5`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

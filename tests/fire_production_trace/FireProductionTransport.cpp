@@ -237,11 +237,50 @@ namespace RISEFireProductionTrace
 			HashEOSUInt64(hash,seal.Shape().nz);HashEOSFloat(hash,seal.Shape().cellWidthM);
 			HashEOSFloat(hash,seal.TimeStepS());HashEOSUInt64(hash,seal.AttemptIdentity());
 			HashEOSUInt64(hash,static_cast<std::uint8_t>(seal.Role()));
+			for(const FireProductionProjectionBoundary value:seal.Boundary())
+				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
 			HashEOSString(hash,seal.MethaneRecordId());
 			HashEOSUInt64(hash,seal.SourcePacketIdentity());
 			HashEOSUInt64(hash,seal.FluxCompositionIdentity());
 			HashFluxValues(hash,seal.TargetPerS());
 			HashEOSDouble(hash,seal.MaximumScaledExpansion());
+			return hash;
+		}
+
+		bool SameProjectionShape( const FireProductionProjectionShape& a,
+			const FireProductionProjectionShape& b )
+		{
+			return a.nx==b.nx&&a.ny==b.ny&&a.nz==b.nz&&
+				a.cellWidthM==b.cellWidthM;
+		}
+
+		bool ValidProjectionBoundaryTopology(
+			const std::array<FireProductionProjectionBoundary,6>& boundary )
+		{
+			for(const FireProductionProjectionBoundary value:boundary)
+				if(value!=FireProductionProjectionPeriodic&&
+					value!=FireProductionProjectionPressureOpen&&
+					value!=FireProductionProjectionWall)return false;
+			for(unsigned int axis=0u;axis<3u;++axis)
+				if((boundary[2u*axis]==FireProductionProjectionPeriodic)!=
+					(boundary[2u*axis+1u]==FireProductionProjectionPeriodic))return false;
+			return true;
+		}
+
+		std::uint64_t ScalarProjectionTargetIdentity(
+			const FireProductionScalarProjectionTargetSeal& seal )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar authenticated projection target CPU v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,seal.Shape().nx);HashEOSUInt64(hash,seal.Shape().ny);
+			HashEOSUInt64(hash,seal.Shape().nz);HashEOSFloat(hash,seal.Shape().cellWidthM);
+			HashEOSFloat(hash,seal.TimeStepS());HashEOSUInt64(hash,seal.AttemptIdentity());
+			HashEOSUInt64(hash,static_cast<std::uint8_t>(seal.Role()));
+			for(const FireProductionProjectionBoundary value:seal.Boundary())
+				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
+			HashEOSUInt64(hash,seal.BaseTargetIdentity());
+			HashFluxValues(hash,seal.TargetPerS());
 			return hash;
 		}
 
@@ -2413,6 +2452,7 @@ namespace RISEFireProductionTrace
 			!(shape.cellWidthM>0.0f)||!std::isfinite(shape.cellWidthM)||
 			!(seal.TimeStepS()>0.0f)||!std::isfinite(seal.TimeStepS())||
 			seal.AttemptIdentity()==0u||!ValidDivergenceTargetRole(seal.Role())||
+			!ValidProjectionBoundaryTopology(seal.Boundary())||
 			seal.MethaneRecordId()!=RISE::FireSimulationMethaneRecord::PhysicalV1().RecordId()||
 			seal.TargetPerS().size()!=shape.CellCount()||seal.SourcePacketIdentity()==0u||
 			seal.FluxCompositionIdentity()==0u||!std::isfinite(
@@ -2495,6 +2535,7 @@ namespace RISEFireProductionTrace
 			FireProductionScalarDivergenceTargetSeal computed;
 			computed.shape_=shape;computed.timeStepS_=advectiveRequest.timeStepS;
 			computed.attemptIdentity_=attemptIdentity;computed.role_=role;
+			computed.boundary_=stage.compositeFluxPair.boundary;
 			computed.methaneRecordId_=stage.methaneRecordId;
 			computed.targetPerS_.resize(cells,0.0f);
 			computed.maximumScaledExpansion_=0.0;
@@ -2549,6 +2590,78 @@ namespace RISEFireProductionTrace
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarDivergenceTargetSeal();
 			FailWithoutThrow(error,"scalar base divergence-target allocation failed");return false;}
+	}
+
+	bool FireProductionScalarProjectionTargetSealMatches(
+		const FireProductionScalarProjectionTargetSeal& seal,std::string* error )
+	{
+		const FireProductionProjectionShape& shape=seal.Shape();
+		if(!seal.IsSealed()||shape.nx<4u||shape.nx>1024u||shape.ny<4u||
+			shape.ny>1024u||shape.nz<4u||shape.nz>1024u||
+			!(shape.cellWidthM>0.0f)||!std::isfinite(shape.cellWidthM)||
+			!(seal.TimeStepS()>0.0f)||!std::isfinite(seal.TimeStepS())||
+			seal.AttemptIdentity()==0u||!ValidDivergenceTargetRole(seal.Role())||
+			!ValidProjectionBoundaryTopology(seal.Boundary())||
+			seal.TargetPerS().size()!=shape.CellCount()||seal.BaseTargetIdentity()==0u)
+			return Fail(error,
+				"scalar projection-target seal is malformed");
+		for(const FireProductionRoundoffTrace::TraceFloat value:seal.TargetPerS())if(!std::isfinite(value)||
+			(value==0.0f&&std::signbit(static_cast<double>(value))))return Fail(error,
+				"scalar projection-target value is noncanonical");
+		if(seal.TargetIdentity()==0u||seal.TargetIdentity()!=
+			ScalarProjectionTargetIdentity(seal))return Fail(error,
+				"scalar projection-target identity differs");
+		if(error)error->clear();return true;
+	}
+
+	bool ComposeFireProductionInitialProjectionTargetCPU(
+		const FireProductionScalarDivergenceTargetSeal& base,
+		FireProductionScalarProjectionTargetSeal& result,std::string* error )
+	{
+		result=FireProductionScalarProjectionTargetSeal();
+		try {
+			std::uint64_t payloadBytes=0u;
+			if(!QueryFireProductionBaseDivergenceTargetCPUPayloadBytes(
+				base.Shape(),payloadBytes,error)||payloadBytes>
+				(std::uint64_t(2u)<<30u)/2u)return Fail(error,
+					"scalar initial projection-target working set exceeds two GiB");
+			if(!FireProductionScalarDivergenceTargetSealMatches(base,error))return Fail(error,
+				"scalar initial projection-target parent is invalid");
+			FireProductionScalarProjectionTargetSeal computed;
+			computed.shape_=base.Shape();computed.timeStepS_=base.TimeStepS();
+			computed.attemptIdentity_=base.AttemptIdentity();computed.role_=base.Role();
+			computed.boundary_=base.Boundary();computed.targetPerS_=base.TargetPerS();
+			computed.baseTargetIdentity_=base.TargetIdentity();
+			computed.sealed_=true;
+			computed.targetIdentity_=ScalarProjectionTargetIdentity(computed);
+			if(!FireProductionScalarProjectionTargetSealMatches(computed,error))return false;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&) {
+			result=FireProductionScalarProjectionTargetSeal();
+			FailWithoutThrow(error,"scalar initial projection-target allocation failed");
+			return false;
+		}
+	}
+
+	bool ProjectFireProductionScalarTargetCPU(
+		FireProductionProjectionRequest request,
+		const FireProductionScalarProjectionTargetSeal& target,
+		FireProductionProjectionResult& result,std::string* error )
+	{
+		result=FireProductionProjectionResult();
+		try {
+			if(!request.divergenceTargetPerS.empty()||
+				!FireProductionScalarProjectionTargetSealMatches(target,error)||
+				!SameProjectionShape(request.shape,target.Shape())||
+				request.timeStepS!=target.TimeStepS()||request.boundary!=target.Boundary())
+				return Fail(error,
+					"scalar authenticated projection request or target lineage is invalid");
+			request.divergenceTargetPerS=target.TargetPerS();
+			return ProjectFireProductionCPU(request,result,error);
+		} catch(const std::bad_alloc&) {
+			result=FireProductionProjectionResult();
+			return Fail(error,"scalar authenticated projection allocation failed");
+		}
 	}
 
 	bool AverageFireProductionScalarHeunFluxStagesCPU(

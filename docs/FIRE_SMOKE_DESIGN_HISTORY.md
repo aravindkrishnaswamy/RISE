@@ -4746,3 +4746,35 @@ it was already tried and refuted here.
   closes only the base-target prerequisite:
   separately sealed r70 correction and terminal verification, Metal commands,
   the R0/R1/R2 owner, onset validation, and tier-10 remain blocked.
+
+- **r189 authenticated projection target and Metal-host ordering (2026-08-31):**
+  introduces the opaque iteration-zero target between r188 and projection. The
+  r188 base seal now retains and identity-binds the boundary topology of the
+  stage that produced it; the wrapper inherits that topology and has no caller
+  boundary argument. A valid-but-different topology RED closes the mismatch
+  found in review.
+
+  The CPU consumer refuses a nonempty caller-authored target, then installs the
+  authenticated bytes into a by-value projection request. Its matched-input
+  result is bit-identical to the raw CPU projection oracle. Preauthored-target,
+  valid-different-topology, and unsealed-parent REDs fail atomically. The raw
+  function remains a public calibration oracle and carries no accepted-step
+  capability; the claim is intentionally scoped to the authenticated consumer.
+
+  Review also rejected a standalone r70 child producer: an admissible r184 EOS
+  result lacks the immediate projection/flux parent and could be a stale but
+  self-consistent Picard candidate. Correction therefore moves into the full
+  owner, where its candidate can be constructed and bound rather than asserted.
+  That owner must derive constant-nullspace compatibility from the absence of
+  pressure-open faces, covering wall/periodic closed mixtures as well as fully
+  periodic grids. Terminal Picard, R2, accepted-step authority, and device
+  consumption remain unimplemented.
+
+  Because the current host has no Metal device, r189 also publishes a SHA-bound
+  run manifest rather than implying execution. Its binding order makes Track A
+  tier 8 first on the returning M4 worker: full statistics window, full
+  centerline/lit-area spectrum, preview-primary temporal movie, HDR `colr`
+  verification, and immediate owner delivery. Track B's device kernel sweep and
+  tier-10 onset follow, then the r170/readmission re-derivation and tier-10
+  queue. Renders and simulations remain sequential. Manifest SHA:
+  `c5dcaacd6c5f858fbaefaaa611c02fe213481a2dbde0ba45355c67b3a7ee42d5`.

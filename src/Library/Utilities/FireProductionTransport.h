@@ -487,6 +487,7 @@ namespace RISE
 		float timeStepS_;
 		std::uint64_t attemptIdentity_;
 		FireProductionScalarDivergenceTargetRole role_;
+		std::array<FireProductionProjectionBoundary,6> boundary_;
 		std::string methaneRecordId_;
 		std::vector<float> targetPerS_;
 		double maximumScaledExpansion_;
@@ -499,12 +500,15 @@ namespace RISE
 		FireProductionScalarDivergenceTargetSeal() : timeStepS_(0.0f),
 			attemptIdentity_(0u),role_(static_cast<FireProductionScalarDivergenceTargetRole>(0u)),
 			maximumScaledExpansion_(0.0),sourcePacketIdentity_(0u),
-			fluxCompositionIdentity_(0u),targetIdentity_(0u),sealed_(false) {}
+			fluxCompositionIdentity_(0u),targetIdentity_(0u),sealed_(false)
+			{ boundary_.fill(FireProductionProjectionWall); }
 
 		const FireProductionProjectionShape& Shape() const { return shape_; }
 		float TimeStepS() const { return timeStepS_; }
 		std::uint64_t AttemptIdentity() const { return attemptIdentity_; }
 		FireProductionScalarDivergenceTargetRole Role() const { return role_; }
+		const std::array<FireProductionProjectionBoundary,6>& Boundary() const
+			{ return boundary_; }
 		const std::string& MethaneRecordId() const { return methaneRecordId_; }
 		const std::vector<float>& TargetPerS() const { return targetPerS_; }
 		double MaximumScaledExpansion() const { return maximumScaledExpansion_; }
@@ -516,6 +520,69 @@ namespace RISE
 
 	bool FireProductionScalarDivergenceTargetSealMatches(
 		const FireProductionScalarDivergenceTargetSeal& seal,
+		std::string* error=0 );
+
+	class FireProductionScalarProjectionTargetSeal;
+
+	//! Wraps the authenticated base target as iteration zero of one R0/R1
+	//! projection-target chain. Boundary topology is inherited from the same
+	//! stage that produced the base target; no caller topology is accepted.
+	bool ComposeFireProductionInitialProjectionTargetCPU(
+		const FireProductionScalarDivergenceTargetSeal& base,
+		FireProductionScalarProjectionTargetSeal& result,
+		std::string* error=0 );
+
+	//! Opaque target-chain publication. This proves target provenance only; it is
+	//! deliberately not a terminal Picard/active-set acceptance token.
+	class FireProductionScalarProjectionTargetSeal
+	{
+		friend bool ComposeFireProductionInitialProjectionTargetCPU(
+			const FireProductionScalarDivergenceTargetSeal&,
+			FireProductionScalarProjectionTargetSeal&,std::string* );
+		friend bool FireProductionScalarProjectionTargetSealMatches(
+			const FireProductionScalarProjectionTargetSeal&,std::string* );
+
+		FireProductionProjectionShape shape_;
+		float timeStepS_;
+		std::uint64_t attemptIdentity_;
+		FireProductionScalarDivergenceTargetRole role_;
+		std::array<FireProductionProjectionBoundary,6> boundary_;
+		std::vector<float> targetPerS_;
+		std::uint64_t baseTargetIdentity_;
+		std::uint64_t targetIdentity_;
+		bool sealed_;
+
+	public:
+		FireProductionScalarProjectionTargetSeal() : timeStepS_(0.0f),
+			attemptIdentity_(0u),role_(static_cast<FireProductionScalarDivergenceTargetRole>(0u)),
+			baseTargetIdentity_(0u),targetIdentity_(0u),sealed_(false)
+			{ boundary_.fill(FireProductionProjectionWall); }
+
+		const FireProductionProjectionShape& Shape() const { return shape_; }
+		float TimeStepS() const { return timeStepS_; }
+		std::uint64_t AttemptIdentity() const { return attemptIdentity_; }
+		FireProductionScalarDivergenceTargetRole Role() const { return role_; }
+		const std::array<FireProductionProjectionBoundary,6>& Boundary() const
+			{ return boundary_; }
+		const std::vector<float>& TargetPerS() const { return targetPerS_; }
+		std::uint64_t BaseTargetIdentity() const { return baseTargetIdentity_; }
+		std::uint64_t TargetIdentity() const { return targetIdentity_; }
+		bool IsSealed() const { return sealed_; }
+	};
+
+	bool FireProductionScalarProjectionTargetSealMatches(
+		const FireProductionScalarProjectionTargetSeal& seal,
+		std::string* error=0 );
+
+	//! CPU projection primitive for an authenticated initial target. The request is
+	//! consumed by value so its target slot can be filled without copying the
+	//! large momentum/density operands when the caller moves it. A pre-authored
+	//! target is refused by this capability. The older raw projection function
+	//! remains a calibration oracle and cannot publish accepted-step authority.
+	bool ProjectFireProductionScalarTargetCPU(
+		FireProductionProjectionRequest request,
+		const FireProductionScalarProjectionTargetSeal& target,
+		FireProductionProjectionResult& result,
 		std::string* error=0 );
 
 	//! Identity-bearing donor/MC flux pair for one scalar FCT stage.  The pair
