@@ -1,0 +1,11 @@
+{
+  "//": "Altar stress-test rerun #3 (2026-08-30, post condition-M DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL, commits 5ba49f3a/49718c7e/77eb9385). Identical instrument/provider/N to the p1/p2 runs; deltas since p2: the enclosed-light note now fires on the emissive-on-opaque-shell fake and points at the thickness worked example (which p2 measured landing 1/2). Question: when the agent builds the fake, does the note fire mid-session, and does the agent then FIX the lantern (translucent_material + thickness) instead of shipping painted emission? Prior lantern scoreboard: p1 0/2 real, p2 1/2 real (example copy). Post-hoc: note firings in trajectories, agent response, final lantern material.",
+  "scenarios": [
+    "evals/scenarios/altar_stress.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.7-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 2,
+  "runDir": "evals/runs/altar_stress_p3"
+}

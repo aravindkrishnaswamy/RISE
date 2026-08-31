@@ -1,0 +1,11 @@
+{
+  "//": "Altar stress-test rerun #2 (2026-08-30, post thickness-worked-example 483c9648). Identical instrument/provider/N to altar_stress_gemini.json; the one change since that run is the 'Glow that dies in thick walls -- thickness, not painted emission' worked example in materials-and-media-basics.md (+ recipes pointer). Question: does the lantern element stop being faked with painted emission (prior runs: 0 thickness() calls, emissive gradient on an opaque shell, overclaimed in the final text). Post-hoc: thickness() presence + transmission material on the lantern, light-off-style reasoning, plus regression check on the other four elements.",
+  "scenarios": [
+    "evals/scenarios/altar_stress.json"
+  ],
+  "providers": [
+    { "provider": "gemini", "model": "gemini-3.7-flash", "keyEnvVar": "GEMINI_API_KEY" }
+  ],
+  "repeats": 2,
+  "runDir": "evals/runs/altar_stress_p2"
+}
