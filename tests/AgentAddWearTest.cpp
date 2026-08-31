@@ -2067,6 +2067,291 @@ static void TestDimHeroLightNote()
 	}
 }
 
+//----------------------------------------------------------------------
+// Condition O (2026-08-31): the RE-MEASURE NUDGE -- DESIGN_DIM_LIGHT_
+// REMEASURE.  Closes the handoff void between M and N: M fires on an
+// enclosed dim light, an agent "fixes" it by EDITING THE LIGHT (which is
+// N's own invalidation event), and without a re-run of `light_scene` the
+// fix's effect is never measured.  O picks up exactly that silence.
+//
+// Every case reuses N's own fixtures/helpers (ShapeLightAt, OmniPowerAt,
+// DimLightSlab, RecordSoloAudit) -- O's whole predicate is defined in
+// terms of a RECORDED N-style measurement plus an edit since, so the
+// natural fixture for it IS an N fixture carried one step further.
+//
+// Cases:
+//   (a) O1  FIRES: seed a dim measurement (N1's own numbers), edit the
+//       light's chunk (exitance 5000 -> 6000, same position) -> O fires
+//       quoting the RECORDED numbers (5000, 1.9%), N is silent (its own
+//       validity key just broke).
+//   (b) O2  THE DISARM LOOP, both branches: re-measuring the EDITED
+//       light HEALTHY produces a fresh, validly-keyed entry -> both N
+//       and O silent.  Re-measuring it STILL DIM produces a fresh entry
+//       that is once again validly keyed to the (unchanged since re-
+//       measurement) chunk -> N fires on the fresh number, O is silent
+//       (nothing stale left to nudge).
+//   (c) O3  NEVER A REAL FINDING: the recorded measurement was HEALTHY
+//       (30%) -- edit the light anyway -> O stays silent; a cache entry
+//       that was never a qualified N finding has nothing to nudge a
+//       re-measure over.
+//   (d) O4  M-SUPPRESSION: the light is enclosed by an opaque shell
+//       (M's own N5 fixture) AND dim AND edited since -> M still fires
+//       (the enclosure itself was never touched) -> O is SUPPRESSED,
+//       same "speak together or not at all" rule N follows for M.
+//   (e) O5  DELETED LIGHT: dim + recorded, then the light's chunk is
+//       removed entirely -> silent, no crash.
+//   (f) O6  KIND SWAP: the cached name is re-authored as a DIFFERENT
+//       light kind (shape_light -> omni_light) -> silent, exactly like a
+//       deletion -- there is no live chunk of the RECORDED kind to nudge
+//       a re-measure on.
+//   (g) O7  CARRIER PARITY: the diagnostic message appears byte-
+//       identically inside the render-result note, and both stateless
+//       (no-cache) carriers are silent -- N's own carrier-parity
+//       contract, unchanged for O.
+//----------------------------------------------------------------------
+
+static void TestDimLightRemeasureNote()
+{
+	std::printf( "O: the design note -- the re-measure nudge (dim + edited since, unverified)\n" );
+
+	auto hasCode = []( const std::vector<Agent::AgentDiagnostic>& d, const char* code )
+		-> const Agent::AgentDiagnostic* {
+		for( const Agent::AgentDiagnostic& e : d ) if( e.code == code ) return &e;
+		return nullptr;
+	};
+	const char* const kCodeO = "DESIGN_DIM_LIGHT_REMEASURE";
+	const char* const kCodeN = "DESIGN_DIM_HERO_LIGHT";
+	const char* const kCodeM = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+
+	// The motivating trajectory's own figures, N1's exact fixture: a 1.3
+	// mean-luma solo against a 67.9 all-lights frame, i.e. 1.9% of the
+	// measured light total.
+	const double kDimLuma  = 1.3;
+	const double kDimShare = 1.3 / 67.9;
+
+	// (a) O1: FIRES, quoting the RECORDED (pre-edit) numbers, with N
+	//     silent on the same bytes.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o1.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O1 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+			Check( hasCode( sess->Validate( original ), kCodeO ) == nullptr,
+			       "O1 BEFORE any edit: the cache is still valid, so this is N's territory, not O's" );
+
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+			const Agent::AgentDiagnostic* d = hasCode( diags, kCodeO );
+			Check( d != nullptr,
+			       "O1 MONEY: editing the light AFTER a qualified dim measurement fires the re-measure "
+			       "nudge -- the exact handoff void an agent's own fix otherwise falls into" );
+			Check( hasCode( diags, kCodeN ) == nullptr,
+			       "O1 ...and N is silent on the SAME bytes -- N's own validity key just broke, which "
+			       "is precisely what makes this O's moment to speak instead" );
+			if( d ) {
+				Check( d->severity == Agent::AgentDiagnostic::Severity::Info,
+				       "O1 it is an Info-severity ADVISORY" );
+				Check( d->message.find( "lantern_candle" ) != std::string::npos,
+				       "O1 it NAMES the light" );
+				Check( d->message.find( "1.9%" ) != std::string::npos,
+				       "O1 MONEY: ...quotes the RECORDED share (from BEFORE the edit) -- N1's own 1.9%, "
+				       "not anything about the edited chunk" );
+				Check( d->message.find( "exitance 5000" ) != std::string::npos,
+				       "O1 MONEY: ...and the RECORDED authored intensity -- exitance 5000, the value "
+				       "that was in effect when light_scene measured it, NOT the edited chunk's 6000" );
+				Check( d->message.find( "6000" ) == std::string::npos,
+				       "O1 MONEY: ...and never the edited chunk's new value -- this clause speaks only "
+				       "from what was actually measured" );
+				Check( d->message.find( "edited since" ) != std::string::npos,
+				       "O1 ...states that the edit happened" );
+				Check( d->message.find( "UNVERIFIED" ) != std::string::npos,
+				       "O1 ...and that the fix is UNVERIFIED" );
+				Check( d->message.find( "Re-run light_scene" ) != std::string::npos,
+				       "O1 MONEY: ...with the concrete action -- re-run light_scene to re-measure" );
+
+				// (g) O7a: carrier parity -- the SAME message appears
+				// byte-identically inside the render-result note.
+				const std::string note = Agent::AgentSession::ComputeDesignNote(
+					edited, false, &sess->LightSoloMeasurements() );
+				Check( note.find( d->message ) != std::string::npos,
+				       "O7a MONEY: the diagnostic message appears BYTE-IDENTICALLY inside the "
+				       "render-result note -- one shared formatter, two carriers" );
+			}
+
+			// (g) O7b: the stateless carriers hold no cache and so are
+			// silent, N's own limitation restated for O.
+			Check( hasCode( Agent::AgentSession::ValidateText( edited ), kCodeO ) == nullptr,
+			       "O7b MONEY: the STATELESS text-only carrier is SILENT on O -- it holds no session "
+			       "and therefore no recorded measurement to nudge a re-run of" );
+			Check( Agent::AgentSession::ComputeDesignNote( edited ).find( "UNVERIFIED" ) ==
+			       std::string::npos,
+			       "O7b ...and so is the stateless note wrapper, on the same bytes" );
+
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (b) O2: the disarm loop, both branches.  A FRESH session loaded
+	// directly from the EDITED (post-fix) text stands in for "the agent's
+	// edit already landed"; RecordSoloAudit against THAT session's own
+	// document is what `light_scene`'s real re-run would do -- the
+	// measurement it takes is validity-keyed to the edited chunk, not the
+	// original one.
+	{
+		const std::string edited = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+
+		// O2a: re-measured HEALTHY -> both N and O silent.
+		{
+			const std::string tmp = TempPath( "addwear_remeasure_o2a.RISEscene" );
+			Job* pJob = LoadScene( edited, tmp );
+			Check( pJob != nullptr, "O2a fixture derives" );
+			if( pJob ) {
+				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+				RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+				const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+				Check( hasCode( diags, kCodeN ) == nullptr,
+				       "O2a MONEY: re-measuring the edited light HEALTHY -- N is silent, the fix worked" );
+				Check( hasCode( diags, kCodeO ) == nullptr,
+				       "O2a MONEY: ...and O is silent too -- the fresh entry is validly keyed to the "
+				       "current chunk, nothing stale left to nudge" );
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+
+		// O2b: re-measured STILL DIM -> N fires on the fresh number, O
+		//      stays silent (the fresh entry is validly keyed).
+		{
+			const std::string tmp = TempPath( "addwear_remeasure_o2b.RISEscene" );
+			Job* pJob = LoadScene( edited, tmp );
+			Check( pJob != nullptr, "O2b fixture derives" );
+			if( pJob ) {
+				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+				RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+				const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+				Check( hasCode( diags, kCodeN ) != nullptr,
+				       "O2b MONEY: re-measuring the edited light STILL DIM -- N fires on the fresh, "
+				       "validly-keyed number; the fix did not work" );
+				Check( hasCode( diags, kCodeO ) == nullptr,
+				       "O2b MONEY: ...and O is silent -- the fresh entry matches the current chunk, so "
+				       "there is nothing stale for O to nudge a re-measure over" );
+				pJob->release();
+				std::remove( tmp.c_str() );
+			}
+		}
+	}
+
+	// (c) O3: the recorded measurement was NEVER a qualified N finding
+	//     (a healthy 30% share) -- editing the light afterwards still
+	//     gives O nothing to nudge.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o3.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O3 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", 20.0, 0.30 );
+
+			const std::string edited = Preamble() + DimLightSlab() +
+				ShapeLightAt( "lantern_candle", 6000.0, "0 3 0" );
+			Check( hasCode( sess->Validate( edited ), kCodeO ) == nullptr,
+			       "O3 MONEY: the RECORDED measurement was healthy, so it was never a qualified N "
+			       "finding to begin with -- editing the light afterwards does not manufacture one" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (d) O4: M-SUPPRESSION.  The light is enclosed (M's own N5 fixture),
+	//     dim, AND edited since -- but the enclosure itself is untouched,
+	//     so M still fires and O must stay suppressed.
+	{
+		std::string original = Preamble();
+		original += Box( "shell", 4.0 );
+		original += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		original += Obj( "obj_shell", "shell", "mat_shell", 0 );
+		original += ShapeLightAt( "lantern_candle", 5000.0, "0 0 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o4.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O4 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			std::string edited = Preamble();
+			edited += Box( "shell", 4.0 );
+			edited += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+			edited += Obj( "obj_shell", "shell", "mat_shell", 0 );
+			edited += ShapeLightAt( "lantern_candle", 6000.0, "0 0 0" );   // edited, still enclosed
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( edited );
+			Check( hasCode( diags, kCodeM ) != nullptr,
+			       "O4 condition M still fires -- the shell was never touched, the light is still "
+			       "enclosed" );
+			Check( hasCode( diags, kCodeO ) == nullptr,
+			       "O4 MONEY: O is SUPPRESSED while M still names the same light -- the enclosure isn't "
+			       "fixed yet, so nudging a re-measure is premature" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (e) O5: the cached light's chunk is GONE entirely.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o5.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O5 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::string deleted = Preamble() + DimLightSlab();
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( deleted );
+			Check( hasCode( diags, kCodeO ) == nullptr,
+			       "O5 MONEY: a cache entry whose light chunk no longer exists is SILENT, not a crash "
+			       "and not a nudge to re-measure a light that is not there" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+
+	// (f) O6: KIND SWAP -- the same name, re-authored as a different
+	//     light kind.
+	{
+		const std::string original = Preamble() + DimLightSlab() +
+			ShapeLightAt( "lantern_candle", 5000.0, "0 3 0" );
+		const std::string tmp = TempPath( "addwear_remeasure_o6.RISEscene" );
+		Job* pJob = LoadScene( original, tmp );
+		Check( pJob != nullptr, "O6 fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			RecordSoloAudit( *sess, "lantern_candle", kDimLuma, kDimShare );
+
+			const std::string swapped = Preamble() + DimLightSlab() +
+				OmniPowerAt( "lantern_candle", 5.0, "0 3 0" );
+			const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( swapped );
+			Check( hasCode( diags, kCodeO ) == nullptr,
+			       "O6 MONEY: the cached NAME now belongs to a different light KIND -- silent, exactly "
+			       "like a deletion, since there is no live chunk of the RECORDED kind left to nudge" );
+			Check( hasCode( diags, kCodeN ) == nullptr,
+			       "O6 ...and N is silent too, for the same kind-mismatch reason its own validity check "
+			       "already covers" );
+			pJob->release();
+			std::remove( tmp.c_str() );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "AgentAddWearTest -- GEOMETRY_SHADING_SIGNALS sec 11: add_wear\n" );
@@ -2082,6 +2367,7 @@ int main()
 	TestWireSurface();
 	TestEnclosedLightShellNote();
 	TestDimHeroLightNote();
+	TestDimLightRemeasureNote();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
 	return g_fail ? 1 : 0;
 }
