@@ -158,6 +158,13 @@ namespace RISE
 			float feasibilityFactor;
 		};
 
+		struct MetalSingleStageFCTParameters
+		{
+			std::uint32_t nx,ny,nz,cells,components,inequalities,nullity,affineRows;
+			std::uint32_t boundary[6],sideOffset[6];
+			float cellWidthM,timeStepS,feasibility,assemblyReserve;
+		};
+
 		constexpr std::size_t MetalThermochemistrySpeciesStride=32u;
 		constexpr std::size_t MetalThermochemistrySpeciesValues=
 			7u*MetalThermochemistrySpeciesStride;
@@ -223,6 +230,73 @@ namespace RISE
 				parameters.temperatureMinK>0.0f&&
 				parameters.temperatureMaxK>parameters.temperatureMinK&&
 				parameters.pressurePa>0.0f&&parameters.feasibilityFactor>0.0f;
+		}
+
+		bool PackMetalSingleStageFCTCertificate(
+			std::vector<float>& basis,std::vector<float>& coordinateProjector,
+			std::array<float,14>& enthalpyBounds,std::vector<float>& affine,
+			float& feasibility,float& assemblyReserve,std::string* error )
+		{
+			const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+			const FireCertifiedNullspace& reconstruction=fuel.ConservativeReconstruction();
+			std::array<double,7> lower,upper;
+			if(!fuel.IsValid()||reconstruction.stateDimension!=8u||
+				reconstruction.nullity==0u||reconstruction.nullity>8u||
+				reconstruction.orthonormalBasis.size()!=
+					reconstruction.stateDimension*reconstruction.nullity||
+				reconstruction.constraintMatrix.size()!=
+					reconstruction.constraintRows*reconstruction.stateDimension||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMinK(),
+					lower.data(),lower.size(),error)||
+				!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
+					upper.data(),upper.size(),error))return false;
+			basis.resize(reconstruction.orthonormalBasis.size());
+			for(std::size_t index=0u;index<basis.size();++index){
+				basis[index]=static_cast<float>(reconstruction.orthonormalBasis[index]);
+				if(!std::isfinite(basis[index]))return false;
+			}
+			coordinateProjector.assign(reconstruction.nullity*reconstruction.nullity,0.0f);
+			for(std::size_t index=0u;index<reconstruction.nullity;++index)
+				coordinateProjector[index*reconstruction.nullity+index]=1.0f;
+			affine.resize(reconstruction.constraintMatrix.size());
+			for(std::size_t index=0u;index<affine.size();++index){
+				affine[index]=static_cast<float>(reconstruction.constraintMatrix[index]);
+				if(!std::isfinite(affine[index]))return false;
+			}
+			for(std::size_t species=0u;species<7u;++species){
+				enthalpyBounds[species]=static_cast<float>(lower[species]);
+				enthalpyBounds[7u+species]=static_cast<float>(upper[species]);
+				if(!std::isfinite(enthalpyBounds[species])||
+					!std::isfinite(enthalpyBounds[7u+species]))return false;
+			}
+			const FireAcceptedStateFeasibilityEnvelope& envelope=
+				fuel.AcceptedStateFeasibilityEnvelope();
+			const double epsilon=std::numeric_limits<float>::epsilon();
+			feasibility=static_cast<float>(envelope.kappaEpsilon32*epsilon);
+			assemblyReserve=static_cast<float>(envelope.remapFactorEpsilon32*epsilon);
+			if(!std::isfinite(feasibility)||!std::isfinite(assemblyReserve)||
+				!(feasibility>0.0f)||assemblyReserve<0.0f||
+				!(assemblyReserve<feasibility)){
+				if(error)*error="production single-stage FCT certificate reserve is invalid";
+				return false;
+			}
+			return true;
+		}
+
+		std::uint64_t SingleStageFCTBoundaryIdentity(
+			const FireProductionProjectionShape& shape,
+			const FireProductionSingleStageFCTBoundaryState& state )
+		{
+			std::uint64_t digest=UINT64_C(0x5353464354424e44);
+			auto append=[&](const std::uint64_t word){digest^=word+
+				UINT64_C(0x9e3779b97f4a7c15)+(digest<<6u)+(digest>>2u);};
+			append(shape.nx);append(shape.ny);append(shape.nz);
+			append(state.statePayloadIdentity);
+			for(std::size_t side=0u;side<state.pressureOpenInflow.size();++side){
+				append(side+1u);append(state.pressureOpenInflow[side].size());
+				append(OrderedAcceptedByteFieldDigest(state.pressureOpenInflow[side],side+1u));
+			}
+			return AvalancheAcceptedDigest(digest);
 		}
 
 		bool ValidateFireProductionCellSourceIncrement(
@@ -1175,13 +1249,13 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 			// Isolated r183 candidate source. Ordinary production does not compile or
 			// create these pipelines; only the explicit diagnostic owner below can
 			// instantiate this library.
-			static const char* FCTHeunSource()
+			static const char* SingleStageFCTSource()
 		{
 			return R"METAL(
 #include <metal_stdlib>
 using namespace metal;
 struct FCTParams {
- uint nx;uint ny;uint nz;uint cells;uint components;uint inequalities;uint nullity;uint reserved;
+ uint nx;uint ny;uint nz;uint cells;uint components;uint inequalities;uint nullity;uint affineRows;
  uint boundary[6];uint sideOffset[6];float dx;float dt;float feasibility;float assemblyReserve;
 };
 inline uint fct_cell(constant FCTParams& p,uint x,uint y,uint z){return (z*p.ny+y)*p.nx+x;}
@@ -1294,16 +1368,21 @@ kernel void fct_build_ratios(device const float* beginning [[buffer(0)]],
   correction[2u*axis+1u][component]=-scale*fluxDelta[component*all+upper];}
   if(!isfinite(low[component]))atomic_fetch_or_explicit(failure,1u,memory_order_relaxed);
   if(inequality==0u)lowState[component*p.cells+cell]=low[component];}
+ float lowEnvelopeScale=1.0f;for(uint component=0u;component<9u;++component)
+  lowEnvelopeScale+=abs(low[component]);
  float rowScale=0.0f;for(uint component=0u;component<9u;++component){float lower=low[component],upper=low[component];
   for(uint direction=0u;direction<6u;++direction){float d=correction[direction][component];
    if(d<0.0f)lower+=d;else upper+=d;}float minimum=lower<=0.0f&&upper>=0.0f?0.0f:min(abs(lower),abs(upper));
-  if(inequality<9u){if(component<8u)rowScale+=minimum;}else if(component==8u)rowScale+=minimum;
+ if(inequality<9u){if(component<8u)rowScale+=minimum;}else if(component==8u)rowScale+=minimum;
   else if(component>0u&&component<8u)rowScale+=(abs(enthalpyBounds[component-1u])+
    abs(enthalpyBounds[7u+component-1u]))*minimum;}rowScale=max(1.0f,rowScale);
+ float lowExcess=fct_inequality(low,inequality,enthalpyBounds);
+ if(!isfinite(lowExcess)||lowExcess>p.feasibility*lowEnvelopeScale)
+  atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);
  float requested=0.0f;for(uint direction=0u;direction<6u;++direction)
   requested+=max(0.0f,fct_inequality(correction[direction],inequality,enthalpyBounds));
  float budget=max(0.0f,(p.feasibility-p.assemblyReserve)*rowScale-
-  fct_inequality(low,inequality,enthalpyBounds));float value=requested>0.0f?min(1.0f,budget/requested):1.0f;
+  lowExcess);float value=requested>0.0f?min(1.0f,budget/requested):1.0f;
  if(!isfinite(value)||value<0.0f||value>1.0f)atomic_fetch_or_explicit(failure,2u,memory_order_relaxed);
  ratio[inequality*p.cells+cell]=clamp(value,0.0f,1.0f);
 }
@@ -1335,8 +1414,9 @@ kernel void fct_build_face_alpha(device const float* fluxDelta [[buffer(0)]],
 }
 kernel void fct_commit_scalar(device const float* lowState [[buffer(0)]],
  device const float* fluxDelta [[buffer(1)]],device const float* alpha [[buffer(2)]],
- device const float* enthalpyBounds [[buffer(3)]],device float* accepted [[buffer(4)]],
- device atomic_uint* failure [[buffer(5)]],constant FCTParams& p [[buffer(6)]],
+ device const float* enthalpyBounds [[buffer(3)]],device const float* affine [[buffer(4)]],
+ device float* accepted [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ constant FCTParams& p [[buffer(7)]],
  uint gid [[thread_position_in_grid]]){
  if(gid>=p.cells)return;uint all=fct_all_faces(p);float value[9],scale=p.dt/p.dx;
  for(uint component=0u;component<9u;++component){value[component]=lowState[component*p.cells+gid];
@@ -1350,6 +1430,11 @@ kernel void fct_commit_scalar(device const float* lowState [[buffer(0)]],
   float excess=fct_inequality(value,inequality,enthalpyBounds);
   if(!isfinite(excess)||excess>p.feasibility*rowScale)
    atomic_fetch_or_explicit(failure,16u,memory_order_relaxed);}
+ for(uint row=0u;row<p.affineRows;++row){float residual=0.0f,rowScale=1.0f;
+  for(uint component=0u;component<8u;++component){float coefficient=affine[row*8u+component];
+   residual+=coefficient*value[component];rowScale+=abs(coefficient)*abs(value[component]);}
+  if(!isfinite(residual)||abs(residual)>p.feasibility*rowScale)
+   atomic_fetch_or_explicit(failure,256u,memory_order_relaxed);}
 }
 inline float fct_accepted_gas(device const float* low,device const float* delta,
  device const float* alpha,constant FCTParams& p,uint axis,uint x,uint y,uint z){
@@ -1357,7 +1442,8 @@ inline float fct_accepted_gas(device const float* low,device const float* delta,
  uint extent=fct_extent(p,axis);if(p.boundary[2u*axis]==0u&&coordinate==extent){
   fct_set_coordinate(axis,0u,x,y,z);packed=fct_packed_face(p,axis,x,y,z);}
  float gas=0.0f;for(uint component=1u;component<=6u;++component)
-  gas+=low[component*all+packed]+alpha[packed]*delta[component*all+packed];return gas;
+  gas+=low[component*all+packed]+alpha[packed]*delta[component*all+packed];
+ return gas;
 }
 inline float fct_velocity(device const float* ux,device const float* uy,device const float* uz,
  constant FCTParams& p,uint component,uint x,uint y,uint z){device const float* values=
@@ -1461,6 +1547,20 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
  if(!isfinite(divergence))atomic_fetch_or_explicit(failure,32u,memory_order_relaxed);
  rate[gid]=divergence;
 }
+kernel void fct_apply_momentum_rate(device float* momentum [[buffer(0)]],
+ device const float* rate [[buffer(1)]],device atomic_uint* failure [[buffer(2)]],
+ constant FCTParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=fct_all_faces(p))return;float updated=momentum[gid]-p.dt*rate[gid];
+ if(!isfinite(updated))atomic_fetch_or_explicit(failure,512u,memory_order_relaxed);
+ momentum[gid]=updated;
+}
+kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
+ device float* density [[buffer(1)]],constant FCTParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid>=p.cells)return;float gas=accepted[p.cells+gid];
+ for(uint component=2u;component<=6u;++component)gas+=accepted[component*p.cells+gid];
+ density[gid]=gas;
+}
 )METAL";
 		}
 
@@ -1479,7 +1579,7 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
 			}
 		};
 
-		struct FCTHeunMetalContext
+		struct SingleStageFCTMetalContext
 		{
 			id<MTLDevice> device;
 			id<MTLCommandQueue> queue;
@@ -1488,21 +1588,26 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
 			id<MTLComputePipelineState> buildFaceAlpha;
 			id<MTLComputePipelineState> commitScalar;
 			id<MTLComputePipelineState> compatibleStageRate;
+			id<MTLComputePipelineState> applyMomentumRate;
+			id<MTLComputePipelineState> extractGasDensity;
 			std::string error;
 
-			FCTHeunMetalContext() : device(nil),queue(nil),buildFluxPair(nil),buildRatios(nil),
-				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil)
+			SingleStageFCTMetalContext() : device(nil),queue(nil),buildFluxPair(nil),buildRatios(nil),
+				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil),applyMomentumRate(nil),
+				extractGasDensity(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
-					if(!device){error="production FCT-Heun diagnostic has no Metal device";return;}
+					if(!device){error="production single-stage FCT diagnostic has no Metal device";return;}
 					MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
 					if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
-					else{error="production FCT-Heun diagnostic requires Metal safe math mode";return;}
+					else{error="production single-stage FCT diagnostic requires Metal safe math mode";return;}
 					NSError* metalError=nil;
-					NSString* source=[NSString stringWithUTF8String:MetalRemapContext::FCTHeunSource()];
+					NSString* source=[NSString stringWithUTF8String:
+						MetalRemapContext::SingleStageFCTSource()];
 					id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&metalError];
-					if(!library){error=MetalError("production FCT-Heun diagnostic library compilation failed",
+					if(!library){error=MetalError(
+						"production single-stage FCT diagnostic library compilation failed",
 						metalError);return;}
 					auto makePipeline=[&](const char* name)->id<MTLComputePipelineState>{
 						id<MTLFunction> function=[library newFunctionWithName:
@@ -1514,18 +1619,22 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
 					buildFaceAlpha=makePipeline("fct_build_face_alpha");
 					commitScalar=makePipeline("fct_commit_scalar");
 					compatibleStageRate=makePipeline("fct_compatible_stage_rate");
+					applyMomentumRate=makePipeline("fct_apply_momentum_rate");
+					extractGasDensity=makePipeline("fct_extract_gas_density");
 					if(!buildFluxPair||!buildRatios||!buildFaceAlpha||!commitScalar||
-						!compatibleStageRate){error=MetalError(
-						"production FCT-Heun diagnostic pipeline creation failed",metalError);return;}
+						!compatibleStageRate||!applyMomentumRate||!extractGasDensity){error=MetalError(
+						"production single-stage FCT diagnostic pipeline creation failed",
+						metalError);return;}
 					queue=[device newCommandQueue];
-					if(!queue)error="production FCT-Heun diagnostic command queue allocation failed";
+					if(!queue)error=
+						"production single-stage FCT diagnostic command queue allocation failed";
 				}
 			}
 
 			bool Valid() const
 			{
 				return device&&queue&&buildFluxPair&&buildRatios&&buildFaceAlpha&&commitScalar&&
-					compatibleStageRate&&error.empty();
+					compatibleStageRate&&applyMomentumRate&&extractGasDensity&&error.empty();
 			}
 		};
 
@@ -1535,9 +1644,9 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
 			return context;
 		}
 
-		FCTHeunMetalContext& FCTHeunContext()
+		SingleStageFCTMetalContext& SingleStageFCTContext()
 		{
-			static FCTHeunMetalContext context;
+			static SingleStageFCTMetalContext context;
 			return context;
 		}
 
@@ -4387,20 +4496,70 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
 		return AttemptFireProductionResidentStepMetal(request,result,structuredError);
 	}
 
-	bool AttemptFireProductionFCTHeunDiagnosticMetal(
+	bool SealFireProductionSingleStageFCTBoundaryState(
+		const FireProductionProjectionShape& shape,
+		const std::array<FireProductionProjectionBoundary,6>& boundary,
+		FireProductionSingleStageFCTBoundaryState& state,
+		std::string* error )
+	{
+		try {
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||state.statePayloadIdentity==0u){
+				state.identity=0u;
+				if(error)*error="production single-stage FCT boundary-state owner is invalid";
+				return false;
+			}
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=boundary[2u*axis],
+					upper=boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+					FireProductionProjectionPeriodic))){
+					state.identity=0u;
+					if(error)*error="production single-stage FCT boundary-state topology is invalid";
+					return false;
+				}
+			}
+			for(unsigned int side=0u;side<6u;++side){const std::size_t expected=side<2u?
+				shape.ny*shape.nz:(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+				if(state.pressureOpenInflow[side].size()!=expected){state.identity=0u;
+					if(error)*error="production single-stage FCT boundary-state shape is invalid";
+					return false;}
+				for(const unsigned char value:state.pressureOpenInflow[side])
+					if(value>1u||(boundary[side]!=FireProductionProjectionPressureOpen&&value!=0u)){
+						state.identity=0u;
+						if(error)*error="production single-stage FCT boundary-state byte is invalid";
+						return false;
+					}
+			}
+			state.identity=SingleStageFCTBoundaryIdentity(shape,state);
+			if(state.identity==0u){
+				if(error)*error="production single-stage FCT boundary-state identity is unavailable";
+				return false;
+			}
+			if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){state.identity=0u;
+			if(error)*error="production single-stage FCT boundary-state sealing failed";return false;}
+	}
+
+	bool AttemptFireProductionSingleStageFCTDiagnosticMetal(
 		const FireProductionResidentStepRequest& request,
-		FireProductionFCTHeunDiagnosticResult& result,
+		const FireProductionSingleStageFCTBoundaryState& boundaryState,
+		FireProductionSingleStageFCTDiagnosticResult& result,
 		std::string* structuredError )
 	{
-		result=FireProductionFCTHeunDiagnosticResult();
-		constexpr std::uint32_t operatorVersion=1u;
-		constexpr std::uint64_t operatorIdentity=UINT64_C(0x6633746865756e31);
+		result=FireProductionSingleStageFCTDiagnosticResult();
+		try {
+		result.phase=FireProductionSingleStageFCTDiagnosticPhase::Preflight;
+		result.operatorVersion=1u;
+		result.zeroPhysicalGasFluxIdentity=UINT64_C(0x4a675f6578616374);
 		const FireProductionProjectionShape& shape=request.force.shape;
+		auto fail=[&](const char* message){if(structuredError)*structuredError=message;return false;};
 		auto sameShape=[](const FireProductionProjectionShape& first,
-			const FireProductionProjectionShape& second) {
-			return first.nx==second.nx&&first.ny==second.ny&&first.nz==second.nz&&
-				first.cellWidthM==second.cellWidthM;
-		};
+			const FireProductionProjectionShape& second){return first.nx==second.nx&&
+			first.ny==second.ny&&first.nz==second.nz&&first.cellWidthM==second.cellWidthM;};
 		if(!sameShape(shape,request.cellTransport.shape)||
 			!sameShape(shape,request.dualTransport.shape)||
 			request.force.timeStepS!=request.cellTransport.timeStepS||
@@ -4408,76 +4567,419 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
 			request.force.boundary!=request.cellTransport.boundary||
 			request.force.boundary!=request.dualTransport.boundary||
 			request.cellTransport.componentCount!=9u||
-			request.cellTransport.retainAcceptedGasMassDose) {
-			if(structuredError)*structuredError=
-				"production FCT-Heun diagnostic ownership metadata is invalid";
-			return false;
-		}
+			request.cellTransport.retainAcceptedGasMassDose||
+			!request.monitorManifoldDiagnostics||request.enforceManifoldPlateau)
+			return fail("production single-stage FCT ownership metadata is invalid");
 		std::string validationError;
 		if(!ValidateFireProductionFrozenForceRequest(request.force,&validationError)||
 			!ValidateFireProductionCellPalindromeRequest(request.cellTransport,&validationError)||
-			!ValidateFireProductionCompatibleDualMomentumRequest(request.dualTransport,
-				&validationError)) {
+			!ValidateFireProductionDualMomentumRequest(request.dualTransport,&validationError)){
 			if(structuredError)*structuredError=validationError.empty()?
-				"production FCT-Heun diagnostic operand validation failed":validationError;
+				"production single-stage FCT operand validation failed":validationError;
 			return false;
 		}
 		const std::size_t cells=shape.CellCount();
+		std::array<std::size_t,3> faceCount,faceOffset;std::size_t allFaces=0u;
+		for(unsigned int axis=0u;axis<3u;++axis){faceOffset[axis]=allFaces;
+			faceCount[axis]=FireProductionProjectionFaceCount(shape,axis);allFaces+=faceCount[axis];}
 		if(request.cellSourceIncrement.size()!=9u*cells||
 			request.divergenceTargetPerS.size()!=cells||
-			request.restorationDivergenceTargetPerS.size()!=cells) {
-			if(structuredError)*structuredError=
-				"production FCT-Heun diagnostic source shape is invalid";
-			return false;
-		}
+			request.restorationDivergenceTargetPerS.size()!=cells||
+			request.beginningManifoldDeviationPerCell.size()!=cells||
+			!ValidateFireProductionCellSourceIncrement(request.cellSourceIncrement,cells,false,
+				&validationError))return fail(validationError.empty()?
+				"production single-stage FCT source shape is invalid":validationError.c_str());
 		bool anyPeriodic=false,allPeriodic=true;
-		for(unsigned int axis=0u;axis<3u;++axis) {
+		std::vector<unsigned char> packedInflow;
+		for(unsigned int side=0u;side<6u;++side){
+			const std::size_t expected=side<2u?shape.ny*shape.nz:
+				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+			if(boundaryState.pressureOpenInflow[side].size()!=expected)
+				return fail("production single-stage FCT boundary-state shape is invalid");
+			for(const unsigned char value:boundaryState.pressureOpenInflow[side])
+				if(value>1u||(request.force.boundary[side]!=
+					FireProductionProjectionPressureOpen&&value!=0u))
+					return fail("production single-stage FCT boundary-state byte is invalid");
+			packedInflow.insert(packedInflow.end(),boundaryState.pressureOpenInflow[side].begin(),
+				boundaryState.pressureOpenInflow[side].end());
+		}
+		result.beginningStateIdentity=FireProductionAcceptedStatePayloadDigestFast(shape,
+			request.cellTransport.conservativeValues,request.force.beginningMomentumKGPerM2S,
+			request.cellTransport.frozenVelocityMPerS);
+		if(boundaryState.statePayloadIdentity==0u||
+			boundaryState.statePayloadIdentity!=result.beginningStateIdentity)return fail(
+			"production single-stage FCT boundary-state predecessor is stale");
+		result.boundaryStateIdentity=SingleStageFCTBoundaryIdentity(shape,boundaryState);
+		if(boundaryState.identity==0u||boundaryState.identity!=result.boundaryStateIdentity)
+			return fail("production single-stage FCT boundary-state identity is stale");
+		result.operatorIdentity=AvalancheAcceptedDigest(UINT64_C(0x70726f645f666374)^
+			result.boundaryStateIdentity^result.zeroPhysicalGasFluxIdentity);
+		for(unsigned int axis=0u;axis<3u;++axis){
 			const bool periodic=request.force.boundary[2u*axis]==
 				FireProductionProjectionPeriodic;
 			anyPeriodic=anyPeriodic||periodic;allPeriodic=allPeriodic&&periodic;
-			if(request.momentumSourceIncrement[axis].size()!=
-				FireProductionProjectionFaceCount(shape,axis)) {
-				if(structuredError)*structuredError=
-					"production FCT-Heun diagnostic momentum-source shape is invalid";
-				return false;
+			if(request.momentumSourceIncrement[axis].size()!=faceCount[axis]||
+				request.dualTransport.beginningFaceDensity[axis]!=
+					request.force.faceDensityKGPerM3[axis]||
+				request.dualTransport.beginningMomentum[axis]!=
+					request.force.beginningMomentumKGPerM2S[axis]||
+				request.dualTransport.frozenVelocityMPerS[axis]!=
+					request.cellTransport.frozenVelocityMPerS[axis])
+				return fail("production single-stage FCT dual ownership is invalid");
+			for(const float increment:request.momentumSourceIncrement[axis]){
+				std::uint32_t bits=0u;std::memcpy(&bits,&increment,sizeof(bits));
+				if(bits!=0u)return fail(
+					"production single-stage FCT momentum source is not positive zero");
 			}
 		}
-		if(anyPeriodic&&!allPeriodic) {
-			if(structuredError)*structuredError=
-				"production FCT-Heun diagnostic hybrid periodic topology has no authoritative oracle";
+		if(anyPeriodic&&!allPeriodic)return fail(
+			"production single-stage FCT hybrid periodic topology has no authoritative oracle");
+		for(std::size_t cell=0u;cell<cells;++cell){
+			float gas=request.cellTransport.conservativeValues[cells+cell];
+			for(std::size_t component=2u;component<=6u;++component)
+				gas+=request.cellTransport.conservativeValues[component*cells+cell];
+			if(gas!=request.force.cellGasDensityKGPerM3[cell])return fail(
+				"production single-stage FCT packed gas density does not match force input");
+			if(!std::isfinite(request.beginningManifoldDeviationPerCell[cell]))return fail(
+				"production single-stage FCT beginning manifold metadata is nonfinite");
+		}
+		FireProductionManifoldTailTarget tail;
+		if(request.restoreManifoldOutliers&&!DeriveFireProductionManifoldTailTarget(
+			request.beginningManifoldDeviationPerCell,request.force.timeStepS,shape.cellWidthM,
+			tail,structuredError,0x1p-4))return false;
+		const bool tailActive=request.restoreManifoldOutliers&&tail.outlierCellCount>0u;
+		result.tailCellCount=tail.outlierCellCount;result.tailDrainedVolumeM3=tail.drainedVolumeM3;
+
+		std::vector<float> basis,coordinateProjector,affine;std::array<float,14> enthalpy;
+		float feasibility=0.0f,assemblyReserve=0.0f;
+		if(!PackMetalSingleStageFCTCertificate(basis,coordinateProjector,enthalpy,affine,
+			feasibility,assemblyReserve,structuredError))return false;
+		const FireCertifiedNullspace& reconstruction=
+			FireSimulationMethaneRecord::PhysicalV1().ConservativeReconstruction();
+		FireProductionScalarFCTRequest scalarRequest;
+		scalarRequest.shape=shape;scalarRequest.timeStepS=request.force.timeStepS;
+		scalarRequest.boundary=request.force.boundary;
+		scalarRequest.beginning=request.cellTransport.conservativeValues;
+		scalarRequest.sourceDelta=request.cellSourceIncrement;
+		scalarRequest.frozenVelocityMPerS=request.cellTransport.frozenVelocityMPerS;
+		std::copy(request.cellTransport.ambientValues.begin(),
+			request.cellTransport.ambientValues.end(),scalarRequest.ambient.begin());
+		scalarRequest.pressureOpenInflow=boundaryState.pressureOpenInflow;
+		scalarRequest.nullity=reconstruction.nullity;scalarRequest.nullspaceBasis=basis;
+		scalarRequest.coordinateProjector=coordinateProjector;
+		scalarRequest.enthalpyBoundsJPerKG=enthalpy;
+		scalarRequest.feasibilityFactor=feasibility;
+		scalarRequest.assemblyReserveFactor=assemblyReserve;
+		FireProductionScalarFCTResult scalarReference;
+		if(!EvaluateFireProductionScalarFCTCPU(scalarRequest,scalarReference,structuredError))
 			return false;
+		MetalSingleStageFCTParameters parameters={static_cast<std::uint32_t>(shape.nx),
+			static_cast<std::uint32_t>(shape.ny),static_cast<std::uint32_t>(shape.nz),
+			static_cast<std::uint32_t>(cells),9u,11u,
+			static_cast<std::uint32_t>(reconstruction.nullity),
+			static_cast<std::uint32_t>(reconstruction.constraintRows),{},{},
+			shape.cellWidthM,request.force.timeStepS,feasibility,assemblyReserve};
+		std::size_t sideOffset=0u;for(unsigned int side=0u;side<6u;++side){
+			parameters.boundary[side]=static_cast<std::uint32_t>(request.force.boundary[side]);
+			parameters.sideOffset[side]=static_cast<std::uint32_t>(sideOffset);
+			sideOffset+=boundaryState.pressureOpenInflow[side].size();
 		}
-		for(unsigned int axis=0u;axis<3u;++axis)for(const float increment:
-			request.momentumSourceIncrement[axis]) {
-			std::uint32_t bits=0u;std::memcpy(&bits,&increment,sizeof(bits));
-			if(bits!=0u) {
-				if(structuredError)*structuredError=
-					"production FCT-Heun diagnostic momentum source is not positive zero";
-				return false;
-			}
-		}
-		const std::uint64_t beginningCommits=MetalCommandCommitCount;
-		FCTHeunMetalContext& context=FCTHeunContext();
-		if(!context.Valid()) {
-			if(structuredError)*structuredError=context.error.empty()?
-				"production FCT-Heun diagnostic context is invalid":context.error;
-			return false;
-		}
-		if(MetalCommandCommitCount!=beginningCommits) {
-			if(structuredError)*structuredError=
-				"production FCT-Heun diagnostic scaffold performed Metal work";
-			return false;
-		}
-		result.operatorVersion=operatorVersion;
-		result.operatorIdentity=operatorIdentity;
-		result.phase=FireProductionFCTHeunDiagnosticPhase::ScaffoldReady;
+		std::uint64_t certified=0u;
+		if(!FireProductionResidentStepWorkingSetBytes(shape,request.force.boundary,certified))
+			return fail("production single-stage FCT working-set base is unavailable");
+		auto addCertified=[&](std::uint64_t bytes){const std::uint64_t rounded=
+			(bytes+UINT64_C(16383))&~UINT64_C(16383);if(bytes==0u||rounded<bytes||
+			certified>std::numeric_limits<std::uint64_t>::max()-rounded)return false;
+			certified+=rounded;return true;};
+		const std::uint64_t cellValueBytes=9u*cells*sizeof(float),
+			packedFaceBytes=allFaces*sizeof(float),fluxBytes=9u*packedFaceBytes,
+			terminalBytes=(29u*cells+20u*allFaces)*sizeof(float);
+		auto addCopies=[&](const std::uint64_t bytes,const unsigned int count){
+			for(unsigned int copy=0u;copy<count;++copy)if(!addCertified(bytes))return false;
+			return true;};
+		if(!addCopies(cellValueBytes,6u)||!addCopies(9u*sizeof(float),1u)||
+			!addCopies(packedInflow.size(),2u)||!addCopies(cells*sizeof(float),5u)||
+			!addCopies(basis.size()*sizeof(float),1u)||
+			!addCopies(coordinateProjector.size()*sizeof(float),1u)||
+			!addCopies(enthalpy.size()*sizeof(float),1u)||
+			!addCopies(affine.size()*sizeof(float),1u)||!addCopies(sizeof(parameters),1u)||
+			!addCopies(fluxBytes,2u)||!addCopies(11u*cells*sizeof(float),1u)||
+			!addCopies(packedFaceBytes,2u)||!addCopies(sizeof(std::uint32_t),1u)||
+			!addCopies(terminalBytes,1u))return fail(
+			"production single-stage FCT working-set certificate overflowed");
+		for(unsigned int axis=0u;axis<3u;++axis)if(!addCopies(
+			faceCount[axis]*sizeof(float),2u))return fail(
+			"production single-stage FCT velocity working-set certificate overflowed");
+		if(certified>(UINT64_C(1)<<31u))return fail(
+			"production single-stage FCT working set exceeds two GiB");
+		result.certifiedWorkingSetBytes=certified;
+		SingleStageFCTMetalContext& context=SingleStageFCTContext();
+		if(!context.Valid()){if(structuredError)*structuredError=context.error;return false;}
 		result.pipelineIdentityComplete=true;
-		// Phase 1 deliberately publishes no accepted state.  The stage owner must
-		// bind the working-set certificate, alpha digests, three projection gates,
-		// and commuting residual before this API may become executable.
-		if(structuredError)*structuredError=
-			"production FCT-Heun diagnostic phase-1 scaffold is not executable";
-		return false;
+		@autoreleasepool {
+			std::uint64_t ownBytes=0u;std::vector<id<MTLBuffer> > owned;
+			auto record=[&](id<MTLBuffer> buffer){if(!buffer)return false;
+				const std::uint64_t bytes=[buffer allocatedSize];
+				if(ownBytes>std::numeric_limits<std::uint64_t>::max()-bytes)return false;
+				ownBytes+=bytes;owned.push_back(buffer);return true;};
+			auto stage=[&](const void* data,const std::size_t bytes){id<MTLBuffer> buffer=
+				[context.device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
+				return record(buffer)?buffer:nil;};
+			auto privateBuffer=[&](const std::size_t bytes){id<MTLBuffer> buffer=
+				[context.device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];
+				return record(buffer)?buffer:nil;};
+			id<MTLBuffer> qStage=stage(request.cellTransport.conservativeValues.data(),cellValueBytes),
+				q=privateBuffer(cellValueBytes),sourceStage=stage(request.cellSourceIncrement.data(),
+				cellValueBytes),source=privateBuffer(cellValueBytes),ambient=stage(
+				request.cellTransport.ambientValues.data(),9u*sizeof(float));
+			std::array<id<MTLBuffer>,3> velocityStage,velocity;
+			for(unsigned int axis=0u;axis<3u;++axis){velocityStage[axis]=stage(
+				request.cellTransport.frozenVelocityMPerS[axis].data(),faceCount[axis]*sizeof(float));
+				velocity[axis]=privateBuffer(faceCount[axis]*sizeof(float));}
+			id<MTLBuffer> inflowStage=stage(packedInflow.data(),packedInflow.size()),
+				inflow=privateBuffer(packedInflow.size()),targetStage=stage(
+				request.divergenceTargetPerS.data(),cells*sizeof(float)),target=privateBuffer(cells*sizeof(float));
+			const std::vector<float>& tailTarget=tailActive?tail.divergenceTargetPerS:
+				request.restorationDivergenceTargetPerS;
+			id<MTLBuffer> tailStage=stage(tailTarget.data(),cells*sizeof(float)),
+				tailPrivate=privateBuffer(cells*sizeof(float)),basisBuffer=stage(basis.data(),
+				basis.size()*sizeof(float)),projectorBuffer=stage(coordinateProjector.data(),
+				coordinateProjector.size()*sizeof(float)),enthalpyBuffer=stage(enthalpy.data(),
+				enthalpy.size()*sizeof(float)),affineBuffer=stage(affine.data(),affine.size()*sizeof(float)),
+				parameterBuffer=stage(&parameters,sizeof(parameters));
+			id<MTLBuffer> low=privateBuffer(fluxBytes),delta=privateBuffer(fluxBytes),
+				lowState=privateBuffer(cellValueBytes),ratio=privateBuffer(11u*cells*sizeof(float)),
+				alpha=privateBuffer(packedFaceBytes),accepted=privateBuffer(cellValueBytes),
+				rate=privateBuffer(packedFaceBytes),gasDensity=privateBuffer(cells*sizeof(float));
+			id<MTLBuffer> failure=[context.device newBufferWithLength:sizeof(std::uint32_t)
+				options:MTLResourceStorageModeShared],terminal=[context.device newBufferWithLength:
+				terminalBytes options:MTLResourceStorageModeShared];
+			if(!record(failure)||!record(terminal)||!qStage||!q||!sourceStage||!source||!ambient||
+				!inflowStage||!inflow||!targetStage||!target||!tailStage||!tailPrivate||!basisBuffer||
+				!projectorBuffer||!enthalpyBuffer||!affineBuffer||!parameterBuffer||!low||!delta||
+				!lowState||!ratio||!alpha||!accepted||!rate||!gasDensity)
+				return fail("production single-stage FCT allocation failed");
+			for(unsigned int axis=0u;axis<3u;++axis)if(!velocityStage[axis]||!velocity[axis])
+				return fail("production single-stage FCT velocity allocation failed");
+			std::memset([failure contents],0,sizeof(std::uint32_t));
+			id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
+			id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;
+			if(!blit)return fail("production single-stage FCT upload encoder failed");
+			auto copy=[&](id<MTLBuffer> from,id<MTLBuffer> to,std::size_t bytes){
+				[blit copyFromBuffer:from sourceOffset:0 toBuffer:to destinationOffset:0 size:bytes];};
+			copy(qStage,q,cellValueBytes);copy(sourceStage,source,cellValueBytes);
+			for(unsigned int axis=0u;axis<3u;++axis)copy(velocityStage[axis],velocity[axis],
+				faceCount[axis]*sizeof(float));
+			copy(inflowStage,inflow,packedInflow.size());copy(targetStage,target,cells*sizeof(float));
+			copy(tailStage,tailPrivate,cells*sizeof(float));[blit endEncoding];
+			CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
+			if([upload status]!=MTLCommandBufferStatusCompleted)return fail(
+				"production single-stage FCT upload failed");
+
+			result.phase=FireProductionSingleStageFCTDiagnosticPhase::ForceAdvance;
+			FireProductionMetalFrozenForceResidentState force;
+			if(!AdvanceFireProductionFrozenForceMetalResidentState(request.force,force,structuredError))
+				return false;
+			result.forceSchedule=force.schedule;result.forceDiagnostics=force.diagnostics;
+			result.phase=FireProductionSingleStageFCTDiagnosticPhase::FCTSolve;
+			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+			auto encoderFor=[&](id<MTLComputePipelineState> pipeline,std::size_t count){
+				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				if(encoder){[encoder setComputePipelineState:pipeline];const std::size_t width=
+					std::min<std::size_t>(256u,[pipeline maxTotalThreadsPerThreadgroup]);
+					[encoder dispatchThreads:MTLSizeMake(count,1,1)
+						threadsPerThreadgroup:MTLSizeMake(width,1,1)];}return encoder;};
+			id<MTLComputeCommandEncoder> encoder=encoderFor(context.buildFluxPair,9u*allFaces);
+			if(!encoder)return fail("production single-stage FCT flux encoder failed");
+			[encoder setBuffer:q offset:0 atIndex:0];for(unsigned int axis=0u;axis<3u;++axis)
+				[encoder setBuffer:velocity[axis] offset:0 atIndex:1u+axis];
+			[encoder setBuffer:ambient offset:0 atIndex:4];[encoder setBuffer:inflow offset:0 atIndex:5];
+			[encoder setBuffer:basisBuffer offset:0 atIndex:6];[encoder setBuffer:projectorBuffer offset:0 atIndex:7];
+			[encoder setBuffer:low offset:0 atIndex:8];[encoder setBuffer:delta offset:0 atIndex:9];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:10];[encoder endEncoding];
+			encoder=encoderFor(context.buildRatios,11u*cells);if(!encoder)return fail(
+				"production single-stage FCT ratio encoder failed");
+			[encoder setBuffer:q offset:0 atIndex:0];[encoder setBuffer:source offset:0 atIndex:1];
+			[encoder setBuffer:low offset:0 atIndex:2];[encoder setBuffer:delta offset:0 atIndex:3];
+			[encoder setBuffer:enthalpyBuffer offset:0 atIndex:4];[encoder setBuffer:lowState offset:0 atIndex:5];
+			[encoder setBuffer:ratio offset:0 atIndex:6];[encoder setBuffer:failure offset:0 atIndex:7];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];[encoder endEncoding];
+			encoder=encoderFor(context.buildFaceAlpha,allFaces);if(!encoder)return fail(
+				"production single-stage FCT alpha encoder failed");
+			[encoder setBuffer:delta offset:0 atIndex:0];[encoder setBuffer:ratio offset:0 atIndex:1];
+			[encoder setBuffer:enthalpyBuffer offset:0 atIndex:2];[encoder setBuffer:alpha offset:0 atIndex:3];
+			[encoder setBuffer:failure offset:0 atIndex:4];[encoder setBuffer:parameterBuffer offset:0 atIndex:5];
+			[encoder endEncoding];encoder=encoderFor(context.commitScalar,cells);if(!encoder)return fail(
+				"production single-stage FCT scalar encoder failed");
+			[encoder setBuffer:lowState offset:0 atIndex:0];[encoder setBuffer:delta offset:0 atIndex:1];
+			[encoder setBuffer:alpha offset:0 atIndex:2];[encoder setBuffer:enthalpyBuffer offset:0 atIndex:3];
+			[encoder setBuffer:affineBuffer offset:0 atIndex:4];[encoder setBuffer:accepted offset:0 atIndex:5];
+			[encoder setBuffer:failure offset:0 atIndex:6];[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
+			[encoder endEncoding];encoder=encoderFor(context.compatibleStageRate,allFaces);
+			if(!encoder)return fail("production single-stage FCT compatible-rate encoder failed");
+			[encoder setBuffer:low offset:0 atIndex:0];[encoder setBuffer:delta offset:0 atIndex:1];
+			[encoder setBuffer:alpha offset:0 atIndex:2];for(unsigned int axis=0u;axis<3u;++axis)
+				[encoder setBuffer:velocity[axis] offset:0 atIndex:3u+axis];
+			[encoder setBuffer:rate offset:0 atIndex:6];[encoder setBuffer:failure offset:0 atIndex:7];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];[encoder endEncoding];
+			encoder=encoderFor(context.applyMomentumRate,allFaces);if(!encoder)return fail(
+				"production single-stage FCT momentum encoder failed");
+			[encoder setBuffer:force.packedMomentumKGPerM2S offset:0 atIndex:0];
+			[encoder setBuffer:rate offset:0 atIndex:1];[encoder setBuffer:failure offset:0 atIndex:2];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:3];[encoder endEncoding];
+			encoder=encoderFor(context.extractGasDensity,cells);if(!encoder)return fail(
+				"production single-stage FCT density encoder failed");
+			[encoder setBuffer:accepted offset:0 atIndex:0];[encoder setBuffer:gasDensity offset:0 atIndex:1];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:2];[encoder endEncoding];
+			CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+			if([command status]!=MTLCommandBufferStatusCompleted)return fail(
+				"production single-stage FCT command failed");
+			const std::uint32_t* failureWord=static_cast<const std::uint32_t*>(
+				ReadTrackedMetalBuffer(failure));if(!failureWord)return fail(
+				"production single-stage FCT failure word is unavailable");
+			result.failureBitmap=*failureWord;if(result.failureBitmap!=0u)return fail(
+				"production single-stage FCT admissibility gate refused");
+			result.fluxPairBuildCount=1u;result.fctSolveCount=1u;
+			result.compatibleRateApplicationCount=1u;result.sourceApplicationCount=1u;
+			result.scalarAdmissible=true;result.affineIdentityPassed=true;
+
+			FireProductionProjectionRequest projectionRequest;
+			projectionRequest.shape=shape;projectionRequest.timeStepS=request.force.timeStepS;
+			projectionRequest.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
+			projectionRequest.boundary=request.force.boundary;
+			projectionRequest.gasDensityKGPerM3=request.force.cellGasDensityKGPerM3;
+			projectionRequest.provisionalMomentumKGPerM2S=request.force.beginningMomentumKGPerM2S;
+			projectionRequest.divergenceTargetPerS=request.divergenceTargetPerS;
+			projectionRequest.residentPhysicalOpenVCycleCount=request.physicalOpenProjectionVCycleCount;
+			FireProductionMetalProjectionResidentInput projectionInput;
+			projectionInput.gasDensityKGPerM3=gasDensity;
+			projectionInput.provisionalMomentumKGPerM2S.fill(force.packedMomentumKGPerM2S);
+			projectionInput.provisionalMomentumByteOffset=force.faceByteOffset;
+			projectionInput.divergenceTargetPerS=target;
+			result.phase=FireProductionSingleStageFCTDiagnosticPhase::PhysicalProjection;
+			if(tailActive){
+				FireProductionMetalProjectionResidentState physicalState;
+				if(!ProjectFireProductionMetalResidentState(projectionRequest,projectionInput,
+					physicalState,result.physicalProjection,structuredError))return false;
+				FireProductionProjectionRequest restorationRequest=projectionRequest;
+				restorationRequest.divergenceTargetPerS=tailTarget;
+				FireProductionMetalProjectionResidentInput restorationInput;
+				restorationInput.gasDensityKGPerM3=gasDensity;
+				restorationInput.provisionalMomentumKGPerM2S=physicalState.momentumKGPerM2S;
+				restorationInput.provisionalMomentumByteOffset=physicalState.momentumByteOffset;
+				restorationInput.divergenceTargetPerS=tailPrivate;
+				result.phase=FireProductionSingleStageFCTDiagnosticPhase::TailProjection;
+				if(!ProjectFireProductionMetalRestorationResident(restorationRequest,restorationInput,
+					tailPrivate,result.projection,structuredError))return false;
+			}else if(!ProjectFireProductionMetalResident(projectionRequest,projectionInput,
+				result.projection,structuredError))return false;
+
+			id<MTLCommandBuffer> terminalCommand=TrackedMetalCommandBuffer(context.queue);
+			blit=terminalCommand?[terminalCommand blitCommandEncoder]:nil;
+			if(!blit)return fail("production single-stage FCT terminal encoder failed");
+			std::size_t terminalOffset=0u;auto publish=[&](id<MTLBuffer> buffer,std::size_t bytes){
+				[blit copyFromBuffer:buffer sourceOffset:0 toBuffer:terminal
+					destinationOffset:terminalOffset size:bytes];terminalOffset+=bytes;};
+			publish(accepted,cellValueBytes);publish(lowState,cellValueBytes);
+			publish(ratio,11u*cells*sizeof(float));publish(alpha,packedFaceBytes);
+			publish(low,fluxBytes);publish(delta,fluxBytes);publish(rate,packedFaceBytes);
+			[blit endEncoding];
+			CommitTrackedMetalCommand(terminalCommand);[terminalCommand waitUntilCompleted];
+			if([terminalCommand status]!=MTLCommandBufferStatusCompleted||terminalOffset!=terminalBytes)
+				return fail("production single-stage FCT terminal publication failed");
+			const float* published=static_cast<const float*>(ReadTrackedMetalBuffer(terminal));
+			if(!published)return fail("production single-stage FCT terminal payload is unavailable");
+			result.conservativeValues.assign(published,published+9u*cells);
+			const float* publishedLowState=published+9u*cells;
+			const float* publishedRatio=publishedLowState+9u*cells;
+			const float* publishedAlpha=publishedRatio+11u*cells;
+			const float* publishedLow=publishedAlpha+allFaces;
+			const float* publishedDelta=publishedLow+9u*allFaces;
+			const float* publishedRate=publishedDelta+9u*allFaces;
+			const std::size_t scalarWordCount=29u*cells+19u*allFaces;
+			std::vector<float> scalarWords(published,published+scalarWordCount);
+			result.scalarStageIdentity=OrderedAcceptedFloatFieldDigest(scalarWords,
+				UINT64_C(0x7363616c61725f31));
+			auto exactWords=[](const float* metal,const std::vector<float>& cpu){
+				for(std::size_t index=0u;index<cpu.size();++index){std::uint32_t metalBits=0u,
+					cpuBits=0u;std::memcpy(&metalBits,metal+index,sizeof(metalBits));
+					std::memcpy(&cpuBits,&cpu[index],sizeof(cpuBits));if(metalBits!=cpuBits)return false;}
+				return true;};
+			bool scalarExact=scalarReference.packedFaceOffset==faceOffset&&
+				scalarReference.accepted.size()==9u*cells&&
+				scalarReference.lowState.size()==9u*cells&&
+				scalarReference.limiterRatio.size()==11u*cells&&
+				scalarReference.lowFlux.size()==9u*allFaces&&
+				scalarReference.fluxDelta.size()==9u*allFaces&&
+				exactWords(published,scalarReference.accepted)&&
+				exactWords(publishedLowState,scalarReference.lowState)&&
+				exactWords(publishedRatio,scalarReference.limiterRatio)&&
+				exactWords(publishedLow,scalarReference.lowFlux)&&
+				exactWords(publishedDelta,scalarReference.fluxDelta);
+			for(unsigned int axis=0u;axis<3u&&scalarExact;++axis){
+				const std::vector<float>& cpuAlpha=scalarReference.sharedFaceAlpha[axis];
+				if(cpuAlpha.size()!=faceCount[axis]){scalarExact=false;break;}
+				scalarExact=exactWords(publishedAlpha+faceOffset[axis],cpuAlpha);
+			}
+			result.scalarStageIdentityPassed=scalarExact;if(!scalarExact)return fail(
+				"production single-stage FCT scalar-stage identity failed");
+			result.scalarAdmissible=true;result.affineIdentityPassed=true;
+			std::vector<float> alphaWords(publishedAlpha,publishedAlpha+allFaces);
+			result.alphaIdentity=OrderedAcceptedFloatFieldDigest(alphaWords,
+				UINT64_C(0x616c7068615f7631));
+			FireProductionCompatibleFCTMomentumRequest comparator;
+			comparator.shape=shape;comparator.boundary=request.force.boundary;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				comparator.lowGasFluxKGPerM2S[axis]=
+					scalarReference.acceptedGasFluxKGPerM2S[axis];
+				comparator.highGasFluxKGPerM2S[axis]=
+					scalarReference.acceptedGasFluxKGPerM2S[axis];
+				comparator.sharedFaceAlpha[axis]=scalarReference.sharedFaceAlpha[axis];
+				comparator.frozenVelocityMPerS[axis]=request.cellTransport.frozenVelocityMPerS[axis];
+			}
+			FireProductionCompatibleFCTMomentumResult comparison;
+			if(!EvaluateFireProductionCompatibleFCTMomentumCPU(comparator,comparison,structuredError))
+				return false;
+			float maximumResidual=0.0f;bool exact=true;
+			for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;
+				face<faceCount[axis];++face){const float metal=publishedRate[faceOffset[axis]+face],
+					cpu=comparison.advectionRateKGPerM2S2[axis][face];maximumResidual=
+					std::max(maximumResidual,std::fabs(metal-cpu));std::uint32_t mb=0u,cb=0u;
+					std::memcpy(&mb,&metal,sizeof(mb));std::memcpy(&cb,&cpu,sizeof(cb));exact&=mb==cb;}
+			result.maximumCommutingResidual=std::max(maximumResidual,
+				scalarReference.maximumCommutingResidualKGPerM3);
+			const bool scalarCommuting=!allPeriodic||
+				(scalarReference.commutingIdentityAvailable&&
+				scalarReference.maximumCommutingResidualKGPerM3==0.0f);
+			result.commutingIdentityPassed=exact&&scalarCommuting;
+			if(!result.commutingIdentityPassed)return fail(
+				"production single-stage FCT compatible-rate identity failed");
+			result.residentProjectionInvocationCount=result.projection.residentProjectionInvocationCount+
+				result.physicalProjection.residentProjectionInvocationCount;
+			result.interstageFullGridTransferCount=force.diagnostics.substepLoopDeviceToHostTransferCount+
+				result.projection.residentInterstageDeviceToHostTransferCount+
+				result.physicalProjection.residentInterstageDeviceToHostTransferCount;
+			result.terminalStagingCount=1u+result.projection.residentTerminalStagingCount+
+				result.physicalProjection.residentTerminalStagingCount;
+			std::uint64_t actualBytes=ownBytes;auto addActual=[&](const std::uint64_t bytes){
+				if(actualBytes>std::numeric_limits<std::uint64_t>::max()-bytes)return false;
+				actualBytes+=bytes;return true;};
+			if(!addActual(force.diagnostics.actualMetalAllocationBytes)||
+				!addActual(result.projection.residentActualMetalAllocationBytes)||
+				!addActual(result.physicalProjection.residentActualMetalAllocationBytes))return fail(
+				"production single-stage FCT actual working set overflowed");
+			result.actualMetalAllocationBytes=actualBytes;
+			if(result.actualMetalAllocationBytes>result.certifiedWorkingSetBytes||
+				result.actualMetalAllocationBytes>(UINT64_C(1)<<31u))return fail(
+				"production single-stage FCT actual working set exceeds its certificate");
+			result.phase=FireProductionSingleStageFCTDiagnosticPhase::Accepted;
+			result.accepted=true;if(structuredError)structuredError->clear();return true;
+		}
+		} catch(const std::bad_alloc&){
+			result=FireProductionSingleStageFCTDiagnosticResult();
+			if(structuredError)*structuredError="production single-stage FCT allocation failed";
+			return false;
+		}
 	}
 
 	bool AdvanceFireProductionResidentStepMetal(
