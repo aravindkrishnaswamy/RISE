@@ -103,14 +103,28 @@ namespace RISE
 		return false;
 	}
 
-	bool AttemptFireProductionFCTHeunDiagnosticMetal(
-		const FireProductionResidentStepRequest&,
-		FireProductionFCTHeunDiagnosticResult& result,
+	bool SealFireProductionSingleStageFCTBoundaryState(
+		const FireProductionProjectionShape&,
+		const std::array<FireProductionProjectionBoundary,6>&,
+		FireProductionSingleStageFCTBoundaryState& state,
 		std::string* error )
 	{
-		result=FireProductionFCTHeunDiagnosticResult();
+		state.identity=0u;
 		if( error ) try {
-			*error="production FCT-Heun diagnostic Metal unavailable: Metal is not built on this platform";
+			*error="production single-stage FCT boundary seal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
+	bool AttemptFireProductionSingleStageFCTDiagnosticMetal(
+		const FireProductionResidentStepRequest&,
+		const FireProductionSingleStageFCTBoundaryState&,
+		FireProductionSingleStageFCTDiagnosticResult& result,
+		std::string* error )
+	{
+		result=FireProductionSingleStageFCTDiagnosticResult();
+		if( error ) try {
+			*error="production single-stage FCT diagnostic Metal unavailable: Metal is not built on this platform";
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
