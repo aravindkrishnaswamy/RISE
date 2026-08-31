@@ -2886,6 +2886,62 @@ namespace RISE
 			m_temperatureMinK,m_temperatureMaxK,producerPrecision,temperature,result,error);
 	}
 
+	bool FireSimulationMethaneRecord::DivergenceFromDiscreteRateByComponentOrder(
+		const double* state,const std::size_t stateCount,const double* rate,
+		const std::size_t rateCount,const double temperatureK,
+		const FireStateProducerPrecision producerPrecision,double& result,
+		std::string* error ) const
+	{
+		static const char* names[7]={"CH4","O2","N2","CO2","H2O","CO","C(gr)"};
+		result=0.0;
+		if(!state||!rate||stateCount!=9u||rateCount!=9u||
+			!std::isfinite(temperatureK)||temperatureK<=0.0)return Fail(error,
+				"methane discrete-rate divergence input is invalid");
+		std::array<double,7> lowerEnthalpy,upperEnthalpy;
+		if(!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMinK,
+			lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+			!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMaxK,
+				upperEnthalpy.data(),upperEnthalpy.size(),error)||
+			!AcceptedConservativeStateAdmissibleByComponentOrder(state,stateCount,
+				lowerEnthalpy.data(),upperEnthalpy.data(),lowerEnthalpy.size(),
+				producerPrecision,error))return false;
+		std::array<double,7> propertyDensities;
+		for(std::size_t species=0u;species<propertyDensities.size();++species)
+			propertyDensities[species]=std::max(0.0,state[1u+species]);
+		double gasDensity=0.0,inverseMeanWeightSum=0.0;
+		for(std::size_t species=0u;species<6u;++species){
+			const double density=propertyDensities[species];
+			gasDensity+=density;
+			inverseMeanWeightSum+=density/
+				m_thermochemistrySpecies[species].molecularWeightKGPerKMol;
+		}
+		if(!(gasDensity>0.0)||!(inverseMeanWeightSum>0.0)||
+			!std::isfinite(gasDensity)||!std::isfinite(inverseMeanWeightSum))return Fail(error,
+				"methane discrete-rate divergence has an invalid gas state");
+		const double meanWeight=gasDensity/inverseMeanWeightSum;
+		std::array<double,7> enthalpy={{}};
+		double heatCapacity=0.0;
+		for(std::size_t species=0u;species<propertyDensities.size();++species){
+			double cp=0.0;
+			if(!CpJPerKGK(names[species],temperatureK,cp,error)||
+				!SensibleEnthalpyJPerKG(names[species],temperatureK,enthalpy[species],error))
+				return false;
+			heatCapacity+=propertyDensities[species]*cp;
+		}
+		if(!(heatCapacity>0.0)||!std::isfinite(heatCapacity))return Fail(error,
+			"methane discrete-rate divergence lacks positive C_T");
+		const double heatCapacityTemperature=heatCapacity*temperatureK;
+		double candidate=rate[8u]/heatCapacityTemperature;
+		for(std::size_t species=0u;species<6u;++species)
+			candidate+=(meanWeight/(gasDensity*
+				FindSpecies(names[species])->molecularWeightKGPerKMol)-
+				enthalpy[species]/heatCapacityTemperature)*rate[1u+species];
+		candidate-=enthalpy[6u]/heatCapacityTemperature*rate[7u];
+		if(!std::isfinite(candidate))return Fail(error,
+			"methane discrete-rate divergence overflowed");
+		result=candidate;return true;
+	}
+
 	bool FireSimulationMethaneRecord::InvertAcceptedConservativeStateByComponentOrder(
 		const double* state,const std::size_t count,const double lowerTemperatureK,
 		const double upperTemperatureK,const FireStateProducerPrecision producerPrecision,

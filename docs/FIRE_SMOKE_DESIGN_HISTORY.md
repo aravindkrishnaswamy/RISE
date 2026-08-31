@@ -4712,3 +4712,37 @@ it was already tried and refuted here.
   `10F+8D` retained output.  Metal command encoding, projection consumption,
   the complete R0/R1/R2 owner, onset validation, and tier-10 claims remain
   blocked.
+
+- **r188 authenticated base physical divergence target (2026-08-31):** adds an
+  opaque CPU-only R0/R1 base-target producer. It rebuilds the r185 stage from
+  raw operands, requires the r186 packet's exact source dose and attempt/shape/
+  timestep parents, and implements the pinned split
+  `dV(Q_stage)[D(f_N^stage)] + S_div^source(Q_n,Delta Q_source)`. The source
+  term is the r187 beginning-referenced absolute finite-source target, frozen
+  identically across R0/R1; the physical term is the exact record-owned EOS
+  tangent at the current stage. A reviewed first draft that folded `D(f_N)`
+  into the nonlinear finite-source map was rejected: that construction made
+  the source contribution stage-dependent and did not implement the pinned
+  tableau. Zero source dose deliberately leaves `(V(Q_n)-1)/Delta t` rather
+  than deleting absolute restoration.
+
+  The first implementation exposed a one-bit authority hazard: reinverting R0
+  with the record's wider temperature bracket is not guaranteed to reproduce
+  the source producer's case-bounded inversion. The source seal therefore
+  retains its exact canonical beginning-temperature bytes by moving the
+  already-live producer buffer; retained output becomes `11F+8D` and the exact
+  source-build peak advances from `19F` to `20F` without a duplicate, while R0
+  recomputes and matches the source beginning-state identity. R1 is role-
+  separated and uses the shared record inversion for its current stage; its
+  later projection eligibility still requires the Q-star accepted-candidate
+  lineage.
+
+  The publication identity covers target bytes, source packet, flux-stage
+  composition, role, attempt, record, and maximum absolute scaled expansion,
+  but no projection API consumes the seal. Independent tangent-plus-source
+  reconstruction, distinct-stage R1, zero-dose/nonmanifold absolute-source,
+  nonzero-physical-flux, stale-source, stale-temperature (including traced
+  scalar equality), role-separation, and pre-payload two-GiB REDs pass. This
+  closes only the base-target prerequisite:
+  separately sealed r70 correction and terminal verification, Metal commands,
+  the R0/R1/R2 owner, onset validation, and tier-10 remain blocked.

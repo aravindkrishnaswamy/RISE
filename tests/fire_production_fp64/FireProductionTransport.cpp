@@ -219,6 +219,46 @@ namespace RISEFireProductionFP64
 			return hash;
 		}
 
+		bool ValidDivergenceTargetRole(
+			const FireProductionScalarDivergenceTargetRole role )
+		{
+			return role==FireProductionScalarDivergenceTargetRole::R0Base||
+				role==FireProductionScalarDivergenceTargetRole::R1Base;
+		}
+
+		std::uint64_t BaseDivergenceTargetIdentity(
+			const FireProductionScalarDivergenceTargetSeal& seal )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar base divergence target CPU v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,seal.Shape().nx);HashEOSUInt64(hash,seal.Shape().ny);
+			HashEOSUInt64(hash,seal.Shape().nz);HashEOSFloat(hash,seal.Shape().cellWidthM);
+			HashEOSFloat(hash,seal.TimeStepS());HashEOSUInt64(hash,seal.AttemptIdentity());
+			HashEOSUInt64(hash,static_cast<std::uint8_t>(seal.Role()));
+			HashEOSString(hash,seal.MethaneRecordId());
+			HashEOSUInt64(hash,seal.SourcePacketIdentity());
+			HashEOSUInt64(hash,seal.FluxCompositionIdentity());
+			HashFluxValues(hash,seal.TargetPerS());
+			HashEOSDouble(hash,seal.MaximumScaledExpansion());
+			return hash;
+		}
+
+		std::uint64_t CanonicalSourceBeginningStateIdentity(
+			const FireProductionProjectionShape& shape,
+			const std::vector<double>& conservativeValues,
+			const std::vector<double>& temperatureK )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE canonical frozen source beginning v1";
+			for(const unsigned char* byte=reinterpret_cast<const unsigned char*>(domain);
+				*byte;++byte)HashEOSByte(hash,*byte);
+			HashEOSUInt64(hash,shape.nx);HashEOSUInt64(hash,shape.ny);
+			HashEOSUInt64(hash,shape.nz);HashEOSFloat(hash,shape.cellWidthM);
+			HashFluxValues(hash,conservativeValues);HashFluxValues(hash,temperatureK);
+			return hash;
+		}
+
 		bool ValidHeunFluxRole( const FireProductionScalarHeunFluxRole role )
 		{
 			return role==FireProductionScalarHeunFluxRole::R0||
@@ -931,7 +971,8 @@ namespace RISEFireProductionFP64
 			!CanonicalEOSRecordId(methaneRecordId_)||
 			!CanonicalEOSRecordId(transportRecordId_)||
 			!CanonicalEOSRecordId(opacityRecordId_)||!CanonicalEOSRecordId(caseRecordId_)||
-			sourceDelta_.size()!=9u*cells||divergenceTargetPerS_.size()!=cells||
+			beginningTemperatureK_.size()!=cells||sourceDelta_.size()!=9u*cells||
+			divergenceTargetPerS_.size()!=cells||
 			reactedFuelKGPerM3_.size()!=cells||
 			oxidizedCarbonKGPerM3_.size()!=cells||grossCarbonFormedKGPerM3_.size()!=cells||
 			gasHeatReleaseWPerM3_.size()!=cells||sootHeatReleaseWPerM3_.size()!=cells||
@@ -945,6 +986,10 @@ namespace RISEFireProductionFP64
 			sourceInputIdentity_==0u||globalRadiationIdentity_==0u||
 			packetContentIdentity_==0u||packetIdentity_==0u)
 			return Fail(error,"canonical frozen source-packet seal metadata is invalid");
+		for(const double value:beginningTemperatureK_)if(!std::isfinite(value)||
+			value<RISE::FireSimulationMethaneRecord::PhysicalV1().TemperatureMinK()||
+			value>RISE::FireSimulationMethaneRecord::PhysicalV1().TemperatureMaxK())return Fail(error,
+				"production canonical source beginning temperature is invalid");
 		for(const double value:sourceDelta_)if(!std::isfinite(value)||
 			(value==0.0&&std::signbit(static_cast<double>(value))))return Fail(error,
 				"canonical frozen source-packet resident dose is noncanonical");
@@ -2334,6 +2379,169 @@ namespace RISEFireProductionFP64
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarHeunFluxStage();
 			FailWithoutThrow(error,"scalar Heun flux-stage allocation failed");return false;}
+	}
+
+	bool QueryFireProductionBaseDivergenceTargetCPUPayloadBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& payloadBytes,
+		std::string* error )
+	{
+		payloadBytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0)||
+			!std::isfinite(shape.cellWidthM))return Fail(error,
+				"scalar base divergence-target query shape is invalid");
+		if(!AddBytes(shape.CellCount(),sizeof(double),payloadBytes)){
+			payloadBytes=0u;return Fail(error,
+				"scalar base divergence-target query exceeds uint64 capacity");
+		}
+		if(error)error->clear();return true;
+	}
+
+	bool FireProductionScalarDivergenceTargetSealMatches(
+		const FireProductionScalarDivergenceTargetSeal& seal,std::string* error )
+	{
+		const FireProductionProjectionShape& shape=seal.Shape();
+		if(!seal.IsSealed()||shape.nx<4u||shape.nx>1024u||shape.ny<4u||
+			shape.ny>1024u||shape.nz<4u||shape.nz>1024u||
+			!(shape.cellWidthM>0.0)||!std::isfinite(shape.cellWidthM)||
+			!(seal.TimeStepS()>0.0)||!std::isfinite(seal.TimeStepS())||
+			seal.AttemptIdentity()==0u||!ValidDivergenceTargetRole(seal.Role())||
+			seal.MethaneRecordId()!=RISE::FireSimulationMethaneRecord::PhysicalV1().RecordId()||
+			seal.TargetPerS().size()!=shape.CellCount()||seal.SourcePacketIdentity()==0u||
+			seal.FluxCompositionIdentity()==0u||!std::isfinite(
+				seal.MaximumScaledExpansion()))return Fail(error,
+					"scalar base divergence-target seal is malformed");
+		for(const double value:seal.TargetPerS())if(!std::isfinite(value)||
+			(value==0.0&&std::signbit(static_cast<double>(value))))return Fail(error,
+				"scalar base divergence-target value is noncanonical");
+		if(seal.TargetIdentity()==0u||seal.TargetIdentity()!=
+			BaseDivergenceTargetIdentity(seal))return Fail(error,
+				"scalar base divergence-target identity differs");
+		if(error)error->clear();return true;
+	}
+
+	bool ComposeFireProductionBaseDivergenceTargetCPU(
+		const std::uint64_t attemptIdentity,
+		const FireProductionScalarDivergenceTargetRole role,
+		const FireProductionScalarFCTRequest& advectiveRequest,
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& physicalRequest,
+		const FireProductionFrozenSourcePacketSeal& source,
+		FireProductionScalarDivergenceTargetSeal& result,std::string* error )
+	{
+		result=FireProductionScalarDivergenceTargetSeal();
+		try {
+			const FireProductionProjectionShape& shape=advectiveRequest.shape;
+			std::uint64_t stageBytes=0u,targetBytes=0u;
+			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(shape,stageBytes,error)||
+				!QueryFireProductionBaseDivergenceTargetCPUPayloadBytes(
+					shape,targetBytes,error)||targetBytes>
+				std::numeric_limits<std::uint64_t>::max()/2u||stageBytes>
+				std::numeric_limits<std::uint64_t>::max()-2u*targetBytes)return Fail(error,
+					"scalar base divergence-target live set exceeds uint64 capacity");
+			if(stageBytes+2u*targetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"scalar base divergence-target working set exceeds two GiB");
+			const FireProductionScalarHeunFluxRole fluxRole=
+				role==FireProductionScalarDivergenceTargetRole::R0Base?
+					FireProductionScalarHeunFluxRole::R0:
+					FireProductionScalarHeunFluxRole::R1;
+			if(attemptIdentity==0u||!ValidDivergenceTargetRole(role)||
+				!FireProductionFrozenSourcePacketSealMatches(source,error)||
+				source.AttemptIdentity()!=attemptIdentity||source.TimeStepS()!=
+					advectiveRequest.timeStepS||source.Shape().nx!=shape.nx||
+				source.Shape().ny!=shape.ny||source.Shape().nz!=shape.nz||
+				source.Shape().cellWidthM!=shape.cellWidthM||
+				!SameFloatVectorBits(source.SourceDelta(),advectiveRequest.sourceDelta))
+				return Fail(error,"scalar base divergence-target parent identity is invalid");
+			FireProductionScalarHeunFluxStage stage;
+			if(!ComposeFireProductionScalarHeunFluxStageCPU(attemptIdentity,fluxRole,
+				advectiveRequest,physicalRequest,stage,error))return false;
+			const RISE::FireSimulationMethaneRecord& record=
+				RISE::FireSimulationMethaneRecord::PhysicalV1();
+			if(stage.methaneRecordId!=source.MethaneRecordId()||
+				stage.methaneRecordId!=record.RecordId())return Fail(error,
+					"scalar base divergence-target record identity differs");
+			const std::size_t cells=shape.CellCount();
+			std::vector<double> canonicalTemperatureK(cells,0.0);
+			for(std::size_t cell=0u;cell<cells;++cell){
+				if(role==FireProductionScalarDivergenceTargetRole::R0Base)
+					canonicalTemperatureK[cell]=source.BeginningTemperatureK()[cell];
+				else {
+					std::array<double,9> tuple={{}};
+					for(std::size_t component=0u;component<9u;++component)
+						tuple[component]=static_cast<double>(
+							advectiveRequest.beginning[component*cells+cell]);
+					double temperatureK=0.0,pressureRatio=0.0;
+					if(!record.InvertAcceptedConservativeStateByComponentOrder(tuple.data(),
+						tuple.size(),record.TemperatureMinK(),record.TemperatureMaxK(),
+						RISE::FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,error))return false;
+					canonicalTemperatureK[cell]=static_cast<double>(temperatureK);
+				}
+				if(canonicalTemperatureK[cell]!=physicalRequest.temperatureK[cell])return Fail(error,
+						"scalar base divergence-target temperature lacks accepted-state authority");
+			}
+			if(role==FireProductionScalarDivergenceTargetRole::R0Base&&
+				CanonicalSourceBeginningStateIdentity(shape,advectiveRequest.beginning,
+					canonicalTemperatureK)!=source.BeginningStateIdentity())return Fail(error,
+						"scalar R0 base divergence-target beginning state differs from source authority");
+			const std::size_t allFaces=stage.compositeFluxPair.packedFaceOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			FireProductionScalarDivergenceTargetSeal computed;
+			computed.shape_=shape;computed.timeStepS_=advectiveRequest.timeStepS;
+			computed.attemptIdentity_=attemptIdentity;computed.role_=role;
+			computed.methaneRecordId_=stage.methaneRecordId;
+			computed.targetPerS_.resize(cells,0.0);
+			computed.maximumScaledExpansion_=0.0;
+			computed.sourcePacketIdentity_=source.PacketIdentity();
+			computed.fluxCompositionIdentity_=stage.compositionIdentity;
+			const double dt=static_cast<double>(advectiveRequest.timeStepS);
+			const double inverseWidth=1.0/static_cast<double>(shape.cellWidthM);
+			for(std::size_t z=0u;z<shape.nz;++z)for(std::size_t y=0u;y<shape.ny;++y)
+				for(std::size_t x=0u;x<shape.nx;++x){
+					const std::size_t cell=CellIndex(shape,x,y,z);
+					std::array<double,9> state={{}},physicalRate={{}};
+					for(std::size_t component=0u;component<9u;++component){
+						state[component]=static_cast<double>(
+							advectiveRequest.beginning[component*cells+cell]);
+						physicalRate[component]=0.0;
+					}
+					for(unsigned int axis=0u;axis<3u;++axis){
+						std::size_t rx=x,ry=y,rz=z;
+						if(axis==0u)++rx;else if(axis==1u)++ry;else ++rz;
+						const std::size_t left=stage.compositeFluxPair.packedFaceOffset[axis]+
+							FaceIndex(shape,axis,x,y,z);
+						const std::size_t right=stage.compositeFluxPair.packedFaceOffset[axis]+
+							FaceIndex(shape,axis,rx,ry,rz);
+						for(std::size_t component=0u;component<8u;++component)
+							physicalRate[component]+=inverseWidth*(
+								static_cast<double>(stage.physicalMassFluxKGPerM2S[
+									component*allFaces+left])-static_cast<double>(
+									stage.physicalMassFluxKGPerM2S[component*allFaces+right]));
+						physicalRate[8u]+=inverseWidth*(static_cast<double>(
+							stage.physicalEnergyFluxWPerM2[left])-static_cast<double>(
+							stage.physicalEnergyFluxWPerM2[right]));
+					}
+					double physicalPerS=0.0;
+					if(!record.DivergenceFromDiscreteRateByComponentOrder(state.data(),
+						state.size(),physicalRate.data(),physicalRate.size(),static_cast<double>(
+							physicalRequest.temperatureK[cell]),
+						RISE::FireStateProducerPrecision::Binary32,physicalPerS,error))return false;
+					const double targetPerS=physicalPerS+static_cast<double>(
+						source.DivergenceTargetPerS()[cell]);
+					const double scaled=dt*targetPerS;
+					double target=static_cast<double>(targetPerS);
+					if(!std::isfinite(scaled)||!std::isfinite(target))return Fail(error,
+						"scalar base divergence-target composition is nonfinite");
+					if(target==0.0)target=0.0;
+					computed.targetPerS_[cell]=target;
+					computed.maximumScaledExpansion_=std::max(
+						computed.maximumScaledExpansion_,std::fabs(scaled));
+				}
+			computed.sealed_=true;
+			computed.targetIdentity_=BaseDivergenceTargetIdentity(computed);
+			if(!FireProductionScalarDivergenceTargetSealMatches(computed,error))return false;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarDivergenceTargetSeal();
+			FailWithoutThrow(error,"scalar base divergence-target allocation failed");return false;}
 	}
 
 	bool AverageFireProductionScalarHeunFluxStagesCPU(

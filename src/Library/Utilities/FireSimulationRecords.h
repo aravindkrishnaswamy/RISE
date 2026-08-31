@@ -277,6 +277,14 @@ namespace RISE
 			const double* conservativeValues, std::size_t count,
 			FireStateProducerPrecision producerPrecision,
 			double& result, std::string* error = 0 ) const;
+		//! Exact tangent of the accepted-state EOS volume ratio in the
+		//! record's conservative component order. The supplied rate is a
+		//! physical per-second rate, not a finite source increment.
+		bool DivergenceFromDiscreteRateByComponentOrder(
+			const double* conservativeValues, std::size_t conservativeCount,
+			const double* rateValuesPerS, std::size_t rateCount,
+			double temperatureK, FireStateProducerPrecision producerPrecision,
+			double& result, std::string* error = 0 ) const;
 		const std::vector<std::string>& ElementOrder() const { return m_elementOrder; }
 		const std::vector<double>& ElementMassFractionMatrix() const
 		{

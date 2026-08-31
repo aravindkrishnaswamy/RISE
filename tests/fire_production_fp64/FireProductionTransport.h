@@ -374,6 +374,7 @@ namespace RISEFireProductionFP64
 		double beginningTimeS_;
 		std::uint64_t attemptIdentity_;
 		std::string methaneRecordId_,transportRecordId_,opacityRecordId_,caseRecordId_;
+		std::vector<double> beginningTemperatureK_;
 		std::vector<double> sourceDelta_;
 		std::vector<double> divergenceTargetPerS_;
 		std::vector<double> reactedFuelKGPerM3_,oxidizedCarbonKGPerM3_;
@@ -405,6 +406,8 @@ namespace RISEFireProductionFP64
 		const std::string& TransportRecordId() const { return transportRecordId_; }
 		const std::string& OpacityRecordId() const { return opacityRecordId_; }
 		const std::string& CaseRecordId() const { return caseRecordId_; }
+		const std::vector<double>& BeginningTemperatureK() const
+			{ return beginningTemperatureK_; }
 		const std::vector<double>& SourceDelta() const { return sourceDelta_; }
 		const std::vector<double>& DivergenceTargetPerS() const
 			{ return divergenceTargetPerS_; }
@@ -437,6 +440,84 @@ namespace RISEFireProductionFP64
 	//! seal and therefore does not turn algebraic validation into source authority.
 	bool FireProductionFrozenSourcePacketSealMatches(
 		const FireProductionFrozenSourcePacketSeal& seal,
+		std::string* error=0 );
+
+	enum class FireProductionScalarDivergenceTargetRole : std::uint8_t
+	{
+		R0Base=1u,
+		R1Base=2u
+	};
+
+	class FireProductionScalarDivergenceTargetSeal;
+
+	//! Rebuilds one authenticated R0/R1 physical stage, evaluates the exact EOS
+	//! tangent of its retained nonadvective flux divergence, and adds the frozen
+	//! beginning-referenced source target. The publication is intentionally not
+	//! accepted by any projection API: r70 accepted-candidate correction and
+	//! terminal verification are separate authorities.
+	bool ComposeFireProductionBaseDivergenceTargetCPU(
+		std::uint64_t attemptIdentity,
+		FireProductionScalarDivergenceTargetRole role,
+		const FireProductionScalarFCTRequest& advectiveRequest,
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& physicalRequest,
+		const FireProductionFrozenSourcePacketSeal& source,
+		FireProductionScalarDivergenceTargetSeal& result,
+		std::string* error=0 );
+
+	//! Exact persistent publication size: one binary32 value per cell. This is a
+	//! query-only resource gate and does not inspect caller payloads.
+	bool QueryFireProductionBaseDivergenceTargetCPUPayloadBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& payloadBytes,
+		std::string* error=0 );
+
+	//! Opaque, identity-bearing base target. Its absence from the projection
+	//! request surface is deliberate: a base target cannot bypass r70 terminal
+	//! correction/verification merely because its bytes are finite.
+	class FireProductionScalarDivergenceTargetSeal
+	{
+		friend bool ComposeFireProductionBaseDivergenceTargetCPU(
+			std::uint64_t,FireProductionScalarDivergenceTargetRole,
+			const FireProductionScalarFCTRequest&,
+			const FireProductionScalarPhysicalFluxPrerequisiteRequest&,
+			const FireProductionFrozenSourcePacketSeal&,
+			FireProductionScalarDivergenceTargetSeal&,std::string* );
+		friend bool FireProductionScalarDivergenceTargetSealMatches(
+			const FireProductionScalarDivergenceTargetSeal&,std::string* );
+
+		FireProductionProjectionShape shape_;
+		double timeStepS_;
+		std::uint64_t attemptIdentity_;
+		FireProductionScalarDivergenceTargetRole role_;
+		std::string methaneRecordId_;
+		std::vector<double> targetPerS_;
+		double maximumScaledExpansion_;
+		std::uint64_t sourcePacketIdentity_;
+		std::uint64_t fluxCompositionIdentity_;
+		std::uint64_t targetIdentity_;
+		bool sealed_;
+
+	public:
+		FireProductionScalarDivergenceTargetSeal() : timeStepS_(0.0),
+			attemptIdentity_(0u),role_(static_cast<FireProductionScalarDivergenceTargetRole>(0u)),
+			maximumScaledExpansion_(0.0),sourcePacketIdentity_(0u),
+			fluxCompositionIdentity_(0u),targetIdentity_(0u),sealed_(false) {}
+
+		const FireProductionProjectionShape& Shape() const { return shape_; }
+		double TimeStepS() const { return timeStepS_; }
+		std::uint64_t AttemptIdentity() const { return attemptIdentity_; }
+		FireProductionScalarDivergenceTargetRole Role() const { return role_; }
+		const std::string& MethaneRecordId() const { return methaneRecordId_; }
+		const std::vector<double>& TargetPerS() const { return targetPerS_; }
+		double MaximumScaledExpansion() const { return maximumScaledExpansion_; }
+		std::uint64_t SourcePacketIdentity() const { return sourcePacketIdentity_; }
+		std::uint64_t FluxCompositionIdentity() const { return fluxCompositionIdentity_; }
+		std::uint64_t TargetIdentity() const { return targetIdentity_; }
+		bool IsSealed() const { return sealed_; }
+	};
+
+	bool FireProductionScalarDivergenceTargetSealMatches(
+		const FireProductionScalarDivergenceTargetSeal& seal,
 		std::string* error=0 );
 
 	//! Identity-bearing donor/MC flux pair for one scalar FCT stage.  The pair

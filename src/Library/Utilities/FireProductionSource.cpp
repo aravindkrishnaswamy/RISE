@@ -87,10 +87,10 @@ namespace RISE
 				workerCount>FireWorkerCapacity())return Fail(error,
 					"production canonical source working-set shape is invalid");
 			const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
-			// Request Q/mixing/mask, sealed 10F+8D result, and the simultaneously
+			// Request Q/mixing/mask, sealed 11F+8D result, and the simultaneously
 			// live canonical two-pass reaction/radiation scratch. vector<bool> is
 			// deliberately charged as one full byte for each of its three maps.
-			const std::uint64_t bytesPerCell=19u*sizeof(float)+
+			const std::uint64_t bytesPerCell=20u*sizeof(float)+
 				11u*sizeof(double)+3u*sizeof(MethaneCellState)+
 				sizeof(MethaneReactionStep)+3u*sizeof(MethaneSourcePacket)+5u;
 			// The persistent pool is topology-bounded.  Charge an explicit conservative
@@ -277,6 +277,7 @@ namespace RISE
 				HashFloatValues(candidate.beginningStateIdentity_,
 					request.beginningConservativeValues);
 				HashFloatValues(candidate.beginningStateIdentity_,canonicalTemperatureK);
+				candidate.beginningTemperatureK_=std::move(canonicalTemperatureK);
 				candidate.reactionControlIdentity_=UINT64_C(14695981039346656037);
 				HashDomain(candidate.reactionControlIdentity_,
 					"RISE canonical frozen source reaction control v1");

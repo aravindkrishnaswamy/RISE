@@ -5100,6 +5100,55 @@ This remains a CPU publication prerequisite.  It does not yet encode a Metal
 source command, bind the target to R0/R1 projection commands, commit a
 projected-Heun step, rerun onset, or authorize tier-10 deliverables.
 
+### 7.56u Authenticated base physical divergence target (r188)
+
+r188 composes the first non-projectable R0/R1 target from the two authorities
+that own its physics: the r186 frozen source packet and the r185 same-stage
+retained nonadvective flux. The implementation rebuilds the 30-face-field
+stage from its raw authenticated operands rather than accepting a mutable
+physical-flux result. It then implements the pinned source/physics split
+cell-by-cell and in component order:
+
+`S_div^stage = dV(Q_stage)[D(f_N^stage)] + S_div^source(Q_n, Delta Q_source)`.
+
+The first term is the exact PhysicalV1 tangent evaluated from the stage's
+physical nonadvective rate. The second is the beginning-referenced absolute
+finite-source target published by r187 and is byte-identical for R0 and R1.
+In particular, a zero source dose still yields `(V(Q_n)-1)/Delta t`; it does
+not erase absolute restoration. A reviewed draft that inserted `D(f_N)` into
+the nonlinear finite-source map was rejected because it changed the pinned
+tableau and made the source contribution stage-dependent.
+
+R0 accepts only the exact beginning-temperature bytes retained by the
+canonical source authority and recomputes that authority's beginning-state
+identity from the stage Q/T bytes. The retained temperature vector is moved
+from the source producer's already-live inversion buffer. The retained result
+becomes `11F+8D`; the exact source-build peak therefore advances from r187's
+`19F` certificate to `20F`, without a second temperature allocation.
+R1 has a distinct role identity and
+independently inverts its current stage through the shared accepted-state
+record operation; the later coupled owner must still supply Q-star accepted-
+candidate lineage before an R1 target can become terminal.
+
+The opaque target binds exact shape and `Delta t`, attempt and role, methane
+record, source-packet identity, rebuilt flux-composition identity, every
+binary32 target byte, and the maximum absolute scaled expansion. It has no
+projection-consumer overload. Its live CPU peak is the retained `30F` stage
+plus one `C` canonical-temperature buffer and one `C` target buffer; the
+adjacent over-cap RED refuses before source or stage payload access.
+
+The independent fixture reconstructs `D(f_N)`, evaluates the record-owned EOS
+tangent, adds the frozen r187 target, and requires target bit identity. A
+distinct accepted R1 stage proves only the physical tangent changes while the
+source packet identity remains fixed. A zero-dose nonmanifold fixture proves
+the absolute-source branch, while a nonuniform thermodynamic field proves at
+least one ordinary output differs from the source-only field. One-ULP stale
+source and temperature parents refuse in production and the traced scalar
+comparison distinguishes the stale temperature.
+The r70 accepted-candidate correction, terminal verification, projection
+command, Metal implementation, complete R0/R1/R2 owner, onset rerun, and all
+tier-10 deliverables remain blocked.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

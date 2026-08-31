@@ -3140,7 +3140,7 @@ int main()
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunLiveBinding.begin(),projectedHeunLiveBinding.end()))==
-			"bfcdccafe3848f37403fa90445cad80077497a124b1b71e6dbed6f4001d32eea"&&
+			"437167018a3abcf8b24a3dc1a46f2a339e3bf1613480b449fe110ae1e7c1b61e"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3149,9 +3149,9 @@ int main()
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"94bcf76ae6d6443d79dddfca99e295477fb63fcf80b96ea7e7b9044c97fdde8e")&&
+			"9e5f046b9d19265181e194253d1949dd2a8377cf3bfde2dedeafe28e79236683")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"a8940ad48ce53aa22c1c1170f544b926028339f514e60f7fd3905b01fa2a0a7f")&&
+			"5654c3a23d7c3f9420952492509a29e58dbf9b77a3e8d5ac9742c5e27320f397")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm",
 			"2554a0a41feaa9356d3ffb8c17b1a2d8520b0642c7975d4fa62947b4e9fede57")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionForce.h",
@@ -3169,9 +3169,9 @@ int main()
 		liveOwnerBound("src/Library/Utilities/FireProductionProjectionMac.mm",
 			"6a7b3b70670be107b39ce873e6a4937019c56ed06ac94c85367b7a26c5449d6b")&&
 		liveOwnerBound("src/Library/Utilities/FireSimulationRecords.h",
-			"0e2168f2da54d749920388cee13735df6f66899f476c870afbda74b3aa0514e1")&&
+			"8e81fff299ee02af6cec1e9c3a117e19936492ae470c495bd6877cfb006e28dd")&&
 		liveOwnerBound("src/Library/Utilities/FireSimulationRecords.cpp",
-			"034ee354671d287b475db455c8a6c70ccb73514d3a105b68d63d6b3edc15f5f4")&&
+			"67b0bf8d90f79e733c04da1562a5c7e427cf6fa9d4ab0042c5c4308efdf4aaab")&&
 		liveOwnerBound("src/Library/Utilities/FireCase.h",
 			"48d640638cc1ee2704be3a880d72eba2e609ff6374ae7b50400a497ab3822f5d")&&
 		liveOwnerBound("src/Library/Utilities/FireCase.cpp",
@@ -3189,9 +3189,9 @@ int main()
 		liveOwnerBound("tests/FireSequenceTest.cpp",
 			"1cadffc8309e50aafa0a85b83502c7918e2cfb9e2e9c5f398169e27d83a7ab40")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
-			"1f018f2eec780652f3626f060c8f1a538a0921a35ad6c1e0771e2f0038654b3f")&&
+			"c68c13f5b1630dc302f3b5a3de77de9104dc5527b0d7c9e61e28a94bedad5969")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
-			"19fb174479fcea9de1814672eb8e9b2a4fe076e4eab30452e0b7ef8cb6fb8971")&&
+			"544dd38001ccbada9b3de992e2013d5937180157963a36210b60c70facecee45")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.h",
 			"dd561ead598cc5426ec91a6efd47b2915d88167c1a37f159defd42f62102a01f")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.cpp",
@@ -3201,11 +3201,11 @@ int main()
 		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.cpp",
 			"2611c42e43e5b2e7a4b32e0749bcfbf007d5c20ddc36babddfbfd2c34725c473")&&
 		liveOwnerBound("tests/fire_production_fp64/SourceManifest.h",
-			"72d8734457731d9a588ebc03e5f137d2e8f03d340487e58bae0bd708ccd9596b")&&
+			"23a154f2f646302719c827678b302f63c5dbaa271dedb5bab1e98bcb30977c05")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
-			"02631f8bddfdd846f81f37d9615860afb75109ea1f905e17b27b4686cb35819c")&&
+			"91bfad2bc604a30dfed2d4c4b37d30fbbca1b40b0293346e57f90ff81bc43d77")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
-			"e31f136e37a29e46096cf994074608b3dd1822881d44f583f07bd4b69fa8342b")&&
+			"8958576c405430eb12b908e3ad95ea1c8b975f1a1380ae23272e100436ca9cb5")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.h",
 			"7d453246cbd95acaef81bda1a5141d42a8750d8e69a94ea38dc64f1b43b8add6")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.cpp",
@@ -3215,11 +3215,11 @@ int main()
 		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.cpp",
 			"5cf59d615da1f3022faea6ea5614a85060849b702ad321a1b16b916f0574b384")&&
 		liveOwnerBound("tests/fire_production_trace/SourceManifest.h",
-			"ada2fe815c5c4580dd310bef91807ecd4204cb2d89915a40f9d8bc3f9f6308a4")&&
+			"95627bcb0a1e07c42fa67fed5bfbf1b1f99c445ca274fbe4a3be84f87156904c")&&
 		liveOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
-			"3cf20e0d15cb2e613f4d395762ffd7893c5e2dbd7d6614ee35dcc4c86de6309d")&&
+			"a38d874ed97cc6a3cfd403fb408c41d302c511be78fe0939ed07fcda4db0d60b")&&
 		liveOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
-			"e51ecfcb8ec1473540dd9ade648b3802bb1a5ad63421dedeb5d6cf160d7be1d5"),
+			"fde00b3de5d6f6052c3e41778817f9517afa08db4aa46936e768df483da67517"),
 		"r183 exact-binds immutable evidence and its live implementation, tests, mirrors, and documentation without self-binding the calibration gate");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
@@ -6291,7 +6291,7 @@ int main()
 	const bool sourceOversizedQuery=
 		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
 			sourceOversized.shape,sourceOversized.workerCount,sourceOversizedBytes,&error);
-	const std::uint64_t sourceBytesPerCell=19u*sizeof(float)+11u*sizeof(double)+
+	const std::uint64_t sourceBytesPerCell=20u*sizeof(float)+11u*sizeof(double)+
 		3u*sizeof(RISE::FireSim::MethaneCellState)+sizeof(RISE::FireSim::MethaneReactionStep)+
 		3u*sizeof(RISE::FireSim::MethaneSourcePacket)+5u;
 	const std::uint64_t sourceWorkerBytes=static_cast<std::uint64_t>(
@@ -6330,6 +6330,271 @@ int main()
 		sourceHighWorkerBytes==sourceLowAfterHighBytes&&
 		sourceLowAfterHighBytes==sourceWorkingSetBytes,
 		"canonical source producer exactly accounts live storage and rejects oversized inputs early");
+
+	// r188 prerequisite: the base projection target is rebuilt from one
+	// authenticated source packet plus the same stage's retained f_N divergence.
+	// It is opaque and deliberately has no projection-consumer overload.
+	RISE::FireProductionFrozenMethaneSourceRequest baseTargetSourceRequest=sourceRequest;
+	baseTargetSourceRequest.attemptIdentity=UINT64_C(0x1880000000000001);
+	baseTargetSourceRequest.pilotCommandMask.assign(sourceCells,0u);
+	baseTargetSourceRequest.pilotCommandMask[0u]=1u;
+	std::vector<float> baseTargetTemperature(sourceCells,0.0f);
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+		for(std::size_t x=0u;x<4u;++x){
+			const std::size_t cell=(z*4u+y)*4u+x;
+			const std::array<float,9> tuple=eosTuple(300.0+25.0*static_cast<double>(x));
+			std::array<double,9> represented={{}};
+			for(std::size_t component=0u;component<9u;++component){
+				baseTargetSourceRequest.beginningConservativeValues[component*sourceCells+cell]=
+					tuple[component];
+				represented[component]=static_cast<double>(tuple[component]);
+			}
+			double temperatureK=0.0,pressureRatio=0.0;
+			if(eosRecord.InvertAcceptedConservativeStateByComponentOrder(represented.data(),
+				represented.size(),eosRecord.TemperatureMinK(),eosRecord.TemperatureMaxK(),
+				RISE::FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,&error))
+				baseTargetTemperature[cell]=static_cast<float>(temperatureK);
+		}
+	RISE::FireProductionFrozenSourcePacketSeal baseTargetSource;
+	const bool baseTargetSourceOK=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			baseTargetSourceRequest,baseTargetSource,&error);
+	if(baseTargetSourceOK)baseTargetTemperature=baseTargetSource.BeginningTemperatureK();
+	RISE::FireProductionScalarFCTRequest baseTargetAdvective=constantScalarFCT;
+	baseTargetAdvective.shape=baseTargetSourceRequest.shape;
+	baseTargetAdvective.timeStepS=baseTargetSourceRequest.timeStepS;
+	baseTargetAdvective.beginning=baseTargetSourceRequest.beginningConservativeValues;
+	baseTargetAdvective.sourceDelta=baseTargetSource.SourceDelta();
+	baseTargetAdvective.boundary.fill(RISE::FireProductionProjectionPeriodic);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest baseTargetPhysical=
+		physicalFluxRequest;
+	baseTargetPhysical.shape=baseTargetAdvective.shape;
+	baseTargetPhysical.boundary=baseTargetAdvective.boundary;
+	baseTargetPhysical.conservativeValues=baseTargetAdvective.beginning;
+	baseTargetPhysical.temperatureK=baseTargetTemperature;
+	baseTargetPhysical.diffusivityM2PerS.assign(sourceCells,0.01f);
+	baseTargetPhysical.conductivityWPerMK.assign(sourceCells,0.03f);
+	baseTargetPhysical.ambientTemperatureK=300.0f;
+	const std::array<float,9> baseAmbientTuple=eosTuple(300.0);
+	baseTargetAdvective.ambient=baseAmbientTuple;
+	baseTargetPhysical.ambient=baseAmbientTuple;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(
+			baseTargetAdvective.shape,axis);
+		baseTargetAdvective.frozenVelocityMPerS[axis].assign(faces,0.0f);
+		baseTargetPhysical.frozenVelocityMPerS[axis]=
+			baseTargetAdvective.frozenVelocityMPerS[axis];
+	}
+	for(unsigned int side=0u;side<6u;++side){
+		const std::size_t count=16u;
+		baseTargetAdvective.pressureOpenInflow[side].assign(count,0u);
+		baseTargetPhysical.pressureOpenInflow[side]=
+			baseTargetAdvective.pressureOpenInflow[side];
+	}
+	RISE::FireProductionScalarDivergenceTargetSeal baseTargetR0;
+	const bool baseTargetR0OK=baseTargetSourceOK&&
+		RISE::ComposeFireProductionBaseDivergenceTargetCPU(
+			baseTargetSourceRequest.attemptIdentity,
+			RISE::FireProductionScalarDivergenceTargetRole::R0Base,
+			baseTargetAdvective,baseTargetPhysical,baseTargetSource,baseTargetR0,&error);
+	RISE::FireProductionScalarHeunFluxStage baseTargetStage;
+	const bool baseTargetStageOK=RISE::ComposeFireProductionScalarHeunFluxStageCPU(
+		baseTargetSourceRequest.attemptIdentity,RISE::FireProductionScalarHeunFluxRole::R0,
+		baseTargetAdvective,baseTargetPhysical,baseTargetStage,&error);
+	auto targetMatchesIndependentTangent=[&](
+		const RISE::FireProductionScalarFCTRequest& advective,
+		const RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest& physical,
+		const RISE::FireProductionScalarHeunFluxStage& stage,
+		const RISE::FireProductionScalarDivergenceTargetSeal& target){
+		bool exact=true;
+		const std::size_t allFaces=stage.compositeFluxPair.packedFaceOffset[2]+
+			RISE::FireProductionProjectionFaceCount(advective.shape,2u);
+		const double inverseWidth=1.0/static_cast<double>(advective.shape.cellWidthM);
+		for(std::size_t z=0u;z<4u&&exact;++z)
+			for(std::size_t y=0u;y<4u&&exact;++y)
+				for(std::size_t x=0u;x<4u&&exact;++x){
+					const std::size_t cell=(z*4u+y)*4u+x;
+					std::array<double,9> state={{}},physicalRate={{}};
+					for(std::size_t component=0u;component<9u;++component)
+						state[component]=advective.beginning[component*sourceCells+cell];
+					for(unsigned int axis=0u;axis<3u;++axis){
+						std::size_t rx=x,ry=y,rz=z;
+						if(axis==0u)++rx;else if(axis==1u)++ry;else ++rz;
+						const std::size_t left=stage.compositeFluxPair.packedFaceOffset[axis]+
+							productionFaceIndex(advective.shape,axis,x,y,z);
+						const std::size_t right=stage.compositeFluxPair.packedFaceOffset[axis]+
+							productionFaceIndex(advective.shape,axis,rx,ry,rz);
+						for(std::size_t component=0u;component<8u;++component)
+							physicalRate[component]+=inverseWidth*(static_cast<double>(
+								stage.physicalMassFluxKGPerM2S[component*allFaces+left])-
+								static_cast<double>(stage.physicalMassFluxKGPerM2S[
+									component*allFaces+right]));
+						physicalRate[8u]+=inverseWidth*(static_cast<double>(
+							stage.physicalEnergyFluxWPerM2[left])-static_cast<double>(
+							stage.physicalEnergyFluxWPerM2[right]));
+					}
+					static const char* speciesNames[7]={
+						"CH4","O2","N2","CO2","H2O","CO","C(gr)"};
+					std::array<double,7> propertyDensity={{}},enthalpy={{}};
+					double gasDensity=0.0,inverseMeanWeightSum=0.0,heatCapacity=0.0;
+					for(std::size_t species=0u;species<7u;++species){
+						propertyDensity[species]=std::max(0.0,state[1u+species]);
+						double cp=0.0;
+						exact=exact&&eosRecord.CpJPerKGK(speciesNames[species],
+							physical.temperatureK[cell],cp,&error)&&
+							eosRecord.SensibleEnthalpyJPerKG(speciesNames[species],
+								physical.temperatureK[cell],enthalpy[species],&error);
+						heatCapacity+=propertyDensity[species]*cp;
+						if(species<6u){
+							const RISE::FireThermochemistrySpecies* property=
+								eosRecord.FindSpecies(speciesNames[species]);
+							exact=exact&&property;
+							gasDensity+=propertyDensity[species];
+							inverseMeanWeightSum+=propertyDensity[species]/
+								property->molecularWeightKGPerKMol;
+						}
+					}
+					const double meanWeight=gasDensity/inverseMeanWeightSum;
+					const double heatCapacityTemperature=heatCapacity*
+						physical.temperatureK[cell];
+					double physicalPerS=physicalRate[8u]/heatCapacityTemperature;
+					for(std::size_t species=0u;species<6u;++species){
+						const RISE::FireThermochemistrySpecies* property=
+							eosRecord.FindSpecies(speciesNames[species]);
+						physicalPerS+=(meanWeight/(gasDensity*
+							property->molecularWeightKGPerKMol)-enthalpy[species]/
+							heatCapacityTemperature)*physicalRate[1u+species];
+					}
+					physicalPerS-=enthalpy[6u]/heatCapacityTemperature*physicalRate[7u];
+					exact=exact&&std::isfinite(physicalPerS);
+					const float expected=static_cast<float>(physicalPerS+
+						static_cast<double>(baseTargetSource.DivergenceTargetPerS()[cell]));
+					exact=exact&&sameFloatBits(target.TargetPerS()[cell],expected);
+				}
+		return exact;
+	};
+	const bool baseTargetOracleExact=baseTargetR0OK&&baseTargetStageOK&&
+		targetMatchesIndependentTangent(baseTargetAdvective,baseTargetPhysical,
+			baseTargetStage,baseTargetR0);
+	bool baseTargetIncludesPhysicalFlux=false;
+	for(std::size_t cell=0u;cell<sourceCells;++cell)
+		baseTargetIncludesPhysicalFlux=baseTargetIncludesPhysicalFlux||!sameFloatBits(
+			baseTargetR0.TargetPerS()[cell],baseTargetSource.DivergenceTargetPerS()[cell]);
+	Check(baseTargetR0OK&&baseTargetStageOK&&baseTargetOracleExact&&
+		baseTargetIncludesPhysicalFlux&&baseTargetR0.IsSealed()&&
+		RISE::FireProductionScalarDivergenceTargetSealMatches(baseTargetR0,&error)&&
+		baseTargetR0.SourcePacketIdentity()==baseTargetSource.PacketIdentity()&&
+		baseTargetR0.FluxCompositionIdentity()==baseTargetStage.compositionIdentity,
+		"r188 base target adds the canonical f_N tangent to the frozen absolute source target");
+	RISE::FireProductionScalarFCTRequest baseTargetR1Advective=baseTargetAdvective;
+	for(float& value:baseTargetR1Advective.beginning)value*=1.001f;
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest baseTargetR1Physical=
+		baseTargetPhysical;
+	baseTargetR1Physical.conservativeValues=baseTargetR1Advective.beginning;
+	for(std::size_t cell=0u;cell<sourceCells;++cell){
+		std::array<double,9> represented={{}};
+		for(std::size_t component=0u;component<9u;++component)
+			represented[component]=baseTargetR1Advective.beginning[component*sourceCells+cell];
+		double temperatureK=0.0,pressureRatio=0.0;
+		if(eosRecord.InvertAcceptedConservativeStateByComponentOrder(represented.data(),
+			represented.size(),eosRecord.TemperatureMinK(),eosRecord.TemperatureMaxK(),
+			RISE::FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,&error))
+			baseTargetR1Physical.temperatureK[cell]=static_cast<float>(temperatureK);
+	}
+	RISE::FireProductionScalarDivergenceTargetSeal baseTargetR1;
+	const bool baseTargetR1OK=RISE::ComposeFireProductionBaseDivergenceTargetCPU(
+		baseTargetSourceRequest.attemptIdentity,
+		RISE::FireProductionScalarDivergenceTargetRole::R1Base,
+		baseTargetR1Advective,baseTargetR1Physical,baseTargetSource,baseTargetR1,&error);
+	RISE::FireProductionScalarHeunFluxStage baseTargetR1Stage;
+	const bool baseTargetR1StageOK=RISE::ComposeFireProductionScalarHeunFluxStageCPU(
+		baseTargetSourceRequest.attemptIdentity,RISE::FireProductionScalarHeunFluxRole::R1,
+		baseTargetR1Advective,baseTargetR1Physical,baseTargetR1Stage,&error);
+	const bool baseTargetR1OracleExact=baseTargetR1OK&&baseTargetR1StageOK&&
+		targetMatchesIndependentTangent(baseTargetR1Advective,baseTargetR1Physical,
+			baseTargetR1Stage,baseTargetR1);
+	Check(baseTargetR1OracleExact&&baseTargetR1.TargetPerS()!=baseTargetR0.TargetPerS()&&
+		baseTargetR1.TargetIdentity()!=baseTargetR0.TargetIdentity()&&
+		baseTargetR1.SourcePacketIdentity()==baseTargetR0.SourcePacketIdentity(),
+		"r188 R1 changes only the physical tangent while retaining the frozen source authority");
+	RISE::FireProductionFrozenMethaneSourceRequest zeroSourceRequest=
+		baseTargetSourceRequest;
+	zeroSourceRequest.attemptIdentity=UINT64_C(0x1880000000000002);
+	zeroSourceRequest.pilotCommandMask.assign(sourceCells,0u);
+	for(float& value:zeroSourceRequest.beginningConservativeValues)value*=1.01f;
+	RISE::FireProductionFrozenSourcePacketSeal zeroSource;
+	const bool zeroSourceOK=RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+		zeroSourceRequest,zeroSource,&error);
+	bool zeroSourceDeltaCanonical=zeroSourceOK;
+	for(const float value:zeroSource.SourceDelta())
+		zeroSourceDeltaCanonical=zeroSourceDeltaCanonical&&value==0.0f&&!std::signbit(value);
+	RISE::FireProductionScalarFCTRequest zeroAdvective=baseTargetAdvective;
+	zeroAdvective.timeStepS=zeroSourceRequest.timeStepS;
+	zeroAdvective.beginning=zeroSourceRequest.beginningConservativeValues;
+	zeroAdvective.sourceDelta=zeroSource.SourceDelta();
+	for(auto& velocity:zeroAdvective.frozenVelocityMPerS)
+		std::fill(velocity.begin(),velocity.end(),0.0f);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest zeroPhysical=
+		baseTargetPhysical;
+	zeroPhysical.conservativeValues=zeroAdvective.beginning;
+	zeroPhysical.temperatureK=zeroSource.BeginningTemperatureK();
+	zeroPhysical.diffusivityM2PerS.assign(sourceCells,0.0f);
+	zeroPhysical.conductivityWPerMK.assign(sourceCells,0.0f);
+	for(auto& velocity:zeroPhysical.frozenVelocityMPerS)
+		std::fill(velocity.begin(),velocity.end(),0.0f);
+	RISE::FireProductionScalarDivergenceTargetSeal zeroTarget;
+	const bool zeroTargetOK=zeroSourceOK&&
+		RISE::ComposeFireProductionBaseDivergenceTargetCPU(zeroSourceRequest.attemptIdentity,
+			RISE::FireProductionScalarDivergenceTargetRole::R0Base,zeroAdvective,zeroPhysical,
+			zeroSource,zeroTarget,&error);
+	bool zeroSourceAbsoluteBranch=zeroTargetOK&&zeroSourceDeltaCanonical;
+	bool zeroSourceNonzero=false;
+	for(std::size_t cell=0u;cell<sourceCells&&zeroSourceAbsoluteBranch;++cell){
+		zeroSourceAbsoluteBranch=sameFloatBits(zeroTarget.TargetPerS()[cell],
+			zeroSource.DivergenceTargetPerS()[cell]);
+		zeroSourceNonzero=zeroSourceNonzero||zeroTarget.TargetPerS()[cell]!=0.0f;
+	}
+	Check(zeroSourceAbsoluteBranch&&zeroSourceNonzero,
+		"r188 zero source still carries the beginning-referenced absolute restoration branch");
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest staleBaseTemperature=
+		baseTargetPhysical;
+	staleBaseTemperature.temperatureK[0u]=std::nextafter(
+		staleBaseTemperature.temperatureK[0u],1000.0f);
+	RISE::FireProductionScalarDivergenceTargetSeal refusedBaseTarget;
+	const bool staleBaseTemperatureRejected=
+		!RISE::ComposeFireProductionBaseDivergenceTargetCPU(
+			baseTargetSourceRequest.attemptIdentity,
+			RISE::FireProductionScalarDivergenceTargetRole::R0Base,
+			baseTargetAdvective,staleBaseTemperature,baseTargetSource,refusedBaseTarget,&error)&&
+		!refusedBaseTarget.IsSealed();
+	RISE::FireProductionScalarFCTRequest staleBaseSource=baseTargetAdvective;
+	staleBaseSource.sourceDelta[0u]=std::nextafter(staleBaseSource.sourceDelta[0u],1.0f);
+	const bool staleBaseSourceRejected=
+		!RISE::ComposeFireProductionBaseDivergenceTargetCPU(
+			baseTargetSourceRequest.attemptIdentity,
+			RISE::FireProductionScalarDivergenceTargetRole::R0Base,
+			staleBaseSource,baseTargetPhysical,baseTargetSource,refusedBaseTarget,&error)&&
+		!refusedBaseTarget.IsSealed();
+	RISE::FireProductionScalarFCTRequest overBaseTarget;
+	overBaseTarget.shape=heunPayloadUnder;
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest overBasePhysical;
+	overBasePhysical.shape=overBaseTarget.shape;
+	const bool overBaseRejected=!RISE::ComposeFireProductionBaseDivergenceTargetCPU(
+		baseTargetSourceRequest.attemptIdentity,
+		RISE::FireProductionScalarDivergenceTargetRole::R0Base,
+		overBaseTarget,overBasePhysical,baseTargetSource,refusedBaseTarget,&error)&&
+		error.find("working set exceeds two GiB")!=std::string::npos;
+	std::uint64_t baseTargetPayloadBytes=0u;
+	const FireProductionRoundoffTrace::TraceFloat traceTemperature(300.0f);
+	const FireProductionRoundoffTrace::TraceFloat traceStaleTemperature(
+		std::nextafter(300.0f,1000.0f));
+	Check(staleBaseTemperatureRejected&&staleBaseSourceRejected&&overBaseRejected&&
+		traceTemperature!=traceStaleTemperature&&
+		RISE::QueryFireProductionBaseDivergenceTargetCPUPayloadBytes(
+			baseTargetAdvective.shape,baseTargetPayloadBytes,&error)&&
+		baseTargetPayloadBytes==sourceCells*sizeof(float)&&
+		!std::is_aggregate<RISE::FireProductionScalarDivergenceTargetSeal>::value,
+		"r188 refuses stale temperature/source parents and preflights the combined live set");
 	RISE::FireSim::PersistentFireWorkerPool exceptionPool;
 	const unsigned int exceptionWorkers=std::min(2u,RISE::FireSim::FireWorkerCapacity());
 	bool workerExceptionPropagated=false;
@@ -6369,17 +6634,21 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			canonicalSourceAuthorityLiveBinding.begin(),
 			canonicalSourceAuthorityLiveBinding.end()))==
-			"65393af52ad513cff6ec2947c2693fc4ec1bbb33d433e2b94086ac8bae13a760"&&
-		canonicalSourceAuthorityLiveBinding.find("live_owner_count 20\n")!=
+			"33730809d6aa9647331e3d97daef61beaa068af571a6b4fb932d1d7631a16cfe"&&
+		canonicalSourceAuthorityLiveBinding.find("live_owner_count 22\n")!=
 			std::string::npos&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionSourceKernel.h",
-			"f9f0de5fe6c59cee121c4ad44d025f9190acc59d6d464edd3eb6c2feb7824aaf")&&
+			"17ba9d611f4f391e57884e47b4a88d4c728aefa947d66e01314ed43ce2aa9274")&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionSource.cpp",
-			"620881433b352a1477d37e9afcf44a4fe8f12b09800bb5f8208f861d894d9569")&&
+			"112020e369f5b67e7dba98d87c5caf10bca10b1b6daf7694489c76602918b6f6")&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"94bcf76ae6d6443d79dddfca99e295477fb63fcf80b96ea7e7b9044c97fdde8e")&&
+			"9e5f046b9d19265181e194253d1949dd2a8377cf3bfde2dedeafe28e79236683")&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"a8940ad48ce53aa22c1c1170f544b926028339f514e60f7fd3905b01fa2a0a7f")&&
+			"5654c3a23d7c3f9420952492509a29e58dbf9b77a3e8d5ac9742c5e27320f397")&&
+		canonicalSourceOwnerBound("src/Library/Utilities/FireSimulationRecords.h",
+			"8e81fff299ee02af6cec1e9c3a117e19936492ae470c495bd6877cfb006e28dd")&&
+		canonicalSourceOwnerBound("src/Library/Utilities/FireSimulationRecords.cpp",
+			"67b0bf8d90f79e733c04da1562a5c7e427cf6fa9d4ab0042c5c4308efdf4aaab")&&
 		canonicalSourceOwnerBound("tools/fire_simulator_core.h",
 			"21a5cf2c6177cc535d9ff8ced6835a7b0b09b2fe19dfed887c76d7e89c61eae1")&&
 		canonicalSourceOwnerBound("build/make/rise/Filelist",
@@ -6397,21 +6666,21 @@ int main()
 		canonicalSourceOwnerBound("build/XCode/rise/rise.xcodeproj/project.pbxproj",
 			"c9c0439a88b23d23fb08d696d8ad79353fe8e48ce21a25ede8239b390ca7fefa")&&
 		canonicalSourceOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
-			"1f018f2eec780652f3626f060c8f1a538a0921a35ad6c1e0771e2f0038654b3f")&&
+			"c68c13f5b1630dc302f3b5a3de77de9104dc5527b0d7c9e61e28a94bedad5969")&&
 		canonicalSourceOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
-			"19fb174479fcea9de1814672eb8e9b2a4fe076e4eab30452e0b7ef8cb6fb8971")&&
+			"544dd38001ccbada9b3de992e2013d5937180157963a36210b60c70facecee45")&&
 		canonicalSourceOwnerBound("tests/fire_production_fp64/SourceManifest.h",
-			"72d8734457731d9a588ebc03e5f137d2e8f03d340487e58bae0bd708ccd9596b")&&
+			"23a154f2f646302719c827678b302f63c5dbaa271dedb5bab1e98bcb30977c05")&&
 		canonicalSourceOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
-			"02631f8bddfdd846f81f37d9615860afb75109ea1f905e17b27b4686cb35819c")&&
+			"91bfad2bc604a30dfed2d4c4b37d30fbbca1b40b0293346e57f90ff81bc43d77")&&
 		canonicalSourceOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
-			"e31f136e37a29e46096cf994074608b3dd1822881d44f583f07bd4b69fa8342b")&&
+			"8958576c405430eb12b908e3ad95ea1c8b975f1a1380ae23272e100436ca9cb5")&&
 		canonicalSourceOwnerBound("tests/fire_production_trace/SourceManifest.h",
-			"ada2fe815c5c4580dd310bef91807ecd4204cb2d89915a40f9d8bc3f9f6308a4")&&
+			"95627bcb0a1e07c42fa67fed5bfbf1b1f99c445ca274fbe4a3be84f87156904c")&&
 		canonicalSourceOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
-			"3cf20e0d15cb2e613f4d395762ffd7893c5e2dbd7d6614ee35dcc4c86de6309d")&&
+			"a38d874ed97cc6a3cfd403fb408c41d302c511be78fe0939ed07fcda4db0d60b")&&
 		canonicalSourceOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
-			"e51ecfcb8ec1473540dd9ade648b3802bb1a5ad63421dedeb5d6cf160d7be1d5")&&
+			"fde00b3de5d6f6052c3e41778817f9517afa08db4aa46936e768df483da67517")&&
 		canonicalSourceAuthorityEvidence.find(
 			"verdict accepted_cpu_prerequisite\n")!=std::string::npos&&
 		canonicalSourceAuthorityEvidence.find(
@@ -6426,7 +6695,7 @@ int main()
 		"rendered/fire_production_calibration/r187_packet_divergence_target/"
 		"packet_divergence_target_evidence.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-		packetDivergenceEvidence.begin(),packetDivergenceEvidence.end()))==
+			packetDivergenceEvidence.begin(),packetDivergenceEvidence.end()))==
 		"9a04c48b31ab5646724393e94de01b4569208e98c75ff9e353c4c3362ccdcc04"&&
 		packetDivergenceEvidence.find("caller_authored_divergence_target false\n")!=
 			std::string::npos&&
@@ -6435,6 +6704,23 @@ int main()
 		packetDivergenceEvidence.find("projection_consumer false\n")!=std::string::npos&&
 		packetDivergenceEvidence.find("tier10_claim false\n")!=std::string::npos,
 		"r187 publishes packet-derived divergence targets without claiming projection consumption");
+	const std::string baseDivergenceTargetEvidence=ReadText(
+		"rendered/fire_production_calibration/r188_base_divergence_target/"
+		"base_divergence_target_evidence.v1");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			baseDivergenceTargetEvidence.begin(),baseDivergenceTargetEvidence.end()))==
+			"3ce69ec82d30acf1c244dbdfa150559dae96f96e725abd16636b66ee5871ebb0"&&
+		baseDivergenceTargetEvidence.find(
+			"formula dV(Q_stage)[D(f_N_stage)]+S_div_source(Q_n,Delta_Q_source)\n")!=
+			std::string::npos&&
+		baseDivergenceTargetEvidence.find("distinct_R1_stage_RED true\n")!=
+			std::string::npos&&
+		baseDivergenceTargetEvidence.find("zero_source_absolute_branch_RED true\n")!=
+			std::string::npos&&
+		baseDivergenceTargetEvidence.find("projection_consumer false\n")!=
+			std::string::npos&&
+		baseDivergenceTargetEvidence.find("tier10_claim false\n")!=std::string::npos,
+		"r188 binds the tangent-plus-frozen-source derivation and honest prerequisite scope");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;
