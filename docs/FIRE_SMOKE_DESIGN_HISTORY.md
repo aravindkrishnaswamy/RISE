@@ -4699,3 +4699,16 @@ it was already tried and refuted here.
   This remains a CPU source prerequisite.  Packet-derived `S_div`, Metal
   command encoding, the coupled projected-Heun owner, onset validation, and
   tier-10 deliverables remain blocked.
+
+- **r187 packet-derived divergence-target publication (2026-08-31):** retains
+  the per-cell finite-volume expansion already computed by the canonical r186
+  authority instead of asking a later projection owner to reconstruct it.
+  The published binary32 target is exactly
+  `(Delta t*S_thermo+I_pilot)/Delta t`; the source packet's pilot energy is
+  excluded from `S_thermo` and its exact `1-1/V'` integral is added once.
+  The `C` values enter packet-content identity and seal validation, and a RED
+  reconstructs every packet from the sealed dose/pilot fields and requires
+  bit-identical target publication.  The source working set is re-derived for
+  `10F+8D` retained output.  Metal command encoding, projection consumption,
+  the complete R0/R1/R2 owner, onset validation, and tier-10 claims remain
+  blocked.

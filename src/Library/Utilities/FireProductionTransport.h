@@ -373,6 +373,7 @@ namespace RISE
 		std::uint64_t attemptIdentity_;
 		std::string methaneRecordId_,transportRecordId_,opacityRecordId_,caseRecordId_;
 		std::vector<float> sourceDelta_;
+		std::vector<float> divergenceTargetPerS_;
 		std::vector<double> reactedFuelKGPerM3_,oxidizedCarbonKGPerM3_;
 		std::vector<double> grossCarbonFormedKGPerM3_,gasHeatReleaseWPerM3_;
 		std::vector<double> sootHeatReleaseWPerM3_,pilotEnergyDeltaJPerM3_;
@@ -403,6 +404,8 @@ namespace RISE
 		const std::string& OpacityRecordId() const { return opacityRecordId_; }
 		const std::string& CaseRecordId() const { return caseRecordId_; }
 		const std::vector<float>& SourceDelta() const { return sourceDelta_; }
+		const std::vector<float>& DivergenceTargetPerS() const
+			{ return divergenceTargetPerS_; }
 		const std::vector<double>& ReactedFuelKGPerM3() const { return reactedFuelKGPerM3_; }
 		const std::vector<double>& OxidizedCarbonKGPerM3() const { return oxidizedCarbonKGPerM3_; }
 		const std::vector<double>& GrossCarbonFormedKGPerM3() const

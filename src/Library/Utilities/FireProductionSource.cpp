@@ -87,10 +87,10 @@ namespace RISE
 				workerCount>FireWorkerCapacity())return Fail(error,
 					"production canonical source working-set shape is invalid");
 			const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
-			// Request Q/mixing/mask, sealed 9F+8D result, and the simultaneously
+			// Request Q/mixing/mask, sealed 10F+8D result, and the simultaneously
 			// live canonical two-pass reaction/radiation scratch. vector<bool> is
 			// deliberately charged as one full byte for each of its three maps.
-			const std::uint64_t bytesPerCell=18u*sizeof(float)+
+			const std::uint64_t bytesPerCell=19u*sizeof(float)+
 				11u*sizeof(double)+3u*sizeof(MethaneCellState)+
 				sizeof(MethaneReactionStep)+3u*sizeof(MethaneSourcePacket)+5u;
 			// The persistent pool is topology-bounded.  Charge an explicit conservative
@@ -227,6 +227,7 @@ namespace RISE
 				candidate.opacityRecordId_=opacity.RecordId();
 				candidate.caseRecordId_=fireCase.caseRecordId;
 				candidate.sourceDelta_.assign(9u*cells,0.0f);
+				candidate.divergenceTargetPerS_.resize(cells);
 				candidate.reactedFuelKGPerM3_.resize(cells);
 				candidate.oxidizedCarbonKGPerM3_.resize(cells);
 				candidate.grossCarbonFormedKGPerM3_.resize(cells);
@@ -256,6 +257,13 @@ namespace RISE
 						FireStateProducerPrecision::Binary32,&scaled,error))return false;
 					candidate.maximumScaledExpansion_=std::max(
 						candidate.maximumScaledExpansion_,scaled);
+					const float divergenceTargetPerS=static_cast<float>(scaled/
+						static_cast<double>(request.timeStepS));
+					if(!std::isfinite(divergenceTargetPerS)||
+						(divergenceTargetPerS==0.0f&&std::signbit(divergenceTargetPerS)))
+						return Fail(error,
+							"production canonical source divergence target is noncanonical");
+					candidate.divergenceTargetPerS_[cell]=divergenceTargetPerS;
 				}
 				candidate.radiationBeta_=factor.beta;candidate.radiationGamma_=factor.gamma;
 				candidate.radiationEscapeFactor_=factor.accepted;

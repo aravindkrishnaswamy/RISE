@@ -376,6 +376,7 @@ namespace RISEFireProductionTrace
 		std::uint64_t attemptIdentity_;
 		std::string methaneRecordId_,transportRecordId_,opacityRecordId_,caseRecordId_;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> sourceDelta_;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> divergenceTargetPerS_;
 		std::vector<double> reactedFuelKGPerM3_,oxidizedCarbonKGPerM3_;
 		std::vector<double> grossCarbonFormedKGPerM3_,gasHeatReleaseWPerM3_;
 		std::vector<double> sootHeatReleaseWPerM3_,pilotEnergyDeltaJPerM3_;
@@ -406,6 +407,8 @@ namespace RISEFireProductionTrace
 		const std::string& OpacityRecordId() const { return opacityRecordId_; }
 		const std::string& CaseRecordId() const { return caseRecordId_; }
 		const std::vector<FireProductionRoundoffTrace::TraceFloat>& SourceDelta() const { return sourceDelta_; }
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& DivergenceTargetPerS() const
+			{ return divergenceTargetPerS_; }
 		const std::vector<double>& ReactedFuelKGPerM3() const { return reactedFuelKGPerM3_; }
 		const std::vector<double>& OxidizedCarbonKGPerM3() const { return oxidizedCarbonKGPerM3_; }
 		const std::vector<double>& GrossCarbonFormedKGPerM3() const

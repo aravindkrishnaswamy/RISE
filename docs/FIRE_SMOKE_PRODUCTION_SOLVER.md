@@ -5077,6 +5077,29 @@ This is a compiled CPU prerequisite only.  r186 does not yet compose
 packet-derived `S_div`, encode Metal source commands, wire the R0/R1/R2 owner,
 rerun onset, or authorize any tier-10 spectrum, row, animation, or report.
 
+### 7.56t Packet-derived divergence-target publication (r187)
+
+r187 removes one more caller-authored seam from the future projected-Heun
+owner.  The canonical source authority already evaluated each packet's finite
+volume change while enforcing its expansion bound.  It now publishes that
+same value as one component-major binary32 cell field,
+`S_div=(Delta t*S_thermo+I_pilot)/Delta t`, alongside the `9C` conservative
+dose.  `S_thermo` is evaluated from the represented packet with pilot energy
+removed exactly once; `I_pilot=1-1/V'` remains the separately derived exact
+pilot expansion integral.  No second thermochemistry or EOS path is introduced.
+
+The target is part of the opaque packet-content and final-packet identities.
+Seal validation requires exactly `C` finite canonical values, including
+positive zero.  The RED reconstructs each retained packet from the sealed
+binary32 dose plus its pilot pair, reruns the finite-increment expansion
+identity, and requires bit equality with the published target.  Working-set
+admission correspondingly changes from a sealed `9F+8D` result to `10F+8D`,
+and the exact adjacent/high-to-low worker certificate is re-derived.
+
+This remains a CPU publication prerequisite.  It does not yet encode a Metal
+source command, bind the target to R0/R1 projection commands, commit a
+projected-Heun step, rerun onset, or authorize tier-10 deliverables.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

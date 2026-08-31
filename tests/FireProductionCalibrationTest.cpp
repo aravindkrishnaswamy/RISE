@@ -3140,7 +3140,7 @@ int main()
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunLiveBinding.begin(),projectedHeunLiveBinding.end()))==
-			"a2a3b8beed32558c839739566ac61f883d6356f7ea44e05c160854b61228aed6"&&
+			"bfcdccafe3848f37403fa90445cad80077497a124b1b71e6dbed6f4001d32eea"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3149,9 +3149,9 @@ int main()
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"b1407bc508af6c15ce58e970711dc6a3ff78d699e8c504c08824863c9c22b627")&&
+			"94bcf76ae6d6443d79dddfca99e295477fb63fcf80b96ea7e7b9044c97fdde8e")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"91791d9ef1e6d4e1471a242024d030770344f36c63ff894ae3fdffda7023efec")&&
+			"a8940ad48ce53aa22c1c1170f544b926028339f514e60f7fd3905b01fa2a0a7f")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm",
 			"2554a0a41feaa9356d3ffb8c17b1a2d8520b0642c7975d4fa62947b4e9fede57")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionForce.h",
@@ -3189,9 +3189,9 @@ int main()
 		liveOwnerBound("tests/FireSequenceTest.cpp",
 			"1cadffc8309e50aafa0a85b83502c7918e2cfb9e2e9c5f398169e27d83a7ab40")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
-			"0b44fe8985cc5aeea6298dbe3bb067e477d8c7dc063eb2c526fd69f79fcee894")&&
+			"1f018f2eec780652f3626f060c8f1a538a0921a35ad6c1e0771e2f0038654b3f")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
-			"6383bddcc3131d47bc07cb9160ab8f34030babd1f658310b219d356f6959b96e")&&
+			"19fb174479fcea9de1814672eb8e9b2a4fe076e4eab30452e0b7ef8cb6fb8971")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.h",
 			"dd561ead598cc5426ec91a6efd47b2915d88167c1a37f159defd42f62102a01f")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.cpp",
@@ -3201,11 +3201,11 @@ int main()
 		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.cpp",
 			"2611c42e43e5b2e7a4b32e0749bcfbf007d5c20ddc36babddfbfd2c34725c473")&&
 		liveOwnerBound("tests/fire_production_fp64/SourceManifest.h",
-			"ad844cf297321c1541b89b3146369bc32ad47501565fc23cb9d9008e372d8ea0")&&
+			"72d8734457731d9a588ebc03e5f137d2e8f03d340487e58bae0bd708ccd9596b")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
-			"16e4a7ef3bc111d416d79c40110360eb0ae04055f527e045c9ff14690a7fd543")&&
+			"02631f8bddfdd846f81f37d9615860afb75109ea1f905e17b27b4686cb35819c")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
-			"e88b1386afbfd1b5c032b6181a432f7f484727dad9486145ae0b8bdcead83011")&&
+			"e31f136e37a29e46096cf994074608b3dd1822881d44f583f07bd4b69fa8342b")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.h",
 			"7d453246cbd95acaef81bda1a5141d42a8750d8e69a94ea38dc64f1b43b8add6")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.cpp",
@@ -3215,11 +3215,11 @@ int main()
 		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.cpp",
 			"5cf59d615da1f3022faea6ea5614a85060849b702ad321a1b16b916f0574b384")&&
 		liveOwnerBound("tests/fire_production_trace/SourceManifest.h",
-			"f9965eda83ecbf522093dbf1e7c1c798bbe2920ab42a1f4f3d1d9353bcdff197")&&
+			"ada2fe815c5c4580dd310bef91807ecd4204cb2d89915a40f9d8bc3f9f6308a4")&&
 		liveOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
-			"fe754851c3920fd828557011165d2ec8e22c3d14ee7d9a6124d2cdcb61e999fe")&&
+			"3cf20e0d15cb2e613f4d395762ffd7893c5e2dbd7d6614ee35dcc4c86de6309d")&&
 		liveOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
-			"a4199e47d0cad5f8779928c0263c00af7a101900e71dd9a5e1f3ff1714540f2f"),
+			"e51ecfcb8ec1473540dd9ade648b3802bb1a5ad63421dedeb5d6cf160d7be1d5"),
 		"r183 exact-binds immutable evidence and its live implementation, tests, mirrors, and documentation without self-binding the calibration gate");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
@@ -6152,9 +6152,28 @@ int main()
 	const double sourcePilotVolume=sourcePilotTarget/sourceBeginning.temperatureK;
 	const double sourcePilotExpected=(sourcePilotTargetEnergy-sourcePilotBeginningEnergy)/
 		sourcePilotVolume;
+	bool sourceDivergenceExact=sourceSealOK&&
+		sourceSeal.DivergenceTargetPerS().size()==sourceCells;
+	for(std::size_t cell=0u;cell<sourceCells&&sourceDivergenceExact;++cell){
+		RISE::FireSim::MethaneSourcePacket packet;
+		for(std::size_t species=0u;species<7u;++species)
+			packet.constituentDelta[species]=static_cast<double>(
+				sourceSeal.SourceDelta()[(1u+species)*sourceCells+cell]);
+		packet.sensibleEnergyDeltaJPerM3=static_cast<double>(
+			sourceSeal.SourceDelta()[8u*sourceCells+cell]);
+		packet.pilotEnergyDeltaJPerM3=sourceSeal.PilotEnergyDeltaJPerM3()[cell];
+		packet.pilotExpansionIntegral=sourceSeal.PilotExpansionIntegral()[cell];
+		double scaled=0.0;
+		sourceDivergenceExact=RISE::FireSim::FrozenSourcePacketExpansionAdmissible(
+			sourceBeginningVector,sourceBeginning.temperatureK,packet,
+			sourceRequest.timeStepS,eosRecord,RISE::FireStateProducerPrecision::Binary32,
+			&scaled,&error)&&sameFloatBits(sourceSeal.DivergenceTargetPerS()[cell],
+				static_cast<float>(scaled/static_cast<double>(sourceRequest.timeStepS)));
+	}
 	Check(sourceSealOK&&sourceSeal.IsSealed()&&
 		RISE::FireProductionFrozenSourcePacketSealMatches(sourceSeal,&error)&&
 		sourceSeal.SourceDelta().size()==9u*sourceCells&&
+		sourceDivergenceExact&&
 		sourceSeal.PilotEnergyDeltaJPerM3().size()==sourceCells&&
 		sourceSeal.PilotExpansionIntegral().size()==sourceCells&&
 		sourceSeal.PacketIdentity()!=0u&&sourceSeal.PacketContentIdentity()!=0u&&
@@ -6272,7 +6291,7 @@ int main()
 	const bool sourceOversizedQuery=
 		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
 			sourceOversized.shape,sourceOversized.workerCount,sourceOversizedBytes,&error);
-	const std::uint64_t sourceBytesPerCell=18u*sizeof(float)+11u*sizeof(double)+
+	const std::uint64_t sourceBytesPerCell=19u*sizeof(float)+11u*sizeof(double)+
 		3u*sizeof(RISE::FireSim::MethaneCellState)+sizeof(RISE::FireSim::MethaneReactionStep)+
 		3u*sizeof(RISE::FireSim::MethaneSourcePacket)+5u;
 	const std::uint64_t sourceWorkerBytes=static_cast<std::uint64_t>(
@@ -6337,47 +6356,62 @@ int main()
 	const std::string canonicalSourceAuthorityEvidence=ReadText(
 		"rendered/fire_production_calibration/r186_canonical_source_authority/"
 		"canonical_source_authority_evidence.v1");
-	const auto canonicalSourceOwnerBound=[&](const char* path,const char* field,
-		const char* sha256) {
-		return sourceSHA(path)==sha256&&canonicalSourceAuthorityEvidence.find(
-			std::string(field)+" "+sha256+"\n")!=std::string::npos;
+	const std::string canonicalSourceAuthorityLiveBinding=ReadText(
+		"rendered/fire_production_calibration/r186_canonical_source_authority/"
+		"canonical_source_authority_live_binding.v1");
+	const auto canonicalSourceOwnerBound=[&](const char* path,const char* sha256) {
+		return sourceSHA(path)==sha256&&canonicalSourceAuthorityLiveBinding.find(
+			std::string("owner ")+path+" sha256 "+sha256+"\n")!=std::string::npos;
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		canonicalSourceAuthorityEvidence.begin(),canonicalSourceAuthorityEvidence.end()))==
 		"248e8da89dac1f5754d9a352ad15d43fd9726e237eb1e994f0c7d2fdad5a135a"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			canonicalSourceAuthorityLiveBinding.begin(),
+			canonicalSourceAuthorityLiveBinding.end()))==
+			"65393af52ad513cff6ec2947c2693fc4ec1bbb33d433e2b94086ac8bae13a760"&&
+		canonicalSourceAuthorityLiveBinding.find("live_owner_count 20\n")!=
+			std::string::npos&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionSourceKernel.h",
-			"source_kernel_sha256",
 			"f9f0de5fe6c59cee121c4ad44d025f9190acc59d6d464edd3eb6c2feb7824aaf")&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionSource.cpp",
-			"source_authority_sha256",
-			"4e9539d43dd9b48d6bf0016d233aa24b039132a1b993499b6fc47aaa23774957")&&
+			"620881433b352a1477d37e9afcf44a4fe8f12b09800bb5f8208f861d894d9569")&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"transport_header_sha256",
-			"b1407bc508af6c15ce58e970711dc6a3ff78d699e8c504c08824863c9c22b627")&&
+			"94bcf76ae6d6443d79dddfca99e295477fb63fcf80b96ea7e7b9044c97fdde8e")&&
 		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"transport_source_sha256",
-			"91791d9ef1e6d4e1471a242024d030770344f36c63ff894ae3fdffda7023efec")&&
-		canonicalSourceOwnerBound("tools/fire_simulator_core.h","tool_core_sha256",
+			"a8940ad48ce53aa22c1c1170f544b926028339f514e60f7fd3905b01fa2a0a7f")&&
+		canonicalSourceOwnerBound("tools/fire_simulator_core.h",
 			"21a5cf2c6177cc535d9ff8ced6835a7b0b09b2fe19dfed887c76d7e89c61eae1")&&
-		canonicalSourceOwnerBound("build/make/rise/Filelist","make_filelist_sha256",
+		canonicalSourceOwnerBound("build/make/rise/Filelist",
 			"8517dff07dee064c6e682c1f53b7bf8ae9eae70ef2d31d87309cefd3e80617a4")&&
-		canonicalSourceOwnerBound("build/make/rise/Makefile","make_rules_sha256",
+		canonicalSourceOwnerBound("build/make/rise/Makefile",
 			"b36ad42da2bf5ef25a454ad2d84dd5c034bfb581459379cd0293c9debfd4ce65")&&
 		canonicalSourceOwnerBound("build/cmake/rise-android/CMakeLists.txt",
-			"android_cmakelists_sha256",
 			"0b0bac8387f25bf4157a3f5b50f978ead49031e685368628949711ddb68419f9")&&
 		canonicalSourceOwnerBound("build/cmake/rise-android/rise_sources.cmake",
-			"android_sources_sha256",
 			"83789553843a1d84aa1cdae132354de03c9b9615fc052700e9d1050dfde7b5b6")&&
 		canonicalSourceOwnerBound("build/VS2022/Library/Library.vcxproj",
-			"visual_studio_project_sha256",
 			"c5190cc329a33bd25751752a68a2cd057be460fc9122a55155f2d7be511321d1")&&
 		canonicalSourceOwnerBound("build/VS2022/Library/Library.vcxproj.filters",
-			"visual_studio_filters_sha256",
 			"9c76ca266ee430294234a0dea1c6808102efc9cf7210132b0c43553168703114")&&
 		canonicalSourceOwnerBound("build/XCode/rise/rise.xcodeproj/project.pbxproj",
-			"xcode_project_sha256",
 			"c9c0439a88b23d23fb08d696d8ad79353fe8e48ce21a25ede8239b390ca7fefa")&&
+		canonicalSourceOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
+			"1f018f2eec780652f3626f060c8f1a538a0921a35ad6c1e0771e2f0038654b3f")&&
+		canonicalSourceOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
+			"19fb174479fcea9de1814672eb8e9b2a4fe076e4eab30452e0b7ef8cb6fb8971")&&
+		canonicalSourceOwnerBound("tests/fire_production_fp64/SourceManifest.h",
+			"72d8734457731d9a588ebc03e5f137d2e8f03d340487e58bae0bd708ccd9596b")&&
+		canonicalSourceOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
+			"02631f8bddfdd846f81f37d9615860afb75109ea1f905e17b27b4686cb35819c")&&
+		canonicalSourceOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
+			"e31f136e37a29e46096cf994074608b3dd1822881d44f583f07bd4b69fa8342b")&&
+		canonicalSourceOwnerBound("tests/fire_production_trace/SourceManifest.h",
+			"ada2fe815c5c4580dd310bef91807ecd4204cb2d89915a40f9d8bc3f9f6308a4")&&
+		canonicalSourceOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
+			"3cf20e0d15cb2e613f4d395762ffd7893c5e2dbd7d6614ee35dcc4c86de6309d")&&
+		canonicalSourceOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
+			"e51ecfcb8ec1473540dd9ade648b3802bb1a5ad63421dedeb5d6cf160d7be1d5")&&
 		canonicalSourceAuthorityEvidence.find(
 			"verdict accepted_cpu_prerequisite\n")!=std::string::npos&&
 		canonicalSourceAuthorityEvidence.find(
@@ -6388,6 +6422,19 @@ int main()
 			"serial_parallel_packet_bytes_identical true\n")!=std::string::npos&&
 		canonicalSourceAuthorityEvidence.find("tier10_claim false\n")!=std::string::npos,
 		"r186 binds the compiled canonical source authority, rejection trail, and honest scope");
+	const std::string packetDivergenceEvidence=ReadText(
+		"rendered/fire_production_calibration/r187_packet_divergence_target/"
+		"packet_divergence_target_evidence.v1");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		packetDivergenceEvidence.begin(),packetDivergenceEvidence.end()))==
+		"9a04c48b31ab5646724393e94de01b4569208e98c75ff9e353c4c3362ccdcc04"&&
+		packetDivergenceEvidence.find("caller_authored_divergence_target false\n")!=
+			std::string::npos&&
+		packetDivergenceEvidence.find(
+			"target_RED reconstruct_packet_and_require_bit_identity\n")!=std::string::npos&&
+		packetDivergenceEvidence.find("projection_consumer false\n")!=std::string::npos&&
+		packetDivergenceEvidence.find("tier10_claim false\n")!=std::string::npos,
+		"r187 publishes packet-derived divergence targets without claiming projection consumption");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;

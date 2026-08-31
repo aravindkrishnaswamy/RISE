@@ -166,9 +166,10 @@ namespace RISEFireProductionFP64
 			const FireProductionFrozenSourcePacketSeal& seal )
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
-			static const char domain[]="RISE canonical frozen source packet content v1";
+			static const char domain[]="RISE canonical frozen source packet content v2";
 			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
 			HashFluxValues(hash,seal.SourceDelta());
+			HashFluxValues(hash,seal.DivergenceTargetPerS());
 			HashSourceDoubleValues(hash,seal.ReactedFuelKGPerM3());
 			HashSourceDoubleValues(hash,seal.OxidizedCarbonKGPerM3());
 			HashSourceDoubleValues(hash,seal.GrossCarbonFormedKGPerM3());
@@ -200,7 +201,7 @@ namespace RISEFireProductionFP64
 			const FireProductionFrozenSourcePacketSeal& seal )
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
-			static const char domain[]="RISE canonical frozen source packet seal v1";
+			static const char domain[]="RISE canonical frozen source packet seal v2";
 			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
 			HashEOSUInt64(hash,seal.Shape().nx);HashEOSUInt64(hash,seal.Shape().ny);
 			HashEOSUInt64(hash,seal.Shape().nz);HashEOSFloat(hash,seal.Shape().cellWidthM);
@@ -930,7 +931,8 @@ namespace RISEFireProductionFP64
 			!CanonicalEOSRecordId(methaneRecordId_)||
 			!CanonicalEOSRecordId(transportRecordId_)||
 			!CanonicalEOSRecordId(opacityRecordId_)||!CanonicalEOSRecordId(caseRecordId_)||
-			sourceDelta_.size()!=9u*cells||reactedFuelKGPerM3_.size()!=cells||
+			sourceDelta_.size()!=9u*cells||divergenceTargetPerS_.size()!=cells||
+			reactedFuelKGPerM3_.size()!=cells||
 			oxidizedCarbonKGPerM3_.size()!=cells||grossCarbonFormedKGPerM3_.size()!=cells||
 			gasHeatReleaseWPerM3_.size()!=cells||sootHeatReleaseWPerM3_.size()!=cells||
 			pilotEnergyDeltaJPerM3_.size()!=cells||pilotExpansionIntegral_.size()!=cells||
@@ -946,6 +948,9 @@ namespace RISEFireProductionFP64
 		for(const double value:sourceDelta_)if(!std::isfinite(value)||
 			(value==0.0&&std::signbit(static_cast<double>(value))))return Fail(error,
 				"canonical frozen source-packet resident dose is noncanonical");
+		for(const double value:divergenceTargetPerS_)if(!std::isfinite(value)||
+			(value==0.0&&std::signbit(static_cast<double>(value))))return Fail(error,
+				"canonical frozen source-packet divergence target is noncanonical");
 		const std::vector<double>* diagnostic[]={&reactedFuelKGPerM3_,
 			&oxidizedCarbonKGPerM3_,&grossCarbonFormedKGPerM3_,&gasHeatReleaseWPerM3_,
 			&sootHeatReleaseWPerM3_,&pilotEnergyDeltaJPerM3_,&pilotExpansionIntegral_,
