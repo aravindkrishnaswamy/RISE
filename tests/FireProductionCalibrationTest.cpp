@@ -3134,7 +3134,7 @@ int main()
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunLiveBinding.begin(),projectedHeunLiveBinding.end()))==
-			"c36967e3d1301935baaa2a77a53e1c740aa8efcd6988495d9cd317c47a97d996"&&
+			"b94b1755d8c9f2968f7b7a7bf6c94d5037918eaff586ed54bbf2304ed4e372a0"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3143,9 +3143,9 @@ int main()
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"68e8fe02ea51262b2634b44ce5b13634c55e34bf81cf4dc112e8de933e4a2deb")&&
+			"d4827b2b6aa3413887b5b26db1d7abd7ab276be96aacd02d814063fe353899f3")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"45a9090a1b7332013a385125927812296e38c549e6a02e5b0633fc5d1df4810a")&&
+			"ffffc7d29cbb1fbb9bf563ad7abf4e475121c73dd7418b8fd604471d3ce167eb")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm",
 			"2554a0a41feaa9356d3ffb8c17b1a2d8520b0642c7975d4fa62947b4e9fede57")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionForce.h",
@@ -3183,9 +3183,9 @@ int main()
 		liveOwnerBound("tests/FireSequenceTest.cpp",
 			"1cadffc8309e50aafa0a85b83502c7918e2cfb9e2e9c5f398169e27d83a7ab40")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
-			"22b5bff737f1dcc10a486fe7b7eeda06a2111d18f8f35e6c9148ed12cb7afe71")&&
+			"c4afd1c5df6e2061bb97ee7ebf3863994b1edc63fab4162d942d9503b2e5ae5d")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
-			"5f0bfd969fde7f3ae27436cb56e3f5181dacfc43363e8756d5a10b01d5d2c4c5")&&
+			"bb7725df43697e01dabcc2afc4273f817d833cfd2a154b9b2a3f936b516961ea")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.h",
 			"dd561ead598cc5426ec91a6efd47b2915d88167c1a37f159defd42f62102a01f")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.cpp",
@@ -3195,11 +3195,11 @@ int main()
 		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.cpp",
 			"2611c42e43e5b2e7a4b32e0749bcfbf007d5c20ddc36babddfbfd2c34725c473")&&
 		liveOwnerBound("tests/fire_production_fp64/SourceManifest.h",
-			"1065ab68fe914eed01369d9dcf7ecf635e132c04455f273d67ac56be50f193d5")&&
+			"c2e884152833c500a40ac591d0bd9fea5c13773c414396a4daf54b27d147ea24")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
-			"790a10eac39f4073e075d6bf88d42eae9763164ed6e4bcef6b1b2cedc0183637")&&
+			"2815ac777ac1db75ece9addfdb78167e72e8b99475ebf37e085dc608b2667540")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
-			"ee8bf2d946282d055330872c5f7a4acf1a76f0fa4fa908e462ac39da26b4ac20")&&
+			"4c0b02371905bc74c08a618efd7afdd0aafb8ae9ba0d0e2c2ec8d462d7b84eb9")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.h",
 			"7d453246cbd95acaef81bda1a5141d42a8750d8e69a94ea38dc64f1b43b8add6")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.cpp",
@@ -3209,18 +3209,18 @@ int main()
 		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.cpp",
 			"5cf59d615da1f3022faea6ea5614a85060849b702ad321a1b16b916f0574b384")&&
 		liveOwnerBound("tests/fire_production_trace/SourceManifest.h",
-			"952e175caeb9610aa680b726a4ad8e4ab034c3992128f3e11daaa8d7b3f0f867")&&
+			"90d5db9c13d1518382e10ded4abc19242ee5845cf43f71c7f2b7872179f1435b")&&
 		liveOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
-			"98935a82a0646b0ce742e5b23db1e33cc7fea91d3cad56d7bb869f9e4c0a0550")&&
+			"d02c3d1278083e3939fa7bc87fbfb8272e73aed69ff9ae1996b45bc51c87bdd6")&&
 		liveOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
-			"b361eff090518d212638e8dcd2fdc542c1df67ae027ecf79840add5e746c68d3"),
+			"cf92616eeec9105020b5929d2ec7de58dfb617798eda709ccd8cc9e453379f23"),
 		"r183 exact-binds immutable evidence and its live implementation, tests, mirrors, and documentation without self-binding the calibration gate");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
 		"authenticated_eos_prerequisite.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			authenticatedEOSEvidence.begin(),authenticatedEOSEvidence.end()))==
-			"fe21810e9a50720e27815175161a1e55263a1bfe7cfa37736e98055d8ab4ea50"&&
+			"43ef57d8e0172d2d196cdd3aa5a845b43d128aa0ff404c964f3b1f125166075e"&&
 		authenticatedEOSEvidence.find("caller_authored_temperature_ceiling_absent true")!=
 			std::string::npos&&
 		authenticatedEOSEvidence.find("retired_oracle_1e_minus_3_production_gate false")!=
@@ -3229,6 +3229,23 @@ int main()
 			"verdict accepted_cpu_only_eos_prerequisite_full_owner_still_blocked")!=
 			std::string::npos,
 		"r184 binds the authenticated CPU EOS prerequisite without promoting the projected-Heun owner");
+	const std::string exactHeunFluxEvidence=ReadText(
+		"rendered/fire_production_calibration/r185_exact_heun_flux_composition/"
+		"exact_heun_flux_composition_evidence.v1");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			exactHeunFluxEvidence.begin(),exactHeunFluxEvidence.end()))==
+			"609a373b1fff5bc80083499efd8f7cb5b7fdba75ce14617f0c3bd4ea394990a4"&&
+		exactHeunFluxEvidence.find("persistent_payload_fields_per_face 30\n")!=
+			std::string::npos&&
+		exactHeunFluxEvidence.find("average_live_bytes_per_face 360\n")!=
+			std::string::npos&&
+		exactHeunFluxEvidence.find(
+			"compatible_momentum_high_minus_low_reconstruction false\n")!=
+			std::string::npos&&
+		exactHeunFluxEvidence.find(
+			"verdict accepted_cpu_only_exact_flux_composition_full_owner_still_blocked\n")!=
+			std::string::npos,
+		"r185 binds exact 30F composition and direct-delta momentum without promoting the full owner");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&
@@ -5180,6 +5197,274 @@ int main()
 		averagedStageAccepted.sharedFaceAlpha[0][nonlinearFace]!=
 			independentlyAveragedAlpha,
 		"projected-Heun scalar staging averages flux pairs and solves a fresh shared alpha, not an averaged alpha");
+
+	// r185 granular composition: build each 30F stage from the same raw Q/u/
+	// boundary operands, retain f_N/J_g/Phi_g separately, average every field,
+	// and consume the retained advective delta without reconstructing high-low.
+	RISE::FireProductionProjectionShape heunPayloadUnder,heunPayloadOver;
+	heunPayloadUnder.nx=38u;heunPayloadUnder.ny=191u;heunPayloadUnder.nz=813u;
+	heunPayloadUnder.cellWidthM=1.0f;
+	heunPayloadOver.nx=18u;heunPayloadOver.ny=500u;heunPayloadOver.nz=650u;
+	heunPayloadOver.cellWidthM=1.0f;
+	std::uint64_t heunPayloadUnderBytes=0u,heunPayloadOverBytes=0u;
+	const bool heunPayloadQuery=
+		RISE::QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+			heunPayloadUnder,heunPayloadUnderBytes,&error)&&
+		RISE::QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+			heunPayloadOver,heunPayloadOverBytes,&error);
+	Check(heunPayloadQuery&&heunPayloadUnderBytes==UINT64_C(2147483640)&&
+		heunPayloadOverBytes==UINT64_C(2147484000)&&
+		heunPayloadUnderBytes<=(UINT64_C(2)<<30u)&&
+		heunPayloadOverBytes>(UINT64_C(2)<<30u),
+		"r185 Heun stage payload query exact-binds the 30F two-GiB neighbors");
+	RISE::FireProductionScalarFCTRequest overComposeFCT;
+	overComposeFCT.shape.nx=36u;overComposeFCT.shape.ny=115u;
+	overComposeFCT.shape.nz=736u;overComposeFCT.shape.cellWidthM=1.0f;
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest overComposePhysical;
+	overComposePhysical.shape=overComposeFCT.shape;
+	RISE::FireProductionScalarHeunFluxStage refusedHeunStage;
+	refusedHeunStage.physicalEnergyFluxWPerM2.assign(1u,1.0f);
+	const bool composeOverCapRejected=
+		!RISE::ComposeFireProductionScalarHeunFluxStageCPU(UINT64_C(18501),
+			RISE::FireProductionScalarHeunFluxRole::R0,overComposeFCT,
+			overComposePhysical,refusedHeunStage,&error)&&
+		refusedHeunStage.physicalEnergyFluxWPerM2.empty()&&
+		error.find("working set exceeds two GiB")!=std::string::npos;
+	RISE::FireProductionScalarHeunFluxStage overAverageFirst,overAverageSecond,
+		refusedAverageStage;
+	overAverageFirst.compositeFluxPair.shape.nx=25u;
+	overAverageFirst.compositeFluxPair.shape.ny=140u;
+	overAverageFirst.compositeFluxPair.shape.nz=559u;
+	overAverageFirst.compositeFluxPair.shape.cellWidthM=1.0f;
+	overAverageSecond.compositeFluxPair.shape=overAverageFirst.compositeFluxPair.shape;
+	const bool averageOverCapRejected=
+		!RISE::AverageFireProductionScalarHeunFluxStagesCPU(overAverageFirst,
+			overAverageSecond,refusedAverageStage,&error)&&
+		refusedAverageStage.compositeFluxPair.lowFlux.empty()&&
+		error.find("average working set exceeds two GiB")!=std::string::npos;
+	RISE::FireProductionScalarHeunFluxStage mismatchedAverageFirst,
+		mismatchedAverageSecond;
+	mismatchedAverageFirst.compositeFluxPair.shape.nx=4u;
+	mismatchedAverageFirst.compositeFluxPair.shape.ny=4u;
+	mismatchedAverageFirst.compositeFluxPair.shape.nz=4u;
+	mismatchedAverageFirst.compositeFluxPair.shape.cellWidthM=1.0f;
+	mismatchedAverageSecond.compositeFluxPair.shape=heunPayloadOver;
+	const bool mismatchedLargeAverageRejected=
+		!RISE::AverageFireProductionScalarHeunFluxStagesCPU(mismatchedAverageFirst,
+			mismatchedAverageSecond,refusedAverageStage,&error)&&
+		error.find("average working set exceeds two GiB")!=std::string::npos;
+	Check(composeOverCapRejected&&averageOverCapRejected&&
+		mismatchedLargeAverageRejected,
+		"r185 composition and three-stage averaging reject their exact live-set over-cap shapes before payload access");
+
+	RISE::FireProductionScalarFCTRequest heunR0=constantScalarFCT;
+	heunR0.beginning=physicalFluxRequest.conservativeValues;
+	heunR0.sourceDelta.assign(9u*scalarCells,0.0f);
+	heunR0.ambient=physicalFluxRequest.ambient;
+	for(std::size_t species=0u;species<7u;++species){
+		heunR0.enthalpyBoundsJPerKG[species]=-1.0e8f;
+		heunR0.enthalpyBoundsJPerKG[7u+species]=1.0e8f;
+	}
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest heunPhysicalR0=
+		physicalFluxRequest;
+	const float heunMethanePattern[4]={0.1f,0.125f,0.15f,0.125f};
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+		for(std::size_t x=0u;x<4u;++x){const std::size_t cell=(z*4u+y)*4u+x;
+			const float methane=heunMethanePattern[x];
+			heunPhysicalR0.conservativeValues[cell]=methane;
+			heunPhysicalR0.conservativeValues[scalarCells+cell]=methane;
+			heunPhysicalR0.conservativeValues[3u*scalarCells+cell]=0.8f-methane;
+		}
+	heunR0.beginning=heunPhysicalR0.conservativeValues;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const float velocity=axis==0u?0.1f:0.0f;
+		std::fill(heunR0.frozenVelocityMPerS[axis].begin(),
+			heunR0.frozenVelocityMPerS[axis].end(),velocity);
+		heunPhysicalR0.frozenVelocityMPerS[axis]=heunR0.frozenVelocityMPerS[axis];
+	}
+	RISE::FireProductionScalarFCTRequest heunR1=heunR0;
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest heunPhysicalR1=
+		heunPhysicalR0;
+	for(std::size_t cell=0u;cell<scalarCells;++cell)
+		heunPhysicalR1.temperatureK[cell]+=5.0f;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const float velocity=axis==0u?0.075f:0.0f;
+		std::fill(heunR1.frozenVelocityMPerS[axis].begin(),
+			heunR1.frozenVelocityMPerS[axis].end(),velocity);
+		heunPhysicalR1.frozenVelocityMPerS[axis]=heunR1.frozenVelocityMPerS[axis];
+	}
+	RISE::FireProductionScalarHeunFluxStage heunStageR0,heunStageR1,heunStageAverage;
+	RISE::FireProductionScalarFCTFluxPair heunAdvectiveR0;
+	const bool heunAdvectiveR0OK=RISE::BuildFireProductionScalarFCTFluxPairCPU(
+		heunR0,heunAdvectiveR0,&error);
+	const bool heunR0OK=RISE::ComposeFireProductionScalarHeunFluxStageCPU(
+		UINT64_C(18501),RISE::FireProductionScalarHeunFluxRole::R0,heunR0,
+		heunPhysicalR0,heunStageR0,&error);
+	const bool heunR1OK=RISE::ComposeFireProductionScalarHeunFluxStageCPU(
+		UINT64_C(18501),RISE::FireProductionScalarHeunFluxRole::R1,heunR1,
+		heunPhysicalR1,heunStageR1,&error);
+	const bool heunAverageOK=heunR0OK&&heunR1OK&&
+		RISE::AverageFireProductionScalarHeunFluxStagesCPU(
+			heunStageR0,heunStageR1,heunStageAverage,&error);
+	RISE::FireProductionScalarHeunSolveResult heunSolve;
+	const bool heunSolveOK=heunAverageOK&&
+		RISE::SolveFireProductionScalarHeunFluxStageCPU(UINT64_C(18501),heunR0,
+			heunStageAverage,heunSolve,&error);
+	const RISE::FireProductionScalarFCTResult& heunAccepted=heunSolve.scalar;
+	RISE::FireProductionCompatibleFCTMomentumResult heunMomentumR0,heunMomentumR1;
+	const bool heunMomentumR0OK=heunSolveOK&&
+		RISE::EvaluateFireProductionCompatibleHeunMomentumCPU(heunStageR0,
+			heunSolve,heunR0.frozenVelocityMPerS,heunMomentumR0,&error);
+	const bool heunMomentumR1OK=heunSolveOK&&
+		RISE::EvaluateFireProductionCompatibleHeunMomentumCPU(heunStageR1,
+			heunSolve,heunR1.frozenVelocityMPerS,heunMomentumR1,&error);
+	bool heunCompositionExact=heunAdvectiveR0OK&&heunR0OK&&heunR1OK&&heunAverageOK;
+	for(std::size_t component=0u;component<8u&&heunCompositionExact;++component)
+		for(std::size_t face=0u;face<physicalAllFaces&&heunCompositionExact;++face){
+			const std::size_t index=component*physicalAllFaces+face;
+			heunCompositionExact=sameFloatBits(
+				heunStageR0.compositeFluxPair.lowFlux[index],
+				heunAdvectiveR0.lowFlux[index]+heunStageR0.physicalMassFluxKGPerM2S[index])&&
+				sameFloatBits(heunStageR0.compositeFluxPair.fluxDelta[index],
+					heunAdvectiveR0.fluxDelta[index]);
+		}
+	const std::size_t heunFace=productionFaceIndex(heunR0.shape,0u,2u,0u,0u);
+	const float directExpected=heunStageR0.advectiveGasLowFluxKGPerM2S[0][heunFace]+
+		heunAccepted.sharedFaceAlpha[0][heunFace]*
+		heunStageR0.advectiveGasFluxDeltaKGPerM2S[0][heunFace]+
+		heunStageR0.physicalGasFluxKGPerM2S[0][heunFace];
+	const bool directDeltaExact=heunMomentumR0OK&&sameFloatBits(directExpected,
+		heunMomentumR0.acceptedGasFluxKGPerM2S[0][heunFace]);
+	RISE::FireProductionCompatibleFCTMomentumRequest reconstructedHeun;
+	reconstructedHeun.shape=heunR0.shape;reconstructedHeun.boundary=heunR0.boundary;
+	reconstructedHeun.lowGasFluxKGPerM2S=heunStageR0.advectiveGasLowFluxKGPerM2S;
+	reconstructedHeun.physicalGasFluxKGPerM2S=heunStageR0.physicalGasFluxKGPerM2S;
+	reconstructedHeun.sharedFaceAlpha=heunAccepted.sharedFaceAlpha;
+	reconstructedHeun.frozenVelocityMPerS=heunR0.frozenVelocityMPerS;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		reconstructedHeun.highGasFluxKGPerM2S[axis].resize(
+			heunStageR0.advectiveGasLowFluxKGPerM2S[axis].size());
+		for(std::size_t face=0u;face<reconstructedHeun.highGasFluxKGPerM2S[axis].size();
+			++face)reconstructedHeun.highGasFluxKGPerM2S[axis][face]=
+				heunStageR0.advectiveGasLowFluxKGPerM2S[axis][face]+
+				heunStageR0.advectiveGasFluxDeltaKGPerM2S[axis][face];
+	}
+	RISE::FireProductionCompatibleFCTMomentumResult reconstructedMomentum;
+	const bool reconstructedMomentumOK=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		reconstructedHeun,reconstructedMomentum,&error);
+	bool cancellationWitness=false;
+	for(unsigned int axis=0u;axis<3u;++axis)
+		for(std::size_t face=0u;face<reconstructedHeun.highGasFluxKGPerM2S[axis].size();
+			++face)cancellationWitness=cancellationWitness||!sameFloatBits(
+				heunStageR0.advectiveGasFluxDeltaKGPerM2S[axis][face],
+				reconstructedHeun.highGasFluxKGPerM2S[axis][face]-
+					reconstructedHeun.lowGasFluxKGPerM2S[axis][face]);
+	Check(heunR0OK&&heunR1OK&&heunAverageOK,
+		"r185 authenticates and composes distinct R0/R1 flux stages");
+	Check(heunCompositionExact,
+		"r185 composite low adds f_N once while the antidiffusive delta remains advective");
+	Check(heunSolveOK,
+		"r185 averaged composite accepts one fresh shared-alpha solve");
+	Check(heunMomentumR0OK&&heunMomentumR1OK,
+		"r185 direct-delta compatible momentum accepts both original stage velocities");
+	Check(heunCompositionExact&&heunSolveOK&&heunMomentumR0OK&&heunMomentumR1OK&&
+		heunStageAverage.role==RISE::FireProductionScalarHeunFluxRole::HeunAverage&&
+		heunStageAverage.attemptIdentity==UINT64_C(18501),
+		"r185 retains and averages all 30F fields and solves one fresh alpha");
+	Check(directDeltaExact,
+		"r185 compatible momentum consumes retained DeltaPhi_g in its exact published operation order");
+	Check(reconstructedMomentumOK&&cancellationWitness,
+		"r185 cancellation fixture distinguishes direct DeltaPhi_g from reconstructed high-low");
+
+	auto rejectsMutatedHeun=[&](RISE::FireProductionScalarHeunFluxStage candidate){
+		RISE::FireProductionCompatibleFCTMomentumResult rejected;
+		rejected.acceptedGasFluxKGPerM2S[0].assign(1u,1.0f);
+		return !RISE::EvaluateFireProductionCompatibleHeunMomentumCPU(candidate,
+			heunSolve,heunR0.frozenVelocityMPerS,rejected,&error)&&
+			rejected.acceptedGasFluxKGPerM2S[0].empty();
+	};
+	RISE::FireProductionScalarHeunFluxStage mutatedHeun=heunStageR0;
+	mutatedHeun.physicalMassFluxKGPerM2S[0]=std::nextafter(
+		mutatedHeun.physicalMassFluxKGPerM2S[0],std::numeric_limits<float>::infinity());
+	const bool mutatedMassRejected=rejectsMutatedHeun(mutatedHeun);
+	mutatedHeun=heunStageR0;mutatedHeun.physicalEnergyFluxWPerM2[0]=std::nextafter(
+		mutatedHeun.physicalEnergyFluxWPerM2[0],std::numeric_limits<float>::infinity());
+	const bool mutatedEnergyRejected=rejectsMutatedHeun(mutatedHeun);
+	mutatedHeun=heunStageR0;mutatedHeun.physicalGasFluxKGPerM2S[0][heunFace]=
+		std::nextafter(mutatedHeun.physicalGasFluxKGPerM2S[0][heunFace],
+			std::numeric_limits<float>::infinity());
+	const bool mutatedJgRejected=rejectsMutatedHeun(mutatedHeun);
+	mutatedHeun=heunStageR0;mutatedHeun.advectiveGasLowFluxKGPerM2S[0][heunFace]=
+		std::nextafter(mutatedHeun.advectiveGasLowFluxKGPerM2S[0][heunFace],
+			std::numeric_limits<float>::infinity());
+	const bool mutatedPhiLowRejected=rejectsMutatedHeun(mutatedHeun);
+	mutatedHeun=heunStageR0;mutatedHeun.advectiveGasFluxDeltaKGPerM2S[0][heunFace]=
+		std::nextafter(mutatedHeun.advectiveGasFluxDeltaKGPerM2S[0][heunFace],
+			std::numeric_limits<float>::infinity());
+	const bool mutatedPhiDeltaRejected=rejectsMutatedHeun(mutatedHeun);
+	mutatedHeun=heunStageR0;mutatedHeun.compositeFluxPair.lowFlux[0]=std::nextafter(
+		mutatedHeun.compositeFluxPair.lowFlux[0],std::numeric_limits<float>::infinity());
+	const bool mutatedCompositeLowRejected=rejectsMutatedHeun(mutatedHeun);
+	mutatedHeun=heunStageR0;mutatedHeun.compositeFluxPair.fluxDelta[0]=std::nextafter(
+		mutatedHeun.compositeFluxPair.fluxDelta[0],std::numeric_limits<float>::infinity());
+	const bool mutatedCompositeDeltaRejected=rejectsMutatedHeun(mutatedHeun);
+	std::array<std::vector<float>,3> staleHeunVelocity=heunR0.frozenVelocityMPerS;
+	staleHeunVelocity[0][heunFace]=std::nextafter(staleHeunVelocity[0][heunFace],
+		std::numeric_limits<float>::infinity());
+	RISE::FireProductionCompatibleFCTMomentumResult staleVelocityResult;
+	const bool staleVelocityRejected=!RISE::EvaluateFireProductionCompatibleHeunMomentumCPU(
+		heunStageR0,heunSolve,staleHeunVelocity,
+		staleVelocityResult,&error);
+	RISE::FireProductionScalarHeunSolveResult staleAlphaSolve=heunSolve;
+	staleAlphaSolve.scalar.sharedFaceAlpha[0][heunFace]=std::nextafter(
+		staleAlphaSolve.scalar.sharedFaceAlpha[0][heunFace],0.0f);
+	RISE::FireProductionCompatibleFCTMomentumResult staleAlphaResult;
+	const bool staleAlphaRejected=!RISE::EvaluateFireProductionCompatibleHeunMomentumCPU(
+		heunStageR0,staleAlphaSolve,heunR0.frozenVelocityMPerS,
+		staleAlphaResult,&error)&&staleAlphaResult.acceptedGasFluxKGPerM2S[0].empty();
+	RISE::FireProductionScalarHeunFluxStage mutatedAverageStage=heunStageAverage;
+	mutatedAverageStage.compositeFluxPair.lowFlux[0]=std::nextafter(
+		mutatedAverageStage.compositeFluxPair.lowFlux[0],
+		std::numeric_limits<float>::infinity());
+	RISE::FireProductionScalarHeunSolveResult refusedMutatedAverage;
+	const bool mutatedAverageRejected=
+		!RISE::SolveFireProductionScalarHeunFluxStageCPU(UINT64_C(18501),heunR0,
+			mutatedAverageStage,refusedMutatedAverage,&error)&&
+		refusedMutatedAverage.scalar.accepted.empty();
+	RISE::FireProductionScalarFCTRequest incompatibleHeunR1=heunR1;
+	incompatibleHeunR1.sourceDelta[0]=0.25f;
+	RISE::FireProductionScalarHeunFluxStage incompatibleStageR1,
+		refusedIncompatibleAverage;
+	const bool incompatibleStageBuilt=
+		RISE::ComposeFireProductionScalarHeunFluxStageCPU(UINT64_C(18501),
+			RISE::FireProductionScalarHeunFluxRole::R1,incompatibleHeunR1,
+			heunPhysicalR1,incompatibleStageR1,&error);
+	const bool sharedContractRejected=incompatibleStageBuilt&&
+		!RISE::AverageFireProductionScalarHeunFluxStagesCPU(heunStageR0,
+			incompatibleStageR1,refusedIncompatibleAverage,&error)&&
+		refusedIncompatibleAverage.compositeFluxPair.lowFlux.empty();
+	RISE::FireProductionScalarHeunFluxStage swappedAverage;
+	const bool swappedRolesRejected=!RISE::AverageFireProductionScalarHeunFluxStagesCPU(
+		heunStageR1,heunStageR0,swappedAverage,&error);
+	Check(mutatedMassRejected&&mutatedEnergyRejected&&mutatedJgRejected&&
+		mutatedPhiLowRejected&&mutatedPhiDeltaRejected&&mutatedCompositeLowRejected&&
+		mutatedCompositeDeltaRejected,
+		"r185 all seven retained field classes are content-identity protected");
+	Check(staleVelocityRejected&&staleAlphaRejected&&mutatedAverageRejected,
+		"r185 stale velocity, stale alpha, and mutated averaged-stage consumers refuse");
+	Check(sharedContractRejected&&swappedRolesRejected,
+		"r185 shared FCT contract and R0/R1 ordering are identity-bearing");
+	Check(incompatibleStageBuilt,
+		"r185 can construct a valid R1 witness carrying a deliberately different shared source contract");
+	Check(sharedContractRejected,
+		"r185 refuses an R0/R1 shared-contract mismatch before averaging payloads");
+	Check(swappedRolesRejected,
+		"r185 refuses swapped R1/R0 stage roles");
+	Check(mutatedMassRejected&&mutatedEnergyRejected&&mutatedJgRejected&&
+		mutatedPhiLowRejected&&mutatedPhiDeltaRejected&&mutatedCompositeLowRejected&&
+		mutatedCompositeDeltaRejected&&staleVelocityRejected&&staleAlphaRejected&&
+		mutatedAverageRejected&&sharedContractRejected&&swappedRolesRejected,
+		"r185 content, shared-contract, fresh-alpha, stage-role, and frozen-velocity identities reject every transplant atomically");
 	RISE::FireProductionScalarFCTRequest openScalarFCT=constantScalarFCT;
 	openScalarFCT.boundary={{RISE::FireProductionProjectionWall,
 		RISE::FireProductionProjectionPressureOpen,RISE::FireProductionProjectionWall,

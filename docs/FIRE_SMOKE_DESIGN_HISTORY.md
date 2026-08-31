@@ -4635,3 +4635,38 @@ it was already tried and refuted here.
   `S_div`, caller-command projection/FCT encoders, the complete R0/R1/R2 owner,
   onset revalidation, and all tier-10 deliverables remain blocked and are not
   claimed.
+- **r185 exact scalar-flux composition prerequisite (2026-08-31):** adds the
+  CPU-only, identity-bearing bridge from the source-free donor/MC pair and the
+  certified physical producer to the exact section 3.7 retained stage. The
+  first draft was rejected because it accepted a public mutable physical
+  result as authority and would have reused the legacy compatible seam's
+  `high-low` subtraction. The corrected composer consumes raw same-stage
+  requests, requires byte-identical `Q/u/ambient/open/boundary` operands,
+  invokes both producers internally, rechecks the physical affine bound, and
+  recomputes `J_g` from components 1--6 in producer order.
+
+  The persistent payload is exactly `30F`: composite low `9F`, advective delta
+  `9F`, physical mass `8F`, physical energy `F`, `J_g F`, advective gas low
+  `F`, and advective gas delta `F`. Physical flux is added to the scalar low
+  pair once; the delta remains advective. R0/R1 stage role, attempt, raw-input,
+  frozen-velocity, and content identities are sealed. Every one-ULP mutation
+  of the retained classes refuses atomically. R0/R1 average all 30 fields
+  independently and carry no alpha. A second review rejected pair-only solve
+  authority, under-bound average lineage, propagated physical attestation, and
+  caller-authored alpha. The corrected path requires identical shared FCT
+  contracts, binds both parent composition IDs, derives new affine and `J_g`
+  averaging bounds including binary32 publication error, and mints a
+  fresh-alpha token from a solve that validates the R0 request and averaged
+  stage. The average's three live payloads are `360F` bytes, with exact
+  adjacent two-GiB shapes and mismatched-large-second preflight recorded.
+
+  Compatible momentum gains a separate direct-delta CPU consumer computing
+  `Phi_g^L+alpha*DeltaPhi_g+J_g`. A binary32 cancellation fixture proves the
+  retained delta is not interchangeable with `(low+delta)-low`. Each original
+  stage's velocity, parent, attempt, and fresh-alpha identities must match;
+  mutated or stale alpha bytes refuse. The future owner must evaluate R0 and
+  R1 momentum separately with the final alpha and average their rates. Hybrid
+  periodic/nonperiodic topology remains fail-closed because that compatible
+  kernel has no oracle. Metal
+  composition, packet-derived `S_div`, the complete projected-Heun owner,
+  onset revalidation, and tier-10 deliverables remain blocked.

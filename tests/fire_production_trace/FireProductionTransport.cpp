@@ -143,6 +143,182 @@ namespace RISEFireProductionTrace
 			return hash;
 		}
 
+		void HashFluxValues( std::uint64_t& hash, const std::vector<FireProductionRoundoffTrace::TraceFloat>& values )
+		{
+			HashEOSUInt64(hash,values.size());
+			for(const FireProductionRoundoffTrace::TraceFloat value:values)HashEOSFloat(hash,value);
+		}
+
+		void HashFluxBytes( std::uint64_t& hash,
+			const std::vector<unsigned char>& values )
+		{
+			HashEOSUInt64(hash,values.size());
+			for(const unsigned char value:values)HashEOSByte(hash,value);
+		}
+
+		bool ValidHeunFluxRole( const FireProductionScalarHeunFluxRole role )
+		{
+			return role==FireProductionScalarHeunFluxRole::R0||
+				role==FireProductionScalarHeunFluxRole::R1||
+				role==FireProductionScalarHeunFluxRole::HeunAverage;
+		}
+
+		std::uint64_t HeunVelocityIdentity(
+			const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& velocity )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun frozen velocity v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			for(const std::vector<FireProductionRoundoffTrace::TraceFloat>& axis:velocity)HashFluxValues(hash,axis);
+			return hash;
+		}
+
+		bool SameFloatVectorBits( const std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+			const std::vector<FireProductionRoundoffTrace::TraceFloat>& second )
+		{
+			if(first.size()!=second.size())return false;
+			for(std::size_t value=0u;value<first.size();++value)if(std::memcmp(
+				&first[value],&second[value],sizeof(float))!=0)return false;
+			return true;
+		}
+
+		std::uint64_t HeunStageInputIdentity(
+			const std::uint64_t attemptIdentity,const FireProductionScalarHeunFluxRole role,
+			const FireProductionScalarFCTRequest& advective,
+			const FireProductionScalarPhysicalFluxPrerequisiteRequest& physical )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun raw stage operands v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,attemptIdentity);
+			HashEOSUInt64(hash,static_cast<std::uint8_t>(role));
+			HashEOSUInt64(hash,advective.shape.nx);HashEOSUInt64(hash,advective.shape.ny);
+			HashEOSUInt64(hash,advective.shape.nz);HashEOSFloat(hash,advective.shape.cellWidthM);
+			HashEOSFloat(hash,advective.timeStepS);
+			for(const FireProductionProjectionBoundary value:advective.boundary)
+				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
+			HashFluxValues(hash,advective.beginning);HashFluxValues(hash,advective.sourceDelta);
+			for(const std::vector<FireProductionRoundoffTrace::TraceFloat>& axis:advective.frozenVelocityMPerS)
+				HashFluxValues(hash,axis);
+			for(const FireProductionRoundoffTrace::TraceFloat value:advective.ambient)HashEOSFloat(hash,value);
+			for(const std::vector<unsigned char>& side:advective.pressureOpenInflow)
+				HashFluxBytes(hash,side);
+			HashEOSUInt64(hash,advective.nullity);
+			HashFluxValues(hash,advective.nullspaceBasis);
+			HashFluxValues(hash,advective.coordinateProjector);
+			for(const FireProductionRoundoffTrace::TraceFloat value:advective.enthalpyBoundsJPerKG)HashEOSFloat(hash,value);
+			HashEOSFloat(hash,advective.feasibilityFactor);
+			HashEOSFloat(hash,advective.assemblyReserveFactor);
+			HashFluxValues(hash,physical.temperatureK);
+			HashFluxValues(hash,physical.diffusivityM2PerS);
+			HashFluxValues(hash,physical.conductivityWPerMK);
+			HashEOSFloat(hash,physical.ambientTemperatureK);
+			return hash;
+		}
+
+		std::uint64_t HeunSharedFCTContractIdentity(
+			const FireProductionScalarFCTRequest& request )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun shared FCT contract v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,request.shape.nx);HashEOSUInt64(hash,request.shape.ny);
+			HashEOSUInt64(hash,request.shape.nz);HashEOSFloat(hash,request.shape.cellWidthM);
+			HashEOSFloat(hash,request.timeStepS);
+			for(const FireProductionProjectionBoundary value:request.boundary)
+				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
+			HashFluxValues(hash,request.sourceDelta);
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.ambient)HashEOSFloat(hash,value);
+			for(const std::vector<unsigned char>& side:request.pressureOpenInflow)
+				HashFluxBytes(hash,side);
+			HashEOSUInt64(hash,request.nullity);
+			HashFluxValues(hash,request.nullspaceBasis);
+			HashFluxValues(hash,request.coordinateProjector);
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.enthalpyBoundsJPerKG)HashEOSFloat(hash,value);
+			HashEOSFloat(hash,request.feasibilityFactor);
+			HashEOSFloat(hash,request.assemblyReserveFactor);
+			return hash;
+		}
+
+		std::uint64_t HeunFCTRequestIdentity(
+			const FireProductionScalarFCTRequest& request )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun FCT request v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,HeunSharedFCTContractIdentity(request));
+			HashFluxValues(hash,request.beginning);
+			for(const std::vector<FireProductionRoundoffTrace::TraceFloat>& axis:request.frozenVelocityMPerS)
+				HashFluxValues(hash,axis);
+			return hash;
+		}
+
+		std::uint64_t HeunAlphaIdentity(
+			const std::uint64_t attemptIdentity,const std::uint64_t averageIdentity,
+			const std::array<std::uint64_t,2>& parents,
+			const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& alpha )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun fresh alpha v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,attemptIdentity);HashEOSUInt64(hash,averageIdentity);
+			HashEOSUInt64(hash,parents[0]);HashEOSUInt64(hash,parents[1]);
+			for(const std::vector<FireProductionRoundoffTrace::TraceFloat>& axis:alpha)HashFluxValues(hash,axis);
+			return hash;
+		}
+
+		std::uint64_t HeunAverageInputIdentity(
+			const FireProductionScalarHeunFluxStage& first,
+			const FireProductionScalarHeunFluxStage& second )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun averaged stage operands v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,first.attemptIdentity);
+			HashEOSUInt64(hash,first.stageInputIdentity);
+			HashEOSUInt64(hash,second.stageInputIdentity);
+			HashEOSUInt64(hash,first.sharedFCTContractIdentity);
+			HashEOSUInt64(hash,first.compositionIdentity);
+			HashEOSUInt64(hash,second.compositionIdentity);
+			return hash;
+		}
+
+		std::uint64_t HeunFluxStageIdentity(
+			const FireProductionScalarHeunFluxStage& stage )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar Heun flux stage CPU v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			const FireProductionScalarFCTFluxPair& pair=stage.compositeFluxPair;
+			HashEOSUInt64(hash,pair.shape.nx);HashEOSUInt64(hash,pair.shape.ny);
+			HashEOSUInt64(hash,pair.shape.nz);HashEOSFloat(hash,pair.shape.cellWidthM);
+			HashEOSFloat(hash,pair.timeStepS);
+			for(const FireProductionProjectionBoundary value:pair.boundary)
+				HashEOSUInt64(hash,static_cast<std::uint8_t>(value));
+			for(const std::size_t value:pair.packedFaceOffset)HashEOSUInt64(hash,value);
+			HashFluxValues(hash,pair.lowFlux);HashFluxValues(hash,pair.fluxDelta);
+			HashFluxValues(hash,stage.physicalMassFluxKGPerM2S);
+			HashFluxValues(hash,stage.physicalEnergyFluxWPerM2);
+			for(unsigned int axis=0u;axis<3u;++axis){
+				HashFluxValues(hash,stage.physicalGasFluxKGPerM2S[axis]);
+				HashFluxValues(hash,stage.advectiveGasLowFluxKGPerM2S[axis]);
+				HashFluxValues(hash,stage.advectiveGasFluxDeltaKGPerM2S[axis]);
+			}
+			HashEOSString(hash,stage.methaneRecordId);
+			HashEOSUInt64(hash,stage.attemptIdentity);
+			HashEOSUInt64(hash,static_cast<std::uint8_t>(stage.role));
+			HashEOSUInt64(hash,stage.stageInputIdentity);
+			HashEOSUInt64(hash,stage.sharedFCTContractIdentity);
+			HashEOSUInt64(hash,stage.fctRequestIdentity);
+			HashEOSUInt64(hash,stage.frozenVelocityIdentity);
+			HashEOSUInt64(hash,stage.parentCompositionIdentity[0]);
+			HashEOSUInt64(hash,stage.parentCompositionIdentity[1]);
+			HashEOSDouble(hash,stage.physicalConstraintForwardErrorBoundKGPerM2S);
+			HashEOSDouble(hash,stage.physicalGasAveragingForwardErrorBoundKGPerM2S);
+			HashEOSUInt64(hash,stage.fp64ReferenceIdentityVerified?1u:0u);
+			return hash;
+		}
+
 		void FailWithoutThrow( std::string* error, const char* message ) noexcept
 		{
 			if( !error ) return;
@@ -1743,6 +1919,451 @@ namespace RISEFireProductionTrace
 			FailWithoutThrow(error,"physical scalar-flux prerequisite allocation failed");return false;}
 	}
 
+	bool QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& payloadBytes,
+		std::string* error )
+	{
+		payloadBytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+			!std::isfinite(shape.cellWidthM))return Fail(error,
+				"scalar Heun flux-stage query shape is invalid");
+		const std::uint64_t allFaces=FireProductionProjectionFaceCount(shape,0u)+
+			FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u);
+		if(!AddBytes(allFaces,30u*sizeof(float),payloadBytes)){
+			payloadBytes=0u;return Fail(error,
+				"scalar Heun flux-stage query exceeds uint64 capacity");
+		}
+		if(error)error->clear();return true;
+	}
+
+	namespace
+	{
+		bool ValidScalarHeunFluxStage(
+			const FireProductionScalarHeunFluxStage& stage,std::string* error )
+		{
+			const FireProductionScalarFCTFluxPair& pair=stage.compositeFluxPair;
+			const FireProductionProjectionShape& shape=pair.shape;
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!(pair.timeStepS>0.0f)||
+				!std::isfinite(pair.timeStepS)||stage.attemptIdentity==0u||
+				!ValidHeunFluxRole(stage.role)||stage.stageInputIdentity==0u||
+				stage.sharedFCTContractIdentity==0u||stage.fctRequestIdentity==0u||
+				stage.frozenVelocityIdentity==0u||
+				!stage.fp64ReferenceIdentityVerified||
+				!std::isfinite(stage.physicalConstraintForwardErrorBoundKGPerM2S)||
+				stage.physicalConstraintForwardErrorBoundKGPerM2S<0.0||
+				!std::isfinite(stage.physicalGasAveragingForwardErrorBoundKGPerM2S)||
+				stage.physicalGasAveragingForwardErrorBoundKGPerM2S<0.0||
+				((stage.role==FireProductionScalarHeunFluxRole::HeunAverage)!=
+					(stage.parentCompositionIdentity[0]!=0u&&
+					 stage.parentCompositionIdentity[1]!=0u))||
+				stage.methaneRecordId!=RISE::FireSimulationMethaneRecord::PhysicalV1().RecordId())
+				return Fail(error,"scalar Heun flux-stage identity is invalid");
+			std::array<std::size_t,3> expectedOffset={{0u,
+				FireProductionProjectionFaceCount(shape,0u),0u}};
+			expectedOffset[2]=expectedOffset[1]+FireProductionProjectionFaceCount(shape,1u);
+			const std::size_t allFaces=expectedOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			std::uint64_t workingSetBytes=0u;
+			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+				shape,workingSetBytes,error))return false;
+			if(workingSetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"scalar Heun flux-stage working set exceeds two GiB");
+			if(pair.packedFaceOffset!=expectedOffset||pair.lowFlux.size()!=9u*allFaces||
+				pair.fluxDelta.size()!=9u*allFaces||
+				stage.physicalMassFluxKGPerM2S.size()!=8u*allFaces||
+				stage.physicalEnergyFluxWPerM2.size()!=allFaces)
+				return Fail(error,"scalar Heun flux-stage payload shape is invalid");
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				const FireProductionProjectionBoundary lower=pair.boundary[2u*axis],
+					upper=pair.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))||
+					stage.physicalGasFluxKGPerM2S[axis].size()!=faces||
+					stage.advectiveGasLowFluxKGPerM2S[axis].size()!=faces||
+					stage.advectiveGasFluxDeltaKGPerM2S[axis].size()!=faces)
+					return Fail(error,"scalar Heun flux-stage boundary or gas shape is invalid");
+			}
+			for(const FireProductionRoundoffTrace::TraceFloat value:pair.lowFlux)if(!std::isfinite(value))
+				return Fail(error,"scalar Heun composite low flux is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:pair.fluxDelta)if(!std::isfinite(value))
+				return Fail(error,"scalar Heun composite flux delta is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:stage.physicalMassFluxKGPerM2S)if(!std::isfinite(value))
+				return Fail(error,"scalar Heun physical mass flux is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:stage.physicalEnergyFluxWPerM2)if(!std::isfinite(value))
+				return Fail(error,"scalar Heun physical energy flux is nonfinite");
+			for(unsigned int axis=0u;axis<3u;++axis){
+				for(const FireProductionRoundoffTrace::TraceFloat value:stage.physicalGasFluxKGPerM2S[axis])if(!std::isfinite(value))
+					return Fail(error,"scalar Heun physical gas flux is nonfinite");
+				for(const FireProductionRoundoffTrace::TraceFloat value:stage.advectiveGasLowFluxKGPerM2S[axis])if(!std::isfinite(value))
+					return Fail(error,"scalar Heun advective gas low flux is nonfinite");
+				for(const FireProductionRoundoffTrace::TraceFloat value:stage.advectiveGasFluxDeltaKGPerM2S[axis])if(!std::isfinite(value))
+					return Fail(error,"scalar Heun advective gas delta is nonfinite");
+				if(pair.boundary[2u*axis]==FireProductionProjectionPeriodic){
+					const std::size_t extent=AxisCoordinateExtent(shape,axis),
+						xEnd=axis==0u?1u:shape.nx,yEnd=axis==1u?1u:shape.ny,
+						zEnd=axis==2u?1u:shape.nz;
+					for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+						for(std::size_t x=0u;x<xEnd;++x){
+							std::size_t hx=x,hy=y,hz=z;SetAxisCoordinate(axis,extent,hx,hy,hz);
+							const std::size_t lowPacked=expectedOffset[axis]+
+								FaceIndex(shape,axis,x,y,z),highPacked=expectedOffset[axis]+
+								FaceIndex(shape,axis,hx,hy,hz),lowFace=lowPacked-expectedOffset[axis],
+								highFace=highPacked-expectedOffset[axis];
+							auto same=[](const FireProductionRoundoffTrace::TraceFloat a,const FireProductionRoundoffTrace::TraceFloat b){return std::memcmp(
+								&a,&b,sizeof(float))==0;};
+							for(std::size_t component=0u;component<9u;++component)if(
+								!same(pair.lowFlux[component*allFaces+lowPacked],
+									pair.lowFlux[component*allFaces+highPacked])||
+								!same(pair.fluxDelta[component*allFaces+lowPacked],
+									pair.fluxDelta[component*allFaces+highPacked]))return Fail(error,
+									"scalar Heun composite periodic seam differs");
+							for(std::size_t component=0u;component<8u;++component)if(!same(
+								stage.physicalMassFluxKGPerM2S[component*allFaces+lowPacked],
+								stage.physicalMassFluxKGPerM2S[component*allFaces+highPacked]))
+								return Fail(error,"scalar Heun physical periodic seam differs");
+							if(!same(stage.physicalEnergyFluxWPerM2[lowPacked],
+								stage.physicalEnergyFluxWPerM2[highPacked])||
+								!same(stage.physicalGasFluxKGPerM2S[axis][lowFace],
+									stage.physicalGasFluxKGPerM2S[axis][highFace])||
+								!same(stage.advectiveGasLowFluxKGPerM2S[axis][lowFace],
+									stage.advectiveGasLowFluxKGPerM2S[axis][highFace])||
+								!same(stage.advectiveGasFluxDeltaKGPerM2S[axis][lowFace],
+									stage.advectiveGasFluxDeltaKGPerM2S[axis][highFace]))return Fail(error,
+									"scalar Heun gas periodic seam differs");
+						}
+				}
+			}
+			const RISE::FireCertifiedNullspace& projection=
+				RISE::FireSimulationMethaneRecord::PhysicalV1().NonadvectiveFluxProjection();
+			for(std::size_t face=0u;face<allFaces;++face)
+				for(std::size_t row=0u;row<projection.constraintRows;++row){
+					double residual=0.0;for(std::size_t component=0u;component<8u;++component)
+						residual+=projection.constraintMatrix[row*8u+component]*
+							static_cast<double>(stage.physicalMassFluxKGPerM2S[
+								component*allFaces+face]);
+					if(!std::isfinite(residual)||std::fabs(residual)>
+						stage.physicalConstraintForwardErrorBoundKGPerM2S)return Fail(error,
+							"scalar Heun physical affine certificate differs");
+				}
+			for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+				FireProductionProjectionFaceCount(shape,axis);for(std::size_t face=0u;
+					face<faces;++face){const std::size_t packed=expectedOffset[axis]+face;
+					FireProductionRoundoffTrace::TraceFloat gas=0.0f;for(std::size_t component=1u;component<=6u;++component)
+						gas+=stage.physicalMassFluxKGPerM2S[component*allFaces+packed];
+					if(stage.role==FireProductionScalarHeunFluxRole::HeunAverage){
+						const double residual=std::fabs(static_cast<double>(gas)-
+							static_cast<double>(stage.physicalGasFluxKGPerM2S[axis][face]));
+						if(!std::isfinite(residual)||residual>
+							stage.physicalGasAveragingForwardErrorBoundKGPerM2S)return Fail(error,
+								"scalar Heun averaged J_g exceeds its forward bound");
+					}else if(std::memcmp(&gas,&stage.physicalGasFluxKGPerM2S[axis][face],
+						sizeof(float))!=0)return Fail(error,
+							"scalar Heun J_g differs from retained f_N bytes");
+				}
+			}
+			if(stage.compositionIdentity!=HeunFluxStageIdentity(stage))return Fail(error,
+				"scalar Heun flux-stage content identity differs");
+			return true;
+		}
+	}
+
+	bool ComposeFireProductionScalarHeunFluxStageCPU(
+		const std::uint64_t attemptIdentity,const FireProductionScalarHeunFluxRole role,
+		const FireProductionScalarFCTRequest& advectiveRequest,
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& physicalRequest,
+		FireProductionScalarHeunFluxStage& result,std::string* error )
+	{
+		result=FireProductionScalarHeunFluxStage();
+		try {
+			const FireProductionProjectionShape& shape=advectiveRequest.shape;
+			std::uint64_t workingSetBytes=0u;
+			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+				shape,workingSetBytes,error)||!AddBytes(
+				FireProductionProjectionFaceCount(shape,0u)+
+				FireProductionProjectionFaceCount(shape,1u)+
+				FireProductionProjectionFaceCount(shape,2u),28u*sizeof(float),workingSetBytes))
+				return Fail(error,"scalar Heun flux-stage live set exceeds uint64 capacity");
+			if(workingSetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"scalar Heun flux-stage working set exceeds two GiB");
+			if(attemptIdentity==0u||(role!=FireProductionScalarHeunFluxRole::R0&&
+				role!=FireProductionScalarHeunFluxRole::R1)||
+				physicalRequest.shape.nx!=shape.nx||physicalRequest.shape.ny!=shape.ny||
+				physicalRequest.shape.nz!=shape.nz||
+				physicalRequest.shape.cellWidthM!=shape.cellWidthM||
+				physicalRequest.boundary!=advectiveRequest.boundary||
+				!SameFloatVectorBits(physicalRequest.conservativeValues,
+					advectiveRequest.beginning)||
+				physicalRequest.pressureOpenInflow!=advectiveRequest.pressureOpenInflow)
+				return Fail(error,"scalar Heun raw stage identity is invalid");
+			for(unsigned int axis=0u;axis<3u;++axis)if(!SameFloatVectorBits(
+				physicalRequest.frozenVelocityMPerS[axis],
+				advectiveRequest.frozenVelocityMPerS[axis]))return Fail(error,
+					"scalar Heun raw stage velocity differs");
+			for(std::size_t component=0u;component<9u;++component)if(std::memcmp(
+				&physicalRequest.ambient[component],&advectiveRequest.ambient[component],
+				sizeof(float))!=0)return Fail(error,"scalar Heun raw stage ambient differs");
+			FireProductionScalarFCTFluxPair advectiveFluxPair;
+			if(!BuildFireProductionScalarFCTFluxPairCPU(
+				advectiveRequest,advectiveFluxPair,error))return false;
+			FireProductionScalarPhysicalFluxPrerequisiteResult physicalFlux;
+			if(!BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+				physicalRequest,physicalFlux,error))return false;
+			std::array<std::size_t,3> expectedOffset={{0u,
+				FireProductionProjectionFaceCount(shape,0u),0u}};
+			expectedOffset[2]=expectedOffset[1]+FireProductionProjectionFaceCount(shape,1u);
+			const std::size_t allFaces=expectedOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			const RISE::FireSimulationMethaneRecord& record=
+				RISE::FireSimulationMethaneRecord::PhysicalV1();
+			if(!(advectiveFluxPair.timeStepS>0.0f)||!std::isfinite(
+				advectiveFluxPair.timeStepS)||advectiveFluxPair.packedFaceOffset!=expectedOffset||
+				advectiveFluxPair.lowFlux.size()!=9u*allFaces||
+				advectiveFluxPair.fluxDelta.size()!=9u*allFaces||
+				physicalFlux.shape.nx!=shape.nx||physicalFlux.shape.ny!=shape.ny||
+				physicalFlux.shape.nz!=shape.nz||physicalFlux.shape.cellWidthM!=shape.cellWidthM||
+				physicalFlux.boundary!=advectiveFluxPair.boundary||
+				physicalFlux.packedFaceOffset!=expectedOffset||
+				physicalFlux.physicalMassFluxKGPerM2S.size()!=8u*allFaces||
+				physicalFlux.physicalEnergyFluxWPerM2.size()!=allFaces||
+				physicalFlux.methaneRecordId!=record.RecordId()||
+				!physicalFlux.fp64ReferenceIdentityVerified||
+				!std::isfinite(physicalFlux.maximumFP64ReferenceResidualKGPerM2S)||
+				!std::isfinite(physicalFlux.fp64ReferenceForwardErrorBoundKGPerM2S)||
+				physicalFlux.maximumFP64ReferenceResidualKGPerM2S>
+					physicalFlux.fp64ReferenceForwardErrorBoundKGPerM2S||
+				!std::isfinite(physicalFlux.maximumConstraintResidualKGPerM2S)||
+				!std::isfinite(physicalFlux.constraintForwardErrorBoundKGPerM2S)||
+				physicalFlux.maximumConstraintResidualKGPerM2S>
+					physicalFlux.constraintForwardErrorBoundKGPerM2S)return Fail(error,
+					"scalar Heun flux-stage input identity is invalid");
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				const FireProductionProjectionBoundary lower=advectiveFluxPair.boundary[2u*axis],
+					upper=advectiveFluxPair.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))||
+					physicalFlux.physicalGasFluxKGPerM2S[axis].size()!=faces)return Fail(error,
+						"scalar Heun flux-stage boundary or gas input is invalid");
+			}
+			for(const FireProductionRoundoffTrace::TraceFloat value:advectiveFluxPair.lowFlux)if(!std::isfinite(value))
+				return Fail(error,"scalar Heun advective low flux is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:advectiveFluxPair.fluxDelta)if(!std::isfinite(value))
+				return Fail(error,"scalar Heun advective flux delta is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:physicalFlux.physicalMassFluxKGPerM2S)
+				if(!std::isfinite(value))return Fail(error,
+					"scalar Heun physical mass input is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:physicalFlux.physicalEnergyFluxWPerM2)
+				if(!std::isfinite(value))return Fail(error,
+					"scalar Heun physical energy input is nonfinite");
+			for(unsigned int axis=0u;axis<3u;++axis)for(const FireProductionRoundoffTrace::TraceFloat value:
+				physicalFlux.physicalGasFluxKGPerM2S[axis])if(!std::isfinite(value))
+					return Fail(error,"scalar Heun physical gas input is nonfinite");
+
+			FireProductionScalarHeunFluxStage computed;
+			computed.compositeFluxPair=advectiveFluxPair;
+			computed.physicalMassFluxKGPerM2S=physicalFlux.physicalMassFluxKGPerM2S;
+			computed.physicalEnergyFluxWPerM2=physicalFlux.physicalEnergyFluxWPerM2;
+			computed.physicalGasFluxKGPerM2S=physicalFlux.physicalGasFluxKGPerM2S;
+			computed.methaneRecordId=physicalFlux.methaneRecordId;
+			computed.attemptIdentity=attemptIdentity;computed.role=role;
+			computed.stageInputIdentity=HeunStageInputIdentity(
+				attemptIdentity,role,advectiveRequest,physicalRequest);
+			computed.sharedFCTContractIdentity=HeunSharedFCTContractIdentity(
+				advectiveRequest);
+			computed.fctRequestIdentity=HeunFCTRequestIdentity(advectiveRequest);
+			computed.frozenVelocityIdentity=HeunVelocityIdentity(
+				advectiveRequest.frozenVelocityMPerS);
+			computed.physicalConstraintForwardErrorBoundKGPerM2S=
+				physicalFlux.constraintForwardErrorBoundKGPerM2S;
+			computed.fp64ReferenceIdentityVerified=true;
+			for(std::size_t component=0u;component<8u;++component)
+				for(std::size_t face=0u;face<allFaces;++face){const std::size_t index=
+					component*allFaces+face;computed.compositeFluxPair.lowFlux[index]=
+						advectiveFluxPair.lowFlux[index]+
+						computed.physicalMassFluxKGPerM2S[index];}
+			for(std::size_t face=0u;face<allFaces;++face)computed.compositeFluxPair.lowFlux[
+				8u*allFaces+face]=advectiveFluxPair.lowFlux[8u*allFaces+face]+
+				computed.physicalEnergyFluxWPerM2[face];
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				computed.advectiveGasLowFluxKGPerM2S[axis].assign(faces,0.0f);
+				computed.advectiveGasFluxDeltaKGPerM2S[axis].assign(faces,0.0f);
+				for(std::size_t face=0u;face<faces;++face){const std::size_t packed=
+					expectedOffset[axis]+face;FireProductionRoundoffTrace::TraceFloat physicalGas=0.0f,advectiveLow=0.0f,
+						advectiveDelta=0.0f;
+					for(std::size_t component=1u;component<=6u;++component){
+						const std::size_t index=component*allFaces+packed;
+						physicalGas+=computed.physicalMassFluxKGPerM2S[index];
+						advectiveLow+=advectiveFluxPair.lowFlux[index];
+						advectiveDelta+=advectiveFluxPair.fluxDelta[index];
+					}
+					if(std::memcmp(&physicalGas,&computed.physicalGasFluxKGPerM2S[axis][face],
+						sizeof(float))!=0)return Fail(error,
+							"scalar Heun J_g input differs from published f_N bytes");
+					computed.advectiveGasLowFluxKGPerM2S[axis][face]=advectiveLow;
+					computed.advectiveGasFluxDeltaKGPerM2S[axis][face]=advectiveDelta;
+				}
+			}
+			computed.compositionIdentity=HeunFluxStageIdentity(computed);
+			if(!ValidScalarHeunFluxStage(computed,error))return false;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarHeunFluxStage();
+			FailWithoutThrow(error,"scalar Heun flux-stage allocation failed");return false;}
+	}
+
+	bool AverageFireProductionScalarHeunFluxStagesCPU(
+		const FireProductionScalarHeunFluxStage& first,
+		const FireProductionScalarHeunFluxStage& second,
+		FireProductionScalarHeunFluxStage& result,std::string* error )
+	{
+		result=FireProductionScalarHeunFluxStage();
+		try {
+			const FireProductionScalarFCTFluxPair& a=first.compositeFluxPair;
+			const FireProductionScalarFCTFluxPair& b=second.compositeFluxPair;
+			std::uint64_t firstPayload=0u,secondPayload=0u;
+			if(!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+				a.shape,firstPayload,error)||
+				!QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+					b.shape,secondPayload,error))return false;
+			std::uint64_t liveBytes=firstPayload;
+			if(liveBytes>std::numeric_limits<std::uint64_t>::max()-firstPayload||
+				(liveBytes+=firstPayload)>std::numeric_limits<std::uint64_t>::max()-
+					secondPayload)return Fail(error,
+						"scalar Heun flux-stage average working set exceeds uint64 capacity");
+			liveBytes+=secondPayload;
+			if(
+				liveBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+					"scalar Heun flux-stage average working set exceeds two GiB");
+			if(a.shape.nx!=b.shape.nx||a.shape.ny!=b.shape.ny||a.shape.nz!=b.shape.nz||
+				a.shape.cellWidthM!=b.shape.cellWidthM||a.timeStepS!=b.timeStepS||
+				a.boundary!=b.boundary||a.packedFaceOffset!=b.packedFaceOffset||
+				first.methaneRecordId!=second.methaneRecordId||
+				first.attemptIdentity!=second.attemptIdentity||
+				first.sharedFCTContractIdentity!=second.sharedFCTContractIdentity||
+				first.role!=FireProductionScalarHeunFluxRole::R0||
+				second.role!=FireProductionScalarHeunFluxRole::R1)return Fail(error,
+					"scalar Heun flux-stage average identity is invalid");
+			if(!ValidScalarHeunFluxStage(first,error)||!ValidScalarHeunFluxStage(second,error))
+				return false;
+			const std::size_t allFaces=FireProductionProjectionFaceCount(a.shape,0u)+
+				FireProductionProjectionFaceCount(a.shape,1u)+
+				FireProductionProjectionFaceCount(a.shape,2u);
+			FireProductionScalarHeunFluxStage computed;
+			computed.compositeFluxPair.shape=a.shape;
+			computed.compositeFluxPair.timeStepS=a.timeStepS;
+			computed.compositeFluxPair.boundary=a.boundary;
+			computed.compositeFluxPair.packedFaceOffset=a.packedFaceOffset;
+			computed.methaneRecordId=first.methaneRecordId;
+			computed.attemptIdentity=first.attemptIdentity;
+			computed.role=FireProductionScalarHeunFluxRole::HeunAverage;
+			computed.stageInputIdentity=HeunAverageInputIdentity(first,second);
+			computed.sharedFCTContractIdentity=first.sharedFCTContractIdentity;
+			computed.fctRequestIdentity=first.fctRequestIdentity;
+			computed.frozenVelocityIdentity=HeunAverageInputIdentity(first,second);
+			computed.parentCompositionIdentity={{first.compositionIdentity,
+				second.compositionIdentity}};
+			auto average=[](const std::vector<FireProductionRoundoffTrace::TraceFloat>& x,const std::vector<FireProductionRoundoffTrace::TraceFloat>& y,
+				std::vector<FireProductionRoundoffTrace::TraceFloat>& output){output.resize(x.size());for(std::size_t value=0u;
+					value<x.size();++value){const FireProductionRoundoffTrace::TraceFloat mean=0.5f*(x[value]+y[value]);
+					if(!std::isfinite(mean))return false;output[value]=mean;}return true;};
+			if(!average(a.lowFlux,b.lowFlux,computed.compositeFluxPair.lowFlux)||
+				!average(a.fluxDelta,b.fluxDelta,computed.compositeFluxPair.fluxDelta)||
+				!average(first.physicalMassFluxKGPerM2S,second.physicalMassFluxKGPerM2S,
+					computed.physicalMassFluxKGPerM2S)||
+				!average(first.physicalEnergyFluxWPerM2,second.physicalEnergyFluxWPerM2,
+					computed.physicalEnergyFluxWPerM2))return Fail(error,
+					"scalar Heun averaged flux is nonfinite");
+			for(unsigned int axis=0u;axis<3u;++axis)if(
+				!average(first.physicalGasFluxKGPerM2S[axis],
+					second.physicalGasFluxKGPerM2S[axis],
+					computed.physicalGasFluxKGPerM2S[axis])||
+				!average(first.advectiveGasLowFluxKGPerM2S[axis],
+					second.advectiveGasLowFluxKGPerM2S[axis],
+					computed.advectiveGasLowFluxKGPerM2S[axis])||
+				!average(first.advectiveGasFluxDeltaKGPerM2S[axis],
+					second.advectiveGasFluxDeltaKGPerM2S[axis],
+					computed.advectiveGasFluxDeltaKGPerM2S[axis]))return Fail(error,
+						"scalar Heun averaged gas flux is nonfinite");
+			const RISE::FireCertifiedNullspace& projection=
+				RISE::FireSimulationMethaneRecord::PhysicalV1().NonadvectiveFluxProjection();
+			const double epsilon64=std::numeric_limits<double>::epsilon(),
+				gamma64=(8.0*epsilon64)/(1.0-8.0*epsilon64);
+			for(std::size_t face=0u;face<allFaces;++face)
+				for(std::size_t row=0u;row<projection.constraintRows;++row){
+					double publicationError=0.0,reductionScale=0.0;
+					for(std::size_t component=0u;component<8u;++component){
+						const std::size_t index=component*allFaces+face;
+						const double exactMean=0.5*(static_cast<double>(
+							first.physicalMassFluxKGPerM2S[index])+static_cast<double>(
+							second.physicalMassFluxKGPerM2S[index]));
+						const double published=static_cast<double>(
+							computed.physicalMassFluxKGPerM2S[index]);
+						const double coefficient=projection.constraintMatrix[row*8u+component];
+						publicationError+=std::fabs(coefficient)*std::fabs(published-exactMean);
+						reductionScale+=std::fabs(coefficient*published);
+					}
+					computed.physicalConstraintForwardErrorBoundKGPerM2S=std::max(
+						computed.physicalConstraintForwardErrorBoundKGPerM2S,
+						0.5*(first.physicalConstraintForwardErrorBoundKGPerM2S+
+						second.physicalConstraintForwardErrorBoundKGPerM2S)+
+						publicationError+gamma64*reductionScale);
+				}
+			const double epsilon32=static_cast<double>(std::numeric_limits<FireProductionRoundoffTrace::TraceFloat>::epsilon()),
+				gamma20=(20.0*epsilon32)/(1.0-20.0*epsilon32);
+			for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+				FireProductionProjectionFaceCount(a.shape,axis);for(std::size_t face=0u;
+					face<faces;++face){const std::size_t packed=a.packedFaceOffset[axis]+face;
+					double scale=1.0;for(std::size_t component=1u;component<=6u;++component){
+						const std::size_t index=component*allFaces+packed;
+						scale+=std::fabs(static_cast<double>(first.physicalMassFluxKGPerM2S[index]));
+						scale+=std::fabs(static_cast<double>(second.physicalMassFluxKGPerM2S[index]));
+					}
+					computed.physicalGasAveragingForwardErrorBoundKGPerM2S=std::max(
+						computed.physicalGasAveragingForwardErrorBoundKGPerM2S,gamma20*scale);
+				}
+			}
+			computed.fp64ReferenceIdentityVerified=true;
+			computed.compositionIdentity=HeunFluxStageIdentity(computed);
+			if(!ValidScalarHeunFluxStage(computed,error))return false;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarHeunFluxStage();
+			FailWithoutThrow(error,"scalar Heun flux-stage average allocation failed");return false;}
+	}
+
+	bool SolveFireProductionScalarHeunFluxStageCPU(
+		const std::uint64_t attemptIdentity,const FireProductionScalarFCTRequest& request,
+		const FireProductionScalarHeunFluxStage& averagedStage,
+		FireProductionScalarHeunSolveResult& result,std::string* error )
+	{
+		result=FireProductionScalarHeunSolveResult();
+		if(!ValidScalarHeunFluxStage(averagedStage,error))return false;
+		if(attemptIdentity==0u||averagedStage.attemptIdentity!=attemptIdentity||
+			averagedStage.role!=FireProductionScalarHeunFluxRole::HeunAverage||
+			averagedStage.sharedFCTContractIdentity!=HeunSharedFCTContractIdentity(request)||
+			averagedStage.fctRequestIdentity!=HeunFCTRequestIdentity(request))return Fail(error,
+				"scalar Heun fresh-alpha solve identity differs");
+		FireProductionScalarHeunSolveResult computed;
+		if(!SolveFireProductionScalarFCTFluxPairCPU(request,
+			averagedStage.compositeFluxPair,computed.scalar,error))return false;
+		computed.attemptIdentity=attemptIdentity;
+		computed.averageCompositionIdentity=averagedStage.compositionIdentity;
+		computed.sharedFCTContractIdentity=averagedStage.sharedFCTContractIdentity;
+		computed.parentCompositionIdentity=averagedStage.parentCompositionIdentity;
+		computed.alphaIdentity=HeunAlphaIdentity(attemptIdentity,
+			computed.averageCompositionIdentity,computed.parentCompositionIdentity,
+			computed.scalar.sharedFaceAlpha);
+		result=std::move(computed);if(error)error->clear();return true;
+	}
+
 	bool QueryFireProductionScalarEOSAcceptanceCPUWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& workingSetBytes,
 		std::string* error )
@@ -1887,8 +2508,9 @@ namespace RISEFireProductionTrace
 				result.acceptanceIdentity;
 	}
 
-	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+	static bool EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
 		const FireProductionCompatibleFCTMomentumRequest& request,
+		const bool secondFluxIsDelta,
 		FireProductionCompatibleFCTMomentumResult& result, std::string* error )
 	{
 		result=FireProductionCompatibleFCTMomentumResult();
@@ -1924,12 +2546,12 @@ namespace RISEFireProductionTrace
 					return Fail(error,"compatible FCT momentum face shape is invalid");
 				for( std::size_t face=0u;face<faces;++face ) {
 					const FireProductionRoundoffTrace::TraceFloat low=request.lowGasFluxKGPerM2S[axis][face];
-					const FireProductionRoundoffTrace::TraceFloat high=request.highGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat second=request.highGasFluxKGPerM2S[axis][face];
 					const FireProductionRoundoffTrace::TraceFloat alpha=request.sharedFaceAlpha[axis][face];
 					const FireProductionRoundoffTrace::TraceFloat velocity=request.frozenVelocityMPerS[axis][face];
 					const FireProductionRoundoffTrace::TraceFloat physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
 						request.physicalGasFluxKGPerM2S[axis][face];
-					if( !std::isfinite(low)||!std::isfinite(high)||!std::isfinite(physical)||
+					if( !std::isfinite(low)||!std::isfinite(second)||!std::isfinite(physical)||
 						!std::isfinite(alpha)||alpha<0.0f||alpha>1.0f||
 						!std::isfinite(velocity) ) return Fail(error,
 						"compatible FCT momentum face value is invalid");
@@ -1956,10 +2578,11 @@ namespace RISEFireProductionTrace
 				computed.acceptedGasFluxKGPerM2S[axis].resize(faces);
 				for( std::size_t face=0u;face<faces;++face ) {
 					const FireProductionRoundoffTrace::TraceFloat low=request.lowGasFluxKGPerM2S[axis][face];
-					const FireProductionRoundoffTrace::TraceFloat high=request.highGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat second=request.highGasFluxKGPerM2S[axis][face];
 					const FireProductionRoundoffTrace::TraceFloat physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
 						request.physicalGasFluxKGPerM2S[axis][face];
-					const FireProductionRoundoffTrace::TraceFloat accepted=low+request.sharedFaceAlpha[axis][face]*(high-low)+
+					const FireProductionRoundoffTrace::TraceFloat delta=secondFluxIsDelta?second:second-low;
+					const FireProductionRoundoffTrace::TraceFloat accepted=low+request.sharedFaceAlpha[axis][face]*delta+
 						physical;
 					if( !std::isfinite(accepted) ) return Fail(error,
 						"compatible FCT momentum accepted flux is nonfinite");
@@ -2142,6 +2765,46 @@ namespace RISEFireProductionTrace
 			FailWithoutThrow(error,"compatible FCT momentum allocation failed");
 			return false;
 		}
+	}
+
+	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
+	{
+		return EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
+			request,false,result,error);
+	}
+
+	bool EvaluateFireProductionCompatibleHeunMomentumCPU(
+		const FireProductionScalarHeunFluxStage& stage,
+		const FireProductionScalarHeunSolveResult& solve,
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& frozenVelocityMPerS,
+		FireProductionCompatibleFCTMomentumResult& result,std::string* error )
+	{
+		result=FireProductionCompatibleFCTMomentumResult();
+		if(!ValidScalarHeunFluxStage(stage,error))return false;
+		if((stage.role!=FireProductionScalarHeunFluxRole::R0&&
+			stage.role!=FireProductionScalarHeunFluxRole::R1)||
+			HeunVelocityIdentity(frozenVelocityMPerS)!=stage.frozenVelocityIdentity||
+			solve.attemptIdentity!=stage.attemptIdentity||
+			solve.sharedFCTContractIdentity!=stage.sharedFCTContractIdentity||
+			solve.averageCompositionIdentity==0u||
+			solve.parentCompositionIdentity[stage.role==
+				FireProductionScalarHeunFluxRole::R0?0u:1u]!=stage.compositionIdentity||
+			solve.alphaIdentity!=HeunAlphaIdentity(solve.attemptIdentity,
+				solve.averageCompositionIdentity,solve.parentCompositionIdentity,
+				solve.scalar.sharedFaceAlpha))
+			return Fail(error,"compatible Heun momentum stage or velocity identity differs");
+		FireProductionCompatibleFCTMomentumRequest request;
+		request.shape=stage.compositeFluxPair.shape;
+		request.boundary=stage.compositeFluxPair.boundary;
+		request.lowGasFluxKGPerM2S=stage.advectiveGasLowFluxKGPerM2S;
+		request.highGasFluxKGPerM2S=stage.advectiveGasFluxDeltaKGPerM2S;
+		request.physicalGasFluxKGPerM2S=stage.physicalGasFluxKGPerM2S;
+		request.sharedFaceAlpha=solve.scalar.sharedFaceAlpha;
+		request.frozenVelocityMPerS=frozenVelocityMPerS;
+		return EvaluateFireProductionCompatibleFCTMomentumCPUImpl(
+			request,true,result,error);
 	}
 
 	static bool EvaluateFireProductionScalarFCTStagesCPU(

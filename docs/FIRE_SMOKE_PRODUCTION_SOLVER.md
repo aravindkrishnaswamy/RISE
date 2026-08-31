@@ -4968,6 +4968,66 @@ Metal resident inversion, caller-command owner, `Phi_g/J_g` Heun composition,
 packet-derived `S_div`, R0/R1/R2 schedule, onset claim, or tier-10 deliverable
 is enabled by r184.
 
+### 7.56r Exact 30F scalar-flux composition prerequisite (r185)
+
+r185 closes the CPU composition seam between the source-free donor/MC pair and
+the independently certified physical flux producer. A stage is built only
+from the raw same-stage operands: `Q`, frozen velocity, boundary/open class,
+ambient tuple, and topology must be byte-identical between the advective and
+physical requests. The composer invokes both producers itself; it never
+accepts a mutable prerequisite result or trusts a caller-set qualification
+boolean. Attempt identity and the distinct R0/R1 role bind the raw input
+digest, retained content digest, record identity, frozen-velocity digest, and
+a shared FCT-contract digest covering the source dose, nullspace/projector,
+enthalpy bounds, feasibility/reserve factors, ambient tuple, and open classes.
+R0 and R1 cannot be averaged unless that shared contract is identical.
+
+The retained binary32 payload is exactly `30F` for `F` packed primal faces:
+`9F` composite low flux, `9F` advective antidiffusive delta, `8F` physical
+mass flux, `F` physical energy flux, `F` `J_g`, `F` advective `Phi_g^L`, and
+`F` advective `Delta Phi_g`. Composition publishes `f_N` first and adds it
+once to the eight mass low-flux components; physical energy is added once to
+the energy low flux. The antidiffusive tuple remains advective-only. Gas low
+and delta are summed independently over components 1--6 in ascending order,
+and `J_g` is recomputed from the retained physical component bytes in the same
+order. Every consume rechecks the physical affine residual against the
+producer's independently derived publication bound. The averaged stage derives
+a new bound that adds each input bound, the measured binary32 publication
+rounding, and the binary64 row-reduction error; its averaged `J_g` has a
+separate operation-count forward bound. Both are re-evaluated before consume.
+Periodic seams are bit-canonical across all 30 fields.
+
+R0 and R1 fields are averaged independently as `0.5*(R0+R1)`, producing a
+Heun-average role with no limiter state and explicit parent composition IDs.
+A solve-from-average-stage API validates the R0 request identity, shared
+contract, attempt, parents, averaged content, and physical certificates before
+performing one fresh shared-alpha solve. The resulting alpha token binds its
+bytes to the attempt, averaged stage, and both parents; the legacy pair-only
+diagnostic cannot mint that token. Three live
+stages use exactly `360F` bytes; the `58x80x424` / `25x140x559` neighbors bind
+the average's two-GiB admission boundary before payload access. Composition's
+live face set is `58F`; its adjacent over-cap shape likewise refuses before
+raw payload inspection.
+
+The compatible momentum seam gained a CPU-only direct-delta entry point. It
+evaluates `Phi_g^L + alpha*Delta Phi_g + J_g` from the retained fields and
+then applies the existing boundary-aware `I_i` operator. The legacy diagnostic
+continues to accept low/high inputs, but r185 never creates `high=low+delta`
+and subtracts it again. A cancellation RED records a one-bit difference
+between the retained delta and that reconstruction. The consumer accepts only
+the fresh-alpha token whose parent identifies the selected R0/R1 stage; a
+caller-provided or mutated alpha is refused. The final shared alpha is
+applied separately to each original R0/R1 stage with that stage's own velocity
+and `J_g`; the later owner must average their momentum rates rather than use an
+averaged flux with an averaged velocity. The current compatible kernel has an
+oracle only for all-periodic or all-nonperiodic topology and fails closed on a
+hybrid periodic/nonperiodic domain.
+
+This is still a granular CPU prerequisite, not the projected-Heun owner. No
+Metal composed-stage encoder, packet-derived `S_div`, coupled R0/R1/R2 cycle,
+state commit, onset verdict, or tier-10 deliverable is enabled. Those remain
+blocked behind packet/source composition and caller-command resident encoders.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

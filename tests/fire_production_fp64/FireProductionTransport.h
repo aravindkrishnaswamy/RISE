@@ -321,6 +321,66 @@ namespace RISEFireProductionFP64
 		}
 	};
 
+	enum class FireProductionScalarHeunFluxRole : std::uint8_t
+	{
+		R0=1u,
+		R1=2u,
+		HeunAverage=3u
+	};
+
+	//! Identity-bearing Section 3.7 scalar-flux stage.  The composite pair is
+	//! the exact low-order scalar flux consumed by the FCT solve: donor flux
+	//! plus f_N for the eight mass components and donor energy plus the physical
+	//! energy flux, with an advective-only antidiffusive delta.  The remaining
+	//! twelve face fields retain f_N, J_g, Phi_g^L, and Delta Phi_g separately so
+	//! compatible momentum never reconstructs them from a rounded composite.
+	//! The persistent payload is exactly 30 packed binary32 face fields.
+	struct FireProductionScalarHeunFluxStage
+	{
+		FireProductionScalarFCTFluxPair compositeFluxPair;
+		std::vector<double> physicalMassFluxKGPerM2S;
+		std::vector<double> physicalEnergyFluxWPerM2;
+		std::array<std::vector<double>,3> physicalGasFluxKGPerM2S;
+		std::array<std::vector<double>,3> advectiveGasLowFluxKGPerM2S;
+		std::array<std::vector<double>,3> advectiveGasFluxDeltaKGPerM2S;
+		std::string methaneRecordId;
+		std::uint64_t attemptIdentity;
+		FireProductionScalarHeunFluxRole role;
+		std::uint64_t stageInputIdentity;
+		std::uint64_t sharedFCTContractIdentity;
+		std::uint64_t fctRequestIdentity;
+		std::uint64_t frozenVelocityIdentity;
+		std::array<std::uint64_t,2> parentCompositionIdentity;
+		std::uint64_t compositionIdentity;
+		double physicalConstraintForwardErrorBoundKGPerM2S;
+		double physicalGasAveragingForwardErrorBoundKGPerM2S;
+		bool fp64ReferenceIdentityVerified;
+
+		FireProductionScalarHeunFluxStage() : attemptIdentity(0u),
+			role(static_cast<FireProductionScalarHeunFluxRole>(0u)),stageInputIdentity(0u),
+			sharedFCTContractIdentity(0u),fctRequestIdentity(0u),
+			frozenVelocityIdentity(0u),compositionIdentity(0u),
+			physicalConstraintForwardErrorBoundKGPerM2S(0.0),
+			physicalGasAveragingForwardErrorBoundKGPerM2S(0.0),
+			fp64ReferenceIdentityVerified(false) { parentCompositionIdentity.fill(0u); }
+	};
+
+	//! Identity-bearing fresh-alpha solve for one authenticated HeunAverage stage.
+	//! Its alpha cannot be transplanted to a different attempt or R0/R1 parent.
+	struct FireProductionScalarHeunSolveResult
+	{
+		FireProductionScalarFCTResult scalar;
+		std::uint64_t attemptIdentity;
+		std::uint64_t averageCompositionIdentity;
+		std::uint64_t sharedFCTContractIdentity;
+		std::array<std::uint64_t,2> parentCompositionIdentity;
+		std::uint64_t alphaIdentity;
+
+		FireProductionScalarHeunSolveResult() : attemptIdentity(0u),
+			averageCompositionIdentity(0u),sharedFCTContractIdentity(0u),
+			alphaIdentity(0u) { parentCompositionIdentity.fill(0u); }
+	};
+
 	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
 	using FireProductionPeriodicDualMomentumResult=FireProductionDualMomentumResult;
 
@@ -497,6 +557,56 @@ namespace RISEFireProductionFP64
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
 		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
 		FireProductionScalarPhysicalFluxPrerequisiteResult& result,
+		std::string* error=0 );
+
+	//! Exact persistent payload for one composed stage: 30 packed face fields.
+	//! Query-only; allocation and payload inspection are forbidden here.
+	bool QueryFireProductionScalarHeunFluxStageCPUPayloadBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& payloadBytes,
+		std::string* error=0 );
+
+	//! Builds and composes one donor/MC pair with its same-stage physical f_N/J_g
+	//! directly from authenticated raw operands; mutable prerequisite results are
+	//! never accepted as authority.
+	//! The operation order is fixed: publish the physical fields, add them once
+	//! to the low pair component-by-component, and retain the advective gas sums
+	//! independently in ascending species order.  Failure publishes no fields.
+	bool ComposeFireProductionScalarHeunFluxStageCPU(
+		std::uint64_t attemptIdentity,
+		FireProductionScalarHeunFluxRole role,
+		const FireProductionScalarFCTRequest& advectiveRequest,
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& physicalRequest,
+		FireProductionScalarHeunFluxStage& result,
+		std::string* error=0 );
+
+	//! Arithmetic stage average over all 30 retained fields.  No limiter state is
+	//! carried or averaged; the returned composite pair requires one fresh r60
+	//! shared-alpha solve.
+	bool AverageFireProductionScalarHeunFluxStagesCPU(
+		const FireProductionScalarHeunFluxStage& first,
+		const FireProductionScalarHeunFluxStage& second,
+		FireProductionScalarHeunFluxStage& result,
+		std::string* error=0 );
+
+	//! Validates the complete averaged-stage lineage and performs the one fresh
+	//! shared-alpha solve.  The legacy pair-only solver remains diagnostic and
+	//! cannot produce the identity token required by compatible Heun momentum.
+	bool SolveFireProductionScalarHeunFluxStageCPU(
+		std::uint64_t attemptIdentity,
+		const FireProductionScalarFCTRequest& request,
+		const FireProductionScalarHeunFluxStage& averagedStage,
+		FireProductionScalarHeunSolveResult& result,
+		std::string* error=0 );
+
+	//! Direct-delta compatible momentum consumer.  It evaluates exactly
+	//! Phi_g^L+alpha*DeltaPhi_g+J_g from the retained stage bytes; it never forms
+	//! a high flux and never reconstructs DeltaPhi_g by subtraction.
+	bool EvaluateFireProductionCompatibleHeunMomentumCPU(
+		const FireProductionScalarHeunFluxStage& stage,
+		const FireProductionScalarHeunSolveResult& solve,
+		const std::array<std::vector<double>,3>& frozenVelocityMPerS,
+		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );
 
 	bool EvaluateFireProductionScalarFCTCPU(
