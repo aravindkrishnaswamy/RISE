@@ -12,10 +12,12 @@
 #include "fire_production_trace/FireProductionAdvection.h"
 #include "fire_production_trace/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
+#include "../tools/fire_simulator_core.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -4390,6 +4392,282 @@ int main()
 	}
 	Check(tracedCellOK&&tracedCellBytes&&completeStages,
 		"cell palindrome trace seals five local certificates and resets radii without changing fp32 bytes");
+
+	// Exact Section 3.7 bootstrap.  Every arithmetic operand is dyadic, so the
+	// strict-binary32 production seam must equal the live binary64 oracle without
+	// a tolerance.  The asymmetric pattern distinguishes low/high/shared-alpha,
+	// normal and transverse I_i, frozen carrier velocity, and wall/open handling.
+	auto productionFaceIndex=[]( const RISE::FireProductionProjectionShape& shape,
+		const unsigned int axis, const std::size_t x, const std::size_t y,
+		const std::size_t z ) {
+		if(axis==0u)return (z*shape.ny+y)*(shape.nx+1u)+x;
+		if(axis==1u)return (z*(shape.ny+1u)+y)*shape.nx+x;
+		return (z*shape.ny+y)*shape.nx+x;
+	};
+	auto sameDoubleBits=[]( const double first, const double second ) {
+		std::uint64_t firstBits=0u,secondBits=0u;
+		std::memcpy(&firstBits,&first,sizeof(firstBits));
+		std::memcpy(&secondBits,&second,sizeof(secondBits));
+		return firstBits==secondBits;
+	};
+	RISE::FireProductionCompatibleFCTMomentumRequest openFCT32;
+	openFCT32.shape.nx=4u;openFCT32.shape.ny=4u;openFCT32.shape.nz=4u;
+	openFCT32.shape.cellWidthM=0.5f;
+	openFCT32.boundary={{RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionPressureOpen,
+		RISE::FireProductionProjectionPressureOpen,RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionWall,RISE::FireProductionProjectionPressureOpen}};
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(openFCT32.shape,axis);
+		openFCT32.lowGasFluxKGPerM2S[axis].assign(faces,0.0f);
+		openFCT32.highGasFluxKGPerM2S[axis].assign(faces,0.0f);
+		openFCT32.sharedFaceAlpha[axis].assign(faces,0.0f);
+		openFCT32.frozenVelocityMPerS[axis].assign(faces,0.0f);
+	}
+	const auto setOpenX=[&](const std::size_t x,const float low,const float high,
+		const float alpha,const float velocity){
+		const std::size_t face=productionFaceIndex(openFCT32.shape,0u,x,1u,1u);
+		openFCT32.lowGasFluxKGPerM2S[0][face]=low;
+		openFCT32.highGasFluxKGPerM2S[0][face]=high;
+		openFCT32.sharedFaceAlpha[0][face]=alpha;
+		openFCT32.frozenVelocityMPerS[0][face]=velocity;
+	};
+	setOpenX(0u,0.0f,0.0f,0.0f,0.0f);setOpenX(1u,1.0f,3.0f,0.5f,1.0f);
+	setOpenX(2u,2.0f,6.0f,0.25f,3.0f);setOpenX(3u,4.0f,0.0f,1.0f,2.0f);
+	setOpenX(4u,8.0f,16.0f,0.0f,4.0f);
+	// Duplicate the normal pattern on y=3 so its analytic 9/80 sentinels are
+	// isolated from the transverse y-flux pattern used at y=1.
+	for(std::size_t x=0u;x<=4u;++x){
+		const std::size_t source=productionFaceIndex(openFCT32.shape,0u,x,1u,1u);
+		const std::size_t destination=productionFaceIndex(openFCT32.shape,0u,x,3u,1u);
+		openFCT32.lowGasFluxKGPerM2S[0][destination]=
+			openFCT32.lowGasFluxKGPerM2S[0][source];
+		openFCT32.highGasFluxKGPerM2S[0][destination]=
+			openFCT32.highGasFluxKGPerM2S[0][source];
+		openFCT32.sharedFaceAlpha[0][destination]=openFCT32.sharedFaceAlpha[0][source];
+		openFCT32.frozenVelocityMPerS[0][destination]=
+			openFCT32.frozenVelocityMPerS[0][source];
+	}
+	openFCT32.frozenVelocityMPerS[0][productionFaceIndex(
+		openFCT32.shape,0u,2u,0u,1u)]=1.0f;
+	openFCT32.frozenVelocityMPerS[0][productionFaceIndex(
+		openFCT32.shape,0u,2u,2u,1u)]=5.0f;
+	const auto setOpenY=[&](const std::size_t x,const std::size_t y,const float low,
+		const float high,const float alpha){
+		const std::size_t face=productionFaceIndex(openFCT32.shape,1u,x,y,1u);
+		openFCT32.lowGasFluxKGPerM2S[1][face]=low;
+		openFCT32.highGasFluxKGPerM2S[1][face]=high;
+		openFCT32.sharedFaceAlpha[1][face]=alpha;
+	};
+	setOpenY(1u,1u,0.0f,2.0f,0.5f);setOpenY(2u,1u,2.0f,4.0f,0.5f);
+	setOpenY(1u,2u,2.0f,8.0f,0.0f);setOpenY(2u,2u,0.0f,6.0f,1.0f);
+	RISE::FireProductionCompatibleFCTMomentumResult openFCTResult;
+	const bool openFCTOK=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		openFCT32,openFCTResult,&error);
+	RISE::FireSim::PeriodicMACShape openOracleShape;
+	openOracleShape.nx=4u;openOracleShape.ny=4u;openOracleShape.nz=4u;
+	openOracleShape.cellWidthM=0.5;
+	RISE::FireSim::OpenFluxPair3D openOracleFlux;
+	std::array<std::vector<double>,3> openOracleAlpha;
+	RISE::FireSim::OpenMACField3D openOracleVelocity;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireSim::OpenMACFaceCount3D(openOracleShape,axis);
+		openOracleFlux.low[axis].assign(faces,RISE::FireSim::ConservativeVector());
+		openOracleFlux.high[axis].assign(faces,RISE::FireSim::ConservativeVector());
+		openOracleFlux.nonadvectiveMass[axis].assign(faces,
+			std::array<double,RISE::FireSim::MethaneMassStateDimension>());
+		openOracleFlux.nonadvectiveEnergy[axis].assign(faces,0.0);
+		openOracleAlpha[axis].resize(faces);
+		openOracleVelocity.component[axis].resize(faces);
+		for(std::size_t face=0u;face<faces;++face){
+			const double physical=openFCT32.physicalGasFluxKGPerM2S[axis].empty()?0.0:
+				openFCT32.physicalGasFluxKGPerM2S[axis][face];
+			openOracleFlux.low[axis][face][1u+RISE::FireSim::MethaneCH4]=
+				openFCT32.lowGasFluxKGPerM2S[axis][face]+physical;
+			openOracleFlux.high[axis][face][1u+RISE::FireSim::MethaneCH4]=
+				openFCT32.highGasFluxKGPerM2S[axis][face]+physical;
+			openOracleFlux.nonadvectiveMass[axis][face][1u+RISE::FireSim::MethaneCH4]=
+				physical;
+			openOracleAlpha[axis][face]=openFCT32.sharedFaceAlpha[axis][face];
+			openOracleVelocity.component[axis][face]=
+				openFCT32.frozenVelocityMPerS[axis][face];
+		}
+	}
+	RISE::FireSim::OpenBoundaryConfig3D openOracleBoundary;
+	for(unsigned int side=0u;side<6u;++side)openOracleBoundary.kind[side]=
+		openFCT32.boundary[side]==RISE::FireProductionProjectionPressureOpen?
+		RISE::FireSim::PressureOpenBoundary3D:RISE::FireSim::AdiabaticWallBoundary3D;
+	const RISE::FireSim::OpenMACField3D openOracleRate=
+		RISE::FireSim::OpenCompatibleMomentumFluxDivergence3D(openOracleShape,
+			openOracleFlux,openOracleAlpha,openOracleVelocity,&openOracleBoundary);
+	bool openFCTExact=openFCTOK;
+	for(unsigned int axis=0u;axis<3u&&openFCTExact;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(openFCT32.shape,axis);
+		openFCTExact=openFCTResult.advectionRateKGPerM2S2[axis].size()==faces&&
+			openFCTResult.acceptedGasFluxKGPerM2S[axis].size()==faces;
+		for(std::size_t face=0u;face<faces&&openFCTExact;++face){
+			const double physical=openFCT32.physicalGasFluxKGPerM2S[axis].empty()?0.0:
+				openFCT32.physicalGasFluxKGPerM2S[axis][face];
+			const double accepted=openFCT32.lowGasFluxKGPerM2S[axis][face]+
+				openFCT32.sharedFaceAlpha[axis][face]*(
+				openFCT32.highGasFluxKGPerM2S[axis][face]-
+				openFCT32.lowGasFluxKGPerM2S[axis][face])+physical;
+			openFCTExact=sameDoubleBits(static_cast<double>(
+				openFCTResult.acceptedGasFluxKGPerM2S[axis][face]),accepted)&&
+				sameDoubleBits(static_cast<double>(
+				openFCTResult.advectionRateKGPerM2S2[axis][face]),
+				openOracleRate.component[axis][face]);
+		}
+	}
+	const std::size_t openX1=productionFaceIndex(openFCT32.shape,0u,1u,3u,1u);
+	const std::size_t openX2=productionFaceIndex(openFCT32.shape,0u,2u,1u,1u);
+	const std::size_t openX4=productionFaceIndex(openFCT32.shape,0u,4u,3u,1u);
+	const std::size_t openX0=productionFaceIndex(openFCT32.shape,0u,0u,3u,1u);
+	Check(openFCTExact&&openFCTResult.advectionRateKGPerM2S2[0][openX1]==9.0f&&
+		openFCTResult.advectionRateKGPerM2S2[0][openX2]==21.5f&&
+		openFCTResult.advectionRateKGPerM2S2[0][openX4]==80.0f&&
+		openFCTResult.advectionRateKGPerM2S2[0][openX0]==0.0f&&
+		!std::signbit(openFCTResult.advectionRateKGPerM2S2[0][openX0]),
+		"compatible FCT open/wall operator is word-exact to the live oracle and analytic sentinels");
+
+	// Periodic storage has a publication plane while the live oracle owns one
+	// canonical face per cell.  Compare every canonical face and the exact seam.
+	RISE::FireProductionCompatibleFCTMomentumRequest periodicFCT32;
+	periodicFCT32.shape=openFCT32.shape;
+	periodicFCT32.boundary.fill(RISE::FireProductionProjectionPeriodic);
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=RISE::FireProductionProjectionFaceCount(periodicFCT32.shape,axis);
+		periodicFCT32.lowGasFluxKGPerM2S[axis].assign(faces,0.0f);
+		periodicFCT32.highGasFluxKGPerM2S[axis].assign(faces,0.0f);
+		periodicFCT32.sharedFaceAlpha[axis].assign(faces,0.0f);
+		periodicFCT32.frozenVelocityMPerS[axis].assign(faces,0.0f);
+	}
+	periodicFCT32.physicalGasFluxKGPerM2S[0].assign(
+		RISE::FireProductionProjectionFaceCount(periodicFCT32.shape,0u),0.0f);
+	const float periodicLow[4]={0.5f,0.5f,1.5f,7.5f};
+	const float periodicHigh[4]={2.5f,2.5f,5.5f,0.0f};
+	const float periodicAlpha[4]={0.0f,0.5f,0.5f,0.0f};
+	const float periodicVelocity[4]={1.0f,3.0f,2.0f,4.0f};
+	for(std::size_t x=0u;x<4u;++x){
+		const std::size_t face=productionFaceIndex(periodicFCT32.shape,0u,x,1u,1u);
+		periodicFCT32.lowGasFluxKGPerM2S[0][face]=periodicLow[x];
+		periodicFCT32.highGasFluxKGPerM2S[0][face]=periodicHigh[x];
+		periodicFCT32.physicalGasFluxKGPerM2S[0][face]=0.5f;
+		periodicFCT32.sharedFaceAlpha[0][face]=periodicAlpha[x];
+		periodicFCT32.frozenVelocityMPerS[0][face]=periodicVelocity[x];
+	}
+	const std::size_t periodicLowSeam=productionFaceIndex(periodicFCT32.shape,0u,0u,1u,1u);
+	const std::size_t periodicHighSeam=productionFaceIndex(periodicFCT32.shape,0u,4u,1u,1u);
+	periodicFCT32.lowGasFluxKGPerM2S[0][periodicHighSeam]=
+		periodicFCT32.lowGasFluxKGPerM2S[0][periodicLowSeam];
+	periodicFCT32.highGasFluxKGPerM2S[0][periodicHighSeam]=
+		periodicFCT32.highGasFluxKGPerM2S[0][periodicLowSeam];
+	periodicFCT32.physicalGasFluxKGPerM2S[0][periodicHighSeam]=
+		periodicFCT32.physicalGasFluxKGPerM2S[0][periodicLowSeam];
+	periodicFCT32.sharedFaceAlpha[0][periodicHighSeam]=
+		periodicFCT32.sharedFaceAlpha[0][periodicLowSeam];
+	periodicFCT32.frozenVelocityMPerS[0][periodicHighSeam]=
+		periodicFCT32.frozenVelocityMPerS[0][periodicLowSeam];
+	RISE::FireProductionCompatibleFCTMomentumResult periodicFCTResult;
+	const bool periodicFCTOK=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		periodicFCT32,periodicFCTResult,&error);
+	RISE::FireSim::PeriodicMACShape periodicOracleShape=openOracleShape;
+	std::array<std::vector<double>,3> periodicAcceptedAdvection,periodicPhysical;
+	RISE::FireSim::PeriodicMACField periodicOracleVelocity;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		periodicAcceptedAdvection[axis].assign(periodicOracleShape.CellCount(),0.0);
+		periodicPhysical[axis].assign(periodicOracleShape.CellCount(),0.0);
+		periodicOracleVelocity.component[axis].assign(periodicOracleShape.CellCount(),0.0);
+		for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+			for(std::size_t x=0u;x<4u;++x){
+				const std::size_t cell=(z*4u+y)*4u+x;
+				const std::size_t face=productionFaceIndex(periodicFCT32.shape,axis,x,y,z);
+				periodicAcceptedAdvection[axis][cell]=
+					periodicFCT32.lowGasFluxKGPerM2S[axis][face]+
+					periodicFCT32.sharedFaceAlpha[axis][face]*(
+					periodicFCT32.highGasFluxKGPerM2S[axis][face]-
+					periodicFCT32.lowGasFluxKGPerM2S[axis][face]);
+				periodicPhysical[axis][cell]=periodicFCT32.physicalGasFluxKGPerM2S[axis].empty()?0.0:
+					periodicFCT32.physicalGasFluxKGPerM2S[axis][face];
+				periodicOracleVelocity.component[axis][cell]=
+					periodicFCT32.frozenVelocityMPerS[axis][face];
+			}
+	}
+	const std::array<std::vector<double>,3> periodicOracleRate=
+		RISE::FireSim::CompatibleMomentumFluxDivergence3D(periodicOracleShape,
+			periodicAcceptedAdvection,periodicPhysical,periodicOracleVelocity);
+	bool periodicFCTExact=periodicFCTOK;
+	for(unsigned int axis=0u;axis<3u&&periodicFCTExact;++axis){
+		for(std::size_t z=0u;z<4u&&periodicFCTExact;++z)
+			for(std::size_t y=0u;y<4u&&periodicFCTExact;++y)
+				for(std::size_t x=0u;x<4u&&periodicFCTExact;++x){
+					const std::size_t cell=(z*4u+y)*4u+x;
+					const std::size_t face=productionFaceIndex(periodicFCT32.shape,axis,x,y,z);
+					periodicFCTExact=sameDoubleBits(static_cast<double>(periodicFCTResult.
+						acceptedGasFluxKGPerM2S[axis][face]),
+						periodicAcceptedAdvection[axis][cell]+periodicPhysical[axis][cell])&&
+						sameDoubleBits(static_cast<double>(periodicFCTResult.
+						advectionRateKGPerM2S2[axis][face]),periodicOracleRate[axis][cell]);
+				}
+		const std::size_t firstEnd=axis==0u?periodicFCT32.shape.ny:
+			periodicFCT32.shape.nx;
+		const std::size_t secondEnd=axis==2u?periodicFCT32.shape.ny:
+			periodicFCT32.shape.nz;
+		for(std::size_t second=0u;second<secondEnd&&periodicFCTExact;++second)
+			for(std::size_t first=0u;first<firstEnd&&periodicFCTExact;++first){
+				std::size_t lx=axis==0u?0u:first;
+				std::size_t ly=axis==0u?first:(axis==1u?0u:second);
+				std::size_t lz=axis==2u?0u:second;
+				std::size_t hx=lx,hy=ly,hz=lz;
+				if(axis==0u)hx=4u;if(axis==1u)hy=4u;if(axis==2u)hz=4u;
+				const std::size_t low=productionFaceIndex(
+					periodicFCT32.shape,axis,lx,ly,lz);
+				const std::size_t high=productionFaceIndex(
+					periodicFCT32.shape,axis,hx,hy,hz);
+				periodicFCTExact=periodicFCTResult.acceptedGasFluxKGPerM2S[axis][low]==
+					periodicFCTResult.acceptedGasFluxKGPerM2S[axis][high]&&
+					periodicFCTResult.advectionRateKGPerM2S2[axis][low]==
+					periodicFCTResult.advectionRateKGPerM2S2[axis][high];
+			}
+	}
+	const std::size_t periodicX0=productionFaceIndex(periodicFCT32.shape,0u,0u,1u,1u);
+	const std::size_t periodicX1=productionFaceIndex(periodicFCT32.shape,0u,1u,1u,1u);
+	Check(periodicFCTExact&&periodicFCTResult.advectionRateKGPerM2S2[0][periodicX0]==-16.5f&&
+		periodicFCTResult.advectionRateKGPerM2S2[0][periodicX1]==9.0f,
+		"compatible FCT periodic operator is word-exact to the live oracle, analytic sentinels, and seam");
+
+	// Fail closed before publication, and prove the fixture distinguishes the
+	// rejected all-high (shared-alpha ignored) mutation from the admitted form.
+	RISE::FireProductionCompatibleFCTMomentumRequest malformedFCT=periodicFCT32;
+	malformedFCT.sharedFaceAlpha[0][periodicX1]=1.25f;
+	RISE::FireProductionCompatibleFCTMomentumResult refusedFCT;
+	refusedFCT.acceptedGasFluxKGPerM2S[0].assign(1u,123.0f);
+	const bool invalidAlphaRefused=!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		malformedFCT,refusedFCT,&error)&&refusedFCT.acceptedGasFluxKGPerM2S[0].empty()&&
+		refusedFCT.advectionRateKGPerM2S2[0].empty();
+	malformedFCT=periodicFCT32;
+	malformedFCT.lowGasFluxKGPerM2S[0][periodicHighSeam]+=1.0f;
+	const bool badSeamRefused=!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		malformedFCT,refusedFCT,&error);
+	malformedFCT=periodicFCT32;
+	malformedFCT.boundary[2]=RISE::FireProductionProjectionWall;
+	malformedFCT.boundary[3]=RISE::FireProductionProjectionWall;
+	const bool hybridRefused=!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		malformedFCT,refusedFCT,&error);
+	malformedFCT=periodicFCT32;
+	malformedFCT.physicalGasFluxKGPerM2S[1].assign(1u,0.0f);
+	const bool badPhysicalShapeRefused=!RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		malformedFCT,refusedFCT,&error);
+	RISE::FireProductionCompatibleFCTMomentumRequest allHighFCT=periodicFCT32;
+	for(unsigned int axis=0u;axis<3u;++axis)allHighFCT.lowGasFluxKGPerM2S[axis]=
+		allHighFCT.highGasFluxKGPerM2S[axis];
+	RISE::FireProductionCompatibleFCTMomentumResult allHighResult;
+	const bool allHighComputed=RISE::EvaluateFireProductionCompatibleFCTMomentumCPU(
+		allHighFCT,allHighResult,&error);
+	Check(invalidAlphaRefused&&badSeamRefused&&hybridRefused&&badPhysicalShapeRefused&&
+		allHighComputed&&allHighResult.advectionRateKGPerM2S2[0][periodicX1]!=
+		periodicFCTResult.advectionRateKGPerM2S2[0][periodicX1],
+		"compatible FCT bootstrap refuses malformed identity inputs and detects an all-high limiter mutant");
 
 	RISE::FireProductionDualMomentumRequest dual32;
 	dual32.shape=cell32.shape;dual32.timeStepS=cell32.timeStepS;

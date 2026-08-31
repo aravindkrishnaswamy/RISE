@@ -1358,4 +1358,257 @@ namespace RISE
 			return false;
 		}
 	}
+
+	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result, std::string* error )
+	{
+		result=FireProductionCompatibleFCTMomentumResult();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!std::isfinite(1.0f/shape.cellWidthM) )
+				return Fail(error,"compatible FCT momentum shape is invalid");
+			bool anyPeriodic=false,allPeriodic=true;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic)) )
+					return Fail(error,"compatible FCT momentum boundary pairing is invalid");
+				const bool periodic=lower==FireProductionProjectionPeriodic;
+				anyPeriodic=anyPeriodic||periodic;allPeriodic=allPeriodic&&periodic;
+			}
+			if( anyPeriodic&&!allPeriodic ) return Fail(error,
+				"compatible FCT momentum hybrid periodic topology has no authoritative oracle");
+			std::uint64_t allFaces=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.lowGasFluxKGPerM2S[axis].size()!=faces||
+					request.highGasFluxKGPerM2S[axis].size()!=faces||
+					request.sharedFaceAlpha[axis].size()!=faces||
+					request.frozenVelocityMPerS[axis].size()!=faces||
+					(!request.physicalGasFluxKGPerM2S[axis].empty()&&
+					 request.physicalGasFluxKGPerM2S[axis].size()!=faces) )
+					return Fail(error,"compatible FCT momentum face shape is invalid");
+				for( std::size_t face=0u;face<faces;++face ) {
+					const float low=request.lowGasFluxKGPerM2S[axis][face];
+					const float high=request.highGasFluxKGPerM2S[axis][face];
+					const float alpha=request.sharedFaceAlpha[axis][face];
+					const float velocity=request.frozenVelocityMPerS[axis][face];
+					const float physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
+						request.physicalGasFluxKGPerM2S[axis][face];
+					if( !std::isfinite(low)||!std::isfinite(high)||!std::isfinite(physical)||
+						!std::isfinite(alpha)||alpha<0.0f||alpha>1.0f||
+						!std::isfinite(velocity) ) return Fail(error,
+						"compatible FCT momentum face value is invalid");
+				}
+				if( allPeriodic&&(!PeriodicFaceSeamEqual(shape,
+					request.lowGasFluxKGPerM2S[axis],axis)||
+					!PeriodicFaceSeamEqual(shape,request.highGasFluxKGPerM2S[axis],axis)||
+					!PeriodicFaceSeamEqual(shape,request.sharedFaceAlpha[axis],axis)||
+					!PeriodicFaceSeamEqual(shape,request.frozenVelocityMPerS[axis],axis)||
+					(!request.physicalGasFluxKGPerM2S[axis].empty()&&
+					 !PeriodicFaceSeamEqual(shape,request.physicalGasFluxKGPerM2S[axis],axis))) )
+					return Fail(error,"compatible FCT momentum periodic seam is invalid");
+				allFaces+=faces;
+			}
+			std::uint64_t outputBytes=0u;
+			if( !AddBytes(allFaces,2u*sizeof(float),outputBytes)||
+				outputBytes>(std::uint64_t(2u)<<30u) ) return Fail(error,
+				"compatible FCT momentum output exceeds two GiB");
+
+			FireProductionCompatibleFCTMomentumResult computed;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				computed.acceptedGasFluxKGPerM2S[axis].resize(faces);
+				for( std::size_t face=0u;face<faces;++face ) {
+					const float low=request.lowGasFluxKGPerM2S[axis][face];
+					const float high=request.highGasFluxKGPerM2S[axis][face];
+					const float physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
+						request.physicalGasFluxKGPerM2S[axis][face];
+					const float accepted=low+request.sharedFaceAlpha[axis][face]*(high-low)+
+						physical;
+					if( !std::isfinite(accepted) ) return Fail(error,
+						"compatible FCT momentum accepted flux is nonfinite");
+					computed.acceptedGasFluxKGPerM2S[axis][face]=accepted;
+				}
+			}
+
+			if( allPeriodic ) {
+				auto previousCoordinate=[]( const std::size_t coordinate,
+					const std::size_t extent ) {return coordinate?coordinate-1u:extent-1u;};
+				auto nextCoordinate=[]( const std::size_t coordinate,
+					const std::size_t extent ) {return coordinate+1u==extent?0u:coordinate+1u;};
+				for( unsigned int component=0u;component<3u;++component ) {
+					computed.advectionRateKGPerM2S2[component].assign(
+						FireProductionProjectionFaceCount(shape,component),0.0f);
+					for( std::size_t z=0u;z<shape.nz;++z )
+						for( std::size_t y=0u;y<shape.ny;++y )
+							for( std::size_t x=0u;x<shape.nx;++x ) {
+								const std::size_t componentFace=FaceIndex(shape,component,x,y,z);
+								float divergence=0.0f;
+								for( unsigned int derivative=0u;derivative<3u;++derivative ) {
+									std::size_t ncx=x,ncy=y,ncz=z,pdx=x,pdy=y,pdz=z,
+										ncpdx=x,ncpdy=y,ncpdz=z,ndx=x,ndy=y,ndz=z;
+									const std::size_t componentCoordinate=AxisCoordinate(component,x,y,z);
+									const std::size_t derivativeCoordinate=AxisCoordinate(derivative,x,y,z);
+									SetAxisCoordinate(component,nextCoordinate(componentCoordinate,
+										AxisCoordinateExtent(shape,component)),ncx,ncy,ncz);
+									SetAxisCoordinate(derivative,previousCoordinate(derivativeCoordinate,
+										AxisCoordinateExtent(shape,derivative)),pdx,pdy,pdz);
+									ncpdx=ncx;ncpdy=ncy;ncpdz=ncz;
+									SetAxisCoordinate(derivative,previousCoordinate(AxisCoordinate(
+										derivative,ncx,ncy,ncz),AxisCoordinateExtent(shape,derivative)),
+										ncpdx,ncpdy,ncpdz);
+									SetAxisCoordinate(derivative,nextCoordinate(derivativeCoordinate,
+										AxisCoordinateExtent(shape,derivative)),ndx,ndy,ndz);
+									auto massFlux=[&]( std::size_t fx, std::size_t fy,
+										std::size_t fz ) {return computed.acceptedGasFluxKGPerM2S[
+										derivative][FaceIndex(shape,derivative,fx,fy,fz)];};
+									float upper=0.0f,lower=0.0f;
+									if( derivative==component ) {
+										upper=0.25f*(massFlux(x,y,z)+massFlux(ncx,ncy,ncz))*
+											(request.frozenVelocityMPerS[component][componentFace]+
+											 request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,ncx,ncy,ncz)]);
+										lower=0.25f*(massFlux(pdx,pdy,pdz)+massFlux(x,y,z))*
+											(request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,pdx,pdy,pdz)]+
+											 request.frozenVelocityMPerS[component][componentFace]);
+									} else {
+										upper=0.25f*(massFlux(x,y,z)+massFlux(ncx,ncy,ncz))*
+											(request.frozenVelocityMPerS[component][componentFace]+
+											 request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,ndx,ndy,ndz)]);
+										lower=0.25f*(massFlux(pdx,pdy,pdz)+
+											massFlux(ncpdx,ncpdy,ncpdz))*
+											(request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,pdx,pdy,pdz)]+
+											 request.frozenVelocityMPerS[component][componentFace]);
+									}
+									divergence+=(upper-lower)/shape.cellWidthM;
+								}
+								if( !std::isfinite(divergence) ) return Fail(error,
+									"compatible FCT momentum periodic rate is nonfinite");
+								computed.advectionRateKGPerM2S2[component][componentFace]=divergence;
+							}
+					const std::size_t firstEnd=component==0u?shape.ny:shape.nx;
+					const std::size_t secondEnd=component==2u?shape.ny:shape.nz;
+					for( std::size_t second=0u;second<secondEnd;++second )
+						for( std::size_t first=0u;first<firstEnd;++first ) {
+							std::size_t lowX=component==0u?0u:first;
+							std::size_t lowY=component==0u?first:(component==1u?0u:second);
+							std::size_t lowZ=component==2u?0u:second;
+							std::size_t highX=lowX,highY=lowY,highZ=lowZ;
+							SetAxisCoordinate(component,AxisCoordinateExtent(shape,component),
+								highX,highY,highZ);
+							computed.advectionRateKGPerM2S2[component][FaceIndex(shape,component,
+								highX,highY,highZ)]=computed.advectionRateKGPerM2S2[component][
+								FaceIndex(shape,component,lowX,lowY,lowZ)];
+						}
+				}
+			} else {
+				for( unsigned int component=0u;component<3u;++component ) {
+					computed.advectionRateKGPerM2S2[component].assign(
+						FireProductionProjectionFaceCount(shape,component),0.0f);
+					const std::size_t normalCount=AxisCoordinateExtent(shape,component)+1u;
+					const std::size_t firstCount=component==0u?shape.ny:shape.nx;
+					const std::size_t secondCount=component==2u?shape.ny:shape.nz;
+					for( std::size_t second=0u;second<secondCount;++second )
+						for( std::size_t first=0u;first<firstCount;++first )
+							for( std::size_t normal=0u;normal<normalCount;++normal ) {
+								std::size_t x=0u,y=0u,z=0u;
+								if( component==0u ){x=normal;y=first;z=second;}
+								if( component==1u ){x=first;y=normal;z=second;}
+								if( component==2u ){x=first;y=second;z=normal;}
+								const std::size_t componentFace=FaceIndex(shape,component,x,y,z);
+								float divergence=0.0f;
+								for( unsigned int derivative=0u;derivative<3u;++derivative ) {
+									if( derivative==component ) {
+										const std::size_t previousNormal=normal?normal-1u:normal;
+										const std::size_t nextNormal=normal+1u<normalCount?
+											normal+1u:normal;
+										std::size_t px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+										SetAxisCoordinate(component,previousNormal,px,py,pz);
+										SetAxisCoordinate(component,nextNormal,nx,ny,nz);
+										const std::size_t previousFace=FaceIndex(shape,component,px,py,pz);
+										const std::size_t nextFace=FaceIndex(shape,component,nx,ny,nz);
+										const float upper=0.25f*(
+											computed.acceptedGasFluxKGPerM2S[component][componentFace]+
+											computed.acceptedGasFluxKGPerM2S[component][nextFace])*(
+											request.frozenVelocityMPerS[component][componentFace]+
+											request.frozenVelocityMPerS[component][nextFace]);
+										const float lower=0.25f*(
+											computed.acceptedGasFluxKGPerM2S[component][previousFace]+
+											computed.acceptedGasFluxKGPerM2S[component][componentFace])*(
+											request.frozenVelocityMPerS[component][previousFace]+
+											request.frozenVelocityMPerS[component][componentFace]);
+										const float normalScale=normal==0u||normal+1u==normalCount?
+											2.0f:1.0f;
+										divergence+=normalScale*(upper-lower)/shape.cellWidthM;
+									} else {
+										const std::size_t derivativeExtent=AxisCoordinateExtent(shape,derivative);
+										const std::size_t derivativePosition=AxisCoordinate(derivative,x,y,z);
+										const std::size_t componentExtent=AxisCoordinateExtent(shape,component);
+										const std::size_t componentLower=normal?normal-1u:0u;
+										const std::size_t componentUpper=normal<componentExtent?
+											normal:componentExtent-1u;
+										auto derivativeFlux=[&]( const std::size_t componentCell,
+											const std::size_t derivativeBoundary ) {
+											std::size_t fx=x,fy=y,fz=z;
+											SetAxisCoordinate(component,componentCell,fx,fy,fz);
+											SetAxisCoordinate(derivative,derivativeBoundary,fx,fy,fz);
+											return computed.acceptedGasFluxKGPerM2S[derivative][
+												FaceIndex(shape,derivative,fx,fy,fz)];
+										};
+										auto shiftedVelocity=[&]( const bool upper ) {
+											std::size_t vx=x,vy=y,vz=z;
+											const std::size_t shifted=upper?std::min(derivativePosition+1u,
+												derivativeExtent-1u):(derivativePosition?
+												derivativePosition-1u:0u);
+											SetAxisCoordinate(derivative,shifted,vx,vy,vz);
+											return request.frozenVelocityMPerS[component][
+												FaceIndex(shape,component,vx,vy,vz)];
+										};
+										float upper=0.25f*(derivativeFlux(componentLower,
+											derivativePosition+1u)+derivativeFlux(componentUpper,
+											derivativePosition+1u))*(
+											request.frozenVelocityMPerS[component][componentFace]+
+											shiftedVelocity(true));
+										float lower=0.25f*(derivativeFlux(componentLower,
+											derivativePosition)+derivativeFlux(componentUpper,
+											derivativePosition))*(shiftedVelocity(false)+
+											request.frozenVelocityMPerS[component][componentFace]);
+										if( derivativePosition==0u&&request.boundary[2u*derivative]!=
+											FireProductionProjectionPressureOpen ) lower=0.0f;
+										if( derivativePosition+1u==derivativeExtent&&
+											request.boundary[2u*derivative+1u]!=
+											FireProductionProjectionPressureOpen ) upper=0.0f;
+										divergence+=(upper-lower)/shape.cellWidthM;
+									}
+								}
+								const bool lowerBoundary=normal==0u;
+								const bool upperBoundary=normal+1u==normalCount;
+								if( (lowerBoundary||upperBoundary)&&request.boundary[
+									2u*component+(upperBoundary?1u:0u)]!=
+									FireProductionProjectionPressureOpen ) divergence=0.0f;
+								if( !std::isfinite(divergence) ) return Fail(error,
+									"compatible FCT momentum open rate is nonfinite");
+								computed.advectionRateKGPerM2S2[component][componentFace]=divergence;
+							}
+				}
+			}
+			result=std::move(computed);
+			if( error ) error->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionCompatibleFCTMomentumResult();
+			FailWithoutThrow(error,"compatible FCT momentum allocation failed");
+			return false;
+		}
+	}
 }

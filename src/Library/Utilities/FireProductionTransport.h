@@ -101,6 +101,32 @@ namespace RISE
 			deviceElapsedMS(0.0) {}
 	};
 
+	//! Pure Section 3.7 compatible-flux operator input.  Low and high are the
+	//! advective gas-mass flux pair on primal MAC faces.  Physical gas flux is
+	//! optional per axis (an empty vector is exact +0).  The shared face alpha
+	//! and velocity are frozen operands; this seam computes no evolving state.
+	struct FireProductionCompatibleFCTMomentumRequest
+	{
+		FireProductionProjectionShape shape;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::array<std::vector<float>,3> lowGasFluxKGPerM2S;
+		std::array<std::vector<float>,3> highGasFluxKGPerM2S;
+		std::array<std::vector<float>,3> physicalGasFluxKGPerM2S;
+		std::array<std::vector<float>,3> sharedFaceAlpha;
+		std::array<std::vector<float>,3> frozenVelocityMPerS;
+
+		FireProductionCompatibleFCTMomentumRequest()
+		{
+			boundary.fill(FireProductionProjectionWall);
+		}
+	};
+
+	struct FireProductionCompatibleFCTMomentumResult
+	{
+		std::array<std::vector<float>,3> acceptedGasFluxKGPerM2S;
+		std::array<std::vector<float>,3> advectionRateKGPerM2S2;
+	};
+
 	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
 	using FireProductionPeriodicDualMomentumResult=FireProductionDualMomentumResult;
 
@@ -257,6 +283,14 @@ namespace RISE
 		const FireProductionDualMomentumRequest& request,
 		const std::array<std::vector<float>,5>& acceptedGasMassDoseKGPerM2,
 		FireProductionDualMomentumResult& result,
+		std::string* error=0 );
+
+	//! Evaluates K_i=I_i(low+alpha*(high-low)+physical)*mean(u) and then D_i K_i.
+	//! All-periodic and all-nonperiodic topologies are supported.  Hybrid
+	//! periodic/open topology is rejected until it has an authoritative oracle.
+	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The
