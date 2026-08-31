@@ -155,6 +155,69 @@ namespace RISEFireProductionFP64
 			for(const unsigned char value:values)HashEOSByte(hash,value);
 		}
 
+		void HashSourceDoubleValues( std::uint64_t& hash,
+			const std::vector<double>& values )
+		{
+			HashEOSUInt64(hash,values.size());
+			for(const double value:values)HashEOSDouble(hash,value);
+		}
+
+		std::uint64_t SourcePacketContentIdentity(
+			const FireProductionFrozenSourcePacketSeal& seal )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE canonical frozen source packet content v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashFluxValues(hash,seal.SourceDelta());
+			HashSourceDoubleValues(hash,seal.ReactedFuelKGPerM3());
+			HashSourceDoubleValues(hash,seal.OxidizedCarbonKGPerM3());
+			HashSourceDoubleValues(hash,seal.GrossCarbonFormedKGPerM3());
+			HashSourceDoubleValues(hash,seal.GasHeatReleaseWPerM3());
+			HashSourceDoubleValues(hash,seal.SootHeatReleaseWPerM3());
+			HashSourceDoubleValues(hash,seal.PilotEnergyDeltaJPerM3());
+			HashSourceDoubleValues(hash,seal.PilotExpansionIntegral());
+			HashSourceDoubleValues(hash,seal.RadiativeCoolingWPerM3());
+			return hash;
+		}
+
+		std::uint64_t SourceGlobalRadiationIdentity(
+			const FireProductionFrozenSourcePacketSeal& seal )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE canonical frozen source global radiation v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,seal.SourceInputIdentity());
+			HashEOSDouble(hash,seal.RadiationBeta());
+			HashEOSDouble(hash,seal.RadiationGamma());
+			HashEOSDouble(hash,seal.RadiationEscapeFactor());
+			HashSourceDoubleValues(hash,seal.GasHeatReleaseWPerM3());
+			HashSourceDoubleValues(hash,seal.SootHeatReleaseWPerM3());
+			HashSourceDoubleValues(hash,seal.RadiativeCoolingWPerM3());
+			return hash;
+		}
+
+		std::uint64_t SourcePacketIdentity(
+			const FireProductionFrozenSourcePacketSeal& seal )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE canonical frozen source packet seal v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,seal.Shape().nx);HashEOSUInt64(hash,seal.Shape().ny);
+			HashEOSUInt64(hash,seal.Shape().nz);HashEOSFloat(hash,seal.Shape().cellWidthM);
+			HashEOSFloat(hash,seal.TimeStepS());HashEOSDouble(hash,seal.BeginningTimeS());
+			HashEOSUInt64(hash,seal.AttemptIdentity());
+			HashEOSString(hash,seal.MethaneRecordId());
+			HashEOSString(hash,seal.TransportRecordId());
+			HashEOSString(hash,seal.OpacityRecordId());HashEOSString(hash,seal.CaseRecordId());
+			HashEOSUInt64(hash,seal.BeginningStateIdentity());
+			HashEOSUInt64(hash,seal.ReactionControlIdentity());
+			HashEOSUInt64(hash,seal.SourceInputIdentity());
+			HashEOSUInt64(hash,seal.GlobalRadiationIdentity());
+			HashEOSUInt64(hash,seal.PacketContentIdentity());
+			HashEOSDouble(hash,seal.MaximumScaledExpansion());
+			return hash;
+		}
+
 		bool ValidHeunFluxRole( const FireProductionScalarHeunFluxRole role )
 		{
 			return role==FireProductionScalarHeunFluxRole::R0||
@@ -846,6 +909,61 @@ namespace RISEFireProductionFP64
 				}
 			return true;
 		}
+	}
+
+	void FireProductionFrozenSourcePacketSeal::FinalizeIdentities()
+	{
+		packetContentIdentity_=SourcePacketContentIdentity(*this);
+		globalRadiationIdentity_=SourceGlobalRadiationIdentity(*this);
+		packetIdentity_=SourcePacketIdentity(*this);
+		sealed_=true;
+	}
+
+	bool FireProductionFrozenSourcePacketSeal::Matches( std::string* error ) const
+	{
+		const std::size_t cells=shape_.CellCount();
+		if(!sealed_||shape_.nx<4u||shape_.nx>1024u||shape_.ny<4u||shape_.ny>1024u||
+			shape_.nz<4u||shape_.nz>1024u||!(shape_.cellWidthM>0.0)||
+			!std::isfinite(shape_.cellWidthM)||!(timeStepS_>0.0)||
+			!std::isfinite(timeStepS_)||!std::isfinite(beginningTimeS_)||
+			beginningTimeS_<0.0||attemptIdentity_==0u||
+			!CanonicalEOSRecordId(methaneRecordId_)||
+			!CanonicalEOSRecordId(transportRecordId_)||
+			!CanonicalEOSRecordId(opacityRecordId_)||!CanonicalEOSRecordId(caseRecordId_)||
+			sourceDelta_.size()!=9u*cells||reactedFuelKGPerM3_.size()!=cells||
+			oxidizedCarbonKGPerM3_.size()!=cells||grossCarbonFormedKGPerM3_.size()!=cells||
+			gasHeatReleaseWPerM3_.size()!=cells||sootHeatReleaseWPerM3_.size()!=cells||
+			pilotEnergyDeltaJPerM3_.size()!=cells||pilotExpansionIntegral_.size()!=cells||
+			radiativeCoolingWPerM3_.size()!=cells||
+			!std::isfinite(radiationBeta_)||radiationBeta_<0.0||
+			!std::isfinite(radiationGamma_)||radiationGamma_<0.0||radiationGamma_>1.0||
+			!std::isfinite(radiationEscapeFactor_)||radiationEscapeFactor_<0.0||
+			!std::isfinite(maximumScaledExpansion_)||maximumScaledExpansion_>0.5||
+			beginningStateIdentity_==0u||reactionControlIdentity_==0u||
+			sourceInputIdentity_==0u||globalRadiationIdentity_==0u||
+			packetContentIdentity_==0u||packetIdentity_==0u)
+			return Fail(error,"canonical frozen source-packet seal metadata is invalid");
+		for(const double value:sourceDelta_)if(!std::isfinite(value)||
+			(value==0.0&&std::signbit(static_cast<double>(value))))return Fail(error,
+				"canonical frozen source-packet resident dose is noncanonical");
+		const std::vector<double>* diagnostic[]={&reactedFuelKGPerM3_,
+			&oxidizedCarbonKGPerM3_,&grossCarbonFormedKGPerM3_,&gasHeatReleaseWPerM3_,
+			&sootHeatReleaseWPerM3_,&pilotEnergyDeltaJPerM3_,&pilotExpansionIntegral_,
+			&radiativeCoolingWPerM3_};
+		for(const std::vector<double>* values:diagnostic)for(const double value:*values)
+			if(!std::isfinite(value)||(value==0.0&&std::signbit(value)))return Fail(error,
+				"canonical frozen source-packet diagnostic is noncanonical");
+		if(packetContentIdentity_!=SourcePacketContentIdentity(*this)||
+			globalRadiationIdentity_!=SourceGlobalRadiationIdentity(*this)||
+			packetIdentity_!=SourcePacketIdentity(*this))return Fail(error,
+				"canonical frozen source-packet seal identity does not match its content");
+		if(error)error->clear();return true;
+	}
+
+	bool FireProductionFrozenSourcePacketSealMatches(
+		const FireProductionFrozenSourcePacketSeal& seal,std::string* error )
+	{
+		return seal.Matches(error);
 	}
 
 	bool FireProductionCellPalindromeWorkingSetBytes(

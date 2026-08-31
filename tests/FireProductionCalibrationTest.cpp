@@ -23,6 +23,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <stdexcept>
 #include <sstream>
 #include <string>
 #include <type_traits>
@@ -868,6 +869,8 @@ int main()
 		"rendered/fire_production_calibration/r151_accepted_map_reconstruction_stop/"
 		"accepted_map_reconstruction_evidence.v1");
 	const std::string fireSimulatorCore=ReadText("tools/fire_simulator_core.h");
+	const std::string fireProductionSourceKernel=ReadText(
+		"src/Library/Utilities/FireProductionSourceKernel.h");
 	const std::string fireSimulationRecords=ReadText(
 		"src/Library/Utilities/FireSimulationRecords.cpp");
 	Check(!acceptedMapReconstructionEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
@@ -1907,7 +1910,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
-			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
+			"21a5cf2c6177cc535d9ff8ced6835a7b0b09b2fe19dfed887c76d7e89c61eae1"&&
 		// r168's source bytes remain sealed by its immutable artifact.  r181 now
 		// owns the live diagnostic-source binding after adding onset retention.
 		monitoredShadowEvidence.find("golden_fixture_sha256 "
@@ -2460,7 +2463,7 @@ int main()
 			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
-			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
+			"21a5cf2c6177cc535d9ff8ced6835a7b0b09b2fe19dfed887c76d7e89c61eae1"&&
 		// r175's exact simulation/Metal owners are preserved by the sealed
 		// artifact; r181 binds their superseding diagnostic revisions.
 		thermoSourceEvidence.find("records_header_sha256 "
@@ -2483,9 +2486,11 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fileRasterizerOutputShimTest.begin(),fileRasterizerOutputShimTest.end()))==
 			"58863556252b7df8accefede0d262dc84b2726a9d4cce6c9f38eeb6338866169"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			makeRules.begin(),makeRules.end()))==
-			"d81af70fb94b8714b1c4ee7cd9e89ba5f44347a74681bfa82fa266bd9c943625"&&
+		// r186 adds the canonical-source strict-FP build rule.  Preserve the
+		// historical r175 build owner through its already sealed evidence bytes.
+		thermoSourceEvidence.find("make_rules_sha256 "
+			"d81af70fb94b8714b1c4ee7cd9e89ba5f44347a74681bfa82fa266bd9c943625")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			firstLightReadme.begin(),firstLightReadme.end()))==
 			"d81ac9bbbee11082112a353494aa7ba141aa5432d6d67fa555b7c909de763017"&&
@@ -2588,7 +2593,8 @@ int main()
 		CountText(thermoSourceRaw,"THERMO_SOURCE_MAP_STEP step=")==2u&&
 		CountText(thermoSourceRaw,"accepted=0")==0u&&
 		thermoSourceRaw.find("THERMO_SOURCE_MAP_COMPLETE steps=2")!=std::string::npos&&
-		fireSimulatorCore.find("CertifiedBinary32SourcePacket")!=std::string::npos&&
+		fireProductionSourceKernel.find("CertifiedBinary32SourcePacket")!=
+			std::string::npos&&
 		advectionMetal.find("ValidateFireProductionCellSourceIncrement")!=
 			std::string::npos&&
 		productionSolverTest.find(
@@ -3134,7 +3140,7 @@ int main()
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunLiveBinding.begin(),projectedHeunLiveBinding.end()))==
-			"b94b1755d8c9f2968f7b7a7bf6c94d5037918eaff586ed54bbf2304ed4e372a0"&&
+			"a2a3b8beed32558c839739566ac61f883d6356f7ea44e05c160854b61228aed6"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3143,9 +3149,9 @@ int main()
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"d4827b2b6aa3413887b5b26db1d7abd7ab276be96aacd02d814063fe353899f3")&&
+			"b1407bc508af6c15ce58e970711dc6a3ff78d699e8c504c08824863c9c22b627")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"ffffc7d29cbb1fbb9bf563ad7abf4e475121c73dd7418b8fd604471d3ce167eb")&&
+			"91791d9ef1e6d4e1471a242024d030770344f36c63ff894ae3fdffda7023efec")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm",
 			"2554a0a41feaa9356d3ffb8c17b1a2d8520b0642c7975d4fa62947b4e9fede57")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionForce.h",
@@ -3183,9 +3189,9 @@ int main()
 		liveOwnerBound("tests/FireSequenceTest.cpp",
 			"1cadffc8309e50aafa0a85b83502c7918e2cfb9e2e9c5f398169e27d83a7ab40")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
-			"c4afd1c5df6e2061bb97ee7ebf3863994b1edc63fab4162d942d9503b2e5ae5d")&&
+			"0b44fe8985cc5aeea6298dbe3bb067e477d8c7dc063eb2c526fd69f79fcee894")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
-			"bb7725df43697e01dabcc2afc4273f817d833cfd2a154b9b2a3f936b516961ea")&&
+			"6383bddcc3131d47bc07cb9160ab8f34030babd1f658310b219d356f6959b96e")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.h",
 			"dd561ead598cc5426ec91a6efd47b2915d88167c1a37f159defd42f62102a01f")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.cpp",
@@ -3195,11 +3201,11 @@ int main()
 		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.cpp",
 			"2611c42e43e5b2e7a4b32e0749bcfbf007d5c20ddc36babddfbfd2c34725c473")&&
 		liveOwnerBound("tests/fire_production_fp64/SourceManifest.h",
-			"c2e884152833c500a40ac591d0bd9fea5c13773c414396a4daf54b27d147ea24")&&
+			"ad844cf297321c1541b89b3146369bc32ad47501565fc23cb9d9008e372d8ea0")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
-			"2815ac777ac1db75ece9addfdb78167e72e8b99475ebf37e085dc608b2667540")&&
+			"16e4a7ef3bc111d416d79c40110360eb0ae04055f527e045c9ff14690a7fd543")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
-			"4c0b02371905bc74c08a618efd7afdd0aafb8ae9ba0d0e2c2ec8d462d7b84eb9")&&
+			"e88b1386afbfd1b5c032b6181a432f7f484727dad9486145ae0b8bdcead83011")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.h",
 			"7d453246cbd95acaef81bda1a5141d42a8750d8e69a94ea38dc64f1b43b8add6")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.cpp",
@@ -3209,11 +3215,11 @@ int main()
 		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.cpp",
 			"5cf59d615da1f3022faea6ea5614a85060849b702ad321a1b16b916f0574b384")&&
 		liveOwnerBound("tests/fire_production_trace/SourceManifest.h",
-			"90d5db9c13d1518382e10ded4abc19242ee5845cf43f71c7f2b7872179f1435b")&&
+			"f9965eda83ecbf522093dbf1e7c1c798bbe2920ab42a1f4f3d1d9353bcdff197")&&
 		liveOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
-			"d02c3d1278083e3939fa7bc87fbfb8272e73aed69ff9ae1996b45bc51c87bdd6")&&
+			"fe754851c3920fd828557011165d2ec8e22c3d14ee7d9a6124d2cdcb61e999fe")&&
 		liveOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
-			"cf92616eeec9105020b5929d2ec7de58dfb617798eda709ccd8cc9e453379f23"),
+			"a4199e47d0cad5f8779928c0263c00af7a101900e71dd9a5e1f3ff1714540f2f"),
 		"r183 exact-binds immutable evidence and its live implementation, tests, mirrors, and documentation without self-binding the calibration gate");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
@@ -6091,6 +6097,297 @@ int main()
 		error.find("working set exceeds two GiB")!=std::string::npos&&
 		!eosRejected.accepted&&eosRejected.temperatureK.empty(),
 		"accepted-state EOS exact working-set query enforces the two-GiB cap before payload access");
+
+	// r186 prerequisite: only the canonical grid source producer can mint the
+	// opaque production packet seal.  Its input surface contains controls and a
+	// beginning state, never a caller-authored conservative dose or pilot pair.
+	const RISE::FireSimulationTransportRecord& sourceTransport=
+		RISE::FireSimulationTransportRecord::OpenV1();
+	const RISE::FireSimulationGasOpacityRecord& sourceOpacity=
+		RISE::FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
+	RISE::FireCase::RecordV1 sourceCase;
+	const bool sourceCaseOK=RISE::FireCase::BuildMethaneV1(eosAuthored,eosRecord,
+		{eosRecord.RecordId(),sourceTransport.RecordId(),sourceOpacity.RecordId()},
+		sourceCase,error);
+	RISE::FireProductionFrozenMethaneSourceRequest sourceRequest;
+	sourceRequest.shape.nx=4u;sourceRequest.shape.ny=4u;sourceRequest.shape.nz=4u;
+	sourceRequest.shape.cellWidthM=0.01f;sourceRequest.timeStepS=0.0005f;
+	sourceRequest.beginningTimeS=0.0;
+	sourceRequest.attemptIdentity=UINT64_C(0x1860000000000001);
+	sourceRequest.caseRecordEnvelope=sourceCase.envelopeBytes;
+	const std::size_t sourceCells=sourceRequest.shape.CellCount();
+	const std::array<float,9> sourceBeginningTuple=eosTuple(300.0);
+	sourceRequest.beginningConservativeValues.resize(9u*sourceCells);
+	for(std::size_t component=0u;component<9u;++component)
+		for(std::size_t cell=0u;cell<sourceCells;++cell)
+			sourceRequest.beginningConservativeValues[component*sourceCells+cell]=
+				sourceBeginningTuple[component];
+	sourceRequest.pilotCommandMask.assign(sourceCells,0u);
+	sourceRequest.pilotCommandMask[0u]=1u;
+	sourceRequest.mixingTimeS.assign(sourceCells,sourceTransport.ChemicalTimeS());
+	sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=2u;
+	RISE::FireProductionFrozenSourcePacketSeal sourceSeal;
+	const bool sourceSealOK=sourceCaseOK&&
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceRequest,sourceSeal,&error);
+	if(!sourceSealOK)std::fprintf(stderr,"canonical source detail: %s\n",error.c_str());
+	RISE::FireSim::ConservativeVector sourceBeginningVector;
+	for(std::size_t index=0u;index<9u;++index)sourceBeginningVector[index]=
+		static_cast<double>(sourceBeginningTuple[index]);
+	RISE::FireSim::MethaneCellState sourceBeginning=
+		RISE::FireSim::FromConservativeVector(sourceBeginningVector,
+			RISE::FireStateProducerPrecision::Binary32);
+	sourceBeginning.temperatureK=300.0;
+	double sourcePilotCommand=0.0;
+	const bool sourcePilotCommandOK=RISE::FireCase::EvaluatePilotSetpointTemperatureK(
+		sourceCase.derived,true,sourceRequest.beginningTimeS,
+		sourceRequest.beginningTimeS+sourceRequest.timeStepS,sourcePilotCommand,error);
+	const double sourcePilotTarget=std::min(sourcePilotCommand,
+		sourceBeginning.temperatureK*sourceCase.derived.pilotExpansionVolumeRatioCap);
+	double sourcePilotBeginningEnergy=0.0,sourcePilotTargetEnergy=0.0;
+	const bool sourcePilotEnergyOK=RISE::FireSim::SignedMixtureSensibleEnergy(sourceBeginning,
+		sourceBeginning.temperatureK,eosRecord,sourcePilotBeginningEnergy,&error)&&
+		RISE::FireSim::SignedMixtureSensibleEnergy(sourceBeginning,sourcePilotTarget,
+			eosRecord,sourcePilotTargetEnergy,&error);
+	const double sourcePilotVolume=sourcePilotTarget/sourceBeginning.temperatureK;
+	const double sourcePilotExpected=(sourcePilotTargetEnergy-sourcePilotBeginningEnergy)/
+		sourcePilotVolume;
+	Check(sourceSealOK&&sourceSeal.IsSealed()&&
+		RISE::FireProductionFrozenSourcePacketSealMatches(sourceSeal,&error)&&
+		sourceSeal.SourceDelta().size()==9u*sourceCells&&
+		sourceSeal.PilotEnergyDeltaJPerM3().size()==sourceCells&&
+		sourceSeal.PilotExpansionIntegral().size()==sourceCells&&
+		sourceSeal.PacketIdentity()!=0u&&sourceSeal.PacketContentIdentity()!=0u&&
+		sourceSeal.GlobalRadiationIdentity()!=0u,
+		"canonical grid producer mints one complete identity-bearing frozen source seal");
+	Check(sourceSealOK&&sourcePilotCommandOK&&sourcePilotEnergyOK&&sourcePilotVolume>1.0&&
+		sourceSeal.PilotEnergyDeltaJPerM3()[0u]==sourcePilotExpected&&
+		sourceSeal.PilotExpansionIntegral()[0u]==1.0-1.0/sourcePilotVolume,
+		"canonical source seal retains the exact pilot 1/V-prime energy and expansion pair");
+	RISE::FireProductionFrozenMethaneSourceRequest sourceAttemptMutation=sourceRequest;
+	++sourceAttemptMutation.attemptIdentity;
+	RISE::FireProductionFrozenSourcePacketSeal sourceAttemptSeal;
+	const bool sourceAttemptOK=RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+		sourceAttemptMutation,sourceAttemptSeal,&error);
+	Check(sourceSealOK&&sourceAttemptOK&&
+		sourceSeal.SourceDelta()==sourceAttemptSeal.SourceDelta()&&
+		sourceSeal.PacketContentIdentity()==sourceAttemptSeal.PacketContentIdentity()&&
+		sourceSeal.PacketIdentity()!=sourceAttemptSeal.PacketIdentity()&&
+		sourceSeal.SourceInputIdentity()!=sourceAttemptSeal.SourceInputIdentity(),
+		"canonical source seal binds attempt identity without perturbing physical packet bytes");
+	RISE::FireProductionFrozenMethaneSourceRequest sourceSerialRequest=sourceRequest;
+	sourceSerialRequest.workerCount=1u;
+	RISE::FireProductionFrozenSourcePacketSeal sourceSerialSeal;
+	const bool sourceSerialOK=RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+		sourceSerialRequest,sourceSerialSeal,&error);
+	Check(sourceSealOK&&sourceSerialOK&&
+		sourceSeal.SourceDelta()==sourceSerialSeal.SourceDelta()&&
+		sourceSeal.PacketIdentity()==sourceSerialSeal.PacketIdentity()&&
+		sourceSeal.GlobalRadiationIdentity()==sourceSerialSeal.GlobalRadiationIdentity(),
+		"canonical source packet is byte-identical across admitted worker schedules");
+	RISE::FireProductionFrozenMethaneSourceRequest sourceControlMutation=sourceRequest;
+	sourceControlMutation.mixingTimeS[1u]=std::nextafter(
+		sourceControlMutation.mixingTimeS[1u],1.0);
+	RISE::FireProductionFrozenSourcePacketSeal sourceControlSeal;
+	const bool sourceControlOK=RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+		sourceControlMutation,sourceControlSeal,&error);
+	Check(sourceControlOK&&sourceControlSeal.ReactionControlIdentity()!=
+		sourceSeal.ReactionControlIdentity()&&sourceControlSeal.PacketIdentity()!=
+		sourceSeal.PacketIdentity(),
+		"canonical source seal binds every stage-derived mixing-control byte");
+	RISE::FireProductionFrozenMethaneSourceRequest badSourceRequest=sourceRequest;
+	badSourceRequest.pilotCommandMask[0u]=2u;
+	RISE::FireProductionFrozenSourcePacketSeal rejectedSource=sourceSeal;
+	const bool badMaskRejected=!RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+		badSourceRequest,rejectedSource,&error)&&!rejectedSource.IsSealed();
+	badSourceRequest=sourceRequest;badSourceRequest.caseRecordEnvelope.back()^=1u;
+	const bool badCaseRejected=!RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+		badSourceRequest,rejectedSource,&error)&&!rejectedSource.IsSealed();
+	RISE::FireProductionFrozenSourcePacketSeal emptySourceSeal;
+	Check(badMaskRejected&&badCaseRejected&&
+		!RISE::FireProductionFrozenSourcePacketSealMatches(emptySourceSeal,&error)&&
+		!std::is_aggregate<RISE::FireProductionFrozenSourcePacketSeal>::value,
+		"raw controls, corrupt case bytes, and public empty objects cannot mint source authority");
+	RISE::FireProductionFrozenMethaneSourceRequest sourceCeiling=sourceRequest;
+	const std::array<float,9> sourceCeilingTuple=eosTuple(2300.0);
+	for(std::size_t component=0u;component<9u;++component)
+		for(std::size_t cell=0u;cell<sourceCells;++cell)
+			sourceCeiling.beginningConservativeValues[component*sourceCells+cell]=
+				sourceCeilingTuple[component];
+	Check(!RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceCeiling,rejectedSource,&error)&&!rejectedSource.IsSealed()&&
+		error.find("strict case ceiling")!=std::string::npos,
+		"canonical source producer derives temperature from Q and refuses the exact case ceiling");
+	RISE::FireProductionFrozenMethaneSourceRequest sourceBelowCase=sourceRequest;
+	std::array<float,9> sourceBelowCaseTuple=eosTuple(300.0);
+	// The thermochemistry domain begins at 300 K, so constructing a 299 K tuple
+	// through the public enthalpy API would itself be invalid.  Exercise the
+	// promised below-endpoint roundoff clamp with the nearest binary32 energy
+	// strictly below the exact 300 K energy for the encoded constituent tuple.
+	std::array<double,7> sourceLowerEnthalpy;
+	const bool sourceLowerEnthalpyOK=eosRecord.SensibleEnthalpiesBySpeciesOrderJPerKG(
+		300.0,sourceLowerEnthalpy.data(),sourceLowerEnthalpy.size(),&error);
+	double sourceLowerEnergy=0.0;
+	for(std::size_t species=0u;species<7u;++species)
+		sourceLowerEnergy+=static_cast<double>(sourceBelowCaseTuple[1u+species])*
+			sourceLowerEnthalpy[species];
+	float sourceBelowEnergy=static_cast<float>(sourceLowerEnergy);
+	while(static_cast<double>(sourceBelowEnergy)>=sourceLowerEnergy)
+		sourceBelowEnergy=std::nextafter(sourceBelowEnergy,
+			-std::numeric_limits<float>::infinity());
+	sourceBelowCaseTuple[8u]=sourceBelowEnergy;
+	for(std::size_t component=0u;component<9u;++component)
+		for(std::size_t cell=0u;cell<sourceCells;++cell)
+			sourceBelowCase.beginningConservativeValues[component*sourceCells+cell]=
+				sourceBelowCaseTuple[component];
+	RISE::FireProductionFrozenSourcePacketSeal sourceBelowCaseSeal;
+	RISE::FireProductionScalarEOSAcceptanceResult eosBelowCaseAccepted;
+	const bool eosBelowCaseOK=RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(
+		eosRequestFromTuple(sourceBelowCaseTuple),eosBelowCaseAccepted,&error);
+	const bool sourceBelowCaseOK=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceBelowCase,sourceBelowCaseSeal,&error);
+	Check(sourceLowerEnthalpyOK&&
+		static_cast<double>(sourceBelowCaseTuple[8u])<sourceLowerEnergy&&
+		eosBelowCaseOK&&eosBelowCaseAccepted.accepted&&
+		eosBelowCaseAccepted.temperatureK[0u]==300.0f&&sourceBelowCaseOK&&
+		sourceBelowCaseSeal.IsSealed(),
+		"canonical source producer shares r184's inclusive lower-bound inversion semantics");
+	std::uint64_t sourceWorkingSetBytes=0u,sourceAdjacentBytes=0u,sourceOversizedBytes=0u;
+	RISE::FireProductionProjectionShape sourceAdjacentShape=sourceRequest.shape;
+	++sourceAdjacentShape.nz;
+	RISE::FireProductionProjectionShape sourceOversizedShape;
+	sourceOversizedShape.nx=1024u;sourceOversizedShape.ny=1024u;
+	sourceOversizedShape.nz=1024u;sourceOversizedShape.cellWidthM=0.01f;
+	RISE::FireProductionFrozenMethaneSourceRequest sourceOversized=sourceRequest;
+	sourceOversized.shape=sourceOversizedShape;
+	sourceOversized.beginningConservativeValues.clear();
+	sourceOversized.pilotCommandMask.clear();sourceOversized.mixingTimeS.clear();
+	const bool sourceWorkingSetOK=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
+			sourceRequest.shape,sourceRequest.workerCount,sourceWorkingSetBytes,&error);
+	const bool sourceAdjacentQuery=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
+			sourceAdjacentShape,sourceRequest.workerCount,sourceAdjacentBytes,&error);
+	const bool sourceOversizedQuery=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
+			sourceOversized.shape,sourceOversized.workerCount,sourceOversizedBytes,&error);
+	const std::uint64_t sourceBytesPerCell=18u*sizeof(float)+11u*sizeof(double)+
+		3u*sizeof(RISE::FireSim::MethaneCellState)+sizeof(RISE::FireSim::MethaneReactionStep)+
+		3u*sizeof(RISE::FireSim::MethaneSourcePacket)+5u;
+	const std::uint64_t sourceWorkerBytes=static_cast<std::uint64_t>(
+		RISE::FireSim::FireWorkerCapacity())*(UINT64_C(8)<<20u);
+	const std::uint64_t sourceExpected=UINT64_C(1048576)+sourceWorkerBytes+
+		static_cast<std::uint64_t>(sourceCells)*sourceBytesPerCell;
+	const std::uint64_t sourceAdjacentExpected=UINT64_C(1048576)+sourceWorkerBytes+
+		static_cast<std::uint64_t>(sourceAdjacentShape.CellCount())*sourceBytesPerCell;
+	RISE::FireProductionFrozenMethaneSourceRequest sourceHugeEnvelope=sourceRequest;
+	sourceHugeEnvelope.caseRecordEnvelope.resize(UINT64_C(1048576)+1u,0u);
+	RISE::FireProductionFrozenMethaneSourceRequest sourceTooManyWorkers=sourceRequest;
+	sourceTooManyWorkers.workerCount=RISE::FireSim::FireWorkerCapacity()+1u;
+	const bool sourceOversizedRejected=
+		!RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceOversized,rejectedSource,&error)&&!rejectedSource.IsSealed()&&
+		error.find("working set exceeds two GiB")!=std::string::npos;
+	const bool sourceEnvelopeRejected=
+		!RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceHugeEnvelope,rejectedSource,&error)&&!rejectedSource.IsSealed()&&
+		error.find("case envelope exceeds one MiB")!=std::string::npos;
+	const bool sourceWorkerCountRejected=
+		!RISE::FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceTooManyWorkers,rejectedSource,&error)&&!rejectedSource.IsSealed();
+	std::uint64_t sourceHighWorkerBytes=0u,sourceLowAfterHighBytes=0u;
+	const bool sourceHighWorkerQuery=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
+			sourceRequest.shape,RISE::FireSim::FireWorkerCapacity(),sourceHighWorkerBytes,&error);
+	const bool sourceLowAfterHighQuery=
+		RISE::FireSim::FireProductionCanonicalSourceAuthority::WorkingSetBytes(
+			sourceRequest.shape,1u,sourceLowAfterHighBytes,&error);
+	Check(sourceWorkingSetOK&&sourceAdjacentQuery&&sourceOversizedQuery&&
+		sourceWorkingSetBytes==sourceExpected&&sourceAdjacentBytes==sourceAdjacentExpected&&
+		sourceOversizedBytes>(UINT64_C(2)<<30u)&&
+		sourceOversizedRejected&&sourceEnvelopeRejected&&sourceWorkerCountRejected&&
+		sourceHighWorkerQuery&&sourceLowAfterHighQuery&&
+		sourceHighWorkerBytes==sourceLowAfterHighBytes&&
+		sourceLowAfterHighBytes==sourceWorkingSetBytes,
+		"canonical source producer exactly accounts live storage and rejects oversized inputs early");
+	RISE::FireSim::PersistentFireWorkerPool exceptionPool;
+	const unsigned int exceptionWorkers=std::min(2u,RISE::FireSim::FireWorkerCapacity());
+	bool workerExceptionPropagated=false;
+	try {
+		exceptionPool.Run(exceptionWorkers,[](const unsigned int worker){
+			if(worker==0u)throw std::runtime_error("injected worker failure");
+		});
+	} catch(const std::runtime_error&) { workerExceptionPropagated=true; }
+	std::atomic<unsigned int> recoveredWorkers(0u);
+	exceptionPool.Run(exceptionWorkers,[&](const unsigned int){++recoveredWorkers;});
+	Check(workerExceptionPropagated&&recoveredWorkers.load()==exceptionWorkers,
+		"persistent fire worker pool propagates task failure and remains reusable after its barrier");
+	const std::string sourceAuthorityImplementation=ReadText(
+		"src/Library/Utilities/FireProductionSource.cpp");
+	const std::string sourceKernelImplementation=ReadText(
+		"src/Library/Utilities/FireProductionSourceKernel.h");
+	const std::string toolCoreSource=ReadText("tools/fire_simulator_core.h");
+	Check(CountText(sourceAuthorityImplementation,
+		"FireProductionCanonicalSourceAuthority::Build")==1u&&
+		CountText(sourceKernelImplementation,"BuildFrozenMethaneSourcePackets(")==1u&&
+		CountText(toolCoreSource,"FireProductionCanonicalSourceAuthority::Build")==0u&&
+		CountText(toolCoreSource,"BuildFrozenMethaneSourcePackets(")==0u,
+		"compiled production source owns the sole source authority and shared canonical grid kernel");
+	const std::string canonicalSourceAuthorityEvidence=ReadText(
+		"rendered/fire_production_calibration/r186_canonical_source_authority/"
+		"canonical_source_authority_evidence.v1");
+	const auto canonicalSourceOwnerBound=[&](const char* path,const char* field,
+		const char* sha256) {
+		return sourceSHA(path)==sha256&&canonicalSourceAuthorityEvidence.find(
+			std::string(field)+" "+sha256+"\n")!=std::string::npos;
+	};
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+		canonicalSourceAuthorityEvidence.begin(),canonicalSourceAuthorityEvidence.end()))==
+		"248e8da89dac1f5754d9a352ad15d43fd9726e237eb1e994f0c7d2fdad5a135a"&&
+		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionSourceKernel.h",
+			"source_kernel_sha256",
+			"f9f0de5fe6c59cee121c4ad44d025f9190acc59d6d464edd3eb6c2feb7824aaf")&&
+		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionSource.cpp",
+			"source_authority_sha256",
+			"4e9539d43dd9b48d6bf0016d233aa24b039132a1b993499b6fc47aaa23774957")&&
+		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionTransport.h",
+			"transport_header_sha256",
+			"b1407bc508af6c15ce58e970711dc6a3ff78d699e8c504c08824863c9c22b627")&&
+		canonicalSourceOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
+			"transport_source_sha256",
+			"91791d9ef1e6d4e1471a242024d030770344f36c63ff894ae3fdffda7023efec")&&
+		canonicalSourceOwnerBound("tools/fire_simulator_core.h","tool_core_sha256",
+			"21a5cf2c6177cc535d9ff8ced6835a7b0b09b2fe19dfed887c76d7e89c61eae1")&&
+		canonicalSourceOwnerBound("build/make/rise/Filelist","make_filelist_sha256",
+			"8517dff07dee064c6e682c1f53b7bf8ae9eae70ef2d31d87309cefd3e80617a4")&&
+		canonicalSourceOwnerBound("build/make/rise/Makefile","make_rules_sha256",
+			"b36ad42da2bf5ef25a454ad2d84dd5c034bfb581459379cd0293c9debfd4ce65")&&
+		canonicalSourceOwnerBound("build/cmake/rise-android/CMakeLists.txt",
+			"android_cmakelists_sha256",
+			"0b0bac8387f25bf4157a3f5b50f978ead49031e685368628949711ddb68419f9")&&
+		canonicalSourceOwnerBound("build/cmake/rise-android/rise_sources.cmake",
+			"android_sources_sha256",
+			"83789553843a1d84aa1cdae132354de03c9b9615fc052700e9d1050dfde7b5b6")&&
+		canonicalSourceOwnerBound("build/VS2022/Library/Library.vcxproj",
+			"visual_studio_project_sha256",
+			"c5190cc329a33bd25751752a68a2cd057be460fc9122a55155f2d7be511321d1")&&
+		canonicalSourceOwnerBound("build/VS2022/Library/Library.vcxproj.filters",
+			"visual_studio_filters_sha256",
+			"9c76ca266ee430294234a0dea1c6808102efc9cf7210132b0c43553168703114")&&
+		canonicalSourceOwnerBound("build/XCode/rise/rise.xcodeproj/project.pbxproj",
+			"xcode_project_sha256",
+			"c9c0439a88b23d23fb08d696d8ad79353fe8e48ce21a25ede8239b390ca7fefa")&&
+		canonicalSourceAuthorityEvidence.find(
+			"verdict accepted_cpu_prerequisite\n")!=std::string::npos&&
+		canonicalSourceAuthorityEvidence.find(
+			"rejected_raw_validator true\n")!=std::string::npos&&
+		canonicalSourceAuthorityEvidence.find(
+			"rejected_inline_tool_friend_authority true\n")!=std::string::npos&&
+		canonicalSourceAuthorityEvidence.find(
+			"serial_parallel_packet_bytes_identical true\n")!=std::string::npos&&
+		canonicalSourceAuthorityEvidence.find("tier10_claim false\n")!=std::string::npos,
+		"r186 binds the compiled canonical source authority, rejection trail, and honest scope");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;

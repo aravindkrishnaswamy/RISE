@@ -135,6 +135,10 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )
 set_source_files_properties(
+    "${RISE_LIB}/Utilities/FireProductionSource.cpp"
+    PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
+)
+set_source_files_properties(
     "${RISE_LIB}/Utilities/FireProductionForce.cpp"
     PROPERTIES COMPILE_OPTIONS "-fno-fast-math;-ffp-contract=off"
 )

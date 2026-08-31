@@ -503,6 +503,9 @@
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionTransport.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionSource.cpp">
+      <FloatingPointModel>Strict</FloatingPointModel>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Utilities\FireProductionForce.cpp">
       <FloatingPointModel>Strict</FloatingPointModel>
     </ClCompile>
@@ -1061,6 +1064,7 @@
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionAdvection.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionProjection.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionTransport.h" />
+    <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionSourceKernel.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireProductionForce.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireOptics.h" />
     <ClInclude Include="..\..\..\src\Library\Utilities\FireSimulationRecords.h" />

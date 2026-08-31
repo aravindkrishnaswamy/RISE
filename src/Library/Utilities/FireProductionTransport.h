@@ -21,6 +21,37 @@
 
 namespace RISE
 {
+	struct FireProductionFrozenMethaneSourceRequest;
+	class FireProductionFrozenSourcePacketSeal;
+	namespace FireSim
+	{
+		//! Complete declaration prevents a client from defining a counterfeit friend
+		//! type.  The canonical FireSim owner supplies these member definitions.
+		class FireProductionCanonicalSourceAuthority
+		{
+			static void HashByte(std::uint64_t&,unsigned char);
+			static void HashUInt64(std::uint64_t&,std::uint64_t);
+			static void HashDouble(std::uint64_t&,double);
+			static void HashFloat(std::uint64_t&,float);
+			static void HashString(std::uint64_t&,const std::string&);
+			static void HashFloatValues(std::uint64_t&,const std::vector<float>&);
+			static void HashDoubleValues(std::uint64_t&,const std::vector<double>&);
+			static void HashByteValues(std::uint64_t&,
+				const std::vector<unsigned char>&);
+			static void HashDomain(std::uint64_t&,const char*);
+		public:
+			static bool WorkingSetBytes(
+				const FireProductionProjectionShape& shape,
+				unsigned int workerCount,
+				std::uint64_t& bytes,
+				std::string* error=0 );
+			static bool Build(
+				const FireProductionFrozenMethaneSourceRequest& request,
+				FireProductionFrozenSourcePacketSeal& result,
+				std::string* error=0 );
+		};
+	}
+
 	//! Advection-only P3 oracle surface.  Carrier velocities and boundaries are
 	//! frozen from the beginning snapshot; only conservativeValues advances.
 	struct FireProductionCellPalindromeRequest
@@ -299,6 +330,109 @@ namespace RISE
 			lowerTemperatureK(0.0),upperTemperatureK(0.0),maximumEOSResidual(0.0),
 			stateDigest(0u),temperatureDigest(0u),acceptanceIdentity(0u),accepted(false) {}
 	};
+
+	//! Raw, authenticated inputs to the existing canonical methane source-map
+	//! producer.  The request contains no caller-authored source dose.  Ignition,
+	//! pilot, reaction, radiation, ledger, and expansion results are derived by
+	//! the FireSim authority from these beginning/control bytes.
+	struct FireProductionFrozenMethaneSourceRequest
+	{
+		FireProductionProjectionShape shape;
+		float timeStepS;
+		double beginningTimeS;
+		std::uint64_t attemptIdentity;
+		RISE::RISECBOR64::Bytes caseRecordEnvelope;
+		std::vector<float> beginningConservativeValues;
+		//! Identity-bound upstream controller decision.  The source producer still
+		//! derives ignition connectivity and the continuous pilot command itself.
+		std::vector<unsigned char> pilotCommandMask;
+		//! Stage-derived mixing time is an input coefficient, not a source dose.
+		//! Its exact bytes and the canonical transport record identity are bound.
+		std::vector<double> mixingTimeS;
+		bool predictiveRadiation;
+		unsigned int workerCount;
+
+		FireProductionFrozenMethaneSourceRequest() : timeStepS(0.0f),
+			beginningTimeS(0.0),attemptIdentity(0u),predictiveRadiation(false),
+			workerCount(1u) {}
+	};
+
+	//! Opaque publication from the canonical grid source producer.  A public
+	//! raw-delta validator cannot construct or mutate this object.  The resident
+	//! nine-component dose is component-major [9][cells]; the remaining fields
+	//! are diagnostic certificates retained for ledgers and S_div composition.
+	class FireProductionFrozenSourcePacketSeal
+	{
+		friend class FireSim::FireProductionCanonicalSourceAuthority;
+		friend bool FireProductionFrozenSourcePacketSealMatches(
+			const FireProductionFrozenSourcePacketSeal&,std::string* );
+
+		FireProductionProjectionShape shape_;
+		float timeStepS_;
+		double beginningTimeS_;
+		std::uint64_t attemptIdentity_;
+		std::string methaneRecordId_,transportRecordId_,opacityRecordId_,caseRecordId_;
+		std::vector<float> sourceDelta_;
+		std::vector<double> reactedFuelKGPerM3_,oxidizedCarbonKGPerM3_;
+		std::vector<double> grossCarbonFormedKGPerM3_,gasHeatReleaseWPerM3_;
+		std::vector<double> sootHeatReleaseWPerM3_,pilotEnergyDeltaJPerM3_;
+		std::vector<double> pilotExpansionIntegral_,radiativeCoolingWPerM3_;
+		double radiationBeta_,radiationGamma_,radiationEscapeFactor_;
+		double maximumScaledExpansion_;
+		std::uint64_t beginningStateIdentity_,reactionControlIdentity_;
+		std::uint64_t sourceInputIdentity_,globalRadiationIdentity_;
+		std::uint64_t packetContentIdentity_,packetIdentity_;
+		bool sealed_;
+		void FinalizeIdentities();
+		bool Matches(std::string* error) const;
+
+	public:
+		FireProductionFrozenSourcePacketSeal() : timeStepS_(0.0f),beginningTimeS_(0.0),
+			attemptIdentity_(0u),radiationBeta_(0.0),radiationGamma_(0.0),
+			radiationEscapeFactor_(0.0),maximumScaledExpansion_(0.0),
+			beginningStateIdentity_(0u),reactionControlIdentity_(0u),sourceInputIdentity_(0u),
+			globalRadiationIdentity_(0u),packetContentIdentity_(0u),packetIdentity_(0u),
+			sealed_(false) {}
+
+		const FireProductionProjectionShape& Shape() const { return shape_; }
+		float TimeStepS() const { return timeStepS_; }
+		double BeginningTimeS() const { return beginningTimeS_; }
+		std::uint64_t AttemptIdentity() const { return attemptIdentity_; }
+		const std::string& MethaneRecordId() const { return methaneRecordId_; }
+		const std::string& TransportRecordId() const { return transportRecordId_; }
+		const std::string& OpacityRecordId() const { return opacityRecordId_; }
+		const std::string& CaseRecordId() const { return caseRecordId_; }
+		const std::vector<float>& SourceDelta() const { return sourceDelta_; }
+		const std::vector<double>& ReactedFuelKGPerM3() const { return reactedFuelKGPerM3_; }
+		const std::vector<double>& OxidizedCarbonKGPerM3() const { return oxidizedCarbonKGPerM3_; }
+		const std::vector<double>& GrossCarbonFormedKGPerM3() const
+			{ return grossCarbonFormedKGPerM3_; }
+		const std::vector<double>& GasHeatReleaseWPerM3() const { return gasHeatReleaseWPerM3_; }
+		const std::vector<double>& SootHeatReleaseWPerM3() const { return sootHeatReleaseWPerM3_; }
+		const std::vector<double>& PilotEnergyDeltaJPerM3() const
+			{ return pilotEnergyDeltaJPerM3_; }
+		const std::vector<double>& PilotExpansionIntegral() const
+			{ return pilotExpansionIntegral_; }
+		const std::vector<double>& RadiativeCoolingWPerM3() const
+			{ return radiativeCoolingWPerM3_; }
+		double RadiationBeta() const { return radiationBeta_; }
+		double RadiationGamma() const { return radiationGamma_; }
+		double RadiationEscapeFactor() const { return radiationEscapeFactor_; }
+		double MaximumScaledExpansion() const { return maximumScaledExpansion_; }
+		std::uint64_t BeginningStateIdentity() const { return beginningStateIdentity_; }
+		std::uint64_t ReactionControlIdentity() const { return reactionControlIdentity_; }
+		std::uint64_t SourceInputIdentity() const { return sourceInputIdentity_; }
+		std::uint64_t GlobalRadiationIdentity() const { return globalRadiationIdentity_; }
+		std::uint64_t PacketContentIdentity() const { return packetContentIdentity_; }
+		std::uint64_t PacketIdentity() const { return packetIdentity_; }
+		bool IsSealed() const { return sealed_; }
+	};
+
+	//! Recomputes every published-content and parent identity.  It cannot mint a
+	//! seal and therefore does not turn algebraic validation into source authority.
+	bool FireProductionFrozenSourcePacketSealMatches(
+		const FireProductionFrozenSourcePacketSeal& seal,
+		std::string* error=0 );
 
 	//! Identity-bearing donor/MC flux pair for one scalar FCT stage.  The pair
 	//! deliberately excludes limiter state: projected Heun averages the two

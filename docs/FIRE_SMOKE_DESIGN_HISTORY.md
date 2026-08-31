@@ -4670,3 +4670,32 @@ it was already tried and refuted here.
   kernel has no oracle. Metal
   composition, packet-derived `S_div`, the complete projected-Heun owner,
   onset revalidation, and tier-10 deliverables remain blocked.
+- **r186 canonical frozen-source authority prerequisite (2026-08-31):** moves
+  the canonical methane source chain out of the tool layer into one shared
+  `src/Library` implementation and adds a non-inline compiled authority that
+  alone can mint the opaque production seal.  A first validator-shaped draft
+  was rejected: algebraic validation of caller-authored dose/pilot/radiation
+  fields is not source provenance.  A second draft was also rejected because
+  its complete friend class still had only inline definitions in the tools
+  header, leaving the mint replaceable and the production library unresolved.
+  The accepted boundary exposes raw authenticated `Q`, case, timing, pilot-mask,
+  mixing, and radiation-policy inputs only; ignition, reaction, exact pilot
+  `1/V'`, global radiation, ledgers, and expansion are derived internally.
+
+  The source path uses r184's shared record inversion and therefore preserves
+  its inclusive lower publication semantics rather than inventing a source-
+  only rejection.  The strict case ceiling remains fail-closed.  Six parent/
+  content identities bind the complete packet.  Worker scheduling is excluded
+  from physical identity and serial/parallel packets compare byte-for-byte.
+  Fresh review also exposed two general worker/resource defects: partial pool
+  growth could retain threads after creation failure, and task exceptions
+  escaped the worker.  Growth now commits atomically, exceptions propagate
+  after the barrier, the pool is reusable, and worker count is topology-bounded.
+  Because the global pool retains its high-water threads, every admission now
+  charges conservative stack reservations for the full topology capacity plus
+  an explicitly bounded case envelope.  Exact adjacent and high-worker-to-low-
+  worker working-set tests and early over-cap REDs bind the certificate.
+
+  This remains a CPU source prerequisite.  Packet-derived `S_div`, Metal
+  command encoding, the coupled projected-Heun owner, onset validation, and
+  tier-10 deliverables remain blocked.

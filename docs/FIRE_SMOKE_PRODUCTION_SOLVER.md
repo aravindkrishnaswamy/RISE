@@ -5028,6 +5028,55 @@ Metal composed-stage encoder, packet-derived `S_div`, coupled R0/R1/R2 cycle,
 state commit, onset verdict, or tier-10 deliverable is enabled. Those remain
 blocked behind packet/source composition and caller-command resident encoders.
 
+### 7.56s Canonical frozen-source authority prerequisite (r186)
+
+r186 closes the CPU source-map ownership seam needed before packet-derived
+`S_div` can be composed.  The public request contains only authenticated raw
+inputs: shape, `Delta t`, beginning time and attempt, the canonical fire-case
+envelope, beginning component-major binary32 `Q`, the controller's pilot mask,
+per-cell mixing time, predictive-radiation policy, and a topology-bounded
+worker count.  It cannot supply a conservative source dose, pilot energy or
+expansion pair, reaction diagnostics, radiation factor, or a qualification
+bit.
+
+One implementation now owns the source arithmetic.  The previously
+tool-local cell state, ignition/reaction, exact pilot projection, global
+radiation, backward-Euler cooling, ledger, and finite-expansion kernels moved
+unchanged to `FireProductionSourceKernel.h` under `src/Library`; the offline
+tool includes that shared implementation and no longer defines a second grid
+producer.  The only seal-minting `Build` member is non-inline in the compiled
+`FireProductionSource.cpp`.  This corrects a rejected draft whose friend-capable
+definition lived only in the tool header and could therefore be replaced by a
+client definition.
+
+The authority validates PhysicalV1, OpenV1, HITEMPPlanckMeanV1, and the case
+record references before producing anything.  Temperature comes from the
+same r184 record inversion over the authenticated `[300,2300] K` interval:
+the lower endpoint is inclusive and may publish a certified below-endpoint
+roundoff state as `300 K`, while publication at the `2300 K` ceiling refuses.
+It derives ignition connectivity and the continuous pilot command, including
+the exact `(E(T')-E(T0))/V'` energy and `1-1/V'` expansion pair; applies
+reaction headroom, the single grid radiation escape factor, cooling, source
+ledgers, and expansion admission; then publishes an opaque `9C` resident dose
+plus eight diagnostic fields.
+
+Beginning-state, reaction-control, raw-source-input, global-radiation, packet-
+content, and final packet identities bind all retained bytes and record
+parents.  Scheduling is deliberately not physical identity: one- and
+multi-worker builds are byte-identical.  Worker creation is topology-bounded,
+partial growth rolls back atomically, task exceptions cross the completed
+barrier, and the pool remains reusable.  Because the process-global pool keeps
+its high-water worker set, every admission charges a conservative 8 MiB stack
+reservation for the complete hardware-concurrency capacity, not merely the
+current request.  It also charges a one-MiB bounded case envelope/record
+scratch and every simultaneously live per-cell field.  Exact adjacent-shape
+and high-worker-then-low-worker tests bind that formula; oversized shape,
+envelope, and worker requests refuse before payload parsing or allocation.
+
+This is a compiled CPU prerequisite only.  r186 does not yet compose
+packet-derived `S_div`, encode Metal source commands, wire the R0/R1/R2 owner,
+rerun onset, or authorize any tier-10 spectrum, row, animation, or report.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
