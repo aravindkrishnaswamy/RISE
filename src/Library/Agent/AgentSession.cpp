@@ -4918,12 +4918,37 @@ namespace RISE
 			//! `color 0 0 0` emits nothing, so it genuinely measures ~0%, and
 			//! telling its author to RAISE THE EXITANCE would be confident,
 			//! specific, actionable and wrong.
-			bool DimLightIntensityIsNonTrivial_( const NodeRef& item, const std::string& kind, double value )
+			//!
+			//! PRIMITIVES, not a NodeRef -- deliberately, since 2026-08-31
+			//! (condition O).  Condition N evaluates this against the LIVE
+			//! document (a NodeRef it can still read a `color` off); condition
+			//! O evaluates the identical rule against a RECORDED measurement
+			//! snapshot, whose light may have since been edited or deleted, so
+			//! there is no live node left to read.  Taking `colorMax` as an
+			//! already-read double is what lets both conditions call the SAME
+			//! function instead of growing two ideas of "authored non-trivial".
+			bool DimLightIntensityIsNonTrivial_( const std::string& kind, double value, double colorMax )
 			{
 				DimLightIntensityRule_ rule;
 				if( !DimLightIntensityRuleFor_( kind, rule ) ) return false;
 				if( value < rule.floorValue ) return false;
-				return DimLightColorMax_( item, rule.defaultColorIsBlack ? 0.0 : 1.0 ) > 0.0;
+				return colorMax > 0.0;
+			}
+
+			//! Condition N's WHOLE qualification -- clauses (i) (share below
+			//! the gate) and (ii) (authored non-trivially) together -- as ONE
+			//! function so condition O can ask "was this cached measurement
+			//! ever a real N finding?" without re-deriving either threshold.
+			//! Takes the same primitives `DimLightIntensityIsNonTrivial_` does
+			//! plus the measured `share`, so it can be evaluated against
+			//! EITHER the live document (N, mixing a current-doc `value`/
+			//! `colorMax` with a cached `share`) or a recorded snapshot alone
+			//! (O, every argument from the same cache entry).
+			bool IsQualifiedDimFinding_( const std::string& kind, double authoredIntensity, double colorMax,
+			                            double share )
+			{
+				if( !( share < kDimLightShareGate ) ) return false;
+				return DimLightIntensityIsNonTrivial_( kind, authoredIntensity, colorMax );
 			}
 
 			//! Condition N's ONE finding: a light authored bright that measured
@@ -4973,6 +4998,65 @@ namespace RISE
 				return s;
 			}
 
+			//======================================================================
+			// Condition O (2026-08-31): the RE-MEASURE NUDGE.  See
+			// AgentDiagnosticCode::DESIGN_DIM_LIGHT_REMEASURE's own doc for the
+			// whole condition -- the handoff void it closes, the three clauses
+			// of its predicate, and the M-edit-N-O-light_scene lifecycle loop
+			// that disarms it.  The pieces below are only the finding shape and
+			// the shared clause; the predicate itself lives in
+			// ComputeDesignNoteConditionsFromDoc_, right after condition N's own
+			// resolution pass, because it reads the SAME `soloCache` and
+			// `positionalLights`/`enclosedLightFindings` N's pass already built.
+			//======================================================================
+
+			//! Condition O's ONE finding: a light whose cached measurement was a
+			//! qualified dim finding, RECORDED, whose chunk has since been
+			//! edited -- so the number below is stale by construction (that is
+			//! the whole point: the edit is what makes this an O finding rather
+			//! than an N one).
+			struct DimLightRemeasureFinding_
+			{
+				std::string name;
+				std::string kind;
+				std::string intensityParam;   //!< "power" / "exitance", RECORDED
+				double      authoredIntensity = 0.0;   //!< RECORDED, not the current chunk's value
+				double      share             = 0.0;   //!< [0,1] RECORDED share of the measured light total
+			};
+
+			//! Condition O's whole clause, SHARED by the note builder and the
+			//! diagnostic builder -- FormatDimHeroLightClause_'s arrangement
+			//! exactly, and for its reason: the two carriers must not be able to
+			//! disagree about what was recorded.
+			//!
+			//! BOTH RECORDED NUMBERS, always -- the share and what it was
+			//! authored at when THAT measurement was taken -- so an author can
+			//! recognise which run this is talking about, plus the one new fact
+			//! N's clause never needed to state: the light has been edited SINCE,
+			//! so the number is now unverified rather than merely a validity-key
+			//! non-match.  `findings` is never empty when this is called; more
+			//! than one collapses to the first named in full plus a count,
+			//! matching this file's other multi-finding clauses.
+			std::string FormatDimLightRemeasureClause_( const std::vector<DimLightRemeasureFinding_>& findings )
+			{
+				const DimLightRemeasureFinding_& f = findings[0];
+				char valueBuf[64];
+				std::snprintf( valueBuf, sizeof( valueBuf ), "%g", f.authoredIntensity );
+				char pctBuf[64];
+				std::snprintf( pctBuf, sizeof( pctBuf ), "%.1f", f.share * 100.0 );
+
+				std::string s = "`" + f.name + "` measured " + pctBuf + "% of this scene's measured light "
+					"total (authored at `" + f.intensityParam + " " + valueBuf + "`) when light_scene last "
+					"ran, and it has been edited since -- the fix is UNVERIFIED. Re-run light_scene to "
+					"confirm the light now reaches the scene.";
+				if( findings.size() > 1 ) {
+					s += " (" + std::to_string( findings.size() - 1 ) + " more light" +
+					     ( findings.size() > 2 ? std::string( "s" ) : std::string() ) +
+					     " edited since their own dim measurement.)";
+				}
+				return s;
+			}
+
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused (binding-aware as of adoption-polish item 3)
@@ -4989,6 +5073,7 @@ namespace RISE
 				bool conditionL = false;   //!< GEOMETRY_SHADING_SIGNALS sec 11: a flat-colour material on curv-bearing geometry -- `add_wear`'s note half
 				bool conditionM = false;   //!< the emissive-on-opaque-shell translucency fake: a positional light enclosed by an opaque standard_object
 				bool conditionN = false;   //!< the dim hero light: authored bright, MEASURED at <2% by light_scene's own solo audit
+				bool conditionO = false;   //!< the re-measure nudge: a QUALIFIED-DIM cached measurement whose light has since been edited (N's own invalidation case) and is no longer enclosed by M
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -5153,6 +5238,16 @@ namespace RISE
 				//! document order.  Read through !empty() -- one light authored
 				//! at exitance 5000 and measuring 1% already IS the failure.
 				std::vector<DimLightFinding_> dimLightFindings;
+
+				//! Condition O: every re-measure-nudge finding, in CACHE
+				//! iteration order (the map is keyed by light name, so this is
+				//! alphabetical -- unlike M/N's document order, since O's input
+				//! is the cache, not a document walk).  Read through !empty();
+				//! MUTUALLY EXCLUSIVE with dimLightFindings above by
+				//! construction -- N requires the cached chunkText to still
+				//! match the live chunk, O requires it not to, so no light can
+				//! ever appear in both vectors from the same computation.
+				std::vector<DimLightRemeasureFinding_> dimLightRemeasureFindings;
 			};
 
 			//! Condition L's gate: how many wear candidates it takes before the
@@ -5943,8 +6038,13 @@ namespace RISE
 						L.chunkText = RISE::Cst::SerializeNode( item );
 						L.haveIntensity = ReadDimLightAuthoredIntensity_( item, role, L.intensityParam,
 						                                                  L.authoredIntensity );
-						L.intensityNonTrivial = L.haveIntensity &&
-							DimLightIntensityIsNonTrivial_( item, role, L.authoredIntensity );
+						if( L.haveIntensity ) {
+							DimLightIntensityRule_ rule;
+							DimLightIntensityRuleFor_( role, rule );
+							const double colorMax = DimLightColorMax_( item, rule.defaultColorIsBlack ? 0.0 : 1.0 );
+							L.intensityNonTrivial =
+								DimLightIntensityIsNonTrivial_( role, L.authoredIntensity, colorMax );
+						}
 						if( !L.name.empty() ) positionalLights.push_back( L );
 					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
@@ -6881,6 +6981,78 @@ namespace RISE
 				}
 				c.conditionN = !c.dimLightFindings.empty();
 
+				// (2026-08-31) Condition O's resolution pass -- the RE-MEASURE
+				// NUDGE.  See AgentDiagnosticCode::DESIGN_DIM_LIGHT_REMEASURE's
+				// doc for the whole condition: it closes the handoff void N's
+				// own invalidation case opens the moment an agent "fixes" an
+				// enclosed light by editing the light itself, then never re-runs
+				// `light_scene`.
+				//
+				// ITERATES THE CACHE, not `positionalLights` -- N walks the
+				// document because its (ii) check needs the CURRENT chunk; O's
+				// qualification (1) is evaluated purely against the RECORDED
+				// snapshot, so the cache is the natural thing to iterate, and a
+				// light that has been deleted (no longer in `positionalLights`
+				// at all) still needs to be visited so clause (2) can rule it
+				// silent by name lookup below.
+				//
+				// SILENT WITHOUT A CACHE, exactly like N: absent, never guessed.
+				if( soloCache && !soloCache->empty() ) {
+					for( AgentSession::AgentLightSoloMeasurementMap::const_iterator it = soloCache->begin();
+					     it != soloCache->end(); ++it ) {
+						const AgentSession::AgentLightSoloMeasurement& rec = it->second;
+
+						// (1) The RECORDED measurement was itself a QUALIFIED DIM
+						// FINDING -- condition N's own qualification (share (i)
+						// and authored-non-trivial (ii)), evaluated against the
+						// snapshot the cache holds.  A cache entry that was
+						// never a real N finding to begin with (a healthy share,
+						// or a light authored faint on purpose) has nothing to
+						// nudge a re-measure over.  SAME function N's own (ii)
+						// check is built on -- no duplicated thresholds.
+						if( !IsQualifiedDimFinding_( rec.kind, rec.authoredIntensity, rec.authoredColorMax,
+						                             rec.share ) )
+							continue;
+
+						// (2) THE EDIT HAPPENED.  Find this light's CURRENT
+						// chunk by name in the same document walk N reads from.
+						// Absent -> deleted, silent (nothing left to nudge a
+						// re-measure on).  Kind changed -> the name was
+						// re-authored as a different light kind, silent for the
+						// same reason a deleted light is.  Text UNCHANGED ->
+						// this is N's territory (the cache is still valid), not
+						// O's -- N speaks instead, and by construction never
+						// both.
+						const PositionalLightCandidate_* current = nullptr;
+						for( const PositionalLightCandidate_& L : positionalLights )
+							if( L.name == it->first ) { current = &L; break; }
+						if( !current )                                continue;
+						if( current->kind != rec.kind )               continue;
+						if( current->chunkText == rec.chunkText )     continue;
+
+						// (3) SUPPRESSED BY CONDITION M.  If M still names this
+						// light, the enclosure is not fixed yet -- nudging a
+						// re-measure is premature, the same "speak together or
+						// not at all" rule N's own M-suppression follows.  With
+						// no derived scene, `enclosedLightFindings` is empty and
+						// M is structurally silent, so this loop finds nothing
+						// and O behaves exactly as N does in that bootstrap case.
+						bool namedByM = false;
+						for( const EnclosedLightFinding_& e : c.enclosedLightFindings )
+							if( e.lightName == it->first ) { namedByM = true; break; }
+						if( namedByM ) continue;
+
+						DimLightRemeasureFinding_ f;
+						f.name              = it->first;
+						f.kind              = rec.kind;
+						f.intensityParam    = rec.intensityParam;
+						f.authoredIntensity = rec.authoredIntensity;
+						f.share             = rec.share;
+						c.dimLightRemeasureFindings.push_back( f );
+					}
+				}
+				c.conditionO = !c.dimLightRemeasureFindings.empty();
+
 				// (88) Condition C: the LARGEST qualifying group wins, so the
 				// note names one concrete geometry rather than a list.  The
 				// `distinctTransforms` requirement is what makes the clause's
@@ -7293,7 +7465,7 @@ namespace RISE
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM && !c.conditionN ) return std::string();
+				    !c.conditionM && !c.conditionN && !c.conditionO ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -7382,6 +7554,9 @@ namespace RISE
 				if( c.conditionN ) {
 					note += " " + FormatDimHeroLightClause_( c.dimLightFindings );
 				}
+				if( c.conditionO ) {
+					note += " " + FormatDimLightRemeasureClause_( c.dimLightRemeasureFindings );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -7422,7 +7597,7 @@ namespace RISE
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM && !c.conditionN ) return;
+				    !c.conditionM && !c.conditionN && !c.conditionO ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -7612,6 +7787,20 @@ namespace RISE
 					// hedge about what the cached figure does and does not
 					// track, which is the escape a stale reading needs.
 					d.message = FormatDimHeroLightClause_( c.dimLightFindings );
+					out.push_back( d );
+				}
+				if( c.conditionO ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_DIM_LIGHT_REMEASURE;
+					// SHARED formatter -- cannot drift from the note's O clause.
+					// No kSelfDisarm, N's own reason: this is a re-measure NUDGE
+					// off a real prior measurement plus a real edit since, not a
+					// styling judgement -- and the clause's own "Re-run
+					// light_scene" imperative already IS the escape (the very
+					// next light_scene run disarms this condition one way or the
+					// other, see the condition's doc for the lifecycle).
+					d.message = FormatDimLightRemeasureClause_( c.dimLightRemeasureFindings );
 					out.push_back( d );
 				}
 			}
@@ -30223,6 +30412,16 @@ namespace RISE
 				// the same bytes), so this copy is a self-describing record,
 				// not the value the clause prints.
 				ReadDimLightAuthoredIntensity_( node, kind, rec.intensityParam, rec.authoredIntensity );
+				// Condition O's OWN need (2026-08-31): once this light's chunk
+				// has been edited, there is no live node left for
+				// IsQualifiedDimFinding_ to read a colour off, so the snapshot
+				// must carry it.  Read the SAME way condition N's (ii) check
+				// does -- same rule, same fallback for an absent `color`.
+				{
+					DimLightIntensityRule_ rule;
+					if( DimLightIntensityRuleFor_( kind, rule ) )
+						rec.authoredColorMax = DimLightColorMax_( node, rule.defaultColorIsBlack ? 0.0 : 1.0 );
+				}
 
 				mLightSoloMeasurements[rec.name] = rec;
 			}

@@ -2664,6 +2664,17 @@ namespace RISE
 				//! so the record is self-describing at the point it is written.
 				double      authoredIntensity = 0.0;
 				std::string intensityParam;
+				//! The largest channel of the light's `color` at measurement
+				//! time (0.0 when the parameter was absent and the kind
+				//! defaults it to black), read the SAME way condition N's own
+				//! (ii) colour test does.  Kept here -- not just re-derivable
+				//! from `chunkText` -- so condition O (DESIGN_DIM_LIGHT_
+				//! REMEASURE, AgentDiagnostic.h) can evaluate N's whole
+				//! qualification predicate against this RECORDED SNAPSHOT
+				//! after the light's chunk has since changed, when there is no
+				//! longer a live document node for this measurement to read a
+				//! colour off.
+				double      authoredColorMax = 0.0;
 				std::string chunkText;
 			};
 

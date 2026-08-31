@@ -466,6 +466,82 @@ namespace RISE
 			//! `RenderCore_`), and both render the SAME shared clause.
 			//! Severity::Info, this family's convention.
 			static const char* const DESIGN_DIM_HERO_LIGHT = "DESIGN_DIM_HERO_LIGHT";
+			//! Condition O (2026-08-31): the RE-MEASURE NUDGE that closes the
+			//! handoff void between conditions M and N -- N's own
+			//! cache-invalidation event (the light's chunk text changes) is
+			//! EXACTLY what happens when an agent acts on condition M's advice
+			//! and "fixes" an enclosed light by editing the light itself.
+			//! Editing erases N's own evidence: the stale entry stops matching
+			//! and N goes silent, without the fix's effect ever having been
+			//! re-measured.
+			//!
+			//! MEASURED MOTIVATION (altar p4 forensic, 2026-08-31): condition M
+			//! fired live on an enclosed dim light in both runs.  Both agents
+			//! fixed the enclosure by EDITING THE LIGHT (moving it, enlarging
+			//! it, retuning it) -- which is the light's OWN chunk changing,
+			//! i.e. N's invalidation case -- and then never re-ran
+			//! `light_scene`.  The fix's effectiveness was unverifiable and
+			//! both closing summaries claimed an unmeasured "glow".  Acting on
+			//! M's advice erases N's evidence; O exists to close that handoff
+			//! void rather than leave it a dead end.
+			//!
+			//! FIRES on >= 1 light for which ALL THREE hold:
+			//!   (1) The CACHED measurement was itself a QUALIFIED DIM FINDING
+			//!       when it was recorded -- condition N's own qualification
+			//!       (share < kDimLightShareGate, and authored-non-trivial
+			//!       with a non-black colour), evaluated against the RECORDED
+			//!       SNAPSHOT rather than the live document
+			//!       (IsQualifiedDimFinding_ in AgentSession.cpp, built on the
+			//!       SAME primitive N's own (ii) check calls -- no duplicated
+			//!       thresholds).  A cache entry that was never a real N
+			//!       finding to begin with (a healthy share, or a light
+			//!       authored faint on purpose) has nothing to nudge a
+			//!       re-measure over.
+			//!   (2) The light's CURRENT chunk exists, with the SAME authored
+			//!       kind, but its text is DIFFERENT from the recorded
+			//!       `chunkText` -- the edit happened.  This is N's OWN
+			//!       invalidation test read the other way: N requires
+			//!       byte-identical text to speak from the cache; O requires
+			//!       it to differ.  A DELETED light, or one whose name was
+			//!       re-authored as a different light kind, is silent -- there
+			//!       is no live chunk to nudge a re-measure on.
+			//!   (3) Condition M does NOT currently name this light.  If M
+			//!       still fires, the enclosure is not fixed yet and nudging a
+			//!       re-measure is premature -- the same "speak together or
+			//!       not at all" rule M/N already share, including the
+			//!       bootstrap case: when M cannot be computed at all (no
+			//!       derived scene, so M is structurally silent), O stays
+			//!       silent too, exactly as N does.
+			//!
+			//! MUTUALLY EXCLUSIVE WITH N, BY CONSTRUCTION: N requires the
+			//! cached `chunkText` to be BYTE-IDENTICAL to the light's current
+			//! chunk; O requires it to be DIFFERENT.  The same light can never
+			//! satisfy both predicates in the same computation -- one reads
+			//! "still valid and still dim", the other reads "no longer valid
+			//! because it was just edited".
+			//!
+			//! THE SELF-DISARMING LOOP this condition closes: M fires (light
+			//! enclosed) -> an agent edits the light itself (the attempted
+			//! fix) -> the edit invalidates N's cache entry, so N goes silent
+			//! -> O picks up exactly that silence and nudges a re-run -> when
+			//! `light_scene` actually re-runs it REPLACES the cache entry with
+			//! a fresh one keyed to the NEW chunk text -> if the fix worked,
+			//! the fresh measurement is healthy and BOTH N and O fall silent;
+			//! if it did not, N fires again on the fresh (now validly-keyed)
+			//! low share and O is silent (there is no longer anything stale to
+			//! nudge).  Either branch, re-running `light_scene` is what ENDS
+			//! this condition -- it can never be satisfied by further editing
+			//! alone, only by measuring again.
+			//!
+			//! REQUIRES SESSION STATE, exactly like N: the stateless text-only
+			//! carriers (`ValidateText`, `ComputeDesignNote` called with no
+			//! cache) are silent on it, for the identical reason -- a
+			//! condition whose input the caller does not have is absent, never
+			//! guessed.  Severity::Info, this family's convention; both
+			//! carriers render the SAME shared clause
+			//! (FormatDimLightRemeasureClause_ in AgentSession.cpp), so they
+			//! can never disagree about what fired.
+			static const char* const DESIGN_DIM_LIGHT_REMEASURE = "DESIGN_DIM_LIGHT_REMEASURE";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a
