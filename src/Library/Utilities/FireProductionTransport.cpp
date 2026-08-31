@@ -1684,8 +1684,11 @@ namespace RISE
 			for(unsigned int side=0u;side<6u;++side){
 				if(request.pressureOpenInflow[side].size()!=sideFaceCount(side))
 					return Fail(error,"scalar FCT inflow shape is invalid");
-				for(const unsigned char value:request.pressureOpenInflow[side])if(value>1u)
-					return Fail(error,"scalar FCT inflow value is invalid");
+				for(const unsigned char value:request.pressureOpenInflow[side]){
+					if(value>1u)return Fail(error,"scalar FCT inflow value is invalid");
+					if(request.boundary[side]!=FireProductionProjectionPressureOpen&&value!=0u)
+						return Fail(error,"scalar FCT inactive inflow identity is noncanonical");
+				}
 			}
 			for(const float value:request.beginning)if(!std::isfinite(value))
 				return Fail(error,"scalar FCT beginning is nonfinite");
@@ -1855,6 +1858,18 @@ namespace RISE
 				}
 				if(!std::isfinite(low))return Fail(error,"scalar FCT low state is nonfinite");
 				computed.lowState[component*cells+cell]=low;
+			}
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<float,9> low={{}};float rowScale=1.0f;
+				for(std::size_t component=0u;component<components;++component){
+					low[component]=computed.lowState[component*cells+cell];
+					rowScale+=std::fabs(low[component]);
+				}
+				for(std::size_t inequality=0u;inequality<inequalities;++inequality){
+					const float excess=inequalityValue(low.data(),inequality);
+					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale)
+						return Fail(error,"scalar FCT low state exceeds r60 envelope");
+				}
 			}
 			computed.limiterRatio.assign(inequalities*cells,1.0f);
 			for(std::size_t inequality=0u;inequality<inequalities;++inequality)

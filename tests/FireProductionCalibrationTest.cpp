@@ -4818,6 +4818,60 @@ int main()
 	Check(constantPairExact,
 		"strict fp32 donor/MC pair is word-exact to the live periodic oracle on the dyadic collapse");
 
+	// The nonconstant live bootstrap uses the oracle's actual invariant-MC
+	// routine with the exact one-row orthonormal basis e_CH4.  Thus the
+	// binary64 operations collapse exactly to binary32 on a nonzero slope,
+	// while the zero assembly budget makes the independently-known shared
+	// limiter answer alpha=0 on precisely the two antidiffusive faces.
+	RISE::FireProductionScalarFCTRequest liveFrontScalarFCT=scalarFCT;
+	liveFrontScalarFCT.sourceDelta.assign(9u*scalarCells,0.0f);
+	liveFrontScalarFCT.nullspaceBasis.assign(8u,0.0f);
+	liveFrontScalarFCT.nullspaceBasis[1]=1.0f;
+	liveFrontScalarFCT.coordinateProjector.assign(1u,1.0f);
+	liveFrontScalarFCT.assemblyReserveFactor=liveFrontScalarFCT.feasibilityFactor;
+	RISE::FireProductionScalarFCTResult liveFrontScalarResult;
+	const bool liveFrontScalarOK=RISE::EvaluateFireProductionScalarFCTCPU(
+		liveFrontScalarFCT,liveFrontScalarResult,&error);
+	RISE::FireCertifiedNullspace liveFrontClosure;
+	liveFrontClosure.stateDimension=8u;liveFrontClosure.nullity=1u;
+	liveFrontClosure.orthonormalBasis.assign(8u,0.0);
+	liveFrontClosure.orthonormalBasis[1]=1.0;
+	std::vector<RISE::FireSim::ConservativeVector> liveFrontLine(4u);
+	for(std::size_t x=0u;x<4u;++x){
+		liveFrontLine[x][0]=static_cast<double>(scalarPattern[x]);
+		liveFrontLine[x][1]=static_cast<double>(scalarPattern[x]);
+	}
+	std::vector<std::array<double,8> > liveFrontSlope;
+	const bool liveFrontOracleOK=RISE::FireSim::InvariantMCMassSlopes(
+		liveFrontLine,liveFrontClosure,liveFrontSlope,&error);
+	bool liveFrontPairExact=liveFrontScalarOK&&liveFrontOracleOK;
+	for(std::size_t z=0u;z<4u&&liveFrontPairExact;++z)
+		for(std::size_t y=0u;y<4u&&liveFrontPairExact;++y)
+			for(std::size_t x=0u;x<4u&&liveFrontPairExact;++x){
+				const std::size_t face=productionFaceIndex(
+					liveFrontScalarFCT.shape,0u,x+1u,y,z);
+				const std::size_t packed=liveFrontScalarResult.packedFaceOffset[0]+face;
+				for(std::size_t component=0u;component<8u&&liveFrontPairExact;++component){
+					const double oracleLow=liveFrontLine[x][component];
+					const double oracleDelta=0.5*liveFrontSlope[x][component];
+					liveFrontPairExact=sameDoubleBits(static_cast<double>(liveFrontScalarResult.
+						lowFlux[component*liveFrontScalarResult.lowFlux.size()/9u+packed]),
+						oracleLow)&&sameDoubleBits(static_cast<double>(liveFrontScalarResult.
+						fluxDelta[component*liveFrontScalarResult.fluxDelta.size()/9u+packed]),
+						oracleDelta);
+				}
+				const bool antidiffusive=x==1u||x==3u;
+				liveFrontPairExact=liveFrontPairExact&&liveFrontScalarResult.
+					sharedFaceAlpha[0][face]==(antidiffusive?0.0f:1.0f)&&
+					liveFrontScalarResult.acceptedGasFluxKGPerM2S[0][face]==
+					liveFrontScalarResult.lowFlux[liveFrontScalarResult.lowFlux.size()/9u+packed];
+			}
+	for(std::size_t value=0u;value<liveFrontScalarResult.accepted.size()&&
+		liveFrontPairExact;++value)liveFrontPairExact=liveFrontScalarResult.accepted[value]==
+		liveFrontScalarResult.lowState[value];
+	Check(liveFrontPairExact,
+		"nonconstant dyadic MC slopes match the live oracle and bind shared-alpha acceptance");
+
 	// The production PPM dose and an evolving carrier are rejected operator
 	// mutations: this fixture must distinguish both from the frozen MC/FCT form.
 	RISE::FireProductionRemapRequest ppmMutation;
@@ -4887,11 +4941,19 @@ int main()
 	malformedScalarFCT=scalarFCT;malformedScalarFCT.pressureOpenInflow[0][0]=2u;
 	const bool badInflowRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
 		malformedScalarFCT,refusedScalarFCT,&error);
+	malformedScalarFCT=scalarFCT;malformedScalarFCT.pressureOpenInflow[0][0]=1u;
+	const bool inactiveInflowRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
+		malformedScalarFCT,refusedScalarFCT,&error);
+	malformedScalarFCT=constantScalarFCT;
+	malformedScalarFCT.sourceDelta[scalarCells]=-2.0f;
+	const bool infeasibleLowRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
+		malformedScalarFCT,refusedScalarFCT,&error);
 	malformedScalarFCT=scalarFCT;malformedScalarFCT.frozenVelocityMPerS[0].back()=-0.0f;
 	const bool badVelocitySeamRefused=!RISE::EvaluateFireProductionScalarFCTCPU(
 		malformedScalarFCT,refusedScalarFCT,&error);
-	Check(badBasisRefused&&badSourceRefused&&badInflowRefused&&badVelocitySeamRefused,
-		"scalar FCT stages fail closed on malformed certificate, source, inflow, and seam identity");
+	Check(badBasisRefused&&badSourceRefused&&badInflowRefused&&inactiveInflowRefused&&
+		infeasibleLowRefused&&badVelocitySeamRefused,
+		"scalar FCT stages fail closed on malformed certificate, low state, inflow, and seam identity");
 
 	RISE::FireProductionDualMomentumRequest dual32;
 	dual32.shape=cell32.shape;dual32.timeStepS=cell32.timeStepS;
