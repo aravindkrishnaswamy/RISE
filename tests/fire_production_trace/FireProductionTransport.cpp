@@ -12,6 +12,7 @@
 #include "FireProductionTransport.h"
 
 #include "FireProductionAdvection.h"
+#include "../../src/Library/Utilities/FireSimulationRecords.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1393,6 +1394,276 @@ namespace RISEFireProductionTrace
 		}
 	}
 
+	bool QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& workingSetBytes,
+		std::string* error )
+	{
+		workingSetBytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+			!std::isfinite(shape.cellWidthM))return Fail(error,
+				"physical scalar-flux prerequisite query shape is invalid");
+		const std::uint64_t cells=shape.CellCount(),allFaces=
+			FireProductionProjectionFaceCount(shape,0u)+
+			FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u),boundaryFaces=2u*(
+			shape.ny*shape.nz+shape.nx*shape.nz+shape.nx*shape.ny);
+		if(!AddBytes(cells,12u*sizeof(float),workingSetBytes)||
+			!AddBytes(allFaces,11u*sizeof(float),workingSetBytes)||
+			!AddBytes(boundaryFaces,sizeof(unsigned char),workingSetBytes)){
+			workingSetBytes=0u;return Fail(error,
+				"physical scalar-flux prerequisite query exceeds uint64 capacity");
+		}
+		if(error)error->clear();return true;
+	}
+
+	bool BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
+		FireProductionScalarPhysicalFluxPrerequisiteResult& result, std::string* error )
+	{
+		result=FireProductionScalarPhysicalFluxPrerequisiteResult();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			const RISE::FireSimulationMethaneRecord& record=
+				RISE::FireSimulationMethaneRecord::PhysicalV1();
+			const RISE::FireCertifiedNullspace& projection=record.NonadvectiveFluxProjection();
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!std::isfinite(1.0f/shape.cellWidthM)||
+				!record.IsValid()||projection.stateDimension!=8u||projection.nullity==0u||
+				projection.nullity>8u||projection.orthonormalBasis.size()!=8u*projection.nullity)
+				return Fail(error,"physical scalar-flux prerequisite shape or record is invalid");
+			std::uint64_t workingSetBytes=0u;
+			if(!QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
+				shape,workingSetBytes,error))return false;
+			if(workingSetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"physical scalar-flux prerequisite working set exceeds two GiB");
+			const std::size_t cells=shape.CellCount();
+			if(request.conservativeValues.size()!=9u*cells||request.temperatureK.size()!=cells||
+				request.diffusivityM2PerS.size()!=cells||request.conductivityWPerMK.size()!=cells||
+				!std::isfinite(request.ambientTemperatureK)||
+				static_cast<double>(request.ambientTemperatureK)<record.TemperatureMinK()||
+				static_cast<double>(request.ambientTemperatureK)>record.TemperatureMaxK())
+				return Fail(error,"physical scalar-flux prerequisite cell input is invalid");
+			auto sideCount=[&](unsigned int side){return side<2u?shape.ny*shape.nz:
+				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);};
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis],
+					upper=request.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))||request.frozenVelocityMPerS[axis].size()!=
+					FireProductionProjectionFaceCount(shape,axis))return Fail(error,
+						"physical scalar-flux prerequisite boundary or velocity shape is invalid");
+				for(FireProductionRoundoffTrace::TraceFloat value:request.frozenVelocityMPerS[axis])if(!std::isfinite(value))
+					return Fail(error,"physical scalar-flux prerequisite velocity is nonfinite");
+				if(lower==FireProductionProjectionPeriodic&&
+					!PeriodicFaceSeamBitEqual(shape,request.frozenVelocityMPerS[axis],axis))
+					return Fail(error,"physical scalar-flux prerequisite periodic velocity seam is invalid");
+			}
+			for(unsigned int side=0u;side<6u;++side){
+				if(request.pressureOpenInflow[side].size()!=sideCount(side))return Fail(error,
+					"physical scalar-flux prerequisite inflow shape is invalid");
+				for(unsigned char value:request.pressureOpenInflow[side])if(value>1u||
+					(request.boundary[side]!=FireProductionProjectionPressureOpen&&value!=0u))
+					return Fail(error,"physical scalar-flux prerequisite inflow value is invalid");
+			}
+			for(FireProductionRoundoffTrace::TraceFloat value:request.conservativeValues)if(!std::isfinite(value))return Fail(error,
+				"physical scalar-flux prerequisite conservative value is nonfinite");
+			for(std::size_t cell=0u;cell<cells;++cell)if(
+				!std::isfinite(request.temperatureK[cell])||
+				static_cast<double>(request.temperatureK[cell])<record.TemperatureMinK()||
+				static_cast<double>(request.temperatureK[cell])>record.TemperatureMaxK()||
+				request.diffusivityM2PerS[cell]<0.0f||
+				!std::isfinite(request.diffusivityM2PerS[cell])||request.conductivityWPerMK[cell]<0.0f||
+				!std::isfinite(request.conductivityWPerMK[cell]))return Fail(error,
+					"physical scalar-flux prerequisite transport value is invalid");
+			for(FireProductionRoundoffTrace::TraceFloat value:request.ambient)if(!std::isfinite(value))return Fail(error,
+				"physical scalar-flux prerequisite ambient value is nonfinite");
+
+			auto enthalpy=[&](std::size_t species,FireProductionRoundoffTrace::TraceFloat temperature,FireProductionRoundoffTrace::TraceFloat& value){
+				const RISE::FireThermochemistrySpecies* item=record.FindSpecies(
+					record.SpeciesOrder()[species].c_str());
+				if(!item||item->segments.empty())return false;
+				const RISE::FireThermochemistrySegment* selected=&item->segments.front();
+				for(const RISE::FireThermochemistrySegment& segment:item->segments)if(
+					temperature>=static_cast<FireProductionRoundoffTrace::TraceFloat>(segment.temperatureMinK)&&
+					(temperature<static_cast<FireProductionRoundoffTrace::TraceFloat>(segment.temperatureMaxK)||
+					 &segment==&item->segments.back()))selected=&segment;
+				const double t=static_cast<double>(temperature),inverse=1.0/t,
+					logT=std::log(t),t2=t*t,t3=t2*t,t4=t3*t,t5=t4*t;
+				const double* a=selected->coefficients;
+				const double primitive=-a[0]*inverse+a[1]*logT+a[2]*t+a[3]*t2/2.0+
+					a[4]*t3/3.0+a[5]*t4/4.0+a[6]*t5/5.0;
+				value=static_cast<FireProductionRoundoffTrace::TraceFloat>(8314.46261815324*primitive/
+					item->molecularWeightKGPerKMol+selected->sensibleEnthalpyOffsetJPerKG);
+				return std::isfinite(value);
+			};
+			FireProductionScalarPhysicalFluxPrerequisiteResult computed;
+			computed.shape=shape;computed.boundary=request.boundary;
+			computed.packedFaceOffset[0]=0u;
+			computed.packedFaceOffset[1]=FireProductionProjectionFaceCount(shape,0u);
+			computed.packedFaceOffset[2]=computed.packedFaceOffset[1]+
+				FireProductionProjectionFaceCount(shape,1u);
+			const std::size_t allFaces=computed.packedFaceOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			computed.physicalMassFluxKGPerM2S.assign(8u*allFaces,0.0f);
+			computed.physicalEnergyFluxWPerM2.assign(allFaces,0.0f);
+			for(unsigned int axis=0u;axis<3u;++axis)
+				computed.physicalGasFluxKGPerM2S[axis].assign(
+					FireProductionProjectionFaceCount(shape,axis),0.0f);
+			computed.methaneRecordId=record.RecordId();
+			auto sideIndex=[&](unsigned int side,std::size_t x,std::size_t y,std::size_t z){
+				return side<2u?z*shape.ny+y:(side<4u?z*shape.nx+x:y*shape.nx+x);};
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t xEnd=shape.nx+(axis==0u?1u:0u),
+					yEnd=shape.ny+(axis==1u?1u:0u),zEnd=shape.nz+(axis==2u?1u:0u),
+					extent=AxisCoordinateExtent(shape,axis);
+				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+					for(std::size_t x=0u;x<xEnd;++x){
+						std::size_t normal=AxisCoordinate(axis,x,y,z);
+						const std::size_t face=FaceIndex(shape,axis,x,y,z),
+							packed=computed.packedFaceOffset[axis]+face;
+						bool boundaryFace=normal==0u||normal==extent;
+						if(request.boundary[2u*axis]==FireProductionProjectionPeriodic){
+							boundaryFace=false;if(normal==extent)normal=0u;
+						}
+						std::size_t lx=x,ly=y,lz=z,rx=x,ry=y,rz=z,left=0u,right=0u;
+						FireProductionRoundoffTrace::TraceFloat leftTemperature=0.0f,rightTemperature=0.0f,rhoD=0.0f,
+							conductivity=0.0f,distance=shape.cellWidthM;
+						bool leftAmbient=false,rightAmbient=false;
+						if(boundaryFace){
+							const bool upper=normal==extent;const unsigned int side=2u*axis+(upper?1u:0u);
+							if(request.boundary[side]==FireProductionProjectionWall||
+								request.pressureOpenInflow[side][sideIndex(side,x,y,z)]==0u)continue;
+							std::size_t ix=x,iy=y,iz=z;SetAxisCoordinate(axis,upper?extent-1u:0u,ix,iy,iz);
+							const std::size_t interior=CellIndex(shape,ix,iy,iz);left=right=interior;
+							leftAmbient=!upper;rightAmbient=upper;leftTemperature=leftAmbient?
+								request.ambientTemperatureK:request.temperatureK[interior];
+							rightTemperature=rightAmbient?request.ambientTemperatureK:
+								request.temperatureK[interior];
+							FireProductionRoundoffTrace::TraceFloat total=0.0f;for(std::size_t species=0u;species<7u;++species)
+								total+=request.conservativeValues[(1u+species)*cells+interior];
+							if(!(total>0.0f)||!std::isfinite(total))return Fail(error,
+								"physical scalar-flux prerequisite boundary mass is invalid");
+							rhoD=total*request.diffusivityM2PerS[interior];
+							conductivity=request.conductivityWPerMK[interior];distance=0.5f*shape.cellWidthM;
+						}else{
+							const std::size_t leftNormal=normal==0u?extent-1u:normal-1u,
+								rightNormal=normal==extent?0u:normal;
+							SetAxisCoordinate(axis,leftNormal,lx,ly,lz);SetAxisCoordinate(axis,rightNormal,rx,ry,rz);
+							left=CellIndex(shape,lx,ly,lz);right=CellIndex(shape,rx,ry,rz);
+							leftTemperature=request.temperatureK[left];rightTemperature=request.temperatureK[right];
+							FireProductionRoundoffTrace::TraceFloat totalLeft=0.0f,totalRight=0.0f;for(std::size_t species=0u;species<7u;++species){
+								totalLeft+=request.conservativeValues[(1u+species)*cells+left];
+								totalRight+=request.conservativeValues[(1u+species)*cells+right];}
+							if(!(totalLeft>0.0f)||!(totalRight>0.0f))return Fail(error,
+								"physical scalar-flux prerequisite interior mass is invalid");
+							auto harmonic=[](FireProductionRoundoffTrace::TraceFloat a,FireProductionRoundoffTrace::TraceFloat b){return a>0.0f&&b>0.0f?2.0f*a*b/(a+b):0.0f;};
+							rhoD=harmonic(totalLeft*request.diffusivityM2PerS[left],
+								totalRight*request.diffusivityM2PerS[right]);
+							conductivity=harmonic(request.conductivityWPerMK[left],
+								request.conductivityWPerMK[right]);
+						}
+						FireProductionRoundoffTrace::TraceFloat totalLeft=0.0f,totalRight=0.0f;
+						for(std::size_t species=0u;species<7u;++species){
+							totalLeft+=leftAmbient?request.ambient[1u+species]:
+								request.conservativeValues[(1u+species)*cells+left];
+							totalRight+=rightAmbient?request.ambient[1u+species]:
+								request.conservativeValues[(1u+species)*cells+right];}
+						if(!(totalLeft>0.0f)||!(totalRight>0.0f))return Fail(error,
+							"physical scalar-flux prerequisite face mass is invalid");
+						std::array<FireProductionRoundoffTrace::TraceFloat,8> raw={{}},projected={{}};
+						for(std::size_t component=0u;component<8u;++component){
+							const FireProductionRoundoffTrace::TraceFloat ql=leftAmbient?request.ambient[component]:
+								request.conservativeValues[component*cells+left];
+							const FireProductionRoundoffTrace::TraceFloat qr=rightAmbient?request.ambient[component]:
+								request.conservativeValues[component*cells+right];
+							raw[component]=-rhoD*(qr/totalRight-ql/totalLeft)/distance;
+						}
+						std::array<double,8> raw64={{}},projected64={{}};
+						double rawScale=0.0;
+						for(std::size_t component=0u;component<8u;++component){
+							raw64[component]=static_cast<double>(raw[component]);
+							rawScale+=std::fabs(raw64[component]);
+						}
+						if(!projection.Project(raw64.data(),raw64.size(),projected64.data(),
+							projected64.size(),error))return false;
+						for(std::size_t component=0u;component<8u;++component){
+							projected[component]=static_cast<FireProductionRoundoffTrace::TraceFloat>(projected64[component]);
+							if(!std::isfinite(projected[component]))return Fail(error,
+								"physical scalar-flux prerequisite projection cast is nonfinite");
+						}
+						const double epsilon=std::numeric_limits<double>::epsilon();
+						const double gamma=(8.0*epsilon)/(1.0-8.0*epsilon);
+						const double projectionFactor=record.AcceptedStateFeasibilityEnvelope().
+							nullspaceProjectionFactorEpsilon64;
+						if(!(projectionFactor>0.0)||!std::isfinite(projectionFactor))return Fail(error,
+							"physical scalar-flux prerequisite projection certificate is invalid");
+						for(std::size_t row=0u;row<projection.constraintRows;++row){
+								double residual=0.0,referenceResidual=0.0,castBound=0.0,
+									arithmeticScale=0.0,referenceScale=0.0,constraintNorm=0.0;
+								for(std::size_t component=0u;component<8u;++component){
+									const double coefficient=projection.constraintMatrix[row*8u+component];
+									constraintNorm+=std::fabs(coefficient);
+								residual+=coefficient*static_cast<double>(projected[component]);
+								referenceResidual+=coefficient*projected64[component];
+								referenceScale+=std::fabs(coefficient*projected64[component]);
+								castBound+=std::fabs(coefficient)*std::fabs(
+									static_cast<double>(projected[component])-projected64[component]);
+								arithmeticScale+=std::fabs(coefficient*
+									static_cast<double>(projected[component]));
+							}
+								// The record's 1040-eps64 certificate covers the fixed N(N^T raw)
+								// operation.  Its scale must therefore come from raw, not the possibly
+								// tiny projected output.  Propagate that componentwise envelope through
+								// this constraint row, then separately cover the final row reduction.
+								const double referenceBound=projectionFactor*epsilon*
+									std::max(1.0,rawScale)*std::max(1.0,constraintNorm)+
+									gamma*referenceScale;
+								if(!std::isfinite(rawScale)||!std::isfinite(constraintNorm)||
+									!std::isfinite(referenceResidual)||!std::isfinite(referenceBound)||
+								std::fabs(referenceResidual)>referenceBound)return Fail(error,
+									"physical scalar-flux prerequisite fp64 reference exceeds its certificate");
+							const double bound=referenceBound+castBound+
+								gamma*arithmeticScale;
+							computed.maximumFP64ReferenceResidualKGPerM2S=std::max(
+								computed.maximumFP64ReferenceResidualKGPerM2S,std::fabs(referenceResidual));
+							computed.fp64ReferenceForwardErrorBoundKGPerM2S=std::max(
+								computed.fp64ReferenceForwardErrorBoundKGPerM2S,referenceBound);
+							computed.maximumConstraintResidualKGPerM2S=std::max(
+								computed.maximumConstraintResidualKGPerM2S,std::fabs(residual));
+							computed.constraintForwardErrorBoundKGPerM2S=std::max(
+								computed.constraintForwardErrorBoundKGPerM2S,bound);
+							if(!std::isfinite(residual)||!std::isfinite(bound)||std::fabs(residual)>bound)
+								return Fail(error,"physical scalar-flux prerequisite fp64 identity check failed");
+						}
+						const FireProductionRoundoffTrace::TraceFloat faceTemperature=0.5f*(leftTemperature+rightTemperature);
+						FireProductionRoundoffTrace::TraceFloat energy=0.0f,gas=0.0f;
+						for(std::size_t component=0u;component<8u;++component){
+							if(!std::isfinite(projected[component]))return Fail(error,
+								"physical scalar-flux prerequisite mass flux is nonfinite");
+							computed.physicalMassFluxKGPerM2S[component*allFaces+packed]=projected[component];
+							if(component>=1u&&component<=6u)gas+=projected[component];
+						}
+						for(std::size_t species=0u;species<7u;++species){FireProductionRoundoffTrace::TraceFloat h=0.0f;
+							if(!enthalpy(species,faceTemperature,h))return Fail(error,
+								"physical scalar-flux prerequisite enthalpy is invalid");
+							energy+=h*projected[1u+species];}
+						energy-=conductivity*(rightTemperature-leftTemperature)/distance;
+						if(!std::isfinite(energy)||!std::isfinite(gas))return Fail(error,
+							"physical scalar-flux prerequisite aggregate flux is nonfinite");
+						computed.physicalEnergyFluxWPerM2[packed]=energy;
+						computed.physicalGasFluxKGPerM2S[axis][face]=gas;
+					}
+			}
+			computed.fp64ReferenceIdentityVerified=true;
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarPhysicalFluxPrerequisiteResult();
+			FailWithoutThrow(error,"physical scalar-flux prerequisite allocation failed");return false;}
+	}
+
 	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
 		const FireProductionCompatibleFCTMomentumRequest& request,
 		FireProductionCompatibleFCTMomentumResult& result, std::string* error )
@@ -1650,8 +1921,10 @@ namespace RISEFireProductionTrace
 		}
 	}
 
-	bool EvaluateFireProductionScalarFCTCPU(
+	static bool EvaluateFireProductionScalarFCTStagesCPU(
 		const FireProductionScalarFCTRequest& request,
+		const FireProductionScalarFCTFluxPair* suppliedFluxPair,
+		const bool fluxPairOnly,
 		FireProductionScalarFCTResult& result, std::string* error )
 	{
 		result=FireProductionScalarFCTResult();
@@ -1676,7 +1949,6 @@ namespace RISEFireProductionTrace
 				return Fail(error,"scalar FCT cell tuple shape is invalid");
 			auto sideFaceCount=[&](const unsigned int side){return side<2u?shape.ny*shape.nz:
 				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);};
-			bool allPeriodic=true;
 			for(unsigned int axis=0u;axis<3u;++axis){
 				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
 				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
@@ -1685,10 +1957,12 @@ namespace RISEFireProductionTrace
 					((lower==FireProductionProjectionPeriodic)!=(upper==
 						FireProductionProjectionPeriodic))) return Fail(error,
 					"scalar FCT boundary pairing is invalid");
-				allPeriodic=allPeriodic&&lower==FireProductionProjectionPeriodic;
 				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
 				if(request.frozenVelocityMPerS[axis].size()!=faces)
 					return Fail(error,"scalar FCT velocity shape is invalid");
+				for(const FireProductionRoundoffTrace::TraceFloat velocity:request.frozenVelocityMPerS[axis])
+					if(!std::isfinite(velocity))
+						return Fail(error,"scalar FCT velocity is nonfinite");
 				if(lower==FireProductionProjectionPeriodic&&
 					!PeriodicFaceSeamBitEqual(shape,request.frozenVelocityMPerS[axis],axis))
 					return Fail(error,"scalar FCT periodic velocity seam is invalid");
@@ -1730,6 +2004,49 @@ namespace RISEFireProductionTrace
 				"scalar FCT output exceeds two GiB");
 			computed.lowFlux.assign(components*allFaces,0.0f);
 			computed.fluxDelta.assign(components*allFaces,0.0f);
+			if( suppliedFluxPair ) {
+				const FireProductionProjectionShape& suppliedShape=suppliedFluxPair->shape;
+				if(suppliedShape.nx!=shape.nx||suppliedShape.ny!=shape.ny||
+					suppliedShape.nz!=shape.nz||suppliedShape.cellWidthM!=shape.cellWidthM||
+					suppliedFluxPair->timeStepS!=request.timeStepS||
+					suppliedFluxPair->boundary!=request.boundary||
+					suppliedFluxPair->packedFaceOffset!=computed.packedFaceOffset||
+					suppliedFluxPair->lowFlux.size()!=components*allFaces||
+					suppliedFluxPair->fluxDelta.size()!=components*allFaces)
+					return Fail(error,"scalar FCT supplied flux pair identity is invalid");
+				for(const FireProductionRoundoffTrace::TraceFloat value:suppliedFluxPair->lowFlux)if(!std::isfinite(value))
+					return Fail(error,"scalar FCT supplied low flux is nonfinite");
+				for(const FireProductionRoundoffTrace::TraceFloat value:suppliedFluxPair->fluxDelta)if(!std::isfinite(value))
+					return Fail(error,"scalar FCT supplied flux delta is nonfinite");
+				computed.lowFlux=suppliedFluxPair->lowFlux;
+				computed.fluxDelta=suppliedFluxPair->fluxDelta;
+				for(unsigned int axis=0u;axis<3u;++axis)if(
+					request.boundary[2u*axis]==FireProductionProjectionPeriodic){
+					const std::size_t extent=AxisCoordinateExtent(shape,axis);
+					const std::size_t xEnd=axis==0u?1u:shape.nx;
+					const std::size_t yEnd=axis==1u?1u:shape.ny;
+					const std::size_t zEnd=axis==2u?1u:shape.nz;
+					for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+						for(std::size_t x=0u;x<xEnd;++x){
+							std::size_t hx=x,hy=y,hz=z;
+							SetAxisCoordinate(axis,extent,hx,hy,hz);
+							const std::size_t low=computed.packedFaceOffset[axis]+
+								FaceIndex(shape,axis,x,y,z);
+							const std::size_t high=computed.packedFaceOffset[axis]+
+								FaceIndex(shape,axis,hx,hy,hz);
+							for(std::size_t component=0u;component<components;++component){
+								const std::size_t lowIndex=component*allFaces+low;
+								const std::size_t highIndex=component*allFaces+high;
+								if(std::memcmp(&computed.lowFlux[lowIndex],
+									&computed.lowFlux[highIndex],sizeof(float))!=0||
+									std::memcmp(&computed.fluxDelta[lowIndex],
+										&computed.fluxDelta[highIndex],sizeof(float))!=0)
+									return Fail(error,
+										"scalar FCT supplied periodic flux seam differs");
+							}
+						}
+				}
+			} else {
 			auto sideIndex=[&](const unsigned int side,const std::size_t x,
 				const std::size_t y,const std::size_t z){return side<2u?z*shape.ny+y:
 				(side<4u?z*shape.nx+x:y*shape.nx+x);};
@@ -1824,6 +2141,16 @@ namespace RISEFireProductionTrace
 							computed.fluxDelta[output]=velocity*(high-donor);
 						}
 				}
+			}
+			for(const FireProductionRoundoffTrace::TraceFloat value:computed.lowFlux)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT low flux is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:computed.fluxDelta)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT flux delta is nonfinite");
+			if( fluxPairOnly ) {
+				result=std::move(computed);
+				if(error)error->clear();
+				return true;
+			}
 
 			auto packedCellFace=[&](const std::size_t cell,const unsigned int axis,
 				const bool upper){std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
@@ -1989,7 +2316,8 @@ namespace RISEFireProductionTrace
 				computed.acceptedGasFluxKGPerM2S[axis].assign(faces,0.0f);
 				for(std::size_t face=0u;face<faces;++face){
 					const std::size_t packed=computed.packedFaceOffset[axis]+face;
-					FireProductionRoundoffTrace::TraceFloat gas=0.0f;for(std::size_t component=1u;component<=6u;++component)
+					FireProductionRoundoffTrace::TraceFloat gas=0.0f;
+					for(std::size_t component=1u;component<=6u;++component)
 						gas+=computed.lowFlux[component*allFaces+packed]+
 							computed.sharedFaceAlpha[axis][face]*computed.fluxDelta[
 								component*allFaces+packed];
@@ -2069,5 +2397,93 @@ namespace RISEFireProductionTrace
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarFCTResult();
 			FailWithoutThrow(error,"scalar FCT allocation failed");return false;}
+	}
+
+	bool BuildFireProductionScalarFCTFluxPairCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTFluxPair& result, std::string* error )
+	{
+		result=FireProductionScalarFCTFluxPair();
+		FireProductionScalarFCTResult staged;
+		if(!EvaluateFireProductionScalarFCTStagesCPU(request,0,true,staged,error))return false;
+		result.shape=request.shape;
+		result.timeStepS=request.timeStepS;
+		result.boundary=request.boundary;
+		result.packedFaceOffset=staged.packedFaceOffset;
+		result.lowFlux=std::move(staged.lowFlux);
+		result.fluxDelta=std::move(staged.fluxDelta);
+		if(error)error->clear();
+		return true;
+	}
+
+	bool AverageFireProductionScalarFCTFluxPairsCPU(
+		const FireProductionScalarFCTFluxPair& first,
+		const FireProductionScalarFCTFluxPair& second,
+		FireProductionScalarFCTFluxPair& result, std::string* error )
+	{
+		result=FireProductionScalarFCTFluxPair();
+		try {
+			const FireProductionProjectionShape& a=first.shape;
+			const FireProductionProjectionShape& b=second.shape;
+			if(a.nx<4u||a.nx>1024u||a.ny<4u||a.ny>1024u||
+				a.nz<4u||a.nz>1024u||!(a.cellWidthM>0.0f)||
+				!std::isfinite(a.cellWidthM)||a.nx!=b.nx||a.ny!=b.ny||a.nz!=b.nz||
+				a.cellWidthM!=b.cellWidthM||!(first.timeStepS>0.0f)||
+				!std::isfinite(first.timeStepS)||first.timeStepS!=second.timeStepS||
+				first.boundary!=second.boundary)
+				return Fail(error,"scalar FCT stage flux pair identity is invalid");
+			std::array<std::size_t,3> expectedOffset={{0u,
+				FireProductionProjectionFaceCount(a,0u),0u}};
+			expectedOffset[2]=expectedOffset[1]+FireProductionProjectionFaceCount(a,1u);
+			const std::size_t allFaces=expectedOffset[2]+
+				FireProductionProjectionFaceCount(a,2u);
+			if(first.packedFaceOffset!=expectedOffset||
+				second.packedFaceOffset!=expectedOffset||
+				first.lowFlux.size()!=9u*allFaces||
+				first.fluxDelta.size()!=9u*allFaces||
+				second.lowFlux.size()!=9u*allFaces||
+				second.fluxDelta.size()!=9u*allFaces)
+				return Fail(error,"scalar FCT stage flux pair identity is invalid");
+			result.shape=a;
+			result.timeStepS=first.timeStepS;
+			result.boundary=first.boundary;
+			result.packedFaceOffset=first.packedFaceOffset;
+			result.lowFlux.resize(first.lowFlux.size());
+			result.fluxDelta.resize(first.fluxDelta.size());
+			for(std::size_t value=0u;value<first.lowFlux.size();++value){
+				const FireProductionRoundoffTrace::TraceFloat low=0.5f*(first.lowFlux[value]+second.lowFlux[value]);
+				const FireProductionRoundoffTrace::TraceFloat delta=0.5f*(first.fluxDelta[value]+second.fluxDelta[value]);
+				if(!std::isfinite(low)||!std::isfinite(delta)){
+					result=FireProductionScalarFCTFluxPair();
+					return Fail(error,"scalar FCT averaged stage flux is nonfinite");
+				}
+				result.lowFlux[value]=low;
+				result.fluxDelta[value]=delta;
+			}
+			if(error)error->clear();
+			return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarFCTFluxPair();
+			FailWithoutThrow(error,"scalar FCT flux average allocation failed");return false;}
+	}
+
+	bool SolveFireProductionScalarFCTFluxPairCPU(
+		const FireProductionScalarFCTRequest& request,
+		const FireProductionScalarFCTFluxPair& fluxPair,
+		FireProductionScalarFCTResult& result, std::string* error )
+	{
+		return EvaluateFireProductionScalarFCTStagesCPU(
+			request,&fluxPair,false,result,error);
+	}
+
+	bool EvaluateFireProductionScalarFCTCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTResult& result, std::string* error )
+	{
+		FireProductionScalarFCTFluxPair fluxPair;
+		if(!BuildFireProductionScalarFCTFluxPairCPU(request,fluxPair,error)){
+			result=FireProductionScalarFCTResult();
+			return false;
+		}
+		return SolveFireProductionScalarFCTFluxPairCPU(request,fluxPair,result,error);
 	}
 }

@@ -4569,3 +4569,43 @@ it was already tried and refuted here.
   activation but is not adopted by ordinary production; the previous admitted
   remap remains the default.  The immutable r181 crossing transcript remains
   its unconformed-momentum RED.
+- **r183 tier-8 stop and projected-Heun bootstrap (2026-08-31):** Track A starts
+  the requested tier-8 full-window run but stops before the statistics discard
+  ends.  It reaches step 1,980 / `2.70156268 s`, records 819 hard-bound rejected
+  candidates and a minimum logged `Delta t=5.57543046e-7 s`, and produces zero
+  frames.  The retained step-2,149 checkpoint measures `429.0182 m/s` at
+  `(axis 2, 34,34,45)` with zero realized heat release, so neither a spectrum
+  nor a temporal animation is claimed.  The exact tier-8 evidence artifact is
+  inherited as Track A's stop rather than relabelled as a deliverable.
+
+  Track B proves that the existing tokenless single-stage compatible-FCT
+  diagnostic is both the wrong time tableau and far too expensive to promote:
+  its first two tier-10 steps cost roughly `2.50--2.53 s` resident device and
+  `3.09--3.17 s` wall each.  A source-stage refusal also catches an r60 affine-
+  envelope ownership mistake; signed-mixture sensible energy now validates the
+  already-admissible tuple without clipping its tiny negative roundoff.
+
+  The r183 code change is deliberately a bootstrap.  It factors scalar FCT
+  into source-free Build/Average/Solve operations with a fresh averaged-pair
+  alpha, adds a `Delta t`-independent resident nonpressure momentum RHS, and
+  adds projection ownership for sealed stage classifications, sealed
+  integrated R0/R1 pressure-open head, and endpoint class publication.  CPU and
+  Metal REDs bind source-once semantics, fresh-alpha identity, no interstage
+  host publication, endpoint seed/head separation, and exact working-set
+  accounting.  A reviewed standalone CPU prerequisite additionally publishes
+  `f_N/J_g` from fixed binary32 stage operands: the `N_C N_C^T` projection is
+  verified in fp64 with the record-derived forward-error envelope, binary32
+  publication has its own bound, `J_g` is recomputed from the published bytes,
+  PhysicalV1's inclusive `[300,5000] K` domain is enforced, open/wall/periodic
+  boundaries are sealed, and `4(12C+11F)+B` is the exact pre-payload resource
+  gate.  Metal is explicitly unsupported for this prerequisite rather than
+  being credited with an fp64 identity it does not yet implement.
+
+  Ordinary production remains on the admitted r182 predecessor:
+  no projected-Heun owner is enabled, no onset success is claimed, and all
+  tier-10 deliverables remain blocked.  `Phi_g` retention/FCT composition,
+  packet-derived `S_div`, accepted-state EOS inversion, and caller-command
+  projection/FCT encoders are the named missing seams before the full R0/R1/R2
+  Picard schedule can be compared kernel-by-kernel against the fp64 oracle.
+  This records progress without reviving the rejected form-level graft or
+  laundering the single-stage diagnostic into §3.7 conformance.

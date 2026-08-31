@@ -89,6 +89,34 @@ namespace RISE
 			return false;
 		}
 
+		void PublishDirectGravityRates(
+			const FireProductionFrozenForceRequest& request,
+			FireProductionFrozenForceResult& result )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+				const std::size_t xEnd=shape.nx+(axis==0u?1u:0u);
+				const std::size_t yEnd=shape.ny+(axis==1u?1u:0u);
+				const std::size_t zEnd=shape.nz+(axis==2u?1u:0u);
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				result.gravityMomentumRateKGPerM2S2[axis].resize(faces);
+				for( std::size_t z=0u;z<zEnd;++z ) for( std::size_t y=0u;y<yEnd;++y )
+					for( std::size_t x=0u;x<xEnd;++x ) {
+						const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+						const std::size_t face=axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
+							(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:
+								(z*shape.ny+y)*shape.nx+x);
+						const bool wall=(normal==0u&&request.boundary[2u*axis]==
+							FireProductionProjectionWall)||(normal==extent&&
+							request.boundary[2u*axis+1u]==FireProductionProjectionWall);
+						result.gravityMomentumRateKGPerM2S2[axis][face]=wall?0.0f:
+							(request.faceDensityKGPerM3[axis][face]-
+								request.ambientDensityKGPerM3)*request.gravityMPerS2[axis];
+					}
+			}
+		}
+
 		std::string MetalError( const char* prefix, NSError* error )
 		{
 			std::string result(prefix);
@@ -220,6 +248,27 @@ kernel void build_face_force(device const float* faceDensity [[buffer(0)]],
  if(periodic&&normal==0u){uint highXYZ[3]={x,y,z};highXYZ[component]=n;
  uint high=face_index(p,component,highXYZ[0],highXYZ[1],highXYZ[2]);viscous[high]=value;gravity[high]=gravityValue;}
 }
+kernel void build_phase_source_rate(device const float* cellPhaseSource [[buffer(0)]],
+ device const float* faceVelocity [[buffer(1)]],device const float* viscous [[buffer(2)]],
+ device const float* gravity [[buffer(3)]],device float* phase [[buffer(4)]],
+ device float* combined [[buffer(5)]],constant Params& p [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid>=p.totalFaces)return;uint axis=face_axis(p,gid),local=gid-p.faceOffset[axis];
+ uint x,y,z;face_coordinate(p,axis,local,x,y,z);uint xyz[3]={x,y,z};
+ uint normal=xyz[axis],n=extent(p,axis);bool periodic=p.boundary[2u*axis]==0u;
+ if(periodic&&normal==n)return;bool wall=(normal==0u&&p.boundary[2u*axis]==2u)||
+  (normal==n&&p.boundary[2u*axis+1u]==2u);float restricted=0.0f;
+ if(!wall){if(normal>0u){uint left[3]={x,y,z};left[axis]=normal-1u;
+   restricted+=0.5f*cellPhaseSource[cell_index(p,left[0],left[1],left[2])];}
+  else if(periodic){uint left[3]={x,y,z};left[axis]=n-1u;
+   restricted+=0.5f*cellPhaseSource[cell_index(p,left[0],left[1],left[2])];}
+  if(normal<n){uint right[3]={x,y,z};right[axis]=normal;
+   restricted+=0.5f*cellPhaseSource[cell_index(p,right[0],right[1],right[2])];}}
+ float value=wall?0.0f:faceVelocity[gid]*restricted;
+ float total=gravity[gid]+viscous[gid]+value;phase[gid]=value;combined[gid]=total;
+ if(periodic&&normal==0u){uint highXYZ[3]={x,y,z};highXYZ[axis]=n;
+  uint high=face_index(p,axis,highXYZ[0],highXYZ[1],highXYZ[2]);phase[high]=value;combined[high]=total;}
+}
 kernel void build_stress_fixed_mu(device const float* cellVelocity [[buffer(0)]],
  device const float* mu [[buffer(1)]],device float* stress [[buffer(2)]],
  constant Params& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
@@ -290,7 +339,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		{
 			id<MTLDevice> device;
 			id<MTLCommandQueue> queue;
-			id<MTLComputePipelineState> setupFace,cellVelocity,stress,faceForce,fixedStress,
+			id<MTLComputePipelineState> setupFace,cellVelocity,stress,faceForce,phaseSource,fixedStress,
 				prepareMu,prepareInverseDensity,reduceMax,storeMaximum,buildLambda,
 				updateViscous,addGravity,snapshot;
 			std::string error;
@@ -314,13 +363,14 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 				};
 				setupFace=pipeline("setup_face_velocity");cellVelocity=pipeline("build_cell_velocity");
 				stress=pipeline("build_stress");faceForce=pipeline("build_face_force");
+				phaseSource=pipeline("build_phase_source_rate");
 				fixedStress=pipeline("build_stress_fixed_mu");prepareMu=pipeline("prepare_max_mu");
 				prepareInverseDensity=pipeline("prepare_max_inverse_density");
 				reduceMax=pipeline("reduce_max_pair");storeMaximum=pipeline("store_maximum");
 				buildLambda=pipeline("build_lambda");updateViscous=pipeline("update_viscous_momentum");
 				addGravity=pipeline("add_gravity_momentum");snapshot=pipeline("snapshot_momentum");
 			}
-			bool Valid() const {return device&&queue&&setupFace&&cellVelocity&&stress&&faceForce&&
+			bool Valid() const {return device&&queue&&setupFace&&cellVelocity&&stress&&faceForce&&phaseSource&&
 				fixedStress&&prepareMu&&prepareInverseDensity&&reduceMax&&storeMaximum&&buildLambda&&
 				updateViscous&&addGravity&&snapshot;}
 		};
@@ -530,11 +580,13 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					computed.gravityMomentumIncrementKGPerM2S[axis].assign(
 						gravityValues+offset,gravityValues+offset+faceCounts[axis]);offset+=faceCounts[axis];
 				}
+				PublishDirectGravityRates(request,computed);
 				if( !AllFinite(computed.eddyKinematicViscosityM2PerS)||
 					!AllFinite(computed.effectiveDynamicViscosityPaS) )
 					return Fail(error,"production frozen-force Metal output is nonfinite");
 				for( unsigned int axis=0u;axis<3u;++axis ) if( !AllFinite(
 					computed.beginningViscousMomentumRateKGPerM2S2[axis])||!AllFinite(
+					computed.gravityMomentumRateKGPerM2S2[axis])||!AllFinite(
 					computed.gravityMomentumIncrementKGPerM2S[axis]) )
 					return Fail(error,"production frozen-force Metal output is nonfinite");
 				if( InjectedFailure("output")&&
@@ -552,6 +604,327 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		} catch( const std::bad_alloc& ) {
 			result=FireProductionFrozenForceResult();deviceElapsedMS=0.0;
 			return Fail(error,"production frozen-force Metal allocation failed");
+		}
+	}
+
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalResident(
+		const FireProductionMetalNonpressureMomentumRHSResidentInput& input,
+		FireProductionMetalNonpressureMomentumRHSResidentResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		std::string* error )
+	{
+		result=FireProductionMetalNonpressureMomentumRHSResidentResult();
+		diagnostics=FireProductionNonpressureMomentumRHSMetalDiagnostics();
+		try {
+			const FireProductionProjectionShape& shape=input.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!(input.ambientDensityKGPerM3>0.0f)||
+				!std::isfinite(input.ambientDensityKGPerM3)||!(input.vremanCoefficient>=0.0f)||
+				!std::isfinite(input.vremanCoefficient)||!input.commandBuffer ) return Fail(error,
+					"production resident nonpressure momentum scalar is invalid");
+			for( const float gravity : input.gravityMPerS2 ) if( !std::isfinite(gravity) )
+				return Fail(error,"production resident nonpressure momentum gravity is nonfinite");
+			for( unsigned int axis=0u;axis<3u;++axis ) if(
+				input.boundary[2u*axis]<FireProductionProjectionPeriodic||
+				input.boundary[2u*axis]>FireProductionProjectionWall||
+				input.boundary[2u*axis+1u]<FireProductionProjectionPeriodic||
+				input.boundary[2u*axis+1u]>FireProductionProjectionWall||
+				((input.boundary[2u*axis]==FireProductionProjectionPeriodic)!=
+				 (input.boundary[2u*axis+1u]==FireProductionProjectionPeriodic)) ) return Fail(error,
+					"production resident nonpressure momentum boundary is invalid");
+			const std::size_t cells=shape.CellCount(),cellBytes=cells*sizeof(float);
+			std::uint64_t certifiedBytes=0u;
+			if( !FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,certifiedBytes)||
+				certifiedBytes>(UINT64_C(1)<<31u) ) return Fail(error,
+					"production resident nonpressure momentum working set exceeds two GiB");
+			std::array<std::size_t,3> faceCounts={};std::size_t faces=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);faces+=faceCounts[axis];
+			}
+			const std::size_t faceBytes=faces*sizeof(float);
+			const id<MTLBuffer> inputs[]={input.cellGasDensityKGPerM3,
+				input.molecularKinematicViscosityM2PerS,input.cellGasPhaseSourceRateKGPerM3S,
+				input.packedFaceDensityKGPerM3,input.packedMomentumKGPerM2S};
+			const std::size_t inputBytes[]={cellBytes,cellBytes,cellBytes,faceBytes,faceBytes};
+			ForceContext& context=Context();if( !context.Valid() ) return Fail(error,context.error.c_str());
+			id<MTLCommandQueue> callerQueue=[input.commandBuffer commandQueue];
+			if(!callerQueue||[callerQueue device]!=context.device)return Fail(error,
+				"production resident nonpressure momentum command device is invalid");
+			for( std::size_t index=0u;index<5u;++index ) if( !inputs[index]||
+				[inputs[index] storageMode]!=MTLStorageModePrivate||
+				[inputs[index] device]!=context.device||
+				[inputs[index] length]<inputBytes[index] ) return Fail(error,
+					"production resident nonpressure momentum input buffer is invalid");
+			@autoreleasepool {
+				auto privateBuffer=[&](std::size_t bytes) -> id<MTLBuffer> {
+					return [context.device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];};
+				FireProductionMetalNonpressureMomentumRHSResidentResult computed;
+				computed.faceVelocityMPerS=privateBuffer(faceBytes);
+				computed.cellVelocityMPerS=privateBuffer(3u*cellBytes);
+				computed.stressTensorPa=privateBuffer(9u*cellBytes);
+				computed.eddyKinematicViscosityM2PerS=privateBuffer(cellBytes);
+				computed.effectiveDynamicViscosityPaS=privateBuffer(cellBytes);
+				computed.stressMomentumRateKGPerM2S2=privateBuffer(faceBytes);
+				computed.buoyancyMomentumRateKGPerM2S2=privateBuffer(faceBytes);
+				computed.phaseSourceMomentumRateKGPerM2S2=privateBuffer(faceBytes);
+				computed.combinedMomentumRateKGPerM2S2=privateBuffer(faceBytes);
+				const id<MTLBuffer> outputs[]={computed.faceVelocityMPerS,computed.cellVelocityMPerS,
+					computed.stressTensorPa,computed.eddyKinematicViscosityM2PerS,
+					computed.effectiveDynamicViscosityPaS,computed.stressMomentumRateKGPerM2S2,
+					computed.buoyancyMomentumRateKGPerM2S2,
+					computed.phaseSourceMomentumRateKGPerM2S2,
+					computed.combinedMomentumRateKGPerM2S2};
+				std::uint64_t actual=0u;
+				for( id<MTLBuffer> buffer : outputs ) {
+					if( !buffer||[buffer storageMode]!=MTLStorageModePrivate ) return Fail(error,
+						"production resident nonpressure momentum output allocation failed");
+					const std::uint64_t allocation=[buffer allocatedSize];
+					if( actual>std::numeric_limits<std::uint64_t>::max()-allocation ) return Fail(error,
+						"production resident nonpressure momentum allocation overflowed");
+					actual+=allocation;
+				}
+				ForceParameters p={static_cast<std::uint32_t>(shape.nx),
+					static_cast<std::uint32_t>(shape.ny),static_cast<std::uint32_t>(shape.nz),0u,
+					shape.cellWidthM,1.0f,input.ambientDensityKGPerM3,input.vremanCoefficient,
+					{input.gravityMPerS2[0],input.gravityMPerS2[1],input.gravityMPerS2[2]},0.0f,{},
+					{0u,static_cast<std::uint32_t>(faceCounts[0]),
+						static_cast<std::uint32_t>(faceCounts[0]+faceCounts[1])},
+					static_cast<std::uint32_t>(faces)};
+				for( unsigned int side=0u;side<6u;++side ) p.boundary[side]=input.boundary[side];
+				id<MTLBuffer> parameters=[context.device newBufferWithBytes:&p length:sizeof(p)
+					options:MTLResourceStorageModeShared];
+				if( !parameters ) return Fail(error,
+					"production resident nonpressure momentum parameter allocation failed");
+				computed.parameterBuffer=parameters;
+				const std::uint64_t parameterAllocation=[parameters allocatedSize];
+				if( actual>std::numeric_limits<std::uint64_t>::max()-parameterAllocation )
+					return Fail(error,
+						"production resident nonpressure momentum allocation overflowed");
+				actual+=parameterAllocation;
+				auto encode=[&](id<MTLComputePipelineState> pipeline,
+					const id<MTLBuffer>* bound,std::size_t count,std::size_t threads) -> bool {
+					id<MTLComputeCommandEncoder> encoder=[input.commandBuffer computeCommandEncoder];
+					if( !encoder ) return false;
+					for( std::size_t index=0u;index<count;++index )
+						[encoder setBuffer:bound[index] offset:0 atIndex:index];
+					Dispatch(encoder,pipeline,threads);[encoder endEncoding];return true;};
+				const id<MTLBuffer> setupBuffers[]={input.packedFaceDensityKGPerM3,
+					input.packedMomentumKGPerM2S,computed.faceVelocityMPerS,parameters};
+				const id<MTLBuffer> cellBuffers[]={computed.faceVelocityMPerS,
+					computed.cellVelocityMPerS,parameters};
+				const id<MTLBuffer> stressBuffers[]={computed.cellVelocityMPerS,
+					input.cellGasDensityKGPerM3,input.molecularKinematicViscosityM2PerS,
+					computed.eddyKinematicViscosityM2PerS,computed.effectiveDynamicViscosityPaS,
+					computed.stressTensorPa,parameters};
+				const id<MTLBuffer> forceBuffers[]={input.packedFaceDensityKGPerM3,
+					computed.stressTensorPa,computed.stressMomentumRateKGPerM2S2,
+					computed.buoyancyMomentumRateKGPerM2S2,parameters};
+				const id<MTLBuffer> phaseBuffers[]={input.cellGasPhaseSourceRateKGPerM3S,
+					computed.faceVelocityMPerS,computed.stressMomentumRateKGPerM2S2,
+					computed.buoyancyMomentumRateKGPerM2S2,
+					computed.phaseSourceMomentumRateKGPerM2S2,
+					computed.combinedMomentumRateKGPerM2S2,parameters};
+				if( !encode(context.setupFace,setupBuffers,4u,faces)||
+					!encode(context.cellVelocity,cellBuffers,3u,cells)||
+					!encode(context.stress,stressBuffers,7u,cells)||
+					!encode(context.faceForce,forceBuffers,5u,faces)||
+					!encode(context.phaseSource,phaseBuffers,7u,faces) ) return Fail(error,
+						"production resident nonpressure momentum encoder failed");
+				computed.privateAllocationBytes=actual;result=computed;
+				diagnostics.commandCommitCount=0u;
+				diagnostics.interstageFullGridTransferCount=0u;
+				diagnostics.terminalStagingCount=0u;
+				diagnostics.certifiedWorkingSetBytes=certifiedBytes;
+				diagnostics.actualMetalAllocationBytes=actual;
+			}
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionMetalNonpressureMomentumRHSResidentResult();
+			diagnostics=FireProductionNonpressureMomentumRHSMetalDiagnostics();
+			return Fail(error,"production resident nonpressure momentum allocation failed");
+		}
+	}
+
+	bool EvaluateFireProductionNonpressureMomentumRHSMetal(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		std::string* error )
+	{
+		result=FireProductionNonpressureMomentumRHSResult();
+		diagnostics=FireProductionNonpressureMomentumRHSMetalDiagnostics();
+		try {
+			if( !ValidateFireProductionFrozenForceRequest(request.force,error) ) return false;
+			const FireProductionProjectionShape& shape=request.force.shape;
+			const std::size_t cells=shape.CellCount();
+			if( request.cellGasPhaseSourceRateKGPerM3S.size()!=cells )
+				return Fail(error,"production nonpressure momentum Metal phase-source shape is invalid");
+			for( const float value : request.cellGasPhaseSourceRateKGPerM3S )
+				if( !std::isfinite(value) ) return Fail(error,
+					"production nonpressure momentum Metal phase-source rate is nonfinite");
+			std::uint64_t certifiedBytes=0u;
+			if( !FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,certifiedBytes)||
+				certifiedBytes>(UINT64_C(1)<<31u) ) return Fail(error,
+					"production nonpressure momentum Metal working set exceeds two GiB");
+			std::array<std::size_t,3> faceCounts={};std::size_t faces=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				faceCounts[axis]=FireProductionProjectionFaceCount(shape,axis);faces+=faceCounts[axis];
+			}
+			std::vector<float> packedDensity(faces),packedMomentum(faces);
+			std::size_t offset=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				std::copy(request.force.faceDensityKGPerM3[axis].begin(),
+					request.force.faceDensityKGPerM3[axis].end(),packedDensity.begin()+offset);
+				std::copy(request.force.beginningMomentumKGPerM2S[axis].begin(),
+					request.force.beginningMomentumKGPerM2S[axis].end(),packedMomentum.begin()+offset);
+				offset+=faceCounts[axis];
+			}
+			ForceContext& context=Context();if( !context.Valid() ) return Fail(error,context.error.c_str());
+			@autoreleasepool {
+				const std::size_t cellBytes=cells*sizeof(float),faceBytes=faces*sizeof(float);
+				auto sharedBytes=[&](const void* source,std::size_t bytes) -> id<MTLBuffer> {
+					return [context.device newBufferWithBytes:source length:bytes
+						options:MTLResourceStorageModeShared];};
+				auto sharedBuffer=[&](std::size_t bytes) -> id<MTLBuffer> {
+					return [context.device newBufferWithLength:bytes options:MTLResourceStorageModeShared];};
+				auto privateBuffer=[&](std::size_t bytes) -> id<MTLBuffer> {
+					return [context.device newBufferWithLength:bytes options:MTLResourceStorageModePrivate];};
+				id<MTLBuffer> rhoUpload=sharedBytes(request.force.cellGasDensityKGPerM3.data(),cellBytes);
+				id<MTLBuffer> nuUpload=sharedBytes(
+					request.force.molecularKinematicViscosityM2PerS.data(),cellBytes);
+				id<MTLBuffer> sourceUpload=sharedBytes(
+					request.cellGasPhaseSourceRateKGPerM3S.data(),cellBytes);
+				id<MTLBuffer> faceRhoUpload=sharedBytes(packedDensity.data(),faceBytes);
+				id<MTLBuffer> momentumUpload=sharedBytes(packedMomentum.data(),faceBytes);
+				id<MTLBuffer> rho=privateBuffer(cellBytes),nu=privateBuffer(cellBytes);
+				id<MTLBuffer> source=privateBuffer(cellBytes),faceRho=privateBuffer(faceBytes);
+				id<MTLBuffer> momentum=privateBuffer(faceBytes);
+				id<MTLBuffer> stageEddy=sharedBuffer(cellBytes),stageMu=sharedBuffer(cellBytes);
+				id<MTLBuffer> stageViscous=sharedBuffer(faceBytes),stageGravity=sharedBuffer(faceBytes);
+				id<MTLBuffer> stagePhase=sharedBuffer(faceBytes),stageCombined=sharedBuffer(faceBytes);
+				const id<MTLBuffer> buffers[]={rhoUpload,nuUpload,sourceUpload,faceRhoUpload,
+					momentumUpload,rho,nu,source,faceRho,momentum,stageEddy,stageMu,stageViscous,
+					stageGravity,stagePhase,stageCombined};
+				std::uint64_t actual=0u;
+				for( id<MTLBuffer> buffer : buffers ) {
+					if( !buffer ) return Fail(error,
+						"production nonpressure momentum Metal buffer allocation failed");
+					const std::uint64_t allocation=[buffer allocatedSize];
+					if( actual>std::numeric_limits<std::uint64_t>::max()-allocation ) return Fail(error,
+						"production nonpressure momentum Metal allocation overflowed");
+					actual+=allocation;
+				}
+				if( actual>certifiedBytes ) return Fail(error,
+					"production nonpressure momentum Metal allocation exceeds certificate");
+				id<MTLCommandBuffer> command=[context.queue commandBufferWithUnretainedReferences];
+				if( !command ) return Fail(error,
+					"production nonpressure momentum Metal command allocation failed");
+				id<MTLBlitCommandEncoder> upload=[command blitCommandEncoder];
+				if( !upload ) return Fail(error,
+					"production nonpressure momentum Metal upload encoder failed");
+				const id<MTLBuffer> uploadSource[]={rhoUpload,nuUpload,sourceUpload,
+					faceRhoUpload,momentumUpload};
+				const id<MTLBuffer> uploadTarget[]={rho,nu,source,faceRho,momentum};
+				const std::size_t uploadSize[]={cellBytes,cellBytes,cellBytes,faceBytes,faceBytes};
+				{
+					ResidentForceTransferScope transferScope(ResidentForceUploadTransfer);
+					for( std::size_t index=0u;index<5u;++index ) CopyResidentForceBuffer(upload,
+						uploadSource[index],0u,uploadTarget[index],0u,uploadSize[index]);
+				}
+				[upload endEncoding];
+				FireProductionMetalNonpressureMomentumRHSResidentInput residentInput;
+				residentInput.shape=shape;
+				residentInput.ambientDensityKGPerM3=request.force.ambientDensityKGPerM3;
+				residentInput.vremanCoefficient=request.force.vremanCoefficient;
+				residentInput.gravityMPerS2=request.force.gravityMPerS2;
+				residentInput.boundary=request.force.boundary;residentInput.commandBuffer=command;
+				residentInput.cellGasDensityKGPerM3=rho;
+				residentInput.molecularKinematicViscosityM2PerS=nu;
+				residentInput.cellGasPhaseSourceRateKGPerM3S=source;
+				residentInput.packedFaceDensityKGPerM3=faceRho;
+				residentInput.packedMomentumKGPerM2S=momentum;
+				FireProductionMetalNonpressureMomentumRHSResidentResult residentResult;
+				FireProductionNonpressureMomentumRHSMetalDiagnostics residentDiagnostics;
+				if( !EvaluateFireProductionNonpressureMomentumRHSMetalResident(residentInput,
+					residentResult,residentDiagnostics,error) ) return false;
+				if( residentDiagnostics.commandCommitCount!=0u||
+					residentDiagnostics.interstageFullGridTransferCount!=0u||
+					residentDiagnostics.terminalStagingCount!=0u ) return Fail(error,
+						"production resident nonpressure momentum transfer audit failed");
+				if( actual>std::numeric_limits<std::uint64_t>::max()-
+					residentDiagnostics.actualMetalAllocationBytes ) return Fail(error,
+						"production nonpressure momentum Metal allocation overflowed");
+				actual+=residentDiagnostics.actualMetalAllocationBytes;
+				if( actual>certifiedBytes ) return Fail(error,
+					"production nonpressure momentum Metal allocation exceeds certificate");
+				id<MTLBlitCommandEncoder> staging=[command blitCommandEncoder];
+				if( !staging ) return Fail(error,
+					"production nonpressure momentum Metal staging encoder failed");
+				const id<MTLBuffer> stageSource[]={residentResult.eddyKinematicViscosityM2PerS,
+					residentResult.effectiveDynamicViscosityPaS,
+					residentResult.stressMomentumRateKGPerM2S2,
+					residentResult.buoyancyMomentumRateKGPerM2S2,
+					residentResult.phaseSourceMomentumRateKGPerM2S2,
+					residentResult.combinedMomentumRateKGPerM2S2};
+				const id<MTLBuffer> stageTarget[]={stageEddy,stageMu,stageViscous,stageGravity,
+					stagePhase,stageCombined};
+				const std::size_t stageSize[]={cellBytes,cellBytes,faceBytes,faceBytes,faceBytes,faceBytes};
+				{
+					ResidentForceTransferScope transferScope(ResidentForceTerminalTransfer);
+					for( std::size_t index=0u;index<6u;++index ) CopyResidentForceBuffer(staging,
+						stageSource[index],0u,stageTarget[index],0u,stageSize[index]);
+				}
+				[staging endEncoding];[command commit];[command waitUntilCompleted];
+				if( [command status]!=MTLCommandBufferStatusCompleted ) {
+					const std::string detail=MetalError(
+						"production nonpressure momentum Metal command failed",[command error]);
+					return Fail(error,detail.c_str());
+				}
+				FireProductionNonpressureMomentumRHSResult computed;
+				const float* eddyValues=static_cast<const float*>([stageEddy contents]);
+				const float* muValues=static_cast<const float*>([stageMu contents]);
+				const float* viscousValues=static_cast<const float*>([stageViscous contents]);
+				const float* gravityValues=static_cast<const float*>([stageGravity contents]);
+				const float* phaseValues=static_cast<const float*>([stagePhase contents]);
+				const float* combinedValues=static_cast<const float*>([stageCombined contents]);
+				computed.eddyKinematicViscosityM2PerS.assign(eddyValues,eddyValues+cells);
+				computed.effectiveDynamicViscosityPaS.assign(muValues,muValues+cells);
+				offset=0u;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					computed.stressMomentumRateKGPerM2S2[axis].assign(viscousValues+offset,
+						viscousValues+offset+faceCounts[axis]);
+					computed.buoyancyMomentumRateKGPerM2S2[axis].assign(gravityValues+offset,
+						gravityValues+offset+faceCounts[axis]);
+					computed.phaseSourceMomentumRateKGPerM2S2[axis].assign(phaseValues+offset,
+						phaseValues+offset+faceCounts[axis]);
+					computed.combinedMomentumRateKGPerM2S2[axis].assign(combinedValues+offset,
+						combinedValues+offset+faceCounts[axis]);offset+=faceCounts[axis];
+				}
+				if( !AllFinite(computed.eddyKinematicViscosityM2PerS)||
+					!AllFinite(computed.effectiveDynamicViscosityPaS) ) return Fail(error,
+						"production nonpressure momentum Metal output is nonfinite");
+				for( unsigned int axis=0u;axis<3u;++axis ) if(
+					!AllFinite(computed.stressMomentumRateKGPerM2S2[axis])||
+					!AllFinite(computed.buoyancyMomentumRateKGPerM2S2[axis])||
+					!AllFinite(computed.phaseSourceMomentumRateKGPerM2S2[axis])||
+					!AllFinite(computed.combinedMomentumRateKGPerM2S2[axis]) ) return Fail(error,
+						"production nonpressure momentum Metal output is nonfinite");
+				diagnostics.commandCommitCount=1u;
+				diagnostics.interstageFullGridTransferCount=0u;
+				diagnostics.terminalStagingCount=1u;
+				diagnostics.certifiedWorkingSetBytes=certifiedBytes;
+				diagnostics.actualMetalAllocationBytes=actual;
+				diagnostics.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				if( !std::isfinite(diagnostics.deviceElapsedMS)||diagnostics.deviceElapsedMS<0.0 )
+					return Fail(error,"production nonpressure momentum Metal timing is nonfinite");
+				result=std::move(computed);
+			}
+			if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionNonpressureMomentumRHSResult();
+			diagnostics=FireProductionNonpressureMomentumRHSMetalDiagnostics();
+			return Fail(error,"production nonpressure momentum Metal allocation failed");
 		}
 	}
 
@@ -1076,6 +1449,7 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 					computed.momentumKGPerM2S[axis].assign(momentumValues+offset,
 						momentumValues+offset+faceCounts[axis]);offset+=faceCounts[axis];
 				}
+				PublishDirectGravityRates(request,computed.frozenFields);
 				computed.executedViscousSubstepCount=selectedSchedule.substepCount;
 				if( captureIntermediateStates ) {const float* values=static_cast<const float*>(
 					ResidentForceBufferContents(stageSnapshots,ResidentForceTerminalAccess));

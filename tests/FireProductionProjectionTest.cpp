@@ -1156,6 +1156,109 @@ int main()
 		rolesResult.maximumOpenComplementarityDiscrepancyMPerS==
 			IndependentOpenComplementarity(roles,rolesResult),
 		"P2 role reversal publishes independently recomputed nonzero complementarity");
+	FireProductionProjectionRequest sealedRoles=roles;
+	sealedRoles.openClassificationMode=
+		FireProductionProjectionUseSealedOpenClassification;
+	for(unsigned int side=0u;side<6u;++side){
+		const std::size_t count=side<2u?sealedRoles.shape.ny*sealedRoles.shape.nz:
+			(side<4u?sealedRoles.shape.nx*sealedRoles.shape.nz:
+			 sealedRoles.shape.nx*sealedRoles.shape.ny);
+		sealedRoles.sealedPressureOpenInflow[side].assign(count,0u);
+	}
+	std::fill(sealedRoles.sealedPressureOpenInflow[1].begin(),
+		sealedRoles.sealedPressureOpenInflow[1].end(),1u);
+	FireProductionProjectionResult sealedRolesResult;
+	Check(ProjectFireProductionCPU(sealedRoles,sealedRolesResult,&error)&&
+		sealedRolesResult.pressureOpenInflow==sealedRoles.sealedPressureOpenInflow&&
+		sealedRolesResult.pressurePa!=rolesResult.pressurePa&&
+		sealedRolesResult.velocityMPerS!=rolesResult.velocityMPerS,
+		"P2 sealed pressure-open class controls the Bernoulli head and solve instead of being echoed");
+	FireProductionProjectionRequest endpointRoles=sealedRoles;
+	endpointRoles.openHeadMode=FireProductionProjectionUseSealedOpenHead;
+	endpointRoles.outputClassificationMode=
+		FireProductionProjectionDeriveEndpointOpenClassification;
+	endpointRoles.endpointVelocityToleranceMPerS=1024.0f;
+	for(unsigned int side=0u;side<6u;++side)
+		endpointRoles.sealedPressureOpenDynamicPressurePa[side].assign(
+			endpointRoles.sealedPressureOpenInflow[side].size(),-0.125f);
+	FireProductionProjectionResult endpointRolesResult;
+	const bool endpointRolesOK=ProjectFireProductionCPU(
+		endpointRoles,endpointRolesResult,&error);
+	FireProductionProjectionRequest zeroHeadEndpointRoles=endpointRoles;
+	for(auto& side:zeroHeadEndpointRoles.sealedPressureOpenDynamicPressurePa)
+		std::fill(side.begin(),side.end(),0.0f);
+	FireProductionProjectionResult zeroHeadEndpointRolesResult;
+	const bool zeroHeadEndpointRolesOK=ProjectFireProductionCPU(
+		zeroHeadEndpointRoles,zeroHeadEndpointRolesResult,&error);
+	FireProductionProjectionRequest oppositeEndpointRoles=endpointRoles;
+	for(unsigned int side=0u;side<6u;++side)if(
+		oppositeEndpointRoles.boundary[side]==FireProductionProjectionPressureOpen)
+		for(unsigned char& value:oppositeEndpointRoles.sealedPressureOpenInflow[side])
+			value=value?0u:1u;
+	FireProductionProjectionResult oppositeEndpointRolesResult;
+	const bool oppositeEndpointRolesOK=ProjectFireProductionCPU(
+		oppositeEndpointRoles,oppositeEndpointRolesResult,&error);
+	Check(endpointRolesOK&&zeroHeadEndpointRolesOK&&oppositeEndpointRolesOK&&
+		endpointRolesResult.pressurePa!=zeroHeadEndpointRolesResult.pressurePa&&
+		endpointRolesResult.velocityMPerS!=zeroHeadEndpointRolesResult.velocityMPerS&&
+		endpointRolesResult.pressureOpenInflow==endpointRoles.sealedPressureOpenInflow&&
+		oppositeEndpointRolesResult.pressureOpenInflow==
+			oppositeEndpointRoles.sealedPressureOpenInflow&&
+		endpointRolesResult.faceDensityKGPerM3==oppositeEndpointRolesResult.faceDensityKGPerM3&&
+		endpointRolesResult.velocityMPerS==oppositeEndpointRolesResult.velocityMPerS&&
+		endpointRolesResult.momentumKGPerM2S==oppositeEndpointRolesResult.momentumKGPerM2S&&
+		endpointRolesResult.pressurePa==oppositeEndpointRolesResult.pressurePa,
+		"P2 R2 consumes caller-sealed integrated head independently of its deadband endpoint seed");
+	FireProductionProjectionRequest classifiedEndpointRoles=endpointRoles;
+	classifiedEndpointRoles.endpointVelocityToleranceMPerS=0.0f;
+	FireProductionProjectionResult classifiedEndpointRolesResult;
+	const bool classifiedEndpointRolesOK=ProjectFireProductionCPU(
+		classifiedEndpointRoles,classifiedEndpointRolesResult,&error);
+	bool endpointClassMatches=classifiedEndpointRolesOK;
+	bool endpointChangedSeed=false;
+	for(unsigned int side=0u;side<6u&&endpointClassMatches;++side){
+		if(classifiedEndpointRoles.boundary[side]!=FireProductionProjectionPressureOpen)continue;
+		const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+		const std::size_t firstCount=axis==0u?classifiedEndpointRoles.shape.ny:
+			classifiedEndpointRoles.shape.nx;
+		const std::size_t secondCount=axis==2u?classifiedEndpointRoles.shape.ny:
+			classifiedEndpointRoles.shape.nz;
+		for(std::size_t second=0u;second<secondCount;++second)
+			for(std::size_t first=0u;first<firstCount;++first){
+				std::size_t x=0u,y=0u,z=0u;
+				if(axis==0u){x=positive?classifiedEndpointRoles.shape.nx:0u;y=first;z=second;}
+				if(axis==1u){x=first;y=positive?classifiedEndpointRoles.shape.ny:0u;z=second;}
+				if(axis==2u){x=first;y=second;z=positive?classifiedEndpointRoles.shape.nz:0u;}
+				const std::size_t face=Face(classifiedEndpointRoles.shape,axis,x,y,z);
+				const std::size_t index=second*firstCount+first;
+				const float outward=(positive?1.0f:-1.0f)*
+					classifiedEndpointRolesResult.velocityMPerS[axis][face];
+				const unsigned char seed=classifiedEndpointRoles.sealedPressureOpenInflow[side][index];
+				const unsigned char expected=outward<0.0f?1u:(outward>0.0f?0u:seed);
+				endpointClassMatches=endpointClassMatches&&
+					classifiedEndpointRolesResult.pressureOpenInflow[side][index]==expected;
+				endpointChangedSeed=endpointChangedSeed||expected!=seed;
+			}
+	}
+	Check(endpointClassMatches&&endpointChangedSeed,
+		"P2 R2 endpoint classifier follows corrected outward velocity outside its deadband");
+	FireProductionProjectionRequest derivedClassSealedHead=endpointRoles;
+	derivedClassSealedHead.openClassificationMode=
+		FireProductionProjectionDeriveOpenClassification;
+	derivedClassSealedHead.outputClassificationMode=
+		FireProductionProjectionPreserveOpenClassification;
+	for(auto& side:derivedClassSealedHead.sealedPressureOpenInflow)side.clear();
+	FireProductionProjectionResult derivedClassSealedHeadResult;
+	Check(ProjectFireProductionCPU(derivedClassSealedHead,derivedClassSealedHeadResult,&error)&&
+		derivedClassSealedHeadResult.pressureOpenInflow==rolesResult.pressureOpenInflow,
+		"P2 derives the stage class independently while consuming a sealed integrated head");
+	FireProductionProjectionRequest staleDerived=roles;
+	staleDerived.sealedPressureOpenInflow[0].assign(
+		staleDerived.shape.ny*staleDerived.shape.nz,0u);
+	FireProductionProjectionResult staleDerivedResult;
+	Check(!ProjectFireProductionCPU(staleDerived,staleDerivedResult,&error)&&
+		staleDerivedResult.pressurePa.empty(),
+		"P2 derived classification refuses a stale sealed active set before work");
 #ifdef __APPLE__
 	FireProductionProjectionResult rolesMetal;
 	Check(ProjectFireProductionMetal(roles,rolesMetal,&error)&&
@@ -1163,6 +1266,30 @@ int main()
 		rolesMetal.maximumOpenComplementarityDiscrepancyMPerS==
 			IndependentOpenComplementarity(roles,rolesMetal),
 		"P2 Metal publishes independently recomputed nonzero role-reversal complementarity");
+	FireProductionProjectionResult sealedRolesMetal;
+	Check(ProjectFireProductionMetal(sealedRoles,sealedRolesMetal,&error)&&
+		sealedRolesMetal.pressureOpenInflow==sealedRoles.sealedPressureOpenInflow&&
+		sealedRolesMetal.pressurePa!=rolesMetal.pressurePa&&
+		sealedRolesMetal.velocityMPerS!=rolesMetal.velocityMPerS,
+		"P2 Metal sealed pressure-open class controls the Bernoulli head and solve");
+	FireProductionProjectionResult endpointRolesMetal,oppositeEndpointRolesMetal;
+	Check(ProjectFireProductionMetal(endpointRoles,endpointRolesMetal,&error)&&
+		ProjectFireProductionMetal(oppositeEndpointRoles,oppositeEndpointRolesMetal,&error)&&
+		endpointRolesMetal.pressureOpenInflow==endpointRoles.sealedPressureOpenInflow&&
+		oppositeEndpointRolesMetal.pressureOpenInflow==
+			oppositeEndpointRoles.sealedPressureOpenInflow&&
+		endpointRolesMetal.faceDensityKGPerM3==oppositeEndpointRolesMetal.faceDensityKGPerM3&&
+		endpointRolesMetal.velocityMPerS==oppositeEndpointRolesMetal.velocityMPerS&&
+		endpointRolesMetal.momentumKGPerM2S==oppositeEndpointRolesMetal.momentumKGPerM2S&&
+		endpointRolesMetal.pressurePa==oppositeEndpointRolesMetal.pressurePa,
+		"P2 Metal R2 keeps integrated head independent of endpoint-class deadband seed");
+	FireProductionProjectionResult classifiedEndpointRolesMetal,derivedClassSealedHeadMetal;
+	Check(ProjectFireProductionMetal(classifiedEndpointRoles,classifiedEndpointRolesMetal,&error)&&
+		classifiedEndpointRolesMetal.pressureOpenInflow==
+			classifiedEndpointRolesResult.pressureOpenInflow&&
+		ProjectFireProductionMetal(derivedClassSealedHead,derivedClassSealedHeadMetal,&error)&&
+		derivedClassSealedHeadMetal.pressureOpenInflow==rolesMetal.pressureOpenInflow,
+		"P2 Metal independently derives endpoint and stage classes with a sealed head");
 #endif
 
 	FireProductionProjectionRequest incompatible=EmptyRequest(6u,5u,4u);
@@ -1338,12 +1465,12 @@ int main()
 		error.find("2 GiB")!=std::string::npos,
 		"P2 rejects the complete peak working set before allocating arrays");
 	FireProductionProjectionShape nearUnder,nearOver;
-	nearUnder.nx=120u;nearUnder.ny=226u;nearUnder.nz=395u;nearUnder.cellWidthM=0.1f;
-	nearOver.nx=119u;nearOver.ny=200u;nearOver.nz=450u;nearOver.cellWidthM=0.1f;
+	nearUnder.nx=124u;nearUnder.ny=206u;nearUnder.nz=419u;nearUnder.cellWidthM=0.1f;
+	nearOver.nx=128u;nearOver.ny=207u;nearOver.nz=404u;nearOver.cellWidthM=0.1f;
 	std::uint64_t nearUnderBytes=0u,nearOverBytes=0u;
 	Check(FireProductionProjectionWorkingSetBytes(nearUnder,nearUnderBytes)&&
 		FireProductionProjectionWorkingSetBytes(nearOver,nearOverBytes)&&
-		nearUnderBytes==UINT64_C(2147482428)&&nearOverBytes==UINT64_C(2147484428)&&
+		nearUnderBytes==UINT64_C(2147471816)&&nearOverBytes==UINT64_C(2147503312)&&
 		nearUnderBytes<=(UINT64_C(1)<<31u)&&nearOverBytes>(UINT64_C(1)<<31u),
 		"P2 complete rounded Metal working-set accounting binds the independent cap boundary pair");
 	FireProductionProjectionRequest underAdmission,overAdmission;
@@ -1428,7 +1555,7 @@ int main()
 	const std::string residentProjectionBody=residentProjectionBeginning==std::string::npos?
 		std::string():metalSource.substr(residentProjectionBeginning);
 	Check(Count(source,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
-		Count(source,"(execution==CPUProjectionResidentPhysical?17u:16u):12u")==1u&&
+		Count(source,"request.residentPhysicalOpenVCycleCount:16u):12u")==1u&&
 		Count(source,"HasOpenBoundary(boundary)?0.75f:1.0f")==1u&&
 		Count(source,"Smooth(level,boundary,3u,nullspace,sweepCounter)")==2u&&
 		Count(source,"Smooth(level,boundary,32u,nullspace,sweepCounter)")==1u&&
@@ -1438,7 +1565,7 @@ int main()
 		source.find("const float mean=BlellochSum(values)")!=std::string::npos,
 		"P2 source guard binds 12 periodic, 17 physical-open, or 16 restoration-open cycles, 3+3/32 Jacobi, fp32 omega, and Blelloch mean");
 	Check(Count(metalSource,"for( unsigned int cycle=0;cycle<cycleCount;++cycle )")==1u&&
-		Count(metalSource,"execution==ProjectionResidentStateOnly?17u:16u")==1u&&
+		Count(metalSource,"request.residentPhysicalOpenVCycleCount:16u")==1u&&
 		metalSource.find("p.restoration!=0u?-target[gid]:divergence-target[gid]")!=
 			std::string::npos&&
 		metalSource.find("abs((divergence-beginning)-target[gid])")!=std::string::npos&&

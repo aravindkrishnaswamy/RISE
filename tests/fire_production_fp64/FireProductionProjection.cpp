@@ -144,9 +144,12 @@ namespace RISEFireProductionFP64
 				static_cast<std::uint64_t>(shape.nx)*shape.ny);
 			if( !AddMetalBufferBytes(boundaryFaces,sizeof(double),total)||
 				!AddMetalBufferBytes(boundaryFaces,sizeof(unsigned char),total)||
-				// Six caller-owned classification vectors are materialized while the
-				// device classification remains live.
+				// Caller-owned stage classification and integrated-head vectors may
+				// both remain materialized while the returned endpoint classification
+				// and their device records are live.
 				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
+				!AddBytes(boundaryFaces,sizeof(unsigned char),total)||
+				!AddBytes(boundaryFaces,sizeof(double),total)||
 				!AddMetalBufferBytes(NextPowerOfTwo(static_cast<std::size_t>(fineCells)),sizeof(double),total)||
 				!AddMetalBufferBytes(12u,sizeof(double),total) ) return false;
 			// Terminal staging: pressure plus stored density, momentum, and velocity.
@@ -567,6 +570,52 @@ namespace RISEFireProductionFP64
 			if( value!=FireProductionProjectionPeriodic&&value!=FireProductionProjectionWall&&
 				value!=FireProductionProjectionPressureOpen )
 				return Fail(error,"production projection boundary kind is invalid");
+		if(request.openClassificationMode!=FireProductionProjectionDeriveOpenClassification&&
+			request.openClassificationMode!=FireProductionProjectionUseSealedOpenClassification)
+			return Fail(error,"production projection open-classification mode is invalid");
+		if(request.openHeadMode!=FireProductionProjectionDeriveCurrentOpenHead&&
+			request.openHeadMode!=FireProductionProjectionUseSealedOpenHead)
+			return Fail(error,"production projection open-head mode is invalid");
+		if(request.outputClassificationMode!=
+			FireProductionProjectionPreserveOpenClassification&&
+			request.outputClassificationMode!=
+			FireProductionProjectionDeriveEndpointOpenClassification)
+			return Fail(error,"production projection output-classification mode is invalid");
+		if(!std::isfinite(request.endpointVelocityToleranceMPerS)||
+			request.endpointVelocityToleranceMPerS<0.0)
+			return Fail(error,"production projection endpoint velocity tolerance is invalid");
+		const bool endpointClassification=request.outputClassificationMode==
+			FireProductionProjectionDeriveEndpointOpenClassification;
+		if(endpointClassification&&(
+			request.openClassificationMode!=
+				FireProductionProjectionUseSealedOpenClassification||
+			request.openHeadMode!=FireProductionProjectionUseSealedOpenHead))
+			return Fail(error,
+				"production projection endpoint class requires sealed stage head and seed");
+		for(unsigned int side=0u;side<6u;++side){
+			const std::size_t expected=SideFaceCount(shape,side);
+			const std::vector<unsigned char>& sealed=request.sealedPressureOpenInflow[side];
+			if(request.openClassificationMode==
+				FireProductionProjectionUseSealedOpenClassification){
+				if(sealed.size()!=expected)return Fail(error,
+					"production projection sealed open-classification shape is invalid");
+				for(const unsigned char value:sealed)if(value>1u||
+					(request.boundary[side]!=FireProductionProjectionPressureOpen&&value!=0u))
+					return Fail(error,
+						"production projection sealed open-classification byte is invalid");
+			}else if(!sealed.empty())return Fail(error,
+				"production projection derived open classification carries a stale seal");
+			const std::vector<double>& sealedHead=
+				request.sealedPressureOpenDynamicPressurePa[side];
+			if(request.openHeadMode==FireProductionProjectionUseSealedOpenHead){
+				if(sealedHead.size()!=expected)return Fail(error,
+					"production projection sealed open-head shape is invalid");
+				for(const double value:sealedHead)if(!std::isfinite(value)||
+					(request.boundary[side]!=FireProductionProjectionPressureOpen&&value!=0.0))
+					return Fail(error,"production projection sealed open-head value is invalid");
+			}else if(!sealedHead.empty())return Fail(error,
+				"production projection derived open head carries a stale seal");
+		}
 		if( request.gasDensityKGPerM3.size()!=cells||
 			request.divergenceTargetPerS.size()!=cells )
 			return Fail(error,"production projection cell arrays are malformed");
@@ -650,11 +699,19 @@ namespace RISEFireProductionFP64
 			for( const double value : result.velocityMPerS[axis] )
 				maximumVelocity=std::max(maximumVelocity,std::fabs(value));
 		}
+		const bool sealedOpenClassification=request.openClassificationMode==
+			FireProductionProjectionUseSealedOpenClassification;
+		const bool sealedOpenHead=request.openHeadMode==
+			FireProductionProjectionUseSealedOpenHead;
 		for( unsigned int side=0;side<6u;++side )
-			result.pressureOpenInflow[side].assign(SideFaceCount(shape,side),0u);
+			result.pressureOpenInflow[side]=sealedOpenClassification?
+				request.sealedPressureOpenInflow[side]:
+				std::vector<unsigned char>(SideFaceCount(shape,side),0u);
 		std::array<std::vector<double>,6> boundaryPressure;
 		for( unsigned int side=0;side<6u;++side )
-			boundaryPressure[side].assign(SideFaceCount(shape,side),0.0);
+			boundaryPressure[side]=sealedOpenHead?
+				request.sealedPressureOpenDynamicPressurePa[side]:
+				std::vector<double>(SideFaceCount(shape,side),0.0);
 		for( unsigned int side=0;side<6u;++side ) {
 			if( request.boundary[side]!=FireProductionProjectionPressureOpen ) continue;
 			const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
@@ -672,8 +729,11 @@ namespace RISEFireProductionFP64
 					const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
 					const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
 					const std::size_t index=SideFaceIndex(shape,side,cx,cy,cz);
-					if( outward<0.0 ) {
-						result.pressureOpenInflow[side][index]=1u;
+					const bool inflow=sealedOpenClassification?
+						result.pressureOpenInflow[side][index]!=0u:outward<0.0;
+					if( !sealedOpenClassification )
+						result.pressureOpenInflow[side][index]=inflow?1u:0u;
+					if( inflow&&!sealedOpenHead ) {
 						double speed2=result.velocityMPerS[axis][face]*
 							result.velocityMPerS[axis][face];
 						for( unsigned int tangent=0;tangent<3u;++tangent ) if( tangent!=axis ) {
@@ -821,6 +881,32 @@ namespace RISEFireProductionFP64
 			}
 			for( const double value : result.velocityMPerS[axis] )
 				maximumVelocity=std::max(maximumVelocity,std::fabs(value));
+		}
+		if(request.outputClassificationMode==
+			FireProductionProjectionDeriveEndpointOpenClassification){
+			for(unsigned int side=0u;side<6u;++side){
+				if(request.boundary[side]!=FireProductionProjectionPressureOpen)continue;
+				const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+				const std::size_t firstCount=axis==0u?ny:nx;
+				const std::size_t secondCount=axis==2u?ny:nz;
+				for(std::size_t second=0u;second<secondCount;++second)
+					for(std::size_t first=0u;first<firstCount;++first){
+						std::size_t x=0u,y=0u,z=0u;
+						if(axis==0u){x=positive?nx:0u;y=first;z=second;}
+						if(axis==1u){x=first;y=positive?ny:0u;z=second;}
+						if(axis==2u){x=first;y=second;z=positive?nz:0u;}
+						const std::size_t cx=axis==0u?(positive?nx-1u:0u):x;
+						const std::size_t cy=axis==1u?(positive?ny-1u:0u):y;
+						const std::size_t cz=axis==2u?(positive?nz-1u:0u):z;
+						const std::size_t index=SideFaceIndex(shape,side,cx,cy,cz);
+						const double outward=(positive?1.0:-1.0)*result.velocityMPerS[axis][
+							FaceIndex(nx,ny,axis,x,y,z)];
+						if(outward < -request.endpointVelocityToleranceMPerS)
+							result.pressureOpenInflow[side][index]=1u;
+						else if(outward > request.endpointVelocityToleranceMPerS)
+							result.pressureOpenInflow[side][index]=0u;
+					}
+			}
 		}
 		std::array<std::vector<double>,3> beginningVelocity;
 		if( execution==CPUProjectionRestoration ) {

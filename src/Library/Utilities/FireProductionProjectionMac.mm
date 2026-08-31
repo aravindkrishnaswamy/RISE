@@ -257,10 +257,25 @@ kernel void classify_open(device const float* vx [[buffer(0)]],device const floa
  if(axis==2u){x=u;y=v;z=positive?p.nz:0u;}device const float* vel[3]={vx,vy,vz};
  float normal=vel[axis][face_index(p,axis,x,y,z)],outward=positive?normal:-normal;
  uint cx=axis==0u?(positive?p.nx-1u:0u):x,cy=axis==1u?(positive?p.ny-1u:0u):y;
- uint cz=axis==2u?(positive?p.nz-1u:0u):z;bool inside=outward<0.0f;inflow[p.sideOffset[side]+gid]=inside?1u:0u;
- float pressure=0.0f;if(inside&&p.restoration==0u){float speed2=normal*normal;for(uint t=0u;t<3u;++t)if(t!=axis){
-  float q=centered_velocity(vel[t],p,t,cx,cy,cz);speed2+=q*q;}pressure=-0.5f*p.ambient*speed2;}
- pb[p.sideOffset[side]+gid]=pressure;
+ uint cz=axis==2u?(positive?p.nz-1u:0u):z;uint inflowIndex=p.sideOffset[side]+gid;
+ bool sealedClass=(a.padding&1u)!=0u,sealedHead=(a.padding&2u)!=0u;
+ bool inside=sealedClass?inflow[inflowIndex]!=0u:outward<0.0f;
+ if(!sealedClass)inflow[inflowIndex]=inside?1u:0u;
+ if(!sealedHead){float pressure=0.0f;if(inside&&p.restoration==0u){float speed2=normal*normal;
+  for(uint t=0u;t<3u;++t)if(t!=axis){float q=centered_velocity(vel[t],p,t,cx,cy,cz);
+   speed2+=q*q;}pressure=-0.5f*p.ambient*speed2;}pb[p.sideOffset[side]+gid]=pressure;}
+}
+kernel void classify_endpoint(device const float* vx [[buffer(0)]],device const float* vy [[buffer(1)]],
+ device const float* vz [[buffer(2)]],device uchar* inflow [[buffer(3)]],
+ constant LevelParams& p [[buffer(4)]],constant AxisParams& a [[buffer(5)]],
+ constant float& tolerance [[buffer(6)]],uint gid [[thread_position_in_grid]]){
+ uint side=a.side;if(gid>=side_face_count(p,side))return;uint axis=side/2u,positive=side&1u;
+ uint first=axis==0u?p.ny:p.nx;uint u=gid%first,v=gid/first,x=0u,y=0u,z=0u;
+ if(axis==0u){x=positive?p.nx:0u;y=u;z=v;}if(axis==1u){x=u;y=positive?p.ny:0u;z=v;}
+ if(axis==2u){x=u;y=v;z=positive?p.nz:0u;}device const float* vel[3]={vx,vy,vz};
+ float outward=(positive?1.0f:-1.0f)*vel[axis][face_index(p,axis,x,y,z)];
+ uint index=p.sideOffset[side]+gid;if(outward < -tolerance)inflow[index]=1u;
+ else if(outward > tolerance)inflow[index]=0u;
 }
 kernel void build_rhs(device const float* vx [[buffer(0)]],device const float* vy [[buffer(1)]],
  device const float* vz [[buffer(2)]],device const float* target [[buffer(3)]],
@@ -442,13 +457,13 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			id<MTLDevice> device;
 			id<MTLCommandQueue> queue;
 			id<MTLComputePipelineState> buildFaces,buildDiagonal,restrictAverage,
-				setupVelocity,classifyOpen,buildRHS,jacobi,computeResidual,
+				setupVelocity,classifyOpen,classifyEndpoint,buildRHS,jacobi,computeResidual,
 				prolongate,clearValues,copyReduction,sumPass,maxPass,subtractMean,
 				storeRoot,correctFaces,copySeam,postResidual,validationMetrics;
 			std::string error;
 
 			MetalProjectionContext() : device(nil),queue(nil),buildFaces(nil),buildDiagonal(nil),
-				restrictAverage(nil),setupVelocity(nil),classifyOpen(nil),buildRHS(nil),
+				restrictAverage(nil),setupVelocity(nil),classifyOpen(nil),classifyEndpoint(nil),buildRHS(nil),
 				jacobi(nil),computeResidual(nil),prolongate(nil),clearValues(nil),
 				copyReduction(nil),sumPass(nil),maxPass(nil),subtractMean(nil),storeRoot(nil),
 				correctFaces(nil),copySeam(nil),postResidual(nil),validationMetrics(nil)
@@ -467,15 +482,17 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 						id<MTLFunction> fn=[library newFunctionWithName:[NSString stringWithUTF8String:name]];
 						return fn?[device newComputePipelineStateWithFunction:fn error:&metalError]:nil;};
 					buildFaces=make("build_faces");buildDiagonal=make("build_diagonal");
-					restrictAverage=make("restrict_average");setupVelocity=make("setup_velocity");
-					classifyOpen=make("classify_open");buildRHS=make("build_rhs");jacobi=make("jacobi");
+				restrictAverage=make("restrict_average");setupVelocity=make("setup_velocity");
+				classifyOpen=make("classify_open");classifyEndpoint=make("classify_endpoint");
+				buildRHS=make("build_rhs");jacobi=make("jacobi");
 					computeResidual=make("compute_residual");prolongate=make("prolongate_add");
 					clearValues=make("clear_values");copyReduction=make("copy_reduction");
 					sumPass=make("sum_pass");maxPass=make("max_pass");subtractMean=make("subtract_mean");
 					storeRoot=make("store_root");correctFaces=make("correct_faces");
 					copySeam=make("copy_periodic_seam");postResidual=make("cell_post_residual");
 					validationMetrics=make("cell_validation_metrics");
-					if( !buildFaces||!buildDiagonal||!restrictAverage||!setupVelocity||!classifyOpen||
+				if( !buildFaces||!buildDiagonal||!restrictAverage||!setupVelocity||!classifyOpen||
+					!classifyEndpoint||
 						!buildRHS||!jacobi||!computeResidual||!prolongate||!clearValues||!copyReduction||
 						!sumPass||!maxPass||!subtractMean||!storeRoot||!correctFaces||!copySeam||
 						!postResidual||!validationMetrics ) {
@@ -923,7 +940,7 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					faceValues+=FireProductionProjectionFaceCount(shape,axis);
 				const std::uint64_t hostBytes=terminal?
 					(3u*static_cast<std::uint64_t>(cells)+4u*faceValues)*sizeof(float)+
-						2u*static_cast<std::uint64_t>(boundaryCount):0u;
+						6u*static_cast<std::uint64_t>(boundaryCount):0u;
 				if( hostBytes>std::numeric_limits<std::uint64_t>::max()-residentBytes||
 					hostBytes+residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes )
 					return false;
@@ -933,10 +950,29 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					if( error ) *error="production fire projection actual allocation exceeds certificate";
 					return false;
 				}
-				std::fill_n(static_cast<float*>(ProjectionBufferContents(boundaryPressure,
-					ProjectionMetadataAccess)),boundaryCount,0.0f);
-				std::fill_n(static_cast<unsigned char*>(ProjectionBufferContents(inflow,
-					ProjectionMetadataAccess)),boundaryCount,
+				float* representedBoundaryPressure=static_cast<float*>(
+					ProjectionBufferContents(boundaryPressure,ProjectionMetadataAccess));
+				if(request.openHeadMode==FireProductionProjectionUseSealedOpenHead){
+					std::size_t offset=0u;
+					for(unsigned int side=0u;side<6u;++side){
+						const std::vector<float>& sealed=
+							request.sealedPressureOpenDynamicPressurePa[side];
+						std::copy(sealed.begin(),sealed.end(),representedBoundaryPressure+offset);
+						offset+=sealed.size();
+					}
+				}else std::fill_n(representedBoundaryPressure,boundaryCount,0.0f);
+				unsigned char* representedInflow=static_cast<unsigned char*>(
+					ProjectionBufferContents(inflow,ProjectionMetadataAccess));
+				if(request.openClassificationMode==
+					FireProductionProjectionUseSealedOpenClassification){
+					std::size_t offset=0u;
+					for(unsigned int side=0u;side<6u;++side){
+						const std::vector<unsigned char>& sealed=
+							request.sealedPressureOpenInflow[side];
+						std::copy(sealed.begin(),sealed.end(),representedInflow+offset);
+						offset+=sealed.size();
+					}
+				}else std::fill_n(representedInflow,boundaryCount,
 					static_cast<unsigned char>(0u));
 				std::fill_n(static_cast<float*>(ProjectionBufferContents(diagnostics,
 					ProjectionMetadataAccess)),12u,0.0f);
@@ -998,8 +1034,15 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:4];[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:5];
 					Dispatch(encoder,context.setupVelocity,FireProductionProjectionFaceCount(shape,axis));[encoder endEncoding];
 				}
-				for( unsigned int side=0;side<6u;++side ) if( request.boundary[side]==FireProductionProjectionPressureOpen ) {
-					const MetalAxisParameters sideParameters={0u,0u,side,0u};
+				for( unsigned int side=0;side<6u;++side ) if(
+					request.boundary[side]==FireProductionProjectionPressureOpen&&(
+					request.openHeadMode==FireProductionProjectionDeriveCurrentOpenHead||
+					request.openClassificationMode==
+						FireProductionProjectionDeriveOpenClassification) ) {
+					const MetalAxisParameters sideParameters={0u,0u,side,
+						(request.openClassificationMode==
+							FireProductionProjectionUseSealedOpenClassification?1u:0u)|
+						(request.openHeadMode==FireProductionProjectionUseSealedOpenHead?2u:0u)};
 					if( !Begin(command,encoder,error,"open-boundary classification") ) return false;
 					for( unsigned int axis=0;axis<3u;++axis ) [encoder setBuffer:velocity[axis] offset:0 atIndex:axis];
 					[encoder setBuffer:inflow offset:0 atIndex:3];[encoder setBuffer:boundaryPressure offset:0 atIndex:4];
@@ -1048,6 +1091,24 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 						[encoder setBytes:&axisParameters length:sizeof(axisParameters) atIndex:4];
 						const std::size_t seam=axis==0u?shape.ny*shape.nz:(axis==1u?shape.nx*shape.nz:shape.nx*shape.ny);
 						Dispatch(encoder,context.copySeam,seam);[encoder endEncoding];
+					}
+				}
+				if(request.outputClassificationMode==
+					FireProductionProjectionDeriveEndpointOpenClassification){
+					for(unsigned int side=0u;side<6u;++side)if(
+						request.boundary[side]==FireProductionProjectionPressureOpen){
+						const MetalAxisParameters sideParameters={0u,0u,side,0u};
+						if(!Begin(command,encoder,error,"endpoint open-boundary classification"))return false;
+						for(unsigned int axis=0u;axis<3u;++axis)
+							[encoder setBuffer:velocity[axis] offset:0 atIndex:axis];
+						[encoder setBuffer:inflow offset:0 atIndex:3];
+						[encoder setBuffer:fineLevel.parameters offset:0 atIndex:4];
+						[encoder setBytes:&sideParameters length:sizeof(sideParameters) atIndex:5];
+						[encoder setBytes:&request.endpointVelocityToleranceMPerS
+							length:sizeof(request.endpointVelocityToleranceMPerS) atIndex:6];
+						const std::size_t count=side<2u?shape.ny*shape.nz:
+							(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+						Dispatch(encoder,context.classifyEndpoint,count);[encoder endEncoding];
 					}
 				}
 				if( !Begin(command,encoder,error,"post residual") ) return false;

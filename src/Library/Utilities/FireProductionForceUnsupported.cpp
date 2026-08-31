@@ -25,6 +25,20 @@ namespace RISE
 		return false;
 	}
 
+	bool EvaluateFireProductionNonpressureMomentumRHSMetal(
+		const FireProductionNonpressureMomentumRHSRequest&,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		std::string* error )
+	{
+		result=FireProductionNonpressureMomentumRHSResult();
+		diagnostics=FireProductionNonpressureMomentumRHSMetalDiagnostics();
+		if( error ) try {
+			*error="production nonpressure momentum Metal unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
 	bool AdvanceFireProductionFrozenForceMetal(
 		const FireProductionFrozenForceRequest&,
 		bool,

@@ -92,6 +92,7 @@ namespace RISE
 		std::vector<float> eddyKinematicViscosityM2PerS;
 		std::vector<float> effectiveDynamicViscosityPaS;
 		std::array<std::vector<float>,3> beginningViscousMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> gravityMomentumRateKGPerM2S2;
 		std::array<std::vector<float>,3> gravityMomentumIncrementKGPerM2S;
 	};
 
@@ -142,6 +143,66 @@ namespace RISE
 	bool BuildFireProductionFrozenForceFieldsCPU(
 		const FireProductionFrozenForceRequest& request,
 		FireProductionFrozenForceResult& result,
+		std::string* error=0 );
+
+	//! Instantaneous nonpressure momentum owner for one projected stage state.
+	//! The gas-phase source is a cell rate, not a step increment.  Every
+	//! published momentum quantity is consequently a rate and is independent of
+	//! request.force.timeStepS; the retained time step only serves the legacy
+	//! frozen-force increment returned by the shared field builder.
+	struct FireProductionNonpressureMomentumRHSRequest
+	{
+		FireProductionFrozenForceRequest force;
+		std::vector<float> cellGasPhaseSourceRateKGPerM3S;
+	};
+
+	struct FireProductionNonpressureMomentumRHSResult
+	{
+		std::vector<float> eddyKinematicViscosityM2PerS;
+		std::vector<float> effectiveDynamicViscosityPaS;
+		std::array<std::vector<float>,3> buoyancyMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> stressMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> phaseSourceMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> combinedMomentumRateKGPerM2S2;
+	};
+
+	//! Evaluate buoyancy, Vreman stress divergence, and compatible phase-source
+	//! momentum at the supplied stage state without advancing momentum.
+	bool EvaluateFireProductionNonpressureMomentumRHSCPU(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		std::string* error=0 );
+
+	bool FireProductionNonpressureMomentumRHSWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
+	struct FireProductionNonpressureMomentumRHSMetalDiagnostics
+	{
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		double deviceElapsedMS;
+
+		FireProductionNonpressureMomentumRHSMetalDiagnostics() : commandCommitCount(0u),
+			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
+			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),deviceElapsedMS(0.0) {}
+	};
+
+	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes );
+
+	//! One-command Private-buffer stage evaluator.  Inputs upload before the
+	//! first kernel and the six published rate/diagnostic fields stage only after
+	//! every dependent kernel, so no full-grid host transfer can occur between
+	//! setup, Vreman stress, face force, and phase-source composition.
+	bool EvaluateFireProductionNonpressureMomentumRHSMetal(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
 		std::string* error=0 );
 
 	//! Standalone Metal comparison wrapper for the same beginning-state frozen
@@ -219,6 +280,62 @@ namespace RISE
 		std::string* error=0 );
 
 #if defined(__OBJC__) && defined(__APPLE__)
+	struct FireProductionMetalNonpressureMomentumRHSResidentInput
+	{
+		FireProductionProjectionShape shape;
+		float ambientDensityKGPerM3;
+		float vremanCoefficient;
+		std::array<float,3> gravityMPerS2;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		id<MTLCommandBuffer> commandBuffer;
+		id<MTLBuffer> cellGasDensityKGPerM3;
+		id<MTLBuffer> molecularKinematicViscosityM2PerS;
+		id<MTLBuffer> cellGasPhaseSourceRateKGPerM3S;
+		id<MTLBuffer> packedFaceDensityKGPerM3;
+		id<MTLBuffer> packedMomentumKGPerM2S;
+
+		FireProductionMetalNonpressureMomentumRHSResidentInput() :
+			ambientDensityKGPerM3(1.0f),vremanCoefficient(0.07f),commandBuffer(nil),
+			cellGasDensityKGPerM3(nil),molecularKinematicViscosityM2PerS(nil),
+			cellGasPhaseSourceRateKGPerM3S(nil),packedFaceDensityKGPerM3(nil),
+			packedMomentumKGPerM2S(nil)
+		{
+			gravityMPerS2.fill(0.0f);boundary.fill(FireProductionProjectionPeriodic);
+		}
+	};
+
+	struct FireProductionMetalNonpressureMomentumRHSResidentResult
+	{
+		id<MTLBuffer> eddyKinematicViscosityM2PerS;
+		id<MTLBuffer> effectiveDynamicViscosityPaS;
+		id<MTLBuffer> buoyancyMomentumRateKGPerM2S2;
+		id<MTLBuffer> stressMomentumRateKGPerM2S2;
+		id<MTLBuffer> phaseSourceMomentumRateKGPerM2S2;
+		id<MTLBuffer> combinedMomentumRateKGPerM2S2;
+		// Command-lifetime owners for the intermediates consumed by the rates.
+		id<MTLBuffer> faceVelocityMPerS;
+		id<MTLBuffer> cellVelocityMPerS;
+		id<MTLBuffer> stressTensorPa;
+		id<MTLBuffer> parameterBuffer;
+		std::uint64_t privateAllocationBytes;
+
+		FireProductionMetalNonpressureMomentumRHSResidentResult() :
+			eddyKinematicViscosityM2PerS(nil),effectiveDynamicViscosityPaS(nil),
+			buoyancyMomentumRateKGPerM2S2(nil),stressMomentumRateKGPerM2S2(nil),
+			phaseSourceMomentumRateKGPerM2S2(nil),combinedMomentumRateKGPerM2S2(nil),
+			faceVelocityMPerS(nil),cellVelocityMPerS(nil),stressTensorPa(nil),
+			parameterBuffer(nil),
+			privateAllocationBytes(0u) {}
+	};
+
+	//! Encode the complete stage RHS into a caller-owned command buffer.  Every
+	//! input and output is Private; this call neither commits nor stages.
+	bool EvaluateFireProductionNonpressureMomentumRHSMetalResident(
+		const FireProductionMetalNonpressureMomentumRHSResidentInput& input,
+		FireProductionMetalNonpressureMomentumRHSResidentResult& result,
+		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
+		std::string* error=0 );
+
 	struct FireProductionMetalFrozenForceResidentState
 	{
 		id<MTLBuffer> cellGasDensityKGPerM3;

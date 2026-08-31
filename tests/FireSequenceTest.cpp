@@ -6542,8 +6542,72 @@ namespace
 #endif
 }
 
+#if defined(__APPLE__)
+int RunProductionScalarFCTMetalStageFixture()
+{
+	RISE::FireProductionScalarFCTRequest first;
+	first.shape.nx=4u;first.shape.ny=4u;first.shape.nz=4u;first.shape.cellWidthM=1.0f;
+	first.timeStepS=0.25f;first.boundary.fill(RISE::FireProductionProjectionPeriodic);
+	const std::size_t cells=first.shape.CellCount();first.beginning.assign(9u*cells,0.0f);
+	first.sourceDelta.assign(9u*cells,0.0f);const float pattern[4]={1.0f,1.25f,1.5f,1.25f};
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+		for(std::size_t x=0u;x<4u;++x){const std::size_t cell=(z*4u+y)*4u+x;
+			first.beginning[cell]=pattern[x];first.beginning[cells+cell]=pattern[x];}
+	first.sourceDelta[0u]=0.125f;first.sourceDelta[cells]=0.125f;
+	for(unsigned int axis=0u;axis<3u;++axis)first.frozenVelocityMPerS[axis].assign(
+		RISE::FireProductionProjectionFaceCount(first.shape,axis),axis==0u?1.0f:0.0f);
+	for(auto& side:first.pressureOpenInflow)side.assign(16u,0u);
+	first.ambient[0]=1.0f;first.ambient[1]=1.0f;first.nullity=1u;
+	first.nullspaceBasis.assign(8u,0.0f);first.nullspaceBasis[1]=1.0f;
+	first.coordinateProjector.assign(1u,1.0f);first.feasibilityFactor=1.0f/1024.0f;
+	first.assemblyReserveFactor=first.feasibilityFactor;
+	RISE::FireProductionScalarFCTRequest second=first;
+	second.sourceDelta.assign(9u*cells,0.0f);
+	for(std::size_t cell=0u;cell<cells;++cell){second.beginning[cell]=1.0f;
+		second.beginning[cells+cell]=1.0f;}
+	RISE::FireProductionScalarFCTFluxPair firstPair,secondPair,averagePair;
+	RISE::FireProductionScalarFCTResult firstCPU,secondCPU,averageCPU;
+	std::string stageError;const bool cpu=
+		RISE::BuildFireProductionScalarFCTFluxPairCPU(first,firstPair,&stageError)&&
+		RISE::BuildFireProductionScalarFCTFluxPairCPU(second,secondPair,&stageError)&&
+		RISE::AverageFireProductionScalarFCTFluxPairsCPU(
+			firstPair,secondPair,averagePair,&stageError)&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(first,firstPair,firstCPU,&stageError)&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(first,secondPair,secondCPU,&stageError)&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(first,averagePair,averageCPU,&stageError);
+	RISE::FireProductionScalarFCTMetalStageDiagnosticResult metal;
+	const bool computed=cpu&&RISE::EvaluateFireProductionScalarFCTMetalStageDiagnostic(
+		first,second,metal,&stageError);
+	auto sameSolve=[](const auto& a,const auto& b){return a.packedFaceOffset==b.packedFaceOffset&&
+		a.lowFlux==b.lowFlux&&a.fluxDelta==b.fluxDelta&&a.lowState==b.lowState&&
+		a.limiterRatio==b.limiterRatio&&a.sharedFaceAlpha==b.sharedFaceAlpha&&
+		a.accepted==b.accepted;};
+	bool freshAlpha=false;if(cpu)for(unsigned int axis=0u;axis<3u;++axis)
+		for(std::size_t face=0u;face<averageCPU.sharedFaceAlpha[axis].size();++face)
+			freshAlpha=freshAlpha||averageCPU.sharedFaceAlpha[axis][face]!=0.5f*(
+				firstCPU.sharedFaceAlpha[axis][face]+secondCPU.sharedFaceAlpha[axis][face]);
+	const bool passed=computed&&metal.failureBitmap==
+		std::array<std::uint32_t,3>{{0u,0u,0u}}&&metal.firstFluxPair.lowFlux==firstPair.lowFlux&&
+		metal.firstFluxPair.fluxDelta==firstPair.fluxDelta&&
+		metal.secondFluxPair.lowFlux==secondPair.lowFlux&&
+		metal.secondFluxPair.fluxDelta==secondPair.fluxDelta&&
+		metal.averagedFluxPair.lowFlux==averagePair.lowFlux&&
+		metal.averagedFluxPair.fluxDelta==averagePair.fluxDelta&&
+		sameSolve(metal.firstSolve,firstCPU)&&sameSolve(metal.secondSolve,secondCPU)&&
+		sameSolve(metal.averagedSolve,averageCPU)&&freshAlpha&&metal.commandCommitCount==7u;
+	std::fprintf(stderr,"SCALAR_FCT_METAL_STAGES computed=%d passed=%d fresh_alpha=%d "
+		"commits=%u failures=%u/%u/%u error=%s\n",computed?1:0,passed?1:0,
+		freshAlpha?1:0,metal.commandCommitCount,metal.failureBitmap[0],metal.failureBitmap[1],
+		metal.failureBitmap[2],stageError.c_str());return passed?0:181;
+}
+#endif
+
 int main(int argc,char** argv)
 {
+#if defined(__APPLE__)
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-scalar-fct-metal-stages")==0)
+		return RunProductionScalarFCTMetalStageFixture();
+#endif
 	if(argc==3&&std::strcmp(argv[1],"--fire-checkpoint-build-id")==0){
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(argv[2],checkpoint,error))return 98;

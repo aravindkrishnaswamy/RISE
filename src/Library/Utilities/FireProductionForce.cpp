@@ -683,9 +683,9 @@ namespace RISE
 		const std::uint64_t allFaces=(nx+1u)*ny*nz+
 			nx*(ny+1u)*nz+nx*ny*(nz+1u);
 		// Peak includes caller-owned inputs and the local atomic result:
-		// 16 cell arrays (2 input, 14 work/result) and 5 face arrays
-		// (2 input, velocity work, viscous result, gravity result).
-		bytes=(16u*cells+5u*allFaces)*sizeof(float);
+		// 16 cell arrays (2 input, 14 work/result) and 6 face arrays
+		// (2 input, velocity work, viscous result, gravity rate, gravity increment).
+		bytes=(16u*cells+6u*allFaces)*sizeof(float);
 		return true;
 	}
 
@@ -702,7 +702,7 @@ namespace RISE
 			nx*(ny+1u)*nz+nx*ny*(nz+1u);
 		// At a substep peak the original request, frozen fields, evolving
 		// momentum, copied substep request, and atomic substep result/work coexist.
-		bytes=(20u*cells+10u*allFaces)*sizeof(float);
+		bytes=(20u*cells+12u*allFaces)*sizeof(float);
 		return true;
 	}
 
@@ -722,10 +722,56 @@ namespace RISE
 			const std::uint64_t raw=count*sizeof(float);
 			return ((raw+quantum-1u)/quantum)*quantum;
 		};
-		// Host request, packed face staging, and atomic result: 4C+6F. Metal owns four C buffers,
+		// Host request, packed face staging, and atomic result: 4C+7F. Metal owns four C buffers,
 		// one 3C buffer, one 9C buffer, five F buffers, and one 88-byte record.
-		bytes=(4u*cells+6u*faces)*sizeof(float)+4u*rounded(cells)+
+		bytes=(4u*cells+7u*faces)*sizeof(float)+4u*rounded(cells)+
 			rounded(3u*cells)+rounded(9u*cells)+5u*rounded(faces)+quantum;
+		return true;
+	}
+
+	bool FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u ) return false;
+		const std::uint64_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+		const std::uint64_t cells=nx*ny*nz;
+		const std::uint64_t faces=(nx+1u)*ny*nz+
+			nx*(ny+1u)*nz+nx*ny*(nz+1u);
+		const std::uint64_t quantum=UINT64_C(16384);
+		auto rounded=[&](std::uint64_t count) -> std::uint64_t {
+			const std::uint64_t raw=count*sizeof(float);
+			return ((raw+quantum-1u)/quantum)*quantum;
+		};
+		// Caller inputs, packed face staging, and atomic result: 5C+8F.  Metal owns three C and
+		// two F uploads; matching Private inputs; face velocity, 3C velocity,
+		// 9C stress, eddy/mu, four face-rate fields, six terminal stage fields,
+		// and the fixed parameter record.
+		bytes=(5u*cells+8u*faces)*sizeof(float)+
+			2u*(3u*rounded(cells)+2u*rounded(faces))+
+			rounded(faces)+rounded(3u*cells)+rounded(9u*cells)+
+			2u*rounded(cells)+4u*rounded(faces)+
+			2u*rounded(cells)+4u*rounded(faces)+quantum;
+		return true;
+	}
+
+	bool FireProductionNonpressureMomentumRHSWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& bytes )
+	{
+		bytes=0u;std::uint64_t nested=0u;
+		if(!FireProductionFrozenForceWorkingSetBytes(shape,nested))return false;
+		const std::uint64_t nx=shape.nx,ny=shape.ny,nz=shape.nz;
+		const std::uint64_t cells=nx*ny*nz;
+		const std::uint64_t faces=(nx+1u)*ny*nz+
+			nx*(ny+1u)*nz+nx*ny*(nz+1u);
+		if(cells>(std::numeric_limits<std::uint64_t>::max()-2u*faces)/3u||
+			3u*cells+2u*faces>std::numeric_limits<std::uint64_t>::max()/sizeof(float)||
+			nested>std::numeric_limits<std::uint64_t>::max()-
+				(3u*cells+2u*faces)*sizeof(float))return false;
+		bytes=nested+(3u*cells+2u*faces)*sizeof(float);
 		return true;
 	}
 
@@ -751,7 +797,7 @@ namespace RISE
 		// Host caller, packing, and atomic publication coexist with all resident
 		// buffers.  Optional snapshots exist once Private and once in terminal
 		// Shared staging; neither is present in production execution.
-		bytes=(4u*cells+7u*faces)*sizeof(float)+18u*rounded(cells)+
+		bytes=(4u*cells+8u*faces)*sizeof(float)+18u*rounded(cells)+
 			9u*rounded(faces)+2u*rounded(padded)+3u*quantum;
 		if( captureIntermediateStates ) bytes+=16u*rounded(faces);
 		return true;
@@ -1079,6 +1125,7 @@ namespace RISE
 			for( unsigned int component=0u;component<3u;++component ) {
 				const std::size_t faces=FireProductionProjectionFaceCount(shape,component);
 				computed.beginningViscousMomentumRateKGPerM2S2[component].assign(faces,0.0f);
+				computed.gravityMomentumRateKGPerM2S2[component].resize(faces);
 				computed.gravityMomentumIncrementKGPerM2S[component].resize(faces);
 				const std::size_t normalExtent=AxisExtent(shape,component);
 				const bool periodicNormal=request.boundary[2u*component]==
@@ -1096,10 +1143,14 @@ namespace RISE
 							const bool prescribedWall=(normal==0u&&request.boundary[2u*component]==
 								FireProductionProjectionWall)||(normal==normalExtent&&
 								request.boundary[2u*component+1u]==FireProductionProjectionWall);
+							computed.gravityMomentumRateKGPerM2S2[component][face]=prescribedWall?
+								0.0f:(request.faceDensityKGPerM3[component][face]-
+									request.ambientDensityKGPerM3)*request.gravityMPerS2[component];
 							computed.gravityMomentumIncrementKGPerM2S[component][face]=prescribedWall?
 								0.0f:request.timeStepS*(request.faceDensityKGPerM3[component][face]-
 									request.ambientDensityKGPerM3)*request.gravityMPerS2[component];
 							if( !std::isfinite(
+								computed.gravityMomentumRateKGPerM2S2[component][face])||!std::isfinite(
 								computed.gravityMomentumIncrementKGPerM2S[component][face]) )
 								return Fail(error,"production frozen-force output is nonfinite");
 							if( (normal==0u&&!periodicNormal)||normal==normalExtent ) continue;
@@ -1159,6 +1210,8 @@ namespace RISE
 								highXYZ[0],highXYZ[1],highXYZ[2]);
 							computed.beginningViscousMomentumRateKGPerM2S2[component][high]=
 								computed.beginningViscousMomentumRateKGPerM2S2[component][low];
+							computed.gravityMomentumRateKGPerM2S2[component][high]=
+								computed.gravityMomentumRateKGPerM2S2[component][low];
 							computed.gravityMomentumIncrementKGPerM2S[component][high]=
 								computed.gravityMomentumIncrementKGPerM2S[component][low];
 						}
@@ -1180,6 +1233,121 @@ namespace RISE
 		std::string* error )
 	{
 		return BuildFireProductionFrozenForceFieldsImpl(request,0,false,result,error);
+	}
+
+	bool EvaluateFireProductionNonpressureMomentumRHSCPU(
+		const FireProductionNonpressureMomentumRHSRequest& request,
+		FireProductionNonpressureMomentumRHSResult& result,
+		std::string* error )
+	{
+		result=FireProductionNonpressureMomentumRHSResult();
+		try {
+			const FireProductionProjectionShape& shape=request.force.shape;
+			std::uint64_t workingBytes=0u;
+			const bool workingSetKnown=
+				FireProductionNonpressureMomentumRHSWorkingSetBytes(shape,workingBytes);
+			if(workingSetKnown&&workingBytes>(UINT64_C(1)<<31u))return Fail(error,
+				"production nonpressure momentum working set exceeds two GiB");
+			if( !ValidateFireProductionFrozenForceRequest(request.force,error) ) return false;
+			const std::size_t cells=shape.CellCount();
+			if(!workingSetKnown)return Fail(error,
+				"production nonpressure momentum working set is invalid");
+			if( request.cellGasPhaseSourceRateKGPerM3S.size()!=cells )
+				return Fail(error,"production nonpressure momentum phase-source shape is invalid");
+			for( const float sourceRate : request.cellGasPhaseSourceRateKGPerM3S )
+				if( !std::isfinite(sourceRate) ) return Fail(error,
+					"production nonpressure momentum phase-source rate is nonfinite");
+
+			// The shared strict-fp32 force stencil still carries a legacy increment.
+			// A unit represented step makes that auxiliary field equal to its direct
+			// gravity rate and prevents the stage RHS from inheriting the caller's dt.
+			FireProductionFrozenForceRequest fieldRequest=request.force;
+			fieldRequest.timeStepS=1.0f;
+			FireProductionFrozenForceResult fields;
+			if( !BuildFireProductionFrozenForceFieldsImpl(fieldRequest,0,true,fields,error) )
+				return false;
+
+			FireProductionNonpressureMomentumRHSResult computed;
+			computed.eddyKinematicViscosityM2PerS=std::move(
+				fields.eddyKinematicViscosityM2PerS);
+			computed.effectiveDynamicViscosityPaS=std::move(
+				fields.effectiveDynamicViscosityPaS);
+			computed.stressMomentumRateKGPerM2S2=std::move(
+				fields.beginningViscousMomentumRateKGPerM2S2);
+			computed.buoyancyMomentumRateKGPerM2S2=std::move(
+				fields.gravityMomentumRateKGPerM2S2);
+
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				computed.phaseSourceMomentumRateKGPerM2S2[axis].assign(faces,0.0f);
+				computed.combinedMomentumRateKGPerM2S2[axis].resize(faces);
+				const std::size_t extent=AxisExtent(shape,axis);
+				const unsigned int firstAxis=(axis+1u)%3u;
+				const unsigned int secondAxis=(axis+2u)%3u;
+				const std::size_t firstExtent=AxisExtent(shape,firstAxis);
+				const std::size_t secondExtent=AxisExtent(shape,secondAxis);
+				const bool periodic=request.force.boundary[2u*axis]==
+					FireProductionProjectionPeriodic;
+				for( std::size_t second=0u;second<secondExtent;++second )
+					for( std::size_t first=0u;first<firstExtent;++first )
+						for( std::size_t normal=0u;normal<=extent;++normal ) {
+							std::size_t xyz[]={0u,0u,0u};xyz[axis]=normal;
+							xyz[firstAxis]=first;xyz[secondAxis]=second;
+							const std::size_t face=FaceIndex(shape,axis,xyz[0],xyz[1],xyz[2]);
+							if( periodic&&normal==extent ) continue;
+							const bool prescribedWall=(normal==0u&&request.force.boundary[2u*axis]==
+								FireProductionProjectionWall)||(normal==extent&&
+								request.force.boundary[2u*axis+1u]==FireProductionProjectionWall);
+							float restrictedSource=0.0f;
+							if( !prescribedWall ) {
+								if( normal>0u ) {
+									std::size_t leftXYZ[]={xyz[0],xyz[1],xyz[2]};
+									leftXYZ[axis]=normal-1u;
+									restrictedSource+=0.5f*request.cellGasPhaseSourceRateKGPerM3S[
+										CellIndex(shape,leftXYZ[0],leftXYZ[1],leftXYZ[2])];
+								} else if( periodic ) {
+									std::size_t leftXYZ[]={xyz[0],xyz[1],xyz[2]};
+									leftXYZ[axis]=extent-1u;
+									restrictedSource+=0.5f*request.cellGasPhaseSourceRateKGPerM3S[
+										CellIndex(shape,leftXYZ[0],leftXYZ[1],leftXYZ[2])];
+								}
+								if( normal<extent ) {
+									std::size_t rightXYZ[]={xyz[0],xyz[1],xyz[2]};
+									rightXYZ[axis]=normal;
+									restrictedSource+=0.5f*request.cellGasPhaseSourceRateKGPerM3S[
+										CellIndex(shape,rightXYZ[0],rightXYZ[1],rightXYZ[2])];
+								}
+							}
+							const float velocity=prescribedWall?0.0f:
+								request.force.beginningMomentumKGPerM2S[axis][face]/
+								request.force.faceDensityKGPerM3[axis][face];
+							const float phaseRate=velocity*restrictedSource;
+							const float combined=computed.buoyancyMomentumRateKGPerM2S2[axis][face]+
+								computed.stressMomentumRateKGPerM2S2[axis][face]+phaseRate;
+							if( !std::isfinite(phaseRate)||!std::isfinite(combined) ) return Fail(error,
+								"production nonpressure momentum rate overflowed");
+							computed.phaseSourceMomentumRateKGPerM2S2[axis][face]=phaseRate;
+							computed.combinedMomentumRateKGPerM2S2[axis][face]=combined;
+						}
+				if( periodic ) for( std::size_t second=0u;second<secondExtent;++second )
+					for( std::size_t first=0u;first<firstExtent;++first ) {
+						std::size_t lowXYZ[]={0u,0u,0u};
+						lowXYZ[firstAxis]=first;lowXYZ[secondAxis]=second;
+						std::size_t highXYZ[]={lowXYZ[0],lowXYZ[1],lowXYZ[2]};
+						highXYZ[axis]=extent;
+						const std::size_t low=FaceIndex(shape,axis,lowXYZ[0],lowXYZ[1],lowXYZ[2]);
+						const std::size_t high=FaceIndex(shape,axis,highXYZ[0],highXYZ[1],highXYZ[2]);
+						computed.phaseSourceMomentumRateKGPerM2S2[axis][high]=
+							computed.phaseSourceMomentumRateKGPerM2S2[axis][low];
+						computed.combinedMomentumRateKGPerM2S2[axis][high]=
+							computed.combinedMomentumRateKGPerM2S2[axis][low];
+					}
+			}
+			result=std::move(computed);if( error ) error->clear();return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionNonpressureMomentumRHSResult();
+			return Fail(error,"production nonpressure momentum allocation failed");
+		}
 	}
 
 	bool AdvanceFireProductionFrozenForceCPU(

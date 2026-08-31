@@ -129,6 +129,58 @@ namespace RISEFireProductionFP64
 		std::array<std::vector<double>,3> advectionRateKGPerM2S2;
 	};
 
+	//! Prerequisite-only producer input for the nonadvective Section 3.7 scalar
+	//! face tuple.  This is not a projected-Heun owner and advances no state.
+	//! Q is component-major [9][cells]; T, D, and k are fixed binary32 stage
+	//! operands.  Pressure-open classification is sealed by the caller.
+	struct FireProductionScalarPhysicalFluxPrerequisiteRequest
+	{
+		FireProductionProjectionShape shape;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::vector<double> conservativeValues;
+		std::vector<double> temperatureK;
+		std::vector<double> diffusivityM2PerS;
+		std::vector<double> conductivityWPerMK;
+		std::array<std::vector<double>,3> frozenVelocityMPerS;
+		std::array<double,9> ambient;
+		double ambientTemperatureK;
+		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+
+		FireProductionScalarPhysicalFluxPrerequisiteRequest() : ambientTemperatureK(0.0)
+		{
+			boundary.fill(FireProductionProjectionWall);ambient.fill(0.0);
+		}
+	};
+
+	//! Separately retained f_N and J_g.  Mass is component-major [8][faces];
+	//! energy and gas are packed x/y/z face arrays.  The record identity makes
+	//! this prerequisite object unsuitable for cross-record composition.
+	struct FireProductionScalarPhysicalFluxPrerequisiteResult
+	{
+		FireProductionProjectionShape shape;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<double> physicalMassFluxKGPerM2S;
+		std::vector<double> physicalEnergyFluxWPerM2;
+		std::array<std::vector<double>,3> physicalGasFluxKGPerM2S;
+		std::string methaneRecordId;
+		double maximumFP64ReferenceResidualKGPerM2S;
+		double fp64ReferenceForwardErrorBoundKGPerM2S;
+		double maximumConstraintResidualKGPerM2S;
+		double constraintForwardErrorBoundKGPerM2S;
+		bool fp64ReferenceIdentityVerified;
+
+		FireProductionScalarPhysicalFluxPrerequisiteResult() :
+			maximumFP64ReferenceResidualKGPerM2S(0.0),
+			fp64ReferenceForwardErrorBoundKGPerM2S(0.0),
+			maximumConstraintResidualKGPerM2S(0.0),
+			constraintForwardErrorBoundKGPerM2S(0.0),
+			fp64ReferenceIdentityVerified(false)
+		{
+			boundary.fill(FireProductionProjectionWall);packedFaceOffset.fill(0u);
+		}
+	};
+
 	//! Strict-binary32 owner surface for the four scalar stages used by the
 	//! isolated full-FCT diagnostic: donor/MC pair, r60 shared alpha, source-
 	//! inclusive scalar commit, and the periodic D_i I_i commuting witness.
@@ -184,6 +236,25 @@ namespace RISEFireProductionFP64
 			commutingIdentityFace(0u),
 			commutingIdentityAvailable(false)
 		{
+			packedFaceOffset.fill(0u);
+		}
+	};
+
+	//! Identity-bearing donor/MC flux pair for one scalar FCT stage.  The pair
+	//! deliberately excludes limiter state: projected Heun averages the two
+	//! stage fluxes, then solves one fresh shared limiter for the averaged pair.
+	struct FireProductionScalarFCTFluxPair
+	{
+		FireProductionProjectionShape shape;
+		double timeStepS;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<double> lowFlux;
+		std::vector<double> fluxDelta;
+
+		FireProductionScalarFCTFluxPair() : timeStepS(0.0)
+		{
+			boundary.fill(FireProductionProjectionWall);
 			packedFaceOffset.fill(0u);
 		}
 	};
@@ -354,10 +425,95 @@ namespace RISEFireProductionFP64
 		FireProductionCompatibleFCTMomentumResult& result,
 		std::string* error=0 );
 
+	//! Logical caller-input plus produced-output footprint: 4(12C+11F)+B.
+	//! This is query-only and performs no allocation.
+	bool QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& workingSetBytes,
+		std::string* error=0 );
+
+	bool BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
+		FireProductionScalarPhysicalFluxPrerequisiteResult& result,
+		std::string* error=0 );
+
 	bool EvaluateFireProductionScalarFCTCPU(
 		const FireProductionScalarFCTRequest& request,
 		FireProductionScalarFCTResult& result,
 		std::string* error=0 );
+
+	//! Builds only the donor/MC flux pair from Q and the frozen carrier.  Source
+	//! dose and limiter acceptance are not applied by this stage.
+	bool BuildFireProductionScalarFCTFluxPairCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTFluxPair& result,
+		std::string* error=0 );
+
+	//! Arithmetic mean of two stage flux pairs.  Limiter alphas are intentionally
+	//! absent: the caller must solve a fresh shared alpha for this averaged pair.
+	bool AverageFireProductionScalarFCTFluxPairsCPU(
+		const FireProductionScalarFCTFluxPair& first,
+		const FireProductionScalarFCTFluxPair& second,
+		FireProductionScalarFCTFluxPair& result,
+		std::string* error=0 );
+
+	//! Applies one source dose, constructs the low state, solves a fresh r60
+	//! shared limiter, and commits the caller-provided flux pair.
+	bool SolveFireProductionScalarFCTFluxPairCPU(
+		const FireProductionScalarFCTRequest& request,
+		const FireProductionScalarFCTFluxPair& fluxPair,
+		FireProductionScalarFCTResult& result,
+		std::string* error=0 );
+
+#if defined(__APPLE__)
+	//! Fail-closed blocker. Metal qualification requires device candidates to be
+	//! checked against the fp64 N_C N_C^T forward-error certificate first.
+	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest& request,
+		FireProductionScalarPhysicalFluxPrerequisiteResult& result,
+		std::string* error=0 );
+
+	//! Host-published fields produced by the diagnostic Metal acceptance solve.
+	//! Accepted gas flux and the commuting witness belong to the later compatible-
+	//! momentum stage and are deliberately absent rather than CPU-filled here.
+	struct FireProductionScalarFCTMetalAcceptanceStageResult
+	{
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<double> lowFlux;
+		std::vector<double> fluxDelta;
+		std::vector<double> lowState;
+		std::vector<double> limiterRatio;
+		std::array<std::vector<double>,3> sharedFaceAlpha;
+		std::vector<double> accepted;
+
+		FireProductionScalarFCTMetalAcceptanceStageResult()
+			{ packedFaceOffset.fill(0u); }
+	};
+
+	//! Host-published bootstrap for the diagnostic resident Metal stages.  It is
+	//! not an accepted step owner: its only authority is matched-input CPU/Metal
+	//! producer equivalence while the complete projected-Heun owner is absent.
+	struct FireProductionScalarFCTMetalStageDiagnosticResult
+	{
+		FireProductionScalarFCTFluxPair firstFluxPair;
+		FireProductionScalarFCTFluxPair secondFluxPair;
+		FireProductionScalarFCTFluxPair averagedFluxPair;
+		FireProductionScalarFCTMetalAcceptanceStageResult firstSolve;
+		FireProductionScalarFCTMetalAcceptanceStageResult secondSolve;
+		FireProductionScalarFCTMetalAcceptanceStageResult averagedSolve;
+		std::array<std::uint32_t,3> failureBitmap;
+		std::uint32_t commandCommitCount;
+
+		FireProductionScalarFCTMetalStageDiagnosticResult() : commandCommitCount(0u)
+			{ failureBitmap.fill(0u); }
+	};
+
+	bool EvaluateFireProductionScalarFCTMetalStageDiagnostic(
+		const FireProductionScalarFCTRequest& firstStage,
+		const FireProductionScalarFCTRequest& secondStage,
+		FireProductionScalarFCTMetalStageDiagnosticResult& result,
+		std::string* error=0 );
+#endif
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The
 	//! values are disposable packing bytes; carrier and side ambient arrays are
@@ -380,6 +536,65 @@ namespace RISEFireProductionFP64
 		std::string* error=0 );
 
 #if defined(__OBJC__) && defined(__APPLE__)
+	//! Private-buffer output of the diagnostic Metal donor/MC stage.  These
+	//! operations are reusable building blocks only; they cannot publish an
+	//! accepted production step until the complete projected-Heun owner is gated.
+	struct FireProductionMetalScalarFCTFluxPairDiagnostic
+	{
+		FireProductionProjectionShape shape;
+		double timeStepS;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::array<std::size_t,3> packedFaceOffset;
+		id<MTLBuffer> lowFlux;
+		id<MTLBuffer> fluxDelta;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint32_t commandCommitCount;
+
+		FireProductionMetalScalarFCTFluxPairDiagnostic() : timeStepS(0.0),
+			lowFlux(nil),fluxDelta(nil),
+			actualMetalAllocationBytes(0u),commandCommitCount(0u)
+			{ boundary.fill(FireProductionProjectionWall);packedFaceOffset.fill(0u); }
+	};
+
+	struct FireProductionMetalScalarFCTSolveDiagnostic
+	{
+		FireProductionProjectionShape shape;
+		std::array<std::size_t,3> packedFaceOffset;
+		id<MTLBuffer> lowState;
+		id<MTLBuffer> limiterRatio;
+		id<MTLBuffer> packedFaceAlpha;
+		id<MTLBuffer> accepted;
+		id<MTLBuffer> failureBitmap;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint32_t commandCommitCount;
+
+		FireProductionMetalScalarFCTSolveDiagnostic() : lowState(nil),limiterRatio(nil),
+			packedFaceAlpha(nil),accepted(nil),failureBitmap(nil),
+			actualMetalAllocationBytes(0u),commandCommitCount(0u)
+			{ packedFaceOffset.fill(0u); }
+	};
+
+	bool BuildFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+		const FireProductionScalarFCTRequest& request,
+		id<MTLBuffer> beginning,
+		const std::array<id<MTLBuffer>,3>& frozenVelocityMPerS,
+		FireProductionMetalScalarFCTFluxPairDiagnostic& result,
+		std::string* error=0 );
+
+	bool AverageFireProductionScalarFCTFluxPairsMetalResidentDiagnostic(
+		const FireProductionMetalScalarFCTFluxPairDiagnostic& first,
+		const FireProductionMetalScalarFCTFluxPairDiagnostic& second,
+		FireProductionMetalScalarFCTFluxPairDiagnostic& result,
+		std::string* error=0 );
+
+	bool SolveFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+		const FireProductionScalarFCTRequest& request,
+		id<MTLBuffer> beginning,
+		id<MTLBuffer> sourceDelta,
+		const FireProductionMetalScalarFCTFluxPairDiagnostic& fluxPair,
+		FireProductionMetalScalarFCTSolveDiagnostic& result,
+		std::string* error=0 );
+
 	struct FireProductionMetalPeriodicDualMomentumResidentInput
 	{
 		std::array<id<MTLBuffer>,3> beginningFaceDensity;

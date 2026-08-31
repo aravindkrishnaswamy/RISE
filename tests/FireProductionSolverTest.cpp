@@ -114,6 +114,7 @@ namespace
 			!result.effectiveDynamicViscosityPaS.empty() ) return false;
 		for( unsigned int axis=0u;axis<3u;++axis )
 			if( !result.beginningViscousMomentumRateKGPerM2S2[axis].empty()||
+				!result.gravityMomentumRateKGPerM2S2[axis].empty()||
 				!result.gravityMomentumIncrementKGPerM2S[axis].empty() ) return false;
 		return true;
 	}
@@ -832,8 +833,31 @@ namespace
 		for( unsigned int axis=0u;axis<3u;++axis ) if( !SameFloatVectorsWithinULP(
 			cpu.beginningViscousMomentumRateKGPerM2S2[axis],
 			gpu.beginningViscousMomentumRateKGPerM2S2[axis],maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.gravityMomentumRateKGPerM2S2[axis],
+				gpu.gravityMomentumRateKGPerM2S2[axis],maximumULPs)||
 			!SameFloatVectorsWithinULP(cpu.gravityMomentumIncrementKGPerM2S[axis],
 				gpu.gravityMomentumIncrementKGPerM2S[axis],maximumULPs) ) return false;
+		return true;
+	}
+
+	bool SameNonpressureMomentumRHSWithinULP(
+		const RISE::FireProductionNonpressureMomentumRHSResult& cpu,
+		const RISE::FireProductionNonpressureMomentumRHSResult& gpu,
+		std::uint64_t maximumULPs )
+	{
+		if( !SameFloatVectorsWithinULP(cpu.eddyKinematicViscosityM2PerS,
+			gpu.eddyKinematicViscosityM2PerS,maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.effectiveDynamicViscosityPaS,
+				gpu.effectiveDynamicViscosityPaS,maximumULPs) ) return false;
+		for( unsigned int axis=0u;axis<3u;++axis ) if(
+			!SameFloatVectorsWithinULP(cpu.buoyancyMomentumRateKGPerM2S2[axis],
+				gpu.buoyancyMomentumRateKGPerM2S2[axis],maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.stressMomentumRateKGPerM2S2[axis],
+				gpu.stressMomentumRateKGPerM2S2[axis],maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.phaseSourceMomentumRateKGPerM2S2[axis],
+				gpu.phaseSourceMomentumRateKGPerM2S2[axis],maximumULPs)||
+			!SameFloatVectorsWithinULP(cpu.combinedMomentumRateKGPerM2S2[axis],
+				gpu.combinedMomentumRateKGPerM2S2[axis],maximumULPs) ) return false;
 		return true;
 	}
 
@@ -1161,10 +1185,15 @@ int main()
 		forceRestExact=forceRestExact&&
 		forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis].size()==
 			FireProductionProjectionFaceCount(forceRest.shape,axis)&&
+		forceRestResult.gravityMomentumRateKGPerM2S2[axis].size()==
+			FireProductionProjectionFaceCount(forceRest.shape,axis)&&
 		forceRestResult.gravityMomentumIncrementKGPerM2S[axis].size()==
 			FireProductionProjectionFaceCount(forceRest.shape,axis)&&std::all_of(
 			forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis].begin(),
 			forceRestResult.beginningViscousMomentumRateKGPerM2S2[axis].end(),
+			[](float value){return value==0.0f;})&&std::all_of(
+			forceRestResult.gravityMomentumRateKGPerM2S2[axis].begin(),
+			forceRestResult.gravityMomentumRateKGPerM2S2[axis].end(),
 			[](float value){return value==0.0f;})&&std::all_of(
 			forceRestResult.gravityMomentumIncrementKGPerM2S[axis].begin(),
 			forceRestResult.gravityMomentumIncrementKGPerM2S[axis].end(),
@@ -1185,13 +1214,42 @@ int main()
 				// Writing the expression here would let the Opto test translation
 				// unit contract it differently from the strict production object.
 				const float expected=y==0u?0.0f:-0x1.e22e5ap-5f;
+				const float expectedRate=y==0u?0.0f:-0x1.78b436p+1f;
 				const float observed=gravityForceResult.gravityMomentumIncrementKGPerM2S[1][
 					TransportFaceIndex(gravityForce.shape,1u,x,y,z)];
-				gravityForceExact=gravityForceExact&&observed==expected;
+				const float observedRate=gravityForceResult.gravityMomentumRateKGPerM2S2[1][
+					TransportFaceIndex(gravityForce.shape,1u,x,y,z)];
+				gravityForceExact=gravityForceExact&&observed==expected&&observedRate==expectedRate;
 			}
 	Check(gravityForceExact,
-		"relative gravity uses authoritative face density, keeps a wall prescribed, "
-		"and updates the opposite open endpoint");
+		"relative gravity publishes its direct rate without changing the legacy increment, "
+		"keeps a wall prescribed, and updates the opposite open endpoint");
+	FireProductionFrozenForceRequest overflowGravityRate=forceRest;
+	overflowGravityRate.timeStepS=0.25f;
+	overflowGravityRate.ambientDensityKGPerM3=1.0f;
+	overflowGravityRate.gravityMPerS2={2.0f,0.0f,0.0f};
+	std::fill(overflowGravityRate.faceDensityKGPerM3[0].begin(),
+		overflowGravityRate.faceDensityKGPerM3[0].end(),
+		std::numeric_limits<float>::max());
+	FireProductionFrozenForceResult rejectedOverflowGravityRate;
+	error.clear();
+	const bool overflowGravityRateCPURejected=!BuildFireProductionFrozenForceFieldsCPU(
+		overflowGravityRate,rejectedOverflowGravityRate,&error)&&
+		FrozenForceResultEmpty(rejectedOverflowGravityRate)&&
+		error.find("nonfinite")!=std::string::npos;
+#ifdef __APPLE__
+	double rejectedOverflowGravityRateMetalMS=0.0;
+	error.clear();
+	const bool overflowGravityRateMetalRejected=!BuildFireProductionFrozenForceFieldsMetal(
+		overflowGravityRate,rejectedOverflowGravityRate,rejectedOverflowGravityRateMetalMS,&error)&&
+		FrozenForceResultEmpty(rejectedOverflowGravityRate)&&
+		error.find("nonfinite")!=std::string::npos;
+#else
+	const bool overflowGravityRateMetalRejected=true;
+#endif
+	Check(overflowGravityRateCPURejected&&overflowGravityRateMetalRejected,
+		"finite inputs whose direct gravity rate overflows are rejected by CPU and Metal even "
+		"when the legacy dt-scaled increment remains finite");
 	FireProductionFrozenForceRequest affineForce=forceRest;
 	affineForce.ambientDensityKGPerM3=1.0f;
 	std::fill(affineForce.cellGasDensityKGPerM3.begin(),
@@ -1415,6 +1473,63 @@ int main()
 		authorityForceResult.effectiveDynamicViscosityPaS[authorityCell]==
 			3.0f*(0.125f+expectedAuthorityVreman),
 		"two-face velocity averaging, authoritative face division, and cell-density mu are bound");
+	FireProductionNonpressureMomentumRHSRequest stageRHSRequest;
+	stageRHSRequest.force=authorityForce;
+	stageRHSRequest.force.gravityMPerS2={0.0f,-2.0f,0.0f};
+	stageRHSRequest.cellGasPhaseSourceRateKGPerM3S.assign(
+		authorityForce.shape.CellCount(),2.0f);
+	for( unsigned int axis=0u;axis<3u;++axis ) {
+		std::fill(stageRHSRequest.force.faceDensityKGPerM3[axis].begin(),
+			stageRHSRequest.force.faceDensityKGPerM3[axis].end(),2.0f);
+		std::fill(stageRHSRequest.force.beginningMomentumKGPerM2S[axis].begin(),
+			stageRHSRequest.force.beginningMomentumKGPerM2S[axis].end(),axis==0u?0.5f:0.0f);
+	}
+	FireProductionNonpressureMomentumRHSResult stageRHS,otherStepRHS;
+	const bool stageRHSBuilt=EvaluateFireProductionNonpressureMomentumRHSCPU(
+		stageRHSRequest,stageRHS,&error);
+	FireProductionNonpressureMomentumRHSRequest otherStepRequest=stageRHSRequest;
+	otherStepRequest.force.timeStepS=0.00390625f;
+	const bool otherStepRHSBuilt=EvaluateFireProductionNonpressureMomentumRHSCPU(
+		otherStepRequest,otherStepRHS,&error);
+	const std::size_t openPhaseFace=TransportFaceIndex(authorityForce.shape,0u,0u,2u,2u);
+	const std::size_t interiorPhaseFace=TransportFaceIndex(authorityForce.shape,0u,2u,2u,2u);
+	bool stageRHSDecomposes=stageRHSBuilt&&otherStepRHSBuilt&&
+		stageRHS.eddyKinematicViscosityM2PerS==otherStepRHS.eddyKinematicViscosityM2PerS&&
+		stageRHS.effectiveDynamicViscosityPaS==otherStepRHS.effectiveDynamicViscosityPaS&&
+		stageRHS.buoyancyMomentumRateKGPerM2S2==otherStepRHS.buoyancyMomentumRateKGPerM2S2&&
+		stageRHS.stressMomentumRateKGPerM2S2==otherStepRHS.stressMomentumRateKGPerM2S2&&
+		stageRHS.phaseSourceMomentumRateKGPerM2S2==
+			otherStepRHS.phaseSourceMomentumRateKGPerM2S2&&
+		stageRHS.combinedMomentumRateKGPerM2S2==otherStepRHS.combinedMomentumRateKGPerM2S2&&
+		stageRHS.phaseSourceMomentumRateKGPerM2S2[0][openPhaseFace]==0.25f&&
+		stageRHS.phaseSourceMomentumRateKGPerM2S2[0][interiorPhaseFace]==0.5f;
+	for( unsigned int axis=0u;axis<3u&&stageRHSDecomposes;++axis )
+		for( std::size_t face=0u;face<stageRHS.combinedMomentumRateKGPerM2S2[axis].size();++face )
+			stageRHSDecomposes=stageRHS.combinedMomentumRateKGPerM2S2[axis][face]==
+				stageRHS.buoyancyMomentumRateKGPerM2S2[axis][face]+
+				stageRHS.stressMomentumRateKGPerM2S2[axis][face]+
+				stageRHS.phaseSourceMomentumRateKGPerM2S2[axis][face];
+	Check(stageRHSDecomposes,
+		"stage nonpressure RHS publishes a dt-independent exact buoyancy/stress/phase "
+		"decomposition and the pressure-open half-cell I-rho restriction");
+	FireProductionNonpressureMomentumRHSRequest wallStageRHSRequest=stageRHSRequest;
+	wallStageRHSRequest.force.boundary[0u]=FireProductionProjectionWall;
+	FireProductionNonpressureMomentumRHSResult wallStageRHS;
+	const std::size_t wallPhaseFace=TransportFaceIndex(authorityForce.shape,0u,0u,2u,2u);
+	Check(EvaluateFireProductionNonpressureMomentumRHSCPU(
+		wallStageRHSRequest,wallStageRHS,&error)&&
+		wallStageRHS.phaseSourceMomentumRateKGPerM2S2[0][wallPhaseFace]==0.0f&&
+		wallStageRHS.combinedMomentumRateKGPerM2S2[0][wallPhaseFace]==0.0f,
+		"stage phase-source restriction preserves a prescribed wall-normal momentum DOF");
+	FireProductionNonpressureMomentumRHSRequest malformedStageRHS=stageRHSRequest;
+	malformedStageRHS.cellGasPhaseSourceRateKGPerM3S.pop_back();
+	FireProductionNonpressureMomentumRHSResult rejectedStageRHS=stageRHS;
+	error.clear();
+	Check(!EvaluateFireProductionNonpressureMomentumRHSCPU(
+		malformedStageRHS,rejectedStageRHS,&error)&&
+		rejectedStageRHS.combinedMomentumRateKGPerM2S2[0].empty()&&
+		error.find("phase-source shape")!=std::string::npos,
+		"stage nonpressure RHS rejects a malformed phase source atomically");
 	FireProductionFrozenForceRequest periodicForce=forceRest;
 	periodicForce.shape.cellWidthM=1.0f;periodicForce.timeStepS=0.125f;
 	periodicForce.ambientDensityKGPerM3=1.0f;periodicForce.gravityMPerS2[0]=1.0f;
@@ -1631,8 +1746,8 @@ int main()
 		error.find("gravity update overflowed")!=std::string::npos,
 		"a finite late gravity overflow discards every completed viscous intermediate");
 	FireProductionProjectionShape advanceBelowShape,advanceAboveShape;
-	advanceBelowShape.nx=103u;advanceBelowShape.ny=313u;advanceBelowShape.nz=332u;
-	advanceAboveShape.nx=86u;advanceAboveShape.ny=200u;advanceAboveShape.nz=622u;
+	advanceBelowShape.nx=56u;advanceBelowShape.ny=273u;advanceBelowShape.nz=624u;
+	advanceAboveShape.nx=75u;advanceAboveShape.ny=234u;advanceAboveShape.nz=544u;
 	std::uint64_t advanceBelowBytes=0u,advanceAboveBytes=0u;
 	FireProductionFrozenForceRequest advanceAdmission;
 	advanceAdmission.shape=advanceAboveShape;advanceAdmission.shape.cellWidthM=1.0f;
@@ -1652,8 +1767,8 @@ int main()
 		advanceBelowShape,advanceBelowBytes)&&
 		FireProductionFrozenForceAdvanceWorkingSetBytes(
 			advanceAboveShape,advanceAboveBytes)&&
-		advanceBelowBytes==UINT64_C(2147483640)&&
-		advanceAboveBytes==UINT64_C(2147483680)&&
+		advanceBelowBytes==UINT64_C(2147483520)&&
+		advanceAboveBytes==UINT64_C(2147483808)&&
 		advanceOverRejected&&advanceBelowContinues,
 		"multi-substep force peak and actual admission straddle two GiB exactly");
 	FireProductionFrozenForceRequest invalidFrozenForce=forceRest;
@@ -1746,16 +1861,16 @@ int main()
 	Check(frozenAllocationRejected&&FrozenForceResultEmpty(rejectedFrozenForce),
 		"persistent allocation denial cannot escape or publish a partial frozen-force result");
 	FireProductionProjectionShape frozenBytesBelow,frozenBytesAbove;
-	frozenBytesBelow.nx=26u;frozenBytesBelow.ny=765u;frozenBytesBelow.nz=865u;
-	frozenBytesAbove.nx=49u;frozenBytesAbove.ny=439u;frozenBytesAbove.nz=802u;
+	frozenBytesBelow.nx=86u;frozenBytesBelow.ny=208u;frozenBytesBelow.nz=880u;
+	frozenBytesAbove.nx=91u;frozenBytesAbove.ny=243u;frozenBytesAbove.nz=712u;
 	std::uint64_t frozenBelowBytes=0u,frozenAboveBytes=0u;
 	Check(FireProductionFrozenForceWorkingSetBytes(frozenBytesBelow,frozenBelowBytes)&&
 		FireProductionFrozenForceWorkingSetBytes(frozenBytesAbove,frozenAboveBytes)&&
-		frozenBelowBytes==UINT64_C(2147483500)&&
-		frozenAboveBytes==UINT64_C(2147483668)&&
+		frozenBelowBytes==UINT64_C(2147474432)&&
+		frozenAboveBytes==UINT64_C(2147484120)&&
 		frozenBelowBytes<(UINT64_C(1)<<31u)&&
 		frozenAboveBytes>(UINT64_C(1)<<31u),
-		"independent near-cap shapes bind all sixteen cell and five face payloads");
+		"independent near-cap shapes bind all sixteen cell and six face payloads");
 	FireProductionFrozenForceRequest frozenAdmission;
 	frozenAdmission.shape=frozenBytesAbove;frozenAdmission.shape.cellWidthM=1.0f;
 	frozenAdmission.timeStepS=1.0f;
@@ -1772,8 +1887,8 @@ int main()
 	Check(overFrozenAdmission&&underFrozenAdmission,
 		"the actual frozen-force admission path straddles the exact two-GiB boundary");
 	FireProductionProjectionShape forceMetalBelow,forceMetalAbove;
-	forceMetalBelow.nx=67u;forceMetalBelow.ny=306u;forceMetalBelow.nz=492u;
-	forceMetalAbove.nx=43u;forceMetalAbove.ny=393u;forceMetalAbove.nz=596u;
+	forceMetalBelow.nx=119u;forceMetalBelow.ny=180u;forceMetalBelow.nz=446u;
+	forceMetalAbove.nx=60u;forceMetalAbove.ny=285u;forceMetalAbove.nz=558u;
 	FireProductionProjectionShape tier10ForceMetalShape;
 	tier10ForceMetalShape.nx=86u;tier10ForceMetalShape.ny=86u;tier10ForceMetalShape.nz=132u;
 	std::uint64_t forceMetalBelowBytes=0u,forceMetalAboveBytes=0u,tier10ForceMetalBytes=0u;
@@ -1783,10 +1898,53 @@ int main()
 			forceMetalAbove,forceMetalAboveBytes)&&
 		FireProductionFrozenForceMetalWorkingSetBytes(
 			tier10ForceMetalShape,tier10ForceMetalBytes)&&
-		forceMetalBelowBytes==UINT64_C(2147483504)&&
-		forceMetalAboveBytes==UINT64_C(2147483752)&&
-		tier10ForceMetalBytes==UINT64_C(208432992),
+		forceMetalBelowBytes==UINT64_C(2147472904)&&
+		forceMetalAboveBytes==UINT64_C(2147495864)&&
+		tier10ForceMetalBytes==UINT64_C(220268656),
 		"standalone Metal force certificate counts live host arrays and every rounded buffer");
+	FireProductionProjectionShape stageRHSCPUBelow,stageRHSCPUAbove,
+		stageRHSMetalBelow,stageRHSMetalAbove;
+	stageRHSCPUBelow.nx=105u;stageRHSCPUBelow.ny=334u;stageRHSCPUBelow.nz=355u;
+	stageRHSCPUAbove.nx=81u;stageRHSCPUAbove.ny=334u;stageRHSCPUAbove.nz=460u;
+	stageRHSMetalBelow.nx=38u;stageRHSMetalBelow.ny=201u;stageRHSMetalBelow.nz=775u;
+	stageRHSMetalAbove.nx=39u;stageRHSMetalAbove.ny=229u;stageRHSMetalAbove.nz=663u;
+	std::uint64_t stageRHSCPUBelowBytes=0u,stageRHSCPUAboveBytes=0u,
+		stageRHSMetalBelowBytes=0u,stageRHSMetalAboveBytes=0u;
+	Check(FireProductionNonpressureMomentumRHSWorkingSetBytes(
+		stageRHSCPUBelow,stageRHSCPUBelowBytes)&&
+		FireProductionNonpressureMomentumRHSWorkingSetBytes(
+			stageRHSCPUAbove,stageRHSCPUAboveBytes)&&
+		FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+			stageRHSMetalBelow,stageRHSMetalBelowBytes)&&
+		FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(
+			stageRHSMetalAbove,stageRHSMetalAboveBytes)&&
+		stageRHSCPUBelowBytes==UINT64_C(2147483480)&&
+		stageRHSCPUAboveBytes==UINT64_C(2147487008)&&
+		stageRHSMetalBelowBytes==UINT64_C(2147448488)&&
+		stageRHSMetalAboveBytes==UINT64_C(2147539620)&&
+		stageRHSCPUBelowBytes<(UINT64_C(1)<<31u)&&
+		stageRHSCPUAboveBytes>(UINT64_C(1)<<31u)&&
+		stageRHSMetalBelowBytes<(UINT64_C(1)<<31u)&&
+		stageRHSMetalAboveBytes>(UINT64_C(1)<<31u),
+		"stage-RHS CPU and Metal certificates straddle two GiB with every host packing field");
+	FireProductionNonpressureMomentumRHSRequest stageRHSAdmission;
+	stageRHSAdmission.force.shape=stageRHSCPUAbove;
+	stageRHSAdmission.force.shape.cellWidthM=1.0f;
+	stageRHSAdmission.force.timeStepS=1.0f;
+	FireProductionNonpressureMomentumRHSResult rejectedStageRHSAdmission;
+	error.clear();
+	const bool stageRHSOverCap=!EvaluateFireProductionNonpressureMomentumRHSCPU(
+		stageRHSAdmission,rejectedStageRHSAdmission,&error)&&
+		rejectedStageRHSAdmission.combinedMomentumRateKGPerM2S2[0].empty()&&
+		error.find("two GiB")!=std::string::npos;
+	stageRHSAdmission.force.shape=stageRHSCPUBelow;
+	stageRHSAdmission.force.shape.cellWidthM=1.0f;
+	error.clear();
+	const bool stageRHSUnderCap=!EvaluateFireProductionNonpressureMomentumRHSCPU(
+		stageRHSAdmission,rejectedStageRHSAdmission,&error)&&
+		error.find("two GiB")==std::string::npos;
+	Check(stageRHSOverCap&&stageRHSUnderCap,
+		"stage-RHS CPU admission applies its outer-owner certificate before payload access");
 	invalidFrozenForce=FireProductionFrozenForceRequest();
 	invalidFrozenForce.shape.nx=1024u;invalidFrozenForce.shape.ny=1024u;
 	invalidFrozenForce.shape.nz=1024u;invalidFrozenForce.shape.cellWidthM=1.0f;
@@ -3237,6 +3395,22 @@ int main()
 		forceRest,restForceGPU,restForceMetalMS,&error);
 	const bool compressionForceMetal=BuildFireProductionFrozenForceFieldsMetal(
 		compressionForce,compressionForceGPU,compressionForceMetalMS,&error);
+	FireProductionNonpressureMomentumRHSResult stageRHSGPU;
+	FireProductionNonpressureMomentumRHSMetalDiagnostics stageRHSGPUDiagnostics;
+	const bool stageRHSMetal=EvaluateFireProductionNonpressureMomentumRHSMetal(
+		stageRHSRequest,stageRHSGPU,stageRHSGPUDiagnostics,&error);
+	Check(stageRHSMetal&&SameNonpressureMomentumRHSWithinULP(
+		stageRHS,stageRHSGPU,forceMetalMaximumULPs)&&
+		stageRHSGPUDiagnostics.commandCommitCount==1u&&
+		stageRHSGPUDiagnostics.interstageFullGridTransferCount==0u&&
+		stageRHSGPUDiagnostics.terminalStagingCount==1u&&
+		stageRHSGPUDiagnostics.certifiedWorkingSetBytes>=
+			stageRHSGPUDiagnostics.actualMetalAllocationBytes&&
+		stageRHSGPUDiagnostics.actualMetalAllocationBytes>0u&&
+		std::isfinite(stageRHSGPUDiagnostics.deviceElapsedMS)&&
+		stageRHSGPUDiagnostics.deviceElapsedMS>0.0,
+		"resident Metal stage RHS matches CPU buoyancy/stress/phase bytes and performs "
+		"one terminal staging with no full-grid interstage transfer");
 	FireProductionFrozenForceRequest residentForce=periodicForce;
 	residentForce.timeStepS=62.5f;residentForce.vremanCoefficient=0.0f;
 	residentForce.cellGasDensityKGPerM3.assign(residentForce.shape.CellCount(),1.2f);
@@ -4652,9 +4826,9 @@ int main()
 	std::array<FireProductionProjectionBoundary,6> fullStepAdmissionBoundary;
 	fullStepAdmissionBoundary.fill(FireProductionProjectionPressureOpen);
 	FireProductionProjectionShape fullStepUnderShape,fullStepOverShape;
-	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=202u;
+	fullStepUnderShape.nx=64u;fullStepUnderShape.ny=84u;fullStepUnderShape.nz=201u;
 	fullStepUnderShape.cellWidthM=0.01f;
-	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=203u;
+	fullStepOverShape.nx=64u;fullStepOverShape.ny=84u;fullStepOverShape.nz=202u;
 	fullStepOverShape.cellWidthM=0.01f;
 	std::uint64_t fullStepUnderBytes=0u,fullStepOverBytes=0u;
 	const bool fullStepBoundaryQuery=
@@ -4662,8 +4836,8 @@ int main()
 			fullStepAdmissionBoundary,fullStepUnderBytes)&&
 		FireProductionResidentStepWorkingSetBytes(fullStepOverShape,
 			fullStepAdmissionBoundary,fullStepOverBytes)&&
-		fullStepUnderBytes==UINT64_C(2140435944)&&
-		fullStepOverBytes==UINT64_C(2149934712);
+		fullStepUnderBytes==UINT64_C(2143321656)&&
+		fullStepOverBytes==UINT64_C(2154313896);
 	std::cout << "Production resident full-step cap under_bytes=" << fullStepUnderBytes <<
 		" over_bytes=" << fullStepOverBytes << '\n';
 	auto makeEmptyFullStepAdmission=[&](const FireProductionProjectionShape& admissionShape) {
@@ -4835,8 +5009,8 @@ int main()
 			tier10ResidentStepResult.projection.validationPassed&&
 			tier10ResidentStepResult.physicalProjection.executedVCycleCount==0u&&
 			tier10ResidentStepResult.projection.executedVCycleCount==12u&&
-			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1918285016)&&
-			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1241789448)&&
+			tier10ResidentStepResult.combinedCertifiedWorkingSetBytes==UINT64_C(1930722680)&&
+			tier10ResidentStepResult.combinedActualMetalAllocationBytes==UINT64_C(1242030248)&&
 			tier10ResidentStepResult.combinedActualMetalAllocationBytes<=
 				tier10ResidentStepResult.combinedCertifiedWorkingSetBytes,
 			"tier-10 resident full-step timing trial preserves the exact schedule and resource gate");
@@ -5078,6 +5252,18 @@ int main()
 		"bool BuildFireProductionFrozenForceFieldsMetal(");
 	const std::string forceMetalBody=forceMetalBeginning==std::string::npos?
 		std::string():forceMetalSource.substr(forceMetalBeginning);
+	const std::size_t stageRHSMetalBeginning=forceMetalSource.find(
+		"bool EvaluateFireProductionNonpressureMomentumRHSMetal(");
+	const std::size_t residentStageRHSMetalBeginning=forceMetalSource.find(
+		"bool EvaluateFireProductionNonpressureMomentumRHSMetalResident(");
+	const std::string residentStageRHSMetalBody=residentStageRHSMetalBeginning==std::string::npos||
+		stageRHSMetalBeginning==std::string::npos?std::string():forceMetalSource.substr(
+			residentStageRHSMetalBeginning,stageRHSMetalBeginning-residentStageRHSMetalBeginning);
+	const std::size_t stageRHSMetalEnd=forceMetalSource.find(
+		"bool AdvanceFireProductionFrozenForceMetalImpl(",stageRHSMetalBeginning);
+	const std::string stageRHSMetalBody=stageRHSMetalBeginning==std::string::npos||
+		stageRHSMetalEnd==std::string::npos?std::string():forceMetalSource.substr(
+			stageRHSMetalBeginning,stageRHSMetalEnd-stageRHSMetalBeginning);
 	const std::size_t forceResourceBeginning=forceMetalBody.find(
 		"const id<MTLBuffer> buffers[]=");
 	const std::size_t forceResourceEnd=forceMetalBody.find(
@@ -5194,7 +5380,9 @@ int main()
 		advectionMetalSource.find("fast::")==std::string::npos&&
 		CountSubstring(advectionMetalSource,"device atomic_uint* reduction")==1u&&
 		CountSubstring(advectionMetalSource,"atomic_fetch_max_explicit")==3u&&
-		CountSubstring(advectionMetalSource,"atomic_fetch_or_explicit")==3u&&
+		CountSubstring(advectionMetalSource,"atomic_fetch_or_explicit")==16u&&
+		advectionMetalSource.find("makePipeline(\"fct_validate_flux_pair\")")!=
+			std::string::npos&&
 		advectionMetalSource.find(
 			"atomic_fetch_max_explicit(reduction+3u,as_type<uint>(localDose/headroom)")!=
 			std::string::npos&&
@@ -5265,9 +5453,9 @@ int main()
 		CountSubstring(advectionMetalSource,"[queue commandBuffer]")==1u&&
 		CountSubstring(advectionMetalSource,"[command commit]")==1u&&
 		CountSubstring(advectionMetalSource,"[buffer contents]")==1u&&
-		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==20u&&
-		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==20u&&
-		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==11u&&
+		CountSubstring(advectionMetalSource,"TrackedMetalCommandBuffer(")==28u&&
+		CountSubstring(advectionMetalSource,"CommitTrackedMetalCommand(")==28u&&
+		CountSubstring(advectionMetalSource,"ReadTrackedMetalBuffer(")==15u&&
 		CountSubstring(palindromeMetalBody,"TrackedMetalCommandBuffer(")==1u&&
 		CountSubstring(palindromeMetalBody,"CommitTrackedMetalCommand(")==1u&&
 		CountSubstring(palindromeMetalBody,"ReadTrackedMetalBuffer(")==1u&&
@@ -5404,8 +5592,19 @@ int main()
 			"\t\t\t\tstatic_cast<double>(outwardLambdaPerS),infinity);")!=
 			std::string::npos&&
 		forceSource.find("if( count>8u )")!=std::string::npos&&
-		forceSource.find("bytes=(16u*cells+5u*allFaces)*sizeof(float);")!=
+		forceSource.find("bytes=(16u*cells+6u*allFaces)*sizeof(float);")!=
 			std::string::npos&&
+		forceSource.find("bytes=nested+(3u*cells+2u*faces)*sizeof(float);")!=
+			std::string::npos&&
+		residentStageRHSMetalBody.find("computed.parameterBuffer=parameters;")!=
+			std::string::npos&&
+		residentStageRHSMetalBody.find("id<MTLCommandQueue> callerQueue=")!=
+			std::string::npos&&
+		residentStageRHSMetalBody.find("[callerQueue device]!=context.device")!=
+			std::string::npos&&
+		residentStageRHSMetalBody.find("[inputs[index] device]!=context.device")!=
+			std::string::npos&&
+		stageRHSMetalBody.find("commandBufferWithUnretainedReferences")!=std::string::npos&&
 		forceSource.find("leftXYZ[component]=normal==0u?normalExtent-1u:normal-1u;")!=
 			std::string::npos&&
 		forceSource.find("computed.beginningViscousMomentumRateKGPerM2S2[component][high]=\n"
@@ -5496,8 +5695,8 @@ int main()
 		CountSubstring(residentForceBody,"privateBuffer(")==18u&&
 		CountSubstring(residentForceBody,"sharedBuffer(")==11u&&
 		CountSubstring(residentForceBody,"sharedBytes(")==6u&&
-		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==15u&&
-		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==3u&&
+		CountSubstring(forceMetalSource,"CopyResidentForceBuffer(")==17u&&
+		CountSubstring(forceMetalSource,"ResidentForceTransferScope transferScope(")==5u&&
 		residentForceBody.find(" copyFromBuffer:")==std::string::npos&&
 		CountSubstring(residentForceBody,"[preflight commit]")==0u&&
 		CountSubstring(residentForceBody,"[advance commit]")==0u&&
@@ -5517,6 +5716,26 @@ int main()
 			std::string::npos&&
 		residentForceBody.find("ProjectFireProductionMetalResident(")!=std::string::npos,
 		"resident force observes every command/read seam and invokes one private-buffer projection");
+	Check(!stageRHSMetalBody.empty()&&
+		CountSubstring(stageRHSMetalBody,"[command commit]")==1u&&
+		CountSubstring(stageRHSMetalBody,"[command waitUntilCompleted]")==1u&&
+		CountSubstring(stageRHSMetalBody,
+			"ResidentForceTransferScope transferScope(ResidentForceUploadTransfer)")==1u&&
+		CountSubstring(stageRHSMetalBody,
+			"ResidentForceTransferScope transferScope(ResidentForceTerminalTransfer)")==1u&&
+		stageRHSMetalBody.find("ResidentForceInterstageTransfer")==std::string::npos&&
+		stageRHSMetalBody.find("interstageFullGridTransferCount=0u")!=std::string::npos&&
+		stageRHSMetalBody.find(
+			"EvaluateFireProductionNonpressureMomentumRHSMetalResident(residentInput")!=
+			std::string::npos&&
+		!residentStageRHSMetalBody.empty()&&
+		residentStageRHSMetalBody.find("[input.commandBuffer commit]")==std::string::npos&&
+		residentStageRHSMetalBody.find("waitUntilCompleted")==std::string::npos&&
+		residentStageRHSMetalBody.find("contents]")==std::string::npos&&
+		residentStageRHSMetalBody.find("context.phaseSource")!=std::string::npos&&
+		residentStageRHSMetalBody.find("commandCommitCount=0u")!=std::string::npos&&
+		residentStageRHSMetalBody.find("terminalStagingCount=0u")!=std::string::npos,
+		"stage RHS keeps all setup/Vreman/force/phase grids private until one terminal staging");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
 		!capability.structuredError.empty(),

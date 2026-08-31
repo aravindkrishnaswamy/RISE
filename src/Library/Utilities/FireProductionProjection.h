@@ -28,6 +28,36 @@ namespace RISE
 		FireProductionProjectionWall
 	};
 
+	//! Open-boundary classification ownership for one projection application.
+	//! Derived mode is the ordinary one-pass production behavior.  Sealed mode
+	//! consumes the caller's complete prior/Picard class without reclassifying it;
+	//! this is the primitive required by the projected-Heun active-set owner.
+	enum FireProductionProjectionOpenClassificationMode
+	{
+		FireProductionProjectionDeriveOpenClassification,
+		FireProductionProjectionUseSealedOpenClassification
+	};
+
+	//! Pressure-open head ownership for one projection application.  Ordinary
+	//! R0/R1 projections derive Bernoulli head from the projected stage's own
+	//! provisional velocity.  The R2 endpoint projection instead consumes the
+	//! time-integrated head assembled from the accepted R0/R1 stage records.
+	enum FireProductionProjectionOpenHeadMode
+	{
+		FireProductionProjectionDeriveCurrentOpenHead,
+		FireProductionProjectionUseSealedOpenHead
+	};
+
+	//! Publication policy for the pressure-open class after correction.  The
+	//! ordinary frozen-active-set solve retains its input class.  R2 derives the
+	//! endpoint class from the corrected velocity and uses the caller's sealed
+	//! class only inside the velocity deadband.
+	enum FireProductionProjectionOutputClassificationMode
+	{
+		FireProductionProjectionPreserveOpenClassification,
+		FireProductionProjectionDeriveEndpointOpenClassification
+	};
+
 	struct FireProductionProjectionShape
 	{
 		std::size_t nx,ny,nz;
@@ -46,10 +76,20 @@ namespace RISE
 		std::vector<float> gasDensityKGPerM3;
 		std::array<std::vector<float>,3> provisionalMomentumKGPerM2S;
 		std::vector<float> divergenceTargetPerS;
+		std::array<std::vector<unsigned char>,6> sealedPressureOpenInflow;
+		std::array<std::vector<float>,6> sealedPressureOpenDynamicPressurePa;
 		std::uint32_t residentPhysicalOpenVCycleCount;
+		FireProductionProjectionOpenClassificationMode openClassificationMode;
+		FireProductionProjectionOpenHeadMode openHeadMode;
+		FireProductionProjectionOutputClassificationMode outputClassificationMode;
+		float endpointVelocityToleranceMPerS;
 
 		FireProductionProjectionRequest() : timeStepS(0.0f),ambientDensityKGPerM3(0.0f),
-			residentPhysicalOpenVCycleCount(17u)
+			residentPhysicalOpenVCycleCount(17u),
+			openClassificationMode(FireProductionProjectionDeriveOpenClassification),
+			openHeadMode(FireProductionProjectionDeriveCurrentOpenHead),
+			outputClassificationMode(FireProductionProjectionPreserveOpenClassification),
+			endpointVelocityToleranceMPerS(0.0f)
 		{
 			boundary.fill(FireProductionProjectionWall);
 		}

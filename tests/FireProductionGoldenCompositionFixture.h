@@ -2850,6 +2850,84 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::vector<MethaneSourcePacket>().swap(zeroPackets);
 		}
 		if(singleStageFCTSmoke){
+			RISE::FireProductionScalarFCTRequest firstScalarStage;
+			firstScalarStage.shape.nx=4u;firstScalarStage.shape.ny=4u;
+			firstScalarStage.shape.nz=4u;firstScalarStage.shape.cellWidthM=1.0f;
+			firstScalarStage.timeStepS=0.25f;
+			firstScalarStage.boundary.fill(RISE::FireProductionProjectionPeriodic);
+			const std::size_t stageCells=firstScalarStage.shape.CellCount();
+			firstScalarStage.beginning.assign(9u*stageCells,0.0f);
+			firstScalarStage.sourceDelta.assign(9u*stageCells,0.0f);
+			const float stagePattern[4]={1.0f,1.25f,1.5f,1.25f};
+			for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+				for(std::size_t x=0u;x<4u;++x){const std::size_t cell=(z*4u+y)*4u+x;
+					firstScalarStage.beginning[cell]=stagePattern[x];
+					firstScalarStage.beginning[stageCells+cell]=stagePattern[x];}
+			firstScalarStage.sourceDelta[0u]=0.125f;
+			firstScalarStage.sourceDelta[stageCells]=0.125f;
+			for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+				RISE::FireProductionProjectionFaceCount(firstScalarStage.shape,axis);
+				firstScalarStage.frozenVelocityMPerS[axis].assign(
+					faces,axis==0u?1.0f:0.0f);}
+			for(auto& side:firstScalarStage.pressureOpenInflow)side.assign(16u,0u);
+			firstScalarStage.ambient[0]=1.0f;firstScalarStage.ambient[1]=1.0f;
+			firstScalarStage.nullity=1u;firstScalarStage.nullspaceBasis.assign(8u,0.0f);
+			firstScalarStage.nullspaceBasis[1]=1.0f;
+			firstScalarStage.coordinateProjector.assign(1u,1.0f);
+			firstScalarStage.feasibilityFactor=1.0f/1024.0f;
+			firstScalarStage.assemblyReserveFactor=firstScalarStage.feasibilityFactor;
+			RISE::FireProductionScalarFCTRequest secondScalarStage=firstScalarStage;
+			secondScalarStage.sourceDelta.assign(9u*stageCells,0.0f);
+			for(std::size_t cell=0u;cell<stageCells;++cell){
+				secondScalarStage.beginning[cell]=1.0f;
+				secondScalarStage.beginning[stageCells+cell]=1.0f;}
+			RISE::FireProductionScalarFCTFluxPair firstScalarPair,secondScalarPair,
+				averagedScalarPair;
+			RISE::FireProductionScalarFCTResult firstScalarCPU,secondScalarCPU,
+				averagedScalarCPU;
+			std::string stageError;
+			const bool scalarCPUStages=
+				RISE::BuildFireProductionScalarFCTFluxPairCPU(
+					firstScalarStage,firstScalarPair,&stageError)&&
+				RISE::BuildFireProductionScalarFCTFluxPairCPU(
+					secondScalarStage,secondScalarPair,&stageError)&&
+				RISE::AverageFireProductionScalarFCTFluxPairsCPU(
+					firstScalarPair,secondScalarPair,averagedScalarPair,&stageError)&&
+				RISE::SolveFireProductionScalarFCTFluxPairCPU(
+					firstScalarStage,firstScalarPair,firstScalarCPU,&stageError)&&
+				RISE::SolveFireProductionScalarFCTFluxPairCPU(
+					firstScalarStage,secondScalarPair,secondScalarCPU,&stageError)&&
+				RISE::SolveFireProductionScalarFCTFluxPairCPU(
+					firstScalarStage,averagedScalarPair,averagedScalarCPU,&stageError);
+			RISE::FireProductionScalarFCTMetalStageDiagnosticResult scalarMetalStages;
+			const bool scalarMetalComputed=scalarCPUStages&&
+				RISE::EvaluateFireProductionScalarFCTMetalStageDiagnostic(
+					firstScalarStage,secondScalarStage,scalarMetalStages,&stageError);
+			auto sameSolve=[](const RISE::FireProductionScalarFCTMetalAcceptanceStageResult& first,
+				const RISE::FireProductionScalarFCTResult& second){return
+				first.packedFaceOffset==second.packedFaceOffset&&
+				first.lowFlux==second.lowFlux&&first.fluxDelta==second.fluxDelta&&
+				first.lowState==second.lowState&&first.limiterRatio==second.limiterRatio&&
+				first.sharedFaceAlpha==second.sharedFaceAlpha&&first.accepted==second.accepted;};
+			bool freshAlphaDistinguished=false;
+			if(scalarCPUStages)for(unsigned int axis=0u;axis<3u;++axis)
+				for(std::size_t face=0u;face<averagedScalarCPU.sharedFaceAlpha[axis].size();++face)
+					freshAlphaDistinguished=freshAlphaDistinguished||
+						averagedScalarCPU.sharedFaceAlpha[axis][face]!=0.5f*(
+							firstScalarCPU.sharedFaceAlpha[axis][face]+
+							secondScalarCPU.sharedFaceAlpha[axis][face]);
+			const bool scalarMetalStagesPassed=scalarMetalComputed&&
+				scalarMetalStages.failureBitmap==std::array<std::uint32_t,3>{{0u,0u,0u}}&&
+				scalarMetalStages.firstFluxPair.lowFlux==firstScalarPair.lowFlux&&
+				scalarMetalStages.firstFluxPair.fluxDelta==firstScalarPair.fluxDelta&&
+				scalarMetalStages.secondFluxPair.lowFlux==secondScalarPair.lowFlux&&
+				scalarMetalStages.secondFluxPair.fluxDelta==secondScalarPair.fluxDelta&&
+				scalarMetalStages.averagedFluxPair.lowFlux==averagedScalarPair.lowFlux&&
+				scalarMetalStages.averagedFluxPair.fluxDelta==averagedScalarPair.fluxDelta&&
+				sameSolve(scalarMetalStages.firstSolve,firstScalarCPU)&&
+				sameSolve(scalarMetalStages.secondSolve,secondScalarCPU)&&
+				sameSolve(scalarMetalStages.averagedSolve,averagedScalarCPU)&&
+				freshAlphaDistinguished&&scalarMetalStages.commandCommitCount==7u;
 			RISE::FireProductionSingleStageFCTBoundaryState boundaryState;
 			boundaryState.statePayloadIdentity=RISE::FireProductionAcceptedStatePayloadDigestFast(
 				request.force.shape,request.cellTransport.conservativeValues,
@@ -2872,7 +2950,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			const double wallMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-start).count();
 			const std::uint64_t commitsAfter=RISE::FireProductionResidentStepMetalCommandCommitCount();
-			const bool accepted=computed&&candidate.accepted&&
+			const bool accepted=scalarMetalStagesPassed&&computed&&candidate.accepted&&
 				candidate.phase==RISE::FireProductionSingleStageFCTDiagnosticPhase::Accepted&&
 				candidate.operatorVersion==1u&&candidate.pipelineIdentityComplete&&
 				candidate.fluxPairBuildCount==1u&&candidate.fctSolveCount==1u&&
@@ -2887,13 +2965,14 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				candidate.actualMetalAllocationBytes<=candidate.certifiedWorkingSetBytes&&
 				candidate.beginningStateIdentity==boundaryState.statePayloadIdentity&&
 				candidate.boundaryStateIdentity==boundaryState.identity&&commitsAfter>commitsBefore;
-			std::fprintf(stderr,"SINGLE_STAGE_FCT_SMOKE sealed=%d computed=%d accepted=%d "
+			std::fprintf(stderr,"SINGLE_STAGE_FCT_SMOKE sealed=%d computed=%d accepted=%d stages=%d "
 				"phase=%u operator=%u pipelines=%d flux_pairs=%u solves=%u rates=%u sources=%u "
 				"scalar_identity=%d scalar_equivalent=%d scalar_zero=%d scalar_normalized=%.9g "
 				"rate_equivalent=%d rate_zero=%d rate_normalized=%.9g commuting=%d "
 				"residual=%.9g projections=%u transfers=%u "
 				"terminal=%u certified=%llu actual=%llu commits=%llu wall_ms=%.17g error=%s\n",
-				sealed?1:0,computed?1:0,accepted?1:0,static_cast<unsigned int>(candidate.phase),
+				sealed?1:0,computed?1:0,accepted?1:0,scalarMetalStagesPassed?1:0,
+				static_cast<unsigned int>(candidate.phase),
 				candidate.operatorVersion,candidate.pipelineIdentityComplete?1:0,
 				candidate.fluxPairBuildCount,candidate.fctSolveCount,
 				candidate.compatibleRateApplicationCount,candidate.sourceApplicationCount,
@@ -2910,7 +2989,7 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 				static_cast<unsigned long long>(candidate.certifiedWorkingSetBytes),
 				static_cast<unsigned long long>(candidate.actualMetalAllocationBytes),
 				static_cast<unsigned long long>(commitsAfter-commitsBefore),wallMS,
-				boundaryError.c_str());
+				(stageError.empty()?boundaryError:stageError).c_str());
 			return accepted?179:180;
 		}
 		RISE::FireProductionResidentStepResult production;

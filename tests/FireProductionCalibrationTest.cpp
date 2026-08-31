@@ -2145,20 +2145,20 @@ int main()
 		goldenSubdominanceEvidence.find("measurement_fixture_sha256 "
 			"0a91b12c762fa1beadac41c716d9a9d15b200f42bb77dd9b8f4842b477c2a5c8")!=
 			std::string::npos&&
-		// The r171 artifact seals its historical mirror/manifests.  r182 below
-		// binds their compatible-flux successors directly.
+		// The byte-sealed r171 artifact is the immutable authority for its
+		// historical owners.  Later live owners are bound by their own rung.
 		goldenSubdominanceEvidence.find("force_header_sha256 "
 			"0e832ecc8b24d5e32e11cc60b94363f2095f74fdaf1eddee2e4dbc60b8ffc16b")!=
 			std::string::npos&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			projectionMetal.begin(),projectionMetal.end()))==
-			"9f7356c9c1aa913fe4bfb83b3c9b31f1fdba0ff485183093a9fe42bf3b1edc7a"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			projectionSource.begin(),projectionSource.end()))==
-			"133a41686fcf4538f0fa14d65a675cb6a3b8ad72d83b376d4022efd34e57663d"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			projectionHeader.begin(),projectionHeader.end()))==
-			"e657a44dd08b0b26c7674800ff0e15a28b996d1373f7f80cd57359fcd9475e42"&&
+		goldenSubdominanceEvidence.find("projection_metal_sha256 "
+			"bff3315513f88b51f5967c179dbd2995eaa9ab1ccb35a78d2ae223ae6a5f4871")!=
+			std::string::npos&&
+		goldenSubdominanceEvidence.find("projection_cpu_sha256 "
+			"133a41686fcf4538f0fa14d65a675cb6a3b8ad72d83b376d4022efd34e57663d")!=
+			std::string::npos&&
+		goldenSubdominanceEvidence.find("projection_header_sha256 "
+			"e657a44dd08b0b26c7674800ff0e15a28b996d1373f7f80cd57359fcd9475e42")!=
+			std::string::npos&&
 		goldenSubdominanceEvidence.find("unix_runner_sha256 "
 			"1cb7c6ca09c69e57ae10da9307af81400e060b796952e317dfddb27ba2b20524")!=
 			std::string::npos&&
@@ -2342,19 +2342,17 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			equalTimeReadmissionRaw.begin(),equalTimeReadmissionRaw.end()))==
 			"89e579173156c4e3ce9f0932e73dac4817c51282d564a2dfc03451a2e86da32e"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693"&&
-		// r174's sealed artifact retains the historical dyadic owner.  The
-		// current owner is bound by r182 after compatible-momentum adoption.
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			calibrationMathSource.begin(),calibrationMathSource.end()))==
-			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6"&&
-		// The r174 evaluator source is retained by its artifact; r181 binds the
-		// live sequence owner after checkpoint-retention instrumentation.
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			unixTestDriver.begin(),unixTestDriver.end()))==
-			"e37149731d65eb1c18e0b107150d040d78b3fc03a427d344463bf064985a251b"&&
+		// Historical owner provenance comes from the exact evidence bytes above,
+		// never from whichever revision is currently live in the checkout.
+		equalTimeReadmissionEvidence.find("fixture_sha256 "
+			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693")!=
+			std::string::npos&&
+		equalTimeReadmissionEvidence.find("calibration_math_sha256 "
+			"b7db0c46f99b309f7b2b86c767067d3b29ae07d6c861b589c6b8d967f33b6bd6")!=
+			std::string::npos&&
+		equalTimeReadmissionEvidence.find("unix_runner_sha256 "
+			"058e363848e78e9120380eb37806db47eb0cd92b8cafe59b554176dc9d55a47b")!=
+			std::string::npos&&
 		equalTimeReadmissionEvidence.find("gate_count 152")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find("failure_count 0")!=std::string::npos&&
 		equalTimeReadmissionEvidence.find(
@@ -2460,9 +2458,9 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			thermoSourceRaw.begin(),thermoSourceRaw.end()))==
 			"c9f0188fdfd688e10f0edef4c7ef7e9712e4bf71d7cff19ddcba3b5276553865"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			goldenCompositionFixture.begin(),goldenCompositionFixture.end()))==
-			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693"&&
+		thermoSourceEvidence.find("fixture_sha256 "
+			"f0be92f1a5d70bea5729609396dc619f766388fce5b4ccd9e23810fc22a48693")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			fireSimulatorCore.begin(),fireSimulatorCore.end()))==
 			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
@@ -2618,9 +2616,12 @@ int main()
 		!tier6FullSpectrum.empty()&&RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			tier6SpectrumCostEvidence.begin(),tier6SpectrumCostEvidence.end()))==
 			"edea4d12db7c8529610a0e8933ccc842c2f938765fd927a183785b8fc60bdea4"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			tier10SteadyProfile.begin(),tier10SteadyProfile.end()))==
-			"81dc56f84eb3c5780e1576a49dd0852f07445cf5dc949f6b967580ea1151524d"&&
+		// The tracked raw profile has subsequently acquired non-evidentiary
+		// provenance text; preserve r177 through the hash sealed in its exact
+		// evidence artifact rather than rebasing history onto mutable bytes.
+		tier6SpectrumCostEvidence.find("tier10_steady_profile_raw_sha256 "
+			"81dc56f84eb3c5780e1576a49dd0852f07445cf5dc949f6b967580ea1151524d")!=
+			std::string::npos&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			tier6FullSpectrum.begin(),tier6FullSpectrum.end()))==
 			"0e7f63c92d0f63d88dcf8cf4a5f69fd318f31dd6523f40581b3212e6771ab5ba"&&
@@ -2815,14 +2816,17 @@ int main()
 			std::string::npos&&
 		onsetBudgetEvidence.find("oracle_2p2s_claimed false")!=std::string::npos&&
 		onsetBudgetEvidence.find("tier10_full_window_authorized false")!=std::string::npos&&
-		// The exact r181 artifact above binds its historical owners.  r182
-		// source-binds the compatible-flux successors.
-		sourceSHA("tests/FireSimulationSolverTest.cpp")==
-			"ffabd7edb2e518c313a58721dc48eb24537447461842ef15c4e90928ef750094"&&
-		sourceSHA("tools/fire_simulator_3d_advance.h")==
-			"24ad3b942b637bcb05deae6138d315d8b78414192266846bde7a243f2466a3c4"&&
-		sourceSHA("tools/generate_fire_production_onset_plot.py")==
-			"ee6689f9518230db539a75a6bb0a0541e2eaeaa8497cd299fbf2d710b936397d"&&
+		// The exact r181 artifact above binds its historical owners; current
+		// successors are independently source-bound by the newest evidence rung.
+		onsetBudgetEvidence.find("fire_simulation_solver_test_sha256 "
+			"ffabd7edb2e518c313a58721dc48eb24537447461842ef15c4e90928ef750094")!=
+			std::string::npos&&
+		onsetBudgetEvidence.find("oracle_advance_header_sha256 "
+			"24ad3b942b637bcb05deae6138d315d8b78414192266846bde7a243f2466a3c4")!=
+			std::string::npos&&
+		onsetBudgetEvidence.find("onset_plot_generator_sha256 "
+			"ee6689f9518230db539a75a6bb0a0541e2eaeaa8497cd299fbf2d710b936397d")!=
+			std::string::npos&&
 		solverDoc.find("### 7.56n Runaway-onset and retained-state campaign (r181)")!=
 			std::string::npos&&historyDoc.find("r181 retained onset and resolution diagnosis")!=
 			std::string::npos,
@@ -3065,44 +3069,143 @@ int main()
 			"1.7316493930411525,7,4.2156947377414156e-10")!=std::string::npos&&
 		compatibleMomentumEvidenceV2.find("v1_moving_column_comparison_withdrawn true")!=
 			std::string::npos&&
-		sourceSHA("src/Library/Utilities/FireProductionTransport.h")==
-			"cb9c127eb014a70605feedac9bd8cb0592b808821d0f2b5b402dfb5b209b0d8f"&&
-		sourceSHA("src/Library/Utilities/FireProductionTransport.cpp")==
-			"d2f8236bd8bc9e6f065836a80768f51239efa025104f6ed1ac17c2095d64fb6a"&&
-		sourceSHA("src/Library/Utilities/FireProductionAdvectionMac.mm")==
-			"00aaf43d64939db8c72cf2ba81b136b06d53fa0fba26556524e8dceede0164c0"&&
-		sourceSHA("src/Library/Utilities/FireProductionForce.h")==
-			"0b30618a47a84d0dbabb0e629ea6db39f2339dd55ae10917eb7f97f001bd482f"&&
-		sourceSHA("src/Library/Utilities/FireProductionForceUnsupported.cpp")==
-			"a04589f149c9851265029165b444cd47a7eef5aaa8243686718095e873d66f65"&&
-		sourceSHA("src/Library/Utilities/FireProductionForce.cpp")==
-			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501"&&
-		sourceSHA("tests/FireProductionSolverTest.cpp")==
-			"e1d7ed26757eb858db5af6b8d2ab76e6a4efa953e072e06bd7797cf9beff36b1"&&
+		// r182 remains cryptographically immutable through its byte-sealed
+		// evidence.  Never reinterpret these hashes as requirements on the live
+		// r183 owners below.
+		compatibleMomentumEvidenceV2.find("transport_header_sha256 "
+			"cb9c127eb014a70605feedac9bd8cb0592b808821d0f2b5b402dfb5b209b0d8f")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("transport_source_sha256 "
+			"d2f8236bd8bc9e6f065836a80768f51239efa025104f6ed1ac17c2095d64fb6a")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("advection_metal_sha256 "
+			"00aaf43d64939db8c72cf2ba81b136b06d53fa0fba26556524e8dceede0164c0")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("force_header_sha256 "
+			"0b30618a47a84d0dbabb0e629ea6db39f2339dd55ae10917eb7f97f001bd482f")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("force_unsupported_sha256 "
+			"a04589f149c9851265029165b444cd47a7eef5aaa8243686718095e873d66f65")!=
+			std::string::npos&&
+		compatibleMomentumEvidence.find("force_source_sha256 "
+			"d8bfdc76db1a44220c76b0997217ad13ea36a0e581c985ba718d6cacbad53501")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("solver_test_sha256 "
+			"e1d7ed26757eb858db5af6b8d2ab76e6a4efa953e072e06bd7797cf9beff36b1")!=
+			std::string::npos&&
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
 			"360468434d2deda9dfa9f54aab7d0cb8329fa574aadd0c66b01968ba9b961452"&&
 		sourceSHA("tests/FireProductionRoundoffWalker.h")==
 			"22259ff8367aeb73ac5b73d8a282b23f18c61d545ca99cad14d856f9e40a4378"&&
-		sourceSHA("tests/FireSequenceTest.cpp")==
-			"96dad4db54da84d47803588eff014e88592a463bc3e41335564009a3ba05b122"&&
+		compatibleMomentumEvidenceV2.find("sequence_test_sha256 "
+			"96dad4db54da84d47803588eff014e88592a463bc3e41335564009a3ba05b122")!=
+			std::string::npos&&
 		sourceSHA("tests/FireProductionCalibrationMirror.h")==
 			"be18f64d518f63c2f2c770be0535532eb6c26b5df65cc00b905d0d809c1e1709"&&
 		sourceSHA("tests/FireProductionRoundoffTraceAdapter.h")==
 			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc"&&
-		sourceSHA("tests/fire_production_fp64/SourceManifest.h")==
-			"d1372a3d1ca544bc63904e8d5f4f43a39c545f10b7ecd4a8c865fa5753701807"&&
-		sourceSHA("tests/fire_production_trace/SourceManifest.h")==
-			"efe255934e7edab90404826e45e397f8a50ea7d3b1656865426daa039317e5da"&&
-		sourceSHA("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")==
-			"3ebbce0bf891384f53930e609293dbdefb9c4f2e1388961c677f4ef267c55d84"&&
-		sourceSHA("docs/FIRE_SMOKE_DESIGN_HISTORY.md")==
-			"40577c5c51741da1dd689480e6d0c0a84a46e144cea313027a5bd272b327e65a"&&
+		compatibleMomentumEvidenceV2.find("fp64_manifest_sha256 "
+			"d1372a3d1ca544bc63904e8d5f4f43a39c545f10b7ecd4a8c865fa5753701807")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("trace_manifest_sha256 "
+			"efe255934e7edab90404826e45e397f8a50ea7d3b1656865426daa039317e5da")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("solver_document_sha256 "
+			"3ebbce0bf891384f53930e609293dbdefb9c4f2e1388961c677f4ef267c55d84")!=
+			std::string::npos&&
+		compatibleMomentumEvidenceV2.find("history_document_sha256 "
+			"40577c5c51741da1dd689480e6d0c0a84a46e144cea313027a5bd272b327e65a")!=
+			std::string::npos&&
 		compatibleMomentumEvidence.find("ordinary_production_compatible_flux_enabled false")!=
 			std::string::npos&&
 		solverDoc.find("### 7.56o Compatible momentum-flux conformance and measured stop (r182)")!=
 			std::string::npos&&historyDoc.find("r182 §3.7 compatible momentum conformance")!=
 			std::string::npos,
 		"r182 retains the compatible momentum diagnostic and records the corrected fixed-column onset stop");
+	const std::string projectedHeunEvidence=ReadText(
+		"rendered/fire_production_calibration/r183_projected_heun_bootstrap/"
+		"projected_heun_bootstrap_evidence.v1");
+	const std::string projectedHeunLiveBinding=ReadText(
+		"rendered/fire_production_calibration/r183_projected_heun_bootstrap/"
+		"projected_heun_bootstrap_live_binding.v1");
+	const auto liveOwnerBound=[&](const std::string& path,const std::string& sha256) {
+		return sourceSHA(path.c_str())==sha256&&projectedHeunLiveBinding.find(
+			"owner "+path+" sha256 "+sha256+"\n")!=std::string::npos;
+	};
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunEvidence.begin(),projectedHeunEvidence.end()))==
+			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunLiveBinding.begin(),projectedHeunLiveBinding.end()))==
+			"b421ea582b7a013c0c2237633e67b41c8af8cbe879b6cf0484329bfe99151ea1"&&
+		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
+		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
+			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
+			std::string::npos&&
+		projectedHeunLiveBinding.find("live_owner_count 30\n")!=std::string::npos&&
+		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
+			std::string::npos&&
+		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
+			"07628993bfe3174298c97a2ce565e1e41cb6bbe0764d3002784128b425b34758")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
+			"a19cfc907fc4e753f9ce6caf67146b7d918d7358bc503b58bdc3345e65425ce2")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm",
+			"2554a0a41feaa9356d3ffb8c17b1a2d8520b0642c7975d4fa62947b4e9fede57")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionForce.h",
+			"e0fb7260ce30c02f052dff47fcf8ee40d782ca94fc4b5130bce10f940110d048")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionForce.cpp",
+			"96fad8c2307201a53b940fa59368f792b0e55b2d035e725294272434d3ace64e")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionForceMac.mm",
+			"70c15a76a71e607b600ca8b369e1e0bdc0afc6590232a0cab612765591c7f591")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionForceUnsupported.cpp",
+			"b28fade2a67676b562c6d840b3826cb7a89ffdb61b77ab0f55d750606d2eee83")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionProjection.h",
+			"dddd52b82198c636240a6954c6e7d82d7d52eb2a9604d22aa55c621dc2d710ca")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionProjection.cpp",
+			"8a9f5e648d43fdcea7fcad43f9681eaf5aee6b9f011246b5da6ec2b44ca628db")&&
+		liveOwnerBound("src/Library/Utilities/FireProductionProjectionMac.mm",
+			"6a7b3b70670be107b39ce873e6a4937019c56ed06ac94c85367b7a26c5449d6b")&&
+		liveOwnerBound("tests/FireProductionGoldenCompositionFixture.h",
+			"07fa3aa3f438fa5ea3c7e108a8a631120150837e026fffd419e791d85990da19")&&
+		liveOwnerBound("tests/FireProductionSolverTest.cpp",
+			"7d1964cea53d0f218be4659ac6b78082ce59412677ee7feb88ff404b758c8660")&&
+		liveOwnerBound("tests/FireProductionProjectionTest.cpp",
+			"bdd7ef8f865287270be6e2f8d48584630500f10f1da1f0121df63e3101873b61")&&
+		liveOwnerBound("tests/FireSequenceTest.cpp",
+			"1cadffc8309e50aafa0a85b83502c7918e2cfb9e2e9c5f398169e27d83a7ab40")&&
+		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
+			"b34b294e5adca333ada0b8b2db04d3743f215a306bd006b14e15fbc4613b1438")&&
+		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
+			"3d2306bd74c8a972caec00135c9c3f96a3527c16ba929b2f01f65f5c70629f3c")&&
+		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.h",
+			"dd561ead598cc5426ec91a6efd47b2915d88167c1a37f159defd42f62102a01f")&&
+		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.cpp",
+			"f79c04a543e8546b1fc1e2c3d24cd48b94e2273d45a436e0e073bc7f9d0018f6")&&
+		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.h",
+			"fce0ceb6c3110d290c756babb2e25d9bc959ee4003bf78e14cb17bc1189c4cac")&&
+		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.cpp",
+			"2611c42e43e5b2e7a4b32e0749bcfbf007d5c20ddc36babddfbfd2c34725c473")&&
+		liveOwnerBound("tests/fire_production_fp64/SourceManifest.h",
+			"8cb1344dcd010a6187ed380f3d41554fd6a3dd0a54b55946dcfa9a02c205f10b")&&
+		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
+			"3a4e6be8964d8d08ae1f4520a4a4cd3adb5c647093aa37760dcb55d49032e092")&&
+		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
+			"cef687b06bed11358396c8a257f817d245fe36eb229a9dd2e54b0d8cad6bfab0")&&
+		liveOwnerBound("tests/fire_production_trace/FireProductionForce.h",
+			"7d453246cbd95acaef81bda1a5141d42a8750d8e69a94ea38dc64f1b43b8add6")&&
+		liveOwnerBound("tests/fire_production_trace/FireProductionForce.cpp",
+			"00f13e372777068879e7d29e88b875c2539bfd638ddc49154abc0cf13a2e4b41")&&
+		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.h",
+			"7828fe103122e300e67abc33a47f2878536c6ae1714eb567a0bc486992bf2cfe")&&
+		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.cpp",
+			"5cf59d615da1f3022faea6ea5614a85060849b702ad321a1b16b916f0574b384")&&
+		liveOwnerBound("tests/fire_production_trace/SourceManifest.h",
+			"e06bfdd9cb21b5c0c0abe742f292ec0dfc7d6f879942a63c2407d76f1f24fbf7")&&
+		liveOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
+			"cf033490b8ad8535027baf1c621c370b18e5e61aa02e7a13298598e830e5b691")&&
+		liveOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
+			"4fc9982d03d2b142851aba201be8056315607082acc49a6a956b5dc3ffbf0bc3"),
+		"r183 exact-binds immutable evidence and its live implementation, tests, mirrors, and documentation without self-binding the calibration gate");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&
@@ -4735,16 +4838,251 @@ int main()
 		scalarFCTResult.maximumCommutingResidualKGPerM3==0.0f,
 		"strict fp32 scalar FCT reconstructs the dyadic nullspace, shares alpha, and commutes exactly");
 
+	// Prerequisite-only f_N/J_g producer. It consumes fixed binary32 Q,T,D,k,u,
+	// verifies the canonical fp64 N_C N_C^T reference envelope, and retains the
+	// binary32 publication residual separately. It is not a projected-Heun owner.
+	RISE::FireProductionProjectionShape physicalUnderCap,physicalOverCap;
+	physicalUnderCap.nx=76u;physicalUnderCap.ny=279u;physicalUnderCap.nz=560u;
+	physicalUnderCap.cellWidthM=1.0f;
+	physicalOverCap.nx=132u;physicalOverCap.ny=224u;physicalOverCap.nz=402u;
+	physicalOverCap.cellWidthM=1.0f;
+	std::uint64_t physicalUnderBytes=0u,physicalOverBytes=0u;
+	const bool physicalAdmissionQuery=
+		RISE::QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
+			physicalUnderCap,physicalUnderBytes,&error)&&
+		RISE::QueryFireProductionScalarPhysicalFluxPrerequisiteCPUWorkingSetBytes(
+			physicalOverCap,physicalOverBytes,&error);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest emptyOverCap;
+	emptyOverCap.shape=physicalOverCap;
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult rejectedOverCap;
+	rejectedOverCap.physicalMassFluxKGPerM2S.assign(1u,1.0f);
+	rejectedOverCap.fp64ReferenceIdentityVerified=true;
+	const bool physicalOverCapCallRejected=
+		!RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+			emptyOverCap,rejectedOverCap,&error);
+	const bool physicalOverCapCleared=
+		rejectedOverCap.physicalMassFluxKGPerM2S.empty()&&
+		!rejectedOverCap.fp64ReferenceIdentityVerified;
+	const bool physicalOverCapError=
+		error.find("working set exceeds two GiB")!=std::string::npos;
+	Check(physicalAdmissionQuery&&physicalUnderBytes==UINT64_C(2147483384)&&
+		physicalOverBytes==UINT64_C(2147483760)&&
+		physicalUnderBytes<=(UINT64_C(2)<<30u)&&
+		physicalOverBytes>(UINT64_C(2)<<30u),
+		"physical scalar-flux prerequisite admits and rejects the exact two-GiB working-set neighbors without allocation");
+	Check(physicalOverCapCallRejected&&physicalOverCapCleared&&physicalOverCapError,
+		"physical scalar-flux prerequisite rejects an empty over-cap request before payload validation");
+
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest physicalFluxRequest;
+	physicalFluxRequest.shape=scalarFCT.shape;
+	physicalFluxRequest.boundary.fill(RISE::FireProductionProjectionPeriodic);
+	physicalFluxRequest.conservativeValues.assign(9u*scalarCells,0.0f);
+	physicalFluxRequest.temperatureK.assign(scalarCells,300.0f);
+	physicalFluxRequest.diffusivityM2PerS.assign(scalarCells,0.01f);
+	physicalFluxRequest.conductivityWPerMK.assign(scalarCells,0.03f);
+	physicalFluxRequest.ambientTemperatureK=300.0f;
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y)
+		for(std::size_t x=0u;x<4u;++x){const std::size_t cell=(z*4u+y)*4u+x;
+			const float methane=(x&1u)?0.2f:0.1f;
+			physicalFluxRequest.conservativeValues[cell]=methane;
+			physicalFluxRequest.conservativeValues[scalarCells+cell]=methane;
+			physicalFluxRequest.conservativeValues[2u*scalarCells+cell]=0.2f;
+			physicalFluxRequest.conservativeValues[3u*scalarCells+cell]=0.8f-methane;
+			physicalFluxRequest.temperatureK[cell]=300.0f+25.0f*static_cast<float>(x);
+		}
+	physicalFluxRequest.ambient[0]=0.1f;physicalFluxRequest.ambient[1]=0.1f;
+	physicalFluxRequest.ambient[2]=0.2f;physicalFluxRequest.ambient[3]=0.7f;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		physicalFluxRequest.frozenVelocityMPerS[axis].assign(
+			RISE::FireProductionProjectionFaceCount(physicalFluxRequest.shape,axis),0.0f);
+	}
+	for(unsigned int side=0u;side<6u;++side)
+		physicalFluxRequest.pressureOpenInflow[side].assign(16u,0u);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult physicalFluxResult;
+	const bool physicalFluxOK=RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		physicalFluxRequest,physicalFluxResult,&error);
+	const std::size_t physicalAllFaces=physicalFluxOK?
+		physicalFluxResult.physicalEnergyFluxWPerM2.size():0u;
+	bool physicalNonzero=false,physicalSeamExact=physicalFluxOK,
+		physicalGasExact=physicalFluxOK;
+	for(float value:physicalFluxResult.physicalMassFluxKGPerM2S)
+		physicalNonzero=physicalNonzero||value!=0.0f;
+	for(float value:physicalFluxResult.physicalEnergyFluxWPerM2)
+		physicalNonzero=physicalNonzero||value!=0.0f;
+	for(unsigned int axis=0u;axis<3u&&physicalGasExact;++axis)
+		for(std::size_t face=0u;face<physicalFluxResult.physicalGasFluxKGPerM2S[axis].size();
+			++face){float gas=0.0f;const std::size_t packed=
+				physicalFluxResult.packedFaceOffset[axis]+face;
+			for(std::size_t component=1u;component<=6u;++component)gas+=
+				physicalFluxResult.physicalMassFluxKGPerM2S[component*physicalAllFaces+packed];
+			physicalGasExact=physicalGasExact&&sameFloatBits(gas,
+				physicalFluxResult.physicalGasFluxKGPerM2S[axis][face]);
+		}
+	for(unsigned int axis=0u;axis<3u&&physicalSeamExact;++axis){
+		const std::size_t extent=4u,firstEnd=4u,secondEnd=4u;
+		for(std::size_t second=0u;second<secondEnd&&physicalSeamExact;++second)
+			for(std::size_t first=0u;first<firstEnd&&physicalSeamExact;++first){
+				std::size_t lx=axis==0u?0u:first,ly=axis==0u?first:(axis==1u?0u:second),
+					lz=axis==2u?0u:second,hx=lx,hy=ly,hz=lz;
+				if(axis==0u)hx=extent;if(axis==1u)hy=extent;if(axis==2u)hz=extent;
+				const std::size_t low=physicalFluxResult.packedFaceOffset[axis]+
+					productionFaceIndex(physicalFluxRequest.shape,axis,lx,ly,lz);
+				const std::size_t high=physicalFluxResult.packedFaceOffset[axis]+
+					productionFaceIndex(physicalFluxRequest.shape,axis,hx,hy,hz);
+				for(std::size_t component=0u;component<8u;++component)physicalSeamExact=
+					physicalSeamExact&&sameFloatBits(physicalFluxResult.physicalMassFluxKGPerM2S[
+						component*physicalAllFaces+low],physicalFluxResult.physicalMassFluxKGPerM2S[
+						component*physicalAllFaces+high]);
+				physicalSeamExact=physicalSeamExact&&sameFloatBits(
+					physicalFluxResult.physicalEnergyFluxWPerM2[low],
+					physicalFluxResult.physicalEnergyFluxWPerM2[high]);
+			physicalSeamExact=physicalSeamExact&&sameFloatBits(
+				physicalFluxResult.physicalGasFluxKGPerM2S[axis][
+					productionFaceIndex(physicalFluxRequest.shape,axis,lx,ly,lz)],
+				physicalFluxResult.physicalGasFluxKGPerM2S[axis][
+					productionFaceIndex(physicalFluxRequest.shape,axis,hx,hy,hz)]);
+		}
+	}
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest uniformPhysical=physicalFluxRequest;
+	for(std::size_t component=0u;component<9u;++component)
+		for(std::size_t cell=1u;cell<scalarCells;++cell)uniformPhysical.conservativeValues[
+			component*scalarCells+cell]=uniformPhysical.conservativeValues[component*scalarCells];
+	std::fill(uniformPhysical.temperatureK.begin(),uniformPhysical.temperatureK.end(),300.0f);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult uniformPhysicalResult;
+	const bool uniformPhysicalOK=RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		uniformPhysical,uniformPhysicalResult,&error);
+	const bool uniformPhysicalZero=uniformPhysicalOK&&std::all_of(
+		uniformPhysicalResult.physicalMassFluxKGPerM2S.begin(),
+		uniformPhysicalResult.physicalMassFluxKGPerM2S.end(),[](float value){return value==0.0f;})&&
+		std::all_of(uniformPhysicalResult.physicalEnergyFluxWPerM2.begin(),
+		uniformPhysicalResult.physicalEnergyFluxWPerM2.end(),[](float value){return value==0.0f;});
+	Check(physicalFluxOK&&physicalNonzero&&physicalSeamExact&&physicalGasExact&&
+		uniformPhysicalZero&&
+		physicalFluxResult.fp64ReferenceIdentityVerified&&
+		physicalFluxResult.maximumFP64ReferenceResidualKGPerM2S<=
+			physicalFluxResult.fp64ReferenceForwardErrorBoundKGPerM2S&&
+		physicalFluxResult.maximumConstraintResidualKGPerM2S<=
+			physicalFluxResult.constraintForwardErrorBoundKGPerM2S,
+		"physical scalar-flux prerequisite verifies fp64 N_C identity, publishes nonzero f_N/J_g, canonicalizes periodic seams, and collapses uniform data to zero");
+
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest openPhysical=physicalFluxRequest;
+	openPhysical.boundary[0]=RISE::FireProductionProjectionWall;
+	openPhysical.boundary[1]=RISE::FireProductionProjectionPressureOpen;
+	std::fill(openPhysical.pressureOpenInflow[1].begin(),
+		openPhysical.pressureOpenInflow[1].end(),1u);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult openPhysicalResult;
+	const bool openPhysicalOK=RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		openPhysical,openPhysicalResult,&error);
+	bool wallPhysicalZero=openPhysicalOK,openInflowNonzero=false;
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y){
+		const std::size_t lowFace=productionFaceIndex(openPhysical.shape,0u,0u,y,z),
+			highFace=productionFaceIndex(openPhysical.shape,0u,4u,y,z),
+			lowPacked=openPhysicalResult.packedFaceOffset[0]+lowFace,
+			highPacked=openPhysicalResult.packedFaceOffset[0]+highFace;
+		for(std::size_t component=0u;component<8u;++component){
+			wallPhysicalZero=wallPhysicalZero&&
+				openPhysicalResult.physicalMassFluxKGPerM2S[
+					component*physicalAllFaces+lowPacked]==0.0f;
+			openInflowNonzero=openInflowNonzero||
+				openPhysicalResult.physicalMassFluxKGPerM2S[
+					component*physicalAllFaces+highPacked]!=0.0f;
+		}
+		wallPhysicalZero=wallPhysicalZero&&
+			openPhysicalResult.physicalEnergyFluxWPerM2[lowPacked]==0.0f&&
+			openPhysicalResult.physicalGasFluxKGPerM2S[0][lowFace]==0.0f;
+		openInflowNonzero=openInflowNonzero||
+			openPhysicalResult.physicalEnergyFluxWPerM2[highPacked]!=0.0f||
+			openPhysicalResult.physicalGasFluxKGPerM2S[0][highFace]!=0.0f;
+	}
+	std::fill(openPhysical.pressureOpenInflow[1].begin(),
+		openPhysical.pressureOpenInflow[1].end(),0u);
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult outflowPhysicalResult;
+	const bool outflowPhysicalOK=RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		openPhysical,outflowPhysicalResult,&error);
+	bool outflowPhysicalZero=outflowPhysicalOK;
+	for(std::size_t z=0u;z<4u;++z)for(std::size_t y=0u;y<4u;++y){
+		const std::size_t face=productionFaceIndex(openPhysical.shape,0u,4u,y,z),
+			packed=outflowPhysicalResult.packedFaceOffset[0]+face;
+		for(std::size_t component=0u;component<8u;++component)outflowPhysicalZero=
+			outflowPhysicalZero&&outflowPhysicalResult.physicalMassFluxKGPerM2S[
+				component*physicalAllFaces+packed]==0.0f;
+		outflowPhysicalZero=outflowPhysicalZero&&
+			outflowPhysicalResult.physicalEnergyFluxWPerM2[packed]==0.0f&&
+			outflowPhysicalResult.physicalGasFluxKGPerM2S[0][face]==0.0f;
+	}
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest badPhysical=physicalFluxRequest;
+	badPhysical.diffusivityM2PerS.back()=std::numeric_limits<float>::quiet_NaN();
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult failedPhysical=physicalFluxResult;
+	const bool failedPhysicalRejected=!RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+		badPhysical,failedPhysical,&error)&&failedPhysical.physicalMassFluxKGPerM2S.empty()&&
+		failedPhysical.physicalEnergyFluxWPerM2.empty()&&
+		failedPhysical.physicalGasFluxKGPerM2S[0].empty()&&
+		!failedPhysical.fp64ReferenceIdentityVerified&&!error.empty();
+	auto rejectsPhysicalTemperature=[&](
+		const RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest& candidate){
+		RISE::FireProductionScalarPhysicalFluxPrerequisiteResult rejected=physicalFluxResult;
+		return !RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+			candidate,rejected,&error)&&rejected.physicalMassFluxKGPerM2S.empty()&&
+			rejected.physicalEnergyFluxWPerM2.empty()&&
+			rejected.physicalGasFluxKGPerM2S[0].empty()&&
+			!rejected.fp64ReferenceIdentityVerified;
+	};
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest belowCell=physicalFluxRequest,
+		aboveCell=physicalFluxRequest,belowAmbient=physicalFluxRequest,
+		aboveAmbient=physicalFluxRequest,maximumEndpoint=uniformPhysical;
+	belowCell.temperatureK.back()=std::nextafter(300.0f,0.0f);
+	aboveCell.temperatureK.back()=std::nextafter(5000.0f,
+		std::numeric_limits<float>::infinity());
+	belowAmbient.ambientTemperatureK=std::nextafter(300.0f,0.0f);
+	aboveAmbient.ambientTemperatureK=std::nextafter(5000.0f,
+		std::numeric_limits<float>::infinity());
+	std::fill(maximumEndpoint.temperatureK.begin(),maximumEndpoint.temperatureK.end(),5000.0f);
+	maximumEndpoint.ambientTemperatureK=5000.0f;
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult maximumEndpointResult;
+	const bool maximumEndpointAccepted=
+		RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+			maximumEndpoint,maximumEndpointResult,&error);
+	Check(openPhysicalOK&&wallPhysicalZero&&openInflowNonzero&&outflowPhysicalZero&&
+		failedPhysicalRejected&&rejectsPhysicalTemperature(belowCell)&&
+		rejectsPhysicalTemperature(aboveCell)&&rejectsPhysicalTemperature(belowAmbient)&&
+		rejectsPhysicalTemperature(aboveAmbient)&&maximumEndpointAccepted,
+		"physical scalar-flux prerequisite seals boundaries, enforces the inclusive PhysicalV1 temperature domain, and fails atomically");
+
+#if defined(__APPLE__)
+	RISE::FireProductionScalarPhysicalFluxPrerequisiteResult unsupportedPhysical=physicalFluxResult;
+	const bool unsupportedPhysicalRejected=
+		!RISE::BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(
+			physicalFluxRequest,unsupportedPhysical,&error)&&
+		unsupportedPhysical.physicalMassFluxKGPerM2S.empty()&&
+		!unsupportedPhysical.fp64ReferenceIdentityVerified&&
+		error.find("fp64 identity qualification")!=std::string::npos;
+	Check(unsupportedPhysicalRejected,
+		"physical scalar-flux Metal prerequisite fails closed until fp64 qualification exists");
+#endif
+
 	RISE::FireProductionScalarFCTRequest noSourceScalarFCT=scalarFCT;
 	noSourceScalarFCT.sourceDelta.assign(9u*scalarCells,0.0f);
 	RISE::FireProductionScalarFCTResult noSourceScalarResult;
 	const bool noSourceScalarOK=RISE::EvaluateFireProductionScalarFCTCPU(
 		noSourceScalarFCT,noSourceScalarResult,&error);
-	Check(noSourceScalarOK&&scalarFCTResult.accepted[0u]-
+	RISE::FireProductionScalarFCTFluxPair sourcedFluxPair,noSourceFluxPair;
+	const bool sourcedFluxPairOK=RISE::BuildFireProductionScalarFCTFluxPairCPU(
+		scalarFCT,sourcedFluxPair,&error);
+	const bool noSourceFluxPairOK=RISE::BuildFireProductionScalarFCTFluxPairCPU(
+		noSourceScalarFCT,noSourceFluxPair,&error);
+	RISE::FireProductionScalarFCTResult stagedSourceCommit;
+	const bool stagedSourceCommitOK=sourcedFluxPairOK&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(
+			scalarFCT,sourcedFluxPair,stagedSourceCommit,&error);
+	Check(noSourceScalarOK&&sourcedFluxPairOK&&noSourceFluxPairOK&&
+		sourcedFluxPair.lowFlux==noSourceFluxPair.lowFlux&&
+		sourcedFluxPair.fluxDelta==noSourceFluxPair.fluxDelta&&stagedSourceCommitOK&&
+		stagedSourceCommit.accepted==scalarFCTResult.accepted&&
+		scalarFCTResult.accepted[0u]-
 		noSourceScalarResult.accepted[0u]==0.125f&&
 		scalarFCTResult.accepted[scalarCells]-
 		noSourceScalarResult.accepted[scalarCells]==0.125f,
-		"scalar FCT commit includes the frozen source exactly once");
+		"scalar FCT flux stages exclude source and the final commit applies its dose exactly once");
 	// Live-oracle bootstrap: a constant dyadic tuple makes the physical record's
 	// binary64 nullspace arithmetic collapse exactly to zero slope.  Production
 	// publication face x+1 corresponds to the periodic oracle's upper face x.
@@ -4760,6 +5098,65 @@ int main()
 	RISE::FireProductionScalarFCTResult constantScalarResult;
 	const bool constantScalarOK=RISE::EvaluateFireProductionScalarFCTCPU(
 		constantScalarFCT,constantScalarResult,&error);
+	RISE::FireProductionScalarFCTFluxPair firstStagePair,secondStagePair,averagedStagePair;
+	const bool firstStagePairOK=RISE::BuildFireProductionScalarFCTFluxPairCPU(
+		constantScalarFCT,firstStagePair,&error);
+	RISE::FireProductionScalarFCTRequest nonfiniteStage=constantScalarFCT;
+	nonfiniteStage.frozenVelocityMPerS[0][1u]=
+		std::numeric_limits<float>::quiet_NaN();
+	RISE::FireProductionScalarFCTFluxPair rejectedNonfinitePair=firstStagePair;
+	const bool nonfinitePairRejected=!RISE::BuildFireProductionScalarFCTFluxPairCPU(
+		nonfiniteStage,rejectedNonfinitePair,&error)&&rejectedNonfinitePair.lowFlux.empty();
+	secondStagePair=firstStagePair;
+	const std::size_t nonlinearFace=productionFaceIndex(
+		constantScalarFCT.shape,0u,2u,0u,0u);
+	const std::size_t nonlinearPacked=firstStagePair.packedFaceOffset[0]+nonlinearFace;
+	const std::size_t nonlinearAllFaces=firstStagePair.lowFlux.size()/9u;
+	secondStagePair.fluxDelta[nonlinearAllFaces+nonlinearPacked]=8.0f;
+	const bool averagedStagePairOK=RISE::AverageFireProductionScalarFCTFluxPairsCPU(
+		firstStagePair,secondStagePair,averagedStagePair,&error);
+	RISE::FireProductionScalarFCTResult firstStageAccepted,secondStageAccepted,
+		averagedStageAccepted;
+	const bool firstStageAcceptedOK=firstStagePairOK&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(
+			constantScalarFCT,firstStagePair,firstStageAccepted,&error);
+	const bool secondStageAcceptedOK=firstStagePairOK&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(
+			constantScalarFCT,secondStagePair,secondStageAccepted,&error);
+	const bool averagedStageAcceptedOK=averagedStagePairOK&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(
+			constantScalarFCT,averagedStagePair,averagedStageAccepted,&error);
+	RISE::FireProductionScalarFCTRequest mismatchedStageTopology=constantScalarFCT;
+	mismatchedStageTopology.boundary.fill(RISE::FireProductionProjectionWall);
+	RISE::FireProductionScalarFCTResult rejectedMismatchedStage;
+	const bool mismatchedTopologyRejected=!RISE::SolveFireProductionScalarFCTFluxPairCPU(
+		mismatchedStageTopology,firstStagePair,rejectedMismatchedStage,&error)&&
+		rejectedMismatchedStage.accepted.empty();
+	RISE::FireProductionScalarFCTFluxPair mismatchedAveragePair=secondStagePair;
+	mismatchedAveragePair.boundary.fill(RISE::FireProductionProjectionWall);
+	RISE::FireProductionScalarFCTFluxPair rejectedAveragePair;
+	const bool mismatchedAverageRejected=
+		!RISE::AverageFireProductionScalarFCTFluxPairsCPU(
+			firstStagePair,mismatchedAveragePair,rejectedAveragePair,&error)&&
+		rejectedAveragePair.lowFlux.empty();
+	RISE::FireProductionScalarFCTFluxPair brokenPeriodicPair=firstStagePair;
+	const std::size_t periodicHighFace=firstStagePair.packedFaceOffset[0]+
+		productionFaceIndex(constantScalarFCT.shape,0u,constantScalarFCT.shape.nx,0u,0u);
+	brokenPeriodicPair.lowFlux[periodicHighFace]+=1.0f;
+	RISE::FireProductionScalarFCTResult rejectedPeriodicPair;
+	const bool periodicSeamRejected=!RISE::SolveFireProductionScalarFCTFluxPairCPU(
+		constantScalarFCT,brokenPeriodicPair,rejectedPeriodicPair,&error)&&
+		rejectedPeriodicPair.accepted.empty();
+	const float independentlyAveragedAlpha=firstStageAcceptedOK&&secondStageAcceptedOK?
+		0.5f*(firstStageAccepted.sharedFaceAlpha[0][nonlinearFace]+
+		secondStageAccepted.sharedFaceAlpha[0][nonlinearFace]):0.0f;
+	Check(firstStagePairOK&&nonfinitePairRejected&&averagedStagePairOK&&firstStageAcceptedOK&&
+		secondStageAcceptedOK&&averagedStageAcceptedOK&&
+		mismatchedTopologyRejected&&mismatchedAverageRejected&&periodicSeamRejected&&
+		averagedStagePair.fluxDelta[nonlinearAllFaces+nonlinearPacked]==4.0f&&
+		averagedStageAccepted.sharedFaceAlpha[0][nonlinearFace]!=
+			independentlyAveragedAlpha,
+		"projected-Heun scalar staging averages flux pairs and solves a fresh shared alpha, not an averaged alpha");
 	RISE::FireProductionScalarFCTRequest openScalarFCT=constantScalarFCT;
 	openScalarFCT.boundary={{RISE::FireProductionProjectionWall,
 		RISE::FireProductionProjectionPressureOpen,RISE::FireProductionProjectionWall,

@@ -1344,6 +1344,30 @@ kernel void fct_build_flux_pair(device const float* q [[buffer(0)]],
    fct_stage_value(q,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor);
  float high=donor+(fromLeft?0.5f:-0.5f)*slope;low[gid]=u*donor;delta[gid]=u*(high-donor);
 }
+kernel void fct_average_flux_pair(device const float* firstLow [[buffer(0)]],
+ device const float* firstDelta [[buffer(1)]],device const float* secondLow [[buffer(2)]],
+ device const float* secondDelta [[buffer(3)]],device float* averagedLow [[buffer(4)]],
+ device float* averagedDelta [[buffer(5)]],constant uint& count [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid>=count)return;averagedLow[gid]=0.5f*(firstLow[gid]+secondLow[gid]);
+ averagedDelta[gid]=0.5f*(firstDelta[gid]+secondDelta[gid]);
+}
+kernel void fct_validate_flux_pair(device const float* low [[buffer(0)]],
+ device const float* delta [[buffer(1)]],device atomic_uint* failure [[buffer(2)]],
+ constant FCTParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ uint all=fct_all_faces(p),total=p.components*all;if(gid>=total)return;
+ float lowValue=low[gid],deltaValue=delta[gid];
+ if(!isfinite(lowValue)||!isfinite(deltaValue)){
+  atomic_fetch_or_explicit(failure,1024u,memory_order_relaxed);return;}
+ uint component=gid/all,packed=gid-component*all,axis,x,y,z;
+ fct_decode_face(p,packed,axis,x,y,z);uint coordinate=fct_coordinate(axis,x,y,z);
+ if(p.boundary[2u*axis]==0u&&coordinate==fct_extent(p,axis)){
+  fct_set_coordinate(axis,0u,x,y,z);uint lowPacked=fct_packed_face(p,axis,x,y,z);
+  if(as_type<uint>(lowValue)!=as_type<uint>(low[component*all+lowPacked])||
+   as_type<uint>(deltaValue)!=as_type<uint>(delta[component*all+lowPacked]))
+   atomic_fetch_or_explicit(failure,2048u,memory_order_relaxed);
+ }
+}
 inline float fct_inequality(thread const float* value,uint inequality,device const float* enthalpy){
  if(inequality==0u)return-value[0];if(inequality==1u){float result=value[0];
   for(uint species=0u;species<7u;++species)result-=value[1u+species];return result;}
@@ -1597,6 +1621,8 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLDevice> device;
 			id<MTLCommandQueue> queue;
 			id<MTLComputePipelineState> buildFluxPair;
+			id<MTLComputePipelineState> averageFluxPair;
+			id<MTLComputePipelineState> validateFluxPair;
 			id<MTLComputePipelineState> buildRatios;
 			id<MTLComputePipelineState> buildFaceAlpha;
 			id<MTLComputePipelineState> commitScalar;
@@ -1605,7 +1631,8 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLComputePipelineState> extractGasDensity;
 			std::string error;
 
-			SingleStageFCTMetalContext() : device(nil),queue(nil),buildFluxPair(nil),buildRatios(nil),
+			SingleStageFCTMetalContext() : device(nil),queue(nil),buildFluxPair(nil),
+				averageFluxPair(nil),validateFluxPair(nil),buildRatios(nil),
 				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil),applyMomentumRate(nil),
 				extractGasDensity(nil)
 			{
@@ -1628,13 +1655,15 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 						return function?[device newComputePipelineStateWithFunction:function
 							error:&metalError]:nil;};
 					buildFluxPair=makePipeline("fct_build_flux_pair");
+					averageFluxPair=makePipeline("fct_average_flux_pair");
+					validateFluxPair=makePipeline("fct_validate_flux_pair");
 					buildRatios=makePipeline("fct_build_ratios");
 					buildFaceAlpha=makePipeline("fct_build_face_alpha");
 					commitScalar=makePipeline("fct_commit_scalar");
 					compatibleStageRate=makePipeline("fct_compatible_stage_rate");
 					applyMomentumRate=makePipeline("fct_apply_momentum_rate");
 					extractGasDensity=makePipeline("fct_extract_gas_density");
-					if(!buildFluxPair||!buildRatios||!buildFaceAlpha||!commitScalar||
+					if(!buildFluxPair||!averageFluxPair||!validateFluxPair||!buildRatios||!buildFaceAlpha||!commitScalar||
 						!compatibleStageRate||!applyMomentumRate||!extractGasDensity){error=MetalError(
 						"production single-stage FCT diagnostic pipeline creation failed",
 						metalError);return;}
@@ -1646,7 +1675,7 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 
 			bool Valid() const
 			{
-				return device&&queue&&buildFluxPair&&buildRatios&&buildFaceAlpha&&commitScalar&&
+				return device&&queue&&buildFluxPair&&averageFluxPair&&validateFluxPair&&buildRatios&&buildFaceAlpha&&commitScalar&&
 					compatibleStageRate&&applyMomentumRate&&extractGasDensity&&error.empty();
 			}
 		};
@@ -4507,6 +4536,588 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			~ScopedDiagnostic(){CompatibleMomentumDiagnosticActive=false;}
 		} scoped;
 		return AttemptFireProductionResidentStepMetal(request,result,structuredError);
+	}
+
+	namespace
+	{
+		bool ValidateScalarFCTMetalStageRequest(
+			const FireProductionScalarFCTRequest& request,std::string* error )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!(request.timeStepS>0.0f)||
+				!std::isfinite(request.timeStepS)||request.nullity==0u||request.nullity>8u||
+				request.nullspaceBasis.size()!=8u*request.nullity||
+				request.coordinateProjector.size()!=request.nullity*request.nullity||
+				!std::isfinite(request.feasibilityFactor)||request.feasibilityFactor<=0.0f||
+				!std::isfinite(request.assemblyReserveFactor)||request.assemblyReserveFactor<0.0f||
+				request.assemblyReserveFactor>request.feasibilityFactor){if(error)*error=
+					"production scalar FCT Metal stage schedule is invalid";
+				return false;
+			}
+			const std::size_t cells=shape.CellCount();
+			if(request.beginning.size()!=9u*cells||request.sourceDelta.size()!=9u*cells){
+				if(error)*error="production scalar FCT Metal stage cell tuple is invalid";
+				return false;
+			}
+			auto faceIndex=[&](const unsigned int axis,const std::size_t x,
+				const std::size_t y,const std::size_t z){return axis==0u?
+				(z*shape.ny+y)*(shape.nx+1u)+x:(axis==1u?
+				(z*(shape.ny+1u)+y)*shape.nx+x:(z*shape.ny+y)*shape.nx+x);};
+			bool anyPeriodic=false,allPeriodic=true;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis],
+					upper=request.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))||request.frozenVelocityMPerS[axis].size()!=
+					FireProductionProjectionFaceCount(shape,axis)){if(error)*error=
+					"production scalar FCT Metal stage boundary or velocity shape is invalid";
+					return false;
+				}
+				anyPeriodic=anyPeriodic||lower==FireProductionProjectionPeriodic;
+				allPeriodic=allPeriodic&&lower==FireProductionProjectionPeriodic;
+				for(const float value:request.frozenVelocityMPerS[axis])if(!std::isfinite(value)){
+					if(error)*error="production scalar FCT Metal stage velocity is nonfinite";
+					return false;
+				}
+				if(lower==FireProductionProjectionPeriodic){const std::size_t extent=axis==0u?
+					shape.nx:(axis==1u?shape.ny:shape.nz),firstEnd=axis==0u?shape.ny:shape.nx,
+					secondEnd=axis==2u?shape.ny:shape.nz;
+					for(std::size_t second=0u;second<secondEnd;++second)
+						for(std::size_t first=0u;first<firstEnd;++first){std::size_t lx=0u,ly=0u,lz=0u,
+							hx=0u,hy=0u,hz=0u;if(axis==0u){ly=hy=first;lz=hz=second;hx=extent;}
+							if(axis==1u){lx=hx=first;lz=hz=second;hy=extent;}
+							if(axis==2u){lx=hx=first;ly=hy=second;hz=extent;}
+							const float low=request.frozenVelocityMPerS[axis][faceIndex(axis,lx,ly,lz)],
+								high=request.frozenVelocityMPerS[axis][faceIndex(axis,hx,hy,hz)];
+							std::uint32_t lowBits=0u,highBits=0u;std::memcpy(&lowBits,&low,sizeof(lowBits));
+							std::memcpy(&highBits,&high,sizeof(highBits));if(lowBits!=highBits){if(error)*error=
+								"production scalar FCT Metal stage periodic velocity seam is invalid";
+								return false;}}
+				}
+			}
+			if(anyPeriodic&&!allPeriodic){if(error)*error=
+				"production scalar FCT Metal stage hybrid periodic topology has no commuting oracle";
+				return false;
+			}
+			for(unsigned int side=0u;side<6u;++side){const std::size_t expected=side<2u?
+				shape.ny*shape.nz:(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+				if(request.pressureOpenInflow[side].size()!=expected){if(error)*error=
+					"production scalar FCT Metal stage inflow shape is invalid";
+					return false;
+				}
+				for(const unsigned char value:request.pressureOpenInflow[side])if(value>1u||
+					(request.boundary[side]!=FireProductionProjectionPressureOpen&&value!=0u)){
+					if(error)*error="production scalar FCT Metal stage inflow value is invalid";
+					return false;
+				}
+			}
+			for(const float value:request.beginning)if(!std::isfinite(value)){
+				if(error)*error="production scalar FCT Metal stage beginning is nonfinite";
+				return false;
+			}
+			for(const float value:request.sourceDelta)if(!std::isfinite(value)){
+				if(error)*error="production scalar FCT Metal stage source is nonfinite";
+				return false;
+			}
+			for(const float value:request.ambient)if(!std::isfinite(value)){
+				if(error)*error="production scalar FCT Metal stage ambient is nonfinite";
+				return false;
+			}
+			for(const float value:request.nullspaceBasis)if(!std::isfinite(value)){
+				if(error)*error="production scalar FCT Metal stage basis is nonfinite";
+				return false;
+			}
+			for(const float value:request.coordinateProjector)if(!std::isfinite(value)){
+				if(error)*error="production scalar FCT Metal stage projector is nonfinite";
+				return false;
+			}
+			for(const float value:request.enthalpyBoundsJPerKG)if(!std::isfinite(value)){
+				if(error)*error="production scalar FCT Metal stage enthalpy bound is nonfinite";
+				return false;
+			}
+			return true;
+		}
+
+		bool PrepareScalarFCTMetalStageMetadata(
+			const FireProductionScalarFCTRequest& request,
+			MetalSingleStageFCTParameters& parameters,
+			std::vector<unsigned char>& packedInflow,
+			std::array<std::size_t,3>& faceOffset,
+			std::size_t& allFaces,std::string* error )
+		{
+			if(!ValidateScalarFCTMetalStageRequest(request,error))return false;
+			const FireProductionProjectionShape& shape=request.shape;
+			const std::size_t cells=shape.CellCount();allFaces=0u;
+			for(unsigned int axis=0u;axis<3u;++axis){faceOffset[axis]=allFaces;
+				allFaces+=FireProductionProjectionFaceCount(shape,axis);}
+			parameters={static_cast<std::uint32_t>(shape.nx),
+				static_cast<std::uint32_t>(shape.ny),static_cast<std::uint32_t>(shape.nz),
+				static_cast<std::uint32_t>(cells),9u,11u,
+				static_cast<std::uint32_t>(request.nullity),0u,{},{},shape.cellWidthM,
+				request.timeStepS,request.feasibilityFactor,request.assemblyReserveFactor};
+			std::size_t sideOffset=0u;packedInflow.clear();
+			for(unsigned int side=0u;side<6u;++side){
+				parameters.boundary[side]=static_cast<std::uint32_t>(request.boundary[side]);
+				parameters.sideOffset[side]=static_cast<std::uint32_t>(sideOffset);
+				packedInflow.insert(packedInflow.end(),request.pressureOpenInflow[side].begin(),
+					request.pressureOpenInflow[side].end());
+				sideOffset+=request.pressureOpenInflow[side].size();
+			}
+			return allFaces>0u&&sideOffset==packedInflow.size();
+		}
+
+		bool SameScalarFCTMetalPairIdentity(
+			const FireProductionMetalScalarFCTFluxPairDiagnostic& first,
+			const FireProductionMetalScalarFCTFluxPairDiagnostic& second )
+		{
+			std::array<std::size_t,3> expected={{0u,
+				FireProductionProjectionFaceCount(first.shape,0u),0u}};
+			expected[2]=expected[1]+FireProductionProjectionFaceCount(first.shape,1u);
+			return first.shape.nx==second.shape.nx&&first.shape.ny==second.shape.ny&&
+				first.shape.nz==second.shape.nz&&
+				first.shape.cellWidthM==second.shape.cellWidthM&&
+				first.timeStepS==second.timeStepS&&first.boundary==second.boundary&&
+				first.packedFaceOffset==expected&&second.packedFaceOffset==expected&&first.lowFlux&&
+				first.fluxDelta&&second.lowFlux&&second.fluxDelta;
+		}
+
+		MetalSingleStageFCTParameters ScalarFCTMetalPairParameters(
+			const FireProductionMetalScalarFCTFluxPairDiagnostic& pair )
+		{
+			const FireProductionProjectionShape& shape=pair.shape;
+			MetalSingleStageFCTParameters parameters={static_cast<std::uint32_t>(shape.nx),
+				static_cast<std::uint32_t>(shape.ny),static_cast<std::uint32_t>(shape.nz),
+				static_cast<std::uint32_t>(shape.CellCount()),9u,11u,0u,0u,{},{},
+				shape.cellWidthM,pair.timeStepS,0.0f,0.0f};
+			std::size_t sideOffset=0u;
+			for(unsigned int side=0u;side<6u;++side){
+				parameters.boundary[side]=static_cast<std::uint32_t>(pair.boundary[side]);
+				parameters.sideOffset[side]=static_cast<std::uint32_t>(sideOffset);
+				sideOffset+=side<2u?shape.ny*shape.nz:
+					(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+			}
+			return parameters;
+		}
+	}
+
+	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(
+		const FireProductionScalarPhysicalFluxPrerequisiteRequest&,
+		FireProductionScalarPhysicalFluxPrerequisiteResult& result,std::string* error )
+	{
+		result=FireProductionScalarPhysicalFluxPrerequisiteResult();
+		if(error)*error=
+			"production scalar physical-flux Metal prerequisite lacks fp64 identity qualification";
+		return false;
+	}
+
+	bool BuildFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+		const FireProductionScalarFCTRequest& request,id<MTLBuffer> beginning,
+		const std::array<id<MTLBuffer>,3>& frozenVelocityMPerS,
+		FireProductionMetalScalarFCTFluxPairDiagnostic& result,std::string* error )
+	{
+		result=FireProductionMetalScalarFCTFluxPairDiagnostic();
+		MetalSingleStageFCTParameters parameters;std::vector<unsigned char> inflow;
+		std::array<std::size_t,3> faceOffset;std::size_t allFaces=0u;
+		if(!PrepareScalarFCTMetalStageMetadata(request,parameters,inflow,faceOffset,allFaces,error)){
+			if(error)*error="production scalar FCT Metal flux metadata is invalid";return false;}
+		const std::size_t cellBytes=9u*request.shape.CellCount()*sizeof(float);
+		if(!beginning||[beginning length]<cellBytes){
+			if(error)*error="production scalar FCT Metal beginning buffer is invalid";
+			return false;
+		}
+		for(unsigned int axis=0u;axis<3u;++axis)if(!frozenVelocityMPerS[axis]||
+			[frozenVelocityMPerS[axis] length]<FireProductionProjectionFaceCount(
+				request.shape,axis)*sizeof(float)){
+				if(error)*error="production scalar FCT Metal velocity buffer is invalid";
+				return false;
+			}
+		SingleStageFCTMetalContext& context=SingleStageFCTContext();
+		if(!context.Valid()){if(error)*error=context.error;return false;}
+		@autoreleasepool {
+			id<MTLBuffer> ambient=[context.device newBufferWithBytes:request.ambient.data()
+				length:request.ambient.size()*sizeof(float) options:MTLResourceStorageModeShared];
+			id<MTLBuffer> inflowBuffer=[context.device newBufferWithBytes:inflow.data()
+				length:inflow.size() options:MTLResourceStorageModeShared];
+			id<MTLBuffer> basis=[context.device newBufferWithBytes:request.nullspaceBasis.data()
+				length:request.nullspaceBasis.size()*sizeof(float)
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> projector=[context.device newBufferWithBytes:
+				request.coordinateProjector.data()
+				length:request.coordinateProjector.size()*sizeof(float)
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> parameter=[context.device newBufferWithBytes:&parameters
+				length:sizeof(parameters) options:MTLResourceStorageModeShared];
+			const std::size_t fluxBytes=9u*allFaces*sizeof(float);
+			id<MTLBuffer> low=[context.device newBufferWithLength:fluxBytes
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> delta=[context.device newBufferWithLength:fluxBytes
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> failure=[context.device newBufferWithLength:sizeof(std::uint32_t)
+				options:MTLResourceStorageModeShared];
+			if(!ambient||!inflowBuffer||!basis||!projector||!parameter||!low||!delta||!failure){
+				if(error)*error="production scalar FCT Metal flux allocation failed";return false;}
+			std::memset([failure contents],0,sizeof(std::uint32_t));
+			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+			id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+			if(!encoder){if(error)*error="production scalar FCT Metal flux encoder failed";return false;}
+			[encoder setComputePipelineState:context.buildFluxPair];
+			[encoder setBuffer:beginning offset:0 atIndex:0];
+			for(unsigned int axis=0u;axis<3u;++axis)
+				[encoder setBuffer:frozenVelocityMPerS[axis] offset:0 atIndex:1u+axis];
+			[encoder setBuffer:ambient offset:0 atIndex:4];[encoder setBuffer:inflowBuffer offset:0 atIndex:5];
+			[encoder setBuffer:basis offset:0 atIndex:6];[encoder setBuffer:projector offset:0 atIndex:7];
+			[encoder setBuffer:low offset:0 atIndex:8];[encoder setBuffer:delta offset:0 atIndex:9];
+			[encoder setBuffer:parameter offset:0 atIndex:10];Dispatch(encoder,
+				context.buildFluxPair,9u*allFaces);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];
+			if(!encoder){if(error)*error="production scalar FCT Metal flux validation encoder failed";
+				return false;}
+			[encoder setComputePipelineState:context.validateFluxPair];
+			[encoder setBuffer:low offset:0 atIndex:0];[encoder setBuffer:delta offset:0 atIndex:1];
+			[encoder setBuffer:failure offset:0 atIndex:2];[encoder setBuffer:parameter offset:0 atIndex:3];
+			Dispatch(encoder,context.validateFluxPair,9u*allFaces);[encoder endEncoding];
+			CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+			const std::uint32_t failureWord=*static_cast<const std::uint32_t*>([failure contents]);
+			if([command status]!=MTLCommandBufferStatusCompleted||failureWord!=0u){
+				if(error)*error="production scalar FCT Metal flux command failed";
+				return false;
+			}
+			result.shape=request.shape;result.timeStepS=request.timeStepS;
+			result.boundary=request.boundary;result.packedFaceOffset=faceOffset;
+			result.lowFlux=low;result.fluxDelta=delta;
+			result.actualMetalAllocationBytes=[low allocatedSize]+[delta allocatedSize]+
+				[failure allocatedSize]+[parameter allocatedSize];
+			result.commandCommitCount=1u;if(error)error->clear();return true;
+		}
+	}
+
+	bool AverageFireProductionScalarFCTFluxPairsMetalResidentDiagnostic(
+		const FireProductionMetalScalarFCTFluxPairDiagnostic& first,
+		const FireProductionMetalScalarFCTFluxPairDiagnostic& second,
+		FireProductionMetalScalarFCTFluxPairDiagnostic& result,std::string* error )
+	{
+		result=FireProductionMetalScalarFCTFluxPairDiagnostic();
+		if(!SameScalarFCTMetalPairIdentity(first,second)){
+			if(error)*error="production scalar FCT Metal average identity is invalid";
+			return false;
+		}
+		const std::size_t allFaces=first.packedFaceOffset[2]+
+			FireProductionProjectionFaceCount(first.shape,2u);
+		const std::size_t values=9u*allFaces,bytes=values*sizeof(float);
+		if([first.lowFlux length]<bytes||[first.fluxDelta length]<bytes||
+			[second.lowFlux length]<bytes||[second.fluxDelta length]<bytes||
+			values>std::numeric_limits<std::uint32_t>::max()){
+			if(error)*error="production scalar FCT Metal average buffer is invalid";
+			return false;
+		}
+		SingleStageFCTMetalContext& context=SingleStageFCTContext();
+		if(!context.Valid()){if(error)*error=context.error;return false;}
+		@autoreleasepool {
+			const std::uint32_t count=static_cast<std::uint32_t>(values);
+			const MetalSingleStageFCTParameters parameters=
+				ScalarFCTMetalPairParameters(first);
+			id<MTLBuffer> countBuffer=[context.device newBufferWithBytes:&count length:sizeof(count)
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> parameter=[context.device newBufferWithBytes:&parameters
+				length:sizeof(parameters) options:MTLResourceStorageModeShared];
+			id<MTLBuffer> failure=[context.device newBufferWithLength:sizeof(std::uint32_t)
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> low=[context.device newBufferWithLength:bytes
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> delta=[context.device newBufferWithLength:bytes
+				options:MTLResourceStorageModePrivate];
+			if(!countBuffer||!parameter||!failure||!low||!delta){
+				if(error)*error="production scalar FCT Metal average allocation failed";
+				return false;
+			}
+			std::memset([failure contents],0,sizeof(std::uint32_t));
+			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+			auto validate=[&](id<MTLBuffer> pairLow,id<MTLBuffer> pairDelta){
+				id<MTLComputeCommandEncoder> check=command?[command computeCommandEncoder]:nil;
+				if(!check)return false;[check setComputePipelineState:context.validateFluxPair];
+				[check setBuffer:pairLow offset:0 atIndex:0];[check setBuffer:pairDelta offset:0 atIndex:1];
+				[check setBuffer:failure offset:0 atIndex:2];[check setBuffer:parameter offset:0 atIndex:3];
+				Dispatch(check,context.validateFluxPair,values);[check endEncoding];return true;};
+			if(!validate(first.lowFlux,first.fluxDelta)||
+				!validate(second.lowFlux,second.fluxDelta)){
+				if(error)*error="production scalar FCT Metal average validation encoder failed";
+				return false;
+			}
+			id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+			if(!encoder){if(error)*error="production scalar FCT Metal average encoder failed";return false;}
+			[encoder setComputePipelineState:context.averageFluxPair];
+			[encoder setBuffer:first.lowFlux offset:0 atIndex:0];
+			[encoder setBuffer:first.fluxDelta offset:0 atIndex:1];
+			[encoder setBuffer:second.lowFlux offset:0 atIndex:2];
+			[encoder setBuffer:second.fluxDelta offset:0 atIndex:3];
+			[encoder setBuffer:low offset:0 atIndex:4];[encoder setBuffer:delta offset:0 atIndex:5];
+			[encoder setBuffer:countBuffer offset:0 atIndex:6];Dispatch(encoder,
+				context.averageFluxPair,values);[encoder endEncoding];
+			if(!validate(low,delta)){
+				if(error)*error="production scalar FCT Metal average output validation encoder failed";
+				return false;
+			}
+			CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+			const std::uint32_t failureWord=*static_cast<const std::uint32_t*>([failure contents]);
+			if([command status]!=MTLCommandBufferStatusCompleted||failureWord!=0u){
+				if(error)*error="production scalar FCT Metal average command failed";
+				return false;
+			}
+			result.shape=first.shape;result.timeStepS=first.timeStepS;
+			result.boundary=first.boundary;result.packedFaceOffset=first.packedFaceOffset;
+			result.lowFlux=low;result.fluxDelta=delta;
+			result.actualMetalAllocationBytes=[low allocatedSize]+[delta allocatedSize]+
+				[countBuffer allocatedSize]+[parameter allocatedSize]+[failure allocatedSize];
+			result.commandCommitCount=1u;if(error)error->clear();return true;
+		}
+	}
+
+	bool SolveFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+		const FireProductionScalarFCTRequest& request,id<MTLBuffer> beginning,
+		id<MTLBuffer> sourceDelta,
+		const FireProductionMetalScalarFCTFluxPairDiagnostic& fluxPair,
+		FireProductionMetalScalarFCTSolveDiagnostic& result,std::string* error )
+	{
+		result=FireProductionMetalScalarFCTSolveDiagnostic();
+		MetalSingleStageFCTParameters parameters;std::vector<unsigned char> inflow;
+		std::array<std::size_t,3> faceOffset;std::size_t allFaces=0u;
+		if(!PrepareScalarFCTMetalStageMetadata(request,parameters,inflow,faceOffset,allFaces,error)||
+			fluxPair.shape.nx!=request.shape.nx||fluxPair.shape.ny!=request.shape.ny||
+			fluxPair.shape.nz!=request.shape.nz||
+			fluxPair.shape.cellWidthM!=request.shape.cellWidthM||
+			fluxPair.timeStepS!=request.timeStepS||fluxPair.boundary!=request.boundary||
+			fluxPair.packedFaceOffset!=faceOffset||!fluxPair.lowFlux||!fluxPair.fluxDelta){
+			if(error)*error="production scalar FCT Metal solve identity is invalid";return false;}
+		const std::size_t cells=request.shape.CellCount(),cellBytes=9u*cells*sizeof(float),
+			fluxBytes=9u*allFaces*sizeof(float);
+		if(!beginning||!sourceDelta||[beginning length]<cellBytes||[sourceDelta length]<cellBytes||
+			[fluxPair.lowFlux length]<fluxBytes||[fluxPair.fluxDelta length]<fluxBytes){
+			if(error)*error="production scalar FCT Metal solve buffer is invalid";
+			return false;
+		}
+		SingleStageFCTMetalContext& context=SingleStageFCTContext();
+		if(!context.Valid()){if(error)*error=context.error;return false;}
+		@autoreleasepool {
+			id<MTLBuffer> enthalpy=[context.device newBufferWithBytes:
+				request.enthalpyBoundsJPerKG.data()
+				length:request.enthalpyBoundsJPerKG.size()*sizeof(float)
+				options:MTLResourceStorageModeShared];
+			const float zero=0.0f;
+			id<MTLBuffer> affine=[context.device newBufferWithBytes:&zero length:sizeof(zero)
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> parameter=[context.device newBufferWithBytes:&parameters
+				length:sizeof(parameters) options:MTLResourceStorageModeShared];
+			id<MTLBuffer> lowState=[context.device newBufferWithLength:cellBytes
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> ratio=[context.device newBufferWithLength:11u*cells*sizeof(float)
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> alpha=[context.device newBufferWithLength:allFaces*sizeof(float)
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> accepted=[context.device newBufferWithLength:cellBytes
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> failure=[context.device newBufferWithLength:sizeof(std::uint32_t)
+				options:MTLResourceStorageModeShared];
+			if(!enthalpy||!affine||!parameter||!lowState||!ratio||!alpha||!accepted||!failure){
+				if(error)*error="production scalar FCT Metal solve allocation failed";return false;}
+			std::memset([failure contents],0,sizeof(std::uint32_t));
+			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+			auto encoderFor=[&](id<MTLComputePipelineState> pipeline){
+				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				if(encoder)[encoder setComputePipelineState:pipeline];return encoder;};
+			id<MTLComputeCommandEncoder> encoder=encoderFor(context.validateFluxPair);
+			if(!encoder){if(error)*error="production scalar FCT Metal solve validation encoder failed";
+				return false;}
+			[encoder setBuffer:fluxPair.lowFlux offset:0 atIndex:0];
+			[encoder setBuffer:fluxPair.fluxDelta offset:0 atIndex:1];
+			[encoder setBuffer:failure offset:0 atIndex:2];[encoder setBuffer:parameter offset:0 atIndex:3];
+			Dispatch(encoder,context.validateFluxPair,9u*allFaces);[encoder endEncoding];
+			encoder=encoderFor(context.buildRatios);
+			if(!encoder){if(error)*error="production scalar FCT Metal ratio encoder failed";return false;}
+			[encoder setBuffer:beginning offset:0 atIndex:0];[encoder setBuffer:sourceDelta offset:0 atIndex:1];
+			[encoder setBuffer:fluxPair.lowFlux offset:0 atIndex:2];
+			[encoder setBuffer:fluxPair.fluxDelta offset:0 atIndex:3];
+			[encoder setBuffer:enthalpy offset:0 atIndex:4];[encoder setBuffer:lowState offset:0 atIndex:5];
+			[encoder setBuffer:ratio offset:0 atIndex:6];[encoder setBuffer:failure offset:0 atIndex:7];
+			[encoder setBuffer:parameter offset:0 atIndex:8];Dispatch(encoder,
+				context.buildRatios,11u*cells);[encoder endEncoding];
+			encoder=encoderFor(context.buildFaceAlpha);if(!encoder){
+				if(error)*error="production scalar FCT Metal alpha encoder failed";
+				return false;
+			}
+			[encoder setBuffer:fluxPair.fluxDelta offset:0 atIndex:0];
+			[encoder setBuffer:ratio offset:0 atIndex:1];[encoder setBuffer:enthalpy offset:0 atIndex:2];
+			[encoder setBuffer:alpha offset:0 atIndex:3];[encoder setBuffer:failure offset:0 atIndex:4];
+			[encoder setBuffer:parameter offset:0 atIndex:5];Dispatch(encoder,
+				context.buildFaceAlpha,allFaces);[encoder endEncoding];
+			encoder=encoderFor(context.commitScalar);if(!encoder){
+				if(error)*error="production scalar FCT Metal commit encoder failed";
+				return false;
+			}
+			[encoder setBuffer:lowState offset:0 atIndex:0];
+			[encoder setBuffer:fluxPair.fluxDelta offset:0 atIndex:1];
+			[encoder setBuffer:alpha offset:0 atIndex:2];[encoder setBuffer:enthalpy offset:0 atIndex:3];
+			[encoder setBuffer:affine offset:0 atIndex:4];[encoder setBuffer:accepted offset:0 atIndex:5];
+			[encoder setBuffer:failure offset:0 atIndex:6];[encoder setBuffer:parameter offset:0 atIndex:7];
+			Dispatch(encoder,context.commitScalar,cells);[encoder endEncoding];
+			CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+			if([command status]!=MTLCommandBufferStatusCompleted){
+				if(error)*error="production scalar FCT Metal solve command failed";
+				return false;
+			}
+			result.shape=request.shape;result.packedFaceOffset=faceOffset;
+			result.lowState=lowState;result.limiterRatio=ratio;result.packedFaceAlpha=alpha;
+			result.accepted=accepted;result.failureBitmap=failure;
+			result.actualMetalAllocationBytes=[lowState allocatedSize]+[ratio allocatedSize]+
+				[alpha allocatedSize]+[accepted allocatedSize]+[failure allocatedSize];
+			result.commandCommitCount=1u;if(error)error->clear();return true;
+		}
+	}
+
+	bool EvaluateFireProductionScalarFCTMetalStageDiagnostic(
+		const FireProductionScalarFCTRequest& firstStage,
+		const FireProductionScalarFCTRequest& secondStage,
+		FireProductionScalarFCTMetalStageDiagnosticResult& result,std::string* error )
+	{
+		result=FireProductionScalarFCTMetalStageDiagnosticResult();
+		try {
+			FireProductionScalarFCTFluxPair firstCPU,secondCPU,averagedCPU;
+			if(!BuildFireProductionScalarFCTFluxPairCPU(firstStage,firstCPU,error)||
+				!BuildFireProductionScalarFCTFluxPairCPU(secondStage,secondCPU,error)||
+				!AverageFireProductionScalarFCTFluxPairsCPU(firstCPU,secondCPU,averagedCPU,error))
+				return false;
+			SingleStageFCTMetalContext& context=SingleStageFCTContext();
+			if(!context.Valid()){if(error)*error=context.error;return false;}
+			const std::size_t cells=firstStage.shape.CellCount();
+			if(secondStage.shape.nx!=firstStage.shape.nx||
+				secondStage.shape.ny!=firstStage.shape.ny||
+				secondStage.shape.nz!=firstStage.shape.nz||
+				secondStage.shape.cellWidthM!=firstStage.shape.cellWidthM){
+				if(error)*error="production scalar FCT Metal diagnostic stage shape differs";
+				return false;
+			}
+			@autoreleasepool {
+				auto stage=[&](const void* data,const std::size_t bytes){return
+					[context.device newBufferWithBytes:data length:bytes
+						options:MTLResourceStorageModeShared];};
+				const std::size_t cellBytes=9u*cells*sizeof(float);
+				id<MTLBuffer> firstQ=stage(firstStage.beginning.data(),cellBytes);
+				id<MTLBuffer> secondQ=stage(secondStage.beginning.data(),cellBytes);
+				id<MTLBuffer> source=stage(firstStage.sourceDelta.data(),cellBytes);
+				std::array<id<MTLBuffer>,3> firstVelocity,secondVelocity;
+				for(unsigned int axis=0u;axis<3u;++axis){const std::size_t bytes=
+					FireProductionProjectionFaceCount(firstStage.shape,axis)*sizeof(float);
+					firstVelocity[axis]=stage(firstStage.frozenVelocityMPerS[axis].data(),bytes);
+					secondVelocity[axis]=stage(secondStage.frozenVelocityMPerS[axis].data(),bytes);}
+				if(!firstQ||!secondQ||!source){
+					if(error)*error="production scalar FCT Metal diagnostic input allocation failed";
+					return false;
+				}
+				for(unsigned int axis=0u;axis<3u;++axis)
+					if(!firstVelocity[axis]||!secondVelocity[axis]){
+						if(error)*error=
+							"production scalar FCT Metal diagnostic velocity allocation failed";
+						return false;
+					}
+				FireProductionMetalScalarFCTFluxPairDiagnostic firstPair,secondPair,averagedPair;
+				FireProductionMetalScalarFCTSolveDiagnostic firstSolve,secondSolve,averagedSolve;
+				if(!BuildFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+					firstStage,firstQ,firstVelocity,firstPair,error)||
+					!BuildFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+						secondStage,secondQ,secondVelocity,secondPair,error)||
+					!AverageFireProductionScalarFCTFluxPairsMetalResidentDiagnostic(
+						firstPair,secondPair,averagedPair,error)||
+					!SolveFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+						firstStage,firstQ,source,firstPair,firstSolve,error)||
+					!SolveFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+						firstStage,firstQ,source,secondPair,secondSolve,error)||
+					!SolveFireProductionScalarFCTFluxPairMetalResidentDiagnostic(
+						firstStage,firstQ,source,averagedPair,averagedSolve,error))return false;
+				const std::size_t allFaces=firstPair.packedFaceOffset[2]+
+					FireProductionProjectionFaceCount(firstStage.shape,2u);
+				const std::size_t fluxValues=9u*allFaces;
+				const std::size_t publishedFloatValues=6u*fluxValues+
+					3u*(29u*cells+allFaces);
+				const std::size_t publishedBytes=publishedFloatValues*sizeof(float)+
+					3u*sizeof(std::uint32_t);
+				id<MTLBuffer> terminal=[context.device newBufferWithLength:publishedBytes
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!terminal||!blit){
+					if(error)*error=
+						"production scalar FCT Metal diagnostic publication allocation failed";
+					return false;
+				}
+				std::size_t offset=0u;
+				auto publish=[&](id<MTLBuffer> buffer,const std::size_t bytes){
+					[blit copyFromBuffer:buffer sourceOffset:0 toBuffer:terminal
+						destinationOffset:offset size:bytes];offset+=bytes;};
+				const std::array<FireProductionMetalScalarFCTFluxPairDiagnostic*,3> pairs={{
+					&firstPair,&secondPair,&averagedPair}};
+				for(const auto* pair:pairs){publish(pair->lowFlux,fluxValues*sizeof(float));
+					publish(pair->fluxDelta,fluxValues*sizeof(float));}
+				const std::array<FireProductionMetalScalarFCTSolveDiagnostic*,3> solves={{
+					&firstSolve,&secondSolve,&averagedSolve}};
+				for(const auto* solve:solves){publish(solve->lowState,9u*cells*sizeof(float));
+					publish(solve->limiterRatio,11u*cells*sizeof(float));
+					publish(solve->packedFaceAlpha,allFaces*sizeof(float));
+					publish(solve->accepted,9u*cells*sizeof(float));
+					publish(solve->failureBitmap,sizeof(std::uint32_t));}
+				[blit endEncoding];CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if([command status]!=MTLCommandBufferStatusCompleted||offset!=publishedBytes){
+					if(error)*error="production scalar FCT Metal diagnostic publication failed";
+					return false;
+				}
+				const unsigned char* bytes=static_cast<const unsigned char*>(
+					ReadTrackedMetalBuffer(terminal));
+				if(!bytes){
+					if(error)*error="production scalar FCT Metal diagnostic payload is unavailable";
+					return false;
+				}
+				offset=0u;
+				auto readFloats=[&](std::vector<float>& output,const std::size_t count){
+					const float* values=reinterpret_cast<const float*>(bytes+offset);
+					output.assign(values,values+count);offset+=count*sizeof(float);};
+				std::array<FireProductionScalarFCTFluxPair*,3> publishedPairs={{
+					&result.firstFluxPair,&result.secondFluxPair,&result.averagedFluxPair}};
+				for(auto* pair:publishedPairs){pair->shape=firstStage.shape;
+					pair->timeStepS=firstStage.timeStepS;pair->boundary=firstStage.boundary;
+					pair->packedFaceOffset=firstPair.packedFaceOffset;
+					readFloats(pair->lowFlux,fluxValues);readFloats(pair->fluxDelta,fluxValues);}
+				std::array<FireProductionScalarFCTMetalAcceptanceStageResult*,3> publishedSolves={{
+					&result.firstSolve,&result.secondSolve,&result.averagedSolve}};
+				for(std::size_t solveIndex=0u;solveIndex<publishedSolves.size();++solveIndex){
+					FireProductionScalarFCTMetalAcceptanceStageResult& solve=
+						*publishedSolves[solveIndex];
+					solve.packedFaceOffset=firstPair.packedFaceOffset;
+					solve.lowFlux=publishedPairs[solveIndex]->lowFlux;
+					solve.fluxDelta=publishedPairs[solveIndex]->fluxDelta;
+					readFloats(solve.lowState,9u*cells);readFloats(solve.limiterRatio,11u*cells);
+					std::vector<float> alpha;readFloats(alpha,allFaces);
+					for(unsigned int axis=0u;axis<3u;++axis){const std::size_t count=
+						FireProductionProjectionFaceCount(firstStage.shape,axis);
+						solve.sharedFaceAlpha[axis].assign(alpha.begin()+firstPair.packedFaceOffset[axis],
+							alpha.begin()+firstPair.packedFaceOffset[axis]+count);}
+					readFloats(solve.accepted,9u*cells);
+					std::memcpy(&result.failureBitmap[solveIndex],bytes+offset,
+						sizeof(std::uint32_t));offset+=sizeof(std::uint32_t);
+				}
+				if(offset!=publishedBytes){
+					if(error)*error="production scalar FCT Metal diagnostic payload shape is invalid";
+					return false;
+				}
+				result.commandCommitCount=firstPair.commandCommitCount+
+					secondPair.commandCommitCount+averagedPair.commandCommitCount+
+					firstSolve.commandCommitCount+secondSolve.commandCommitCount+
+					averagedSolve.commandCommitCount+1u;
+				if(error)error->clear();return true;
+			}
+		} catch(const std::bad_alloc&){result=FireProductionScalarFCTMetalStageDiagnosticResult();
+			if(error)*error="production scalar FCT Metal diagnostic allocation failed";return false;}
 	}
 
 	bool SealFireProductionSingleStageFCTBoundaryState(

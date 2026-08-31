@@ -4853,6 +4853,79 @@ the corrected operator.  Tier-10 full
 window, spectrum, empirical rows, animation, and capstone report remain
 blocked pending an owner ruling on this residual compatible-flux/tail coupling.
 
+### 7.56p Tier-8 deliverable stop and projected-Heun bootstrap (r183)
+
+Track A began immediately from the analytic tier-8 state with the pinned
+`0.0625 s` frame cadence and the full `5 t_ft` discard plus statistics window.
+It did not reach the first statistics sample and therefore produces neither a
+spectrum nor an animation.  The run reached accepted step 1,980 at
+`2.70156268 s`; its smallest logged step was `5.57543046e-7 s`, its peak heat-
+release probe was `1.09938804e10 W/m3`, and 819 hard-bound candidates were
+rejected.  A separately retained step-2,149 checkpoint at
+`2.703921805823768 s` localizes the collapse: maximum physical velocity is
+`429.0181884765625 m/s` on the vertical face `(34,34,45)`, the advective CFL
+candidate is `3.56548008e-5 s`, and realized heat release is already zero.
+The tier-8 preview remains honestly labelled and rows remain unclaimed; a
+full-window spectrum or movie cannot be formed from zero frames.
+
+Track B closes the form-level-graft route.  The tokenless single-stage FCT
+diagnostic does execute the compatible flux, but profiling shows about
+`2.50--2.53 s` resident device time and `3.09--3.17 s` completed-call wall time
+for each of its first two tier-10 steps.  More importantly, its force/FCT/
+projection ordering is not the §3.7 projected-Heun tableau.  It is retained as
+the old-operator RED only and is not eligible for production acceptance.
+During that diagnostic, source staging exposed an r60 ownership bug: stored
+species may contain affine-envelope negative roundoff even though the physical
+mixture is admissible.  Sensible energy is now evaluated with the signed
+mixture routine at that seam; the stored constituents are not clipped or
+rewritten.
+
+r183 establishes the independently testable prerequisites for the faithful
+owner:
+
+- scalar FCT is split into source-free flux-pair construction, pair averaging,
+  and an acceptance solve that applies the source exactly once; the averaged
+  pair obtains a fresh shared `alpha_H` rather than averaging stage alphas;
+- a resident Metal stage-RHS evaluator publishes instantaneous buoyancy,
+  Vreman-stress, phase-source, and combined momentum rates without multiplying
+  by `Delta t`, committing its caller-owned command, or staging a full grid;
+- the projection primitive can consume a sealed R0/R1 pressure-open class and
+  a separately sealed integrated Bernoulli head, then derive the R2 endpoint
+  class from corrected velocity while retaining the seed only inside the
+  explicit deadband; and
+- every added caller-owned or Private buffer is included in the re-derived
+  two-GiB certificates.  The focused projection and solver suites, the staged
+  Metal FCT selector, strict mirror generation check, and exact resource/source
+  guards pass.
+
+The first conservation prerequisite beyond those seams is also present, but
+only at the authority it has earned.  A standalone CPU producer builds the
+separately retained physical nonadvective mass/energy tuple `f_N` and gas
+diffusion subflux `J_g` from fixed binary32 `Q,T,D,k,u`.  It evaluates the
+certified `N_C N_C^T` mass projection in binary64 against the record's
+independent forward-error envelope, then records a separate binary32
+publication bound and recomputes `J_g` from the published component bytes.
+Periodic seams are byte-canonical; walls are exact zero; pressure-open inflow
+uses the sealed class and half-cell ambient gradient while sealed outflow is
+zero-normal-gradient.  The exact standalone peak `4(12C+11F)+B` is denied
+before payload access above two GiB.  Temperatures are restricted to the
+PhysicalV1 record's inclusive `[300,5000] K` domain.  Metal deliberately fails
+closed for this producer: its fp64 identity and publication contract has not
+yet been ported.
+
+These are bootstrap seams, not the completed operator.  There is no ordinary
+production projected-Heun activation in r183, no coupled R0/R1/R2 Picard/cycle
+owner, no `Phi_g` retention/FCT composition, no packet-derived `S_div` or
+accepted-state EOS inversion seam, no caller-command projection/FCT encoder,
+and no stage-averaged momentum commit yet.  Consequently the r182 onset
+criterion is not re-run, r170 and readmission are not re-derived, and tier-10
+full-window, spectrum, empirical rows, animation, and report remain blocked.
+The next admissible implementation steps are `Phi_g` retention and composition,
+then packet/`S_div`, EOS, and caller-command seams; only after those are green
+can the complete stage schedule be wired and compared kernel-by-kernel with the
+oracle.  Promoting the single-stage diagnostic would misrepresent a time
+integrator as §3.7 conformance.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
