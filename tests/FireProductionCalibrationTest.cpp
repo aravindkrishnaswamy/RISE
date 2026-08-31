@@ -4531,7 +4531,7 @@ int main()
 	const std::size_t openX0=productionFaceIndex(openFCT32.shape,0u,0u,3u,1u);
 	Check(openFCTExact&&openFCTResult.advectionRateKGPerM2S2[0][openX1]==9.0f&&
 		openFCTResult.advectionRateKGPerM2S2[0][openX2]==21.5f&&
-		openFCTResult.advectionRateKGPerM2S2[0][openX4]==80.0f&&
+		openFCTResult.advectionRateKGPerM2S2[0][openX4]==40.0f&&
 		openFCTResult.advectionRateKGPerM2S2[0][openX0]==0.0f&&
 		!std::signbit(openFCTResult.advectionRateKGPerM2S2[0][openX0]),
 		"compatible FCT open/wall operator is word-exact to the live oracle and analytic sentinels");
@@ -4880,6 +4880,7 @@ int main()
 	ppmMutation.boundary=RISE::FireProductionRemapPeriodic;
 	ppmMutation.values.assign(scalarPattern,scalarPattern+4u);
 	ppmMutation.faceVelocityMPerS.assign(5u,1.0f);
+	ppmMutation.ambientValues.assign(1u,scalarPattern[0]);
 	RISE::FireProductionRemapResult ppmMutationResult;
 	const bool ppmMutationOK=RISE::RemapFireProductionCPU(
 		ppmMutation,ppmMutationResult,&error);

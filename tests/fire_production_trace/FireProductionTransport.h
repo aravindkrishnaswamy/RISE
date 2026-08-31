@@ -104,6 +104,91 @@ namespace RISEFireProductionTrace
 			deviceElapsedMS(0.0) {}
 	};
 
+	//! Pure Section 3.7 compatible-flux operator input.  Low and high are the
+	//! advective gas-mass flux pair on primal MAC faces.  Physical gas flux is
+	//! optional per axis (an empty vector is exact +0).  The shared face alpha
+	//! and velocity are frozen operands; this seam computes no evolving state.
+	struct FireProductionCompatibleFCTMomentumRequest
+	{
+		FireProductionProjectionShape shape;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> lowGasFluxKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> highGasFluxKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> physicalGasFluxKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> sharedFaceAlpha;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> frozenVelocityMPerS;
+
+		FireProductionCompatibleFCTMomentumRequest()
+		{
+			boundary.fill(FireProductionProjectionWall);
+		}
+	};
+
+	struct FireProductionCompatibleFCTMomentumResult
+	{
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> acceptedGasFluxKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> advectionRateKGPerM2S2;
+	};
+
+	//! Strict-binary32 owner surface for the four scalar stages used by the
+	//! isolated full-FCT diagnostic: donor/MC pair, r60 shared alpha, source-
+	//! inclusive scalar commit, and the periodic D_i I_i commuting witness.
+	//! Cell tuples are component-major [9][cells].  Flux tuples are
+	//! component-major over the packed x/y/z primal faces.
+	struct FireProductionScalarFCTRequest
+	{
+		FireProductionProjectionShape shape;
+		FireProductionRoundoffTrace::TraceFloat timeStepS;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> beginning;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> sourceDelta;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> frozenVelocityMPerS;
+		std::array<FireProductionRoundoffTrace::TraceFloat,9> ambient;
+		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		std::size_t nullity;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> nullspaceBasis;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> coordinateProjector;
+		std::array<FireProductionRoundoffTrace::TraceFloat,14> enthalpyBoundsJPerKG;
+		FireProductionRoundoffTrace::TraceFloat feasibilityFactor;
+		FireProductionRoundoffTrace::TraceFloat assemblyReserveFactor;
+
+		FireProductionScalarFCTRequest() : timeStepS(0.0f),nullity(0u),
+			feasibilityFactor(0.0f),assemblyReserveFactor(0.0f)
+		{
+			boundary.fill(FireProductionProjectionWall);ambient.fill(0.0f);
+			enthalpyBoundsJPerKG.fill(0.0f);
+		}
+	};
+
+	struct FireProductionScalarFCTResult
+	{
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> lowFlux;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> fluxDelta;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> lowState;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> limiterRatio;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> sharedFaceAlpha;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> accepted;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> acceptedGasFluxKGPerM2S;
+		FireProductionRoundoffTrace::TraceFloat maximumCommutingResidualKGPerM3;
+		FireProductionRoundoffTrace::TraceFloat commutingIdentityScaleKGPerM3;
+		FireProductionRoundoffTrace::TraceFloat commutingIdentityRestrictedAcceptedKGPerM3;
+		FireProductionRoundoffTrace::TraceFloat commutingIdentityAdvancedKGPerM3;
+		unsigned int commutingIdentityComponent;
+		std::size_t commutingIdentityFace;
+		bool commutingIdentityAvailable;
+
+		FireProductionScalarFCTResult() : maximumCommutingResidualKGPerM3(0.0f),
+			commutingIdentityScaleKGPerM3(0.0f),
+			commutingIdentityRestrictedAcceptedKGPerM3(0.0f),
+			commutingIdentityAdvancedKGPerM3(0.0f),commutingIdentityComponent(0u),
+			commutingIdentityFace(0u),
+			commutingIdentityAvailable(false)
+		{
+			packedFaceOffset.fill(0u);
+		}
+	};
+
 	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
 	using FireProductionPeriodicDualMomentumResult=FireProductionDualMomentumResult;
 
@@ -260,6 +345,19 @@ namespace RISEFireProductionTrace
 		const FireProductionDualMomentumRequest& request,
 		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,5>& acceptedGasMassDoseKGPerM2,
 		FireProductionDualMomentumResult& result,
+		std::string* error=0 );
+
+	//! Evaluates K_i=I_i(low+alpha*(high-low)+physical)*mean(u) and then D_i K_i.
+	//! All-periodic and all-nonperiodic topologies are supported.  Hybrid
+	//! periodic/open topology is rejected until it has an authoritative oracle.
+	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,
+		std::string* error=0 );
+
+	bool EvaluateFireProductionScalarFCTCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTResult& result,
 		std::string* error=0 );
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The

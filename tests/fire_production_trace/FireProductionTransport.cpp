@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <new>
 
@@ -394,6 +395,30 @@ namespace RISEFireProductionTrace
 			if( axis==2u ) for( std::size_t y=0u;y<shape.ny;++y )
 				for( std::size_t x=0u;x<shape.nx;++x )
 					if( !SamePeriodicFaceValue(values[FaceIndex(shape,axis,x,y,0u)],
+						values[FaceIndex(shape,axis,x,y,shape.nz)]) ) return false;
+			return true;
+		}
+
+		bool PeriodicFaceSeamBitEqual( const FireProductionProjectionShape& shape,
+			const std::vector<FireProductionRoundoffTrace::TraceFloat>& values, unsigned int axis )
+		{
+			auto equal=[]( const FireProductionRoundoffTrace::TraceFloat first, const FireProductionRoundoffTrace::TraceFloat second ) {
+				std::uint32_t firstBits=0u,secondBits=0u;
+				std::memcpy(&firstBits,&first,sizeof(firstBits));
+				std::memcpy(&secondBits,&second,sizeof(secondBits));
+				return firstBits==secondBits;
+			};
+			if( axis==0u ) for( std::size_t z=0u;z<shape.nz;++z )
+				for( std::size_t y=0u;y<shape.ny;++y )
+					if( !equal(values[FaceIndex(shape,axis,0u,y,z)],
+						values[FaceIndex(shape,axis,shape.nx,y,z)]) ) return false;
+			if( axis==1u ) for( std::size_t z=0u;z<shape.nz;++z )
+				for( std::size_t x=0u;x<shape.nx;++x )
+					if( !equal(values[FaceIndex(shape,axis,x,0u,z)],
+						values[FaceIndex(shape,axis,x,shape.ny,z)]) ) return false;
+			if( axis==2u ) for( std::size_t y=0u;y<shape.ny;++y )
+				for( std::size_t x=0u;x<shape.nx;++x )
+					if( !equal(values[FaceIndex(shape,axis,x,y,0u)],
 						values[FaceIndex(shape,axis,x,y,shape.nz)]) ) return false;
 			return true;
 		}
@@ -1366,5 +1391,683 @@ namespace RISEFireProductionTrace
 			FailWithoutThrow(error,"compatible dual momentum allocation failed");
 			return false;
 		}
+	}
+
+	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result, std::string* error )
+	{
+		result=FireProductionCompatibleFCTMomentumResult();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			if( shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!std::isfinite(1.0f/shape.cellWidthM) )
+				return Fail(error,"compatible FCT momentum shape is invalid");
+			bool anyPeriodic=false,allPeriodic=true;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if( lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic)) )
+					return Fail(error,"compatible FCT momentum boundary pairing is invalid");
+				const bool periodic=lower==FireProductionProjectionPeriodic;
+				anyPeriodic=anyPeriodic||periodic;allPeriodic=allPeriodic&&periodic;
+			}
+			if( anyPeriodic&&!allPeriodic ) return Fail(error,
+				"compatible FCT momentum hybrid periodic topology has no authoritative oracle");
+			std::uint64_t allFaces=0u;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if( request.lowGasFluxKGPerM2S[axis].size()!=faces||
+					request.highGasFluxKGPerM2S[axis].size()!=faces||
+					request.sharedFaceAlpha[axis].size()!=faces||
+					request.frozenVelocityMPerS[axis].size()!=faces||
+					(!request.physicalGasFluxKGPerM2S[axis].empty()&&
+					 request.physicalGasFluxKGPerM2S[axis].size()!=faces) )
+					return Fail(error,"compatible FCT momentum face shape is invalid");
+				for( std::size_t face=0u;face<faces;++face ) {
+					const FireProductionRoundoffTrace::TraceFloat low=request.lowGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat high=request.highGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat alpha=request.sharedFaceAlpha[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat velocity=request.frozenVelocityMPerS[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
+						request.physicalGasFluxKGPerM2S[axis][face];
+					if( !std::isfinite(low)||!std::isfinite(high)||!std::isfinite(physical)||
+						!std::isfinite(alpha)||alpha<0.0f||alpha>1.0f||
+						!std::isfinite(velocity) ) return Fail(error,
+						"compatible FCT momentum face value is invalid");
+				}
+				if( allPeriodic&&(!PeriodicFaceSeamBitEqual(shape,
+					request.lowGasFluxKGPerM2S[axis],axis)||
+					!PeriodicFaceSeamBitEqual(shape,request.highGasFluxKGPerM2S[axis],axis)||
+					!PeriodicFaceSeamBitEqual(shape,request.sharedFaceAlpha[axis],axis)||
+					!PeriodicFaceSeamBitEqual(shape,request.frozenVelocityMPerS[axis],axis)||
+					(!request.physicalGasFluxKGPerM2S[axis].empty()&&
+					 !PeriodicFaceSeamBitEqual(shape,
+						request.physicalGasFluxKGPerM2S[axis],axis))) )
+					return Fail(error,"compatible FCT momentum periodic seam is invalid");
+				allFaces+=faces;
+			}
+			std::uint64_t outputBytes=0u;
+			if( !AddBytes(allFaces,2u*sizeof(float),outputBytes)||
+				outputBytes>(std::uint64_t(2u)<<30u) ) return Fail(error,
+				"compatible FCT momentum output exceeds two GiB");
+
+			FireProductionCompatibleFCTMomentumResult computed;
+			for( unsigned int axis=0u;axis<3u;++axis ) {
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				computed.acceptedGasFluxKGPerM2S[axis].resize(faces);
+				for( std::size_t face=0u;face<faces;++face ) {
+					const FireProductionRoundoffTrace::TraceFloat low=request.lowGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat high=request.highGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat physical=request.physicalGasFluxKGPerM2S[axis].empty()?0.0f:
+						request.physicalGasFluxKGPerM2S[axis][face];
+					const FireProductionRoundoffTrace::TraceFloat accepted=low+request.sharedFaceAlpha[axis][face]*(high-low)+
+						physical;
+					if( !std::isfinite(accepted) ) return Fail(error,
+						"compatible FCT momentum accepted flux is nonfinite");
+					computed.acceptedGasFluxKGPerM2S[axis][face]=accepted;
+				}
+			}
+
+			if( allPeriodic ) {
+				auto previousCoordinate=[]( const std::size_t coordinate,
+					const std::size_t extent ) {return coordinate?coordinate-1u:extent-1u;};
+				auto nextCoordinate=[]( const std::size_t coordinate,
+					const std::size_t extent ) {return coordinate+1u==extent?0u:coordinate+1u;};
+				for( unsigned int component=0u;component<3u;++component ) {
+					computed.advectionRateKGPerM2S2[component].assign(
+						FireProductionProjectionFaceCount(shape,component),0.0f);
+					for( std::size_t z=0u;z<shape.nz;++z )
+						for( std::size_t y=0u;y<shape.ny;++y )
+							for( std::size_t x=0u;x<shape.nx;++x ) {
+								const std::size_t componentFace=FaceIndex(shape,component,x,y,z);
+								FireProductionRoundoffTrace::TraceFloat divergence=0.0f;
+								for( unsigned int derivative=0u;derivative<3u;++derivative ) {
+									std::size_t ncx=x,ncy=y,ncz=z,pdx=x,pdy=y,pdz=z,
+										pcx=x,pcy=y,pcz=z,ndx=x,ndy=y,ndz=z;
+									const std::size_t componentCoordinate=AxisCoordinate(component,x,y,z);
+									const std::size_t derivativeCoordinate=AxisCoordinate(derivative,x,y,z);
+									const std::size_t nextDerivative=nextCoordinate(derivativeCoordinate,
+										AxisCoordinateExtent(shape,derivative));
+									SetAxisCoordinate(component,nextCoordinate(componentCoordinate,
+										AxisCoordinateExtent(shape,component)),ncx,ncy,ncz);
+									SetAxisCoordinate(derivative,previousCoordinate(derivativeCoordinate,
+										AxisCoordinateExtent(shape,derivative)),pdx,pdy,pdz);
+									SetAxisCoordinate(component,previousCoordinate(componentCoordinate,
+										AxisCoordinateExtent(shape,component)),pcx,pcy,pcz);
+									SetAxisCoordinate(derivative,nextDerivative,ndx,ndy,ndz);
+									auto massFlux=[&]( std::size_t fx, std::size_t fy,
+										std::size_t fz ) {return computed.acceptedGasFluxKGPerM2S[
+										derivative][FaceIndex(shape,derivative,fx,fy,fz)];};
+									FireProductionRoundoffTrace::TraceFloat upper=0.0f,lower=0.0f;
+									if( derivative==component ) {
+										upper=0.25f*(massFlux(x,y,z)+massFlux(ncx,ncy,ncz))*
+											(request.frozenVelocityMPerS[component][componentFace]+
+											 request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,ncx,ncy,ncz)]);
+										lower=0.25f*(massFlux(pdx,pdy,pdz)+massFlux(x,y,z))*
+											(request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,pdx,pdy,pdz)]+
+											 request.frozenVelocityMPerS[component][componentFace]);
+									} else {
+										std::size_t pcux=pcx,pcuy=pcy,pcuz=pcz,
+											cux=x,cuy=y,cuz=z;
+										SetAxisCoordinate(derivative,nextDerivative,pcux,pcuy,pcuz);
+										SetAxisCoordinate(derivative,nextDerivative,cux,cuy,cuz);
+										upper=0.25f*(massFlux(pcux,pcuy,pcuz)+massFlux(cux,cuy,cuz))*
+											(request.frozenVelocityMPerS[component][componentFace]+
+											 request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,ndx,ndy,ndz)]);
+										lower=0.25f*(massFlux(pcx,pcy,pcz)+massFlux(x,y,z))*
+											(request.frozenVelocityMPerS[component][FaceIndex(shape,
+											 component,pdx,pdy,pdz)]+
+											 request.frozenVelocityMPerS[component][componentFace]);
+									}
+									divergence+=(upper-lower)/shape.cellWidthM;
+								}
+								if( !std::isfinite(divergence) ) return Fail(error,
+									"compatible FCT momentum periodic rate is nonfinite");
+								computed.advectionRateKGPerM2S2[component][componentFace]=divergence;
+							}
+					const std::size_t firstEnd=component==0u?shape.ny:shape.nx;
+					const std::size_t secondEnd=component==2u?shape.ny:shape.nz;
+					for( std::size_t second=0u;second<secondEnd;++second )
+						for( std::size_t first=0u;first<firstEnd;++first ) {
+							std::size_t lowX=component==0u?0u:first;
+							std::size_t lowY=component==0u?first:(component==1u?0u:second);
+							std::size_t lowZ=component==2u?0u:second;
+							std::size_t highX=lowX,highY=lowY,highZ=lowZ;
+							SetAxisCoordinate(component,AxisCoordinateExtent(shape,component),
+								highX,highY,highZ);
+							computed.advectionRateKGPerM2S2[component][FaceIndex(shape,component,
+								highX,highY,highZ)]=computed.advectionRateKGPerM2S2[component][
+								FaceIndex(shape,component,lowX,lowY,lowZ)];
+						}
+				}
+			} else {
+				for( unsigned int component=0u;component<3u;++component ) {
+					computed.advectionRateKGPerM2S2[component].assign(
+						FireProductionProjectionFaceCount(shape,component),0.0f);
+					const std::size_t normalCount=AxisCoordinateExtent(shape,component)+1u;
+					const std::size_t firstCount=component==0u?shape.ny:shape.nx;
+					const std::size_t secondCount=component==2u?shape.ny:shape.nz;
+					for( std::size_t second=0u;second<secondCount;++second )
+						for( std::size_t first=0u;first<firstCount;++first )
+							for( std::size_t normal=0u;normal<normalCount;++normal ) {
+								std::size_t x=0u,y=0u,z=0u;
+								if( component==0u ){x=normal;y=first;z=second;}
+								if( component==1u ){x=first;y=normal;z=second;}
+								if( component==2u ){x=first;y=second;z=normal;}
+								const std::size_t componentFace=FaceIndex(shape,component,x,y,z);
+								FireProductionRoundoffTrace::TraceFloat divergence=0.0f;
+								for( unsigned int derivative=0u;derivative<3u;++derivative ) {
+									if( derivative==component ) {
+										const std::size_t previousNormal=normal?normal-1u:normal;
+										const std::size_t nextNormal=normal+1u<normalCount?
+											normal+1u:normal;
+										std::size_t px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+										SetAxisCoordinate(component,previousNormal,px,py,pz);
+										SetAxisCoordinate(component,nextNormal,nx,ny,nz);
+										const std::size_t previousFace=FaceIndex(shape,component,px,py,pz);
+										const std::size_t nextFace=FaceIndex(shape,component,nx,ny,nz);
+										const FireProductionRoundoffTrace::TraceFloat upper=0.25f*(
+											computed.acceptedGasFluxKGPerM2S[component][componentFace]+
+											computed.acceptedGasFluxKGPerM2S[component][nextFace])*(
+											request.frozenVelocityMPerS[component][componentFace]+
+											request.frozenVelocityMPerS[component][nextFace]);
+										const FireProductionRoundoffTrace::TraceFloat lower=0.25f*(
+											computed.acceptedGasFluxKGPerM2S[component][previousFace]+
+											computed.acceptedGasFluxKGPerM2S[component][componentFace])*(
+											request.frozenVelocityMPerS[component][previousFace]+
+											request.frozenVelocityMPerS[component][componentFace]);
+										const FireProductionRoundoffTrace::TraceFloat normalScale=normal==0u||normal+1u==normalCount?
+											2.0f:1.0f;
+										divergence+=normalScale*(upper-lower)/shape.cellWidthM;
+									} else {
+										const std::size_t derivativeExtent=AxisCoordinateExtent(shape,derivative);
+										const std::size_t derivativePosition=AxisCoordinate(derivative,x,y,z);
+										const std::size_t componentExtent=AxisCoordinateExtent(shape,component);
+										const std::size_t componentLower=normal?normal-1u:0u;
+										const std::size_t componentUpper=normal<componentExtent?
+											normal:componentExtent-1u;
+										auto derivativeFlux=[&]( const std::size_t componentCell,
+											const std::size_t derivativeBoundary ) {
+											std::size_t fx=x,fy=y,fz=z;
+											SetAxisCoordinate(component,componentCell,fx,fy,fz);
+											SetAxisCoordinate(derivative,derivativeBoundary,fx,fy,fz);
+											return computed.acceptedGasFluxKGPerM2S[derivative][
+												FaceIndex(shape,derivative,fx,fy,fz)];
+										};
+										auto shiftedVelocity=[&]( const bool upper ) {
+											std::size_t vx=x,vy=y,vz=z;
+											const std::size_t shifted=upper?std::min(derivativePosition+1u,
+												derivativeExtent-1u):(derivativePosition?
+												derivativePosition-1u:0u);
+											SetAxisCoordinate(derivative,shifted,vx,vy,vz);
+											return request.frozenVelocityMPerS[component][
+												FaceIndex(shape,component,vx,vy,vz)];
+										};
+										FireProductionRoundoffTrace::TraceFloat upper=0.25f*(derivativeFlux(componentLower,
+											derivativePosition+1u)+derivativeFlux(componentUpper,
+											derivativePosition+1u))*(
+											request.frozenVelocityMPerS[component][componentFace]+
+											shiftedVelocity(true));
+										FireProductionRoundoffTrace::TraceFloat lower=0.25f*(derivativeFlux(componentLower,
+											derivativePosition)+derivativeFlux(componentUpper,
+											derivativePosition))*(shiftedVelocity(false)+
+											request.frozenVelocityMPerS[component][componentFace]);
+										if( derivativePosition==0u&&request.boundary[2u*derivative]!=
+											FireProductionProjectionPressureOpen ) lower=0.0f;
+										if( derivativePosition+1u==derivativeExtent&&
+											request.boundary[2u*derivative+1u]!=
+											FireProductionProjectionPressureOpen ) upper=0.0f;
+										divergence+=(upper-lower)/shape.cellWidthM;
+									}
+								}
+								const bool lowerBoundary=normal==0u;
+								const bool upperBoundary=normal+1u==normalCount;
+								if( (lowerBoundary||upperBoundary)&&request.boundary[
+									2u*component+(upperBoundary?1u:0u)]!=
+									FireProductionProjectionPressureOpen ) divergence=0.0f;
+								else if( lowerBoundary||upperBoundary ) divergence*=0.5f;
+								if( !std::isfinite(divergence) ) return Fail(error,
+									"compatible FCT momentum open rate is nonfinite");
+								computed.advectionRateKGPerM2S2[component][componentFace]=divergence;
+							}
+				}
+			}
+			result=std::move(computed);
+			if( error ) error->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionCompatibleFCTMomentumResult();
+			FailWithoutThrow(error,"compatible FCT momentum allocation failed");
+			return false;
+		}
+	}
+
+	bool EvaluateFireProductionScalarFCTCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTResult& result, std::string* error )
+	{
+		result=FireProductionScalarFCTResult();
+		try {
+			const FireProductionProjectionShape& shape=request.shape;
+			constexpr std::size_t components=9u,inequalities=11u;
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+				!std::isfinite(shape.cellWidthM)||!std::isfinite(1.0f/shape.cellWidthM)||
+				!(request.timeStepS>0.0f)||!std::isfinite(request.timeStepS)||
+				request.nullity==0u||request.nullity>8u||
+				request.nullspaceBasis.size()!=8u*request.nullity||
+				request.coordinateProjector.size()!=request.nullity*request.nullity||
+				!std::isfinite(request.feasibilityFactor)||request.feasibilityFactor<=0.0f||
+				!std::isfinite(request.assemblyReserveFactor)||
+				request.assemblyReserveFactor<0.0f||
+				request.assemblyReserveFactor>request.feasibilityFactor)
+				return Fail(error,"scalar FCT shape, schedule, or certificate is invalid");
+			const std::size_t cells=shape.CellCount();
+			if(request.beginning.size()!=components*cells||
+				request.sourceDelta.size()!=components*cells)
+				return Fail(error,"scalar FCT cell tuple shape is invalid");
+			auto sideFaceCount=[&](const unsigned int side){return side<2u?shape.ny*shape.nz:
+				(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);};
+			bool allPeriodic=true;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))) return Fail(error,
+					"scalar FCT boundary pairing is invalid");
+				allPeriodic=allPeriodic&&lower==FireProductionProjectionPeriodic;
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if(request.frozenVelocityMPerS[axis].size()!=faces)
+					return Fail(error,"scalar FCT velocity shape is invalid");
+				if(lower==FireProductionProjectionPeriodic&&
+					!PeriodicFaceSeamBitEqual(shape,request.frozenVelocityMPerS[axis],axis))
+					return Fail(error,"scalar FCT periodic velocity seam is invalid");
+			}
+			for(unsigned int side=0u;side<6u;++side){
+				if(request.pressureOpenInflow[side].size()!=sideFaceCount(side))
+					return Fail(error,"scalar FCT inflow shape is invalid");
+				for(const unsigned char value:request.pressureOpenInflow[side]){
+					if(value>1u)return Fail(error,"scalar FCT inflow value is invalid");
+					if(request.boundary[side]!=FireProductionProjectionPressureOpen&&value!=0u)
+						return Fail(error,"scalar FCT inactive inflow identity is noncanonical");
+				}
+			}
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.beginning)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT beginning is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.sourceDelta)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT source is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.ambient)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT ambient tuple is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.nullspaceBasis)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT nullspace basis is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.coordinateProjector)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT coordinate projector is nonfinite");
+			for(const FireProductionRoundoffTrace::TraceFloat value:request.enthalpyBoundsJPerKG)if(!std::isfinite(value))
+				return Fail(error,"scalar FCT enthalpy bound is nonfinite");
+
+			FireProductionScalarFCTResult computed;
+			computed.packedFaceOffset[0]=0u;
+			computed.packedFaceOffset[1]=FireProductionProjectionFaceCount(shape,0u);
+			computed.packedFaceOffset[2]=computed.packedFaceOffset[1]+
+				FireProductionProjectionFaceCount(shape,1u);
+			const std::size_t allFaces=computed.packedFaceOffset[2]+
+				FireProductionProjectionFaceCount(shape,2u);
+			std::uint64_t outputBytes=0u;
+			const std::uint64_t outputValues=2u*components*allFaces+
+				2u*components*cells+inequalities*cells+4u*allFaces;
+			if(!AddBytes(outputValues,sizeof(float),outputBytes)||
+				outputBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"scalar FCT output exceeds two GiB");
+			computed.lowFlux.assign(components*allFaces,0.0f);
+			computed.fluxDelta.assign(components*allFaces,0.0f);
+			auto sideIndex=[&](const unsigned int side,const std::size_t x,
+				const std::size_t y,const std::size_t z){return side<2u?z*shape.ny+y:
+				(side<4u?z*shape.nx+x:y*shape.nx+x);};
+			auto stageValue=[&](const std::size_t component,std::size_t x,std::size_t y,
+				std::size_t z,const unsigned int axis,const int shift){
+				const int coordinate=static_cast<int>(AxisCoordinate(axis,x,y,z))+shift;
+				const int extent=static_cast<int>(AxisCoordinateExtent(shape,axis));
+				if(coordinate>=0&&coordinate<extent){SetAxisCoordinate(axis,
+					static_cast<std::size_t>(coordinate),x,y,z);return request.beginning[
+					component*cells+CellIndex(shape,x,y,z)];}
+				const unsigned int side=2u*axis+(coordinate>=extent?1u:0u);
+				if(request.boundary[side]==FireProductionProjectionPeriodic){
+					SetAxisCoordinate(axis,coordinate<0?AxisCoordinateExtent(shape,axis)-1u:0u,
+						x,y,z);return request.beginning[component*cells+CellIndex(shape,x,y,z)];}
+				SetAxisCoordinate(axis,coordinate<0?0u:AxisCoordinateExtent(shape,axis)-1u,
+					x,y,z);
+				const FireProductionRoundoffTrace::TraceFloat interior=request.beginning[component*cells+CellIndex(shape,x,y,z)];
+				return request.boundary[side]==FireProductionProjectionPressureOpen&&
+					request.pressureOpenInflow[side][sideIndex(side,x,y,z)]!=0u?
+					request.ambient[component]:interior;
+			};
+			auto mc=[](const FireProductionRoundoffTrace::TraceFloat backward,const FireProductionRoundoffTrace::TraceFloat forward)->FireProductionRoundoffTrace::TraceFloat{
+				if(backward*forward<=0.0f)return 0.0f;
+				const FireProductionRoundoffTrace::TraceFloat centered=0.5f*(backward+forward);
+				const FireProductionRoundoffTrace::TraceFloat sign=centered<0.0f?-1.0f:1.0f;
+				return sign*std::min(std::fabs(centered),2.0f*std::min(
+					std::fabs(backward),std::fabs(forward)));
+			};
+			auto massSlope=[&](const std::size_t component,const std::size_t x,
+				const std::size_t y,const std::size_t z,const unsigned int axis){
+				std::array<FireProductionRoundoffTrace::TraceFloat,8> coordinateSlope={{}};
+				for(std::size_t basis=0u;basis<request.nullity;++basis){
+					FireProductionRoundoffTrace::TraceFloat backward=0.0f,forward=0.0f;
+					for(std::size_t row=0u;row<8u;++row){
+						const FireProductionRoundoffTrace::TraceFloat center=request.beginning[row*cells+CellIndex(shape,x,y,z)];
+						const FireProductionRoundoffTrace::TraceFloat coefficient=request.nullspaceBasis[
+							row*request.nullity+basis];
+						backward+=coefficient*(center-stageValue(row,x,y,z,axis,-1));
+						forward+=coefficient*(stageValue(row,x,y,z,axis,1)-center);
+					}
+					coordinateSlope[basis]=mc(backward,forward);
+				}
+				FireProductionRoundoffTrace::TraceFloat slope=0.0f;
+				for(std::size_t basis=0u;basis<request.nullity;++basis){
+					FireProductionRoundoffTrace::TraceFloat projected=0.0f;
+					for(std::size_t column=0u;column<request.nullity;++column)
+						projected+=request.coordinateProjector[
+							basis*request.nullity+column]*coordinateSlope[column];
+					slope+=request.nullspaceBasis[component*request.nullity+basis]*projected;
+				}
+				return slope;
+			};
+			for(std::size_t component=0u;component<components;++component)
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t extent=AxisCoordinateExtent(shape,axis);
+					const std::size_t xEnd=shape.nx+(axis==0u?1u:0u);
+					const std::size_t yEnd=shape.ny+(axis==1u?1u:0u);
+					const std::size_t zEnd=shape.nz+(axis==2u?1u:0u);
+					for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+						for(std::size_t x=0u;x<xEnd;++x){
+							const std::size_t face=FaceIndex(shape,axis,x,y,z);
+							const std::size_t packed=computed.packedFaceOffset[axis]+face;
+							const std::size_t output=component*allFaces+packed;
+							const std::size_t coordinate=AxisCoordinate(axis,x,y,z);
+							const FireProductionRoundoffTrace::TraceFloat velocity=request.frozenVelocityMPerS[axis][face];
+							if((coordinate==0u||coordinate==extent)&&request.boundary[
+								2u*axis+(coordinate==extent?1u:0u)]==
+								FireProductionProjectionWall)continue;
+							if((coordinate==0u||coordinate==extent)&&request.boundary[
+								2u*axis+(coordinate==extent?1u:0u)]!=
+								FireProductionProjectionPeriodic){
+								const int donorShift=velocity>=0.0f?-1:0;
+								const FireProductionRoundoffTrace::TraceFloat donor=stageValue(component,x,y,z,axis,donorShift);
+								computed.lowFlux[output]=velocity*donor;continue;
+							}
+							const std::size_t rightCoordinate=coordinate==extent?0u:coordinate;
+							const std::size_t leftCoordinate=rightCoordinate==0u?extent-1u:
+								rightCoordinate-1u;
+							std::size_t lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;
+							SetAxisCoordinate(axis,leftCoordinate,lx,ly,lz);
+							SetAxisCoordinate(axis,rightCoordinate,rx,ry,rz);
+							const bool fromLeft=velocity>=0.0f;
+							const std::size_t dx=fromLeft?lx:rx,dy=fromLeft?ly:ry,
+								dz=fromLeft?lz:rz;
+							const FireProductionRoundoffTrace::TraceFloat donor=request.beginning[
+								component*cells+CellIndex(shape,dx,dy,dz)];
+							const FireProductionRoundoffTrace::TraceFloat slope=component<8u?massSlope(component,dx,dy,dz,axis):
+								mc(donor-stageValue(component,dx,dy,dz,axis,-1),
+									stageValue(component,dx,dy,dz,axis,1)-donor);
+							const FireProductionRoundoffTrace::TraceFloat high=donor+(fromLeft?0.5f:-0.5f)*slope;
+							computed.lowFlux[output]=velocity*donor;
+							computed.fluxDelta[output]=velocity*(high-donor);
+						}
+				}
+
+			auto packedCellFace=[&](const std::size_t cell,const unsigned int axis,
+				const bool upper){std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
+					z=cell/(shape.nx*shape.ny);
+				if(upper)SetAxisCoordinate(axis,AxisCoordinate(axis,x,y,z)+1u,x,y,z);
+				return computed.packedFaceOffset[axis]+FaceIndex(shape,axis,x,y,z);
+			};
+			auto inequalityValue=[&](const FireProductionRoundoffTrace::TraceFloat* value,const std::size_t inequality){
+				if(inequality==0u)return -value[0];
+				if(inequality==1u){
+					FireProductionRoundoffTrace::TraceFloat closure=value[0];
+					for(std::size_t species=0u;species<7u;++species)
+						closure-=value[1u+species];
+					return closure;
+				}
+				if(inequality<9u)return -value[inequality-1u];
+				if(inequality==9u){
+					FireProductionRoundoffTrace::TraceFloat lower=-value[8];
+					for(std::size_t species=0u;species<7u;++species)
+						lower+=request.enthalpyBoundsJPerKG[species]*value[1u+species];
+					return lower;
+				}
+				FireProductionRoundoffTrace::TraceFloat upper=value[8];for(std::size_t species=0u;species<7u;++species)
+					upper-=request.enthalpyBoundsJPerKG[7u+species]*value[1u+species];
+				return upper;
+			};
+			computed.lowState.assign(components*cells,0.0f);
+			std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,6> correction;
+			for(auto& direction:correction)direction.assign(components*cells,0.0f);
+			const FireProductionRoundoffTrace::TraceFloat scale=request.timeStepS/shape.cellWidthM;
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+				component<components;++component){
+				FireProductionRoundoffTrace::TraceFloat low=request.beginning[component*cells+cell]+
+					request.sourceDelta[component*cells+cell];
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t lower=packedCellFace(cell,axis,false);
+					const std::size_t upper=packedCellFace(cell,axis,true);
+					low+=scale*(computed.lowFlux[component*allFaces+lower]-
+						computed.lowFlux[component*allFaces+upper]);
+					correction[2u*axis][component*cells+cell]=scale*
+						computed.fluxDelta[component*allFaces+lower];
+					correction[2u*axis+1u][component*cells+cell]=-scale*
+						computed.fluxDelta[component*allFaces+upper];
+				}
+				if(!std::isfinite(low))return Fail(error,"scalar FCT low state is nonfinite");
+				computed.lowState[component*cells+cell]=low;
+			}
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<FireProductionRoundoffTrace::TraceFloat,9> low={{}};FireProductionRoundoffTrace::TraceFloat rowScale=1.0f;
+				for(std::size_t component=0u;component<components;++component){
+					low[component]=computed.lowState[component*cells+cell];
+					rowScale+=std::fabs(low[component]);
+				}
+				for(std::size_t inequality=0u;inequality<inequalities;++inequality){
+					const FireProductionRoundoffTrace::TraceFloat excess=inequalityValue(low.data(),inequality);
+					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale)
+						return Fail(error,"scalar FCT low state exceeds r60 envelope");
+				}
+			}
+			computed.limiterRatio.assign(inequalities*cells,1.0f);
+			for(std::size_t inequality=0u;inequality<inequalities;++inequality)
+				for(std::size_t cell=0u;cell<cells;++cell){
+					std::array<FireProductionRoundoffTrace::TraceFloat,9> low={{}};std::array<std::array<FireProductionRoundoffTrace::TraceFloat,9>,6> local={{}};
+					for(std::size_t component=0u;component<components;++component){
+						low[component]=computed.lowState[component*cells+cell];
+						for(unsigned int direction=0u;direction<6u;++direction)
+							local[direction][component]=correction[direction][component*cells+cell];
+					}
+					FireProductionRoundoffTrace::TraceFloat rowScale=0.0f;
+					for(std::size_t component=0u;component<components;++component){
+						FireProductionRoundoffTrace::TraceFloat lower=low[component],upper=low[component];
+						for(unsigned int direction=0u;direction<6u;++direction){
+							const FireProductionRoundoffTrace::TraceFloat delta=local[direction][component];
+							if(delta<0.0f)lower+=delta;else upper+=delta;
+						}
+						const FireProductionRoundoffTrace::TraceFloat minimum=lower<=0.0f&&upper>=0.0f?0.0f:
+							std::min(std::fabs(lower),std::fabs(upper));
+						if(inequality<9u){if(component<8u)rowScale+=minimum;}
+						else if(component==8u)rowScale+=minimum;
+						else if(component>0u&&component<8u)rowScale+=(std::fabs(
+							request.enthalpyBoundsJPerKG[component-1u])+std::fabs(
+							request.enthalpyBoundsJPerKG[7u+component-1u]))*minimum;
+					}
+					rowScale=std::max(FireProductionRoundoffTrace::TraceFloat(1.0f),rowScale);FireProductionRoundoffTrace::TraceFloat requested=0.0f;
+					for(unsigned int direction=0u;direction<6u;++direction)requested+=
+						std::max(FireProductionRoundoffTrace::TraceFloat(0.0f),inequalityValue(local[direction].data(),inequality));
+					const FireProductionRoundoffTrace::TraceFloat budget=std::max(FireProductionRoundoffTrace::TraceFloat(0.0f),(request.feasibilityFactor-
+						request.assemblyReserveFactor)*rowScale-
+						inequalityValue(low.data(),inequality));
+					const FireProductionRoundoffTrace::TraceFloat ratio=requested>0.0f?std::min(FireProductionRoundoffTrace::TraceFloat(1.0f),budget/requested):1.0f;
+					if(!std::isfinite(ratio)||ratio<0.0f||ratio>1.0f)return Fail(error,
+						"scalar FCT limiter ratio is invalid");
+					computed.limiterRatio[inequality*cells+cell]=ratio;
+				}
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faceCount=FireProductionProjectionFaceCount(shape,axis);
+				computed.sharedFaceAlpha[axis].assign(faceCount,1.0f);
+				const std::size_t extent=AxisCoordinateExtent(shape,axis);
+				const std::size_t xEnd=shape.nx+(axis==0u?1u:0u),
+					yEnd=shape.ny+(axis==1u?1u:0u),zEnd=shape.nz+(axis==2u?1u:0u);
+				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+					for(std::size_t x=0u;x<xEnd;++x){
+						const std::size_t face=FaceIndex(shape,axis,x,y,z);
+						const std::size_t packed=computed.packedFaceOffset[axis]+face;
+						const std::size_t coordinate=AxisCoordinate(axis,x,y,z);
+						const bool periodic=request.boundary[2u*axis]==
+							FireProductionProjectionPeriodic;
+						const bool haveLeft=periodic||coordinate>0u;
+						const bool haveRight=periodic||coordinate<extent;
+						std::size_t lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;
+						SetAxisCoordinate(axis,coordinate?coordinate-1u:extent-1u,lx,ly,lz);
+						SetAxisCoordinate(axis,coordinate==extent?0u:coordinate,rx,ry,rz);
+						const std::size_t left=haveLeft?CellIndex(shape,lx,ly,lz):0u;
+						const std::size_t right=haveRight?CellIndex(shape,rx,ry,rz):0u;
+						FireProductionRoundoffTrace::TraceFloat accepted=1.0f;std::array<FireProductionRoundoffTrace::TraceFloat,9> faceCorrection={{}};
+						for(std::size_t inequality=0u;inequality<inequalities;++inequality){
+							for(std::size_t component=0u;component<components;++component)
+								faceCorrection[component]=-scale*computed.fluxDelta[
+									component*allFaces+packed];
+							if(haveLeft&&inequalityValue(faceCorrection.data(),inequality)>0.0f)
+								accepted=std::min(accepted,computed.limiterRatio[
+									inequality*cells+left]);
+							for(FireProductionRoundoffTrace::TraceFloat& value:faceCorrection)value=-value;
+							if(haveRight&&inequalityValue(faceCorrection.data(),inequality)>0.0f)
+								accepted=std::min(accepted,computed.limiterRatio[
+									inequality*cells+right]);
+						}
+						if(!std::isfinite(accepted)||accepted<0.0f||accepted>1.0f)
+							return Fail(error,"scalar FCT shared alpha is invalid");
+						computed.sharedFaceAlpha[axis][face]=accepted;
+					}
+			}
+			computed.accepted=computed.lowState;
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+				component<components;++component){
+				FireProductionRoundoffTrace::TraceFloat value=computed.lowState[component*cells+cell];
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t lower=packedCellFace(cell,axis,false);
+					const std::size_t upper=packedCellFace(cell,axis,true);
+					value+=scale*(computed.sharedFaceAlpha[axis][lower-
+						computed.packedFaceOffset[axis]]*computed.fluxDelta[
+						component*allFaces+lower]-computed.sharedFaceAlpha[axis][upper-
+						computed.packedFaceOffset[axis]]*computed.fluxDelta[
+						component*allFaces+upper]);
+				}
+				if(!std::isfinite(value))return Fail(error,"scalar FCT accepted state is nonfinite");
+				computed.accepted[component*cells+cell]=value;
+			}
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<FireProductionRoundoffTrace::TraceFloat,9> value={{}};FireProductionRoundoffTrace::TraceFloat rowScale=1.0f;
+				for(std::size_t component=0u;component<components;++component){
+					value[component]=computed.accepted[component*cells+cell];
+					rowScale+=std::fabs(value[component]);
+				}
+				for(std::size_t inequality=0u;inequality<inequalities;++inequality){
+					const FireProductionRoundoffTrace::TraceFloat excess=inequalityValue(value.data(),inequality);
+					if(!std::isfinite(excess)||excess>request.feasibilityFactor*rowScale)
+						return Fail(error,"scalar FCT accepted state exceeds r60 envelope");
+				}
+			}
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				computed.acceptedGasFluxKGPerM2S[axis].assign(faces,0.0f);
+				for(std::size_t face=0u;face<faces;++face){
+					const std::size_t packed=computed.packedFaceOffset[axis]+face;
+					FireProductionRoundoffTrace::TraceFloat gas=0.0f;for(std::size_t component=1u;component<=6u;++component)
+						gas+=computed.lowFlux[component*allFaces+packed]+
+							computed.sharedFaceAlpha[axis][face]*computed.fluxDelta[
+								component*allFaces+packed];
+					if(!std::isfinite(gas))return Fail(error,"scalar FCT accepted gas flux is nonfinite");
+					computed.acceptedGasFluxKGPerM2S[axis][face]=gas;
+				}
+			}
+
+			std::vector<FireProductionRoundoffTrace::TraceFloat> baseGas(cells,0.0f),acceptedGas(cells,0.0f);
+			FireProductionRoundoffTrace::TraceFloat ambientGas=0.0f;
+			for(std::size_t component=1u;component<=6u;++component)
+				ambientGas+=request.ambient[component];
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;
+				component<=6u;++component){baseGas[cell]+=request.beginning[component*cells+cell]+
+					request.sourceDelta[component*cells+cell];
+				acceptedGas[cell]+=computed.accepted[component*cells+cell];}
+			FireProductionCompatibleFCTMomentumRequest identityRequest;
+			identityRequest.shape=shape;identityRequest.boundary=request.boundary;
+			for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+				FireProductionProjectionFaceCount(shape,axis);
+				identityRequest.lowGasFluxKGPerM2S[axis]=computed.acceptedGasFluxKGPerM2S[axis];
+				identityRequest.highGasFluxKGPerM2S[axis]=computed.acceptedGasFluxKGPerM2S[axis];
+				identityRequest.sharedFaceAlpha[axis].assign(faces,0.0f);
+				identityRequest.frozenVelocityMPerS[axis].assign(faces,1.0f);
+			}
+			FireProductionCompatibleFCTMomentumResult identityRate;
+			if(!EvaluateFireProductionCompatibleFCTMomentumCPU(identityRequest,identityRate,error))
+				return false;
+			computed.commutingIdentityAvailable=true;
+			for(unsigned int component=0u;component<3u;++component){
+				const std::size_t xEnd=shape.nx+(component==0u?1u:0u),
+					yEnd=shape.ny+(component==1u?1u:0u),
+					zEnd=shape.nz+(component==2u?1u:0u),
+					extent=AxisCoordinateExtent(shape,component);
+				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+					for(std::size_t x=0u;x<xEnd;++x){const std::size_t normal=
+						AxisCoordinate(component,x,y,z),face=FaceIndex(shape,component,x,y,z);
+						const bool boundaryFace=normal==0u||normal==extent;
+						const unsigned int side=2u*component+(normal==extent?1u:0u);
+						if(boundaryFace&&request.boundary[side]==FireProductionProjectionWall){
+							std::uint32_t rateBits=0u;std::memcpy(&rateBits,
+								&identityRate.advectionRateKGPerM2S2[component][face],sizeof(rateBits));
+							if(rateBits!=0u)return Fail(error,
+								"scalar FCT wall commuting rate is not positive zero");
+							continue;
+						}
+						auto restricted=[&](const std::vector<FireProductionRoundoffTrace::TraceFloat>& gas){
+							std::size_t lowX=x,lowY=y,lowZ=z,highX=x,highY=y,highZ=z;
+							if(!boundaryFace){SetAxisCoordinate(component,normal-1u,
+								lowX,lowY,lowZ);return 0.5f*(gas[CellIndex(shape,lowX,lowY,lowZ)]+
+								gas[CellIndex(shape,highX,highY,highZ)]);}
+							if(request.boundary[side]==FireProductionProjectionPeriodic){
+								SetAxisCoordinate(component,extent-1u,lowX,lowY,lowZ);
+								SetAxisCoordinate(component,0u,highX,highY,highZ);
+								return 0.5f*(gas[CellIndex(shape,lowX,lowY,lowZ)]+
+									gas[CellIndex(shape,highX,highY,highZ)]);}
+							SetAxisCoordinate(component,normal==extent?extent-1u:0u,
+								highX,highY,highZ);return 0.5f*(gas[CellIndex(shape,highX,highY,highZ)]+
+								ambientGas);
+						};
+						const FireProductionRoundoffTrace::TraceFloat base=restricted(baseGas),acceptedValue=restricted(acceptedGas),
+							advanced=base-request.timeStepS*
+							identityRate.advectionRateKGPerM2S2[component][face];
+						computed.commutingIdentityScaleKGPerM3=std::max(
+							computed.commutingIdentityScaleKGPerM3,std::max(std::fabs(base),
+							std::fabs(acceptedValue)));
+						const FireProductionRoundoffTrace::TraceFloat residual=std::fabs(acceptedValue-advanced);
+						if(residual>computed.maximumCommutingResidualKGPerM3){
+							computed.maximumCommutingResidualKGPerM3=residual;
+							computed.commutingIdentityRestrictedAcceptedKGPerM3=acceptedValue;
+							computed.commutingIdentityAdvancedKGPerM3=advanced;
+							computed.commutingIdentityComponent=component;
+							computed.commutingIdentityFace=face;
+						}
+					}
+			}
+			result=std::move(computed);if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){result=FireProductionScalarFCTResult();
+			FailWithoutThrow(error,"scalar FCT allocation failed");return false;}
 	}
 }

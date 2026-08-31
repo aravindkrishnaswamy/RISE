@@ -1946,6 +1946,7 @@
 							if(side==4&&!boundary->bottomFuelMask.empty()&&
 								boundary->bottomFuelMask[index])kind=FuelInletBoundary3D;
 							if(kind!=PressureOpenBoundary3D)divergence=0.0;
+							else divergence*=0.5;
 						}
 					}
 					result.component[component][componentFace]=divergence;

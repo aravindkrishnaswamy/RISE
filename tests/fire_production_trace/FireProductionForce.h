@@ -618,6 +618,113 @@ namespace RISEFireProductionTrace
 		FireProductionResidentStepResult& rejectedOrAcceptedResult,
 		std::string* error=0 );
 
+	//! Identity-bearing status for the isolated single-stage production FCT
+	//! candidate. This type deliberately has no accepted-manifold token: a
+	//! diagnostic trajectory may not confer ordinary-production authority.
+	enum class FireProductionSingleStageFCTDiagnosticPhase : std::uint8_t
+	{
+		Unavailable=0u,
+		Preflight=1u,
+		ForceAdvance=2u,
+		FCTSolve=3u,
+		PhysicalProjection=4u,
+		TailProjection=5u,
+		Accepted=6u
+	};
+
+	//! Prior accepted pressure-open classification consumed only by the isolated
+	//! FCT diagnostic. All six side arrays are mandatory and digest-bound with the
+	//! accepted predecessor-state payload through the caller-supplied identity,
+	//! including on wall and periodic sides.
+	struct FireProductionSingleStageFCTBoundaryState
+	{
+		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		std::uint64_t statePayloadIdentity;
+		std::uint64_t identity;
+
+		FireProductionSingleStageFCTBoundaryState() : statePayloadIdentity(0u),identity(0u) {}
+	};
+
+	struct FireProductionSingleStageFCTDiagnosticResult
+	{
+		std::vector<FireProductionRoundoffTrace::TraceFloat> conservativeValues;
+		FireProductionProjectionResult physicalProjection;
+		FireProductionProjectionResult projection;
+		FireProductionViscousSchedule forceSchedule;
+		FireProductionResidentForceDiagnostics forceDiagnostics;
+		std::uint32_t operatorVersion;
+		std::uint64_t operatorIdentity;
+		std::uint64_t zeroPhysicalGasFluxIdentity;
+		std::uint64_t boundaryStateIdentity;
+		std::uint64_t beginningStateIdentity;
+		FireProductionSingleStageFCTDiagnosticPhase phase;
+		std::uint32_t fluxPairBuildCount;
+		std::uint32_t fctSolveCount;
+		std::uint32_t compatibleRateApplicationCount;
+		std::uint32_t sourceApplicationCount;
+		std::uint32_t residentProjectionInvocationCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t failureBitmap;
+		std::uint32_t tailCellCount;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t alphaIdentity;
+		std::uint64_t scalarStageIdentity;
+		FireProductionRoundoffTrace::TraceFloat maximumCommutingResidual;
+		FireProductionRoundoffTrace::TraceFloat scalarStageGamma128;
+		FireProductionRoundoffTrace::TraceFloat maximumScalarStageAbsoluteDifference;
+		FireProductionRoundoffTrace::TraceFloat maximumScalarStageNormalizedDifference;
+		FireProductionRoundoffTrace::TraceFloat maximumCompatibleRateAbsoluteDifference;
+		FireProductionRoundoffTrace::TraceFloat maximumCompatibleRateNormalizedDifference;
+		double tailDrainedVolumeM3;
+		bool pipelineIdentityComplete;
+		bool scalarAdmissible;
+		bool scalarStageIdentityPassed;
+		bool scalarStageExactZeroPassed;
+		bool scalarStageProducerEquivalencePassed;
+		bool compatibleRateExactZeroPassed;
+		bool compatibleRateProducerEquivalencePassed;
+		bool affineIdentityPassed;
+		bool commutingIdentityPassed;
+		bool accepted;
+
+		FireProductionSingleStageFCTDiagnosticResult() : operatorVersion(0u),
+			operatorIdentity(0u),zeroPhysicalGasFluxIdentity(0u),boundaryStateIdentity(0u),
+			beginningStateIdentity(0u),
+			phase(FireProductionSingleStageFCTDiagnosticPhase::Unavailable),
+			fluxPairBuildCount(0u),fctSolveCount(0u),compatibleRateApplicationCount(0u),
+			sourceApplicationCount(0u),residentProjectionInvocationCount(0u),
+			interstageFullGridTransferCount(0u),terminalStagingCount(0u),failureBitmap(0u),
+			tailCellCount(0u),certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			alphaIdentity(0u),scalarStageIdentity(0u),maximumCommutingResidual(0.0f),
+			scalarStageGamma128(0.0f),maximumScalarStageAbsoluteDifference(0.0f),
+			maximumScalarStageNormalizedDifference(0.0f),
+			maximumCompatibleRateAbsoluteDifference(0.0f),
+			maximumCompatibleRateNormalizedDifference(0.0f),
+			tailDrainedVolumeM3(0.0),
+			pipelineIdentityComplete(false),scalarAdmissible(false),
+			scalarStageIdentityPassed(false),scalarStageExactZeroPassed(false),
+			scalarStageProducerEquivalencePassed(false),compatibleRateExactZeroPassed(false),
+			compatibleRateProducerEquivalencePassed(false),affineIdentityPassed(false),
+			commutingIdentityPassed(false),accepted(false) {}
+	};
+
+	//! Explicit tokenless diagnostic seam for production's single-stage schedule
+	//! with a coefficient-free §3.7 scalar/momentum FCT operator. It is never
+	//! selected by the ordinary resident-step owner. The physical gas diffusion
+	//! flux J_g is identity-bearing exact +0 because production owns no such flux.
+	bool SealFireProductionSingleStageFCTBoundaryState(
+		const FireProductionProjectionShape& shape,
+		const std::array<FireProductionProjectionBoundary,6>& boundary,
+		FireProductionSingleStageFCTBoundaryState& state,
+		std::string* error=0 );
+	bool AttemptFireProductionSingleStageFCTDiagnosticMetal(
+		const FireProductionResidentStepRequest& request,
+		const FireProductionSingleStageFCTBoundaryState& boundaryState,
+		FireProductionSingleStageFCTDiagnosticResult& result,
+		std::string* error=0 );
+
 	//! Thread-local observed Metal commits, exposed only to bind fail-before-work
 	//! owner gates. Unsupported builds return zero.
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount();

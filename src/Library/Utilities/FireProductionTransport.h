@@ -168,9 +168,18 @@ namespace RISE
 		std::vector<float> accepted;
 		std::array<std::vector<float>,3> acceptedGasFluxKGPerM2S;
 		float maximumCommutingResidualKGPerM3;
+		float commutingIdentityScaleKGPerM3;
+		float commutingIdentityRestrictedAcceptedKGPerM3;
+		float commutingIdentityAdvancedKGPerM3;
+		unsigned int commutingIdentityComponent;
+		std::size_t commutingIdentityFace;
 		bool commutingIdentityAvailable;
 
 		FireProductionScalarFCTResult() : maximumCommutingResidualKGPerM3(0.0f),
+			commutingIdentityScaleKGPerM3(0.0f),
+			commutingIdentityRestrictedAcceptedKGPerM3(0.0f),
+			commutingIdentityAdvancedKGPerM3(0.0f),commutingIdentityComponent(0u),
+			commutingIdentityFace(0u),
 			commutingIdentityAvailable(false)
 		{
 			packedFaceOffset.fill(0u);

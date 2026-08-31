@@ -1306,12 +1306,15 @@ inline float fct_mass_slope(device const float* q,device const float* ambient,
   for(uint row=0u;row<8u;++row){float center=q[row*p.cells+fct_cell(p,cellX,cellY,cellZ)];
    float previous=fct_stage_value(q,ambient,inflow,p,row,cellX,cellY,cellZ,axis,-1);
    float next=fct_stage_value(q,ambient,inflow,p,row,cellX,cellY,cellZ,axis,1);
-   float coefficient=basis[row*p.nullity+b];backward+=coefficient*(center-previous);
-   forward+=coefficient*(next-center);}coordinateSlope[b]=fct_mc(backward,forward);}
+   float coefficient=basis[row*p.nullity+b];volatile float backwardDifference=center-previous;
+   volatile float forwardDifference=next-center;volatile float backwardProduct=
+   coefficient*backwardDifference;volatile float forwardProduct=coefficient*forwardDifference;
+   backward+=backwardProduct;forward+=forwardProduct;}coordinateSlope[b]=fct_mc(backward,forward);}
  float result=0.0f;for(uint b=0u;b<p.nullity;++b){float projected=0.0f;
-  for(uint column=0u;column<p.nullity;++column)
-   projected+=coordinateProjector[b*p.nullity+column]*coordinateSlope[column];
-  result+=basis[component*p.nullity+b]*projected;}return result;
+  for(uint column=0u;column<p.nullity;++column){volatile float projectedProduct=
+   coordinateProjector[b*p.nullity+column]*coordinateSlope[column];projected+=projectedProduct;}
+  volatile float resultProduct=basis[component*p.nullity+b]*projected;
+  result+=resultProduct;}return result;
 }
 kernel void fct_build_flux_pair(device const float* q [[buffer(0)]],
  device const float* ux [[buffer(1)]],device const float* uy [[buffer(2)]],
@@ -1363,9 +1366,12 @@ kernel void fct_build_ratios(device const float* beginning [[buffer(0)]],
  uint all=fct_all_faces(p);float low[9],correction[6][9],scale=p.dt/p.dx;
  for(uint component=0u;component<9u;++component){low[component]=beginning[component*p.cells+cell]+
   sourceDelta[component*p.cells+cell];for(uint axis=0u;axis<3u;++axis){uint lower=fct_cell_face(p,cell,axis,false);
-  uint upper=fct_cell_face(p,cell,axis,true);low[component]+=scale*(lowFlux[component*all+lower]-
-   lowFlux[component*all+upper]);correction[2u*axis][component]=scale*fluxDelta[component*all+lower];
-  correction[2u*axis+1u][component]=-scale*fluxDelta[component*all+upper];}
+  uint upper=fct_cell_face(p,cell,axis,true);volatile float fluxDifference=
+   lowFlux[component*all+lower]-lowFlux[component*all+upper];volatile float scaledFlux=
+   scale*fluxDifference;low[component]+=scaledFlux;volatile float lowerCorrection=
+   scale*fluxDelta[component*all+lower];volatile float upperCorrection=
+   scale*fluxDelta[component*all+upper];correction[2u*axis][component]=lowerCorrection;
+  correction[2u*axis+1u][component]=-upperCorrection;}
   if(!isfinite(low[component]))atomic_fetch_or_explicit(failure,1u,memory_order_relaxed);
   if(inequality==0u)lowState[component*p.cells+cell]=low[component];}
  float lowEnvelopeScale=1.0f;for(uint component=0u;component<9u;++component)
@@ -1421,8 +1427,11 @@ kernel void fct_commit_scalar(device const float* lowState [[buffer(0)]],
  if(gid>=p.cells)return;uint all=fct_all_faces(p);float value[9],scale=p.dt/p.dx;
  for(uint component=0u;component<9u;++component){value[component]=lowState[component*p.cells+gid];
   for(uint axis=0u;axis<3u;++axis){uint lower=fct_cell_face(p,gid,axis,false);
-   uint upper=fct_cell_face(p,gid,axis,true);value[component]+=scale*(
-    alpha[lower]*fluxDelta[component*all+lower]-alpha[upper]*fluxDelta[component*all+upper]);}
+   uint upper=fct_cell_face(p,gid,axis,true);volatile float lowerCorrection=
+    alpha[lower]*fluxDelta[component*all+lower];volatile float upperCorrection=
+    alpha[upper]*fluxDelta[component*all+upper];volatile float correction=
+    lowerCorrection-upperCorrection;volatile float scaled=scale*correction;
+    value[component]+=scaled;}
   accepted[component*p.cells+gid]=value[component];
   if(!isfinite(value[component]))atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);}
  for(uint inequality=0u;inequality<p.inequalities;++inequality){float rowScale=1.0f;
@@ -1473,16 +1482,19 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
     fct_extent(p,derivative)-1u;
    uint nextDerivative=derivativeCoordinate+1u==fct_extent(p,derivative)?0u:
     derivativeCoordinate+1u;
-   uint ncx=x,ncy=y,ncz=z,pdx=x,pdy=y,pdz=z,ncpdx=x,ncpdy=y,ncpdz=z,
+   uint ncx=x,ncy=y,ncz=z,pdx=x,pdy=y,pdz=z,pcx=x,pcy=y,pcz=z,
     ndx=x,ndy=y,ndz=z;
    fct_set_coordinate(component,nextComponent,ncx,ncy,ncz);
    fct_set_coordinate(derivative,previousDerivative,pdx,pdy,pdz);
-   ncpdx=ncx;ncpdy=ncy;ncpdz=ncz;
-   fct_set_coordinate(derivative,previousDerivative,ncpdx,ncpdy,ncpdz);
+   uint previousComponent=componentCoordinate?componentCoordinate-1u:componentExtent-1u;
+   fct_set_coordinate(component,previousComponent,pcx,pcy,pcz);
    fct_set_coordinate(derivative,nextDerivative,ndx,ndy,ndz);
    float upper=0.0f,lower=0.0f;if(derivative==component){
-    upper=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,x,y,z)+
-     fct_accepted_gas(low,delta,alpha,p,derivative,ncx,ncy,ncz))*(
+    uint pcux=pcx,pcuy=pcy,pcuz=pcz,cux=x,cuy=y,cuz=z;
+    fct_set_coordinate(derivative,nextDerivative,pcux,pcuy,pcuz);
+    fct_set_coordinate(derivative,nextDerivative,cux,cuy,cuz);
+    upper=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,pcux,pcuy,pcuz)+
+     fct_accepted_gas(low,delta,alpha,p,derivative,cux,cuy,cuz))*(
      fct_velocity(ux,uy,uz,p,component,x,y,z)+
      fct_velocity(ux,uy,uz,p,component,ncx,ncy,ncz));
     lower=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,pdx,pdy,pdz)+
@@ -1494,8 +1506,8 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
      fct_accepted_gas(low,delta,alpha,p,derivative,ncx,ncy,ncz))*(
      fct_velocity(ux,uy,uz,p,component,x,y,z)+
      fct_velocity(ux,uy,uz,p,component,ndx,ndy,ndz));
-    lower=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,pdx,pdy,pdz)+
-     fct_accepted_gas(low,delta,alpha,p,derivative,ncpdx,ncpdy,ncpdz))*(
+    lower=0.25f*(fct_accepted_gas(low,delta,alpha,p,derivative,pcx,pcy,pcz)+
+     fct_accepted_gas(low,delta,alpha,p,derivative,x,y,z))*(
      fct_velocity(ux,uy,uz,p,component,pdx,pdy,pdz)+
      fct_velocity(ux,uy,uz,p,component,x,y,z));
    }divergence+=(upper-lower)/p.dx;
@@ -1543,7 +1555,8 @@ kernel void fct_compatible_stage_rate(device const float* low [[buffer(0)]],
    if(position+1u==derivativeExtent&&fct_prescribed(p,2u*derivative+1u))upper=0.0f;
    divergence+=(upper-lower)/p.dx;}}
  bool boundaryFace=normal==0u||normal==componentExtent;if(boundaryFace){uint side=2u*component+
-  (normal==componentExtent?1u:0u);if(fct_prescribed(p,side))divergence=0.0f;}
+  (normal==componentExtent?1u:0u);if(fct_prescribed(p,side))divergence=0.0f;
+  else divergence*=0.5f;}
  if(!isfinite(divergence))atomic_fetch_or_explicit(failure,32u,memory_order_relaxed);
  rate[gid]=divergence;
 }
@@ -4684,13 +4697,18 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			parameters.sideOffset[side]=static_cast<std::uint32_t>(sideOffset);
 			sideOffset+=boundaryState.pressureOpenInflow[side].size();
 		}
-		std::uint64_t certified=0u;
-		if(!FireProductionResidentStepWorkingSetBytes(shape,request.force.boundary,certified))
+		std::uint64_t certified=0u,forceCertified=0u,projectionCertified=0u;
+		if(!FireProductionResidentForceMetalWorkingSetBytes(shape,false,forceCertified)||
+			!FireProductionProjectionWorkingSetBytes(shape,projectionCertified))
 			return fail("production single-stage FCT working-set base is unavailable");
+		certified=forceCertified;
 		auto addCertified=[&](std::uint64_t bytes){const std::uint64_t rounded=
 			(bytes+UINT64_C(16383))&~UINT64_C(16383);if(bytes==0u||rounded<bytes||
 			certified>std::numeric_limits<std::uint64_t>::max()-rounded)return false;
 			certified+=rounded;return true;};
+		if(!addCertified(projectionCertified)||
+			(tailActive&&!addCertified(projectionCertified)))return fail(
+			"production single-stage FCT projection certificate overflowed");
 		const std::uint64_t cellValueBytes=9u*cells*sizeof(float),
 			packedFaceBytes=allFaces*sizeof(float),fluxBytes=9u*packedFaceBytes,
 			terminalBytes=(29u*cells+20u*allFaces)*sizeof(float);
@@ -4783,54 +4801,64 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			result.forceSchedule=force.schedule;result.forceDiagnostics=force.diagnostics;
 			result.phase=FireProductionSingleStageFCTDiagnosticPhase::FCTSolve;
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
-			auto encoderFor=[&](id<MTLComputePipelineState> pipeline,std::size_t count){
+			auto encoderFor=[&](id<MTLComputePipelineState> pipeline){
 				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
-				if(encoder){[encoder setComputePipelineState:pipeline];const std::size_t width=
-					std::min<std::size_t>(256u,[pipeline maxTotalThreadsPerThreadgroup]);
-					[encoder dispatchThreads:MTLSizeMake(count,1,1)
-						threadsPerThreadgroup:MTLSizeMake(width,1,1)];}return encoder;};
-			id<MTLComputeCommandEncoder> encoder=encoderFor(context.buildFluxPair,9u*allFaces);
+				if(encoder)[encoder setComputePipelineState:pipeline];return encoder;};
+			auto finishKernel=[](id<MTLComputeCommandEncoder> encoder,
+				id<MTLComputePipelineState> pipeline,const std::size_t count){
+				const std::size_t width=std::min<std::size_t>(256u,
+					[pipeline maxTotalThreadsPerThreadgroup]);
+				[encoder dispatchThreads:MTLSizeMake(count,1,1)
+					threadsPerThreadgroup:MTLSizeMake(width,1,1)];[encoder endEncoding];};
+			id<MTLComputeCommandEncoder> encoder=encoderFor(context.buildFluxPair);
 			if(!encoder)return fail("production single-stage FCT flux encoder failed");
 			[encoder setBuffer:q offset:0 atIndex:0];for(unsigned int axis=0u;axis<3u;++axis)
 				[encoder setBuffer:velocity[axis] offset:0 atIndex:1u+axis];
 			[encoder setBuffer:ambient offset:0 atIndex:4];[encoder setBuffer:inflow offset:0 atIndex:5];
 			[encoder setBuffer:basisBuffer offset:0 atIndex:6];[encoder setBuffer:projectorBuffer offset:0 atIndex:7];
 			[encoder setBuffer:low offset:0 atIndex:8];[encoder setBuffer:delta offset:0 atIndex:9];
-			[encoder setBuffer:parameterBuffer offset:0 atIndex:10];[encoder endEncoding];
-			encoder=encoderFor(context.buildRatios,11u*cells);if(!encoder)return fail(
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:10];
+			finishKernel(encoder,context.buildFluxPair,9u*allFaces);
+			encoder=encoderFor(context.buildRatios);if(!encoder)return fail(
 				"production single-stage FCT ratio encoder failed");
 			[encoder setBuffer:q offset:0 atIndex:0];[encoder setBuffer:source offset:0 atIndex:1];
 			[encoder setBuffer:low offset:0 atIndex:2];[encoder setBuffer:delta offset:0 atIndex:3];
 			[encoder setBuffer:enthalpyBuffer offset:0 atIndex:4];[encoder setBuffer:lowState offset:0 atIndex:5];
 			[encoder setBuffer:ratio offset:0 atIndex:6];[encoder setBuffer:failure offset:0 atIndex:7];
-			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];[encoder endEncoding];
-			encoder=encoderFor(context.buildFaceAlpha,allFaces);if(!encoder)return fail(
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];
+			finishKernel(encoder,context.buildRatios,11u*cells);
+			encoder=encoderFor(context.buildFaceAlpha);if(!encoder)return fail(
 				"production single-stage FCT alpha encoder failed");
 			[encoder setBuffer:delta offset:0 atIndex:0];[encoder setBuffer:ratio offset:0 atIndex:1];
 			[encoder setBuffer:enthalpyBuffer offset:0 atIndex:2];[encoder setBuffer:alpha offset:0 atIndex:3];
 			[encoder setBuffer:failure offset:0 atIndex:4];[encoder setBuffer:parameterBuffer offset:0 atIndex:5];
-			[encoder endEncoding];encoder=encoderFor(context.commitScalar,cells);if(!encoder)return fail(
+			finishKernel(encoder,context.buildFaceAlpha,allFaces);
+			encoder=encoderFor(context.commitScalar);if(!encoder)return fail(
 				"production single-stage FCT scalar encoder failed");
 			[encoder setBuffer:lowState offset:0 atIndex:0];[encoder setBuffer:delta offset:0 atIndex:1];
 			[encoder setBuffer:alpha offset:0 atIndex:2];[encoder setBuffer:enthalpyBuffer offset:0 atIndex:3];
 			[encoder setBuffer:affineBuffer offset:0 atIndex:4];[encoder setBuffer:accepted offset:0 atIndex:5];
 			[encoder setBuffer:failure offset:0 atIndex:6];[encoder setBuffer:parameterBuffer offset:0 atIndex:7];
-			[encoder endEncoding];encoder=encoderFor(context.compatibleStageRate,allFaces);
+			finishKernel(encoder,context.commitScalar,cells);
+			encoder=encoderFor(context.compatibleStageRate);
 			if(!encoder)return fail("production single-stage FCT compatible-rate encoder failed");
 			[encoder setBuffer:low offset:0 atIndex:0];[encoder setBuffer:delta offset:0 atIndex:1];
 			[encoder setBuffer:alpha offset:0 atIndex:2];for(unsigned int axis=0u;axis<3u;++axis)
-				[encoder setBuffer:velocity[axis] offset:0 atIndex:3u+axis];
+			[encoder setBuffer:velocity[axis] offset:0 atIndex:3u+axis];
 			[encoder setBuffer:rate offset:0 atIndex:6];[encoder setBuffer:failure offset:0 atIndex:7];
-			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];[encoder endEncoding];
-			encoder=encoderFor(context.applyMomentumRate,allFaces);if(!encoder)return fail(
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:8];
+			finishKernel(encoder,context.compatibleStageRate,allFaces);
+			encoder=encoderFor(context.applyMomentumRate);if(!encoder)return fail(
 				"production single-stage FCT momentum encoder failed");
 			[encoder setBuffer:force.packedMomentumKGPerM2S offset:0 atIndex:0];
 			[encoder setBuffer:rate offset:0 atIndex:1];[encoder setBuffer:failure offset:0 atIndex:2];
-			[encoder setBuffer:parameterBuffer offset:0 atIndex:3];[encoder endEncoding];
-			encoder=encoderFor(context.extractGasDensity,cells);if(!encoder)return fail(
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:3];
+			finishKernel(encoder,context.applyMomentumRate,allFaces);
+			encoder=encoderFor(context.extractGasDensity);if(!encoder)return fail(
 				"production single-stage FCT density encoder failed");
 			[encoder setBuffer:accepted offset:0 atIndex:0];[encoder setBuffer:gasDensity offset:0 atIndex:1];
-			[encoder setBuffer:parameterBuffer offset:0 atIndex:2];[encoder endEncoding];
+			[encoder setBuffer:parameterBuffer offset:0 atIndex:2];
+			finishKernel(encoder,context.extractGasDensity,cells);
 			CommitTrackedMetalCommand(command);[command waitUntilCompleted];
 			if([command status]!=MTLCommandBufferStatusCompleted)return fail(
 				"production single-stage FCT command failed");
@@ -4856,11 +4884,37 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			projectionInput.provisionalMomentumKGPerM2S.fill(force.packedMomentumKGPerM2S);
 			projectionInput.provisionalMomentumByteOffset=force.faceByteOffset;
 			projectionInput.divergenceTargetPerS=target;
+			auto appendProvisionalAudit=[&](){
+				id<MTLCommandBuffer> auditCommand=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> auditBlit=auditCommand?
+					[auditCommand blitCommandEncoder]:nil;
+				if(!auditBlit)return;
+				[auditBlit copyFromBuffer:gasDensity sourceOffset:0 toBuffer:terminal
+					destinationOffset:0 size:cells*sizeof(float)];
+				[auditBlit copyFromBuffer:force.packedMomentumKGPerM2S sourceOffset:0
+					toBuffer:terminal destinationOffset:cells*sizeof(float)
+					size:allFaces*sizeof(float)];
+				[auditBlit endEncoding];CommitTrackedMetalCommand(auditCommand);
+				[auditCommand waitUntilCompleted];
+				const float* audit=static_cast<const float*>(ReadTrackedMetalBuffer(terminal));
+				if(!audit)return;
+				float minimumGas=std::numeric_limits<float>::infinity(),maximumGas=0.0f,
+					maximumMomentum=0.0f;
+				for(std::size_t cell=0u;cell<cells;++cell){minimumGas=std::min(minimumGas,
+					audit[cell]);maximumGas=std::max(maximumGas,audit[cell]);}
+				for(std::size_t face=0u;face<allFaces;++face)maximumMomentum=std::max(
+					maximumMomentum,std::fabs(audit[cells+face]));
+				if(structuredError)*structuredError+=" [accepted_gas_min="+
+					std::to_string(minimumGas)+" accepted_gas_max="+
+					std::to_string(maximumGas)+" provisional_momentum_abs_max="+
+					std::to_string(maximumMomentum)+"]";
+			};
 			result.phase=FireProductionSingleStageFCTDiagnosticPhase::PhysicalProjection;
 			if(tailActive){
 				FireProductionMetalProjectionResidentState physicalState;
 				if(!ProjectFireProductionMetalResidentState(projectionRequest,projectionInput,
-					physicalState,result.physicalProjection,structuredError))return false;
+					physicalState,result.physicalProjection,structuredError)){
+					appendProvisionalAudit();return false;}
 				FireProductionProjectionRequest restorationRequest=projectionRequest;
 				restorationRequest.divergenceTargetPerS=tailTarget;
 				FireProductionMetalProjectionResidentInput restorationInput;
@@ -4872,7 +4926,7 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 				if(!ProjectFireProductionMetalRestorationResident(restorationRequest,restorationInput,
 					tailPrivate,result.projection,structuredError))return false;
 			}else if(!ProjectFireProductionMetalResident(projectionRequest,projectionInput,
-				result.projection,structuredError))return false;
+				result.projection,structuredError)){appendProvisionalAudit();return false;}
 
 			id<MTLCommandBuffer> terminalCommand=TrackedMetalCommandBuffer(context.queue);
 			blit=terminalCommand?[terminalCommand blitCommandEncoder]:nil;
@@ -4900,29 +4954,74 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			std::vector<float> scalarWords(published,published+scalarWordCount);
 			result.scalarStageIdentity=OrderedAcceptedFloatFieldDigest(scalarWords,
 				UINT64_C(0x7363616c61725f31));
-			auto exactWords=[](const float* metal,const std::vector<float>& cpu){
-				for(std::size_t index=0u;index<cpu.size();++index){std::uint32_t metalBits=0u,
-					cpuBits=0u;std::memcpy(&metalBits,metal+index,sizeof(metalBits));
-					std::memcpy(&cpuBits,&cpu[index],sizeof(cpuBits));if(metalBits!=cpuBits)return false;}
-				return true;};
-			bool scalarExact=scalarReference.packedFaceOffset==faceOffset&&
+			const float unitRoundoff=0.5f*std::numeric_limits<float>::epsilon();
+			const float gamma128=128.0f*unitRoundoff/(1.0f-128.0f*unitRoundoff);
+			result.scalarStageGamma128=gamma128;
+			bool scalarExact=true,scalarExactZero=true;std::string scalarComparisonError;
+			auto compareGrouped=[&](const char* field,const float* metal,
+				const std::vector<float>& cpu,const std::size_t groups,
+				const std::size_t valuesPerGroup,float& maximumAbsolute,
+				float& maximumNormalized){
+				if(cpu.size()!=groups*valuesPerGroup){scalarComparisonError=
+					std::string(field)+" shape";return false;}
+				for(std::size_t group=0u;group<groups;++group){float scale=0.0f;
+					for(std::size_t local=0u;local<valuesPerGroup;++local){const std::size_t index=
+						group*valuesPerGroup+local;scale=std::max(scale,std::max(
+						std::fabs(metal[index]),std::fabs(cpu[index])));}
+					const float bound=gamma128*scale;
+					for(std::size_t local=0u;local<valuesPerGroup;++local){const std::size_t index=
+						group*valuesPerGroup+local;const float first=metal[index],second=cpu[index];
+						std::uint32_t metalBits=0u,cpuBits=0u;std::memcpy(&metalBits,&first,sizeof(metalBits));
+						std::memcpy(&cpuBits,&second,sizeof(cpuBits));scalarExact&=metalBits==cpuBits;
+						if((cpuBits&UINT32_C(0x7fffffff))==0u)scalarExactZero&=metalBits==cpuBits;
+						const float difference=std::fabs(first-second);maximumAbsolute=
+							std::max(maximumAbsolute,difference);if(scale>0.0f)maximumNormalized=
+							std::max(maximumNormalized,difference/scale);
+						if(!std::isfinite(first)||!std::isfinite(second)||!std::isfinite(difference)||
+							difference>bound){scalarComparisonError=std::string(field)+"["+
+								std::to_string(index)+"] difference="+std::to_string(difference)+
+								" bound="+std::to_string(bound);return false;}
+					}
+				}
+				return true;
+			};
+			bool scalarEquivalent=scalarReference.packedFaceOffset==faceOffset&&
 				scalarReference.accepted.size()==9u*cells&&
 				scalarReference.lowState.size()==9u*cells&&
 				scalarReference.limiterRatio.size()==11u*cells&&
 				scalarReference.lowFlux.size()==9u*allFaces&&
 				scalarReference.fluxDelta.size()==9u*allFaces&&
-				exactWords(published,scalarReference.accepted)&&
-				exactWords(publishedLowState,scalarReference.lowState)&&
-				exactWords(publishedRatio,scalarReference.limiterRatio)&&
-				exactWords(publishedLow,scalarReference.lowFlux)&&
-				exactWords(publishedDelta,scalarReference.fluxDelta);
-			for(unsigned int axis=0u;axis<3u&&scalarExact;++axis){
+				compareGrouped("low_state",publishedLowState,scalarReference.lowState,9u,cells,
+					result.maximumScalarStageAbsoluteDifference,
+					result.maximumScalarStageNormalizedDifference)&&
+				compareGrouped("ratio",publishedRatio,scalarReference.limiterRatio,11u,cells,
+					result.maximumScalarStageAbsoluteDifference,
+					result.maximumScalarStageNormalizedDifference)&&
+				compareGrouped("low_flux",publishedLow,scalarReference.lowFlux,9u,allFaces,
+					result.maximumScalarStageAbsoluteDifference,
+					result.maximumScalarStageNormalizedDifference)&&
+				compareGrouped("flux_delta",publishedDelta,scalarReference.fluxDelta,9u,allFaces,
+					result.maximumScalarStageAbsoluteDifference,
+					result.maximumScalarStageNormalizedDifference);
+			for(unsigned int axis=0u;axis<3u&&scalarEquivalent;++axis){
 				const std::vector<float>& cpuAlpha=scalarReference.sharedFaceAlpha[axis];
-				if(cpuAlpha.size()!=faceCount[axis]){scalarExact=false;break;}
-				scalarExact=exactWords(publishedAlpha+faceOffset[axis],cpuAlpha);
+				scalarEquivalent=compareGrouped((std::string("alpha_")+std::to_string(axis)).c_str(),
+					publishedAlpha+faceOffset[axis],cpuAlpha,1u,faceCount[axis],
+					result.maximumScalarStageAbsoluteDifference,
+					result.maximumScalarStageNormalizedDifference);
 			}
-			result.scalarStageIdentityPassed=scalarExact;if(!scalarExact)return fail(
-				"production single-stage FCT scalar-stage identity failed");
+			if(scalarEquivalent)scalarEquivalent=compareGrouped("accepted",published,
+				scalarReference.accepted,9u,cells,result.maximumScalarStageAbsoluteDifference,
+				result.maximumScalarStageNormalizedDifference);
+			result.scalarStageIdentityPassed=scalarExact;
+			result.scalarStageExactZeroPassed=scalarExactZero;
+			result.scalarStageProducerEquivalencePassed=scalarEquivalent&&scalarExactZero;
+			if(!result.scalarStageProducerEquivalencePassed){
+				if(structuredError)*structuredError=
+					"production single-stage FCT scalar-stage producer equivalence failed: "+
+					(scalarComparisonError.empty()?"exact-zero identity":scalarComparisonError);
+				return false;
+			}
 			result.scalarAdmissible=true;result.affineIdentityPassed=true;
 			std::vector<float> alphaWords(publishedAlpha,publishedAlpha+allFaces);
 			result.alphaIdentity=OrderedAcceptedFloatFieldDigest(alphaWords,
@@ -4940,20 +5039,34 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			FireProductionCompatibleFCTMomentumResult comparison;
 			if(!EvaluateFireProductionCompatibleFCTMomentumCPU(comparator,comparison,structuredError))
 				return false;
-			float maximumResidual=0.0f;bool exact=true;
-			for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;
-				face<faceCount[axis];++face){const float metal=publishedRate[faceOffset[axis]+face],
-					cpu=comparison.advectionRateKGPerM2S2[axis][face];maximumResidual=
-					std::max(maximumResidual,std::fabs(metal-cpu));std::uint32_t mb=0u,cb=0u;
-					std::memcpy(&mb,&metal,sizeof(mb));std::memcpy(&cb,&cpu,sizeof(cb));exact&=mb==cb;}
-			result.maximumCommutingResidual=std::max(maximumResidual,
+			bool rateEquivalent=true;bool rateExactZeroBefore=scalarExactZero;
+			for(unsigned int axis=0u;axis<3u&&rateEquivalent;++axis)rateEquivalent=compareGrouped(
+				(std::string("compatible_rate_")+std::to_string(axis)).c_str(),
+				publishedRate+faceOffset[axis],comparison.advectionRateKGPerM2S2[axis],1u,
+				faceCount[axis],result.maximumCompatibleRateAbsoluteDifference,
+				result.maximumCompatibleRateNormalizedDifference);
+			result.compatibleRateExactZeroPassed=scalarExactZero;
+			result.compatibleRateProducerEquivalencePassed=rateEquivalent&&scalarExactZero;
+			scalarExactZero=rateExactZeroBefore;
+			result.maximumCommutingResidual=std::max(result.maximumCompatibleRateAbsoluteDifference,
 				scalarReference.maximumCommutingResidualKGPerM3);
-			const bool scalarCommuting=!allPeriodic||
-				(scalarReference.commutingIdentityAvailable&&
-				scalarReference.maximumCommutingResidualKGPerM3==0.0f);
-			result.commutingIdentityPassed=exact&&scalarCommuting;
-			if(!result.commutingIdentityPassed)return fail(
-				"production single-stage FCT compatible-rate identity failed");
+			const float commutingBound=gamma128*scalarReference.commutingIdentityScaleKGPerM3;
+			const bool scalarCommuting=scalarReference.commutingIdentityAvailable&&
+				std::isfinite(commutingBound)&&
+				scalarReference.maximumCommutingResidualKGPerM3<=commutingBound;
+			result.commutingIdentityPassed=scalarCommuting;
+			if(!result.compatibleRateProducerEquivalencePassed)return fail(
+				"production single-stage FCT compatible-rate producer equivalence failed");
+			if(!result.commutingIdentityPassed){if(structuredError)*structuredError=
+				"production single-stage FCT compatible-rate identity failed: residual="+
+				std::to_string(scalarReference.maximumCommutingResidualKGPerM3)+" bound="+
+				std::to_string(commutingBound)+" component="+
+				std::to_string(scalarReference.commutingIdentityComponent)+" face="+
+				std::to_string(scalarReference.commutingIdentityFace)+" accepted="+
+				std::to_string(scalarReference.commutingIdentityRestrictedAcceptedKGPerM3)+
+				" advanced="+std::to_string(scalarReference.commutingIdentityAdvancedKGPerM3);
+				return false;
+			}
 			result.residentProjectionInvocationCount=result.projection.residentProjectionInvocationCount+
 				result.physicalProjection.residentProjectionInvocationCount;
 			result.interstageFullGridTransferCount=force.diagnostics.substepLoopDeviceToHostTransferCount+

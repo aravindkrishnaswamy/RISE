@@ -912,10 +912,19 @@ namespace RISE
 		std::uint64_t alphaIdentity;
 		std::uint64_t scalarStageIdentity;
 		float maximumCommutingResidual;
+		float scalarStageGamma128;
+		float maximumScalarStageAbsoluteDifference;
+		float maximumScalarStageNormalizedDifference;
+		float maximumCompatibleRateAbsoluteDifference;
+		float maximumCompatibleRateNormalizedDifference;
 		double tailDrainedVolumeM3;
 		bool pipelineIdentityComplete;
 		bool scalarAdmissible;
 		bool scalarStageIdentityPassed;
+		bool scalarStageExactZeroPassed;
+		bool scalarStageProducerEquivalencePassed;
+		bool compatibleRateExactZeroPassed;
+		bool compatibleRateProducerEquivalencePassed;
 		bool affineIdentityPassed;
 		bool commutingIdentityPassed;
 		bool accepted;
@@ -929,9 +938,15 @@ namespace RISE
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),failureBitmap(0u),
 			tailCellCount(0u),certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
 			alphaIdentity(0u),scalarStageIdentity(0u),maximumCommutingResidual(0.0f),
+			scalarStageGamma128(0.0f),maximumScalarStageAbsoluteDifference(0.0f),
+			maximumScalarStageNormalizedDifference(0.0f),
+			maximumCompatibleRateAbsoluteDifference(0.0f),
+			maximumCompatibleRateNormalizedDifference(0.0f),
 			tailDrainedVolumeM3(0.0),
 			pipelineIdentityComplete(false),scalarAdmissible(false),
-			scalarStageIdentityPassed(false),affineIdentityPassed(false),
+			scalarStageIdentityPassed(false),scalarStageExactZeroPassed(false),
+			scalarStageProducerEquivalencePassed(false),compatibleRateExactZeroPassed(false),
+			compatibleRateProducerEquivalencePassed(false),affineIdentityPassed(false),
 			commutingIdentityPassed(false),accepted(false) {}
 	};
 

@@ -103,6 +103,91 @@ namespace RISEFireProductionFP64
 			deviceElapsedMS(0.0) {}
 	};
 
+	//! Pure Section 3.7 compatible-flux operator input.  Low and high are the
+	//! advective gas-mass flux pair on primal MAC faces.  Physical gas flux is
+	//! optional per axis (an empty vector is exact +0).  The shared face alpha
+	//! and velocity are frozen operands; this seam computes no evolving state.
+	struct FireProductionCompatibleFCTMomentumRequest
+	{
+		FireProductionProjectionShape shape;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::array<std::vector<double>,3> lowGasFluxKGPerM2S;
+		std::array<std::vector<double>,3> highGasFluxKGPerM2S;
+		std::array<std::vector<double>,3> physicalGasFluxKGPerM2S;
+		std::array<std::vector<double>,3> sharedFaceAlpha;
+		std::array<std::vector<double>,3> frozenVelocityMPerS;
+
+		FireProductionCompatibleFCTMomentumRequest()
+		{
+			boundary.fill(FireProductionProjectionWall);
+		}
+	};
+
+	struct FireProductionCompatibleFCTMomentumResult
+	{
+		std::array<std::vector<double>,3> acceptedGasFluxKGPerM2S;
+		std::array<std::vector<double>,3> advectionRateKGPerM2S2;
+	};
+
+	//! Strict-binary32 owner surface for the four scalar stages used by the
+	//! isolated full-FCT diagnostic: donor/MC pair, r60 shared alpha, source-
+	//! inclusive scalar commit, and the periodic D_i I_i commuting witness.
+	//! Cell tuples are component-major [9][cells].  Flux tuples are
+	//! component-major over the packed x/y/z primal faces.
+	struct FireProductionScalarFCTRequest
+	{
+		FireProductionProjectionShape shape;
+		double timeStepS;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		std::vector<double> beginning;
+		std::vector<double> sourceDelta;
+		std::array<std::vector<double>,3> frozenVelocityMPerS;
+		std::array<double,9> ambient;
+		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		std::size_t nullity;
+		std::vector<double> nullspaceBasis;
+		std::vector<double> coordinateProjector;
+		std::array<double,14> enthalpyBoundsJPerKG;
+		double feasibilityFactor;
+		double assemblyReserveFactor;
+
+		FireProductionScalarFCTRequest() : timeStepS(0.0),nullity(0u),
+			feasibilityFactor(0.0),assemblyReserveFactor(0.0)
+		{
+			boundary.fill(FireProductionProjectionWall);ambient.fill(0.0);
+			enthalpyBoundsJPerKG.fill(0.0);
+		}
+	};
+
+	struct FireProductionScalarFCTResult
+	{
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<double> lowFlux;
+		std::vector<double> fluxDelta;
+		std::vector<double> lowState;
+		std::vector<double> limiterRatio;
+		std::array<std::vector<double>,3> sharedFaceAlpha;
+		std::vector<double> accepted;
+		std::array<std::vector<double>,3> acceptedGasFluxKGPerM2S;
+		double maximumCommutingResidualKGPerM3;
+		double commutingIdentityScaleKGPerM3;
+		double commutingIdentityRestrictedAcceptedKGPerM3;
+		double commutingIdentityAdvancedKGPerM3;
+		unsigned int commutingIdentityComponent;
+		std::size_t commutingIdentityFace;
+		bool commutingIdentityAvailable;
+
+		FireProductionScalarFCTResult() : maximumCommutingResidualKGPerM3(0.0),
+			commutingIdentityScaleKGPerM3(0.0),
+			commutingIdentityRestrictedAcceptedKGPerM3(0.0),
+			commutingIdentityAdvancedKGPerM3(0.0),commutingIdentityComponent(0u),
+			commutingIdentityFace(0u),
+			commutingIdentityAvailable(false)
+		{
+			packedFaceOffset.fill(0u);
+		}
+	};
+
 	using FireProductionPeriodicDualMomentumRequest=FireProductionDualMomentumRequest;
 	using FireProductionPeriodicDualMomentumResult=FireProductionDualMomentumResult;
 
@@ -259,6 +344,19 @@ namespace RISEFireProductionFP64
 		const FireProductionDualMomentumRequest& request,
 		const std::array<std::vector<double>,5>& acceptedGasMassDoseKGPerM2,
 		FireProductionDualMomentumResult& result,
+		std::string* error=0 );
+
+	//! Evaluates K_i=I_i(low+alpha*(high-low)+physical)*mean(u) and then D_i K_i.
+	//! All-periodic and all-nonperiodic topologies are supported.  Hybrid
+	//! periodic/open topology is rejected until it has an authoritative oracle.
+	bool EvaluateFireProductionCompatibleFCTMomentumCPU(
+		const FireProductionCompatibleFCTMomentumRequest& request,
+		FireProductionCompatibleFCTMomentumResult& result,
+		std::string* error=0 );
+
+	bool EvaluateFireProductionScalarFCTCPU(
+		const FireProductionScalarFCTRequest& request,
+		FireProductionScalarFCTResult& result,
 		std::string* error=0 );
 
 	//! Step-boundary oracle for one of the nine dual-grid line layouts.  The

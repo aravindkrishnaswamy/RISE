@@ -217,6 +217,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE");
 	if(closureConvergenceValue&&std::strcmp(closureConvergenceValue,"1")!=0)return 200;
 	const bool closureConvergence=closureConvergenceValue!=nullptr;
+	const char* singleStageFCTSmokeValue=std::getenv(
+		"RISE_FIRE_SINGLE_STAGE_FCT_SMOKE");
+	if(singleStageFCTSmokeValue&&std::strcmp(singleStageFCTSmokeValue,"1")!=0)return 180;
+	const bool singleStageFCTSmoke=singleStageFCTSmokeValue!=nullptr;
 	if((plateauProbe&&manifoldProbe)||(plateauProbe&&stageBudgetProbe)||
 		(manifoldProbe&&stageBudgetProbe)||(timestepVelocityAuditPresent&&plateauProbe)||
 		(timestepVelocityAuditPresent&&manifoldProbe)||
@@ -236,7 +240,10 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 		(contractionProbe&&(plateauProbe||manifoldProbe||stageBudgetProbe||
 			timestepVelocityAuditPresent))||
 		(closureConvergence&&(plateauProbe||manifoldProbe||stageBudgetProbe||
-			timestepVelocityAuditPresent||longShadow||contractionProbe)))return 224;
+			timestepVelocityAuditPresent||longShadow||contractionProbe))||
+		(singleStageFCTSmoke&&(plateauProbe||manifoldProbe||stageBudgetProbe||
+			timestepVelocityAuditPresent||longShadow||contractionProbe||closureConvergence||
+			goldenSubdominance||equalTimeReadmission||thermoSourceMaps)))return 224;
 	std::array<double,9> productionDistance={{}},oracleDistance={{}},scalarBound={{}},
 		oracleScalarBound={{}},inventoryDistance={{}},oracleInventoryDistance={{}},
 		inventoryBound={{}},oracleInventoryBound={{}};
@@ -2841,6 +2848,70 @@ int RunProductionGoldenCompositionFixture(const std::filesystem::path& checkpoin
 			std::vector<float>().swap(equalTimeSerialTerminalTarget);
 			std::vector<ConservativeVector>().swap(conservative);
 			std::vector<MethaneSourcePacket>().swap(zeroPackets);
+		}
+		if(singleStageFCTSmoke){
+			RISE::FireProductionSingleStageFCTBoundaryState boundaryState;
+			boundaryState.statePayloadIdentity=RISE::FireProductionAcceptedStatePayloadDigestFast(
+				request.force.shape,request.cellTransport.conservativeValues,
+				request.force.beginningMomentumKGPerM2S,
+				request.cellTransport.frozenVelocityMPerS);
+			for(unsigned int side=0u;side<6u;++side){
+				const std::size_t count=side<2u?request.force.shape.ny*request.force.shape.nz:
+					(side<4u?request.force.shape.nx*request.force.shape.nz:
+					request.force.shape.nx*request.force.shape.ny);
+				boundaryState.pressureOpenInflow[side].assign(count,0u);
+			}
+			std::string boundaryError;
+			const bool sealed=RISE::SealFireProductionSingleStageFCTBoundaryState(
+				request.force.shape,request.force.boundary,boundaryState,&boundaryError);
+			RISE::FireProductionSingleStageFCTDiagnosticResult candidate;
+			const std::uint64_t commitsBefore=RISE::FireProductionResidentStepMetalCommandCommitCount();
+			const auto start=std::chrono::steady_clock::now();
+			const bool computed=sealed&&RISE::AttemptFireProductionSingleStageFCTDiagnosticMetal(
+				request,boundaryState,candidate,&boundaryError);
+			const double wallMS=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-start).count();
+			const std::uint64_t commitsAfter=RISE::FireProductionResidentStepMetalCommandCommitCount();
+			const bool accepted=computed&&candidate.accepted&&
+				candidate.phase==RISE::FireProductionSingleStageFCTDiagnosticPhase::Accepted&&
+				candidate.operatorVersion==1u&&candidate.pipelineIdentityComplete&&
+				candidate.fluxPairBuildCount==1u&&candidate.fctSolveCount==1u&&
+				candidate.compatibleRateApplicationCount==1u&&
+				candidate.sourceApplicationCount==1u&&candidate.scalarAdmissible&&
+				candidate.scalarStageProducerEquivalencePassed&&
+				candidate.scalarStageExactZeroPassed&&
+				candidate.compatibleRateProducerEquivalencePassed&&
+				candidate.compatibleRateExactZeroPassed&&candidate.affineIdentityPassed&&
+				candidate.commutingIdentityPassed&&candidate.failureBitmap==0u&&
+				candidate.terminalStagingCount>=1u&&
+				candidate.actualMetalAllocationBytes<=candidate.certifiedWorkingSetBytes&&
+				candidate.beginningStateIdentity==boundaryState.statePayloadIdentity&&
+				candidate.boundaryStateIdentity==boundaryState.identity&&commitsAfter>commitsBefore;
+			std::fprintf(stderr,"SINGLE_STAGE_FCT_SMOKE sealed=%d computed=%d accepted=%d "
+				"phase=%u operator=%u pipelines=%d flux_pairs=%u solves=%u rates=%u sources=%u "
+				"scalar_identity=%d scalar_equivalent=%d scalar_zero=%d scalar_normalized=%.9g "
+				"rate_equivalent=%d rate_zero=%d rate_normalized=%.9g commuting=%d "
+				"residual=%.9g projections=%u transfers=%u "
+				"terminal=%u certified=%llu actual=%llu commits=%llu wall_ms=%.17g error=%s\n",
+				sealed?1:0,computed?1:0,accepted?1:0,static_cast<unsigned int>(candidate.phase),
+				candidate.operatorVersion,candidate.pipelineIdentityComplete?1:0,
+				candidate.fluxPairBuildCount,candidate.fctSolveCount,
+				candidate.compatibleRateApplicationCount,candidate.sourceApplicationCount,
+				candidate.scalarStageIdentityPassed?1:0,
+				candidate.scalarStageProducerEquivalencePassed?1:0,
+				candidate.scalarStageExactZeroPassed?1:0,
+				candidate.maximumScalarStageNormalizedDifference,
+				candidate.compatibleRateProducerEquivalencePassed?1:0,
+				candidate.compatibleRateExactZeroPassed?1:0,
+				candidate.maximumCompatibleRateNormalizedDifference,
+				candidate.commutingIdentityPassed?1:0,
+				candidate.maximumCommutingResidual,candidate.residentProjectionInvocationCount,
+				candidate.interstageFullGridTransferCount,candidate.terminalStagingCount,
+				static_cast<unsigned long long>(candidate.certifiedWorkingSetBytes),
+				static_cast<unsigned long long>(candidate.actualMetalAllocationBytes),
+				static_cast<unsigned long long>(commitsAfter-commitsBefore),wallMS,
+				boundaryError.c_str());
+			return accepted?179:180;
 		}
 		RISE::FireProductionResidentStepResult production;
 		bool productionSucceeded=false;

@@ -1479,19 +1479,18 @@ namespace RISE
 								float divergence=0.0f;
 								for( unsigned int derivative=0u;derivative<3u;++derivative ) {
 									std::size_t ncx=x,ncy=y,ncz=z,pdx=x,pdy=y,pdz=z,
-										ncpdx=x,ncpdy=y,ncpdz=z,ndx=x,ndy=y,ndz=z;
+										pcx=x,pcy=y,pcz=z,ndx=x,ndy=y,ndz=z;
 									const std::size_t componentCoordinate=AxisCoordinate(component,x,y,z);
 									const std::size_t derivativeCoordinate=AxisCoordinate(derivative,x,y,z);
+									const std::size_t nextDerivative=nextCoordinate(derivativeCoordinate,
+										AxisCoordinateExtent(shape,derivative));
 									SetAxisCoordinate(component,nextCoordinate(componentCoordinate,
 										AxisCoordinateExtent(shape,component)),ncx,ncy,ncz);
 									SetAxisCoordinate(derivative,previousCoordinate(derivativeCoordinate,
 										AxisCoordinateExtent(shape,derivative)),pdx,pdy,pdz);
-									ncpdx=ncx;ncpdy=ncy;ncpdz=ncz;
-									SetAxisCoordinate(derivative,previousCoordinate(AxisCoordinate(
-										derivative,ncx,ncy,ncz),AxisCoordinateExtent(shape,derivative)),
-										ncpdx,ncpdy,ncpdz);
-									SetAxisCoordinate(derivative,nextCoordinate(derivativeCoordinate,
-										AxisCoordinateExtent(shape,derivative)),ndx,ndy,ndz);
+									SetAxisCoordinate(component,previousCoordinate(componentCoordinate,
+										AxisCoordinateExtent(shape,component)),pcx,pcy,pcz);
+									SetAxisCoordinate(derivative,nextDerivative,ndx,ndy,ndz);
 									auto massFlux=[&]( std::size_t fx, std::size_t fy,
 										std::size_t fz ) {return computed.acceptedGasFluxKGPerM2S[
 										derivative][FaceIndex(shape,derivative,fx,fy,fz)];};
@@ -1506,12 +1505,15 @@ namespace RISE
 											 component,pdx,pdy,pdz)]+
 											 request.frozenVelocityMPerS[component][componentFace]);
 									} else {
-										upper=0.25f*(massFlux(x,y,z)+massFlux(ncx,ncy,ncz))*
+										std::size_t pcux=pcx,pcuy=pcy,pcuz=pcz,
+											cux=x,cuy=y,cuz=z;
+										SetAxisCoordinate(derivative,nextDerivative,pcux,pcuy,pcuz);
+										SetAxisCoordinate(derivative,nextDerivative,cux,cuy,cuz);
+										upper=0.25f*(massFlux(pcux,pcuy,pcuz)+massFlux(cux,cuy,cuz))*
 											(request.frozenVelocityMPerS[component][componentFace]+
 											 request.frozenVelocityMPerS[component][FaceIndex(shape,
 											 component,ndx,ndy,ndz)]);
-										lower=0.25f*(massFlux(pdx,pdy,pdz)+
-											massFlux(ncpdx,ncpdy,ncpdz))*
+										lower=0.25f*(massFlux(pcx,pcy,pcz)+massFlux(x,y,z))*
 											(request.frozenVelocityMPerS[component][FaceIndex(shape,
 											 component,pdx,pdy,pdz)]+
 											 request.frozenVelocityMPerS[component][componentFace]);
@@ -1622,6 +1624,7 @@ namespace RISE
 								if( (lowerBoundary||upperBoundary)&&request.boundary[
 									2u*component+(upperBoundary?1u:0u)]!=
 									FireProductionProjectionPressureOpen ) divergence=0.0f;
+								else if( lowerBoundary||upperBoundary ) divergence*=0.5f;
 								if( !std::isfinite(divergence) ) return Fail(error,
 									"compatible FCT momentum open rate is nonfinite");
 								computed.advectionRateKGPerM2S2[component][componentFace]=divergence;
@@ -1739,7 +1742,7 @@ namespace RISE
 					request.pressureOpenInflow[side][sideIndex(side,x,y,z)]!=0u?
 					request.ambient[component]:interior;
 			};
-			auto mc=[](const float backward,const float forward){
+			auto mc=[](const float backward,const float forward)->float{
 				if(backward*forward<=0.0f)return 0.0f;
 				const float centered=0.5f*(backward+forward);
 				const float sign=centered<0.0f?-1.0f:1.0f;
@@ -1986,64 +1989,73 @@ namespace RISE
 				}
 			}
 
-			computed.commutingIdentityAvailable=allPeriodic;
-			if(allPeriodic){
-				std::vector<float> baseGas(cells,0.0f),acceptedGas(cells,0.0f);
-				for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;
-					component<=6u;++component){baseGas[cell]+=request.beginning[component*cells+cell]+
-						request.sourceDelta[component*cells+cell];
-					acceptedGas[cell]+=computed.accepted[component*cells+cell];}
-				for(unsigned int component=0u;component<3u;++component)
-					for(std::size_t z=0u;z<shape.nz;++z)for(std::size_t y=0u;y<shape.ny;++y)
-						for(std::size_t x=0u;x<shape.nx;++x){
-							const std::size_t normal=AxisCoordinate(component,x,y,z);
-							const std::size_t extent=AxisCoordinateExtent(shape,component);
-							std::size_t px=x,py=y,pz=z;
-							SetAxisCoordinate(component,normal?normal-1u:extent-1u,px,py,pz);
-							const std::size_t previousCell=CellIndex(shape,px,py,pz);
-							const std::size_t currentCell=CellIndex(shape,x,y,z);
-							float dualDivergence=0.0f;
-							for(unsigned int derivative=0u;derivative<3u;++derivative){
-								const std::size_t position=AxisCoordinate(derivative,x,y,z);
-								auto restrictedFlux=[&](const std::size_t derivativeBoundary){
-									if(derivative==component){
-										const std::size_t derivativeExtent=AxisCoordinateExtent(
-											shape,derivative);
-										const std::size_t canonical=derivativeBoundary==derivativeExtent?
-											0u:derivativeBoundary;
-										const std::size_t previous=canonical?canonical-1u:
-											derivativeExtent-1u;
-										std::size_t firstX=x,firstY=y,firstZ=z,
-											secondX=x,secondY=y,secondZ=z;
-										SetAxisCoordinate(derivative,previous,firstX,firstY,firstZ);
-										SetAxisCoordinate(derivative,canonical,secondX,secondY,secondZ);
-										return 0.5f*(computed.acceptedGasFluxKGPerM2S[derivative][
-											FaceIndex(shape,derivative,firstX,firstY,firstZ)]+
-											computed.acceptedGasFluxKGPerM2S[derivative][
-											FaceIndex(shape,derivative,secondX,secondY,secondZ)]);
-									}
-									std::size_t lowerX=px,lowerY=py,lowerZ=pz,
-										upperX=x,upperY=y,upperZ=z;
-									SetAxisCoordinate(derivative,derivativeBoundary,
-										lowerX,lowerY,lowerZ);
-									SetAxisCoordinate(derivative,derivativeBoundary,
-										upperX,upperY,upperZ);
-									return 0.5f*(computed.acceptedGasFluxKGPerM2S[derivative][
-										FaceIndex(shape,derivative,lowerX,lowerY,lowerZ)]+
-										computed.acceptedGasFluxKGPerM2S[derivative][
-										FaceIndex(shape,derivative,upperX,upperY,upperZ)]);
-								};
-								dualDivergence+=(restrictedFlux(position+1u)-
-									restrictedFlux(position))/shape.cellWidthM;
-							}
-							const float dualAccepted=0.5f*(baseGas[previousCell]+baseGas[currentCell])-
-								request.timeStepS*dualDivergence;
-							const float restrictedAccepted=0.5f*(acceptedGas[previousCell]+
-								acceptedGas[currentCell]);
-							computed.maximumCommutingResidualKGPerM3=std::max(
-								computed.maximumCommutingResidualKGPerM3,
-								std::fabs(restrictedAccepted-dualAccepted));
+			std::vector<float> baseGas(cells,0.0f),acceptedGas(cells,0.0f);
+			float ambientGas=0.0f;
+			for(std::size_t component=1u;component<=6u;++component)
+				ambientGas+=request.ambient[component];
+			for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;
+				component<=6u;++component){baseGas[cell]+=request.beginning[component*cells+cell]+
+					request.sourceDelta[component*cells+cell];
+				acceptedGas[cell]+=computed.accepted[component*cells+cell];}
+			FireProductionCompatibleFCTMomentumRequest identityRequest;
+			identityRequest.shape=shape;identityRequest.boundary=request.boundary;
+			for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+				FireProductionProjectionFaceCount(shape,axis);
+				identityRequest.lowGasFluxKGPerM2S[axis]=computed.acceptedGasFluxKGPerM2S[axis];
+				identityRequest.highGasFluxKGPerM2S[axis]=computed.acceptedGasFluxKGPerM2S[axis];
+				identityRequest.sharedFaceAlpha[axis].assign(faces,0.0f);
+				identityRequest.frozenVelocityMPerS[axis].assign(faces,1.0f);
+			}
+			FireProductionCompatibleFCTMomentumResult identityRate;
+			if(!EvaluateFireProductionCompatibleFCTMomentumCPU(identityRequest,identityRate,error))
+				return false;
+			computed.commutingIdentityAvailable=true;
+			for(unsigned int component=0u;component<3u;++component){
+				const std::size_t xEnd=shape.nx+(component==0u?1u:0u),
+					yEnd=shape.ny+(component==1u?1u:0u),
+					zEnd=shape.nz+(component==2u?1u:0u),
+					extent=AxisCoordinateExtent(shape,component);
+				for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+					for(std::size_t x=0u;x<xEnd;++x){const std::size_t normal=
+						AxisCoordinate(component,x,y,z),face=FaceIndex(shape,component,x,y,z);
+						const bool boundaryFace=normal==0u||normal==extent;
+						const unsigned int side=2u*component+(normal==extent?1u:0u);
+						if(boundaryFace&&request.boundary[side]==FireProductionProjectionWall){
+							std::uint32_t rateBits=0u;std::memcpy(&rateBits,
+								&identityRate.advectionRateKGPerM2S2[component][face],sizeof(rateBits));
+							if(rateBits!=0u)return Fail(error,
+								"scalar FCT wall commuting rate is not positive zero");
+							continue;
 						}
+						auto restricted=[&](const std::vector<float>& gas){
+							std::size_t lowX=x,lowY=y,lowZ=z,highX=x,highY=y,highZ=z;
+							if(!boundaryFace){SetAxisCoordinate(component,normal-1u,
+								lowX,lowY,lowZ);return 0.5f*(gas[CellIndex(shape,lowX,lowY,lowZ)]+
+								gas[CellIndex(shape,highX,highY,highZ)]);}
+							if(request.boundary[side]==FireProductionProjectionPeriodic){
+								SetAxisCoordinate(component,extent-1u,lowX,lowY,lowZ);
+								SetAxisCoordinate(component,0u,highX,highY,highZ);
+								return 0.5f*(gas[CellIndex(shape,lowX,lowY,lowZ)]+
+									gas[CellIndex(shape,highX,highY,highZ)]);}
+							SetAxisCoordinate(component,normal==extent?extent-1u:0u,
+								highX,highY,highZ);return 0.5f*(gas[CellIndex(shape,highX,highY,highZ)]+
+								ambientGas);
+						};
+						const float base=restricted(baseGas),acceptedValue=restricted(acceptedGas),
+							advanced=base-request.timeStepS*
+							identityRate.advectionRateKGPerM2S2[component][face];
+						computed.commutingIdentityScaleKGPerM3=std::max(
+							computed.commutingIdentityScaleKGPerM3,std::max(std::fabs(base),
+							std::fabs(acceptedValue)));
+						const float residual=std::fabs(acceptedValue-advanced);
+						if(residual>computed.maximumCommutingResidualKGPerM3){
+							computed.maximumCommutingResidualKGPerM3=residual;
+							computed.commutingIdentityRestrictedAcceptedKGPerM3=acceptedValue;
+							computed.commutingIdentityAdvancedKGPerM3=advanced;
+							computed.commutingIdentityComponent=component;
+							computed.commutingIdentityFace=face;
+						}
+					}
 			}
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarFCTResult();
