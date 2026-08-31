@@ -5872,13 +5872,18 @@ namespace
 		return 0;
 	}
 
+	bool ProductionTemporalCapstoneTierSupported(const double resolutionTier)
+	{
+		return resolutionTier==6.0||resolutionTier==8.0||resolutionTier==10.0;
+	}
+
 	int RunProductionTemporalCapstoneChild(const double resolutionTier,
 		const double frameCadenceS,const std::filesystem::path& outputDirectory)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)frameCadenceS;(void)outputDirectory;return 90;
 #else
-		if((resolutionTier!=6.0&&resolutionTier!=10.0)||!(frameCadenceS>0.0)||
+		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||!(frameCadenceS>0.0)||
 			!std::isfinite(frameCadenceS)||
 			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
 		std::error_code directoryError;
@@ -6494,6 +6499,15 @@ int main(int argc,char** argv)
 		return RunTemporalFirePreviewChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-first-light-preview")==0)
 		return RunFirstLightPreviewChild(argv[2],argv[3]);
+	Check(ProductionTemporalCapstoneTierSupported(6.0)&&
+		ProductionTemporalCapstoneTierSupported(8.0)&&
+		ProductionTemporalCapstoneTierSupported(10.0),
+		"production temporal capstone admits the sealed preview and claim tiers");
+	Check(!ProductionTemporalCapstoneTierSupported(5.0)&&
+		!ProductionTemporalCapstoneTierSupported(7.0)&&
+		!ProductionTemporalCapstoneTierSupported(9.0)&&
+		!ProductionTemporalCapstoneTierSupported(11.0),
+		"production temporal capstone refuses unsupported neighboring tiers");
 	{
 		std::vector<double> time(129u),signal(129u);
 		for(std::size_t sample=0u;sample<time.size();++sample){
