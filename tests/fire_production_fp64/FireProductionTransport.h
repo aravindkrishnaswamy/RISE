@@ -13,6 +13,7 @@
 
 #include "FireProductionAdvection.h"
 #include "FireProductionProjection.h"
+#include "../../src/Library/Utilities/FireSimulationRecords.h"
 
 #include <array>
 #include <cstddef>
@@ -240,6 +241,67 @@ namespace RISEFireProductionFP64
 		}
 	};
 
+	//! The two accepted conservative states that require an EOS gate in the
+	//! projected-Heun construction.  Zero is deliberately not a valid role.
+	enum class FireProductionScalarEOSStage : std::uint8_t
+	{
+		QStar=1u,
+		QNPlus1=2u
+	};
+
+	//! CPU-only prerequisite for accepting one completed scalar state.  This is
+	//! intentionally not wired into the projected-Heun owner: the owner and its
+	//! Metal-resident equivalent must fail closed until they consume this sealed
+	//! result without host substitution.
+	struct FireProductionScalarEOSAcceptanceRequest
+	{
+		FireProductionProjectionShape shape;
+		double timeStepS;
+		std::uint64_t attemptIdentity;
+		FireProductionScalarEOSStage stage;
+		RISE::FireStateProducerPrecision producerPrecision;
+		std::string methaneRecordId;
+		//! Canonical fire-case-v1 envelope. The gate derives its identity and
+		//! inversion bounds from these bytes; caller-authored ceilings are not an
+		//! API surface.
+		RISE::RISECBOR64::Bytes caseRecordEnvelope;
+		std::vector<double> conservativeValues;
+
+		FireProductionScalarEOSAcceptanceRequest() : timeStepS(0.0),
+			attemptIdentity(0u),stage(static_cast<FireProductionScalarEOSStage>(0u)),
+			producerPrecision(RISE::FireStateProducerPrecision::Binary32) {}
+	};
+
+	//! Identity-bearing publication from the accepted-state EOS gate.  The
+	//! identity covers the exact request state and all attempt/role/bound record
+	//! metadata, plus the exact published binary32 temperature field.
+	struct FireProductionScalarEOSAcceptanceResult
+	{
+		FireProductionProjectionShape shape;
+		double timeStepS;
+		std::uint64_t attemptIdentity;
+		FireProductionScalarEOSStage stage;
+		RISE::FireStateProducerPrecision producerPrecision;
+		std::string methaneRecordId;
+		std::string caseRecordId;
+		double lowerTemperatureK;
+		double upperTemperatureK;
+		std::vector<double> temperatureK;
+		//! Monitored P0-deviation diagnostic. The retired oracle 1e-3 validity
+		//! detector is not a production acceptance threshold.
+		double maximumEOSResidual;
+		std::uint64_t stateDigest;
+		std::uint64_t temperatureDigest;
+		std::uint64_t acceptanceIdentity;
+		bool accepted;
+
+		FireProductionScalarEOSAcceptanceResult() : timeStepS(0.0),
+			attemptIdentity(0u),stage(static_cast<FireProductionScalarEOSStage>(0u)),
+			producerPrecision(RISE::FireStateProducerPrecision::Binary32),
+			lowerTemperatureK(0.0),upperTemperatureK(0.0),maximumEOSResidual(0.0),
+			stateDigest(0u),temperatureDigest(0u),acceptanceIdentity(0u),accepted(false) {}
+	};
+
 	//! Identity-bearing donor/MC flux pair for one scalar FCT stage.  The pair
 	//! deliberately excludes limiter state: projected Heun averages the two
 	//! stage fluxes, then solves one fresh shared limiter for the averaged pair.
@@ -441,6 +503,26 @@ namespace RISEFireProductionFP64
 		const FireProductionScalarFCTRequest& request,
 		FireProductionScalarFCTResult& result,
 		std::string* error=0 );
+
+	//! Exact logical payload peak: component-major Q[9][C] plus T[C].
+	//! Query-only; allocation and payload inspection are forbidden here.
+	bool QueryFireProductionScalarEOSAcceptanceCPUWorkingSetBytes(
+		const FireProductionProjectionShape& shape,
+		std::uint64_t& workingSetBytes,
+		std::string* error=0 );
+
+	//! Allocation-free per-cell record inversion apart from the single published
+	//! temperature vector. The authenticated case envelope owns the strict upper
+	//! temperature bound; p/P0 deviation is published as a monitored diagnostic.
+	bool EvaluateFireProductionScalarEOSAcceptanceCPU(
+		const FireProductionScalarEOSAcceptanceRequest& request,
+		FireProductionScalarEOSAcceptanceResult& result,
+		std::string* error=0 );
+
+	//! Verifies exact request/result provenance without rerunning thermochemistry.
+	bool FireProductionScalarEOSAcceptanceMatches(
+		const FireProductionScalarEOSAcceptanceRequest& request,
+		const FireProductionScalarEOSAcceptanceResult& result );
 
 	//! Builds only the donor/MC flux pair from Q and the frozen carrier.  Source
 	//! dose and limiter acceptance are not applied by this stage.

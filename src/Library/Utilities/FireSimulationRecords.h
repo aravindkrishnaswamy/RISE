@@ -253,6 +253,22 @@ namespace RISE
 			std::size_t enthalpyCount,
 			FireStateProducerPrecision producerPrecision,
 			std::string* error = 0 ) const;
+		//! Canonical allocation-free accepted-state inversion over explicit bounds.
+		//! Signed stored constituent densities define sensible energy; positive-part
+		//! gas availability defines the ideal-gas pressure ratio p/P0.
+		bool InvertAcceptedConservativeStateByComponentOrder(
+			const double* conservativeValues, std::size_t count,
+			double lowerTemperatureK, double upperTemperatureK,
+			FireStateProducerPrecision producerPrecision,
+			double& temperatureK, double& pressureRatio,
+			std::string* error = 0 ) const;
+		//! Canonical accepted-state ideal-gas evaluation at a represented
+		//! temperature. This preserves the oracle's gas-density, molar-density,
+		//! mean-weight, represented-pressure operation order.
+		bool AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+			const double* conservativeValues, std::size_t count,
+			double temperatureK, FireStateProducerPrecision producerPrecision,
+			double& pressureRatio, std::string* error = 0 ) const;
 		//! Accepted-state EOS volume ratio used by the resident manifold gate.
 		//! This first executes the single r60 predicate above; signed stored
 		//! densities participate in energy inversion and positive-part gas

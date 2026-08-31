@@ -9,6 +9,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "FireProductionTransport.h"
+#include "../../src/Library/Utilities/FireCase.h"
 
 #include "FireProductionAdvection.h"
 #include "../../src/Library/Utilities/FireSimulationRecords.h"
@@ -61,6 +62,84 @@ namespace RISEFireProductionFP64
 			if( bytesPerValue&&count>std::numeric_limits<std::uint64_t>::max()/bytesPerValue )
 				return false;
 			return AddMetalBufferBytes(count*bytesPerValue,total);
+		}
+
+		void HashEOSByte( std::uint64_t& hash, const unsigned char value )
+		{
+			hash^=value;hash*=UINT64_C(1099511628211);
+		}
+
+		void HashEOSUInt64( std::uint64_t& hash, const std::uint64_t value )
+		{
+			for(unsigned int byte=0u;byte<8u;++byte)
+				HashEOSByte(hash,static_cast<unsigned char>(value>>(8u*byte)));
+		}
+
+		std::uint64_t EOSDoubleBits( const double value )
+		{
+			std::uint64_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));return bits;
+		}
+
+		void HashEOSDouble( std::uint64_t& hash, const double value )
+		{
+			HashEOSUInt64(hash,EOSDoubleBits(value));
+		}
+
+		void HashEOSFloat( std::uint64_t& hash, const double value )
+		{
+			// Conversion is injective for every finite binary32 value and survives
+			// the mechanically generated fp64/roundoff mirrors.
+			HashEOSDouble(hash,static_cast<double>(value));
+		}
+
+		void HashEOSString( std::uint64_t& hash, const std::string& value )
+		{
+			HashEOSUInt64(hash,value.size());
+			for(const unsigned char byte:value)HashEOSByte(hash,byte);
+		}
+
+		std::uint64_t EOSValueDigest( const std::vector<double>& values )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			HashEOSUInt64(hash,values.size());
+			for(const double value:values)HashEOSFloat(hash,value);
+			return hash;
+		}
+
+		bool ValidEOSStage( const FireProductionScalarEOSStage stage )
+		{
+			return stage==FireProductionScalarEOSStage::QStar||
+				stage==FireProductionScalarEOSStage::QNPlus1;
+		}
+
+		bool CanonicalEOSRecordId( const std::string& value )
+		{
+			return value.size()==64u&&std::all_of(value.begin(),value.end(),[](const char digit){
+				return (digit>='0'&&digit<='9')||(digit>='a'&&digit<='f');
+			});
+		}
+
+		std::uint64_t EOSAcceptanceIdentity(
+			const FireProductionScalarEOSAcceptanceRequest& request,
+			const std::string& caseRecordId,const double lowerTemperatureK,
+			const double upperTemperatureK,
+			const std::uint64_t stateDigest,const std::uint64_t temperatureDigest,
+			const double maximumEOSResidual )
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			static const char domain[]="RISE scalar accepted-state EOS CPU v1";
+			for(const unsigned char byte:domain)HashEOSByte(hash,byte);
+			HashEOSUInt64(hash,request.shape.nx);HashEOSUInt64(hash,request.shape.ny);
+			HashEOSUInt64(hash,request.shape.nz);HashEOSFloat(hash,request.shape.cellWidthM);
+			HashEOSFloat(hash,request.timeStepS);HashEOSUInt64(hash,request.attemptIdentity);
+			HashEOSUInt64(hash,static_cast<std::uint8_t>(request.stage));
+			HashEOSUInt64(hash,static_cast<std::uint8_t>(request.producerPrecision));
+			HashEOSString(hash,request.methaneRecordId);HashEOSString(hash,caseRecordId);
+			HashEOSDouble(hash,lowerTemperatureK);
+			HashEOSDouble(hash,upperTemperatureK);
+			HashEOSUInt64(hash,stateDigest);HashEOSUInt64(hash,temperatureDigest);
+			HashEOSDouble(hash,maximumEOSResidual);
+			return hash;
 		}
 
 		void FailWithoutThrow( std::string* error, const char* message ) noexcept
@@ -1655,6 +1734,150 @@ namespace RISEFireProductionFP64
 			result=std::move(computed);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){result=FireProductionScalarPhysicalFluxPrerequisiteResult();
 			FailWithoutThrow(error,"physical scalar-flux prerequisite allocation failed");return false;}
+	}
+
+	bool QueryFireProductionScalarEOSAcceptanceCPUWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& workingSetBytes,
+		std::string* error )
+	{
+		workingSetBytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0)||
+			!std::isfinite(shape.cellWidthM))return Fail(error,
+				"scalar EOS acceptance query shape is invalid");
+		if(!AddBytes(shape.CellCount(),10u*sizeof(double),workingSetBytes)){
+			workingSetBytes=0u;return Fail(error,
+				"scalar EOS acceptance query exceeds uint64 capacity");
+		}
+		if(error)error->clear();return true;
+	}
+
+	bool EvaluateFireProductionScalarEOSAcceptanceCPU(
+		const FireProductionScalarEOSAcceptanceRequest& request,
+		FireProductionScalarEOSAcceptanceResult& result,std::string* error )
+	{
+		result=FireProductionScalarEOSAcceptanceResult();
+		try {
+			const RISE::FireSimulationMethaneRecord& record=
+				RISE::FireSimulationMethaneRecord::PhysicalV1();
+			RISE::FireCase::RecordV1 sealedCase;std::string caseError;
+			if(!record.IsValid()||request.methaneRecordId!=record.RecordId()||
+				!CanonicalEOSRecordId(request.methaneRecordId)||
+				!ValidEOSStage(request.stage)||
+				request.producerPrecision!=RISE::FireStateProducerPrecision::Binary32||
+				!(request.timeStepS>0.0)||!std::isfinite(request.timeStepS)||
+				request.attemptIdentity==0u||!RISE::FireCase::ValidateMethaneEnvelopeV1(
+					request.caseRecordEnvelope,record,sealedCase,caseError)||
+				sealedCase.authored.fuelRecordId!=record.RecordId()||
+				!std::isfinite(sealedCase.derived.pilotAmbientTemperatureK)||
+				!std::isfinite(sealedCase.derived.maximumAcceptedTemperatureK)||
+				sealedCase.derived.pilotAmbientTemperatureK<record.TemperatureMinK()||
+				sealedCase.derived.maximumAcceptedTemperatureK>record.TemperatureMaxK()||
+				sealedCase.derived.pilotAmbientTemperatureK>=
+					sealedCase.derived.maximumAcceptedTemperatureK)return Fail(error,
+					"scalar EOS acceptance metadata or payload is invalid");
+			std::uint64_t workingSetBytes=0u;
+			if(!QueryFireProductionScalarEOSAcceptanceCPUWorkingSetBytes(
+				request.shape,workingSetBytes,error))return false;
+			if(workingSetBytes>(std::uint64_t(2u)<<30u))return Fail(error,
+				"scalar EOS acceptance working set exceeds two GiB");
+			const std::size_t cells=request.shape.CellCount();
+			if(request.conservativeValues.size()!=9u*cells)return Fail(error,
+				"scalar EOS acceptance metadata or payload is invalid");
+			const double lowerTemperatureK=sealedCase.derived.pilotAmbientTemperatureK,
+				upperTemperatureK=sealedCase.derived.maximumAcceptedTemperatureK;
+			FireProductionScalarEOSAcceptanceResult computed;
+			computed.shape=request.shape;computed.timeStepS=request.timeStepS;
+			computed.attemptIdentity=request.attemptIdentity;computed.stage=request.stage;
+			computed.producerPrecision=request.producerPrecision;
+			computed.methaneRecordId=request.methaneRecordId;
+			computed.caseRecordId=sealedCase.caseRecordId;
+			computed.lowerTemperatureK=lowerTemperatureK;
+			computed.upperTemperatureK=upperTemperatureK;
+			computed.temperatureK.resize(cells);
+			for(std::size_t cell=0u;cell<cells;++cell){
+				std::array<double,9> state;
+				for(std::size_t component=0u;component<9u;++component){
+					const double value=request.conservativeValues[component*cells+cell];
+					if(!std::isfinite(value))return Fail(error,
+						"scalar EOS acceptance conservative value is nonfinite");
+					state[component]=static_cast<double>(value);
+				}
+				double temperature=0.0,pressureRatio=0.0;
+				if(!record.InvertAcceptedConservativeStateByComponentOrder(state.data(),
+					state.size(),lowerTemperatureK,upperTemperatureK,
+					request.producerPrecision,temperature,pressureRatio,error))return false;
+				if(temperature>=upperTemperatureK)return Fail(error,
+					"scalar EOS acceptance temperature reaches the case ceiling");
+				const double publishedTemperature=static_cast<double>(temperature);
+				if(!std::isfinite(publishedTemperature)||
+					static_cast<double>(publishedTemperature)<lowerTemperatureK||
+					static_cast<double>(publishedTemperature)>=upperTemperatureK)
+					return Fail(error,
+						"scalar EOS acceptance temperature publication is outside the case bounds");
+				double publishedPressureRatio=0.0;
+				if(!record.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+					state.data(),state.size(),static_cast<double>(publishedTemperature),
+					request.producerPrecision,publishedPressureRatio,error))return false;
+				const double residual=std::fabs(publishedPressureRatio-1.0);
+				if(!std::isfinite(residual))return Fail(error,
+					"scalar EOS acceptance pressure residual is nonfinite");
+				computed.temperatureK[cell]=publishedTemperature;
+				computed.maximumEOSResidual=std::max(computed.maximumEOSResidual,residual);
+			}
+			computed.stateDigest=EOSValueDigest(request.conservativeValues);
+			computed.temperatureDigest=EOSValueDigest(computed.temperatureK);
+			computed.acceptanceIdentity=EOSAcceptanceIdentity(request,computed.caseRecordId,
+				lowerTemperatureK,upperTemperatureK,
+				computed.stateDigest,computed.temperatureDigest,computed.maximumEOSResidual);
+			computed.accepted=true;result=std::move(computed);
+			if(error)error->clear();return true;
+		} catch(const std::bad_alloc&) {
+			result=FireProductionScalarEOSAcceptanceResult();
+			FailWithoutThrow(error,"scalar EOS acceptance allocation failed");return false;
+		}
+	}
+
+	bool FireProductionScalarEOSAcceptanceMatches(
+		const FireProductionScalarEOSAcceptanceRequest& request,
+		const FireProductionScalarEOSAcceptanceResult& result )
+	{
+		const RISE::FireSimulationMethaneRecord& record=
+			RISE::FireSimulationMethaneRecord::PhysicalV1();
+		RISE::FireCase::RecordV1 sealedCase;std::string caseError;
+		if(!result.accepted||!ValidEOSStage(request.stage)||!record.IsValid()||
+			request.methaneRecordId!=record.RecordId()||
+			!RISE::FireCase::ValidateMethaneEnvelopeV1(request.caseRecordEnvelope,record,
+				sealedCase,caseError)||
+			request.shape.nx!=result.shape.nx||request.shape.ny!=result.shape.ny||
+			request.shape.nz!=result.shape.nz||
+			EOSDoubleBits(static_cast<double>(request.shape.cellWidthM))!=
+				EOSDoubleBits(static_cast<double>(result.shape.cellWidthM))||
+			EOSDoubleBits(static_cast<double>(request.timeStepS))!=
+				EOSDoubleBits(static_cast<double>(result.timeStepS))||
+			request.attemptIdentity!=result.attemptIdentity||request.stage!=result.stage||
+			request.producerPrecision!=result.producerPrecision||
+			request.methaneRecordId!=result.methaneRecordId||
+			sealedCase.caseRecordId!=result.caseRecordId||
+			EOSDoubleBits(sealedCase.derived.pilotAmbientTemperatureK)!=
+				EOSDoubleBits(result.lowerTemperatureK)||
+			EOSDoubleBits(sealedCase.derived.maximumAcceptedTemperatureK)!=
+				EOSDoubleBits(result.upperTemperatureK)||
+			result.temperatureK.size()!=request.shape.CellCount()||
+			!std::isfinite(result.maximumEOSResidual)||result.maximumEOSResidual<0.0||
+			request.conservativeValues.size()!=9u*request.shape.CellCount())return false;
+		for(const double value:request.conservativeValues)if(!std::isfinite(value))return false;
+		for(const double value:result.temperatureK)if(!std::isfinite(value)||
+			static_cast<double>(value)<result.lowerTemperatureK||
+			static_cast<double>(value)>=result.upperTemperatureK)return false;
+		const std::uint64_t stateDigest=EOSValueDigest(request.conservativeValues),
+			temperatureDigest=EOSValueDigest(result.temperatureK);
+		return stateDigest==result.stateDigest&&temperatureDigest==result.temperatureDigest&&
+			EOSAcceptanceIdentity(request,sealedCase.caseRecordId,
+				sealedCase.derived.pilotAmbientTemperatureK,
+				sealedCase.derived.maximumAcceptedTemperatureK,stateDigest,temperatureDigest,
+				result.maximumEOSResidual)==
+				result.acceptanceIdentity;
 	}
 
 	bool EvaluateFireProductionCompatibleFCTMomentumCPU(

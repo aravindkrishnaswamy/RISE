@@ -4926,6 +4926,48 @@ can the complete stage schedule be wired and compared kernel-by-kernel with the
 oracle.  Promoting the single-stage diagnostic would misrepresent a time
 integrator as §3.7 conformance.
 
+### 7.56q Authenticated accepted-state EOS prerequisite (r184)
+
+r184 closes the CPU acceptance seam for the two conservative states that the
+projected-Heun tableau must invert separately: `Q*` and `Q^(n+1)`.  The request
+cannot author a temperature ceiling.  It carries the canonical fire-case-v1
+envelope, which is validated against PhysicalV1 before any conservative-grid
+payload is inspected; the case record supplies the exact `300 K` lower bound,
+strict `2300 K` maximum-accepted-temperature ceiling, and case SHA.  Stage role,
+represented timestep, attempt identity, shape bytes, fuel/case identities,
+derived bounds, exact conservative bytes, published binary32 temperatures, and
+the monitored pressure-deviation maximum all enter the result identity.  A
+Q-star seal therefore cannot be transplanted to the final Heun state or to a
+stale attempt with the same topology.
+
+The record now exposes one allocation-free signed-mixture inversion over
+explicit authenticated bounds and one canonical pressure-ratio evaluation at
+the published temperature.  The latter deliberately preserves the oracle's
+gas-density, molar-density, mean-molecular-weight, represented-pressure
+operation order rather than using an algebraically equivalent rescaling.  The
+r60 affine envelope remains the admissibility predicate: envelope-negative
+stored species participate in sensible energy unchanged, while positive-part
+gas densities participate in the ideal-gas diagnostic.
+
+Fresh review caught and rejected an initial draft that treated `1e-3` as a
+production pressure gate.  That number is the binary64 oracle's validity
+detector, as corrected in r159; it is not a production thermochemistry-domain
+property.  Production now records the P0 deviation without stalling on it.  A
+uniform `1.01` density/energy scaling is consequently accepted by this
+inversion prerequisite and reports its approximately one-percent deviation;
+the independently owned low-Mach/manifold policy remains the authority for
+fidelity classification.  The strict case temperature ceiling and r60/EOS
+physical evaluability still fail atomically.
+
+The exact CPU logical payload is `40C` bytes (nine binary32 conservative
+components plus one published temperature), with the adjacent two-GiB shapes
+gated before conservative payload access.  The fp64 and roundoff manifests now
+also bind the live FireSimulationRecords and FireCase dependencies used by
+their generated Transport mirrors.  This remains a CPU-only prerequisite: no
+Metal resident inversion, caller-command owner, `Phi_g/J_g` Heun composition,
+packet-derived `S_div`, R0/R1/R2 schedule, onset claim, or tier-10 deliverable
+is enabled by r184.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

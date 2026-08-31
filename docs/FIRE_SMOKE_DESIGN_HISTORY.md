@@ -4609,3 +4609,29 @@ it was already tried and refuted here.
   Picard schedule can be compared kernel-by-kernel against the fp64 oracle.
   This records progress without reviving the rejected form-level graft or
   laundering the single-stage diagnostic into §3.7 conformance.
+- **r184 authenticated accepted-state EOS prerequisite (2026-08-31):** adds a
+  CPU-only, identity-bearing inversion gate for the distinct `Q*` and
+  `Q^(n+1)` roles.  Its bounds are derived by validating the canonical
+  fire-case-v1 envelope against PhysicalV1; a syntactically plausible case ID
+  or caller-authored `T_max` cannot authorize the capstone's strict `2300 K`
+  ceiling.  The record-level arithmetic preserves signed envelope-negative
+  constituents for sensible-energy inversion, uses positive-part gas density
+  for pressure, and evaluates the published-temperature pressure ratio in the
+  oracle's exact gas-density/molar-density/mean-weight operation order.
+
+  Fresh adversarial review rejects the first draft's inherited `1e-3`
+  production refusal.  r159 already proved that number is the oracle validity
+  detector, not a production thermo-domain limit.  The corrected prerequisite
+  records P0 deviation as identity-bound diagnostics and accepts a
+  one-percent, r60-feasible scaling; stability/fidelity policy remains owned by
+  the separately derived production contract.  Temperature-domain and affine
+  infeasibility still refuse atomically.  The exact logical payload is `40C`
+  bytes, near/over two-GiB neighbors are bound before conservative payload
+  access, and the generated fp64/trace manifests now include their live
+  FireSimulationRecords and FireCase dependencies.
+
+  This closes only the CPU EOS prerequisite.  Metal inversion and
+  producer-equivalence, `Phi_g/J_g` retention and averaging, packet-derived
+  `S_div`, caller-command projection/FCT encoders, the complete R0/R1/R2 owner,
+  onset revalidation, and all tier-10 deliverables remain blocked and are not
+  claimed.

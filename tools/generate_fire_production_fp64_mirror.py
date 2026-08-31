@@ -26,6 +26,7 @@ NAMES = (
     "FireProductionTransport",
     "FireProductionForce",
 )
+DEPENDENCIES = ("FireSimulationRecords", "FireCase")
 
 
 def source_manifest() -> str:
@@ -36,6 +37,12 @@ def source_manifest() -> str:
         "namespace RISEFireProductionFP64 { namespace SourceManifest {\n",
     ]
     for name in NAMES:
+        for suffix in (".h", ".cpp"):
+            path = SOURCE / (name + suffix)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            identifier = name + ("Header" if suffix == ".h" else "Source")
+            lines.append(f'inline constexpr const char* {identifier}="{digest}";\n')
+    for name in DEPENDENCIES:
         for suffix in (".h", ".cpp"):
             path = SOURCE / (name + suffix)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -108,6 +115,10 @@ def transform(text: str, name: str, suffix: str) -> str:
     text = text.replace(
         '#include "FireSimulationRecords.h"',
         '#include "../../src/Library/Utilities/FireSimulationRecords.h"',
+    )
+    text = text.replace(
+        '#include "FireCase.h"',
+        '#include "../../src/Library/Utilities/FireCase.h"',
     )
     text = text.replace("FireStateProducerPrecision", "RISE::FireStateProducerPrecision")
     text = re.sub(r"\bfloat\b", "double", text)

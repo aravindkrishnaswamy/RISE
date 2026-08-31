@@ -15,6 +15,7 @@ SOURCE = ROOT / "src" / "Library" / "Utilities"
 DESTINATION = ROOT / "tests" / "fire_production_trace"
 NAMES = ("FireProductionAdvection", "FireProductionProjection",
          "FireProductionTransport", "FireProductionForce")
+DEPENDENCIES = ("FireSimulationRecords", "FireCase")
 
 
 def transform(text: str, name: str, suffix: str) -> str:
@@ -79,6 +80,8 @@ def transform(text: str, name: str, suffix: str) -> str:
     text = text.replace("namespace RISE", "namespace RISEFireProductionTrace")
     text = text.replace('#include "FireSimulationRecords.h"',
                         '#include "../../src/Library/Utilities/FireSimulationRecords.h"')
+    text = text.replace('#include "FireCase.h"',
+                        '#include "../../src/Library/Utilities/FireCase.h"')
     text = text.replace("FireStateProducerPrecision", "RISE::FireStateProducerPrecision")
     text = re.sub(r"\bfloat\b", "FireProductionRoundoffTrace::TraceFloat", text)
     text = text.replace("sizeof(FireProductionRoundoffTrace::TraceFloat)", "sizeof(float)")
@@ -389,6 +392,10 @@ def manifest() -> str:
              "#define FIRE_PRODUCTION_TRACE_SOURCE_MANIFEST_H\n\n",
              "namespace RISEFireProductionTrace { namespace SourceManifest {\n"]
     for name in NAMES:
+        for suffix in (".h", ".cpp"):
+            digest = hashlib.sha256((SOURCE / (name + suffix)).read_bytes()).hexdigest()
+            lines.append(f'inline constexpr const char* {name}{"Header" if suffix == ".h" else "Source"}="{digest}";\n')
+    for name in DEPENDENCIES:
         for suffix in (".h", ".cpp"):
             digest = hashlib.sha256((SOURCE / (name + suffix)).read_bytes()).hexdigest()
             lines.append(f'inline constexpr const char* {name}{"Header" if suffix == ".h" else "Source"}="{digest}";\n')

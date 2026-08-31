@@ -2881,16 +2881,29 @@ namespace RISE
 		const FireStateProducerPrecision producerPrecision,double& result,
 		std::string* error ) const
 	{
-		result=0.0;
-		if(!state||count!=9u)return Fail(error,
-			"methane accepted volume-ratio input is invalid");
+		double temperature=0.0;
+		return InvertAcceptedConservativeStateByComponentOrder(state,count,
+			m_temperatureMinK,m_temperatureMaxK,producerPrecision,temperature,result,error);
+	}
+
+	bool FireSimulationMethaneRecord::InvertAcceptedConservativeStateByComponentOrder(
+		const double* state,const std::size_t count,const double lowerTemperatureK,
+		const double upperTemperatureK,const FireStateProducerPrecision producerPrecision,
+		double& temperature,double& pressureRatio,std::string* error ) const
+	{
+		temperature=0.0;pressureRatio=0.0;
+		double candidateTemperature=0.0,candidatePressureRatio=0.0;
+		if(!state||count!=9u||!std::isfinite(lowerTemperatureK)||
+			!std::isfinite(upperTemperatureK)||lowerTemperatureK<m_temperatureMinK||
+			upperTemperatureK>m_temperatureMaxK||lowerTemperatureK>=upperTemperatureK)
+			return Fail(error,"methane accepted inversion input is invalid");
 		const double* massDensities=state+1u;
 		const std::size_t speciesCount=7u;
 		const double sensibleEnergy=state[8u];
 		std::array<double,7> lowerEnthalpy,upperEnthalpy;
-		if(!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMinK,
+		if(!SensibleEnthalpiesBySpeciesOrderJPerKG(lowerTemperatureK,
 			lowerEnthalpy.data(),speciesCount,error)||
-			!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMaxK,
+			!SensibleEnthalpiesBySpeciesOrderJPerKG(upperTemperatureK,
 				upperEnthalpy.data(),speciesCount,error)||
 			!AcceptedConservativeStateAdmissibleByComponentOrder(state,count,
 				lowerEnthalpy.data(),upperEnthalpy.data(),speciesCount,
@@ -2907,9 +2920,38 @@ namespace RISE
 			return std::isfinite(energy);
 		};
 		double lowerEnergy=0.0,upperEnergy=0.0;
-		if(!signedEnergy(m_temperatureMinK,lowerEnergy)||
-			!signedEnergy(m_temperatureMaxK,upperEnergy))
+		if(!signedEnergy(lowerTemperatureK,lowerEnergy)||
+			!signedEnergy(upperTemperatureK,upperEnergy))
 			return Fail(error,"methane accepted volume-ratio energy overflowed");
+		double cpLower=0.0;
+		for(std::size_t speciesIndex=0u;speciesIndex<speciesCount;++speciesIndex){
+			const FireThermochemistrySpecies& species=m_thermochemistrySpecies[speciesIndex];
+			double speciesLower=std::numeric_limits<double>::infinity(),speciesUpper=0.0;
+			for(const FireThermochemistrySegment& segment:species.segments)if(
+				segment.temperatureMaxK>=lowerTemperatureK&&
+				segment.temperatureMinK<=upperTemperatureK){
+				speciesLower=std::min(speciesLower,segment.certifiedCpLowerJPerKGK);
+				const double boundedLower=std::max(lowerTemperatureK,segment.temperatureMinK);
+				const double boundedUpper=std::min(upperTemperatureK,segment.temperatureMaxK);
+				double absolutePolynomial=std::fabs(segment.coefficients[0])/
+					(boundedLower*boundedLower)+std::fabs(segment.coefficients[1])/boundedLower+
+					std::fabs(segment.coefficients[2]);
+				double power=boundedUpper;
+				for(std::size_t coefficient=3u;coefficient<7u;++coefficient){
+					absolutePolynomial+=std::fabs(segment.coefficients[coefficient])*power;
+					power*=boundedUpper;
+				}
+				speciesUpper=std::max(speciesUpper,absolutePolynomial*8314.46261815324/
+					species.molecularWeightKGPerKMol);
+			}
+			if(!std::isfinite(speciesLower)||!std::isfinite(speciesUpper))return Fail(error,
+				"methane accepted inversion heat-capacity certificate is invalid");
+			cpLower+=massDensities[speciesIndex]>=0.0?
+				massDensities[speciesIndex]*speciesLower:
+				massDensities[speciesIndex]*speciesUpper;
+		}
+		if(!(cpLower>0.0)||!std::isfinite(cpLower))return Fail(error,
+			"methane accepted inversion lacks a positive certified heat capacity");
 		double scale=std::fabs(sensibleEnergy);
 		for(std::size_t species=0u;species<speciesCount;++species){
 			scale+=std::fabs(lowerEnthalpy[species]*massDensities[species]);
@@ -2925,29 +2967,59 @@ namespace RISE
 		const double tolerance=kappa*epsilon*scale;
 		if(!std::isfinite(tolerance)||tolerance<=0.0)
 			return Fail(error,"methane accepted volume-ratio envelope is invalid");
-		double temperature=0.0;
-		if(sensibleEnergy<=lowerEnergy+tolerance)temperature=m_temperatureMinK;
-		else if(sensibleEnergy>=upperEnergy-tolerance)temperature=m_temperatureMaxK;
+		if(sensibleEnergy<=lowerEnergy+tolerance)candidateTemperature=lowerTemperatureK;
+		else if(sensibleEnergy>=upperEnergy-tolerance)candidateTemperature=upperTemperatureK;
 		else {
-			double lower=m_temperatureMinK,upper=m_temperatureMaxK;
+			double lower=lowerTemperatureK,upper=upperTemperatureK;
 			for(unsigned int iteration=0u;iteration<96u;++iteration){
 				const double midpoint=0.5*(lower+upper);double energy=0.0;
-				if(midpoint==lower||midpoint==upper){temperature=midpoint;break;}
+				if(midpoint==lower||midpoint==upper){candidateTemperature=midpoint;break;}
 				if(!signedEnergy(midpoint,energy))return Fail(error,
 					"methane accepted volume-ratio inversion overflowed");
 				if(energy<sensibleEnergy)lower=midpoint;else upper=midpoint;
-				temperature=0.5*(lower+upper);
+				candidateTemperature=0.5*(lower+upper);
 			}
 		}
-		if(!std::isfinite(temperature)||temperature<=0.0)
+		if(!std::isfinite(candidateTemperature)||candidateTemperature<=0.0)
 			return Fail(error,"methane accepted volume-ratio temperature is invalid");
-		double molarDensity=0.0;
-		for(std::size_t species=0u;species+1u<speciesCount;++species)
-			molarDensity+=std::max(0.0,massDensities[species])/
+		if(!AcceptedConservativePressureRatioAtTemperatureByComponentOrder(state,count,
+			candidateTemperature,producerPrecision,candidatePressureRatio,error))return false;
+		temperature=candidateTemperature;pressureRatio=candidatePressureRatio;return true;
+	}
+
+	bool FireSimulationMethaneRecord::
+		AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+		const double* state,const std::size_t count,const double temperature,
+		const FireStateProducerPrecision producerPrecision,double& pressureRatio,
+		std::string* error ) const
+	{
+		pressureRatio=0.0;
+		if(!state||count!=9u||!std::isfinite(temperature)||temperature<=0.0)
+			return Fail(error,"methane accepted pressure-ratio input is invalid");
+		std::array<double,7> lowerEnthalpy,upperEnthalpy;
+		if(!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMinK,
+			lowerEnthalpy.data(),lowerEnthalpy.size(),error)||
+			!SensibleEnthalpiesBySpeciesOrderJPerKG(m_temperatureMaxK,
+				upperEnthalpy.data(),upperEnthalpy.size(),error)||
+			!AcceptedConservativeStateAdmissibleByComponentOrder(state,count,
+				lowerEnthalpy.data(),upperEnthalpy.data(),lowerEnthalpy.size(),
+				producerPrecision,error))return false;
+		double gasDensity=0.0,molarDensity=0.0;
+		for(std::size_t species=0u;species<6u;++species){
+			const double density=std::max(0.0,state[1u+species]);
+			gasDensity+=density;
+			molarDensity+=density/
 				m_thermochemistrySpecies[species].molecularWeightKGPerKMol;
-		result=molarDensity*8314.46261815324*temperature/m_pressurePa;
-		return (std::isfinite(result)&&result>0.0)||
-			Fail(error,"methane accepted volume ratio is invalid");
+		}
+		if(!(gasDensity>0.0)||!(molarDensity>0.0)||!std::isfinite(gasDensity)||
+			!std::isfinite(molarDensity))return Fail(error,
+				"methane accepted pressure ratio has no positive gas density");
+		const double meanMolecularWeight=gasDensity/molarDensity;
+		const double representedPressure=gasDensity*8314.46261815324*temperature/
+			meanMolecularWeight;
+		pressureRatio=representedPressure/m_pressurePa;
+		return (std::isfinite(pressureRatio)&&pressureRatio>0.0)||
+			Fail(error,"methane accepted pressure ratio is invalid");
 	}
 
 	bool FireSimulationMethaneRecord::ResolveRadiativeFraction(

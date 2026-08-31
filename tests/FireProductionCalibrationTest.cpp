@@ -2,6 +2,7 @@
 #include "FireProductionCalibrationMirror.h"
 #include "FireProductionRoundoffWalker.h"
 #include "FireProductionRoundoffTraceAdapter.h"
+#include "Utilities/FireCase.h"
 #include "Utilities/FireProductionAdvection.h"
 #include "Utilities/FireProductionForce.h"
 #include "Utilities/FireProductionProjection.h"
@@ -682,10 +683,6 @@ int main()
 		"src/Library/Utilities/FireProductionForceUnsupported.cpp");
 	const std::string transportHeader=ReadText(
 		"src/Library/Utilities/FireProductionTransport.h");
-	const std::string recordsSource=ReadText(
-		"src/Library/Utilities/FireSimulationRecords.cpp");
-	const std::string recordsHeader=ReadText(
-		"src/Library/Utilities/FireSimulationRecords.h");
 	Check(!manifoldPredictorEvidence.empty()&&RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(manifoldPredictorEvidence.begin(),
 			manifoldPredictorEvidence.end()))==
@@ -2466,12 +2463,12 @@ int main()
 			"ae0706a62abace331b1c34248774d399e739e2f172c92102be9e050a72585078"&&
 		// r175's exact simulation/Metal owners are preserved by the sealed
 		// artifact; r181 binds their superseding diagnostic revisions.
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			recordsHeader.begin(),recordsHeader.end()))==
-			"b73382076eafc153c4a2b058ed0fc247e4f14ffa20d9700df0aaa8e4b98b6f5c"&&
-		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
-			recordsSource.begin(),recordsSource.end()))==
-			"38762e15cde178da70e15f0762b3dbff1c2ebeaa93994ac78348960df6e84b42"&&
+		thermoSourceEvidence.find("records_header_sha256 "
+			"b73382076eafc153c4a2b058ed0fc247e4f14ffa20d9700df0aaa8e4b98b6f5c")!=
+			std::string::npos&&
+		thermoSourceEvidence.find("records_source_sha256 "
+			"38762e15cde178da70e15f0762b3dbff1c2ebeaa93994ac78348960df6e84b42")!=
+			std::string::npos&&
 		// The r175 solver/sequence sources are likewise historical provenance;
 		// their current successors are source-bound by r181.
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
@@ -3137,18 +3134,18 @@ int main()
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunLiveBinding.begin(),projectedHeunLiveBinding.end()))==
-			"b421ea582b7a013c0c2237633e67b41c8af8cbe879b6cf0484329bfe99151ea1"&&
+			"c36967e3d1301935baaa2a77a53e1c740aa8efcd6988495d9cd317c47a97d996"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
 			std::string::npos&&
-		projectedHeunLiveBinding.find("live_owner_count 30\n")!=std::string::npos&&
+		projectedHeunLiveBinding.find("live_owner_count 36\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
-			"07628993bfe3174298c97a2ce565e1e41cb6bbe0764d3002784128b425b34758")&&
+			"68e8fe02ea51262b2634b44ce5b13634c55e34bf81cf4dc112e8de933e4a2deb")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.cpp",
-			"a19cfc907fc4e753f9ce6caf67146b7d918d7358bc503b58bdc3345e65425ce2")&&
+			"45a9090a1b7332013a385125927812296e38c549e6a02e5b0633fc5d1df4810a")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm",
 			"2554a0a41feaa9356d3ffb8c17b1a2d8520b0642c7975d4fa62947b4e9fede57")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionForce.h",
@@ -3165,6 +3162,18 @@ int main()
 			"8a9f5e648d43fdcea7fcad43f9681eaf5aee6b9f011246b5da6ec2b44ca628db")&&
 		liveOwnerBound("src/Library/Utilities/FireProductionProjectionMac.mm",
 			"6a7b3b70670be107b39ce873e6a4937019c56ed06ac94c85367b7a26c5449d6b")&&
+		liveOwnerBound("src/Library/Utilities/FireSimulationRecords.h",
+			"0e2168f2da54d749920388cee13735df6f66899f476c870afbda74b3aa0514e1")&&
+		liveOwnerBound("src/Library/Utilities/FireSimulationRecords.cpp",
+			"034ee354671d287b475db455c8a6c70ccb73514d3a105b68d63d6b3edc15f5f4")&&
+		liveOwnerBound("src/Library/Utilities/FireCase.h",
+			"48d640638cc1ee2704be3a880d72eba2e609ff6374ae7b50400a497ab3822f5d")&&
+		liveOwnerBound("src/Library/Utilities/FireCase.cpp",
+			"ccec8ac875bd2922217a90dad0c114cb2ef1e3ccab47c05bdc65208459adb003")&&
+		liveOwnerBound("tools/generate_fire_production_fp64_mirror.py",
+			"16f1c05fb7bcf202a7ef7b3bea0b878d3602a258267fed0821db8b60e03fd2cb")&&
+		liveOwnerBound("tools/generate_fire_production_roundoff_trace.py",
+			"74a153037b83901fc2a994ff9d591827e2880f8130fd1d3130e15bcd51fed2fc")&&
 		liveOwnerBound("tests/FireProductionGoldenCompositionFixture.h",
 			"07fa3aa3f438fa5ea3c7e108a8a631120150837e026fffd419e791d85990da19")&&
 		liveOwnerBound("tests/FireProductionSolverTest.cpp",
@@ -3174,9 +3183,9 @@ int main()
 		liveOwnerBound("tests/FireSequenceTest.cpp",
 			"1cadffc8309e50aafa0a85b83502c7918e2cfb9e2e9c5f398169e27d83a7ab40")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.h",
-			"b34b294e5adca333ada0b8b2db04d3743f215a306bd006b14e15fbc4613b1438")&&
+			"22b5bff737f1dcc10a486fe7b7eeda06a2111d18f8f35e6c9148ed12cb7afe71")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionTransport.cpp",
-			"3d2306bd74c8a972caec00135c9c3f96a3527c16ba929b2f01f65f5c70629f3c")&&
+			"5f0bfd969fde7f3ae27436cb56e3f5181dacfc43363e8756d5a10b01d5d2c4c5")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.h",
 			"dd561ead598cc5426ec91a6efd47b2915d88167c1a37f159defd42f62102a01f")&&
 		liveOwnerBound("tests/fire_production_fp64/FireProductionForce.cpp",
@@ -3186,11 +3195,11 @@ int main()
 		liveOwnerBound("tests/fire_production_fp64/FireProductionProjection.cpp",
 			"2611c42e43e5b2e7a4b32e0749bcfbf007d5c20ddc36babddfbfd2c34725c473")&&
 		liveOwnerBound("tests/fire_production_fp64/SourceManifest.h",
-			"8cb1344dcd010a6187ed380f3d41554fd6a3dd0a54b55946dcfa9a02c205f10b")&&
+			"1065ab68fe914eed01369d9dcf7ecf635e132c04455f273d67ac56be50f193d5")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.h",
-			"3a4e6be8964d8d08ae1f4520a4a4cd3adb5c647093aa37760dcb55d49032e092")&&
+			"790a10eac39f4073e075d6bf88d42eae9763164ed6e4bcef6b1b2cedc0183637")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp",
-			"cef687b06bed11358396c8a257f817d245fe36eb229a9dd2e54b0d8cad6bfab0")&&
+			"ee8bf2d946282d055330872c5f7a4acf1a76f0fa4fa908e462ac39da26b4ac20")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.h",
 			"7d453246cbd95acaef81bda1a5141d42a8750d8e69a94ea38dc64f1b43b8add6")&&
 		liveOwnerBound("tests/fire_production_trace/FireProductionForce.cpp",
@@ -3200,12 +3209,26 @@ int main()
 		liveOwnerBound("tests/fire_production_trace/FireProductionProjection.cpp",
 			"5cf59d615da1f3022faea6ea5614a85060849b702ad321a1b16b916f0574b384")&&
 		liveOwnerBound("tests/fire_production_trace/SourceManifest.h",
-			"e06bfdd9cb21b5c0c0abe742f292ec0dfc7d6f879942a63c2407d76f1f24fbf7")&&
+			"952e175caeb9610aa680b726a4ad8e4ab034c3992128f3e11daaa8d7b3f0f867")&&
 		liveOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md",
-			"cf033490b8ad8535027baf1c621c370b18e5e61aa02e7a13298598e830e5b691")&&
+			"98935a82a0646b0ce742e5b23db1e33cc7fea91d3cad56d7bb869f9e4c0a0550")&&
 		liveOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md",
-			"4fc9982d03d2b142851aba201be8056315607082acc49a6a956b5dc3ffbf0bc3"),
+			"b361eff090518d212638e8dcd2fdc542c1df67ae027ecf79840add5e746c68d3"),
 		"r183 exact-binds immutable evidence and its live implementation, tests, mirrors, and documentation without self-binding the calibration gate");
+	const std::string authenticatedEOSEvidence=ReadText(
+		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
+		"authenticated_eos_prerequisite.v1");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			authenticatedEOSEvidence.begin(),authenticatedEOSEvidence.end()))==
+			"fe21810e9a50720e27815175161a1e55263a1bfe7cfa37736e98055d8ab4ea50"&&
+		authenticatedEOSEvidence.find("caller_authored_temperature_ceiling_absent true")!=
+			std::string::npos&&
+		authenticatedEOSEvidence.find("retired_oracle_1e_minus_3_production_gate false")!=
+			std::string::npos&&
+		authenticatedEOSEvidence.find(
+			"verdict accepted_cpu_only_eos_prerequisite_full_owner_still_blocked")!=
+			std::string::npos,
+		"r184 binds the authenticated CPU EOS prerequisite without promoting the projected-Heun owner");
 	const double baselineStep=static_cast<double>(0x1.e54eeep-10f);
 	Check(baselineStep==0.0018513043178245425&&0.5*baselineStep==
 		0.00092565215891227125&&0.25*baselineStep==0.00046282607945613563&&
@@ -5593,6 +5616,196 @@ int main()
 		std::fprintf(stderr,"roundoff full-step detail ok=%d stages=%d bytes=%d count=%zu error=%s\n",
 			tracedStepOK?1:0,tracedStepStages?1:0,tracedStepBytes?1:0,
 			tracedStep.stages.size(),error.c_str());
+
+	// r184 prerequisite: a completed Q* or Q^{n+1} is not accepted merely
+	// because it passed r60.  Its signed inversion, EOS residual, case ceiling,
+	// and exact state/attempt/role identity must all agree.
+	const RISE::FireSimulationMethaneRecord& eosRecord=
+		RISE::FireSimulationMethaneRecord::PhysicalV1();
+	RISE::FireCase::AuthoredV1 eosAuthored;
+	eosAuthored.fuelRecordId=eosRecord.RecordId();eosAuthored.poolDiameterM=0.03;
+	eosAuthored.heatReleaseRateKW=0.10;
+	eosAuthored.envelope={{0.0,0.0},{0.5,1.0},{1.0,1.0}};
+	eosAuthored.durationS=1.0;eosAuthored.quality="draft";eosAuthored.seed=184u;
+	eosAuthored.outputFramesPerS=4.0;
+	RISE::FireCase::RecordV1 eosCase;
+	const bool eosCaseOK=RISE::FireCase::BuildMethaneV1(eosAuthored,eosRecord,
+		{eosRecord.RecordId()},eosCase,error);
+	Check(eosCaseOK&&eosCase.derived.pilotAmbientTemperatureK==300.0&&
+		eosCase.derived.maximumAcceptedTemperatureK==2300.0,
+		"accepted-state EOS gate derives its bounds from an authenticated case record");
+	auto eosTuple=[&](const double temperatureK){
+		std::array<float,9> tuple={{}};
+		const std::vector<double>& massFraction=eosRecord.AmbientMassFractions();
+		double reciprocalWeight=0.0;
+		for(std::size_t species=0u;species<7u;++species){
+			const RISE::FireThermochemistrySpecies* property=eosRecord.FindSpecies(
+				eosRecord.SpeciesOrder()[species].c_str());
+			reciprocalWeight+=massFraction[species]/property->molecularWeightKGPerKMol;
+		}
+		const double density=eosRecord.ThermodynamicPressurePa()/
+			(8314.46261815324*temperatureK*reciprocalWeight);
+		for(std::size_t species=0u;species<7u;++species)
+			tuple[1u+species]=static_cast<float>(density*massFraction[species]);
+		std::array<double,7> enthalpy;
+		eosRecord.SensibleEnthalpiesBySpeciesOrderJPerKG(temperatureK,
+			enthalpy.data(),enthalpy.size(),&error);
+		double energy=0.0;for(std::size_t species=0u;species<7u;++species)
+			energy+=static_cast<double>(tuple[1u+species])*enthalpy[species];
+		tuple[8u]=static_cast<float>(energy);return tuple;
+	};
+	auto eosRequestFromTuple=[&](const std::array<float,9>& tuple){
+		RISE::FireProductionScalarEOSAcceptanceRequest request;
+		request.shape.nx=4u;request.shape.ny=5u;request.shape.nz=4u;
+		request.shape.cellWidthM=0.01f;request.timeStepS=0.0005f;
+		request.attemptIdentity=UINT64_C(0x1840000000000001);
+		request.stage=RISE::FireProductionScalarEOSStage::QStar;
+		request.producerPrecision=RISE::FireStateProducerPrecision::Binary32;
+		request.methaneRecordId=eosRecord.RecordId();
+		request.caseRecordEnvelope=eosCase.envelopeBytes;
+		const std::size_t cells=request.shape.CellCount();
+		request.conservativeValues.resize(9u*cells);
+		for(std::size_t component=0u;component<9u;++component)
+			for(std::size_t cell=0u;cell<cells;++cell)
+				request.conservativeValues[component*cells+cell]=tuple[component];
+		return request;
+	};
+	const std::array<float,9> eosPhysicalTuple=eosTuple(900.0);
+	RISE::FireProductionScalarEOSAcceptanceRequest eosRequest=
+		eosRequestFromTuple(eosPhysicalTuple);
+	std::vector<RISE::FireSim::ConservativeVector> eosOracleState(
+		eosRequest.shape.CellCount());
+	for(std::size_t cell=0u;cell<eosOracleState.size();++cell)
+		for(std::size_t component=0u;component<9u;++component)
+			eosOracleState[cell][component]=static_cast<double>(
+				eosRequest.conservativeValues[component*eosOracleState.size()+cell]);
+	std::vector<double> eosOracleTemperature;
+	const bool eosOracleOK=RISE::FireSim::InvertPeriodicTemperaturesWithinBounds(
+		eosOracleState,eosRecord,eosCase.derived.pilotAmbientTemperatureK,
+		eosCase.derived.maximumAcceptedTemperatureK,
+		RISE::FireStateProducerPrecision::Binary32,eosOracleTemperature,&error);
+	RISE::FireProductionScalarEOSAcceptanceResult eosAccepted;
+	const bool eosAcceptedOK=RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(
+		eosRequest,eosAccepted,&error);
+	RISE::FireSim::MethaneCellState eosOracleCell=RISE::FireSim::FromConservativeVector(
+		eosOracleState[0],RISE::FireStateProducerPrecision::Binary32);
+	if(!eosAccepted.temperatureK.empty())eosOracleCell.temperatureK=
+		static_cast<double>(eosAccepted.temperatureK[0]);
+	double eosOracleResidual=0.0;
+	const bool eosOracleResidualOK=!eosAccepted.temperatureK.empty()&&
+		RISE::FireSim::EquationOfStateResidual(eosOracleCell,eosRecord,
+			RISE::FireStateProducerPrecision::Binary32,eosOracleResidual,&error);
+	bool eosTemperatureExact=eosAccepted.temperatureK.size()==eosOracleTemperature.size();
+	for(std::size_t cell=0u;cell<eosAccepted.temperatureK.size()&&eosTemperatureExact;++cell)
+		eosTemperatureExact=sameFloatBits(eosAccepted.temperatureK[cell],
+			static_cast<float>(eosOracleTemperature[cell]));
+	Check(eosOracleOK&&eosAcceptedOK&&eosOracleResidualOK&&eosTemperatureExact&&
+		eosAccepted.accepted&&eosAccepted.maximumEOSResidual==eosOracleResidual&&
+		eosAccepted.maximumEOSResidual<=1.0e-3&&
+		RISE::FireProductionScalarEOSAcceptanceMatches(eosRequest,eosAccepted),
+		"accepted-state EOS gate agrees exactly with the Section 3.7 binary32 oracle");
+
+	RISE::FireProductionScalarEOSAcceptanceRequest eosFinalRequest=eosRequest;
+	eosFinalRequest.stage=RISE::FireProductionScalarEOSStage::QNPlus1;
+	RISE::FireProductionScalarEOSAcceptanceResult eosFinalAccepted;
+	Check(RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(eosFinalRequest,
+		eosFinalAccepted,&error)&&
+		RISE::FireProductionScalarEOSAcceptanceMatches(eosFinalRequest,eosFinalAccepted)&&
+		eosFinalAccepted.acceptanceIdentity!=eosAccepted.acceptanceIdentity,
+		"accepted-state EOS identity distinguishes QStar from QNPlus1");
+
+	RISE::FireProductionScalarEOSAcceptanceRequest eosScaled=eosRequest;
+	for(float& value:eosScaled.conservativeValues)value*=1.01f;
+	RISE::FireProductionScalarEOSAcceptanceResult eosScaledAccepted;
+	Check(RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(eosScaled,
+		eosScaledAccepted,&error)&&eosScaledAccepted.accepted&&
+		eosScaledAccepted.maximumEOSResidual>0.009&&
+		eosScaledAccepted.maximumEOSResidual<0x1p-5&&
+		RISE::FireProductionScalarEOSAcceptanceMatches(eosScaled,eosScaledAccepted),
+		"production monitors a one-percent P0 deviation without resurrecting the oracle 1e-3 detector");
+
+	RISE::FireProductionScalarEOSAcceptanceRequest eosCeiling=
+		eosRequestFromTuple(eosTuple(2300.0));
+	RISE::FireProductionScalarEOSAcceptanceResult eosRejected=eosAccepted;
+	Check(!RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(eosCeiling,eosRejected,&error)&&
+		error.find("case ceiling")!=std::string::npos&&!eosRejected.accepted&&
+		eosRejected.temperatureK.empty(),
+		"accepted-state EOS gate enforces the strict case temperature ceiling atomically");
+
+	std::array<float,9> eosNegativeTuple=eosPhysicalTuple;
+	double eosMassScale=0.0;for(std::size_t component=0u;component<8u;++component)
+		eosMassScale+=std::fabs(static_cast<double>(eosNegativeTuple[component]));
+	const double eosNegativeBound=eosRecord.AcceptedStateFeasibilityEnvelope().kappaEpsilon32*
+		static_cast<double>(std::numeric_limits<float>::epsilon())*std::max(1.0,eosMassScale);
+	eosNegativeTuple[7u]=static_cast<float>(-0.125*eosNegativeBound);
+	std::array<double,7> eosNegativeEnthalpy;
+	eosRecord.SensibleEnthalpiesBySpeciesOrderJPerKG(900.0,eosNegativeEnthalpy.data(),
+		eosNegativeEnthalpy.size(),&error);
+	double eosNegativeEnergy=0.0;for(std::size_t species=0u;species<7u;++species)
+		eosNegativeEnergy+=static_cast<double>(eosNegativeTuple[1u+species])*
+			eosNegativeEnthalpy[species];
+	eosNegativeTuple[8u]=static_cast<float>(eosNegativeEnergy);
+	RISE::FireProductionScalarEOSAcceptanceRequest eosNegative=
+		eosRequestFromTuple(eosNegativeTuple);
+	RISE::FireProductionScalarEOSAcceptanceResult eosNegativeAccepted;
+	Check(RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(eosNegative,
+		eosNegativeAccepted,&error)&&eosNegativeAccepted.accepted,
+		"accepted-state EOS gate preserves signed inversion for an envelope-negative tuple");
+
+	bool eosMutationsRejected=true;
+	auto eosMutationRejected=[&](RISE::FireProductionScalarEOSAcceptanceRequest mutation){
+		return !RISE::FireProductionScalarEOSAcceptanceMatches(mutation,eosAccepted);
+	};
+	RISE::FireProductionScalarEOSAcceptanceRequest eosMutation=eosRequest;
+	eosMutation.conservativeValues[0]=std::nextafter(eosMutation.conservativeValues[0],1.0f);
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	eosMutation=eosRequest;eosMutation.timeStepS=std::nextafter(eosMutation.timeStepS,1.0f);
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	eosMutation=eosRequest;++eosMutation.attemptIdentity;
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	eosMutation=eosRequest;eosMutation.stage=RISE::FireProductionScalarEOSStage::QNPlus1;
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	eosMutation=eosRequest;eosMutation.caseRecordEnvelope.back()^=1u;
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	eosMutation=eosRequest;eosMutation.methaneRecordId.back()=
+		eosMutation.methaneRecordId.back()=='a'?'b':'a';
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	eosMutation=eosRequest;std::swap(eosMutation.shape.nx,eosMutation.shape.ny);
+	eosMutationsRejected=eosMutationsRejected&&eosMutationRejected(eosMutation);
+	RISE::FireProductionScalarEOSAcceptanceResult eosPublishedMutation=eosAccepted;
+	eosPublishedMutation.temperatureK[0]=std::nextafter(eosPublishedMutation.temperatureK[0],
+		1000.0f);
+	eosMutationsRejected=eosMutationsRejected&&
+		!RISE::FireProductionScalarEOSAcceptanceMatches(eosRequest,eosPublishedMutation);
+	eosPublishedMutation=eosAccepted;
+	eosPublishedMutation.maximumEOSResidual=std::nextafter(
+		eosPublishedMutation.maximumEOSResidual,1.0);
+	eosMutationsRejected=eosMutationsRejected&&
+		!RISE::FireProductionScalarEOSAcceptanceMatches(eosRequest,eosPublishedMutation);
+	eosPublishedMutation=eosAccepted;
+	eosPublishedMutation.upperTemperatureK=2500.0;
+	eosMutationsRejected=eosMutationsRejected&&
+		!RISE::FireProductionScalarEOSAcceptanceMatches(eosRequest,eosPublishedMutation);
+	Check(eosMutationsRejected,
+		"accepted-state EOS identity rejects state, output, dt, attempt, role, record, bound, and shape mutations");
+
+	RISE::FireProductionProjectionShape eosUnderCap,eosOverCap;
+	eosUnderCap.nx=63u;eosUnderCap.ny=884u;eosUnderCap.nz=964u;
+	eosUnderCap.cellWidthM=1.0f;eosOverCap.nx=116u;eosOverCap.ny=634u;
+	eosOverCap.nz=730u;eosOverCap.cellWidthM=1.0f;
+	std::uint64_t eosUnderBytes=0u,eosOverBytes=0u;
+	const bool eosUnderQuery=RISE::QueryFireProductionScalarEOSAcceptanceCPUWorkingSetBytes(
+		eosUnderCap,eosUnderBytes,&error);
+	const bool eosOverQuery=RISE::QueryFireProductionScalarEOSAcceptanceCPUWorkingSetBytes(
+		eosOverCap,eosOverBytes,&error);
+	RISE::FireProductionScalarEOSAcceptanceRequest eosOversized=eosRequest;
+	eosOversized.shape=eosOverCap;eosOversized.conservativeValues.clear();eosRejected=eosAccepted;
+	Check(eosUnderQuery&&eosOverQuery&&eosUnderBytes==UINT64_C(2147483520)&&
+		eosOverBytes==UINT64_C(2147484800)&&
+		!RISE::EvaluateFireProductionScalarEOSAcceptanceCPU(eosOversized,eosRejected,&error)&&
+		error.find("working set exceeds two GiB")!=std::string::npos&&
+		!eosRejected.accepted&&eosRejected.temperatureK.empty(),
+		"accepted-state EOS exact working-set query enforces the two-GiB cap before payload access");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;
