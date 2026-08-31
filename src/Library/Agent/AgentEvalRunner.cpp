@@ -6679,7 +6679,8 @@ namespace RISE
 					// default, so a scenario checkpoint sees the SAME
 					// DESIGN_UNBOUND_MATERIAL gating a live run would.
 					const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument(),
-						session->BuildProtocolActive() && session->BuildPhase() == AgentSession::AgentBuildPhase::Pieces );
+						session->BuildProtocolActive() && session->BuildPhase() == AgentSession::AgentBuildPhase::Pieces,
+						&session->LightSoloMeasurements() );
 
 					if( expect == "clean" ) {
 						// Creative-richness P2.b (73-creative-richness-design.md

@@ -1074,7 +1074,14 @@ namespace RISE
 			// state, though (doc 91), so -- unlike the no-head bootstrap
 			// path -- it is passed through rather than left at ValidateText's
 			// conservative default.
-			return ValidateText( candidateText, BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces );
+			//
+			// (Condition N, 2026-08-30) The session's `light_scene` solo cache
+			// goes through too, for the same reason and by the same rule: this
+			// session HAS the measurement, the stateless core does not, and a
+			// condition whose input the caller holds must not be silenced by
+			// the forwarder.
+			return ValidateText( candidateText, BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces,
+			                     &mLightSoloMeasurements );
 		}
 
 		namespace
@@ -1090,7 +1097,8 @@ namespace RISE
 			//! declaration further down for the identical pattern), so this and
 			//! the later definition refer to the same symbol.
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase = false,
-			                               IJobPriv* derivedJob = nullptr );
+			                               IJobPriv* derivedJob = nullptr,
+			                               const AgentSession::AgentLightSoloMeasurementMap* soloCache = nullptr );
 
 			//! Post-arc enforcement E1 (docs/agentic-redesign/75-expressive-surface-
 			//! arc.md sec 7's LUMINAIRE_NULL_GEOMETRY entry; 76-...-log.md sec 3's
@@ -2927,7 +2935,8 @@ namespace RISE
 			return CheckZeroAreaLightConfirmation_( added );
 		}
 
-		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText, bool inPiecesPhase )
+		std::vector<AgentDiagnostic> AgentSession::ValidateText( const std::string& candidateText, bool inPiecesPhase,
+		                                                         const AgentLightSoloMeasurementMap* soloCache )
 		{
 			std::vector<AgentDiagnostic> out;
 
@@ -3160,7 +3169,9 @@ namespace RISE
 			// (Condition M) `throwaway` IS the scene this candidate text
 			// derives to -- exactly what the condition needs, already built by
 			// step (b), so validate pays no second derive for it.
-			AppendDesignDiagnostics_( candidateDoc, out, inPiecesPhase, throwaway );
+			// (Condition N) `soloCache` is the CALLER's session cache, null on
+			// the no-head bootstrap -- see this function's own doc.
+			AppendDesignDiagnostics_( candidateDoc, out, inPiecesPhase, throwaway, soloCache );
 
 			throwaway->release();
 			throwaway = nullptr;
@@ -4591,6 +4602,20 @@ namespace RISE
 			{
 				std::string name;
 				std::string kind;            //!< "omni_light" / "spot_light" / "rect_light" / "shape_light"
+				//! CONDITION N's half of this record, captured in the SAME walk
+				//! so no second document pass is needed: the chunk's verbatim
+				//! bytes (the cached measurement's validity key -- see
+				//! AgentSession::AgentLightSoloMeasurement) and the authored
+				//! intensity literal condition N (ii) tests and the clause
+				//! quotes.  `haveIntensity` false means the slot held something
+				//! that is not a finite literal (a painter, an expression), in
+				//! which case condition N skips this light -- it may only speak
+				//! numbers it actually read.
+				std::string chunkText;
+				std::string intensityParam;
+				double      authoredIntensity = 0.0;
+				bool        haveIntensity     = false;
+				bool        intensityNonTrivial = false;
 			};
 
 			//! Condition M's ONE finding: a positional light enclosed by an
@@ -4771,6 +4796,183 @@ namespace RISE
 				return s;
 			}
 
+			//======================================================================
+			// Condition N (2026-08-30): the DIM HERO LIGHT.  See
+			// AgentDiagnosticCode::DESIGN_DIM_HERO_LIGHT's own doc for the whole
+			// condition, the measured trajectory that motivated it and the three
+			// clauses of its predicate; the helpers below are only the pieces.
+			//
+			// WHAT MAKES IT UNLIKE EVERY CONDITION ABOVE: its input is a
+			// MEASUREMENT, not a document fact.  Condition M reads the derived
+			// scene, which any carrier can rebuild from the same bytes; N reads
+			// what `light_scene`'s solo audit actually RENDERED, which only a
+			// session that ran it holds.  That is why the cache
+			// (AgentSession::AgentLightSoloMeasurementMap) is threaded through
+			// this scan the way `derivedJob` is, and why the stateless text-only
+			// carriers are silent on N rather than recomputing it.
+			//======================================================================
+
+			//! Condition N (i): the share of the scene's measured light total
+			//! below which a light counts as "not reaching the scene".
+			//!
+			//! TWO PERCENT.  The motivating trajectory measured its enclosed
+			//! candle at 1.3 mean luma against a 67.9 all-lights frame -- and a
+			//! duplicate light at literally zero -- so the failure this catches
+			//! lives at or below ~2%.  Set higher, and an honest rim or accent
+			//! light doing real but small work in a bright scene starts getting
+			//! told it is broken; a note that fires on a working light is how
+			//! this family loses the right to be read at all.
+			static const double kDimLightShareGate = 0.02;
+
+			//! Condition N (ii): the floors that separate "authored bright" from
+			//! "deliberately faint".  Both come from what the chunk descriptors
+			//! themselves say, NOT from a tuned constant:
+			//!   * `power` on omni/spot DEFAULTS to 1.0 (the descriptor's own
+			//!     defaultValueHint), so 1.0 is the value an author who typed
+			//!     nothing gets -- at or above it is a real authored intent,
+			//!     while the `power 0.1` whisper this condition must never
+			//!     scold falls an order below.
+			//!   * `exitance` on rect/shape is REQUIRED and its descriptor
+			//!     documents the authored range in prose: "tens for a soft
+			//!     interior fill panel, thousands for a small window reading as
+			//!     daylight".  Ten is the bottom of that stated range, so
+			//!     anything below it is fainter than the softest fill the
+			//!     grammar's own documentation describes.
+			static const double kDimLightPowerFloor    = 1.0;
+			static const double kDimLightExitanceFloor = 10.0;
+
+			//! How ONE positional light kind authors its intensity.  `param` is
+			//! the parameter to read, `floorValue` the (ii) floor above, and
+			//! `defaultValue` / `defaultColorIsBlack` the descriptor's own
+			//! defaults for the two parameters when the author omitted them
+			//! (omni/spot: `power 1.0`, `color 0 0 0`; rect/shape: `exitance`
+			//! is required so there is no meaningful default, `color 1 1 1`).
+			struct DimLightIntensityRule_
+			{
+				const char* param              = "";
+				double      floorValue         = 0.0;
+				double      defaultValue       = 0.0;
+				bool        defaultColorIsBlack = false;
+			};
+
+			//! The rule for `kind`, or false for a kind condition N does not
+			//! cover.  ONE function, shared by the design-note scan and by
+			//! AgentSession::RecordLightSoloMeasurements, so the writer and the
+			//! reader cannot grow two ideas of what "authored intensity" means.
+			bool DimLightIntensityRuleFor_( const std::string& kind, DimLightIntensityRule_& out )
+			{
+				if( kind == "omni_light" || kind == "spot_light" ) {
+					out.param = "power"; out.floorValue = kDimLightPowerFloor;
+					out.defaultValue = 1.0; out.defaultColorIsBlack = true;
+					return true;
+				}
+				if( kind == "rect_light" || kind == "shape_light" ) {
+					out.param = "exitance"; out.floorValue = kDimLightExitanceFloor;
+					out.defaultValue = 0.0; out.defaultColorIsBlack = false;
+					return true;
+				}
+				return false;
+			}
+
+			//! The largest channel of a chunk's `color`, or `fallback` when the
+			//! parameter is absent entirely.  A PRESENT but unreadable value
+			//! comes back negative, which the caller treats as black -- this
+			//! condition may only ever MISS a dim light, never invent one.
+			double DimLightColorMax_( const NodeRef& item, double fallback )
+			{
+				const std::string s = ChunkParamString_( item, "color" );
+				if( s.empty() ) return fallback;
+				double best = -1.0;
+				const char* p = s.c_str();
+				for( int k = 0; k < 3; ++k ) {
+					char* end = nullptr;
+					const double v = std::strtod( p, &end );
+					if( end == p ) break;
+					if( RISE::IsFiniteDouble( v ) && v > best ) best = v;
+					p = end;
+				}
+				return best;
+			}
+
+			//! Reads `kind`'s authored intensity literal off `item`.  FALSE for
+			//! a kind this condition does not cover, and for a slot holding
+			//! something that is not a finite number -- a painter reference or
+			//! an expression is a value this note cannot honestly QUOTE, and
+			//! quoting is half of what the clause does.
+			bool ReadDimLightAuthoredIntensity_( const NodeRef& item, const std::string& kind,
+			                                     std::string& outParam, double& outValue )
+			{
+				DimLightIntensityRule_ rule;
+				if( !DimLightIntensityRuleFor_( kind, rule ) ) return false;
+				outParam = rule.param;
+				const std::string raw = ChunkParamString_( item, rule.param );
+				if( raw.empty() )               outValue = rule.defaultValue;
+				else if( LooksNumeric( raw ) )  outValue = std::strtod( raw.c_str(), nullptr );
+				else                            return false;
+				return RISE::IsFiniteDouble( outValue );
+			}
+
+			//! Condition N clause (ii), whole: the authored intensity clears its
+			//! kind's floor AND the light is not authored black.  The colour
+			//! test is not pedantry -- a light at `exitance 5000` with
+			//! `color 0 0 0` emits nothing, so it genuinely measures ~0%, and
+			//! telling its author to RAISE THE EXITANCE would be confident,
+			//! specific, actionable and wrong.
+			bool DimLightIntensityIsNonTrivial_( const NodeRef& item, const std::string& kind, double value )
+			{
+				DimLightIntensityRule_ rule;
+				if( !DimLightIntensityRuleFor_( kind, rule ) ) return false;
+				if( value < rule.floorValue ) return false;
+				return DimLightColorMax_( item, rule.defaultColorIsBlack ? 0.0 : 1.0 ) > 0.0;
+			}
+
+			//! Condition N's ONE finding: a light authored bright that measured
+			//! near-nothing, with both numbers the clause has to carry.
+			struct DimLightFinding_
+			{
+				std::string name;
+				std::string kind;
+				std::string intensityParam;   //!< "power" / "exitance"
+				double      authoredIntensity = 0.0;
+				double      share             = 0.0;   //!< [0,1] of the measured light total
+			};
+
+			//! Condition N's whole clause, SHARED by the note builder and the
+			//! diagnostic builder -- FormatEnclosedLightClause_'s arrangement
+			//! exactly, and for its reason: the two carriers must not be able to
+			//! disagree about what was measured.
+			//!
+			//! BOTH NUMBERS, always: what the author WROTE and what the audit
+			//! MEASURED.  The mismatch between them IS the finding -- either one
+			//! alone reads as an opinion.  Then the action (three fixes, in the
+			//! order they are usually the answer), then the honest hedge about
+			//! what the cached figure does and does not track.  `findings` is
+			//! never empty when this is called; when it holds more than one, the
+			//! first is named in full and the rest are counted, matching this
+			//! file's other multi-finding clauses.
+			std::string FormatDimHeroLightClause_( const std::vector<DimLightFinding_>& findings )
+			{
+				const DimLightFinding_& f = findings[0];
+				char valueBuf[64];
+				std::snprintf( valueBuf, sizeof( valueBuf ), "%g", f.authoredIntensity );
+				char pctBuf[64];
+				std::snprintf( pctBuf, sizeof( pctBuf ), "%.1f", f.share * 100.0 );
+
+				std::string s = "`" + f.name + "` is authored at `" + f.intensityParam + " " + valueBuf +
+					"` but light_scene's own solo audit measured it at " + pctBuf + "% of this scene's "
+					"measured light total -- it is not reaching the scene. Raise its `" + f.intensityParam +
+					"`, enlarge the emitter, or clear what encloses it, then re-run light_scene to "
+					"re-measure. That figure is from the last light_scene run and this light's own chunk "
+					"has not changed since; edits ELSEWHERE -- moving what blocks it, retuning the other "
+					"lights -- change what it really contributes without changing this number.";
+				if( findings.size() > 1 ) {
+					s += " (" + std::to_string( findings.size() - 1 ) + " more light" +
+					     ( findings.size() > 2 ? std::string( "s" ) : std::string() ) +
+					     " measured the same way.)";
+				}
+				return s;
+			}
+
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused (binding-aware as of adoption-polish item 3)
@@ -4786,6 +4988,7 @@ namespace RISE
 				bool conditionK = false;   //!< GPT slice item 4: a low-roughness metallic material coexists with a strongly saturated env dome
 				bool conditionL = false;   //!< GEOMETRY_SHADING_SIGNALS sec 11: a flat-colour material on curv-bearing geometry -- `add_wear`'s note half
 				bool conditionM = false;   //!< the emissive-on-opaque-shell translucency fake: a positional light enclosed by an opaque standard_object
+				bool conditionN = false;   //!< the dim hero light: authored bright, MEASURED at <2% by light_scene's own solo audit
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -4945,6 +5148,11 @@ namespace RISE
 				//! ONE enclosed light already IS the failure.  The clause
 				//! formatter reads it whole (FormatEnclosedLightClause_).
 				std::vector<EnclosedLightFinding_> enclosedLightFindings;
+
+				//! Condition N: every dim-hero-light finding, in the LIGHT's
+				//! document order.  Read through !empty() -- one light authored
+				//! at exitance 5000 and measuring 1% already IS the failure.
+				std::vector<DimLightFinding_> dimLightFindings;
 			};
 
 			//! Condition L's gate: how many wear candidates it takes before the
@@ -5399,8 +5607,17 @@ namespace RISE
 			//! `mJob`, and the stateless ComputeDesignNote(text) wrapper derives
 			//! its own throwaway exactly as ValidateText does -- so the note and
 			//! the diagnostic carriers cannot disagree about whether M fired.
+			//!
+			//! `soloCache` (condition N, 2026-08-30) is the calling SESSION's
+			//! `light_scene` solo-measurement cache -- the one input in this
+			//! whole scan that is a MEASUREMENT rather than a fact recomputable
+			//! from the bytes.  Null means condition N is SILENT, exactly as a
+			//! null `derivedJob` silences condition M, and for the same reason:
+			//! the four verb call sites and the stateless text-only carriers
+			//! have no session to hold one.
 			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc, bool inPiecesPhase = false,
-			                                                          IJobPriv* derivedJob = nullptr )
+			                                                          IJobPriv* derivedJob = nullptr,
+			                                                          const AgentSession::AgentLightSoloMeasurementMap* soloCache = nullptr )
 			{
 				DesignNoteConditions_ c;
 				bool hasAdvancedGeometry = false;
@@ -5718,6 +5935,16 @@ namespace RISE
 						PositionalLightCandidate_ L;
 						L.name = ChunkParamString_( item, "name" );
 						L.kind = role;
+						// (Condition N) The same four kinds are condition N's
+						// whole scope, so its two document facts are captured
+						// HERE rather than in a second walk: the chunk's
+						// verbatim bytes (the cached measurement's validity
+						// key) and the authored intensity literal.
+						L.chunkText = RISE::Cst::SerializeNode( item );
+						L.haveIntensity = ReadDimLightAuthoredIntensity_( item, role, L.intensityParam,
+						                                                  L.authoredIntensity );
+						L.intensityNonTrivial = L.haveIntensity &&
+							DimLightIntensityIsNonTrivial_( item, role, L.authoredIntensity );
 						if( !L.name.empty() ) positionalLights.push_back( L );
 					}
 					// C3 (2026-08-18): lathe_geometry counts as an ADVANCED
@@ -6604,6 +6831,56 @@ namespace RISE
 				}
 				c.conditionM = !c.enclosedLightFindings.empty();
 
+				// (2026-08-30) Condition N's resolution pass -- the DIM HERO
+				// LIGHT.  Its input is the session's cached `light_scene` solo
+				// audit; see DESIGN_DIM_HERO_LIGHT's doc for the failure this
+				// exists to carry forward and the three clauses below.
+				//
+				// SILENT WITHOUT A CACHE (a caller with no session, or a session
+				// where light_scene has never run): absent, never guessed.
+				if( soloCache && !soloCache->empty() ) {
+					for( const PositionalLightCandidate_& L : positionalLights ) {
+						// (ii) AUTHORED NON-TRIVIALLY.  Checked FIRST because it
+						// is the cheap document fact and it is what keeps this
+						// note off a deliberately-faint fill.
+						if( !L.intensityNonTrivial ) continue;
+
+						// SUPPRESSED BY CONDITION M.  M already names this light
+						// AND says why it is dark; N would add only "it is dark,
+						// find out why".  One light, one clause.
+						bool namedByM = false;
+						for( const EnclosedLightFinding_& e : c.enclosedLightFindings )
+							if( e.lightName == L.name ) { namedByM = true; break; }
+						if( namedByM ) continue;
+
+						const AgentSession::AgentLightSoloMeasurementMap::const_iterator m =
+							soloCache->find( L.name );
+						if( m == soloCache->end() ) continue;
+
+						// (iii) STILL VALID.  The measurement speaks only while
+						// the light's own chunk is byte-identical to what it was
+						// when the audit ran.  A retuned light -- and a light
+						// whose chunk was replaced, or whose name now belongs to
+						// a different kind -- drops its entry silently.  This is
+						// also what makes a DELETED light harmless: no chunk, no
+						// candidate, so the orphaned entry can never speak.
+						if( m->second.chunkText != L.chunkText ) continue;
+						if( m->second.kind != L.kind )           continue;
+
+						// (i) MEASURED NEAR-NOTHING.
+						if( !( m->second.share < kDimLightShareGate ) ) continue;
+
+						DimLightFinding_ f;
+						f.name              = L.name;
+						f.kind              = L.kind;
+						f.intensityParam    = L.intensityParam;
+						f.authoredIntensity = L.authoredIntensity;
+						f.share             = m->second.share;
+						c.dimLightFindings.push_back( f );
+					}
+				}
+				c.conditionN = !c.dimLightFindings.empty();
+
 				// (88) Condition C: the LARGEST qualifying group wins, so the
 				// note names one concrete geometry rather than a list.  The
 				// `distinctTransforms` requirement is what makes the clause's
@@ -7008,13 +7285,15 @@ namespace RISE
 			//! ComputeDesignNoteConditionsFromDoc_ -- condition M's live-scene
 			//! half; null means M is silent.  See that function's own doc.
 			std::string ComputeDesignNoteFromDoc_( const Document& doc, bool inPiecesPhase = false,
-			                                       IJobPriv* derivedJob = nullptr )
+			                                       IJobPriv* derivedJob = nullptr,
+			                                       const AgentSession::AgentLightSoloMeasurementMap* soloCache = nullptr )
 			{
-				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob );
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob,
+				                                                                     soloCache );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM ) return std::string();
+				    !c.conditionM && !c.conditionN ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -7100,6 +7379,9 @@ namespace RISE
 				if( c.conditionM ) {
 					note += " " + FormatEnclosedLightClause_( c.enclosedLightFindings );
 				}
+				if( c.conditionN ) {
+					note += " " + FormatDimHeroLightClause_( c.dimLightFindings );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -7132,13 +7414,15 @@ namespace RISE
 			//! untouched; see that function's doc for why validate no longer
 			//! calls it.
 			void AppendDesignDiagnostics_( const Document& doc, std::vector<AgentDiagnostic>& out, bool inPiecesPhase,
-			                               IJobPriv* derivedJob )
+			                               IJobPriv* derivedJob,
+			                               const AgentSession::AgentLightSoloMeasurementMap* soloCache )
 			{
-				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob );
+				const DesignNoteConditions_ c = ComputeDesignNoteConditionsFromDoc_( doc, inPiecesPhase, derivedJob,
+				                                                                     soloCache );
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM ) return;
+				    !c.conditionM && !c.conditionN ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -7316,6 +7600,20 @@ namespace RISE
 					d.message = FormatEnclosedLightClause_( c.enclosedLightFindings );
 					out.push_back( d );
 				}
+				if( c.conditionN ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_DIM_HERO_LIGHT;
+					// SHARED formatter -- cannot drift from the note's N clause.
+					// No kSelfDisarm, condition J/M's reason: this is a
+					// MEASUREMENT, not a styling judgement.  "Authored at
+					// exitance 5000, measured at 1%" has no deliberately-simple
+					// reading -- and the clause already carries its own honest
+					// hedge about what the cached figure does and does not
+					// track, which is the escape a stale reading needs.
+					d.message = FormatDimHeroLightClause_( c.dimLightFindings );
+					out.push_back( d );
+				}
 			}
 		}
 
@@ -7338,7 +7636,8 @@ namespace RISE
 		//! `mJob->GetCstDocument()` from INSIDE doRenderWork's tail, while
 		//! still under the park -- see designNoteLocal's declaration and
 		//! its two call sites in RenderCore_.
-		std::string AgentSession::ComputeDesignNote( const std::string& documentText, bool inPiecesPhase )
+		std::string AgentSession::ComputeDesignNote( const std::string& documentText, bool inPiecesPhase,
+		                                             const AgentLightSoloMeasurementMap* soloCache )
 		{
 			if( documentText.empty() ) return std::string();
 			const Document doc = RISE::Cst::ParseToCst( documentText );
@@ -7354,10 +7653,10 @@ namespace RISE
 			// every OTHER condition is a pure document fact and stays correct.
 			IJobPriv* throwaway = nullptr;
 			if( !RISE_CreateJobPriv( &throwaway ) || !throwaway )
-				return ComputeDesignNoteFromDoc_( doc, inPiecesPhase );
+				return ComputeDesignNoteFromDoc_( doc, inPiecesPhase, nullptr, soloCache );
 
 			RISE::Cst::DeriveToJob( doc, *throwaway, nullptr );
-			const std::string note = ComputeDesignNoteFromDoc_( doc, inPiecesPhase, throwaway );
+			const std::string note = ComputeDesignNoteFromDoc_( doc, inPiecesPhase, throwaway, soloCache );
 			throwaway->release();
 			return note;
 		}
@@ -23556,7 +23855,8 @@ namespace RISE
 					// this closure.  See designNoteLocal's declaration above.
 					if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
 						designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc,
-							BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces, mJob );
+							BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces, mJob,
+							&mLightSoloMeasurements );
 					publishCompletedToLastRender();
 					return;
 				}
@@ -24043,7 +24343,8 @@ namespace RISE
 				// (both re-enter the controller) from inside this closure.
 				if( const RISE::Cst::Document* liveDoc = mJob->GetCstDocument() )
 					designNoteLocal = ComputeDesignNoteFromDoc_( *liveDoc,
-						BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces, mJob );
+						BuildProtocolActive_() && mBuildPhase == AgentBuildPhase::Pieces, mJob,
+						&mLightSoloMeasurements );
 				publishCompletedToLastRender();
 			};
 
@@ -29818,6 +30119,87 @@ namespace RISE
 			return out;
 		}
 
+		void AgentSession::RecordLightSoloMeasurements( const AgentLightSceneResult& measured )
+		{
+			// REPLACE, never merge.  A fresh audit solos every soloable light in
+			// the scene, so anything the previous map held for a light this one
+			// measured is superseded, and anything it held for a light this one
+			// did NOT measure describes a scene that has since changed.  Keeping
+			// either would be exactly the stale measurement the validity key
+			// exists to refuse.
+			mLightSoloMeasurements.clear();
+
+			// NOTHING WAS MEASURED.  `shareOfSoloedTotal` is a fraction of the
+			// SUM of the soloed mean lumas, so an audit whose solos all came
+			// back black leaves every share at 0.0 -- which does not mean "every
+			// light contributes nothing", it means the measurement did not
+			// happen (a scene that would not render, a camera facing away).
+			// Recording that would make condition N fire on every light in the
+			// document off a number nobody measured.
+			double soloTotal = 0.0;
+			for( std::size_t i = 0; i < measured.contributions.size(); ++i )
+				if( measured.contributions[i].soloed ) soloTotal += measured.contributions[i].meanLuma;
+			if( !( soloTotal > 0.0 ) ) return;
+
+			// The VALIDITY KEY comes from the LIVE document, read directly (the
+			// arc-82 CollectPopulationStock_ convention) rather than through
+			// ReadDocumentSnapshot, which re-enters the controller.  No document,
+			// no key, no record: a measurement this session cannot tie to
+			// specific authored bytes must not be able to speak later.
+			const RISE::Cst::Document* doc = mJob ? mJob->GetCstDocument() : nullptr;
+			if( !doc ) return;
+
+			//! Defensive bound only.  An audit measures at most
+			//! kLightSceneMaxSolos lights, so this cap is unreachable in
+			//! practice; it is here so a future caller cannot turn an advisory
+			//! cache into unbounded session state.
+			static const std::size_t kMaxLightSoloRecords = 64;
+
+			static const char* const kRecordedKinds[] = {
+				"omni_light", "spot_light", "rect_light", "shape_light"
+			};
+
+			for( std::size_t i = 0; i < measured.contributions.size(); ++i ) {
+				const AgentLightContribution& c = measured.contributions[i];
+				if( !c.soloed ) continue;
+				if( mLightSoloMeasurements.size() >= kMaxLightSoloRecords ) break;
+
+				// ONLY the four positional light kinds -- condition N's whole
+				// scope (see DESIGN_DIM_HERO_LIGHT's SCOPE note).  A soloed
+				// entry that is not one of them (the reserved `environment`, a
+				// directional light, a hand-authored emissive object) is
+				// measured and reported by light_scene exactly as before; it
+				// simply gets no cache record, because no condition reads one.
+				// The join is by NAME, which is sound for all four: omni/spot
+				// are light-manager entries named by their chunk, and
+				// rect_light/shape_light derive to an OBJECT that takes the
+				// chunk's own name.
+				RISE::Cst::NodeRef node;
+				std::string        kind;
+				for( std::size_t k = 0; k < sizeof( kRecordedKinds ) / sizeof( kRecordedKinds[0] ); ++k ) {
+					node = FindChunkByRoleAndName_( *doc, kRecordedKinds[k], c.name );
+					if( node ) { kind = kRecordedKinds[k]; break; }
+				}
+				if( !node ) continue;
+
+				AgentLightSoloMeasurement rec;
+				rec.name              = c.name;
+				rec.kind              = kind;
+				rec.share             = c.shareOfSoloedTotal;
+				rec.meanLuma          = c.meanLuma;
+				rec.allLightsMeanLuma = measured.allLightsMeanLuma;
+				rec.chunkText         = RISE::Cst::SerializeNode( node );
+				// Best-effort: a slot holding a non-literal leaves these at
+				// their defaults.  Condition N re-reads the authored intensity
+				// off the CURRENT document anyway (the validity key guarantees
+				// the same bytes), so this copy is a self-describing record,
+				// not the value the clause prints.
+				ReadDimLightAuthoredIntensity_( node, kind, rec.intensityParam, rec.authoredIntensity );
+
+				mLightSoloMeasurements[rec.name] = rec;
+			}
+		}
+
 		void AgentSession::MeasureLightContributions_( AgentLightSceneResult& out )
 		{
 			const std::vector<SoloableLight_> all = CollectSoloableLights_( mJob );
@@ -29969,6 +30351,16 @@ namespace RISE
 					if( !a.soloed ) return false;
 					return a.meanLuma > b.meanLuma;
 				} );
+
+			// (Condition N, 2026-08-30) RETAIN what was just measured.  Here --
+			// at the tail of the measurement itself, not at LightScene's -- so
+			// measuring and remembering cannot be separated by a later caller.
+			// The report this pass returns is read ONCE by the model and was
+			// demonstrably read past (a solo audit reported an interior candle
+			// at 1% of the frame and the closing summary still called the
+			// lantern "illuminated"); the cache is what makes the same fact
+			// ARRIVE again, on the note carriers, until it is fixed.
+			RecordLightSoloMeasurements( out );
 		}
 
 		//======================================================================

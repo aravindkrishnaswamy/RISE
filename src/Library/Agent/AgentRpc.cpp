@@ -1866,7 +1866,8 @@ namespace RISE
 						// no-session default.
 						headResult.set( "diagnostics", diagnosticsArray(
 							AgentSession::ValidateText( snap.document,
-								s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces ) ) );
+								s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces,
+								&s->LightSoloMeasurements() ) ) );
 						headResult.set( "validated", JsonValue::MakeString( "head" ) );
 						headResult.set( "headVersion", HeadVersionJson( snap.headVersion ) );
 						// Creative-richness P2.b (73-creative-richness-design.md
@@ -1888,7 +1889,8 @@ namespace RISE
 					// exists, pass its real build phase through.
 					result.set( "diagnostics", diagnosticsArray(
 						AgentSession::ValidateText( text->asString(),
-							s && s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces ) ) );
+							s && s->BuildProtocolActive() && s->BuildPhase() == AgentSession::AgentBuildPhase::Pieces,
+							s ? &s->LightSoloMeasurements() : nullptr ) ) );
 					result.set( "validated", JsonValue::MakeString( "text" ) );
 					// Creative-richness P2.b: no `note` field here either -- see
 					// the head-form branch's comment above.

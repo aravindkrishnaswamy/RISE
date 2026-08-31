@@ -2619,6 +2619,59 @@ namespace RISE
 			//! when `keyword` is non-empty, else the whole grammar.
 			std::string ReadSchema( const std::string& keyword = std::string() ) const;
 
+			//! ONE light's LAST `light_scene` solo measurement, retained for
+			//! design-note condition N (DESIGN_DIM_HERO_LIGHT -- a light
+			//! authored bright that measured near-nothing).  See that code's
+			//! doc in AgentDiagnostic.h for the whole condition; this struct is
+			//! only the record it speaks from.  Declared HERE, well above the
+			//! `light_scene` block that writes it, because the validate/design-
+			//! note declarations just below take the map by pointer and a
+			//! member declaration may only name a nested type already declared.
+			//!
+			//! `chunkText` is the VALIDITY KEY: the light's own document chunk,
+			//! verbatim (RISE::Cst::SerializeNode), as it read at measurement
+			//! time.  A cached entry is USED only while the light's current
+			//! chunk text is byte-identical to it -- retune the light and the
+			//! entry is silently dropped rather than quoted at a document it no
+			//! longer describes.  The key is deliberately the light's OWN bytes
+			//! and nothing wider: keying on the whole document would drop every
+			//! measurement on any edit anywhere (the note would never speak
+			//! twice), and the honest cost of the narrow key -- an edit
+			//! ELSEWHERE that changes this light's real contribution without
+			//! touching its chunk -- is stated in the clause the note prints.
+			struct AgentLightSoloMeasurement
+			{
+				std::string name;
+				//! The AUTHORED chunk keyword at measurement time: one of
+				//! `omni_light` / `spot_light` / `rect_light` / `shape_light`.
+				//! Nothing else is recorded -- see the condition's SCOPE note.
+				std::string kind;
+				//! `AgentLightContribution::shareOfSoloedTotal` [0,1], recorded
+				//! ONLY when the soloed total was strictly positive (an
+				//! all-black audit measures nothing, and a 0/0 share is not a
+				//! measurement this note may speak from).
+				double      share = 0.0;
+				//! The solo frame's mean Rec.709 luma (0-255), and the
+				//! all-lights frame's, exactly as the audit reported them --
+				//! kept so the record carries the raw pair the trajectory that
+				//! motivated this condition printed (1.3 against 67.9).
+				double      meanLuma = 0.0;
+				double      allLightsMeanLuma = 0.0;
+				//! The AUTHORED intensity at measurement time and the parameter
+				//! it was read from ("power" for omni/spot, "exitance" for
+				//! rect/shape).  Redundant with re-reading the chunk -- the
+				//! validity key guarantees the bytes are unchanged -- but kept
+				//! so the record is self-describing at the point it is written.
+				double      authoredIntensity = 0.0;
+				std::string intensityParam;
+				std::string chunkText;
+			};
+
+			//! light name -> its last solo measurement.  Small by construction
+			//! (one entry per soloed light, and a whole audit REPLACES the map),
+			//! so a plain std::map is the right shape.
+			typedef std::map<std::string, AgentLightSoloMeasurement> AgentLightSoloMeasurementMap;
+
 			//! THE KEYSTONE.  Validate a CANDIDATE scene text with NO side
 			//! effects on this session's Job.  A candidate that declares NO
 			//! CHUNKS AT ALL (empty, whitespace-only, comments-only) is
@@ -2656,8 +2709,18 @@ namespace RISE
 			//! real one.  See AgentDiagnosticCode::DESIGN_UNBOUND_MATERIAL's
 			//! doc for why this ONE condition is phase-sensitive when none
 			//! of the others are.
+			//!
+			//! `soloCache` (condition N, 2026-08-30) is the calling session's
+			//! `light_scene` solo-measurement cache, or null.  Being static,
+			//! this function has no session state of its own -- so a caller
+			//! WITH one passes it (`Validate()` below does), and the no-head
+			//! bootstrap leaves it null, in which case condition N is simply
+			//! SILENT.  Exactly condition M's `derivedJob` arrangement, and for
+			//! the same reason: a condition whose input the caller does not
+			//! have is absent, never guessed.
 			static std::vector<AgentDiagnostic> ValidateText( const std::string& candidateText,
-			                                                  bool inPiecesPhase = false );
+			                                                  bool inPiecesPhase = false,
+			                                                  const AgentLightSoloMeasurementMap* soloCache = nullptr );
 
 			//! Creative-richness P2 (73-creative-richness-design.md sec 2 P2,
 			//! RE-TARGETED by sec 7): the shared engine-side "design note"
@@ -2682,8 +2745,15 @@ namespace RISE
 			//! `inPiecesPhase` -- same contract as ValidateText's own
 			//! parameter above (doc 91); default `false` for the same
 			//! conservative reason.
+			//!
+			//! `soloCache` -- same contract as ValidateText's own parameter
+			//! just above (condition N): null means N is silent here.  A caller
+			//! that has a session passes `LightSoloMeasurements()` so this
+			//! carrier and the diagnostic carrier cannot disagree about whether
+			//! N fired on the same bytes.
 			static std::string ComputeDesignNote( const std::string& documentText,
-			                                      bool inPiecesPhase = false );
+			                                      bool inPiecesPhase = false,
+			                                      const AgentLightSoloMeasurementMap* soloCache = nullptr );
 
 			//! Facet 5 slice S1: read_skill -- STATELESS, like ReadSchema /
 			//! ValidateText (references NO member state; exposed static so the
@@ -5330,6 +5400,34 @@ namespace RISE
 				double      allLightsMeanLuma = 0.0;
 				std::string message;
 			};
+
+			//! THE CACHE SEAM condition N reads from, and the ONE place it is
+			//! written.  `light_scene`'s own measurement pass
+			//! (MeasureLightContributions_) calls this at its tail with the
+			//! result it just measured; it REPLACES whatever was cached (a fresh
+			//! audit measures every soloable light, so a merge could only
+			//! preserve figures the new audit already superseded).
+			//!
+			//! Public because it is the seam the condition-N test battery drives
+			//! directly: building an AgentLightSceneResult by hand and recording
+			//! it is how the note's predicate is unit-tested without a provider
+			//! and N solo renders.  It is advisory state only -- nothing in the
+			//! document, the derived scene or any render depends on it, and the
+			//! worst a wrong record can do is make one Info-severity note fire
+			//! or stay silent.
+			//!
+			//! THREAD SAFETY: none of its own, deliberately.  The write runs
+			//! inside a `light_scene` tool turn and the reads run inside
+			//! `validate` / a render's own tail -- both on the dispatcher's
+			//! single-caller thread (AgentRpc.h's contract), and the render's
+			//! note is computed synchronously inside the parked closure before
+			//! RenderCore_ returns, so no read can interleave with the write.
+			void RecordLightSoloMeasurements( const AgentLightSceneResult& measured );
+
+			//! Read-only view of the cache above, for the carriers that must
+			//! pass it into the shared design-note scan (and for the tests that
+			//! assert `light_scene` really populated it).
+			const AgentLightSoloMeasurementMap& LightSoloMeasurements() const { return mLightSoloMeasurements; }
 
 			//! Design this scene's lighting in FRESH minimal provider
 			//! contexts and validated-insert the result.
@@ -9291,6 +9389,22 @@ namespace RISE
 			//! authoring after the clean room has had its one turn would
 			//! strand exactly the session whose builder failed.
 			bool mLightSceneRan = false;
+
+			//! Condition N (DESIGN_DIM_HERO_LIGHT): the last `light_scene` solo
+			//! audit's per-light measurements, keyed by light name.  Written
+			//! ONLY by RecordLightSoloMeasurements (see its doc for the seam,
+			//! the replace-not-merge rule and the thread-safety argument); read
+			//! ONLY by the design-note carriers, which pass a const pointer to
+			//! it into the shared scan.
+			//!
+			//! LIFETIME is the session's.  Nothing prunes it when a light chunk
+			//! is deleted -- an orphaned entry is harmless, because the validity
+			//! check looks the light's chunk up in the CURRENT document and a
+			//! name that no longer resolves simply fails to match, so the entry
+			//! can never speak.  Bounded by construction: an audit replaces the
+			//! whole map and measures at most kLightSceneMaxSolos lights, with a
+			//! defensive cap in the writer besides.
+			AgentLightSoloMeasurementMap mLightSoloMeasurements;
 
 			//! Arc 81, arc 83 slices 2 and 5: the SCENE FACTS a clean-room
 			//! prompt opens with -- the session's imagined subject/mood, the

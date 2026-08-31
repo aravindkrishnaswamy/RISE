@@ -401,6 +401,71 @@ namespace RISE
 			//! derives its own throwaway -- so the note and the diagnostic can
 			//! never disagree about whether this fired on the same bytes.
 			static const char* const DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL = "DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL";
+			//! Condition N (2026-08-30): the DIM HERO LIGHT -- a light authored
+			//! BRIGHT that this scene's own `light_scene` solo audit MEASURED
+			//! contributing almost nothing.
+			//!
+			//! MEASURED MOTIVATION (a live GUI trajectory, 2026-08-29).  The
+			//! agent ran `light_scene`; the pass's own per-light solo audit
+			//! reported the lantern's interior candle at 1.3 mean luma against
+			//! a 67.9 all-lights frame -- about 1% of the scene's measured
+			//! light total -- with an authored exitance of 5000-6000, plus a
+			//! duplicate light at 0%.  The agent read straight past both
+			//! numbers and its closing summary told the user the lantern was
+			//! "illuminated".  The audit had MEASURED THE TRUTH; nothing
+			//! carried it forward.  That is the whole of this condition: the
+			//! measurement rides the note carriers an agent actually reads,
+			//! because one-time result text was demonstrably ignored (the
+			//! mechanism law -- facts must BLOCK or ARRIVE).
+			//!
+			//! FIRES on >= 1 light for which ALL THREE hold:
+			//!   (i)   its most recent `light_scene` solo measurement puts it
+			//!         below kDimLightShareGate (2%) of the scene's measured
+			//!         light total (the SUM of every soloed light's mean luma
+			//!         -- `AgentLightContribution::shareOfSoloedTotal`, not a
+			//!         fraction of the all-lights frame, which light transport
+			//!         does not make additive);
+			//!   (ii)  its AUTHORED intensity is non-trivial -- `power` >= 1.0
+			//!         for omni/spot (the descriptor's own default, so anything
+			//!         at or above it is a real authored intent), `exitance` >=
+			//!         10.0 for rect/shape (the bottom of the range those
+			//!         descriptors document, "tens for a soft interior fill
+			//!         panel") -- AND its `color` is not black.  This is what
+			//!         exempts a deliberately-faint fill someone authored at
+			//!         `power 0.1` while catching "exitance 5000 measuring 1%";
+			//!   (iii) the cached measurement is still VALID: the light's own
+			//!         document chunk text is byte-identical to what it was
+			//!         when the measurement was taken.  A retuned light drops
+			//!         its entry silently -- a stale measurement never speaks.
+			//!
+			//! SCOPE is condition M's OWN positional set (`omni_light`,
+			//! `spot_light`, `rect_light`, `shape_light`) and nothing else: a
+			//! `directional_light` / `ambient_light` / sky dome measuring low is
+			//! ordinarily a deliberate ambient wash, and those kinds carry no
+			//! notion of "enclosed" for the M-suppression below to key off.
+			//!
+			//! SUPPRESSED for any light condition M already names in the SAME
+			//! computation.  M explains WHY that light is dark (an opaque shell
+			//! blocks it); N without M says only "it is dark, find out why".
+			//! Noting one light twice in one note is noise, so M wins.
+			//!
+			//! HONEST LIMITATION, stated in the clause itself: the validity key
+			//! is the LIGHT'S OWN chunk text.  Edits ELSEWHERE -- moving the
+			//! shell that blocks it, retuning the other lights, changing the
+			//! camera -- change what the light really contributes WITHOUT
+			//! invalidating the cache, so the clause says the figure is from
+			//! the last `light_scene` run and asks for a re-run to re-measure.
+			//!
+			//! REQUIRES SESSION STATE (the cache `light_scene` writes), which is
+			//! what makes it the first condition in this family that the
+			//! STATELESS text-only carriers cannot compute: `ValidateText(text)`
+			//! and `ComputeDesignNote(text)` called with no cache are simply
+			//! SILENT on it, exactly as condition M is silent without a derived
+			//! scene.  The carriers that DO have a session pass their cache
+			//! through (`AgentSession::Validate`, and the render-result note in
+			//! `RenderCore_`), and both render the SAME shared clause.
+			//! Severity::Info, this family's convention.
+			static const char* const DESIGN_DIM_HERO_LIGHT = "DESIGN_DIM_HERO_LIGHT";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a
