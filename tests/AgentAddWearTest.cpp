@@ -1093,10 +1093,21 @@ static void TestWireSurface()
 //       parented area light, which is EVERY piece of every element
 //       `build_element` writes.  Carries M13 too -- the shape_light's own
 //       derived emissive object trivially contains its own centre and must
-//       never be named as the shell.
+//       never be named as the shell.  Shell and light carry DIFFERENT
+//       non-zero local offsets (not both (0,0,0)) so the fixture actually
+//       requires both kinds' parent composition to run with the right sign;
+//       (k2) is its companion negative -- mirroring the light's local
+//       offset composes to a world point just outside the shell's box, and
+//       must NOT fire.
 //   (l) THE GEOMETRY-KIND GAP (2026-08-30): a `lathe_geometry` vessel
 //       around an interior omni -> fires.  lathe was outside the old
 //       analytic allowlist entirely, so no lathe shell could ever be seen.
+//   (m)/(n) THE UNBOUNDED-SENTINEL REGRESSION (P2-1, 2026-08-30): an
+//       axis-aligned and a rotated `infiniteplane_geometry` (opaque
+//       material) with a light above it -> silent in both.  The
+//       box-usability filter must reject the plane's +-DBL_MAX bbox via an
+//       explicit sentinel-magnitude check, not merely rely on `hi - lo`
+//       overflowing to +inf.
 //----------------------------------------------------------------------
 
 //! `ggx_material` with an explicit (possibly empty) `emissive` binding.
@@ -1428,9 +1439,39 @@ static void TestEnclosedLightShellNote()
 	//     LOCAL to the parent), so on a harness-authored scene it saw NOTHING
 	//     -- a live p3 altar run rendered an opaque shell around a shape_light
 	//     the harness's own light audit measured at ZERO luminance and this
-	//     condition stayed silent.  Both pieces here are parented, and the
-	//     root sits at x=5, so BOTH the shell's box and the light's point are
-	//     wrong unless the parent transform is composed.
+	//     condition stayed silent.
+	//
+	//     BOTH pieces below are parented to `lantern_root` (world position
+	//     5,0,0), and -- unlike the shell and the light sharing local (0,0,0)
+	//     in an earlier draft of this fixture -- they carry DIFFERENT,
+	//     non-zero local offsets:
+	//       shell (obj_shell):     local (-1, 0,   0), half-width 0.8
+	//       light (lantern_flame): local (-1, 0.2, 0)
+	//     A local (0,0,0) shell coinciding with a local (0,0,0) light is a
+	//     degenerate point: parent composition maps a shared local point to
+	//     a shared world point NO MATTER what the parent offset is (even 0,
+	//     i.e. composition silently skipped), so the light is trivially at
+	//     the shell's own centre regardless of whether composition ran at
+	//     all -- the pair could pass with parent composition deleted
+	//     entirely.  Distinct offsets close that: `obj_shell`'s composed
+	//     world box is centred at (5,0,0)+(-1,0,0) = (4,0,0), extents
+	//     x[3.2,4.8] y/z[-0.8,0.8]; `lantern_flame`'s composed world centre
+	//     is (5,0,0)+(-1,0.2,0) = (4,0.2,0), inside that box ONLY because
+	//     BOTH the shell's and the light's own parent-composition ran, with
+	//     the correct (+5,0,0) offset, on their own local values.  If either
+	//     kind's composition is skipped, or applied with the wrong sign, one
+	//     of the two points lands >= 4 units away on X against a box only
+	//     1.6 units wide -- well outside -- and the finding does not fire.
+	//     (Composition dropped identically, for the SAME numeric value, on
+	//     BOTH kinds at once is not distinguishable by any point-in-box test
+	//     -- a uniform additive offset cancels out of a containment check
+	//     between two points that share it -- but RISE has exactly one
+	//     shared `ComposeWorldTransforms` walk for every object-graph node
+	//     (`ObjectManager::ComposeWorldTransforms`, which both
+	//     `standard_object` and the object a `shape_light` derives to run
+	//     through identically), so a regression that broke it wholesale
+	//     would fail essentially every other position-dependent test in
+	//     this suite, not just this one.)
 	//
 	//     This case also carries (M13): a shape_light derives to an emissive
 	//     OBJECT of its own name, which trivially contains its own centre --
@@ -1438,19 +1479,21 @@ static void TestEnclosedLightShellNote()
 	{
 		std::string body = Preamble();
 		body += "standard_object\n{\n\tname lantern_root\n\tposition 5 0 0\n}\n\n";
-		body += Box( "shell_box", 4.0 );
+		body += Box( "shell_box", 1.6 );
 		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
 		body += "standard_object\n{\n\tname obj_shell\n\tgeometry shell_box\n\tmaterial mat_shell\n"
-		        "\tparent lantern_root\n\tposition 0 0 0\n}\n\n";
+		        "\tparent lantern_root\n\tposition -1 0 0\n}\n\n";
 		body += "shape_light\n{\n\tname lantern_flame\n\tparent lantern_root\n\tshape sphere\n"
-		        "\tcenter 0 0 0\n\tsize 0.2\n\texitance 500\n\tcolor 1 0.8 0.6\n}\n\n";
+		        "\tcenter -1 0.2 0\n\tsize 0.2\n\texitance 500\n\tcolor 1 0.8 0.6\n}\n\n";
 
 		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
 		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
 		Check( d != nullptr,
 		       "M11 MONEY: a PARENTED opaque shell enclosing a PARENTED shape_light FIRES -- the "
 		       "multi-piece-element shape every harness-authored scene has, and the exact case the "
-		       "document-side scan was structurally blind to" );
+		       "document-side scan was structurally blind to.  The shell and light have DIFFERENT "
+		       "local offsets, so this only fires when BOTH kinds' parent composition genuinely ran "
+		       "with the correct sign" );
 		if( d ) {
 			Check( d->message.find( "sits inside `obj_shell`" ) != std::string::npos,
 			       "M11: it names the parented SHELL as the enclosure..." );
@@ -1460,6 +1503,36 @@ static void TestEnclosedLightShellNote()
 			Check( d->message.find( "`shape_light lantern_flame`" ) != std::string::npos,
 			       "M11: ...and names the light by its authored kind and name" );
 		}
+	}
+
+	// (k2) M11's COMPANION NEGATIVE.  Identical to (k) -- same root, same
+	//     shell at local (-1,0,0) -- except the light's local offset is
+	//     mirrored to (+1, 0.2, 0), composing to world
+	//     (5,0,0)+(1,0.2,0) = (6, 0.2, 0), which sits 1.2 units past the
+	//     shell's world box edge at x=4.8 -- OUTSIDE.  This pins that the
+	//     containment test is a real bounded interval check, not a loose
+	//     "some positional light is somewhere near this parented shell"
+	//     heuristic: (k)'s and (k2)'s shell are byte-identical, and only the
+	//     sign of the light's local X offset differs, so a test that fires
+	//     on BOTH fixtures would mean the geometry check is not precise
+	//     enough to tell -1 from +1 once a parent offset is in play.
+	{
+		std::string body = Preamble();
+		body += "standard_object\n{\n\tname lantern_root\n\tposition 5 0 0\n}\n\n";
+		body += Box( "shell_box", 1.6 );
+		body += GgxEmissive( "mat_shell", "pnt_bronze", "0.3", "" );
+		body += "standard_object\n{\n\tname obj_shell\n\tgeometry shell_box\n\tmaterial mat_shell\n"
+		        "\tparent lantern_root\n\tposition -1 0 0\n}\n\n";
+		body += "shape_light\n{\n\tname lantern_flame\n\tparent lantern_root\n\tshape sphere\n"
+		        "\tcenter 1 0.2 0\n\tsize 0.2\n\texitance 500\n\tcolor 1 0.8 0.6\n}\n\n";
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d == nullptr,
+		       "M11 NEGATIVE: mirroring the light's local offset to the OTHER side of the shell's "
+		       "local centre composes to a world point outside the shell's world box, and must NOT "
+		       "fire -- pins that (k)'s fire is a precise bounded-box result, not a loose proximity "
+		       "match on the parented pair" );
 	}
 
 	// (l) THE GEOMETRY-KIND GAP: a lathe_geometry vessel (a closed profile of
@@ -1490,6 +1563,55 @@ static void TestEnclosedLightShellNote()
 			Check( d->message.find( "sits inside `obj_vessel`" ) != std::string::npos,
 			       "M12: ...and names the lathe object" );
 		}
+	}
+
+	// (m) THE UNBOUNDED-SENTINEL REGRESSION (P2-1): an axis-aligned
+	//     `infiniteplane_geometry` (opaque, non-luminaire material) with a
+	//     light above it must NEVER be read as an enclosing shell.  Its
+	//     default-constructed BoundingBox is +-RISE_INFINITY == +-DBL_MAX on
+	//     every axis, which IS finite by IsFiniteDouble -- the box-usability
+	//     filter in CollectDerivedSceneFacts_ must reject it via the
+	//     explicit sentinel-magnitude check (>= 1e29), not rely on `hi - lo`
+	//     happening to overflow to +inf, since a smaller-but-still-huge
+	//     finite sentinel (RISE's own +-1e30 / +-FLT_MAX family) would
+	//     satisfy both IsFiniteDouble AND a finite non-overflowing
+	//     subtraction.
+	{
+		std::string body = Preamble();
+		body += "infiniteplane_geometry\n{\n\tname inf_plane\n\txtile 1.0\n\tytile 1.0\n}\n\n";
+		body += GgxEmissive( "mat_plane", "pnt_bronze", "0.3", "" );
+		body += Obj( "obj_plane", "inf_plane", "mat_plane", 0 );
+		body += OmniAt( "sun", 0, 0, 5 );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d == nullptr,
+		       "M14 (P2-1): an axis-aligned infinite plane is NEVER read as an enclosing shell -- its "
+		       "+-DBL_MAX bbox must be rejected as an unbounded sentinel, not merely happen to fail a "
+		       "later finite-extent check" );
+	}
+
+	// (n) THE UNBOUNDED-SENTINEL REGRESSION, ROTATED (P2-1): the same
+	//     opaque infinite plane, but the object also carries a non-trivial
+	//     `orientation` -- a rotated instance's world corners are computed
+	//     by transforming the +-DBL_MAX local bounds, which the pre-fix
+	//     code only rejected because THAT corner transform overflowed to
+	//     +-inf.  The explicit sentinel check catches it directly instead,
+	//     so this must stay silent exactly like the axis-aligned case.
+	{
+		std::string body = Preamble();
+		body += "infiniteplane_geometry\n{\n\tname inf_plane\n\txtile 1.0\n\tytile 1.0\n}\n\n";
+		body += GgxEmissive( "mat_plane", "pnt_bronze", "0.3", "" );
+		body += "standard_object\n{\n\tname obj_plane\n\tgeometry inf_plane\n\tmaterial mat_plane\n"
+		        "\torientation 30 15 0\n\tposition 0 0 0\n}\n\n";
+		body += OmniAt( "sun", 0, 0, 5 );
+
+		const std::vector<Agent::AgentDiagnostic> diags = Agent::AgentSession::ValidateText( body );
+		const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+		Check( d == nullptr,
+		       "M14 (P2-1), rotated variant: a rotated infinite plane is ALSO never read as an "
+		       "enclosing shell -- the explicit sentinel check catches it directly rather than "
+		       "depending on the rotated corner transform overflowing" );
 	}
 }
 

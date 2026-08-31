@@ -4623,10 +4623,17 @@ namespace RISE
 			//!     ground plane, whose extent overflows to inf) or a zero one (a
 			//!     container's) can neither enclose anything meaningfully nor be
 			//!     compared by volume, so it is dropped HERE rather than guarded
-			//!     at every later use.  `hi - lo` must be finite AND strictly
-			//!     positive on all three axes: a flat panel has no interior for a
-			//!     light to sit in, and a zero-volume box would otherwise always
-			//!     win the smallest-volume tie-break.
+			//!     at every later use.  Rejection is an explicit sentinel-magnitude
+			//!     check (any bound component >= 1e29 in absolute value -- see the
+			//!     comment at the check itself) FIRST, not a reliance on `hi - lo`
+			//!     overflowing to +-inf -- that subtraction is kept as a backstop,
+			//!     but a large-but-not-maximal finite sentinel (e.g. +-1e30) would
+			//!     satisfy IsFiniteDouble on both bounds AND their difference, so
+			//!     the overflow alone is not a sound unbounded-ness test.  Beyond
+			//!     that, `hi - lo` must also be finite AND strictly positive on all
+			//!     three axes: a flat panel has no interior for a light to sit in,
+			//!     and a zero-volume box would otherwise always win the
+			//!     smallest-volume tie-break.
 			//!   * A light whose position is not finite is skipped for the same
 			//!     reason.
 			//!
@@ -4660,8 +4667,32 @@ namespace RISE
 						box.name  = n;
 						box.lo[0] = bb.ll.x; box.lo[1] = bb.ll.y; box.lo[2] = bb.ll.z;
 						box.hi[0] = bb.ur.x; box.hi[1] = bb.ur.y; box.hi[2] = bb.ur.z;
+						//! Explicit unbounded-sentinel rejection, AHEAD of the
+						//! finite/extent checks below.  An axis-aligned infinite
+						//! plane's default-constructed BoundingBox (see
+						//! InfinitePlaneGeometry::GenerateBoundingBox ->
+						//! BoundingBox()) is +-RISE_INFINITY == +-DBL_MAX on
+						//! every axis -- IsFiniteDouble(DBL_MAX) is true, so
+						//! that box would sail through the finite check below,
+						//! and it is only the SUBTRACTION `hi - lo` overflowing
+						//! to +inf that catches the axis-aligned case; a
+						//! rotated instance is only caught because ITS corner
+						//! transform overflows.  Neither backstop fires for a
+						//! large-but-not-maximal finite sentinel -- RISE's own
+						//! sentinel family (+-1e30 in Ray::RecomputeInvDir,
+						//! +-FLT_MAX in BVH, see CLAUDE.md's "SAFE_INV" note)
+						//! would pass BOTH checks and be treated as a normal,
+						//! comparable-by-volume box.  1e29 is one order below
+						//! the smallest member of that sentinel family and at
+						//! least ~20 orders above any authorable scene
+						//! coordinate, so it separates "this bound is a
+						//! stand-in for unbounded" from "this bound is a real
+						//! authored extent" with no tunable ambiguity.
+						constexpr double kUnboundedSentinelThreshold_ = 1e29;
 						bool usable = true;
 						for( int k = 0; k < 3; ++k ) {
+							if( std::fabs( box.lo[k] ) >= kUnboundedSentinelThreshold_ ||
+							    std::fabs( box.hi[k] ) >= kUnboundedSentinelThreshold_ ) { usable = false; break; }
 							if( !RISE::IsFiniteDouble( box.lo[k] ) || !RISE::IsFiniteDouble( box.hi[k] ) ) { usable = false; break; }
 							const double extent = box.hi[k] - box.lo[k];
 							if( !RISE::IsFiniteDouble( extent ) || extent <= 0.0 ) { usable = false; break; }
