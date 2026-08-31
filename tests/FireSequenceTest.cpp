@@ -5481,16 +5481,29 @@ namespace
 		return 0;
 	}
 
+	double ProductionResolutionTierForCheckpointDimensions(
+		const std::array<std::size_t,3>& dimensions)
+	{
+		if(dimensions==std::array<std::size_t,3>{{52u,52u,80u}})return 6.0;
+		if(dimensions==std::array<std::size_t,3>{{69u,69u,106u}})return 8.0;
+		if(dimensions==std::array<std::size_t,3>{{86u,86u,132u}})return 10.0;
+		return 0.0;
+	}
+
 	int RunProductionCheckpointPhysicsDiagnosticChild(
 		const std::filesystem::path& checkpointPath,const std::filesystem::path& outputPath)
 	{
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error))return 90;
+		const double diagnosticResolutionTier=
+			ProductionResolutionTierForCheckpointDimensions(checkpoint.dimensions);
+		if(diagnosticResolutionTier==0.0)return 92;
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();
 		authored.poolDiameterM=CapstonePoolDiameterM;
 		authored.heatReleaseRateKW=CapstoneHeatReleaseRateKW;authored.envelope={{0.0,1.0}};
-		authored.durationS=1.0;authored.quality="dstar";authored.numericDStarTier=10.0;
+		authored.durationS=1.0;authored.quality="dstar";
+		authored.numericDStarTier=diagnosticResolutionTier;
 		authored.seed=1234;authored.outputFramesPerS=1.0;authored.plumeLaw=true;
 		FireCase::RecordV1 caseRecord;const RISECBOR64::Bytes aerosol=AerosolRecord();
 		const RISECBOR64::Bytes chem=SyntheticChemRecord();
@@ -5705,10 +5718,13 @@ namespace
 			caseRecord.derived.referenceHeatReleaseRateW,
 			caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
 			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,8u))return 102;
-		double heatReleaseW=0.0,fuelConsumptionKGPerS=0.0;
+		double heatReleaseW=0.0,maximumHeatReleaseWPerM3=0.0,
+			fuelConsumptionKGPerS=0.0;
 		for(MethaneSourcePacket& packet:packets){
 			RepresentMethaneSourcePacketBinary32(packet);
 			if(!CertifiedBinary32SourcePacket(packet,fuel))return 103;
+			maximumHeatReleaseWPerM3=std::max(maximumHeatReleaseWPerM3,
+				packet.gasHeatReleaseWPerM3);
 			heatReleaseW+=packet.gasHeatReleaseWPerM3*cellVolume;
 			fuelConsumptionKGPerS+=-packet.constituentDelta[MethaneCH4]*cellVolume/step;
 		}
@@ -5782,6 +5798,7 @@ namespace
 			<<"manifold_deviation_p95 "<<quantile(0.95)<<"\n"
 			<<"manifold_deviation_p50 "<<quantile(0.50)<<"\n"
 			<<"source_probe_dt_s "<<step<<"\n"
+			<<"source_probe_maximum_HRR_W_per_m3 "<<maximumHeatReleaseWPerM3<<"\n"
 			<<"source_probe_realized_HRR_W "<<heatReleaseW<<"\n"
 			<<"source_probe_fuel_consumption_kg_per_s "<<fuelConsumptionKGPerS<<"\n"
 			<<"source_probe_consumption_times_LHV_W "<<consumptionHeatReleaseW<<"\n"
@@ -5799,9 +5816,11 @@ namespace
 			<<"format13_retry_counters_persisted false\n";
 		if(!output)return 105;
 		std::fprintf(stderr,"PRODUCTION_CHECKPOINT_PHYSICS_DIAGNOSTIC steps=%llu time=%.17g "
-			"velocity=%.17g dt=%.17g gprime=%.17g HRR=%.17g consumption_LHV=%.17g\n",
+			"velocity=%.17g dt=%.17g gprime=%.17g qmax=%.17g HRR=%.17g "
+			"consumption_LHV=%.17g\n",
 			static_cast<unsigned long long>(checkpoint.acceptedSteps),checkpoint.simulationTimeS,
-			maximumSpeed,checkpoint.lastAcceptedStepS,maximumReducedGravity,heatReleaseW,
+			maximumSpeed,checkpoint.lastAcceptedStepS,maximumReducedGravity,
+			maximumHeatReleaseWPerM3,heatReleaseW,
 			consumptionHeatReleaseW);return 0;
 	}
 
@@ -6200,14 +6219,9 @@ namespace
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			checkpoint.producerBuildId!=expectedCheckpointBuildId)return 91;
-		double replayResolutionTier=0.0;
-		if(checkpoint.dimensions==std::array<std::size_t,3>{{52u,52u,80u}})
-			replayResolutionTier=6.0;
-		else if(checkpoint.dimensions==std::array<std::size_t,3>{{69u,69u,106u}})
-			replayResolutionTier=8.0;
-		else if(checkpoint.dimensions==std::array<std::size_t,3>{{86u,86u,132u}})
-			replayResolutionTier=10.0;
-		else return 90;
+		const double replayResolutionTier=
+			ProductionResolutionTierForCheckpointDimensions(checkpoint.dimensions);
+		if(replayResolutionTier==0.0)return 90;
 		std::ofstream clearAudit(auditPath,std::ios::trunc);clearAudit.close();
 		if(!clearAudit)return 92;
 		std::ofstream clearColumn(std::filesystem::path(auditPath).string()+".column.csv",
@@ -6508,6 +6522,13 @@ int main(int argc,char** argv)
 		!ProductionTemporalCapstoneTierSupported(9.0)&&
 		!ProductionTemporalCapstoneTierSupported(11.0),
 		"production temporal capstone refuses unsupported neighboring tiers");
+	Check(ProductionResolutionTierForCheckpointDimensions({{52u,52u,80u}})==6.0&&
+		ProductionResolutionTierForCheckpointDimensions({{69u,69u,106u}})==8.0&&
+		ProductionResolutionTierForCheckpointDimensions({{86u,86u,132u}})==10.0,
+		"production checkpoint diagnostics derive every sealed resolution tier from shape");
+	Check(ProductionResolutionTierForCheckpointDimensions({{68u,69u,106u}})==0.0&&
+		ProductionResolutionTierForCheckpointDimensions({{70u,69u,106u}})==0.0,
+		"production checkpoint diagnostics refuse neighboring unknown shapes");
 	{
 		std::vector<double> time(129u),signal(129u);
 		for(std::size_t sample=0u;sample<time.size();++sample){
