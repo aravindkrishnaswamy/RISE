@@ -5192,43 +5192,64 @@ trusting codec tags alone.  The manifest SHA is
 
 ### 7.56w Complete CPU projected-Heun owner (r190)
 
-r190 closes the host-independent R0/R1/R2 ownership rung.  The central
-authority correction is intentionally not an API: only
-`FireProductionProjectedHeunCPUOwner` can call it.  A target-chain child stores
-the exact parent-target identity, accepted-candidate identity, and correction
-iteration in addition to its base lineage.  Closed domains remove the constant
-correction mode whenever no pressure-open face exists; this covers mixed
-wall/periodic closed topologies rather than the earlier all-periodic shortcut.
+r190 closes the host-independent R0/R1/R2 ownership rung after a fresh review
+rejected its first draft. The central r70 correction remains private to
+`FireProductionProjectedHeunCPUOwner`. Its candidate identity is recomputed
+from the exact attempt, stage, parent, flux, alpha, and candidate bytes at the
+correction boundary. Closed domains remove the constant mode from the complete
+target, including iteration zero, whenever no pressure-open face exists.
 
-The owner is a strict protocol state machine. `Begin` accepts the opaque frozen
-source packet, beginning state and momentum, case envelope, and empty dynamic
-slots in the invariant FCT/physical/force contracts. `SolveR0` and `SolveR1`
-perform projection, projection-bound coefficient publication, flux composition,
-scalar acceptance, r70 correction, and coupled convergence in that order.  The
-coefficient provider must echo stage, attempt, immediate candidate parent, and
-exact projection identity; a stale but otherwise finite coefficient field has
-no authority.  R0 produces EOS-gated `Q*` and force-inclusive `M*dagger`. R1
-uses the R0 flux as the other parent, solves a fresh shared alpha on the averaged
-30-field tuple, EOS-gates `Q^{n+1}`, and evaluates compatible R0/R1 momentum
-rates separately with that alpha.
+The owner is a strict protocol state machine. `Begin` binds the canonical case
+envelope to the frozen source case, preflights the simultaneous owner live set,
+and accepts only empty dynamic slots in the invariant contracts. `SolveR0` and
+`SolveR1` perform projection, coefficient publication, flux composition,
+scalar acceptance, r70 correction, and coupled convergence in order. Every
+projection must pass validation. Coefficient identity binds the exact projected
+state, temperature, velocity, and all payload arrays, so stale bytes with
+current metadata refuse. Both EOS publications must retain the source case.
 
-`SolveR2` derives the endpoint target from the accepted averaged physical flux
-and the frozen source target, rather than substituting R1's target. It applies
-the pinned stage-averaged Bernoulli head only for the corresponding R0/R1 inflow
-classes, derives the endpoint class inside the projection, performs no scalar
-commit, and returns projected `M^{n+1}`, endpoint velocity, and step-average
-pressure. The endpoint physical-flux and force evaluations still run as
-diagnostics, so R2 cannot silently bypass a malformed transport publication.
+Terminal R0/R1 acceptance reprojects the corrected target, verifies target,
+momentum, and coefficient convergence, and applies r59's pointwise
+`min(alpha_next,alpha_ver)` for a discontinuous limiter class. Open-face class
+history is retained; a two-class cycle selects its least-discrepant frozen
+member with a lexicographic tie break and records cycle length and
+differing-face count. The shared Heun
+contract excludes stage-local pressure-open classes, while each stage request
+identity binds its own class.
 
-The RED battery covers R1-before-R0, R2-before-R1, stale projected-candidate
-identity, forged parent lineage, and public inability to mint or mutate a
-target.  The accepted uniform witness reaches R2 with both r70 chains bound to
-their internally produced candidates.  A mechanically generated binary64
-owner consumes the same authenticated source content through a calibration-only
-importer and agrees within `32 epsilon_32`; the live binary32 header contains no
-import seam.  No Metal run is claimed.  When the worker returns, the r189
-manifest still runs tier 8 first and sends its movie before the device kernel
-sweep and tier-10 onset verdict.
+`SolveR2` fixes `Q^{n+1}` and `M^{n+1,dagger}` and iterates
+`u2 -> f_N,2 -> S_div,2 -> projection` to convergence. The Heun-averaged
+physical flux is not an endpoint target. The integrated head is exactly
+`-rho_ambient (I0 |u0|^2 + I1 |u1|^2)/4`, including tangential velocity. R2
+performs no scalar commit and publishes endpoint momentum, velocity, and
+step-average pressure atomically.
+
+REDs cover out-of-order stages, stale r70 candidate identity, stale coefficient
+payload with current echoes, forged parent, closed constant-mode compatibility,
+result mutation, combined-live-set preflight, projection validation, and retry
+after an injected result-publication allocation failure. The final verifier
+binds every public owner payload: conservative state, final and stage momentum,
+velocity and pressure, both EOS publications, fluxes, limiter state,
+nonpressure rates, targets, and diagnostics. Pressure, stage-velocity, alpha,
+and EOS-temperature mutation REDs prove that the mutable diagnostic struct has
+no acceptance power without the verifier. The combined-live-set RED also
+checks that a valid 1024-cubed shape is measured above the two-GiB admission
+cap before payload access.
+
+A source-active pressure-open `4^3` matched-input differential reconstructs the
+exact canonical one-ULP pilot packet at the oracle-convergent `1e-4 s` schedule
+and uses oracle transport evaluations, then compares every projected stage to
+the independently implemented fp64 `AdvanceConservative3D` owner. State,
+velocity, and momentum use the measured 64-epsilon binary32 forward envelope.
+The pressure band follows from the two accepted Picard residuals as
+`2 dx^2 epsilon_Picard / dt = 9.999999582e-3 Pa`; the measured maximum is
+`4.768810759e-4 Pa`. The generated binary64 mirror separately bounds roundoff
+over state, targets, momentum, velocity, pressure, and alpha. No Metal run is
+claimed. The r136 diagnostic's source-bound trace digest is re-pinned to
+`71bb7b53f9aaad3c50e9772a07dd09017ddf60b8bd87f25e357a0d9bd4f01d87`;
+all frozen metrics and the `0xff` a-priori refusal remain unchanged. When the worker returns,
+r189 still runs tier 8 first and sends its movie before the device sweep and
+tier-10 onset verdict.
 
 ## 8. Rejected directions and future work
 

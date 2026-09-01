@@ -208,14 +208,21 @@ namespace RISEFireProductionFP64
 		std::uint64_t attemptIdentity;
 		std::uint64_t parentCandidateIdentity;
 		std::uint64_t projectionIdentity;
+		std::uint64_t publicationIdentity;
 		std::vector<double> diffusivityM2PerS;
 		std::vector<double> conductivityWPerMK;
 		std::vector<double> molecularKinematicViscosityM2PerS;
 
 		FireProductionProjectedHeunTransportCoefficients() :
 			stage(static_cast<FireProductionProjectedHeunStage>(0u)),attemptIdentity(0u),
-			parentCandidateIdentity(0u),projectionIdentity(0u) {}
+			parentCandidateIdentity(0u),projectionIdentity(0u),publicationIdentity(0u) {}
 	};
+
+	//! Identity of the exact projected state, coefficient payload, and protocol
+	//! parents. A provider that replays stale bytes cannot retain a current seal.
+	std::uint64_t FireProductionProjectedHeunTransportPublicationIdentity(
+		const FireProductionProjectedHeunTransportContext& context,
+		const FireProductionProjectedHeunTransportCoefficients& result );
 
 	class FireProductionProjectedHeunTransportProvider
 	{
@@ -255,6 +262,7 @@ namespace RISEFireProductionFP64
 		FireProductionProjectedHeunStage stage;
 		FireProductionProjectionResult projection;
 		FireProductionScalarHeunFluxStage flux;
+		FireProductionScalarPhysicalFluxPrerequisiteResult endpointPhysicalFlux;
 		FireProductionScalarFCTResult scalarAcceptance;
 		FireProductionNonpressureMomentumRHSResult nonpressure;
 		FireProductionScalarProjectionTargetSeal target;
@@ -262,12 +270,25 @@ namespace RISEFireProductionFP64
 		std::uint64_t parentCandidateIdentity;
 		std::uint64_t acceptedCandidateIdentity;
 		std::uint32_t acceptedIterationCount;
+		std::uint32_t activeSetCycleLength;
+		std::uint32_t activeSetDifferingFaceCount;
+		double maximumActiveSetComplementarityDiscrepancyMPerS;
+		double maximumLimiterClassDiscrepancy;
+		bool activeSetDiscontinuousClass;
+		bool limiterDiscontinuousClass;
 
 		FireProductionProjectedHeunCoupledStageResult() :
 			stage(static_cast<FireProductionProjectedHeunStage>(0u)),
 			parentCandidateIdentity(0u),acceptedCandidateIdentity(0u),
-			acceptedIterationCount(0u) {}
+			acceptedIterationCount(0u),activeSetCycleLength(0u),
+			activeSetDifferingFaceCount(0u),maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
+			maximumLimiterClassDiscrepancy(0.0),activeSetDiscontinuousClass(false),
+			limiterDiscontinuousClass(false) {}
 	};
+
+	//! Complete simultaneous host live-set certificate for the staged owner.
+	bool FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
 	struct FireProductionProjectedHeunOwnerResult
 	{
@@ -285,6 +306,11 @@ namespace RISEFireProductionFP64
 
 		FireProductionProjectedHeunOwnerResult() : ownerIdentity(0u),accepted(false) {}
 	};
+
+	//! Recomputes the complete publication identity. Production consumers must
+	//! call this gate; the diagnostic struct alone carries no acceptance power.
+	bool FireProductionProjectedHeunOwnerResultMatches(
+		const FireProductionProjectedHeunOwnerResult& result );
 
 	//! Stateful CPU calibration owner for R0 -> R1 -> R2.  Each method accepts
 	//! exactly one next stage.  Failure is atomic and leaves the owner in its

@@ -530,6 +530,12 @@ namespace RISEFireProductionTrace
 
 	class FireProductionScalarProjectionTargetSeal;
 
+	std::uint64_t FireProductionProjectedHeunCandidateIdentity(
+		std::uint64_t attemptIdentity,std::uint8_t stageOrdinal,
+		std::uint64_t parentCandidateIdentity,std::uint64_t fluxIdentity,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& candidate,
+		const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& alpha );
+
 	//! Wraps the authenticated base target as iteration zero of one R0/R1
 	//! projection-target chain. Boundary topology is inherited from the same
 	//! stage that produced the base target; no caller topology is accepted.
@@ -599,10 +605,14 @@ namespace RISEFireProductionTrace
 				const FireProductionScalarProjectionTargetSeal& current,
 				const std::vector<FireProductionRoundoffTrace::TraceFloat>& acceptedCandidate,
 				std::uint64_t acceptedCandidateIdentity,
+				std::uint8_t stageOrdinal,
+				std::uint64_t parentCandidateIdentity,
+				std::uint64_t fluxIdentity,
+				const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& alpha,
 				FireProductionScalarProjectionTargetSeal& result,
 				std::string* error );
-			static bool HeunBase(
-				const FireProductionScalarHeunFluxStage& averagedStage,
+			static bool EndpointBase(
+				const FireProductionScalarPhysicalFluxPrerequisiteResult& endpointFlux,
 				const std::vector<FireProductionRoundoffTrace::TraceFloat>& committedConservativeValues,
 				const std::vector<FireProductionRoundoffTrace::TraceFloat>& committedTemperatureK,
 				const FireProductionFrozenSourcePacketSeal& source,

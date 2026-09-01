@@ -566,6 +566,12 @@ namespace RISEFireProductionFP64
 
 	class FireProductionScalarProjectionTargetSeal;
 
+	std::uint64_t FireProductionProjectedHeunCandidateIdentity(
+		std::uint64_t attemptIdentity,std::uint8_t stageOrdinal,
+		std::uint64_t parentCandidateIdentity,std::uint64_t fluxIdentity,
+		const std::vector<double>& candidate,
+		const std::array<std::vector<double>,3>& alpha );
+
 	//! Wraps the authenticated base target as iteration zero of one R0/R1
 	//! projection-target chain. Boundary topology is inherited from the same
 	//! stage that produced the base target; no caller topology is accepted.
@@ -635,10 +641,14 @@ namespace RISEFireProductionFP64
 				const FireProductionScalarProjectionTargetSeal& current,
 				const std::vector<double>& acceptedCandidate,
 				std::uint64_t acceptedCandidateIdentity,
+				std::uint8_t stageOrdinal,
+				std::uint64_t parentCandidateIdentity,
+				std::uint64_t fluxIdentity,
+				const std::array<std::vector<double>,3>& alpha,
 				FireProductionScalarProjectionTargetSeal& result,
 				std::string* error );
-			static bool HeunBase(
-				const FireProductionScalarHeunFluxStage& averagedStage,
+			static bool EndpointBase(
+				const FireProductionScalarPhysicalFluxPrerequisiteResult& endpointFlux,
 				const std::vector<double>& committedConservativeValues,
 				const std::vector<double>& committedTemperatureK,
 				const FireProductionFrozenSourcePacketSeal& source,

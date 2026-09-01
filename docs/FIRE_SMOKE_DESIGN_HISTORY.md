@@ -4791,25 +4791,40 @@ it was already tried and refuted here.
   authority is private and friends only the complete owner; there is still no
   standalone public r70 producer.
 
-  R0 publishes `Q*` through the Q-star EOS gate and assembles
-  `M*dagger=M^n+dt(A0-D_i K0)` from the projected force-inclusive stage.  R1
-  averages all 30 retained flux fields, solves one fresh Heun alpha against
-  `Q^n`, publishes `Q^{n+1}` through the endpoint EOS gate, and assembles
-  `M^{n+1,dagger}` from the separately evaluated R0/R1 compatible rates.  R2
-  derives its physical target from the accepted averaged `f_N`, consumes the
-  time-averaged pressure-open head with each stage's inflow class, performs no
-  scalar update, and publishes the endpoint projected momentum, velocity, and
-  step-average pressure.  Source dose is applied exactly once by the scalar
-  solves; R2 is diagnostic/projection-only.
+  Fresh review rejected the first draft's one-shot R2, averaged endpoint
+  target, wrong-sign normal-only open head, first-class freeze, missing r59
+  verification, correction-only mean removal, unchecked projection result,
+  forgeable coefficient echo, zero-state mirror claim, and non-atomic result
+  copy. The corrected owner removes the mean of the complete closed target,
+  owns r80/r81 active-set history and r59 pointwise-infimum alpha acceptance,
+  and refuses every failed projection validation.
 
-  The staged API refuses R1 or R2 out of order.  A provider replaying the first
-  projection identity into a later iteration and a provider forging the
-  candidate parent both refuse before their coefficients enter a flux or force
-  evaluation.  The uniform sealed witness executes both coupled stages and R2,
-  retains correction ordinals and candidate identities, and agrees with the
-  generated binary64 owner within the recorded binary32 roundoff margin.  The
-  binary64 source import exists only in the generated calibration header; the
-  live source seal remains non-importable.  Metal encoding and run evidence are
-  deliberately not claimed on this non-Metal host.  The sealed r189 host
-  manifest remains binding: tier 8 full-window spectrum and movie first, then
-  the device kernel sweep and tier-10 onset campaign.
+  R0 publishes `Q*` and `M*dagger`; R1 publishes `Q^{n+1}` and the separately
+  compatible R0/R1 Heun momentum. R2 fixes that state and provisional momentum
+  while iterating `u2 -> f_N,2 -> S_div,2 -> projection`. Its integrated head is
+  `-rho_ambient (I0 |u0|^2 + I1 |u1|^2)/4`, including tangential velocity.
+  Source dose is applied exactly once; R2 has no scalar commit.
+
+  `Begin` binds source/case lineage and preflights the combined live set.
+  Coefficient identity covers projected state, temperature, velocity, and
+  payload bytes. Candidate identity is recomputed at the private correction
+  boundary. The terminal verifier covers the complete public payload, including
+  every stage projection, flux, limiter, nonpressure rate, EOS temperature,
+  target, and diagnostic, and publication remains retryable after an injected
+  copy failure. REDs cover stale candidate, stale coefficient payload with
+  current echoes, forged parent, stage order, closed constant mode, mutations
+  of pressure/stage velocity/alpha/EOS temperature, an oversized combined live
+  set, and atomic retry. Active-set least-discrepancy selection uses a
+  lexicographic tie break.
+
+  A source-active pressure-open `4^3` case uses a canonical one-ULP pilot packet
+  at `dt=1e-4 s` and matches every projected stage of the independently
+  implemented fp64 `AdvanceConservative3D` owner. State, velocity, and momentum
+  remain inside a 64-epsilon binary32 forward envelope. Pressure differs by at
+  most `4.768810759e-4 Pa` against the derived two-residual band
+  `2 dx^2 epsilon_Picard / dt = 9.999999582e-3 Pa`. The generated binary64 owner
+  is retained only as a separate all-publication roundoff check. Metal execution
+  remains unclaimed on this host. The r136 source-bound trace digest is re-pinned
+  to `71bb7b53f9aaad3c50e9772a07dd09017ddf60b8bd87f25e357a0d9bd4f01d87`
+  with every frozen metric and the `0xff` refusal unchanged. r189's tier-8-first
+  manifest remains binding.
