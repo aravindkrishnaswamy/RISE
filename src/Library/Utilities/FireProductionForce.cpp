@@ -1758,6 +1758,20 @@ namespace RISE
 			return false;
 		}
 
+		template<typename State>
+		class OwnerStageStateGuard
+		{
+		public:
+			OwnerStageStateGuard(State& state,const State inProgress) : state_(state),
+				rollback_(state),committed_(false) { state_=inProgress; }
+			~OwnerStageStateGuard() { if(!committed_)state_=rollback_; }
+			void Commit(const State completed) { state_=completed;committed_=true; }
+		private:
+			State& state_;
+			State rollback_;
+			bool committed_;
+		};
+
 		void CopyOwnerResultForPublication(
 			const FireProductionProjectedHeunOwnerResult& source,
 			FireProductionProjectedHeunOwnerResult& destination )
@@ -1775,7 +1789,6 @@ namespace RISE
 			destination.r1=source.r1;
 			destination.r2=source.r2;
 			destination.sourcePacketIdentity=source.sourcePacketIdentity;
-			destination.ownerIdentity=source.ownerIdentity;
 			destination.accepted=source.accepted;
 		}
 
@@ -2705,6 +2718,7 @@ namespace RISE
 	{
 		if(state_!=State::Begun)return Fail(error,
 			"projected-Heun R0 is out of order");
+		OwnerStageStateGuard<State> stageGuard(state_,State::R0InProgress);
 		try {
 			FireProductionProjectedHeunCoupledStageResult r0;
 			std::vector<float> predictor;
@@ -2744,7 +2758,7 @@ namespace RISE
 			}
 			work_.r0=std::move(r0);work_.predictorEOS=std::move(predictorEOS);
 			predictor_=std::move(predictor);predictorMomentum_=std::move(predictorMomentum);
-			state_=State::R0Complete;if(error)error->clear();return true;
+			stageGuard.Commit(State::R0Complete);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){return Fail(error,
 			"projected-Heun R0 allocation failed");}
 	}
@@ -2754,6 +2768,7 @@ namespace RISE
 	{
 		if(state_!=State::R0Complete)return Fail(error,
 			"projected-Heun R1 is out of order");
+		OwnerStageStateGuard<State> stageGuard(state_,State::R1InProgress);
 		try {
 			FireProductionProjectedHeunCoupledStageResult r1;
 			std::vector<float> committed;
@@ -2819,7 +2834,7 @@ namespace RISE
 			work_.r1=std::move(r1);work_.averagedFlux=std::move(averaged);
 			work_.heunSolve=std::move(heunSolve);work_.committedEOS=std::move(committedEOS);
 			work_.conservativeValues=std::move(committed);heunMomentum_=std::move(heunMomentum);
-			state_=State::R1Complete;if(error)error->clear();return true;
+			stageGuard.Commit(State::R1Complete);if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){return Fail(error,
 			"projected-Heun R1 allocation failed");}
 	}
@@ -2834,6 +2849,7 @@ namespace RISE
 		result=FireProductionProjectedHeunOwnerResult();
 		if(state_!=State::R1Complete)return Fail(error,
 			"projected-Heun R2 is out of order");
+		OwnerStageStateGuard<State> stageGuard(state_,State::R2InProgress);
 		try {
 			const FireProductionProjectionShape& shape=request_.source.Shape();
 			const std::size_t cells=shape.CellCount();
@@ -2905,6 +2921,7 @@ namespace RISE
 			// Bootstrap the endpoint map from a force-inclusive projection.  The raw
 			// zero target never crosses the owner boundary; only EndpointBase can mint
 			// the first authenticated f_N,2 target.
+			const std::array<std::vector<unsigned char>,6> bootstrapClass=active;
 			FireProductionProjectionRequest bootstrap=projectionRequest(true);
 			bootstrap.divergenceTargetPerS.assign(cells,0.0f);
 			FireProductionProjectionResult bootstrapProjection;
@@ -2915,6 +2932,33 @@ namespace RISE
 			if(
 				!bootstrapProjection.validationPassed)return Fail(error,
 					"projected-Heun R2 bootstrap projection validation failed");
+			const std::array<std::vector<float>,3>* bootstrapDiscrepancyVelocity=
+				&bootstrapProjection.velocityMPerS;
+			std::array<std::vector<float>,3> injectedBootstrapDiscrepancyVelocity;
+			if(OwnerTestFailure("r2-bootstrap-used-class-discrepancy")){
+				injectedBootstrapDiscrepancyVelocity=bootstrapProjection.velocityMPerS;
+				for(unsigned int side=0u;side<6u;++side)if(
+					request_.scalarContract.boundary[side]==
+						FireProductionProjectionPressureOpen&&
+					!bootstrapClass[side].empty()){
+					const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+					const std::size_t x=axis==0u?(positive?shape.nx:0u):0u;
+					const std::size_t y=axis==1u?(positive?shape.ny:0u):0u;
+					const std::size_t z=axis==2u?(positive?shape.nz:0u):0u;
+					const float outward=bootstrapClass[side][0u]?
+						request_.endpointVelocityToleranceMPerS+0.25f:
+						-request_.endpointVelocityToleranceMPerS-0.25f;
+					injectedBootstrapDiscrepancyVelocity[axis][FaceIndex(
+						shape,axis,x,y,z)]=(positive?1.0f:-1.0f)*outward;
+					bootstrapProjection.pressureOpenInflow[side][0u]=
+						static_cast<unsigned char>(bootstrapClass[side][0u]^1u);
+					break;
+				}
+				bootstrapDiscrepancyVelocity=&injectedBootstrapDiscrepancyVelocity;
+			}
+			const float bootstrapTrajectoryMaximum=OwnerOpenClassDiscrepancy(shape,
+				request_.scalarContract.boundary,bootstrapClass,
+				*bootstrapDiscrepancyVelocity,request_.endpointVelocityToleranceMPerS);
 			active=bootstrapProjection.pressureOpenInflow;
 			FireProductionProjectedHeunTransportCoefficients bootstrapCoefficients;
 			FireProductionScalarPhysicalFluxPrerequisiteResult bootstrapFlux;
@@ -2929,9 +2973,7 @@ namespace RISE
 			FireProductionProjectedHeunTransportCoefficients priorCoefficients;
 			FireProductionProjectedHeunTransportCoefficients acceptedCoefficients;
 			std::vector<std::array<std::vector<unsigned char>,6> > activeHistory;
-			float activeTrajectoryMaximum=OwnerOpenClassDiscrepancy(shape,
-				request_.scalarContract.boundary,bootstrapProjection.pressureOpenInflow,
-				bootstrapProjection.velocityMPerS,request_.endpointVelocityToleranceMPerS);
+			float activeTrajectoryMaximum=bootstrapTrajectoryMaximum;
 			bool havePrior=false,frozenCycle=false,accepted=false;
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
 				++iteration){
@@ -3091,14 +3133,16 @@ namespace RISE
 			completed.velocityMPerS=completed.r2.projection.velocityMPerS;
 			completed.stepAveragePressurePa=completed.r2.projection.pressurePa;
 			completed.sourcePacketIdentity=request_.source.PacketIdentity();
-			completed.accepted=true;completed.ownerIdentity=OwnerResultIdentity(completed);
+			completed.accepted=true;completed.ownerIdentity_=OwnerResultIdentity(completed);
 			const char* publicationFailure=std::getenv(
 				"RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
 			if(publicationFailure&&std::strcmp(publicationFailure,"result-copy")==0)
 				throw std::bad_alloc();
 			FireProductionProjectedHeunOwnerResult publication;
 			CopyOwnerResultForPublication(completed,publication);
-			work_=std::move(completed);result=std::move(publication);state_=State::Complete;
+			publication.ownerIdentity_=completed.ownerIdentity_;
+			work_=std::move(completed);result=std::move(publication);
+			stageGuard.Commit(State::Complete);
 			if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){return Fail(error,
 			"projected-Heun R2 allocation failed");}
@@ -3110,7 +3154,7 @@ namespace RISE
 	{
 		const std::uint64_t expectedAttempt=expectedSource.AttemptIdentity();
 		if(!FireProductionFrozenSourcePacketSealMatches(expectedSource,0)||
-			!result.accepted||result.ownerIdentity==0u||expectedAttempt==0u||
+			!result.accepted||result.ownerIdentity_==0u||expectedAttempt==0u||
 			result.sourcePacketIdentity!=expectedSource.PacketIdentity()||
 			!result.predictorEOS.accepted||!result.committedEOS.accepted||
 			result.predictorEOS.attemptIdentity!=expectedAttempt||
@@ -3127,6 +3171,6 @@ namespace RISE
 			result.r2.target.AttemptIdentity()!=expectedAttempt||
 			result.r0.acceptedCandidateIdentity==0u||
 			result.r1.acceptedCandidateIdentity==0u)return false;
-		return OwnerResultIdentity(result)==result.ownerIdentity;
+		return OwnerResultIdentity(result)==result.ownerIdentity_;
 	}
 }

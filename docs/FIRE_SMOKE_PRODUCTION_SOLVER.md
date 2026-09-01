@@ -5199,7 +5199,10 @@ from the exact attempt, stage, parent, flux, alpha, and candidate bytes at the
 correction boundary. Closed domains remove the constant mode from the complete
 target, including iteration zero, whenever no pressure-open face exists.
 
-The owner is a strict protocol state machine. `Begin` binds the canonical case
+The owner is a strict protocol state machine. Each stage enters an explicit
+in-progress state before any transport callback; a scoped rollback restores the
+last stable stage on refusal, so a provider cannot reenter R0/R1/R2 and mint a
+nested publication. `Begin` binds the canonical case
 envelope to the frozen source case, preflights the simultaneous owner live set,
 and accepts only empty dynamic slots in the invariant contracts. `SolveR0` and
 `SolveR1` perform projection, coefficient publication, flux composition,
@@ -5252,7 +5255,11 @@ nonpressure rates, targets, diagnostics, all nested shapes/timesteps/boundaries,
 and the exact frozen-source packet identity. Pressure, stage-velocity, alpha,
 EOS-temperature, flux-metadata, physical-flux-shape, and EOS-shape mutation
 REDs prove that the mutable diagnostic struct has no acceptance power without
-the verifier. A consumer must supply the current sealed source packet; an
+the verifier. The acceptance seal itself is private and owner-minted with a
+read-only getter, so source-visible hashing cannot be used to re-sign mutated
+public bytes. A re-signing RED copies a valid result, changes its state, and
+proves both that the seal is not publicly writable and that verification
+refuses. A consumer must supply the current sealed source packet; an
 internally intact publication from another attempt refuses. The working-set
 RED both measures a valid 1024-cubed shape above two GiB and injects that live
 count through `Begin`, proving the admission branch rather than only its query.
@@ -5279,7 +5286,7 @@ bounds roundoff over state, targets, momentum, velocity, pressure, and alpha.
 No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-derived from
 historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-to `dab661f91dcb62595c689df1e12847aff01f1029ea78b981978d72f58d2a771b`.
+to `9c6f87644dcb221bca4ec1ceeb0e7e42f067131ba80e71b5edc0c04e297572ce`.
 The digest encoding prefixes all 16 generated manifest fields: every primary
 operator, `FireSimulationRecords` and `FireCase` header/source dependency, and
 the three trace-support files plus the generator. A shared enumerator is used
@@ -5289,8 +5296,9 @@ build both return the exact diagnostic success code 237; all 3,972,326 branch
 obligations, frozen metrics, and the `0xff` a-priori refusal remain unchanged.
 The SHA-bound `r136_trace_repin_evidence.v1` records both runs instead of
 rewriting the historical record. R2 complementarity is now scored against the
-classification actually supplied to the projection rather than its newly
-derived endpoint class; a forced class-flip RED distinguishes the two choices.
+classification actually supplied to the bootstrap and iterative projections
+rather than either newly derived endpoint class; separate forced class-flip
+REDs distinguish both choices.
 The fp32/fp64 owner comparison also includes every R2 endpoint physical mass,
 energy, and gas flux plus all certificate fields and metadata. When the worker returns,
 r189 still runs tier 8 first and sends its movie before the device sweep and

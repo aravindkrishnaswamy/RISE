@@ -53,8 +53,9 @@ namespace RISE
 		bool SolveR2(const FireProductionProjectedHeunTransportProvider& provider,
 			FireProductionProjectedHeunOwnerResult& result,std::string* error=0);
 	private:
-		enum class State : std::uint8_t { Empty=0u,Begun=1u,R0Complete=2u,
-			R1Complete=3u,Complete=4u };
+		enum class State : std::uint8_t { Empty=0u,Begun=1u,R0InProgress=2u,
+			R0Complete=3u,R1InProgress=4u,R1Complete=5u,R2InProgress=6u,
+			Complete=7u };
 		class Implementation;
 		std::unique_ptr<Implementation> implementation_;
 		State& state_;

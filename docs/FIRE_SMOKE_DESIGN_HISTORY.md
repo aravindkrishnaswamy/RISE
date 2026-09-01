@@ -4817,6 +4817,13 @@ it was already tried and refuted here.
   payload copy, proves the caller is wholly default on refusal, and commits both
   internal and external publications only through statically non-throwing moves;
   the owner remains retryable after that refusal.
+  A later fresh authority pass closed two remaining authority gaps. The result's
+  acceptance identity is now a private owner-minted seal with a read-only
+  accessor, so public payload bytes cannot be mutated and re-signed by replaying
+  the visible hash algorithm. Each R0/R1/R2 call also enters an explicit
+  in-progress state before invoking transport; scoped rollback restores the
+  prior stable state on refusal, blocking callback reentry while preserving the
+  ordinary retry path.
   Result consumption requires the expected sealed source, so an intact prior
   attempt refuses. REDs cover stale candidate, stale coefficient payload with
   current echoes, forged parent, stage order, closed constant mode, mutations
@@ -4852,7 +4859,7 @@ it was already tried and refuted here.
   and wall positive-zero checks inspect the complete binary64 word. Metal execution
   remains unclaimed on this host. The r136 source-bound trace digest moves from
   the historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-  to `dab661f91dcb62595c689df1e12847aff01f1029ea78b981978d72f58d2a771b`.
+  to `9c6f87644dcb221bca4ec1ceeb0e7e42f067131ba80e71b5edc0c04e297572ce`.
   This is a manifest re-derivation, not a numerical re-baseline: the encoding
   prefixes the Transport/Force source hashes, and a detached build of
   `0e70f17f1` reproduces the historical digest and exit 237 while the reviewed
@@ -4863,7 +4870,7 @@ it was already tried and refuted here.
   dependency fields for `FireSimulationRecords` and `FireCase`; r190 now
   consumes all 16 generated manifest fields through a shared enumerator, and a
   per-field mutation RED proves each is identity-bearing. The same review
-  corrected R2's trajectory diagnostic to score the class actually projected,
-  with a known-flip RED, and extended the fp32/fp64 mirror through the complete
+  corrected R2's trajectory diagnostic to score both bootstrap and iterative
+  classes actually projected, with separate known-flip REDs, and extended the fp32/fp64 mirror through the complete
   R2 endpoint physical-flux payload and certificates. r189's tier-8-first
   manifest remains binding.

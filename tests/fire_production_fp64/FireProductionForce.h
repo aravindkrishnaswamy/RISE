@@ -313,11 +313,21 @@ namespace RISEFireProductionFP64
 		FireProductionScalarHeunSolveResult heunSolve;
 		FireProductionProjectedHeunCoupledStageResult r0,r1,r2;
 		std::uint64_t sourcePacketIdentity;
-		std::uint64_t ownerIdentity;
 		bool accepted;
 
 		FireProductionProjectedHeunOwnerResult() : sourcePacketIdentity(0u),
-			ownerIdentity(0u),accepted(false) {}
+			accepted(false),ownerIdentity_(0u) {}
+
+		//! Opaque acceptance seal minted only by the complete owner.  Publication
+		//! payloads remain inspectable, but a client cannot re-sign mutated bytes.
+		std::uint64_t OwnerIdentity() const { return ownerIdentity_; }
+
+	private:
+		std::uint64_t ownerIdentity_;
+		friend class FireProductionProjectedHeunCPUOwner;
+		friend bool FireProductionProjectedHeunOwnerResultMatches(
+			const FireProductionProjectedHeunOwnerResult&,
+			const FireProductionFrozenSourcePacketSeal& );
 	};
 
 	//! Recomputes the complete publication identity against the exact source
