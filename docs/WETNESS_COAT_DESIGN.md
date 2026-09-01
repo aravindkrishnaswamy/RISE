@@ -1,11 +1,24 @@
 # Wetness and Coat Layering — Water, Dust, and Snow as an Authorable, Summonable Material System
 
-**Status:** **DESIGN — proposed, not ratified.** No code has been written; this
-document proposes. Phase 1 is costed and specified to the point where an
-implementation brief can be cut from it directly; Phase 2 is specified to the
-architecture-decision level with the layering-model choice argued but the
-per-lobe algebra left to the implementation; Phase 3 is deliberately left as a
-gated sketch and **may be declined**, per the repo's observed-need convention.
+**Status:** **PHASE 1 SHIPPED (2026-08-31), census pending; Phase 2 specified,
+gated; Phase 3 a gated sketch that may be declined.** Phase 1 landed across
+commits `bd7555ff` (eval instrument — the pre-verb baseline pin), `aa1f0162`
+(validation scene, rain-wet cobbles, water spectra, tidepools fix), `d09064c2`
+(the `add_wetness` verb, two adversarial rounds to zero P1), `d8da392b`
+(prediction-enforced furnace coverage-dip configs), `a9fbf14b` (read-set skill
+text), and `94cf63aa` (condition-P empty-name guard from the fresh
+verification round). Clean-rebuild warning gates pass on both toolchains (the
+one Xcode `ld` search-path line is the documented OIDN-install discount,
+[AGENTS.md](../AGENTS.md) §OIDN). **Open against the Phase-1 exit gate: the
+pre-verb baseline census (run at `bd7555ff`) and the post-verb census — both
+user-run, no hosted-provider keys in the implementation environment (§13's
+AMENDED block); the census tabulation block in §10.3/§13 stays empty until
+then.** Phase 2 remains gated on that census evidence plus the standing
+correctness-debt justification (debts 5/6/6a).
+Original framing for the record: this document proposed; Phase 1 was costed to
+implementation-brief precision, Phase 2 to the architecture-decision level with
+the layering-model choice argued but the per-lobe algebra left to the
+implementation.
 **Date:** 2026-08-31.
 **Inputs:** a three-report source survey of the RISE tree — the materials and
 layering stack
@@ -2266,6 +2279,19 @@ providers, tabulated against the step-1 baseline in this document as a dated
 report the textured-albedo refusal rate**, which is the go/no-go signal for
 option §4(g); without that counter the adopted option has no way to be decided
 (§10.3).
+
+**SHIPPED (2026-08-31) — gate status per item.** Steps 1–10 all landed (commits
+in the front-matter Status block). Gate items green locally: clean warning-free
+rebuild on both toolchains; `AgentAddWetnessTest` 182 checks (every refusal
+clause, cross-exclusion both orders, byte-identity, the two-way `wet ⊆ damp`
+invariant, condition-P fire/silence/self-disarm/all-metallic-silence);
+`TextureExpressionVMTest`-equivalent coverage via the executed expression sweeps
+and the agent suite (7 suites, 3,455 checks total across the touched surfaces);
+the worked example renders at mean luma 0.195 in-band under PT with
+`oidn_denoise FALSE`; furnace configs 8–10 pin the §6.2 coverage dip to the
+analytic prediction within 0.002 (`kPostureMatchesPrediction`, red-proved).
+**Still open: both censuses (user-run; baseline at `bd7555ff`), and therefore
+the §4(g) decision and the Phase-2 gate reading.**
 
 ### Phase 2 — `coated_material`
 
