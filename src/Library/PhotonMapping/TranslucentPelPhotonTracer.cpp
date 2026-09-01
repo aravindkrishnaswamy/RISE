@@ -129,7 +129,7 @@ void TranslucentPelPhotonTracer::TracePhoton(
 				if( (scat.type==ScatteredRay::eRayTranslucent && bTraceTranslucent) ||
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
-					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, ior_stack );
+					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack );
 					if( bFromTranslucent ) {
 						accum_scattered = accum_scattered + scat.kray;
 					}
