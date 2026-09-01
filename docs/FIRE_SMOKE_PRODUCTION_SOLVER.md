@@ -5455,6 +5455,54 @@ Evidence is sealed under
 `rendered/fire_production_calibration/r192_tier8_runaway/`. The golden
 checkpoint remains untouched.
 
+### 7.56z Matched-replay operator-identity stop (r193)
+
+r193 first corrects the tier-8 stability premise: r181 observed tier 8 only to
+`1.8264868 s`, while r192's runaway begins later.  Calling that prefix stable
+beyond its measured horizon was an extrapolation error.
+
+The requested matched replay is refused before measurement because its second
+leg does not exist as a live production entry point.  The completed
+authenticated R0/R1/R2 projected-Heun owner is a CPU authority.  Source
+enumeration finds its declarations and implementation, but no production or
+`FireSequenceTest` caller.  The available Metal alternatives are not aliases
+for it: `AttemptFireProductionCompatibleMomentumDiagnosticMetal` only scopes
+the r182 shared-alpha flag around the ordinary resident owner, and r183's
+tokenless single-stage FCT route has the wrong tableau.  Both were already
+rejected as production acceptance paths.  Running either and labelling it the
+ported leg would fabricate the three-way verdict and could improperly
+authorize integration.
+
+Fresh independent operator, numerical, and provenance reviews all classified
+that substitution as P1.  They also caught evidence-protocol defects in the
+discarded draft: resume could be labelled from-zero, nonempty directories
+could mix appended thresholds, a crossing-local moving-column rate was
+misnamed as the fixed matched-state observable, skipped thresholds were cloned
+without a shared-event identity, vertical-only cell indexing was not guarded,
+and global packet totals did not preserve the source field's spatial identity.
+No such mode or measurement is landed.
+
+The replay unblocks only after an identity-bearing live Metal entry point owns
+the complete R0/R1/R2 schedule and binds its accepted result to checkpoint
+publication.  The pair protocol must then seal the exact tier-8, `3.0 s`, seed,
+case, initial-state, executable, and preregistration identities before either
+run; refuse resume and nonempty output roots; publish axis-general 15/30/60
+crossing budgets plus a separately named exact-equal-time oracle-composed
+fixed-face or fixed-column observable whose spatial selection and match rule
+are sealed before execution; and bind the complete binary32 packet field with
+the adjacent-cell packet values.  The historical
+`63.339610872283018 kg/(m2 s2)` value is a velocity-owning-face sample at
+oracle time `2.1135824235796083 s`, not an equal-time criterion.  The nearest
+retained oracle fixed-column maximum is
+`159.00892323854879 kg/(m2 s2)` at `2.1079791976176079 s`, compared with the
+production column at `2.1077302111661993 s` (separation
+`2.489864514086e-4 s` from the authored decimal timestamps); it too is not
+exact equal-time composition.
+Evidence is sealed in
+`rendered/fire_production_calibration/r193_matched_tier8_replay/`; the stop
+artifact SHA-256 is
+`e7347d76d964b80d0cb2ebd7867ddea9afcf21afcda8a60f04a4c1cfc487912a`.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

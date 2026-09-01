@@ -4991,3 +4991,24 @@ it was already tried and refuted here.
   velocity-owning face state, momentum/scalar compatibility, the persisted
   accepted-step source ledger, and pre/post `(rho,T,species,deviation)` for the
   two cells adjacent to that face.
+
+- **r193 matched-replay operator-identity stop (2026-09-01):** corrects the
+  r181 tier-8 premise: the `1.8264868 s` healthy prefix did not establish
+  stability beyond its sample horizon. The requested matched old/ported replay
+  is nevertheless refused before measurement because the completed
+  authenticated R0/R1/R2 owner has no live Metal production entry point. The
+  only switchable Metal alternatives are the rejected r182 compatible-momentum
+  graft and r183 tokenless single-stage diagnostic. Three independent reviews
+  classify substituting either for the completed port as P1.
+
+  No replay or verdict is published, the proposed test mode is discarded, and
+  the dirty `fire-smoke-design` checkout remains untouched. The replay now
+  explicitly waits for an identity-bearing live Metal owner plus a sealed
+  from-zero pair protocol. That protocol must refuse resume/nonempty roots,
+  bind tier, target, seed, case, initial state, executable, and preregistration
+  before execution, distinguish crossing-local rates from an exact-equal-time
+  oracle-composed fixed-face or fixed-column observable with a sealed match rule,
+  use axis-general adjacent-cell indexing, and bind the full binary32 source
+  packet field. Evidence is under
+  `r193_matched_tier8_replay/stage0_operator_identity_stop.v1`, SHA-256
+  `e7347d76d964b80d0cb2ebd7867ddea9afcf21afcda8a60f04a4c1cfc487912a`.
