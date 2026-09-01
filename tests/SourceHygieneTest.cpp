@@ -48,6 +48,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <array>
 #include <cstring>   // std::strlen -- read_schema batch-cap parity scan
 #include <cctype>
 #include <filesystem>
@@ -3863,6 +3864,95 @@ int main()
 		}
 		Check( unregistered.empty(),
 		       "no unregistered file enumerates the read_viewport reason values" );
+	}
+
+	{
+		const fs::path repoRoot=fs::weakly_canonical(fs::absolute(testsDir)).parent_path();
+		const auto readFile=[](const fs::path& path){
+			std::ifstream input(path,std::ios::binary);
+			return std::string(std::istreambuf_iterator<char>(input),
+				std::istreambuf_iterator<char>());
+		};
+		const std::string force=readFile(repoRoot/"src"/"Library"/"Utilities"/
+			"FireProductionForce.cpp");
+		const std::string transport=readFile(repoRoot/"src"/"Library"/"Utilities"/
+			"FireProductionTransport.cpp");
+		const std::string calibration=readFile(repoRoot/"tests"/
+			"FireProductionCalibrationTest.cpp");
+		const std::string fp64=readFile(repoRoot/"tests"/"fire_production_fp64"/
+			"FireProductionForce.cpp");
+		const std::string trace=readFile(repoRoot/"tests"/"fire_production_trace"/
+			"FireProductionForce.cpp");
+		const std::string ownerEvidence=readFile(repoRoot/"rendered"/
+			"fire_production_calibration"/"r190_projected_heun_owner"/
+			"projected_heun_owner_evidence.v1");
+		const std::string hookEnvironment="RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE";
+		const std::string hookSymbol="RISEProjectedHeunOwnerTestFailureProbe";
+		const std::string hookDeclaration=
+			"extern \"C\" bool RISEProjectedHeunOwnerTestFailureProbe(const char*)";
+		const auto countToken=[](const std::string& text,const std::string& token){
+			std::size_t count=0u,position=0u;
+			while((position=text.find(token,position))!=std::string::npos){
+				++count;position+=token.size();
+			}
+			return count;
+		};
+		Check(force.find(hookEnvironment)==std::string::npos&&
+			calibration.find(hookEnvironment)!=std::string::npos&&
+			fp64.find("#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) false")!=
+				std::string::npos&&
+			trace.find("#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) false")!=
+				std::string::npos,
+			"projected-Heun fault injection is linked only by its RED executable" );
+		const std::array<fs::path,5> shippedBuilds={{
+			repoRoot/"build"/"make"/"rise"/"Filelist",
+			repoRoot/"build"/"cmake"/"rise-android"/"rise_sources.cmake",
+			repoRoot/"build"/"VS2022"/"Library"/"Library.vcxproj",
+			repoRoot/"build"/"VS2022"/"Library"/"Library.vcxproj.filters",
+			repoRoot/"build"/"XCode"/"rise"/"rise.xcodeproj"/"project.pbxproj"}};
+		bool shippedBuildsClean=true;
+		for(const fs::path& build:shippedBuilds)shippedBuildsClean=
+			shippedBuildsClean&&readFile(build).find(
+				"RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE")==std::string::npos;
+		Check(shippedBuildsClean,
+			"shipped build projects never define projected-Heun test instrumentation" );
+		bool productionProbeOwnershipClean=true;
+		const fs::path forcePath=repoRoot/"src"/"Library"/"Utilities"/
+			"FireProductionForce.cpp";
+		const fs::path calibrationPath=repoRoot/"tests"/
+			"FireProductionCalibrationTest.cpp";
+		const fs::path hygienePath=repoRoot/"tests"/"SourceHygieneTest.cpp";
+		for(const auto& entry:fs::recursive_directory_iterator(repoRoot)){
+			const std::string extension=entry.path().extension().string();
+			const bool sourceFile=extension==".cpp"||extension==".h"||
+				extension==".cc"||extension==".hpp"||extension==".m"||extension==".mm"||
+				extension==".c"||extension==".cxx"||extension==".swift"||
+				extension==".inl"||extension==".inc"||extension==".ipp"||
+				extension==".tpp"||extension==".metal"||extension==".s"||
+				extension==".S"||extension==".asm"||extension==".pch";
+			if(!entry.is_regular_file()||!sourceFile||entry.path()==forcePath||
+				entry.path()==calibrationPath||entry.path()==hygienePath)continue;
+			productionProbeOwnershipClean=productionProbeOwnershipClean&&
+				readFile(entry.path()).find(hookSymbol)==std::string::npos;
+		}
+		productionProbeOwnershipClean=productionProbeOwnershipClean&&
+			countToken(force,hookSymbol)==9u&&countToken(force,hookDeclaration)==3u&&
+			force.find(hookDeclaration+"\n{")==std::string::npos&&
+			force.find(hookDeclaration+"\r\n{")==std::string::npos&&
+			countToken(calibration,hookSymbol)==1u&&calibration.find(
+				"extern \"C\" bool RISEProjectedHeunOwnerTestFailureProbe(const char* name)\n{")!=
+				std::string::npos;
+		Check(productionProbeOwnershipClean,
+			"projected-Heun test probe has declarations/calls but no shipped definition" );
+		Check(force.find("RISE complete projected-Heun CPU owner v5")!=
+				std::string::npos&&
+			transport.find("RISE scalar authenticated projection target CPU v2")!=
+				std::string::npos&&
+			ownerEvidence.find("result_payload_verifier full_publication_v5\n")!=
+				std::string::npos&&
+			ownerEvidence.find("target_chain_identity_version 2\n")!=
+				std::string::npos,
+			"projected-Heun evidence identity versions match their source domains" );
 	}
 
 	std::cout << std::endl

@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -29,6 +30,20 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+
+extern "C" bool RISEProjectedHeunOwnerTestFailureProbe(const char* name)
+{
+	const char* requested=std::getenv("RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
+	if(!requested)return false;
+	const std::size_t nameLength=std::strlen(name);
+	for(const char* token=requested;*token;){
+		const char* end=std::strchr(token,',');
+		const std::size_t length=end?static_cast<std::size_t>(end-token):std::strlen(token);
+		if(length==nameLength&&std::memcmp(token,name,length)==0)return true;
+		if(!end)break;token=end+1;
+	}
+	return false;
+}
 
 #if defined(__APPLE__)
 namespace RISE
@@ -244,7 +259,14 @@ namespace
 	{
 		ConservativeState,
 		Temperature,
-		ProjectedVelocity
+		ProjectedVelocity,
+		Stage,
+		AttemptIdentity,
+		ParentCandidateIdentity,
+		ProjectionIdentity,
+		ConservativeStatePointer,
+		TemperaturePointer,
+		ProjectedVelocityPointer
 	};
 
 	class MutatingProjectedHeunTransport32 final :
@@ -259,6 +281,8 @@ namespace
 			std::string* error) const override
 		{
 			if(context.stage==stage_&&!mutated_){
+				ConstantProjectedHeunTransport32 valid;
+				if(!valid.Evaluate(context,result,error))return false;
 				float* value=0;
 				if(operand_==ProjectedHeunContextOperand::ConservativeState&&
 					context.conservativeValues&&!context.conservativeValues->empty())
@@ -272,12 +296,31 @@ namespace
 						!(*context.projectedVelocityMPerS)[axis].empty())value=&const_cast<
 							std::array<std::vector<float>,3>*>(context.projectedVelocityMPerS)->
 							at(axis).front();
-				if(!value){ if(error)*error="mutation context is malformed";return false; }
-				*value=std::nextafter(*value,std::numeric_limits<float>::infinity());
+				auto& mutableContext=const_cast<
+					RISE::FireProductionProjectedHeunTransportContext&>(context);
+				if(value)*value=std::nextafter(*value,std::numeric_limits<float>::infinity());
+				else if(operand_==ProjectedHeunContextOperand::Stage)
+					mutableContext.stage=stage_==RISE::FireProductionProjectedHeunStage::R0?
+						RISE::FireProductionProjectedHeunStage::R1:
+						RISE::FireProductionProjectedHeunStage::R0;
+				else if(operand_==ProjectedHeunContextOperand::AttemptIdentity)
+					++mutableContext.attemptIdentity;
+				else if(operand_==ProjectedHeunContextOperand::ParentCandidateIdentity)
+					++mutableContext.parentCandidateIdentity;
+				else if(operand_==ProjectedHeunContextOperand::ProjectionIdentity)
+					++mutableContext.projectionIdentity;
+				else if(operand_==ProjectedHeunContextOperand::ConservativeStatePointer)
+					mutableContext.conservativeValues=context.temperatureK;
+				else if(operand_==ProjectedHeunContextOperand::TemperaturePointer)
+					mutableContext.temperatureK=context.conservativeValues;
+				else if(operand_==ProjectedHeunContextOperand::ProjectedVelocityPointer)
+					mutableContext.projectedVelocityMPerS=&alternateVelocity_;
+				else { if(error)*error="mutation context is malformed";return false; }
 				mutated_=true;
 				if(!returnSuccess_){
 					if(error)*error="injected mutated transport refusal";return false;
 				}
+				if(error)error->clear();return true;
 			}
 			ConstantProjectedHeunTransport32 valid;
 			return valid.Evaluate(context,result,error);
@@ -287,6 +330,33 @@ namespace
 		RISE::FireProductionProjectedHeunStage stage_;
 		ProjectedHeunContextOperand operand_;
 		bool returnSuccess_;
+		mutable bool mutated_;
+		mutable std::array<std::vector<float>,3> alternateVelocity_;
+	};
+
+	class MutatingOuterResultProjectedHeunTransport32 final :
+		public RISE::FireProductionProjectedHeunTransportProvider
+	{
+	public:
+		MutatingOuterResultProjectedHeunTransport32(
+			RISE::FireProductionProjectedHeunOwnerResult& outer,
+			const RISE::FireProductionProjectedHeunOwnerResult& stale) :
+			outer_(outer),stale_(stale),mutated_(false) {}
+		bool Evaluate(const RISE::FireProductionProjectedHeunTransportContext& context,
+			RISE::FireProductionProjectedHeunTransportCoefficients& result,
+			std::string* error) const override
+		{
+			if(context.stage==RISE::FireProductionProjectedHeunStage::R2&&!mutated_){
+				outer_=stale_;mutated_=true;
+				if(error)*error="injected outer-result mutation";return false;
+			}
+			ConstantProjectedHeunTransport32 valid;
+			return valid.Evaluate(context,result,error);
+		}
+		bool Mutated() const { return mutated_; }
+	private:
+		RISE::FireProductionProjectedHeunOwnerResult& outer_;
+		const RISE::FireProductionProjectedHeunOwnerResult& stale_;
 		mutable bool mutated_;
 	};
 
@@ -3440,7 +3510,11 @@ int main()
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
 			"df29df47bc44da5da23c37c1cd236e1e92b7163bc196f878e22fa4324ac8c908"||
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
-			"d0f13862226b2d6da5cd14b2c6bff9b729516524be3d8c6049aa457d00ed5a2f")&&
+			"d0f13862226b2d6da5cd14b2c6bff9b729516524be3d8c6049aa457d00ed5a2f"||
+		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
+			"c9f616e09daae141f5cc6cd109e8573b92bc6aca6ba20b783ea9e597d554189f"||
+		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
+			"88ae7d5ee894db770dc622f1191feee06ee2aadd0a590e3c4773214f10a794fd")&&
 		sourceSHA("tests/FireProductionRoundoffWalker.h")==
 			"22259ff8367aeb73ac5b73d8a282b23f18c61d545ca99cad14d856f9e40a4378"&&
 		compatibleMomentumEvidenceV2.find("sequence_test_sha256 "
@@ -3493,7 +3567,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"a386505fae3dae296bc17216efaf59df507c3ce08bcb81bee378cba4bf0b270b"&&
+			"c65995996763e06a9268bfc83d5f6a2bff26b91659c39b2dee57063de0019539"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3501,8 +3575,10 @@ int main()
 		projectedHeunLiveBinding.find("live_owner_count 36\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
-		projectedHeunOwnerLiveBinding.find("live_owner_count 26\n")!=
+		projectedHeunOwnerLiveBinding.find("live_owner_count 27\n")!=
 			std::string::npos&&
+		projectedHeunOwnerLiveBinding.find("owner tests/SourceHygieneTest.cpp sha256 "+
+			sourceSHA("tests/SourceHygieneTest.cpp")+"\n")!=std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner src/Library/Utilities/"
 			"FireProductionAdvectionUnsupported.cpp sha256 "+sourceSHA(
 			"src/Library/Utilities/FireProductionAdvectionUnsupported.cpp")+"\n")!=
@@ -3520,7 +3596,7 @@ int main()
 			"src/Library/Utilities/FireSequence.cpp")+"\n")!=std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner rendered/fire_production_calibration/"
 			"r190_projected_heun_owner/r136_trace_repin_evidence.v1 sha256 "
-			"1a9c428a41d2b2378d1f8c3939e02cca91570af89748bea5bbb5bda0095347b7\n")!=
+			"f5f4ddc01cc0c6f2b3d1c3e2a6c66fd11c92d1e274295428b512dd40ba3e895e\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
 			"258b92cf142d609c9247942906710233cc52921795cc264f3efc8e4c47ce669e")&&
@@ -7133,7 +7209,14 @@ int main()
 		ownerResult.r0.target.AcceptedCandidateIdentity()==
 			ownerResult.r0.acceptedCandidateIdentity&&
 		ownerResult.r1.target.AcceptedCandidateIdentity()==
-			ownerResult.r1.acceptedCandidateIdentity;
+			ownerResult.r1.acceptedCandidateIdentity&&
+		ownerResult.r0.target.ParentTargetIdentity()==
+			ownerResult.r0.projectionTarget.TargetIdentity()&&
+		ownerResult.r1.target.ParentTargetIdentity()==
+			ownerResult.r1.projectionTarget.TargetIdentity()&&
+		ownerResult.r0.projectionTarget.TargetIdentity()!=ownerResult.r0.target.TargetIdentity()&&
+		ownerResult.r1.projectionTarget.TargetIdentity()!=ownerResult.r1.target.TargetIdentity()&&
+		ownerResult.r2.projectionTarget.TargetPerS()==ownerResult.r2.target.TargetPerS();
 	for(unsigned int axis=0u;axis<3u&&ownerExact;++axis)for(const float value:
 		ownerResult.velocityMPerS[axis])ownerExact=ownerExact&&value==0.0f;
 	RISE::FireProductionProjectedHeunOwnerResult forgedOwnerPublication=ownerResult;
@@ -7230,6 +7313,12 @@ int main()
 		compareOwnerVector(ownerResult.r0.target.TargetPerS(),ownerResult64.r0.target.TargetPerS());
 		compareOwnerVector(ownerResult.r1.target.TargetPerS(),ownerResult64.r1.target.TargetPerS());
 		compareOwnerVector(ownerResult.r2.target.TargetPerS(),ownerResult64.r2.target.TargetPerS());
+		compareOwnerVector(ownerResult.r0.projectionTarget.TargetPerS(),
+			ownerResult64.r0.projectionTarget.TargetPerS());
+		compareOwnerVector(ownerResult.r1.projectionTarget.TargetPerS(),
+			ownerResult64.r1.projectionTarget.TargetPerS());
+		compareOwnerVector(ownerResult.r2.projectionTarget.TargetPerS(),
+			ownerResult64.r2.projectionTarget.TargetPerS());
 		for(unsigned int axis=0u;axis<3u;++axis){
 			compareOwnerVector(ownerResult.momentumKGPerM2S[axis],
 				ownerResult64.momentumKGPerM2S[axis]);
@@ -7262,6 +7351,8 @@ int main()
 	++mutatedOwnerPhysicalMetadata.r2.endpointPhysicalFlux.shape.nx;
 	RISE::FireProductionProjectedHeunOwnerResult mutatedOwnerEOSMetadata=ownerResult;
 	++mutatedOwnerEOSMetadata.committedEOS.shape.nz;
+	RISE::FireProductionProjectedHeunOwnerResult mutatedOwnerProjectionTarget=ownerResult;
+	mutatedOwnerProjectionTarget.r0.projectionTarget=ownerResult.r0.target;
 	RISE::FireProductionFrozenMethaneSourceRequest nextOwnerSourceRequest=ownerSourceRequest;
 	nextOwnerSourceRequest.attemptIdentity=ownerSourceRequest.attemptIdentity+1u;
 	RISE::FireProductionFrozenSourcePacketSeal nextOwnerSource;
@@ -7295,7 +7386,7 @@ int main()
 			(ownerSourceRequest.shape.ny+1u)*ownerSourceRequest.shape.nz+
 		static_cast<std::uint64_t>(ownerSourceRequest.shape.nx)*
 			ownerSourceRequest.shape.ny*(ownerSourceRequest.shape.nz+1u);
-	const std::uint64_t expectedOwnerWorkingSetBytes=(266u*sourceCells+
+	const std::uint64_t expectedOwnerWorkingSetBytes=(274u*sourceCells+
 		97u*ownerFaceCount)*sizeof(float);
 	Check(ownerExact&&publicResigningRejected&&owner64OK&&ownerOracleMaximumDifference<=
 		32.0*std::numeric_limits<float>::epsilon()&&
@@ -7309,6 +7400,8 @@ int main()
 			mutatedOwnerPhysicalMetadata,ownerSource)&&
 		!RISE::FireProductionProjectedHeunOwnerResultMatches(
 			mutatedOwnerEOSMetadata,ownerSource)&&nextOwnerSourceOK&&
+		!RISE::FireProductionProjectedHeunOwnerResultMatches(
+			mutatedOwnerProjectionTarget,ownerSource)&&
 		!RISE::FireProductionProjectedHeunOwnerResultMatches(ownerResult,nextOwnerSource)&&
 		RISE::FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
 			ownerSourceRequest.shape,ownerWorkingSetBytes)&&
@@ -7717,7 +7810,8 @@ int main()
 			projectionDefault(stage.projection)&&heunFluxDefault(stage.flux)&&
 			physicalFluxDefault(stage.endpointPhysicalFlux)&&
 			scalarAcceptanceDefault(stage.scalarAcceptance)&&
-			nonpressureDefault(stage.nonpressure)&&targetDefault(stage.target)&&
+			nonpressureDefault(stage.nonpressure)&&targetDefault(stage.projectionTarget)&&
+			targetDefault(stage.target)&&
 			stage.picardResidualPerS.empty()&&stage.parentCandidateIdentity==0u&&
 			stage.acceptedCandidateIdentity==0u&&stage.acceptedIterationCount==0u&&
 			stage.activeSetCycleLength==0u&&stage.activeSetDifferingFaceCount==0u&&
@@ -7768,10 +7862,17 @@ int main()
 		RISE::FireProductionProjectedHeunStage::R0,
 		RISE::FireProductionProjectedHeunStage::R1,
 		RISE::FireProductionProjectedHeunStage::R2}};
-	const std::array<ProjectedHeunContextOperand,3> mutatingOperands={{
+	const std::array<ProjectedHeunContextOperand,10> mutatingOperands={{
 		ProjectedHeunContextOperand::ConservativeState,
 		ProjectedHeunContextOperand::Temperature,
-		ProjectedHeunContextOperand::ProjectedVelocity}};
+		ProjectedHeunContextOperand::ProjectedVelocity,
+		ProjectedHeunContextOperand::Stage,
+		ProjectedHeunContextOperand::AttemptIdentity,
+		ProjectedHeunContextOperand::ParentCandidateIdentity,
+		ProjectedHeunContextOperand::ProjectionIdentity,
+		ProjectedHeunContextOperand::ConservativeStatePointer,
+		ProjectedHeunContextOperand::TemperaturePointer,
+		ProjectedHeunContextOperand::ProjectedVelocityPointer}};
 	for(const auto stage:mutatingStages)for(const auto operand:mutatingOperands)
 		for(const bool callbackReturnsSuccess:{false,true})mutatingTransportMatrix=
 			mutatingTransportMatrix&&mutatingTransportRefusalRetries(
@@ -8220,6 +8321,21 @@ int main()
 		activeCycleResult.r0.activeSetCanonicalProjectionCount==4u&&
 		RISE::FireProductionProjectedHeunOwnerResultMatches(
 			activeCycleResult,differentialSource);
+	RISE::FireProductionProjectedHeunCPUOwner thirdClassOwner;
+	RISE::FireProductionProjectedHeunOwnerResult thirdClassResult;
+	const bool thirdClassInjected=setOwnerFailure(
+		"active-cycle,post-freeze-third-class-r0");
+	const bool thirdClassAcceptedCore=thirdClassInjected&&
+		thirdClassOwner.Begin(differentialRequest,&error)&&
+		thirdClassOwner.SolveR0(differentialTransport,&error)&&
+		thirdClassOwner.SolveR1(differentialTransport,&error)&&
+		thirdClassOwner.SolveR2(differentialTransport,thirdClassResult,&error);
+	const bool thirdClassAccepted=setOwnerFailure(0)&&thirdClassAcceptedCore&&
+		thirdClassResult.r0.activeSetDiscontinuousClass&&
+		thirdClassResult.r0.activeSetCycleLength>=3u&&
+		thirdClassResult.r0.activeSetCanonicalProjectionCount>=5u&&
+		RISE::FireProductionProjectedHeunOwnerResultMatches(
+			thirdClassResult,differentialSource);
 	RISE::FireProductionProjectedHeunCPUOwner selectedCycleValidationOwner;
 	const bool selectedCycleValidationInjected=setOwnerFailure(
 		"active-cycle,projection-validation-selected-cycle");
@@ -8244,6 +8360,29 @@ int main()
 		error=="projected-Heun R2 canonical active class validation failed";
 	const bool r2CycleValidationRejected=setOwnerFailure(0)&&
 		r2CycleValidationRejectedCore;
+	RISE::FireProductionProjectedHeunCPUOwner r2ThirdClassOwner;
+	RISE::FireProductionProjectedHeunOwnerResult r2ThirdClassResult;
+	const bool r2ThirdClassPrepared=r2ThirdClassOwner.Begin(differentialRequest,&error)&&
+		r2ThirdClassOwner.SolveR0(differentialTransport,&error)&&
+		r2ThirdClassOwner.SolveR1(differentialTransport,&error);
+	const bool r2ThirdClassInjected=setOwnerFailure(
+		"active-cycle-r2,post-freeze-third-class-r2");
+	const bool r2ThirdClassAcceptedCore=r2ThirdClassPrepared&&r2ThirdClassInjected&&
+		r2ThirdClassOwner.SolveR2(differentialTransport,r2ThirdClassResult,&error);
+	const bool r2ThirdClassAccepted=setOwnerFailure(0)&&r2ThirdClassAcceptedCore&&
+		r2ThirdClassResult.r2.activeSetDiscontinuousClass&&
+		r2ThirdClassResult.r2.activeSetCycleLength>=3u&&
+		r2ThirdClassResult.r2.activeSetCanonicalProjectionCount>=3u&&
+		RISE::FireProductionProjectedHeunOwnerResultMatches(
+			r2ThirdClassResult,differentialSource);
+	if(!thirdClassAccepted||!r2ThirdClassAccepted)std::fprintf(stderr,
+		"r190 post-freeze third-class RED: r0=%u core=%u cycle=%u count=%u r2=%u core=%u cycle=%u count=%u error=%s\n",
+		thirdClassAccepted?1u:0u,thirdClassAcceptedCore?1u:0u,
+		thirdClassResult.r0.activeSetCycleLength,
+		thirdClassResult.r0.activeSetCanonicalProjectionCount,
+		r2ThirdClassAccepted?1u:0u,r2ThirdClassAcceptedCore?1u:0u,
+		r2ThirdClassResult.r2.activeSetCycleLength,
+		r2ThirdClassResult.r2.activeSetCanonicalProjectionCount,error.c_str());
 	if(!r2CycleValidationRejected)std::fprintf(stderr,
 		"r190 R2 selected-cycle RED: prepared=%u injected=%u error=%s\n",
 		r2CycleValidationPrepared?1u:0u,r2CycleValidationInjected?1u:0u,error.c_str());
@@ -8400,6 +8539,20 @@ int main()
 		staleCorrectionOwner.SolveR2(ownerTransport,staleCorrectionResult,&error)&&
 		RISE::FireProductionProjectedHeunOwnerResultMatches(
 			staleCorrectionResult,ownerSource);
+	RISE::FireProductionProjectedHeunCPUOwner outerMutationOwner;
+	RISE::FireProductionProjectedHeunOwnerResult outerMutationResult;
+	const bool outerMutationPrepared=outerMutationOwner.Begin(ownerRequest,&error)&&
+		outerMutationOwner.SolveR0(ownerTransport,&error)&&
+		outerMutationOwner.SolveR1(ownerTransport,&error);
+	MutatingOuterResultProjectedHeunTransport32 outerMutationTransport(
+		outerMutationResult,ownerResult);
+	const bool outerMutationRejected=outerMutationPrepared&&
+		!outerMutationOwner.SolveR2(outerMutationTransport,outerMutationResult,&error)&&
+		outerMutationTransport.Mutated()&&ownerResultDefault(outerMutationResult);
+	const bool outerMutationRetry=outerMutationRejected&&
+		outerMutationOwner.SolveR2(ownerTransport,outerMutationResult,&error)&&
+		RISE::FireProductionProjectedHeunOwnerResultMatches(
+			outerMutationResult,ownerSource);
 	RISE::FireProductionProjectedHeunCPUOwner atomicOwner;
 	RISE::FireProductionProjectedHeunOwnerResult atomicResult=ownerResult;
 	const bool atomicPrepared=atomicOwner.Begin(ownerRequest,&error)&&
@@ -8414,7 +8567,7 @@ int main()
 	Check(outOfOrderRejected&&staleCandidateRejected&&forgedLineageRejected&&
 		replayedPayloadRejected&&staleR2CandidateRejected&&forgedR2LineageRejected&&
 		replayedR2PayloadRejected&&reentrantRetryable&&staleCorrectionRejected&&
-		atomicReset&&atomicRetry&&mutatingTransportMatrix&&
+		outerMutationRetry&&atomicReset&&atomicRetry&&mutatingTransportMatrix&&
 		!std::is_aggregate<RISE::FireProductionProjectedHeunCPUOwner>::value,
 		"r190 owner refuses stale payload/lineage and callback mutation, blocks reentry, preserves order, and retries atomically");
 	Check(initialValidationRejected&&iterativeValidationRejected&&
@@ -8425,7 +8578,8 @@ int main()
 		"r190 owner behaviorally refuses every projection-validation path and its live-set preflight");
 	Check(limiterDiscontinuousAccepted,
 		"r190 nonuniform owner revalidates the r59 selected alpha through r60 and compatible commuting identity");
-	Check(activeCycleAccepted&&biasedCycleAccepted&&terminalTransitionR0&&
+	Check(activeCycleAccepted&&thirdClassAccepted&&r2ThirdClassAccepted&&
+		biasedCycleAccepted&&terminalTransitionR0&&
 		terminalTransitionR1&&terminalTransitionR2&&terminalWinnerR0&&
 		terminalWinnerR1&&terminalWinnerR2,
 		"r190 owner continues first terminal class transitions and reselects every cycle branch at the accepted target");
@@ -8440,32 +8594,70 @@ int main()
 	const std::string projectedHeunR136Repin=ReadText(
 		"rendered/fire_production_calibration/r190_projected_heun_owner/"
 		"r136_trace_repin_evidence.v1");
-	const auto manifestStage=[&](const std::string& header){
-		const std::size_t begin=projectedHeunMetalManifest.find(header);
-		if(begin==std::string::npos)return std::string();
-		const std::size_t end=projectedHeunMetalManifest.find("stage_end\n",begin);
-		return end==std::string::npos?std::string():
-			projectedHeunMetalManifest.substr(begin,end+10u-begin);
+	std::vector<std::string> manifestRecords;
+	{
+		std::istringstream records(projectedHeunMetalManifest);std::string record;
+		while(std::getline(records,record))manifestRecords.push_back(record);
+	}
+	const auto recordIndex=[&](const std::string& record,const std::size_t start){
+		if(start>=manifestRecords.size())return manifestRecords.size();
+		const auto found=std::find(manifestRecords.begin()+start,
+			manifestRecords.end(),record);
+		return found==manifestRecords.end()?manifestRecords.size():
+			static_cast<std::size_t>(found-manifestRecords.begin());
 	};
-	const std::string tier8MovieStage=manifestStage(
-		"stage 1 track_a_tier8_full_window_spectrum_animation_delivery\n");
-	const std::string tier10MovieStage=manifestStage(
-		"stage 5 tier10_full_window_spectrum_rows_animation_report\n");
-	const auto movieStageComplete=[](const std::string& stage,const char* tier,
+	const auto recordCount=[&](const std::string& record){
+		return static_cast<std::size_t>(std::count(manifestRecords.begin(),
+			manifestRecords.end(),record));
+	};
+	const auto manifestStage=[&](const std::string& header){
+		const std::size_t begin=recordIndex(header,0u);
+		const std::size_t end=recordIndex("stage_end",begin+1u);
+		if(begin==manifestRecords.size()||end==manifestRecords.size())
+			return std::vector<std::string>();
+		return std::vector<std::string>(manifestRecords.begin()+begin,
+			manifestRecords.begin()+end+1u);
+	};
+	const std::string stage1Header=
+		"stage 1 track_a_tier8_full_window_spectrum_animation_delivery";
+	const std::string stage2Header=
+		"stage 2 track_b_live_metal_consumers_and_kernel_sweep";
+	const std::string stage3Header="stage 3 track_b_tier10_onset";
+	const std::string stage4Header="stage 4 regression_rederivation";
+	const std::string stage5Header=
+		"stage 5 tier10_full_window_spectrum_rows_animation_report";
+	const std::vector<std::string> tier8MovieStage=manifestStage(stage1Header);
+	const std::vector<std::string> tier10MovieStage=manifestStage(stage5Header);
+	const auto movieStageComplete=[](const std::vector<std::string>& stage,
+		const char* tier,
 		const char* movie){
 		const std::string movieName(movie);
-		return !stage.empty()&&stage.find(std::string(
-			"--fire-production-puffing-spectrum ")+tier+" ")!=std::string::npos&&
-			stage.find("command python3 tools/encode_pq_prores.py ")!=std::string::npos&&
-			stage.find("-vf \"setparams=color_primaries=bt2020:color_trc=smpte2084:"
-				"colorspace=bt2020nc:range=tv\"")!=std::string::npos&&
-			stage.find("-c:v prores_ks -profile:v 4444 -movflags +write_colr "+
-				movieName)!=std::string::npos&&
-			stage.find("ffprobe -v trace "+movieName+" 2>&1 | grep \"nclc: pri 9 trc 16 matrix 9\"")!=
-				std::string::npos&&
-			stage.find("/usr/bin/shasum -a 256 "+movieName+" ")!=std::string::npos&&
-			stage.find("preview/temporal_primary_*.exr.provenance.cbor > "+movieName+
-				".evidence.sha256")!=std::string::npos;
+		const std::string base=std::string(
+			"rendered/fire_production_calibration/r190_tier")+tier+"_temporal";
+		const std::string provenancePrefix=std::string(
+			"rendered/fire_production_calibration/r190_tier")+tier+
+			"_temporal/preview/temporal_primary_*.exr.provenance.cbor";
+		const std::string contiguousDigestCommand="  command /usr/bin/shasum -a 256 "+
+			movieName+" "+provenancePrefix+" > "+movieName+".evidence.sha256";
+		const std::array<std::string,6> commands={{
+			"  command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone "+
+				std::string(tier)+" 0.0625 "+base,
+			"  command ./bin/tests/FireSequenceTest --fire-production-temporal-preview "+
+				base+" "+base+"/preview",
+			"  command python3 tools/encode_pq_prores.py "+base+
+				"/preview/temporal_primary_*.exr | ffmpeg -y -f rawvideo -pix_fmt "
+				"yuv444p10le -s 64x64 -r 16 -i - -vf \"setparams=color_primaries="
+				"bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv\" -c:v "
+				"prores_ks -profile:v 4444 -movflags +write_colr "+movieName,
+			"  command ffprobe -v trace "+movieName+
+				" 2>&1 | grep \"nclc: pri 9 trc 16 matrix 9\"",
+			contiguousDigestCommand,
+			"  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum "+
+				std::string(tier)+" "+base+"/production_final.checkpoint "+base+" "+
+				base+"/preview "+base+"/spectrum"}};
+		return !stage.empty()&&std::all_of(commands.begin(),commands.end(),
+			[&](const std::string& command){return std::find(stage.begin(),stage.end(),
+				command)!=stage.end();});
 	};
 	const bool tier8MovieStageComplete=movieStageComplete(tier8MovieStage,"8",
 		"rendered/fire_production_calibration/r190_tier8_temporal/"
@@ -8473,21 +8665,53 @@ int main()
 	const bool tier10MovieStageComplete=movieStageComplete(tier10MovieStage,"10",
 		"rendered/fire_production_calibration/r190_tier10_temporal/"
 		"tier10_preview_hdr10_prores4444.mov");
+	const std::size_t manifestStage1=recordIndex(stage1Header,0u);
+	const std::size_t manifestStage2=recordIndex(stage2Header,0u);
+	const std::size_t manifestStage3=recordIndex(stage3Header,0u);
+	const std::size_t manifestStage4=recordIndex(stage4Header,0u);
+	const std::size_t manifestStage5=recordIndex(stage5Header,0u);
+	const auto stageEnd=[&](const std::size_t stage){
+		return recordIndex("stage_end",stage<manifestRecords.size()?stage+1u:stage);
+	};
+	const std::size_t manifestStageEnd1=stageEnd(manifestStage1);
+	const std::size_t manifestStageEnd2=stageEnd(manifestStage2);
+	const std::size_t manifestStageEnd3=stageEnd(manifestStage3);
+	const std::size_t manifestStageEnd4=stageEnd(manifestStage4);
+	const std::size_t manifestStageEnd5=stageEnd(manifestStage5);
+	const bool manifestTier8DeliveryStageLocal=std::find(tier8MovieStage.begin(),
+		tier8MovieStage.end(),
+		"  delivery send movie and preview_primary sidecars to owner immediately")!=
+		tier8MovieStage.end();
+	const bool manifestScopeAndOrder=
+		recordCount("current_host_has_required_device 0")==1u&&
+		recordCount("run_stages_executed_on_current_host 0")==1u&&
+		recordCount(stage1Header)==1u&&recordCount(stage2Header)==1u&&
+		recordCount(stage3Header)==1u&&recordCount(stage4Header)==1u&&
+		recordCount(stage5Header)==1u&&recordCount("stage_end")==5u&&
+		manifestStage1<manifestStageEnd1&&manifestStageEnd1<manifestStage2&&
+		manifestStage2<manifestStageEnd2&&manifestStageEnd2<manifestStage3&&
+		manifestStage3<manifestStageEnd3&&manifestStageEnd3<manifestStage4&&
+		manifestStage4<manifestStageEnd4&&manifestStageEnd4<manifestStage5&&
+		manifestStage5<manifestStageEnd5&&
+		manifestTier8DeliveryStageLocal;
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		projectedHeunOwnerEvidence.begin(),projectedHeunOwnerEvidence.end()))==
-			"6ec5f5ef6c258110f604b460b31defe4b84a71f529c67838cf563d62bb734adb"&&
+			"80e08c2a58ecbbca03892ae067bf4637527e56eafe9328a137f7f1aac53324f8"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunMetalManifest.begin(),projectedHeunMetalManifest.end()))==
 			"c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunR136Repin.begin(),projectedHeunR136Repin.end()))==
-			"1a9c428a41d2b2378d1f8c3939e02cca91570af89748bea5bbb5bda0095347b7"&&
+			"f5f4ddc01cc0c6f2b3d1c3e2a6c66fd11c92d1e274295428b512dd40ba3e895e"&&
 		projectedHeunOwnerEvidence.find("r70_authority public false\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find("red_stale_projection_identity true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"result_payload_verifier full_publication_v4\n")!=std::string::npos&&
+			"result_payload_verifier full_publication_v5\n")!=std::string::npos&&
+		projectedHeunOwnerEvidence.find(
+			"result_payload_identity_domain v5_source_hygiene_bound\n")!=
+			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
 			"result_acceptance_seal private_owner_minted_read_only\n")!=
 			std::string::npos&&
@@ -8495,10 +8719,10 @@ int main()
 			"result_stage_callback_reentry in_progress_state_refusal_with_raii_rollback\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"transport_callback_context_postcondition exact_bit_unchanged_on_success_and_refusal\n")!=
+			"transport_callback_context_postcondition exact_scalar_pointer_and_payload_bits_unchanged_on_success_and_refusal\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"working_set_exact_formula_bytes (266C_plus_97F)*sizeof(float)\n")!=
+			"working_set_exact_formula_bytes (274C_plus_97F)*sizeof(float)\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
 			"red_stale_whole_result_source_attempt true\n")!=std::string::npos&&
@@ -8512,7 +8736,10 @@ int main()
 			"red_terminal_accepted_target_winner_change_r0_r1_r2 true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"red_transport_context_mutation_r0_r1_r2_state_temperature_velocity_success_and_refusal_18_cases true\n")!=
+			"red_transport_context_mutation_r0_r1_r2_payload_scalar_identity_pointer_rebinding_success_and_refusal_60_cases true\n")!=
+			std::string::npos&&
+		projectedHeunOwnerEvidence.find(
+			"red_active_set_post_freeze_third_class_r0_ordinary_collector true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
 			"r189_transport_source_changed true\n")!=std::string::npos&&
@@ -8520,7 +8747,11 @@ int main()
 			"red_r59_independent_r60_and_commuting_recompute true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"r136_live_trace_digest 4e9a98422e118dd14750b81f633c2ce481aa70ad2e1f6eca7081185f2601d9d8\n")!=
+			"red_spectrum_tier_exact_record_line true\n")!=std::string::npos&&
+		projectedHeunOwnerEvidence.find(
+			"red_manifest_tier8_delivery_stage_local true\n")!=std::string::npos&&
+		projectedHeunOwnerEvidence.find(
+			"r136_live_trace_digest 7736ec4adb7fd3b0cb3c1bf7bddd5b1d2a050e7e0fbd56bc31e928b7f9faa22d\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
 			"red_r2_bootstrap_used_class_flip_discrepancy true\n")!=
@@ -8550,7 +8781,7 @@ int main()
 			"current_exit_code 237\n")!=std::string::npos&&
 		projectedHeunR136Repin.find(
 			"branch_obligations_discharged 3972326\n")!=std::string::npos&&
-		tier8MovieStageComplete&&tier10MovieStageComplete&&
+		tier8MovieStageComplete&&tier10MovieStageComplete&&manifestScopeAndOrder&&
 		projectedHeunMetalManifest.find(
 			"command ./bin/tests/FireProductionProjectionTest\n")!=std::string::npos&&
 		projectedHeunMetalManifest.find(

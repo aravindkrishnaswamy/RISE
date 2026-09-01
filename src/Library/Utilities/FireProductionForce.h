@@ -263,6 +263,9 @@ namespace RISE
 		FireProductionScalarPhysicalFluxPrerequisiteResult endpointPhysicalFlux;
 		FireProductionScalarFCTResult scalarAcceptance;
 		FireProductionNonpressureMomentumRHSResult nonpressure;
+		//! Exact input seal consumed by projection. `target` is the Picard-map
+		//! output produced from this projection and the accepted candidate.
+		FireProductionScalarProjectionTargetSeal projectionTarget;
 		FireProductionScalarProjectionTargetSeal target;
 		std::vector<float> picardResidualPerS;
 		std::uint64_t parentCandidateIdentity;

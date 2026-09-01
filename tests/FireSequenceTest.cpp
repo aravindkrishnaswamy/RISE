@@ -6718,15 +6718,22 @@ int main(int argc,char** argv)
 			tier10Evidence,tier10,10.0);
 		const bool crossTierRejected=!WriteProductionPuffingSpectrumTierEvidence(
 			rejectedTierEvidence,tier8,10.0)&&rejectedTierEvidence.str().empty();
+		const auto exactlyOneLine=[](const std::string& text,const std::string& line){
+			std::istringstream records(text);std::string record;unsigned int matches=0u;
+			while(std::getline(records,record))if(record==line)++matches;
+			return matches==1u;
+		};
 		Check(tier8Built&&tier10Built&&
 			ProductionPuffingSpectrumTierMatches(tier8,8.0)&&
 			!ProductionPuffingSpectrumTierMatches(tier8,10.0)&&
 			ProductionPuffingSpectrumTierMatches(tier10,10.0)&&
 			!ProductionPuffingSpectrumTierMatches(tier10,8.0)&&tier8Written&&tier10Written&&
-			tier8Evidence.str().find("resolution_tier 8\n")!=std::string::npos&&
-			tier10Evidence.str().find("resolution_tier 10\n")!=std::string::npos&&
+			exactlyOneLine(tier8Evidence.str(),"resolution_tier 8")&&
+			exactlyOneLine(tier10Evidence.str(),"resolution_tier 10")&&
 			tier8Evidence.str().find("resolution_tier 6\n")==std::string::npos&&
+			tier8Evidence.str().find("resolution_tier 10\n")==std::string::npos&&
 			tier10Evidence.str().find("resolution_tier 6\n")==std::string::npos&&
+			tier10Evidence.str().find("resolution_tier 8\n")==std::string::npos&&
 			crossTierRejected,
 			"puffing spectrum serializes tier 8/10 evidence only for matching checkpoint grids");
 	}

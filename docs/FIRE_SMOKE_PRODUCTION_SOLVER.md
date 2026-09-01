@@ -5188,7 +5188,7 @@ tier-10 onset run, followed by regression re-derivation and the tier-10 queue.
 All simulations and renders are sequential.  The animation stage also carries
 the HDR container check (`nclc` primaries 9, transfer 16, matrix 9) rather than
 trusting codec tags alone.  The manifest SHA is
-`c5dcaacd6c5f858fbaefaaa611c02fe213481a2dbde0ba45355c67b3a7ee42d5`.
+`c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c`.
 
 ### 7.56w Complete CPU projected-Heun owner (r190)
 
@@ -5223,15 +5223,22 @@ the complete owner. This is recorded as a source change, not disguised as
 byte identity; none of those additions can publish standalone accepted-step
 authority. Open-face class history stores the class actually used by each
 projection. On a cycle, every member is reprojected against the same current
-target with its class frozen, and only then compared with the configured
+target with its class frozen, and every subsequently projected or derived class
+is added to the proved set before terminal selection. Only then are branches compared with the configured
 velocity deadband and a lexicographic tie break. A fresh numerical review found
 that this canonical choice had originally been made against a transient target.
 The corrected owner treats a first terminal class change as another Picard
 iteration; if the terminal classes cycle, it reprojects every proved member
 against the corrected accepted target and chooses only from those results. R2
 does the same and performs its terminal projection before rebuilding endpoint
-transport, physical flux, and target. Thus the published class is a fixed point
-of the target it authenticates, not a winner frozen from an earlier target. The
+transport, physical flux, and target. Each accepted stage publishes two named,
+identity-bearing seals: `projectionTarget` is the exact input consumed by the
+published projection, while `target` is the Picard-map output minted from that
+projection's authenticated flux/candidate and is the only seal that binds
+`acceptedCandidateIdentity`. This makes the tolerance-level residual explicit
+without mislabelling it as bitwise fixed-point equality. Thus the published
+class is selected against the exact projection target, not a winner frozen from
+an earlier target. The
 owner records cycle length,
 differing-face count, canonical reprojection count, and the maximum discrepancy
 over the full trajectory. The shared Heun
@@ -5247,10 +5254,13 @@ step-average pressure atomically.
 
 Transport callbacks receive private deep snapshots of state, temperature, and
 velocity rather than aliases into owner storage. Exact-bit postconditions run
-after both success and refusal, so a provider that casts away const and mutates
-any context byte cannot affect retry state or mint an identity over an
-unprojected velocity. Those `10C+F` snapshot words are included in the exact
-working-set certificate, now `(266C+97F) sizeof(float)`.
+after both success and refusal over every context scalar and pointer as well as
+all pointed-to bytes. Publication identity is recomputed from a fresh owner-local
+context, so a provider that casts away const, repoints a context member, or
+mutates payload cannot affect retry state or mint an identity over an
+unprojected velocity. Those `10C+F` snapshot words and the two-seal publication
+copies are included in the exact working-set certificate, now
+`(274C+97F) sizeof(float)`.
 
 REDs cover out-of-order stages, stale r70 candidate identity, stale coefficient
 payload with current echoes, forged parent, closed constant-mode compatibility,
@@ -5261,12 +5271,14 @@ every selected-cycle reprojection in both the coupled R0/R1 path and R2, an
 exercised two-class active cycle with
 distinguishable discrepancies, an exercised nonuniform r59 selected-alpha path,
 terminal first-class transitions and terminal canonical-winner changes in R0,
-R1, and R2, an R2 terminal-validation refusal, all 18 combinations of callback
-stage, aliased operand, and success/refusal mutation, and retry after an
+R1, and R2, an R2 terminal-validation refusal, all 60 combinations of callback
+stage, scalar/pointer/payload operand, and success/refusal mutation, and retry after an
 injected mid-publication allocation failure. The caller's
 result remains the complete default publication until a separate deep copy has
 finished; committing the internal and external publications then uses
-compile-time-proven non-throwing moves. The final verifier
+compile-time-proven non-throwing moves. A callback that retains the caller's
+result reference, overwrites it with a stale valid publication, and refuses is
+also rolled back recursively to the complete default before a clean retry. The final verifier
 binds every public owner payload: conservative state, final and stage momentum,
 velocity and pressure, both EOS publications, fluxes, limiter state,
 nonpressure rates, targets, diagnostics, all nested shapes/timesteps/boundaries,
@@ -5307,7 +5319,7 @@ container probe, and SHA sidecar independently inside each movie stage rather
 than accepting global substrings from another stage. No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-derived from
 historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-to `4e9a98422e118dd14750b81f633c2ce481aa70ad2e1f6eca7081185f2601d9d8`.
+to `7736ec4adb7fd3b0cb3c1bf7bddd5b1d2a050e7e0fbd56bc31e928b7f9faa22d`.
 The digest encoding prefixes all 16 generated manifest fields: every primary
 operator, `FireSimulationRecords` and `FireCase` header/source dependency, and
 the three trace-support files plus the generator. A shared enumerator is used

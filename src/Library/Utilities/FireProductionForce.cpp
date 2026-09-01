@@ -19,6 +19,34 @@
 #include <type_traits>
 #include <utility>
 
+// BEGIN RISE projected-Heun owner test-only link seam.
+// Shipped binaries provide no probe definition on ELF/Mach-O and therefore
+// resolve this path to false. MSVC's alternate-name fallback likewise resolves
+// to the disabled implementation unless a test executable defines the probe.
+#if defined(_MSC_VER)
+extern "C" bool RISEProjectedHeunOwnerTestFailureProbe(const char*);
+extern "C" bool RISEProjectedHeunOwnerTestFailureDisabled(const char*)
+{
+	return false;
+}
+#pragma comment(linker,"/alternatename:RISEProjectedHeunOwnerTestFailureProbe=RISEProjectedHeunOwnerTestFailureDisabled")
+#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) \
+	RISEProjectedHeunOwnerTestFailureProbe(name)
+#elif defined(__APPLE__)
+extern "C" bool RISEProjectedHeunOwnerTestFailureProbe(const char*)
+	__attribute__((weak_import));
+#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) \
+	(RISEProjectedHeunOwnerTestFailureProbe&&RISEProjectedHeunOwnerTestFailureProbe(name))
+#elif defined(__GNUC__)
+extern "C" bool RISEProjectedHeunOwnerTestFailureProbe(const char*)
+	__attribute__((weak));
+#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) \
+	(RISEProjectedHeunOwnerTestFailureProbe&&RISEProjectedHeunOwnerTestFailureProbe(name))
+#else
+#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) false
+#endif
+// END RISE projected-Heun owner test-only link seam.
+
 namespace RISE
 {
 	namespace
@@ -793,10 +821,10 @@ namespace RISE
 		// and atomic publication.
 		// Deliberately conservative: every vector is charged even when moved between
 		// protocol states, so no schedule-dependent alias is needed by the proof.
-		if(cells>(std::numeric_limits<std::uint64_t>::max()-97u*faces)/266u||
-			266u*cells+97u*faces>std::numeric_limits<std::uint64_t>::max()/sizeof(float))
+		if(cells>(std::numeric_limits<std::uint64_t>::max()-97u*faces)/274u||
+			274u*cells+97u*faces>std::numeric_limits<std::uint64_t>::max()/sizeof(float))
 			return false;
-		bytes=(266u*cells+97u*faces)*sizeof(float);
+		bytes=(274u*cells+97u*faces)*sizeof(float);
 		return true;
 	}
 
@@ -1682,7 +1710,8 @@ namespace RISE
 			OwnerHashProjection(hash,value.projection);OwnerHashFluxStage(hash,value.flux);
 			OwnerHashPhysicalFlux(hash,value.endpointPhysicalFlux);
 			OwnerHashFCT(hash,value.scalarAcceptance);OwnerHashNonpressure(hash,value.nonpressure);
-			OwnerHashTarget(hash,value.target);OwnerHashFloats(hash,value.picardResidualPerS);
+			OwnerHashTarget(hash,value.projectionTarget);OwnerHashTarget(hash,value.target);
+			OwnerHashFloats(hash,value.picardResidualPerS);
 			OwnerHashUInt64(hash,value.parentCandidateIdentity);
 			OwnerHashUInt64(hash,value.acceptedCandidateIdentity);
 			OwnerHashUInt64(hash,value.acceptedIterationCount);
@@ -1698,7 +1727,7 @@ namespace RISE
 		std::uint64_t OwnerResultIdentity(const FireProductionProjectedHeunOwnerResult& value)
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
-			static const char domain[]="RISE complete projected-Heun CPU owner v4";
+			static const char domain[]="RISE complete projected-Heun CPU owner v5";
 			for(const unsigned char byte:domain)OwnerHashByte(hash,byte);
 			OwnerHashFloats(hash,value.conservativeValues);
 			OwnerHashFloatAxes(hash,value.momentumKGPerM2S);
@@ -1740,6 +1769,19 @@ namespace RISE
 			return true;
 		}
 
+		bool SameOwnerTransportContext(
+			const FireProductionProjectedHeunTransportContext& actual,
+			const FireProductionProjectedHeunTransportContext& expected)
+		{
+			return actual.stage==expected.stage&&
+				actual.attemptIdentity==expected.attemptIdentity&&
+				actual.parentCandidateIdentity==expected.parentCandidateIdentity&&
+				actual.projectionIdentity==expected.projectionIdentity&&
+				actual.conservativeValues==expected.conservativeValues&&
+				actual.temperatureK==expected.temperatureK&&
+				actual.projectedVelocityMPerS==expected.projectedVelocityMPerS;
+		}
+
 		bool OwnerActiveClassLess(
 			const std::array<std::vector<unsigned char>,6>& a,
 			const std::array<std::vector<unsigned char>,6>& b)
@@ -1755,16 +1797,7 @@ namespace RISE
 
 		bool OwnerTestFailure(const char* name)
 		{
-			const char* requested=std::getenv("RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
-			if(!requested)return false;
-			const std::size_t nameLength=std::strlen(name);
-			for(const char* token=requested;*token;){
-				const char* end=std::strchr(token,',');
-				const std::size_t length=end?static_cast<std::size_t>(end-token):std::strlen(token);
-				if(length==nameLength&&std::memcmp(token,name,length)==0)return true;
-				if(!end)break;token=end+1;
-			}
-			return false;
+			return RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name);
 		}
 
 		template<typename State>
@@ -1778,6 +1811,22 @@ namespace RISE
 		private:
 			State& state_;
 			State rollback_;
+			bool committed_;
+		};
+
+		class OwnerResultPublicationGuard
+		{
+		public:
+			explicit OwnerResultPublicationGuard(
+				FireProductionProjectedHeunOwnerResult& result) :
+				result_(result),committed_(false) {}
+			~OwnerResultPublicationGuard()
+			{
+				if(!committed_)result_=FireProductionProjectedHeunOwnerResult();
+			}
+			void Commit() { committed_=true; }
+		private:
+			FireProductionProjectedHeunOwnerResult& result_;
 			bool committed_;
 		};
 
@@ -2366,9 +2415,11 @@ namespace RISE
 				context.projectionIdentity=projectionIdentity;
 				context.conservativeValues=&contextState;context.temperatureK=&contextTemperature;
 				context.projectedVelocityMPerS=&contextVelocity;
+				const FireProductionProjectedHeunTransportContext authorityContext=context;
 				coefficients=FireProductionProjectedHeunTransportCoefficients();
 				const bool evaluated=provider.Evaluate(context,coefficients,error);
-				if(!SameOwnerFloatBits(contextState,state)||
+				if(!SameOwnerTransportContext(context,authorityContext)||
+					!SameOwnerFloatBits(contextState,state)||
 					!SameOwnerFloatBits(contextTemperature,temperatureK)||
 					!SameOwnerFloatBits(contextVelocity,projection.velocityMPerS))return Fail(error,
 						"projected-Heun transport context was mutated");
@@ -2383,7 +2434,8 @@ namespace RISE
 					return Fail(error,"projected-Heun transport publication lineage differs");
 				if(coefficients.publicationIdentity==0u||
 					coefficients.publicationIdentity!=
-						FireProductionProjectedHeunTransportPublicationIdentity(context,coefficients))
+						FireProductionProjectedHeunTransportPublicationIdentity(
+							authorityContext,coefficients))
 					return Fail(error,"projected-Heun transport publication payload differs");
 				for(std::size_t cell=0u;cell<cells;++cell)if(
 					!std::isfinite(coefficients.diffusivityM2PerS[cell])||
@@ -2459,6 +2511,7 @@ namespace RISE
 				firstProjection.velocityMPerS,request_.endpointVelocityToleranceMPerS);
 			bool frozenActiveCycle=false;
 			bool havePrior=false;
+			bool postFreezeThirdClassInjected=false;
 			bool terminalFirstTransitionInjected=false,terminalFirstTransitionPending=false,
 				terminalFirstTransitionTerminalPending=false;
 			auto addCycleBranch=[&](const OpenClass& branch){
@@ -2567,7 +2620,21 @@ namespace RISE
 						nextClass[side][0u]=static_cast<unsigned char>(
 							projected.pressureOpenInflow[side][0u]^1u);break;
 					}
+				const char* postFreezeHook=r0?"post-freeze-third-class-r0":
+					"post-freeze-third-class-r1";
+				if(frozenActiveCycle&&!postFreezeThirdClassInjected&&
+					OwnerTestFailure(postFreezeHook))
+					for(unsigned int side=0u;side<6u;++side)if(
+						request_.scalarContract.boundary[side]==
+							FireProductionProjectionPressureOpen&&nextClass[side].size()>1u){
+						nextClass[side][1u]=static_cast<unsigned char>(
+							nextClass[side][1u]^1u);postFreezeThirdClassInjected=true;break;
+					}
 				bool classStable=frozenActiveCycle||nextClass==projected.pressureOpenInflow;
+				if(frozenActiveCycle){
+					addCycleBranch(projected.pressureOpenInflow);addCycleBranch(nextClass);
+					recordCycle();
+				}
 				if(!frozenActiveCycle&&!classStable){
 					const OpenClass solvedClass=projected.pressureOpenInflow;
 					activeHistory.push_back(solvedClass);
@@ -2696,6 +2763,15 @@ namespace RISE
 						}
 					}
 					if(frozenActiveCycle){
+						if(!postFreezeThirdClassInjected&&OwnerTestFailure(postFreezeHook)){
+							for(unsigned int side=0u;side<6u;++side)if(
+								request_.scalarContract.boundary[side]==
+									FireProductionProjectionPressureOpen&&terminalNextClass[side].size()>1u){
+								terminalNextClass[side][1u]=static_cast<unsigned char>(
+									terminalNextClass[side][1u]^1u);
+								postFreezeThirdClassInjected=true;break;
+							}
+						}
 						addCycleBranch(terminalUsedClass);addCycleBranch(terminalNextClass);
 						OpenClass selectedClass;
 						if(!canonicalProjection(corrected,&terminalUsedClass,
@@ -2808,6 +2884,7 @@ namespace RISE
 					result.flux=std::move(verifiedFlux);
 					result.scalarAcceptance=std::move(certifiedScalar);
 					result.nonpressure=std::move(verifiedNonpressure);
+					result.projectionTarget=std::move(corrected);
 					result.target=std::move(certifiedTarget);
 					result.parentCandidateIdentity=parentCandidateIdentity;
 					result.acceptedCandidateIdentity=certifiedIdentity;
@@ -2964,6 +3041,7 @@ namespace RISE
 			FireProductionProjectedHeunOwnerResult>::value,
 			"projected-Heun publication commit must not throw");
 		result=FireProductionProjectedHeunOwnerResult();
+		OwnerResultPublicationGuard publicationGuard(result);
 		if(state_!=State::R1Complete)return Fail(error,
 			"projected-Heun R2 is out of order");
 		OwnerStageStateGuard<State> stageGuard(state_,State::R2InProgress);
@@ -3014,9 +3092,11 @@ namespace RISE
 				context.conservativeValues=&contextState;
 				context.temperatureK=&contextTemperature;
 				context.projectedVelocityMPerS=&contextVelocity;
+				const FireProductionProjectedHeunTransportContext authorityContext=context;
 				coefficients=FireProductionProjectedHeunTransportCoefficients();
 				const bool evaluated=provider.Evaluate(context,coefficients,error);
-				if(!SameOwnerFloatBits(contextState,work_.conservativeValues)||
+				if(!SameOwnerTransportContext(context,authorityContext)||
+					!SameOwnerFloatBits(contextState,work_.conservativeValues)||
 					!SameOwnerFloatBits(contextTemperature,work_.committedEOS.temperatureK)||
 					!SameOwnerFloatBits(contextVelocity,projected.velocityMPerS))return Fail(error,
 						"projected-Heun R2 transport context was mutated");
@@ -3030,7 +3110,8 @@ namespace RISE
 					coefficients.molecularKinematicViscosityM2PerS.size()!=cells)
 					return Fail(error,"projected-Heun R2 transport lineage differs");
 				if(coefficients.publicationIdentity==0u||coefficients.publicationIdentity!=
-					FireProductionProjectedHeunTransportPublicationIdentity(context,coefficients))
+					FireProductionProjectedHeunTransportPublicationIdentity(
+						authorityContext,coefficients))
 					return Fail(error,"projected-Heun R2 transport payload differs");
 				FireProductionScalarPhysicalFluxPrerequisiteRequest physical=
 					request_.physicalContract;
@@ -3101,6 +3182,7 @@ namespace RISE
 			std::vector<OpenClass> activeHistory,provedCycleBranches;
 			float activeTrajectoryMaximum=bootstrapTrajectoryMaximum;
 			bool havePrior=false,frozenCycle=false,accepted=false;
+			bool postFreezeThirdClassInjected=false;
 			bool terminalFirstTransitionInjected=false,terminalFirstTransitionPending=false,
 				terminalFirstTransitionTerminalPending=false;
 			auto addCycleBranch=[&](const OpenClass& branch){
@@ -3193,6 +3275,16 @@ namespace RISE
 						projected.pressureOpenInflow[side][0u]=static_cast<unsigned char>(
 						projected.pressureOpenInflow[side][0u]^1u);break;
 					}
+				if(frozenCycle&&!postFreezeThirdClassInjected&&
+					OwnerTestFailure("post-freeze-third-class-r2"))
+					for(unsigned int side=0u;side<6u;++side)if(
+						request_.scalarContract.boundary[side]==
+							FireProductionProjectionPressureOpen&&
+						projected.pressureOpenInflow[side].size()>1u){
+						projected.pressureOpenInflow[side][1u]=static_cast<unsigned char>(
+							projected.pressureOpenInflow[side][1u]^1u);
+						postFreezeThirdClassInjected=true;break;
+					}
 				}
 				const std::array<std::vector<float>,3>* discrepancyVelocity=
 					&projected.velocityMPerS;
@@ -3222,6 +3314,10 @@ namespace RISE
 						request_.endpointVelocityToleranceMPerS));
 				bool classStable=frozenCycle||
 					projected.pressureOpenInflow==projectedClass;
+				if(frozenCycle){
+					addCycleBranch(projectedClass);
+					addCycleBranch(projected.pressureOpenInflow);recordCycle();
+				}
 				if(!frozenCycle&&!classStable){
 					if(activeHistory.empty()||activeHistory.back()!=projectedClass)
 						activeHistory.push_back(projectedClass);
@@ -3362,6 +3458,7 @@ namespace RISE
 					r2.stage=FireProductionProjectedHeunStage::R2;
 					r2.projection=std::move(terminalProjection);
 					r2.endpointPhysicalFlux=std::move(terminalFlux);
+					r2.projectionTarget=std::move(nextTarget);
 					r2.target=std::move(terminalTarget);
 					r2.parentCandidateIdentity=work_.r1.acceptedCandidateIdentity;
 					r2.acceptedCandidateIdentity=work_.r1.acceptedCandidateIdentity;
@@ -3396,15 +3493,14 @@ namespace RISE
 			completed.stepAveragePressurePa=completed.r2.projection.pressurePa;
 			completed.sourcePacketIdentity=request_.source.PacketIdentity();
 			completed.accepted=true;completed.ownerIdentity_=OwnerResultIdentity(completed);
-			const char* publicationFailure=std::getenv(
-				"RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
-			if(publicationFailure&&std::strcmp(publicationFailure,"result-copy")==0)
+			if(OwnerTestFailure("result-copy"))
 				throw std::bad_alloc();
 			FireProductionProjectedHeunOwnerResult publication;
 			CopyOwnerResultForPublication(completed,publication);
 			publication.ownerIdentity_=completed.ownerIdentity_;
 			work_=std::move(completed);result=std::move(publication);
 			stageGuard.Commit(State::Complete);
+			publicationGuard.Commit();
 			if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){return Fail(error,
 			"projected-Heun R2 allocation failed");}
@@ -3425,9 +3521,15 @@ namespace RISE
 			result.r1.flux.attemptIdentity!=expectedAttempt||
 			result.averagedFlux.attemptIdentity!=expectedAttempt||
 			result.heunSolve.attemptIdentity!=expectedAttempt||
+			!FireProductionScalarProjectionTargetSealMatches(result.r0.projectionTarget,0)||
+			!FireProductionScalarProjectionTargetSealMatches(result.r1.projectionTarget,0)||
+			!FireProductionScalarProjectionTargetSealMatches(result.r2.projectionTarget,0)||
 			!FireProductionScalarProjectionTargetSealMatches(result.r0.target,0)||
 			!FireProductionScalarProjectionTargetSealMatches(result.r1.target,0)||
 			!FireProductionScalarProjectionTargetSealMatches(result.r2.target,0)||
+			result.r0.projectionTarget.AttemptIdentity()!=expectedAttempt||
+			result.r1.projectionTarget.AttemptIdentity()!=expectedAttempt||
+			result.r2.projectionTarget.AttemptIdentity()!=expectedAttempt||
 			result.r0.target.AttemptIdentity()!=expectedAttempt||
 			result.r1.target.AttemptIdentity()!=expectedAttempt||
 			result.r2.target.AttemptIdentity()!=expectedAttempt||

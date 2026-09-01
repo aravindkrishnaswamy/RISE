@@ -101,6 +101,16 @@ def transform(text: str, name: str, suffix: str) -> str:
             raise RuntimeError("accepted manifold publication declaration seam changed")
         text = text[:begin] + text[end:]
     if name == "FireProductionForce" and suffix == ".cpp":
+        bridge_begin = text.find(
+            "\n// BEGIN RISE projected-Heun owner test-only link seam.")
+        bridge_end = text.find(
+            "\n// END RISE projected-Heun owner test-only link seam.", bridge_begin)
+        if bridge_begin < 0 or bridge_end < 0:
+            raise RuntimeError("projected-Heun test-only link seam changed")
+        bridge_end += len("\n// END RISE projected-Heun owner test-only link seam.")
+        text = (text[:bridge_begin] +
+                "\n#define RISE_PROJECTED_HEUN_OWNER_TEST_FAILURE(name) false" +
+                text[bridge_end:])
         # This owner-only publication seam consumes a completed binary32
         # resident result.  It is outside the same-scheme arithmetic mirror
         # and has no binary64 producer analogue.

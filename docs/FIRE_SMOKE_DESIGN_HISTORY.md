@@ -4777,7 +4777,7 @@ it was already tried and refuted here.
   verification, and immediate owner delivery. Track B's device kernel sweep and
   tier-10 onset follow, then the r170/readmission re-derivation and tier-10
   queue. Renders and simulations remain sequential. Manifest SHA:
-  `c5dcaacd6c5f858fbaefaaa611c02fe213481a2dbde0ba45355c67b3a7ee42d5`.
+  `c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c`.
 
 - **r190 complete CPU R0/R1/R2 owner (2026-08-31):** moves the r70
   correction into the only scope that possesses its real parent.  The owner
@@ -4831,11 +4831,18 @@ it was already tried and refuted here.
   same accepted-target rule plus a terminal projection and endpoint rebuild.
   Separately, callback `const` references still aliased mutable owner storage.
   R0, R1, and R2 now pass deep callback-only snapshots and exact-bit-check them
-  after success and refusal. The added `10C+F` words are charged in the exact
-  `(266C+97F) sizeof(float)` working-set certificate. REDs force terminal class
+  after success and refusal. The accepted stage now exposes the exact
+  `projectionTarget` consumed by its projection separately from the next
+  correction `target` produced by the authenticated candidate; both are sealed
+  and result-identity-bearing. This records the Picard residual honestly instead
+  of confusing tolerance convergence with bitwise fixed-point equality. The
+  added snapshots and two-seal atomic copies are charged in the exact
+  `(274C+97F) sizeof(float)` working-set certificate. REDs force terminal class
   changes and winner changes in all three stages, reject R2 terminal validation,
-  and exercise all 18 callback stage/operand/outcome mutation combinations with
-  clean retry.
+  and exercise all 60 callback stage/operand/outcome mutation combinations with
+  clean retry, including every scalar and pointer member. The publication guard
+  also clears a stale valid result written through a retained outer reference
+  when the R2 callback refuses, then proves clean retry.
   The next fresh test/evidence pass made the atomic-refusal RED exhaustive over
   every nested EOS, projection, physical-flux, FCT, nonpressure, target,
   active-set, and publication field; `complete_default` no longer means a
@@ -4881,7 +4888,7 @@ it was already tried and refuted here.
   and wall positive-zero checks inspect the complete binary64 word. Metal execution
   remains unclaimed on this host. The r136 source-bound trace digest moves from
   the historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-  to `4e9a98422e118dd14750b81f633c2ce481aa70ad2e1f6eca7081185f2601d9d8`.
+  to `7736ec4adb7fd3b0cb3c1bf7bddd5b1d2a050e7e0fbd56bc31e928b7f9faa22d`.
   This is a manifest re-derivation, not a numerical re-baseline: the encoding
   prefixes the Transport/Force source hashes, and a detached build of
   `0e70f17f1` reproduces the historical digest and exit 237 while the reviewed
