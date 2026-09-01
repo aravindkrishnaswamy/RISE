@@ -3450,6 +3450,219 @@ namespace RISE
 				return false;
 			}
 
+			//! docs/WETNESS_COAT_DESIGN.md sec 6.4/13 (2026-08-31): ONE material
+			//! that `add_wetness` can rewrite into the two-mask (damp/wet)
+			//! wetness composition -- the qualifying unit SHARED by design-note
+			//! condition P (which PRICES the rewrite) and `AgentSession::
+			//! AddWetness` (which PERFORMS it), the identical one-predicate-
+			//! two-consumers arrangement `WearMaterial_` establishes for
+			//! condition L / `AddWear`.
+			//!
+			//! WHAT "QUALIFIES" MEANS (design sec 6.4's four clauses):
+			//!   (1) kind is `lambertian_material`, `orennayar_material`,
+			//!       `ggx_material` or `pbr_metallic_roughness_material`.  A
+			//!       CONSTANT-metallic material (a literal `metallic > 0.5` on
+			//!       pbr_metallic_roughness_material, or a `ggx_material` whose
+			//!       `fresnel_mode` is `conductor` (the descriptor default) or
+			//!       `thinfilm`) still POPULATES this list -- `isMetallic` is
+			//!       set -- but `SelectMaterialToWet_` (the bare-call picker)
+			//!       skips every metallic entry, so a metallic material is only
+			//!       ever reached by NAMING it, and reaching it that way skips
+			//!       the darkening half (sec 6.4 clause 1, sec 2.1: a metal has
+			//!       no subsurface for the darkening mechanism to act on).
+			//!   (2) its PRIMARY colour slot (`WearAlbedoSlotRank_`'s ranking,
+			//!       reused verbatim -- one question, "which slot is the
+			//!       albedo", asked by both verbs) binds a `uniformcolor_painter`
+			//!       whose RGB is readable in the default (Rec.709 linear)
+			//!       colourspace.  SKIPPED ENTIRELY for a metallic material,
+			//!       which never reads a base colour to darken.  A material
+			//!       whose primary slot binds a NON-constant painter still
+			//!       records a `wetDeclineReasons` entry -- and if that
+			//!       painter's body reads the geometry signals the way
+			//!       `add_wear`'s own composition does, the reason NAMES
+			//!       `add_wear` (sec 6.4's collision, made loud both ways).
+			//!   (3) at least one bound `standard_object` sits on ANY geometry
+			//!       (deliberately weaker than `WearMaterial_` clause (c) --
+			//!       see `curvGeometryKind`/`geometryUniform` below for why a
+			//!       curv-barren object does not refuse here: `base_wetness`
+			//!       makes flat geometry meaningful, sec 6.4 clause 3).
+			//!   (4) nothing it already references reads this verb's OWN
+			//!       prelude (`WetnessBodyReadsPreludeDefs_`'s `dryness` marker)
+			//!       -- already wet, and re-wetting would stack two passes.
+			//!       (The mirror-image exclusion -- wetness refuses a material
+			//!       `add_wear` already rewrote -- falls out of clause (2) for
+			//!       free: `add_wear` rebinds the colour slot to an
+			//!       `expression_painter`, which is never a `uniformcolor_
+			//!       painter`, so a worn material simply has no readable base
+			//!       to band around.)
+			struct WetnessMaterial_
+			{
+				int         itemIndex = -1;
+				std::string name;
+				std::string kind;
+				int         objectCount = 0;
+
+				//! Clause (2)'s slot -- empty/unset for a metallic material,
+				//! which never reads or rewrites a colour slot.
+				std::string colorSlot;
+				std::string colorPainter;
+				double      baseR = 0.0, baseG = 0.0, baseB = 0.0;
+				bool        hasReadableColor = false;
+
+				//! The microsurface slot(s) this material's KIND carries and
+				//! this verb rebinds -- `alphax`+`alphay` for `ggx_material`,
+				//! `roughness` for `pbr_metallic_roughness_material`, EMPTY for
+				//! `lambertian_material` (its own `scattering`/`tau` are minted
+				//! fresh on the polished_material rewrite, not rebound here) and
+				//! for `orennayar_material` (damp-only, sec 6.2 -- no coat, no
+				//! gloss touch).  Only slots that classify Constant or Absent
+				//! are included -- a slot already spatially varying is left
+				//! untouched rather than silently overwritten (sec 6.4 does not
+				//! specify this case; see the AddWetness report's honest-
+				//! ambiguity note).
+				std::vector<std::string> roughnessSlots;
+				//! The constant each `roughnessSlots[i]` carries TODAY (its
+				//! descriptor default when the slot was never spelled out) --
+				//! parallel array, read as the "unwet" band centre so a
+				//! per-slot roughness field never changes the dry-state look,
+				//! only where it converges as `wet` rises.
+				std::vector<double>      roughnessValues;
+
+				bool isMetallic  = false;   //!< clause (1)'s metallic carve-out
+				bool isOrenNayar = false;   //!< sec 6.2's damp-only branch
+
+				//! One representative geometry chunk KIND from clause (3), and
+				//! whether EVERY bound object's geometry is curv-barren
+				//! (`WearMaterial_`'s barren-set, reused verbatim) -- true means
+				//! the wetness will read UNIFORM (only `base_wetness` fires;
+				//! `pooling`/`ridge` are inert), which is the honest sec 6.4
+				//! clause 3 case, not a refusal.
+				std::string curvGeometryKind;
+				bool        geometryUniform = false;
+
+				//! Review decision D2 (2026-08-31): `ggx_material`'s alphax/
+				//! alphay must move TOGETHER or not at all -- half-modulating
+				//! one while leaving the other alone would INTRODUCE an
+				//! anisotropy the author never authored.  True when exactly
+				//! ONE of the pair is writable (Absent or Constant) and the
+				//! other is not (Varying/Opaque) -- `roughnessSlots` is then
+				//! left EMPTY for this material (the coat/darkening halves
+				//! still apply per branch) and `AddWetness`'s success message
+				//! says so.  False whenever both slots agree (both writable,
+				//! both not) or the kind is not `ggx_material`.
+				bool        microsurfaceSkippedMismatch = false;
+			};
+
+			//! Whole-word substring test shared by `WetnessBodyReadsPreludeDefs_`
+			//! below (and reusable anywhere else a `param`/`def` NAME needs a
+			//! reliable "is this token really here" check without parsing the
+			//! body).
+			bool BodyHasWholeWord_( const std::string& body, const char* word )
+			{
+				const std::size_t n = std::strlen( word );
+				std::size_t at = body.find( word );
+				while( at != std::string::npos ) {
+					const bool leftOk = ( at == 0 ) ||
+						!( std::isalnum( static_cast<unsigned char>( body[at - 1] ) ) || body[at - 1] == '_' );
+					const std::size_t after = at + n;
+					const bool rightOk = ( after >= body.size() ) ||
+						!( std::isalnum( static_cast<unsigned char>( body[after] ) ) || body[after] == '_' );
+					if( leftOk && rightOk ) return true;
+					at = body.find( word, at + 1 );
+				}
+				return false;
+			}
+
+			//! Clause (4)'s test: does an expression body carry `add_wetness`'s
+			//! OWN prelude?  P3 (review 2026-08-31, "desert-sand false
+			//! positive"): `dryness` ALONE is a plausible name for a
+			//! hand-authored, unrelated procedural texture (a desert/drought
+			//! painter has every reason to spell a `dryness` param that has
+			//! nothing to do with this verb).  Requiring BOTH `dryness` AND
+			//! `film_amount` -- the second name unique to wetness's specific
+			//! damp/wet mask shape and vanishingly unlikely to appear in an
+			//! unrelated body -- is a far more reliable "this was already
+			//! made wet by add_wetness" signal, at the same economy
+			//! `WearBodyReadsGeometrySignals_` banks on for `curv`/
+			//! `occlusion`/`thickness`.
+			bool WetnessBodyReadsPreludeDefs_( const std::string& body )
+			{
+				return BodyHasWholeWord_( body, "dryness" ) && BodyHasWholeWord_( body, "film_amount" );
+			}
+
+			//! Clause (1)'s metallic test, TRI-STATE (review round 2026-08-31,
+			//! decision D1).  The FIRST cut here treated an unreadable
+			//! `pbr_metallic_roughness_material.metallic` (a textured/
+			//! procedural mask -- not a literal number, not a name resolving
+			//! to a `uniformcolor_painter`) as "not provably metallic" and let
+			//! darkening proceed.  That is wrong by this very design's OWN
+			//! law (sec 6.4 clause 2, sec 6.9 item 2): a substrate this verb
+			//! cannot read a fact about gets a REFUSAL, never a guessed
+			//! default -- exactly the textured-albedo rule, just on the
+			//! `metallic` slot instead of the colour one.  `Unreadable`
+			//! callers must decline the WHOLE material ("cannot tell whether
+			//! darkening applies"), not silently fall through to `NotMetallic`.
+			//!   - `pbr_metallic_roughness_material`: its `metallic` slot is a
+			//!     Colour-pipe Reference by construction (sec 6.2's own trap),
+			//!     so a literal numeric string ("0.8") is NOT a chunk name --
+			//!     `LooksNumeric` catches that case directly; a name that DOES
+			//!     resolve to a `uniformcolor_painter` is read from
+			//!     `uniformColorPainters` and averaged across channels; anything
+			//!     else (a textured/procedural/expression-bound mask, or an
+			//!     unresolvable name) is `Unreadable`.
+			//!   - `ggx_material`: `fresnel_mode` is a plain String param
+			//!     (never a painter reference), so it is ALWAYS readable --
+			//!     unspelled defaults to `"conductor"`
+			//!     (`GGXMaterialAsciiChunkParser::Finalize`'s own default) --
+			//!     absent OR `conductor` OR `thinfilm` (an oxide film over a
+			//!     conductor substrate) count as `Metallic`; `schlick_f0` (the
+			//!     glTF-style dielectric-F0 mapping) is `NotMetallic`.  Never
+			//!     `Unreadable`.
+			//!   - `lambertian_material` / `orennayar_material`: always
+			//!     `NotMetallic` (no such slot exists).
+			enum class WetnessMetallicState_ { NotMetallic, Metallic, Unreadable };
+			WetnessMetallicState_ WetnessMaterialMetallicState_(
+				const std::string& kind,
+				const std::map<std::string, std::string>& params,
+				const std::map<std::string, std::array<double, 3> >& uniformColorPainters )
+			{
+				if( kind == "ggx_material" ) {
+					const std::map<std::string, std::string>::const_iterator fm = params.find( "fresnel_mode" );
+					const std::string mode = ( fm != params.end() ) ? fm->second : std::string( "conductor" );
+					return ( mode != "schlick_f0" ) ? WetnessMetallicState_::Metallic : WetnessMetallicState_::NotMetallic;
+				}
+				if( kind == "pbr_metallic_roughness_material" ) {
+					const std::map<std::string, std::string>::const_iterator mv = params.find( "metallic" );
+					const std::string metallicStr = ( mv != params.end() ) ? mv->second : std::string( "0.0" );
+					if( LooksNumeric( metallicStr ) )
+						return ( std::strtod( metallicStr.c_str(), nullptr ) > 0.5 )
+							? WetnessMetallicState_::Metallic : WetnessMetallicState_::NotMetallic;
+					const std::map<std::string, std::array<double, 3> >::const_iterator u =
+						uniformColorPainters.find( metallicStr );
+					if( u != uniformColorPainters.end() ) {
+						const double avg = ( u->second[0] + u->second[1] + u->second[2] ) / 3.0;
+						return ( avg > 0.5 ) ? WetnessMetallicState_::Metallic : WetnessMetallicState_::NotMetallic;
+					}
+					return WetnessMetallicState_::Unreadable;   // a textured/procedural metallic mask
+				}
+				return WetnessMetallicState_::NotMetallic;
+			}
+
+			//! The descriptor default for a microsurface slot this scan found
+			//! Absent (never spelled out) -- `GGXMaterialAsciiChunkParser::
+			//! Finalize`'s `alphax`/`alphay` default (0.15 each) and
+			//! `PBRMetallicRoughnessMaterialAsciiChunkParser::Finalize`'s
+			//! `roughness` default (0.5), read straight off
+			//! ChunkParserRegistry.cpp so `AddWetness` bands its per-slot
+			//! roughness field around the value the material ACTUALLY reads
+			//! today rather than a private guess.
+			double WetnessMicrosurfaceDescriptorDefault_( const std::string& kind, const std::string& )
+			{
+				if( kind == "ggx_material" ) return 0.15;
+				if( kind == "pbr_metallic_roughness_material" ) return 0.5;
+				return 0.15;
+			}
+
 			//! Condition D's gate: how many all-constant-microsurface materials it
 			//! takes before the note names `vary_material`.
 			//!
@@ -4514,6 +4727,28 @@ namespace RISE
 				return best;
 			}
 
+			//! `add_wetness`'s twin, with ONE deliberate difference from
+			//! `SelectMaterialToWear_`: a metallic candidate (sec 6.4 clause 1)
+			//! is SKIPPED entirely, never merely deprioritized, so a bare
+			//! `add_wetness {}` call can never silently hand back the lesser
+			//! coat-only result -- reaching a metallic material always requires
+			//! naming it.  Among the remaining candidates, the rule is
+			//! IDENTICAL to `SelectMaterialToWear_` (most objects bound, ties
+			//! broken lexicographically): design-note condition P names the
+			//! material a bare `add_wetness` call takes, so the two must be one
+			//! function.
+			const WetnessMaterial_* SelectMaterialToWet_( const std::vector<WetnessMaterial_>& mats )
+			{
+				const WetnessMaterial_* best = nullptr;
+				for( const WetnessMaterial_& m : mats ) {
+					if( m.isMetallic ) continue;
+					if( !best ) { best = &m; continue; }
+					if( m.objectCount > best->objectCount ) { best = &m; continue; }
+					if( m.objectCount == best->objectCount && m.name < best->name ) best = &m;
+				}
+				return best;
+			}
+
 			//======================================================================
 			// Condition M (2026-08-30): the "emissive-on-opaque-shell" translucency
 			// fake.  See AgentDiagnosticCode::DESIGN_ENCLOSED_LIGHT_OPAQUE_SHELL's
@@ -5074,6 +5309,7 @@ namespace RISE
 				bool conditionM = false;   //!< the emissive-on-opaque-shell translucency fake: a positional light enclosed by an opaque standard_object
 				bool conditionN = false;   //!< the dim hero light: authored bright, MEASURED at <2% by light_scene's own solo audit
 				bool conditionO = false;   //!< the re-measure nudge: a QUALIFIED-DIM cached measurement whose light has since been edited (N's own invalidation case) and is no longer enclosed by M
+				bool conditionP = false;   //!< WETNESS_COAT_DESIGN sec 13: the scene's own language implies rain/wet/storm while a qualifying material still reads bone-dry -- `add_wetness`'s note half
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -5228,6 +5464,41 @@ namespace RISE
 				//! SelectMaterialToWear_ and the verb read it that way.
 				std::vector<std::string> wearCandidateNames;
 
+				//! WETNESS_COAT_DESIGN sec 6.4/13 (2026-08-31): EVERY material
+				//! that clears `WetnessMaterial_`'s clauses (metallic ones
+				//! included, `isMetallic` marked), in DOCUMENT order.  Condition
+				//! P reads it through kWetCandidateGate; `AgentSession::
+				//! AddWetness` reads it whole -- the `WearMaterial_`/
+				//! `wearCandidateMaterials` arrangement two conditions up,
+				//! mirrored for the same reason.
+				std::vector<WetnessMaterial_> wetCandidateMaterials;
+				//! Why each material that HAS a colour opinion but did NOT
+				//! qualify was turned down (name -> one clause-shaped reason),
+				//! naming `add_wear` when the detected cause is that verb's own
+				//! composition (sec 6.4's collision, made loud).  The
+				//! `add_wetness` verb reads this to answer a named `material`
+				//! argument with the actual rule instead of the generic
+				//! nothing-qualifies text.
+				std::map<std::string, std::string> wetDeclineReasons;
+				//! Condition P's chosen material (the one a bare `add_wetness`
+				//! call takes): most objects bound, ties broken lexicographically,
+				//! metallic candidates EXCLUDED (`SelectMaterialToWet_`).  Empty
+				//! when P is silent or every candidate is metallic.
+				std::string addWetName;
+				std::string addWetKind;
+				std::string addWetGeometryKind;
+				int         wetCandidateCount = 0;
+				//! Condition P's bounded "still untouched" list, most-referenced
+				//! first (ties by name) -- the wear twin's identical display-only
+				//! copy.
+				std::vector<std::string> wetCandidateNames;
+				//! Condition P's OTHER half: does the document's OWN text (its
+				//! chunk `name`s, and any comment trivia the serialized form
+				//! carries) use rain/wet/storm vocabulary?  Computed once per
+				//! scan (`DocumentTextImpliesRain_`) and stored here so the note
+				//! formatter never re-serializes the document.
+				bool docTextImpliesRain = false;
+
 				//! Condition M: every enclosed-light finding, in the LIGHT's
 				//! document order.  Condition M reads it through !empty() --
 				//! ONE enclosed light already IS the failure.  The clause
@@ -5262,6 +5533,19 @@ namespace RISE
 			//! untextured, and two private thresholds for one complaint is how a
 			//! note starts contradicting its sibling.
 			static const int kWearCandidateGate = 3;
+
+			//! Condition P's gate: how many rain-vocabulary-plus-dry-material
+			//! findings it takes before the note names `add_wetness`.
+			//!
+			//! ONE, unlike condition L/D's three -- matching conditions M/N's
+			//! "one already is the failure" convention rather than condition
+			//! L's "is this a document-wide pattern" one.  A scene whose own
+			//! name or a comment says "rainstorm" and whose ONE ground material
+			//! is a flat, dry `lambertian_material` is already the described
+			//! failure in full; there is no partial reading the way "some
+			//! materials are flat" has one, because the rain vocabulary is
+			//! either present or it is not.
+			static const int kWetCandidateGate = 1;
 
 			//! Condition C's gate: how many hand-authored copies of ONE
 			//! geometry it takes before the note names `source` / `count_u`.
@@ -5710,6 +5994,81 @@ namespace RISE
 			//! null `derivedJob` silences condition M, and for the same reason:
 			//! the four verb call sites and the stateless text-only carriers
 			//! have no session to hold one.
+			//! Condition P's OTHER half (AgentDiagnosticCode::DESIGN_DRY_RAIN_
+			//! SCENE's own doc states the heuristic and its honest limits): a
+			//! case-insensitive, whole-word scan of the document's SERIALIZED
+			//! text for rain/wet vocabulary.  Serializing carries every chunk
+			//! `name` and any comment trivia the CST preserves, which is the
+			//! closest thing this file-only scan has to "the scene's own
+			//! language" -- there is no separate scene-description/title field
+			//! in the vocabulary today.  Deliberately coarse (a `name` like
+			//! `raincoat_display_case` false-fires; a rain scene that never
+			//! spells the word anywhere is invisible to it) -- acceptable for
+			//! an Info-severity, self-disarming advisory.
+			//!
+			//! P2 (review 2026-08-31) -- SELF-CERTIFICATION GUARD: every
+			//! `add_wetness` call itself emits `def damp`/`def wet` lines
+			//! containing the word `wet`, so scanning the WHOLE serialized
+			//! text would make condition P permanently true on any document
+			//! that has ever been made wet once -- the note certifying its
+			//! own evidence rather than reading the author's intent.  Lines
+			//! whose first token is `param` / `def` / `expr` / `expression`
+			//! (the four DSL keywords a painter's mask body can appear under)
+			//! are EXCLUDED from the scan; only chunk `name`s and comment
+			//! trivia count.
+			bool DocumentTextImpliesRain_( const std::string& docText )
+			{
+				std::string filtered;
+				filtered.reserve( docText.size() );
+				{
+					std::size_t lineStart = 0;
+					while( lineStart <= docText.size() ) {
+						const std::size_t lineEnd = docText.find( '\n', lineStart );
+						const std::size_t end = ( lineEnd == std::string::npos ) ? docText.size() : lineEnd;
+						const std::size_t tokenStart = docText.find_first_not_of( " \t", lineStart );
+						bool excluded = false;
+						if( tokenStart != std::string::npos && tokenStart < end ) {
+							std::size_t tokenEnd = tokenStart;
+							while( tokenEnd < end &&
+							       !std::isspace( static_cast<unsigned char>( docText[tokenEnd] ) ) ) ++tokenEnd;
+							const std::string token = docText.substr( tokenStart, tokenEnd - tokenStart );
+							excluded = ( token == "param" || token == "def" || token == "expr" || token == "expression" );
+						}
+						if( !excluded ) filtered.append( docText, lineStart, end - lineStart );
+						filtered += '\n';
+						if( lineEnd == std::string::npos ) break;
+						lineStart = lineEnd + 1;
+					}
+				}
+
+				// Lower-case ONCE, then a plain std::string::find per keyword --
+				// linear in document length rather than the naive O(document *
+				// keyword-chars) a per-window compare would cost on a large
+				// scene file.
+				std::string lower( filtered );
+				for( char& ch : lower ) ch = static_cast<char>( std::tolower( static_cast<unsigned char>( ch ) ) );
+
+				static const char* const kWords[] = {
+					"rain", "raining", "rainy", "rainstorm", "downpour", "drizzle",
+					"monsoon", "storm", "wet", "damp", "puddle"
+				};
+				for( const char* w : kWords ) {
+					const std::string word( w );
+					const std::size_t n = word.size();
+					std::size_t at = lower.find( word );
+					while( at != std::string::npos ) {
+						const bool leftOk = ( at == 0 ) ||
+							!( std::isalnum( static_cast<unsigned char>( lower[at - 1] ) ) || lower[at - 1] == '_' );
+						const std::size_t after = at + n;
+						const bool rightOk = ( after >= lower.size() ) ||
+							!( std::isalnum( static_cast<unsigned char>( lower[after] ) ) || lower[after] == '_' );
+						if( leftOk && rightOk ) return true;
+						at = lower.find( word, at + 1 );
+					}
+				}
+				return false;
+			}
+
 			DesignNoteConditions_ ComputeDesignNoteConditionsFromDoc_( const Document& doc, bool inPiecesPhase = false,
 			                                                          IJobPriv* derivedJob = nullptr,
 			                                                          const AgentSession::AgentLightSoloMeasurementMap* soloCache = nullptr )
@@ -6650,22 +7009,42 @@ namespace RISE
 
 						// -- clause (a): spelled out, and every spelled-out colour
 						// slot classifies Constant.
-						bool anySpelled = false, allConstant = true;
+						//
+						// WETNESS_COAT_DESIGN sec 6.4 (2026-08-31): a material
+						// `add_wetness` already rewrote fails THIS clause, not
+						// clause (d) below -- its darkened colour slot is a
+						// non-constant `expression_painter`, so `allConstant`
+						// goes false here before clause (d) is ever reached.
+						// Detect the wetness marker on the SAME pass so the
+						// decline message names `add_wetness` rather than the
+						// generic "colour already varies" text (sec 6.4's
+						// "make it loud" collision rule).
+						bool anySpelled = false, allConstant = true, sawWetnessMarker = false;
 						std::vector<std::pair<std::string, std::string> > constantSlots;   // (slot, painter name)
 						for( const std::string& slotName : slotsIt->second ) {
 							const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
 							if( v == pm.params.end() ) continue;
 							anySpelled = true;
-							if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+							if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Constant ) {
 								allConstant = false;
+								const std::map<std::string, std::string>::const_iterator b =
+									expressionBodies.find( v->second );
+								if( b != expressionBodies.end() && WetnessBodyReadsPreludeDefs_( b->second ) )
+									sawWetnessMarker = true;
+							}
 							else
 								constantSlots.push_back( std::make_pair( slotName, v->second ) );
 						}
 						if( !anySpelled ) continue;   // no colour opinion at all
 						if( !allConstant ) {
-							c.wearDeclineReasons[pm.name] =
-								"its colour already varies across the surface (or binds something this cannot "
-								"read) -- there is nothing flat here to wear";
+							c.wearDeclineReasons[pm.name] = sawWetnessMarker
+								? std::string( "its colour slot is already bound to an expression reading the "
+								               "wetness prelude (`dryness`/`wet`) -- this material has already been "
+								               "made wet by `add_wetness`, and add_wear / add_wetness cannot "
+								               "currently be combined on one material (each verb refuses what the "
+								               "other has already rewritten)" )
+								: std::string( "its colour already varies across the surface (or binds something "
+								               "this cannot read) -- there is nothing flat here to wear" );
 							continue;
 						}
 
@@ -6695,21 +7074,34 @@ namespace RISE
 						}
 
 						// -- clause (d): not already wearing the geometry signals.
-						bool alreadyWorn = false;
+						// WETNESS_COAT_DESIGN sec 6.4 (2026-08-31): `add_wetness`'s
+						// own prelude ALSO reads `curv`/`occlusion` (its damp/
+						// pooling masks), so a wet material trips this same test
+						// -- which is the intended half of the collision (a wet
+						// surface cannot then be worn).  `WetnessBodyReadsPreludeDefs_`
+						// (the `dryness` marker) disambiguates the message without
+						// changing the refusal itself.
+						bool alreadyWorn = false, wornByWetness = false;
 						for( const std::pair<const std::string, std::string>& kv : pm.params ) {
 							if( kv.first == "name" ) continue;
 							const std::map<std::string, std::string>::const_iterator b =
 								expressionBodies.find( kv.second );
 							if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) ) {
 								alreadyWorn = true;
+								if( WetnessBodyReadsPreludeDefs_( b->second ) ) wornByWetness = true;
 								break;
 							}
 						}
 						if( alreadyWorn ) {
-							c.wearDeclineReasons[pm.name] =
-								"it already binds an expression that reads `curv` / `occlusion` / `thickness` -- "
-								"this surface has been worn once already, and a second pass would stack two wear "
-								"layers rather than deepen one";
+							c.wearDeclineReasons[pm.name] = wornByWetness
+								? std::string( "it already binds an expression that reads the wetness prelude "
+								               "(`dryness`/`wet`) -- this material has already been made wet by "
+								               "`add_wetness`, and add_wear / add_wetness cannot currently be "
+								               "combined on one material (each verb refuses what the other has "
+								               "already rewritten)" )
+								: std::string( "it already binds an expression that reads `curv` / `occlusion` / "
+								               "`thickness` -- this surface has been worn once already, and a "
+								               "second pass would stack two wear layers rather than deepen one" );
 							continue;
 						}
 
@@ -6808,6 +7200,324 @@ namespace RISE
 				// is exactly the disarm materials-realism item 1 found the OLD
 				// binary "does anything vary anywhere" test lacked.
 				c.conditionL = c.wearCandidateCount >= kWearCandidateGate && !c.addWearName.empty();
+
+				// WETNESS_COAT_DESIGN sec 6.4/13 (2026-08-31): condition P's
+				// resolution pass -- add_wetness's own qualifying scan, ONE
+				// predicate shared with AgentSession::AddWetness exactly as
+				// WearMaterial_ is shared by condition L / AddWear.  See
+				// WetnessMaterial_'s own doc for the four clauses this loop
+				// evaluates.
+				{
+					auto geometryKindOfObjectForWetness = [&]( const std::string& objectName ) -> std::string {
+						std::string cur = objectName;
+						for( int hop = 0; hop < 8 && !cur.empty(); ++hop ) {
+							const std::map<std::string, std::string>::const_iterator g =
+								objectGeometryByName.find( cur );
+							if( g != objectGeometryByName.end() ) {
+								const std::map<std::string, std::string>::const_iterator k =
+									geometryKindByName.find( g->second );
+								return ( k != geometryKindByName.end() ) ? k->second : std::string();
+							}
+							const std::map<std::string, std::string>::const_iterator s =
+								objectSourceByName.find( cur );
+							if( s == objectSourceByName.end() ) break;
+							cur = s->second;
+						}
+						return std::string();
+					};
+
+					static const char* const kWetnessKinds[] = {
+						"lambertian_material", "orennayar_material", "ggx_material",
+						"pbr_metallic_roughness_material"
+					};
+
+					for( const PendingMaterial_& pm : pendingMaterials ) {
+						bool isWetKind = false;
+						for( const char* k : kWetnessKinds ) if( pm.kind == k ) { isWetKind = true; break; }
+						if( !isWetKind ) continue;
+
+						const bool isOrenNayar = ( pm.kind == "orennayar_material" );
+
+						// Review decision D1 (2026-08-31): an UNREADABLE
+						// `metallic` on pbr_metallic_roughness_material (a
+						// textured/procedural mask, not a literal or a
+						// uniformcolor_painter) REFUSES the whole material --
+						// "cannot tell whether darkening applies" -- rather
+						// than the earlier under-approximation that proceeded
+						// as if it were not metallic.  This is sec 6.4 clause
+						// 2's own "decline rather than deliver a coat with no
+						// darkening" law, applied to the `metallic` slot.
+						const WetnessMetallicState_ metallicState =
+							WetnessMaterialMetallicState_( pm.kind, pm.params, uniformColorPainters );
+						if( metallicState == WetnessMetallicState_::Unreadable ) {
+							c.wetDeclineReasons[pm.name] =
+								"its `metallic` slot binds a painter this cannot read as a constant (a "
+								"textured/procedural metallic mask) -- add_wetness cannot tell whether "
+								"darkening applies (a metal gets none, sec 2.1) and declines rather than guess, "
+								"the same rule that refuses a textured colour albedo (sec 6.4 clause 2)";
+							continue;
+						}
+						const bool isMetallic = ( metallicState == WetnessMetallicState_::Metallic );
+
+						// -- REVIEW P1-B(ii): the add_wear COLLISION check runs
+						// FIRST, over EVERY param on the material (not just the
+						// slot(s) this verb would touch), and applies REGARDLESS
+						// of metallic-ness.  Without this, a metallic material
+						// add_wear already rewrote (rebinding a CONSTANT
+						// alphax/alphay to its own wear-masked roughness field,
+						// which then classifies Varying and drops out of the
+						// microsurface loop below) would sail past clause 2
+						// (skipped for metallic) and clause 3 into an empty
+						// `roughnessSlots` -- the SILENT NO-OP success P1-B
+						// names, instead of a refusal naming `add_wear`.
+						{
+							bool wornByWear = false;
+							std::string wearPainterName;
+							for( const std::pair<const std::string, std::string>& kv : pm.params ) {
+								if( kv.first == "name" ) continue;
+								const std::map<std::string, std::string>::const_iterator b =
+									expressionBodies.find( kv.second );
+								// `add_wetness`'s OWN prelude also reads `curv`/
+								// `occlusion` (its `ridge`/`cavity` terms), so
+								// `WearBodyReadsGeometrySignals_` alone cannot
+								// tell the two verbs' compositions apart --
+								// EXCLUDE a body that is wetness's own (the
+								// `WetnessBodyReadsPreludeDefs_` marker) so a
+								// material already wet by THIS verb defers to
+								// clause (4) below instead of being misreported
+								// as an `add_wear` collision.
+								if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) &&
+								    !WetnessBodyReadsPreludeDefs_( b->second ) ) {
+									wornByWear = true;
+									wearPainterName = kv.second;
+									break;
+								}
+							}
+							if( wornByWear ) {
+								c.wetDeclineReasons[pm.name] =
+									"it already binds an expression (`" + wearPainterName + "`) reading the "
+									"geometry wear signals -- this material has likely already been worn by "
+									"`add_wear`, and add_wetness / add_wear cannot currently be combined on one "
+									"material (each verb refuses what the other has already rewritten)";
+								continue;
+							}
+						}
+
+						// -- clause (4): not already wet.
+						bool alreadyWet = false;
+						for( const std::pair<const std::string, std::string>& kv : pm.params ) {
+							if( kv.first == "name" ) continue;
+							const std::map<std::string, std::string>::const_iterator b =
+								expressionBodies.find( kv.second );
+							if( b != expressionBodies.end() && WetnessBodyReadsPreludeDefs_( b->second ) ) {
+								alreadyWet = true;
+								break;
+							}
+						}
+						if( alreadyWet ) {
+							c.wetDeclineReasons[pm.name] =
+								"it already binds an expression that reads the wetness prelude (`dryness`/`wet`) "
+								"-- this material has already been made wet by `add_wetness`, and re-running "
+								"would stack two wetness passes rather than deepen one";
+							continue;
+						}
+
+						// -- clause (2): a readable primary colour slot -- SKIPPED
+						// entirely for a metallic material, which never reads or
+						// rewrites a colour slot (sec 6.4 clause 1).  The
+						// add_wear-collision case is handled ABOVE now, so this
+						// is left to the two remaining honest outcomes: no
+						// colour opinion at all, or an unreadable base.
+						//
+						// THE PRIMARY SLOT IS CHOSEN BY RANK AMONG SPELLED SLOTS
+						// FIRST, its constancy checked SECOND -- deliberately,
+						// not "the best-ranked slot that HAPPENS to be
+						// constant" (see the git history of this comment for
+						// the worn-ggx-falls-through-to-`rs` bug that rule
+						// fixed).
+						std::string bestSlot, bestPainter;
+						double baseR = 0.0, baseG = 0.0, baseB = 0.0;
+						bool hasReadableColor = false;
+						if( !isMetallic ) {
+							const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+								ColorMaterialSlotsByKind_().find( pm.kind );
+							bool sawUnreadableBase = false;
+							std::string primarySlot;
+							int bestRank = 1000000;
+							if( slotsIt != ColorMaterialSlotsByKind_().end() ) {
+								for( const std::string& slotName : slotsIt->second ) {
+									if( !pm.params.count( slotName ) ) continue;
+									const int rank = WearAlbedoSlotRank_( slotName );
+									if( rank < bestRank ) { bestRank = rank; primarySlot = slotName; }
+								}
+							}
+							if( !primarySlot.empty() ) {
+								const std::string& value = pm.params.find( primarySlot )->second;
+								if( ClassifyColorBinding_( value, painterKinds ) != MicrosurfaceBinding_::Constant ) {
+									sawUnreadableBase = true;
+								}
+								else {
+									const std::map<std::string, std::array<double, 3> >::const_iterator u =
+										uniformColorPainters.find( value );
+									if( u == uniformColorPainters.end() ) { sawUnreadableBase = true; }
+									else {
+										const std::map<std::string, std::string>::const_iterator cs =
+											uniformColorSpaces.find( value );
+										if( cs != uniformColorSpaces.end() && !cs->second.empty() &&
+										    cs->second != "Rec709RGB_Linear" ) { sawUnreadableBase = true; }
+										else {
+											bestSlot = primarySlot; bestPainter = value;
+											baseR = u->second[0]; baseG = u->second[1]; baseB = u->second[2];
+											hasReadableColor = true;
+										}
+									}
+								}
+							}
+							if( !hasReadableColor ) {
+								c.wetDeclineReasons[pm.name] = sawUnreadableBase
+									? std::string( "its colour slot binds a painter whose RGB this cannot read "
+									               "as a plain Rec.709-linear triple (a blackbody_painter, a "
+									               "spectral_painter, a non-default `colorspace`, or something "
+									               "already spatially varying) -- there is no base to darken from" )
+									: std::string( "no colour slot on it resolves to a painter chunk at all" );
+								continue;
+							}
+						}
+
+						// -- clause (3): at least one bound object, on ANY
+						// geometry -- deliberately weaker than add_wear's clause
+						// (see WetnessMaterial_'s own doc).
+						std::string curvKind;
+						bool geometryUniform = true;
+						bool sawAnyObject = false;
+						{
+							const std::map<std::string, std::vector<std::string> >::const_iterator ob =
+								materialObjectNames.find( pm.name );
+							if( ob != materialObjectNames.end() ) {
+								for( const std::string& objName : ob->second ) {
+									const std::string gk = geometryKindOfObjectForWetness( objName );
+									if( gk.empty() ) continue;
+									sawAnyObject = true;
+									if( curvKind.empty() ) curvKind = gk;
+									if( !CurvBarrenGeometryKind_( gk ) ) { geometryUniform = false; curvKind = gk; }
+								}
+							}
+						}
+						if( !sawAnyObject ) {
+							c.wetDeclineReasons[pm.name] =
+								"no `standard_object` binds it to a geometry this scan can identify -- "
+								"add_wetness needs at least one bound object (any geometry qualifies; unlike "
+								"add_wear, a flat slab still reads wet uniformly via `base_wetness`)";
+							continue;
+						}
+
+						WetnessMaterial_ w;
+						w.itemIndex        = pm.itemIndex;
+						w.name             = pm.name;
+						w.kind             = pm.kind;
+						w.isMetallic       = isMetallic;
+						w.isOrenNayar      = isOrenNayar;
+						w.colorSlot        = bestSlot;
+						w.colorPainter     = bestPainter;
+						w.baseR = baseR; w.baseG = baseG; w.baseB = baseB;
+						w.hasReadableColor = hasReadableColor;
+						w.curvGeometryKind = curvKind;
+						w.geometryUniform  = geometryUniform;
+						{
+							const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( pm.name );
+							w.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
+						}
+						// Microsurface half -- ggx (alphax+alphay) / pbr
+						// (roughness) ONLY; lambertian mints its own tau/
+						// scattering fresh on the polished_material rewrite, and
+						// orennayar is damp-only (sec 6.2) -- neither rebinds an
+						// existing slot here.
+						//
+						// Review decision D2 (2026-08-31): ggx's alphax/alphay
+						// move TOGETHER or not at all.  Evaluate BOTH slots'
+						// writability first; only emit the pair when BOTH are
+						// Absent-or-Constant.  Exactly one writable means the
+						// pair is SKIPPED entirely (never half-modulate an
+						// anisotropy the author did not write) --
+						// `microsurfaceSkippedMismatch` records that for the
+						// success message.  pbr has only one slot, so the
+						// "together" constraint is vacuous there.
+						if( pm.kind == "ggx_material" || pm.kind == "pbr_metallic_roughness_material" ) {
+							const MicrosurfaceKindSlots_* slots = MicrosurfaceSlotsForKind_( pm.kind );
+							if( slots ) {
+								struct WetSlotEval_ { std::string name; bool writable; double val; };
+								std::vector<WetSlotEval_> evals;
+								for( int s = 0; s < 3 && slots->primarySlots[s]; ++s ) {
+									const std::string slotName = slots->primarySlots[s];
+									const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
+									double val = 0.0;
+									const MicrosurfaceBinding_ b = ( v == pm.params.end() )
+										? MicrosurfaceBinding_::Absent
+										: ClassifyMicrosurfaceBinding_( v->second, scalarPainterForms, painterKinds, val );
+									const bool writable = ( b == MicrosurfaceBinding_::Absent || b == MicrosurfaceBinding_::Constant );
+									if( b == MicrosurfaceBinding_::Absent )
+										val = WetnessMicrosurfaceDescriptorDefault_( pm.kind, slotName );
+									WetSlotEval_ e; e.name = slotName; e.writable = writable; e.val = val;
+									evals.push_back( e );
+								}
+								if( pm.kind == "ggx_material" && evals.size() == 2 ) {
+									if( evals[0].writable && evals[1].writable ) {
+										for( const WetSlotEval_& e : evals ) {
+											w.roughnessSlots.push_back( e.name );
+											w.roughnessValues.push_back( e.val );
+										}
+									}
+									else if( evals[0].writable != evals[1].writable ) {
+										w.microsurfaceSkippedMismatch = true;
+									}
+									// both non-writable: nothing to offer, no mismatch to report.
+								}
+								else {
+									// pbr_metallic_roughness_material: one slot, no
+									// "together" constraint -- a slot already
+									// spatially varying is left untouched rather
+									// than silently overwritten.
+									for( const WetSlotEval_& e : evals ) {
+										if( e.writable ) {
+											w.roughnessSlots.push_back( e.name );
+											w.roughnessValues.push_back( e.val );
+										}
+									}
+								}
+							}
+						}
+						c.wetCandidateMaterials.push_back( w );
+					}
+				}
+				c.wetCandidateCount = static_cast<int>( c.wetCandidateMaterials.size() );
+				{
+					std::vector<WetnessMaterial_> sorted = c.wetCandidateMaterials;
+					std::sort( sorted.begin(), sorted.end(),
+						[]( const WetnessMaterial_& a, const WetnessMaterial_& b ) {
+							if( a.objectCount != b.objectCount ) return a.objectCount > b.objectCount;
+							return a.name < b.name;
+						} );
+					for( const WetnessMaterial_& m : sorted ) c.wetCandidateNames.push_back( m.name );
+				}
+				{
+					const WetnessMaterial_* pick = SelectMaterialToWet_( c.wetCandidateMaterials );
+					if( pick ) {
+						c.addWetName         = pick->name;
+						c.addWetKind         = pick->kind;
+						c.addWetGeometryKind = pick->curvGeometryKind;
+					}
+				}
+				// Condition P's OTHER half: does the scene's own language imply
+				// rain?  P3 (review 2026-08-31): gated on `wetCandidateCount >
+				// 0` -- condition P can never fire without a candidate anyway,
+				// so a document with nothing to wet skips the (whole-document)
+				// serialize + scan entirely, rather than paying that cost on
+				// every design-note computation regardless of relevance.
+				// Serialized once, only here -- every other condition in this
+				// scan reads the Document structurally, never its raw text.
+				c.docTextImpliesRain = ( c.wetCandidateCount > 0 ) &&
+					DocumentTextImpliesRain_( RISE::Cst::SerializeCst( doc ) );
+				c.conditionP = c.docTextImpliesRain && c.wetCandidateCount >= kWetCandidateGate;
 
 				// (2026-08-30) Condition M's resolution pass -- the "emissive-
 				// on-opaque-shell" translucency fake.  GEOMETRY COMES FROM THE
@@ -7378,6 +8088,39 @@ namespace RISE
 					"this is fine -- ignore and do not churn.";
 			}
 
+			//! WETNESS_COAT_DESIGN sec 6.4/13 (2026-08-31)'s whole clause,
+			//! condition P -- SHARED by the note builder and the diagnostic
+			//! builder, the FormatWearCandidatesClause_ pattern exactly, and it
+			//! NAMES `add_wetness` for the same reason that clause names
+			//! `add_wear`: the note and the escalation must be the same act.
+			std::string FormatDryRainSceneClause_( int candidateCount,
+			                                       const std::vector<std::string>& candidateNames,
+			                                       const std::string& materialName,
+			                                       const std::string& materialKind,
+			                                       const std::string& geometryKind )
+			{
+				return "this scene's own text reads as rain/wet, but " + std::to_string( candidateCount ) +
+					" material" + ( candidateCount == 1 ? std::string() : std::string( "s" ) ) + " (" +
+					FormatBoundedNameList_( candidateNames ) + ") still " +
+					( candidateCount == 1 ? std::string( "reads" ) : std::string( "read" ) ) +
+					" bone-dry. `add_wetness` writes the two-mask (damp/wet) wetness composition for you: "
+					"call it with NO ARGUMENTS and it takes `" + materialName + "` (" + materialKind + ", on " +
+					geometryKind + "), darkens and saturates the reflectance under a `damp` mask driven by "
+					"`curv`/`occlusion()`/`fbm`, and adds a coat coverage (`tau`) plus a pooling-keyed gloss "
+					"(`scattering`) under the derived `wet` mask -- rewriting a Lambertian base to "
+					"`polished_material`, or modulating roughness in place on a GGX/PBR base. A single "
+					"`dryness` param sweeps the whole surface from soaked back to dry. ONE call, ONE undo "
+					"step, every knob a named `param` with a min/max you can retune with propose_patch. Pass "
+					"`material` to choose a different one -- naming a METALLIC material explicitly gives it "
+					"the coat/gloss without darkening (a wet metal has no subsurface to darken). It REFUSES "
+					"-- changing nothing, costing one call -- when nothing qualifies, when the material is "
+					"already wet, or when its colour is not a plain, readable flat constant (a textured "
+					"albedo gets no darkening in Phase 1 and this verb declines rather than half-deliver "
+					"it). It cannot currently be combined with `add_wear` on one material. For the hand-"
+					"authored form of the same idiom read_skill {\"name\":\"materials-and-media-basics\"}. If "
+					"a deliberately dry look is the point, this is fine -- ignore and do not churn.";
+			}
+
 			//! Materials-realism item 4's whole clause, SHARED by the note
 			//! builder and the diagnostic builder.  Names the mismatched
 			//! object(s) and the transmissive alternatives; hedges the claim
@@ -7465,7 +8208,7 @@ namespace RISE
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM && !c.conditionN && !c.conditionO ) return std::string();
+				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -7557,6 +8300,10 @@ namespace RISE
 				if( c.conditionO ) {
 					note += " " + FormatDimLightRemeasureClause_( c.dimLightRemeasureFindings );
 				}
+				if( c.conditionP ) {
+					note += " " + FormatDryRainSceneClause_( c.wetCandidateCount, c.wetCandidateNames,
+					                                         c.addWetName, c.addWetKind, c.addWetGeometryKind );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -7597,7 +8344,7 @@ namespace RISE
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM && !c.conditionN && !c.conditionO ) return;
+				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -7801,6 +8548,19 @@ namespace RISE
 					// next light_scene run disarms this condition one way or the
 					// other, see the condition's doc for the lifecycle).
 					d.message = FormatDimLightRemeasureClause_( c.dimLightRemeasureFindings );
+					out.push_back( d );
+				}
+				if( c.conditionP ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_DRY_RAIN_SCENE;
+					// SHARED formatter -- cannot drift from the note's P
+					// clause.  No kSelfDisarm here, condition L's reason: the
+					// clause carries its OWN targeted "if a deliberately dry
+					// look is the point" escape, so both carriers get one and
+					// neither carries two.
+					d.message = FormatDryRainSceneClause_( c.wetCandidateCount, c.wetCandidateNames,
+					                                       c.addWetName, c.addWetKind, c.addWetGeometryKind );
 					out.push_back( d );
 				}
 			}
@@ -35547,6 +36307,217 @@ namespace RISE
 				}
 				return std::string();
 			}
+
+			//==============================================================
+			// docs/WETNESS_COAT_DESIGN.md Phase 1 (2026-08-31): `add_wetness`.
+			// Mirrors `add_wear`'s recipe shape immediately above -- a shared
+			// `param`/`def` prelude duplicated byte-identically into every
+			// field chunk one call writes, FNV-1a hashed per-material knobs so
+			// two calls on the same document are byte-identical, one composite
+			// document swap.  See WetnessMaterial_'s doc (near WearMaterial_,
+			// earlier in this file) for the qualifying predicate.
+			//
+			// EVERY `expr`/`expression`/`def` VALUE BELOW IS ONE PHYSICAL
+			// LINE, DELIBERATELY: the chunk parser is line-based per
+			// parameter, so the design doc's own two-line-wrapped listing of
+			// the reflectance `expr` (sec 6.3/6.5, wrapped there for
+			// readability) does NOT parse as written -- a continuation line
+			// reads as an unknown parameter name and hard-fails.  Confirmed
+			// against a live scene-authoring pass; `AgentAddWetnessTest.cpp`
+			// round-trips every emitted chunk through `RISE::Cst::ParseToCst`
+			// so a regression here can never ship silently again.
+			//==============================================================
+			double WetnessBreakupScaleFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "wetness_breakupscale", 3.0, 9.0 );
+			}
+			double WetnessSeedFor_( const std::string& material )
+			{
+				return ScaffoldJitterRange( material, "wetness_seed", 0.0, 100.0 );
+			}
+
+			//! THE ONE WETNESS-MASK RECIPE (design sec 6.3), emitted into
+			//! EVERY field chunk a single `add_wetness` call writes, so the
+			//! darkening, the coat coverage and the gloss all read the SAME
+			//! `damp`/`wet` masks at every point -- the `wet <= damp`
+			//! invariant holds BY CONSTRUCTION (the outer `clamp(..., 0,
+			//! damp)` on `wet`) rather than by careful editing, `add_wear`'s
+			//! identical discipline for `wear_mask`/`crevice_mask`.
+			//!
+			//! `occlusion(0.08)`'s radius is a numeric LITERAL, for `add_wear`'s
+			//! own reason (ExpressionEval.h's DynR-fallback trap on a non-
+			//! literal radius argument on an indexed mesh).  `breakup_scale`
+			//! and `seed` are the two FNV-1a-hashed per-material knobs; every
+			//! OTHER default is the literal sec 6.3 number.
+			std::string BuildWetnessMaskPreludeText_( double breakupScale, double seed )
+			{
+				std::string t;
+				t += "\tparam\t\t\tdryness 0.15 min 0 max 1 step 0.01 label \"Dryness\"\n";
+				t += "\tparam\t\t\tpool_gain 1.60 min 0 max 4 step 0.05 label \"Pooling in cavities\"\n";
+				t += "\tparam\t\t\tridge_shed 2.20 min 0 max 6 step 0.1 label \"Ridges shed water\"\n";
+				t += "\tparam\t\t\tbase_wetness 0.55 min 0 max 1 step 0.01 label \"Overall wetness\"\n";
+				t += "\tparam\t\t\tgravity_bias 0.80 min 0 max 1 step 0.01 label \"Water needs up-facing\"\n";
+				t += "\tparam\t\t\tfilm_amount 1.00 min 0 max 1 step 0.01 label \"Film vs merely damp\"\n";
+				t += "\tparam\t\t\tfilm_gloss_lo 220.0 min 60 max 400 step 5 label \"Damp-film gloss (Phong n)\"\n";
+				t += "\tparam\t\t\tbreakup_amp 0.18 min 0 max 1 step 0.01 label \"Mask breakup\"\n";
+				t += "\tparam\t\t\tbreakup_scale " + MicrosurfaceFmt_( breakupScale ) +
+					" min 0.1 max 40 step 0.1 label \"Breakup scale\"\n";
+				t += "\tseed\t\t\t" + MicrosurfaceFmt_( seed ) + "\n";
+				t += "\tdef\t\t\t\tjitter vec3(seed, seed*1.7, seed*2.3)\n";
+				t += "\tdef\t\t\t\tup_facing clamp(dot(N, vec3(0,1,0)), 0, 1)\n";
+				t += "\tdef\t\t\t\tgravity mix(1.0, up_facing, gravity_bias)\n";
+				t += "\tdef\t\t\t\tcavity (1.0 - occlusion(0.08)) * gravity\n";
+				t += "\tdef\t\t\t\tpooling clamp(pool_gain*cavity, 0, 1)\n";
+				t += "\tdef\t\t\t\tridge clamp(curv * ridge_shed, 0, 1)\n";
+				t += "\tdef\t\t\t\tbreakup breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)\n";
+				t += "\tdef\t\t\t\tdamp_raw clamp(base_wetness + pooling + breakup - ridge, 0, 1)\n";
+				t += "\tdef\t\t\t\tdamp (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)\n";
+				t += "\tdef\t\t\t\twet clamp(damp * film_amount, 0, damp)\n";
+				return t;
+			}
+
+			//! The DARKENING half: one `expression_painter` mixing the
+			//! substrate's own authored colour toward `pow(base, k)` under the
+			//! `damp` mask (design sec 6.1/6.3).  `base_r/g/b` are params
+			//! carrying the material's OWN authored colour -- the vary_material/
+			//! add_wear convention of banding around what is already there.
+			std::string BuildWetnessReflectancePainterText_( const std::string& chunkName,
+			                                                 double baseR, double baseG, double baseB,
+			                                                 double breakupScale, double seed )
+			{
+				std::string t = "expression_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tparam\t\t\tk 1.55 min 1 max 2.5 step 0.05 label \"Wet darkening exponent\"\n";
+				t += "\tparam\t\t\tbase_r " + MicrosurfaceFmt_( baseR ) + " min 0 max 1 step 0.005 label \"Base colour R\"\n";
+				t += "\tparam\t\t\tbase_g " + MicrosurfaceFmt_( baseG ) + " min 0 max 1 step 0.005 label \"Base colour G\"\n";
+				t += "\tparam\t\t\tbase_b " + MicrosurfaceFmt_( baseB ) + " min 0 max 1 step 0.005 label \"Base colour B\"\n";
+				t += BuildWetnessMaskPreludeText_( breakupScale, seed );
+				t += "\texpr\t\t\tmix( vec3(base_r, base_g, base_b), "
+					"vec3( pow(base_r, k), pow(base_g, k), pow(base_b, k) ), damp )\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The COAT-COVERAGE half (Lambertian->polished_material branch
+			//! only): `polished_material`'s `tau`, a `scalar_painter` reading
+			//! the `wet` mask straight through (design sec 6.3).  `tau = 0` is
+			//! exactly "no coat" (`polished_material`'s own parser comment),
+			//! so this IS the coat's on/off + partial-coverage control.
+			std::string BuildWetnessTauPainterText_( const std::string& chunkName, double breakupScale, double seed )
+			{
+				std::string t = "scalar_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += BuildWetnessMaskPreludeText_( breakupScale, seed );
+				t += "\texpression\t\twet\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The GLOSS half (Lambertian->polished_material branch only):
+			//! `polished_material`'s `scattering`, a Phong cone exponent keyed
+			//! on POOLING rather than on wetness generally (design sec 6.3's
+			//! correction: a thin wetting film conforms to relief, so only
+			//! water deep enough to submerge it should sharpen toward a
+			//! mirror).  `film_gloss_lo` (default 220, alpha ~0.095) is the
+			//! damp-but-unpooled floor; 200000 is the pooled/mirror ceiling.
+			std::string BuildWetnessScatteringPainterText_( const std::string& chunkName, double breakupScale, double seed )
+			{
+				std::string t = "scalar_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += BuildWetnessMaskPreludeText_( breakupScale, seed );
+				t += "\texpression\t\tmix( film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1) )\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The GGX/PBR IN-PLACE branch's roughness/gloss field (design sec
+			//! 6.2's "drive the chosen slot toward 0.02-0.05 where wet, and
+			//! darken the base colour via the same expression_painter").
+			//!
+			//! HONEST GAP THE DESIGN DOC LEAVES OPEN: sec 6.2 states the goal
+			//! qualitatively but never writes the in-place branch's expression
+			//! verbatim the way sec 6.3 does for the polished_material coat
+			//! (`AddWetness`'s own report flags this as an ambiguity, not a
+			//! silent deviation).  This mixes the slot's OWN current constant
+			//! (`rough_base`, read off the material so the DRY state never
+			//! changes) toward a wet-floor param (`rough_wet`, default 0.035,
+			//! sec 6.2's 0.02-0.05 band) under the SAME `wet` mask every other
+			//! wetness effect uses, which keeps "one wet mask drives every wet
+			//! effect" true across all three branches rather than inventing a
+			//! second wetness curve for this one.
+			//!
+			//! `asColourPipe` is the SAME `pbr_metallic_roughness_material`
+			//! exception `BuildWearRoughnessPainterText`/`FormatConstantMicro-
+			//! surfaceClause_` carry -- see `MicrosurfaceKindUsesColourPipe_`'s
+			//! own doc for the traced evidence (a `scalar_painter` here binds
+			//! nothing and silently synthesizes a ZERO painter).
+			std::string BuildWetnessInPlaceRoughnessPainterText_( const std::string& chunkName,
+			                                                      double roughBase, double breakupScale, double seed,
+			                                                      bool asColourPipe )
+			{
+				const double sliderMax = ( roughBase > 1.0 ) ? roughBase : 1.0;
+				// P3 (review 2026-08-31): the declared `min` must never sit
+				// ABOVE the default it bounds -- an author (or a mirror-flat
+				// `alphax 0.0`) with `roughBase` below the old hardcoded 0.001
+				// floor produced invalid slider metadata (default < min).
+				const double sliderMin = ( roughBase < 0.001 ) ? roughBase : 0.001;
+				std::string t = asColourPipe ? "expression_painter\n{\n" : "scalar_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tparam\t\t\trough_base " + MicrosurfaceFmt_( roughBase ) +
+					" min " + MicrosurfaceFmt_( sliderMin ) + " max " + MicrosurfaceFmt_( sliderMax ) +
+					" step 0.005 label \"Unwet roughness\"\n";
+				t += "\tparam\t\t\trough_wet 0.035 min 0.005 max 0.1 step 0.001 label \"Wet-film roughness floor\"\n";
+				t += BuildWetnessMaskPreludeText_( breakupScale, seed );
+				t += asColourPipe
+					? "\texpr\t\t\tmix(rough_base, rough_wet, wet)\n"
+					: "\texpression\t\tmix(rough_base, rough_wet, wet)\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The Lambertian->polished_material REWRITE TARGET (design sec
+			//! 6.1/6.2): a literal `ior 1.33` (a constant needs no painter,
+			//! sec 6.1), `reflectance`/`tau`/`scattering` bound to the three
+			//! field chunks just built.
+			std::string BuildWetnessPolishedMaterialText_( const std::string& materialName,
+			                                               const std::string& reflectanceFieldName,
+			                                               const std::string& tauFieldName,
+			                                               const std::string& scatteringFieldName )
+			{
+				std::string t = "polished_material\n{\n";
+				t += "\tname\t\t\t" + materialName + "\n";
+				t += "\treflectance\t\t" + reflectanceFieldName + "\n";
+				t += "\ttau\t\t\t" + tauFieldName + "\n";
+				t += "\tior\t\t\t1.33\n";
+				t += "\tscattering\t\t" + scatteringFieldName + "\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! A KIND-CHANGING chunk swap (Lambertian -> polished_material is a
+			//! different chunk KEYWORD, not a param rebind) -- `DocReplaceItem`'s
+			//! documented contract ("the chunk's NodeId persists; its params
+			//! are re-matched by content") makes this safe even though every
+			//! param name and the keyword itself change: the material's
+			//! NodeId survives the swap, so nothing else in the document that
+			//! merely NAMES it (a `standard_object`'s `material` slot) needs
+			//! re-resolving.
+			RISE::Cst::Document WetnessReplaceChunkAt_( const RISE::Cst::Document& doc, int at,
+			                                            const std::string& chunkText )
+			{
+				RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
+				RISE::Cst::NodeRef  chunkItem;
+				{
+					const int n = RISE::Cst::DocItemCount( chunkDoc );
+					for( int i = 0; i < n; ++i ) {
+						const RISE::Cst::NodeRef it =
+							RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
+						if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
+					}
+				}
+				if( !chunkItem ) return doc;
+				return RISE::Cst::DocReplaceItem( doc, at, chunkItem );
+			}
 		}
 
 		AgentSession::AgentAddWearResult AgentSession::AddWear(
@@ -35935,6 +36906,502 @@ namespace RISE
 				AttributeChunkToActiveElement_( colorFieldName, "expression_painter" );
 				if( !roughFieldName.empty() )
 					AttributeChunkToActiveElement_( roughFieldName, roughChunkKind );
+			}
+
+			return out;
+		}
+
+		//! docs/WETNESS_COAT_DESIGN.md Phase 1 (sec 5 Track 1, sec 6, sec 13):
+		//! `add_wetness`.  See AgentSession.h's declaration for the full
+		//! contract; this is the implementation.
+		AgentSession::AgentAddWetnessResult AgentSession::AddWetness(
+			const std::string& material, const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			CaptureHeadRevisionSnapshot_();
+			AgentAddWetnessResult out;
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "add_wetness refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"add_wetness refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			// ---- (2) THE SHARED PREDICATE -- design-note condition P reads
+			// the SAME ComputeDesignNoteConditionsFromDoc_ scan, so the note
+			// can never advertise this call and then have it edit a different
+			// material.
+			const DesignNoteConditions_ cond = ComputeDesignNoteConditionsFromDoc_( headDoc );
+			out.qualifyingMaterials = cond.wetCandidateCount;
+
+			const WetnessMaterial_* pick = nullptr;
+			if( !material.empty() ) {
+				for( const WetnessMaterial_& m : cond.wetCandidateMaterials )
+					if( m.name == material ) { pick = &m; break; }
+				if( !pick ) {
+					const std::map<std::string, std::string>::const_iterator why =
+						cond.wetDeclineReasons.find( material );
+					if( why != cond.wetDeclineReasons.end() ) {
+						out.message = "add_wetness refused: `" + material + "` does not qualify -- " +
+							why->second + ". Call it with no arguments to take the most prominent material "
+							"that DOES qualify -- document unchanged";
+					}
+					else {
+						const bool exists = ( RISE::Cst::DocFindByNameAnyRole( headDoc, material ) ? true : false );
+						out.message = exists
+							? ( "add_wetness refused: `" + material + "` exists but is not a kind this verb "
+							    "rewrites -- it needs to be lambertian_material / orennayar_material / "
+							    "ggx_material / pbr_metallic_roughness_material. Call it with no arguments to "
+							    "take the most prominent material that DOES qualify -- document unchanged" )
+							: ( "add_wetness refused: no chunk named `" + material + "` is in this document -- "
+							    "`material` must name a material chunk (read_document to see the names), or "
+							    "omit it entirely to take the most prominent qualifying material -- document "
+							    "unchanged" );
+					}
+					return out;
+				}
+			}
+			else {
+				pick = SelectMaterialToWet_( cond.wetCandidateMaterials );
+				if( !pick ) {
+					out.message = "add_wetness refused: no non-metallic material in this document is a flat, "
+						"readable colour bound to at least one object -- it needs a lambertian_material / "
+						"orennayar_material / ggx_material / pbr_metallic_roughness_material whose primary "
+						"colour slot is bound to a uniformcolor_painter (not already varying, not a "
+						"blackbody/spectral painter, not already worn by add_wear) and is not already wet. A "
+						"metallic material can still be made wet for its coat/gloss alone (no darkening) -- "
+						"name it explicitly with `material`. Author such a material first, or bind a "
+						"`polished_material` by hand (read_skill {\"name\":\"materials-and-media-basics\"}) -- "
+						"document unchanged";
+					return out;
+				}
+			}
+
+			out.material        = pick->name;
+			out.materialKind    = pick->kind;
+			out.geometryKind    = pick->curvGeometryKind;
+			out.geometryUniform = pick->geometryUniform;
+			out.boundObjects    = pick->objectCount;
+			out.isMetallic      = pick->isMetallic;
+			out.isOrenNayar     = pick->isOrenNayar;
+			if( pick->hasReadableColor ) { out.baseR = pick->baseR; out.baseG = pick->baseG; out.baseB = pick->baseB; }
+
+			const bool lambertianBranch = ( pick->kind == "lambertian_material" );
+			const bool roughColourPipe  = MicrosurfaceKindUsesColourPipe_( pick->kind );
+
+			// ---- (3) Name the chunk(s), collision-safe against the document
+			// AND against every other name this call is about to mint.
+			std::vector<std::string> minted;
+			std::string reflectanceFieldName;
+			if( pick->hasReadableColor ) {
+				reflectanceFieldName = WearMintChunkName_( headDoc, pick->name, "_wet", minted );
+				if( reflectanceFieldName.empty() ) {
+					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
+						pick->name + "` -- rename or remove the colliding `" + pick->name +
+						"_wet*` chunks and retry -- document unchanged";
+					return out;
+				}
+				minted.push_back( reflectanceFieldName );
+			}
+			std::string tauFieldName, scatteringFieldName;
+			if( lambertianBranch ) {
+				tauFieldName = WearMintChunkName_( headDoc, pick->name, "_wettau", minted );
+				if( tauFieldName.empty() ) {
+					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
+						pick->name + "` -- rename or remove the colliding `" + pick->name +
+						"_wettau*` chunks and retry -- document unchanged";
+					return out;
+				}
+				minted.push_back( tauFieldName );
+				scatteringFieldName = WearMintChunkName_( headDoc, pick->name, "_wetgloss", minted );
+				if( scatteringFieldName.empty() ) {
+					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
+						pick->name + "` -- rename or remove the colliding `" + pick->name +
+						"_wetgloss*` chunks and retry -- document unchanged";
+					return out;
+				}
+				minted.push_back( scatteringFieldName );
+			}
+			// One roughness/gloss field PER slot (never one shared between
+			// alphax/alphay) -- see AgentAddWetnessResult::scatteringPainters'
+			// own doc for why.
+			std::vector<std::string> roughFieldNames;
+			if( !lambertianBranch ) {
+				for( std::size_t i = 0; i < pick->roughnessSlots.size(); ++i ) {
+					const std::string nm = WearMintChunkName_( headDoc, pick->name, "_wetrough", minted );
+					if( nm.empty() ) {
+						out.message = "add_wetness refused: could not derive an unused chunk name from `" +
+							pick->name + "` -- rename or remove the colliding `" + pick->name +
+							"_wetrough*` chunks and retry -- document unchanged";
+						return out;
+					}
+					minted.push_back( nm );
+					roughFieldNames.push_back( nm );
+				}
+			}
+
+			const double breakupScale = WetnessBreakupScaleFor_( pick->name );
+			const double seed         = WetnessSeedFor_( pick->name );
+
+			RISE::Cst::Document work = headDoc;
+			std::string          reboundColorSlot;
+			std::vector<std::string> reboundRoughSlots;
+
+			// ---- (4) Rebind the slots (GGX/PBR/Oren-Nayar in-place branches
+			// ONLY -- the Lambertian branch replaces the whole chunk instead,
+			// below, since polished_material is a different KEYWORD).
+			if( !lambertianBranch ) {
+				const RISE::Cst::NodeId matId = RISE::Cst::DocNodeIdAt( work, pick->itemIndex );
+				if( !matId ) {
+					out.message = "add_wetness refused: internal -- `" + pick->name +
+						"` could not be re-resolved in the document; nothing changed";
+					return out;
+				}
+				if( pick->hasReadableColor ) {
+					work = RISE::Cst::DocSetParamValue( work, matId, pick->colorSlot, 0, reflectanceFieldName );
+					const RISE::Cst::NodeRef matRef = RISE::Cst::DocResolveNodeId( work, matId );
+					const std::string bound = RISE::Cst::ParamValueAtOccurrence( matRef, pick->colorSlot, 0 );
+					if( bound.find( reflectanceFieldName ) == std::string::npos ) {
+						out.message = "add_wetness refused: internal -- rebinding `" + pick->colorSlot +
+							"` on `" + pick->name + "` did not take; document unchanged";
+						return out;
+					}
+					reboundColorSlot = pick->colorSlot;
+				}
+				for( std::size_t i = 0; i < pick->roughnessSlots.size(); ++i ) {
+					const std::string& slot = pick->roughnessSlots[i];
+					const std::string& fieldName = roughFieldNames[i];
+					// P1-A (review 2026-08-31): `DocSetParamValue` NO-OPS on an
+					// ABSENT param -- and `roughnessSlots` legitimately includes
+					// Absent slots (`WetnessMicrosurfaceDescriptorDefault_` is
+					// exactly the descriptor default banded around for that
+					// case, e.g. a glTF-shaped pbr with no `roughness` line at
+					// all).  `DocSetOrAddParamValue` (Cst.h) inserts the param
+					// line when it is missing instead of silently doing
+					// nothing, which is what makes that case reachable at all.
+					bool inserted = false;
+					work = RISE::Cst::DocSetOrAddParamValue( work, matId, slot, 0, fieldName, &inserted );
+					const RISE::Cst::NodeRef matRef = RISE::Cst::DocResolveNodeId( work, matId );
+					const std::string bound = RISE::Cst::ParamValueAtOccurrence( matRef, slot, 0 );
+					if( bound.find( fieldName ) == std::string::npos ) {
+						out.message = "add_wetness refused: internal -- rebinding `" + slot + "` on `" +
+							pick->name + "` did not take; document unchanged";
+						return out;
+					}
+					reboundRoughSlots.push_back( slot );
+				}
+			}
+
+			// ---- (5) Splice the field chunks in ahead of the material
+			// (declare-before-use).  Each splice targets the material's
+			// ORIGINAL item index -- add_wear's discipline -- so the LAST
+			// call below lands FIRST in the final text; the order chosen here
+			// reproduces sec 6.5's worked example (tau, scattering,
+			// reflectance, material) for the Lambertian branch.
+			for( std::size_t i = 0; i < roughFieldNames.size(); ++i ) {
+				const int before = RISE::Cst::DocItemCount( work );
+				work = CollapseSpliceChunkAt_( work, pick->itemIndex,
+					BuildWetnessInPlaceRoughnessPainterText_( roughFieldNames[i], pick->roughnessValues[i],
+					                                          breakupScale, seed, roughColourPipe ) );
+				if( RISE::Cst::DocItemCount( work ) == before ) {
+					out.message = "add_wetness refused: internal -- the generated `" +
+						std::string( roughColourPipe ? "expression_painter" : "scalar_painter" ) +
+						"` chunk did not parse; nothing changed";
+					return out;
+				}
+			}
+			if( lambertianBranch ) {
+				{
+					const int before = RISE::Cst::DocItemCount( work );
+					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
+						BuildWetnessScatteringPainterText_( scatteringFieldName, breakupScale, seed ) );
+					if( RISE::Cst::DocItemCount( work ) == before ) {
+						out.message = "add_wetness refused: internal -- the generated `scalar_painter` "
+							"(scattering) chunk did not parse; nothing changed";
+						return out;
+					}
+				}
+				{
+					const int before = RISE::Cst::DocItemCount( work );
+					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
+						BuildWetnessTauPainterText_( tauFieldName, breakupScale, seed ) );
+					if( RISE::Cst::DocItemCount( work ) == before ) {
+						out.message = "add_wetness refused: internal -- the generated `scalar_painter` (tau) "
+							"chunk did not parse; nothing changed";
+						return out;
+					}
+				}
+			}
+			if( pick->hasReadableColor ) {
+				const int before = RISE::Cst::DocItemCount( work );
+				work = CollapseSpliceChunkAt_( work, pick->itemIndex,
+					BuildWetnessReflectancePainterText_( reflectanceFieldName, pick->baseR, pick->baseG,
+					                                     pick->baseB, breakupScale, seed ) );
+				if( RISE::Cst::DocItemCount( work ) == before ) {
+					out.message = "add_wetness refused: internal -- the generated `expression_painter` "
+						"(reflectance) chunk did not parse; nothing changed";
+					return out;
+				}
+			}
+
+			// ---- (6) The Lambertian branch alone REWRITES the material
+			// chunk to `polished_material` -- a different keyword, so this is
+			// a whole-chunk REPLACE (WetnessReplaceChunkAt_), not a param
+			// rebind.  The material's NodeId is stable across every splice
+			// above (inserts never renumber existing NodeIds), so it is
+			// re-resolved to its now-shifted INDEX rather than re-derived.
+			if( lambertianBranch ) {
+				const RISE::Cst::NodeId matId = RISE::Cst::DocNodeIdAt( headDoc, pick->itemIndex );
+				if( !matId ) {
+					out.message = "add_wetness refused: internal -- `" + pick->name +
+						"` could not be re-resolved in the document; nothing changed";
+					return out;
+				}
+				const int matIndexNow = RISE::Cst::DocIndexOfNodeId( work, matId, nullptr );
+				if( matIndexNow < 0 ) {
+					out.message = "add_wetness refused: internal -- `" + pick->name +
+						"` was lost while splicing its field chunks; nothing changed";
+					return out;
+				}
+				// P2 (review 2026-08-31): a plain item-COUNT check here is
+				// VACUOUS -- `WetnessReplaceChunkAt_` preserves item count on
+				// BOTH success (one chunk replaced by one chunk) and its own
+				// silent-no-op failure path (an unparseable `chunkText`
+				// returns `doc` UNCHANGED, same count).  Verify the REAL
+				// postcondition instead: the item now AT `matIndexNow` exists
+				// and is actually a `polished_material` chunk.
+				work = WetnessReplaceChunkAt_( work, matIndexNow,
+					BuildWetnessPolishedMaterialText_( pick->name, reflectanceFieldName, tauFieldName,
+					                                   scatteringFieldName ) );
+				const RISE::Cst::NodeRef replaced =
+					RISE::Cst::DocResolveNodeId( work, RISE::Cst::DocNodeIdAt( work, matIndexNow ) );
+				if( !replaced || replaced->kind != RISE::Cst::NodeKind::Chunk || replaced->role != "polished_material" ) {
+					out.message = "add_wetness refused: internal -- the generated `polished_material` chunk "
+						"did not parse; nothing changed";
+					return out;
+				}
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "add_wetness refused: internal -- the candidate document serialized to "
+					"nothing; document unchanged";
+				return out;
+			}
+
+			// ---- P1-B(i) (review 2026-08-31): a METALLIC material with NO
+			// rebindable microsurface slot (both alphax/alphay already
+			// spatially varying, or a D2 writability mismatch that skips the
+			// pair entirely) writes NOTHING -- no reflectance touch (metallic
+			// skips darkening), no coat (no separate film in Phase 1), no
+			// roughness field.  Committing that candidate would bump the
+			// head, create an undo step, and report "applied" over a
+			// byte-identical document -- a silent no-op success.  Caught here
+			// as a REFUSAL, before the commit, rather than after.
+			if( candidateText == snap.document ) {
+				out.message = "add_wetness refused: `" + pick->name + "` is metallic and has nothing this verb "
+					"can rebind -- darkening is skipped (a metal has no subsurface to darken, sec 2.1) and its "
+					"microsurface slot(s) are already spatially varying" +
+					( pick->microsurfaceSkippedMismatch
+						? std::string( " (alphax/alphay disagree on writability -- one is a flat constant, the "
+						               "other already varies -- so the pair was skipped rather than "
+						               "half-modulated)" )
+						: std::string() ) +
+					" -- there is nothing left to write, so the call is refused rather than reporting a "
+					"no-op success -- document unchanged";
+				return out;
+			}
+
+			// ---- (7) S1 cross-element arm, deliberately AFTER the candidate
+			// build (CheckBuildPlanGate_'s rule).
+			{
+				const std::string clause = CheckElementWindowForEdit_( "add_wetness", pick->name, &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (8) COMMIT: ONE whole-document swap, ONE dry-run-guarded
+			// re-derive, ONE head bump, ONE undo step -- add_wear's identical
+			// composite primitive.
+			AgentChunkResult commit;
+			commit.name = pick->name;
+			commit.kind = pick->kind;
+
+			if( mAuthority == AgentAuthority::External ) {
+				out.message = "add_wetness refused: this session is External-authority, and this verb has no "
+					"staged-proposal form (it is ONE composite document swap, not a single chunk edit an "
+					"Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk the field "
+					"painter(s), then propose_patch the rebound slot(s) on `" + pick->name +
+					"` to their names (or, for a Lambertian base, insert_chunk a replacement "
+					"`polished_material` and remove_chunk the old one) -- document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( pick->name.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "add_wetness" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "add_wetness refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"add_wetness refused: the head moved (revision %llu) while the rewrite was being "
+						"composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "add_wetness" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 )      { commit.applied = true;  commit.status = "applied"; }
+				else if( code == 3 ) { commit.applied = false; commit.status = "diagnosed"; }
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (9) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			if( ResultMutatedDocument_( commit ) ) {
+				out.rewroteToPolished = lambertianBranch;
+				out.reflectanceSlot   = reboundColorSlot.empty() && lambertianBranch && pick->hasReadableColor
+					? std::string( "reflectance" ) : reboundColorSlot;
+				out.reflectancePainter = reflectanceFieldName;
+				out.tauSlot            = lambertianBranch ? std::string( "tau" ) : std::string();
+				out.tauPainter         = tauFieldName;
+				out.scatteringSlots    = lambertianBranch
+					? std::vector<std::string>{ "scattering" }
+					: reboundRoughSlots;
+				out.scatteringPainters = lambertianBranch
+					? std::vector<std::string>{ scatteringFieldName }
+					: roughFieldNames;
+			}
+
+			{
+				std::string m;
+				if( commit.applied ) {
+					m = "`" + pick->name + "` (" + pick->kind + ") is now ";
+					if( pick->isMetallic ) {
+						m += "wet-look only (metallic base, no darkening): ";
+					}
+					else if( pick->isOrenNayar ) {
+						m += "damp (Oren-Nayar base, darkening only, no coat/film): ";
+					}
+					else {
+						m += "wet: ";
+					}
+					if( !out.reflectancePainter.empty() ) {
+						m += "its " + ( out.reflectanceSlot.empty() ? pick->colorSlot : out.reflectanceSlot ) +
+							" is bound to `" + out.reflectancePainter + "`, an expression_painter darkening/"
+							"saturating the " + MicrosurfaceFmt_( pick->baseR ) + " " + MicrosurfaceFmt_( pick->baseG ) +
+							" " + MicrosurfaceFmt_( pick->baseB ) + " that was there under a `damp` mask (curv/"
+							"occlusion/fbm)";
+					}
+					if( lambertianBranch ) {
+						const std::string scatName =
+							out.scatteringPainters.empty() ? std::string() : out.scatteringPainters[0];
+						m += "; rewritten to `polished_material` with tau bound to `" + out.tauPainter +
+							"` (coat coverage, the `wet` mask) and scattering bound to `" + scatName +
+							"` (pooling-keyed gloss)";
+					}
+					else if( !out.scatteringPainters.empty() ) {
+						std::string slots;
+						for( const std::string& s : out.scatteringSlots ) { if( !slots.empty() ) slots += "/"; slots += s; }
+						std::string fields;
+						for( const std::string& f : out.scatteringPainters ) { if( !fields.empty() ) fields += "/"; fields += f; }
+						m += "; its " + slots + " " +
+							( out.scatteringPainters.size() == 1 ? std::string( "is" ) : std::string( "are" ) ) +
+							" bound to `" + fields + "` (in-place gloss toward the wet floor under the same "
+							"`wet` mask -- no separate film, per sec 6.2)";
+					}
+					m += ". The signal reads because this material's objects sit on " + pick->curvGeometryKind;
+					m += pick->geometryUniform
+						? std::string( " -- planar/patch geometry, so wetness reads UNIFORM here (only "
+						               "`base_wetness` contributes; pooling/ridge are inert)" )
+						: std::string( " (pooling/ridge variation reads)" );
+					m += " -- " + std::to_string( pick->objectCount ) + " bound object" +
+						( pick->objectCount == 1 ? std::string() : std::string( "s" ) ) +
+						" now read wet (a material shared across several objects wets all of them in one call)";
+					if( !lambertianBranch && pick->kind == "ggx_material" && out.scatteringPainters.empty() &&
+					    pick->microsurfaceSkippedMismatch ) {
+						m += ". alphax/alphay disagree on writability (one is a flat constant, the other already "
+							"varies), so the microsurface pair was SKIPPED rather than half-modulated -- "
+							"driving just one toward the wet floor would introduce an anisotropy you never "
+							"authored";
+					}
+					m += ". The gravity gate assumes +Y UP (`dot(N, vec3(0,1,0))` in the emitted `up_facing`/"
+						"`gravity` lines) -- a Z-up scene needs that axis vector hand-edited or pooling will "
+						"read on the wrong faces.";
+					m += " ONE full re-derive, ONE undo step. Retune it with propose_patch on the named "
+						"params (dryness, base_wetness, pool_gain, ridge_shed, film_amount, film_gloss_lo, "
+						"and the darkening `k`/`base_r/g/b` where present) or the `seed`.";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "add_wetness NOT a clean success: the Document was mutated and the live managers were "
+						"replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+				}
+				else {
+					m = "add_wetness rejected (NOTHING changed): the candidate document would not derive -- "
+						"head unchanged";
+				}
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
+			if( ResultMutatedDocument_( commit ) ) {
+				if( !reflectanceFieldName.empty() ) AttributeChunkToActiveElement_( reflectanceFieldName, "expression_painter" );
+				if( !tauFieldName.empty() )         AttributeChunkToActiveElement_( tauFieldName, "scalar_painter" );
+				if( !scatteringFieldName.empty() )  AttributeChunkToActiveElement_( scatteringFieldName, "scalar_painter" );
+				for( const std::string& f : roughFieldNames )
+					AttributeChunkToActiveElement_( f, roughColourPipe ? "expression_painter" : "scalar_painter" );
 			}
 
 			return out;

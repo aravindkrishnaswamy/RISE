@@ -354,6 +354,10 @@ namespace
 		    // the whole document in one call, exactly like vary_material --
 		    // same per-call leverage, same rate-limit membership.
 		    name == "add_wear" ||
+		    // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): add_wetness rewrites
+		    // the whole document in one call, exactly like add_wear -- same
+		    // per-call leverage, same rate-limit membership.
+		    name == "add_wetness" ||
 		    // Doc 90 slice R2 (2026-08-23): revert_to_revision replaces the
 		    // whole document in one call, exactly like the three swaps above --
 		    // same per-call leverage, same rate-limit membership.  Metering the

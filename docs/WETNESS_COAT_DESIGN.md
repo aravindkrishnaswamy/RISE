@@ -948,6 +948,19 @@ wrong fails silently**:
 Drive the chosen slot toward 0.02–0.05 where wet, and darken the base colour via
 the same `expression_painter`.
 
+**AMENDED (2026-08-31) — the shipped formula and per-slot fields are now the
+contract.** The implementation (reviewed, adjudicated ACCEPT) emits
+`mix(rough_base, rough_wet, wet)` per microsurface slot, with `rough_base`
+lifted from the slot's own constant (or the kind's descriptor default when the
+slot is unspelled — rebinding uses `DocSetOrAddParamValue`, so an unspelled
+`roughness`/`alphay` still gets a real mask) and `rough_wet` a `param`
+defaulting to 0.035 in the 0.005–0.1 band. It keys on `wet` directly — there is
+no separate coat lobe to gate on `pooling` the way the polished branch's Phong
+exponent is. Fields are minted **one per slot**, and `alphax`/`alphay` move
+**together or not at all**: if only one of the pair is writable the pair is
+skipped entirely (and the message says so) — a shared field or a half-modulation
+would flatten or invent anisotropy even where the surface is dry.
+
 > **Trap — PBR-MR's `roughness` and `metallic` are Colour-pipe by construction,
 > and binding a `scalar_painter` to them silently yields ZERO.** The descriptor
 > says so in its own semantics note: *"Color pipe by construction, not by meaning:
@@ -1175,6 +1188,16 @@ Mirroring `WearMaterial_`
    named it explicitly, applies the coat and **skips the darkening**, saying so.
    §2.1's mechanisms require a dielectric scattering substrate; a wet metal is a
    filmed metal, not a darkened one;
+
+   **AMENDED (2026-08-31), two clarifications from implementation review.**
+   (i) A `metallic` slot the verb cannot read (textured or spatially varying)
+   **refuses the whole call** — it cannot tell whether darkening applies, and
+   the governing law here is "declines rather than deliver a coat with no
+   darkening"; guessing in either direction silently mis-renders one case.
+   (ii) Since `fresnel_mode` defaults to `conductor`, **every plain
+   `ggx_material` in the wild classifies as metallic** — excluded from the bare
+   call, coat-only when named explicitly. Authors wanting the full recipe on a
+   GGX dielectric must set `fresnel_mode schlick_f0` (or `thinfilm`) first.
 2. its primary colour slot reads a constant bound to a plain
    `uniformcolor_painter` (not blackbody, not spectral, not a non-default
    colorspace) — so the verb can *derive* the darkened band from a real value.
@@ -1204,7 +1227,13 @@ material fails a specific clause (say which); the material is already wet; the
 base colour is unreadable **or is a painter rather than a constant** (clause 2);
 the base is metallic and darkening is the point; a minted chunk name would
 collide; or `dryness` resolves to 1 so the composition is a no-op (§6.3's
-multiplicative form is what makes that check exact). Every refusal path is
+multiplicative form is what makes that check exact — **AMENDED 2026-08-31: this
+clause is vacuous for the verb itself**, which always emits a fresh literal
+`dryness 0.15` and never derives it from prior state; it applies only to
+hand-authored preludes, and the implementation correctly does not carry it as
+dead code. The implemented no-op guard is more general: any call whose candidate
+document is byte-identical to the head refuses rather than committing an empty
+change). Every refusal path is
 `ok=false` with an empty `status`, so callers branch on `applied` — the convention
 `add_wear`'s tool description already teaches
 ([AgentMcpAdapter.cpp:1848-1901](../src/Library/Agent/AgentMcpAdapter.cpp)).
@@ -1512,7 +1541,11 @@ geometry problem, and this recipe is the answer.
     darkening (§2.1, §6.2, §6.4).
 12. **The GGX/PBR in-place branch is not a water film** — it sharpens the base's
     own tinted lobe, destroys anisotropy where the mask bites, and couples what
-    §2.2 says water decouples (§6.2).
+    §2.2 says water decouples (§6.2). *AMENDED (2026-08-31): "where the mask
+    bites" is now literally the whole story — the shipped per-slot fields keep
+    authored `alphax ≠ alphay` anisotropy intact wherever the surface is dry,
+    and a pair with only one writable slot is skipped entirely rather than
+    half-modulated (§6.2's amended table note).*
 13. **Wetness and wear are mutually exclusive on one material** in v1; each verb
     refuses a material the other has already written (§6.4).
 14. **The verb rewrites a material chunk, so every object bound to it becomes

@@ -7081,6 +7081,14 @@ namespace RISE
 										// material before asking must not VACUOUSLY pass
 										// askUserBeforeMutation.
 										"add_wear",
+										// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31):
+										// add_wetness mutates the document (a Lambertian
+										// rewrite to polished_material, or one-to-three
+										// field chunks plus the material's slots on a
+										// GGX/PBR base), so a run that wet a material
+										// before asking must not VACUOUSLY pass
+										// askUserBeforeMutation.
+										"add_wetness",
 										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
 										// the document (one composite swap restoring an
 										// earlier revision's whole text), so a run that

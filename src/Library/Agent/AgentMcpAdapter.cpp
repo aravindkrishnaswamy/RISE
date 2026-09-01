@@ -396,6 +396,22 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): add_wetness's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! SAME rationale as kAddWearProposeRefusedNote above (it mutates
+			//! through one composite whole-document swap: a Lambertian base is
+			//! rewritten to `polished_material`, a GGX/PBR base gets one or
+			//! more field chunks spliced plus its slots repointed; deliberately
+			//! excluded from AgentRpc.cpp's IsProposeSafeVerb rather than pay
+			//! the "N mutating verbs" prose ripple SourceHygieneTest's
+			//! verb-parity scan pins; refused under Propose exactly like Read;
+			//! deliberately contains neither magic substring the per-note
+			//! counters key on).
+			const std::string kAddWetnessProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: add_wetness is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -1890,14 +1906,83 @@ namespace RISE
 						"retuning it is one propose_patch on a named line -- and that is the idiom to COPY "
 						"when you author wear by hand. It REFUSES, changing nothing and costing only this "
 						"call, when no material is a readable flat colour, when the material is already "
-						"worn (its slots already read curv/occlusion), or when every object bound to it "
+						"worn (its slots already read curv/occlusion), when every object bound to it "
 						"sits on planar or patch geometry, where `curv` is 0 everywhere and the mask would "
-						"render the flat colour it started from. Returns {ok,applied,rawCode,status,"
+						"render the flat colour it started from, or when it collides with `add_wetness`'s own "
+						"composition (a WET material's colour slot is already bound to an expression_painter, "
+						"never a plain uniformcolor_painter -- the two verbs cannot currently be combined on "
+						"one material; whichever ran first locks the other out). Returns {ok,applied,rawCode,status,"
 						"retriable,headVersion,message,material,materialKind,colorSlot,painter,roughPainter,"
 						"roughSlots,previousRoughness,baseColor,geometry,qualifying,objects}. A PRE-COMMIT "
 						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
 						"headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "add_wear", desc, ObjectProp( "", props, required ) ) );
+				}
+
+				// add_wetness (WETNESS_COAT_DESIGN sec 6/13, 2026-08-31) -- the
+				// VERB half of design-note condition P.  Hand-authored HERE and
+				// semantically identical to the chat-codec definition in
+				// AgentChatCodecs.cpp's kToolDefs (two texts, one verb -- a
+				// semantic change to either must land in both).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to make wet. Omit it to take the MOST "
+						"PROMINENT non-metallic material that is still a flat, readable colour on a bound "
+						"object -- which is what a DESIGN NOTE about a dry rain scene is pointing at, so the "
+						"no-argument call is the usual one. Name a METALLIC material explicitly to give it "
+						"the coat/gloss only (no darkening -- a wet metal has no subsurface to darken)." ) );
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason add_wear is: this
+					// verb commits ONE composite whole-document swap, which is
+					// no AgentProposalKind an Owner could approve card-by-card,
+					// so an External-authority session cannot stage it either.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kAddWetnessProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"MAKE ONE MATERIAL WET -- darkened/saturated reflectance in the damp, a coat/gloss "
+						"where it pools -- in one call. Call this the moment a surface is meant to read RAIN-"
+						"SLICKED, DAMP, or STANDING IN WATER: a wet street, a rained-on wall, a damp cave "
+						"floor. The physics: wetting a porous substrate darkens and saturates it (index-"
+						"matching plus internal-reflection recycling at the water/air interface -- Lekner & "
+						"Dorf 1988), and only WATER DEEP ENOUGH TO POOL lies flat and mirror-smooth -- a "
+						"merely-damp film still shows the substrate's own relief, sharpened but not mirrored. "
+						"This writes a shared `damp`/`wet` mask pair (`damp` drives darkening; `wet = "
+						"clamp(damp*film_amount, 0, damp)` drives the coat, so `wet` can never exceed `damp` "
+						"by construction) keyed on `curv` (dry ridges), `occlusion()` (pooling cavities, "
+						"gated by an up-facing term so water never pools on ceilings) and `fbm` (breakup). A "
+						"Lambertian base is REWRITTEN to `polished_material` (reflectance darkened under "
+						"`damp`, `tau` = coat coverage under `wet`, `scattering` = a Phong gloss keyed on "
+						"POOLING so damp-but-unpooled regions stay broad-lobed rather than instantly mirror-"
+						"flat). A GGX/PBR base is left as its own kind and modulated IN PLACE (reflectance "
+						"darkened the same way; roughness driven toward a wet floor under `wet` -- an "
+						"approximation of a film, not a real second layer, so it sharpens the base's OWN "
+						"tinted lobe and can flatten an authored anisotropy where it bites). An Oren-Nayar "
+						"base gets DARKENING ONLY, no coat (its retroreflective lobe has no film analogue). The "
+						"gravity gate (keeps pooling off ceilings/undersides) assumes +Y UP -- "
+						"`dot(N, vec3(0,1,0))` in the emitted `up_facing`/`gravity` lines -- a Z-up scene "
+						"needs that axis vector hand-edited. A "
+						"single `dryness` param sweeps the whole thing back to bone-dry. ONE headVersion "
+						"bump, ONE undo step. Pass NO ARGUMENTS to take the most prominent qualifying "
+						"material. Pass `material` to name a different one, including a metallic material "
+						"(coat/gloss only). Every knob is a named `param` carrying min/max/step/label "
+						"(dryness, base_wetness, pool_gain, ridge_shed, gravity_bias, film_amount, "
+						"film_gloss_lo, breakup_amp/scale, plus the darkening `k`/`base_r/g/b` where "
+						"present) plus a `seed`, so retuning it is one propose_patch on a named line. It "
+						"REFUSES, changing nothing and costing only this call, when nothing qualifies, when "
+						"the material is already wet, when its colour is a painter rather than a plain "
+						"readable constant (a TEXTURED albedo gets no darkening in Phase 1 -- this verb "
+						"declines rather than deliver a coat with no darkening), or when it collides with "
+						"`add_wear`'s own composition (the two cannot currently be combined on one material "
+						"-- whichever ran first locks the other out; each verb's refusal names the other). "
+						"Returns {ok,applied,rawCode,status,retriable,headVersion,message,material,"
+						"materialKind,rewroteToPolished,reflectanceSlot,reflectancePainter,tauSlot,"
+						"tauPainter,scatteringSlots,scatteringPainters,baseColor,geometry,geometryUniform,"
+						"isMetallic,isOrenNayar,qualifying,objects}. A PRE-COMMIT refusal is ok=false with "
+						"an EMPTY status, so branch on `applied`. Always pass the headVersion you last read "
+						"as baseHeadVersion." );
+					tools.push_back( MakeTool( "add_wetness", desc, ObjectProp( "", props, required ) ) );
 				}
 
 				// remove_chunk
@@ -2398,7 +2483,7 @@ namespace RISE
 				return b;
 			}
 
-			//! The list of the 40 tool names this adapter recognizes --
+			//! The list of the 41 tool names this adapter recognizes --
 			//! shared between tools/list and tools/call's unknown-name check.
 			bool IsKnownToolName( const std::string& name )
 			{
@@ -2430,6 +2515,7 @@ namespace RISE
 					"vary_material",           // 88 S5 (2026-08-20): MUTATING, the condition-D rewrite verb
 					"fix_blend_scale",         // cat plan item 1 (2026-08-25): MUTATING, the condition-J rewrite verb
 					"add_wear",                // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): MUTATING, the condition-L rewrite verb
+					"add_wetness",             // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): MUTATING, the condition-P rewrite verb
 					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",

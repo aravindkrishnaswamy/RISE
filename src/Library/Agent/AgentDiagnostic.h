@@ -555,6 +555,39 @@ namespace RISE
 			//! (FormatDimLightRemeasureClause_ in AgentSession.cpp), so they
 			//! can never disagree about what fired.
 			static const char* const DESIGN_DIM_LIGHT_REMEASURE = "DESIGN_DIM_LIGHT_REMEASURE";
+			//! docs/WETNESS_COAT_DESIGN.md sec 6.4/13 (2026-08-31), condition P:
+			//! the DRY RAIN SCENE -- the scene's OWN language (its name, an
+			//! object/element name, or a comment anywhere in the document text)
+			//! uses rain/wet/storm/damp/puddle vocabulary, while every material
+			//! this scan can rewrite for wetness (`WetnessMaterial_`'s
+			//! qualifying scan, shared one-predicate-two-consumers with
+			//! `AgentSession::AddWetness`, exactly as condition L shares
+			//! `WearMaterial_` with `AddWear`) still reads bone-dry.
+			//!
+			//! FIRES on >= 1 qualifying-but-unwet material once the rain
+			//! vocabulary test passes -- no volume gate, matching conditions
+			//! M/N's "one already is the failure" convention: a scene whose own
+			//! name or a comment says "rainstorm" and whose stone floor is a
+			//! flat, dry `lambertian_material` is already the described failure,
+			//! not a matter of degree.
+			//!
+			//! THE VOCABULARY TEST IS A HEURISTIC, STATED AS SUCH: a
+			//! case-insensitive, whole-word scan of the SERIALIZED document text
+			//! (chunk `name`s and any `#`-comment trivia the CST preserves) for
+			//! { rain, raining, rainy, rainstorm, downpour, drizzle, monsoon,
+			//! storm, wet, damp, puddle }.  This can both under- and over-fire
+			//! (a `name` like `raincoat_display_case` is not a rain SCENE; a
+			//! scene actually about rain that never spells the word anywhere is
+			//! invisible to it) -- acceptable for an Info-severity, self-
+			//! disarming advisory whose only claim is "consider `add_wetness`",
+			//! never a hard refusal.
+			//!
+			//! The note NAMES `add_wetness`, the verb this condition is paired
+			//! with, so the advisory and the escalation are the same act (the
+			//! `add_wear`/condition L precedent).  Severity::Info; the clause
+			//! carries the same generic self-disarm suffix every sibling in this
+			//! family appends ("if a deliberately dry look was wanted, ignore").
+			static const char* const DESIGN_DRY_RAIN_SCENE = "DESIGN_DRY_RAIN_SCENE";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

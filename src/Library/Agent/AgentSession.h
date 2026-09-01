@@ -6569,6 +6569,148 @@ namespace RISE
 			AgentAddWearResult AddWear( const std::string& material = std::string(),
 			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! docs/WETNESS_COAT_DESIGN.md sec 6/13 (2026-08-31): what
+			//! `AgentSession::AddWetness` did, or the reason it declined.
+			//! Mirrors `AgentAddWearResult` field-for-field where the two
+			//! verbs share shape (the whole-document-swap commit, the
+			//! qualifying-materials count, the bound-object count §6.9 item 14
+			//! requires reporting), and adds the fields wetness's OWN recipe
+			//! needs: which of the three field chunks actually got written (the
+			//! Lambertian branch writes all three; the GGX/PBR in-place branch
+			//! writes reflectance + a roughness field but no `tau`; a metallic-
+			//! named material writes ONLY the roughness field, per §6.4 clause 1;
+			//! an Oren-Nayar base writes ONLY the reflectance field, per §6.2).
+			struct AgentAddWetnessResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material now made wet
+				std::string materialKind;    //!< its chunk keyword BEFORE the call (a Lambertian base reports "lambertian_material" even though the commit rewrites it to "polished_material" -- see `rewroteToPolished`)
+				bool        rewroteToPolished = false;   //!< true iff a Lambertian base was rewritten into a `polished_material` (empty `materialKind` reporting stays the pre-image kind; the document now holds `polished_material`)
+
+				//! The reflectance/darkening half -- an `expression_painter`
+				//! mixing toward `pow(base, k)` under the `damp` mask.  Empty
+				//! `reflectanceSlot` means this half was SKIPPED: either the
+				//! material is metallic and was named explicitly (§6.4 clause 1,
+				//! `isMetallic` true), or the commit did not land.
+				std::string reflectanceSlot;
+				std::string reflectancePainter;
+
+				//! The coat-coverage half -- `polished_material`'s `tau`, a
+				//! `scalar_painter` reading the `wet` mask.  Populated ONLY on
+				//! the Lambertian->polished_material branch: GGX/PBR bases have
+				//! no separate coat lobe in Phase 1 (§6.2's in-place branch is
+				//! roughness modulation, not a film), and Oren-Nayar bases get
+				//! damp-only (no coat at all, §6.2).
+				std::string tauSlot;
+				std::string tauPainter;
+
+				//! The gloss/roughness half.  On the Lambertian branch this is
+				//! `polished_material`'s `scattering` (one `scalar_painter`
+				//! keyed on `pooling`; `scatteringSlots`/`scatteringPainters`
+				//! each hold exactly one entry).  On the GGX/PBR in-place
+				//! branch this is `alphax`+`alphay` (GGX) or `roughness`
+				//! (PBR-MR, an `expression_painter` -- §6.2's colour-pipe
+				//! trap) -- ONE painter PER slot (parallel arrays), not one
+				//! shared painter across both GGX slots: sharing one field
+				//! would flatten an authored alphax!=alphay anisotropy even at
+				//! `dryness=1` (fully dry), not only where sec 6.2's caveat
+				//! says wetness legitimately destroys it.  Empty on the Oren-
+				//! Nayar branch (damp-only, no microsurface touch at all).
+				std::vector<std::string> scatteringSlots;
+				std::vector<std::string> scatteringPainters;
+
+				//! The constant RGB the darkening was banded from -- a fact
+				//! about the document, set whenever the reflectance half
+				//! was read (regardless of whether the commit landed), exactly
+				//! as `AgentAddWearResult::baseR/G/B` is.  Left at 0 when the
+				//! material is metallic-named (the darkening half is skipped
+				//! and there is no base to report).
+				double baseR = 0.0, baseG = 0.0, baseB = 0.0;
+
+				//! One representative geometry kind the chosen material's
+				//! objects sit on, so the caller can see whether the pooling/
+				//! ridge variation reads or the surface will be uniformly wet
+				//! (§6.4 clause 3's deliberately weaker geometry bar -- unlike
+				//! `add_wear`, a curv-barren geometry does not refuse, it just
+				//! makes `geometryUniform` true).
+				std::string geometryKind;
+				bool        geometryUniform = false;
+
+				bool isMetallic  = false;   //!< §6.4 clause 1: darkening was skipped, coat/gloss only
+				bool isOrenNayar = false;   //!< §6.2: damp-only, no coat/gloss touch at all
+
+				int qualifyingMaterials = 0;   //!< how many materials the shared predicate found (non-metallic + metallic-named-reachable)
+				int boundObjects        = 0;   //!< how many standard_objects bind the chosen material -- §6.9 item 14's blast-radius figure
+			};
+
+			//! docs/WETNESS_COAT_DESIGN.md Phase 1 (§5 Track 1, §6, §13): rewrite
+			//! ONE qualifying material into the census-precedented two-mask
+			//! (`damp`/`wet`) wetness composition -- darkened/saturated
+			//! reflectance, a coat-coverage `tau` and a pooling-keyed gloss for a
+			//! Lambertian base rewritten to `polished_material`; in-place
+			//! roughness + reflectance modulation for a GGX/PBR base (no new
+			//! material class); darkening only for an Oren-Nayar base; coat/
+			//! gloss only, no darkening, for an explicitly-named metallic base.
+			//!
+			//! SHARES ONE QUALIFYING PREDICATE with design-note condition P
+			//! (DESIGN_DRY_RAIN_SCENE) -- `WetnessMaterial_`'s clauses, read by
+			//! `ComputeDesignNoteConditionsFromDoc_` into `wetCandidateMaterials`
+			//! -- the same one-predicate-two-consumers discipline `add_wear` /
+			//! condition L established, so the note can never advertise a call
+			//! this verb then declines to make.
+			//!
+			//! ZERO REQUIRED ARGUMENTS: called bare it takes the most-referenced
+			//! qualifying material (`SelectMaterialToWet_`, ties broken
+			//! lexicographically), skipping metallic candidates entirely (§6.4
+			//! clause 1) -- a bare call never silently produces the lesser
+			//! coat-only result. Naming a metallic material explicitly opts into
+			//! that lesser result on purpose.
+			//!
+			//! EVERY EMITTED param carries min/max/step/label, and the shared
+			//! `dryness`/`base_wetness`/`pool_gain`/`ridge_shed`/`gravity_bias`/
+			//! `film_amount`/`film_gloss_lo`/`breakup_amp`/`breakup_scale`/`seed`
+			//! prelude is written BYTE-IDENTICAL into every field chunk this call
+			//! emits (§6.1, §6.3) -- the mechanism that makes `wet <= damp`
+			//! hold by construction rather than by careful editing, mirroring
+			//! `add_wear`'s identical discipline for `wear_mask`/`crevice_mask`.
+			//! `occlusion(0.08)`'s radius is a numeric LITERAL for the same
+			//! reason `add_wear`'s is (ExpressionEval.h's DynR-fallback trap on
+			//! any non-literal radius argument). `breakup_scale` and `seed` are
+			//! FNV-1a hashed from the material name (`ScaffoldJitterRange`, the
+			//! same primitive `add_wear` uses) so two calls on the same document
+			//! produce byte-identical text; every OTHER default is the literal
+			//! §6.3 number.
+			//!
+			//! REFUSALS, each leaving the document byte-identical: nothing
+			//! qualifies; a named material fails a specific clause (the message
+			//! says which, and names `add_wear` when the failure is that the
+			//! material's colour or another slot already carries `add_wear`'s
+			//! own composition, or names `add_wetness` back when it is already
+			//! wet -- §6.4's "make it loud" collision rule, both directions);
+			//! the material is metallic and was not named explicitly; the base
+			//! colour is unreadable or a painter rather than a constant; a
+			//! minted chunk name collides; the material's `metallic` slot
+			//! is unreadable (a textured mask -- "cannot tell whether darkening
+			//! applies", the same decline §6.4 clause 2 gives a textured
+			//! colour albedo); or the composed candidate would be
+			//! byte-identical to the current document (a metallic material
+			//! with no rebindable microsurface slot has nothing left to
+			//! write).
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
+			//! same commit path `AddWear` / `VaryMaterial` / `CollapseToInstances`
+			//! use, and for the same reason it has no staged-proposal form under
+			//! External authority.
+			AgentAddWetnessResult AddWetness( const std::string& material = std::string(),
+			                                   const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
 			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
 			//! reason it declined.
 			//!

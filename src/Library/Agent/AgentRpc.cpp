@@ -1418,6 +1418,22 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): add_wetness is the
+					// SEVENTH verb whose commit is one composite whole-document swap
+					// (a Lambertian base is REWRITTEN to polished_material; a GGX/PBR
+					// base gets one or more field chunks spliced plus its slots
+					// repointed), so it is excluded from IsProposeSafeVerb for
+					// exactly the reason add_wear above is, with the same message
+					// shape and the same "each verb refuses what the other has
+					// already rewritten" collision with add_wear.
+					if( m == "add_wetness" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; add_wetness "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -4318,6 +4334,77 @@ namespace RISE
 					if( !wr.geometryKind.empty() )     result.set( "geometry",     JsonValue::MakeString( wr.geometryKind ) );
 					if( !wr.material.empty() ) {
 						result.set( "previousRoughness", JsonValue::MakeNumber( wr.previousRoughness ) );
+						JsonValue rgb = JsonValue::MakeArray();
+						rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
+						rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );
+						rgb.push_back( JsonValue::MakeNumber( wr.baseB ) );
+						result.set( "baseColor", rgb );
+					}
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( wr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( wr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// add_wetness {material?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,rewroteToPolished,reflectanceSlot,
+				//       reflectancePainter,tauSlot,tauPainter,
+				//       scatteringSlots:[string,...],scatteringPainters:[string,...],
+				//       baseColor:[r,g,b],geometry,geometryUniform,isMetallic,
+				//       isOrenNayar,qualifying,objects}
+				//   docs/WETNESS_COAT_DESIGN.md Phase 1 (2026-08-31): rewrite ONE
+				//   material into the two-mask (damp/wet) wetness composition -- a
+				//   Lambertian base to `polished_material`, a GGX/PBR base in
+				//   place.  A pre-commit refusal comes back as ok=false with the
+				//   reason in `message`, the same shape add_wear/vary_material use.
+				//--------------------------------------------------------------
+				if( m == "add_wetness" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentAddWetnessResult wr =
+						s->AddWetness( materialStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( wr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( wr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( wr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( wr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( wr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( wr.headVersion ) );
+					if( !wr.message.empty() )      result.set( "message",      JsonValue::MakeString( wr.message ) );
+					if( !wr.material.empty() )     result.set( "material",     JsonValue::MakeString( wr.material ) );
+					if( !wr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( wr.materialKind ) );
+					result.set( "rewroteToPolished", JsonValue::MakeBool( wr.rewroteToPolished ) );
+					if( !wr.reflectanceSlot.empty() )    result.set( "reflectanceSlot",    JsonValue::MakeString( wr.reflectanceSlot ) );
+					if( !wr.reflectancePainter.empty() ) result.set( "reflectancePainter", JsonValue::MakeString( wr.reflectancePainter ) );
+					if( !wr.tauSlot.empty() )            result.set( "tauSlot",            JsonValue::MakeString( wr.tauSlot ) );
+					if( !wr.tauPainter.empty() )         result.set( "tauPainter",         JsonValue::MakeString( wr.tauPainter ) );
+					if( !wr.scatteringSlots.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : wr.scatteringSlots ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "scatteringSlots", arr );
+					}
+					if( !wr.scatteringPainters.empty() ) {
+						JsonValue arr = JsonValue::MakeArray();
+						for( const std::string& nm : wr.scatteringPainters ) arr.push_back( JsonValue::MakeString( nm ) );
+						result.set( "scatteringPainters", arr );
+					}
+					if( !wr.geometryKind.empty() ) result.set( "geometry", JsonValue::MakeString( wr.geometryKind ) );
+					if( !wr.material.empty() ) {
+						result.set( "geometryUniform", JsonValue::MakeBool( wr.geometryUniform ) );
+						result.set( "isMetallic",      JsonValue::MakeBool( wr.isMetallic ) );
+						result.set( "isOrenNayar",     JsonValue::MakeBool( wr.isOrenNayar ) );
 						JsonValue rgb = JsonValue::MakeArray();
 						rgb.push_back( JsonValue::MakeNumber( wr.baseR ) );
 						rgb.push_back( JsonValue::MakeNumber( wr.baseG ) );

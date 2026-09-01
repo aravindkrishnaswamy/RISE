@@ -452,6 +452,13 @@ namespace RISE
 				       // two plus the material's slots), one head bump, one
 				       // undo step, made without looking.
 				       v == "add_wear" ||
+				       // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): ONE
+				       // add_wetness call is ONE blind mutation on the same
+				       // argument -- one composite document swap (a Lambertian
+				       // rewrite to polished_material, or one-to-three field
+				       // chunks plus the material's slots on a GGX/PBR base),
+				       // one head bump, one undo step, made without looking.
+				       v == "add_wetness" ||
 				       // Doc 90 R2 (2026-08-23): ONE revert_to_revision call is
 				       // ONE blind mutation on the same argument -- one composite
 				       // document swap, one head bump, one undo step.  It counts
@@ -1446,6 +1453,7 @@ namespace RISE
 			//!   4f. name == "revert_to_revision"         -> "rev <requested> restored as rev <new> (was rev <previous>)", or "refused: <=80 chars of message" (doc 90 R2: same empty-status-on-refusal shape as 4d, and refusing is the COMMON outcome -- every "that is the current head" / "that one has aged out" answer arrives this way)
 			//!   4g. name == "fix_blend_scale"            -> "<n> joint(s) clamped[ -- <k> more: call again]", or "refused: <=80 chars of message" (cat plan item 1: same empty-status-on-refusal shape as 4d, and "nothing to fix" is a common, honest outcome)
 			//!   4h. name == "add_wear"                  -> "`<material>` <colorSlot>[+<roughSlots>] -> wear fields", or "refused: <=80 chars of message" (GEOMETRY_SHADING_SIGNALS sec 11: same empty-status-on-refusal shape as 4d)
+			//!   4i. name == "add_wetness"                -> "`<material>` <reflectanceSlot>[+<scatteringSlots>] -> wetness fields", or "refused: <=80 chars of message" (WETNESS_COAT_DESIGN sec 6/13: same empty-status-on-refusal shape as 4h)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1590,6 +1598,28 @@ namespace RISE
 						}
 					}
 					return "`" + result.get( "material" ).asString() + "` " + slots + " -> wear fields";
+				}
+
+				// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31) add_wetness: ONE
+				// atomic mutation, and not a count -- report which material is
+				// now wet and which slots it repointed.  Same empty-status-on-
+				// refusal shape as add_wear above, so a refusal ("nothing
+				// qualifies", "already wet", "collides with add_wear") is
+				// reported HERE with its reason rather than reading like a
+				// success.
+				if( call.name == "add_wetness" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					std::string slots = result.get( "reflectanceSlot" ).asString();
+					const JsonValue& scat = result.get( "scatteringSlots" );
+					if( scat.isArray() ) {
+						for( std::size_t i = 0; i < scat.size(); ++i ) {
+							if( !slots.empty() ) slots += "+";
+							slots += scat.at( i ).asString();
+						}
+					}
+					return "`" + result.get( "material" ).asString() + "` " + slots + " -> wetness fields";
 				}
 
 			// 4b-3. 88 S5 (2026-08-20) vary_material: ONE atomic mutation, and
