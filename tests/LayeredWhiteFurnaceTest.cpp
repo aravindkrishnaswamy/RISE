@@ -668,14 +668,39 @@ int main()
 	    "Energy-bounded by Estevez/Kulla Λ; ρ < 1 expected at grazing" );
 	  Run( r, *sheen ); }
 
-	// 3. Composite: dielectric over Lambertian.  KNOWN FAILURE on the
-	//    current CompositeSPF random walk — recursion budget kills most
-	//    diffuse-then-refracted paths before they exit, so the only
-	//    energy that reports out is the dielectric's surface Fresnel.
-	//    First L6 finding the audit produced; the importer's Phase-5
-	//    "skip layering" warning matches this.
-	{ ConfigReport& r = add( "3. Dielectric / Lambertian", kPostureKnownFailure, 0.0,
-	    "CompositeSPF random walk: recursion budget kills below-layer diffuse" );
+	// 3. Composite: dielectric over Lambertian.
+	//
+	//    2026-09-01 RE-MEASURE.  The original L6 note on this row said the
+	//    "recursion budget kills below-layer diffuse".  That diagnosis was
+	//    WRONG.  The real cause was an IOR-stack threading bug in
+	//    CompositeSPF's random walk: the walk recursed with the ior_stack it
+	//    was HANDED instead of each scattered ray's OWN stack, so the return
+	//    trip arrived at the top interface with an OUTSIDE stack, DielectricSPF
+	//    read it as "entering from outside", and BOTH of its lobes were then
+	//    culled -- the interface emitted nothing at all.  EVERY gap-crossing
+	//    path died inside the walk, which is why this row sat at exactly the
+	//    bare-Fresnel reflectance and why composite_material's `extinction` and
+	//    `thickness` were completely inert.  Fixed via
+	//    CompositeSPF::EffectiveStack; guarded by tests/CompositeExtinctionTest.
+	//
+	//    Measured here: {0.0400, 0.0415, 0.0892, 0.3877} before the fix ->
+	//    {0.3339, 0.3044, 0.3128, 0.5324} after, bit-identical across runs.
+	//
+	//    Still NOT energy-conserving, and the ORIGINAL note's mechanism is now
+	//    the correct description of what remains: with max_recur=4 and per-type
+	//    budgets of 2, the light that TIRs back down at the top interface (~56 %
+	//    of the returning diffuse population) hits its reflection budget at
+	//    steps=2 and is dropped.  That is a genuine finite-budget truncation,
+	//    not a bug, so this row stays a documented deficit -- but as a
+	//    PREDICTION check, not a free pass: kPostureKnownFailure would silently
+	//    swallow both a regression back to 0.04 and an over-unity blow-up.
+	//    eps = 0.03 is ~10x the MC noise on a 100k-sample mean here.
+	static const double kPredDielLamb[NUM_THETA] = { 0.3339, 0.3044, 0.3128, 0.5324 };
+	{ ConfigReport& r = addPredicted( "3. Dielectric / Lambertian",
+	    "post-EffectiveStack recovery locked in: predicted rho={0.3339,0.3044,0.3128,0.5324} "
+	    "(pre-fix was {0.0400,0.0415,0.0892,0.3877}, eps 0.03); residual deficit is finite "
+	    "recursion-budget truncation of the TIR population",
+	    kPredDielLamb, 0.03 );
 	  Run( r, *compDielLamb ); }
 
 	// 4. Composite: GGX top over Lambertian (clearcoat-style).  Top
@@ -722,8 +747,23 @@ int main()
 	//    re-running with white inputs (#5) which passes; the bug
 	//    is regime-dependent.  Disposition: same as Finding A
 	//    (CompositeSPF random walk fix).
+	//    2026-09-01 RE-MEASURE + CORRECTED DIAGNOSIS.  This row is NOT the same
+	//    bug as #3, and it is not a recursion-budget effect either.  It did not
+	//    move at all when #3's IOR-stack bug was fixed ({0.0390, 0.0391, 0.0652,
+	//    0.1970} before and after).  The actual cause is structural: GGXSPF only
+	//    ever emits UPWARD lobes (reflection + diffuse; grep AddScatteredRay in
+	//    GGXSPF.cpp -- there is no transmission lobe), so a GGX top layer never
+	//    hands CompositeSPF's walk a downward ray and the SUBSTRATE IS NEVER
+	//    REACHED.  Measured directly: an SPF-level probe of GGX(rd=0, rs=0.04)
+	//    over a white Lambertian reports rho = 0.03900 against the BARE coat's
+	//    0.03897, with zero downward rays emitted.  Configs #4 and #5 have the
+	//    same structure and only look healthy because their top layer's rs = 1
+	//    (a perfect mirror), which masks the missing substrate at rho = 1.
+	//    Closing this needs a transmission path for reflection-only top layers,
+	//    not a walk fix -- coated_material (#14/#15) is the shipped answer.
 	{ ConfigReport& r = add( "7. Clearcoat / red GGX-PBR (Finding D)", kPostureKnownFailure, 0.0,
-	    "same recursion-budget bug as #3 in coloured-input regime; tied to Finding A" );
+	    "reflection-only GGX top emits no downward lobe, so the substrate is never reached "
+	    "(NOT #3's walk bug, NOT a recursion budget)" );
 	  Run( r, *compClearcoatRedPbr ); }
 
 	// 8-10. polished_material wetness recipe (docs/WETNESS_COAT_DESIGN.md §6.2,
