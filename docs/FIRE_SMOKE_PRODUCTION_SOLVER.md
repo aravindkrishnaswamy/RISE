@@ -5279,7 +5279,7 @@ bounds roundoff over state, targets, momentum, velocity, pressure, and alpha.
 No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-derived from
 historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-to `c6bee4af83dff8a62dc65ae4c45051259b9bd055d8eecabb2579bf64b52be29f`.
+to `6b266c7ee5599b7c9461fea7b83b01bf34bbdd1f117925bef6ba693de1db51cf`.
 The digest encoding prefixes the Transport/Force source manifest, so the owner
 change must change this digest. A detached build at `0e70f17f1` and the current
 build both return the exact diagnostic success code 237; all 3,972,326 branch

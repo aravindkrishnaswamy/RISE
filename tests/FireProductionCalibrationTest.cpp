@@ -3340,7 +3340,9 @@ int main()
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
 			"e9e0e6e40ea51686a4f34e57ea0ae4102408986c2dc8221dd89ca9ca99c32a79"||
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
-			"edfb22639f8dac34e0d6f66d021b5b6f4c9ece83fff848e81c1ac2a8b00b326e")&&
+			"edfb22639f8dac34e0d6f66d021b5b6f4c9ece83fff848e81c1ac2a8b00b326e"||
+		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
+			"a2e251a99fd40488ad3387e294b560040fbf41d5015f7ff77776e38faae6a8bf")&&
 		sourceSHA("tests/FireProductionRoundoffWalker.h")==
 			"22259ff8367aeb73ac5b73d8a282b23f18c61d545ca99cad14d856f9e40a4378"&&
 		compatibleMomentumEvidenceV2.find("sequence_test_sha256 "
@@ -3391,7 +3393,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"fc31e7d09a14b2ab542edf2f180e9ad90a58e2847bdc19fb2fe9cd3da433a078"&&
+			"a079599e7ecfe2af008815a01766c13697cb4ab244863a287daf236a32afcc6e"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3414,7 +3416,7 @@ int main()
 			"src/Library/Utilities/FireSequence.cpp")+"\n")!=std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner rendered/fire_production_calibration/"
 			"r190_projected_heun_owner/r136_trace_repin_evidence.v1 sha256 "
-			"22c81b75db8959408f0745bb239b2442c508cc404b4e97bd84e174c56b2ccb2b\n")!=
+			"85b57c7f220a37665ea30fbc8b6601b8778dd9291628215ea09a25b60fc629d1\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
 			"258b92cf142d609c9247942906710233cc52921795cc264f3efc8e4c47ce669e")&&
@@ -7845,12 +7847,20 @@ int main()
 		biasedCycleResult.r0.projection.pressureOpenInflow!=
 			differentialResult.r0.projection.pressureOpenInflow;
 	RISE::FireProductionProjectedHeunCPUOwner staleCorrectionOwner;
+	RISE::FireProductionProjectedHeunOwnerResult staleCorrectionResult;
 	const bool staleCorrectionInjected=setOwnerFailure("stale-candidate");
-	const bool staleCorrectionRejected=staleCorrectionInjected&&
+	const bool staleCorrectionRejectedCore=staleCorrectionInjected&&
 		staleCorrectionOwner.Begin(ownerRequest,&error)&&
 		!staleCorrectionOwner.SolveR0(ownerTransport,&error)&&
-		error.find("candidate lineage")!=std::string::npos;
+		error=="projected-Heun r70 candidate lineage is invalid";
 	const bool staleCorrectionReset=setOwnerFailure(0);
+	const bool staleCorrectionRejected=staleCorrectionReset&&
+		staleCorrectionRejectedCore&&
+		staleCorrectionOwner.SolveR0(ownerTransport,&error)&&
+		staleCorrectionOwner.SolveR1(ownerTransport,&error)&&
+		staleCorrectionOwner.SolveR2(ownerTransport,staleCorrectionResult,&error)&&
+		RISE::FireProductionProjectedHeunOwnerResultMatches(
+			staleCorrectionResult,ownerSource);
 	RISE::FireProductionProjectedHeunCPUOwner atomicOwner;
 	RISE::FireProductionProjectedHeunOwnerResult atomicResult=ownerResult;
 	const auto axesEmpty=[](const std::array<std::vector<float>,3>& axes){
@@ -7899,7 +7909,7 @@ int main()
 	const bool atomicRetry=atomicFailure&&atomicOwner.SolveR2(ownerTransport,atomicResult,&error)&&
 		RISE::FireProductionProjectedHeunOwnerResultMatches(atomicResult,ownerSource);
 	Check(outOfOrderRejected&&staleCandidateRejected&&forgedLineageRejected&&
-		replayedPayloadRejected&&staleCorrectionRejected&&staleCorrectionReset&&atomicReset&&
+		replayedPayloadRejected&&staleCorrectionRejected&&atomicReset&&
 		atomicRetry&&
 		!std::is_aggregate<RISE::FireProductionProjectedHeunCPUOwner>::value,
 		"r190 owner refuses stale payload/lineage, preserves order, and retries atomic publication");
@@ -7923,13 +7933,13 @@ int main()
 		"r136_trace_repin_evidence.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		projectedHeunOwnerEvidence.begin(),projectedHeunOwnerEvidence.end()))==
-			"041a6df600b5622c4a4519eaebcf7236aaa2c736d69cce01e1d66f69360d98ca"&&
+			"71064ccc0c8150ae1cbd115faeef5059deb1c4c76eed5d7c65013221b32957b7"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunMetalManifest.begin(),projectedHeunMetalManifest.end()))==
 			"67a1531ecef0ae0a0f08749e210d5c47f81389dba3617f4e3842a8df81517c6b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunR136Repin.begin(),projectedHeunR136Repin.end()))==
-			"22c81b75db8959408f0745bb239b2442c508cc404b4e97bd84e174c56b2ccb2b"&&
+			"85b57c7f220a37665ea30fbc8b6601b8778dd9291628215ea09a25b60fc629d1"&&
 		projectedHeunOwnerEvidence.find("r70_authority public false\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find("red_stale_projection_identity true\n")!=
@@ -7948,7 +7958,7 @@ int main()
 			"red_r59_independent_r60_and_commuting_recompute true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"r136_live_trace_digest c6bee4af83dff8a62dc65ae4c45051259b9bd055d8eecabb2579bf64b52be29f\n")!=
+			"r136_live_trace_digest 6b266c7ee5599b7c9461fea7b83b01bf34bbdd1f117925bef6ba693de1db51cf\n")!=
 			std::string::npos&&
 		projectedHeunR136Repin.find(
 			"historical_exit_code 237\n")!=std::string::npos&&

@@ -4852,7 +4852,7 @@ it was already tried and refuted here.
   and wall positive-zero checks inspect the complete binary64 word. Metal execution
   remains unclaimed on this host. The r136 source-bound trace digest moves from
   the historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-  to `c6bee4af83dff8a62dc65ae4c45051259b9bd055d8eecabb2579bf64b52be29f`.
+  to `6b266c7ee5599b7c9461fea7b83b01bf34bbdd1f117925bef6ba693de1db51cf`.
   This is a manifest re-derivation, not a numerical re-baseline: the encoding
   prefixes the Transport/Force source hashes, and a detached build of
   `0e70f17f1` reproduces the historical digest and exit 237 while the reviewed

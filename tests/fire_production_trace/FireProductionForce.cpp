@@ -2417,9 +2417,7 @@ namespace RISEFireProductionTrace
 					candidate,scalarAcceptance.sharedFaceAlpha);
 				FireProductionScalarProjectionTargetSeal corrected;
 				std::uint64_t correctionCandidateIdentity=candidateIdentity;
-				const char* correctionFailure=std::getenv(
-					"RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
-				if(correctionFailure&&std::strcmp(correctionFailure,"stale-candidate")==0)
+				if(OwnerTestFailure("stale-candidate"))
 					correctionCandidateIdentity^=UINT64_C(1);
 				if(!FireProductionProjectedHeunTargetAuthority::Correct(target,
 					candidate,correctionCandidateIdentity,static_cast<std::uint8_t>(stage),
