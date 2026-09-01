@@ -649,6 +649,9 @@ clearcoat-over-paint scenes; its own landing.
 | 5 | Composite: GGX / GGX-PBR (clearcoat over PBR), white inputs | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — passes with white baseColor; the importer's "near-black" warning was suspected stale based on this alone, but #7 below shows it's regime-dependent. |
 | 6 | Composite: Sheen / GGX-PBR | 0.087 | 0.128 | 0.280 | 0.547 | PASS @ 5% bounded — Imageworks Λ keeps the layered case bounded too; sheen-over-PBR no longer blows up at grazing. |
 | 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.040** | **0.040** | **0.068** | **0.205** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
+| 8 | `polished_material`, tau=1.0 (full coverage) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | PASS @ `kPostureMatchesPrediction`, eps=0.002 — 2026-08-31, [WETNESS_COAT_DESIGN.md §6.2](WETNESS_COAT_DESIGN.md#6-2-the-emitted-target-polished_material-and-why-not-ggx) Phase-1 exit-gate configuration. `c=1` zeroes the `Rd·Rs·(1−c)` deficit identically; measured matches the predicted `ρ=1.0` exactly. Doubles as the polished-fixture methodology check (analogue of #0). |
+| 9 | `polished_material`, tau=0.5 (worst-case dip) | 0.9900 | 0.9894 | 0.9704 | 0.8265 | PASS @ `kPostureMatchesPrediction`, eps=0.002 — 2026-08-31, same doc §6.2. Predicted `ρ = 1 − 0.5·Rs(θ)` = {0.9900, 0.9894, 0.9704, 0.8265} (Rs at ior=1.33: {0.0201, 0.0211, 0.0591, 0.3469}), stored per-angle and enforced (not just an energy band) — the `Rd·Rs·(1−c)` analytic bound is confirmed, not just asserted, and the separate geometric-horizon coat-lobe drop §6.2 also describes adds no measurable extra loss on this flat, unperturbed fixture. |
+| 10 | `polished_material`, tau=0.9 (recipe's pooled value) | 0.9980 | 0.9979 | 0.9941 | 0.9653 | PASS @ `kPostureMatchesPrediction`, eps=0.002 — 2026-08-31, same doc §6.2, tau matches the rain-wet-cobbles recipe's own pooled joints value ([WETNESS_COAT_DESIGN.md §6.5](WETNESS_COAT_DESIGN.md#6-5-worked-example-rain-wet-cobblestones)). Predicted `ρ = 1 − 0.1·Rs(θ)` = {0.9980, 0.9979, 0.9941, 0.9653}; enforced to within eps. This is the number §13's Phase-1 exit gate and §12 debt 5 ask for: at the recipe's actual coverage the coverage-mask deficit is ≤0.2% up to 60° and ~3.5% at 80° grazing. |
 
 ### Findings, in priority order
 
@@ -704,6 +707,48 @@ same bug, surfacing in different regimes.  The importer warning
 at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp)
 SHOULD remain in place until Finding A's recursion-budget fix
 lands.
+
+**Finding E — `polished_material`'s `tau`-as-coverage-mask deficit
+(#8, #9, #10) is exactly the analytic `Rd·Rs·(1−c)` bound, with no
+measurable extra loss.**  2026-08-31, added for
+[WETNESS_COAT_DESIGN.md §6.2/§13](WETNESS_COAT_DESIGN.md)'s Phase-1
+exit gate ("a furnace configuration putting a number on §6.2's
+coverage dip").  `PolishedSPF`'s coat lobe carries `kray = tau·Rs`
+but the substrate lobe stays `kray = Rd·(1−Rs)` rather than
+`Rd·(1−tau·Rs)`, so intermediate coverage (`tau ∈ (0,1)`) loses
+`Rd·Rs·(1−tau)` relative to a true coverage mixture.  Measured at
+`tau = 0.5` (#9, the worst-case region) and `tau = 0.9` (#10, the
+rain-wet-cobbles recipe's own pooled value) against the closed-form
+prediction `ρ_pred(θ) = 1 − Rs(θ)·(1−tau)` for `Rd = 1`: **both match
+to within 0.0001 at every incident angle**, and `tau = 1.0` (#8)
+reproduces `ρ = 1.0000` exactly, confirming the fixture's
+methodology.  **Configs #8-10 use a dedicated `kPostureMatchesPrediction`
+posture** (added 2026-08-31, review round P1) rather than the generic
+`kPostureBounded` used elsewhere in this table: it stores the
+closed-form `ρ_pred(θ)` above per config/angle and fails when
+`|measured − predicted| > 0.002`, so the gate actually checks the
+predicted curve rather than just an energy band — `kPostureBounded`'s
+`[0, 1+tol]` would silently pass both a regression that turns `tau`
+into a no-op (`ρ` pinned near 1.0 regardless of coverage) and one that
+lets the deficit run unbounded or invert into a gain.  Red-proved by
+perturbing config #9's stored prediction by 0.01 at θ=80°: the test
+correctly turned that row FAIL (exit 1) with the mismatch reported in
+the note, then passed again once reverted.  §6.2 separately describes
+a second, grazing-
+concentrated loss from `PolishedSPF`'s geometric-horizon coat-lobe
+rejection ([PolishedSPF.cpp:206-207](../src/Library/Materials/PolishedSPF.cpp))
+— that mechanism needs a shading/geometric-normal MISMATCH (a tilting
+modifier bending the shading normal away from the true surface), and
+this furnace fixture is a single flat, unperturbed normal, so the
+gate degenerates to the ordinary shading-hemisphere test and
+contributes no additional measurable loss here.  **The `Rd·Rs·(1−c)`
+term is therefore confirmed as the dominant, and at this fixture's
+geometry the *only* measurable, component of §6.2's coverage dip** —
+at the recipe's actual pooled coverage (`tau = 0.9`) the loss is
+≤ 0.2 % up to 60° and ≈ 3.5 % at 80° grazing, small enough that Phase
+1 ships as designed; `coated_material`'s `coat_weight` (Phase 2,
+§7.4) remains the principled fix for the general case, including
+scenes whose geometry DOES produce a shading/geometric mismatch.
 
 ### Disposition for L7-L11
 
