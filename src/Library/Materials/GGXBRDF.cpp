@@ -558,3 +558,106 @@ RISEPel GGXBRDF::albedo( const RayIntersectionGeometric& ri ) const
 		return diffColor + specColor * fresnel;
 	}
 }
+
+//////////////////////////////////////////////////////////////////////
+// hemisphericalAlbedo / hemisphericalAlbedoNM -- IBSDF's VIEW-
+// INDEPENDENT reflectance.  See IBSDF.h for why it exists separately
+// from `albedo` above.
+//
+// Same "diffuse + Fresnel-weighted specular; D and G shape the lobe but
+// do not move the integrated reflectance to first order" structure as
+// `albedo`, with ONE deliberate difference that is the entire reason
+// this is a separate method: every Fresnel term here is the
+// HEMISPHERICAL AVERAGE, never an outgoing-cosine evaluation.
+//
+// That is both required and correct.  REQUIRED, because a view-
+// dependent reflectance fed into a layered material's shared recycling
+// term makes that material's BRDF non-reciprocal -- f(a->b) would carry
+// R(b) while f(b->a) carried R(a).  CORRECT, because the field this
+// quantity answers for -- light a coat has totally-internally-reflected
+// back down onto the substrate -- IS diffuse, so the hemispherical
+// average is the physically right Fresnel weight and not merely a
+// convenient view-free stand-in.
+//
+// All three averages are already in the tree for Kulla-Conty, which
+// needs the same quantity for the same reason: SchlickFresnelAvg
+// (closed form), MicrofacetEnergyLUT::ComputeFresnelAvg (21-point
+// Gauss-Legendre), ThinFilm::FresnelAvgConductor{,RGBSpectral}.
+// `ri.onb.w()` is a shading-point property, not a view direction, so
+// handing it to ComputeFresnelAvg keeps the result view-independent.
+//////////////////////////////////////////////////////////////////////
+bool GGXBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
+{
+	const Vector3 n = ri.onb.w();
+	const RISEPel specColor = pSpecular->GetColor( ri );
+	const RISEPel diffColor = pDiffuse->GetColor( ri );
+
+	if( fresnelMode == eFresnelSchlickF0 )
+	{
+		const RISEPel F_avg = SchlickFresnelAvg<RISEPel>( specColor );
+		const Scalar maxF0 = ColorMath::MaxValue( specColor );
+		out = diffColor * r_max( Scalar(0), Scalar(1.0) - maxF0 ) + F_avg;
+	}
+	else if( fresnelMode == eFresnelThinFilmConductor )
+	{
+		const Scalar thickness = pFilmThickness->GetValueAtNM( ri, Scalar(550) );
+		auto stackAt = [&]( Scalar nm, Scalar& n0, Scalar& k0, Scalar& n1, Scalar& k1, Scalar& n2, Scalar& k2 ) {
+			n0 = ri.ambientIOR; k0 = Scalar(0);	// G6 ambient medium IOR (default 1.0 = air)
+			n1 = pFilmIOR->GetValueAtNM( ri, nm );
+			k1 = pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0);
+			n2 = pIOR->GetValueAtNM( ri, nm );
+			k2 = pExtinction->GetValueAtNM( ri, nm );
+		};
+		const RISEPel F_avg = ThinFilm::FresnelAvgConductorRGBSpectral( thickness, stackAt );
+		out = diffColor + specColor * F_avg;
+	}
+	else
+	{
+		const ScalarTriple iorT = pIOR->GetValuesAt( ri );
+		const ScalarTriple extT = pExtinction->GetValuesAt( ri );
+		const RISEPel ior( iorT.v[0], iorT.v[1], iorT.v[2] );
+		const RISEPel ext( extT.v[0], extT.v[1], extT.v[2] );
+		const RISEPel niPel( ri.ambientIOR, ri.ambientIOR, ri.ambientIOR );
+		const RISEPel F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<RISEPel>( n, niPel, ior, ext );
+		out = diffColor + specColor * F_avg;
+	}
+
+	out = RISEPel(
+		r_min( r_max( out[0], Scalar(0) ), Scalar(1) ),
+		r_min( r_max( out[1], Scalar(0) ), Scalar(1) ),
+		r_min( r_max( out[2], Scalar(0) ), Scalar(1) ) );
+	return true;
+}
+
+bool GGXBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
+{
+	const Vector3 n = ri.onb.w();
+	const Scalar specNM = pSpecular->GetColorNM( ri, nm );
+	const Scalar diffNM = pDiffuse->GetColorNM( ri, nm );
+
+	if( fresnelMode == eFresnelSchlickF0 )
+	{
+		// The diffuse split uses the PER-WAVELENGTH F0 rather than the
+		// RGB path's max-over-channels: at a single wavelength there
+		// are no other channels to take a maximum over.
+		const Scalar F_avg = SchlickFresnelAvg<Scalar>( specNM );
+		out = diffNM * r_max( Scalar(0), Scalar(1.0) - specNM ) + F_avg;
+	}
+	else if( fresnelMode == eFresnelThinFilmConductor )
+	{
+		out = diffNM + specNM * ThinFilm::FresnelAvgConductor(
+			nm, ri.ambientIOR, Scalar(0),
+			pFilmIOR->GetValueAtNM( ri, nm ), ( pFilmExtinction ? pFilmExtinction->GetValueAtNM( ri, nm ) : Scalar(0) ),
+			pFilmThickness->GetValueAtNM( ri, nm ),
+			pIOR->GetValueAtNM( ri, nm ), pExtinction->GetValueAtNM( ri, nm ) );
+	}
+	else
+	{
+		const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>(
+			n, ri.ambientIOR, pIOR->GetValueAtNM( ri, nm ), pExtinction->GetValueAtNM( ri, nm ) );
+		out = diffNM + specNM * F_avg;
+	}
+
+	out = r_min( r_max( out, Scalar(0) ), Scalar(1) );
+	return true;
+}

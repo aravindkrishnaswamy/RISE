@@ -124,9 +124,84 @@ construction merges sub-interfaces independently:
 - The `Emitter` similarly composites if both layers emit.
 
 This is the classic "varnished wood" / "skin over fat" / "metal flake
-under clearcoat" idiom. For most users `composite_material` is the
-right layer-stacking primitive; PBR-style additive lobes (sheen + base)
+under clearcoat" idiom. `composite_material` is the general
+layer-stacking primitive; PBR-style additive lobes (sheen + base)
 are expressed as their own dedicated materials (`sheen_material`).
+
+**But for a transparent film over an opaque substrate — water, oil,
+lacquer, clearcoat — reach for `coated_material` (§6.1) instead.**
+
+## 6.1 `coated_material` — a film with *coverage*, and a real layered BSDF
+
+[`CoatedMaterial`](../src/Library/Materials/CoatedMaterial.h) +
+[`CoatedBRDF`](../src/Library/Materials/CoatedBRDF.h) +
+[`CoatedSPF`](../src/Library/Materials/CoatedSPF.h), with the layer
+algebra in [`CoatedLayer.h`](../src/Library/Materials/CoatedLayer.h).
+Full design: [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) §7.
+
+**Why it exists rather than reusing §6.** Both existing routes to a
+coated surface answer direct lighting with the *wrong* BSDF:
+`composite_material` forwards one sub-material's BSDF (top wins), and
+`polished_material` returns a bare `LambertianBRDF` for a
+Fresnel-coated surface. So NEE, BDPT vertex connections, and MIS
+denominators all saw an **uncoated** substrate.
+`CoatedBRDF::value`/`valueNM` is the closed-form *combined* response,
+which is the point of the material.
+
+| parameter | pipe | notes |
+|---|---|---|
+| `base` | material ref | **allowlisted** — see below |
+| `coat_weight` | `IScalarPainter` | [0,1] sub-pixel **coverage** fraction; the spatially varying slot |
+| `coat_ior` | `IScalarPainter` | 1.33 water, 1.5 varnish; clamped to [1, 3] |
+| `coat_roughness` | `IScalarPainter` | coat lobe's GGX α; clamped to [1e-3, 1] |
+| `coat_thickness` | `IScalarPainter` | world length; feeds Beer–Lambert |
+| `coat_absorption` | `IScalarPainter` | 1/length; **scalar pipe deliberately** (a large coefficient on the colour pipe would be clamped by the JH uplift) |
+| `coat_tint` | `IPainter` | colour of one normal-incidence traversal; genuinely a colour |
+
+Names follow the OpenPBR surface spec so a future MaterialX/OpenPBR
+import is a rename rather than a redesign.
+
+**The substrate allowlist.** `base` accepts only `lambertian_material`,
+`orennayar_material`, `ggx_material`, and
+`pbr_metallic_roughness_material` (which resolves to a `ggx_material`
+at scene-build time), and refuses anything that emits. Two independent
+reasons: the layered model needs the substrate's *directional albedo*
+to run its interreflection series, which a luminaire / BSSRDF /
+volumetric random walk cannot supply; and §7.5's lobe budget only
+closes because the substrate's lobe count is known. Refusal happens at
+**parse time** with a diagnostic naming the allowlist, in both
+`Job::AddCoatedMaterial` and `RISE_API_CreateCoatedMaterial`.
+
+**Three things worth knowing before extending it:**
+
+1. **`coat_weight` is coverage, not gloss.** At coverage `c` the
+   response is the mixture `c·(coated) + (1−c)·(bare)`, and the bare
+   branch reaches the substrate through *air* — no Fresnel
+   transmission, no interreflection. Both branches conserve energy, so
+   partial coverage does not darken a white surface.
+
+2. **The wet darkening is transport, not a fitted exponent.** The
+   Saunderson recycling `1/(1 − r_i·R(λ))` is evaluated *per
+   wavelength*, so the channels where the substrate is bright are
+   amplified most — darkening and chroma boost fall out together. This
+   is why there is no `substrate_wet_exponent`: an additional `R^k`
+   would double-count the same physics.
+
+3. **Anything shared by both directions must be view-independent.** The
+   recycling term multiplies `f_base` symmetrically, so it reads
+   `IBSDF::hemisphericalAlbedo` (whose contract forbids touching
+   `ri.ray`) and *not* `IBSDF::albedo`, which is the OIDN AOV and is
+   legitimately view-dependent. Using the latter made the BRDF
+   non-reciprocal by ~28 % at grazing — invisible to every
+   self-consistency check, which is why
+   `SPFBSDFConsistencyTest`'s Part E sweeps `f(a→b)` against `f(b→a)`.
+
+Guards: `LayeredWhiteFurnaceTest` configs 11–18 (energy, including a
+red-proof pair that measures the ~45 % loss when the interreflection
+term is removed), `SPFBSDFConsistencyTest` (value↔Scatter, pointwise,
+and reciprocity), `SPFPdfConsistencyTest` (the real mixture PDF),
+`CoatedMaterialChunkTest` (parser, allowlist, editor introspection),
+and [`scenes/Tests/Materials/coated_material.RISEscene`](../scenes/Tests/Materials/coated_material.RISEscene).
 
 ## 7. Luminaires — materials that emit
 
@@ -178,6 +253,10 @@ file for parameter-by-parameter behaviour.
 - `isotropic_phong_material` — classic Phong.
 
 **Layered / additive lobes:**
+- `coated_material` — a transparent dielectric film over a
+  **restricted** substrate, with the film's *coverage* as a first-class
+  spatially varying slot (§6.1). The wetness / clearcoat / varnish /
+  oil-film material.
 - `composite_material` — top/bottom layered composition (§6).
 - `sheen_material` — Charlie-style sheen lobe (intended to layer over a
   base via `composite_material`).

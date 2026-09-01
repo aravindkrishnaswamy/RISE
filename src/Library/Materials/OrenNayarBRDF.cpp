@@ -145,6 +145,59 @@ RISEPel OrenNayarBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	return pReflectance->GetColor( ri );
 }
 
+//////////////////////////////////////////////////////////////////////
+// hemisphericalAlbedo{,NM} -- Rd, as an APPROXIMATION whose error is
+// measured rather than assumed.
+//
+// An earlier revision of this comment claimed the L1 / L2 roughness
+// terms "redistribute scattering direction but do not move the
+// integrated reflectance", i.e. that Rd is exact.  That is true only
+// at roughness 0.  MEASURED on this implementation (the full
+// C1/C2/C3 + L2 form, not the qualitative two-term one), as
+// hemispherical reflectance / Rd:
+//
+//     roughness    0 deg    30 deg    60 deg    80 deg
+//        0.00      1.0000   1.0000   1.0000   1.0000
+//        0.20      0.9780   0.9792   0.9908   1.0108
+//        0.30      0.9485   0.9505   0.9694   1.0019
+//        0.50      0.8740   0.8770   0.9046   0.9525
+//        1.00      0.7444   0.7482   0.7827   0.8424
+//
+// So Rd is exact at roughness 0, ~2 % high at 0.2, ~5 % at 0.3, and up
+// to 25.6 % high at roughness 1.  It is also mildly view-dependent
+// (0.744 -> 0.842 across the angle sweep at roughness 1), which this
+// method's contract cannot express -- one more reason the value is an
+// approximation and is documented as one.
+//
+// DIRECTION OF THE ERROR, for the one consumer that exists.
+// `coated_material` puts this in the recycling denominator
+// 1/(1 - r_i * R), so an over-estimate of R over-amplifies the
+// recycled term and renders a coated rough Oren-Nayar substrate
+// slightly too BRIGHT.  Bounded: at r_i = 0.472 and Rd = 1, R = 1.0
+// vs a true 0.744 moves the factor from 1.894 to 1.542, so the cap is
+// roughly 20 % on the recycled portion, at the extreme roughness.  For
+// the roughness values scenes actually use (<= 0.3) it is under 5 %.
+//
+// NOT CORRECTED because there is no clean closed form to correct it
+// with: the C3 and L2 terms add energy back in a way that does not
+// factor out of Rd (at roughness 0.5 the qualitative model predicts
+// 0.7845 while this one measures 0.8740), so a fit would have to be
+// baked and validated on its own.  Recorded here so the next person to
+// need a tighter number knows the size of the gap and does not
+// rediscover it.
+//////////////////////////////////////////////////////////////////////
+bool OrenNayarBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
+{
+	out = pReflectance->GetColor( ri );
+	return true;
+}
+
+bool OrenNayarBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
+{
+	out = pReflectance->GetColorNM( ri, nm );
+	return true;
+}
+
 // Explicit instantiation so other TUs (OrenNayarSPF.cpp) can link to the
 // scalar overload without seeing the template body.  The RISEPel flavour
 // is instantiated implicitly through OrenNayarBRDF::value above.

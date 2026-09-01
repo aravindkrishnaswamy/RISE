@@ -22,6 +22,7 @@
 #include "../Materials/Material.h"   // NullMaterial — Job's default-registered "none" material
 #include "../Materials/LambertianMaterial.h"
 #include "../Materials/PolishedMaterial.h"
+#include "../Materials/CoatedMaterial.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
@@ -178,6 +179,7 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	if( dynamic_cast<const NullMaterial*>( &material ) )                                return String( "None (default)" );
 	if( dynamic_cast<const LambertianMaterial*>( &material ) )                          return String( "Lambertian" );
 	if( dynamic_cast<const PolishedMaterial*>( &material ) )                            return String( "Polished" );
+	if( dynamic_cast<const CoatedMaterial*>( &material ) )                              return String( "Coated" );
 	if( dynamic_cast<const DielectricMaterial*>( &material ) )                          return String( "Dielectric" );
 	if( dynamic_cast<const PerfectReflectorMaterial*>( &material ) )                    return String( "Perfect Reflector" );
 	if( dynamic_cast<const PerfectRefractorMaterial*>( &material ) )                    return String( "Perfect Refractor" );
@@ -338,6 +340,30 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildScalarPainterSlot( "scattering", pol->GetScattering(),
 			scalarPainters, composed,
 			"Scalar painter for the coat's scattering function (Phong cone width or HG asymmetry depending on the material's `hg` flag)." ) );
+	}
+	else if( const CoatedMaterial* coat = dynamic_cast<const CoatedMaterial*>( &material ) ) {
+		// `base` is a MATERIAL, not a painter, so it has no row here --
+		// MaterialSlotRef models Painter / ScalarPainter only.  Changing
+		// the substrate means re-authoring the chunk (it has to re-run
+		// the allowlist and rebuild the BRDF and SPF).
+		rows.push_back( BuildScalarPainterSlot( "coat_weight", coat->GetCoatWeight(),
+			scalarPainters, composed,
+			"Scalar painter for the coat's COVERAGE fraction in [0,1] -- the spatially varying slot.  A sub-pixel area fraction, not a gloss knob: at coverage c the surface is the mixture c*(coated) + (1-c)*(bare)." ) );
+		rows.push_back( BuildScalarPainterSlot( "coat_ior", coat->GetCoatIOR(),
+			scalarPainters, composed,
+			"Scalar painter for the coat's index of refraction (1.33 water, 1.5 varnish).  Drives both the coat's Fresnel lobe and the internal reflectance that recycles light back into the substrate -- i.e. the wet darkening and chroma boost." ) );
+		rows.push_back( BuildScalarPainterSlot( "coat_roughness", coat->GetCoatRoughness(),
+			scalarPainters, composed,
+			"Scalar painter for the coat lobe's GGX alpha.  0.01-0.05 water, 0.03-0.1 clearcoat; floored at 1e-3 so the coat is never a delta lobe." ) );
+		rows.push_back( BuildScalarPainterSlot( "coat_thickness", coat->GetCoatThickness(),
+			scalarPainters, composed,
+			"Scalar painter for the coat's thickness in world length units; multiplies coat_absorption into a Beer-Lambert optical depth.  0 makes absorption a no-op." ) );
+		rows.push_back( BuildScalarPainterSlot( "coat_absorption", coat->GetCoatAbsorption(),
+			scalarPainters, composed,
+			"Scalar painter for the coat's absorption coefficient (1/length) -- physical scalar, NOT a colour.  Use coat_tint for a coloured coat." ) );
+		rows.push_back( BuildPainterSlot( "coat_tint", coat->GetCoatTint(),
+			painters, composed,
+			"Painter for the colour transmitted by one normal-incidence traversal of the coat.  The one coat slot that is genuinely a colour (a tinted lacquer); white is untinted." ) );
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		rows.push_back( BuildScalarPainterSlot( "tau", die->GetTransmittance(),
@@ -671,6 +697,26 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &pol->GetScattering(); return out;
 		}
 	}
+	else if( const CoatedMaterial* coat = dynamic_cast<const CoatedMaterial*>( &material ) ) {
+		if( slotName == String( "coat_weight" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatWeight(); return out;
+		}
+		if( slotName == String( "coat_ior" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatIOR(); return out;
+		}
+		if( slotName == String( "coat_roughness" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatRoughness(); return out;
+		}
+		if( slotName == String( "coat_thickness" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatThickness(); return out;
+		}
+		if( slotName == String( "coat_absorption" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &coat->GetCoatAbsorption(); return out;
+		}
+		if( slotName == String( "coat_tint" ) ) {
+			out.kind = MaterialSlotRef::Painter; out.painter = &coat->GetCoatTint(); return out;
+		}
+	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		if( slotName == String( "tau" ) ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
@@ -824,6 +870,41 @@ bool MaterialIntrospection::SetSlot(
 			return true;
 		}
 		return false;
+	}
+	if( CoatedMaterial* coat = dynamic_cast<CoatedMaterial*>( &material ) ) {
+		// Only the BRDF is rebound; CoatedSPF reads these back through
+		// it, so there is no second copy to keep in lockstep.
+		if( slotName == String( "coat_weight" ) ) {
+			if( !scalarPainter ) return false;
+			coat->SetCoatWeight( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "coat_ior" ) ) {
+			if( !scalarPainter ) return false;
+			coat->SetCoatIOR( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "coat_roughness" ) ) {
+			if( !scalarPainter ) return false;
+			coat->SetCoatRoughness( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "coat_thickness" ) ) {
+			if( !scalarPainter ) return false;
+			coat->SetCoatThickness( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "coat_absorption" ) ) {
+			if( !scalarPainter ) return false;
+			coat->SetCoatAbsorption( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "coat_tint" ) ) {
+			if( !painter ) return false;
+			coat->SetCoatTint( *painter );
+			return true;
+		}
+		return false;		// `base` is a material, not a rebindable painter slot
 	}
 	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {
 		if( slotName == String( "tau" ) ) {

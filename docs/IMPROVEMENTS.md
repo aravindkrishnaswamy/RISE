@@ -1363,6 +1363,44 @@ for the per-topology delta and implementation citations.
 
 ---
 
+## GGX low-F0 grazing gain — FIRST MEASURED 2026-09-01, unowned
+
+`ggx_material` in `eFresnelSchlickF0` mode goes **over unity at grazing
+incidence** when F0 is small.  Measured on a white diffuse-dominant base
+(diffuse 1.0, F0 = 0.04, α = 0.16) by
+[tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp)
+configuration 17:
+
+| θ | 0° | 30° | 60° | 80° |
+|---|---|---|---|---|
+| ρ | 0.9988 | 0.9994 | 1.0251 | **1.1573** |
+
+**Mechanism (hypothesis, not yet confirmed):** the glTF-spec energy
+split gives the diffuse lobe a weight of `1 − max(F0)` = 0.96, which is
+constant in angle, while the specular lobe's Schlick Fresnel rises
+toward 1 as `cos θ → 0`.  Their sum therefore exceeds 1 at grazing, and
+the Kulla-Conty multiscatter tail adds a little more on top.  A
+Fresnel-weighted diffuse term (`1 − F(θ)` rather than `1 − max(F0)`)
+would be the obvious candidate fix, but that is a change to the glTF
+metallic-roughness composition and would move every existing PBR
+render, so it wants its own landing and its own before/after image set.
+
+**Why it is recorded here rather than fixed in passing.**  It surfaced
+during the `coated_material` work (docs/WETNESS_COAT_DESIGN.md Phase 2)
+purely because that work added a BARE-substrate reference row to the
+furnace test; nothing about it is caused by, or fixable from, the
+coated material, and the coated configuration layered over the same
+substrate does not inherit the gain.  Config 17 is posture
+`kPostureKnownFailure` — the number is recorded and watched, not gated,
+so it stays in front of whoever picks this up.
+
+**Scope note:** this is the `eFresnelSchlickF0` path specifically.  The
+conductor path weights its diffuse term differently and was not
+measured here.  Anyone taking this should start by extending the
+furnace test with a conductor-mode bare row rather than assuming.
+
+---
+
 ## Explicit Non-Goals
 
 These are interesting but should not displace the ranked items above:

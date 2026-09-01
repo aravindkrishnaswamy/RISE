@@ -171,7 +171,7 @@ R_wet(λ)  ≈  (1 − r_e)(1 − r_i) · R(λ)  /  (1 − r_i · R(λ))
 where `r_e` is the external Fresnel reflectance at the air–water interface
 (≈ 0.02–0.06 depending on the incident distribution) and `r_i` is the
 **hemispherically averaged internal reflectance** at the water–air interface —
-for n = 1.33, `r_i ≈ 0.44–0.47`, of which the pure TIR fraction alone is
+for n = 1.33, `r_i ≈ 0.47` (Gauss-Legendre-derived exactly: 0.4719, just above the 0.44–0.47 band earlier drafts quoted), of which the pure TIR fraction alone is
 `1 − 1/n² = 0.435`. That `r_i` is §2.1(ii)'s recycling coefficient, and it is
 the single most important number in this document: it reappears in §7.4 as the
 reason a layered coat model *must* carry a multiple-scattering term.
@@ -1699,7 +1699,7 @@ where the compensation term is REQUIRED, not an optional refinement.**
 > is the wrong coefficient, and it inverts §2.1(ii).** F₀ ≈ 0.02 is the
 > **external** reflectance at the air→water interface. The coat↔substrate
 > interreflection is governed by the **internal** hemispherically averaged
-> reflectance at the water→air boundary, `r_i ≈ 0.44–0.47` for n = 1.33 (the pure
+> reflectance at the water→air boundary, `r_i ≈ 0.47` (Gauss-Legendre-derived exactly: 0.4719, just above the 0.44–0.47 band earlier drafts quoted) for n = 1.33 (the pure
 > TIR fraction alone is `1 − 1/n² = 0.435`). That is not a small correction: it is
 > **the dominant wet-darkening mechanism** this document opened with. A
 > Weidlich–Wilkie single-bounce coat that omits the recycling term throws away
@@ -1786,6 +1786,24 @@ single-bounce approximation is weakest. The harness to detect that already exist
   the coverage semantics `coat_weight` exists to provide — and would make `c` a
   gloss knob rather than a coverage fraction. `T_in`/`T_out` are the coat's
   transmission factors and `recycling` is §7.4's required term.
+
+  **AMENDED (2026-08-31) — three errors in the display above, corrected by the
+  implementation and adjudicated in review; the code is the contract.**
+  (i) The through-coat term needs the **`1/η²` radiance-compression factor**:
+  without it the layer *gains* energy (η² ≈ 1.77× at n = 1.33 for R = 1 — the
+  smooth-interface identity `(1−r_e)/η² ≡ (1−r_i)` is what makes the furnace
+  close at ρ = 1, and it does not hold without the compression). This matches
+  Mitsuba `plastic`/`roughplastic`'s `m_invEta2`. (ii) `F(θ)·f_coat`
+  double-counts Fresnel — the microfacet coat lobe carries its own `F` at the
+  half-vector; the outer factor must not repeat it. (iii) `(1 − F(θ))`
+  alongside `T_in` double-counts the entry transmittance (`T_in ≡ 1 − F(θ_i)`).
+  As implemented:
+  `f = c·f_coat + (c·K + (1−c))·f_base`, with
+  `K = T(θ_i)·T(θ_o)·A_in·A_out / (η²·(1 − r_i·R·A_rt))`, `f_coat` the GGX coat
+  lobe carrying its own Fresnel, and `R` the substrate albedo made
+  **direction-free** (a reciprocity requirement — a view-dependent `R` breaks
+  `f(a→b) = f(b→a)` on exactly the BDPT-connection path this phase exists to
+  fix).
 
 ### 7.6 Validation, and the second customer
 
@@ -2203,6 +2221,28 @@ timing exists because no implementation exists.
    with base albedo** (§2.1), so it over-boosts saturation on already-saturated
    substrates. Inherent to the exponent form; **closed by Phase 2's transport**,
    which never forms an exponent.
+12. **(added 2026-09-01) Near-white `coat_tint` values in roughly [0.96, 1.0)
+   are spectrally discontinuous.** `coat_tint` is a colour-pipe slot used as a
+   per-wavelength *transmittance*, but the JH **albedo** uplift preserves
+   CIE-integrated colour, not spectral flatness — a pure white collapses at the
+   red end of the LUT's gamut corner (measured 1.4e-7 at 780 nm) while a 0.95
+   grey does not (0.973 at 660 nm). The shipped fix decides "tinted at all?"
+   once from the authored RGB triple, so the **default untinted coat is exactly
+   correct**, and tints ≤ 0.95 are well-conditioned; the residual is a hard
+   boundary for authored tints just under white (and per-pixel edges for
+   textured tints straddling 1.0). Normalizing by the uplifted white was
+   proposed in review and **refuted by measurement** (the collapse is specific
+   to the white corner; the divisor blows up 75,768× on a 0.95 grey at
+   660 nm). The clean fix is a transmittance-appropriate spectral
+   representation for the slot — a §7.2 design change, open. Related: the
+   session-filed repo-wide audit of colour-pipe slots with the same shape.
+13. **(added 2026-09-01) `hemisphericalAlbedo` for Oren-Nayar over-estimates at
+   high roughness** (measured: exact at 0, ~5% high at 0.3, 25.6% high at 1.0,
+   mildly view-dependent), which over-amplifies the recycling term for a coated
+   rough Oren-Nayar substrate — bounded ~20% on the recycled portion at extreme
+   roughness, documented at the override. A fitted correction needs its own
+   validation (C3/L2 add energy in a way that does not factor out of `Rd`);
+   open, low priority.
 
 ---
 
@@ -2353,6 +2393,21 @@ that proved the Bug-3 fix); the glTF clearcoat regression scene renders
 non-black; every existing `polished_material` and `composite_material` scene
 renders unchanged; and a zero-P1 review round on the current state per
 [implementation-review-loop](skills/implementation-review-loop.md).
+
+**AMENDED (2026-08-31) — gate reading for the config-7 mirror.** The
+`kPosturePass` clause is met by the config-3 mirror and by the
+high-substrate-albedo clause (coated-over-white configs at ρ ≈ 1.0 within 2%,
+where composite measured 0.040). The **config-7 mirror cannot land in
+`kPosturePass` on its own substrate**: config 7's red base absorbs, so its ρ
+ceiling is the Saunderson value (≈ 0.64 at normal incidence), not 1. The
+implementation splits it honestly — a white-substrate twin carries the shape
+claim, and the actual red-substrate config is pinned to the analytic Saunderson
+prediction via `kPostureMatchesPrediction` (measured 0.6777 vs analytic 0.6770
+at normal incidence, under the corrected sum/FURNACE_SAMPLES normalization —
+an earlier draft of this block quoted 0.6454/0.6442 from the pre-normalization
+run). A known residual at 80° on microfacet substrates (directional exit
+`T(θ_o)` vs the diffuse-average `r_i`) is §7.4's pre-named Belcour trigger,
+declined for v1 on scope.
 
 ### Phase 3 — siblings, observed-need gated (may be declined)
 

@@ -340,3 +340,4 @@ virtual bool AddHairMaterial(const char*name,const char*color,const char*sigma_a
 virtual bool AddHairGuides(const char*name,const HairGuidesDescriptor&desc)=0;
 virtual bool AddHairGeometryFromFile(const char*name,const HairFileGroomDescriptor&desc)=0;
 virtual void EnumerateHairGuideNames(IEnumCallback<const char*>&cb)const=0;
+virtual bool AddCoatedMaterial(const char*name,const char*base,const char*coat_weight,const char*coat_ior,const char*coat_roughness,const char*coat_thickness,const char*coat_absorption,const char*coat_tint)=0;

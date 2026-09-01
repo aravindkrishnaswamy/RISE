@@ -64,6 +64,9 @@
 #include "../src/Library/Materials/AshikminShirleyAnisotropicPhongSPF.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/PolishedSPF.h"
+#include "../src/Library/Materials/LambertianMaterial.h"
+#include "../src/Library/Materials/GGXMaterial.h"
+#include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
 #include "../src/Library/Materials/PerfectReflectorSPF.h"
@@ -355,6 +358,140 @@ static PointwiseResult PointwiseTest(
 }
 
 // ============================================================
+//  Test 2b: HELMHOLTZ RECIPROCITY  f(a->b) == f(b->a)
+//
+//  Added 2026-08-31 with `coated_material`, and it exists because
+//  NOTHING ELSE IN THIS FILE CAN SEE A NON-RECIPROCAL BRDF.
+//  Part C integrates the BRDF and compares against the SPF; Part D
+//  compares kray*pdf against BRDF*cos.  Both compare a material
+//  against ITSELF, so both hold perfectly for a BRDF that answers
+//  differently depending on which direction you call "the light".
+//
+//  The defect that motivated it: `coated_material`'s layer factor
+//  carries the substrate's directional albedo, and the first cut read
+//  it from `IBSDF::albedo`, which is the OIDN AOV and legitimately
+//  VIEW-dependent (it reads ri.ray).  f(a->b) therefore carried R(b)
+//  while f(b->a) carried R(a) -- ~28 % apart at grazing on a GGX
+//  substrate.  That is a direct error on NEE and BDPT/VCM connection
+//  weights, i.e. exactly the path Phase 2 of
+//  docs/WETNESS_COAT_DESIGN.md exists to make correct.  Fixed by
+//  routing the term through `IBSDF::hemisphericalAlbedo`, whose
+//  contract forbids reading ri.ray.
+//
+//  The sweep is over ORDERED PAIRS of directions rather than the
+//  usual single incident angle, because reciprocity is a statement
+//  about a pair and a one-angle fixture cannot express it.
+// ============================================================
+
+static const double RECIPROCITY_TOL = 1e-6;		// relative; the property is exact, not statistical
+
+//! Intersection whose VIEW direction (toward the viewer) is `view`.
+//! The existing MakeIntersection fixes the view from a polar angle in
+//! the x-z plane; reciprocity needs arbitrary pairs, so this builds
+//! the same fixture (flat +z normal, vGeomNormal left zero so the
+//! horizon gate degenerates to the shading-hemisphere test) from a
+//! full direction vector.
+static RayIntersectionGeometric MakeIntersectionFromView( const Vector3& view )
+{
+    const Vector3 inDir = -view;					// ray travels INTO the surface
+    Ray inRay( Point3( view.x, view.y, view.z ), inDir );
+    RasterizerState rs = {0, 0};
+    RayIntersectionGeometric ri( inRay, rs );
+
+    ri.bHit = true;
+    ri.range = 1.0;
+    ri.ptIntersection = Point3(0, 0, 0);
+    ri.vNormal = Vector3(0, 0, 1);
+    ri.onb.CreateFromW( Vector3(0, 0, 1) );
+    ri.ptCoord = Point2(0.5, 0.5);
+
+    return ri;
+}
+
+struct ReciprocityResult {
+    std::string name;
+    int    numPairs;
+    int    numFailures;
+    double maxRelError;			// RGB
+    double maxRelErrorNM;		// spectral
+    bool   passed;
+};
+
+static ReciprocityResult ReciprocityTest( const std::string& name, IBSDF& brdf )
+{
+    ReciprocityResult result;
+    result.name = name;
+    result.numPairs = 0;
+    result.numFailures = 0;
+    result.maxRelError = 0;
+    result.maxRelErrorNM = 0;
+
+    // A spread of polar angles (including grazing, where the defect
+    // this test was written for was largest) crossed with azimuths, so
+    // pairs differ in BOTH angles rather than only in elevation.
+    static const double thetaDeg[] = { 10.0, 25.0, 40.0, 55.0, 70.0, 85.0 };
+    static const double phiDeg[]   = { 0.0, 60.0, 140.0, 230.0, 310.0 };
+
+    std::vector<Vector3> dirs;
+    for( double t : thetaDeg ) {
+        for( double p : phiDeg ) {
+            const double th = t * DEG_TO_RAD, ph = p * DEG_TO_RAD;
+            dirs.push_back( Vector3Ops::Normalize(
+                Vector3( sin(th) * cos(ph), sin(th) * sin(ph), cos(th) ) ) );
+        }
+    }
+
+    const double kNM = 550.0;
+
+    for( size_t i = 0; i < dirs.size(); i++ )
+    {
+        for( size_t j = i + 1; j < dirs.size(); j++ )
+        {
+            const Vector3& a = dirs[i];
+            const Vector3& b = dirs[j];
+
+            // f(a -> b): viewer at b, light at a.   value(vLightIn, ri)
+            // takes the light direction and reads the view off ri.ray.
+            RayIntersectionGeometric riB = MakeIntersectionFromView( b );
+            RayIntersectionGeometric riA = MakeIntersectionFromView( a );
+
+            // MAX-CHANNEL, not per-channel: reciprocity is a
+            // statement about the BRDF, and a defect that moved only
+            // one channel would still move the max unless it moved the
+            // channels by exactly compensating amounts in opposite
+            // directions -- which no view-dependence bug does, because
+            // the view term multiplies all three channels through the
+            // same layer factor.  Max-channel also matches how every
+            // other comparison in this file reduces a RISEPel, so the
+            // tolerances are on the same footing.
+            const double fab = ColorMath::MaxValue( brdf.value( a, riB ) );
+            const double fba = ColorMath::MaxValue( brdf.value( b, riA ) );
+
+            const double fabNM = brdf.valueNM( a, riB, kNM );
+            const double fbaNM = brdf.valueNM( b, riA, kNM );
+
+            result.numPairs++;
+
+            const double den   = r_max( fabs(fab),   fabs(fba)   );
+            const double denNM = r_max( fabs(fabNM), fabs(fbaNM) );
+
+            const double rel   = ( den   > 1e-12 ) ? fabs(fab   - fba  ) / den   : 0.0;
+            const double relNM = ( denNM > 1e-12 ) ? fabs(fabNM - fbaNM) / denNM : 0.0;
+
+            if( rel   > result.maxRelError   ) result.maxRelError   = rel;
+            if( relNM > result.maxRelErrorNM ) result.maxRelErrorNM = relNM;
+
+            if( rel > RECIPROCITY_TOL || relNM > RECIPROCITY_TOL ) {
+                result.numFailures++;
+            }
+        }
+    }
+
+    result.passed = ( result.numFailures == 0 );
+    return result;
+}
+
+// ============================================================
 //  Test 3: Delta SPF direction correctness
 // ============================================================
 
@@ -591,6 +728,55 @@ int main()
     LambertianSPF* lambertian2SPF = new LambertianSPF( *spec );  lambertian2SPF->addref();
     CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *zeroExt );  compositeSPF->addref();
 
+    // coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2).  Unlike
+    // every other entry in this file the coated triad is built through
+    // its MATERIAL, because CoatedSPF is the importance sampler FOR a
+    // specific CoatedBRDF and holds a reference to it -- which is the
+    // structural reason `kray * pdf == value * cos` holds exactly here
+    // (see CoatedSPF.h).  Two substrates from the allowlist: a plain
+    // Lambertian, and a GGX (the multi-lobe case, which is where a
+    // naive layered sampler's value/Scatter agreement usually breaks).
+    UniformScalarPainter* coatWeightSc = new UniformScalarPainter( 1.0 );   coatWeightSc->addref();
+    UniformScalarPainter* coatIorSc    = new UniformScalarPainter( 1.33 );  coatIorSc->addref();
+    UniformScalarPainter* coatRoughSc  = new UniformScalarPainter( 0.05 );  coatRoughSc->addref();
+    UniformScalarPainter* coatZeroSc   = new UniformScalarPainter( 0.0 );   coatZeroSc->addref();
+
+    LambertianMaterial* coatBaseLambMat = new LambertianMaterial( *white );  coatBaseLambMat->addref();
+    GGXMaterial* coatBaseGgxMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalar, *extinctionSc );
+    coatBaseGgxMat->addref();
+
+    CoatedMaterial* coatedLambMat = new CoatedMaterial(
+        *coatBaseLambMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedLambMat->addref();
+    CoatedMaterial* coatedGgxMat = new CoatedMaterial(
+        *coatBaseGgxMat, *coatWeightSc, *coatIorSc, *coatRoughSc, *coatZeroSc, *coatZeroSc, *one );
+    coatedGgxMat->addref();
+
+    // A fixture that lights up EVERY term at once -- partial coverage,
+    // a real Beer-Lambert thickness and absorption, and a saturated
+    // tint -- for the reciprocity sweep.  The A_in * A_out product is
+    // symmetric under a wi/wo swap by construction, so this is not
+    // where a defect is expected; it is swept anyway because "by
+    // construction" is exactly the claim the previous round's
+    // view-dependent albedo also had, and it was wrong.  Cheap to
+    // check, and it covers the tint and absorption code paths that the
+    // two neutral fixtures above never enter.
+    UniformScalarPainter* coatHalfSc  = new UniformScalarPainter( 0.5 );   coatHalfSc->addref();
+    UniformScalarPainter* coatThickSc = new UniformScalarPainter( 0.05 );  coatThickSc->addref();
+    UniformScalarPainter* coatAbsSc   = new UniformScalarPainter( 1.8 );   coatAbsSc->addref();
+    UniformColorPainter*  coatAmber   = new UniformColorPainter( RISEPel(0.92, 0.55, 0.18) );  coatAmber->addref();
+
+    CoatedMaterial* coatedFullMat = new CoatedMaterial(
+        *coatBaseGgxMat, *coatHalfSc, *coatIorSc, *coatRoughSc,
+        *coatThickSc, *coatAbsSc, *coatAmber );
+    coatedFullMat->addref();
+
+    ISPF*  coatedLambSPF  = coatedLambMat->GetSPF();
+    IBSDF* coatedLambBRDF = coatedLambMat->GetBSDF();
+    ISPF*  coatedGgxSPF   = coatedGgxMat->GetSPF();
+    IBSDF* coatedGgxBRDF  = coatedGgxMat->GetBSDF();
+
     std::cout << " done." << std::endl;
 
     // Delta SPFs
@@ -703,6 +889,32 @@ int main()
         { "AshikminShirleyAnisotropicPhong",   ashikminSPF,     ashikminBRDF,       false, FURNACE_TOL },
         { "Translucent",                       translucentSPF,  translucentBSDF,    false, FURNACE_TOL },
         { "SubSurfaceScattering",              sssSPF,          sssBSDF,            true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // coated_material -- docs/WETNESS_COAT_DESIGN.md Phase 2.
+        //
+        // These are the entries `polished_material` could never have:
+        // Polished appears ONLY in the Part-A sanity list below,
+        // because its GetBSDF() returns a bare LambertianBRDF (3.3's
+        // documented defect) and pairing it here would compare a
+        // Fresnel-coated sampler against an uncoated evaluator.  The
+        // coated triad's whole reason for existing (7.1) is that its
+        // BSDF IS the layered response, so it can be paired.
+        //
+        // singleLobe = TRUE for both, including the GGX substrate.
+        // That is not an approximation: CoatedSPF emits one ray per
+        // Scatter with kray = value * cos / mixturePdf, so
+        // kray * pdf == value * cos identically for every sample
+        // regardless of which mixture component drew it (CoatedSPF.h).
+        // Part D therefore checks the layered value <-> Scatter
+        // agreement POINTWISE, not just in the hemispherical integral.
+        //
+        // Default 5 % furnace tolerance -- the layer adds no model
+        // limitation of its own to the SPF/BRDF comparison; both sides
+        // read the same closed form.
+        //--------------------------------------------------------------
+        { "Coated_Lambertian",                 coatedLambSPF,   coatedLambBRDF,     true,  FURNACE_TOL },
+        { "Coated_GGX",                        coatedGgxSPF,    coatedGgxBRDF,      true,  FURNACE_TOL },
     };
     const int numPaired = sizeof(pairedMaterials) / sizeof(pairedMaterials[0]);
 
@@ -741,6 +953,8 @@ int main()
         { "Polished",                          polishedSPF,     false },
         { "SubSurfaceScattering",              sssSPF,          false },
         { "Composite",                         compositeSPF,    false },
+        { "Coated_Lambertian",                 coatedLambSPF,   false },
+        { "Coated_GGX",                        coatedGgxSPF,    false },
         { "PerfectReflector",                  perfReflSPF,     true  },
         { "PerfectRefractor",                  perfRefrSPF,     true  },
         { "Dielectric",                        dielectricSPF,   true  },
@@ -911,6 +1125,47 @@ int main()
     std::cout << std::endl;
 
     // ================================================================
+    //  Part E: Helmholtz reciprocity  f(a->b) == f(b->a)
+    //
+    //  Run on the LAYERED materials, which are the ones whose shared
+    //  layer terms can silently pick up a view dependence, plus their
+    //  bare substrates as controls -- if a control ever fails, the
+    //  defect is in the substrate, not in the coat.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part E: Reciprocity f(a->b) == f(b->a)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    struct ReciprocityEntry { std::string name; IBSDF* brdf; };
+    ReciprocityEntry reciprocityMaterials[] = {
+        { "Lambertian (control)",              lambertianBRDF },
+        { "GGX_Isotropic (control)",           ggxIsoBRDF     },
+        { "Coated_Lambertian",                 coatedLambBRDF },
+        { "Coated_GGX",                        coatedGgxBRDF  },
+        { "Coated_GGX_tinted_absorbing_c0.5",  coatedFullMat->GetBSDF() },
+    };
+
+    for( const ReciprocityEntry& e : reciprocityMaterials )
+    {
+        ReciprocityResult rr = ReciprocityTest( e.name, *e.brdf );
+
+        std::cout << "  " << e.name << ": pairs=" << rr.numPairs
+                  << " failures=" << rr.numFailures
+                  << " maxRelErr(RGB)=" << std::scientific << std::setprecision(3) << rr.maxRelError
+                  << " maxRelErr(NM)=" << rr.maxRelErrorNM << std::fixed;
+
+        if( rr.passed )
+            std::cout << " -> PASS" << std::endl;
+        else
+        {
+            std::cout << " -> FAIL" << std::endl;
+            numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
     //  Summary
     // ================================================================
 
@@ -936,6 +1191,22 @@ int main()
                   << "  maxErr=" << std::setprecision(2) << pr.maxRelError * 100 << "%"
                   << std::endl;
     }
+
+    // Coated triad: release the materials (which own the BRDF/SPF the
+    // tables above borrowed) before their substrates and painters.
+    safe_release( coatedFullMat );
+    safe_release( coatAmber );
+    safe_release( coatAbsSc );
+    safe_release( coatThickSc );
+    safe_release( coatHalfSc );
+    safe_release( coatedGgxMat );
+    safe_release( coatedLambMat );
+    safe_release( coatBaseGgxMat );
+    safe_release( coatBaseLambMat );
+    safe_release( coatZeroSc );
+    safe_release( coatRoughSc );
+    safe_release( coatIorSc );
+    safe_release( coatWeightSc );
 
     g_stubObject->release();
 

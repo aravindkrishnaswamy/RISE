@@ -1188,6 +1188,17 @@ namespace RISE
 									const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 									);
 
+		bool AddCoatedMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* coat_weight,		///< [in] [0,1] coat coverage (physical scalar)
+									const char* coat_ior,			///< [in] Coat index of refraction (physical scalar)
+									const char* coat_roughness,		///< [in] Coat GGX alpha (physical scalar)
+									const char* coat_thickness,		///< [in] Coat thickness, world length (physical scalar)
+									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
+									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
+									);
+
 		//! Creates a Dielectric material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddDielectricMaterial(

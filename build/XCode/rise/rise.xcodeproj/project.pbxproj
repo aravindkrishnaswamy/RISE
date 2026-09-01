@@ -879,6 +879,14 @@
 		F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545C2F84597B009AF16D /* GGXBRDF.cpp */; };
 		F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F24C545F2F84597B009AF16D /* GGXSPF.cpp */; };
 		423B3D03E22FB684BB66FF45 /* HairBSDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */; };
+		E1A49FB2D11175828AC28AE8 /* CoatedBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = DA541E7FCE0292311902AE1B /* CoatedBRDF.h */; };
+		0502FDBE8143D1CD4D465C49 /* CoatedLayer.h in Headers */ = {isa = PBXBuildFile; fileRef = BE97194A69B6C1460F7FB826 /* CoatedLayer.h */; };
+		0AD4AE3C9A478F46DA9649FC /* CoatedMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DABC15E31A0A16CEB74B324 /* CoatedMaterial.h */; };
+		9F7B9C262E883C25C3DF9D60 /* CoatedSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = EEF7E296E65F086F1F6167DA /* CoatedSPF.h */; };
+		F35A4FEBECD3EC031E2A910B /* CoatedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3881A80ADDAB3CB09D212B5C /* CoatedBRDF.cpp */; };
+		8854C884A1395678E4214A93 /* CoatedBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3881A80ADDAB3CB09D212B5C /* CoatedBRDF.cpp */; };
+		98D9BFF7A5827A84A7ED25E2 /* CoatedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FA0C7E59289723E64496B54 /* CoatedSPF.cpp */; };
+		89C41D9A5D912C676DC86E0C /* CoatedSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FA0C7E59289723E64496B54 /* CoatedSPF.cpp */; };
 		DFF4A759A6190D449F96FDDA /* HairMedullaProfile.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */; };
 		A08DE0C48F21E900A2672F48 /* HairMedullaProfile_LUTData.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */; };
 		A1C4E7131B3D5F8092A6C413 /* HairGenerator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1C4E7111B3D5F8092A6C411 /* HairGenerator.cpp */; };
@@ -2142,6 +2150,12 @@
 		9B1936B0DA6BD983BD655075 /* HairBSDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HairBSDF.h; sourceTree = "<group>"; };
 		8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HairBSDF.cpp; sourceTree = "<group>"; };
 		9B9A7F508556212A9B0A2B8C /* HairMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HairMaterial.h; sourceTree = "<group>"; };
+		DA541E7FCE0292311902AE1B /* CoatedBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoatedBRDF.h; sourceTree = "<group>"; };
+		BE97194A69B6C1460F7FB826 /* CoatedLayer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoatedLayer.h; sourceTree = "<group>"; };
+		2DABC15E31A0A16CEB74B324 /* CoatedMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoatedMaterial.h; sourceTree = "<group>"; };
+		EEF7E296E65F086F1F6167DA /* CoatedSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CoatedSPF.h; sourceTree = "<group>"; };
+		3881A80ADDAB3CB09D212B5C /* CoatedBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CoatedBRDF.cpp; sourceTree = "<group>"; };
+		2FA0C7E59289723E64496B54 /* CoatedSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CoatedSPF.cpp; sourceTree = "<group>"; };
 		DB0830BB91E0F22339555B4E /* HairMedullaProfile.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = HairMedullaProfile.h; sourceTree = "<group>"; };
 		76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HairMedullaProfile.cpp; sourceTree = "<group>"; };
 		4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = HairMedullaProfile_LUTData.cpp; sourceTree = "<group>"; };
@@ -3556,6 +3570,12 @@
 				9B1936B0DA6BD983BD655075 /* HairBSDF.h */,
 				8B553180FBB94379A0F6AF7F /* HairBSDF.cpp */,
 				9B9A7F508556212A9B0A2B8C /* HairMaterial.h */,
+				DA541E7FCE0292311902AE1B /* CoatedBRDF.h */,
+				BE97194A69B6C1460F7FB826 /* CoatedLayer.h */,
+				2DABC15E31A0A16CEB74B324 /* CoatedMaterial.h */,
+				EEF7E296E65F086F1F6167DA /* CoatedSPF.h */,
+				3881A80ADDAB3CB09D212B5C /* CoatedBRDF.cpp */,
+				2FA0C7E59289723E64496B54 /* CoatedSPF.cpp */,
 				DB0830BB91E0F22339555B4E /* HairMedullaProfile.h */,
 				76FBEAD61D383BFA4D8D6A50 /* HairMedullaProfile.cpp */,
 				4C21B5F5107F1E8B7E987055 /* HairMedullaProfile_LUTData.cpp */,
@@ -4549,6 +4569,10 @@
 				A1C4E7151B3D5F8092A6C415 /* HairGenerator.h in Headers */,
 				A1C4E7051B3D5F8092A6C405 /* HairGeometry.h in Headers */,
 				482B2F4486E04902978C23B9 /* HairMaterial.h in Headers */,
+				E1A49FB2D11175828AC28AE8 /* CoatedBRDF.h in Headers */,
+				0502FDBE8143D1CD4D465C49 /* CoatedLayer.h in Headers */,
+				0AD4AE3C9A478F46DA9649FC /* CoatedMaterial.h in Headers */,
+				9F7B9C262E883C25C3DF9D60 /* CoatedSPF.h in Headers */,
 				B7A4ED17F0DE4E61A0A3D001 /* SheenBRDF.h in Headers */,
 				B7A4ED18F0DE4E61A0A3D001 /* SheenSPF.h in Headers */,
 				B7A4ED19F0DE4E61A0A3D001 /* SheenMaterial.h in Headers */,
@@ -5464,6 +5488,8 @@
 				F24C54652F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54662F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				423B3D03E22FB684BB66FF45 /* HairBSDF.cpp in Sources */,
+				F35A4FEBECD3EC031E2A910B /* CoatedBRDF.cpp in Sources */,
+				98D9BFF7A5827A84A7ED25E2 /* CoatedSPF.cpp in Sources */,
 				DFF4A759A6190D449F96FDDA /* HairMedullaProfile.cpp in Sources */,
 				A08DE0C48F21E900A2672F48 /* HairMedullaProfile_LUTData.cpp in Sources */,
 				A1C4E7131B3D5F8092A6C413 /* HairGenerator.cpp in Sources */,
@@ -6446,6 +6472,8 @@
 				F24C54602F84597B009AF16D /* GGXBRDF.cpp in Sources */,
 				F24C54612F84597B009AF16D /* GGXSPF.cpp in Sources */,
 				7619E4529A2D5B78D9A0FD68 /* HairBSDF.cpp in Sources */,
+				8854C884A1395678E4214A93 /* CoatedBRDF.cpp in Sources */,
+				89C41D9A5D912C676DC86E0C /* CoatedSPF.cpp in Sources */,
 				89CD382B6157CFD6F4FC2514 /* HairMedullaProfile.cpp in Sources */,
 				046B040BB516720F221A5B97 /* HairMedullaProfile_LUTData.cpp in Sources */,
 				A1C4E7141B3D5F8092A6C414 /* HairGenerator.cpp in Sources */,

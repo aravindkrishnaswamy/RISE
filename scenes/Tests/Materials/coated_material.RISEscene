@@ -1,0 +1,256 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           coated_material.RISEscene                                                               #
+#   Description:    Regression scene for the `coated_material` triad                                        #
+#                   (docs/WETNESS_COAT_DESIGN.md Phase 2, sections 7.1-7.6).                                #
+#                                                                                                           #
+#                   Four spheres on a plane, left to right, sharing ONE Lambertian substrate, so the coat is #
+#                   the only AUTHORED difference between them.  Spaced widely (+/-1.6, +/-4.8) on purpose --  #
+#                   at a tighter spacing the spheres shadow and bounce light into each other enough to skew   #
+#                   the comparison.                                                                          #
+#                                                                                                            #
+#                   READ THE ORDERING HERE, NOT THE MAGNITUDES.  This is a lit scene with a bright bounce     #
+#                   floor, inter-sphere transport, and an 8-bit sRGB output; none of those are controlled.    #
+#                   The quantitative claims live in tests/, where they are exact:                             #
+#                     - coverage is EXACTLY linear in c (f(c) = (1-c)*f_bare + c*f_coated, to < 1e-12 on      #
+#                       both the RGB and the spectral pipe) -- CoatedMaterialChunkTest::TestCoverageIsLinear  #
+#                     - the layer conserves energy -- LayeredWhiteFurnaceTest configs 11-18                   #
+#                   What the render is for is that the four spheres parse, derive, and shade in the right     #
+#                   ORDER with no artefacts:                                                                  #
+#                                                                                                            #
+#                     1. DRY       -- the bare `lambertian_material`, the control.                           #
+#                     2. WET       -- full-coverage water coat (ior 1.33).  Must read DARKER and MORE        #
+#                                     SATURATED than the control: that is section 2.1's wet darkening +      #
+#                                     chroma boost, and here it comes out of the layer's per-wavelength      #
+#                                     recycling 1/(1 - r_i R) rather than out of a fitted exponent.          #
+#                     3. HALF      -- coat_weight 0.5.  Section 7.3's coverage is a sub-pixel AREA mixture,  #
+#                                     so this must land BETWEEN 1 and 2, not merely look glossier.           #
+#                     4. LACQUER   -- a tinted, absorbing, thicker varnish coat (ior 1.5), exercising        #
+#                                     coat_tint / coat_thickness / coat_absorption together.                 #
+#                                                                                                            #
+#                   WHAT THIS SCENE IS FOR.  It is the parse + derive + render regression: the numeric       #
+#                   claims live in tests/ (LayeredWhiteFurnaceTest owns energy, SPFBSDFConsistencyTest owns  #
+#                   value<->Scatter agreement AND reciprocity, CoatedMaterialChunkTest owns the parser and   #
+#                   the substrate allowlist).  What a scene adds over those is the end-to-end path: real     #
+#                   geometry, a real integrator, real lights, the IOR stack, the shader-op chain.            #
+#                                                                                                            #
+#                   Deliberately SMALL (320x180, 48 spp) so it stays cheap enough to run routinely.          #
+#                   `oidn_denoise FALSE` so what lands on disk is the integrator's own output and not the    #
+#                   denoiser's -- the trap docs/PT_ENV_MIS_DOUBLECOUNT.md records for EnvLightBalanceTest.   #
+#                                                                                                            #
+#   Author:         RISE contributors                                                                        #
+#   Birthdate:      2026-08-31                                                                                #
+#                                                                                                             #
+#############################################################################################################
+
+##################################################
+# Renderer
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_sky
+	color		0.30 0.34 0.42
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+film
+{
+	width		320
+	height		180
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				48
+	oidn_denoise		FALSE
+	radiance_map		pnt_sky
+	radiance_background	TRUE
+}
+
+pinhole_camera
+{
+	location	0 1.9 14.5
+	lookat		0 0.15 0
+	fov			40
+}
+
+##################################################
+# Lights
+##################################################
+
+# `direction` is the vector FROM the surface TO the light
+# (docs/SCENE_CONVENTIONS.md) -- positive Z for a camera on +Z.
+directional_light
+{
+	name		key
+	power		2.6
+	color		1.0 0.97 0.92
+	direction	-0.35 0.75 0.56
+}
+
+ambient_light
+{
+	name		fill
+	power		0.16
+	color		0.55 0.62 0.78
+}
+
+##################################################
+# Painters
+##################################################
+
+# A saturated, mid-albedo terracotta -- porous-looking, which is the
+# substrate class section 2.1 says actually darkens when wet.  A
+# near-white or near-black base would make the effect hard to see.
+uniformcolor_painter
+{
+	name		pnt_clay
+	color		0.62 0.30 0.20
+}
+
+uniformcolor_painter
+{
+	name		pnt_floor
+	color		0.42 0.42 0.45
+}
+
+# Amber varnish tint for sphere 4.
+uniformcolor_painter
+{
+	name		pnt_amber
+	color		0.92 0.68 0.34
+}
+
+scalar_painter
+{
+	name		sp_halfcover
+	value		0.5
+}
+
+##################################################
+# Materials
+##################################################
+
+lambertian_material
+{
+	name		mat_dry
+	reflectance	pnt_clay
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+# 2. Full-coverage water film.  Everything except `base` is left at the
+#    descriptor default, which IS the water case (coat_weight 1.0,
+#    coat_ior 1.33, coat_roughness 0.02, no thickness/absorption, and
+#    coat_tint defaulting to untinted-white rather than to the colour
+#    manager's black `none`).
+coated_material
+{
+	name		mat_wet
+	base		mat_dry
+}
+
+# 3. Half coverage -- the section 7.3 mixture.
+coated_material
+{
+	name		mat_half
+	base		mat_dry
+	coat_weight	sp_halfcover
+}
+
+# 4. Tinted, absorbing varnish.  coat_thickness multiplies
+#    coat_absorption into a Beer-Lambert optical depth; coat_tint is the
+#    colour of ONE normal-incidence traversal and is applied on the way
+#    in and again on the way out.
+coated_material
+{
+	name		mat_lacquer
+	base		mat_dry
+	coat_ior		1.5
+	coat_roughness	0.04
+	coat_thickness	0.05
+	coat_absorption	1.8
+	coat_tint		pnt_amber
+}
+
+##################################################
+# Geometry
+##################################################
+
+sphere_geometry
+{
+	name		geo_ball
+	radius		0.85
+}
+
+box_geometry
+{
+	name		geo_floor
+	width		24
+	height		0.4
+	depth		24
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	geo_floor
+	material	mat_floor
+	position	0 -1.05 0
+}
+
+standard_object
+{
+	name		obj_dry
+	geometry	geo_ball
+	material	mat_dry
+	position	-4.8 0 0
+}
+
+standard_object
+{
+	name		obj_wet
+	geometry	geo_ball
+	material	mat_wet
+	position	-1.6 0 0
+}
+
+standard_object
+{
+	name		obj_half
+	geometry	geo_ball
+	material	mat_half
+	position	1.6 0 0
+}
+
+standard_object
+{
+	name		obj_lacquer
+	geometry	geo_ball
+	material	mat_lacquer
+	position	4.8 0 0
+}
+
+##################################################
+# Output
+##################################################
+
+file_rasterizeroutput
+{
+	pattern		coated_material
+	type		PNG
+	bpp			8
+	color_space	sRGB
+}

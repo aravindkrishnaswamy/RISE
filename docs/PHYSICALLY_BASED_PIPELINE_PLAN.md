@@ -193,7 +193,7 @@ that builds on the foundation.
 | 3 | Spectral upsampling (Jakob-Hanika) + analytic spectral sun-and-sky | Spectral | No | IMPROVEMENTS.md #11 | **DONE — v1**. Rec.709 JH uplift and the `hosek_wilkie_skylight` API/chunk shipped; the sky model retains the documented Preetham-v1 internals rather than the planned Hosek-Wilkie coefficient fit. |
 | 4 | Per-light-type intensity override (drop unit-blind override) | Lights | Minor | None | **DONE** (Group A bundle) |
 | 5 | Physical camera model (ISO + fstop + shutter → EV stack into LDR outputs) | Camera | No (additive) | 1 | **DONE — minimal variant** (Group A bundle).  No new chunk; ISO is opt-in on existing `pinhole_camera` / `thinlens_camera`.  Realistic-camera (lens-element ray tracing) is a separate future landing. |
-| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit + sheen fix shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 8 configs.  Sheen grazing divergence (Findings B / configs #2, #6) FIXED via Imageworks production-friendly Charlie Λ (Estevez & Kulla 2017).  Composite recursion-budget loss (Finding A / configs #3, #7) remains its own future landing.  Detailed disposition in §"Landing 6" below. |
+| 6 | Layered material energy-conservation audit | Materials | No | None | **PARTIAL — audit + sheen fix shipped**.  [tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp) covers 19 configs.  Sheen grazing divergence (Findings B / configs #2, #6) FIXED via Imageworks production-friendly Charlie Λ (Estevez & Kulla 2017).  Composite recursion-budget loss (Finding A / configs #3, #7) remains its own future landing.  Detailed disposition in §"Landing 6" below. |
 | 7 | `KHR_materials_specular` (specular_factor + specular_color → F0) | Materials | No (additive defaults) | None | **DONE** — `pbr_metallic_roughness_material` accepts `specular_factor` and `specular_color`; importer reads `KHR_materials_specular`'s scalar fields.  Defaults preserve every existing scene bit-identically.  Texture-sampled specular is L12. |
 | 8 | Anisotropy (anisotropy_factor + anisotropy_rotation → α_x / α_y) | Materials | No (additive defaults) | None | **DONE**.  `pbr_metallic_roughness_material` accepts `anisotropy_factor` (αt = mix(α, 1, anisotropy²)) AND `anisotropy_rotation` (tangent-frame rotation around w; round-2 fix per adversarial review).  GGX BRDF / SPF now apply the rotation per shading point.  `anisotropy_texture` (per-pixel rotation + strength) is L12.  Defaults preserve every existing scene. |
 | 9 | `KHR_materials_iridescence` (thin-film) | Materials | Yes | 6, 3 | TODO |
@@ -642,16 +642,25 @@ clearcoat-over-paint scenes; its own landing.
 | # | Configuration | ρ(0°) | ρ(30°) | ρ(60°) | ρ(80°) | Disposition |
 |---|---|---|---|---|---|---|
 | 0 | Lambertian alone (sanity) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | PASS @ 1% — methodology confirmed |
-| 1 | GGX-PBR (schlick_f0, α=0.16) | 1.016 | 1.015 | 1.020 | 1.032 | PASS @ 5% — Kulla-Conty over-corrects ~1-3 % at moderate roughness; matches pbrt-v4 furnace tolerance |
+| 1 | GGX-PBR (schlick_f0, α=0.16) | 1.0025 | 1.0010 | 1.0032 | 1.0077 | PASS @ 5% — **⚠ RETRACTED 2026-09-01: the earlier {1.016, 1.015, 1.020, 1.032} and its "Kulla-Conty over-corrects ~1-3 %" reading were both ARTEFACTS OF THE HARNESS, not of GGX.** `DirectionalAlbedo` divided by the number of samples that produced a usable ray rather than by the sample COUNT, so every configuration with a nonzero rejection rate was re-normalised upward by 1/(survival rate) — this row rejects ~2 %, which is essentially the whole "over-correction". Corrected to `sum / FURNACE_SAMPLES`; the rejection rate is now printed per config so a value that moves can be told apart from a sampler that started rejecting. Kulla-Conty's residual gain at this roughness is ≤ 0.8 %, not 1-3 %. Finding C is retracted with it. |
 | 2 | Sheen alone (Imageworks-Charlie Λ) | 0.088 | 0.128 | 0.281 | 0.545 | PASS @ 5% bounded — energy-bounded by the Estevez & Kulla 2017 production-friendly Λ; no grazing blow-up. |
 | 3 | Composite: dielectric / Lambertian | **0.040** | **0.042** | **0.089** | 0.388 | KNOWN-FAIL — `CompositeSPF` random walk exits with the dielectric's surface-Fresnel only.  Below-layer diffuse paths get clipped by the recursion budget (`kMaxRecur = 4`, `kMaxDiffuseRecur = 2`).  This is the catastrophic loss the importer's Phase-5 warning flagged.  Needs the random-walk's recursion accounting redesigned, OR replacement with a proper analytic layered-BSDF (Belcour 2018 / Heitz 2017 LTC-Layered). |
-| 4 | Composite: GGX / Lambertian | 1.025 | 1.027 | 1.036 | 1.051 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path; gain matches GGX baseline + a tiny systematic walk bias |
-| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR), white inputs | 1.025 | 1.026 | 1.036 | 1.052 | PASS @ 6% — passes with white baseColor; the importer's "near-black" warning was suspected stale based on this alone, but #7 below shows it's regime-dependent. |
+| 4 | Composite: GGX / Lambertian | 1.0020 | 1.0005 | 1.0009 | 1.0100 | PASS @ 6% — non-delta GGX top doesn't trigger the recursion-loss path. Values corrected 2026-09-01 for the row-1 normalisation fix (this config rejects ~4 %, so the old numbers were inflated by about that much); the "systematic walk bias" the previous disposition inferred was mostly the same artefact. |
+| 5 | Composite: GGX / GGX-PBR (clearcoat over PBR), white inputs | 1.0004 | 1.0012 | 1.0011 | 1.0094 | PASS @ 6% — passes with white baseColor; the importer's "near-black" warning was suspected stale based on this alone, but #7 below shows it's regime-dependent. Values corrected 2026-09-01 (row-1 normalisation fix; ~4 % rejection). |
 | 6 | Composite: Sheen / GGX-PBR | 0.087 | 0.128 | 0.280 | 0.547 | PASS @ 5% bounded — Imageworks Λ keeps the layered case bounded too; sheen-over-PBR no longer blows up at grazing. |
-| 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.040** | **0.040** | **0.068** | **0.205** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
+| 7 | Composite: clearcoat / red GGX-PBR (Finding D) | **0.0390** | **0.0391** | **0.0652** | **0.1970** | KNOWN-FAIL — same loss profile as #3.  Confirms the importer warning at [GLTFSceneImporter.cpp:851](../src/Library/Importers/GLTFSceneImporter.cpp) is real for diffuse-dominant materials.  Tied to Finding A — same recursion-budget bug, different regime. |
 | 8 | `polished_material`, tau=1.0 (full coverage) | 1.0000 | 1.0000 | 1.0000 | 1.0000 | PASS @ `kPostureMatchesPrediction`, eps=0.002 — 2026-08-31, [WETNESS_COAT_DESIGN.md §6.2](WETNESS_COAT_DESIGN.md#6-2-the-emitted-target-polished_material-and-why-not-ggx) Phase-1 exit-gate configuration. `c=1` zeroes the `Rd·Rs·(1−c)` deficit identically; measured matches the predicted `ρ=1.0` exactly. Doubles as the polished-fixture methodology check (analogue of #0). |
 | 9 | `polished_material`, tau=0.5 (worst-case dip) | 0.9900 | 0.9894 | 0.9704 | 0.8265 | PASS @ `kPostureMatchesPrediction`, eps=0.002 — 2026-08-31, same doc §6.2. Predicted `ρ = 1 − 0.5·Rs(θ)` = {0.9900, 0.9894, 0.9704, 0.8265} (Rs at ior=1.33: {0.0201, 0.0211, 0.0591, 0.3469}), stored per-angle and enforced (not just an energy band) — the `Rd·Rs·(1−c)` analytic bound is confirmed, not just asserted, and the separate geometric-horizon coat-lobe drop §6.2 also describes adds no measurable extra loss on this flat, unperturbed fixture. |
 | 10 | `polished_material`, tau=0.9 (recipe's pooled value) | 0.9980 | 0.9979 | 0.9941 | 0.9653 | PASS @ `kPostureMatchesPrediction`, eps=0.002 — 2026-08-31, same doc §6.2, tau matches the rain-wet-cobbles recipe's own pooled joints value ([WETNESS_COAT_DESIGN.md §6.5](WETNESS_COAT_DESIGN.md#6-5-worked-example-rain-wet-cobblestones)). Predicted `ρ = 1 − 0.1·Rs(θ)` = {0.9980, 0.9979, 0.9941, 0.9653}; enforced to within eps. This is the number §13's Phase-1 exit gate and §12 debt 5 ask for: at the recipe's actual coverage the coverage-mask deficit is ≤0.2% up to 60° and ~3.5% at 80° grazing. |
+
+| 11 | `coated_material`: varnish (ior 1.5) / white Lambertian | 0.9998 | 0.9998 | 1.0008 | 0.9895 | PASS @ 2% `kPosturePass` — 2026-09-01, [WETNESS_COAT_DESIGN.md §7](WETNESS_COAT_DESIGN.md) Phase-2 exit gate. **The direct mirror of known-failing #3**: same white Lambertian substrate, same 1.5 coat IOR, full coverage. Nothing recurses — the coat's transmission is folded into the substrate lobe's throughput analytically — so there is no recursion budget to exhaust. HIGH-SUBSTRATE-ALBEDO (R=1), the case §7.4 names as the one that fails without the interreflection compensation. |
+| 12 | `coated_material`: water (ior 1.33) / white Lambertian | 0.9997 | 1.0001 | 1.0004 | 0.9896 | PASS @ 2% `kPosturePass` — the wetness case at the highest substrate albedo there is. Red-proof twin is #16. |
+| 13 | `coated_material`: water, coat_weight = 0.5 / white Lambertian | 1.0001 | 0.9999 | 0.9999 | 0.9944 | PASS @ 2% `kPosturePass` — §7.3's coverage is a sub-pixel AREA mixture, and both the coated and the bare branch conserve energy at R=1, so ρ stays 1 at every coverage. The discriminating contrast is #9, where `polished_material`'s `tau`-as-coverage stand-in loses 17 % at 80°. |
+| 14 | `coated_material`: clearcoat (ior 1.5, α=0.16) / white GGX-PBR | 0.9997 | 1.0010 | 1.0104 | 0.8776 | PASS @ `kPostureMatchesPrediction`, eps=0.005 — config #7's SHAPE at white inputs. Cross-checked ANALYTICALLY against reference row #17 via `ρ = F + (1−F)·A_base·(1−r_i)/(1−r_i·R_hemi)`: agreement +0.0009 / +0.0016 at 0°/30°, −0.0125 at 60°, **−0.2187 at 80°**. The grazing divergence is root-caused, not noise — see Finding E. |
+| 15 | `coated_material`: clearcoat / red GGX-PBR | 0.6777 | 0.6789 | 0.7002 | 0.6589 | PASS @ `kPostureMatchesPrediction`, eps=0.005 — **the apples-to-apples improvement claim against #7**: composite reports {0.0390, 0.0391, 0.0652, 0.1970} on the SAME substrate; coated reports 17× the energy at normal incidence. ρ cannot be 1 (the substrate absorbs; row #18 measures its ceiling). Analytic Saunderson agreement vs #18: +0.0007 / +0.0010 at 0°/30°, −0.0139 / −0.2137 at 60°/80° — the same profile as #14 on a completely different substrate. |
+| 16 | `coated_material`: water / white Lambertian, **§7.4 recycling DISABLED** | 0.5375 | 0.5377 | 0.5562 | 0.6804 | PASS @ `kPostureMatchesPrediction`, eps=0.015 — **the red proof.** Identical to #12 except that §7.4's required interreflection compensation is switched off (a constructor flag, unreachable from the scene language), leaving plain Weidlich-Wilkie single bounce. Predicted `ρ = F + (1−F)(1−r_i)` with `r_i(1.33) = 0.471949` computed independently of the code under test: {0.5375, 0.5380, 0.5560, 0.6918}. **A 46 % energy loss at normal incidence — §7.4's "roughly 45 %", measured rather than asserted.** The configuration must keep FAILING conservation in exactly this shape, so a regression that quietly reintroduced or mis-weighted the term moves off the curve. |
+| 17 | White GGX-PBR base alone (reference for #14) | 0.9988 | 0.9994 | 1.0251 | 1.1573 | KNOWN-FAIL — a bare-substrate REFERENCE row, present so #14 can be checked analytically rather than pinned to measurement. Goes **over unity at grazing (1.157)**: GGX's own low-F0 behaviour (Schlick grazing Fresnel rising toward 1 on top of a diffuse weight of `1 − maxF0` = 0.96, plus the Kulla-Conty tail). First measured here; recorded rather than gated, and NOT introduced by — or fixable from — `coated_material`. The coated row above it does not inherit the gain. See [IMPROVEMENTS.md](IMPROVEMENTS.md) §"GGX low-F0 grazing gain". |
+| 18 | Red GGX-PBR base alone (reference for #15) | 0.8069 | 0.8074 | 0.8344 | 0.9631 | PASS @ 6% bounded — bare-substrate reference row for #15's analytic check. Supplies `A_base(θ)`, the substrate's ACTUAL directional albedo, which is a different quantity from the `R_hemi` the recycling denominator uses (0.8537143 here, closed-form). Conflating the two is the easy mistake; both appear in #15's derivation. |
 
 ### Findings, in priority order
 
@@ -685,11 +694,20 @@ duplicated helpers across the value() and Scatter() sites are
 documented as "keep in sync".
 
 **Finding C — GGX baseline gains 1-3% via Kulla-Conty over-
-correction (#1, #4, #5).**  Within tolerance and matches pbrt-v4 /
-Mitsuba behaviour at the same parameter regime; not blocking.
-Could be tightened by switching to the Turquin 2019 or Hoffman
-2023 multi-scatter compensation, but the gain is small and the
-existing pbrt-v4-faithful behaviour is acceptable.
+correction (#1, #4, #5).**  ⚠ **RETRACTED 2026-09-01 — the finding was
+a measurement artefact, not a property of GGX.**  `DirectionalAlbedo`
+normalised by the count of samples that produced a usable ray instead
+of by the sample count, so any configuration with a nonzero rejection
+rate was scaled up by 1/(survival rate).  Configs #1, #4 and #5 reject
+~2-4 %, which is essentially the entire "1-3 % over-correction" the
+finding was built on.  With the denominator corrected the same configs
+read 1.0025 / 1.0020 / 1.0004 at normal incidence and at most 1.0100 at
+grazing.  Kulla-Conty's real residual gain at this roughness is
+≤ 0.8 %.  No action needed, and specifically: **do not switch to
+Turquin 2019 or Hoffman 2023 on the strength of this finding** — there
+is no longer a 1-3 % gain to chase.  The harness now prints each
+config's rejection rate so this class of artefact is visible rather
+than inferred.
 
 **Finding D — Importer's "near-black-clearcoat-over-PBR" warning
 IS real, but only in the coloured / diffuse-dominant regime.**
@@ -833,6 +851,37 @@ Out:
   the test parameters.
 
 ---
+
+
+**Finding E — `coated_material` closes Finding A's regime, and its own
+limit is measured and named (#11-#18, 2026-09-01).**  The
+`coated_material` triad ([WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md)
+§7) lands the configurations that mirror known-failing #3 and #7 in
+`kPosturePass` — #11/#12/#13 hold ρ = 1 to within 2 % at the highest
+substrate albedo there is, where #3 loses 96 %.  It does so WITHOUT
+touching `CompositeSPF`: the coat's transmission is folded into the
+substrate lobe's throughput analytically, so Finding A's recursion
+budget is simply not in the path.  Finding A still stands for
+`composite_material` itself, which remains the general layer-stacking
+primitive; what changed is that the specific "transparent film over an
+opaque substrate" case now has a material that gets it right.
+
+The model's own boundary is measured rather than assumed.  Rows #14 and
+#15 diverge from their analytic prediction by −0.219 and −0.214 at 80°
+while agreeing to ~0.001 at 0° and 30° — **near-identical profiles on a
+white substrate and on a coloured absorbing one**, which is what makes
+the cause attributable rather than guessed.  The mechanism: the layer's
+exit factor is DIRECTIONAL (`T(θ_o) = 1 − F(θ_o)`) while its recycling
+coefficient is the DIFFUSE average `r_i`.  Those agree for a Lambertian
+substrate — that agreement is the identity putting #11-#13 exactly on
+1.0 — but a microfacet substrate returns light near its own mirror
+direction, which at 80° incidence is also grazing, where `T(θ_o)` is
+0.61 while `r_i` still says 0.60.  The model under-recycles precisely
+where a specular substrate returns its light.  This is the limitation
+§7.4 names IN ADVANCE as the Belcour trigger, and it is the same
+Belcour 2018 / LTC-Layered option Finding A's A2 lists — so if A2 is
+ever taken, it closes both.  Declined for v1 on scope, not on
+correctness.
 
 ## Landing 7 — `KHR_materials_specular` [DONE]
 

@@ -20,6 +20,7 @@
 #include "Objects/CSGObject.h"     // workstream #3: CSG re-point (dynamic_cast<CSGObject*> + SetOperation/CsgOpFromChar)
 #include "Geometry/SDFGeometry.h"
 #include "Geometry/HairGenerator.h"	// ValidateHairGuides (AddHairGuides shares the generator's checks)
+#include "Materials/CoatedMaterial.h"	// AddCoatedMaterial: the substrate allowlist predicate + its text
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES
@@ -3238,6 +3239,107 @@ bool Job::AddPolishedMaterial(
 	safe_release( pTau );
 	safe_release( pRefract );
 	safe_release( pScat );
+
+	return ok;
+}
+
+//! Adds a Coated material (docs/WETNESS_COAT_DESIGN.md Phase 2, item 6).
+//!
+//! The substrate ALLOWLIST is enforced here, at parse time, because 7.2
+//! is explicit: "refuse anything else at parse time with a message
+//! naming the allowlist, rather than rendering something quietly wrong."
+//! RISE_API_CreateCoatedMaterial repeats the check for callers that do
+//! not come through the scene language; this site exists so the author
+//! of a scene file gets the diagnostic with THEIR material's name in it.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddCoatedMaterial(
+							const char* name,				///< [in] Name of the material
+							const char* base,				///< [in] Name of the substrate material
+							const char* coat_weight,		///< [in] [0,1] coat coverage
+							const char* coat_ior,			///< [in] Coat index of refraction
+							const char* coat_roughness,		///< [in] Coat GGX alpha
+							const char* coat_thickness,		///< [in] Coat thickness, world length
+							const char* coat_absorption,	///< [in] Coat absorption, 1/length
+							const char* coat_tint			///< [in] Coat transmission colour
+							)
+{
+	IMaterial* pBase = pMatManager->GetItem( base );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"coated_material `%s`: base material `%s` is not a registered material",
+			name, base );
+		return false;
+	}
+
+	const char* why = 0;
+	if( !CoatedMaterial::IsSupportedSubstrate( *pBase, &why ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"coated_material `%s`: base `%s` is not a supported substrate -- %s.  "
+			"Supported: %s.  (pbr_metallic_roughness_material resolves to a "
+			"ggx_material at scene-build time, so it is accepted.)",
+			name, base, why ? why : "unsupported",
+			CoatedMaterial::SubstrateAllowlistText() );
+		return false;
+	}
+
+	// coat_tint: `none` / empty means UNTINTED.  Resolving it through
+	// the painter manager would bind the built-in "none" painter, which
+	// is BLACK -- an opaque coat, the opposite of the intended default
+	// -- so an owned white painter is synthesised instead.  Named
+	// painters still resolve normally, so an author who genuinely wants
+	// a black coat binds one explicitly.
+	IPainter* pTintOwned = 0;
+	IPainter* pTint = 0;
+	const bool tintUnset = ( !coat_tint || !coat_tint[0] || std::string( coat_tint ) == "none" );
+	if( tintUnset ) {
+		RISE_API_CreateUniformColorPainter( &pTintOwned, RISEPel( 1.0, 1.0, 1.0 ) );
+		pTint = pTintOwned;
+	} else {
+		pTint = pPntManager->GetItem( coat_tint );
+	}
+	if( !pTint ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"coated_material `%s`: coat_tint `%s` is not a registered colour painter",
+			name, coat_tint );
+		return false;
+	}
+
+	// requireSingle=true on ALL FIVE: every coat scalar is read as a
+	// single value (`.v[0]` / GetValueAtNM) by CoatedBRDF::ResolveCoat.
+	// A per-channel painter bound here would have its green and blue
+	// silently ignored on the RGB pipe while the spectral pipe read a
+	// DIFFERENT number through GetValueAtNM -- an RGB-vs-spectral
+	// divergence that renders as "the spectral render disagrees and
+	// nobody knows why".  Refuse it at parse time instead.
+	IScalarPainter* pWeight     = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_weight",     coat_weight,     /*requireSingle*/ true );
+	IScalarPainter* pIOR        = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_ior",        coat_ior,        /*requireSingle*/ true );
+	IScalarPainter* pRoughness  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_roughness",  coat_roughness,  /*requireSingle*/ true );
+	IScalarPainter* pThickness  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_thickness",  coat_thickness,  /*requireSingle*/ true );
+	IScalarPainter* pAbsorption = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "coated_material", name, "coat_absorption", coat_absorption, /*requireSingle*/ true );
+
+	if( !pWeight || !pIOR || !pRoughness || !pThickness || !pAbsorption ) {
+		safe_release( pWeight );
+		safe_release( pIOR );
+		safe_release( pRoughness );
+		safe_release( pThickness );
+		safe_release( pAbsorption );
+		safe_release( pTintOwned );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateCoatedMaterial( &pMaterial, *pBase, *pWeight, *pIOR, *pRoughness,
+	                               *pThickness, *pAbsorption, *pTint );
+
+	const bool ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
+
+	safe_release( pMaterial );
+	safe_release( pWeight );
+	safe_release( pIOR );
+	safe_release( pRoughness );
+	safe_release( pThickness );
+	safe_release( pAbsorption );
+	safe_release( pTintOwned );
 
 	return ok;
 }

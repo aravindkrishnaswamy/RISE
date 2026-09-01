@@ -751,6 +751,33 @@ namespace RISE
 								const bool hg					///< [in] Use Henyey-Greenstein phase function scattering
 								);
 
+	//! Creates a Coated material -- a transparent dielectric film over
+	//! a RESTRICTED substrate, with the film's coverage as a spatially
+	//! varying slot.  docs/WETNESS_COAT_DESIGN.md Phase 2 (7.1-7.6).
+	//!
+	//! Every physical scalar rides `IScalarPainter` (no JH spectral
+	//! uplift); only `coat_tint` is genuinely a colour and rides
+	//! `IPainter`.  See docs/ISCALARPAINTER_REFACTOR.md.
+	//!
+	//! `base` MUST be one of `lambertian_material`, `orennayar_material`,
+	//! `ggx_material` or `pbr_metallic_roughness_material`, and must not
+	//! emit.  Anything else is REFUSED here (returns FALSE, `*ppi` left
+	//! null) with a logged message naming the allowlist, rather than
+	//! rendering something quietly wrong -- the layered model needs the
+	//! substrate's directional albedo, which an arbitrary material
+	//! cannot supply.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateCoatedMaterial(
+								IMaterial** ppi,						///< [out] Pointer to recieve the material
+								const IMaterial& base,					///< [in] Substrate material (allowlisted -- see above)
+								const IScalarPainter& coat_weight,		///< [in] [0,1] coat coverage fraction
+								const IScalarPainter& coat_ior,			///< [in] Coat index of refraction (1.33 water, 1.5 varnish)
+								const IScalarPainter& coat_roughness,	///< [in] GGX alpha of the coat lobe
+								const IScalarPainter& coat_thickness,	///< [in] Coat thickness, world length (Beer-Lambert)
+								const IScalarPainter& coat_absorption,	///< [in] Coat absorption coefficient, 1/length
+								const IPainter& coat_tint				///< [in] Coat transmission colour for one normal-incidence traversal
+								);
+
 	//! Creates a Dielectric material.  Scalar params (tau, IOR, scattering)
 	//! are physical scalars carried by `IScalarPainter` — see
 	//! docs/ISCALARPAINTER_REFACTOR.md.

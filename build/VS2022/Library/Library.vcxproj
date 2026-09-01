@@ -219,6 +219,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BioSpecSkinSPFHelpers.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeEmitter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceBRDF.cpp" />
@@ -733,6 +735,10 @@
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinData.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\BioSpecSkinSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedLayer.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceBRDF.h" />

@@ -3378,6 +3378,89 @@ namespace RISE
 				}
 			};
 
+			//! `coated_material` -- docs/WETNESS_COAT_DESIGN.md Phase 2.
+			//!
+			//! OpenPBR-shaped coat names on purpose (7.2): OpenPBR is the
+			//! industry's converging interchange model, and GUI_ROADMAP.md
+			//! already records RISE's posture of adopting it as the
+			//! conceptual model.  Matching its coat parameter names costs
+			//! nothing and makes an eventual MaterialX/OpenPBR import a
+			//! rename rather than a redesign.
+			//!
+			//! There is deliberately NO `substrate_wet_exponent` (Phase 2
+			//! item 4).  The wet darkening is a property of the layered
+			//! TRANSPORT here -- the per-wavelength recycling
+			//! 1/(1 - r_i R(lambda)) -- so an additional R^k would
+			//! double-count the same physics.  Phase 1's `pow(base, k)`
+			//! recipe was an RGB fit standing in for exactly this term.
+			struct CoatedMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name       = bag.GetString( "name", "noname" );
+					std::string base       = bag.GetString( "base", "none" );
+					// Every coat parameter below the `base` is a physical
+					// SCALAR and rides IScalarPainter -- coverage, IOR,
+					// roughness, world length, 1/length.  "none" is the
+					// COLOUR manager's default painter name and does not
+					// resolve in the scalar manager (the wrong-pipe-default
+					// class in CLAUDE.md / ISCALARPAINTER_REFACTOR.md), so
+					// each default is a numeric literal.
+					//
+					// Defaults describe a WATER film at full coverage, which
+					// is the phenomenon this material was built for: n = 1.33
+					// and alpha = 0.02 are 7.2's own water values, and
+					// thickness/absorption at 0 make Beer-Lambert a no-op so
+					// a bare chunk is a clean, energy-conserving wet coat.
+					std::string weight     = bag.GetString( "coat_weight",     "1.0" );
+					std::string ior        = bag.GetString( "coat_ior",        "1.33" );
+					std::string roughness  = bag.GetString( "coat_roughness",  "0.02" );
+					std::string thickness  = bag.GetString( "coat_thickness",  "0.0" );
+					std::string absorption = bag.GetString( "coat_absorption", "0.0" );
+					// coat_tint IS genuinely a colour (a tinted lacquer), so
+					// it rides the IPainter colourspace + JH-uplift pipe.
+					// The default is the "none" sentinel, which
+					// Job::AddCoatedMaterial reads as UNTINTED and turns
+					// into white -- NOT as the "none" manager entry, which
+					// is black and would make an untinted coat opaque.  A
+					// genuinely black coat is authored by binding an
+					// explicit black painter by name.
+					std::string tint       = bag.GetString( "coat_tint",       "none" );
+
+					return pJob.AddCoatedMaterial(
+						name.c_str(), base.c_str(), weight.c_str(), ior.c_str(),
+						roughness.c_str(), thickness.c_str(), absorption.c_str(),
+						tint.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "coated_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Transparent dielectric film over a restricted substrate, with the film's coverage as a spatially varying slot.  Unlike composite_material and polished_material, its BSDF is the COMBINED layer response, so NEE and BDPT/VCM connections evaluate the coated surface rather than the bare substrate.  This is the wetness / clearcoat / varnish / oil-film material.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "base";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.semantics.pipe = ParameterPipe::Material;
+						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material` and `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's directional albedo to run its interreflection series, which a luminaire, a BSSRDF or a volumetric random walk cannot supply."; }
+						{ auto& p = P(); p.name = "coat_weight";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.0";
+						  p.description = "Coat COVERAGE fraction in [0,1] (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter: this slot is read as one value, so an `r g b` triple would silently drop g and b).  Clamped to [0,1].  This is the spatially varying slot: paint it to make a surface wet in the joints and dry on the crowns.  Semantically a sub-pixel AREA fraction, not a gloss knob -- at coverage c the response is the statistical mixture c*(coated) + (1-c)*(bare), and the bare branch reaches the substrate through AIR with no Fresnel transmission and no interreflection.  Both branches conserve energy, so partial coverage does not darken an otherwise-white surface."; }
+						{ auto& p = P(); p.name = "coat_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.33";
+						  p.description = "Coat index of refraction (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  1.33 water, 1.5 varnish/lacquer, 1.4-1.6 oil.  CLAMPED to [1, 3]: values below the surrounding medium's IOR are raised to it (see the next sentence), and 3 is the top of the tabulated range (no dielectric coat anyone authors exceeds it).  Drives BOTH the coat's Fresnel lobe AND the internal reflectance that recycles light back into the substrate -- which is where wet darkening and the wet chroma boost actually come from.  Must exceed the surrounding medium's IOR; a lower value is clamped to it (the layer model assumes the coat is the denser medium)."; }
+						{ auto& p = P(); p.name = "coat_roughness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.02";
+						  p.description = "GGX alpha of the coat lobe (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  0.01-0.05 for water, 0.03-0.1 for a clearcoat.  CLAMPED to [1e-3, 1] -- 1 is fully rough.  Floored at 1e-3: the coat lobe is never a delta distribution, deliberately, so that direct lighting and bidirectional connections can see it."; }
+						{ auto& p = P(); p.name = "coat_thickness";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0";
+						  p.description = "Coat thickness in WORLD length units (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  Multiplies `coat_absorption` into a Beer-Lambert optical depth for one normal-incidence traversal; oblique paths lengthen correctly.  0 (default) makes absorption a no-op.  It does NOT scale `coat_tint`, which is defined per traversal."; }
+						{ auto& p = P(); p.name = "coat_absorption"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0";
+						  p.description = "Coat absorption coefficient in 1/length (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter).  Deliberately on the SCALAR pipe, not the colour pipe: a large coefficient routed through a colour painter would be silently clamped by the Jakob-Hanika spectral uplift.  Use `coat_tint` for a coloured coat.  0 (default) is a perfectly clear film."; }
+						{ auto& p = P(); p.name = "coat_tint";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "Colour transmitted by ONE normal-incidence traversal of the coat (COLOUR painter -- this is the one coat slot that is genuinely a colour, e.g. a tinted lacquer).  Applied on the way in and again on the way out, raised to the obliquity factor so grazing paths tint more.  Independent of `coat_thickness` by construction.  `none` (the default) means UNTINTED, i.e. white -- it is NOT read as the built-in black `none` painter, which would make a clear coat opaque.  Bind an explicit black painter by name if a fully absorbing coat is what you want."; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct DielectricMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -12999,6 +13082,7 @@ namespace RISE
 		add( "biospec_skin_material",                 new BioSpecSkinMaterialAsciiChunkParser() );
 		add( "donner_jensen_skin_bssrdf_material",    new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser() );
 		add( "generic_human_tissue_material",         new GenericHumanTissueMaterialAsciiChunkParser() );
+		add( "coated_material",                       new CoatedMaterialAsciiChunkParser() );
 		add( "composite_material",                    new CompositeMaterialAsciiChunkParser() );
 		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
 		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );

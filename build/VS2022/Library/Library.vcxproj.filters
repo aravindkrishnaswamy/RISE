@@ -705,6 +705,12 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile_LUTData.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
@@ -1978,6 +1984,18 @@
       <Filter>Object</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedLayer.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\CoatedSPF.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h">

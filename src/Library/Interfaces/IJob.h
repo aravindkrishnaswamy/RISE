@@ -4244,6 +4244,37 @@ namespace RISE
 									IEnumCallback<const char*>& cb			///< [in] Functor called once per registered guide-set name
 									) const = 0;
 
+		//! Adds a Coated material -- a transparent dielectric film over
+		//! a RESTRICTED substrate, with the film's coverage as a
+		//! spatially varying slot (docs/WETNESS_COAT_DESIGN.md Phase 2).
+		//!
+		//! `base` names an already-registered material and must be one
+		//! of lambertian / orennayar / ggx / pbr_metallic_roughness and
+		//! must not emit; anything else is refused here with a
+		//! diagnostic naming the allowlist, because the layered model
+		//! needs the substrate's directional albedo to run its
+		//! interreflection series.
+		//!
+		//! DECLARED HERE, at the tail, rather than beside
+		//! `AddPolishedMaterial` where it belongs thematically: IJob's
+		//! policy is append-only (the "ABI POLICY" comment above
+		//! `SetActiveRasterizer`, and the same note on
+		//! `EnumerateHairGuideNames` directly above).  Slotting it next
+		//! to its sibling renumbers every vtable slot after it --
+		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
+		//! exactly that, and did catch this one.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddCoatedMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* coat_weight,		///< [in] [0,1] coat coverage (physical scalar)
+									const char* coat_ior,			///< [in] Coat index of refraction (physical scalar)
+									const char* coat_roughness,		///< [in] Coat GGX alpha (physical scalar)
+									const char* coat_thickness,		///< [in] Coat thickness, world length (physical scalar)
+									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
+									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
+									) = 0;
+
 	};
 
 

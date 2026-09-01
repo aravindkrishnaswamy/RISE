@@ -97,3 +97,17 @@ RISEPel LambertianBRDF::albedo( const RayIntersectionGeometric& ri ) const
 	// Exact: ∫ f cos θ dω = Rd for a Lambertian.
 	return pReflectance->GetColor( ri );
 }
+
+bool LambertianBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& out ) const
+{
+	// Exact and trivially view-independent: a Lambertian reflects Rd of
+	// whatever arrives, from any distribution, in any direction.
+	out = pReflectance->GetColor( ri );
+	return true;
+}
+
+bool LambertianBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
+{
+	out = pReflectance->GetColorNM( ri, nm );
+	return true;
+}

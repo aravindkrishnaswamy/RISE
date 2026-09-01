@@ -4042,6 +4042,7 @@ namespace RISE
 #include "Materials/LambertianLuminaireMaterial.h"
 #include "Materials/PhongLuminaireMaterial.h"
 #include "Materials/PolishedMaterial.h"
+#include "Materials/CoatedMaterial.h"
 #include "Materials/DielectricMaterial.h"
 #include "Materials/SubSurfaceScatteringMaterial.h"
 #include "Materials/RandomWalkSSSMaterial.h"
@@ -4118,6 +4119,41 @@ namespace RISE
 
 		(*ppi) = new PolishedMaterial( ref, tau, Nt, scat, hg );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "polished material" );
+		return true;
+	}
+
+	bool RISE_API_CreateCoatedMaterial(
+								IMaterial** ppi,
+								const IMaterial& base,
+								const IScalarPainter& coat_weight,
+								const IScalarPainter& coat_ior,
+								const IScalarPainter& coat_roughness,
+								const IScalarPainter& coat_thickness,
+								const IScalarPainter& coat_absorption,
+								const IPainter& coat_tint
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Substrate allowlist (docs/WETNESS_COAT_DESIGN.md 7.2, Phase 2
+		// item 4a).  Enforced HERE as well as in Job::AddCoatedMaterial
+		// so a caller that bypasses the scene language -- the glTF
+		// importer, the interactive editor, a test -- gets the same
+		// refusal instead of a quietly wrong render.
+		const char* why = 0;
+		if( !CoatedMaterial::IsSupportedSubstrate( base, &why ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateCoatedMaterial: unsupported substrate -- %s.  "
+				"coated_material accepts: %s",
+				why ? why : "unsupported", CoatedMaterial::SubstrateAllowlistText() );
+			return false;
+		}
+
+		(*ppi) = new CoatedMaterial( base, coat_weight, coat_ior, coat_roughness,
+		                             coat_thickness, coat_absorption, coat_tint );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "coated material" );
 		return true;
 	}
 

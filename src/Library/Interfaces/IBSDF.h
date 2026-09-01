@@ -79,6 +79,68 @@ namespace RISE
 		{
 			return RISEPel( 1.0, 1.0, 1.0 );
 		}
+
+		/// Reflectance this BSDF presents to a UNIFORM (diffuse)
+		/// incident field -- i.e. its hemispherically-averaged
+		/// directional-hemispherical reflectance.
+		///
+		/// DELIBERATELY VIEW-INDEPENDENT, and that is the whole point of
+		/// its existing separately from `albedo` above.  `albedo` is the
+		/// OIDN AOV: it answers "what does this surface reflect toward
+		/// the camera", reads `ri.ray.Dir()`, and is therefore a
+		/// function of the view direction.  A layered material that fed
+		/// `albedo` into a term shared by both directions would make its
+		/// own BRDF NON-RECIPROCAL, because f(a->b) would carry R(b)
+		/// while f(b->a) carried R(a).  That is not hypothetical: it was
+		/// a real defect in `coated_material`'s first cut, worth ~28 %
+		/// asymmetry at grazing on a GGX substrate, and it broke exactly
+		/// the NEE / BDPT-connection path the material exists to fix.
+		///
+		/// Implementations MUST NOT read `ri.ray`.  `ri` is passed only
+		/// so painters can be sampled at the shading point.
+		///
+		/// Consumed by `coated_material`, whose Saunderson recycling
+		/// denominator 1/(1 - r_i * R) describes light that has been
+		/// totally-internally-reflected at the coat's underside and is
+		/// arriving back at the substrate as a diffuse field -- so the
+		/// reflectance under a diffuse field is precisely the right
+		/// quantity, and it includes a glossy substrate's specular lobe
+		/// (via its hemispherical Fresnel average), not just its diffuse
+		/// one.
+		///
+		/// Follows the out-param convention rather than a sentinel
+		/// because RISEPel has no natural "not implemented" value.
+		///
+		///   @return  TRUE if `out` was filled; FALSE if this BSDF does
+		///            not implement it (the caller decides what to do --
+		///            `coated_material` refuses such substrates at parse
+		///            time, so for it the FALSE path is unreachable).
+		virtual bool hemisphericalAlbedo(
+			const RayIntersectionGeometric& /*ri*/,			///< [in] Shading point (for painter sampling ONLY -- do not read ri.ray)
+			RISEPel& /*out*/								///< [out] Reflectance under a uniform incident field, per channel
+			) const
+		{
+			return false;
+		}
+
+		/// Single-wavelength companion to `hemisphericalAlbedo`.
+		///
+		/// The per-wavelength form is what produces spectral wet
+		/// darkening AND the wet chroma boost in `coated_material`: the
+		/// recycling denominator 1/(1 - r_i * R(lambda)) amplifies the
+		/// wavelengths where R is largest, which is the Saunderson form
+		/// of docs/WETNESS_COAT_DESIGN.md 2.1 falling out of transport
+		/// rather than out of a fitted exponent.
+		///
+		///   @return  TRUE if `out` was filled, FALSE otherwise.
+		virtual bool hemisphericalAlbedoNM(
+			const RayIntersectionGeometric& /*ri*/,			///< [in] Shading point (for painter sampling ONLY -- do not read ri.ray)
+			const Scalar /*nm*/,							///< [in] Wavelength
+			Scalar& /*out*/									///< [out] Reflectance under a uniform incident field at `nm`
+			) const
+		{
+			return false;
+		}
 	};
 }
 

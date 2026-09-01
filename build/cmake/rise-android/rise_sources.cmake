@@ -125,6 +125,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/BioSpecSkinSPFHelpers.cpp"
     "${RISE_LIB}/Materials/DonnerJensenSkinDiffusionProfile.cpp"
     "${RISE_LIB}/Materials/MultipoleDiffusion.cpp"
+    "${RISE_LIB}/Materials/CoatedBRDF.cpp"
+    "${RISE_LIB}/Materials/CoatedSPF.cpp"
     "${RISE_LIB}/Materials/CompositeEmitter.cpp"
     "${RISE_LIB}/Materials/CompositeSPF.cpp"
     "${RISE_LIB}/Materials/CookTorranceBRDF.cpp"
