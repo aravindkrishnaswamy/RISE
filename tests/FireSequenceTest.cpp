@@ -2221,6 +2221,18 @@ namespace
 			checkpoint.dimensions==dimensions&&checkpoint.cellWidthM==cellWidthM;
 	}
 
+	bool WriteProductionPuffingSpectrumTierEvidence(std::ostream& output,
+		const MethaneRunCheckpoint& checkpoint,const double resolutionTier)
+	{
+		if(!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier))return false;
+		output<<std::setprecision(17)
+			<<"resolution_tier "<<resolutionTier<<"\n"
+			<<"burner_diameter_m "<<CapstonePoolDiameterM<<"\n"
+			<<"cell_width_m "<<checkpoint.cellWidthM<<"\n"
+			<<"burner_cells_across "<<CapstonePoolDiameterM/checkpoint.cellWidthM<<"\n";
+		return static_cast<bool>(output);
+	}
+
 #if defined(__APPLE__)
 	bool ReadDisplayLitArea(const std::filesystem::path& path,std::size_t& litPixels,
 		unsigned int& width,unsigned int& height)
@@ -2337,7 +2349,6 @@ namespace
 				spectrum.frequencyHz.begin());
 		};
 		const std::size_t centerlineExpected=nearestBin(centerline),litExpected=nearestBin(litArea);
-		const double cellsAcrossBurner=CapstonePoolDiameterM/checkpoint.cellWidthM;
 		std::ofstream summary(outputDirectory/"puffing_spectrum_evidence.v1",std::ios::trunc);
 		summary<<std::setprecision(17)
 			<<"artifact_fidelity simulation_evidence\n"
@@ -2346,11 +2357,9 @@ namespace
 			<<"display_inputs_sha256 "<<DigestFile(outputDirectory/"display_inputs.csv")<<"\n"
 			<<"centerline_signal_sha256 "<<DigestFile(outputDirectory/"centerline_signal.csv")<<"\n"
 			<<"lit_area_signal_sha256 "<<DigestFile(outputDirectory/"lit_area_signal.csv")<<"\n"
-			<<"full_spectrum_sha256 "<<DigestFile(outputDirectory/"full_spectrum.csv")<<"\n"
-			<<"resolution_tier "<<resolutionTier<<"\n"
-			<<"burner_diameter_m "<<CapstonePoolDiameterM<<"\n"
-			<<"cell_width_m "<<checkpoint.cellWidthM<<"\n"
-			<<"burner_cells_across "<<cellsAcrossBurner<<"\n"
+			<<"full_spectrum_sha256 "<<DigestFile(outputDirectory/"full_spectrum.csv")<<"\n";
+		if(!WriteProductionPuffingSpectrumTierEvidence(summary,checkpoint,resolutionTier))return 96;
+		summary
 			<<"r57_general_case_admissibility_minimum_cells 4\n"
 			<<"puffing_claim_requires_refined_approximately_ten_cell_class true\n"
 			<<"centerline_probe central_two_by_two_columns_full_height_cell_volume_integrated_and_four_column_averaged\n"
@@ -6702,12 +6711,24 @@ int main(int argc,char** argv)
 		const bool tier10Built=CanonicalCapstoneGridForTier(
 			10.0,tier10.dimensions,tier10Width);
 		tier8.cellWidthM=tier8Width;tier10.cellWidthM=tier10Width;
+		std::ostringstream tier8Evidence,tier10Evidence,rejectedTierEvidence;
+		const bool tier8Written=WriteProductionPuffingSpectrumTierEvidence(
+			tier8Evidence,tier8,8.0);
+		const bool tier10Written=WriteProductionPuffingSpectrumTierEvidence(
+			tier10Evidence,tier10,10.0);
+		const bool crossTierRejected=!WriteProductionPuffingSpectrumTierEvidence(
+			rejectedTierEvidence,tier8,10.0)&&rejectedTierEvidence.str().empty();
 		Check(tier8Built&&tier10Built&&
 			ProductionPuffingSpectrumTierMatches(tier8,8.0)&&
 			!ProductionPuffingSpectrumTierMatches(tier8,10.0)&&
 			ProductionPuffingSpectrumTierMatches(tier10,10.0)&&
-			!ProductionPuffingSpectrumTierMatches(tier10,8.0),
-			"puffing spectrum binds the reported tier to the checkpoint grid metadata");
+			!ProductionPuffingSpectrumTierMatches(tier10,8.0)&&tier8Written&&tier10Written&&
+			tier8Evidence.str().find("resolution_tier 8\n")!=std::string::npos&&
+			tier10Evidence.str().find("resolution_tier 10\n")!=std::string::npos&&
+			tier8Evidence.str().find("resolution_tier 6\n")==std::string::npos&&
+			tier10Evidence.str().find("resolution_tier 6\n")==std::string::npos&&
+			crossTierRejected,
+			"puffing spectrum serializes tier 8/10 evidence only for matching checkpoint grids");
 	}
 	{
 		std::vector<double> time(129u),signal(129u);

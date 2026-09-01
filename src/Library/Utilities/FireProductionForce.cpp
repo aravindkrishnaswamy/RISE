@@ -789,13 +789,14 @@ namespace RISE
 			static_cast<std::uint64_t>(shape.nx)*(shape.ny+1u)*shape.nz+
 			static_cast<std::uint64_t>(shape.nx)*shape.ny*(shape.nz+1u);
 		// Request/source retention, two scalar states, three coupled-stage records,
-		// accepted/verification scratch, EOS temperatures, and atomic publication.
+		// accepted/verification scratch, EOS temperatures, immutable callback snapshots,
+		// and atomic publication.
 		// Deliberately conservative: every vector is charged even when moved between
 		// protocol states, so no schedule-dependent alias is needed by the proof.
-		if(cells>(std::numeric_limits<std::uint64_t>::max()-96u*faces)/256u||
-			256u*cells+96u*faces>std::numeric_limits<std::uint64_t>::max()/sizeof(float))
+		if(cells>(std::numeric_limits<std::uint64_t>::max()-97u*faces)/266u||
+			266u*cells+97u*faces>std::numeric_limits<std::uint64_t>::max()/sizeof(float))
 			return false;
-		bytes=(256u*cells+96u*faces)*sizeof(float);
+		bytes=(266u*cells+97u*faces)*sizeof(float);
 		return true;
 	}
 
@@ -1731,6 +1732,14 @@ namespace RISE
 			return true;
 		}
 
+		bool SameOwnerFloatBits(const std::array<std::vector<float>,3>& a,
+			const std::array<std::vector<float>,3>& b)
+		{
+			for(unsigned int axis=0u;axis<3u;++axis)
+				if(!SameOwnerFloatBits(a[axis],b[axis]))return false;
+			return true;
+		}
+
 		bool OwnerActiveClassLess(
 			const std::array<std::vector<unsigned char>,6>& a,
 			const std::array<std::vector<unsigned char>,6>& b)
@@ -2349,14 +2358,21 @@ namespace RISE
 				FireProductionNonpressureMomentumRHSResult& nonpressure)->bool{
 				const std::uint64_t projectionIdentity=
 					OwnerProjectionIdentity(targetIdentity,projection);
+				std::vector<float> contextState=state,contextTemperature=temperatureK;
+				std::array<std::vector<float>,3> contextVelocity=projection.velocityMPerS;
 				FireProductionProjectedHeunTransportContext context;
 				context.stage=stage;context.attemptIdentity=request_.attemptIdentity;
 				context.parentCandidateIdentity=parentCandidateIdentity;
 				context.projectionIdentity=projectionIdentity;
-				context.conservativeValues=&state;context.temperatureK=&temperatureK;
-				context.projectedVelocityMPerS=&projection.velocityMPerS;
+				context.conservativeValues=&contextState;context.temperatureK=&contextTemperature;
+				context.projectedVelocityMPerS=&contextVelocity;
 				coefficients=FireProductionProjectedHeunTransportCoefficients();
-				if(!provider.Evaluate(context,coefficients,error))return false;
+				const bool evaluated=provider.Evaluate(context,coefficients,error);
+				if(!SameOwnerFloatBits(contextState,state)||
+					!SameOwnerFloatBits(contextTemperature,temperatureK)||
+					!SameOwnerFloatBits(contextVelocity,projection.velocityMPerS))return Fail(error,
+						"projected-Heun transport context was mutated");
+				if(!evaluated)return false;
 				if(coefficients.stage!=stage||
 					coefficients.attemptIdentity!=request_.attemptIdentity||
 					coefficients.parentCandidateIdentity!=parentCandidateIdentity||
@@ -2436,12 +2452,90 @@ namespace RISE
 
 			FireProductionProjectionResult priorProjection;
 			FireProductionProjectedHeunTransportCoefficients priorCoefficients;
-			std::vector<std::array<std::vector<unsigned char>,6> > activeHistory;
+			using OpenClass=std::array<std::vector<unsigned char>,6>;
+			std::vector<OpenClass> activeHistory,provedCycleBranches;
 			float activeTrajectoryMaximum=OwnerOpenClassDiscrepancy(shape,
 				request_.scalarContract.boundary,firstProjection.pressureOpenInflow,
 				firstProjection.velocityMPerS,request_.endpointVelocityToleranceMPerS);
 			bool frozenActiveCycle=false;
 			bool havePrior=false;
+			bool terminalFirstTransitionInjected=false,terminalFirstTransitionPending=false,
+				terminalFirstTransitionTerminalPending=false;
+			auto addCycleBranch=[&](const OpenClass& branch){
+				if(std::find(provedCycleBranches.begin(),provedCycleBranches.end(),branch)==
+					provedCycleBranches.end())provedCycleBranches.push_back(branch);
+			};
+			auto recordCycle=[&](){
+				result.activeSetDiscontinuousClass=true;
+				result.activeSetCycleLength=static_cast<std::uint32_t>(provedCycleBranches.size());
+				result.activeSetDifferingFaceCount=0u;
+				if(provedCycleBranches.empty())return;
+				for(unsigned int side=0u;side<6u;++side)for(std::size_t face=0u;
+					face<provedCycleBranches.front()[side].size();++face){
+					bool differs=false;for(const OpenClass& branch:provedCycleBranches)
+						differs=differs||branch[side][face]!=
+							provedCycleBranches.front()[side][face];
+					result.activeSetDifferingFaceCount+=differs?1u:0u;
+				}
+			};
+			auto canonicalProjection=[&](const FireProductionScalarProjectionTargetSeal& ownerTarget,
+				const OpenClass* terminalRejectedClass,FireProductionProjectionResult& selectedProjection,
+				OpenClass& selectedClass)->bool{
+				if(provedCycleBranches.empty())return Fail(error,
+					"projected-Heun canonical active class set is empty");
+				std::size_t selected=0u;float selectedDiscrepancy=0.0f;bool haveSelected=false;
+				for(std::size_t i=0u;i<provedCycleBranches.size();++i){
+					++result.activeSetCanonicalProjectionCount;
+					FireProductionProjectionResult branchSeed,branchProjection;
+					branchSeed.pressureOpenInflow=provedCycleBranches[i];
+					FireProductionProjectionRequest branchRequest=
+						projectionRequest(&ownerTarget,&branchSeed);
+					branchRequest.outputClassificationMode=
+						FireProductionProjectionPreserveOpenClassification;
+					if(!ProjectFireProductionScalarTargetCPU(std::move(branchRequest),ownerTarget,
+						branchProjection,error))return Fail(error,
+							"projected-Heun canonical active class projection failed");
+					if(OwnerTestFailure("projection-validation-selected-cycle"))
+						branchProjection.validationPassed=false;
+					if(!branchProjection.validationPassed)return Fail(error,
+						"projected-Heun canonical active class validation failed");
+					float discrepancy=OwnerOpenClassDiscrepancy(shape,
+						request_.scalarContract.boundary,provedCycleBranches[i],
+						branchProjection.velocityMPerS,request_.endpointVelocityToleranceMPerS);
+					if(!terminalRejectedClass&&OwnerTestFailure("active-cycle-selection-bias")&&
+						i==0u)
+						discrepancy=std::numeric_limits<float>::max();
+					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,discrepancy);
+					if(!haveSelected||discrepancy<selectedDiscrepancy||
+						(discrepancy==selectedDiscrepancy&&OwnerActiveClassLess(
+							provedCycleBranches[i],provedCycleBranches[selected]))){
+						selected=i;selectedDiscrepancy=discrepancy;
+						selectedProjection=std::move(branchProjection);haveSelected=true;
+					}
+				}
+				if(terminalRejectedClass&&OwnerTestFailure("terminal-canonical-winner-bias")&&
+					provedCycleBranches.size()>1u){
+					selected=(selected+1u)%provedCycleBranches.size();
+					++result.activeSetCanonicalProjectionCount;
+					FireProductionProjectionResult branchSeed,alternate;
+					branchSeed.pressureOpenInflow=provedCycleBranches[selected];
+					FireProductionProjectionRequest alternateRequest=
+						projectionRequest(&ownerTarget,&branchSeed);
+					alternateRequest.outputClassificationMode=
+						FireProductionProjectionPreserveOpenClassification;
+					if(!ProjectFireProductionScalarTargetCPU(std::move(alternateRequest),ownerTarget,
+						alternate,error))return Fail(error,
+							"projected-Heun terminal canonical winner projection failed");
+					if(!alternate.validationPassed)return Fail(error,
+						"projected-Heun terminal canonical winner validation failed");
+					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
+						OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
+							provedCycleBranches[selected],alternate.velocityMPerS,
+							request_.endpointVelocityToleranceMPerS));
+					selectedProjection=std::move(alternate);
+				}
+				selectedClass=provedCycleBranches[selected];return true;
+			};
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
 				++iteration){
 				FireProductionProjectionRequest projection=projectionRequest(&target,
@@ -2460,7 +2554,13 @@ namespace RISE
 				std::array<std::vector<unsigned char>,6> nextClass=OwnerNextOpenClass(
 					shape,request_.scalarContract.boundary,projected.pressureOpenInflow,
 					projected.velocityMPerS,request_.endpointVelocityToleranceMPerS);
-				if(OwnerTestFailure("active-cycle")&&stage==FireProductionProjectedHeunStage::R0)
+				if(terminalFirstTransitionPending){
+					nextClass=projected.pressureOpenInflow;terminalFirstTransitionPending=false;
+				}
+				if((OwnerTestFailure("active-cycle")&&
+					stage==FireProductionProjectedHeunStage::R0)||
+					(OwnerTestFailure("active-cycle-r1")&&
+					stage==FireProductionProjectedHeunStage::R1))
 					for(unsigned int side=0u;side<6u;++side)if(
 						request_.scalarContract.boundary[side]==FireProductionProjectionPressureOpen&&
 						!nextClass[side].empty()){
@@ -2469,55 +2569,18 @@ namespace RISE
 					}
 				bool classStable=frozenActiveCycle||nextClass==projected.pressureOpenInflow;
 				if(!frozenActiveCycle&&!classStable){
-					const std::array<std::vector<unsigned char>,6> solvedClass=
-						projected.pressureOpenInflow;
+					const OpenClass solvedClass=projected.pressureOpenInflow;
 					activeHistory.push_back(solvedClass);
 					auto repeated=std::find(activeHistory.begin(),activeHistory.end(),nextClass);
 					if(repeated!=activeHistory.end()){
 						const std::size_t first=static_cast<std::size_t>(repeated-
-							activeHistory.begin());std::size_t selected=first;
-						float selectedDiscrepancy=0.0f;bool haveSelected=false;
+							activeHistory.begin());
+						provedCycleBranches.assign(activeHistory.begin()+first,activeHistory.end());
 						FireProductionProjectionResult selectedProjection;
-						for(std::size_t i=first;i<activeHistory.size();++i){
-							++result.activeSetCanonicalProjectionCount;
-							FireProductionProjectionResult branchSeed=projected,branchProjection;
-							branchSeed.pressureOpenInflow=activeHistory[i];
-							FireProductionProjectionRequest branchRequest=
-								projectionRequest(&target,&branchSeed);
-							branchRequest.outputClassificationMode=
-								FireProductionProjectionPreserveOpenClassification;
-							if(!ProjectFireProductionScalarTargetCPU(std::move(branchRequest),target,
-								branchProjection,error))return Fail(error,
-									"projected-Heun canonical active class projection failed");
-							if(OwnerTestFailure("projection-validation-selected-cycle"))
-								branchProjection.validationPassed=false;
-							if(!branchProjection.validationPassed)return Fail(error,
-								"projected-Heun canonical active class validation failed");
-							float discrepancy=OwnerOpenClassDiscrepancy(shape,
-								request_.scalarContract.boundary,activeHistory[i],
-								branchProjection.velocityMPerS,
-								request_.endpointVelocityToleranceMPerS);
-							if(OwnerTestFailure("active-cycle-selection-bias")&&i==first)
-								discrepancy=std::numeric_limits<float>::max();
-							activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,discrepancy);
-							if(!haveSelected||discrepancy<selectedDiscrepancy||
-								(discrepancy==selectedDiscrepancy&&OwnerActiveClassLess(
-									activeHistory[i],activeHistory[selected]))){
-								selected=i;selectedDiscrepancy=discrepancy;
-								selectedProjection=std::move(branchProjection);haveSelected=true;
-							}
-						}
-						nextClass=activeHistory[selected];frozenActiveCycle=true;
+						if(!canonicalProjection(target,0,selectedProjection,nextClass))return false;
+						frozenActiveCycle=true;
 						projected=std::move(selectedProjection);
-						result.activeSetDiscontinuousClass=true;
-						result.activeSetCycleLength=static_cast<std::uint32_t>(
-							activeHistory.size()-first);
-						for(unsigned int side=0u;side<6u;++side)for(std::size_t face=0u;
-							face<nextClass[side].size();++face){
-							bool differs=false;for(std::size_t i=first;i<activeHistory.size();++i)
-								differs=differs||activeHistory[i][side][face]!=nextClass[side][face];
-								result.activeSetDifferingFaceCount+=differs?1u:0u;
-						}
+						recordCycle();
 						classStable=true;
 					}
 				}
@@ -2579,6 +2642,8 @@ namespace RISE
 				if(havePrior&&classStable&&residual<=request_.projectionTolerancePerS){
 					FireProductionProjectionRequest verificationRequest=
 						projectionRequest(&corrected,&projected);
+					verificationRequest.outputClassificationMode=
+						FireProductionProjectionPreserveOpenClassification;
 					FireProductionProjectionResult verifiedProjection;
 					if(!ProjectFireProductionScalarTargetCPU(std::move(verificationRequest),
 						corrected,verifiedProjection,error))return Fail(error,
@@ -2587,6 +2652,56 @@ namespace RISE
 						verifiedProjection.validationPassed=false;
 					if(!verifiedProjection.validationPassed)
 						return Fail(error,"projected-Heun terminal projection validation failed");
+					const OpenClass terminalUsedClass=projected.pressureOpenInflow;
+					OpenClass terminalNextClass=OwnerNextOpenClass(shape,
+						request_.scalarContract.boundary,terminalUsedClass,
+						verifiedProjection.velocityMPerS,
+						request_.endpointVelocityToleranceMPerS);
+					if(terminalFirstTransitionTerminalPending){
+						terminalNextClass=terminalUsedClass;
+						terminalFirstTransitionTerminalPending=false;
+					}
+					bool forcedTerminalFirstTransition=false;
+					const char* terminalTransitionHook=r0?"terminal-first-transition-r0":
+						"terminal-first-transition-r1";
+					if(!terminalFirstTransitionInjected&&
+						OwnerTestFailure(terminalTransitionHook)){
+						for(unsigned int side=0u;side<6u;++side)if(
+							request_.scalarContract.boundary[side]==
+								FireProductionProjectionPressureOpen&&
+							!terminalNextClass[side].empty()){
+							terminalNextClass[side][0u]=static_cast<unsigned char>(
+								terminalUsedClass[side][0u]^1u);break;
+						}
+						terminalFirstTransitionInjected=true;
+						terminalFirstTransitionPending=true;
+						terminalFirstTransitionTerminalPending=true;
+						forcedTerminalFirstTransition=true;
+					}
+					bool terminalFirstTransition=false;
+					if(forcedTerminalFirstTransition){
+						activeHistory.clear();activeHistory.push_back(terminalNextClass);
+						terminalFirstTransition=true;
+					}else if(!frozenActiveCycle&&terminalNextClass!=terminalUsedClass){
+						if(activeHistory.empty()||activeHistory.back()!=terminalUsedClass)
+							activeHistory.push_back(terminalUsedClass);
+						auto repeated=std::find(activeHistory.begin(),activeHistory.end(),
+							terminalNextClass);
+						if(repeated==activeHistory.end()){
+							activeHistory.push_back(terminalNextClass);
+							terminalFirstTransition=true;
+						}else{
+							provedCycleBranches.assign(repeated,activeHistory.end());
+							frozenActiveCycle=true;
+						}
+					}
+					if(frozenActiveCycle){
+						addCycleBranch(terminalUsedClass);addCycleBranch(terminalNextClass);
+						OpenClass selectedClass;
+						if(!canonicalProjection(corrected,&terminalUsedClass,
+							verifiedProjection,selectedClass))return false;
+						terminalNextClass=selectedClass;recordCycle();
+					}
 					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
 						OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
 							verifiedProjection.pressureOpenInflow,verifiedProjection.velocityMPerS,
@@ -2682,8 +2797,10 @@ namespace RISE
 							conductivityWPerMK[cell]-coefficients.conductivityWPerMK[cell]),
 						std::fabs(verifiedCoefficients.molecularKinematicViscosityM2PerS[cell]-
 							coefficients.molecularKinematicViscosityM2PerS[cell])});
-					if(verificationResidual>request_.projectionTolerancePerS){
+					if(terminalFirstTransition||
+						verificationResidual>request_.projectionTolerancePerS){
 						target=std::move(certifiedTarget);priorProjection=std::move(verifiedProjection);
+						priorProjection.pressureOpenInflow=std::move(terminalNextClass);
 						priorCoefficients=std::move(verifiedCoefficients);havePrior=true;continue;
 					}
 					acceptedCandidate=certifiedScalar.accepted;
@@ -2886,16 +3003,24 @@ namespace RISE
 				FireProductionScalarPhysicalFluxPrerequisiteResult& flux)->bool{
 				const std::uint64_t projectionIdentity=
 					OwnerProjectionIdentity(targetIdentity,projected);
+				std::vector<float> contextState=work_.conservativeValues;
+				std::vector<float> contextTemperature=work_.committedEOS.temperatureK;
+				std::array<std::vector<float>,3> contextVelocity=projected.velocityMPerS;
 				FireProductionProjectedHeunTransportContext context;
 				context.stage=FireProductionProjectedHeunStage::R2;
 				context.attemptIdentity=request_.attemptIdentity;
 				context.parentCandidateIdentity=work_.r1.acceptedCandidateIdentity;
 				context.projectionIdentity=projectionIdentity;
-				context.conservativeValues=&work_.conservativeValues;
-				context.temperatureK=&work_.committedEOS.temperatureK;
-				context.projectedVelocityMPerS=&projected.velocityMPerS;
+				context.conservativeValues=&contextState;
+				context.temperatureK=&contextTemperature;
+				context.projectedVelocityMPerS=&contextVelocity;
 				coefficients=FireProductionProjectedHeunTransportCoefficients();
-				if(!provider.Evaluate(context,coefficients,error))return false;
+				const bool evaluated=provider.Evaluate(context,coefficients,error);
+				if(!SameOwnerFloatBits(contextState,work_.conservativeValues)||
+					!SameOwnerFloatBits(contextTemperature,work_.committedEOS.temperatureK)||
+					!SameOwnerFloatBits(contextVelocity,projected.velocityMPerS))return Fail(error,
+						"projected-Heun R2 transport context was mutated");
+				if(!evaluated)return false;
 				if(coefficients.stage!=FireProductionProjectedHeunStage::R2||
 					coefficients.attemptIdentity!=request_.attemptIdentity||
 					coefficients.parentCandidateIdentity!=work_.r1.acceptedCandidateIdentity||
@@ -2972,64 +3097,94 @@ namespace RISE
 			FireProductionProjectionResult priorProjection;
 			FireProductionProjectedHeunTransportCoefficients priorCoefficients;
 			FireProductionProjectedHeunTransportCoefficients acceptedCoefficients;
-			std::vector<std::array<std::vector<unsigned char>,6> > activeHistory;
+			using OpenClass=std::array<std::vector<unsigned char>,6>;
+			std::vector<OpenClass> activeHistory,provedCycleBranches;
 			float activeTrajectoryMaximum=bootstrapTrajectoryMaximum;
 			bool havePrior=false,frozenCycle=false,accepted=false;
+			bool terminalFirstTransitionInjected=false,terminalFirstTransitionPending=false,
+				terminalFirstTransitionTerminalPending=false;
+			auto addCycleBranch=[&](const OpenClass& branch){
+				if(std::find(provedCycleBranches.begin(),provedCycleBranches.end(),branch)==
+					provedCycleBranches.end())provedCycleBranches.push_back(branch);
+			};
+			auto recordCycle=[&](){
+				r2.activeSetDiscontinuousClass=true;
+				r2.activeSetCycleLength=static_cast<std::uint32_t>(provedCycleBranches.size());
+				r2.activeSetDifferingFaceCount=0u;
+				if(provedCycleBranches.empty())return;
+				for(unsigned int side=0u;side<6u;++side)for(std::size_t face=0u;
+					face<provedCycleBranches.front()[side].size();++face){
+					bool differs=false;for(const OpenClass& branch:provedCycleBranches)
+						differs=differs||branch[side][face]!=
+							provedCycleBranches.front()[side][face];
+					r2.activeSetDifferingFaceCount+=differs?1u:0u;
+				}
+			};
+			auto canonicalProjection=[&](const FireProductionScalarProjectionTargetSeal& ownerTarget,
+				const OpenClass* terminalRejectedClass,FireProductionProjectionResult& selectedProjection,
+				OpenClass& selectedClass)->bool{
+				if(provedCycleBranches.empty())return Fail(error,
+					"projected-Heun R2 canonical active class set is empty");
+				std::size_t selected=0u;float selectedDiscrepancy=0.0f;bool haveSelected=false;
+				for(std::size_t i=0u;i<provedCycleBranches.size();++i){
+					++r2.activeSetCanonicalProjectionCount;
+					active=provedCycleBranches[i];FireProductionProjectionResult branch;
+					if(!ProjectFireProductionScalarTargetCPU(projectionRequest(false),ownerTarget,
+						branch,error))return Fail(error,
+							"projected-Heun R2 canonical active class projection failed");
+					if(OwnerTestFailure("projection-validation-selected-cycle"))
+						branch.validationPassed=false;
+					if(!branch.validationPassed)return Fail(error,
+						"projected-Heun R2 canonical active class validation failed");
+					float discrepancy=OwnerOpenClassDiscrepancy(shape,
+						request_.scalarContract.boundary,provedCycleBranches[i],branch.velocityMPerS,
+						request_.endpointVelocityToleranceMPerS);
+					if(!terminalRejectedClass&&OwnerTestFailure("active-cycle-selection-bias")&&
+						i==0u)
+						discrepancy=std::numeric_limits<float>::max();
+					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,discrepancy);
+					if(!haveSelected||discrepancy<selectedDiscrepancy||
+						(discrepancy==selectedDiscrepancy&&OwnerActiveClassLess(
+							provedCycleBranches[i],provedCycleBranches[selected]))){
+						selected=i;selectedDiscrepancy=discrepancy;
+						selectedProjection=std::move(branch);haveSelected=true;
+					}
+				}
+				if(terminalRejectedClass&&
+					OwnerTestFailure("terminal-canonical-winner-bias-r2")&&
+					provedCycleBranches.size()>1u){
+					selected=(selected+1u)%provedCycleBranches.size();
+					++r2.activeSetCanonicalProjectionCount;active=provedCycleBranches[selected];
+					FireProductionProjectionResult alternate;
+					if(!ProjectFireProductionScalarTargetCPU(projectionRequest(false),ownerTarget,
+						alternate,error))return Fail(error,
+							"projected-Heun R2 terminal canonical winner projection failed");
+					if(!alternate.validationPassed)return Fail(error,
+						"projected-Heun R2 terminal canonical winner validation failed");
+					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
+						OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
+							provedCycleBranches[selected],alternate.velocityMPerS,
+							request_.endpointVelocityToleranceMPerS));
+					selectedProjection=std::move(alternate);
+				}
+				selectedClass=provedCycleBranches[selected];active=selectedClass;return true;
+			};
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
 				++iteration){
 				FireProductionProjectionResult projected;
-				bool haveCanonicalProjection=false;
-				if(!frozenCycle){
-					auto repeated=std::find(activeHistory.begin(),activeHistory.end(),active);
-					if(repeated!=activeHistory.end()){
-						const std::size_t first=static_cast<std::size_t>(repeated-activeHistory.begin());
-						std::size_t selected=first;float selectedDiscrepancy=0.0f;
-						bool haveSelected=false;
-						for(std::size_t i=first;i<activeHistory.size();++i){
-							++r2.activeSetCanonicalProjectionCount;
-							active=activeHistory[i];FireProductionProjectionResult branch;
-							if(!ProjectFireProductionScalarTargetCPU(projectionRequest(false),
-								endpointTarget,branch,error))return Fail(error,
-									"projected-Heun R2 canonical active class projection failed");
-							if(OwnerTestFailure("projection-validation-selected-cycle"))
-								branch.validationPassed=false;
-							if(!branch.validationPassed)return Fail(error,
-								"projected-Heun R2 canonical active class validation failed");
-							float discrepancy=OwnerOpenClassDiscrepancy(shape,
-								request_.scalarContract.boundary,activeHistory[i],branch.velocityMPerS,
-								request_.endpointVelocityToleranceMPerS);
-							if(OwnerTestFailure("active-cycle-selection-bias")&&i==first)
-								discrepancy=std::numeric_limits<float>::max();
-							activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,discrepancy);
-							if(!haveSelected||discrepancy<selectedDiscrepancy||
-								(discrepancy==selectedDiscrepancy&&OwnerActiveClassLess(
-									activeHistory[i],activeHistory[selected]))){
-								selected=i;selectedDiscrepancy=discrepancy;
-								projected=std::move(branch);haveSelected=true;
-							}
-						}
-						active=activeHistory[selected];frozenCycle=true;
-						haveCanonicalProjection=true;
-						r2.activeSetDiscontinuousClass=true;
-						r2.activeSetCycleLength=static_cast<std::uint32_t>(
-							activeHistory.size()-first);
-						for(unsigned int side=0u;side<6u;++side)for(std::size_t face=0u;
-							face<active[side].size();++face){
-							bool differs=false;for(std::size_t i=first;i<activeHistory.size();++i)
-								differs=differs||activeHistory[i][side][face]!=active[side][face];
-							r2.activeSetDifferingFaceCount+=differs?1u:0u;
-						}
-					}else activeHistory.push_back(active);
-				}
-				const std::array<std::vector<unsigned char>,6> projectedClass=active;
-				if(!haveCanonicalProjection&&!ProjectFireProductionScalarTargetCPU(
+				const OpenClass projectedClass=active;
+				if(!ProjectFireProductionScalarTargetCPU(
 					projectionRequest(!frozenCycle),endpointTarget,projected,error))
 					return Fail(error,"projected-Heun R2 projection failed");
 				if(OwnerTestFailure("projection-validation-r2-endpoint"))
 					projected.validationPassed=false;
 				if(!projected.validationPassed)return Fail(error,
 						"projected-Heun R2 projection validation failed");
-				if(OwnerTestFailure("active-cycle-r2")){
+				if(terminalFirstTransitionPending){
+					projected.pressureOpenInflow=projectedClass;
+					terminalFirstTransitionPending=false;
+				}
+				if(OwnerTestFailure("active-cycle-r2")&&!frozenCycle){
 					projected.pressureOpenInflow=active;
 					for(unsigned int side=0u;side<6u;++side)if(
 						request_.scalarContract.boundary[side]==
@@ -3065,9 +3220,23 @@ namespace RISE
 					OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
 						projectedClass,*discrepancyVelocity,
 						request_.endpointVelocityToleranceMPerS));
-				const bool classStable=frozenCycle||
+				bool classStable=frozenCycle||
 					projected.pressureOpenInflow==projectedClass;
-				if(!frozenCycle)active=projected.pressureOpenInflow;
+				if(!frozenCycle&&!classStable){
+					if(activeHistory.empty()||activeHistory.back()!=projectedClass)
+						activeHistory.push_back(projectedClass);
+					auto repeated=std::find(activeHistory.begin(),activeHistory.end(),
+						projected.pressureOpenInflow);
+					if(repeated!=activeHistory.end()){
+						provedCycleBranches.assign(repeated,activeHistory.end());
+						OpenClass selectedClass;
+						if(!canonicalProjection(endpointTarget,0,projected,selectedClass))return false;
+						active=selectedClass;frozenCycle=true;classStable=true;recordCycle();
+					}else{
+						activeHistory.push_back(projected.pressureOpenInflow);
+						active=projected.pressureOpenInflow;
+					}
+				}else if(!frozenCycle)active=projected.pressureOpenInflow;
 				FireProductionProjectedHeunTransportCoefficients coefficients;
 				FireProductionScalarPhysicalFluxPrerequisiteResult flux;
 				if(!endpointFlux(projected,endpointTarget.TargetIdentity(),coefficients,flux))
@@ -3098,15 +3267,108 @@ namespace RISE
 					coefficientResidual});
 				r2.picardResidualPerS.push_back(residual);
 				if(havePrior&&classStable&&residual<=request_.projectionTolerancePerS){
+					const OpenClass terminalUsedClass=active;
+					FireProductionProjectionResult terminalProjection;
+					if(!ProjectFireProductionScalarTargetCPU(projectionRequest(false),nextTarget,
+						terminalProjection,error))return Fail(error,
+							"projected-Heun R2 terminal projection failed");
+					if(OwnerTestFailure("projection-validation-r2-terminal"))
+						terminalProjection.validationPassed=false;
+					if(!terminalProjection.validationPassed)return Fail(error,
+						"projected-Heun R2 terminal projection validation failed");
+					OpenClass terminalNextClass=OwnerNextOpenClass(shape,
+						request_.scalarContract.boundary,terminalUsedClass,
+						terminalProjection.velocityMPerS,
+						request_.endpointVelocityToleranceMPerS);
+					if(terminalFirstTransitionTerminalPending){
+						terminalNextClass=terminalUsedClass;
+						terminalFirstTransitionTerminalPending=false;
+					}
+					bool forcedTerminalFirstTransition=false;
+					if(!terminalFirstTransitionInjected&&
+						OwnerTestFailure("terminal-first-transition-r2")){
+						for(unsigned int side=0u;side<6u;++side)if(
+							request_.scalarContract.boundary[side]==
+								FireProductionProjectionPressureOpen&&
+							!terminalNextClass[side].empty()){
+							terminalNextClass[side][0u]=static_cast<unsigned char>(
+								terminalUsedClass[side][0u]^1u);break;
+						}
+						terminalFirstTransitionInjected=true;
+						terminalFirstTransitionPending=true;
+						terminalFirstTransitionTerminalPending=true;
+						forcedTerminalFirstTransition=true;
+					}
+					bool terminalFirstTransition=false;
+					if(forcedTerminalFirstTransition){
+						activeHistory.clear();activeHistory.push_back(terminalNextClass);
+						terminalFirstTransition=true;
+					}else if(!frozenCycle&&terminalNextClass!=terminalUsedClass){
+						if(activeHistory.empty()||activeHistory.back()!=terminalUsedClass)
+							activeHistory.push_back(terminalUsedClass);
+						auto repeated=std::find(activeHistory.begin(),activeHistory.end(),
+							terminalNextClass);
+						if(repeated==activeHistory.end()){
+							activeHistory.push_back(terminalNextClass);
+							terminalFirstTransition=true;
+						}else{
+							provedCycleBranches.assign(repeated,activeHistory.end());
+							frozenCycle=true;
+						}
+					}
+					if(frozenCycle){
+						addCycleBranch(terminalUsedClass);addCycleBranch(terminalNextClass);
+						OpenClass selectedClass;
+						if(!canonicalProjection(nextTarget,&terminalUsedClass,
+							terminalProjection,selectedClass))return false;
+						terminalNextClass=selectedClass;recordCycle();
+					}
+					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
+						OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
+							terminalProjection.pressureOpenInflow,
+							terminalProjection.velocityMPerS,
+							request_.endpointVelocityToleranceMPerS));
+					FireProductionProjectedHeunTransportCoefficients terminalCoefficients;
+					FireProductionScalarPhysicalFluxPrerequisiteResult terminalFlux;
+					if(!endpointFlux(terminalProjection,nextTarget.TargetIdentity(),
+						terminalCoefficients,terminalFlux))return false;
+					FireProductionScalarProjectionTargetSeal terminalTarget;
+					if(!FireProductionProjectedHeunTargetAuthority::EndpointBase(terminalFlux,
+						work_.conservativeValues,work_.committedEOS.temperatureK,request_.source,
+						terminalTarget,error))return false;
+					float verificationResidual=0.0f;
+					for(std::size_t cell=0u;cell<cells;++cell)verificationResidual=std::max({
+						verificationResidual,std::fabs(terminalTarget.TargetPerS()[cell]-
+							nextTarget.TargetPerS()[cell]),
+						std::fabs(terminalCoefficients.diffusivityM2PerS[cell]-
+							coefficients.diffusivityM2PerS[cell]),
+						std::fabs(terminalCoefficients.conductivityWPerMK[cell]-
+							coefficients.conductivityWPerMK[cell]),
+						std::fabs(terminalCoefficients.molecularKinematicViscosityM2PerS[cell]-
+							coefficients.molecularKinematicViscosityM2PerS[cell])});
+					for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;
+						face<terminalProjection.momentumKGPerM2S[axis].size();++face)
+						verificationResidual=std::max(verificationResidual,std::fabs(
+							terminalProjection.momentumKGPerM2S[axis][face]-
+							projected.momentumKGPerM2S[axis][face])/shape.cellWidthM);
+					if(terminalFirstTransition||
+						verificationResidual>request_.projectionTolerancePerS){
+						endpointTarget=std::move(terminalTarget);
+						priorProjection=std::move(terminalProjection);
+						priorProjection.pressureOpenInflow=terminalNextClass;
+						priorCoefficients=std::move(terminalCoefficients);
+						active=std::move(terminalNextClass);havePrior=true;continue;
+					}
 					r2.stage=FireProductionProjectedHeunStage::R2;
-					r2.projection=std::move(projected);r2.endpointPhysicalFlux=std::move(flux);
-					r2.target=std::move(nextTarget);
+					r2.projection=std::move(terminalProjection);
+					r2.endpointPhysicalFlux=std::move(terminalFlux);
+					r2.target=std::move(terminalTarget);
 					r2.parentCandidateIdentity=work_.r1.acceptedCandidateIdentity;
 					r2.acceptedCandidateIdentity=work_.r1.acceptedCandidateIdentity;
 					r2.acceptedIterationCount=iteration+1u;
 					r2.maximumActiveSetComplementarityDiscrepancyMPerS=
 						activeTrajectoryMaximum;
-					acceptedCoefficients=std::move(coefficients);
+					acceptedCoefficients=std::move(terminalCoefficients);
 					accepted=true;break;
 				}
 				endpointTarget=std::move(nextTarget);priorProjection=std::move(projected);

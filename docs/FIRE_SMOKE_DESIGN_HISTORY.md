@@ -4824,6 +4824,18 @@ it was already tried and refuted here.
   in-progress state before invoking transport; scoped rollback restores the
   prior stable state on refusal, blocking callback reentry while preserving the
   ordinary retry path.
+  The next numerical/authority review found two deeper ownership leaks. Cycle
+  selection was canonical only at a transient target, so the corrected owner
+  now continues on the first terminal class change and canonically re-solves
+  every proved cycle member against the accepted corrected target; R2 gains the
+  same accepted-target rule plus a terminal projection and endpoint rebuild.
+  Separately, callback `const` references still aliased mutable owner storage.
+  R0, R1, and R2 now pass deep callback-only snapshots and exact-bit-check them
+  after success and refusal. The added `10C+F` words are charged in the exact
+  `(266C+97F) sizeof(float)` working-set certificate. REDs force terminal class
+  changes and winner changes in all three stages, reject R2 terminal validation,
+  and exercise all 18 callback stage/operand/outcome mutation combinations with
+  clean retry.
   The next fresh test/evidence pass made the atomic-refusal RED exhaustive over
   every nested EOS, projection, physical-flux, FCT, nonpressure, target,
   active-set, and publication field; `complete_default` no longer means a
@@ -4869,7 +4881,7 @@ it was already tried and refuted here.
   and wall positive-zero checks inspect the complete binary64 word. Metal execution
   remains unclaimed on this host. The r136 source-bound trace digest moves from
   the historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-  to `9c6f87644dcb221bca4ec1ceeb0e7e42f067131ba80e71b5edc0c04e297572ce`.
+  to `4e9a98422e118dd14750b81f633c2ce481aa70ad2e1f6eca7081185f2601d9d8`.
   This is a manifest re-derivation, not a numerical re-baseline: the encoding
   prefixes the Transport/Force source hashes, and a detached build of
   `0e70f17f1` reproduces the historical digest and exit 237 while the reviewed

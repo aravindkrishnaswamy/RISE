@@ -5224,7 +5224,15 @@ byte identity; none of those additions can publish standalone accepted-step
 authority. Open-face class history stores the class actually used by each
 projection. On a cycle, every member is reprojected against the same current
 target with its class frozen, and only then compared with the configured
-velocity deadband and a lexicographic tie break. The owner records cycle length,
+velocity deadband and a lexicographic tie break. A fresh numerical review found
+that this canonical choice had originally been made against a transient target.
+The corrected owner treats a first terminal class change as another Picard
+iteration; if the terminal classes cycle, it reprojects every proved member
+against the corrected accepted target and chooses only from those results. R2
+does the same and performs its terminal projection before rebuilding endpoint
+transport, physical flux, and target. Thus the published class is a fixed point
+of the target it authenticates, not a winner frozen from an earlier target. The
+owner records cycle length,
 differing-face count, canonical reprojection count, and the maximum discrepancy
 over the full trajectory. The shared Heun
 contract excludes stage-local pressure-open classes, while each stage request
@@ -5237,6 +5245,13 @@ physical flux is not an endpoint target. The integrated head is exactly
 performs no scalar commit and publishes endpoint momentum, velocity, and
 step-average pressure atomically.
 
+Transport callbacks receive private deep snapshots of state, temperature, and
+velocity rather than aliases into owner storage. Exact-bit postconditions run
+after both success and refusal, so a provider that casts away const and mutates
+any context byte cannot affect retry state or mint an identity over an
+unprojected velocity. Those `10C+F` snapshot words are included in the exact
+working-set certificate, now `(266C+97F) sizeof(float)`.
+
 REDs cover out-of-order stages, stale r70 candidate identity, stale coefficient
 payload with current echoes, forged parent, closed constant-mode compatibility,
 stale whole-result replay against a different sealed source attempt, result
@@ -5245,7 +5260,10 @@ terminal/R2 bootstrap/endpoint projection-validation branch, validation of
 every selected-cycle reprojection in both the coupled R0/R1 path and R2, an
 exercised two-class active cycle with
 distinguishable discrepancies, an exercised nonuniform r59 selected-alpha path,
-and retry after an injected mid-publication allocation failure. The caller's
+terminal first-class transitions and terminal canonical-winner changes in R0,
+R1, and R2, an R2 terminal-validation refusal, all 18 combinations of callback
+stage, aliased operand, and success/refusal mutation, and retry after an
+injected mid-publication allocation failure. The caller's
 result remains the complete default publication until a separate deep copy has
 finished; committing the internal and external publications then uses
 compile-time-proven non-throwing moves. The final verifier
@@ -5283,10 +5301,13 @@ projections, flux pairs, nonpressure rates, and shared alpha. The signed r60
 gas-density differential also proves that a rounding-scale negative constituent
 is included rather than clamped. The generated binary64 mirror separately
 bounds roundoff over state, targets, momentum, velocity, pressure, and alpha.
-No Metal run is
+The tier publisher is also tested through its serialized evidence path for
+tiers 8 and 10, and the Metal manifest parser validates the complete HDR encode,
+container probe, and SHA sidecar independently inside each movie stage rather
+than accepting global substrings from another stage. No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-derived from
 historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-to `9c6f87644dcb221bca4ec1ceeb0e7e42f067131ba80e71b5edc0c04e297572ce`.
+to `4e9a98422e118dd14750b81f633c2ce481aa70ad2e1f6eca7081185f2601d9d8`.
 The digest encoding prefixes all 16 generated manifest fields: every primary
 operator, `FireSimulationRecords` and `FireCase` header/source dependency, and
 the three trace-support files plus the generator. A shared enumerator is used
