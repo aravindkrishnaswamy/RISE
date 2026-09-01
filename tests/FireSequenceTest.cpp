@@ -1082,12 +1082,268 @@ namespace
 		bool productionMetal=false;
 		bool compatibleMomentumDiagnostic=false;
 		bool singleStageFCTDiagnostic=false;
+		bool sealedLegacyMomentumReplay=false;
+		std::filesystem::path replayProtocolPath;
+		std::string replayProtocolDigest;
+		double productionMomentumObservationTimeS=0.0;
+		std::size_t productionMomentumObservationColumnX=0u;
+		std::size_t productionMomentumObservationColumnY=0u;
+		double productionMomentumObservationReferenceTier=0.0;
 		std::filesystem::path temporalSnapshotDirectory;
 		double temporalSnapshotCadenceS=0.0;
 		double maximumProductionSourceStepS=0.0;
 		std::filesystem::path productionOnsetDiagnosticDirectory;
 		double productionOnsetStopVelocityMPerS=0.0;
 	};
+
+	void AppendReplayUInt64(RISECBOR64::Bytes& bytes,const std::uint64_t value)
+	{
+		for(unsigned int byte=0u;byte<8u;++byte)
+			bytes.push_back(static_cast<unsigned char>((value>>(8u*byte))&0xffu));
+	}
+
+	void AppendReplayDouble(RISECBOR64::Bytes& bytes,const double value)
+	{
+		std::uint64_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));
+		AppendReplayUInt64(bytes,bits);
+	}
+	void AppendReplayFloat(RISECBOR64::Bytes& bytes,const float value)
+	{
+		std::uint32_t bits=0u;std::memcpy(&bits,&value,sizeof(bits));
+		for(unsigned int byte=0u;byte<4u;++byte)
+			bytes.push_back(static_cast<unsigned char>((bits>>(8u*byte))&0xffu));
+	}
+
+	RISECBOR64::Bytes ProductionSourcePacketFieldBytes(
+		const std::vector<MethaneSourcePacket>& packets)
+	{
+		RISECBOR64::Bytes bytes;
+		const char schema[]="rise.fire.production.source_packet_field.v1";
+		bytes.insert(bytes.end(),schema,schema+sizeof(schema));
+		AppendReplayUInt64(bytes,packets.size());
+		for(const MethaneSourcePacket& packet:packets){
+			for(const double value:packet.constituentDelta)AppendReplayDouble(bytes,value);
+			AppendReplayDouble(bytes,packet.sensibleEnergyDeltaJPerM3);
+			AppendReplayDouble(bytes,packet.reactedFuelKGPerM3);
+			AppendReplayDouble(bytes,packet.oxidizedCarbonKGPerM3);
+			AppendReplayDouble(bytes,packet.grossCarbonFormedKGPerM3);
+			AppendReplayDouble(bytes,packet.gasHeatReleaseWPerM3);
+			AppendReplayDouble(bytes,packet.sootHeatReleaseWPerM3);
+			AppendReplayDouble(bytes,packet.pilotEnergyDeltaJPerM3);
+			AppendReplayDouble(bytes,packet.pilotExpansionIntegral);
+			AppendReplayDouble(bytes,packet.radiativeCoolingWPerM3);
+		}
+		return bytes;
+	}
+
+	std::string ProductionSourcePacketFieldSHA256(
+		const std::vector<MethaneSourcePacket>& packets)
+	{
+		return RISECBOR64::SHA256Hex(ProductionSourcePacketFieldBytes(packets));
+	}
+
+	bool WriteProductionSourcePacketFieldEvidence(const std::filesystem::path& base,
+		const std::vector<MethaneSourcePacket>& packets,
+		const std::vector<MethaneCellState>& unstagedBeginning,
+		const std::vector<MethaneCellState>& stagedBeginning,
+		const PeriodicMACField& unstagedMomentum,
+		const FireProductionResidentStepRequest& request,std::string& error)
+	{
+		const RISECBOR64::Bytes bytes=ProductionSourcePacketFieldBytes(packets);
+		const std::filesystem::path payloadPath=base.string()+".source_packets.bin";
+		std::ofstream payload(payloadPath,std::ios::binary|std::ios::trunc);
+		if(!bytes.empty())payload.write(reinterpret_cast<const char*>(bytes.data()),
+			static_cast<std::streamsize>(bytes.size()));
+		payload.close();
+		if(!payload){error="production onset source-packet field write failed";return false;}
+		RISECBOR64::Bytes complete;
+		const char completeSchema[]="rise.fire.production.source_observation_inputs.v1";
+		complete.insert(complete.end(),completeSchema,completeSchema+sizeof(completeSchema));
+		complete.insert(complete.end(),bytes.begin(),bytes.end());
+		AppendReplayUInt64(complete,unstagedBeginning.size());
+		if(stagedBeginning.size()!=unstagedBeginning.size()){
+			error="production complete source input state shape mismatch";return false;}
+		for(std::size_t cell=0u;cell<unstagedBeginning.size();++cell){
+			const ConservativeVector unstaged=ToConservativeVector(unstagedBeginning[cell]);
+			const ConservativeVector staged=ToConservativeVector(stagedBeginning[cell]);
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component){
+				AppendReplayDouble(complete,unstaged[component]);
+				AppendReplayDouble(complete,staged[component]);
+			}
+		}
+		for(unsigned int axis=0u;axis<3u;++axis){
+			AppendReplayUInt64(complete,unstagedMomentum.component[axis].size());
+			if(request.force.beginningMomentumKGPerM2S[axis].size()!=
+				unstagedMomentum.component[axis].size()){
+				error="production complete source input momentum shape mismatch";return false;}
+			for(std::size_t face=0u;face<unstagedMomentum.component[axis].size();++face){
+				AppendReplayDouble(complete,unstagedMomentum.component[axis][face]);
+				AppendReplayFloat(complete,request.force.beginningMomentumKGPerM2S[axis][face]);
+			}
+		}
+		for(unsigned int axis=0u;axis<3u;++axis){
+			AppendReplayUInt64(complete,request.cellTransport.frozenVelocityMPerS[axis].size());
+			for(const float value:request.cellTransport.frozenVelocityMPerS[axis])
+				AppendReplayFloat(complete,value);
+			AppendReplayUInt64(complete,request.dualTransport.frozenVelocityMPerS[axis].size());
+			for(const float value:request.dualTransport.frozenVelocityMPerS[axis])
+				AppendReplayFloat(complete,value);
+		}
+		AppendReplayUInt64(complete,request.cellSourceIncrement.size());
+		for(const float value:request.cellSourceIncrement)AppendReplayFloat(complete,value);
+		for(unsigned int axis=0u;axis<3u;++axis){
+			AppendReplayUInt64(complete,request.momentumSourceIncrement[axis].size());
+			for(const float value:request.momentumSourceIncrement[axis])
+				AppendReplayFloat(complete,value);
+		}
+		const std::filesystem::path completePath=base.string()+".source_observation_inputs.bin";
+		std::ofstream completeOutput(completePath,std::ios::binary|std::ios::trunc);
+		if(!complete.empty())completeOutput.write(reinterpret_cast<const char*>(complete.data()),
+			static_cast<std::streamsize>(complete.size()));
+		completeOutput.close();
+		if(!completeOutput){error="production complete source input write failed";return false;}
+		std::array<long double,MethaneSpeciesCount> speciesTotal{};
+		long double energy=0.0L,reacted=0.0L,oxidized=0.0L,grossCarbon=0.0L,
+			gasHRR=0.0L,sootHRR=0.0L,pilotEnergy=0.0L,pilotExpansion=0.0L,
+			radiativeCooling=0.0L;
+		for(const MethaneSourcePacket& packet:packets){
+			for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+				speciesTotal[species]+=packet.constituentDelta[species];
+			energy+=packet.sensibleEnergyDeltaJPerM3;reacted+=packet.reactedFuelKGPerM3;
+			oxidized+=packet.oxidizedCarbonKGPerM3;
+			grossCarbon+=packet.grossCarbonFormedKGPerM3;
+			gasHRR+=packet.gasHeatReleaseWPerM3;sootHRR+=packet.sootHeatReleaseWPerM3;
+			pilotEnergy+=packet.pilotEnergyDeltaJPerM3;
+			pilotExpansion+=packet.pilotExpansionIntegral;
+			radiativeCooling+=packet.radiativeCoolingWPerM3;
+		}
+		std::ofstream ledger(base.string()+".source_ledger.v1",std::ios::trunc);
+		const long double cellVolume=static_cast<long double>(request.force.shape.cellWidthM)*
+			request.force.shape.cellWidthM*request.force.shape.cellWidthM;
+		ledger<<std::setprecision(21)
+			<<"schema rise.fire.production.source_packet_ledger.v1\n"
+			<<"payload_sha256 "<<RISECBOR64::SHA256Hex(bytes)<<"\n"
+			<<"source_observation_inputs_sha256 "<<RISECBOR64::SHA256Hex(complete)<<"\n"
+			<<"packet_count "<<packets.size()<<"\n";
+		for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+			ledger<<"constituent_delta_kg_"<<species<<' '<<speciesTotal[species]*cellVolume<<'\n';
+		ledger<<"sensible_energy_delta_j "<<energy*cellVolume<<"\nreacted_fuel_kg "<<
+			reacted*cellVolume<<"\noxidized_carbon_kg "<<oxidized*cellVolume<<
+			"\ngross_carbon_kg "<<grossCarbon*cellVolume<<"\ngas_hrr_w "<<gasHRR*cellVolume<<
+			"\nsoot_hrr_w "<<sootHRR*cellVolume<<"\npilot_energy_j "<<pilotEnergy*cellVolume<<
+			"\npilot_expansion_m3 "<<pilotExpansion*cellVolume<<
+			"\nradiative_cooling_w "<<radiativeCooling*cellVolume<<'\n';
+		ledger.close();
+		if(!ledger||DigestFile(payloadPath)!=RISECBOR64::SHA256Hex(bytes)||
+			DigestFile(completePath)!=RISECBOR64::SHA256Hex(complete)){
+			error="production onset source-packet evidence verification failed";return false;
+		}
+		return true;
+	}
+
+	bool WriteProductionSourceAndAdjacentStateContext(const std::filesystem::path& path,
+		const FireProductionProjectionShape& shape,const std::size_t centerX,
+		const std::size_t centerY,const std::size_t centerZ,
+		const std::vector<MethaneCellState>& beginning,
+		const std::vector<MethaneSourcePacket>& packets,
+		const std::vector<float>& acceptedConservative,
+		const FireSimulationMethaneRecord& fuel,std::string& error)
+	{
+		const std::size_t cells=shape.CellCount();
+		if(beginning.size()!=cells||packets.size()!=cells||
+			acceptedConservative.size()!=MethaneConservativeDimension*cells||
+			centerX>=shape.nx||centerY>=shape.ny||centerZ>=shape.nz){
+			error="production onset source/state context shape mismatch";return false;
+		}
+		std::vector<std::array<std::size_t,3>> locations;
+		auto add=[&](const std::size_t x,const std::size_t y,const std::size_t z){
+			const std::array<std::size_t,3> location={{x,y,z}};
+			if(std::find(locations.begin(),locations.end(),location)==locations.end())
+				locations.push_back(location);};
+		add(centerX,centerY,centerZ);
+		if(centerX>0u)add(centerX-1u,centerY,centerZ);
+		if(centerX+1u<shape.nx)add(centerX+1u,centerY,centerZ);
+		if(centerY>0u)add(centerX,centerY-1u,centerZ);
+		if(centerY+1u<shape.ny)add(centerX,centerY+1u,centerZ);
+		if(centerZ>0u)add(centerX,centerY,centerZ-1u);
+		if(centerZ+1u<shape.nz)add(centerX,centerY,centerZ+1u);
+		std::ofstream context(path,std::ios::trunc);
+		context<<"relation,cell,x,y,z,beginning_temperature_k,beginning_eos_deviation,"
+			"accepted_temperature_k,accepted_eos_deviation";
+		for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+			context<<",beginning_q"<<component;
+		for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+			context<<",accepted_q"<<component;
+		for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+			context<<",source_species"<<species;
+		context<<",source_sensible_energy,source_reacted_fuel,source_oxidized_carbon,"
+			"source_gross_carbon,source_gas_hrr,source_soot_hrr,source_pilot_energy,"
+			"source_pilot_expansion,source_radiative_cooling\n";
+		for(std::size_t locationIndex=0u;locationIndex<locations.size();++locationIndex){
+			const std::size_t x=locations[locationIndex][0],y=locations[locationIndex][1],
+				z=locations[locationIndex][2];
+			const std::size_t cell=x+shape.nx*(y+shape.ny*z);
+			ConservativeVector acceptedVector{};
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+				acceptedVector[component]=acceptedConservative[component*cells+cell];
+			MethaneCellState accepted=FromConservativeVector(acceptedVector,
+				FireStateProducerPrecision::Binary32);
+			double acceptedTemperature=0.0;
+			if(!InvertMethaneTemperatureWithinAcceptedEnvelope(accepted,
+				fuel.TemperatureMinK(),fuel.TemperatureMaxK(),fuel,acceptedTemperature,&error))
+				return false;
+			accepted.temperatureK=acceptedTemperature;
+			double beginningDeviation=0.0,acceptedDeviation=0.0;
+			if(!EquationOfStateResidual(beginning[cell],fuel,beginningDeviation,&error)||
+				!EquationOfStateResidual(accepted,fuel,acceptedDeviation,&error))return false;
+			const ConservativeVector beginningVector=ToConservativeVector(beginning[cell]);
+			const MethaneSourcePacket& packet=packets[cell];
+			context<<std::setprecision(17)<<(locationIndex==0u?"center":"adjacent")<<','<<
+				cell<<','<<x<<','<<y<<','<<z<<','<<beginning[cell].temperatureK<<','<<
+				beginningDeviation<<','<<acceptedTemperature<<','<<acceptedDeviation;
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+				context<<','<<beginningVector[component];
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+				context<<','<<acceptedVector[component];
+			for(const double value:packet.constituentDelta)context<<','<<value;
+			context<<','<<packet.sensibleEnergyDeltaJPerM3<<','<<packet.reactedFuelKGPerM3<<','<<
+				packet.oxidizedCarbonKGPerM3<<','<<packet.grossCarbonFormedKGPerM3<<','<<
+				packet.gasHeatReleaseWPerM3<<','<<packet.sootHeatReleaseWPerM3<<','<<
+				packet.pilotEnergyDeltaJPerM3<<','<<packet.pilotExpansionIntegral<<','<<
+				packet.radiativeCoolingWPerM3<<'\n';
+		}
+		context.close();
+		if(!context){error="production onset source/state context write failed";return false;}
+		return true;
+	}
+
+	std::string ProductionBeginningFieldSHA256(const std::string& caseRecordId,
+		const PeriodicMACShape& shape,const std::vector<MethaneCellState>& states,
+		const PeriodicMACField& momentum,const PeriodicMACField& velocity)
+	{
+		RISECBOR64::Bytes bytes;
+		const char schema[]="rise.fire.production.from_zero_state.v1";
+		bytes.insert(bytes.end(),schema,schema+sizeof(schema));
+		AppendReplayUInt64(bytes,caseRecordId.size());
+		bytes.insert(bytes.end(),caseRecordId.begin(),caseRecordId.end());
+		AppendReplayUInt64(bytes,shape.nx);AppendReplayUInt64(bytes,shape.ny);
+		AppendReplayUInt64(bytes,shape.nz);AppendReplayDouble(bytes,shape.cellWidthM);
+		AppendReplayUInt64(bytes,states.size());
+		for(const MethaneCellState& state:states){
+			AppendReplayUInt64(bytes,static_cast<std::uint64_t>(state.producerPrecision));
+			AppendReplayDouble(bytes,state.temperatureK);
+			const ConservativeVector conservative=ToConservativeVector(state);
+			for(std::size_t component=0u;component<MethaneConservativeDimension;++component)
+				AppendReplayDouble(bytes,conservative[component]);
+		}
+		for(unsigned int axis=0u;axis<3u;++axis){
+			AppendReplayUInt64(bytes,momentum.component[axis].size());
+			for(const double value:momentum.component[axis])AppendReplayDouble(bytes,value);
+			AppendReplayUInt64(bytes,velocity.component[axis].size());
+			for(const double value:velocity.component[axis])AppendReplayDouble(bytes,value);
+		}
+		return RISECBOR64::SHA256Hex(bytes);
+	}
 
 	bool LimitBinary32ProductionStepToEvent(const double simulationTimeS,
 		const double eventTimeS,double& timeStepS)
@@ -2707,6 +2963,34 @@ namespace
 		ConservativeAdvance3DResult advanced;
 		if(persistence.productionMetal)for(unsigned int axis=0u;axis<3u;++axis)
 			advanced.velocityMPerS.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
+		if(persistence.sealedLegacyMomentumReplay){
+			if(persistence.resume||persistence.replayProtocolPath.empty()||
+				persistence.replayProtocolDigest.size()!=64u||
+				DigestFile(persistence.replayProtocolPath)!=persistence.replayProtocolDigest||
+				persistence.productionOnsetDiagnosticDirectory.empty()){
+				values.structuredError="sealed_legacy_replay_identity_failure";return values;
+			}
+			const std::string initialStateDigest=ProductionBeginningFieldSHA256(
+				caseRecord.caseRecordId,shape,states,momentum,advanced.velocityMPerS);
+			std::ofstream identity(persistence.productionOnsetDiagnosticDirectory.parent_path()/
+				"from_zero_identity.v1",std::ios::trunc);
+			identity<<std::setprecision(17)
+				<<"schema rise.fire.production.r193_from_zero_identity.v1\n"
+				<<"operator ordinary_independent_dual_momentum_resident_step\n"
+				<<"resolution_tier "<<resolutionTier<<"\nseed "<<authored.seed<<"\n"
+				<<"case_record_id "<<caseRecord.caseRecordId<<"\n"
+				<<"initial_state_sha256 "<<initialStateDigest<<"\n"
+				<<"producer_build_id "<<currentBuildId<<"\n"
+				<<"producer_executable_sha256 "<<currentExecutableDigest<<"\n"
+				<<"protocol_path "<<persistence.replayProtocolPath.string()<<"\n"
+				<<"protocol_sha256 "<<persistence.replayProtocolDigest<<"\n"
+				<<"resume_forbidden true\n";
+			identity.close();
+			if(initialStateDigest.size()!=64u||!identity){
+				values.structuredError="sealed_legacy_replay_identity_publication_failure";
+				return values;
+			}
+		}
 		bool advancedOK=minimumStepCount>0u || targetTimeS==0.0;
 		double simulationTimeS=0.0,previousStepS=0.0;
 		unsigned int acceptedSteps=0u;
@@ -2833,6 +3117,7 @@ namespace
 		auto lastCheckpointWall=std::chrono::steady_clock::now();
 		const std::array<double,3> productionOnsetVelocityThresholds={{15.0,30.0,60.0}};
 		std::array<bool,3> productionOnsetThresholdCaptured={{false,false,false}};
+		bool productionMomentumObservationCaptured=false;
 		bool productionOnsetStopReached=false;
 		std::array<std::vector<unsigned char>,6> singleStageFCTAcceptedInflow;
 		for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
@@ -3047,6 +3332,8 @@ namespace
 			std::vector<MethaneCellState> acceptedBeginningStates=states;
 			std::vector<double> acceptedProductionTemperatureK;
 			double acceptedExternalFuelMassKG=0.0;
+			bool fatalOnsetAuditFailure=false;
+			bool mandatoryEvidenceFailure=false,observationEvidencePublished=false;
 			solverPhase="resident step attempt";
 			for(unsigned int reduction=0;
 				reduction<RISE::FireStepRejectionRetryCap&&!advancedOK;++reduction) {
@@ -3412,6 +3699,7 @@ namespace
 						std::filesystem::path effectiveMomentumAuditPath;
 						std::size_t onsetThresholdIndex=productionOnsetVelocityThresholds.size();
 						std::size_t auditColumnX=38u,auditColumnY=42u;
+						bool exactTimeObservation=false;
 						if(const char* auditPath=std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH"))
 							effectiveMomentumAuditPath=auditPath;
 						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
@@ -3419,6 +3707,9 @@ namespace
 							for(std::size_t threshold=0u;threshold<productionOnsetVelocityThresholds.size();
 								++threshold)if(!productionOnsetThresholdCaptured[threshold]&&
 								attemptMaximumVelocity>=productionOnsetVelocityThresholds[threshold]){
+								if(attemptMaximumAxis!=2u){lastAdvanceError=
+									"production onset maximum is not vertical; column budget refused";
+									fatalOnsetAuditFailure=true;advancedOK=false;break;}
 								onsetThresholdIndex=threshold;auditColumnX=attemptMaximumX;
 								auditColumnY=attemptMaximumY;std::ostringstream name;
 								name<<"threshold_"<<static_cast<unsigned int>(
@@ -3426,6 +3717,29 @@ namespace
 								effectiveMomentumAuditPath=
 									persistence.productionOnsetDiagnosticDirectory/name.str();break;
 							}
+						if(fatalOnsetAuditFailure)break;
+						if(onsetThresholdIndex==productionOnsetVelocityThresholds.size()&&
+							disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
+							!productionMomentumObservationCaptured&&
+							persistence.productionMomentumObservationTimeS>0.0&&
+							simulationTimeS>=persistence.productionMomentumObservationTimeS){
+							exactTimeObservation=true;
+							if(!(persistence.productionMomentumObservationReferenceTier>0.0)){
+								lastAdvanceError="production matched observation lacks reference tier";
+								mandatoryEvidenceFailure=true;advancedOK=false;break;}
+							const double referenceCellWidth=caseRecord.derived.
+								characteristicDiameterM/
+								persistence.productionMomentumObservationReferenceTier;
+							auditColumnX=static_cast<std::size_t>(std::floor(
+								(static_cast<double>(persistence.productionMomentumObservationColumnX)+0.5)*
+								referenceCellWidth/shape.cellWidthM));
+							auditColumnY=static_cast<std::size_t>(std::floor(
+								(static_cast<double>(persistence.productionMomentumObservationColumnY)+0.5)*
+								referenceCellWidth/shape.cellWidthM));
+							effectiveMomentumAuditPath=
+								persistence.productionOnsetDiagnosticDirectory/
+								"reference_composition_candidate_fixed_column.raw.csv";
+						}
 						if(attemptComputed&&
 							disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted&&
 							!effectiveMomentumAuditPath.empty()){
@@ -3586,6 +3900,7 @@ namespace
 								auditValid&&
 								forceInclusiveProvisionalDifferenceCount==0u;
 							if(!auditValid){
+								mandatoryEvidenceFailure=true;
 								lastAdvanceError=std::string("production momentum audit failed at ")+auditPhase+
 									" [attempt="+(attemptComputed?"1":"0")+
 									" physical_only="+(physicalOnlyComputed?"1":"0")+
@@ -3601,6 +3916,12 @@ namespace
 								std::fprintf(stderr,"%s\n",lastAdvanceError.c_str());advancedOK=false;break;
 							}
 							if(auditValid){
+								if(auditColumnX>=request.force.shape.nx||
+									auditColumnY>=request.force.shape.ny){
+									mandatoryEvidenceFailure=true;
+									lastAdvanceError="production momentum audit column is out of range";
+									advancedOK=false;break;
+								}
 								const double representedStep=static_cast<double>(production.representedTimeStepS);
 								double columnStressMaximum=0.0,columnBuoyancyMaximum=0.0,
 									columnAdvectionMaximum=0.0,columnSourceMaximum=0.0,
@@ -3608,6 +3929,7 @@ namespace
 									columnTotalMaximum=0.0,columnClosureMaximum=0.0,
 									columnVremanMinimum=std::numeric_limits<double>::infinity(),
 									columnVremanMaximum=0.0;
+								std::size_t columnAdvectionMaximumZ=0u;
 								const std::filesystem::path columnPath=
 									effectiveMomentumAuditPath.string()+".column.csv";
 								std::error_code columnSizeError;const bool writeColumnHeader=
@@ -3650,7 +3972,9 @@ namespace
 										forceFieldsCPU.eddyKinematicViscosityM2PerS[upperCell];
 									columnStressMaximum=std::max(columnStressMaximum,std::fabs(stress));
 									columnBuoyancyMaximum=std::max(columnBuoyancyMaximum,std::fabs(buoyancy));
-									columnAdvectionMaximum=std::max(columnAdvectionMaximum,std::fabs(advection));
+									if(std::fabs(advection)>columnAdvectionMaximum){
+										columnAdvectionMaximum=std::fabs(advection);
+										columnAdvectionMaximumZ=z;}
 									columnSourceMaximum=std::max(columnSourceMaximum,std::fabs(source));
 									columnPressureMaximum=std::max(columnPressureMaximum,std::fabs(pressure));
 									columnRestorationMaximum=std::max(columnRestorationMaximum,std::fabs(restoration));
@@ -3665,7 +3989,7 @@ namespace
 								}
 								columnAudit.close();
 								if(!columnAudit){lastAdvanceError="production momentum column audit write failed";
-									advancedOK=false;break;}
+									mandatoryEvidenceFailure=true;advancedOK=false;break;}
 								std::error_code sizeError;const bool writeHeader=
 									!std::filesystem::exists(effectiveMomentumAuditPath)||
 									std::filesystem::file_size(effectiveMomentumAuditPath,sizeError)==0u;
@@ -3684,7 +4008,10 @@ namespace
 									"attempt_velocity_max_m_per_s,attempt_velocity_axis,attempt_velocity_face,"
 									"attempt_velocity_x,attempt_velocity_y,attempt_velocity_z,"
 									"force_inclusive_provisional_byte_identity,force_inclusive_provisional_"
-									"difference_count,force_inclusive_provisional_difference_max\n";
+									"difference_count,force_inclusive_provisional_difference_max,"
+									"source_packet_field_sha256\n";
+								const std::string sourcePacketFieldDigest=
+									ProductionSourcePacketFieldSHA256(packets);
 								audit<<std::setprecision(17)<<simulationTimeS<<','<<reduction<<','<<
 									static_cast<double>(production.representedTimeStepS)<<','<<
 									production.manifoldTailCellCount<<','<<
@@ -3705,10 +4032,54 @@ namespace
 									attemptMaximumFace<<','<<attemptMaximumX<<','<<attemptMaximumY<<','<<attemptMaximumZ<<','<<
 									(forceInclusiveProvisionalByteIdentity?1:0)<<','<<
 									forceInclusiveProvisionalDifferenceCount<<','<<
-									forceInclusiveProvisionalDifferenceMaximum<<'\n';
+									forceInclusiveProvisionalDifferenceMaximum<<','<<
+									sourcePacketFieldDigest<<'\n';
 								audit.close();
 								if(!audit){lastAdvanceError="production momentum audit write failed";
-									advancedOK=false;break;}
+									mandatoryEvidenceFailure=true;advancedOK=false;break;}
+								const std::filesystem::path sourceContextPath=
+									effectiveMomentumAuditPath.string()+".source_context.csv";
+								const std::size_t sourceContextX=exactTimeObservation?
+									columnX:attemptMaximumX;
+								const std::size_t sourceContextY=exactTimeObservation?
+									columnY:attemptMaximumY;
+								const std::size_t sourceContextZ=exactTimeObservation?
+									std::min(columnAdvectionMaximumZ,request.force.shape.nz-1u):
+									attemptMaximumZ;
+								if(!WriteProductionSourceAndAdjacentStateContext(sourceContextPath,
+									request.force.shape,sourceContextX,sourceContextY,
+									sourceContextZ,packetBeginning,packets,
+									production.conservativeValues,fuel,lastAdvanceError)){
+									mandatoryEvidenceFailure=true;advancedOK=false;break;
+								}
+								if(!WriteProductionSourcePacketFieldEvidence(
+									effectiveMomentumAuditPath,packets,states,packetBeginning,momentum,
+									request,lastAdvanceError)){
+									mandatoryEvidenceFailure=true;advancedOK=false;break;
+								}
+								std::ofstream event(effectiveMomentumAuditPath.string()+".event.v1",
+									std::ios::trunc);
+								event<<std::setprecision(17)
+									<<"schema rise.fire.production.onset_observation_event.v1\n"
+									<<"accepted_step_beginning "<<acceptedSteps<<"\n"
+									<<"beginning_time_s "<<simulationTimeS<<"\nend_time_s "<<
+										simulationTimeS+representedStep<<"\n"
+									<<"realized_max_velocity_m_per_s "<<attemptMaximumVelocity<<"\n"
+									<<"max_axis "<<attemptMaximumAxis<<"\nmax_face "<<attemptMaximumFace<<"\n"
+									<<"source_packet_field_sha256 "<<sourcePacketFieldDigest<<"\n"
+									<<"source_event_threshold "<<(onsetThresholdIndex<
+										productionOnsetVelocityThresholds.size()?
+										productionOnsetVelocityThresholds[onsetThresholdIndex]:0.0)<<"\n";
+								for(const double threshold:productionOnsetVelocityThresholds)
+									if(attemptMaximumVelocity>=threshold)event<<"crossed_threshold "<<
+										threshold<<'\n';
+								event
+									<<"exact_reference_composition_endpoint_s "<<simulationTimeS<<"\n";
+								event.close();
+								if(!event){lastAdvanceError="production onset event write failed";
+									mandatoryEvidenceFailure=true;advancedOK=false;break;}
+								observationEvidencePublished=true;
+								if(exactTimeObservation)productionMomentumObservationCaptured=true;
 								if(onsetThresholdIndex<productionOnsetThresholdCaptured.size()){
 									productionOnsetThresholdCaptured[onsetThresholdIndex]=true;
 									for(std::size_t skipped=onsetThresholdIndex+1u;
@@ -3726,9 +4097,38 @@ namespace
 										const bool columnCopied=summaryCopied&&std::filesystem::copy_file(
 											columnPath,skippedPath.string()+".column.csv",
 											std::filesystem::copy_options::overwrite_existing,copyError);
-										if(!columnCopied){lastAdvanceError=
+										const bool contextCopied=columnCopied&&std::filesystem::copy_file(
+											sourceContextPath,skippedPath.string()+".source_context.csv",
+											std::filesystem::copy_options::overwrite_existing,copyError);
+										const bool payloadCopied=contextCopied&&std::filesystem::copy_file(
+											effectiveMomentumAuditPath.string()+".source_packets.bin",
+											skippedPath.string()+".source_packets.bin",
+											std::filesystem::copy_options::overwrite_existing,copyError);
+										const bool ledgerCopied=payloadCopied&&std::filesystem::copy_file(
+											effectiveMomentumAuditPath.string()+".source_ledger.v1",
+											skippedPath.string()+".source_ledger.v1",
+											std::filesystem::copy_options::overwrite_existing,copyError);
+										const bool completeCopied=ledgerCopied&&std::filesystem::copy_file(
+							effectiveMomentumAuditPath.string()+".source_observation_inputs.bin",
+							skippedPath.string()+".source_observation_inputs.bin",
+											std::filesystem::copy_options::overwrite_existing,copyError);
+										if(!completeCopied){lastAdvanceError=
 											"production onset skipped-threshold publication failed";
-											advancedOK=false;break;}
+											mandatoryEvidenceFailure=true;advancedOK=false;break;}
+										std::ofstream alias(skippedPath.string()+".event.v1",std::ios::trunc);
+										alias<<std::setprecision(17)
+											<<"schema rise.fire.production.onset_observation_alias.v1\n"
+											<<"threshold "<<productionOnsetVelocityThresholds[skipped]<<"\n"
+											<<"source_threshold "<<productionOnsetVelocityThresholds[
+												onsetThresholdIndex]<<"\nsource_event_sha256 "<<
+												DigestFile(effectiveMomentumAuditPath.string()+".event.v1")<<"\n"
+											<<"beginning_time_s "<<simulationTimeS<<"\nend_time_s "<<
+												simulationTimeS+representedStep<<"\nrealized_max_velocity_m_per_s "<<
+												attemptMaximumVelocity<<'\n';
+										alias.close();
+										if(!alias){lastAdvanceError=
+											"production onset skipped-threshold alias write failed";
+											mandatoryEvidenceFailure=true;advancedOK=false;break;}
 										productionOnsetThresholdCaptured[skipped]=true;
 									}
 									if(!advancedOK)break;
@@ -3909,6 +4309,8 @@ namespace
 					}
 				}
 				if(!advancedOK) {
+					if(fatalOnsetAuditFailure||mandatoryEvidenceFailure||
+						observationEvidencePublished)break;
 					if(error.empty())error=std::string("production owner failed during ")+
 						solverPhase;
 					lastAdvanceError=error;
@@ -6190,26 +6592,64 @@ namespace
 	}
 
 	int RunProductionOnsetCampaignChild(const double resolutionTier,
-		const std::filesystem::path& outputDirectory)
+		const std::filesystem::path& outputDirectory,const bool sealedLegacyReplay=false,
+		const std::filesystem::path& replayProtocolPath=std::filesystem::path(),
+		const std::string& replayProtocolDigest=std::string())
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)outputDirectory;return 90;
 #else
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return 91;
+		if(sealedLegacyReplay&&(resolutionTier!=8.0||std::filesystem::exists(outputDirectory)||
+			replayProtocolDigest.size()!=64u||DigestFile(replayProtocolPath)!=replayProtocolDigest||
+			std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")||
+			std::getenv("RISE_FIRE_SINGLE_STAGE_FCT_ONSET")||
+			std::getenv("RISE_FIRE_FORCE_TEST_FAILURE")||
+			std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE")||
+			std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")||
+			std::getenv("RISE_FIRE_PRODUCTION_STEP_FAILURE")||
+			std::getenv("RISE_FIRE_PROFILE")||
+			std::getenv("RISE_FIRE_PROJECTION_TEST_FAILURE")||
+			std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE")||
+			std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT")||
+			std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE")||
+			std::getenv("RISE_FIRE_MOMENTUM_AUDIT_PATH")||
+			std::getenv("RISE_FIRE_TARGET_TEMPERATURE_IDENTITY_RED")||
+			std::getenv("RISE_FIRE_TARGET_MOLECULAR_IDENTITY_RED")||
+			std::getenv("RISE_FIRE_REQUEST_LAYOUT_IDENTITY_RED")||
+			std::getenv("RISE_FIRE_MANIFOLD_TIMESTEP_PROBE")||
+			std::getenv("RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE")||
+			std::getenv("RISE_FIRE_GOLDEN_LONG_SHADOW")||
+			std::getenv("RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST")||
+			std::getenv("RISE_FIRE_MANIFOLD_TAIL_THRESHOLD_RED")||
+			std::getenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE")||
+			std::getenv("RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES")||
+			std::getenv("RISE_FIRE_HOST_RESIDUAL_PROBE")||
+			std::getenv("RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE")))return 91;
 		std::error_code directoryError;
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
-		double targetTimeS=2.2;
-		if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
+		double targetTimeS=sealedLegacyReplay?3.0:2.2;
+		if(!sealedLegacyReplay)if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
 			char* end=nullptr;targetTimeS=std::strtod(target,&end);
 			if(!end||*end!='\0'||!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
 		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
-		persistence.singleStageFCTDiagnostic=
+		persistence.sealedLegacyMomentumReplay=sealedLegacyReplay;
+		persistence.replayProtocolPath=replayProtocolPath;
+		persistence.replayProtocolDigest=replayProtocolDigest;
+		persistence.singleStageFCTDiagnostic=!sealedLegacyReplay&&
 			std::getenv("RISE_FIRE_SINGLE_STAGE_FCT_ONSET")!=nullptr;
-		persistence.compatibleMomentumDiagnostic=!persistence.singleStageFCTDiagnostic;
+		persistence.compatibleMomentumDiagnostic=!sealedLegacyReplay&&
+			!persistence.singleStageFCTDiagnostic;
+		if(sealedLegacyReplay){
+			persistence.productionMomentumObservationTimeS=2.1079791976176079;
+			persistence.productionMomentumObservationColumnX=38u;
+			persistence.productionMomentumObservationColumnY=42u;
+			persistence.productionMomentumObservationReferenceTier=10.0;
+		}
 		persistence.checkpointPath=outputDirectory/"latest.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoints";
@@ -6222,7 +6662,8 @@ namespace
 		}
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.productionOnsetStopVelocityMPerS=60.0;
-		if(const char* resumeCheckpoint=std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")){
+		if(!sealedLegacyReplay)if(const char* resumeCheckpoint=
+			std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")){
 			const char* expectedBuild=std::getenv("RISE_FIRE_ONSET_EXPECTED_BUILD_ID");
 			const char* expectedDigest=std::getenv("RISE_FIRE_ONSET_EXPECTED_CHECKPOINT_DIGEST");
 			if(!expectedBuild||std::strlen(expectedBuild)!=64u||!expectedDigest||
@@ -6262,14 +6703,20 @@ namespace
 		std::ofstream summary(summaryPath,std::ios::trunc);
 		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v2\n"
 			<<"resolution_tier "<<resolutionTier<<"\n"
-			<<"operator_mode "<<(persistence.singleStageFCTDiagnostic?
-				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic")<<"\n"
+			<<"operator_mode "<<(sealedLegacyReplay?
+				"ordinary_independent_dual_momentum_resident_step":
+				(persistence.singleStageFCTDiagnostic?
+				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic"))<<"\n"
 			<<"compatible_momentum_diagnostic "<<
 				(persistence.compatibleMomentumDiagnostic?1:0)<<"\n"
 			<<"single_stage_fct_diagnostic "<<
 				(persistence.singleStageFCTDiagnostic?1:0)<<"\n"
 			<<"producer_build_id "<<producerBuildId<<"\n"
 			<<"producer_executable_sha256 "<<producerExecutableDigest<<"\n"
+			<<"seed 1234\n"
+			<<"protocol_sha256 "<<replayProtocolDigest<<"\n"
+			<<"from_zero_identity_sha256 "<<
+				DigestFile(outputDirectory/"from_zero_identity.v1")<<"\n"
 			<<"target_time_s "<<targetTimeS<<"\n"
 			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
 			<<"completed_target "<<(reachedTarget?1:0)<<"\n"
@@ -6285,27 +6732,83 @@ namespace
 				"tokenless_diagnostic_unavailable":"ordinary_accepted_state")<<"\n"
 			<<"final_checkpoint_sha256 "<<
 				DigestFile(outputDirectory/"final.checkpoint")<<"\n";
+		bool capturedThresholdBundlesComplete=true;
 		for(const unsigned int threshold:{15u,30u,60u}){
 			const std::filesystem::path budget=outputDirectory/"budgets"/
 				("threshold_"+std::to_string(threshold)+".raw.csv");
+			if(std::filesystem::exists(budget))capturedThresholdBundlesComplete=
+				capturedThresholdBundlesComplete&&
+				!DigestFile(budget.string()+".column.csv").empty()&&
+				!DigestFile(budget.string()+".source_context.csv").empty()&&
+				!DigestFile(budget.string()+".source_packets.bin").empty()&&
+				!DigestFile(budget.string()+".source_ledger.v1").empty()&&
+				!DigestFile(budget.string()+".source_observation_inputs.bin").empty()&&
+				!DigestFile(budget.string()+".event.v1").empty();
 			summary<<"threshold_"<<threshold<<"_captured "<<
 				(std::filesystem::exists(budget)?1:0)<<"\n";
 			if(std::filesystem::exists(budget))summary<<"threshold_"<<threshold<<
 				"_summary_sha256 "<<DigestFile(budget)<<"\n"<<"threshold_"<<threshold<<
-				"_column_sha256 "<<DigestFile(budget.string()+".column.csv")<<"\n";
+				"_column_sha256 "<<DigestFile(budget.string()+".column.csv")<<"\n"<<
+				"threshold_"<<threshold<<"_source_context_sha256 "<<
+				DigestFile(budget.string()+".source_context.csv")<<"\n"<<
+				"threshold_"<<threshold<<"_source_packets_sha256 "<<
+				DigestFile(budget.string()+".source_packets.bin")<<"\n"<<
+				"threshold_"<<threshold<<"_source_ledger_sha256 "<<
+				DigestFile(budget.string()+".source_ledger.v1")<<"\n"<<
+				"threshold_"<<threshold<<"_source_observation_inputs_sha256 "<<
+				DigestFile(budget.string()+".source_observation_inputs.bin")<<"\n"<<
+				"threshold_"<<threshold<<"_event_sha256 "<<
+				DigestFile(budget.string()+".event.v1")<<"\n";
 		}
+		if(sealedLegacyReplay&&!reachedTarget)
+			for(const unsigned int threshold:{15u,30u,60u})
+				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
+					std::filesystem::exists(outputDirectory/"budgets"/
+						("threshold_"+std::to_string(threshold)+".raw.csv"));
+		const std::filesystem::path exactObservation=outputDirectory/"budgets"/
+			"reference_composition_candidate_fixed_column.raw.csv";
+		summary<<"observation_not_before_s "<<
+			persistence.productionMomentumObservationTimeS<<"\n"
+			<<"observation_reference_tier "<<
+				persistence.productionMomentumObservationReferenceTier<<"\n"
+			<<"oracle_composition_required true\n"
+			<<"reference_composition_candidate_observation_sha256 "<<
+				DigestFile(exactObservation)<<"\n"
+			<<"reference_composition_candidate_column_sha256 "<<
+				DigestFile(exactObservation.string()+".column.csv")<<"\n"
+			<<"reference_composition_candidate_source_context_sha256 "<<
+				DigestFile(exactObservation.string()+".source_context.csv")<<"\n"
+			<<"reference_composition_candidate_source_packets_sha256 "<<
+				DigestFile(exactObservation.string()+".source_packets.bin")<<"\n"
+			<<"reference_composition_candidate_source_ledger_sha256 "<<
+				DigestFile(exactObservation.string()+".source_ledger.v1")<<"\n"
+			<<"reference_composition_candidate_source_observation_inputs_sha256 "<<
+				DigestFile(exactObservation.string()+".source_observation_inputs.bin")<<"\n"
+			<<"reference_composition_candidate_event_sha256 "<<
+				DigestFile(exactObservation.string()+".event.v1")<<"\n";
 		summary.close();
-		if(!summary||(!persistence.compatibleMomentumDiagnostic&&
+		if(!summary||(!sealedLegacyReplay&&!persistence.compatibleMomentumDiagnostic&&
 			!persistence.singleStageFCTDiagnostic)||DigestFile(trajectory).empty()||
 			DigestFile(retryTrajectory).empty()||
+			!capturedThresholdBundlesComplete||
+			(sealedLegacyReplay&&(DigestFile(outputDirectory/"from_zero_identity.v1").empty()||
+				DigestFile(exactObservation).empty()||
+				DigestFile(exactObservation.string()+".column.csv").empty()||
+				DigestFile(exactObservation.string()+".source_context.csv").empty()||
+				DigestFile(exactObservation.string()+".source_packets.bin").empty()||
+				DigestFile(exactObservation.string()+".source_ledger.v1").empty()||
+				DigestFile(exactObservation.string()+".source_observation_inputs.bin").empty()||
+				DigestFile(exactObservation.string()+".event.v1").empty()))||
 			(!persistence.singleStageFCTDiagnostic&&
 			 DigestFile(outputDirectory/"final.checkpoint").empty()))return 94;
 		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN%s tier=%.0f target=%.17g time=%.17g steps=%zu "
 			"wall_s=%.17g operator=%s build=%s trajectory=%s "
 			"summary=%s\n",reachedTarget?"":"_STOP",resolutionTier,targetTimeS,
 			result.simulatedTimeS,
-			result.acceptedTimeStepHistoryS.size(),wallS,persistence.singleStageFCTDiagnostic?
-				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic",
+			result.acceptedTimeStepHistoryS.size(),wallS,sealedLegacyReplay?
+				"ordinary_independent_dual_momentum_resident_step":
+				(persistence.singleStageFCTDiagnostic?
+				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic"),
 			producerBuildId.c_str(),
 			DigestFile(trajectory).c_str(),DigestFile(summaryPath).c_str());
 		return reachedTarget?0:95;
@@ -7270,6 +7773,8 @@ int main(int argc,char** argv)
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionOnsetCampaignChild(tier,argv[3]);
 	}
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-r193-baseline")==0)
+		return RunProductionOnsetCampaignChild(8.0,argv[2],true,argv[3],argv[4]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
 		double target=0.0;if(!ParsePositiveDoubleArgument(argv[2],target))return 91;
 		return RunOracleRetainedTrajectoryChild(target,argv[3]);
