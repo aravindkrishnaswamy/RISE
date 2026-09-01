@@ -5503,6 +5503,48 @@ Evidence is sealed in
 artifact SHA-256 is
 `e7347d76d964b80d0cb2ebd7867ddea9afcf21afcda8a60f04a4c1cfc487912a`.
 
+### 7.56aa Sealed tier-8 legacy replay (r194)
+
+r194 executes the baseline half of the corrected split replay before the live
+projected-Heun Metal owner exists. The run is from zero at tier 8 with the
+ordinary independent dual-momentum resident operator, seed 1234, the full
+binary32 source field, independent CFL selection, and a 3.0 s target. It stops
+on the pre-registered 60 m/s onset gate at `2.6991133776609786 s` after 1872
+accepted steps. The first 15, 30, and 60 m/s observations end at
+`2.3182910486939363`, `2.6965437539038248`, and `2.6991133776609786 s`, with
+realized maxima `15.0224609375`, `32.694915771484375`, and
+`63.960872650146484 m/s`.
+
+At the final crossing the aligned column advection rate is
+`11691.86634461989 kg/(m2 s2)`, while buoyancy is
+`9.538979544294932 kg/(m2 s2)`. The physical impulse maximum is
+`5.3986992835998535 kg/(m2 s)` versus restoration's
+`0.36649751663208008 kg/(m2 s)`, and Vreman spans
+`3.1672589830128888e-4` to `1.935882493853569e-2 m2/s`. The old operator thus
+reproduces the late advective-focusing runaway without the r183 integration
+state. The three-way verdict is tier-spanning: the completed Section 3.7
+operator must pass at tiers 8 and 10 before either statistics window resumes.
+Tier 6 remains the interim movie authority.
+
+This also records the r181 tier-8 health premise as an extrapolation error: its
+sample ended at `1.8264868 s`, before this late onset. The baseline's separately
+captured fixed-column candidate begins at `2.1081581366597675 s` and has
+maximum aligned advection magnitude `302.19727231644055 kg/(m2 s2)`. It is not
+an equal-time oracle composition and carries no 159-class verdict. Each
+from-zero leg retains its own CFL schedule; the 159-class decision belongs only
+to the separately sealed frozen-state equal-time probe.
+
+Tracked evidence is
+`rendered/fire_production_calibration/r194_matched_tier8_replay/`
+`baseline_verdict_evidence.v1`, SHA-256
+`d37e1aa85fb1e96b6ee69950c0df71ab92572a5c7427990c3c439c12efea8844`.
+The authoritative raw summary SHA-256 is
+`57f40959d60ea78c516fcd048b4f6a1dbcbd33ea132643bed25a675012ea749c`,
+and the full velocity trajectory SHA-256 is
+`49d8802f72735925ee406596628f613b56c3412e70e7a91659c79be40e811e80`.
+Fresh numerical and sealing re-reviews report zero P1/P2. The golden checkpoint
+is unchanged.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

@@ -5012,3 +5012,21 @@ it was already tried and refuted here.
   packet field. Evidence is under
   `r193_matched_tier8_replay/stage0_operator_identity_stop.v1`, SHA-256
   `e7347d76d964b80d0cb2ebd7867ddea9afcf21afcda8a60f04a4c1cfc487912a`.
+
+- **r194 sealed tier-8 legacy replay (2026-09-01):** runs the baseline half of
+  the split old/ported experiment from zero with the ordinary production
+  operator, independent CFL selection, full source-field identity, and sealed
+  15/30/60 m/s onset bundles. It reaches `63.960872650146484 m/s` at
+  `2.6991133776609786 s`, reproducing the late runaway without any projected-
+  Heun integration state. The final aligned advection rate is
+  `11691.86634461989 kg/(m2 s2)` versus `9.538979544294932` buoyancy; physical
+  impulse exceeds restoration impulse by about 14.7x. The verdict is therefore
+  tier-spanning advective focusing, and the complete Section 3.7 port gates
+  tier-8 and tier-10 windows. r181's `1.8264868 s` tier-8 sample is explicitly
+  recorded as an extrapolation error. The captured `302.19727231644055`
+  baseline fixed-column value is not oracle-composed and has no 159-class
+  authority; each trajectory owns its CFL schedule and the later frozen-state
+  probe owns equal time. Evidence is SHA-bound in
+  `r194_matched_tier8_replay/baseline_verdict_evidence.v1`, SHA-256
+  `d37e1aa85fb1e96b6ee69950c0df71ab92572a5c7427990c3c439c12efea8844`;
+  fresh review is zero P1/P2 and the golden checkpoint remains untouched.
