@@ -1,0 +1,256 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           rainwet_cobbles.RISEscene                                                              #
+#   Description:    "Rain-wet cobblestones" -- the Phase-1 `add_wetness` worked example from                #
+#                   docs/WETNESS_COAT_DESIGN.md section 6.5: pooled joints, damp flats, dry crowns, on a    #
+#                   polished_material substrate.  The three consumer chunks below (cobble_wet /             #
+#                   cobble_gloss / cobble_albedo) carry the SAME `param`/`def` mask prelude byte-for-byte    #
+#                   (same names, same values, same order, same `seed 3`, same LITERAL `occlusion(0.06)`)    #
+#                   per the doc's section 6.1 mechanism; only the final expression/expr line differs.        #
+#                                                                                                            #
+#                   Geometry: a single part-based sdf_geometry "patch" -- a 4x4 grid of 16 slightly          #
+#                   irregular sphere cobbles union'd onto a flat mortar-bed slab, so the joints between      #
+#                   stones are genuine self-concavities of ONE geometry (per section 6.5's scale-trap        #
+#                   caveat: `occlusion(r)`'s radius is a fraction of the HIT GEOMETRY's OWN bbox diagonal --  #
+#                   a single big street mesh would read its overall bowl, not 3cm joints, so this recipe     #
+#                   only reads correctly on a per-tile patch like this one, never one large ground mesh).    #
+#                   Part-based, not heightfield_function, so curv/occlusion are exact (section 6.8).         #
+#                                                                                                            #
+#                   Rendered under the default pathtracing_pel_rasterizer with oidn_denoise FALSE per        #
+#                   section 13 step 3's execution-validation gate.                                           #
+#                                                                                                            #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-31                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer -- default PT, no denoise (section 13
+# step 3 gate).
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_bg
+	color		0.10 0.11 0.13
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				128
+	oidn_denoise		FALSE
+	radiance_map		pnt_bg
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rainwet_cobbles
+	type				EXR
+	color_space			Rec709RGB_Linear
+	exr_compression		piz
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rainwet_cobbles
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+}
+
+##################################################
+# Film + Camera -- a low, raking street-level view
+# so the pooled joints catch a specular glint.
+##################################################
+
+film
+{
+	width		320
+	height		240
+}
+
+pinhole_camera
+{
+	location	0.0 0.30 1.05
+	lookat		0.0 0.05 -0.35
+	up			0 1 0
+	fov			42.0
+}
+
+##################################################
+# Geometry -- one sdf_geometry "cobble patch": a
+# mortar-bed slab plus a 4x4 grid of 16 irregular
+# sphere cobbles (union, k=0, so the joints between
+# domes stay genuine concavities, not smin-blended
+# away).  Positions/radii are hand-authored data
+# (a slight per-cobble jitter on a base 0.34-unit
+# grid, radii 0.13-0.17) -- the authored-data
+# pattern from skills/effective-rise-scene-authoring.md.
+##################################################
+
+sdf_geometry
+{
+	name		geo_cobble_patch
+	part		box    union  0  0.00  0.05  0.00   0 0 0  1 1 1  0.78 0.05 0.78  0
+	# Row z = -0.51
+	part		sphere union  0  -0.52  0.03 -0.51   0 0 0  1 1 1  0.15 0 0  0
+	part		sphere union  0  -0.17  0.02 -0.53   0 0 0  1 1 1  0.16 0 0  0
+	part		sphere union  0   0.18  0.03 -0.50   0 0 0  1 1 1  0.14 0 0  0
+	part		sphere union  0   0.53  0.02 -0.52   0 0 0  1 1 1  0.17 0 0  0
+	# Row z = -0.17
+	part		sphere union  0  -0.53  0.02 -0.16   0 0 0  1 1 1  0.16 0 0  0
+	part		sphere union  0  -0.16  0.03 -0.18   0 0 0  1 1 1  0.14 0 0  0
+	part		sphere union  0   0.17  0.02 -0.15   0 0 0  1 1 1  0.15 0 0  0
+	part		sphere union  0   0.52  0.03 -0.17   0 0 0  1 1 1  0.16 0 0  0
+	# Row z = 0.18
+	part		sphere union  0  -0.51  0.03  0.17   0 0 0  1 1 1  0.14 0 0  0
+	part		sphere union  0  -0.18  0.02  0.19   0 0 0  1 1 1  0.17 0 0  0
+	part		sphere union  0   0.16  0.03  0.16   0 0 0  1 1 1  0.16 0 0  0
+	part		sphere union  0   0.51  0.02  0.18   0 0 0  1 1 1  0.15 0 0  0
+	# Row z = 0.52
+	part		sphere union  0  -0.52  0.02  0.51   0 0 0  1 1 1  0.15 0 0  0
+	part		sphere union  0  -0.17  0.03  0.53   0 0 0  1 1 1  0.14 0 0  0
+	part		sphere union  0   0.18  0.02  0.50   0 0 0  1 1 1  0.17 0 0  0
+	part		sphere union  0   0.52  0.03  0.52   0 0 0  1 1 1  0.16 0 0  0
+}
+
+##################################################
+# The mask prelude (docs/WETNESS_COAT_DESIGN.md
+# section 6.5) -- byte-identical in all three
+# consumer chunks below.
+##################################################
+
+scalar_painter
+{
+	name			cobble_wet
+	param			dryness       0.10  min 0 max 1 step 0.01 label "Dryness"
+	param			base_wetness  0.45  min 0 max 1 step 0.01 label "Overall wetness"
+	param			pool_gain     2.20  min 0 max 4 step 0.05 label "Pooling"
+	param			ridge_shed    2.60  min 0 max 6 step 0.1  label "Crowns shed"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.14  min 0 max 1 step 0.01 label "Breakup"
+	param			breakup_scale 9.0   min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			3
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.06)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expression		wet
+}
+
+scalar_painter
+{
+	name			cobble_gloss
+	param			dryness       0.10  min 0 max 1 step 0.01 label "Dryness"
+	param			base_wetness  0.45  min 0 max 1 step 0.01 label "Overall wetness"
+	param			pool_gain     2.20  min 0 max 4 step 0.05 label "Pooling"
+	param			ridge_shed    2.60  min 0 max 6 step 0.1  label "Crowns shed"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.14  min 0 max 1 step 0.01 label "Breakup"
+	param			breakup_scale 9.0   min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			3
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.06)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expression		mix(film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1))
+}
+
+expression_painter
+{
+	name			cobble_albedo
+	param			k             1.70  min 1 max 2.5 step 0.05 label "Wet exponent"
+	param			base_r        0.42  min 0 max 1 step 0.01 label "Base R"
+	param			base_g        0.40  min 0 max 1 step 0.01 label "Base G"
+	param			base_b        0.37  min 0 max 1 step 0.01 label "Base B"
+	param			dryness       0.10  min 0 max 1 step 0.01 label "Dryness"
+	param			base_wetness  0.45  min 0 max 1 step 0.01 label "Overall wetness"
+	param			pool_gain     2.20  min 0 max 4 step 0.05 label "Pooling"
+	param			ridge_shed    2.60  min 0 max 6 step 0.1  label "Crowns shed"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.14  min 0 max 1 step 0.01 label "Breakup"
+	param			breakup_scale 9.0   min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			3
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.06)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expr			mix( vec3(base_r, base_g, base_b), vec3(pow(base_r,k), pow(base_g,k), pow(base_b,k)), damp )
+}
+
+polished_material
+{
+	name			cobble_wet_stone
+	reflectance		cobble_albedo
+	tau			cobble_wet
+	ior			1.33
+	scattering		cobble_gloss
+}
+
+standard_object
+{
+	name		obj_cobble_patch
+	geometry	geo_cobble_patch
+	material	cobble_wet_stone
+	position	0 0 0
+}
+
+##################################################
+# Lights -- an overcast rain sky: one broad, soft
+# cool key overhead plus a dim warm bounce fill.
+##################################################
+
+rect_light
+{
+	name		light_overcast_key
+	center		0.20 2.10 0.60
+	size		2.50 2.50
+	facing		0.10 -1.00 0.25
+	color		0.85 0.87 0.92
+	exitance	8
+}
+
+rect_light
+{
+	name		light_bounce_fill
+	center		-1.30 1.30 -0.80
+	size		1.40 1.40
+	facing		0.55 -1.00 0.45
+	color		0.55 0.52 0.48
+	exitance	1.5
+}

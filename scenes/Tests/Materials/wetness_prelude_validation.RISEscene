@@ -1,0 +1,273 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           wetness_prelude_validation.RISEscene                                                   #
+#   Description:    Phase-1 hand-authored validation of the wetness mask PRELUDE, per                      #
+#                   docs/WETNESS_COAT_DESIGN.md section 6.3 (SEE section 13 step 2).  The `param`/`def`     #
+#                   block below is copied byte-for-byte from the design doc's section 6.3 listing -- same   #
+#                   names, same defaults, same order, same `occlusion(0.08)` LITERAL radius -- and is       #
+#                   repeated verbatim in all three consumer chunks (reflectance / tau / scattering) per the #
+#                   doc's section 6.1 mechanism.  Only the final expr/expression line differs per consumer. #
+#                                                                                                           #
+#                   Geometry: a part-based sdf_geometry basin -- a slab with a carved central cavity        #
+#                   (concave, pools water via `occlusion`/`cavity`) flanked by two raised, rounded ribs     #
+#                   (convex, sheds water via `curv`/`ridge`).  Chosen because signals are EXACT on an SDF   #
+#                   (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md), unlike heightfield-mode sdf_geometry, which  #
+#                   the design doc's section 6.8 warns returns NEUTRAL occlusion (silently dry) -- avoided  #
+#                   here by using part-based (not heightfield) mode.                                        #
+#                                                                                                           #
+#                   Bound to a polished_material: reflectance = expression_painter (RGB per-channel `pow`   #
+#                   darkening, section 2.1/6.3), tau = scalar_painter (coat coverage = `wet`), scattering =  #
+#                   scalar_painter (Phong exponent keyed on `pooling`, not `wet`, per the section 6.3        #
+#                   plastic-look correction).                                                                #
+#                                                                                                            #
+#                   VALIDATION: parses, derives, renders under default PT.  The doc's section 6.3 states     #
+#                   `dryness = 1` must drive `damp` (and therefore `wet`) to exactly zero for every setting  #
+#                   of every other param -- checked out-of-band by re-rendering a scratch copy of this       #
+#                   scene with `dryness` overridden to 1.0 and comparing mean luma against this file's       #
+#                   default `dryness 0.15` render (see the task's dryness-invariant report).                #
+#                                                                                                            #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-08-31                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer -- default PT.  Signals (curv, occlusion)
+# are fully correct only under PT; this scene does
+# not exercise BDPT/VCM/MLT.
+##################################################
+
+uniformcolor_painter
+{
+	name		pnt_bg
+	color		0.05 0.055 0.065
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				96
+	oidn_denoise		FALSE
+	radiance_map		pnt_bg
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/wetness_prelude_validation
+	type				EXR
+	color_space			Rec709RGB_Linear
+	exr_compression		piz
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/wetness_prelude_validation
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	exposure			0.0
+	display_transform	aces
+}
+
+##################################################
+# Film + Camera
+##################################################
+
+film
+{
+	width		240
+	height		240
+}
+
+pinhole_camera
+{
+	location	0.0 1.35 2.10
+	lookat		0.0 0.28 0.0
+	up			0 1 0
+	fov			42.0
+}
+
+##################################################
+# Geometry -- a part-based SDF basin: slab + carved
+# central cavity (concave, pools) + two raised ribs
+# (convex, sheds).  All part-based (never
+# heightfield_function), so curv/occlusion are exact.
+##################################################
+
+sdf_geometry
+{
+	name		geo_wetbasin
+	part		box      union     0      0.00 0.15 0.00    0 0 0   1 1 1   0.80 0.15 0.80    0
+	part		roundbox subtract  0.03   0.00 0.28 0.00    0 0 0   1 1 1   0.32 0.10 0.32    0.04
+	part		roundbox union     0.03   0.55 0.34 0.00    0 0 0   1 1 1   0.08 0.06 0.75    0.02
+	part		roundbox union     0.03  -0.55 0.34 0.00    0 0 0   1 1 1   0.08 0.06 0.75    0.02
+}
+
+##################################################
+# The mask prelude (docs/WETNESS_COAT_DESIGN.md
+# section 6.3) -- byte-identical in all three
+# consumer chunks below.
+##################################################
+
+scalar_painter
+{
+	name			basin_wet
+	param			dryness       0.15  min 0 max 1 step 0.01 label "Dryness"
+	param			pool_gain     1.60  min 0 max 4 step 0.05 label "Pooling in cavities"
+	param			ridge_shed    2.20  min 0 max 6 step 0.1  label "Ridges shed water"
+	param			base_wetness  0.55  min 0 max 1 step 0.01 label "Overall wetness"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 220.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.18  min 0 max 1 step 0.01 label "Mask breakup"
+	param			breakup_scale 6.0   min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			0
+	def			jitter      vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing   clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity     mix(1.0, up_facing, gravity_bias)
+	def			cavity      (1.0 - occlusion(0.08)) * gravity
+	def			pooling     clamp(pool_gain*cavity, 0, 1)
+	def			ridge       clamp(curv * ridge_shed, 0, 1)
+	def			breakup     breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw    clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp        (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet         clamp(damp * film_amount, 0, damp)
+	expression		wet
+}
+
+scalar_painter
+{
+	name			basin_gloss
+	param			dryness       0.15  min 0 max 1 step 0.01 label "Dryness"
+	param			pool_gain     1.60  min 0 max 4 step 0.05 label "Pooling in cavities"
+	param			ridge_shed    2.20  min 0 max 6 step 0.1  label "Ridges shed water"
+	param			base_wetness  0.55  min 0 max 1 step 0.01 label "Overall wetness"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 220.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.18  min 0 max 1 step 0.01 label "Mask breakup"
+	param			breakup_scale 6.0   min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			0
+	def			jitter      vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing   clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity     mix(1.0, up_facing, gravity_bias)
+	def			cavity      (1.0 - occlusion(0.08)) * gravity
+	def			pooling     clamp(pool_gain*cavity, 0, 1)
+	def			ridge       clamp(curv * ridge_shed, 0, 1)
+	def			breakup     breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw    clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp        (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet         clamp(damp * film_amount, 0, damp)
+	expression		mix(film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1))
+}
+
+expression_painter
+{
+	name			basin_albedo
+	param			k             1.55  min 1 max 2.5 step 0.05 label "Wet exponent"
+	param			base_r        0.50  min 0 max 1 step 0.01 label "Base R"
+	param			base_g        0.47  min 0 max 1 step 0.01 label "Base G"
+	param			base_b        0.42  min 0 max 1 step 0.01 label "Base B"
+	param			dryness       0.15  min 0 max 1 step 0.01 label "Dryness"
+	param			pool_gain     1.60  min 0 max 4 step 0.05 label "Pooling in cavities"
+	param			ridge_shed    2.20  min 0 max 6 step 0.1  label "Ridges shed water"
+	param			base_wetness  0.55  min 0 max 1 step 0.01 label "Overall wetness"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 220.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.18  min 0 max 1 step 0.01 label "Mask breakup"
+	param			breakup_scale 6.0   min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			0
+	def			jitter      vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing   clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity     mix(1.0, up_facing, gravity_bias)
+	def			cavity      (1.0 - occlusion(0.08)) * gravity
+	def			pooling     clamp(pool_gain*cavity, 0, 1)
+	def			ridge       clamp(curv * ridge_shed, 0, 1)
+	def			breakup     breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw    clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp        (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet         clamp(damp * film_amount, 0, damp)
+	expr		mix( vec3(base_r, base_g, base_b), vec3( pow(base_r, k), pow(base_g, k), pow(base_b, k) ), damp )
+}
+
+polished_material
+{
+	name			mat_wetbasin
+	reflectance		basin_albedo
+	tau			basin_wet
+	ior			1.33
+	scattering		basin_gloss
+}
+
+standard_object
+{
+	name		obj_wetbasin
+	geometry	geo_wetbasin
+	material	mat_wetbasin
+	position	0 0 0
+}
+
+##################################################
+# Floor
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_floor
+	color	0.05 0.055 0.06
+}
+
+lambertian_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+}
+
+infiniteplane_geometry
+{
+	name	geo_floor
+	xtile	1.0
+	ytile	1.0
+}
+
+standard_object
+{
+	name		obj_floor
+	geometry	geo_floor
+	material	mat_floor
+	position	0 0 0
+	orientation	-90 0 0
+}
+
+##################################################
+# Lights
+##################################################
+
+rect_light
+{
+	name		light_key
+	center		0.30 3.20 1.00
+	size		2.00 2.00
+	facing		0.15 -1.00 0.35
+	color		0.98 0.94 0.88
+	exitance	22
+}
+
+rect_light
+{
+	name		light_fill
+	center		-1.80 2.20 -1.20
+	size		1.80 1.80
+	facing		1.20 -1.00 0.60
+	color		0.55 0.65 0.85
+	exitance	4
+}

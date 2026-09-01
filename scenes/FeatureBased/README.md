@@ -121,7 +121,11 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   backdrop wash faces away from the subject), because a one-pixel filament staying legible
   against a bright ground is the harder test.
 - `MLT/`: visually interesting Metropolis light transport scenes
-- `Materials/`: integrated material showcases (GGX, thin film, glints, enamel)
+- `Materials/`: integrated material showcases (GGX, thin film, glints, enamel, rain-wet coat
+  layering -- `rainwet_cobbles.RISEscene`, the docs/WETNESS_COAT_DESIGN.md section 6.5
+  `add_wetness` worked example: a `polished_material` cobblestone patch whose pooled
+  joints/damp flats/dry crowns come from one `curv`+`occlusion()` mask prelude shared
+  byte-for-byte across the albedo/tau/scattering chunks)
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

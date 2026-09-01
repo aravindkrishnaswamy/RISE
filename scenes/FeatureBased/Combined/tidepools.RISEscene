@@ -397,10 +397,16 @@ dielectric_material
 	scattering			5000.0
 }
 
-# Wet pebbles - polished with Perlin texture.  Tau (transmittance)
-# does not vary spatially with the perlin diffuse base under
-# IScalarPainter (no `texture` form on scalar_painter), so we lock
-# tau to unity here — the spatial colour variation still lives in
+# Wet pebbles - polished with Perlin texture.  Tau is locked to unity
+# here as an authoring choice (a uniform coat coverage), not because
+# the engine can't vary it: scalar_painter has since gained a `painter`
+# form (the P2.1 any-painter bridge, docs/WETNESS_COAT_DESIGN.md §3.6) that
+# binds ANY colour painter with a channel select, so
+# `scalar_painter { painter pnt_rock channel R }` bound to `tau` would let
+# the coat coverage follow the same perlin field driving `reflectance`
+# below.  (An earlier version of this comment said scalar_painter had no
+# way to read a spatial painter at all; that stopped being true once the
+# `painter` bridge landed.)  The spatial colour variation still lives in
 # the perlin painter via `reflectance`.
 polished_material
 {
