@@ -44,6 +44,16 @@
 //  Tests 1-4 below ALL FAIL before the fix (1 collapses to the bare-Fresnel
 //  level; 2-4 all become exact equalities because nothing responds).
 //
+//  Section 5 guards a SECOND, independent bug this file surfaced while it was
+//  being written and which was fixed immediately after (2026-09-01):
+//  `extinction` was typed `IPainter`, so the SPECTRAL walk read it through
+//  the Jakob-Hanika ALBEDO uplift and every value above ~1 saturated to ~1.0
+//  -- the NM ratio measured 0.9582 where the RGB walk gave 0.1194.  The slot
+//  is `IScalarPainter` now (a physical Beer-Lambert coefficient, never
+//  colourspace-converted), and the two walks agree.  Section 8 covers the
+//  composite EMITTER, which shares `thickness` (and shared the same
+//  saturating read).
+//
 //  Section 6 guards the SECOND half of the same story: the first fix threaded
 //  each scattered ray's own stack UNCONDITIONALLY, which repaired the top
 //  interface but broke the BOTTOM one -- because IORStack keys on the
@@ -63,6 +73,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
@@ -80,6 +91,8 @@
 #include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
+#include "../src/Library/Materials/CompositeEmitter.h"
+#include "../src/Library/Materials/LambertianEmitter.h"
 
 #include "TestStubObject.h"
 
@@ -448,27 +461,34 @@ int main()
 
 	Check( nmLo.nCrossed > kSamples / 10,
 	       "NM walk emits gap-crossing rays" );
-	// Deliberately only a MONOTONICITY check, not a Beer-Lambert band.
+
+	// A REAL magnitude guard, not just monotonicity -- and the reason this
+	// section exists in its current form.
 	//
-	// SECOND, INDEPENDENT BUG found while writing this test (2026-09-01, NOT
-	// fixed here): CompositeSPF's `extinction` is typed `IPainter`, so the
-	// spectral walk reads it through IPainter::GetColorNM.  For the ordinary
-	// `uniformcolor_painter` that means RGBAlbedoSpectrum::FromRGB -- the
-	// Jakob-Hanika ALBEDO uplift, which is bounded to [0,1] by construction.
-	// An extinction of 50 therefore arrives at the NM walk as ~1.0, and the
-	// measured spectral attenuation here is 0.958 where the RGB walk gives
-	// 0.119.  Every extinction above ~1 is silently clamped in every spectral
-	// rasterizer.  This is exactly the failure class docs/ISCALARPAINTER_REFACTOR.md
-	// exists for: extinction is a PHYSICAL SCALAR coefficient, so the slot
-	// wants `IScalarPainter` (which never goes through JH uplift), not
-	// `IPainter`.  Retyping it touches the CompositeSPF ctor, RISE_API,
-	// Job::AddCompositeMaterial, the composite_material chunk descriptor, and
-	// needs a scene migration -- out of scope for the walk fix, so the check
-	// below asserts only what IS true today: extinction is LIVE on the NM path
-	// (pre-fix the two were an EXACT tie at zero) and pushes energy DOWN.  It
-	// stays valid if and when the IScalarPainter retyping lands.
-	Check( nmHi.crossed < nmLo.crossed * 0.999,
-	       "NM gap-crossing energy responds to extinction (strictly lower at ext=50)" );
+	// HISTORY (the second, independent bug this file surfaced, fixed
+	// 2026-09-01): `extinction` used to be typed `IPainter`, so the spectral
+	// walk read it through `IPainter::GetColorNM`.  For an ordinary
+	// `uniformcolor_painter` that is `RGBAlbedoSpectrum::FromRGB` -- the
+	// Jakob-Hanika ALBEDO uplift, bounded to [0,1] by construction.  An
+	// extinction of 50 therefore reached the NM walk as ~1.0: the measured
+	// spectral ratio was 0.9582 = exp(-1.0 * 2 * 0.02) where the RGB walk
+	// gave 0.1194.  EVERY extinction above ~1 silently saturated in EVERY
+	// spectral rasterizer while the RGB walk used the authored value.  The
+	// slot is now `IScalarPainter` (docs/ISCALARPAINTER_REFACTOR.md), which
+	// never goes through colourspace or uplift.
+	//
+	// Post-fix the two walks agree: NM 0.11940 vs RGB 0.11938 -- the same
+	// physics through the same painter, differing only in the last MC digit.
+	// The band is the RGB band from section 2 ([0.05, 0.25], derived from the
+	// same measurement and equally MC-robust); a regression to the JH-uplift
+	// routing lands at 0.958, an order of magnitude outside it.
+	Check( nmRatio > 0.05 && nmRatio < 0.25,
+	       "NM gap-crossing energy attenuated into the Beer-Lambert band [0.05, 0.25] (JH-uplift regression lands at 0.958)" );
+	// The NM and RGB walks read the SAME scalar at 550 nm, so their ratios
+	// must agree to well inside MC noise.  This is the direct statement that
+	// the spectral path is no longer on a different value of `extinction`.
+	Check( std::fabs( nmRatio - extRatio ) < 0.02,
+	       "NM and RGB attenuation ratios agree (same scalar, no spectral-only clamp)" );
 
 	// ------------------------------------------------------------
 	// 6. STACK-SENSITIVE BOTTOM LAYER.
@@ -606,6 +626,96 @@ int main()
 	// extinction of 0.001 rather than exactly zero.
 	Check( negT.crossed <= lo.crossed * 1.01,
 	       "no energy gain: gap-crossing energy stays at the transparent-gap level" );
+
+	// ------------------------------------------------------------
+	// 8. CompositeEmitter's OWN negative-thickness clamp.
+	//
+	//    `thickness` has a second consumer -- the composite EMITTER, which
+	//    attenuates the bottom layer's emission through the same Beer-Lambert
+	//    term.  Section 7 covers only the SPF, and the two clamps are separate
+	//    functions in separate files, so a regression could take out either
+	//    one alone.  Here the exposure is worse than in the SPF: the amplified
+	//    value also lands in `averageRadiantExitance`, which drives light-
+	//    importance weights and photon budgets, so an unclamped negative
+	//    thickness inflates a luminaire's sampling weight as well as its
+	//    radiance.
+	//
+	//    Both clamps test `!(thickness >= 0)` rather than `thickness < 0`, so
+	//    a NaN -- which compares false against EVERY relational operator and
+	//    would sail straight through `< 0` -- clamps too.  The third fixture
+	//    below is that case; without the negated form its emitted radiance is
+	//    NaN, and the equality checks fail.
+	//
+	//    Each clamp prints a warning; both appear in this test's own output
+	//    immediately above the section-8 lines.
+	// ------------------------------------------------------------
+	std::cout << "\n8. CompositeEmitter clamps a non-positive thickness (extinction 5)\n";
+
+	UniformColorPainter* emitTopPnt = new UniformColorPainter( RISEPel( 0.2, 0.2, 0.2 ) );  emitTopPnt->addref();
+	UniformColorPainter* emitBotPnt = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) );  emitBotPnt->addref();
+	LambertianEmitter* emitTop = new LambertianEmitter( *emitTopPnt, 1.0 );  emitTop->addref();
+	LambertianEmitter* emitBot = new LambertianEmitter( *emitBotPnt, 1.0 );  emitBot->addref();
+
+	CompositeEmitter* ceZero = new CompositeEmitter( *emitTop, *emitBot, *extMid, 0.0 );   ceZero->addref();
+	CompositeEmitter* ceNeg  = new CompositeEmitter( *emitTop, *emitBot, *extMid, -0.10 ); ceNeg->addref();
+	const Scalar nanThickness = std::numeric_limits<Scalar>::quiet_NaN();
+	CompositeEmitter* ceNaN  = new CompositeEmitter( *emitTop, *emitBot, *extMid, nanThickness ); ceNaN->addref();
+
+	{
+		const RayIntersectionGeometric eri = MakeIntersection( 0.0 );
+		const Vector3 N  = eri.onb.w();
+		const Vector3 out = Vector3Ops::Normalize( Vector3( 0.3, 0.0, 1.0 ) );
+
+		const RISEPel radZero = ceZero->emittedRadiance( eri, out, N );
+		const RISEPel radNeg  = ceNeg->emittedRadiance( eri, out, N );
+		const RISEPel radNaN  = ceNaN->emittedRadiance( eri, out, N );
+		const Scalar  nmZero  = ceZero->emittedRadianceNM( eri, out, N, 550.0 );
+		const Scalar  nmNeg   = ceNeg->emittedRadianceNM( eri, out, N, 550.0 );
+		const Scalar  nmNaN   = ceNaN->emittedRadianceNM( eri, out, N, 550.0 );
+		const RISEPel avgZero = ceZero->averageRadiantExitance();
+		const RISEPel avgNeg  = ceNeg->averageRadiantExitance();
+		const RISEPel avgNaN  = ceNaN->averageRadiantExitance();
+
+		std::cout << "  " << std::left << std::setw( 40 ) << "emitter thick= 0.00"
+		          << std::fixed << std::setprecision( 5 )
+		          << " radiance=" << radZero[0] << " NM=" << nmZero
+		          << " avgRadEx=" << avgZero[0] << "\n";
+		std::cout << "  " << std::left << std::setw( 40 ) << "emitter thick=-0.10"
+		          << " radiance=" << radNeg[0] << " NM=" << nmNeg
+		          << " avgRadEx=" << avgNeg[0] << "\n";
+		std::cout << "  " << std::left << std::setw( 40 ) << "emitter thick= NaN"
+		          << " radiance=" << radNaN[0] << " NM=" << nmNaN
+		          << " avgRadEx=" << avgNaN[0] << "\n";
+
+		Check( ColorMath::MaxValue( radNeg - radZero ) < 1e-12 &&
+		       ColorMath::MaxValue( radZero - radNeg ) < 1e-12,
+		       "negative thickness emits exactly as thickness 0 (RGB)" );
+		Check( std::fabs( nmNeg - nmZero ) < 1e-12,
+		       "negative thickness emits exactly as thickness 0 (spectral)" );
+		Check( std::fabs( avgNeg[0] - avgZero[0] ) < 1e-12,
+		       "negative thickness leaves averageRadiantExitance at the thickness-0 value" );
+		Check( ColorMath::MaxValue( radNaN - radZero ) < 1e-12 &&
+		       ColorMath::MaxValue( radZero - radNaN ) < 1e-12,
+		       "NaN thickness clamps too (the `!(t >= 0)` form, not `t < 0`)" );
+		Check( std::fabs( nmNaN - nmZero ) < 1e-12,
+		       "NaN thickness clamps on the spectral path as well" );
+
+		// Standalone no-gain statement, independent of the clamp target: at
+		// thickness 0 the gap is absent, so the composite emits exactly
+		// top+bottom.  Anything ABOVE that is Beer-Lambert running backwards.
+		const RISEPel unattenuated =
+			emitTop->emittedRadiance( eri, out, N ) + emitBot->emittedRadiance( eri, out, N );
+		Check( ColorMath::MaxValue( radNeg - unattenuated ) < 1e-12,
+		       "no emission gain: a negative thickness never exceeds top+bottom" );
+	}
+
+	ceNaN->release();
+	ceNeg->release();
+	ceZero->release();
+	emitBot->release();
+	emitTop->release();
+	emitBotPnt->release();
+	emitTopPnt->release();
 
 	compNeg->release();
 	compZero->release();
