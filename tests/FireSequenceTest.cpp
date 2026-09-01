@@ -6700,7 +6700,9 @@ namespace
 			"retry_attempt_trajectory.csv";
 		const bool reachedTarget=result.simulatedTimeS>=targetTimeS;
 		const std::filesystem::path summaryPath=outputDirectory/"onset_campaign_summary.v2";
-		std::ofstream summary(summaryPath,std::ios::trunc);
+		const std::filesystem::path pendingSummaryPath=
+			outputDirectory/"onset_campaign_summary.pending.v2";
+		std::ofstream summary(pendingSummaryPath,std::ios::trunc);
 		summary<<std::setprecision(17)<<"schema rise.fire.production.onset_campaign.summary.v2\n"
 			<<"resolution_tier "<<resolutionTier<<"\n"
 			<<"operator_mode "<<(sealedLegacyReplay?
@@ -6801,6 +6803,9 @@ namespace
 				DigestFile(exactObservation.string()+".event.v1").empty()))||
 			(!persistence.singleStageFCTDiagnostic&&
 			 DigestFile(outputDirectory/"final.checkpoint").empty()))return 94;
+		std::error_code summaryPublishError;
+		std::filesystem::rename(pendingSummaryPath,summaryPath,summaryPublishError);
+		if(summaryPublishError||DigestFile(summaryPath).empty())return 94;
 		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN%s tier=%.0f target=%.17g time=%.17g steps=%zu "
 			"wall_s=%.17g operator=%s build=%s trajectory=%s "
 			"summary=%s\n",reachedTarget?"":"_STOP",resolutionTier,targetTimeS,
