@@ -637,6 +637,63 @@ random-walk recursion budget clips below-layer diffuse paths under
 delta-mediated specular tops.  Remains the dominant blocker for
 clearcoat-over-paint scenes; its own landing.
 
+> **ADDENDUM 2026-09-01 — Findings A and D were both misdiagnosed; row #3 is
+> partly fixed and row #7 is a different bug entirely.**  The rows and the
+> Findings prose below are left as the historical record; this paragraph is the
+> correction.
+>
+> **Row #3 (dielectric / Lambertian) was NOT a recursion-budget failure.**  It
+> was an IOR-stack threading bug in `CompositeSPF`'s random walk: the walk
+> recursed with the `ior_stack` it was *handed* instead of each `ScatteredRay`'s
+> *own* stack.  The camera ray's first refraction pushes the dielectric onto the
+> scattered ray's stack, the walk discarded that, and the return trip therefore
+> re-entered `ProcessTopLayer` with the **outside** stack and an **upward** ray.
+> `IORStack::containsCurrent()` reads false, `DielectricSPF` takes its
+> "entering from outside" branch, and both of its lobes are then culled — the
+> transmission lobe by the hemisphere gate (an upward direction cannot be a
+> transmission when entering from above) and the Fresnel lobe by the
+> geometric-normal gate (reflecting an upward ray about `−N` points down).  The
+> interface emitted **nothing**, so every gap-crossing path died inside the walk
+> and the row sat at exactly the bare surface-Fresnel reflectance.  Measured
+> directly: an upward ray handed to a bare `DielectricSPF(ior 1.5)` scattered
+> nothing on 20000/20000 draws with the outside stack, and scattered a mean
+> exiting `kray` of 0.949 with the pushed stack.  The same defect made
+> `composite_material`'s `extinction` and `thickness` **exactly inert** — both
+> apply only to gap-crossing legs — which is why an asymmetric per-channel
+> extinction rendered exactly R=G=B.  Fixed by `CompositeSPF::EffectiveStack`
+> (all four `Process*` variants, RGB and NM).  Row #3 moves
+> **{0.040, 0.042, 0.089, 0.388} → {0.3339, 0.3044, 0.3128, 0.5324}**, and the
+> row is now gated at `kPostureMatchesPrediction` (eps 0.03) rather than waved
+> through as a known failure.  The residual deficit *is* budget truncation —
+> the ~56 % of the returning diffuse population that TIRs back down hits
+> `kMaxReflectRecur = 2` at `steps = 2` and is dropped — so the original prose
+> describes what is left, not what was wrong.  Guarded by
+> [tests/CompositeExtinctionTest.cpp](../tests/CompositeExtinctionTest.cpp),
+> which red-proves 10 checks against the pre-fix code.
+>
+> **Row #7 (clearcoat / red GGX-PBR) is not "the same bug in another regime".**
+> It did not move at all across the fix ({0.0390, 0.0391, 0.0652, 0.1970} before
+> and after), and it is not a budget effect either.  `GGXSPF` only ever emits
+> **upward** lobes — reflection and diffuse; there is no transmission lobe in
+> the file — so a GGX top layer never hands the walk a downward ray and
+> **the substrate is never reached at all**.  Measured: GGX(rd=0, rs=0.04) over
+> a white Lambertian reports ρ(0°) = 0.03900 against the *bare* coat's 0.03897,
+> with zero downward rays emitted.  Rows #4 and #5 have the identical structure
+> and only look healthy because their top layer's `rs = 1` masks the missing
+> substrate at ρ = 1.  Closing #7 needs a transmission path for reflection-only
+> top layers, not a walk fix; `coated_material` (#14/#15) is the shipped answer.
+>
+> **Separately, still open:** `extinction` is typed `const IPainter&`, so the
+> spectral walk reads it through `GetColorNM` → the Jakob-Hanika **albedo**
+> uplift, which is bounded to [0, 1].  An extinction of 50 arrives at the NM
+> walk as ≈1.0: measured spectral attenuation 0.958 where the RGB walk gives
+> 0.119.  Every extinction above ~1 is silently clamped in every spectral
+> rasterizer.  This is the routing hazard
+> [WETNESS_COAT_DESIGN.md §3.2](WETNESS_COAT_DESIGN.md) already flagged, now
+> with a number on it; the fix is retyping the slot to `IScalarPainter`
+> (ctor + `RISE_API` + `Job::AddCompositeMaterial` + the `composite_material`
+> chunk descriptor + a scene migration) and was left out of the walk fix.
+
 ### Audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
 
 | # | Configuration | ρ(0°) | ρ(30°) | ρ(60°) | ρ(80°) | Disposition |

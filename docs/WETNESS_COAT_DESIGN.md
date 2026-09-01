@@ -478,6 +478,39 @@ exact class of bug [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) was
 written to eliminate. Any new coat must put its absorption on an
 `IScalarPainter`.
 
+> **UPDATE 2026-09-01 — item 3's root cause found and fixed; the routing hazard
+> is now measured, not hypothetical.**
+>
+> Item 3's "loses 96 % of the energy" was **not** the recursion budget the
+> quoted Finding A prose blames.  `CompositeSPF`'s random walk recursed with the
+> `ior_stack` it was *handed* rather than each `ScatteredRay`'s *own* stack, so
+> the return trip arrived at the top interface with an **outside** stack;
+> `DielectricSPF` read it as "entering from outside" and culled both lobes (the
+> transmission lobe by its hemisphere gate, the Fresnel lobe by its
+> geometric-normal gate).  The interface emitted nothing, so every path that
+> crossed the inter-layer gap died inside the walk — which is also why
+> `extinction` and `thickness` were **exactly inert**: both apply only to
+> gap-crossing legs.  Fixed by `CompositeSPF::EffectiveStack` in all four
+> `Process*` variants; config 3 moves {0.040, 0.042, 0.089, 0.388} →
+> **{0.3339, 0.3044, 0.3128, 0.5324}** and is now a prediction-gated row.  It
+> still does not conserve — the residual *is* budget truncation of the
+> total-internally-reflected population — so **item 3's conclusion for this
+> design stands**: `composite_material` is still the wrong substrate for a coat.
+> Items 1 (heuristic `Pdf`) and 2 (top-wins `GetBSDF`) are untouched by the fix
+> and remain disqualifying on their own.  Config 7 is a *different* defect
+> again: `GGXSPF` emits no downward lobe at all, so a GGX top never reaches the
+> substrate — see the 2026-09-01 addendum in
+> [PHYSICALLY_BASED_PIPELINE_PLAN.md](PHYSICALLY_BASED_PIPELINE_PLAN.md).
+>
+> The routing hazard above now has a number: with `extinction` at 50, the
+> spectral walk attenuates the gap-crossing population by a factor 0.958 where
+> the RGB walk gives 0.119 — the JH **albedo** uplift bounds the coefficient to
+> [0, 1], so every extinction above ~1 is silently clamped in every spectral
+> rasterizer.  Retyping the slot to `IScalarPainter` remains open (it touches
+> the ctor, `RISE_API`, `Job::AddCompositeMaterial`, the chunk descriptor, and
+> needs a scene migration).  Guard for all of the above:
+> [tests/CompositeExtinctionTest.cpp](../tests/CompositeExtinctionTest.cpp).
+
 ### 3.3 `polished_material` — the closest existing precedent, and genuinely close
 
 Its header states its purpose: "A polished material is a diffuse substrate with a
