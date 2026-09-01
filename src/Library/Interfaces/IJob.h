@@ -1709,7 +1709,13 @@ namespace RISE
 			const double pos[3],									///< [in] Position of the object
 			const double orient[3],									///< [in] Orientation of the object
 			const bool bCastsShadows,								///< [in] Does the object cast shadows?
-			const bool bReceivesShadows								///< [in] Does the object receive shadows?
+			const bool bReceivesShadows,							///< [in] Does the object receive shadows?
+			const bool bAllowTransformedOperands					///< [in] Acknowledges an intentional operand-rebase (author set
+																	///<      `allow_transformed_operands TRUE` on this csg_object);
+																	///<      suppresses the operand-rebase advisory Job::AddCSGObject
+																	///<      would otherwise log when this csg_object's own
+																	///<      position/orientation is non-identity AND at least one
+																	///<      operand is already transformed.
 			) = 0;
 
 

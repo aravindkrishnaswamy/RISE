@@ -401,7 +401,7 @@ static void TestSnapshotPreservesCSGType()
 	const bool csgMade = pJob->AddCSGObject(
 		"csg", "operA", "operB", /*op*/ 0,
 		/*material*/ nullptr, /*modifier*/ nullptr, /*shader*/ nullptr,
-		nilRMap, csgPos, orient, true, true );
+		nilRMap, csgPos, orient, true, true, /*bAllowTransformedOperands*/ false );
 	Check( csgMade, "[csg] AddCSGObject succeeded" );
 
 	IObjectManager* objs = pJob->GetObjects();

@@ -775,9 +775,9 @@ int main()
 		Check( omI && omI->GetItem( "nested" ) == 0, "I: `nested` not yet present" );
 		RadianceMapConfig noMapI;
 		const double zeroI[3] = { 0, 0, 0 };
-		Check( j->AddCSGObject( "nested", "cut", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		Check( j->AddCSGObject( "nested", "cut", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true, false ),
 		       "I: a csg_object may take another csg_object as an operand (nested CSG still works)" );
-		Check( !j->AddCSGObject( "bad", "perch2", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		Check( !j->AddCSGObject( "bad", "perch2", "opA", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true, false ),
 		       "I: a CONTAINER is refused as a CSG operand (it is a transform, not a shape)" );
 
 		// The csg_object ITSELF is a world-visible node and IS parentable.
@@ -807,7 +807,7 @@ int main()
 		// A composite that IS parented cannot then be consumed as an operand:
 		// an operand's matrix is read in its composite's frame, so the world
 		// parent would be applied in the wrong space.
-		Check( !j->AddCSGObject( "nested2", "nested", "opB", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true ),
+		Check( !j->AddCSGObject( "nested2", "nested", "opB", 0, "m", 0, 0, noMapI, zeroI, zeroI, true, true, false ),
 		       "I: a PARENTED composite is refused as an operand -- its matrix would be read in the "
 		       "outer composite's frame, applying the world parent in the wrong space" );
 		j->release();

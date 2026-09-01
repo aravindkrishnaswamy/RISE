@@ -9202,7 +9202,14 @@ namespace RISE
 					bool bCastsShadows    = bag.GetBool( "casts_shadows",    true );
 					bool bReceivesShadows = bag.GetBool( "receives_shadows", true );
 
-					if( !pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows ) ) {
+					// Acknowledgment idiom mirroring `allow_non_sampling_emitter` on this same
+					// chunk (below) -- except this flag is NOT inert: it is threaded through to
+					// Job::AddCSGObject, which reads it to suppress its operand-rebase advisory
+					// (see that function's comment) for a csg_object that deliberately re-bases
+					// already-transformed operands.
+					bool bAllowTransformedOperands = bag.GetBool( "allow_transformed_operands", false );
+
+					if( !pJob.AddCSGObject( name.c_str(), obja.c_str(), objb.c_str(), op, material=="none"?0:material.c_str(), modifier=="none"?0:modifier.c_str(), shader=="none"?0:shader.c_str(), radianceMapConfig, pos, orient, bCastsShadows, bReceivesShadows, bAllowTransformedOperands ) ) {
 						return false;
 					}
 
@@ -9259,6 +9266,20 @@ namespace RISE
 						// Finalize) to silence the LUMINAIRE_NULL_GEOMETRY Warning and the agent-
 						// edit creation gate for an object that carries it TRUE.
 						{ auto& p = P(); p.name = "allow_non_sampling_emitter"; p.kind = ValueKind::Bool; p.description = "Acknowledges that this object's emissive material intentionally will not light-sample (a csg_object has no directly-owned geometry, so it is never selected for next-event estimation) -- it only glows on direct view."; p.defaultValueHint = "FALSE"; }
+						// 87 review: an operand's `position`/`orientation` is interpreted in THIS
+						// csg_object's LOCAL frame, so when the csg_object ALSO carries its own
+						// `position`/`orientation`, that transform RE-BASES every already-positioned
+						// operand -- a valid, supported construction (an already-authored
+						// sub-assembly rebased as a unit; the "two half-spheres offset locally,
+						// assembly positioned as a unit" lens idiom, e.g.
+						// scenes/FeatureBased/Combined/crystal_lens.RISEscene), but one
+						// Job::AddCSGObject otherwise flags with a parse-time advisory in case it
+						// was accidental (see docs/SCENE_CONVENTIONS.md sec 5.5).  This flag has a
+						// single purpose: let an author ACKNOWLEDGE the rebase is intentional.
+						// UNLIKE `allow_non_sampling_emitter` above, this one is NOT semantically
+						// inert here -- it is threaded straight through to Job::AddCSGObject, which
+						// reads it to suppress that advisory.
+						{ auto& p = P(); p.name = "allow_transformed_operands"; p.kind = ValueKind::Bool; p.description = "Acknowledges that this csg_object deliberately re-bases already-transformed operands -- its own transform composes with each operand's transform, which is interpreted in this csg_object's local frame; suppresses the operand-rebase warning."; p.defaultValueHint = "FALSE"; }
 						return cd;
 					}();
 					return d;

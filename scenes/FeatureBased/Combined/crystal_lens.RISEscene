@@ -332,6 +332,7 @@ csg_object
 	objb				lens_half_b
 	operation			intersection
 	position			0 2.5 0
+	allow_transformed_operands			TRUE
 }
 
 # Torus prism beside the lens

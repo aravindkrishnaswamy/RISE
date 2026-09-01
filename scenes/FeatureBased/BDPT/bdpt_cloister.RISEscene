@@ -1305,6 +1305,7 @@ csg_object
 	operation			intersection
 	position			-1.5 1.36 -1.86
 	orientation			0 0 -8
+	allow_transformed_operands			TRUE
 }
 
 standard_object

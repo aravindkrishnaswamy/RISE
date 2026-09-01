@@ -153,7 +153,7 @@ virtual bool AddPiecewiseLinearFunction(const char*name,const double x[],const d
 virtual bool AddPiecewiseLinearFunction2D(const char*name,const double x[],char**y,const unsigned int num)=0;
 virtual bool AddObject(const char*name,const char*geom,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double pos[3],const double orient[3],const double scale[3],const bool bCastsShadows,const bool bReceivesShadows)=0;
 virtual bool AddObjectMatrix(const char*name,const char*geom,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double matrix[16],const bool bCastsShadows,const bool bReceivesShadows)=0;
-virtual bool AddCSGObject(const char*name,const char*objA,const char*objB,const char op,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double pos[3],const double orient[3],const bool bCastsShadows,const bool bReceivesShadows)=0;
+virtual bool AddCSGObject(const char*name,const char*objA,const char*objB,const char op,const char*material,const char*modifier,const char*shader,const RadianceMapConfig&radianceMapConfig,const double pos[3],const double orient[3],const bool bCastsShadows,const bool bReceivesShadows,const bool bAllowTransformedOperands)=0;
 virtual bool AddReflectionShaderOp(const char*name)=0;
 virtual bool AddRefractionShaderOp(const char*name)=0;
 virtual bool AddEmissionShaderOp(const char*name)=0;

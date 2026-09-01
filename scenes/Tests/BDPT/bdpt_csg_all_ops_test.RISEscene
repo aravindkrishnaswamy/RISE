@@ -271,6 +271,7 @@ csg_object
 	objb				union_sphere_b
 	operation			union
 	position			-4.0 1.0 0
+	allow_transformed_operands			TRUE
 }
 
 ##################################################
@@ -300,6 +301,7 @@ csg_object
 	objb				isect_sphere_b
 	operation			intersection
 	position			-1.3 1.0 0
+	allow_transformed_operands			TRUE
 }
 
 ##################################################
@@ -330,6 +332,7 @@ csg_object
 	objb				sub_sphere_b
 	operation			subtraction
 	position			1.3 1.0 0
+	allow_transformed_operands			TRUE
 }
 
 ##################################################

@@ -637,6 +637,134 @@ surprising when the same evaluator computes how many objects a scene has.
 
 ---
 
+## 5.5. `csg_object` operand transforms are CSG-LOCAL — a positioned `csg_object` RE-BASES positioned operands
+
+Reported as an all-black render with a `csg_object` that carries its own
+`position` on top of operand `standard_object`s that are themselves
+positioned.  This is **not** a transform-composition bug:
+`CSGObject::IntersectRay` composes the operand's transform into the
+csg_object's exactly once (world → CSG-local via the csg's inverse
+matrix, then the operand applies its own matrix) — union, intersection
+and subtraction all render correctly with positioned operands under a
+positioned `csg_object`.  The trap is semantic, not arithmetic:
+
+**An operand's `position`/`orientation` is interpreted in its
+`csg_object`'s LOCAL frame, not the world's** (§5's `parent` sub-bullet
+already says this for the "operand can't take a `parent`" case — this
+is the same rule, for the `csg_object`'s OWN transform).  So when the
+`csg_object` ALSO carries a `position`/`orientation`, that transform
+**re-bases** every already-positioned operand: the composite lands at
+`(csg transform) ∘ (operand transform)`, **not** at the operand's
+authored world coordinates.
+
+```text
+standard_object { name sphereA  geometry sphA  position -0.25 0 0 }
+standard_object { name sphereB  geometry sphB  position  0.25 0 0 }
+
+csg_object
+{
+    name       csg1
+    obja       sphereA
+    objb       sphereB
+    operation  union
+    position   5 0 0          # re-bases BOTH operands, not "moves the union 5 units further out"
+}
+```
+
+`sphereA`'s composed-once world position is `(5 + -0.25, 0, 0) =
+(4.75, 0, 0)`, not `(-0.25, 0, 0)` and not `(4.75 + -0.25, 0, 0)`.  If
+`csg1`'s own `position` is large enough — or its own `orientation`
+rotates the operands out of the camera's direction — the whole
+composite can leave the frustum entirely, rendering **all-black with no
+visual clue why**: the image looks the same as "nothing here" and
+"wrong place."
+
+This is a **valid, supported construction** — rebasing an
+already-authored sub-assembly as a unit is exactly what you want when,
+say, a hand-built CSG shape needs to be moved as one piece.  It is the
+in-corpus **lens idiom**: a lens built from two half-spheres offset
+*locally* from each other, with the whole assembly then positioned as a
+unit — e.g. `scenes/FeatureBased/Combined/crystal_lens.RISEscene`'s
+`lens_half_a` at local `position 0 0.95 0` under a `lens` csg_object at
+`position 0 2.5 0`.  Nine in-corpus scenes use exactly this pattern (see
+`allow_transformed_operands` below).  It is only a trap when the
+operands were positioned assuming they'd keep their authored world
+coordinates once wrapped in a `csg_object`, with nothing in the document
+signalling that the rebase was intentional.
+
+**Job::AddCSGObject warns at parse time** when both halves are
+transformed (the csg_object's own `position`/`orientation` is
+non-identity, AND at least one operand already carries a non-identity
+transform), naming the csg_object and which operand(s).  The wording
+branches on how many operands are transformed — shown here for the
+common case where both are (see `Job::AddCSGObject` in `src/Library/Job.cpp`
+for the single-operand grammar variant, "operand `X` ... RE-BASES it"):
+
+```text
+Job::AddCSGObject:: `csg1` carries its own position/orientation on top of
+operands `sphereA` and `sphereB`, which are already transformed -- an
+operand's transform is interpreted in `csg1`'s LOCAL frame, not the
+world's, so `csg1`'s own transform RE-BASES them: the composite lands at
+(`csg1`'s transform composed with each operand's transform), NOT at the
+operands' authored coordinates.  This is a valid construction (a
+sub-assembly rebased as a unit); if it is what you intend, set
+`allow_transformed_operands TRUE` to acknowledge it.  But if the
+composite renders shifted, empty, or entirely out of view (an all-black
+frame), this composition is the likely reason -- either position the
+composite solely through `csg1` (author its operands untransformed), or
+drop `csg1`'s own position/orientation.
+```
+
+It is a WARNING, not a refusal — the construction is valid, so nothing
+fails to load.  A `csg_object` positioned over UNtransformed operands
+(the common case — see `scenes/Tests/Geometry/csg.RISEscene`) does not
+trigger it at all.
+
+**`allow_transformed_operands` (Bool, default `FALSE`) acknowledges the
+rebase and silences the warning.**  It mirrors the `allow_non_sampling_emitter`
+idiom on this same chunk (§ elsewhere in this doc / `ChunkParserRegistry.cpp`),
+except it is not inert: it is threaded straight through to
+`Job::AddCSGObject`, which reads it and skips the advisory entirely.  Set
+it when the rebase is deliberate — the lens idiom above is the
+canonical case:
+
+```text
+csg_object
+{
+    name       lens
+    obja       lens_half_a
+    objb       lens_half_b
+    operation  intersection
+    position   0 2.5 0
+    allow_transformed_operands TRUE
+}
+```
+
+**Scope note:** a csg_object placed via `parent` re-bases its operands
+the same way, but does NOT need (or trigger) this advisory — parenting
+the csg_object is this codebase's explicitly recommended grouping idiom
+(its own operand-parent refusal says "Parent the csg_object instead"),
+which already expresses the same intent as the acknowledgment flag. The
+advisory targets only the dual-inline-authoring case: operand `position`
+and csg_object `position` written in the same document.
+
+**Fix (when the rebase was NOT intended):** either position the
+composite solely through the `csg_object` (author its operands with no
+`position`/`orientation` of their own — the common pattern), or drop the
+`csg_object`'s own transform and position the operands directly.  Don't
+do both unless the rebase is what you actually want — and if it is,
+prefer `allow_transformed_operands TRUE` over silently living with the
+warning.
+
+Regression coverage:
+`scenes/Tests/Geometry/csg_positioned_operands.RISEscene` (the
+supported, in-view case — intentionally trips the warning, and
+deliberately does NOT carry `allow_transformed_operands`, so it stays a
+live tripwire) and `tests/CsgOperandTransformTest.cpp` (compose-once
+arithmetic lock + parse-time diagnostic fire/no-fire/acknowledged-silence).
+
+---
+
 ## 6. Coordinate system
 
 RISE uses a right-handed coordinate system.  Common authored conventions:

@@ -7396,6 +7396,30 @@ bool Job::IsMaterialComposed( const char* name ) const
 
 //! Creates a CSG object
 /// \return TRUE if successful, FALSE otherwise
+//! Exact VALUE compare against identity, matching ViewTransform.cpp's
+//! `IsIdentityWB` convention (see its comment for why exact compare, not an
+//! epsilon, is the right test here) -- NOT a bit-compare: every field below
+//! is a plain double `==`, and that distinction matters, because `-0.0 ==
+//! 0.0` is TRUE under `==` (a memcmp would reject it).  A rotation-by-zero
+//! can leave a signed `-0.0` in an off-diagonal (cos/sin combine with a
+//! sign that depends on axis order), and that must still read as identity.
+//! `GetFinalTransformMatrix()` is exact identity here for a transform-less
+//! operand not because SetPosition/SetOrientation were never called --
+//! Job::AddObject always calls both, even with the neutral defaults
+//! `(0,0,0)` -- but because SetPosition(0,0,0)/SetOrientation(0,0,0) compose
+//! to an EXACT identity: sin(0) == 0.0 and cos(0) == 1.0 hold bit-for-bit in
+//! IEEE double, so the neutral-default compose is the Matrix4 identity
+//! exactly, not an epsilon-close approximation.  An operand that DID get a
+//! non-neutral SetPosition/SetOrientation is what this warning
+//! (Job::AddCSGObject, below) needs to name.
+static bool IsIdentityTransform4_( const Matrix4& m )
+{
+	return ( m._00 == 1.0 && m._01 == 0.0 && m._02 == 0.0 && m._03 == 0.0
+	      && m._10 == 0.0 && m._11 == 1.0 && m._12 == 0.0 && m._13 == 0.0
+	      && m._20 == 0.0 && m._21 == 0.0 && m._22 == 1.0 && m._23 == 0.0
+	      && m._30 == 0.0 && m._31 == 0.0 && m._32 == 0.0 && m._33 == 1.0 );
+}
+
 bool Job::AddCSGObject(
 	const char* name,										///< [in] Name of the object
 	const char* objA,										///< [in] Name of the first object
@@ -7412,7 +7436,10 @@ bool Job::AddCSGObject(
 	const double pos[3],									///< [in] Position of the object
 	const double orient[3],									///< [in] Orientation of the object
 	const bool bCastsShadows,								///< [in] Does the object cast shadows?
-	const bool bReceivesShadows								///< [in] Does the object receive shadows?
+	const bool bReceivesShadows,							///< [in] Does the object receive shadows?
+	const bool bAllowTransformedOperands					///< [in] Acknowledges an intentional operand-rebase (author set
+															///<      `allow_transformed_operands TRUE`); suppresses the
+															///<      operand-rebase advisory below.
 	)
 {
 	// RESOLVE every reference FIRST, BEFORE any mutation (atomicity, mirror AddObject): a missing
@@ -7470,6 +7497,7 @@ bool Job::AddCSGObject(
 			}
 		}
 	}
+
 	IMaterial* pMat = 0;
 	if( material ) { pMat = pMatManager->GetItem( material ); if( !pMat ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Material not found `%s`", material ); return false; } }
 	IRayIntersectionModifier* pMod = 0;
@@ -7478,6 +7506,80 @@ bool Job::AddCSGObject(
 	if( shader ) { pShaderObj = pShaderManager->GetItem( shader ); if( !pShaderObj ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Shader not found `%s`", shader ); return false; } }
 	IPainter* pRadPnt = 0;
 	if( !( radianceMapConfig.name == "none" ) ) { pRadPnt = pPntManager->GetItem( radianceMapConfig.name.c_str() ); if( !pRadPnt ) { GlobalLog()->PrintEx( eLog_Warning, "Job::AddCSGObject:: Painter for radiance map not found `%s`", radianceMapConfig.name.c_str() ); return false; } }
+
+	// 87: the reciprocal of the operand-parent-refusal comment above, made
+	// audible.  An operand's transform is read in THIS csg_object's LOCAL
+	// frame -- so when the csg_object ALSO carries its own position/
+	// orientation, that transform RE-BASES every already-positioned operand:
+	// the composite lands at (this csg_object's transform composed with the
+	// operand's transform), not at the operand's authored world coordinates.
+	// That composition is exactly once and exactly correct
+	// (CSGObject::IntersectRay), so this is NOT a bug -- it is a valid,
+	// supported construction (an already-authored sub-assembly can
+	// legitimately be rebased as a unit).  But a caller who separately
+	// positioned the operands AND the csg_object, expecting the operands to
+	// keep their authored place, can get a shifted -- or entirely
+	// out-of-frustum, all-black -- composite with no visual clue why.  One
+	// advisory, not an error: refusing would break the legitimate use.
+	//
+	// PLACEMENT: this runs AFTER the material/modifier/shader/radiance-
+	// painter resolution above (all of which can `return false`), not
+	// before -- so a call that is going to fail never gets to warn about an
+	// object it is not going to create.  Placing it any earlier described a
+	// composite that never came into being.
+	//
+	// SCOPE: a csg_object placed via `parent` (ObjectManager::SetObjectParent,
+	// applied AFTER this call returns, by the chunk parser) re-bases its
+	// operands the exact same way -- parenting composes into the csg_object's
+	// own final transform just like an inline `position`/`orientation` does.
+	// It deliberately does NOT trip this advisory: parenting the csg_object
+	// is this codebase's explicitly recommended grouping idiom (see the
+	// operand-parent gate above -- its own error message says "Parent the
+	// csg_object instead"), which is itself an expression of intent
+	// equivalent to `allow_transformed_operands TRUE`.  This advisory targets
+	// only the DUAL-INLINE-AUTHORING confusion: operand `position` and
+	// csg_object `position` written in the same document, with nothing else
+	// signalling the rebase was deliberate.
+	//
+	// ACKNOWLEDGMENT: `allow_transformed_operands TRUE` on this csg_object
+	// suppresses the advisory below -- the idiom mirrors
+	// `allow_non_sampling_emitter` on the same chunk (ChunkParserRegistry.cpp
+	// descriptor), except that flag is semantically inert to Job and read
+	// separately by AgentSession, while this one is read by, and changes the
+	// behaviour of, this very function.
+	if( !bAllowTransformedOperands ) {
+		const bool csgTransformed = pos[0] != 0.0 || pos[1] != 0.0 || pos[2] != 0.0
+		                          || orient[0] != 0.0 || orient[1] != 0.0 || orient[2] != 0.0;
+		if( csgTransformed ) {
+			const bool aTransformed = !IsIdentityTransform4_( pA->GetFinalTransformMatrix() );
+			const bool bTransformed = !IsIdentityTransform4_( pB->GetFinalTransformMatrix() );
+			if( aTransformed || bTransformed ) {
+				const bool bothTransformed = aTransformed && bTransformed;
+				std::string operandDesc;
+				if( bothTransformed )   { operandDesc = std::string( "`" ) + objA + "` and `" + objB + "`"; }
+				else if( aTransformed ) { operandDesc = std::string( "`" ) + objA + "`"; }
+				else                    { operandDesc = std::string( "`" ) + objB + "`"; }
+				const char* const which    = bothTransformed ? "operands" : "operand";
+				const char* const isAre    = bothTransformed ? "are"      : "is";
+				const char* const itThem   = bothTransformed ? "them"     : "it";
+				const char* const eachThe  = bothTransformed ? "each"     : "the";
+				const char* const authored = bothTransformed ? "operands'" : "operand's";
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Job::AddCSGObject:: `%s` carries its own position/orientation on top of %s %s, "
+					"which %s already transformed -- an operand's transform is interpreted in `%s`'s "
+					"LOCAL frame, not the world's, so `%s`'s own transform RE-BASES %s: the composite "
+					"lands at (`%s`'s transform composed with %s operand's transform), NOT at the %s "
+					"authored coordinates.  This is a valid construction (a sub-assembly rebased as a "
+					"unit); if it is what you intend, set `allow_transformed_operands TRUE` to "
+					"acknowledge it.  But if the composite renders shifted, empty, or entirely out of "
+					"view (an all-black frame), this composition is the likely reason -- either "
+					"position the composite solely through `%s` (author its operands untransformed), "
+					"or drop `%s`'s own position/orientation.",
+					name, which, operandDesc.c_str(), isAre, name, name, itThem, name, eachThe,
+					authored, name, name );
+			}
+		}
+	}
 
 	// Slice 3 / workstream #3 (stable-object apply): in incremental re-point mode an EXISTING
 	// same-named CSGObject is re-pointed IN PLACE (its address -- which the TLAS stores raw, and

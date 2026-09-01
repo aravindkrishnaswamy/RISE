@@ -1,0 +1,153 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           csg_positioned_operands.RISEscene                                                      #
+#   Description:    Regression scene for the "87" csg_object operand-rebase semantics: a csg_object that   #
+#                    carries its OWN position on top of operand standard_objects that are THEMSELVES        #
+#                    positioned.  An operand's transform is interpreted in its csg_object's LOCAL frame,    #
+#                    not the world's, so the csg_object's own position/orientation RE-BASES each operand:   #
+#                    the composite lands at (csg transform composed with operand transform), not at the     #
+#                    operand's authored world coordinates.  This is the SUPPORTED, IN-VIEW case -- the      #
+#                    csg position (0.1, 0.1, 0) is small enough that the rebased composite stays inside     #
+#                    the camera frustum, so the render is non-black.  (A large enough csg position pushes   #
+#                    the same construction out of frame -- an all-black render with no visual clue why,     #
+#                    which is exactly the bug report this scene documents; see Job::AddCSGObject's parse-   #
+#                    time warning and docs/SCENE_CONVENTIONS.md.)  This scene therefore INTENTIONALLY       #
+#                    triggers that warning -- expect one `Job::AddCSGObject` line in RISE_Log.txt naming    #
+#                    `csg_op_positioned` and both operands.                                                 #
+#   See also:       docs/skills/effective-rise-scene-authoring.md, docs/SCENE_CONVENTIONS.md                #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Setup a renderer
+##################################################
+
+standard_shader
+{
+	name				global
+	shaderop			DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		10
+	samples				1
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/csg_positioned_operands
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+##################################################
+# Cameras
+##################################################
+
+film
+{
+	width			128
+	height			128
+}
+
+pinhole_camera
+{
+	location			0 0 1.5
+	lookat				0 0 0
+	up					0 1 0
+	fov					39.0
+}
+
+##################################################
+# Painters / Materials
+##################################################
+
+uniformcolor_painter
+{
+	name		color_red
+	color		1.0 0.0 0.0
+}
+
+uniformcolor_painter
+{
+	name		color_blue
+	color		0.0 0.0 1.0
+}
+
+lambertian_material
+{
+	name				red
+	reflectance			color_red
+}
+
+lambertian_material
+{
+	name				blue
+	reflectance			color_blue
+}
+
+##################################################
+# Objects
+##################################################
+
+sphere_geometry
+{
+	name				spheregeomA
+	radius				0.2
+}
+
+sphere_geometry
+{
+	name				spheregeomB
+	radius				0.2
+}
+
+# The two operands are ALREADY positioned in what CSGObject::IntersectRay
+# treats as the csg_object's own LOCAL frame -- exactly the shape reported
+# as an all-black render.
+standard_object
+{
+	name				sphereA
+	geometry			spheregeomA
+	position			-0.25 0.0 0.0
+	material			red
+}
+
+standard_object
+{
+	name				sphereB
+	geometry			spheregeomB
+	position			0.25 0.0 0.0
+	material			blue
+}
+
+# The csg_object ALSO carries its own position -- this is what re-bases the
+# operands.  Composed-once world centers: (0.1,0.1,0) + (-0.25,0,0) =
+# (-0.15,0.1,0) for sphereA, (0.1,0.1,0) + (0.25,0,0) = (0.35,0.1,0) for
+# sphereB -- both comfortably inside this camera's frustum, so this scene
+# renders NON-BLACK even though it trips the operand-rebase warning.
+csg_object
+{
+	name				csg_op_positioned
+	obja				sphereA
+	objb				sphereB
+	operation			union
+	position			0.1 0.1 0.0
+}
+
+##################################################
+# Lights
+##################################################
+
+omni_light
+{
+	name		lightA
+	power		40
+	color		1.0 1.0 1.0
+	position	0 0 3
+}

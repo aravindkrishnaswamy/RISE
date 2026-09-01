@@ -986,6 +986,7 @@ csg_object
 	operation			intersection
 	position			-4.0 0.95 2.0
 	orientation			20 15 0
+	allow_transformed_operands			TRUE
 }
 
 # ---- Caustic point light behind the lens ----

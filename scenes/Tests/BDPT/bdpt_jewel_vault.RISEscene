@@ -1009,6 +1009,7 @@ csg_object
 	operation			intersection
 	position			-2.5 1.0 2.5
 	orientation			15 0 10
+	allow_transformed_operands			TRUE
 }
 
 # Small sapphire sphere directly on the floor (accent piece)
