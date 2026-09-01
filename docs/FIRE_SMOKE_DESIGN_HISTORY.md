@@ -5030,3 +5030,21 @@ it was already tried and refuted here.
   `r194_matched_tier8_replay/baseline_verdict_evidence.v1`, SHA-256
   `d37e1aa85fb1e96b6ee69950c0df71ab92572a5c7427990c3c439c12efea8844`;
   fresh review is zero P1/P2 and the golden checkpoint remains untouched.
+
+- **r195 live Metal owner prerequisite audit (2026-09-01):** follows the r194
+  tier-spanning verdict into the requested resident Section 3.7 owner and finds
+  that the missing rung is not an entry-point wrapper. The physical-flux Metal
+  prerequisite is fail-closed, EOS identity is CPU-only, the transport provider
+  consumes host vectors, the r70 target authority is private to the CPU owner,
+  and the available resident FCT seams are explicitly diagnostic. A development
+  physical-flux/EOS experiment is rejected before commit because its bound used
+  the cancelled output rather than raw/term scales and its EOS result returned a
+  CPU-minted identity after device comparison. The ported replay remains
+  unexecuted rather than substituting a wrapper, diagnostic, or CPU fallback.
+  The next authority contract must bind resident transport, physical-flux, EOS,
+  and target-chain candidates end to end, with exact fp32 operator mirrors,
+  separate fp64 physics certificates, zero full-grid interstage host transfers,
+  and an updated owner working-set peak. Evidence is in
+  `r195_live_metal_owner_prerequisite_audit/live_owner_prerequisite_audit.v1`,
+  SHA-256 `88f79c08beed9b70e43b2655d5f8b7f9ea05154abe5e31cd2f5941d8f9eb9f0d`;
+  the golden checkpoint and dirty main checkout remain untouched.

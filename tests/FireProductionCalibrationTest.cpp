@@ -3572,7 +3572,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"c65995996763e06a9268bfc83d5f6a2bff26b91659c39b2dee57063de0019539"&&
+			"08d3e1e8c1b6067d359be570f6f376a658ac6290fb2a7c458aeebe5977cfcdaf"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			metalContextLiveBinding.begin(),metalContextLiveBinding.end()))==
 			"ede952577d0b873cb758b0383461d4f9b9e71cb0e1ca340ce3d106e9fe6dc1ee"&&
@@ -3583,7 +3583,7 @@ int main()
 		projectedHeunLiveBinding.find("live_owner_count 36\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
-		projectedHeunOwnerLiveBinding.find("live_owner_count 27\n")!=
+		projectedHeunOwnerLiveBinding.find("live_owner_count 28\n")!=
 			std::string::npos&&
 		metalContextLiveBinding.find("live_owner_count 17\n")!=std::string::npos&&
 		metalContextLiveBinding.find("calibration_test_self_binding false\n")!=

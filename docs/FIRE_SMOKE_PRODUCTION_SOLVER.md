@@ -5545,6 +5545,37 @@ and the full velocity trajectory SHA-256 is
 Fresh numerical and sealing re-reviews report zero P1/P2. The golden checkpoint
 is unchanged.
 
+### 7.56ab Live Metal owner prerequisite audit (r195)
+
+r195 starts the requested live-owner rung only after the r194 baseline proves
+that the late focusing defect spans tiers. Source enumeration then rejects the
+premise that only an entry-point wrapper is missing. The physical scalar-flux
+Metal function is a literal fail-closed stub; EOS acceptance can be minted only
+from host vectors by the CPU authority; the projected-Heun transport-provider
+contract accepts host vector pointers; and the r70 target authority friends
+only the CPU owner. The resident FCT functions are explicitly diagnostic and
+there is no complete live owner caller in `FireSequenceTest`.
+
+A provisional physical-flux/EOS device experiment was run only as development
+work and rejected by fresh review before commit. Its physical comparison bound
+scaled by a possibly cancelled output and did not cover coefficient
+quantization or the transcendental term. Its EOS path compared a device result
+and then returned the CPU-minted acceptance identity, so CPU substitution could
+pass. Neither may be promoted as production. The required next contract is a
+resident candidate lineage spanning transport coefficients, physical flux,
+EOS, and the r70 target chain, with exact binary32 operator mirrors, a separate
+fp64 physics certificate, private interstage fields, and a complete owner peak
+working-set certificate.
+
+The ported replay is therefore not executed or claimed. This is an
+owner-authority stop rather than a numerical failure of the port, and no
+diagnostic wrapper, CPU fallback, tolerance change, or shortened run is used.
+The audit is sealed in
+`rendered/fire_production_calibration/r195_live_metal_owner_prerequisite_audit/`
+`live_owner_prerequisite_audit.v1`, SHA-256
+`88f79c08beed9b70e43b2655d5f8b7f9ea05154abe5e31cd2f5941d8f9eb9f0d`.
+The golden checkpoint and dirty main checkout remain untouched.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
