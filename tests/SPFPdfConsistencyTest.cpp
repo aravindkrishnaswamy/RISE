@@ -524,7 +524,6 @@ int main()
     UniformColorPainter* polishScat  = new UniformColorPainter( RISEPel(20.0, 20.0, 20.0) ); polishScat->addref();  // Phong exponent for polish
     UniformColorPainter* sssAbsorb   = new UniformColorPainter( RISEPel(0.01, 0.01, 0.01) ); sssAbsorb->addref();
     UniformColorPainter* sssScat     = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
-    UniformColorPainter* zeroExt     = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
 
     // Scalar twins (IScalarPainter slots — physical scalars, no JH uplift).
     UniformScalarPainter* tauScalar     = new UniformScalarPainter( 0.9 );   tauScalar->addref();
@@ -542,7 +541,7 @@ int main()
 
     // Composite SPF: two Lambertian layers, max_recur=4, reflection/refraction/diffuse/translucent limits, thickness=0.1, zero extinction
     LambertianSPF* lambertian2 = new LambertianSPF( *spec );  lambertian2->addref();
-    CompositeSPF* composite = new CompositeSPF( *lambertian, *lambertian2, 4, 2, 2, 2, 2, 0.1, *zeroExt );  composite->addref();
+    CompositeSPF* composite = new CompositeSPF( *lambertian, *lambertian2, 4, 2, 2, 2, 2, 0.1, *extinctionSc );  composite->addref();
 
     // coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2 item 5).
     // Built through the MATERIAL because CoatedSPF is the importance

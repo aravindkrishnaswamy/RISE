@@ -4110,7 +4110,16 @@ bool Job::AddCompositeMaterial(
 		return false;
 	}
 
-	IPainter* pExt = pPntManager->GetItem( extinction );
+	// `extinction` is a Beer-Lambert coefficient (an inverse length), not a
+	// colour: authored values well above 1 are ordinary.  Routing it through
+	// `IPainter` sent the SPECTRAL walk's read into `GetColorNM` -> the
+	// Jakob-Hanika ALBEDO uplift, which is bounded to [0,1], so every
+	// extinction above ~1 silently saturated in every spectral rasterizer
+	// while the RGB walk used the authored value.  Per-channel input stays
+	// legal (`requireSingle` false, like translucent_material's `ext`) --
+	// Beer-Lambert is evaluated per channel.
+	IScalarPainter* pExt = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager, "composite_material", name, "extinction", extinction );
 
 	if( !pExt ) {
 		return false;
@@ -4121,6 +4130,7 @@ bool Job::AddCompositeMaterial(
 
 	const bool ok = RegisterOrDiag( pMatManager, pMaterial, name, "material" );
 	safe_release( pMaterial );
+	safe_release( pExt );
 
 	return ok;
 }

@@ -232,37 +232,12 @@ uniformcolor_painter
 	color				1.0 0.95 0.8
 }
 
-# Extinction painters for absorption between layers
-uniformcolor_painter
-{
-	name				pnt_no_extinction
-	color				0.0 0.0 0.0
-}
-
-uniformcolor_painter
-{
-	name				pnt_amber_extinction
-	color				0.5 2.0 8.0
-}
-
-uniformcolor_painter
-{
-	name				pnt_blue_extinction
-	color				0.2 0.5 6.0
-}
-
-uniformcolor_painter
-{
-	name				pnt_mild_extinction
-	color				1.0 1.0 1.0
-}
-
-uniformcolor_painter
-{
-	name				pnt_warm_extinction
-	color				0.3 1.5 4.0
-}
-
+# NOTE: composite_material's `extinction` is a PHYSICAL SCALAR slot
+# (IScalarPainter), not a colour -- it is a Beer-Lambert coefficient in
+# inverse scene units and is routinely > 1 (8.0 on blue below).  A colour
+# painter does not bind here, so the values are authored inline; the five
+# `pnt_*_extinction` uniformcolor_painter chunks that used to live at this
+# spot were removed with the retyping.
 # Translucent layer painters
 uniformcolor_painter
 {
@@ -382,7 +357,7 @@ composite_material
 	max_diffuse_recursion		3
 	max_translucent_recursion	3
 	thickness			0.5
-	extinction			pnt_no_extinction
+	extinction			0.0
 }
 
 # 2. Amber-tinted coat over red paint - strong colored absorption
@@ -398,7 +373,7 @@ composite_material
 	max_diffuse_recursion		3
 	max_translucent_recursion	3
 	thickness			2.0
-	extinction			pnt_amber_extinction
+	extinction			0.5 2.0 8.0
 }
 
 # 3. Blue-absorbing coat over white - warm light filters through, blue absorbed
@@ -414,7 +389,7 @@ composite_material
 	max_diffuse_recursion		3
 	max_translucent_recursion	3
 	thickness			1.0
-	extinction			pnt_blue_extinction
+	extinction			0.2 0.5 6.0
 }
 
 # 4. Translucent wax over gold base - subsurface scattering over metallic
@@ -430,7 +405,7 @@ composite_material
 	max_diffuse_recursion		3
 	max_translucent_recursion	3
 	thickness			3.0
-	extinction			pnt_warm_extinction
+	extinction			0.3 1.5 4.0
 }
 
 # 5. Glass over emissive - glowing orb under glass
@@ -446,7 +421,7 @@ composite_material
 	max_diffuse_recursion		3
 	max_translucent_recursion	3
 	thickness			1.5
-	extinction			pnt_warm_extinction
+	extinction			0.3 1.5 4.0
 }
 
 # 6. Double composite - dielectric over (translucent over diffuse gold)
@@ -462,7 +437,7 @@ composite_material
 	max_diffuse_recursion		4
 	max_translucent_recursion	4
 	thickness			0.5
-	extinction			pnt_mild_extinction
+	extinction			1.0
 }
 
 ##################################################

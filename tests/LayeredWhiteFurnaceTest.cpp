@@ -485,7 +485,10 @@ int main()
 	// composite_material chunk's defaults; thickness=0.0 keeps the
 	// inter-layer translucent traversal neutral; extinction=zero so
 	// the audit reflects pure layer-composition behaviour, not Beer-
-	// Lambert absorption between layers.
+	// Lambert absorption between layers.  `extinction` is an
+	// IScalarPainter slot (a physical Beer-Lambert coefficient, never
+	// colourspace-converted), hence `zeroSc` rather than the `zero`
+	// COLOUR painter -- both are 0, so every number below is unmoved.
 	const unsigned int kMaxRecur          = 4;
 	const unsigned int kMaxReflectRecur   = 2;
 	const unsigned int kMaxRefractRecur   = 2;
@@ -497,28 +500,28 @@ int main()
 		*dielectric, *lambertian,
 		kMaxRecur, kMaxReflectRecur, kMaxRefractRecur,
 		kMaxDiffuseRecur, kMaxTranslucent,
-		kThickness, *zero );
+		kThickness, *zeroSc );
 	compDielLamb->addref();
 
 	CompositeSPF* compGgxLamb = new CompositeSPF(
 		*ggxOnly, *lambertian,
 		kMaxRecur, kMaxReflectRecur, kMaxRefractRecur,
 		kMaxDiffuseRecur, kMaxTranslucent,
-		kThickness, *zero );
+		kThickness, *zeroSc );
 	compGgxLamb->addref();
 
 	CompositeSPF* compGgxPbr = new CompositeSPF(
 		*ggxOnly, *ggxPBR,
 		kMaxRecur, kMaxReflectRecur, kMaxRefractRecur,
 		kMaxDiffuseRecur, kMaxTranslucent,
-		kThickness, *zero );
+		kThickness, *zeroSc );
 	compGgxPbr->addref();
 
 	CompositeSPF* compSheenPbr = new CompositeSPF(
 		*sheen, *ggxPBR,
 		kMaxRecur, kMaxReflectRecur, kMaxRefractRecur,
 		kMaxDiffuseRecur, kMaxTranslucent,
-		kThickness, *zero );
+		kThickness, *zeroSc );
 	compSheenPbr->addref();
 
 	// Finding D: clearcoat (GGX with F0=0.04) over a coloured /
@@ -532,7 +535,7 @@ int main()
 		*clearcoatDiel, *ggxRedDiff,
 		kMaxRecur, kMaxReflectRecur, kMaxRefractRecur,
 		kMaxDiffuseRecur, kMaxTranslucent,
-		kThickness, *zero );
+		kThickness, *zeroSc );
 	compClearcoatRedPbr->addref();
 
 	// ---------- coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2) ----------

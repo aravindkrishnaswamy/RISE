@@ -48,7 +48,7 @@ namespace RISE
 				const unsigned int max_diffuse_recursion,			// maximum level of diffuse recursion
 				const unsigned int max_translucent_recursion,		// maximum level of translucent recursion
 				const Scalar thickness,								// thickness between the materials
-				const IPainter& extinction							// extinction coefficient for absorption between layers
+				const IScalarPainter& extinction					// extinction coefficient for absorption between layers (physical scalar)
 				) :
 			pBRDF( 0 ), 
 			pSPF( 0 ), 

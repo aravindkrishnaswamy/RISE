@@ -26,11 +26,15 @@ using namespace RISE::Implementation;
 // bottom layer's attenuation into GAIN.  Here it is worse than in the SPF --
 // the amplified value also lands in averageRadiantExitance, which drives
 // light-importance weights and photon budgets.  Clamp identically.
+// The test is NEGATED (`!(thickness >= 0)`) so a NaN -- false against every
+// comparison, and therefore invisible to a plain `< 0` -- clamps as well.
+// Here that also protects `averageRadEx` / `averageSpectrum`, i.e. the
+// light-importance weights and photon budgets, from a NaN.
 static Scalar ClampCompositeThickness( const Scalar thickness )
 {
-	if( thickness < 0 ) {
+	if( !( thickness >= 0 ) ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"CompositeEmitter:: negative inter-layer thickness (%g) would make the Beer-Lambert term amplify rather than absorb -- clamping to 0",
+			"CompositeEmitter:: inter-layer thickness (%g) is not >= 0 -- a negative path length makes the Beer-Lambert term amplify rather than absorb, and a NaN poisons it -- clamping to 0",
 			thickness );
 		return 0;
 	}
@@ -40,7 +44,7 @@ static Scalar ClampCompositeThickness( const Scalar thickness )
 CompositeEmitter::CompositeEmitter(
 	const IEmitter& top_,
 	const IEmitter& bottom_,
-	const IPainter& extinction_,
+	const IScalarPainter& extinction_,
 	const Scalar thickness_
 	) :
   topEmitter( top_ ),
@@ -58,8 +62,23 @@ CompositeEmitter::CompositeEmitter(
 	// (mean of thickness/cos(theta) weighted by cos(theta) over hemisphere)
 	RISEPel topAvg = topEmitter.averageRadiantExitance();
 
-	// Sample extinction over texture space to get an average
+	// Sample extinction over texture space to get an average.
+	//
+	// BOTH averages below come from the SAME scalar painter, read through the
+	// SAME grid: `GetValuesAt` for the RGB average and `GetValueAtNM` for the
+	// per-wavelength one.  That is the point of this block.  Before the
+	// IScalarPainter retyping the RGB average came from `IPainter::GetColor`
+	// (unsaturated) while `emittedRadianceNM` read `IPainter::GetColorNM`
+	// (Jakob-Hanika albedo uplift, clamped to [0,1]) -- so at any extinction
+	// above ~1 the emitter's own average and its per-hit spectral radiance
+	// described different materials.  Neither read touches colourspace now,
+	// and the spectral average is sampled per-bin instead of being collapsed
+	// to the mean of the three RGB channels, so a wavelength-varying painter
+	// (e.g. an inline per-channel triple, which interpolates across the
+	// visible band) is averaged at the wavelength it will actually be
+	// evaluated at.
 	RISEPel avgExtinction;
+	Scalar  avgExtinctionNM[40] = { Scalar(0) };
 	RayIntersectionGeometric rig( Ray(), nullRasterizerState );
 	// Deterministic 10x10 stratified UV grid (cell centres), NOT 100 GlobalRNG samples: reproducible and
 	// consumes no render-RNG at parse (this runs at emitter construction).  averageRadEx/averageSpectrum feed
@@ -72,9 +91,16 @@ CompositeEmitter::CompositeEmitter(
 	// the 0.1-UV pitch.  The determinism is required for a reproducible parse (the v6->v7 cutover gate).
 	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
 		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
-		avgExtinction = avgExtinction + extinction_.GetColor(rig);
+		const ScalarTriple e = extinction_.GetValuesAt(rig);
+		avgExtinction = avgExtinction + RISEPel( e.v[0], e.v[1], e.v[2] );
+		for( unsigned int i=0; i<40; i++ ) {
+			avgExtinctionNM[i] += extinction_.GetValueAtNM( rig, Scalar(380 + i * 10) );
+		}
 	}
 	avgExtinction = avgExtinction * (1.0/100.0);
+	for( unsigned int i=0; i<40; i++ ) {
+		avgExtinctionNM[i] *= (1.0/100.0);
+	}
 
 	// Average attenuation: integrate exp(-ext*thickness/cos(theta)) * cos(theta) * sin(theta) dtheta
 	// over [0, pi/2], normalized.  For simplicity, use thickness * 2 as the mean path length.
@@ -85,10 +111,9 @@ CompositeEmitter::CompositeEmitter(
 
 	// Build the spectral average by iterating over the 40 wavelength bins
 	// VisibleSpectralPacket is <Scalar, 380, 780, 40> with delta = (780-380)/(40-1) ~= 10nm
-	const Scalar avgExtScalar = (avgExtinction[0] + avgExtinction[1] + avgExtinction[2]) / 3.0;
-	const Scalar avgAttenScalar = exp( -avgExtScalar * 2.0 * thickness );
 	for( unsigned int i=0; i<40; i++ ) {
 		const Scalar nm = Scalar(380 + i * 10);
+		const Scalar avgAttenScalar = exp( -avgExtinctionNM[i] * 2.0 * thickness );
 		const Scalar topVal = topEmitter.averageRadiantExitanceNM( nm );
 		const Scalar bottomVal = bottomEmitter.averageRadiantExitanceNM( nm );
 		averageSpectrum.SetIndex( i, topVal + bottomVal * avgAttenScalar );
@@ -114,7 +139,8 @@ RISEPel CompositeEmitter::emittedRadiance(
 	// Bottom layer's emission is attenuated by Beer's law through the medium
 	const Scalar cosTheta = fabs( Vector3Ops::Dot( out, N ) );
 	const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
-	const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
+	const ScalarTriple e = extinction.GetValuesAt(ri);
+	const RISEPel attenuation = ColorMath::exponential( RISEPel( e.v[0], e.v[1], e.v[2] ) * (-pathLength) );
 
 	result = result + bottomEmitter.emittedRadiance( ri, out, N ) * attenuation;
 
@@ -132,7 +158,7 @@ Scalar CompositeEmitter::emittedRadianceNM(
 
 	const Scalar cosTheta = fabs( Vector3Ops::Dot( out, N ) );
 	const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
-	const Scalar extinctionNM = extinction.GetColorNM( ri, nm );
+	const Scalar extinctionNM = extinction.GetValueAtNM( ri, nm );
 	const Scalar attenuation = exp( -extinctionNM * pathLength );
 
 	result += bottomEmitter.emittedRadianceNM( ri, out, N, nm ) * attenuation;

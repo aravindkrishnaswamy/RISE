@@ -4022,7 +4022,12 @@ namespace RISE
 					unsigned int max_diff_recur= bag.GetUInt(   "max_diffuse_recursion",     3 );
 					unsigned int max_tran_recur= bag.GetUInt(   "max_translucent_recursion", 3 );
 					double thickness           = bag.GetDouble( "thickness",                 0.0 );
-					std::string extinction     = bag.GetString( "extinction",                "none" );
+					// Default "0.0", not the "none" IPainter sentinel: `extinction` is a
+					// physical-scalar slot now, and the null painter's numeric value WAS
+					// 0 -- so 0.0 reproduces the pre-refactor default bit-for-bit while
+					// resolving through the scalar-painter path.  Same move translucent
+					// _material's `ext` made.
+					std::string extinction     = bag.GetString( "extinction",                "0.0" );
 
 					return pJob.AddCompositeMaterial( name.c_str(), top.c_str(), bottom.c_str(), max_recur, max_refl_recur, max_refr_recur, max_diff_recur, max_tran_recur, thickness, extinction.c_str() );
 				}
@@ -4042,7 +4047,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "max_diffuse_recursion";    p.kind = ValueKind::UInt; p.description = "Max diffuse recursion"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "max_translucent_recursion";p.kind = ValueKind::UInt; p.description = "Max translucent recursion"; p.defaultValueHint = "3"; }
 						{ auto& p = P(); p.name = "thickness";            p.kind = ValueKind::Double;    p.description = "Layer thickness"; p.defaultValueHint = "0"; }
-						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Interior extinction"; p.semantics.pipe = ParameterPipe::Color; }
+						{ auto& p = P(); p.name = "extinction";           p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Inter-layer extinction, applied as exp(-extinction*path) across the gap (physical SCALAR: a scalar_painter name, or an inline `r g b` or single scalar -- a COLOUR painter does not bind here).  0.0 (default) reproduces the pre-refactor \"none\" IPainter default's numeric value bit-for-bit -- NO extinction (a clear gap), not black/opaque."; p.defaultValueHint = "0.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();

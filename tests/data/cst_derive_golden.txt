@@ -212,7 +212,7 @@ scenes/Tests/Materials/Enamel/enamel_dome_dial.RISEscene  ac2a57ec3bb2f25e59b0f7
 scenes/Tests/Materials/Enamel/enamel_swatch_goldruby.RISEscene  4c4f15812743dc4074c3a0e17ace60dfe3a3e8adf420f7e4f56c48a152f5cf61  813  26
 scenes/Tests/Materials/Enamel/enamel_swatch_silver.RISEscene  9fdd38d5ee2f073cd99e56ee3dcfa3fe2db24336459e499409b22a6bc288813f  825  27
 scenes/Tests/Materials/Enamel/silver_reference.RISEscene  cb9f119e24d46516ccb6ab8b820d309d76b09b5ef14d9749bc35569d4d8647aa  700  24
-scenes/Tests/Materials/composite_material.RISEscene  5fd70142929f1bbdc084e81f0dad5bbaec354355cb88dee14397783fecb190da  4174  70
+scenes/Tests/Materials/composite_material.RISEscene  58135c8bc5a158f50f8372473fc32faca6a1a1dc8d96b361d7f218b63eae0878  4065  65
 scenes/Tests/Materials/cooktorrance_multiscatter_test.RISEscene  9c5107f0c869c23cc9757ff83dc801875f6486ebbdeb670be1aadc47fb80d599  3232  56
 scenes/Tests/Materials/cooktorrance_vndf_test.RISEscene  8f45eb9acb2cf228b1f1f314ce90c98ebfeced92d553f785ed0afb6b69817848  2759  51
 scenes/Tests/Materials/dielectric_dispersion.RISEscene  6843c048fd724879528e8866e63d930b7e781dc431a16a18fe9c0d4488472812  1544  33

@@ -689,16 +689,25 @@ clearcoat-over-paint scenes; its own landing.
 > substrate at ρ = 1.  Closing #7 needs a transmission path for reflection-only
 > top layers, not a walk fix; `coated_material` (#14/#15) is the shipped answer.
 >
-> **Separately, still open:** `extinction` is typed `const IPainter&`, so the
-> spectral walk reads it through `GetColorNM` → the Jakob-Hanika **albedo**
-> uplift, which is bounded to [0, 1].  An extinction of 50 arrives at the NM
-> walk as ≈1.0: measured spectral attenuation 0.958 where the RGB walk gives
-> 0.119.  Every extinction above ~1 is silently clamped in every spectral
-> rasterizer.  This is the routing hazard
-> [WETNESS_COAT_DESIGN.md §3.2](WETNESS_COAT_DESIGN.md) already flagged, now
-> with a number on it; the fix is retyping the slot to `IScalarPainter`
-> (ctor + `RISE_API` + `Job::AddCompositeMaterial` + the `composite_material`
-> chunk descriptor + a scene migration) and was left out of the walk fix.
+> **Separately — FIXED 2026-09-01, one commit after the walk fix:**
+> `extinction` was typed `const IPainter&`, so the spectral walk read it
+> through `GetColorNM` → the Jakob-Hanika **albedo** uplift, which is bounded
+> to [0, 1].  An extinction of 50 arrived at the NM walk as ≈1.0: measured
+> spectral attenuation 0.958 where the RGB walk gave 0.119.  Every extinction
+> above ~1 was silently clamped in every spectral rasterizer.  This was the
+> routing hazard [WETNESS_COAT_DESIGN.md §3.2](WETNESS_COAT_DESIGN.md) had
+> flagged.  The slot is now `IScalarPainter` throughout — `CompositeSPF`,
+> `CompositeEmitter` (whose constructor-time average had been deriving from
+> the UNSATURATED `GetColor` while its `emittedRadianceNM` used the saturated
+> `GetColorNM`, so the emitter disagreed with itself), `RISE_API`,
+> `Job::AddCompositeMaterial` (with the per-parameter scalar diagnostic), and
+> the `composite_material` chunk descriptor (`extinction` default `none` →
+> `0.0`, bit-identical, `ParameterPipe::Scalar`).  The shipped scene was
+> migrated to inline scalars; `tools/migrate_scenes_iscalarpainter.py` now
+> covers the slot.  Post-fix the NM ratio is **0.1194**, matching RGB's
+> 0.1194 — `tests/CompositeExtinctionTest.cpp` §5 is the band guard, §8 the
+> emitter's clamp guard.  Every RGB number in this document is unmoved
+> (the scalar painter returns the same triple the colour painter did).
 
 ### Audit results (FURNACE_SAMPLES = 100,000 per (config, angle))
 

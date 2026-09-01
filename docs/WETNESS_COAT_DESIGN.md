@@ -469,14 +469,17 @@ two boundary SPFs with an absorbing gap — but not a layered BSDF.
    it is not a dielectric-specific quirk, it is the whole "smooth coat over
    diffuse" regime, which is the whole of wetness.
 
-**Routing hazard, separately.** `composite_material`'s `extinction` parameter is
-typed `const IPainter&`
-([CompositeSPF.h:41](../src/Library/Materials/CompositeSPF.h)) and consumed via
-`GetColor`/`GetColorNM`. A measured water-absorption curve bound there would be
-**JH-uplifted and behave as a colorant, not an absorption coefficient** — the
+**Routing hazard, separately — CLOSED 2026-09-01.** `composite_material`'s
+`extinction` parameter *was* typed `const IPainter&`
+([CompositeSPF.h](../src/Library/Materials/CompositeSPF.h)) and consumed via
+`GetColor`/`GetColorNM`, so a measured water-absorption curve bound there would
+be **JH-uplifted and behave as a colorant, not an absorption coefficient** — the
 exact class of bug [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) was
-written to eliminate. Any new coat must put its absorption on an
-`IScalarPainter`.
+written to eliminate. It is now `const IScalarPainter&` in `CompositeSPF` and
+`CompositeEmitter` alike, mirroring `TranslucentSPF::pExtinction`; the measured
+saturation (spectral 0.958 vs RGB 0.119 at extinction 50) is gone (0.1194 vs
+0.1194). The standing rule is unchanged: any new coat must put its absorption on
+an `IScalarPainter`.
 
 > **UPDATE 2026-09-01 — item 3's root cause found and fixed; the routing hazard
 > is now measured, not hypothetical.**
@@ -2237,12 +2240,15 @@ timing exists because no implementation exists.
    usable for coat-over-diffuse but still carries the 50/50 `Pdf` and top-wins
    `GetBSDF` architectural defects (§3.2). **Open.**
 3. **`composite_material`'s `extinction` is `IPainter`**
-   ([CompositeSPF.h:41](../src/Library/Materials/CompositeSPF.h)) — a
+   ([CompositeSPF.h](../src/Library/Materials/CompositeSPF.h)) — a
    wrong-pipe slot of the exact class
    [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) eliminated elsewhere.
-   Binding a physical absorption curve there JH-uplifts it. **Open, out of scope,
-   flagged so nobody does it.** Retyping it is an ABI-visible change to
-   `RISE_API_CreateCompositeMaterial`.
+   Binding a physical absorption curve there JH-uplifts it. **CLOSED
+   2026-09-01** — retyped to `IScalarPainter` across `CompositeSPF`,
+   `CompositeEmitter`, `RISE_API_CreateCompositeMaterial` (the ABI-visible
+   change this entry warned about), `Job::AddCompositeMaterial` and the chunk
+   descriptor, with the shipped scene migrated to inline scalars. Spectral
+   attenuation now matches RGB (0.1194 vs 0.1194, was 0.958 vs 0.119).
 4. **`tidepools.RISEscene:400-404`'s comment is stale** — it claims `tau` cannot
    vary spatially, which the P2.1 `painter` bridge and the `expression` form have
    since made false (§3.6). Fix it in passing during Phase 1; it is currently

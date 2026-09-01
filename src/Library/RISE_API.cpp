@@ -4447,7 +4447,7 @@ namespace RISE
 								const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
 								const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
 								const Scalar thickness,										///< [in] Thickness between the materials
-								const IPainter& extinction									///< [in] Extinction coefficient for absorption between layers
+								const IScalarPainter& extinction							///< [in] Extinction coefficient for absorption between layers (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								)
 	{
 		if( !ppi ) {

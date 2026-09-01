@@ -25,11 +25,15 @@ using namespace RISE::Implementation;
 // every gap crossing.  That was harmless only while the walk was broken and
 // nothing ever crossed the gap; it is reachable now, so clamp it to 0 (no
 // gap, no absorption) and say so rather than rendering an energy source.
+// The comparison is written NEGATED (`!(thickness >= 0)`) rather than
+// `thickness < 0` so that a NaN thickness -- which compares false against
+// EVERYTHING, and would sail through `< 0` -- is clamped too.  A NaN path
+// length poisons the Beer-Lambert exponent and every kray downstream of it.
 static Scalar ClampCompositeThickness( const Scalar thickness )
 {
-	if( thickness < 0 ) {
+	if( !( thickness >= 0 ) ) {
 		GlobalLog()->PrintEx( eLog_Warning,
-			"CompositeSPF:: negative inter-layer thickness (%g) would make the Beer-Lambert term amplify rather than absorb -- clamping to 0",
+			"CompositeSPF:: inter-layer thickness (%g) is not >= 0 -- a negative path length makes the Beer-Lambert term amplify rather than absorb, and a NaN poisons it -- clamping to 0",
 			thickness );
 		return 0;
 	}
@@ -45,7 +49,7 @@ CompositeSPF::CompositeSPF(
 	const unsigned int max_diffuse_recursion_,			// maximum level of diffuse recursion
 	const unsigned int max_translucent_recursion_,		// maximum level of translucent recursion
 	const Scalar thickness_,							// thickness between the materials
-	const IPainter& extinction_							// extinction coefficient for absorption between layers
+	const IScalarPainter& extinction_					// extinction coefficient for absorption between layers (physical scalar)
 	) :
   top( top_ ),
   bottom( bottom_ ),
@@ -67,6 +71,23 @@ CompositeSPF::~CompositeSPF( )
 	top.release();
 	bottom.release();
 	extinction.release();
+}
+
+// Beer-Lambert attenuation across ONE gap crossing, RGB path.
+//
+// The scalar painter's three components map 1:1 onto the R/G/B channels --
+// the same shape `DielectricSPF` uses for its scalar `tau` / `ior`.  No
+// colourspace conversion and no Jakob-Hanika uplift happen anywhere on this
+// path, so an authored extinction of 8.0 arrives as 8.0 (see the member
+// comment in CompositeSPF.h).
+static RISEPel GapAttenuation(
+	const IScalarPainter& extinction,
+	const RayIntersectionGeometric& ri,
+	const Scalar pathLength
+	)
+{
+	const ScalarTriple e = extinction.GetValuesAt( ri );
+	return ColorMath::exponential( RISEPel( e.v[0], e.v[1], e.v[2] ) * (-pathLength) );
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +148,33 @@ CompositeSPF::~CompositeSPF( )
 //
 //  tests/CompositeExtinctionTest.cpp section 6 is the regression guard for
 //  (2); sections 1-5 guard (1).
+//
+//  KNOWN SCOPE GAPS -- both reviewer-verified, both UNCHANGED from the
+//  pre-two-stack baseline, and both deliberately left alone here:
+//
+//   (a) A walk ENTERED FROM BELOW (Scatter() called on an up-going ray, i.e.
+//       the camera/photon is inside a closed composite volume) starts BOTH
+//       stacks at the entry stack -- and that stack already contains this
+//       object's entry, because the ray is inside it.  So on a subsequent
+//       DOWN-going leg the bottom layer is handed a WITH-entry stack even
+//       though `EvalStack` is selecting the nominally "outside" one, and a
+//       stack-sensitive bottom reads containsCurrent()==true for a ray
+//       entering it.  Fixing this needs a stack that can express "the outside
+//       medium" independently of the entry stack, which IORStack's shared
+//       per-IObject key cannot do; it is the same structural limit as (2)
+//       above, and no shipped scene puts a camera inside a composite.
+//
+//   (b) The BOTTOM interface's incident IOR is the OUTSIDE medium's, not the
+//       gap's.  `EvalStack` gives a down-going ray the without-entry stack so
+//       the bottom classifies the crossing correctly (entering, not exiting) --
+//       but that stack also carries the IOR the bottom will refract against.
+//       For a dielectric top over a dielectric bottom the gap->bottom crossing
+//       is therefore computed as 1.0 -> 1.33 rather than 1.5 -> 1.33.  Again
+//       structural: IORStack cannot express "the gap's IOR WITHOUT this
+//       object's entry", because the entry IS how the gap's IOR got recorded.
+//       Classification correctness was chosen over Ni fidelity, which is also
+//       exactly what the pre-fix down-leg did -- so this is not a regression,
+//       and the section-6 numbers bake it in.
 // ---------------------------------------------------------------------------
 
 // Picks the stack a layer's Scatter() is evaluated against, by the direction
@@ -228,7 +276,7 @@ void CompositeSPF::ProcessTopLayer(
 				// Apply Beer's law absorption through the layer
 				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
-				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
+				const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
 
 				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, outside_stack, GapStackBelowTop( scat_top[i], gap_stack ) );
 			}
@@ -271,7 +319,7 @@ void CompositeSPF::ProcessBottomLayer(
 				// Apply Beer's law absorption through the layer
 				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
-				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
+				const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
 
 				// gap_stack is passed through UNCHANGED -- see GapStackBelowTop.
 				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, outside_stack, gap_stack );
@@ -316,7 +364,7 @@ void CompositeSPF::ProcessTopLayerNM(
 				// Apply Beer's law absorption through the layer
 				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
-				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
+				const Scalar extinctionNM = extinction.GetValueAtNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
 				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, outside_stack, GapStackBelowTop( scat_top[i], gap_stack ) );
@@ -361,7 +409,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 				// Apply Beer's law absorption through the layer
 				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
-				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
+				const Scalar extinctionNM = extinction.GetValueAtNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
 				// gap_stack is passed through UNCHANGED -- see GapStackBelowTop.

@@ -180,7 +180,7 @@ namespace
 		{ "generic_human_tissue_material", "g", "Scalar", false, false, "%s" },
 		{ "composite_material", "top", "Material", false, false, "%s" },
 		{ "composite_material", "bottom", "Material", false, false, "%s" },
-		{ "composite_material", "extinction", "Color", false, false, "%s" },
+		{ "composite_material", "extinction", "Scalar", false, false, "%s" },
 		{ "ward_isotropic_material", "rd", "Color", false, false, "%s" },
 		{ "ward_isotropic_material", "rs", "Color", false, false, "%s" },
 		{ "ward_isotropic_material", "alpha", "Scalar", false, false, "%s" },

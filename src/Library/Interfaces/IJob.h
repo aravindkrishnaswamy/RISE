@@ -989,7 +989,7 @@ namespace RISE
 			const unsigned int max_diffuse_recursion,					///< [in] Maximum level of diffuse recursion
 			const unsigned int max_translucent_recursion,				///< [in] Maximum level of translucent recursion
 			const double thickness,										///< [in] Thickness between the materials
-			const char* extinction										///< [in] Extinction painter name
+			const char* extinction										///< [in] Extinction: a scalar_painter name, or an inline `r g b` / single scalar (physical SCALAR slot -- a colour painter does not bind here)
 			) = 0;
 
 		//! Adds Composite material

@@ -339,6 +339,23 @@ piece is small enough to keep mental load manageable:
 - [x] DonnerJensenSkinBSSRDFMaterial — all 9 slots (melanin fraction/blend, hemoglobin epi/dermis, carotene fraction, epidermis thickness, IOR epi/dermis, blood oxygenation) → `IScalarPainter`.
 - [x] GenericHumanTissueMaterial — `sca`, `g` → `IScalarPainter`.
 - [x] PhongLuminaireMaterial — `exponent` → `IScalarPainter` (via `PhongEmitter`).
+- [x] CompositeMaterial (SPF + Emitter) — `extinction` → `IScalarPainter`.
+  **Missed by the original Phase-4 sweep** and caught 2026-09-01, once the
+  two-stack walk fix made the parameter live: `extinction` is the
+  inter-layer Beer-Lambert coefficient, routinely authored above 1 (the
+  shipped scene uses 8.0 on blue), and the spectral walk's `GetColorNM`
+  read was clamping every such value to ~1.0 — measured NM attenuation
+  0.958 against the RGB walk's 0.119 at extinction 50.  Its twin
+  `TranslucentSPF::pExtinction` had been converted in the sweep; this slot
+  looked like a colour because it sat next to `top`/`bottom` material
+  references.  `CompositeEmitter` was additionally inconsistent with
+  *itself* — the constructor's average derived from the unsaturated
+  `GetColor` while `emittedRadianceNM` used the saturated `GetColorNM`;
+  both now read the one scalar painter, and the spectral average is
+  sampled per wavelength bin instead of collapsing to the RGB-channel
+  mean.  Scene migration: inline scalar triples, the idiom
+  `tools/migrate_scenes_iscalarpainter.py` uses (the slot is now in its
+  `MATERIAL_SCALAR_PARAMS` table).
 
 **Test fixes**: `LayeredWhiteFurnaceTest`, `SPFBSDFConsistencyTest`,
 `SPFPdfConsistencyTest`, `BSSRDFSamplingTest`, `GGXFresnelModeTest`,

@@ -687,7 +687,6 @@ int main()
     UniformColorPainter* polishScat = new UniformColorPainter( RISEPel(20.0, 20.0, 20.0) ); polishScat->addref();
     UniformColorPainter* sssAbsorb  = new UniformColorPainter( RISEPel(0.01, 0.01, 0.01) ); sssAbsorb->addref();
     UniformColorPainter* sssScat    = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  sssScat->addref();
-    UniformColorPainter* zeroExt    = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  zeroExt->addref();
     UniformColorPainter* one        = new UniformColorPainter( RISEPel(1.0, 1.0, 1.0) );  one->addref();
 
     // Scalar twins of the numeric values that drive the consistency
@@ -726,7 +725,7 @@ int main()
     PolishedSPF* polishedSPF = new PolishedSPF( *gray, *tauScalar, *iorScalar, *polishScatSc, false );  polishedSPF->addref();
     SubSurfaceScatteringSPF* sssSPF = new SubSurfaceScatteringSPF( *iorScalar, 0.8, 0.3 );  sssSPF->addref();
     LambertianSPF* lambertian2SPF = new LambertianSPF( *spec );  lambertian2SPF->addref();
-    CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *zeroExt );  compositeSPF->addref();
+    CompositeSPF* compositeSPF = new CompositeSPF( *lambertianSPF, *lambertian2SPF, 4, 2, 2, 2, 2, 0.1, *extinctionSc );  compositeSPF->addref();
 
     // coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2).  Unlike
     // every other entry in this file the coated triad is built through

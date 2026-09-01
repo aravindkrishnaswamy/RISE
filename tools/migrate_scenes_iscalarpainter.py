@@ -48,6 +48,10 @@ MATERIAL_SCALAR_PARAMS = {
     'orennayar_material': ('roughness',),
     'sheen_material': ('sheen_roughness',),
     'translucent_material': ('ext', 'N', 'scattering'),
+    # composite_material's `extinction` is a Beer-Lambert coefficient for the
+    # inter-layer gap, retyped IPainter -> IScalarPainter (the JH albedo
+    # uplift was clamping every value above ~1 in the spectral walk).
+    'composite_material': ('extinction',),
     'phong_luminaire_material': ('N',),
     'biospec_skin_material': (
         'thickness_SC', 'thickness_epidermis', 'thickness_papillary_dermis',

@@ -17,6 +17,7 @@
 
 #include "../Interfaces/ISPF.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
 namespace RISE
@@ -38,7 +39,18 @@ namespace RISE
 			const unsigned int max_translucent_recursion;		// maximum level of translucent recursion
 
 			const Scalar thickness;			// thickness of each of the layers
-			const IPainter& extinction;		// extinction coefficient for Beer's law absorption between layers
+
+			//! Beer-Lambert extinction coefficient for the inter-layer gap.
+			//! A PHYSICAL SCALAR, not a colour: it is an inverse length that
+			//! is routinely authored well above 1 (the shipped scene uses
+			//! 8.0 on blue).  Typed `IScalarPainter` for exactly the reason
+			//! docs/ISCALARPAINTER_REFACTOR.md gives -- `IPainter::GetColorNM`
+			//! routes through the Jakob-Hanika ALBEDO uplift, which is
+			//! bounded to [0,1], so every extinction above ~1 used to
+			//! saturate to ~1.0 in every SPECTRAL rasterizer while the RGB
+			//! walk used the authored value.  `IScalarPainter` never touches
+			//! colourspace.  Mirrors `TranslucentSPF::pExtinction`.
+			const IScalarPainter& extinction;
 
 			//! The walk carries TWO stacks -- `outside` (without this object's
 			//! IOR-stack entry, i.e. the medium above the top interface) and
@@ -127,7 +139,7 @@ namespace RISE
 				const unsigned int max_diffuse_recursion_,			// maximum level of diffuse recursion
 				const unsigned int max_translucent_recursion_,		// maximum level of translucent recursion
 				const Scalar thickness_,							// thickness between the materials
-				const IPainter& extinction_							// extinction coefficient for absorption between layers
+				const IScalarPainter& extinction_					// extinction coefficient for absorption between layers (physical scalar)
 				);
 
 			//! Given parameters describing the intersection of a ray with a surface, this will return

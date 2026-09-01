@@ -1471,11 +1471,6 @@ namespace
 		// `pbrRegisterName`/`matName` instead, matching the coated_material
 		// wrap above rather than the old dual-CompositeMaterial stack.
 		std::string currentBottom = baseMatName;
-		const std::string nLayerZero = PainterName( prefix, "layer_zero", matIdx );
-		if( hasSheen ) {
-			const double zero[3] = { 0.0, 0.0, 0.0 };
-			job.AddUniformColorPainter( nLayerZero.c_str(), zero, "Rec709RGB_Linear" );
-		}
 
 		// ----- Sheen layer -----
 		if( hasSheen ) {
@@ -1525,7 +1520,10 @@ namespace
 				/*max_diffuse_recursion*/      3,
 				/*max_translucent_recursion*/  3,
 				/*thickness*/                  0.5,
-				nLayerZero.c_str() );
+				// `extinction` is a physical-SCALAR slot (IScalarPainter), so
+				// an inline literal, not the zero COLOUR painter this used to
+				// register.  0.0 = a clear gap.
+				"0.0" );
 			currentBottom = sheenComposite;
 		}
 #endif	// Sheen composite layering guard

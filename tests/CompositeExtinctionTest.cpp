@@ -75,6 +75,7 @@
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
 #include "../src/Library/Materials/LambertianSPF.h"
 #include "../src/Library/Materials/DielectricSPF.h"
 #include "../src/Library/Materials/TranslucentSPF.h"
@@ -292,10 +293,14 @@ int main()
 
 	// Extinction painters.  E_LO is "effectively transparent" rather than
 	// exactly zero so that the zero case is not special-cased anywhere.
-	UniformColorPainter* extLo   = new UniformColorPainter( RISEPel( 0.001, 0.001, 0.001 ) );  extLo->addref();
-	UniformColorPainter* extHi   = new UniformColorPainter( RISEPel( 50.0, 50.0, 50.0 ) );     extHi->addref();
-	UniformColorPainter* extAsym = new UniformColorPainter( RISEPel( 50.0, 50.0, 0.001 ) );    extAsym->addref();
-	UniformColorPainter* extMid  = new UniformColorPainter( RISEPel( 5.0, 5.0, 5.0 ) );        extMid->addref();
+	//
+	// These are SCALAR painters: `extinction` is a Beer-Lambert coefficient
+	// (an inverse length), and the slot is typed `IScalarPainter` precisely so
+	// that values above 1 survive the SPECTRAL walk -- see section 5.
+	UniformScalarPainter* extLo   = new UniformScalarPainter( 0.001 );          extLo->addref();
+	UniformScalarPainter* extHi   = new UniformScalarPainter( 50.0 );           extHi->addref();
+	RGBScalarPainter*     extAsym = new RGBScalarPainter( 50.0, 50.0, 0.001 );  extAsym->addref();
+	UniformScalarPainter* extMid  = new UniformScalarPainter( 5.0 );            extMid->addref();
 
 	LambertianSPF*  lambertian = new LambertianSPF( *white );  lambertian->addref();
 	DielectricSPF*  dielectric = new DielectricSPF( *sTau, *sIor, *sScat, /*hg*/ false );  dielectric->addref();
