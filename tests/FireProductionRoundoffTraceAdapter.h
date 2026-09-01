@@ -4,13 +4,37 @@
 #include "Utilities/FireProductionForce.h"
 #include "FireProductionRoundoffWalker.h"
 #include "fire_production_trace/FireProductionForce.h"
+#include "fire_production_trace/SourceManifest.h"
 
+#include <array>
 #include <string>
 #include <vector>
 
 namespace FireProductionRoundoffAdapter
 {
 	namespace Trace=RISEFireProductionTrace;
+	static constexpr std::size_t TraceSourceManifestFieldCount=16u;
+
+	inline std::array<const char*,TraceSourceManifestFieldCount>
+		TraceSourceManifestFields()
+	{
+		return {{Trace::SourceManifest::Generator,
+			Trace::SourceManifest::FireProductionAdvectionHeader,
+			Trace::SourceManifest::FireProductionAdvectionSource,
+			Trace::SourceManifest::FireProductionTransportHeader,
+			Trace::SourceManifest::FireProductionTransportSource,
+			Trace::SourceManifest::FireProductionForceHeader,
+			Trace::SourceManifest::FireProductionForceSource,
+			Trace::SourceManifest::FireProductionProjectionHeader,
+			Trace::SourceManifest::FireProductionProjectionSource,
+			Trace::SourceManifest::FireSimulationRecordsHeader,
+			Trace::SourceManifest::FireSimulationRecordsSource,
+			Trace::SourceManifest::FireCaseHeader,
+			Trace::SourceManifest::FireCaseSource,
+			Trace::SourceManifest::TraceAdapter,
+			Trace::SourceManifest::TraceCore,
+			Trace::SourceManifest::IndependentWalker}};
+	}
 
 	inline Trace::FireProductionProjectionShape Shape(
 		const RISE::FireProductionProjectionShape& source)

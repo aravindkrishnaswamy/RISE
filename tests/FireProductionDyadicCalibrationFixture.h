@@ -1643,19 +1643,9 @@ namespace FireProductionDyadicCalibration
 			trace.restorationStreaming.roundedResidualMatches?1:0,
 			trace.restorationStreaming.roundedVelocityMatches?1:0);
 		RISECBOR64::Bytes encoded;std::uint32_t unresolvedBitmap=0u,invalidBitmap=0u;
-		const char* traceSources[]={RISEFireProductionTrace::SourceManifest::Generator,
-			RISEFireProductionTrace::SourceManifest::FireProductionAdvectionHeader,
-			RISEFireProductionTrace::SourceManifest::FireProductionAdvectionSource,
-			RISEFireProductionTrace::SourceManifest::FireProductionTransportHeader,
-			RISEFireProductionTrace::SourceManifest::FireProductionTransportSource,
-			RISEFireProductionTrace::SourceManifest::FireProductionForceHeader,
-			RISEFireProductionTrace::SourceManifest::FireProductionForceSource,
-			RISEFireProductionTrace::SourceManifest::FireProductionProjectionHeader,
-			RISEFireProductionTrace::SourceManifest::FireProductionProjectionSource,
-			RISEFireProductionTrace::SourceManifest::TraceAdapter,
-			RISEFireProductionTrace::SourceManifest::TraceCore,
-			RISEFireProductionTrace::SourceManifest::IndependentWalker};
-		for(const char* source:traceSources)AppendText(encoded,source);
+		for(const char* source:
+			FireProductionRoundoffAdapter::TraceSourceManifestFields())
+			AppendText(encoded,source);
 		for(const auto* certificate:{&physicalCertificate,&restorationCertificate}){
 			AppendDouble(encoded,certificate->densityLower);
 			AppendDouble(encoded,certificate->densityUpper);
@@ -1920,7 +1910,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="6b266c7ee5599b7c9461fea7b83b01bf34bbdd1f117925bef6ba693de1db51cf"||
+			traceDigest!="dab661f91dcb62595c689df1e12847aff01f1029ea78b981978d72f58d2a771b"||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||

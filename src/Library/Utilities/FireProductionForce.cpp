@@ -2979,6 +2979,7 @@ namespace RISE
 						}
 					}else activeHistory.push_back(active);
 				}
+				const std::array<std::vector<unsigned char>,6> projectedClass=active;
 				if(!haveCanonicalProjection&&!ProjectFireProductionScalarTargetCPU(
 					projectionRequest(!frozenCycle),endpointTarget,projected,error))
 					return Fail(error,"projected-Heun R2 projection failed");
@@ -2993,14 +2994,37 @@ namespace RISE
 							FireProductionProjectionPressureOpen&&
 						!projected.pressureOpenInflow[side].empty()){
 						projected.pressureOpenInflow[side][0u]=static_cast<unsigned char>(
-							projected.pressureOpenInflow[side][0u]^1u);break;
+						projected.pressureOpenInflow[side][0u]^1u);break;
 					}
+				}
+				const std::array<std::vector<float>,3>* discrepancyVelocity=
+					&projected.velocityMPerS;
+				std::array<std::vector<float>,3> injectedDiscrepancyVelocity;
+				if(OwnerTestFailure("r2-used-class-discrepancy")){
+					injectedDiscrepancyVelocity=projected.velocityMPerS;
+					for(unsigned int side=0u;side<6u;++side)if(
+						request_.scalarContract.boundary[side]==
+							FireProductionProjectionPressureOpen&&
+						!projectedClass[side].empty()){
+						const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+						const std::size_t x=axis==0u?(positive?shape.nx:0u):0u;
+						const std::size_t y=axis==1u?(positive?shape.ny:0u):0u;
+						const std::size_t z=axis==2u?(positive?shape.nz:0u):0u;
+						const float outward=projectedClass[side][0u]?
+							request_.endpointVelocityToleranceMPerS+0.25f:
+							-request_.endpointVelocityToleranceMPerS-0.25f;
+						injectedDiscrepancyVelocity[axis][FaceIndex(shape,axis,x,y,z)]=
+							(positive?1.0f:-1.0f)*outward;
+						break;
+					}
+					discrepancyVelocity=&injectedDiscrepancyVelocity;
 				}
 				activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
 					OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
-						projected.pressureOpenInflow,projected.velocityMPerS,
+						projectedClass,*discrepancyVelocity,
 						request_.endpointVelocityToleranceMPerS));
-				const bool classStable=frozenCycle||projected.pressureOpenInflow==active;
+				const bool classStable=frozenCycle||
+					projected.pressureOpenInflow==projectedClass;
 				if(!frozenCycle)active=projected.pressureOpenInflow;
 				FireProductionProjectedHeunTransportCoefficients coefficients;
 				FireProductionScalarPhysicalFluxPrerequisiteResult flux;

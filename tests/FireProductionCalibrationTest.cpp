@@ -3342,7 +3342,9 @@ int main()
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
 			"edfb22639f8dac34e0d6f66d021b5b6f4c9ece83fff848e81c1ac2a8b00b326e"||
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
-			"a2e251a99fd40488ad3387e294b560040fbf41d5015f7ff77776e38faae6a8bf")&&
+			"a2e251a99fd40488ad3387e294b560040fbf41d5015f7ff77776e38faae6a8bf"||
+		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
+			"f631e65c3447c6da2201f653955f1cc846e56b0a1a8a37ca19500bcbd651d805")&&
 		sourceSHA("tests/FireProductionRoundoffWalker.h")==
 			"22259ff8367aeb73ac5b73d8a282b23f18c61d545ca99cad14d856f9e40a4378"&&
 		compatibleMomentumEvidenceV2.find("sequence_test_sha256 "
@@ -3350,8 +3352,10 @@ int main()
 			std::string::npos&&
 		sourceSHA("tests/FireProductionCalibrationMirror.h")==
 			"be18f64d518f63c2f2c770be0535532eb6c26b5df65cc00b905d0d809c1e1709"&&
+		(sourceSHA("tests/FireProductionRoundoffTraceAdapter.h")==
+			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc"||
 		sourceSHA("tests/FireProductionRoundoffTraceAdapter.h")==
-			"a4bf94c30688d8addbf1988c5873438f83a4b9e9a2003bc618102f055056a5fc"&&
+			"6efe1f3ebdd1104fba5b9a0f44ea91edd734985073130dd458942900237e1b4a")&&
 		compatibleMomentumEvidenceV2.find("fp64_manifest_sha256 "
 			"d1372a3d1ca544bc63904e8d5f4f43a39c545f10b7ecd4a8c865fa5753701807")!=
 			std::string::npos&&
@@ -3393,7 +3397,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"a079599e7ecfe2af008815a01766c13697cb4ab244863a287daf236a32afcc6e"&&
+			"9f350ffbcafaec0d14bafd2608c9f6e7578bb142ccff008df476502141895411"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3401,7 +3405,7 @@ int main()
 		projectedHeunLiveBinding.find("live_owner_count 36\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
-		projectedHeunOwnerLiveBinding.find("live_owner_count 24\n")!=
+		projectedHeunOwnerLiveBinding.find("live_owner_count 25\n")!=
 			std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner src/Library/Utilities/"
 			"FireProductionAdvectionUnsupported.cpp sha256 "+sourceSHA(
@@ -3411,12 +3415,16 @@ int main()
 			"FireProductionDyadicCalibrationFixture.h sha256 "+sourceSHA(
 			"tests/FireProductionDyadicCalibrationFixture.h")+"\n")!=
 			std::string::npos&&
+		projectedHeunOwnerLiveBinding.find("owner tests/"
+			"FireProductionRoundoffTraceAdapter.h sha256 "
+			"6efe1f3ebdd1104fba5b9a0f44ea91edd734985073130dd458942900237e1b4a\n")!=
+			std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner src/Library/Utilities/"
 			"FireSequence.cpp sha256 "+sourceSHA(
 			"src/Library/Utilities/FireSequence.cpp")+"\n")!=std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner rendered/fire_production_calibration/"
 			"r190_projected_heun_owner/r136_trace_repin_evidence.v1 sha256 "
-			"85b57c7f220a37665ea30fbc8b6601b8778dd9291628215ea09a25b60fc629d1\n")!=
+			"23229a24859a95ea0afdfa8ad8d239cf42868c7b7741fcd7f2e114b915a837ef\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
 			"258b92cf142d609c9247942906710233cc52921795cc264f3efc8e4c47ce669e")&&
@@ -3818,6 +3826,34 @@ int main()
 			!FireProductionRoundoffTrace::ApplyProjectionAposterioriCertificate(
 				rejected,0.001f,0.0011f,0.0002,0.0,certified.velocityRMSUpper),
 			"rejected and over-band validation paths cannot borrow the accepted-solution anchor");
+	}
+	{
+		const auto appendManifestText=[](RISE::RISECBOR64::Bytes& bytes,
+			const char* value){
+			const std::size_t length=std::strlen(value);
+			for(unsigned int shift=0u;shift<64u;shift+=8u)
+				bytes.push_back(static_cast<unsigned char>(
+					(static_cast<std::uint64_t>(length)>>shift)&0xffu));
+			bytes.insert(bytes.end(),value,value+length);
+		};
+		const auto manifestFields=
+			FireProductionRoundoffAdapter::TraceSourceManifestFields();
+		RISE::RISECBOR64::Bytes canonicalManifest;
+		for(const char* field:manifestFields)appendManifestText(canonicalManifest,field);
+		const std::string canonicalManifestDigest=
+			RISE::RISECBOR64::SHA256Hex(canonicalManifest);
+		bool everyManifestFieldBound=true;
+		for(std::size_t field=0u;field<manifestFields.size();++field){
+			RISE::RISECBOR64::Bytes mutatedManifest;
+			for(std::size_t index=0u;index<manifestFields.size();++index)
+				appendManifestText(mutatedManifest,index==field?
+					"r136-dependency-mutation":manifestFields[index]);
+			everyManifestFieldBound=everyManifestFieldBound&&
+				RISE::RISECBOR64::SHA256Hex(mutatedManifest)!=canonicalManifestDigest;
+		}
+		Check(everyManifestFieldBound&&manifestFields.size()==
+			FireProductionRoundoffAdapter::TraceSourceManifestFieldCount,
+			"r136 trace identity changes for every primary, dependency, and support manifest field");
 	}
 	{
 		FireProductionRoundoffWalker::FullStepAssumptionRefusal refusal;
@@ -7634,6 +7670,7 @@ int main()
 		limiterFP64TargetRefinement=0.0,limiterFineTargetPrecision=0.0,
 		limiterTargetScale=1.0;
 	double limiterMirrorMaximumFP32=0.0,limiterMirrorMaximumFP64=0.0;
+	bool limiterMirrorEndpointMetadata=true;
 	const char* limiterMirrorMaximumField="none";
 	auto compareLimiterMirror=[&](const char* field,const std::vector<float>& fp32,
 		const std::vector<double>& fp64){
@@ -7659,6 +7696,39 @@ int main()
 			limiterMirrorFluxScale=std::max(limiterMirrorFluxScale,
 				std::max(std::fabs(static_cast<double>(fp32[value])),std::fabs(fp64[value])));
 		}
+	};
+	auto compareLimiterFluxCertificate=[&](const double fp32,const double fp64){
+		limiterMirrorFluxDifference=std::max(limiterMirrorFluxDifference,
+			std::fabs(fp32-fp64));
+		limiterMirrorFluxScale=std::max(limiterMirrorFluxScale,
+			std::max(std::fabs(fp32),std::fabs(fp64)));
+	};
+	auto compareEndpointPhysicalFlux=[&](const auto& fp32,const auto& fp64){
+		compareLimiterFlux(fp32.physicalMassFluxKGPerM2S,
+			fp64.physicalMassFluxKGPerM2S);
+		compareLimiterFlux(fp32.physicalEnergyFluxWPerM2,
+			fp64.physicalEnergyFluxWPerM2);
+		for(unsigned int axis=0u;axis<3u;++axis)
+			compareLimiterFlux(fp32.physicalGasFluxKGPerM2S[axis],
+				fp64.physicalGasFluxKGPerM2S[axis]);
+		compareLimiterFluxCertificate(fp32.maximumFP64ReferenceResidualKGPerM2S,
+			fp64.maximumFP64ReferenceResidualKGPerM2S);
+		compareLimiterFluxCertificate(fp32.fp64ReferenceForwardErrorBoundKGPerM2S,
+			fp64.fp64ReferenceForwardErrorBoundKGPerM2S);
+		compareLimiterFluxCertificate(fp32.maximumConstraintResidualKGPerM2S,
+			fp64.maximumConstraintResidualKGPerM2S);
+		compareLimiterFluxCertificate(fp32.constraintForwardErrorBoundKGPerM2S,
+			fp64.constraintForwardErrorBoundKGPerM2S);
+		limiterMirrorEndpointMetadata=limiterMirrorEndpointMetadata&&
+			fp32.shape.nx==fp64.shape.nx&&fp32.shape.ny==fp64.shape.ny&&
+			fp32.shape.nz==fp64.shape.nz&&fp32.shape.cellWidthM==fp64.shape.cellWidthM&&
+			fp32.packedFaceOffset==fp64.packedFaceOffset&&
+			fp32.methaneRecordId==fp64.methaneRecordId&&
+			fp32.fp64ReferenceIdentityVerified==fp64.fp64ReferenceIdentityVerified;
+		for(unsigned int side=0u;side<6u;++side)
+			limiterMirrorEndpointMetadata=limiterMirrorEndpointMetadata&&
+				static_cast<unsigned int>(fp32.boundary[side])==
+				static_cast<unsigned int>(fp64.boundary[side]);
 	};
 	auto targetDistance=[&](const auto& first,const auto& second){
 		double maximum=0.0;
@@ -7710,6 +7780,8 @@ int main()
 				stages64[stage]->flux.compositeFluxPair.lowFlux);
 			compareLimiterFlux(stages32[stage]->flux.compositeFluxPair.fluxDelta,
 				stages64[stage]->flux.compositeFluxPair.fluxDelta);
+			compareEndpointPhysicalFlux(stages32[stage]->endpointPhysicalFlux,
+				stages64[stage]->endpointPhysicalFlux);
 		}
 	}
 	if(limiterBaselineOK&&limiterMirrorOK&&limiterFineOK&&limiterFine64OK){
@@ -7764,6 +7836,7 @@ int main()
 		limiterMirrorMaximumDifference<=128.0*std::numeric_limits<float>::epsilon()&&
 		limiterMirrorResidualDifference<=limiterRequest.projectionTolerancePerS&&
 		limiterMirrorFluxDifference<=limiterMirrorFluxBound&&
+		limiterMirrorEndpointMetadata&&
 		limiterMirrorTargetDifference<=limiterTargetAdditiveBound&&
 		limiterDiscontinuousResult.r1.limiterDiscontinuousClass&&
 		limiterDiscontinuousResult.r1.scalarAcceptance.commutingIdentityAvailable&&
@@ -7833,6 +7906,26 @@ int main()
 	if(!r2CycleValidationRejected)std::fprintf(stderr,
 		"r190 R2 selected-cycle RED: prepared=%u injected=%u error=%s\n",
 		r2CycleValidationPrepared?1u:0u,r2CycleValidationInjected?1u:0u,error.c_str());
+	RISE::FireProductionProjectedHeunCPUOwner r2UsedClassOwner;
+	RISE::FireProductionProjectedHeunOwnerResult r2UsedClassResult;
+	const bool r2UsedClassPrepared=r2UsedClassOwner.Begin(differentialRequest,&error)&&
+		r2UsedClassOwner.SolveR0(differentialTransport,&error)&&
+		r2UsedClassOwner.SolveR1(differentialTransport,&error);
+	const bool r2UsedClassInjected=setOwnerFailure(
+		"active-cycle-r2,r2-used-class-discrepancy");
+	const bool r2UsedClassAcceptedCore=r2UsedClassPrepared&&r2UsedClassInjected&&
+		r2UsedClassOwner.SolveR2(differentialTransport,r2UsedClassResult,&error);
+	const float r2KnownUsedClassDiscrepancy=0.25f;
+	const bool r2UsedClassAccepted=setOwnerFailure(0)&&r2UsedClassAcceptedCore&&
+		r2UsedClassResult.r2.activeSetDiscontinuousClass&&
+		r2UsedClassResult.r2.activeSetCycleLength==2u&&
+		r2UsedClassResult.r2.maximumActiveSetComplementarityDiscrepancyMPerS>=
+			r2KnownUsedClassDiscrepancy;
+	if(!r2UsedClassAccepted)std::fprintf(stderr,
+		"r190 R2 used-class RED: core=%u known=%.9g published=%.9g error=%s\n",
+		r2UsedClassAcceptedCore?1u:0u,r2KnownUsedClassDiscrepancy,
+		r2UsedClassResult.r2.maximumActiveSetComplementarityDiscrepancyMPerS,
+		error.c_str());
 	RISE::FireProductionProjectedHeunCPUOwner biasedCycleOwner;
 	RISE::FireProductionProjectedHeunOwnerResult biasedCycleResult;
 	const bool biasedCycleInjected=setOwnerFailure(
@@ -7922,6 +8015,8 @@ int main()
 		"r190 nonuniform owner revalidates the r59 selected alpha through r60 and compatible commuting identity");
 	Check(activeCycleAccepted&&biasedCycleAccepted,
 		"r190 owner reprojects every two-class cycle member at one target and selects its least-discrepant class");
+	Check(r2UsedClassAccepted,
+		"r190 R2 trajectory scores a known class flip against the class actually projected");
 	const std::string projectedHeunOwnerEvidence=ReadText(
 		"rendered/fire_production_calibration/r190_projected_heun_owner/"
 		"projected_heun_owner_evidence.v1");
@@ -7933,13 +8028,13 @@ int main()
 		"r136_trace_repin_evidence.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		projectedHeunOwnerEvidence.begin(),projectedHeunOwnerEvidence.end()))==
-			"71064ccc0c8150ae1cbd115faeef5059deb1c4c76eed5d7c65013221b32957b7"&&
+			"2083d77ca674b0714ca4511098de475cd988aa442d2445d67bfb5719cd4a49fa"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunMetalManifest.begin(),projectedHeunMetalManifest.end()))==
 			"67a1531ecef0ae0a0f08749e210d5c47f81389dba3617f4e3842a8df81517c6b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunR136Repin.begin(),projectedHeunR136Repin.end()))==
-			"85b57c7f220a37665ea30fbc8b6601b8778dd9291628215ea09a25b60fc629d1"&&
+			"23229a24859a95ea0afdfa8ad8d239cf42868c7b7741fcd7f2e114b915a837ef"&&
 		projectedHeunOwnerEvidence.find("r70_authority public false\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find("red_stale_projection_identity true\n")!=
@@ -7958,7 +8053,7 @@ int main()
 			"red_r59_independent_r60_and_commuting_recompute true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"r136_live_trace_digest 6b266c7ee5599b7c9461fea7b83b01bf34bbdd1f117925bef6ba693de1db51cf\n")!=
+			"r136_live_trace_digest dab661f91dcb62595c689df1e12847aff01f1029ea78b981978d72f58d2a771b\n")!=
 			std::string::npos&&
 		projectedHeunR136Repin.find(
 			"historical_exit_code 237\n")!=std::string::npos&&

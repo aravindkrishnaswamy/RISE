@@ -5279,13 +5279,20 @@ bounds roundoff over state, targets, momentum, velocity, pressure, and alpha.
 No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-derived from
 historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-to `6b266c7ee5599b7c9461fea7b83b01bf34bbdd1f117925bef6ba693de1db51cf`.
-The digest encoding prefixes the Transport/Force source manifest, so the owner
-change must change this digest. A detached build at `0e70f17f1` and the current
+to `dab661f91dcb62595c689df1e12847aff01f1029ea78b981978d72f58d2a771b`.
+The digest encoding prefixes all 16 generated manifest fields: every primary
+operator, `FireSimulationRecords` and `FireCase` header/source dependency, and
+the three trace-support files plus the generator. A shared enumerator is used
+by the diagnostic and a per-field mutation RED proves that every field changes
+the identity. A detached build at `0e70f17f1` and the current
 build both return the exact diagnostic success code 237; all 3,972,326 branch
 obligations, frozen metrics, and the `0xff` a-priori refusal remain unchanged.
 The SHA-bound `r136_trace_repin_evidence.v1` records both runs instead of
-rewriting the historical record. When the worker returns,
+rewriting the historical record. R2 complementarity is now scored against the
+classification actually supplied to the projection rather than its newly
+derived endpoint class; a forced class-flip RED distinguishes the two choices.
+The fp32/fp64 owner comparison also includes every R2 endpoint physical mass,
+energy, and gas flux plus all certificate fields and metadata. When the worker returns,
 r189 still runs tier 8 first and sends its movie before the device sweep and
 tier-10 onset verdict.
 
