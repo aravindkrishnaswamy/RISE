@@ -2295,6 +2295,15 @@ the §4(g) decision and the Phase-2 gate reading.**
 
 ### Phase 2 — `coated_material`
 
+**AMENDED (2026-08-31) — gate reading at implementation time.** The census
+cannot run in the implementation environment (user-run, keys; §13 Phase 1
+AMENDED block), so the census half of this gate is unread. Phase 2 proceeds on
+the paragraph below's own standing justification — debts 5, 6 and 6a mean every
+existing route to a coated surface mis-evaluates direct lighting, independent
+of adoption evidence — at the user's explicit direction to implement phase by
+phase. The census, when run, still owns the §4(g) decision and the
+verb-re-target/scope readings.
+
 Gated on Phase 1's census. **Proceed if** the verb fires and authors are observed
 reaching past what Phase 1 can express — spatially varying coat *roughness*
 independent of coverage, a tinted or absorbing coat, **wetness over a GGX/PBR
