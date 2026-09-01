@@ -1,0 +1,84 @@
+{
+  "id": "rainwet_closeup",
+  "title": "Rain-wet cobblestone close-up -- wetness census (docs/WETNESS_COAT_DESIGN.md §10.3)",
+  "//": "Phase-1 pre/post census instrument for the add_wetness verb (docs/WETNESS_COAT_DESIGN.md §10.3, §13 Phase 1 step 1; master triad §10.2). Built on rich_material_closeup's shape ('macro product close-up') with the subject changed to a rain-wet cobblestone close-up -- the prompt summons wetness work (rain, puddles, a wet street) without naming any mechanism ('add_wetness', 'tau', 'scalar_painter' never appear). Checkpoint battery: chunk_count/render/diagnostics/trajectory are the same structural carryover every build-family scenario uses (rich_material_closeup, altar_stress); the three checkpoints §10.3 calls out BY NAME as 'adapted from that scenario's' are (1) any_param_references_kind:scalar_painter weight 3, the same headline 0/24-deficit-shaped check, unchanged; (2) the wetness-specific replacement for rich_material_closeup's 'expression_family' checkpoint (same weight, 2) -- §10.3 specifies this as ONE compound gate, 'expression_painter AND any one of (a) polished_material, (b) a mask-driven alphax/alphay on ggx_material, or (c) a mask-driven roughness on pbr_metallic_roughness_material'; the checker (src/Library/Agent/AgentEvalRunner.cpp) has no AND-of-checkpoints or per-kind-conditional-param combinator, so this is decomposed into two distinct_chunk_kinds checkpoints of weight 1 each (summing to the specified 2): 'wetness_darkening_expression' (expression_painter present -- the reflectance-darkening chunk from §6.3, used across all three base-material branches) and 'wetness_base_material' (one of the three material kinds present -- the disjunction proper). This is an approximation, not the literal compound gate: neither checkpoint verifies that the expression_painter and the material-kind chunk are actually WIRED to each other, nor that the ggx_material branch specifically drives alphax/alphay (not some unrelated param) or that the pbr branch specifically drives roughness via expression_painter rather than the silently-zero scalar_painter trap documented in §6.2's 'Trap' callout -- any_param_references_kind:scalar_painter (checkpoint 1) is what catches an orphaned scalar_painter, but does not catch a scalar_painter wrongly bound to pbr_metallic_roughness_material's colour-pipe roughness slot, which is not a param-reference failure, just a silently-inert one. Per-kind param-binding fidelity is left to the §13 step-8 unit test (tests/AgentAddWetnessTest.cpp), not this census instrument. (3) A render band on meanLuma, calibrated for THIS scene, not copied from rich_material_closeup's dry-brass band -- an author-time estimate (no fixture exists yet to measure against; the pre-verb baseline run in evals/runs/wetness_census is what puts a real number on it, exactly as rich_material_closeup's own band comment records its post-fixture recalibration). A rain-wet night street under one overhead lamp is legitimately darker than a studio-lit brass doorknob, so the floor is lowered from rich_material_closeup's 0.015 toward altar_stress's darker-scene 0.008, one further step down to 0.006, with headroom kept on channelBalanceMax at the same 4.0. This scenario carries no evals/fixtures/*.fixture.jsonl and no \"replay\" block -- none exists yet, matching altar_stress.json's precedent for a freshly-authored instrument (also fixture-less in the committed tree). Consequence: tests/AgentEvalCheckTest.cpp's T10 (TestSeedScenariosCheckpointsAreTrue) dynamically enumerates every evals/scenarios/*.json and will pick this file up; RunScenario() returns terminalStatus=\"load_error\" for any scenario whose replayFixturePath is empty and no replaySourceOverride is supplied (AgentEvalRunner.cpp ~line 3338), which T10 immediately asserts against and fails -- the same fate altar_stress.json already carries today for the identical reason. A committed fixture is out of scope for this authoring pass (exactly two files); it would be authored later from the pre-verb baseline run's own trajectory, the way rich_material_closeup's fixture was captured after its first live runs.",
+  "scene": {
+    "inline": "RISE ASCII SCENE 7\nstandard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\npathtracing_pel_rasterizer\n{\n\tsamples 8\n\tpixel_filter box\n\toidn_denoise false\n}\n\nfilm\n{\n\twidth 32\n\theight 24\n}\n\npinhole_camera\n{\n\tlocation 0 0 3.5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n"
+  },
+  "autonomy": "commit",
+  "prompts": [
+    "A close-up shot of rain-slicked cobblestones on an old street at night, water pooling between the stones and catching the light from a single overhead street lamp."
+  ],
+  "budgets": {
+    "//": "Matches rich_material_closeup and altar_stress -- deliberately loose so a budget exhaustion never masquerades as a flat-materials or no-verb-call signal.",
+    "maxToolCalls": 300,
+    "maxLlmCalls": 200,
+    "maxWallMs": 7200000
+  },
+  "checkpoints": [
+    {
+      "kind": "document",
+      "op": "chunk_count",
+      "chunkKind": "standard_object",
+      "min": 1,
+      "max": 30
+    },
+    {
+      "//": "HEADLINE gate, unchanged from rich_material_closeup: doc-88's 0/24 deficit metric, the direct attack on 'roughness/coverage is a number' (C-TYPE). Passes iff a scalar_painter chunk exists AND is bound to >=1 param anywhere in the document. Weighted well above the other checkpoints so it dominates the report's weighted score.",
+      "kind": "document",
+      "op": "any_param_references_kind",
+      "referencedKind": "scalar_painter",
+      "weight": 3,
+      "metricLabel": "spatially_varying_scalar"
+    },
+    {
+      "//": "Half A of the §10.3 disjunction gate: 'expression_painter' present anywhere -- the reflectance-darkening chunk (§6.3's 'expr mix(vec3(base_r,...), vec3(pow(base_r,k),...), damp)') that every base-material branch (polished, ggx, pbr) emits when darkening a flat-colour albedo. Weight 1 of the compound gate's total weight 2 (see the top-level '//' for why this is two checkpoints, not one).",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": ["expression_painter"],
+      "distinctMin": 1,
+      "weight": 1,
+      "metricLabel": "wetness_darkening_expression"
+    },
+    {
+      "//": "Half B of the §10.3 disjunction gate: at least one of the three wetness base-material targets is present -- polished_material (§6.2's recommended Lambertian-base target), or a mask-driven ggx_material (alphax/alphay), or a mask-driven pbr_metallic_roughness_material (roughness). Deliberately a disjunction over kinds, not a single required kind: a checkpoint requiring polished_material outright would fail the §6.2 in-place GGX/PBR branch, and a checkpoint requiring alphax specifically would fail every correct PBR-base run (pbr_metallic_roughness_material has no alphax/alphay -- ChunkParserRegistry.cpp:4163). Weight 1 of the compound gate's total weight 2.",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "kinds": ["polished_material", "ggx_material", "pbr_metallic_roughness_material"],
+      "distinctMin": 1,
+      "weight": 1,
+      "metricLabel": "wetness_base_material"
+    },
+    {
+      "//": "Painter-kind diversity floor, carried over unchanged from rich_material_closeup/altar_stress -- not itself a §10.3-named checkpoint, but a general material-richness bar this scenario inherits by being built on rich_material_closeup's shape.",
+      "kind": "document",
+      "op": "distinct_chunk_kinds",
+      "category": "painter",
+      "exclude": ["uniformcolor_painter", "scalar_painter"],
+      "distinctMin": 3,
+      "weight": 1.5,
+      "metricLabel": "painter_kinds"
+    },
+    {
+      "//": "Render band calibrated for a rain-wet night street under one overhead lamp -- darker than rich_material_closeup's studio-lit dry brass (meanLumaMin 0.015) because (a) the scene is a single practical light source, not full studio lighting, and (b) §2.1's wet-darkening is the effect under test, so the band must not itself punish successful darkening. This is an AUTHOR-TIME ESTIMATE, not a fixture-measured band (no fixture exists yet -- see top-level '//'); it should be recalibrated against the pre-verb baseline run's actual renders the way rich_material_closeup's own band comment records its post-fixture recalibration, and tightened once real numbers exist.",
+      "kind": "render",
+      "samples": 512,
+      "width": 32,
+      "height": 24,
+      "meanLumaMin": 0.006,
+      "meanLumaMax": 0.35,
+      "channelBalanceMax": 4.0
+    },
+    {
+      "kind": "diagnostics",
+      "expect": "clean"
+    },
+    {
+      "//": "Tool-call sanity, mirroring rich_material_closeup/altar_stress: reads before building, renders before declaring done, never falls into the mechanical-loop failure mode.",
+      "kind": "trajectory",
+      "terminalStatus": "final_text",
+      "noMechanicalLoop": true,
+      "requiredToolInOrder": ["read_document", "render"]
+    }
+  ]
+}
