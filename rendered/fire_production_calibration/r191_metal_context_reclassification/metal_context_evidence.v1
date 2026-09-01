@@ -1,0 +1,99 @@
+schema rise.fire.production.metal_context_evidence.v1
+revision r191
+authored_utc 2026-09-01
+r190_manifest_preserved_immutable true
+r190_manifest_sha256 c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c
+owner_correction host_is_metal_machine
+
+host
+  chipset Apple_M4_Max
+  gpu_core_count 40
+  system_profiler_metal Supported
+  macos_version 26.5.2
+  macos_build 25F84
+  xcode_version 26.6_17F113
+  clang_version Apple_clang_21.0.0_2100.1.1.101
+  metal_compiler_version 32023.883
+host_end
+
+diagnostic_probe
+  APIs MTLCreateSystemDefaultDevice_and_MTLCopyAllDevices
+  source metal_context_probe_source.v1.mm
+  source_sha256 b3cf419c987c82de631e7bc8b19f44619dd26780ce7cb32e95f4b9afb51e3a54
+  executable metal_context_probe.v1
+  executable_sha256 4650040b2451e09e5f5f80b828e9ee0162bc855336a2ae0faa6a9ae349343cde
+  same_executable_both_contexts true
+  workspace_sandbox_exit 0
+  workspace_sandbox_default_present 0
+  workspace_sandbox_enumerated_count 0
+  unrestricted_exit 0
+  unrestricted_default_present 1
+  unrestricted_enumerated_count 1
+  unrestricted_device Apple_M4_Max
+  unrestricted_registry_id 4294969469
+  workspace_sandbox_transcript raw_probe_sandbox.transcript.v1
+  workspace_sandbox_transcript_sha256 f0b40293d5d5bb5378ade367ba65f184fa3715fb3be93855070c46c8f646998d
+  unrestricted_transcript raw_probe_unrestricted.transcript.v1
+  unrestricted_transcript_sha256 45caefa25c676f36f07aba163082431ade167e76972d022742f9c9f5b080efaa
+diagnostic_probe_end
+
+capability_gate
+  command ./bin/tests/FireProductionSolverTest_--fire-production-metal-capability
+  workspace_sandbox_exit 86
+  workspace_sandbox_discovery blocked-by-execution-context
+  unrestricted_exit 0
+  unrestricted_discovery available
+  unrestricted_default_present 1
+  unrestricted_enumerated_count 1
+  unrestricted_identity_kernel 1
+  unrestricted_device Apple_M4_Max
+  unrestricted_registry_id 4294969469
+  workspace_sandbox_transcript capability_sandbox.transcript.v1
+  workspace_sandbox_transcript_sha256 857e8e648da0db8c801ea21ecada78827368257a49a48d0f7c46d1e2be40f9dd
+  unrestricted_transcript capability_unrestricted.transcript.v1
+  unrestricted_transcript_sha256 ac2652e894df2505341e72dc321cba5c69e91810f3e7712140ace61516701480
+capability_gate_end
+
+device_kernel_sweep
+  classification pre_manifest_development_qualification_not_stage_2_execution
+  formal_stage_2_rerun_required_after_tier_8 true
+  transcript kernel_sweep.transcript.v1
+  transcript_sha256 24d7c95b90887ce1b3c9ef229b7dbc3832bfbc262c9bb674e13152090737c011
+  scalar_fct_metal_passed true
+  compatible_momentum_periodic_and_mixed_fixtures 2
+  scalar_intermediate_publications_fp64_rounded_exact true
+  scalar_intermediate_fp64_mismatches 0
+  scalar_mixed_boundary_nondyadic_fixture true
+  scalar_mixed_metal_cpu_byte_exact true
+  scalar_mixed_fp64_maximum_absolute_difference 2.1297667185393721e-7
+  scalar_mixed_input_conditioned_absolute_bound 4.1114563049705465e-5
+  scalar_mixed_ratio_fp64_class_identity true
+  scalar_mixed_ratio_interior_count 18
+  scalar_mixed_ratio_minimum_class_margin 0.10898987999238696
+  scalar_mixed_ratio_maximum_absolute_difference 0.00039498558320727462
+  scalar_mixed_alpha_fp64_class_identity true
+  scalar_mixed_alpha_interior_count 21
+  scalar_mixed_alpha_minimum_class_margin 0.10898987999238696
+  scalar_mixed_alpha_maximum_absolute_difference 0.00039498558320727462
+  scalar_mixed_boundary_adjacent_limited_alpha_count 4
+  metal_cpu_byte_exact true
+  signed_zero_red true
+  fp64_gamma128_envelope_passed true
+  fp64_maximum_absolute_difference 1.1175870895385742e-7
+  fp64_maximum_normalized_difference 2.2941710525697736e-7
+  input_conditioned_absolute_bound 3.1200230559651367e-5
+  maximum_device_ms 0.0408750493
+device_kernel_sweep_end
+
+finding workspace_sandbox_execution_context_blocked_Metal_discovery
+finding no_device_hardware_absence_refuted
+gate_state_in_sandbox blocked-by-execution-context
+gate_state_unrestricted available
+gate_rule Apple_silicon_plus_zero_results_from_both_APIs_is_context_blocked_not_no_device
+enumerated_device_fallback false_downstream_consumers_require_default_device
+identity_kernel_required_for_available true
+manifest_execution_context unrestricted
+corrected_manifest metal_host_manifest.v3
+corrected_manifest_sha256 109a18a5e7803679bf35acf5adb3b34d89fb3548a549889f043414937d1e2763
+render_concurrency 1
+golden_checkpoint_mutation_allowed 0

@@ -1,0 +1,9 @@
+command ./bin/tests/FireSequenceTest --fire-production-metal-fp64-kernel-sweep
+classification pre_manifest_development_qualification_not_stage_2_execution
+formal_stage_2_rerun_required_after_tier_8 true
+executable_sha256 2019600908fd16ca7b2c6dc3574b55a526547abf2c358f5d174485a27332aa9d
+execution_context unrestricted
+exit 0
+SCALAR_FCT_METAL_STAGES computed=1 passed=1 fresh_alpha=1 fp64_rounded_exact=1 fp64_mismatches=0 fp64_max_abs=0 commits=7 failures=0/0/0 error=
+SCALAR_FCT_METAL_MIXED passed=1 fp32_byte_exact=1 fp64_envelope=1 fp64_max_abs=2.1297667185393721e-07 fp64_abs_bound=4.1114563049705465e-05 ratio_interior=18 ratio_min_margin=0.10898987999238696 ratio_max_abs=0.00039498558320727462 alpha_interior=21 alpha_min_margin=0.10898987999238696 alpha_max_abs=0.00039498558320727462 boundary_adjacent_limited_alpha=4 commits=7 failures=0/0/0 error=
+COMPATIBLE_MOMENTUM_METAL_FP64 passed=1 fixtures=2 metal_cpu_byte_exact=1 signed_zero_red=1 fp64_gamma128_envelope=1 fp64_max_abs=1.1175870895385742e-07 fp64_max_norm=2.2941710525697736e-07 derived_abs_bound=3.1200230559651367e-05 max_device_ms=0.0408750493

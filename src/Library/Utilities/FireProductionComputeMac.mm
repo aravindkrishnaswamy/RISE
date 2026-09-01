@@ -8,6 +8,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <TargetConditionals.h>
 
 #include "FireProductionCompute.h"
 
@@ -17,6 +18,44 @@ namespace RISE
 {
 	namespace
 	{
+		bool AppleSiliconHost()
+		{
+#if TARGET_CPU_ARM64
+			return true;
+#else
+			return false;
+#endif
+		}
+
+		id<MTLDevice> DiscoverMetalDevice( bool& defaultDevicePresent,
+			std::size_t& enumeratedDeviceCount )
+		{
+			id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+			defaultDevicePresent=device!=nil;
+			NSArray<id<MTLDevice> >* devices=MTLCopyAllDevices();
+			enumeratedDeviceCount=static_cast<std::size_t>([devices count]);
+			return device;
+		}
+
+		std::string DiscoveryFailure( const char* operation,
+			FireProductionDeviceDiscovery discovery,std::size_t enumeratedDeviceCount )
+		{
+			std::string result="production fire compute ";result+=operation;
+			if( discovery==FireProductionDeviceBlockedByExecutionContext ) {
+				result+=" blocked by execution context: ";
+				if( enumeratedDeviceCount>0u ) result+=
+					"default-device access failed although Metal enumeration found "+
+					std::to_string(enumeratedDeviceCount)+" device(s)";
+				else if( AppleSiliconHost() ) result+=
+					"Metal discovery returned no devices on Apple silicon";
+				else result+="default-device access failed";
+				return result;
+			}
+			result += operation[0]=='c'&&operation[1]=='a' ?
+				" unavailable: no Metal device" : " has no Metal device";
+			return result;
+		}
+
 		std::string UTF8String( NSString* value )
 		{
 			if( !value ) return std::string();
@@ -86,9 +125,14 @@ namespace RISE
 		capability=FireProductionComputeCapability();
 		capability.backend="metal";
 		@autoreleasepool {
-			id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+			id<MTLDevice> device=DiscoverMetalDevice(capability.defaultDevicePresent,
+				capability.enumeratedDeviceCount);
+			capability.deviceDiscovery=ClassifyFireProductionDeviceDiscovery(true,
+				AppleSiliconHost(),capability.defaultDevicePresent,
+				capability.enumeratedDeviceCount);
 			if( !device ) {
-				capability.structuredError="production fire compute capability unavailable: no Metal device";
+				capability.structuredError=DiscoveryFailure("capability",
+					capability.deviceDiscovery,capability.enumeratedDeviceCount);
 				return true;
 			}
 
@@ -167,9 +211,16 @@ namespace RISE
 			return false;
 		}
 		@autoreleasepool {
-			id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+			bool defaultDevicePresent=false;
+			std::size_t enumeratedDeviceCount=0u;
+			id<MTLDevice> device=DiscoverMetalDevice(defaultDevicePresent,
+				enumeratedDeviceCount);
+			const FireProductionDeviceDiscovery discovery=
+				ClassifyFireProductionDeviceDiscovery(true,AppleSiliconHost(),
+					defaultDevicePresent,enumeratedDeviceCount);
 			if( !device ) {
-				if( structuredError ) *structuredError="production fire compute challenge has no Metal device";
+				if( structuredError ) *structuredError=DiscoveryFailure(
+					"challenge",discovery,enumeratedDeviceCount);
 				return false;
 			}
 			id<MTLLibrary> library=CompileLibrary(device,structuredError);

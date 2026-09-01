@@ -4903,3 +4903,52 @@ it was already tried and refuted here.
   classes actually projected, with separate known-flip REDs, and extended the fp32/fp64 mirror through the complete
   R2 endpoint physical-flux payload and certificates. r189's tier-8-first
   manifest remains binding.
+
+- **r191 Metal execution-context reclassification (2026-09-01):** corrects
+  the r189/r190 assertion that the current host lacked a Metal device. The
+  hardware inventory reports a 40-core Apple M4 Max with Metal support. An
+  exact binary calling both `MTLCreateSystemDefaultDevice()` and
+  `MTLCopyAllDevices()` returned nil/zero in the workspace sandbox but found
+  Apple M4 Max registry ID `4294969469` through both APIs unrestricted. The
+  broken context was therefore the sandbox, not the host.
+
+  The production capability gate now distinguishes available,
+  execution-context-blocked, absent-device, backend-not-built, and unqueried
+  states. It records the default-device result and enumeration count, permits
+  no enumeration-only fallback because all production consumers use the
+  default device, and still withholds availability until the safe-math
+  identity kernel returns exact bytes. On
+  Apple silicon, zero results from both discovery APIs are classified as a
+  context denial rather than fabricated hardware absence. A focused executable
+  mode returns exit 86 for the sandboxed observation and exit 0 for the
+  unrestricted M4 observation. The immutable r190 manifest is superseded by a
+  v3 manifest with the same tier-8-first stage order and an explicit
+  unrestricted-context preflight. Manifest SHA:
+  `109a18a5e7803679bf35acf5adb3b34d89fb3548a549889f043414937d1e2763`.
+
+  Fresh evidence review also found that the queued kernel sweep stopped at
+  fp32 CPU comparisons. A new test-only staging comparator now exercises the
+  actual private compatible-momentum Metal owner on periodic and mixed
+  wall/pressure-open fixtures. Every scalar Metal publication—donor,
+  MC-MUSCL, averaged pair, and each fresh shared-alpha solve—is now checked at
+  matched inputs. The dyadic periodic fixture is exact after binary32 rounding;
+  a non-dyadic mixed wall/pressure-open fixture remains byte-exact against fp32
+  and has fp64 maximum flux/state difference `2.1297667185393721e-7` inside the
+  input-conditioned `4.1114563049705465e-5` bound. Ratios and α use a separate
+  class proof: 18 and 21 interior values respectively, minimum clamp-class
+  margin `0.10898987999238696`, maximum fp64 difference
+  `0.00039498558320727462`, and four boundary-adjacent limited α faces. The
+  first direct
+  compatible-momentum comparison caught one-bit contraction differences;
+  contraction is disabled inside that kernel body only, restoring the pinned
+  CPU operation topology without perturbing later kernels. Compatible fields
+  use byte comparison with a signed-zero RED. Their fp64 differences are
+  computed before any float cast and must satisfy both the original relative
+  `gamma128` gate and an input-conditioned absolute bound derived from
+  `rho_min-10D/h` plus the five-pass momentum recurrence. The development
+  sweep reports `1.1175870895385742e-7` maximum absolute,
+  `2.2941710525697736e-7` normalized, and `3.1200230559651367e-5` derived
+  absolute bound. It is recorded as pre-manifest qualification, not Stage 2;
+  the formal sweep still follows tier 8. Thus the direct mirror harness now
+  covers every published rung, and any byte mismatch or fp64-envelope breach
+  refuses.

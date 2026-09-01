@@ -827,6 +827,7 @@ kernel void compatible_dual_update(device const float* density [[buffer(0)]],
  device const float* momentum [[buffer(1)]],device const float* massDose [[buffer(2)]],
  device float* updatedDensity [[buffer(3)]],device float* updatedMomentum [[buffer(4)]],
  constant CompatibleDualParams& p [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+#pragma clang fp contract(off)
  uint count0=compatible_face_count(p,0u),count1=compatible_face_count(p,1u);
  uint total=count0+count1+compatible_face_count(p,2u);if(gid>=total)return;
  uint component=gid<count0?0u:(gid<count0+count1?1u:2u);
@@ -3345,6 +3346,124 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			result=FireProductionDualMomentumResult();
 			if( structuredError ) try { *structuredError=
 				"production resident dual comparator allocation failed"; } catch( const std::bad_alloc& ) {}
+			return false;
+		}
+	}
+
+	bool RemapFireProductionCompatibleDualMomentumMetalComparator(
+		const FireProductionDualMomentumRequest& request,
+		const std::array<std::vector<float>,5>& acceptedGasMassDoseKGPerM2,
+		FireProductionDualMomentumResult& result,
+		std::string* structuredError )
+	{
+		result=FireProductionDualMomentumResult();
+		try {
+			if( !ValidateFireProductionCompatibleDualMomentumRequest(request,structuredError) )
+				return false;
+			MetalRemapContext& context=Context();
+			if( !context.Valid() ) {
+				if( structuredError ) *structuredError=context.error;
+				return false;
+			}
+			@autoreleasepool {
+				const unsigned int axes[]={0u,1u,2u,1u,0u};
+				std::array<std::size_t,3> offsets,counts;
+				std::size_t allFaces=0u;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					offsets[axis]=allFaces*sizeof(float);
+					counts[axis]=FireProductionProjectionFaceCount(request.shape,axis);
+					allFaces+=counts[axis];
+				}
+				for( unsigned int pass=0u;pass<5u;++pass ) if(
+					acceptedGasMassDoseKGPerM2[pass].size()!=counts[axes[pass]] ) {
+					if( structuredError ) *structuredError=
+						"production compatible dual Metal comparator mass-dose shape is invalid";
+					return false;
+				}
+				std::vector<float> density(allFaces),momentum(allFaces);
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					std::copy(request.beginningFaceDensity[axis].begin(),
+						request.beginningFaceDensity[axis].end(),
+						density.begin()+offsets[axis]/sizeof(float));
+					std::copy(request.beginningMomentum[axis].begin(),
+						request.beginningMomentum[axis].end(),
+						momentum.begin()+offsets[axis]/sizeof(float));
+				}
+				id<MTLBuffer> densityStage=[context.device newBufferWithBytes:density.data()
+					length:allFaces*sizeof(float) options:MTLResourceStorageModeShared];
+				id<MTLBuffer> momentumStage=[context.device newBufferWithBytes:momentum.data()
+					length:allFaces*sizeof(float) options:MTLResourceStorageModeShared];
+				id<MTLBuffer> densityPrivate=[context.device newBufferWithLength:
+					allFaces*sizeof(float) options:MTLResourceStorageModePrivate];
+				id<MTLBuffer> momentumPrivate=[context.device newBufferWithLength:
+					allFaces*sizeof(float) options:MTLResourceStorageModePrivate];
+				std::array<id<MTLBuffer>,5> doseStage,dosePrivate;
+				for( unsigned int pass=0u;pass<5u;++pass ) {
+					const std::size_t bytes=counts[axes[pass]]*sizeof(float);
+					doseStage[pass]=[context.device newBufferWithBytes:
+						acceptedGasMassDoseKGPerM2[pass].data() length:bytes
+						options:MTLResourceStorageModeShared];
+					dosePrivate[pass]=[context.device newBufferWithLength:bytes
+						options:MTLResourceStorageModePrivate];
+				}
+				id<MTLCommandBuffer> upload=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=upload?[upload blitCommandEncoder]:nil;
+				if( !densityStage||!momentumStage||!densityPrivate||!momentumPrivate||!blit )
+					return false;
+				[blit copyFromBuffer:densityStage sourceOffset:0 toBuffer:densityPrivate
+					destinationOffset:0 size:allFaces*sizeof(float)];
+				[blit copyFromBuffer:momentumStage sourceOffset:0 toBuffer:momentumPrivate
+					destinationOffset:0 size:allFaces*sizeof(float)];
+				for( unsigned int pass=0u;pass<5u;++pass ) {
+					if( !doseStage[pass]||!dosePrivate[pass] ) return false;
+					[blit copyFromBuffer:doseStage[pass] sourceOffset:0
+						toBuffer:dosePrivate[pass] destinationOffset:0
+						size:counts[axes[pass]]*sizeof(float)];
+				}
+				[blit endEncoding];CommitTrackedMetalCommand(upload);[upload waitUntilCompleted];
+				if( [upload status]!=MTLCommandBufferStatusCompleted ) return false;
+				FireProductionMetalDualMomentumResidentInput input;
+				input.packedFaceDensity=densityPrivate;input.packedMomentum=momentumPrivate;
+				input.acceptedGasMassDoseKGPerM2=dosePrivate;input.faceByteOffset=offsets;
+				FireProductionMetalDualMomentumResidentResult resident;
+				if( !RemapFireProductionCompatibleDualMomentumMetalResident(request,input,
+					resident,structuredError) ) return false;
+				id<MTLBuffer> output=[context.device newBufferWithLength:
+					2u*allFaces*sizeof(float) options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> stage=TrackedMetalCommandBuffer(context.queue);
+				blit=stage?[stage blitCommandEncoder]:nil;
+				if( !output||!blit ) return false;
+				[blit copyFromBuffer:resident.packedAuxiliaryFaceDensity sourceOffset:0
+					toBuffer:output destinationOffset:0 size:allFaces*sizeof(float)];
+				[blit copyFromBuffer:resident.packedMomentum sourceOffset:0 toBuffer:output
+					destinationOffset:allFaces*sizeof(float) size:allFaces*sizeof(float)];
+				[blit endEncoding];CommitTrackedMetalCommand(stage);[stage waitUntilCompleted];
+				if( [stage status]!=MTLCommandBufferStatusCompleted ) return false;
+				const float* values=static_cast<const float*>(ReadTrackedMetalBuffer(output));
+				if( !values ) return false;
+				FireProductionDualMomentumResult computed;
+				for( unsigned int axis=0u;axis<3u;++axis ) {
+					const std::size_t beginning=offsets[axis]/sizeof(float);
+					computed.auxiliaryFaceDensity[axis].assign(values+beginning,
+						values+beginning+counts[axis]);
+					computed.momentum[axis].assign(values+allFaces+beginning,
+						values+allFaces+beginning+counts[axis]);
+				}
+				computed.executedSubmapCount=resident.executedSubmapCount;
+				computed.commandCommitCount=resident.commandCommitCount;
+				computed.interstageFullGridTransferCount=
+					resident.interstageFullGridTransferCount;
+				computed.actualMetalAllocationBytes=resident.actualMetalAllocationBytes;
+				computed.deviceElapsedMS=resident.deviceElapsedMS;
+				result=std::move(computed);
+			}
+			if( structuredError ) structuredError->clear();
+			return true;
+		} catch( const std::bad_alloc& ) {
+			result=FireProductionDualMomentumResult();
+			if( structuredError ) try {
+				*structuredError="production compatible dual Metal comparator allocation failed";
+			} catch( const std::bad_alloc& ) { structuredError->clear(); }
 			return false;
 		}
 	}

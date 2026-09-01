@@ -1,0 +1,7 @@
+compile_command xcrun_clang++_-std=c++17_-fobjc-arc_-framework_Foundation_-framework_Metal_metal_context_probe_source.v1.mm_-o_metal_context_probe.v1
+command ./metal_context_probe.v1
+executable_sha256 4650040b2451e09e5f5f80b828e9ee0162bc855336a2ae0faa6a9ae349343cde
+execution_context workspace_sandbox
+exit 0
+default_present 0
+all_device_count 0

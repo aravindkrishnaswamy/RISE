@@ -22,6 +22,7 @@
 #include "FireProductionCalibrationMirror.h"
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "FireProductionRoundoffWalker.h"
+#include "fire_production_fp64/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
 
 #if defined(__APPLE__)
@@ -53,6 +54,17 @@
 
 #if defined(__APPLE__)
 #include <unistd.h>
+
+namespace RISE
+{
+	//! Test-only terminal staging around the private compatible-momentum owner.
+	//! The production resident API remains private-buffer-only.
+	bool RemapFireProductionCompatibleDualMomentumMetalComparator(
+		const FireProductionDualMomentumRequest& request,
+		const std::array<std::vector<float>,5>& acceptedGasMassDoseKGPerM2,
+		FireProductionDualMomentumResult& result,
+		std::string* error );
+}
 #endif
 
 using namespace RISE;
@@ -5594,16 +5606,29 @@ namespace
 		return 0;
 	}
 
+	double ProductionResolutionTierForCheckpointDimensions(
+		const std::array<std::size_t,3>& dimensions)
+	{
+		if(dimensions==std::array<std::size_t,3>{{52u,52u,80u}})return 6.0;
+		if(dimensions==std::array<std::size_t,3>{{69u,69u,106u}})return 8.0;
+		if(dimensions==std::array<std::size_t,3>{{86u,86u,132u}})return 10.0;
+		return 0.0;
+	}
+
 	int RunProductionCheckpointPhysicsDiagnosticChild(
 		const std::filesystem::path& checkpointPath,const std::filesystem::path& outputPath)
 	{
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error))return 90;
+		const double diagnosticResolutionTier=
+			ProductionResolutionTierForCheckpointDimensions(checkpoint.dimensions);
+		if(diagnosticResolutionTier==0.0)return 92;
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();
 		authored.poolDiameterM=CapstonePoolDiameterM;
 		authored.heatReleaseRateKW=CapstoneHeatReleaseRateKW;authored.envelope={{0.0,1.0}};
-		authored.durationS=1.0;authored.quality="dstar";authored.numericDStarTier=10.0;
+		authored.durationS=1.0;authored.quality="dstar";
+		authored.numericDStarTier=diagnosticResolutionTier;
 		authored.seed=1234;authored.outputFramesPerS=1.0;authored.plumeLaw=true;
 		FireCase::RecordV1 caseRecord;const RISECBOR64::Bytes aerosol=AerosolRecord();
 		const RISECBOR64::Bytes chem=SyntheticChemRecord();
@@ -5818,10 +5843,13 @@ namespace
 			caseRecord.derived.referenceHeatReleaseRateW,
 			caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
 			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,8u))return 102;
-		double heatReleaseW=0.0,fuelConsumptionKGPerS=0.0;
+		double heatReleaseW=0.0,maximumHeatReleaseWPerM3=0.0,
+			fuelConsumptionKGPerS=0.0;
 		for(MethaneSourcePacket& packet:packets){
 			RepresentMethaneSourcePacketBinary32(packet);
 			if(!CertifiedBinary32SourcePacket(packet,fuel))return 103;
+			maximumHeatReleaseWPerM3=std::max(maximumHeatReleaseWPerM3,
+				packet.gasHeatReleaseWPerM3);
 			heatReleaseW+=packet.gasHeatReleaseWPerM3*cellVolume;
 			fuelConsumptionKGPerS+=-packet.constituentDelta[MethaneCH4]*cellVolume/step;
 		}
@@ -5895,6 +5923,7 @@ namespace
 			<<"manifold_deviation_p95 "<<quantile(0.95)<<"\n"
 			<<"manifold_deviation_p50 "<<quantile(0.50)<<"\n"
 			<<"source_probe_dt_s "<<step<<"\n"
+			<<"source_probe_maximum_HRR_W_per_m3 "<<maximumHeatReleaseWPerM3<<"\n"
 			<<"source_probe_realized_HRR_W "<<heatReleaseW<<"\n"
 			<<"source_probe_fuel_consumption_kg_per_s "<<fuelConsumptionKGPerS<<"\n"
 			<<"source_probe_consumption_times_LHV_W "<<consumptionHeatReleaseW<<"\n"
@@ -5912,9 +5941,11 @@ namespace
 			<<"format13_retry_counters_persisted false\n";
 		if(!output)return 105;
 		std::fprintf(stderr,"PRODUCTION_CHECKPOINT_PHYSICS_DIAGNOSTIC steps=%llu time=%.17g "
-			"velocity=%.17g dt=%.17g gprime=%.17g HRR=%.17g consumption_LHV=%.17g\n",
+			"velocity=%.17g dt=%.17g gprime=%.17g qmax=%.17g HRR=%.17g "
+			"consumption_LHV=%.17g\n",
 			static_cast<unsigned long long>(checkpoint.acceptedSteps),checkpoint.simulationTimeS,
-			maximumSpeed,checkpoint.lastAcceptedStepS,maximumReducedGravity,heatReleaseW,
+			maximumSpeed,checkpoint.lastAcceptedStepS,maximumReducedGravity,
+			maximumHeatReleaseWPerM3,heatReleaseW,
 			consumptionHeatReleaseW);return 0;
 	}
 
@@ -6330,14 +6361,9 @@ namespace
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			checkpoint.producerBuildId!=expectedCheckpointBuildId)return 91;
-		double replayResolutionTier=0.0;
-		if(checkpoint.dimensions==std::array<std::size_t,3>{{52u,52u,80u}})
-			replayResolutionTier=6.0;
-		else if(checkpoint.dimensions==std::array<std::size_t,3>{{69u,69u,106u}})
-			replayResolutionTier=8.0;
-		else if(checkpoint.dimensions==std::array<std::size_t,3>{{86u,86u,132u}})
-			replayResolutionTier=10.0;
-		else return 90;
+		const double replayResolutionTier=
+			ProductionResolutionTierForCheckpointDimensions(checkpoint.dimensions);
+		if(replayResolutionTier==0.0)return 90;
 		std::ofstream clearAudit(auditPath,std::ios::trunc);clearAudit.close();
 		if(!clearAudit)return 92;
 		std::ofstream clearColumn(std::filesystem::path(auditPath).string()+".column.csv",
@@ -6586,6 +6612,65 @@ namespace
 }
 
 #if defined(__APPLE__)
+template<class T>
+bool ByteIdenticalVector(const std::vector<T>& first,const std::vector<T>& second)
+{
+	return first.size()==second.size()&&(first.empty()||std::memcmp(
+		first.data(),second.data(),first.size()*sizeof(T))==0);
+}
+
+template<class T,std::size_t N>
+bool ByteIdenticalVectorArray(const std::array<std::vector<T>,N>& first,
+	const std::array<std::vector<T>,N>& second)
+{
+	for(std::size_t index=0u;index<N;++index)
+		if(!ByteIdenticalVector(first[index],second[index]))return false;
+	return true;
+}
+
+::RISEFireProductionFP64::FireProductionScalarFCTRequest ScalarFCTRequestFP64(
+	const RISE::FireProductionScalarFCTRequest& request)
+{
+	::RISEFireProductionFP64::FireProductionScalarFCTRequest result;
+	result.shape.nx=request.shape.nx;result.shape.ny=request.shape.ny;
+	result.shape.nz=request.shape.nz;
+	result.shape.cellWidthM=static_cast<double>(request.shape.cellWidthM);
+	result.timeStepS=static_cast<double>(request.timeStepS);
+	for(unsigned int side=0u;side<6u;++side)result.boundary[side]=
+		static_cast<::RISEFireProductionFP64::FireProductionProjectionBoundary>(
+			request.boundary[side]);
+	result.beginning.assign(request.beginning.begin(),request.beginning.end());
+	result.sourceDelta.assign(request.sourceDelta.begin(),request.sourceDelta.end());
+	for(unsigned int axis=0u;axis<3u;++axis)result.frozenVelocityMPerS[axis].assign(
+		request.frozenVelocityMPerS[axis].begin(),request.frozenVelocityMPerS[axis].end());
+	for(unsigned int component=0u;component<9u;++component)
+		result.ambient[component]=static_cast<double>(request.ambient[component]);
+	result.pressureOpenInflow=request.pressureOpenInflow;result.nullity=request.nullity;
+	result.nullspaceBasis.assign(request.nullspaceBasis.begin(),request.nullspaceBasis.end());
+	result.coordinateProjector.assign(
+		request.coordinateProjector.begin(),request.coordinateProjector.end());
+	for(unsigned int bound=0u;bound<14u;++bound)
+		result.enthalpyBoundsJPerKG[bound]=static_cast<double>(request.enthalpyBoundsJPerKG[bound]);
+	result.feasibilityFactor=static_cast<double>(request.feasibilityFactor);
+	result.assemblyReserveFactor=static_cast<double>(request.assemblyReserveFactor);
+	return result;
+}
+
+template<class FloatVector,class DoubleVector>
+bool RoundedFP64BytesMatch(const FloatVector& observed,const DoubleVector& reference,
+	std::size_t& mismatches,double& maximumAbsoluteDifference)
+{
+	if(observed.size()!=reference.size())return false;
+	bool match=true;
+	for(std::size_t value=0u;value<observed.size();++value){
+		const float rounded=static_cast<float>(reference[value]);
+		const double difference=std::fabs(static_cast<double>(observed[value])-reference[value]);
+		maximumAbsoluteDifference=std::max(maximumAbsoluteDifference,difference);
+		if(std::memcmp(&observed[value],&rounded,sizeof(float))!=0){++mismatches;match=false;}
+	}
+	return match;
+}
+
 int RunProductionScalarFCTMetalStageFixture()
 {
 	RISE::FireProductionScalarFCTRequest first;
@@ -6603,7 +6688,7 @@ int RunProductionScalarFCTMetalStageFixture()
 	first.ambient[0]=1.0f;first.ambient[1]=1.0f;first.nullity=1u;
 	first.nullspaceBasis.assign(8u,0.0f);first.nullspaceBasis[1]=1.0f;
 	first.coordinateProjector.assign(1u,1.0f);first.feasibilityFactor=1.0f/1024.0f;
-	first.assemblyReserveFactor=first.feasibilityFactor;
+	first.assemblyReserveFactor=0.5f*first.feasibilityFactor;
 	RISE::FireProductionScalarFCTRequest second=first;
 	second.sourceDelta.assign(9u*cells,0.0f);
 	for(std::size_t cell=0u;cell<cells;++cell){second.beginning[cell]=1.0f;
@@ -6622,26 +6707,526 @@ int RunProductionScalarFCTMetalStageFixture()
 	const bool computed=cpu&&RISE::EvaluateFireProductionScalarFCTMetalStageDiagnostic(
 		first,second,metal,&stageError);
 	auto sameSolve=[](const auto& a,const auto& b){return a.packedFaceOffset==b.packedFaceOffset&&
-		a.lowFlux==b.lowFlux&&a.fluxDelta==b.fluxDelta&&a.lowState==b.lowState&&
-		a.limiterRatio==b.limiterRatio&&a.sharedFaceAlpha==b.sharedFaceAlpha&&
-		a.accepted==b.accepted;};
+		ByteIdenticalVector(a.lowFlux,b.lowFlux)&&ByteIdenticalVector(a.fluxDelta,b.fluxDelta)&&
+		ByteIdenticalVector(a.lowState,b.lowState)&&
+		ByteIdenticalVector(a.limiterRatio,b.limiterRatio)&&
+		ByteIdenticalVectorArray(a.sharedFaceAlpha,b.sharedFaceAlpha)&&
+		ByteIdenticalVector(a.accepted,b.accepted);};
+	const auto oracleFirstRequest=ScalarFCTRequestFP64(first);
+	const auto oracleSecondRequest=ScalarFCTRequestFP64(second);
+	::RISEFireProductionFP64::FireProductionScalarFCTFluxPair oracleFirstPair,
+		oracleSecondPair,oracleAveragePair;
+	::RISEFireProductionFP64::FireProductionScalarFCTResult oracleFirstSolve,
+		oracleSecondSolve,oracleAverageSolve;
+	const bool oracle=::RISEFireProductionFP64::BuildFireProductionScalarFCTFluxPairCPU(
+		oracleFirstRequest,oracleFirstPair,&stageError)&&
+		::RISEFireProductionFP64::BuildFireProductionScalarFCTFluxPairCPU(
+			oracleSecondRequest,oracleSecondPair,&stageError)&&
+		::RISEFireProductionFP64::AverageFireProductionScalarFCTFluxPairsCPU(
+			oracleFirstPair,oracleSecondPair,oracleAveragePair,&stageError)&&
+		::RISEFireProductionFP64::SolveFireProductionScalarFCTFluxPairCPU(
+			oracleFirstRequest,oracleFirstPair,oracleFirstSolve,&stageError)&&
+		::RISEFireProductionFP64::SolveFireProductionScalarFCTFluxPairCPU(
+			oracleFirstRequest,oracleSecondPair,oracleSecondSolve,&stageError)&&
+		::RISEFireProductionFP64::SolveFireProductionScalarFCTFluxPairCPU(
+			oracleFirstRequest,oracleAveragePair,oracleAverageSolve,&stageError);
+	std::size_t fp64RoundedMismatches=0u;double fp64MaximumAbsoluteDifference=0.0;
+	auto pairMatchesFP64=[&](const auto& observed,const auto& reference){
+		return observed.packedFaceOffset==reference.packedFaceOffset&&
+			RoundedFP64BytesMatch(observed.lowFlux,reference.lowFlux,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference)&&
+			RoundedFP64BytesMatch(observed.fluxDelta,reference.fluxDelta,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference);};
+	auto solveMatchesFP64=[&](const auto& observed,const auto& reference){
+		bool match=observed.packedFaceOffset==reference.packedFaceOffset&&
+			RoundedFP64BytesMatch(observed.lowFlux,reference.lowFlux,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference)&&
+			RoundedFP64BytesMatch(observed.fluxDelta,reference.fluxDelta,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference)&&
+			RoundedFP64BytesMatch(observed.lowState,reference.lowState,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference)&&
+			RoundedFP64BytesMatch(observed.limiterRatio,reference.limiterRatio,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference)&&
+			RoundedFP64BytesMatch(observed.accepted,reference.accepted,
+				fp64RoundedMismatches,fp64MaximumAbsoluteDifference);
+		for(unsigned int axis=0u;axis<3u;++axis)match=
+			RoundedFP64BytesMatch(observed.sharedFaceAlpha[axis],
+				reference.sharedFaceAlpha[axis],fp64RoundedMismatches,
+				fp64MaximumAbsoluteDifference)&&match;
+		return match;
+	};
+	const bool fp64RoundedExact=oracle&&pairMatchesFP64(metal.firstFluxPair,oracleFirstPair)&&
+		pairMatchesFP64(metal.secondFluxPair,oracleSecondPair)&&
+		pairMatchesFP64(metal.averagedFluxPair,oracleAveragePair)&&
+		solveMatchesFP64(metal.firstSolve,oracleFirstSolve)&&
+		solveMatchesFP64(metal.secondSolve,oracleSecondSolve)&&
+		solveMatchesFP64(metal.averagedSolve,oracleAverageSolve);
 	bool freshAlpha=false;if(cpu)for(unsigned int axis=0u;axis<3u;++axis)
 		for(std::size_t face=0u;face<averageCPU.sharedFaceAlpha[axis].size();++face)
 			freshAlpha=freshAlpha||averageCPU.sharedFaceAlpha[axis][face]!=0.5f*(
 				firstCPU.sharedFaceAlpha[axis][face]+secondCPU.sharedFaceAlpha[axis][face]);
 	const bool passed=computed&&metal.failureBitmap==
-		std::array<std::uint32_t,3>{{0u,0u,0u}}&&metal.firstFluxPair.lowFlux==firstPair.lowFlux&&
-		metal.firstFluxPair.fluxDelta==firstPair.fluxDelta&&
-		metal.secondFluxPair.lowFlux==secondPair.lowFlux&&
-		metal.secondFluxPair.fluxDelta==secondPair.fluxDelta&&
-		metal.averagedFluxPair.lowFlux==averagePair.lowFlux&&
-		metal.averagedFluxPair.fluxDelta==averagePair.fluxDelta&&
+		std::array<std::uint32_t,3>{{0u,0u,0u}}&&
+		ByteIdenticalVector(metal.firstFluxPair.lowFlux,firstPair.lowFlux)&&
+		ByteIdenticalVector(metal.firstFluxPair.fluxDelta,firstPair.fluxDelta)&&
+		ByteIdenticalVector(metal.secondFluxPair.lowFlux,secondPair.lowFlux)&&
+		ByteIdenticalVector(metal.secondFluxPair.fluxDelta,secondPair.fluxDelta)&&
+		ByteIdenticalVector(metal.averagedFluxPair.lowFlux,averagePair.lowFlux)&&
+		ByteIdenticalVector(metal.averagedFluxPair.fluxDelta,averagePair.fluxDelta)&&
 		sameSolve(metal.firstSolve,firstCPU)&&sameSolve(metal.secondSolve,secondCPU)&&
-		sameSolve(metal.averagedSolve,averageCPU)&&freshAlpha&&metal.commandCommitCount==7u;
+		sameSolve(metal.averagedSolve,averageCPU)&&freshAlpha&&fp64RoundedExact&&
+		metal.commandCommitCount==7u;
 	std::fprintf(stderr,"SCALAR_FCT_METAL_STAGES computed=%d passed=%d fresh_alpha=%d "
+		"fp64_rounded_exact=%d fp64_mismatches=%zu fp64_max_abs=%.17g "
 		"commits=%u failures=%u/%u/%u error=%s\n",computed?1:0,passed?1:0,
-		freshAlpha?1:0,metal.commandCommitCount,metal.failureBitmap[0],metal.failureBitmap[1],
-		metal.failureBitmap[2],stageError.c_str());return passed?0:181;
+		freshAlpha?1:0,fp64RoundedExact?1:0,fp64RoundedMismatches,
+		fp64MaximumAbsoluteDifference,metal.commandCommitCount,metal.failureBitmap[0],
+		metal.failureBitmap[1],metal.failureBitmap[2],stageError.c_str());return passed?0:181;
+}
+
+template<class FloatVector,class DoubleVector>
+bool FP64VectorInsideAbsoluteEnvelope(const FloatVector& observed,
+	const DoubleVector& reference,const double bound,double& maximumAbsoluteDifference)
+{
+	if(observed.size()!=reference.size())return false;
+	bool inside=true;
+	for(std::size_t value=0u;value<observed.size();++value){
+		const double difference=std::fabs(static_cast<double>(observed[value])-reference[value]);
+		maximumAbsoluteDifference=std::max(maximumAbsoluteDifference,difference);
+		inside=inside&&std::isfinite(difference)&&difference<=bound;
+	}
+	return inside;
+}
+
+struct UnitIntervalComparison
+{
+	std::size_t interiorCount=0u;
+	double minimumInteriorClassMargin=std::numeric_limits<double>::infinity();
+	double maximumAbsoluteDifference=0.0;
+};
+
+template<class FloatVector,class DoubleVector>
+bool FP64UnitIntervalClassesMatch(const FloatVector& observed,
+	const DoubleVector& reference,UnitIntervalComparison& comparison)
+{
+	if(observed.size()!=reference.size())return false;
+	bool match=true;
+	for(std::size_t value=0u;value<observed.size();++value){
+		const double fp64=reference[value],fp32=static_cast<double>(observed[value]);
+		const double difference=std::fabs(fp32-fp64);
+		comparison.maximumAbsoluteDifference=std::max(
+			comparison.maximumAbsoluteDifference,difference);
+		if(!(fp64>=0.0&&fp64<=1.0&&fp32>=0.0&&fp32<=1.0)||
+			!std::isfinite(difference)){match=false;continue;}
+		if(fp64==0.0||fp64==1.0){match=match&&fp32==fp64;continue;}
+		const double classMargin=std::min(fp64,1.0-fp64);
+		comparison.minimumInteriorClassMargin=std::min(
+			comparison.minimumInteriorClassMargin,classMargin);
+		++comparison.interiorCount;
+		match=match&&fp32>0.0&&fp32<1.0&&difference<0.5*classMargin;
+	}
+	return match;
+}
+
+int RunProductionScalarFCTMetalMixedBoundaryFixture()
+{
+	RISE::FireProductionScalarFCTRequest first;
+	first.shape.nx=4u;first.shape.ny=4u;first.shape.nz=4u;
+	first.shape.cellWidthM=0.37f;first.timeStepS=0.013f;
+	first.boundary={{RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionPressureOpen,
+		RISE::FireProductionProjectionPressureOpen,
+		RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionWall,
+		RISE::FireProductionProjectionPressureOpen}};
+	const std::size_t cells=first.shape.CellCount();
+	first.beginning.assign(9u*cells,0.0f);first.sourceDelta.assign(9u*cells,0.0f);
+	for(std::size_t cell=0u;cell<cells;++cell){
+		const float variation=0.017f*static_cast<float>((7u*cell+3u)%11u);
+		first.beginning[cell]=0.91f+variation;
+		first.beginning[cells+cell]=first.beginning[cell]+0.00021f;
+		first.sourceDelta[cell]=0.00037f*static_cast<float>(static_cast<int>(cell%5u)-2);
+		first.sourceDelta[cells+cell]=first.sourceDelta[cell];
+	}
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t xEnd=first.shape.nx+(axis==0u?1u:0u);
+		const std::size_t yEnd=first.shape.ny+(axis==1u?1u:0u);
+		const std::size_t zEnd=first.shape.nz+(axis==2u?1u:0u);
+		first.frozenVelocityMPerS[axis].assign(
+			RISE::FireProductionProjectionFaceCount(first.shape,axis),0.0f);
+		for(std::size_t z=0u;z<zEnd;++z)for(std::size_t y=0u;y<yEnd;++y)
+			for(std::size_t x=0u;x<xEnd;++x){
+				const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+				const std::size_t extent=axis==0u?first.shape.nx:
+					(axis==1u?first.shape.ny:first.shape.nz);
+				const std::size_t face=axis==0u?(z*first.shape.ny+y)*(first.shape.nx+1u)+x:
+					(axis==1u?(z*(first.shape.ny+1u)+y)*first.shape.nx+x:
+						(z*first.shape.ny+y)*first.shape.nx+x);
+				const bool wall=(normal==0u&&first.boundary[2u*axis]==
+					RISE::FireProductionProjectionWall)||(normal==extent&&
+					first.boundary[2u*axis+1u]==RISE::FireProductionProjectionWall);
+				if(!wall)first.frozenVelocityMPerS[axis][face]=0.071f*
+					static_cast<float>(static_cast<int>((x+3u*y+5u*z+axis)%9u)-4);
+			}
+	}
+	for(auto& side:first.pressureOpenInflow)side.assign(16u,0u);
+	first.ambient[0]=1.03f;first.ambient[1]=1.03021f;first.nullity=1u;
+	first.nullspaceBasis.assign(8u,0.0f);first.nullspaceBasis[1]=1.0f;
+	first.coordinateProjector.assign(1u,1.0f);first.feasibilityFactor=1.0f/1024.0f;
+	first.assemblyReserveFactor=first.feasibilityFactor;
+	RISE::FireProductionScalarFCTRequest second=first;
+	for(std::size_t cell=0u;cell<cells;++cell){
+		second.beginning[cell]+=0.0061f*static_cast<float>(static_cast<int>(cell%3u)-1);
+		second.beginning[cells+cell]=second.beginning[cell]+0.00021f;
+	}
+	second.sourceDelta.assign(9u*cells,0.0f);
+	RISE::FireProductionScalarFCTFluxPair firstPair,secondPair,averagePair;
+	RISE::FireProductionScalarFCTResult firstCPU,secondCPU,averageCPU;
+	std::string stageError;const bool cpu=
+		RISE::BuildFireProductionScalarFCTFluxPairCPU(first,firstPair,&stageError)&&
+		RISE::BuildFireProductionScalarFCTFluxPairCPU(second,secondPair,&stageError)&&
+		RISE::AverageFireProductionScalarFCTFluxPairsCPU(
+			firstPair,secondPair,averagePair,&stageError)&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(first,firstPair,firstCPU,&stageError)&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(first,secondPair,secondCPU,&stageError)&&
+		RISE::SolveFireProductionScalarFCTFluxPairCPU(first,averagePair,averageCPU,&stageError);
+	RISE::FireProductionScalarFCTMetalStageDiagnosticResult metal;
+	const bool computed=cpu&&RISE::EvaluateFireProductionScalarFCTMetalStageDiagnostic(
+		first,second,metal,&stageError);
+	auto sameSolve=[](const auto& a,const auto& b){return a.packedFaceOffset==b.packedFaceOffset&&
+		ByteIdenticalVector(a.lowFlux,b.lowFlux)&&ByteIdenticalVector(a.fluxDelta,b.fluxDelta)&&
+		ByteIdenticalVector(a.lowState,b.lowState)&&
+		ByteIdenticalVector(a.limiterRatio,b.limiterRatio)&&
+		ByteIdenticalVectorArray(a.sharedFaceAlpha,b.sharedFaceAlpha)&&
+		ByteIdenticalVector(a.accepted,b.accepted);};
+	const auto oracleFirstRequest=ScalarFCTRequestFP64(first);
+	const auto oracleSecondRequest=ScalarFCTRequestFP64(second);
+	::RISEFireProductionFP64::FireProductionScalarFCTFluxPair oracleFirstPair,
+		oracleSecondPair,oracleAveragePair;
+	::RISEFireProductionFP64::FireProductionScalarFCTResult oracleFirstSolve,
+		oracleSecondSolve,oracleAverageSolve;
+	const bool oracle=::RISEFireProductionFP64::BuildFireProductionScalarFCTFluxPairCPU(
+		oracleFirstRequest,oracleFirstPair,&stageError)&&
+		::RISEFireProductionFP64::BuildFireProductionScalarFCTFluxPairCPU(
+			oracleSecondRequest,oracleSecondPair,&stageError)&&
+		::RISEFireProductionFP64::AverageFireProductionScalarFCTFluxPairsCPU(
+			oracleFirstPair,oracleSecondPair,oracleAveragePair,&stageError)&&
+		::RISEFireProductionFP64::SolveFireProductionScalarFCTFluxPairCPU(
+			oracleFirstRequest,oracleFirstPair,oracleFirstSolve,&stageError)&&
+		::RISEFireProductionFP64::SolveFireProductionScalarFCTFluxPairCPU(
+			oracleFirstRequest,oracleSecondPair,oracleSecondSolve,&stageError)&&
+		::RISEFireProductionFP64::SolveFireProductionScalarFCTFluxPairCPU(
+			oracleFirstRequest,oracleAveragePair,oracleAverageSolve,&stageError);
+	double maximumState=0.0,maximumSource=0.0,maximumVelocity=0.0;
+	const RISE::FireProductionScalarFCTRequest* scaleRequests[]={&first,&second};
+	for(const auto* scaleRequest:scaleRequests){
+		for(const float value:scaleRequest->beginning)maximumState=std::max(
+			maximumState,std::fabs(static_cast<double>(value)));
+		for(const float value:scaleRequest->sourceDelta)maximumSource=std::max(
+			maximumSource,std::fabs(static_cast<double>(value)));
+		for(const auto& axis:scaleRequest->frozenVelocityMPerS)for(const float value:axis)
+			maximumVelocity=std::max(maximumVelocity,std::fabs(static_cast<double>(value)));
+	}
+	// MC bounds each reconstructed state by 3 Q_max, so both donor and
+	// antidiffusive flux magnitudes are <=4 Q_max U_max.  Six face differences
+	// then bound a 3-D accepted update by Q_max+S_max+24 dt Q_max U_max/h.
+	// No publication chains more than 512 rounded arithmetic operations (nine
+	// shared components and six faces included), giving this input-derived
+	// cancellation-safe absolute gamma_512 envelope for the flux and state
+	// fields. Limiter ratios and alpha use a separate class/margin proof below.
+	const double unitRoundoff=0.5*static_cast<double>(std::numeric_limits<float>::epsilon());
+	const double gamma512=512.0*unitRoundoff/(1.0-512.0*unitRoundoff);
+	const double fluxScale=4.0*maximumState*maximumVelocity;
+	const double updateScale=maximumState+maximumSource+24.0*
+		static_cast<double>(first.timeStepS)*maximumState*maximumVelocity/
+		static_cast<double>(first.shape.cellWidthM);
+	const double fp64AbsoluteBound=gamma512*std::max({1.0,fluxScale,updateScale});
+	double fp64MaximumAbsoluteDifference=0.0;
+	UnitIntervalComparison ratioComparison,alphaComparison;
+	auto pairInside=[&](const auto& observed,const auto& reference){return
+		observed.packedFaceOffset==reference.packedFaceOffset&&
+		FP64VectorInsideAbsoluteEnvelope(observed.lowFlux,reference.lowFlux,
+			fp64AbsoluteBound,fp64MaximumAbsoluteDifference)&&
+		FP64VectorInsideAbsoluteEnvelope(observed.fluxDelta,reference.fluxDelta,
+			fp64AbsoluteBound,fp64MaximumAbsoluteDifference);};
+	auto solveInside=[&](const auto& observed,const auto& reference){
+		bool inside=observed.packedFaceOffset==reference.packedFaceOffset&&
+			FP64VectorInsideAbsoluteEnvelope(observed.lowFlux,reference.lowFlux,
+				fp64AbsoluteBound,fp64MaximumAbsoluteDifference)&&
+			FP64VectorInsideAbsoluteEnvelope(observed.fluxDelta,reference.fluxDelta,
+				fp64AbsoluteBound,fp64MaximumAbsoluteDifference)&&
+			FP64VectorInsideAbsoluteEnvelope(observed.lowState,reference.lowState,
+				fp64AbsoluteBound,fp64MaximumAbsoluteDifference)&&
+			FP64UnitIntervalClassesMatch(observed.limiterRatio,reference.limiterRatio,
+				ratioComparison)&&
+			FP64VectorInsideAbsoluteEnvelope(observed.accepted,reference.accepted,
+				fp64AbsoluteBound,fp64MaximumAbsoluteDifference);
+		for(unsigned int axis=0u;axis<3u;++axis)inside=
+			FP64UnitIntervalClassesMatch(observed.sharedFaceAlpha[axis],
+				reference.sharedFaceAlpha[axis],alphaComparison)&&inside;
+		return inside;
+	};
+	const bool fp64Envelope=oracle&&pairInside(metal.firstFluxPair,oracleFirstPair)&&
+		pairInside(metal.secondFluxPair,oracleSecondPair)&&
+		pairInside(metal.averagedFluxPair,oracleAveragePair)&&
+		solveInside(metal.firstSolve,oracleFirstSolve)&&
+		solveInside(metal.secondSolve,oracleSecondSolve)&&
+		solveInside(metal.averagedSolve,oracleAverageSolve);
+	const bool fp32Bytes=computed&&metal.firstFluxPair.packedFaceOffset==firstPair.packedFaceOffset&&
+		metal.secondFluxPair.packedFaceOffset==secondPair.packedFaceOffset&&
+		metal.averagedFluxPair.packedFaceOffset==averagePair.packedFaceOffset&&
+		ByteIdenticalVector(metal.firstFluxPair.lowFlux,firstPair.lowFlux)&&
+		ByteIdenticalVector(metal.firstFluxPair.fluxDelta,firstPair.fluxDelta)&&
+		ByteIdenticalVector(metal.secondFluxPair.lowFlux,secondPair.lowFlux)&&
+		ByteIdenticalVector(metal.secondFluxPair.fluxDelta,secondPair.fluxDelta)&&
+		ByteIdenticalVector(metal.averagedFluxPair.lowFlux,averagePair.lowFlux)&&
+		ByteIdenticalVector(metal.averagedFluxPair.fluxDelta,averagePair.fluxDelta)&&
+		sameSolve(metal.firstSolve,firstCPU)&&sameSolve(metal.secondSolve,secondCPU)&&
+		sameSolve(metal.averagedSolve,averageCPU);
+	std::size_t boundaryAdjacentLimitedAlphaCount=0u;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t extent=axis==0u?first.shape.nx:
+			(axis==1u?first.shape.ny:first.shape.nz);
+		for(std::size_t face=0u;face<metal.averagedSolve.sharedFaceAlpha[axis].size();++face){
+			const std::size_t normal=axis==0u?face%(first.shape.nx+1u):
+				(axis==1u?(face/first.shape.nx)%(first.shape.ny+1u):
+					face/(first.shape.nx*first.shape.ny));
+			if((normal==1u||normal+1u==extent)&&
+				metal.averagedSolve.sharedFaceAlpha[axis][face]<1.0f)
+				++boundaryAdjacentLimitedAlphaCount;
+		}
+	}
+	const bool limiterClassesExercised=ratioComparison.interiorCount>0u&&
+		alphaComparison.interiorCount>0u&&boundaryAdjacentLimitedAlphaCount>0u&&
+		std::isfinite(ratioComparison.minimumInteriorClassMargin)&&
+		std::isfinite(alphaComparison.minimumInteriorClassMargin);
+	const bool passed=fp32Bytes&&fp64Envelope&&metal.failureBitmap==
+		std::array<std::uint32_t,3>{{0u,0u,0u}}&&limiterClassesExercised&&
+		metal.commandCommitCount==7u;
+	std::fprintf(stderr,"SCALAR_FCT_METAL_MIXED passed=%d fp32_byte_exact=%d "
+		"fp64_envelope=%d fp64_max_abs=%.17g fp64_abs_bound=%.17g "
+		"ratio_interior=%zu ratio_min_margin=%.17g ratio_max_abs=%.17g "
+		"alpha_interior=%zu alpha_min_margin=%.17g alpha_max_abs=%.17g "
+		"boundary_adjacent_limited_alpha=%zu commits=%u failures=%u/%u/%u error=%s\n",
+		passed?1:0,fp32Bytes?1:0,fp64Envelope?1:0,fp64MaximumAbsoluteDifference,
+		fp64AbsoluteBound,ratioComparison.interiorCount,
+		ratioComparison.minimumInteriorClassMargin,ratioComparison.maximumAbsoluteDifference,
+		alphaComparison.interiorCount,alphaComparison.minimumInteriorClassMargin,
+		alphaComparison.maximumAbsoluteDifference,boundaryAdjacentLimitedAlphaCount,
+		metal.commandCommitCount,metal.failureBitmap[0],metal.failureBitmap[1],
+		metal.failureBitmap[2],stageError.c_str());return passed?0:183;
+}
+
+int RunProductionCompatibleMomentumMetalFP64Fixture()
+{
+	const auto faceIndex=[](const RISE::FireProductionProjectionShape& shape,
+		const unsigned int axis,const std::size_t x,const std::size_t y,
+		const std::size_t z){
+		return axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
+			(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:
+				(z*shape.ny+y)*shape.nx+x);
+	};
+	const unsigned int passAxes[]={0u,1u,2u,1u,0u};
+	const std::vector<float> positiveZero={0.0f},negativeZero={-0.0f};
+	const bool signedZeroRED=!ByteIdenticalVector(positiveZero,negativeZero);
+	bool passed=signedZeroRED,metalCPUBitExact=true,fp64EnvelopePassed=true;
+	double maximumAbsoluteDifference=0.0,maximumNormalizedDifference=0.0,
+		maximumDerivedAbsoluteBound=0.0;
+	double maximumDeviceMS=0.0;
+	for( unsigned int fixture=0u;fixture<2u&&passed;++fixture ) {
+		RISE::FireProductionDualMomentumRequest request;
+		request.shape.nx=4u;request.shape.ny=4u;request.shape.nz=4u;
+		request.shape.cellWidthM=0.125f;request.timeStepS=0.03125f;
+		if( fixture==0u ) request.boundary.fill(RISE::FireProductionProjectionPeriodic);
+		else request.boundary={{RISE::FireProductionProjectionWall,
+			RISE::FireProductionProjectionPressureOpen,
+			RISE::FireProductionProjectionPressureOpen,
+			RISE::FireProductionProjectionWall,
+			RISE::FireProductionProjectionWall,
+			RISE::FireProductionProjectionPressureOpen}};
+		std::array<std::vector<float>,5> acceptedDose;
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			const std::size_t xEnd=request.shape.nx+(axis==0u?1u:0u);
+			const std::size_t yEnd=request.shape.ny+(axis==1u?1u:0u);
+			const std::size_t zEnd=request.shape.nz+(axis==2u?1u:0u);
+			const std::size_t faces=RISE::FireProductionProjectionFaceCount(request.shape,axis);
+			request.beginningFaceDensity[axis].assign(faces,0.0f);
+			request.beginningMomentum[axis].assign(faces,0.0f);
+			request.frozenVelocityMPerS[axis].assign(faces,0.0f);
+			for( std::size_t z=0u;z<zEnd;++z ) for( std::size_t y=0u;y<yEnd;++y )
+				for( std::size_t x=0u;x<xEnd;++x ) {
+					const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=axis==0u?request.shape.nx:
+						(axis==1u?request.shape.ny:request.shape.nz);
+					const std::size_t canonical=fixture==0u&&normal==extent?0u:normal;
+					const std::size_t cx=axis==0u?canonical:x;
+					const std::size_t cy=axis==1u?canonical:y;
+					const std::size_t cz=axis==2u?canonical:z;
+					const std::size_t face=faceIndex(request.shape,axis,x,y,z);
+					const float density=0.8f+0.025f*static_cast<float>(
+						(canonical+3u*cx+5u*cy+7u*cz+axis)%9u);
+					const float velocity=-0.35f+0.075f*static_cast<float>(
+						(2u*canonical+cx+4u*cy+3u*cz+axis)%11u);
+					request.beginningFaceDensity[axis][face]=density;
+					request.beginningMomentum[axis][face]=density*velocity;
+					request.frozenVelocityMPerS[axis][face]=velocity;
+				}
+		}
+		for( unsigned int pass=0u;pass<5u;++pass ) {
+			const unsigned int axis=passAxes[pass];
+			const std::size_t xEnd=request.shape.nx+(axis==0u?1u:0u);
+			const std::size_t yEnd=request.shape.ny+(axis==1u?1u:0u);
+			const std::size_t zEnd=request.shape.nz+(axis==2u?1u:0u);
+			acceptedDose[pass].assign(
+				RISE::FireProductionProjectionFaceCount(request.shape,axis),0.0f);
+			for( std::size_t z=0u;z<zEnd;++z ) for( std::size_t y=0u;y<yEnd;++y )
+				for( std::size_t x=0u;x<xEnd;++x ) {
+					const std::size_t normal=axis==0u?x:(axis==1u?y:z);
+					const std::size_t extent=axis==0u?request.shape.nx:
+						(axis==1u?request.shape.ny:request.shape.nz);
+					const std::size_t canonical=fixture==0u&&normal==extent?0u:normal;
+					const std::size_t cx=axis==0u?canonical:x;
+					const std::size_t cy=axis==1u?canonical:y;
+					const std::size_t cz=axis==2u?canonical:z;
+					acceptedDose[pass][faceIndex(request.shape,axis,x,y,z)]=
+						0.0025f*static_cast<float>(static_cast<int>(
+						(canonical+2u*cx+3u*cy+5u*cz+pass)%7u)-3);
+				}
+		}
+		RISE::FireProductionDualMomentumResult metal;
+		std::string error;
+		const bool metalOK=RISE::RemapFireProductionCompatibleDualMomentumMetalComparator(
+			request,acceptedDose,metal,&error);
+		maximumDeviceMS=std::max(maximumDeviceMS,metal.deviceElapsedMS);
+		RISE::FireProductionDualMomentumResult cpu;
+		const bool cpuOK=RISE::RemapFireProductionCompatibleDualMomentumCPU(
+			request,acceptedDose,cpu,&error);
+		::RISEFireProductionFP64::FireProductionDualMomentumRequest oracleRequest;
+		oracleRequest.shape.nx=request.shape.nx;oracleRequest.shape.ny=request.shape.ny;
+		oracleRequest.shape.nz=request.shape.nz;
+		oracleRequest.shape.cellWidthM=static_cast<double>(request.shape.cellWidthM);
+		oracleRequest.timeStepS=static_cast<double>(request.timeStepS);
+		oracleRequest.ambientDensityKGPerM3=
+			static_cast<double>(request.ambientDensityKGPerM3);
+		for( unsigned int side=0u;side<6u;++side ) oracleRequest.boundary[side]=
+			static_cast<::RISEFireProductionFP64::FireProductionProjectionBoundary>(
+				request.boundary[side]);
+		for( unsigned int axis=0u;axis<3u;++axis ) {
+			oracleRequest.beginningFaceDensity[axis].assign(
+				request.beginningFaceDensity[axis].begin(),request.beginningFaceDensity[axis].end());
+			oracleRequest.beginningMomentum[axis].assign(
+				request.beginningMomentum[axis].begin(),request.beginningMomentum[axis].end());
+			oracleRequest.frozenVelocityMPerS[axis].assign(
+				request.frozenVelocityMPerS[axis].begin(),request.frozenVelocityMPerS[axis].end());
+		}
+		std::array<std::vector<double>,5> oracleDose;
+		for( unsigned int pass=0u;pass<5u;++pass ) oracleDose[pass].assign(
+			acceptedDose[pass].begin(),acceptedDose[pass].end());
+		::RISEFireProductionFP64::FireProductionDualMomentumResult oracle;
+		const bool oracleOK=::RISEFireProductionFP64::RemapFireProductionCompatibleDualMomentumCPU(
+			oracleRequest,oracleDose,oracle,&error);
+		bool metadataOK=metalOK&&cpuOK&&oracleOK&&metal.executedSubmapCount==15u&&
+			metal.commandCommitCount==1u&&metal.interstageFullGridTransferCount==0u;
+		bool fixtureCPUBitExact=metadataOK,fixtureFP64Envelope=metadataOK;
+		const float unitRoundoff=0.5f*std::numeric_limits<float>::epsilon();
+		const float gamma128=128.0f*unitRoundoff/(1.0f-128.0f*unitRoundoff);
+		double maximumDose=0.0,minimumBeginningDensity=std::numeric_limits<double>::infinity(),
+			maximumBeginningDensity=0.0,maximumBeginningMomentum=0.0;
+		for(const auto& dose:acceptedDose)for(const float value:dose)
+			maximumDose=std::max(maximumDose,std::fabs(static_cast<double>(value)));
+		for(unsigned int axis=0u;axis<3u;++axis){
+			for(const float value:request.beginningFaceDensity[axis]){
+				minimumBeginningDensity=std::min(
+					minimumBeginningDensity,static_cast<double>(value));
+				maximumBeginningDensity=std::max(
+					maximumBeginningDensity,std::fabs(static_cast<double>(value)));
+			}
+			for(const float value:request.beginningMomentum[axis])
+				maximumBeginningMomentum=std::max(
+					maximumBeginningMomentum,std::fabs(static_cast<double>(value)));
+		}
+		// Each of the five palindrome passes changes density by at most 2D/h.
+		// Therefore rho_min-10D/h is a request-derived lower bound for every
+		// intermediate density.  The momentum recurrence
+		// M_(k+1)<=M_k(1+2D/(h rho_lower)) bounds every cancellation-free term
+		// magnitude.  At most 128 rounded elementary operations feed one final
+		// publication (five passes, including both interpolated face velocities),
+		// so gamma_128 times these magnitude bounds is an absolute forward bound.
+		const double inverseCellWidth=1.0/static_cast<double>(request.shape.cellWidthM);
+		const double minimumDensityBound=minimumBeginningDensity-
+			10.0*maximumDose*inverseCellWidth;
+		const double densityMagnitudeBound=maximumBeginningDensity+
+			10.0*maximumDose*inverseCellWidth;
+		double momentumMagnitudeBound=maximumBeginningMomentum;
+		if(minimumDensityBound>0.0)for(unsigned int pass=0u;pass<5u;++pass)
+			momentumMagnitudeBound*=1.0+2.0*maximumDose*inverseCellWidth/
+				minimumDensityBound;
+		const double densityAbsoluteBound=static_cast<double>(gamma128)*
+			densityMagnitudeBound;
+		const double momentumAbsoluteBound=static_cast<double>(gamma128)*
+			momentumMagnitudeBound;
+		maximumDerivedAbsoluteBound=std::max(maximumDerivedAbsoluteBound,
+			std::max(densityAbsoluteBound,momentumAbsoluteBound));
+		fixtureFP64Envelope=fixtureFP64Envelope&&minimumDensityBound>0.0&&
+			std::isfinite(momentumMagnitudeBound);
+		for( unsigned int axis=0u;axis<3u&&metadataOK;++axis ) {
+			metadataOK=metal.auxiliaryFaceDensity[axis].size()==
+				oracle.auxiliaryFaceDensity[axis].size()&&metal.momentum[axis].size()==
+				oracle.momentum[axis].size();
+			fixtureCPUBitExact=fixtureCPUBitExact&&metadataOK&&
+				ByteIdenticalVector(metal.auxiliaryFaceDensity[axis],
+					cpu.auxiliaryFaceDensity[axis])&&
+				ByteIdenticalVector(metal.momentum[axis],cpu.momentum[axis]);
+			for( std::size_t face=0u;face<metal.momentum[axis].size()&&metadataOK;++face ) {
+				const double oracleDensity=oracle.auxiliaryFaceDensity[axis][face];
+				const double oracleMomentum=oracle.momentum[axis][face];
+				const double densityDifference=std::fabs(
+					static_cast<double>(metal.auxiliaryFaceDensity[axis][face])-oracleDensity);
+				const double momentumDifference=std::fabs(
+					static_cast<double>(metal.momentum[axis][face])-oracleMomentum);
+				const double densityScale=std::max(std::fabs(
+					static_cast<double>(metal.auxiliaryFaceDensity[axis][face])),
+					std::fabs(oracleDensity));
+				const double momentumScale=std::max(std::fabs(
+					static_cast<double>(metal.momentum[axis][face])),std::fabs(oracleMomentum));
+				maximumAbsoluteDifference=std::max(maximumAbsoluteDifference,
+					std::max(densityDifference,momentumDifference));
+				if( densityScale>0.0f ) maximumNormalizedDifference=std::max(
+					maximumNormalizedDifference,densityDifference/densityScale);
+				if( momentumScale>0.0f ) maximumNormalizedDifference=std::max(
+					maximumNormalizedDifference,momentumDifference/momentumScale);
+				fixtureFP64Envelope=fixtureFP64Envelope&&
+					densityDifference<=gamma128*densityScale&&
+					momentumDifference<=gamma128*momentumScale&&
+					densityDifference<=densityAbsoluteBound&&
+					momentumDifference<=momentumAbsoluteBound;
+			}
+		}
+		metalCPUBitExact=metalCPUBitExact&&fixtureCPUBitExact;
+		fp64EnvelopePassed=fp64EnvelopePassed&&fixtureFP64Envelope;
+		const bool fixturePassed=metadataOK&&fixtureCPUBitExact&&fixtureFP64Envelope;
+		if( !fixturePassed ) std::fprintf(stderr,"COMPATIBLE_MOMENTUM_METAL_FP64 fixture=%u "
+			"metal=%d cpu=%d oracle=%d max_abs=%.17g max_norm=%.17g gamma128=%.9g "
+			"error=%s\n",fixture,metalOK?1:0,cpuOK?1:0,oracleOK?1:0,
+			maximumAbsoluteDifference,maximumNormalizedDifference,gamma128,error.c_str());
+		passed=passed&&fixturePassed;
+	}
+	std::fprintf(stderr,"COMPATIBLE_MOMENTUM_METAL_FP64 passed=%d fixtures=2 "
+		"metal_cpu_byte_exact=%d signed_zero_red=%d fp64_gamma128_envelope=%d "
+		"fp64_max_abs=%.17g fp64_max_norm=%.17g derived_abs_bound=%.17g "
+		"max_device_ms=%.9g\n",passed?1:0,metalCPUBitExact?1:0,signedZeroRED?1:0,
+		fp64EnvelopePassed?1:0,maximumAbsoluteDifference,maximumNormalizedDifference,
+		maximumDerivedAbsoluteBound,maximumDeviceMS);
+	return passed?0:182;
+}
+
+int RunProductionMetalFP64KernelSweep()
+{
+	const int scalar=RunProductionScalarFCTMetalStageFixture();
+	if( scalar!=0 ) return scalar;
+	const int scalarMixed=RunProductionScalarFCTMetalMixedBoundaryFixture();
+	if( scalarMixed!=0 ) return scalarMixed;
+	return RunProductionCompatibleMomentumMetalFP64Fixture();
 }
 #endif
 
@@ -6650,6 +7235,8 @@ int main(int argc,char** argv)
 #if defined(__APPLE__)
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-scalar-fct-metal-stages")==0)
 		return RunProductionScalarFCTMetalStageFixture();
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-metal-fp64-kernel-sweep")==0)
+		return RunProductionMetalFP64KernelSweep();
 #endif
 	if(argc==3&&std::strcmp(argv[1],"--fire-checkpoint-build-id")==0){
 		MethaneRunCheckpoint checkpoint;std::string error;
@@ -6704,6 +7291,13 @@ int main(int argc,char** argv)
 		!ProductionTemporalCapstoneTierSupported(9.0)&&
 		!ProductionTemporalCapstoneTierSupported(11.0),
 		"production temporal capstone refuses unsupported neighboring tiers");
+	Check(ProductionResolutionTierForCheckpointDimensions({{52u,52u,80u}})==6.0&&
+		ProductionResolutionTierForCheckpointDimensions({{69u,69u,106u}})==8.0&&
+		ProductionResolutionTierForCheckpointDimensions({{86u,86u,132u}})==10.0,
+		"production checkpoint diagnostics derive every sealed resolution tier from shape");
+	Check(ProductionResolutionTierForCheckpointDimensions({{68u,69u,106u}})==0.0&&
+		ProductionResolutionTierForCheckpointDimensions({{70u,69u,106u}})==0.0,
+		"production checkpoint diagnostics refuse neighboring unknown shapes");
 	{
 		MethaneRunCheckpoint tier8,tier10;double tier8Width=0.0,tier10Width=0.0;
 		const bool tier8Built=CanonicalCapstoneGridForTier(

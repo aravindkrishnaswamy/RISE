@@ -5349,6 +5349,69 @@ energy, and gas flux plus all certificate fields and metadata. When the worker r
 r189 still runs tier 8 first and sends its movie before the device sweep and
 tier-10 onset verdict.
 
+### 7.56x Metal execution-context reclassification (r191)
+
+r191 corrects the deferred-host premise without changing the sealed r190
+manifest. `system_profiler` identifies the current machine as an integrated
+40-core Apple M4 Max with Metal support. More decisively, one probe calling
+both `MTLCreateSystemDefaultDevice()` and `MTLCopyAllDevices()` was run in two
+contexts. The workspace sandbox returned a nil default device and an empty
+enumeration; the identical binary outside that sandbox returned one Apple M4
+Max, registry ID `4294969469`, through both APIs. The earlier result therefore
+measured a blocked execution context, not absent hardware.
+
+The production capability seam now records device discovery independently
+from kernel validation. Its explicit states are `available`,
+`blocked-by-execution-context`, `no-device`, `backend-not-built`, and
+`unqueried`. It consults both discovery APIs, but authorizes execution only
+when the same default-device API used by every production consumer succeeds.
+A nil default with a nonempty enumeration is therefore context-blocked, not an
+advertised fallback. On Apple silicon, an empty result from both APIs is also
+classified as execution-context denial because the integrated GPU cannot be
+absent; no-device remains available for hosts on which hardware absence is
+meaningful. `available` still requires the safe-math identity
+kernel to compile, dispatch, complete, and return exact bytes, so enumeration
+alone grants no production authority.
+
+A capability-only test mode makes this distinction the manifest preflight. In
+the workspace sandbox it returns exit 86 with
+`discovery=blocked-by-execution-context`; unrestricted it returns exit 0 with
+`discovery=available`, `default_present=1`, `enumerated_count=1`, and an exact
+identity-kernel pass on Apple M4 Max. The corrected manifest v3 preserves the
+r190 stage definitions and binding order—tier 8 remains first—while requiring
+an unrestricted execution context. Manifest SHA:
+`109a18a5e7803679bf35acf5adb3b34d89fb3548a549889f043414937d1e2763`.
+
+Fresh evidence review rejected the original stage-2 wording because it compared
+device fields only with fp32 publications. The corrected sweep now stages the
+private compatible-momentum resident kernel through a test-only terminal
+comparator and runs two matched-input fixtures: fully periodic and mixed
+wall/pressure-open. Device output must be bit-identical to the fp32 CPU
+authority, while the same fields are compared directly with the mechanically
+generated fp64 mirror. The initial sweep exposed contraction-induced one-bit
+device/CPU differences; the compatible kernel now disables floating-point
+contraction only inside that kernel body, matching the pinned CPU expression
+topology without changing any other Metal kernel. The bootstrap compares every
+donor, MC-MUSCL, averaged-pair, and fresh-shared-alpha device publication
+directly with the generated fp64 stage. The dyadic periodic fixture obtains
+zero mismatches after exact binary32 rounding. A second non-dyadic mixed
+wall/pressure-open fixture is byte-exact against fp32 and differs from fp64 by
+at most `2.1297667185393721e-7`, inside its input-conditioned flux/state bound
+`4.1114563049705465e-5`. Ratios and shared α are not admitted under that
+arithmetic bound: their fp32/fp64 unit-interval classes are checked directly.
+The fixture exercises 18 interior ratios, 21 interior α values, and four
+boundary-adjacent limited faces; the minimum class margin is
+`0.10898987999238696` against maximum observed difference
+`0.00039498558320727462`. Compatible output is byte-compared rather than
+value-compared, with a signed-zero RED. Its fp64 difference is evaluated in
+double and checked both against the original relative `gamma128` gate and an
+absolute forward bound derived from `rho_min-10D/h` and the five-pass
+momentum-magnitude recurrence. The development-qualification sweep reports
+fp64 maximum absolute difference `1.1175870895385742e-7`, maximum normalized
+difference `2.2941710525697736e-7`, and derived absolute bound
+`3.1200230559651367e-5`. This run is explicitly pre-manifest qualification,
+not Stage 2: the same sealed command reruns formally only after tier 8.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

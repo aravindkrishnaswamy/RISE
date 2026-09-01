@@ -3553,11 +3553,16 @@ int main()
 	const std::string projectedHeunOwnerLiveBinding=ReadText(
 		"rendered/fire_production_calibration/r190_projected_heun_owner/"
 		"projected_heun_owner_live_binding.v1");
+	const std::string metalContextLiveBinding=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"metal_context_live_binding.v1");
 	const auto liveOwnerBound=[&](const std::string& path,const std::string& sha256) {
 		const std::string current=sourceSHA(path.c_str());
 		return projectedHeunLiveBinding.find("owner "+path+" sha256 "+sha256+"\n")!=
 			std::string::npos&&(current==sha256||projectedHeunOwnerLiveBinding.find(
-				"owner "+path+" sha256 "+current+"\n")!=std::string::npos);
+				"owner "+path+" sha256 "+current+"\n")!=std::string::npos||
+				metalContextLiveBinding.find("owner "+path+" sha256 "+current+"\n")!=
+				std::string::npos);
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunEvidence.begin(),projectedHeunEvidence.end()))==
@@ -3568,6 +3573,9 @@ int main()
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
 			"c65995996763e06a9268bfc83d5f6a2bff26b91659c39b2dee57063de0019539"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			metalContextLiveBinding.begin(),metalContextLiveBinding.end()))==
+			"ede952577d0b873cb758b0383461d4f9b9e71cb0e1ca340ce3d106e9fe6dc1ee"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3576,6 +3584,9 @@ int main()
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("live_owner_count 27\n")!=
+			std::string::npos&&
+		metalContextLiveBinding.find("live_owner_count 17\n")!=std::string::npos&&
+		metalContextLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner tests/SourceHygieneTest.cpp sha256 "+
 			sourceSHA("tests/SourceHygieneTest.cpp")+"\n")!=std::string::npos&&
@@ -8822,7 +8833,9 @@ int main()
 		return canonicalSourceAuthorityLiveBinding.find(std::string("owner ")+path+
 			" sha256 "+sha256+"\n")!=std::string::npos&&(current==sha256||
 			projectedHeunOwnerLiveBinding.find(std::string("owner ")+path+" sha256 "+
-				current+"\n")!=std::string::npos);
+				current+"\n")!=std::string::npos||metalContextLiveBinding.find(
+				std::string("owner ")+path+" sha256 "+current+"\n")!=
+				std::string::npos);
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		canonicalSourceAuthorityEvidence.begin(),canonicalSourceAuthorityEvidence.end()))==
@@ -8947,6 +8960,100 @@ int main()
 		metalHostManifest.find("current_host_has_required_device 0\n")!=
 			std::string::npos,
 		"r189 binds the CPU projection prerequisite and tier-8-first Metal-host manifest");
+	const std::string metalContextEvidence=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"metal_context_evidence.v1");
+	const std::string correctedMetalManifest=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"metal_host_manifest.v3");
+	const std::string metalContextProbe=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"metal_context_probe_source.v1.mm");
+	const std::string rawProbeSandbox=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"raw_probe_sandbox.transcript.v1");
+	const std::string rawProbeUnrestricted=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"raw_probe_unrestricted.transcript.v1");
+	const std::string capabilitySandbox=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"capability_sandbox.transcript.v1");
+	const std::string capabilityUnrestricted=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"capability_unrestricted.transcript.v1");
+	const std::string kernelSweep=ReadText(
+		"rendered/fire_production_calibration/r191_metal_context_reclassification/"
+		"kernel_sweep.transcript.v1");
+	const std::size_t correctedStage1=correctedMetalManifest.find(
+		"stage 1 track_a_tier8_full_window_spectrum_animation_delivery\n");
+	const std::size_t correctedStage2=correctedMetalManifest.find(
+		"stage 2 track_b_live_metal_consumers_and_kernel_sweep\n");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			metalContextEvidence.begin(),metalContextEvidence.end()))==
+			"3e95fb0a3de25997f96e6ec0abe137940aabca4378481f2c9f95d5d319e65a89"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			correctedMetalManifest.begin(),correctedMetalManifest.end()))==
+			"109a18a5e7803679bf35acf5adb3b34d89fb3548a549889f043414937d1e2763"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			metalContextProbe.begin(),metalContextProbe.end()))==
+			"b3cf419c987c82de631e7bc8b19f44619dd26780ce7cb32e95f4b9afb51e3a54"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			rawProbeSandbox.begin(),rawProbeSandbox.end()))==
+			"f0b40293d5d5bb5378ade367ba65f184fa3715fb3be93855070c46c8f646998d"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			rawProbeUnrestricted.begin(),rawProbeUnrestricted.end()))==
+			"45caefa25c676f36f07aba163082431ade167e76972d022742f9c9f5b080efaa"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			capabilitySandbox.begin(),capabilitySandbox.end()))==
+			"857e8e648da0db8c801ea21ecada78827368257a49a48d0f7c46d1e2be40f9dd"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			capabilityUnrestricted.begin(),capabilityUnrestricted.end()))==
+			"ac2652e894df2505341e72dc321cba5c69e91810f3e7712140ace61516701480"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			kernelSweep.begin(),kernelSweep.end()))==
+			"24d7c95b90887ce1b3c9ef229b7dbc3832bfbc262c9bb674e13152090737c011"&&
+		metalContextEvidence.find(
+			"finding workspace_sandbox_execution_context_blocked_Metal_discovery\n")!=
+			std::string::npos&&
+		metalContextEvidence.find("workspace_sandbox_enumerated_count 0\n")!=
+			std::string::npos&&
+		metalContextEvidence.find("unrestricted_enumerated_count 1\n")!=
+			std::string::npos&&
+		correctedMetalManifest.find("current_host_has_required_device 1\n")!=
+			std::string::npos&&
+		correctedMetalManifest.find("execution_context unrestricted\n")!=
+			std::string::npos&&
+		correctedMetalManifest.find("supersedes_manifest_sha256 "
+			"c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c\n")!=
+			std::string::npos&&correctedStage1!=std::string::npos&&
+		correctedStage2!=std::string::npos&&correctedStage1<correctedStage2&&
+		correctedMetalManifest.find(
+			"command ./bin/tests/FireSequenceTest --fire-production-metal-fp64-kernel-sweep\n")!=
+			std::string::npos&&
+		rawProbeSandbox.find("executable_sha256 "
+			"4650040b2451e09e5f5f80b828e9ee0162bc855336a2ae0faa6a9ae349343cde\n")!=
+			std::string::npos&&rawProbeUnrestricted.find("executable_sha256 "
+			"4650040b2451e09e5f5f80b828e9ee0162bc855336a2ae0faa6a9ae349343cde\n")!=
+			std::string::npos&&sourceSHA("rendered/fire_production_calibration/"
+			"r191_metal_context_reclassification/metal_context_probe.v1")==
+			"4650040b2451e09e5f5f80b828e9ee0162bc855336a2ae0faa6a9ae349343cde"&&
+		rawProbeSandbox.find("exit 0\ndefault_present 0\nall_device_count 0\n")!=
+			std::string::npos&&capabilitySandbox.find("exit 86\n")!=std::string::npos&&
+		kernelSweep.find("classification pre_manifest_development_qualification_not_"
+			"stage_2_execution\n")!=std::string::npos&&
+		kernelSweep.find("fp64_rounded_exact=1 fp64_mismatches=0")!=std::string::npos&&
+		kernelSweep.find("SCALAR_FCT_METAL_MIXED passed=1 fp32_byte_exact=1 "
+			"fp64_envelope=1")!=std::string::npos&&
+		kernelSweep.find("ratio_interior=18 ratio_min_margin=0.10898987999238696")!=
+			std::string::npos&&kernelSweep.find("alpha_interior=21 alpha_min_margin="
+			"0.10898987999238696")!=std::string::npos&&
+		kernelSweep.find("boundary_adjacent_limited_alpha=4")!=std::string::npos&&
+		kernelSweep.find("metal_cpu_byte_exact=1 signed_zero_red=1 "
+			"fp64_gamma128_envelope=1")!=
+			std::string::npos&&
+		metalContextProbe.find("MTLCreateSystemDefaultDevice()")!=std::string::npos&&
+		metalContextProbe.find("MTLCopyAllDevices()")!=std::string::npos,
+		"r191 distinguishes execution-context denial from absent Metal hardware and preserves tier-8-first ordering");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;

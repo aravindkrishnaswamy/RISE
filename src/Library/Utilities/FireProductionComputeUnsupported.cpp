@@ -15,6 +15,7 @@ namespace RISE
 	{
 		capability=FireProductionComputeCapability();
 		capability.backend="unavailable";
+		capability.deviceDiscovery=FireProductionDeviceBackendNotBuilt;
 		capability.structuredError=
 			"production fire compute capability unavailable: Metal is not built on this platform";
 		return true;

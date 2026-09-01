@@ -890,9 +890,48 @@ namespace
 	}
 }
 
-int main()
+int main( int argc, char** argv )
 {
 	using namespace RISE;
+	if( argc==2 && std::strcmp(argv[1],"--fire-production-metal-capability")==0 ) {
+		FireProductionComputeCapability probe;
+		if( !QueryFireProductionComputeCapability(probe) ) {
+			std::cerr << "fire_production_metal_capability query-failed\n";
+			return 89;
+		}
+		std::cout << "fire_production_metal_capability"
+			<< " discovery=" << FireProductionDeviceDiscoveryName(probe.deviceDiscovery)
+			<< " available=" << (probe.available?1:0)
+			<< " default_present=" << (probe.defaultDevicePresent?1:0)
+			<< " enumerated_count=" << probe.enumeratedDeviceCount
+			<< " identity_kernel=" << (probe.identityKernelPassed?1:0)
+			<< " device=\"" << probe.deviceName << "\""
+			<< " registry_id=" << probe.registryId
+			<< " error=\"" << probe.structuredError << "\"\n";
+		switch( probe.deviceDiscovery ) {
+		case FireProductionDeviceAvailable:return probe.available?0:89;
+		case FireProductionDeviceBlockedByExecutionContext:return 86;
+		case FireProductionDeviceAbsent:return 87;
+		case FireProductionDeviceBackendNotBuilt:return 88;
+		default:return 89;
+		}
+	}
+	Check(ClassifyFireProductionDeviceDiscovery(false,true,true,1u)==
+			FireProductionDeviceBackendNotBuilt&&
+		ClassifyFireProductionDeviceDiscovery(true,true,true,0u)==
+			FireProductionDeviceAvailable&&
+		ClassifyFireProductionDeviceDiscovery(true,true,false,1u)==
+			FireProductionDeviceBlockedByExecutionContext&&
+		ClassifyFireProductionDeviceDiscovery(true,false,false,1u)==
+			FireProductionDeviceBlockedByExecutionContext&&
+		ClassifyFireProductionDeviceDiscovery(true,true,false,0u)==
+			FireProductionDeviceBlockedByExecutionContext&&
+		ClassifyFireProductionDeviceDiscovery(true,false,false,0u)==
+			FireProductionDeviceAbsent&&
+		std::strcmp(FireProductionDeviceDiscoveryName(
+			FireProductionDeviceBlockedByExecutionContext),
+			"blocked-by-execution-context")==0,
+		"Metal discovery classifies backend, fallback, context denial, and hardware absence distinctly");
 	const FireSimulationMethaneRecord& methane=FireSimulationMethaneRecord::PhysicalV1();
 	const FireSimulationGasOpacityRecord& opacity=
 		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
@@ -4259,6 +4298,8 @@ int main()
 		rejectedForceMetalMS==0.0,
 		"persistent allocation denial cannot escape the Metal force API boundary");
 	Check(capability.available&&capability.identityKernelPassed&&capability.backend=="metal"&&
+		capability.deviceDiscovery==FireProductionDeviceAvailable&&
+		capability.defaultDevicePresent&&capability.enumeratedDeviceCount>0u&&
 		!capability.deviceName.empty()&&!capability.deviceFamily.empty()&&
 		capability.deviceFamily!="metal-family-unreported"&&
 		capability.registryId!=0u&&capability.maximumThreadsPerThreadgroup>=8u&&
@@ -5185,6 +5226,7 @@ int main()
 		"tier-10-shaped Metal remap meets the 45 ms p95 allocation");
 	const std::string metalSource=ReadText("src/Library/Utilities/FireProductionComputeMac.mm");
 	Check(metalSource.find("newLibraryWithSource")!=std::string::npos&&
+		metalSource.find("MTLCopyAllDevices")!=std::string::npos&&
 		metalSource.find("dispatchThreads")!=std::string::npos&&
 		metalSource.find("[command commit]")!=std::string::npos&&
 		metalSource.find("MTLCommandBufferStatusCompleted")!=std::string::npos&&
@@ -5522,6 +5564,9 @@ int main()
 			"[input.acceptedGasMassDoseKGPerM2[pass] storageMode]!=MTLStorageModePrivate")!=
 			std::string::npos&&residentCompatibleDualBody.find(
 			"context.compatibleDualUpdate")!=std::string::npos&&
+		advectionMetalSource.find("constant CompatibleDualParams& p [[buffer(5)]],"
+			"uint gid [[thread_position_in_grid]]){\n"
+			"#pragma clang fp contract(off)\n uint count0=")!=std::string::npos&&
 		residentCompatibleDualBody.find("commits!=1u||reads!=0u")!=std::string::npos,
 		"compatible momentum consumes the five accepted Private primal mass fluxes in one "
 		"resident command with no host transfer");
@@ -5738,6 +5783,7 @@ int main()
 		"stage RHS keeps all setup/Vreman/force/phase grids private until one terminal staging");
 #else
 	Check(!capability.available&&!capability.identityKernelPassed&&capability.backend=="unavailable"&&
+		capability.deviceDiscovery==FireProductionDeviceBackendNotBuilt&&
 		!capability.structuredError.empty(),
 		"non-Metal production capability reports honest unavailability");
 	const std::uint32_t unsupportedInput[]={0x12345678u,0x9abcdef0u};
