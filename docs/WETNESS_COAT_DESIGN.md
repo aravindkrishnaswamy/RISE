@@ -1,7 +1,19 @@
 # Wetness and Coat Layering — Water, Dust, and Snow as an Authorable, Summonable Material System
 
-**Status:** **PHASE 1 SHIPPED (2026-08-31), census pending; Phase 2 specified,
-gated; Phase 3 a gated sketch that may be declined.** Phase 1 landed across
+**Status:** **PHASES 1 AND 2 SHIPPED (2026-08-31 / 2026-09-01), censuses
+pending; Phase 3 a gated sketch that may be declined.** Phase 2 landed across
+commits `1f929fef` (the `coated_material` triad — energy-closed, reciprocal,
+two adversarial rounds + a fresh zero-P1 gate + a polish round; furnace
+19/19 with the compensation red-proof at 46.3% loss matching the analytic WW
+prediction) and `e72f7014` (`add_wetness` re-targeted to a non-destructive
+coat-wrap, glTF `KHR_materials_clearcoat` re-enabled through
+`coated_material`, HWSS invariant recorded). Every §13 Phase-2 checklist item
+is done; exit-gate items green locally except the census-owned readings
+(§4(g), verb-scope) which remain user-run. Debts 5/6/6a are CLOSED by the
+triad; new debts 12 (near-white `coat_tint` spectral discontinuity) and 13
+(Oren-Nayar hemispherical albedo at high roughness) are open, documented.
+Phase 1 record follows.
+Phase 1 landed across
 commits `bd7555ff` (eval instrument — the pre-verb baseline pin), `aa1f0162`
 (validation scene, rain-wet cobbles, water spectra, tidepools fix), `d09064c2`
 (the `add_wetness` verb, two adversarial rounds to zero P1), `d8da392b`
