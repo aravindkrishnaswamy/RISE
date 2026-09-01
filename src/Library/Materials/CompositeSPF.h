@@ -40,6 +40,18 @@ namespace RISE
 			const Scalar thickness;			// thickness of each of the layers
 			const IPainter& extinction;		// extinction coefficient for Beer's law absorption between layers
 
+			//! Returns the IOR stack that governs the next leg of the random
+			//! walk: a ray that crossed a refracting interface carries its own
+			//! (pushed / popped) stack and MUST use it, otherwise the return
+			//! trip through a dielectric top layer is read as "entering from
+			//! outside" and both of its lobes get culled.  Rays with no stack
+			//! of their own stay in the caller's medium.  See the definition
+			//! comment in CompositeSPF.cpp for the full failure mode.
+			static const IORStack& EffectiveStack(
+					const ScatteredRay& scat,									///< [in] The scattered ray about to be handed to the other layer
+					const IORStack& ior_stack									///< [in] The stack this walk step was entered with
+					);
+
 			bool	ShouldScatteredRayBePropagated(
 					const ScatteredRay::ScatRayType type,
 					const unsigned int steps

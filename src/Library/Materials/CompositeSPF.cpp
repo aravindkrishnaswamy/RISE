@@ -50,6 +50,38 @@ CompositeSPF::~CompositeSPF( )
 	extinction.release();
 }
 
+// Returns the IOR stack that governs the NEXT leg of the random walk.
+//
+// A ScatteredRay that crossed a refracting interface carries its OWN stack
+// (DielectricSPF pushes the medium it just entered / pops the one it left).
+// The walk used to discard that and recurse with the stack it was handed,
+// which broke the RETURN trip through a dielectric top layer: the up-going
+// ray arrived at the top interface with an OUTSIDE stack, so
+// IORStack::containsCurrent() reported false, DielectricSPF took its
+// "entering from outside" branch, and BOTH lobes were then culled -- the
+// transmission lobe by the hemisphere gate (an upward direction cannot be a
+// transmission when entering from above) and the Fresnel lobe by the
+// geometric-normal gate (reflecting an upward ray about -N points down).
+// Every path that crossed the inter-layer gap therefore died inside the walk,
+// which made `extinction` and `thickness` -- both of which only ever apply to
+// gap-crossing legs -- completely inert.
+//
+// Rays that carry no stack of their own (every non-refracting lobe: diffuse,
+// glossy, mirror) keep travelling in the medium the caller was already in, so
+// they correctly fall back to the caller's stack.
+//
+// Lifetime: the returned reference aliases either the caller's stack or the
+// ScatteredRay's, and the ScatteredRay lives in the ScatteredRayContainer that
+// the enclosing loop iterates -- the recursion completes long before that
+// container is destroyed.
+const IORStack& CompositeSPF::EffectiveStack(
+	const ScatteredRay& scat,
+	const IORStack& ior_stack
+	)
+{
+	return scat.ior_stack ? *scat.ior_stack : ior_stack;
+}
+
 bool CompositeSPF::ShouldScatteredRayBePropagated(
 	const ScatteredRay::ScatRayType type,
 	const unsigned int steps
@@ -113,7 +145,7 @@ void CompositeSPF::ProcessTopLayer(
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
-				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, ior_stack );
+				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, EffectiveStack( scat_top[i], ior_stack ) );
 			}
 		}
 	}
@@ -155,7 +187,7 @@ void CompositeSPF::ProcessBottomLayer(
 				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
 				const RISEPel attenuation = ColorMath::exponential( extinction.GetColor(ri) * (-pathLength) );
 
-				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, ior_stack );
+				ProcessTopLayer( my_ri, scat_bottom[i].kray*importance*attenuation, sampler, scattered, steps+1, EffectiveStack( scat_bottom[i], ior_stack ) );
 			}
 		}
 	}
@@ -199,7 +231,7 @@ void CompositeSPF::ProcessTopLayerNM(
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
-				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, ior_stack );
+				ProcessBottomLayerNM( my_ri, scat_top[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, EffectiveStack( scat_top[i], ior_stack ) );
 			}
 		}
 	}
@@ -243,7 +275,7 @@ void CompositeSPF::ProcessBottomLayerNM(
 				const Scalar extinctionNM = extinction.GetColorNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
-				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, ior_stack );
+				ProcessTopLayerNM( my_ri, scat_bottom[i].krayNM*importance*attenuation, sampler, nm, scattered, steps+1, EffectiveStack( scat_bottom[i], ior_stack ) );
 			}
 		}
 	}
