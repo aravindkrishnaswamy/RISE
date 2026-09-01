@@ -125,7 +125,14 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   layering -- `rainwet_cobbles.RISEscene`, the docs/WETNESS_COAT_DESIGN.md section 6.5
   `add_wetness` worked example: a `polished_material` cobblestone patch whose pooled
   joints/damp flats/dry crowns come from one `curv`+`occlusion()` mask prelude shared
-  byte-for-byte across the albedo/tau/scattering chunks)
+  byte-for-byte across the albedo/tau/scattering chunks;
+  `lacquer_and_rain_still_life.RISEscene`, the Phase-2 `coated_material` hero still
+  life: amber-varnished turned wood whose tint deepens at curvature transitions via a
+  `curv`-driven `coat_thickness`, a worn oiled-brass box whose `coat_weight` rides
+  `occlusion`/`curv` so the coat survives in the recess and wears off handled edges,
+  and a wet/dry stone pair whose darkening+saturation come purely from the layered
+  transport's per-wavelength recycling -- no `pow(base,k)` anywhere; the wet gleam
+  needed a small hard raking light, the documented soft-light-on-mirror-lobe lesson)
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

@@ -880,6 +880,22 @@ go/no-go signal is the **textured-albedo refusal rate** measured in Phase 1
 
 ### 6.1 What it emits
 
+**AMENDED (2026-09-01) — this section describes the PHASE-1 emission, now
+superseded by the shipped Phase-2 re-target (§13 Phase 2 item 8, commit
+`e72f7014`).** As shipped, the Lambertian branch no longer rewrites the base
+into `polished_material`: it **wraps the untouched base material in a minted
+`coated_material`** (`coat_weight` ← the unchanged §6.3 `wet` mask;
+`coat_roughness` ← the gloss band re-expressed in GGX-alpha space; no
+`pow(base, k)` darkening painter — the coat transport darkens via §7's
+per-wavelength recycling) and rebinds every bound object, `csg_object`
+material overrides included. The listing below and §6.5's worked example
+remain valid as the **hand-authorable Phase-1 recipe** (`polished_material` +
+explicit `k` — still the only route with a tunable darkening exponent, per
+the skills text), and `rainwet_cobbles.RISEscene` deliberately keeps that
+shape; `rainwet_courtyard_night.RISEscene` shows both shapes side by side.
+Read this section as "the recipe"; read the verb's emission from the shipped
+source and `tests/AgentAddWetnessTest.cpp`.
+
 The verb follows `add_wear`'s mechanical pattern exactly: operate on the
 `RISE::Cst::Document`, resolve the target material's `NodeId` *before* any
 structural change, rebind the slots, then splice the new field chunks in at the
@@ -1097,6 +1113,17 @@ Reading it against §2:
   computed radius degrades to the neutral fallback on indexed meshes
   ([ChunkParserRegistry.cpp:1601](../src/Library/Parsers/ChunkParserRegistry.cpp)).
   Inherited verbatim from `add_wear`; must be repeated correctly.
+- **AMENDED (2026-09-01) — `ridge_shed` is calibrated to jointed
+  cobblestone-scale geometry and does not port across geometry scales.**
+  `curv` is dimensionless but scales with the geometry's own curvature at its
+  bbox scale, so on a small uniformly-convex primitive (a single rounded
+  pebble) the canonical `ridge_shed 2.0–2.6` saturates `ridge` to 1
+  everywhere, zeroing `damp_raw` regardless of `base_wetness` — the mask
+  silently becomes a no-op (execution-found while authoring
+  `lacquer_and_rain_still_life.RISEscene`; the fix there was `ridge_shed 0`
+  for that geometry class). Authors reusing the prelude on non-jointed or
+  small-scale geometry should re-derive `ridge_shed` from a debug
+  visualization of `clamp(curv*ridge_shed,0,1)` before trusting the mask.
 - `base_wetness` is the **uniform term**, and it is what makes a flat wet street
   expressible at all: on planar geometry `curv` and `occlusion` are both inert, so
   without it the whole mask would collapse to zero (§6.4 clause 3, §6.9).
