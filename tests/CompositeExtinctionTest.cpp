@@ -5,7 +5,8 @@
 //
 //  WHAT THIS CATCHES (measured 2026-09-01)
 //
-//  Before the CompositeSPF::EffectiveStack fix, `extinction` and `thickness`
+//  Before the CompositeSPF ior-stack walk fix (now the two-stack
+//  EvalStack / GapStackBelowTop design), `extinction` and `thickness`
 //  were COMPLETELY INERT: an env-lit dielectric-over-diffuse composite
 //  rendered bit-near-identically for extinction 0.001 vs 1000, for thickness
 //  0.0001 vs 50, and an asymmetric per-channel extinction (R=1000, G=1000,

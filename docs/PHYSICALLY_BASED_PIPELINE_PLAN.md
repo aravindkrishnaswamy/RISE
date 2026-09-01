@@ -660,8 +660,14 @@ clearcoat-over-paint scenes; its own landing.
 > exiting `kray` of 0.949 with the pushed stack.  The same defect made
 > `composite_material`'s `extinction` and `thickness` **exactly inert** — both
 > apply only to gap-crossing legs — which is why an asymmetric per-channel
-> extinction rendered exactly R=G=B.  Fixed by `CompositeSPF::EffectiveStack`
-> (all four `Process*` variants, RGB and NM).  Row #3 moves
+> extinction rendered exactly R=G=B.  Fixed by threading TWO IOR stacks through
+> all four `Process*` variants (RGB and NM): `CompositeSPF::EvalStack` selects
+> outside-vs-gap by the incoming ray's direction, and `GapStackBelowTop` updates
+> the gap stack only on the top→bottom leg.  (A first-cut fix threaded each
+> scattered ray's own stack unconditionally; review caught that this made a
+> stack-sensitive *bottom* layer — both layers key the stack on the same
+> `IObject*` — read `containsCurrent()==true` and take its from-inside branch,
+> the same double-cull one layer down.)  Row #3 moves
 > **{0.040, 0.042, 0.089, 0.388} → {0.3339, 0.3044, 0.3128, 0.5324}**, and the
 > row is now gated at `kPostureMatchesPrediction` (eps 0.03) rather than waved
 > through as a known failure.  The residual deficit *is* budget truncation —

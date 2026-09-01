@@ -490,8 +490,14 @@ written to eliminate. Any new coat must put its absorption on an
 > geometric-normal gate).  The interface emitted nothing, so every path that
 > crossed the inter-layer gap died inside the walk — which is also why
 > `extinction` and `thickness` were **exactly inert**: both apply only to
-> gap-crossing legs.  Fixed by `CompositeSPF::EffectiveStack` in all four
-> `Process*` variants; config 3 moves {0.040, 0.042, 0.089, 0.388} →
+> gap-crossing legs.  Fixed by threading TWO stacks through all four `Process*`
+> variants — `CompositeSPF::EvalStack` picks outside-vs-gap by ray direction and
+> `GapStackBelowTop` updates the gap only on the top→bottom leg.  (A first-cut
+> single-stack fix threaded the scattered ray's stack unconditionally; review
+> caught that it made a stack-sensitive *bottom* layer read
+> `containsCurrent()==true` — both layers share one `IObject*` key — and take
+> its from-inside branch, breaking dielectric/dielectric and the shipped
+> `mat_double_composite`.)  Config 3 moves {0.040, 0.042, 0.089, 0.388} →
 > **{0.3339, 0.3044, 0.3128, 0.5324}** and is now a prediction-gated row.  It
 > still does not conserve — the residual *is* budget truncation of the
 > total-internally-reflected population — so **item 3's conclusion for this

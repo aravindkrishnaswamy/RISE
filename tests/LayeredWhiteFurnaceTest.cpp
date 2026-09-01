@@ -680,8 +680,9 @@ int main()
 	//    culled -- the interface emitted nothing at all.  EVERY gap-crossing
 	//    path died inside the walk, which is why this row sat at exactly the
 	//    bare-Fresnel reflectance and why composite_material's `extinction` and
-	//    `thickness` were completely inert.  Fixed via
-	//    CompositeSPF::EffectiveStack; guarded by tests/CompositeExtinctionTest.
+	//    `thickness` were completely inert.  Fixed via the two-stack walk
+	//    (CompositeSPF::EvalStack / GapStackBelowTop); guarded by
+	//    tests/CompositeExtinctionTest.
 	//
 	//    Measured here: {0.0400, 0.0415, 0.0892, 0.3877} before the fix ->
 	//    {0.3339, 0.3044, 0.3128, 0.5324} after, bit-identical across runs.
@@ -697,7 +698,7 @@ int main()
 	//    eps = 0.03 is ~10x the MC noise on a 100k-sample mean here.
 	static const double kPredDielLamb[NUM_THETA] = { 0.3339, 0.3044, 0.3128, 0.5324 };
 	{ ConfigReport& r = addPredicted( "3. Dielectric / Lambertian",
-	    "post-EffectiveStack recovery locked in: predicted rho={0.3339,0.3044,0.3128,0.5324} "
+	    "post-ior-stack-fix recovery locked in: predicted rho={0.3339,0.3044,0.3128,0.5324} "
 	    "(pre-fix was {0.0400,0.0415,0.0892,0.3877}, eps 0.03); residual deficit is finite "
 	    "recursion-budget truncation of the TIR population",
 	    kPredDielLamb, 0.03 );
