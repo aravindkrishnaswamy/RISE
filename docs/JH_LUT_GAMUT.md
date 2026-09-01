@@ -81,6 +81,8 @@ This is intrinsic to wide-gamut RGB spaces with primaries outside the locus. Cha
 
 The 22 % isn't impacting any production scene. It's an LUT-quality metric, not a render-quality metric.
 
+**2026-09-01 update — the WHITE corner cell IS a render-quality issue, now guarded engine-wide.** Authored white `(1,1,1)` uplifts to a spectrum that collapses above ~620 nm (1.28e-5 @ 660 nm — measured curve in `CoatedLayer.h` `PassTransmittance`), which cost ~8–10 % of the red channel *per bounce* on every multiplicative slot (reflectance / tint / transmittance / alpha / extinction) in spectral renders while RGB stayed exact. Commit `c3d38ea2` generalizes `CoatedBRDF::ResolveCoat`'s decision into `IsUntintedWhite` / `GuardedGetColorNM` (`src/Library/Interfaces/IPainter.h`) and applies it across all material + shader-op multiplicative slots; regression tripwires in `tests/JHWhiteGuardSpectralTest.cpp`. Emitter *exitance* slots are deliberately unguarded — for a source term the albedo uplift of white is round-trip-exact, and flat 1.0 would shift the whitepoint. Known residual the guard does NOT touch: grey albedos uplift non-flat (0.5 grey → 0.36 @ 660 nm, round-trip-preserving), so every throughput multiply compounds metamerically (~19 % R per multiply measured at 0.95 grey) — that is the JH-shape limitation this document describes, not a per-slot bug.
+
 ## Worst-case residual translation
 
 Mean residual 1.6 × 10⁻² in ROMM RGB units = ~1.6 % chromatic error per channel after round-trip. Max 0.39 = ~39 % off in the worst single cell, but those cells are at `(R=1, G=0, B=0)`-style corners. An 8-bit display quantum is ~4 × 10⁻³, so:

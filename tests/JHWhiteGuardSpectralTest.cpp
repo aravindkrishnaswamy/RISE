@@ -36,6 +36,21 @@
 //         collapses like white's -- because RGBAlbedoSpectrum::FromRGB
 //         clamps to [0,1] before the LUT lookup, documenting why the
 //         floor-only check is exact for Albedo-kind painters.
+//      7. PerfectReflectorSPF::ScatterNM at an authored-white reflectance:
+//         the specular ray's krayNM == exactly 1.0 at 660nm.  End-to-end
+//         through the highest-exposure delta-BSDF site (mutation-probe
+//         confirmed this guard had NO tripwire prior to this check).
+//      8. PerfectRefractorSPF::ScatterNM at an authored-white refractance
+//         with a non-dispersive IOR: the transmitted (eRayRefraction)
+//         ray's krayNM is wavelength-flat -- identical at 660nm and
+//         550nm -- even though the Fresnel term `ref` and the raw
+//         (unguarded) uplift both vary enormously across that span.
+//      9. GGXBRDF::valueNM with white diffuse + white specular
+//         (conductor Fresnel, non-dispersive ior/ext) at a fixed
+//         off-mirror geometry: valueNM(660nm) == valueNM(550nm) exactly,
+//         AND both equal the corresponding (identical) channel of the
+//         RGB value() at the same geometry -- the guard applied through
+//         a third, independent material family.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -50,14 +65,24 @@
 
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
+#include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/LambertianBRDF.h"
 #include "../src/Library/Materials/SheenBRDF.h"
+#include "../src/Library/Materials/PerfectReflectorSPF.h"
+#include "../src/Library/Materials/PerfectRefractorSPF.h"
+#include "../src/Library/Materials/GGXBRDF.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Math3D/Constants.h"
 #include "../src/Library/Utilities/MediaPathLocator.h"
+#include "../src/Library/Utilities/RandomNumbers.h"
+#include "../src/Library/Utilities/IndependentSampler.h"
+#include "../src/Library/Utilities/IORStack.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/IPainter.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Interfaces/ISPF.h"
+
+#include "TestStubObject.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -114,8 +139,8 @@ int main()
 
 	const RayIntersectionGeometric ri = MakeDummyRi();
 
-	// [1/4] Document the raw LUT collapse the guard exists for.
-	std::cout << "\n[1/4] Raw GetColorNM on white collapses at the red end (documents the bug)\n";
+	// [1/9] Document the raw LUT collapse the guard exists for.
+	std::cout << "\n[1/9] Raw GetColorNM on white collapses at the red end (documents the bug)\n";
 	{
 		IPainter* p = nullptr;
 		RISE_API_CreateUniformColorPainter( &p, RISEPel( 1, 1, 1 ) );
@@ -125,8 +150,8 @@ int main()
 		p->release();
 	}
 
-	// [2/4] GuardedGetColorNM(white) == exactly 1.0 at several red/NIR bins.
-	std::cout << "\n[2/4] GuardedGetColorNM(white) == exactly 1.0\n";
+	// [2/9] GuardedGetColorNM(white) == exactly 1.0 at several red/NIR bins.
+	std::cout << "\n[2/9] GuardedGetColorNM(white) == exactly 1.0\n";
 	{
 		IPainter* p = nullptr;
 		RISE_API_CreateUniformColorPainter( &p, RISEPel( 1, 1, 1 ) );
@@ -139,9 +164,9 @@ int main()
 		p->release();
 	}
 
-	// [3/4] GuardedGetColorNM(0.95 grey) must NOT fire the guard: it must
+	// [3/9] GuardedGetColorNM(0.95 grey) must NOT fire the guard: it must
 	// equal the raw (unguarded) GetColorNM sample, and be < 1.
-	std::cout << "\n[3/4] GuardedGetColorNM(0.95 grey) == raw GetColorNM (guard does not fire)\n";
+	std::cout << "\n[3/9] GuardedGetColorNM(0.95 grey) == raw GetColorNM (guard does not fire)\n";
 	{
 		IPainter* p = nullptr;
 		RISE_API_CreateUniformColorPainter( &p, RISEPel( 0.95, 0.95, 0.95 ) );
@@ -156,8 +181,8 @@ int main()
 		p->release();
 	}
 
-	// [4/4] End-to-end through LambertianBRDF::valueNM.
-	std::cout << "\n[4/4] LambertianBRDF::valueNM: white == INV_PI exactly, 0.95 grey < INV_PI\n";
+	// [4/9] End-to-end through LambertianBRDF::valueNM.
+	std::cout << "\n[4/9] LambertianBRDF::valueNM: white == INV_PI exactly, 0.95 grey < INV_PI\n";
 	const RayIntersectionGeometric shadingRi = MakeShadingRi();
 	{
 		IPainter* white = nullptr;
@@ -186,12 +211,12 @@ int main()
 		grey->release();
 	}
 
-	// [5/5] End-to-end through SheenBRDF::valueNM (Charlie sheen lobe --
+	// [5/9] End-to-end through SheenBRDF::valueNM (Charlie sheen lobe --
 	// a second material family independent of Lambertian).  Pick a
 	// light/view pair off the mirror direction so D*V is nonzero (at
 	// nDotH == 1 the Charlie distribution is exactly 0 regardless of the
 	// guard, which would make this check vacuous).
-	std::cout << "\n[5/5] SheenBRDF::valueNM(white) == value(white)'s channel exactly at 660nm\n";
+	std::cout << "\n[5/9] SheenBRDF::valueNM(white) == value(white)'s channel exactly at 660nm\n";
 	{
 		IPainter* white = nullptr;
 		RISE_API_CreateUniformColorPainter( &white, RISEPel( 1, 1, 1 ) );
@@ -214,16 +239,16 @@ int main()
 		roughness->release();
 	}
 
-	// [6/6] Chromatic-boosted (1.2,1.0,1.0): documents WHY the floor-only
+	// [6/9] Chromatic-boosted (1.2,1.0,1.0): documents WHY the floor-only
 	// `IsUntintedWhite` check is exact even though only two of its three
 	// channels are exactly 1.0.  min(1.2,1.0,1.0) == 1.0 >= 1-1e-6, so the
 	// guard fires -- and because `RGBAlbedoSpectrum::FromRGB` clamps its
 	// input to [0,1] BEFORE the LUT lookup (RGBSpectra.h:39-40,
 	// RGBToSpectrumTable.h:93), the raw (unguarded) uplift of this triple
 	// clamps to the same (1,1,1) pure white and collapses at the red end
-	// exactly like [1/4]'s raw-white case, so the guard's answer is exact
+	// exactly like [1/9]'s raw-white case, so the guard's answer is exact
 	// here too, not merely a floor-only approximation.
-	std::cout << "\n[6/6] Chromatic-boosted (1.2,1.0,1.0): guard fires, raw uplift collapses like white\n";
+	std::cout << "\n[6/9] Chromatic-boosted (1.2,1.0,1.0): guard fires, raw uplift collapses like white\n";
 	{
 		IPainter* p = nullptr;
 		RISE_API_CreateUniformColorPainter( &p, RISEPel( 1.2, 1.0, 1.0 ) );
@@ -234,6 +259,167 @@ int main()
 		Check( raw660 < Scalar(0.01), "raw uplift of (1.2,1,1) also collapses at 660nm (albedo clamp == white's uplift)" );
 		Check( guarded660 == Scalar(1), "GuardedGetColorNM((1.2,1,1)) == exactly 1.0 (guard fires on the floor check)" );
 		p->release();
+	}
+
+	// [7/9] End-to-end through PerfectReflectorSPF::ScatterNM -- the highest-
+	// exposure delta-reflection site (mutation probe: reverting this guard
+	// site to raw GetColorNM survived the entire pre-existing suite).  A
+	// white mirror's specular krayNM must be exactly 1.0 at 660nm -- an
+	// independently-derived expected value (the literal constant), never
+	// GuardedGetColorNM itself.
+	std::cout << "\n[7/9] PerfectReflectorSPF::ScatterNM(white): krayNM == exactly 1.0 at 660nm\n";
+	{
+		IPainter* white = nullptr;
+		RISE_API_CreateUniformColorPainter( &white, RISEPel( 1, 1, 1 ) );
+
+		PerfectReflectorSPF* mirror = new PerfectReflectorSPF( *white );
+		mirror->addref();
+
+		StubObject* stub = new StubObject();
+		stub->addref();
+		const IORStack iorStack = MakeTestIORStack( stub );
+		RandomNumberGenerator rng;
+		IndependentSampler sampler( rng );
+
+		ScatteredRayContainer scattered;
+		mirror->ScatterNM( shadingRi, sampler, Scalar(660), scattered, iorStack );
+
+		Check( scattered.Count() >= 1, "sanity: white mirror ScatterNM produces at least one ray" );
+		bool foundSpecular = false;
+		for( unsigned int i = 0; i < scattered.Count(); ++i ) {
+			if( scattered[i].type == ScatteredRay::eRayReflection ) {
+				foundSpecular = true;
+				std::printf( "    mirror krayNM(660nm) = %.9f\n", double( scattered[i].krayNM ) );
+				Check( scattered[i].krayNM == Scalar(1), "PerfectReflectorSPF::ScatterNM(white).krayNM == exactly 1.0 at 660nm" );
+			}
+		}
+		Check( foundSpecular, "sanity: found the specular reflection lobe (test is not vacuous)" );
+
+		mirror->release();
+		white->release();
+		stub->release();
+	}
+
+	// [8/9] End-to-end through PerfectRefractorSPF::ScatterNM -- a second
+	// delta-BSDF family (transmission, not reflection).  `ref` depends on
+	// Fresnel reflectance, which is itself wavelength-dependent in general,
+	// so we don't compare against a fixed literal; instead we pin the
+	// SHARPER invariant the guard buys us: with a non-dispersive IOR (so
+	// `ref` -- and every other geometric factor -- is bit-identical at both
+	// wavelengths), the transmitted ray's krayNM must be wavelength-flat.
+	// The raw (unguarded) uplift of white is NOT wavelength-flat (it
+	// collapses at the red end, per [1/9] above) -- so this invariant is a
+	// genuine tripwire, not a restatement of the helper.
+	std::cout << "\n[8/9] PerfectRefractorSPF::ScatterNM(white, non-dispersive IOR): krayNM(660nm) == krayNM(550nm)\n";
+	{
+		IPainter* white = nullptr;
+		RISE_API_CreateUniformColorPainter( &white, RISEPel( 1, 1, 1 ) );
+		IScalarPainter* ior = nullptr;
+		RISE_API_CreateUniformScalarPainter( &ior, Scalar(1.5) );
+
+		PerfectRefractorSPF* glass = new PerfectRefractorSPF( *white, *ior );
+		glass->addref();
+
+		StubObject* stub = new StubObject();
+		stub->addref();
+		// Environment IOR 1.0 (air), no object yet pushed -> containsCurrent()
+		// is false -> the SPF takes the "entering" branch (air -> glass),
+		// which can never TIR, guaranteeing a transmitted lobe exists.
+		const IORStack iorStack = MakeTestIORStack( stub, Scalar(1.0) );
+		RandomNumberGenerator rng;
+		IndependentSampler sampler( rng );
+
+		Scalar krayAt660 = -1, krayAt550 = -1;
+		bool found660 = false, found550 = false;
+
+		{
+			ScatteredRayContainer scattered;
+			glass->ScatterNM( shadingRi, sampler, Scalar(660), scattered, iorStack );
+			for( unsigned int i = 0; i < scattered.Count(); ++i ) {
+				if( scattered[i].type == ScatteredRay::eRayRefraction ) {
+					found660 = true;
+					krayAt660 = scattered[i].krayNM;
+				}
+			}
+		}
+		{
+			ScatteredRayContainer scattered;
+			glass->ScatterNM( shadingRi, sampler, Scalar(550), scattered, iorStack );
+			for( unsigned int i = 0; i < scattered.Count(); ++i ) {
+				if( scattered[i].type == ScatteredRay::eRayRefraction ) {
+					found550 = true;
+					krayAt550 = scattered[i].krayNM;
+				}
+			}
+		}
+
+		Check( found660 && found550, "sanity: transmitted (eRayRefraction) lobe present at both wavelengths (not TIR)" );
+		Check( krayAt660 > Scalar(0), "sanity: krayNM(660nm) is nonzero (test is not vacuous)" );
+		std::printf( "    glass krayNM(660nm) = %.9f, krayNM(550nm) = %.9f\n", double( krayAt660 ), double( krayAt550 ) );
+		Check( krayAt660 == krayAt550, "PerfectRefractorSPF::ScatterNM(white).krayNM is wavelength-flat (660nm == 550nm)" );
+
+		glass->release();
+		white->release();
+		ior->release();
+		stub->release();
+	}
+
+	// [9/9] End-to-end through GGXBRDF::valueNM (conductor Fresnel mode,
+	// non-dispersive ior/ext) -- a third material family independent of
+	// Lambertian/Sheen and of the two delta-BSDF SPFs above.  Off-mirror
+	// light direction so D*G2 (and therefore the specular lobe) is nonzero.
+	// Both diffuse and specular painters are white, so:
+	//   (a) valueNM(660nm) == valueNM(550nm) exactly -- alphaX/alphaY/ior/
+	//       ext are all non-dispersive IScalarPainter reads, so the ONLY
+	//       possible wavelength dependence left is the two GuardedGetColorNM
+	//       calls (specColor, diffuse); if either regresses to raw
+	//       GetColorNM, white's LUT collapse breaks this equality.
+	//   (b) valueNM(660nm) equals value()'s (RGB) channel exactly -- the
+	//       RGB path reads the same white/white painters via GetColor (no
+	//       LUT uplift at all), so this pins the guarded NM path to the
+	//       LUT-free RGB reference.
+	std::cout << "\n[9/9] GGXBRDF::valueNM(white diffuse, white specular): wavelength-flat and RGB-matching\n";
+	{
+		IPainter* diffuse = nullptr;
+		RISE_API_CreateUniformColorPainter( &diffuse, RISEPel( 1, 1, 1 ) );
+		IPainter* specular = nullptr;
+		RISE_API_CreateUniformColorPainter( &specular, RISEPel( 1, 1, 1 ) );
+		IScalarPainter* alphaX = nullptr;
+		RISE_API_CreateUniformScalarPainter( &alphaX, Scalar(0.3) );
+		IScalarPainter* alphaY = nullptr;
+		RISE_API_CreateUniformScalarPainter( &alphaY, Scalar(0.3) );
+		IScalarPainter* iorS = nullptr;
+		RISE_API_CreateUniformScalarPainter( &iorS, Scalar(2.5) );
+		IScalarPainter* extS = nullptr;
+		RISE_API_CreateUniformScalarPainter( &extS, Scalar(3.0) );
+
+		GGXBRDF* ggx = new GGXBRDF( *diffuse, *specular, *alphaX, *alphaY, *iorS, *extS );
+		ggx->addref();
+
+		// Off-mirror light direction (mirrors the SheenBRDF setup above):
+		// with vNormal/onb.w() == (0,0,1) and view == (0,0,1) (ray arrives
+		// along (0,0,-1)), the mirror direction is exactly (0,0,1); using
+		// vLightIn == (0.6,0,0.8) keeps h != n so D, G2 are both nonzero.
+		const Vector3 vLightIn( 0.6, 0.0, 0.8 );
+
+		const Scalar nmAt660 = ggx->valueNM( vLightIn, shadingRi, Scalar(660) );
+		const Scalar nmAt550 = ggx->valueNM( vLightIn, shadingRi, Scalar(550) );
+		const RISEPel rgbVal = ggx->value( vLightIn, shadingRi );
+
+		std::printf( "    valueNM(660nm) = %.9f, valueNM(550nm) = %.9f, value()[0] = %.9f\n",
+			double( nmAt660 ), double( nmAt550 ), double( rgbVal[0] ) );
+
+		Check( nmAt660 > Scalar(0), "sanity: valueNM(660nm) is nonzero (off-mirror geometry is not vacuous)" );
+		Check( nmAt660 == nmAt550, "GGXBRDF::valueNM(white,white) is wavelength-flat (660nm == 550nm)" );
+		Check( nmAt660 == rgbVal[0], "GGXBRDF::valueNM(white,white, 660nm) == value()'s (RGB) channel exactly" );
+
+		ggx->release();
+		diffuse->release();
+		specular->release();
+		alphaX->release();
+		alphaY->release();
+		iorS->release();
+		extS->release();
 	}
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";
