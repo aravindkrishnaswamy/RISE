@@ -459,7 +459,7 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! Build the `tools/list` result: the 35 existing AgentRpc verbs,
+			//! Build the `tools/list` result: the 41 existing AgentRpc verbs,
 			//! each carrying an inputSchema faithful to AgentRpc.cpp's ACTUAL
 			//! parsing, and a description mined from AgentRpc.h's verb-doc
 			//! comments for the gotchas an external MCP client needs (paired
@@ -2670,7 +2670,7 @@ namespace RISE
 				}
 
 				//----------------------------------------------------------
-				// tools/list -> the 36 verbs as MCP tools.
+				// tools/list -> the 41 verbs as MCP tools.
 				//----------------------------------------------------------
 				if( m == "tools/list" ) {
 					JsonValue result = JsonValue::MakeObject();

@@ -1217,6 +1217,25 @@ static void TestDesignNote()
 		       "on the vocabulary" );
 	}
 
+	// (3b) Rain language + ONLY metallic candidates -- SILENT.  Regression
+	// for the missing !addWetName guard (2026-08-31 review round): metallic
+	// materials COUNT as wet candidates (the clause teaches the explicit-
+	// naming rule for them) but the SELECTOR skips them, so without the
+	// guard the note fired with an EMPTY material name, advertising a bare
+	// call that then refuses.  Every plain conductor-default ggx_material
+	// classifies metallic, making this the common case, not a corner.
+	{
+		std::string body = Preamble();
+		body += SphereGeo( "s" );
+		body += GgxMetal( "mat_chrome", "pnt_stone", 0.15 );
+		body += Obj( "o1", "s", "mat_chrome", 0 );
+		body += "\n# Rain hammers the chrome awning all night.\n";
+		Check( hasCode( Agent::AgentSession::ValidateText( body ), kCode ) == nullptr,
+		       "I3b MONEY: rain language + only-metallic candidates -- SILENT; the note never "
+		       "advertises a bare call the selector cannot satisfy (the !addWetName guard is "
+		       "load-bearing here, unlike condition L's belt-and-braces twin)" );
+	}
+
 	// (4) SELF-DISARM: after add_wetness runs the sole candidate, the note
 	// stops firing (wetCandidateCount drops to 0, below the gate).
 	{

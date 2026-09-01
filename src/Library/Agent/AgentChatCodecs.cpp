@@ -4,7 +4,7 @@
 //    LLM chat loop (see AgentChatCodecs.h).
 //
 //  Layout:
-//    (1) the THIRTY-THREE provider-neutral tool definitions -- thirty-two are
+//    (1) the THIRTY-SIX provider-neutral tool definitions -- thirty-five are
 //        1:1 with the AgentRpc verbs (parameter names/shapes mirror
 //        AgentRpc.cpp); `ask_user` is the one CHAT-LOOP-ONLY exception
 //        -- it has no AgentRpc verb and no AgentMcpAdapter tool, it is

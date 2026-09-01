@@ -7517,7 +7517,14 @@ namespace RISE
 				// scan reads the Document structurally, never its raw text.
 				c.docTextImpliesRain = ( c.wetCandidateCount > 0 ) &&
 					DocumentTextImpliesRain_( RISE::Cst::SerializeCst( doc ) );
-				c.conditionP = c.docTextImpliesRain && c.wetCandidateCount >= kWetCandidateGate;
+				// The !addWetName guard is LOAD-BEARING here, unlike its
+				// belt-and-braces twin on condition L: SelectMaterialToWet_
+				// deliberately skips metallic candidates while
+				// wetCandidateCount counts them, so an all-metallic rain
+				// scene would otherwise fire a note with an empty name --
+				// advertising a bare call that then refuses.
+				c.conditionP = c.docTextImpliesRain && c.wetCandidateCount >= kWetCandidateGate &&
+					!c.addWetName.empty();
 
 				// (2026-08-30) Condition M's resolution pass -- the "emissive-
 				// on-opaque-shell" translucency fake.  GEOMETRY COMES FROM THE
@@ -37111,9 +37118,10 @@ namespace RISE
 			// ---- (5) Splice the field chunks in ahead of the material
 			// (declare-before-use).  Each splice targets the material's
 			// ORIGINAL item index -- add_wear's discipline -- so the LAST
-			// call below lands FIRST in the final text; the order chosen here
-			// reproduces sec 6.5's worked example (tau, scattering,
-			// reflectance, material) for the Lambertian branch.
+			// call below lands FIRST in the final text: reflectance, then
+			// tau, then scattering, then the material.  (Sec 6.5's listing
+			// orders them differently; declare-before-use is the only
+			// ordering contract, and it holds either way.)
 			for( std::size_t i = 0; i < roughFieldNames.size(); ++i ) {
 				const int before = RISE::Cst::DocItemCount( work );
 				work = CollapseSpliceChunkAt_( work, pick->itemIndex,
