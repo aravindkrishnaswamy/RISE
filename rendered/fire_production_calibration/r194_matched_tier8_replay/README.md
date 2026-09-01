@@ -29,9 +29,12 @@ At the 60 m/s crossing, the aligned column advection rate is
 11691.86634461989 kg/(m2 s2), versus 9.538979544294932 kg/(m2 s2) buoyancy;
 Vreman spans 3.1672589830128888e-4 to 1.935882493853569e-2 m2/s. The
 restoration impulse maximum (0.36649751663208008 kg/(m2 s)) remains far below
-the physical impulse maximum (5.3986992835998535 kg/(m2 s)). These data name
-the reproduced mechanism as advective focusing, not restoration or a
-Vreman-silent column.
+the physical impulse maximum (5.3986992835998535 kg/(m2 s)). The aligned
+stress/advection magnitude ratios at the 15/30/60 m/s crossings are
+approximately 3.01e-7, 1.76e-2, and 1.41e-2. These data name the reproduced
+mechanism as advective focusing rather than restoration: nu_t is nonzero, but
+SGS stress is dynamically subdominant, so the r181 dissipation-silent
+description remains applicable in its dynamical rather than bitwise sense.
 
 The r181 statement that tier 8 was healthy was an extrapolation error: its
 sample ended at 1.826 s, while this onset is late and abrupt. The legacy
