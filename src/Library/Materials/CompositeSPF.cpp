@@ -13,9 +13,28 @@
 
 #include "pch.h"
 #include "CompositeSPF.h"
+#include "../Interfaces/ILog.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// composite_material's `thickness` has a parser default of 0.0 and no range
+// check, so a negative value reaches us intact.  It goes straight into the
+// Beer-Lambert exponent below, where a negative path length turns attenuation
+// into GAIN -- exp(-extinction * negative) > 1, unbounded energy created on
+// every gap crossing.  That was harmless only while the walk was broken and
+// nothing ever crossed the gap; it is reachable now, so clamp it to 0 (no
+// gap, no absorption) and say so rather than rendering an energy source.
+static Scalar ClampCompositeThickness( const Scalar thickness )
+{
+	if( thickness < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"CompositeSPF:: negative inter-layer thickness (%g) would make the Beer-Lambert term amplify rather than absorb -- clamping to 0",
+			thickness );
+		return 0;
+	}
+	return thickness;
+}
 
 CompositeSPF::CompositeSPF(
 	const ISPF& top_,
@@ -35,7 +54,7 @@ CompositeSPF::CompositeSPF(
   max_refraction_recursion( max_refraction_recursion_ ),
   max_diffuse_recursion( max_diffuse_recursion_ ),
   max_translucent_recursion( max_translucent_recursion_ ),
-  thickness( thickness_ ),
+  thickness( ClampCompositeThickness( thickness_ ) ),
   extinction( extinction_ )
 {
 	top.addref();

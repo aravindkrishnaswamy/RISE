@@ -20,6 +20,23 @@
 using namespace RISE;
 using namespace RISE::Implementation;
 
+// Same exposure as CompositeSPF: `thickness` feeds the Beer-Lambert exponent
+// unguarded (the -2.0*thickness mean-path term below, and the per-direction
+// thickness/cosTheta in emittedRadiance{,NM}), so a negative value turns the
+// bottom layer's attenuation into GAIN.  Here it is worse than in the SPF --
+// the amplified value also lands in averageRadiantExitance, which drives
+// light-importance weights and photon budgets.  Clamp identically.
+static Scalar ClampCompositeThickness( const Scalar thickness )
+{
+	if( thickness < 0 ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"CompositeEmitter:: negative inter-layer thickness (%g) would make the Beer-Lambert term amplify rather than absorb -- clamping to 0",
+			thickness );
+		return 0;
+	}
+	return thickness;
+}
+
 CompositeEmitter::CompositeEmitter(
 	const IEmitter& top_,
 	const IEmitter& bottom_,
@@ -29,7 +46,7 @@ CompositeEmitter::CompositeEmitter(
   topEmitter( top_ ),
   bottomEmitter( bottom_ ),
   extinction( extinction_ ),
-  thickness( thickness_ )
+  thickness( ClampCompositeThickness( thickness_ ) )
 {
 	topEmitter.addref();
 	bottomEmitter.addref();

@@ -565,6 +565,44 @@ int main()
 	Check( dt.nCrossed > kSamples / 20,
 	       "translucent substrate returns light out through the top (nCrossed > 5% of draws)" );
 
+	// ------------------------------------------------------------
+	// 7. Negative thickness must not become an energy source.
+	//
+	//    `thickness` reaches CompositeSPF straight from the scene file (parser
+	//    default 0.0, no range check), and it lands in the Beer-Lambert
+	//    exponent as a path length.  A NEGATIVE one flips attenuation into
+	//    GAIN -- exp(-extinction * negative) > 1 -- once per gap crossing,
+	//    which the live walk now performs.  The constructor clamps it to 0
+	//    (with a warning), so a negative thickness must be
+	//    indistinguishable from zero rather than brighter than either.
+	// ------------------------------------------------------------
+	std::cout << "\n7. Negative thickness is clamped (extinction 5, thickness -0.10 vs 0.0)\n";
+	CompositeSPF* compZero = new CompositeSPF(
+		*dielectric, *lambertian, kMaxRecur, kMaxReflRecur, kMaxRefrRecur,
+		kMaxDiffRecur, kMaxTransRecur, 0.0, *extMid );
+	compZero->addref();
+	CompositeSPF* compNeg = new CompositeSPF(
+		*dielectric, *lambertian, kMaxRecur, kMaxReflRecur, kMaxRefrRecur,
+		kMaxDiffRecur, kMaxTransRecur, -0.10, *extMid );
+	compNeg->addref();
+
+	const Measurement zeroT = Measure( *compZero, 0.0 );
+	const Measurement negT  = Measure( *compNeg,  0.0 );
+	PrintMeasurement( "composite ext=5 thick= 0.00", zeroT );
+	PrintMeasurement( "composite ext=5 thick=-0.10", negT );
+
+	Check( std::fabs( negT.total - zeroT.total ) < 1e-9,
+	       "negative thickness renders exactly as thickness 0" );
+	// The standalone no-gain statement, independent of the clamp target: an
+	// UNCLAMPED -0.10 at extinction 5 amplifies each crossing by exp(0.5) or
+	// more, so this trips long before the equality above goes stale.  The 1%
+	// slack absorbs the fact that the reference (`lo`) has a real, if tiny,
+	// extinction of 0.001 rather than exactly zero.
+	Check( negT.crossed <= lo.crossed * 1.01,
+	       "no energy gain: gap-crossing energy stays at the transparent-gap level" );
+
+	compNeg->release();
+	compZero->release();
 	compDT->release();
 	translucent->release();
 	tScat->release();
