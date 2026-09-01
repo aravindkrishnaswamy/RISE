@@ -4824,6 +4824,16 @@ it was already tried and refuted here.
   in-progress state before invoking transport; scoped rollback restores the
   prior stable state on refusal, blocking callback reentry while preserving the
   ordinary retry path.
+  The next fresh test/evidence pass made the atomic-refusal RED exhaustive over
+  every nested EOS, projection, physical-flux, FCT, nonpressure, target,
+  active-set, and publication field; `complete_default` no longer means a
+  selected-field proxy. The same pass corrected the deferred Metal manifest:
+  tier-8 and tier-10 spectrum commands carry an explicit tier that is checked
+  against the checkpoint grid, and each animation stage now includes the
+  headless Rec.709-linear-to-Rec.2020/PQ ProRes 4444 encode, the required `colr`
+  atom probe, and a SHA sidecar binding the movie to every primary-frame
+  provenance sidecar. These are queued commands only; no Metal execution is
+  claimed on this host.
   Result consumption requires the expected sealed source, so an intact prior
   attempt refuses. REDs cover stale candidate, stale coefficient payload with
   current echoes, forged parent, stage order, closed constant mode, mutations

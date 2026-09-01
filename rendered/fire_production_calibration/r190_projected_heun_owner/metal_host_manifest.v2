@@ -18,9 +18,12 @@ global_preflight_end
 stage 1 track_a_tier8_full_window_spectrum_animation_delivery
   command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 8 0.0625 rendered/fire_production_calibration/r190_tier8_temporal
   command ./bin/tests/FireSequenceTest --fire-production-temporal-preview rendered/fire_production_calibration/r190_tier8_temporal rendered/fire_production_calibration/r190_tier8_temporal/preview
-  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum rendered/fire_production_calibration/r190_tier8_temporal/production_final.checkpoint rendered/fire_production_calibration/r190_tier8_temporal rendered/fire_production_calibration/r190_tier8_temporal/preview rendered/fire_production_calibration/r190_tier8_temporal/spectrum
+  command python3 tools/encode_pq_prores.py rendered/fire_production_calibration/r190_tier8_temporal/preview/temporal_primary_*.exr | ffmpeg -y -f rawvideo -pix_fmt yuv444p10le -s 64x64 -r 16 -i - -vf "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" -c:v prores_ks -profile:v 4444 -movflags +write_colr rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov
+  command ffprobe -v trace rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov 2>&1 | grep "nclc: pri 9 trc 16 matrix 9"
+  command /usr/bin/shasum -a 256 rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov rendered/fire_production_calibration/r190_tier8_temporal/preview/temporal_primary_*.exr.provenance.cbor > rendered/fire_production_calibration/r190_tier8_temporal/tier8_preview_hdr10_prores4444.mov.evidence.sha256
+  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum 8 rendered/fire_production_calibration/r190_tier8_temporal/production_final.checkpoint rendered/fire_production_calibration/r190_tier8_temporal rendered/fire_production_calibration/r190_tier8_temporal/preview rendered/fire_production_calibration/r190_tier8_temporal/spectrum
   acceptance complete 5*t_ft discard plus statistics; monitored diagnostics and pinned-cadence frames retained; full centerline/lit-area spectra published
-  animation sequential HDR10 ProRes 4444 at 16 fps plus preview GIF; first/middle/last frame digests must differ
+  animation sequential HDR10 ProRes 4444 at 16 fps plus preview GIF; first/middle/last frame digests must differ; movie must have the Rec.2020/PQ colr atom and its evidence sidecar must bind the movie plus every preview_primary provenance sidecar
   label tier-8_preview_rows_not_claimed_r57_tier10_pin
   delivery send movie and preview_primary sidecars to owner immediately
 stage_end
@@ -52,7 +55,10 @@ stage_end
 stage 5 tier10_full_window_spectrum_rows_animation_report
   command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 10 0.0625 rendered/fire_production_calibration/r190_tier10_temporal
   command ./bin/tests/FireSequenceTest --fire-production-temporal-preview rendered/fire_production_calibration/r190_tier10_temporal rendered/fire_production_calibration/r190_tier10_temporal/preview
-  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum rendered/fire_production_calibration/r190_tier10_temporal/production_final.checkpoint rendered/fire_production_calibration/r190_tier10_temporal rendered/fire_production_calibration/r190_tier10_temporal/preview rendered/fire_production_calibration/r190_tier10_temporal/spectrum
+  command python3 tools/encode_pq_prores.py rendered/fire_production_calibration/r190_tier10_temporal/preview/temporal_primary_*.exr | ffmpeg -y -f rawvideo -pix_fmt yuv444p10le -s 64x64 -r 16 -i - -vf "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc:range=tv" -c:v prores_ks -profile:v 4444 -movflags +write_colr rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov
+  command ffprobe -v trace rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov 2>&1 | grep "nclc: pri 9 trc 16 matrix 9"
+  command /usr/bin/shasum -a 256 rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov rendered/fire_production_calibration/r190_tier10_temporal/preview/temporal_primary_*.exr.provenance.cbor > rendered/fire_production_calibration/r190_tier10_temporal/tier10_preview_hdr10_prores4444.mov.evidence.sha256
+  command ./bin/tests/FireSequenceTest --fire-production-puffing-spectrum 10 rendered/fire_production_calibration/r190_tier10_temporal/production_final.checkpoint rendered/fire_production_calibration/r190_tier10_temporal rendered/fire_production_calibration/r190_tier10_temporal/preview rendered/fire_production_calibration/r190_tier10_temporal/spectrum
   verdict publish spectrum first; slow-mode dominance without 2.7 Hz stops for the pre-registered r54 domain audit
   claims only after passing spectrum: empirical rows, tier-10 HDR animation delivery, report, fresh zero-P1 review, owner digest
 stage_end

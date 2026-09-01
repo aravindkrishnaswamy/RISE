@@ -2189,6 +2189,38 @@ namespace
 			spectrum.frequencyHz[spectrum.dominantBin]:0.0;
 	}
 
+	bool CanonicalCapstoneGridForTier(const double resolutionTier,
+		std::array<std::size_t,3>& dimensions,double& cellWidthM)
+	{
+		dimensions.fill(0u);cellWidthM=0.0;
+		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return false;
+		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+		FireCase::AuthoredV1 authored;
+		authored.fuelRecordId=fuel.RecordId();authored.poolDiameterM=CapstonePoolDiameterM;
+		authored.heatReleaseRateKW=CapstoneHeatReleaseRateKW;authored.envelope={{0.0,1.0}};
+		authored.durationS=1.0;authored.outputFramesPerS=1.0;authored.quality="dstar";
+		authored.numericDStarTier=resolutionTier;authored.seed=1234;authored.plumeLaw=true;
+		const RISECBOR64::Bytes aerosol=AerosolRecord(),chem=SyntheticChemRecord();
+		FireCase::RecordV1 record;std::string error;
+		if(!FireCase::BuildMethaneV1(authored,fuel,{
+			RISECBOR64::SHA256Hex(fuel.RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationThermochemistryRecord::OpenSubsetV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationTransportRecord::OpenV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(FireOpticsPreset::PredictiveV1().RecordBytes()),
+			RISECBOR64::SHA256Hex(aerosol),RISECBOR64::SHA256Hex(chem)},record,error))return false;
+		dimensions={{record.derived.nx,record.derived.ny,record.derived.nz}};
+		cellWidthM=record.derived.cellWidthM;return true;
+	}
+
+	bool ProductionPuffingSpectrumTierMatches(const MethaneRunCheckpoint& checkpoint,
+		const double resolutionTier)
+	{
+		std::array<std::size_t,3> dimensions;double cellWidthM=0.0;
+		return CanonicalCapstoneGridForTier(resolutionTier,dimensions,cellWidthM)&&
+			checkpoint.dimensions==dimensions&&checkpoint.cellWidthM==cellWidthM;
+	}
+
 #if defined(__APPLE__)
 	bool ReadDisplayLitArea(const std::filesystem::path& path,std::size_t& litPixels,
 		unsigned int& width,unsigned int& height)
@@ -2222,13 +2254,15 @@ namespace
 		return true;
 	}
 
-	int RunProductionPuffingSpectrumChild(const std::filesystem::path& checkpointPath,
+	int RunProductionPuffingSpectrumChild(const double resolutionTier,
+		const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& simulationDirectory,
 		const std::filesystem::path& previewDirectory,
 		const std::filesystem::path& outputDirectory)
 	{
 		MethaneRunCheckpoint checkpoint;std::string error;
-		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)){
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			!ProductionPuffingSpectrumTierMatches(checkpoint,resolutionTier)){
 			std::fprintf(stderr,"puffing spectrum checkpoint rejected: %s\n",error.c_str());return 91;
 		}
 		UniformHannSpectrum centerline;
@@ -2313,7 +2347,7 @@ namespace
 			<<"centerline_signal_sha256 "<<DigestFile(outputDirectory/"centerline_signal.csv")<<"\n"
 			<<"lit_area_signal_sha256 "<<DigestFile(outputDirectory/"lit_area_signal.csv")<<"\n"
 			<<"full_spectrum_sha256 "<<DigestFile(outputDirectory/"full_spectrum.csv")<<"\n"
-			<<"resolution_tier 6\n"
+			<<"resolution_tier "<<resolutionTier<<"\n"
 			<<"burner_diameter_m "<<CapstonePoolDiameterM<<"\n"
 			<<"cell_width_m "<<checkpoint.cellWidthM<<"\n"
 			<<"burner_cells_across "<<cellsAcrossBurner<<"\n"
@@ -6622,8 +6656,10 @@ int main(int argc,char** argv)
 		return passed?0:98;
 	}
 #if defined(RISE_ENABLE_OPENVDB)
-	if(argc==6&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0)
-		return RunProductionPuffingSpectrumChild(argv[2],argv[3],argv[4],argv[5]);
+	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
+		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
+		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);
+	}
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-checkpoint-physics-diagnostic")==0)
 		return RunProductionCheckpointPhysicsDiagnosticChild(argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-frame-write-benchmark")==0)
@@ -6659,6 +6695,20 @@ int main(int argc,char** argv)
 		!ProductionTemporalCapstoneTierSupported(9.0)&&
 		!ProductionTemporalCapstoneTierSupported(11.0),
 		"production temporal capstone refuses unsupported neighboring tiers");
+	{
+		MethaneRunCheckpoint tier8,tier10;double tier8Width=0.0,tier10Width=0.0;
+		const bool tier8Built=CanonicalCapstoneGridForTier(
+			8.0,tier8.dimensions,tier8Width);
+		const bool tier10Built=CanonicalCapstoneGridForTier(
+			10.0,tier10.dimensions,tier10Width);
+		tier8.cellWidthM=tier8Width;tier10.cellWidthM=tier10Width;
+		Check(tier8Built&&tier10Built&&
+			ProductionPuffingSpectrumTierMatches(tier8,8.0)&&
+			!ProductionPuffingSpectrumTierMatches(tier8,10.0)&&
+			ProductionPuffingSpectrumTierMatches(tier10,10.0)&&
+			!ProductionPuffingSpectrumTierMatches(tier10,8.0),
+			"puffing spectrum binds the reported tier to the checkpoint grid metadata");
+	}
 	{
 		std::vector<double> time(129u),signal(129u);
 		for(std::size_t sample=0u;sample<time.size();++sample){

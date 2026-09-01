@@ -5299,6 +5299,18 @@ rewriting the historical record. R2 complementarity is now scored against the
 classification actually supplied to the bootstrap and iterative projections
 rather than either newly derived endpoint class; separate forced class-flip
 REDs distinguish both choices.
+The caller-reset RED compares every public field recursively with a fresh
+default result, including endpoint physical flux, projection diagnostics,
+nonpressure rates, all FCT payloads, EOS metadata, active-set counters, target
+lineage, and the private acceptance seal. The deferred Metal manifest also
+passes tier 8 or 10 explicitly to the spectrum publisher and checks it against
+the checkpoint's canonical grid metadata. Its tier-8-first and tier-10 movie
+stages now name the complete headless HDR pipeline: primary linear EXRs enter
+`encode_pq_prores.py`, FFmpeg writes ProRes 4444 with `setparams` plus
+`+write_colr`, `ffprobe` must report `nclc: pri 9 trc 16 matrix 9`, and a SHA
+sidecar binds the movie to all primary-frame provenance sidecars. These remain
+deferred commands; no device result is inferred from their host-independent
+validation.
 The fp32/fp64 owner comparison also includes every R2 endpoint physical mass,
 energy, and gas flux plus all certificate fields and metadata. When the worker returns,
 r189 still runs tier 8 first and sends its movie before the device sweep and

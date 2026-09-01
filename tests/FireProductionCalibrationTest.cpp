@@ -3441,7 +3441,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"6983be0dc7107fcfe619c03a8ad594b8fa6e02552217fc9287f58e5af3543efc"&&
+			"b29404b4f1203bcb9bc18577e4be6f828977329e339b5fbd8cfc543a9f4b845a"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3449,7 +3449,7 @@ int main()
 		projectedHeunLiveBinding.find("live_owner_count 36\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
-		projectedHeunOwnerLiveBinding.find("live_owner_count 25\n")!=
+		projectedHeunOwnerLiveBinding.find("live_owner_count 26\n")!=
 			std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner src/Library/Utilities/"
 			"FireProductionAdvectionUnsupported.cpp sha256 "+sourceSHA(
@@ -7543,39 +7543,132 @@ int main()
 			unsetenv("RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE")==0;
 #endif
 	};
-	const auto axesEmpty=[](const std::array<std::vector<float>,3>& axes){
-		return axes[0].empty()&&axes[1].empty()&&axes[2].empty();
-	};
-	const auto bytesEmpty=[](const std::array<std::vector<unsigned char>,6>& sides){
-		for(const std::vector<unsigned char>& side:sides)if(!side.empty())return false;
+	const auto vectorsEmpty=[](const auto& vectors){
+		for(const auto& values:vectors)if(!values.empty())return false;
 		return true;
+	};
+	const auto shapeDefault=[](const RISE::FireProductionProjectionShape& shape){
+		return shape.nx==0u&&shape.ny==0u&&shape.nz==0u&&shape.cellWidthM==0.0f;
+	};
+	const auto boundariesDefault=[](const auto& boundary){
+		for(const auto side:boundary)if(side!=RISE::FireProductionProjectionWall)return false;
+		return true;
+	};
+	const auto offsetsDefault=[](const std::array<std::size_t,3>& offsets){
+		return offsets[0]==0u&&offsets[1]==0u&&offsets[2]==0u;
+	};
+	const auto projectionDefault=[&](const RISE::FireProductionProjectionResult& projection){
+		return vectorsEmpty(projection.faceDensityKGPerM3)&&
+			vectorsEmpty(projection.velocityMPerS)&&vectorsEmpty(projection.momentumKGPerM2S)&&
+			projection.pressurePa.empty()&&vectorsEmpty(projection.pressureOpenInflow)&&
+			projection.maximumPreProjectionResidualPerS==0.0f&&
+			projection.maximumPostProjectionResidualPerS==0.0f&&
+			projection.validationBandPerS==0.0f&&
+			projection.maximumOpenComplementarityDiscrepancyMPerS==0.0f&&
+			projection.removedFineRightHandSideMean==0.0f&&
+			projection.executedVCycleCount==0u&&projection.executedJacobiSweepCount==0u&&
+			projection.residentUploadStagingCount==0u&&
+			projection.residentInterstageDeviceToHostTransferCount==0u&&
+			projection.residentTerminalStagingCount==0u&&
+			projection.residentCommandCommitCount==0u&&
+			projection.residentProjectionInvocationCount==0u&&
+			projection.residentCertifiedWorkingSetBytes==0u&&
+			projection.residentActualMetalAllocationBytes==0u&&!projection.validationPassed&&
+			projection.deviceElapsedMS==0.0&&projection.deviceStartTimeS==0.0&&
+			projection.deviceEndTimeS==0.0;
+	};
+	const auto physicalFluxDefault=[&](
+		const RISE::FireProductionScalarPhysicalFluxPrerequisiteResult& flux){
+		return shapeDefault(flux.shape)&&boundariesDefault(flux.boundary)&&
+			offsetsDefault(flux.packedFaceOffset)&&flux.physicalMassFluxKGPerM2S.empty()&&
+			flux.physicalEnergyFluxWPerM2.empty()&&vectorsEmpty(flux.physicalGasFluxKGPerM2S)&&
+			flux.methaneRecordId.empty()&&flux.maximumFP64ReferenceResidualKGPerM2S==0.0&&
+			flux.fp64ReferenceForwardErrorBoundKGPerM2S==0.0&&
+			flux.maximumConstraintResidualKGPerM2S==0.0&&
+			flux.constraintForwardErrorBoundKGPerM2S==0.0&&
+			!flux.fp64ReferenceIdentityVerified;
+	};
+	const auto scalarAcceptanceDefault=[&](const RISE::FireProductionScalarFCTResult& scalar){
+		return offsetsDefault(scalar.packedFaceOffset)&&scalar.lowFlux.empty()&&
+			scalar.fluxDelta.empty()&&scalar.lowState.empty()&&scalar.limiterRatio.empty()&&
+			vectorsEmpty(scalar.sharedFaceAlpha)&&scalar.accepted.empty()&&
+			vectorsEmpty(scalar.acceptedGasFluxKGPerM2S)&&
+			scalar.maximumCommutingResidualKGPerM3==0.0f&&
+			scalar.commutingIdentityScaleKGPerM3==0.0f&&
+			scalar.commutingIdentityRestrictedAcceptedKGPerM3==0.0f&&
+			scalar.commutingIdentityAdvancedKGPerM3==0.0f&&
+			scalar.commutingIdentityComponent==0u&&scalar.commutingIdentityFace==0u&&
+			!scalar.commutingIdentityAvailable;
+	};
+	const auto fluxPairDefault=[&](const RISE::FireProductionScalarFCTFluxPair& pair){
+		return shapeDefault(pair.shape)&&pair.timeStepS==0.0f&&
+			boundariesDefault(pair.boundary)&&offsetsDefault(pair.packedFaceOffset)&&
+			pair.lowFlux.empty()&&pair.fluxDelta.empty();
+	};
+	const auto heunFluxDefault=[&](const RISE::FireProductionScalarHeunFluxStage& flux){
+		return fluxPairDefault(flux.compositeFluxPair)&&flux.physicalMassFluxKGPerM2S.empty()&&
+			flux.physicalEnergyFluxWPerM2.empty()&&vectorsEmpty(flux.physicalGasFluxKGPerM2S)&&
+			vectorsEmpty(flux.advectiveGasLowFluxKGPerM2S)&&
+			vectorsEmpty(flux.advectiveGasFluxDeltaKGPerM2S)&&flux.methaneRecordId.empty()&&
+			flux.attemptIdentity==0u&&static_cast<unsigned int>(flux.role)==0u&&
+			flux.stageInputIdentity==0u&&flux.sharedFCTContractIdentity==0u&&
+			flux.fctRequestIdentity==0u&&flux.frozenVelocityIdentity==0u&&
+			flux.parentCompositionIdentity[0]==0u&&flux.parentCompositionIdentity[1]==0u&&
+			flux.compositionIdentity==0u&&flux.physicalConstraintForwardErrorBoundKGPerM2S==0.0&&
+			flux.physicalGasAveragingForwardErrorBoundKGPerM2S==0.0&&
+			!flux.fp64ReferenceIdentityVerified;
+	};
+	const auto heunSolveDefault=[&](const RISE::FireProductionScalarHeunSolveResult& solve){
+		return scalarAcceptanceDefault(solve.scalar)&&solve.attemptIdentity==0u&&
+			solve.averageCompositionIdentity==0u&&solve.sharedFCTContractIdentity==0u&&
+			solve.parentCompositionIdentity[0]==0u&&solve.parentCompositionIdentity[1]==0u&&
+			solve.alphaIdentity==0u;
+	};
+	const auto eosDefault=[&](const RISE::FireProductionScalarEOSAcceptanceResult& eos){
+		return shapeDefault(eos.shape)&&eos.timeStepS==0.0f&&eos.attemptIdentity==0u&&
+			static_cast<unsigned int>(eos.stage)==0u&&
+			eos.producerPrecision==RISE::FireStateProducerPrecision::Binary32&&
+			eos.methaneRecordId.empty()&&eos.caseRecordId.empty()&&
+			eos.lowerTemperatureK==0.0&&eos.upperTemperatureK==0.0&&
+			eos.temperatureK.empty()&&eos.maximumEOSResidual==0.0&&eos.stateDigest==0u&&
+			eos.temperatureDigest==0u&&eos.acceptanceIdentity==0u&&!eos.accepted;
+	};
+	const auto nonpressureDefault=[&](
+		const RISE::FireProductionNonpressureMomentumRHSResult& nonpressure){
+		return nonpressure.eddyKinematicViscosityM2PerS.empty()&&
+			nonpressure.effectiveDynamicViscosityPaS.empty()&&
+			vectorsEmpty(nonpressure.buoyancyMomentumRateKGPerM2S2)&&
+			vectorsEmpty(nonpressure.stressMomentumRateKGPerM2S2)&&
+			vectorsEmpty(nonpressure.phaseSourceMomentumRateKGPerM2S2)&&
+			vectorsEmpty(nonpressure.combinedMomentumRateKGPerM2S2);
+	};
+	const auto targetDefault=[&](const RISE::FireProductionScalarProjectionTargetSeal& target){
+		return shapeDefault(target.Shape())&&target.TimeStepS()==0.0f&&
+			target.AttemptIdentity()==0u&&static_cast<unsigned int>(target.Role())==0u&&
+			boundariesDefault(target.Boundary())&&target.TargetPerS().empty()&&
+			target.BaseTargetIdentity()==0u&&target.ParentTargetIdentity()==0u&&
+			target.AcceptedCandidateIdentity()==0u&&target.CorrectionIteration()==0u&&
+			target.TargetIdentity()==0u&&!target.IsSealed();
 	};
 	const auto stageDefault=[&](const RISE::FireProductionProjectedHeunCoupledStageResult& stage){
 		return static_cast<unsigned int>(stage.stage)==0u&&
-			stage.parentCandidateIdentity==0u&&stage.acceptedCandidateIdentity==0u&&
-			stage.acceptedIterationCount==0u&&stage.picardResidualPerS.empty()&&
-			stage.target.TargetIdentity()==0u&&!stage.target.IsSealed()&&
-			stage.projection.pressurePa.empty()&&
-			axesEmpty(stage.projection.faceDensityKGPerM3)&&
-			axesEmpty(stage.projection.velocityMPerS)&&
-			axesEmpty(stage.projection.momentumKGPerM2S)&&
-			bytesEmpty(stage.projection.pressureOpenInflow)&&
-			stage.flux.compositeFluxPair.lowFlux.empty()&&
-			stage.flux.compositeFluxPair.fluxDelta.empty()&&
-			stage.scalarAcceptance.accepted.empty()&&
-			stage.nonpressure.eddyKinematicViscosityM2PerS.empty();
+			projectionDefault(stage.projection)&&heunFluxDefault(stage.flux)&&
+			physicalFluxDefault(stage.endpointPhysicalFlux)&&
+			scalarAcceptanceDefault(stage.scalarAcceptance)&&
+			nonpressureDefault(stage.nonpressure)&&targetDefault(stage.target)&&
+			stage.picardResidualPerS.empty()&&stage.parentCandidateIdentity==0u&&
+			stage.acceptedCandidateIdentity==0u&&stage.acceptedIterationCount==0u&&
+			stage.activeSetCycleLength==0u&&stage.activeSetDifferingFaceCount==0u&&
+			stage.activeSetCanonicalProjectionCount==0u&&
+			stage.maximumActiveSetComplementarityDiscrepancyMPerS==0.0f&&
+			stage.maximumLimiterClassDiscrepancy==0.0f&&
+			!stage.activeSetDiscontinuousClass&&!stage.limiterDiscontinuousClass;
 	};
 	const auto ownerResultDefault=[&](const RISE::FireProductionProjectedHeunOwnerResult& value){
-		return value.conservativeValues.empty()&&axesEmpty(value.momentumKGPerM2S)&&
-			axesEmpty(value.velocityMPerS)&&value.stepAveragePressurePa.empty()&&
-			!value.predictorEOS.accepted&&value.predictorEOS.temperatureK.empty()&&
-			value.predictorEOS.acceptanceIdentity==0u&&!value.committedEOS.accepted&&
-			value.committedEOS.temperatureK.empty()&&
-			value.committedEOS.acceptanceIdentity==0u&&
-			value.averagedFlux.compositeFluxPair.lowFlux.empty()&&
-			value.averagedFlux.compositeFluxPair.fluxDelta.empty()&&
-			value.averagedFlux.compositionIdentity==0u&&
-			value.heunSolve.scalar.accepted.empty()&&value.heunSolve.alphaIdentity==0u&&
+		return value.conservativeValues.empty()&&vectorsEmpty(value.momentumKGPerM2S)&&
+			vectorsEmpty(value.velocityMPerS)&&value.stepAveragePressurePa.empty()&&
+			eosDefault(value.predictorEOS)&&eosDefault(value.committedEOS)&&
+			heunFluxDefault(value.averagedFlux)&&heunSolveDefault(value.heunSolve)&&
 			stageDefault(value.r0)&&stageDefault(value.r1)&&stageDefault(value.r2)&&
 			value.sourcePacketIdentity==0u&&value.OwnerIdentity()==0u&&!value.accepted;
 	};
@@ -8142,10 +8235,10 @@ int main()
 		"r136_trace_repin_evidence.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		projectedHeunOwnerEvidence.begin(),projectedHeunOwnerEvidence.end()))==
-			"32961b9d9f438bd94e9c86922ce43a97c4499ac293d4af0ee44db280aa173e03"&&
+			"44cd7fd386e2f9d7c02da1206c362a16aa84c7055d2dd2b1c3d7627d4941ee7f"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunMetalManifest.begin(),projectedHeunMetalManifest.end()))==
-			"67a1531ecef0ae0a0f08749e210d5c47f81389dba3617f4e3842a8df81517c6b"&&
+			"c9c48a6eb64d195235f59bb73783296f54f61507f2fb6271280da07d07433f5c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunR136Repin.begin(),projectedHeunR136Repin.end()))==
 			"f91553aa2bb1f3186c3ade42091654d453e1c9f5f2b8d729894bf54227e61c58"&&
@@ -8180,6 +8273,11 @@ int main()
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
 			"red_reentrant_transport_nested_r0_r1_r2 true\n")!=std::string::npos&&
+		projectedHeunOwnerEvidence.find(
+			"red_result_complete_default_exhaustive true\n")!=std::string::npos&&
+		projectedHeunOwnerEvidence.find(
+			"metal_spectrum_tier explicit_6_8_10_validated_against_checkpoint_grid\n")!=
+			std::string::npos&&
 		projectedHeunR136Repin.find(
 			"value_changed_manifest_fields FireProductionTransportHeader,FireProductionForceHeader,FireProductionForceSource,TraceAdapter\n")!=
 			std::string::npos&&
@@ -8194,6 +8292,18 @@ int main()
 			"branch_obligations_discharged 3972326\n")!=std::string::npos&&
 		projectedHeunMetalManifest.find(
 			"stage 1 track_a_tier8_full_window_spectrum_animation_delivery\n")!=
+			std::string::npos&&
+		projectedHeunMetalManifest.find(
+			"--fire-production-puffing-spectrum 8 ")!=std::string::npos&&
+		projectedHeunMetalManifest.find(
+			"--fire-production-puffing-spectrum 10 ")!=std::string::npos&&
+		projectedHeunMetalManifest.find("tools/encode_pq_prores.py ")!=
+			std::string::npos&&
+		projectedHeunMetalManifest.find("-movflags +write_colr ")!=
+			std::string::npos&&
+		projectedHeunMetalManifest.find("nclc: pri 9 trc 16 matrix 9")!=
+			std::string::npos&&
+		projectedHeunMetalManifest.find(".mov.evidence.sha256")!=
 			std::string::npos&&
 		projectedHeunMetalManifest.find(
 			"command ./bin/tests/FireProductionProjectionTest\n")!=std::string::npos&&
