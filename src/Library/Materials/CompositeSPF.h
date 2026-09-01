@@ -40,16 +40,34 @@ namespace RISE
 			const Scalar thickness;			// thickness of each of the layers
 			const IPainter& extinction;		// extinction coefficient for Beer's law absorption between layers
 
-			//! Returns the IOR stack that governs the next leg of the random
-			//! walk: a ray that crossed a refracting interface carries its own
-			//! (pushed / popped) stack and MUST use it, otherwise the return
-			//! trip through a dielectric top layer is read as "entering from
-			//! outside" and both of its lobes get culled.  Rays with no stack
-			//! of their own stay in the caller's medium.  See the definition
-			//! comment in CompositeSPF.cpp for the full failure mode.
-			static const IORStack& EffectiveStack(
-					const ScatteredRay& scat,									///< [in] The scattered ray about to be handed to the other layer
-					const IORStack& ior_stack									///< [in] The stack this walk step was entered with
+			//! The walk carries TWO stacks -- `outside` (without this object's
+			//! IOR-stack entry, i.e. the medium above the top interface) and
+			//! `gap` (with the entry the top interface pushed).  A single
+			//! stack cannot work: IORStack keys its entries on the IObject*,
+			//! which is shared by both layers, so the top's push is
+			//! indistinguishable from an entry of the bottom's.
+			//!
+			//! EvalStack picks which one a layer's Scatter() sees: a
+			//! DOWN-going ray is arriving from the medium above that layer and
+			//! must see `outside` (so a stack-sensitive bottom layer reads
+			//! "entering from outside"); an UP-going ray is arriving from
+			//! inside and must see `gap` (so a dielectric top layer takes its
+			//! from-inside branch and refracts OUT).  Full failure-mode
+			//! history in the block comment in CompositeSPF.cpp.
+			static const IORStack& EvalStack(
+					const RayIntersectionGeometric& ri,							///< [in] The intersection whose ray direction selects the stack
+					const IORStack& outside_stack,								///< [in] Stack without this object's entry
+					const IORStack& gap_stack									///< [in] Stack of the inter-layer gap
+					);
+
+			//! Returns the gap stack for the leg BELOW the top interface: a
+			//! ray the top layer refracted downward carries its own pushed
+			//! stack, and that stack IS the gap medium.  Rays with no stack of
+			//! their own did not change medium.  Deliberately not applied in
+			//! the bottom->top direction -- see CompositeSPF.cpp.
+			static const IORStack& GapStackBelowTop(
+					const ScatteredRay& scat,									///< [in] The scattered ray about to cross the gap
+					const IORStack& gap_stack									///< [in] The gap stack so far
 					);
 
 			bool	ShouldScatteredRayBePropagated(
@@ -63,7 +81,8 @@ namespace RISE
 					ISampler& sampler,									///< Sampler for the MC process
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
+					const IORStack& outside_stack,							///< [in] Stack of the medium above the top interface (no entry for this object)
+					const IORStack& gap_stack								///< [in] Stack of the inter-layer gap (with the top's pushed entry)
 					) const;
 
 			void	ProcessBottomLayer(
@@ -72,7 +91,8 @@ namespace RISE
 					ISampler& sampler,									///< Sampler for the MC process
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
+					const IORStack& outside_stack,							///< [in] Stack of the medium above the top interface (no entry for this object)
+					const IORStack& gap_stack								///< [in] Stack of the inter-layer gap (with the top's pushed entry)
 					) const;
 
 			void	ProcessTopLayerNM(
@@ -82,7 +102,8 @@ namespace RISE
 					const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
+					const IORStack& outside_stack,							///< [in] Stack of the medium above the top interface (no entry for this object)
+					const IORStack& gap_stack								///< [in] Stack of the inter-layer gap (with the top's pushed entry)
 					) const;
 
 			void	ProcessBottomLayerNM(
@@ -92,7 +113,8 @@ namespace RISE
 					const Scalar nm,											///< [in] Wavelength the material is to consider (only used for spectral processing)
 					ScatteredRayContainer& scattered,							///< [out] The list of scattered rays from the surface
 					const unsigned int steps,									///< [in] Number of steps taken in the random walk process
-					const IORStack& ior_stack								///< [in/out] Index of refraction stack
+					const IORStack& outside_stack,							///< [in] Stack of the medium above the top interface (no entry for this object)
+					const IORStack& gap_stack								///< [in] Stack of the inter-layer gap (with the top's pushed entry)
 					) const;
 
 		public:

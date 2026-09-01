@@ -43,6 +43,12 @@
 //  Tests 1-4 below ALL FAIL before the fix (1 collapses to the bare-Fresnel
 //  level; 2-4 all become exact equalities because nothing responds).
 //
+//  Section 6 guards the SECOND half of the same story: the first fix threaded
+//  each scattered ray's own stack UNCONDITIONALLY, which repaired the top
+//  interface but broke the BOTTOM one -- because IORStack keys on the
+//  IObject*, which both layers share.  The walk now carries two stacks.  See
+//  the section-6 comment for the mechanism and the red-proof numbers.
+//
 //  This is an SPF-DIRECT unit test -- no scene, no rendering.  Fixture
 //  construction mirrors tests/LayeredWhiteFurnaceTest.cpp.
 //
@@ -70,6 +76,7 @@
 #include "../src/Library/Painters/UniformScalarPainter.h"
 #include "../src/Library/Materials/LambertianSPF.h"
 #include "../src/Library/Materials/DielectricSPF.h"
+#include "../src/Library/Materials/TranslucentSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
 
 #include "TestStubObject.h"
@@ -143,6 +150,8 @@ struct Measurement
 	double crossed = 0;		// ... restricted to eRayRefraction (gap-crossing)
 	double r = 0, g = 0, b = 0;	// mean per-draw per-channel sums, up-exiting
 	long   nCrossed = 0;	// count of gap-crossing rays
+	double down    = 0;		// mean per-draw sum of max-channel kray, DOWN-exiting
+	long   nDown   = 0;		// count of down-exiting rays
 };
 
 static Measurement Measure( const ISPF& spf, const double thetaRad )
@@ -164,10 +173,18 @@ static Measurement Measure( const ISPF& spf, const double thetaRad )
 		{
 			const ScatteredRay& s = scattered[j];
 			const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
-			if( Vector3Ops::Dot( wo, normal ) <= 0 ) continue;	// into the substrate
 
 			const double k = ColorMath::MaxValue( s.kray );
 			if( !( k >= 0 && k < 1e6 ) ) continue;				// NaN / inf guard
+
+			if( Vector3Ops::Dot( wo, normal ) <= 0 ) {
+				// Transmitted THROUGH the stack and out the bottom.  Zero for a
+				// Lambertian substrate; the primary signal for a transmissive
+				// one (section 6).
+				m.down += k;
+				m.nDown++;
+				continue;
+			}
 
 			m.total += k;
 			m.r += s.kray[0];
@@ -186,6 +203,7 @@ static Measurement Measure( const ISPF& spf, const double thetaRad )
 	const double inv = 1.0 / double( kSamples );
 	m.total *= inv;  m.fresnel *= inv;  m.crossed *= inv;
 	m.r *= inv;  m.g *= inv;  m.b *= inv;
+	m.down *= inv;
 	return m;
 }
 
@@ -197,7 +215,8 @@ static void PrintMeasurement( const std::string& label, const Measurement& m )
 	          << " fresnel=" << std::setw( 8 ) << m.fresnel
 	          << " crossed=" << std::setw( 8 ) << m.crossed
 	          << "  RGB=(" << m.r << ", " << m.g << ", " << m.b << ")"
-	          << "  nCrossed=" << m.nCrossed << "\n";
+	          << "  nCrossed=" << m.nCrossed
+	          << "  down=" << m.down << " (n=" << m.nDown << ")\n";
 }
 
 // Spectral (NM) twin of Measure().  The NM walk is a separate code path
@@ -444,6 +463,118 @@ int main()
 	// stays valid if and when the IScalarPainter retyping lands.
 	Check( nmHi.crossed < nmLo.crossed * 0.999,
 	       "NM gap-crossing energy responds to extinction (strictly lower at ext=50)" );
+
+	// ------------------------------------------------------------
+	// 6. STACK-SENSITIVE BOTTOM LAYER.
+	//
+	//    Sections 1-5 all use a Lambertian substrate, which ignores the IOR
+	//    stack entirely -- so they are blind to WHICH stack the walk hands
+	//    each layer.  This section uses substrates that DO read the stack.
+	//
+	//    IORStack keys its entries on `pCurrentObject` (IORStack.h), which is
+	//    ONE pointer for the whole composite: the top layer's push is
+	//    indistinguishable from an entry belonging to the bottom layer.  So a
+	//    walk that threads the top's pushed stack straight down into the
+	//    bottom makes the bottom read containsCurrent()==true for a ray that
+	//    is physically ENTERING it from the gap above, and it takes its
+	//    from-inside branch.  The fix threads TWO stacks (see
+	//    CompositeSPF::EvalStack): `outside` (without this object's entry) and
+	//    `gap` (with it), and evaluates every DOWN-going ray against `outside`
+	//    and every UP-going ray against `gap`.
+	//
+	//    RED-PROOF (measured 2026-09-01 against the single-stack walk, i.e.
+	//    the state right after the EffectiveStack commit 24888c67):
+	//
+	//      dielectric(1.5) over dielectric(1.33)
+	//        single-stack : down=0.00000 (n=0)      total=0.04000  nCrossed=0
+	//        two-stack    : down=0.94072 (n=200000) total=0.05849  nCrossed=200000
+	//        (total=0.04000 pre-fix is EXACTLY the bare-top Fresnel floor: the
+	//         bottom interface emitted nothing at all and 96% of the incident
+	//         energy simply vanished inside the walk.)
+	//
+	//      dielectric(1.5) over translucent
+	//        single-stack : nCrossed=0       total=0.04000
+	//        two-stack    : nCrossed=89203   total=0.19556
+	//
+	//    Sections 1-5 are BYTE-IDENTICAL across the two (same seed, same
+	//    sampler consumption): with a Lambertian substrate the two stacks
+	//    coincide everywhere it matters, which is why those sections could not
+	//    see this bug.
+	//
+	//    Mechanism of the single-stack failure, dielectric over dielectric:
+	//    the bottom takes bFromInside, so its transmission lobe is killed by
+	//    the `Dot(dir, w) >= NEARZERO` gate (DielectricSPF.cpp) -- a downward
+	//    refraction cannot be an exit -- and its Fresnel lobe is killed by the
+	//    geometric-normal gate.  BOTH lobes vanish: a black interface.
+	//    Translucent bottom: TranslucentSPF's exit branch POPS, and since the
+	//    key is shared it destroys the entry the TOP pushed; the up-going lobe
+	//    then reaches the top interface with a popped stack and is
+	//    double-culled -- exactly the failure 24888c67 fixed, re-introduced one
+	//    layer down.  This is the shipped-scene case
+	//    scenes/Tests/Materials/composite_material.RISEscene `mat_double_composite`.
+	// ------------------------------------------------------------
+	std::cout << "\n6. Stack-sensitive bottom layer (the shared-IObject-key trap)\n";
+
+	UniformScalarPainter* sIorB = new UniformScalarPainter( 1.33 );  sIorB->addref();
+	DielectricSPF* dielectricBot = new DielectricSPF( *sTau, *sIorB, *sScat, /*hg*/ false );
+	dielectricBot->addref();
+
+	CompositeSPF* compDD = new CompositeSPF(
+		*dielectric, *dielectricBot, kMaxRecur, kMaxReflRecur, kMaxRefrRecur,
+		kMaxDiffRecur, kMaxTransRecur, 0.02, *extLo );
+	compDD->addref();
+
+	const Measurement dd = Measure( *compDD, 0.0 );
+	PrintMeasurement( "composite dielectric/dielectric", dd );
+
+	// 6a. The bottom interface must actually transmit.  This is the direct
+	//     signal: on the single-stack walk it is EXACTLY zero.
+	Check( dd.nDown > kSamples / 10,
+	       "bottom interface transmits (nDown > 10% of draws)" );
+	Check( dd.down > 0.30,
+	       "down-exiting transmission carries substantial energy (>0.30, measured 0.94)" );
+
+	// 6b. Some of the light reflected off the BOTTOM interface must find its
+	//     way back out through the top.  On the single-stack walk the bottom
+	//     emits nothing at all, so the up-exiting total collapses to exactly
+	//     the bare first-interface Fresnel level.
+	Check( dd.total > bare.total * 1.10,
+	       "up-exiting energy exceeds the bare-top Fresnel-only floor by >10%" );
+
+	// 6c. Translucent bottom -- the mat_double_composite shape.  The
+	//     up-exiting eRayRefraction population can ONLY be produced by a ray
+	//     that went down through the gap, scattered off the substrate, came
+	//     back up and refracted out of the top interface.
+	UniformColorPainter*  tFront = new UniformColorPainter( RISEPel( 0.4, 0.4, 0.4 ) );  tFront->addref();
+	UniformColorPainter*  tTrans = new UniformColorPainter( RISEPel( 0.6, 0.6, 0.6 ) );  tTrans->addref();
+	UniformScalarPainter* tExt   = new UniformScalarPainter( 0.0 );    tExt->addref();
+	UniformScalarPainter* tN     = new UniformScalarPainter( 100.0 );  tN->addref();
+	UniformScalarPainter* tScat  = new UniformScalarPainter( 0.5 );    tScat->addref();
+
+	TranslucentSPF* translucent = new TranslucentSPF( *tFront, *tTrans, *tExt, *tN, *tScat );
+	translucent->addref();
+
+	CompositeSPF* compDT = new CompositeSPF(
+		*dielectric, *translucent, kMaxRecur, kMaxReflRecur, kMaxRefrRecur,
+		kMaxDiffRecur, kMaxTransRecur, 0.02, *extLo );
+	compDT->addref();
+
+	const Measurement dt = Measure( *compDT, 0.0 );
+	PrintMeasurement( "composite dielectric/translucent", dt );
+
+	Check( dt.nCrossed > kSamples / 20,
+	       "translucent substrate returns light out through the top (nCrossed > 5% of draws)" );
+
+	compDT->release();
+	translucent->release();
+	tScat->release();
+	tN->release();
+	tExt->release();
+	tTrans->release();
+	tFront->release();
+	compDD->release();
+	dielectricBot->release();
+	sIorB->release();
 
 	compThick->release();
 	compThin->release();
