@@ -4810,21 +4810,35 @@ it was already tried and refuted here.
   payload bytes. Candidate identity is recomputed at the private correction
   boundary. The terminal verifier covers the complete public payload, including
   every stage projection, flux, limiter, nonpressure rate, EOS temperature,
-  target, and diagnostic, and publication remains retryable after an injected
-  copy failure. REDs cover stale candidate, stale coefficient payload with
+  target, diagnostic, nested topology/schedule metadata, and exact source
+  packet, and publication remains retryable after an injected copy failure.
+  Result consumption requires the expected sealed source, so an intact prior
+  attempt refuses. REDs cover stale candidate, stale coefficient payload with
   current echoes, forged parent, stage order, closed constant mode, mutations
-  of pressure/stage velocity/alpha/EOS temperature, an oversized combined live
-  set, and atomic retry. Active-set least-discrepancy selection uses a
-  lexicographic tie break.
+  of pressure/stage velocity/alpha/EOS temperature and nested metadata, the
+  live `Begin` working-set refusal, every projection-validation branch, an
+  exercised two-class cycle, the r59 selected-alpha path, and atomic retry.
+  Active-set least-discrepancy selection associates each discrepancy with the
+  class actually projected and reprojects the canonical member. The r59
+  pointwise minimum is revalidated through r60 and the commuting identity, and
+  the terminal Heun token carries that exact alpha. This proof remains local
+  to the complete owner; the accepted r189 transport source is byte-identical,
+  preventing a standalone selected-alpha authority from invalidating or
+  widening the frozen r136 source certificate.
 
   A source-active pressure-open `4^3` case uses a canonical one-ULP pilot packet
   at `dt=1e-4 s` and matches every projected stage of the independently
   implemented fp64 `AdvanceConservative3D` owner. State, velocity, and momentum
-  remain inside a 64-epsilon binary32 forward envelope. Pressure differs by at
-  most `4.768810759e-4 Pa` against the derived two-residual band
-  `2 dx^2 epsilon_Picard / dt = 9.999999582e-3 Pa`. The generated binary64 owner
+  remain inside a 64-epsilon binary32 forward envelope. The former local
+  `2 dx^2 epsilon_Picard/dt` pressure claim is rejected because it omitted the
+  discrete inverse. Independent oracle tolerances `1`, `1/16`, and `1/256`
+  instead establish a converged reference: coarse/fine is
+  `2.988941126e-4 Pa`, fine/finer is `4.302731804e-5 Pa`, and production/finer
+  is `3.396462939e-4 Pa`. The pinned comparison bound is the one-bit-headroom
+  dyadic envelope `2^-10 Pa`; it is explicitly a fixture measurement, not an
+  operator-wide formula. The generated binary64 owner
   is retained only as a separate all-publication roundoff check. Metal execution
   remains unclaimed on this host. The r136 source-bound trace digest is re-pinned
-  to `71bb7b53f9aaad3c50e9772a07dd09017ddf60b8bd87f25e357a0d9bd4f01d87`
+  to `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
   with every frozen metric and the `0xff` refusal unchanged. r189's tier-8-first
   manifest remains binding.

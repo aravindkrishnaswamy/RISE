@@ -5210,9 +5210,16 @@ current metadata refuse. Both EOS publications must retain the source case.
 
 Terminal R0/R1 acceptance reprojects the corrected target, verifies target,
 momentum, and coefficient convergence, and applies r59's pointwise
-`min(alpha_next,alpha_ver)` for a discontinuous limiter class. Open-face class
-history is retained; a two-class cycle selects its least-discrepant frozen
-member with a lexicographic tie break and records cycle length and
+`min(alpha_next,alpha_ver)` for a discontinuous limiter class. The selected
+alpha is run back through the complete r60 accepted-state validation and the
+compatible `D_i I_i = I_rho,i D` witness before the identity-bearing Heun
+solve may consume it. That selected-alpha validation is owner-local: the
+accepted r189 transport source remains byte-identical, so the owner gains no
+standalone correction authority and the frozen r136 source certificate is not
+silently broadened. Open-face class history stores the class actually used
+by each projection with that projection's discrepancy; a two-class cycle
+selects its least-discrepant frozen member with a lexicographic tie break,
+reprojects that member before acceptance, and records cycle length and
 differing-face count. The shared Heun
 contract excludes stage-local pressure-open classes, while each stage request
 identity binds its own class.
@@ -5226,27 +5233,39 @@ step-average pressure atomically.
 
 REDs cover out-of-order stages, stale r70 candidate identity, stale coefficient
 payload with current echoes, forged parent, closed constant-mode compatibility,
-result mutation, combined-live-set preflight, projection validation, and retry
+stale whole-result replay against a different sealed source attempt, result
+mutation, the actual `Begin` combined-live-set refusal, every initial/iterative/
+terminal/R2 projection-validation branch, an exercised two-class active cycle,
+an exercised r59 selected-alpha path, and retry
 after an injected result-publication allocation failure. The final verifier
 binds every public owner payload: conservative state, final and stage momentum,
 velocity and pressure, both EOS publications, fluxes, limiter state,
-nonpressure rates, targets, and diagnostics. Pressure, stage-velocity, alpha,
-and EOS-temperature mutation REDs prove that the mutable diagnostic struct has
-no acceptance power without the verifier. The combined-live-set RED also
-checks that a valid 1024-cubed shape is measured above the two-GiB admission
-cap before payload access.
+nonpressure rates, targets, diagnostics, all nested shapes/timesteps/boundaries,
+and the exact frozen-source packet identity. Pressure, stage-velocity, alpha,
+EOS-temperature, flux-metadata, physical-flux-shape, and EOS-shape mutation
+REDs prove that the mutable diagnostic struct has no acceptance power without
+the verifier. A consumer must supply the current sealed source packet; an
+internally intact publication from another attempt refuses. The working-set
+RED both measures a valid 1024-cubed shape above two GiB and injects that live
+count through `Begin`, proving the admission branch rather than only its query.
 
 A source-active pressure-open `4^3` matched-input differential reconstructs the
 exact canonical one-ULP pilot packet at the oracle-convergent `1e-4 s` schedule
 and uses oracle transport evaluations, then compares every projected stage to
 the independently implemented fp64 `AdvanceConservative3D` owner. State,
 velocity, and momentum use the measured 64-epsilon binary32 forward envelope.
-The pressure band follows from the two accepted Picard residuals as
-`2 dx^2 epsilon_Picard / dt = 9.999999582e-3 Pa`; the measured maximum is
-`4.768810759e-4 Pa`. The generated binary64 mirror separately bounds roundoff
+Pressure is compared to separately converged oracle schedules at tolerance
+ratios `1`, `1/16`, and `1/256`; the coarse-to-fine difference is
+`2.988941126e-4 Pa`, the fine-to-finer tail is `4.302731804e-5 Pa` (ratio
+`0.144`), and production differs from the finer reference by
+`3.396462939e-4 Pa`. The comparison gate is the one-bit-headroom dyadic
+envelope `2^-10 Pa = 9.765625e-4 Pa`, derived by rounding that measured
+converged differential upward and then adding one binary headroom bit. It is a
+fixture-specific measured upper bound, not the rejected local
+`2 dx^2 epsilon/dt` pressure formula. The generated binary64 mirror separately bounds roundoff
 over state, targets, momentum, velocity, pressure, and alpha. No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-pinned to
-`71bb7b53f9aaad3c50e9772a07dd09017ddf60b8bd87f25e357a0d9bd4f01d87`;
+`19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`;
 all frozen metrics and the `0xff` a-priori refusal remain unchanged. When the worker returns,
 r189 still runs tier 8 first and sends its movie before the device sweep and
 tier-10 onset verdict.

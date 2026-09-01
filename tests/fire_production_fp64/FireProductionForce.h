@@ -301,16 +301,20 @@ namespace RISEFireProductionFP64
 		FireProductionScalarHeunFluxStage averagedFlux;
 		FireProductionScalarHeunSolveResult heunSolve;
 		FireProductionProjectedHeunCoupledStageResult r0,r1,r2;
+		std::uint64_t sourcePacketIdentity;
 		std::uint64_t ownerIdentity;
 		bool accepted;
 
-		FireProductionProjectedHeunOwnerResult() : ownerIdentity(0u),accepted(false) {}
+		FireProductionProjectedHeunOwnerResult() : sourcePacketIdentity(0u),
+			ownerIdentity(0u),accepted(false) {}
 	};
 
-	//! Recomputes the complete publication identity. Production consumers must
-	//! call this gate; the diagnostic struct alone carries no acceptance power.
+	//! Recomputes the complete publication identity against the exact source
+	//! packet expected by the current attempt. The diagnostic struct alone
+	//! carries no acceptance power, and a prior attempt cannot be replayed.
 	bool FireProductionProjectedHeunOwnerResultMatches(
-		const FireProductionProjectedHeunOwnerResult& result );
+		const FireProductionProjectedHeunOwnerResult& result,
+		const FireProductionFrozenSourcePacketSeal& expectedSource );
 
 	//! Stateful CPU calibration owner for R0 -> R1 -> R2.  Each method accepts
 	//! exactly one next stage.  Failure is atomic and leaves the owner in its
