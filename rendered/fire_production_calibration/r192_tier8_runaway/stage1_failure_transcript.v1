@@ -1,0 +1,36 @@
+schema rise.fire.production.stage1_failure_transcript.v1
+revision r192
+authored_utc 2026-09-01
+source manually_curated_live_unrestricted_terminal_observation
+authority unsealed_operator_observation_not_gate_authority
+durable_gate_authority step_0000001873_checkpoint_and_diagnostic
+command ./bin/tests/FireSequenceTest --fire-production-temporal-capstone 8 0.0625 rendered/fire_production_calibration/r190_tier8_temporal
+command_exit 130
+termination_operator_interrupt_after_physical_runaway true
+shortened_empirical_evidence_claimed false
+
+accepted_summary
+step 1280 time_s 2.0497872115811333 dt_s 0.0014643216272816062 deviation_max 0.216152191 deviation_p95 0.0585733652 tail_count 9124 drained_volume 0.00283764646 maximum_velocity_m_per_s 10.3293924 maximum_temperature_K 1916.08983 minimum_gas_density_kg_per_m3 0.172436769 maximum_gas_density_kg_per_m3 1.26896238 lambda_per_s 211.313522 maximum_transport_momentum 5.51138544
+step 1536 time_s 2.3667028112104163 dt_s 0.00065162067767232656 deviation_max 0.144449532 deviation_p95 0.0483469963 tail_count 19720 drained_volume 0.0021520975 maximum_velocity_m_per_s 22.8803482 maximum_temperature_K 1782.61287 minimum_gas_density_kg_per_m3 0.177666372 maximum_gas_density_kg_per_m3 1.26087386 lambda_per_s 420.756805 maximum_transport_momentum 19.9087372
+step 1792 time_s 2.6173680481733754 dt_s 0.0011995041277259588 deviation_max 0.157063484 deviation_p95 0.0627397299 tail_count 20757 drained_volume 0.00299178383 maximum_velocity_m_per_s 12.4585304 maximum_temperature_K 1673.48612 minimum_gas_density_kg_per_m3 0.184907952 maximum_gas_density_kg_per_m3 1.27289119 lambda_per_s 294.366608 maximum_transport_momentum 11.991869
+step 2048 time_s 2.7019304983144252 dt_s 9.6145768111455254e-06 deviation_max 0.234242916 deviation_p95 0.00523304939 tail_count 122 drained_volume 7.28845255e-05 maximum_velocity_m_per_s 1659.15625 maximum_temperature_K 1334.50946 minimum_gas_density_kg_per_m3 0.24751326 maximum_gas_density_kg_per_m3 1.1864636 lambda_per_s 16015.2471 maximum_transport_momentum 793.279297
+accepted_summary_end
+
+post_step_2048_retry_excerpt
+candidate 0 dt_s 1.0733149792940821e-05 deviation_max 0.263212085 deviation_p95 0.0087467432 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.6279954959754832e-06
+candidate 1 dt_s 9.6279954959754832e-06 deviation_max 0.253556758 deviation_p95 0.00820356607 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.3393991846824065e-06
+candidate 5 dt_s 9.2398940978455357e-06 deviation_max 0.250016041 deviation_p95 0.00801646709 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.2386053438531235e-06
+candidate 6 dt_s 9.2386053438531235e-06 deviation_max 0.250004166 deviation_p95 0.00801599026 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.2382697403081693e-06
+candidate 7 dt_s 9.2382697403081693e-06 deviation_max 0.250001431 deviation_p95 0.00801587105 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.2381542344810441e-06
+candidate 8 dt_s 9.2381542344810441e-06 deviation_max 0.250000119 deviation_p95 0.00801587105 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.2381433205446228e-06
+candidate 9 dt_s 9.2381433205446228e-06 deviation_max 0.250000238 deviation_p95 0.00801587105 tail_count 144 drained_volume 8.46126618e-05 suggested_dt_s 9.2381233116611838e-06
+post_step_2048_retry_excerpt_end
+
+verdict operator_observation_consistent_with_durable_step_1873_physical_runaway
+manifest_stage1_complete false
+preview_rendered false
+spectrum_published false
+empirical_rows_claimed false
+stage2_formal_sweep_executed false
+stage3_tier10_onset_executed false
+stop_reason tier8_no_longer_materially_unchanged_and_CFL_collapsed_from_physical_velocity

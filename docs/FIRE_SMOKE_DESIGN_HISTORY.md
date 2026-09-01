@@ -4952,3 +4952,42 @@ it was already tried and refuted here.
   the formal sweep still follows tier 8. Thus the direct mirror harness now
   covers every published rung, and any byte mismatch or fp64-envelope breach
   refuses.
+
+- **r192 tier-8 live-trajectory rejection (2026-09-01):** executes Stage 1 of
+  the corrected Metal-host manifest unrestricted on the Apple M4 Max. The
+  retained onset is initially plume-scale: max velocity is `3.887`, `7.189`,
+  `9.446`, `10.934`, and `10.166 m/s` at steps 505, 897, 1130, 1224, and 1355.
+  It then reaches `19.835 m/s` with `dt=7.480e-4 s` at step 1565 and
+  `68.786 m/s` with `dt=2.392e-4 s` at step 1873. That retained, SHA-bound
+  checkpoint is the decisive rejection. Its monitored manifold maximum is
+  only `0.15253`, below the unchanged `2^-2` hard bound, so the event is not
+  classified as a manifold-gate miss. A manually curated operator observation
+  records a later accepted step-2048 value of `1659.15625 m/s` at
+  `dt=9.61458e-6 s`; because no raw terminal capture was preserved, that point
+  is context rather than gate authority.
+
+  The checkpoint diagnostic at step 1873 reports maximum momentum/velocity
+  compatibility residual `1.8463e-6`. Its newly reconstructed source probe
+  reports HRR `46290.069 W` against consumption times LHV `46290.075 W`
+  (relative internal consistency error `1.3215e-7`). These observations exclude
+  only a gross `M/rho` identity break at that checkpoint and an inconsistency
+  inside that reconstructed packet. They do not exclude accepted-step scalar
+  application, tail-restoration coupling, or identify which live momentum
+  substage is defective. The run is interrupted after the physical runaway
+  instead of spending the statistics window at a collapsed CFL step. No
+  shortened movie, spectrum, or empirical row is published.
+
+  This rejects the Stage-1 tier-8 hedge and the required claim that tier-6/8
+  onset is materially unchanged. The v3 manifest makes Stage 1 binding, so the
+  formal Stage-2 device sweep, tier-10 onset, regressions, and tier-10 queue are
+  not executed or claimed. The earlier development kernel sweep remains only
+  a matched-input component result; it cannot authorize a failed live
+  trajectory. The seven retained checkpoints, their independent diagnostics,
+  the unsealed terminal observation, exact executables, and manifest are SHA-bound in
+  `r192_tier8_runaway/stage1_failure_evidence.v1`. The golden checkpoint is
+  untouched, no tolerance is widened, and no remedy is authorized without a
+  matched old/ported onset replay at the first 15/30/60 m/s crossings. That
+  replay must publish per-term momentum rates, restoration, Vreman value, the
+  velocity-owning face state, momentum/scalar compatibility, the persisted
+  accepted-step source ledger, and pre/post `(rho,T,species,deviation)` for the
+  two cells adjacent to that face.

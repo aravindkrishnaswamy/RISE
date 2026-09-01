@@ -5412,6 +5412,49 @@ difference `2.2941710525697736e-7`, and derived absolute bound
 `3.1200230559651367e-5`. This run is explicitly pre-manifest qualification,
 not Stage 2: the same sealed command reruns formally only after tier 8.
 
+### 7.56y Tier-8 live-trajectory rejection (r192)
+
+The corrected Metal-host manifest was started unrestricted on the verified
+Apple M4 Max, with tier 8 first and no concurrent render. Its retained
+trajectory is healthy through the early pilot, then develops an intermittent
+vertical-momentum runaway after pilot shutoff. Retained samples report
+`10.166 m/s` at `t=2.15824 s`, `19.835 m/s` at `2.38744 s`, and `68.786 m/s`
+at `2.69935 s`, with respective CFL steps `1.508e-3 s`, `7.480e-4 s`, and
+`2.392e-4 s`. Unsealed intermediate summaries include both a `22.880 m/s`
+excursion and a rebound to `12.459 m/s`; monotone growth is not claimed. The
+retained step-1873 checkpoint is the durable rejection authority. A manually
+curated, unsealed operator observation records a later step-2048 value of
+`1659.15625 m/s` and `9.615e-6 s`; it is context, not a gate claim.
+
+At the last retained checkpoint, step 1873, the monitored manifold maximum is
+`0.15253`, below the unchanged `2^-2` physicality bound; this proves the
+accepted state did not violate the hard bound, not that tail restoration was
+irrelevant. The momentum/velocity compatibility residual is `1.8463e-6`. A
+newly reconstructed source probe has HRR/consumption-times-LHV internal
+consistency of `1.3215e-7` relative; it is not the persisted accepted-step
+source ledger. Thus the evidence excludes only a gross compatibility-identity
+break at that checkpoint and an inconsistency inside that reconstructed packet.
+Accepted-step scalar application, tail-restoration coupling, advection,
+force/projection ordering, and other momentum consumers remain in scope.
+
+The run was interrupted after the physical failure. It did not reach the full
+statistics window, so there is no spectrum, animation, or tier-8 empirical
+claim. Because Stage 1 is a binding prerequisite in the v3 manifest, the
+formal device sweep and tier-10 stages remain unexecuted. This distinguishes
+the earlier matched-input development qualification from live-trajectory
+acceptance: component byte agreement cannot overrule a failed integrated
+trajectory. The next authorized instrument is an onset budget from the last
+healthy retained state through the first 15/30/60 m/s crossings, with the
+ported and prior momentum paths compared at the same inputs. It must capture
+per-term momentum rates, restoration, Vreman value, the exact velocity-owning
+face state, momentum/scalar compatibility, the persisted accepted-step source
+ledger, and pre/post `(rho,T,species,deviation)` for both adjacent cells. No
+bound, tolerance, or timestep rule changes on this evidence alone.
+
+Evidence is sealed under
+`rendered/fire_production_calibration/r192_tier8_runaway/`. The golden
+checkpoint remains untouched.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
