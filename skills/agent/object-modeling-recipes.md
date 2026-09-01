@@ -2014,6 +2014,53 @@ directional_light
 }
 ```
 
+## Pooled water on large terrain -- a geometry problem, not a shading mask
+
+`occlusion(r)`'s radius is a fraction of the HIT GEOMETRY's OWN bbox
+diagonal (Recipe 7's companion signal, and
+`materials-and-media-basics.md`'s wetness/patina recipes both key off
+it).  On a single large ground mesh that means a shading-level pooling
+mask can only ever resolve basin-scale hollows -- a 40 m terrain's
+`occlusion(0.06)` query is a couple of metres wide, so a puddle-sized
+cavity is below its resolution no matter what radius you pick.  Small
+pools on one big terrain mesh are a geometry problem, not a bigger
+radius: author the pool as its OWN object.
+
+**The recipe:** a `dielectric_material` (`ior 1.33`, `scattering
+1000000` for a delta-flat surface, `tau` per the water-tint idiom in
+`materials-and-media-basics.md`), on one of:
+
+- a squashed `ellipsoid_geometry` for a simple round pool --
+  `tidepools.RISEscene`'s idiom;
+- a `displaced_geometry` over a flat `box_geometry` or
+  `cartesian_disk_geometry`, driven by a `gerstnerwave_painter` or an
+  `IFunction2D`, for a rippled surface --
+  `vcm_sdf_luminaire_jellyfish.RISEscene`'s idiom;
+- a `csg_object` intersection of the terrain with a half-space, to
+  carve a level cap that follows an irregular basin.
+
+Reach for this whenever the terrain is one large mesh, not only when
+the water must be level -- it is also what a genuinely raised, level
+pool of any size needs, since a shading-level mask never lies flat, it
+only follows the host surface's own normals (fine at cobblestone scale,
+wrong at pond scale).  A geometry-level pool is a real dielectric
+surface and does add light-transport chains a shading-level coat does
+not; a scene whose hero effect is light focused through the pool wants
+VCM, per the integrator map (PT/BDPT miss most caustic energy).
+
+> **Trap, flag it loudly: heightfield-mode `sdf_geometry` cannot drive
+> ANY occlusion-based pooling mask.**  `occlusion()` and `thickness()`
+> return their neutral fallback in heightfield mode (a heightfield's
+> global Lipschitz bound would make a local answer systematically
+> wrong).  So the natural instinct -- build a terrain as an SDF
+> heightfield, then pool water in its hollows with `occlusion()` --
+> silently produces a uniformly DRY terrain: neutral occlusion is 1
+> (unoccluded) everywhere, there is no error and no warning, the mask
+> simply never lights up.  Terrain that must drive occlusion-based
+> puddles has to be a MESH, a `displaced_geometry` (which bakes to an
+> indexed mesh), or a PART-BASED `sdf_geometry` -- never heightfield
+> mode.
+
 ## Traps specific to object modeling
 
 1. **`torus_geometry`'s ring axis is always Y** -- there is no `axis`

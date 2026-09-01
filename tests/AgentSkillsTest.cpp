@@ -715,7 +715,33 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// pointer only, next to the existing curv/occlusion recipe -- no new
 	// fence there, per the same one-worked-example-per-signal economy as
 	// the curv/occlusion ledger entry above.
-	Check( totalSnippets == 29, "the seed skills carry the expected 29 ```rise snippets in total (got " +
+	//
+	// The wetness verb's skill-text slice (2026-08-31,
+	// docs/WETNESS_COAT_DESIGN.md section 13 Phase 1 step 9) took the
+	// count 29 -> 30: materials-and-media-basics gains "Wet surfaces --
+	// a coat plus a darkened substrate, not a texture", the
+	// `add_wetness` recipe (a `polished_material` with `reflectance`
+	// darkened via `pow(base_rgb, k)`, `tau` reading an
+	// occlusion/curv-driven coverage mask, `scattering` sharpening only
+	// where the mask actually pools) plus the per-substrate `k` table,
+	// the `colors/water_absorption.spectra` / three-number-RGB tau
+	// idiom, and the PT-vs-BDPT/VCM signal-neutrality caveat.  The
+	// review round on this slice's first draft caught the snippet
+	// violating the file's own contract -- a bare `polished_material`
+	// fragment, not a complete scene -- and, separately, keying
+	// `occlusion(0.08)` off a lone analytic sphere, which reads the
+	// signal's neutral fallback and would have demonstrated nothing.
+	// The corrected snippet is a full standalone scene (header,
+	// rasterizer, film, camera, light) whose geometry is a part-based
+	// `sdf_geometry` of two overlapping spheres -- the union's seam is a
+	// genuine self-concavity, so `occlusion(0.08)` reads a real pooled
+	// joint between the two lobes instead of its neutral 1 everywhere.
+	// object-modeling-recipes' geometry-level pooling recipe (the
+	// `dielectric_material` pool-as-its-own-object idiom, plus the
+	// heightfield-mode trap) is prose only, per the design doc's own
+	// "documentation, not code" framing for that item -- no new fence
+	// there.
+	Check( totalSnippets == 30, "the seed skills carry the expected 30 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 

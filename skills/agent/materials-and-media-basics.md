@@ -847,6 +847,202 @@ the analytic primitives, non-indexed meshes, and a heightfield-mode SDF —
 reads the neutral 1 (unoccluded / thick), so an unsupported geometry
 stays inert rather than lighting up.
 
+## Wet surfaces — a coat plus a darkened substrate, not a texture
+
+Rain-wet is the most-requested "make it look real" ask after wear, and
+it is not a paint job: water darkens and saturates the substrate AND
+lays a coat over it, so the recipe needs TWO masks feeding a
+`polished_material` (`reflectance` darkened, `tau` = coat coverage,
+`scattering` = coat sharpness) — never a single colour swap.  One
+`param`/`def` prelude, shared byte-for-byte across all three consumer
+chunks, drives everything: `occlusion(0.08)` gated by an up-facing
+normal test finds cavities water actually pools in (gravity keeps it
+off ceilings and vertical faces), `curv > 0` sheds it off convex
+ridges, and a `base_wetness` constant is what makes a FLAT street
+wettable at all — on planar geometry both `curv` and `occlusion` go
+inert, so without that constant term the whole mask collapses to zero.
+`tau` reads the coverage mask directly; `scattering` sharpens only
+where `pooling` (not mere dampness) saturates — keying the coat lobe on
+wetness alone is the classic "wet asphalt looks like plastic" failure;
+and `reflectance` darkens via `pow(base_rgb, k)` mixed in by the
+coverage, using a per-substrate porosity exponent `k` (table below) —
+this step only works when the base colour is a flat constant, because
+the expression VM cannot sample another painter, so a textured albedo
+gets the coat with no darkening.
+
+If you would rather not hand-type it, **`add_wetness`** — zero required
+arguments — finds the qualifying material (non-metallic, flat-coloured,
+not already wet) and writes exactly this composition, in one call and
+one undo step.
+
+The shape to copy (radius `0.08` on `occlusion` is a LITERAL, never a
+`param` — a computed radius degrades to the neutral fallback on indexed
+meshes).  This trims the full recipe's `dryness`/`film_amount`/`fbm`
+breakup knobs to the essential mechanism; the full parameterized form —
+every knob a `param`, plus the breakup and drying controls — is what
+`add_wetness` emits and what ships as
+`scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene`, the
+execution-validated pooled-joint version of this same idiom.  **The
+geometry below is a part-based `sdf_geometry` — two overlapping spheres,
+not a bare analytic primitive** — on purpose: `occlusion(0.08)` needs a
+real self-concavity to read anything but its neutral 1, and a lone
+sphere or box has none.  Unioning two spheres gives one: the seam
+between them is a genuine concave wedge that occlusion sees as enclosed
+(the same fact the patina section above proves numerically), so the
+joint between the two "cobbles" pools while the outer lobes stay merely
+damp:
+
+```rise
+RISE ASCII SCENE 7
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.35 0.40 0.50
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples					16
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+film
+{
+	width	128
+	height	128
+}
+
+pinhole_camera
+{
+	location	0 0.85 1.9
+	lookat		0 -0.05 0
+	up			0 1 0
+	fov			36.0
+}
+
+scalar_painter
+{
+	name		wet_tau
+	def		up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def		cavity (1.0 - occlusion(0.08)) * up_facing
+	def		pooling clamp(1.6*cavity, 0, 1)
+	def		ridge clamp(curv * 2.2, 0, 1)
+	def		damp_raw clamp(0.55 + pooling - ridge, 0, 1)
+	def		damp smoothstep(0.0, 1.0, damp_raw)
+	expression	damp
+}
+
+scalar_painter
+{
+	name		wet_gloss
+	def		up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def		cavity (1.0 - occlusion(0.08)) * up_facing
+	def		pooling clamp(1.6*cavity, 0, 1)
+	def		ridge clamp(curv * 2.2, 0, 1)
+	def		damp_raw clamp(0.55 + pooling - ridge, 0, 1)
+	def		damp smoothstep(0.0, 1.0, damp_raw)
+	expression	mix(220.0, 200000.0, clamp(pooling * damp, 0, 1))
+}
+
+expression_painter
+{
+	name		wet_albedo
+	param		k 1.55 min 1 max 2.5 step 0.05 label "Wet exponent"
+	param		base_r 0.45 min 0 max 1 step 0.01 label "Base R"
+	param		base_g 0.43 min 0 max 1 step 0.01 label "Base G"
+	param		base_b 0.40 min 0 max 1 step 0.01 label "Base B"
+	def		up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def		cavity (1.0 - occlusion(0.08)) * up_facing
+	def		pooling clamp(1.6*cavity, 0, 1)
+	def		ridge clamp(curv * 2.2, 0, 1)
+	def		damp_raw clamp(0.55 + pooling - ridge, 0, 1)
+	def		damp smoothstep(0.0, 1.0, damp_raw)
+	expr		mix( vec3(base_r, base_g, base_b), vec3(pow(base_r,k), pow(base_g,k), pow(base_b,k)), damp )
+}
+
+polished_material
+{
+	name		mat_wet
+	reflectance	wet_albedo
+	tau		wet_tau
+	ior		1.33
+	scattering	wet_gloss
+}
+
+# Two overlapping spheres, unioned -- a real enclosed joint at the seam
+# for occlusion(0.08) to read, not a bare convex primitive.
+sdf_geometry
+{
+	name	wet_cobbles
+	part	sphere union 0   -0.28 0 0   0 0 0   1 1 1   0.4 0 0   0
+	part	sphere union 0    0.28 0 0   0 0 0   1 1 1   0.4 0 0   0
+}
+
+standard_object
+{
+	name		obj_wet_cobbles
+	geometry	wet_cobbles
+	material	mat_wet
+	position	0 0 0
+}
+
+directional_light
+{
+	name		key
+	power		3.0
+	color		1 1 1
+	direction	0.3 0.6 0.7
+}
+```
+
+**The darkening exponent `k` is a per-substrate porosity number** — not
+one universal default:
+
+| substrate | `k` |
+|---|---|
+| glazed tile, sealed concrete, painted metal, varnished wood | 1.0 – 1.1 |
+| fired brick, dressed stone, cobble | 1.5 – 1.8 |
+| unsealed concrete, plaster, dry soil, unglazed terracotta | 1.8 – 2.0 |
+| cloth, canvas, raw wood | 1.7 – 2.0 |
+
+A sealed, non-porous substrate (`k ≈ 1`) barely darkens at all — that is
+the physics, not a conservative default; what changes when you wet
+glazed tile is almost entirely the coat, not the substrate colour.
+
+**Deep or pooled water wants a real transmittance tint, not a
+uniform-color guess.**  `colors/water_absorption.spectra` (a measured
+Pope & Fry 1997 absorption table, pre-converted to a `pow(tau,
+distance)` transmittance base) gives spectrally correct depth tint —
+but only **under a spectral rasterizer**; `pathtracing_pel_rasterizer`
+broadcasts the file's one 555 nm sample and the water comes out grey.
+For the default RGB path, tint by hand with three explicit per-channel
+`tau` numbers instead, red attenuating fastest — the idiom already
+shipping at `tidepools.RISEscene:395`: `dielectric_material { tau 0.85
+0.92 0.95  ior 1.33  scattering 5000.0 }`.  (`ior 1.333  scattering
+1000000` — a flatter, more delta-mirror surface for a still, deep pool
+— is `WETNESS_COAT_DESIGN.md` §6.7's own illustrative example, not a
+shipped scene; don't cite it as one.)
+
+**A wet PT render will not match a wet BDPT or VCM render of the same
+scene.**  `occlusion()` and `curv` read their neutral fallback on parts
+of BDPT/VCM/MLT transport (those integrators omit the derivative/signal
+records PT carries), so the pooling term collapses and the surface
+reads patchily drier wherever a non-PT strategy contributed — and
+`auto_rasterizer` can route there without you choosing a non-PT
+integrator by name.  Validate a wet-highlight render's numbers under PT
+with `oidn_denoise FALSE`; OIDN is measured to inflate exactly the kind
+of sharp, near-deterministic highlight a pooled coat produces.
+
 ## A one-call route to a wired varied material
 
 The four starters above are hand-typed, one painter and one material at
