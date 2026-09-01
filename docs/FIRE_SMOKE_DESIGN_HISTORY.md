@@ -4817,14 +4817,17 @@ it was already tried and refuted here.
   current echoes, forged parent, stage order, closed constant mode, mutations
   of pressure/stage velocity/alpha/EOS temperature and nested metadata, the
   live `Begin` working-set refusal, every projection-validation branch, an
-  exercised two-class cycle, the r59 selected-alpha path, and atomic retry.
-  Active-set least-discrepancy selection associates each discrepancy with the
-  class actually projected and reprojects the canonical member. The r59
+  exercised two-class cycle, the nonuniform r59 selected-alpha path, and atomic
+  retry. Active-set least-discrepancy selection reprojects every cycle member
+  against one current target, applies the configured velocity deadband, and
+  publishes the maximum discrepancy over the trajectory. The r59
   pointwise minimum is revalidated through r60 and the commuting identity, and
-  the terminal Heun token carries that exact alpha. This proof remains local
-  to the complete owner; the accepted r189 transport source is byte-identical,
-  preventing a standalone selected-alpha authority from invalidating or
-  widening the frozen r136 source certificate.
+  the terminal Heun token carries that exact alpha. This proof remains local to
+  the complete owner. r190 truthfully changes the r189 transport files to add
+  the authenticated target-chain payload and compatible-momentum delta; those
+  additions expose no standalone accepted-step authority. The complete owner
+  declaration now exists at the target boundary, closing the incomplete-friend
+  counterfeit found by fresh review.
 
   A source-active pressure-open `4^3` case uses a canonical one-ULP pilot packet
   at `dt=1e-4 s` and matches every projected stage of the independently
@@ -4836,9 +4839,17 @@ it was already tried and refuted here.
   `2.988941126e-4 Pa`, fine/finer is `4.302731804e-5 Pa`, and production/finer
   is `3.396462939e-4 Pa`. The pinned comparison bound is the one-bit-headroom
   dyadic envelope `2^-10 Pa`; it is explicitly a fixture measurement, not an
-  operator-wide formula. The generated binary64 owner
-  is retained only as a separate all-publication roundoff check. Metal execution
-  remains unclaimed on this host. The r136 source-bound trace digest is re-pinned
-  to `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-  with every frozen metric and the `0xff` refusal unchanged. r189's tier-8-first
-  manifest remains binding.
+  operator-wide formula. The generated binary64 owner is retained as a separate
+  all-publication roundoff check, including a nonuniform periodic fixture. The
+  signed r60 gas-density differential rejects the former per-constituent clamp,
+  and wall positive-zero checks inspect the complete binary64 word. Metal execution
+  remains unclaimed on this host. The r136 source-bound trace digest moves from
+  the historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
+  to `a74cba22a6db8030796553711691078b92a9a1e1319cf6d4bff5d4693cfed6cb`.
+  This is a manifest re-derivation, not a numerical re-baseline: the encoding
+  prefixes the Transport/Force source hashes, and a detached build of
+  `0e70f17f1` reproduces the historical digest and exit 237 while the reviewed
+  owner sources reproduce the new digest and exit 237. All 3,972,326 branch
+  obligations, every frozen metric, and the `0xff` refusal are identical; the
+  separately bound `r136_trace_repin_evidence.v1` preserves both digests and
+  the comparison. r189's tier-8-first manifest remains binding.

@@ -16,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,9 +24,58 @@ namespace RISE
 {
 	struct FireProductionFrozenMethaneSourceRequest;
 	class FireProductionFrozenSourcePacketSeal;
-	class FireProductionProjectedHeunCPUOwner;
+	struct FireProductionProjectedHeunOwnerRequest;
+	class FireProductionProjectedHeunTransportProvider;
+	struct FireProductionProjectedHeunOwnerResult;
+	enum class FireProductionProjectedHeunStage : std::uint8_t;
+	struct FireProductionProjectedHeunCoupledStageResult;
 	class FireProductionProjectedHeunTargetAuthority;
 	struct FireProductionScalarHeunFluxStage;
+
+	//! Complete declaration at the target-authority boundary prevents a client
+	//! from supplying a counterfeit friend with this name.  The opaque
+	//! implementation is defined only beside the full force/transport owner.
+	class FireProductionProjectedHeunCPUOwner
+	{
+	public:
+		FireProductionProjectedHeunCPUOwner();
+		~FireProductionProjectedHeunCPUOwner();
+		FireProductionProjectedHeunCPUOwner(
+			const FireProductionProjectedHeunCPUOwner&)=delete;
+		FireProductionProjectedHeunCPUOwner& operator=(
+			const FireProductionProjectedHeunCPUOwner&)=delete;
+		bool Begin(const FireProductionProjectedHeunOwnerRequest& request,
+			std::string* error=0);
+		bool SolveR0(const FireProductionProjectedHeunTransportProvider& provider,
+			std::string* error=0);
+		bool SolveR1(const FireProductionProjectedHeunTransportProvider& provider,
+			std::string* error=0);
+		bool SolveR2(const FireProductionProjectedHeunTransportProvider& provider,
+			FireProductionProjectedHeunOwnerResult& result,std::string* error=0);
+	private:
+		enum class State : std::uint8_t { Empty=0u,Begun=1u,R0Complete=2u,
+			R1Complete=3u,Complete=4u };
+		class Implementation;
+		std::unique_ptr<Implementation> implementation_;
+		State& state_;
+		FireProductionProjectedHeunOwnerRequest& request_;
+		FireProductionProjectedHeunOwnerResult& work_;
+		std::vector<float>& predictor_;
+		std::array<std::vector<float>,3>& predictorMomentum_;
+		std::array<std::vector<float>,3>& heunMomentum_;
+		bool SolveCoupledStage(FireProductionProjectedHeunStage stage,
+			const std::vector<float>& state,
+			const std::vector<float>& temperatureK,
+			const std::array<std::vector<float>,3>& provisionalMomentum,
+			std::uint64_t parentCandidateIdentity,
+			const FireProductionProjectedHeunTransportProvider& provider,
+			const FireProductionScalarHeunFluxStage* firstStage,
+			std::vector<float>& acceptedCandidate,
+			FireProductionProjectedHeunCoupledStageResult& result,
+			std::string* error);
+	};
+	static_assert(sizeof(FireProductionProjectedHeunCPUOwner)>0u,
+		"projected-Heun owner must be complete before target authority friendship");
 	namespace FireSim
 	{
 		//! Complete declaration prevents a client from defining a counterfeit friend

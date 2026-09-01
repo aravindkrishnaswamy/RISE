@@ -273,6 +273,7 @@ namespace RISEFireProductionTrace
 		std::uint32_t acceptedIterationCount;
 		std::uint32_t activeSetCycleLength;
 		std::uint32_t activeSetDifferingFaceCount;
+		std::uint32_t activeSetCanonicalProjectionCount;
 		FireProductionRoundoffTrace::TraceFloat maximumActiveSetComplementarityDiscrepancyMPerS;
 		FireProductionRoundoffTrace::TraceFloat maximumLimiterClassDiscrepancy;
 		bool activeSetDiscontinuousClass;
@@ -282,7 +283,8 @@ namespace RISEFireProductionTrace
 			stage(static_cast<FireProductionProjectedHeunStage>(0u)),
 			parentCandidateIdentity(0u),acceptedCandidateIdentity(0u),
 			acceptedIterationCount(0u),activeSetCycleLength(0u),
-			activeSetDifferingFaceCount(0u),maximumActiveSetComplementarityDiscrepancyMPerS(0.0f),
+			activeSetDifferingFaceCount(0u),activeSetCanonicalProjectionCount(0u),
+			maximumActiveSetComplementarityDiscrepancyMPerS(0.0f),
 			maximumLimiterClassDiscrepancy(0.0f),activeSetDiscontinuousClass(false),
 			limiterDiscontinuousClass(false) {}
 	};
@@ -290,6 +292,15 @@ namespace RISEFireProductionTrace
 	//! Complete simultaneous host live-set certificate for the staged owner.
 	bool FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! r60 permits rounding-scale negative constituent rows.  Gas density is
+	//! therefore the signed sum of the six represented gas rows; per-row clamps
+	//! would silently change the momentum/projection operand.
+	bool ComputeFireProductionGasDensityCPU(
+		const FireProductionProjectionShape& shape,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& conservativeValues,
+		std::vector<FireProductionRoundoffTrace::TraceFloat>& gasDensityKGPerM3,
+		std::string* error=0 );
 
 	struct FireProductionProjectedHeunOwnerResult
 	{
@@ -316,43 +327,6 @@ namespace RISEFireProductionTrace
 	bool FireProductionProjectedHeunOwnerResultMatches(
 		const FireProductionProjectedHeunOwnerResult& result,
 		const FireProductionFrozenSourcePacketSeal& expectedSource );
-
-	//! Stateful CPU calibration owner for R0 -> R1 -> R2.  Each method accepts
-	//! exactly one next stage.  Failure is atomic and leaves the owner in its
-	//! prior protocol state, making stale-candidate and out-of-order refusal
-	//! observable without exposing a target-minting function.
-	class FireProductionProjectedHeunCPUOwner
-	{
-	public:
-		FireProductionProjectedHeunCPUOwner();
-		bool Begin(const FireProductionProjectedHeunOwnerRequest& request,
-			std::string* error=0);
-		bool SolveR0(const FireProductionProjectedHeunTransportProvider& provider,
-			std::string* error=0);
-		bool SolveR1(const FireProductionProjectedHeunTransportProvider& provider,
-			std::string* error=0);
-		bool SolveR2(const FireProductionProjectedHeunTransportProvider& provider,
-			FireProductionProjectedHeunOwnerResult& result,std::string* error=0);
-	private:
-		enum class State : std::uint8_t { Empty=0u,Begun=1u,R0Complete=2u,
-			R1Complete=3u,Complete=4u };
-		State state_;
-		FireProductionProjectedHeunOwnerRequest request_;
-		FireProductionProjectedHeunOwnerResult work_;
-		std::vector<FireProductionRoundoffTrace::TraceFloat> predictor_;
-		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> predictorMomentum_;
-		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunMomentum_;
-		bool SolveCoupledStage(FireProductionProjectedHeunStage stage,
-			const std::vector<FireProductionRoundoffTrace::TraceFloat>& state,
-			const std::vector<FireProductionRoundoffTrace::TraceFloat>& temperatureK,
-			const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& provisionalMomentum,
-			std::uint64_t parentCandidateIdentity,
-			const FireProductionProjectedHeunTransportProvider& provider,
-			const FireProductionScalarHeunFluxStage* firstStage,
-			std::vector<FireProductionRoundoffTrace::TraceFloat>& acceptedCandidate,
-			FireProductionProjectedHeunCoupledStageResult& result,
-			std::string* error);
-	};
 
 	bool FireProductionNonpressureMomentumRHSWorkingSetBytes(
 		const FireProductionProjectionShape& shape,

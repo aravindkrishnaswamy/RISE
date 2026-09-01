@@ -67,4 +67,17 @@ namespace RISE
 		} catch( const std::bad_alloc& ) {}
 		return false;
 	}
+
+	bool EvaluateFireProductionScalarFCTMetalStageDiagnostic(
+		const FireProductionScalarFCTRequest&,
+		const FireProductionScalarFCTRequest&,
+		FireProductionScalarFCTMetalStageDiagnosticResult& result,
+		std::string* error )
+	{
+		result=FireProductionScalarFCTMetalStageDiagnosticResult();
+		if( error ) try {
+			*error="production scalar FCT Metal-stage diagnostic unavailable: Metal is not built on this platform";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
 }

@@ -1565,6 +1565,7 @@ namespace RISEFireProductionFP64
 			OwnerHashUInt64(hash,value.acceptedIterationCount);
 			OwnerHashUInt64(hash,value.activeSetCycleLength);
 			OwnerHashUInt64(hash,value.activeSetDifferingFaceCount);
+			OwnerHashUInt64(hash,value.activeSetCanonicalProjectionCount);
 			OwnerHashFloat(hash,value.maximumActiveSetComplementarityDiscrepancyMPerS);
 			OwnerHashFloat(hash,value.maximumLimiterClassDiscrepancy);
 			OwnerHashUInt64(hash,value.activeSetDiscontinuousClass?1u:0u);
@@ -1574,7 +1575,7 @@ namespace RISEFireProductionFP64
 		std::uint64_t OwnerResultIdentity(const FireProductionProjectedHeunOwnerResult& value)
 		{
 			std::uint64_t hash=UINT64_C(14695981039346656037);
-			static const char domain[]="RISE complete projected-Heun CPU owner v3";
+			static const char domain[]="RISE complete projected-Heun CPU owner v4";
 			for(const unsigned char byte:domain)OwnerHashByte(hash,byte);
 			OwnerHashFloats(hash,value.conservativeValues);
 			OwnerHashFloatAxes(hash,value.momentumKGPerM2S);
@@ -1624,7 +1625,15 @@ namespace RISEFireProductionFP64
 		bool OwnerTestFailure(const char* name)
 		{
 			const char* requested=std::getenv("RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
-			return requested&&std::strcmp(requested,name)==0;
+			if(!requested)return false;
+			const std::size_t nameLength=std::strlen(name);
+			for(const char* token=requested;*token;){
+				const char* end=std::strchr(token,',');
+				const std::size_t length=end?static_cast<std::size_t>(end-token):std::strlen(token);
+				if(length==nameLength&&std::memcmp(token,name,length)==0)return true;
+				if(!end)break;token=end+1;
+			}
+			return false;
 		}
 
 		bool EmptyOwnerStageArrays(const FireProductionProjectedHeunOwnerRequest& request)
@@ -1651,17 +1660,7 @@ namespace RISEFireProductionFP64
 		bool OwnerGasDensity(const FireProductionProjectionShape& shape,
 			const std::vector<double>& state,std::vector<double>& result)
 		{
-			const std::size_t cells=shape.CellCount();
-			if(state.size()!=9u*cells)return false;
-			result.assign(cells,0.0);
-			for(std::size_t cell=0u;cell<cells;++cell){
-				double density=0.0;
-				for(std::size_t component=1u;component<=6u;++component)
-					density+=std::max(state[component*cells+cell],0.0);
-				if(!std::isfinite(density)||!(density>0.0))return false;
-				result[cell]=density;
-			}
-			return true;
+			return ComputeFireProductionGasDensityCPU(shape,state,result,0);
 		}
 
 		std::uint64_t OwnerProjectionIdentity(const std::uint64_t targetIdentity,
@@ -1804,6 +1803,37 @@ namespace RISEFireProductionFP64
 			return next;
 		}
 
+		double OwnerOpenClassDiscrepancy(
+			const FireProductionProjectionShape& shape,
+			const std::array<FireProductionProjectionBoundary,6>& boundary,
+			const std::array<std::vector<unsigned char>,6>& classification,
+			const std::array<std::vector<double>,3>& velocity,
+			const double tolerance)
+		{
+			double result=0.0;
+			for(unsigned int side=0u;side<6u;++side){
+				if(boundary[side]!=FireProductionProjectionPressureOpen)continue;
+				const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+				const std::size_t firstCount=axis==0u?shape.ny:shape.nx;
+				const std::size_t secondCount=axis==2u?shape.ny:shape.nz;
+				for(std::size_t second=0u;second<secondCount;++second)
+					for(std::size_t first=0u;first<firstCount;++first){
+						std::size_t x=0u,y=0u,z=0u;
+						if(axis==0u){x=positive?shape.nx:0u;y=first;z=second;}
+						if(axis==1u){x=first;y=positive?shape.ny:0u;z=second;}
+						if(axis==2u){x=first;y=second;z=positive?shape.nz:0u;}
+						const std::size_t index=second*firstCount+first;
+						const double outward=(positive?1.0:-1.0)*
+							velocity[axis][FaceIndex(shape,axis,x,y,z)];
+						const double discrepancy=classification[side][index]?
+							std::max(0.0,outward-tolerance):
+							std::max(0.0,-outward-tolerance);
+						result=std::max(result,discrepancy);
+					}
+			}
+			return result;
+		}
+
 		bool OwnerApplySelectedAlpha(const FireProductionScalarFCTRequest& request,
 			const FireProductionScalarFCTResult& solved,
 			const std::array<std::vector<double>,3>& alpha,
@@ -1937,7 +1967,7 @@ namespace RISEFireProductionFP64
 							const bool boundaryFace=normal==0u||normal==extent;
 							const unsigned int side=2u*component+(normal==extent?1u:0u);
 							if(boundaryFace&&request.boundary[side]==FireProductionProjectionWall){
-								std::uint32_t rateBits=0u;std::memcpy(&rateBits,
+								std::uint64_t rateBits=0u;std::memcpy(&rateBits,
 									&identityRate.advectionRateKGPerM2S2[component][face],
 									sizeof(rateBits));
 								if(rateBits!=0u)return Fail(error,
@@ -1980,6 +2010,32 @@ namespace RISEFireProductionFP64
 		}
 	}
 
+	bool ComputeFireProductionGasDensityCPU(
+		const FireProductionProjectionShape& shape,
+		const std::vector<double>& conservativeValues,
+		std::vector<double>& gasDensityKGPerM3,std::string* error )
+	{
+		gasDensityKGPerM3.clear();
+		try {
+			const std::size_t cells=shape.CellCount();
+			if(cells==0u||conservativeValues.size()!=9u*cells)
+				return Fail(error,"production gas-density state shape is invalid");
+			gasDensityKGPerM3.assign(cells,0.0);
+			for(std::size_t cell=0u;cell<cells;++cell){
+				double density=0.0;
+				for(std::size_t component=1u;component<=6u;++component)
+					density+=conservativeValues[component*cells+cell];
+				if(!std::isfinite(density)||!(density>0.0)){
+					gasDensityKGPerM3.clear();
+					return Fail(error,"production gas density is nonpositive or nonfinite");
+				}
+				gasDensityKGPerM3[cell]=density;
+			}
+			if(error)error->clear();return true;
+		} catch(const std::bad_alloc&){gasDensityKGPerM3.clear();return Fail(error,
+			"production gas-density allocation failed");}
+	}
+
 	std::uint64_t FireProductionProjectedHeunTransportPublicationIdentity(
 		const FireProductionProjectedHeunTransportContext& context,
 		const FireProductionProjectedHeunTransportCoefficients& result )
@@ -2007,8 +2063,26 @@ namespace RISEFireProductionFP64
 		return hash;
 	}
 
+	class FireProductionProjectedHeunCPUOwner::Implementation
+	{
+	public:
+		Implementation() : state_(State::Empty) {}
+		State state_;
+		FireProductionProjectedHeunOwnerRequest request_;
+		FireProductionProjectedHeunOwnerResult work_;
+		std::vector<double> predictor_;
+		std::array<std::vector<double>,3> predictorMomentum_;
+		std::array<std::vector<double>,3> heunMomentum_;
+	};
+
 	FireProductionProjectedHeunCPUOwner::FireProductionProjectedHeunCPUOwner() :
-		state_(State::Empty) {}
+		implementation_(new Implementation),state_(implementation_->state_),
+		request_(implementation_->request_),work_(implementation_->work_),
+		predictor_(implementation_->predictor_),
+		predictorMomentum_(implementation_->predictorMomentum_),
+		heunMomentum_(implementation_->heunMomentum_) {}
+
+	FireProductionProjectedHeunCPUOwner::~FireProductionProjectedHeunCPUOwner()=default;
 
 	bool FireProductionProjectedHeunCPUOwner::Begin(
 		const FireProductionProjectedHeunOwnerRequest& request,std::string* error)
@@ -2207,7 +2281,9 @@ namespace RISEFireProductionFP64
 			FireProductionProjectionResult priorProjection;
 			FireProductionProjectedHeunTransportCoefficients priorCoefficients;
 			std::vector<std::array<std::vector<unsigned char>,6> > activeHistory;
-			std::vector<double> activeDiscrepancy;
+			double activeTrajectoryMaximum=OwnerOpenClassDiscrepancy(shape,
+				request_.scalarContract.boundary,firstProjection.pressureOpenInflow,
+				firstProjection.velocityMPerS,request_.endpointVelocityToleranceMPerS);
 			bool frozenActiveCycle=false;
 			bool havePrior=false;
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
@@ -2221,6 +2297,10 @@ namespace RISEFireProductionFP64
 					projected.validationPassed=false;
 				if(!projected.validationPassed)return Fail(error,
 						"projected-Heun coupled projection validation failed");
+				activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
+					OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
+						projected.pressureOpenInflow,projected.velocityMPerS,
+						request_.endpointVelocityToleranceMPerS));
 				std::array<std::vector<unsigned char>,6> nextClass=OwnerNextOpenClass(
 					shape,request_.scalarContract.boundary,projected.pressureOpenInflow,
 					projected.velocityMPerS,request_.endpointVelocityToleranceMPerS);
@@ -2236,18 +2316,43 @@ namespace RISEFireProductionFP64
 					const std::array<std::vector<unsigned char>,6> solvedClass=
 						projected.pressureOpenInflow;
 					activeHistory.push_back(solvedClass);
-					activeDiscrepancy.push_back(
-						projected.maximumOpenComplementarityDiscrepancyMPerS);
 					auto repeated=std::find(activeHistory.begin(),activeHistory.end(),nextClass);
 					if(repeated!=activeHistory.end()){
 						const std::size_t first=static_cast<std::size_t>(repeated-
 							activeHistory.begin());std::size_t selected=first;
-						for(std::size_t i=first+1u;i<activeHistory.size();++i)
-							if(activeDiscrepancy[i]<activeDiscrepancy[selected]||
-								(activeDiscrepancy[i]==activeDiscrepancy[selected]&&
-								OwnerActiveClassLess(activeHistory[i],activeHistory[selected])))
-								selected=i;
+						double selectedDiscrepancy=0.0;bool haveSelected=false;
+						FireProductionProjectionResult selectedProjection;
+						for(std::size_t i=first;i<activeHistory.size();++i){
+							++result.activeSetCanonicalProjectionCount;
+							FireProductionProjectionResult branchSeed=projected,branchProjection;
+							branchSeed.pressureOpenInflow=activeHistory[i];
+							FireProductionProjectionRequest branchRequest=
+								projectionRequest(&target,&branchSeed);
+							branchRequest.outputClassificationMode=
+								FireProductionProjectionPreserveOpenClassification;
+							if(!ProjectFireProductionScalarTargetCPU(std::move(branchRequest),target,
+								branchProjection,error))return Fail(error,
+									"projected-Heun canonical active class projection failed");
+							if(OwnerTestFailure("projection-validation-selected-cycle"))
+								branchProjection.validationPassed=false;
+							if(!branchProjection.validationPassed)return Fail(error,
+								"projected-Heun canonical active class validation failed");
+							double discrepancy=OwnerOpenClassDiscrepancy(shape,
+								request_.scalarContract.boundary,activeHistory[i],
+								branchProjection.velocityMPerS,
+								request_.endpointVelocityToleranceMPerS);
+							if(OwnerTestFailure("active-cycle-selection-bias")&&i==first)
+								discrepancy=std::numeric_limits<double>::max();
+							activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,discrepancy);
+							if(!haveSelected||discrepancy<selectedDiscrepancy||
+								(discrepancy==selectedDiscrepancy&&OwnerActiveClassLess(
+									activeHistory[i],activeHistory[selected]))){
+								selected=i;selectedDiscrepancy=discrepancy;
+								selectedProjection=std::move(branchProjection);haveSelected=true;
+							}
+						}
 						nextClass=activeHistory[selected];frozenActiveCycle=true;
+						projected=std::move(selectedProjection);
 						result.activeSetDiscontinuousClass=true;
 						result.activeSetCycleLength=static_cast<std::uint32_t>(
 							activeHistory.size()-first);
@@ -2256,17 +2361,6 @@ namespace RISEFireProductionFP64
 							bool differs=false;for(std::size_t i=first;i<activeHistory.size();++i)
 								differs=differs||activeHistory[i][side][face]!=nextClass[side][face];
 								result.activeSetDifferingFaceCount+=differs?1u:0u;
-						}
-						if(nextClass!=solvedClass){
-							FireProductionProjectionResult selectedSeed=projected;
-							selectedSeed.pressureOpenInflow=nextClass;
-							FireProductionProjectionRequest selectedRequest=
-								projectionRequest(&target,&selectedSeed);
-							if(!ProjectFireProductionScalarTargetCPU(std::move(selectedRequest),target,
-								projected,error))return Fail(error,
-									"projected-Heun selected active class projection failed");
-							if(!projected.validationPassed)return Fail(error,
-									"projected-Heun selected active class validation failed");
 						}
 						classStable=true;
 					}
@@ -2339,6 +2433,10 @@ namespace RISEFireProductionFP64
 						verifiedProjection.validationPassed=false;
 					if(!verifiedProjection.validationPassed)
 						return Fail(error,"projected-Heun terminal projection validation failed");
+					activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
+						OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
+							verifiedProjection.pressureOpenInflow,verifiedProjection.velocityMPerS,
+							request_.endpointVelocityToleranceMPerS));
 					FireProductionProjectedHeunTransportCoefficients verifiedCoefficients;
 					FireProductionScalarFCTRequest verifiedScalarRequest;
 					FireProductionScalarPhysicalFluxPrerequisiteRequest verifiedPhysical;
@@ -2378,12 +2476,31 @@ namespace RISEFireProductionFP64
 							selectedAlpha[axis][face]=std::min(scalarAcceptance.sharedFaceAlpha[
 								axis][face],verifiedScalar.sharedFaceAlpha[axis][face]);
 					if(OwnerTestFailure("limiter-discontinuity")&&
-						stage==FireProductionProjectedHeunStage::R1&&
-						selectedAlpha[0u].size()>1u){
-						selectedAlpha[0u][1u]=0.5*selectedAlpha[0u][1u];
-						limiterDiscrepancy=std::max(limiterDiscrepancy,
-							std::fabs(selectedAlpha[0u][1u]-verifiedScalar.sharedFaceAlpha[0u][1u]));
-						limiterDiscontinuous=true;
+						stage==FireProductionProjectedHeunStage::R1){
+						bool injected=false;
+						const std::size_t allFaces=verifiedScalar.packedFaceOffset[2u]+
+							FireProductionProjectionFaceCount(shape,2u);
+						for(unsigned int axis=0u;axis<3u&&!injected;++axis)
+							for(std::size_t face=0u;face<selectedAlpha[axis].size()&&!injected;++face){
+								const std::size_t coordinate=axis==0u?face%(shape.nx+1u):
+									(axis==1u?(face/shape.nx)%(shape.ny+1u):
+										face/(shape.nx*shape.ny));
+								const std::size_t extent=axis==0u?shape.nx:
+									(axis==1u?shape.ny:shape.nz);
+								if(coordinate==0u||coordinate==extent)continue;
+								bool transports=false;
+								for(std::size_t component=0u;component<9u;++component)
+									transports=transports||verifiedScalar.fluxDelta[
+										component*allFaces+verifiedScalar.packedFaceOffset[axis]+face]!=0.0;
+								if(transports&&selectedAlpha[axis][face]>0.0){
+									selectedAlpha[axis][face]*=0.5;
+									limiterDiscrepancy=std::max(limiterDiscrepancy,std::fabs(
+										selectedAlpha[axis][face]-
+										verifiedScalar.sharedFaceAlpha[axis][face]));
+									injected=true;
+								}
+							}
+						limiterDiscontinuous=limiterDiscontinuous||injected;
 					}
 					FireProductionScalarFCTResult certifiedScalar;
 					if(!OwnerApplySelectedAlpha(verifiedScalarRequest,verifiedScalar,
@@ -2425,7 +2542,7 @@ namespace RISEFireProductionFP64
 					result.acceptedCandidateIdentity=certifiedIdentity;
 					result.acceptedIterationCount=iteration+1u;
 					result.maximumActiveSetComplementarityDiscrepancyMPerS=
-						result.projection.maximumOpenComplementarityDiscrepancyMPerS;
+						activeTrajectoryMaximum;
 					result.maximumLimiterClassDiscrepancy=limiterDiscrepancy;
 					result.limiterDiscontinuousClass=limiterDiscontinuous;
 					if(error)error->clear();return true;
@@ -2668,21 +2785,45 @@ namespace RISEFireProductionFP64
 			FireProductionProjectedHeunTransportCoefficients priorCoefficients;
 			FireProductionProjectedHeunTransportCoefficients acceptedCoefficients;
 			std::vector<std::array<std::vector<unsigned char>,6> > activeHistory;
-			std::vector<double> activeDiscrepancy;
+			double activeTrajectoryMaximum=OwnerOpenClassDiscrepancy(shape,
+				request_.scalarContract.boundary,bootstrapProjection.pressureOpenInflow,
+				bootstrapProjection.velocityMPerS,request_.endpointVelocityToleranceMPerS);
 			bool havePrior=false,frozenCycle=false,accepted=false;
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
 				++iteration){
+				FireProductionProjectionResult projected;
+				bool haveCanonicalProjection=false;
 				if(!frozenCycle){
 					auto repeated=std::find(activeHistory.begin(),activeHistory.end(),active);
 					if(repeated!=activeHistory.end()){
 						const std::size_t first=static_cast<std::size_t>(repeated-activeHistory.begin());
-						std::size_t selected=first;
-						for(std::size_t i=first+1u;i<activeHistory.size();++i)
-							if(activeDiscrepancy[i]<activeDiscrepancy[selected]||
-								(activeDiscrepancy[i]==activeDiscrepancy[selected]&&
-								OwnerActiveClassLess(activeHistory[i],activeHistory[selected])))
-								selected=i;
+						std::size_t selected=first;double selectedDiscrepancy=0.0;
+						bool haveSelected=false;
+						for(std::size_t i=first;i<activeHistory.size();++i){
+							++r2.activeSetCanonicalProjectionCount;
+							active=activeHistory[i];FireProductionProjectionResult branch;
+							if(!ProjectFireProductionScalarTargetCPU(projectionRequest(false),
+								endpointTarget,branch,error))return Fail(error,
+									"projected-Heun R2 canonical active class projection failed");
+							if(OwnerTestFailure("projection-validation-selected-cycle"))
+								branch.validationPassed=false;
+							if(!branch.validationPassed)return Fail(error,
+								"projected-Heun R2 canonical active class validation failed");
+							double discrepancy=OwnerOpenClassDiscrepancy(shape,
+								request_.scalarContract.boundary,activeHistory[i],branch.velocityMPerS,
+								request_.endpointVelocityToleranceMPerS);
+							if(OwnerTestFailure("active-cycle-selection-bias")&&i==first)
+								discrepancy=std::numeric_limits<double>::max();
+							activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,discrepancy);
+							if(!haveSelected||discrepancy<selectedDiscrepancy||
+								(discrepancy==selectedDiscrepancy&&OwnerActiveClassLess(
+									activeHistory[i],activeHistory[selected]))){
+								selected=i;selectedDiscrepancy=discrepancy;
+								projected=std::move(branch);haveSelected=true;
+							}
+						}
 						active=activeHistory[selected];frozenCycle=true;
+						haveCanonicalProjection=true;
 						r2.activeSetDiscontinuousClass=true;
 						r2.activeSetCycleLength=static_cast<std::uint32_t>(
 							activeHistory.size()-first);
@@ -2694,16 +2835,17 @@ namespace RISEFireProductionFP64
 						}
 					}else activeHistory.push_back(active);
 				}
-				FireProductionProjectionResult projected;
-				if(!ProjectFireProductionScalarTargetCPU(projectionRequest(!frozenCycle),
-					endpointTarget,projected,error))return Fail(error,
-						"projected-Heun R2 projection failed");
+				if(!haveCanonicalProjection&&!ProjectFireProductionScalarTargetCPU(
+					projectionRequest(!frozenCycle),endpointTarget,projected,error))
+					return Fail(error,"projected-Heun R2 projection failed");
 				if(OwnerTestFailure("projection-validation-r2-endpoint"))
 					projected.validationPassed=false;
 				if(!projected.validationPassed)return Fail(error,
 						"projected-Heun R2 projection validation failed");
-				if(!frozenCycle)activeDiscrepancy.push_back(
-					projected.maximumOpenComplementarityDiscrepancyMPerS);
+				activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
+					OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
+						projected.pressureOpenInflow,projected.velocityMPerS,
+						request_.endpointVelocityToleranceMPerS));
 				const bool classStable=frozenCycle||projected.pressureOpenInflow==active;
 				if(!frozenCycle)active=projected.pressureOpenInflow;
 				FireProductionProjectedHeunTransportCoefficients coefficients;
@@ -2743,7 +2885,7 @@ namespace RISEFireProductionFP64
 					r2.acceptedCandidateIdentity=work_.r1.acceptedCandidateIdentity;
 					r2.acceptedIterationCount=iteration+1u;
 					r2.maximumActiveSetComplementarityDiscrepancyMPerS=
-						r2.projection.maximumOpenComplementarityDiscrepancyMPerS;
+						activeTrajectoryMaximum;
 					acceptedCoefficients=std::move(coefficients);
 					accepted=true;break;
 				}

@@ -5213,14 +5213,17 @@ momentum, and coefficient convergence, and applies r59's pointwise
 `min(alpha_next,alpha_ver)` for a discontinuous limiter class. The selected
 alpha is run back through the complete r60 accepted-state validation and the
 compatible `D_i I_i = I_rho,i D` witness before the identity-bearing Heun
-solve may consume it. That selected-alpha validation is owner-local: the
-accepted r189 transport source remains byte-identical, so the owner gains no
-standalone correction authority and the frozen r136 source certificate is not
-silently broadened. Open-face class history stores the class actually used
-by each projection with that projection's discrepancy; a two-class cycle
-selects its least-discrepant frozen member with a lexicographic tie break,
-reprojects that member before acceptance, and records cycle length and
-differing-face count. The shared Heun
+solve may consume it. That selected-alpha validation is owner-local. r190 does
+extend the r189 transport target payload: it adds the authenticated
+parent/candidate/correction chain and the compatible-momentum delta consumed by
+the complete owner. This is recorded as a source change, not disguised as
+byte identity; none of those additions can publish standalone accepted-step
+authority. Open-face class history stores the class actually used by each
+projection. On a cycle, every member is reprojected against the same current
+target with its class frozen, and only then compared with the configured
+velocity deadband and a lexicographic tie break. The owner records cycle length,
+differing-face count, canonical reprojection count, and the maximum discrepancy
+over the full trajectory. The shared Heun
 contract excludes stage-local pressure-open classes, while each stage request
 identity binds its own class.
 
@@ -5235,8 +5238,10 @@ REDs cover out-of-order stages, stale r70 candidate identity, stale coefficient
 payload with current echoes, forged parent, closed constant-mode compatibility,
 stale whole-result replay against a different sealed source attempt, result
 mutation, the actual `Begin` combined-live-set refusal, every initial/iterative/
-terminal/R2 projection-validation branch, an exercised two-class active cycle,
-an exercised r59 selected-alpha path, and retry
+terminal/R2 bootstrap/endpoint projection-validation branch, validation of
+every selected-cycle reprojection, an exercised two-class active cycle with
+distinguishable discrepancies, an exercised nonuniform r59 selected-alpha path,
+and retry
 after an injected result-publication allocation failure. The final verifier
 binds every public owner payload: conservative state, final and stage momentum,
 velocity and pressure, both EOS publications, fluxes, limiter state,
@@ -5262,11 +5267,22 @@ ratios `1`, `1/16`, and `1/256`; the coarse-to-fine difference is
 envelope `2^-10 Pa = 9.765625e-4 Pa`, derived by rounding that measured
 converged differential upward and then adding one binary headroom bit. It is a
 fixture-specific measured upper bound, not the rejected local
-`2 dx^2 epsilon/dt` pressure formula. The generated binary64 mirror separately bounds roundoff
-over state, targets, momentum, velocity, pressure, and alpha. No Metal run is
-claimed. The r136 diagnostic's source-bound trace digest is re-pinned to
-`19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`;
-all frozen metrics and the `0xff` a-priori refusal remain unchanged. When the worker returns,
+`2 dx^2 epsilon/dt` pressure formula. A second, nonuniform periodic fixture
+compares complete generated fp32/fp64 owner publications: stage targets,
+projections, flux pairs, nonpressure rates, and shared alpha. The signed r60
+gas-density differential also proves that a rounding-scale negative constituent
+is included rather than clamped. The generated binary64 mirror separately
+bounds roundoff over state, targets, momentum, velocity, pressure, and alpha.
+No Metal run is
+claimed. The r136 diagnostic's source-bound trace digest is re-derived from
+historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
+to `a74cba22a6db8030796553711691078b92a9a1e1319cf6d4bff5d4693cfed6cb`.
+The digest encoding prefixes the Transport/Force source manifest, so the owner
+change must change this digest. A detached build at `0e70f17f1` and the current
+build both return the exact diagnostic success code 237; all 3,972,326 branch
+obligations, frozen metrics, and the `0xff` a-priori refusal remain unchanged.
+The SHA-bound `r136_trace_repin_evidence.v1` records both runs instead of
+rewriting the historical record. When the worker returns,
 r189 still runs tier 8 first and sends its movie before the device sweep and
 tier-10 onset verdict.
 

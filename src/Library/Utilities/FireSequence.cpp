@@ -231,6 +231,7 @@ namespace RISE
 				return true;
 			}
 
+		#if defined(RISE_ENABLE_OPENVDB)
 			bool CheckedVoxelCount( const std::array<std::uint64_t,3>& dimensions,
 				const std::uint64_t limit, std::uint64_t& count )
 			{
@@ -241,6 +242,7 @@ namespace RISE
 				}
 				return count <= limit;
 			}
+		#endif
 
 			bool SafeRelativePath( const std::string& text )
 			{

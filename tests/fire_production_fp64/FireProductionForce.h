@@ -272,6 +272,7 @@ namespace RISEFireProductionFP64
 		std::uint32_t acceptedIterationCount;
 		std::uint32_t activeSetCycleLength;
 		std::uint32_t activeSetDifferingFaceCount;
+		std::uint32_t activeSetCanonicalProjectionCount;
 		double maximumActiveSetComplementarityDiscrepancyMPerS;
 		double maximumLimiterClassDiscrepancy;
 		bool activeSetDiscontinuousClass;
@@ -281,7 +282,8 @@ namespace RISEFireProductionFP64
 			stage(static_cast<FireProductionProjectedHeunStage>(0u)),
 			parentCandidateIdentity(0u),acceptedCandidateIdentity(0u),
 			acceptedIterationCount(0u),activeSetCycleLength(0u),
-			activeSetDifferingFaceCount(0u),maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
+			activeSetDifferingFaceCount(0u),activeSetCanonicalProjectionCount(0u),
+			maximumActiveSetComplementarityDiscrepancyMPerS(0.0),
 			maximumLimiterClassDiscrepancy(0.0),activeSetDiscontinuousClass(false),
 			limiterDiscontinuousClass(false) {}
 	};
@@ -289,6 +291,15 @@ namespace RISEFireProductionFP64
 	//! Complete simultaneous host live-set certificate for the staged owner.
 	bool FireProductionProjectedHeunCPUOwnerWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! r60 permits rounding-scale negative constituent rows.  Gas density is
+	//! therefore the signed sum of the six represented gas rows; per-row clamps
+	//! would silently change the momentum/projection operand.
+	bool ComputeFireProductionGasDensityCPU(
+		const FireProductionProjectionShape& shape,
+		const std::vector<double>& conservativeValues,
+		std::vector<double>& gasDensityKGPerM3,
+		std::string* error=0 );
 
 	struct FireProductionProjectedHeunOwnerResult
 	{
@@ -315,43 +326,6 @@ namespace RISEFireProductionFP64
 	bool FireProductionProjectedHeunOwnerResultMatches(
 		const FireProductionProjectedHeunOwnerResult& result,
 		const FireProductionFrozenSourcePacketSeal& expectedSource );
-
-	//! Stateful CPU calibration owner for R0 -> R1 -> R2.  Each method accepts
-	//! exactly one next stage.  Failure is atomic and leaves the owner in its
-	//! prior protocol state, making stale-candidate and out-of-order refusal
-	//! observable without exposing a target-minting function.
-	class FireProductionProjectedHeunCPUOwner
-	{
-	public:
-		FireProductionProjectedHeunCPUOwner();
-		bool Begin(const FireProductionProjectedHeunOwnerRequest& request,
-			std::string* error=0);
-		bool SolveR0(const FireProductionProjectedHeunTransportProvider& provider,
-			std::string* error=0);
-		bool SolveR1(const FireProductionProjectedHeunTransportProvider& provider,
-			std::string* error=0);
-		bool SolveR2(const FireProductionProjectedHeunTransportProvider& provider,
-			FireProductionProjectedHeunOwnerResult& result,std::string* error=0);
-	private:
-		enum class State : std::uint8_t { Empty=0u,Begun=1u,R0Complete=2u,
-			R1Complete=3u,Complete=4u };
-		State state_;
-		FireProductionProjectedHeunOwnerRequest request_;
-		FireProductionProjectedHeunOwnerResult work_;
-		std::vector<double> predictor_;
-		std::array<std::vector<double>,3> predictorMomentum_;
-		std::array<std::vector<double>,3> heunMomentum_;
-		bool SolveCoupledStage(FireProductionProjectedHeunStage stage,
-			const std::vector<double>& state,
-			const std::vector<double>& temperatureK,
-			const std::array<std::vector<double>,3>& provisionalMomentum,
-			std::uint64_t parentCandidateIdentity,
-			const FireProductionProjectedHeunTransportProvider& provider,
-			const FireProductionScalarHeunFluxStage* firstStage,
-			std::vector<double>& acceptedCandidate,
-			FireProductionProjectedHeunCoupledStageResult& result,
-			std::string* error);
-	};
 
 	bool FireProductionNonpressureMomentumRHSWorkingSetBytes(
 		const FireProductionProjectionShape& shape,

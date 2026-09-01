@@ -125,6 +125,11 @@ def transform(text: str, name: str, suffix: str) -> str:
     # Decimal and hexadecimal floating literals use the same expression tree;
     # only their storage suffix changes.
     text = re.sub(r"(?<=[0-9])f\b", "", text)
+    if suffix == ".cpp" and name in ("FireProductionTransport", "FireProductionForce"):
+        # Positive-zero commuting checks inspect the complete storage word.
+        # After the scalar transform that word is binary64, so retaining the
+        # source's uint32_t destination would accept any nonzero upper half.
+        text = text.replace("std::uint32_t rateBits=0u;", "std::uint64_t rateBits=0u;")
     # Calibration alone may translate an already authenticated binary32 source
     # packet into binary64 storage.  The live header exposes no such importer;
     # this template exists only in the mechanically generated mirror so the full

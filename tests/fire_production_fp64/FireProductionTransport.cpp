@@ -3893,7 +3893,7 @@ namespace RISEFireProductionFP64
 						const bool boundaryFace=normal==0u||normal==extent;
 						const unsigned int side=2u*component+(normal==extent?1u:0u);
 						if(boundaryFace&&request.boundary[side]==FireProductionProjectionWall){
-							std::uint32_t rateBits=0u;std::memcpy(&rateBits,
+							std::uint64_t rateBits=0u;std::memcpy(&rateBits,
 								&identityRate.advectionRateKGPerM2S2[component][face],sizeof(rateBits));
 							if(rateBits!=0u)return Fail(error,
 								"scalar FCT wall commuting rate is not positive zero");
