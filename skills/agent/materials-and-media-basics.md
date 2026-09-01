@@ -847,33 +847,45 @@ the analytic primitives, non-indexed meshes, and a heightfield-mode SDF —
 reads the neutral 1 (unoccluded / thick), so an unsupported geometry
 stays inert rather than lighting up.
 
-## Wet surfaces — a coat plus a darkened substrate, not a texture
+## Wet surfaces — a coat over an UNTOUCHED substrate, not a texture
 
 Rain-wet is the most-requested "make it look real" ask after wear, and
-it is not a paint job: water darkens and saturates the substrate AND
-lays a coat over it, so the recipe needs TWO masks feeding a
-`polished_material` (`reflectance` darkened, `tau` = coat coverage,
-`scattering` = coat sharpness) — never a single colour swap.  One
-`param`/`def` prelude, shared byte-for-byte across all three consumer
+it is not a paint job: water lays a real dielectric film over the
+substrate, and the film's own layered transport (Fresnel in, attenuate,
+scatter off the substrate, internal-reflection recycling back into it,
+attenuate, Fresnel out) is what darkens and saturates the substrate —
+not a separate paint step.  The recipe is `coated_material` wrapping
+the ORIGINAL material chunk UNCHANGED: `base` names it, `coat_weight` =
+coverage, `coat_roughness` = coat sharpness.  There is no `reflectance`/
+darkening painter to write at all — the coat's own transport does that
+work, so adding one on top would double-count the same physics.  One
+`param`/`def` prelude, shared byte-for-byte across the two coat-field
 chunks, drives everything: `occlusion(0.08)` gated by an up-facing
 normal test finds cavities water actually pools in (gravity keeps it
 off ceilings and vertical faces), `curv > 0` sheds it off convex
 ridges, and a `base_wetness` constant is what makes a FLAT street
 wettable at all — on planar geometry both `curv` and `occlusion` go
 inert, so without that constant term the whole mask collapses to zero.
-`tau` reads the coverage mask directly; `scattering` sharpens only
-where `pooling` (not mere dampness) saturates — keying the coat lobe on
-wetness alone is the classic "wet asphalt looks like plastic" failure;
-and `reflectance` darkens via `pow(base_rgb, k)` mixed in by the
-coverage, using a per-substrate porosity exponent `k` (table below) —
-this step only works when the base colour is a flat constant, because
-the expression VM cannot sample another painter, so a textured albedo
-gets the coat with no darkening.
+`coat_weight` reads the coverage mask directly; `coat_roughness`
+sharpens only where `pooling` (not mere dampness) saturates — keying
+the coat lobe on wetness alone is the classic "wet asphalt looks like
+plastic" failure.  `coat_roughness` is a GGX ALPHA, not a Phong
+exponent, so a gloss band authored in the more intuitive "cone
+exponent" terms needs the `alpha = sqrt(2/(n+2))` conversion (see the
+snippet below) before it lands in the chunk.
 
 If you would rather not hand-type it, **`add_wetness`** — zero required
 arguments — finds the qualifying material (non-metallic, flat-coloured,
-not already wet) and writes exactly this composition, in one call and
-one undo step.
+not already wet) and writes exactly this composition FOR A LAMBERTIAN
+BASE: it mints the `coated_material` wrapper and the two coat-field
+chunks, and rebinds every bound object's `material` reference to the
+wrapper — the original chunk is left byte-for-byte untouched, which is
+strictly less destructive than an earlier design that rewrote it in
+place.  (A GGX/PBR base still gets in-place roughness + reflectance
+modulation instead — no separate coat lobe there yet; an Oren-Nayar
+base gets darkening only, no coat, since Phase 2's `coated_material`
+substrate allowlist accepts it but the verb has not been re-targeted to
+use that for Oren-Nayar in this slice.)
 
 The shape to copy (radius `0.08` on `occlusion` is a LITERAL, never a
 `param` — a computed radius degrades to the neutral fallback on indexed
@@ -930,9 +942,23 @@ pinhole_camera
 	fov			36.0
 }
 
+uniformcolor_painter
+{
+	name	pnt_cobble
+	color	0.45 0.43 0.40
+}
+
+# The ORIGINAL material -- byte-for-byte untouched by the coat wrap
+# below, exactly what add_wetness does for a Lambertian base (item 8).
+lambertian_material
+{
+	name		mat_cobble
+	reflectance	pnt_cobble
+}
+
 scalar_painter
 {
-	name		wet_tau
+	name		wet_coatweight
 	def		up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
 	def		cavity (1.0 - occlusion(0.08)) * up_facing
 	def		pooling clamp(1.6*cavity, 0, 1)
@@ -944,39 +970,27 @@ scalar_painter
 
 scalar_painter
 {
-	name		wet_gloss
+	name		wet_coatrough
 	def		up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
 	def		cavity (1.0 - occlusion(0.08)) * up_facing
 	def		pooling clamp(1.6*cavity, 0, 1)
 	def		ridge clamp(curv * 2.2, 0, 1)
 	def		damp_raw clamp(0.55 + pooling - ridge, 0, 1)
 	def		damp smoothstep(0.0, 1.0, damp_raw)
-	expression	mix(220.0, 200000.0, clamp(pooling * damp, 0, 1))
+	# alpha = sqrt(2/(n+2)) turns a Phong-cone gloss band (n=220 damp
+	# floor, n=200000 pooled/mirror ceiling) into the GGX alpha
+	# coat_roughness actually wants.
+	expression	mix( sqrt(2.0/222.0), sqrt(2.0/200002.0), clamp(pooling * damp, 0, 1) )
 }
 
-expression_painter
-{
-	name		wet_albedo
-	param		k 1.55 min 1 max 2.5 step 0.05 label "Wet exponent"
-	param		base_r 0.45 min 0 max 1 step 0.01 label "Base R"
-	param		base_g 0.43 min 0 max 1 step 0.01 label "Base G"
-	param		base_b 0.40 min 0 max 1 step 0.01 label "Base B"
-	def		up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
-	def		cavity (1.0 - occlusion(0.08)) * up_facing
-	def		pooling clamp(1.6*cavity, 0, 1)
-	def		ridge clamp(curv * 2.2, 0, 1)
-	def		damp_raw clamp(0.55 + pooling - ridge, 0, 1)
-	def		damp smoothstep(0.0, 1.0, damp_raw)
-	expr		mix( vec3(base_r, base_g, base_b), vec3(pow(base_r,k), pow(base_g,k), pow(base_b,k)), damp )
-}
-
-polished_material
+# The coat: NO darkening painter here -- the layered transport (Fresnel
+# in, recycle against the substrate, Fresnel out) performs it.
+coated_material
 {
 	name		mat_wet
-	reflectance	wet_albedo
-	tau		wet_tau
-	ior		1.33
-	scattering	wet_gloss
+	base		mat_cobble
+	coat_weight	wet_coatweight
+	coat_roughness	wet_coatrough
 }
 
 # Two overlapping spheres, unioned -- a real enclosed joint at the seam
@@ -1005,19 +1019,31 @@ directional_light
 }
 ```
 
-**The darkening exponent `k` is a per-substrate porosity number** — not
-one universal default:
+**`coated_material` has no per-substrate porosity knob to tune** — the
+darkening it produces is a fixed function of the substrate's own
+reflectance and the coat's IOR (the internal-reflection recycling
+series), not an authored exponent.  The table below is still useful
+INTUITION for how much a real substrate should visually darken when
+wet, even though there is currently no `k`-shaped parameter on the
+coated route to dial it with:
 
-| substrate | `k` |
+| substrate | how much it should darken when wet |
 |---|---|
-| glazed tile, sealed concrete, painted metal, varnished wood | 1.0 – 1.1 |
-| fired brick, dressed stone, cobble | 1.5 – 1.8 |
-| unsealed concrete, plaster, dry soil, unglazed terracotta | 1.8 – 2.0 |
-| cloth, canvas, raw wood | 1.7 – 2.0 |
+| glazed tile, sealed concrete, painted metal, varnished wood | almost none — what changes is almost entirely the coat |
+| fired brick, dressed stone, cobble | moderate |
+| unsealed concrete, plaster, dry soil, unglazed terracotta | strong |
+| cloth, canvas, raw wood | strong |
 
-A sealed, non-porous substrate (`k ≈ 1`) barely darkens at all — that is
-the physics, not a conservative default; what changes when you wet
-glazed tile is almost entirely the coat, not the substrate colour.
+A sealed, non-porous substrate barely darkens in reality — what changes
+when you wet glazed tile is almost entirely the coat, not the substrate
+colour.  If a scene genuinely needs to ART-DIRECT the darkening amount
+independent of the coat physics, the Phase-1 hand recipe (an
+`expression_painter` mixing the base colour toward `pow(base_rgb, k)`
+under the damp mask, feeding a `polished_material`'s `reflectance`
+instead of a `coated_material` wrap) is still valid RISE and still the
+only route with an explicit, tunable exponent — just be aware it is a
+DIFFERENT material shape from what `add_wetness` now emits, with the
+sec 6.9 caveats that come with `polished_material`'s own dry-NEE gap.
 
 **Deep or pooled water wants a real transmittance tint, not a
 uniform-color guess.**  `colors/water_absorption.spectra` (a measured

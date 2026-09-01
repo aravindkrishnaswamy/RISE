@@ -93,16 +93,33 @@ orientations.  See §13 for the full delivered-vs-deferred breakdown.
 **Phase 4 status (2026-04-30, this branch, uncommitted):** Cohort A
 (emissive_strength, unlit, per-pixel alpha, alphaMode = BLEND) and
 the bulk of Cohort B (sheen, transmission + volume + ior) have
-shipped.  KHR_materials_clearcoat is detected and warned about but
-the layered import is **deferred to Phase 5** because RISE's existing
-CompositeMaterial random-walk SPF doesn't compose cleanly with a
-PBR-shaped (3-lobe diffuse + specular + multiscatter) base — it
-produces near-black surfaces in tests.  Phase 5 will build a proper
-additive layered-material that works with PBR.  Sheen as a glTF
-import-time layer is also deferred to Phase 5 for the same reason;
-the standalone `sheen_material` chunk is fully working for hand-
-authored fabric scenes.  See §15 below for the delivered + deferred
-breakdown.
+shipped.  KHR_materials_clearcoat was detected and warned about at the
+time, with the layered import deferred pending a material that
+composes cleanly with a PBR-shaped (3-lobe diffuse + specular +
+multiscatter) base — RISE's `CompositeMaterial` random-walk SPF does
+not, and produced near-black surfaces in tests.  Sheen as a glTF
+import-time layer was deferred for the same reason; the standalone
+`sheen_material` chunk was (and still is) fully working for hand-
+authored fabric scenes.
+
+**AMENDED (2026-09-01) — clearcoat delivered via `coated_material`.**
+docs/WETNESS_COAT_DESIGN.md's Phase 2 shipped `coated_material` — a
+transparent dielectric film over a restricted substrate allowlist that
+includes `pbr_metallic_roughness_material` — for an unrelated reason
+(the wetness/varnish/oil-film verb), but it is exactly the "proper
+additive layered-material that works with PBR" this section used to
+say Phase 5 would build.  `KHR_materials_clearcoat` now imports onto
+it: `clearcoat_factor` → `coat_weight`, `clearcoat_roughness_factor`
+(squared, perceptual-roughness → GGX-alpha) → `coat_roughness`,
+`coat_ior` fixed at 1.5 per the glTF spec (KHR_materials_clearcoat
+carries no IOR of its own).  **Sheen stays deferred, but no longer on
+composition-with-PBR grounds** — the real reason is MODELLING, not
+scope: sheen is a retro-reflective grazing lobe (Charlie/Neubelt),
+which is a physically different object from a transparent dielectric
+film, so `coated_material`'s `coat_weight`/`coat_roughness`/`coat_tint`
+surface cannot express it no matter how the composition problem is
+solved.  See §15 below for the delivered + deferred breakdown, and
+`GLTFSceneImporter.cpp`'s clearcoat block for the implementation.
 
 ## Historical implementation snapshot
 
@@ -129,9 +146,9 @@ breakdown.
 | **KHR_materials_unlit** | — | Importer detects `mat.unlit` and registers the material as `LambertianLuminaireMaterial(baseColor, zero-reflectance Lambertian, scale = π)` so the BSDF returns 0 and the emitter contributes baseColor as Lambertian radiance.  Supports alpha-mode interaction. | — |
 | **Per-pixel alpha (alpha-aware painter)** | — | New `IPainter::GetAlpha()` virtual (default 1.0); `TexturePainter` overrides to return the **straight** A channel.  `ChannelPainter` extended with `CHAN_A = 3` (clamped to [0,1]) so the chunk parser can route alpha through the standard channel-extraction flow.  Closes the Phase 3 `max(R,G,B)` proxy gap.  Phase 4 also fixed two latent bugs: (a) `BuildAlphaPainter` reads CHAN_A from the **raw** `baseColorTexturePainter`, not the composed product (a `BlendPainter` wouldn't propagate texture alpha and collapsed to the default 1.0); (b) `TexturePainter::GetColor` no longer pre-multiplies RGB by alpha (legacy semantic that double-dimmed glTF textures under BLEND once the shader-op also weighted by alpha). | — |
 | **alphaMode = BLEND** (`transparency_shaderop` wiring) | — | Per-material wiring: `BlendPainter(zero, white, alpha) = (1 − α)` produces the see-through factor for `transparency_shaderop`; composed via `advanced_shader` with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  PT-only (same integrator caveat as alphaMode = MASK). | — |
-| **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **Standalone-only** in this branch — the glTF import-time layering over PBR is deferred to Phase 5 (see §15). | Phase 5: layered composite over PBR base |
+| **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **Standalone-only** -- the glTF import-time layering over PBR stays deferred, but as of 2026-09-01 (WETNESS_COAT_DESIGN.md sec 13 item 9) the reason is MODELLING, not composition: sheen is a retro-reflective grazing lobe, a different physical object from `coated_material`'s transparent dielectric film, so it cannot be expressed there regardless of scope (see §15). | No `coated_material`-shaped path; needs a dedicated layered-sheen primitive or a revisit of `CompositeMaterial`'s deficiencies |
 | **KHR_materials_transmission + volume + ior (scalar subset)** | — | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium(σ_a derived from attenuation_color / attenuation_distance)`; the medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  IOR painter from KHR_materials_ior or default 1.5.  Requires `pathtracing_shaderop` for refraction (the legacy `DefaultDirectLighting` + `pixelpel_rasterizer` only evaluates BSDFs, and dielectrics have no BSDF).  **`transmission_texture` is NOT honoured** — assets that vary transmissivity per-pixel import as uniformly transmissive; importer emits a one-time warning per affected material. | Phase 5: per-pixel τ painter |
-| **KHR_materials_clearcoat** | — | Detected, warn-and-skip-the-layer.  Implementation deferred to Phase 5 because `CompositeMaterial`'s existing random-walk SPF (designed for dielectric-on-Lambertian) doesn't compose cleanly with PBR-shaped (3-lobe) bases — produces near-black surfaces in tests. | Phase 5: additive layered material that works with PBR |
+| **KHR_materials_clearcoat** | — | **DELIVERED 2026-09-01** (WETNESS_COAT_DESIGN.md sec 13 item 9): imports onto `coated_material` over the PBR base -- `clearcoat_factor` -> `coat_weight`, `clearcoat_roughness_factor` squared -> `coat_roughness` (perceptual roughness -> GGX alpha), `coat_ior` fixed at 1.5 per spec.  The `clearcoat`/`clearcoatRoughness`/`clearcoatNormal` textures are not sampled -- uniform factors only, warned once per affected material. | Per-pixel clearcoat/roughness/normal textures |
 | **Animation / skinning / morph targets** | — | Importer warns once per file; no runtime support yet. | Phase 5+ |
 | **Other KHR_materials_*** (specular, anisotropy, iridescence, dispersion, unlit-extension-extras) | — | — | Phase 5+ |
 
@@ -1082,14 +1099,19 @@ The work split into two cohorts.
 |---|---|
 | **`KHR_materials_sheen` (BRDF)** | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution `D(α, n·h) = (2 + 1/α)/(2π) · sin(θ_h)^(1/α)` + Neubelt visibility `V(n·l, n·v) = 1/(4·(n·l + n·v − n·l·n·v)·n·l·n·v)` (Estevez & Kulla 2017 / KHR_materials_sheen).  Cosine-hemisphere sampling for the SPF (no closed-form Charlie importance sample); the PDF mismatch is small for sheen's typical roughness range and is cleaned up by MIS in PT.  Both `SheenBRDF::value(NM)` and `SheenSPF::Pdf(NM)` flip the shading normal on back-face hits so the BRDF stays consistent with the sampling counterpart.  **Standalone-only** in this branch — see "Deferred to Phase 5" below. |
 | **`KHR_materials_transmission` + `KHR_materials_volume` + `KHR_materials_ior`** | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium`.  Beer-Lambert absorption coefficient derived from the volume's `attenuation_color` and `attenuation_distance`: `σ_a = -ln(attenuation_color) / attenuation_distance` (component-wise; per-wavelength absorption gives green / red / etc. tinted glass).  IOR taken from `KHR_materials_ior` or default 1.5.  The medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  **Requires `pathtracing_shaderop`** for refraction: dielectrics have no BSDF (`GetBSDF()` returns `NULL`), so `DefaultDirectLighting` + `pixelpel_rasterizer` cannot shade them — render glass scenes with `pathtracing_pel_rasterizer`. |
-| **`KHR_materials_clearcoat`** | Detected; warn-and-skip-the-layer.  See "Deferred to Phase 5". |
+| **`KHR_materials_clearcoat`** | **DELIVERED 2026-09-01** — imports onto `coated_material` over the PBR base.  See the amended Test-assets §13 entry and "Delivered 2026-09-01" below; no longer warn-and-skip. |
+
+### Delivered 2026-09-01 (WETNESS_COAT_DESIGN.md sec 13 item 9)
+
+| Item | What landed |
+|---|---|
+| **Layered `KHR_materials_clearcoat` over PBR, via `coated_material`** | The composition problem below was never actually about clearcoat specifically — it was that `CompositeMaterial`'s random-walk SPF doesn't compose with a 3-lobe PBR base.  `coated_material` (built for an unrelated reason, the wetness/varnish verb) sidesteps it entirely: its `base` slot allowlists `pbr_metallic_roughness_material` directly and its own closed-form layered transport (Weidlich-Wilkie + Kulla-Conty recycling) evaluates the combined response without a stochastic walk.  `clearcoat_factor` -> `coat_weight`; `clearcoat_roughness_factor` squared (perceptual roughness -> GGX alpha, matching the same convention `Job::AddPBRMetallicRoughnessMaterial` already applies to the base `roughness`) -> `coat_roughness`; `coat_ior` fixed at 1.5 (KHR_materials_clearcoat has no IOR field of its own, unlike KHR_materials_transmission/ior above).  `coat_thickness`/`coat_absorption`/`coat_tint` stay at their clear-film defaults -- clearcoat has no absorption or tint concept.  Textures (`clearcoatTexture`, `clearcoatRoughnessTexture`, `clearcoatNormalTexture`) are not sampled; uniform factors only, warned once per affected material. |
 
 ### Deferred to Phase 5
 
 | Item | Why deferred |
 |---|---|
-| **Layered `KHR_materials_clearcoat` over PBR** | RISE's `CompositeMaterial` random-walk SPF was designed for dielectric-on-Lambertian (the existing `composite_material.RISEscene` regression).  When layered over a PBR base — which has a 3-lobe BSDF (diffuse + specular + multiscatter) — the random-walk doesn't compose: probe rays terminate too quickly and the layer renders near-black.  Phase 5 needs a proper additive layered material that respects per-lobe albedo. |
-| **Layered `KHR_materials_sheen` over PBR** | Same composition problem as clearcoat; the standalone `SheenMaterial` works fine for hand-authored fabric (see `scenes/Tests/Materials/sheen.RISEscene`), but the importer's `mat.sheen` path emits a warn-and-skip until the layered base lands. |
+| **Layered `KHR_materials_sheen` over PBR** | Not a composition problem any more (clearcoat's fix above would apply equally) -- a MODELLING one: sheen is a retro-reflective grazing lobe (Charlie/Neubelt), a physically different object from `coated_material`'s transparent dielectric film, so `coated_material`'s `coat_weight`/`coat_roughness`/`coat_tint` surface cannot express it regardless of scope.  The standalone `SheenMaterial` works fine for hand-authored fabric (see `scenes/Tests/Materials/sheen.RISEscene`), but the importer's `mat.sheen` path stays warn-and-skip pending either a dedicated layered-sheen primitive or a measured need to revisit `CompositeMaterial`'s own deficiencies. |
 | **Alpha mask + blend under BDPT / VCM / MLT** | Same constraint as Phase 3: those integrators bypass the shader-op pipeline and treat alpha as opaque.  Promoting alpha-test to a hit-time geometry concern is a substantial cross-cutting refactor. |
 | **Animation / skinning / morph targets** | Carried forward from Phase 3+. |
 | **Other `KHR_materials_*`** (`specular`, `anisotropy`, `iridescence`, `dispersion`) | Phase 5+. |

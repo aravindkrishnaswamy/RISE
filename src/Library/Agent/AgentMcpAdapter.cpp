@@ -396,11 +396,12 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
-			//! WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): add_wetness's own
-			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
-			//! SAME rationale as kAddWearProposeRefusedNote above (it mutates
-			//! through one composite whole-document swap: a Lambertian base is
-			//! rewritten to `polished_material`, a GGX/PBR base gets one or
+			//! WETNESS_COAT_DESIGN sec 6/13 (2026-08-31, item 8 2026-09-01):
+			//! add_wetness's own annotation under AgentAutonomy::Propose
+			//! SPECIFICALLY -- the SAME rationale as kAddWearProposeRefusedNote
+			//! above (it mutates through one composite whole-document swap: a
+			//! Lambertian base is WRAPPED in a new `coated_material` chunk and
+			//! every bound object rebound to it, a GGX/PBR base gets one or
 			//! more field chunks spliced plus its slots repointed; deliberately
 			//! excluded from AgentRpc.cpp's IsProposeSafeVerb rather than pay
 			//! the "N mutating verbs" prose ripple SourceHygieneTest's
@@ -1952,10 +1953,14 @@ namespace RISE
 						"clamp(damp*film_amount, 0, damp)` drives the coat, so `wet` can never exceed `damp` "
 						"by construction) keyed on `curv` (dry ridges), `occlusion()` (pooling cavities, "
 						"gated by an up-facing term so water never pools on ceilings) and `fbm` (breakup). A "
-						"Lambertian base is REWRITTEN to `polished_material` (reflectance darkened under "
-						"`damp`, `tau` = coat coverage under `wet`, `scattering` = a Phong gloss keyed on "
+						"Lambertian base is WRAPPED, not rewritten: the original chunk is left byte-for-byte "
+						"untouched, a new `coated_material` chunk is minted (`base` naming the original, "
+						"`coat_weight` = coat coverage under `wet`, `coat_roughness` = a GGX gloss keyed on "
 						"POOLING so damp-but-unpooled regions stay broad-lobed rather than instantly mirror-"
-						"flat). A GGX/PBR base is left as its own kind and modulated IN PLACE (reflectance "
+						"flat), and every bound object's `material` reference is moved to the new chunk. There "
+						"is no separate darkening painter on this branch -- `coated_material`'s own layered "
+						"transport performs the recycling-driven darkening, so a `pow(base,k)` painter on top "
+						"would double-count it. A GGX/PBR base is left as its own kind and modulated IN PLACE (reflectance "
 						"darkened the same way; roughness driven toward a wet floor under `wet` -- an "
 						"approximation of a film, not a real second layer, so it sharpens the base's OWN "
 						"tinted lobe and can flatten an authored anisotropy where it bites). An Oren-Nayar "
@@ -1977,8 +1982,9 @@ namespace RISE
 						"`add_wear`'s own composition (the two cannot currently be combined on one material "
 						"-- whichever ran first locks the other out; each verb's refusal names the other). "
 						"Returns {ok,applied,rawCode,status,retriable,headVersion,message,material,"
-						"materialKind,rewroteToPolished,reflectanceSlot,reflectancePainter,tauSlot,"
-						"tauPainter,scatteringSlots,scatteringPainters,baseColor,geometry,geometryUniform,"
+						"materialKind,wrappedInCoat,coatedMaterial,coatWeightPainter,coatRoughnessPainter,"
+						"rebindObjectCount,reflectanceSlot,reflectancePainter,scatteringSlots,"
+						"scatteringPainters,baseColor,geometry,geometryUniform,"
 						"isMetallic,isOrenNayar,qualifying,objects}. A PRE-COMMIT refusal is ok=false with "
 						"an EMPTY status, so branch on `applied`. Always pass the headVersion you last read "
 						"as baseHeadVersion." );

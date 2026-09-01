@@ -1,15 +1,18 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  AgentAddWetnessTest.cpp - docs/WETNESS_COAT_DESIGN.md Phase 1 (sec 5
-//    Track 1, sec 6, sec 13, 2026-08-31): add_wetness, the VERB half of
-//    design-note condition P.
+//  AgentAddWetnessTest.cpp - docs/WETNESS_COAT_DESIGN.md Phase 1 + Phase
+//    2 item 8 (sec 5 Track 1, sec 6, sec 13, 2026-08-31): add_wetness,
+//    the VERB half of design-note condition P.
 //
 //  WHAT THIS VERB HAS TO GET RIGHT, and therefore what is measured here,
 //  mirrors AgentAddWearTest.cpp's own discipline:
-//    (a) the FOUR branches (Lambertian -> polished_material rewrite;
-//        GGX/PBR in-place roughness modulation; Oren-Nayar damp-only;
-//        a NAMED metallic material's coat-only) each write exactly the
-//        chunks sec 6.2 specifies and nothing else;
+//    (a) the FOUR branches (Lambertian -> `coated_material` WRAP, item
+//        8: the base chunk is left untouched and every bound object's
+//        `material` reference moves to a new wrapper chunk; GGX/PBR
+//        in-place roughness modulation, UNCHANGED by item 8; Oren-Nayar
+//        damp-only, UNCHANGED by item 8; a NAMED metallic material's
+//        coat-only) each write exactly the chunks sec 6.2/13 item 8
+//        specify and nothing else;
 //    (b) the wet <= damp invariant holds BOTH textually (the shared
 //        param/def prelude is byte-identical across every consumer
 //        chunk a single call writes -- sec 6.1's mechanism) AND
@@ -26,38 +29,51 @@
 //        by deriving the rewritten document, not merely string-matching
 //        it;
 //    (d) every refusal clause leaves the document BYTE-IDENTICAL,
-//        including both directions of the add_wear collision;
+//        including both directions of the add_wear collision (which
+//        item 8 had to re-derive: a coat-WRAPPED base no longer trips
+//        either verb's own-params scan, so both scans now also check
+//        `namesAlreadyCoated`, "is this material named as `base` by a
+//        `coated_material` chunk");
 //    (e) collision-safe name minting, and the eight-surface wire
 //        checks (MCP advertised + routable, RPC dispatch, chat-codec
 //        table).
 //
 //  Cases:
-//    A  LAMBERTIAN -> polished_material, bare call: the sole qualifying
-//       material, reflectance/tau/scattering minted and bound, `ior
-//       1.33`, prelude byte-identical across all three, parses+derives+
-//       renders non-black with zero error diagnostics.
+//    A  LAMBERTIAN -> `coated_material` WRAP, bare call (item 8): the
+//       sole qualifying material's OWN chunk is left BYTE-IDENTICAL;
+//       coat_weight/coat_roughness minted and bound on a NEW
+//       `coated_material` chunk naming it as `base`; every bound object
+//       rebound to the wrapper; NO reflectance/darkening painter (the
+//       layered transport performs it); prelude byte-identical across
+//       both minted chunks, parses+derives+renders non-black with zero
+//       error diagnostics.
 //    A2 THE wet <= damp INVARIANT, numerically, swept over every
 //       emitted param at its declared min/max.
 //    A3 THE SIGNAL DRIVES IT: a pooled (occlusion-favourable, high
 //       curvature-favourable via ridge=0) synthetic hit reads WETTER
-//       than a ridge (convex, ridge-favourable) hit.
-//    B  GGX in-place, named: reflectance -> `rd`; alphax/alphay each
-//       get their OWN roughness field (never one shared chunk), banded
-//       around the authored constant.
-//    C  PBR-MR in-place, named: reflectance -> `base_color`; roughness
-//       field is an `expression_painter` (the colour-pipe trap), not a
-//       `scalar_painter`.
-//    D  OREN-NAYAR, named: reflectance only -- no tau, no scattering,
-//       no roughness touch at all (damp-only, sec 6.2).
+//       than a ridge (convex, ridge-favourable) hit, read straight off
+//       the minted `coat_weight` painter.
+//    B  GGX in-place, named (UNCHANGED by item 8): reflectance -> `rd`;
+//       alphax/alphay each get their OWN roughness field (never one
+//       shared chunk), banded around the authored constant.
+//    C  PBR-MR in-place, named (UNCHANGED by item 8): reflectance ->
+//       `base_color`; roughness field is an `expression_painter` (the
+//       colour-pipe trap), not a `scalar_painter`.
+//    D  OREN-NAYAR, named (UNCHANGED by item 8, evaluated and declined
+//       for this slice -- see the design doc's item 8 note): reflectance
+//       only -- no coat, no roughness touch at all (damp-only, sec 6.2).
 //    E  METALLIC, named: coat/gloss only -- no reflectance touch, `rd`
 //       stays bound to the ORIGINAL painter.
 //    F  REFUSALS, each with the document BYTE-IDENTICAL afterwards: no
 //       non-metallic candidate (bare call on an all-metallic document);
 //       unknown chunk name; a named chunk of the wrong kind; a textured
 //       albedo (clause 2); already wet (re-running on the same
-//       material); the add_wear collision, BOTH directions.
-//    G  NAME-COLLISION MINTING: a pre-existing `<material>_wet` chunk
-//       forces the mint to bump to `<material>_wet2`, not a refusal.
+//       material, on BOTH the coat-wrap and the in-place shapes); the
+//       add_wear collision, BOTH directions (including the coat-wrap
+//       shape, which neither verb's own-params scan alone can see).
+//    G  NAME-COLLISION MINTING: a pre-existing `<material>_wetcoat`
+//       chunk forces the mint to bump to `<material>_wetcoat2`, not a
+//       refusal.
 //    H  WIRE SURFACE: declared in the shared chat-codec table,
 //       advertised AND routable on MCP, dispatches through
 //       AgentRpcDispatcher, and a refusal is a SUCCESSFUL response.
@@ -290,7 +306,7 @@ static std::string PbrNonMetal( const std::string& name, const std::string& base
 
 static void TestLambertianRewrite()
 {
-	std::printf( "A: Lambertian -> polished_material, bare call\n" );
+	std::printf( "A: Lambertian -> coated_material WRAP, bare call (item 8)\n" );
 	std::string body = Preamble();
 	body += SphereGeo( "s" );
 	body += Lambertian( "mat_lam", "pnt_stone" );
@@ -307,18 +323,22 @@ static void TestLambertianRewrite()
 	Check( r.ok && r.applied, std::string( "A: the no-argument call APPLIED -- " ) + r.message );
 	Check( r.status == "applied", "A: status is \"applied\"" );
 	Check( r.material == "mat_lam", "A: it took the sole qualifying material" );
-	Check( r.materialKind == "lambertian_material", "A: it reports the PRE-image kind" );
-	Check( r.rewroteToPolished, "A MONEY: rewroteToPolished is true" );
-	Check( r.reflectanceSlot == "reflectance", "A: the reflectance slot name is `reflectance`" );
-	Check( r.tauSlot == "tau", "A: the tau slot name is `tau`" );
-	Check( r.scatteringSlots.size() == 1 && r.scatteringSlots[0] == "scattering",
-	       "A: the scattering slot name is `scattering`" );
-	Check( !r.reflectancePainter.empty() && !r.tauPainter.empty() && r.scatteringPainters.size() == 1 &&
-	       !r.scatteringPainters[0].empty(),
-	       "A: it names all three minted chunks" );
+	Check( r.materialKind == "lambertian_material",
+	       "A MONEY: it STILL reports lambertian_material -- item 8's wrap never changes the base's own kind" );
+	Check( r.wrappedInCoat, "A MONEY: wrappedInCoat is true" );
+	Check( !r.coatedMaterial.empty(), "A: the minted coated_material chunk is named" );
+	Check( !r.coatWeightPainter.empty() && !r.coatRoughnessPainter.empty(),
+	       "A: both coat field chunks are named" );
+	Check( r.rebindObjectCount == 1, "A MONEY: exactly the one bound object was rebound" );
+	Check( r.reflectanceSlot.empty() && r.reflectancePainter.empty(),
+	       "A MONEY: NO reflectance/darkening painter on this branch -- coated_material's own layered "
+	       "transport performs the darkening (sec 7.1), so a second painter here would double-count it" );
+	Check( r.scatteringSlots.empty() && r.scatteringPainters.empty(),
+	       "A: the GGX/PBR in-place branch's scatteringSlots/Painters stay EMPTY here -- this branch's "
+	       "gloss half is coatRoughnessPainter instead" );
 	Check( std::fabs( r.baseR - 0.42 ) < 1e-9 && std::fabs( r.baseG - 0.4 ) < 1e-9 &&
 	       std::fabs( r.baseB - 0.37 ) < 1e-9,
-	       "A2: baseR/G/B are exactly the authored pnt_stone colour" );
+	       "A2: baseR/G/B still report the authored pnt_stone colour (read, even though never rewritten)" );
 	// ---- P2: the success message states the +Y-up axis assumption AND
 	// interpolates the bound-object count into the PROSE (not just JSON).
 	Check( r.message.find( "+Y" ) != std::string::npos && r.message.find( "vec3(0,1,0)" ) != std::string::npos,
@@ -328,21 +348,31 @@ static void TestLambertianRewrite()
 	Check( r.message.find( std::to_string( r.boundObjects ) ) != std::string::npos,
 	       "A MONEY: the bound-object count is interpolated into the PROSE message, not just the JSON "
 	       "`objects` field -- sec 6.9 item 14's blast-radius figure" );
+	Check( r.message.find( "double-count" ) != std::string::npos,
+	       "A MONEY: the success message itself explains why there is no separate darkening painter, not "
+	       "just the empty struct field" );
 
 	const std::string docAfter = sess->ReadDocument();
 	Check( docBefore != docAfter, "A: the document really changed" );
-	Check( docAfter.find( "polished_material" ) != std::string::npos,
-	       "A MONEY: the material was rewritten to `polished_material`" );
-	Check( docAfter.find( "lambertian_material" ) == std::string::npos,
-	       "A: ...and the old `lambertian_material` keyword is gone" );
-	Check( docAfter.find( "ior\t\t\t1.33" ) != std::string::npos,
-	       "A MONEY: a literal `ior 1.33` -- a constant needs no painter (sec 6.1)" );
-	Check( docAfter.find( "reflectance\t\t" + r.reflectancePainter ) != std::string::npos,
-	       "A: reflectance names the minted expression_painter" );
-	Check( docAfter.find( "tau\t\t\t" + r.tauPainter ) != std::string::npos,
-	       "A: tau names the minted scalar_painter" );
-	Check( docAfter.find( "scattering\t\t" + r.scatteringPainters[0] ) != std::string::npos,
-	       "A: scattering names the minted scalar_painter" );
+	Check( docAfter.find( "coated_material" ) != std::string::npos,
+	       "A MONEY: a `coated_material` chunk was minted" );
+	Check( docAfter.find( "lambertian_material" ) != std::string::npos,
+	       "A MONEY: the ORIGINAL `lambertian_material` keyword is STILL PRESENT -- item 8's wrap, unlike "
+	       "Phase 1's rewrite, never removes the base chunk" );
+	Check( docAfter.find( "name mat_lam\n\treflectance pnt_stone\n" ) != std::string::npos,
+	       "A MONEY: the base chunk's own body -- name AND reflectance -- is BYTE-IDENTICAL to what was "
+	       "authored: `mat_lam` is still `reflectance pnt_stone`, untouched" );
+	Check( docAfter.find( "base\t\t\tmat_lam" ) != std::string::npos,
+	       "A MONEY: the coated_material's `base` names the untouched original" );
+	Check( docAfter.find( "coat_weight\t\t" + r.coatWeightPainter ) != std::string::npos,
+	       "A: coat_weight names the minted scalar_painter" );
+	Check( docAfter.find( "coat_roughness\t\t" + r.coatRoughnessPainter ) != std::string::npos,
+	       "A: coat_roughness names the minted scalar_painter" );
+	Check( docAfter.find( "coat_ior" ) == std::string::npos,
+	       "A MONEY: NO `coat_ior` line -- the descriptor's own default (1.33, sec 7.2's water value) is "
+	       "left to speak for itself rather than spelling out a literal that matches it anyway" );
+	Check( docAfter.find( "material " + r.coatedMaterial ) != std::string::npos,
+	       "A MONEY: the bound object's `material` reference now names the coated wrapper, not `mat_lam`" );
 
 	// ---- Parse round-trip -- the mid-flight correction this file exists
 	// to guard: a two-line-wrapped `expr`/`expression` value does NOT
@@ -374,13 +404,12 @@ static void TestLambertianRewrite()
 
 	// ---- Textual half of the wet<=damp invariant: byte-identical prelude.
 	{
-		const std::string preludeRefl = ExtractPrelude( docAfter, r.reflectancePainter );
-		const std::string preludeTau  = ExtractPrelude( docAfter, r.tauPainter );
-		const std::string preludeScat = ExtractPrelude( docAfter, r.scatteringPainters[0] );
-		Check( !preludeRefl.empty() && !preludeTau.empty() && !preludeScat.empty(),
-		       "A: all three preludes were extracted" );
-		Check( preludeRefl == preludeTau && preludeTau == preludeScat,
-		       "A MONEY: the param/def prelude is BYTE-IDENTICAL across reflectance/tau/scattering -- "
+		const std::string preludeWeight = ExtractPrelude( docAfter, r.coatWeightPainter );
+		const std::string preludeRough  = ExtractPrelude( docAfter, r.coatRoughnessPainter );
+		Check( !preludeWeight.empty() && !preludeRough.empty(),
+		       "A: both preludes were extracted" );
+		Check( preludeWeight == preludeRough,
+		       "A MONEY: the param/def prelude is BYTE-IDENTICAL across coat_weight/coat_roughness -- "
 		       "sec 6.1's mechanism for the wet<=damp invariant (painters cannot reference one another's "
 		       "def names, so it must be duplicated verbatim rather than shared)" );
 	}
@@ -391,22 +420,26 @@ static void TestLambertianRewrite()
 	       docAfter.find( "step " ) != std::string::npos && docAfter.find( "label " ) != std::string::npos,
 	       "A MONEY: every emitted `param` carries min/max/step/label metadata" );
 	Check( docAfter.find( "\tseed" ) != std::string::npos, "A: ...and a `seed` line" );
+	Check( docAfter.find( "sqrt(2.0/(film_gloss_lo+2.0))" ) != std::string::npos,
+	       "A MONEY: coat_roughness is the Phong-exponent band RE-EXPRESSED as a GGX alpha via "
+	       "alpha=sqrt(2/(n+2)) (sec 6.3) -- not a raw Phong exponent copied into a slot that expects an "
+	       "alpha" );
 
 	// ---- A2: THE wet<=damp INVARIANT, numerically, over every emitted
 	// param's declared min/max.  A "damp probe" chunk -- byte-identical to
-	// the real tau chunk except its final line reads `damp` instead of
-	// `wet` -- lets the test read damp straight out of the SAME expression
-	// text add_wetness actually emitted, rather than recomputing it by
-	// hand.
+	// the real coat_weight chunk except its final line reads `damp` instead
+	// of `wet` -- lets the test read damp straight out of the SAME
+	// expression text add_wetness actually emitted, rather than
+	// recomputing it by hand.
 	{
-		std::string dampProbeText = ExtractChunkFullText( docAfter, r.tauPainter );
-		Check( !dampProbeText.empty(), "A2: the tau chunk's full text was extracted" );
-		const std::string dampProbeName = r.tauPainter + "_dampprobe";
+		std::string dampProbeText = ExtractChunkFullText( docAfter, r.coatWeightPainter );
+		Check( !dampProbeText.empty(), "A2: the coat_weight chunk's full text was extracted" );
+		const std::string dampProbeName = r.coatWeightPainter + "_dampprobe";
 		{
-			const std::size_t namePos = dampProbeText.find( "name\t\t\t" + r.tauPainter + "\n" );
+			const std::size_t namePos = dampProbeText.find( "name\t\t\t" + r.coatWeightPainter + "\n" );
 			Check( namePos != std::string::npos, "A2: the damp-probe's name line was found for renaming" );
 			if( namePos != std::string::npos )
-				dampProbeText.replace( namePos, std::string( "name\t\t\t" + r.tauPainter ).size(),
+				dampProbeText.replace( namePos, std::string( "name\t\t\t" + r.coatWeightPainter ).size(),
 				                       "name\t\t\t" + dampProbeName );
 		}
 		{
@@ -429,23 +462,23 @@ static void TestLambertianRewrite()
 				const double v = ( bound == 0 ) ? kMins[p] : kMaxs[p];
 				RISE::Cst::Document d = RISE::Cst::ParseToCst( docAfter + "\n" + dampProbeText );
 				char valBuf[32]; std::snprintf( valBuf, sizeof( valBuf ), "%g", v );
-				const RISE::Cst::NodeId tauId  = RISE::Cst::DocFindByNameAnyRole( d, r.tauPainter );
-				const RISE::Cst::NodeId dampId = RISE::Cst::DocFindByNameAnyRole( d, dampProbeName );
-				if( !tauId || !dampId ) continue;
-				d = RISE::Cst::DocSetParamValue( d, tauId,  kParams[p], 0, valBuf );
-				d = RISE::Cst::DocSetParamValue( d, dampId, kParams[p], 0, valBuf );
+				const RISE::Cst::NodeId weightId = RISE::Cst::DocFindByNameAnyRole( d, r.coatWeightPainter );
+				const RISE::Cst::NodeId dampId   = RISE::Cst::DocFindByNameAnyRole( d, dampProbeName );
+				if( !weightId || !dampId ) continue;
+				d = RISE::Cst::DocSetParamValue( d, weightId, kParams[p], 0, valBuf );
+				d = RISE::Cst::DocSetParamValue( d, dampId,   kParams[p], 0, valBuf );
 				const std::string variantText = RISE::Cst::SerializeCst( d );
 				const std::string tmpv = TempPath( ( std::string( "addwet_a2_" ) +
 					std::to_string( p ) + "_" + std::to_string( bound ) + ".RISEscene" ).c_str() );
 				Job* pv = LoadScene( variantText, tmpv );
 				if( !pv ) continue;
 				IScalarPainterManager* sm = pv->GetScalarPainters();
-				IScalarPainter* tauField  = sm ? sm->GetItem( r.tauPainter.c_str() ) : nullptr;
-				IScalarPainter* dampField = sm ? sm->GetItem( dampProbeName.c_str() ) : nullptr;
-				if( tauField && dampField ) {
+				IScalarPainter* weightField = sm ? sm->GetItem( r.coatWeightPainter.c_str() ) : nullptr;
+				IScalarPainter* dampField   = sm ? sm->GetItem( dampProbeName.c_str() ) : nullptr;
+				if( weightField && dampField ) {
 					for( double curv : { -1.5, 0.0, 1.5 } ) {
 						++sweepsRun;
-						const double wet  = tauField->GetValuesAt( ProbeHit( curv ) ).v[0];
+						const double wet  = weightField->GetValuesAt( ProbeHit( curv ) ).v[0];
 						const double damp = dampField->GetValuesAt( ProbeHit( curv ) ).v[0];
 						const bool ok = wet >= -1e-9 && wet <= damp + 1e-9 && damp <= 1.0 + 1e-9 && damp >= -1e-9;
 						if( ok ) ++sweepsOk;
@@ -485,28 +518,32 @@ static void TestSignalDrivesIt()
 	Check( r.ok && r.applied, "A3: applied" );
 	if( r.applied ) {
 		IScalarPainterManager* sm = pJob->GetScalarPainters();
-		IScalarPainter* tauField = sm ? sm->GetItem( r.tauPainter.c_str() ) : nullptr;
-		Check( tauField != nullptr, "A3: the minted tau painter resolved in the live manager" );
-		if( tauField ) {
-			const double ridge = tauField->GetValuesAt( ProbeHit(  2.5 ) ).v[0];   // convex ridge: sheds water
-			const double flat  = tauField->GetValuesAt( ProbeHit(  0.0 ) ).v[0];
-			std::printf( "    A3: tau (wet)  ridge %.4f  flat %.4f\n", ridge, flat );
+		IScalarPainter* weightField = sm ? sm->GetItem( r.coatWeightPainter.c_str() ) : nullptr;
+		Check( weightField != nullptr, "A3: the minted coat_weight painter resolved in the live manager" );
+		if( weightField ) {
+			const double ridge = weightField->GetValuesAt( ProbeHit(  2.5 ) ).v[0];   // convex ridge: sheds water
+			const double flat  = weightField->GetValuesAt( ProbeHit(  0.0 ) ).v[0];
+			std::printf( "    A3: coat_weight (wet)  ridge %.4f  flat %.4f\n", ridge, flat );
 			Check( ridge < flat - 1e-6,
 			       "A3 MONEY: a CONVEX (ridge) hit reads DRIER than a flat one at the same world point -- "
 			       "the `ridge` term genuinely subtracts from `damp_raw`, which is what \"convex ridges "
 			       "shed water\" (sec 6.3) means in the emitted expression, not merely in prose" );
 		}
+		// ---- Item 8's OWN claim, checked live rather than merely by absent
+		// field: the base material's colour painter is genuinely UNTOUCHED --
+		// it still reads the flat authored constant at BOTH probes, since
+		// nothing on this branch rebinds it any more (darkening is now the
+		// coated_material transport's job, sec 7.1).
 		IPainterManager* pm = pJob->GetPainters();
-		IPainter* reflField = pm ? pm->GetItem( r.reflectancePainter.c_str() ) : nullptr;
-		Check( reflField != nullptr, "A3: the minted reflectance painter resolved" );
-		if( reflField ) {
-			const double ridgeLuma = LumaOf( reflField->GetColor( ProbeHit(  2.5 ) ) );
-			const double flatLuma  = LumaOf( reflField->GetColor( ProbeHit(  0.0 ) ) );
-			std::printf( "    A3: reflectance luma  ridge %.4f  flat %.4f\n", ridgeLuma, flatLuma );
-			Check( ridgeLuma > flatLuma - 1e-6,
-			       "A3 MONEY: the ridge reads LIGHTER (or equal) than the flat -- darkening is `damp`-"
-			       "driven and `damp` is lower on a ridge, so a wet substrate's dry ridge should not read "
-			       "darker than its damp field" );
+		IPainter* baseField = pm ? pm->GetItem( "pnt_stone" ) : nullptr;
+		Check( baseField != nullptr, "A3: the ORIGINAL base painter is still live and resolvable by its own name" );
+		if( baseField ) {
+			const double ridgeLuma = LumaOf( baseField->GetColor( ProbeHit(  2.5 ) ) );
+			const double flatLuma  = LumaOf( baseField->GetColor( ProbeHit(  0.0 ) ) );
+			Check( std::fabs( ridgeLuma - flatLuma ) < 1e-9,
+			       "A3 MONEY: the base painter reads IDENTICALLY at ridge and flat -- it is a plain "
+			       "uniformcolor_painter nothing rebinds any more, confirming there is no separate "
+			       "darkening pass on this branch" );
 		}
 	}
 	sess.reset();
@@ -528,10 +565,10 @@ static void TestGgxInPlace()
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 	const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_ggx" );
 	Check( r.ok && r.applied, std::string( "B: applied -- " ) + r.message );
-	Check( !r.rewroteToPolished, "B: the material kind is UNCHANGED (in-place branch)" );
+	Check( !r.wrappedInCoat, "B: NOT wrapped in a coated_material (in-place branch, unchanged by item 8)" );
+	Check( r.coatedMaterial.empty() && r.coatWeightPainter.empty() && r.coatRoughnessPainter.empty(),
+	       "B MONEY: NO coat fields at all -- GGX has no separate coat lobe in Phase 1" );
 	Check( r.reflectanceSlot == "rd", "B: reflectance rebound `rd`, the albedo slot" );
-	Check( r.tauSlot.empty() && r.tauPainter.empty(),
-	       "B MONEY: NO tau field -- GGX has no separate coat lobe in Phase 1" );
 	Check( r.scatteringSlots.size() == 2, "B: both alphax and alphay were rebound" );
 	Check( r.scatteringPainters.size() == 2, "B MONEY: TWO roughness painters were minted, one per slot" );
 	if( r.scatteringPainters.size() == 2 )
@@ -646,9 +683,11 @@ static void TestOrenNayarDampOnly()
 	Check( r.ok && r.applied, std::string( "D: applied -- " ) + r.message );
 	Check( r.isOrenNayar, "D: isOrenNayar is true" );
 	Check( !r.reflectancePainter.empty(), "D: reflectance WAS rebound" );
-	Check( r.tauPainter.empty() && r.scatteringPainters.empty(),
-	       "D MONEY: NO tau, NO scattering/roughness field -- Oren-Nayar's substrate lobe is strictly "
-	       "Lambertian and there is no coat concept for it in Phase 1 (sec 6.2)" );
+	Check( !r.wrappedInCoat && r.coatedMaterial.empty() && r.coatWeightPainter.empty() &&
+	       r.coatRoughnessPainter.empty() && r.scatteringPainters.empty(),
+	       "D MONEY: NO coat wrap, NO scattering/roughness field -- Oren-Nayar's substrate lobe is strictly "
+	       "Lambertian and there is no coat concept for it (sec 6.2; item 8 evaluated and declined the "
+	       "re-target for this branch on scope, see the design doc's item 8 note)" );
 	const std::string docAfter = sess->ReadDocument();
 	Check( docAfter.find( "roughness 0.3" ) != std::string::npos ||
 	       docAfter.find( "roughness\t\t\t0.3" ) != std::string::npos ||
@@ -809,11 +848,8 @@ static void TestRefusals()
 		std::remove( tmp.c_str() );
 	}
 
-	// F5b: already wet, GGX in-place (kind stays put -- clause 4 fires).
-	// (Lambertian's `polished_material` rewrite makes a same-name second
-	// call fail even earlier, on "not a kind this verb rewrites" -- F3
-	// already covers that shape, so this fixture proves clause 4 itself
-	// on the branch where the kind stays put.)
+	// F5b: already wet, GGX in-place (kind stays put -- clause 4's own-params
+	// test fires, unchanged by item 8).
 	{
 		std::string body = Preamble();
 		body += SphereGeo( "s" );
@@ -834,6 +870,41 @@ static void TestRefusals()
 			Check( second.message.find( "already been made wet" ) != std::string::npos,
 			       "F5b: message says so" );
 			Check( sess->ReadDocument() == afterFirst, "F5b: document byte-identical to after the FIRST call" );
+			sess.reset(); pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// F5c (item 8, 2026-08-31): already wet, Lambertian coat-WRAP -- unlike
+	// Phase 1's `polished_material` rewrite (which changed the chunk's own
+	// KEYWORD, so a second call failed on F3's "not a kind this verb
+	// rewrites" before clause 4 was ever reached), item 8's wrap leaves
+	// `mat_lam` a `lambertian_material` with its colour slot untouched, so
+	// a second call on the SAME NAME must be caught by the NEW
+	// `namesAlreadyCoated` half of clause 4 -- "is this material named as
+	// `base` by an existing `coated_material` chunk" -- since the own-
+	// params scan alone would see nothing unusual.
+	{
+		std::string body = Preamble();
+		body += SphereGeo( "s" );
+		body += Lambertian( "mat_lam", "pnt_stone" );
+		body += Obj( "o1", "s", "mat_lam", 0 );
+		const std::string tmp = TempPath( "addwet_f5c.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "F5c: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWetnessResult first = sess->AddWetness( "mat_lam" );
+			Check( first.applied && first.wrappedInCoat, "F5c: the first call applied and wrapped" );
+			const std::string afterFirst = sess->ReadDocument();
+			const Agent::AgentSession::AgentAddWetnessResult second = sess->AddWetness( "mat_lam" );
+			Check( !second.applied,
+			       "F5c MONEY: a SECOND add_wetness call on the SAME (still lambertian_material, still "
+			       "reading `pnt_stone`) target REFUSES -- already coated, caught via `namesAlreadyCoated` "
+			       "rather than via a changed kind" );
+			Check( second.message.find( "already" ) != std::string::npos,
+			       "F5c: message says so" );
+			Check( sess->ReadDocument() == afterFirst, "F5c: document byte-identical to after the FIRST call" );
 			sess.reset(); pJob->release();
 		}
 		std::remove( tmp.c_str() );
@@ -888,6 +959,42 @@ static void TestRefusals()
 			       "F7 MONEY: the refusal message NAMES `add_wetness` -- the RECIPROCAL half of sec 6.4's "
 			       "collision, fixed in add_wear itself" );
 			Check( sess->ReadDocument() == afterWet, "F7: document byte-identical to after add_wetness" );
+			sess.reset(); pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// F7b (item 8, 2026-08-31): the SAME reciprocal direction as F7, but on
+	// the coat-WRAP shape specifically -- `add_wetness` applied first on a
+	// LAMBERTIAN base leaves its colour slot an untouched plain
+	// `uniformcolor_painter` (unlike F7's GGX case, whose colour slot DOES
+	// get rebound to an expression), so `add_wear`'s own-params scan alone
+	// would see nothing unusual.  Proves the `namesAlreadyCoated` half of
+	// `add_wear`'s clause (d) actually catches it.
+	{
+		std::string body = Preamble();
+		body += SphereGeo( "s" );
+		body += Lambertian( "mat_lam", "pnt_stone" );
+		body += Obj( "o1", "s", "mat_lam", 0 );
+		const std::string tmp = TempPath( "addwet_f7b.RISEscene" );
+		Job* pJob = LoadScene( body, tmp );
+		Check( pJob != nullptr, "F7b: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const Agent::AgentSession::AgentAddWetnessResult wetResult = sess->AddWetness( "mat_lam" );
+			Check( wetResult.applied && wetResult.wrappedInCoat, "F7b: add_wetness applied first (coat wrap)" );
+			const std::string afterWet = sess->ReadDocument();
+			const Agent::AgentSession::AgentAddWearResult wearResult = sess->AddWear( "mat_lam" );
+			Check( !wearResult.applied,
+			       "F7b MONEY: add_wear REFUSES a material `add_wetness` already COAT-WRAPPED, even though "
+			       "the material's OWN colour slot is still a plain, untouched uniformcolor_painter -- "
+			       "caught via `namesAlreadyCoated` (\"is this material named as `base` by a "
+			       "`coated_material` chunk\"), not via the own-params expression-body scan" );
+			Check( wearResult.message.find( "coated_material" ) != std::string::npos ||
+			       wearResult.message.find( "add_wetness" ) != std::string::npos,
+			       "F7b MONEY: the refusal message names the collision (either the coated_material wrapper "
+			       "or add_wetness itself)" );
+			Check( sess->ReadDocument() == afterWet, "F7b: document byte-identical to after add_wetness" );
 			sess.reset(); pJob->release();
 		}
 		std::remove( tmp.c_str() );
@@ -1030,8 +1137,9 @@ static void TestNameCollisionMinting()
 	body += SphereGeo( "s" );
 	body += Lambertian( "mat_lam", "pnt_stone" );
 	body += Obj( "o1", "s", "mat_lam", 0 );
-	// Pre-occupy the FIRST name add_wetness would mint.
-	body += "uniformcolor_painter\n{\n\tname mat_lam_wet\n\tcolor 0 0 0\n}\n\n";
+	// Pre-occupy the FIRST name add_wetness's Lambertian branch would mint
+	// (item 8: coat_weight is minted before coat_roughness/coated_material).
+	body += "uniformcolor_painter\n{\n\tname mat_lam_wetcoatweight\n\tcolor 0 0 0\n}\n\n";
 	const std::string tmp = TempPath( "addwet_g.RISEscene" );
 	Job* pJob = LoadScene( body, tmp );
 	Check( pJob != nullptr, "G: fixture derives" );
@@ -1039,9 +1147,127 @@ static void TestNameCollisionMinting()
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 	const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_lam" );
 	Check( r.ok && r.applied, std::string( "G: applied despite the collision -- " ) + r.message );
-	Check( r.reflectancePainter == "mat_lam_wet2",
-	       "G MONEY: the mint BUMPED to `mat_lam_wet2` rather than colliding with the pre-existing "
-	       "`mat_lam_wet` painter" );
+	Check( r.coatWeightPainter == "mat_lam_wetcoatweight2",
+	       "G MONEY: the mint BUMPED to `mat_lam_wetcoatweight2` rather than colliding with the "
+	       "pre-existing `mat_lam_wetcoatweight` painter" );
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! P1 regression (2026-09-01 review round): `DocFindByNameAnyRole` with an
+//! EMPTY `roleKindSuffix` counts a bare-name match across EVERY chunk kind,
+//! not just objects.  Naming an object the SAME as its geometry is a
+//! routine idiom (34 scenes in this repo alone, e.g.
+//! scenes/Tests/Cameras/film_chunk.RISEscene) -- before the fix, the
+//! rebind loop's `DocFindByNameAnyRole( work, objName, &occ )` (no suffix)
+//! saw TWO bare-name matches for that name (the geometry AND the object)
+//! and hard-refused with `occ != 1`, even though the OBJECT itself
+//! resolves uniquely once kind-narrowed.  The fix passes `"object"` as
+//! the suffix, which matches only `standard_object`/`csg_object`/
+//! `override_object` (every keyword ending `_object`) -- exactly
+//! `boundObjectNames`'s own population, so it is an EXACT narrowing, not
+//! a heuristic one.
+static void TestObjectGeometryNameCollision()
+{
+	std::printf( "J: object name == geometry name -- P1 regression, the routine-idiom collision\n" );
+	std::string body = Preamble();
+	// Geometry and object share the bare name "dup" -- the exact shape
+	// that hard-refused before the "object" roleKindSuffix fix.
+	body += SphereGeo( "dup" );
+	body += Lambertian( "mat_lam", "pnt_stone" );
+	body += Obj( "dup", "dup", "mat_lam", 0 );
+	const std::string tmp = TempPath( "addwet_j.RISEscene" );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, "J: fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness();
+	Check( r.ok && r.applied,
+	       std::string( "J MONEY: add_wetness SUCCEEDS despite the object/geometry name collision -- " ) +
+	       r.message );
+	Check( r.wrappedInCoat && r.rebindObjectCount == 1,
+	       "J MONEY: the coat-wrap fired and the ONE bound object (name-colliding with its own "
+	       "geometry) was rebound" );
+	if( r.ok && r.applied ) {
+		const std::string docAfter = sess->ReadDocument();
+		// The OBJECT's `material` param moved; the GEOMETRY chunk of the
+		// same bare name is untouched (it never had a `material` param to
+		// move in the first place, so this just confirms the right chunk
+		// was the one addressed).
+		Check( docAfter.find( "material " + r.coatedMaterial ) != std::string::npos,
+		       "J MONEY: the rebind actually landed -- `material` now names the coated wrapper" );
+	}
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//! P2-1 regression (2026-09-01 review round): a `csg_object` ALSO carries
+//! a `material` OVERRIDE param (ChunkParserRegistry.cpp), which the scan
+//! used to bucket only for `standard_object` -- a csg override stayed
+//! bound to the dry base after a coat-wrap rebind, while the success
+//! message claimed every reference moved, and a re-run would then be
+//! wrongly blocked by `namesAlreadyCoated` with a stale csg reference
+//! left behind.  Fixed via `csgMaterialObjectNames`, a separate bucket
+//! consumed only by add_wetness's own rebind (see its own doc for why it
+//! is not merged into `materialObjectNames`).
+static void TestCsgObjectMaterialRebind()
+{
+	std::printf( "K: csg_object material override is rebound too -- P2-1 regression\n" );
+	std::string body = Preamble();
+	body += SphereGeo( "s1" );
+	body += SphereGeo( "s2" );
+	body += Lambertian( "mat_lam", "pnt_stone" );
+	body += "uniformcolor_painter\n{\n\tname\tpnt_other\n\tcolor\t0.2 0.2 0.2\n}\n\n";
+	body += "lambertian_material\n{\n\tname\tmat_other\n\treflectance\tpnt_other\n}\n\n";
+	body += Obj( "o1", "s1", "mat_lam", 0 );
+	// o2 deliberately does NOT bind mat_lam -- only o1 (standard_object)
+	// and obj_csg (csg_object override, below) do, so rebindObjectCount
+	// == 2 pins the csg contribution specifically rather than being
+	// muddied by a third unrelated standard_object binding.
+	body += Obj( "o2", "s2", "mat_other", 2 );
+	// A csg_object combining the o1/o2 OPERAND OBJECTS (obja/objb are
+	// Object references, not geometry -- ChunkParserRegistry.cpp's own
+	// descriptor), its OWN `material` override naming `mat_lam` -- the
+	// binding shape this test exists to catch.
+	// `name\t\t\t` (three tabs) matches ExtractChunkFullText's own name-line
+	// marker below -- the helper Test A/G already use for chunks add_wetness
+	// mints, reused here for this hand-authored fixture too.
+	body += "csg_object\n{\n\tname\t\t\tobj_csg\n\tobja\to1\n\tobjb\to2\n\toperation\tunion\n"
+	        "\tmaterial\tmat_lam\n\tposition\t4 0 0\n}\n\n";
+	const std::string tmp = TempPath( "addwet_k.RISEscene" );
+	Job* pJob = LoadScene( body, tmp );
+	Check( pJob != nullptr, "K: fixture derives" );
+	if( !pJob ) return;
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentAddWetnessResult r = sess->AddWetness( "mat_lam" );
+	Check( r.ok && r.applied, std::string( "K: applied -- " ) + r.message );
+	Check( r.wrappedInCoat, "K: the coat-wrap fired" );
+	Check( r.rebindObjectCount == 2,
+	       "K MONEY: BOTH bound references were rebound -- the standard_object (`o1`) AND the "
+	       "csg_object's own `material` override (`obj_csg`), not just the former" );
+	if( r.ok && r.applied ) {
+		const std::string docAfter = sess->ReadDocument();
+		// The csg_object's own chunk body must now carry the coated
+		// wrapper's name on its `material` line, not the dry `mat_lam` it
+		// started with -- extracted via the SAME full-chunk-text helper
+		// Test A uses, so this is a real per-chunk check, not a
+		// document-wide substring guess that could match `o1`'s line.
+		const std::string csgText = ExtractChunkFullText( docAfter, "obj_csg" );
+		Check( !csgText.empty(), "K: the csg_object chunk's full text was extracted" );
+		Check( csgText.find( "material\t" + r.coatedMaterial + "\n" ) != std::string::npos,
+		       "K MONEY: the csg_object's `material` line now names the coated wrapper `" +
+		       r.coatedMaterial + "` -- extracted chunk text: " + csgText );
+		Check( csgText.find( "material\tmat_lam\n" ) == std::string::npos,
+		       "K: ...and no longer names the dry `mat_lam`" );
+	}
+	// A second call must now be refused -- `namesAlreadyCoated` sees
+	// `mat_lam` as `base` on the wrapper, so re-running does not leave
+	// the csg reference in limbo (the bug this test guards against would
+	// otherwise have let a second call slip through and double-wrap).
+	const Agent::AgentSession::AgentAddWetnessResult second = sess->AddWetness( "mat_lam" );
+	Check( !second.applied, "K: a second call on the same (now-coated) material refuses" );
 	sess.reset();
 	pJob->release();
 	std::remove( tmp.c_str() );
@@ -1107,8 +1333,9 @@ static void TestWireSurface()
 			const Agent::JsonValue& result = env.get( "result" );
 			Check( result.get( "applied" ).asBool(), "H: the RPC form applied the rewrite" );
 			Check( result.get( "material" ).asString() == "mat_lam", "H: ...and echoes the material" );
-			Check( result.get( "rewroteToPolished" ).asBool(), "H: ...and rewroteToPolished" );
-			Check( result.get( "tauPainter" ).asString().size() > 0, "H: ...and the tau painter it minted" );
+			Check( result.get( "wrappedInCoat" ).asBool(), "H: ...and wrappedInCoat" );
+			Check( result.get( "coatedMaterial" ).asString().size() > 0, "H: ...and the coated_material it minted" );
+			Check( result.get( "coatWeightPainter" ).asString().size() > 0, "H: ...and the coat_weight painter it minted" );
 			pJob2->release();
 			std::remove( tmp2.c_str() );
 		}
@@ -1311,6 +1538,8 @@ int main()
 	TestMetallicCoatOnly();
 	TestRefusals();
 	TestNameCollisionMinting();
+	TestObjectGeometryNameCollision();
+	TestCsgObjectMaterialRebind();
 	TestWireSurface();
 	TestDesignNote();
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );

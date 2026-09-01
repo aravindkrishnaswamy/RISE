@@ -1418,11 +1418,12 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
-					// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): add_wetness is the
-					// SEVENTH verb whose commit is one composite whole-document swap
-					// (a Lambertian base is REWRITTEN to polished_material; a GGX/PBR
-					// base gets one or more field chunks spliced plus its slots
-					// repointed), so it is excluded from IsProposeSafeVerb for
+					// WETNESS_COAT_DESIGN sec 6/13 (2026-08-31, item 8 2026-09-01):
+					// add_wetness is the SEVENTH verb whose commit is one composite
+					// whole-document swap (a Lambertian base is WRAPPED in a new
+					// `coated_material` chunk with every bound object rebound to it;
+					// a GGX/PBR base gets one or more field chunks spliced plus its
+					// slots repointed), so it is excluded from IsProposeSafeVerb for
 					// exactly the reason add_wear above is, with the same message
 					// shape and the same "each verb refuses what the other has
 					// already rewritten" collision with add_wear.
@@ -4348,15 +4349,18 @@ namespace RISE
 				//--------------------------------------------------------------
 				// add_wetness {material?, baseHeadVersion?}
 				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
-				//       material,materialKind,rewroteToPolished,reflectanceSlot,
-				//       reflectancePainter,tauSlot,tauPainter,
+				//       material,materialKind,wrappedInCoat,coatedMaterial,
+				//       coatWeightPainter,coatRoughnessPainter,rebindObjectCount,
+				//       reflectanceSlot,reflectancePainter,
 				//       scatteringSlots:[string,...],scatteringPainters:[string,...],
 				//       baseColor:[r,g,b],geometry,geometryUniform,isMetallic,
 				//       isOrenNayar,qualifying,objects}
-				//   docs/WETNESS_COAT_DESIGN.md Phase 1 (2026-08-31): rewrite ONE
-				//   material into the two-mask (damp/wet) wetness composition -- a
-				//   Lambertian base to `polished_material`, a GGX/PBR base in
-				//   place.  A pre-commit refusal comes back as ok=false with the
+				//   docs/WETNESS_COAT_DESIGN.md Phase 1 + Phase 2 item 8
+				//   (2026-08-31): apply the two-mask (damp/wet) wetness
+				//   composition to ONE material -- a Lambertian base is WRAPPED
+				//   in a new `coated_material` chunk (the original left
+				//   untouched, bound objects rebound to the wrapper), a GGX/PBR
+				//   base in place.  A pre-commit refusal comes back as ok=false with the
 				//   reason in `message`, the same shape add_wear/vary_material use.
 				//--------------------------------------------------------------
 				if( m == "add_wetness" ) {
@@ -4385,11 +4389,13 @@ namespace RISE
 					if( !wr.message.empty() )      result.set( "message",      JsonValue::MakeString( wr.message ) );
 					if( !wr.material.empty() )     result.set( "material",     JsonValue::MakeString( wr.material ) );
 					if( !wr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( wr.materialKind ) );
-					result.set( "rewroteToPolished", JsonValue::MakeBool( wr.rewroteToPolished ) );
+					result.set( "wrappedInCoat", JsonValue::MakeBool( wr.wrappedInCoat ) );
+					if( !wr.coatedMaterial.empty() )       result.set( "coatedMaterial",       JsonValue::MakeString( wr.coatedMaterial ) );
+					if( !wr.coatWeightPainter.empty() )    result.set( "coatWeightPainter",    JsonValue::MakeString( wr.coatWeightPainter ) );
+					if( !wr.coatRoughnessPainter.empty() ) result.set( "coatRoughnessPainter", JsonValue::MakeString( wr.coatRoughnessPainter ) );
+					if( wr.rebindObjectCount > 0 )          result.set( "rebindObjectCount",   JsonValue::MakeNumber( static_cast<double>( wr.rebindObjectCount ) ) );
 					if( !wr.reflectanceSlot.empty() )    result.set( "reflectanceSlot",    JsonValue::MakeString( wr.reflectanceSlot ) );
 					if( !wr.reflectancePainter.empty() ) result.set( "reflectancePainter", JsonValue::MakeString( wr.reflectancePainter ) );
-					if( !wr.tauSlot.empty() )            result.set( "tauSlot",            JsonValue::MakeString( wr.tauSlot ) );
-					if( !wr.tauPainter.empty() )         result.set( "tauPainter",         JsonValue::MakeString( wr.tauPainter ) );
 					if( !wr.scatteringSlots.empty() ) {
 						JsonValue arr = JsonValue::MakeArray();
 						for( const std::string& nm : wr.scatteringSlots ) arr.push_back( JsonValue::MakeString( nm ) );

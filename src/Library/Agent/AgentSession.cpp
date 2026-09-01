@@ -3512,10 +3512,12 @@ namespace RISE
 				//! The microsurface slot(s) this material's KIND carries and
 				//! this verb rebinds -- `alphax`+`alphay` for `ggx_material`,
 				//! `roughness` for `pbr_metallic_roughness_material`, EMPTY for
-				//! `lambertian_material` (its own `scattering`/`tau` are minted
-				//! fresh on the polished_material rewrite, not rebound here) and
-				//! for `orennayar_material` (damp-only, sec 6.2 -- no coat, no
-				//! gloss touch).  Only slots that classify Constant or Absent
+				//! `lambertian_material` (its `coat_weight`/`coat_roughness` are
+				//! minted fresh on the new `coated_material` wrapper chunk,
+				//! item 8 -- not rebound here, since nothing on the base
+				//! chunk itself changes) and for `orennayar_material`
+				//! (damp-only, sec 6.2 -- no coat, no gloss touch).  Only
+				//! slots that classify Constant or Absent
 				//! are included -- a slot already spatially varying is left
 				//! untouched rather than silently overwritten (sec 6.4 does not
 				//! specify this case; see the AddWetness report's honest-
@@ -3539,6 +3541,20 @@ namespace RISE
 				//! clause 3 case, not a refusal.
 				std::string curvGeometryKind;
 				bool        geometryUniform = false;
+
+				//! Item 8 (2026-08-31, coated_material re-target): every
+				//! `standard_object`/instancing chunk whose OWN `material`
+				//! param equals this material's name -- `materialObjectNames`'s
+				//! per-material bucket, copied out at scan time so `AddWetness`
+				//! can rebind each one's `material` param to the minted
+				//! `coated_material` chunk WITHOUT re-deriving the bucket (the
+				//! scan's local map does not outlive `ComputeDesignNoteConditionsFromDoc_`).
+				//! Deliberately NOT filtered by `geometryKindOfObjectForWetness`
+				//! resolving -- an instancing chunk with no `geometry` of its
+				//! own still carries the `material` param directly (the same
+				//! "one binding decision" reasoning `materialObjectCounts`'s own
+				//! comment gives) and still needs rebinding.
+				std::vector<std::string> boundObjectNames;
 
 				//! Review decision D2 (2026-08-31): `ggx_material`'s alphax/
 				//! alphay must move TOGETHER or not at all -- half-modulating
@@ -6103,6 +6119,22 @@ namespace RISE
 				std::map<std::string, std::string>               objectGeometryByName;  // standard_object name -> its `geometry`
 				std::map<std::string, std::string>               objectSourceByName;    // standard_object name -> its `source`
 				std::map<std::string, std::vector<std::string> > materialObjectNames;   // material name -> the objects binding it
+				//! P2-1 fix (2026-09-01 review round): `csg_object` ALSO carries
+				//! a `material` override param (ChunkParserRegistry.cpp's own
+				//! descriptor), which the loop below only ever bucketed for
+				//! `standard_object`.  Kept as a SEPARATE bucket rather than
+				//! merged into `materialObjectNames` -- that map also feeds
+				//! condition D's "most prominent material" prominence count,
+				//! condition L's `add_wear` scan, and the materials-realism
+				//! briefed-vs-bound mismatch scan, none of which asked to start
+				//! counting csg_object overrides, and auditing all three for a
+				//! safe broadening is out of scope for this fix.  Consumed
+				//! ONLY by `add_wetness`'s own object-rebind (WetnessMaterial_::
+				//! boundObjectNames), which is the one place P2-1 found a real
+				//! correctness gap: a csg_object material override left
+				//! stale after the rebind, while the success message claimed
+				//! every reference moved.
+				std::map<std::string, std::vector<std::string> > csgMaterialObjectNames;
 				//! `colorspace` as authored on each uniformcolor_painter (absent
 				//! when the chunk omits it, which is the Rec.709-linear default).
 				//! Condition L clause (b) needs it: an RGB triple authored in some
@@ -6281,6 +6313,24 @@ namespace RISE
 							if( !g.distinctTransforms && xform != g.firstTransform ) g.distinctTransforms = true;
 						}
 						continue;
+					}
+					if( role == "csg_object" ) {
+						// P2-1 fix: bucket a csg_object's `material` OVERRIDE
+						// param into its own map (see csgMaterialObjectNames'
+						// doc for why it stays separate from
+						// materialObjectNames rather than merged in).  NO
+						// `continue` here -- the generic ChunkCategory::Object
+						// handling further below (which populates
+						// `objectMaterialByName` for Condition M) already
+						// processes csg_object too, and this branch must fall
+						// through to it rather than short-circuit it.
+						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator mat = pm.find( "material" );
+						if( mat != pm.end() && !mat->second.empty() && mat->second != "none" ) {
+							const std::map<std::string, std::string>::const_iterator onm = pm.find( "name" );
+							if( onm != pm.end() && !onm->second.empty() )
+								csgMaterialObjectNames[mat->second].push_back( onm->second );
+						}
 					}
 					if( role == "scalar_painter" ) {
 						// (88 S5) Keep the WHOLE param map: which form a
@@ -6968,6 +7018,28 @@ namespace RISE
 				               !c.roughnessCoverageSatisfied &&
 				               !c.varyMaterialName.empty();
 
+				// Item 8 (2026-08-31, coated_material re-target): every material
+				// named as `base` by SOME `coated_material` chunk, computed ONCE
+				// here (before EITHER of the two resolution passes below that
+				// need it) from `materialByName` -- Condition M's unconditional
+				// map over every Material-category chunk, already fully
+				// populated by the single walk above.  Both `add_wear`'s own
+				// scan (clause (d), right below) and `add_wetness`'s own scan
+				// (clause (4), further down) must treat a coat-wrapped material
+				// as already-wet: the Lambertian branch's coat WRAP (unlike
+				// Phase 1's `polished_material` REWRITE) leaves the base
+				// chunk's own colour slot a plain, untouched `uniformcolor_
+				// painter`, so neither scan's own-params test sees anything
+				// unusual there any more -- this is the one place that still
+				// catches it.
+				std::set<std::string> namesAlreadyCoated;
+				for( const std::pair<const std::string, std::pair<std::string, std::map<std::string, std::string> > >& kv : materialByName ) {
+					if( kv.second.first != "coated_material" ) continue;
+					const std::map<std::string, std::string>::const_iterator baseIt = kv.second.second.find( "base" );
+					if( baseIt != kv.second.second.end() && !baseIt->second.empty() )
+						namesAlreadyCoated.insert( baseIt->second );
+				}
+
 				// (GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30) Condition L's
 				// resolution pass -- ONE predicate, read by the note AND by
 				// AgentSession::AddWear, the same discipline conditions C/D/J
@@ -7073,31 +7145,46 @@ namespace RISE
 							continue;
 						}
 
-						// -- clause (d): not already wearing the geometry signals.
-						// WETNESS_COAT_DESIGN sec 6.4 (2026-08-31): `add_wetness`'s
-						// own prelude ALSO reads `curv`/`occlusion` (its damp/
-						// pooling masks), so a wet material trips this same test
-						// -- which is the intended half of the collision (a wet
+						// -- clause (d): not already wearing the geometry signals,
+						// AND (item 8, 2026-08-31) not already coated -- the two
+						// wetness SHAPES clause (a)/(d) has to catch, mirroring
+						// `WetnessMaterial_`'s own clause (4).  The Lambertian
+						// branch's coat WRAP names this material as `base` on a
+						// separate `coated_material` chunk and leaves ITS OWN
+						// params untouched, so the own-params expression-body
+						// scan below sees nothing -- `namesAlreadyCoated` (shared
+						// with the wetness scan, computed once above) is the one
+						// test that still catches it.  WETNESS_COAT_DESIGN sec 6.4
+						// (2026-08-31): `add_wetness`'s own prelude ALSO reads
+						// `curv`/`occlusion` (its damp/pooling masks), so a wet
+						// GGX/PBR/Oren-Nayar material (the in-place branches,
+						// unchanged by item 8) trips this same own-params test --
+						// which is the intended half of the collision (a wet
 						// surface cannot then be worn).  `WetnessBodyReadsPreludeDefs_`
 						// (the `dryness` marker) disambiguates the message without
 						// changing the refusal itself.
 						bool alreadyWorn = false, wornByWetness = false;
-						for( const std::pair<const std::string, std::string>& kv : pm.params ) {
-							if( kv.first == "name" ) continue;
-							const std::map<std::string, std::string>::const_iterator b =
-								expressionBodies.find( kv.second );
-							if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) ) {
-								alreadyWorn = true;
-								if( WetnessBodyReadsPreludeDefs_( b->second ) ) wornByWetness = true;
-								break;
+						if( namesAlreadyCoated.count( pm.name ) != 0 ) { alreadyWorn = true; wornByWetness = true; }
+						if( !alreadyWorn ) {
+							for( const std::pair<const std::string, std::string>& kv : pm.params ) {
+								if( kv.first == "name" ) continue;
+								const std::map<std::string, std::string>::const_iterator b =
+									expressionBodies.find( kv.second );
+								if( b != expressionBodies.end() && WearBodyReadsGeometrySignals_( b->second ) ) {
+									alreadyWorn = true;
+									if( WetnessBodyReadsPreludeDefs_( b->second ) ) wornByWetness = true;
+									break;
+								}
 							}
 						}
 						if( alreadyWorn ) {
 							c.wearDeclineReasons[pm.name] = wornByWetness
 								? std::string( "it already binds an expression that reads the wetness prelude "
-								               "(`dryness`/`wet`) -- this material has already been made wet by "
-								               "`add_wetness`, and add_wear / add_wetness cannot currently be "
-								               "combined on one material (each verb refuses what the other has "
+								               "(`dryness`/`wet`), or it is already named as `base` by an existing "
+								               "`coated_material` chunk -- this material has already been made wet by "
+								               "`add_wetness` (or otherwise coated -- a hand-authored `coated_material` "
+								               "wrap trips the same test), and add_wear / add_wetness cannot currently "
+								               "be combined on one material (each verb refuses what the other has "
 								               "already rewritten)" )
 								: std::string( "it already binds an expression that reads `curv` / `occlusion` / "
 								               "`thickness` -- this surface has been worn once already, and a "
@@ -7231,6 +7318,13 @@ namespace RISE
 						"pbr_metallic_roughness_material"
 					};
 
+					// Clause (4)'s "not already wet" test uses `namesAlreadyCoated`
+					// (computed once, above `add_wear`'s own resolution pass, and
+					// shared with it -- see that computation's own doc for why
+					// item 8 needs it: the Lambertian branch's coat WRAP leaves
+					// the base's own params untouched, so clause (4)'s own-params
+					// scan alone would see a fresh, dry candidate).
+
 					for( const PendingMaterial_& pm : pendingMaterials ) {
 						bool isWetKind = false;
 						for( const char* k : kWetnessKinds ) if( pm.kind == k ) { isWetKind = true; break; }
@@ -7303,22 +7397,34 @@ namespace RISE
 							}
 						}
 
-						// -- clause (4): not already wet.
-						bool alreadyWet = false;
-						for( const std::pair<const std::string, std::string>& kv : pm.params ) {
-							if( kv.first == "name" ) continue;
-							const std::map<std::string, std::string>::const_iterator b =
-								expressionBodies.find( kv.second );
-							if( b != expressionBodies.end() && WetnessBodyReadsPreludeDefs_( b->second ) ) {
-								alreadyWet = true;
-								break;
+						// -- clause (4): not already wet.  Two independent tests,
+						// because item 8 split "already wet" into two different
+						// SHAPES: the GGX/PBR/Oren-Nayar in-place branches still
+						// rebind the CANDIDATE's own colour slot to a prelude-
+						// reading expression (the old test, unchanged); the
+						// Lambertian coat-WRAP branch instead leaves the
+						// candidate's own params untouched and names it as
+						// `base` in a separate `coated_material` chunk (the new
+						// `namesAlreadyCoated` test, computed once above).
+						bool alreadyWet = ( namesAlreadyCoated.count( pm.name ) != 0 );
+						if( !alreadyWet ) {
+							for( const std::pair<const std::string, std::string>& kv : pm.params ) {
+								if( kv.first == "name" ) continue;
+								const std::map<std::string, std::string>::const_iterator b =
+									expressionBodies.find( kv.second );
+								if( b != expressionBodies.end() && WetnessBodyReadsPreludeDefs_( b->second ) ) {
+									alreadyWet = true;
+									break;
+								}
 							}
 						}
 						if( alreadyWet ) {
 							c.wetDeclineReasons[pm.name] =
-								"it already binds an expression that reads the wetness prelude (`dryness`/`wet`) "
-								"-- this material has already been made wet by `add_wetness`, and re-running "
-								"would stack two wetness passes rather than deepen one";
+								"it is already coated -- either it already binds an expression that reads the "
+								"wetness prelude (`dryness`/`wet`), or it is already named as `base` by an "
+								"existing `coated_material` chunk -- this material has already been made wet by "
+								"`add_wetness` (or otherwise coated), and re-running would double-coat it rather "
+								"than deepen one wetness pass";
 							continue;
 						}
 
@@ -7390,10 +7496,12 @@ namespace RISE
 						std::string curvKind;
 						bool geometryUniform = true;
 						bool sawAnyObject = false;
+						std::vector<std::string> boundObjectNames;
 						{
 							const std::map<std::string, std::vector<std::string> >::const_iterator ob =
 								materialObjectNames.find( pm.name );
 							if( ob != materialObjectNames.end() ) {
+								boundObjectNames = ob->second;
 								for( const std::string& objName : ob->second ) {
 									const std::string gk = geometryKindOfObjectForWetness( objName );
 									if( gk.empty() ) continue;
@@ -7402,12 +7510,33 @@ namespace RISE
 									if( !CurvBarrenGeometryKind_( gk ) ) { geometryUniform = false; curvKind = gk; }
 								}
 							}
+							// P2-1 fix: a csg_object's `material` override ALSO
+							// counts as a real bound object -- it names a
+							// composite that DOES have a world box (Condition
+							// M's own reasoning) -- even though this scan has
+							// no geometry-kind classifier for a CSG composite
+							// (`geometryKindOfObjectForWetness` only follows
+							// `standard_object`'s `geometry`/`source` chain).
+							// Counted toward `sawAnyObject` and appended to
+							// `boundObjectNames` (so the rebind loop moves it
+							// too), but does NOT contribute a `curvKind` --
+							// reporting "uniform" would be a GUESS this scan
+							// cannot back up.
+							const std::map<std::string, std::vector<std::string> >::const_iterator csgOb =
+								csgMaterialObjectNames.find( pm.name );
+							if( csgOb != csgMaterialObjectNames.end() ) {
+								for( const std::string& csgName : csgOb->second ) {
+									boundObjectNames.push_back( csgName );
+									sawAnyObject = true;
+								}
+							}
 						}
 						if( !sawAnyObject ) {
 							c.wetDeclineReasons[pm.name] =
-								"no `standard_object` binds it to a geometry this scan can identify -- "
-								"add_wetness needs at least one bound object (any geometry qualifies; unlike "
-								"add_wear, a flat slab still reads wet uniformly via `base_wetness`)";
+								"no `standard_object`/`csg_object` binds it to a geometry this scan can "
+								"identify -- add_wetness needs at least one bound object (any geometry "
+								"qualifies; unlike add_wear, a flat slab still reads wet uniformly via "
+								"`base_wetness`)";
 							continue;
 						}
 
@@ -7423,13 +7552,15 @@ namespace RISE
 						w.hasReadableColor = hasReadableColor;
 						w.curvGeometryKind = curvKind;
 						w.geometryUniform  = geometryUniform;
+						w.boundObjectNames = boundObjectNames;
 						{
 							const std::map<std::string, int>::const_iterator oc = materialObjectCounts.find( pm.name );
 							w.objectCount = ( oc != materialObjectCounts.end() ) ? oc->second : 0;
 						}
 						// Microsurface half -- ggx (alphax+alphay) / pbr
-						// (roughness) ONLY; lambertian mints its own tau/
-						// scattering fresh on the polished_material rewrite, and
+						// (roughness) ONLY; lambertian mints its own
+						// coat_weight/coat_roughness fresh on the new
+						// coated_material wrapper chunk (item 8), and
 						// orennayar is damp-only (sec 6.2) -- neither rebinds an
 						// existing slot here.
 						//
@@ -8112,10 +8243,10 @@ namespace RISE
 					( candidateCount == 1 ? std::string( "reads" ) : std::string( "read" ) ) +
 					" bone-dry. `add_wetness` writes the two-mask (damp/wet) wetness composition for you: "
 					"call it with NO ARGUMENTS and it takes `" + materialName + "` (" + materialKind + ", on " +
-					geometryKind + "), darkens and saturates the reflectance under a `damp` mask driven by "
-					"`curv`/`occlusion()`/`fbm`, and adds a coat coverage (`tau`) plus a pooling-keyed gloss "
-					"(`scattering`) under the derived `wet` mask -- rewriting a Lambertian base to "
-					"`polished_material`, or modulating roughness in place on a GGX/PBR base. A single "
+					geometryKind + "), and adds a coat coverage (`coat_weight`) plus a pooling-keyed gloss "
+					"(`coat_roughness`) under the derived `wet` mask -- wrapping a Lambertian base's untouched "
+					"chunk in a new `coated_material` (whose own layered transport darkens and saturates the "
+					"substrate, no separate painter needed), or modulating roughness in place on a GGX/PBR base. A single "
 					"`dryness` param sweeps the whole surface from soaked back to dry. ONE call, ONE undo "
 					"step, every knob a named `param` with a min/max you can retune with propose_patch. Pass "
 					"`material` to choose a different one -- naming a METALLIC material explicitly gives it "
@@ -36388,6 +36519,13 @@ namespace RISE
 			//! `damp` mask (design sec 6.1/6.3).  `base_r/g/b` are params
 			//! carrying the material's OWN authored colour -- the vary_material/
 			//! add_wear convention of banding around what is already there.
+			//!
+			//! Item 8 (2026-08-31): the Lambertian branch no longer calls this
+			//! -- `coated_material`'s own layered transport performs the
+			//! darkening (design sec 7.1), so a second `pow(base, k)` on top
+			//! would double-count it.  Still used by the GGX/PBR in-place
+			//! branch and the metallic-named/Oren-Nayar darkening-only paths,
+			//! which have no coat lobe of their own to do that work.
 			std::string BuildWetnessReflectancePainterText_( const std::string& chunkName,
 			                                                 double baseR, double baseG, double baseB,
 			                                                 double breakupScale, double seed )
@@ -36405,12 +36543,14 @@ namespace RISE
 				return t;
 			}
 
-			//! The COAT-COVERAGE half (Lambertian->polished_material branch
-			//! only): `polished_material`'s `tau`, a `scalar_painter` reading
-			//! the `wet` mask straight through (design sec 6.3).  `tau = 0` is
-			//! exactly "no coat" (`polished_material`'s own parser comment),
-			//! so this IS the coat's on/off + partial-coverage control.
-			std::string BuildWetnessTauPainterText_( const std::string& chunkName, double breakupScale, double seed )
+			//! The COAT-COVERAGE half (Lambertian -> `coated_material` wrap,
+			//! item 8): `coat_weight`, a `scalar_painter` reading the `wet`
+			//! mask straight through -- byte-identical in shape to Phase 1's
+			//! `tau` field, just bound to a different slot name.  `coat_weight
+			//! = 0` is exactly "no coat" (sec 7.2's own descriptor text), so
+			//! this IS the coat's on/off + partial-coverage control, same as
+			//! `polished_material`'s `tau` was.
+			std::string BuildWetnessCoatWeightPainterText_( const std::string& chunkName, double breakupScale, double seed )
 			{
 				std::string t = "scalar_painter\n{\n";
 				t += "\tname\t\t\t" + chunkName + "\n";
@@ -36420,19 +36560,51 @@ namespace RISE
 				return t;
 			}
 
-			//! The GLOSS half (Lambertian->polished_material branch only):
-			//! `polished_material`'s `scattering`, a Phong cone exponent keyed
-			//! on POOLING rather than on wetness generally (design sec 6.3's
-			//! correction: a thin wetting film conforms to relief, so only
-			//! water deep enough to submerge it should sharpen toward a
-			//! mirror).  `film_gloss_lo` (default 220, alpha ~0.095) is the
-			//! damp-but-unpooled floor; 200000 is the pooled/mirror ceiling.
-			std::string BuildWetnessScatteringPainterText_( const std::string& chunkName, double breakupScale, double seed )
+			//! The GLOSS half (Lambertian -> `coated_material` wrap, item 8):
+			//! `coat_roughness`, keyed on POOLING rather than on wetness
+			//! generally (design sec 6.3's correction: a thin wetting film
+			//! conforms to relief, so only water deep enough to submerge it
+			//! should sharpen toward a mirror) -- unchanged reasoning from
+			//! Phase 1's `scattering` field, but re-expressed in GGX-alpha
+			//! terms because `coat_roughness` is a GGX alpha, not a Phong cone
+			//! exponent (sec 7.2's descriptor: "GGX alpha of the coat lobe").
+			//!
+			//! CONVERSION (design sec 6.3): alpha = sqrt(2 / (n + 2)) for a
+			//! Phong exponent n.  Applied to BOTH ends of Phase 1's
+			//! `mix(film_gloss_lo, 200000.0, ...)` band so `film_gloss_lo`
+			//! keeps its existing name, label and Phong-n units (an author
+			//! retuning it need not learn a new unit) while the emitted VALUE
+			//! is a real GGX alpha: `film_gloss_lo` (default 220) -> alpha ~=
+			//! 0.095, the damp-but-unpooled floor; the pooled/mirror ceiling
+			//! n=200000 -> alpha ~= 0.0032, inside `coat_roughness`'s
+			//! [1e-3, 1] clamp band with room to spare.  Computed via the
+			//! expression VM's own `sqrt`, not folded to a decimal literal, so
+			//! the emitted scene text is self-documenting about where the
+			//! number comes from.
+			//!
+			//! MIXING IN ALPHA-SPACE, NOT n-SPACE, IS A BEHAVIOUR CHANGE FROM
+			//! PHASE 1 -- adjudicated BETTER, not merely a re-expression of
+			//! the same curve (2026-09-01 review round).  The mix below
+			//! applies `sqrt(2/(n+2))` to EACH endpoint first, THEN mixes the
+			//! two alphas; the alternative -- mix `film_gloss_lo` and
+			//! `200000.0` in n-space first, THEN convert the single result --
+			//! is NOT equivalent, because sqrt(2/(n+2)) is convex in n.  At
+			//! the design doc's own "pooled cavity" worked example (sec 6.3,
+			//! `clamp(pooling*wet,0,1) = 0.85`), the n-space-then-convert
+			//! route gives alpha ~= 0.0034 -- OUTSIDE sec 2.2's pooled band
+			//! (0.01-0.05) on the sharp side, reproducing the "wet asphalt
+			//! looks like plastic" failure this whole field exists to avoid.
+			//! The alpha-space mix implemented here gives alpha ~= 0.017 at
+			//! the same point -- INSIDE the pooled band.  Reaching for
+			//! n-space mixing here (e.g. to "simplify" this expression back
+			//! toward Phase 1's literal shape) would silently reintroduce
+			//! that failure.
+			std::string BuildWetnessCoatRoughnessPainterText_( const std::string& chunkName, double breakupScale, double seed )
 			{
 				std::string t = "scalar_painter\n{\n";
 				t += "\tname\t\t\t" + chunkName + "\n";
 				t += BuildWetnessMaskPreludeText_( breakupScale, seed );
-				t += "\texpression\t\tmix( film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1) )\n";
+				t += "\texpression\t\tmix( sqrt(2.0/(film_gloss_lo+2.0)), sqrt(2.0/200002.0), clamp(pooling * wet, 0, 1) )\n";
 				t += "}\n";
 				return t;
 			}
@@ -36482,48 +36654,28 @@ namespace RISE
 				return t;
 			}
 
-			//! The Lambertian->polished_material REWRITE TARGET (design sec
-			//! 6.1/6.2): a literal `ior 1.33` (a constant needs no painter,
-			//! sec 6.1), `reflectance`/`tau`/`scattering` bound to the three
-			//! field chunks just built.
-			std::string BuildWetnessPolishedMaterialText_( const std::string& materialName,
-			                                               const std::string& reflectanceFieldName,
-			                                               const std::string& tauFieldName,
-			                                               const std::string& scatteringFieldName )
+			//! The Lambertian -> `coated_material` WRAP TARGET (design sec 13
+			//! item 8): a NEW chunk, `base` naming the untouched original
+			//! material, `coat_weight`/`coat_roughness` bound to the two field
+			//! chunks just built.  `coat_ior` is left unspelled -- the
+			//! descriptor's own default is 1.33 (sec 7.2's water value, and
+			//! exactly the literal Phase 1's `polished_material` rewrite used
+			//! to spell out), so a bare chunk already says the right thing.
+			//! `coat_thickness`/`coat_absorption`/`coat_tint` are likewise
+			//! left at their defaults (0/0/untinted-white): a clear water film
+			//! with no absorption, which is this verb's whole brief.
+			std::string BuildWetnessCoatedMaterialText_( const std::string& coatedName,
+			                                             const std::string& baseName,
+			                                             const std::string& coatWeightFieldName,
+			                                             const std::string& coatRoughFieldName )
 			{
-				std::string t = "polished_material\n{\n";
-				t += "\tname\t\t\t" + materialName + "\n";
-				t += "\treflectance\t\t" + reflectanceFieldName + "\n";
-				t += "\ttau\t\t\t" + tauFieldName + "\n";
-				t += "\tior\t\t\t1.33\n";
-				t += "\tscattering\t\t" + scatteringFieldName + "\n";
+				std::string t = "coated_material\n{\n";
+				t += "\tname\t\t\t" + coatedName + "\n";
+				t += "\tbase\t\t\t" + baseName + "\n";
+				t += "\tcoat_weight\t\t" + coatWeightFieldName + "\n";
+				t += "\tcoat_roughness\t\t" + coatRoughFieldName + "\n";
 				t += "}\n";
 				return t;
-			}
-
-			//! A KIND-CHANGING chunk swap (Lambertian -> polished_material is a
-			//! different chunk KEYWORD, not a param rebind) -- `DocReplaceItem`'s
-			//! documented contract ("the chunk's NodeId persists; its params
-			//! are re-matched by content") makes this safe even though every
-			//! param name and the keyword itself change: the material's
-			//! NodeId survives the swap, so nothing else in the document that
-			//! merely NAMES it (a `standard_object`'s `material` slot) needs
-			//! re-resolving.
-			RISE::Cst::Document WetnessReplaceChunkAt_( const RISE::Cst::Document& doc, int at,
-			                                            const std::string& chunkText )
-			{
-				RISE::Cst::Document chunkDoc = RISE::Cst::ParseToCst( chunkText );
-				RISE::Cst::NodeRef  chunkItem;
-				{
-					const int n = RISE::Cst::DocItemCount( chunkDoc );
-					for( int i = 0; i < n; ++i ) {
-						const RISE::Cst::NodeRef it =
-							RISE::Cst::DocResolveNodeId( chunkDoc, RISE::Cst::DocNodeIdAt( chunkDoc, i ) );
-						if( it && it->kind == RISE::Cst::NodeKind::Chunk ) { chunkItem = it; break; }
-					}
-				}
-				if( !chunkItem ) return doc;
-				return RISE::Cst::DocReplaceItem( doc, at, chunkItem );
 			}
 		}
 
@@ -36994,8 +37146,8 @@ namespace RISE
 						"blackbody/spectral painter, not already worn by add_wear) and is not already wet. A "
 						"metallic material can still be made wet for its coat/gloss alone (no darkening) -- "
 						"name it explicitly with `material`. Author such a material first, or bind a "
-						"`polished_material` by hand (read_skill {\"name\":\"materials-and-media-basics\"}) -- "
-						"document unchanged";
+						"`coated_material` by hand -- this verb's own shape as of item 8 -- over it "
+						"(read_skill {\"name\":\"materials-and-media-basics\"}) -- document unchanged";
 					return out;
 				}
 			}
@@ -37014,9 +37166,22 @@ namespace RISE
 
 			// ---- (3) Name the chunk(s), collision-safe against the document
 			// AND against every other name this call is about to mint.
+			//
+			// Item 8 (2026-08-31, coated_material re-target): the Lambertian
+			// branch no longer mints a reflectance darkening painter at all --
+			// coated_material's own layered transport performs the
+			// recycling-driven darkening (design sec 7.1's "the principled
+			// spectral wet-darkening IS the layered model's own per-wavelength
+			// transport"), so an ADDITIONAL pow(base,k) painter here would
+			// double-count the same physics (sec 7.1's `substrate_wet_exponent`
+			// demotion, applied to this verb's own emission).  `hasReadableColor`
+			// is guarded off for this branch below -- the GGX/PBR in-place branch
+			// (sec 6.2's stopgap, UNCHANGED by item 8) and the Oren-Nayar/
+			// metallic-named darkening-only branches still mint it exactly as
+			// before.
 			std::vector<std::string> minted;
 			std::string reflectanceFieldName;
-			if( pick->hasReadableColor ) {
+			if( pick->hasReadableColor && !lambertianBranch ) {
 				reflectanceFieldName = WearMintChunkName_( headDoc, pick->name, "_wet", minted );
 				if( reflectanceFieldName.empty() ) {
 					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
@@ -37026,24 +37191,44 @@ namespace RISE
 				}
 				minted.push_back( reflectanceFieldName );
 			}
-			std::string tauFieldName, scatteringFieldName;
+			// The coat half: a NEW `coated_material` chunk wrapping the
+			// UNTOUCHED base (design sec 13 item 8 -- "strictly less
+			// destructive than the polished rewrite": the author's original
+			// lambertian_material chunk is never edited).  `coat_weight` reads
+			// the `wet` mask straight through (byte-identical to the old `tau`
+			// field's role); `coat_roughness` re-expresses the same
+			// `film_gloss_lo`/200000 Phong-exponent band in GGX-alpha terms via
+			// alpha = sqrt(2/(n+2)) (design sec 6.3's own conversion formula),
+			// still keyed on `pooling`, not on `wet` alone (sec 6.3's "thin
+			// film conforms to relief" correction).  `coat_ior` is left at the
+			// chunk's own default (1.33 water, sec 7.2) -- no painter needed
+			// for a literal the descriptor already defaults to.
+			std::string coatWeightFieldName, coatRoughFieldName, coatedMaterialName;
 			if( lambertianBranch ) {
-				tauFieldName = WearMintChunkName_( headDoc, pick->name, "_wettau", minted );
-				if( tauFieldName.empty() ) {
+				coatWeightFieldName = WearMintChunkName_( headDoc, pick->name, "_wetcoatweight", minted );
+				if( coatWeightFieldName.empty() ) {
 					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
 						pick->name + "` -- rename or remove the colliding `" + pick->name +
-						"_wettau*` chunks and retry -- document unchanged";
+						"_wetcoatweight*` chunks and retry -- document unchanged";
 					return out;
 				}
-				minted.push_back( tauFieldName );
-				scatteringFieldName = WearMintChunkName_( headDoc, pick->name, "_wetgloss", minted );
-				if( scatteringFieldName.empty() ) {
+				minted.push_back( coatWeightFieldName );
+				coatRoughFieldName = WearMintChunkName_( headDoc, pick->name, "_wetcoatrough", minted );
+				if( coatRoughFieldName.empty() ) {
 					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
 						pick->name + "` -- rename or remove the colliding `" + pick->name +
-						"_wetgloss*` chunks and retry -- document unchanged";
+						"_wetcoatrough*` chunks and retry -- document unchanged";
 					return out;
 				}
-				minted.push_back( scatteringFieldName );
+				minted.push_back( coatRoughFieldName );
+				coatedMaterialName = WearMintChunkName_( headDoc, pick->name, "_wetcoat", minted );
+				if( coatedMaterialName.empty() ) {
+					out.message = "add_wetness refused: could not derive an unused chunk name from `" +
+						pick->name + "` -- rename or remove the colliding `" + pick->name +
+						"_wetcoat*` chunks and retry -- document unchanged";
+					return out;
+				}
+				minted.push_back( coatedMaterialName );
 			}
 			// One roughness/gloss field PER slot (never one shared between
 			// alphax/alphay) -- see AgentAddWetnessResult::scatteringPainters'
@@ -37071,8 +37256,9 @@ namespace RISE
 			std::vector<std::string> reboundRoughSlots;
 
 			// ---- (4) Rebind the slots (GGX/PBR/Oren-Nayar in-place branches
-			// ONLY -- the Lambertian branch replaces the whole chunk instead,
-			// below, since polished_material is a different KEYWORD).
+			// ONLY -- the Lambertian branch touches NOTHING on the base chunk
+			// at all, item 8: it mints a `coated_material` wrapper and rebinds
+			// bound OBJECTS instead, further below).
 			if( !lambertianBranch ) {
 				const RISE::Cst::NodeId matId = RISE::Cst::DocNodeIdAt( work, pick->itemIndex );
 				if( !matId ) {
@@ -37134,29 +37320,57 @@ namespace RISE
 					return out;
 				}
 			}
+			// Item 8: the Lambertian branch mints its THREE coat chunks --
+			// coat_roughness, coat_weight, coated_material, in that order --
+			// AFTER the base material's own item index, never before: unlike
+			// every other field chunk this verb writes, `coated_material`
+			// NAMES the base material in its own `base` parameter
+			// (`Job::AddCoatedMaterial` resolves `base` by looking it up in
+			// the already-registered material manager, so `base` must be
+			// declared BEFORE the chunk that references it -- forward
+			// reference is not just a style choice here, it fails to parse).
+			// The base chunk itself is never touched, so `pick->itemIndex`
+			// is still valid in `work` at this point (no rebind, no splice,
+			// has landed before it yet). Splicing three times at the SAME
+			// fixed index (`insertAt`) is the same "last call lands first"
+			// trick the rest of this function uses for declare-before-use,
+			// just aimed one slot later and run in reverse order so the
+			// final layout is coat_weight, coat_roughness, coated_material.
 			if( lambertianBranch ) {
+				const int insertAt = pick->itemIndex + 1;
 				{
 					const int before = RISE::Cst::DocItemCount( work );
-					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
-						BuildWetnessScatteringPainterText_( scatteringFieldName, breakupScale, seed ) );
+					work = CollapseSpliceChunkAt_( work, insertAt,
+						BuildWetnessCoatedMaterialText_( coatedMaterialName, pick->name,
+						                                 coatWeightFieldName, coatRoughFieldName ) );
 					if( RISE::Cst::DocItemCount( work ) == before ) {
-						out.message = "add_wetness refused: internal -- the generated `scalar_painter` "
-							"(scattering) chunk did not parse; nothing changed";
-						return out;
-					}
-				}
-				{
-					const int before = RISE::Cst::DocItemCount( work );
-					work = CollapseSpliceChunkAt_( work, pick->itemIndex,
-						BuildWetnessTauPainterText_( tauFieldName, breakupScale, seed ) );
-					if( RISE::Cst::DocItemCount( work ) == before ) {
-						out.message = "add_wetness refused: internal -- the generated `scalar_painter` (tau) "
+						out.message = "add_wetness refused: internal -- the generated `coated_material` "
 							"chunk did not parse; nothing changed";
 						return out;
 					}
 				}
+				{
+					const int before = RISE::Cst::DocItemCount( work );
+					work = CollapseSpliceChunkAt_( work, insertAt,
+						BuildWetnessCoatRoughnessPainterText_( coatRoughFieldName, breakupScale, seed ) );
+					if( RISE::Cst::DocItemCount( work ) == before ) {
+						out.message = "add_wetness refused: internal -- the generated `scalar_painter` "
+							"(coat_roughness) chunk did not parse; nothing changed";
+						return out;
+					}
+				}
+				{
+					const int before = RISE::Cst::DocItemCount( work );
+					work = CollapseSpliceChunkAt_( work, insertAt,
+						BuildWetnessCoatWeightPainterText_( coatWeightFieldName, breakupScale, seed ) );
+					if( RISE::Cst::DocItemCount( work ) == before ) {
+						out.message = "add_wetness refused: internal -- the generated `scalar_painter` "
+							"(coat_weight) chunk did not parse; nothing changed";
+						return out;
+					}
+				}
 			}
-			if( pick->hasReadableColor ) {
+			if( pick->hasReadableColor && !lambertianBranch ) {
 				const int before = RISE::Cst::DocItemCount( work );
 				work = CollapseSpliceChunkAt_( work, pick->itemIndex,
 					BuildWetnessReflectancePainterText_( reflectanceFieldName, pick->baseR, pick->baseG,
@@ -37168,41 +37382,52 @@ namespace RISE
 				}
 			}
 
-			// ---- (6) The Lambertian branch alone REWRITES the material
-			// chunk to `polished_material` -- a different keyword, so this is
-			// a whole-chunk REPLACE (WetnessReplaceChunkAt_), not a param
-			// rebind.  The material's NodeId is stable across every splice
-			// above (inserts never renumber existing NodeIds), so it is
-			// re-resolved to its now-shifted INDEX rather than re-derived.
+			// ---- (6) The Lambertian branch REBINDS every bound object's
+			// `material` reference from the (untouched) base to the newly
+			// minted `coated_material` -- design sec 13 item 8's "strictly
+			// less destructive than the polished rewrite" contract.  Unlike
+			// the old whole-chunk REPLACE, the base material keeps its
+			// ORIGINAL NodeId and name, so this is the one place a
+			// `standard_object`'s (or `csg_object`'s, P2-1) own `material`
+			// slot DOES need re-resolving: it still names `pick->name`, and
+			// that binding is exactly what must move.  `boundObjectNames` is
+			// the scan's own per-material object bucket (WetnessMaterial_'s
+			// doc), captured once at scan time so this loop never re-derives
+			// it.
+			//
+			// P1 fix (2026-09-01 review round): `DocFindByNameAnyRole` with
+			// an EMPTY `roleKindSuffix` counts a bare-name match across
+			// EVERY chunk kind, not just objects -- so a scene using the
+			// routine idiom of naming an object the SAME as its geometry
+			// (34 scenes in this repo alone, e.g.
+			// scenes/Tests/Cameras/film_chunk.RISEscene) hard-refused here
+			// with `occ == 2`, even though the object itself resolves
+			// uniquely.  Passing `"object"` narrows the match to chunks
+			// whose keyword ends in `_object` (`standard_object`,
+			// `csg_object`, `override_object` -- exactly `boundObjectNames`'
+			// own population, so the constraint is exact, not merely a
+			// heuristic narrowing).
+			int rebindObjectCount = 0;
 			if( lambertianBranch ) {
-				const RISE::Cst::NodeId matId = RISE::Cst::DocNodeIdAt( headDoc, pick->itemIndex );
-				if( !matId ) {
-					out.message = "add_wetness refused: internal -- `" + pick->name +
-						"` could not be re-resolved in the document; nothing changed";
-					return out;
-				}
-				const int matIndexNow = RISE::Cst::DocIndexOfNodeId( work, matId, nullptr );
-				if( matIndexNow < 0 ) {
-					out.message = "add_wetness refused: internal -- `" + pick->name +
-						"` was lost while splicing its field chunks; nothing changed";
-					return out;
-				}
-				// P2 (review 2026-08-31): a plain item-COUNT check here is
-				// VACUOUS -- `WetnessReplaceChunkAt_` preserves item count on
-				// BOTH success (one chunk replaced by one chunk) and its own
-				// silent-no-op failure path (an unparseable `chunkText`
-				// returns `doc` UNCHANGED, same count).  Verify the REAL
-				// postcondition instead: the item now AT `matIndexNow` exists
-				// and is actually a `polished_material` chunk.
-				work = WetnessReplaceChunkAt_( work, matIndexNow,
-					BuildWetnessPolishedMaterialText_( pick->name, reflectanceFieldName, tauFieldName,
-					                                   scatteringFieldName ) );
-				const RISE::Cst::NodeRef replaced =
-					RISE::Cst::DocResolveNodeId( work, RISE::Cst::DocNodeIdAt( work, matIndexNow ) );
-				if( !replaced || replaced->kind != RISE::Cst::NodeKind::Chunk || replaced->role != "polished_material" ) {
-					out.message = "add_wetness refused: internal -- the generated `polished_material` chunk "
-						"did not parse; nothing changed";
-					return out;
+				for( const std::string& objName : pick->boundObjectNames ) {
+					int occ = 0;
+					const RISE::Cst::NodeId objId =
+						RISE::Cst::DocFindByNameAnyRole( work, objName, &occ, "object" );
+					if( !objId || occ != 1 ) {
+						out.message = "add_wetness refused: internal -- bound object `" + objName +
+							"` could not be uniquely re-resolved in the document while rebinding it to `" +
+							coatedMaterialName + "`; nothing changed";
+						return out;
+					}
+					work = RISE::Cst::DocSetParamValue( work, objId, "material", 0, coatedMaterialName );
+					const RISE::Cst::NodeRef objRef = RISE::Cst::DocResolveNodeId( work, objId );
+					const std::string bound = RISE::Cst::ParamValueAtOccurrence( objRef, "material", 0 );
+					if( bound.find( coatedMaterialName ) == std::string::npos ) {
+						out.message = "add_wetness refused: internal -- rebinding `material` on `" + objName +
+							"` to `" + coatedMaterialName + "` did not take; document unchanged";
+						return out;
+					}
+					++rebindObjectCount;
 				}
 			}
 
@@ -37258,8 +37483,9 @@ namespace RISE
 					"staged-proposal form (it is ONE composite document swap, not a single chunk edit an "
 					"Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk the field "
 					"painter(s), then propose_patch the rebound slot(s) on `" + pick->name +
-					"` to their names (or, for a Lambertian base, insert_chunk a replacement "
-					"`polished_material` and remove_chunk the old one) -- document unchanged";
+					"` to their names (or, for a Lambertian base, insert_chunk a `coated_material` wrapper "
+					"naming `" + pick->name + "` as `base` and propose_patch each bound object's `material` "
+					"reference to the wrapper's name) -- document unchanged";
 				return out;
 			}
 
@@ -37319,18 +37545,15 @@ namespace RISE
 			out.applied     = commit.applied;
 			out.headVersion = commit.headVersion;
 			if( ResultMutatedDocument_( commit ) ) {
-				out.rewroteToPolished = lambertianBranch;
-				out.reflectanceSlot   = reboundColorSlot.empty() && lambertianBranch && pick->hasReadableColor
-					? std::string( "reflectance" ) : reboundColorSlot;
-				out.reflectancePainter = reflectanceFieldName;
-				out.tauSlot            = lambertianBranch ? std::string( "tau" ) : std::string();
-				out.tauPainter         = tauFieldName;
-				out.scatteringSlots    = lambertianBranch
-					? std::vector<std::string>{ "scattering" }
-					: reboundRoughSlots;
-				out.scatteringPainters = lambertianBranch
-					? std::vector<std::string>{ scatteringFieldName }
-					: roughFieldNames;
+				out.wrappedInCoat      = lambertianBranch;
+				out.coatedMaterial     = lambertianBranch ? coatedMaterialName : std::string();
+				out.coatWeightPainter  = lambertianBranch ? coatWeightFieldName : std::string();
+				out.coatRoughnessPainter = lambertianBranch ? coatRoughFieldName : std::string();
+				out.rebindObjectCount  = lambertianBranch ? rebindObjectCount : 0;
+				out.reflectanceSlot    = reboundColorSlot;
+				out.reflectancePainter = lambertianBranch ? std::string() : reflectanceFieldName;
+				out.scatteringSlots    = lambertianBranch ? std::vector<std::string>() : reboundRoughSlots;
+				out.scatteringPainters = lambertianBranch ? std::vector<std::string>() : roughFieldNames;
 			}
 
 			{
@@ -37354,11 +37577,18 @@ namespace RISE
 							"occlusion/fbm)";
 					}
 					if( lambertianBranch ) {
-						const std::string scatName =
-							out.scatteringPainters.empty() ? std::string() : out.scatteringPainters[0];
-						m += "; rewritten to `polished_material` with tau bound to `" + out.tauPainter +
-							"` (coat coverage, the `wet` mask) and scattering bound to `" + scatName +
-							"` (pooling-keyed gloss)";
+						m += "; the base `" + pick->name + "` chunk itself was left UNTOUCHED and wrapped in a new "
+							"`coated_material` chunk `" + out.coatedMaterial + "` (coat_weight bound to `" +
+							out.coatWeightPainter + "`, the `wet` mask; coat_roughness bound to `" +
+							out.coatRoughnessPainter + "`, the same pooling-keyed gloss band re-expressed as a GGX "
+							"alpha; coat_ior left at the chunk's own 1.33 default) -- " +
+							std::to_string( out.rebindObjectCount ) + " bound object" +
+							( out.rebindObjectCount == 1 ? std::string() : std::string( "s" ) ) +
+							" had their `material` reference moved to `" + out.coatedMaterial +
+							"`. Darkening is no longer a separate painter here: `coated_material`'s own layered "
+							"transport recycles light between the coat and the substrate (design sec 7.1), which "
+							"IS the darkening/saturation effect the old `pow(base, k)` painter approximated -- "
+							"adding one back on top would double-count it";
 					}
 					else if( !out.scatteringPainters.empty() ) {
 						std::string slots;
@@ -37406,8 +37636,9 @@ namespace RISE
 
 			if( ResultMutatedDocument_( commit ) ) {
 				if( !reflectanceFieldName.empty() ) AttributeChunkToActiveElement_( reflectanceFieldName, "expression_painter" );
-				if( !tauFieldName.empty() )         AttributeChunkToActiveElement_( tauFieldName, "scalar_painter" );
-				if( !scatteringFieldName.empty() )  AttributeChunkToActiveElement_( scatteringFieldName, "scalar_painter" );
+				if( !coatWeightFieldName.empty() )  AttributeChunkToActiveElement_( coatWeightFieldName, "scalar_painter" );
+				if( !coatRoughFieldName.empty() )   AttributeChunkToActiveElement_( coatRoughFieldName, "scalar_painter" );
+				if( !coatedMaterialName.empty() )   AttributeChunkToActiveElement_( coatedMaterialName, "coated_material" );
 				for( const std::string& f : roughFieldNames )
 					AttributeChunkToActiveElement_( f, roughColourPipe ? "expression_painter" : "scalar_painter" );
 			}

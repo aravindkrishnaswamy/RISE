@@ -1028,6 +1028,17 @@ namespace
 		const bool hasSheen     = mat.has_sheen;
 		const std::string baseMatName = matName;
 
+		// P3-8 fix (2026-09-01 review round): `clearcoat_factor == 0` (the
+		// glTF default when the extension is present but the factor is
+		// unspecified) means the layer contributes NOTHING -- `coat_weight
+		// 0` is `coated_material`'s own "no coat" case (its descriptor's
+		// own comment).  Treat that as "no clearcoat" at registration-name-
+		// and-wrap-cost time too: importing the base straight under
+		// `matName` (skipping the `coated_material` wrapper and its
+		// `__cc_base` indirection entirely) is strictly cheaper and
+		// produces the identical rendered result.
+		const bool clearcoatContributes = hasClearcoat && (double)mat.clearcoat.clearcoat_factor > 0.0;
+
 		// KHR_materials_unlit: skip the BSDF entirely and treat baseColor
 		// as Lambertian radiant exitance.  RISE has no "BSDF-less" material
 		// class; the closest fit is LambertianLuminaireMaterial wrapping a
@@ -1301,8 +1312,36 @@ namespace
 				anisoRotationStr = buf;
 			}
 
+			// Item 9 (docs/WETNESS_COAT_DESIGN.md sec 13 Phase 2, 2026-09-01):
+			// KHR_materials_clearcoat re-targeted onto `coated_material`.
+			// When clearcoat CONTRIBUTES (P3-8: factor > 0) the PBR base
+			// registers under an INTERMEDIATE name instead of `matName`
+			// directly, so the `coated_material` wrap below can register the
+			// FINAL, downstream-visible name (`matName`) as base + coat.
+			// Every other branch (unlit / transmission / no-clearcoat PBR /
+			// clearcoat-but-factor-zero) keeps registering straight under
+			// `baseMatName` (== matName), byte-identical to before.
+			//
+			// P3-7 (collision on `__cc_base`): NOT bump-on-collision minted
+			// the way `add_wetness`'s own chunk-name minting is -- deliberately,
+			// because `matName` is already guaranteed collision-free by
+			// `Job::ImportGLTFScene`'s own name_prefix-uniqueness enforcement
+			// (a repeated `name_prefix` across `gltf_import` chunks is
+			// refused before any material is registered), so two DIFFERENT
+			// materials can never derive the same `__cc_base` name within one
+			// import.  The only way this name could collide is a hand-
+			// authored chunk in the SAME document that happens to be named
+			// exactly `<prefix>.mat.<idx>__cc_base` -- astronomically
+			// unlikely, and NOT silently accepted if it happens:
+			// `GenericManager::AddItem` refuses (not overwrites) a duplicate
+			// name, so `Job::AddPBRMetallicRoughnessMaterial` below returns
+			// false, `ok` goes false, and the existing "failed to register
+			// material" diagnostic a few lines down fires -- a documented
+			// check via the manager's own collision refusal, not a silent one.
+			const std::string pbrRegisterName = clearcoatContributes ? ( matName + "__cc_base" ) : baseMatName;
+
 			ok = job.AddPBRMetallicRoughnessMaterial(
-				baseMatName.c_str(),
+				pbrRegisterName.c_str(),
 				baseColorPainter.c_str(),
 				metallicPainter.c_str(),
 				roughnessPainter.c_str(),
@@ -1313,43 +1352,127 @@ namespace
 				specularColorPainter.c_str(),
 				anisoFactorStr.c_str(),
 				anisoRotationStr.c_str() );
+
+			// ----- Clearcoat layer, via coated_material -----
+			// glTF clearcoat is a thin dielectric coating over the base PBR
+			// -- exactly `coated_material`'s brief (docs/WETNESS_COAT_DESIGN.md
+			// sec 7.2), and `pbr_metallic_roughness_material` is on its
+			// substrate allowlist (CoatedMaterial::IsSupportedSubstrate).
+			// Mapping: clearcoat_factor -> coat_weight (both [0,1] coverage
+			// fractions); clearcoat IOR is FIXED at 1.5 per the glTF spec
+			// (KHR_materials_clearcoat carries no ior field of its own --
+			// unlike KHR_materials_transmission/ior above, there is nothing
+			// to read).  clearcoat_roughness_factor -> coat_roughness is
+			// SQUARED, not copied verbatim: glTF's roughness factor is a
+			// PERCEPTUAL roughness (the same convention the base
+			// `roughnessFactor` uses, squared internally by
+			// `Job::AddPBRMetallicRoughnessMaterial`'s own `nRoughSq` blend
+			// a few lines above), while `coated_material`'s `coat_roughness`
+			// is directly a GGX ALPHA with no such conversion of its own
+			// (sec 7.2's descriptor: "GGX alpha of the coat lobe") --
+			// passing the perceptual value straight through would silently
+			// render a coat about `sqrt` too rough.  `coat_thickness` /
+			// `coat_absorption` / `coat_tint` stay at their clear-film
+			// defaults: KHR_materials_clearcoat has no absorption or tint
+			// concept, only coverage and roughness.  The three optional
+			// clearcoat textures (base/roughness/normal) are NOT sampled --
+			// uniform factors only, the same scope limit Phase 4 already
+			// accepts for KHR_materials_transmission's texture above.
+			if( ok && clearcoatContributes ) {
+				const cgltf_clearcoat& cc = mat.clearcoat;
+				const double ccWeight = (double)cc.clearcoat_factor;
+				const double ccRoughSq = (double)cc.clearcoat_roughness_factor *
+				                          (double)cc.clearcoat_roughness_factor;
+				char weightStr[32], roughStr[32];
+				std::snprintf( weightStr, sizeof( weightStr ), "%.6f", ccWeight );
+				std::snprintf( roughStr,  sizeof( roughStr ),  "%.6f", ccRoughSq );
+
+				ok = job.AddCoatedMaterial(
+					matName.c_str(),
+					pbrRegisterName.c_str(),
+					weightStr,       // coat_weight <- clearcoat_factor
+					"1.5",           // coat_ior, fixed per glTF spec
+					roughStr,        // coat_roughness <- clearcoat_roughness_factor^2
+					"0.0",           // coat_thickness -- no glTF equivalent, clear film
+					"0.0",           // coat_absorption -- no glTF equivalent, clear film
+					"none" );        // coat_tint -- no glTF equivalent, untinted
+
+				if( cc.clearcoat_texture.texture || cc.clearcoat_roughness_texture.texture ||
+				    cc.clearcoat_normal_texture.texture ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares a clearcoat/clearcoatRoughness/"
+						"clearcoatNormal texture; the clearcoat layer honours only the SCALAR "
+						"clearcoat_factor (%.3f) and clearcoat_roughness_factor (%.3f) -- the "
+						"textures are ignored.  See docs/GLTF_IMPORT.md §15.",
+						matName.c_str(), ccWeight, (double)cc.clearcoat_roughness_factor );
+				}
+			}
 		}
 		if( !ok ) {
 			GlobalLog()->PrintEx( eLog_Error,
-				"GLTFSceneImporter:: failed to register material `%s`", baseMatName.c_str() );
+				"GLTFSceneImporter:: failed to register material `%s`", matName.c_str() );
 			return false;
 		}
 
-		// Layered KHR extensions detected — log once per material so users
-		// know the layer was seen and skipped.  Phase 4 carries the base
-		// material verbatim; Phase 5 will add proper additive layering.
-		if( hasClearcoat ) {
+		// P2-2 fix (2026-09-01 review round): the clearcoat wrap above only
+		// fires inside the PBR `else` branch -- a material that ALSO
+		// declares `unlit` or `KHR_materials_transmission` registers as a
+		// `LambertianLuminaireMaterial` or a `DielectricMaterial` instead,
+		// neither of which is on `coated_material`'s substrate allowlist
+		// (correctly -- coating a luminaire or an already-dielectric
+		// transmissive surface is not a modelled configuration), so
+		// clearcoat is silently dropped for that combination.  This used to
+		// be caught by an UNCONDITIONAL warn-and-skip that fired regardless
+		// of branch; restore the warning specifically for the branches that
+		// can no longer wrap it, so the drop is said rather than silent.
+		// Gated on `clearcoatContributes` (P3-8), not the raw extension
+		// presence -- a `clearcoat_factor == 0` genuinely has nothing to
+		// drop, so warning about it would be noise.
+		if( clearcoatContributes && ( mat.unlit || mat.has_transmission ) ) {
 			GlobalLog()->PrintEx( eLog_Warning,
-				"GLTFSceneImporter:: material `%s` declares KHR_materials_clearcoat "
-				"(factor=%.2f); Phase 4 imports the base PBR only and skips the "
-				"clearcoat layer.  See docs/GLTF_IMPORT.md §13 (Phase 5 candidates).",
-				matName.c_str(), (double)mat.clearcoat.clearcoat_factor );
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_clearcoat (factor=%.2f) "
+				"together with `%s`; the clearcoat layer is skipped -- `coated_material`'s substrate "
+				"allowlist does not accept a %s (coating a %s is not a modelled configuration).  See "
+				"docs/GLTF_IMPORT.md §15.",
+				matName.c_str(), (double)mat.clearcoat.clearcoat_factor,
+				mat.unlit ? "KHR_materials_unlit" : "KHR_materials_transmission",
+				mat.unlit ? "luminaire" : "already-dielectric transmissive surface",
+				mat.unlit ? "luminaire" : "dielectric" );
 		}
+
+		// KHR_materials_sheen -- a retro-reflective grazing lobe, not a
+		// dielectric coat, so `coated_material` genuinely cannot express it
+		// (docs/WETNESS_COAT_DESIGN.md sec 13 item 9's own note: sheen
+		// stays deferred, unlike clearcoat above, on MODELLING grounds, not
+		// scope).  Log once per material so users know the layer was seen
+		// and skipped; the stand-alone `sheen_material` chunk remains the
+		// hand-authored route for fabric.
 		if( hasSheen ) {
 			GlobalLog()->PrintEx( eLog_Warning,
-				"GLTFSceneImporter:: material `%s` declares KHR_materials_sheen; "
-				"Phase 4 imports the base PBR only and skips the sheen layer.  "
-				"Use the standalone `sheen_material` chunk for hand-authored fabric.",
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_sheen; sheen is a "
+				"retro-reflective grazing lobe, not a dielectric coat, so it cannot be expressed "
+				"via `coated_material` (unlike KHR_materials_clearcoat, which now imports onto "
+				"it) -- this layer is skipped.  Use the standalone `sheen_material` chunk for "
+				"hand-authored fabric.  See docs/GLTF_IMPORT.md §15.",
 				matName.c_str() );
 		}
 
-#if 0	// Phase 5 — preserved for the layered-composite work that comes next.
-		// Layered KHR extensions: sheen and clearcoat both add a top
-		// dielectric/cloth layer over the base PBR.  We compose them in
-		// order  base → sheen → clearcoat  via two CompositeMaterial
-		// layers, so the user's view ray hits clearcoat first.  When only
-		// one extension is present, we collapse to a single composite.
-		// `currentBottom` tracks the running "below this layer" material
-		// name as we wrap each layer; the LAST layer registers under
-		// matName so downstream consumers find the composite.
+#if 0	// Sheen composite layering -- deferred, docs/WETNESS_COAT_DESIGN.md
+		// sec 13 item 9: `coated_material` cannot express sheen (a retro-
+		// reflective grazing lobe is a different physical object from a
+		// transparent dielectric film), so this stays on `CompositeMaterial`
+		// pending either a dedicated layered-sheen primitive or a measured
+		// need to revisit `CompositeMaterial`'s own known deficiencies
+		// (docs/PHYSICALLY_BASED_PIPELINE_PLAN.md).  Preserved for that
+		// future work rather than deleted -- it was reviewed and functional
+		// for the sheen-only case before this note was added.  `baseMatName`
+		// below is what the sheen composite would wrap; if this is ever
+		// re-enabled alongside clearcoat it needs to consume
+		// `pbrRegisterName`/`matName` instead, matching the coated_material
+		// wrap above rather than the old dual-CompositeMaterial stack.
 		std::string currentBottom = baseMatName;
 		const std::string nLayerZero = PainterName( prefix, "layer_zero", matIdx );
-		if( hasClearcoat || hasSheen ) {
+		if( hasSheen ) {
 			const double zero[3] = { 0.0, 0.0, 0.0 };
 			job.AddUniformColorPainter( nLayerZero.c_str(), zero, "Rec709RGB_Linear" );
 		}
@@ -1387,11 +1510,7 @@ namespace
 				sheenColorPainter.c_str(),
 				nShRough.c_str() );
 
-			// Final layer-output name: matName if no clearcoat above,
-			// otherwise an intermediate name for clearcoat to consume.
-			const std::string sheenComposite = hasClearcoat
-				? matName + "__sheen_layer"
-				: matName;
+			const std::string sheenComposite = matName;
 			// CompositeMaterial recursion limits + thickness mirror the
 			// committed clearcoat reference scene (composite_material.RISEscene)
 			// which is the only existing usage pattern and was tuned to
@@ -1409,67 +1528,7 @@ namespace
 				nLayerZero.c_str() );
 			currentBottom = sheenComposite;
 		}
-
-		// ----- Clearcoat layer -----
-		// glTF clearcoat: thin dielectric coating with its own roughness.
-		// CompositeMaterial(top=clearcoat_GGX, bottom=currentBottom) — the
-		// random walk in CompositeSPF propagates rays through the clearcoat
-		// layer, into whatever's below (sheen or base), then back out.
-		// Clearcoat has no diffuse; F0 = 0.04 (standard dielectric) scaled
-		// by clearcoat_factor so factor = 0 disables the layer.  Roughness
-		// is squared to match the GGX α convention.  The glTF optional
-		// clearcoatTexture / clearcoatRoughnessTexture / clearcoatNormalTexture
-		// are documented but not yet wired (uniform factors only — Phase 5).
-		if( hasClearcoat ) {
-			const cgltf_clearcoat& cc = mat.clearcoat;
-			const double ccFactor   = (double)cc.clearcoat_factor;
-			const double ccRoughSq  = (double)cc.clearcoat_roughness_factor *
-			                          (double)cc.clearcoat_roughness_factor;
-
-			// rs = factor * 0.04   (Schlick F0; factor scales coverage)
-			const std::string nCcF0 = PainterName( prefix, "cc_f0", matIdx );
-			const double f0[3] = { 0.04 * ccFactor, 0.04 * ccFactor, 0.04 * ccFactor };
-			job.AddUniformColorPainter( nCcF0.c_str(), f0, "Rec709RGB_Linear" );
-
-			// α = roughness^2
-			const std::string nCcAlpha = PainterName( prefix, "cc_alpha", matIdx );
-			const double alpha[3] = { ccRoughSq, ccRoughSq, ccRoughSq };
-			job.AddUniformColorPainter( nCcAlpha.c_str(), alpha, "Rec709RGB_Linear" );
-
-			// IOR / extinction unused in Schlick mode but required by the API.
-			const std::string nCcIor = PainterName( prefix, "cc_ior", matIdx );
-			const double ior[3] = { 1.5, 1.5, 1.5 };
-			job.AddUniformColorPainter( nCcIor.c_str(), ior, "Rec709RGB_Linear" );
-
-			// Top layer GGX in Schlick-from-F0 mode.  Diffuse = zero (shared
-			// across all layered extensions, lives in nLayerZero above).
-			const std::string nCcTop = baseMatName + "__cc_top";
-			job.AddGGXMaterial( nCcTop.c_str(),
-				nLayerZero.c_str(),
-				nCcF0.c_str(),
-				nCcAlpha.c_str(),
-				nCcAlpha.c_str(),
-				nCcIor.c_str(),
-				nLayerZero.c_str(),
-				"schlick_f0" );
-
-			job.AddCompositeMaterial(
-				matName.c_str(),
-				nCcTop.c_str(),
-				currentBottom.c_str(),
-				/*max_recur*/                  5,
-				/*max_reflection_recursion*/   3,
-				/*max_refraction_recursion*/   3,
-				/*max_diffuse_recursion*/      3,
-				/*max_translucent_recursion*/  3,
-				/*thickness*/                  0.5,
-				nLayerZero.c_str() );
-			currentBottom = matName;
-		}
-#endif	// Phase 5 layered-material guard
-
-		(void)hasClearcoat;
-		(void)hasSheen;
+#endif	// Sheen composite layering guard
 
 		// Optional normal-map modifier.
 		if( mat.normal_texture.texture ) {

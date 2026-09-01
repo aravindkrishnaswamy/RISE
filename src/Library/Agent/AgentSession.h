@@ -6591,38 +6591,49 @@ namespace RISE
 				std::string message;
 
 				std::string material;        //!< the material now made wet
-				std::string materialKind;    //!< its chunk keyword BEFORE the call (a Lambertian base reports "lambertian_material" even though the commit rewrites it to "polished_material" -- see `rewroteToPolished`)
-				bool        rewroteToPolished = false;   //!< true iff a Lambertian base was rewritten into a `polished_material` (empty `materialKind` reporting stays the pre-image kind; the document now holds `polished_material`)
+				std::string materialKind;    //!< its chunk keyword (the Lambertian branch does NOT rewrite it -- see `wrappedInCoat`)
+
+				//! Item 8 (2026-08-31, coated_material re-target): true iff a
+				//! Lambertian base was WRAPPED -- the original chunk is left
+				//! byte-for-byte untouched, a new `coated_material` chunk
+				//! (`coatedMaterial`) is minted with `base` naming it, and
+				//! every bound object's `material` reference is rebound to the
+				//! new chunk (`rebindObjectCount` of them).  Renamed from the
+				//! Phase 1 `rewroteToPolished`, which no longer describes what
+				//! happens: nothing is rewritten any more, `materialKind`
+				//! keeps reporting the true current kind of `material` itself.
+				bool        wrappedInCoat = false;
+
+				//! Populated only when `wrappedInCoat` is true.
+				std::string coatedMaterial;         //!< name of the minted `coated_material` chunk
+				std::string coatWeightPainter;      //!< its `coat_weight` scalar_painter (the `wet` mask straight through)
+				std::string coatRoughnessPainter;   //!< its `coat_roughness` scalar_painter (the pooling-keyed gloss band, re-expressed as a GGX alpha -- sec 6.3)
+				int         rebindObjectCount = 0;  //!< how many bound objects' `material` slot was moved to `coatedMaterial`
 
 				//! The reflectance/darkening half -- an `expression_painter`
 				//! mixing toward `pow(base, k)` under the `damp` mask.  Empty
 				//! `reflectanceSlot` means this half was SKIPPED: either the
 				//! material is metallic and was named explicitly (§6.4 clause 1,
-				//! `isMetallic` true), or the commit did not land.
+				//! `isMetallic` true), the branch is the Lambertian coat wrap
+				//! (`wrappedInCoat` true -- `coated_material`'s own layered
+				//! transport performs the darkening now, sec 7.1, so a second
+				//! painter here would double-count it), or the commit did not
+				//! land.
 				std::string reflectanceSlot;
 				std::string reflectancePainter;
 
-				//! The coat-coverage half -- `polished_material`'s `tau`, a
-				//! `scalar_painter` reading the `wet` mask.  Populated ONLY on
-				//! the Lambertian->polished_material branch: GGX/PBR bases have
-				//! no separate coat lobe in Phase 1 (§6.2's in-place branch is
-				//! roughness modulation, not a film), and Oren-Nayar bases get
-				//! damp-only (no coat at all, §6.2).
-				std::string tauSlot;
-				std::string tauPainter;
-
-				//! The gloss/roughness half.  On the Lambertian branch this is
-				//! `polished_material`'s `scattering` (one `scalar_painter`
-				//! keyed on `pooling`; `scatteringSlots`/`scatteringPainters`
-				//! each hold exactly one entry).  On the GGX/PBR in-place
-				//! branch this is `alphax`+`alphay` (GGX) or `roughness`
-				//! (PBR-MR, an `expression_painter` -- §6.2's colour-pipe
-				//! trap) -- ONE painter PER slot (parallel arrays), not one
-				//! shared painter across both GGX slots: sharing one field
-				//! would flatten an authored alphax!=alphay anisotropy even at
-				//! `dryness=1` (fully dry), not only where sec 6.2's caveat
-				//! says wetness legitimately destroys it.  Empty on the Oren-
-				//! Nayar branch (damp-only, no microsurface touch at all).
+				//! The gloss/roughness half of the GGX/PBR IN-PLACE branch
+				//! ONLY (§6.2's stopgap, unchanged by item 8): `alphax`+
+				//! `alphay` (GGX) or `roughness` (PBR-MR, an
+				//! `expression_painter` -- §6.2's colour-pipe trap) -- ONE
+				//! painter PER slot (parallel arrays), not one shared painter
+				//! across both GGX slots: sharing one field would flatten an
+				//! authored alphax!=alphay anisotropy even at `dryness=1`
+				//! (fully dry), not only where sec 6.2's caveat says wetness
+				//! legitimately destroys it.  Empty on the Lambertian coat-wrap
+				//! branch (its gloss half is `coatRoughnessPainter` instead)
+				//! and on the Oren-Nayar branch (damp-only, no microsurface
+				//! touch at all).
 				std::vector<std::string> scatteringSlots;
 				std::vector<std::string> scatteringPainters;
 
@@ -6650,14 +6661,26 @@ namespace RISE
 				int boundObjects        = 0;   //!< how many standard_objects bind the chosen material -- §6.9 item 14's blast-radius figure
 			};
 
-			//! docs/WETNESS_COAT_DESIGN.md Phase 1 (§5 Track 1, §6, §13): rewrite
-			//! ONE qualifying material into the census-precedented two-mask
-			//! (`damp`/`wet`) wetness composition -- darkened/saturated
-			//! reflectance, a coat-coverage `tau` and a pooling-keyed gloss for a
-			//! Lambertian base rewritten to `polished_material`; in-place
-			//! roughness + reflectance modulation for a GGX/PBR base (no new
-			//! material class); darkening only for an Oren-Nayar base; coat/
-			//! gloss only, no darkening, for an explicitly-named metallic base.
+			//! docs/WETNESS_COAT_DESIGN.md Phase 1 (§5 Track 1, §6, §13) + Phase 2
+			//! item 8 (§13, 2026-08-31): apply the two-mask (`damp`/`wet`)
+			//! wetness composition to ONE qualifying material -- for a
+			//! Lambertian base, WRAP it: the original chunk is left byte-for-
+			//! byte untouched, a new `coated_material` chunk is minted with
+			//! `base` naming it, `coat_weight` bound to the `wet` mask and
+			//! `coat_roughness` to a pooling-keyed gloss band (re-expressed in
+			//! GGX-alpha terms, §6.3), and every bound object's `material`
+			//! reference is moved to the new chunk -- strictly less
+			//! destructive than Phase 1's `polished_material` rewrite, and
+			//! with no separate darkening painter: `coated_material`'s own
+			//! layered transport performs the recycling-driven darkening
+			//! (§7.1), so a `pow(base, k)` painter on top would double-count
+			//! it.  For a GGX/PBR base: in-place roughness + reflectance
+			//! modulation (no new material class, §6.2's stopgap, UNCHANGED by
+			//! item 8). Darkening only for an Oren-Nayar base (§6.2's damp-only
+			//! branch, also UNCHANGED by item 8 -- evaluated for the same
+			//! coat-wrap re-target and declined for this slice on scope; see
+			//! the design doc's item 8 note). Coat/gloss only, no darkening,
+			//! for an explicitly-named metallic base.
 			//!
 			//! SHARES ONE QUALIFYING PREDICATE with design-note condition P
 			//! (DESIGN_DRY_RAIN_SCENE) -- `WetnessMaterial_`'s clauses, read by

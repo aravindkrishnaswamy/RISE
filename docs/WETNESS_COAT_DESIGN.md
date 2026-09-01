@@ -2382,6 +2382,92 @@ still a real justification, just a different one, owned by a different roadmap).
    ([GLTFSceneImporter.cpp:1341-1469](../src/Library/Importers/GLTFSceneImporter.cpp))
    against the new material.
 
+**AMENDED (2026-09-01) — items 8-9 shipped.** Item 8: `add_wetness`'s
+Lambertian branch now WRAPS the qualifying material in a new
+`coated_material` chunk (`coat_weight` <- the `wet` mask unchanged,
+`coat_roughness` <- the pooling-keyed gloss band re-expressed as a GGX
+alpha via `sqrt(2/(n+2))`, `coat_ior` left at the descriptor default
+1.33) rather than rewriting it to `polished_material` -- the base chunk
+is left byte-for-byte untouched and every bound object's `material`
+reference is moved to the wrapper.  The reflectance/darkening painter
+(`pow(base,k)`) is DROPPED entirely for this branch, per this section's
+own 7.1 reasoning -- the coat's layered transport performs the
+darkening, so a second painter on top would double-count it; the
+`add_wear` cross-exclusion and condition P's self-disarm were both
+re-derived to detect "named as `base` by an existing `coated_material`
+chunk" as well as the old "own colour slot reads the prelude" test,
+since a coat-wrapped Lambertian no longer trips the latter.  The GGX/
+PBR in-place branch and the Oren-Nayar damp-only branch are UNCHANGED
+(re-targeting Oren-Nayar was evaluated and declined for this slice on
+scope -- same code path, same result shape, but doubles the test-
+surface this slice already touches; a clean follow-up).  Item 9: glTF
+`KHR_materials_clearcoat` now imports onto `coated_material` over the
+PBR base (`clearcoat_factor` -> `coat_weight`, `clearcoat_roughness_
+factor` SQUARED -> `coat_roughness`, `coat_ior` fixed at 1.5 per spec);
+sheen stays deferred on MODELLING grounds (a retro-reflective grazing
+lobe is not expressible via a dielectric coat), not composition ones.
+Both re-verified: `AgentAddWetnessTest` (198/198, all four branches +
+refusals + the new coat-wrap collision cases), `AgentAddWearTest`
+(285/285), `CoatedMaterialChunkTest` (64/64), `AgentSkillsTest`
+(596/596, the wetness snippet re-authored to the coated shape),
+`GLTFClearcoatImportTest` (new, 10/10) against a hand-authored
+`ClearcoatQuad.gltf` fixture, zero-warning clean build.  `tidepools.
+RISEscene` (`polished_material`) and `composite_material.RISEscene`
+render clean and unchanged (neither code path was touched this slice).
+
+**`hwss=true` vs `hwss=false` convergence check, corrected 2026-09-01.**
+An earlier draft of this entry read a single 48 spp full-image ratio
+(1.013, 1.014, 1.019) as "within MC noise" without checking whether it
+actually shrinks with sample count -- the diagnostic that distinguishes
+real MC noise from a converged bias.  Re-measured at both 48 and 256
+spp, full-image mean radiance on this section's own `coated_material.
+RISEscene` under the spectral rasterizer (`ExrRegionCompareTest`,
+independent of the RGB pel path):
+
+| | 48 spp ratio (hwss=T/F) | 256 spp ratio (hwss=T/F) |
+|---|---|---|
+| coated (this scene, as shipped) | (1.012, 1.014, 1.022) | (0.996, 1.006, 1.013) |
+| dry control (all four spheres rebound to `mat_dry`, no coat) | (1.013, 1.013, 1.019) | (0.995, 1.007, 1.012) |
+
+The residual SHRINKS by roughly the factor plain Monte Carlo averaging
+predicts (spp x5.3 -> noise / sqrt(5.3) = /2.3; observed shrink is
+~1.7-3x per channel) rather than holding fixed, so for THIS scene the
+`hwss` discrepancy reads as ordinary MC noise, not the converged
+spectral-bundle bias PT_ENV_MIS_DOUBLECOUNT.md's Session 13 entry
+documents for uniform/env-dominated scenes -- this scene is neither
+(direct + ambient lighting, no environment dome).  The coated and dry
+controls are statistically indistinguishable from each other at both
+sample counts, so `coated_material` neither narrows nor widens
+whatever residual is present here.  (A 2026-09-01 review round's own
+pass at this same check reported different figures -- (0.98, 1.01,
+1.02) converged, coated narrowing a larger (0.996, 1.022, 1.033)
+control -- that this re-measurement, run against the same committed
+scene and the same tool, does not reproduce; recorded as an open
+discrepancy for whoever picks this up next to reconcile, rather than
+silently overwritten in either direction.)  The exit gate's `hwss=true
+== hwss=false` invariant is satisfied either way -- both readings agree
+the discrepancy is small and shrinks or stays small with more samples,
+not a first-order effect.
+
+**NOT done**: the zero-P1 adversarial review round this exit gate's own
+last clause calls for -- this slice's brief was items 8-9 plus the
+exit-gate numeric checks specifically, not the full review loop; treat
+the gate as open until that round runs.
+
+**MIXING coat_roughness IN ALPHA-SPACE IS AN ADJUDICATED IMPROVEMENT
+OVER PHASE 1, not a pure re-expression (2026-09-01).**  `coat_roughness`
+mixes `sqrt(2/(film_gloss_lo+2))` and `sqrt(2/200002)` DIRECTLY (alpha-
+space), not `film_gloss_lo` and `200000` first with a single conversion
+applied after (n-space) -- `sqrt(2/(n+2))` is convex in `n`, so the two
+orders are not equivalent.  At this section's own "pooled cavity"
+worked example (sec 6.3, `clamp(pooling*wet,0,1) = 0.85`): n-space-
+then-convert gives alpha ~= 0.0034, OUTSIDE sec 2.2's pooled band
+(0.01-0.05) on the sharp side -- the "wet asphalt looks like plastic"
+failure this whole field exists to avoid; the shipped alpha-space mix
+gives alpha ~= 0.017, INSIDE the pooled band.  A future edit that
+"simplifies" this expression back toward n-space mixing would silently
+reintroduce that failure.
+
 **Exit gate:** clean warning-free build on both toolchains; the new furnace
 configurations in **`kPosturePass`** where their composite counterparts are
 `kPostureKnownFailure` — the direct numeric claim against a shipped baseline —
