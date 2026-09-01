@@ -4811,12 +4811,19 @@ it was already tried and refuted here.
   boundary. The terminal verifier covers the complete public payload, including
   every stage projection, flux, limiter, nonpressure rate, EOS temperature,
   target, diagnostic, nested topology/schedule metadata, and exact source
-  packet, and publication remains retryable after an injected copy failure.
+  packet. A fresh authority review found that direct aggregate assignment could
+  partially mutate the caller on allocation failure. The amended publication
+  path deep-copies into a private temporary, injects failure after the first
+  payload copy, proves the caller is wholly default on refusal, and commits both
+  internal and external publications only through statically non-throwing moves;
+  the owner remains retryable after that refusal.
   Result consumption requires the expected sealed source, so an intact prior
   attempt refuses. REDs cover stale candidate, stale coefficient payload with
   current echoes, forged parent, stage order, closed constant mode, mutations
   of pressure/stage velocity/alpha/EOS temperature and nested metadata, the
-  live `Begin` working-set refusal, every projection-validation branch, an
+  live `Begin` working-set refusal, every projection-validation branch including
+  canonical cycle members in both R0/R1 and R2, exact refusal diagnostics plus
+  state-preserving retry for stale/order/forged cases, an
   exercised two-class cycle, the nonuniform r59 selected-alpha path, and atomic
   retry. Active-set least-discrepancy selection reprojects every cycle member
   against one current target, applies the configured velocity deadband, and
@@ -4845,7 +4852,7 @@ it was already tried and refuted here.
   and wall positive-zero checks inspect the complete binary64 word. Metal execution
   remains unclaimed on this host. The r136 source-bound trace digest moves from
   the historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-  to `a74cba22a6db8030796553711691078b92a9a1e1319cf6d4bff5d4693cfed6cb`.
+  to `c6bee4af83dff8a62dc65ae4c45051259b9bd055d8eecabb2579bf64b52be29f`.
   This is a manifest re-derivation, not a numerical re-baseline: the encoding
   prefixes the Transport/Force source hashes, and a detached build of
   `0e70f17f1` reproduces the historical digest and exit 237 while the reviewed

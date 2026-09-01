@@ -3338,7 +3338,9 @@ int main()
 		(sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
 			"48be718bf8f012dc82fd6a8d7ce6744e0e826469c26a63c07c49b21ba8e1934e"||
 		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
-			"e9e0e6e40ea51686a4f34e57ea0ae4102408986c2dc8221dd89ca9ca99c32a79")&&
+			"e9e0e6e40ea51686a4f34e57ea0ae4102408986c2dc8221dd89ca9ca99c32a79"||
+		sourceSHA("tests/FireProductionDyadicCalibrationFixture.h")==
+			"edfb22639f8dac34e0d6f66d021b5b6f4c9ece83fff848e81c1ac2a8b00b326e")&&
 		sourceSHA("tests/FireProductionRoundoffWalker.h")==
 			"22259ff8367aeb73ac5b73d8a282b23f18c61d545ca99cad14d856f9e40a4378"&&
 		compatibleMomentumEvidenceV2.find("sequence_test_sha256 "
@@ -3389,7 +3391,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"234e4f3b85fe85efd1ddfe1bc72c5cb139f6a34b3555cbd58e9e02bee0863a5f"&&
+			"fc31e7d09a14b2ab542edf2f180e9ad90a58e2847bdc19fb2fe9cd3da433a078"&&
 		projectedHeunLiveBinding.find("schema rise.fire.production.projected_heun_bootstrap.live_binding.v1\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("immutable_evidence_sha256 "
 			"425f7e27414fd5ba41e826c71d1ea556e6b29aa205c7447bdc8fc5594275859d\n")!=
@@ -3412,7 +3414,7 @@ int main()
 			"src/Library/Utilities/FireSequence.cpp")+"\n")!=std::string::npos&&
 		projectedHeunOwnerLiveBinding.find("owner rendered/fire_production_calibration/"
 			"r190_projected_heun_owner/r136_trace_repin_evidence.v1 sha256 "
-			"625623c132806506352affdfa4aa7aa0faca161de36832a91bf05ec271500f54\n")!=
+			"22c81b75db8959408f0745bb239b2442c508cc404b4e97bd84e174c56b2ccb2b\n")!=
 			std::string::npos&&
 		liveOwnerBound("src/Library/Utilities/FireProductionTransport.h",
 			"258b92cf142d609c9247942906710233cc52921795cc264f3efc8e4c47ce669e")&&
@@ -7452,18 +7454,33 @@ int main()
 
 	RISE::FireProductionProjectedHeunCPUOwner outOfOrderOwner;
 	RISE::FireProductionProjectedHeunOwnerResult refusedOwnerResult;
-	const bool outOfOrderRejected=outOfOrderOwner.Begin(ownerRequest,&error)&&
+	const bool outOfOrderBegun=outOfOrderOwner.Begin(ownerRequest,&error);
+	const bool outOfOrderR1Rejected=outOfOrderBegun&&
 		!outOfOrderOwner.SolveR1(ownerTransport,&error)&&
-		!outOfOrderOwner.SolveR2(ownerTransport,refusedOwnerResult,&error);
+		error=="projected-Heun R1 is out of order";
+	const bool outOfOrderR2Rejected=outOfOrderR1Rejected&&
+		!outOfOrderOwner.SolveR2(ownerTransport,refusedOwnerResult,&error)&&
+		error=="projected-Heun R2 is out of order";
+	const bool outOfOrderRejected=outOfOrderR2Rejected&&
+		outOfOrderOwner.SolveR0(ownerTransport,&error);
 	ForgedProjectedHeunTransport32 staleOwnerTransport(true),forgedOwnerTransport(false);
 	ReplayedProjectedHeunTransport32 replayedOwnerTransport;
 	RISE::FireProductionProjectedHeunCPUOwner staleOwner,forgedOwner,replayedOwner;
-	const bool staleCandidateRejected=staleOwner.Begin(ownerRequest,&error)&&
-		!staleOwner.SolveR0(staleOwnerTransport,&error);
-	const bool forgedLineageRejected=forgedOwner.Begin(ownerRequest,&error)&&
-		!forgedOwner.SolveR0(forgedOwnerTransport,&error);
-	const bool replayedPayloadRejected=replayedOwner.Begin(ownerRequest,&error)&&
-		!replayedOwner.SolveR0(replayedOwnerTransport,&error);
+	const bool staleCandidateRejectedCore=staleOwner.Begin(ownerRequest,&error)&&
+		!staleOwner.SolveR0(staleOwnerTransport,&error)&&
+		error=="projected-Heun transport publication lineage differs";
+	const bool staleCandidateRejected=staleCandidateRejectedCore&&
+		staleOwner.SolveR0(ownerTransport,&error);
+	const bool forgedLineageRejectedCore=forgedOwner.Begin(ownerRequest,&error)&&
+		!forgedOwner.SolveR0(forgedOwnerTransport,&error)&&
+		error=="projected-Heun transport publication lineage differs";
+	const bool forgedLineageRejected=forgedLineageRejectedCore&&
+		forgedOwner.SolveR0(ownerTransport,&error);
+	const bool replayedPayloadRejectedCore=replayedOwner.Begin(ownerRequest,&error)&&
+		!replayedOwner.SolveR0(replayedOwnerTransport,&error)&&
+		error=="projected-Heun transport publication payload differs";
+	const bool replayedPayloadRejected=replayedPayloadRejectedCore&&
+		replayedOwner.SolveR0(ownerTransport,&error);
 	const auto r0ProjectionValidationRejected=[&](const char* failure){
 		RISE::FireProductionProjectedHeunCPUOwner validationOwner;
 		const bool injected=setOwnerFailure(failure);
@@ -7796,6 +7813,24 @@ int main()
 		error.find("canonical active class validation")!=std::string::npos;
 	const bool selectedCycleValidationRejected=setOwnerFailure(0)&&
 		selectedCycleValidationRejectedCore;
+	RISE::FireProductionProjectedHeunCPUOwner r2CycleValidationOwner;
+	RISE::FireProductionProjectedHeunOwnerResult r2CycleValidationResult;
+	const bool r2CycleValidationPrepared=
+		r2CycleValidationOwner.Begin(differentialRequest,&error)&&
+		r2CycleValidationOwner.SolveR0(differentialTransport,&error)&&
+		r2CycleValidationOwner.SolveR1(differentialTransport,&error);
+	const bool r2CycleValidationInjected=setOwnerFailure(
+		"active-cycle-r2,projection-validation-selected-cycle");
+	const bool r2CycleValidationRejectedCore=r2CycleValidationPrepared&&
+		r2CycleValidationInjected&&
+		!r2CycleValidationOwner.SolveR2(differentialTransport,
+			r2CycleValidationResult,&error)&&
+		error=="projected-Heun R2 canonical active class validation failed";
+	const bool r2CycleValidationRejected=setOwnerFailure(0)&&
+		r2CycleValidationRejectedCore;
+	if(!r2CycleValidationRejected)std::fprintf(stderr,
+		"r190 R2 selected-cycle RED: prepared=%u injected=%u error=%s\n",
+		r2CycleValidationPrepared?1u:0u,r2CycleValidationInjected?1u:0u,error.c_str());
 	RISE::FireProductionProjectedHeunCPUOwner biasedCycleOwner;
 	RISE::FireProductionProjectedHeunOwnerResult biasedCycleResult;
 	const bool biasedCycleInjected=setOwnerFailure(
@@ -7817,13 +7852,49 @@ int main()
 		error.find("candidate lineage")!=std::string::npos;
 	const bool staleCorrectionReset=setOwnerFailure(0);
 	RISE::FireProductionProjectedHeunCPUOwner atomicOwner;
-	RISE::FireProductionProjectedHeunOwnerResult atomicResult;
+	RISE::FireProductionProjectedHeunOwnerResult atomicResult=ownerResult;
+	const auto axesEmpty=[](const std::array<std::vector<float>,3>& axes){
+		return axes[0].empty()&&axes[1].empty()&&axes[2].empty();
+	};
+	const auto bytesEmpty=[](const std::array<std::vector<unsigned char>,6>& sides){
+		for(const std::vector<unsigned char>& side:sides)if(!side.empty())return false;
+		return true;
+	};
+	const auto stageDefault=[&](const RISE::FireProductionProjectedHeunCoupledStageResult& stage){
+		return static_cast<unsigned int>(stage.stage)==0u&&
+			stage.parentCandidateIdentity==0u&&stage.acceptedCandidateIdentity==0u&&
+			stage.acceptedIterationCount==0u&&stage.picardResidualPerS.empty()&&
+			stage.target.TargetIdentity()==0u&&!stage.target.IsSealed()&&
+			stage.projection.pressurePa.empty()&&
+			axesEmpty(stage.projection.faceDensityKGPerM3)&&
+			axesEmpty(stage.projection.velocityMPerS)&&
+			axesEmpty(stage.projection.momentumKGPerM2S)&&
+			bytesEmpty(stage.projection.pressureOpenInflow)&&
+			stage.flux.compositeFluxPair.lowFlux.empty()&&
+			stage.flux.compositeFluxPair.fluxDelta.empty()&&
+			stage.scalarAcceptance.accepted.empty()&&
+			stage.nonpressure.eddyKinematicViscosityM2PerS.empty();
+	};
+	const auto ownerResultDefault=[&](const RISE::FireProductionProjectedHeunOwnerResult& value){
+		return value.conservativeValues.empty()&&axesEmpty(value.momentumKGPerM2S)&&
+			axesEmpty(value.velocityMPerS)&&value.stepAveragePressurePa.empty()&&
+			!value.predictorEOS.accepted&&value.predictorEOS.temperatureK.empty()&&
+			value.predictorEOS.acceptanceIdentity==0u&&!value.committedEOS.accepted&&
+			value.committedEOS.temperatureK.empty()&&
+			value.committedEOS.acceptanceIdentity==0u&&
+			value.averagedFlux.compositeFluxPair.lowFlux.empty()&&
+			value.averagedFlux.compositeFluxPair.fluxDelta.empty()&&
+			value.averagedFlux.compositionIdentity==0u&&
+			value.heunSolve.scalar.accepted.empty()&&value.heunSolve.alphaIdentity==0u&&
+			stageDefault(value.r0)&&stageDefault(value.r1)&&stageDefault(value.r2)&&
+			value.sourcePacketIdentity==0u&&value.ownerIdentity==0u&&!value.accepted;
+	};
 	const bool atomicPrepared=atomicOwner.Begin(ownerRequest,&error)&&
 		atomicOwner.SolveR0(ownerTransport,&error)&&atomicOwner.SolveR1(ownerTransport,&error);
-	const bool atomicInjected=setOwnerFailure("result-copy");
+	const bool atomicInjected=setOwnerFailure("result-copy-mid");
 	const bool atomicFailure=atomicPrepared&&atomicInjected&&
 		!atomicOwner.SolveR2(ownerTransport,atomicResult,&error)&&
-		!atomicResult.accepted;
+		error=="projected-Heun R2 allocation failed"&&ownerResultDefault(atomicResult);
 	const bool atomicReset=setOwnerFailure(0);
 	const bool atomicRetry=atomicFailure&&atomicOwner.SolveR2(ownerTransport,atomicResult,&error)&&
 		RISE::FireProductionProjectedHeunOwnerResultMatches(atomicResult,ownerSource);
@@ -7834,7 +7905,8 @@ int main()
 		"r190 owner refuses stale payload/lineage, preserves order, and retries atomic publication");
 	Check(initialValidationRejected&&iterativeValidationRejected&&
 		terminalValidationRejected&&r2ValidationRejected&&r2BootstrapRetry&&
-		selectedCycleValidationRejected&&workingSetAdmissionRejected,
+		selectedCycleValidationRejected&&r2CycleValidationRejected&&
+		workingSetAdmissionRejected,
 		"r190 owner behaviorally refuses every projection-validation path and its live-set preflight");
 	Check(limiterDiscontinuousAccepted,
 		"r190 nonuniform owner revalidates the r59 selected alpha through r60 and compatible commuting identity");
@@ -7851,13 +7923,13 @@ int main()
 		"r136_trace_repin_evidence.v1");
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 		projectedHeunOwnerEvidence.begin(),projectedHeunOwnerEvidence.end()))==
-			"c7e860316d2a942f6731f54a9b2110d09262b545608cb5665de2412d3e267897"&&
+			"041a6df600b5622c4a4519eaebcf7236aaa2c736d69cce01e1d66f69360d98ca"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunMetalManifest.begin(),projectedHeunMetalManifest.end()))==
 			"67a1531ecef0ae0a0f08749e210d5c47f81389dba3617f4e3842a8df81517c6b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunR136Repin.begin(),projectedHeunR136Repin.end()))==
-			"625623c132806506352affdfa4aa7aa0faca161de36832a91bf05ec271500f54"&&
+			"22c81b75db8959408f0745bb239b2442c508cc404b4e97bd84e174c56b2ccb2b"&&
 		projectedHeunOwnerEvidence.find("r70_authority public false\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find("red_stale_projection_identity true\n")!=
@@ -7876,7 +7948,7 @@ int main()
 			"red_r59_independent_r60_and_commuting_recompute true\n")!=
 			std::string::npos&&
 		projectedHeunOwnerEvidence.find(
-			"r136_live_trace_digest a74cba22a6db8030796553711691078b92a9a1e1319cf6d4bff5d4693cfed6cb\n")!=
+			"r136_live_trace_digest c6bee4af83dff8a62dc65ae4c45051259b9bd055d8eecabb2579bf64b52be29f\n")!=
 			std::string::npos&&
 		projectedHeunR136Repin.find(
 			"historical_exit_code 237\n")!=std::string::npos&&

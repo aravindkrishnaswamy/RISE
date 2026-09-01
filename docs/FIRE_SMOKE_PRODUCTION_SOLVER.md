@@ -5239,10 +5239,13 @@ payload with current echoes, forged parent, closed constant-mode compatibility,
 stale whole-result replay against a different sealed source attempt, result
 mutation, the actual `Begin` combined-live-set refusal, every initial/iterative/
 terminal/R2 bootstrap/endpoint projection-validation branch, validation of
-every selected-cycle reprojection, an exercised two-class active cycle with
+every selected-cycle reprojection in both the coupled R0/R1 path and R2, an
+exercised two-class active cycle with
 distinguishable discrepancies, an exercised nonuniform r59 selected-alpha path,
-and retry
-after an injected result-publication allocation failure. The final verifier
+and retry after an injected mid-publication allocation failure. The caller's
+result remains the complete default publication until a separate deep copy has
+finished; committing the internal and external publications then uses
+compile-time-proven non-throwing moves. The final verifier
 binds every public owner payload: conservative state, final and stage momentum,
 velocity and pressure, both EOS publications, fluxes, limiter state,
 nonpressure rates, targets, diagnostics, all nested shapes/timesteps/boundaries,
@@ -5276,7 +5279,7 @@ bounds roundoff over state, targets, momentum, velocity, pressure, and alpha.
 No Metal run is
 claimed. The r136 diagnostic's source-bound trace digest is re-derived from
 historical `19371e6ef60fb1c78e6feeb0616b5952993ee375a7b9f7d97afd16b544182326`
-to `a74cba22a6db8030796553711691078b92a9a1e1319cf6d4bff5d4693cfed6cb`.
+to `c6bee4af83dff8a62dc65ae4c45051259b9bd055d8eecabb2579bf64b52be29f`.
 The digest encoding prefixes the Transport/Force source manifest, so the owner
 change must change this digest. A detached build at `0e70f17f1` and the current
 build both return the exact diagnostic success code 237; all 3,972,326 branch

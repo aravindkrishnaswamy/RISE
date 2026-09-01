@@ -16,6 +16,7 @@
 #include <fstream>
 #include <limits>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 namespace RISE
@@ -1757,6 +1758,27 @@ namespace RISE
 			return false;
 		}
 
+		void CopyOwnerResultForPublication(
+			const FireProductionProjectedHeunOwnerResult& source,
+			FireProductionProjectedHeunOwnerResult& destination )
+		{
+			destination.conservativeValues=source.conservativeValues;
+			if(OwnerTestFailure("result-copy-mid"))throw std::bad_alloc();
+			destination.momentumKGPerM2S=source.momentumKGPerM2S;
+			destination.velocityMPerS=source.velocityMPerS;
+			destination.stepAveragePressurePa=source.stepAveragePressurePa;
+			destination.predictorEOS=source.predictorEOS;
+			destination.committedEOS=source.committedEOS;
+			destination.averagedFlux=source.averagedFlux;
+			destination.heunSolve=source.heunSolve;
+			destination.r0=source.r0;
+			destination.r1=source.r1;
+			destination.r2=source.r2;
+			destination.sourcePacketIdentity=source.sourcePacketIdentity;
+			destination.ownerIdentity=source.ownerIdentity;
+			destination.accepted=source.accepted;
+		}
+
 		bool EmptyOwnerStageArrays(const FireProductionProjectedHeunOwnerRequest& request)
 		{
 			if(!request.scalarContract.beginning.empty()||
@@ -2808,6 +2830,9 @@ namespace RISE
 		const FireProductionProjectedHeunTransportProvider& provider,
 		FireProductionProjectedHeunOwnerResult& result,std::string* error)
 	{
+		static_assert(std::is_nothrow_move_assignable<
+			FireProductionProjectedHeunOwnerResult>::value,
+			"projected-Heun publication commit must not throw");
 		result=FireProductionProjectedHeunOwnerResult();
 		if(state_!=State::R1Complete)return Fail(error,
 			"projected-Heun R2 is out of order");
@@ -2963,6 +2988,16 @@ namespace RISE
 					projected.validationPassed=false;
 				if(!projected.validationPassed)return Fail(error,
 						"projected-Heun R2 projection validation failed");
+				if(OwnerTestFailure("active-cycle-r2")){
+					projected.pressureOpenInflow=active;
+					for(unsigned int side=0u;side<6u;++side)if(
+						request_.scalarContract.boundary[side]==
+							FireProductionProjectionPressureOpen&&
+						!projected.pressureOpenInflow[side].empty()){
+						projected.pressureOpenInflow[side][0u]=static_cast<unsigned char>(
+							projected.pressureOpenInflow[side][0u]^1u);break;
+					}
+				}
 				activeTrajectoryMaximum=std::max(activeTrajectoryMaximum,
 					OwnerOpenClassDiscrepancy(shape,request_.scalarContract.boundary,
 						projected.pressureOpenInflow,projected.velocityMPerS,
@@ -3038,9 +3073,10 @@ namespace RISE
 			const char* publicationFailure=std::getenv(
 				"RISE_FIRE_PROJECTED_HEUN_OWNER_TEST_FAILURE");
 			if(publicationFailure&&std::strcmp(publicationFailure,"result-copy")==0)
-				return Fail(error,"injected projected-Heun publication allocation failure");
-			result=completed;
-			work_=std::move(completed);state_=State::Complete;
+				throw std::bad_alloc();
+			FireProductionProjectedHeunOwnerResult publication;
+			CopyOwnerResultForPublication(completed,publication);
+			work_=std::move(completed);result=std::move(publication);state_=State::Complete;
 			if(error)error->clear();return true;
 		} catch(const std::bad_alloc&){return Fail(error,
 			"projected-Heun R2 allocation failed");}
