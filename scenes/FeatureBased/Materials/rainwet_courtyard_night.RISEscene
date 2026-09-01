@@ -1,0 +1,766 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                            #
+#   File:           rainwet_courtyard_night.RISEscene                                                       #
+#   Description:    PHASE-1 HERO SCENE for the wetness workstream (docs/WETNESS_COAT_DESIGN.md) -- a         #
+#                    rain-wet nighttime courtyard vignette: pooled joints, damp flats, dry crowns on a       #
+#                    part-based sdf_geometry paver ground; a low wall with a real self-concave overhang      #
+#                    sheltering a deliberately DRY paver alcove; a hand-recipe-wetted bollard shown SIDE     #
+#                    BY SIDE with the verb-wetted ground; a lantern post as the one warm practical light;    #
+#                    a geometry-level puddle (tidepools idiom) mirroring the lantern down the "road".        #
+#                                                                                                            #
+#                    DOGFOODING NOTE: the ground's wetness composition (the `mat_ground_pavers_wetcoat*`     #
+#                    chunks below) was authored by literally RUNNING `add_wetness` on `mat_ground_pavers`    #
+#                    via a small standalone driver (AgentSession::WrapJob + AddWetness, the                  #
+#                    tests/AgentAddWetnessTest.cpp idiom) against a DRY staging scene, then hand-tuning      #
+#                    the emitted params for hero quality -- see the "HAND-TUNED FROM VERB DEFAULTS" comment  #
+#                    below the coat chunks for exactly which params moved and why.  Since Phase 2 shipped    #
+#                    (item 8, 2026-08-31) the verb WRAPS the base material in a `coated_material` chunk       #
+#                    rather than rewriting it to `polished_material` -- the original `mat_ground_pavers`     #
+#                    chunk below is untouched, and every darkening/saturation you see on the ground comes    #
+#                    from `coated_material`'s own layered transport (design sec 7.1), not a painter.  The    #
+#                    bollard uses the OLDER Phase-1 hand recipe instead (an expression_painter darkening     #
+#                    toward pow(base,k) feeding a polished_material) specifically to show both wetness       #
+#                    shapes in one frame -- see its own comment block.                                       #
+#                                                                                                             #
+#                    Geometry: ground is ONE part-based sdf_geometry patch, 4x4 roundbox pavers (per         #
+#                    docs/WETNESS_COAT_DESIGN.md sec 6.5/6.8's scale trap: occlusion(0.08)'s radius is a     #
+#                    FRACTION of this patch's OWN bbox diagonal (~3.06), so 0.08 -> an absolute query        #
+#                    radius of ~0.24 units against a ~0.08-unit paver gap and a ~0.56-unit pitch -- inside   #
+#                    the calibration band from rainwet_cobbles.RISEscene's own worked example).  The dry     #
+#                    alcove is a SEPARATE 2-paver sdf_geometry bound to its OWN untouched lambertian_material #
+#                    (mat_alcove_pavers) so add_wetness's ground rebind never reaches it -- this is the      #
+#                    "authored mask" route from sec 6.5's caveat list ("dry under an overhang" needs         #
+#                    self-concavity OR an authored mask; RISE has no cross-object AO, so the wall's real     #
+#                    self-concave overhang is a VISUAL cue only -- the alcove's dryness is authored           #
+#                    explicitly by simply never wetting that material, not derived from occlusion()).        #
+#                                                                                                             #
+#                    Rendered under the default pathtracing_pel_rasterizer, oidn_denoise FALSE (wetness      #
+#                    highlights are exactly the sharp near-deterministic feature OIDN is measured to         #
+#                    inflate, per skills/agent/materials-and-media-basics.md's wetness section).              #
+#                                                                                                             #
+#   Author:         RISE contributors                                                                        #
+#   Birthdate:      2026-09-01                                                                                #
+#                                                                                                             #
+#############################################################################################################
+
+##################################################
+# Renderer -- default PT, no denoise.
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_sky
+	color	0.018 0.026 0.042
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				96
+	pixel_filter			box
+	oidn_denoise			FALSE
+	radiance_map			pnt_sky
+	radiance_background		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rainwet_courtyard_night
+	type				EXR
+	color_space			Rec709RGB_Linear
+	exr_compression			piz
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/rainwet_courtyard_night
+	type				PNG
+	bpp				8
+	color_space			sRGB
+	exposure			0.0
+	display_transform		aces
+}
+
+##################################################
+# Film + Camera -- low, close, down the wet path
+# so pooled joints, damp flats and dry crowns all
+# read in one frame, with the puddle streak
+# receding toward the lantern.
+##################################################
+
+film
+{
+	width		640
+	height		360
+}
+
+pinhole_camera
+{
+	location	0.0 0.52 0.95
+	lookat		-0.20 0.05 -1.35
+	up		0 1 0
+	fov		64.0
+}
+
+##################################################
+# SUPERVISOR FIX (whole-frame #2): with nothing under or beyond the
+# paver patch, the joints and everything past the grid showed the flat
+# navy sky background straight through -- the pavers read as floating
+# islands and the courtyard just stopped.  A large dark wet-ground
+# slab (well past the framed area in every direction) now sits just
+# below the pavers' own base (y=0, so top=-0.005 avoids z-fighting the
+# paver bottoms) and the puddle is sunk into it (see the puddle
+# comment below).  A low, dim, distant wall silhouette breaks the
+# horizon so the midground doesn't cut straight to sky.
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_ground_slab
+	color	0.062 0.056 0.050
+}
+
+lambertian_material
+{
+	name		mat_ground_slab
+	reflectance	pnt_ground_slab
+}
+
+box_geometry
+{
+	name		geo_ground_slab
+	width		24
+	height		0.06
+	depth		24
+}
+
+standard_object
+{
+	name		obj_ground_slab
+	geometry	geo_ground_slab
+	material	mat_ground_slab
+	position	0 -0.035 -1.5
+}
+
+uniformcolor_painter
+{
+	name	pnt_far_wall
+	color	0.020 0.020 0.026
+}
+
+lambertian_material
+{
+	name		mat_far_wall
+	reflectance	pnt_far_wall
+}
+
+box_geometry
+{
+	name		geo_far_wall
+	width		14
+	height		0.85
+	depth		0.30
+}
+
+standard_object
+{
+	name		obj_far_wall
+	geometry	geo_far_wall
+	material	mat_far_wall
+	position	0 0.40 -6.2
+}
+
+##################################################
+# Ground pavers -- one part-based sdf_geometry
+# patch, 4x4 roundbox pavers (hard union, k=0, so
+# the joints stay genuine self-concavities).
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_paver
+	color	0.40 0.37 0.33
+}
+
+lambertian_material
+{
+	name		mat_ground_pavers
+	reflectance	pnt_paver
+}
+
+# ---- Wetness composition, captured verbatim from a real add_wetness()
+# call (see the driver note in the header) then hand-tuned.  See
+# "HAND-TUNED FROM VERB DEFAULTS" below for the full before/after table.
+scalar_painter
+{
+	name			mat_ground_pavers_wetcoatweight
+	param			dryness 0.05 min 0 max 1 step 0.01 label "Dryness"
+	param			pool_gain 2.10 min 0 max 4 step 0.05 label "Pooling in cavities"
+	param			ridge_shed 2.60 min 0 max 6 step 0.1 label "Ridges shed water"
+	param			base_wetness 0.60 min 0 max 1 step 0.01 label "Overall wetness"
+	param			gravity_bias 0.80 min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount 1.00 min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp 0.14 min 0 max 1 step 0.01 label "Mask breakup"
+	param			breakup_scale 6.0 min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			6.81482
+	def				jitter vec3(seed, seed*1.7, seed*2.3)
+	def				up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def				gravity mix(1.0, up_facing, gravity_bias)
+	def				cavity (1.0 - occlusion(0.08)) * gravity
+	def				pooling clamp(pool_gain*cavity, 0, 1)
+	def				ridge clamp(curv * ridge_shed, 0, 1)
+	def				breakup breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def				damp_raw clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def				damp (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def				wet clamp(damp * film_amount, 0, damp)
+	expression		wet
+}
+
+scalar_painter
+{
+	name			mat_ground_pavers_wetcoatrough
+	param			dryness 0.05 min 0 max 1 step 0.01 label "Dryness"
+	param			pool_gain 2.10 min 0 max 4 step 0.05 label "Pooling in cavities"
+	param			ridge_shed 2.60 min 0 max 6 step 0.1 label "Ridges shed water"
+	param			base_wetness 0.60 min 0 max 1 step 0.01 label "Overall wetness"
+	param			gravity_bias 0.80 min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount 1.00 min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp 0.14 min 0 max 1 step 0.01 label "Mask breakup"
+	param			breakup_scale 6.0 min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			6.81482
+	def				jitter vec3(seed, seed*1.7, seed*2.3)
+	def				up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def				gravity mix(1.0, up_facing, gravity_bias)
+	def				cavity (1.0 - occlusion(0.08)) * gravity
+	def				pooling clamp(pool_gain*cavity, 0, 1)
+	def				ridge clamp(curv * ridge_shed, 0, 1)
+	def				breakup breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def				damp_raw clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def				damp (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def				wet clamp(damp * film_amount, 0, damp)
+	expression		mix( sqrt(2.0/(film_gloss_lo+2.0)), sqrt(2.0/200002.0), clamp(pooling * wet, 0, 1) )
+}
+
+coated_material
+{
+	name			mat_ground_pavers_wetcoat
+	base			mat_ground_pavers
+	coat_weight		mat_ground_pavers_wetcoatweight
+	coat_roughness		mat_ground_pavers_wetcoatrough
+}
+
+# ---- HAND-TUNED FROM VERB DEFAULTS (all nine shared params moved as a
+# UNIT across both coat chunks, sec 6.1's byte-identical-prelude rule):
+#   dryness       0.15 -> 0.05   hero wants a freshly-rained street, not
+#                                one already starting to dry off
+#   base_wetness  0.55 -> 0.60   push the uniform flat-paver baseline up
+#                                so the damp read is unmistakable at a
+#                                glance, not just in the joints
+#   pool_gain     1.60 -> 2.10   decisive mirror-black joints (matches
+#                                rainwet_cobbles.RISEscene's own tuning)
+#   ridge_shed    2.20 -> 2.60   stronger dry-crown contrast against the
+#                                pooled joints -- the wet/dry legibility
+#                                the brief asks for
+#   film_gloss_lo 220  -> 260    slightly glossier damp flats so the
+#                                un-pooled paver tops still catch the
+#                                lantern, not just the joints
+#   breakup_amp   0.18 -> 0.14   calmer mask edges at hero framing
+#                                distance (rainwet_cobbles' value)
+#   breakup_scale 5.29 -> 6.0    verb auto-derives this by hashing the
+#                                material name; retuned to the paver
+#                                patch's own scale (bbox diagonal ~3.06,
+#                                vs. the cobble patch's ~2.23) so the
+#                                breakup wavelength reads at paver size
+#   gravity_bias, film_amount, seed: left at verb defaults (0.80, 1.00,
+#                                and the material-hashed 6.81482) -- no
+#                                hero-specific reason to move them
+#   occlusion(0.08): left LITERAL and unmoved -- already lands in the
+#                                calibration band for this patch's own
+#                                bbox (sec 6.5's "a few times the gap,
+#                                under half the pitch" rule; see header)
+
+sdf_geometry
+{
+	name	geo_ground_pavers
+	part	roundbox union 0  -0.84  0.035  -0.40   0 -2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.28  0.038  -0.42   0  3 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.28  0.033  -0.39   0 -4 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.84  0.036  -0.41   0  2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.84  0.037  -0.96   0  4 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.28  0.034  -0.94   0 -3 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.28  0.036  -0.98   0  2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.84  0.033  -0.95   0 -2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.84  0.036  -1.52   0  3 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.28  0.037  -1.50   0 -4 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.28  0.034  -1.54   0  2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.84  0.035  -1.51   0 -3 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.84  0.033  -2.08   0 -2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -0.28  0.036  -2.06   0  4 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.28  0.037  -2.10   0 -3 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0   0.84  0.034  -2.07   0  2 0   1 1 1   0.235 0.030 0.235   0.015
+}
+
+standard_object
+{
+	name		obj_ground_pavers
+	geometry	geo_ground_pavers
+	material	mat_ground_pavers_wetcoat
+	position	0 0 0
+}
+
+##################################################
+# Dry alcove pavers -- SEPARATE untouched material
+# (mat_alcove_pavers), never seen by add_wetness,
+# sheltered under the wall's overhang below.  This
+# is the "authored mask" route: RISE has no cross-
+# object AO (sec 6.5), so this dryness is an
+# explicit authoring choice, not a derived signal.
+#
+# REVIEW FIX (P1b): a same-albedo dry patch under
+# this scene's actual light levels measured only an
+# 8% linear-luma gap against the adjacent wet ground
+# -- well short of legible.  Two honest levers, used
+# together: (1) `light_alcove_fill` below gives the
+# alcove its own judgeable light level (the design
+# doc's sec 6.5 explicitly allows this when a dry
+# patch needs to be judgeable at all); (2) the
+# alcove's OWN albedo is bumped a bit lighter/dustier
+# than the ground's `pnt_paver` -- a long-dry, never-
+# rained-on stone reads visibly lighter/chalkier than
+# the same stone rain-darkened by the coat's Fresnel-
+# recycling transport (sec 2.1), so this is a second
+# independently-motivated physical difference, not a
+# fudge stacked only to pass a number.
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_paver_dry_alcove
+	color	0.53 0.50 0.45
+}
+
+lambertian_material
+{
+	name		mat_alcove_pavers
+	reflectance	pnt_paver_dry_alcove
+}
+
+sdf_geometry
+{
+	name	geo_alcove_pavers
+	part	roundbox union 0  -1.10  0.035  -0.05   0  2 0   1 1 1   0.235 0.030 0.235   0.015
+	part	roundbox union 0  -1.10  0.036  -0.61   0 -3 0   1 1 1   0.235 0.030 0.235   0.015
+}
+
+standard_object
+{
+	name		obj_alcove_pavers
+	geometry	geo_alcove_pavers
+	material	mat_alcove_pavers
+	position	0 0 0
+}
+
+##################################################
+# Low wall with an overhanging coping cap -- real
+# self-concavity where the cap's underside meets
+# the wall's face (a genuine inside corner an SDF
+# occlusion() query would read as enclosed).
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_wall
+	color	0.30 0.29 0.27
+}
+
+lambertian_material
+{
+	name		mat_wall
+	reflectance	pnt_wall
+}
+
+sdf_geometry
+{
+	name	geo_wall
+	part	box union 0  -1.55  0.55  -1.05   0 0 0   1 1 1   0.12 0.55 0.62   0
+	part	box union 0  -1.46  1.14  -1.05   0 0 0   1 1 1   0.20 0.06 0.68   0
+}
+
+standard_object
+{
+	name		obj_wall
+	geometry	geo_wall
+	material	mat_wall
+	position	0 0 0
+}
+
+##################################################
+# Bollard -- cylinder shaft, a SUBTRACTED torus
+# collar (real carved concavity), a domed cap.
+# Hand-recipe wetted with the OLDER Phase-1 shape
+# (design sec 6.5): an expression_painter darkening
+# toward pow(base,k) under the `damp` mask, feeding
+# a polished_material -- shown side by side with the
+# ground's coated_material wrap on purpose.
+##################################################
+
+# ---- Phase-1 hand recipe (docs/WETNESS_COAT_DESIGN.md sec 6.5), typed
+# by hand rather than emitted by add_wetness, to show the two wetness
+# shapes side by side in one frame.  Prelude is byte-identical across
+# all three chunks below (sec 6.1's mechanism), tuned slightly rounder/
+# glossier than the ground for a smaller, more sheltered object.
+scalar_painter
+{
+	name			bollard_wet
+	param			dryness       0.10  min 0 max 1 step 0.01 label "Dryness"
+	param			base_wetness  0.50  min 0 max 1 step 0.01 label "Overall wetness"
+	param			pool_gain     2.00  min 0 max 4 step 0.05 label "Pooling"
+	param			ridge_shed    2.80  min 0 max 6 step 0.1  label "Crowns shed"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.12  min 0 max 1 step 0.01 label "Breakup"
+	param			breakup_scale 12.0  min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			2
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.10)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expression		wet
+}
+
+scalar_painter
+{
+	name			bollard_gloss
+	param			dryness       0.10  min 0 max 1 step 0.01 label "Dryness"
+	param			base_wetness  0.50  min 0 max 1 step 0.01 label "Overall wetness"
+	param			pool_gain     2.00  min 0 max 4 step 0.05 label "Pooling"
+	param			ridge_shed    2.80  min 0 max 6 step 0.1  label "Crowns shed"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.12  min 0 max 1 step 0.01 label "Breakup"
+	param			breakup_scale 12.0  min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			2
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.10)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expression		mix(film_gloss_lo, 200000.0, clamp(pooling * wet, 0, 1))
+}
+
+expression_painter
+{
+	name			bollard_albedo
+	param			k             1.55  min 1 max 2.5 step 0.05 label "Wet exponent"
+	param			base_r        0.33  min 0 max 1 step 0.01 label "Base R"
+	param			base_g        0.31  min 0 max 1 step 0.01 label "Base G"
+	param			base_b        0.29  min 0 max 1 step 0.01 label "Base B"
+	param			dryness       0.10  min 0 max 1 step 0.01 label "Dryness"
+	param			base_wetness  0.50  min 0 max 1 step 0.01 label "Overall wetness"
+	param			pool_gain     2.00  min 0 max 4 step 0.05 label "Pooling"
+	param			ridge_shed    2.80  min 0 max 6 step 0.1  label "Crowns shed"
+	param			gravity_bias  0.80  min 0 max 1 step 0.01 label "Water needs up-facing"
+	param			film_amount   1.00  min 0 max 1 step 0.01 label "Film vs merely damp"
+	param			film_gloss_lo 260.0 min 60 max 400 step 5 label "Damp-film gloss (Phong n)"
+	param			breakup_amp   0.12  min 0 max 1 step 0.01 label "Breakup"
+	param			breakup_scale 12.0  min 0.1 max 40 step 0.1 label "Breakup scale"
+	seed			2
+	def			jitter    vec3(seed, seed*1.7, seed*2.3)
+	def			up_facing clamp(dot(N, vec3(0,1,0)), 0, 1)
+	def			gravity   mix(1.0, up_facing, gravity_bias)
+	def			cavity    (1.0 - occlusion(0.10)) * gravity
+	def			pooling   clamp(pool_gain*cavity, 0, 1)
+	def			ridge     clamp(curv * ridge_shed, 0, 1)
+	def			breakup   breakup_amp * (fbm(P*breakup_scale + jitter, 4, 0.5, 2.0) - 0.5)
+	def			damp_raw  clamp(base_wetness + pooling + breakup - ridge, 0, 1)
+	def			damp      (1.0 - dryness) * smoothstep(0.0, 1.0, damp_raw)
+	def			wet       clamp(damp * film_amount, 0, damp)
+	expr			mix( vec3(base_r, base_g, base_b), vec3(pow(base_r,k), pow(base_g,k), pow(base_b,k)), damp )
+}
+
+polished_material
+{
+	name			mat_bollard_wet
+	reflectance		bollard_albedo
+	tau			bollard_wet
+	ior			1.33
+	scattering		bollard_gloss
+}
+
+sdf_geometry
+{
+	name	geo_bollard
+	part	cylinder union    0  0.80 0.28 -0.60   0 0 0   1 1 1   0.09 0.28 0     0
+	part	torus    subtract 0  0.80 0.48 -0.60   0 0 0   1 1 1   0.09 0.028 0    0
+	part	sphere   union    0  0.80 0.58 -0.60   0 0 0   1 1 1   0.10 0 0       0
+}
+
+standard_object
+{
+	name		obj_bollard
+	geometry	geo_bollard
+	material	mat_bollard_wet
+	position	0 0 0
+}
+
+##################################################
+# Lantern post -- dry dark metal pole + base plate
+# + the warm practical bulb (shape_light).
+##################################################
+
+uniformcolor_painter
+{
+	name	pnt_post
+	color	0.045 0.045 0.05
+}
+
+lambertian_material
+{
+	name		mat_post
+	reflectance	pnt_post
+}
+
+cylinder_geometry
+{
+	name		geo_post
+	axis		y
+	radius		0.035
+	height		1.30
+}
+
+standard_object
+{
+	name		obj_post
+	geometry	geo_post
+	material	mat_post
+	position	0.65 0.65 -1.60
+}
+
+box_geometry
+{
+	name		geo_post_cap
+	width		0.16
+	height		0.03
+	depth		0.16
+}
+
+standard_object
+{
+	name		obj_post_cap
+	geometry	geo_post_cap
+	material	mat_post
+	position	0.65 1.315 -1.60
+}
+
+shape_light
+{
+	name		light_lantern_bulb
+	shape		sphere
+	center		0.65 1.41 -1.60
+	size		0.085
+	color		1.0 0.72 0.42
+	exitance	550
+}
+
+##################################################
+# Geometry-level puddle -- flat dielectric surface
+# in the ground's central gutter (tidepools idiom,
+# sec 6.8): a real mirror, catching the lantern
+# down the "road" per sec 2.2's opening image.
+##################################################
+
+dielectric_material
+{
+	name			water_puddle
+	tau			0.93 0.96 0.985
+	ior			1.33
+	scattering		20000.0
+}
+
+# Positioned in the open foreground gutter, just short of the nearest
+# paver row -- NOT arbitrarily: for a perfectly flat mirror, the image
+# of a light source at height y_L reflects at the single point where
+# the camera-to-mirrored-source line crosses the water plane, and for
+# THIS camera (0,0.52,0.95 -> -0.20,0.05,-1.35) and THIS lantern
+# (0.65,1.41,-1.60) that point is (x=0.12, z=0.28) -- solved by hand
+# from the mirrored-source construction (reflect the lantern through
+# the puddle's y-plane, then intersect the camera-to-mirrored-lantern
+# ray with that plane).  A puddle centred mid-grid (the geometrically
+# obvious "in the gutter between rows" placement tried first) misses
+# that point entirely and reads as a dark, reflection-less hole -- the
+# specular glint only lands here.  Sized generously around the solved
+# point so the reflection survives small re-tunes of camera/lantern.
+#
+# REVIEW FIX (P3): a single ellipsoid reads as a stamped, too-perfect
+# circle in silhouette.  Three overlapping flattened superellipsoid
+# lobes (smin blend, k=0.06) around the same solved reflection point
+# give an organic puddle outline instead, at zero photometric change.
+#
+# SUPERVISOR FIX (whole-frame #1): at the ORIGINAL y=0.020 centre /
+# 0.020 half-height, the puddle's rounded top read as a domed glass
+# mound rising visibly off the ground -- especially once the new
+# ground slab below gave the eye a flat reference to judge it against.
+# Sunk and flattened to match the tidepools idiom (a squashed y-thin
+# disk): half-height 0.010 (was 0.020), centre y=-0.006 (was 0.020),
+# so the crown sits at y=+0.004 -- a hair above the new ground slab's
+# y=-0.005 top -- and the belly (down to y=-0.016) is buried inside
+# the slab, invisible, instead of showing as a curved dielectric edge.
+# The reflection-point math above shifts with the lower mirror plane
+# (y_p=0.004 now, not 0.020): re-solved to (x=0.17, z=0.27), still
+# comfortably inside this footprint's generous envelope.
+# part fields: prim op k  px py pz  exDeg eyDeg ezDeg  sx sy sz  a b c  round
+# -- <sx sy sz> is the PRE-TRANSFORM scale; with a=1 b=1 c=1 (unit-radius,
+# true-ellipsoid exponents) it becomes the three lobe radii directly.
+sdf_geometry
+{
+	name	geo_puddle
+	part	superellipsoid smin  0.06   0.10  -0.006  0.12    0 0 0   0.30 0.010 0.34   1 1 1   0
+	part	superellipsoid smin  0.06   0.27  -0.006  0.00    0 0 0   0.19 0.010 0.23   1 1 1   0
+	part	superellipsoid smin  0.06  -0.06  -0.006  0.28    0 0 0   0.17 0.010 0.19   1 1 1   0
+}
+
+standard_object
+{
+	name		obj_puddle
+	geometry	geo_puddle
+	material	water_puddle
+	position	0 0 0
+}
+
+##################################################
+# Lights -- one warm practical (the lantern bulb
+# above), a LOW second practical ("path light",
+# review-fix P1a) positioned so its flat-mirror
+# reflection point lands ON the pooled paver joints
+# (same reflect-through-the-plane construction as
+# the puddle comment above: y_cam=0.52, y_paver=
+# 0.065 (paver top), y_L=0.15 -> t=0.843 ->
+# z_r=-1.03, x_r=0.30 -- squarely inside the
+# mid-grid joint band the review measured), a small
+# warm accent lighting the bollard directly
+# (review-fix P1c), a subtle overhead fill on the
+# dry alcove so its higher (unwetted) reflectance
+# actually reads brighter than the coated ground
+# (review-fix P1b), one dim cool "moonlight" fill
+# from overhead, and a very dim cool ambient sky.
+#
+# CURATOR FIX (P2-a): the three practicals above used to be bare
+# emitter spheres -- the only fixture that read as a real object was
+# the lantern (post + cap + bulb).  Each now gets minimal dark-metal
+# HOUSING geometry, built from the same sdf_geometry part idiom as the
+# bollard/wall/lantern-cap, reusing `mat_post` (no new material chunk):
+# a recessed collar+puck for the path light, a second short bollard-
+# lamp (the lantern-post idiom scaled ~1/4) beside the main bollard,
+# and a wall-mounted sconce box flush against the alcove wall's own
+# face (x=-1.43, the wall body's actual right edge -- the emitter used
+# to sit in open air well in front of it, which is what read as a
+# square pasted onto the wall texture).  Each emitter is repositioned
+# to nest against its housing and re-tuned so the P1 legibility numbers
+# hold (see the header comment's iteration log for the before/after).
+##################################################
+
+sdf_geometry
+{
+	name	geo_pathlight_housing
+	part	cylinder union 0    0.00 0.075 -1.20   0 0 0   1 1 1   0.045 0.018 0       0.006
+	part	torus    union 0    0.00 0.100 -1.20   0 0 0   1 1 1   0.032 0.009 0       0
+}
+
+standard_object
+{
+	name		obj_pathlight_housing
+	geometry	geo_pathlight_housing
+	material	mat_post
+	position	0 0 0
+}
+
+shape_light
+{
+	name		light_path_raker
+	shape		sphere
+	center		0.00 0.125 -1.20
+	size		0.020
+	color		1.0 0.78 0.52
+	exitance	52
+}
+
+sdf_geometry
+{
+	name	geo_bollard_lamp
+	part	cylinder union 0    0.93 0.200 -0.65   0 0 0   1 1 1   0.018 0.135 0       0.004
+	part	box      union 0    0.93 0.343 -0.65   0 0 0   1 1 1   0.030 0.010 0.030   0
+}
+
+standard_object
+{
+	name		obj_bollard_lamp
+	geometry	geo_bollard_lamp
+	material	mat_post
+	position	0 0 0
+}
+
+shape_light
+{
+	name		light_bollard_accent
+	shape		sphere
+	center		0.93 0.395 -0.65
+	size		0.014
+	color		1.0 0.82 0.60
+	exitance	220
+}
+
+sdf_geometry
+{
+	name	geo_alcove_sconce
+	part	box union 0    -1.395 0.550 -0.33   0 0 0   1 1 1   0.035 0.045 0.060   0.006
+}
+
+standard_object
+{
+	name		obj_alcove_sconce
+	geometry	geo_alcove_sconce
+	material	mat_post
+	position	0 0 0
+}
+
+shape_light
+{
+	name		light_alcove_fill
+	shape		sphere
+	center		-1.33 0.49 -0.33
+	size		0.014
+	color		0.95 0.90 0.82
+	exitance	650
+}
+
+rect_light
+{
+	name		light_moon_fill
+	center		0.0 2.6 -1.0
+	size		2.4 2.4
+	facing		0.15 -1.0 -0.25
+	color		0.55 0.65 0.85
+	exitance	4.0
+}

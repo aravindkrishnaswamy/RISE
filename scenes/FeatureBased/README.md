@@ -132,7 +132,14 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   `occlusion`/`curv` so the coat survives in the recess and wears off handled edges,
   and a wet/dry stone pair whose darkening+saturation come purely from the layered
   transport's per-wavelength recycling -- no `pow(base,k)` anywhere; the wet gleam
-  needed a small hard raking light, the documented soft-light-on-mirror-lobe lesson)
+  needed a small hard raking light, the documented soft-light-on-mirror-lobe lesson;
+  `rainwet_courtyard_night.RISEscene`, the Phase-1 hero: a paver courtyard wetted by
+  driving the real `add_wetness` verb (coat-wrap emission, params hand-tuned from the
+  emitted min/max) beside a hand-recipe-wetted bollard showing both wetness shapes,
+  an authored-dry sheltered alcove (cross-object AO does not exist -- the dryness is
+  an authored material choice, said so in-scene), a sunk flat puddle placed by the
+  mirror reflection-point construction so it catches the lantern, and three housed
+  practicals -- every light in frame has fixture geometry)
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
