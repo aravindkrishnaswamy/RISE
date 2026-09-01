@@ -1465,6 +1465,145 @@ namespace RISE
 				return out;
 			}
 
+			//! CSG_OPERAND_REBASE's classification helper.  One post-derive
+			//! finding: a named csg_object whose OWN chunk position/orientation
+			//! is non-identity AND at least one operand is already transformed,
+			//! plus whether its own chunk acknowledges the rebase via
+			//! `allow_transformed_operands TRUE`.  Deliberately NOT shared with
+			//! NullGeometryEmitterFinding / CollectNullGeometryEmitters_ above --
+			//! the two diagnostics flag different chunk defects (emitter-with-
+			//! no-geometry vs dual-transformed-halves) and key off different
+			//! tests; folding them into one struct/walk would just be an `if`
+			//! fork wearing one name.  See AgentDiagnosticCode::CSG_OPERAND_REBASE
+			//! (AgentDiagnostic.h) for the full acknowledgment contract and why
+			//! this diagnostic is Warning-tier ONLY, with no paired creation gate.
+			struct RebasedOperandCsgFinding
+			{
+				std::string name;
+				bool        acknowledged = false;
+			};
+
+			//! AgentSession.cpp's own copy of `Job::AddCSGObject`'s file-local
+			//! `IsIdentityTransform4_` (src/Library/Job.cpp) -- Job.cpp's helper
+			//! has internal (translation-unit) linkage, so it cannot be called
+			//! from here; this is a second, byte-identical definition, not a
+			//! shared one.  Same exact-VALUE compare Job.cpp's uses (matching
+			//! its own comment's reference to ViewTransform.cpp's `IsIdentityWB`
+			//! convention, src/Library/Rendering/ViewTransform.cpp): every field
+			//! is a plain double `==` against a literal 0.0/1.0, not a memcmp,
+			//! because `-0.0 == 0.0` is TRUE under `==` and a rotation-by-zero
+			//! can legitimately leave a signed `-0.0` in an off-diagonal (cos/sin
+			//! combine with a sign that depends on axis order) that must still
+			//! read as identity.  ViewTransform.cpp's `IsIdentityWB` is a
+			//! DIFFERENT-shaped helper for a different purpose (a Matrix3 white-
+			//! balance identity fast-path, not a general Matrix4 transform
+			//! test) -- it is cited here only as the shared exact-compare
+			//! CONVENTION, not as a copy of this function.  By existing repo
+			//! convention each translation unit that needs this test keeps its
+			//! own small copy rather than sharing one via a header; this is
+			//! intentional duplication, not something to "fix" by extracting a
+			//! shared helper.
+			bool IsIdentityTransform4_( const Matrix4& m )
+			{
+				return ( m._00 == 1.0 && m._01 == 0.0 && m._02 == 0.0 && m._03 == 0.0
+				      && m._10 == 0.0 && m._11 == 1.0 && m._12 == 0.0 && m._13 == 0.0
+				      && m._20 == 0.0 && m._21 == 0.0 && m._22 == 1.0 && m._23 == 0.0
+				      && m._30 == 0.0 && m._31 == 0.0 && m._32 == 0.0 && m._33 == 1.0 );
+			}
+
+			//! Whether a chunk's DoubleVec3-kind param (`position` /
+			//! `orientation`) is non-identity, read straight off the CST --
+			//! NOT via any derived/inherited transform.  `joined` is the
+			//! space-joined value ChunkParamString_ returns (e.g. "1 0 0"); an
+			//! absent param reads back as "" and parses to no components, which
+			//! is correctly non-transformed (the chunk descriptor's default is
+			//! "0 0 0").  Mirrors `Job::AddCSGObject`'s own test bit-for-bit
+			//! (`pos[0] != 0.0 || pos[1] != 0.0 || pos[2] != 0.0`, likewise for
+			//! orient[]) -- a per-component `!=` against a literal 0.0, not an
+			//! epsilon.
+			bool ChunkParamVec3NonZero_( const std::string& joined )
+			{
+				const char* p = joined.c_str();
+				for( int i = 0; i < 3; ++i ) {
+					char* end = nullptr;
+					const double v = std::strtod( p, &end );
+					if( end == p ) break;   // no more tokens
+					if( v != 0.0 ) return true;
+					p = end;
+				}
+				return false;
+			}
+
+			//! Every csg_object in `doc` whose OWN chunk carries a non-identity
+			//! `position`/`orientation` AND at least one of its `obja`/`objb`
+			//! operands is already transformed -- the CSG_OPERAND_REBASE
+			//! condition `Job::AddCSGObject`'s runtime advisory flags (see that
+			//! function's comment, src/Library/Job.cpp, and
+			//! docs/SCENE_CONVENTIONS.md sec 5.5) -- paired with whether the
+			//! csg_object's own chunk acknowledges the rebase via
+			//! `allow_transformed_operands TRUE`.
+			//!
+			//! DELIBERATELY ASYMMETRIC, mirroring `Job::AddCSGObject`'s own
+			//! test exactly so the two cannot silently drift apart if one is
+			//! edited without the other:
+			//!   * the csg_object's OWN transform is tested against the
+			//!     AUTHORED chunk params (ChunkParamVec3NonZero_ on this
+			//!     chunk's `position`/`orientation`) -- matches the runtime
+			//!     warning, which reads `pos[]`/`orient[]` off the very same
+			//!     chunk-parsed values, not a derived transform.
+			//!   * each OPERAND is tested against `GetFinalTransformMatrix()`
+			//!     (IsIdentityTransform4_ above) -- the full DERIVED transform,
+			//!     so this catches any authoring route to a transformed
+			//!     operand (an inline `position`/`orientation`, a
+			//!     `matrix`-authored transform, etc.), not only a literal
+			//!     `position` param on the operand's own chunk.  A `parent`
+			//!     chain is NOT among those routes -- deliberately not cited
+			//!     here, because a parented object cannot BE a CSG operand at
+			//!     all: Job::AddCSGObject refuses the whole call for a
+			//!     parented operand, so no such csg_object ever derives and
+			//!     the GetItem existence check above skips the chunk.
+			//! `job` must already be a completed DeriveToJob of `doc` (this
+			//! function does not derive anything itself) -- same contract as
+			//! CollectNullGeometryEmitters_ above.
+			std::vector<RebasedOperandCsgFinding> CollectRebasedOperandCsgs_( IJobPriv& job, const Document& doc )
+			{
+				std::vector<RebasedOperandCsgFinding> out;
+				IObjectManager* pObjMan = job.GetObjects();
+				if( !pObjMan ) return out;
+
+				std::vector<NodeRef> items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+				for( const NodeRef& it : items ) {
+					if( !it || it->kind != NodeKind::Chunk || it->role != "csg_object" ) continue;
+					const std::string name = ChunkParamString_( it, "name" );
+					if( name.empty() ) continue;
+					if( !pObjMan->GetItem( name.c_str() ) ) continue;   // must have actually derived
+
+					const bool csgTransformed =
+						ChunkParamVec3NonZero_( ChunkParamString_( it, "position" ) ) ||
+						ChunkParamVec3NonZero_( ChunkParamString_( it, "orientation" ) );
+					if( !csgTransformed ) continue;
+
+					bool operandTransformed = false;
+					const char* const operandParams[2] = { "obja", "objb" };
+					for( int k = 0; k < 2 && !operandTransformed; ++k ) {
+						const std::string operandName = ChunkParamString_( it, operandParams[k] );
+						if( operandName.empty() ) continue;
+						const IObjectPriv* pOperand = pObjMan->GetItem( operandName.c_str() );
+						if( !pOperand ) continue;
+						if( !IsIdentityTransform4_( pOperand->GetFinalTransformMatrix() ) ) operandTransformed = true;
+					}
+					if( !operandTransformed ) continue;
+
+					RebasedOperandCsgFinding f;
+					f.name         = name;
+					f.acknowledged = ChunkParamBool_( it, "allow_transformed_operands", false );
+					out.push_back( f );
+				}
+				return out;
+			}
+
 			//! Post-arc enforcement E1's creation gate, core derive step: given
 			//! `candidateDoc` (the CANDIDATE state -- the current head with the
 			//! touched edit already applied, NOT yet committed) and a list of
@@ -3053,6 +3192,71 @@ namespace RISE
 						"emissive material to a standard_object with real geometry instead, "
 						"or add `allow_non_sampling_emitter TRUE` to acknowledge the glow-only "
 						"intent and silence this warning.";
+					out.push_back( d );
+				}
+			}
+
+			// (b3) CSG_OPERAND_REBASE: sibling audit to the LUMINAIRE_NULL_GEOMETRY
+			// (b2) block just above, same shape, DIFFERENT defect and NO paired creation
+			// gate (see AgentDiagnosticCode::CSG_OPERAND_REBASE, AgentDiagnostic.h,
+			// for why this one stays Warning-tier only).  Mirrors
+			// `Job::AddCSGObject`'s parse-time advisory (src/Library/Job.cpp) and
+			// docs/SCENE_CONVENTIONS.md sec 5.5: a csg_object whose own transform
+			// is non-identity RE-BASES any already-transformed operand into that
+			// csg_object's local frame, which can silently shift or blank the
+			// composite.  Walk the same throwaway job/candidateDoc already derived
+			// above; unlike LUMINAIRE_NULL_GEOMETRY's count-only message, this one
+			// NAMES the offending csg_object(s) -- the same 'a', 'a' and 'b' /
+			// 'a', 'b' and 'c' joined-quoted-name convention
+			// DescribeUnacknowledgedNullGeometryEmitters_ (below) uses for the
+			// creation-gate refusal text, reused here because there is no gate
+			// call site to instead read the names off of.
+			{
+				std::vector<std::string> unacknowledgedNames;
+				for( const RebasedOperandCsgFinding& f : CollectRebasedOperandCsgs_( *throwaway, candidateDoc ) )
+					if( !f.acknowledged ) unacknowledgedNames.push_back( f.name );
+				if( !unacknowledgedNames.empty() ) {
+					std::string named;
+					for( std::size_t i = 0; i < unacknowledgedNames.size(); ++i ) {
+						if( i ) named += ( i + 1 == unacknowledgedNames.size() ? " and " : ", " );
+						named += "'" + unacknowledgedNames[i] + "'";
+					}
+					const bool plural = unacknowledgedNames.size() > 1;
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Warning;
+					d.code     = AgentDiagnosticCode::CSG_OPERAND_REBASE;
+					// Grammar branches on count exactly like Job::AddCSGObject's own
+					// "RE-BASES it" (one transformed operand) vs "RE-BASES them" (more
+					// than one) -- here the count is over OFFENDING csg_objects rather
+					// than operands, but the same singular/plural care applies: "carry"
+					// (not "carrys") for the plural noun-verb pairing.
+					d.message  = std::to_string( unacknowledgedNames.size() ) +
+						" csg_object" + std::string( plural ? "s (" : " (" ) + named + ") " +
+						std::string( plural ? "carry" : "carries" ) +
+						std::string( plural ? " their" : " its" ) +
+						" own position/orientation on top of an already-transformed operand -- "
+						"an operand's transform is interpreted in its csg_object's LOCAL frame, not "
+						"the world's, so " + std::string( plural ? "each csg_object's" : "the csg_object's" ) +
+						" own transform RE-BASES " + std::string( plural ? "them" : "it" ) + ": " +
+						std::string( plural ? "each composite lands at its" : "the composite lands at the" ) +
+						" composed transform, NOT at the operand's authored world "
+						"coordinates. This is a valid construction (a sub-assembly rebased as a "
+						"unit); if the render looks shifted, empty, or entirely black with no "
+						"visual clue why, this composition is the likely cause. " +
+						// The fix-instruction tail must scale with the offender count too
+						// (round-1 review P2): a 2+-offender message that says "the
+						// csg_object chunk ... acknowledge it" reads as one chunk to fix,
+						// and an agent patching one chunk would treat the diagnostic as
+						// resolved while the others still trip it.
+						std::string( plural
+							? "Add `allow_transformed_operands TRUE` to each named csg_object chunk to "
+							  "acknowledge them, or restructure the scene (position each composite solely "
+							  "through its csg_object, authoring its operands untransformed, or drop the "
+							  "csg_objects' own position/orientation)."
+							: "Add `allow_transformed_operands TRUE` to the csg_object chunk to acknowledge "
+							  "it, or restructure the scene (position the composite solely through the "
+							  "csg_object, authoring its operands untransformed, or drop the "
+							  "csg_object's own position/orientation)." );
 					out.push_back( d );
 				}
 			}

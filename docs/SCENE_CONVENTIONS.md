@@ -762,6 +762,13 @@ supported, in-view case — intentionally trips the warning, and
 deliberately does NOT carry `allow_transformed_operands`, so it stays a
 live tripwire) and `tests/CsgOperandTransformTest.cpp` (compose-once
 arithmetic lock + parse-time diagnostic fire/no-fire/acknowledged-silence).
+Agent-facing validation surfaces this structurally too, as a
+Warning-severity `CSG_OPERAND_REBASE` diagnostic from
+`AgentSession::ValidateText` (Warning tier only — no paired creation
+gate, unlike `LUMINAIRE_NULL_GEOMETRY`; see
+`AgentDiagnosticCode::CSG_OPERAND_REBASE` in
+`src/Library/Agent/AgentDiagnostic.h` for why); covered in both
+`tests/CsgOperandTransformTest.cpp` and `tests/AgentChunkCrudTest.cpp`.
 
 ---
 

@@ -3375,6 +3375,119 @@ static void TestNonSamplingEmitterGate()
 
 
 //----------------------------------------------------------------------
+// CSG_OPERAND_REBASE (docs/SCENE_CONVENTIONS.md sec 5.5;
+// AgentDiagnosticCode::CSG_OPERAND_REBASE in AgentDiagnostic.h): the
+// Warning-tier-only sibling of the E1 LUMINAIRE_NULL_GEOMETRY audit just
+// above.  Same ValidateText (b2) audit shape, but NO paired creation
+// gate -- see the diagnostic's own doc comment for why (operand rebase
+// is the DOMINANT in-corpus csg_object idiom, not a rare mistake).
+//
+// Three cases, matching `Job::AddCSGObject`'s own runtime advisory
+// (src/Library/Job.cpp) and its regression coverage
+// (CsgOperandTransformTest.cpp / csg_positioned_operands.RISEscene):
+//   (a) an UNACKNOWLEDGED csg_object with its own non-identity
+//       position, referencing an operand that is ALSO transformed
+//       (kCsgReadyScene's csg_opB, already positioned at 0.35 0 0) ->
+//       ValidateText returns a Warning-severity CSG_OPERAND_REBASE
+//       diagnostic naming the csg_object.
+//   (b) the SAME construct, ACKNOWLEDGED via
+//       `allow_transformed_operands TRUE` -> ValidateText is SILENT (no
+//       CSG_OPERAND_REBASE at all -- an acknowledged choice must not
+//       nag, matching E1(f)'s LUMINAIRE_NULL_GEOMETRY precedent).
+//   (c) a csg_object with its own non-identity position, but BOTH
+//       operands untransformed (the common, correct case -- e.g.
+//       scenes/Tests/Geometry/csg.RISEscene) -> ValidateText is SILENT.
+//       This must NOT false-positive: it is the ordinary, unremarkable
+//       authoring pattern.
+//----------------------------------------------------------------------
+static void TestCsgOperandRebaseWarning()
+{
+	std::printf( "CSG_OPERAND_REBASE: rebase Warning fires / is silenced by the ack flag / "
+	             "does not false-positive on untransformed operands...\n" );
+
+	// (a) unacknowledged rebase -> Warning with the precise code, naming
+	// the offending csg_object and stating the acknowledgment escape.
+	{
+		const std::string tmp = TempPath( "agentcrud_csgrebase_a.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_rebased\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial matte\n\tposition 1 0 0\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "CSG_OPERAND_REBASE(a) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			const Agent::AgentDiagnostic* found = nullptr;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "CSG_OPERAND_REBASE" ) { found = &d; break; }
+			Check( found != nullptr, "CSG_OPERAND_REBASE(a) fires on an unacknowledged rebased csg_object" );
+			if( found ) {
+				Check( found->severity == Agent::AgentDiagnostic::Severity::Warning,
+				       "CSG_OPERAND_REBASE(a) is Severity::Warning, not a refusal" );
+				Check( found->message.find( "csg_rebased" ) != std::string::npos,
+				       "CSG_OPERAND_REBASE(a) message names the offending csg_object" );
+				Check( found->message.find( "allow_transformed_operands" ) != std::string::npos,
+				       "CSG_OPERAND_REBASE(a) message states the acknowledgment escape" );
+				std::printf( "  CSG_OPERAND_REBASE(a) message: %s\n", found->message.c_str() );
+			}
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (b) the SAME construct, acknowledged -> silent (no nag-loop).
+	{
+		const std::string tmp = TempPath( "agentcrud_csgrebase_b.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "csg_object\n{\n\tname csg_rebased\n\tobja csg_opA\n\tobjb csg_opB\n"
+		         "\toperation union\n\tmaterial matte\n\tposition 1 0 0\n"
+		         "\tallow_transformed_operands TRUE\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "CSG_OPERAND_REBASE(b) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "CSG_OPERAND_REBASE" ) sawCode = true;
+			Check( !sawCode, "CSG_OPERAND_REBASE(b) is SILENT once acknowledged via allow_transformed_operands TRUE" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// (c) csg_object transformed, but BOTH operands untransformed -> the
+	// common case, must not false-positive.
+	{
+		const std::string tmp = TempPath( "agentcrud_csgrebase_c.RISEscene" );
+		std::string scene = kCsgReadyScene;
+		scene += "standard_object\n{\n\tname csg_opE\n\tgeometry sph_a\n\tmaterial matte\n}\n\n"
+		         "standard_object\n{\n\tname csg_opF\n\tgeometry sph_b\n\tmaterial matte\n}\n\n"
+		         "csg_object\n{\n\tname csg_untouched\n\tobja csg_opE\n\tobjb csg_opF\n"
+		         "\toperation union\n\tmaterial matte\n\tposition 1 0 0\n}\n";
+		Job* pJob = LoadScene( scene.c_str(), tmp );
+		Check( pJob != nullptr, "CSG_OPERAND_REBASE(c) fixture loads" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::vector<Agent::AgentDiagnostic> diags =
+				Agent::AgentSession::ValidateText( sess->ReadDocument() );
+			bool sawCode = false;
+			for( const Agent::AgentDiagnostic& d : diags )
+				if( d.code == "CSG_OPERAND_REBASE" ) sawCode = true;
+			Check( !sawCode, "CSG_OPERAND_REBASE(c) does NOT false-positive when both operands are untransformed" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+}
+
+
+//----------------------------------------------------------------------
 // R1c (2026-08-09): the AGENT RASTERIZER ALLOWLIST gate.
 //
 // USER DIRECTIVE: a scene-editing agent must never select the MLT
@@ -20015,6 +20128,7 @@ int main()
 	TestActionablePatchDiagnostics();
 	TestProposePatchOccurrence();
 	TestNonSamplingEmitterGate();
+	TestCsgOperandRebaseWarning();
 	TestRasterizerAllowlistGate();
 	TestActionableRemoveDiagnostics();
 	TestRemoveChunksBatch();

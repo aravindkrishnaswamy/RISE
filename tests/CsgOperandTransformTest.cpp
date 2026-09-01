@@ -39,6 +39,8 @@
 #include <string>
 #include <vector>
 
+#include "../src/Library/Agent/AgentDiagnostic.h"
+#include "../src/Library/Agent/AgentSession.h"
 #include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
@@ -49,6 +51,9 @@
 #include "../src/Library/Utilities/BoundingBox.h"
 
 using namespace RISE;
+using RISE::Agent::AgentSession;
+using RISE::Agent::AgentDiagnostic;
+namespace AgentDiagnosticCode = RISE::Agent::AgentDiagnosticCode;
 using namespace RISE::Implementation;
 
 static int g_pass = 0, g_fail = 0;
@@ -295,6 +300,117 @@ void TestParseTimeDiagnostic( CapturingLogPrinter* pRebaseLog,
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// Part C -- the agent-facing diagnostic (AgentSession::ValidateText,
+// AgentDiagnosticCode::CSG_OPERAND_REBASE)
+//////////////////////////////////////////////////////////////////////
+
+// Reuses MinimalCsgScene (Part B) -- the SAME fixture builder, so the
+// agent-facing Warning below and the runtime GlobalLog advisory Part B
+// proved are known to fire on byte-identical scene text.  Unlike Part B
+// (which captures GlobalLog output via a printer), this drives
+// AgentSession::ValidateText's stateless post-derive audit directly.
+// CSG_OPERAND_REBASE is Warning-tier ONLY -- no paired creation gate (see
+// AgentDiagnosticCode::CSG_OPERAND_REBASE, AgentDiagnostic.h, for why) --
+// so ValidateText's (b2) audit is this diagnostic's entire agent-facing
+// surface; there is no InsertChunk/ProposePatch refusal to test alongside
+// it, unlike LUMINAIRE_NULL_GEOMETRY's E1 gate.
+void TestAgentValidateTextSurfacesRebaseWarning()
+{
+	std::printf( "=== CsgOperandTransformTest: AgentSession::ValidateText fires CSG_OPERAND_REBASE "
+	             "(Warning); `allow_transformed_operands TRUE` silences it; unpositioned operands never trip it ===\n" );
+
+	// (a) unacknowledged positioned-operands + positioned csg_object -- the
+	// trap -- ValidateText returns a Warning-severity CSG_OPERAND_REBASE
+	// naming csg1 and stating the acknowledgment escape.
+	{
+		const std::vector<AgentDiagnostic> diags =
+			AgentSession::ValidateText( MinimalCsgScene( /*positionOperandA=*/true, /*positionOperandB=*/true ) );
+		const AgentDiagnostic* found = nullptr;
+		for( const AgentDiagnostic& d : diags )
+			if( d.code == AgentDiagnosticCode::CSG_OPERAND_REBASE ) { found = &d; break; }
+		Check( found != nullptr, "(a) CSG_OPERAND_REBASE fires on the unacknowledged positioned-operands scene" );
+		if( found ) {
+			Check( found->severity == AgentDiagnostic::Severity::Warning,
+			       "(a) ...at Severity::Warning (a valid construction, not a refusal)" );
+			Check( found->message.find( "csg1" ) != std::string::npos,
+			       "(a) message names the offending csg_object" );
+			Check( found->message.find( "allow_transformed_operands" ) != std::string::npos,
+			       "(a) message states the acknowledgment escape" );
+		}
+	}
+
+	// (b) the SAME scene, WITH `allow_transformed_operands TRUE` -- no
+	// CSG_OPERAND_REBASE at all: an acknowledged, disclosed rebase must not
+	// nag on every subsequent Validate call (the same anti-pattern
+	// LUMINAIRE_NULL_GEOMETRY's ack flag guards against).
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText(
+			MinimalCsgScene( /*positionOperandA=*/true, /*positionOperandB=*/true, /*ackTransformedOperands=*/true ) );
+		bool sawCode = false;
+		for( const AgentDiagnostic& d : diags )
+			if( d.code == AgentDiagnosticCode::CSG_OPERAND_REBASE ) sawCode = true;
+		Check( !sawCode, "(b) `allow_transformed_operands TRUE`: ValidateText is SILENT on CSG_OPERAND_REBASE" );
+	}
+
+	// (c) UNpositioned operands under a positioned csg_object -- the common,
+	// unremarkable construction (the scenes/Tests/Geometry/csg.RISEscene
+	// shape) -- no CSG_OPERAND_REBASE at all.  The false-positive guard: the
+	// diagnostic must not fire merely because the csg_object itself is
+	// transformed.
+	{
+		const std::vector<AgentDiagnostic> diags =
+			AgentSession::ValidateText( MinimalCsgScene( /*positionOperandA=*/false, /*positionOperandB=*/false ) );
+		bool sawCode = false;
+		for( const AgentDiagnostic& d : diags )
+			if( d.code == AgentDiagnosticCode::CSG_OPERAND_REBASE ) sawCode = true;
+		Check( !sawCode,
+		       "(c) unpositioned operands under a positioned csg_object: no CSG_OPERAND_REBASE (common, valid case)" );
+	}
+
+	// (d) exactly ONE operand transformed -- pins the "at least one operand"
+	// semantics on THIS surface too (Part B's case (1b) pins it for the
+	// runtime advisory): if CollectRebasedOperandCsgs_ ever regressed to
+	// requiring BOTH operands transformed, this case fails while (a)/(b)/(c)
+	// would all keep passing (they transform both or neither).
+	{
+		const std::vector<AgentDiagnostic> diags =
+			AgentSession::ValidateText( MinimalCsgScene( /*positionOperandA=*/true, /*positionOperandB=*/false ) );
+		const AgentDiagnostic* found = nullptr;
+		for( const AgentDiagnostic& d : diags )
+			if( d.code == AgentDiagnosticCode::CSG_OPERAND_REBASE ) { found = &d; break; }
+		Check( found != nullptr, "(d) CSG_OPERAND_REBASE fires with exactly ONE transformed operand" );
+		if( found ) {
+			Check( found->message.find( "csg1" ) != std::string::npos,
+			       "(d) ...naming the csg_object" );
+		}
+	}
+
+	// (e) TWO unacknowledged rebased csg_objects in one scene -- the audit's
+	// PLURAL message branch (quoted names joined with \"and\", \"carry\"/
+	// \"their\", and a fix tail that scales past one chunk) is otherwise
+	// never exercised by any case in either test file.  Operand sharing
+	// across composites is a supported construction (csg.RISEscene's csgA /
+	// csgB share boxB / sphereB), so csg2 simply reuses opA / opB.
+	{
+		std::string scene = MinimalCsgScene( /*positionOperandA=*/true, /*positionOperandB=*/true );
+		scene += "csg_object\n{\nname csg2\nobja opA\nobjb opB\noperation union\nposition 2 0 0\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( scene );
+		const AgentDiagnostic* found = nullptr;
+		for( const AgentDiagnostic& d : diags )
+			if( d.code == AgentDiagnosticCode::CSG_OPERAND_REBASE ) { found = &d; break; }
+		Check( found != nullptr, "(e) two unacknowledged rebased csg_objects: the diagnostic fires" );
+		if( found ) {
+			Check( found->message.find( "'csg1' and 'csg2'" ) != std::string::npos,
+			       "(e) both offenders are named, joined with 'and'" );
+			Check( found->message.find( " carry " ) != std::string::npos,
+			       "(e) plural verb agreement (`carry`, not `carries`)" );
+			Check( found->message.find( "each named csg_object" ) != std::string::npos,
+			       "(e) the fix-instruction tail scales past one chunk" );
+		}
+	}
+}
+
 int main()
 {
 	std::printf( "CsgOperandTransformTest -- csg_object operand-rebase: compose-once semantics + parse-time diagnostic\n" );
@@ -321,6 +437,7 @@ int main()
 
 	TestComposeOnceSemantics();
 	TestParseTimeDiagnostic( pRebaseLog, pRebaseItLog, pRebaseThemLog );
+	TestAgentValidateTextSurfacesRebaseWarning();
 
 	safe_release( pRebaseLogOwned );
 	safe_release( pRebaseItLogOwned );

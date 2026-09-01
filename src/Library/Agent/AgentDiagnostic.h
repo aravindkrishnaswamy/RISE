@@ -621,6 +621,71 @@ namespace RISE
 			//! (CollectNullGeometryEmitters_ in AgentSession.cpp) so the
 			//! Warning and the gate can never drift apart on what counts.
 			static const char* const LUMINAIRE_NULL_GEOMETRY = "LUMINAIRE_NULL_GEOMETRY";
+			//! Advisory sibling of LUMINAIRE_NULL_GEOMETRY -- same one-flag
+			//! acknowledgment idiom on the same chunk kind, but Warning-tier
+			//! ONLY (see the "NO CREATION GATE" note below for why the second
+			//! tier does not apply here).  Mirrors `Job::AddCSGObject`'s
+			//! parse-time advisory (src/Library/Job.cpp) and
+			//! docs/SCENE_CONVENTIONS.md sec 5.5: a `csg_object`'s own
+			//! `position`/`orientation` is composed on top of each operand's
+			//! transform, and an operand's transform is interpreted in that
+			//! `csg_object`'s LOCAL frame, not the world's -- so a csg_object
+			//! that is ITSELF transformed RE-BASES any operand that is already
+			//! transformed.  The composite lands at (csg_object's transform)
+			//! composed with (operand's transform), not at the operand's
+			//! authored world coordinates; a large enough re-base (or one that
+			//! rotates the composite out of the camera's frustum) can render
+			//! shifted, empty, or entirely all-black with no visual clue why.
+			//!
+			//! The acknowledgment: `allow_transformed_operands TRUE` on the
+			//! csg_object chunk suppresses this diagnostic (and, at runtime,
+			//! `Job::AddCSGObject`'s matching log advisory).
+			//!   * UNACKNOWLEDGED (the flag absent/FALSE): this Warning fires
+			//!     whenever the csg_object's own transform is non-identity AND
+			//!     at least one operand is already transformed.
+			//!   * ACKNOWLEDGED (the flag TRUE): this Warning is SUPPRESSED
+			//!     entirely for that csg_object -- a permanent Warning on a
+			//!     deliberate, disclosed choice is the nag-loop anti-pattern.
+			//! AgentSession::ValidateText's (b2) audit is the SOLE consumer;
+			//! the classification helper lives in AgentSession.cpp
+			//! (CollectRebasedOperandCsgs_) alongside, but NOT sharing, the
+			//! LUMINAIRE_NULL_GEOMETRY predicate (CollectNullGeometryEmitters_)
+			//! -- the two diagnostics flag different chunk defects and key off
+			//! different tests (emitter-with-no-geometry vs
+			//! dual-transformed-halves), so a shared helper would just be an
+			//! `if` fork wearing one name.
+			//!
+			//! NO CREATION GATE, deliberately -- unlike LUMINAIRE_NULL_GEOMETRY,
+			//! which pairs its Warning with a refusal in
+			//! AgentSession::InsertChunk / AgentSession::ProposePatch that
+			//! blocks CREATING an unacknowledged null-geometry emitter.  That
+			//! gate's own governing comment (AgentSession.cpp, the R1c
+			//! rasterizer-allowlist block) states the stop rule any new escape
+			//! flag is held to: one is only worth adding when the construct it
+			//! acknowledges "has a rare but LEGITIMATE authoring intent... the
+			//! agent can honestly disclose" -- otherwise "an escape param would
+			//! be exactly the habituation surface... a flag the model learns
+			//! to set reflexively, turning a refusal into a two-call
+			//! formality."  Operand rebase fails that test in the OPPOSITE
+			//! direction from a rare-and-risky construct: it is the DOMINANT
+			//! in-corpus csg_object idiom, not a rare exception -- 9 of the 14
+			//! csg_object scenes in the corpus (`grep -rl '^csg_object$'
+			//! scenes/`) use exactly this
+			//! two-halves-positioned-locally-then-rebased-as-a-unit pattern
+			//! (the "lens" idiom -- see
+			//! scenes/FeatureBased/Combined/crystal_lens.RISEscene and
+			//! docs/SCENE_CONVENTIONS.md sec 5.5), and every one of them
+			//! already carries `allow_transformed_operands TRUE` as of the
+			//! commit that introduced the runtime advisory (27aeeae4).  A
+			//! creation gate here would refuse the common, correct case far
+			//! more often than the rare mistake it exists to catch --
+			//! training exactly the reflexive-acknowledgment habituation the
+			//! stop rule warns against, for a construct that is ordinary
+			//! rather than risky.  Warning tier, surfaced once post-derive, is
+			//! therefore the whole mechanism: it tells the author (or the
+			//! agent reading diagnostics) what happened and how to
+			//! acknowledge or fix it, without refusing legitimate authoring.
+			static const char* const CSG_OPERAND_REBASE = "CSG_OPERAND_REBASE";
 		}
 	}
 }
