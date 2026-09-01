@@ -7,11 +7,13 @@ into a previously absent `baseline_legacy/` directory.
 
 The corrected 159.00892323854879 kg/(m2 s2) tier-10 observation is the
 nearest-retained 159-class context, not an equal-time scalar claim. The
-baseline records an actual, unmodified binary32 production boundary and the
-ported leg must replay its sealed step schedule; the fp64 oracle must then be
-composed to that recorded endpoint. The tier-10 column is mapped to tier 8 by
-its physical cell-center coordinate. The older 63.339610872283018 number is
-retained only as a differently sampled face-local historical diagnostic.
+baseline records an actual, unmodified binary32 production boundary. Each
+from-zero leg records its own unmodified CFL schedule. The 159-class comparison
+is reserved for a separately sealed frozen-state probe in which the fp64 oracle
+is composed to the recorded production endpoint. The tier-10 column is mapped
+to tier 8 by its physical cell-center coordinate. The older
+63.339610872283018 number is retained only as a differently sampled face-local
+historical diagnostic.
 
 ## Baseline verdict
 
