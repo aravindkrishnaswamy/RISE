@@ -103,8 +103,10 @@ namespace
 		}
 		if(rows!=192u)return false;
 		for(const auto& cell:seen)for(const bool field:cell)if(!field)return false;
-		const std::array<const char*,9> redRecords={{
+		const std::array<const char*,11> redRecords={{
 			"name=r170_hard_bound_30_percent expected=0x00000400 observed=0x00000400",
+			"name=pressure_midpoint_rounding_ambiguous expected=0x00000200 observed=0x00000200",
+			"name=deviation_midpoint_rounding_ambiguous expected=0x00000200 observed=0x00000200",
 			"name=eos_lower_inversion_endpoint expected=0x000000d0 observed=0x000000d0",
 			"name=eos_upper_inversion_endpoint expected=0x00000080 observed=0x00000080",
 			"name=r170_exact_above_binary32_rounds_to_bound expected=0x00000400 observed=0x00000400",
@@ -129,7 +131,11 @@ namespace
 			text.find("RESIDENT_EOS_ARITHMETIC_BOUNDARY_SWEEP samples=4 "
 				"temperature_classes=4 composition_classes=main_64_cell_fixture "
 				"scale_min=0.750500023 scale_max=1.24950004 passed=1")!=
-				std::string::npos&&text.find("RESIDENT_EOS passed=1 ")!=std::string::npos;
+				std::string::npos&&text.find("RESIDENT_EOS_LOG_ENCLOSURE samples=1037 "
+				"max_residual_over_bound=0.70588552087007805 ln2_residual=0 "
+				"ln2_bound=5.5511151231257827e-17 ln2_high_precision=1 passed=1")!=
+				std::string::npos&&
+			text.find("RESIDENT_EOS passed=1 ")!=std::string::npos;
 	}
 	bool IndependentR60AndPeriodicCommuting(
 		const RISE::FireProductionScalarFCTRequest& request,
@@ -3747,14 +3753,14 @@ int main()
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateEvidence.begin(),residentEOSCandidateEvidence.end()))==
-			"cda430d2320619ab2b9daae0551fb0d9b8b7702b3e135fba1fb0aa58c76d67ed"&&
+			"6e15f273cdbacf32e9a6cac31c1fa6648f01403665ffda4db4c0850f659d591e"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSRawEvidence.begin(),residentEOSRawEvidence.end()))==
-			"709dc85f47bb593f046e333f8e69f01e0a54eeb40fdd99dbf9cdc91089212fcf"&&
+			"3225d77a1840606a7524dcfa80bf30f4d88d595ea3d8cc988ca2bbb6f21b6e0d"&&
 		ValidateResidentEOSRawEvidence(residentEOSRawEvidence)&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateLiveBinding.begin(),residentEOSCandidateLiveBinding.end()))==
-			"82c49bd9dc73e7ba37e36270b542a0ce31c331f83a259e25c5ba2616f4c05622"&&
+			"953fc3800ebfd67db448ca7b787d59268cc4e863826795acaf306e4b1728e66e"&&
 		residentEOSCandidateLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 14\n")!=
 			std::string::npos&&
@@ -3792,7 +3798,13 @@ int main()
 		residentEOSCandidateEvidence.find(
 			"arithmetic_enclosure connected_error_free_expansion_plus_outward_remainder\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
-			"raw_transcript_sha256 709dc85f47bb593f046e333f8e69f01e0a54eeb40fdd99dbf9cdc91089212fcf\n")!=
+			"log_tail_denominator_rounding directed_down_subtraction_and_multiplication\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"fp64_std_log_projection_bound 2^-52_times_max_1_abs_log\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"binary32_publication whole_interval_must_fit_strictly_inside_one_rounding_bin\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"raw_transcript_sha256 3225d77a1840606a7524dcfa80bf30f4d88d595ea3d8cc988ca2bbb6f21b6e0d\n")!=
 			std::string::npos&&
 		residentEOSCandidateEvidence.find(
 			"host_preflight_refusal_observation no_publication_issued_no_device_attempt_no_terminal_read\n")!=

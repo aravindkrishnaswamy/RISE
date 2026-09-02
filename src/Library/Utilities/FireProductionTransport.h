@@ -1240,6 +1240,8 @@ namespace RISE
 		bool qualificationMismatchedDeviceCells;
 		bool qualificationMismatchedDeviceTimeStep;
 		bool qualificationMismatchedDeviceCase;
+		bool qualificationAmbiguousPressureRounding;
+		bool qualificationAmbiguousDeviationRounding;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
@@ -1256,6 +1258,8 @@ namespace RISE
 			qualificationMismatchedDeviceCells(false),
 			qualificationMismatchedDeviceTimeStep(false),
 			qualificationMismatchedDeviceCase(false),
+			qualificationAmbiguousPressureRounding(false),
+			qualificationAmbiguousDeviationRounding(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 
@@ -1375,6 +1379,15 @@ namespace RISE
 		const FireProductionScalarFCTRequest& request,
 		const std::vector<float>& candidate,
 		std::uint32_t& failureBitmap,
+		std::string* error=0 );
+
+	//! Qualification-only enclosure tap for the exact EOS logarithm used by the
+	//! resident inversion. Each output is {hi,lo,tail,outwardBound}; it carries
+	//! no live authority and exists only to compare the production Metal DAG to
+	//! the binary64 thermochemistry mirror over adversarial inputs.
+	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
+		const std::vector<float>& input,
+		std::vector<std::array<float,4> >& expansionAndBound,
 		std::string* error=0 );
 #endif
 

@@ -9360,6 +9360,61 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		"temperature_classes=4 composition_classes=main_64_cell_fixture scale_min=%.9g "
 		"scale_max=%.9g passed=%d\n",proofScale[0],proofScale[3],
 		arithmeticBoundarySweep?1:0);
+	std::vector<float> logInputs;const int logExponents[4]={-2,0,4,12};
+	for(const int exponent:logExponents)for(unsigned int bin=0u;bin<=256u;++bin){
+		const std::uint32_t mantissa=bin==256u?0x007fffffu:
+			static_cast<std::uint32_t>((static_cast<std::uint64_t>(0x007fffffu)*bin)/256u);
+		std::uint32_t bits=0x3f800000u|mantissa;float normalized=0.0f;
+		std::memcpy(&normalized,&bits,sizeof(normalized));logInputs.push_back(std::ldexp(
+			normalized,exponent));}
+	const float logEdges[9]={300.0f,std::nextafter(300.0f,
+		std::numeric_limits<float>::infinity()),std::nextafter(1000.0f,
+		-std::numeric_limits<float>::infinity()),1000.0f,std::nextafter(1000.0f,
+		std::numeric_limits<float>::infinity()),1000.001f,2200.0f,5000.0f,2.0f};
+	logInputs.insert(logInputs.end(),std::begin(logEdges),std::end(logEdges));
+	std::vector<std::array<float,4> > logExpansion;bool logEnclosure=
+		EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(logInputs,logExpansion,&error)&&
+		logExpansion.size()==logInputs.size();double maximumLogRatio=0.0;
+	for(std::size_t sample=0u;sample<logExpansion.size()&&logEnclosure;++sample){
+		const double center=static_cast<double>(logExpansion[sample][0])+
+			static_cast<double>(logExpansion[sample][1])+
+			static_cast<double>(logExpansion[sample][2]),bound=logExpansion[sample][3],
+			residual=std::fabs(std::log(static_cast<double>(logInputs[sample]))-center);
+		const double ratio=bound>0.0?residual/bound:std::numeric_limits<double>::infinity();
+		maximumLogRatio=std::max(maximumLogRatio,ratio);logEnclosure=std::isfinite(bound)&&
+			bound>0.0&&residual<=bound;}
+	const double ln2Triple=static_cast<double>(0.693147182464599609375f)+
+		static_cast<double>(-1.9046542121259336e-9f)+
+		static_cast<double>(-1.1102230246251565e-16f),ln2Bound=0x1p-54;
+	using SignedWide=__int128;using UnsignedWide=unsigned __int128;
+	auto floatQ100=[](const float value){std::uint32_t bits=0u;std::memcpy(&bits,&value,
+		sizeof(bits));const bool negative=(bits>>31u)!=0u;const unsigned int exponentBits=
+		(bits>>23u)&255u;const UnsignedWide mantissa=exponentBits==0u?(bits&0x007fffffu):
+			((bits&0x007fffffu)|0x00800000u);const int exponent=exponentBits==0u?-126:
+			static_cast<int>(exponentBits)-127,shift=exponent+77;
+		const SignedWide magnitude=shift>=0?static_cast<SignedWide>(mantissa<<shift):
+			static_cast<SignedWide>(mantissa>>(-shift));return negative?-magnitude:magnitude;};
+	const SignedWide ln2TripleQ100=floatQ100(0.693147182464599609375f)+
+		floatQ100(-1.9046542121259336e-9f)+floatQ100(-1.1102230246251565e-16f),
+		ln2BoundQ100=static_cast<SignedWide>(1u)<<46u;
+	const UnsignedWide q100=static_cast<UnsignedWide>(1u)<<100u;
+	UnsignedWide ln2LowerQ100=0u,powerOfThree=3u;
+	for(unsigned int odd=1u;odd<=49u;odd+=2u){ln2LowerQ100+=(2u*q100)/
+		(static_cast<UnsignedWide>(odd)*powerOfThree);powerOfThree*=9u;}
+	const UnsignedWide tailNumerator=18u*q100,tailDenominator=
+		static_cast<UnsignedWide>(51u)*powerOfThree*8u,
+		tailUpper=(tailNumerator+tailDenominator-1u)/tailDenominator,
+		ln2UpperQ100=ln2LowerQ100+25u+tailUpper;
+	const bool ln2HighPrecisionEnclosed=static_cast<SignedWide>(ln2LowerQ100)>=
+		ln2TripleQ100-ln2BoundQ100&&static_cast<SignedWide>(ln2UpperQ100)<=
+		ln2TripleQ100+ln2BoundQ100;
+	const bool ln2Enclosed=std::fabs(std::log(2.0)-ln2Triple)<=ln2Bound&&
+		ln2HighPrecisionEnclosed;
+	logEnclosure=logEnclosure&&ln2Enclosed;
+	std::fprintf(stderr,"RESIDENT_EOS_LOG_ENCLOSURE samples=%zu max_residual_over_bound=%.17g "
+		"ln2_residual=%.17g ln2_bound=%.17g ln2_high_precision=%d passed=%d\n",
+		logInputs.size(),maximumLogRatio,std::fabs(std::log(2.0)-ln2Triple),ln2Bound,
+		ln2HighPrecisionEnclosed?1:0,logEnclosure?1:0);
 	bool candidateBitEqual=observed.candidateConservativeValues.size()==9u*cells;
 	for(std::size_t component=0u;component<9u;++component)for(std::size_t cell=0u;cell<cells;++cell){
 		candidateBitEqual=candidateBitEqual&&sameFloatBits(observed.candidateConservativeValues[
@@ -9466,6 +9521,14 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		error.clear();return !EvaluateFireProductionResidentEOSCandidateMetalComparator(
 			mutation,refused,&error)&&noPublication(refused);};
 	const bool hardBoundRefused=deviceRefused(hardBound,1024u,"r170_hard_bound_30_percent");
+	FireProductionResidentEOSCandidateComparatorRequest ambiguousPressure=request;
+	ambiguousPressure.qualificationAmbiguousPressureRounding=true;
+	const bool ambiguousPressureRefused=deviceRefused(ambiguousPressure,512u,
+		"pressure_midpoint_rounding_ambiguous");
+	FireProductionResidentEOSCandidateComparatorRequest ambiguousDeviation=request;
+	ambiguousDeviation.qualificationAmbiguousDeviationRounding=true;
+	const bool ambiguousDeviationRefused=deviceRefused(ambiguousDeviation,512u,
+		"deviation_midpoint_rounding_ambiguous");
 	FireProductionResidentEOSCandidateComparatorRequest lowerEnvelope;
 	bool lowerEnvelopePrepared=uniformRequest(sealedCase.derived.pilotAmbientTemperatureK,1.0f,
 		lowerEnvelope),lowerEnvelopeAccepted=false,lowerAdjacentRefused=false;
@@ -9641,11 +9704,12 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 				item.temperatureMinK<=sealedCase.derived.maximumAcceptedTemperatureK)
 				requiredBranches|=1u<<(7u+std::min<std::size_t>(segment,2u));}}
 	const bool passed=r60Prepared&&r60Adjacent&&r60Accepted&&r60Refused&&
-		arithmeticBoundarySweep&&candidateBitEqual&&
+		arithmeticBoundarySweep&&logEnclosure&&candidateBitEqual&&
 		sharedAlphaBitEqual&&temperatureBitEqual&&pressureBitEqual&&deviationEnclosed&&
 		observed.branchObligationBitmap==requiredBranches&&observed.commandCommitCount==1u&&
 		observed.terminalStagingCount==1u&&observed.interstageFullGridTransferCount==0u&&
-		monitoredAccepted&&hardBoundRefused&&unsealedRefused&&mismatchedRefused&&cpuRefused&&
+		monitoredAccepted&&hardBoundRefused&&ambiguousPressureRefused&&
+		ambiguousDeviationRefused&&unsealedRefused&&mismatchedRefused&&cpuRefused&&
 		lowerEnvelopeAccepted&&lowerAdjacentRefused&&upperAdjacentAccepted&&upperEnvelopeRefused&&
 		roundedHardBoundPrepared&&roundedHardBoundRefused&&
 		fp64LabelRefused&&shortCandidateRefused&&invalidConservationRefused&&finalStageRefused&&
@@ -9665,7 +9729,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		"limited_cpu_solves=%u limited_device_attempts=%u limited_candidate_bit_equal=%d "
 		"shared_alpha_bit_equal=%d split_stage_refused=%d split_precision_refused=%d "
 		"split_attempt_refused=%d split_cells_refused=%d split_timestep_refused=%d "
-		"split_case_refused=%d "
+		"split_case_refused=%d pressure_midpoint_refused=%d deviation_midpoint_refused=%d "
 		"branch_bitmap=0x%08x required=0x%08x command=%u reads=%u transfers=%u\n",
 		passed?1:0,candidateBitEqual?1:0,temperatureBitEqual?1:0,pressureBitEqual?1:0,
 		deviationEnclosed?1:0,
@@ -9679,7 +9743,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		searchMinimumAlpha,limitedMinimumAlpha,limitedCPUSolves,limitedDeviceAttempts,
 		limitedFCTBitEqual?1:0,sharedAlphaBitEqual?1:0,splitStageRefused?1:0,
 		splitPrecisionRefused?1:0,splitAttemptRefused?1:0,splitCellsRefused?1:0,
-		splitTimeStepRefused?1:0,splitCaseRefused?1:0,
+		splitTimeStepRefused?1:0,splitCaseRefused?1:0,ambiguousPressureRefused?1:0,
+		ambiguousDeviationRefused?1:0,
 		observed.branchObligationBitmap,requiredBranches,observed.commandCommitCount,
 		observed.terminalStagingCount,observed.interstageFullGridTransferCount);
 	std::fprintf(stderr,"RESIDENT_EOS_CELLWISE temperature_max_residual_K=%.17g "

@@ -1873,6 +1873,7 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLComputePipelineState> evaluateEOSCandidate;
 			id<MTLComputePipelineState> finalizeEOSCandidate;
 			id<MTLComputePipelineState> identifyEOS;
+			id<MTLComputePipelineState> diagnoseEOSLog;
 			std::string error;
 
 			static const char* Source()
@@ -2273,6 +2274,10 @@ inline float eos_up_mul(float first,float second){float value=first*second;
  return isfinite(value)?nextafter(value,INFINITY):value;}
 inline float eos_up_div(float first,float second){float value=first/second;
  return isfinite(value)?nextafter(value,INFINITY):value;}
+inline float eos_down_sub(float first,float second){float value=first-second;
+ return isfinite(value)?nextafter(value,-INFINITY):value;}
+inline float eos_down_mul(float first,float second){float value=first*second;
+ return isfinite(value)?nextafter(value,-INFINITY):value;}
 inline float eos_local_spacing(float value){float upper=nextafter(value,INFINITY),
  lower=nextafter(value,-INFINITY);return max(abs(upper-value),abs(value-lower));}
 inline float eos_component_abs_sum(EOSDD value){return eos_up_add(eos_up_add(abs(value.hi),
@@ -2339,12 +2344,25 @@ inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int expon
  EOSDD logarithm=eos_mul(eos_dd(2.0f),sum);
  float yMagnitude=eos_abs_upper(y),remainderPower=yMagnitude;
  for(uint factor=1u;factor<51u;++factor)remainderPower=eos_up_mul(remainderPower,yMagnitude);
- float denominator=eos_up_mul(51.0f,max(0.0f,1.0f-eos_up_mul(yMagnitude,yMagnitude)));
+ float denominatorFactor=eos_down_sub(1.0f,eos_up_mul(yMagnitude,yMagnitude));
+ float denominator=denominatorFactor>0.0f?eos_down_mul(51.0f,denominatorFactor):0.0f;
  float truncation=denominator>0.0f?eos_up_div(eos_up_mul(2.0f,remainderPower),denominator):INFINITY;
  logarithm.bound=eos_up_add(logarithm.bound,truncation);
  EOSDD ln2=eos_dd(0.693147182464599609375f,-1.9046542121259336e-9f,
-  -1.1102230246251565e-16f);
- return eos_add(logarithm,eos_mul(eos_dd(float(exponent)),ln2));}
+  -1.1102230246251565e-16f,0x1p-54f);
+ EOSDD result=eos_add(logarithm,eos_mul(eos_dd(float(exponent)),ln2));
+ // The canonical fp64 mirror consumes std::log.  One binary64 relative ULP,
+ // validated over the sealed mantissa/domain sweep, encloses that projection
+ // separately from the exact analytic-series remainder above.
+ float mirrorProjection=eos_up_mul(0x1p-52f,max(1.0f,eos_abs_upper(result)));
+ result.bound=eos_up_add(result.bound,mirrorProjection);return result;}
+inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
+ EOSDD normalized=eos_add(value,eos_dd(0.0f));rounded=normalized.hi;
+ if(!isfinite(rounded))return false;float lower=nextafter(rounded,-INFINITY),
+  upper=nextafter(rounded,INFINITY);EOSDD lowerMidpoint=eos_add(eos_dd(rounded),
+  eos_dd((lower-rounded)*0.5f)),upperMidpoint=eos_add(eos_dd(rounded),
+  eos_dd((upper-rounded)*0.5f));return eos_order(lowerMidpoint,normalized)==-1&&
+  eos_order(normalized,upperMidpoint)==-1;}
 inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD temperature,
  thread uint& offset,device atomic_uint* obligations,thread bool& valid){uint base=96u*species,
  segments=uint(thermo[base+3u]);
@@ -2458,9 +2476,14 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
   eos_load_dd(eosThermo,7u*96u)),eos_dd(T)),meanWeight);
  EOSDD ratioDD=eos_div(represented,eos_load_dd(eosThermo,7u*96u+3u));
  EOSDD deviationDD=eos_abs(eos_sub(ratioDD,eos_dd(1.0f)));
- float ratio=eos_add(ratioDD,eos_dd(0.0f)).hi;
- float absoluteDeviation=eos_add(deviationDD,eos_dd(0.0f)).hi;
- if(!isfinite(ratio)||!(ratio>0.0f)||!isfinite(absoluteDeviation)){
+ if((p.pad0&1u)!=0u){float adjacent=nextafter(1.0f,INFINITY);
+  ratioDD=eos_add(eos_dd(1.0f),eos_dd((adjacent-1.0f)*0.5f));}
+ if((p.pad0&2u)!=0u){float adjacent=nextafter(0.125f,INFINITY);
+  deviationDD=eos_add(eos_dd(0.125f),eos_dd((adjacent-0.125f)*0.5f));}
+ float ratio=0.0f,absoluteDeviation=0.0f;
+ if(!eos_unique_binary32_round(ratioDD,ratio)||
+  !eos_unique_binary32_round(deviationDD,absoluteDeviation)||
+  !isfinite(ratio)||!(ratio>0.0f)||!isfinite(absoluteDeviation)){
   atomic_fetch_or_explicit(failure,512u,memory_order_relaxed);return;}
  temperature[gid]=T;pressureRatio[gid]=ratio;deviation[gid]=absoluteDeviation;
  atomic_fetch_or_explicit(obligations,1u<<5u,memory_order_relaxed);
@@ -2484,13 +2507,19 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
  hash^=p.attempt;hash*=1099511628211ul;hash^=p.caseIdentity;hash*=1099511628211ul;
  hash^=ulong(p.stage);hash*=1099511628211ul;hash^=ulong(p.precision);hash*=1099511628211ul;
  hash^=ulong(as_type<uint>(p.dynamicsBound));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
+kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
+ device float* output [[buffer(1)]],uint gid [[thread_position_in_grid]]){
+ EOSDD value=eos_log_dd(eos_dd(input[gid]));output[4u*gid]=value.hi;
+ output[4u*gid+1u]=value.lo;output[4u*gid+2u]=value.tail;
+ output[4u*gid+3u]=value.bound;}
 )METAL";
 			}
 
 			ResidentTransportMetalContext() : device(nil),queue(nil),evaluate(nil),identify(nil),
 				physicalFlux(nil),advectivePair(nil),finalizeAdvective(nil),composePair(nil),validatePhysical(nil),
 				identifyPhysical(nil),identifyEOSCandidate(nil),
-				evaluateEOSCandidate(nil),finalizeEOSCandidate(nil),identifyEOS(nil)
+				evaluateEOSCandidate(nil),finalizeEOSCandidate(nil),identifyEOS(nil),
+				diagnoseEOSLog(nil)
 			{
 				@autoreleasepool {
 					device=DiscoverProductionMetalDevice("resident transport",error);
@@ -2515,9 +2544,11 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
 					evaluateEOSCandidate=pipeline("evaluate_resident_eos_candidate");
 					finalizeEOSCandidate=pipeline("finalize_resident_eos_candidate");
 					identifyEOS=pipeline("identify_resident_eos");
+					diagnoseEOSLog=pipeline("diagnose_eos_log_enclosure");
 					if(!evaluate||!identify||!physicalFlux||!advectivePair||!finalizeAdvective||!composePair||
 						!validatePhysical||!identifyPhysical||
-						!identifyEOSCandidate||!evaluateEOSCandidate||!finalizeEOSCandidate||!identifyEOS){error=MetalError(
+						!identifyEOSCandidate||!evaluateEOSCandidate||!finalizeEOSCandidate||!identifyEOS||
+						!diagnoseEOSLog){error=MetalError(
 						"production resident authority pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
 				}
@@ -2526,7 +2557,7 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
 			bool Valid() const {return device&&queue&&evaluate&&identify&&physicalFlux&&
 				advectivePair&&finalizeAdvective&&composePair&&validatePhysical&&identifyPhysical&&
 				identifyEOSCandidate&&evaluateEOSCandidate&&
-				finalizeEOSCandidate&&identifyEOS&&error.empty();}
+				finalizeEOSCandidate&&identifyEOS&&diagnoseEOSLog&&error.empty();}
 		};
 
 		MetalRemapContext& Context()
@@ -7264,6 +7295,8 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
 			if(request.qualificationMismatchedDeviceTimeStep)
 				deviceEOSParameters.timeStepS=std::nextafter(deviceEOSParameters.timeStepS,
 					std::numeric_limits<float>::infinity());
+			if(request.qualificationAmbiguousPressureRounding)deviceEOSParameters.padding[0]|=1u;
+			if(request.qualificationAmbiguousDeviationRounding)deviceEOSParameters.padding[0]|=2u;
 			MetalResidentEOSParameters candidateEOSParameters=deviceEOSParameters;
 			if(request.qualificationMismatchedDeviceCase)++candidateEOSParameters.caseIdentity;
 			std::array<float,MetalResidentTransportSpeciesCount*
@@ -8016,6 +8049,47 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
 			}
 		} catch(const std::bad_alloc&){failureBitmap=0u;
 			if(error)*error="production scalar FCT commit diagnostic allocation failed";return false;}
+	}
+
+	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
+		const std::vector<float>& input,std::vector<std::array<float,4> >& expansionAndBound,
+		std::string* error )
+	{
+		expansionAndBound.clear();
+		try {
+			if(input.empty()||!AllFinite(input)){
+				if(error)*error="production EOS log diagnostic input is invalid";return false;}
+			ResidentTransportMetalContext& context=ResidentTransportContext();
+			if(!context.Valid()){if(error)*error=context.error;return false;}
+			@autoreleasepool {
+				id<MTLBuffer> deviceInput=[context.device newBufferWithBytes:input.data()
+					length:input.size()*sizeof(float) options:MTLResourceStorageModeShared],
+					deviceOutput=[context.device newBufferWithLength:4u*input.size()*sizeof(float)
+						options:MTLResourceStorageModeShared];
+				if(!deviceInput||!deviceOutput){
+					if(error)*error="production EOS log diagnostic allocation failed";return false;}
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				if(!encoder){if(error)*error="production EOS log diagnostic encoder failed";
+					return false;}
+				[encoder setComputePipelineState:context.diagnoseEOSLog];
+				[encoder setBuffer:deviceInput offset:0 atIndex:0];
+				[encoder setBuffer:deviceOutput offset:0 atIndex:1];
+				Dispatch(encoder,context.diagnoseEOSLog,input.size());[encoder endEncoding];
+				CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if([command status]!=MTLCommandBufferStatusCompleted){
+					if(error)*error="production EOS log diagnostic command failed";return false;}
+				const float* output=static_cast<const float*>(ReadTrackedMetalBuffer(deviceOutput));
+				if(!output){if(error)*error="production EOS log diagnostic output is unavailable";
+					return false;}
+				expansionAndBound.resize(input.size());
+				for(std::size_t sample=0u;sample<input.size();++sample)
+					for(std::size_t component=0u;component<4u;++component)
+						expansionAndBound[sample][component]=output[4u*sample+component];
+				if(error)error->clear();return true;
+			}
+		} catch(const std::bad_alloc&){expansionAndBound.clear();
+			if(error)*error="production EOS log diagnostic allocation failed";return false;}
 	}
 
 	bool SealFireProductionSingleStageFCTBoundaryState(

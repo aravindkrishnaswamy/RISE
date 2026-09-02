@@ -5827,7 +5827,14 @@ begin with the local spacing of the discarded tail. Addition accumulates with
 general `TwoSum`; multiplication accumulates every 3-by-3 product and its FMA
 residual; division certifies the quotient from its computed residual divided by
 a proved denominator lower bound. The logarithm uses an atanh series through
-odd order 49 and includes its analytic remainder. Every gate compares the
+odd order 49 and includes its analytic remainder; its denominator uses
+directed-down subtraction/multiplication, the `ln(2)` triple carries its
+`2^-54` semantic remainder, and a `2^-52 max(1,|log|)` absolute term covers the
+canonical binary64 mirror's `std::log` projection. A 1,037-input Metal sweep
+over mantissas, exponents, and NASA9 edges measures worst residual/bound
+`0.70588552087007805`; an independent Q100 fixed-point atanh-series interval
+also proves mathematical `ln(2)` lies inside the packed triple's `2^-54`
+bound. Every gate compares the
 resulting intervals and refuses when their order overlaps. Thus r60 and r170
 are protected by a connected error enclosure, not output spacing or
 subtractive cancellation.
@@ -5839,6 +5846,10 @@ are retained in the SHA-bound raw transcript; their residuals and worst
 residual/enclosure ratios are zero. Four additional arithmetic-boundary cases
 span 300, 1000, 1000.001, and 2200 K and state scales from `0.750500023` to
 `1.24950004`. No pooled across-field statistic participates in acceptance.
+Pressure and deviation publish only when their complete propagated intervals
+fit strictly inside one binary32 rounding bin. Qualification values placed
+exactly on each midpoint refuse with `0x200` and zero candidate/EOS identities;
+an ambiguous interval can never acquire publication authority.
 
 The isolated r60 RED calls the production `fct_commit_scalar` kernel directly:
 energy `2283578` is admitted and its adjacent binary32 value `2283578.25`
