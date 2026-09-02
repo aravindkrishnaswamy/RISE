@@ -1059,6 +1059,30 @@ namespace RISEFireProductionTrace
 		return seal.Matches(error);
 	}
 
+	bool FireProductionResidentTransportLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!std::isfinite(shape.cellWidthM)||
+			!(shape.cellWidthM>0.0f))return false;
+		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
+		const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.ny);
+		// Device-private coefficient publication, identity, immutable record
+		// tables, fixed fuel-inlet classes, parameters, and two refusal words.
+		// State/T/projected velocity are already resident owner surfaces.
+		return AddMetalValueBuffer(3u*cells,sizeof(float),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
+			AddMetalValueBuffer(7u*32u+64u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(6u*(1u+5u*128u),sizeof(float),bytes)&&
+			AddMetalValueBuffer(boundaryFaces,sizeof(unsigned char),bytes)&&
+			AddMetalValueBuffer(256u,sizeof(unsigned char),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes);
+	}
+
 	bool FireProductionCellPalindromeWorkingSetBytes(
 		const FireProductionProjectionShape& shape, std::size_t componentCount,
 		std::uint64_t& bytes, bool retainAcceptedGasMassDose )

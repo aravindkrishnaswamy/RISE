@@ -5066,3 +5066,32 @@ it was already tried and refuted here.
   entry changes no solver semantics and therefore does not regenerate the case
   record. Evidence SHA-256 is
   `594cd3978d22bec423c7e8132b7d85bbe99cb97e67bbb0add51620560fb40253`.
+
+- **r197 resident transport authority (2026-09-02):** completes only the
+  first r196 rung. The live surface is an opaque device-produced authority;
+  the public comparator is a terminal qualification tap and cannot be
+  converted into owner transport coefficients. Private Metal state,
+  temperature, velocity, and the fixed physical fuel-inlet face class feed
+  NASA9/PCHIP/Wilke-WMS/Vreman evaluation and device-side identity in one
+  command. The fuel-inlet class is case-authored boundary topology, not the
+  pressure-open boundary's changing inflow/outflow active set. The matched
+  fp64 mirror plus a termwise binary32 forward-error enclosure is binding;
+  the host binary32 DAG comparison is diagnostic and unequal, which is
+  admissible because transport evaluation is not a streaming kernel. The
+  branch walker exactly matches device bitmap `0x0007fffb`; the current
+  methane record/domain proves NASA9 segment 2 unreachable. Maximum normalized
+  device/mirror separation is `0.0020747848823717565`, below derived bound
+  `0.00084344337177579909` in absolute units, with uncancelled Vreman scale
+  `0.049928860855711937`. Residency is measured as one command, one terminal
+  staging read, and zero interstage full-grid transfers. Fixture allocation is
+  exactly `44296` bytes; the live incremental certificate is `131072` bytes
+  and the complete owner peak becomes `5941576` bytes. Immutable records,
+  physical boundary classes, and mutable stage/attempt/parent/projection
+  lineage all alter the device identity; a missing lineage tuple, invalid device state,
+  broken periodic seams, and short velocity surfaces refuse without
+  publication. No case-authored input changed, so `case_record_id` is stable;
+  r197's live binding regenerates producer identity, and later runs regenerate
+  run identity from these solver semantics. The golden checkpoint is untouched. The
+  evidence SHA-256 is
+  `3473a554ecec6cf56017efe60fa4b4d94a99350fa6fd6b3100f419122aee9acf`.
+  The next separately reviewed rung is resident physical-flux authority.

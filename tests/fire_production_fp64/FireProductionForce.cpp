@@ -749,11 +749,13 @@ namespace RISEFireProductionFP64
 	{
 		bytes=0u;
 		std::uint64_t forceProjectionBytes=0u,restorationProjectionBytes=0u,
-			cellBytes=0u,dualBytes=0u;
+			cellBytes=0u,dualBytes=0u,transportIncrementBytes=0u;
 		if( !FireProductionResidentForceProjectionWorkingSetBytes(shape,forceProjectionBytes)||
 			!FireProductionProjectionWorkingSetBytes(shape,restorationProjectionBytes)||
 			!FireProductionCellPalindromeWorkingSetBytes(shape,9u,cellBytes)||
-			!FireProductionDualMomentumResidentWorkingSetBytes(shape,boundary,dualBytes) )
+			!FireProductionDualMomentumResidentWorkingSetBytes(shape,boundary,dualBytes)||
+			!FireProductionResidentTransportLiveIncrementWorkingSetBytes(
+				shape,transportIncrementBytes) )
 			return false;
 		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
 		const std::uint64_t allFaces=static_cast<std::uint64_t>(shape.nx+1u)*shape.ny*shape.nz+
@@ -780,9 +782,13 @@ namespace RISEFireProductionFP64
 					2u*targetAllocation||
 			forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)+
 				restorationProjectionBytes+2u*targetAllocation>
-					std::numeric_limits<std::uint64_t>::max()-manifoldAllocationAllowance ) return false;
+					std::numeric_limits<std::uint64_t>::max()-manifoldAllocationAllowance||
+			forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)+
+				restorationProjectionBytes+2u*targetAllocation+manifoldAllocationAllowance>
+					std::numeric_limits<std::uint64_t>::max()-transportIncrementBytes ) return false;
 		bytes=forceProjectionBytes+2u*cellBytes+dualBytes+extraValues*sizeof(double)+
-			restorationProjectionBytes+2u*targetAllocation+manifoldAllocationAllowance;return true;
+			restorationProjectionBytes+2u*targetAllocation+manifoldAllocationAllowance+
+			transportIncrementBytes;return true;
 	}
 
 	bool ValidateFireProductionFrozenForceRequest(

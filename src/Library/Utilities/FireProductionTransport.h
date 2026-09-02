@@ -1042,7 +1042,75 @@ namespace RISE
 		FireProductionScalarFCTResult& result,
 		std::string* error=0 );
 
+	//! Incremental simultaneous resident-owner peak for the transport authority.
+	//! Beginning state, temperature, and projected velocity already belong to the
+	//! owner and are therefore not double-counted here.
+	bool FireProductionResidentTransportLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
 #if defined(__APPLE__)
+	//! Matched-input qualification request for the private resident transport
+	//! authority.  This wrapper uploads immutable fixture inputs and stages only
+	//! the terminal coefficient fields; it cannot mint a live-owner publication.
+	struct FireProductionResidentTransportComparatorRequest
+	{
+		FireProductionProjectionShape shape;
+		std::array<FireProductionProjectionBoundary,6> boundary;
+		FireProductionProjectedHeunStage stage;
+		std::uint64_t attemptIdentity;
+		std::uint64_t parentCandidateIdentity;
+		std::uint64_t projectionIdentity;
+		std::vector<float> conservativeValues;
+		std::vector<float> temperatureK;
+		std::array<std::vector<float>,3> projectedVelocityMPerS;
+		//! Per-face fixed physical fuel-inlet classification. The canonical
+		//! methane case uses only the lower-z side; all other entries are zero.
+		std::array<std::vector<unsigned char>,6> fuelInletBoundaryFace;
+
+		FireProductionResidentTransportComparatorRequest() :
+			stage(static_cast<FireProductionProjectedHeunStage>(0u)),attemptIdentity(0u),
+			parentCandidateIdentity(0u),projectionIdentity(0u)
+			{ boundary.fill(FireProductionProjectionWall); }
+	};
+
+	struct FireProductionResidentTransportComparatorResult
+	{
+		FireProductionProjectedHeunStage stage;
+		std::uint64_t attemptIdentity;
+		std::uint64_t parentCandidateIdentity;
+		std::uint64_t projectionIdentity;
+		std::vector<float> diffusivityM2PerS;
+		std::vector<float> conductivityWPerMK;
+		std::vector<float> molecularKinematicViscosityM2PerS;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t branchObligationBitmap;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t devicePublicationIdentity;
+		double deviceElapsedMS;
+		bool deviceProduced;
+
+		FireProductionResidentTransportComparatorResult() :
+			stage(static_cast<FireProductionProjectedHeunStage>(0u)),attemptIdentity(0u),
+			parentCandidateIdentity(0u),projectionIdentity(0u),commandCommitCount(0u),
+			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
+			branchObligationBitmap(0u),certifiedWorkingSetBytes(0u),
+			actualMetalAllocationBytes(0u),devicePublicationIdentity(0u),
+			deviceElapsedMS(0.0),deviceProduced(false) {}
+	};
+
+	bool FireProductionResidentTransportMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! Qualification-only terminal tap for the private authority used by the
+	//! forthcoming resident owner. No CPU implementation or fallback is reachable.
+	bool EvaluateFireProductionResidentTransportMetalComparator(
+		const FireProductionResidentTransportComparatorRequest& request,
+		FireProductionResidentTransportComparatorResult& result,
+		std::string* error=0 );
+
 	//! Fail-closed blocker. Metal qualification requires device candidates to be
 	//! checked against the fp64 N_C N_C^T forward-error certificate first.
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(

@@ -8,8 +8,10 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <TargetConditionals.h>
 
 #include "FireProductionAdvection.h"
+#include "FireProductionCompute.h"
 #include "FireProductionForce.h"
 #include "FireSimulationRecords.h"
 #include "FireProductionTransport.h"
@@ -42,6 +44,29 @@ namespace RISE
 
 	namespace
 	{
+		id<MTLDevice> DiscoverProductionMetalDevice(const char* operation,
+			std::string& error)
+		{
+			id<MTLDevice> device=MTLCreateSystemDefaultDevice();
+			const bool defaultPresent=device!=nil;
+			NSArray<id<MTLDevice> >* enumerated=MTLCopyAllDevices();
+			const std::size_t enumeratedCount=static_cast<std::size_t>([enumerated count]);
+#if TARGET_CPU_ARM64
+			const bool appleSilicon=true;
+#else
+			const bool appleSilicon=false;
+#endif
+			const FireProductionDeviceDiscovery discovery=
+				ClassifyFireProductionDeviceDiscovery(true,appleSilicon,defaultPresent,
+					enumeratedCount);
+			if(device)return device;
+			error="production ";error+=operation;error+=" Metal discovery ";
+			error+=FireProductionDeviceDiscoveryName(discovery);
+			error+=" (default_present="+std::to_string(defaultPresent?1u:0u)+
+				", enumerated_count="+std::to_string(enumeratedCount)+")";
+			return nil;
+		}
+
 		thread_local bool CompatibleMomentumDiagnosticActive=false;
 		std::uint64_t AvalancheAcceptedDigest(std::uint64_t word)
 		{
@@ -165,6 +190,22 @@ namespace RISE
 			float cellWidthM,timeStepS,feasibility,assemblyReserve;
 		};
 
+		struct MetalResidentTransportParameters
+		{
+			std::uint32_t nx,ny,nz,cells;
+			std::uint32_t boundary[6],sideOffset[6];
+			std::uint32_t faceOffset[3];
+			std::uint32_t stage;
+			float cellWidthM,turbulentPrandtl,turbulentSchmidt,vremanCoefficient;
+			std::uint64_t attemptIdentity,parentCandidateIdentity,projectionIdentity;
+			std::uint64_t thermochemistryIdentity,transportIdentity;
+		};
+
+		constexpr std::size_t MetalResidentTransportMaximumKnots=128u;
+		constexpr std::size_t MetalResidentTransportSpeciesStride=
+			1u+5u*MetalResidentTransportMaximumKnots;
+		constexpr std::size_t MetalResidentTransportSpeciesCount=6u;
+
 		constexpr std::size_t MetalThermochemistrySpeciesStride=32u;
 		constexpr std::size_t MetalThermochemistrySpeciesValues=
 			7u*MetalThermochemistrySpeciesStride;
@@ -230,6 +271,73 @@ namespace RISE
 				parameters.temperatureMinK>0.0f&&
 				parameters.temperatureMaxK>parameters.temperatureMinK&&
 				parameters.pressurePa>0.0f&&parameters.feasibilityFactor>0.0f;
+		}
+
+		std::uint64_t ResidentRecordIdentity(const std::string& id)
+		{
+			std::uint64_t hash=UINT64_C(14695981039346656037);
+			for(const unsigned char byte:id){hash^=byte;hash*=UINT64_C(1099511628211);}
+			return hash==0u?1u:hash;
+		}
+
+		bool PackMetalResidentTransport(
+			std::array<float,MetalResidentTransportSpeciesCount*
+				MetalResidentTransportSpeciesStride>& packed,
+			MetalResidentTransportParameters& parameters,std::string* error )
+		{
+			packed.fill(0.0f);
+			const FireSimulationMethaneRecord& thermochemistry=
+				FireSimulationMethaneRecord::PhysicalV1();
+			const FireSimulationTransportRecord& transport=
+				FireSimulationTransportRecord::OpenV1();
+			if(!thermochemistry.IsValid()||!transport.IsValid()||
+				thermochemistry.SpeciesOrder().size()<MetalResidentTransportSpeciesCount){
+				if(error)*error="production resident transport records are unavailable";
+				return false;
+			}
+			for(std::size_t speciesIndex=0u;
+				speciesIndex<MetalResidentTransportSpeciesCount;++speciesIndex){
+				const FireTransportSpecies* species=transport.FindSpecies(
+					thermochemistry.SpeciesOrder()[speciesIndex].c_str());
+				if(!species||!species->viscosity.IsValid()||!species->conductivity.IsValid()||
+					species->viscosity.Wavelengths()!=species->conductivity.Wavelengths()||
+					species->viscosity.Wavelengths().size()<2u||
+					species->viscosity.Wavelengths().size()>MetalResidentTransportMaximumKnots||
+					species->viscosity.Values().size()!=species->viscosity.Wavelengths().size()||
+					species->viscosity.Slopes().size()!=species->viscosity.Wavelengths().size()||
+					species->conductivity.Values().size()!=species->viscosity.Wavelengths().size()||
+					species->conductivity.Slopes().size()!=species->viscosity.Wavelengths().size()){
+					if(error)*error="production resident transport curve is malformed for "+
+						thermochemistry.SpeciesOrder()[speciesIndex]+" (viscosity_knots="+
+						std::to_string(species?species->viscosity.Wavelengths().size():0u)+
+						", conductivity_knots="+std::to_string(species?
+							species->conductivity.Wavelengths().size():0u)+")";
+					return false;
+				}
+				const std::size_t count=species->viscosity.Wavelengths().size();
+				float* destination=packed.data()+speciesIndex*MetalResidentTransportSpeciesStride;
+				destination[0]=static_cast<float>(count);
+				for(std::size_t knot=0u;knot<count;++knot){
+					destination[1u+knot]=static_cast<float>(species->viscosity.Wavelengths()[knot]);
+					destination[1u+MetalResidentTransportMaximumKnots+knot]=
+					static_cast<float>(species->viscosity.Values()[knot]);
+					destination[1u+2u*MetalResidentTransportMaximumKnots+knot]=
+					static_cast<float>(species->viscosity.Slopes()[knot]);
+					destination[1u+3u*MetalResidentTransportMaximumKnots+knot]=
+					static_cast<float>(species->conductivity.Values()[knot]);
+					destination[1u+4u*MetalResidentTransportMaximumKnots+knot]=
+					static_cast<float>(species->conductivity.Slopes()[knot]);
+				}
+			}
+			parameters.turbulentPrandtl=static_cast<float>(transport.TurbulentPrandtl());
+			parameters.turbulentSchmidt=static_cast<float>(transport.TurbulentSchmidt());
+			parameters.vremanCoefficient=static_cast<float>(transport.VremanCv());
+			parameters.thermochemistryIdentity=ResidentRecordIdentity(thermochemistry.RecordId());
+			parameters.transportIdentity=ResidentRecordIdentity(transport.RecordId());
+			return std::isfinite(parameters.turbulentPrandtl)&&
+				std::isfinite(parameters.turbulentSchmidt)&&
+				std::isfinite(parameters.vremanCoefficient)&&parameters.turbulentPrandtl>0.0f&&
+				parameters.turbulentSchmidt>0.0f&&parameters.vremanCoefficient>0.0f;
 		}
 
 		bool PackMetalSingleStageFCTCertificate(
@@ -1681,6 +1789,184 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			}
 		};
 
+		struct ResidentTransportMetalContext
+		{
+			id<MTLDevice> device;
+			id<MTLCommandQueue> queue;
+			id<MTLComputePipelineState> evaluate;
+			id<MTLComputePipelineState> identify;
+			std::string error;
+
+			static const char* Source()
+			{
+				return R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+struct TransportParams {uint nx;uint ny;uint nz;uint cells;uint boundary[6];uint sideOffset[6];uint faceOffset[3];
+ uint stage;float dx;float Pr;float Sc;float Cv;ulong attempt;ulong parent;ulong projection;
+ ulong thermochemistry;ulong transport;};
+constant uint transport_max_knots=128u;
+constant uint transport_stride=1u+5u*transport_max_knots;
+inline uint tr_cell(constant TransportParams& p,uint x,uint y,uint z){return (z*p.ny+y)*p.nx+x;}
+inline uint tr_extent(constant TransportParams& p,uint a){return a==0u?p.nx:(a==1u?p.ny:p.nz);}
+inline uint tr_face(constant TransportParams& p,uint a,uint x,uint y,uint z){return p.faceOffset[a]+
+ (a==0u?(z*p.ny+y)*(p.nx+1u)+x:(a==1u?(z*(p.ny+1u)+y)*p.nx+x:(z*p.ny+y)*p.nx+x));}
+inline void tr_set(uint a,uint v,thread uint& x,thread uint& y,thread uint& z){if(a==0u)x=v;else if(a==1u)y=v;else z=v;}
+inline float tr_cell_velocity(device const float* velocity,constant TransportParams& p,uint a,uint x,uint y,uint z){
+ uint upperX=x+(a==0u),upperY=y+(a==1u),upperZ=z+(a==2u);
+ return 0.5f*(velocity[tr_face(p,a,x,y,z)]+velocity[tr_face(p,a,upperX,upperY,upperZ)]);}
+inline float tr_boundary_velocity(device const float* velocity,constant TransportParams& p,
+ uint side,uint component,uint x,uint y,uint z){uint normal=side/2u;if(component!=normal)return 0.0f;
+ if(normal==0u)x=(side&1u)?p.nx:0u;else if(normal==1u)y=(side&1u)?p.ny:0u;
+ else z=(side&1u)?p.nz:0u;return velocity[tr_face(p,component,x,y,z)];}
+inline bool tr_inlet(device const uchar* inflow,constant TransportParams& p,uint side,
+ uint x,uint y,uint z){uint first=side<2u?y:x,second=side<4u?z:y;
+ uint width=side<2u?p.ny:p.nx;return inflow[p.sideOffset[side]+second*width+first]!=0u;}
+inline float tr_cp(device const float* thermo,uint species,float temperature,thread bool& valid,
+ device atomic_uint* obligations){
+ device const float* record=thermo+32u*species;uint segments=uint(record[1]);device const float* selected=record+2u;
+ bool found=false;
+ for(uint segment=0u;segment<segments;++segment){device const float* candidate=record+2u+10u*segment;
+  if(temperature>=candidate[0]&&(temperature<candidate[1]||(segment+1u==segments&&temperature==candidate[1]))){
+   selected=candidate;found=true;atomic_fetch_or_explicit(obligations,1u<<min(segment,2u),memory_order_relaxed);}}
+ if(!found){valid=false;return 0.0f;}float inverse=1.0f/temperature,t2=temperature*temperature;
+ float cp=selected[2]*inverse*inverse+selected[3]*inverse+selected[4]+selected[5]*temperature+
+  selected[6]*t2+selected[7]*t2*temperature+selected[8]*t2*t2;
+ cp*=8314.46261815324f/record[0];if(!(cp>0.0f)||!isfinite(cp))valid=false;return cp;}
+inline float tr_curve(device const float* transport,uint species,uint field,float temperature,
+ thread bool& valid,device atomic_uint* obligations){device const float* record=transport+species*transport_stride;
+ uint count=uint(record[0]);if(count<2u||count>transport_max_knots){valid=false;return 0.0f;}uint knotOffset=1u;
+ uint valueOffset=1u+transport_max_knots+field*2u*transport_max_knots;
+ uint slopeOffset=valueOffset+transport_max_knots;
+ if(temperature<record[knotOffset]||temperature>record[knotOffset+count-1u]){valid=false;return 0.0f;}
+ if(temperature<=record[knotOffset]){atomic_fetch_or_explicit(obligations,1u<<3u,memory_order_relaxed);return record[valueOffset];}
+ if(temperature>=record[knotOffset+count-1u]){atomic_fetch_or_explicit(obligations,1u<<4u,memory_order_relaxed);return record[valueOffset+count-1u];}
+ atomic_fetch_or_explicit(obligations,1u<<5u,memory_order_relaxed);
+ uint lower=0u,upper=count-1u;while(upper-lower>1u){uint middle=(lower+upper)/2u;
+  if(temperature<record[knotOffset+middle]){upper=middle;
+   atomic_fetch_or_explicit(obligations,1u<<16u,memory_order_relaxed);}else{lower=middle;
+   atomic_fetch_or_explicit(obligations,1u<<17u,memory_order_relaxed);}}
+ if(temperature==record[knotOffset+lower]||temperature==record[knotOffset+upper])
+  atomic_fetch_or_explicit(obligations,1u<<6u,memory_order_relaxed);
+ float h=record[knotOffset+upper]-record[knotOffset+lower];float t=(temperature-record[knotOffset+lower])/h;
+ float t2=t*t,t3=t2*t;return (2.0f*t3-3.0f*t2+1.0f)*record[valueOffset+lower]+
+  (t3-2.0f*t2+t)*h*record[slopeOffset+lower]+(-2.0f*t3+3.0f*t2)*record[valueOffset+upper]+
+  (t3-t2)*h*record[slopeOffset+upper];}
+inline float tr_phi(float mui,float muj,float wi,float wj){float numerator=1.0f+
+ sqrt(mui/muj)*sqrt(sqrt(wj/wi));return numerator*numerator/sqrt(8.0f*(1.0f+wi/wj));}
+kernel void evaluate_resident_transport(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
+ device const float* thermo [[buffer(3)]],device const float* transport [[buffer(4)]],
+ device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ device atomic_uint* obligations [[buffer(7)]],constant TransportParams& p [[buffer(8)]],
+ device const uchar* inflow [[buffer(9)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
+ float T=temperature[gid];bool valid=isfinite(T);float rho=0.0f,mass[6];
+ for(uint species=0u;species<6u;++species){float q=state[(species+1u)*p.cells+gid];
+  if(!isfinite(q))valid=false;mass[species]=max(0.0f,q);rho+=mass[species];}
+ if(!(rho>0.0f)||!isfinite(rho))valid=false;float gradient[3][3];
+ for(uint derivative=0u;derivative<3u;++derivative){uint coordinate=derivative==0u?x:(derivative==1u?y:z);
+  uint extent=tr_extent(p,derivative);for(uint component=0u;component<3u;++component){
+   uint px=x,py=y,pz=z,nx=x,ny=y,nz=z;uint previous=coordinate?coordinate-1u:0u;
+   uint next=coordinate+1u<extent?coordinate+1u:extent-1u;
+   if(coordinate>0u&&coordinate+1u<extent)atomic_fetch_or_explicit(obligations,1u<<7u,memory_order_relaxed);
+   if(coordinate==0u&&p.boundary[2u*derivative]==0u){previous=extent-1u;
+    atomic_fetch_or_explicit(obligations,1u<<8u,memory_order_relaxed);}
+   if(coordinate+1u==extent&&p.boundary[2u*derivative+1u]==0u){next=0u;
+    atomic_fetch_or_explicit(obligations,1u<<8u,memory_order_relaxed);}
+   tr_set(derivative,previous,px,py,pz);tr_set(derivative,next,nx,ny,nz);
+   float pv=tr_cell_velocity(velocity,p,component,px,py,pz),nv=tr_cell_velocity(velocity,p,component,nx,ny,nz);
+   if(coordinate==0u&&p.boundary[2u*derivative]!=0u){uint side=2u*derivative;
+    bool inlet=tr_inlet(inflow,p,side,x,y,z);uint kind=inlet?2u:p.boundary[side];
+    atomic_fetch_or_explicit(obligations,1u<<(kind==1u?9u:10u),memory_order_relaxed);
+    if(inlet)atomic_fetch_or_explicit(obligations,1u<<18u,memory_order_relaxed);
+    pv=kind==1u?tr_cell_velocity(velocity,p,component,x,y,z):
+     2.0f*tr_boundary_velocity(velocity,p,side,component,x,y,z)-tr_cell_velocity(velocity,p,component,x,y,z);}
+   if(coordinate+1u==extent&&p.boundary[2u*derivative+1u]!=0u){uint side=2u*derivative+1u;
+    bool inlet=tr_inlet(inflow,p,side,x,y,z);uint kind=inlet?2u:p.boundary[side];
+    atomic_fetch_or_explicit(obligations,1u<<(kind==1u?9u:10u),memory_order_relaxed);
+    if(inlet)atomic_fetch_or_explicit(obligations,1u<<18u,memory_order_relaxed);
+    nv=kind==1u?tr_cell_velocity(velocity,p,component,x,y,z):
+     2.0f*tr_boundary_velocity(velocity,p,side,component,x,y,z)-tr_cell_velocity(velocity,p,component,x,y,z);}
+   gradient[derivative][component]=(nv-pv)/(2.0f*p.dx);if(!isfinite(gradient[derivative][component]))valid=false;}}
+ float alpha2=0.0f,beta[3][3];for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j){
+  alpha2+=gradient[i][j]*gradient[i][j];beta[i][j]=0.0f;}float width2=p.dx*p.dx;
+ for(uint m=0u;m<3u;++m)for(uint i=0u;i<3u;++i)for(uint j=0u;j<3u;++j)
+  beta[i][j]+=width2*gradient[m][i]*gradient[m][j];
+ float b0=beta[0][0]*beta[1][1],b1=beta[0][1]*beta[0][1],b2=beta[0][0]*beta[2][2];
+ float b3=beta[0][2]*beta[0][2],b4=beta[1][1]*beta[2][2],b5=beta[1][2]*beta[1][2];
+ float rawB=b0-b1+b2-b3+b4-b5,rawScale=abs(b0)+abs(b1)+abs(b2)+abs(b3)+abs(b4)+abs(b5);
+ if(abs(rawB)<=32.0f*0x1p-24f*max(1.0f,rawScale))atomic_fetch_or_explicit(obligations,1u<<11u,memory_order_relaxed);
+ atomic_fetch_or_explicit(obligations,1u<<(alpha2==0.0f?12u:13u),memory_order_relaxed);
+ atomic_fetch_or_explicit(obligations,1u<<(rawB<0.0f?14u:15u),memory_order_relaxed);
+ float eddy=alpha2==0.0f?0.0f:p.Cv*sqrt(max(0.0f,rawB)/alpha2);if(!(eddy>=0.0f)||!isfinite(eddy))valid=false;
+ float mole[6],mu[6],conductivity[6],moleTotal=0.0f,cp=0.0f;
+ for(uint species=0u;species<6u;++species){float fraction=mass[species]/rho;
+  float weight=thermo[32u*species];mole[species]=fraction/weight;moleTotal+=mole[species];
+  cp+=fraction*tr_cp(thermo,species,T,valid,obligations);mu[species]=tr_curve(transport,species,0u,T,valid,obligations);
+  conductivity[species]=tr_curve(transport,species,1u,T,valid,obligations);}
+ if(!(moleTotal>0.0f)||!isfinite(moleTotal))valid=false;for(uint species=0u;species<6u;++species)mole[species]/=moleTotal;
+ float mixtureMu=0.0f,mixtureK=0.0f;for(uint i=0u;i<6u;++i){float denominator=0.0f;
+  for(uint j=0u;j<6u;++j)denominator+=mole[j]*tr_phi(mu[i],mu[j],thermo[32u*i],thermo[32u*j]);
+  mixtureMu+=mole[i]*mu[i]/denominator;mixtureK+=mole[i]*conductivity[i]/denominator;}
+ float volumetric=rho*cp;float totalDiff=mixtureK/volumetric+eddy/p.Sc;
+ float effectiveK=mixtureK+volumetric*eddy/p.Pr;float molecularNu=mixtureMu/rho;
+ if(!(totalDiff>0.0f)||!(effectiveK>0.0f)||!(molecularNu>0.0f)||!isfinite(totalDiff)||!isfinite(effectiveK)||!isfinite(molecularNu))valid=false;
+ output[gid]=totalDiff;output[p.cells+gid]=effectiveK;output[2u*p.cells+gid]=molecularNu;
+ if(!valid)atomic_fetch_or_explicit(failure,1u,memory_order_relaxed);}
+kernel void identify_resident_transport(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* velocity [[buffer(2)]],
+ device const float* output [[buffer(3)]],device const float* thermo [[buffer(4)]],
+ device const float* transport [[buffer(5)]],device const uchar* inflow [[buffer(6)]],
+ device ulong* identity [[buffer(7)]],device atomic_uint* failure [[buffer(8)]],
+ constant TransportParams& p [[buffer(9)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid!=0u)return;if(atomic_load_explicit(failure,memory_order_relaxed)!=0u){identity[0]=0ul;return;}
+ ulong hash=14695981039346656037ul;
+ for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<p.cells;++word){hash^=ulong(as_type<uint>(temperature[word]));hash*=1099511628211ul;}
+ uint faceWords=p.faceOffset[2]+p.nx*p.ny*(p.nz+1u);
+ for(uint word=0u;word<faceWords;++word){hash^=ulong(as_type<uint>(velocity[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<3u*p.cells;++word){
+  hash^=ulong(as_type<uint>(output[word]));hash*=1099511628211ul;}hash^=p.attempt;hash*=1099511628211ul;
+ for(uint word=0u;word<7u*32u;++word){hash^=ulong(as_type<uint>(thermo[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<6u*transport_stride;++word){hash^=ulong(as_type<uint>(transport[word]));hash*=1099511628211ul;}
+ uint inflowWords=p.sideOffset[5]+p.nx*p.ny;
+ for(uint word=0u;word<inflowWords;++word){hash^=ulong(inflow[word]);hash*=1099511628211ul;}
+ hash^=p.parent;hash*=1099511628211ul;hash^=p.projection;hash*=1099511628211ul;hash^=ulong(p.stage);
+ hash*=1099511628211ul;hash^=ulong(p.nx);hash*=1099511628211ul;hash^=ulong(p.ny);
+ hash*=1099511628211ul;hash^=ulong(p.nz);hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.dx));
+ for(uint side=0u;side<6u;++side){hash*=1099511628211ul;hash^=ulong(p.boundary[side]);}
+ hash*=1099511628211ul;hash^=p.thermochemistry;hash*=1099511628211ul;hash^=p.transport;
+ hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Pr));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.Sc));hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Cv));
+ identity[0]=hash==0ul?1ul:hash;}
+)METAL";
+			}
+
+			ResidentTransportMetalContext() : device(nil),queue(nil),evaluate(nil),identify(nil)
+			{
+				@autoreleasepool {
+					device=DiscoverProductionMetalDevice("resident transport",error);
+					if(!device)return;
+					MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
+					if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
+					else{error="production resident transport requires Metal safe math mode";return;}
+					NSError* metalError=nil;NSString* source=[NSString stringWithUTF8String:Source()];
+					id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&metalError];
+					if(!library){error=MetalError("production resident transport library compilation failed",metalError);return;}
+					auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{id<MTLFunction> function=
+						[library newFunctionWithName:[NSString stringWithUTF8String:name]];
+						return function?[device newComputePipelineStateWithFunction:function error:&metalError]:nil;};
+					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
+					if(!evaluate||!identify){error=MetalError("production resident transport pipeline creation failed",metalError);return;}
+					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
+				}
+			}
+
+			bool Valid() const {return device&&queue&&evaluate&&identify&&error.empty();}
+		};
+
 		MetalRemapContext& Context()
 		{
 			static MetalRemapContext context;
@@ -1690,6 +1976,12 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 		SingleStageFCTMetalContext& SingleStageFCTContext()
 		{
 			static SingleStageFCTMetalContext context;
+			return context;
+		}
+
+		ResidentTransportMetalContext& ResidentTransportContext()
+		{
+			static ResidentTransportMetalContext context;
 			return context;
 		}
 
@@ -4659,6 +4951,231 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 
 	namespace
 	{
+		class ResidentTransportMetalAuthority;
+		bool EncodeResidentTransportAuthority(
+			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,std::size_t,std::size_t,
+			std::size_t,ResidentTransportMetalAuthority&,std::string*);
+
+		class ResidentTransportMetalAuthority
+		{
+			friend bool EncodeResidentTransportAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,std::size_t,std::size_t,
+				std::size_t,ResidentTransportMetalAuthority&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentTransportMetalComparator(
+				const FireProductionResidentTransportComparatorRequest&,
+				FireProductionResidentTransportComparatorResult&,std::string*);
+			id<MTLBuffer> coefficients;
+			id<MTLBuffer> publicationIdentity;
+			std::uint64_t allocationBytes;
+			ResidentTransportMetalAuthority() : coefficients(nil),publicationIdentity(nil),
+				allocationBytes(0u) {}
+			ResidentTransportMetalAuthority(const ResidentTransportMetalAuthority&)=delete;
+			ResidentTransportMetalAuthority& operator=(
+				const ResidentTransportMetalAuthority&)=delete;
+		};
+
+		bool ValidResidentTransportStage(const FireProductionProjectedHeunStage stage)
+		{
+			return stage==FireProductionProjectedHeunStage::R0||
+				stage==FireProductionProjectedHeunStage::R1||
+				stage==FireProductionProjectedHeunStage::R2;
+		}
+
+		bool PrepareResidentTransportRequest(
+			const FireProductionResidentTransportComparatorRequest& request,
+			MetalResidentTransportParameters& parameters,
+			std::array<std::size_t,3>& faceOffset,std::size_t& allFaces,
+			std::vector<unsigned char>& packedInflow,
+			std::string* error )
+		{
+			const FireProductionProjectionShape& shape=request.shape;
+			if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+				shape.nz<4u||shape.nz>1024u||!std::isfinite(shape.cellWidthM)||
+				!(shape.cellWidthM>0.0f)||!ValidResidentTransportStage(request.stage)||
+				request.attemptIdentity==0u||request.parentCandidateIdentity==0u||
+				request.projectionIdentity==0u){
+				if(error)*error="production resident transport protocol metadata is invalid";
+				return false;
+			}
+			const std::size_t cells=shape.CellCount();
+			if(cells==0u||cells>std::numeric_limits<std::uint32_t>::max()||
+				request.conservativeValues.size()!=9u*cells||
+				request.temperatureK.size()!=cells){
+				if(error)*error="production resident transport cell tuple is invalid";
+				return false;
+			}
+			allFaces=0u;
+			for(unsigned int axis=0u;axis<3u;++axis){
+				faceOffset[axis]=allFaces;
+				const std::size_t faces=FireProductionProjectionFaceCount(shape,axis);
+				if(request.projectedVelocityMPerS[axis].size()!=faces||
+					allFaces>std::numeric_limits<std::size_t>::max()-faces){
+					if(error)*error="production resident transport velocity tuple is invalid";
+					return false;
+				}
+				allFaces+=faces;
+			}
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const FireProductionProjectionBoundary lower=request.boundary[2u*axis];
+				const FireProductionProjectionBoundary upper=request.boundary[2u*axis+1u];
+				if(lower<FireProductionProjectionPeriodic||lower>FireProductionProjectionWall||
+					upper<FireProductionProjectionPeriodic||upper>FireProductionProjectionWall||
+					((lower==FireProductionProjectionPeriodic)!=(upper==
+						FireProductionProjectionPeriodic))){
+					if(error)*error="production resident transport boundary tuple is invalid";
+					return false;
+				}
+				if(lower==FireProductionProjectionPeriodic){
+					const std::size_t extent=axis==0u?shape.nx:(axis==1u?shape.ny:shape.nz);
+					const std::size_t firstEnd=axis==0u?shape.ny:shape.nx;
+					const std::size_t secondEnd=axis==2u?shape.ny:shape.nz;
+					auto faceIndex=[&](const std::size_t x,const std::size_t y,
+						const std::size_t z){return axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
+						(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:
+							(z*shape.ny+y)*shape.nx+x);};
+					for(std::size_t second=0u;second<secondEnd;++second)
+						for(std::size_t first=0u;first<firstEnd;++first){
+							std::size_t lx=0u,ly=0u,lz=0u,hx=0u,hy=0u,hz=0u;
+							if(axis==0u){ly=hy=first;lz=hz=second;hx=extent;}
+							if(axis==1u){lx=hx=first;lz=hz=second;hy=extent;}
+							if(axis==2u){lx=hx=first;ly=hy=second;hz=extent;}
+							const float lowValue=request.projectedVelocityMPerS[axis][
+								faceIndex(lx,ly,lz)],highValue=request.projectedVelocityMPerS[axis][
+								faceIndex(hx,hy,hz)];
+							std::uint32_t lowBits=0u,highBits=0u;
+							std::memcpy(&lowBits,&lowValue,sizeof(lowBits));
+							std::memcpy(&highBits,&highValue,sizeof(highBits));
+							if(lowBits!=highBits){
+								if(error)*error=
+									"production resident transport periodic velocity seam is invalid";
+								return false;
+							}
+						}
+				}
+			}
+			if(!AllFinite(request.conservativeValues)||!AllFinite(request.temperatureK)){
+				if(error)*error="production resident transport cell input is nonfinite";
+				return false;
+			}
+			for(const std::vector<float>& velocity:request.projectedVelocityMPerS)
+				if(!AllFinite(velocity)){
+					if(error)*error="production resident transport velocity is nonfinite";
+					return false;
+				}
+			parameters={};parameters.nx=static_cast<std::uint32_t>(shape.nx);
+			parameters.ny=static_cast<std::uint32_t>(shape.ny);
+			parameters.nz=static_cast<std::uint32_t>(shape.nz);
+			parameters.cells=static_cast<std::uint32_t>(cells);
+			packedInflow.clear();std::size_t sideOffset=0u;
+			for(unsigned int side=0u;side<6u;++side){
+				const std::size_t expected=side<2u?shape.ny*shape.nz:
+					(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+				if(request.fuelInletBoundaryFace[side].size()!=expected){if(error)*error=
+					"production resident transport fuel-inlet classification shape is invalid";
+					return false;}
+				for(const unsigned char value:request.fuelInletBoundaryFace[side])if(value>1u||
+					(value!=0u&&(side!=4u||request.boundary[side]!=
+						FireProductionProjectionWall))){
+					if(error)*error=
+						"production resident transport fuel-inlet classification value is invalid";
+					return false;}
+				parameters.boundary[side]=static_cast<std::uint32_t>(request.boundary[side]);
+				parameters.sideOffset[side]=static_cast<std::uint32_t>(sideOffset);
+				packedInflow.insert(packedInflow.end(),request.fuelInletBoundaryFace[side].begin(),
+					request.fuelInletBoundaryFace[side].end());sideOffset+=expected;
+			}
+			for(unsigned int axis=0u;axis<3u;++axis)parameters.faceOffset[axis]=
+				static_cast<std::uint32_t>(faceOffset[axis]);
+			parameters.stage=static_cast<std::uint32_t>(request.stage);
+			parameters.cellWidthM=shape.cellWidthM;
+			parameters.attemptIdentity=request.attemptIdentity;
+			parameters.parentCandidateIdentity=request.parentCandidateIdentity;
+			parameters.projectionIdentity=request.projectionIdentity;
+			return true;
+		}
+
+		bool EncodeResidentTransportAuthority(
+			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
+			id<MTLBuffer> state,id<MTLBuffer> temperature,id<MTLBuffer> velocity,
+			id<MTLBuffer> thermochemistry,id<MTLBuffer> transport,id<MTLBuffer> fuelInlet,
+			id<MTLBuffer> parameters,id<MTLBuffer> failure,id<MTLBuffer> obligations,
+			const std::size_t cells,const std::size_t allFaces,
+			const std::size_t boundaryFaces,
+			ResidentTransportMetalAuthority& authority,
+			std::string* error )
+		{
+			if(!command||!state||!temperature||!velocity||!thermochemistry||!transport||!fuelInlet||
+				!parameters||!failure||!obligations||cells==0u){
+				if(error)*error="production resident transport authority input is absent";
+				return false;
+			}
+			const std::array<id<MTLBuffer>,9> privateInputs={{state,temperature,velocity,
+				thermochemistry,transport,fuelInlet,parameters,failure,obligations}};
+			for(id<MTLBuffer> buffer:privateInputs)if([buffer device]!=context.device||
+				[buffer storageMode]!=MTLStorageModePrivate){if(error)*error=
+				"production resident transport authority requires device-private inputs";
+				return false;}
+			if([state length]!=9u*cells*sizeof(float)||
+				[temperature length]!=cells*sizeof(float)||
+				[velocity length]!=allFaces*sizeof(float)||
+				[fuelInlet length]!=boundaryFaces*sizeof(unsigned char)||
+				[thermochemistry length]!=MetalManifoldCertificateValues*sizeof(float)||
+				[transport length]!=MetalResidentTransportSpeciesCount*
+					MetalResidentTransportSpeciesStride*sizeof(float)||
+				[parameters length]!=sizeof(MetalResidentTransportParameters)||
+				[failure length]!=sizeof(std::uint32_t)||
+				[obligations length]!=sizeof(std::uint32_t)){if(error)*error=
+				"production resident transport authority buffer extent is invalid";
+				return false;}
+			authority.coefficients=[context.device newBufferWithLength:3u*cells*sizeof(float)
+				options:MTLResourceStorageModePrivate];
+			authority.publicationIdentity=[context.device newBufferWithLength:sizeof(std::uint64_t)
+				options:MTLResourceStorageModePrivate];
+			if(!authority.coefficients||!authority.publicationIdentity){
+				if(error)*error="production resident transport authority allocation failed";
+				return false;
+			}
+			authority.allocationBytes=[authority.coefficients allocatedSize]+
+				[authority.publicationIdentity allocatedSize];
+			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			if(!encoder){
+				if(error)*error="production resident transport evaluation encoder failed";
+				return false;
+			}
+			[encoder setBuffer:state offset:0 atIndex:0];
+			[encoder setBuffer:temperature offset:0 atIndex:1];
+			[encoder setBuffer:velocity offset:0 atIndex:2];
+			[encoder setBuffer:thermochemistry offset:0 atIndex:3];
+			[encoder setBuffer:transport offset:0 atIndex:4];
+			[encoder setBuffer:authority.coefficients offset:0 atIndex:5];
+			[encoder setBuffer:failure offset:0 atIndex:6];
+			[encoder setBuffer:obligations offset:0 atIndex:7];
+			[encoder setBuffer:parameters offset:0 atIndex:8];
+			[encoder setBuffer:fuelInlet offset:0 atIndex:9];
+			Dispatch(encoder,context.evaluate,cells);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];
+			if(!encoder){
+				if(error)*error="production resident transport identity encoder failed";
+				return false;
+			}
+			[encoder setBuffer:state offset:0 atIndex:0];
+			[encoder setBuffer:temperature offset:0 atIndex:1];
+			[encoder setBuffer:velocity offset:0 atIndex:2];
+			[encoder setBuffer:authority.coefficients offset:0 atIndex:3];
+			[encoder setBuffer:thermochemistry offset:0 atIndex:4];
+			[encoder setBuffer:transport offset:0 atIndex:5];
+			[encoder setBuffer:fuelInlet offset:0 atIndex:6];
+			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:7];
+			[encoder setBuffer:failure offset:0 atIndex:8];
+			[encoder setBuffer:parameters offset:0 atIndex:9];
+			Dispatch(encoder,context.identify,1u);[encoder endEncoding];
+			return true;
+		}
+
 		bool ValidateScalarFCTMetalStageRequest(
 			const FireProductionScalarFCTRequest& request,std::string* error )
 		{
@@ -4820,6 +5337,244 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 					(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
 			}
 			return parameters;
+		}
+	}
+
+	bool FireProductionResidentTransportMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!std::isfinite(shape.cellWidthM)||
+			!(shape.cellWidthM>0.0f))return false;
+		const std::size_t cells=shape.CellCount();
+		if(cells==0u||cells>std::numeric_limits<std::uint32_t>::max())return false;
+		std::size_t faces=0u;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			const std::size_t count=FireProductionProjectionFaceCount(shape,axis);
+			if(faces>std::numeric_limits<std::size_t>::max()-count)return false;
+			faces+=count;
+		}
+		const std::uint64_t stateBytes=9u*static_cast<std::uint64_t>(cells)*sizeof(float);
+		const std::uint64_t temperatureBytes=static_cast<std::uint64_t>(cells)*sizeof(float);
+		const std::uint64_t velocityBytes=static_cast<std::uint64_t>(faces)*sizeof(float);
+		const std::uint64_t inflowBytes=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.ny)*sizeof(unsigned char);
+		const std::uint64_t thermoBytes=MetalManifoldCertificateValues*sizeof(float);
+		const std::uint64_t transportBytes=MetalResidentTransportSpeciesCount*
+			MetalResidentTransportSpeciesStride*sizeof(float);
+		const std::uint64_t parameterBytes=sizeof(MetalResidentTransportParameters);
+		const std::uint64_t controlBytes=2u*sizeof(std::uint32_t);
+		const std::uint64_t coefficientBytes=3u*static_cast<std::uint64_t>(cells)*sizeof(float);
+		const std::uint64_t identityBytes=sizeof(std::uint64_t);
+		const std::uint64_t terminalBytes=(coefficientBytes+7u)/8u*8u+
+			identityBytes+controlBytes;
+		auto add=[&](const std::uint64_t value){
+			if(bytes>std::numeric_limits<std::uint64_t>::max()-value)return false;
+			bytes+=value;return true;
+		};
+		// Fixture upload + resident copy for every immutable/input surface.
+		if(!add(2u*stateBytes)||!add(2u*temperatureBytes)||!add(2u*velocityBytes)||
+			!add(2u*inflowBytes)||
+			!add(2u*thermoBytes)||!add(2u*transportBytes)||!add(2u*parameterBytes)||
+			!add(2u*controlBytes)||!add(coefficientBytes)||!add(identityBytes)||
+			!add(terminalBytes))return false;
+		return bytes<=(UINT64_C(1)<<31u);
+	}
+
+	bool EvaluateFireProductionResidentTransportMetalComparator(
+		const FireProductionResidentTransportComparatorRequest& request,
+		FireProductionResidentTransportComparatorResult& result,std::string* error )
+	{
+		result=FireProductionResidentTransportComparatorResult();
+		try {
+			MetalResidentTransportParameters parameters={};
+			std::array<std::size_t,3> faceOffset={{}};std::size_t allFaces=0u;
+			std::vector<unsigned char> packedInflow;
+			if(!PrepareResidentTransportRequest(request,parameters,faceOffset,allFaces,
+				packedInflow,error))
+				return false;
+			if(allFaces>std::numeric_limits<std::uint32_t>::max()){
+				if(error)*error="production resident transport face tuple is too large";
+				return false;
+			}
+			std::array<float,MetalResidentTransportSpeciesCount*
+				MetalResidentTransportSpeciesStride> packedTransport;
+			if(!PackMetalResidentTransport(packedTransport,parameters,error))return false;
+			std::array<float,MetalManifoldCertificateValues> packedThermochemistry;
+			MetalManifoldParameters manifoldParameters={};
+			std::array<double,7> lowerEnthalpy,upperEnthalpy;
+			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
+				lowerEnthalpy,upperEnthalpy,error))return false;
+			std::vector<float> packedVelocity;packedVelocity.reserve(allFaces);
+			for(unsigned int axis=0u;axis<3u;++axis)packedVelocity.insert(
+				packedVelocity.end(),request.projectedVelocityMPerS[axis].begin(),
+				request.projectedVelocityMPerS[axis].end());
+			ResidentTransportMetalContext& context=ResidentTransportContext();
+			if(!context.Valid()){if(error)*error=context.error;return false;}
+			const std::size_t cells=request.shape.CellCount();
+			const std::size_t stateBytes=9u*cells*sizeof(float);
+			const std::size_t temperatureBytes=cells*sizeof(float);
+			const std::size_t velocityBytes=allFaces*sizeof(float);
+			const std::size_t inflowBytes=packedInflow.size()*sizeof(unsigned char);
+			const std::size_t thermoBytes=packedThermochemistry.size()*sizeof(float);
+			const std::size_t transportBytes=packedTransport.size()*sizeof(float);
+			const std::size_t coefficientBytes=3u*cells*sizeof(float);
+			const std::size_t identityOffset=(coefficientBytes+7u)/8u*8u;
+			const std::size_t controlOffset=identityOffset+sizeof(std::uint64_t);
+			const std::size_t terminalBytes=controlOffset+2u*sizeof(std::uint32_t);
+			std::uint64_t certified=0u;
+			if(!FireProductionResidentTransportMetalWorkingSetBytes(request.shape,certified)){
+				if(error)*error="production resident transport working-set certificate failed";
+				return false;
+			}
+			const std::uint64_t beginningCommits=MetalCommandCommitCount;
+			const std::uint64_t beginningReads=MetalHostBufferReadCount;
+			@autoreleasepool {
+				id<MTLBuffer> stateUpload=[context.device newBufferWithBytes:
+					request.conservativeValues.data() length:stateBytes
+					options:MTLResourceStorageModeShared];
+				id<MTLBuffer> temperatureUpload=[context.device newBufferWithBytes:
+					request.temperatureK.data() length:temperatureBytes
+					options:MTLResourceStorageModeShared];
+				id<MTLBuffer> velocityUpload=[context.device newBufferWithBytes:packedVelocity.data()
+					length:velocityBytes options:MTLResourceStorageModeShared];
+				id<MTLBuffer> inflowUpload=[context.device newBufferWithBytes:packedInflow.data()
+					length:inflowBytes options:MTLResourceStorageModeShared];
+				id<MTLBuffer> thermochemistryUpload=[context.device newBufferWithBytes:
+					packedThermochemistry.data() length:thermoBytes options:MTLResourceStorageModeShared];
+				id<MTLBuffer> transportUpload=[context.device newBufferWithBytes:
+					packedTransport.data() length:transportBytes options:MTLResourceStorageModeShared];
+				id<MTLBuffer> parameterUpload=[context.device newBufferWithBytes:&parameters
+					length:sizeof(parameters) options:MTLResourceStorageModeShared];
+				std::array<std::uint32_t,2> zeros={{0u,0u}};
+				id<MTLBuffer> controlUpload=[context.device newBufferWithBytes:zeros.data()
+					length:sizeof(zeros) options:MTLResourceStorageModeShared];
+				auto privateBuffer=[&](const std::size_t size){return
+					[context.device newBufferWithLength:size options:MTLResourceStorageModePrivate];};
+				id<MTLBuffer> state=privateBuffer(stateBytes);
+				id<MTLBuffer> temperature=privateBuffer(temperatureBytes);
+				id<MTLBuffer> velocity=privateBuffer(velocityBytes);
+				id<MTLBuffer> inflow=privateBuffer(inflowBytes);
+				id<MTLBuffer> thermochemistry=privateBuffer(thermoBytes);
+				id<MTLBuffer> transport=privateBuffer(transportBytes);
+				id<MTLBuffer> parameter=privateBuffer(sizeof(parameters));
+				id<MTLBuffer> failure=privateBuffer(sizeof(std::uint32_t));
+				id<MTLBuffer> obligations=privateBuffer(sizeof(std::uint32_t));
+				id<MTLBuffer> terminal=[context.device newBufferWithLength:terminalBytes
+					options:MTLResourceStorageModeShared];
+				const std::array<id<MTLBuffer>,18> preAuthority={{stateUpload,temperatureUpload,
+					velocityUpload,inflowUpload,thermochemistryUpload,transportUpload,parameterUpload,
+					controlUpload,state,temperature,velocity,inflow,thermochemistry,transport,parameter,
+					failure,obligations,terminal}};
+				for(id<MTLBuffer> buffer:preAuthority)if(!buffer){
+					if(error)*error="production resident transport buffer allocation failed";
+					return false;
+				}
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!blit){
+					if(error)*error="production resident transport upload encoder failed";
+					return false;
+				}
+				auto upload=[&](id<MTLBuffer> source,id<MTLBuffer> destination,
+					const std::size_t size){[blit copyFromBuffer:source sourceOffset:0
+						toBuffer:destination destinationOffset:0 size:size];};
+				upload(stateUpload,state,stateBytes);upload(temperatureUpload,temperature,
+					temperatureBytes);upload(velocityUpload,velocity,velocityBytes);
+				upload(inflowUpload,inflow,inflowBytes);
+				upload(thermochemistryUpload,thermochemistry,thermoBytes);
+				upload(transportUpload,transport,transportBytes);
+				upload(parameterUpload,parameter,sizeof(parameters));
+				[blit copyFromBuffer:controlUpload sourceOffset:0 toBuffer:failure
+					destinationOffset:0 size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:controlUpload sourceOffset:sizeof(std::uint32_t)
+					toBuffer:obligations destinationOffset:0 size:sizeof(std::uint32_t)];
+				[blit endEncoding];
+				ResidentTransportMetalAuthority authority;
+				if(!EncodeResidentTransportAuthority(context,command,state,temperature,velocity,
+					thermochemistry,transport,inflow,parameter,failure,obligations,cells,allFaces,
+					packedInflow.size(),authority,error))
+					return false;
+				blit=[command blitCommandEncoder];
+				if(!blit){
+					if(error)*error="production resident transport terminal encoder failed";
+					return false;
+				}
+				[blit copyFromBuffer:authority.coefficients sourceOffset:0 toBuffer:terminal
+					destinationOffset:0 size:coefficientBytes];
+				[blit copyFromBuffer:authority.publicationIdentity sourceOffset:0 toBuffer:terminal
+					destinationOffset:identityOffset size:sizeof(std::uint64_t)];
+				[blit copyFromBuffer:failure sourceOffset:0 toBuffer:terminal
+					destinationOffset:controlOffset size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:obligations sourceOffset:0 toBuffer:terminal
+					destinationOffset:controlOffset+sizeof(std::uint32_t)
+					size:sizeof(std::uint32_t)];[blit endEncoding];
+				CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if([command status]!=MTLCommandBufferStatusCompleted){
+					if(error)*error="production resident transport command failed";
+					return false;
+				}
+				const unsigned char* bytes=static_cast<const unsigned char*>(
+					ReadTrackedMetalBuffer(terminal));
+				if(!bytes){
+					if(error)*error=
+						"production resident transport terminal payload is unavailable";
+					return false;
+				}
+				const std::uint32_t* controls=reinterpret_cast<const std::uint32_t*>(
+					bytes+controlOffset);
+				if(controls[0]!=0u){
+					if(error)*error="production resident transport device validation failed";
+					return false;
+				}
+				FireProductionResidentTransportComparatorResult computed;
+				const float* values=reinterpret_cast<const float*>(bytes);
+				computed.diffusivityM2PerS.assign(values,values+cells);
+				computed.conductivityWPerMK.assign(values+cells,values+2u*cells);
+				computed.molecularKinematicViscosityM2PerS.assign(values+2u*cells,
+					values+3u*cells);
+				std::memcpy(&computed.devicePublicationIdentity,bytes+identityOffset,
+					sizeof(computed.devicePublicationIdentity));
+				computed.stage=request.stage;computed.attemptIdentity=request.attemptIdentity;
+				computed.parentCandidateIdentity=request.parentCandidateIdentity;
+				computed.projectionIdentity=request.projectionIdentity;
+				const std::uint64_t observedCommits=MetalCommandCommitCount-beginningCommits;
+				const std::uint64_t observedReads=MetalHostBufferReadCount-beginningReads;
+				computed.commandCommitCount=static_cast<std::uint32_t>(observedCommits);
+				computed.interstageFullGridTransferCount=static_cast<std::uint32_t>(
+					observedReads>0u?observedReads-1u:0u);
+				computed.terminalStagingCount=static_cast<std::uint32_t>(observedReads);
+				computed.branchObligationBitmap=controls[1];
+				computed.certifiedWorkingSetBytes=certified;
+				std::uint64_t actual=authority.allocationBytes;
+				for(id<MTLBuffer> buffer:preAuthority){const std::uint64_t allocation=
+					[buffer allocatedSize];if(actual>std::numeric_limits<std::uint64_t>::max()-
+					allocation){
+						if(error)*error=
+							"production resident transport allocation count overflowed";
+						return false;
+					}
+					actual+=allocation;}
+				computed.actualMetalAllocationBytes=actual;
+				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				computed.deviceProduced=computed.devicePublicationIdentity!=0u;
+				if(observedCommits!=1u||observedReads!=1u||!computed.deviceProduced||
+					!AllFinite(computed.diffusivityM2PerS)||
+					!AllFinite(computed.conductivityWPerMK)||
+					!AllFinite(computed.molecularKinematicViscosityM2PerS)||
+					!std::isfinite(computed.deviceElapsedMS)||computed.deviceElapsedMS<0.0||
+					actual>certified){if(error)*error=
+					"production resident transport publication failed its certificate";
+					return false;}
+				result=std::move(computed);if(error)error->clear();return true;
+			}
+		} catch(const std::bad_alloc&){
+			result=FireProductionResidentTransportComparatorResult();
+			if(error)try{*error="production resident transport allocation failed";}
+				catch(const std::bad_alloc&){}
+			return false;
 		}
 	}
 

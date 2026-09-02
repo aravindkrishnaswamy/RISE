@@ -3955,6 +3955,64 @@ int main()
 			"projected-Heun evidence identity versions match their source domains" );
 	}
 
+	{
+		const fs::path repoRoot=fs::weakly_canonical(fs::absolute(testsDir)).parent_path();
+		const auto readFile=[](const fs::path& path){
+			std::ifstream input(path,std::ios::binary);
+			return std::string(std::istreambuf_iterator<char>(input),
+				std::istreambuf_iterator<char>());
+		};
+		const std::string metal=readFile(repoRoot/"src"/"Library"/"Utilities"/
+			"FireProductionAdvectionMac.mm");
+		const std::string force=readFile(repoRoot/"src"/"Library"/"Utilities"/
+			"FireProductionForce.cpp");
+		const std::string sequence=readFile(repoRoot/"tests"/"FireSequenceTest.cpp");
+		const std::string evidence=readFile(repoRoot/"rendered"/
+			"fire_production_calibration"/"r197_resident_transport_authority"/
+			"resident_transport_authority_evidence.v1");
+		const std::size_t authorityBegin=metal.find("bool EncodeResidentTransportAuthority(");
+		const std::size_t authorityEnd=metal.find("bool ValidateScalarFCTMetalStageRequest(",
+			authorityBegin);
+		const std::string authority=authorityBegin!=std::string::npos&&
+			authorityEnd!=std::string::npos?metal.substr(authorityBegin,
+				authorityEnd-authorityBegin):std::string();
+		Check(metal.find("DiscoverProductionMetalDevice")!=std::string::npos&&
+			metal.find("MTLCopyAllDevices")!=std::string::npos&&metal.find(
+				"ClassifyFireProductionDeviceDiscovery")!=std::string::npos,
+			"resident transport distinguishes execution-context denial from absent Metal hardware" );
+		Check(!authority.empty()&&authority.find("MTLStorageModePrivate")!=std::string::npos&&
+			authority.find("device-private inputs")!=std::string::npos&&
+			authority.find("CPU")==std::string::npos,
+			"resident transport authority accepts only device-private producer surfaces" );
+		Check(metal.find("observedCommits=MetalCommandCommitCount-beginningCommits")!=
+				std::string::npos&&metal.find(
+				"observedReads=MetalHostBufferReadCount-beginningReads")!=std::string::npos&&
+			metal.find("observedCommits!=1u||observedReads!=1u")!=std::string::npos,
+			"resident transport residency certificate is measured, not self-attested" );
+		Check(metal.find("for(uint word=0u;word<7u*32u")!=std::string::npos&&
+			metal.find("for(uint word=0u;word<6u*transport_stride")!=std::string::npos&&
+			metal.find("inflowWords=p.sideOffset[5]+p.nx*p.ny")!=std::string::npos,
+			"resident transport identity binds immutable records and fixed fuel-inlet classes" );
+		Check(force.find("transportIncrementBytes")!=std::string::npos&&force.find(
+				"FireProductionResidentTransportLiveIncrementWorkingSetBytes")!=
+				std::string::npos,
+			"resident owner working-set certificate includes the transport authority peak" );
+		Check(sequence.find("independentBranchBitmap")!=std::string::npos&&
+			sequence.find("1u<<14u")!=std::string::npos&&sequence.find("1u<<18u")!=
+				std::string::npos&&sequence.find("invalidDeviceRefused")!=std::string::npos&&
+			sequence.find("shortVelocityRefused")!=std::string::npos,
+			"resident transport REDs bind cancellation, boundary-kind, invalid-device, and extent paths" );
+		Check(evidence.find("live_path_CPU_substitution_admissible false\n")!=
+				std::string::npos&&evidence.find(
+				"host_binary32_DAG_role diagnostic_only\n")!=std::string::npos&&
+			evidence.find("device_branch_bitmap 0x0007fffb\n")!=std::string::npos&&
+			evidence.find("interstage_full_grid_transfer_count 0\n")!=
+				std::string::npos&&evidence.find(
+				"complete_owner_peak_working_set_bytes 5941576\n")!=std::string::npos&&
+			evidence.find("case_record_id_regenerated false\n")!=std::string::npos,
+			"r197 evidence seals the non-forgeable transport surface, numerical classification, residency, and identity policy" );
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;

@@ -5611,6 +5611,69 @@ The binding contract is sealed in
 The tier-6 movie remains the owner's interim deliverable; the golden checkpoint
 is untouched.
 
+### 7.56ad Resident transport authority (r197)
+
+r197 completes only the first r196 resident-lineage rung. The live authority is
+created from device-private conservative state, temperature, projected face
+velocities, and a fixed per-face physical fuel-inlet classification. Its type
+and constructor are private to the Metal implementation. The public comparator
+is a qualification-only terminal tap: it uploads a matched fixture, invokes
+the same private issuer, and can return staged coefficient fields and the
+device publication identity, but its result is deliberately not convertible
+to the accepted owner transport-coefficient surface. There is no CPU issuer or
+fallback. The fixed fuel-inlet mask is distinct from the pressure-open
+boundary's dynamic inflow/outflow active class and is identity-bearing.
+
+The authority evaluates density, projected-velocity gradients, Vreman SGS,
+NASA9 heat capacity, PCHIP viscosity/conductivity, Wilke/WMS mixture
+properties, total diffusivity, effective conductivity, and molecular
+kinematic viscosity on Metal. The immutable table packs 109 transport knots
+inside a forced maximum of 128 and six gas species; solid carbon is not a gas
+transport species. Device identity covers all state and output fields, the
+immutable NASA9/transport records, shape and spacing, boundary/fuel-inlet
+classes, constants, and mutable stage, attempt, parent-candidate, and
+projection lineage. A failed validation publishes neither coefficients nor an
+identity.
+
+Transport evaluation is classified as a non-streaming physical operator, so
+the binding numerical certificate is the canonical fp64 mirror at matched
+inputs plus a termwise binary32 forward-error enclosure. The host binary32 DAG
+comparison is retained as a diagnostic and is not bit-identical; no streaming
+bit-comparison obligation is waived. The enclosure propagates record rounding
+and every add, subtract, multiply, divide, square root, absolute value, and
+maximum. Vreman cancellation is bounded by the uncancelled sum of absolute
+terms, never by the cancelled result, and any nonfinite bound fails closed.
+An independent branch walker matches the device bitmap `0x0007fffb`, including
+PCHIP endpoints/interior/search directions, all boundary classes, and the
+Vreman cancellation signs. NASA9 segment 2 is proved unreachable for the
+canonical record over the admissible temperature domain and is therefore not
+silently counted as covered.
+
+On the sealed 4x5x4 mixed-boundary fixture, maximum normalized device/mirror
+separation is `0.0020747848823717565`; maximum derived absolute bound is
+`0.00084344337177579909`, and the maximum uncancelled Vreman scale is
+`0.049928860855711937`. Residency counters measure one command, one terminal
+staging read, and zero interstage full-grid transfers. The comparator's
+certified and actual allocation are both `44296` bytes. The incremental live
+authority certificate is `131072` bytes, and adding it to the already certified
+force/projection/cell/dual-remap components yields a `5941576`-byte complete
+owner peak. A missing lineage tuple, broken periodic seams, invalid device state, and a
+short velocity surface each refuse atomically. Changing attempt, parent,
+projection, stage, immutable records, or physical boundary classes changes the
+device identity. Authentication against a nonzero expected parent belongs to
+the separately scoped r196 target-lineage rung and is not claimed here.
+
+No case-authored semantics or inputs change, so `case_record_id` is not
+regenerated. The r197 live-binding revision regenerates solver producer
+identity, and every later run must regenerate run identity from these solver
+semantics. The golden checkpoint remains untouched. Evidence is
+sealed in `rendered/fire_production_calibration/r197_resident_transport_authority/`
+`resident_transport_authority_evidence.v1`, SHA-256
+`3473a554ecec6cf56017efe60fa4b4d94a99350fa6fd6b3100f419122aee9acf`.
+The next separately committed and reviewed rung is resident physical-flux
+authority; r197 does not claim a live R0/R1/R2 owner or execute the ported
+replay.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

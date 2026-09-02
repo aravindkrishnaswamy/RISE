@@ -15,6 +15,7 @@
 #include "../src/Library/Utilities/FireSimulationRecords.h"
 #include "../src/Library/Utilities/FireProductionProjection.h"
 #include "../src/Library/Utilities/FireProductionForce.h"
+#include "../src/Library/Utilities/FireProductionTransport.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../tools/fire_simulator_core.h"
 #include "FireOutputMetadataTestFixture.h"
@@ -7136,6 +7137,327 @@ bool ByteIdenticalVectorArray(const std::array<std::vector<T>,N>& first,
 	return true;
 }
 
+struct CertifiedBinary32
+{
+	float rounded;
+	double exact;
+	double error;
+	bool valid;
+};
+
+CertifiedBinary32 InvalidCertifiedBinary32()
+{
+	return {0.0f,0.0,0.0,false};
+}
+
+CertifiedBinary32 CertifiedInput(const float value)
+{
+	return {value,static_cast<double>(value),0.0,true};
+}
+
+CertifiedBinary32 CertifiedRecord(const double value)
+{
+	const float rounded=static_cast<float>(value);
+	return {rounded,value,std::fabs(static_cast<double>(rounded)-value),true};
+}
+
+double Binary32RoundingEnvelope(const double magnitude)
+{
+	const double unitRoundoff=0x1p-24;
+	return unitRoundoff/(1.0-unitRoundoff)*magnitude+
+		static_cast<double>(std::numeric_limits<float>::denorm_min());
+}
+
+CertifiedBinary32 CertifiedAdd(const CertifiedBinary32& a,const CertifiedBinary32& b)
+{
+	if(!a.valid||!b.valid)return InvalidCertifiedBinary32();
+	const float rounded=a.rounded+b.rounded;const double exact=a.exact+b.exact;
+	const double inherited=a.error+b.error;
+	return {rounded,exact,inherited+Binary32RoundingEnvelope(std::fabs(exact)+inherited),true};
+}
+
+CertifiedBinary32 CertifiedSubtract(const CertifiedBinary32& a,const CertifiedBinary32& b)
+{
+	if(!a.valid||!b.valid)return InvalidCertifiedBinary32();
+	const float rounded=a.rounded-b.rounded;const double exact=a.exact-b.exact;
+	const double inherited=a.error+b.error;
+	return {rounded,exact,inherited+Binary32RoundingEnvelope(std::fabs(exact)+inherited),true};
+}
+
+CertifiedBinary32 CertifiedMultiply(const CertifiedBinary32& a,const CertifiedBinary32& b)
+{
+	if(!a.valid||!b.valid)return InvalidCertifiedBinary32();
+	const float rounded=a.rounded*b.rounded;const double exact=a.exact*b.exact;
+	const double inherited=std::fabs(a.exact)*b.error+std::fabs(b.exact)*a.error+
+		a.error*b.error;
+	return {rounded,exact,inherited+Binary32RoundingEnvelope(std::fabs(exact)+inherited),true};
+}
+
+CertifiedBinary32 CertifiedDivide(const CertifiedBinary32& a,const CertifiedBinary32& b)
+{
+	if(!a.valid||!b.valid)return InvalidCertifiedBinary32();
+	const float rounded=a.rounded/b.rounded;const double exact=a.exact/b.exact;
+	const double denominator=std::fabs(b.exact)-b.error;
+	if(!(denominator>0.0))return InvalidCertifiedBinary32();
+	const double inherited=(a.error+std::fabs(exact)*b.error)/denominator;
+	return {rounded,exact,inherited+Binary32RoundingEnvelope(std::fabs(exact)+inherited),true};
+}
+
+CertifiedBinary32 CertifiedSqrt(const CertifiedBinary32& value)
+{
+	if(!value.valid)return InvalidCertifiedBinary32();
+	const float rounded=std::sqrt(std::max(0.0f,value.rounded));
+	const double exact=std::sqrt(std::max(0.0,value.exact));
+	const double lower=std::sqrt(std::max(0.0,value.exact-value.error));
+	const double upper=std::sqrt(std::max(0.0,value.exact+value.error));
+	const double inherited=std::max(std::fabs(exact-lower),std::fabs(upper-exact));
+	return {rounded,exact,inherited+Binary32RoundingEnvelope(exact+inherited),true};
+}
+
+CertifiedBinary32 CertifiedMaxZero(const CertifiedBinary32& value)
+{
+	if(!value.valid)return InvalidCertifiedBinary32();
+	const float rounded=std::max(0.0f,value.rounded);
+	const double exact=std::max(0.0,value.exact);
+	const double lower=std::max(0.0,value.exact-value.error);
+	const double upper=std::max(0.0,value.exact+value.error);
+	return {rounded,exact,std::max(std::fabs(exact-lower),std::fabs(upper-exact)),true};
+}
+
+CertifiedBinary32 CertifiedAbsolute(const CertifiedBinary32& value)
+{
+	if(!value.valid)return InvalidCertifiedBinary32();
+	const float rounded=std::fabs(value.rounded);const double exact=std::fabs(value.exact);
+	const double lower=std::min(std::fabs(value.exact-value.error),
+		std::fabs(value.exact+value.error));
+	const double enclosedLower=value.exact-value.error<=0.0&&
+		value.exact+value.error>=0.0?0.0:lower;
+	const double upper=std::max(std::fabs(value.exact-value.error),
+		std::fabs(value.exact+value.error));
+	return {rounded,exact,std::max(std::fabs(exact-enclosedLower),std::fabs(upper-exact)),true};
+}
+
+struct CertifiedResidentTransport
+{
+	std::array<CertifiedBinary32,3> coefficient;
+	std::uint32_t branchBitmap;
+	double vremanUncancelledScale;
+};
+
+bool EvaluateCertifiedResidentTransport(
+	const FireProductionResidentTransportComparatorRequest& request,
+	const std::size_t cell,CertifiedResidentTransport& output,std::string* error)
+{
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
+	const std::size_t cells=request.shape.CellCount();
+	const std::size_t x=cell%request.shape.nx;
+	const std::size_t y=(cell/request.shape.nx)%request.shape.ny;
+	const std::size_t z=cell/(request.shape.nx*request.shape.ny);
+	output.branchBitmap=0u;output.vremanUncancelledScale=0.0;
+	auto faceIndex=[&](const unsigned int axis,const std::size_t fx,
+		const std::size_t fy,const std::size_t fz){return axis==0u?
+		(fz*request.shape.ny+fy)*(request.shape.nx+1u)+fx:
+		(axis==1u?(fz*(request.shape.ny+1u)+fy)*request.shape.nx+fx:
+			(fz*request.shape.ny+fy)*request.shape.nx+fx);};
+	auto cellVelocity=[&](const unsigned int component,const std::size_t cx,
+		const std::size_t cy,const std::size_t cz){std::size_t ux=cx,uy=cy,uz=cz;
+		if(component==0u)++ux;else if(component==1u)++uy;else ++uz;
+		return CertifiedMultiply(CertifiedAdd(CertifiedInput(
+			request.projectedVelocityMPerS[component][faceIndex(component,cx,cy,cz)]),
+			CertifiedInput(request.projectedVelocityMPerS[component][
+				faceIndex(component,ux,uy,uz)])),CertifiedRecord(0.5));};
+	auto boundaryVelocity=[&](const unsigned int side,const unsigned int component,
+		std::size_t cx,std::size_t cy,std::size_t cz){const unsigned int normal=side/2u;
+		if(component!=normal)return CertifiedInput(0.0f);
+		if(normal==0u)cx=(side&1u)?request.shape.nx:0u;
+		else if(normal==1u)cy=(side&1u)?request.shape.ny:0u;
+		else cz=(side&1u)?request.shape.nz:0u;
+		return CertifiedInput(request.projectedVelocityMPerS[component][
+			faceIndex(component,cx,cy,cz)]);};
+	CertifiedBinary32 gradient[3][3];
+	for(unsigned int derivative=0u;derivative<3u;++derivative){
+		const std::size_t coordinate=derivative==0u?x:(derivative==1u?y:z);
+		const std::size_t extent=derivative==0u?request.shape.nx:
+			(derivative==1u?request.shape.ny:request.shape.nz);
+		for(unsigned int component=0u;component<3u;++component){
+			std::size_t px=x,py=y,pz=z,nx=x,ny=y,nz=z;
+			std::size_t previous=coordinate?coordinate-1u:0u;
+			std::size_t next=coordinate+1u<extent?coordinate+1u:extent-1u;
+			if(coordinate>0u&&coordinate+1u<extent)output.branchBitmap|=1u<<7u;
+			if(coordinate==0u&&request.boundary[2u*derivative]==
+				FireProductionProjectionPeriodic){previous=extent-1u;output.branchBitmap|=1u<<8u;}
+			if(coordinate+1u==extent&&request.boundary[2u*derivative+1u]==
+				FireProductionProjectionPeriodic){next=0u;output.branchBitmap|=1u<<8u;}
+			if(derivative==0u){px=previous;nx=next;}else if(derivative==1u){py=previous;ny=next;}
+			else{pz=previous;nz=next;}
+			CertifiedBinary32 pv=cellVelocity(component,px,py,pz);
+			CertifiedBinary32 nv=cellVelocity(component,nx,ny,nz);
+			if(coordinate==0u&&request.boundary[2u*derivative]!=
+				FireProductionProjectionPeriodic){const unsigned int side=2u*derivative;
+				const std::size_t first=side<2u?y:x,second=side<4u?z:y;
+				const std::size_t width=side<2u?request.shape.ny:request.shape.nx;
+				const bool inlet=request.fuelInletBoundaryFace[side][second*width+first]!=0u;
+				const bool open=request.boundary[side]==FireProductionProjectionPressureOpen&&!inlet;
+				output.branchBitmap|=1u<<(open?9u:10u);
+				if(inlet)output.branchBitmap|=1u<<18u;
+				pv=open?cellVelocity(component,x,y,z):CertifiedSubtract(CertifiedMultiply(
+					CertifiedRecord(2.0),boundaryVelocity(side,component,x,y,z)),
+					cellVelocity(component,x,y,z));}
+			if(coordinate+1u==extent&&request.boundary[2u*derivative+1u]!=
+				FireProductionProjectionPeriodic){const unsigned int side=2u*derivative+1u;
+				const std::size_t first=side<2u?y:x,second=side<4u?z:y;
+				const std::size_t width=side<2u?request.shape.ny:request.shape.nx;
+				const bool inlet=request.fuelInletBoundaryFace[side][second*width+first]!=0u;
+				const bool open=request.boundary[side]==FireProductionProjectionPressureOpen&&!inlet;
+				output.branchBitmap|=1u<<(open?9u:10u);
+				if(inlet)output.branchBitmap|=1u<<18u;
+				nv=open?cellVelocity(component,x,y,z):CertifiedSubtract(CertifiedMultiply(
+					CertifiedRecord(2.0),boundaryVelocity(side,component,x,y,z)),
+					cellVelocity(component,x,y,z));}
+			gradient[derivative][component]=CertifiedDivide(CertifiedSubtract(nv,pv),
+				CertifiedMultiply(CertifiedRecord(2.0),CertifiedInput(request.shape.cellWidthM)));
+		}
+	}
+	CertifiedBinary32 alpha2=CertifiedInput(0.0f),beta[3][3];
+	for(unsigned int i=0u;i<3u;++i)for(unsigned int j=0u;j<3u;++j){
+		alpha2=CertifiedAdd(alpha2,CertifiedMultiply(gradient[i][j],gradient[i][j]));
+		beta[i][j]=CertifiedInput(0.0f);}
+	const CertifiedBinary32 width2=CertifiedMultiply(CertifiedInput(request.shape.cellWidthM),
+		CertifiedInput(request.shape.cellWidthM));
+	for(unsigned int m=0u;m<3u;++m)for(unsigned int i=0u;i<3u;++i)
+		for(unsigned int j=0u;j<3u;++j)beta[i][j]=CertifiedAdd(beta[i][j],
+			CertifiedMultiply(CertifiedMultiply(width2,gradient[m][i]),gradient[m][j]));
+	CertifiedBinary32 b[6]={CertifiedMultiply(beta[0][0],beta[1][1]),
+		CertifiedMultiply(beta[0][1],beta[0][1]),CertifiedMultiply(beta[0][0],beta[2][2]),
+		CertifiedMultiply(beta[0][2],beta[0][2]),CertifiedMultiply(beta[1][1],beta[2][2]),
+		CertifiedMultiply(beta[1][2],beta[1][2])};
+	CertifiedBinary32 raw=CertifiedSubtract(b[0],b[1]);raw=CertifiedAdd(raw,b[2]);
+	raw=CertifiedSubtract(raw,b[3]);raw=CertifiedAdd(raw,b[4]);raw=CertifiedSubtract(raw,b[5]);
+	CertifiedBinary32 rawScale=CertifiedInput(0.0f);
+	for(const CertifiedBinary32& term:b)rawScale=CertifiedAdd(rawScale,CertifiedAbsolute(term));
+	output.vremanUncancelledScale=rawScale.exact+rawScale.error;
+	if(std::fabs(raw.rounded)<=32.0f*0x1p-24f*std::max(1.0f,rawScale.rounded))
+		output.branchBitmap|=1u<<11u;
+	output.branchBitmap|=1u<<(alpha2.rounded==0.0f?12u:13u);
+	output.branchBitmap|=1u<<(raw.rounded<0.0f?14u:15u);
+	CertifiedBinary32 eddy=alpha2.rounded==0.0f?CertifiedInput(0.0f):CertifiedMultiply(
+		CertifiedRecord(transport.VremanCv()),CertifiedSqrt(CertifiedDivide(
+			CertifiedMaxZero(raw),alpha2)));
+	CertifiedBinary32 rho=CertifiedInput(0.0f),cp=CertifiedInput(0.0f),moleTotal=CertifiedInput(0.0f);
+	CertifiedBinary32 mass[6],mole[6],mu[6],conductivity[6];
+	const float temperature=request.temperatureK[cell];
+	for(std::size_t species=0u;species<6u;++species){
+		mass[species]=CertifiedMaxZero(CertifiedInput(
+			request.conservativeValues[(species+1u)*cells+cell]));
+		rho=CertifiedAdd(rho,mass[species]);
+	}
+	for(std::size_t species=0u;species<6u;++species){
+		const FireThermochemistrySpecies* thermo=fuel.FindSpecies(
+			fuel.SpeciesOrder()[species].c_str());
+		const FireTransportSpecies* curve=transport.FindSpecies(
+			fuel.SpeciesOrder()[species].c_str());
+		if(!thermo||!curve||thermo->segments.empty()){
+			if(error)*error="resident transport certified mirror record is incomplete";
+			return false;
+		}
+		const CertifiedBinary32 fraction=CertifiedDivide(mass[species],rho);
+		mole[species]=CertifiedDivide(fraction,
+			CertifiedRecord(thermo->molecularWeightKGPerKMol));
+		moleTotal=CertifiedAdd(moleTotal,mole[species]);
+		std::size_t selected=thermo->segments.size();
+		for(std::size_t segment=0u;segment<thermo->segments.size();++segment){
+			const float lo=static_cast<float>(thermo->segments[segment].temperatureMinK);
+			const float hi=static_cast<float>(thermo->segments[segment].temperatureMaxK);
+			if(temperature>=lo&&(temperature<hi||(segment+1u==thermo->segments.size()&&
+				temperature==hi))){selected=segment;output.branchBitmap|=1u<<
+					static_cast<unsigned int>(std::min<std::size_t>(segment,2u));}}
+		if(selected==thermo->segments.size()){
+			if(error)*error=
+				"resident transport certified mirror temperature is outside NASA9 record";
+			return false;
+		}
+		const FireThermochemistrySegment& segment=thermo->segments[selected];
+		CertifiedBinary32 T=CertifiedInput(temperature),inverse=CertifiedDivide(
+			CertifiedInput(1.0f),T),t2=CertifiedMultiply(T,T);
+		CertifiedBinary32 speciesCp=CertifiedMultiply(CertifiedMultiply(
+			CertifiedRecord(segment.coefficients[0]),inverse),inverse);
+		speciesCp=CertifiedAdd(speciesCp,CertifiedMultiply(CertifiedRecord(
+			segment.coefficients[1]),inverse));
+		speciesCp=CertifiedAdd(speciesCp,CertifiedRecord(segment.coefficients[2]));
+		speciesCp=CertifiedAdd(speciesCp,CertifiedMultiply(CertifiedRecord(
+			segment.coefficients[3]),T));
+		speciesCp=CertifiedAdd(speciesCp,CertifiedMultiply(CertifiedRecord(
+			segment.coefficients[4]),t2));
+		speciesCp=CertifiedAdd(speciesCp,CertifiedMultiply(CertifiedMultiply(
+			CertifiedRecord(segment.coefficients[5]),t2),T));
+		speciesCp=CertifiedAdd(speciesCp,CertifiedMultiply(CertifiedMultiply(
+			CertifiedRecord(segment.coefficients[6]),t2),t2));
+		speciesCp=CertifiedMultiply(speciesCp,CertifiedDivide(CertifiedRecord(
+			8314.46261815324),CertifiedRecord(thermo->molecularWeightKGPerKMol)));
+		cp=CertifiedAdd(cp,CertifiedMultiply(fraction,speciesCp));
+		auto evaluateCurve=[&](const DifferentiableSpectrum& spectrum){
+			const auto& knots=spectrum.Wavelengths();const auto& values=spectrum.Values();
+			const auto& slopes=spectrum.Slopes();std::size_t lower=0u;
+			if(temperature<=static_cast<float>(knots.front())){output.branchBitmap|=1u<<3u;
+				return CertifiedRecord(values.front());}
+			if(temperature>=static_cast<float>(knots.back())){output.branchBitmap|=1u<<4u;
+				return CertifiedRecord(values.back());}
+			output.branchBitmap|=1u<<5u;std::size_t upper=knots.size()-1u;
+			while(upper-lower>1u){const std::size_t middle=(lower+upper)/2u;
+				if(temperature<static_cast<float>(knots[middle])){upper=middle;
+					output.branchBitmap|=1u<<16u;}else{lower=middle;output.branchBitmap|=1u<<17u;}}
+			if(temperature==static_cast<float>(knots[lower])||
+				temperature==static_cast<float>(knots[upper]))output.branchBitmap|=1u<<6u;
+			CertifiedBinary32 h=CertifiedSubtract(CertifiedRecord(knots[upper]),
+				CertifiedRecord(knots[lower]));
+			CertifiedBinary32 t=CertifiedDivide(CertifiedSubtract(CertifiedInput(temperature),
+				CertifiedRecord(knots[lower])),h),tt=CertifiedMultiply(t,t),ttt=CertifiedMultiply(tt,t);
+			CertifiedBinary32 one=CertifiedRecord(1.0),two=CertifiedRecord(2.0),three=CertifiedRecord(3.0);
+			CertifiedBinary32 result=CertifiedMultiply(CertifiedAdd(CertifiedSubtract(
+				CertifiedMultiply(two,ttt),CertifiedMultiply(three,tt)),one),CertifiedRecord(values[lower]));
+			result=CertifiedAdd(result,CertifiedMultiply(CertifiedMultiply(CertifiedAdd(
+				CertifiedSubtract(ttt,CertifiedMultiply(two,tt)),t),h),CertifiedRecord(slopes[lower])));
+			result=CertifiedAdd(result,CertifiedMultiply(CertifiedAdd(CertifiedMultiply(
+				CertifiedRecord(-2.0),ttt),CertifiedMultiply(three,tt)),CertifiedRecord(values[upper])));
+			return CertifiedAdd(result,CertifiedMultiply(CertifiedMultiply(CertifiedSubtract(ttt,tt),h),
+				CertifiedRecord(slopes[upper])));};
+		mu[species]=evaluateCurve(curve->viscosity);
+		conductivity[species]=evaluateCurve(curve->conductivity);
+	}
+	for(std::size_t species=0u;species<6u;++species)mole[species]=
+		CertifiedDivide(mole[species],moleTotal);
+	auto phi=[&](const std::size_t i,const std::size_t j){
+		const FireThermochemistrySpecies* ti=fuel.FindSpecies(fuel.SpeciesOrder()[i].c_str());
+		const FireThermochemistrySpecies* tj=fuel.FindSpecies(fuel.SpeciesOrder()[j].c_str());
+		CertifiedBinary32 numerator=CertifiedAdd(CertifiedRecord(1.0),CertifiedMultiply(
+			CertifiedSqrt(CertifiedDivide(mu[i],mu[j])),CertifiedSqrt(CertifiedSqrt(
+				CertifiedDivide(CertifiedRecord(tj->molecularWeightKGPerKMol),
+					CertifiedRecord(ti->molecularWeightKGPerKMol))))));
+		return CertifiedDivide(CertifiedMultiply(numerator,numerator),CertifiedSqrt(
+			CertifiedMultiply(CertifiedRecord(8.0),CertifiedAdd(CertifiedRecord(1.0),
+				CertifiedDivide(CertifiedRecord(ti->molecularWeightKGPerKMol),
+					CertifiedRecord(tj->molecularWeightKGPerKMol))))));};
+	CertifiedBinary32 mixtureMu=CertifiedInput(0.0f),mixtureK=CertifiedInput(0.0f);
+	for(std::size_t i=0u;i<6u;++i){CertifiedBinary32 denominator=CertifiedInput(0.0f);
+		for(std::size_t j=0u;j<6u;++j)denominator=CertifiedAdd(denominator,
+			CertifiedMultiply(mole[j],phi(i,j)));
+		mixtureMu=CertifiedAdd(mixtureMu,CertifiedDivide(CertifiedMultiply(mole[i],mu[i]),denominator));
+		mixtureK=CertifiedAdd(mixtureK,CertifiedDivide(CertifiedMultiply(mole[i],conductivity[i]),denominator));}
+	CertifiedBinary32 volumetric=CertifiedMultiply(rho,cp);
+	output.coefficient[0]=CertifiedAdd(CertifiedDivide(mixtureK,volumetric),
+		CertifiedDivide(eddy,CertifiedRecord(transport.TurbulentSchmidt())));
+	output.coefficient[1]=CertifiedAdd(mixtureK,CertifiedDivide(CertifiedMultiply(volumetric,eddy),
+		CertifiedRecord(transport.TurbulentPrandtl())));
+	output.coefficient[2]=CertifiedDivide(mixtureMu,rho);
+	if(!rawScale.valid||!output.coefficient[0].valid||!output.coefficient[1].valid||
+		!output.coefficient[2].valid){
+		if(error)*error="resident transport forward-error enclosure is invalid";
+		return false;
+	}
+	return true;
+}
+
 ::RISEFireProductionFP64::FireProductionScalarFCTRequest ScalarFCTRequestFP64(
 	const RISE::FireProductionScalarFCTRequest& request)
 {
@@ -7728,8 +8050,450 @@ int RunProductionCompatibleMomentumMetalFP64Fixture()
 	return passed?0:182;
 }
 
+int RunProductionResidentTransportMetalFP64Fixture()
+{
+	static_assert(!std::is_convertible<FireProductionResidentTransportComparatorResult,
+		FireProductionProjectedHeunTransportCoefficients>::value,
+		"qualification output must never become a live transport publication");
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
+	if(!fuel.IsValid()||!transport.IsValid()||fuel.SpeciesOrder().size()!=MethaneSpeciesCount)
+		return 183;
+	FireProductionResidentTransportComparatorRequest request;
+	request.shape.nx=4u;request.shape.ny=5u;request.shape.nz=4u;
+	request.shape.cellWidthM=0.025f;request.stage=FireProductionProjectedHeunStage::R0;
+	request.attemptIdentity=UINT64_C(0x1960000000000001);
+	request.parentCandidateIdentity=UINT64_C(0x1960000000000002);
+	request.projectionIdentity=UINT64_C(0x1960000000000003);
+	request.boundary.fill(FireProductionProjectionWall);
+	const std::size_t cells=request.shape.CellCount();
+	for(unsigned int side=0u;side<6u;++side)request.fuelInletBoundaryFace[side].assign(
+		side<2u?request.shape.ny*request.shape.nz:
+			(side<4u?request.shape.nx*request.shape.nz:request.shape.nx*request.shape.ny),0u);
+	request.conservativeValues.assign(9u*cells,0.0f);
+	request.temperatureK.resize(cells);
+	PeriodicMACShape mirrorShape;mirrorShape.nx=request.shape.nx;
+	mirrorShape.ny=request.shape.ny;mirrorShape.nz=request.shape.nz;
+	mirrorShape.cellWidthM=request.shape.cellWidthM;
+	std::vector<ConservativeVector> mirrorState(cells);
+	const FireTransportSpecies* firstSpecies=transport.FindSpecies(
+		fuel.SpeciesOrder().front().c_str());
+	if(!firstSpecies||firstSpecies->viscosity.Wavelengths().size()<3u)return 184;
+	const std::vector<double>& knots=firstSpecies->viscosity.Wavelengths();
+	const std::array<double,4> temperaturePattern={{transport.TemperatureMinK(),knots[1],
+		0.5*(knots[1]+knots[2]),transport.TemperatureMaxK()}};
+	std::string error;
+	for(std::size_t cell=0u;cell<cells;++cell){
+		MethaneCellState physical;physical.producerPrecision=FireStateProducerPrecision::Binary32;
+		physical.temperatureK=static_cast<double>(static_cast<float>(temperaturePattern[cell%4u]));
+		const double mixtureFraction=0.015+0.005*static_cast<double>(cell%4u);
+		double gasFraction[6];
+		for(std::size_t species=0u;species<6u;++species)
+			gasFraction[species]=(1.0-mixtureFraction)*fuel.AmbientMassFractions()[species]+
+				mixtureFraction*fuel.InjectedMassFractions()[species];
+		const double reacted=0.15*std::min(gasFraction[MethaneCH4],
+			gasFraction[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+		for(std::size_t species=0u;species<6u;++species)
+			gasFraction[species]+=reacted*fuel.PrimaryReactionDelta()[species];
+		double inverseWeight=0.0;
+		for(std::size_t species=0u;species<MethaneCarbon;++species){
+			const FireThermochemistrySpecies* speciesRecord=fuel.FindSpecies(
+				fuel.SpeciesOrder()[species].c_str());
+			if(!speciesRecord)return 185;
+			inverseWeight+=gasFraction[species]/
+				speciesRecord->molecularWeightKGPerKMol;
+		}
+		const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+			physical.temperatureK*inverseWeight);
+		for(std::size_t species=0u;species<MethaneCarbon;++species)
+			physical.constituent[species]=gasFraction[species]*density;
+		physical.constituent[MethaneCarbon]=0.0;
+		physical.rhoTotalZ=mixtureFraction*density;
+		if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(physical),
+			physical.temperatureK,physical.sensibleEnergyJPerM3,&error))return 186;
+		const ConservativeVector conservative=ToConservativeVector(physical);
+		for(std::size_t component=0u;component<MethaneConservativeDimension;++component){
+			const float value=static_cast<float>(conservative[component]);
+			request.conservativeValues[component*cells+cell]=value;
+			mirrorState[cell][component]=static_cast<double>(value);
+		}
+		request.temperatureK[cell]=static_cast<float>(physical.temperatureK);
+	}
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=FireProductionProjectionFaceCount(request.shape,axis);
+		request.projectedVelocityMPerS[axis].resize(faces);
+		const std::size_t ex=axis==0u?request.shape.nx+1u:request.shape.nx;
+		const std::size_t ey=axis==1u?request.shape.ny+1u:request.shape.ny;
+		const std::size_t ez=axis==2u?request.shape.nz+1u:request.shape.nz;
+		for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+			for(std::size_t x=0u;x<ex;++x){
+				const std::size_t face=axis==0u?(z*request.shape.ny+y)*
+					(request.shape.nx+1u)+x:(axis==1u?(z*(request.shape.ny+1u)+y)*
+					request.shape.nx+x:(z*request.shape.ny+y)*request.shape.nx+x);
+				const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
+				const std::size_t extent=axis==0u?request.shape.nx:
+					(axis==1u?request.shape.ny:request.shape.nz);
+				const float value=(coordinate==0u||coordinate==extent)?0.0f:
+					0.03125f*static_cast<float>((axis+1u)*(x+1u))-
+					0.0234375f*static_cast<float>((y+1u)*(z+1u))+
+					0.015625f*static_cast<float>(axis+z);
+				request.projectedVelocityMPerS[axis][face]=value;
+			}
+	}
+	auto mirrorBoundary=[&](const FireProductionResidentTransportComparatorRequest& fixture){
+		OpenBoundaryConfig3D boundary;
+		for(unsigned int side=0u;side<6u;++side)boundary.kind[side]=
+			fixture.boundary[side]==FireProductionProjectionPressureOpen?
+				PressureOpenBoundary3D:AdiabaticWallBoundary3D;
+		boundary.ambientState=mirrorState.front();boundary.injectedState=mirrorState.front();
+		if(std::any_of(fixture.fuelInletBoundaryFace[4].begin(),
+			fixture.fuelInletBoundaryFace[4].end(),[](unsigned char value){return value!=0u;})){
+			boundary.bottomFuelMask.assign(fixture.fuelInletBoundaryFace[4].begin(),
+				fixture.fuelInletBoundaryFace[4].end());
+			boundary.bottomFuelMassFluxKGPerM2S.resize(boundary.bottomFuelMask.size());
+			for(std::size_t face=0u;face<boundary.bottomFuelMask.size();++face)
+				boundary.bottomFuelMassFluxKGPerM2S[face]=boundary.bottomFuelMask[face]?0.01:0.0;
+		}
+		double density=0.0;for(std::size_t species=0u;species<MethaneCarbon;++species)
+			density+=mirrorState.front()[1u+species];
+		boundary.ambientDensityKGPerM3=density;boundary.injectedGasDensityKGPerM3=density;
+		boundary.fuelMassFluxKGPerM2S=0.0;boundary.velocityToleranceMPerS=0.0;
+		boundary.pressureTolerancePa=1.0e-3;return boundary;
+	};
+	bool hostBinary32DAGBitExact=true;
+	std::uint32_t independentBranchBitmap=0u;
+	double maximumDerivedAbsoluteBound=0.0,maximumVremanUncancelledScale=0.0;
+	auto compare=[&](const FireProductionResidentTransportComparatorRequest& fixture,
+		const OpenBoundaryConfig3D& boundary,FireProductionResidentTransportComparatorResult& metal,
+		double& maximumNormalized)->bool{
+		if(!EvaluateFireProductionResidentTransportMetalComparator(fixture,metal,&error)){
+			std::fprintf(stderr,"RESIDENT_TRANSPORT_METAL failed error=%s\n",error.c_str());
+			return false;
+		}
+		OpenMACField3D fixtureVelocity;
+		for(unsigned int axis=0u;axis<3u;++axis)fixtureVelocity.component[axis].assign(
+			fixture.projectedVelocityMPerS[axis].begin(),fixture.projectedVelocityMPerS[axis].end());
+		std::vector<CellTransportEvaluation> oracle;
+		const bool periodic=std::all_of(fixture.boundary.begin(),fixture.boundary.end(),
+			[](const FireProductionProjectionBoundary value){return
+				value==FireProductionProjectionPeriodic;});
+		if(periodic){
+			std::array<std::vector<double>,3> cellVelocity;
+			for(unsigned int component=0u;component<3u;++component){
+				cellVelocity[component].resize(cells);
+				for(std::size_t cell=0u;cell<cells;++cell)cellVelocity[component][cell]=0.5*(
+					fixtureVelocity.component[component][OpenLowerFaceForCell3D(
+						mirrorShape,cell,component)]+fixtureVelocity.component[component][
+						OpenUpperFaceForCell3D(mirrorShape,cell,component)]);
+			}
+			oracle.resize(cells);const double widths[3]={mirrorShape.cellWidthM,
+				mirrorShape.cellWidthM,mirrorShape.cellWidthM};
+			for(std::size_t cell=0u;cell<cells;++cell){double gradient[3][3]={};
+				for(unsigned int derivative=0u;derivative<3u;++derivative){
+					const std::size_t previous=PeriodicPrevious(mirrorShape,cell,derivative);
+					const std::size_t next=PeriodicNext(mirrorShape,cell,derivative);
+					for(unsigned int component=0u;component<3u;++component)
+						gradient[derivative][component]=(cellVelocity[component][next]-
+							cellVelocity[component][previous])/(2.0*mirrorShape.cellWidthM);
+				}
+				MethaneCellState physical=FromConservativeVector(mirrorState[cell],
+					FireStateProducerPrecision::Binary32);
+				physical.temperatureK=fixture.temperatureK[cell];
+				if(!EvaluateCellTransport(physical,gradient,widths,false,fuel,transport,
+					FireStateProducerPrecision::Binary32,oracle[cell],&error)){
+					std::fprintf(stderr,"RESIDENT_TRANSPORT_FP64 periodic cell=%zu error=%s\n",
+						cell,error.c_str());return false;}
+			}
+		}else if(!BuildOpenStageTransportEvaluations3D(mirrorShape,mirrorState,
+			std::vector<double>(fixture.temperatureK.begin(),fixture.temperatureK.end()),
+			fixtureVelocity,boundary,false,fuel,transport,FireStateProducerPrecision::Binary32,
+			oracle,&error,1u)){std::fprintf(stderr,"RESIDENT_TRANSPORT_FP64 open error=%s\n",
+				error.c_str());return false;}
+		bool bounded=oracle.size()==cells&&metal.diffusivityM2PerS.size()==cells&&
+			metal.conductivityWPerMK.size()==cells&&
+			metal.molecularKinematicViscosityM2PerS.size()==cells;
+		for(std::size_t cell=0u;cell<cells&&bounded;++cell){
+			double rho=0.0;for(std::size_t species=0u;species<MethaneCarbon;++species)
+				rho+=mirrorState[cell][1u+species];
+			const double target[3]={oracle[cell].totalDiffusivityM2PerS,
+				oracle[cell].effectiveConductivityWPerMK,
+				oracle[cell].molecularViscosityPaS/rho};
+			const double positiveScale[3]={oracle[cell].molecularDiffusivityM2PerS+
+				oracle[cell].sgsDiffusivityM2PerS,oracle[cell].molecularConductivityWPerMK+
+				rho*oracle[cell].gasCpJPerKGK*oracle[cell].eddyViscosityM2PerS/
+					transport.TurbulentPrandtl(),oracle[cell].molecularViscosityPaS/rho};
+			const float observedFloat[3]={metal.diffusivityM2PerS[cell],
+				metal.conductivityWPerMK[cell],metal.molecularKinematicViscosityM2PerS[cell]};
+			const double observed[3]={observedFloat[0],observedFloat[1],observedFloat[2]};
+			CertifiedResidentTransport certified;
+			if(!EvaluateCertifiedResidentTransport(fixture,cell,certified,&error))return false;
+			independentBranchBitmap|=certified.branchBitmap;
+			maximumVremanUncancelledScale=std::max(maximumVremanUncancelledScale,
+				certified.vremanUncancelledScale);
+			for(unsigned int field=0u;field<3u;++field){
+				const double difference=std::fabs(observed[field]-
+					certified.coefficient[field].exact);
+				const double doubleEquivalence=std::fabs(certified.coefficient[field].exact-
+					target[field]);
+				// Both the packed binary32 DAG and the canonical fp64 evaluator must
+				// lie inside the independently propagated termwise enclosure. The
+				// resulting device-vs-oracle radius is the triangle bound 2e. No
+				// final-output or cancellation-sensitive scale enters this gate.
+				const double doubleEquivalenceBound=certified.coefficient[field].error;
+				const double bound=2.0*certified.coefficient[field].error;
+				maximumDerivedAbsoluteBound=std::max(maximumDerivedAbsoluteBound,bound);
+				hostBinary32DAGBitExact=hostBinary32DAGBitExact&&
+					std::memcmp(&observedFloat[field],&certified.coefficient[field].rounded,
+						sizeof(float))==0;
+				maximumNormalized=std::max(maximumNormalized,std::fabs(
+					observed[field]-target[field])/positiveScale[field]);
+				if((!std::isfinite(difference)||difference>bound||
+					doubleEquivalence>doubleEquivalenceBound)&&bounded)
+					std::fprintf(stderr,"RESIDENT_TRANSPORT_BOUND cell=%zu field=%u "
+						"observed=%.17g strict=%.17g target=%.17g difference=%.17g "
+						"bound=%.17g double_residual=%.17g double_bound=%.17g scale=%.17g\n",
+						cell,field,observed[field],certified.coefficient[field].rounded,
+						target[field],difference,bound,doubleEquivalence,
+						doubleEquivalenceBound,positiveScale[field]);
+				bounded=bounded&&std::isfinite(bound)&&bound>=0.0&&
+					std::isfinite(doubleEquivalenceBound)&&doubleEquivalenceBound>=0.0&&
+					std::isfinite(difference)&&difference<=
+					certified.coefficient[field].error&&
+					doubleEquivalence<=doubleEquivalenceBound;
+			}
+		}
+		return bounded&&metal.deviceProduced&&metal.devicePublicationIdentity!=0u&&
+			metal.commandCommitCount==1u&&metal.interstageFullGridTransferCount==0u&&
+			metal.terminalStagingCount==1u&&metal.actualMetalAllocationBytes<=
+				metal.certifiedWorkingSetBytes&&metal.stage==fixture.stage&&
+			metal.attemptIdentity==fixture.attemptIdentity&&
+			metal.parentCandidateIdentity==fixture.parentCandidateIdentity&&
+			metal.projectionIdentity==fixture.projectionIdentity;
+	};
+	double maximumNormalized=0.0;std::uint32_t branchBitmap=0u;
+	FireProductionResidentTransportComparatorResult wallResult;
+	bool passed=compare(request,mirrorBoundary(request),wallResult,maximumNormalized);
+	std::uint64_t liveIncrementBytes=0u,residentOwnerPeakBytes=0u;
+	FireProductionProjectionShape ownerShape=request.shape;
+	ownerShape.nx=8u;ownerShape.ny=8u;ownerShape.nz=8u;
+	const bool liveIncrementCertified=
+		FireProductionResidentTransportLiveIncrementWorkingSetBytes(ownerShape,
+			liveIncrementBytes);
+	const std::array<FireProductionProjectionBoundary,6> productionBoundary={{
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionWall,FireProductionProjectionPressureOpen}};
+	const bool ownerPeakCertified=FireProductionResidentStepWorkingSetBytes(ownerShape,
+		productionBoundary,residentOwnerPeakBytes);
+	std::uint64_t forceProjectionProbe=0u,projectionProbe=0u,cellProbe=0u,dualProbe=0u;
+	const bool forceProjectionCertified=FireProductionResidentForceProjectionWorkingSetBytes(
+		ownerShape,forceProjectionProbe);
+	const bool projectionCertified=FireProductionProjectionWorkingSetBytes(
+		ownerShape,projectionProbe);
+	const bool cellCertified=FireProductionCellPalindromeWorkingSetBytes(
+		ownerShape,9u,cellProbe);
+	const bool dualCertified=FireProductionDualMomentumResidentWorkingSetBytes(
+		ownerShape,productionBoundary,dualProbe);
+	passed=liveIncrementCertified&&ownerPeakCertified&&liveIncrementBytes>0u&&
+		residentOwnerPeakBytes>=liveIncrementBytes&&passed;
+	branchBitmap|=wallResult.branchObligationBitmap;
+	FireProductionResidentTransportComparatorRequest lineageOnly=request;
+	lineageOnly.attemptIdentity+=3u;
+	FireProductionResidentTransportComparatorResult lineageResult;
+	passed=compare(lineageOnly,mirrorBoundary(lineageOnly),lineageResult,maximumNormalized)&&
+		lineageResult.devicePublicationIdentity!=wallResult.devicePublicationIdentity&&passed;
+	FireProductionResidentTransportComparatorRequest parentOnly=request;
+	parentOnly.parentCandidateIdentity+=7u;
+	FireProductionResidentTransportComparatorResult parentResult;
+	passed=compare(parentOnly,mirrorBoundary(parentOnly),parentResult,maximumNormalized)&&
+		parentResult.devicePublicationIdentity!=wallResult.devicePublicationIdentity&&passed;
+	FireProductionResidentTransportComparatorRequest projectionOnly=request;
+	projectionOnly.projectionIdentity+=11u;
+	FireProductionResidentTransportComparatorResult projectionResult;
+	passed=compare(projectionOnly,mirrorBoundary(projectionOnly),projectionResult,maximumNormalized)&&
+		projectionResult.devicePublicationIdentity!=wallResult.devicePublicationIdentity&&passed;
+	FireProductionResidentTransportComparatorRequest stageOnly=request;
+	stageOnly.stage=FireProductionProjectedHeunStage::R1;
+	FireProductionResidentTransportComparatorResult stageResult;
+	passed=compare(stageOnly,mirrorBoundary(stageOnly),stageResult,maximumNormalized)&&
+		stageResult.devicePublicationIdentity!=wallResult.devicePublicationIdentity&&passed;
+	FireProductionResidentTransportComparatorRequest periodic=request;
+	periodic.boundary.fill(FireProductionProjectionPeriodic);periodic.attemptIdentity+=1u;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t firstEnd=axis==0u?request.shape.ny:request.shape.nx;
+		const std::size_t secondEnd=axis==2u?request.shape.ny:request.shape.nz;
+		const std::size_t extent=axis==0u?request.shape.nx:
+			(axis==1u?request.shape.ny:request.shape.nz);
+		auto seamFace=[&](const std::size_t normal,const std::size_t first,
+			const std::size_t second){return axis==0u?
+			(second*request.shape.ny+first)*(request.shape.nx+1u)+normal:
+			(axis==1u?(second*(request.shape.ny+1u)+normal)*request.shape.nx+first:
+				(normal*request.shape.ny+second)*request.shape.nx+first);};
+		for(std::size_t second=0u;second<secondEnd;++second)
+			for(std::size_t first=0u;first<firstEnd;++first)
+				periodic.projectedVelocityMPerS[axis][seamFace(extent,first,second)]=
+					periodic.projectedVelocityMPerS[axis][seamFace(0u,first,second)];
+	}
+	OpenBoundaryConfig3D periodicBoundary=mirrorBoundary(periodic);
+	periodicBoundary.kind.fill(AdiabaticWallBoundary3D);
+	FireProductionResidentTransportComparatorResult periodicResult;
+	passed=compare(periodic,periodicBoundary,periodicResult,maximumNormalized)&&passed;
+	branchBitmap|=periodicResult.branchObligationBitmap;
+	FireProductionResidentTransportComparatorRequest open=request;
+	open.boundary.fill(FireProductionProjectionPressureOpen);open.attemptIdentity+=2u;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t extent=axis==0u?request.shape.nx:
+			(axis==1u?request.shape.ny:request.shape.nz);
+		const std::size_t firstEnd=axis==0u?request.shape.ny:request.shape.nx;
+		const std::size_t secondEnd=axis==2u?request.shape.ny:request.shape.nz;
+		auto boundaryFace=[&](const std::size_t normal,const std::size_t first,
+			const std::size_t second){return axis==0u?
+			(second*request.shape.ny+first)*(request.shape.nx+1u)+normal:
+			(axis==1u?(second*(request.shape.ny+1u)+normal)*request.shape.nx+first:
+				(normal*request.shape.ny+second)*request.shape.nx+first);};
+		for(std::size_t second=0u;second<secondEnd;++second)
+			for(std::size_t first=0u;first<firstEnd;++first){
+				open.projectedVelocityMPerS[axis][boundaryFace(0u,first,second)]=0.0625f;
+				open.projectedVelocityMPerS[axis][boundaryFace(extent,first,second)]=-0.046875f;
+			}
+	}
+	OpenBoundaryConfig3D openBoundary=mirrorBoundary(open);
+	FireProductionResidentTransportComparatorResult openResult;
+	passed=compare(open,openBoundary,openResult,maximumNormalized)&&passed;
+	branchBitmap|=openResult.branchObligationBitmap;
+	FireProductionResidentTransportComparatorRequest mixed=request;
+	mixed.boundary={{FireProductionProjectionWall,FireProductionProjectionWall,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionWall,FireProductionProjectionWall}};
+	mixed.attemptIdentity+=4u;
+	for(std::size_t face=0u;face<mixed.fuelInletBoundaryFace[4].size();++face)
+		mixed.fuelInletBoundaryFace[4][face]=face%3u==0u?1u:0u;
+	FireProductionResidentTransportComparatorResult mixedResult;
+	passed=compare(mixed,mirrorBoundary(mixed),mixedResult,maximumNormalized)&&passed;
+	branchBitmap|=mixedResult.branchObligationBitmap;
+	FireProductionResidentTransportComparatorRequest cancellation=request;
+	cancellation.boundary.fill(FireProductionProjectionPressureOpen);
+	cancellation.attemptIdentity+=5u;
+	const float cancellationGradient[3][3]={{-0.76821637f,1.02942061f,-4.74512291f},
+		{0.35371006f,-0.47399589f,2.18486214f},
+		{1.24271476f,-1.66526103f,7.67605352f}};
+	for(unsigned int component=0u;component<3u;++component){
+		const std::size_t ex=component==0u?request.shape.nx+1u:request.shape.nx;
+		const std::size_t ey=component==1u?request.shape.ny+1u:request.shape.ny;
+		const std::size_t ez=component==2u?request.shape.nz+1u:request.shape.nz;
+		for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+			for(std::size_t x=0u;x<ex;++x){
+				const float position[3]={request.shape.cellWidthM*(static_cast<float>(x)+
+					(component==0u?0.0f:0.5f)),request.shape.cellWidthM*(static_cast<float>(y)+
+					(component==1u?0.0f:0.5f)),request.shape.cellWidthM*(static_cast<float>(z)+
+					(component==2u?0.0f:0.5f))};
+				float value=0.0f;for(unsigned int derivative=0u;derivative<3u;++derivative)
+					value+=cancellationGradient[derivative][component]*position[derivative];
+				const std::size_t face=component==0u?(z*request.shape.ny+y)*
+					(request.shape.nx+1u)+x:(component==1u?
+					(z*(request.shape.ny+1u)+y)*request.shape.nx+x:
+					(z*request.shape.ny+y)*request.shape.nx+x);
+				cancellation.projectedVelocityMPerS[component][face]=value;
+			}
+	}
+	FireProductionResidentTransportComparatorResult cancellationResult;
+	passed=compare(cancellation,mirrorBoundary(cancellation),cancellationResult,
+		maximumNormalized)&&passed;
+	branchBitmap|=cancellationResult.branchObligationBitmap;
+	// Independent arithmetic walker for the cancellation-negative Vreman arm.
+	// The matrix is the sealed float tuple from the search witness above; this
+	// evaluation neither reads the device bitmap nor reuses the Metal source.
+	float walkerBeta[3][3]={};
+	for(unsigned int m=0u;m<3u;++m)for(unsigned int i=0u;i<3u;++i)
+		for(unsigned int j=0u;j<3u;++j)
+			walkerBeta[i][j]+=cancellationGradient[m][i]*cancellationGradient[m][j];
+	const float walkerB0=walkerBeta[0][0]*walkerBeta[1][1];
+	const float walkerB1=walkerBeta[0][1]*walkerBeta[0][1];
+	const float walkerB2=walkerBeta[0][0]*walkerBeta[2][2];
+	const float walkerB3=walkerBeta[0][2]*walkerBeta[0][2];
+	const float walkerB4=walkerBeta[1][1]*walkerBeta[2][2];
+	const float walkerB5=walkerBeta[1][2]*walkerBeta[1][2];
+	const float walkerRawB=walkerB0-walkerB1+walkerB2-walkerB3+walkerB4-walkerB5;
+	if(walkerRawB<0.0f)independentBranchBitmap|=1u<<14u;
+	FireProductionResidentTransportComparatorRequest zeroGradient=request;
+	for(std::vector<float>& axis:zeroGradient.projectedVelocityMPerS)
+		std::fill(axis.begin(),axis.end(),0.0f);
+	for(float& temperature:zeroGradient.temperatureK)
+		temperature=static_cast<float>(transport.TemperatureMinK());
+	FireProductionResidentTransportComparatorResult zeroResult;
+	passed=compare(zeroGradient,mirrorBoundary(zeroGradient),zeroResult,maximumNormalized)&&passed;
+	branchBitmap|=zeroResult.branchObligationBitmap;
+	std::uint32_t requiredCPBitmap=0u;bool thirdCPSegmentReachable=false;
+	for(std::size_t species=0u;species<6u;++species){const FireThermochemistrySpecies* record=
+		fuel.FindSpecies(fuel.SpeciesOrder()[species].c_str());
+		for(std::size_t segment=0u;record&&segment<record->segments.size();++segment){
+			const double lo=std::max(record->segments[segment].temperatureMinK,
+				transport.TemperatureMinK());
+			const double hi=std::min(record->segments[segment].temperatureMaxK,
+				transport.TemperatureMaxK());
+			if(lo<=hi){requiredCPBitmap|=1u<<std::min<std::size_t>(segment,2u);
+				thirdCPSegmentReachable=thirdCPSegmentReachable||segment>=2u;}}
+	}
+	const std::uint32_t requiredBranchBitmap=requiredCPBitmap|(1u<<3u)|(1u<<4u)|(1u<<5u)|
+		(1u<<6u)|(1u<<7u)|(1u<<8u)|(1u<<9u)|(1u<<10u)|(1u<<11u)|
+		(1u<<12u)|(1u<<13u)|(1u<<14u)|(1u<<15u)|(1u<<16u)|(1u<<17u)|(1u<<18u);
+	passed=passed&&branchBitmap==independentBranchBitmap&&
+		(branchBitmap&requiredBranchBitmap)==requiredBranchBitmap&&
+		wallResult.devicePublicationIdentity!=periodicResult.devicePublicationIdentity&&
+		periodicResult.devicePublicationIdentity!=openResult.devicePublicationIdentity;
+	FireProductionResidentTransportComparatorRequest missingLineage=request;
+	missingLineage.attemptIdentity=0u;
+	FireProductionResidentTransportComparatorResult refused;error.clear();
+	const bool missingLineageRefused=!EvaluateFireProductionResidentTransportMetalComparator(
+		missingLineage,refused,&error)&&!error.empty()&&!refused.deviceProduced&&
+		refused.devicePublicationIdentity==0u;
+	FireProductionResidentTransportComparatorRequest brokenSeam=periodic;
+	brokenSeam.projectedVelocityMPerS[0][request.shape.nx]+=0.125f;
+	error.clear();const bool seamRefused=
+		!EvaluateFireProductionResidentTransportMetalComparator(brokenSeam,refused,&error)&&
+		!error.empty()&&!refused.deviceProduced;
+	FireProductionResidentTransportComparatorRequest invalidDeviceState=request;
+	for(std::size_t species=0u;species<6u;++species)
+		std::fill(invalidDeviceState.conservativeValues.begin()+(species+1u)*cells,
+			invalidDeviceState.conservativeValues.begin()+(species+2u)*cells,0.0f);
+	FireProductionResidentTransportComparatorResult invalidDeviceResult;error.clear();
+	const bool invalidDeviceRefused=
+		!EvaluateFireProductionResidentTransportMetalComparator(invalidDeviceState,
+			invalidDeviceResult,&error)&&!error.empty()&&!invalidDeviceResult.deviceProduced&&
+		invalidDeviceResult.devicePublicationIdentity==0u;
+	FireProductionResidentTransportComparatorRequest shortVelocity=request;
+	shortVelocity.projectedVelocityMPerS[2].pop_back();error.clear();
+	const bool shortVelocityRefused=!EvaluateFireProductionResidentTransportMetalComparator(
+		shortVelocity,refused,&error)&&!error.empty()&&!refused.deviceProduced;
+	passed=passed&&missingLineageRefused&&seamRefused&&invalidDeviceRefused&&
+		shortVelocityRefused;
+	std::fprintf(stderr,"RESIDENT_TRANSPORT_METAL_FP64 passed=%d host_fp32_dag_bit_equal=%d "
+		"max_norm=%.17g max_bound=%.17g vreman_uncancelled=%.17g "
+		"branch_bitmap=0x%08x independent_bitmap=0x%08x missing_lineage_refused=%d seam_refused=%d "
+		"invalid_device_refused=%d short_velocity_refused=%d cp_segment2_reachable=%d "
+		"fixture_ws=%llu actual_ws=%llu live_increment_ws=%llu owner_peak_ws=%llu "
+		"live_increment_certified=%d owner_peak_certified=%d "
+		"ws_parts=%d/%d/%d/%d "
+		"device_identity=%016llx\n",
+		passed?1:0,hostBinary32DAGBitExact?1:0,maximumNormalized,
+		maximumDerivedAbsoluteBound,maximumVremanUncancelledScale,branchBitmap,
+		independentBranchBitmap,missingLineageRefused?1:0,seamRefused?1:0,
+		invalidDeviceRefused?1:0,shortVelocityRefused?1:0,thirdCPSegmentReachable?1:0,
+		static_cast<unsigned long long>(wallResult.certifiedWorkingSetBytes),
+		static_cast<unsigned long long>(wallResult.actualMetalAllocationBytes),
+		static_cast<unsigned long long>(liveIncrementBytes),
+		static_cast<unsigned long long>(residentOwnerPeakBytes),
+		liveIncrementCertified?1:0,ownerPeakCertified?1:0,
+		forceProjectionCertified?1:0,projectionCertified?1:0,cellCertified?1:0,
+		dualCertified?1:0,
+		static_cast<unsigned long long>(wallResult.devicePublicationIdentity));
+	return passed?0:196;
+}
+
 int RunProductionMetalFP64KernelSweep()
 {
+	const int transport=RunProductionResidentTransportMetalFP64Fixture();
+	if( transport!=0 ) return transport;
 	const int scalar=RunProductionScalarFCTMetalStageFixture();
 	if( scalar!=0 ) return scalar;
 	const int scalarMixed=RunProductionScalarFCTMetalMixedBoundaryFixture();
