@@ -8628,7 +8628,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 			residual<=bound;};
 	const double epsilon=std::numeric_limits<float>::epsilon();
 	auto gamma=[&](const double operations){return operations*epsilon/(1.0-operations*epsilon);};
-	bool donorBitExact=true,mcBitExact=true,shared=true,boundsPassed=true;
+	bool donorBitExact=true,deltaBitExact=true,mcBitExact=true,shared=true,boundsPassed=true;
 	bool enthalpyBitExact=true,logBitExact=true,logEnclosurePassed=true;
 	double maximumDeviceLogEnclosureRatio=0.0;
 	std::uint32_t branchBitmap=0u,independentBranchBitmap=0u;std::uint64_t wallIdentity=0u;
@@ -8654,7 +8654,8 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		for(std::size_t value=0u;value<highCPU.size();++value)
 			highCPU[value]=advectiveCPU.lowFlux[value]+advectiveCPU.fluxDelta[value];
 		donorBitExact=donorBitExact&&ByteIdenticalVector(observed.donorAdvectiveFlux,
-			advectiveCPU.lowFlux);mcBitExact=mcBitExact&&
+			advectiveCPU.lowFlux);deltaBitExact=deltaBitExact&&ByteIdenticalVector(
+				observed.advectiveFluxDelta,advectiveCPU.fluxDelta);mcBitExact=mcBitExact&&
 			ByteIdenticalVector(observed.mcMusclAdvectiveFlux,highCPU);
 		FireProductionScalarPhysicalFluxPrerequisiteRequest physical;
 		physical.shape=fixture.transport.shape;physical.boundary=fixture.transport.boundary;
@@ -9014,7 +9015,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		ownerBytes>=liveBytes&&metal.actualMetalAllocationBytes<=metal.certifiedWorkingSetBytes;
 	const std::uint32_t requiredBranches=(1u<<0u)|(1u<<1u)|(1u<<2u)|(1u<<3u)|
 		(1u<<4u)|(1u<<5u)|(1u<<7u)|(1u<<8u)|(1u<<10u)|(1u<<11u)|(1u<<12u);
-	const bool passed=fixturesPassed&&donorBitExact&&mcBitExact&&shared&&
+	const bool passed=fixturesPassed&&donorBitExact&&deltaBitExact&&mcBitExact&&shared&&
 		sharedMutantRefused&&lineageRegenerated&&missingLineageRefused&&mismatchedParentRefused&&
 		shortInflowRefused&&oversizedBasisRefused&&understatedRefused&&workingSet&&boundsPassed&&
 		logBitExact&&logEnclosurePassed&&
@@ -9023,7 +9024,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		metal.commandCommitCount==1u&&metal.terminalStagingCount==1u&&
 		metal.interstageFullGridTransferCount==0u&&metal.transportPublicationIdentity!=0u&&
 		metal.devicePublicationIdentity!=0u;
-	std::fprintf(stderr,"RESIDENT_PHYSICAL_FLUX_METAL passed=%d donor_bit_equal=%d "
+	std::fprintf(stderr,"RESIDENT_PHYSICAL_FLUX_METAL passed=%d donor_bit_equal=%d delta_bit_equal=%d "
 		"mc_bit_equal=%d shared_fN=%d shared_mutant_refused=%d lineage_regenerated=%d "
 		"missing_lineage_refused=%d parent_candidate_mismatch_refused=%d "
 		"short_inflow_refused=%d oversized_basis_refused=%d understated_ws_refused=%d "
@@ -9031,7 +9032,7 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		"log_series_enclosure_passed=%d log_max_residual_over_local_bound=%.17g bounds_passed=%d "
 		"branch_bitmap=0x%08x independent_branch_bitmap=0x%08x required_branch_bitmap=0x%08x "
 		"fixture_ws=%llu actual_ws=%llu live_ws=%llu owner_ws=%llu identity=%016llx\n",
-		passed?1:0,donorBitExact?1:0,mcBitExact?1:0,shared?1:0,
+		passed?1:0,donorBitExact?1:0,deltaBitExact?1:0,mcBitExact?1:0,shared?1:0,
 		sharedMutantRefused?1:0,lineageRegenerated?1:0,missingLineageRefused?1:0,
 		mismatchedParentRefused?1:0,shortInflowRefused?1:0,oversizedBasisRefused?1:0,
 		understatedRefused?1:0,enthalpyBitExact?1:0,logBitExact?1:0,logEnclosurePassed?1:0,
@@ -9067,20 +9068,6 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 		(axis==1u?"y":"z"),"kg_m2_s",gasStat[axis]);
 	return passed?0:203;
 }
-
-struct ResidentEOSArithmeticObligationWalker
-{
-	struct Group { const char* identity;std::uint32_t secondOrderTerms; };
-	std::vector<std::string> visited;
-	std::uint32_t terms=0u;
-	bool Visit(const Group& group)
-	{
-		if(!group.identity||group.identity[0]=='\0'||group.secondOrderTerms==0u||
-			std::find(visited.begin(),visited.end(),group.identity)!=visited.end()||
-			terms>std::numeric_limits<std::uint32_t>::max()-group.secondOrderTerms)return false;
-		visited.emplace_back(group.identity);terms+=group.secondOrderTerms;return true;
-	}
-};
 
 int RunProductionResidentEOSCandidateMetalFP64Fixture()
 {
@@ -9218,11 +9205,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	fctPair.timeStepS=fctRequest.timeStepS;fctPair.boundary=fctRequest.boundary;
 	fctPair.packedFaceOffset=candidateFluxMirror.packedFaceOffset;
 	fctPair.lowFlux=candidateFluxMirror.lowCompositeFlux;
-	fctPair.fluxDelta.resize(candidateFluxMirror.highCompositeFlux.size());
-	for(std::size_t index=0u;index<fctPair.fluxDelta.size();++index){
-		const volatile float high=candidateFluxMirror.highCompositeFlux[index];
-		const volatile float low=candidateFluxMirror.lowCompositeFlux[index];
-		fctPair.fluxDelta[index]=high-low;}
+	fctPair.fluxDelta=candidateFluxMirror.advectiveFluxDelta;
 	FireProductionScalarFCTResult fctMirror;
 	if(!SolveFireProductionScalarFCTFluxPairCPU(fctRequest,fctPair,fctMirror,&error))return 207;
 	float minimumCandidateAlpha=1.0f;for(const std::vector<float>& axis:fctMirror.sharedFaceAlpha)
@@ -9258,10 +9241,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	limiterFCT.pressureOpenInflow=limiterBase.physicalFlux.pressureOpenInflow;
 	FireProductionScalarFCTFluxPair limiterPair;limiterPair.shape=limiterFCT.shape;
 	limiterPair.boundary=limiterFCT.boundary;limiterPair.packedFaceOffset=limiterFlux.packedFaceOffset;
-	limiterPair.lowFlux=limiterFlux.lowCompositeFlux;limiterPair.fluxDelta.resize(
-		limiterFlux.highCompositeFlux.size());for(std::size_t index=0u;index<limiterPair.fluxDelta.size();++index){
-		const volatile float high=limiterFlux.highCompositeFlux[index],low=limiterFlux.lowCompositeFlux[index];
-		limiterPair.fluxDelta[index]=high-low;}
+	limiterPair.lowFlux=limiterFlux.lowCompositeFlux;
+	limiterPair.fluxDelta=limiterFlux.advectiveFluxDelta;
 	const std::array<float,7> limiterTimeSteps={{0x1p-14f,0x1p-12f,0x1p-10f,
 		0x1p-9f,0x1p-8f,0x1p-7f,0x1p-6f}};
 	const std::array<double,5> limiterMixtureFractions={{1.0e-3,1.0e-4,1.0e-5,1.0e-6,0.0}};
@@ -9297,7 +9278,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(trial,trialMetal,&error)||
 			trialMetal.candidateConservativeValues.size()!=trialMirror.accepted.size())continue;
 			limitedFCTBitEqual=ByteIdenticalVector(trialMetal.candidateConservativeValues,
-				trialMirror.accepted);if(limitedFCTBitEqual)limitedMinimumAlpha=trialMinimum;}
+				trialMirror.accepted)&&ByteIdenticalVectorArray(trialMetal.sharedFaceAlpha,
+					trialMirror.sharedFaceAlpha);if(limitedFCTBitEqual)limitedMinimumAlpha=trialMinimum;}
 	}
 	FireProductionResidentEOSCandidateComparatorResult observed;
 	if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(request,observed,&error)){
@@ -9313,6 +9295,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	for(std::size_t component=0u;component<9u;++component)for(std::size_t cell=0u;cell<cells;++cell){
 		candidateBitEqual=candidateBitEqual&&sameFloatBits(observed.candidateConservativeValues[
 			component*cells+cell],fctMirror.accepted[component*cells+cell]);}
+	const bool sharedAlphaBitEqual=ByteIdenticalVectorArray(observed.sharedFaceAlpha,
+		fctMirror.sharedFaceAlpha);
 	double maximumTemperatureResidual=0.0,maximumPressureResidual=0.0,
 		maximumDeviationResidual=0.0,maximumDeviationBoundRatio=0.0,maximumMonitoredDeviation=0.0;
 	for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> state;
@@ -9337,11 +9321,9 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		temperatureBitEqual=temperatureBitEqual&&sameFloatBits(observed.temperatureK[cell],
 			expectedTemperature);pressureBitEqual=pressureBitEqual&&sameFloatBits(
 			observed.representedPressureRatio[cell],expectedRatio);
-		const double deviationArithmeticEnclosure=0x1p-41*std::max(1.0,std::fabs(representedRatio));
-		const double deviationProjectionEnclosure=std::fabs(static_cast<double>(
+		const double deviationEnclosure=std::fabs(static_cast<double>(
 			std::nextafter(expectedDeviation,std::numeric_limits<float>::infinity()))-
 			static_cast<double>(expectedDeviation));
-		const double deviationEnclosure=deviationArithmeticEnclosure+deviationProjectionEnclosure;
 		deviationEnclosed=deviationEnclosed&&std::fabs(static_cast<double>(
 			observed.absoluteEOSDeviation[cell])-expectedDeviation)<=deviationEnclosure;
 		maximumDeviationBoundRatio=std::max(maximumDeviationBoundRatio,
@@ -9386,13 +9368,28 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	FireProductionResidentEOSCandidateComparatorRequest hardBound=request;
 	for(float& value:hardBound.physicalFlux.transport.conservativeValues)value*=1.30f;
 	FireProductionResidentEOSCandidateComparatorResult refused;
-	const bool hardBoundRefused=!EvaluateFireProductionResidentEOSCandidateMetalComparator(
-		hardBound,refused,&error)&&refused.candidatePublicationIdentity==0u&&
-		refused.EOSPublicationIdentity==0u;
+	auto noPublication=[](const FireProductionResidentEOSCandidateComparatorResult& value){return
+		value.candidatePublicationIdentity==0u&&value.EOSPublicationIdentity==0u;};
+	auto hostRefused=[&](FireProductionResidentEOSCandidateComparatorRequest mutation){
+		error.clear();const bool accepted=EvaluateFireProductionResidentEOSCandidateMetalComparator(
+			mutation,refused,&error);return !accepted&&noPublication(refused)&&
+			!refused.deviceAttempted&&!refused.terminalRead&&refused.deviceFailureBitmap==0u;};
+	auto deviceRefused=[&](FireProductionResidentEOSCandidateComparatorRequest mutation,
+		const std::uint32_t exactFailure){error.clear();const bool accepted=
+			EvaluateFireProductionResidentEOSCandidateMetalComparator(mutation,refused,&error);
+		const bool passed=!accepted&&noPublication(refused)&&refused.deviceAttempted&&
+			refused.terminalRead&&refused.commandCommitCount==1u&&
+			refused.terminalStagingCount==1u&&refused.deviceFailureBitmap==exactFailure;
+		if(!passed){
+			std::fprintf(stderr,"RESIDENT_EOS_REFUSAL expected=0x%08x observed=0x%08x "
+				"attempted=%d read=%d error=%s\n",exactFailure,refused.deviceFailureBitmap,
+				refused.deviceAttempted?1:0,refused.terminalRead?1:0,error.c_str());
+		}
+		return passed;};
 	auto refusedMutation=[&](FireProductionResidentEOSCandidateComparatorRequest mutation){
 		error.clear();return !EvaluateFireProductionResidentEOSCandidateMetalComparator(
-			mutation,refused,&error)&&refused.candidatePublicationIdentity==0u&&
-			refused.EOSPublicationIdentity==0u;};
+			mutation,refused,&error)&&noPublication(refused);};
+	const bool hardBoundRefused=deviceRefused(hardBound,1024u);
 	FireProductionResidentEOSCandidateComparatorRequest lowerEnvelope;
 	bool lowerEnvelopePrepared=uniformRequest(sealedCase.derived.pilotAmbientTemperatureK,1.0f,
 		lowerEnvelope),lowerEnvelopeAccepted=false,lowerAdjacentRefused=false;
@@ -9444,7 +9441,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 			if(lowerEnvelopeAccepted){lowerEnvelopeAccepted=deviceAcceptsLower(deviceAccepted);
 				auto adjacent=lowerEnvelope;setUniformEnergy(adjacent,deviceRejected);
 				lowerAdjacentRefused=std::nextafter(deviceRejected,
-					std::numeric_limits<float>::infinity())==deviceAccepted&&refusedMutation(adjacent);}}}
+					std::numeric_limits<float>::infinity())==deviceAccepted&&deviceRefused(adjacent,0xd0u);}}}
 	FireProductionResidentEOSCandidateComparatorRequest upperEnvelope;
 	bool upperEnvelopePrepared=uniformRequest(sealedCase.derived.maximumAcceptedTemperatureK,1.0f,
 		upperEnvelope),upperEnvelopeRefused=false,upperAdjacentAccepted=false;
@@ -9459,7 +9456,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 			FireProductionResidentEOSCandidateComparatorResult value;
 			upperAdjacentAccepted=EvaluateFireProductionResidentEOSCandidateMetalComparator(
 				upperEnvelope,value,&error);setUniformEnergy(upperEnvelope,rejected);
-			upperEnvelopeRefused=upperAdjacentAccepted&&refusedMutation(upperEnvelope);}}
+			upperEnvelopeRefused=upperAdjacentAccepted&&deviceRefused(upperEnvelope,128u);}}
 	FireProductionResidentEOSCandidateComparatorRequest roundedHardBound;
 	const double justAboveHardBound=std::nextafter(1.25,
 		std::numeric_limits<double>::infinity());
@@ -9482,35 +9479,49 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 				roundedHardBound.physicalFlux.ambient[component]=state[component];}
 			std::fill(roundedHardBound.physicalFlux.transport.temperatureK.begin(),
 				roundedHardBound.physicalFlux.transport.temperatureK.end(),static_cast<float>(T));
+			for(std::vector<float>& axis:roundedHardBound.physicalFlux.transport.projectedVelocityMPerS)
+				std::fill(axis.begin(),axis.end(),0.0f);
 			roundedHardBound.physicalFlux.ambientTemperatureK=static_cast<float>(T);
 			roundedHardBoundPrepared=static_cast<float>(justAboveHardBound)==1.25f;}}
 	bool roundedHardBoundRefused=false;
-	if(roundedHardBoundPrepared)roundedHardBoundRefused=refusedMutation(roundedHardBound);
+	if(roundedHardBoundPrepared)roundedHardBoundRefused=deviceRefused(roundedHardBound,1024u);
 	FireProductionResidentEOSCandidateComparatorRequest unsealed=request;
-	unsealed.qualificationUnsealedParentFlux=true;const bool unsealedRefused=refusedMutation(unsealed);
+	unsealed.qualificationUnsealedParentFlux=true;const bool unsealedRefused=hostRefused(unsealed);
 	FireProductionResidentEOSCandidateComparatorRequest mismatched=request;
 	mismatched.qualificationMismatchedParentFlux=true;
-	const bool mismatchedRefused=refusedMutation(mismatched);
+	const bool mismatchedRefused=hostRefused(mismatched);
 	FireProductionResidentEOSCandidateComparatorRequest cpu=request;
-	cpu.qualificationCPUProducedCandidate=true;const bool cpuRefused=refusedMutation(cpu);
+	cpu.qualificationCPUProducedCandidate=true;const bool cpuRefused=hostRefused(cpu);
 	FireProductionResidentEOSCandidateComparatorRequest fp64Label=request;
 	fp64Label.producerPrecision=FireStateProducerPrecision::Binary64;
-	const bool fp64LabelRefused=refusedMutation(fp64Label);
+	const bool fp64LabelRefused=hostRefused(fp64Label);
 	FireProductionResidentEOSCandidateComparatorRequest shortCandidate=request;
 	shortCandidate.qualificationShortCandidateSurface=true;
-	const bool shortCandidateRefused=refusedMutation(shortCandidate);
+	const bool shortCandidateRefused=hostRefused(shortCandidate);
 	FireProductionResidentEOSCandidateComparatorRequest invalidConservation=request;
 	invalidConservation.physicalFlux.transport.conservativeValues[cells]=-1.0f;
 	const bool invalidConservationRefused=refusedMutation(invalidConservation);
 	FireProductionResidentEOSCandidateComparatorRequest finalStage=request;
 	finalStage.producingStage=FireProductionScalarEOSStage::QNPlus1;
-	const bool finalStageRefused=refusedMutation(finalStage);
+	const bool finalStageRefused=hostRefused(finalStage);
 	FireProductionResidentEOSCandidateComparatorRequest wrongProducer=request;
 	wrongProducer.physicalFlux.transport.stage=FireProductionProjectedHeunStage::R1;
-	const bool wrongProducerRefused=refusedMutation(wrongProducer);
+	const bool wrongProducerRefused=hostRefused(wrongProducer);
 	FireProductionResidentEOSCandidateComparatorRequest eosTableMutation=request;
 	eosTableMutation.qualificationMismatchedEOSThermochemistry=true;
-	const bool eosTableMutationRefused=refusedMutation(eosTableMutation);
+	const bool eosTableMutationRefused=hostRefused(eosTableMutation);
+	FireProductionResidentEOSCandidateComparatorRequest splitStage=request;
+	splitStage.qualificationMismatchedDeviceStage=true;
+	const bool splitStageRefused=deviceRefused(splitStage,0x50u);
+	FireProductionResidentEOSCandidateComparatorRequest splitPrecision=request;
+	splitPrecision.qualificationMismatchedDevicePrecision=true;
+	const bool splitPrecisionRefused=deviceRefused(splitPrecision,0x50u);
+	FireProductionResidentEOSCandidateComparatorRequest splitAttempt=request;
+	splitAttempt.qualificationMismatchedDeviceAttempt=true;
+	const bool splitAttemptRefused=hostRefused(splitAttempt);
+	FireProductionResidentEOSCandidateComparatorRequest splitCase=request;
+	splitCase.qualificationMismatchedDeviceCase=true;
+	const bool splitCaseRefused=hostRefused(splitCase);
 	FireProductionResidentEOSCandidateComparatorRequest parentMutation=request;
 	++parentMutation.physicalFlux.transport.parentCandidateIdentity;
 	FireProductionResidentEOSCandidateComparatorResult parentMutationResult;
@@ -9531,7 +9542,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		ownerShape,request.physicalFlux.transport.boundary,ownerPeak);
 	FireProductionResidentEOSCandidateComparatorRequest understated=request;
 	understated.qualificationWorkingSetLimitBytes=fixtureWorkingSet-1u;
-	const bool understatedRefused=fixtureCertified&&refusedMutation(understated);
+	const bool understatedRefused=fixtureCertified&&hostRefused(understated);
 	// Independent walker: candidate/materialization/admissibility/inversion/
 	// publication branches plus each thermochemistry segment reachable while
 	// evaluating the sealed case interval.  This does not reuse kernel control.
@@ -9544,25 +9555,15 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 			if(item.temperatureMaxK>=sealedCase.derived.pilotAmbientTemperatureK&&
 				item.temperatureMinK<=sealedCase.derived.maximumAcceptedTemperatureK)
 				requiredBranches|=1u<<(7u+std::min<std::size_t>(segment,2u));}}
-	// Independent arithmetic obligation ledger for the compensated EOS DAG.
-	// Each group is a cancellation-free second-order remainder family; the
-	// rounding-aware publication bound separately adds one output ULP.
-	const std::array<ResidentEOSArithmeticObligationWalker::Group,6> arithmeticGroups={{{
-		"two_sum_and_quick_two_sum",24u},{"triple_renormalization",24u},
-		{"triple_multiplication",32u},{"triple_division_corrections",24u},
-		{"log_series_accumulation",16u},{"pressure_projection",8u}}};
-	ResidentEOSArithmeticObligationWalker arithmeticWalker;bool arithmeticWalked=true;
-	for(const auto& group:arithmeticGroups)arithmeticWalked=arithmeticWalker.Visit(group)&&arithmeticWalked;
-	arithmeticWalked=arithmeticWalked&&arithmeticWalker.visited.size()==arithmeticGroups.size()&&
-		arithmeticWalker.terms==128u;
-	const bool passed=candidateBitEqual&&temperatureBitEqual&&pressureBitEqual&&deviationEnclosed&&
+	const bool passed=candidateBitEqual&&sharedAlphaBitEqual&&temperatureBitEqual&&pressureBitEqual&&deviationEnclosed&&
 		observed.branchObligationBitmap==requiredBranches&&observed.commandCommitCount==1u&&
 		observed.terminalStagingCount==1u&&observed.interstageFullGridTransferCount==0u&&
 		monitoredAccepted&&hardBoundRefused&&unsealedRefused&&mismatchedRefused&&cpuRefused&&
 		lowerEnvelopeAccepted&&lowerAdjacentRefused&&upperAdjacentAccepted&&upperEnvelopeRefused&&
 		roundedHardBoundPrepared&&roundedHardBoundRefused&&
 		fp64LabelRefused&&shortCandidateRefused&&invalidConservationRefused&&finalStageRefused&&
-		wrongProducerRefused&&eosTableMutationRefused&&arithmeticWalked&&limitedFCTBitEqual&&
+		wrongProducerRefused&&eosTableMutationRefused&&splitStageRefused&&splitPrecisionRefused&&
+		splitAttemptRefused&&splitCaseRefused&&limitedFCTBitEqual&&
 		parentIdentityDistinct&&fixtureCertified&&liveCertified&&ownerCertified&&understatedRefused;
 	std::fprintf(stderr,"RESIDENT_EOS passed=%d candidate_bit_equal=%d temperature_bit_equal=%d pressure_bit_equal=%d "
 		"deviation_enclosed=%d monitored_20_percent_accepted=%d hard_bound_refused=%d "
@@ -9574,7 +9575,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		"wrong_producer_refused=%d eos_table_mutation_refused=%d parent_identity_distinct=%d "
 		"minimum_shared_alpha=%.9g search_minimum_alpha=%.9g limited_shared_alpha=%.9g "
 		"limited_cpu_solves=%u limited_device_attempts=%u limited_candidate_bit_equal=%d "
-		"arithmetic_obligations=%u arithmetic_walked=%d "
+		"shared_alpha_bit_equal=%d split_stage_refused=%d split_precision_refused=%d "
+		"split_attempt_refused=%d split_case_refused=%d "
 		"branch_bitmap=0x%08x required=0x%08x command=%u reads=%u transfers=%u\n",
 		passed?1:0,candidateBitEqual?1:0,temperatureBitEqual?1:0,pressureBitEqual?1:0,
 		deviationEnclosed?1:0,
@@ -9586,7 +9588,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		invalidConservationRefused?1:0,finalStageRefused?1:0,wrongProducerRefused?1:0,
 		eosTableMutationRefused?1:0,parentIdentityDistinct?1:0,minimumCandidateAlpha,
 		searchMinimumAlpha,limitedMinimumAlpha,limitedCPUSolves,limitedDeviceAttempts,
-		limitedFCTBitEqual?1:0,arithmeticWalker.terms,arithmeticWalked?1:0,
+		limitedFCTBitEqual?1:0,sharedAlphaBitEqual?1:0,splitStageRefused?1:0,
+		splitPrecisionRefused?1:0,splitAttemptRefused?1:0,splitCaseRefused?1:0,
 		observed.branchObligationBitmap,requiredBranches,observed.commandCommitCount,
 		observed.terminalStagingCount,observed.interstageFullGridTransferCount);
 	std::fprintf(stderr,"RESIDENT_EOS_CELLWISE temperature_max_residual_K=%.17g "

@@ -5775,9 +5775,12 @@ r199 completes the third r195 resident-lineage rung. The first implementation
 was rejected on review because it advanced only the donor/physical low-flux
 state and allowed the caller to relabel the same bits as either accepted stage.
 The corrected private Metal issuer now performs the complete source-inclusive
-FCT `Q*` construction: it consumes both r198 composite candidates, forms their
-advective delta, builds the r60 ratios, constructs one shared face alpha, and
-commits the accepted state. A deliberately limiting fixture obtains alpha
+FCT `Q*` construction: it consumes r198's low composite and the canonical
+advective increment retained before the shared nonadvective flux is composed,
+builds the r60 ratios, constructs one shared face alpha, and commits the
+accepted state. Reconstructing the increment as `highComposite-lowComposite`
+was rejected because it subtracts independently rounded sums and is not the
+§3.7 FCT operator. A deliberately limiting fixture obtains alpha
 `0.832918644`; its device candidate is byte-identical to the complete binary32
 CPU FCT solve. The ordinary fixture also carries nonzero source and flux-delta
 terms. This rung accepts only the sealed R0-to-`Q*` role. `Q^{n+1}` refuses
@@ -5789,35 +5792,47 @@ covers the resulting bits, source dose, shared alpha, binary32 precision, step,
 attempt/case identity, and the exact r198 and r197a publication handles. The
 accepted publication is withheld until conservation admissibility, EOS
 inversion, and the r170 physicality bound complete. The raw terminal identity
-words are decoded even on rejection, so the failed-publication RED observes
-the device-written zero rather than a default host result. The short-surface
-RED now presents a genuinely short private allocation to the issuer.
+words are decoded even on device rejection, so those REDs observe the
+device-written zero rather than a default host result. Host-preflight lineage
+refusals are recorded separately as “no publication issued”; they do not claim
+a device terminal read. The short-surface RED presents a genuinely short
+private allocation to the issuer. All resident authority members are private
+to their issuer functions, preventing same-translation-unit aggregate forgery.
 
 The device evaluates the accepted-state temperature inversion and represented
 pressure functional per cell. Apple Metal has no binary64 arithmetic, so the
 sealed binary64 thermochemistry and affine coefficients are represented as
 three-term binary32 expansions and evaluated with two-sum/FMA compensated
 operations. The exact private EOS parameter and thermochemistry handles are
-retained on the candidate lineage; a different same-sized table refuses, and
+retained as the candidate's single metadata lineage; a different same-sized table refuses, and
 all 870 table words are incorporated into the EOS publication identity. The
 device searches the positive binary32 temperature lattice and emits the same
 single binary32 projection as the CPU/fp64 mirror. Candidate, temperature, and
-represented-pressure fields are bit-identical per cell. The fixture spans the
-1000 K NASA9 segment boundary as well as 300, 425, 950, 1500, 1900, and 2200 K.
+represented-pressure fields are bit-identical per cell. The per-face shared
+alpha is terminal-copied and bit-identical to the CPU FCT mirror, so a
+non-injective final-state comparison cannot hide a limiter mismatch. Device
+stage/precision mutations refuse with exact bitmap `0x50`; distinct
+attempt/case metadata handles refuse at preflight. The fixture spans the 1000 K
+NASA9 segment boundary as well as 300, 425, 950, 1500, 1900, and 2200 K.
 
-Deviation uses a rounding-aware local enclosure in identical ratio units:
-`2^-41 max(1, |P/P0|)` for compensated arithmetic plus one local binary32 ULP
-for final absolute-deviation publication. The first term is the independent
-arithmetic obligation walker's 128 cancellation-free second-order terms times
-binary32 unit roundoff squared; the output-ULP term fixes the rejected r199a
-derivation, which did not bound final rounding. The measured worst residual is
-zero and the worst residual/bound ratio is zero on the sealed cells. No pooled
+The earlier `2^-41` arithmetic claim is withdrawn: its hard-coded obligation
+count was not connected to the Metal DAG and therefore was not a proof. The
+streaming EOS kernel instead applies the r195 primary rule directly—every
+cell's temperature and represented-pressure output bit-matches the fp64
+mirror's single binary32 projection. Absolute deviation is compared in
+identical ratio units with one local binary32 output ULP derived by
+`nextafter`; the measured residual and worst residual/bound ratio are zero.
+Renormalization uses general `TwoSum` at every merge, so no unchecked
+QuickTwoSum magnitude precondition remains. The r60 and r170 comparisons add
+one local binary32 ULP to the measured residual, not to the allowance, making
+the policy fail-closed without a cancellation-derived bound. No pooled
 across-field statistic participates in acceptance.
 
 The r60 endpoint REDs locate the actual adjacent binary32 energy values:
 rejected/accepted at the lower clamp and accepted/refused at the strict upper
-bound. The r170 comparison remains on compensated deviation before binary32
-publication and adds only the arithmetic enclosure fail-closed. A constructed
+bound. Their exact terminal failure bitmaps are `0xD0` at the lower boundary
+and `0x80` at the upper boundary. The r170 comparison remains on compensated
+deviation before binary32 publication and adds one local ULP fail-closed. A constructed
 state whose exact ratio exceeds `1.25` while binary32 rounds to `1.25` still
 refuses. No dynamics threshold was widened.
 
@@ -5834,7 +5849,7 @@ NASA9 segment classes reachable over the sealed case interval.
 
 The qualification interval is one Metal command with one terminal staging
 read and zero interstage full-grid transfers. Its fixture certificate is
-`1130496` bytes against `127424` bytes allocated. The live incremental
+`1130496` bytes against `128384` bytes allocated. The live incremental
 certificate is `278528` bytes and the complete 8-cubed owner peak is
 `6875464` bytes. No case-authored input changed, so `case_record_id` remains
 stable; producer and future run identities inherit r199 semantics, and the

@@ -3695,10 +3695,10 @@ int main()
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateEvidence.begin(),residentEOSCandidateEvidence.end()))==
-			"65b93b215c03c2a5c1cc2dbe4744fb0b85bb822832c9c620dc3c19fbf4bc33ab"&&
+			"2978558e5b6a6965fa01fe24abf511f9e572165c00dc79a414a4b74027736924"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateLiveBinding.begin(),residentEOSCandidateLiveBinding.end()))==
-			"ccb7e994c44ae8b219518975d94afcf19d6995ec68a163e74d37866bad9881ab"&&
+			"79c177afd994558df3361d69a09e404d9f46e3344e0d2ad3d9d0b86e46df368e"&&
 		residentEOSCandidateLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 13\n")!=
 			std::string::npos&&
@@ -3725,6 +3725,15 @@ int main()
 			"complete_FCT_minimum_shared_alpha 0.832918644\n")!=std::string::npos&&
 		residentEOSCandidateEvidence.find(
 			"complete_FCT_Metal_CPU_candidate_bit_equal true\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find(
+			"complete_FCT_Metal_CPU_shared_face_alpha_bit_equal true\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find(
+			"composite_subtraction_used false\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find(
+			"withdrawn_bound 2^-41_termwise_arithmetic\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find(
+			"host_preflight_refusal_observation no_publication_issued_no_device_attempt_no_terminal_read\n")!=
+			std::string::npos&&
 		residentEOSCandidateEvidence.find(
 			"temperature_worst_residual_over_local_projection_enclosure=0 ")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(

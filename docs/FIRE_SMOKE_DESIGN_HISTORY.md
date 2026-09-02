@@ -5141,31 +5141,40 @@ it was already tried and refuted here.
   review rounds rejected, first, a CPU-authored candidate and then a
   low-composite-only update that could be relabelled as either Heun role. The
   corrected surface has no public candidate input: it performs the complete
-  source-inclusive r60 FCT `Q*` commit from sealed R0, both r198 composite flux
-  candidates, and r197a transport lineage. `Q^{n+1}` refuses until the full
+  source-inclusive r60 FCT `Q*` commit from sealed R0, r198's low composite and
+  separately retained canonical advective increment, and r197a transport
+  lineage. Reconstructing the increment by subtracting rounded composites was
+  rejected as noncanonical. `Q^{n+1}` refuses until the full
   owner supplies its authentic averaged R0/R1 parent. A limited fixture reaches
   shared alpha `0.832918644` and byte-matches the complete CPU FCT candidate.
-  Candidate publication is withheld until EOS and physical gates pass.
-  Unsealed, mismatched, missing, genuinely short, CPU-substituted, falsely
-  fp64-labelled, and physically invalid candidates leave both raw candidate
-  and EOS terminal publication words zero.
+  Candidate publication is withheld until EOS and physical gates pass. Host
+  preflight refusals issue no publication; device refusals expose the raw zero
+  identities and exact failure bitmap. All authority members are private to
+  their issuers. Unsealed, mismatched, missing, genuinely short,
+  CPU-substituted, falsely fp64-labelled, and physically invalid candidates
+  refuse atomically.
   The EOS kernel carries the sealed binary64 NASA9 and affine data as
   three-term binary32 expansions. Candidate update, temperature inversion,
   and represented pressure bit-match their mirrors per cell. EOS parameters
   and all 870 thermochemistry words are exact lineage parents; a different
-  same-sized table refuses and the table bits enter EOS identity. Deviation is
-  enclosed per cell by `2^-41 max(1, |P/P0|)` for the independently walked 128
-  cancellation-free second-order arithmetic terms plus one local binary32 ULP
-  for final output rounding. The measured maximum residual is zero. Exact
+  same-sized table refuses and the table bits enter EOS identity. The shared
+  per-face alpha and candidate are bit-identical to their CPU mirrors. The
+  earlier unconnected `2^-41` obligation-count claim is withdrawn; per-cell
+  temperature and pressure use exact fp64-to-binary32 bit comparison, while
+  deviation uses one locally derived binary32 output ULP. General `TwoSum`
+  replaces unchecked QuickTwoSum renormalization. The measured maximum
+  residual and residual/bound ratio are zero. Exact
   adjacent r60 lower/upper endpoint pairs and a just-above-`2^-2` state that
-  rounds to `1.25f` bind the corrected semantics. The isolated `0x000003ff`
+  rounds to `1.25f` bind the corrected semantics; r60 lower/upper failure
+  bitmaps are `0xD0`/`0x80`, and r170 is `0x400`. Device stage/precision
+  mutations produce `0x50`; split attempt/case handles refuse preflight. The isolated `0x000003ff`
   bitmap matches its independent branch walker.
   Monitored-manifold semantics are preserved: a 20% deviation is recorded and
   admitted, no manifold ceiling exists here, and only conservation-class
   admissibility plus the r170 `2^-2` dynamics bound refuse (the 30% RED does).
   The interval uses one command, one terminal read, and zero interstage grid
   transfers. Fixture/candidate/owner certificates are `1130496`, `278528`, and
-  `6875464` bytes respectively, versus `127424` fixture bytes allocated.
+  `6875464` bytes respectively, versus `128384` fixture bytes allocated.
   `case_record_id` is unchanged, future producer/run identities inherit r199,
   and the golden checkpoint is untouched. The evidence SHA is sealed after
   fresh boundary review. The next rung is authenticated target lineage.

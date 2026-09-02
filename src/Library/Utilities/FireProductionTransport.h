@@ -1159,6 +1159,9 @@ namespace RISE
 	{
 		std::array<std::size_t,3> packedFaceOffset;
 		std::vector<float> donorAdvectiveFlux;
+		//! Canonical high-minus-low advective increment retained before either
+		//! candidate receives the shared nonadvective contribution.
+		std::vector<float> advectiveFluxDelta;
 		std::vector<float> mcMusclAdvectiveFlux;
 		//! Qualification-only terminal copy of the exact parent inputs consumed by
 		//! the physical kernel; these bytes cannot mint a resident authority.
@@ -1227,6 +1230,12 @@ namespace RISE
 		bool qualificationCPUProducedCandidate;
 		bool qualificationShortCandidateSurface;
 		bool qualificationMismatchedEOSThermochemistry;
+		//! Split-metadata REDs. The device candidate must consume one sealed
+		//! metadata surface end-to-end; no host label may repair these mutations.
+		bool qualificationMismatchedDeviceStage;
+		bool qualificationMismatchedDevicePrecision;
+		bool qualificationMismatchedDeviceAttempt;
+		bool qualificationMismatchedDeviceCase;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
@@ -1237,6 +1246,10 @@ namespace RISE
 			qualificationCPUProducedCandidate(false),
 			qualificationShortCandidateSurface(false),
 			qualificationMismatchedEOSThermochemistry(false),
+			qualificationMismatchedDeviceStage(false),
+			qualificationMismatchedDevicePrecision(false),
+			qualificationMismatchedDeviceAttempt(false),
+			qualificationMismatchedDeviceCase(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 
@@ -1249,6 +1262,7 @@ namespace RISE
 		FireProductionScalarEOSStage producingStage;
 		FireStateProducerPrecision producerPrecision;
 		std::vector<float> candidateConservativeValues;
+		std::array<std::vector<float>,3> sharedFaceAlpha;
 		std::vector<float> temperatureK;
 		std::vector<float> representedPressureRatio;
 		std::vector<float> absoluteEOSDeviation;
@@ -1256,6 +1270,7 @@ namespace RISE
 		std::uint32_t interstageFullGridTransferCount;
 		std::uint32_t terminalStagingCount;
 		std::uint32_t branchObligationBitmap;
+		std::uint32_t deviceFailureBitmap;
 		std::uint64_t certifiedWorkingSetBytes;
 		std::uint64_t actualMetalAllocationBytes;
 		std::uint64_t transportPublicationIdentity;
@@ -1263,17 +1278,19 @@ namespace RISE
 		std::uint64_t candidatePublicationIdentity;
 		std::uint64_t EOSPublicationIdentity;
 		double deviceElapsedMS;
+		bool deviceAttempted;
+		bool terminalRead;
 		bool deviceProduced;
 
 		FireProductionResidentEOSCandidateComparatorResult() :
 			producingStage(static_cast<FireProductionScalarEOSStage>(0u)),
 			producerPrecision(FireStateProducerPrecision::Binary32),
 			commandCommitCount(0u),interstageFullGridTransferCount(0u),
-			terminalStagingCount(0u),branchObligationBitmap(0u),
+			terminalStagingCount(0u),branchObligationBitmap(0u),deviceFailureBitmap(0u),
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
 			transportPublicationIdentity(0u),physicalFluxPublicationIdentity(0u),
 			candidatePublicationIdentity(0u),EOSPublicationIdentity(0u),
-			deviceElapsedMS(0.0),deviceProduced(false) {}
+			deviceElapsedMS(0.0),deviceAttempted(false),terminalRead(false),deviceProduced(false) {}
 	};
 
 	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
