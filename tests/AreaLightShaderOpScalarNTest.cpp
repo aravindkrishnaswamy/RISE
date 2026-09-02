@@ -304,16 +304,23 @@ int main()
 		}
 
 		// Query the emission painter's OWN spectral factor at nmProbe
-		// directly (emm intentionally stays `IPainter` -- untouched by
-		// this migration, and its own GetColorNM is unguarded, so it is
-		// not necessarily exactly 1.0).  Dividing it back out isolates
-		// the light-SHAPING factor -- (N+1)*pow(fDot,N)/(2*PI) * fDotLight
-		// * attenuation -- which is EXACTLY where `N` participates, and
-		// is the thing this migration must keep IDENTICAL between the
-		// RGB and spectral pipes.
+		// directly.  Dividing it back out isolates the light-SHAPING
+		// factor -- (N+1)*pow(fDot,N)/(2*PI) * fDotLight * attenuation --
+		// which is EXACTLY where `N` participates, and is the thing this
+		// migration must keep IDENTICAL between the RGB and spectral pipes.
+		//
+		// It MUST be read through `GetRadianceNM`, not `GetColorNM`: since
+		// Stage C slice 2 (docs/SPECTRAL_ILLUMINANT_CONVENTION.md)
+		// `AreaLightShaderOp::PerformOperationNM` samples its `emm`
+		// EMISSION slot as a radiance source, so `emm`'s contribution to
+		// `cNm` is its illuminant-shaped spectrum (sigmoid x D65norm),
+		// not its reflectance sigmoid.  Normalising by `GetColorNM` here
+		// left D65norm(550)/kD65YNorm ~= 1.052 in the quotient and made
+		// this check fail by exactly 5.2 % -- a stale test, not a
+		// light-shaping regression.
 		const RayIntersectionGeometric& rig = ri.geometric;
-		const Scalar emmFactorNm = pEmm->GetColorNM( rig, nmProbe );
-		std::printf( "  emm->GetColorNM(550nm) = %.9f\n", double(emmFactorNm) );
+		const Scalar emmFactorNm = pEmm->GetRadianceNM( rig, nmProbe );
+		std::printf( "  emm->GetRadianceNM(550nm) = %.9f\n", double(emmFactorNm) );
 
 		if( cRgb[0] > 0 && emmFactorNm > 0 )
 		{

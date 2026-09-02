@@ -53,7 +53,13 @@ void PhongEmitter::RefreshAverages()
 	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
 		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
 		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
-		averageSpectrum = averageSpectrum + pRadEx->GetSpectrum(rig);
+		// GetRadianceNM per bin, not GetSpectrum -- see the twin comment in
+		// LambertianEmitter::RefreshAverages (Stage C slice 2).
+		VisibleSpectralPacket radSp;
+		for( unsigned int i = 0; i < 40; i++ ) {
+			radSp.SetIndex( i, pRadEx->GetRadianceNM( rig, Scalar(380 + i * 10) ) );
+		}
+		averageSpectrum = averageSpectrum + radSp;
 	}
 
 	averageRadEx = averageRadEx * (scale/Scalar(100.0));
@@ -103,7 +109,9 @@ Scalar PhongEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri, cons
 	//   where alpha = angle between outgoing and direction of perfect specular (in this case the normal)
 	const Scalar	pN = pPhongN->GetValueAtNM( ri, nm );
 	const Scalar	k = (pN + 1) * pow(co,pN) * (1.0 / TWO_PI);
-	return (pRadEx->GetColorNM( ri, nm ) * k * scale);
+	// SOURCE term -> GetRadianceNM (Stage C slice 2); see the twin comment
+	// in LambertianEmitter::emittedRadianceNM.
+	return (pRadEx->GetRadianceNM( ri, nm ) * k * scale);
 }
 
 RISEPel PhongEmitter::averageRadiantExitance() const

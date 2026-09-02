@@ -990,11 +990,14 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	// appearance (the uplift round-trips through the CMFs) and reuses the
 	// existing tabulation; the per-lambda diffusion radius is RGB-
 	// resolution, not re-derived -- documented approximation, true
-	// spectral skin is future work.  RGBUnboundedSpectrum (not Albedo):
-	// exitant radiance is >= 0 and may exceed 1.
+	// spectral skin is future work.
+	//
+	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is the
+	// exitant RADIANCE, a source term at this boundary -- see the twin
+	// comment in SubSurfaceScatteringShaderOp::PerformOperationNM.
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
-	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }
 
 void DonnerJensenSkinSSSShaderOp::ResetRuntimeData() const

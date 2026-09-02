@@ -237,6 +237,25 @@ Scalar TexturePainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	return s.Eval( nm );
 }
 
+Scalar TexturePainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// Stage C slice 2.  The kind switch above decides how a texel behaves
+	// as a MULTIPLIER; this entry point is asked how it behaves as an
+	// EMITTER, and the answer is the same for all three kinds: the texel
+	// carries the reference illuminant's shape.  Overriding (rather than
+	// letting the IPainter default run) skips a redundant GetColor virtual
+	// and re-samples the mip exactly once, matching GetColorNM's cost.
+	if( !pRIA ) {
+		return Scalar(0);
+	}
+
+	RISE_PROFILE_PHASE(TexturePainter);
+	RISE_PROFILE_INC(nTexturePainterSamples);
+
+	const RISEPel rgb = SampleTextured( ri ).base;
+	return RGBIlluminantSpectrum::FromRGB( rgb, RGBToSpectrumTable::Get() ).Eval( nm );
+}
+
 SpectralPacket TexturePainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
 {
 	// Same per-sample uplift as GetColorNM, but populates an entire

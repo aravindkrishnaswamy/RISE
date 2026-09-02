@@ -15,9 +15,44 @@
 #include "PointLight.h"
 #include "../Animation/KeyframableHelper.h"
 #include "../Rendering/RayCaster.h"		// concrete RayCaster — dynamic_cast target for transparent (Fresnel-attenuated) shadow rays
+#include "../Utilities/Color/RGBSpectra.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+//////////////////////////////////////////////////////////////////////
+// ILight's two out-of-line defaults (Stage C slice 2).
+//
+// They live in THIS translation unit — rather than inline in ILight.h —
+// so that RGBSpectra.h (and through it the Jakob-Hanika LUT table
+// header) is not dragged into every TU that includes ILight.h.
+// PointLight.cpp is always linked into the library, and every build
+// target links the whole library, so the definitions are always
+// available.  See docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
+//////////////////////////////////////////////////////////////////////
+
+Scalar ILight::emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const
+{
+	return RGBIlluminantSpectrum::FromRGB( emittedRadiance( vLightOut ) ).Eval( nm );
+}
+
+Scalar ILight::ComputeDirectLightingNM(
+	const RayIntersectionGeometric& ri,
+	const IRayCaster& pCaster,
+	const IBSDF& brdf,
+	const bool bReceivesShadows,
+	const Scalar nm,
+	const bool bFullSphereReceiver,
+	const bool bVolumeReceiver
+	) const
+{
+	RISEPel amount( 0, 0, 0 );
+	ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver );
+	// `amount` is a computed RADIANCE, so it uplifts as an illuminant and
+	// round-trips through the film back to itself.  (Pre-Stage-C this was a
+	// Rec.709 luma projection that discarded `nm` entirely.)
+	return RGBIlluminantSpectrum::FromRGB( amount ).Eval( nm );
+}
 
 PointLight::PointLight(
 	const Scalar radiantEnergy_,
@@ -29,6 +64,7 @@ PointLight::PointLight(
   cColor( c ),
   bShootPhotons( shootPhotons )
 {
+	RefreshSpectrum();
 }
 
 PointLight::~PointLight( )
@@ -141,11 +177,17 @@ Scalar PointLight::ComputeDirectLightingNM(
 	}
 
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
-	const Scalar lightLum =
-		Scalar(0.2126) * cColor.r +
-		Scalar(0.7152) * cColor.g +
-		Scalar(0.0722) * cColor.b;
-	return lightLum * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
+	// Stage C slice 2: the light's own spectrum at `nm`, NOT a Rec.709 luma
+	// projection of its RGB colour used flat at every wavelength.  The luma
+	// collapse made every coloured point light spectrally grey and tinted
+	// even a white one by the flat-spectrum chromaticity.
+	const Scalar lightSpec = cSpectrum.Eval( nm );
+	return lightSpec * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
+}
+
+void PointLight::RefreshSpectrum()
+{
+	cSpectrum = RGBIlluminantSpectrum::FromRGB( cColor );
 }
 
 void PointLight::FinalizeTransformations( const Matrix4& parentWorld )
@@ -191,6 +233,7 @@ void PointLight::SetIntermediateValue( const IKeyframeParameter& val )
 	case COLOR_ID:
 		{
 			cColor = *(RISEPel*)val.getValue();
+			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:

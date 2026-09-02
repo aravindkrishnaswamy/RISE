@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -33,6 +34,27 @@ namespace RISE
 			Point3		ptPosition;
 			RISEPel		cColor;
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
+
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2):
+			//! JH sigmoid times the D65 reference illuminant, Y-normalised
+			//! so an authored-white light of unit energy resolves to film
+			//! Y = 1 exactly as the RGB pipe does.  Cached because the NM
+			//! NEE path evaluates it per sample per wavelength.
+			//!
+			//! STALENESS: `cColor` is settable through exactly ONE path --
+			//! `SetIntermediateValue( COLOR_ID )`, which both the animation
+			//! keyframe system and the SceneEditor / agent light-edit tools
+			//! funnel through (SceneEditor.cpp builds the keyframe via
+			//! `ILight::KeyframeFromParameters` and applies it with
+			//! `SetIntermediateValue`).  There is no `SetColor` mutator and
+			//! `cColor` is protected, so hooking that one site is
+			//! sufficient; `SnapshotLeafClone` rebuilds a fresh light from
+			//! `emissionColor()` rather than mutating one.
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum();
 
 			virtual ~PointLight( );
 
@@ -54,6 +76,14 @@ namespace RISE
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{
 				return (cColor * radiantEnergy);
+			}
+
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2).  Reads
+			//! the cached illuminant spectrum instead of the ILight
+			//! default's per-call LUT uplift; the two agree numerically.
+			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
+			{
+				return cSpectrum.Eval( nm ) * radiantEnergy;
 			}
 
 			inline Point3 position() const override

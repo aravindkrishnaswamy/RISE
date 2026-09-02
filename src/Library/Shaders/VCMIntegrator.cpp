@@ -191,10 +191,12 @@ namespace
 		return emitter.emittedRadianceNM( ri, outDir, normal, tag.nm );
 	}
 
-	/// ILight::emittedRadiance dispatcher.  ILight has ONLY a Pel
-	/// API; the NM path applies the RISEPelToNMProxy luminance
-	/// projection to preserve v1 behavior.  See comment at the
-	/// "SPECTRAL (NM) VARIANTS" block below for rationale.
+	/// ILight::emittedRadiance dispatcher.  Pel takes the RGB virtual;
+	/// NM takes `ILight::emittedRadianceNM`, which evaluates the light's
+	/// own illuminant spectrum at the wavelength (Stage C slice 2).  It
+	/// used to apply RISEPelToNMProxy -- a Rec.709 luma scalar reused at
+	/// every wavelength -- which rendered coloured point / spot /
+	/// directional lights spectrally grey.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type
 	EvalLightRadiance( const ILight& light, const Vector3& dir, const Tag& tag );
@@ -208,9 +210,9 @@ namespace
 
 	template<>
 	inline Scalar EvalLightRadiance<NMTag>(
-		const ILight& light, const Vector3& dir, const NMTag& )
+		const ILight& light, const Vector3& dir, const NMTag& tag )
 	{
-		return RISEPelToNMProxy( light.emittedRadiance( dir ) );
+		return light.emittedRadianceNM( dir, tag.nm );
 	}
 
 	/// IRadianceMap::GetRadiance dispatcher (env-IBL).  Used when a
@@ -1114,7 +1116,8 @@ RISEPel VCMIntegrator::EvaluateS0(
 // EvaluateNEEImpl — templated body shared by EvaluateNEE and
 // EvaluateNEENM.  See EvaluateNEE documentation above for the
 // algorithm.  The only Pel/NM differences resolved by Tag dispatch
-// are (a) Le from ILight (Pel direct, NM via RISEPelToNMProxy),
+// are (a) Le from ILight (Pel via emittedRadiance, NM via the
+// wavelength-aware emittedRadianceNM -- Stage C slice 2),
 // (b) Le from IEmitter (Pel/NM via virtuals), (c) BSDF evaluation at
 // the eye vertex, and (d) throughput field selection.
 //////////////////////////////////////////////////////////////////////

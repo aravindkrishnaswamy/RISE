@@ -245,6 +245,9 @@ namespace RISE
 
 			RISEPel        GetColor( const RayIntersectionGeometric& ri ) const override;
 			Scalar         GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
+			//! Source-term sample (Stage C slice 2): the evaluated RGB
+			//! uplifted as an ILLUMINANT, whatever `m_kind` is.
+			Scalar         GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const override;
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const override;
 
 			// IFunction2D::Evaluate is inherited from Painter's default

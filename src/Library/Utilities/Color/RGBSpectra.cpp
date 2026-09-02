@@ -118,13 +118,37 @@ namespace
 	}
 }
 
+namespace
+{
+	// Single shared lazily-initialised copy of the normalisation constant.
+	// Function-local static: no static-initialisation-order dependency on
+	// ColorUtils' CIE table, and thread-safe initialisation.
+	inline double D65YNorm()
+	{
+		static const double v = ComputeD65YNorm();
+		return v;
+	}
+}
+
 Scalar RGBIlluminantSpectrum::ReferenceIlluminant( Scalar lambda_nm )
 {
-	static const double kD65YNorm = ComputeD65YNorm();
-	return Scalar( LookupD65( double( lambda_nm ) ) / kD65YNorm );
+	return Scalar( LookupD65( double( lambda_nm ) ) / D65YNorm() );
+}
+
+Scalar RGBIlluminantSpectrum::YNormReciprocal()
+{
+	static const double inv = 1.0 / D65YNorm();
+	return Scalar( inv );
 }
 
 Scalar RGBIlluminantSpectrum::Eval( Scalar lambda_nm ) const
 {
-	return scale * poly.Eval( lambda_nm ) * ReferenceIlluminant( lambda_nm );
+	// `scale` already carries 1/kD65YNorm (folded in by FromRGB / the
+	// default ctor), so this is the RAW table lookup -- no function-local
+	// static is touched per wavelength.  Since Stage C slice 2 every
+	// light, emitter, radiance map and radiance-uplifting shader op
+	// evaluates this per sample per wavelength, so that acquire load was
+	// worth removing.  Numerically this reassociates one multiply
+	// (a*b*(c/k) -> (a/k)*b*c); the difference is at the ulp level.
+	return scale * poly.Eval( lambda_nm ) * Scalar( LookupD65( double( lambda_nm ) ) );
 }

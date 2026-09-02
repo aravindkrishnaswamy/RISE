@@ -54,7 +54,20 @@ void LambertianEmitter::RefreshAverages()
 	for( int gy=0; gy<10; gy++ ) for( int gx=0; gx<10; gx++ ) {
 		rig.ptCoord = Point2( (Scalar(gx)+Scalar(0.5))/Scalar(10), (Scalar(gy)+Scalar(0.5))/Scalar(10) );
 		averageRadEx = averageRadEx + pRadEx->GetColor(rig);
-		averageSpectrum = averageSpectrum + pRadEx->GetSpectrum(rig);
+		// Sampled through GetRadianceNM, NOT GetSpectrum (Stage C slice 2).
+		// `averageSpectrum` is the per-wavelength EMITTED power that
+		// SpectralPhotonTracer turns into photon energy; it has to carry the
+		// same illuminant shape `emittedRadianceNM` now does, or a spectral
+		// photon render would light the scene with a reflectance-shaped
+		// spectrum while direct NEE used a D65-shaped one.
+		// VisibleSpectralPacket is <Scalar, 380, 780, 40> with an INTEGER
+		// delta of (780-380)/(40-1) == 10, so bin i sits at 380 + 10*i --
+		// the same indexing CompositeEmitter's constructor uses.
+		VisibleSpectralPacket radSp;
+		for( unsigned int i = 0; i < 40; i++ ) {
+			radSp.SetIndex( i, pRadEx->GetRadianceNM( rig, Scalar(380 + i * 10) ) );
+		}
+		averageSpectrum = averageSpectrum + radSp;
 	}
 
 	averageRadEx = averageRadEx * (scale/Scalar(100.0));
@@ -84,7 +97,13 @@ Scalar LambertianEmitter::emittedRadianceNM( const RayIntersectionGeometric& ri,
 	if( Vector3Ops::Dot( out, N ) <= 0 ) {
 		return 0;
 	}
-	return (pRadEx->GetColorNM( ri, nm ) * INV_PI * scale);
+	// SOURCE term -> GetRadianceNM, not GetColorNM (Stage C slice 2).  The
+	// exitance painter is authored as "the colour this panel glows", which
+	// under the Stage C convention means reflectance-under-D65 TIMES D65 --
+	// so a white panel radiates D65 and resolves through the film to the
+	// authored white, instead of a flat spectrum landing on a reddish
+	// (1.20, 0.95, 0.91).  docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
+	return (pRadEx->GetRadianceNM( ri, nm ) * INV_PI * scale);
 }
 
 RISEPel LambertianEmitter::averageRadiantExitance() const

@@ -759,13 +759,19 @@ Scalar FinalGatherShaderOp::PerformOperationNM(
 	// translational irradiance gradients, so its non-negativity rests entirely
 	// on those upstream clamps; a refactor dropping one would not be obvious.
 	// And the failure is catastrophic at THIS boundary specifically: a
-	// negative RGB flips RGBUnboundedSpectrum's max-channel scale and corrupts
+	// negative RGB flips the max-channel scale and corrupts
 	// EVERY wavelength -- far worse than the RGB path, where a stray negative
 	// is merely clamped at film resolve.  So clamp at the projection boundary,
-	// where it matters.  RGBUnboundedSpectrum (not Albedo): indirect radiance
-	// is >= 0 and may exceed 1.
+	// where it matters.
+	//
+	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is a
+	// COMPUTED RADIANCE leaving this point, not a reflectance-shaped
+	// multiplier.  Unbounded carries no illuminant shape, so the spectral
+	// render's gathered indirect landed on the flat-spectrum chromaticity
+	// (1.20, 0.95, 0.91) instead of on `c`.  Illuminant round-trips: the
+	// film resolves it back to exactly the RGB `c`.
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
 	ColorMath::EnsurePositve( c );
-	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }

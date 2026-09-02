@@ -2928,20 +2928,21 @@ LuminaryRadiance( const BDPTVertex& vertex, const Vector3& dir, Tag tag )
 	}
 }
 
-// ILight (point/spot/...) radiance toward `dir`.  ILight has no NM virtual,
-// so the NM path projects RGB->scalar via Rec.709 luminance -- the same
-// pattern as VCM's EvalLightRadiance<Tag> and the original
-// ConnectAndEvaluateNM s=1 / t=1 branches.
+// ILight (point/spot/...) radiance toward `dir`.  The NM path calls
+// `ILight::emittedRadianceNM`, which evaluates the light's own illuminant
+// spectrum at the wavelength (Stage C slice 2) -- the same pattern as
+// VCM's EvalLightRadiance<Tag>.  It used to project RGB->scalar via
+// Rec.709 luminance and reuse that one number at every wavelength, which
+// made coloured point / spot / directional lights spectrally grey.
 template<class Tag>
 typename SpectralValueTraits<Tag>::value_type
 LightRadiance( const ILight* pLight, const Vector3& dir, Tag tag )
 {
-	(void)tag;
 	if constexpr( SpectralValueTraits<Tag>::is_pel ) {
+		(void)tag;
 		return pLight->emittedRadiance( dir );
 	} else {
-		const RISEPel Le = pLight->emittedRadiance( dir );
-		return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
+		return pLight->emittedRadianceNM( dir, tag.nm );
 	}
 }
 
@@ -2972,8 +2973,9 @@ EvalEmitterRadiance( const BDPTVertex& eyeEnd, const Vector3& woFromEmitter,
 			return eyeEnd.pEnvLight->GetRadianceNM( skyProbe, nullRast, tag.nm );
 		}
 		if( eyeEnd.pLight ) {
-			const RISEPel Le = eyeEnd.pLight->emittedRadiance( woFromEmitter );
-			return 0.2126 * Le[0] + 0.7152 * Le[1] + 0.0722 * Le[2];
+			// Stage C slice 2: the light's own spectrum at tag.nm, not a
+			// flat Rec.709 luma projection.
+			return eyeEnd.pLight->emittedRadianceNM( woFromEmitter, tag.nm );
 		}
 		// Surface / mesh emitter.  Prefer pMaterial (set on an EYE vertex
 		// that hit the emitter -- the s=0 strategy); fall back to pLuminary
@@ -5227,7 +5229,9 @@ unsigned int GenerateLightSubpathImpl(
 				LeNM = pEmitter->emittedRadianceNM( rig, ls.direction, ls.normal, tag.nm );
 			}
 		} else if( ls.pLight ) {
-			LeNM = 0.2126 * ls.Le[0] + 0.7152 * ls.Le[1] + 0.0722 * ls.Le[2];
+			// Stage C slice 2: the light's own spectrum at tag.nm, not a
+			// flat Rec.709 luma projection of ls.Le.
+			LeNM = ls.pLight->emittedRadianceNM( ls.direction, tag.nm );
 		} else if( ls.pEnvLight ) {
 			RasterizerState nullRast = {0};
 			const Vector3 toSky( -ls.direction.x, -ls.direction.y, -ls.direction.z );
@@ -5357,7 +5361,10 @@ unsigned int GenerateLightSubpathImpl(
 							rigW, ls.direction, ls.normal, pSwlHWSS->lambda[w] );
 					}
 				} else if( ls.pLight ) {
-					LeW = 0.2126 * ls.Le[0] + 0.7152 * ls.Le[1] + 0.0722 * ls.Le[2];
+					// Stage C slice 2: per-wavelength, so the HWSS
+					// companion wavelengths actually differ (they were all
+					// the same luma scalar before).
+					LeW = ls.pLight->emittedRadianceNM( ls.direction, pSwlHWSS->lambda[w] );
 				} else if( ls.pEnvLight ) {
 					RasterizerState nullRastW = {0};
 					const Vector3 toSkyW( -ls.direction.x, -ls.direction.y, -ls.direction.z );

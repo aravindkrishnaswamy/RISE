@@ -2355,8 +2355,14 @@ Scalar LightSampler::EvaluateDirectLightingNM(
 
 			// emittedRadiance expects the outgoing direction FROM the
 			// light; -vToLight is the light-to-surface direction.
-			const RISEPel LeRGB = entry.pLight->emittedRadiance( -vToLight );
-			const Scalar LeNM = ColorMath::Luminance( LeRGB );
+			// Stage C slice 2: ask the light for its radiance AT `nm`.  This
+			// used to be `ColorMath::Luminance( emittedRadiance(...) )` --
+			// one Rec.709 luma scalar reused at every wavelength, which made
+			// every coloured point / spot light spectrally GREY in NM renders
+			// and tinted even a white one by the flat-spectrum chromaticity
+			// (1.20, 0.95, 0.91).  This is the NEE row PT actually takes for
+			// delta-position lights.
+			const Scalar LeNM = entry.pLight->emittedRadianceNM( -vToLight, nm );
 			const Scalar invDistSq = 1.0 / (dist * dist);
 			const Scalar fBSDF = brdf.valueNM( vToLight, ri, nm );
 

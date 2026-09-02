@@ -36,6 +36,12 @@ SpotLight::SpotLight(
   bShootPhotons( shootPhotons )
 {
 	vDirection = Vector3Ops::Normalize(Vector3Ops::mkVector3(ptTarget,ptPosition));
+	RefreshSpectrum();
+}
+
+void SpotLight::RefreshSpectrum()
+{
+	cSpectrum = RGBIlluminantSpectrum::FromRGB( cColor );
 }
 
 SpotLight::~SpotLight( )
@@ -163,11 +169,10 @@ Scalar SpotLight::ComputeDirectLightingNM(
 	}
 
 	const Scalar invDistSq = 1.0 / (fDistFromLight * fDistFromLight);
-	const Scalar lightLum =
-		Scalar(0.2126) * cColor.r +
-		Scalar(0.7152) * cColor.g +
-		Scalar(0.0722) * cColor.b;
-	const Scalar base = lightLum * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
+	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
+	// luma projection of its RGB colour.  See PointLight::ComputeDirectLightingNM.
+	const Scalar lightSpec = cSpectrum.Eval( nm );
+	const Scalar base = lightSpec * brdf.valueNM( vToLight, ri, nm ) * invDistSq * fDot * radiantEnergy * shadowT;
 
 	if( fAngleOfIncidence <= dInnerAngle/2.0 ) {
 		return base;
@@ -246,6 +251,7 @@ void SpotLight::SetIntermediateValue( const IKeyframeParameter& val )
 	case COLOR_ID:
 		{
 			cColor = *(RISEPel*)val.getValue();
+			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:

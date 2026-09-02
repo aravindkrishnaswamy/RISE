@@ -185,23 +185,32 @@ namespace RISE
 	class RGBIlluminantSpectrum
 	{
 	public:
-		RGBIlluminantSpectrum() : scale( Scalar(1) ) {}
+		// `scale` carries the Y-normalisation factor 1/kD65YNorm (see
+		// YNormReciprocal below), so the default-constructed object still
+		// means "unit scale under the Y-normalised SPD" exactly as it did
+		// when Eval divided by kD65YNorm itself.
+		RGBIlluminantSpectrum() : scale( YNormReciprocal() ) {}
 
 		static RGBIlluminantSpectrum FromRGB( const RISEPel& rgb,
 		                                       const RGBToSpectrumTable& table = RGBToSpectrumTable::Get() )
 		{
 			RGBIlluminantSpectrum s;
 			const LUTTargetPel rgb_target( rgb );
-			s.scale = ColorMath::MaxValue( rgb_target );
-			if( s.scale > Scalar(1e-9) ) {
+			const Scalar maxc = ColorMath::MaxValue( rgb_target );
+			if( maxc > Scalar(1e-9) ) {
 				const LUTTargetPel norm(
-					rgb_target.r / s.scale,
-					rgb_target.g / s.scale,
-					rgb_target.b / s.scale );
+					rgb_target.r / maxc,
+					rgb_target.g / maxc,
+					rgb_target.b / maxc );
 				s.poly = table( norm );
 			} else {
 				s.poly = RGBSigmoidPolynomial( 0, 0, 0 );
 			}
+			// Fold the Y-normalisation in HERE, once per spectrum, so that
+			// Eval -- which since Stage C slice 2 runs on every light,
+			// emitter, radiance-map and shader-op radiance sample -- does no
+			// function-local-static acquire load per wavelength.
+			s.scale = maxc * YNormReciprocal();
 			return s;
 		}
 
@@ -211,12 +220,21 @@ namespace RISE
 		Scalar operator()( Scalar lambda_nm ) const { return Eval( lambda_nm ); }
 
 		// The Y-normalised reference illuminant itself (D65), i.e. the
-		// factor Eval multiplies into the sigmoid.  Exposed so tests
-		// and offline checks can reproduce the LUT's forward model
-		// against the SAME table the runtime uses, instead of carrying
-		// a fourth copy of the SPD.  ∫ReferenceIlluminant·ȳ dλ = ∫ȳ dλ,
-		// so a flat unit spectrum times this resolves to film Y = 1.
+		// factor a unit-scale spectrum multiplies into the sigmoid.
+		// Exposed so tests and offline checks can reproduce the LUT's
+		// forward model against the SAME table the runtime uses, instead
+		// of carrying a fourth copy of the SPD.
+		// ∫ReferenceIlluminant·ȳ dλ = ∫ȳ dλ, so a flat unit spectrum times
+		// this resolves to film Y = 1.
 		static Scalar ReferenceIlluminant( Scalar lambda_nm );
+
+		// 1 / kD65YNorm, where kD65YNorm = ∫D65·ȳ dλ / ∫ȳ dλ = 98.89248
+		// for the shipped tables.  Computed once from the tables (never
+		// hardcoded) behind a function-local static in the .cpp; folded
+		// into `scale` at construction so the per-wavelength Eval on the
+		// hot path is a plain multiply chain.  Public only so the ctor
+		// above (which is inline in this header) can reach it.
+		static Scalar YNormReciprocal();
 
 	private:
 		RGBSigmoidPolynomial poly;

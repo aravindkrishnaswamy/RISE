@@ -70,6 +70,43 @@ namespace RISE
 			) const = 0;
 
 		//!
+		//! Per-wavelength sample of this painter used as a RADIANCE SOURCE
+		//! (Stage C slice 2, docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
+		//!
+		//! `GetColorNM` answers "what fraction of the light arriving here
+		//! does this surface send on at λ" — a REFLECTANCE, trained under
+		//! D65.  `GetRadianceNM` answers "what does a source of this
+		//! authored colour EMIT at λ", which is that same reflectance
+		//! TIMES the reference illuminant.  A white source therefore
+		//! radiates D65, not a flat spectrum, and resolves through the
+		//! film back to the authored (1, 1, 1) instead of the flat-
+		//! spectrum chromaticity (1.20, 0.95, 0.91).
+		//!
+		//! ROUTING IS BY SLOT, NOT BY PAINTER KIND.  A named painter can
+		//! be bound to a reflectance slot on one material and an emissive
+		//! slot on another, so the construction-time `SpectrumKind` cannot
+		//! decide this — the CONSUMER does, by calling `GetColorNM` for a
+		//! multiplicative slot and `GetRadianceNM` for a source term.
+		//! Every emitter, light, radiance map and radiance-uplifting
+		//! shader op calls this one.
+		//!
+		//! DEFAULT (SLOW PATH): uplift the composed `GetColor` per call
+		//! through the Jakob-Hanika LUT as an illuminant.  That costs a
+		//! LUT lookup per sample, and it is the CORRECT semantics for a
+		//! composite painter (blend / ramp / checker / noise / mapping):
+		//! the thing that emits is the composed colour, so the composed
+		//! colour is what carries the illuminant shape.  Forwarding to the
+		//! children's own spectra would sum reflectance-shaped spectra and
+		//! never produce D65.  Painters that already hold (or can cheaply
+		//! build) an illuminant spectrum override this.
+		//!
+		/// \return The emitted radiance at the particular wavelength
+		virtual Scalar GetRadianceNM(
+			const RayIntersectionGeometric& ri,					///< [in] Geometric intersection details
+			const Scalar nm										///< [in] Wavelength to process
+			) const;
+
+		//!
 		//! This function is also similar to the above ones, however it returns the entire spectrum
 		//! rather than just the value at the particular wavelength
 		//!

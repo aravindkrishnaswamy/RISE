@@ -349,11 +349,16 @@ Scalar SubSurfaceScatteringShaderOp::PerformOperationNM(
 	// spectral render reconstruct the RGB SSS appearance (the uplift
 	// round-trips through the CMFs).  The diffusion *radius* is therefore
 	// at RGB resolution, not per-lambda -- documented approximation; a
-	// true spectral BSSRDF is future work.  RGBUnboundedSpectrum (not
-	// Albedo): SSS exitant radiance is >= 0 and may exceed 1.
+	// true spectral BSSRDF is future work.
+	//
+	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is the
+	// exitant RADIANCE, a source term at this boundary, so it must carry
+	// the reference illuminant's shape to round-trip through the film back
+	// to the RGB result.  Unbounded is reflectance-shaped and tinted the
+	// spectral SSS render by (1.20, 0.95, 0.91).
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
-	return RGBUnboundedSpectrum::FromRGB( c ).Eval( nm );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }
 
 void SubSurfaceScatteringShaderOp::ResetRuntimeData() const

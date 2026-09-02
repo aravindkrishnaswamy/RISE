@@ -18,6 +18,7 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Transformable.h"
 #include "../Animation/KeyframableHelper.h"
@@ -35,10 +36,26 @@ namespace RISE
 			Scalar		radiantEnergy;
 			RISEPel		cColor;
 
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
+			//! See PointLight::cSpectrum for the convention and for the
+			//! staleness argument (colour is writable only through
+			//! `SetIntermediateValue( kColorID )`).
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum()
+			{
+				cSpectrum = RGBIlluminantSpectrum::FromRGB( cColor );
+			}
+
 			virtual ~AmbientLight( ){};
 
 		public:
-			AmbientLight( Scalar radiantEnergy_, const RISEPel& c  ) : radiantEnergy( radiantEnergy_ ), cColor( c ){};
+			AmbientLight( Scalar radiantEnergy_, const RISEPel& c  ) : radiantEnergy( radiantEnergy_ ), cColor( c )
+			{
+				RefreshSpectrum();
+			}
 
 			inline bool CanGeneratePhotons() const override
 			{
@@ -53,6 +70,13 @@ namespace RISE
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const override
 			{
 				return (cColor * radiantEnergy);
+			}
+
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2): the
+			//! cached illuminant spectrum at `nm`, times the energy.
+			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const override
+			{
+				return cSpectrum.Eval( nm ) * radiantEnergy;
 			}
 
 			inline Point3 position() const override
@@ -104,13 +128,15 @@ namespace RISE
 				amount = cColor * radiantEnergy * brdf.value( ri.vNormal, ri );
 			}
 
-			//! Per-wavelength evaluation: project the light color to
-			//! luminance (flat-E projection) and multiply by the per-NM
-			//! BSDF.  Matches the RGB version but uses brdf.valueNM,
-			//! preserving the surface's spectral character (which the
-			//! previous Luminance(amount_RGB) projection collapsed to
-			//! white because amount_RGB had the per-NM BSDF replaced by
-			//! its RGB equivalent).
+			//! Per-wavelength evaluation: sample the light's own illuminant
+			//! spectrum at `nm` and multiply by the per-NM BSDF.  Matches
+			//! the RGB version but uses brdf.valueNM, preserving the
+			//! surface's spectral character (which the older
+			//! Luminance(amount_RGB) projection collapsed to white because
+			//! amount_RGB had the per-NM BSDF replaced by its RGB
+			//! equivalent).  Stage C slice 2 replaced the remaining
+			//! Rec.709 luma projection of `cColor` with the real spectrum,
+			//! so a coloured ambient is no longer spectrally grey.
 			inline Scalar ComputeDirectLightingNM(
 				const RayIntersectionGeometric& ri,
 				const IRayCaster&,
@@ -121,11 +147,7 @@ namespace RISE
 				const bool = false				///< bVolumeReceiver: no-op, see the RGB override above
 				) const override
 			{
-				const Scalar lightLum =
-					Scalar(0.2126) * cColor.r +
-					Scalar(0.7152) * cColor.g +
-					Scalar(0.0722) * cColor.b;
-				return lightLum * radiantEnergy * brdf.valueNM( ri.vNormal, ri, nm );
+				return cSpectrum.Eval( nm ) * radiantEnergy * brdf.valueNM( ri.vNormal, ri, nm );
 			}
 
 			// No light-specific state to refresh; the base composition is all an
@@ -179,6 +201,7 @@ namespace RISE
 				case kColorID:
 					{
 						cColor = *(RISEPel*)val.getValue();
+						RefreshSpectrum();		// keep the cached illuminant spectrum in step
 					}
 					break;
 				case kEnergyID:

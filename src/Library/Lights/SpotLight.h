@@ -19,6 +19,7 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Transformable.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -39,6 +40,17 @@ namespace RISE
 			bool		bShootPhotons;		///< Should this light shoot photons for photon mapping?
 
 			Vector3		vDirection;
+
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
+			//! See PointLight::cSpectrum for the convention and for the
+			//! staleness argument (colour is writable only through
+			//! `SetIntermediateValue( COLOR_ID )`, which both keyframes and
+			//! the SceneEditor / agent light-edit tools funnel through).
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum();
 
 			virtual ~SpotLight( );
 
@@ -120,6 +132,31 @@ namespace RISE
 				}
 
 				return RISEPel(0,0,0);
+			}
+
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2).  The
+			//! cone geometry below MUST stay identical to the RGB version
+			//! above; only the colour term differs (cached illuminant
+			//! spectrum at `nm` instead of the RGB triple).
+			inline Scalar emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const override
+			{
+				const Scalar cost = Vector3Ops::Dot( vLightOut, vDirection );
+				if( cost < 0 ) {
+					return Scalar(0);
+				}
+
+				const Scalar halfInner = dInnerAngle / 2.0;
+				const Scalar halfOuter = dOuterAngle / 2.0;
+
+				const Scalar acost = acos(cost);
+				if( acost <= halfInner ) {
+					return cSpectrum.Eval( nm ) * radiantEnergy;
+				} else if( acost <= halfOuter ) {
+					const Scalar t = (halfOuter - acost) / (halfOuter - halfInner);
+					return cSpectrum.Eval( nm ) * radiantEnergy * (t * t);
+				}
+
+				return Scalar(0);
 			}
 
 			inline Ray generateRandomPhoton( const Point3& ptrand ) const override

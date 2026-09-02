@@ -25,7 +25,12 @@ DirectionalLight::DirectionalLight( Scalar radiantEnergy_, const RISEPel& c, con
   cColor( c ),
   vDirection( Vector3Ops::Normalize(vDir) )
 {
+	RefreshSpectrum();
+}
 
+void DirectionalLight::RefreshSpectrum()
+{
+	cSpectrum = RGBIlluminantSpectrum::FromRGB( cColor );
 }
 
 DirectionalLight::~DirectionalLight( )
@@ -167,11 +172,10 @@ Scalar DirectionalLight::ComputeDirectLightingNM(
 		}
 	}
 
-	const Scalar lightLum =
-		Scalar(0.2126) * cColor.r +
-		Scalar(0.7152) * cColor.g +
-		Scalar(0.0722) * cColor.b;
-	return lightLum * brdf.valueNM( vDirection, ri, nm ) * fDot * radiantEnergy * shadowT;
+	// Stage C slice 2: the light's own spectrum at `nm`, not a flat Rec.709
+	// luma projection.  See PointLight::ComputeDirectLightingNM.
+	const Scalar lightSpec = cSpectrum.Eval( nm );
+	return lightSpec * brdf.valueNM( vDirection, ri, nm ) * fDot * radiantEnergy * shadowT;
 }
 
 static const unsigned int DIRECTION_ID = 100;
@@ -219,6 +223,7 @@ void DirectionalLight::SetIntermediateValue( const IKeyframeParameter& val )
 	case COLOR_ID:
 		{
 			cColor = *(RISEPel*)val.getValue();
+			RefreshSpectrum();		// keep the cached illuminant spectrum in step
 		}
 		break;
 	case ENERGY_ID:

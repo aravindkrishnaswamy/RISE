@@ -50,6 +50,20 @@ namespace RISE
 						albedoSpec = RGBAlbedoSpectrum::FromRGB( C );
 						break;
 				}
+
+				// `illuminantSpec` is ALSO built for the other two kinds,
+				// because GetRadianceNM must answer regardless of how this
+				// painter was constructed: routing is by SLOT (does the
+				// consumer want a reflectance or a radiance source?), not by
+				// construction kind -- a named painter is routinely bound to
+				// both an emissive and a multiplicative slot.  See
+				// IPainter::GetRadianceNM and
+				// docs/SPECTRAL_ILLUMINANT_CONVENTION.md.  Cost is one extra
+				// LUT lookup at construction / keyframe update, never at
+				// sample time.
+				if( kind != eSpectrumKind_Illuminant ) {
+					illuminantSpec = RGBIlluminantSpectrum::FromRGB( C );
+				}
 			}
 
 			Scalar EvalKind( const Scalar nm ) const
@@ -74,6 +88,15 @@ namespace RISE
 			Scalar GetColorNM( const RayIntersectionGeometric&, const Scalar nm ) const
 			{
 				return EvalKind( nm );
+			}
+
+			//! Source-term sample: always the cached illuminant spectrum,
+			//! whatever this painter's construction kind is.  Overrides the
+			//! IPainter default purely to avoid its per-call LUT lookup --
+			//! the RESULT is identical to the default for a uniform colour.
+			Scalar GetRadianceNM( const RayIntersectionGeometric&, const Scalar nm ) const
+			{
+				return illuminantSpec.Eval( nm );
 			}
 
 			// Build a properly-populated SpectralPacket sampled at the

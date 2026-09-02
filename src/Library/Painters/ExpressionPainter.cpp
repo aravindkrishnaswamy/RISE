@@ -148,6 +148,17 @@ Scalar ExpressionPainter::GetColorNM( const RayIntersectionGeometric& ri, const 
 	return RGBAlbedoSpectrum::FromRGB( rgb, table ).Eval( nm );
 }
 
+Scalar ExpressionPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// Stage C slice 2: as a SOURCE, an expression's output carries the
+	// reference illuminant's shape regardless of `m_kind` (which only
+	// describes how the same value behaves as a multiplier).  Overriding
+	// the IPainter default skips a redundant GetColor virtual so the
+	// program is evaluated exactly once, matching GetColorNM's cost.
+	const RISEPel rgb = EvalRGB( ri );
+	return RGBIlluminantSpectrum::FromRGB( rgb, RGBToSpectrumTable::Get() ).Eval( nm );
+}
+
 SpectralPacket ExpressionPainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
 {
 	const Scalar lambda_begin = Scalar(380);

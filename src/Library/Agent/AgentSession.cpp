@@ -18283,15 +18283,22 @@ namespace RISE
 				//! do.  Noted here so the next reader of this dome does not
 				//! rediscover it as a new bug.
 				//! ONE MORE HAZARD WORTH NAMING, since the painters below are
-				//! plain RISEPel uniforms: those are safe here ONLY because
-				//! this dome is consumed by the RGB pathtracing_pel pipeline
-				//! CreateMaterialLookPipeline builds, whose GetColor path
-				//! returns the RISEPel verbatim.  A spectral routing would go
-				//! through GetColorNM and JH-uplift them (see
+				//! plain RISEPel uniforms: this dome is consumed by the RGB
+				//! pathtracing_pel pipeline CreateMaterialLookPipeline builds,
+				//! whose GetColor path returns the RISEPel verbatim.  A
+				//! spectral routing USED to go through GetColorNM and
+				//! JH-uplift them as reflectances (see
 				//! docs/ISCALARPAINTER_REFACTOR.md -- the same mechanism that
 				//! once made glass spheres invisible in every spectral
-				//! rasterizer).  If the material look is ever given a spectral
-				//! pipeline, these two painters have to be revisited first.
+				//! rasterizer).  Stage C slice 2 fixed that at the CONSUMER:
+				//! `RadianceMap::GetRadianceNM` now calls
+				//! `IPainter::GetRadianceNM`, whose default uplifts the
+				//! CheckerPainter's COMPOSED colour as an illuminant -- the
+				//! physically right answer for a dome.  The
+				//! `eSpectrumKind_Unbounded` below is therefore inert for the
+				//! radiance path (routing is by SLOT, not by construction
+				//! kind) and is left as-is; it would only matter if these
+				//! painters were also bound to a multiplicative slot.
 				static const IRadianceMap* BuildStudioDome_()
 				{
 					IPainter* dark = nullptr;

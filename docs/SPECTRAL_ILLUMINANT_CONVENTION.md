@@ -1,7 +1,7 @@
 # Stage C — the reference illuminant belongs in the spectral forward model
 
 **Date:** 2026-09-02
-**Status:** slice 1 (LUT convention + runtime illuminant normalisation + tests) landed; slice 2 (routing emissive slots onto the Illuminant kind) not started
+**Status:** slice 1 (LUT convention + runtime illuminant normalisation + tests) landed; slice 2 (routing every SOURCE term onto the illuminant path) landed — see §7
 **Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md) (LUT quality history), [COLOR_SPACE_MIGRATION.md](COLOR_SPACE_MIGRATION.md) (Stage A = LUT target → Rec.709, Stage B = `RISEPel` → Rec.709)
 
 ---
@@ -214,3 +214,126 @@ object at all, just a scalar.
 * `tests/JakobHanikaRoundTripTest.cpp`, `tests/RGBPainterSpectralRoundTripTest.cpp`,
   `tests/JHWhiteGuardSpectralTest.cpp` — forward models corrected, tolerances tightened,
   real illuminant-source round-trip added.
+
+---
+
+## 7. Slice 2 — routing source terms onto the illuminant path
+
+**Status:** landed 2026-09-02.
+
+### 7.1 The mechanism: route by SLOT, not by painter kind
+
+`SpectrumKind` is fixed when a painter is *constructed*, but a named painter is routinely
+bound to a reflectance slot on one material and an emissive slot on another. So the
+construction kind cannot decide whether a sample means "reflectance" or "radiance" — the
+**consumer** must.
+
+`IPainter` therefore gained a second per-wavelength entry point:
+
+| call | means | who calls it |
+|---|---|---|
+| `GetColorNM( ri, nm )` | REFLECTANCE at λ (sigmoid alone) | every multiplicative slot — BRDF/BSDF/SPF colours, tints, transmittance, alpha |
+| `GetRadianceNM( ri, nm )` | EMITTED RADIANCE at λ (sigmoid × D65norm) | every source term — emitters, area lights, radiance maps, radiance-uplifting shader ops |
+
+`GetRadianceNM`'s **default** (out-of-line in `Painters/Painter.cpp`, so `RGBSpectra.h`
+stays out of the ~300 TUs that include `IPainter.h`) uplifts the painter's **composed**
+`GetColor` per call. That is the slow path *and the correct semantics for a composite
+painter*: what a blend / ramp / checker / noise / mapping painter emits is its composed
+colour, so the composed colour is what must carry the illuminant shape. Forwarding to the
+children's reflectance spectra would sum reflectance-shaped spectra and never produce D65.
+`UniformColorPainter` (cached), `TexturePainter` and `ExpressionPainter` (per-sample, same
+cost as their `GetColorNM`) override it to skip a redundant `GetColor` virtual.
+
+**The other overrides are load-bearing, not an optimisation.** `SpectralColorPainter`
+(`spectral_painter`), `BlackBodyPainter` and `Function1DSpectralPainter` carry a **physical
+SPD**, not a Jakob-Hanika uplift of an RGB triple — the classic physically-authored
+spectral Cornell box binds `spectral_painter` straight to a luminaire's `exitance`. For
+those three `GetRadianceNM` forwards to `GetColorNM` verbatim, exactly as
+`HosekWilkieSpectralRadianceMap` stays off the uplift path. Without the override the
+default would discard the measured spectrum and re-uplift its RGB projection — and for
+`Function1DSpectralPainter`, whose `GetColor` returns **black**, a luminaire would emit
+exactly zero on the spectral path.
+
+**Known limitation of the composition rule:** a physical-SPD painter nested *inside* a
+composite (e.g. a `checker` of two blackbodies) bound to an emissive slot now resolves
+through the composite's default — its composed RGB, uplifted — rather than through the
+children's measured spectra. That is the price of the "composite emits its composed
+colour" semantics; no in-tree scene does it (every `spectral_painter` / `blackbody_painter`
+emissive binding is direct). If one ever needs to, the composite needs its own
+`GetRadianceNM` forwarding to its children.
+
+`ILight` gained the analogous `emittedRadianceNM( vLightOut, nm )` — default uplifts
+`emittedRadiance()` per call, overridden by Point / Spot / Directional / Ambient with a
+spectrum cached at construction.
+
+**The film is unchanged and must stay unchanged.** It integrates radiance × CMF
+normalised by `∫ȳ` with no illuminant weighting, because the D65 shape rides in the
+sources. Putting D65 in both places double-applies it. A flat unit spectrum through the
+film is `(1.20485, 0.94827, 0.90894)`; a D65norm-shaped unit source is `(1, 1, 1)`.
+
+### 7.2 What changed
+
+* **Painters** — `IPainter::GetRadianceNM` (new virtual + default in `Painter.cpp`);
+  overrides in `UniformColorPainter` (always builds `illuminantSpec`, whatever the
+  construction kind), `TexturePainter`, `ExpressionPainter`.
+* **Emitters** — `LambertianEmitter` / `PhongEmitter` `emittedRadianceNM` read
+  `GetRadianceNM`; their `RefreshAverages` build `averageSpectrum` from per-bin
+  `GetRadianceNM` instead of `GetSpectrum`, so spectral **photon power** carries the same
+  shape direct NEE does. `CompositeEmitter` needed no edit — it forwards to its leaves.
+* **Lights** — `PointLight` / `SpotLight` / `DirectionalLight` / `AmbientLight` cache an
+  `RGBIlluminantSpectrum` built from their colour, rebuilt in `SetIntermediateValue`
+  (the *only* colour-write path: keyframes and the SceneEditor / agent light-edit tools
+  both funnel through `KeyframeFromParameters` + `SetIntermediateValue`; there is no
+  `SetColor`, and `SnapshotLeafClone` rebuilds rather than mutates).
+* **Consumers of light emission at a wavelength** — `LightSampler`'s NM delta-light NEE
+  row, `VCMIntegrator::EvalLightRadiance<NMTag>`, and four BDPT sites (`LightRadiance`,
+  `EvalEmitterRadiance`, the light-subpath `Le`, and the HWSS companion-wavelength `LeW`)
+  all dropped their Rec.709 luma projections.
+* **Radiance maps** — `RadianceMap::GetRadianceNM` reads `GetRadianceNM`. This covers
+  every painter-backed environment, including the AgentSession studio dome.
+  `HosekWilkieSpectralRadianceMap` (a physical SPD) is untouched.
+* **Area lights** — `AreaLightShaderOp`'s `emm` slot.
+* **glTF** — the `emissive` texture role became `eSpectrumKind_Illuminant` at both the
+  slow path and the `PreDecodeTextures` fast path (they MUST agree).
+* **Shader ops that uplift a computed radiance** — `FinalGatherShaderOp`,
+  `SubSurfaceScatteringShaderOp`, `DonnerJensenSkinSSSShaderOp` moved from
+  `RGBUnboundedSpectrum` to `RGBIlluminantSpectrum`. `DataDrivenBSDF` deliberately did
+  **not**: it uplifts a BRDF *value*, which is reflectance-shaped.
+* **Perf** — `RGBIlluminantSpectrum` folds `1/kD65YNorm` into `scale` at construction, so
+  the now-per-sample `Eval` performs no function-local-static acquire load.
+
+### 7.3 Measured (64² / 128² A/B renders, `oidn_denoise FALSE`)
+
+spectral ÷ RGB per-channel mean, before → after. Scene `num_wavelengths` in the last
+column — it matters, see §7.4.
+
+| scene | before | after | N |
+|---|---|---|---|
+| white luminaire on 0.9 floor | 1.200 / 0.947 / 0.903 | 0.995 / 1.002 / 0.996 | 80 |
+| grey-0.95 luminaire on 0.9 floor | 1.200 / 0.955 / 0.901 | 1.005 / 1.006 / 0.993 | 80 |
+| white luminaire on WHITE floor | 1.209 / 0.948 / 0.908 | 0.984 / 0.999 / 1.005 | 80 |
+| grey-0.5 box, 2 bounces | 1.199 / 0.950 / 0.908 | 1.003 / 0.998 / 0.995 | 80 |
+| omni light (1.0, 0.2, 0.2) | 0.286 / 6.856 / 6.544 (**grey!**) | 1.000 / 0.987 / 1.002 | 80 |
+| furnace, white perfect reflector | 1.240 / 0.938 / 0.896 | 1.032 / 0.993 / 1.002 | 10 (default) |
+| furnace, grey-0.95 perfect reflector | 1.224 / 0.939 / 0.883 | 1.048 / 1.000 / 1.013 | 10 (default) |
+
+Scenes are in `_abtest2/` (`gen.py` writes (c)/(d)/(e); the s1/s6 pairs are copies of the
+slice-1 `_abtest/` scenes with their output paths redirected). `analyze.py` prints the
+table.
+
+### 7.4 Known residual: the wavelength-grid bias is NOT closed
+
+The two `N = 10` rows above are the ones still 3–5 % red-heavy, and that is **not** a
+slice-2 residual — it is the film's left-Riemann wavelength grid, which has a chroma bias
+of its own independent of the uplift convention. Re-rendering the *same* scenes at
+`num_wavelengths 80` collapses it:
+
+| scene / ROI | N = 10 (default) | N = 80 |
+|---|---|---|
+| white panel on white floor | 1.045 / 0.993 / 1.010 | 0.984 / 0.999 / 1.005 |
+| furnace, white sphere | 1.032 / 0.993 / 1.002 | 0.999 / 1.010 / 0.988 |
+| furnace, grey-0.95 sphere | 1.048 / 1.000 / 1.013 | 1.010 / 1.002 / 0.995 |
+
+The default was deliberately **not** changed in this slice. Any spectral-vs-RGB comparison
+must state its `num_wavelengths`, and a future slice should either raise the default or
+stratify / jitter the wavelength samples.

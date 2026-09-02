@@ -661,13 +661,19 @@ namespace
 		// often pair with KHR_materials_emissive_strength scalar > 1,
 		// pushing per-texel radiance above the [0, 1] reflectance
 		// gamut.  Using Albedo uplift on those clamps to 1.0 inside
-		// the LUT path (RGBToSpectrumTable.cpp:218); use Unbounded so
-		// the sigmoid is normalized by max(R,G,B) and the scale is
-		// preserved.  All other roles (baseColor, MR, normal, AO,
-		// sheen_color, transmission_color, etc.) are bounded
-		// reflectances and stay on the Albedo path.
+		// the LUT path (RGBToSpectrumTable.cpp:218); Illuminant, like
+		// Unbounded, normalizes the sigmoid by max(R,G,B) and keeps
+		// the scale, so HDR emissive survives either way.
+		//
+		// Stage C slice 2: emissive is Illuminant, not Unbounded.  It is
+		// a RADIANCE SOURCE, so it carries the reference illuminant's
+		// shape -- an authored-white emissive texel radiates D65 and
+		// resolves through the film back to white instead of to the
+		// flat-spectrum (1.20, 0.95, 0.91).  All other roles (baseColor,
+		// MR, normal, AO, sheen_color, transmission_color, etc.) are
+		// bounded reflectances and stay on the Albedo path.
 		const SpectrumKind sk = ( std::strcmp( role, "emissive" ) == 0 )
-			? eSpectrumKind_Unbounded
+			? eSpectrumKind_Illuminant
 			: eSpectrumKind_Albedo;
 		if( !filePath.empty() ) {
 			// On-disk sidecar (the .gltf JSON form with external image files).
@@ -2840,7 +2846,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		char wrap_s;				// per-texture U-axis wrap (eRasterWrapMode); read from cgltf_texture::sampler
 		char wrap_t;				// per-texture V-axis wrap
 		bool mipmap;				// Landing 2: build a mip pyramid for this texture.  False for normal maps (vector quantities — box-filter prefiltering corrupts them; LEAN/LEADR is a separate audit).
-		SpectrumKind spectrumKind;	// Landing 3: spectral-uplift role (Albedo for reflectance; Unbounded for emissive).
+		SpectrumKind spectrumKind;	// Landing 3: spectral-uplift role (Albedo for reflectance; Illuminant for emissive).
 	};
 	std::vector<PendingDecode> pending;
 	std::set<std::string> seen;
@@ -2908,13 +2914,18 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 		pd.wrap_t      = wrapT;
 		// Landing 2: per-role; false for normal maps.
 		pd.mipmap      = ( std::strcmp( role, "normal" ) != 0 );
-		// Landing 3: emissive textures need Unbounded uplift so HDR
-		// values (KHR_materials_emissive_strength > 1) survive without
-		// being clamped through the bounded-reflectance LUT path.  All
-		// other glTF texture roles are physically bounded reflectances
-		// and stay on Albedo.
+		// Landing 3 / Stage C slice 2: emissive textures uplift as
+		// ILLUMINANT -- HDR values (KHR_materials_emissive_strength > 1)
+		// survive unclamped (same max-channel scale + normalize as
+		// Unbounded) AND the texel carries the reference illuminant's
+		// shape, which is what a radiance source means under the Stage C
+		// convention.  MUST match the slow-path kind chosen in
+		// CreateTexturePainter above, or a pre-decoded painter and a
+		// slow-path one would disagree spectrally for the same texture.
+		// All other glTF texture roles are physically bounded
+		// reflectances and stay on Albedo.
 		pd.spectrumKind = ( std::strcmp( role, "emissive" ) == 0 )
-			? eSpectrumKind_Unbounded
+			? eSpectrumKind_Illuminant
 			: eSpectrumKind_Albedo;
 		pending.push_back( std::move( pd ) );
 	};
@@ -2982,7 +2993,7 @@ void GLTFSceneImporter::PreDecodeTextures( IJob& job, const GLTFImportOptions& o
 								// per-sample render cost.  Match the
 								// CreateTexturePainter slow path if changing.
 		r.mipmap     = pd.mipmap;	// Landing 2: per-role; false for normal maps
-		r.spectrumKind = pd.spectrumKind;	// Landing 3: per-role; Unbounded for emissive
+		r.spectrumKind = pd.spectrumKind;	// Landing 3: per-role; Illuminant for emissive
 		std::memcpy( r.scale, identityScale, sizeof(identityScale) );
 		std::memcpy( r.shift, zeroShift,     sizeof(zeroShift) );
 		requests.push_back( r );

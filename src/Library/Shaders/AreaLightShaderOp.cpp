@@ -211,7 +211,10 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 				if( !caster.CastShadowRay( rayToLight, fDistFromLight ) ) {
 					const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 					const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
-					c += (emm.GetColorNM(ri.geometric,nm) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueNM(vToLight,ri.geometric,nm):1));
+					// `emm` is the area light's EMISSION slot -> GetRadianceNM
+					// (Stage C slice 2), so an authored-white area light
+					// radiates D65 and resolves to white through the film.
+					c += (emm.GetRadianceNM(ri.geometric,nm) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->valueNM(vToLight,ri.geometric,nm):1));
 				}
 			}
 		}

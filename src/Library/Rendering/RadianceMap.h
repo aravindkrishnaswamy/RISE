@@ -85,7 +85,16 @@ namespace RISE
 				rig.ptCoord.x = 0.5 + v.x * r;
 				rig.ptCoord.y = 0.5 - v.y * r;
 				
-				return pRadianceMap.GetColorNM( rig, nm ) * dScale;
+				// A radiance map IS a source term, so the painter is read
+				// through GetRadianceNM (Stage C slice 2): the map's RGB is
+				// "the colour the sky has", i.e. reflectance-under-D65 times
+				// D65.  This covers every painter-backed environment --
+				// uniform dome colours (including the AgentSession studio
+				// dome), HDR/EXR lat-longs through TexturePainter, and
+				// procedural sky painters.  HosekWilkieSpectralRadianceMap
+				// is a separate IRadianceMap with a PHYSICAL SPD and does
+				// not come through here.
+				return pRadianceMap.GetRadianceNM( rig, nm ) * dScale;
 			}
 
 			//! Sets the orientation of this map

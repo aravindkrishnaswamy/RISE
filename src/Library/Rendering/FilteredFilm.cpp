@@ -94,12 +94,26 @@ void FilteredFilm::Resolve(
 	// The implicit `RISEPel(XYZPel)` constructor invokes
 	// `ColorUtils::XYZtoRec709RGB` (post Stage-B colour-space migration:
 	// RISEPel = Rec709RGBPel, no Bradford adapt — Rec.709 is D65 and
-	// the integrator's XYZ is D65-referred).  This matches the JH LUT
-	// generator's rec709 target's forward model
-	// (`tools/JakobHanikaLUTGen.cpp::IntegrateToTarget` with the rec709
-	// target), so JH-uplifted spectra and physical spectra (BioSpec,
-	// blackbody, measured SPDs) both round-trip through the same
-	// conversion.  Pre-Stage-B revisions dispatched on a `bIntegratorMode`
+	// the integrator's XYZ is D65-referred).
+	//
+	// The film is the SAME un-adapted XYZ(D65)->Rec709(D65) matrix the JH
+	// LUT generator's rec709 target ends with, but it is NOT the
+	// generator's whole forward model and must not be: the generator
+	// integrates sigmoid x D65 x cmf and divides by INT D65*ybar, because it
+	// is defining what a REFLECTANCE means (reflectance under D65).  The
+	// film integrates radiance x cmf and divides by INT ybar, with no
+	// illuminant weighting at all, because the D65 shape rides in the
+	// SOURCES (Stage C: RGBIlluminantSpectrum = sigmoid x D65norm is what
+	// every emitter, light and radiance map now emits -- slice 2).  Putting
+	// D65 in BOTH places would apply it twice.  The consequence callers
+	// rely on: a D65norm-shaped source of unit scale resolves here to
+	// exactly (1, 1, 1), while a FLAT unit spectrum resolves to
+	// (1.20485, 0.94827, 0.90894) -- equal-energy chromaticity, not D65.
+	// Physical spectra (BioSpec, blackbody, measured SPDs) are absolute
+	// radiances and come through this same un-weighted integral unchanged.
+	// See docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
+	//
+	// Pre-Stage-B revisions dispatched on a `bIntegratorMode`
 	// flag to a matrix-only `IntegratorXYZtoROMMRGB`, which broke
 	// physically-grounded scenes — that path was eliminated by the
 	// Stage A colour-space migration (`IntegratorXYZto*` no longer

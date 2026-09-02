@@ -38,6 +38,7 @@
 
 #include "../Interfaces/ILightPriv.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/Reference.h"
 #include "../Utilities/Transformable.h"
 
@@ -51,6 +52,16 @@ namespace RISE
 			Scalar		radiantEnergy;
 			RISEPel		cColor;
 			Vector3		vDirection;
+
+			//! `cColor` uplifted as a RADIANCE SOURCE (Stage C slice 2).
+			//! See PointLight::cSpectrum for the convention and for the
+			//! staleness argument (colour is writable only through
+			//! `SetIntermediateValue( COLOR_ID )`).
+			RGBIlluminantSpectrum	cSpectrum;
+
+			//! Rebuild `cSpectrum` from `cColor`.  Call after ANY write to
+			//! `cColor`.
+			void RefreshSpectrum();
 
 			virtual ~DirectionalLight( );
 
@@ -69,6 +80,13 @@ namespace RISE
 			inline RISEPel emittedRadiance( const Vector3& vLightOut ) const
 			{
 				return (cColor * radiantEnergy);
+			}
+
+			//! Spectral twin of `emittedRadiance` (Stage C slice 2): the
+			//! cached illuminant spectrum at `nm`, times the energy.
+			inline Scalar emittedRadianceNM( const Vector3& /*vLightOut*/, const Scalar nm ) const
+			{
+				return cSpectrum.Eval( nm ) * radiantEnergy;
 			}
 
 			inline Point3 position() const

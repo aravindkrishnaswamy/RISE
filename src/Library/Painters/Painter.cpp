@@ -14,9 +14,26 @@
 
 #include "pch.h"
 #include "Painter.h"
+#include "../Utilities/Color/RGBSpectra.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+// The IPainter::GetRadianceNM default lives HERE rather than inline in
+// IPainter.h so that RGBSpectra.h (and through it the Jakob-Hanika LUT
+// table header) does not have to be pulled into every one of the ~300
+// translation units that include IPainter.h.  Painter.cpp is always
+// linked -- every in-tree painter derives from Implementation::Painter --
+// so the out-of-line definition is always available.
+//
+// SLOW PATH by design: one LUT lookup per sample.  See the declaration in
+// IPainter.h for why the composed colour (not the children's spectra) is
+// what a composite painter must uplift, and
+// docs/SPECTRAL_ILLUMINANT_CONVENTION.md for the convention.
+Scalar IPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	return RGBIlluminantSpectrum::FromRGB( GetColor( ri ) ).Eval( nm );
+}
 
 Scalar Painter::GetColorNM( const RayIntersectionGeometric&, const Scalar ) const
 {

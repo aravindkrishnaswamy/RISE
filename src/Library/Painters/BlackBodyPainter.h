@@ -64,6 +64,22 @@ namespace RISE
 			SpectralPacket					GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar							GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 
+			//! PHYSICAL SPD -- pass through verbatim (Stage C slice 2).
+			//! This painter's GetColorNM is not a Jakob-Hanika uplift of an
+			//! RGB triple; it is an absolute spectral radiance/reflectance
+			//! the author supplied.  Letting the IPainter default run would
+			//! throw it away and re-uplift the RGB projection instead, which
+			//! is exactly the class of bug the Hosek-Wilkie radiance map is
+			//! kept off the painter path to avoid.
+			//! For a blackbody in particular the SPD IS the physics --
+			//! Planck's law at the authored temperature.  A blackbody bound
+			//! to a luminaire's exitance is the canonical physically-authored
+			//! emitter in RISE.
+			Scalar							GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+			{
+				return GetColorNM( ri, nm );
+			}
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );

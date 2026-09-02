@@ -61,6 +61,28 @@ namespace RISE
 		//! Asks the light for its emitted radiance in a particular direction
 		virtual RISEPel emittedRadiance( const Vector3& vLightOut ) const = 0;
 
+		//! Per-wavelength emitted radiance in a particular direction
+		//! (Stage C slice 2, docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
+		//!
+		//! Every NM consumer of a non-mesh light used to take
+		//! `emittedRadiance()` and project it to a Rec.709 luma scalar
+		//! (`0.2126 r + 0.7152 g + 0.0722 b`), used unchanged at every
+		//! wavelength — so a coloured point / spot / directional light was
+		//! spectrally GREY in NM renders, and even a white one landed on
+		//! the flat-spectrum chromaticity (1.20, 0.95, 0.91) rather than
+		//! on white.  An RGB-authored light source means "reflectance-
+		//! under-D65 times D65", so its spectrum is the JH sigmoid times
+		//! the reference illuminant, and the film resolves that back to
+		//! the authored RGB exactly.
+		//!
+		//! Default: uplift `emittedRadiance(vLightOut)` per call.  In-tree
+		//! lights override with a spectrum cached at construction (and
+		//! rebuilt on every colour mutation) so no LUT lookup happens on
+		//! the hot path.  Declared out-of-line (defined in PointLight.cpp)
+		//! to keep the Jakob-Hanika LUT header out of every translation
+		//! unit that includes ILight.h.
+		virtual Scalar emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const;
+
 		//! Returns the light's world-space position (for spatial importance estimation)
 		virtual Point3 position() const = 0;
 
@@ -223,8 +245,12 @@ namespace RISE
 		//! This is the per-NM analog of the RGB `ComputeDirectLighting`.
 		//!
 		//! Default impl falls back to running the RGB version and
-		//! projecting to luminance — preserves the previous (incorrect
-		//! for spectral) behaviour for any out-of-tree light type.
+		//! uplifting the resulting RGB as an ILLUMINANT at @a nm — the
+		//! best available answer for an out-of-tree light type, since
+		//! `amount` is a computed RADIANCE and so round-trips through the
+		//! film back to the RGB result.  (Before Stage C slice 2 this
+		//! projected to Rec.709 luma and discarded the wavelength, which
+		//! tinted the result by the flat-spectrum chromaticity.)
 		//! Concrete RISE light types (Ambient / Directional / Point /
 		//! Spot) override this to multiply per-NM BSDF correctly.
 		virtual Scalar ComputeDirectLightingNM(
@@ -235,13 +261,7 @@ namespace RISE
 			const Scalar nm,								///< [in] Wavelength (nm) at which to evaluate
 			const bool bFullSphereReceiver = false,			///< [in] See the RGB ComputeDirectLighting's doc
 			const bool bVolumeReceiver = false				///< [in] See the RGB ComputeDirectLighting's doc
-			) const
-		{
-			RISEPel amount( 0, 0, 0 );
-			ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver );
-			(void)nm;  // default fallback discards wavelength
-			return Scalar(0.2126) * amount.r + Scalar(0.7152) * amount.g + Scalar(0.0722) * amount.b;
-		}
+			) const;
 	};
 }
 

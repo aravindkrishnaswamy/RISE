@@ -55,11 +55,23 @@ PixelBasedSpectralIntegratingRasterizer::PixelBasedSpectralIntegratingRasterizer
 	// k_y = ∫Ȳ(λ)dλ over [lambda_begin, lambda_end].  The MC estimator
 	// (1/N)·Σ X̄(λᵢ)·V(λᵢ) for uniformly sampled λᵢ ∈ [a, b]
 	// approximates the AVERAGE of the integrand; multiplying by (b-a)
-	// converts to the integral, then dividing by k_y normalizes a
-	// perfect-white reflector under flat illuminant to Y = 1.  Without
-	// this scale, spectral renders are uniformly ~3.7× dimmer than
+	// converts to the integral, then dividing by k_y makes a spectral
+	// radiance of constant unit amplitude resolve to LUMINANCE Y = 1.
+	// Without this scale, spectral renders are uniformly ~3.7× dimmer than
 	// equivalent RGB renders (for the standard [380, 780] range
 	// k_y ≈ 106.86, so (b-a) / k_y ≈ 3.74).
+	//
+	// Y = 1 is all this normalisation buys, and it is deliberately
+	// achromatic: it says nothing about the chromaticity the pixel lands
+	// on.  A FLAT unit spectrum has equal-energy (E) chromaticity, so it
+	// resolves to Rec.709 (1.20485, 0.94827, 0.90894) -- Y = 1, but
+	// reddish, NOT neutral.  Landing on neutral (1, 1, 1) requires the
+	// SOURCE to be D65-shaped, which since Stage C slice 2 it is:
+	// every emitter, light, radiance map and radiance-uplifting shader op
+	// emits RGBIlluminantSpectrum = sigmoid x D65norm, and D65norm is
+	// itself Y-normalised so unit scale still lands on Y = 1 here.  No
+	// illuminant weighting belongs in THIS integral -- it would double-
+	// apply D65.  See docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
 	const Scalar k_y = ColorUtils::CIE_Y_Integral( lambda_begin_, lambda_end_ );
 	if( k_y > NEARZERO ) {
 		mYNormalization = lambda_diff / k_y;
