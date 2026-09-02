@@ -103,5 +103,22 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
+
+	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
+		const FireProductionProjectionShape&,std::uint64_t& bytes )
+	{
+		bytes=0u;return false;
+	}
+
+	bool EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		const FireProductionResidentEOSCandidateComparatorRequest&,
+		FireProductionResidentEOSCandidateComparatorResult& result,std::string* error )
+	{
+		result=FireProductionResidentEOSCandidateComparatorResult();
+		if( error ) try {
+			*error="production resident EOS Metal unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
 #endif
 }

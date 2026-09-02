@@ -1115,6 +1115,26 @@ namespace RISE
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&bytes<=(UINT64_C(1)<<31u);
 	}
 
+	bool FireProductionResidentEOSCandidateLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+			!std::isfinite(shape.cellWidthM))return false;
+		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
+		return AddMetalValueBuffer(9u*cells,sizeof(float),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
+			// Device-private compensated copy of the sealed binary64 EOS record.
+			AddMetalValueBuffer(452u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(cells,sizeof(float),bytes)&&
+			AddMetalValueBuffer(cells,sizeof(float),bytes)&&
+			AddMetalValueBuffer(cells,sizeof(float),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
+			AddMetalValueBuffer(256u,sizeof(unsigned char),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&bytes<=(UINT64_C(1)<<31u);
+	}
+
 	bool FireProductionCellPalindromeWorkingSetBytes(
 		const FireProductionProjectionShape& shape, std::size_t componentCount,
 		std::uint64_t& bytes, bool retainAcceptedGasMassDose )

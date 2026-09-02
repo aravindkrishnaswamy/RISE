@@ -15,6 +15,7 @@
 #include "FireProductionForce.h"
 #include "FireSimulationRecords.h"
 #include "FireProductionTransport.h"
+#include "FireCase.h"
 #include "ThreadPool.h"
 #include "../Interfaces/IOptions.h"
 
@@ -207,6 +208,15 @@ namespace RISE
 			float ambientTemperatureK;
 		};
 
+		struct MetalResidentEOSParameters
+		{
+			std::uint32_t cells,stage,precision,affineRowCount;
+			float temperatureMinK,temperatureMaxK,pressurePa,feasibilityFactor;
+			float dynamicsValidityBound;
+			std::uint32_t padding[3];
+			std::uint64_t attemptIdentity,caseIdentity;
+		};
+
 		constexpr std::size_t MetalResidentTransportMaximumKnots=128u;
 		constexpr std::size_t MetalResidentTransportSpeciesStride=
 			1u+5u*MetalResidentTransportMaximumKnots;
@@ -215,6 +225,9 @@ namespace RISE
 		constexpr std::size_t MetalThermochemistrySpeciesStride=32u;
 		constexpr std::size_t MetalThermochemistrySpeciesValues=
 			7u*MetalThermochemistrySpeciesStride;
+		constexpr std::size_t MetalEOSThermochemistrySpeciesStride=64u;
+		constexpr std::size_t MetalEOSThermochemistryValues=
+			7u*MetalEOSThermochemistrySpeciesStride+4u;
 		constexpr std::size_t MetalManifoldCertificateValues=
 			MetalThermochemistrySpeciesValues+64u;
 		constexpr std::size_t MetalManifoldQuantileBins=65536u;
@@ -277,6 +290,40 @@ namespace RISE
 				parameters.temperatureMinK>0.0f&&
 				parameters.temperatureMaxK>parameters.temperatureMinK&&
 				parameters.pressurePa>0.0f&&parameters.feasibilityFactor>0.0f;
+		}
+
+		bool PackMetalEOSDoubleDoubleThermochemistry(
+			std::array<float,MetalEOSThermochemistryValues>& packed,std::string* error )
+		{
+			packed.fill(0.0f);const FireSimulationMethaneRecord& fuel=
+				FireSimulationMethaneRecord::PhysicalV1();
+			auto split=[](const double value,float* destination){const float high=
+				static_cast<float>(value);destination[0]=high;
+				destination[1]=static_cast<float>(value-static_cast<double>(high));
+				return std::isfinite(destination[0])&&std::isfinite(destination[1]);};
+			if(!fuel.IsValid()||fuel.SpeciesOrder().size()!=7u)return false;
+			for(std::size_t speciesIndex=0u;speciesIndex<7u;++speciesIndex){
+				const FireThermochemistrySpecies* species=fuel.FindSpecies(
+					fuel.SpeciesOrder()[speciesIndex].c_str());
+				if(!species||species->segments.empty()||species->segments.size()>3u)return false;
+				float* destination=packed.data()+speciesIndex*MetalEOSThermochemistrySpeciesStride;
+				if(!split(species->molecularWeightKGPerKMol,destination))return false;
+				destination[2]=static_cast<float>(species->segments.size());
+				for(std::size_t segmentIndex=0u;segmentIndex<species->segments.size();++segmentIndex){
+					const FireThermochemistrySegment& segment=species->segments[segmentIndex];
+					float* output=destination+4u+20u*segmentIndex;
+					if(!split(segment.temperatureMinK,output)||
+						!split(segment.temperatureMaxK,output+2u))return false;
+					for(std::size_t coefficient=0u;coefficient<7u;++coefficient)
+						if(!split(segment.coefficients[coefficient],output+4u+2u*coefficient))
+							return false;
+					if(!split(segment.sensibleEnthalpyOffsetJPerKG,output+18u))return false;
+				}
+			}
+			return split(8314.46261815324,
+				packed.data()+7u*MetalEOSThermochemistrySpeciesStride)&&
+				split(fuel.ThermodynamicPressurePa(),
+					packed.data()+7u*MetalEOSThermochemistrySpeciesStride+2u);
 		}
 
 		std::uint64_t ResidentRecordIdentity(const std::string& id)
@@ -1807,6 +1854,10 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLComputePipelineState> composePair;
 			id<MTLComputePipelineState> validatePhysical;
 			id<MTLComputePipelineState> identifyPhysical;
+			id<MTLComputePipelineState> materializeEOSCandidate;
+			id<MTLComputePipelineState> identifyEOSCandidate;
+			id<MTLComputePipelineState> evaluateEOSCandidate;
+			id<MTLComputePipelineState> identifyEOS;
 			std::string error;
 
 			static const char* Source()
@@ -1954,6 +2005,9 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  hash^=ulong(as_type<uint>(p.Sc));hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Cv));
  identity[0]=hash==0ul?1ul:hash;}
 struct PhysicalParams {uint advectiveNullity;uint physicalNullity;uint mutateHigh;float ambientT;};
+struct EOSParams {uint cells;uint stage;uint precision;uint affineRowCount;
+ float Tmin;float Tmax;float pressure;float feasibility;
+ float dynamicsBound;uint pad0;uint pad1;uint pad2;ulong attempt;ulong caseIdentity;};
 inline uint pf_all_faces(constant TransportParams& p){return p.faceOffset[2]+p.nx*p.ny*(p.nz+1u);}
 inline void pf_decode_face(constant TransportParams& p,uint packed,thread uint& axis,
  thread uint& x,thread uint& y,thread uint& z){if(packed<p.faceOffset[1]){axis=0u;uint r=packed;
@@ -2147,12 +2201,180 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
  for(uint word=0u;word<8u*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(advectiveBasis[word]));hash*=1099511628211ul;}
  for(uint word=0u;word<extra.advectiveNullity*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(projector[word]));hash*=1099511628211ul;}
  hash^=ulong(as_type<uint>(extra.ambientT));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
+kernel void materialize_resident_eos_candidate(device const float* source [[buffer(0)]],
+ device float* candidate [[buffer(1)]],device atomic_uint* obligations [[buffer(2)]],
+ constant EOSParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=9u*p.cells)return;candidate[gid]=source[gid];
+ if(gid==0u)atomic_fetch_or_explicit(obligations,1u<<0u,memory_order_relaxed);}
+kernel void identify_resident_eos_candidate(device const float* candidate [[buffer(0)]],
+ device const ulong* physicalIdentity [[buffer(1)]],device const ulong* transportIdentity [[buffer(2)]],
+ device ulong* identity [[buffer(3)]],device atomic_uint* failure [[buffer(4)]],
+ device atomic_uint* obligations [[buffer(5)]],constant EOSParams& p [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||physicalIdentity[0]==0ul||
+  transportIdentity[0]==0ul||p.precision!=2u||(p.stage!=1u&&p.stage!=2u)){
+  identity[0]=0ul;atomic_fetch_or_explicit(failure,16u,memory_order_relaxed);return;}
+ ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=physicalIdentity[0];hash*=1099511628211ul;
+ for(uint word=0u;word<9u*p.cells;++word){float value=candidate[word];
+  if(!isfinite(value)){identity[0]=0ul;atomic_fetch_or_explicit(failure,32u,memory_order_relaxed);return;}
+  hash^=ulong(as_type<uint>(value));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=p.caseIdentity;hash*=1099511628211ul;
+ hash^=ulong(p.stage);hash*=1099511628211ul;hash^=ulong(p.precision);hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.Tmin));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.Tmax));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.pressure));hash*=1099511628211ul;
+ identity[0]=hash==0ul?1ul:hash;atomic_fetch_or_explicit(obligations,1u<<1u,memory_order_relaxed);}
+inline bool eos_state_admissible(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,device atomic_uint* obligations){
+ float values[9];for(uint component=0u;component<9u;++component){values[component]=state[component*p.cells+cell];
+  if(!isfinite(values[component]))return false;}float totalMass=0.0f,massScale=abs(values[0]);
+ for(uint species=0u;species<7u;++species){totalMass+=values[species+1u];massScale+=abs(values[species+1u]);}
+ if(!(totalMass>0.0f)||!isfinite(totalMass))return false;massScale=max(1.0f,massScale);
+ if(-values[0]>p.feasibility*massScale)return false;float closure=values[0];
+ for(uint species=0u;species<7u;++species){closure-=values[species+1u];
+  if(-values[species+1u]>p.feasibility*massScale)return false;}
+ if(closure>p.feasibility*massScale)return false;float below=-values[8],above=values[8],energyScale=abs(values[8]);
+ bool valid=true;float lowerLog=pf_log(p.Tmin),upperLog=pf_log(p.Tmax);
+ for(uint species=0u;species<7u;++species){float lowerH=pf_enthalpy(thermo,species,p.Tmin,lowerLog,valid,obligations);
+  float upperH=pf_enthalpy(thermo,species,p.Tmax,upperLog,valid,obligations);float density=values[species+1u];
+  below+=lowerH*density;above-=upperH*density;energyScale+=abs(lowerH*density)+abs(upperH*density);}
+ energyScale=max(1.0f,energyScale);if(!valid||below>p.feasibility*energyScale||above>p.feasibility*energyScale)return false;
+ device const float* matrix=thermo+224u;for(uint row=0u;row<p.affineRowCount;++row){float residual=0.0f,scale=0.0f;
+  for(uint column=0u;column<8u;++column){float term=matrix[row*8u+column]*values[column];residual+=term;scale+=abs(term);}
+  if(!isfinite(residual)||abs(residual)>p.feasibility*max(1.0f,scale))return false;}
+ return true;}
+// Apple GPUs expose no binary64 arithmetic.  These non-overlapping float pairs
+// carry the sealed binary64 thermochemistry through a compensated device-only
+// evaluation.  The inversion searches the binary32 lattice and decides the
+// final rounding at the exact midpoint between adjacent floats; it therefore
+// validates the production surface against the binary64 mirror's one-time
+// binary32 projection rather than against a looser numerical tolerance.
+struct EOSDD {float hi;float lo;};
+inline EOSDD eos_dd(float hi,float lo=0.0f){EOSDD value={hi,lo};return value;}
+inline EOSDD eos_quick_two_sum(float first,float second){float sum=first+second;
+ float error=second-(sum-first);return eos_dd(sum,error);}
+inline EOSDD eos_two_sum(float first,float second){float sum=first+second;
+ float virtualSecond=sum-first,error=(first-(sum-virtualSecond))+(second-virtualSecond);
+ return eos_dd(sum,error);}
+inline EOSDD eos_add(EOSDD first,EOSDD second){EOSDD leading=eos_two_sum(first.hi,second.hi);
+ float trailing=first.lo+second.lo+leading.lo;return eos_quick_two_sum(leading.hi,trailing);}
+inline EOSDD eos_neg(EOSDD value){return eos_dd(-value.hi,-value.lo);}
+inline EOSDD eos_sub(EOSDD first,EOSDD second){return eos_add(first,eos_neg(second));}
+inline EOSDD eos_mul(EOSDD first,EOSDD second){float product=first.hi*second.hi;
+ float error=fma(first.hi,second.hi,-product)+first.hi*second.lo+first.lo*second.hi;
+ error+=first.lo*second.lo;return eos_quick_two_sum(product,error);}
+inline EOSDD eos_div(EOSDD numerator,EOSDD denominator){float quotient=numerator.hi/denominator.hi;
+ EOSDD remainder=eos_sub(numerator,eos_mul(denominator,eos_dd(quotient)));
+ float correction=(remainder.hi+remainder.lo)/denominator.hi;
+ return eos_quick_two_sum(quotient,correction);}
+inline bool eos_less(EOSDD first,EOSDD second){return first.hi<second.hi||
+ (first.hi==second.hi&&first.lo<second.lo);}
+inline EOSDD eos_load_dd(device const float* source,uint offset){return eos_dd(source[offset],source[offset+1u]);}
+inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int exponent=int((bits>>23u)&255u)-127;
+ float power=as_type<float>(uint(exponent+127)<<23u);EOSDD normalized=eos_div(value,eos_dd(power));
+ EOSDD y=eos_div(eos_sub(normalized,eos_dd(1.0f)),eos_add(normalized,eos_dd(1.0f)));
+ EOSDD y2=eos_mul(y,y),term=y,sum=y;
+ for(uint odd=3u;odd<=49u;odd+=2u){term=eos_mul(term,y2);sum=eos_add(sum,eos_div(term,eos_dd(float(odd))));}
+ EOSDD logarithm=eos_mul(eos_dd(2.0f),sum);
+ EOSDD ln2=eos_dd(0.693147182464599609375f,-1.904654323148236017e-9f);
+ return eos_add(logarithm,eos_mul(eos_dd(float(exponent)),ln2));}
+inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD temperature,
+ thread uint& offset,device atomic_uint* obligations){uint base=64u*species,segments=uint(thermo[base+2u]);
+ for(uint segment=0u;segment<segments;++segment){uint candidate=base+4u+20u*segment;
+  EOSDD lower=eos_load_dd(thermo,candidate),upper=eos_load_dd(thermo,candidate+2u);
+  bool above=!eos_less(temperature,lower),below=eos_less(temperature,upper)||
+   (segment+1u==segments&&!eos_less(temperature,upper)&&!eos_less(upper,temperature));
+  if(above&&below){offset=candidate;atomic_fetch_or_explicit(obligations,
+    1u<<(7u+min(segment,2u)),memory_order_relaxed);return true;}}
+ return false;}
+inline EOSDD eos_enthalpy_dd(device const float* thermo,uint species,EOSDD temperature,
+ device atomic_uint* obligations,thread bool& valid){uint offset=0u;
+ if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations)){valid=false;return eos_dd(0.0f);}
+ EOSDD inverse=eos_div(eos_dd(1.0f),temperature),logT=eos_log_dd(temperature);
+ EOSDD t2=eos_mul(temperature,temperature),t3=eos_mul(t2,temperature),t4=eos_mul(t3,temperature),
+  t5=eos_mul(t4,temperature);EOSDD primitive=eos_neg(eos_mul(eos_load_dd(thermo,offset+4u),inverse));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+6u),logT));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+8u),temperature));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+10u),eos_mul(t2,eos_dd(0.5f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+12u),eos_div(t3,eos_dd(3.0f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+14u),eos_mul(t4,eos_dd(0.25f))));
+ primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+16u),eos_mul(t5,eos_dd(0.2f))));
+ EOSDD gasConstant=eos_load_dd(thermo,7u*64u),weight=eos_load_dd(thermo,64u*species);
+ return eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+18u));}
+inline EOSDD eos_energy_dd(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,EOSDD temperature,device atomic_uint* obligations,thread bool& valid){
+ EOSDD energy=eos_dd(0.0f);for(uint species=0u;species<7u;++species)energy=eos_add(energy,
+  eos_mul(eos_dd(state[(species+1u)*p.cells+cell]),eos_enthalpy_dd(thermo,species,
+   temperature,obligations,valid)));return energy;}
+inline bool eos_temperature(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,device atomic_uint* obligations,thread float& temperature){
+ EOSDD sensible=eos_dd(state[8u*p.cells+cell]),lowerT=eos_dd(p.Tmin),upperT=eos_dd(p.Tmax);bool valid=true;
+ EOSDD lowerEnergy=eos_energy_dd(state,thermo,p,cell,lowerT,obligations,valid),
+  upperEnergy=eos_energy_dd(state,thermo,p,cell,upperT,obligations,valid);temperature=0.0f;if(!valid)return false;
+ if(!eos_less(lowerEnergy,sensible)){temperature=p.Tmin;
+  atomic_fetch_or_explicit(obligations,1u<<3u,memory_order_relaxed);}
+ else if(!eos_less(sensible,upperEnergy))return false;
+ else{atomic_fetch_or_explicit(obligations,1u<<4u,memory_order_relaxed);
+  uint lowerBits=as_type<uint>(p.Tmin),upperBits=as_type<uint>(p.Tmax);
+  while(upperBits-lowerBits>1u){uint midpointBits=lowerBits+(upperBits-lowerBits)/2u;
+   EOSDD energy=eos_energy_dd(state,thermo,p,cell,eos_dd(as_type<float>(midpointBits)),obligations,valid);
+   if(!valid)return false;if(eos_less(energy,sensible))lowerBits=midpointBits;else upperBits=midpointBits;}
+  float lower=as_type<float>(lowerBits),upper=as_type<float>(upperBits);
+  EOSDD midpoint=eos_add(eos_dd(lower),eos_dd((upper-lower)*0.5f));
+  EOSDD midpointEnergy=eos_energy_dd(state,thermo,p,cell,midpoint,obligations,valid);if(!valid)return false;
+  if(eos_less(midpointEnergy,sensible))temperature=upper;
+  else if(eos_less(sensible,midpointEnergy))temperature=lower;
+  else temperature=(lowerBits&1u)==0u?lower:upper;}
+ return isfinite(temperature)&&temperature>=p.Tmin&&temperature<p.Tmax;}
+kernel void evaluate_resident_eos_candidate(device const float* candidate [[buffer(0)]],
+ device const float* thermo [[buffer(1)]],device const float* eosThermo [[buffer(2)]],
+ device const ulong* candidateIdentity [[buffer(3)]],device float* temperature [[buffer(4)]],
+ device float* pressureRatio [[buffer(5)]],device float* deviation [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
+ constant EOSParams& p [[buffer(9)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
+ if(candidateIdentity[0]==0ul||!eos_state_admissible(candidate,thermo,p,gid,obligations)){
+  atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);return;}
+ atomic_fetch_or_explicit(obligations,1u<<2u,memory_order_relaxed);float T=0.0f;
+ if(!eos_temperature(candidate,eosThermo,p,gid,obligations,T)){
+  atomic_fetch_or_explicit(failure,128u,memory_order_relaxed);return;}
+ EOSDD gas=eos_dd(0.0f),molar=eos_dd(0.0f);for(uint species=0u;species<6u;++species){float density=max(0.0f,
+  candidate[(species+1u)*p.cells+gid]);gas=eos_add(gas,eos_dd(density));molar=eos_add(molar,
+   eos_div(eos_dd(density),eos_load_dd(eosThermo,64u*species)));}
+ if(!(gas.hi>0.0f)||!(molar.hi>0.0f)){atomic_fetch_or_explicit(failure,256u,memory_order_relaxed);return;}
+ EOSDD meanWeight=eos_div(gas,molar),represented=eos_div(eos_mul(eos_mul(gas,
+  eos_load_dd(eosThermo,7u*64u)),eos_dd(T)),meanWeight);
+ float ratio=eos_add(eos_div(represented,eos_load_dd(eosThermo,7u*64u+2u)),eos_dd(0.0f)).hi;
+ float absoluteDeviation=abs(ratio-1.0f);if(!isfinite(ratio)||!(ratio>0.0f)||!isfinite(absoluteDeviation)){
+  atomic_fetch_or_explicit(failure,512u,memory_order_relaxed);return;}
+ temperature[gid]=T;pressureRatio[gid]=ratio;deviation[gid]=absoluteDeviation;
+ atomic_fetch_or_explicit(obligations,1u<<5u,memory_order_relaxed);
+ if(absoluteDeviation>p.dynamicsBound)atomic_fetch_or_explicit(failure,1024u,memory_order_relaxed);
+ else atomic_fetch_or_explicit(obligations,1u<<6u,memory_order_relaxed);}
+kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
+ device const float* pressureRatio [[buffer(1)]],device const float* deviation [[buffer(2)]],
+ device const ulong* candidateIdentity [[buffer(3)]],device const ulong* physicalIdentity [[buffer(4)]],
+ device const ulong* transportIdentity [[buffer(5)]],device ulong* identity [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],constant EOSParams& p [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||candidateIdentity[0]==0ul||
+  physicalIdentity[0]==0ul||transportIdentity[0]==0ul){identity[0]=0ul;return;}
+ ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=physicalIdentity[0];hash*=1099511628211ul;hash^=candidateIdentity[0];hash*=1099511628211ul;
+ for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(temperature[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(pressureRatio[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(deviation[cell]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=p.caseIdentity;hash*=1099511628211ul;
+ hash^=ulong(p.stage);hash*=1099511628211ul;hash^=ulong(p.precision);hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.dynamicsBound));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
 )METAL";
 			}
 
 			ResidentTransportMetalContext() : device(nil),queue(nil),evaluate(nil),identify(nil),
 				physicalFlux(nil),advectivePair(nil),finalizeAdvective(nil),composePair(nil),validatePhysical(nil),
-				identifyPhysical(nil)
+				identifyPhysical(nil),materializeEOSCandidate(nil),identifyEOSCandidate(nil),
+				evaluateEOSCandidate(nil),identifyEOS(nil)
 			{
 				@autoreleasepool {
 					device=DiscoverProductionMetalDevice("resident transport",error);
@@ -2173,15 +2395,21 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 					composePair=pipeline("compose_resident_flux_pair");
 					validatePhysical=pipeline("validate_resident_physical_flux");
 					identifyPhysical=pipeline("identify_resident_physical_flux");
+					materializeEOSCandidate=pipeline("materialize_resident_eos_candidate");
+					identifyEOSCandidate=pipeline("identify_resident_eos_candidate");
+					evaluateEOSCandidate=pipeline("evaluate_resident_eos_candidate");
+					identifyEOS=pipeline("identify_resident_eos");
 					if(!evaluate||!identify||!physicalFlux||!advectivePair||!finalizeAdvective||!composePair||
-						!validatePhysical||!identifyPhysical){error=MetalError(
+						!validatePhysical||!identifyPhysical||!materializeEOSCandidate||
+						!identifyEOSCandidate||!evaluateEOSCandidate||!identifyEOS){error=MetalError(
 						"production resident authority pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
 				}
 			}
 
 			bool Valid() const {return device&&queue&&evaluate&&identify&&physicalFlux&&
-				advectivePair&&finalizeAdvective&&composePair&&validatePhysical&&identifyPhysical&&error.empty();}
+				advectivePair&&finalizeAdvective&&composePair&&validatePhysical&&identifyPhysical&&
+				materializeEOSCandidate&&identifyEOSCandidate&&evaluateEOSCandidate&&identifyEOS&&error.empty();}
 		};
 
 		MetalRemapContext& Context()
@@ -5170,6 +5398,8 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 	{
 		class ResidentTransportMetalAuthority;
 		class ResidentPhysicalFluxMetalAuthority;
+		class ResidentEOSCandidateMetalAuthority;
+		class ResidentEOSMetalAuthority;
 		bool EncodeResidentTransportAuthority(
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -5196,6 +5426,20 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 			friend bool ::RISE::EvaluateFireProductionResidentPhysicalFluxMetalComparator(
 				const FireProductionResidentPhysicalFluxComparatorRequest&,
 				FireProductionResidentPhysicalFluxComparatorResult&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				const FireProductionResidentEOSCandidateComparatorRequest&,
+				FireProductionResidentEOSCandidateComparatorResult&,std::string*);
+			friend bool EncodeResidentEOSQualificationCandidate(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,const MetalResidentEOSParameters&,
+				bool,bool,bool,ResidentEOSCandidateMetalAuthority&,std::string*);
+			friend bool EncodeResidentEOSAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,
+				const ResidentEOSCandidateMetalAuthority&,const MetalResidentEOSParameters&,
+				ResidentEOSMetalAuthority&,std::string*);
 			id<MTLBuffer> coefficients;
 			id<MTLBuffer> publicationIdentity;
 			id<MTLCommandBuffer> parentCommand;
@@ -5238,6 +5482,20 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 			friend bool ::RISE::EvaluateFireProductionResidentPhysicalFluxMetalComparator(
 				const FireProductionResidentPhysicalFluxComparatorRequest&,
 				FireProductionResidentPhysicalFluxComparatorResult&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				const FireProductionResidentEOSCandidateComparatorRequest&,
+				FireProductionResidentEOSCandidateComparatorResult&,std::string*);
+			friend bool EncodeResidentEOSQualificationCandidate(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,const MetalResidentEOSParameters&,
+				bool,bool,bool,ResidentEOSCandidateMetalAuthority&,std::string*);
+			friend bool EncodeResidentEOSAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,
+				const ResidentEOSCandidateMetalAuthority&,const MetalResidentEOSParameters&,
+				ResidentEOSMetalAuthority&,std::string*);
 			id<MTLBuffer> donorAdvective;
 			id<MTLBuffer> mcMusclAdvective;
 			id<MTLBuffer> physicalMass;
@@ -5248,16 +5506,91 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 			id<MTLBuffer> lowComposite;
 			id<MTLBuffer> highComposite;
 			id<MTLBuffer> publicationIdentity;
+			id<MTLCommandBuffer> parentCommand;
+			id<MTLBuffer> parentState;
+			id<MTLBuffer> parentThermochemistry;
+			id<MTLBuffer> parentTransportPublicationIdentity;
+			std::size_t parentCells,parentAllFaces;
 			std::uint64_t allocationBytes;
 			ResidentPhysicalFluxMetalAuthority() : donorAdvective(nil),
 				mcMusclAdvective(nil),physicalMass(nil),physicalEnergy(nil),physicalGas(nil),
 				faceLogTemperature(nil),faceSensibleEnthalpy(nil),lowComposite(nil),
-				highComposite(nil),publicationIdentity(nil),
+				highComposite(nil),publicationIdentity(nil),parentCommand(nil),parentState(nil),
+				parentThermochemistry(nil),parentTransportPublicationIdentity(nil),
+				parentCells(0u),parentAllFaces(0u),
 				allocationBytes(0u) {}
 			ResidentPhysicalFluxMetalAuthority(
 				const ResidentPhysicalFluxMetalAuthority&)=delete;
 			ResidentPhysicalFluxMetalAuthority& operator=(
 				const ResidentPhysicalFluxMetalAuthority&)=delete;
+		};
+
+		bool EncodeResidentEOSQualificationCandidate(
+			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+			const ResidentPhysicalFluxMetalAuthority&,const MetalResidentEOSParameters&,
+			bool,bool,bool,ResidentEOSCandidateMetalAuthority&,std::string*);
+
+		class ResidentEOSCandidateMetalAuthority
+		{
+			friend bool EncodeResidentEOSQualificationCandidate(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,const MetalResidentEOSParameters&,
+				bool,bool,bool,ResidentEOSCandidateMetalAuthority&,std::string*);
+			friend bool EncodeResidentEOSAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,
+				const ResidentEOSCandidateMetalAuthority&,const MetalResidentEOSParameters&,
+				ResidentEOSMetalAuthority&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				const FireProductionResidentEOSCandidateComparatorRequest&,
+				FireProductionResidentEOSCandidateComparatorResult&,std::string*);
+			id<MTLBuffer> conservative;
+			id<MTLBuffer> publicationIdentity;
+			id<MTLCommandBuffer> parentCommand;
+			id<MTLBuffer> parentPhysicalPublicationIdentity;
+			id<MTLBuffer> parentTransportPublicationIdentity;
+			std::uint32_t producingStage,producerPrecision;
+			std::size_t cells;
+			std::uint64_t allocationBytes;
+			ResidentEOSCandidateMetalAuthority() : conservative(nil),publicationIdentity(nil),
+				parentCommand(nil),parentPhysicalPublicationIdentity(nil),
+				parentTransportPublicationIdentity(nil),producingStage(0u),producerPrecision(0u),
+				cells(0u),allocationBytes(0u) {}
+			ResidentEOSCandidateMetalAuthority(const ResidentEOSCandidateMetalAuthority&)=delete;
+			ResidentEOSCandidateMetalAuthority& operator=(
+				const ResidentEOSCandidateMetalAuthority&)=delete;
+		};
+
+		bool EncodeResidentEOSAuthority(
+			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+			const ResidentPhysicalFluxMetalAuthority&,
+			const ResidentEOSCandidateMetalAuthority&,const MetalResidentEOSParameters&,
+			ResidentEOSMetalAuthority&,std::string*);
+
+		class ResidentEOSMetalAuthority
+		{
+			friend bool EncodeResidentEOSAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentPhysicalFluxMetalAuthority&,
+				const ResidentEOSCandidateMetalAuthority&,const MetalResidentEOSParameters&,
+				ResidentEOSMetalAuthority&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentEOSCandidateMetalComparator(
+				const FireProductionResidentEOSCandidateComparatorRequest&,
+				FireProductionResidentEOSCandidateComparatorResult&,std::string*);
+			id<MTLBuffer> temperature;
+			id<MTLBuffer> representedPressureRatio;
+			id<MTLBuffer> absoluteDeviation;
+			id<MTLBuffer> publicationIdentity;
+			std::uint64_t allocationBytes;
+			ResidentEOSMetalAuthority() : temperature(nil),representedPressureRatio(nil),
+				absoluteDeviation(nil),publicationIdentity(nil),allocationBytes(0u) {}
+			ResidentEOSMetalAuthority(const ResidentEOSMetalAuthority&)=delete;
+			ResidentEOSMetalAuthority& operator=(const ResidentEOSMetalAuthority&)=delete;
 		};
 
 		bool ValidResidentTransportStage(const FireProductionProjectedHeunStage stage)
@@ -5462,6 +5795,10 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 				}
 				authority.allocationBytes+=allocation;
 			}
+			authority.parentCommand=command;authority.parentState=state;
+			authority.parentThermochemistry=thermochemistry;
+			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
+			authority.parentCells=cells;authority.parentAllFaces=allFaces;
 			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
 			if(!encoder){if(error)*error="production resident physical-flux encoder failed";return false;}
 			[encoder setComputePipelineState:context.physicalFlux];
@@ -5554,6 +5891,180 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 			return true;
 		}
 
+		bool EncodeResidentEOSQualificationCandidate(
+			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
+			id<MTLBuffer> sourceCandidate,id<MTLBuffer> eosParameters,
+			id<MTLBuffer> failure,id<MTLBuffer> obligations,
+			const ResidentTransportMetalAuthority& transportAuthority,
+			const ResidentPhysicalFluxMetalAuthority& physicalAuthority,
+			const MetalResidentEOSParameters& metadata,const bool unsealedParent,
+			const bool mismatchedParent,const bool cpuSubstitution,
+			ResidentEOSCandidateMetalAuthority& authority,std::string* error )
+		{
+			if(unsealedParent){
+				if(error)*error="production resident EOS candidate refuses an unsealed parent flux";
+				return false;
+			}
+			if(cpuSubstitution){
+				if(error)*error="production resident EOS candidate refuses CPU substitution";
+				return false;
+			}
+			if(!command||!sourceCandidate||!eosParameters||!failure||!obligations||metadata.cells==0u||
+				command!=physicalAuthority.parentCommand||command!=transportAuthority.parentCommand||
+				physicalAuthority.parentTransportPublicationIdentity!=
+					transportAuthority.publicationIdentity||
+				physicalAuthority.parentState!=transportAuthority.parentState||
+				physicalAuthority.parentThermochemistry!=transportAuthority.parentThermochemistry||
+				physicalAuthority.parentCells!=transportAuthority.parentCells||
+				metadata.cells!=transportAuthority.parentCells){
+				if(error)*error="production resident EOS candidate parent lineage is stale";
+				return false;
+			}
+			const std::array<id<MTLBuffer>,7> inputs={{sourceCandidate,eosParameters,failure,obligations,
+				physicalAuthority.publicationIdentity,transportAuthority.publicationIdentity,
+				transportAuthority.parentThermochemistry}};
+			for(id<MTLBuffer> buffer:inputs)if(!buffer||[buffer device]!=context.device||
+				[buffer storageMode]!=MTLStorageModePrivate){
+				if(error)*error="production resident EOS candidate requires device-private inputs";
+				return false;
+			}
+			if([sourceCandidate length]!=9u*metadata.cells*sizeof(float)||
+				[eosParameters length]!=sizeof(MetalResidentEOSParameters)||
+				[failure length]!=sizeof(std::uint32_t)||
+				[obligations length]!=sizeof(std::uint32_t)||
+				[physicalAuthority.publicationIdentity length]!=sizeof(std::uint64_t)||
+				[transportAuthority.publicationIdentity length]!=sizeof(std::uint64_t)){
+				if(error)*error="production resident EOS candidate extent is invalid";return false;}
+			authority.conservative=[context.device newBufferWithLength:
+				9u*metadata.cells*sizeof(float) options:MTLResourceStorageModePrivate];
+			authority.publicationIdentity=[context.device newBufferWithLength:sizeof(std::uint64_t)
+				options:MTLResourceStorageModePrivate];
+			if(!authority.conservative||!authority.publicationIdentity){
+				if(error)*error="production resident EOS candidate allocation failed";
+				return false;
+			}
+			authority.parentCommand=command;
+			authority.parentPhysicalPublicationIdentity=mismatchedParent?
+				transportAuthority.publicationIdentity:physicalAuthority.publicationIdentity;
+			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
+			authority.producingStage=metadata.stage;authority.producerPrecision=metadata.precision;
+			authority.cells=metadata.cells;authority.allocationBytes=
+				[authority.conservative allocatedSize]+[authority.publicationIdentity allocatedSize];
+			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			if(!encoder){if(error)*error="production resident EOS candidate encoder failed";return false;}
+			[encoder setComputePipelineState:context.materializeEOSCandidate];
+			[encoder setBuffer:sourceCandidate offset:0 atIndex:0];
+			[encoder setBuffer:authority.conservative offset:0 atIndex:1];
+			[encoder setBuffer:obligations offset:0 atIndex:2];
+			[encoder setBuffer:eosParameters offset:0 atIndex:3];
+			Dispatch(encoder,context.materializeEOSCandidate,9u*metadata.cells);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];
+			if(!encoder){
+				if(error)*error="production resident EOS candidate identity encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.identifyEOSCandidate];
+			[encoder setBuffer:authority.conservative offset:0 atIndex:0];
+			[encoder setBuffer:authority.parentPhysicalPublicationIdentity offset:0 atIndex:1];
+			[encoder setBuffer:authority.parentTransportPublicationIdentity offset:0 atIndex:2];
+			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:3];
+			[encoder setBuffer:failure offset:0 atIndex:4];
+			[encoder setBuffer:obligations offset:0 atIndex:5];
+			[encoder setBuffer:eosParameters offset:0 atIndex:6];
+			Dispatch(encoder,context.identifyEOSCandidate,1u);[encoder endEncoding];return true;
+		}
+
+		bool EncodeResidentEOSAuthority(
+			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
+			id<MTLBuffer> thermochemistry,id<MTLBuffer> eosThermochemistry,
+			id<MTLBuffer> eosParameters,
+			id<MTLBuffer> failure,id<MTLBuffer> obligations,
+			const ResidentTransportMetalAuthority& transportAuthority,
+			const ResidentPhysicalFluxMetalAuthority& physicalAuthority,
+			const ResidentEOSCandidateMetalAuthority& candidateAuthority,
+			const MetalResidentEOSParameters& metadata,ResidentEOSMetalAuthority& authority,
+			std::string* error )
+		{
+			if(!command||!thermochemistry||!eosThermochemistry||!eosParameters||!failure||!obligations||
+				metadata.precision!=static_cast<std::uint32_t>(FireStateProducerPrecision::Binary32)||
+				(metadata.stage!=static_cast<std::uint32_t>(FireProductionScalarEOSStage::QStar)&&
+				 metadata.stage!=static_cast<std::uint32_t>(FireProductionScalarEOSStage::QNPlus1))||
+				candidateAuthority.parentCommand!=command||physicalAuthority.parentCommand!=command||
+				transportAuthority.parentCommand!=command||
+				candidateAuthority.parentPhysicalPublicationIdentity!=physicalAuthority.publicationIdentity||
+				candidateAuthority.parentTransportPublicationIdentity!=
+					transportAuthority.publicationIdentity||
+				physicalAuthority.parentTransportPublicationIdentity!=
+					transportAuthority.publicationIdentity||
+				candidateAuthority.producingStage!=metadata.stage||
+				candidateAuthority.producerPrecision!=metadata.precision||
+				candidateAuthority.cells!=metadata.cells||metadata.cells!=transportAuthority.parentCells){
+				if(error)*error="production resident EOS authority lineage is stale";return false;}
+			const std::array<id<MTLBuffer>,10> inputs={{thermochemistry,eosThermochemistry,eosParameters,
+				failure,obligations,
+				candidateAuthority.conservative,candidateAuthority.publicationIdentity,
+				physicalAuthority.publicationIdentity,transportAuthority.publicationIdentity,
+				transportAuthority.parentObligations}};
+			for(id<MTLBuffer> buffer:inputs)if(!buffer||[buffer device]!=context.device||
+				[buffer storageMode]!=MTLStorageModePrivate){
+				if(error)*error="production resident EOS authority requires device-private lineage";
+				return false;
+			}
+			if([thermochemistry length]!=MetalManifoldCertificateValues*sizeof(float)||
+				[eosThermochemistry length]!=MetalEOSThermochemistryValues*sizeof(float)||
+				[eosParameters length]!=sizeof(MetalResidentEOSParameters)||
+				[failure length]!=sizeof(std::uint32_t)||
+				[obligations length]!=sizeof(std::uint32_t)||
+				[candidateAuthority.conservative length]!=9u*metadata.cells*sizeof(float)||
+				[candidateAuthority.publicationIdentity length]!=sizeof(std::uint64_t)){
+				if(error)*error="production resident EOS authority extent is invalid";return false;}
+			auto make=[&](const std::size_t bytes){return [context.device newBufferWithLength:bytes
+				options:MTLResourceStorageModePrivate];};const std::size_t fieldBytes=metadata.cells*sizeof(float);
+			authority.temperature=make(fieldBytes);authority.representedPressureRatio=make(fieldBytes);
+			authority.absoluteDeviation=make(fieldBytes);authority.publicationIdentity=make(sizeof(std::uint64_t));
+			const std::array<id<MTLBuffer>,4> outputs={{authority.temperature,
+				authority.representedPressureRatio,authority.absoluteDeviation,authority.publicationIdentity}};
+			for(id<MTLBuffer> buffer:outputs)if(!buffer){
+				if(error)*error="production resident EOS authority allocation failed";
+				return false;
+			}
+			authority.allocationBytes=0u;for(id<MTLBuffer> buffer:outputs)
+				authority.allocationBytes+=[buffer allocatedSize];
+			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			if(!encoder){
+				if(error)*error="production resident EOS evaluation encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.evaluateEOSCandidate];
+			[encoder setBuffer:candidateAuthority.conservative offset:0 atIndex:0];
+			[encoder setBuffer:thermochemistry offset:0 atIndex:1];
+			[encoder setBuffer:eosThermochemistry offset:0 atIndex:2];
+			[encoder setBuffer:candidateAuthority.publicationIdentity offset:0 atIndex:3];
+			[encoder setBuffer:authority.temperature offset:0 atIndex:4];
+			[encoder setBuffer:authority.representedPressureRatio offset:0 atIndex:5];
+			[encoder setBuffer:authority.absoluteDeviation offset:0 atIndex:6];
+			[encoder setBuffer:failure offset:0 atIndex:7];
+			[encoder setBuffer:obligations offset:0 atIndex:8];
+			[encoder setBuffer:eosParameters offset:0 atIndex:9];
+			Dispatch(encoder,context.evaluateEOSCandidate,metadata.cells);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];
+			if(!encoder){
+				if(error)*error="production resident EOS publication encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.identifyEOS];
+			[encoder setBuffer:authority.temperature offset:0 atIndex:0];
+			[encoder setBuffer:authority.representedPressureRatio offset:0 atIndex:1];
+			[encoder setBuffer:authority.absoluteDeviation offset:0 atIndex:2];
+			[encoder setBuffer:candidateAuthority.publicationIdentity offset:0 atIndex:3];
+			[encoder setBuffer:physicalAuthority.publicationIdentity offset:0 atIndex:4];
+			[encoder setBuffer:transportAuthority.publicationIdentity offset:0 atIndex:5];
+			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:6];
+			[encoder setBuffer:failure offset:0 atIndex:7];
+			[encoder setBuffer:eosParameters offset:0 atIndex:8];
+			Dispatch(encoder,context.identifyEOS,1u);[encoder endEncoding];return true;
+		}
+
 		bool PrepareResidentPhysicalFluxRequest(
 			const FireProductionResidentPhysicalFluxComparatorRequest& request,
 			MetalResidentTransportParameters& transportParameters,
@@ -5622,6 +6133,74 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 				request.qualificationMutateHighNonadvective?1u:0u,
 				request.ambientTemperatureK};
 			return true;
+		}
+
+		bool PrepareResidentEOSCandidateRequest(
+			const FireProductionResidentEOSCandidateComparatorRequest& request,
+			MetalResidentTransportParameters& transportParameters,
+			MetalResidentPhysicalFluxParameters& physicalParameters,
+			MetalResidentEOSParameters& eosParameters,
+			std::array<std::size_t,3>& faceOffset,std::size_t& allFaces,
+			std::vector<unsigned char>& packedFuelInlet,
+			std::vector<unsigned char>& packedPressureInflow,
+			std::vector<float>& physicalBasis,std::string* error )
+		{
+			if(!PrepareResidentPhysicalFluxRequest(request.physicalFlux,transportParameters,
+				physicalParameters,faceOffset,allFaces,packedFuelInlet,packedPressureInflow,
+				physicalBasis,error))return false;
+			const FireSimulationMethaneRecord& record=FireSimulationMethaneRecord::PhysicalV1();
+			RISE::FireCase::RecordV1 sealedCase;std::string caseError;
+			const std::size_t cells=request.physicalFlux.transport.shape.CellCount();
+			if(request.producingStage!=FireProductionScalarEOSStage::QStar&&
+				request.producingStage!=FireProductionScalarEOSStage::QNPlus1){
+				if(error)*error="production resident EOS producing stage is invalid";
+				return false;
+			}
+			if(request.producerPrecision!=FireStateProducerPrecision::Binary32){
+				if(error)*error="production resident EOS candidate precision class is not binary32";
+				return false;
+			}
+			if(!record.IsValid()||!RISE::FireCase::ValidateMethaneEnvelopeV1(
+				request.caseRecordEnvelope,record,sealedCase,caseError)||
+				sealedCase.authored.fuelRecordId!=record.RecordId()||
+				request.candidateConservativeValues.size()!=9u*cells||
+				!AllFinite(request.candidateConservativeValues)||
+				!std::isfinite(sealedCase.derived.pilotAmbientTemperatureK)||
+				!std::isfinite(sealedCase.derived.maximumAcceptedTemperatureK)||
+				sealedCase.derived.pilotAmbientTemperatureK<record.TemperatureMinK()||
+				sealedCase.derived.maximumAcceptedTemperatureK>record.TemperatureMaxK()||
+				sealedCase.derived.pilotAmbientTemperatureK>=
+					sealedCase.derived.maximumAcceptedTemperatureK){
+				if(error)*error="production resident EOS candidate metadata or payload is invalid";
+				return false;
+			}
+			const FireCertifiedNullspace& affine=record.ConservativeReconstruction();
+			if(affine.stateDimension!=8u||affine.constraintRows>8u){
+				if(error)*error="production resident EOS affine certificate is invalid";
+				return false;
+			}
+			eosParameters={};eosParameters.cells=static_cast<std::uint32_t>(cells);
+			eosParameters.stage=static_cast<std::uint32_t>(request.producingStage);
+			eosParameters.precision=static_cast<std::uint32_t>(request.producerPrecision);
+			eosParameters.affineRowCount=static_cast<std::uint32_t>(affine.constraintRows);
+			eosParameters.temperatureMinK=static_cast<float>(
+				sealedCase.derived.pilotAmbientTemperatureK);
+			eosParameters.temperatureMaxK=static_cast<float>(
+				sealedCase.derived.maximumAcceptedTemperatureK);
+			eosParameters.pressurePa=static_cast<float>(record.ThermodynamicPressurePa());
+			eosParameters.feasibilityFactor=static_cast<float>(
+				record.AcceptedStateFeasibilityEnvelope().kappaEpsilon32*
+				static_cast<double>(std::numeric_limits<float>::epsilon()));
+			eosParameters.dynamicsValidityBound=0x1p-2f;
+			eosParameters.attemptIdentity=request.physicalFlux.transport.attemptIdentity;
+			eosParameters.caseIdentity=ResidentRecordIdentity(sealedCase.caseRecordId);
+			return std::isfinite(eosParameters.temperatureMinK)&&
+				std::isfinite(eosParameters.temperatureMaxK)&&
+				std::isfinite(eosParameters.pressurePa)&&
+				std::isfinite(eosParameters.feasibilityFactor)&&
+				eosParameters.temperatureMinK>0.0f&&
+				eosParameters.temperatureMaxK>eosParameters.temperatureMinK&&
+				eosParameters.pressurePa>0.0f&&eosParameters.feasibilityFactor>0.0f;
 		}
 
 		bool EncodeResidentTransportAuthority(
@@ -5964,6 +6543,33 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 		return add(terminal)&&bytes<=(UINT64_C(1)<<31u);
 	}
 
+	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(shape,bytes))return false;
+		const std::uint64_t cells=shape.CellCount();
+		auto add=[&](std::uint64_t requested){if(requested==0u)return false;
+			const std::uint64_t quantum=UINT64_C(16384),remainder=requested%quantum;
+			if(remainder){const std::uint64_t increment=quantum-remainder;
+				if(requested>std::numeric_limits<std::uint64_t>::max()-increment)return false;
+				requested+=increment;}
+			if(bytes>std::numeric_limits<std::uint64_t>::max()-requested)return false;
+			bytes+=requested;return true;};
+		// Qualification source upload/private copy, EOS metadata upload/private
+		// copy, compensated EOS-record upload/private copy, device candidate and
+		// its identity, three EOS fields and identity, isolated EOS obligation
+		// word, and one terminal staging allocation.
+		return add(9u*cells*sizeof(float))&&add(9u*cells*sizeof(float))&&
+			add(sizeof(MetalResidentEOSParameters))&&add(sizeof(MetalResidentEOSParameters))&&
+			add(MetalEOSThermochemistryValues*sizeof(float))&&
+			add(MetalEOSThermochemistryValues*sizeof(float))&&
+			add(9u*cells*sizeof(float))&&add(sizeof(std::uint64_t))&&
+			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
+			add(sizeof(std::uint64_t))&&add(sizeof(std::uint32_t))&&
+			add(3u*cells*sizeof(float)+4u*sizeof(std::uint64_t)+
+				2u*sizeof(std::uint32_t)+64u)&&bytes<=(UINT64_C(1)<<31u);
+	}
+
 	bool EvaluateFireProductionResidentTransportMetalComparator(
 		const FireProductionResidentTransportComparatorRequest& request,
 		FireProductionResidentTransportComparatorResult& result,std::string* error )
@@ -6177,9 +6783,11 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 				MetalResidentTransportSpeciesStride> packedTransport;
 			if(!PackMetalResidentTransport(packedTransport,transportParameters,error))return false;
 			std::array<float,MetalManifoldCertificateValues> packedThermochemistry;
+			std::array<float,MetalEOSThermochemistryValues> packedEOSThermochemistry;
 			MetalManifoldParameters manifoldParameters={};std::array<double,7> lower,upper;
 			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
-				lower,upper,error))return false;
+				lower,upper,error)||!PackMetalEOSDoubleDoubleThermochemistry(
+					packedEOSThermochemistry,error))return false;
 			std::vector<float> packedVelocity;packedVelocity.reserve(allFaces);
 			for(const std::vector<float>& axis:request.transport.projectedVelocityMPerS)
 				packedVelocity.insert(packedVelocity.end(),axis.begin(),axis.end());
@@ -6399,6 +7007,238 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
 			result=FireProductionResidentPhysicalFluxComparatorResult();
 			if(error)try{*error="production resident physical-flux allocation failed";}
 				catch(const std::bad_alloc&){}
+			return false;
+		}
+	}
+
+	bool EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		const FireProductionResidentEOSCandidateComparatorRequest& request,
+		FireProductionResidentEOSCandidateComparatorResult& result,std::string* error )
+	{
+		result=FireProductionResidentEOSCandidateComparatorResult();
+		try {
+			MetalResidentTransportParameters transportParameters={};
+			MetalResidentPhysicalFluxParameters physicalParameters={};
+			MetalResidentEOSParameters eosParameters={};
+			std::array<std::size_t,3> faceOffset={{}};std::size_t allFaces=0u;
+			std::vector<unsigned char> packedFuelInlet,packedPressureInflow;
+			std::vector<float> physicalBasis;
+			if(!PrepareResidentEOSCandidateRequest(request,transportParameters,physicalParameters,
+				eosParameters,faceOffset,allFaces,packedFuelInlet,packedPressureInflow,
+				physicalBasis,error))return false;
+			std::array<float,MetalResidentTransportSpeciesCount*
+				MetalResidentTransportSpeciesStride> packedTransport;
+			if(!PackMetalResidentTransport(packedTransport,transportParameters,error))return false;
+			std::array<float,MetalManifoldCertificateValues> packedThermochemistry;
+			std::array<float,MetalEOSThermochemistryValues> packedEOSThermochemistry;
+			MetalManifoldParameters manifoldParameters={};std::array<double,7> lower,upper;
+			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
+				lower,upper,error)||!PackMetalEOSDoubleDoubleThermochemistry(
+					packedEOSThermochemistry,error))return false;
+			std::vector<float> packedVelocity;packedVelocity.reserve(allFaces);
+			for(const std::vector<float>& axis:request.physicalFlux.transport.projectedVelocityMPerS)
+				packedVelocity.insert(packedVelocity.end(),axis.begin(),axis.end());
+			ResidentTransportMetalContext& context=ResidentTransportContext();
+			if(!context.Valid()){if(error)*error=context.error;return false;}
+			const FireProductionProjectionShape& shape=request.physicalFlux.transport.shape;
+			const std::size_t cells=shape.CellCount(),stateBytes=9u*cells*sizeof(float),
+				temperatureBytes=cells*sizeof(float),velocityBytes=allFaces*sizeof(float),
+				fuelBytes=packedFuelInlet.size(),inflowBytes=packedPressureInflow.size(),
+				thermoBytes=packedThermochemistry.size()*sizeof(float),
+				eosThermoBytes=packedEOSThermochemistry.size()*sizeof(float),
+				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=9u*sizeof(float),
+				physicalBasisBytes=physicalBasis.size()*sizeof(float),
+				advectiveBasisBytes=request.physicalFlux.nullspaceBasis.size()*sizeof(float),
+				projectorBytes=request.physicalFlux.coordinateProjector.size()*sizeof(float),
+				controlBytes=4u*sizeof(std::uint32_t),fieldBytes=cells*sizeof(float);
+			const std::size_t identityOffset=(3u*fieldBytes+7u)&~std::size_t(7u),
+				controlOffset=identityOffset+4u*sizeof(std::uint64_t),
+				terminalBytes=controlOffset+2u*sizeof(std::uint32_t);
+			std::uint64_t certified=0u;
+			if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,certified)){
+				if(error)*error="production resident EOS working-set certificate failed";return false;}
+			if(certified>request.qualificationWorkingSetLimitBytes){
+				if(error)*error="production resident EOS working-set limit is understated";
+				return false;
+			}
+			const std::uint64_t beginningCommits=MetalCommandCommitCount,
+				beginningReads=MetalHostBufferReadCount;
+			@autoreleasepool {
+				auto upload=[&](const void* bytes,const std::size_t length){return
+					[context.device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];};
+				auto privateBuffer=[&](const std::size_t length){return
+					[context.device newBufferWithLength:length options:MTLResourceStorageModePrivate];};
+				id<MTLBuffer> stateUpload=upload(request.physicalFlux.transport.conservativeValues.data(),stateBytes);
+				id<MTLBuffer> temperatureUpload=upload(request.physicalFlux.transport.temperatureK.data(),temperatureBytes);
+				id<MTLBuffer> velocityUpload=upload(packedVelocity.data(),velocityBytes);
+				id<MTLBuffer> fuelUpload=upload(packedFuelInlet.data(),fuelBytes);
+				id<MTLBuffer> inflowUpload=upload(packedPressureInflow.data(),inflowBytes);
+				id<MTLBuffer> thermoUpload=upload(packedThermochemistry.data(),thermoBytes);
+				id<MTLBuffer> eosThermoUpload=upload(packedEOSThermochemistry.data(),eosThermoBytes);
+				id<MTLBuffer> transportUpload=upload(packedTransport.data(),transportBytes);
+				id<MTLBuffer> ambientUpload=upload(request.physicalFlux.ambient.data(),ambientBytes);
+				id<MTLBuffer> physicalBasisUpload=upload(physicalBasis.data(),physicalBasisBytes);
+				id<MTLBuffer> advectiveBasisUpload=upload(request.physicalFlux.nullspaceBasis.data(),advectiveBasisBytes);
+				id<MTLBuffer> projectorUpload=upload(request.physicalFlux.coordinateProjector.data(),projectorBytes);
+				id<MTLBuffer> transportParameterUpload=upload(&transportParameters,sizeof(transportParameters));
+				id<MTLBuffer> physicalParameterUpload=upload(&physicalParameters,sizeof(physicalParameters));
+				id<MTLBuffer> eosParameterUpload=upload(&eosParameters,sizeof(eosParameters));
+				id<MTLBuffer> candidateUpload=upload(request.candidateConservativeValues.data(),stateBytes);
+				std::array<std::uint32_t,4> zeros={{0u,0u,0u,0u}};
+				id<MTLBuffer> controlUpload=upload(zeros.data(),controlBytes);
+				const std::size_t privateInflowBytes=request.physicalFlux.qualificationShortInflowSurface?
+					inflowBytes-1u:inflowBytes;
+				const std::size_t privatePhysicalBasisBytes=
+					request.physicalFlux.qualificationOversizedPhysicalBasisSurface?
+					physicalBasisBytes+sizeof(float):physicalBasisBytes;
+				const std::size_t privateCandidateBytes=request.qualificationShortCandidateSurface?
+					stateBytes-sizeof(float):stateBytes;
+				id<MTLBuffer> state=privateBuffer(stateBytes),temperature=privateBuffer(temperatureBytes),
+					velocity=privateBuffer(velocityBytes),fuel=privateBuffer(fuelBytes),
+					inflow=privateBuffer(privateInflowBytes),thermo=privateBuffer(thermoBytes),
+					eosThermo=privateBuffer(eosThermoBytes),
+					transport=privateBuffer(transportBytes),ambient=privateBuffer(ambientBytes),
+					physicalBasisBuffer=privateBuffer(privatePhysicalBasisBytes),
+					advectiveBasis=privateBuffer(advectiveBasisBytes),projector=privateBuffer(projectorBytes),
+					transportParameter=privateBuffer(sizeof(transportParameters)),
+					physicalParameter=privateBuffer(sizeof(physicalParameters)),
+					eosParameter=privateBuffer(sizeof(eosParameters)),
+					candidateSource=privateBuffer(privateCandidateBytes),
+					failure=privateBuffer(sizeof(std::uint32_t)),
+					transportObligations=privateBuffer(sizeof(std::uint32_t)),
+					physicalObligations=privateBuffer(sizeof(std::uint32_t)),
+					eosObligations=privateBuffer(sizeof(std::uint32_t));
+				id<MTLBuffer> mismatchedState=request.physicalFlux.qualificationMismatchedParentCandidate?
+					privateBuffer(stateBytes):nil;
+				id<MTLBuffer> terminal=[context.device newBufferWithLength:terminalBytes
+					options:MTLResourceStorageModeShared];
+				const std::array<id<MTLBuffer>,38> buffers={{stateUpload,temperatureUpload,velocityUpload,
+					fuelUpload,inflowUpload,thermoUpload,eosThermoUpload,transportUpload,ambientUpload,physicalBasisUpload,
+					advectiveBasisUpload,projectorUpload,transportParameterUpload,physicalParameterUpload,
+					eosParameterUpload,candidateUpload,controlUpload,state,temperature,velocity,fuel,inflow,
+					thermo,transport,ambient,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
+					physicalParameter,eosParameter,candidateSource,eosThermo,failure,transportObligations,
+					physicalObligations,eosObligations,terminal}};
+				for(id<MTLBuffer> buffer:buffers)if(!buffer){
+					if(error)*error="production resident EOS buffer allocation failed";
+					return false;
+				}
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!blit){if(error)*error="production resident EOS upload encoder failed";return false;}
+				auto copy=[&](id<MTLBuffer> source,id<MTLBuffer> destination,const std::size_t length){
+					[blit copyFromBuffer:source sourceOffset:0 toBuffer:destination destinationOffset:0 size:length];};
+				copy(stateUpload,state,stateBytes);copy(temperatureUpload,temperature,temperatureBytes);
+				copy(velocityUpload,velocity,velocityBytes);copy(fuelUpload,fuel,fuelBytes);
+				copy(inflowUpload,inflow,privateInflowBytes);copy(thermoUpload,thermo,thermoBytes);
+				copy(eosThermoUpload,eosThermo,eosThermoBytes);
+				copy(transportUpload,transport,transportBytes);copy(ambientUpload,ambient,ambientBytes);
+				copy(physicalBasisUpload,physicalBasisBuffer,physicalBasisBytes);
+				copy(advectiveBasisUpload,advectiveBasis,advectiveBasisBytes);
+				copy(projectorUpload,projector,projectorBytes);
+				copy(transportParameterUpload,transportParameter,sizeof(transportParameters));
+				copy(physicalParameterUpload,physicalParameter,sizeof(physicalParameters));
+				copy(eosParameterUpload,eosParameter,sizeof(eosParameters));
+				copy(candidateUpload,candidateSource,privateCandidateBytes);
+				copy(controlUpload,failure,sizeof(std::uint32_t));
+				[blit copyFromBuffer:controlUpload sourceOffset:sizeof(std::uint32_t)
+					toBuffer:transportObligations destinationOffset:0 size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:controlUpload sourceOffset:2u*sizeof(std::uint32_t)
+					toBuffer:physicalObligations destinationOffset:0 size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:controlUpload sourceOffset:3u*sizeof(std::uint32_t)
+					toBuffer:eosObligations destinationOffset:0 size:sizeof(std::uint32_t)];
+				if(mismatchedState)copy(stateUpload,mismatchedState,stateBytes);[blit endEncoding];
+				ResidentTransportMetalAuthority transportAuthority;
+				if(!EncodeResidentTransportAuthority(context,command,state,temperature,velocity,thermo,
+					transport,fuel,transportParameter,failure,transportObligations,cells,allFaces,
+					packedFuelInlet.size(),transportAuthority,error))return false;
+				ResidentPhysicalFluxMetalAuthority physicalAuthority;
+				id<MTLBuffer> childState=mismatchedState?mismatchedState:state;
+				if(!EncodeResidentPhysicalFluxAuthority(context,command,childState,temperature,velocity,
+					thermo,ambient,inflow,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
+					physicalParameter,failure,physicalObligations,transportAuthority,cells,allFaces,
+					physicalParameters,physicalAuthority,error))return false;
+				ResidentEOSCandidateMetalAuthority candidateAuthority;
+				if(!EncodeResidentEOSQualificationCandidate(context,command,candidateSource,eosParameter,
+					failure,eosObligations,transportAuthority,physicalAuthority,eosParameters,
+					request.qualificationUnsealedParentFlux,request.qualificationMismatchedParentFlux,
+					request.qualificationCPUProducedCandidate,candidateAuthority,error))return false;
+				ResidentEOSMetalAuthority eosAuthority;
+				if(!EncodeResidentEOSAuthority(context,command,thermo,eosThermo,eosParameter,failure,eosObligations,
+					transportAuthority,physicalAuthority,candidateAuthority,eosParameters,eosAuthority,error))
+					return false;
+				blit=[command blitCommandEncoder];
+				if(!blit){
+					if(error)*error="production resident EOS terminal encoder failed";
+					return false;
+				}
+				[blit copyFromBuffer:eosAuthority.temperature sourceOffset:0 toBuffer:terminal
+					destinationOffset:0 size:fieldBytes];
+				[blit copyFromBuffer:eosAuthority.representedPressureRatio sourceOffset:0 toBuffer:terminal
+					destinationOffset:fieldBytes size:fieldBytes];
+				[blit copyFromBuffer:eosAuthority.absoluteDeviation sourceOffset:0 toBuffer:terminal
+					destinationOffset:2u*fieldBytes size:fieldBytes];
+				const std::array<id<MTLBuffer>,4> identities={{transportAuthority.publicationIdentity,
+					physicalAuthority.publicationIdentity,candidateAuthority.publicationIdentity,
+					eosAuthority.publicationIdentity}};
+				for(unsigned int index=0u;index<identities.size();++index)
+					[blit copyFromBuffer:identities[index] sourceOffset:0 toBuffer:terminal
+						destinationOffset:identityOffset+index*sizeof(std::uint64_t)
+						size:sizeof(std::uint64_t)];
+				[blit copyFromBuffer:failure sourceOffset:0 toBuffer:terminal
+					destinationOffset:controlOffset size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:eosObligations sourceOffset:0 toBuffer:terminal
+					destinationOffset:controlOffset+sizeof(std::uint32_t) size:sizeof(std::uint32_t)];
+				[blit endEncoding];CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if([command status]!=MTLCommandBufferStatusCompleted){
+					if(error)*error="production resident EOS command failed";
+					return false;
+				}
+				const unsigned char* bytes=static_cast<const unsigned char*>(ReadTrackedMetalBuffer(terminal));
+				if(!bytes){if(error)*error="production resident EOS terminal is unavailable";return false;}
+				const std::uint32_t* controls=reinterpret_cast<const std::uint32_t*>(bytes+controlOffset);
+				if(controls[0]!=0u){if(error)*error="production resident EOS device validation failed";return false;}
+				FireProductionResidentEOSCandidateComparatorResult computed;
+				const float* values=reinterpret_cast<const float*>(bytes);
+				computed.temperatureK.assign(values,values+cells);
+				computed.representedPressureRatio.assign(values+cells,values+2u*cells);
+				computed.absoluteEOSDeviation.assign(values+2u*cells,values+3u*cells);
+				const std::uint64_t* identityValues=reinterpret_cast<const std::uint64_t*>(bytes+identityOffset);
+				computed.transportPublicationIdentity=identityValues[0];
+				computed.physicalFluxPublicationIdentity=identityValues[1];
+				computed.candidatePublicationIdentity=identityValues[2];
+				computed.EOSPublicationIdentity=identityValues[3];
+				computed.producingStage=request.producingStage;
+				computed.producerPrecision=request.producerPrecision;
+				computed.branchObligationBitmap=controls[1];
+				const std::uint64_t observedCommits=MetalCommandCommitCount-beginningCommits,
+					observedReads=MetalHostBufferReadCount-beginningReads;
+				computed.commandCommitCount=static_cast<std::uint32_t>(observedCommits);
+				computed.terminalStagingCount=static_cast<std::uint32_t>(observedReads);
+				computed.interstageFullGridTransferCount=static_cast<std::uint32_t>(
+					observedReads>0u?observedReads-1u:0u);computed.certifiedWorkingSetBytes=certified;
+				computed.actualMetalAllocationBytes=transportAuthority.allocationBytes+
+					physicalAuthority.allocationBytes+candidateAuthority.allocationBytes+
+					eosAuthority.allocationBytes;
+				for(id<MTLBuffer> buffer:buffers)computed.actualMetalAllocationBytes+=[buffer allocatedSize];
+				if(mismatchedState)computed.actualMetalAllocationBytes+=[mismatchedState allocatedSize];
+				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				computed.deviceProduced=computed.transportPublicationIdentity!=0u&&
+					computed.physicalFluxPublicationIdentity!=0u&&
+					computed.candidatePublicationIdentity!=0u&&computed.EOSPublicationIdentity!=0u;
+				if(observedCommits!=1u||observedReads!=1u||!computed.deviceProduced||
+					computed.actualMetalAllocationBytes>computed.certifiedWorkingSetBytes||
+					!AllFinite(computed.temperatureK)||!AllFinite(computed.representedPressureRatio)||
+					!AllFinite(computed.absoluteEOSDeviation)){
+					if(error)*error="production resident EOS publication failed its certificate";
+					return false;
+				}
+				result=std::move(computed);if(error)error->clear();return true;
+			}
+		} catch(const std::bad_alloc&){
+			result=FireProductionResidentEOSCandidateComparatorResult();
+			if(error)try{*error="production resident EOS allocation failed";}
+			catch(const std::bad_alloc&){}
 			return false;
 		}
 	}

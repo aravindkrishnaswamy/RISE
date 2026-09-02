@@ -1204,6 +1204,88 @@ namespace RISE
 		FireProductionResidentPhysicalFluxComparatorResult& result,
 		std::string* error=0 );
 
+	//! Qualification request for the private resident EOS-candidate authority.
+	//! The candidate payload is copied by a device kernel into a private,
+	//! identity-bearing surface whose sealed parents are the exact r198 physical
+	//! flux publication and the r197a transport publication beneath it.  The
+	//! public request can exercise that issuer but cannot mint its authority.
+	struct FireProductionResidentEOSCandidateComparatorRequest
+	{
+		FireProductionResidentPhysicalFluxComparatorRequest physicalFlux;
+		FireProductionScalarEOSStage producingStage;
+		FireStateProducerPrecision producerPrecision;
+		RISE::RISECBOR64::Bytes caseRecordEnvelope;
+		std::vector<float> candidateConservativeValues;
+		//! Qualification REDs only.  Each corrupts one private authority edge or
+		//! extent before the EOS issuer and must fail without publication.
+		bool qualificationUnsealedParentFlux;
+		bool qualificationMismatchedParentFlux;
+		bool qualificationCPUProducedCandidate;
+		bool qualificationShortCandidateSurface;
+		std::uint64_t qualificationWorkingSetLimitBytes;
+
+		FireProductionResidentEOSCandidateComparatorRequest() :
+			producingStage(static_cast<FireProductionScalarEOSStage>(0u)),
+			producerPrecision(FireStateProducerPrecision::Binary32),
+			qualificationUnsealedParentFlux(false),
+			qualificationMismatchedParentFlux(false),
+			qualificationCPUProducedCandidate(false),
+			qualificationShortCandidateSurface(false),
+			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
+	};
+
+	//! Terminal qualification tap for resident EOS evaluation.  Temperature,
+	//! represented pressure ratio, and absolute P/P0 deviation retain their
+	//! per-cell boundaries; acceptance is never inferred from a summary alone.
+	//! This result is deliberately not convertible to the private live authority.
+	struct FireProductionResidentEOSCandidateComparatorResult
+	{
+		FireProductionScalarEOSStage producingStage;
+		FireStateProducerPrecision producerPrecision;
+		std::vector<float> temperatureK;
+		std::vector<float> representedPressureRatio;
+		std::vector<float> absoluteEOSDeviation;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t branchObligationBitmap;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t transportPublicationIdentity;
+		std::uint64_t physicalFluxPublicationIdentity;
+		std::uint64_t candidatePublicationIdentity;
+		std::uint64_t EOSPublicationIdentity;
+		double deviceElapsedMS;
+		bool deviceProduced;
+
+		FireProductionResidentEOSCandidateComparatorResult() :
+			producingStage(static_cast<FireProductionScalarEOSStage>(0u)),
+			producerPrecision(FireStateProducerPrecision::Binary32),
+			commandCommitCount(0u),interstageFullGridTransferCount(0u),
+			terminalStagingCount(0u),branchObligationBitmap(0u),
+			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			transportPublicationIdentity(0u),physicalFluxPublicationIdentity(0u),
+			candidatePublicationIdentity(0u),EOSPublicationIdentity(0u),
+			deviceElapsedMS(0.0),deviceProduced(false) {}
+	};
+
+	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! Incremental owner peak for the candidate copy, per-cell EOS fields, and
+	//! two publication identities.  Parent transport/physical surfaces are
+	//! already resident and are not counted again.
+	bool FireProductionResidentEOSCandidateLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! Qualification-only execution of the complete transport -> physical flux
+	//! -> device candidate -> EOS lineage in one command.  No CPU issuer or
+	//! fallback is reachable through this surface.
+	bool EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		const FireProductionResidentEOSCandidateComparatorRequest& request,
+		FireProductionResidentEOSCandidateComparatorResult& result,
+		std::string* error=0 );
+
 	//! Fail-closed blocker. Metal qualification requires device candidates to be
 	//! checked against the fp64 N_C N_C^T forward-error certificate first.
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(

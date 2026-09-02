@@ -3970,7 +3970,8 @@ int main()
 		const std::string evidence=readFile(repoRoot/"rendered"/
 			"fire_production_calibration"/"r197_resident_transport_authority"/
 			"resident_transport_authority_evidence.v1");
-		const std::size_t authorityBegin=metal.find("bool EncodeResidentTransportAuthority(");
+		const std::size_t authorityBegin=metal.find("bool EncodeResidentTransportAuthority(\n"
+			"\t\t\tResidentTransportMetalContext& context");
 		const std::size_t authorityEnd=metal.find("bool ValidateScalarFCTMetalStageRequest(",
 			authorityBegin);
 		const std::string authority=authorityBegin!=std::string::npos&&

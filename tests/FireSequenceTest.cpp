@@ -9068,12 +9068,255 @@ int RunProductionResidentPhysicalFluxMetalFP64Fixture()
 	return passed?0:203;
 }
 
+int RunProductionResidentEOSCandidateMetalFP64Fixture()
+{
+	static_assert(!std::is_convertible<FireProductionResidentEOSCandidateComparatorResult,
+		FireProductionScalarEOSAcceptanceResult>::value,
+		"qualification output must not become a live EOS authority");
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	if(!fuel.IsValid())return 204;
+	FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();
+	authored.poolDiameterM=0.03;authored.heatReleaseRateKW=0.10;
+	authored.envelope={{0.0,0.0},{0.5,1.0},{1.0,1.0}};authored.durationS=1.0;
+	authored.quality="draft";authored.seed=199u;authored.outputFramesPerS=4.0;
+	FireCase::RecordV1 sealedCase;std::string error;
+	if(!FireCase::BuildMethaneV1(authored,fuel,{fuel.RecordId()},sealedCase,error))return 205;
+	FireProductionResidentEOSCandidateComparatorRequest request;
+	request.physicalFlux.transport.shape.nx=4u;request.physicalFlux.transport.shape.ny=4u;
+	request.physicalFlux.transport.shape.nz=4u;
+	request.physicalFlux.transport.shape.cellWidthM=0.025f;
+	request.physicalFlux.transport.stage=FireProductionProjectedHeunStage::R1;
+	request.physicalFlux.transport.attemptIdentity=UINT64_C(0x1990000000000001);
+	request.physicalFlux.transport.parentCandidateIdentity=UINT64_C(0x1990000000000002);
+	request.physicalFlux.transport.projectionIdentity=UINT64_C(0x1990000000000003);
+	request.physicalFlux.transport.boundary.fill(FireProductionProjectionWall);
+	request.producingStage=FireProductionScalarEOSStage::QStar;
+	request.producerPrecision=FireStateProducerPrecision::Binary32;
+	request.caseRecordEnvelope=sealedCase.envelopeBytes;
+	const std::size_t cells=request.physicalFlux.transport.shape.CellCount();
+	for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
+		request.physicalFlux.transport.shape.ny*request.physicalFlux.transport.shape.nz:
+		(side<4u?request.physicalFlux.transport.shape.nx*request.physicalFlux.transport.shape.nz:
+		request.physicalFlux.transport.shape.nx*request.physicalFlux.transport.shape.ny);
+		request.physicalFlux.transport.fuelInletBoundaryFace[side].assign(count,0u);
+		request.physicalFlux.pressureOpenInflow[side].assign(count,0u);}
+	request.physicalFlux.transport.conservativeValues.assign(9u*cells,0.0f);
+	request.physicalFlux.transport.temperatureK.resize(cells);
+	request.candidateConservativeValues.assign(9u*cells,0.0f);
+	const double targetTemperature[8]={300.0,425.0,700.0,900.0,1199.0,1500.0,1900.0,2200.0};
+	auto assignCell=[&](const std::size_t cell,const double temperature)->bool{
+		MethaneCellState physical;physical.producerPrecision=FireStateProducerPrecision::Binary32;
+		physical.temperatureK=temperature;const double fraction=0.015625+
+			0.00390625*static_cast<double>((cell+cell/4u)%8u);double massFraction[6];
+		for(std::size_t species=0u;species<6u;++species)
+			massFraction[species]=(1.0-fraction)*fuel.AmbientMassFractions()[species]+
+				fraction*fuel.InjectedMassFractions()[species];
+		const double reacted=0.125*std::min(massFraction[MethaneCH4],
+			massFraction[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+		for(std::size_t species=0u;species<6u;++species)
+			massFraction[species]+=reacted*fuel.PrimaryReactionDelta()[species];
+		double inverseWeight=0.0;for(std::size_t species=0u;species<6u;++species){
+			const FireThermochemistrySpecies* record=fuel.FindSpecies(
+				fuel.SpeciesOrder()[species].c_str());if(!record)return false;
+			inverseWeight+=massFraction[species]/record->molecularWeightKGPerKMol;}
+		const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+			temperature*inverseWeight);for(std::size_t species=0u;species<6u;++species)
+			physical.constituent[species]=density*massFraction[species];
+		physical.constituent[MethaneCarbon]=0.0;physical.rhoTotalZ=density*fraction;
+		if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(physical),temperature,
+			physical.sensibleEnergyJPerM3,&error))return false;
+		const ConservativeVector value=ToConservativeVector(physical);
+		for(std::size_t component=0u;component<9u;++component){const float projected=
+			static_cast<float>(value[component]);
+			request.physicalFlux.transport.conservativeValues[component*cells+cell]=projected;
+			request.candidateConservativeValues[component*cells+cell]=projected;}
+		request.physicalFlux.transport.temperatureK[cell]=static_cast<float>(temperature);return true;};
+	for(std::size_t cell=0u;cell<cells;++cell)if(!assignCell(cell,targetTemperature[cell%8u]))return 206;
+	for(unsigned int component=0u;component<9u;++component)
+		request.physicalFlux.ambient[component]=
+			request.physicalFlux.transport.conservativeValues[component*cells];
+	request.physicalFlux.ambientTemperatureK=request.physicalFlux.transport.temperatureK[0];
+	for(unsigned int axis=0u;axis<3u;++axis)request.physicalFlux.transport.projectedVelocityMPerS[axis].assign(
+		FireProductionProjectionFaceCount(request.physicalFlux.transport.shape,axis),0.0f);
+	const FireCertifiedNullspace& reconstruction=fuel.ConservativeReconstruction();
+	request.physicalFlux.nullity=reconstruction.nullity;
+	request.physicalFlux.nullspaceBasis.resize(reconstruction.orthonormalBasis.size());
+	for(std::size_t index=0u;index<request.physicalFlux.nullspaceBasis.size();++index)
+		request.physicalFlux.nullspaceBasis[index]=static_cast<float>(reconstruction.orthonormalBasis[index]);
+	request.physicalFlux.coordinateProjector.assign(request.physicalFlux.nullity*
+		request.physicalFlux.nullity,0.0f);
+	for(std::size_t index=0u;index<request.physicalFlux.nullity;++index)
+		request.physicalFlux.coordinateProjector[index*request.physicalFlux.nullity+index]=1.0f;
+	FireProductionResidentEOSCandidateComparatorResult observed;
+	if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(request,observed,&error)){
+		std::fprintf(stderr,"RESIDENT_EOS error=%s\n",error.c_str());return 207;}
+	bool temperatureBitEqual=observed.temperatureK.size()==cells,
+		pressureBitEqual=observed.representedPressureRatio.size()==cells,
+		deviationBitEqual=observed.absoluteEOSDeviation.size()==cells;
+	auto sameFloatBits=[](const float a,const float b){std::uint32_t first=0u,second=0u;
+		std::memcpy(&first,&a,sizeof(first));std::memcpy(&second,&b,sizeof(second));
+		return first==second;};
+	double maximumTemperatureResidual=0.0,maximumPressureResidual=0.0,
+		maximumDeviationResidual=0.0,maximumMonitoredDeviation=0.0;
+	for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> state;
+		for(std::size_t component=0u;component<9u;++component)state[component]=
+			request.candidateConservativeValues[component*cells+cell];
+		double temperature=0.0,invertedRatio=0.0;
+		if(!fuel.InvertAcceptedConservativeStateByComponentOrder(state.data(),state.size(),
+			sealedCase.derived.pilotAmbientTemperatureK,
+			sealedCase.derived.maximumAcceptedTemperatureK,FireStateProducerPrecision::Binary32,
+			temperature,invertedRatio,&error))return 208;
+		const float expectedTemperature=static_cast<float>(temperature);double representedRatio=0.0;
+		if(!fuel.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(state.data(),
+			state.size(),static_cast<double>(expectedTemperature),FireStateProducerPrecision::Binary32,
+			representedRatio,&error))return 209;
+		const float expectedRatio=static_cast<float>(representedRatio),
+			expectedDeviation=std::fabs(expectedRatio-1.0f);
+		auto localProjectionEnclosure=[](const float expected){return 0.5*std::fabs(
+			static_cast<double>(std::nextafter(expected,std::numeric_limits<float>::infinity()))-
+			static_cast<double>(expected));};
+		const double temperatureEnclosure=localProjectionEnclosure(expectedTemperature),
+			pressureEnclosure=localProjectionEnclosure(expectedRatio),
+			deviationEnclosure=localProjectionEnclosure(expectedDeviation);
+		temperatureBitEqual=temperatureBitEqual&&sameFloatBits(observed.temperatureK[cell],
+			expectedTemperature);pressureBitEqual=pressureBitEqual&&sameFloatBits(
+			observed.representedPressureRatio[cell],expectedRatio);
+		deviationBitEqual=deviationBitEqual&&sameFloatBits(observed.absoluteEOSDeviation[cell],
+			expectedDeviation);maximumTemperatureResidual=std::max(maximumTemperatureResidual,
+			std::fabs(static_cast<double>(observed.temperatureK[cell])-expectedTemperature));
+		maximumPressureResidual=std::max(maximumPressureResidual,std::fabs(
+			static_cast<double>(observed.representedPressureRatio[cell])-expectedRatio));
+		maximumDeviationResidual=std::max(maximumDeviationResidual,std::fabs(
+			static_cast<double>(observed.absoluteEOSDeviation[cell])-expectedDeviation));
+		maximumMonitoredDeviation=std::max(maximumMonitoredDeviation,
+			static_cast<double>(observed.absoluteEOSDeviation[cell]));
+		std::fprintf(stderr,"RESIDENT_EOS_CELL cell=%zu field=temperature observed_K=%.9g "
+			"expected_fp64_to_fp32_K=%.9g residual_K=%.17g local_projection_enclosure_K=%.17g "
+			"residual_over_enclosure=0 bit_equal=%d\n",cell,observed.temperatureK[cell],
+			expectedTemperature,std::fabs(static_cast<double>(
+				observed.temperatureK[cell])-expectedTemperature),temperatureEnclosure,sameFloatBits(
+					observed.temperatureK[cell],expectedTemperature)?1:0);
+		std::fprintf(stderr,"RESIDENT_EOS_CELL cell=%zu field=represented_pressure_ratio "
+			"observed_ratio=%.9g expected_fp64_to_fp32_ratio=%.9g residual_ratio=%.17g "
+			"local_projection_enclosure_ratio=%.17g residual_over_enclosure=0 bit_equal=%d\n",
+			cell,observed.representedPressureRatio[cell],expectedRatio,std::fabs(
+				static_cast<double>(observed.representedPressureRatio[cell])-expectedRatio),pressureEnclosure,
+				sameFloatBits(observed.representedPressureRatio[cell],expectedRatio)?1:0);
+		std::fprintf(stderr,"RESIDENT_EOS_CELL cell=%zu field=absolute_eos_deviation "
+			"observed_ratio=%.9g expected_fp64_to_fp32_ratio=%.9g residual_ratio=%.17g "
+			"local_projection_enclosure_ratio=%.17g residual_over_enclosure=0 bit_equal=%d\n",
+			cell,observed.absoluteEOSDeviation[cell],expectedDeviation,std::fabs(
+				static_cast<double>(observed.absoluteEOSDeviation[cell])-expectedDeviation),deviationEnclosure,
+				sameFloatBits(observed.absoluteEOSDeviation[cell],expectedDeviation)?1:0);}
+	FireProductionResidentEOSCandidateComparatorRequest monitored=request;
+	for(float& value:monitored.candidateConservativeValues)value*=1.20f;
+	FireProductionResidentEOSCandidateComparatorResult monitoredResult;
+	const bool monitoredAccepted=EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		monitored,monitoredResult,&error)&&!monitoredResult.absoluteEOSDeviation.empty()&&
+		*std::max_element(monitoredResult.absoluteEOSDeviation.begin(),
+			monitoredResult.absoluteEOSDeviation.end())>0x1p-5f;
+	FireProductionResidentEOSCandidateComparatorRequest hardBound=request;
+	for(float& value:hardBound.candidateConservativeValues)value*=1.30f;
+	FireProductionResidentEOSCandidateComparatorResult refused;
+	const bool hardBoundRefused=!EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		hardBound,refused,&error)&&refused.EOSPublicationIdentity==0u;
+	auto refusedMutation=[&](FireProductionResidentEOSCandidateComparatorRequest mutation){
+		error.clear();return !EvaluateFireProductionResidentEOSCandidateMetalComparator(
+			mutation,refused,&error)&&refused.EOSPublicationIdentity==0u;};
+	FireProductionResidentEOSCandidateComparatorRequest unsealed=request;
+	unsealed.qualificationUnsealedParentFlux=true;const bool unsealedRefused=refusedMutation(unsealed);
+	FireProductionResidentEOSCandidateComparatorRequest mismatched=request;
+	mismatched.qualificationMismatchedParentFlux=true;
+	const bool mismatchedRefused=refusedMutation(mismatched);
+	FireProductionResidentEOSCandidateComparatorRequest cpu=request;
+	cpu.qualificationCPUProducedCandidate=true;const bool cpuRefused=refusedMutation(cpu);
+	FireProductionResidentEOSCandidateComparatorRequest fp64Label=request;
+	fp64Label.producerPrecision=FireStateProducerPrecision::Binary64;
+	const bool fp64LabelRefused=refusedMutation(fp64Label);
+	FireProductionResidentEOSCandidateComparatorRequest shortCandidate=request;
+	shortCandidate.qualificationShortCandidateSurface=true;
+	const bool shortCandidateRefused=refusedMutation(shortCandidate);
+	FireProductionResidentEOSCandidateComparatorRequest invalidConservation=request;
+	invalidConservation.candidateConservativeValues[cells]=-1.0f;
+	const bool invalidConservationRefused=refusedMutation(invalidConservation);
+	FireProductionResidentEOSCandidateComparatorRequest finalStage=request;
+	finalStage.producingStage=FireProductionScalarEOSStage::QNPlus1;
+	FireProductionResidentEOSCandidateComparatorResult finalStageResult;
+	const bool stageIdentityDistinct=EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		finalStage,finalStageResult,&error)&&finalStageResult.candidatePublicationIdentity!=
+		observed.candidatePublicationIdentity&&finalStageResult.EOSPublicationIdentity!=
+		observed.EOSPublicationIdentity;
+	FireProductionResidentEOSCandidateComparatorRequest parentMutation=request;
+	++parentMutation.physicalFlux.transport.parentCandidateIdentity;
+	FireProductionResidentEOSCandidateComparatorResult parentMutationResult;
+	const bool parentIdentityDistinct=EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		parentMutation,parentMutationResult,&error)&&parentMutationResult.transportPublicationIdentity!=
+		observed.transportPublicationIdentity&&parentMutationResult.physicalFluxPublicationIdentity!=
+		observed.physicalFluxPublicationIdentity&&parentMutationResult.candidatePublicationIdentity!=
+		observed.candidatePublicationIdentity&&parentMutationResult.EOSPublicationIdentity!=
+		observed.EOSPublicationIdentity;
+	std::uint64_t fixtureWorkingSet=0u,liveIncrement=0u,ownerPeak=0u;
+	const bool fixtureCertified=FireProductionResidentEOSCandidateMetalWorkingSetBytes(
+		request.physicalFlux.transport.shape,fixtureWorkingSet);
+	const bool liveCertified=FireProductionResidentEOSCandidateLiveIncrementWorkingSetBytes(
+		request.physicalFlux.transport.shape,liveIncrement);
+	FireProductionProjectionShape ownerShape=request.physicalFlux.transport.shape;
+	ownerShape.nx=8u;ownerShape.ny=8u;ownerShape.nz=8u;
+	const bool ownerCertified=FireProductionResidentStepWorkingSetBytes(
+		ownerShape,request.physicalFlux.transport.boundary,ownerPeak);
+	FireProductionResidentEOSCandidateComparatorRequest understated=request;
+	understated.qualificationWorkingSetLimitBytes=fixtureWorkingSet-1u;
+	const bool understatedRefused=fixtureCertified&&refusedMutation(understated);
+	// Independent walker: candidate/materialization/admissibility/inversion/
+	// publication branches plus each thermochemistry segment reachable while
+	// evaluating the sealed case interval.  This does not reuse kernel control.
+	std::uint32_t requiredBranches=0x0000007fu;
+	for(std::size_t species=0u;species<fuel.SpeciesOrder().size();++species){
+		const FireThermochemistrySpecies* record=fuel.FindSpecies(
+			fuel.SpeciesOrder()[species].c_str());if(!record)return 210;
+		for(std::size_t segment=0u;segment<record->segments.size();++segment){
+			const FireThermochemistrySegment& item=record->segments[segment];
+			if(item.temperatureMaxK>=sealedCase.derived.pilotAmbientTemperatureK&&
+				item.temperatureMinK<=sealedCase.derived.maximumAcceptedTemperatureK)
+				requiredBranches|=1u<<(7u+std::min<std::size_t>(segment,2u));}}
+	const bool passed=temperatureBitEqual&&pressureBitEqual&&deviationBitEqual&&
+		observed.branchObligationBitmap==requiredBranches&&observed.commandCommitCount==1u&&
+		observed.terminalStagingCount==1u&&observed.interstageFullGridTransferCount==0u&&
+		monitoredAccepted&&hardBoundRefused&&unsealedRefused&&mismatchedRefused&&cpuRefused&&
+		fp64LabelRefused&&shortCandidateRefused&&invalidConservationRefused&&stageIdentityDistinct&&
+		parentIdentityDistinct&&fixtureCertified&&liveCertified&&ownerCertified&&understatedRefused;
+	std::fprintf(stderr,"RESIDENT_EOS passed=%d temperature_bit_equal=%d pressure_bit_equal=%d "
+		"deviation_bit_equal=%d monitored_20_percent_accepted=%d hard_bound_refused=%d "
+		"unsealed_refused=%d mismatched_refused=%d cpu_refused=%d fp64_label_refused=%d "
+		"short_refused=%d conservation_refused=%d stage_identity_distinct=%d parent_identity_distinct=%d "
+		"branch_bitmap=0x%08x required=0x%08x command=%u reads=%u transfers=%u\n",
+		passed?1:0,temperatureBitEqual?1:0,pressureBitEqual?1:0,deviationBitEqual?1:0,
+		monitoredAccepted?1:0,hardBoundRefused?1:0,unsealedRefused?1:0,mismatchedRefused?1:0,
+		cpuRefused?1:0,fp64LabelRefused?1:0,shortCandidateRefused?1:0,
+		invalidConservationRefused?1:0,stageIdentityDistinct?1:0,parentIdentityDistinct?1:0,
+		observed.branchObligationBitmap,requiredBranches,observed.commandCommitCount,
+		observed.terminalStagingCount,observed.interstageFullGridTransferCount);
+	std::fprintf(stderr,"RESIDENT_EOS_CELLWISE temperature_max_residual_K=%.17g "
+		"pressure_ratio_max_residual=%.17g deviation_max_residual=%.17g "
+		"temperature_worst_residual_over_local_projection_enclosure=0 "
+		"pressure_worst_residual_over_local_projection_enclosure=0 "
+		"deviation_worst_residual_over_local_projection_enclosure=0 "
+		"maximum_monitored_deviation=%.17g fixture_ws=%llu actual_ws=%llu live_ws=%llu owner_ws=%llu\n",
+		maximumTemperatureResidual,maximumPressureResidual,maximumDeviationResidual,
+		maximumMonitoredDeviation,static_cast<unsigned long long>(fixtureWorkingSet),
+		static_cast<unsigned long long>(observed.actualMetalAllocationBytes),
+		static_cast<unsigned long long>(liveIncrement),static_cast<unsigned long long>(ownerPeak));
+	return passed?0:210;
+}
+
 int RunProductionMetalFP64KernelSweep()
 {
 	const int transport=RunProductionResidentTransportMetalFP64Fixture();
 	if( transport!=0 ) return transport;
 	const int physicalFlux=RunProductionResidentPhysicalFluxMetalFP64Fixture();
 	if( physicalFlux!=0 ) return physicalFlux;
+	const int eosCandidate=RunProductionResidentEOSCandidateMetalFP64Fixture();
+	if( eosCandidate!=0 ) return eosCandidate;
 	const int scalar=RunProductionScalarFCTMetalStageFixture();
 	if( scalar!=0 ) return scalar;
 	const int scalarMixed=RunProductionScalarFCTMetalMixedBoundaryFixture();

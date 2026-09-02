@@ -5135,3 +5135,29 @@ it was already tried and refuted here.
   golden checkpoint remains untouched. Evidence SHA-256 is
   `ac13e3f986261337c9cb5a64f27ccb801cdea91f30a0ff077caa4864725386a6`. The next
   rung is resident EOS candidate identity.
+
+- **r199 resident EOS candidate identity (2026-09-02):** completes the third
+  r195 rung as a private device-produced candidate and EOS authority. Candidate
+  identity binds every conservative bit, the `Q*`/`Q^{n+1}` producing stage,
+  binary32 precision class, attempt/case identity, the exact r198
+  physical-flux publication, and its r197a transport parent on the same Metal
+  command. Unsealed, mismatched, missing, short, CPU-substituted, and falsely
+  fp64-labelled surfaces refuse without publication. The qualification output
+  remains a terminal tap and cannot become live authority.
+  The EOS kernel uses compensated binary32 pairs of the sealed binary64 NASA9
+  record and a binary32-lattice inversion, because Metal exposes no binary64.
+  All 64 per-cell temperatures, represented-pressure ratios, and absolute
+  deviations are bit-identical to the fp64 mirror after one binary32
+  projection; their residuals and separate worst local projection-enclosure
+  ratios are all zero. The isolated `0x000003ff` branch bitmap matches an
+  independent interval walker and covers all reachable NASA9 segment classes.
+  Monitored-manifold semantics are preserved: a 20% deviation is recorded and
+  admitted, no manifold ceiling exists here, and only conservation-class
+  admissibility plus the r170 `2^-2` dynamics bound refuse (the 30% RED does).
+  The interval uses one command, one terminal read, and zero interstage grid
+  transfers. Fixture/candidate/owner certificates are `950272`, `147456`, and
+  `6662472` bytes respectively, versus `106552` fixture bytes allocated.
+  `case_record_id` is unchanged, future producer/run identities inherit r199,
+  and the golden checkpoint is untouched. Evidence SHA-256 is
+  `7e7e7bd18b52aceb4c0d87f0bd86f052f5d69e21eba3553e2b72657fb70991ab`.
+  The next rung is authenticated target lineage.
