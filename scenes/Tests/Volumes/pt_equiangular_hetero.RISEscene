@@ -102,6 +102,7 @@ omni_light
 	name				pointlight
 	power				40000.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			350 400 350
 }
 

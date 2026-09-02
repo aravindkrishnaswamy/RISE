@@ -770,6 +770,7 @@ spot_light
 	position			0 9 -2
 	target				0 -2 -0.5
 	color				1.0 0.96 0.86
+	colorspace			sRGB
 	power				100.0
 	inner				22
 	outer				55
@@ -781,6 +782,7 @@ spot_light
 	position			0 7 -8
 	target				0 0 0
 	color				1.0 0.96 0.92
+	colorspace			sRGB
 	power				150.0
 	inner				70
 	outer				120

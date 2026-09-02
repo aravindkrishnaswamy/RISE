@@ -483,6 +483,7 @@ omni_light
 	name				keylight
 	power				620
 	color				1.0 0.98 0.94
+	colorspace			sRGB
 	position			-11 15 16
 }
 
@@ -491,6 +492,7 @@ omni_light
 	name				filllight
 	power				380
 	color				0.88 0.92 1.0
+	colorspace			sRGB
 	position			13 10 15
 }
 
@@ -499,4 +501,5 @@ ambient_light
 	name				amb
 	power				0.055
 	color				0.55 0.60 0.72
+	colorspace			sRGB
 }

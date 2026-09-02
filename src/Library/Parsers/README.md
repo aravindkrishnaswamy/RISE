@@ -32,6 +32,13 @@ Chunk syntax rules:
 - The closing `}` must be on its own line.
 - Comments are stripped before the chunk-specific parser sees the chunk body.
 
+Note on light colour (2026-09-02): `omni_light`, `spot_light`,
+`directional_light` and `ambient_light` each take a `colorspace`
+parameter, defaulting to `Rec709RGB_Linear` — their `color` is a LINEAR
+triple, matching `uniformcolor_painter`.  They used to gamma-decode it as
+sRGB with nothing in the descriptor saying so; pre-existing scenes are
+carried across by `tools/migrate_scenes_light_colorspace.py`.
+
 For semantic conventions (light direction sign, colour space defaults,
 transform precedence on `standard_object`, V-axis flip, alpha-mask
 integrator caveats, …), see

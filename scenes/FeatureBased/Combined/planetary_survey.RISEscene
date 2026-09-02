@@ -627,6 +627,7 @@ omni_light
 	name				starlight
 	power				6.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	position			0 0 0
 }
 

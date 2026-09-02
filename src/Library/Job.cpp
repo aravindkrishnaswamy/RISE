@@ -143,6 +143,37 @@ namespace {
 		return true;
 	}
 
+	//! THE colour-space name -> RISEPel conversion.  One switch, shared by
+	//! every Add* that takes an authored RGB triple plus a colour-space name
+	//! (uniformcolor_painter, ramp_painter's stops, and -- since 2026-09-02 --
+	//! the four zero-area lights), so those surfaces cannot drift apart on
+	//! which names they accept or what each one means.
+	//!
+	//! `cspace` must be non-null; each caller supplies its OWN null-default
+	//! (the painters historically default to "sRGB", the lights to
+	//! "Rec709RGB_Linear") because the two conventions differ.  Returns false
+	//! and logs, with `out` untouched, on an unrecognised name.
+	bool ColorSpaceNameToRISEPel( const char* cspace, const double rgb[3],
+	                              const char* context, const char* name, RISEPel& out )
+	{
+		if( strcmp( cspace, "Rec709RGB_Linear" ) == 0 ) {
+			out = RISEPel( Rec709RGBPel( rgb ) );
+		} else if( strcmp( cspace, "sRGB" ) == 0 ) {
+			out = RISEPel( sRGBPel( rgb ) );
+		} else if( strcmp( cspace, "ROMMRGB_Linear" ) == 0 ) {
+			out = RISEPel( ROMMRGBPel( rgb ) );
+		} else if( strcmp( cspace, "ProPhotoRGB" ) == 0 ) {
+			out = RISEPel( ProPhotoRGBPel( rgb ) );
+		} else if( strcmp( cspace, "RISERGB" ) == 0 ) {
+			out = RISEPel( rgb );
+		} else {
+			GlobalLog()->PrintEx( eLog_Error, "%s `%s`: unknown color space `%s`",
+				context, name ? name : "noname", cspace );
+			return false;
+		}
+		return true;
+	}
+
 } // anonymous namespace
 
 using namespace RISE::Implementation;
@@ -3120,7 +3151,9 @@ bool Job::AddHosekWilkieSkylight(
 			std::cos(el) * std::cos(az)
 		};
 		double color[3] = { 1.0, 1.0, 1.0 };
-		AddDirectionalLight( "__hw_sun__", sunIntensityScale, color, dir );
+		// Neutral white; explicit linear so the call reads unambiguously
+		// (1 1 1 is a fixed point of every colour-space conversion anyway).
+		AddDirectionalLight( "__hw_sun__", sunIntensityScale, color, "Rec709RGB_Linear", dir );
 	}
 
 	pRm->release();
@@ -6275,19 +6308,35 @@ bool Job::AddDisplacedGeometry(
 //
 //  Adds lights
 //
+//  COLOUR CONVENTION (2026-09-02).  `color` is LINEAR (Rec.709) unless
+//  `colorspace` says otherwise -- the same reading uniformcolor_painter
+//  and every emissive material's exitance already had.  These four used
+//  to gamma-DECODE the triple as sRGB unconditionally, so an authored
+//  `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033).  The
+//  conversion goes through the SAME ColorSpaceNameToRISEPel switch the
+//  painters use, so a light and a painter given the same `colorspace`
+//  land on the same RISEPel.
+//
 
 //! Creates a infinite point omni light, located at the origin
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddPointOmniLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	const double pos[3],									///< [in] Position of the light
 	const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddPointOmniLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreatePointOmniLight( &pLight, power, sRGBPel(srgb), shootPhotons );
+	RISE_API_CreatePointOmniLight( &pLight, power, c, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
 	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
@@ -6300,7 +6349,8 @@ bool Job::AddPointOmniLight(
 bool Job::AddPointSpotLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	const double foc[3],									///< [in] Point the center of the light is focussing on
 	const double inner,										///< [in] Angle of the inner cone in radians
 	const double outer,										///< [in] Angle of the outer cone in radians
@@ -6308,8 +6358,14 @@ bool Job::AddPointSpotLight(
 	const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddPointSpotLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreatePointSpotLight( &pLight, power, sRGBPel(srgb), Point3(foc), inner, outer, shootPhotons );
+	RISE_API_CreatePointSpotLight( &pLight, power, c, Point3(foc), inner, outer, shootPhotons );
 	pLight->SetPosition( Point3( pos ) );
 	pLight->FinalizeTransformations();
 	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
@@ -6322,11 +6378,18 @@ bool Job::AddPointSpotLight(
 bool Job::AddAmbientLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3]									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddAmbientLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreateAmbientLight( &pLight, power, sRGBPel(srgb) );
+	RISE_API_CreateAmbientLight( &pLight, power, c );
 	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
 	return ok;
@@ -6337,12 +6400,19 @@ bool Job::AddAmbientLight(
 bool Job::AddDirectionalLight(
 	const char* name,										///< [in] Name of the light
 	const double power,										///< [in] Power of the light in watts
-	const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+	const double color[3],									///< [in] Color of the light, in `colorspace`
+	const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 	const double dir[3]										///< [in] Direction of the light
 	)
 {
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( colorspace ? colorspace : "Rec709RGB_Linear", color,
+	                              "AddDirectionalLight", name, c ) ) {
+		return false;
+	}
+
 	ILightPriv* pLight = 0;
-	RISE_API_CreateDirectionalLight( &pLight, power, sRGBPel(srgb), Vector3(dir) );
+	RISE_API_CreateDirectionalLight( &pLight, power, c, Vector3(dir) );
 	const bool ok = RegisterOrDiag( pLightManager, pLight, name, "light" );   // H3: LightManager::AddItem self-invalidates the light-topology gen on success
 	safe_release( pLight );
 	return ok;

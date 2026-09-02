@@ -511,6 +511,7 @@ directional_light
 	name				key
 	power				2.0
 	color				1.0 0.98 0.93
+	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
 	direction			0.5 1.0 -0.3
 }
@@ -520,6 +521,7 @@ omni_light
 	name				fill
 	power				500.0
 	color				0.9 0.92 1.0
+	colorspace			sRGB
 	position			4 5 6
 }
 

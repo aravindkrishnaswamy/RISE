@@ -125,6 +125,7 @@ omni_light
 	name			keylight
 	power			45
 	color			1.0 0.98 0.94
+	colorspace		sRGB
 	position		3.5 3.0 3.0
 }
 
@@ -133,5 +134,6 @@ omni_light
 	name			filllight
 	power			14
 	color			0.85 0.9 1.0
+	colorspace		sRGB
 	position		-3.0 1.0 2.5
 }

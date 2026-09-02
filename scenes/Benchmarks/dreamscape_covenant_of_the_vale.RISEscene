@@ -546,6 +546,7 @@ omni_light
 	name		orb_light
 	power		25
 	color		0.55 1.0 0.85
+	colorspace	sRGB
 	position	2.63 3.62 3.70
 }
 
@@ -750,6 +751,7 @@ omni_light
 	name		crystal_light
 	power		7
 	color		0.35 0.95 1.0
+	colorspace	sRGB
 	position	-0.52 0.65 -1.2
 }
 
@@ -849,6 +851,7 @@ directional_light
 	name		key
 	power		1.6
 	color		1.0 0.82 0.58
+	colorspace	sRGB
 	direction	0.45 0.55 0.55
 }
 
@@ -857,6 +860,7 @@ directional_light
 	name		fill
 	power		0.7
 	color		0.50 0.45 0.90
+	colorspace	sRGB
 	direction	-0.55 0.35 0.60
 }
 
@@ -865,5 +869,6 @@ directional_light
 	name		rim
 	power		3.2
 	color		1.0 0.35 0.75
+	colorspace	sRGB
 	direction	0.10 0.45 -0.85
 }

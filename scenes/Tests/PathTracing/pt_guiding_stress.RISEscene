@@ -265,6 +265,7 @@ omni_light
 	name				room_b_light
 	power				500000
 	color				1.0 0.95 0.80
+	colorspace			sRGB
 	position			278 520 140
 }
 

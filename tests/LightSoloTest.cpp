@@ -376,7 +376,7 @@ static const char* const kSceneOmniPlusMeshLight =
 	"lambertian_material\n{\n\tname floor_mat\n\treflectance floor_pnt\n}\n\n"
 	"box_geometry\n{\n\tname floor_geo\n\twidth 12\n\theight 0.2\n\tdepth 12\n}\n\n"
 	"standard_object\n{\n\tname floor_obj\n\tgeometry floor_geo\n\tmaterial floor_mat\n\tposition 0 -1 0\n}\n\n"
-	"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n}\n\n"
+	"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n\tcolorspace sRGB\n}\n\n"
 	"uniformcolor_painter\n{\n\tname redlight_pnt\n\tcolor 1.0 0.05 0.05\n}\n\n"
 	"lambertian_luminaire_material\n{\n\tname redlight_mat\n\texitance redlight_pnt\n\tmaterial none\n\tscale 3.0\n}\n\n"
 	"box_geometry\n{\n\tname redlight_geo\n\twidth 2.5\n\theight 0.2\n\tdepth 2.5\n}\n\n"
@@ -420,7 +420,7 @@ static void RunExplicitLightPartitionTest()
 	std::string meshOnly = kSceneOmniPlusMeshLight;
 	{
 		const std::string omniChunk =
-			"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n}\n\n";
+			"omni_light\n{\n\tname greenomni\n\tpower 40.0\n\tposition 2.2 2.5 0\n\tcolor 0.05 1.0 0.05\n\tcolorspace sRGB\n}\n\n";
 		const size_t at = meshOnly.find( omniChunk );
 		Check( at != std::string::npos, "located the omni chunk to strip for the reference scene" );
 		if( at != std::string::npos ) meshOnly.erase( at, omniChunk.size() );

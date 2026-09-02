@@ -9300,6 +9300,33 @@ namespace RISE
 			// Lights
 			//////////////////////////////////////////
 
+			// COLOUR CONVENTION (2026-09-02) shared by all four zero-area lights.
+			//
+			// A light's `color` is a LINEAR Rec.709 triple by default -- the same
+			// reading `uniformcolor_painter` and every emissive material's
+			// `exitance` already had.  Before this date the four Job::Add*Light
+			// entry points silently gamma-DECODED the triple as sRGB, so an
+			// authored `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033)
+			// while the SAME triple on a painter meant what it said.  Authors who
+			// picked their colour in an sRGB colour picker now say so explicitly
+			// with `colorspace sRGB`; `tools/migrate_scenes_light_colorspace.py`
+			// adds exactly that line to pre-existing scenes so their look is
+			// preserved bit-for-bit.
+			//
+			// The accepted value set is `uniformcolor_painter`'s (Job.cpp routes
+			// both through the one ColorSpaceNameToRISEPel switch), minus the
+			// internal "RISERGB" passthrough which is not an authoring colour
+			// space.  Job still ACCEPTS "RISERGB" if some caller passes it; it is
+			// simply not offered in the enum a scene author / highlighter sees.
+			const std::vector<std::string> kLightColorSpaceValues =
+				{ "sRGB", "Rec709RGB_Linear", "ROMMRGB_Linear", "ProPhotoRGB" };
+			const char* const kLightDefaultColorSpace = "Rec709RGB_Linear";
+			const char* const kLightColorDescription =
+				"R G B emission colour -- LINEAR Rec.709 unless `colorspace` says otherwise";
+			const char* const kLightColorSpaceDescription =
+				"Interpretation of `color` (linear default; same value set as uniformcolor_painter's `colorspace`).  "
+				"Use `sRGB` for a value read off a colour picker";
+
 			// AmbientLight — descriptor-driven (reference pattern for migrations).
 			// State holds the accumulator values; apply functions below populate
 			// it; kAmbientLightDescriptor lists every valid parameter with its
@@ -9315,7 +9342,8 @@ namespace RISE
 					double power = bag.GetDouble( "power", 1.0 );
 					double color[3] = {0,0,0};
 					bag.GetVec3( "color", color );
-					return pJob.AddAmbientLight( name.c_str(), power, color );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddAmbientLight( name.c_str(), power, color, cspace.c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -9328,7 +9356,8 @@ namespace RISE
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";  p.kind = ValueKind::String;     p.description = "Unique name for this light";  p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power"; p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "color"; p.kind = ValueKind::DoubleVec3; p.description = "R G B in scene colour space"; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color"; p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription; p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::Enum; p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						return cd;
 					}();
 					return d;
@@ -9345,7 +9374,8 @@ namespace RISE
 					double position[3] = {0,0,0}; bag.GetVec3( "position", position );
 					double color[3]    = {0,0,0}; bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
-					return pJob.AddPointOmniLight( name.c_str(), power, color, position, shootphotons );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddPointOmniLight( name.c_str(), power, color, cspace.c_str(), position, shootphotons );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -9358,7 +9388,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";         p.kind = ValueKind::String;     p.description = "Unique name for this light";        p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power";        p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)";   p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";             p.defaultValueHint = "0 0 0"; }
-						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;             p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
@@ -9382,7 +9413,8 @@ namespace RISE
 					double target[3]   = {0,0,0};  bag.GetVec3( "target",   target );
 					double color[3]    = {0,0,0};  bag.GetVec3( "color",    color );
 					bool shootphotons  = bag.GetBool( "shootphotons", true );
-					return pJob.AddPointSpotLight( name.c_str(), power, color, target, inner, outer, position, shootphotons );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddPointSpotLight( name.c_str(), power, color, cspace.c_str(), target, inner, outer, position, shootphotons );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -9398,7 +9430,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "outer";        p.kind = ValueKind::Double;     p.description = "Outer cone half-angle (degrees)"; p.defaultValueHint = "90"; }
 						{ auto& p = P(); p.name = "position";     p.kind = ValueKind::DoubleVec3; p.description = "World-space position";            p.defaultValueHint = "0 0 0"; }
 						{ auto& p = P(); p.name = "target";       p.kind = ValueKind::DoubleVec3; p.description = "World-space target point";        p.defaultValueHint = "0 0 -1"; }
-						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";        p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;            p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace";   p.kind = ValueKind::Enum;       p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						{ auto& p = P(); p.name = "shootphotons"; p.kind = ValueKind::Bool;       p.description = "Whether this light emits photons"; p.defaultValueHint = "TRUE"; }
 						return cd;
 					}();
@@ -9462,7 +9495,8 @@ namespace RISE
 					double power = bag.GetDouble( "power", 1.0 );
 					double dir[3]   = {0,0,0}; bag.GetVec3( "direction", dir );
 					double color[3] = {0,0,0}; bag.GetVec3( "color",     color );
-					return pJob.AddDirectionalLight( name.c_str(), power, color, dir );
+					const std::string cspace = bag.GetString( "colorspace", kLightDefaultColorSpace );
+					return pJob.AddDirectionalLight( name.c_str(), power, color, cspace.c_str(), dir );
 				}
 
 				const ChunkDescriptor& Describe() const override
@@ -9475,7 +9509,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";      p.kind = ValueKind::String;     p.description = "Unique name for this light";      p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "power";     p.kind = ValueKind::Double;     p.description = "Power scale (multiplies color)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "direction"; p.kind = ValueKind::DoubleVec3; p.description = "Direction vector";                p.defaultValueHint = "0 -1 0"; }
-						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = "R G B emission colour";           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "color";     p.kind = ValueKind::DoubleVec3; p.description = kLightColorDescription;           p.defaultValueHint = "0 0 0"; }
+						{ auto& p = P(); p.name = "colorspace"; p.kind = ValueKind::Enum;      p.enumValues = kLightColorSpaceValues; p.description = kLightColorSpaceDescription; p.defaultValueHint = kLightDefaultColorSpace; }
 						return cd;
 					}();
 					return d;

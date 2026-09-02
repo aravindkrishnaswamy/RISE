@@ -387,6 +387,7 @@ omni_light
 	name				keylight
 	power				2000
 	color				1.0 0.98 0.94
+	colorspace			sRGB
 	position			-10 16 14
 }
 
@@ -395,6 +396,7 @@ omni_light
 	name				filllight
 	power				900
 	color				0.90 0.94 1.0
+	colorspace			sRGB
 	position			12 10 12
 }
 

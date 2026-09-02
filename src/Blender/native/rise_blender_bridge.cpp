@@ -73,33 +73,22 @@ namespace
 		);
 	}
 
-	// sRGB OETF (encode): linear → sRGB-display values.
-	// Required because Job::AddPointOmniLight / AddPointSpotLight /
-	// AddDirectionalLight / AddAmbientLight wrap the input in
-	// sRGBPel(srgb[3]) and rely on the implicit sRGBPel→ROMMRGBPel
-	// conversion, which calls ColorUtils::sRGBtoROMMRGB (=
-	// Linearize_sRGB followed by Rec709→ROMM matrix).  Blender's
-	// `light.color` is already linear Rec.709 — without this encode,
-	// the renderer's gamma decode would dim mid-greys by ~57 % and
-	// nonlinearly desaturate colours.
-	double linear_to_srgb_channel( const float value )
+	// Blender's `light.color` is linear Rec.709, and since 2026-09-02
+	// Job::Add*Light take a linear triple plus a colour-space name -- so
+	// the value passes straight through.  What used to live here was an
+	// sRGB OETF encode that existed ONLY to cancel those methods'
+	// unconditional gamma DECODE (without it, mid-greys came out ~57 %
+	// dim and colours nonlinearly desaturated).  Both the trap and the
+	// workaround are gone; see IJob.h's "COLOUR CONVENTION (2026-09-02)".
+	//
+	// Negative clamp is kept: Blender colour pickers occasionally emit
+	// slightly negative tristimulus values, which have no meaning as
+	// emitted radiance.
+	void blender_light_color( const float linear[3], double out[3] )
 	{
-		// Operate on negative-clamped magnitude.  Blender colour
-		// pickers occasionally emit slightly negative tristimulus
-		// values; the standard sRGB curve mirrors around 0 in
-		// practice, so we just clamp.
-		const double v = std::max( 0.0, double( value ) );
-		if( v <= 0.0031308 ) {
-			return v * 12.92;
-		}
-		return 1.055 * std::pow( v, 1.0 / 2.4 ) - 0.055;
-	}
-
-	void linear_rgb_to_srgb( const float linear[3], double srgb[3] )
-	{
-		srgb[0] = linear_to_srgb_channel( linear[0] );
-		srgb[1] = linear_to_srgb_channel( linear[1] );
-		srgb[2] = linear_to_srgb_channel( linear[2] );
+		out[0] = std::max( 0.0, double( linear[0] ) );
+		out[1] = std::max( 0.0, double( linear[1] ) );
+		out[2] = std::max( 0.0, double( linear[2] ) );
 	}
 
 	void normalize3( double value[3] )
@@ -1728,11 +1717,11 @@ namespace
 			return false;
 		}
 
-		// Blender's light.color is linear Rec.709.  Job::Add*Light
-		// expects sRGB-encoded values (see sRGBPel(srgb)→ROMMRGBPel
-		// conversion in Job.cpp:4772), so we gamma-encode here.
+		// Blender's light.color is linear Rec.709 -- which is exactly
+		// what Job::Add*Light take when handed "Rec709RGB_Linear".
 		double color[3];
-		linear_rgb_to_srgb( light.color, color );
+		blender_light_color( light.color, color );
+		const char* const kLinear = "Rec709RGB_Linear";
 
 		switch( light.type )
 		{
@@ -1740,7 +1729,7 @@ namespace
 		case RISE_BLENDER_LIGHT_AREA:
 		{
 			double position[3] = { light.position[0], light.position[1], light.position[2] };
-			if( !job.AddPointOmniLight( light.name, light.intensity, color, position, false ) ) {
+			if( !job.AddPointOmniLight( light.name, light.intensity, color, kLinear, position, false ) ) {
 				write_error( error_message, error_message_size, "Failed to add a point light" );
 				return false;
 			}
@@ -1758,7 +1747,7 @@ namespace
 			};
 			const double outer_angle = clamp_value<float>( light.spot_size, 0.0f, float( kPi ) );
 			const double inner_angle = outer_angle * ( 1.0 - clamp_value<float>( light.spot_blend, 0.0f, 1.0f ) );
-			if( !job.AddPointSpotLight( light.name, light.intensity, color, focus, inner_angle, outer_angle, position, false ) ) {
+			if( !job.AddPointSpotLight( light.name, light.intensity, color, kLinear, focus, inner_angle, outer_angle, position, false ) ) {
 				write_error( error_message, error_message_size, "Failed to add a spot light" );
 				return false;
 			}
@@ -1768,7 +1757,7 @@ namespace
 		{
 			double direction[3] = { -light.direction[0], -light.direction[1], -light.direction[2] };
 			normalize3( direction );
-			if( !job.AddDirectionalLight( light.name, light.intensity, color, direction ) ) {
+			if( !job.AddDirectionalLight( light.name, light.intensity, color, kLinear, direction ) ) {
 				write_error( error_message, error_message_size, "Failed to add a directional light" );
 				return false;
 			}
@@ -1776,7 +1765,7 @@ namespace
 		}
 		case RISE_BLENDER_LIGHT_AMBIENT:
 		default:
-			if( !job.AddAmbientLight( light.name, light.intensity, color ) ) {
+			if( !job.AddAmbientLight( light.name, light.intensity, color, kLinear ) ) {
 				write_error( error_message, error_message_size, "Failed to add an ambient light" );
 				return false;
 			}

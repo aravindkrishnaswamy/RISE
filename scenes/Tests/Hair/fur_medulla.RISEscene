@@ -204,6 +204,7 @@ directional_light
 	name			backlight
 	power			26.0
 	color			1.0 0.97 0.90
+	colorspace		sRGB
 	direction		0.2 0.35 -1.0
 }
 
@@ -212,5 +213,6 @@ omni_light
 	name			fill
 	power			34
 	color			0.80 0.85 1.0
+	colorspace		sRGB
 	position		2.0 1.5 4.5
 }

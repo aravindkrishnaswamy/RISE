@@ -1697,22 +1697,20 @@ namespace
 		const double dnz = (dlen > 1e-8) ? dz / dlen : -1;
 
 		const std::string name = LightName( prefix, nodeIdx );
-		// glTF light color is documented as linear sRGB (linear Rec.709).
-		// RISE's `Add*Light` methods treat the supplied triple as sRGB,
-		// gamma-decoding it on use -- so we'd lose ~58% of the intensity
-		// without compensation.  Apply the sRGB OETF (linear -> sRGB
-		// encoded) to the linear glTF color so RISE's downstream decode
-		// recovers the original linear value.  This is the standard
-		// Rec.709 OETF approximation; it deliberately matches RISE's
-		// own sRGBPel <-> linear roundtrip.
-		auto toSRGB = []( double linear ) -> double {
-			if( linear <= 0.0031308 ) return 12.92 * linear;
-			return 1.055 * std::pow( linear, 1.0 / 2.4 ) - 0.055;
-		};
+		// glTF light color is documented as linear sRGB (linear Rec.709),
+		// which is exactly what RISE's `Add*Light` methods now take when
+		// handed "Rec709RGB_Linear" -- so the spec value passes straight
+		// through.  Until 2026-09-02 those methods gamma-DECODED the
+		// triple as sRGB unconditionally (losing ~58% of the intensity),
+		// and this function pre-applied the sRGB OETF to cancel it.  That
+		// workaround is retired with the trap that motivated it; see
+		// IJob.h's "COLOUR CONVENTION (2026-09-02)" note and
+		// docs/GLTF_IMPORT.md P1-4.
 		const double color[3] = {
-			toSRGB( (double)light->color[0] ),
-			toSRGB( (double)light->color[1] ),
-			toSRGB( (double)light->color[2] ) };
+			(double)light->color[0],
+			(double)light->color[1],
+			(double)light->color[2] };
+		const char* const kLinear = "Rec709RGB_Linear";
 		// glTF intensity units: cd for point/spot, lm/m² (lux) for directional.
 		// RISE's "power" is a multiplier on color; pass intensity directly.
 		//
@@ -1752,12 +1750,12 @@ namespace
 				// The shine direction we computed above goes the opposite
 				// way, so flip the sign before passing it through.
 				const double dirArr[3] = { -dnx, -dny, -dnz };
-				return job.AddDirectionalLight( name.c_str(), power, color, dirArr );
+				return job.AddDirectionalLight( name.c_str(), power, color, kLinear, dirArr );
 			}
 			case cgltf_light_type_point:
 			{
 				const double posArr[3] = { px, py, pz };
-				return job.AddPointOmniLight( name.c_str(), power, color, posArr,
+				return job.AddPointOmniLight( name.c_str(), power, color, kLinear, posArr,
 					/*shootPhotons*/ false );
 			}
 			case cgltf_light_type_spot:
@@ -1771,7 +1769,7 @@ namespace
 				const double focArr[3] = { px + dnx, py + dny, pz + dnz };
 				const double inner = (double)light->spot_inner_cone_angle;
 				const double outer = (double)light->spot_outer_cone_angle;
-				return job.AddPointSpotLight( name.c_str(), power, color,
+				return job.AddPointSpotLight( name.c_str(), power, color, kLinear,
 					focArr, inner, outer, posArr,
 					/*shootPhotons*/ false );
 			}

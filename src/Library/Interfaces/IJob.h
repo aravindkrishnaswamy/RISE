@@ -1435,13 +1435,26 @@ namespace RISE
 		//
 		// Adds lights
 		//
+		// COLOUR CONVENTION (2026-09-02).  `color` is a LINEAR triple by
+		// default -- the same reading `uniformcolor_painter` and every
+		// emissive material's exitance already had.  `colorspace` names
+		// the interpretation and accepts exactly the value set
+		// AddUniformColorPainter accepts ("sRGB", "Rec709RGB_Linear",
+		// "ROMMRGB_Linear", "ProPhotoRGB", "RISERGB"); null means the
+		// default "Rec709RGB_Linear".  BEFORE this date these four
+		// methods silently gamma-DECODED the triple as sRGB, so
+		// `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033) --
+		// a trap the glTF importer had to pre-encode around and that
+		// made a live editor colour edit (which was always linear, via
+		// KeyframeFromParameters) disagree with the reloaded file.
 
 		//! Adds a infinite point omni light, located at the origin
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddPointOmniLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double pos[3],									///< [in] Position of the light
 			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			) = 0;
@@ -1451,7 +1464,8 @@ namespace RISE
 		virtual bool AddPointSpotLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double foc[3],									///< [in] Point the center of the light is focussing on
 			const double inner,										///< [in] Angle of the inner cone in radians
 			const double outer,										///< [in] Angle of the outer cone in radians
@@ -1464,7 +1478,8 @@ namespace RISE
 		virtual bool AddAmbientLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3]									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			) = 0;
 
 		//! Adds an infinite directional light, shining in a particular direction
@@ -1472,10 +1487,10 @@ namespace RISE
 		virtual bool AddDirectionalLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double dir[3]										///< [in] Direction of the light
 			) = 0;
-
 
 		//
 		// Participating media

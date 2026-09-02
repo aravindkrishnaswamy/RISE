@@ -4323,9 +4323,9 @@ static void TestAdversarialOracleControls()
 		// itself, so the message is scripted twice, matching what a real
 		// model's own repair turn would do.  One extra mutating call, still
 		// well under the E4 gate's 10-call threshold noted above (8 -> 9).
-		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+		insertMsg( "Cool omni fill light.", "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" );
 		insertMsg( "Cool omni fill light (confirming the zero-area light).",
-			"omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" );
+			"omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_" + std::to_string( msgIdx ),
 			"Built the scene; key light is neutral white.", {}, "end_turn" ) );
 
@@ -4541,12 +4541,12 @@ static void TestAdversarialOracleControls()
 		// (msg_5's 3 + msg_6's 1 + msg_7's 4 + msg_8's 1 + msg_8b's 1;
 		// msg_8a's read_document is not a mutating call and does not count).
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
-			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8a", "Checking what actually landed.",
 			{ { "read_document", EmptyInput() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8b", "Confirming the fill light (re-issuing the identical request).",
-			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Rendering to check the composition.",
 			{ { "render", EmptyInput() } }, "tool_use" ) );
@@ -4728,12 +4728,12 @@ static void TestAdversarialOracleControls()
 		// (msg_5's 3 + msg_6's 1 + msg_7's 4 + msg_8's 1 + msg_8b's 1;
 		// msg_8a's read_document is not a mutating call and does not count).
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8", "Adding a dim cool omni fill light on the right side.",
-			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8a", "Checking what actually landed.",
 			{ { "read_document", EmptyInput() } }, "tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_8b", "Confirming the fill light (re-issuing the identical request).",
-			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n}" ) } },
+			{ { "insert_chunk", InsertChunkInput( "omni_light\n{\n\tname fill\n\tpower 6.0\n\tposition 3.4 2.2 1.6\n\tcolor 0.55 0.62 0.78\n\tcolorspace sRGB\n}" ) } },
 			"tool_use" ) );
 		fixture += JsonlLine( "anthropic", AnthropicBody( "msg_9", "Draft check of the composition.",
 			{ { "render", ( []{

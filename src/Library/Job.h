@@ -1787,13 +1787,17 @@ namespace RISE
 		//
 		// Adds lights
 		//
+		// `color` is LINEAR by default; `colorspace` (null =
+		// "Rec709RGB_Linear") names the interpretation.  See IJob.h's
+		// "COLOUR CONVENTION (2026-09-02)" note for the history.
 
 		//! Creates a infinite point omni light, located at the origin
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPointOmniLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double pos[3],									///< [in] Position of the light
 			const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 			);
@@ -1803,7 +1807,8 @@ namespace RISE
 		bool AddPointSpotLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double foc[3],									///< [in] Point the center of the light is focussing on
 			const double inner,										///< [in] Angle of the inner cone in radians
 			const double outer,										///< [in] Angle of the outer cone in radians
@@ -1816,7 +1821,8 @@ namespace RISE
 		bool AddAmbientLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3]									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			);
 
 		//! Adds an infinite directional light, shining in a particular direction
@@ -1824,7 +1830,8 @@ namespace RISE
 		bool AddDirectionalLight(
 			const char* name,										///< [in] Name of the light
 			const double power,										///< [in] Power of the light in watts
-			const double srgb[3],									///< [in] Color of the light in a non-linear colorspace
+			const double color[3],									///< [in] Color of the light, in `colorspace`
+			const char* colorspace,									///< [in] Colour space of `color` (null = "Rec709RGB_Linear")
 			const double dir[3]										///< [in] Direction of the light
 			);
 

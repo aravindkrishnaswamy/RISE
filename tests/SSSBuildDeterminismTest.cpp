@@ -143,7 +143,7 @@ static const char* kScene =
 	"lambertian_material\n{\n\tname sss_mat\n\treflectance white\n}\n"
 	"sphere_geometry\n{\n\tname spheregeom\n\tradius 1.0\n}\n"
 	"standard_object\n{\n\tname sss_sphere\n\tgeometry spheregeom\n\tmaterial sss_mat\n}\n"
-	"omni_light\n{\n\tname light\n\tpower 1200.0\n\tposition 0 4 4\n\tcolor 1.0 0.3 0.3\n}\n"
+	"omni_light\n{\n\tname light\n\tpower 1200.0\n\tposition 0 4 4\n\tcolor 1.0 0.3 0.3\n\tcolorspace sRGB\n}\n"
 	"\n"
 	"pixelpel_rasterizer\n{\n\tmax_recursion 4\n\tsamples 16\n\tlum_samples 1\n\toidn_denoise FALSE\n}\n";
 

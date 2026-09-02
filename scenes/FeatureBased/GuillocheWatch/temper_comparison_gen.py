@@ -108,7 +108,8 @@ def build_scene(metal, temp_lo, temp_hi, out_pattern, width, height, samples):
     s.append("pinhole_camera\n{\n\tlocation\t\t0 -16 53\n\tlookat\t\t\t0 0 0\n\tup\t\t\t0 1 0\n\tfov\t\t\t46.0\n}")
     # a soft key fill so the matte oxide-scale region reads as dark grey
     # rather than pure black (the env alone barely lights the rough scale).
-    s.append("omni_light\n{\n\tname\t\t\tfill\n\tpower\t\t\t9000\n\tcolor\t\t\t1.0 0.97 0.92\n\tposition\t\t-22 -30 60\n}")
+    s.append("omni_light\n{\n\tname\t\t\tfill\n\tpower\t\t\t9000\n\tcolor\t\t\t1.0 0.97 0.92\n"
+             "\tcolorspace\t\tsRGB\n\tposition\t\t-22 -30 60\n}")
 
     # substrate + oxide complex index
     s.append("scalar_painter\n{\n\tname\t\t\tsub_n\n\tfile\t\t\t%s\n}" % (NK % ("substrates", sub, "n")))

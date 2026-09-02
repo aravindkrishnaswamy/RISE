@@ -631,6 +631,7 @@ omni_light
 	name				ceiling_light
 	power				15.0
 	color				1.0 0.98 0.92
+	colorspace			sRGB
 	position			0 4.5 0
 }
 
@@ -639,6 +640,7 @@ omni_light
 	name				fill_light
 	power				25
 	color				0.9 0.92 1.0
+	colorspace			sRGB
 	position			3 3 4
 }
 

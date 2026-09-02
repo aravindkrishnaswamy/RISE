@@ -93,6 +93,7 @@ directional_light
 	name		key
 	power		2.6
 	color		1.0 0.97 0.92
+	colorspace	sRGB
 	direction	-0.35 0.75 0.56
 }
 
@@ -101,6 +102,7 @@ ambient_light
 	name		fill
 	power		0.16
 	color		0.55 0.62 0.78
+	colorspace	sRGB
 }
 
 ##################################################

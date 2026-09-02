@@ -987,14 +987,26 @@ approximation" used by every realtime renderer — visually subtle but a
 spec-correctness gap on grazing angles.  Phase 3 fix is part of the
 Schlick-from-F0 work.
 
-**P1-4: glTF light colors not gamma-encoded (FIXED).**  glTF
-KHR_lights_punctual specifies linear sRGB (linear Rec.709) for `color`,
-but RISE's `Add*Light` methods treat the supplied triple as
-already-encoded sRGB and gamma-decode it internally before lighting.
-Without compensation, glTF lights came out roughly twice as dark as
-authored.  Fixed in `GLTFSceneImporter::CreateLightForNode` by applying
-the Rec.709 OETF (linear → sRGB) to `light->color` before passing to
-`AddDirectionalLight` / `AddPointOmniLight` / `AddPointSpotLight`.
+**P1-4: glTF light colors not gamma-encoded (FIXED; workaround RETIRED
+2026-09-02).**  glTF KHR_lights_punctual specifies linear sRGB (linear
+Rec.709) for `color`, but RISE's `Add*Light` methods used to treat the
+supplied triple as already-encoded sRGB and gamma-decode it internally
+before lighting.  Without compensation, glTF lights came out roughly twice
+as dark as authored.  The original fix in
+`GLTFSceneImporter::CreateLightForNode` applied the Rec.709 OETF
+(linear → sRGB) to `light->color` to cancel that decode.
+
+**That pre-encode is now GONE.**  The four zero-area lights take a linear
+triple plus a `colorspace` name (default `Rec709RGB_Linear`) — the trap
+the workaround existed for was fixed at its source, so the importer passes
+the spec-linear colour straight through with `"Rec709RGB_Linear"`.  Two
+round-trips of the transfer function no longer cancel each other in the
+middle of the import path, and a light authored in Blender, exported to
+glTF, imported to RISE and then hand-edited in a `.RISEscene` all agree on
+what the digits mean.  See `docs/SCENE_CONVENTIONS.md` §4 ("Lights") and
+IJob.h's "COLOUR CONVENTION (2026-09-02)" note.  The same workaround was
+removed from the Blender bridge (`src/Blender/native/rise_blender_bridge.cpp`),
+which had an identical `linear_to_srgb_channel` encode for the same reason.
 
 ### P2 — API robustness / observable behavior
 

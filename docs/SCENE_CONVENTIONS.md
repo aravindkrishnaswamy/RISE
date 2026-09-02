@@ -131,6 +131,10 @@ An emissive material has no `power`; its `scale` multiplies the
 that same per-unit-area quantity, and the parser rejects a `power` line
 on either.
 
+The `color` these four multiply is **linear Rec.709 by default** — the
+same reading a `uniformcolor_painter` gets — and each takes an optional
+`colorspace` parameter.  See §4 ("Lights").
+
 ---
 
 ## 3.5. Which light kind to use — area lights are the norm
@@ -363,7 +367,7 @@ number of them.
 
 ---
 
-## 4. Color spaces in painters
+## 4. Color spaces in painters and lights
 
 Most painters take a `colorspace` parameter:
 
@@ -380,6 +384,48 @@ explicit `colorspace` (e.g. `sRGB`) when the value was picked perceptually and
 should be gamma-decoded.  Painters that load image data (`png_painter`,
 `jpg_painter`, `exr_painter`, `hdr_painter`) default to sRGB for PNG/JPG and
 linear for EXR/HDR.
+
+### Lights
+
+**Since 2026-09-02 the four zero-area lights — `omni_light`, `spot_light`,
+`directional_light`, `ambient_light` — read `color` as linear Rec.709 by
+default, and take the same `colorspace` parameter as the painters** (same
+four values, same meanings; the conversion goes through the same code).
+So `color 1.0 0.2 0.2` on a light and on a `uniformcolor_painter` now mean
+the same thing.  Use `colorspace sRGB` for a value picked out of a colour
+picker or copied from a hex code:
+
+```
+omni_light
+{
+	name        key
+	power       80.0
+	position    0 5 0
+	color       1.0 0.2 0.2
+	colorspace  sRGB
+}
+```
+
+**Before that date lights silently gamma-decoded `color` as sRGB** — with
+nothing in the scene language, the descriptors or this document saying so.
+An authored `color 1.0 0.2 0.2` lit the scene with (1.0, 0.033, 0.033), a
+6× error in two channels, while the identical triple on a painter meant
+what it said.  Two consequences worth knowing about:
+
+- The live editor / animation path (`KeyframeFromParameters("color")`)
+  never decoded, so editing a light's colour in the GUI and reloading the
+  saved file gave two different renders.  They agree now.
+- The glTF importer pre-applied the sRGB OETF to cancel the decode
+  (`KHR_lights_punctual` colour is spec-linear), as did the Blender
+  bridge.  Both workarounds are retired.
+
+`tools/migrate_scenes_light_colorspace.py` adds `colorspace sRGB` to every
+pre-existing light chunk whose `color` is chromatic, so an old scene's look
+is preserved exactly (verified: `CstDeriveGoldenTest` reports 0 drift
+across the migrated corpus, and it digests each light's colour at 9
+significant figures).  It skips chunks whose components are all 0 or 1 —
+the fixed points of the transfer function, where the line would be noise.
+The migrator is idempotent and takes `--dry-run`.
 
 ### Anti-patterns
 

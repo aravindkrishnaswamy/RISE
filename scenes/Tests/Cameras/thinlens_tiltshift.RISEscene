@@ -326,6 +326,7 @@ directional_light
 	name				sun
 	power				4.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
 	direction			0.3 1.0 0.4
 }
@@ -335,6 +336,7 @@ ambient_light
 	name				amb
 	power				0.3
 	color				0.85 0.9 1.0
+	colorspace			sRGB
 }
 
 

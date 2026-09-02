@@ -214,7 +214,7 @@ static void TestLightEditing()
 	// Register a point light.  Energy=1, white color.
 	double pos[3] = { 0, 0, 0 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointOmniLight( "key", 1.0, pos, col, true );
+	pJob->AddPointOmniLight( "key", 1.0, col, "Rec709RGB_Linear", pos, true );
 
 	ILightManager* lights = pJob->GetLights();
 	const ILightPriv* light = lights ? lights->GetItem( "key" ) : nullptr;

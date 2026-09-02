@@ -154,7 +154,7 @@ static Job* MakeTxnScene()
 
 	const double lc[3] = { 1.0, 0.9, 0.8 };
 	const double lp[3] = { 0, 10, 0 };
-	pJob->AddPointOmniLight( "key", /*power*/ 5.0, lc, lp, /*shootPhotons*/ false );
+	pJob->AddPointOmniLight( "key", /*power*/ 5.0, lc, "Rec709RGB_Linear", lp, /*shootPhotons*/ false );
 
 	const char* ops[] = { "DefaultDirectLighting" };
 	pJob->AddStandardShader( "global", 1, ops );

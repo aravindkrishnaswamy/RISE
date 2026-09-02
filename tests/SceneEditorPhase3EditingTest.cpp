@@ -269,7 +269,7 @@ static void TestLightEditUndoRedo()
 	Job* pJob = MakeJobAndSeed();
 	double pos[3] = { 0, 0, 0 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointOmniLight( "key", 1.0, col, pos, true );
+	pJob->AddPointOmniLight( "key", 1.0, col, "Rec709RGB_Linear", pos, true );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -334,10 +334,10 @@ static void TestPerLightTypeVirtuals()
 	double dir[3]    = { 0, -1, 0 };
 
 	const double DEG = static_cast<double>( PI ) / 180.0;
-	pJob->AddPointOmniLight(  "omni",  1.0, col, pos, true );
-	pJob->AddPointSpotLight(  "spot",  1.0, col, tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
-	pJob->AddDirectionalLight("dir",   1.0, col, dir );
-	pJob->AddAmbientLight(    "amb",   1.0, col );
+	pJob->AddPointOmniLight(  "omni",  1.0, col, "Rec709RGB_Linear", pos, true );
+	pJob->AddPointSpotLight(  "spot",  1.0, col, "Rec709RGB_Linear", tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
+	pJob->AddDirectionalLight("dir",   1.0, col, "Rec709RGB_Linear", dir );
+	pJob->AddAmbientLight(    "amb",   1.0, col, "Rec709RGB_Linear" );
 
 	ILightManager* lights = pJob->GetLights();
 
@@ -387,7 +387,7 @@ static void TestSpotLightFullEditUndo()
 	double pos[3] = { 1, 2, 3 };
 	double tgt[3] = { 4, 5, 6 };
 	double col[3] = { 1, 1, 1 };
-	pJob->AddPointSpotLight( "spot", 1.0, col, tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
+	pJob->AddPointSpotLight( "spot", 1.0, col, "Rec709RGB_Linear", tgt, 30.0 * DEG, 60.0 * DEG, pos, true );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -440,7 +440,7 @@ static void TestAmbientLightEditApplies()
 
 	Job* pJob = MakeJobAndSeed();
 	double col[3] = { 1, 1, 1 };
-	pJob->AddAmbientLight( "amb", 1.0, col );
+	pJob->AddAmbientLight( "amb", 1.0, col, "Rec709RGB_Linear" );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
@@ -503,7 +503,7 @@ static void TestDirectionalLightUndo()
 	Job* pJob = MakeJobAndSeed();
 	double col[3] = { 1, 1, 1 };
 	double dir[3] = { 0, -1, 0 };
-	pJob->AddDirectionalLight( "sun", 1.0, col, dir );
+	pJob->AddDirectionalLight( "sun", 1.0, col, "Rec709RGB_Linear", dir );
 
 	{
 	SceneEditController c( *pJob, /*interactiveRasterizer*/0 );

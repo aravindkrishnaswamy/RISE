@@ -67,6 +67,7 @@ directional_light
 	name				sun
 	power				12.0
 	color				1.0 0.95 0.85
+	colorspace			sRGB
 	# RISE convention: `direction` FROM surface TO light, lit when N·dir > 0.
 	direction			0.3 0.5 -0.8
 }
@@ -75,6 +76,7 @@ ambient_light
 {
 	name				sky_fill
 	color				0.55 0.65 0.95
+	colorspace			sRGB
 	power				1.2
 }
 

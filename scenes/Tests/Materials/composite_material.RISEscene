@@ -632,6 +632,7 @@ directional_light
 	name				keylight
 	direction			0.5 0.8 -0.3
 	color				1.0 0.98 0.95
+	colorspace			sRGB
 	power				3.0
 }
 
@@ -641,6 +642,7 @@ directional_light
 	name				filllight
 	direction			-0.4 0.6 -0.2
 	color				0.7 0.75 0.9
+	colorspace			sRGB
 	power				1.5
 }
 
@@ -649,6 +651,7 @@ ambient_light
 {
 	name				ambientlight
 	color				0.3 0.3 0.35
+	colorspace			sRGB
 	power				0.8
 }
 

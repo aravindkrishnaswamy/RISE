@@ -528,7 +528,7 @@ static void TestSnapshotLightIsImmutable()
 	// off-origin so the transform-derived position must come across too.
 	const double srgb[3] = { 0.20, 0.40, 0.80 };
 	const double pos[3]  = { 3, 4, 5 };
-	pJob->AddPointOmniLight( "key", /*power*/ 7.0, srgb, pos, /*shootPhotons*/ false );
+	pJob->AddPointOmniLight( "key", /*power*/ 7.0, srgb, "sRGB", pos, /*shootPhotons*/ false );
 
 	ILightManager* lights = const_cast<ILightManager*>( pScene->GetLights() );
 	Check( lights != nullptr && lights->getItemCount() == 1,
@@ -613,7 +613,7 @@ static void TestSnapshotLightIsImmutable()
 	const double spotSrgb[3] = { 0.9, 0.8, 0.7 };
 	const double spotFoc[3]  = { 0, 0, 0 };
 	const double spotPos[3]  = { 0, 10, 0 };
-	pJob->AddPointSpotLight( "spot", /*power*/ 5.0, spotSrgb, spotFoc,
+	pJob->AddPointSpotLight( "spot", /*power*/ 5.0, spotSrgb, "sRGB", spotFoc,
 		/*inner*/ 0.2, /*outer*/ 0.5, spotPos, /*shootPhotons*/ false );
 
 	ILightPriv* liveSpot = lights->GetItem( "spot" );
@@ -754,7 +754,7 @@ static void TestSnapshotIsRenderComplete()
 	// --- A light. ---
 	const double srgb[3] = { 1.0, 0.9, 0.7 };
 	const double dir[3]  = { 0, 1, 0 };
-	pJob->AddDirectionalLight( "sun", /*power*/ 3.0, srgb, dir );
+	pJob->AddDirectionalLight( "sun", /*power*/ 3.0, srgb, "sRGB", dir );
 
 	// --- A film (replace the qHD default with a distinctive size). ---
 	IFilm* pFilm = nullptr;
@@ -899,9 +899,9 @@ static void MeasureSnapshotCostLargeScene()
 	// render-faithful capture, not just objects.
 	const double lc[3] = { 1, 1, 1 };
 	const double lp[3] = { 5, 5, 5 };
-	pJob->AddPointOmniLight( "L0", 4.0, lc, lp, false );
+	pJob->AddPointOmniLight( "L0", 4.0, lc, "Rec709RGB_Linear", lp, false );
 	const double ld[3] = { 0, 1, 0 };
-	pJob->AddDirectionalLight( "L1", 2.0, lc, ld );
+	pJob->AddDirectionalLight( "L1", 2.0, lc, "Rec709RGB_Linear", ld );
 
 	ICamera* pCam = nullptr;
 	if( RISE_API_CreatePinholeCamera( &pCam,

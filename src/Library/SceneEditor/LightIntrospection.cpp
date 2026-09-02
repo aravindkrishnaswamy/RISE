@@ -115,6 +115,17 @@ String ReadLightParam( const ILight& light, const std::string& paramName )
 	if( paramName == "shootphotons" ) {
 		return String( light.CanGeneratePhotons() ? "true" : "false" );
 	}
+	if( paramName == "colorspace" ) {
+		// `colorspace` is a LOAD-TIME interpretation of the authored
+		// triple, not light state: whatever the scene said, what the
+		// light HOLDS (and what the `color` row above prints) is the
+		// converted linear RISEPel.  So the honest read-back is the
+		// linear identity, and the row is not runtime-editable --
+		// re-interpreting an already-converted colour would silently
+		// re-decode it.  Change the scene text to change the
+		// interpretation.
+		return String( "Rec709RGB_Linear" );
+	}
 	return String();
 }
 
@@ -130,6 +141,9 @@ String ReadLightParam( const ILight& light, const std::string& paramName )
 bool IsRuntimeEditable( ILight::LightType type, const std::string& paramName )
 {
 	if( paramName == "name" ) return false;  // shown as panel header
+	// See ReadLightParam's `colorspace` arm: a load-time interpretation,
+	// already consumed by the time the light exists.
+	if( paramName == "colorspace" ) return false;
 	if( paramName == "shootphotons" ) {
 		return type == ILight::LightType::Point
 		    || type == ILight::LightType::Spot;

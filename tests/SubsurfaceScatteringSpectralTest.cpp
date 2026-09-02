@@ -369,6 +369,7 @@ static std::string BuildScene( bool spectral )
 		"\tpower 1200.0\n"
 		"\tposition 0 4 4\n"
 		"\tcolor 1.0 0.3 0.3\n"
+		"\tcolorspace sRGB\n"
 		"}\n"
 		"\n";
 

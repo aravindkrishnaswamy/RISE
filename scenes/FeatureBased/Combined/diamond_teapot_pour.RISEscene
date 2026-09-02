@@ -929,6 +929,7 @@ spot_light
 	name				pot1
 	power				200
 	color				1.0 0.92 0.78
+	colorspace			sRGB
 	position			-0.5  2.495  -0.5
 	target				-0.2  0.78   -0.2
 	inner				22
@@ -940,6 +941,7 @@ spot_light
 	name				pot2
 	power				200
 	color				1.0 0.92 0.78
+	colorspace			sRGB
 	position			 0.5  2.495  -0.5
 	target				 0.2  0.78   -0.2
 	inner				22
@@ -951,6 +953,7 @@ spot_light
 	name				pot3
 	power				200
 	color				1.0 0.92 0.78
+	colorspace			sRGB
 	position			-0.5  2.495   0.5
 	target				-0.2  0.78    0.2
 	inner				22
@@ -962,6 +965,7 @@ spot_light
 	name				pot4
 	power				200
 	color				1.0 0.92 0.78
+	colorspace			sRGB
 	position			 0.5  2.495   0.5
 	target				 0.2  0.78    0.2
 	inner				22
@@ -975,6 +979,7 @@ spot_light
 	name				pot1
 	power				500
 	color				1.0 0.92 0.78
+	colorspace			sRGB
 	position			0  2.495  0
 	target				-0.05  0   -0.05
 	inner				15

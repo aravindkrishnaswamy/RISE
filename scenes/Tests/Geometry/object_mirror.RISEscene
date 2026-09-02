@@ -308,6 +308,7 @@ directional_light
 name key
 power 2.6
 color 1 0.97 0.90
+colorspace sRGB
 direction 0.30 0.82 0.60
 }
 
@@ -316,6 +317,7 @@ ambient_light
 name fill
 power 0.30
 color 0.56 0.62 0.74
+colorspace sRGB
 }
 
 standard_shader

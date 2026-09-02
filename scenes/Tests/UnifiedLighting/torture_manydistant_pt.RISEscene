@@ -240,6 +240,7 @@ omni_light
 	name				nearby_light
 	power				100000.0
 	color				1.0 0.95 0.8
+	colorspace			sRGB
 	position			278 50 280
 }
 
@@ -255,6 +256,7 @@ omni_light
 	name		far_01
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	56 540 56
 }
 
@@ -263,6 +265,7 @@ omni_light
 	name		far_02
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	156 540 56
 }
 
@@ -271,6 +274,7 @@ omni_light
 	name		far_03
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	256 540 56
 }
 
@@ -279,6 +283,7 @@ omni_light
 	name		far_04
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	356 540 56
 }
 
@@ -287,6 +292,7 @@ omni_light
 	name		far_05
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	456 540 56
 }
 
@@ -295,6 +301,7 @@ omni_light
 	name		far_06
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	56 540 168
 }
 
@@ -303,6 +310,7 @@ omni_light
 	name		far_07
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	156 540 168
 }
 
@@ -311,6 +319,7 @@ omni_light
 	name		far_08
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	256 540 168
 }
 
@@ -319,6 +328,7 @@ omni_light
 	name		far_09
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	356 540 168
 }
 
@@ -327,6 +337,7 @@ omni_light
 	name		far_10
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	456 540 168
 }
 
@@ -335,6 +346,7 @@ omni_light
 	name		far_11
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	56 540 280
 }
 
@@ -343,6 +355,7 @@ omni_light
 	name		far_12
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	156 540 280
 }
 
@@ -351,6 +364,7 @@ omni_light
 	name		far_13
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	256 540 280
 }
 
@@ -359,6 +373,7 @@ omni_light
 	name		far_14
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	356 540 280
 }
 
@@ -367,6 +382,7 @@ omni_light
 	name		far_15
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	456 540 280
 }
 
@@ -375,6 +391,7 @@ omni_light
 	name		far_16
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	56 540 392
 }
 
@@ -383,6 +400,7 @@ omni_light
 	name		far_17
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	156 540 392
 }
 
@@ -391,6 +409,7 @@ omni_light
 	name		far_18
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	256 540 392
 }
 
@@ -399,6 +418,7 @@ omni_light
 	name		far_19
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	356 540 392
 }
 
@@ -407,6 +427,7 @@ omni_light
 	name		far_20
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	456 540 392
 }
 
@@ -415,6 +436,7 @@ omni_light
 	name		far_21
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	56 540 504
 }
 
@@ -423,6 +445,7 @@ omni_light
 	name		far_22
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	156 540 504
 }
 
@@ -431,6 +454,7 @@ omni_light
 	name		far_23
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	256 540 504
 }
 
@@ -439,6 +463,7 @@ omni_light
 	name		far_24
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	356 540 504
 }
 
@@ -447,6 +472,7 @@ omni_light
 	name		far_25
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	456 540 504
 }
 
@@ -455,6 +481,7 @@ omni_light
 	name		far_26
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	100 540 112
 }
 
@@ -463,6 +490,7 @@ omni_light
 	name		far_27
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	200 540 112
 }
 
@@ -471,6 +499,7 @@ omni_light
 	name		far_28
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	300 540 112
 }
 
@@ -479,6 +508,7 @@ omni_light
 	name		far_29
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	400 540 112
 }
 
@@ -487,6 +517,7 @@ omni_light
 	name		far_30
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	500 540 112
 }
 
@@ -495,6 +526,7 @@ omni_light
 	name		far_31
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	100 540 224
 }
 
@@ -503,6 +535,7 @@ omni_light
 	name		far_32
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	200 540 224
 }
 
@@ -511,6 +544,7 @@ omni_light
 	name		far_33
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	300 540 224
 }
 
@@ -519,6 +553,7 @@ omni_light
 	name		far_34
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	400 540 224
 }
 
@@ -527,6 +562,7 @@ omni_light
 	name		far_35
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	500 540 224
 }
 
@@ -535,6 +571,7 @@ omni_light
 	name		far_36
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	100 540 336
 }
 
@@ -543,6 +580,7 @@ omni_light
 	name		far_37
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	200 540 336
 }
 
@@ -551,6 +589,7 @@ omni_light
 	name		far_38
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	300 540 336
 }
 
@@ -559,6 +598,7 @@ omni_light
 	name		far_39
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	400 540 336
 }
 
@@ -567,6 +607,7 @@ omni_light
 	name		far_40
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	500 540 336
 }
 
@@ -575,6 +616,7 @@ omni_light
 	name		far_41
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	100 540 448
 }
 
@@ -583,6 +625,7 @@ omni_light
 	name		far_42
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	200 540 448
 }
 
@@ -591,6 +634,7 @@ omni_light
 	name		far_43
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	300 540 448
 }
 
@@ -599,6 +643,7 @@ omni_light
 	name		far_44
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	400 540 448
 }
 
@@ -607,6 +652,7 @@ omni_light
 	name		far_45
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	500 540 448
 }
 
@@ -615,6 +661,7 @@ omni_light
 	name		far_46
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	78 540 336
 }
 
@@ -623,6 +670,7 @@ omni_light
 	name		far_47
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	178 540 168
 }
 
@@ -631,6 +679,7 @@ omni_light
 	name		far_48
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	378 540 448
 }
 
@@ -639,6 +688,7 @@ omni_light
 	name		far_49
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	478 540 280
 }
 
@@ -647,6 +697,7 @@ omni_light
 	name		far_50
 	power		100000.0
 	color		0.8 0.85 1.0
+	colorspace	sRGB
 	position	278 540 504
 }
 

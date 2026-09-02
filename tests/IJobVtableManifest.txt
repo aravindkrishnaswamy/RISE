@@ -133,10 +133,10 @@ virtual bool AddRISEMeshTriangleMeshGeometry(const char*name,const char*szFileNa
 virtual bool AddBezierPatchGeometry(const char*name,const char*szFileName,const unsigned int max_patches,const unsigned char max_recur,const bool use_bsp,const bool bCenterObject)=0;
 virtual bool AddBilinearPatchGeometry(const char*name,const char*szFileName,const unsigned int max_polys,const unsigned char max_recur,const bool use_bsp)=0;
 virtual bool AddDisplacedGeometry(const char*name,const char*base_geometry_name,const unsigned int detail,const char*displacement,const Scalar disp_scale,const bool double_sided,const bool face_normals,const bool seam_fold=true)=0;
-virtual bool AddPointOmniLight(const char*name,const double power,const double srgb[3],const double pos[3],const bool shootPhotons)=0;
-virtual bool AddPointSpotLight(const char*name,const double power,const double srgb[3],const double foc[3],const double inner,const double outer,const double pos[3],const bool shootPhotons)=0;
-virtual bool AddAmbientLight(const char*name,const double power,const double srgb[3])=0;
-virtual bool AddDirectionalLight(const char*name,const double power,const double srgb[3],const double dir[3])=0;
+virtual bool AddPointOmniLight(const char*name,const double power,const double color[3],const char*colorspace,const double pos[3],const bool shootPhotons)=0;
+virtual bool AddPointSpotLight(const char*name,const double power,const double color[3],const char*colorspace,const double foc[3],const double inner,const double outer,const double pos[3],const bool shootPhotons)=0;
+virtual bool AddAmbientLight(const char*name,const double power,const double color[3],const char*colorspace)=0;
+virtual bool AddDirectionalLight(const char*name,const double power,const double color[3],const char*colorspace,const double dir[3])=0;
 virtual bool AddHomogeneousMedium(const char*name,const double sigma_a[3],const double sigma_s[3],const char*phase_type,const double phase_g)=0;
 virtual bool AddHomogeneousMediumSpectral(const char*name,const double sigma_a[3],const double sigma_s[3],const double emission[3],const char*absorption_spectral,const char*scattering_spectral,const char*phase_type,const double phase_g)=0;
 virtual bool AddHeterogeneousMedium(const char*name,const double max_sigma_a[3],const double max_sigma_s[3],const double emission[3],const char*phase_type,const double phase_g,const char*szVolumeFilePattern,const unsigned int volWidth,const unsigned int volHeight,const unsigned int volStartZ,const unsigned int volEndZ,const char accessor,const double bboxMin[3],const double bboxMax[3])=0;
