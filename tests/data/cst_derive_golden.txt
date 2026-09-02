@@ -26,6 +26,7 @@ scenes/FeatureBased/EnamelWatch/enamel_watch.RISEscene  5431dc3cbcb058150e7b2e81
 scenes/FeatureBased/Geometry/aphrodite.RISEscene  5d8c167c8190c19736e6ed0d5cf25dd8f24c89efe4bbc8d817272336d84bdd32  669  25
 scenes/FeatureBased/Geometry/f16.RISEscene  9eeb268a88b7cc353cf4c56045aacad8ed4c2e4b5038e1ed71c47763f1f3da9c  675  25
 scenes/FeatureBased/Geometry/teapot.RISEscene  b962c50a94ced3ddea115807f4857c192672d88c33a4ad1ad952333a006461f9  856  35
+scenes/FeatureBased/GeometrySignals/weathered_reliquary.RISEscene  e2e27cfb115e8e09ed23534a987043a46919e2d3dc9886f8051aa852cf234020  3491  69
 scenes/FeatureBased/GlobalIllumination/irradiance_cache_torture.RISEscene  afc86991ac7b90de2873b508b03790ab6e0916527a73f49ecf2d00c1909ac738  3865  62
 scenes/FeatureBased/GuillocheWatch/watch_dial.RISEscene  f3e9322258f4c9a18e6565576803d697dab9cf03e9ae59bb1a9319cb55f607ac  5582  99
 scenes/FeatureBased/Hair/cottontail_dusk.RISEscene  4d00ba6f5036255663aad59b5a88450e9a95e7849838a16bc5060b4f24be32d0  3344  65
@@ -40,6 +41,9 @@ scenes/FeatureBased/Materials/enamel_depth_glints.RISEscene  369981a9879cf8521c3
 scenes/FeatureBased/Materials/enamel_grandfeu_opaque.RISEscene  206452c2f7c0764ad9f1ba9f4dca6431f292ae8f196ebf98d478ae6c26da56b8  1513  33
 scenes/FeatureBased/Materials/ggx_showcase.RISEscene  9e7db589605fdf14d274d8a5af301b9efa87dbc0b122222a84a3edc9abc17924  5011  79
 scenes/FeatureBased/Materials/glint_flakes.RISEscene  367c34371174244451cf40740553e834888e672d567e074f2fcc3f0b38b8a43f  1822  42
+scenes/FeatureBased/Materials/lacquer_and_rain_still_life.RISEscene  d5ef30fa6598229566ef630a56c8ed6ddcbd08e21fcabc35802ff632952b5b9b  2863  56
+scenes/FeatureBased/Materials/rainwet_cobbles.RISEscene  7db18593a19761349d5595930b47ed3e4dd71ba430e33daaacfd43eac2c3dc47  1303  29
+scenes/FeatureBased/Materials/rainwet_courtyard_night.RISEscene  8f41525f906b220affae81e307a0ef508a998f9ed55792971c97d6805b499fe2  5003  77
 scenes/FeatureBased/Materials/thinfilm_heattint_showcase.RISEscene  e9c922dff2a06e73ea07f7a1ad69725cd623d427f5780a238cf992e5bbc25fa3  2789  47
 scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene  88b48779488bee285f7d475aa407d92634d9539ff15cf04f3aeb6139387f06d1  43251  417
 scenes/FeatureBased/Parser/photon_cloister.RISEscene  edb805650807c2b039af746e6f9d7cedc98be770c41e1d88787c4fceb3643af3  14545  156
@@ -135,6 +139,7 @@ scenes/Tests/Geometry/aphrodite_mesh.RISEscene  880c46044653a2859ad63060f2301584
 scenes/Tests/Geometry/bilinear_patch.RISEscene  d6d2a06a07905648e9a63a854da9062291bc7d78a2390999daccf2a518a9f341  610  21
 scenes/Tests/Geometry/csg.RISEscene  c885504f746ecfe3b71eb3153ad29796424b8e929c826543cadec16cc6db8faa  2507  40
 scenes/Tests/Geometry/csg_comprehensive.RISEscene  52769e63c5bcc9c7a86f2dd785286f458a3d3a8adce47d553f77818276c12701  8845  96
+scenes/Tests/Geometry/csg_positioned_operands.RISEscene  a05c69a1b7fd07e9ef41867b6fb0a93a40fe4b3d0b37ea1499fa0a1625f12532  991  26
 scenes/Tests/Geometry/displaced_box.RISEscene  e395d8bae437dd25ba0e1466ae250667970b10cee4ae63ea38f531584b692e2d  654  23
 scenes/Tests/Geometry/displaced_builders_stress.RISEscene  5af5128cd8fd06fc1a14cf64c9eb1df0224a536bf4346178524350bc44e86fec  2652  59
 scenes/Tests/Geometry/displaced_procedural.RISEscene  84f828f95479c19d567a34597a1943e989acc7d5cd4fbfcd9427b6a843f70e53  1251  37
@@ -212,6 +217,7 @@ scenes/Tests/Materials/Enamel/enamel_dome_dial.RISEscene  ac2a57ec3bb2f25e59b0f7
 scenes/Tests/Materials/Enamel/enamel_swatch_goldruby.RISEscene  4c4f15812743dc4074c3a0e17ace60dfe3a3e8adf420f7e4f56c48a152f5cf61  813  26
 scenes/Tests/Materials/Enamel/enamel_swatch_silver.RISEscene  9fdd38d5ee2f073cd99e56ee3dcfa3fe2db24336459e499409b22a6bc288813f  825  27
 scenes/Tests/Materials/Enamel/silver_reference.RISEscene  cb9f119e24d46516ccb6ab8b820d309d76b09b5ef14d9749bc35569d4d8647aa  700  24
+scenes/Tests/Materials/coated_material.RISEscene  abb1740227a1e32dcb57cbd82e698dced69db22f65823f7e818cfe7cc0a397b4  1676  34
 scenes/Tests/Materials/composite_material.RISEscene  58135c8bc5a158f50f8372473fc32faca6a1a1dc8d96b361d7f218b63eae0878  4065  65
 scenes/Tests/Materials/cooktorrance_multiscatter_test.RISEscene  9c5107f0c869c23cc9757ff83dc801875f6486ebbdeb670be1aadc47fb80d599  3232  56
 scenes/Tests/Materials/cooktorrance_vndf_test.RISEscene  8f45eb9acb2cf228b1f1f314ce90c98ebfeced92d553f785ed0afb6b69817848  2759  51
@@ -236,6 +242,7 @@ scenes/Tests/Materials/texture_dispersion.RISEscene  e3957b60fbcfe9846695732a542
 scenes/Tests/Materials/thinfilm_ladder.RISEscene  fa7c00d6b2671fcd1c6afb0d5d90d3d5cc03eec2ca7f12e51f17e8f776c1cd8f  2032  40
 scenes/Tests/Materials/transmission.RISEscene  345b610722e06038eba428fefb4c06b4af041bac9ff9079bb174fcb90815ae40  1733  38
 scenes/Tests/Materials/unlit.RISEscene  471054128d11910d04bff1416c84a7f872f582aad070fde10684e1b6bf2ccb02  1516  40
+scenes/Tests/Materials/wetness_prelude_validation.RISEscene  f828aa6551701b1e6729df59d1c313028ac08d1c442163ac8dbee827476f4d6f  1439  33
 scenes/Tests/Painters/blackbodyradiator.RISEscene  5ace2dcb9ec88da1a58b4f4c97c7f935b07acd8398d24ddcd09f29bf687d5728  15868  228
 scenes/Tests/Painters/composite_displaced_sphere.RISEscene  d474a823167cd2541daa7e37f3f49f781bddc75a5f1e20648869b166e04f0012  740  28
 scenes/Tests/Painters/composite_polynomial_catalog.RISEscene  947a27a731ddd647224326ddc5d3c5c64bf21abf99e1960edb08194b97974791  2465  53
