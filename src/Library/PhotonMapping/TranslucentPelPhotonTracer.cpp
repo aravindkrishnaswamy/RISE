@@ -55,13 +55,12 @@ void TranslucentPelPhotonTracer::TracePhoton(
 	const RISEPel& power,
 	const bool bFromTranslucent,
 	TranslucentPelPhotonMap& pPhotonMap,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in/out] Index of refraction stack
+	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
-	static unsigned int		numRecursions = 0;
-
 #ifdef ENABLE_MAX_RECURSION
-	if( numRecursions > nMaxRecursions )
+	if( depth > nMaxRecursions )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -77,8 +76,6 @@ void TranslucentPelPhotonTracer::TracePhoton(
 #endif
 		return;
 	}
-
-	numRecursions++;
 
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
@@ -122,14 +119,14 @@ void TranslucentPelPhotonTracer::TracePhoton(
 				// Trace all rays
 				scat.ray.Advance( 1e-8 );
 				bool bTraceTranslucent = true;
-				if( !bTraceDirectTranslucent && numRecursions==1 ) {
+				if( !bTraceDirectTranslucent && depth==0 ) {
 					bTraceTranslucent = false;
 				}
 
 				if( (scat.type==ScatteredRay::eRayTranslucent && bTraceTranslucent) ||
 					(scat.type==ScatteredRay::eRayReflection && bTraceReflections) ||
 					(scat.type==ScatteredRay::eRayRefraction && bTraceRefractions) ) {
-					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack );
+					TracePhoton( scat.ray, power*scat.kray, scat.type==ScatteredRay::eRayTranslucent, pPhotonMap, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 					if( bFromTranslucent ) {
 						accum_scattered = accum_scattered + scat.kray;
 					}
@@ -144,8 +141,6 @@ void TranslucentPelPhotonTracer::TracePhoton(
 	}
 
 	// If there was no hit then the photon just got ejected into space!
-
-	numRecursions--;
 }
 
 

@@ -51,13 +51,12 @@ void GlobalPelPhotonTracer::TracePhoton(
 	const RISEPel& power,
 	GlobalPelPhotonMap& pPhotonMap,
 	const bool bStorePhoton,
-	const IORStack& ior_stack								///< [in/out] Index of refraction stack
+	const IORStack& ior_stack,								///< [in/out] Index of refraction stack
+	const unsigned int depth								///< [in] Recursion depth (0 = primary photon emitted from the light)
 	) const
 {
-	static unsigned int		numRecursions = 0;
-
 #ifdef ENABLE_MAX_RECURSION
-	if( numRecursions > nMaxRecursions )
+	if( depth > nMaxRecursions )
 	{
 #ifdef ENABLE_TERMINATION_MESSAGES
 		GlobalLog()->PrintEasyInfo( "FORCED RECURSION TERMINATION" );
@@ -73,8 +72,6 @@ void GlobalPelPhotonTracer::TracePhoton(
 #endif
 		return;
 	}
-
-	numRecursions++;
 
 	// Cast the ray into the scene
 	RayIntersection	ri( ray, nullRasterizerState );
@@ -141,20 +138,18 @@ void GlobalPelPhotonTracer::TracePhoton(
 				for( unsigned int i=0; i<scattered.Count(); i++ ) {
 					ScatteredRay& scat = scattered[i];
 					scat.ray.Advance( 1e-8 );
-					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack );
+					TracePhoton( scat.ray, power*scat.kray, pPhotonMap, scat.type==ScatteredRay::eRayDiffuse, scat.ior_stack?*scat.ior_stack:ior_stack, depth+1 );
 				}
 			} else {
 				ScatteredRay* pScat = scattered.RandomlySelect( random.CanonicalRandom(), false );
 				if( pScat ) {
 					pScat->ray.Advance( 1e-8 );
-					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack );
+					TracePhoton( pScat->ray, power*pScat->kray, pPhotonMap, pScat->type==ScatteredRay::eRayDiffuse, pScat->ior_stack?*pScat->ior_stack:ior_stack, depth+1 );
 				}
 			}
 		}
 	}
 
 	// If there was no hit then the photon just got ejected into space!
-
-	numRecursions--;
 }
 
