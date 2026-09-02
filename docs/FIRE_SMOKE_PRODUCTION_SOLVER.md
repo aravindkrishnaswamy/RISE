@@ -5576,6 +5576,41 @@ The audit is sealed in
 `88f79c08beed9b70e43b2655d5f8b7f9ea05154abe5e31cd2f5941d8f9eb9f0d`.
 The golden checkpoint and dirty main checkout remain untouched.
 
+### 7.56ac Resident candidate-lineage contract (r196)
+
+r196 accepts the r195 owner stop and authorizes a provenance extension, never
+a relaxation. The live Metal path may consume only device-produced resident
+authority surfaces. A CPU-computed value cannot mint, copy, or reconstruct the
+private lineage carried by a resident candidate; the checkpoint-authority
+pattern established by r148/r164 is binding, and CPU substitution is a standing
+RED at every new surface.
+
+Every surface has two independent numerical obligations. Streaming arithmetic
+is compared bit-for-bit against its strict binary32 mirror. The physical
+certificate is evaluated by the fp64 mirror at matched inputs, using bounds
+derived from uncancelled terms. A quantity made small by subtractive
+cancellation cannot scale its own error bound. Kernels with arithmetic branches
+must enumerate their walker paths and discharge an obligation for each path.
+
+The resident interval permits zero full-grid interstage transfers. Each rung
+must add a transfer RED and extend the simultaneous working-set certificate.
+Changes to case-authored semantics or inputs regenerate `case_record_id`;
+solver-implementation changes instead regenerate producer/run identity, per
+the canonical Section 6 distinction. This contract-only commit changes
+neither. The ordered, separately committed rungs are: device-resident
+transport coefficients, physical-flux authority, EOS candidate identity,
+authenticated target lineage through r70, the complete R0/R1/R2 Metal owner,
+the device/fp64 kernel sweep, and the sealed tier-8 ported replay. The replay
+inherits r194's seed and exact-equal-time observables and uses the corrected
+`159.01` aligned-advection class before the three-way verdict.
+
+The binding contract is sealed in
+`rendered/fire_production_calibration/r196_resident_candidate_lineage_contract/`
+`resident_candidate_lineage_contract.v1`, SHA-256
+`594cd3978d22bec423c7e8132b7d85bbe99cb97e67bbb0add51620560fb40253`.
+The tier-6 movie remains the owner's interim deliverable; the golden checkpoint
+is untouched.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

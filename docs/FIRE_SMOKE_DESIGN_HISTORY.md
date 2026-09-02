@@ -5048,3 +5048,21 @@ it was already tried and refuted here.
   `r195_live_metal_owner_prerequisite_audit/live_owner_prerequisite_audit.v1`,
   SHA-256 `88f79c08beed9b70e43b2655d5f8b7f9ea05154abe5e31cd2f5941d8f9eb9f0d`;
   the golden checkpoint and dirty main checkout remain untouched.
+
+- **r196 resident candidate-lineage authorization (2026-09-02):** authorizes
+  the r195 missing authority contract as a provenance extension, never a
+  relaxation. Every live surface is device-produced and privately lineage-
+  bound so a CPU value cannot forge it; CPU substitution becomes a standing
+  RED. Streaming kernels require strict binary32 bit comparison, all surfaces
+  require matched-input fp64 mirrors, and physical bounds use uncancelled term
+  scales with walker obligations for branching arithmetic. Each rung preserves
+  zero full-grid interstage transfers, extends the simultaneous working-set
+  certificate. Case-authored semantic/input changes regenerate
+  `case_record_id`; solver changes regenerate producer/run identity instead.
+  Transport, physical flux, EOS, r70 target lineage, complete Metal owner,
+  kernel sweep, sealed tier-8 replay, and three-way verdict proceed as separate
+  reviewed commits in that order. The replay inherits the r194 seed and exact-
+  equal-time protocol with the corrected `159.01` criterion. The contract-only
+  entry changes no solver semantics and therefore does not regenerate the case
+  record. Evidence SHA-256 is
+  `594cd3978d22bec423c7e8132b7d85bbe99cb97e67bbb0add51620560fb40253`.

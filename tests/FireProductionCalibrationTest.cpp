@@ -3572,7 +3572,7 @@ int main()
 			"2a739cdc61fe928e74e3f2ce96f4f8da41cabe99a9ba4a3a0427f770262efc91"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunOwnerLiveBinding.begin(),projectedHeunOwnerLiveBinding.end()))==
-			"08d3e1e8c1b6067d359be570f6f376a658ac6290fb2a7c458aeebe5977cfcdaf"&&
+			"181e421337dc2e9bdcbac60ebe18d7ee172adbadef3a80622739ddaa8b90eadd"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			metalContextLiveBinding.begin(),metalContextLiveBinding.end()))==
 			"ede952577d0b873cb758b0383461d4f9b9e71cb0e1ca340ce3d106e9fe6dc1ee"&&
@@ -3583,7 +3583,7 @@ int main()
 		projectedHeunLiveBinding.find("live_owner_count 36\n")!=std::string::npos&&
 		projectedHeunLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&
-		projectedHeunOwnerLiveBinding.find("live_owner_count 28\n")!=
+		projectedHeunOwnerLiveBinding.find("live_owner_count 29\n")!=
 			std::string::npos&&
 		metalContextLiveBinding.find("live_owner_count 17\n")!=std::string::npos&&
 		metalContextLiveBinding.find("calibration_test_self_binding false\n")!=
@@ -9054,6 +9054,54 @@ int main()
 		metalContextProbe.find("MTLCreateSystemDefaultDevice()")!=std::string::npos&&
 		metalContextProbe.find("MTLCopyAllDevices()")!=std::string::npos,
 		"r191 distinguishes execution-context denial from absent Metal hardware and preserves tier-8-first ordering");
+	const std::string residentCandidateLineageContract=ReadText(
+		"rendered/fire_production_calibration/r196_resident_candidate_lineage_contract/"
+		"resident_candidate_lineage_contract.v1");
+	const std::array<std::size_t,8> residentRungs={{
+		residentCandidateLineageContract.find("rung_1 device_resident_transport_coefficients\n"),
+		residentCandidateLineageContract.find("rung_2 resident_physical_flux_authority\n"),
+		residentCandidateLineageContract.find("rung_3 resident_EOS_candidate_identity\n"),
+		residentCandidateLineageContract.find(
+			"rung_4 authenticated_device_target_lineage_through_r70\n"),
+		residentCandidateLineageContract.find("rung_5 complete_R0_R1_R2_owner_live_on_Metal\n"),
+		residentCandidateLineageContract.find(
+			"rung_6 Metal_kernel_sweep_against_fp64_mirrors\n"),
+		residentCandidateLineageContract.find("rung_7 sealed_tier8_ported_replay\n"),
+		residentCandidateLineageContract.find("rung_8 three_way_verdict\n")}};
+	bool residentRungsOrdered=residentRungs[0]!=std::string::npos;
+	for(std::size_t rung=1u;rung<residentRungs.size();++rung)
+		residentRungsOrdered=residentRungsOrdered&&residentRungs[rung]!=std::string::npos&&
+			residentRungs[rung-1u]<residentRungs[rung];
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			residentCandidateLineageContract.begin(),residentCandidateLineageContract.end()))==
+			"594cd3978d22bec423c7e8132b7d85bbe99cb97e67bbb0add51620560fb40253"&&
+		residentCandidateLineageContract.find("contract_kind provenance_extension\n")!=
+			std::string::npos&&
+		residentCandidateLineageContract.find("relaxation_permitted false\n")!=
+			std::string::npos&&
+		residentCandidateLineageContract.find(
+			"live_path_cpu_substitution_admissible false\n")!=std::string::npos&&
+		residentCandidateLineageContract.find(
+			"cpu_value_forgery_RED required_per_surface\n")!=std::string::npos&&
+		residentCandidateLineageContract.find(
+			"cancellation_sensitive_bound_admissible false\n")!=std::string::npos&&
+		residentCandidateLineageContract.find(
+			"interstage_full_grid_transfer_count 0\n")!=std::string::npos&&
+		residentCandidateLineageContract.find(
+			"case_record_id_regeneration required_when_case_authored_semantics_or_inputs_change\n")!=
+			std::string::npos&&residentCandidateLineageContract.find(
+			"producer_run_identity_regeneration required_when_solver_semantics_change\n")!=
+			std::string::npos&&residentCandidateLineageContract.find(
+			"commit_boundary one_rung_per_pathspec_commit\n")!=std::string::npos&&
+		residentCandidateLineageContract.find("RED_battery required_per_rung\n")!=
+			std::string::npos&&residentCandidateLineageContract.find(
+			"fresh_review required_per_rung\n")!=std::string::npos&&residentRungsOrdered&&
+		residentCandidateLineageContract.find("post_verdict_queue onset_criteria_"
+			"tier10_and_tier8_then_windows_spectra_rows_movies_report_reviewers_digest\n")!=
+			std::string::npos&&
+		residentCandidateLineageContract.find(
+			"rung_7_aligned_advection_criterion_class 159.01\n")!=std::string::npos,
+		"r196 authorizes only a resident, non-forgeable, mirror-validated lineage extension");
 	if(failures){std::fprintf(stderr,"FireProductionCalibrationTest: %d failure(s)\n",failures);return 1;}
 	std::printf("FireProductionCalibrationTest passed\n");
 	return 0;
