@@ -39,6 +39,7 @@
 
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/Color/Color.h"
+#include "../Utilities/Color/RGBSpectra.h"		// RGBIlluminantSpectrum cache for the NM merge path (LightVertex::throughputSpectrum)
 #include "VCMRecurrence.h"
 
 namespace RISE
@@ -78,6 +79,22 @@ namespace RISE
 			const IObject*		pObject;		///< For merge-time BSDF evaluation
 
 			RISEPel				throughput;		///< Cumulative alpha_i from light origin
+
+			///< Cached illuminant uplift of `throughput`
+			///< (`VCMIntegrator::LightThroughputSpectrum`), Stage C
+			///< slice 2 perf follow-up.  `throughput` is fixed once a
+			///< vertex is deposited (ConvertLightSubpath) or rescaled
+			///< (LightVertexStore::ClampOutlierThroughputs) -- both
+			///< sites rebuild this field there -- so the NM merge
+			///< estimator's per-CANDIDATE read in EvaluateMerges is a
+			///< plain `.Eval(nm)` instead of a fresh JH LUT lookup per
+			///< candidate.  Bit-identical to evaluating
+			///< LightThroughputRadianceNM(throughput, nm) fresh; this
+			///< only moves WHEN the lookup happens, not what it
+			///< computes.  Whoever writes `throughput` outside those
+			///< two sites in the future MUST rebuild this alongside it.
+			RGBIlluminantSpectrum throughputSpectrum;
+
 			VCMMisQuantities	mis;			///< dVCM/dVC/dVM at this vertex after the geometric update
 
 			//! Per-vertex color interpolated by the geometry at hit time
@@ -100,6 +117,12 @@ namespace RISE
 				pMaterial( 0 ),
 				pObject( 0 ),
 				throughput( 0, 0, 0 ),
+				// Match zero throughput: RGBIlluminantSpectrum's own
+				// default ctor is a UNIT-scale spectrum (see its
+				// comment), not a zero one -- FromRGB(0,0,0) is the
+				// zero-radiance spectrum consistent with `throughput`
+				// above (both real write sites overwrite this anyway).
+				throughputSpectrum( RGBIlluminantSpectrum::FromRGB( RISEPel( 0, 0, 0 ) ) ),
 				vColor( 0, 0, 0 )
 			{}
 		};

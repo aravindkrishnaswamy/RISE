@@ -32,7 +32,12 @@ using namespace RISE::Implementation;
 // docs/SPECTRAL_ILLUMINANT_CONVENTION.md for the convention.
 Scalar IPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	return RGBIlluminantSpectrum::FromRGB( GetColor( ri ) ).Eval( nm );
+	// Irradiance/exitance is physically non-negative; an all-negative RGB
+	// triple would otherwise uplift to poly=(0,0,0) (Eval == 0.5) times a
+	// NEGATIVE scale, producing negative radiance at every wavelength.
+	RISEPel c = GetColor( ri );
+	ColorMath::EnsurePositve( c );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }
 
 Scalar Painter::GetColorNM( const RayIntersectionGeometric&, const Scalar ) const

@@ -52,6 +52,7 @@
 #include "../src/Library/Interfaces/IFunction1D.h"
 #include "../src/Library/Interfaces/IPiecewiseFunction.h"
 #include "../src/Library/Utilities/Color/Color.h"
+#include "../src/Library/Utilities/Color/RGBSpectra.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 
 using namespace RISE;
@@ -136,6 +137,32 @@ namespace
 		Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
 		{
 			return GetColorNM( ri, nm );
+		}
+		Scalar GetAlpha( const RayIntersectionGeometric& ) const { return Scalar( 1 ); }
+		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
+		void SetIntermediateValue( const IKeyframeParameter& ) {}
+		void RegenerateData() {}
+	};
+
+	// UV-INDEPENDENT source with GetColorNM and GetRadianceNM carrying two
+	// deliberately unrelated, strongly-differing formulas of `nm` (used
+	// to independently reconstruct StochasticTilePainter's output below
+	// without duplicating its internal hash-tiling; see TestScatterAndTiling).
+	class SplitColorRadiancePainter : public Painter
+	{
+	public:
+		SplitColorRadiancePainter() {}
+	protected:
+		virtual ~SplitColorRadiancePainter() {}
+	public:
+		RISEPel GetColor( const RayIntersectionGeometric& ) const { return RISEPel( 0, 0, 0 ); }
+		Scalar GetColorNM( const RayIntersectionGeometric&, const Scalar nm ) const
+		{
+			return Scalar( 100 ) + nm;
+		}
+		Scalar GetRadianceNM( const RayIntersectionGeometric&, const Scalar nm ) const
+		{
+			return Scalar( 5000 ) - Scalar( 3 ) * nm;
 		}
 		Scalar GetAlpha( const RayIntersectionGeometric& ) const { return Scalar( 1 ); }
 		IKeyframeParameter* KeyframeFromParameters( const String&, const String& ) { return 0; }
@@ -236,7 +263,13 @@ static void TestMapping()
 
 	src->release();
 
-	// ri plumbing on the uv projection: scale 2, translate 0.1/0.2.
+	// ri plumbing on the uv projection: scale 2/3, no rotation, translate
+	// 0.1/0.2.  Independently derived expected value (same style as
+	// TestUVTransform): MappingPainter::ApplyUV computes
+	// (cosRz*scaleU*u - sinRz*scaleV*v + translateU,
+	//  sinRz*scaleU*u + cosRz*scaleV*v + translateV); with rotateDeg=0
+	// (cosRz=1, sinRz=0) that is just (scaleU*u + translateU,
+	// scaleV*v + translateV) = (2*1.0+0.1, 3*1.0+0.2) = (2.1, 3.2).
 	UVSpectralEchoPainter* echo = new UVSpectralEchoPainter();
 	echo->addref();
 	IPainter* w2 = 0;
@@ -244,9 +277,15 @@ static void TestMapping()
 		Vector3( 2, 3, 1 ), Vector3( 0, 0, 0 ), Vector3( 0.1, 0.2, 0 ), 4.0 );
 	const RayIntersectionGeometric ri2 = MakeRiAtUV( 1.0, 1.0 );
 	const Scalar gotRad = w2->GetRadianceNM( ri2, Scalar( 550 ) );
+	const Scalar want = Scalar( 2.1 ) * Scalar( 1000 ) + Scalar( 3.2 ) * Scalar( 10 ) + Scalar( 550 );
+	Check( Close( double( gotRad ), double( want ), 1e-9 ),
+	       "mapping(uv): GetRadianceNM sampled at the TRANSFORMED uv" );
+	// GetColorNM must agree with GetRadianceNM here too (echo painter has
+	// no colour-vs-radiance distinction) -- keeps the original same-uv
+	// cross-check as a second, independent assertion rather than the sole one.
 	const Scalar gotCol = w2->GetColorNM( ri2, Scalar( 550 ) );
-	Check( Close( double( gotRad ), double( gotCol ), 1e-9 ),
-	       "mapping(uv): GetRadianceNM samples the SAME uv GetColorNM does" );
+	Check( Close( double( gotCol ), double( want ), 1e-9 ),
+	       "mapping(uv): GetColorNM sampled at the TRANSFORMED uv" );
 	w2->release();
 	echo->release();
 }
@@ -322,6 +361,24 @@ static void TestSelectors()
 	}
 	cases.push_back( Case{ "voronoi2d", voronoi } );
 
+	// voronoi3d: same generator-picks-one-child contract, but the
+	// generators and the query point are Point3 (z=0 plane here, since
+	// MakeRiAtUV puts (u,v,0) in both ptIntersection and ptObjIntersec).
+	// RISE_API_CreateVoronoi3DPainter (the non-WithSpace overload) samples
+	// ptObjIntersec, which MakeRiAtUV also sets, so this exercises the
+	// same code path CheckerPainter/LinesPainter/Voronoi2DPainter do.
+	IPainter* voronoi3d = 0;
+	{
+		std::vector<Point3> pts;
+		pts.push_back( Point3( 0.25, 0.25, 0 ) );
+		pts.push_back( Point3( 0.75, 0.75, 0 ) );
+		std::vector<IPainter*> childs;
+		childs.push_back( a );
+		childs.push_back( bUniform );
+		RISE_API_CreateVoronoi3DPainter( &voronoi3d, pts, childs, *bUniform, 0.0 );
+	}
+	cases.push_back( Case{ "voronoi3d", voronoi3d } );
+
 	for( std::size_t c = 0; c < cases.size(); ++c ) {
 		bool ok = true;
 		bool sawSpectralChild = false;
@@ -379,24 +436,70 @@ static void TestScatterAndTiling()
 	}
 
 	// Stochastic tiling reads ONE source at three hash-offset UVs and
-	// recombines them about the authored mean.  The source's spectrum is
-	// ri-independent here, so the reconstruction is exactly that
-	// spectrum: mu + sum((s - mu) * w) / |w| with all three s equal to
-	// the same value s gives mu + (s - mu) * (sum w) / |w|, and the
-	// weights sum to 1... which is NOT s in general.  So assert the
-	// weaker, still-decisive property: strictly positive, and NOT the
-	// zero the missing override would give.
+	// recombines them about the authored mean:
+	//   result = mu + sum_k( (s_k - mu) * w_k ) / sqrt(sum_k w_k^2)
+	// where (w_k, uv_k) come from the SAME ComputeHexTiling(ri.ptCoord)
+	// call in GetColorNM and GetRadianceNM (StochasticTilePainter.cpp
+	// calls it identically in both -- "structural twins"), and `mu` is
+	// RGBAlbedoSpectrum::FromRGB(mean).Eval(nm) for GetColorNM vs
+	// RGBIlluminantSpectrum::FromRGB(mean).Eval(nm) for GetRadianceNM.
+	//
+	// ComputeHexTiling is `protected` (not reachable from this free
+	// function without duplicating the Worley-hash tiling), so reproduce
+	// the hashing is impractical here.  Instead: drive the source with
+	// SplitColorRadiancePainter, whose GetColorNM and GetRadianceNM are
+	// UV-INDEPENDENT and carry two strongly different formulas of `nm`.
+	// Because the source is UV-independent, all three hash-offset samples
+	// read the identical value in each call, collapsing the sum to a
+	// single unknown `S = sum_k w_k / sqrt(sum_k w_k^2)` -- shared between
+	// the two calls because they tile the SAME ri.ptCoord. Solve for S
+	// from the (independently-checkable) GetColorNM equation, then
+	// predict GetRadianceNM from it using the illuminant-space `mu` and
+	// the source's own (very different) GetRadianceNM value, and assert
+	// the wrapper's actual GetRadianceNM matches that prediction to 1e-9.
+	// This is sensitive to exactly the mutations the override exists to
+	// prevent: reverting to `meanSpec` (wrong mu) or to
+	// `source.GetColorNM` (wrong s) inside GetRadianceNM both break the
+	// prediction, since here GetColorNM and GetRadianceNM genuinely
+	// differ.
 	{
-		IPainter* src = MakeSpectralSource();
+		SplitColorRadiancePainter* src = new SplitColorRadiancePainter();
+		src->addref();
 		IPainter* w = 0;
+		const RISEPel mean( 0.5, 0.2, 0.8 );
 		RISE_API_CreateStochasticTilePainter( &w, *src,
 			/*tileScale*/ 4.0, /*seed*/ 11,
-			/*mean*/ RISEPel( 0.5, 0.5, 0.5 ), /*blendGamma*/ 1.0 );
+			/*mean*/ mean, /*blendGamma*/ 1.0 );
+
+		const RayIntersectionGeometric ri = MakeRiAtUV( 0.21, 0.44 );
+		bool matches = true;
 		bool positive = true;
 		for( int i = 0; i < kNumNM; ++i ) {
-			const RayIntersectionGeometric ri = MakeRiAtUV( 0.21, 0.44 );
-			if( !( double( w->GetRadianceNM( ri, kNMs[i] ) ) > 0.0 ) ) positive = false;
+			const Scalar nm = kNMs[i];
+			const double muC = double( RGBAlbedoSpectrum::FromRGB( mean ).Eval( nm ) );
+			const double muR = double( RGBIlluminantSpectrum::FromRGB( mean ).Eval( nm ) );
+			const double sC = double( src->GetColorNM( ri, nm ) );
+			const double sR = double( src->GetRadianceNM( ri, nm ) );
+			const double Rc = double( w->GetColorNM( ri, nm ) );
+			const double Rr = double( w->GetRadianceNM( ri, nm ) );
+
+			// S is shared between the two reconstructions (same ri.ptCoord
+			// -> same ComputeHexTiling weights); sC != muC by construction
+			// (100+nm is far from a [0,1]-clamped albedo mean) so this
+			// division is safe.
+			const double S = ( Rc - muC ) / ( sC - muC );
+			const double RrPredicted = muR + ( sR - muR ) * S;
+
+			if( !Close( Rr, RrPredicted, 1e-9 ) ) {
+				matches = false;
+				std::printf( "    stochastic_tile: nm=%g Rr=%.12g predicted=%.12g\n",
+					double( nm ), Rr, RrPredicted );
+			}
+			if( !( Rr > 0.0 ) ) positive = false;
 		}
+		Check( matches,
+		       "stochastic_tile: GetRadianceNM matches the independently-derived "
+		       "illuminant-space reconstruction (RGBIlluminantSpectrum::FromRGB(mean).Eval(nm))" );
 		Check( positive,
 		       "stochastic_tile: GetRadianceNM > 0 (would be 0 without the override)" );
 		w->release();

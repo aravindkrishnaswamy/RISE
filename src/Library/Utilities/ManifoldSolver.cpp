@@ -715,6 +715,27 @@ namespace
 	// `FinalGatherShaderOp` and the SSS ops make for a COMPUTED
 	// radiance.  Delta lights do NOT go through here: they have an
 	// `ILight::emittedRadianceNM` and the call sites use it.
+	//
+	// One open hole, stated explicitly (2026-09-02): a mesh luminaire
+	// whose exitance is bound to a `piecewise_linear_function`
+	// (Function1DSpectralPainter -- its RGB `GetColor` is black by
+	// construction, the physical spectrum only exists on the NM path)
+	// has `LightSample::Le` == (0,0,0), because `Le` is filled from the
+	// emitter's RGB `emittedRadiance`.  SMSLeNM's uplift of a black RGB
+	// triple is exactly black, so an SMS caustic cast by that emitter
+	// renders EXACTLY BLACK on the NM path, while direct NEE lights the
+	// same emitter correctly (LightSampler.cpp's spectral NEE loop
+	// calls `pEmitter->emittedRadianceNM(...)` with the full sampled
+	// geometry, reaching the authored spectral curve).  This is not a
+	// NEW regression -- `ColorMath::Luminance(RISEPel(0,0,0))` was also
+	// 0, so the pre-uplift code produced the same black caustic -- it
+	// is the one case where "chroma-preserving approximation" above is
+	// not just approximate but wrong (0 instead of the emitter's true
+	// nonzero spectral Le).  The real fix is widening `LightSample`
+	// with the sampled hit's `RayIntersectionGeometric` (or at least
+	// its normal + the `IEmitter*`) so `emittedRadianceNM` becomes
+	// reachable here too -- the sampler already has both at fill time,
+	// so this is a struct-widening change, not a new capability.
 	inline Scalar SMSLeNM( const RISEPel& Le, const Scalar nm )
 	{
 		RISEPel c = Le;
@@ -7888,6 +7909,17 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		+ static_cast<unsigned int>( photonSeeds.size() )
 		+ ( N > 0 ? N - 1 : 0 );
 
+	// Hoisted out of the per-trial loop below: `lightSample` is drawn
+	// ONCE above (before the trial loop), and SMSLeNM's mesh-light
+	// projection depends only on `lightSample.Le` and `nm` — neither of
+	// which varies per trial (unlike `cosAtLight`, which depends on the
+	// per-trial converged chain's last vertex and stays inside the
+	// loop).  Every trial that reaches the non-delta branch, or the
+	// delta-without-`pLight` branch, was recomputing the identical JH
+	// LUT uplift.  Bit-identical to calling SMSLeNM(lightSample.Le, nm)
+	// fresh inside the loop; this only moves WHEN it is computed.
+	const Scalar meshLeNM = SMSLeNM( lightSample.Le, nm );
+
 	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
 		std::vector<ManifoldVertex> trialSeed = baseSeedChain;
@@ -8060,12 +8092,12 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 				// (Stage C slice 2).  See SMSLeNM's comment block.
 				Le = lightSample.pLight->emittedRadianceNM( dirSpecToLight, nm );
 			} else {
-				Le = SMSLeNM( lightSample.Le, nm );
+				Le = meshLeNM;	// hoisted -- see the comment above the trial loop
 			}
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			Le = SMSLeNM( lightSample.Le, nm );
+			Le = meshLeNM;	// hoisted -- see the comment above the trial loop
 		}
 
 		// SMS measure-conversion factor — must match the RGB path exactly

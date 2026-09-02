@@ -84,14 +84,30 @@ static inline Scalar AreaToSolidAngleFactor(
 // approximated by the illuminant uplift of its RGB projection --
 // the same chroma-preserving approximation FinalGatherShaderOp and
 // the SSS ops make for a COMPUTED radiance.
-Scalar VCMIntegrator::LightThroughputRadianceNM( const RISEPel& p, const Scalar nm )
+//
+// THE single place that builds the spectrum -- LightThroughputRadianceNM
+// below just evaluates it.  `lv.throughput` is fixed once a LightVertex
+// is deposited (ConvertLightSubpath) or rescaled (ClampOutlierThroughputs),
+// so both call sites cache the returned RGBIlluminantSpectrum on the
+// vertex (`LightVertex::throughputSpectrum`) instead of paying a fresh
+// JH LUT lookup per merge CANDIDATE inside the per-eye-vertex candidate
+// loop (EvaluateMerges).  sizeof(RGBIlluminantSpectrum) is 4 Scalars (a
+// 3-coefficient RGBSigmoidPolynomial + a scale) -- 32 bytes/vertex on a
+// build with Scalar==double, i.e. the same order as the existing
+// RISEPel throughput field it sits beside.
+RGBIlluminantSpectrum VCMIntegrator::LightThroughputSpectrum( const RISEPel& p )
 {
 	RISEPel c = p;
 	// FromRGB takes the max channel as its scale, so a single
 	// negative component flips the scale and corrupts every
 	// wavelength (FinalGatherShaderOp guards the same boundary).
 	ColorMath::EnsurePositve( c );
-	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
+	return RGBIlluminantSpectrum::FromRGB( c );
+}
+
+Scalar VCMIntegrator::LightThroughputRadianceNM( const RISEPel& p, const Scalar nm )
+{
+	return LightThroughputSpectrum( p ).Eval( nm );
 }
 
 
@@ -312,7 +328,12 @@ namespace
 	template<>
 	inline Scalar LightVertexThroughput<NMTag>( const LightVertex& lv, const NMTag& tag )
 	{
-		return VCMIntegrator::LightThroughputRadianceNM( lv.throughput, tag.nm );
+		// Perf: lv.throughputSpectrum is built ONCE at deposit /
+		// rescale time (VCMIntegrator::LightThroughputSpectrum); this
+		// used to call LightThroughputRadianceNM (a fresh JH LUT
+		// lookup) once per merge CANDIDATE inside EvaluateMerges'
+		// candidate loop.  Bit-identical result, just cached.
+		return lv.throughputSpectrum.Eval( tag.nm );
 	}
 
 	/// Convert a contribution to an RGB splat value for writing to
@@ -759,6 +780,11 @@ void VCMIntegrator::ConvertLightSubpath(
 			lv.pMaterial  = v.pMaterial;
 			lv.pObject    = v.pObject;
 			lv.throughput = v.throughput;
+			// Cache the NM-merge spectrum at deposit time -- see
+			// LightVertex::throughputSpectrum's comment
+			// (VCMLightVertex.h) and LightThroughputSpectrum's comment
+			// above.
+			lv.throughputSpectrum = LightThroughputSpectrum( lv.throughput );
 			lv.vColor     = v.vColor;
 			lv.mis        = mis;
 			out.push_back( lv );

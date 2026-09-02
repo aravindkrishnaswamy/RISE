@@ -237,12 +237,21 @@ namespace RISE
 		//! position or delta-direction) light contribution with the
 		//! per-NM BSDF (`brdf.valueNM`) rather than the RGB BSDF.
 		//!
-		//! The spectral character comes from the BSDF: each light's
-		//! emission is treated as a flat scalar (Illuminant E
-		//! projection of its RGB color via `ColorMath::Luminance`),
-		//! matching RISE's JH-LUT-trained-with-flat-E convention
-		//! (see tools/JakobHanikaLUTGen.cpp:160-174 for the rationale).
-		//! This is the per-NM analog of the RGB `ComputeDirectLighting`.
+		//! (Dated 2026-09-02.) The spectral character comes from BOTH the
+		//! BSDF and the light: since Stage C slice 2
+		//! (docs/SPECTRAL_ILLUMINANT_CONVENTION.md), a light's emission is
+		//! the reference D65-shaped illuminant spectrum, not a flat
+		//! scalar -- concrete lights (`PointLight` / `SpotLight` /
+		//! `DirectionalLight` / `AmbientLight`) cache an
+		//! `RGBIlluminantSpectrum` built from their colour, rebuilt on
+		//! every colour write, and evaluate it at `nm` here.  A flat
+		//! scalar reused at every wavelength would resolve to the
+		//! flat-spectrum chromaticity (1.20, 0.95, 0.91) on this film
+		//! instead of round-tripping to the authored RGB colour; the
+		//! stale "Illuminant E projection via `ColorMath::Luminance`"
+		//! description this comment used to carry is what Stage C
+		//! replaced.  This is the per-NM analog of the RGB
+		//! `ComputeDirectLighting`.
 		//!
 		//! Default impl falls back to running the RGB version and
 		//! uplifting the resulting RGB as an ILLUMINANT at @a nm — the

@@ -623,6 +623,10 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 					const Scalar maxC = ColorMath::MaxValue( lv.throughput );
 					if( maxC > clampThreshold ) {
 						lv.throughput = lv.throughput * ( clampThreshold / maxC );
+						// Rebuild the cached NM-merge spectrum to match --
+						// see LightVertex::throughputSpectrum's comment
+						// (VCMLightVertex.h).
+						lv.throughputSpectrum = VCMIntegrator::LightThroughputSpectrum( lv.throughput );
 						clamped++;
 					}
 				}

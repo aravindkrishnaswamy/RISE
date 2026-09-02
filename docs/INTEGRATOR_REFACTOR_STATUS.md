@@ -96,6 +96,19 @@ Round 2 (ABI preservation) returned no findings.
 - `LightVertexThroughput<Tag>` — for the merge-store read; applies `RISEPelToNMProxy` on NM since the store is Pel-only (v1 architectural debt preserved as-is).
 - `MaxAbs(RISEPel)` / `MaxAbs(Scalar)` — zero-contribution early-exit magnitude.
 
+> **Correction (2026-09-02, Stage C slice 2 follow-up).** Both bullets above are
+> historical. `RISEPelToNMProxy` no longer exists. `ILight` gained
+> `emittedRadianceNM( vLightOut, nm )` (default: illuminant uplift of `emittedRadiance()`;
+> Point/Spot/Directional/Ambient cache a built spectrum) — `EvalLightRadiance<NMTag>` now
+> calls that. `LightVertexThroughput<NMTag>` now calls
+> `VCMIntegrator::LightThroughputRadianceNM` (a cached-per-vertex illuminant uplift, see
+> `LightVertex::throughputSpectrum`) — still an approximation once coloured bounces are
+> involved, since the store genuinely is still Pel-only (that part of the "v1
+> architectural debt" stands), but no longer a flat Rec.709 luma scalar. See
+> [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7's status block
+> and [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §3 for the full picture; history
+> above is not rewritten.
+
 **Adversarial review**: 1 round automated, 1 additional user review.  Total findings 2× P2, all fixed.
 
 - 0× P1.

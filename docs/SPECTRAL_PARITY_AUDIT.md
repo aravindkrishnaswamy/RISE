@@ -19,12 +19,12 @@ Historical scorecard for the 13 original ✗ / partial / "(limited)" cells:
 - **PT-spectral inline AOV LANDED 2026-06-02** — both `pathtracing_spectral_rasterizer` and `pixelintegratingspectral_rasterizer` allocate/accumulate the inline `PixelAOV` and feed AOV-guided OIDN in accurate mode (§2.6 OUTCOME, §6.2).  The shader-dispatch path uses a new `RuntimeContext::pAOV` bridge (no `IShaderOp` interface change); the Phase-2b Accurate hook was completed with its missing BSDF-section sibling (was inert for diffuse-behind-glass on Pel too).
 - **Phases 2b/2c LANDED 2026-05-31 / 2026-06-02** — the integrator refactor that PT-spectral and BDPT-spectral inline AOV blocked on is now complete; templatized PT, VCM, BDPT are all single-source-of-truth across Pel/NM (see [INTEGRATOR_REFACTOR_STATUS.md](INTEGRATOR_REFACTOR_STATUS.md)).
 - **BDPT-spectral inline AOV** is structurally unblocked but not the listed gap — see §2.12.
-- **1 architectural item REMAINS OPEN** (2–4 weeks, design + implementation): **per-wavelength photon stores for VCM-spectral merging (§3)** — the single correctness issue.  Source still uses `LightVertexThroughput<NMTag>` → `RISEPelToNMProxy(lv.throughput)`; the declared-but-unused `LightVertexNM` struct in [VCMLightVertex.h:110](../src/Library/Shaders/VCMLightVertex.h#L110) is the intended storage destination.
+- **1 architectural item REMAINS OPEN** (2–4 weeks, design + implementation): **per-wavelength photon stores for VCM-spectral merging (§3)** — the single correctness issue.  Source still uses `LightVertexThroughput<NMTag>` → `RISEPelToNMProxy(lv.throughput)`; the declared-but-unused `LightVertexNM` struct in [VCMLightVertex.h:110](../src/Library/Shaders/VCMLightVertex.h#L110) is the intended storage destination.  (Correction, 2026-09-02: `RISEPelToNMProxy` no longer exists — see §3's status block and [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5. The architectural gap this bullet describes — the store is still Pel-only — is otherwise unchanged.)
 - **2 deliberately out of scope** (MLT × 2): chain-based mutation has no useful interaction with the optional features.
 - **2 matrix errors** (no work — fixed in doc): pixelintegratingspectral_rasterizer's ✓ for adaptive sampling and optimal MIS were wrong; BDPT's ✓ for SMS was post-2026-05-excision stale.
 - **3 architecture- or research-blocked** (no path forward without a separate design): VCM-anything path guiding, BDPT/VCM optimal MIS, pixelintegratingspectral path guiding.
 
-The single **correctness** issue (vs feature gap) is **VCM-spectral merging via the `RISEPelToNMProxy` luminance projection** — see §3.
+The single **correctness** issue (vs feature gap) is **VCM-spectral merging via the `RISEPelToNMProxy` luminance projection** — see §3.  (Correction, 2026-09-02: renamed to `VCMIntegrator::LightThroughputRadianceNM`, an illuminant uplift, not a Rec.709 luma proxy; `RISEPelToNMProxy` was deleted. See §3's status block.)
 
 ---
 
@@ -184,6 +184,12 @@ For each ✗ / partial / (limited) cell, this section names the feature, locates
 
 ### 2.16 `vcm_spectral_rasterizer` — Spectral merging via `RISEPelToNMProxy` (CORRECTNESS)
 
+> **Correction (2026-09-02):** this heading's function name is historical — `RISEPelToNMProxy`
+> was deleted (Stage C slice 2 follow-up); the merge path now calls
+> `VCMIntegrator::LightThroughputRadianceNM`. See §3's status block and
+> [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5. The
+> feature-gap classification (correctness, not feature) is unchanged.
+
 This is the only listed gap that's a **correctness** issue, not a feature gap. It gets its own §3.
 
 ### 2.17 `vcm_spectral_rasterizer` — OIDN albedo proxy ✓ (DONE 2026-05-07)
@@ -243,6 +249,8 @@ The merge contribution at NM is:
 contribution_NM = cameraBsdfNM * RISEPelToNMProxy( lv.throughput ) * weight
 ```
 
+(Historical, per §3's status block: read as `VCMIntegrator::LightThroughputRadianceNM( lv.throughput, nm )`, an illuminant uplift — `RISEPelToNMProxy` no longer exists. The shape of the argument below is otherwise unchanged.)
+
 `lv.throughput` is the photon's accumulated alpha from light source through every BSDF lobe along the light subpath, captured at a single hero wavelength during the light pass. The luminance proxy projects this to a scalar **at merge time** rather than carrying the photon's per-wavelength throughput.
 
 **Symptoms on dispersive caustics:**
@@ -301,7 +309,7 @@ Five additional non-fatal but corroborating findings (sodium-vapour + dye glass 
 
 **Implication for §7-Q1.**  The audit's "v2 default; v3 only if regression scenes show residual error" recommendation rested on the load-bearing assumption that v2 is at worst neutral on dispersive scenes.  Findings 13.1, 13.6, 13.7, 13.8 demolish that.  **v3 is now the only path to closing §3 properly.**
 
-**Status of §3 going forward:** OPEN.  The v3 chain-storing design is sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14 but is **NOT design-reviewed** — that's a separate effort the user has deferred to a future focused session.  The current proxy (`RISEPelToNMProxy(lv.throughput)`) remains in tree as the known-wrong-but-stable behaviour.
+**Status of §3 going forward:** OPEN.  The v3 chain-storing design is sketched in [VCM_SPECTRAL_PHOTON_STORE_DESIGN.md](VCM_SPECTRAL_PHOTON_STORE_DESIGN.md) §14 but is **NOT design-reviewed** — that's a separate effort the user has deferred to a future focused session.  The current proxy (`RISEPelToNMProxy(lv.throughput)`) remains in tree as the known-wrong-but-stable behaviour.  (Correction, 2026-09-02: the proxy in tree today is `VCMIntegrator::LightThroughputRadianceNM(lv.throughput, nm)` — an illuminant uplift, not the flat luma scalar `RISEPelToNMProxy` computed; see §3's status block. The dispersion-loss architectural gap this section's OPEN status refers to is unchanged — the store is still Pel-only.)
 
 ### 3.7 NEW finding from design review — NM lobe-selection wavelength divergence (Finding 13.2)
 
@@ -458,6 +466,6 @@ These came up during the audit and need a decision before the corresponding reme
 - [docs/OIDN.md](OIDN.md) — OIDN integration, the AOV retrace fallback and inline-AOV (Accurate) modes, the FilteredFilm bypass invariant.
 - [docs/MLT_POSTMORTEM.md](MLT_POSTMORTEM.md) — why MLT is deliberately feature-empty.
 - [src/Library/Parsers/AsciiSceneParser.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) `CreateAllChunkParsers()` — the helper-template wiring this audit cross-references against the matrix.
-- [src/Library/Shaders/VCMIntegrator.cpp:129-251](../src/Library/Shaders/VCMIntegrator.cpp#L129) — the `RISEPelToNMProxy` luminance projection and its callers.
+- [src/Library/Shaders/VCMIntegrator.cpp:129-251](../src/Library/Shaders/VCMIntegrator.cpp#L129) — the `RISEPelToNMProxy` luminance projection and its callers.  (Correction, 2026-09-02: this is now `VCMIntegrator::LightThroughputRadianceNM` / `LightThroughputSpectrum` — an illuminant uplift; `RISEPelToNMProxy` was deleted. See §3's status block and [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.5.)
 - [src/Library/Shaders/VCMLightVertex.h:110-120](../src/Library/Shaders/VCMLightVertex.h#L110) — the unused `LightVertexNM` struct that's the storage destination for the §3 fix.
 - [AGENTS.md change checklist](../AGENTS.md) — required reading for any of §6.1's `RISE_API_*` factory changes.

@@ -155,7 +155,8 @@ Scalar ExpressionPainter::GetRadianceNM( const RayIntersectionGeometric& ri, con
 	// describes how the same value behaves as a multiplier).  Overriding
 	// the IPainter default skips a redundant GetColor virtual so the
 	// program is evaluated exactly once, matching GetColorNM's cost.
-	const RISEPel rgb = EvalRGB( ri );
+	RISEPel rgb = EvalRGB( ri );
+	ColorMath::EnsurePositve( rgb );
 	return RGBIlluminantSpectrum::FromRGB( rgb, RGBToSpectrumTable::Get() ).Eval( nm );
 }
 

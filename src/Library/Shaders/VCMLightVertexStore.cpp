@@ -32,6 +32,7 @@
 
 #include "pch.h"
 #include "VCMLightVertexStore.h"
+#include "VCMIntegrator.h"			// VCMIntegrator::LightThroughputSpectrum -- rebuild the cached throughputSpectrum after a rescale, see ClampOutlierThroughputs
 #include "../Utilities/BoundingBox.h"
 #include "../Utilities/ThreadPool.h"
 
@@ -655,6 +656,12 @@ void LightVertexStore::ClampOutlierThroughputs(
 		if( lum > threshold ) {
 			const Scalar scale = threshold / lum;
 			mVertices[i].throughput = mVertices[i].throughput * scale;
+			// Rebuild the cached NM-merge spectrum to match the
+			// rescaled throughput -- see LightVertex::throughputSpectrum's
+			// comment (VCMLightVertex.h).  This is the only other site
+			// that writes `.throughput` after deposit.
+			mVertices[i].throughputSpectrum =
+				VCMIntegrator::LightThroughputSpectrum( mVertices[i].throughput );
 		}
 	}
 }

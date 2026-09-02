@@ -93,12 +93,21 @@ namespace RISE
 		//! DEFAULT (SLOW PATH): uplift the composed `GetColor` per call
 		//! through the Jakob-Hanika LUT as an illuminant.  That costs a
 		//! LUT lookup per sample, and it is the CORRECT semantics for a
-		//! composite painter (blend / ramp / checker / noise / mapping):
-		//! the thing that emits is the composed colour, so the composed
-		//! colour is what carries the illuminant shape.  Forwarding to the
-		//! children's own spectra would sum reflectance-shaped spectra and
-		//! never produce D65.  Painters that already hold (or can cheaply
-		//! build) an illuminant spectrum override this.
+		//! painter that genuinely BLENDS several sources into one colour
+		//! (e.g. `BlendPainter`, `RampPainter`, `CurlNoise3DPainter`,
+		//! `CompositeFunction2DPainter`): the thing that emits is the
+		//! composed colour, so the composed colour is what carries the
+		//! illuminant shape.  Forwarding to the children's own spectra
+		//! would sum reflectance-shaped spectra and never produce D65.
+		//! (Dated 2026-09-02: `CheckerPainter` and `MappingPainter` used
+		//! to be cited here too, but they SELECT one child rather than
+		//! blending -- they now override `GetRadianceNM` to forward to
+		//! that child, alongside `LinesPainter`, `Voronoi2DPainter`,
+		//! `Voronoi3DPainter`, `ScatterPainter`, `StochasticTilePainter`,
+		//! `TexCoord1Painter` and `UVTransformPainter`; see
+		//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md §7.1/§7.5.)  Painters
+		//! that already hold (or can cheaply build) an illuminant
+		//! spectrum override this.
 		//!
 		/// \return The emitted radiance at the particular wavelength
 		virtual Scalar GetRadianceNM(

@@ -252,7 +252,8 @@ Scalar TexturePainter::GetRadianceNM( const RayIntersectionGeometric& ri, const 
 	RISE_PROFILE_PHASE(TexturePainter);
 	RISE_PROFILE_INC(nTexturePainterSamples);
 
-	const RISEPel rgb = SampleTextured( ri ).base;
+	RISEPel rgb = SampleTextured( ri ).base;
+	ColorMath::EnsurePositve( rgb );
 	return RGBIlluminantSpectrum::FromRGB( rgb, RGBToSpectrumTable::Get() ).Eval( nm );
 }
 

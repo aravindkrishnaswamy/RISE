@@ -165,6 +165,20 @@ namespace RISE
 				const Scalar nm
 				);
 
+			/// Sibling of LightThroughputRadianceNM that returns the
+			/// built RGBIlluminantSpectrum itself (EnsurePositve'd RGB,
+			/// then FromRGB) rather than evaluating it at one
+			/// wavelength.  This is the ONE place the spectrum is
+			/// constructed; LightThroughputRadianceNM just calls
+			/// `.Eval(nm)` on the result.  A deposited LightVertex
+			/// caches this at write time (`LightVertex::throughputSpectrum`,
+			/// see VCMLightVertex.h) so the per-merge-candidate NM read
+			/// in EvaluateMerges is a plain Eval, not a fresh JH LUT
+			/// lookup per candidate.
+			static RGBIlluminantSpectrum LightThroughputSpectrum(
+				const RISEPel& throughput
+				);
+
 			/// Strategy (s=0): eye subpath's tail vertex directly
 			/// hits an emitter surface.  Iterates every non-delta
 			/// SURFACE eye vertex at t>=2, tests if its material

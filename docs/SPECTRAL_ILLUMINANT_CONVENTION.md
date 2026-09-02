@@ -436,6 +436,24 @@ path. The uplift round-trips exactly for a grey/white emitter; a spectrally-auth
 emitter behind SMS resolves through its RGB projection. Delta lights avoid this entirely
 — they have `ILight::emittedRadianceNM` and the call sites use it.
 
+**The one open black-`GetColor` hole (dated 2026-09-02).** A mesh luminaire whose
+exitance is bound to a `piecewise_linear_function` (`Function1DSpectralPainter` — RGB
+`GetColor` is black by construction; the physical spectrum only exists on the NM path)
+has `LightSample::Le == (0,0,0)`, because `Le` is filled from the emitter's RGB
+`emittedRadiance`. `SMSLeNM`'s illuminant uplift of a black RGB triple is exactly black,
+so **an SMS caustic cast by that emitter is exactly BLACK on the NM path**, while direct
+NEE lights the same emitter correctly — `LightSampler.cpp`'s spectral NEE loop (~line
+2458) calls `pEmitter->emittedRadianceNM(lumri, -vToLight, lumNormal, nm)` with the full
+sampled geometry, which reaches the authored spectral curve. This is **not a new
+regression**: `ColorMath::Luminance(RISEPel(0,0,0))` was also `0`, so the pre-uplift code
+produced the same black caustic. It is, however, the one case where "chroma-preserving
+approximation" above is not merely approximate but wrong (`0` instead of the emitter's
+true nonzero spectral `Le`). The exact fix is widening `LightSample` with the sampled
+hit's geometry (or at least its normal plus the `IEmitter*`) and the emitter itself, so
+`emittedRadianceNM` becomes reachable here too — the sampler already has both in hand at
+fill time, so this is a struct-widening change, not a new capability, and is left for
+follow-up (no code changed by this note).
+
 Tests: `tests/PainterRadianceForwardingTest.cpp` (new — forwarder contract, with
 `BlendPainter` as the negative control), `VolumeSpectralCoefficientsTest` case G
 (emission is illuminant-shaped and `SetEmission` rebuilds the cache),

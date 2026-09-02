@@ -33,7 +33,12 @@ using namespace RISE::Implementation;
 
 Scalar ILight::emittedRadianceNM( const Vector3& vLightOut, const Scalar nm ) const
 {
-	return RGBIlluminantSpectrum::FromRGB( emittedRadiance( vLightOut ) ).Eval( nm );
+	// Emitted radiance is physically non-negative; an all-negative RGB
+	// triple would otherwise uplift to poly=(0,0,0) (Eval == 0.5) times a
+	// NEGATIVE scale, producing negative radiance at every wavelength.
+	RISEPel c = emittedRadiance( vLightOut );
+	ColorMath::EnsurePositve( c );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }
 
 Scalar ILight::ComputeDirectLightingNM(
@@ -50,7 +55,10 @@ Scalar ILight::ComputeDirectLightingNM(
 	ComputeDirectLighting( ri, pCaster, brdf, bReceivesShadows, amount, bFullSphereReceiver, bVolumeReceiver );
 	// `amount` is a computed RADIANCE, so it uplifts as an illuminant and
 	// round-trips through the film back to itself.  (Pre-Stage-C this was a
-	// Rec.709 luma projection that discarded `nm` entirely.)
+	// Rec.709 luma projection that discarded `nm` entirely.)  EnsurePositve
+	// guards the uplift: an all-negative triple would otherwise resolve to
+	// poly=(0,0,0) (Eval == 0.5) times a NEGATIVE scale.
+	ColorMath::EnsurePositve( amount );
 	return RGBIlluminantSpectrum::FromRGB( amount ).Eval( nm );
 }
 
