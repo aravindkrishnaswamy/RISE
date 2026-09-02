@@ -7486,6 +7486,32 @@ bool EvaluateCertifiedResidentTransport(
 	return result;
 }
 
+::RISEFireProductionFP64::FireProductionScalarPhysicalFluxPrerequisiteRequest
+PhysicalFluxRequestFP64(const RISE::FireProductionScalarPhysicalFluxPrerequisiteRequest& request)
+{
+	::RISEFireProductionFP64::FireProductionScalarPhysicalFluxPrerequisiteRequest result;
+	result.shape.nx=request.shape.nx;result.shape.ny=request.shape.ny;
+	result.shape.nz=request.shape.nz;
+	result.shape.cellWidthM=static_cast<double>(request.shape.cellWidthM);
+	for(unsigned int side=0u;side<6u;++side)result.boundary[side]=
+		static_cast<::RISEFireProductionFP64::FireProductionProjectionBoundary>(
+			request.boundary[side]);
+	result.conservativeValues.assign(request.conservativeValues.begin(),
+		request.conservativeValues.end());
+	result.temperatureK.assign(request.temperatureK.begin(),request.temperatureK.end());
+	result.diffusivityM2PerS.assign(request.diffusivityM2PerS.begin(),
+		request.diffusivityM2PerS.end());
+	result.conductivityWPerMK.assign(request.conductivityWPerMK.begin(),
+		request.conductivityWPerMK.end());
+	for(unsigned int axis=0u;axis<3u;++axis)result.frozenVelocityMPerS[axis].assign(
+		request.frozenVelocityMPerS[axis].begin(),request.frozenVelocityMPerS[axis].end());
+	for(unsigned int component=0u;component<9u;++component)
+		result.ambient[component]=static_cast<double>(request.ambient[component]);
+	result.ambientTemperatureK=static_cast<double>(request.ambientTemperatureK);
+	result.pressureOpenInflow=request.pressureOpenInflow;
+	return result;
+}
+
 template<class FloatVector,class DoubleVector>
 bool RoundedFP64BytesMatch(const FloatVector& observed,const DoubleVector& reference,
 	std::size_t& mismatches,double& maximumAbsoluteDifference)
@@ -8509,10 +8535,545 @@ int RunProductionResidentTransportMetalFP64Fixture()
 	return passed?0:196;
 }
 
+int RunProductionResidentPhysicalFluxMetalFP64Fixture()
+{
+	static_assert(!std::is_convertible<FireProductionResidentPhysicalFluxComparatorResult,
+		FireProductionScalarPhysicalFluxPrerequisiteResult>::value,
+		"qualification output must not become resident physical-flux authority");
+	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
+	if(!fuel.IsValid())return 197;
+	FireProductionResidentPhysicalFluxComparatorRequest request;
+	request.transport.shape.nx=4u;request.transport.shape.ny=4u;
+	request.transport.shape.nz=4u;request.transport.shape.cellWidthM=0.025f;
+	request.transport.stage=FireProductionProjectedHeunStage::R0;
+	request.transport.attemptIdentity=UINT64_C(0x1980000000000001);
+	request.transport.parentCandidateIdentity=UINT64_C(0x1980000000000002);
+	request.transport.projectionIdentity=UINT64_C(0x1980000000000003);
+	request.transport.boundary.fill(FireProductionProjectionWall);
+	const std::size_t cells=request.transport.shape.CellCount();
+	for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
+		request.transport.shape.ny*request.transport.shape.nz:(side<4u?
+		request.transport.shape.nx*request.transport.shape.nz:
+		request.transport.shape.nx*request.transport.shape.ny);
+		request.transport.fuelInletBoundaryFace[side].assign(count,0u);
+		request.pressureOpenInflow[side].assign(count,0u);
+	}
+	request.transport.conservativeValues.assign(9u*cells,0.0f);
+	request.transport.temperatureK.resize(cells);std::string error;
+	auto assignCell=[&](FireProductionResidentPhysicalFluxComparatorRequest& fixture,
+		const std::size_t cell,const double temperature)->bool{
+		MethaneCellState physical;physical.producerPrecision=FireStateProducerPrecision::Binary32;
+		physical.temperatureK=temperature;
+		const double fraction=0.01+0.00625*static_cast<double>((cell+cell/4u)%4u);
+		double massFraction[6];for(std::size_t species=0u;species<6u;++species)
+			massFraction[species]=(1.0-fraction)*fuel.AmbientMassFractions()[species]+
+				fraction*fuel.InjectedMassFractions()[species];
+		const double reacted=0.125*std::min(massFraction[MethaneCH4],
+			massFraction[MethaneO2]/fuel.StoichiometricOxygenKGPerKGFuel());
+		for(std::size_t species=0u;species<6u;++species)
+			massFraction[species]+=reacted*fuel.PrimaryReactionDelta()[species];
+		double inverseWeight=0.0;for(std::size_t species=0u;species<6u;++species){
+			const FireThermochemistrySpecies* record=fuel.FindSpecies(
+				fuel.SpeciesOrder()[species].c_str());if(!record)return false;
+			inverseWeight+=massFraction[species]/record->molecularWeightKGPerKMol;
+		}
+		const double density=fuel.ThermodynamicPressurePa()/(8314.46261815324*
+			physical.temperatureK*inverseWeight);
+		for(std::size_t species=0u;species<6u;++species)
+			physical.constituent[species]=density*massFraction[species];
+		physical.constituent[MethaneCarbon]=0.0;physical.rhoTotalZ=density*fraction;
+		if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(physical),
+			physical.temperatureK,physical.sensibleEnergyJPerM3,&error))return false;
+		const ConservativeVector value=ToConservativeVector(physical);
+		for(std::size_t component=0u;component<9u;++component)
+			fixture.transport.conservativeValues[component*cells+cell]=
+				static_cast<float>(value[component]);
+		fixture.transport.temperatureK[cell]=static_cast<float>(physical.temperatureK);
+		return true;
+	};
+	for(std::size_t cell=0u;cell<cells;++cell)if(!assignCell(request,cell,
+		300.0+75.0*static_cast<double>(cell%4u)))return 199;
+	for(unsigned int component=0u;component<9u;++component)
+		request.ambient[component]=request.transport.conservativeValues[component*cells];
+	request.ambientTemperatureK=request.transport.temperatureK[0];
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::size_t faces=FireProductionProjectionFaceCount(request.transport.shape,axis);
+		request.transport.projectedVelocityMPerS[axis].resize(faces);
+		const std::size_t ex=axis==0u?5u:4u,ey=axis==1u?5u:4u,ez=axis==2u?5u:4u;
+		for(std::size_t z=0u;z<ez;++z)for(std::size_t y=0u;y<ey;++y)
+			for(std::size_t x=0u;x<ex;++x){const std::size_t face=axis==0u?
+				(z*4u+y)*5u+x:(axis==1u?(z*5u+y)*4u+x:(z*4u+y)*4u+x);
+				request.transport.projectedVelocityMPerS[axis][face]=
+					0.0234375f*static_cast<float>((axis+1u)*(x+1u))-
+					0.015625f*static_cast<float>((y+1u)*(z+1u));}
+	}
+	const FireCertifiedNullspace& reconstruction=fuel.ConservativeReconstruction();
+	request.nullity=reconstruction.nullity;
+	request.nullspaceBasis.resize(reconstruction.orthonormalBasis.size());
+	for(std::size_t value=0u;value<request.nullspaceBasis.size();++value)
+		request.nullspaceBasis[value]=static_cast<float>(reconstruction.orthonormalBasis[value]);
+	request.coordinateProjector.assign(request.nullity*request.nullity,0.0f);
+	for(std::size_t value=0u;value<request.nullity;++value)
+		request.coordinateProjector[value*request.nullity+value]=1.0f;
+	struct BoundStat {double residual=0.0,boundAtResidual=0.0,maximumRatio=0.0;bool passed=true;};
+	std::array<BoundStat,9> donorStat,mcStat,lowStat,highStat;
+	std::array<BoundStat,8> massStat;std::array<BoundStat,7> enthalpyStat;
+	std::array<BoundStat,3> gasStat;BoundStat energyStat;
+	auto updateStat=[](BoundStat& stat,const double observed,const double target,
+		const double bound){const double residual=std::fabs(observed-target);
+		if(residual>stat.residual){stat.residual=residual;stat.boundAtResidual=bound;}
+		if(bound>0.0)stat.maximumRatio=std::max(stat.maximumRatio,residual/bound);
+		else if(residual!=0.0)stat.maximumRatio=std::numeric_limits<double>::infinity();
+		stat.passed=stat.passed&&std::isfinite(residual)&&std::isfinite(bound)&&bound>=0.0&&
+			residual<=bound;};
+	const double epsilon=std::numeric_limits<float>::epsilon();
+	auto gamma=[&](const double operations){return operations*epsilon/(1.0-operations*epsilon);};
+	bool donorBitExact=true,mcBitExact=true,shared=true,boundsPassed=true;
+	bool enthalpyBitExact=true,logBitExact=true,logEnclosurePassed=true;
+	double maximumDeviceLogEnclosureRatio=0.0;
+	std::uint32_t branchBitmap=0u,independentBranchBitmap=0u;std::uint64_t wallIdentity=0u;
+	FireProductionResidentPhysicalFluxComparatorResult metal;
+	auto validateFixture=[&](const FireProductionResidentPhysicalFluxComparatorRequest& fixture,
+		const char* label)->bool{
+		FireProductionResidentPhysicalFluxComparatorResult observed;
+		if(!EvaluateFireProductionResidentPhysicalFluxMetalComparator(fixture,observed,&error)){
+			std::fprintf(stderr,"RESIDENT_PHYSICAL_FLUX fixture=%s error=%s\n",label,error.c_str());return false;}
+		FireProductionScalarFCTRequest advective;advective.shape=fixture.transport.shape;
+		advective.timeStepS=0.001f;advective.boundary=fixture.transport.boundary;
+		advective.beginning=fixture.transport.conservativeValues;
+		advective.sourceDelta.assign(9u*cells,0.0f);
+		advective.frozenVelocityMPerS=fixture.transport.projectedVelocityMPerS;
+		advective.ambient=fixture.ambient;advective.pressureOpenInflow=fixture.pressureOpenInflow;
+		advective.nullity=fixture.nullity;advective.nullspaceBasis=fixture.nullspaceBasis;
+		advective.coordinateProjector=fixture.coordinateProjector;
+		advective.feasibilityFactor=1.0f/1024.0f;
+		advective.assemblyReserveFactor=0.5f*advective.feasibilityFactor;
+		FireProductionScalarFCTFluxPair advectiveCPU;
+		if(!BuildFireProductionScalarFCTFluxPairCPU(advective,advectiveCPU,&error))return false;
+		std::vector<float> highCPU(advectiveCPU.lowFlux.size());
+		for(std::size_t value=0u;value<highCPU.size();++value)
+			highCPU[value]=advectiveCPU.lowFlux[value]+advectiveCPU.fluxDelta[value];
+		donorBitExact=donorBitExact&&ByteIdenticalVector(observed.donorAdvectiveFlux,
+			advectiveCPU.lowFlux);mcBitExact=mcBitExact&&
+			ByteIdenticalVector(observed.mcMusclAdvectiveFlux,highCPU);
+		FireProductionScalarPhysicalFluxPrerequisiteRequest physical;
+		physical.shape=fixture.transport.shape;physical.boundary=fixture.transport.boundary;
+		physical.conservativeValues=fixture.transport.conservativeValues;
+		physical.temperatureK=fixture.transport.temperatureK;
+		physical.diffusivityM2PerS=observed.diffusivityM2PerS;
+		physical.conductivityWPerMK=observed.conductivityWPerMK;
+		physical.frozenVelocityMPerS=fixture.transport.projectedVelocityMPerS;
+		physical.ambient=fixture.ambient;physical.ambientTemperatureK=fixture.ambientTemperatureK;
+		physical.pressureOpenInflow=fixture.pressureOpenInflow;
+		const auto advective64=ScalarFCTRequestFP64(advective);
+		const auto physical64=PhysicalFluxRequestFP64(physical);
+		::RISEFireProductionFP64::FireProductionScalarFCTFluxPair advectiveOracle;
+		::RISEFireProductionFP64::FireProductionScalarPhysicalFluxPrerequisiteResult physicalOracle;
+		if(!::RISEFireProductionFP64::BuildFireProductionScalarFCTFluxPairCPU(
+			advective64,advectiveOracle,&error)||
+			!::RISEFireProductionFP64::BuildFireProductionScalarPhysicalFluxPrerequisiteCPU(
+				physical64,physicalOracle,&error))return false;
+		const std::size_t allFaces=observed.packedFaceOffset[2]+
+			FireProductionProjectionFaceCount(fixture.transport.shape,2u);
+		auto decode=[&](const std::size_t packed,unsigned int& axis,std::size_t& x,
+			std::size_t& y,std::size_t& z){if(packed<observed.packedFaceOffset[1]){
+				axis=0u;std::size_t rest=packed;x=rest%5u;rest/=5u;y=rest%4u;z=rest/4u;
+			}else if(packed<observed.packedFaceOffset[2]){axis=1u;std::size_t rest=
+				packed-observed.packedFaceOffset[1];x=rest%4u;rest/=4u;y=rest%5u;z=rest/5u;
+			}else{axis=2u;std::size_t rest=packed-observed.packedFaceOffset[2];
+				x=rest%4u;rest/=4u;y=rest%4u;z=rest/4u;}};
+		auto localCell=[&](const unsigned int axis,const long coordinate,std::size_t x,
+			std::size_t y,std::size_t z,std::size_t& cell,bool& ambient)->bool{
+			const long extent=4;long selected=coordinate;ambient=false;
+			if(selected<0||selected>=extent){const unsigned int side=2u*axis+(selected>=extent?1u:0u);
+				const std::size_t sideFace=axis==0u?z*4u+y:(axis==1u?z*4u+x:y*4u+x);
+				if(fixture.transport.boundary[side]==FireProductionProjectionPeriodic)
+					selected=selected<0?extent-1:0;
+				else if(fixture.transport.boundary[side]==FireProductionProjectionPressureOpen&&
+					!fixture.pressureOpenInflow[side].empty()&&
+					fixture.pressureOpenInflow[side][sideFace]!=0u){ambient=true;return true;}
+				else selected=selected<0?0:extent-1;}
+			if(axis==0u)x=static_cast<std::size_t>(selected);else if(axis==1u)y=
+				static_cast<std::size_t>(selected);else z=static_cast<std::size_t>(selected);
+			cell=(z*4u+y)*4u+x;return true;};
+		const FireCertifiedNullspace& physicalProjection=fuel.NonadvectiveFluxProjection();
+		for(std::size_t face=0u;face<allFaces;++face){unsigned int axis=0u;
+			std::size_t x=0u,y=0u,z=0u;decode(face,axis,x,y,z);
+			const long coordinate=static_cast<long>(axis==0u?x:(axis==1u?y:z));
+			const std::size_t localFace=face-observed.packedFaceOffset[axis];
+			const double velocity=fixture.transport.projectedVelocityMPerS[axis][localFace];
+			std::array<double,9> lineScale={{}};
+			for(int shift=-2;shift<=1;++shift){std::size_t cell=0u;bool ambient=false;
+				localCell(axis,coordinate+shift,x,y,z,cell,ambient);
+				for(std::size_t component=0u;component<9u;++component)lineScale[component]+=
+					std::fabs(ambient?fixture.ambient[component]:
+						fixture.transport.conservativeValues[component*cells+cell]);}
+			std::array<double,8> slopeScale={{}};
+			for(std::size_t component=0u;component<8u;++component)
+				for(std::size_t basis=0u;basis<fixture.nullity;++basis){double coordinateScale=0.0;
+					for(std::size_t column=0u;column<fixture.nullity;++column){double rawScale=0.0;
+						for(std::size_t row=0u;row<8u;++row)rawScale+=std::fabs(
+							fixture.nullspaceBasis[row*fixture.nullity+column])*lineScale[row];
+						coordinateScale+=std::fabs(fixture.coordinateProjector[
+							basis*fixture.nullity+column])*rawScale;}
+					slopeScale[component]+=std::fabs(fixture.nullspaceBasis[
+						component*fixture.nullity+basis])*coordinateScale;}
+			std::array<double,8> physicalScale={{}};double maximumRhoD=0.0,
+				minimumMass=std::numeric_limits<double>::max(),
+				maximumK=0.0,minimumT=fixture.ambientTemperatureK,maximumT=minimumT;
+			for(int shift=-1;shift<=0;++shift){std::size_t cell=0u;bool ambient=false;
+				localCell(axis,coordinate+shift,x,y,z,cell,ambient);double total=0.0;
+				for(std::size_t species=0u;species<7u;++species)total+=ambient?
+					fixture.ambient[1u+species]:fixture.transport.conservativeValues[
+						(1u+species)*cells+cell];
+				minimumMass=std::min(minimumMass,total);if(!ambient){maximumRhoD=std::max(
+					maximumRhoD,total*observed.diffusivityM2PerS[cell]);maximumK=std::max(
+					maximumK,static_cast<double>(observed.conductivityWPerMK[cell]));
+					minimumT=std::min(minimumT,static_cast<double>(fixture.transport.temperatureK[cell]));
+					maximumT=std::max(maximumT,static_cast<double>(fixture.transport.temperatureK[cell]));}}
+			const double distance=fixture.transport.shape.cellWidthM*0.5;
+			std::array<double,8> rawScale={{}};for(std::size_t component=0u;component<8u;++component)
+				rawScale[component]=2.0*maximumRhoD*lineScale[component]/
+					(std::max(minimumMass,std::numeric_limits<double>::min())*distance);
+			for(std::size_t component=0u;component<8u;++component)
+				for(std::size_t basis=0u;basis<physicalProjection.nullity;++basis){double coordinateScale=0.0;
+					for(std::size_t row=0u;row<8u;++row)
+						coordinateScale+=std::fabs(physicalProjection.orthonormalBasis[
+							row*physicalProjection.nullity+basis])*rawScale[row];
+					physicalScale[component]+=std::fabs(
+						physicalProjection.orthonormalBasis[component*physicalProjection.nullity+basis])*
+						coordinateScale;}
+			const bool geometricBoundary=coordinate==0||coordinate==4;
+			const bool periodicAxis=fixture.transport.boundary[2u*axis]==
+				FireProductionProjectionPeriodic;
+			bool physicalActive=!geometricBoundary||periodicAxis;
+			unsigned int boundarySide=0u;std::size_t boundarySideFace=0u;
+			if(geometricBoundary&&!periodicAxis){const unsigned int side=2u*axis+
+				(coordinate==4?1u:0u);const std::size_t sideFace=axis==0u?z*4u+y:
+					(axis==1u?z*4u+x:y*4u+x);physicalActive=
+					fixture.transport.boundary[side]==FireProductionProjectionPressureOpen&&
+					fixture.pressureOpenInflow[side][sideFace]!=0u;boundarySide=side;
+				boundarySideFace=sideFace;}
+			if(periodicAxis&&geometricBoundary&&coordinate==4)
+				independentBranchBitmap|=1u<<1u;
+			if(!geometricBoundary||periodicAxis)independentBranchBitmap|=1u<<0u;
+			else if(fixture.transport.boundary[boundarySide]==FireProductionProjectionWall)
+				independentBranchBitmap|=1u<<2u;
+			else if(fixture.pressureOpenInflow[boundarySide][boundarySideFace]==0u)
+				independentBranchBitmap|=1u<<3u;
+			else independentBranchBitmap|=1u<<4u;
+			if(physicalActive)independentBranchBitmap|=1u<<5u;
+			if(geometricBoundary&&!periodicAxis&&
+				fixture.transport.boundary[boundarySide]!=FireProductionProjectionWall)
+				independentBranchBitmap|=1u<<11u;
+			else if(!geometricBoundary||periodicAxis)independentBranchBitmap|=1u<<12u;
+			std::array<double,7> faceEnthalpyBound={{}},faceEnthalpyTarget={{}};
+			double energyBound=0.0;
+			if(physicalActive){std::size_t leftCell=0u,rightCell=0u;bool leftAmbient=false,
+				rightAmbient=false;localCell(axis,coordinate-1,x,y,z,leftCell,leftAmbient);
+				localCell(axis,coordinate,x,y,z,rightCell,rightAmbient);
+				const float leftTemperature=leftAmbient?fixture.ambientTemperatureK:
+					fixture.transport.temperatureK[leftCell];
+				const float rightTemperature=rightAmbient?fixture.ambientTemperatureK:
+					fixture.transport.temperatureK[rightCell];
+				volatile float faceTemperatureValue=0.5f*(leftTemperature+rightTemperature);
+				const float faceTemperature=faceTemperatureValue;
+				auto deterministicLog32=[](const float value){std::uint32_t bits=0u;
+					std::memcpy(&bits,&value,sizeof(bits));const int exponent=
+						static_cast<int>((bits>>23u)&255u)-127;bits=(bits&0x007fffffu)|0x3f800000u;
+					float normalized=0.0f;std::memcpy(&normalized,&bits,sizeof(normalized));
+					volatile float numerator=normalized-1.0f,denominator=normalized+1.0f,
+						y=numerator/denominator,y2=y*y,power=y,sum=power;
+					for(unsigned int odd=3u;odd<=17u;odd+=2u){power=power*y2;
+						volatile float term=power/static_cast<float>(odd);sum=sum+term;}
+					volatile float exponentTerm=static_cast<float>(exponent)*0.6931471805599453f,
+						series=2.0f*sum,result=exponentTerm+series;return static_cast<float>(result);};
+				const float log32=deterministicLog32(faceTemperature);
+				const float deviceLog=observed.faceLogTemperature[face];
+				logBitExact=logBitExact&&std::memcmp(&log32,&deviceLog,sizeof(float))==0;
+				const double log64=std::log(static_cast<double>(faceTemperature));
+				std::uint32_t temperatureBits=0u;std::memcpy(&temperatureBits,&faceTemperature,
+					sizeof(temperatureBits));const int exponent=
+					static_cast<int>((temperatureBits>>23u)&255u)-127;
+				temperatureBits=(temperatureBits&0x007fffffu)|0x3f800000u;
+				float normalized32=0.0f;std::memcpy(&normalized32,&temperatureBits,sizeof(normalized32));
+				const double normalized=normalized32,y=(normalized-1.0)/(normalized+1.0),y2=y*y;
+				double power=y,seriesScale=std::fabs(static_cast<double>(exponent)*
+					static_cast<double>(0.6931471805599453f))+2.0*std::fabs(power);
+				for(unsigned int odd=3u;odd<=17u;odd+=2u){power*=y2;
+					seriesScale+=2.0*std::fabs(power/static_cast<double>(odd));}
+				const double nextPower=power*y2,
+					seriesRemainder=2.0*std::fabs(nextPower)/(19.0*(1.0-y2)),
+					ln2Packing=std::fabs(static_cast<double>(exponent))*
+						std::fabs(static_cast<double>(0.6931471805599453f)-std::log(2.0)),
+					logApproximationBound=gamma(64.0)*seriesScale+ln2Packing+seriesRemainder,
+					deviceLogResidual=std::fabs(static_cast<double>(deviceLog)-log64),
+					deviceLogEnclosureRatio=deviceLogResidual/logApproximationBound;
+				maximumDeviceLogEnclosureRatio=std::max(maximumDeviceLogEnclosureRatio,
+					deviceLogEnclosureRatio);logEnclosurePassed=logEnclosurePassed&&
+					std::isfinite(logApproximationBound)&&deviceLogResidual<=logApproximationBound;
+				if(!fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(faceTemperature,
+					faceEnthalpyTarget.data(),faceEnthalpyTarget.size(),&error))return false;
+				double energyInputError=0.0,energyRoundScale=0.0;
+				for(std::size_t species=0u;species<7u;++species){
+					const FireThermochemistrySpecies* item=fuel.FindSpecies(
+						fuel.SpeciesOrder()[species].c_str());if(!item)return false;
+					const FireThermochemistrySegment* selected=&item->segments.front();
+					for(const FireThermochemistrySegment& segment:item->segments)if(
+						faceTemperature>=static_cast<float>(segment.temperatureMinK)&&
+						(faceTemperature<static_cast<float>(segment.temperatureMaxK)||
+						 &segment==&item->segments.back()))selected=&segment;
+					const std::size_t segmentIndex=static_cast<std::size_t>(selected-
+						item->segments.data());independentBranchBitmap|=1u<<
+						(7u+static_cast<unsigned int>(std::min<std::size_t>(segmentIndex,2u)));
+					float coefficient[7];for(std::size_t term=0u;term<7u;++term)
+						coefficient[term]=static_cast<float>(selected->coefficients[term]);
+					const float molecularWeight=static_cast<float>(item->molecularWeightKGPerKMol),
+						offset=static_cast<float>(selected->sensibleEnthalpyOffsetJPerKG);
+					volatile float inverse=1.0f/faceTemperature,t2=faceTemperature*faceTemperature,
+						t3=t2*faceTemperature,t4=t3*faceTemperature,t5=t4*faceTemperature;
+					volatile float term0=-coefficient[0]*inverse,term1=coefficient[1]*log32,
+						term2=coefficient[2]*faceTemperature,
+						term3=coefficient[3]*t2*0.5f,
+						term4=coefficient[4]*t3*(1.0f/3.0f),
+						term5=coefficient[5]*t4*0.25f,
+						term6=coefficient[6]*t5*0.2f;
+					volatile float primitive=term0+term1+term2+term3+term4+term5+term6;
+					volatile float scaled=8314.46261815324f*primitive/molecularWeight;
+					volatile float hostEnthalpyValue=scaled+offset;const float hostEnthalpy=hostEnthalpyValue;
+					const float deviceEnthalpy=observed.faceSensibleEnthalpyJPerKG[
+						species*allFaces+face];enthalpyBitExact=enthalpyBitExact&&
+						std::memcmp(&hostEnthalpy,&deviceEnthalpy,sizeof(float))==0;
+					const double temperature64=faceTemperature,t2d=temperature64*temperature64,
+						t3d=t2d*temperature64,t4d=t3d*temperature64,t5d=t4d*temperature64;
+					const std::array<double,7> basis={{-1.0/temperature64,log64,temperature64,
+						t2d*0.5,t3d/3.0,t4d*0.25,t5d*0.2}};
+					double packedPrimitiveScale=0.0,truePrimitiveScale=0.0,
+						coefficientPacking=0.0;
+					for(std::size_t term=0u;term<7u;++term){
+						packedPrimitiveScale+=std::fabs(static_cast<double>(coefficient[term])*basis[term]);
+						truePrimitiveScale+=std::fabs(selected->coefficients[term]*basis[term]);
+						coefficientPacking+=std::fabs(static_cast<double>(coefficient[term])-
+							selected->coefficients[term])*std::fabs(basis[term]);}
+					const double gasConstant=8314.46261815324,
+						packedFactor=static_cast<double>(static_cast<float>(gasConstant))/molecularWeight,
+						trueFactor=gasConstant/item->molecularWeightKGPerKMol,
+						uncancelledScale=std::fabs(packedFactor)*packedPrimitiveScale+
+							std::fabs(static_cast<double>(offset)),
+						packingBound=std::fabs(packedFactor)*coefficientPacking+
+							std::fabs(packedFactor-trueFactor)*truePrimitiveScale+
+							std::fabs(static_cast<double>(offset)-
+								selected->sensibleEnthalpyOffsetJPerKG),
+						logBound=std::fabs(packedFactor*coefficient[1])*logApproximationBound;
+					faceEnthalpyBound[species]=gamma(64.0)*uncancelledScale+
+						packingBound+logBound;
+					updateStat(enthalpyStat[species],deviceEnthalpy,
+						faceEnthalpyTarget[species],faceEnthalpyBound[species]);
+					const double massTarget=physicalOracle.physicalMassFluxKGPerM2S[
+						(1u+species)*allFaces+face],massBound=gamma(512.0)*
+						physicalScale[1u+species];
+					energyInputError+=std::fabs(faceEnthalpyTarget[species])*massBound+
+						std::fabs(massTarget)*faceEnthalpyBound[species]+
+						massBound*faceEnthalpyBound[species];
+					energyRoundScale+=(std::fabs(faceEnthalpyTarget[species])+
+						faceEnthalpyBound[species])*(std::fabs(massTarget)+massBound);
+				}
+				const double conductionScale=2.0*maximumK*(maximumT-minimumT)/distance;
+				energyBound=energyInputError+gamma(128.0)*(energyRoundScale+conductionScale);
+			}
+			for(std::size_t component=0u;component<9u;++component){const std::size_t value=component*allFaces+face;
+				const double donorScale=std::fabs(velocity)*lineScale[component];
+				const double mcScale=std::fabs(velocity)*(2.0*lineScale[component]+
+					(component<8u?slopeScale[component]:lineScale[component]));
+				const double donorBound=gamma(4.0)*donorScale,mcBound=gamma(512.0)*mcScale;
+				const double physicalBound=component<8u?gamma(512.0)*physicalScale[component]:
+					energyBound;
+				const double physicalTarget=component<8u?
+					physicalOracle.physicalMassFluxKGPerM2S[value]:
+					physicalOracle.physicalEnergyFluxWPerM2[face];
+				const double donorTarget=advectiveOracle.lowFlux[value];
+				const double mcTarget=donorTarget+advectiveOracle.fluxDelta[value];
+				updateStat(donorStat[component],observed.donorAdvectiveFlux[value],donorTarget,donorBound);
+				updateStat(mcStat[component],observed.mcMusclAdvectiveFlux[value],mcTarget,mcBound);
+				const double lowBound=donorBound+physicalBound+gamma(1.0)*(
+					std::fabs(donorTarget)+std::fabs(physicalTarget));
+				const double highBound=mcBound+physicalBound+gamma(1.0)*(
+					std::fabs(mcTarget)+std::fabs(physicalTarget));
+				updateStat(lowStat[component],observed.lowCompositeFlux[value],
+					donorTarget+physicalTarget,lowBound);
+				updateStat(highStat[component],observed.highCompositeFlux[value],
+					mcTarget+physicalTarget,highBound);
+				if(component<8u)updateStat(massStat[component],
+					observed.physicalMassFluxKGPerM2S[value],physicalTarget,physicalBound);
+			}
+			updateStat(energyStat,observed.physicalEnergyFluxWPerM2[face],
+				physicalOracle.physicalEnergyFluxWPerM2[face],energyBound);
+			double gasScale=0.0;for(std::size_t component=1u;component<=6u;++component)
+				gasScale+=physicalScale[component];
+			updateStat(gasStat[axis],observed.physicalGasFluxKGPerM2S[axis][localFace],
+				physicalOracle.physicalGasFluxKGPerM2S[axis][localFace],gamma(640.0)*gasScale);
+		}
+		for(std::size_t component=0u;component<9u;++component)
+			for(std::size_t face=0u;face<allFaces;++face){const std::size_t value=component*allFaces+face;
+				const float physicalValue=component<8u?observed.physicalMassFluxKGPerM2S[value]:
+					observed.physicalEnergyFluxWPerM2[face];const float low=
+					observed.donorAdvectiveFlux[value]+physicalValue,high=
+					observed.mcMusclAdvectiveFlux[value]+physicalValue;
+				shared=shared&&std::memcmp(&low,&observed.lowCompositeFlux[value],sizeof(float))==0&&
+					std::memcmp(&high,&observed.highCompositeFlux[value],sizeof(float))==0;}
+		branchBitmap|=observed.branchObligationBitmap;independentBranchBitmap|=1u<<10u;
+		if(std::strcmp(label,"wall")==0)wallIdentity=observed.devicePublicationIdentity;
+		metal=std::move(observed);return true;
+	};
+	bool fixturesPassed=validateFixture(request,"wall");
+	FireProductionResidentPhysicalFluxComparatorRequest periodic=request;
+	periodic.transport.boundary.fill(FireProductionProjectionPeriodic);
+	periodic.transport.attemptIdentity+=1u;
+	for(unsigned int axis=0u;axis<3u;++axis){const std::size_t extent=4u;
+		for(std::size_t second=0u;second<4u;++second)for(std::size_t first=0u;first<4u;++first){
+			auto seam=[&](const std::size_t normal){return axis==0u?(second*4u+first)*5u+normal:
+				(axis==1u?(second*5u+normal)*4u+first:(normal*4u+second)*4u+first);};
+			periodic.transport.projectedVelocityMPerS[axis][seam(extent)]=
+				periodic.transport.projectedVelocityMPerS[axis][seam(0u)];}}
+	fixturesPassed=validateFixture(periodic,"periodic_seam")&&fixturesPassed;
+	FireProductionResidentPhysicalFluxComparatorRequest open=request;
+	open.transport.boundary.fill(FireProductionProjectionPressureOpen);
+	open.transport.attemptIdentity+=2u;
+	for(unsigned int side=0u;side<6u;++side)for(std::size_t face=0u;
+		face<open.pressureOpenInflow[side].size();++face)
+		open.pressureOpenInflow[side][face]=(face+side)%2u==0u?1u:0u;
+	fixturesPassed=validateFixture(open,"pressure_open")&&fixturesPassed;
+	FireProductionResidentPhysicalFluxComparatorRequest hot=request;
+	hot.transport.attemptIdentity+=3u;
+	for(std::size_t cell=0u;cell<cells;++cell)if(!assignCell(hot,cell,
+		1200.0+100.0*static_cast<double>(cell%4u)))return 201;
+	for(unsigned int component=0u;component<9u;++component)
+		hot.ambient[component]=hot.transport.conservativeValues[component*cells];
+	hot.ambientTemperatureK=hot.transport.temperatureK[0];
+	fixturesPassed=validateFixture(hot,"high_temperature")&&fixturesPassed;
+	for(const BoundStat& stat:donorStat)boundsPassed=boundsPassed&&stat.passed;
+	for(const BoundStat& stat:mcStat)boundsPassed=boundsPassed&&stat.passed;
+	for(const BoundStat& stat:massStat)boundsPassed=boundsPassed&&stat.passed;
+	for(const BoundStat& stat:enthalpyStat)boundsPassed=boundsPassed&&stat.passed;
+	for(const BoundStat& stat:lowStat)boundsPassed=boundsPassed&&stat.passed;
+	for(const BoundStat& stat:highStat)boundsPassed=boundsPassed&&stat.passed;
+	for(const BoundStat& stat:gasStat)boundsPassed=boundsPassed&&stat.passed;
+	boundsPassed=boundsPassed&&energyStat.passed;
+	FireProductionResidentPhysicalFluxComparatorRequest mutant=request;
+	mutant.qualificationMutateHighNonadvective=true;
+	FireProductionResidentPhysicalFluxComparatorResult refused;error.clear();
+	const bool sharedMutantRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		mutant,refused,&error)&&!error.empty()&&!refused.deviceProduced&&
+		refused.devicePublicationIdentity==0u;
+	FireProductionResidentPhysicalFluxComparatorRequest lineage=request;
+	lineage.transport.attemptIdentity+=17u;
+	FireProductionResidentPhysicalFluxComparatorResult lineageResult;error.clear();
+	const bool lineageRegenerated=EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		lineage,lineageResult,&error)&&lineageResult.deviceProduced&&
+		lineageResult.devicePublicationIdentity!=wallIdentity;
+	FireProductionResidentPhysicalFluxComparatorRequest missingLineage=request;
+	missingLineage.transport.parentCandidateIdentity=0u;error.clear();
+	const bool missingLineageRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		missingLineage,refused,&error)&&!error.empty()&&!refused.deviceProduced&&
+		refused.devicePublicationIdentity==0u;
+	FireProductionResidentPhysicalFluxComparatorRequest mismatchedParent=request;
+	mismatchedParent.qualificationMismatchedParentCandidate=true;error.clear();
+	const bool mismatchedParentRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		mismatchedParent,refused,&error)&&!error.empty()&&!refused.deviceProduced&&
+		refused.devicePublicationIdentity==0u;
+	FireProductionResidentPhysicalFluxComparatorRequest shortInflow=request;
+	shortInflow.qualificationShortInflowSurface=true;error.clear();
+	const bool shortInflowRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		shortInflow,refused,&error)&&!error.empty()&&!refused.deviceProduced&&
+		refused.devicePublicationIdentity==0u;
+	FireProductionResidentPhysicalFluxComparatorRequest oversizedBasis=request;
+	oversizedBasis.qualificationOversizedPhysicalBasisSurface=true;error.clear();
+	const bool oversizedBasisRefused=!EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		oversizedBasis,refused,&error)&&!error.empty()&&!refused.deviceProduced&&
+		refused.devicePublicationIdentity==0u;
+	std::uint64_t liveBytes=0u,ownerBytes=0u;
+	const bool liveWorkingSet=FireProductionResidentPhysicalFluxLiveIncrementWorkingSetBytes(
+		request.transport.shape,liveBytes);
+	const std::array<FireProductionProjectionBoundary,6> productionBoundary={{
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionPressureOpen,FireProductionProjectionPressureOpen,
+		FireProductionProjectionWall,FireProductionProjectionPressureOpen}};
+	FireProductionProjectionShape ownerShape=request.transport.shape;
+	ownerShape.nx=8u;ownerShape.ny=8u;ownerShape.nz=8u;
+	const bool ownerWorkingSet=FireProductionResidentStepWorkingSetBytes(
+		ownerShape,productionBoundary,ownerBytes);
+	std::uint64_t fixtureBytes=0u;
+	const bool fixtureWorkingSet=FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		request.transport.shape,fixtureBytes);
+	FireProductionResidentPhysicalFluxComparatorRequest understated=request;
+	understated.qualificationWorkingSetLimitBytes=fixtureBytes>0u?fixtureBytes-1u:0u;
+	error.clear();const bool understatedRefused=fixtureWorkingSet&&
+		!EvaluateFireProductionResidentPhysicalFluxMetalComparator(understated,refused,&error)&&
+		!error.empty()&&!refused.deviceProduced&&refused.devicePublicationIdentity==0u;
+	const bool workingSet=liveWorkingSet&&ownerWorkingSet&&liveBytes>0u&&
+		ownerBytes>=liveBytes&&metal.actualMetalAllocationBytes<=metal.certifiedWorkingSetBytes;
+	const std::uint32_t requiredBranches=(1u<<0u)|(1u<<1u)|(1u<<2u)|(1u<<3u)|
+		(1u<<4u)|(1u<<5u)|(1u<<7u)|(1u<<8u)|(1u<<10u)|(1u<<11u)|(1u<<12u);
+	const bool passed=fixturesPassed&&donorBitExact&&mcBitExact&&shared&&
+		sharedMutantRefused&&lineageRegenerated&&missingLineageRefused&&mismatchedParentRefused&&
+		shortInflowRefused&&oversizedBasisRefused&&understatedRefused&&workingSet&&boundsPassed&&
+		logBitExact&&logEnclosurePassed&&
+		(branchBitmap&requiredBranches)==requiredBranches&&
+		branchBitmap==independentBranchBitmap&&
+		metal.commandCommitCount==1u&&metal.terminalStagingCount==1u&&
+		metal.interstageFullGridTransferCount==0u&&metal.transportPublicationIdentity!=0u&&
+		metal.devicePublicationIdentity!=0u;
+	std::fprintf(stderr,"RESIDENT_PHYSICAL_FLUX_METAL passed=%d donor_bit_equal=%d "
+		"mc_bit_equal=%d shared_fN=%d shared_mutant_refused=%d lineage_regenerated=%d "
+		"missing_lineage_refused=%d parent_candidate_mismatch_refused=%d "
+		"short_inflow_refused=%d oversized_basis_refused=%d understated_ws_refused=%d "
+		"enthalpy_host_binary32_diagnostic_bit_equal=%d log_binary32_bit_equal=%d "
+		"log_series_enclosure_passed=%d log_max_residual_over_local_bound=%.17g bounds_passed=%d "
+		"branch_bitmap=0x%08x independent_branch_bitmap=0x%08x required_branch_bitmap=0x%08x "
+		"fixture_ws=%llu actual_ws=%llu live_ws=%llu owner_ws=%llu identity=%016llx\n",
+		passed?1:0,donorBitExact?1:0,mcBitExact?1:0,shared?1:0,
+		sharedMutantRefused?1:0,lineageRegenerated?1:0,missingLineageRefused?1:0,
+		mismatchedParentRefused?1:0,shortInflowRefused?1:0,oversizedBasisRefused?1:0,
+		understatedRefused?1:0,enthalpyBitExact?1:0,logBitExact?1:0,logEnclosurePassed?1:0,
+		maximumDeviceLogEnclosureRatio,boundsPassed?1:0,branchBitmap,independentBranchBitmap,
+		requiredBranches,
+		static_cast<unsigned long long>(metal.certifiedWorkingSetBytes),
+		static_cast<unsigned long long>(metal.actualMetalAllocationBytes),
+		static_cast<unsigned long long>(liveBytes),static_cast<unsigned long long>(ownerBytes),
+		static_cast<unsigned long long>(metal.devicePublicationIdentity));
+	if(!liveWorkingSet||!ownerWorkingSet)std::fprintf(stderr,
+		"RESIDENT_PHYSICAL_FLUX_WORKING_SET live=%d owner=%d\n",
+		liveWorkingSet?1:0,ownerWorkingSet?1:0);
+	const char* componentLabel[9]={"rhoZ","CH4","O2","CO2","H2O","N2","CO",
+		"carbon","sensible_energy"};
+	auto publish=[&](const char* family,const char* field,const char* units,
+		const BoundStat& stat){std::fprintf(stderr,
+		"RESIDENT_PHYSICAL_FLUX_BOUND family=%s field=%s scope=every_face_sample "
+		"residual_%s=%.17g local_bound_%s=%.17g worst_residual_over_local_bound=%.17g passed=%d\n",
+		family,field,units,stat.residual,units,stat.boundAtResidual,stat.maximumRatio,
+		stat.passed?1:0);};
+	for(unsigned int component=0u;component<9u;++component){const char* units=
+		component<8u?"kg_m2_s":"W_m2";publish("donor_advective",componentLabel[component],
+		units,donorStat[component]);publish("mc_muscl_advective",componentLabel[component],
+		units,mcStat[component]);publish("low_composite",componentLabel[component],units,
+		lowStat[component]);publish("high_composite",componentLabel[component],units,
+		highStat[component]);}
+	for(unsigned int component=0u;component<8u;++component)publish("physical_mass",
+		componentLabel[component],"kg_m2_s",massStat[component]);
+	for(unsigned int species=0u;species<7u;++species)publish("physical_enthalpy",
+		componentLabel[1u+species],"J_kg",enthalpyStat[species]);
+	publish("physical_energy","sensible_energy","W_m2",energyStat);
+	for(unsigned int axis=0u;axis<3u;++axis)publish("physical_gas",axis==0u?"x":
+		(axis==1u?"y":"z"),"kg_m2_s",gasStat[axis]);
+	return passed?0:203;
+}
+
 int RunProductionMetalFP64KernelSweep()
 {
 	const int transport=RunProductionResidentTransportMetalFP64Fixture();
 	if( transport!=0 ) return transport;
+	const int physicalFlux=RunProductionResidentPhysicalFluxMetalFP64Fixture();
+	if( physicalFlux!=0 ) return physicalFlux;
 	const int scalar=RunProductionScalarFCTMetalStageFixture();
 	if( scalar!=0 ) return scalar;
 	const int scalarMixed=RunProductionScalarFCTMetalMixedBoundaryFixture();

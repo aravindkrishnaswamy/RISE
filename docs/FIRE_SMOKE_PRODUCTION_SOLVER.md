@@ -5687,6 +5687,88 @@ The next separately committed and reviewed rung is resident physical-flux
 authority; r197 does not claim a live R0/R1/R2 owner or execute the ported
 replay.
 
+### 7.56ae Resident physical-flux authority (r198)
+
+r198 completes the second r196 resident-lineage rung. A private Metal issuer
+consumes the private r197 transport authority and device-private state,
+temperature, projected velocity, boundary classes, pressure-open active set,
+and reconstruction/projector records. It produces two separately named
+advective candidates and one nonadvective candidate: `f^L =
+f_adv^donor + f_N` and `f^H = f_adv^MC-MUSCL + f_N`. The same centered `f_N`
+buffer is added to both candidates. A device-side identity check recomposes
+both sums and refuses publication if either candidate does not contain that
+bit-identical nonadvective value. The qualification-only public comparator
+cannot be converted to the private live authority; there is no CPU issuer or
+fallback. The child issuer additionally requires exact identity of the parent
+command plus the state, temperature, velocity, thermochemistry, parameter,
+and failure handles and their extents. A transport authority minted from
+candidate A therefore cannot be paired with candidate-B state; that replay is
+a standing atomic-refusal RED. Short inflow and oversized basis surfaces also
+refuse before encoding.
+
+The donor and MC-MUSCL advective candidates are each bit-identical to the
+strict binary32 CPU operator across wall, periodic-seam, and pressure-open
+inflow/outflow fixtures. The MC-MUSCL high candidate preserves the production
+operator's two-stage rounding: donor and delta are first formed by the
+streaming kernel, then high is materialized as `donor + delta` in a separate
+kernel. This prevents a blended composite from concealing a candidate-level
+mismatch. The physical mass, energy, and gas candidates are compared with the
+canonical fp64 mirror at matched device-transport inputs. A high-temperature
+fixture reaches the second NASA9 segment that the original 300--525 K fixture
+did not exercise.
+
+Every acceptance check is face- and field-local. A face residual is compared
+in identical units with an enclosure built from its adjacent-cell or boundary
+ghost stencil, local transport coefficients, uncancelled reconstruction
+terms, and the operation-count gamma for that field. Pressure-open ghost
+classification uses the exact boundary-face index. Sensible enthalpy is now a
+staged device candidate rather than a hidden cancelling primitive. Its log is
+computed by a CPU/Metal bit-identical exponent reduction and atanh series
+through odd degree 17. The local proof combines a gamma-64 uncancelled series
+scale, binary32 ln(2) packing, and the analytic odd-19 remainder; its worst
+residual/bound fraction is `0.0051601568397958561`. Per-species NASA9 bounds
+then add coefficient/offset packing and uncancelled term scales, and the energy
+bound propagates those enthalpy bounds with the already local mass-flux bounds.
+No across-field maximum is an acceptance claim, and no bound is scaled by a
+cancelled result. The sealed artifact reports all 55 family/field checks
+individually. The largest local
+fractions are `0.050697956482785987` for donor sensible-energy advection,
+`0.00022132475937333758` for MC-MUSCL CO2 advection,
+`0.00020309178466380829` for physical CO2 mass flux,
+`0.0082494670907624044` for physical O2 sensible enthalpy,
+`0.0017207804234051897` for physical sensible-energy flux,
+`3.5605115203941027e-6` for the physical z gas flux,
+`0.0099341976536549831` for the low CO2 composite, and
+`0.00020307817027690736` for the high CO2 composite. These are descriptions
+of separate per-field gates, not a pooled acceptance statistic; every local
+fraction is below one without widening.
+
+The physical branch word is isolated from its parent transport word. Its
+bitmap `0x00001dbf` exactly matches an independent host walker and covers
+interior, periodic seam, wall, pressure-open inflow/outflow,
+harmonic-positive, NASA9 segments zero and one, shared-nonadvective,
+boundary-advective, and interior-advective obligations. Harmonic zero is
+unreachable after the positive transport authority, and NASA9 segment two is
+outside the transport-admissible temperature domain. The shared-`f_N` mutant,
+missing parent lineage, parent-A/child-B candidate, CPU-substitution, extent,
+and working-set-understatement surfaces all refuse atomically. Changing
+attempt identity changes the device
+publication identity. The resident interval remains one command with one
+terminal staging read and zero interstage full-grid transfers. The fixture
+certificate is `720896` bytes against `159832` bytes actually allocated; the
+live incremental certificate is `278528` bytes and the complete 8-cubed owner
+peak becomes `6498632` bytes.
+
+No case-authored input changes, so `case_record_id` remains stable. Solver
+producer identity changes for r198, later run identities must inherit it, and
+the golden checkpoint is untouched. Evidence is sealed in
+`rendered/fire_production_calibration/r198_resident_physical_flux_authority/`
+`resident_physical_flux_authority_evidence.v1`, SHA-256
+`ac13e3f986261337c9cb5a64f27ccb801cdea91f30a0ff077caa4864725386a6`. The next
+separately committed and reviewed rung is resident EOS candidate identity;
+r198 does not claim the target-lineage rung, live R0/R1/R2 owner, kernel
+sweep, or ported replay.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

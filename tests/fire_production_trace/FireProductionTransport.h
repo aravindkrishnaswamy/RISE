@@ -1051,6 +1051,12 @@ namespace RISEFireProductionTrace
 	bool FireProductionResidentTransportLiveIncrementWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
+	//! Incremental simultaneous resident-owner peak for the physical-flux
+	//! authority. The state, temperature, velocity, and transport authority are
+	//! already resident and are not counted a second time.
+	bool FireProductionResidentPhysicalFluxLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
 #if defined(__APPLE__)
 	//! Matched-input qualification request for the private resident transport
 	//! authority.  This wrapper uploads immutable fixture inputs and stages only
@@ -1112,6 +1118,93 @@ namespace RISEFireProductionTrace
 	bool EvaluateFireProductionResidentTransportMetalComparator(
 		const FireProductionResidentTransportComparatorRequest& request,
 		FireProductionResidentTransportComparatorResult& result,
+		std::string* error=0 );
+
+	//! Qualification-only request for the private resident physical-flux
+	//! authority. The transport member supplies the one authoritative resident
+	//! state/temperature/velocity lineage. The remaining members are immutable
+	//! Section 3.6/3.7 operands; no staged transport coefficient is accepted.
+	struct FireProductionResidentPhysicalFluxComparatorRequest
+	{
+		FireProductionResidentTransportComparatorRequest transport;
+		std::array<FireProductionRoundoffTrace::TraceFloat,9> ambient;
+		FireProductionRoundoffTrace::TraceFloat ambientTemperatureK;
+		std::array<std::vector<unsigned char>,6> pressureOpenInflow;
+		std::size_t nullity;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> nullspaceBasis;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> coordinateProjector;
+		//! Qualification RED only. It corrupts the high candidate's f_N after
+		//! composition so the device shared-f_N validator must refuse publication.
+		bool qualificationMutateHighNonadvective;
+		//! Qualification REDs only. They cannot alter the live authority surface:
+		//! each asks the comparator to present one invalid private lineage/extent or
+		//! certificate cap to the same private issuer and requires atomic refusal.
+		bool qualificationMismatchedParentCandidate;
+		bool qualificationShortInflowSurface;
+		bool qualificationOversizedPhysicalBasisSurface;
+		std::uint64_t qualificationWorkingSetLimitBytes;
+
+		FireProductionResidentPhysicalFluxComparatorRequest() :
+			ambientTemperatureK(0.0f),nullity(0u),
+			qualificationMutateHighNonadvective(false),
+			qualificationMismatchedParentCandidate(false),
+			qualificationShortInflowSurface(false),
+			qualificationOversizedPhysicalBasisSurface(false),
+			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max())
+			{ ambient.fill(0.0f); }
+	};
+
+	//! Terminal qualification tap. Each vector preserves its field boundary:
+	//! donor and MC-MUSCL are advective-only [9][faces], physical mass is
+	//! [8][faces], and low/high composite are [9][faces]. A single physical
+	//! device buffer is consumed by both composite candidates.
+	struct FireProductionResidentPhysicalFluxComparatorResult
+	{
+		std::array<std::size_t,3> packedFaceOffset;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> donorAdvectiveFlux;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> mcMusclAdvectiveFlux;
+		//! Qualification-only terminal copy of the exact parent inputs consumed by
+		//! the physical kernel; these bytes cannot mint a resident authority.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> diffusivityM2PerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> conductivityWPerMK;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> physicalMassFluxKGPerM2S;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> physicalEnergyFluxWPerM2;
+		//! Qualification-only staged intermediates used to certify the
+		//! cancellation-sensitive NASA9 primitive before energy composition.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> faceLogTemperature;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> faceSensibleEnthalpyJPerKG;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> physicalGasFluxKGPerM2S;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> lowCompositeFlux;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> highCompositeFlux;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t branchObligationBitmap;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t transportPublicationIdentity;
+		std::uint64_t devicePublicationIdentity;
+		double deviceElapsedMS;
+		bool deviceProduced;
+
+		FireProductionResidentPhysicalFluxComparatorResult() :
+			commandCommitCount(0u),interstageFullGridTransferCount(0u),
+			terminalStagingCount(0u),branchObligationBitmap(0u),
+			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			transportPublicationIdentity(0u),devicePublicationIdentity(0u),
+			deviceElapsedMS(0.0),deviceProduced(false)
+			{ packedFaceOffset.fill(0u); }
+	};
+
+	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! Qualification-only terminal tap. This function always executes the
+	//! device transport issuer and the private physical-flux issuer in one Metal
+	//! command; there is no CPU coefficient fallback or public authority result.
+	bool EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		const FireProductionResidentPhysicalFluxComparatorRequest& request,
+		FireProductionResidentPhysicalFluxComparatorResult& result,
 		std::string* error=0 );
 
 	//! Fail-closed blocker. Metal qualification requires device candidates to be

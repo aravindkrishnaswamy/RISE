@@ -1083,6 +1083,41 @@ namespace RISEFireProductionTrace
 			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes);
 	}
 
+	bool FireProductionResidentPhysicalFluxLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0f)||
+			!std::isfinite(shape.cellWidthM))return false;
+		const std::uint64_t faces=FireProductionProjectionFaceCount(shape,0u)+
+			FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u);
+		const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.ny);
+		// Private immutable surfaces not already owned by transport, followed by
+		// donor, MC-MUSCL, f_N, energy, J_g, staged log/enthalpy certification,
+		// both composites, the physical obligation word, and publication.
+		return AddMetalValueBuffer(boundaryFaces,sizeof(unsigned char),bytes)&&
+			AddMetalValueBuffer(9u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(64u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(64u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(64u,sizeof(float),bytes)&&
+			AddMetalValueBuffer(16u,sizeof(unsigned char),bytes)&&
+			AddMetalValueBuffer(9u*faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(9u*faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(8u*faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(7u*faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(9u*faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(9u*faces,sizeof(float),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&bytes<=(UINT64_C(1)<<31u);
+	}
+
 	bool FireProductionCellPalindromeWorkingSetBytes(
 		const FireProductionProjectionShape& shape, std::size_t componentCount,
 		std::uint64_t& bytes, bool retainAcceptedGasMassDose )

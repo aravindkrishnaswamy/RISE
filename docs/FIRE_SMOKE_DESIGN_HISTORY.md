@@ -5103,3 +5103,35 @@ it was already tried and refuted here.
   evidence SHA-256 is
   `7c00ca11c48b6dccddec1c08ec604c36a9d8aac7ac79d67f4c80a62b90bf7059`.
   The next separately reviewed rung is resident physical-flux authority.
+
+- **r198 resident physical-flux authority (2026-09-02):** completes the
+  second r196 rung as a private device-produced authority consuming the
+  private r197 transport surface. The low and high candidates are respectively
+  donor advection plus one centered nonadvective flux and MC-MUSCL advection
+  plus that same device buffer. Donor and MC-MUSCL are separately bit-matched
+  to the strict binary32 mirror; a device validator proves both composites
+  carry bit-identical `f_N`, and a high-candidate mutant refuses atomically.
+  The child binds the exact parent command and state/T/velocity/
+  thermochemistry/parameter/failure handles, so parent-A/child-B candidates
+  refuse; short and oversized resident surfaces refuse too. Wall, periodic
+  seam, pressure-open inflow/outflow, and both transport-reachable NASA9
+  segments are covered by an isolated physical branch word that exactly
+  matches its independent host walker.
+  Every physical and composite comparison is reported per face and field in
+  identical units against a local uncancelled termwise enclosure; no pooled
+  across-field acceptance statistic is used. The former cancellation-sensitive
+  enthalpy endpoint scale is replaced by staged per-species enthalpies and a
+  CPU/Metal bit-identical log series with an analytic remainder; the log's
+  worst local residual/bound fraction is `0.0051601568397958561`. All 55 field
+  gates remain below one without widening (donor sensible energy
+  `0.050697956482785987`, low-composite CO2 `0.0099341976536549831`, and all
+  other family/field maxima are recorded in the evidence artifact). The live
+  interval remains one command, one terminal staging read, and zero
+  interstage full-grid transfers. Its incremental working-set certificate is
+  `278528` bytes and the complete 8-cubed owner peak is `6498632` bytes. No CPU
+  issuer exists, the qualification output cannot become live authority, and
+  missing parent lineage refuses without publication. `case_record_id` is
+  unchanged; producer and future run identities inherit r198 semantics; the
+  golden checkpoint remains untouched. Evidence SHA-256 is
+  `ac13e3f986261337c9cb5a64f27ccb801cdea91f30a0ff077caa4864725386a6`. The next
+  rung is resident EOS candidate identity.

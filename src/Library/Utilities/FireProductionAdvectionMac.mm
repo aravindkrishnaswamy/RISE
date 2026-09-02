@@ -201,6 +201,12 @@ namespace RISE
 			std::uint64_t thermochemistryIdentity,transportIdentity;
 		};
 
+		struct MetalResidentPhysicalFluxParameters
+		{
+			std::uint32_t advectiveNullity,physicalNullity,mutateHighNonadvective;
+			float ambientTemperatureK;
+		};
+
 		constexpr std::size_t MetalResidentTransportMaximumKnots=128u;
 		constexpr std::size_t MetalResidentTransportSpeciesStride=
 			1u+5u*MetalResidentTransportMaximumKnots;
@@ -1795,6 +1801,12 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLCommandQueue> queue;
 			id<MTLComputePipelineState> evaluate;
 			id<MTLComputePipelineState> identify;
+			id<MTLComputePipelineState> physicalFlux;
+			id<MTLComputePipelineState> advectivePair;
+			id<MTLComputePipelineState> finalizeAdvective;
+			id<MTLComputePipelineState> composePair;
+			id<MTLComputePipelineState> validatePhysical;
+			id<MTLComputePipelineState> identifyPhysical;
 			std::string error;
 
 			static const char* Source()
@@ -1941,10 +1953,206 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Pr));hash*=1099511628211ul;
  hash^=ulong(as_type<uint>(p.Sc));hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Cv));
  identity[0]=hash==0ul?1ul:hash;}
+struct PhysicalParams {uint advectiveNullity;uint physicalNullity;uint mutateHigh;float ambientT;};
+inline uint pf_all_faces(constant TransportParams& p){return p.faceOffset[2]+p.nx*p.ny*(p.nz+1u);}
+inline void pf_decode_face(constant TransportParams& p,uint packed,thread uint& axis,
+ thread uint& x,thread uint& y,thread uint& z){if(packed<p.faceOffset[1]){axis=0u;uint r=packed;
+ x=r%(p.nx+1u);r/=p.nx+1u;y=r%p.ny;z=r/p.ny;}else if(packed<p.faceOffset[2]){
+ axis=1u;uint r=packed-p.faceOffset[1];x=r%p.nx;r/=p.nx;y=r%(p.ny+1u);z=r/(p.ny+1u);
+ }else{axis=2u;uint r=packed-p.faceOffset[2];x=r%p.nx;r/=p.nx;y=r%p.ny;z=r/p.ny;}}
+inline uint pf_coordinate(uint axis,uint x,uint y,uint z){return axis==0u?x:(axis==1u?y:z);}
+inline uint pf_side_index(constant TransportParams& p,uint side,uint x,uint y,uint z){
+ return p.sideOffset[side]+(side<2u?z*p.ny+y:(side<4u?z*p.nx+x:y*p.nx+x));}
+inline float pf_stage_value(device const float* q,device const float* ambient,
+ device const uchar* inflow,constant TransportParams& p,uint component,uint x,uint y,uint z,
+ uint axis,int shift){int coordinate=int(pf_coordinate(axis,x,y,z))+shift;
+ int extent=int(tr_extent(p,axis));if(coordinate>=0&&coordinate<extent){tr_set(axis,uint(coordinate),x,y,z);
+  return q[component*p.cells+tr_cell(p,x,y,z)];}uint side=2u*axis+(coordinate>=extent?1u:0u);
+ if(p.boundary[side]==0u){tr_set(axis,coordinate<0?uint(extent-1):0u,x,y,z);
+  return q[component*p.cells+tr_cell(p,x,y,z)];}tr_set(axis,coordinate<0?0u:uint(extent-1),x,y,z);
+ float interior=q[component*p.cells+tr_cell(p,x,y,z)];return p.boundary[side]==1u&&
+  inflow[pf_side_index(p,side,x,y,z)]!=0u?ambient[component]:interior;}
+inline float pf_mc(float backward,float forward){if(backward*forward<=0.0f)return 0.0f;
+ float centered=0.5f*(backward+forward),sign=centered<0.0f?-1.0f:1.0f;
+ return sign*min(abs(centered),2.0f*min(abs(backward),abs(forward)));}
+inline float pf_log(float value){uint bits=as_type<uint>(value);int exponent=int((bits>>23u)&255u)-127;
+ uint mantissa=(bits&0x007fffffu)|0x3f800000u;float normalized=as_type<float>(mantissa);
+ volatile float numerator=normalized-1.0f,denominator=normalized+1.0f;
+ volatile float y=numerator/denominator,y2=y*y,power=y,sum=power;
+ for(uint odd=3u;odd<=17u;odd+=2u){power=power*y2;volatile float term=power/float(odd);sum=sum+term;}
+ volatile float exponentTerm=float(exponent)*0.6931471805599453f;
+ volatile float series=2.0f*sum;volatile float result=exponentTerm+series;return result;}
+inline float pf_mass_slope(device const float* q,device const float* ambient,
+ device const uchar* inflow,device const float* basis,device const float* projector,
+ constant TransportParams& p,constant PhysicalParams& extra,uint component,uint x,uint y,uint z,
+ uint axis){float coordinateSlope[8];for(uint b=0u;b<8u;++b)coordinateSlope[b]=0.0f;
+ for(uint b=0u;b<extra.advectiveNullity;++b){float backward=0.0f,forward=0.0f;
+  for(uint row=0u;row<8u;++row){float center=q[row*p.cells+tr_cell(p,x,y,z)];
+   float previous=pf_stage_value(q,ambient,inflow,p,row,x,y,z,axis,-1);
+   float next=pf_stage_value(q,ambient,inflow,p,row,x,y,z,axis,1);
+   volatile float backwardDifference=center-previous,forwardDifference=next-center;
+   volatile float backwardProduct=basis[row*extra.advectiveNullity+b]*backwardDifference;
+   volatile float forwardProduct=basis[row*extra.advectiveNullity+b]*forwardDifference;
+   backward+=backwardProduct;forward+=forwardProduct;}coordinateSlope[b]=pf_mc(backward,forward);}
+ float result=0.0f;for(uint b=0u;b<extra.advectiveNullity;++b){float projected=0.0f;
+  for(uint column=0u;column<extra.advectiveNullity;++column){volatile float product=
+   projector[b*extra.advectiveNullity+column]*coordinateSlope[column];projected+=product;}
+  volatile float product=basis[component*extra.advectiveNullity+b]*projected;result+=product;}return result;}
+inline float pf_enthalpy(device const float* thermo,uint species,float temperature,float logT,
+ thread bool& valid,device atomic_uint* obligations){device const float* record=thermo+32u*species;
+ uint segments=uint(record[1]);device const float* selected=record+2u;bool found=false;
+ for(uint segment=0u;segment<segments;++segment){device const float* candidate=record+2u+10u*segment;
+  if(temperature>=candidate[0]&&(temperature<candidate[1]||(segment+1u==segments&&temperature==candidate[1]))){
+   selected=candidate;found=true;atomic_fetch_or_explicit(obligations,1u<<(7u+min(segment,2u)),memory_order_relaxed);}}
+ if(!found){valid=false;return 0.0f;}float inverse=1.0f/temperature;
+ float t2=temperature*temperature,t3=t2*temperature,t4=t3*temperature,t5=t4*temperature;
+ float primitive=-selected[2]*inverse+selected[3]*logT+selected[4]*temperature+
+  selected[5]*t2*0.5f+selected[6]*t3*(1.0f/3.0f)+selected[7]*t4*0.25f+
+  selected[8]*t5*0.2f;float h=8314.46261815324f*primitive/record[0]+selected[9];
+ if(!isfinite(h))valid=false;return h;}
+kernel void evaluate_resident_physical_flux(device const float* state [[buffer(0)]],
+ device const float* temperature [[buffer(1)]],device const float* coefficients [[buffer(2)]],
+ device const float* thermo [[buffer(3)]],device const float* physicalBasis [[buffer(4)]],
+ device const float* ambient [[buffer(5)]],device const uchar* inflow [[buffer(6)]],
+ device float* physicalMass [[buffer(7)]],device float* physicalEnergy [[buffer(8)]],
+ device float* physicalGas [[buffer(9)]],device float* faceLogTemperature [[buffer(10)]],
+ device float* faceEnthalpy [[buffer(11)]],device atomic_uint* failure [[buffer(12)]],
+ device atomic_uint* obligations [[buffer(13)]],constant TransportParams& p [[buffer(14)]],
+ constant PhysicalParams& extra [[buffer(15)]],uint gid [[thread_position_in_grid]]){
+ uint all=pf_all_faces(p);if(gid>=all)return;uint axis,x,y,z;pf_decode_face(p,gid,axis,x,y,z);
+ for(uint component=0u;component<8u;++component)physicalMass[component*all+gid]=0.0f;
+ physicalEnergy[gid]=0.0f;physicalGas[gid]=0.0f;faceLogTemperature[gid]=0.0f;
+ for(uint species=0u;species<7u;++species)faceEnthalpy[species*all+gid]=0.0f;
+ uint coordinate=pf_coordinate(axis,x,y,z),extent=tr_extent(p,axis);bool boundary=coordinate==0u||coordinate==extent;
+ if(p.boundary[2u*axis]==0u){boundary=false;if(coordinate==extent){tr_set(axis,0u,x,y,z);
+  atomic_fetch_or_explicit(obligations,1u<<1u,memory_order_relaxed);}}
+ uint lx=x,ly=y,lz=z,rx=x,ry=y,rz=z,left=0u,right=0u;bool leftAmbient=false,rightAmbient=false;
+ float leftT=0.0f,rightT=0.0f,rhoD=0.0f,k=0.0f,distance=p.dx;bool valid=true;
+ if(boundary){bool upper=coordinate==extent;uint side=2u*axis+(upper?1u:0u);
+  if(p.boundary[side]==2u){atomic_fetch_or_explicit(obligations,1u<<2u,memory_order_relaxed);return;}
+  if(inflow[pf_side_index(p,side,x,y,z)]==0u){atomic_fetch_or_explicit(obligations,1u<<3u,memory_order_relaxed);return;}
+  atomic_fetch_or_explicit(obligations,1u<<4u,memory_order_relaxed);uint normal=upper?extent-1u:0u;
+  tr_set(axis,normal,x,y,z);left=right=tr_cell(p,x,y,z);leftAmbient=!upper;rightAmbient=upper;
+  leftT=leftAmbient?extra.ambientT:temperature[left];rightT=rightAmbient?extra.ambientT:temperature[right];
+  float total=0.0f;for(uint species=0u;species<7u;++species)total+=state[(1u+species)*p.cells+left];
+  rhoD=total*coefficients[left];k=coefficients[p.cells+left];distance=0.5f*p.dx;
+ }else{atomic_fetch_or_explicit(obligations,1u<<0u,memory_order_relaxed);
+  uint rightCoordinate=coordinate==extent?0u:coordinate,leftCoordinate=rightCoordinate==0u?extent-1u:rightCoordinate-1u;
+  tr_set(axis,leftCoordinate,lx,ly,lz);tr_set(axis,rightCoordinate,rx,ry,rz);
+  left=tr_cell(p,lx,ly,lz);right=tr_cell(p,rx,ry,rz);leftT=temperature[left];rightT=temperature[right];
+  float totalLeft=0.0f,totalRight=0.0f;for(uint species=0u;species<7u;++species){
+   totalLeft+=state[(1u+species)*p.cells+left];totalRight+=state[(1u+species)*p.cells+right];}
+  float a=totalLeft*coefficients[left],b=totalRight*coefficients[right];
+  rhoD=a>0.0f&&b>0.0f?2.0f*a*b/(a+b):0.0f;a=coefficients[p.cells+left];b=coefficients[p.cells+right];
+  k=a>0.0f&&b>0.0f?2.0f*a*b/(a+b):0.0f;
+  atomic_fetch_or_explicit(obligations,1u<<((rhoD>0.0f&&k>0.0f)?5u:6u),memory_order_relaxed);}
+ float totalLeft=0.0f,totalRight=0.0f;for(uint species=0u;species<7u;++species){
+  totalLeft+=leftAmbient?ambient[1u+species]:state[(1u+species)*p.cells+left];
+  totalRight+=rightAmbient?ambient[1u+species]:state[(1u+species)*p.cells+right];}
+ if(!(totalLeft>0.0f)||!(totalRight>0.0f))valid=false;float raw[8],projected[8];
+ for(uint component=0u;component<8u;++component){float ql=leftAmbient?ambient[component]:state[component*p.cells+left];
+  float qr=rightAmbient?ambient[component]:state[component*p.cells+right];raw[component]=-rhoD*(qr/totalRight-ql/totalLeft)/distance;}
+ for(uint component=0u;component<8u;++component){float value=0.0f;for(uint b=0u;b<extra.physicalNullity;++b){
+  float coordinateValue=0.0f;for(uint row=0u;row<8u;++row){volatile float product=
+   physicalBasis[row*extra.physicalNullity+b]*raw[row];coordinateValue+=product;}
+  volatile float product=physicalBasis[component*extra.physicalNullity+b]*coordinateValue;value+=product;}
+  projected[component]=value;physicalMass[component*all+gid]=value;}
+ float gas=0.0f;for(uint component=1u;component<=6u;++component)gas+=projected[component];physicalGas[gid]=gas;
+ float faceT=0.5f*(leftT+rightT),logT=pf_log(faceT),energy=0.0f;faceLogTemperature[gid]=logT;
+ for(uint species=0u;species<7u;++species){
+  float h=pf_enthalpy(thermo,species,faceT,logT,valid,obligations);
+  faceEnthalpy[species*all+gid]=h;energy+=h*projected[1u+species];}
+ energy-=k*(rightT-leftT)/distance;physicalEnergy[gid]=energy;
+ for(uint component=0u;component<8u;++component)valid=valid&&isfinite(projected[component]);
+ if(!valid||!isfinite(gas)||!isfinite(energy))atomic_fetch_or_explicit(failure,2u,memory_order_relaxed);}
+kernel void evaluate_resident_advective_pair(device const float* state [[buffer(0)]],
+ device const float* velocity [[buffer(1)]],device const float* ambient [[buffer(2)]],
+ device const uchar* inflow [[buffer(3)]],device const float* basis [[buffer(4)]],
+ device const float* projector [[buffer(5)]],device float* donorOutput [[buffer(6)]],
+ device float* highOutput [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
+ constant TransportParams& p [[buffer(9)]],constant PhysicalParams& extra [[buffer(10)]],
+ uint gid [[thread_position_in_grid]]){uint all=pf_all_faces(p);if(gid>=9u*all)return;
+ uint component=gid/all,packed=gid-component*all,axis,x,y,z;pf_decode_face(p,packed,axis,x,y,z);
+ uint coordinate=pf_coordinate(axis,x,y,z),extent=tr_extent(p,axis);float u=velocity[packed];
+ if((coordinate==0u||coordinate==extent)&&p.boundary[2u*axis+(coordinate==extent?1u:0u)]==2u){
+  donorOutput[gid]=0.0f;highOutput[gid]=0.0f;return;}
+ if((coordinate==0u||coordinate==extent)&&p.boundary[2u*axis+(coordinate==extent?1u:0u)]!=0u){
+  float donor=pf_stage_value(state,ambient,inflow,p,component,x,y,z,axis,u>=0.0f?-1:0);
+  donorOutput[gid]=u*donor;highOutput[gid]=0.0f;
+  atomic_fetch_or_explicit(obligations,1u<<11u,memory_order_relaxed);return;}
+ uint rightCoordinate=coordinate==extent?0u:coordinate,leftCoordinate=rightCoordinate==0u?extent-1u:rightCoordinate-1u;
+ uint lx=x,ly=y,lz=z,rx=x,ry=y,rz=z;tr_set(axis,leftCoordinate,lx,ly,lz);tr_set(axis,rightCoordinate,rx,ry,rz);
+ bool fromLeft=u>=0.0f;uint dx=fromLeft?lx:rx,dy=fromLeft?ly:ry,dz=fromLeft?lz:rz;
+ float donor=state[component*p.cells+tr_cell(p,dx,dy,dz)],slope=component<8u?
+  pf_mass_slope(state,ambient,inflow,basis,projector,p,extra,component,dx,dy,dz,axis):
+  pf_mc(donor-pf_stage_value(state,ambient,inflow,p,component,dx,dy,dz,axis,-1),
+   pf_stage_value(state,ambient,inflow,p,component,dx,dy,dz,axis,1)-donor);
+ volatile float slopeDose=(fromLeft?0.5f:-0.5f)*slope;
+ volatile float high=donor+slopeDose,lowFlux=u*donor,highDifference=high-donor;
+ volatile float deltaFlux=u*highDifference;
+ donorOutput[gid]=lowFlux;highOutput[gid]=deltaFlux;
+ atomic_fetch_or_explicit(obligations,1u<<12u,memory_order_relaxed);}
+kernel void finalize_resident_advective_high(device const float* donor [[buffer(0)]],
+ device float* deltaThenHigh [[buffer(1)]],constant TransportParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){uint total=9u*pf_all_faces(p);if(gid>=total)return;
+ deltaThenHigh[gid]=donor[gid]+deltaThenHigh[gid];}
+kernel void compose_resident_flux_pair(device const float* donor [[buffer(0)]],
+ device const float* highAdvective [[buffer(1)]],device const float* physicalMass [[buffer(2)]],
+ device const float* physicalEnergy [[buffer(3)]],device float* low [[buffer(4)]],
+ device float* high [[buffer(5)]],constant TransportParams& p [[buffer(6)]],
+ constant PhysicalParams& extra [[buffer(7)]],uint gid [[thread_position_in_grid]]){
+ uint all=pf_all_faces(p);if(gid>=9u*all)return;uint component=gid/all,packed=gid-component*all;
+ float physical=component<8u?physicalMass[component*all+packed]:physicalEnergy[packed];
+ low[gid]=donor[gid]+physical;high[gid]=highAdvective[gid]+physical;
+ if(extra.mutateHigh!=0u&&gid==all+1u)high[gid]+=0.0009765625f;}
+kernel void validate_resident_physical_flux(device const float* donor [[buffer(0)]],
+ device const float* highAdvective [[buffer(1)]],device const float* physicalMass [[buffer(2)]],
+ device const float* physicalEnergy [[buffer(3)]],device const float* physicalGas [[buffer(4)]],
+ device const float* low [[buffer(5)]],device const float* high [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
+ constant TransportParams& p [[buffer(9)]],uint gid [[thread_position_in_grid]]){
+ uint all=pf_all_faces(p);if(gid>=9u*all)return;uint component=gid/all,packed=gid-component*all;
+ float physical=component<8u?physicalMass[component*all+packed]:physicalEnergy[packed];
+ if(!isfinite(donor[gid])||!isfinite(highAdvective[gid])||!isfinite(physical)||
+  !isfinite(low[gid])||!isfinite(high[gid])||!isfinite(physicalGas[packed]))
+  atomic_fetch_or_explicit(failure,4u,memory_order_relaxed);
+ if(as_type<uint>(low[gid])!=as_type<uint>(donor[gid]+physical)||
+  as_type<uint>(high[gid])!=as_type<uint>(highAdvective[gid]+physical))
+  atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);
+ else atomic_fetch_or_explicit(obligations,1u<<10u,memory_order_relaxed);}
+kernel void identify_resident_physical_flux(device const float* donor [[buffer(0)]],
+ device const float* highAdvective [[buffer(1)]],device const float* physicalMass [[buffer(2)]],
+ device const float* physicalEnergy [[buffer(3)]],device const float* physicalGas [[buffer(4)]],
+ device const float* low [[buffer(5)]],device const float* high [[buffer(6)]],
+ device const float* faceLogTemperature [[buffer(7)]],device const float* faceEnthalpy [[buffer(8)]],
+ device const ulong* transportIdentity [[buffer(9)]],device const float* ambient [[buffer(10)]],
+ device const uchar* inflow [[buffer(11)]],device const float* physicalBasis [[buffer(12)]],
+ device const float* advectiveBasis [[buffer(13)]],device const float* projector [[buffer(14)]],
+ device ulong* identity [[buffer(15)]],device atomic_uint* failure [[buffer(16)]],
+ constant TransportParams& p [[buffer(17)]],constant PhysicalParams& extra [[buffer(18)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul){identity[0]=0ul;return;}
+ ulong hash=14695981039346656037ul,all=pf_all_faces(p);hash^=transportIdentity[0];hash*=1099511628211ul;
+ for(uint word=0u;word<9u*all;++word){hash^=ulong(as_type<uint>(donor[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(highAdvective[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(low[word]));hash*=1099511628211ul;hash^=ulong(as_type<uint>(high[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<8u*all;++word){hash^=ulong(as_type<uint>(physicalMass[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<all;++word){hash^=ulong(as_type<uint>(physicalEnergy[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(physicalGas[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(faceLogTemperature[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<7u*all;++word){hash^=ulong(as_type<uint>(faceEnthalpy[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<9u;++word){hash^=ulong(as_type<uint>(ambient[word]));hash*=1099511628211ul;}
+ uint inflowWords=p.sideOffset[5]+p.nx*p.ny;for(uint word=0u;word<inflowWords;++word){hash^=ulong(inflow[word]);hash*=1099511628211ul;}
+ for(uint word=0u;word<8u*extra.physicalNullity;++word){hash^=ulong(as_type<uint>(physicalBasis[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<8u*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(advectiveBasis[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<extra.advectiveNullity*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(projector[word]));hash*=1099511628211ul;}
+ hash^=ulong(as_type<uint>(extra.ambientT));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
 )METAL";
 			}
 
-			ResidentTransportMetalContext() : device(nil),queue(nil),evaluate(nil),identify(nil)
+			ResidentTransportMetalContext() : device(nil),queue(nil),evaluate(nil),identify(nil),
+				physicalFlux(nil),advectivePair(nil),finalizeAdvective(nil),composePair(nil),validatePhysical(nil),
+				identifyPhysical(nil)
 			{
 				@autoreleasepool {
 					device=DiscoverProductionMetalDevice("resident transport",error);
@@ -1959,12 +2167,21 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 						[library newFunctionWithName:[NSString stringWithUTF8String:name]];
 						return function?[device newComputePipelineStateWithFunction:function error:&metalError]:nil;};
 					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
-					if(!evaluate||!identify){error=MetalError("production resident transport pipeline creation failed",metalError);return;}
+					physicalFlux=pipeline("evaluate_resident_physical_flux");
+					advectivePair=pipeline("evaluate_resident_advective_pair");
+					finalizeAdvective=pipeline("finalize_resident_advective_high");
+					composePair=pipeline("compose_resident_flux_pair");
+					validatePhysical=pipeline("validate_resident_physical_flux");
+					identifyPhysical=pipeline("identify_resident_physical_flux");
+					if(!evaluate||!identify||!physicalFlux||!advectivePair||!finalizeAdvective||!composePair||
+						!validatePhysical||!identifyPhysical){error=MetalError(
+						"production resident authority pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
 				}
 			}
 
-			bool Valid() const {return device&&queue&&evaluate&&identify&&error.empty();}
+			bool Valid() const {return device&&queue&&evaluate&&identify&&physicalFlux&&
+				advectivePair&&finalizeAdvective&&composePair&&validatePhysical&&identifyPhysical&&error.empty();}
 		};
 
 		MetalRemapContext& Context()
@@ -4952,6 +5169,7 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 	namespace
 	{
 		class ResidentTransportMetalAuthority;
+		class ResidentPhysicalFluxMetalAuthority;
 		bool EncodeResidentTransportAuthority(
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -4968,14 +5186,78 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 			friend bool ::RISE::EvaluateFireProductionResidentTransportMetalComparator(
 				const FireProductionResidentTransportComparatorRequest&,
 				FireProductionResidentTransportComparatorResult&,std::string*);
+			friend bool EncodeResidentPhysicalFluxAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				std::size_t,std::size_t,const MetalResidentPhysicalFluxParameters&,
+				ResidentPhysicalFluxMetalAuthority&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+				const FireProductionResidentPhysicalFluxComparatorRequest&,
+				FireProductionResidentPhysicalFluxComparatorResult&,std::string*);
 			id<MTLBuffer> coefficients;
 			id<MTLBuffer> publicationIdentity;
+			id<MTLCommandBuffer> parentCommand;
+			id<MTLBuffer> parentState;
+			id<MTLBuffer> parentTemperature;
+			id<MTLBuffer> parentVelocity;
+			id<MTLBuffer> parentThermochemistry;
+			id<MTLBuffer> parentParameters;
+			id<MTLBuffer> parentFailure;
+			id<MTLBuffer> parentObligations;
+			std::size_t parentCells,parentAllFaces,parentBoundaryFaces;
 			std::uint64_t allocationBytes;
 			ResidentTransportMetalAuthority() : coefficients(nil),publicationIdentity(nil),
+				parentCommand(nil),parentState(nil),parentTemperature(nil),parentVelocity(nil),
+				parentThermochemistry(nil),parentParameters(nil),parentFailure(nil),
+				parentObligations(nil),parentCells(0u),parentAllFaces(0u),parentBoundaryFaces(0u),
 				allocationBytes(0u) {}
 			ResidentTransportMetalAuthority(const ResidentTransportMetalAuthority&)=delete;
 			ResidentTransportMetalAuthority& operator=(
 				const ResidentTransportMetalAuthority&)=delete;
+		};
+
+		bool EncodeResidentPhysicalFluxAuthority(
+			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+			std::size_t,std::size_t,const MetalResidentPhysicalFluxParameters&,
+			ResidentPhysicalFluxMetalAuthority&,std::string*);
+
+		class ResidentPhysicalFluxMetalAuthority
+		{
+			friend bool EncodeResidentPhysicalFluxAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				std::size_t,std::size_t,const MetalResidentPhysicalFluxParameters&,
+				ResidentPhysicalFluxMetalAuthority&,std::string*);
+			friend bool ::RISE::EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+				const FireProductionResidentPhysicalFluxComparatorRequest&,
+				FireProductionResidentPhysicalFluxComparatorResult&,std::string*);
+			id<MTLBuffer> donorAdvective;
+			id<MTLBuffer> mcMusclAdvective;
+			id<MTLBuffer> physicalMass;
+			id<MTLBuffer> physicalEnergy;
+			id<MTLBuffer> physicalGas;
+			id<MTLBuffer> faceLogTemperature;
+			id<MTLBuffer> faceSensibleEnthalpy;
+			id<MTLBuffer> lowComposite;
+			id<MTLBuffer> highComposite;
+			id<MTLBuffer> publicationIdentity;
+			std::uint64_t allocationBytes;
+			ResidentPhysicalFluxMetalAuthority() : donorAdvective(nil),
+				mcMusclAdvective(nil),physicalMass(nil),physicalEnergy(nil),physicalGas(nil),
+				faceLogTemperature(nil),faceSensibleEnthalpy(nil),lowComposite(nil),
+				highComposite(nil),publicationIdentity(nil),
+				allocationBytes(0u) {}
+			ResidentPhysicalFluxMetalAuthority(
+				const ResidentPhysicalFluxMetalAuthority&)=delete;
+			ResidentPhysicalFluxMetalAuthority& operator=(
+				const ResidentPhysicalFluxMetalAuthority&)=delete;
 		};
 
 		bool ValidResidentTransportStage(const FireProductionProjectedHeunStage stage)
@@ -5098,6 +5380,250 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 			return true;
 		}
 
+		bool EncodeResidentPhysicalFluxAuthority(
+			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
+			id<MTLBuffer> state,id<MTLBuffer> temperature,id<MTLBuffer> velocity,
+			id<MTLBuffer> thermochemistry,id<MTLBuffer> ambient,id<MTLBuffer> inflow,
+			id<MTLBuffer> physicalBasis,id<MTLBuffer> advectiveBasis,id<MTLBuffer> projector,
+			id<MTLBuffer> transportParameters,id<MTLBuffer> physicalParameters,
+			id<MTLBuffer> failure,id<MTLBuffer> obligations,
+			const ResidentTransportMetalAuthority& transportAuthority,
+			const std::size_t cells,const std::size_t allFaces,
+			const MetalResidentPhysicalFluxParameters& metadata,
+			ResidentPhysicalFluxMetalAuthority& authority,std::string* error )
+		{
+			const std::array<id<MTLBuffer>,15> inputs={{state,temperature,velocity,
+				thermochemistry,ambient,inflow,physicalBasis,advectiveBasis,projector,
+				transportParameters,physicalParameters,failure,obligations,
+				transportAuthority.coefficients,transportAuthority.publicationIdentity}};
+			if(!command||cells==0u||allFaces==0u||metadata.advectiveNullity==0u||
+				metadata.advectiveNullity>8u||metadata.physicalNullity==0u||
+				metadata.physicalNullity>8u){
+				if(error)*error="production resident physical-flux authority input is absent";
+				return false;
+			}
+			if(command!=transportAuthority.parentCommand||state!=transportAuthority.parentState||
+				temperature!=transportAuthority.parentTemperature||
+				velocity!=transportAuthority.parentVelocity||
+				thermochemistry!=transportAuthority.parentThermochemistry||
+				transportParameters!=transportAuthority.parentParameters||
+				failure!=transportAuthority.parentFailure||
+				cells!=transportAuthority.parentCells||allFaces!=transportAuthority.parentAllFaces){
+				if(error)*error="production resident physical-flux parent candidate lineage is stale";
+				return false;
+			}
+			for(id<MTLBuffer> buffer:inputs)if(!buffer||[buffer device]!=context.device||
+				[buffer storageMode]!=MTLStorageModePrivate){if(error)*error=
+				"production resident physical-flux authority requires device-private lineage";
+				return false;}
+			if([state length]!=9u*cells*sizeof(float)||[temperature length]!=cells*sizeof(float)||
+				[velocity length]!=allFaces*sizeof(float)||
+				[thermochemistry length]!=MetalManifoldCertificateValues*sizeof(float)||
+				[ambient length]!=9u*sizeof(float)||
+				[inflow length]!=transportAuthority.parentBoundaryFaces*sizeof(unsigned char)||
+				[physicalBasis length]!=8u*metadata.physicalNullity*sizeof(float)||
+				[advectiveBasis length]!=8u*metadata.advectiveNullity*sizeof(float)||
+				[projector length]!=metadata.advectiveNullity*metadata.advectiveNullity*sizeof(float)||
+				[transportParameters length]!=sizeof(MetalResidentTransportParameters)||
+				[physicalParameters length]!=sizeof(MetalResidentPhysicalFluxParameters)||
+				[failure length]!=sizeof(std::uint32_t)||
+				[obligations length]!=sizeof(std::uint32_t)||
+				[transportAuthority.coefficients length]!=3u*cells*sizeof(float)||
+				[transportAuthority.publicationIdentity length]!=sizeof(std::uint64_t)){
+				if(error)*error="production resident physical-flux authority extent is invalid";
+				return false;
+			}
+			auto make=[&](const std::size_t bytes){return [context.device newBufferWithLength:bytes
+				options:MTLResourceStorageModePrivate];};
+			authority.donorAdvective=make(9u*allFaces*sizeof(float));
+			authority.mcMusclAdvective=make(9u*allFaces*sizeof(float));
+			authority.physicalMass=make(8u*allFaces*sizeof(float));
+			authority.physicalEnergy=make(allFaces*sizeof(float));
+			authority.physicalGas=make(allFaces*sizeof(float));
+			authority.faceLogTemperature=make(allFaces*sizeof(float));
+			authority.faceSensibleEnthalpy=make(7u*allFaces*sizeof(float));
+			authority.lowComposite=make(9u*allFaces*sizeof(float));
+			authority.highComposite=make(9u*allFaces*sizeof(float));
+			authority.publicationIdentity=make(sizeof(std::uint64_t));
+			const std::array<id<MTLBuffer>,10> outputs={{authority.donorAdvective,
+				authority.mcMusclAdvective,authority.physicalMass,authority.physicalEnergy,
+				authority.physicalGas,authority.faceLogTemperature,
+				authority.faceSensibleEnthalpy,authority.lowComposite,
+				authority.highComposite,authority.publicationIdentity}};
+			for(id<MTLBuffer> buffer:outputs)if(!buffer){
+				if(error)*error="production resident physical-flux authority allocation failed";
+				return false;
+			}
+			authority.allocationBytes=0u;for(id<MTLBuffer> buffer:outputs){
+				const std::uint64_t allocation=[buffer allocatedSize];
+				if(authority.allocationBytes>std::numeric_limits<std::uint64_t>::max()-allocation){
+					if(error)*error="production resident physical-flux allocation overflowed";
+					return false;
+				}
+				authority.allocationBytes+=allocation;
+			}
+			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			if(!encoder){if(error)*error="production resident physical-flux encoder failed";return false;}
+			[encoder setComputePipelineState:context.physicalFlux];
+			[encoder setBuffer:state offset:0 atIndex:0];[encoder setBuffer:temperature offset:0 atIndex:1];
+			[encoder setBuffer:transportAuthority.coefficients offset:0 atIndex:2];
+			[encoder setBuffer:thermochemistry offset:0 atIndex:3];
+			[encoder setBuffer:physicalBasis offset:0 atIndex:4];[encoder setBuffer:ambient offset:0 atIndex:5];
+			[encoder setBuffer:inflow offset:0 atIndex:6];[encoder setBuffer:authority.physicalMass offset:0 atIndex:7];
+			[encoder setBuffer:authority.physicalEnergy offset:0 atIndex:8];
+			[encoder setBuffer:authority.physicalGas offset:0 atIndex:9];
+			[encoder setBuffer:authority.faceLogTemperature offset:0 atIndex:10];
+			[encoder setBuffer:authority.faceSensibleEnthalpy offset:0 atIndex:11];
+			[encoder setBuffer:failure offset:0 atIndex:12];
+			[encoder setBuffer:obligations offset:0 atIndex:13];
+			[encoder setBuffer:transportParameters offset:0 atIndex:14];
+			[encoder setBuffer:physicalParameters offset:0 atIndex:15];
+			Dispatch(encoder,context.physicalFlux,allFaces);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];if(!encoder){
+				if(error)*error="production resident advective-flux encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.advectivePair];[encoder setBuffer:state offset:0 atIndex:0];
+			[encoder setBuffer:velocity offset:0 atIndex:1];[encoder setBuffer:ambient offset:0 atIndex:2];
+			[encoder setBuffer:inflow offset:0 atIndex:3];[encoder setBuffer:advectiveBasis offset:0 atIndex:4];
+			[encoder setBuffer:projector offset:0 atIndex:5];[encoder setBuffer:authority.donorAdvective offset:0 atIndex:6];
+			[encoder setBuffer:authority.mcMusclAdvective offset:0 atIndex:7];
+			[encoder setBuffer:obligations offset:0 atIndex:8];[encoder setBuffer:transportParameters offset:0 atIndex:9];
+			[encoder setBuffer:physicalParameters offset:0 atIndex:10];
+			Dispatch(encoder,context.advectivePair,9u*allFaces);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];if(!encoder){
+				if(error)*error="production resident MC-MUSCL finalization encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.finalizeAdvective];
+			[encoder setBuffer:authority.donorAdvective offset:0 atIndex:0];
+			[encoder setBuffer:authority.mcMusclAdvective offset:0 atIndex:1];
+			[encoder setBuffer:transportParameters offset:0 atIndex:2];
+			Dispatch(encoder,context.finalizeAdvective,9u*allFaces);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];if(!encoder){
+				if(error)*error="production resident flux composition encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.composePair];
+			[encoder setBuffer:authority.donorAdvective offset:0 atIndex:0];
+			[encoder setBuffer:authority.mcMusclAdvective offset:0 atIndex:1];
+			[encoder setBuffer:authority.physicalMass offset:0 atIndex:2];
+			[encoder setBuffer:authority.physicalEnergy offset:0 atIndex:3];
+			[encoder setBuffer:authority.lowComposite offset:0 atIndex:4];
+			[encoder setBuffer:authority.highComposite offset:0 atIndex:5];
+			[encoder setBuffer:transportParameters offset:0 atIndex:6];
+			[encoder setBuffer:physicalParameters offset:0 atIndex:7];
+			Dispatch(encoder,context.composePair,9u*allFaces);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];if(!encoder){
+				if(error)*error="production resident shared-f_N validation encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.validatePhysical];
+			[encoder setBuffer:authority.donorAdvective offset:0 atIndex:0];
+			[encoder setBuffer:authority.mcMusclAdvective offset:0 atIndex:1];
+			[encoder setBuffer:authority.physicalMass offset:0 atIndex:2];
+			[encoder setBuffer:authority.physicalEnergy offset:0 atIndex:3];
+			[encoder setBuffer:authority.physicalGas offset:0 atIndex:4];
+			[encoder setBuffer:authority.lowComposite offset:0 atIndex:5];
+			[encoder setBuffer:authority.highComposite offset:0 atIndex:6];
+			[encoder setBuffer:failure offset:0 atIndex:7];[encoder setBuffer:obligations offset:0 atIndex:8];
+			[encoder setBuffer:transportParameters offset:0 atIndex:9];
+			Dispatch(encoder,context.validatePhysical,9u*allFaces);[encoder endEncoding];
+			encoder=[command computeCommandEncoder];if(!encoder){
+				if(error)*error="production resident physical-flux identity encoder failed";
+				return false;
+			}
+			[encoder setComputePipelineState:context.identifyPhysical];
+			[encoder setBuffer:authority.donorAdvective offset:0 atIndex:0];
+			[encoder setBuffer:authority.mcMusclAdvective offset:0 atIndex:1];
+			[encoder setBuffer:authority.physicalMass offset:0 atIndex:2];
+			[encoder setBuffer:authority.physicalEnergy offset:0 atIndex:3];
+			[encoder setBuffer:authority.physicalGas offset:0 atIndex:4];
+			[encoder setBuffer:authority.lowComposite offset:0 atIndex:5];
+			[encoder setBuffer:authority.highComposite offset:0 atIndex:6];
+			[encoder setBuffer:authority.faceLogTemperature offset:0 atIndex:7];
+			[encoder setBuffer:authority.faceSensibleEnthalpy offset:0 atIndex:8];
+			[encoder setBuffer:transportAuthority.publicationIdentity offset:0 atIndex:9];
+			[encoder setBuffer:ambient offset:0 atIndex:10];[encoder setBuffer:inflow offset:0 atIndex:11];
+			[encoder setBuffer:physicalBasis offset:0 atIndex:12];
+			[encoder setBuffer:advectiveBasis offset:0 atIndex:13];[encoder setBuffer:projector offset:0 atIndex:14];
+			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:15];
+			[encoder setBuffer:failure offset:0 atIndex:16];[encoder setBuffer:transportParameters offset:0 atIndex:17];
+			[encoder setBuffer:physicalParameters offset:0 atIndex:18];
+			Dispatch(encoder,context.identifyPhysical,1u);[encoder endEncoding];
+			return true;
+		}
+
+		bool PrepareResidentPhysicalFluxRequest(
+			const FireProductionResidentPhysicalFluxComparatorRequest& request,
+			MetalResidentTransportParameters& transportParameters,
+			MetalResidentPhysicalFluxParameters& physicalParameters,
+			std::array<std::size_t,3>& faceOffset,std::size_t& allFaces,
+			std::vector<unsigned char>& packedFuelInlet,
+			std::vector<unsigned char>& packedPressureInflow,
+			std::vector<float>& physicalBasis,std::string* error )
+		{
+			if(!PrepareResidentTransportRequest(request.transport,transportParameters,
+				faceOffset,allFaces,packedFuelInlet,error))return false;
+			const FireProductionProjectionShape& shape=request.transport.shape;
+			const FireSimulationMethaneRecord& record=FireSimulationMethaneRecord::PhysicalV1();
+			const FireCertifiedNullspace& physical=record.NonadvectiveFluxProjection();
+			if(!record.IsValid()||physical.stateDimension!=8u||physical.nullity==0u||
+				physical.nullity>8u||physical.orthonormalBasis.size()!=8u*physical.nullity||
+				request.nullity==0u||request.nullity>8u||
+				request.nullspaceBasis.size()!=8u*request.nullity||
+				request.coordinateProjector.size()!=request.nullity*request.nullity||
+				!std::isfinite(request.ambientTemperatureK)||
+				request.ambientTemperatureK<record.TemperatureMinK()||
+				request.ambientTemperatureK>record.TemperatureMaxK()){
+				if(error)*error="production resident physical-flux certificate is invalid";
+				return false;
+			}
+			for(const float value:request.ambient)if(!std::isfinite(value)){
+				if(error)*error="production resident physical-flux ambient is nonfinite";
+				return false;
+			}
+			for(const float value:request.nullspaceBasis)if(!std::isfinite(value)){
+				if(error)*error="production resident physical-flux basis is nonfinite";
+				return false;
+			}
+			for(const float value:request.coordinateProjector)if(!std::isfinite(value)){
+				if(error)*error="production resident physical-flux projector is nonfinite";
+				return false;
+			}
+			packedPressureInflow.clear();
+			for(unsigned int side=0u;side<6u;++side){
+				const std::size_t expected=side<2u?shape.ny*shape.nz:
+					(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+				if(request.pressureOpenInflow[side].size()!=expected){
+					if(error)*error="production resident physical-flux inflow shape is invalid";
+					return false;
+				}
+				for(const unsigned char value:request.pressureOpenInflow[side])if(value>1u||
+					(request.transport.boundary[side]!=FireProductionProjectionPressureOpen&&
+						value!=0u)){
+					if(error)*error="production resident physical-flux inflow class is invalid";
+					return false;
+				}
+				packedPressureInflow.insert(packedPressureInflow.end(),
+					request.pressureOpenInflow[side].begin(),
+					request.pressureOpenInflow[side].end());
+			}
+			physicalBasis.resize(physical.orthonormalBasis.size());
+			for(std::size_t index=0u;index<physicalBasis.size();++index){
+				physicalBasis[index]=static_cast<float>(physical.orthonormalBasis[index]);
+				if(!std::isfinite(physicalBasis[index])){
+					if(error)*error="production resident physical-flux projection is nonfinite";
+					return false;
+				}
+			}
+			physicalParameters={static_cast<std::uint32_t>(request.nullity),
+				static_cast<std::uint32_t>(physical.nullity),
+				request.qualificationMutateHighNonadvective?1u:0u,
+				request.ambientTemperatureK};
+			return true;
+		}
+
 		bool EncodeResidentTransportAuthority(
 			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
 			id<MTLBuffer> state,id<MTLBuffer> temperature,id<MTLBuffer> velocity,
@@ -5141,6 +5667,12 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 			}
 			authority.allocationBytes=[authority.coefficients allocatedSize]+
 				[authority.publicationIdentity allocatedSize];
+			authority.parentCommand=command;authority.parentState=state;
+			authority.parentTemperature=temperature;authority.parentVelocity=velocity;
+			authority.parentThermochemistry=thermochemistry;
+			authority.parentParameters=parameters;authority.parentFailure=failure;
+			authority.parentObligations=obligations;authority.parentCells=cells;
+			authority.parentAllFaces=allFaces;authority.parentBoundaryFaces=boundaryFaces;
 			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
 			if(!encoder){
 				if(error)*error="production resident transport evaluation encoder failed";
@@ -5383,6 +5915,55 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 		return bytes<=(UINT64_C(1)<<31u);
 	}
 
+	bool FireProductionResidentPhysicalFluxMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;
+		if(shape.nx<4u||shape.nx>1024u||shape.ny<4u||shape.ny>1024u||
+			shape.nz<4u||shape.nz>1024u||!std::isfinite(shape.cellWidthM)||
+			!(shape.cellWidthM>0.0f))return false;
+		const std::uint64_t cells=shape.CellCount();
+		const std::uint64_t faces=FireProductionProjectionFaceCount(shape,0u)+
+			FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u);
+		const std::uint64_t boundaryFaces=2u*(static_cast<std::uint64_t>(shape.ny)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.nz+
+			static_cast<std::uint64_t>(shape.nx)*shape.ny);
+		auto add=[&](std::uint64_t requested){
+			if(requested==0u)return false;const std::uint64_t quantum=UINT64_C(16384);
+			const std::uint64_t remainder=requested%quantum;
+			if(remainder){const std::uint64_t increment=quantum-remainder;
+				if(requested>std::numeric_limits<std::uint64_t>::max()-increment)return false;
+				requested+=increment;}
+			if(bytes>std::numeric_limits<std::uint64_t>::max()-requested)return false;
+			bytes+=requested;return true;};
+		auto addPair=[&](const std::uint64_t requested){return add(requested)&&add(requested);};
+		// Shared fixture upload + private resident copy for immutable inputs.
+		if(!addPair(9u*cells*sizeof(float))||!addPair(cells*sizeof(float))||
+			!addPair(faces*sizeof(float))||!addPair(boundaryFaces*sizeof(unsigned char))||
+			!addPair(boundaryFaces*sizeof(unsigned char))||
+			!addPair(MetalManifoldCertificateValues*sizeof(float))||
+			!addPair(MetalResidentTransportSpeciesCount*MetalResidentTransportSpeciesStride*
+				sizeof(float))||!addPair(9u*sizeof(float))||!addPair(64u*sizeof(float))||
+			!addPair(64u*sizeof(float))||!addPair(64u*sizeof(float))||
+			!addPair(sizeof(MetalResidentTransportParameters))||
+			!addPair(sizeof(MetalResidentPhysicalFluxParameters))||
+			!addPair(3u*sizeof(std::uint32_t)))return false;
+		// Private transport publication, then the physical/advective authority.
+		if(!add(3u*cells*sizeof(float))||!add(sizeof(std::uint64_t))||
+			!add(9u*faces*sizeof(float))||!add(9u*faces*sizeof(float))||
+			!add(8u*faces*sizeof(float))||!add(faces*sizeof(float))||
+			!add(faces*sizeof(float))||!add(faces*sizeof(float))||
+			!add(7u*faces*sizeof(float))||!add(9u*faces*sizeof(float))||
+			!add(9u*faces*sizeof(float))||!add(sizeof(std::uint64_t)))return false;
+		// One terminal staging allocation for all published fields, identities,
+		// and refusal/obligation words.
+		const std::uint64_t terminal=(9u+9u+8u+1u+1u+9u+9u+1u+7u)*faces*sizeof(float)+
+			2u*cells*sizeof(float)+
+			2u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u;
+		return add(terminal)&&bytes<=(UINT64_C(1)<<31u);
+	}
+
 	bool EvaluateFireProductionResidentTransportMetalComparator(
 		const FireProductionResidentTransportComparatorRequest& request,
 		FireProductionResidentTransportComparatorResult& result,std::string* error )
@@ -5573,6 +6154,250 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
 		} catch(const std::bad_alloc&){
 			result=FireProductionResidentTransportComparatorResult();
 			if(error)try{*error="production resident transport allocation failed";}
+				catch(const std::bad_alloc&){}
+			return false;
+		}
+	}
+
+	bool EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		const FireProductionResidentPhysicalFluxComparatorRequest& request,
+		FireProductionResidentPhysicalFluxComparatorResult& result,std::string* error )
+	{
+		result=FireProductionResidentPhysicalFluxComparatorResult();
+		try {
+			MetalResidentTransportParameters transportParameters={};
+			MetalResidentPhysicalFluxParameters physicalParameters={};
+			std::array<std::size_t,3> faceOffset={{}};std::size_t allFaces=0u;
+			std::vector<unsigned char> packedFuelInlet,packedPressureInflow;
+			std::vector<float> physicalBasis;
+			if(!PrepareResidentPhysicalFluxRequest(request,transportParameters,
+				physicalParameters,faceOffset,allFaces,packedFuelInlet,packedPressureInflow,
+				physicalBasis,error))return false;
+			std::array<float,MetalResidentTransportSpeciesCount*
+				MetalResidentTransportSpeciesStride> packedTransport;
+			if(!PackMetalResidentTransport(packedTransport,transportParameters,error))return false;
+			std::array<float,MetalManifoldCertificateValues> packedThermochemistry;
+			MetalManifoldParameters manifoldParameters={};std::array<double,7> lower,upper;
+			if(!PackMetalMethaneThermochemistry(packedThermochemistry,manifoldParameters,
+				lower,upper,error))return false;
+			std::vector<float> packedVelocity;packedVelocity.reserve(allFaces);
+			for(const std::vector<float>& axis:request.transport.projectedVelocityMPerS)
+				packedVelocity.insert(packedVelocity.end(),axis.begin(),axis.end());
+			ResidentTransportMetalContext& context=ResidentTransportContext();
+			if(!context.Valid()){if(error)*error=context.error;return false;}
+			const std::size_t cells=request.transport.shape.CellCount();
+			const std::size_t stateBytes=9u*cells*sizeof(float),temperatureBytes=cells*sizeof(float),
+				velocityBytes=allFaces*sizeof(float),fuelBytes=packedFuelInlet.size(),
+				inflowBytes=packedPressureInflow.size(),thermoBytes=packedThermochemistry.size()*sizeof(float),
+				transportBytes=packedTransport.size()*sizeof(float),ambientBytes=9u*sizeof(float),
+				physicalBasisBytes=physicalBasis.size()*sizeof(float),
+				advectiveBasisBytes=request.nullspaceBasis.size()*sizeof(float),
+				projectorBytes=request.coordinateProjector.size()*sizeof(float),
+				controlBytes=3u*sizeof(std::uint32_t);
+			const std::size_t donorBytes=9u*allFaces*sizeof(float),massBytes=8u*allFaces*sizeof(float),
+				scalarFaceBytes=allFaces*sizeof(float);
+			std::size_t terminalBytes=0u;
+			auto terminalAdd=[&](const std::size_t value){
+				if(terminalBytes>std::numeric_limits<std::size_t>::max()-value)return false;
+				terminalBytes+=value;return true;
+			};
+			std::array<std::size_t,12> terminalOffset={{}};unsigned int terminalField=0u;
+			auto reserveTerminal=[&](const std::size_t value){terminalOffset[terminalField++]=terminalBytes;
+				return terminalAdd(value);};
+			if(!reserveTerminal(donorBytes)||!reserveTerminal(donorBytes)||
+				!reserveTerminal(massBytes)||!reserveTerminal(scalarFaceBytes)||
+				!reserveTerminal(scalarFaceBytes)||!reserveTerminal(donorBytes)||
+				!reserveTerminal(donorBytes)||!reserveTerminal(scalarFaceBytes)||
+				!reserveTerminal(7u*scalarFaceBytes)||
+				!reserveTerminal(2u*cells*sizeof(float))){
+				if(error)*error="production resident physical-flux terminal layout overflowed";
+				return false;
+			}
+			terminalBytes=(terminalBytes+7u)&~std::size_t(7u);
+			terminalOffset[terminalField++]=terminalBytes;terminalBytes+=2u*sizeof(std::uint64_t);
+			terminalOffset[terminalField++]=terminalBytes;terminalBytes+=controlBytes;
+			std::uint64_t certified=0u;
+			if(!FireProductionResidentPhysicalFluxMetalWorkingSetBytes(request.transport.shape,
+				certified)){if(error)*error="production resident physical-flux working-set certificate failed";
+				return false;}
+			if(certified>request.qualificationWorkingSetLimitBytes){if(error)*error=
+				"production resident physical-flux working-set limit is understated";
+				return false;}
+			const std::uint64_t beginningCommits=MetalCommandCommitCount,
+				beginningReads=MetalHostBufferReadCount;
+			@autoreleasepool {
+				auto upload=[&](const void* bytes,const std::size_t length){return
+					[context.device newBufferWithBytes:bytes length:length options:MTLResourceStorageModeShared];};
+				auto privateBuffer=[&](const std::size_t length){return
+					[context.device newBufferWithLength:length options:MTLResourceStorageModePrivate];};
+				id<MTLBuffer> stateUpload=upload(request.transport.conservativeValues.data(),stateBytes);
+				id<MTLBuffer> temperatureUpload=upload(request.transport.temperatureK.data(),temperatureBytes);
+				id<MTLBuffer> velocityUpload=upload(packedVelocity.data(),velocityBytes);
+				id<MTLBuffer> fuelUpload=upload(packedFuelInlet.data(),fuelBytes);
+				id<MTLBuffer> inflowUpload=upload(packedPressureInflow.data(),inflowBytes);
+				id<MTLBuffer> thermoUpload=upload(packedThermochemistry.data(),thermoBytes);
+				id<MTLBuffer> transportUpload=upload(packedTransport.data(),transportBytes);
+				id<MTLBuffer> ambientUpload=upload(request.ambient.data(),ambientBytes);
+				id<MTLBuffer> physicalBasisUpload=upload(physicalBasis.data(),physicalBasisBytes);
+				id<MTLBuffer> advectiveBasisUpload=upload(request.nullspaceBasis.data(),advectiveBasisBytes);
+				id<MTLBuffer> projectorUpload=upload(request.coordinateProjector.data(),projectorBytes);
+				id<MTLBuffer> transportParameterUpload=upload(&transportParameters,sizeof(transportParameters));
+				id<MTLBuffer> physicalParameterUpload=upload(&physicalParameters,sizeof(physicalParameters));
+				std::array<std::uint32_t,3> zeros={{0u,0u,0u}};
+				id<MTLBuffer> controlUpload=upload(zeros.data(),controlBytes);
+				const std::size_t privateInflowBytes=request.qualificationShortInflowSurface?
+					inflowBytes-1u:inflowBytes;
+				const std::size_t privatePhysicalBasisBytes=
+					request.qualificationOversizedPhysicalBasisSurface?
+					physicalBasisBytes+sizeof(float):physicalBasisBytes;
+				id<MTLBuffer> state=privateBuffer(stateBytes),temperature=privateBuffer(temperatureBytes),
+					velocity=privateBuffer(velocityBytes),fuel=privateBuffer(fuelBytes),
+					inflow=privateBuffer(privateInflowBytes),thermo=privateBuffer(thermoBytes),
+					transport=privateBuffer(transportBytes),ambient=privateBuffer(ambientBytes),
+					physicalBasisBuffer=privateBuffer(privatePhysicalBasisBytes),
+					advectiveBasis=privateBuffer(advectiveBasisBytes),projector=privateBuffer(projectorBytes),
+					transportParameter=privateBuffer(sizeof(transportParameters)),
+					physicalParameter=privateBuffer(sizeof(physicalParameters)),
+					failure=privateBuffer(sizeof(std::uint32_t)),
+					transportObligations=privateBuffer(sizeof(std::uint32_t)),
+					physicalObligations=privateBuffer(sizeof(std::uint32_t));
+				id<MTLBuffer> mismatchedState=request.qualificationMismatchedParentCandidate?
+					privateBuffer(stateBytes):nil;
+				id<MTLBuffer> terminal=[context.device newBufferWithLength:terminalBytes
+					options:MTLResourceStorageModeShared];
+				const std::array<id<MTLBuffer>,31> buffers={{stateUpload,temperatureUpload,
+					velocityUpload,fuelUpload,inflowUpload,thermoUpload,transportUpload,ambientUpload,
+					physicalBasisUpload,advectiveBasisUpload,projectorUpload,transportParameterUpload,
+					physicalParameterUpload,controlUpload,state,temperature,velocity,fuel,inflow,thermo,
+					transport,ambient,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
+					physicalParameter,failure,transportObligations,physicalObligations,terminal}};
+				for(id<MTLBuffer> buffer:buffers)if(!buffer){
+					if(error)*error="production resident physical-flux buffer allocation failed";
+					return false;
+				}
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!blit){if(error)*error="production resident physical-flux upload encoder failed";return false;}
+				auto copy=[&](id<MTLBuffer> source,id<MTLBuffer> destination,const std::size_t length){
+					[blit copyFromBuffer:source sourceOffset:0 toBuffer:destination destinationOffset:0 size:length];};
+				copy(stateUpload,state,stateBytes);copy(temperatureUpload,temperature,temperatureBytes);
+				copy(velocityUpload,velocity,velocityBytes);copy(fuelUpload,fuel,fuelBytes);
+				copy(inflowUpload,inflow,privateInflowBytes);copy(thermoUpload,thermo,thermoBytes);
+				copy(transportUpload,transport,transportBytes);copy(ambientUpload,ambient,ambientBytes);
+				copy(physicalBasisUpload,physicalBasisBuffer,physicalBasisBytes);
+				copy(advectiveBasisUpload,advectiveBasis,advectiveBasisBytes);
+				copy(projectorUpload,projector,projectorBytes);
+				copy(transportParameterUpload,transportParameter,sizeof(transportParameters));
+				copy(physicalParameterUpload,physicalParameter,sizeof(physicalParameters));
+				[blit copyFromBuffer:controlUpload sourceOffset:0 toBuffer:failure destinationOffset:0
+					size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:controlUpload sourceOffset:sizeof(std::uint32_t)
+					toBuffer:transportObligations destinationOffset:0 size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:controlUpload sourceOffset:2u*sizeof(std::uint32_t)
+					toBuffer:physicalObligations destinationOffset:0 size:sizeof(std::uint32_t)];
+				if(mismatchedState)copy(stateUpload,mismatchedState,stateBytes);[blit endEncoding];
+				ResidentTransportMetalAuthority transportAuthority;
+				if(!EncodeResidentTransportAuthority(context,command,state,temperature,velocity,
+					thermo,transport,fuel,transportParameter,failure,transportObligations,cells,allFaces,
+					packedFuelInlet.size(),transportAuthority,error))return false;
+				ResidentPhysicalFluxMetalAuthority physicalAuthority;
+				id<MTLBuffer> childState=mismatchedState?mismatchedState:state;
+				if(!EncodeResidentPhysicalFluxAuthority(context,command,childState,temperature,velocity,
+					thermo,ambient,inflow,physicalBasisBuffer,advectiveBasis,projector,
+					transportParameter,physicalParameter,failure,physicalObligations,transportAuthority,
+					cells,allFaces,physicalParameters,physicalAuthority,error))return false;
+				blit=[command blitCommandEncoder];if(!blit){
+					if(error)*error="production resident physical-flux terminal encoder failed";
+					return false;
+				}
+				const std::array<id<MTLBuffer>,9> fields={{physicalAuthority.donorAdvective,
+					physicalAuthority.mcMusclAdvective,physicalAuthority.physicalMass,
+					physicalAuthority.physicalEnergy,physicalAuthority.physicalGas,
+					physicalAuthority.lowComposite,physicalAuthority.highComposite,
+					physicalAuthority.faceLogTemperature,
+					physicalAuthority.faceSensibleEnthalpy}};
+				const std::array<std::size_t,9> fieldBytes={{donorBytes,donorBytes,massBytes,
+					scalarFaceBytes,scalarFaceBytes,donorBytes,donorBytes,scalarFaceBytes,
+					7u*scalarFaceBytes}};
+				for(unsigned int field=0u;field<fields.size();++field)
+					[blit copyFromBuffer:fields[field] sourceOffset:0 toBuffer:terminal
+						destinationOffset:terminalOffset[field] size:fieldBytes[field]];
+				[blit copyFromBuffer:transportAuthority.publicationIdentity sourceOffset:0
+					toBuffer:terminal destinationOffset:terminalOffset[10] size:sizeof(std::uint64_t)];
+				[blit copyFromBuffer:transportAuthority.coefficients sourceOffset:0
+					toBuffer:terminal destinationOffset:terminalOffset[9] size:2u*cells*sizeof(float)];
+				[blit copyFromBuffer:physicalAuthority.publicationIdentity sourceOffset:0
+					toBuffer:terminal destinationOffset:terminalOffset[10]+sizeof(std::uint64_t)
+					size:sizeof(std::uint64_t)];
+				[blit copyFromBuffer:failure sourceOffset:0 toBuffer:terminal
+					destinationOffset:terminalOffset[11] size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:physicalObligations sourceOffset:0 toBuffer:terminal
+					destinationOffset:terminalOffset[11]+sizeof(std::uint32_t)
+					size:sizeof(std::uint32_t)];[blit endEncoding];
+				CommitTrackedMetalCommand(command);[command waitUntilCompleted];
+				if([command status]!=MTLCommandBufferStatusCompleted){
+					if(error)*error="production resident physical-flux command failed";
+					return false;
+				}
+				const unsigned char* bytes=static_cast<const unsigned char*>(ReadTrackedMetalBuffer(terminal));
+				if(!bytes){if(error)*error="production resident physical-flux terminal is unavailable";return false;}
+				const std::uint32_t* controls=reinterpret_cast<const std::uint32_t*>(bytes+terminalOffset[11]);
+				if(controls[0]!=0u){if(error)*error="production resident physical-flux device validation failed";return false;}
+				FireProductionResidentPhysicalFluxComparatorResult computed;
+				auto assign=[&](std::vector<float>& destination,const unsigned int field,
+					const std::size_t count){const float* values=reinterpret_cast<const float*>(bytes+
+						terminalOffset[field]);destination.assign(values,values+count);};
+				assign(computed.donorAdvectiveFlux,0u,9u*allFaces);
+				assign(computed.mcMusclAdvectiveFlux,1u,9u*allFaces);
+				assign(computed.physicalMassFluxKGPerM2S,2u,8u*allFaces);
+				assign(computed.physicalEnergyFluxWPerM2,3u,allFaces);
+				assign(computed.faceLogTemperature,7u,allFaces);
+				assign(computed.faceSensibleEnthalpyJPerKG,8u,7u*allFaces);
+				const float* gas=reinterpret_cast<const float*>(bytes+terminalOffset[4]);
+				for(unsigned int axis=0u;axis<3u;++axis)computed.physicalGasFluxKGPerM2S[axis].assign(
+					gas+faceOffset[axis],gas+faceOffset[axis]+FireProductionProjectionFaceCount(
+						request.transport.shape,axis));
+				assign(computed.lowCompositeFlux,5u,9u*allFaces);
+				assign(computed.highCompositeFlux,6u,9u*allFaces);
+				const float* coefficients=reinterpret_cast<const float*>(bytes+terminalOffset[9]);
+				computed.diffusivityM2PerS.assign(coefficients,coefficients+cells);
+				computed.conductivityWPerMK.assign(coefficients+cells,coefficients+2u*cells);
+				const std::uint64_t* identities=reinterpret_cast<const std::uint64_t*>(bytes+terminalOffset[10]);
+				computed.transportPublicationIdentity=identities[0];computed.devicePublicationIdentity=identities[1];
+				computed.packedFaceOffset=faceOffset;computed.branchObligationBitmap=controls[1];
+				const std::uint64_t observedCommits=MetalCommandCommitCount-beginningCommits,
+					observedReads=MetalHostBufferReadCount-beginningReads;
+				computed.commandCommitCount=static_cast<std::uint32_t>(observedCommits);
+				computed.terminalStagingCount=static_cast<std::uint32_t>(observedReads);
+				computed.interstageFullGridTransferCount=static_cast<std::uint32_t>(
+					observedReads>0u?observedReads-1u:0u);computed.certifiedWorkingSetBytes=certified;
+				computed.actualMetalAllocationBytes=transportAuthority.allocationBytes+
+					physicalAuthority.allocationBytes;
+				for(id<MTLBuffer> buffer:buffers)computed.actualMetalAllocationBytes+=[buffer allocatedSize];
+				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				computed.deviceProduced=computed.transportPublicationIdentity!=0u&&
+					computed.devicePublicationIdentity!=0u;
+				if(observedCommits!=1u||observedReads!=1u||!computed.deviceProduced||
+					computed.actualMetalAllocationBytes>computed.certifiedWorkingSetBytes||
+					!AllFinite(computed.donorAdvectiveFlux)||!AllFinite(computed.mcMusclAdvectiveFlux)||
+					!AllFinite(computed.physicalMassFluxKGPerM2S)||
+					!AllFinite(computed.physicalEnergyFluxWPerM2)||
+					!AllFinite(computed.faceLogTemperature)||
+					!AllFinite(computed.faceSensibleEnthalpyJPerKG)||
+					!AllFinite(computed.lowCompositeFlux)||!AllFinite(computed.highCompositeFlux)){
+					if(error)*error="production resident physical-flux publication failed its certificate";
+					return false;
+				}
+				for(const std::vector<float>& axis:computed.physicalGasFluxKGPerM2S)
+					if(!AllFinite(axis)){
+						if(error)*error="production resident physical gas flux is nonfinite";
+						return false;
+					}
+				result=std::move(computed);if(error)error->clear();return true;
+			}
+		} catch(const std::bad_alloc&){
+			result=FireProductionResidentPhysicalFluxComparatorResult();
+			if(error)try{*error="production resident physical-flux allocation failed";}
 				catch(const std::bad_alloc&){}
 			return false;
 		}

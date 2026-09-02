@@ -80,4 +80,28 @@ namespace RISE
 		} catch( const std::bad_alloc& ) { error->clear(); }
 		return false;
 	}
+
+#if defined(__APPLE__)
+	bool EvaluateFireProductionResidentTransportMetalComparator(
+		const FireProductionResidentTransportComparatorRequest&,
+		FireProductionResidentTransportComparatorResult& result,std::string* error )
+	{
+		result=FireProductionResidentTransportComparatorResult();
+		if( error ) try {
+			*error="production resident transport Metal unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
+	bool EvaluateFireProductionResidentPhysicalFluxMetalComparator(
+		const FireProductionResidentPhysicalFluxComparatorRequest&,
+		FireProductionResidentPhysicalFluxComparatorResult& result,std::string* error )
+	{
+		result=FireProductionResidentPhysicalFluxComparatorResult();
+		if( error ) try {
+			*error="production resident physical-flux Metal unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+#endif
 }
