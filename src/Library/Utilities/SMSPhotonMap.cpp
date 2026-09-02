@@ -193,8 +193,10 @@ void SMSPhotonMap::Clear()
 // so ManifoldSolver can use it as a Newton-iteration seed.
 //
 // The walk is fully inline (no recursion — deterministic bound of
-// kMaxBounces) to avoid the static-variable shared-state in
-// CausticPelPhotonTracer::TracePhoton's numRecursions counter.
+// kMaxBounces).  Historically this also side-stepped a function-local
+// static recursion counter in CausticPelPhotonTracer::TracePhoton; that
+// static is gone (depth is a threaded parameter now), so the inline form
+// stays purely for the deterministic bound.
 //////////////////////////////////////////////////////////////////////
 namespace
 {
