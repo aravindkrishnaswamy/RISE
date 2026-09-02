@@ -332,7 +332,7 @@ For every roadmap feature: the **shared component** (library, write-once) and th
 | D | D1 spectral curve / color picker | `spectral_painter`/`PiecewiseLinearScalarPainter`/`blackbody`/Sellmeier math | curve/slider/swatch widget | B |
 | D | D2 measured-metal n,k picker | n,k tables + GGX conductor wiring in library | picker widget + (optional) refractiveindex.info fetch | B |
 | D | D3 thin-film slider | `fresnel_mode thinfilm` (shipped) + angle-reactive eval | thickness slider + swatch | B |
-| D | D4 JH gamut warning | gamut-edge test (`JH_LUT_GAMUT`) in library | warning badge in the picker | B |
+| D | D4 JH gamut warning *(stale 2026-09-02 — trigger condition closed by Stage C, see [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) §4A)* | gamut-edge test (`JH_LUT_GAMUT`) in library | warning badge in the picker | B |
 | D | D5 "explain the auto-router" heatmap | variance-probe data + per-region rationale (auto-rasterizer) in library | heatmap overlay + tooltip | C (overlay) |
 | D | D6 EDR cinematography scopes | waveform/vectorscope/false-color *math* over FrameStore in library (the scope `ScopeRequest`/binning, §5.4) | scope compute via the per-API `IAuxGpuBackend` (§5.4) + scope draw + EDR present surface | C (needs EDR) |
 | D | D7 spectral Light Mix | per-light AOV render + re-balance math in library | mix-slider panel | B |

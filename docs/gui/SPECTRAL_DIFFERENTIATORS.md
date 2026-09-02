@@ -314,6 +314,23 @@ and D3 ships only once it lands:
 
 ## 4A. D4 — Jakob–Hanika gamut-honesty warning
 
+> **STALE (2026-09-02) — trigger condition no longer exists; not implemented in src/.**
+> This whole spec (§4A.1–§4A.6, and the D4 references at §10A and §11) is built on the
+> pre-Stage-C LUT's per-cell residuals exceeding the `1 × 10⁻⁴` tolerance in the deep-blue
+> corner (~3.9 % of cells). [SPECTRAL_ILLUMINANT_CONVENTION.md](../SPECTRAL_ILLUMINANT_CONVENTION.md)
+> ("Stage C") retrained the LUT with the reference illuminant in the forward model:
+> unconverged cells are now **0.0 % of 786 432**, mean residual 2.554 × 10⁻⁵, max residual
+> < 1.0 × 10⁻⁴ everywhere — so the badge as specified (light when a cell's residual exceeds
+> the LUT's acceptance tolerance) can now never fire. Re-grepped 2026-09-02 for
+> `GamutHonesty` / `GamutWarning` / `IsGamutRisky` across `src/`: no matches, confirming
+> this was never implemented — the spec below is design-only and safe to leave unbuilt.
+> A replacement signal, if this affordance is still wanted, would need a different trigger:
+> out-of-gamut / clamped authored RGB (a colour outside the target primaries before uplift
+> even runs), or an Unbounded-kind HDR chroma-normalisation warning (a texel whose uplifted
+> magnitude is driven by scale rather than hue, which is a different kind of "the spectrum
+> isn't what you typed" honesty gap than the one this section was built to surface). Not a
+> redesign here — just the note that §4A as written is dead per the data it cites.
+
 (Numbered `4A` so this body section can be inserted without renumbering D5–D7 / §8–§11 below; D4 is **#1 in the
 priority order** per §1, ahead of D1 — it is the cheapest, riding on every colour pick.)
 
@@ -967,7 +984,9 @@ net-new engine read-back this spec identified.
     bit-stable (no stochastic hero-sample aliasing). Guards "swatch is deterministic, not a 4-hero draw."
   - *D4 uplift-only scope:* assert the gamut badge fires for a deep-blue **RGB** uplift cell (residual > the LUT
     tolerance, [JH_LUT_GAMUT.md](../JH_LUT_GAMUT.md)) and **never** fires for a native `spectral_painter` /
-    `blackbody_painter` / `scalar_painter` slot (§4A.2). Guards "no false positive on spectral input."
+    `blackbody_painter` / `scalar_painter` slot (§4A.2). Guards "no false positive on spectral input." **STALE
+    (2026-09-02):** no cell exceeds the tolerance post Stage-C, so this acceptance test's premise no longer
+    holds — see the banner at §4A.
   - *D5 probe read-back (net-new):* a test that the additive per-pixel buffer accessor returns the same scalars
     `RunProbe` already computes (`medianLum`/`robustMeanLum`/`meanVar`), and that enabling it leaves the resolved
     integrator + the production render **byte-identical** (the [AUTO_RASTERIZER_DESIGN.md](../AUTO_RASTERIZER_DESIGN.md)
@@ -1049,7 +1068,9 @@ net-new engine read-back this spec identified.
   D1 prism / D3 full-object previews, D5 RMSE reference, and D7's multi-buffer pass all route through it (§2.5,
   §5.6, §7.5, §8.2).
 - [JH_LUT_GAMUT.md](../JH_LUT_GAMUT.md) — the blue-corner uplift residual (~3.9 % gamut-corner cells, `1 × 10⁻⁴`
-  acceptance tolerance) and the uplift-only nature of JH (D4 basis).
+  acceptance tolerance — historical, pre-Stage-C figure; see [SPECTRAL_ILLUMINANT_CONVENTION.md](../SPECTRAL_ILLUMINANT_CONVENTION.md),
+  2026-09-02: 0.0 % unconverged post-Stage-C, which is why §4A above is marked stale) and the uplift-only
+  nature of JH (D4 basis).
 - [THIN_FILM_INTERFERENCE.md](../THIN_FILM_INTERFERENCE.md) — `fresnel_mode thinfilm`, `film_*` slots, exact
   spectral path, introspection, the refractiveindex.info bundling precedent (D2/D3).
 - [AUTO_RASTERIZER_DESIGN.md](../AUTO_RASTERIZER_DESIGN.md) — the probe + per-pixel signals + σ²·T-rewards-dark

@@ -280,7 +280,11 @@ wholesale and swaps the dial material+geometry.**
 ### Spectral pipeline & integrators
 
 - `RISEPel = Rec709RGBPel` (D65); JH spectral uplift LUT (`rec709.coeff`,
-  ~3.9 % deep-blue corner failures). Spectral rasterizers: `*_spectral_*` (NM
+  ~3.9 % deep-blue corner failures — historical, pre-Stage-C; Stage C
+  (2026-09-02) put the reference illuminant into the LUT forward model and
+  the LUT now converges 100 % of cells, see
+  [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)).
+  Spectral rasterizers: `*_spectral_*` (NM
   per-wavelength + HWSS hero-wavelength).
 - **Integrator: `pathtracing_spectral_rasterizer` (PT-spectral).** Glass-over-metal
   is *short* transport (eye → surface → medium → metal → medium → surface → out),

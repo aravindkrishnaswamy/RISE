@@ -10,8 +10,9 @@ coat-wrap, glTF `KHR_materials_clearcoat` re-enabled through
 `coated_material`, HWSS invariant recorded). Every §13 Phase-2 checklist item
 is done; exit-gate items green locally except the census-owned readings
 (§4(g), verb-scope) which remain user-run. Debts 5/6/6a are CLOSED by the
-triad; new debts 12 (near-white `coat_tint` spectral discontinuity) and 13
-(Oren-Nayar hemispherical albedo at high roughness) are open, documented.
+triad; new debts 12 (near-white `coat_tint` spectral discontinuity — CLOSED
+2026-09-02 by Stage C, see §12 item 12) and 13 (Oren-Nayar hemispherical
+albedo at high roughness, still open) were documented.
 Phase 1 record follows.
 Phase 1 landed across
 commits `bd7555ff` (eval instrument — the pre-verb baseline pin), `aa1f0162`
@@ -2305,21 +2306,27 @@ timing exists because no implementation exists.
    with base albedo** (§2.1), so it over-boosts saturation on already-saturated
    substrates. Inherent to the exponent form; **closed by Phase 2's transport**,
    which never forms an exponent.
-12. **(added 2026-09-01) Near-white `coat_tint` values in roughly [0.96, 1.0)
-   are spectrally discontinuous.** `coat_tint` is a colour-pipe slot used as a
-   per-wavelength *transmittance*, but the JH **albedo** uplift preserves
-   CIE-integrated colour, not spectral flatness — a pure white collapses at the
-   red end of the LUT's gamut corner (measured 1.4e-7 at 780 nm) while a 0.95
-   grey does not (0.973 at 660 nm). The shipped fix decides "tinted at all?"
-   once from the authored RGB triple, so the **default untinted coat is exactly
-   correct**, and tints ≤ 0.95 are well-conditioned; the residual is a hard
-   boundary for authored tints just under white (and per-pixel edges for
-   textured tints straddling 1.0). Normalizing by the uplifted white was
-   proposed in review and **refuted by measurement** (the collapse is specific
-   to the white corner; the divisor blows up 75,768× on a 0.95 grey at
-   660 nm). The clean fix is a transmittance-appropriate spectral
-   representation for the slot — a §7.2 design change, open. Related: the
-   session-filed repo-wide audit of colour-pipe slots with the same shape.
+12. **(added 2026-09-01; CLOSED 2026-09-02 by Stage C)** Near-white `coat_tint`
+   values in roughly [0.96, 1.0) were spectrally discontinuous.
+   `coat_tint` is a colour-pipe slot used as a per-wavelength *transmittance*,
+   and at the time this was measured against the pre-Stage-C, flat-illuminant
+   JH LUT: a pure white collapsed at the red end of the LUT's gamut corner
+   (measured 1.4e-7 at 780 nm) while a 0.95 grey did not (0.973 at 660 nm).
+   **Stage C put the reference illuminant into the LUT's forward model**
+   ([SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)):
+   white no longer collapses (uplifts to ≥ 0.99999 at every wavelength) and
+   greys uplift flat to ~1e-4, so the orders-of-magnitude near-white
+   discontinuity this entry describes is gone and the shipped "tinted at all?"
+   decision is no longer masking a hard boundary. One nuance remains: the
+   `GuardedGetColorNM` / `IsUntintedWhite` guard is still needed, because the
+   sigmoid's asymptote is `1 − ε` (wavelength-dependent), not exactly `1`, so
+   authored-white must still be special-cased for a bit-exact NM==RGB
+   multiplicative no-op; a textured tint straddling 1.0 now differs from its
+   neighbours by ~1e-4, not orders of magnitude. The transmittance-appropriate
+   spectral representation from §7.2 is therefore no longer required to close
+   this debt, though it would still be the more principled long-term slot
+   design. Related: the session-filed repo-wide audit of colour-pipe slots
+   with the same shape.
 13. **(added 2026-09-01) `hemisphericalAlbedo` for Oren-Nayar over-estimates at
    high roughness** (measured: exact at 0, ~5% high at 0.3, 25.6% high at 1.0,
    mildly view-dependent), which over-amplifies the recycling term for a coated
