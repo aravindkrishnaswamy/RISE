@@ -113,6 +113,23 @@ namespace RISE
 				return source.GetColorNM( ri2, nm );
 			}
 
+			//! SINGLE-SOURCE FORWARDER (Stage C slice 2).  This painter
+			//! composes nothing: it re-parameterises `ri` and hands the
+			//! sample to exactly one source.  The generic
+			//! `IPainter::GetRadianceNM` default would uplift the
+			//! composed `GetColor` instead, throwing away a physical SPD
+			//! behind the transform -- and for a `piecewise_linear_
+			//! function`-backed painter, whose `GetColor` is BLACK, a
+			//! luminaire's exitance would emit exactly zero.  Forward to
+			//! the same source at the same transformed `ri`.
+			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+			{
+				if( isIdentity ) return source.GetRadianceNM( ri, nm );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ApplyTransform( ri.ptCoord );
+				return source.GetRadianceNM( ri2, nm );
+			}
+
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
 			{
 				// Spectral counterpart of GetColor / GetColorNM.  Without

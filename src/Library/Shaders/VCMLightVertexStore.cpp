@@ -595,9 +595,12 @@ Scalar LightVertexStore::ComputeBBoxSurfaceArea() const
 
 namespace
 {
-	// Rec. 709 luminance — matches RISEPelToNMProxy in VCMIntegrator.cpp
-	// so the clamp ranks photons consistently with the spectral merge
-	// path's projection.
+	// Rec. 709 luminance — a MAGNITUDE used only to RANK stored
+	// throughputs for outlier clamping, never as a radiance.  (It used
+	// to be documented as matching VCMIntegrator's RISEPelToNMProxy;
+	// that proxy is gone — the spectral merge path now uplifts the
+	// stored throughput as an illuminant, Stage C slice 2 — but a
+	// luma-ordered percentile is still the right ranking here.)
 	inline Scalar LightVertexLuminance( const RISEPel& t )
 	{
 		return Scalar( 0.2126 ) * t[0]

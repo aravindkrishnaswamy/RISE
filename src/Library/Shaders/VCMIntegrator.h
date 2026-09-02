@@ -139,6 +139,32 @@ namespace RISE
 				std::vector<VCMMisQuantities>& outMis
 				);
 
+			/// The RGB → wavelength projection the NM merge estimator
+			/// applies to a STORED light-subpath throughput
+			/// (`LightVertexThroughput<NMTag>`), Stage C slice 2.
+			///
+			/// The LightVertexStore holds Pel throughputs only: the
+			/// light pass is not wavelength-matched to the eye pass, so
+			/// a deposited vertex has no single wavelength it could have
+			/// been traced at.  This projects it as the reference
+			/// ILLUMINANT rather than the Rec.709 luma scalar it used
+			/// to, so the VM (merge) strategies land on the same chroma
+			/// as the VC (connect) strategies they share a MIS partition
+			/// with — every other source term in the engine now emits
+			/// the D65-shaped spectrum, and a flat luma scalar resolves
+			/// to (1.205, 0.948, 0.909) on this film.
+			///
+			/// Exposed as a static so the merge path's projection is
+			/// unit-testable without standing up a scene, and so there
+			/// is exactly ONE definition of it (the estimator calls this
+			/// same function).  See the comment block above
+			/// `LightVertexThroughput` in VCMIntegrator.cpp for where
+			/// the projection is exact and where it approximates.
+			static Scalar LightThroughputRadianceNM(
+				const RISEPel& throughput,
+				const Scalar nm
+				);
+
 			/// Strategy (s=0): eye subpath's tail vertex directly
 			/// hits an emitter surface.  Iterates every non-delta
 			/// SURFACE eye vertex at t>=2, tests if its material

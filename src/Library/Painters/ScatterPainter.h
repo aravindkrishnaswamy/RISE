@@ -182,6 +182,19 @@ namespace RISE
 
 			RISEPel			GetColor( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! COVERAGE COMPOSE, NOT A SPECTRAL BLEND (Stage C slice 2):
+			//! mirrors `GetColorNM` but reads each of the two sources'
+			//! `GetRadianceNM`.  Alpha here is stamp COVERAGE -- which of
+			//! the two painters is visible at this texel -- and away from
+			//! the antialiased stamp edge it is exactly 0 or 1, i.e. a
+			//! pure forward.  Forwarding preserves a physical SPD on
+			//! either side; the generic composed-`GetColor` default would
+			//! re-uplift the composite's RGB (and emit BLACK if either
+			//! side is a `piecewise_linear_function`-backed painter).  In
+			//! the partial-coverage band the result is a coverage-weighted
+			//! sum of two illuminant-shaped spectra, which stays
+			//! illuminant-shaped.
+			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 

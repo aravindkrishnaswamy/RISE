@@ -54,6 +54,7 @@ StochasticTilePainter::StochasticTilePainter(
 	seed( seed_ ),
 	mean( mean_ ),
 	meanSpec( RGBAlbedoSpectrum::FromRGB( mean_ ) ),
+	meanRadSpec( RGBIlluminantSpectrum::FromRGB( mean_ ) ),
 	blendGamma( blendGamma_ )
 {
 	source.addref();
@@ -179,6 +180,33 @@ Scalar StochasticTilePainter::GetColorNM( const RayIntersectionGeometric& ri, co
 	for( int k = 0; k < 3; ++k ) {
 		ri2.ptCoord = uv[k];
 		weighted += ( source.GetColorNM( ri2, nm ) - mu ) * w[k];
+		wsq += w[k] * w[k];
+	}
+	return mu + weighted / Scalar( std::sqrt( (double)wsq ) );
+}
+
+Scalar StochasticTilePainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// Structural twin of GetColorNM -- see the header declaration.  Both
+	// the per-sample reads AND the mean must move to the radiance space
+	// together: the reconstruction is mu + sum((s_k - mu) * w_k) / |w|,
+	// which is only mean-preserving when `mu` is the mean of the same
+	// quantity the s_k carry.  Mixing meanSpec (reflectance) with
+	// GetRadianceNM samples would leave a constant offset of
+	// (illuminant - reflectance) at every texel.
+	Scalar w[3];
+	Point2 uv[3];
+	ComputeHexTiling( ri.ptCoord, w, uv );
+
+	RayIntersectionGeometric ri2 = ri;
+	ri2.txFootprint.valid = false;
+
+	const Scalar mu = meanRadSpec.Eval( nm );
+	Scalar weighted = 0;
+	Scalar wsq = 0;
+	for( int k = 0; k < 3; ++k ) {
+		ri2.ptCoord = uv[k];
+		weighted += ( source.GetRadianceNM( ri2, nm ) - mu ) * w[k];
 		wsq += w[k] * w[k];
 	}
 	return mu + weighted / Scalar( std::sqrt( (double)wsq ) );

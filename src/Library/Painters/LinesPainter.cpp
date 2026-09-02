@@ -70,6 +70,12 @@ Scalar LinesPainter::GetColorNM( const RayIntersectionGeometric& ri, const Scala
 	return ComputeWhich(ri).GetColorNM(ri, nm);
 }
 
+Scalar LinesPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// SINGLE-SOURCE SELECTOR -- see the header comment.
+	return ComputeWhich(ri).GetRadianceNM(ri, nm);
+}
+
 static const unsigned int SIZE_ID = 100;
 
 IKeyframeParameter* LinesPainter::KeyframeFromParameters( const String& name, const String& value )

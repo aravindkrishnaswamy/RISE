@@ -266,22 +266,57 @@ children's reflectance spectra would sum reflectance-shaped spectra and never pr
 cost as their `GetColorNM`) override it to skip a redundant `GetColor` virtual.
 
 **The other overrides are load-bearing, not an optimisation.** `SpectralColorPainter`
-(`spectral_painter`), `BlackBodyPainter` and `Function1DSpectralPainter` carry a **physical
-SPD**, not a Jakob-Hanika uplift of an RGB triple — the classic physically-authored
-spectral Cornell box binds `spectral_painter` straight to a luminaire's `exitance`. For
-those three `GetRadianceNM` forwards to `GetColorNM` verbatim, exactly as
-`HosekWilkieSpectralRadianceMap` stays off the uplift path. Without the override the
-default would discard the measured spectrum and re-uplift its RGB projection — and for
-`Function1DSpectralPainter`, whose `GetColor` returns **black**, a luminaire would emit
-exactly zero on the spectral path.
+(`spectral_painter`), `BlackBodyPainter` (`blackbody_painter`) and
+`Function1DSpectralPainter` (the painter a `piecewise_linear_function` chunk registers
+under its own name, `Job::AddPiecewiseLinearFunction`) carry a **physical SPD**, not a
+Jakob-Hanika uplift of an RGB triple. For those three `GetRadianceNM` forwards to
+`GetColorNM` verbatim, exactly as `HosekWilkieSpectralRadianceMap` stays off the uplift
+path. Without the override the default would discard the measured spectrum and re-uplift
+its RGB projection. Two distinct failure modes, and it matters which is which:
 
-**Known limitation of the composition rule:** a physical-SPD painter nested *inside* a
-composite (e.g. a `checker` of two blackbodies) bound to an emissive slot now resolves
-through the composite's default — its composed RGB, uplifted — rather than through the
-children's measured spectra. That is the price of the "composite emits its composed
-colour" semantics; no in-tree scene does it (every `spectral_painter` / `blackbody_painter`
-emissive binding is direct). If one ever needs to, the composite needs its own
-`GetRadianceNM` forwarding to its children.
+* **Re-uplift (wrong spectrum, not zero).** `SpectralColorPainter::GetColor` returns the
+  spectrum's own integrated XYZ (`SpectralColorPainter.cpp`, ctor), so it is **non-black**.
+  The classic physically-authored spectral Cornell box
+  (`scenes/Tests/Spectral/cornellbox_spectral.RISEscene`) binds `spectral_painter`
+  straight to a luminaire's `exitance`, and that is this case: without the override it
+  would have emitted a *re-uplifted RGB projection of the measured SPD* — a wrong
+  spectrum, silently, not a black render.
+* **Zero emission.** Only `Function1DSpectralPainter::GetColor` returns literal
+  **black** (`Function1DSpectralPainter.h`). It is reached by binding a
+  `piecewise_linear_function` chunk's name to an emissive slot — that chunk registers a
+  `Function1DSpectralPainter` in the painter manager alongside the `IFunction1D`. Such a
+  binding would have emitted exactly zero on the spectral path.
+
+> **Correction (2026-09-02).** The `234156a5` commit message, and an earlier revision of
+> this section, attributed the zero-emission case to `cornellbox_spectral.RISEscene`.
+> That is wrong for the reason above — `spectral_painter` resolves to
+> `SpectralColorPainter`, whose `GetColor` is non-black, so that scene is the *re-uplift*
+> case. Git history is not rewritten; the commit message still carries the
+> misattribution. The defensive-design conclusion is unchanged: all three physical-SPD
+> painters forward `GetRadianceNM` → `GetColorNM` verbatim regardless of which failure
+> mode a given binding would have hit.
+
+**Single-source forwarders forward too (added in the slice-2 follow-up).** The
+"composite emits its composed colour" rule applies to painters that genuinely BLEND
+several sources. A painter that composes nothing — it re-parameterises `ri` or SELECTS
+one child — must forward `GetRadianceNM` to the same child at the same transformed `ri`,
+for exactly the two failure modes above: `MappingPainter`, `UVTransformPainter`,
+`TexCoord1Painter`, `CheckerPainter`, `LinesPainter`, `Voronoi2DPainter`,
+`Voronoi3DPainter`, `ScatterPainter` (coverage compose — alpha is which painter is
+visible, 0 or 1 away from the stamp edge), `StochasticTilePainter` (one source, three
+hash-offset UVs, reconstructed about an illuminant-shaped mean), and
+`HosekWilkieSpectralRadianceMap`'s internal `HWAdapterPainter` (a physical sky SPD).
+`tests/PainterRadianceForwardingTest.cpp` pins the contract, with `BlendPainter` as the
+negative control that must KEEP the composed default.
+
+**Known limitation of the composition rule:** a physical-SPD painter nested inside a
+genuine BLEND (e.g. a `blend_painter` or a Perlin-interpolated `a`/`b` pair of
+blackbodies) bound to an emissive slot resolves through the composite's default — its
+composed RGB, uplifted — rather than through the children's measured spectra. That is
+the price of the "composite emits its composed colour" semantics; no in-tree scene does
+it (every `spectral_painter` / `blackbody_painter` emissive binding is direct, or behind
+one of the forwarders listed above). If one ever needs to, that composite needs its own
+`GetRadianceNM` blending its children's `GetRadianceNM`.
 
 `ILight` gained the analogous `emittedRadianceNM( vLightOut, nm )` — default uplifts
 `emittedRadiance()` per call, overridden by Point / Spot / Directional / Ambient with a
@@ -362,3 +397,47 @@ anomaly.
 The default was deliberately **not** changed in this slice. Any spectral-vs-RGB comparison
 must state its `num_wavelengths`, and a future slice should either raise the default or
 stratify / jitter the wavelength samples.
+
+### 7.5 Slice-2 follow-up — the source terms the first sweep missed
+
+Landed 2026-09-02, immediately after §7.2. Review found five more sites that produce or
+carry a SOURCE term on the NM path. They were not *newly* wrong — they had always been
+approximate — but §7.2 made them **differentially** wrong: with every other source now
+emitting D65, a site still projecting to a flat Rec.709 luma scalar renders on the
+flat-spectrum chromaticity `(1.205, 0.948, 0.909)`, and a coloured source there comes out
+grey.
+
+| site | was | now |
+|---|---|---|
+| SMS, `ComputeTrialContributionNM` + `EvaluateAtShadingPointNM` (`Utilities/ManifoldSolver.cpp`; both seeding modes route through these) | `ColorMath::Luminance(Le)` | delta lights → `ILight::emittedRadianceNM`; mesh lights → illuminant uplift of `LightSample::Le` (`SMSLeNM`) |
+| VCM NM merge, `LightVertexThroughput<NMTag>` (`Shaders/VCMIntegrator.cpp`) | `RISEPelToNMProxy` (Rec.709 luma) | `VCMIntegrator::LightThroughputRadianceNM` — illuminant uplift |
+| `HomogeneousMedium` / `HeterogeneousMedium` `GetCoefficientsNM().emission` | `ColorMath::Luminance(m_emission)` | `m_emissionSpectrum.Eval(nm)`, cached at construction / `SetEmission` |
+| single-source forwarding painters (see §7.1's follow-up paragraph) | inherited the composed-`GetColor` default | forward `GetRadianceNM` to the chosen source at the transformed `ri` |
+| `SubSurfaceScatteringShaderOp` / `DonnerJensenSkinSSSShaderOp` `PerformOperationNM` | `RGBIlluminantSpectrum::FromRGB(c)` unguarded | `ColorMath::EnsurePositve(c)` first, matching `FinalGatherShaderOp` |
+
+Two things did **not** change, deliberately:
+
+* **`sigma_t` / `sigma_s` keep the luminance fallback.** They are physical MAGNITUDES
+  (1/m), not source terms; they carry no illuminant shape. The per-wavelength answer for
+  them is an authored `IFunction1D` curve (G1, `absorption_spectral` /
+  `scattering_spectral`), not an uplift.
+* **`LightVertexStore` is still Pel-only.** The light pass is not wavelength-matched to
+  the eye pass — a deposited vertex is merged against eye vertices at arbitrary
+  wavelengths, so there is no single `nm` it could have been traced at. Storing a
+  `throughputNM` needs a per-wavelength light pass, which is
+  [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §3's still-open architectural item.
+  The uplift is exact for a grey/white light with no coloured bounce and a
+  chroma-preserving approximation otherwise.
+
+**Where the SMS mesh-light uplift is exact.** `LightSample` carries an RGB `Le` and no
+`RayIntersectionGeometric` for the sampled point, so the emitter's own
+`emittedRadianceNM` is not reachable without widening the struct and the sampler's fill
+path. The uplift round-trips exactly for a grey/white emitter; a spectrally-authored
+emitter behind SMS resolves through its RGB projection. Delta lights avoid this entirely
+— they have `ILight::emittedRadianceNM` and the call sites use it.
+
+Tests: `tests/PainterRadianceForwardingTest.cpp` (new — forwarder contract, with
+`BlendPainter` as the negative control), `VolumeSpectralCoefficientsTest` case G
+(emission is illuminant-shaped and `SetEmission` rebuilds the cache),
+`VCMSpectralRecurrenceTest`'s `LightThroughputRadianceNM` block (white throughput tracks
+the reference illuminant; red and blue throughputs of equal luma are no longer identical).

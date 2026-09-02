@@ -35,6 +35,7 @@
 #include "../Utilities/PathVertexEval.h"
 #include "../Utilities/PathValueOps.h"
 #include "../Utilities/Color/SpectralValueTraits.h"
+#include "../Utilities/Color/RGBSpectra.h"		// Stage C slice 2: light-subpath throughput uplift
 #include "../Utilities/BDPTUtilities.h"
 #include "../Interfaces/ICamera.h"
 #include "../Cameras/CameraUtilities.h"
@@ -51,6 +52,48 @@ static inline Scalar AreaToSolidAngleFactor(
 	const BDPTVertex& v,
 	const Vector3& dirFromAdjacent
 	);
+
+//////////////////////////////////////////////////////////////////
+// RGB → wavelength projection for a stored LIGHT-SUBPATH
+// throughput (Stage C slice 2).
+//
+// The light pass runs on RGB and is NOT wavelength-matched to the
+// eye pass: a light vertex is deposited once and then merged
+// against eye vertices carrying arbitrary, per-sample wavelengths,
+// so there is no single `nm` the store could have evaluated the
+// subpath at.  Storing a `throughputNM` alongside the Pel one
+// would therefore require running (or re-tracing) the light pass
+// per hero wavelength -- a structural change to the two-pass VCM
+// architecture, not a field addition.  Hence the projection here.
+//
+// It is an ILLUMINANT uplift, not a Rec.709 luma scalar.  The
+// leading factor of a light-subpath throughput is the emitted Le,
+// and since Stage C slice 2 every other source term in the engine
+// (ILight::emittedRadianceNM, IEmitter::emittedRadianceNM,
+// IPainter::GetRadianceNM, the radiance maps) emits the D65-shaped
+// reference illuminant.  A luma scalar reused at every wavelength
+// is FLAT, and a flat spectrum resolves to (1.205, 0.948, 0.909)
+// on this film -- so the VM (merge) strategies would have landed
+// on a different chroma than the VC (connect) strategies that share
+// the same MIS partition, and a coloured light would merge grey.
+//
+// Exactness: the uplift round-trips to the stored RGB exactly for a
+// grey/white light with no coloured bounce along the subpath.  With
+// a coloured light, or after coloured reflectances multiply into
+// the throughput, the product of reflectance spectra is
+// approximated by the illuminant uplift of its RGB projection --
+// the same chroma-preserving approximation FinalGatherShaderOp and
+// the SSS ops make for a COMPUTED radiance.
+Scalar VCMIntegrator::LightThroughputRadianceNM( const RISEPel& p, const Scalar nm )
+{
+	RISEPel c = p;
+	// FromRGB takes the max channel as its scale, so a single
+	// negative component flips the scale and corrupts every
+	// wavelength (FinalGatherShaderOp guards the same boundary).
+	ColorMath::EnsurePositve( c );
+	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
+}
+
 
 namespace
 {
@@ -123,16 +166,6 @@ namespace
 			mis, cosThetaOut, bsdfDirPdfW, Scalar( 0 ), false, norm );
 	}
 
-	// Luminance approximation for ILight sources that only expose a
-	// Pel API.  For wavelength-accurate rendering the scene should
-	// use mesh luminaries with spectral emitters.  This proxy is
-	// applied in the NM path whenever we need a scalar radiance
-	// from an ILight (point / spot / directional).
-	inline Scalar RISEPelToNMProxy( const RISEPel& p )
-	{
-		return Scalar( 0.2126 ) * p.r + Scalar( 0.7152 ) * p.g + Scalar( 0.0722 ) * p.b;
-	}
-
 	//////////////////////////////////////////////////////////////////
 	// Tag-dispatched helpers used by the templated VCM evaluators.
 	// Each pair forwards to the existing Pel or NM implementation
@@ -194,9 +227,9 @@ namespace
 	/// ILight::emittedRadiance dispatcher.  Pel takes the RGB virtual;
 	/// NM takes `ILight::emittedRadianceNM`, which evaluates the light's
 	/// own illuminant spectrum at the wavelength (Stage C slice 2).  It
-	/// used to apply RISEPelToNMProxy -- a Rec.709 luma scalar reused at
-	/// every wavelength -- which rendered coloured point / spot /
-	/// directional lights spectrally grey.
+	/// used to apply a Rec.709 luma scalar reused at every wavelength,
+	/// which rendered coloured point / spot / directional lights
+	/// spectrally grey.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type
 	EvalLightRadiance( const ILight& light, const Vector3& dir, const Tag& tag );
@@ -259,11 +292,13 @@ namespace
 	inline Scalar PositiveMagnitude( const RISEPel& v ) { return ColorMath::MaxValue( v ); }
 	inline Scalar PositiveMagnitude( const Scalar  v ) { return v; }
 
-	/// LightVertex throughput field picker with v1 NM proxy.  The
-	/// LightVertexStore holds Pel throughputs only (populated from
-	/// the hero pass); the NM merge path uses RISEPelToNMProxy
-	/// to project to scalar.  This preserves the v1 behavior
-	/// documented at the EvaluateMergesNM comment block.
+	/// LightVertex throughput field picker.  The LightVertexStore holds
+	/// Pel throughputs only -- the light pass is not wavelength-matched
+	/// to the eye pass, so there is no single `nm` it could have been
+	/// traced at.  The NM merge path projects with
+	/// `VCMIntegrator::LightThroughputRadianceNM` (illuminant uplift); see its
+	/// comment block for why that is the right projection and where it
+	/// is exact.
 	template<class Tag>
 	inline typename SpectralValueTraits<Tag>::value_type
 	LightVertexThroughput( const LightVertex& lv, const Tag& tag );
@@ -275,9 +310,9 @@ namespace
 	}
 
 	template<>
-	inline Scalar LightVertexThroughput<NMTag>( const LightVertex& lv, const NMTag& )
+	inline Scalar LightVertexThroughput<NMTag>( const LightVertex& lv, const NMTag& tag )
 	{
-		return RISEPelToNMProxy( lv.throughput );
+		return VCMIntegrator::LightThroughputRadianceNM( lv.throughput, tag.nm );
 	}
 
 	/// Convert a contribution to an RGB splat value for writing to
@@ -2082,8 +2117,11 @@ void VCMIntegrator::ConvertEyeSubpath(
 //////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////
 // EvaluateMergesImpl — templated body shared by Pel and NM variants.
-// For NM, LightVertexThroughput<NMTag> applies the RISEPelToNMProxy
-// luminance projection since the store holds Pel only (v1 behavior).
+// For NM, LightVertexThroughput<NMTag> projects the store's Pel
+// throughput with an illuminant uplift at the eye sample's wavelength;
+// the store holds Pel only because the light pass is not
+// wavelength-matched to the eye pass (see
+// VCMIntegrator::LightThroughputRadianceNM).
 //////////////////////////////////////////////////////////////////////
 namespace
 {
@@ -2196,11 +2234,19 @@ RISEPel VCMIntegrator::EvaluateMerges(
 // ConvertEyeSubpath) is wavelength-independent and is reused from the
 // Pel side — the NM variants read the SAME VCMMisQuantities arrays.
 //
-// Implementation note: the light sources (ILight) only have a Pel
-// emittedRadiance API, so when a vertex has v.pLight we evaluate the
-// Pel radiance and convert to XYZ.Y as the NM-channel proxy.  For
-// mesh luminaries (v.pLuminary->GetMaterial()->GetEmitter()) we call
-// IEmitter::emittedRadianceNM directly, which IS wavelength-aware.
+// Implementation note (updated Stage C slice 2): every SOURCE term is
+// wavelength-aware.  `ILight::emittedRadianceNM` evaluates the light's
+// own illuminant spectrum (EvalLightRadiance<NMTag>), and mesh
+// luminaries (v.pLuminary->GetMaterial()->GetEmitter()) go through
+// `IEmitter::emittedRadianceNM` (EvalEmitterRadiance<NMTag>).  The old
+// "ILight is Pel-only, project to XYZ.Y" note is obsolete.
+//
+// The ONE remaining RGB → nm projection is the stored light-subpath
+// throughput consumed by the merge estimator — the light pass is not
+// wavelength-matched to the eye pass, so it cannot be traced per
+// wavelength.  It is uplifted as an ILLUMINANT (not a luma scalar) so
+// the VM strategies land on the same chroma as the VC ones; see
+// `VCMIntegrator::LightThroughputRadianceNM` near the top of this file.
 //////////////////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////////////////

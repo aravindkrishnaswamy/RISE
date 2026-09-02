@@ -995,8 +995,12 @@ Scalar DonnerJensenSkinSSSShaderOp::PerformOperationNM(
 	// RGBIlluminantSpectrum, NOT Unbounded (Stage C slice 2): `c` is the
 	// exitant RADIANCE, a source term at this boundary -- see the twin
 	// comment in SubSurfaceScatteringShaderOp::PerformOperationNM.
+	// EnsurePositve first, also per that twin (and FinalGatherShaderOp):
+	// FromRGB scales by the MAX CHANNEL, so a single negative component
+	// flips the scale's sign and corrupts every wavelength.
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	ColorMath::EnsurePositve( c );
 	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }
 

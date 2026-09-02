@@ -202,6 +202,11 @@ namespace RISE
 
 			RISEPel			GetColor( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! SINGLE-SOURCE FORWARDER (Stage C slice 2): re-projects
+			//! `ri` and forwards to the SAME source's `GetRadianceNM`.
+			//! See the implementation comment for why the generic
+			//! composed-GetColor default is wrong here.
+			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 

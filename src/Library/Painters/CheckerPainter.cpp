@@ -71,6 +71,12 @@ Scalar CheckerPainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	return ComputeWhich(ri).GetColorNM(ri, nm);
 }
 
+Scalar CheckerPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// SINGLE-SOURCE SELECTOR -- see the header comment.
+	return ComputeWhich(ri).GetRadianceNM(ri, nm);
+}
+
 static const unsigned int SIZE_ID = 100;
 
 IKeyframeParameter* CheckerPainter::KeyframeFromParameters( const String& name, const String& value )

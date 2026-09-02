@@ -683,10 +683,47 @@ namespace {
 #include "RandomNumbers.h"
 #include "../Intersection/RayIntersection.h"
 #include "../Lights/LightSampler.h"
+#include "Color/RGBSpectra.h"		// Stage C slice 2: SMS source terms carry the reference illuminant
 #include <cmath>
 
 using namespace RISE;
 using namespace RISE::Implementation;
+
+namespace
+{
+	//////////////////////////////////////////////////////////////////
+	// SMS spectral source term (Stage C slice 2).
+	//
+	// `LightSample::Le` is an RGB radiance the light sampler already
+	// computed (mesh luminary: `IEmitter::emittedRadiance` at the
+	// sampled point).  The NM paths used to project it with
+	// `ColorMath::Luminance`, i.e. reuse ONE Rec.709 luma scalar at
+	// every wavelength.  Now that every other source in the engine
+	// emits the D65-shaped reference illuminant, that projection is
+	// DIFFERENTIALLY wrong: a flat spectrum resolves to
+	// (1.205, 0.948, 0.909) on this film and a coloured light comes
+	// out grey.  Uplift as an ILLUMINANT so the caustic round-trips
+	// to the same RGB the RGB SMS path produces.
+	//
+	// Why the uplift rather than the emitter's own
+	// `emittedRadianceNM`: `LightSample` carries no wavelength-
+	// resolved Le and no `RayIntersectionGeometric` for the sampled
+	// point (only position / normal), so reaching the exact value
+	// would mean widening the struct and the sampler's fill path.
+	// The uplift is exact for a grey/white emitter and a
+	// chroma-preserving approximation otherwise -- the same trade
+	// `FinalGatherShaderOp` and the SSS ops make for a COMPUTED
+	// radiance.  Delta lights do NOT go through here: they have an
+	// `ILight::emittedRadianceNM` and the call sites use it.
+	inline Scalar SMSLeNM( const RISEPel& Le, const Scalar nm )
+	{
+		RISEPel c = Le;
+		// FromRGB scales by the max channel; one negative component
+		// would flip that scale and corrupt every wavelength.
+		ColorMath::EnsurePositve( c );
+		return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
+	}
+}
 
 //////////////////////////////////////////////////////////////////////
 // Construction / Destruction
@@ -5751,13 +5788,16 @@ bool ManifoldSolver::ComputeTrialContributionNM(
 	Scalar Le;
 	if( lightSample.isDelta ) {
 		cosAtLight = 1.0;
+		// Delta light: ask the light for its radiance AT `nm` -- it
+		// carries its own illuminant spectrum (Stage C slice 2), same
+		// row LightSampler's NM delta-light NEE takes.
 		Le = lightSample.pLight
-			? ColorMath::Luminance( lightSample.pLight->emittedRadiance( dirSpecToLight ) )
-			: ColorMath::Luminance( lightSample.Le );
+			? lightSample.pLight->emittedRadianceNM( dirSpecToLight, nm )
+			: SMSLeNM( lightSample.Le, nm );
 	} else {
 		cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 		if( cosAtLight <= 0 ) return false;
-		Le = ColorMath::Luminance( lightSample.Le );
+		Le = SMSLeNM( lightSample.Le, nm );
 	}
 	(void)cosAtLight;
 
@@ -8016,15 +8056,16 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 		if( lightSample.isDelta ) {
 			cosAtLight = 1.0;
 			if( lightSample.pLight ) {
-				Le = ColorMath::Luminance(
-					lightSample.pLight->emittedRadiance( dirSpecToLight ) );
+				// Delta light: its own illuminant spectrum at `nm`
+				// (Stage C slice 2).  See SMSLeNM's comment block.
+				Le = lightSample.pLight->emittedRadianceNM( dirSpecToLight, nm );
 			} else {
-				Le = ColorMath::Luminance( lightSample.Le );
+				Le = SMSLeNM( lightSample.Le, nm );
 			}
 		} else {
 			cosAtLight = fabs( Vector3Ops::Dot( lightSample.normal, dirSpecToLight ) );
 			if( cosAtLight <= 0 ) continue;
-			Le = ColorMath::Luminance( lightSample.Le );
+			Le = SMSLeNM( lightSample.Le, nm );
 		}
 
 		// SMS measure-conversion factor — must match the RGB path exactly

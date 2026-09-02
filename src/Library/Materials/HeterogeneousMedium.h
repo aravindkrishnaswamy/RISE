@@ -55,6 +55,7 @@
 #include "../Utilities/Reference.h"
 #include "../Utilities/ISampler.h"
 #include "../Utilities/Color/ColorMath.h"
+#include "../Utilities/Color/RGBSpectra.h"
 #include "../Utilities/MajorantGrid.h"
 
 namespace RISE
@@ -73,6 +74,16 @@ namespace RISE
 		RISEPel m_max_sigma_s;				///< Max scattering coefficient [1/m]
 		RISEPel m_max_sigma_t;				///< Max extinction = max_sigma_a + max_sigma_s
 		RISEPel m_emission;					///< Volumetric emission (constant, not density-modulated)
+		/// `m_emission` uplifted as the reference ILLUMINANT (Stage C
+		/// slice 2), built at construction -- `m_emission` has no
+		/// mutator on this class.  Volume emission is a SOURCE term, so
+		/// on the NM path it must carry the D65 shape every other source
+		/// in the engine now carries; it used to be projected with
+		/// `ColorMath::Luminance`, one flat scalar at every wavelength,
+		/// which resolves to (1.205, 0.948, 0.909) on this film and
+		/// rendered a coloured emissive volume GREY.  Cached because
+		/// `GetCoefficientsNM` runs per delta-tracking step.
+		RGBIlluminantSpectrum m_emissionSpectrum;
 		Scalar m_sigma_t_majorant;			///< Max channel of max_sigma_t (for delta tracking)
 
 		const IPhaseFunction* m_pPhase;		///< Phase function (ref-counted)

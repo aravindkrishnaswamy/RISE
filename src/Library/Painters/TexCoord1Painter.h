@@ -100,6 +100,21 @@ namespace RISE
 				return source.GetColorNM( ri2, nm );
 			}
 
+			//! SINGLE-SOURCE FORWARDER (Stage C slice 2).  Composes
+			//! nothing -- it only swaps in the second UV set and hands
+			//! the sample to one source.  See UVTransformPainter's twin
+			//! comment: the generic default would uplift the composed
+			//! `GetColor` and lose a physical SPD (black, for a
+			//! `piecewise_linear_function`-backed exitance).
+			Scalar GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+			{
+				if( !ri.bHasTexCoord1 ) return source.GetRadianceNM( ri, nm );
+				RayIntersectionGeometric ri2 = ri;
+				ri2.ptCoord = ri.ptCoord1;
+				ri2.txFootprint.valid = false;
+				return source.GetRadianceNM( ri2, nm );
+			}
+
 			SpectralPacket GetSpectrum( const RayIntersectionGeometric& ri ) const
 			{
 				// Spectral counterpart of GetColor / GetColorNM.  Without

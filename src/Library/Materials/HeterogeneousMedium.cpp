@@ -19,6 +19,22 @@
 
 using namespace RISE;
 
+namespace
+{
+	// Volume emission is a SOURCE term (Stage C slice 2): uplift it as
+	// the reference illuminant so the NM path carries the same D65 shape
+	// every emitter / light / radiance map now carries.  EnsurePositve
+	// first -- FromRGB scales by the max channel, so a negative component
+	// (an author typo) would flip the scale and corrupt every wavelength.
+	inline RGBIlluminantSpectrum MakeEmissionSpectrum( const RISEPel& emission )
+	{
+		RISEPel c = emission;
+		ColorMath::EnsurePositve( c );
+		return RGBIlluminantSpectrum::FromRGB( c );
+	}
+}
+
+
 /// Maximum number of delta tracking steps before giving up.
 /// This prevents infinite loops in degenerate cases.
 static const unsigned int nMaxDeltaTrackingSteps = 1024;
@@ -39,6 +55,7 @@ HeterogeneousMedium::HeterogeneousMedium(
   m_max_sigma_s( max_sigma_s ),
   m_max_sigma_t( max_sigma_a + max_sigma_s ),
   m_emission( 0, 0, 0 ),
+  m_emissionSpectrum( MakeEmissionSpectrum( RISEPel( 0, 0, 0 ) ) ),
   m_sigma_t_majorant( ColorMath::MaxValue( max_sigma_a + max_sigma_s ) ),
   m_pPhase( &phase ),
   m_pAccessor( &accessor ),
@@ -78,6 +95,7 @@ HeterogeneousMedium::HeterogeneousMedium(
   m_max_sigma_s( max_sigma_s ),
   m_max_sigma_t( max_sigma_a + max_sigma_s ),
   m_emission( emission ),
+  m_emissionSpectrum( MakeEmissionSpectrum( emission ) ),
   m_sigma_t_majorant( ColorMath::MaxValue( max_sigma_a + max_sigma_s ) ),
   m_pPhase( &phase ),
   m_pAccessor( &accessor ),
@@ -235,7 +253,14 @@ MediumCoefficientsNM HeterogeneousMedium::GetCoefficientsNM(
 	MediumCoefficientsNM c;
 	c.sigma_t = ColorMath::Luminance( m_max_sigma_t ) * density;
 	c.sigma_s = ColorMath::Luminance( m_max_sigma_s ) * density;
-	c.emission = ColorMath::Luminance( m_emission );
+	// Emission uplifted as the reference illuminant and evaluated at
+	// `nm` (cached at construction -- see m_emissionSpectrum).  This
+	// used to be `ColorMath::Luminance`, one flat scalar reused at
+	// every wavelength, which made a coloured emissive volume
+	// spectrally grey.  sigma_t / sigma_s above stay on the
+	// luminance fallback: they are physical MAGNITUDES (1/m), not
+	// source terms, and carry no illuminant shape.
+	c.emission = m_emissionSpectrum.Eval( nm );
 	return c;
 }
 

@@ -199,6 +199,21 @@ This is the only listed gap that's a **correctness** issue, not a feature gap. I
 
 ## 3. Special section — VCM-spectral merging via `RISEPelToNMProxy`
 
+> **Status update (2026-09-02, Stage C slice 2 follow-up).** `RISEPelToNMProxy` **no
+> longer exists**. Site (1), `EvalLightRadiance<NMTag>`, is **CLOSED**: `ILight` gained
+> `emittedRadianceNM`, so point / spot / directional lights are evaluated at the
+> wavelength from their own cached illuminant spectrum
+> ([SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7). Site (2),
+> `LightVertexThroughput<NMTag>`, is **STILL OPEN as described below** — the store is
+> still Pel-only and the dispersion loss is unchanged — but its projection is no longer a
+> flat Rec.709 luma scalar: it is `VCMIntegrator::LightThroughputRadianceNM`, an
+> ILLUMINANT uplift, so the VM strategies at least land on the same chroma as the VC
+> strategies they share a MIS partition with (a flat spectrum resolves to
+> `(1.205, 0.948, 0.909)` on this film, so the old projection made merges
+> differentially wrong once every other source term moved to D65). Read the code
+> snippets in this section as historical; the ARGUMENT for a per-wavelength store
+> stands unchanged.
+
 This is the only gap with **correctness** (not just feature) impact. The proxy is documented in [docs/INTEGRATOR_REFACTOR_PLAN.md](INTEGRATOR_REFACTOR_PLAN.md):35 as a "v1 architectural debt", and in [docs/VCM.md](VCM.md):242 as a known limitation.
 
 ### 3.1 What the proxy does

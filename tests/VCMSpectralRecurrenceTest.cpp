@@ -30,6 +30,7 @@
 
 #include "../src/Library/Shaders/VCMIntegrator.h"
 #include "../src/Library/Shaders/BDPTVertex.h"
+#include "../src/Library/Utilities/Color/RGBSpectra.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -102,6 +103,108 @@ static void BuildSyntheticLightSubpath( std::vector<BDPTVertex>& verts )
 		v.throughput = RISEPel( 0.25, 0.25, 0.25 );
 		v.throughputNM = 0.25;
 		verts.push_back( v );
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// Stage C slice 2: the stored light-subpath throughput's RGB -> nm
+// projection carries the reference illuminant, not a flat luma scalar.
+//
+// The LightVertexStore holds Pel throughputs (the light pass is not
+// wavelength-matched to the eye pass), and the NM merge estimator
+// projects them through VCMIntegrator::LightThroughputRadianceNM --
+// the SAME function LightVertexThroughput<NMTag> calls, so this test
+// exercises the production projection, not a copy of its formula.
+//
+// It used to be `0.2126 r + 0.7152 g + 0.0722 b`: one scalar reused at
+// every wavelength.  A flat spectrum resolves to (1.205, 0.948, 0.909)
+// on this film, so the VM (merge) strategies landed on a different
+// chroma from the VC (connect) strategies they share a MIS partition
+// with, and a coloured light merged GREY.
+//
+// Mutation guard: restore the luma projection and every ratio below
+// becomes exactly 1.0.
+//////////////////////////////////////////////////////////////////////
+static void TestLightThroughputCarriesIlluminant()
+{
+	printf( "\nLightThroughputRadianceNM -- illuminant shape\n" );
+
+	// (1) WHITE throughput must equal the Y-normalised reference
+	// illuminant itself, wavelength for wavelength.
+	const double nms[] = { 420, 450, 500, 550, 600, 650, 700 };
+	bool whiteTracksD65 = true;
+	for( int i = 0; i < 7; i++ ) {
+		const double got = double( VCMIntegrator::LightThroughputRadianceNM(
+			RISEPel( 1, 1, 1 ), Scalar( nms[i] ) ) );
+		const double want = double(
+			RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( nms[i] ) ) );
+		if( fabs( got - want ) > 1e-3 * ( want > 1.0 ? want : 1.0 ) ) {
+			whiteTracksD65 = false;
+			printf( "  at %g nm: got %.6f, D65norm %.6f\n", nms[i], got, want );
+		}
+	}
+	if( whiteTracksD65 ) { g_pass++; } else {
+		g_fail++;
+		printf( "  FAIL: white throughput != reference illuminant\n" );
+	}
+
+	// (2) ... and is therefore NOT wavelength-flat.  This is the check
+	// the old luma projection fails: it returned 1.0 at both.
+	const double w450 = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( 1, 1, 1 ), Scalar( 450 ) ) );
+	const double w650 = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( 1, 1, 1 ), Scalar( 650 ) ) );
+	const double d65_450 = double(
+		RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( 450 ) ) );
+	const double d65_650 = double(
+		RGBIlluminantSpectrum::ReferenceIlluminant( Scalar( 650 ) ) );
+	printf( "  white: S(450) = %.6f, S(650) = %.6f, ratio = %.6f "
+		"(D65norm ratio %.6f; was 1.000000)\n",
+		w450, w650, w650 / w450, d65_650 / d65_450 );
+	// 1e-3 relative, not exact: the authored-white sigmoid is ~0.99999
+	// rather than identically 1 and its residual varies slightly with
+	// wavelength, so the ratio tracks D65norm's to ~5e-5, not to the
+	// last bit.  This tolerance is still ~6000x tighter than the
+	// mutation it guards (the luma projection gives exactly 1.0).
+	if( fabs( w650 / w450 - d65_650 / d65_450 ) < 1e-3 ) { g_pass++; } else {
+		g_fail++;
+		printf( "  FAIL: white S(650)/S(450) != the D65-normalised ratio\n" );
+	}
+	if( fabs( w650 / w450 - 1.0 ) > 1e-3 ) { g_pass++; } else {
+		g_fail++;
+		printf( "  FAIL: white throughput is wavelength-FLAT (luma projection)\n" );
+	}
+
+	// (3) A coloured throughput must be chromatic, not grey.  Red and
+	// blue throughputs of equal luma used to give the IDENTICAL spectrum.
+	const double r650 = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( 1.0, 0.2, 0.2 ), Scalar( 650 ) ) );
+	const double r450 = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( 1.0, 0.2, 0.2 ), Scalar( 450 ) ) );
+	const double b650 = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( 0.2, 0.2, 1.0 ), Scalar( 650 ) ) );
+	const double b450 = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( 0.2, 0.2, 1.0 ), Scalar( 450 ) ) );
+	printf( "  red throughput S(650)/S(450) = %.6f; "
+		"blue throughput S(650)/S(450) = %.6f\n",
+		r650 / r450, b650 / b450 );
+	if( r650 / r450 > 2.0 ) { g_pass++; } else {
+		g_fail++;
+		printf( "  FAIL: red throughput is not red-weighted\n" );
+	}
+	if( b650 / b450 < 0.5 ) { g_pass++; } else {
+		g_fail++;
+		printf( "  FAIL: blue throughput is not blue-weighted\n" );
+	}
+
+	// (4) A negative component must not flip the max-channel scale.
+	// EnsurePositve guards this at the projection boundary.
+	const double neg = double( VCMIntegrator::LightThroughputRadianceNM(
+		RISEPel( -0.5, 0.3, 0.1 ), Scalar( 550 ) ) );
+	if( neg >= 0.0 ) { g_pass++; } else {
+		g_fail++;
+		printf( "  FAIL: a negative component produced negative radiance (%.6f)\n", neg );
 	}
 }
 
@@ -203,6 +306,8 @@ int main()
 		snprintf( lbl, sizeof( lbl ), "eyeMis[%zu].dVM invariant", i );
 		CheckEqual( heroEyeMis[i].dVM, compEyeMis[i].dVM, lbl );
 	}
+
+	TestLightThroughputCarriesIlluminant();
 
 	printf( "Passed: %d\n", g_pass );
 	printf( "Failed: %d\n", g_fail );

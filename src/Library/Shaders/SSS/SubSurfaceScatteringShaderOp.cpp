@@ -356,8 +356,17 @@ Scalar SubSurfaceScatteringShaderOp::PerformOperationNM(
 	// the reference illuminant's shape to round-trip through the film back
 	// to the RGB result.  Unbounded is reflectance-shaped and tinted the
 	// spectral SSS render by (1.20, 0.95, 0.91).
+	//
+	// EnsurePositve before the uplift, for the same reason
+	// FinalGatherShaderOp::PerformOperationNM clamps there: FromRGB takes
+	// the MAX CHANNEL as its scale, so a single negative component (a
+	// stray subtraction in the diffusion profile, an octree lerp
+	// undershoot) can flip the scale's sign and corrupt EVERY wavelength
+	// -- far worse than the RGB path, where a stray negative is merely
+	// clamped at film resolve.  Clamp at the projection boundary.
 	RISEPel c;
 	PerformOperation( rc, ri, caster, rs, c, ior_stack, pScat );
+	ColorMath::EnsurePositve( c );
 	return RGBIlluminantSpectrum::FromRGB( c ).Eval( nm );
 }
 

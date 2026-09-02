@@ -101,3 +101,9 @@ Scalar Voronoi2DPainter::GetColorNM( const RayIntersectionGeometric& ri, const S
 {
 	return ComputeWhich(ri).GetColorNM(ri,nm);
 }
+
+Scalar Voronoi2DPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	// SINGLE-SOURCE SELECTOR -- see the header comment.
+	return ComputeWhich(ri).GetRadianceNM(ri,nm);
+}

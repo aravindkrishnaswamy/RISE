@@ -187,6 +187,68 @@ Scalar MappingPainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// GetRadianceNM -- SINGLE-SOURCE FORWARDER (Stage C slice 2).
+//
+// A mapping painter composes NOTHING.  It re-parameterises `ri` (UV
+// transform, world / object projection, or a triplanar partition of
+// unity) and hands the sample to exactly ONE source.  The generic
+// `IPainter::GetRadianceNM` default -- uplift the composed `GetColor`
+// -- exists for painters that genuinely BLEND several sources' colours
+// (blend / ramp / noise-interpolated), where the emitted thing is the
+// composed colour.  Applying it here would discard the source's own
+// radiance spectrum: a `spectral_painter` behind a `uv_transform` on a
+// luminaire's exitance would be re-uplifted from its RGB projection,
+// and a `piecewise_linear_function`-backed painter (whose `GetColor`
+// is BLACK) would emit exactly ZERO.
+//
+// Triplanar sums the three projections' radiance with weights that sum
+// to 1 -- a convex combination of illuminant-shaped spectra of the SAME
+// source, which stays illuminant-shaped.  That is the same partition
+// GetColorNM applies, so the two paths stay consistent.
+//////////////////////////////////////////////////////////////////////
+Scalar MappingPainter::GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const
+{
+	switch( projection ) {
+		case Proj_UV: {
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptCoord = ApplyUV( ri.ptCoord );
+			// P1-B fix: stale-footprint rationale, see GetColor's Proj_UV
+			// case above.
+			ri2.txFootprint.valid = false;
+			return source.GetRadianceNM( ri2, nm );
+		}
+		case Proj_World: {
+			// world/object leave ptCoord untouched -- footprint stays valid.
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptIntersection = Apply3D( ri.ptIntersection );
+			return source.GetRadianceNM( ri2, nm );
+		}
+		case Proj_Object: {
+			RayIntersectionGeometric ri2 = ri;
+			ri2.ptObjIntersec = Apply3D( ri.ptObjIntersec );
+			return source.GetRadianceNM( ri2, nm );
+		}
+		case Proj_Triplanar:
+		default: {
+			Scalar w[3];
+			Point2 uv2[3];
+			ComputeTriplanar( ri, w, uv2 );
+			RayIntersectionGeometric ri2 = ri;
+			// P1-B fix: stale-footprint rationale, see GetColor's
+			// Proj_Triplanar case above.
+			ri2.txFootprint.valid = false;
+			Scalar sum = 0;
+			for( int k = 0; k < 3; ++k ) {
+				if( w[k] <= Scalar(0) ) continue;
+				ri2.ptCoord = uv2[k];
+				sum += source.GetRadianceNM( ri2, nm ) * w[k];
+			}
+			return sum;
+		}
+	}
+}
+
 SpectralPacket MappingPainter::GetSpectrum( const RayIntersectionGeometric& ri ) const
 {
 	switch( projection ) {

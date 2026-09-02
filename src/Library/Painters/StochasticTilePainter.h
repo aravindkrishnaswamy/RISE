@@ -131,6 +131,13 @@ namespace RISE
 			const unsigned int			seed;
 			const RISEPel				mean;
 			const RGBAlbedoSpectrum		meanSpec;	// mean, uplifted ONCE at construction (Albedo kind)
+			//! `mean` uplifted ONCE at construction as an ILLUMINANT --
+			//! the source-term twin of `meanSpec` (Stage C slice 2).  The
+			//! variance-preserving reconstruction subtracts the mean and
+			//! re-adds it, so the mean must be in the SAME spectral space
+			//! as the per-sample values being combined: reflectance-shaped
+			//! for GetColorNM, illuminant-shaped for GetRadianceNM.
+			const RGBIlluminantSpectrum	meanRadSpec;
 			const Scalar				blendGamma;
 
 			virtual ~StochasticTilePainter();
@@ -156,6 +163,16 @@ namespace RISE
 
 			RISEPel			GetColor( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetColorNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
+			//! SINGLE-SOURCE RECONSTRUCTION (Stage C slice 2): the hex
+			//! tiling reads ONE source at three hash-offset UVs and
+			//! recombines them variance-preservingly.  It composes no
+			//! second painter, so it forwards to that source's
+			//! `GetRadianceNM` (about its illuminant-shaped mean) rather
+			//! than letting the generic composed-`GetColor` default
+			//! re-uplift -- which would discard a physical SPD behind the
+			//! tiling, and emit BLACK for a `piecewise_linear_function`-
+			//! backed source.
+			Scalar			GetRadianceNM( const RayIntersectionGeometric& ri, const Scalar nm ) const;
 			SpectralPacket	GetSpectrum( const RayIntersectionGeometric& ri ) const;
 			Scalar			GetAlpha( const RayIntersectionGeometric& ri ) const;
 
