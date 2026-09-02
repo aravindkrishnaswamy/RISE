@@ -1125,6 +1125,18 @@ namespace RISEFireProductionFP64
 			shape.nz<4u||shape.nz>1024u||!(shape.cellWidthM>0.0)||
 			!std::isfinite(shape.cellWidthM))return false;
 		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
+		const std::uint64_t faces=FireProductionProjectionFaceCount(shape,0u)+
+			FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u);
+		// Complete source-inclusive FCT Q* producer: delta, low state, limiter
+		// ratios, shared face alpha, accepted candidate, and two identities.
+		if(!AddMetalValueBuffer(9u*faces,sizeof(double),bytes)||
+			!AddMetalValueBuffer(9u*cells,sizeof(double),bytes)||
+			!AddMetalValueBuffer(11u*cells,sizeof(double),bytes)||
+			!AddMetalValueBuffer(faces,sizeof(double),bytes)||
+			!AddMetalValueBuffer(14u,sizeof(double),bytes)||
+			!AddMetalValueBuffer(64u,sizeof(double),bytes)||
+			!AddMetalValueBuffer(1u,128u,bytes))return false;
 		return AddMetalValueBuffer(9u*cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&

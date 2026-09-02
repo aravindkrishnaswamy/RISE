@@ -1244,12 +1244,17 @@ namespace RISEFireProductionFP64
 		std::string* error=0 );
 
 	//! Qualification request for the private resident EOS-candidate authority.
-	//! The candidate is advanced on device from the r198 low composite flux; no
-	//! public candidate payload exists.  Its sealed parents are the exact r198
+	//! The candidate is advanced on device by the complete source-inclusive FCT
+	//! Q* commit; no public candidate input exists.  The terminal candidate copy
+	//! below is qualification output only. Its sealed parents are the exact r198
 	//! physical-flux publication and the r197a transport publication beneath it.
 	struct FireProductionResidentEOSCandidateComparatorRequest
 	{
 		FireProductionResidentPhysicalFluxComparatorRequest physicalFlux;
+		//! Source dose consumed by the Q* FCT commit, component-major [9][cells].
+		//! Qualification uploads it only to bootstrap the resident producer; the
+		//! live owner replaces this with its sealed device source authority.
+		std::vector<double> sourceDelta;
 		FireProductionScalarEOSStage producingStage;
 		RISE::FireStateProducerPrecision producerPrecision;
 		RISE::RISECBOR64::Bytes caseRecordEnvelope;
@@ -1260,6 +1265,7 @@ namespace RISEFireProductionFP64
 		bool qualificationMismatchedParentFlux;
 		bool qualificationCPUProducedCandidate;
 		bool qualificationShortCandidateSurface;
+		bool qualificationMismatchedEOSThermochemistry;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
@@ -1269,6 +1275,7 @@ namespace RISEFireProductionFP64
 			qualificationMismatchedParentFlux(false),
 			qualificationCPUProducedCandidate(false),
 			qualificationShortCandidateSurface(false),
+			qualificationMismatchedEOSThermochemistry(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 

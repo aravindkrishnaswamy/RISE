@@ -5137,32 +5137,35 @@ it was already tried and refuted here.
   rung is resident EOS candidate identity.
 
 - **r199 resident EOS candidate identity (2026-09-02):** completes the third
-  r195 rung as a private device-produced candidate and EOS authority. Fresh
-  review rejected the first draft because a CPU-uploaded candidate could mint
-  authority by asserting parent hashes, and because endpoint/r170 decisions
-  lost binary64 information. The corrected surface has no public candidate
-  payload: its Metal update consumes the exact r198 low-composite flux and
-  r197a parent state on their command, and candidate publication is withheld
-  until EOS and physical gates pass. Unsealed, mismatched, missing, short,
-  CPU-substituted, falsely fp64-labelled, and physically invalid candidates
-  leave both candidate and EOS publications zero.
+  r195 rung as a private device-produced candidate and EOS authority. Two
+  review rounds rejected, first, a CPU-authored candidate and then a
+  low-composite-only update that could be relabelled as either Heun role. The
+  corrected surface has no public candidate input: it performs the complete
+  source-inclusive r60 FCT `Q*` commit from sealed R0, both r198 composite flux
+  candidates, and r197a transport lineage. `Q^{n+1}` refuses until the full
+  owner supplies its authentic averaged R0/R1 parent. A limited fixture reaches
+  shared alpha `0.832918644` and byte-matches the complete CPU FCT candidate.
+  Candidate publication is withheld until EOS and physical gates pass.
+  Unsealed, mismatched, missing, genuinely short, CPU-substituted, falsely
+  fp64-labelled, and physically invalid candidates leave both raw candidate
+  and EOS terminal publication words zero.
   The EOS kernel carries the sealed binary64 NASA9 and affine data as
   three-term binary32 expansions. Candidate update, temperature inversion,
-  and represented pressure bit-match their mirrors per cell; deviation is
-  enclosed by the cancellation-independent `2^-41 max(1, |P/P0|)` termwise
-  bound, derived from the sealed walker's 128 second-order rounding
-  obligations as `128 * (2^-24)^2 = 2^-41`, with maximum residual
-  `8.8817841970012523e-15`. r60 lower/upper
-  endpoint adversaries and a just-above-`2^-2` state that rounds to `1.25f`
-  bind the corrected semantics. The isolated `0x000003ff` bitmap matches its
-  independent walker.
+  and represented pressure bit-match their mirrors per cell. EOS parameters
+  and all 870 thermochemistry words are exact lineage parents; a different
+  same-sized table refuses and the table bits enter EOS identity. Deviation is
+  enclosed per cell by `2^-41 max(1, |P/P0|)` for the independently walked 128
+  cancellation-free second-order arithmetic terms plus one local binary32 ULP
+  for final output rounding. The measured maximum residual is zero. Exact
+  adjacent r60 lower/upper endpoint pairs and a just-above-`2^-2` state that
+  rounds to `1.25f` bind the corrected semantics. The isolated `0x000003ff`
+  bitmap matches its independent branch walker.
   Monitored-manifold semantics are preserved: a 20% deviation is recorded and
   admitted, no manifold ceiling exists here, and only conservation-class
   admissibility plus the r170 `2^-2` dynamics bound refuse (the 30% RED does).
   The interval uses one command, one terminal read, and zero interstage grid
-  transfers. Fixture/candidate/owner certificates are `933888`, `163840`, and
-  `6678856` bytes respectively, versus `107600` fixture bytes allocated.
+  transfers. Fixture/candidate/owner certificates are `1130496`, `278528`, and
+  `6875464` bytes respectively, versus `127424` fixture bytes allocated.
   `case_record_id` is unchanged, future producer/run identities inherit r199,
-  and the golden checkpoint is untouched. Evidence SHA-256 is
-  `ab198b55e41c68e237fda5e03c4cca7a8eb5b9111a87186bec3e5b7f8438f94e`.
-  The next rung is authenticated target lineage.
+  and the golden checkpoint is untouched. The evidence SHA is sealed after
+  fresh boundary review. The next rung is authenticated target lineage.
