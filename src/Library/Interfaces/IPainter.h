@@ -97,11 +97,24 @@ namespace RISE
 	//! An authored colour is "untinted white" iff its minimum RGB
 	//! component is >= 1 - 1e-6 (same epsilon as
 	//! CoatedBRDF::ResolveCoat's `out.tinted` decision).  A multiplicative
-	//! slot at authored white must be an exact no-op on the spectral pipe
-	//! too: `GetColorNM` runs the Jakob-Hanika uplift, which collapses
-	//! pure white toward zero above ~620 nm (measured curve + rationale:
-	//! CoatedLayer.h `PassTransmittance`, ~line 302; precedent decision:
-	//! CoatedBRDF::ResolveCoat, ~line 107).
+	//! slot at authored white must be a BIT-EXACT no-op on the spectral
+	//! pipe too, so that the NM path and the RGB path agree exactly.
+	//! `GetColorNM` runs the Jakob-Hanika uplift, whose sigmoid reaches
+	//! white only asymptotically: authored white samples to 1 - epsilon
+	//! (measured 0.99999970 at 660 nm, 0.99999015 at 550 nm), and
+	//! epsilon varies with wavelength -- so without this guard an
+	//! untinted slot would attenuate throughput slightly, and
+	//! wavelength-dependently, on every bounce.
+	//!
+	//! HISTORICAL: before Stage C (2026-09-02,
+	//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the LUT was trained under
+	//! a flat E illuminant, under which white was not representable at
+	//! all and its uplift COLLAPSED above ~620 nm (1.28e-5 at 660 nm) --
+	//! an ~8-10 % red loss per bounce rather than an epsilon.  That is
+	//! the measurement the guard was introduced for; the collapse is
+	//! gone, the exactness requirement is not.  (Measured curve +
+	//! rationale: CoatedLayer.h `PassTransmittance`, ~line 302;
+	//! precedent decision: CoatedBRDF::ResolveCoat, ~line 107.)
 	inline bool IsUntintedWhite( const RISEPel& c )
 	{
 		const Scalar minc = r_min( r_min( c[0], c[1] ), c[2] );

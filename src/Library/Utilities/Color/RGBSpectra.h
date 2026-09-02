@@ -1,20 +1,56 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  RGBSpectra.h - Three flavors of RGB-derived spectra built on top
-//    of RGBSigmoidPolynomial / RGBToSpectrumTable:
+//    of RGBSigmoidPolynomial / RGBToSpectrumTable.
 //
-//      RGBAlbedoSpectrum     - reflectance ∈ [0, 1]; sigmoid only.
-//                              For baseColor, sheen_color,
-//                              transmission_color, etc.
+//    THE CONVENTION (Stage C, 2026-09-02 — full write-up in
+//    docs/SPECTRAL_ILLUMINANT_CONVENTION.md):
 //
-//      RGBUnboundedSpectrum  - radiance / illuminant value ≥ 0;
-//                              sigmoid scaled by max(R, G, B).  For
-//                              emissive painters and HDR EXR sources
-//                              whose RGB exceeds 1.0.
+//      The sigmoid the LUT stores is a REFLECTANCE VIEWED UNDER D65.
+//      It is trained so that
 //
-//      RGBIlluminantSpectrum - illuminant; sigmoid · scale · D50.
-//                              For light SPDs authored as an RGB
-//                              colour temperature equivalent.
+//        rgb = M_XYZ→709 · ( ∫ S(λ)·D65(λ)·cmf(λ) dλ )
+//                          / ( ∫ D65(λ)·ȳ(λ) dλ )
+//
+//      reproduces the authored RGB.  Consequences that callers rely
+//      on: a flat S = c is EXACTLY the neutral grey (c, c, c), and
+//      authored white is representable at the sigmoid's asymptote
+//      (S ≈ 1 − ε) instead of collapsing at the red end.  Before
+//      Stage C the LUT was trained under a flat (E) illuminant, which
+//      made neither of those true.
+//
+//    The three kinds, and which material/light slot each belongs to:
+//
+//      RGBAlbedoSpectrum     - REFLECTANCE, clamped to [0, 1]; the
+//                              sigmoid alone.  Use for every
+//                              multiplicative slot: baseColor,
+//                              sheen_color, specular tint,
+//                              transmission_color, alpha, coat tint.
+//                              Round-trips exactly (∫S·D65·cmf → rgb).
+//
+//      RGBUnboundedSpectrum  - REFLECTANCE-SHAPED but allowed to
+//                              exceed 1: sigmoid of the chromaticity-
+//                              normalised triple, times
+//                              scale = max(R, G, B).  Use for
+//                              multiplicative/throughput quantities
+//                              whose magnitude can exceed unity (HDR
+//                              texture reads feeding a reflectance
+//                              slot, BRDF-value uplift).  NOT for a
+//                              radiance source — it carries no
+//                              illuminant shape, so a "white" source
+//                              built from it is flat, not D65, and
+//                              shifts the whitepoint.
+//
+//      RGBIlluminantSpectrum - RADIANCE SOURCE: scale · sigmoid · D65,
+//                              with the D65 table Y-normalised so an
+//                              authored-white spectrum of scale 1
+//                              resolves to film Y = 1 and Rec.709
+//                              (1, 1, 1).  Use for anything that
+//                              EMITS: light SPDs authored as RGB,
+//                              emissive material slots, environment /
+//                              radiance maps, and shader ops that
+//                              uplift a COMPUTED RADIANCE back into a
+//                              spectrum.
 //
 //    All three are POD-ish value types with closed-form Eval(λ).
 //    Used by UniformColorPainter (eager, cached at construction)
@@ -37,7 +73,11 @@
 namespace RISE
 {
 	// Bounded reflectance: input rgb is clamped to [0, 1] before LUT
-	// lookup.  Eval(λ) returns sigmoid(c0·λ̃² + c1·λ̃ + c2) ∈ [0, 1].
+	// lookup.  Eval(λ) returns sigmoid(c0·λ̃² + c1·λ̃ + c2) ∈ [0, 1],
+	// meaning "the fraction of D65 this surface reflects at λ".  No
+	// code change was needed at Stage C — the MEANING of the sigmoid
+	// changed underneath (reflectance under D65 rather than under a
+	// flat illuminant), not the evaluation.
 	class RGBAlbedoSpectrum
 	{
 	public:
@@ -58,12 +98,20 @@ namespace RISE
 		RGBSigmoidPolynomial poly;
 	};
 
-	// Unbounded radiance / illuminant: rgb may have components > 1.
+	// Unbounded, reflectance-SHAPED: rgb may have components > 1.
 	// Stored as (sigmoid_for_normalized_rgb, scale = max_channel).
 	// At evaluation: scale · sigmoid(λ).  Round-trip preserves the
 	// peak channel; non-peak channels round-trip through the same
 	// sigmoid · scale (slight chromaticity shift at hot pixels — same
 	// as PBRT-v4).
+	//
+	// Stage C note: no code change here either, but the kind's MEANING
+	// is now explicit — this is a reflectance-shaped multiplier that
+	// happens to exceed 1, NOT a radiance source.  A source authored
+	// through this kind emits a flat-ish spectrum rather than a D65-
+	// shaped one; the sites that do that (emissive slots, radiance
+	// maps, radiance-uplifting shader ops) are slice 2's work, listed
+	// in docs/SPECTRAL_ILLUMINANT_CONVENTION.md.
 	//
 	// IMPORTANT: scale + normalize MUST run in the LUT's target colour
 	// space.  Doing the math on the raw RISEPel and passing through
@@ -105,16 +153,29 @@ namespace RISE
 		Scalar               scale;
 	};
 
-	// Illuminant: an unbounded spectrum pre-multiplied by a reference
-	// illuminant SPD.  RISE uses the reference illuminant matching the
-	// LUT's target whitepoint (D65 for Rec.709 post 2026-05 migration;
-	// D50 historically for ROMM).  A pure-white RGB input authored
-	// under "neutral" light returns the reference SPD rather than a
-	// flat spectrum.  Used for `directional_light` SPDs authored as
-	// RGB (e.g. converting a Hosek-Wilkie integrated solar XYZ → RGB
-	// back to a usable SPD).
+	// Illuminant / RADIANCE SOURCE: the reflectance sigmoid multiplied
+	// by the reference illuminant SPD, which is what "an RGB-authored
+	// light" physically means under the Stage C convention — the
+	// authored RGB is the colour that light HAS, i.e. reflectance-
+	// under-D65 × D65.  RISE's reference illuminant matches the LUT
+	// target's whitepoint (D65 for Rec.709 post 2026-05; D50
+	// historically for ROMM).  A pure-white RGB input returns the
+	// reference SPD rather than a flat spectrum.
 	//
-	// Eval(λ) = scale · sigmoid(λ) · refSPD(λ_normalized)
+	// Eval(λ) = scale · sigmoid(λ) · D65norm(λ)
+	//
+	// where D65norm is Y-normalised (∫D65norm·ȳ dλ = ∫ȳ dλ) so that a
+	// white source of scale 1 resolves to film Y = 1 and Rec.709
+	// (1, 1, 1) — matching the RGB pipe exactly.  Before Stage C the
+	// SPD was peak-normalised at 560 nm, which was ~1.1 % dim.
+	//
+	// This is the kind every EMISSIVE slot should use: light SPDs
+	// authored as RGB (`directional_light`, point/spot/omni),
+	// emissive material slots, environment / radiance maps, and shader
+	// ops that uplift a computed radiance.  Wiring those up is slice 2
+	// (docs/SPECTRAL_ILLUMINANT_CONVENTION.md); until then several of
+	// them still use RGBUnboundedSpectrum, which carries no illuminant
+	// shape.
 	//
 	// Reference SPD is sampled at the same 5-nm spacing 380-780 nm as
 	// the CIE_DATA used elsewhere in RISE; data table lives in the .cpp.
@@ -148,6 +209,14 @@ namespace RISE
 		// linearly-interpolated reference SPD value at that wavelength.
 		Scalar Eval( Scalar lambda_nm ) const;
 		Scalar operator()( Scalar lambda_nm ) const { return Eval( lambda_nm ); }
+
+		// The Y-normalised reference illuminant itself (D65), i.e. the
+		// factor Eval multiplies into the sigmoid.  Exposed so tests
+		// and offline checks can reproduce the LUT's forward model
+		// against the SAME table the runtime uses, instead of carrying
+		// a fourth copy of the SPD.  ∫ReferenceIlluminant·ȳ dλ = ∫ȳ dλ,
+		// so a flat unit spectrum times this resolves to film Y = 1.
+		static Scalar ReferenceIlluminant( Scalar lambda_nm );
 
 	private:
 		RGBSigmoidPolynomial poly;

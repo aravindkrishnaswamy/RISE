@@ -11,7 +11,10 @@
 //      For each of N random in-gamut RISEPel (Rec.709 Linear) triples:
 //        1. Construct a UniformColorPainter with that RGB.
 //        2. Sample GetColorNM at every 5nm bin from 380-780nm.
-//        3. Integrate the sampled spectrum against CIE 1931.
+//        3. Integrate the sampled REFLECTANCE against CIE 1931
+//           WEIGHTED BY THE REFERENCE ILLUMINANT (D65), normalising
+//           by ∫D65·ȳ dλ — the Stage C forward model
+//           (docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
 //        4. Convert XYZ(D65) → Rec.709(D65).
 //        5. Assert the round-trip matches the original RGB within
 //           tolerance.
@@ -34,6 +37,7 @@
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Color/ColorUtils.h"
+#include "../src/Library/Utilities/Color/RGBSpectra.h"
 #include "../src/Library/Utilities/MediaPathLocator.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -56,9 +60,20 @@ namespace
 		}
 	}
 
-	// Integrate painter.GetColorNM samples against CIE under a flat
-	// illuminant (matching the LUT generator's rec709 target forward
-	// model and the spectral rasterizer's runtime integration).
+	// Integrate painter.GetColorNM samples — a REFLECTANCE — against
+	// CIE 1931 under the reference illuminant, matching the LUT
+	// generator's rec709 forward model
+	// (tools/JakobHanikaLUTGen.cpp::IntegrateToTarget):
+	//
+	//   rgb = M · ∫ S·D65·cmf dλ / ∫ D65·ȳ dλ
+	//
+	// Before Stage C (2026-09-02) this integrated under a FLAT
+	// illuminant, matching the LUT's then-flat-E training.  That
+	// convention could not represent white or a neutral grey (see
+	// docs/SPECTRAL_ILLUMINANT_CONVENTION.md); the illuminant now lives
+	// in the forward model on both ends.  D65 comes from the production
+	// table via RGBIlluminantSpectrum::ReferenceIlluminant, whose own
+	// Y-normalisation cancels out of the ratio.
 	RISEPel IntegratePainterToRec709( const IPainter& painter, const RayIntersectionGeometric& ri )
 	{
 		double X = 0, Y = 0, Z = 0, normY = 0;
@@ -66,11 +81,12 @@ namespace
 			const Scalar lambda = Scalar(380) + Scalar(i * 5);
 			XYZPel obs;
 			if( !ColorUtils::XYZFromNM( obs, lambda ) ) continue;
-			const Scalar specVal = painter.GetColorNM( ri, lambda );
-			X += double(specVal) * obs.X;
-			Y += double(specVal) * obs.Y;
-			Z += double(specVal) * obs.Z;
-			normY += obs.Y;
+			const double illum   = double( RGBIlluminantSpectrum::ReferenceIlluminant( lambda ) );
+			const double specVal = double( painter.GetColorNM( ri, lambda ) ) * illum;
+			X += specVal * obs.X;
+			Y += specVal * obs.Y;
+			Z += specVal * obs.Z;
+			normY += illum * obs.Y;
 		}
 		const double inv = 1.0 / normY;
 		X *= inv; Y *= inv; Z *= inv;
@@ -157,15 +173,19 @@ int main()
 			(rt.b - rgb.b) * (rt.b - rgb.b) );
 		sumErr += err;
 		maxErr  = std::max( maxErr, err );
-		if( err < 0.05 ) ++withinTol;
+		if( err < 5e-3 ) ++withinTol;
 	}
 	const double meanErr = sumErr / kSamples;
-	std::printf( "  %d painters, mean L2 err = %.4f, max = %.4f, within-0.05 = %d/%d\n",
+	std::printf( "  %d painters, mean L2 err = %.5f, max = %.5f, within-5e-3 = %d/%d\n",
 		kSamples, meanErr, maxErr, withinTol, kSamples );
-	Check( meanErr < 0.02,
-	       "interior mean L2 error < 0.02" );
+	// Measured post-Stage-C on this seed: mean 1.1e-4, max 2.7e-4.
+	// Pre-Stage-C thresholds were 0.02 / 0.05, sized for the flat-E
+	// LUT's unconverged cells; with 100 % cell convergence the residual
+	// is pure grid quantisation, so tighten ~10x.
+	Check( meanErr < 2e-3,
+	       "interior mean L2 error < 2e-3" );
 	Check( withinTol >= int(0.95 * kSamples),
-	       "≥ 95% of painter spectra round-trip within 0.05 L2" );
+	       "≥ 95% of painter spectra round-trip within 5e-3 L2" );
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";
 	return ( s_fail == 0 ) ? 0 : 1;

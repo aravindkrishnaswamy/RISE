@@ -302,23 +302,31 @@ namespace RISE
 			//! WHY `applyTint` IS A FLAG AND NOT `tint < 1`.
 			//! An earlier revision decided "is this coat tinted?" by
 			//! comparing the sampled value against 1.  That is sound on
-			//! the RGB pipe and BADLY WRONG on the spectral one, because
-			//! a white `uniformcolor_painter` does NOT sample to 1.0 at
-			//! every wavelength: `GetColorNM` runs the Jakob-Hanika
-			//! uplift, and pure white in the Rec.709 LUT holds ~0.999999
-			//! only out to ~620 nm before collapsing off the red end --
-			//! MEASURED on this tree at 5 nm steps over 380-780 nm:
-			//! 620 nm -> 0.99998, 640 nm -> 0.5189, 660 nm -> 1.28e-5,
-			//! 780 nm -> 1.43e-7 (min 1.4e-7, mean |1-v| = 0.35).  This
-			//! is the documented ~3.9 % JH gamut-edge failure class
-			//! (docs/JH_LUT_GAMUT.md), not a bug in the painter.
+			//! the RGB pipe and WRONG on the spectral one, because a
+			//! white `uniformcolor_painter` does NOT sample to exactly
+			//! 1.0 at every wavelength: `GetColorNM` runs the
+			//! Jakob-Hanika uplift, whose sigmoid reaches white only
+			//! asymptotically.
 			//!
-			//! Under the old test, an UNTINTED coat therefore took the
-			//! tint branch at every wavelength and multiplied in
+			//! HISTORICAL (pre-Stage-C, i.e. LUT trained under a flat E
+			//! illuminant; superseded 2026-09-02 by
+			//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md): white was then
+			//! not representable AT ALL and collapsed off the red end --
+			//! MEASURED on that tree at 5 nm steps over 380-780 nm:
+			//! 620 nm -> 0.99998, 640 nm -> 0.5189, 660 nm -> 1.28e-5,
+			//! 780 nm -> 1.43e-7 (min 1.4e-7, mean |1-v| = 0.35).  Under
+			//! the Stage C D65-referenced LUT the same samples are
+			//! >= 0.99999 (660 nm -> 0.9999997).  The collapse is gone;
+			//! the FLAG STAYS, because a multiplicative slot at authored
+			//! white must be a BIT-EXACT no-op so the NM path matches the
+			//! RGB path, and 1 - epsilon is not 1.
+			//!
+			//! Under the old test AND the old LUT, an UNTINTED coat took
+			//! the tint branch at every wavelength and multiplied in
 			//! pow(1.3e-5, 1/cos) ~ 0 above 660 nm -- i.e. the default
 			//! coat went opaque across the red end of every spectral
 			//! render, silently, while the RGB render stayed perfect.
-			//! No epsilon rescues that: 1.3e-5 is nowhere near 1.
+			//! No epsilon rescued that: 1.3e-5 is nowhere near 1.
 			//!
 			//! "Is this coat tinted at all?" is a property of the
 			//! AUTHORED COLOUR, not of a wavelength, so CoatedBRDF
@@ -328,12 +336,20 @@ namespace RISE
 			//! magnitude and its red-end behaviour is the engine's
 			//! documented treatment of a colour the author asked for.
 			//!
-			//! KNOWN RESIDUAL, AND A NORMALIZATION THAT DOES NOT FIX IT.
-			//! The flag leaves a genuine DISCONTINUITY at the near-white
+			//! KNOWN RESIDUAL (HISTORICAL -- LARGELY CLOSED BY STAGE C),
+			//! AND A NORMALIZATION THAT DID NOT FIX IT.
+			//! The flag leaves a DISCONTINUITY at the near-white
 			//! boundary: an authored tint of exactly 1 is clear, while
-			//! 0.99 takes the tint branch and goes opaque in the red.  A
-			//! textured tint straddling white therefore shows a
-			//! per-pixel edge on the spectral pipe.
+			//! 0.99 takes the tint branch.  Pre-Stage-C that branch went
+			//! opaque in the red and a textured tint straddling white
+			//! showed a per-pixel edge on the spectral pipe.  Post
+			//! Stage C the tint branch samples ~the authored value at
+			//! every wavelength (0.95 grey -> 0.9501 at 660 nm, was
+			//! 0.973 under flat-E training; 0.5 grey -> 0.50005, was
+			//! 0.36), so the step across the boundary is now ~1e-5
+			//! instead of catastrophic.  The paragraphs below record why
+			//! the divide-by-white repair was rejected at the time; they
+			//! describe the OLD LUT and no longer apply numerically.
 			//!
 			//! The obvious repair -- divide the tint's uplifted spectrum
 			//! by WHITE's, so untinted is 1 by construction and "the
@@ -354,18 +370,21 @@ namespace RISE
 			//! and stops tinting there -- a worse trade, since a tinted
 			//! lacquer is the slot's actual use case.
 			//!
-			//! The residual is upstream of this material: the JH ALBEDO
+			//! The residual was upstream of this material: the JH ALBEDO
 			//! uplift is a reflectance round-trip (it preserves the
-			//! CIE-integrated colour, not spectral flatness -- a 0.5
-			//! grey uplifts to 0.36 at 660 nm), and `coat_tint` is being
-			//! used as a per-wavelength multiplicative TRANSMITTANCE.
-			//! Closing it properly means giving the slot a
-			//! transmittance-appropriate spectral representation, which
-			//! is a design question for docs/WETNESS_COAT_DESIGN.md 7.2
-			//! and not something to improvise here.  Scope of the
-			//! artifact today: authored tints in roughly [0.96, 1.0);
-			//! everything at or below ~0.95 is well-conditioned, and the
-			//! DEFAULT (untinted) is exactly correct.
+			//! CIE-integrated colour, not spectral flatness -- under
+			//! flat-E training a 0.5 grey uplifted to 0.36 at 660 nm),
+			//! and `coat_tint` is used as a per-wavelength
+			//! multiplicative TRANSMITTANCE.  Stage C fixed it upstream
+			//! exactly as that diagnosis predicted: with the reference
+			//! illuminant in the LUT's forward model, a neutral grey
+			//! uplifts FLAT, so a grey tint is now a faithful grey
+			//! transmittance.  A saturated tint is still a reflectance-
+			//! shaped spectrum used as a transmittance -- the design
+			//! question for docs/WETNESS_COAT_DESIGN.md 7.2 -- but the
+			//! near-white artifact this paragraph was written about is
+			//! closed.  The DEFAULT (untinted) is exactly correct via
+			//! the flag, as always.
 			inline Scalar PassTransmittance(
 				const Scalar cosThetaI,
 				const Scalar eta,

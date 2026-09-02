@@ -5,22 +5,37 @@
 //    src/Library/Utilities/Color/RGBToSpectrumTable_LUTData.cpp) and
 //    the runtime types that consume it.
 //
+//    Two forward models are exercised, matching the Stage C
+//    convention (2026-09-02, docs/SPECTRAL_ILLUMINANT_CONVENTION.md):
+//
+//    REFLECTANCE (RGBAlbedoSpectrum / RGBUnboundedSpectrum) — what
+//    the LUT is trained to invert:
+//
+//      rgb = M_XYZ→709 · ( ∫ S(λ)·D65(λ)·cmf(λ) dλ )
+//                        / ( ∫ D65(λ)·ȳ(λ) dλ )
+//
+//    RADIANCE SOURCE (RGBIlluminantSpectrum) — what the FILM does,
+//    with no illuminant factor of its own (the source carries it):
+//
+//      rgb = M_XYZ→709 · ( ∫ L(λ)·cmf(λ) dλ ) / ( ∫ ȳ(λ) dλ )
+//
+//    The D65 weights come from RGBIlluminantSpectrum::
+//    ReferenceIlluminant, i.e. the production table — so if the LUT
+//    generator's private copy of the SPD ever drifts from the
+//    runtime's, these round-trips break.  That is deliberate.
+//
 //    For each of N random in-gamut Rec.709 RGB triples:
 //      1. Construct an RGBAlbedoSpectrum from the rgb (the lookup
 //         goes through the runtime RISEPel→Rec.709 boundary).
-//      2. Integrate the spectrum against the CIE 1931 2° observer
-//         under a flat illuminant and convert XYZ → Rec.709 RGB
-//         (no Bradford adapt — D65 throughout).
+//      2. Apply the reflectance forward model above.
 //      3. Assert the round-trip matches the input within tolerance.
 //
 //    "In-gamut" here means rgb that lands inside the Rec.709 gamut
-//    interior (away from the saturated corners that the JH sigmoid
-//    model cannot perfectly reproduce — see docs/JH_LUT_GAMUT.md).
-//
-//    Acceptance threshold: per-channel max delta < 0.02.  Loose
-//    enough to tolerate the LUT quantisation (~1/63 ≈ 0.016 between
-//    cells) plus the natural inversion limits of the JH sigmoid at
-//    saturated colours.
+//    interior.  Post-Stage-C the LUT converges on 100 % of cells
+//    (max residual < 1e-4), so the residual error these checks see is
+//    dominated by the LUT's grid quantisation between cells
+//    (~1/63 ≈ 0.016 on the x/y axes), not by the sigmoid's
+//    expressiveness.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -63,51 +78,83 @@ namespace
 		}
 	}
 
-	// Integrate a spectrum against CIE 1931 to get XYZ, then convert
-	// to Rec.709 RGB.  Mirror of the LUT generator's forward model in
-	// tools/JakobHanikaLUTGen.cpp::IntegrateToTarget for the rec709
-	// target — keep in sync.  No Bradford adapt (Rec.709 is D65, CIE
-	// is D65-referred).
-	template< typename Spectrum >
-	void IntegrateToRec709( const Spectrum& s, Rec709RGBPel& rec709 )
-	{
-		// CIE 1931 2° observer at 5nm spacing, 380-780nm.  Same data
-		// RISE uses elsewhere via ColorUtils::XYZFromNM, sampled here
-		// at every step (no interpolation needed since we control the
-		// sampling).
-		const int kLambdaMin  = 380;
-		const int kLambdaMax  = 780;
-		const int kLambdaStep = 5;
-		const int kN          = (kLambdaMax - kLambdaMin) / kLambdaStep + 1;
+	// CIE 1931 2° observer at 5nm spacing, 380-780nm.  Same data RISE
+	// uses elsewhere via ColorUtils::XYZFromNM, sampled here at every
+	// step (no interpolation needed since we control the sampling).
+	const int kLambdaMin  = 380;
+	const int kLambdaMax  = 780;
+	const int kLambdaStep = 5;
+	const int kN          = (kLambdaMax - kLambdaMin) / kLambdaStep + 1;
 
+	// XYZ(D65) → Rec.709(D65) via the codebase's mxXYZtoRec709 matrix.
+	// No chromatic adapt — both source and target share D65.  Keep in
+	// sync with src/Library/Utilities/Color/Color.cpp (mxXYZtoRec709).
+	void XYZToRec709( double X, double Y, double Z, Rec709RGBPel& rec709 )
+	{
+		rec709.r = Scalar(  3.240479 * X - 1.537150 * Y - 0.498535 * Z );
+		rec709.g = Scalar( -0.969256 * X + 1.875992 * Y + 0.041556 * Z );
+		rec709.b = Scalar(  0.055648 * X - 0.204043 * Y + 1.057311 * Z );
+	}
+
+	// REFLECTANCE forward model — the one the LUT is trained to invert.
+	// Mirror of tools/JakobHanikaLUTGen.cpp::IntegrateToTarget for the
+	// rec709 target; keep in sync.
+	//
+	//   rgb = M · ∫ S·D65·cmf dλ / ∫ D65·ȳ dλ
+	//
+	// The D65 weights come from the RUNTIME's table (via
+	// RGBIlluminantSpectrum::ReferenceIlluminant), so a drift between
+	// the generator's private SPD copy and the runtime's shows up here.
+	// Its Y-normalisation cancels out of the ratio.
+	template< typename Spectrum >
+	void IntegrateReflectanceToRec709( const Spectrum& s, Rec709RGBPel& rec709 )
+	{
 		double X = 0, Y = 0, Z = 0;
 		double normY = 0;
 
-		// Integrate under FLAT illuminant — matches both the LUT
-		// generator's forward model AND the spectral rasterizer's
-		// runtime integration (which sums spectral samples × CIE
-		// observer with no separate illuminant multiplier).
 		for( int i = 0; i < kN; ++i ) {
 			const Scalar lambda = Scalar(kLambdaMin) + Scalar(i * kLambdaStep);
 			XYZPel obs;
 			if( !ColorUtils::XYZFromNM( obs, lambda ) ) continue;
-			const Scalar specVal = s( lambda );
+			const double illum   = double( RGBIlluminantSpectrum::ReferenceIlluminant( lambda ) );
+			const double specVal = double( s( lambda ) ) * illum;
 
-			X += double(specVal) * obs.X;
-			Y += double(specVal) * obs.Y;
-			Z += double(specVal) * obs.Z;
+			X += specVal * obs.X;
+			Y += specVal * obs.Y;
+			Z += specVal * obs.Z;
+			normY += illum * obs.Y;
+		}
+		const double inv = 1.0 / normY;
+		XYZToRec709( X * inv, Y * inv, Z * inv, rec709 );
+	}
+
+	// RADIANCE forward model — exactly what the film does with a
+	// spectral radiance sample.  See
+	// PixelBasedSpectralIntegratingRasterizer::TakeSingleSample
+	// (mYNormalization = (b-a)/k_y, k_y = ∫ȳ dλ) and FilteredFilm's
+	// matching XYZ→RISEPel resolve.  NO illuminant factor: a radiance
+	// source is expected to carry its own SPD shape.
+	//
+	//   rgb = M · ∫ L·cmf dλ / ∫ ȳ dλ
+	template< typename Spectrum >
+	void IntegrateRadianceToRec709( const Spectrum& s, Rec709RGBPel& rec709 )
+	{
+		double X = 0, Y = 0, Z = 0;
+		double normY = 0;
+
+		for( int i = 0; i < kN; ++i ) {
+			const Scalar lambda = Scalar(kLambdaMin) + Scalar(i * kLambdaStep);
+			XYZPel obs;
+			if( !ColorUtils::XYZFromNM( obs, lambda ) ) continue;
+			const double specVal = double( s( lambda ) );
+
+			X += specVal * obs.X;
+			Y += specVal * obs.Y;
+			Z += specVal * obs.Z;
 			normY += obs.Y;
 		}
 		const double inv = 1.0 / normY;
-		X *= inv; Y *= inv; Z *= inv;
-
-		// XYZ(D65) → Rec.709(D65) via the codebase's mxXYZtoRec709
-		// matrix.  No chromatic adapt — both source and target share
-		// D65.  Keep in sync with src/Library/Utilities/Color/Color.cpp
-		// (mxXYZtoRec709).
-		rec709.r = Scalar(  3.240479 * X - 1.537150 * Y - 0.498535 * Z );
-		rec709.g = Scalar( -0.969256 * X + 1.875992 * Y + 0.041556 * Z );
-		rec709.b = Scalar(  0.055648 * X - 0.204043 * Y + 1.057311 * Z );
+		XYZToRec709( X * inv, Y * inv, Z * inv, rec709 );
 	}
 }
 
@@ -135,50 +182,77 @@ int main()
 	// Test 1: basic identity / centre cases.
 	std::cout << "\n[1/3] Centre + corner sanity\n";
 	{
-		// Pure grey (0.5, 0.5, 0.5).  c = (0,0,0) by construction
-		// of the LUT — sigmoid(0) = 0.5, integrated against flat E
-		// gives Y = 0.5 → neutral grey in Rec.709.
+		// Pure grey (0.5, 0.5, 0.5).  Under the Stage C convention a
+		// FLAT reflectance is exactly neutral, so the solved cell is
+		// c ≈ (0, 0, 0.797) — sigmoid ≈ 0.5 at every λ.  Measured
+		// max per-channel deviation 7.0e-6; tolerance 2e-3 leaves two
+		// orders of margin for LUT-rebuild jitter.  (Pre-Stage-C this
+		// check ran at 0.05 because flat-E training forced a sloped
+		// spectrum on every grey.)
 		const Rec709RGBPel input( 0.5, 0.5, 0.5 );
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
 			RISEPel( input ), table );
 		Rec709RGBPel rt;
-		IntegrateToRec709( s, rt );
-		Check( Close( rt.r, input.r, 0.05 ) &&
-		       Close( rt.g, input.g, 0.05 ) &&
-		       Close( rt.b, input.b, 0.05 ),
-		       "grey (0.5, 0.5, 0.5) round-trips within 0.05" );
+		IntegrateReflectanceToRec709( s, rt );
+		std::printf( "    grey 0.5 -> (%.6f, %.6f, %.6f)\n", rt.r, rt.g, rt.b );
+		Check( Close( rt.r, input.r, 2e-3 ) &&
+		       Close( rt.g, input.g, 2e-3 ) &&
+		       Close( rt.b, input.b, 2e-3 ),
+		       "grey (0.5, 0.5, 0.5) round-trips within 2e-3" );
 	}
 	{
 		// Near-white (0.95, 0.95, 0.95).  The sigmoid asymptotes at 1
-		// so it can't represent perfect white exactly — the closest
-		// match has the polynomial coefficients pushed to large
-		// positive c2.  Tolerance 0.10 accommodates this; same regime
-		// PBRT-v4 / Mitsuba 3 ship with.
+		// rather than reaching it, but under the Stage C convention the
+		// TARGET of a near-white cell is a near-flat spectrum, which the
+		// asymptote approximates to well under a display quantum.
+		// Measured max per-channel deviation 5.2e-5 — the tolerance is
+		// 2e-3, tightened 50x from the pre-Stage-C 0.10 that the flat-E
+		// LUT's white-corner collapse forced.
 		const Rec709RGBPel input( 0.95, 0.95, 0.95 );
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
 			RISEPel( input ), table );
 		Rec709RGBPel rt;
-		IntegrateToRec709( s, rt );
-		Check( Close( rt.r, input.r, 0.10 ) &&
-		       Close( rt.g, input.g, 0.10 ) &&
-		       Close( rt.b, input.b, 0.10 ),
-		       "near-white (0.95, 0.95, 0.95) round-trips within 0.10" );
+		IntegrateReflectanceToRec709( s, rt );
+		std::printf( "    near-white 0.95 -> (%.6f, %.6f, %.6f)\n", rt.r, rt.g, rt.b );
+		Check( Close( rt.r, input.r, 2e-3 ) &&
+		       Close( rt.g, input.g, 2e-3 ) &&
+		       Close( rt.b, input.b, 2e-3 ),
+		       "near-white (0.95, 0.95, 0.95) round-trips within 2e-3" );
+	}
+	{
+		// Pure white (1, 1, 1) — the cell the pre-Stage-C LUT could not
+		// represent at all (it collapsed to 1.28e-5 at 660 nm; see
+		// tests/JHWhiteGuardSpectralTest.cpp for that history).  Now it
+		// is the sigmoid's asymptote and round-trips to 6.7e-5.
+		const Rec709RGBPel input( 1.0, 1.0, 1.0 );
+		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
+			RISEPel( input ), table );
+		Rec709RGBPel rt;
+		IntegrateReflectanceToRec709( s, rt );
+		std::printf( "    white 1.0 -> (%.6f, %.6f, %.6f)\n", rt.r, rt.g, rt.b );
+		Check( Close( rt.r, input.r, 2e-3 ) &&
+		       Close( rt.g, input.g, 2e-3 ) &&
+		       Close( rt.b, input.b, 2e-3 ),
+		       "white (1, 1, 1) round-trips within 2e-3" );
+		Check( s.Eval( Scalar(660) ) > Scalar(0.99),
+		       "white's spectrum does NOT collapse at the red end (>= 0.99 at 660nm)" );
 	}
 	{
 		// Saturated red, bounded at 0.8 to stay in the well-
-		// conditioned interior of the gamut.
+		// conditioned interior of the gamut.  Measured L2 1.6e-4;
+		// tolerance 5e-3 (was 0.05).
 		const Rec709RGBPel input( 0.8, 0.2, 0.2 );
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
 			RISEPel( input ), table );
 		Rec709RGBPel rt;
-		IntegrateToRec709( s, rt );
+		IntegrateReflectanceToRec709( s, rt );
 		const double err = std::sqrt(
 			(rt.r - input.r) * (rt.r - input.r) +
 			(rt.g - input.g) * (rt.g - input.g) +
 			(rt.b - input.b) * (rt.b - input.b) );
-		Check( err < 0.05,
-		       "saturated red (0.8, 0.2, 0.2) round-trips L2 < 0.05" );
-		if( err >= 0.05 ) {
+		Check( err < 5e-3,
+		       "saturated red (0.8, 0.2, 0.2) round-trips L2 < 5e-3" );
+		if( err >= 5e-3 ) {
 			std::printf( "    actual: (%.3f, %.3f, %.3f), err=%.3f\n",
 				rt.r, rt.g, rt.b, err );
 		}
@@ -199,7 +273,7 @@ int main()
 		RGBAlbedoSpectrum s = RGBAlbedoSpectrum::FromRGB(
 			RISEPel( input ), table );
 		Rec709RGBPel rt;
-		IntegrateToRec709( s, rt );
+		IntegrateReflectanceToRec709( s, rt );
 		const double err = std::sqrt(
 			(rt.r - input.r) * (rt.r - input.r) +
 			(rt.g - input.g) * (rt.g - input.g) +
@@ -209,17 +283,20 @@ int main()
 			worstErr = err;
 			worstIdx = i;
 		}
-		if( err < 0.05 ) {
+		if( err < 5e-3 ) {
 			++withinLoose;
 		}
 	}
 	const double meanErr = sumErr / kSamples;
-	std::printf( "  %d samples, mean L2 err = %.4f, max = %.4f (idx %d), "
-	             "within-0.05 = %d/%d\n",
+	std::printf( "  %d samples, mean L2 err = %.5f, max = %.5f (idx %d), "
+	             "within-5e-3 = %d/%d\n",
 		kSamples, meanErr, worstErr, worstIdx, withinLoose, kSamples );
-	Check( meanErr < 0.02, "interior mean L2 error < 0.02" );
+	// Measured post-Stage-C: mean 1.1e-4, max 3.5e-4.  Thresholds
+	// tightened ~10x from the pre-Stage-C 0.02 / 0.05 pair, which had
+	// to absorb the flat-E LUT's unconverged cells.
+	Check( meanErr < 2e-3, "interior mean L2 error < 2e-3" );
 	Check( withinLoose >= int(0.95 * kSamples),
-	       "≥ 95% of samples within 0.05 L2 (in-gamut acceptance)" );
+	       "≥ 95% of samples within 5e-3 L2 (in-gamut acceptance)" );
 
 	// Test 3: unbounded / illuminant types are wired.
 	std::cout << "\n[3/3] Unbounded + Illuminant flavors\n";
@@ -252,15 +329,53 @@ int main()
 		       "scale-in-RISEPel-space bug)" );
 	}
 	{
-		RGBIlluminantSpectrum s = RGBIlluminantSpectrum::FromRGB(
-			RISEPel( Rec709RGBPel( 1.0, 1.0, 1.0 ) ), table );
-		const Scalar e500 = s.Eval( 500.0 );
-		const Scalar e600 = s.Eval( 600.0 );
-		// Both should be positive — the reference illuminant SPD
-		// (D65 post-migration, D50 pre-migration) is non-zero
-		// throughout the visible.
-		Check( e500 > Scalar(0) && e600 > Scalar(0),
-		       "illuminant eval > 0 at 500 and 600 nm" );
+		// Illuminant kind = RADIANCE SOURCE.  This is a real round-trip
+		// through the FILM's forward model (no illuminant factor — the
+		// source carries D65 itself), which is the whole point of the
+		// kind: an RGB-authored light must resolve back to the authored
+		// RGB, brightness included.  Pre-Stage-C this block could only
+		// assert positivity, because the flat-E LUT double-applied D65
+		// (sigmoid already carried a whitepoint-correcting slope) and
+		// the peak-at-560 normalisation left the result ~1.1 % dim.
+		//
+		// Measured max per-channel deviation: white 6.7e-5, 0.5 grey
+		// 3.4e-5, saturated (0.8,0.2,0.2) 5.9e-5.  Tolerance 2e-3.
+		struct Case { const char* name; Rec709RGBPel rgb; };
+		const Case cases[] = {
+			{ "white (1,1,1)",             Rec709RGBPel( 1.0, 1.0, 1.0 ) },
+			{ "0.5 grey",                  Rec709RGBPel( 0.5, 0.5, 0.5 ) },
+			{ "saturated (0.8,0.2,0.2)",   Rec709RGBPel( 0.8, 0.2, 0.2 ) }
+		};
+		for( const Case& c : cases ) {
+			RGBIlluminantSpectrum s = RGBIlluminantSpectrum::FromRGB(
+				RISEPel( c.rgb ), table );
+			Rec709RGBPel rt;
+			IntegrateRadianceToRec709( s, rt );
+			std::printf( "    illuminant %-24s -> (%.6f, %.6f, %.6f)\n",
+				c.name, rt.r, rt.g, rt.b );
+			Check( Close( rt.r, c.rgb.r, 2e-3 ) &&
+			       Close( rt.g, c.rgb.g, 2e-3 ) &&
+			       Close( rt.b, c.rgb.b, 2e-3 ),
+			       "illuminant source round-trips through the film model within 2e-3" );
+		}
+
+		// The reference illuminant itself must be Y-normalised: a
+		// perfectly flat unit spectrum times it resolves to Y = 1.
+		// This is the constant that makes an authored-white light as
+		// bright in a spectral render as in an RGB one.
+		struct FlatUnit {
+			Scalar operator()( Scalar lambda_nm ) const {
+				return RGBIlluminantSpectrum::ReferenceIlluminant( lambda_nm );
+			}
+		};
+		Rec709RGBPel refRt;
+		IntegrateRadianceToRec709( FlatUnit(), refRt );
+		std::printf( "    reference illuminant alone -> (%.6f, %.6f, %.6f)\n",
+			refRt.r, refRt.g, refRt.b );
+		Check( Close( refRt.r, Scalar(1), 1e-3 ) &&
+		       Close( refRt.g, Scalar(1), 1e-3 ) &&
+		       Close( refRt.b, Scalar(1), 1e-3 ),
+		       "reference illuminant is Y-normalised (resolves to Rec.709 white, Y=1)" );
 	}
 
 	std::cout << "\nResults: " << s_pass << " passed, " << s_fail << " failed.\n";

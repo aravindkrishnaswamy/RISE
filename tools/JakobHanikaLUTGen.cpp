@@ -6,11 +6,15 @@
 //    Solves, per cell of a 64×64×64 RGB grid (for each of 3 max-
 //    channel sub-tables):
 //
-//      Find (c0, c1, c2) such that integrating
-//        sigmoid(c0·λ̃² + c1·λ̃ + c2)·CMF(λ) / k_y_E
-//      then chromatic-adapting to the target whitepoint and
-//      matrix-converting to the target RGB space reproduces the
-//      cell's RGB triple.
+//      Find (c0, c1, c2) such that the REFLECTANCE
+//        S(λ) = sigmoid(c0·λ̃² + c1·λ̃ + c2)
+//      VIEWED UNDER THE TARGET'S REFERENCE ILLUMINANT I(λ),
+//
+//        rgb = M_XYZ→RGB · ( ∫ S(λ)·I(λ)·cmf(λ) dλ )
+//                          / ( ∫ I(λ)·ȳ(λ) dλ )
+//
+//      reproduces the cell's RGB triple.  (Stage C, 2026-09-02 —
+//      see docs/SPECTRAL_ILLUMINANT_CONVENTION.md.)
 //
 //    Algorithm: Gauss-Newton with finite-difference Jacobian and
 //    Levenberg-Marquardt damping, line-search backtracking on
@@ -19,11 +23,14 @@
 //    --target <rec709|romm|acescg> selects:
 //      * the target RGB space's XYZ→RGB matrix (in the target's
 //        whitepoint reference frame);
-//      * the Bradford chromatic adapt from CIE 1931 (D65 reference)
-//        to the target's whitepoint.
-//      For D65 targets (rec709), the Bradford step is identity.
-//      For D50 targets (romm), it's the D65→D50 Bradford.
-//      For D60-ish targets (acescg AP1), it's the D65→D60 Bradford.
+//      * the target's REFERENCE ILLUMINANT SPD (D65 for rec709).
+//      Because the forward model integrates under the target's own
+//      whitepoint SPD, the resulting XYZ is already in the target's
+//      whitepoint reference frame — there is NO chromatic-adaptation
+//      step any more (Stage C removed the Bradford stage; see
+//      IntegrateToTarget's comment).  A target without a reference
+//      SPD in this file is REFUSED rather than silently trained
+//      under the wrong whitepoint.
 //
 //    --output is the binary `.coeff` path.  Companion script
 //    tools/GenerateSpectrumLUTHeader.py bakes the binary into the
@@ -98,91 +105,125 @@ static const double kCIE_z[ kNLambda ] = {
 	0.0000
 };
 
+// CIE Standard Illuminant D65 SPD at 5nm spacing, 380-780nm (81
+// entries), normalized so D65(560nm) = 100.  Source: CIE 015:2018
+// Table A.1.
+//
+// Copied verbatim from `kD65` in
+// src/Library/Utilities/Color/RGBSpectra.cpp so the LUT generator's
+// forward model and the runtime's RGBIlluminantSpectrum reference the
+// SAME SPD by construction.  This tool is deliberately a standalone
+// single file (built with a bare `c++ -O3 -std=c++17`, no RISE
+// headers), hence the duplication — keep the two tables in sync.
+//
+// The grid MATCHES the CMF grid above exactly (380-780 nm, 5 nm step,
+// 81 samples), so IntegrateToTarget can index them in lockstep with no
+// resampling.  A future SPD on a different grid MUST be resampled onto
+// this one before use.
+static const double kD65[ kNLambda ] = {
+	 49.9755,  52.3118,  54.6482,  68.7015,  82.7549,  87.1204,  91.4860,  92.4589,  93.4318,  90.0570,
+	 86.6823,  95.7736, 104.8650, 110.9360, 117.0080, 117.4100, 117.8120, 116.3360, 114.8610, 115.3920,
+	115.9230, 112.3670, 108.8110, 109.0820, 109.3540, 108.5780, 107.8020, 106.2960, 104.7900, 106.2390,
+	107.6890, 106.0470, 104.4050, 104.2250, 104.0460, 102.0230, 100.0000,  98.1671,  96.3342,  96.0611,
+	 95.7880,  92.2368,  88.6856,  89.3459,  90.0062,  89.8026,  89.5991,  88.6489,  87.6987,  85.4936,
+	 83.2886,  83.4939,  83.6992,  81.8630,  80.0268,  80.1207,  80.2146,  81.2462,  82.2778,  80.2810,
+	 78.2842,  74.0027,  69.7213,  70.6652,  71.6091,  72.9790,  74.3490,  67.9765,  61.6040,  65.7448,
+	 69.8856,  72.4863,  75.0870,  69.3398,  63.5927,  55.0054,  46.4182,  56.6118,  66.8054,  65.0941,
+	 63.3828
+};
+
 // ─────────────────────────────────────────────────────────────────
 // Per-target colourspace tables.  Each Target supplies:
-//   * mxXYZtoRGB[3][3]   — XYZ→RGB matrix in the target's whitepoint
-//                          reference frame (e.g. XYZ(D65)→Rec709(D65),
-//                          XYZ(D50)→ROMM(D50)).
-//   * mxXYZD65toTW[3][3] — Bradford chromatic adapt from CIE D65
-//                          (the CMF integration reference) to the
-//                          target's whitepoint.  Identity for D65
-//                          targets; D65→D50 Bradford for ROMM;
-//                          D65→D60-ish Bradford for ACES AP1.
+//   * mxXYZtoRGB[3][3]  — XYZ→RGB matrix in the target's whitepoint
+//                         reference frame (e.g. XYZ(D65)→Rec709(D65),
+//                         XYZ(D50)→ROMM(D50)).
+//   * refIlluminant     — the target whitepoint's relative SPD,
+//                         sampled on the CMF grid (kNLambda entries).
+//                         nullptr = this target is NOT trainable and
+//                         --target refuses it (see main()).
 //
-// Adding a new target = add one entry to TargetTables[] with the
-// published constants + a unique --target name string.
+// Stage C (2026-09-02) removed the former `mxXYZD65toTW` Bradford
+// stage.  Under the old flat-E forward model the CMF integral landed
+// in a "flat-E-referred" frame that had to be adapted to the target's
+// whitepoint; now the integral is taken under the target's OWN
+// reference illuminant, so the resulting XYZ is already in that
+// whitepoint's reference frame and any adaptation would be a second,
+// erroneous whitepoint shift.  A new target therefore needs its
+// whitepoint SPD, not a Bradford matrix.
+//
+// Adding a new target = add one entry to kAllTargets[] with the
+// published XYZ→RGB constants, its reference SPD resampled onto the
+// CMF grid, and a unique --target name string.
 // ─────────────────────────────────────────────────────────────────
 
 struct TargetSpec {
-	const char* name;
-	const char* description;
-	double      mxXYZtoRGB[3][3];      // in target whitepoint reference frame
-	double      mxXYZD65toTW[3][3];    // Bradford D65 → target whitepoint
+	const char*   name;
+	const char*   description;
+	double        mxXYZtoRGB[3][3];    // in target whitepoint reference frame
+	const double* refIlluminant;       // kNLambda samples, or nullptr if unsupported
 };
 
 // Rec.709 / sRGB Linear (D65).  XYZ(D65)→Rec709(D65).  Copied from
 // `mxXYZtoRec709` in src/Library/Utilities/Color/Color.cpp.
+// Reference illuminant D65 — matches the space's whitepoint AND the
+// runtime's RGBIlluminantSpectrum reference SPD.
 static const TargetSpec kTarget_Rec709 = {
 	"rec709",
-	"Rec.709 / sRGB Linear (D65).  Primaries inside the spectral locus; "
-	"~96% LUT convergence (residual failures only at deep-blue corner where "
-	"the JH sigmoid form is intrinsically expressively-limited); matches "
-	"modern PBR pipelines.",
+	"Rec.709 / sRGB Linear (D65), reference illuminant D65.  Primaries "
+	"inside the spectral locus; the white/grey axis is exactly "
+	"representable (flat S=c integrates to (c,c,c) under D65).  Matches "
+	"modern PBR pipelines and PBRT-v4's convention.",
 	{
 		{  3.240479, -1.537150, -0.498535 },
 		{ -0.969256,  1.875992,  0.041556 },
 		{  0.055648, -0.204043,  1.057311 }
 	},
-	{
-		// Identity: target and CMF reference share D65.
-		{ 1.0, 0.0, 0.0 },
-		{ 0.0, 1.0, 0.0 },
-		{ 0.0, 0.0, 1.0 }
-	}
+	kD65
 };
 
 // ROMM RGB Linear (D50).  XYZ(D50)→ROMM(D50).  Copied from
 // `mxXYZD50toROMM` in src/Library/Utilities/Color/Color.cpp.
 // Legacy default pre-2026-05; primaries OUTSIDE the spectral locus →
-// ~22 % gamut-corner failures.  Retained for back-compat.
+// ~22 % gamut-corner failures.
+//
+// UNSUPPORTED since Stage C: training it needs the D50 relative SPD
+// on the CMF grid, which this standalone file does not carry (RISE has
+// no vetted D50 table to copy from, and reconstructing it from the CIE
+// daylight S0/S1/S2 basis would introduce unverified constants).  Left
+// listed so the refusal message is specific.
 static const TargetSpec kTarget_ROMM = {
 	"romm",
-	"ROMM RGB Linear / ProPhoto (D50).  Wide gamut but G & B primaries "
-	"are outside the spectral locus — ~22 % LUT cells unconverged at the "
-	"gamut corners (see docs/JH_LUT_GAMUT.md).  Legacy.",
+	"ROMM RGB Linear / ProPhoto (D50).  UNSUPPORTED since Stage C: needs "
+	"the CIE D50 relative SPD on the 380-780/5nm grid (not carried here). "
+	"Also structurally poor: G & B primaries outside the spectral locus → "
+	"~22 % gamut-corner failures (see docs/JH_LUT_GAMUT.md).  Legacy.",
 	{
 		{  1.3460, -0.2556, -0.0511 },
 		{ -0.5446,  1.5082,  0.0205 },
 		{  0.0,     0.0,     1.2123 }
 	},
-	{
-		// Bradford D65 → D50 chromatic adaptation. Copied from
-		// `mxXYZD65toXYZD50` in Color.cpp.
-		{  1.0479, 0.0229, -0.0502 },
-		{  0.0296, 0.9904, -0.0171 },
-		{ -0.0092, 0.0151,  0.7519 }
-	}
+	nullptr
 };
 
 // ACES AP1 (a.k.a. ACEScg).  XYZ(D60-ish)→AP1(D60-ish).  Source:
 // AMPAS S-2014-004 (ACES Reference Image Capture Specification).
 // Pre-staged so a future migration to AP1 is `--target acescg`.
+//
+// UNSUPPORTED since Stage C: needs the "ACES white" (~D60,
+// xy = 0.32168, 0.33767) relative SPD on the CMF grid.  That is a
+// daylight-locus reconstruction, not a published table RISE carries.
 static const TargetSpec kTarget_ACEScg = {
 	"acescg",
-	"ACES AP1 / ACEScg (D60-ish).  Wide gamut, primaries inside the "
-	"spectral locus; industry VFX standard.",
+	"ACES AP1 / ACEScg (D60-ish).  UNSUPPORTED since Stage C: needs the "
+	"ACES-white (~D60) relative SPD on the 380-780/5nm grid (not carried "
+	"here).  Wide gamut, primaries inside the spectral locus; industry "
+	"VFX standard.",
 	{
 		{  1.6410233797, -0.3248032942, -0.2364246952 },
 		{ -0.6636628587,  1.6153315917,  0.0167563477 },
 		{  0.0117218943, -0.0082844420,  0.9883948585 }
 	},
-	{
-		// Bradford D65 → ACES D60-ish (xy = 0.32168, 0.33767),
-		// derived from the canonical Bradford cone-response matrix.
-		{  1.0129910965,  0.0060845191, -0.0149298715 },
-		{  0.0076709636,  0.9981726261, -0.0050179063 },
-		{ -0.0028339778,  0.0046733535,  0.9247039866 }
-	}
+	nullptr
 };
 
 static const TargetSpec* const kAllTargets[] = {
@@ -223,49 +264,77 @@ static inline double EvalSigmoid( const double c[3], double lambda ) {
 	return Sigmoid( c[0] * t * t + c[1] * t + c[2] );
 }
 
-// Integrate S(c, λ) · CIE_obs(λ) under a FLAT illuminant, chromatic-
-// adapt CIE-1931-D65 → target whitepoint via Bradford, then matrix-
-// multiply by the target XYZ→RGB matrix.  Mirrors the runtime resolve
-// pipeline (see Color.cpp ColorUtils::XYZto{Rec709,ROMM}RGB), so the
-// LUT trained here is consumed by the standard runtime pipeline.
+// Forward model: what RGB does the reflectance S(c, ·) produce when
+// VIEWED UNDER the target's reference illuminant I and resolved by the
+// film?
 //
-// Why flat illuminant and not D65:
-//   The runtime spectral integrator computes `∫ S · L · CIE dλ` where
-//   L is whatever the scene's lights emit per wavelength — there is
-//   no fixed reference illuminant baked into the integrator itself.
-//   Inverting that forward model would require the LUT to know L at
-//   training time.  We instead train under L=1 (flat) and rely on
-//   the runtime to multiply by L per sample.
+//   rgb = M_XYZ→RGB · ( ∫ S(λ)·I(λ)·cmf(λ) dλ ) / ( ∫ I(λ)·ȳ(λ) dλ )
+//
+// Why the reference illuminant is IN the model (Stage C, 2026-09-02):
+//   The prior comment here argued for a FLAT (E) illuminant on the
+//   grounds that "the runtime multiplies by whatever L the lights
+//   emit, so the LUT must not bake one in".  That reasoning is wrong,
+//   and it was the bug.  The LUT does not invert the runtime's
+//   integral; it defines what a REFLECTANCE MEANS.  An RGB albedo is
+//   authored as "what this surface looks like under white light" —
+//   that statement is only well-posed once you say which white.  Under
+//   flat E the CMFs give ΣX̄ = Σȳ = Σz̄, so a flat spectrum resolves to
+//   rgb ≈ (1.2048, 0.9483, 0.9089) — NOT neutral.  The solver could
+//   then only reach the white cell by fitting a NON-flat sigmoid whose
+//   integral has D65 chromaticity, and since S ≤ 1 the only way to do
+//   that is to SUPPRESS RED: authored white collapsed to 1.28e-5 at
+//   660 nm, and every grey uplifted red-poor (0.5 grey → 0.36 at
+//   660 nm), compounding ~19 % of the red channel per throughput
+//   multiply in spectral renders.
+//
+//   Putting I in the model makes a flat S = c resolve to exactly
+//   (c, c, c) (verified: S=1 → (0.99991, 1.00002, 1.00005), i.e. 9e-5
+//   from neutral, the CMF/matrix rounding floor), so white is
+//   representable at the sigmoid's asymptote and greys are flat.  This
+//   is PBRT-v4's convention (RGBAlbedoSpectrum trained per
+//   RGBColorSpace::illuminant).  The runtime is unchanged: light
+//   SOURCES carry the illuminant shape (RGBIlluminantSpectrum =
+//   sigmoid × D65), the film integrates radiance × CMF with a uniform
+//   Y normalisation and applies the un-adapted D65 matrix, so a white
+//   light on a white wall lands on (1, 1, 1).
+//
+// Why there is no chromatic-adaptation stage any more:
+//   Integrating under I yields XYZ already referred to I's whitepoint,
+//   which IS the target's whitepoint.  The old Bradford step existed
+//   only to move the flat-E integral into that frame; applying one now
+//   would be a second, erroneous whitepoint shift.  Targets whose
+//   whitepoint ≠ D65 are handled by supplying THEIR SPD in
+//   TargetSpec::refIlluminant, not by adapting a D65 integral.
 static void IntegrateToTarget( const double c[3], double rgb[3] )
 {
+	const double* const I = gTarget->refIlluminant;
+
 	double X = 0.0, Y = 0.0, Z = 0.0;
 	double Y_norm = 0.0;
 
 	for( int i = 0; i < kNLambda; ++i ) {
 		const double lambda = double(kLambdaMin) + i * double(kLambdaStep);
-		const double s = EvalSigmoid( c, lambda );
+		const double s  = EvalSigmoid( c, lambda );
+		const double si = s * I[i];
 
-		X += s * kCIE_x[i];
-		Y += s * kCIE_y[i];
-		Z += s * kCIE_z[i];
-		Y_norm += kCIE_y[i];	// flat illuminant ∫ ȳ dλ
+		X += si * kCIE_x[i];
+		Y += si * kCIE_y[i];
+		Z += si * kCIE_z[i];
+		Y_norm += I[i] * kCIE_y[i];	// ∫ I · ȳ dλ
 	}
 
-	// Normalize so a uniform reflectance S=1 returns Y=1.
+	// Normalize so a uniform reflectance S=1 returns Y=1 (a perfect
+	// white diffuser under the reference illuminant).
 	const double inv = 1.0 / Y_norm;
 	X *= inv;
 	Y *= inv;
 	Z *= inv;
 
-	// Bradford D65 → target whitepoint (identity for D65 targets).
-	const double Xa = gTarget->mxXYZD65toTW[0][0]*X + gTarget->mxXYZD65toTW[0][1]*Y + gTarget->mxXYZD65toTW[0][2]*Z;
-	const double Ya = gTarget->mxXYZD65toTW[1][0]*X + gTarget->mxXYZD65toTW[1][1]*Y + gTarget->mxXYZD65toTW[1][2]*Z;
-	const double Za = gTarget->mxXYZD65toTW[2][0]*X + gTarget->mxXYZD65toTW[2][1]*Y + gTarget->mxXYZD65toTW[2][2]*Z;
-
-	// XYZ (target whitepoint) → target RGB via per-target matrix.
-	rgb[0] = gTarget->mxXYZtoRGB[0][0] * Xa + gTarget->mxXYZtoRGB[0][1] * Ya + gTarget->mxXYZtoRGB[0][2] * Za;
-	rgb[1] = gTarget->mxXYZtoRGB[1][0] * Xa + gTarget->mxXYZtoRGB[1][1] * Ya + gTarget->mxXYZtoRGB[1][2] * Za;
-	rgb[2] = gTarget->mxXYZtoRGB[2][0] * Xa + gTarget->mxXYZtoRGB[2][1] * Ya + gTarget->mxXYZtoRGB[2][2] * Za;
+	// XYZ (already in the target's whitepoint reference frame) →
+	// target RGB via the per-target matrix.
+	rgb[0] = gTarget->mxXYZtoRGB[0][0] * X + gTarget->mxXYZtoRGB[0][1] * Y + gTarget->mxXYZtoRGB[0][2] * Z;
+	rgb[1] = gTarget->mxXYZtoRGB[1][0] * X + gTarget->mxXYZtoRGB[1][1] * Y + gTarget->mxXYZtoRGB[1][2] * Z;
+	rgb[2] = gTarget->mxXYZtoRGB[2][0] * X + gTarget->mxXYZtoRGB[2][1] * Y + gTarget->mxXYZtoRGB[2][2] * Z;
 }
 
 // Solve for sigmoid coefficients matching `target` (in target RGB).
@@ -531,6 +600,24 @@ int main( int argc, char** argv )
 		PrintUsage();
 		return 1;
 	}
+	if( !JH::gTarget->refIlluminant ) {
+		// Stage C: the forward model integrates under the target's own
+		// reference illuminant.  Training a target without one would
+		// silently reuse another whitepoint's SPD and bake a chromatic
+		// error into every uplifted colour — refuse instead.
+		std::fprintf( stderr,
+			"ERROR: --target '%s' has no reference illuminant SPD in this tool, so it\n"
+			"       cannot be trained under the Stage C forward model\n"
+			"       (rgb = M · integral(S*I*cmf) / integral(I*ybar); see\n"
+			"       docs/SPECTRAL_ILLUMINANT_CONVENTION.md).\n"
+			"       To enable it: add that whitepoint's relative SPD, resampled onto\n"
+			"       the %d-%d nm / %d nm CMF grid (%d samples), as a\n"
+			"       `static const double kD??[kNLambda]` table next to kD65 and point\n"
+			"       the target's `refIlluminant` at it.  Only 'rec709' (D65) ships one.\n",
+			JH::gTarget->name,
+			JH::kLambdaMin, JH::kLambdaMax, JH::kLambdaStep, JH::kNLambda );
+		return 1;
+	}
 
 	const int RES = resolution;
 	const size_t totalCells = size_t( 3 ) * RES * RES * RES;
@@ -550,6 +637,16 @@ int main( int argc, char** argv )
 	double maxResNorm = 0.0;
 	double sumResNorm = 0.0;
 	int    convergedCount = 0;
+
+	// Failure clustering, printed at the end: counts per (max channel,
+	// z band) where the bands are z < 1/3, z < 2/3, z >= 2/3.  Lets a
+	// retrain see WHERE the residual failures live without a separate
+	// diagnostic build (the analysis in docs/JH_LUT_GAMUT.md used a
+	// since-reverted --residuals CSV mode).  Also remembers the single
+	// worst cell's target RGB.
+	int    failHist[3][3]  = { {0,0,0}, {0,0,0}, {0,0,0} };
+	int    totalHist[3][3] = { {0,0,0}, {0,0,0}, {0,0,0} };
+	double worstRGB[3]     = { 0.0, 0.0, 0.0 };
 
 	for( int maxC = 0; maxC < 3; ++maxC ) {
 		// Warm-start cache: at the start of each (maxC, iz) plane, the
@@ -597,10 +694,14 @@ int main( int argc, char** argv )
 						}
 					}
 
+					const int zBand = ( z < 1.0/3.0 ) ? 0 : ( z < 2.0/3.0 ? 1 : 2 );
+					++totalHist[maxC][zBand];
+
 					if( resNorm < 1e-4 ) {
 						++convergedCount;
 					} else {
 						++failureCount;
+						++failHist[maxC][zBand];
 						if( quick ) {
 							std::printf( "    fail @ maxC=%d, z=%.3f, x=%.3f, y=%.3f, "
 								"target=(%.3f, %.3f, %.3f), residual=%.3e, "
@@ -609,7 +710,10 @@ int main( int argc, char** argv )
 								resNorm, c[0], c[1], c[2] );
 						}
 					}
-					maxResNorm = std::max( maxResNorm, resNorm );
+					if( resNorm > maxResNorm ) {
+						maxResNorm = resNorm;
+						worstRGB[0] = rgb[0]; worstRGB[1] = rgb[1]; worstRGB[2] = rgb[2];
+					}
 					sumResNorm += resNorm;
 
 					const size_t idx =
@@ -651,8 +755,23 @@ int main( int argc, char** argv )
 write_output:
 	std::printf( "JakobHanikaLUTGen: done.  converged=%d, failures=%d of %d cells.\n",
 		convergedCount, failureCount, cellsDone );
-	std::printf( "  mean residual = %.3e, max residual = %.3e\n",
-		sumResNorm / std::max( 1, cellsDone ), maxResNorm );
+	std::printf( "  mean residual = %.3e, max residual = %.3e (worst cell rgb = %.3f, %.3f, %.3f)\n",
+		sumResNorm / std::max( 1, cellsDone ), maxResNorm,
+		worstRGB[0], worstRGB[1], worstRGB[2] );
+	{
+		static const char* kBandName[3] = { "z<1/3 ", "z<2/3 ", "z>=2/3" };
+		static const char* kChanName[3] = { "maxC=R", "maxC=G", "maxC=B" };
+		std::printf( "  failure clustering (failed / total, %% of cells):\n" );
+		for( int mc = 0; mc < 3; ++mc ) {
+			for( int b = 0; b < 3; ++b ) {
+				if( totalHist[mc][b] == 0 ) continue;
+				std::printf( "    %s %s : %7d / %7d = %5.2f%%\n",
+					kChanName[mc], kBandName[b],
+					failHist[mc][b], totalHist[mc][b],
+					100.0 * double(failHist[mc][b]) / double(totalHist[mc][b]) );
+			}
+		}
+	}
 	if( failureCount > cellsDone / 100 ) {
 		std::fprintf( stderr, "WARNING: > 1%% of cells failed convergence; "
 			"LUT quality may be poor.  Investigate before shipping.\n" );

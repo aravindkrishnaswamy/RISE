@@ -8,7 +8,34 @@ changed `RISEPel` to `Rec709RGBPel`. Current declarations are
 Sections that discuss `RISEPel = ROMMRGBPel`, kickoff choices, or future Stage
 B work are the pre-landing design record.
 **Triggered by:** Landing 3 v2 spectral pipeline correctness work (commit `a763141`) surfaced two structural costs of the current ROMM-RGB-as-`RISEPel` choice that a different working space would resolve cleanly.
-**Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+**Related:** [JH_LUT_GAMUT.md](JH_LUT_GAMUT.md), [PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md](PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_3.md), [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md), [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)
+
+---
+
+## Stage C — Landed 2026-09-02 (follow-on; read this before touching the LUT)
+
+Stages A and B fixed **which colour space** the LUT targets. They did not fix
+**which illuminant** the LUT trains under, which was flat E. Stage C
+([SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)) put the
+target's reference illuminant (D65) into the generator's forward model:
+
+```
+rgb = M_XYZ→RGB · ( ∫ S(λ)·I(λ)·cmf(λ) dλ ) / ( ∫ I(λ)·ȳ(λ) dλ )
+```
+
+Two things in the Stage A record above are superseded by it:
+
+- **The per-target Bradford adapt is gone.** Integrating under `I` already lands in the
+  target whitepoint's frame; a Bradford stage now would be a second, wrong shift. A new
+  target supplies **its own SPD**, not a Bradford matrix — and `romm` / `acescg` refuse
+  until someone adds theirs, so the ACEScg pre-staging is no longer "one line at bake
+  time".
+- **The rec709 LUT's 3.9 % failure rate is now 0.0 %** (mean residual 2.554 × 10⁻⁵). The
+  residual failures were a forward-model error, not a limit of the sigmoid.
+
+The `RISEPel = Rec709RGBPel` / `LUTTargetPel` architecture from Stage B is unchanged, and
+the ACES migration path is still "flip the typedef in `Color.h`, flip `LUTTargetPel`,
+retrain, audit the Stage B sites" — plus, now, "source the ACES-white SPD".
 
 ---
 

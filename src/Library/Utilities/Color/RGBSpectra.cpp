@@ -13,10 +13,21 @@
 //  shift (~2-4% per channel across the visible) on every RGB-
 //  authored illuminant / emissive painter.
 //
+//  Stage C (2026-09-02, docs/SPECTRAL_ILLUMINANT_CONVENTION.md)
+//  changed the SPD's NORMALISATION from "peak = 1 at 560 nm" to
+//  "Y = 1 through the film": the SPD is divided by
+//  ∫D65·ȳ dλ / ∫ȳ dλ instead of by D65(560) = 100.  The film
+//  resolves radiance as ∫L·cmf dλ / ∫ȳ dλ, so with this scaling an
+//  authored-white illuminant of scale 1 lands on film luminance
+//  Y = 1 — identical to what the RGB pipe produces for the same
+//  authored colour.  Under the old peak normalisation it landed on
+//  Y = 0.98892, a silent ~1.1 % spectral-vs-RGB brightness gap.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
 #include "RGBSpectra.h"
+#include "ColorUtils.h"
 #include <algorithm>
 #include <cmath>
 
@@ -29,15 +40,20 @@ namespace
 	// normalized so D65(560nm) = 100.
 	//
 	// Why D65, not D50: matches the Rec.709 Linear LUT target's
-	// whitepoint.  The LUT generator's forward model
+	// whitepoint.  Since Stage C the LUT generator's forward model
 	// (tools/JakobHanikaLUTGen.cpp::IntegrateToTarget for the rec709
-	// target) integrates sigmoid × CIE 1931 under a flat illuminant
-	// and matrix-converts XYZ(D65) → Rec709(D65) with NO Bradford
-	// adapt.  The runtime, when materializing an RGB-authored
-	// illuminant, multiplies that sigmoid by THIS SPD per-wavelength.
-	// For the round-trip identity to hold (white RGB → spectrum
-	// integrates to white) the SPD must reference the same
-	// whitepoint as the LUT — D65.
+	// target) integrates sigmoid × THIS SPD × CIE 1931 and matrix-
+	// converts XYZ(D65) → Rec709(D65) with no chromatic adapt — i.e.
+	// the trained sigmoid means "reflectance under D65".  A light
+	// SOURCE authored as RGB is therefore that reflectance TIMES the
+	// illuminant: the runtime multiplies the sigmoid by THIS SPD
+	// per-wavelength, and the product round-trips through the film
+	// back to the authored RGB.  Both ends must reference the same
+	// whitepoint — D65.
+	//
+	// This table is duplicated verbatim in tools/JakobHanikaLUTGen.cpp
+	// (a deliberately standalone single-file tool that includes no RISE
+	// headers).  Keep the two in sync.
 	const int    kLambdaMin  = 380;
 	const int    kLambdaMax  = 780;
 	const int    kLambdaStep = 5;
@@ -65,15 +81,50 @@ namespace
 		return kD65[i0] * (1.0 - t) + kD65[i1] * t;
 	}
 
-	// Normalization factor: D65 SPD reference at 560 nm (= 100 by
-	// the standard's normalization convention).  Dividing by this
-	// gives a "spectrum normalized to D65" with peak ~1.0 at midband.
-	const double kD65Peak = 100.0;
+	// Y normalisation factor (Stage C).  The film resolves a spectral
+	// radiance L to XYZ as  ∫L·cmf dλ / ∫ȳ dλ  (see
+	// PixelBasedSpectralIntegratingRasterizer's mYNormalization =
+	// (b-a)/k_y, and FilteredFilm's matching resolve).  Dividing the
+	// raw D65 table by
+	//
+	//     kD65YNorm = ∫D65·ȳ dλ / ∫ȳ dλ
+	//
+	// therefore makes an authored-white illuminant of scale 1 land on
+	// film luminance Y exactly 1, and — because the D65-normalised
+	// chromaticity is the Rec.709 whitepoint — on Rec.709 (1, 1, 1)
+	// after the film's un-adapted XYZ(D65)→Rec709(D65) matrix.  That is
+	// the same value the RGB pipe produces for the same authored
+	// colour, so spectral and RGB renders agree on brightness.
+	//
+	// Computed from the tables rather than hardcoded so it can never
+	// drift from kD65 / the CIE observer.  Both integrals are Riemann
+	// sums on the shared 5 nm grid, so the step cancels.  Value for the
+	// tables above: 98.89248 (the old peak-at-560 constant was 100.0,
+	// i.e. the previous convention was ~1.1 % dim).  Lazily initialised
+	// on first use — a function-local static, so there is no
+	// static-initialisation-order dependency on ColorUtils' CIE table
+	// and no data race.
+	double ComputeD65YNorm()
+	{
+		double num = 0.0, den = 0.0;
+		for( int i = 0; i < kNLambda; ++i ) {
+			const Scalar lambda = Scalar( kLambdaMin + i * kLambdaStep );
+			XYZPel obs;
+			if( !ColorUtils::XYZFromNM( obs, lambda ) ) continue;
+			num += kD65[i] * double( obs.Y );
+			den += double( obs.Y );
+		}
+		return ( den > 0.0 ) ? ( num / den ) : 100.0;
+	}
+}
+
+Scalar RGBIlluminantSpectrum::ReferenceIlluminant( Scalar lambda_nm )
+{
+	static const double kD65YNorm = ComputeD65YNorm();
+	return Scalar( LookupD65( double( lambda_nm ) ) / kD65YNorm );
 }
 
 Scalar RGBIlluminantSpectrum::Eval( Scalar lambda_nm ) const
 {
-	const Scalar sig    = poly.Eval( lambda_nm );
-	const Scalar d65val = Scalar( LookupD65( double( lambda_nm ) ) / kD65Peak );
-	return scale * sig * d65val;
+	return scale * poly.Eval( lambda_nm ) * ReferenceIlluminant( lambda_nm );
 }
