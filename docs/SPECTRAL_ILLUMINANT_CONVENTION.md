@@ -86,7 +86,11 @@ Consequences:
   one now would be a second, erroneous shift. A target whose whitepoint ≠ D65 supplies
   **its own SPD**, not a Bradford matrix. `romm` (D50) and `acescg` (~D60) therefore
   **refuse** with an explicit message until someone adds their SPDs — the generator will
-  not silently train them under the wrong white.
+  not silently train them under the wrong white. (ACES's own scene-referred encoding is
+  actually defined via a chromatic-adaptation transform to the ACES white point, not by
+  integrating reflectance under an ACES-white SPD — so "source the target's SPD" is a
+  defensible convention choice here, not the whole story. A future ACEScg implementer
+  still has to pick which convention to follow, not just drop in a table.)
 * **The film is unchanged.** It integrates radiance × CMF with a uniform Y normalisation
   (`mYNormalization = (b−a)/k_y`, `k_y = ∫ȳ dλ`) and applies the un-adapted
   XYZ(D65)→Rec709(D65) matrix. A white light on a white wall therefore lands on
@@ -124,12 +128,20 @@ Both files are `extlib/jakob-hanika-luts/rec709.coeff`, 64³ × 3 sub-tables, 9 
 
 | | pre-Stage-C (flat E) | Stage C (D65) |
 |---|---|---|
-| unconverged cells | **3.9 %** (as recorded in JH_LUT_GAMUT.md) | **0.0 %** (0 of 786 432) |
+| unconverged cells | **3.9 %** (as recorded in JH_LUT_GAMUT.md) | **0.0 %** (0 of 774 144 non-black cells) |
 | mean residual | 1.2 × 10⁻³ | **2.554 × 10⁻⁵** |
-| max residual | 9.5 × 10⁻² | **< 1.0 × 10⁻⁴** (worst cell rgb ≈ (0.001, 0, 0)) |
+| max residual | 9.5 × 10⁻² | **1.003 × 10⁻⁴** on the shipped float32 coefficients (worst cell rgb ≈ (0.001, 0, 0); see verification note below) |
 | where failures cluster | deep-blue / saturated gamut corners, `z ≥ 0.67` | nowhere — every (maxC, z-band) bucket is 0.00 % |
 | generator wall time | ~30–60 s (documented) | **0.96 s** — the old cost was the 3.9 % of cells burning 200 iterations + a cold restart each |
 | md5 | `575b809b5f1198698e69327f72911177` | `b8dabc9548d1cba876c3a32a54712689` |
+
+Of the 786 432 total cells (64³ resolution × 3 max-channel sub-tables), 12 288 are the
+z = 0 "perfect black" cells — one full 64×64 (x, y) plane at iz = 0 in each of the 3
+sub-tables — that the generator assigns `c = (0, 0, -100)` by fiat with residual forced to
+0 rather than solved (`tools/JakobHanikaLUTGen.cpp`, the `z < 1e-9` branch). The 0.0 %
+unconverged figure above is over the remaining 774 144 solved cells; the black cells were
+never at risk of the flat-E collapse because they were never solved under either forward
+model.
 
 The generator now prints a per-(max-channel, z-band) failure histogram at the end of a run
 so a future retrain can see clustering without a diagnostic build.
@@ -137,6 +149,11 @@ so a future retrain can see clustering without a diagnostic build.
 Independently verified outside the solver: 400 randomly chosen cells were re-evaluated
 through the forward model from the **float-rounded coefficients as written to disk**;
 worst residual 9.93e-5. Corner cells: white 8.3e-5, blue 2.8e-5, green 8.0e-6, red 2.4e-5.
+A subsequent full sweep of all 786 432 float32-rounded cells (not just this 400-cell
+sample) found the honest worst case reported in the table above: max residual 1.003e-4,
+with 43 cells marginally above the 1×10⁻⁴ solver tolerance — float32 rounding of
+double-precision solutions that were already under tolerance at solve time, not a
+re-emergence of the flat-E collapse.
 
 ---
 
@@ -213,7 +230,11 @@ object at all, just a scalar.
   measurements dated as historical; guard restated as a bit-exactness guarantee.
 * `tests/JakobHanikaRoundTripTest.cpp`, `tests/RGBPainterSpectralRoundTripTest.cpp`,
   `tests/JHWhiteGuardSpectralTest.cpp` — forward models corrected, tolerances tightened,
-  real illuminant-source round-trip added.
+  real illuminant-source round-trip added. These tests' D65 weights are read from the
+  runtime's `RGBIlluminantSpectrum::ReferenceIlluminant` — the same table production
+  uses — so a uniform-scale drift between the generator's private D65 table and the
+  runtime's would cancel out of the ratio-based forward model and go undetected here; a
+  shape drift (a change to the SPD's relative curve) IS detected.
 
 ---
 
@@ -333,6 +354,10 @@ of its own independent of the uplift convention. Re-rendering the *same* scenes 
 | white panel on white floor | 1.045 / 0.993 / 1.010 | 0.984 / 0.999 / 1.005 |
 | furnace, white sphere | 1.032 / 0.993 / 1.002 | 0.999 / 1.010 / 0.988 |
 | furnace, grey-0.95 sphere | 1.048 / 1.000 / 1.013 | 1.010 / 1.002 / 0.995 |
+
+Averaged across the white/grey N = 10 rows above, a D65-normalised source resolves to
+≈(1.038, 0.989, 1.008) — consistent with a grid-resolution bias rather than a per-scene
+anomaly.
 
 The default was deliberately **not** changed in this slice. Any spectral-vs-RGB comparison
 must state its `num_wavelengths`, and a future slice should either raise the default or

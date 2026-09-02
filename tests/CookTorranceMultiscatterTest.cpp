@@ -407,11 +407,14 @@ static bool TestNMSpecColorInsideMultiscatter()
 			// The EXACT per-lambda specColor the library multiplies in
 			// (JH-uplifted; NOT rs).  Guarded (IPainter.h) to match
 			// CookTorranceBRDF::valueNM: at rs==1 (authored white) the
-			// library now reads exactly 1.0 at every wavelength instead of
-			// the raw uplift's near-zero red-end collapse -- using the raw
-			// sample here would desync this reconstruction from `full`
-			// (computed by the already-guarded library call below) and
-			// silently mis-skip the degenerate-cell guard.
+			// library reads exactly 1.0 at every wavelength.  Pre-Stage-C
+			// (2026-09-02, docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the raw
+			// (unguarded) uplift instead had a near-zero red-end collapse;
+			// post-Stage-C the raw sample is 1 - epsilon rather than a
+			// collapse, but the guard is still required for exactness --
+			// using the raw sample here would desync this reconstruction
+			// from `full` (computed by the already-guarded library call
+			// below) and silently mis-skip the degenerate-cell guard.
 			const Scalar specColor = GuardedGetColorNM( *stk.specular, ri, nm );
 
 			const Scalar full = brdf->valueNM( v, ri, nm );	// diffuse(0) + single + multi
@@ -425,13 +428,18 @@ static bool TestNMSpecColorInsideMultiscatter()
 			const Scalar fmsOld  = MicrofacetEnergyLUT::ComputeFms<Scalar>( Favg, Eavg );
 			const Scalar multiOld = specColor * fmsOld * f_ms;
 
-			// DEGENERATE-CELL GUARD (adversarial concern (e)): the JH uplift
-			// of white (1,1,1) is NOT a flat spectrum — at some wavelengths
-			// (e.g. the rs=1 deep-red corner) uplift(white) collapses toward
-			// ~0, so BOTH single- and multi-scatter shrink to ~1e-5 and the
-			// fast-math single-scatter subtraction is pure noise.  Such a cell
-			// carries no signal about the specColor-inside-Fms direction, so
-			// skip it.  Require the NEW multiscatter term to be a non-trivial
+			// DEGENERATE-CELL GUARD (adversarial concern (e)): HISTORICAL
+			// rationale, pre-Stage-C (2026-09-02,
+			// docs/SPECTRAL_ILLUMINANT_CONVENTION.md) -- the JH uplift of
+			// white (1,1,1) was NOT a flat spectrum then: at some
+			// wavelengths (e.g. the rs=1 deep-red corner) uplift(white)
+			// collapsed toward ~0, so BOTH single- and multi-scatter shrank
+			// to ~1e-5 and the fast-math single-scatter subtraction was
+			// pure noise.  Such a cell carried no signal about the
+			// specColor-inside-Fms direction, so the guard below skips it;
+			// kept as a defensive floor even though `specColor` above is
+			// now guarded to exact white and the collapse itself is gone.
+			// Require the NEW multiscatter term to be a non-trivial
 			// fraction of the full value before we measure anything.
 			if( multiNew < 1e-4 || full < 1e-3 ) {
 				++skippedDegenerate;

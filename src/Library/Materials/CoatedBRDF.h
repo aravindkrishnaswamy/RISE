@@ -85,13 +85,18 @@ namespace RISE
 				//! Whether the coat is tinted AT ALL.  Decided ONCE
 				//! from the authored (un-uplifted) RGB triple and used
 				//! by both pipes, because a white painter's
-				//! `GetColorNM` is NOT 1.0 across the band -- the
-				//! Jakob-Hanika uplift collapses pure white off the red
-				//! end (~1.3e-5 at 660 nm, measured).  Testing
-				//! `tint < 1` per wavelength, as an earlier revision
-				//! did, therefore made an UNTINTED coat opaque in the
-				//! red on every spectral render while RGB stayed clean.
-				//! Full measurement in CoatedLayer::PassTransmittance.
+				//! `GetColorNM` is NOT exactly 1.0 across the band --
+				//! pre-Stage-C (2026-09-02,
+				//! docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the
+				//! Jakob-Hanika uplift collapsed pure white off the red
+				//! end (~1.3e-5 at 660 nm, measured); post-Stage-C it is
+				//! 1 - epsilon instead, epsilon wavelength-dependent.
+				//! Testing `tint < 1` per wavelength, as an earlier
+				//! revision did, therefore made an UNTINTED coat opaque
+				//! in the red on every spectral render while RGB stayed
+				//! clean.  Full measurement in
+				//! CoatedLayer::PassTransmittance / IPainter.h's
+				//! IsUntintedWhite.
 				bool	tinted;
 				Scalar	ri;				///< internal diffuse Fresnel reflectance for `eta`
 				Scalar	re;				///< external diffuse Fresnel average for `eta`

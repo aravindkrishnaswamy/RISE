@@ -33,13 +33,19 @@
 //       one bound to black -- not by inspecting internals.
 //
 //    2b. THE SPECTRAL RED-PROOF for that default.  At 660 nm -- where
-//       a white painter's Jakob-Hanika uplift collapses to 1.28e-5 --
-//       an untinted coat must be indistinguishable from an explicitly
-//       white one AND from an explicitly-neutral Beer-Lambert
-//       baseline, while a saturated tint must differ.  This is the
-//       check that catches a coat deciding "am I tinted?" from the
-//       per-wavelength sample; every RGB assertion above stays green
-//       through that bug.
+//       a white painter's PRE-STAGE-C Jakob-Hanika uplift used to
+//       collapse to 1.28e-5 (flat-E LUT; fixed 2026-09-02, see
+//       docs/SPECTRAL_ILLUMINANT_CONVENTION.md) -- an untinted coat
+//       must be indistinguishable from an explicitly white one AND
+//       from an explicitly-neutral Beer-Lambert baseline, while a
+//       saturated tint must differ.  660 nm stays the probe even
+//       though the LUT no longer collapses there: it is where the old
+//       bug was worst, so this check would re-arm immediately if the
+//       LUT were ever retrained under the wrong illuminant.  The
+//       relative-equality form (omitted == white == neutral, != tinted)
+//       -- never an absolute uplift value -- is what makes the check
+//       robust to that LUT change; every RGB assertion above stays
+//       green through the underlying bug regardless.
 //
 //    3. DESCRIPTOR DEFAULTS ROUND-TRIP.  A chunk that omits every
 //       optional coat parameter must behave EXACTLY like one that binds
@@ -282,11 +288,13 @@ double Respond( IJobPriv& job, const char* matName )
 }
 
 //! Single-wavelength BRDF response at the probe.  660 nm is chosen
-//! deliberately: it is where the Jakob-Hanika uplift of pure WHITE
-//! collapses (1.28e-5, measured), so it is exactly the wavelength at
-//! which a coat that decided "am I tinted?" from the SPECTRAL sample
-//! would go opaque for an UNTINTED coat.  A 550 nm check would pass
-//! either way and prove nothing.
+//! deliberately: it is where the PRE-STAGE-C Jakob-Hanika uplift of
+//! pure WHITE used to collapse (1.28e-5, measured under the old flat-E
+//! LUT; fixed 2026-09-02, see docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
+//! It stays the probe wavelength because that is where a regression
+//! would be most severe -- a coat that decided "am I tinted?" from the
+//! SPECTRAL sample would go opaque for an UNTINTED coat there first.
+//! A 550 nm check would pass either way and prove nothing.
 double RespondNM( IJobPriv& job, const char* matName, double nm )
 {
 	IMaterial* m = job.GetMaterials()->GetItem( matName );
@@ -489,20 +497,27 @@ void TestCoatTintDefault()
 //////////////////////////////////////////////////////////////////////
 // 2b. THE SPECTRAL RED-PROOF for the untinted default.
 //
-// This is the check that would have caught the round-2 bug, and the
-// RGB checks above could not: an untinted coat that decides "am I
-// tinted?" from the per-wavelength sample sees a white painter's
-// Jakob-Hanika uplift COLLAPSE off the red end (1.28e-5 at 660 nm,
-// measured) and multiplies pow(1.3e-5, 1/cos) ~ 0 into its
-// transmittance.  RGB stays perfect throughout, so only a spectral
-// assertion at a red wavelength can see it.
+// This is the check that caught the round-2 bug, and the RGB checks
+// above could not: under the PRE-STAGE-C flat-E LUT, an untinted coat
+// that decided "am I tinted?" from the per-wavelength sample would see
+// a white painter's Jakob-Hanika uplift COLLAPSE off the red end
+// (1.28e-5 at 660 nm, measured) and multiply pow(1.3e-5, 1/cos) ~ 0
+// into its transmittance.  RGB stayed perfect throughout, so only a
+// spectral assertion at a red wavelength could see it.  The LUT's
+// white-corner collapse is fixed as of 2026-09-02 (Stage C, see
+// docs/SPECTRAL_ILLUMINANT_CONVENTION.md); 660 nm is kept as the probe
+// wavelength because that is where the old collapse was worst, so this
+// check re-arms immediately if the LUT is ever retrained under the
+// wrong illuminant.
 //
 // The invariant: at 660 nm an untinted coat must be INDISTINGUISHABLE
 // from an explicitly white one AND from a coat whose Beer-Lambert
 // terms are explicitly neutral -- three spellings of "no attenuation"
 // that must agree exactly -- while a genuinely tinted coat must
 // differ.  Both halves matter: the first alone would also pass if the
-// tint term were dead code.
+// tint term were dead code.  This relative-equality form -- never an
+// absolute uplift value -- is what keeps the check valid across the
+// LUT change.
 //////////////////////////////////////////////////////////////////////
 
 void TestUntintedIsClearSpectrally()

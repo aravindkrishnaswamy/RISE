@@ -1294,14 +1294,20 @@ static void TestExpressionPainterSpectralPath()
 				const Scalar lambda_end   = Scalar(780);
 				const unsigned int nbins  = 81;
 				const Scalar delta = ( lambda_end - lambda_begin ) / Scalar(nbins);
-				// The JH sigmoid uplift is smooth but not perfectly flat for a
-				// neutral grey, even off the gamut-edge corner (see
-				// docs/JH_LUT_GAMUT.md) -- it rolls off toward the 380/780nm
-				// extremes (measured: ~0.16 at the deep-red edge, ~0.55 near
-				// 470nm, for an input of 0.5).  The band below is loose enough
-				// to tolerate that roll-off while still catching a genuinely
+				// HISTORICAL (pre-Stage-C, 2026-09-02,
+				// docs/SPECTRAL_ILLUMINANT_CONVENTION.md): under the old
+				// flat-E LUT the JH sigmoid uplift was smooth but not
+				// perfectly flat for a neutral grey, even off the gamut-edge
+				// corner (see docs/JH_LUT_GAMUT.md) -- it rolled off toward
+				// the 380/780nm extremes (measured: ~0.16 at the deep-red
+				// edge, ~0.55 near 470nm, for an input of 0.5).  Under the
+				// current D65 forward model a neutral grey uplifts flat to
+				// within ~1e-4 across the visible band (see
+				// docs/SPECTRAL_ILLUMINANT_CONVENTION.md §4), so the band
+				// below is now far looser than the roll-off it was sized
+				// for; it is left wide so it still catches a genuinely
 				// broken uplift (negative, zero, wildly overshooting, or
-				// non-finite).
+				// non-finite) rather than being a tight regression check.
 				bool allInBand = true;
 				for( unsigned int i = 0; i < nbins; ++i ) {
 					const Scalar nm = lambda_begin + Scalar(i) * delta + delta * Scalar(1e-6);

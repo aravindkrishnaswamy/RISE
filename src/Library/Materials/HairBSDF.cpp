@@ -1023,12 +1023,15 @@ Scalar HairScatteringBase::SigmaANM(
 		// Guarded at the authored-white corner (IPainter.h,
 		// GuardedGetColorNM): an untinted `color` must invert to
 		// SigmaA == 0 at every wavelength, matching SigmaARGB's white
-		// case exactly -- the raw uplift instead collapses white toward
-		// ~0 above ~620 nm (CoatedLayer.h PassTransmittance), which would
-		// invert to a spuriously large SigmaA and darken hair red-hue
-		// only in spectral renders.  Same near-white discontinuity
-		// precedent as CoatedLayer.h's "KNOWN RESIDUAL" block (~line 331)
-		// for a textured tint straddling white.
+		// case exactly.  Pre-Stage-C (2026-09-02,
+		// docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the raw uplift
+		// collapsed white toward ~0 above ~620 nm (CoatedLayer.h
+		// PassTransmittance); post-Stage-C it is 1 - epsilon instead.
+		// Either way, without the guard the raw sample would invert to
+		// a spuriously large SigmaA and darken hair red-hue only in
+		// spectral renders.  Same near-white discontinuity precedent as
+		// CoatedLayer.h's "KNOWN RESIDUAL" block (~line 331) for a
+		// textured tint straddling white.
 		return SigmaAFromReflectance( GuardedGetColorNM( *pColor, ri, nm ), ReflectanceDenom( betaN ) );
 	}
 	if( pSigmaA ) {														// tier 2

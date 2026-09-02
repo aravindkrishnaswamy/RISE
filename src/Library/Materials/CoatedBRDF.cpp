@@ -107,18 +107,24 @@ void CoatedBRDF::ResolveCoat(
 	// "Is the coat tinted at all?" is decided from the AUTHORED RGB
 	// triple, which carries no Jakob-Hanika uplift, and the SAME answer
 	// drives both pipes.  Deciding it per-wavelength from GetColorNM
-	// would make an untinted (white) coat opaque above ~640 nm on every
-	// spectral render -- see CoatedLayer::PassTransmittance for the
-	// measured curve.  Epsilon guards the RGB side against a painter
-	// that returns 1 - 1e-16 rather than exactly 1.
+	// would make an untinted (white) coat's spectral sample disagree
+	// with the RGB path -- pre-Stage-C (2026-09-02,
+	// docs/SPECTRAL_ILLUMINANT_CONVENTION.md) that disagreement was an
+	// opaque coat above ~640 nm; post-Stage-C it is merely "1 - epsilon
+	// instead of exactly 1", epsilon wavelength-dependent -- see
+	// CoatedLayer::PassTransmittance / IPainter.h's IsUntintedWhite for
+	// the measured curve either way.  Epsilon guards the RGB side against
+	// a painter that returns 1 - 1e-16 rather than exactly 1.
 	const RISEPel tintRGB = pCoatTint->GetColor( ri );
 	const Scalar  minTint = r_min( r_min( tintRGB[0], tintRGB[1] ), tintRGB[2] );
 	out.tinted = ( minTint < Scalar(1) - Scalar(1e-6) );
 
 	if( !out.tinted ) {
-		// Untinted: never sample the spectral pipe at all, so the JH
-		// red-end collapse cannot leak in.  `tint` is left at white so
-		// any diagnostic reading it sees the authored value.
+		// Untinted: never sample the spectral pipe at all, so no
+		// per-wavelength deviation from exact white -- pre-Stage-C the
+		// JH red-end collapse, post-Stage-C the residual 1-epsilon --
+		// can leak in.  `tint` is left at white so any diagnostic
+		// reading it sees the authored value.
 		out.tint = RISEPel( 1, 1, 1 );
 	} else if( spectral ) {
 		const Scalar t = pCoatTint->GetColorNM( ri, nm );

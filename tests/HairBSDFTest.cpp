@@ -1047,12 +1047,19 @@ static void RunInversionRoundTrip()
 
 //! Tier-3 spectral white-corner guard: `HairScatteringBase::SigmaANM`
 //! samples the tier-3 `color` painter through `GuardedGetColorNM`
-//! (HairBSDF.cpp SigmaANM, ~line 1011) precisely because the raw
-//! Jakob-Hanika uplift of authored white collapses toward 0 above
+//! (HairBSDF.cpp SigmaANM, ~line 1011).  HISTORICALLY (pre-Stage-C,
+//! fixed 2026-09-02, see docs/SPECTRAL_ILLUMINANT_CONVENTION.md) the
+//! raw Jakob-Hanika uplift of authored white collapsed toward 0 above
 //! ~620nm (docs/JH_LUT_GAMUT.md; measured in CoatedLayer.h
-//! PassTransmittance) -- which SigmaAFromReflectance would then invert
-//! into a spuriously large absorption instead of the correct 0
-//! (`SigmaAFromReflectance(1, D) == 0` exactly, since log(1) == 0).
+//! PassTransmittance), which SigmaAFromReflectance would then invert
+//! into a spuriously large absorption instead of the correct 0.  The
+//! guard stays load-bearing regardless: even post-Stage-C the raw
+//! sigmoid uplift of white is 1 - epsilon (epsilon wavelength-dependent,
+//! never exactly 1.0), and `SigmaAFromReflectance` must see EXACTLY 1.0
+//! to return EXACTLY 0 (since log(1) == 0) -- so GuardedGetColorNM's
+//! snap-to-exact-white is what makes SigmaANM(white, *) match
+//! SigmaARGB(white)'s exact 0, not a workaround for a bug that no
+//! longer exists.
 //! This locks SigmaANM(white, 660nm) to exactly 0, matching
 //! SigmaARGB(white)'s exact 0 on every channel -- if the guard were
 //! removed this would go from 0 to a large positive number instead.
