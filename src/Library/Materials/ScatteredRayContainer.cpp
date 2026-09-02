@@ -28,7 +28,11 @@ ScatteredRayContainer::~ScatteredRayContainer()
 
 bool ScatteredRayContainer::AddScatteredRay( ScatteredRay& ray )
 {
-	if( freeidx >= 6 ) {
+	if( freeidx >= kCapacity ) {
+		// Container full -- the ray is DROPPED.  Returning false rather than
+		// storing is the whole contract: `delete_stack` below is left true on
+		// this path, so the caller's ScatteredRay destructor still frees its
+		// IOR stack and nothing leaks.  Callers that can overflow must check.
 		return false;
 	}
 
@@ -71,7 +75,7 @@ ScatteredRay* ScatteredRayContainer::RandomlySelect(
 	}
 
 	// Otherwise we have from a whole bunch of events to choose from
-	Scalar cdf[6] = {0};
+	Scalar cdf[kCapacity] = {0};
 	Scalar total = 0;
 	for( unsigned int i=0; i<freeidx; i++ ) {
 		const Scalar prob = bNM ? rays[i].krayNM : ColorMath::MaxValue(rays[i].kray);
@@ -127,8 +131,8 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectNonDiffuse(
 	}
 
 	// Otherwise we have from a whole bunch of events to choose from
-	Scalar cdf[6] = {0};
-	bool valid[6];
+	Scalar cdf[kCapacity] = {0};
+	bool valid[kCapacity];
 	Scalar total = 0;
 	for( unsigned int i=0; i<freeidx; i++ ) {
 		valid[i] = rays[i].type!=ScatteredRay::eRayDiffuse;
@@ -191,8 +195,8 @@ ScatteredRay* ScatteredRayContainer::RandomlySelectDiffuse(
 	}
 
 	// Otherwise we have from a whole bunch of events to choose from
-	Scalar cdf[6] = {0};
-	bool valid[6];
+	Scalar cdf[kCapacity] = {0};
+	bool valid[kCapacity];
 	Scalar total = 0;
 	for( unsigned int i=0; i<freeidx; i++ ) {
 		valid[i] = rays[i].type==ScatteredRay::eRayDiffuse;

@@ -76,16 +76,49 @@ namespace RISE
 	//! This is a class that contains a scattered rays
 	class ScatteredRayContainer
 	{
+	public:
+		//! Maximum number of scattered rays one container can hold.
+		//!
+		//! An `AddScatteredRay` past this returns false and the ray is
+		//! DISCARDED, so the cap is an energy loss, not a queueing delay --
+		//! which is why it is a named constant used by the array bound, the
+		//! bounds check, and the `cdf[]` / `valid[]` scratch arrays of the
+		//! three RandomlySelect* functions alike (the literal 6 used to be
+		//! duplicated across all five sites, so raising it meant finding
+		//! every copy).
+		//!
+		//! Sized 12 from measurement, not intuition.  The demanding producer
+		//! is `CompositeSPF`'s two-layer random walk over a DISPERSIVE top
+		//! dielectric: a per-channel IOR makes `DielectricSPF::Scatter` run
+		//! `DoSingleRGBComponent` three times, so the top interface emits up
+		//! to 3 up-going Fresnel lobes (3 exits) plus 3 down-going refracted
+		//! rays, and each of those returns through the top interface for up
+		//! to 3 more exits -- 3 + 3x3 = 12 at the scene-language default
+		//! recursion budgets.  Measured over 200 000 draws of that fixture:
+		//! max 12 attempted per Scatter, and at capacity 6, 21.7 % of all
+		//! exit rays were dropped (45.96 % of Scatter calls lost at least
+		//! one).  Non-dispersive stacks peak at 3-4 even at deep budgets, so
+		//! they never came near either bound.
+		//!
+		//! A DISPERSIVE top at DEEP budgets still peaks at 30 -- the cap is a
+		//! bound, not a guarantee, so producers that can overflow it must
+		//! check the return value rather than assume success (CompositeSPF
+		//! warns once per process when it does).
+		static const unsigned int kCapacity = 12;
+
 	protected:
-		mutable ScatteredRay	rays[6];
+		mutable ScatteredRay	rays[kCapacity];
 		unsigned int	freeidx;
-			
+
 	public:
 		ScatteredRayContainer();
 		virtual ~ScatteredRayContainer();
 
-		//! Adds a scattered ray
-		bool AddScatteredRay( 
+		//! Adds a scattered ray.
+		/// \return true if the ray was stored; FALSE if the container was
+		///         already at kCapacity, in which case the ray is dropped
+		///         entirely (and keeps ownership of its own IOR stack).
+		bool AddScatteredRay(
 			ScatteredRay& ray											///< [in] Scattered ray to add
 			);
 

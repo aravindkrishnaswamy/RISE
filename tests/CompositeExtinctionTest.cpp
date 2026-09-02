@@ -717,6 +717,92 @@ int main()
 		       "no emission gain: a negative thickness never exceeds top+bottom" );
 	}
 
+	// ------------------------------------------------------------
+	// 9. DISPERSIVE TOP LAYER -- the ScatteredRayContainer capacity guard.
+	//
+	//    A per-channel IOR makes `DielectricSPF::Scatter` take its dispersion
+	//    branch and run `DoSingleRGBComponent` THREE times, so every interface
+	//    crossing emits three Fresnel lobes and three refracted rays instead of
+	//    one of each.  In CompositeSPF's walk that multiplies the number of
+	//    EXIT rays a single Scatter() produces: 3 up-going Fresnel lobes at the
+	//    first interface, plus up to 3 more each time one of the 3 down-going
+	//    rays comes back up through the top -- 3 + 3x3 = 12 at these (default)
+	//    recursion budgets.
+	//
+	//    `ScatteredRayContainer::AddScatteredRay` returns FALSE and DISCARDS
+	//    the ray once the container is full, and the composite's four exit-add
+	//    sites used to ignore that return.  With the historic capacity of 6,
+	//    measured over 200 000 draws of exactly this fixture:
+	//
+	//      attempted 1 401 847 / stored 1 097 664 -> 304 183 DROPPED (21.70 %)
+	//      45.96 % of Scatter() calls lost at least one exiting ray
+	//      max attempted per Scatter = 12
+	//
+	//    and because the per-channel loop runs R, G, B in that order, the drops
+	//    are NOT colour-neutral -- the last channel added starves first.
+	//
+	//    RED-PROOF, both checks below, measured 2026-09-02 by rebuilding with
+	//    ScatteredRayContainer::kCapacity forced back to 6:
+	//      capacity  6: RGB = (0.45588, 0.42010, 0.13374)  total = 1.00972
+	//                   blue/red = 0.2934   total/3xflat = 0.7906   -> 2 FAILs
+	//      capacity 12: RGB = (0.45588, 0.42799, 0.40296)  total = 1.28684
+	//                   blue/red = 0.8839   total/3xflat = 1.0076   -> 2 PASSes
+	//    i.e. at capacity 6 blue comes back 3.4x darker than red on a fixture
+	//    whose three channels differ only by ior 1.45 / 1.50 / 1.55, and a
+	//    fifth of the transported energy is simply gone.  The capacity-6 run
+	//    also emits CompositeSPF's once-per-process drop warning.
+	//
+	//    Both checks below therefore FAIL at capacity 6 and pass at 12.  The
+	//    total-energy check states the same loss in aggregate: a dispersive
+	//    clear coat over the same substrate must transport essentially the same
+	//    total as the non-dispersive one (it differs only in how the three
+	//    channels split), and at capacity 6 it came in ~1/3 low.
+	// ------------------------------------------------------------
+	std::cout << "\n9. Dispersive top layer (container-capacity guard)\n";
+
+	RGBScalarPainter* sIorDisp = new RGBScalarPainter( 1.45, 1.50, 1.55 );  sIorDisp->addref();
+	DielectricSPF* dielDisp = new DielectricSPF( *sTau, *sIorDisp, *sScat, /*hg*/ false );
+	dielDisp->addref();
+	CompositeSPF* compDisp = new CompositeSPF(
+		*dielDisp, *lambertian, kMaxRecur, kMaxReflRecur, kMaxRefrRecur,
+		kMaxDiffRecur, kMaxTransRecur, 0.02, *extLo );
+	compDisp->addref();
+
+	const Measurement disp = Measure( *compDisp, 0.0 );
+	PrintMeasurement( "composite DISPERSIVE-diel/lambertian", disp );
+
+	// 9a. Colour neutrality.  The three channels see ior 1.45 / 1.50 / 1.55,
+	//     which moves each one's Fresnel reflectance by well under 1 %, so any
+	//     large channel spread is a bookkeeping artefact rather than physics.
+	//     Capacity 6 gives b/r = 0.2934; capacity 12 gives 0.8839 (the residual
+	//     11 % IS the genuine dispersion: blue's higher ior reflects slightly
+	//     more at the first interface and TIRs slightly more on the way out).
+	//     The band [0.80, 1.25] clears that while sitting 3x away from the
+	//     broken value.
+	const double dispBR = ( disp.r > 0 ) ? disp.b / disp.r : 0.0;
+	std::cout << "    blue/red = " << std::fixed << std::setprecision( 4 ) << dispBR << "\n";
+	Check( dispBR > 0.80 && dispBR < 1.25,
+	       "dispersive top stays colour-neutral (blue/red in [0.80, 1.25]; a full container "
+	       "starves the last channel added and lands at 0.29)" );
+
+	// 9b. Total transported energy.  Per-channel rays each carry their weight in
+	//     one channel only, so `total` (a sum of max-channel values) counts each
+	//     channel once and is directly comparable to the non-dispersive fixture's
+	//     `total` -- which is the same walk with all three channels coincident.
+	//     Measured: 1.28684 dispersive vs 3 x 0.42569 = 1.27707 at capacity 12,
+	//     a ratio of 1.0076; at capacity 6 it is 1.00972 / 1.27707 = 0.7906,
+	//     i.e. 21 % of the transported energy silently missing.
+	const double dispVsFlat = disp.total / ( 3.0 * lo.total );
+	std::cout << "    total(dispersive) / (3 x total(non-dispersive)) = "
+	          << std::fixed << std::setprecision( 4 ) << dispVsFlat << "\n";
+	Check( dispVsFlat > 0.90 && dispVsFlat < 1.30,
+	       "dispersive walk transports the same total as the non-dispersive one within "
+	       "[0.90, 1.30] (dropped exit rays land it at 0.79)" );
+
+	compDisp->release();
+	dielDisp->release();
+	sIorDisp->release();
+
 	ceNaN->release();
 	ceNeg->release();
 	ceZero->release();
