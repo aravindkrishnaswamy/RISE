@@ -5772,30 +5772,46 @@ sweep, or ported replay.
 ### 7.56af Resident EOS candidate identity (r199)
 
 r199 completes the third r195 resident-lineage rung. A private Metal issuer
-materializes the conservative EOS candidate and publishes an identity over
-the complete candidate bits, its producing stage (`Q*` or `Q^{n+1}`), its
-binary32 precision class, attempt and case identities, and the exact r198
-physical-flux and r197a transport publication identities beneath it. The
-issuer also binds the parent command and private buffer handles. An unsealed
-or parent-A/child-B flux, a missing parent publication, a short candidate, or
-a CPU-substitution attempt cannot mint the private authority. The public
-comparator is a terminal qualification tap and is deliberately not
-convertible to that authority.
+advances the conservative candidate from the exact r197a parent state and the
+r198 low-composite physical-flux surface. The update kernel consumes those
+private buffers on their parent command; no public candidate payload exists.
+Its producer identity covers the resulting candidate bits, producing stage
+(`Q*` or `Q^{n+1}`), binary32 precision class, step size, attempt/case
+identities, and both parent publications. The accepted candidate publication
+is withheld until conservation admissibility, EOS inversion, and the r170
+physicality bound all complete. Thus an unsealed or parent-A/child-B flux, a
+missing publication, short surface, CPU-substitution attempt, or failed EOS
+candidate leaves both candidate and EOS publications zero. The public
+comparator remains a terminal qualification tap and cannot mint authority.
 
 The device evaluates the accepted-state temperature inversion and represented
 pressure functional per cell. Apple Metal has no binary64 arithmetic, so the
-sealed binary64 thermochemistry record is represented as non-overlapping
-binary32 pairs and evaluated with two-sum/FMA compensated operations. The
-device searches the positive binary32 temperature lattice and decides the
-final result at the exact midpoint between its two bracketing values. This is
-not a widened numerical gate: on all 64 cells spanning 300, 425, 700, 900,
-1199, 1500, 1900, and 2200 K, the temperature, represented-pressure ratio,
-and absolute deviation are bit-identical to the canonical fp64 mirror after
-its single binary32 projection. Every per-cell residual is zero. Each field
-is reported separately in its own units against the local half-ULP projection
-enclosure; all three per-field worst residual/enclosure ratios are zero. The
-exact bit comparison remains the binding criterion, and no pooled
-across-field statistic is used.
+sealed binary64 thermochemistry and affine coefficients are represented as
+three-term binary32 expansions and evaluated with two-sum/FMA compensated
+operations. The device searches the positive binary32 temperature lattice and
+decides final rounding at the exact midpoint between adjacent values. The
+candidate streaming update, temperature, and represented-pressure ratio are
+bit-identical to their matched CPU/fp64 mirrors on every cell. The fixture
+spans both sides of the 1000 K NASA9 segment boundary as well as 300, 425,
+1500, 1900, and 2200 K. The recorded deviation is separately enclosed by the
+termwise, cancellation-independent bound `2^-41 max(1, |P/P0|)`. This is the
+sealed arithmetic walker's 128 second-order rounding obligations times
+binary32 unit roundoff squared, `128 * (2^-24)^2 = 2^-41`, not a fitted
+tolerance; its maximum absolute residual is `8.8817841970012523e-15`. No
+pooled across-field
+statistic participates in acceptance.
+
+Fresh review rejected the first r199 draft because it copied a public CPU
+payload and merely asserted parent identities, and because its EOS endpoint
+and r170 comparisons lost binary64 information. The corrected surface removes
+the payload, makes the stage update causally consume r198/r197a, and defers
+publication. It reproduces the r60 `E_min + tolerance` and
+`E_max - tolerance` endpoint bands: the lower-band adversary clamps exactly
+and the upper-band adversary refuses. The r170 comparison is performed on the
+compensated deviation before binary32 publication and adds the same `2^-41`
+termwise enclosure fail-closed. A constructed admissible state whose exact
+ratio is above `1.25` while binary32 rounds to `1.25` refuses. No tolerance was
+widened.
 
 The monitored-manifold boundary remains explicit. EOS deviation is recorded
 for every candidate, but no inherited pressure-deviation or low-Mach ceiling
@@ -5810,14 +5826,14 @@ NASA9 segment classes reachable over the sealed case interval.
 
 The qualification interval is one Metal command with one terminal staging
 read and zero interstage full-grid transfers. Its fixture certificate is
-`950272` bytes against `106552` bytes allocated. The live incremental
-certificate is `147456` bytes and the complete 8-cubed owner peak is
-`6662472` bytes. No case-authored input changed, so `case_record_id` remains
+`933888` bytes against `107600` bytes allocated. The live incremental
+certificate is `163840` bytes and the complete 8-cubed owner peak is
+`6678856` bytes. No case-authored input changed, so `case_record_id` remains
 stable; producer and future run identities inherit r199 semantics, and the
 golden checkpoint remains untouched. Evidence is sealed in
 `rendered/fire_production_calibration/r199_resident_eos_candidate_identity/`
 `resident_eos_candidate_identity_evidence.v1`, SHA-256
-`7e7e7bd18b52aceb4c0d87f0bd86f052f5d69e21eba3553e2b72657fb70991ab`.
+`ab198b55e41c68e237fda5e03c4cca7a8eb5b9111a87186bec3e5b7f8438f94e`.
 The next separately committed and reviewed rung is authenticated target
 lineage; r199 does not claim the live R0/R1/R2 owner, final kernel sweep, or
 ported replay.

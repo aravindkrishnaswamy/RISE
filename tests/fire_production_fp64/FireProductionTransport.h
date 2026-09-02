@@ -1244,17 +1244,16 @@ namespace RISEFireProductionFP64
 		std::string* error=0 );
 
 	//! Qualification request for the private resident EOS-candidate authority.
-	//! The candidate payload is copied by a device kernel into a private,
-	//! identity-bearing surface whose sealed parents are the exact r198 physical
-	//! flux publication and the r197a transport publication beneath it.  The
-	//! public request can exercise that issuer but cannot mint its authority.
+	//! The candidate is advanced on device from the r198 low composite flux; no
+	//! public candidate payload exists.  Its sealed parents are the exact r198
+	//! physical-flux publication and the r197a transport publication beneath it.
 	struct FireProductionResidentEOSCandidateComparatorRequest
 	{
 		FireProductionResidentPhysicalFluxComparatorRequest physicalFlux;
 		FireProductionScalarEOSStage producingStage;
 		RISE::FireStateProducerPrecision producerPrecision;
 		RISE::RISECBOR64::Bytes caseRecordEnvelope;
-		std::vector<double> candidateConservativeValues;
+		double candidateTimeStepS;
 		//! Qualification REDs only.  Each corrupts one private authority edge or
 		//! extent before the EOS issuer and must fail without publication.
 		bool qualificationUnsealedParentFlux;
@@ -1265,7 +1264,7 @@ namespace RISEFireProductionFP64
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
 			producingStage(static_cast<FireProductionScalarEOSStage>(0u)),
-			producerPrecision(RISE::FireStateProducerPrecision::Binary32),
+			producerPrecision(RISE::FireStateProducerPrecision::Binary32),candidateTimeStepS(0.0),
 			qualificationUnsealedParentFlux(false),
 			qualificationMismatchedParentFlux(false),
 			qualificationCPUProducedCandidate(false),
@@ -1281,6 +1280,7 @@ namespace RISEFireProductionFP64
 	{
 		FireProductionScalarEOSStage producingStage;
 		RISE::FireStateProducerPrecision producerPrecision;
+		std::vector<double> candidateConservativeValues;
 		std::vector<double> temperatureK;
 		std::vector<double> representedPressureRatio;
 		std::vector<double> absoluteEOSDeviation;

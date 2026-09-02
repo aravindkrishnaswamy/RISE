@@ -1127,8 +1127,9 @@ namespace RISEFireProductionFP64
 		const std::uint64_t cells=static_cast<std::uint64_t>(shape.nx)*shape.ny*shape.nz;
 		return AddMetalValueBuffer(9u*cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
+			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
 			// Device-private compensated copy of the sealed binary64 EOS record.
-			AddMetalValueBuffer(452u,sizeof(double),bytes)&&
+			AddMetalValueBuffer(870u,sizeof(double),bytes)&&
 			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(cells,sizeof(double),bytes)&&

@@ -5137,27 +5137,32 @@ it was already tried and refuted here.
   rung is resident EOS candidate identity.
 
 - **r199 resident EOS candidate identity (2026-09-02):** completes the third
-  r195 rung as a private device-produced candidate and EOS authority. Candidate
-  identity binds every conservative bit, the `Q*`/`Q^{n+1}` producing stage,
-  binary32 precision class, attempt/case identity, the exact r198
-  physical-flux publication, and its r197a transport parent on the same Metal
-  command. Unsealed, mismatched, missing, short, CPU-substituted, and falsely
-  fp64-labelled surfaces refuse without publication. The qualification output
-  remains a terminal tap and cannot become live authority.
-  The EOS kernel uses compensated binary32 pairs of the sealed binary64 NASA9
-  record and a binary32-lattice inversion, because Metal exposes no binary64.
-  All 64 per-cell temperatures, represented-pressure ratios, and absolute
-  deviations are bit-identical to the fp64 mirror after one binary32
-  projection; their residuals and separate worst local projection-enclosure
-  ratios are all zero. The isolated `0x000003ff` branch bitmap matches an
-  independent interval walker and covers all reachable NASA9 segment classes.
+  r195 rung as a private device-produced candidate and EOS authority. Fresh
+  review rejected the first draft because a CPU-uploaded candidate could mint
+  authority by asserting parent hashes, and because endpoint/r170 decisions
+  lost binary64 information. The corrected surface has no public candidate
+  payload: its Metal update consumes the exact r198 low-composite flux and
+  r197a parent state on their command, and candidate publication is withheld
+  until EOS and physical gates pass. Unsealed, mismatched, missing, short,
+  CPU-substituted, falsely fp64-labelled, and physically invalid candidates
+  leave both candidate and EOS publications zero.
+  The EOS kernel carries the sealed binary64 NASA9 and affine data as
+  three-term binary32 expansions. Candidate update, temperature inversion,
+  and represented pressure bit-match their mirrors per cell; deviation is
+  enclosed by the cancellation-independent `2^-41 max(1, |P/P0|)` termwise
+  bound, derived from the sealed walker's 128 second-order rounding
+  obligations as `128 * (2^-24)^2 = 2^-41`, with maximum residual
+  `8.8817841970012523e-15`. r60 lower/upper
+  endpoint adversaries and a just-above-`2^-2` state that rounds to `1.25f`
+  bind the corrected semantics. The isolated `0x000003ff` bitmap matches its
+  independent walker.
   Monitored-manifold semantics are preserved: a 20% deviation is recorded and
   admitted, no manifold ceiling exists here, and only conservation-class
   admissibility plus the r170 `2^-2` dynamics bound refuse (the 30% RED does).
   The interval uses one command, one terminal read, and zero interstage grid
-  transfers. Fixture/candidate/owner certificates are `950272`, `147456`, and
-  `6662472` bytes respectively, versus `106552` fixture bytes allocated.
+  transfers. Fixture/candidate/owner certificates are `933888`, `163840`, and
+  `6678856` bytes respectively, versus `107600` fixture bytes allocated.
   `case_record_id` is unchanged, future producer/run identities inherit r199,
   and the golden checkpoint is untouched. Evidence SHA-256 is
-  `7e7e7bd18b52aceb4c0d87f0bd86f052f5d69e21eba3553e2b72657fb70991ab`.
+  `ab198b55e41c68e237fda5e03c4cca7a8eb5b9111a87186bec3e5b7f8438f94e`.
   The next rung is authenticated target lineage.
