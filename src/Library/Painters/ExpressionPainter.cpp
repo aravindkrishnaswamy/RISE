@@ -136,7 +136,14 @@ Scalar ExpressionPainter::GetColorNM( const RayIntersectionGeometric& ri, const 
 	// its header comment for why sample-side uplift, not load-time): a
 	// spatially-varying field's average reflectance is only correct if we
 	// filter in RGB first and uplift last.
-	const RISEPel rgb = EvalRGB( ri );
+	RISEPel rgb = EvalRGB( ri );
+	// Unbounded/Illuminant FromRGB derive `scale` from the max channel
+	// OUTSIDE the maxc>1e-9 branch, so an all-negative triple (a subtraction
+	// or other rgb_expression that goes negative) yields sigmoid 0.5 times a
+	// NEGATIVE scale instead of the intended clamp-to-zero.  Clamp once, up
+	// front, so all three kinds see a non-negative input (Albedo already
+	// clamps internally, so this is a no-op for it).
+	ColorMath::EnsurePositve( rgb );
 	const RGBToSpectrumTable& table = RGBToSpectrumTable::Get();
 
 	if( m_kind == eSpectrumKind_Unbounded ) {
@@ -167,7 +174,11 @@ SpectralPacket ExpressionPainter::GetSpectrum( const RayIntersectionGeometric& r
 	const unsigned int nbins  = 81;
 	SpectralPacket sp( lambda_begin, lambda_end, nbins );
 
-	const RISEPel rgb = EvalRGB( ri );
+	RISEPel rgb = EvalRGB( ri );
+	// See GetColorNM above: clamp before the kind switch so Unbounded/
+	// Illuminant FromRGB never see an all-negative triple (would derive a
+	// negative `scale` from the max-channel outside the maxc>1e-9 guard).
+	ColorMath::EnsurePositve( rgb );
 	const RGBToSpectrumTable& table = RGBToSpectrumTable::Get();
 	const Scalar delta = ( lambda_end - lambda_begin ) / Scalar(nbins);
 

@@ -474,6 +474,7 @@ static void TestScatterAndTiling()
 		const RayIntersectionGeometric ri = MakeRiAtUV( 0.21, 0.44 );
 		bool matches = true;
 		bool positive = true;
+		bool sAwayFromLatticeVertex = true;
 		for( int i = 0; i < kNumNM; ++i ) {
 			const Scalar nm = kNMs[i];
 			const double muC = double( RGBAlbedoSpectrum::FromRGB( mean ).Eval( nm ) );
@@ -488,6 +489,26 @@ static void TestScatterAndTiling()
 			// (100+nm is far from a [0,1]-clamped albedo mean) so this
 			// division is safe.
 			const double S = ( Rc - muC ) / ( sC - muC );
+
+			// S = sum_k w_k / sqrt(sum_k w_k^2) is exactly 1 at (and only
+			// at) a hex-lattice VERTEX, where a single w_k = 1 and the
+			// other two are 0 -- sqrt(1^2) = 1.  At a lattice vertex the
+			// whole S-dependent term collapses to `s - mu` regardless of
+			// S's actual formula, so a mutation that swapped in the wrong
+			// mean (`muC` for `muR`, i.e. reverting to `meanSpec` inside
+			// GetRadianceNM) would still satisfy the prediction below by
+			// coincidence and this test would go blind to exactly the bug
+			// it exists to catch.  MakeRiAtUV(0.21, 0.44) at tileScale=4.0
+			// must NOT land on a lattice vertex; assert S is bounded away
+			// from 1 so a future UV/tileScale change can't silently
+			// re-introduce the blind spot.
+			if( !( S > 1.0 + 1e-3 ) ) {
+				sAwayFromLatticeVertex = false;
+				std::printf( "    stochastic_tile: nm=%g S=%.12g not bounded away from the "
+					"lattice-vertex value 1.0 -- mean-swap mutations would go undetected\n",
+					double( nm ), S );
+			}
+
 			const double RrPredicted = muR + ( sR - muR ) * S;
 
 			if( !Close( Rr, RrPredicted, 1e-9 ) ) {
@@ -497,6 +518,9 @@ static void TestScatterAndTiling()
 			}
 			if( !( Rr > 0.0 ) ) positive = false;
 		}
+		Check( sAwayFromLatticeVertex,
+		       "stochastic_tile: S is bounded away from the hex-lattice-vertex value 1.0 "
+		       "(otherwise the mean-swap mutation the test targets is invisible)" );
 		Check( matches,
 		       "stochastic_tile: GetRadianceNM matches the independently-derived "
 		       "illuminant-space reconstruction (RGBIlluminantSpectrum::FromRGB(mean).Eval(nm))" );

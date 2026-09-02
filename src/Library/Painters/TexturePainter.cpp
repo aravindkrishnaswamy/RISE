@@ -218,7 +218,15 @@ Scalar TexturePainter::GetColorNM( const RayIntersectionGeometric& ri, const Sca
 	RISE_PROFILE_PHASE(TexturePainter);
 	RISE_PROFILE_INC(nTexturePainterSamples);
 
-	const RISEPel rgb = SampleTextured( ri ).base;
+	RISEPel rgb = SampleTextured( ri ).base;
+	// Unbounded/Illuminant FromRGB derive `scale` from the max channel
+	// OUTSIDE the maxc>1e-9 branch, so an all-negative triple (HDR/EXR
+	// texel -- Unbounded is the default kind for HDR/EXR image painters,
+	// see IJob.h -- or a computed rgb_expression) yields sigmoid 0.5 times
+	// a NEGATIVE scale instead of the intended clamp-to-zero.  Clamp once,
+	// up front, so all three kinds see a non-negative input (the Albedo
+	// branch already clamps internally, so this is a no-op for it).
+	ColorMath::EnsurePositve( rgb );
 
 	// Cached LUT singleton (loaded once per process).  The lookup is
 	// thread-safe because it never mutates the LUT data after first
@@ -270,7 +278,11 @@ SpectralPacket TexturePainter::GetSpectrum( const RayIntersectionGeometric& ri )
 
 	if( !pRIA ) return sp;
 
-	const RISEPel rgb = SampleTextured( ri ).base;
+	RISEPel rgb = SampleTextured( ri ).base;
+	// See GetColorNM above: clamp before the kind switch so Unbounded/
+	// Illuminant FromRGB never see an all-negative triple (would derive a
+	// negative `scale` from the max-channel outside the maxc>1e-9 guard).
+	ColorMath::EnsurePositve( rgb );
 	const RGBToSpectrumTable& table = RGBToSpectrumTable::Get();
 	const Scalar delta = (lambda_end - lambda_begin) / Scalar(nbins);
 

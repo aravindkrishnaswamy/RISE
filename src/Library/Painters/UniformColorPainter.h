@@ -38,12 +38,27 @@ namespace RISE
 
 			void Recompute()
 			{
+				// Unbounded/Illuminant FromRGB derive `scale` from the max
+				// channel OUTSIDE the maxc>1e-9 branch, so a negative C
+				// (a keyframe spline can overshoot past its endpoint values
+				// -- e.g. Catmull-Rom/TCB -- even when every keyframe is
+				// non-negative, and SetIntermediateValue feeds the
+				// interpolated value straight into this function) yields
+				// sigmoid 0.5 times a NEGATIVE scale.  Clamp a local copy
+				// for the uplift; `C` itself is left untouched since
+				// GetColor() returns it verbatim for the RGB path, which
+				// clamps at film resolve like every other painter (Albedo
+				// already clamps internally in RGBToSpectrumTable, so this
+				// is a no-op for that branch).
+				RISEPel Cpos = C;
+				ColorMath::EnsurePositve( Cpos );
+
 				switch( kind ) {
 					case eSpectrumKind_Unbounded:
-						unboundedSpec = RGBUnboundedSpectrum::FromRGB( C );
+						unboundedSpec = RGBUnboundedSpectrum::FromRGB( Cpos );
 						break;
 					case eSpectrumKind_Illuminant:
-						illuminantSpec = RGBIlluminantSpectrum::FromRGB( C );
+						illuminantSpec = RGBIlluminantSpectrum::FromRGB( Cpos );
 						break;
 					case eSpectrumKind_Albedo:
 					default:
@@ -62,7 +77,7 @@ namespace RISE
 				// LUT lookup at construction / keyframe update, never at
 				// sample time.
 				if( kind != eSpectrumKind_Illuminant ) {
-					illuminantSpec = RGBIlluminantSpectrum::FromRGB( C );
+					illuminantSpec = RGBIlluminantSpectrum::FromRGB( Cpos );
 				}
 			}
 

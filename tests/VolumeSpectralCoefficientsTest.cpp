@@ -462,8 +462,11 @@ static void TestEmissionIlluminantShape()
 // a UniformColorPainter density field, so this needs no volume file on
 // disk.
 //
-// Mutation guard: restore the luminance projection here too and the
-// RED-vs-WHITE energy ratio below collapses to 1.0.
+// Mutation guard: restore the luminance projection here too and both
+// checks below go flat -- the RED case's own e(650)/e(450) ratio drops
+// from >2x to 1.0x, and the WHITE case stops tracking the reference
+// illuminant table (it collapses to a single luma scalar repeated at
+// every wavelength instead).
 //----------------------------------------------------------------------
 static void TestHeterogeneousEmissionIlluminantShape()
 {

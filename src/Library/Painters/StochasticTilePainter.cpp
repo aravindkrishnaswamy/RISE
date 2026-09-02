@@ -40,6 +40,21 @@ namespace
 		const unsigned int h = NoiseCore::WorleyHashCell( vx, vy, (int)zu );
 		return Scalar( h ) / Scalar( 4294967296.0 );	// [0,1)
 	}
+
+	// `mean` is a scene-authored constant (stochastic_tile_painter's
+	// `mean` parameter) validated only for finiteness, not sign -- see
+	// ChunkParserRegistry.cpp.  RGBIlluminantSpectrum::FromRGB derives
+	// its scale from the max channel OUTSIDE the maxc>1e-9 branch, so an
+	// all-negative mean would flip that scale and corrupt every
+	// wavelength meanRadSpec.Eval() is asked for.  Clamp a local copy;
+	// `mean` itself (and meanSpec's Albedo uplift, already clamped
+	// internally by RGBToSpectrumTable) are left untouched.
+	inline RISEPel ClampedMeanForIlluminant( const RISEPel& mean_ )
+	{
+		RISEPel c = mean_;
+		ColorMath::EnsurePositve( c );
+		return c;
+	}
 }
 
 StochasticTilePainter::StochasticTilePainter(
@@ -54,7 +69,7 @@ StochasticTilePainter::StochasticTilePainter(
 	seed( seed_ ),
 	mean( mean_ ),
 	meanSpec( RGBAlbedoSpectrum::FromRGB( mean_ ) ),
-	meanRadSpec( RGBIlluminantSpectrum::FromRGB( mean_ ) ),
+	meanRadSpec( RGBIlluminantSpectrum::FromRGB( ClampedMeanForIlluminant( mean_ ) ) ),
 	blendGamma( blendGamma_ )
 {
 	source.addref();

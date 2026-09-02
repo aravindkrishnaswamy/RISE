@@ -23,6 +23,10 @@
 //      6. Concat path: per-thread buffer moves into the store
 //      7. Stress test: 10k random vertices, 100 random queries vs
 //         brute force
+//      8. ClampOutlierThroughputs rebuilds the cached
+//         LightVertex::throughputSpectrum for every vertex (not just
+//         the rescaled ones) to match a fresh
+//         VCMIntegrator::LightThroughputRadianceNM computation
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -37,6 +41,7 @@
 #include <vector>
 
 #include "../src/Library/Shaders/VCMLightVertexStore.h"
+#include "../src/Library/Shaders/VCMIntegrator.h"
 #include "../src/Library/Utilities/Math3D/Math3D.h"
 
 using namespace RISE;
@@ -391,6 +396,97 @@ static void TestStressRandom()
 }
 
 //////////////////////////////////////////////////////////////////////
+// Test 8: ClampOutlierThroughputs is one of the three sites required
+// to rebuild LightVertex::throughputSpectrum after rewriting
+// `throughput` (see VCMLightVertex.h's field comment and
+// VCMLightVertexStore.cpp's ClampOutlierThroughputs).  Build a store
+// with one bright outlier vertex among several ordinary ones, clamp
+// with parameters chosen so the outlier is provably rescaled, then
+// verify every vertex's cached throughputSpectrum is EXACTLY (not
+// approximately) what VCMIntegrator::LightThroughputRadianceNM
+// computes fresh from the (possibly just-rescaled) throughput.  A
+// forgotten rebuild after the rescale would leave the outlier vertex
+// carrying the PRE-clamp spectrum -- this test's whole point is that
+// the outlier is guaranteed to actually be rescaled, so a missing
+// rebuild is guaranteed to be caught.
+//////////////////////////////////////////////////////////////////////
+static void TestClampOutlierRebuildsThroughputSpectrum()
+{
+	printf( "Test 8: ClampOutlierThroughputs rebuilds throughputSpectrum\n" );
+
+	LightVertexStore store;
+
+	// Five ordinary vertices at luminance ~1, one bright outlier at
+	// luminance ~100.  50th-percentile clamp at multiplier 2 puts the
+	// threshold at ~2 -- comfortably below the outlier's ~100 and
+	// comfortably above the ordinary vertices' ~1, so the outlier is
+	// guaranteed to be rescaled and the ordinary vertices guaranteed
+	// untouched.
+	// Every vertex's throughputSpectrum is seeded from its throughput
+	// here to stand in for the real deposit site (ConvertLightSubpath,
+	// covered separately by VCMSpectralRecurrenceTest) -- this test is
+	// only about the SECOND writer, ClampOutlierThroughputs, so the
+	// pre-clamp state must already be self-consistent or a mismatch on
+	// an untouched vertex would be a false failure, not evidence of a
+	// missing rebuild.
+	for( int i = 0; i < 5; i++ ) {
+		LightVertex v = MakeVertex( Scalar( i ), 0, 0, static_cast<unsigned short>( i ) );
+		v.throughput = RISEPel( 1, 1, 1 );
+		v.throughputSpectrum = VCMIntegrator::LightThroughputSpectrum( v.throughput );
+		store.Append( v );
+	}
+	{
+		LightVertex outlier = MakeVertex( 10, 0, 0, 99 );
+		outlier.throughput = RISEPel( 100, 60, 20 );	// colored, not grey -- exercises chroma preservation too
+		outlier.throughputSpectrum = VCMIntegrator::LightThroughputSpectrum( outlier.throughput );
+		store.Append( outlier );
+	}
+
+	store.ClampOutlierThroughputs( Scalar( 0.5 ), Scalar( 2.0 ) );
+
+	// Confirm the outlier was actually rescaled (proves the clamp did
+	// something, so the rebuild-verification below is meaningful and
+	// not vacuously true).
+	bool outlierRescaled = false;
+	for( std::size_t i = 0; i < store.Size(); i++ ) {
+		if( store.Get( i ).pathLength == 99 ) {
+			outlierRescaled = ( store.Get( i ).throughput[0] < Scalar( 100 ) );
+		}
+	}
+	Check( outlierRescaled, "clamp: outlier throughput was actually rescaled" );
+
+	const double checkNMs[2] = { 450.0, 650.0 };
+	bool allMatch = true;
+	// Tolerance, not `==`: RGBIlluminantSpectrum::Eval() is compiled at
+	// two different call sites here (directly in this test vs. inside
+	// the library's VCMIntegrator::LightThroughputRadianceNM), and this
+	// repo's macOS build pairs `-ffast-math` with associative-math /
+	// FP-contraction, so the SAME formula's rounding can differ in the
+	// last few bits depending on each call site's surrounding code (see
+	// CLAUDE.md's fast-math entry; VCMSpectralRecurrenceTest's
+	// CheckClose documents the same measured ~1e-13 relative spread). A
+	// genuine "forgotten rebuild" bug -- the outlier keeping its
+	// PRE-clamp spectrum after `throughput` was rescaled by ~30x above
+	// -- differs by orders of magnitude more than this tolerance.
+	for( std::size_t i = 0; i < store.Size(); i++ ) {
+		const LightVertex& v = store.Get( i );
+		for( int k = 0; k < 2; k++ ) {
+			const Scalar nm = Scalar( checkNMs[k] );
+			const double cached = (double)v.throughputSpectrum.Eval( nm );
+			const double fresh = (double)VCMIntegrator::LightThroughputRadianceNM( v.throughput, nm );
+			const double scale = ( fabs( cached ) > fabs( fresh ) ? fabs( cached ) : fabs( fresh ) );
+			const double tol = 1e-9 * ( scale > 1.0 ? scale : 1.0 );
+			if( fabs( cached - fresh ) > tol ) {
+				allMatch = false;
+				printf( "  FAIL: vertex %zu (id %hu) throughputSpectrum.Eval(%g) = %.10f, fresh = %.10f\n",
+					i, v.pathLength, checkNMs[k], cached, fresh );
+			}
+		}
+	}
+	Check( allMatch, "clamp: every vertex's throughputSpectrum matches a fresh rebuild post-clamp" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // Main
 //////////////////////////////////////////////////////////////////////
 int main()
@@ -404,6 +500,7 @@ int main()
 	TestBuildStateTracking();
 	TestConcat();
 	TestStressRandom();
+	TestClampOutlierRebuildsThroughputSpectrum();
 
 	printf( "\nPassed: %d\nFailed: %d\n", g_pass, g_fail );
 	if( g_fail > 0 ) {

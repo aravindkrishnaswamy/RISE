@@ -30,7 +30,17 @@ DirectionalLight::DirectionalLight( Scalar radiantEnergy_, const RISEPel& c, con
 
 void DirectionalLight::RefreshSpectrum()
 {
-	cSpectrum = RGBIlluminantSpectrum::FromRGB( cColor );
+	// FromRGB derives its scale from the max channel OUTSIDE the
+	// maxc>1e-9 branch, so a negative cColor (a keyframe spline can
+	// overshoot past its endpoint values even when every keyframe is
+	// non-negative, and SetIntermediateValue feeds the interpolated
+	// value straight into this function) yields sigmoid 0.5 times a
+	// NEGATIVE scale.  Clamp a local copy; cColor itself is left
+	// untouched since emissionColor() and the RGB path return it
+	// verbatim.
+	RISEPel c = cColor;
+	ColorMath::EnsurePositve( c );
+	cSpectrum = RGBIlluminantSpectrum::FromRGB( c );
 }
 
 DirectionalLight::~DirectionalLight( )

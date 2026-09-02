@@ -48,6 +48,32 @@ static void CheckEqual( Scalar a, Scalar b, const char* label )
 	}
 }
 
+// Tight-tolerance variant for values that go through RGBIlluminantSpectrum::Eval()
+// compiled at two DIFFERENT call sites (once inlined inside VCMIntegrator.cpp's
+// ConvertLightSubpath / this test's direct call, once inside the separately
+// compiled VCMIntegrator::LightThroughputRadianceNM).  On this repo's macOS
+// build (`-ffast-math` + associative math, see CLAUDE.md's fast-math entry)
+// the SAME formula compiled at two call sites is not guaranteed bit-identical
+// -- FP contraction/reassociation decisions depend on each call site's
+// surrounding code, not just the formula.  Measured spread for this
+// computation is ~1e-13 relative; a genuine "forgotten rebuild" bug (stale
+// pre-clamp spectrum vs a post-clamp throughput, or the default-zero
+// spectrum) differs by orders of magnitude more, so 1e-9 relative stays
+// tight enough to catch the bug this test targets while tolerating the
+// build's own FP nondeterminism.
+static void CheckClose( Scalar a, Scalar b, const char* label )
+{
+	const double da = (double)a, db = (double)b;
+	const double scale = ( fabs( da ) > fabs( db ) ? fabs( da ) : fabs( db ) );
+	const double tol = 1e-9 * ( scale > 1.0 ? scale : 1.0 );
+	if( fabs( da - db ) <= tol ) {
+		g_pass++;
+	} else {
+		g_fail++;
+		printf( "  FAIL: %s (a=%.20g b=%.20g diff=%.3g)\n", label, da, db, fabs( da - db ) );
+	}
+}
+
 static void BuildSyntheticLightSubpath( std::vector<BDPTVertex>& verts )
 {
 	verts.clear();
@@ -113,9 +139,21 @@ static void BuildSyntheticLightSubpath( std::vector<BDPTVertex>& verts )
 //
 // The LightVertexStore holds Pel throughputs (the light pass is not
 // wavelength-matched to the eye pass), and the NM merge estimator
-// projects them through VCMIntegrator::LightThroughputRadianceNM --
-// the SAME function LightVertexThroughput<NMTag> calls, so this test
-// exercises the production projection, not a copy of its formula.
+// projects them through VCMIntegrator::LightThroughputRadianceNM.
+//
+// CORRECTED (post-09d723b6): production no longer calls
+// LightThroughputRadianceNM at merge time.  It has zero production
+// callers now -- the NM merge estimator instead reads the per-vertex
+// cached `lv.throughputSpectrum.Eval(nm)` (an RGBIlluminantSpectrum
+// built once, at each of the three throughput writers, by
+// VCMIntegrator::LightThroughputSpectrum -- deposit in
+// ConvertLightSubpath, LightVertexStore::ClampOutlierThroughputs, and
+// the VCMRasterizerBase median clamp).  LightThroughputRadianceNM
+// itself is exactly `LightThroughputSpectrum(p).Eval(nm)`, so it
+// remains a faithful equivalent for exercising the projection formula
+// in this test, but it is no longer "the same function production
+// calls" -- see the ConvertLightSubpath-based assertions below, which
+// pin the cached field itself against this free function.
 //
 // It used to be `0.2126 r + 0.7152 g + 0.0722 b`: one scalar reused at
 // every wavelength.  A flat spectrum resolves to (1.205, 0.948, 0.909)
@@ -272,6 +310,57 @@ int main()
 		CheckEqual( heroOut[i].mis.dVC, compOut[i].mis.dVC, lbl );
 		snprintf( lbl, sizeof( lbl ), "lv[%zu].mis.dVM invariant", i );
 		CheckEqual( heroOut[i].mis.dVM, compOut[i].mis.dVM, lbl );
+	}
+
+	// Assertion 2b: pin the production cache.  ConvertLightSubpath is
+	// one of the three sites that must build `throughputSpectrum`
+	// (deposit) -- verify every vertex it emits carries a cache that
+	// matches (see CheckClose above for why this is a tight tolerance
+	// rather than `==`) what LightThroughputRadianceNM computes fresh
+	// from the same `throughput`.  Both sides go through the identical
+	// LightThroughputSpectrum() construction, so a forgotten rebuild
+	// after a future write site would leave `throughputSpectrum` stale
+	// by orders of magnitude more than this test's tolerance (typically
+	// the zero spectrum from LightVertex's default constructor) and
+	// this would catch it immediately instead of only showing up as a
+	// silently-black merge contribution.
+	{
+		const double checkNMs[2] = { 450.0, 650.0 };
+		for( std::size_t i = 0; i < heroOut.size(); i++ ) {
+			for( int k = 0; k < 2; k++ ) {
+				const Scalar nm = Scalar( checkNMs[k] );
+				const Scalar cached = heroOut[i].throughputSpectrum.Eval( nm );
+				const Scalar fresh = VCMIntegrator::LightThroughputRadianceNM(
+					heroOut[i].throughput, nm );
+				char lbl[80];
+				snprintf( lbl, sizeof( lbl ),
+					"lv[%zu].throughputSpectrum.Eval(%g) ~= LightThroughputRadianceNM",
+					i, checkNMs[k] );
+				CheckClose( cached, fresh, lbl );
+			}
+		}
+	}
+
+	// Assertion 2c: the default-constructed LightVertex's
+	// throughputSpectrum must evaluate to exactly 0 at every
+	// wavelength -- this is the silent-zero failure signature a
+	// forgotten rebuild at some future fourth write site would
+	// produce (LightVertex's default ctor leaves `throughput` at
+	// (0,0,0) and builds throughputSpectrum from that same zero
+	// triple, per its header comment).
+	{
+		LightVertex defaultLv;
+		const double checkNMs[3] = { 450.0, 550.0, 650.0 };
+		bool allZero = true;
+		for( int k = 0; k < 3; k++ ) {
+			const Scalar v = defaultLv.throughputSpectrum.Eval( Scalar( checkNMs[k] ) );
+			if( v != Scalar( 0 ) ) {
+				allZero = false;
+				printf( "  FAIL: default LightVertex throughputSpectrum.Eval(%g) = %.6f, want 0\n",
+					checkNMs[k], (double)v );
+			}
+		}
+		if( allZero ) { g_pass++; } else { g_fail++; }
 	}
 
 	// Assertion 3: ConvertEyeSubpath exhibits the same invariance.

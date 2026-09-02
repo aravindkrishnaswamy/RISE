@@ -410,7 +410,7 @@ grey.
 | site | was | now |
 |---|---|---|
 | SMS, `ComputeTrialContributionNM` + `EvaluateAtShadingPointNM` (`Utilities/ManifoldSolver.cpp`; both seeding modes route through these) | `ColorMath::Luminance(Le)` | delta lights → `ILight::emittedRadianceNM`; mesh lights → illuminant uplift of `LightSample::Le` (`SMSLeNM`) |
-| VCM NM merge, `LightVertexThroughput<NMTag>` (`Shaders/VCMIntegrator.cpp`) | `RISEPelToNMProxy` (Rec.709 luma) | `VCMIntegrator::LightThroughputRadianceNM` — illuminant uplift |
+| VCM NM merge, `LightVertexThroughput<NMTag>` (`Shaders/VCMIntegrator.cpp`) | `RISEPelToNMProxy` (Rec.709 luma) | illuminant uplift, `VCMIntegrator::LightThroughputRadianceNM` — **superseded 2026-09-02** (see below): production now reads the per-vertex cached `LightVertex::throughputSpectrum.Eval(nm)` |
 | `HomogeneousMedium` / `HeterogeneousMedium` `GetCoefficientsNM().emission` | `ColorMath::Luminance(m_emission)` | `m_emissionSpectrum.Eval(nm)`, cached at construction / `SetEmission` |
 | single-source forwarding painters (see §7.1's follow-up paragraph) | inherited the composed-`GetColor` default | forward `GetRadianceNM` to the chosen source at the transformed `ri` |
 | `SubSurfaceScatteringShaderOp` / `DonnerJensenSkinSSSShaderOp` `PerformOperationNM` | `RGBIlluminantSpectrum::FromRGB(c)` unguarded | `ColorMath::EnsurePositve(c)` first, matching `FinalGatherShaderOp` |
@@ -421,13 +421,29 @@ Two things did **not** change, deliberately:
   (1/m), not source terms; they carry no illuminant shape. The per-wavelength answer for
   them is an authored `IFunction1D` curve (G1, `absorption_spectral` /
   `scattering_spectral`), not an uplift.
-* **`LightVertexStore` is still Pel-only.** The light pass is not wavelength-matched to
-  the eye pass — a deposited vertex is merged against eye vertices at arbitrary
-  wavelengths, so there is no single `nm` it could have been traced at. Storing a
-  `throughputNM` needs a per-wavelength light pass, which is
+* **`LightVertexStore` is still Pel-DERIVED, not per-wavelength.** The light pass is not
+  wavelength-matched to the eye pass — a deposited vertex is merged against eye vertices
+  at arbitrary wavelengths, so there is no single `nm` it could have been traced at.
+  Storing a `throughputNM` needs a per-wavelength light pass, which is
   [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §3's still-open architectural item.
   The uplift is exact for a grey/white light with no coloured bounce and a
-  chroma-preserving approximation otherwise.
+  chroma-preserving approximation otherwise. **Updated 2026-09-02**: `LightVertex` no
+  longer projects `throughput` fresh per merge candidate. It carries a second field,
+  `throughputSpectrum` (an `RGBIlluminantSpectrum`, one cached spectrum per vertex — still
+  derived from the single Pel `throughput`, not a genuine per-wavelength quantity), built
+  by `VCMIntegrator::LightThroughputSpectrum` at each of the three sites that write
+  `throughput` (deposit in `ConvertLightSubpath`, `LightVertexStore::ClampOutlierThroughputs`,
+  and the `VCMRasterizerBase` median clamp). The NM merge estimator (`EvaluateMerges`) reads
+  `.Eval(nm)` off this cache instead of calling `LightThroughputRadianceNM` per candidate, so
+  the JH LUT lookup happens once per stored vertex rather than once per merge candidate;
+  `LightThroughputRadianceNM` itself is unchanged (`LightThroughputSpectrum(p).Eval(nm)`) and
+  remains available (used by the unit tests to pin the cache), but has zero production
+  callers now. Cost: `sizeof(RGBIlluminantSpectrum)` is 4 `Scalar`s (a 3-coefficient
+  `RGBSigmoidPolynomial` + a scale) — +32 B/vertex on a `Scalar == double` build — against
+  `VCMRasterizerBase.cpp`'s up-front `pLightVertexStore->Reserve(width * height *
+  (maxLightDepth + 1))` (~412-415): at 1920x1080 and `maxLightDepth = 10` that reserve is
+  1920 × 1080 × 11 ≈ 22.8 M vertices, so the cache adds roughly 22.8 M × 32 B ≈ 730 MB to
+  the up-front reservation. Output is bit-identical to the pre-cache projection.
 
 **Where the SMS mesh-light uplift is exact.** `LightSample` carries an RGB `Le` and no
 `RayIntersectionGeometric` for the sampled point, so the emitter's own
@@ -458,4 +474,16 @@ Tests: `tests/PainterRadianceForwardingTest.cpp` (new — forwarder contract, wi
 `BlendPainter` as the negative control), `VolumeSpectralCoefficientsTest` case G
 (emission is illuminant-shaped and `SetEmission` rebuilds the cache),
 `VCMSpectralRecurrenceTest`'s `LightThroughputRadianceNM` block (white throughput tracks
-the reference illuminant; red and blue throughputs of equal luma are no longer identical).
+the reference illuminant; red and blue throughputs of equal luma are no longer identical;
+negative-component guard). **Updated 2026-09-02** for the `throughputSpectrum` cache above:
+`VCMSpectralRecurrenceTest` also asserts, after `ConvertLightSubpath`, that every emitted
+`LightVertex::throughputSpectrum.Eval(nm)` matches (1e-9 relative tolerance, NOT `==`: the
+same formula compiled at two call sites is not guaranteed bit-identical under this repo's
+`-ffast-math` macOS build — measured spread ~1e-13 relative, see CLAUDE.md's fast-math
+entry) a fresh `LightThroughputRadianceNM(throughput, nm)` call (pins the deposit writer)
+and that a default-constructed `LightVertex` evaluates to exactly 0 (an honest `==`: the
+default's polynomial and scale are both the identically-zero result of `FromRGB(0,0,0)`,
+so there is no cross-call-site rounding to tolerate — this documents the silent-zero
+signature of a forgotten rebuild); `VCMLightVertexStoreTest` adds the same tolerance-based
+pin after `ClampOutlierThroughputs` (pins the second writer, with a provably-rescaled
+outlier vertex so the assertion is not vacuous).

@@ -46,7 +46,14 @@ namespace RISE
 			//! `cColor`.
 			void RefreshSpectrum()
 			{
-				cSpectrum = RGBIlluminantSpectrum::FromRGB( cColor );
+				// See DirectionalLight::RefreshSpectrum: FromRGB's scale
+				// comes from the max channel outside the maxc>1e-9 guard,
+				// so a keyframe-spline overshoot into negative cColor
+				// would flip the scale's sign.  Clamp a local copy;
+				// cColor is left untouched for emissionColor()/RGB.
+				RISEPel c = cColor;
+				ColorMath::EnsurePositve( c );
+				cSpectrum = RGBIlluminantSpectrum::FromRGB( c );
 			}
 
 			virtual ~AmbientLight( ){};

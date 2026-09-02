@@ -7918,7 +7918,19 @@ ManifoldSolver::SMSContributionNM ManifoldSolver::EvaluateAtShadingPointNM(
 	// delta-without-`pLight` branch, was recomputing the identical JH
 	// LUT uplift.  Bit-identical to calling SMSLeNM(lightSample.Le, nm)
 	// fresh inside the loop; this only moves WHEN it is computed.
-	const Scalar meshLeNM = SMSLeNM( lightSample.Le, nm );
+	//
+	// LAZY: the delta-light-with-`pLight` case (below) never reads
+	// `meshLeNM` at all — it uses `pLight->emittedRadianceNM` instead —
+	// and that is the DOMINANT case for ordinary point/spot lights.
+	// `lightSample.isDelta`/`.pLight` are already fixed for every trial
+	// (set once when `lightSample` was drawn), so the guard is a single
+	// loop-invariant check, not a per-trial branch: skip the LUT lookup
+	// entirely when it can't be used, instead of computing it "hoisted"
+	// but unused.
+	Scalar meshLeNM = 0;
+	if( !( lightSample.isDelta && lightSample.pLight ) ) {
+		meshLeNM = SMSLeNM( lightSample.Le, nm );
+	}
 
 	for( unsigned int trial = 0; trial < totalTrials; trial++ )
 	{
