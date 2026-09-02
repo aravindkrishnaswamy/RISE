@@ -701,6 +701,18 @@ bool IsObjectSurfaceBindingParamName( const String& param )
 
 namespace {
 
+// The Cst param readers concatenate a value's TOKENS together with their
+// separating / trailing trivia (Cst::ParamValueAsParsed's own doc says so),
+// so a value can arrive with whitespace attached.  Compare -- and store --
+// on the bare word.  Same shape as SceneEditController's TrimAsciiSpace_.
+std::string TrimTrivia_( const std::string& s )
+{
+	size_t b = 0, e = s.size();
+	while( b < e && ( s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n' ) ) ++b;
+	while( e > b && ( s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n' ) ) --e;
+	return s.substr( b, e - b );
+}
+
 // Trim surrounding whitespace + parse the common bool spellings the
 // parser's ParseStateBag::GetBool accepts (`true`/`false`/`TRUE`/
 // `FALSE`/`1`/`0`/`yes`/`no` + case variants).  Returns `false` on
@@ -2205,8 +2217,8 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 	return r == 1 || r == 2;
 }
 
-// Light-colour CST review fix (2026-09-02) -- see the header doc for the contract.  THE BUG this closes:
-// the panel's `color` row is `ILight::emissionColor()`, i.e. the light's LIVE, already-converted LINEAR
+// Light-colour CST composite (2026-09-02, round 2) -- see the header doc for the contract.  THE BUG this
+// closes: the panel's `color` row is `ILight::emissionColor()`, i.e. the light's LIVE, already-converted LINEAR
 // RISEPel.  The CST route writes those digits verbatim into the chunk and re-derives -- and the re-derive
 // reads them through whatever `colorspace` the chunk still spells.  On a chunk carrying `colorspace sRGB`
 // (which is EVERY light `tools/migrate_scenes_light_colorspace.py` touched, since that is exactly how the
@@ -2216,41 +2228,84 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 //
 // The fix is to make the chunk agree with the panel rather than to re-encode the value: write
 // `colorspace Rec709RGB_Linear` alongside the colour, converting the chunk to the linear convention the
-// first time anyone edits its colour.  Self-healing (one edit and the chunk is permanently consistent),
-// one-way (a linear chunk is never converted back), and look-preserving (the digits written ARE the
-// light's current linear colour, so the light does not move except by the edit the user asked for).
-// Re-encoding the panel value back into sRGB was the alternative and is worse: it silently keeps a
-// second, invisible convention alive in the Document, and it is lossy (the OETF round-trip is not exact
-// at the ends of the range).
+// first time anyone edits its colour.  Look-preserving (the digits written ARE the light's current linear
+// colour, so the light does not move except by the edit the user asked for).  Re-encoding the panel value
+// back into sRGB was the alternative and is worse: it silently keeps a second, invisible convention alive in
+// the Document, and it is lossy (the OETF round-trip is not exact at the ends of the range).
 //
-// ORDER: the colourspace goes FIRST, the colour second.  Each ApplyCstParamEdit re-derives on its own, so
-// the FINAL state is the same either way -- but if the colourspace write fails, this ordering leaves the
-// colour digits untouched, so the caller's `return false` is a clean refusal rather than a half-applied
-// edit that has already double-decoded.  The transient between the two routes (old digits, new linear
-// reading) is not observable: both run synchronously inside one SceneEditor::Apply, under the caller's
-// render park.
-bool SceneEditor::NormalizeCstLightColorSpace_( const char* lightName, const String& propertyName )
+// This function answers the QUESTION ("does this edit need the composite, and what did the chunk say before
+// it?"); RouteCstLightColorComposite_ performs the write.  The two ORIGINAL texts it hands back are what the
+// history entry carries so Undo can put the chunk back BYTE-IDENTICALLY -- including the `sRGB` spelling.
+// That is load-bearing rather than tidy: an AGENT history entry captures RAW CHUNK TEXT (see
+// SceneEditController::CaptureAgentPriorParamValue_), so an Undo that left the chunk linear would make an
+// older agent entry replay sRGB digits under a linear chunk -- the light lands ~6x too bright, in the
+// headline shared-undo (agent + user) flow.
+//
+// Read LAST occurrence for the presence/convention test (Cst::ParamValueAsParsed) -- that is the one the
+// derive reads, the same last-wins rule CstIntrospection's rows follow.  Read the values to RESTORE at
+// occurrence 0 (Cst::ParamValueAtOccurrence), because occurrence 0 is where the write will land; the two
+// coincide for every chunk this composite can actually fire on, since Job::ApplyCstParamEdits REFUSES a
+// chunk that spells either param twice (its duplicate-occurrence guard) before anything is written.
+bool SceneEditor::LightColorCompositeState_( const char* lightName, const String& propertyName,
+                                             String& outPrevColorText, String& outPrevColorSpaceText ) const
 {
-	if( !( propertyName == String( "color" ) ) ) return true;   // only the colour row carries the convention
-	if( !mJob || !lightName || !lightName[0] ) return true;
+	outPrevColorText      = String();
+	outPrevColorSpaceText = String();
+	if( !( propertyName == String( "color" ) ) ) return false;   // only the colour row carries the convention
+	if( !mJob || !lightName || !lightName[0] ) return false;
 	const RISE::Cst::Document* doc = mJob->GetCstDocument();
-	if( !doc ) return true;                                     // legacy (no-Document) scene: nothing to normalize
+	if( !doc ) return false;                                     // legacy (no-Document) scene: nothing to convert
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, lightName, nullptr, "light", /*uniqueFallback*/ false );
-	if( id == 0 ) return true;   // not addressable in the Document -- let the colour write report that itself
+	if( id == 0 ) return false;   // not addressable in the Document -- let the colour write report that itself
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
-	if( !chunk ) return true;
+	if( !chunk ) return false;
 
-	// LAST occurrence (Cst::ParamValueAsParsed), because that is the one the derive reads -- the same
-	// last-wins rule CstIntrospection's rows follow.  Absent == the descriptor default, which IS linear.
+	// Absent == the descriptor default, which IS linear -- nothing to convert.
 	bool present = false;
 	const std::string cspace = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &present );
-	if( !present || cspace == "Rec709RGB_Linear" ) return true;
+	if( !present || TrimTrivia_( cspace ) == "Rec709RGB_Linear" ) return false;
 
-	GlobalLog()->PrintEx( eLog_Info,
-		"SceneEditor: light `%s` carries `colorspace %s`; the edited colour is the light's LIVE LINEAR value, "
-		"so the chunk is being converted to `colorspace Rec709RGB_Linear` with it (one-time, look-preserving).",
-		lightName, cspace.c_str() );
-	return RouteCstParamEdit_( lightName, "light", "colorspace", "Rec709RGB_Linear" );
+	// A chunk carrying `colorspace` but NO `color` line still needs the composite -- the panel's write
+	// INSERTS a colour line, and inserting linear digits under a non-linear `colorspace` is the very
+	// double-decode this closes.  Its original colour is the descriptor default `0 0 0` (see the four
+	// light parsers' `double color[3] = {0,0,0}`), so that is what Undo restores -- and `0 0 0` is a
+	// FIXED POINT of every colour space the language accepts (the sRGB and ProPhoto EOTFs map 0 to 0;
+	// the ROMM/Rec.709 matrices are linear), so writing it back under the restored spelling reproduces
+	// the original light EXACTLY.  This is the one shape where Undo is not byte-identical: the chunk
+	// gains an explicit `color 0 0 0` line where it previously relied on the default.  Restoring
+	// "absent" would need a param REMOVE, which is not expressible in a value-write batch, and the
+	// explicit line means exactly what the absent one did.
+	bool colorPresent = false;
+	std::string prevColor = RISE::Cst::ParamValueAtOccurrence( chunk, "color", 0, &colorPresent );
+	if( !colorPresent || TrimTrivia_( prevColor ).empty() ) prevColor = "0 0 0";
+	bool cspacePresent = false;
+	const std::string prevCspace = RISE::Cst::ParamValueAtOccurrence( chunk, "colorspace", 0, &cspacePresent );
+	if( !cspacePresent ) return false;
+
+	outPrevColorText      = String( TrimTrivia_( prevColor ).c_str() );
+	outPrevColorSpaceText = String( TrimTrivia_( prevCspace ).c_str() );
+	if( outPrevColorText.size() <= 1 || outPrevColorSpaceText.size() <= 1 ) return false;
+	return true;
+}
+
+// The write half of the composite.  ONE Job::ApplyCstParamEdits call = one Document copy, both params
+// validated against the pristine head BEFORE either is written, one derive.  The two-call version this
+// replaced re-derived after EACH write with no rollback, so a refused colour write (a malformed value from
+// the public SetPropertyForCategory entry, or a chunk with duplicate `color` lines) left the chunk converted
+// to linear with the AUTHORED sRGB digits still in place -- the light jumped to those digits read as linear,
+// nothing was pushed to history, and a re-render was kicked on a state no undo could reach.
+bool SceneEditor::RouteCstLightColorComposite_( const char* lightName, const char* colorValue, const char* colorSpaceValue )
+{
+	std::vector< std::pair< std::string, std::string > > pairs;
+	// `colorspace` first only for readability of the resulting diagnostic; the batch is atomic, so order
+	// carries no failure semantics (unlike the two-call version it replaced, where order was the only
+	// mitigation available).
+	pairs.push_back( std::make_pair( std::string( "colorspace" ), std::string( colorSpaceValue ) ) );
+	pairs.push_back( std::make_pair( std::string( "color" ),      std::string( colorValue ) ) );
+	const int r = mJob->ApplyCstParamEdits( lightName, "light", pairs );
+	if( r >= 2 ) RebindToJob_();
+	if( r != 0 ) mCstLiveSceneChanged = true;   // code 1/2/3 all MUTATED the live scene -> the controller must re-render
+	return r == 1 || r == 2;
 }
 
 // Shared-undo U1: the inverse of an agent param edit that INSERTED a previously-absent param (SetAgentCstParam's
@@ -3049,6 +3104,17 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 			return true;
 		}
 		edit.prevPropertyValue = ReadLightProperty( *light, edit.propertyName );
+		// Light-colour CST composite (round 2): a `color` edit on a chunk that spells some OTHER colour
+		// space converts it to the linear convention as part of the SAME atomic edit -- so the history
+		// entry must also carry the chunk's ORIGINAL `color` and `colorspace` TEXT, or Undo could restore
+		// the value but not the convention it was written under.  `prevPropertyValue` above cannot serve:
+		// it is the live RISEPel `%g`-formatted, i.e. the DECODED colour, which written back under a
+		// restored `colorspace sRGB` would decode a second time.  FALSE for every other case (already
+		// linear, no chunk, legacy scene) -- those keep the single-param route untouched.
+		edit.lightCstColorSpaceComposite =
+			( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) )
+			&& LightColorCompositeState_( edit.objectName.c_str(), edit.propertyName,
+			                              edit.prevCstColorText, edit.prevCstColorSpaceText );
 		// The keyframe-parse rejection is fused with the mutation;
 		// ApplyForwardMutation surfaces it so Apply rejects.
 		return true;
@@ -3667,13 +3733,23 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !light ) return false;
 		// P5 Slice 3 expansion: CST-route the inverse light edit too (replays through the SAME CST path).
 		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
-			// Light-colour CST review fix, revert half.  `prevPropertyValue` was captured off
-			// ILight::emissionColor() (ReadLightProperty), so it is the light's ORIGINAL DECODED, LINEAR
-			// colour -- writing it back under a still-sRGB `colorspace` would decode it a second time and
-			// undo would land somewhere the light has never been.  Normalizing here restores the original
-			// RISEPel exactly.  Ordinarily a no-op (the forward half already converted the chunk); it earns
-			// its keep when a redo/undo sequence starts from a chunk this editor did not convert.
-			if( !NormalizeCstLightColorSpace_( edit.objectName.c_str(), edit.propertyName ) ) return false;
+			// Light-colour CST composite (round 2), revert half.  When the forward half converted the
+			// chunk, put BOTH original texts back VERBATIM in one atomic edit: the chunk becomes
+			// byte-identical to what it was (the `colorspace sRGB` spelling included) and the light returns
+			// to its original DECODED colour.  Note what is NOT written here: `prevPropertyValue`, which
+			// was captured off ILight::emissionColor() and is therefore the light's decoded LINEAR value --
+			// writing that back under a restored `colorspace sRGB` would decode it a second time and undo
+			// would land somewhere the light has never been.
+			//
+			// Restoring the SPELLING is what keeps shared undo (agent + user) sound: an agent history entry
+			// captures RAW CHUNK TEXT, so an older agent entry undone AFTER this one must find the chunk in
+			// the convention its digits were captured under.
+			if( edit.lightCstColorSpaceComposite ) {
+				if( !RouteCstLightColorComposite_( edit.objectName.c_str(), edit.prevCstColorText.c_str(),
+				                                   edit.prevCstColorSpaceText.c_str() ) ) return false;
+				mLastScope = Dirty_Camera;
+				return true;
+			}
 			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
 			mLastScope = Dirty_Camera;
 			return true;
@@ -4105,10 +4181,21 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 		// P5 Slice 3 expansion: CST-route the light edit (incl. shootphotons -- the re-derive applies it from
 		// the chunk param) so the Document stays complete; a later material D2 then can't revert this edit.
 		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
-			// Light-colour CST review fix: a `color` edit ALSO converts an sRGB-spelled chunk to the linear
-			// convention, else the re-derive decodes the panel's already-linear digits again.  Ordered first
-			// so a failure here leaves the colour untouched.  No-op for every other role.
-			if( !NormalizeCstLightColorSpace_( edit.objectName.c_str(), edit.propertyName ) ) return false;
+			// Light-colour CST composite (round 2): a `color` edit on a chunk spelling a NON-linear colour
+			// space writes `colorspace Rec709RGB_Linear` AND the new digits as ONE atomic Document edit,
+			// else the re-derive decodes the panel's already-linear digits again.  All-or-nothing: a refusal
+			// leaves the chunk untouched, so the caller's `return false` is a clean failure.
+			//
+			// Asked of the DOCUMENT rather than read off `edit.lightCstColorSpaceComposite`, because this
+			// function also serves REDO -- where the chunk's state is whatever the preceding Undo restored
+			// (sRGB again), not what it was at the original capture.  The capture-time flag governs the
+			// REVERT arm (which needs the captured texts); the forward arm needs today's truth.
+			String unusedColor, unusedSpace;
+			if( LightColorCompositeState_( edit.objectName.c_str(), edit.propertyName, unusedColor, unusedSpace ) ) {
+				if( !RouteCstLightColorComposite_( edit.objectName.c_str(), edit.propertyValue.c_str(), "Rec709RGB_Linear" ) ) return false;
+				mLastScope = Dirty_Camera;
+				return true;
+			}
 			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
 			mLastScope = Dirty_Camera;
 			return true;

@@ -3052,6 +3052,11 @@ namespace RISE
 		bool HasRetainedCstDocument() const { return pCstDocument != nullptr; }
 		int ApplyCstParamEdit( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue );
 
+		//! Light-colour composite (2026-09-02 round 2): the ATOMIC multi-param form -- see the IJob virtual doc
+		//! for the contract.  All pairs validated against the pristine Document, written into ONE copy, ONE derive.
+		int ApplyCstParamEdits( const char* entityName, const char* entityKind,
+		                        const std::vector< std::pair< std::string, std::string > >& edits );
+
 		//! Model-B F5 slice S2 round 2 (P1-A root gate): ApplyCstParamEdit PLUS a full-derivability
 		//! pre-commit dry-run for AGENT-originated edits -- same signature and 0/1/2/3 contract, but
 		//! additionally returns 0 (head + live scene untouched) when the edited Document would no longer
@@ -3381,6 +3386,13 @@ namespace RISE
 		//! Shared body of ApplyCstParamEdit (ungated -- GUI panel/gizmo route) and ApplyCstParamEditChecked
 		//! (agent route -- full-derivability gate on).
 		int ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability );
+		//! Light-colour composite (2026-09-02 round 2): the REAL body -- resolves the entity ONCE, runs the owner
+		//! walk + duplicate-occurrence refusal for EVERY pair against the PRISTINE Document, and only then writes
+		//! them all into ONE Document copy and derives ONCE.  `ApplyCstParamEditImpl_` is a one-pair wrapper over
+		//! this, so the single- and multi-param routes cannot drift on resolution or validation.
+		int ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind,
+		                             const std::vector< std::pair< std::string, std::string > >& edits,
+		                             int occ, bool requireFullDerivability );
 		//! Model-B F5 slice S2: the SHARED D2 tail factored out of DeriveEditedCstDocument_ -- validate-before-
 		//! destroy dry-run into a throwaway Job, then the real ClearAll + full re-derive of `editedDoc`, forcing
 		//! the active variant and PRESERVING the active camera/rasterizer/animation + the cached viewport fit.

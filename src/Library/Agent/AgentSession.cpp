@@ -5329,22 +5329,66 @@ namespace RISE
 				return false;
 			}
 
-			//! The largest channel of a chunk's `color`, or `fallback` when the
-			//! parameter is absent entirely.  A PRESENT but unreadable value
-			//! comes back negative, which the caller treats as black -- this
-			//! condition may only ever MISS a dim light, never invent one.
+			//! The largest channel of a chunk's `color` AS THE SCENE DERIVES IT,
+			//! or `fallback` when the parameter is absent entirely.  A PRESENT
+			//! but unreadable value comes back negative, which the caller treats
+			//! as black -- this condition may only ever MISS a dim light, never
+			//! invent one.
+			//!
+			//! Round-2 review fix (2026-09-02): this used to read the literal
+			//! COLOURSPACE-BLIND, which over-estimates a light's brightness by up
+			//! to ~6x on a `colorspace sRGB` chunk (`color 0.5 0.5 0.5` derives to
+			//! 0.214, not 0.5) -- exactly the chunks
+			//! `tools/migrate_scenes_light_colorspace.py` wrote across the whole
+			//! pre-2026-09-02 corpus.  Since this number gates a "your light is
+			//! trivially dim" note, over-estimating is the direction that SILENCES
+			//! a true finding.  Decode the same way Job's shared colour-space
+			//! switch does (its own `ColorSpaceNameToRISEPel` is file-local to
+			//! Job.cpp, so this spells the same four conversions through the same
+			//! Colour utilities -- and an unrecognised name is left UNDECODED
+			//! rather than guessed, matching the "never invent" rule above; the
+			//! derive refuses such a scene anyway).
+			//!
+			//! A triple is required to decode: ROMM / ProPhoto are MATRIX
+			//! conversions, so a channel's linear value depends on all three.  A
+			//! malformed value with fewer than three readable components keeps the
+			//! old literal reading of whatever parsed -- there is nothing to
+			//! convert, and this note never quotes such a slot anyway.
 			double DimLightColorMax_( const NodeRef& item, double fallback )
 			{
 				const std::string s = ChunkParamString_( item, "color" );
 				if( s.empty() ) return fallback;
+				double comp[3] = { 0, 0, 0 };
+				int n = 0;
 				double best = -1.0;
 				const char* p = s.c_str();
 				for( int k = 0; k < 3; ++k ) {
 					char* end = nullptr;
 					const double v = std::strtod( p, &end );
 					if( end == p ) break;
-					if( RISE::IsFiniteDouble( v ) && v > best ) best = v;
+					if( !RISE::IsFiniteDouble( v ) ) { p = end; continue; }
+					comp[n++] = v;
+					if( v > best ) best = v;
 					p = end;
+				}
+				if( n < 3 ) return best;   // not a triple: nothing to convert
+
+				// The light's OWN chunk decides the reading; absent == the
+				// language default, which is linear (`Rec709RGB_Linear`) since
+				// 2026-09-02.  RISEPel IS Rec709RGBPel (asserted elsewhere in this
+				// file), so the linear and RISERGB arms are the literal itself.
+				const std::string cspace = ChunkParamString_( item, "colorspace" );
+				RISEPel decoded( comp );
+				if(      cspace.empty() || cspace == "Rec709RGB_Linear" || cspace == "RISERGB" ) { /* literal */ }
+				else if( cspace == "sRGB" )           decoded = RISEPel( sRGBPel( comp ) );
+				else if( cspace == "ROMMRGB_Linear" ) decoded = RISEPel( ROMMRGBPel( comp ) );
+				else if( cspace == "ProPhotoRGB" )    decoded = RISEPel( ProPhotoRGBPel( comp ) );
+				else return best;   // unknown name: do not guess (the derive refuses it)
+
+				best = -1.0;
+				for( unsigned int k = 0; k < 3; ++k ) {
+					const double v = static_cast<double>( decoded[k] );
+					if( RISE::IsFiniteDouble( v ) && v > best ) best = v;
 				}
 				return best;
 			}

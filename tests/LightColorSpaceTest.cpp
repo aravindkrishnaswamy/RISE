@@ -325,28 +325,44 @@ static void TestUnknownColorSpaceRefused()
 
 //----------------------------------------------------------------------
 // (d) THE EDITOR ROUND-TRIP.  A colour edit on a `colorspace sRGB` chunk
-//     must not double-decode, and undo must land back on the original.
+//     must not double-decode; it must be ATOMIC; and undo must put the
+//     chunk back BYTE-IDENTICALLY, spelling included.
 //
 // WHY THIS IS A SEPARATE HAZARD from everything above.  A CST-routed light
-// edit (SceneEditor::ApplyForwardMutation's SetLightProperty arm ->
-// RouteCstParamEdit_ -> Job::ApplyCstParamEdit) writes the PROPERTY PANEL's
-// value into the chunk and re-derives.  The panel's value is
+// edit (SceneEditor::ApplyForwardMutation's SetLightProperty arm) writes the
+// PROPERTY PANEL's value into the chunk and re-derives.  The panel's value is
 // `ILight::emissionColor()` -- already-converted, LINEAR.  The chunk's
-// `colorspace sRGB` line is not touched by that write, so the re-derive
-// gamma-DECODES the linear digits a SECOND time: nudging a swatch reading
-// (1, 0.0331, 0.0194) up to (1, 0.05, 0.02) lands the light on
+// `colorspace sRGB` line is not touched by a plain colour write, so the
+// re-derive gamma-DECODES the linear digits a SECOND time: nudging a swatch
+// reading (1, 0.0331, 0.0194) up to (1, 0.05, 0.02) lands the light on
 // (1, 0.0039, 0.0016) -- an order of magnitude the wrong way, compounding on
 // every further nudge.  Every check in Tests 1-3 passes with that bug
 // present, because none of them goes through the editor.
 //
-// The fix converts the chunk to the linear convention as part of the edit
-// (SceneEditor::NormalizeCstLightColorSpace_), which is why the assertions
-// below are BOTH about the light's colour AND about the chunk text.
+// The fix writes `colorspace Rec709RGB_Linear` AND the digits as ONE atomic
+// Document edit (SceneEditor::RouteCstLightColorComposite_ ->
+// Job::ApplyCstParamEdits), which is why the assertions below are about the
+// light's colour, the chunk TEXT, and what happens when a part is refused.
 //
-// MUTATION-VERIFIED: dropping the NormalizeCstLightColorSpace_ call from the
-// forward arm turns "the edited colour is EXACTLY what the panel asked for"
-// red (the light lands on the double-decoded value); dropping it from the
-// revert arm turns the undo assertion red.
+// THE UNDO HALF IS NOT COSMETIC.  Undo restores both original texts verbatim,
+// so the chunk comes back spelling `colorspace sRGB`.  It has to: an AGENT
+// history entry captures RAW CHUNK TEXT (SceneEditController::
+// CaptureAgentPriorParamValue_), while a panel entry captures the DECODED
+// live value.  If undo left the chunk linear, undoing an OLDER agent colour
+// edit afterwards would replay sRGB digits under a linear chunk and land the
+// light ~6x too bright -- Test 8 is exactly that sequence.
+//
+// MUTATION-VERIFIED (round 2, both runs actually performed):
+//   * Reverting SceneEditor::ApplyRevertMutation's SetLightProperty arm to the
+//     pre-round-2 behaviour (restore the decoded colour, leave the chunk
+//     spelled `Rec709RGB_Linear`) turns THREE of this test's checks red -- the
+//     byte-identity one, the verbatim-digits one, and the introspection row --
+//     plus three more in Test 8.
+//   * Replacing the atomic Job::ApplyCstParamEdits call with the pre-round-2
+//     pair of sequential ApplyCstParamEdit calls turns SIX of Test 5's checks
+//     red (both malformed values and the duplicate-`color` scene each leave a
+//     half-converted chunk and a light sitting on the authored digits read as
+//     linear, (1, 0.2, 0.15) instead of (1, 0.0331, 0.0196)).
 //----------------------------------------------------------------------
 
 // A `colorspace sRGB` light -- i.e. exactly what
@@ -354,6 +370,16 @@ static void TestUnknownColorSpaceRefused()
 // -- plus the minimum around it for a clean CST derive + re-derive.
 static const char* const kEditorScene =
 	"omni_light\n{\nname L\npower 4\ncolor 1.0 0.2 0.15\ncolorspace sRGB\nposition 0 5 0\n}\n"
+	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+	"lambertian_material\n{\nname m\nreflectance p1\n}\n"
+	"sphere_geometry\n{\nname g\nradius 1\n}\n"
+	"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+
+// The same light with a DOUBLE `color` line.  The scene still derives (the
+// parse is last-wins), but the editor must REFUSE to write it: an occ=0 write
+// would rewrite the dead first line and leave the live value alone.
+static const char* const kDupColorScene =
+	"omni_light\n{\nname L\npower 4\ncolor 0.9 0.8 0.7\ncolor 1.0 0.2 0.15\ncolorspace sRGB\nposition 0 5 0\n}\n"
 	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
 	"lambertian_material\n{\nname m\nreflectance p1\n}\n"
 	"sphere_geometry\n{\nname g\nradius 1\n}\n"
@@ -404,6 +430,11 @@ static void TestEditorColorEditOnSRGBChunk()
 	if( !pJob ) return;
 	Check( pJob->HasRetainedCstDocument(), "the editor scene retains a CST Document (else the edit is not CST-routed)" );
 
+	const std::string docOriginal = LiveDocText( *pJob );
+	Check( docOriginal.find( "color 1.0 0.2 0.15" ) != std::string::npos
+	    && docOriginal.find( "colorspace sRGB" ) != std::string::npos,
+	       "PRECONDITION: the loaded Document really carries the authored `color` + `colorspace sRGB` lines" );
+
 	Check( PelEq( LiveLightColor( *pJob ), expectOriginal, 1e-9 ),
 	       "PRECONDITION: the `colorspace sRGB` light loads DECODED -- got "
 	       + PelStr( LiveLightColor( *pJob ) ) + ", want " + PelStr( expectOriginal ) );
@@ -427,10 +458,10 @@ static void TestEditorColorEditOnSRGBChunk()
 		       + PelStr( edited ) + ", want " + PelStr( expectEdited )
 		       + " (a second sRGB decode would give " + PelStr( doubleDecoded ) + ")" );
 
-		const std::string doc = LiveDocText( *pJob );
-		Check( doc.find( "Rec709RGB_Linear" ) != std::string::npos,
+		const std::string docEdited = LiveDocText( *pJob );
+		Check( docEdited.find( "Rec709RGB_Linear" ) != std::string::npos,
 		       "the chunk now carries `colorspace Rec709RGB_Linear`" );
-		Check( doc.find( "sRGB" ) == std::string::npos,
+		Check( docEdited.find( "sRGB" ) == std::string::npos,
 		       "...and no longer carries `colorspace sRGB` (the conversion is a replacement, not an addition)" );
 		Check( IntrospectedColorSpace( *pJob, pJob->GetCstDocument() ) == "Rec709RGB_Linear",
 		       "the panel's `colorspace` row follows the chunk to linear" );
@@ -441,6 +472,285 @@ static void TestEditorColorEditOnSRGBChunk()
 		       "undo restores the ORIGINAL DECODED colour -- got " + PelStr( reverted )
 		       + ", want " + PelStr( expectOriginal )
 		       + " (a revert written back under the old `colorspace sRGB` would decode it AGAIN)" );
+
+		// (a) The BYTE-IDENTITY half.  Not "the value came back" -- the whole
+		// chunk came back, `colorspace sRGB` spelling included.  Test 7 is why.
+		const std::string docUndone = LiveDocText( *pJob );
+		Check( docUndone == docOriginal,
+		       "undo leaves the Document BYTE-IDENTICAL to the pre-edit text (the `colorspace sRGB` "
+		       "spelling is restored, not just the colour value)" );
+		Check( docUndone.find( "color 1.0 0.2 0.15" ) != std::string::npos,
+		       "...spelling the ORIGINAL colour digits verbatim (`1.0`, not the `%g`-formatted live value)" );
+		Check( IntrospectedColorSpace( *pJob, pJob->GetCstDocument() ) == "sRGB",
+		       "...and the panel's `colorspace` row follows the chunk back to sRGB" );
+
+		// Redo re-applies the forward PAIR (the composite is recomputed from
+		// the Document, which the undo above put back into the sRGB state).
+		Check( c.Editor().Redo(), "redo of the colour edit returns true" );
+		const RISEPel redone = LiveLightColor( *pJob );
+		Check( PelEq( redone, expectEdited, 0.0 ),
+		       "redo lands the edited colour again EXACTLY -- got " + PelStr( redone ) );
+		const std::string docRedone = LiveDocText( *pJob );
+		Check( docRedone.find( "Rec709RGB_Linear" ) != std::string::npos
+		    && docRedone.find( "sRGB" ) == std::string::npos,
+		       "redo re-converts the chunk to `colorspace Rec709RGB_Linear`" );
+	}
+
+	safe_release( pJob );
+}
+
+//----------------------------------------------------------------------
+// Test 5: ATOMICITY.  The composite is TWO param writes; if either half
+// cannot land, NOTHING may change.
+//
+// The pre-round-2 implementation issued them as two separate
+// Job::ApplyCstParamEdit calls, each re-deriving with no rollback between
+// them.  A refused colour write therefore left the chunk converted to
+// `Rec709RGB_Linear` with the AUTHORED sRGB digits still in place: the light
+// jumped to those digits read as LINEAR (~6x too bright on a mid-tone),
+// nothing was pushed to history, and a re-render was kicked on a state no
+// undo could reach.  Both malformed values below reach the Document write and
+// are caught by the re-derive, which is exactly the window that bug lived in.
+//----------------------------------------------------------------------
+static void CheckColorEditRefusedChangesNothing( const char* sceneText, const char* tag,
+                                                 const char* badValue, const RISEPel& expectColor,
+                                                 const std::string& why )
+{
+	IJobPriv* pJob = LoadScene( sceneText, tag );
+	Check( pJob != nullptr, std::string( "atomicity scene loads (" ) + why + ")" );
+	if( !pJob ) return;
+
+	const std::string docBefore = LiveDocText( *pJob );
+	const RISEPel colorBefore = LiveLightColor( *pJob );
+	Check( PelEq( colorBefore, expectColor, 1e-9 ),
+	       std::string( "PRECONDITION (" ) + why + "): the light loads at " + PelStr( expectColor )
+	       + ", got " + PelStr( colorBefore ) );
+
+	{
+		SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
+		c.SetSelection( SceneEditController::Category::Light, String( "L" ) );
+		const unsigned int depthBefore = c.Editor().History().UndoDepth();
+
+		const bool applied = c.SetPropertyForCategory(
+			SceneEditController::Category::Light, String( "color" ), String( badValue ) );
+		Check( !applied, std::string( "the edit is REFUSED (" ) + why + ")" );
+		Check( LiveDocText( *pJob ) == docBefore,
+		       std::string( "...the Document is BYTE-IDENTICAL afterwards (" ) + why
+		       + ") -- no half-applied `colorspace` conversion" );
+		Check( PelEq( LiveLightColor( *pJob ), colorBefore, 0.0 ),
+		       std::string( "...the light did not move (" ) + why + "): got "
+		       + PelStr( LiveLightColor( *pJob ) ) + ", want " + PelStr( colorBefore ) );
+		Check( c.Editor().History().UndoDepth() == depthBefore,
+		       std::string( "...and no history entry was pushed (" ) + why + ")" );
+	}
+
+	safe_release( pJob );
+}
+
+static void TestEditorColorEditAtomicity()
+{
+	std::cout << "Test 5: a refused colour edit on an sRGB chunk changes NOTHING" << std::endl;
+
+	const double kAuthored[3] = { 1.0, 0.2, 0.15 };
+	const RISEPel expectOriginal = RISEPel( sRGBPel( kAuthored ) );
+
+	// (b) MALFORMED VALUES.  Both write into the Document copy fine and are
+	// caught by the RE-DERIVE, so they exercise exactly the window the
+	// two-call implementation left open: the `colorspace` half already
+	// committed (and re-derived) when the colour half is refused.
+	//
+	// NOT USED HERE, and worth naming: a SHORT triple (`color 1 0.05`) is NOT
+	// refused -- the chunk parser zero-fills the missing component, so that
+	// edit legitimately applies and lands the light on (1, 0.05, 0).  It is a
+	// valid edit, not a malformed one, so it cannot pin atomicity.
+	CheckColorEditRefusedChangesNothing( kEditorScene, "atomabc", "abc", expectOriginal,
+	                                     "not a number" );
+	CheckColorEditRefusedChangesNothing( kEditorScene, "atomnan", "1 nan 0.02", expectOriginal,
+	                                     "a non-finite component" );
+
+	// (c) A DOUBLED `color` LINE.  Refused by the duplicate-occurrence guard
+	// BEFORE anything is written -- the guard now runs over EVERY param of the
+	// batch up front, which is what makes the refusal total rather than partial.
+	// The live colour is the LAST line's (the parse is last-wins).
+	CheckColorEditRefusedChangesNothing( kDupColorScene, "atomdup", "1 0.05 0.02", expectOriginal,
+	                                     "the chunk spells `color` twice" );
+}
+
+//----------------------------------------------------------------------
+// Test 7: the introspection row for a light the Document cannot resolve.
+//
+// Round-2 review: reporting `Rec709RGB_Linear` for an unresolvable or
+// ambiguous name is a claim with no basis -- the light exists, the Document
+// simply cannot say which chunk built it.  The no-Document case is different
+// and keeps the default: an API-constructed light really WAS built linear.
+//----------------------------------------------------------------------
+// A `colorspace sRGB` light with NO `color` line -- the shape whose colour the
+// panel's edit INSERTS rather than replaces.  The double-decode hazard is the
+// same (linear digits landing under a non-linear reading), so the composite
+// must fire here too; the light's pre-edit colour is the descriptor default
+// `0 0 0`, which is what undo restores (as an explicit line -- see
+// SceneEditor::LightColorCompositeState_'s doc).
+static const char* const kNoColorLineScene =
+	"omni_light\n{\nname L\npower 4\ncolorspace sRGB\nposition 0 5 0\n}\n"
+	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+	"lambertian_material\n{\nname m\nreflectance p1\n}\n"
+	"sphere_geometry\n{\nname g\nradius 1\n}\n"
+	"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+
+static void TestEditorColorEditInsertsColorLine()
+{
+	std::cout << "Test 6: a colour edit on a `colorspace sRGB` chunk that has NO `color` line" << std::endl;
+
+	IJobPriv* pJob = LoadScene( kNoColorLineScene, "nocolor" );
+	Check( pJob != nullptr, "the no-`color` scene loads" );
+	if( !pJob ) return;
+
+	const RISEPel expectBlack( 0.0, 0.0, 0.0 );
+	Check( PelEq( LiveLightColor( *pJob ), expectBlack, 0.0 ),
+	       "PRECONDITION: with no `color` line the light is the descriptor default (0,0,0) -- got "
+	       + PelStr( LiveLightColor( *pJob ) ) );
+
+	{
+		SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
+		c.SetSelection( SceneEditController::Category::Light, String( "L" ) );
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Light,
+		                                 String( "color" ), String( "1 0.05 0.02" ) ),
+		       "the colour edit applies (inserting a `color` line)" );
+		const RISEPel expectEdited( 1.0, 0.05, 0.02 );
+		Check( PelEq( LiveLightColor( *pJob ), expectEdited, 0.0 ),
+		       "the INSERTED colour is EXACTLY what the panel asked for -- got "
+		       + PelStr( LiveLightColor( *pJob ) ) + " (the composite converted the chunk; without it "
+		       "the inserted digits would decode under the surviving `colorspace sRGB`)" );
+		Check( LiveDocText( *pJob ).find( "Rec709RGB_Linear" ) != std::string::npos,
+		       "...and the chunk converted to the linear convention" );
+
+		Check( c.Editor().Undo(), "undo returns true" );
+		Check( PelEq( LiveLightColor( *pJob ), expectBlack, 0.0 ),
+		       "undo restores the light to its pre-edit (default, black) colour -- got "
+		       + PelStr( LiveLightColor( *pJob ) ) );
+		const std::string docUndone = LiveDocText( *pJob );
+		Check( docUndone.find( "colorspace sRGB" ) != std::string::npos,
+		       "...and the `colorspace sRGB` spelling is back" );
+		Check( docUndone.find( "color 0 0 0" ) != std::string::npos,
+		       "...with the default colour now spelled explicitly (the documented non-byte-identical case: "
+		       "restoring an ABSENT param would need a REMOVE, and `0 0 0` is a fixed point of every "
+		       "colour space, so the light is restored exactly)" );
+	}
+	safe_release( pJob );
+}
+
+static void TestIntrospectionUnknownColorSpace()
+{
+	std::cout << "Test 7: the `colorspace` row is honest about what it cannot resolve" << std::endl;
+
+	IJobPriv* pJob = LoadScene( kEditorScene, "unk" );
+	Check( pJob != nullptr, "introspection scene loads" );
+	if( !pJob ) return;
+
+	ILightManager* lm = pJob->GetLights();
+	const ILight* l = lm ? lm->GetItem( "L" ) : nullptr;
+	Check( l != nullptr, "the light resolves in the manager" );
+	if( l ) {
+		// A name that is NOT in the Document, asked WITH a Document.
+		const std::vector<CameraProperty> rows =
+			LightIntrospection::Inspect( String( "no_such_light" ), *l, pJob->GetCstDocument() );
+		std::string cs;
+		for( size_t i = 0; i < rows.size(); ++i )
+			if( rows[i].name == String( "colorspace" ) ) cs = std::string( rows[i].value.c_str() );
+		Check( cs == "(unknown)",
+		       "an unresolvable light name reports `(unknown)`, not an asserted `Rec709RGB_Linear` -- got `"
+		       + cs + "`" );
+	}
+	safe_release( pJob );
+}
+
+//----------------------------------------------------------------------
+// Test 8: SHARED UNDO -- an AGENT colour edit, then a PANEL colour edit,
+//         then two undos.
+//
+// THE BUG THIS PINS.  The two history entry kinds capture different things:
+// an agent entry captures the chunk's RAW TEXT (SceneEditController::
+// CaptureAgentPriorParamValue_ -> Cst::ParamValueAtOccurrence), a panel entry
+// captures the light's DECODED live value.  If the panel edit's undo restored
+// only the colour and left the chunk spelled `Rec709RGB_Linear`, the SECOND
+// undo would replay the agent entry's sRGB digits under a linear chunk and
+// the light would land at the authored numbers instead of their decode --
+// (1, 0.2, 0.15) instead of (1, 0.0331, 0.0194), ~6x too bright in G and B.
+//
+// MUTATION-VERIFIED (round 2, run performed): reverting
+// SceneEditor::ApplyRevertMutation's SetLightProperty arm to the pre-round-2
+// behaviour (restore the colour only, leave the chunk linear) turns THREE of
+// this test's assertions red -- undo #1's byte-identity, the money assertion
+// (which lands on exactly (1, 0.2, 0.15), the authored digits read as linear),
+// and the final Document comparison -- while Test 4's byte-identity assertions
+// go red too.
+//----------------------------------------------------------------------
+static void TestSharedUndoAgentThenPanel()
+{
+	std::cout << "Test 8: agent colour edit + panel colour edit, undone in LIFO order" << std::endl;
+
+	const double kAuthored[3] = { 1.0, 0.2, 0.15 };
+	const RISEPel expectOriginal = RISEPel( sRGBPel( kAuthored ) );
+	// What the AGENT writes: scene-file digits, read through the chunk's own
+	// (still sRGB) convention.
+	const double kAgentDigits[3] = { 0.5, 0.4, 0.3 };
+	const RISEPel expectAgent = RISEPel( sRGBPel( kAgentDigits ) );
+
+	IJobPriv* pJob = LoadScene( kEditorScene, "shared" );
+	Check( pJob != nullptr, "shared-undo scene loads" );
+	if( !pJob ) return;
+
+	const std::string docOriginal = LiveDocText( *pJob );
+
+	{
+		SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
+
+		// --- 1. The AGENT edits `color` through the CST path.  The chunk is
+		//        still sRGB, so the digits it writes are sRGB digits, and the
+		//        history entry it pushes captures the ORIGINAL sRGB digits.
+		const SceneEditController::AgentCommitResult r = c.ApplyAgentParamEdit(
+			String( "L" ), String( "omni_light" ), String( "color" ),
+			String( "0.5 0.4 0.3" ), /*baseVersionOrNull*/ nullptr );
+		Check( r.applied, std::string( "the agent colour commit applies (status `" )
+		                  + r.status.c_str() + "`)" );
+		Check( PelEq( LiveLightColor( *pJob ), expectAgent, 1e-9 ),
+		       "the agent's digits decode through the chunk's sRGB convention -- got "
+		       + PelStr( LiveLightColor( *pJob ) ) + ", want " + PelStr( expectAgent ) );
+		const std::string docAfterAgent = LiveDocText( *pJob );
+		Check( docAfterAgent.find( "colorspace sRGB" ) != std::string::npos,
+		       "the agent edit did NOT convert the chunk (only a `color` edit through the "
+		       "editor's own composite does that)" );
+
+		// --- 2. The USER nudges the swatch.  This is the composite: the chunk
+		//        converts to linear and takes the panel's linear digits.
+		c.SetSelection( SceneEditController::Category::Light, String( "L" ) );
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Light,
+		                                 String( "color" ), String( "1 0.05 0.02" ) ),
+		       "the panel colour edit applies on top of the agent edit" );
+		Check( LiveDocText( *pJob ).find( "Rec709RGB_Linear" ) != std::string::npos,
+		       "...converting the chunk to the linear convention" );
+
+		// --- 3. Undo the PANEL edit.  The chunk must come back EXACTLY as the
+		//        agent left it -- sRGB spelling and the agent's digits.
+		Check( c.Editor().Undo(), "undo #1 (the panel edit) returns true" );
+		Check( LiveDocText( *pJob ) == docAfterAgent,
+		       "undo #1 restores the post-agent Document BYTE-IDENTICALLY (sRGB spelling included)" );
+		Check( PelEq( LiveLightColor( *pJob ), expectAgent, 1e-6 ),
+		       "undo #1 puts the light back on the agent's decoded colour -- got "
+		       + PelStr( LiveLightColor( *pJob ) ) );
+
+		// --- 4. Undo the AGENT edit.  Its captured prior value is RAW sRGB
+		//        TEXT; it can only be replayed correctly because step 3 put the
+		//        chunk back into the sRGB convention.
+		Check( c.Editor().Undo(), "undo #2 (the agent edit) returns true" );
+		const RISEPel finalColor = LiveLightColor( *pJob );
+		Check( PelEq( finalColor, expectOriginal, 1e-6 ),
+		       "MONEY ASSERTION -- after both undos the light is back on its ORIGINAL DECODED colour: got "
+		       + PelStr( finalColor ) + ", want " + PelStr( expectOriginal )
+		       + " (leaving the chunk linear across undo #1 would land it on the authored digits "
+		         "read as linear, ~6x too bright)" );
+		Check( LiveDocText( *pJob ) == docOriginal,
+		       "...and the Document is byte-identical to the originally-loaded text" );
 	}
 
 	safe_release( pJob );
@@ -455,6 +765,10 @@ int main()
 	TestParseAndKeyframeAgree();
 	TestUnknownColorSpaceRefused();
 	TestEditorColorEditOnSRGBChunk();
+	TestEditorColorEditAtomicity();
+	TestEditorColorEditInsertsColorLine();
+	TestIntrospectionUnknownColorSpace();
+	TestSharedUndoAgentThenPanel();
 
 	std::cout << "=== LightColorSpaceTest: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;

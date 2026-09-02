@@ -439,6 +439,32 @@ namespace RISE
 		//! (the active camera is implicit).
 		String   propertyName;
 
+		//! Light-colour CST composite (2026-09-02 round 2), `SetLightProperty` on `color` ONLY.
+		//! TRUE when this edit's forward half wrote `colorspace Rec709RGB_Linear` ALONGSIDE the
+		//! colour digits, converting a chunk that spelled some OTHER colour space (in practice
+		//! `sRGB`, what `tools/migrate_scenes_light_colorspace.py` wrote onto every pre-2026-09-02
+		//! light) to the linear convention the properties panel speaks.  Set at CAPTURE time by
+		//! SceneEditor::LightColorCompositeState_; see that function's doc for WHY the conversion is
+		//! part of the edit rather than a re-encode of the value.
+		//!
+		//! When it is set, the two carriers below hold the chunk's ORIGINAL `color` and `colorspace`
+		//! VALUE TEXT -- raw, straight out of the Document, NOT the `%g`-formatted live RISEPel
+		//! `prevPropertyValue` carries -- and Undo writes BOTH back verbatim in one atomic edit
+		//! (SceneEditor::RouteCstLightColorComposite_), so the chunk returns byte-identical and the
+		//! light to its original decoded colour.  Redo re-applies the forward pair.
+		//!
+		//! Restoring the SPELLING, not just the value, is what makes shared undo (agent + user) sound:
+		//! an agent history entry captures RAW CHUNK TEXT (SceneEditController::
+		//! CaptureAgentPriorParamValue_), so an Undo that left the chunk linear would have an older
+		//! agent entry replay sRGB digits under a linear chunk -- landing the light ~6x too bright.
+		//!
+		//! FALSE (and both carriers empty) for every other op, for a `color` edit on an
+		//! already-linear chunk, for a light with no chunk, and on a legacy (no-Document) scene --
+		//! all of which take the unchanged single-param route.
+		bool     lightCstColorSpaceComposite;
+		String   prevCstColorText;
+		String   prevCstColorSpaceText;
+
 		//! Final matrix captured BEFORE mutation.  This is the fallback undo
 		//! representation for non-Transformable targets; Transformable objects
 		//! use prevTransformState below so their ordered stack is retained.
@@ -574,6 +600,9 @@ namespace RISE
 		, v3a()
 		, v3b()
 		, s( 0 )
+		, lightCstColorSpaceComposite( false )
+		, prevCstColorText()
+		, prevCstColorSpaceText()
 		, prevTransform( Matrix4Ops::Identity() )
 		, hasTransformState( false )
 		, prevBindingWasNull( false )

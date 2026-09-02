@@ -28,6 +28,8 @@
 #include "IEnumCallback.h"      // for EnumerateMediumNames callback
 #include "ProceduralDescriptors.h" // sweep / path-instances parameter blocks
 #include <string>
+#include <utility>   // std::pair -- ApplyCstParamEdits' (param, value) batch
+#include <vector>    // std::vector -- ditto
 #include "../Utilities/PathGuidingField.h"
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/StabilityConfig.h"
@@ -4295,6 +4297,26 @@ namespace RISE
 									const char* coat_absorption,	///< [in] Coat absorption, 1/length (physical scalar)
 									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
 									) = 0;
+
+		//! Light-colour composite (2026-09-02 round 2): apply SEVERAL param-value edits to ONE chunk of the
+		//! retained CST Document as a SINGLE ATOMIC unit -- all of them are resolved and validated against the
+		//! PRISTINE document first, then written into ONE Document copy which is derived ONCE.  Same resolution
+		//! rules, same duplicate-occurrence refusal (applied to EVERY param before anything is written) and the
+		//! same 0/1/2/3 return contract as ApplyCstParamEdit; `occ` is 0 for every pair (the composite exists for
+		//! non-repeatable params -- a repeatable one still goes through the occurrence-addressed single edit).
+		//!
+		//! WHY IT EXISTS.  Two sequential ApplyCstParamEdit calls are two derives with NO rollback between them:
+		//! if the first succeeds and the second is refused, the live scene is left in a state NEITHER the caller
+		//! nor the history knows about (the light-colour case: `colorspace` converted to linear while the colour
+		//! digits still read as sRGB -- the light jumps ~6x and nothing is undoable).  0 here means NOTHING
+		//! changed: no write, no derive, no re-render.
+		//!
+		//! Every pair must name a non-empty role and a non-empty value, and every role must resolve to the SAME
+		//! owner chunk (the `override_object` transform walk is per-role, so a mixed-owner batch is refused
+		//! rather than silently split across two chunks).  Default 0 (only Job overrides).
+		//! NB: appended at the IJob tail per the append-only ABI convention.
+		virtual int ApplyCstParamEdits( const char* entityName, const char* entityKind,
+		                                const std::vector< std::pair< std::string, std::string > >& edits ) { return 0; }
 
 	};
 

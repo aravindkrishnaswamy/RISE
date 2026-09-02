@@ -87,20 +87,35 @@ const char* KeywordForLightType( ILight::LightType t )
 // actual value is both honest and load-bearing for the reader: it explains
 // why the `color` row above does NOT match the digits in the scene file.
 //
-// Falls back to the language default when there is no Document (an
-// API-constructed light), when the light's chunk does not resolve, or when
-// the chunk omits the line -- all three are cases where the light really
-// was built with the linear reading.  LAST occurrence (ParamValueAsParsed),
-// matching what the derive reads.
+// TWO different "we cannot read it" answers, deliberately (round-2 review
+// fix):
+//
+//   * NO DOCUMENT (an API-constructed light, or a legacy scene with no
+//     retained CST) -> `Rec709RGB_Linear`.  That is not a guess: a light
+//     built through RISE_API_AddOmniLight and friends really WAS built with
+//     the linear reading, so the row is a fact.
+//   * The chunk OMITS the line -> `Rec709RGB_Linear` too, for the same
+//     reason: absent IS the language default the derive applied.
+//   * The name does NOT RESOLVE in the Document -- unknown, or ambiguous
+//     across two chunks -> `(unknown)`.  Here the previous code ASSERTED
+//     linear, which is a claim it has no basis for: the light exists (we
+//     were handed one), the Document just cannot say which chunk built it,
+//     and an ambiguous name is exactly the case where the answer could be
+//     either.  Say so rather than print a plausible falsehood, and note
+//     that the row is read-only anyway -- nothing downstream parses it.
+//
+// LAST occurrence (ParamValueAsParsed), matching what the derive reads.
 String ReadLightColorSpace( const RISE::Cst::Document* doc, const String& lightName )
 {
 	static const char* const kDefault = "Rec709RGB_Linear";
-	if( !doc || lightName.size() <= 1 ) return String( kDefault );
+	static const char* const kUnknown = "(unknown)";
+	if( !doc ) return String( kDefault );
+	if( lightName.size() <= 1 ) return String( kUnknown );
 	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
 		*doc, lightName.c_str(), nullptr, "light", /*uniqueFallback=*/false );
-	if( id == 0 ) return String( kDefault );
+	if( id == 0 ) return String( kUnknown );
 	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
-	if( !chunk ) return String( kDefault );
+	if( !chunk ) return String( kUnknown );
 	bool present = false;
 	const std::string cs = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &present );
 	if( !present || cs.empty() ) return String( kDefault );

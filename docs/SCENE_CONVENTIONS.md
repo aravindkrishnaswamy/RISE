@@ -444,7 +444,14 @@ Two places bypass it, both deliberately:
   so the editor writes `colorspace Rec709RGB_Linear` alongside the new
   `color` (otherwise the re-derive would decode the panel's linear digits a
   second time).  The light's look is unchanged by the conversion itself; the
-  chunk simply stops carrying the legacy reading.  One-way and one-time.
+  chunk simply stops carrying the legacy reading.  The pair is ONE ATOMIC
+  edit — if either half is refused (a malformed colour, or a chunk that
+  spells `color` or `colorspace` twice, which the editor refuses to write
+  into) nothing changes at all — and it is FULLY UNDOABLE: undo restores both
+  original lines verbatim, `colorspace sRGB` spelling included, so the chunk
+  comes back byte-identical.  That matters beyond tidiness, because an agent
+  edit's undo replays the chunk's raw text and must find the convention its
+  digits were captured under.
 
 ### Anti-patterns
 

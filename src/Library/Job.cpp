@@ -11809,7 +11809,34 @@ int Job::ApplyCstParamEditChecked( const char* entityName, const char* entityKin
 
 int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind, const char* role, int occ, const char* newValue, bool requireFullDerivability )
 {
-	if( !pCstDocument || !entityName || !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
+	if( !role || !newValue || !newValue[0] ) return 0;   // empty value rejected (defense)
+	// ONE pair through the SHARED body -- so the single-param route and the atomic multi-param route cannot
+	// drift on resolution, on the owner walk, or on the duplicate-occurrence refusal.
+	std::vector< std::pair< std::string, std::string > > one;
+	one.push_back( std::make_pair( std::string( role ), std::string( newValue ) ) );
+	return ApplyCstParamEditsImpl_( entityName, entityKind, one, occ, requireFullDerivability );
+}
+
+// Light-colour composite (2026-09-02 round 2): the ATOMIC multi-param entry point -- see the IJob virtual doc.
+// UNGATED (no full-derivability dry-run), like ApplyCstParamEdit: its caller is the GUI/editor route, and its
+// pairs are value-only (they do not retarget references, so they cannot manufacture a forward reference).
+int Job::ApplyCstParamEdits( const char* entityName, const char* entityKind,
+                             const std::vector< std::pair< std::string, std::string > >& edits )
+{
+	return ApplyCstParamEditsImpl_( entityName, entityKind, edits, /*occ*/ 0, /*requireFullDerivability*/ false );
+}
+
+// The SHARED body.  ATOMICITY IS THE POINT: every pair is resolved and validated against the PRISTINE retained
+// Document FIRST (owner walk + duplicate-occurrence refusal), and only when ALL of them pass does anything get
+// written -- into ONE Document copy, derived ONCE.  A refusal at any pair returns 0 with the live scene and the
+// retained head byte-identical, so the caller can report a clean failure instead of a half-applied edit.
+int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind,
+                                  const std::vector< std::pair< std::string, std::string > >& edits,
+                                  int occ, bool requireFullDerivability )
+{
+	if( !pCstDocument || !entityName || edits.empty() ) return 0;
+	for( size_t i = 0; i < edits.size(); ++i )
+		if( edits[i].first.empty() || edits[i].second.empty() ) return 0;   // empty role/value rejected (defense)
 	// Cameras are the one editor-addressable kind that can be UNNAMED (the sole `pinhole_camera { ... }`), so
 	// allow the unique-in-kind resolve-by-position fallback for them; always-named kinds keep strict refuse.
 	// Round-7 tightening: the camera fallback is GATED (DocCameraUniqueFallbackPermitted) so a TYPO'D camera
@@ -11829,114 +11856,154 @@ int Job::ApplyCstParamEditImpl_( const char* entityName, const char* entityKind,
 		GlobalLog()->PrintEx( eLog_Warning, "Job::ApplyCstParamEdit:: `%s` (kind `%s`) not found or ambiguous in the CST Document; edit rejected", entityName, ekind.c_str() );
 		return 0;
 	}
-	// AMBIGUOUS-OCCURRENCE REFUSAL.  Every caller of this function edits occurrence
-	// `occ` counted from the FRONT (0 = first), while the parse this edit will be
-	// re-derived through is last-wins for a non-repeatable param -- ParseStateBag::
-	// SetSingle is an unconditional overwrite, and Cst::ParamValue reads the same way.
-	// The two agree exactly as long as such a param appears ONCE.  When it appears
-	// twice, an occ=0 edit rewrites a line that has no effect on the derived scene
-	// and leaves the effective line alone: the render does not change, the properties
-	// panel (which now reads last-wins, Cst::ParamValueAsParsed) does not change, and
-	// the edit reports success.  That silent no-op is worse than a refusal, so refuse
-	// -- and say which parameter, so the author can delete the dead line.
-	//
-	// Scoped to what is actually ambiguous: only a role the chunk's own descriptor
-	// declares NON-repeatable, and only when it is genuinely duplicated.  A repeatable
-	// param (`part`, `cp`, `value`, `shaderop`) is SUPPOSED to occur many times and its
-	// callers pass a real occurrence index -- untouched.  A role with no descriptor
-	// entry is left alone too; the derive's own validation owns that case.
 	const RISE::Cst::NodeRef editTarget = RISE::Cst::DocResolveNodeId( *pCstDocument, id );
 
-	// OWNER WALK -- the same one ApplyCstObjectMatrixEdit and ApplyCstObjectComponentsEdit perform, and
-	// for the same reason.  A same-named `override_object` is applied AFTER the chunk that created the
-	// object and REPLACES its transform fields, so writing a transform param onto the base chunk when an
-	// override exists writes a value the re-derive then overwrites: the typed edit lands in the Document,
-	// the commit reports success (rc 2 -- the override guard forces a D2), and the object does not move.
-	// A return-code assertion stays green through that, which is what kept it invisible.  Route the write
-	// to the LAST chunk that actually decides the pose.
-	//
-	// Cst::DocTransformOwnerId owns the rule (scoping, and the non-transform / non-object / unnamed /
-	// already-an-override cases) because this function is NOT the only site that has to obey it: the
-	// agent's prior-value capture and its Undo resolve the same edit, and a writer that walks while they
-	// do not just moves the silent failure into the history.  One function, three callers, no drift.
-	const std::string editRole = role;
-	bool objectTransformEdit = false;
-	const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *pCstDocument, id, editRole, &objectTransformEdit );
-	const RISE::Cst::NodeRef ownerChunk = ( ownerId == id ) ? editTarget : RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
+	// PLAN, then write.  One entry per pair: which chunk the write lands on and what it strips first.
+	struct PlannedWrite { RISE::Cst::NodeId ownerId; const char* const* strip; };
+	std::vector< PlannedWrite > plan;
+	plan.reserve( edits.size() );
+	RISE::Cst::NodeId anchorId = 0;
 
-	// The duplicate-occurrence refusal below reads the chunk the write will LAND on, not the one the
-	// caller addressed -- a doubled `position` line on the override is exactly the dead-line hazard it
-	// exists to catch, and the base chunk's own lines stop deciding anything once the walk fires.
-	if( ownerChunk ) {
-		const ChunkDescriptor* editDesc = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
-		const ParameterDescriptor* editParam = nullptr;
-		if( editDesc )
-			for( const ParameterDescriptor& p : editDesc->parameters )
-				if( p.name == role ) { editParam = &p; break; }
-		if( editParam && !editParam->repeatable ) {
-			const int occurrences = RISE::Cst::ParamOccurrenceCount( ownerChunk, editParam->name );
-			if( occurrences > 1 ) {
-				GlobalLog()->PrintEx( eLog_Warning,
-					"Job::ApplyCstParamEdit:: `%s` (kind `%s`) spells the non-repeatable parameter `%s` %d times; "
-					"the scene derives from the LAST one, but this edit addresses occurrence %d -- it would rewrite a "
-					"dead line and leave the live value unchanged. Edit rejected; delete the duplicate `%s` lines first.",
-					entityName, ekind.c_str(), role, occurrences, occ, role );
-				return 0;
+	for( size_t i = 0; i < edits.size(); ++i )
+	{
+		const std::string& editRole = edits[i].first;
+
+		// AMBIGUOUS-OCCURRENCE REFUSAL.  Every caller of this function edits occurrence
+		// `occ` counted from the FRONT (0 = first), while the parse this edit will be
+		// re-derived through is last-wins for a non-repeatable param -- ParseStateBag::
+		// SetSingle is an unconditional overwrite, and Cst::ParamValue reads the same way.
+		// The two agree exactly as long as such a param appears ONCE.  When it appears
+		// twice, an occ=0 edit rewrites a line that has no effect on the derived scene
+		// and leaves the effective line alone: the render does not change, the properties
+		// panel (which now reads last-wins, Cst::ParamValueAsParsed) does not change, and
+		// the edit reports success.  That silent no-op is worse than a refusal, so refuse
+		// -- and say which parameter, so the author can delete the dead line.
+		//
+		// Scoped to what is actually ambiguous: only a role the chunk's own descriptor
+		// declares NON-repeatable, and only when it is genuinely duplicated.  A repeatable
+		// param (`part`, `cp`, `value`, `shaderop`) is SUPPOSED to occur many times and its
+		// callers pass a real occurrence index -- untouched.  A role with no descriptor
+		// entry is left alone too; the derive's own validation owns that case.
+		//
+		// In the MULTI-pair form this runs for EVERY pair BEFORE the first write, which is
+		// what makes the composite atomic: a chunk that doubles `color` refuses the whole
+		// batch, rather than converting its `colorspace` and then discovering the colour
+		// cannot be written.
+
+		// OWNER WALK -- the same one ApplyCstObjectMatrixEdit and ApplyCstObjectComponentsEdit perform, and
+		// for the same reason.  A same-named `override_object` is applied AFTER the chunk that created the
+		// object and REPLACES its transform fields, so writing a transform param onto the base chunk when an
+		// override exists writes a value the re-derive then overwrites: the typed edit lands in the Document,
+		// the commit reports success (rc 2 -- the override guard forces a D2), and the object does not move.
+		// A return-code assertion stays green through that, which is what kept it invisible.  Route the write
+		// to the LAST chunk that actually decides the pose.
+		//
+		// Cst::DocTransformOwnerId owns the rule (scoping, and the non-transform / non-object / unnamed /
+		// already-an-override cases) because this function is NOT the only site that has to obey it: the
+		// agent's prior-value capture and its Undo resolve the same edit, and a writer that walks while they
+		// do not just moves the silent failure into the history.  One function, three callers, no drift.
+		bool objectTransformEdit = false;
+		const RISE::Cst::NodeId ownerId = RISE::Cst::DocTransformOwnerId( *pCstDocument, id, editRole, &objectTransformEdit );
+		const RISE::Cst::NodeRef ownerChunk = ( ownerId == id ) ? editTarget : RISE::Cst::DocResolveNodeId( *pCstDocument, ownerId );
+
+		// The duplicate-occurrence refusal below reads the chunk the write will LAND on, not the one the
+		// caller addressed -- a doubled `position` line on the override is exactly the dead-line hazard it
+		// exists to catch, and the base chunk's own lines stop deciding anything once the walk fires.
+		if( ownerChunk ) {
+			const ChunkDescriptor* editDesc = DescriptorForKeyword( String( ownerChunk->role.c_str() ) );
+			const ParameterDescriptor* editParam = nullptr;
+			if( editDesc )
+				for( const ParameterDescriptor& p : editDesc->parameters )
+					if( p.name == editRole ) { editParam = &p; break; }
+			if( editParam && !editParam->repeatable ) {
+				const int occurrences = RISE::Cst::ParamOccurrenceCount( ownerChunk, editParam->name );
+				if( occurrences > 1 ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"Job::ApplyCstParamEdit:: `%s` (kind `%s`) spells the non-repeatable parameter `%s` %d times; "
+						"the scene derives from the LAST one, but this edit addresses occurrence %d -- it would rewrite a "
+						"dead line and leave the live value unchanged. Edit rejected; delete the duplicate `%s` lines first.",
+						entityName, ekind.c_str(), editRole.c_str(), occurrences, occ, editRole.c_str() );
+					return 0;
+				}
 			}
 		}
+
+		// A multi-pair batch must land on ONE chunk.  The owner walk is per-ROLE, so a batch mixing a
+		// transform param (which can walk to a same-named `override_object`) with a non-transform one would
+		// split across two chunks -- two edit closures, one derive anchor, and an atomicity claim this
+		// function could not keep.  Refuse instead of silently splitting.  (A single-pair edit can never
+		// trip this; the composite's own pairs are two params of the same light chunk.)
+		if( i == 0 ) {
+			anchorId = ownerId;
+		} else if( ownerId != anchorId ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"Job::ApplyCstParamEdits:: `%s` (kind `%s`): parameter `%s` resolves to a DIFFERENT owner chunk than the "
+				"first parameter of the batch; an atomic multi-param edit must land on one chunk. Edit rejected.",
+				entityName, ekind.c_str(), editRole.c_str() );
+			return 0;
+		}
+
+		// MASKING STRIP -- the other half of the sibling routes' semantics, evaluated PER-ROLE because this
+		// function writes ONE param where they write a whole pose.  Both the standard_object parser and the
+		// override_object parser rank their transform params matrix > quaternion > per-field, so a param that
+		// OUTRANKS the one being written makes the write a silent no-op on whichever chunk it lands on --
+		// which would just relocate the defect from "silently reverted under the override" to "silently
+		// ignored on it".  Strip exactly what outranks this role, and nothing else:
+		//
+		//   position / scale   <- `matrix` only.  The quaternion branch READS position and scale (it composes
+		//                         T*R*S from them), so the write is honoured with a quaternion present, and
+		//                         stripping one would discard a rotation this edit does not supply.
+		//   orientation        <- `matrix` and `quaternion`.  Both outrank Euler; dropping the quaternion is
+		//                         not data loss here because the typed orientation IS the replacement rotation.
+		//   quaternion         <- `matrix` only.
+		//   matrix             <- position / orientation / quaternion / scale, exactly as ApplyCstObjectMatrixEdit
+		//                         strips them: a 4x4 already encodes all four, so none of them is live after.
+		//
+		// `scale` is never stripped for a per-field write.  ApplyCstObjectComponentsEdit DOES strip it, and
+		// this route deliberately does not follow -- its two reasons for stripping are both properties of
+		// ITS caller, not of the params:
+		//   (1) that route's position/orientation come from DecomposeRigid, which REFUSES any non-unit
+		//       column magnitude, so a real `scale 2 2 2` can never reach it.  A typed edit has no such
+		//       filter: `scale 2 2 2` is an ordinary thing to have on the chunk being edited, and on both
+		//       chunk kinds it is live alongside what is written here (an override_object's per-field branch
+		//       applies position, orientation and scale INDEPENDENTLY; a standard_object composes `scale`
+		//       alongside quaternion / orientation).
+		//   (2) the only scales that DO reach that route are unit sign flips, which DecomposeRigid has
+		//       already folded into the `orientation` it writes -- so keeping one would apply that rotation
+		//       twice.  Nothing here folds anything into anything: this function writes the ONE param it was
+		//       given, so a `scale` it leaves alone is applied exactly once, as it was before the edit.
+		// Stripping it would make a typed translate silently un-scale the object -- the same class of
+		// unrequested mutation, in the opposite direction.
+		//
+		// Residual, stated rather than hidden: stripping a `matrix` to honour one typed component discards the
+		// rotation and scale that matrix encoded.  The alternative is the write reporting success and doing
+		// nothing, which is the defect class this whole path exists to close -- and it is what the two sibling
+		// routes already chose.
+		static const char* const kStripNone[]     = { nullptr };
+		static const char* const kStripMatrix[]   = { "matrix", nullptr };
+		static const char* const kStripMatQuat[]  = { "matrix", "quaternion", nullptr };
+		static const char* const kStripSubsumed[] = { "position", "orientation", "quaternion", "scale", nullptr };
+		const char* const* strip = kStripNone;
+		if( objectTransformEdit ) {
+			if(      editRole == "matrix"      ) strip = kStripSubsumed;
+			else if( editRole == "orientation" ) strip = kStripMatQuat;
+			else                                 strip = kStripMatrix;   // position / scale / quaternion
+		}
+
+		const PlannedWrite pw = { ownerId, strip };
+		plan.push_back( pw );
 	}
 
-	// MASKING STRIP -- the other half of the sibling routes' semantics, evaluated PER-ROLE because this
-	// function writes ONE param where they write a whole pose.  Both the standard_object parser and the
-	// override_object parser rank their transform params matrix > quaternion > per-field, so a param that
-	// OUTRANKS the one being written makes the write a silent no-op on whichever chunk it lands on --
-	// which would just relocate the defect from "silently reverted under the override" to "silently
-	// ignored on it".  Strip exactly what outranks this role, and nothing else:
-	//
-	//   position / scale   <- `matrix` only.  The quaternion branch READS position and scale (it composes
-	//                         T*R*S from them), so the write is honoured with a quaternion present, and
-	//                         stripping one would discard a rotation this edit does not supply.
-	//   orientation        <- `matrix` and `quaternion`.  Both outrank Euler; dropping the quaternion is
-	//                         not data loss here because the typed orientation IS the replacement rotation.
-	//   quaternion         <- `matrix` only.
-	//   matrix             <- position / orientation / quaternion / scale, exactly as ApplyCstObjectMatrixEdit
-	//                         strips them: a 4x4 already encodes all four, so none of them is live after.
-	//
-	// `scale` is never stripped for a per-field write.  ApplyCstObjectComponentsEdit DOES strip it, and
-	// this route deliberately does not follow -- its two reasons for stripping are both properties of
-	// ITS caller, not of the params:
-	//   (1) that route's position/orientation come from DecomposeRigid, which REFUSES any non-unit
-	//       column magnitude, so a real `scale 2 2 2` can never reach it.  A typed edit has no such
-	//       filter: `scale 2 2 2` is an ordinary thing to have on the chunk being edited, and on both
-	//       chunk kinds it is live alongside what is written here (an override_object's per-field branch
-	//       applies position, orientation and scale INDEPENDENTLY; a standard_object composes `scale`
-	//       alongside quaternion / orientation).
-	//   (2) the only scales that DO reach that route are unit sign flips, which DecomposeRigid has
-	//       already folded into the `orientation` it writes -- so keeping one would apply that rotation
-	//       twice.  Nothing here folds anything into anything: this function writes the ONE param it was
-	//       given, so a `scale` it leaves alone is applied exactly once, as it was before the edit.
-	// Stripping it would make a typed translate silently un-scale the object -- the same class of
-	// unrequested mutation, in the opposite direction.
-	//
-	// Residual, stated rather than hidden: stripping a `matrix` to honour one typed component discards the
-	// rotation and scale that matrix encoded.  The alternative is the write reporting success and doing
-	// nothing, which is the defect class this whole path exists to close -- and it is what the two sibling
-	// routes already chose.
-	static const char* const kStripNone[]     = { nullptr };
-	static const char* const kStripMatrix[]   = { "matrix", nullptr };
-	static const char* const kStripMatQuat[]  = { "matrix", "quaternion", nullptr };
-	static const char* const kStripSubsumed[] = { "position", "orientation", "quaternion", "scale", nullptr };
-	const char* const* strip = kStripNone;
-	if( objectTransformEdit ) {
-		if(      editRole == "matrix"      ) strip = kStripSubsumed;
-		else if( editRole == "orientation" ) strip = kStripMatQuat;
-		else                                 strip = kStripMatrix;   // position / scale / quaternion
-	}
-
+	// EVERY pair validated -- now write them all into ONE copy and derive ONCE.
 	RISE::Cst::Document d1 = *pCstDocument;
-	for( const char* const* s = strip; *s; ++s ) d1 = RISE::Cst::DocRemoveParam( d1, ownerId, *s );
-	d1 = RISE::Cst::DocSetOrAddParamValue( d1, ownerId, role, occ, newValue );
-	return DeriveEditedCstDocument_( std::move( d1 ), ownerId, entityName, role, requireFullDerivability );
+	std::string roleDiag;
+	for( size_t i = 0; i < plan.size(); ++i ) {
+		for( const char* const* s = plan[i].strip; *s; ++s ) d1 = RISE::Cst::DocRemoveParam( d1, plan[i].ownerId, *s );
+		d1 = RISE::Cst::DocSetOrAddParamValue( d1, plan[i].ownerId, edits[i].first, occ, edits[i].second );
+		if( i ) roleDiag += "+";
+		roleDiag += edits[i].first;
+	}
+	return DeriveEditedCstDocument_( std::move( d1 ), anchorId, entityName, roleDiag.c_str(), requireFullDerivability );
 }
 
 // Shared-undo U1: the inverse of an agent-originated param INSERT (see the IJob virtual doc).  Resolution

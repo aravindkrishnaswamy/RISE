@@ -975,24 +975,48 @@ namespace RISE
 		//! (0) or a diagnosed re-derive (3).  Shared by the material/light/... CST branches.
 		bool RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value );
 
-		//! Light-colour CST review fix (2026-09-02): a CST-routed light `color` edit writes the PROPERTY
-		//! PANEL's value, which is a LINEAR RISEPel read straight off `ILight::emissionColor()`.  When the
-		//! chunk still carries `colorspace sRGB` -- every scene `tools/migrate_scenes_light_colorspace.py`
-		//! touched -- the re-derive gamma-DECODES those already-linear digits a SECOND time, so a small
-		//! nudge in the colour well lands somewhere far darker than the user asked for.  Convert the chunk
-		//! to the linear convention (write `colorspace Rec709RGB_Linear`) as part of the same edit, so the
-		//! digits the panel writes mean what the panel means by them.  Self-healing and one-way: once a
-		//! chunk is linear it stays linear.  A no-op for any role but `color`, for a chunk with no
-		//! `colorspace` line (already the linear default), and on a legacy (no-Document) scene.  Returns
-		//! false only when the extra route itself failed, so the caller can refuse the whole edit with the
-		//! colour digits still untouched.
+		//! Light-colour CST composite (2026-09-02, round 2).  THE PROBLEM: a CST-routed light `color` edit
+		//! writes the PROPERTY PANEL's value, which is a LINEAR RISEPel read straight off
+		//! `ILight::emissionColor()`.  When the chunk still carries `colorspace sRGB` -- every scene
+		//! `tools/migrate_scenes_light_colorspace.py` touched -- the re-derive gamma-DECODES those
+		//! already-linear digits a SECOND time, so a small nudge in the colour well lands somewhere far
+		//! darker than the user asked for.  THE FIX: the edit writes BOTH `colorspace Rec709RGB_Linear` and
+		//! the new colour digits, as ONE ATOMIC Document edit (Job::ApplyCstParamEdits -- one copy, one
+		//! validation pass over both params, one derive), so the digits the panel writes mean what the panel
+		//! means by them.  If ANY part is refused, NOTHING changes: no write, no derive, no re-render, no
+		//! history entry -- the caller reports a clean failure.
 		//!
-		//! NOT UNDOABLE, deliberately: the conversion is recorded in no history entry, so Undo of the colour
-		//! edit restores the light's COLOUR (which is what the user sees and what the history entry is
-		//! about) while leaving the chunk spelled `Rec709RGB_Linear`.  Restoring the sRGB spelling would
-		//! restore a convention the panel cannot speak -- the very trap this exists to close -- and the two
-		//! spellings describe the SAME light, so nothing observable is lost.
-		bool NormalizeCstLightColorSpace_( const char* lightName, const String& propertyName );
+		//! FULLY UNDOABLE.  `LightColorCompositeState_` reads the chunk's ORIGINAL `color` and `colorspace`
+		//! TEXT (raw, out of the Document) at capture time into the SceneEdit; the revert arm writes both
+		//! back VERBATIM in one atomic edit, so after Undo the chunk is byte-identical to what it was (the
+		//! `colorspace sRGB` spelling restored) and the light is back at its original decoded value.  Redo
+		//! re-applies the pair.  That byte-identity is not cosmetic: an AGENT history entry captures RAW
+		//! CHUNK TEXT (SceneEditController::CaptureAgentPriorParamValue_), so if Undo left the chunk linear,
+		//! an older agent entry would replay sRGB digits under a linear chunk and land the light ~6x too
+		//! bright.  Shared undo (agent + user, LIFO) only works if each entry restores the convention it was
+		//! captured under.  (The restore re-emits the value's tokens single-space separated, so a chunk that
+		//! aligned `color` with tabs or double spaces comes back normalised -- values and line positions are
+		//! preserved exactly; only intra-value padding is not.  One further exception: a chunk that carried
+		//! `colorspace` with NO `color` line gains an explicit `color 0 0 0` -- the descriptor default it was
+		//! relying on, and a fixed point of every colour space, so the LIGHT is restored exactly.)
+		//!
+		//! A chunk that spells `colorspace` TWICE is refused by Job::ApplyCstParamEdits' duplicate-occurrence
+		//! guard (the derive reads the LAST occurrence while the write addresses the first, so the write would
+		//! be a silent no-op) -- the refusal is logged naming the parameter, and the fix is to delete the dead
+		//! `colorspace` line.  The same applies to a doubled `color`.
+		//!
+		//! `LightColorCompositeState_` answers "does this edit need the composite" and, when it does, hands
+		//! back the two ORIGINAL value texts.  FALSE (and the plain single-param route stands, unchanged) for
+		//! any role but `color`, for a chunk whose `colorspace` is absent or already `Rec709RGB_Linear`, for a
+		//! light with no resolvable chunk, and on a legacy (no-Document) scene.
+		bool LightColorCompositeState_( const char* lightName, const String& propertyName,
+		                                String& outPrevColorText, String& outPrevColorSpaceText ) const;
+
+		//! The atomic write half of the composite above: `colorspace` + `color` in ONE Job::ApplyCstParamEdits
+		//! call (one Document copy, one derive, all-or-nothing).  Same rebind-on-D2 / mCstLiveSceneChanged
+		//! bookkeeping as RouteCstParamEdit_; returns false -- with the Document untouched -- when the batch
+		//! was refused or the re-derive diagnosed.
+		bool RouteCstLightColorComposite_( const char* lightName, const char* colorValue, const char* colorSpaceValue );
 
 		//! Shared-undo U1: inverse of an agent param edit that INSERTED a previously-absent param -- removes it
 		//! instead of re-setting a nonexistent prior value.  See SceneEditor.cpp for the full rationale.

@@ -212,14 +212,37 @@ def migrate_text(text, stats, path_label=''):
             i = end + 1
             continue
 
+        # LAST `color` line, not the first.  The derive is LAST-WINS for a
+        # non-repeatable param (`ParseStateBag::SetSingle` is an unconditional
+        # overwrite, and Cst::ParamValueAsParsed reads the same way), so on a
+        # chunk that spells `color` twice the EFFECTIVE line is the last one --
+        # and `colorspace` has to sit where it governs that line's reading, not
+        # a dead one above it.  Inserting after the first would also mis-skip:
+        # the neutrality test below has to be applied to the components that
+        # actually derive.
         color_idx = None
         color_match = None
+        color_count = 0
         for idx, b in enumerate(body_code):
             cm = COLOR_RE.match(b)
             if cm:
                 color_idx = idx
                 color_match = cm
-                break
+                color_count += 1
+
+        if color_count > 1:
+            # Not an error -- the scene still derives (the last line wins) --
+            # but it IS a defect worth naming: every earlier `color` line is
+            # dead text, and RISE's own editor REFUSES to write a param it
+            # finds duplicated (Job::ApplyCstParamEdit's duplicate-occurrence
+            # guard), so a light like this cannot be colour-edited in the GUI
+            # until the dead lines are deleted.
+            stats['duplicate_color_chunks'] += 1
+            print('  NOTE %s: `%s` chunk at line %d spells `color` %d times; '
+                  'the scene derives from the LAST one, so that is the line any '
+                  '`colorspace` goes after (delete the dead `color` lines -- the '
+                  'editor refuses to write a duplicated param)'
+                  % (path_label or '<text>', kind, i + 1, color_count))
 
         if color_idx is None:
             stats['skipped_no_color'] += 1
@@ -271,6 +294,7 @@ def new_stats():
         'skipped_neutral': 0,
         'skipped_no_color': 0,
         'skipped_has_colorspace': 0,
+        'duplicate_color_chunks': 0,
         'unterminated': 0,
         'files_touched_set': set(),
     }
@@ -348,6 +372,23 @@ _SELFTESTS = [
         'omni_light\n{\nname a\n{\n}\ncolor 0.5 0.4 0.3\n}\n',
         1, 1,
     ),
+    (
+        # Round-2 review: the derive is LAST-WINS, so the line has to govern
+        # the LAST `color`.  The positional half of this is asserted
+        # separately below (the counters alone cannot see WHERE it landed).
+        'duplicate `color` lines -- migrate after the LAST one',
+        'omni_light\n{\nname a\ncolor 0.9 0.8 0.7\ncolor 0.5 0.4 0.3\n}\n',
+        1, 1,
+    ),
+    (
+        # ... and the neutrality skip must be judged on the components that
+        # actually derive.  First line is non-neutral, LAST is a transfer
+        # fixed point -> nothing to do.  Keying off the FIRST would insert a
+        # line here and change the render.
+        'duplicate `color` lines -- neutrality judged on the LAST one',
+        'omni_light\n{\nname a\ncolor 0.9 0.8 0.7\ncolor 1 1 1\n}\n',
+        1, 0,
+    ),
 ]
 
 
@@ -384,6 +425,26 @@ def selftest():
             print('  FAIL: %s -- expected no change but the text was rewritten' % label, file=sys.stderr)
             continue
         print('  ok: %s' % label)
+
+    # WHERE the line landed, for the duplicate-`color` case -- the counters
+    # above prove one was inserted, not that it governs the effective line.
+    # `colorspace` must sit AFTER the last `color`, or the derive reads the
+    # live colour through the language default (linear) and the look changes.
+    stats = new_stats()
+    dup_in = 'omni_light\n{\nname a\ncolor 0.9 0.8 0.7\ncolor 0.5 0.4 0.3\n}\n'
+    dup_out, _ = migrate_text(dup_in, stats, path_label='<selftest>')
+    dup_want = ('omni_light\n{\nname a\ncolor 0.9 0.8 0.7\ncolor 0.5 0.4 0.3\n'
+                'colorspace sRGB\n}\n')
+    if dup_out != dup_want:
+        failures += 1
+        print('  FAIL: duplicate `color` -- `colorspace` did not land after the LAST '
+              'colour line; got:\n%r\nwant:\n%r' % (dup_out, dup_want), file=sys.stderr)
+    elif stats['duplicate_color_chunks'] != 1:
+        failures += 1
+        print('  FAIL: duplicate `color` -- the chunk was not COUNTED as duplicated '
+              '(got %d)' % stats['duplicate_color_chunks'], file=sys.stderr)
+    else:
+        print('  ok: duplicate `color` -- inserted after the LAST line, and reported')
 
     # An UNTERMINATED chunk must be diagnosed and counted, not swallowed.
     stats = new_stats()
@@ -442,6 +503,10 @@ def main():
           file=sys.stderr)
     print('  %d chunks skipped: already carry a `colorspace` line'
           % stats['skipped_has_colorspace'], file=sys.stderr)
+    if stats['duplicate_color_chunks']:
+        print('  %d chunks spell `color` more than once (dead lines; `colorspace` '
+              'went after the LAST, which is the one that derives)'
+              % stats['duplicate_color_chunks'], file=sys.stderr)
     if stats['unterminated'] or errors:
         # NON-ZERO EXIT.  An unterminated chunk means part of a file went
         # unscanned; a read/write error means a file went unprocessed.  Either
