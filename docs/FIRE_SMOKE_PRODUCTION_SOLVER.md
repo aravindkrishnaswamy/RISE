@@ -5649,10 +5649,23 @@ Vreman cancellation signs. NASA9 segment 2 is proved unreachable for the
 canonical record over the admissible temperature domain and is therefore not
 silently counted as covered.
 
-On the sealed 4x5x4 mixed-boundary fixture, maximum normalized device/mirror
-separation is `0.0020747848823717565`; maximum derived absolute bound is
-`0.00084344337177579909`, and the maximum uncancelled Vreman scale is
-`0.049928860855711937`. Residency counters measure one command, one terminal
+The r197a reseal makes the acceptance comparison explicit. For every cell and
+each coefficient field across all sealed boundary and lineage fixtures, the
+gate is `|device - canonical fp64| <= 2e`, where `e` is that sample's termwise
+binary32 enclosure error; residual and bound therefore have identical units
+and scope. For diffusivity the maximum absolute residual is
+`5.6840302565076757e-08 m2/s`, with `5.9999482434865543e-07 m2/s` local bound
+at that residual and maximum residual/local-bound fraction
+`0.094734654797700393`. For effective conductivity the corresponding values
+are `6.0894076837687827e-05 W/(m K)`, `0.00064270352746039427 W/(m K)`, and
+`0.09474675995370252`. For molecular kinematic viscosity they are
+`1.0286298429782598e-10 m2/s`, `5.9100077840629978e-09 m2/s`, and
+`0.017404881356536891`. All local fractions are below one without widening.
+The former `0.0020747848823717565` number is retained only as a dimensionless
+positive-scale diagnostic and is not an acceptance comparison. The maximum
+uncancelled Vreman scale is `0.049928860855711937`.
+
+On the sealed 4x5x4 mixed-boundary fixture, residency counters measure one command, one terminal
 staging read, and zero interstage full-grid transfers. The comparator's
 certified and actual allocation are both `44296` bytes. The incremental live
 authority certificate is `131072` bytes, and adding it to the already certified
@@ -5664,12 +5677,12 @@ device identity. Authentication against a nonzero expected parent belongs to
 the separately scoped r196 target-lineage rung and is not claimed here.
 
 No case-authored semantics or inputs change, so `case_record_id` is not
-regenerated. The r197 live-binding revision regenerates solver producer
+regenerated. The r197a live-binding revision regenerates solver producer
 identity, and every later run must regenerate run identity from these solver
 semantics. The golden checkpoint remains untouched. Evidence is
 sealed in `rendered/fire_production_calibration/r197_resident_transport_authority/`
 `resident_transport_authority_evidence.v1`, SHA-256
-`3473a554ecec6cf56017efe60fa4b4d94a99350fa6fd6b3100f419122aee9acf`.
+`7c00ca11c48b6dccddec1c08ec604c36a9d8aac7ac79d67f4c80a62b90bf7059`.
 The next separately committed and reviewed rung is resident physical-flux
 authority; r197 does not claim a live R0/R1/R2 owner or execute the ported
 replay.

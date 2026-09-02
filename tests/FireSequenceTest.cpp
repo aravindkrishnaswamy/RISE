@@ -8162,7 +8162,10 @@ int RunProductionResidentTransportMetalFP64Fixture()
 	};
 	bool hostBinary32DAGBitExact=true;
 	std::uint32_t independentBranchBitmap=0u;
-	double maximumDerivedAbsoluteBound=0.0,maximumVremanUncancelledScale=0.0;
+	double maximumVremanUncancelledScale=0.0;
+	std::array<double,3> maximumOracleAbsoluteResidual={{0.0,0.0,0.0}};
+	std::array<double,3> boundAtMaximumOracleAbsoluteResidual={{0.0,0.0,0.0}};
+	std::array<double,3> maximumOracleBoundFraction={{0.0,0.0,0.0}};
 	auto compare=[&](const FireProductionResidentTransportComparatorRequest& fixture,
 		const OpenBoundaryConfig3D& boundary,FireProductionResidentTransportComparatorResult& metal,
 		double& maximumNormalized)->bool{
@@ -8235,19 +8238,26 @@ int RunProductionResidentTransportMetalFP64Fixture()
 					certified.coefficient[field].exact);
 				const double doubleEquivalence=std::fabs(certified.coefficient[field].exact-
 					target[field]);
+				const double oracleDifference=std::fabs(observed[field]-target[field]);
 				// Both the packed binary32 DAG and the canonical fp64 evaluator must
 				// lie inside the independently propagated termwise enclosure. The
 				// resulting device-vs-oracle radius is the triangle bound 2e. No
 				// final-output or cancellation-sensitive scale enters this gate.
 				const double doubleEquivalenceBound=certified.coefficient[field].error;
 				const double bound=2.0*certified.coefficient[field].error;
-				maximumDerivedAbsoluteBound=std::max(maximumDerivedAbsoluteBound,bound);
+				if(oracleDifference>maximumOracleAbsoluteResidual[field]){
+					maximumOracleAbsoluteResidual[field]=oracleDifference;
+					boundAtMaximumOracleAbsoluteResidual[field]=bound;
+				}
+				if(bound>0.0)maximumOracleBoundFraction[field]=std::max(
+					maximumOracleBoundFraction[field],oracleDifference/bound);
 				hostBinary32DAGBitExact=hostBinary32DAGBitExact&&
 					std::memcmp(&observedFloat[field],&certified.coefficient[field].rounded,
 						sizeof(float))==0;
 				maximumNormalized=std::max(maximumNormalized,std::fabs(
 					observed[field]-target[field])/positiveScale[field]);
 				if((!std::isfinite(difference)||difference>bound||
+					!std::isfinite(oracleDifference)||oracleDifference>bound||
 					doubleEquivalence>doubleEquivalenceBound)&&bounded)
 					std::fprintf(stderr,"RESIDENT_TRANSPORT_BOUND cell=%zu field=%u "
 						"observed=%.17g strict=%.17g target=%.17g difference=%.17g "
@@ -8259,7 +8269,8 @@ int RunProductionResidentTransportMetalFP64Fixture()
 					std::isfinite(doubleEquivalenceBound)&&doubleEquivalenceBound>=0.0&&
 					std::isfinite(difference)&&difference<=
 					certified.coefficient[field].error&&
-					doubleEquivalence<=doubleEquivalenceBound;
+					doubleEquivalence<=doubleEquivalenceBound&&
+					std::isfinite(oracleDifference)&&oracleDifference<=bound;
 			}
 		}
 		return bounded&&metal.deviceProduced&&metal.devicePublicationIdentity!=0u&&
@@ -8468,7 +8479,11 @@ int RunProductionResidentTransportMetalFP64Fixture()
 	passed=passed&&missingLineageRefused&&seamRefused&&invalidDeviceRefused&&
 		shortVelocityRefused;
 	std::fprintf(stderr,"RESIDENT_TRANSPORT_METAL_FP64 passed=%d host_fp32_dag_bit_equal=%d "
-		"max_norm=%.17g max_bound=%.17g vreman_uncancelled=%.17g "
+		"relative_scale_diagnostic_max=%.17g "
+		"diffusivity_abs_m2_s=%.17g diffusivity_bound_m2_s=%.17g diffusivity_bound_fraction=%.17g "
+		"conductivity_abs_W_mK=%.17g conductivity_bound_W_mK=%.17g conductivity_bound_fraction=%.17g "
+		"molecular_nu_abs_m2_s=%.17g molecular_nu_bound_m2_s=%.17g molecular_nu_bound_fraction=%.17g "
+		"vreman_uncancelled=%.17g "
 		"branch_bitmap=0x%08x independent_bitmap=0x%08x missing_lineage_refused=%d seam_refused=%d "
 		"invalid_device_refused=%d short_velocity_refused=%d cp_segment2_reachable=%d "
 		"fixture_ws=%llu actual_ws=%llu live_increment_ws=%llu owner_peak_ws=%llu "
@@ -8476,7 +8491,11 @@ int RunProductionResidentTransportMetalFP64Fixture()
 		"ws_parts=%d/%d/%d/%d "
 		"device_identity=%016llx\n",
 		passed?1:0,hostBinary32DAGBitExact?1:0,maximumNormalized,
-		maximumDerivedAbsoluteBound,maximumVremanUncancelledScale,branchBitmap,
+		maximumOracleAbsoluteResidual[0],boundAtMaximumOracleAbsoluteResidual[0],
+		maximumOracleBoundFraction[0],maximumOracleAbsoluteResidual[1],
+		boundAtMaximumOracleAbsoluteResidual[1],maximumOracleBoundFraction[1],
+		maximumOracleAbsoluteResidual[2],boundAtMaximumOracleAbsoluteResidual[2],
+		maximumOracleBoundFraction[2],maximumVremanUncancelledScale,branchBitmap,
 		independentBranchBitmap,missingLineageRefused?1:0,seamRefused?1:0,
 		invalidDeviceRefused?1:0,shortVelocityRefused?1:0,thirdCPSegmentReachable?1:0,
 		static_cast<unsigned long long>(wallResult.certifiedWorkingSetBytes),

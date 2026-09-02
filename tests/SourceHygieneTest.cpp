@@ -4005,6 +4005,15 @@ int main()
 		Check(evidence.find("live_path_CPU_substitution_admissible false\n")!=
 				std::string::npos&&evidence.find(
 				"host_binary32_DAG_role diagnostic_only\n")!=std::string::npos&&
+			evidence.find("acceptance_criterion absolute_device_minus_canonical_fp64_le_"
+				"2_times_termwise_enclosure_error_same_field_units\n")!=std::string::npos&&
+			evidence.find("diffusivity_max_absolute_residual_m2_per_s ")!=
+				std::string::npos&&evidence.find("diffusivity_bound_at_that_residual_m2_per_s ")!=
+				std::string::npos&&evidence.find("conductivity_max_absolute_residual_W_per_mK ")!=
+				std::string::npos&&evidence.find("conductivity_bound_at_that_residual_W_per_mK ")!=
+				std::string::npos&&evidence.find("maximum_normalized_device_mirror_separation ")==
+				std::string::npos&&evidence.find("maximum_derived_absolute_bound ")==
+				std::string::npos&&
 			evidence.find("device_branch_bitmap 0x0007fffb\n")!=std::string::npos&&
 			evidence.find("interstage_full_grid_transfer_count 0\n")!=
 				std::string::npos&&evidence.find(

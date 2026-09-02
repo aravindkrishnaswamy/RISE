@@ -5079,10 +5079,18 @@ it was already tried and refuted here.
   the host binary32 DAG comparison is diagnostic and unequal, which is
   admissible because transport evaluation is not a streaming kernel. The
   branch walker exactly matches device bitmap `0x0007fffb`; the current
-  methane record/domain proves NASA9 segment 2 unreachable. Maximum normalized
-  device/mirror separation is `0.0020747848823717565`, below derived bound
-  `0.00084344337177579909` in absolute units, with uncancelled Vreman scale
-  `0.049928860855711937`. Residency is measured as one command, one terminal
+  methane record/domain proves NASA9 segment 2 unreachable. The r197a reseal
+  corrects an evidence presentation error: `0.0020747848823717565` is a
+  dimensionless positive-scale diagnostic and is not compared to an absolute
+  bound. The binding criterion is evaluated per cell and field as
+  `|device - canonical fp64| <= 2e`, in that field's units. Maximum paired
+  residual/bound values are `5.6840302565076757e-08 / 5.9999482434865543e-07
+  m2/s` for diffusivity, `6.0894076837687827e-05 / 0.00064270352746039427
+  W/(m K)` for conductivity, and `1.0286298429782598e-10 /
+  5.9100077840629978e-09 m2/s` for molecular kinematic viscosity. Maximum
+  local bound fractions are `0.094734654797700393`, `0.09474675995370252`, and
+  `0.017404881356536891`; all are below one without widening. The uncancelled
+  Vreman scale is `0.049928860855711937`. Residency is measured as one command, one terminal
   staging read, and zero interstage full-grid transfers. Fixture allocation is
   exactly `44296` bytes; the live incremental certificate is `131072` bytes
   and the complete owner peak becomes `5941576` bytes. Immutable records,
@@ -5090,8 +5098,8 @@ it was already tried and refuted here.
   lineage all alter the device identity; a missing lineage tuple, invalid device state,
   broken periodic seams, and short velocity surfaces refuse without
   publication. No case-authored input changed, so `case_record_id` is stable;
-  r197's live binding regenerates producer identity, and later runs regenerate
+  r197a's live binding regenerates producer identity, and later runs regenerate
   run identity from these solver semantics. The golden checkpoint is untouched. The
   evidence SHA-256 is
-  `3473a554ecec6cf56017efe60fa4b4d94a99350fa6fd6b3100f419122aee9acf`.
+  `7c00ca11c48b6dccddec1c08ec604c36a9d8aac7ac79d67f4c80a62b90bf7059`.
   The next separately reviewed rung is resident physical-flux authority.
