@@ -5790,6 +5790,11 @@ There is no public candidate input. The comparator's terminal candidate copy
 is qualification output only and cannot mint authority. Candidate identity
 covers the resulting bits, source dose, shared alpha, binary32 precision, step,
 attempt/case identity, and the exact r198 and r197a publication handles. The
+device also proves the duplicated parent tuple before publication: EOS, FCT,
+and transport cell counts agree, EOS and transport attempts agree, and EOS and
+FCT timesteps have identical binary32 bits. Stage, precision, attempt, cell
+count, and timestep mutations on the same resident handle all refuse with
+bitmap `0x50`; a host label therefore cannot repair stale device metadata. The
 accepted publication is withheld until conservation admissibility, EOS
 inversion, and the r170 physicality bound complete. The raw terminal identity
 words are decoded even on device rejection, so those REDs observe the
@@ -5816,25 +5821,32 @@ attempt/case metadata handles refuse at preflight. The fixture spans the 1000 K
 NASA9 segment boundary as well as 300, 425, 950, 1500, 1900, and 2200 K.
 
 The earlier `2^-41` arithmetic claim is withdrawn: its hard-coded obligation
-count was not connected to the Metal DAG and therefore was not a proof. The
-streaming EOS kernel instead applies the r195 primary rule directly—every
-cell's temperature and represented-pressure output bit-matches the fp64
-mirror's single binary32 projection. Absolute deviation is compared in
-identical ratio units with one local binary32 output ULP derived by
-`nextafter`; the measured residual and worst residual/bound ratio are zero.
-Renormalization uses general `TwoSum` at every merge, so no unchecked
-QuickTwoSum magnitude precondition remains. The r60 and r170 comparisons add
-one local binary32 ULP to the measured residual, not to the allowance, making
-the policy fail-closed without a cancellation-derived bound. No pooled
-across-field statistic participates in acceptance.
+count was not connected to the Metal DAG and therefore was not a proof. Each
+three-term value now carries a fourth, outward error bound. Packed constants
+begin with the local spacing of the discarded tail. Addition accumulates with
+general `TwoSum`; multiplication accumulates every 3-by-3 product and its FMA
+residual; division certifies the quotient from its computed residual divided by
+a proved denominator lower bound. The logarithm uses an atanh series through
+odd order 49 and includes its analytic remainder. Every gate compares the
+resulting intervals and refuses when their order overlaps. Thus r60 and r170
+are protected by a connected error enclosure, not output spacing or
+subtractive cancellation.
 
-The r60 endpoint REDs locate the actual adjacent binary32 energy values:
-rejected/accepted at the lower clamp and accepted/refused at the strict upper
-bound. Their exact terminal failure bitmaps are `0xD0` at the lower boundary
-and `0x80` at the upper boundary. The r170 comparison remains on compensated
-deviation before binary32 publication and adds one local ULP fail-closed. A constructed
-state whose exact ratio exceeds `1.25` while binary32 rounds to `1.25` still
-refuses. No dynamics threshold was widened.
+Every cell's temperature and represented-pressure output bit-matches the fp64
+mirror's single binary32 projection. Absolute deviation is recorded in the
+same ratio units with its local projection enclosure. All 192 cell/field rows
+are retained in the SHA-bound raw transcript; their residuals and worst
+residual/enclosure ratios are zero. Four additional arithmetic-boundary cases
+span 300, 1000, 1000.001, and 2200 K and state scales from `0.750500023` to
+`1.24950004`. No pooled across-field statistic participates in acceptance.
+
+The isolated r60 RED calls the production `fct_commit_scalar` kernel directly:
+energy `2283578` is admitted and its adjacent binary32 value `2283578.25`
+refuses with exact bitmap `0x10`. The separate `0xD0` and `0x80` observations
+are EOS lower/upper inversion refusals, not r60 endpoint evidence. The r170
+kernel still refuses a constructed exact ratio above `1.25` even though its
+binary32 publication rounds to `1.25`; its bitmap is `0x400`. No dynamics
+threshold was widened.
 
 The monitored-manifold boundary remains explicit. EOS deviation is recorded
 for every candidate, but no inherited pressure-deviation or low-Mach ceiling
@@ -5849,8 +5861,10 @@ NASA9 segment classes reachable over the sealed case interval.
 
 The qualification interval is one Metal command with one terminal staging
 read and zero interstage full-grid transfers. Its fixture certificate is
-`1130496` bytes against `128384` bytes allocated. The live incremental
-certificate is `278528` bytes and the complete 8-cubed owner peak is
+`1130496` bytes against `128384` bytes allocated. The r198 live certificate is
+`294912` bytes after counting its retained advective delta explicitly; the EOS
+live incremental certificate is `262144` bytes because it consumes rather than
+duplicates that parent. The complete 8-cubed owner peak is
 `6875464` bytes. No case-authored input changed, so `case_record_id` remains
 stable; producer and future run identities inherit r199 semantics, and the
 golden checkpoint remains untouched. Evidence is staged for fresh review in

@@ -1182,6 +1182,7 @@ namespace RISE
 		std::uint32_t branchObligationBitmap;
 		std::uint64_t certifiedWorkingSetBytes;
 		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t liveAuthorityAllocationBytes;
 		std::uint64_t transportPublicationIdentity;
 		std::uint64_t devicePublicationIdentity;
 		double deviceElapsedMS;
@@ -1191,6 +1192,7 @@ namespace RISE
 			commandCommitCount(0u),interstageFullGridTransferCount(0u),
 			terminalStagingCount(0u),branchObligationBitmap(0u),
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			liveAuthorityAllocationBytes(0u),
 			transportPublicationIdentity(0u),devicePublicationIdentity(0u),
 			deviceElapsedMS(0.0),deviceProduced(false)
 			{ packedFaceOffset.fill(0u); }
@@ -1235,6 +1237,8 @@ namespace RISE
 		bool qualificationMismatchedDeviceStage;
 		bool qualificationMismatchedDevicePrecision;
 		bool qualificationMismatchedDeviceAttempt;
+		bool qualificationMismatchedDeviceCells;
+		bool qualificationMismatchedDeviceTimeStep;
 		bool qualificationMismatchedDeviceCase;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
@@ -1249,6 +1253,8 @@ namespace RISE
 			qualificationMismatchedDeviceStage(false),
 			qualificationMismatchedDevicePrecision(false),
 			qualificationMismatchedDeviceAttempt(false),
+			qualificationMismatchedDeviceCells(false),
+			qualificationMismatchedDeviceTimeStep(false),
 			qualificationMismatchedDeviceCase(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
@@ -1273,6 +1279,7 @@ namespace RISE
 		std::uint32_t deviceFailureBitmap;
 		std::uint64_t certifiedWorkingSetBytes;
 		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t liveAuthorityAllocationBytes;
 		std::uint64_t transportPublicationIdentity;
 		std::uint64_t physicalFluxPublicationIdentity;
 		std::uint64_t candidatePublicationIdentity;
@@ -1288,6 +1295,7 @@ namespace RISE
 			commandCommitCount(0u),interstageFullGridTransferCount(0u),
 			terminalStagingCount(0u),branchObligationBitmap(0u),deviceFailureBitmap(0u),
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			liveAuthorityAllocationBytes(0u),
 			transportPublicationIdentity(0u),physicalFluxPublicationIdentity(0u),
 			candidatePublicationIdentity(0u),EOSPublicationIdentity(0u),
 			deviceElapsedMS(0.0),deviceAttempted(false),terminalRead(false),deviceProduced(false) {}
@@ -1296,9 +1304,11 @@ namespace RISE
 	bool FireProductionResidentEOSCandidateMetalWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
-	//! Incremental owner peak for the candidate copy, per-cell EOS fields, and
-	//! two publication identities.  Parent transport/physical surfaces are
-	//! already resident and are not counted again.
+	//! Incremental owner peak for the complete source-inclusive FCT Q* producer
+	//! over r198's retained delta and for EOS evaluation: low state, limiter
+	//! ratios/alpha, accepted candidate, certificates and immutable EOS table,
+	//! per-cell EOS fields, refusal/obligation storage, and publication identities.
+	//! Parent transport/physical surfaces are already resident and are not counted.
 	bool FireProductionResidentEOSCandidateLiveIncrementWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
@@ -1356,6 +1366,15 @@ namespace RISE
 		const FireProductionScalarFCTRequest& firstStage,
 		const FireProductionScalarFCTRequest& secondStage,
 		FireProductionScalarFCTMetalStageDiagnosticResult& result,
+		std::string* error=0 );
+
+	//! Qualification-only direct invocation of fct_commit_scalar.  It isolates
+	//! the r60 inequality refusal bit from ratio construction and EOS inversion;
+	//! zero flux delta makes the supplied candidate the exact committed state.
+	bool EvaluateFireProductionScalarFCTCommitAdmissibilityMetalDiagnostic(
+		const FireProductionScalarFCTRequest& request,
+		const std::vector<float>& candidate,
+		std::uint32_t& failureBitmap,
 		std::string* error=0 );
 #endif
 

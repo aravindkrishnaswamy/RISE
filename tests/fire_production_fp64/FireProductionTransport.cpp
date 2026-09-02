@@ -1096,14 +1096,16 @@ namespace RISEFireProductionFP64
 			static_cast<std::uint64_t>(shape.nx)*shape.nz+
 			static_cast<std::uint64_t>(shape.nx)*shape.ny);
 		// Private immutable surfaces not already owned by transport, followed by
-		// donor, MC-MUSCL, f_N, energy, J_g, staged log/enthalpy certification,
-		// both composites, the physical obligation word, and publication.
+		// donor, retained canonical FCT delta, MC-MUSCL, f_N, energy, J_g,
+		// staged log/enthalpy certification, both composites, the physical
+		// obligation word, and publication.
 		return AddMetalValueBuffer(boundaryFaces,sizeof(unsigned char),bytes)&&
 			AddMetalValueBuffer(9u,sizeof(double),bytes)&&
 			AddMetalValueBuffer(64u,sizeof(double),bytes)&&
 			AddMetalValueBuffer(64u,sizeof(double),bytes)&&
 			AddMetalValueBuffer(64u,sizeof(double),bytes)&&
 			AddMetalValueBuffer(16u,sizeof(unsigned char),bytes)&&
+			AddMetalValueBuffer(9u*faces,sizeof(double),bytes)&&
 			AddMetalValueBuffer(9u*faces,sizeof(double),bytes)&&
 			AddMetalValueBuffer(9u*faces,sizeof(double),bytes)&&
 			AddMetalValueBuffer(8u*faces,sizeof(double),bytes)&&
@@ -1128,10 +1130,10 @@ namespace RISEFireProductionFP64
 		const std::uint64_t faces=FireProductionProjectionFaceCount(shape,0u)+
 			FireProductionProjectionFaceCount(shape,1u)+
 			FireProductionProjectionFaceCount(shape,2u);
-		// Complete source-inclusive FCT Q* producer: delta, low state, limiter
-		// ratios, shared face alpha, accepted candidate, and two identities.
-		if(!AddMetalValueBuffer(9u*faces,sizeof(double),bytes)||
-			!AddMetalValueBuffer(9u*cells,sizeof(double),bytes)||
+		// Complete source-inclusive FCT Q* producer over the retained r198 delta:
+		// low state, limiter ratios, shared face alpha, accepted candidate,
+		// thermochemistry/certificate inputs, EOS fields, and identities.
+		if(!AddMetalValueBuffer(9u*cells,sizeof(double),bytes)||
 			!AddMetalValueBuffer(11u*cells,sizeof(double),bytes)||
 			!AddMetalValueBuffer(faces,sizeof(double),bytes)||
 			!AddMetalValueBuffer(14u,sizeof(double),bytes)||

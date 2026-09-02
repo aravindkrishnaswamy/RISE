@@ -82,6 +82,55 @@ namespace
 		while((position=text.find(token,position))!=std::string::npos){++count;position+=token.size();}
 		return count;
 	}
+	bool ValidateResidentEOSRawEvidence(const std::string& text)
+	{
+		std::array<std::array<bool,3>,64> seen={};std::size_t rows=0u;
+		std::istringstream input(text);std::string line;
+		while(std::getline(input,line)){
+			if(line.rfind("RESIDENT_EOS_CELL cell=",0u)!=0u)continue;
+			std::size_t cell=64u;char field[64]={};
+			if(std::sscanf(line.c_str(),"RESIDENT_EOS_CELL cell=%zu field=%63s",
+				&cell,field)!=2||cell>=seen.size())return false;
+			std::size_t fieldIndex=3u;
+			if(std::strcmp(field,"temperature")==0)fieldIndex=0u;
+			if(std::strcmp(field,"represented_pressure_ratio")==0)fieldIndex=1u;
+			if(std::strcmp(field,"absolute_eos_deviation")==0)fieldIndex=2u;
+			if(fieldIndex>=3u||seen[cell][fieldIndex]||
+				line.find("residual_over_enclosure=0")==std::string::npos||
+				(fieldIndex<2u&&line.find("bit_equal=1")==std::string::npos)||
+				(fieldIndex==2u&&line.find("enclosed=1")==std::string::npos))return false;
+			seen[cell][fieldIndex]=true;++rows;
+		}
+		if(rows!=192u)return false;
+		for(const auto& cell:seen)for(const bool field:cell)if(!field)return false;
+		const std::array<const char*,9> redRecords={{
+			"name=r170_hard_bound_30_percent expected=0x00000400 observed=0x00000400",
+			"name=eos_lower_inversion_endpoint expected=0x000000d0 observed=0x000000d0",
+			"name=eos_upper_inversion_endpoint expected=0x00000080 observed=0x00000080",
+			"name=r170_exact_above_binary32_rounds_to_bound expected=0x00000400 observed=0x00000400",
+			"name=forged_device_stage expected=0x00000050 observed=0x00000050",
+			"name=forged_device_precision expected=0x00000050 observed=0x00000050",
+			"name=forged_device_attempt expected=0x00000050 observed=0x00000050",
+			"name=forged_device_cells expected=0x00000050 observed=0x00000050",
+			"name=forged_device_timestep expected=0x00000050 observed=0x00000050"}};
+		if(CountText(text,"RESIDENT_EOS_RED ")!=redRecords.size())return false;
+		for(const char* record:redRecords){
+			const std::size_t position=text.find(std::string("RESIDENT_EOS_RED ")+record);
+			if(position==std::string::npos)return false;
+			const std::size_t end=text.find('\n',position);
+			const std::string lineRecord=text.substr(position,end-position);
+			if(lineRecord.find("attempted=1 read=1 commands=1 staging=1")==
+				std::string::npos||lineRecord.find("candidate_identity=0 eos_identity=0 passed=1")==
+				std::string::npos)return false;
+		}
+		return text.find("RESIDENT_EOS_R60_COMMIT accepted_energy=2283578 "
+			"refused_energy=2283578.25 adjacent=1 accepted_bitmap=0x00000000 "
+			"refused_bitmap=0x00000010 passed=1")!=std::string::npos&&
+			text.find("RESIDENT_EOS_ARITHMETIC_BOUNDARY_SWEEP samples=4 "
+				"temperature_classes=4 composition_classes=main_64_cell_fixture "
+				"scale_min=0.750500023 scale_max=1.24950004 passed=1")!=
+				std::string::npos&&text.find("RESIDENT_EOS passed=1 ")!=std::string::npos;
+	}
 	bool IndependentR60AndPeriodicCommuting(
 		const RISE::FireProductionScalarFCTRequest& request,
 		const RISE::FireProductionScalarFCTResult& result)
@@ -3562,6 +3611,9 @@ int main()
 	const std::string residentEOSCandidateLiveBinding=ReadText(
 		"rendered/fire_production_calibration/r199_resident_eos_candidate_identity/"
 		"resident_eos_candidate_identity_live_binding.v1");
+	const std::string residentEOSRawEvidence=ReadText(
+		"rendered/fire_production_calibration/r199_resident_eos_candidate_identity/"
+		"resident_eos_metal_sweep.raw");
 	const auto liveOwnerBound=[&](const std::string& path,const std::string& sha256) {
 		const std::string current=sourceSHA(path.c_str());
 		return projectedHeunLiveBinding.find("owner "+path+" sha256 "+sha256+"\n")!=
@@ -3695,12 +3747,16 @@ int main()
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateEvidence.begin(),residentEOSCandidateEvidence.end()))==
-			"2978558e5b6a6965fa01fe24abf511f9e572165c00dc79a414a4b74027736924"&&
+			"cda430d2320619ab2b9daae0551fb0d9b8b7702b3e135fba1fb0aa58c76d67ed"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			residentEOSRawEvidence.begin(),residentEOSRawEvidence.end()))==
+			"709dc85f47bb593f046e333f8e69f01e0a54eeb40fdd99dbf9cdc91089212fcf"&&
+		ValidateResidentEOSRawEvidence(residentEOSRawEvidence)&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateLiveBinding.begin(),residentEOSCandidateLiveBinding.end()))==
-			"79c177afd994558df3361d69a09e404d9f46e3344e0d2ad3d9d0b86e46df368e"&&
+			"82c49bd9dc73e7ba37e36270b542a0ce31c331f83a259e25c5ba2616f4c05622"&&
 		residentEOSCandidateLiveBinding.find("calibration_test_self_binding false\n")!=
-			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 13\n")!=
+			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 14\n")!=
 			std::string::npos&&
 		residentEOSOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
 		residentEOSOwnerBound("src/Library/Utilities/FireProductionTransport.cpp")&&
@@ -3714,6 +3770,8 @@ int main()
 		residentEOSOwnerBound("tests/fire_production_trace/SourceManifest.h")&&
 		residentEOSOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")&&
 		residentEOSOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md")&&
+		residentEOSOwnerBound("rendered/fire_production_calibration/"
+			"r199_resident_eos_candidate_identity/resident_eos_metal_sweep.raw")&&
 		residentEOSOwnerBound("rendered/fire_production_calibration/"
 			"r199_resident_eos_candidate_identity/resident_eos_candidate_identity_evidence.v1")&&
 		residentEOSCandidateEvidence.find("authority_producer "
@@ -3732,6 +3790,11 @@ int main()
 		residentEOSCandidateEvidence.find(
 			"withdrawn_bound 2^-41_termwise_arithmetic\n")!=std::string::npos&&
 		residentEOSCandidateEvidence.find(
+			"arithmetic_enclosure connected_error_free_expansion_plus_outward_remainder\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"raw_transcript_sha256 709dc85f47bb593f046e333f8e69f01e0a54eeb40fdd99dbf9cdc91089212fcf\n")!=
+			std::string::npos&&
+		residentEOSCandidateEvidence.find(
 			"host_preflight_refusal_observation no_publication_issued_no_device_attempt_no_terminal_read\n")!=
 			std::string::npos&&
 		residentEOSCandidateEvidence.find(
@@ -3744,7 +3807,9 @@ int main()
 			"monitored_20_percent_case accepted\n")!=std::string::npos&&
 		residentEOSCandidateEvidence.find("manifold_ceiling_reintroduced false\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
-			"interstage_full_grid_transfer_count 0\n")!=std::string::npos,
+			"interstage_full_grid_transfer_count 0\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find("isolated_r60_failure_bitmap 0x00000010\n")!=
+			std::string::npos,
 		"r199 binds complete resident QStar lineage, per-cell EOS projection, monitored-manifold scope, and its non-self-referential live owners");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"

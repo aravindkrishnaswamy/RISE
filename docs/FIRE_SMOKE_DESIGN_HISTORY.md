@@ -5152,29 +5152,35 @@ it was already tried and refuted here.
   identities and exact failure bitmap. All authority members are private to
   their issuers. Unsealed, mismatched, missing, genuinely short,
   CPU-substituted, falsely fp64-labelled, and physically invalid candidates
-  refuse atomically.
+  refuse atomically. The device binds EOS, FCT, and transport cell counts,
+  EOS/transport attempts, and EOS/FCT binary32 timesteps as one parent tuple;
+  same-handle stage, precision, attempt, cell-count, and timestep mutations all
+  refuse with `0x50`.
   The EOS kernel carries the sealed binary64 NASA9 and affine data as
   three-term binary32 expansions. Candidate update, temperature inversion,
   and represented pressure bit-match their mirrors per cell. EOS parameters
   and all 870 thermochemistry words are exact lineage parents; a different
   same-sized table refuses and the table bits enter EOS identity. The shared
   per-face alpha and candidate are bit-identical to their CPU mirrors. The
-  earlier unconnected `2^-41` obligation-count claim is withdrawn; per-cell
-  temperature and pressure use exact fp64-to-binary32 bit comparison, while
-  deviation uses one locally derived binary32 output ULP. General `TwoSum`
-  replaces unchecked QuickTwoSum renormalization. The measured maximum
-  residual and residual/bound ratio are zero. Exact
-  adjacent r60 lower/upper endpoint pairs and a just-above-`2^-2` state that
-  rounds to `1.25f` bind the corrected semantics; r60 lower/upper failure
-  bitmaps are `0xD0`/`0x80`, and r170 is `0x400`. Device stage/precision
-  mutations produce `0x50`; split attempt/case handles refuse preflight. The isolated `0x000003ff`
+  earlier unconnected `2^-41` obligation-count claim is withdrawn. The
+  three-term values now carry connected outward error bounds: exact TwoSum/FMA
+  expansion accumulation, residual-certified division, and an analytically
+  bounded atanh logarithm. Interval-order uncertainty refuses, so r60/r170 no
+  longer depend on cancellation or output ULPs. Per-cell temperature and
+  pressure use exact fp64-to-binary32 bit comparison; all 192 field rows are
+  retained in the SHA-bound transcript, with zero residual/bound ratio. Four
+  adversarial temperature/scale cases also pass. A direct production
+  `fct_commit_scalar` RED admits energy `2283578` and refuses the adjacent
+  `2283578.25` value with `0x10`; `0xD0`/`0x80` are correctly classified as EOS
+  inversion refusals, while r170 is `0x400`. The isolated `0x000003ff`
   bitmap matches its independent branch walker.
   Monitored-manifold semantics are preserved: a 20% deviation is recorded and
   admitted, no manifold ceiling exists here, and only conservation-class
   admissibility plus the r170 `2^-2` dynamics bound refuse (the 30% RED does).
   The interval uses one command, one terminal read, and zero interstage grid
-  transfers. Fixture/candidate/owner certificates are `1130496`, `278528`, and
-  `6875464` bytes respectively, versus `128384` fixture bytes allocated.
+  transfers. Fixture/EOS-live/owner certificates are `1130496`, `262144`, and
+  `6875464` bytes respectively, versus `128384` fixture bytes allocated; r198's
+  corrected live certificate is `294912` bytes and owns the retained delta.
   `case_record_id` is unchanged, future producer/run identities inherit r199,
   and the golden checkpoint is untouched. The evidence SHA is sealed after
   fresh boundary review. The next rung is authenticated target lineage.
