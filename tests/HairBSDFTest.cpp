@@ -1045,6 +1045,50 @@ static void RunInversionRoundTrip()
     }
 }
 
+//! Tier-3 spectral white-corner guard: `HairScatteringBase::SigmaANM`
+//! samples the tier-3 `color` painter through `GuardedGetColorNM`
+//! (HairBSDF.cpp SigmaANM, ~line 1011) precisely because the raw
+//! Jakob-Hanika uplift of authored white collapses toward 0 above
+//! ~620nm (docs/JH_LUT_GAMUT.md; measured in CoatedLayer.h
+//! PassTransmittance) -- which SigmaAFromReflectance would then invert
+//! into a spuriously large absorption instead of the correct 0
+//! (`SigmaAFromReflectance(1, D) == 0` exactly, since log(1) == 0).
+//! This locks SigmaANM(white, 660nm) to exactly 0, matching
+//! SigmaARGB(white)'s exact 0 on every channel -- if the guard were
+//! removed this would go from 0 to a large positive number instead.
+static void RunTier3WhiteGuardNM()
+{
+    std::cout << "=== 6b. Tier-3 spectral white-corner guard (SigmaANM) ===" << std::endl;
+
+    ColorRef white( new UniformColorPainter( RISEPel( 1, 1, 1 ), eSpectrumKind_Albedo ) );
+    ScalarRef betaM( new UniformScalarPainter( 0.3 ) );
+    ScalarRef betaN( new UniformScalarPainter( 0.3 ) );
+    ScalarRef alpha( new UniformScalarPainter( 2.0 ) );
+    ScalarRef ior( new UniformScalarPainter( 1.55 ) );
+
+    HairPainters hp;
+    hp.color  = white.get();
+    hp.beta_m = betaM.get();  hp.beta_n = betaN.get();
+    hp.alpha  = alpha.get();  hp.ior    = ior.get();
+
+    HairBRDF* brdf = new HairBRDF( hp ); brdf->addref();
+    const RayIntersectionGeometric ri = MakeFibreHit( 0.3, 1.1, 0.0 );
+
+    Scalar rgb[3];
+    Scalar nmVal = -1;
+    brdf->TestSigmaA( ri, Scalar(0.3), rgb, nmVal, Scalar(660) );
+    brdf->release();
+
+    std::cout << "  SigmaARGB(white) = " << rgb[0] << ", " << rgb[1] << ", " << rgb[2]
+              << "   SigmaANM(white, 660nm) = " << std::setprecision(9) << double(nmVal) << std::endl;
+
+    Check( Near( double(rgb[0]), 0.0, 1e-12 ), "SigmaARGB(white) R == 0 exactly", double(rgb[0]), 0.0 );
+    Check( Near( double(rgb[1]), 0.0, 1e-12 ), "SigmaARGB(white) G == 0 exactly", double(rgb[1]), 0.0 );
+    Check( Near( double(rgb[2]), 0.0, 1e-12 ), "SigmaARGB(white) B == 0 exactly", double(rgb[2]), 0.0 );
+    Check( Near( double(nmVal), 0.0, 1e-12 ), "SigmaANM(white, 660nm) == 0 exactly, matches SigmaARGB",
+           double(nmVal), 0.0 );
+}
+
 // ============================================================
 //  Roughness floor
 // ============================================================
@@ -2742,6 +2786,8 @@ int main()
     RunMelaninLadder();
     std::cout << std::endl;
     RunInversionRoundTrip();
+    std::cout << std::endl;
+    RunTier3WhiteGuardNM();
     std::cout << std::endl;
     RunRoughnessFloor();
     std::cout << std::endl;

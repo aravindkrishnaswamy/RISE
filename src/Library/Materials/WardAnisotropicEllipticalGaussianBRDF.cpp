@@ -137,7 +137,7 @@ Scalar WardAnisotropicEllipticalGaussianBRDF::valueNM( const Vector3& vLightIn, 
 	}
 	ComputeFactors<Scalar>( d, s, vLightIn, ri, myonb.w(), myonb.u(), pAlphaX->GetValueAtNM(ri,nm), pAlphaY->GetValueAtNM(ri,nm) );
 
-	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
+	return d*GuardedGetColorNM( *pDiffuse, ri, nm ) + s*GuardedGetColorNM( *pSpecular, ri, nm );
 }
 
 RISEPel WardAnisotropicEllipticalGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const

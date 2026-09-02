@@ -86,7 +86,7 @@ RISEPel LambertianBRDF::value( const Vector3& vLightIn, const RayIntersectionGeo
 Scalar LambertianBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
 	if( ShouldReflect( vLightIn, ri, ri.onb.w() ) ) {
-		return pReflectance->GetColorNM(ri,nm) * INV_PI;
+		return GuardedGetColorNM( *pReflectance, ri, nm ) * INV_PI;
 	}
 
 	return 0;
@@ -108,6 +108,6 @@ bool LambertianBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RI
 
 bool LambertianBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
-	out = pReflectance->GetColorNM( ri, nm );
+	out = GuardedGetColorNM( *pReflectance, ri, nm );
 	return true;
 }

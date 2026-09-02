@@ -93,6 +93,43 @@ namespace RISE
 			const RayIntersectionGeometric& /*ri*/				///< [in] Geometric intersection details
 			) const { return Scalar(1); }
 	};
+
+	//! An authored colour is "untinted white" iff its minimum RGB
+	//! component is >= 1 - 1e-6 (same epsilon as
+	//! CoatedBRDF::ResolveCoat's `out.tinted` decision).  A multiplicative
+	//! slot at authored white must be an exact no-op on the spectral pipe
+	//! too: `GetColorNM` runs the Jakob-Hanika uplift, which collapses
+	//! pure white toward zero above ~620 nm (measured curve + rationale:
+	//! CoatedLayer.h `PassTransmittance`, ~line 302; precedent decision:
+	//! CoatedBRDF::ResolveCoat, ~line 107).
+	inline bool IsUntintedWhite( const RISEPel& c )
+	{
+		const Scalar minc = r_min( r_min( c[0], c[1] ), c[2] );
+		return minc >= Scalar(1) - Scalar(1e-6);
+	}
+
+	//! Guarded spectral sample of a multiplicative painter slot: returns
+	//! exactly 1.0 when the AUTHORED (un-uplifted) colour is untinted
+	//! white, else the raw `GetColorNM` sample.  See `IsUntintedWhite`.
+	//!
+	//! Precondition: the bound painter must be an eSpectrumKind_Albedo
+	//! source.  The floor-only `minc >= 1 - 1e-6` check is EXACT only
+	//! because `RGBAlbedoSpectrum::FromRGB` clamps its input to [0, 1]
+	//! before the LUT lookup (src/Library/Utilities/Color/RGBSpectra.h:39-40,
+	//! clamp itself performed by RGBToSpectrumTable::operator(), documented
+	//! at RGBToSpectrumTable.h:93) -- so `minc >= 1 - 1e-6` implies every
+	//! channel is already at the clamp ceiling and uplifts as exact white.
+	//! An Unbounded or Illuminant-kind painter does NOT clamp (see
+	//! RGBUnboundedSpectrum::FromRGB / RGBIlluminantSpectrum::FromRGB in the
+	//! same header) -- binding one to a guarded slot would break this
+	//! assumption and must not be done without revisiting the guard.
+	inline Scalar GuardedGetColorNM( const IPainter& p, const RayIntersectionGeometric& ri, const Scalar nm )
+	{
+		if( IsUntintedWhite( p.GetColor( ri ) ) ) {
+			return Scalar(1);
+		}
+		return p.GetColorNM( ri, nm );
+	}
 }
 
 #include "../Intersection/RayIntersectionGeometric.h"

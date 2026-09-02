@@ -127,7 +127,7 @@ Scalar SheenBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometr
 	const Scalar D = CharlieSheen::D( alpha, nDotH );
 	const Scalar V = CharlieSheen::V( alpha, nDotL, nDotV );
 
-	return pColor->GetColorNM( ri, nm ) * D * V;
+	return GuardedGetColorNM( *pColor, ri, nm ) * D * V;
 }
 
 RISEPel SheenBRDF::albedo( const RayIntersectionGeometric& ri ) const

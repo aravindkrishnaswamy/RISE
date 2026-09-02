@@ -114,7 +114,7 @@ Scalar WardIsotropicGaussianBRDF::valueNM( const Vector3& vLightIn, const RayInt
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	ComputeFactors<Scalar>( d, s, vLightIn, ri, n, pAlpha->GetValueAtNM(ri,nm) );
 
-	return d*pDiffuse->GetColorNM(ri,nm) + s*pSpecular->GetColorNM(ri,nm);
+	return d*GuardedGetColorNM( *pDiffuse, ri, nm ) + s*GuardedGetColorNM( *pSpecular, ri, nm );
 }
 
 RISEPel WardIsotropicGaussianBRDF::albedo( const RayIntersectionGeometric& ri ) const

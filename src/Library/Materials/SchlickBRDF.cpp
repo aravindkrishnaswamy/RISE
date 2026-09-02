@@ -142,8 +142,8 @@ Scalar SchlickBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeome
 	}
 	const Scalar factor = ComputeFactor<Scalar>( fresnel, vLightIn, ri, myonb.w(), myonb.v(), pRoughness->GetValueAtNM(ri,nm), pIsotropy->GetValueAtNM(ri,nm) );
 	if( factor > 0 ) {
-		const Scalar rho = pSpecular->GetColorNM(ri,nm);
-		return (pDiffuse->GetColorNM(ri,nm)*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;
+		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
+		return (GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI) + (rho + (1.0-rho)*fresnel) * factor;
 	}
 
 	return 0;

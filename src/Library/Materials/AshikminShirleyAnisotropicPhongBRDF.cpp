@@ -185,7 +185,7 @@ RISEPel AshikminShirleyAnisotropicPhongBRDF::value( const Vector3& vLightIn, con
 
 Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric& ri, const Scalar nm ) const
 {
-	const Scalar	rsCol = pRs->GetColorNM(ri,nm);
+	const Scalar	rsCol = GuardedGetColorNM( *pRs, ri, nm );
 	const Scalar	OMRs = 1.0 - rsCol;
 
 	Scalar diffuseFactor, specularFactor;
@@ -197,7 +197,7 @@ Scalar AshikminShirleyAnisotropicPhongBRDF::valueNM( const Vector3& vLightIn, co
 	}
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, myonb.w(), myonb.u(), myonb.v(), pNu->GetValueAtNM(ri,nm), pNv->GetValueAtNM(ri,nm), rsCol );
 
-	const Scalar diffuse = (pRd->GetColorNM(ri,nm) * OMRs * diffuseFactor);
+	const Scalar diffuse = (GuardedGetColorNM( *pRd, ri, nm ) * OMRs * diffuseFactor);
 	// specularFactor already contains Fresnel — no extra Rs multiplication
 	const Scalar specular = specularFactor;
 

@@ -269,7 +269,7 @@ void TranslucentSPF::ScatterNM(
 	if( bEnteringNM )
 	{
 		// Extinction check
-		front.krayNM = pRefFront->GetColorNM(ri,nm);
+		front.krayNM = GuardedGetColorNM( *pRefFront, ri, nm );
 		front.type = ScatteredRay::eRayDiffuse;
 
 		if( front.krayNM > 0 ) {
@@ -285,7 +285,7 @@ void TranslucentSPF::ScatterNM(
 			}
 		}
 
-		trans.krayNM = pTrans->GetColorNM(ri,nm);
+		trans.krayNM = GuardedGetColorNM( *pTrans, ri, nm );
 		trans.type = ScatteredRay::eRayTranslucent;
 
 		if( trans.krayNM > 0 ) {
@@ -311,7 +311,7 @@ void TranslucentSPF::ScatterNM(
 	{
 		// Coming out the other side
 		const Scalar distance = Vector3Ops::Magnitude( Vector3Ops::mkVector3(ri.ray.origin, ri.ptIntersection) );
-		front.krayNM = pTrans->GetColorNM(ri,nm) * exp(-(pExtinction->GetValueAtNM(ri,nm)*distance));
+		front.krayNM = GuardedGetColorNM( *pTrans, ri, nm ) * exp(-(pExtinction->GetValueAtNM(ri,nm)*distance));
 
 		front.type = ScatteredRay::eRayDiffuse;
 

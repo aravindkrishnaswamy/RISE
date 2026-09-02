@@ -358,7 +358,7 @@ void PerfectRefractorSPF::ScatterNM(
 
 	if( ref < 1.0 ) {
 		specular.ray.Set( ri.ptIntersection, vRefracted );
-		specular.krayNM = pRefractivity->GetColorNM(ri,nm) * (1.0-ref);
+		specular.krayNM = GuardedGetColorNM( *pRefractivity, ri, nm ) * (1.0-ref);
 
 		scattered.AddScatteredRay( specular );
 	}

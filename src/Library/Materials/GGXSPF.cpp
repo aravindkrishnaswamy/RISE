@@ -463,8 +463,8 @@ void GGXSPF::ScatterNM(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture weights
-	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
-	const Scalar ws = pSpecular->GetColorNM(ri,nm);
+	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
+	const Scalar ws = GuardedGetColorNM( *pSpecular, ri, nm );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alphaEff );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
@@ -494,10 +494,12 @@ void GGXSPF::ScatterNM(
 			const Scalar mixPdf = (total > 1e-10) ?
 				(wd * diffPdf + wms * msPdfHere + ws * specPdf) / total : diffPdf;
 
-			Scalar krayNM = pDiffuse->GetColorNM(ri,nm) / pDiffuseSelect;
+			// wd/ws already hold the guarded samples for this call (fetched
+			// once above); reuse rather than re-sampling the same slot.
+			Scalar krayNM = wd / pDiffuseSelect;
 			if( fresnelMode == eFresnelSchlickF0 )
 			{
-				const Scalar F0 = pSpecular->GetColorNM(ri,nm);
+				const Scalar F0 = ws;
 				krayNM = krayNM * r_max( Scalar(0), Scalar(1.0) - F0 );
 			}
 
@@ -537,7 +539,8 @@ void GGXSPF::ScatterNM(
 							(wd * diffPdf + wms * msPdfHere + ws * vndfPdf) / total : vndfPdf;
 
 						// Fresnel evaluated at microfacet normal m
-						const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+						// (ws already holds the guarded pSpecular sample for this call)
+						const Scalar specColor = ws;
 						Scalar F;
 						if( fresnelMode == eFresnelSchlickF0 )
 						{
@@ -634,7 +637,8 @@ void GGXSPF::ScatterNM(
 				Scalar F_ms;
 				if( fresnelMode == eFresnelSchlickF0 )
 				{
-					const Scalar F0 = pSpecular->GetColorNM(ri,nm);
+					// ws already holds the guarded pSpecular sample for this call
+					const Scalar F0 = ws;
 					const Scalar F_avg = SchlickFresnelAvg<Scalar>( F0 );
 					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( F_avg, Eavg );
 				}
@@ -650,7 +654,8 @@ void GGXSPF::ScatterNM(
 					// specColor INSIDE the average: the tinted per-bounce reflectance
 					// specColor*F_avg compounds across bounces (matches single-scatter
 					// specColor*Rfilm).  Pulling it outside over-brightens tinted metals.
-					const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+					// (ws already holds the guarded pSpecular sample for this call)
+					const Scalar specColor = ws;
 					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 				}
 				else
@@ -662,7 +667,8 @@ void GGXSPF::ScatterNM(
 					const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, ri.ambientIOR, iorVal, extVal );
 					// specColor INSIDE the average (tinted per-bounce reflectance
 					// specColor*F_avg compounds; matches single-scatter specColor*fresnel).
-					const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+					// (ws already holds the guarded pSpecular sample for this call)
+					const Scalar specColor = ws;
 					F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 				}
 
@@ -773,8 +779,8 @@ Scalar GGXSPF::PdfNM(
 	const Scalar alphaEff = sqrt( alphaX * alphaY );
 
 	// 3-lobe mixture PDF weighted by per-wavelength albedos
-	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
-	const Scalar ws = pSpecular->GetColorNM(ri,nm);
+	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
+	const Scalar ws = GuardedGetColorNM( *pSpecular, ri, nm );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
 	const Scalar wms = ws * (1.0 - MicrofacetEnergyLUT::LookupEss( cosWi, alphaEff ));

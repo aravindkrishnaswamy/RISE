@@ -103,7 +103,7 @@ Scalar TransparencyShaderOp::PerformOperationNM(
 		}
 
 		// Blend
-		const Scalar trans = transparency.GetColorNM(ri.geometric,nm);
+		const Scalar trans = GuardedGetColorNM( transparency, ri.geometric, nm );
 		c = caccum*(1.0-trans) + c*trans;
 	}
 	

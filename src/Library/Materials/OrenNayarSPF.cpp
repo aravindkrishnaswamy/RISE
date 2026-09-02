@@ -144,7 +144,7 @@ void OrenNayarSPF::ScatterNM(
 	Scalar L1=0, L2=0;
 	OrenNayarBRDF::ComputeFactor( L1, L2, diffuse.ray.Dir(), ri, myonb.w(), pRoughness->GetValueAtNM(ri,nm) );
 
-	const Scalar rho = pReflectance->GetColorNM(ri,nm);
+	const Scalar rho = GuardedGetColorNM( *pReflectance, ri, nm );
 	diffuse.krayNM = L1*rho + (L2*rho*rho);
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi

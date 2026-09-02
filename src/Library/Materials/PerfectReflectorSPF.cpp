@@ -118,7 +118,7 @@ void PerfectReflectorSPF::ScatterNM(
 	specular.pdf = 1.0;
 
 	specular.ray.Set( ri.ptIntersection, Optics::CalculateReflectedRay( ri.ray.Dir(), n ) );
-	specular.krayNM = pReflectivity->GetColorNM(ri,nm);
+	specular.krayNM = GuardedGetColorNM( *pReflectivity, ri, nm );
 
 	if( Vector3Ops::Dot( specular.ray.Dir(), geomN ) <= 0 ) {
 		// Mandatory (no companion lobe) -- see Scatter() for the rationale.

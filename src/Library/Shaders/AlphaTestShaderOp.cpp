@@ -84,7 +84,7 @@ Scalar AlphaTestShaderOp::PerformOperationNM(
 	const ScatteredRayContainer* /*pScat*/
 	) const
 {
-	const Scalar alpha = alphaPainter.GetColorNM( ri.geometric, nm );
+	const Scalar alpha = GuardedGetColorNM( alphaPainter, ri.geometric, nm );
 
 	if( alpha >= cutoff ) {
 		return caccum;	// Leave the running NM value alone; next op shades it.

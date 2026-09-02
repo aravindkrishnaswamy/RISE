@@ -242,13 +242,13 @@ void WardAnisotropicEllipticalGaussianSPF::ScatterNM(
 	// frame lobes are actually sampled around (post-FlipW), not the raw
 	// ri.onb.w() which differs by sign on a back-face hit.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.krayNM = pDiffuse->GetColorNM(ri,nm);
+		d.krayNM = GuardedGetColorNM( *pDiffuse, ri, nm );
 		const Scalar cos_theta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = cos_theta * INV_PI;
 		scattered.AddScatteredRay( d );
 	}
 	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
-		s.krayNM = pSpecular->GetColorNM(ri,nm);
+		s.krayNM = GuardedGetColorNM( *pSpecular, ri, nm );
 		scattered.AddScatteredRay( s );
 	}
 }
@@ -357,8 +357,8 @@ Scalar WardAnisotropicEllipticalGaussianSPF::PdfNM(
 	const Scalar ay_val = pAlphaY->GetValueAtNM(ri,nm);
 
 	// Weight by krayNM magnitude to match RandomlySelect
-	const Scalar wDiff = fabs( pDiffuse->GetColorNM(ri,nm) );
-	const Scalar wSpec = fabs( pSpecular->GetColorNM(ri,nm) );
+	const Scalar wDiff = fabs( GuardedGetColorNM( *pDiffuse, ri, nm ) );
+	const Scalar wSpec = fabs( GuardedGetColorNM( *pSpecular, ri, nm ) );
 
 	return WardAnisotropicPdf( ri, wo, ax_val, ay_val, wDiff, wSpec );
 }

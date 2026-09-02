@@ -1020,7 +1020,16 @@ Scalar HairScatteringBase::SigmaANM(
 		// The uplift is legitimate here and only here: `color` IS an
 		// albedo-class colour, so the JH-uplifted spectrum is the
 		// physically meaningful per-wavelength reflectance to invert.
-		return SigmaAFromReflectance( pColor->GetColorNM( ri, nm ), ReflectanceDenom( betaN ) );
+		// Guarded at the authored-white corner (IPainter.h,
+		// GuardedGetColorNM): an untinted `color` must invert to
+		// SigmaA == 0 at every wavelength, matching SigmaARGB's white
+		// case exactly -- the raw uplift instead collapses white toward
+		// ~0 above ~620 nm (CoatedLayer.h PassTransmittance), which would
+		// invert to a spuriously large SigmaA and darken hair red-hue
+		// only in spectral renders.  Same near-white discontinuity
+		// precedent as CoatedLayer.h's "KNOWN RESIDUAL" block (~line 331)
+		// for a textured tint straddling white.
+		return SigmaAFromReflectance( GuardedGetColorNM( *pColor, ri, nm ), ReflectanceDenom( betaN ) );
 	}
 	if( pSigmaA ) {														// tier 2
 		const Scalar s = pSigmaA->GetValueAtNM( ri, nm );
@@ -1413,6 +1422,15 @@ void HairBRDF::TestApplyLobeTilt(
 	Resolved R;
 	Resolve( ri, R );
 	ApplyLobeTilt( p, R.sin2kAlpha, R.cos2kAlpha, sinThetaO, cosThetaO, sinOut, cosOut );
+}
+
+void HairBRDF::TestSigmaA(
+	const RayIntersectionGeometric& ri, const Scalar betaN,
+	Scalar rgbOut[3], Scalar& nmOut, const Scalar nm
+	) const
+{
+	SigmaARGB( ri, betaN, rgbOut );
+	nmOut = SigmaANM( ri, betaN, nm );
 }
 
 //////////////////////////////////////////////////////////////////////

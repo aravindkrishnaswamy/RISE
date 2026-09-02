@@ -389,7 +389,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 	const Scalar G2 = MicrofacetUtils::GGX_G2_Aniso( alphaX, alphaY, wi_local, wo_local );
 	const Scalar specFactor = D * G2 / (4.0 * nv * nr);
 
-	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
 
 	Scalar specular = 0;
 
@@ -486,7 +486,7 @@ Scalar GGXBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeometric
 		}
 	}
 
-	Scalar diffuse = pDiffuse->GetColorNM(ri,nm) * INV_PI;
+	Scalar diffuse = GuardedGetColorNM( *pDiffuse, ri, nm ) * INV_PI;
 	if( fresnelMode == eFresnelSchlickF0 )
 	{
 		// In NM, F0 is scalar; same (1-F0) split applies.
@@ -632,8 +632,8 @@ bool GGXBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel& 
 bool GGXBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
 	const Vector3 n = ri.onb.w();
-	const Scalar specNM = pSpecular->GetColorNM( ri, nm );
-	const Scalar diffNM = pDiffuse->GetColorNM( ri, nm );
+	const Scalar specNM = GuardedGetColorNM( *pSpecular, ri, nm );
+	const Scalar diffNM = GuardedGetColorNM( *pDiffuse, ri, nm );
 
 	if( fresnelMode == eFresnelSchlickF0 )
 	{

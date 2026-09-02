@@ -110,7 +110,7 @@ void LambertianSPF::ScatterNM(
 		diffuse.ray.Set( ri.ptIntersection, GeometricUtilities::CreateDiffuseVector( ri.onb, ptrand ) );
 	}
 	
-	diffuse.krayNM = pReflectance->GetColorNM(ri, nm);
+	diffuse.krayNM = GuardedGetColorNM( *pReflectance, ri, nm );
 
 	// Set the sampling PDF: cosine-weighted hemisphere = cos(theta) / pi
 	diffuse.pdf = fabs( Vector3Ops::Dot( diffuse.ray.Dir(), ri.onb.w() ) ) * INV_PI;

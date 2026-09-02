@@ -376,7 +376,7 @@ void SchlickSPF::ScatterNM(
 	// frame lobes are actually sampled around (post-FlipW), not the raw
 	// ri.onb.w() which differs by sign on a back-face hit.
 	if( Vector3Ops::Dot( d.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( d.ray.Dir(), geomN ) > 0.0 ) {
-		d.krayNM = pDiffuse->GetColorNM(ri,nm);
+		d.krayNM = GuardedGetColorNM( *pDiffuse, ri, nm );
 		const Scalar cosTheta = Vector3Ops::Dot( d.ray.Dir(), myonb.w() );
 		d.pdf = (cosTheta > 0) ? cosTheta * INV_PI : 0;
 		d.isDelta = false;
@@ -384,7 +384,7 @@ void SchlickSPF::ScatterNM(
 	}
 
 	if( Vector3Ops::Dot( s.ray.Dir(), myonb.w() ) > 0.0 && Vector3Ops::Dot( s.ray.Dir(), geomN ) > 0.0 ) {
-		const Scalar rho = pSpecular->GetColorNM(ri,nm);
+		const Scalar rho = GuardedGetColorNM( *pSpecular, ri, nm );
 		s.krayNM = rho + (1.0-rho) * fresnel;
 		s.pdf = ComputeSchlickSpecularPdf( ri, s.ray.Dir(), roughnessNM, isotropyNM );
 		s.isDelta = false;
@@ -486,8 +486,8 @@ Scalar SchlickSPF::PdfNM(
 	const Scalar specPdf = ComputeSchlickSpecularPdf( ri, wo, r, p );
 
 	// Weight
-	const Scalar rd = pDiffuse->GetColorNM(ri,nm);
-	const Scalar rs = pSpecular->GetColorNM(ri,nm);
+	const Scalar rd = GuardedGetColorNM( *pDiffuse, ri, nm );
+	const Scalar rs = GuardedGetColorNM( *pSpecular, ri, nm );
 	const Scalar totalWeight = rd + rs;
 
 	if( totalWeight < NEARZERO ) {

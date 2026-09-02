@@ -120,13 +120,13 @@ Scalar TranslucentBSDF::valueNM( const Vector3& vLightIn, const RayIntersectionG
 	switch( GetReflectedSide<Scalar>(intensity, vLightIn, ri, ri.onb.w(), pExponent->GetValueAtNM(ri,nm) ) )
 	{
 	case 0:
-		return pTrans->GetColorNM(ri,nm) * intensity * INV_PI;
+		return GuardedGetColorNM( *pTrans, ri, nm ) * intensity * INV_PI;
 		break;
 	case 1:
-		return pRefFront->GetColorNM(ri,nm) * intensity * INV_PI;
+		return GuardedGetColorNM( *pRefFront, ri, nm ) * intensity * INV_PI;
 		break;
 	case 2:
-		return pRefFront->GetColorNM(ri,nm) * intensity * INV_PI;
+		return GuardedGetColorNM( *pRefFront, ri, nm ) * intensity * INV_PI;
 		break;
 	default:
 	case 3:

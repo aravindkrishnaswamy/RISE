@@ -132,7 +132,7 @@ Scalar OrenNayarBRDF::valueNM( const Vector3& vLightIn, const RayIntersectionGeo
 	// Same ray-facing flip as value() above.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	ComputeFactor<Scalar>( L1, L2, vLightIn, ri, n, pRoughness->GetValueAtNM(ri,nm) );
-	const Scalar rho = pReflectance->GetColorNM(ri,nm);
+	const Scalar rho = GuardedGetColorNM( *pReflectance, ri, nm );
 
 	return (L1*INV_PI*rho) + (L2*INV_PI*(rho*rho));
 }
@@ -194,7 +194,7 @@ bool OrenNayarBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RIS
 
 bool OrenNayarBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const Scalar nm, Scalar& out ) const
 {
-	out = pReflectance->GetColorNM( ri, nm );
+	out = GuardedGetColorNM( *pReflectance, ri, nm );
 	return true;
 }
 

@@ -405,8 +405,14 @@ static bool TestNMSpecColorInsideMultiscatter()
 			const Scalar Favg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 
 			// The EXACT per-lambda specColor the library multiplies in
-			// (JH-uplifted; NOT rs).
-			const Scalar specColor = stk.specular->GetColorNM( ri, nm );
+			// (JH-uplifted; NOT rs).  Guarded (IPainter.h) to match
+			// CookTorranceBRDF::valueNM: at rs==1 (authored white) the
+			// library now reads exactly 1.0 at every wavelength instead of
+			// the raw uplift's near-zero red-end collapse -- using the raw
+			// sample here would desync this reconstruction from `full`
+			// (computed by the already-guarded library call below) and
+			// silently mis-skip the degenerate-cell guard.
+			const Scalar specColor = GuardedGetColorNM( *stk.specular, ri, nm );
 
 			const Scalar full = brdf->valueNM( v, ri, nm );	// diffuse(0) + single + multi
 
@@ -521,13 +527,17 @@ static bool TestBRDFvsSPFMultiscatter()
 		Stack stk( alpha, rs );
 		CookTorranceSPF* spf = stk.MakeSPF();
 
-		// SPF lobe-selection weights (ScatterNM): wd=GetColorNM(diffuse)=0,
-		// ws=GetColorNM(spec).  H6 (2026-07): wms is now DIRECTION-AWARE --
+		// SPF lobe-selection weights (ScatterNM): wd=GuardedGetColorNM(diffuse)=0,
+		// ws=GuardedGetColorNM(spec).  H6 (2026-07): wms is now DIRECTION-AWARE --
 		// ws*(1-Ess(cosWi,alpha)), not ws*(1-Eavg) -- see MicrofacetEnergyLUT.h
 		// header comment above MSLobeZ/SampleMSCosTheta/MSPdf and
 		// GGXSPF.cpp/CookTorranceSPF.cpp's "H6:" comments.  pMSSelect = wms/total.
-		const Scalar wd = stk.diffuse->GetColorNM( ri, nm );	// 0
-		const Scalar ws = stk.specular->GetColorNM( ri, nm );
+		// Guarded (IPainter.h) to match CookTorranceSPF::ScatterNM exactly:
+		// at rs==1 (authored white) the library reads exactly 1.0, not the
+		// raw JH-uplifted sample, which is off by ~1e-6 at 560nm and blew
+		// the 1e-9 twin tolerance below before this test was updated.
+		const Scalar wd = GuardedGetColorNM( *stk.diffuse, ri, nm );	// 0
+		const Scalar ws = GuardedGetColorNM( *stk.specular, ri, nm );
 		const Scalar cosWi = Vector3Ops::Dot( Vector3Ops::Normalize( -ri.ray.Dir() ), n );
 		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
 		const Scalar wms = ws * ( 1.0 - Ess_i );

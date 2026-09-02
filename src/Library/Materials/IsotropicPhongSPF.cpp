@@ -225,10 +225,10 @@ void IsotropicPhongSPF::ScatterNM(
 	GenerateDiffuseRay( diffuse, rdotn, ri,  Point2( sampler.Get1D(), sampler.Get1D() ) );
 	GenerateSpecularRay( specular, n, reflected, ri,  Point2( sampler.Get1D(), sampler.Get1D() ),  N );
 
-	diffuse.krayNM = pRd->GetColorNM(ri,nm);
+	diffuse.krayNM = GuardedGetColorNM( *pRd, ri, nm );
 	{
 		const Scalar cos_o = Vector3Ops::Dot( Vector3Ops::Normalize(specular.ray.Dir()), n );
-		specular.krayNM = pRs->GetColorNM(ri,nm) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
+		specular.krayNM = GuardedGetColorNM( *pRs, ri, nm ) * ((N+2.0)/(N+1.0)) * r_max(cos_o, 0.0);
 	}
 
 	// Set PDF for diffuse ray
@@ -341,8 +341,8 @@ Scalar IsotropicPhongSPF::PdfNM(
 	const Scalar specPdf = (cosAlpha > 0) ? (N + 1.0) * INV_PI * 0.5 * pow( cosAlpha, N ) : 0;
 
 	// Weight by relative importance
-	const Scalar rd = pRd->GetColorNM(ri,nm);
-	const Scalar rs = pRs->GetColorNM(ri,nm);
+	const Scalar rd = GuardedGetColorNM( *pRd, ri, nm );
+	const Scalar rs = GuardedGetColorNM( *pRs, ri, nm );
 	const Scalar totalWeight = rd + rs;
 
 	if( totalWeight < NEARZERO ) {

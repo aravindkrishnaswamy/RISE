@@ -797,6 +797,21 @@ namespace RISE
 				Scalar& sinOut,
 				Scalar& cosOut
 				) const;
+
+			//! TEST HOOK -- not called by the renderer.  Exposes the
+			//! protected `SigmaARGB` / `SigmaANM` (HairScatteringBase)
+			//! directly, so a test can check the tier-3 (`color`)
+			//! reflectance-to-absorption inversion's GuardedGetColorNM
+			//! white-corner guard (HairBSDF.cpp SigmaANM, ~line 1011) end
+			//! to end without going through the whole BCSDF evaluation --
+			//! mirrors `TestApAndPathLength` / `TestMedullaAp` above.
+			void TestSigmaA(
+				const RayIntersectionGeometric& ri,
+				const Scalar betaN,
+				Scalar rgbOut[3],
+				Scalar& nmOut,
+				const Scalar nm
+				) const;
 		};
 
 		//! Exact Chiang importance sampler.  Populates exactly ONE

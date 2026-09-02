@@ -142,7 +142,7 @@ Scalar IsotropicPhongBRDF::valueNM( const Vector3& vLightIn, const RayIntersecti
 	Scalar diffuseFactor=0, specularFactor=0;
 	ComputeDiffuseSpecularFactors( diffuseFactor, specularFactor, vLightIn, ri, pExponent->GetValueAtNM(ri,nm) );
 
-	return ((pRd->GetColorNM(ri,nm) * diffuseFactor) + (pRs->GetColorNM(ri,nm)*specularFactor));
+	return ((GuardedGetColorNM( *pRd, ri, nm ) * diffuseFactor) + (GuardedGetColorNM( *pRs, ri, nm )*specularFactor));
 }
 
 RISEPel IsotropicPhongBRDF::albedo( const RayIntersectionGeometric& ri ) const

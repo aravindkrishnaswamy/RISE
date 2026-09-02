@@ -309,7 +309,7 @@ void PolishedSPF::ScatterNM(
 		diffuse.isDelta = false;
 
 		// Generate a reflected ray with a cosine distribution
-		diffuse.krayNM = pRd->GetColorNM(ri,nm) * (1.0-Rs);
+		diffuse.krayNM = GuardedGetColorNM( *pRd, ri, nm ) * (1.0-Rs);
 		diffuse.ray.Set(
 			ri.ptIntersection,
 			GeometricUtilities::CreateDiffuseVector( ri.onb, Point2(sampler.Get1D(),sampler.Get1D()) )
@@ -359,7 +359,7 @@ Scalar PolishedSPF::EvaluateKrayNM(
 		return pTau->GetValueAtNM( ri, nm ) * Rs;
 	}
 	else if( rayType == ScatteredRay::eRayDiffuse ) {
-		return pRd->GetColorNM( ri, nm ) * ( 1.0 - Rs );
+		return GuardedGetColorNM( *pRd, ri, nm ) * ( 1.0 - Rs );
 	}
 
 	return -1;
@@ -525,7 +525,7 @@ Scalar PolishedSPF::PdfNM(
 
 	// Weight by krayNM magnitude: specular = tau*Rs, diffuse = Rd*(1-Rs)
 	const Scalar wSpec = fabs( pTau->GetValueAtNM(ri,nm) * Rs );
-	const Scalar wDiff = fabs( pRd->GetColorNM(ri,nm) * (1.0 - Rs) );
+	const Scalar wDiff = fabs( GuardedGetColorNM( *pRd, ri, nm ) * (1.0 - Rs) );
 
 	return PolishedPdf( ri, wo, s_val, ior_val, bHG, ior_stack, wSpec, wDiff );
 }

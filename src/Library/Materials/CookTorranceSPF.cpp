@@ -294,8 +294,8 @@ void CookTorranceSPF::ScatterNM(
 	}
 
 	// 3-lobe mixture weights
-	const Scalar wd = pDiffuse->GetColorNM(ri,nm);
-	const Scalar ws = pSpecular->GetColorNM(ri,nm);
+	const Scalar wd = GuardedGetColorNM( *pDiffuse, ri, nm );
+	const Scalar ws = GuardedGetColorNM( *pSpecular, ri, nm );
 	const Scalar Eavg = MicrofacetEnergyLUT::LookupEavg( alpha );
 	// H6: direction-aware MS selection weight (see Scatter()'s twin comment).
 	const Scalar cosWi = Vector3Ops::Dot( wi, n );
@@ -326,7 +326,8 @@ void CookTorranceSPF::ScatterNM(
 			ScatteredRay diffuse;
 			diffuse.type = ScatteredRay::eRayDiffuse;
 			diffuse.ray.Set( ri.ptIntersection, wo );
-			diffuse.krayNM = pDiffuse->GetColorNM(ri,nm) / pDiffuseSelect;
+			// wd already holds the guarded pDiffuse sample for this call
+			diffuse.krayNM = wd / pDiffuseSelect;
 			diffuse.pdf = mixPdf;
 			diffuse.isDelta = false;
 			scattered.AddScatteredRay( diffuse );
@@ -362,7 +363,8 @@ void CookTorranceSPF::ScatterNM(
 							pIOR->GetValueAtNM(ri,nm), pExtinction->GetValueAtNM(ri,nm) );
 
 						const Scalar G1wo = MicrofacetUtils::GGX_G1( alpha, cosTheta );
-						const Scalar krayNM = pSpecular->GetColorNM(ri,nm) * fresnel * G1wo / pSpecSelect;
+						// ws already holds the guarded pSpecular sample for this call
+						const Scalar krayNM = ws * fresnel * G1wo / pSpecSelect;
 
 						if( krayNM > 0 )
 						{
@@ -407,7 +409,8 @@ void CookTorranceSPF::ScatterNM(
 				const Scalar F_avg = MicrofacetEnergyLUT::ComputeFresnelAvg<Scalar>( n, 1.0, iorVal, extVal );
 				// specColor INSIDE the average: the tinted per-bounce reflectance specColor*F_avg
 				// compounds across bounces (matches the single-scatter lobe specColor*fresnel).
-				const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+				// (ws already holds the guarded pSpecular sample for this call)
+				const Scalar specColor = ws;
 				const Scalar F_ms = MicrofacetEnergyLUT::ComputeFms<Scalar>( specColor * F_avg, Eavg );
 
 				// H6: honest f*cos/pdf estimator (see Scatter()'s twin comment).

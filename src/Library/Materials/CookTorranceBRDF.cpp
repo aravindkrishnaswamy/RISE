@@ -160,7 +160,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 	// Same ray-facing flip as value() above.
 	const Vector3 n = ( Vector3Ops::Dot( ri.ray.Dir(), ri.onb.w() ) > NEARZERO ) ? -ri.onb.w() : ri.onb.w();
 	const Scalar alpha = pMasking->GetValueAtNM(ri,nm);
-	const Scalar specColor = pSpecular->GetColorNM(ri,nm);
+	const Scalar specColor = GuardedGetColorNM( *pSpecular, ri, nm );
 	const Scalar iorVal = pIOR->GetValueAtNM(ri,nm);
 	const Scalar extVal = pExtinction->GetValueAtNM(ri,nm);
 
@@ -206,7 +206,7 @@ Scalar CookTorranceBRDF::valueNM( const Vector3& vLightIn, const RayIntersection
 		}
 	}
 
-	return pDiffuse->GetColorNM(ri,nm)*INV_PI + specular;
+	return GuardedGetColorNM( *pDiffuse, ri, nm )*INV_PI + specular;
 }
 
 RISEPel CookTorranceBRDF::albedo( const RayIntersectionGeometric& ri ) const

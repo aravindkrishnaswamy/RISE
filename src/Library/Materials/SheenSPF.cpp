@@ -158,7 +158,7 @@ void SheenSPF::ScatterNM(
 	ScatteredRay s;
 	s.type = ScatteredRay::eRayDiffuse;
 	s.ray.Set( ri.ptIntersection, wo );
-	s.krayNM = pColor->GetColorNM( ri, nm ) * D * V * PI;
+	s.krayNM = GuardedGetColorNM( *pColor, ri, nm ) * D * V * PI;
 	s.pdf = nDotL * INV_PI;
 	s.isDelta = false;
 	scattered.AddScatteredRay( s );
