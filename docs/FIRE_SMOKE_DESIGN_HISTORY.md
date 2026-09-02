@@ -5169,20 +5169,28 @@ it was already tried and refuted here.
   denominator was rounded upward and the hand-packed `ln(2)` triple had no
   semantic remainder. The corrected denominator rounds downward, `ln(2)`
   carries `2^-54`, and the binary64 mirror's `std::log` projection carries a
-  derived `2^-52 max(1,|log|)` term. A 1,037-input mantissa/exponent/NASA-edge
-  sweep measures worst residual/bound `0.70588552087007805`, while an
-  independent Q100 fixed-point atanh interval proves the mathematical `ln(2)`
-  remainder fits `2^-54`. Interval-order uncertainty refuses, so r60/r170 no
-  longer depend on cancellation or output ULPs. Per-cell temperature and
-  pressure use exact fp64-to-binary32 bit comparison; all 192 field rows are
-  retained in the SHA-bound transcript, with zero residual/bound ratio. Four
-  adversarial temperature/scale cases also pass. A direct production
+  predeclared `2^-52 max(1,|log|)` qualification allowance. Review rejected
+  the 1,037-point sample as a proof; the replacement exhausts all `24346625`
+  admitted binary32 temperatures and `24346624` adjacent midpoints. All
+  `48693249` arguments pass on identity-bound libsystem_m/macOS build
+  `25F84`/arm64 with worst residual/bound `0.5192248117002557`; an environment
+  change requires requalification. An independent Q100 fixed-point atanh
+  interval proves the mathematical `ln(2)` remainder fits `2^-54`, while the
+  zero binary64-projection residual is named separately. Interval-order
+  uncertainty refuses, so r60/r170 no longer depend on cancellation or output
+  ULPs. Per-cell temperature, pressure, and deviation use exact
+  fp64-to-binary32 bit comparison; all 192 field rows are retained in the
+  SHA-bound transcript, with zero residual/bound ratio. Four adversarial
+  temperature/scale cases also pass. A direct production
   `fct_commit_scalar` RED admits energy `2283578` and refuses the adjacent
   `2283578.25` value with `0x10`; `0xD0`/`0x80` are correctly classified as EOS
   inversion refusals, while r170 is `0x400`. Pressure and deviation now publish
   only after their full intervals fit inside one binary32 rounding bin; exact
-  midpoint REDs both refuse with `0x200` and zero identities. The isolated `0x000003ff`
-  bitmap matches its independent branch walker.
+  midpoint REDs both refuse with `0x200` and zero identities. The zero and
+  minimum-subnormal bin centers publish exactly; tiny components are scaled by
+  `2^126` from their integer significands so FTZ cannot erase their midpoint
+  proof, and intervals covering each adjacent boundary refuse with `0x200`.
+  The isolated `0x000003ff` bitmap matches its independent branch walker.
   Monitored-manifold semantics are preserved: a 20% deviation is recorded and
   admitted, no manifold ceiling exists here, and only conservation-class
   admissibility plus the r170 `2^-2` dynamics bound refuse (the 30% RED does).

@@ -97,16 +97,17 @@ namespace
 			if(std::strcmp(field,"absolute_eos_deviation")==0)fieldIndex=2u;
 			if(fieldIndex>=3u||seen[cell][fieldIndex]||
 				line.find("residual_over_enclosure=0")==std::string::npos||
-				(fieldIndex<2u&&line.find("bit_equal=1")==std::string::npos)||
-				(fieldIndex==2u&&line.find("enclosed=1")==std::string::npos))return false;
+				line.find("bit_equal=1")==std::string::npos)return false;
 			seen[cell][fieldIndex]=true;++rows;
 		}
 		if(rows!=192u)return false;
 		for(const auto& cell:seen)for(const bool field:cell)if(!field)return false;
-		const std::array<const char*,11> redRecords={{
+		const std::array<const char*,13> redRecords={{
 			"name=r170_hard_bound_30_percent expected=0x00000400 observed=0x00000400",
 			"name=pressure_midpoint_rounding_ambiguous expected=0x00000200 observed=0x00000200",
 			"name=deviation_midpoint_rounding_ambiguous expected=0x00000200 observed=0x00000200",
+			"name=zero_lower_upper_bin_ambiguous expected=0x00000200 observed=0x00000200",
+			"name=subnormal_lower_upper_bin_ambiguous expected=0x00000200 observed=0x00000200",
 			"name=eos_lower_inversion_endpoint expected=0x000000d0 observed=0x000000d0",
 			"name=eos_upper_inversion_endpoint expected=0x00000080 observed=0x00000080",
 			"name=r170_exact_above_binary32_rounds_to_bound expected=0x00000400 observed=0x00000400",
@@ -131,10 +132,18 @@ namespace
 			text.find("RESIDENT_EOS_ARITHMETIC_BOUNDARY_SWEEP samples=4 "
 				"temperature_classes=4 composition_classes=main_64_cell_fixture "
 				"scale_min=0.750500023 scale_max=1.24950004 passed=1")!=
-				std::string::npos&&text.find("RESIDENT_EOS_LOG_ENCLOSURE samples=1037 "
-				"max_residual_over_bound=0.70588552087007805 ln2_residual=0 "
-				"ln2_bound=5.5511151231257827e-17 ln2_high_precision=1 passed=1")!=
+				std::string::npos&&text.find("RESIDENT_EOS_LOG_ENCLOSURE samples=48693249 "
+				"lattice=24346625 midpoints=24346624 max_residual_over_bound="
+				"0.5192248117002557 worst_index=1 ln2_binary64_projection_residual=0 "
+				"ln2_bound=5.5511151231257827e-17 ln2_high_precision=1 "
+				"libm_image=/usr/lib/system/libsystem_m.dylib os_build=25F84 "
+				"os_release=25.5.0 machine=arm64 passed=1")!=
 				std::string::npos&&
+			text.find("RESIDENT_EOS_ROUNDING_EDGE name=exact_zero_bin_center "
+				"expected_bits=0x00000000 accepted=1 failure=0x00000000 error= passed=1")!=
+				std::string::npos&&text.find("RESIDENT_EOS_ROUNDING_EDGE "
+				"name=minimum_subnormal_bin_center expected_bits=0x00000001 accepted=1 "
+				"failure=0x00000000 error= passed=1")!=std::string::npos&&
 			text.find("RESIDENT_EOS passed=1 ")!=std::string::npos;
 	}
 	bool IndependentR60AndPeriodicCommuting(
@@ -3753,14 +3762,14 @@ int main()
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateEvidence.begin(),residentEOSCandidateEvidence.end()))==
-			"6e15f273cdbacf32e9a6cac31c1fa6648f01403665ffda4db4c0850f659d591e"&&
+			"aac7c7384a6e19fcfa725cea46fb66480e44ef095ffe4401479d9bf4ba4cd15c"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSRawEvidence.begin(),residentEOSRawEvidence.end()))==
-			"3225d77a1840606a7524dcfa80bf30f4d88d595ea3d8cc988ca2bbb6f21b6e0d"&&
+			"f320afb20f6f9a79e5b056af817dabd76dbe4475b7e6341e5559afc59a620209"&&
 		ValidateResidentEOSRawEvidence(residentEOSRawEvidence)&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateLiveBinding.begin(),residentEOSCandidateLiveBinding.end()))==
-			"953fc3800ebfd67db448ca7b787d59268cc4e863826795acaf306e4b1728e66e"&&
+			"a517ce415056ac53969199d72c42c368dd49e7bb79a7ba798e51a8ae9ef6833a"&&
 		residentEOSCandidateLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 14\n")!=
 			std::string::npos&&
@@ -3802,11 +3811,23 @@ int main()
 			std::string::npos&&residentEOSCandidateEvidence.find(
 			"fp64_std_log_projection_bound 2^-52_times_max_1_abs_log\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
+			"fp64_std_log_qualification_total_inputs 48693249\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"fp64_std_log_provider_image /usr/lib/system/libsystem_m.dylib\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"fp64_std_log_environment_change_requires_requalification true\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
 			"binary32_publication whole_interval_must_fit_strictly_inside_one_rounding_bin\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
-			"raw_transcript_sha256 3225d77a1840606a7524dcfa80bf30f4d88d595ea3d8cc988ca2bbb6f21b6e0d\n")!=
+			"raw_transcript_sha256 f320afb20f6f9a79e5b056af817dabd76dbe4475b7e6341e5559afc59a620209\n")!=
 			std::string::npos&&
 		residentEOSCandidateEvidence.find(
+			"deviation_acceptance device_bits_equal_fp64_mirror_binary32_projection_per_cell\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
+			"zero_rounding_bin_center_accepted true\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find(
+			"minimum_subnormal_rounding_bin_center_accepted true\n")!=
+			std::string::npos&&residentEOSCandidateEvidence.find(
 			"host_preflight_refusal_observation no_publication_issued_no_device_attempt_no_terminal_read\n")!=
 			std::string::npos&&
 		residentEOSCandidateEvidence.find(

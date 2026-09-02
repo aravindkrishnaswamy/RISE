@@ -5816,9 +5816,10 @@ single binary32 projection as the CPU/fp64 mirror. Candidate, temperature, and
 represented-pressure fields are bit-identical per cell. The per-face shared
 alpha is terminal-copied and bit-identical to the CPU FCT mirror, so a
 non-injective final-state comparison cannot hide a limiter mismatch. Device
-stage/precision mutations refuse with exact bitmap `0x50`; distinct
-attempt/case metadata handles refuse at preflight. The fixture spans the 1000 K
-NASA9 segment boundary as well as 300, 425, 950, 1500, 1900, and 2200 K.
+stage, precision, attempt, cell-count, and timestep mutations on the same
+handle refuse with exact bitmap `0x50`; only the distinct case handle refuses
+at host preflight. The fixture spans the 1000 K NASA9 segment boundary as well
+as 300, 425, 950, 1500, 1900, and 2200 K.
 
 The earlier `2^-41` arithmetic claim is withdrawn: its hard-coded obligation
 count was not connected to the Metal DAG and therefore was not a proof. Each
@@ -5829,27 +5830,37 @@ residual; division certifies the quotient from its computed residual divided by
 a proved denominator lower bound. The logarithm uses an atanh series through
 odd order 49 and includes its analytic remainder; its denominator uses
 directed-down subtraction/multiplication, the `ln(2)` triple carries its
-`2^-54` semantic remainder, and a `2^-52 max(1,|log|)` absolute term covers the
-canonical binary64 mirror's `std::log` projection. A 1,037-input Metal sweep
-over mantissas, exponents, and NASA9 edges measures worst residual/bound
-`0.70588552087007805`; an independent Q100 fixed-point atanh-series interval
-also proves mathematical `ln(2)` lies inside the packed triple's `2^-54`
-bound. Every gate compares the
+`2^-54` semantic remainder, and a predeclared `2^-52 max(1,|log|)` absolute
+allowance covers the exact host `std::log` projection only after full-domain
+qualification. This allowance was not fitted to a sampled maximum. The Metal
+sweep exhausts all `24346625` binary32 temperatures from 300 through 2200 K
+and all `24346624` adjacent midpoints: `48693249` arguments total. On the
+identity-bound `/usr/lib/system/libsystem_m.dylib`, macOS build `25F84`, kernel
+`25.5.0`, arm64 host, its worst residual/bound is `0.5192248117002557` at
+index 1. Any provider or OS change requires requalification. An independent
+Q100 fixed-point atanh-series interval also proves mathematical `ln(2)` lies
+inside the packed triple's `2^-54` bound; the separately named binary64
+projection residual is zero on this provider. Every gate compares the
 resulting intervals and refuses when their order overlaps. Thus r60 and r170
 are protected by a connected error enclosure, not output spacing or
 subtractive cancellation.
 
-Every cell's temperature and represented-pressure output bit-matches the fp64
-mirror's single binary32 projection. Absolute deviation is recorded in the
-same ratio units with its local projection enclosure. All 192 cell/field rows
-are retained in the SHA-bound raw transcript; their residuals and worst
+Every cell's temperature, represented-pressure, and absolute-deviation output
+bit-matches the fp64 mirror's single binary32 projection. The local projection
+enclosures remain diagnostic, not an acceptance substitute. All 192 cell/field
+rows are retained in the SHA-bound raw transcript; their residuals and worst
 residual/enclosure ratios are zero. Four additional arithmetic-boundary cases
 span 300, 1000, 1000.001, and 2200 K and state scales from `0.750500023` to
 `1.24950004`. No pooled across-field statistic participates in acceptance.
 Pressure and deviation publish only when their complete propagated intervals
 fit strictly inside one binary32 rounding bin. Qualification values placed
 exactly on each midpoint refuse with `0x200` and zero candidate/EOS identities;
-an ambiguous interval can never acquire publication authority.
+an ambiguous interval can never acquire publication authority. Zero and
+minimum-subnormal bin centers publish with exact bits. Because Apple GPU
+arithmetic flushes subnormals, the proof scales tiny expansion components by
+`2^126` through their integer significands before constructing exact
+midpoints; intervals covering the zero/min-subnormal neighboring boundaries
+both refuse with `0x200`.
 
 The isolated r60 RED calls the production `fct_commit_scalar` kernel directly:
 energy `2283578` is admitted and its adjacent binary32 value `2283578.25`

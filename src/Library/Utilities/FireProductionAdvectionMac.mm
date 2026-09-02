@@ -2334,6 +2334,10 @@ inline int eos_order(EOSDD first,EOSDD second){EOSDD difference=eos_sub(first,se
    (difference.lo==0.0f&&difference.tail<0.0f)));return negative?-1:1;}
 inline bool eos_proved_leq(EOSDD first,EOSDD second){int order=eos_order(first,second);
  return order==-1||order==0;}
+inline float eos_scale_tiny_by_2p126(float value){uint bits=as_type<uint>(value),
+ magnitude=bits&0x7fffffffu;if(magnitude==0u)return value;
+ if((magnitude&0x7f800000u)==0u){float scaled=float(magnitude)*0x1p-23f;
+  return (bits&0x80000000u)!=0u?-scaled:scaled;}return ldexp(value,126);}
 inline EOSDD eos_load_dd(device const float* source,uint offset){float tail=source[offset+2u];
  return eos_dd(source[offset],source[offset+1u],tail,eos_local_spacing(tail));}
 inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int exponent=int((bits>>23u)&255u)-127;
@@ -2351,17 +2355,30 @@ inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int expon
  EOSDD ln2=eos_dd(0.693147182464599609375f,-1.9046542121259336e-9f,
   -1.1102230246251565e-16f,0x1p-54f);
  EOSDD result=eos_add(logarithm,eos_mul(eos_dd(float(exponent)),ln2));
- // The canonical fp64 mirror consumes std::log.  One binary64 relative ULP,
- // validated over the sealed mantissa/domain sweep, encloses that projection
- // separately from the exact analytic-series remainder above.
- float mirrorProjection=eos_up_mul(0x1p-52f,max(1.0f,eos_abs_upper(result)));
- result.bound=eos_up_add(result.bound,mirrorProjection);return result;}
+ // The exact host-libm image and OS build are qualification identities.  The
+ // complete lattice-plus-midpoint domain sweep must prove this predeclared
+ // projection allowance before this Metal program is admitted; it is not
+ // inferred from a sampled residual maximum.
+ float hostProjectionAllowance=eos_up_mul(0x1p-52f,
+  max(1.0f,eos_abs_upper(result)));
+ result.bound=eos_up_add(result.bound,hostProjectionAllowance);return result;}
 inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
- EOSDD normalized=eos_add(value,eos_dd(0.0f));rounded=normalized.hi;
- if(!isfinite(rounded))return false;float lower=nextafter(rounded,-INFINITY),
-  upper=nextafter(rounded,INFINITY);EOSDD lowerMidpoint=eos_add(eos_dd(rounded),
-  eos_dd((lower-rounded)*0.5f)),upperMidpoint=eos_add(eos_dd(rounded),
-  eos_dd((upper-rounded)*0.5f));return eos_order(lowerMidpoint,normalized)==-1&&
+ rounded=value.hi;if(!isfinite(rounded))return false;uint magnitude=as_type<uint>(rounded)&0x7fffffffu;
+ bool tiny=magnitude<=0x00800000u;EOSDD normalized=tiny?eos_renorm(
+  eos_scale_tiny_by_2p126(value.hi),eos_scale_tiny_by_2p126(value.lo),
+  eos_scale_tiny_by_2p126(value.tail),eos_scale_tiny_by_2p126(value.bound)):
+  eos_renorm(value.hi,value.lo,value.tail,value.bound);
+ float lower=nextafter(rounded,-INFINITY),
+  upper=nextafter(rounded,INFINITY),lowerHalf=(lower-rounded)*0.5f,
+  upperHalf=(upper-rounded)*0.5f;EOSDD lowerMidpoint,upperMidpoint;
+ if(tiny||lowerHalf==0.0f||upperHalf==0.0f){float scaledRounded=
+   eos_scale_tiny_by_2p126(rounded);lower=eos_scale_tiny_by_2p126(lower);
+  upper=eos_scale_tiny_by_2p126(upper);
+  lowerMidpoint=eos_add(eos_dd(scaledRounded),eos_dd((lower-scaledRounded)*0.5f));
+  upperMidpoint=eos_add(eos_dd(scaledRounded),eos_dd((upper-scaledRounded)*0.5f));
+ }else{lowerMidpoint=eos_add(eos_dd(rounded),eos_dd(lowerHalf));
+  upperMidpoint=eos_add(eos_dd(rounded),eos_dd(upperHalf));}
+ return eos_order(lowerMidpoint,normalized)==-1&&
   eos_order(normalized,upperMidpoint)==-1;}
 inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD temperature,
  thread uint& offset,device atomic_uint* obligations,thread bool& valid){uint base=96u*species,
@@ -2480,6 +2497,11 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
   ratioDD=eos_add(eos_dd(1.0f),eos_dd((adjacent-1.0f)*0.5f));}
  if((p.pad0&2u)!=0u){float adjacent=nextafter(0.125f,INFINITY);
   deviationDD=eos_add(eos_dd(0.125f),eos_dd((adjacent-0.125f)*0.5f));}
+ if((p.pad0&4u)!=0u)deviationDD=eos_dd(0.0f);
+ if((p.pad0&8u)!=0u)deviationDD=eos_dd(as_type<float>(1u));
+ if((p.pad0&16u)!=0u)deviationDD=eos_dd(0.0f,0.0f,0.0f,as_type<float>(1u));
+ if((p.pad0&32u)!=0u)deviationDD=eos_dd(as_type<float>(1u),0.0f,0.0f,
+  as_type<float>(1u));
  float ratio=0.0f,absoluteDeviation=0.0f;
  if(!eos_unique_binary32_round(ratioDD,ratio)||
   !eos_unique_binary32_round(deviationDD,absoluteDeviation)||
@@ -2509,7 +2531,7 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
  hash^=ulong(as_type<uint>(p.dynamicsBound));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
 kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
  device float* output [[buffer(1)]],uint gid [[thread_position_in_grid]]){
- EOSDD value=eos_log_dd(eos_dd(input[gid]));output[4u*gid]=value.hi;
+ EOSDD value=eos_log_dd(eos_dd(input[2u*gid],input[2u*gid+1u]));output[4u*gid]=value.hi;
  output[4u*gid+1u]=value.lo;output[4u*gid+2u]=value.tail;
  output[4u*gid+3u]=value.bound;}
 )METAL";
@@ -7297,6 +7319,13 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					std::numeric_limits<float>::infinity());
 			if(request.qualificationAmbiguousPressureRounding)deviceEOSParameters.padding[0]|=1u;
 			if(request.qualificationAmbiguousDeviationRounding)deviceEOSParameters.padding[0]|=2u;
+			if(request.qualificationExactZeroDeviationRounding)deviceEOSParameters.padding[0]|=4u;
+			if(request.qualificationMinimumSubnormalDeviationRounding)
+				deviceEOSParameters.padding[0]|=8u;
+			if(request.qualificationAmbiguousZeroDeviationRounding)
+				deviceEOSParameters.padding[0]|=16u;
+			if(request.qualificationAmbiguousSubnormalDeviationRounding)
+				deviceEOSParameters.padding[0]|=32u;
 			MetalResidentEOSParameters candidateEOSParameters=deviceEOSParameters;
 			if(request.qualificationMismatchedDeviceCase)++candidateEOSParameters.caseIdentity;
 			std::array<float,MetalResidentTransportSpeciesCount*
@@ -8052,18 +8081,23 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 	}
 
 	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
-		const std::vector<float>& input,std::vector<std::array<float,4> >& expansionAndBound,
+		const std::vector<std::array<float,2> >& input,
+		std::vector<std::array<float,4> >& expansionAndBound,
 		std::string* error )
 	{
 		expansionAndBound.clear();
 		try {
-			if(input.empty()||!AllFinite(input)){
+			if(input.empty()){
+				if(error)*error="production EOS log diagnostic input is invalid";return false;}
+			for(const std::array<float,2>& value:input)if(!std::isfinite(value[0])||
+				!std::isfinite(value[1])||!(static_cast<double>(value[0])+value[1]>0.0)){
 				if(error)*error="production EOS log diagnostic input is invalid";return false;}
 			ResidentTransportMetalContext& context=ResidentTransportContext();
 			if(!context.Valid()){if(error)*error=context.error;return false;}
 			@autoreleasepool {
 				id<MTLBuffer> deviceInput=[context.device newBufferWithBytes:input.data()
-					length:input.size()*sizeof(float) options:MTLResourceStorageModeShared],
+					length:input.size()*sizeof(std::array<float,2>)
+					options:MTLResourceStorageModeShared],
 					deviceOutput=[context.device newBufferWithLength:4u*input.size()*sizeof(float)
 						options:MTLResourceStorageModeShared];
 				if(!deviceInput||!deviceOutput){

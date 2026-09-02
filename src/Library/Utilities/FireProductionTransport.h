@@ -1242,6 +1242,10 @@ namespace RISE
 		bool qualificationMismatchedDeviceCase;
 		bool qualificationAmbiguousPressureRounding;
 		bool qualificationAmbiguousDeviationRounding;
+		bool qualificationExactZeroDeviationRounding;
+		bool qualificationMinimumSubnormalDeviationRounding;
+		bool qualificationAmbiguousZeroDeviationRounding;
+		bool qualificationAmbiguousSubnormalDeviationRounding;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
@@ -1260,6 +1264,10 @@ namespace RISE
 			qualificationMismatchedDeviceCase(false),
 			qualificationAmbiguousPressureRounding(false),
 			qualificationAmbiguousDeviationRounding(false),
+			qualificationExactZeroDeviationRounding(false),
+			qualificationMinimumSubnormalDeviationRounding(false),
+			qualificationAmbiguousZeroDeviationRounding(false),
+			qualificationAmbiguousSubnormalDeviationRounding(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 
@@ -1384,9 +1392,11 @@ namespace RISE
 	//! Qualification-only enclosure tap for the exact EOS logarithm used by the
 	//! resident inversion. Each output is {hi,lo,tail,outwardBound}; it carries
 	//! no live authority and exists only to compare the production Metal DAG to
-	//! the binary64 thermochemistry mirror over adversarial inputs.
+	//! the binary64 thermochemistry mirror over adversarial inputs. Each input
+	//! is an exact two-term binary32 expansion {hi,lo}; the qualification sweep
+	//! therefore covers both lattice temperatures and adjacent midpoints.
 	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
-		const std::vector<float>& input,
+		const std::vector<std::array<float,2> >& input,
 		std::vector<std::array<float,4> >& expansionAndBound,
 		std::string* error=0 );
 #endif
