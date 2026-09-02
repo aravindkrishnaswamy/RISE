@@ -17,7 +17,6 @@
 #define COMPOSITE_EMITTER_
 
 #include "../Interfaces/IEmitter.h"
-#include "../Interfaces/IPainter.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 

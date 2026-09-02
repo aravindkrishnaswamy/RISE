@@ -13,7 +13,9 @@ RISE ASCII SCENE 7
 #     2. Dielectric over diffuse red   - with strong colored absorption (amber tint)                        #
 #     3. Dielectric over diffuse white - with blue absorption (warm light filters through)                  #
 #     4. Translucent over diffuse gold - wax/skin-like scattering layer over metallic base                  #
-#     5. Dielectric over emissive      - glowing orb under glass (tests composite emitter)                  #
+#     5. Dielectric over emissive      - glowing orb under glass (bottom emitter only; the dielectric      #
+#                                        top has no emitter, so CompositeEmitter itself is NOT built here  #
+#                                        -- its coverage lives in tests/CompositeExtinctionTest.cpp s.8)   #
 #     6. Double composite              - dielectric over (translucent over diffuse)                         #
 #                                                                                                           #
 #############################################################################################################

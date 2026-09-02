@@ -675,6 +675,9 @@ int main()
 		const RISEPel avgZero = ceZero->averageRadiantExitance();
 		const RISEPel avgNeg  = ceNeg->averageRadiantExitance();
 		const RISEPel avgNaN  = ceNaN->averageRadiantExitance();
+		const Scalar  avgNmZero = ceZero->averageRadiantExitanceNM( 550.0 );
+		const Scalar  avgNmNeg  = ceNeg->averageRadiantExitanceNM( 550.0 );
+		const Scalar  avgNmNaN  = ceNaN->averageRadiantExitanceNM( 550.0 );
 
 		std::cout << "  " << std::left << std::setw( 40 ) << "emitter thick= 0.00"
 		          << std::fixed << std::setprecision( 5 )
@@ -694,6 +697,11 @@ int main()
 		       "negative thickness emits exactly as thickness 0 (spectral)" );
 		Check( std::fabs( avgNeg[0] - avgZero[0] ) < 1e-12,
 		       "negative thickness leaves averageRadiantExitance at the thickness-0 value" );
+		Check( std::fabs( avgNaN[0] - avgZero[0] ) < 1e-12,
+		       "NaN thickness leaves averageRadiantExitance at the thickness-0 value" );
+		Check( std::fabs( avgNmNeg - avgNmZero ) < 1e-12 &&
+		       std::fabs( avgNmNaN - avgNmZero ) < 1e-12,
+		       "clamped thicknesses leave the cached spectral average (averageRadiantExitanceNM) at the thickness-0 value" );
 		Check( ColorMath::MaxValue( radNaN - radZero ) < 1e-12 &&
 		       ColorMath::MaxValue( radZero - radNaN ) < 1e-12,
 		       "NaN thickness clamps too (the `!(t >= 0)` form, not `t < 0`)" );

@@ -2239,7 +2239,7 @@ timing exists because no implementation exists.
    The fix belongs to Landing 6's owner; if it lands, `composite_material` becomes
    usable for coat-over-diffuse but still carries the 50/50 `Pdf` and top-wins
    `GetBSDF` architectural defects (§3.2). **Open.**
-3. **`composite_material`'s `extinction` is `IPainter`**
+3. **`composite_material`'s `extinction` was `IPainter` (now `IScalarPainter`)**
    ([CompositeSPF.h](../src/Library/Materials/CompositeSPF.h)) — a
    wrong-pipe slot of the exact class
    [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) eliminated elsewhere.

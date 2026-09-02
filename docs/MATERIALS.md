@@ -113,7 +113,8 @@ is [`BSSRDFSamplingTest.cpp`](../tests/BSSRDFSamplingTest.cpp).
 
 [`CompositeMaterial`](../src/Library/Materials/CompositeMaterial.h)
 synthesises a single `IMaterial` from a `top` and `bottom` material plus
-a thickness, an extinction painter, and per-lobe recursion budgets. The
+a thickness, an extinction scalar painter (inline scalar or `scalar_painter`
+reference — a colour painter is rejected), and per-lobe recursion budgets. The
 construction merges sub-interfaces independently:
 
 - The `BSDF` is taken from whichever of `top` / `bottom` provides one

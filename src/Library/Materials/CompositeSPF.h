@@ -16,7 +16,6 @@
 #define COMPOSITE_SPF_
 
 #include "../Interfaces/ISPF.h"
-#include "../Interfaces/IPainter.h"
 #include "../Interfaces/IScalarPainter.h"
 #include "../Utilities/Reference.h"
 
