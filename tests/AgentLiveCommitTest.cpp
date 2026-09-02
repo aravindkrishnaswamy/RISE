@@ -6424,7 +6424,35 @@ static void TestReadVerbsBindDocumentToHeadVersion()
 		// READER B: validate's head form -- the SAME snapshot call, on its own
 		// thread and its own dispatcher (AgentRpcDispatcher is single-caller
 		// by contract, so the two readers must not share one).
+		// `validateNotClean` counts SNAPSHOT failures only.  What this oracle
+		// is about is the pairing -- `validated == "head"`, the live
+		// headVersion, and a document that PARSED -- NOT whether the fixture
+		// scene is stylistically clean.
+		//
+		// The blanket `diagnostics.size() != 0` this check used to carry went
+		// stale at 108c01ed (2026-08-21, "adoption-polish diagnostics"), which
+		// began appending Info-severity DESIGN_* ADVISORIES to validate's
+		// diagnostics array.  kBaseScene declares TWO painters deliberately --
+		// `grey` exists so the GUI-rebind tests have a second value to flip the
+		// `exitance` slot to -- so within THIS document `grey` genuinely is
+		// referenced by nothing, and DESIGN_ORPHANED_PAINTERS is a CORRECT
+		// advisory: it fired on 4000 of 4000 validates, identically, with the
+		// head standing still or moving.  Counting it made the storm fail on a
+		// true statement about the fixture rather than on anything the storm
+		// did.  SEVERITY is the distinction that keeps the oracle honest -- a
+		// torn read (validate serializing a Document another thread is mid-
+		// mutation) surfaces as an error/warning-severity parse diagnostic,
+		// never as a design advisory.
+		//
+		// The advisory set is not merely tolerated, it is PINNED: the storm
+		// moves only `lum.scale`, a value no design condition keys on, so the
+		// severity+code multiset must be IDENTICAL on every one of the 4000
+		// reads.  A set that VARIES is exactly the half-applied-document
+		// symptom this test exists to catch, arriving through the advisories
+		// instead of through the bytes.
 		int validates = 0, validateNotClean = 0;
+		std::string firstNotClean;                       // dumped on failure
+		std::set<std::string> advisorySignatures;
 		std::thread validateReader( [&]{
 			for( int i = 0; i < kReads; ++i )
 			{
@@ -6434,13 +6462,27 @@ static void TestReadVerbsBindDocumentToHeadVersion()
 				if( JsonResultObj( vResp, vResult ) )
 				{
 					++validates;
-					if( vResult.get( "validated" ).asString() != "head" ) ++validateNotClean;
-					if( vResult.get( "diagnostics" ).size() != 0 ) ++validateNotClean;
+					bool clean = ( vResult.get( "validated" ).asString() == "head" );
+					const Agent::JsonValue& diags = vResult.get( "diagnostics" );
+					std::string signature;
+					for( std::size_t d = 0; d < diags.size(); ++d ) {
+						const std::string sev = diags.at( d ).get( "severity" ).asString();
+						signature += sev + ":" + diags.at( d ).get( "code" ).asString() + " ";
+						if( sev != "info" ) clean = false;   // advisories are fine; louder is not
+					}
+					advisorySignatures.insert( signature );
+					if( !clean ) {
+						++validateNotClean;
+						if( firstNotClean.empty() ) firstNotClean = vResp;
+					}
 					const Agent::JsonValue& hv = vResult.get( "headVersion" );
 					if( static_cast<std::uint64_t>( hv.get( "uuid" ).asNumber() ) != startHead.uuid )
 						++foreignUuid;
 				}
-				else ++validateNotClean;
+				else {
+					++validateNotClean;
+					if( firstNotClean.empty() ) firstNotClean = vResp;
+				}
 				std::this_thread::yield();
 			}
 			readersDone.fetch_add( 1 );
@@ -6483,8 +6525,23 @@ static void TestReadVerbsBindDocumentToHeadVersion()
 		       "document -- bytes and headVersion come from one locked snapshot" );
 		Check( foreignUuid == 0, "every read reports the LIVE head's uuid" );
 		Check( notHead == 0, "no read returned a partial/unparseable document" );
+		// A blind count says nothing about WHICH read went wrong, and the storm
+		// is not replayable -- so dump the offending response itself.
+		if( validateNotClean != 0 )
+			std::cout << "    first non-clean validate: " << firstNotClean << std::endl;
+		if( advisorySignatures.size() != 1 )
+			for( std::set<std::string>::const_iterator si = advisorySignatures.begin();
+			     si != advisorySignatures.end(); ++si )
+				std::cout << "    validate diagnostic set: [" << *si << "]" << std::endl;
+
 		Check( validateNotClean == 0,
-		       "validate {} stayed a clean head verdict throughout the storm" );
+		       "validate {} stayed a clean head verdict throughout the storm -- "
+		       "validated == head, and no error/warning-severity diagnostic "
+		       "(Info-severity DESIGN_* advisories are the fixture's own, not a torn read)" );
+		Check( advisorySignatures.size() == 1,
+		       "validate {} reported the SAME diagnostic set on every read of the storm -- "
+		       "the writer moves only `lum.scale`, which no advisory keys on, so a set that "
+		       "VARIES means a validate ran against a half-applied document" );
 
 		c.Stop();
 		Check( !c.IsRunning(), "controller stops + joins cleanly after the read storm" );
