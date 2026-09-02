@@ -27,7 +27,7 @@ AreaLightShaderOp::AreaLightShaderOp(
 	const unsigned int samples,		///< [in] Number of samples to take
 	const IPainter& emm_,			///< [in] Emission of this light
 	const Scalar power_,			///< [in] Power scale
-	const IPainter& N_,				///< [in] Phong factor for focussing the light on something
+	const IScalarPainter& N_,		///< [in] Phong factor for focussing the light on something (physical scalar)
 	const Scalar hotSpot_,			///< [in] Angle in radians of the light's hot spot
 	const bool cache_				///< [in] Should we use the rasterizer state cache?
 	) : 
@@ -97,7 +97,7 @@ void AreaLightShaderOp::PerformOperation(
 		}
 	}
 
-	const RISEPel pN = N.GetColor( ri.geometric );
+	const Scalar pN = N.GetValuesAt( ri.geometric ).v[0];
 
 	for( ISampling2D::SamplesList2D::const_iterator it = samples.begin(); it != samples.end(); it++ ) {
 		const Point2& sample = *it;
@@ -132,7 +132,7 @@ void AreaLightShaderOp::PerformOperation(
 				}
 			}		
 
-			const RISEPel	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
+			const Scalar	k = (pN + 1) * pow(fDot,pN) * (1.0 / TWO_PI);
 			const Scalar	attenuation_size_factor = area / (fDistFromLight * fDistFromLight);
 			c = c + (emm.GetColor(ri.geometric) * k * power * fDotLight * attenuation_size_factor * (pBRDF?pBRDF->value(vToLight,ri.geometric):RISEPel(1,1,1)));
 		}
@@ -178,7 +178,7 @@ Scalar AreaLightShaderOp::PerformOperationNM(
 		}
 	}
 
-	const Scalar pN = N.GetColorNM( ri.geometric, nm );
+	const Scalar pN = N.GetValueAtNM( ri.geometric, nm );
 
 	for( ISampling2D::SamplesList2D::const_iterator it = samples.begin(); it != samples.end(); it++ ) {
 		const Point2& sample = *it;

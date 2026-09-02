@@ -8015,28 +8015,24 @@ bool Job::AddAreaLightShaderOp(
 		)
 
 {
-	// N (Phong/directionality exponent) is Reference-kind and falls back to atof()
-	// below when not a painter name, so an inline non-finite value would synthesise
-	// a non-finite exponent painter.  Reject up front (painter name / "none" not flagged).
-	if( !ScalarLiteralIsFiniteNumber( N ) && pPntManager->GetItem( N ) == 0 ) {
-		GlobalLog()->PrintEx( eLog_Error, "arealight_shaderop `%s`: `N` must be a finite exponent (got `%s`)", name, N );
-		return false;
-	}
-
+	// N (Phong/directionality exponent) is a physical SCALAR -- it is an exponent
+	// in (N+1)*pow(fDot,N), not a colour.  Routing it through IPainter's
+	// GetColorNM (eSpectrumKind_Albedo) clamps values > 1 to ~1 before the
+	// Jakob-Hanika LUT, so an authored `N 5` silently became N=1 in every
+	// spectral rasterizer while the RGB path used the true value -- see
+	// docs/ISCALARPAINTER_REFACTOR.md.  Resolved through the scalar-painter
+	// pipe: a named scalar_painter, or an inline finite scalar/triple literal.
+	// `requireSingle=true` because the consumption sites read `.v[0]` /
+	// GetValueAtNM only (a single exponent, not a per-channel one).
 	IPainter* pEmm = pPntManager->GetItem( emm );
 	if( !pEmm ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddAreaLightShaderOp: Painter not found '%s'", emm );
 		return false;
 	}
 
-	IPainter*		pN = pPntManager->GetItem( N );
-
-	if( !pN )
-	{
-		double fn = atof(N);
-		RISE_API_CreateUniformColorPainter( &pN, RISEPel(fn,fn,fn) );
-	} else {
-		pN->addref();
+	IScalarPainter* pN = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "arealight_shaderop", name, "N", N, /*requireSingle*/ true );
+	if( !pN ) {
+		return false;
 	}
 
 	IShaderOp* pShaderOp = 0;

@@ -8633,7 +8633,7 @@ bool RISE_API_CreateFinalGatherShaderOp(
 								const unsigned int samples,				///< [in] Number of samples to take
 								const IPainter& emm,					///< [in] Emission of this light
 								const Scalar power,						///< [in] Power scale
-								const IPainter& N,						///< [in] Phong factor for focussing the light
+								const IScalarPainter& N,				///< [in] Phong factor for focussing the light (physical SCALAR -- an IPainter here would JH-uplift and clamp it; see IScalarPainter.h)
 								const Scalar hotSpot,					///< [in] Angle in radians of the light's hot spot
 								const bool cache						///< [in] Should the rasterizer state cache be used?
 								)

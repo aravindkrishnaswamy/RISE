@@ -21,6 +21,7 @@
 
 #include "../Interfaces/IShaderOp.h"
 #include "../Interfaces/IPainter.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ISampling2D.h"
 #include "../Utilities/Reference.h"
 
@@ -44,7 +45,16 @@ namespace RISE
 			const IPainter& emm;	// The emission of this area light
 			const Scalar power;		// Power scale for emission
 
-			const IPainter& N;		// Phong factor for the light, to focus
+			// Phong/directionality exponent for the light, to focus.  This is a
+			// PHYSICAL SCALAR (an exponent used in (N+1)*pow(fDot,N)), not a
+			// colour -- IScalarPainter carries it with no colorspace conversion
+			// and no Jakob-Hanika spectral uplift.  See docs/ISCALARPAINTER_REFACTOR.md
+			// and docs/JH_LUT_GAMUT.md: routing an exponent > 1 through IPainter's
+			// GetColorNM (eSpectrumKind_Albedo) clamps it to ~1 before the JH LUT,
+			// so a scene-authored `N 5` silently became N=1 in every spectral
+			// rasterizer while the RGB path (GetColor, no uplift) used the true
+			// value.
+			const IScalarPainter& N;
 			const Scalar hotSpot;	// Angle in radians of the light's hotspot
 
 			const bool cache;
@@ -64,7 +74,7 @@ namespace RISE
 				const unsigned int samples,		///< [in] Number of samples to take
 				const IPainter& emm_,			///< [in] Emission of this light
 				const Scalar power_,			///< [in] Power scale
-				const IPainter& N_,				///< [in] Phong factor for focussing the light on something
+				const IScalarPainter& N_,		///< [in] Phong factor for focussing the light on something (physical scalar)
 				const Scalar hotSpot_,			///< [in] Angle in radians of the light's hot spot
 				const bool cache_				///< [in] Should we use the rasterizer state cache?
 				);

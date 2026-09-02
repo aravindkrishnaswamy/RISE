@@ -10500,7 +10500,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "samples";  p.kind = ValueKind::UInt;       p.description = "Samples per shade"; p.defaultValueHint = "9"; }
 						{ auto& p = P(); p.name = "emission"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Emission colour"; p.defaultValueHint = "color_white"; }
 						{ auto& p = P(); p.name = "power";    p.kind = ValueKind::Double;     p.description = "Radiant power"; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality exponent"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "N";        p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Directionality (Phong) exponent (physical SCALAR, single value: a scalar_painter name, or an inline scalar -- a COLOUR painter does not bind here)"; p.defaultValueHint = "1.0"; p.semantics.pipe = ParameterPipe::Scalar; }
 						{ auto& p = P(); p.name = "hotspot";  p.kind = ValueKind::Double;     p.description = "Hotspot half-angle (degrees)"; p.defaultValueHint = "180"; }
 						{ auto& p = P(); p.name = "cache";    p.kind = ValueKind::Bool;       p.description = "Cache direct-light estimate"; p.defaultValueHint = "FALSE"; }
 						return cd;
