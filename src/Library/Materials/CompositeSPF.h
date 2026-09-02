@@ -144,7 +144,7 @@ namespace RISE
 			static Scalar GapPathLength(
 					const Vector3& dir,									///< [in] Normalised direction crossing the gap
 					const Vector3& normal,								///< [in] The slab normal (the top interface's onb.w())
-					const Scalar thickness								///< [in] Perpendicular gap thickness (already clamped >= 0)
+					const Scalar thickness								///< [in] Perpendicular gap thickness; a negative or NaN value yields 0
 					);
 
 			CompositeSPF(

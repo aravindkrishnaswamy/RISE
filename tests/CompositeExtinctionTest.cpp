@@ -104,8 +104,9 @@ using namespace RISE::Implementation;
 static const unsigned int kSeed    = 20260901u;
 static const int          kSamples = 200000;
 
-// Recursion budgets: the composite_material chunk's scene-language defaults,
-// same values LayeredWhiteFurnaceTest uses.
+// Recursion budgets: the same values LayeredWhiteFurnaceTest uses (and the
+// glTF importer's clearcoat wrap).  NOTE these are NOT the composite_material
+// chunk's parser defaults, which are max_recursion 3 / per-type 3.
 static const unsigned int kMaxRecur      = 4;
 static const unsigned int kMaxReflRecur  = 2;
 static const unsigned int kMaxRefrRecur  = 2;
@@ -826,7 +827,13 @@ int main()
 	//    0.001, so `tau^distance` is the ONLY term in play.
 	//
 	//    RED-PROOF (measured 2026-09-02 by rebuilding the four recursion sites
-	//    with `Advance( thickness )` in place of `Advance( pathLength )`):
+	//    with `Advance( thickness )` in place of `Advance( pathLength )`).
+	//    What this fixture actually RESOLVES is the RGB bottom->top site (the
+	//    return trip into the absorbing coat): the top->bottom site advances
+	//    into a Lambertian that never reads the distance, and the two NM
+	//    sites are not exercised here (section 5's NM walk uses tau = 1).
+	//    All four now share GapPathLength, so a divergence would have to be
+	//    introduced at a single call site to slip past this guard.
 	//      Advance(thickness)  -- the bug   : crossed = 0.01536  total = 0.05536
 	//      Advance(pathLength) -- fixed     : crossed = 0.01028  total = 0.05028
 	//    The bug inflated the returning population by 49.4 %.  The sign is

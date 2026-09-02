@@ -93,17 +93,26 @@ namespace RISE
 		//! `DoSingleRGBComponent` three times, so the top interface emits up
 		//! to 3 up-going Fresnel lobes (3 exits) plus 3 down-going refracted
 		//! rays, and each of those returns through the top interface for up
-		//! to 3 more exits -- 3 + 3x3 = 12 at the scene-language default
-		//! recursion budgets.  Measured over 200 000 draws of that fixture:
-		//! max 12 attempted per Scatter, and at capacity 6, 21.7 % of all
-		//! exit rays were dropped (45.96 % of Scatter calls lost at least
-		//! one).  Non-dispersive stacks peak at 3-4 even at deep budgets, so
-		//! they never came near either bound.
+		//! to 3 more exits -- 3 + 3x3 = 12 over a DIFFUSE substrate.  Measured
+		//! over 200 000 draws of that fixture (budgets 4/2/2/2/2, the
+		//! LayeredWhiteFurnaceTest set): max 12 attempted per Scatter, and
+		//! at capacity 6, 21.7 % of all exit rays were dropped (45.96 % of
+		//! Scatter calls lost at least one).  Non-dispersive stacks peak at
+		//! 3-4 even at deep budgets, so they never came near either bound.
 		//!
-		//! A DISPERSIVE top at DEEP budgets still peaks at 30 -- the cap is a
-		//! bound, not a guarantee, so producers that can overflow it must
-		//! check the return value rather than assume success (CompositeSPF
-		//! warns once per process when it does).
+		//! 12 is a bound for the coat-over-diffuse regime, NOT a guarantee:
+		//! a dispersive top over a NON-diffuse bottom adds one down-exit per
+		//! refracted ray, so dispersive/dielectric reaches 15 even at the
+		//! parser's default budgets (max_recursion 3, per-type 3), and a
+		//! dispersive top at deep budgets measured 30.  Producers that can
+		//! overflow must check the return value rather than assume success
+		//! (CompositeSPF warns once per process when it does).
+		//!
+		//! Cost of the larger array: every slot is constructed and destroyed
+		//! with the container, so construct+destruct went ~19 -> ~37 ns per
+		//! container (microbenchmark, Config.OSX flags).  At ~1e8 Scatter
+		//! calls per 1024x576x64spp render that is ~2 s of CPU on ~250 s --
+		//! under 1 %, below the wall-clock noise floor, but not zero.
 		static const unsigned int kCapacity = 12;
 
 	protected:

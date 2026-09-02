@@ -21,20 +21,25 @@ using namespace RISE;
 using namespace RISE::Implementation;
 
 // A composite is the only SPF in the engine that can produce MORE exit rays
-// than `ScatteredRayContainer::kCapacity`, because it is the only one that
-// re-enters another SPF's Scatter() inside its own: every extra gap round trip
-// adds another batch of exits.  `AddScatteredRay` answers false and DISCARDS
-// the ray when it is full, so an unchecked add loses that energy with no
-// diagnostic at all -- and the loss is not even colour-neutral, because the
+// than `ScatteredRayContainer::kCapacity`: every extra gap round trip adds
+// another batch of exits.  (CoatedSPF also re-enters a substrate's Scatter(),
+// but its substrate allowlist -- Lambertian / OrenNayar / GGX / PBR -- emits at
+// most one ray, so it cannot overflow; that allowlist is the load-bearing
+// invariant there.)  `AddScatteredRay` answers false and DISCARDS the ray when
+// it is full, so an unchecked add loses that energy with no diagnostic at all
+// -- and on the RGB walk the loss is not even colour-neutral, because the
 // dropped rays are whichever the walk emitted LAST (with a dispersive top the
-// per-channel loop runs R, G, B in order, so BLUE starves first).
+// per-channel loop runs R, G, B in order, so BLUE starves first; the NM walk
+// is per-wavelength and has no such bias).
 //
-// kCapacity is sized from the measured worst case at the scene-language
-// DEFAULT recursion budgets (12; see the constant's comment in ISPF.h), so
-// this path should not fire on a default-budget scene.  It still can on a
-// deliberately deep one -- a dispersive top at max_recur 12 / per-type 6
-// measured 30 attempted exits per Scatter -- which is exactly the case that
-// must be audible rather than silent.
+// kCapacity (12; see the constant's comment in ISPF.h) is sized from the
+// measured worst case of a dispersive top over a DIFFUSE substrate, so a
+// coat-over-diffuse composite should never reach this path.  It is a bound,
+// not a guarantee: a dispersive top over a NON-diffuse bottom (dispersive
+// clearcoat over glass) adds one down-exit per refracted ray and reaches 15
+// at the parser's default budgets, and a dispersive top at max_recursion 12 /
+// per-type 6 measured 30 -- exactly the cases that must be audible rather
+// than silent.
 //
 // Warn ONCE per process (the SplatFilm.cpp / Object.cpp log-once idiom): this
 // sits inside the per-sample scatter loop, so an unthrottled warning would
@@ -46,10 +51,11 @@ static void NoteCompositeExitRayDropped()
 	if( warnedExitRayDropped.compare_exchange_strong( expected, true ) ) {
 		GlobalLog()->PrintEx( eLog_Warning,
 			"CompositeSPF:: the scattered-ray container filled (capacity %u) and at least one "
-			"exiting ray was DROPPED -- that ray's energy is lost from the image, and because "
-			"the walk emits per-channel lobes in R,G,B order the loss is biased toward blue.  "
+			"exiting ray was DROPPED -- that ray's energy is lost from the image (and on the RGB "
+			"path, where a dispersive top emits per-channel lobes in R,G,B order, the loss is "
+			"biased toward blue).  "
 			"This composite's random walk produces more exits than the container can hold; "
-			"lower the material's recursion budgets (max_recur / max_reflection_recursion / "
+			"lower the material's recursion budgets (max_recursion / max_reflection_recursion / "
 			"max_refraction_recursion / max_diffuse_recursion / max_translucent_recursion), "
 			"or drop the per-channel (dispersive) IOR on the top layer, which triples the "
 			"number of lobes each interface emits.  Reported once per process.",
@@ -179,6 +185,11 @@ Scalar CompositeSPF::GapPathLength(
 	const Scalar thickness
 	)
 {
+	// Public entry point: enforce the non-negative precondition here too
+	// (negated compare so NaN also lands on 0), not only at the ctor clamp.
+	if( !( thickness >= 0 ) ) {
+		return 0;
+	}
 	const Scalar cosTheta = fabs( Vector3Ops::Dot( dir, normal ) );
 	return thickness / ( cosTheta > kMinCosTheta ? cosTheta : kMinCosTheta );
 }
