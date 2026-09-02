@@ -2205,6 +2205,54 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 	return r == 1 || r == 2;
 }
 
+// Light-colour CST review fix (2026-09-02) -- see the header doc for the contract.  THE BUG this closes:
+// the panel's `color` row is `ILight::emissionColor()`, i.e. the light's LIVE, already-converted LINEAR
+// RISEPel.  The CST route writes those digits verbatim into the chunk and re-derives -- and the re-derive
+// reads them through whatever `colorspace` the chunk still spells.  On a chunk carrying `colorspace sRGB`
+// (which is EVERY light `tools/migrate_scenes_light_colorspace.py` touched, since that is exactly how the
+// migrator preserved pre-2026-09-02 looks) the linear digits get gamma-DECODED a SECOND time: nudging a
+// swatch that reads (1, 0.0331, 0.0194) up to (1, 0.05, 0.02) lands the light on (1, 0.0039, 0.0016) --
+// an order of magnitude the wrong way, and it compounds on every subsequent nudge.
+//
+// The fix is to make the chunk agree with the panel rather than to re-encode the value: write
+// `colorspace Rec709RGB_Linear` alongside the colour, converting the chunk to the linear convention the
+// first time anyone edits its colour.  Self-healing (one edit and the chunk is permanently consistent),
+// one-way (a linear chunk is never converted back), and look-preserving (the digits written ARE the
+// light's current linear colour, so the light does not move except by the edit the user asked for).
+// Re-encoding the panel value back into sRGB was the alternative and is worse: it silently keeps a
+// second, invisible convention alive in the Document, and it is lossy (the OETF round-trip is not exact
+// at the ends of the range).
+//
+// ORDER: the colourspace goes FIRST, the colour second.  Each ApplyCstParamEdit re-derives on its own, so
+// the FINAL state is the same either way -- but if the colourspace write fails, this ordering leaves the
+// colour digits untouched, so the caller's `return false` is a clean refusal rather than a half-applied
+// edit that has already double-decoded.  The transient between the two routes (old digits, new linear
+// reading) is not observable: both run synchronously inside one SceneEditor::Apply, under the caller's
+// render park.
+bool SceneEditor::NormalizeCstLightColorSpace_( const char* lightName, const String& propertyName )
+{
+	if( !( propertyName == String( "color" ) ) ) return true;   // only the colour row carries the convention
+	if( !mJob || !lightName || !lightName[0] ) return true;
+	const RISE::Cst::Document* doc = mJob->GetCstDocument();
+	if( !doc ) return true;                                     // legacy (no-Document) scene: nothing to normalize
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole( *doc, lightName, nullptr, "light", /*uniqueFallback*/ false );
+	if( id == 0 ) return true;   // not addressable in the Document -- let the colour write report that itself
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return true;
+
+	// LAST occurrence (Cst::ParamValueAsParsed), because that is the one the derive reads -- the same
+	// last-wins rule CstIntrospection's rows follow.  Absent == the descriptor default, which IS linear.
+	bool present = false;
+	const std::string cspace = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &present );
+	if( !present || cspace == "Rec709RGB_Linear" ) return true;
+
+	GlobalLog()->PrintEx( eLog_Info,
+		"SceneEditor: light `%s` carries `colorspace %s`; the edited colour is the light's LIVE LINEAR value, "
+		"so the chunk is being converted to `colorspace Rec709RGB_Linear` with it (one-time, look-preserving).",
+		lightName, cspace.c_str() );
+	return RouteCstParamEdit_( lightName, "light", "colorspace", "Rec709RGB_Linear" );
+}
+
 // Shared-undo U1: the inverse of an agent param edit that INSERTED a previously-absent param (SetAgentCstParam's
 // prevValueWasAbsent case) -- removes the param instead of re-setting a (nonexistent) prior value.  Mirrors
 // RouteCstParamEdit_ exactly (rebind on >=2, mCstLiveSceneChanged on != 0); only the Job entry point differs
@@ -3619,6 +3667,13 @@ bool SceneEditor::ApplyRevertMutation( const SceneEdit& edit )
 		if( !light ) return false;
 		// P5 Slice 3 expansion: CST-route the inverse light edit too (replays through the SAME CST path).
 		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			// Light-colour CST review fix, revert half.  `prevPropertyValue` was captured off
+			// ILight::emissionColor() (ReadLightProperty), so it is the light's ORIGINAL DECODED, LINEAR
+			// colour -- writing it back under a still-sRGB `colorspace` would decode it a second time and
+			// undo would land somewhere the light has never been.  Normalizing here restores the original
+			// RISEPel exactly.  Ordinarily a no-op (the forward half already converted the chunk); it earns
+			// its keep when a redo/undo sequence starts from a chunk this editor did not convert.
+			if( !NormalizeCstLightColorSpace_( edit.objectName.c_str(), edit.propertyName ) ) return false;
 			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.prevPropertyValue.c_str() ) ) return false;
 			mLastScope = Dirty_Camera;
 			return true;
@@ -4050,6 +4105,10 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 		// P5 Slice 3 expansion: CST-route the light edit (incl. shootphotons -- the re-derive applies it from
 		// the chunk param) so the Document stays complete; a later material D2 then can't revert this edit.
 		if( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) ) {
+			// Light-colour CST review fix: a `color` edit ALSO converts an sRGB-spelled chunk to the linear
+			// convention, else the re-derive decodes the panel's already-linear digits again.  Ordered first
+			// so a failure here leaves the colour untouched.  No-op for every other role.
+			if( !NormalizeCstLightColorSpace_( edit.objectName.c_str(), edit.propertyName ) ) return false;
 			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
 			mLastScope = Dirty_Camera;
 			return true;

@@ -31,9 +31,16 @@ touched, whatever its value.
 Line-by-line so indentation, tab style, comments and brace placement are all
 preserved.
 
+Structural decisions are made on a COMMENT-STRIPPED view of the file that
+mirrors RISE's own lexer (see `strip_comments`), so a comment can never hide
+a brace or a `color` line; the bytes written back are the originals.  An
+unterminated chunk is DIAGNOSED and makes the run exit non-zero, rather than
+silently abandoning the rest of the file.
+
 Usage:
     python3 tools/migrate_scenes_light_colorspace.py [--dry-run] [--root scenes]
     python3 tools/migrate_scenes_light_colorspace.py --root scenes/Tests -v
+    python3 tools/migrate_scenes_light_colorspace.py --selftest
 """
 
 import argparse
@@ -43,19 +50,69 @@ import sys
 
 LIGHT_KINDS = ('omni_light', 'spot_light', 'directional_light', 'ambient_light')
 
-# A chunk keyword sitting alone on its line (optionally with trailing
-# whitespace / a comment).  The scene language puts the opening brace on its
-# own line, so the keyword line carries nothing else.
-KIND_RE = re.compile(r'^\s*(' + '|'.join(LIGHT_KINDS) + r')\s*(?:#.*)?$')
+# A chunk keyword on its own line, optionally with the opening brace on the
+# SAME line.  Both spellings are legal: RISE's lexer (Cst.cpp `Tokenize`)
+# treats `{` / `}` as single-character punctuation and whitespace as trivia,
+# so `omni_light {` tokenises identically to `omni_light` + newline + `{`.
+# Matched against the COMMENT-STRIPPED view of the line (see strip_comments),
+# so a trailing `# note` is already gone by the time this runs.
+KIND_RE = re.compile(r'^\s*(' + '|'.join(LIGHT_KINDS) + r')\s*(\{)?\s*$')
 
 # `color` followed by its three components; capture the whitespace run
 # between the keyword and the first component so the inserted line can
-# reproduce the file's own tab style.
+# reproduce the file's own tab style.  Also matched against the stripped view.
 COLOR_RE = re.compile(
     r'^(\s*)color(\s+)('
-    r'[-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*(?:#.*)?$')
+    r'[-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*$')
 
 COLORSPACE_RE = re.compile(r'^\s*colorspace\b')
+
+
+def strip_comments(lines):
+    """Return a same-length list of lines with COMMENT TEXT removed.
+
+    Mirrors RISE's own lexer (`Tokenize` in src/Library/Cst/Cst.cpp), which
+    absorbs `#`-to-end-of-line comments and `/* ... */` block comments as
+    trivia ANYWHERE -- including immediately after a brace.  The scene
+    language has no quoted strings at all (a word token stops at whitespace,
+    `#`, `{`, `}` or `/*`), so a `#` is unconditionally the start of a
+    comment and stripping it can never eat data.
+
+    Why this matters here: the brace-depth walk below used to compare
+    `line.strip()` against exactly `'{'` / `'}'`, so a perfectly legal
+    `}\t# end of the key light` was invisible to it -- the walk never found
+    the chunk's close, gave up, and silently abandoned the REST OF THE FILE
+    (a two-light file with one such brace reported 0 chunks and exited 0).
+
+    Block-comment state carries ACROSS lines, so a `/* ... */` spanning a
+    `}` hides that brace exactly as the lexer does.
+    """
+    out = []
+    in_block = False
+    for line in lines:
+        buf = []
+        i = 0
+        n = len(line)
+        while i < n:
+            if in_block:
+                j = line.find('*/', i)
+                if j < 0:
+                    i = n
+                else:
+                    in_block = False
+                    i = j + 2
+                continue
+            if line.startswith('/*', i):
+                in_block = True
+                i += 2
+                continue
+            if line[i] == '#':
+                i = n                       # `#` to end of line, per the lexer
+                continue
+            buf.append(line[i])
+            i += 1
+        out.append(''.join(buf))
+    return out
 
 
 def _is_transfer_fixed_point(components):
@@ -71,8 +128,15 @@ def _is_transfer_fixed_point(components):
 
 
 def migrate_text(text, stats, path_label=''):
-    """Return (new_text, changed).  Mutates `stats` in place."""
+    """Return (new_text, changed).  Mutates `stats` in place.
+
+    Two parallel views of the file: `lines` (verbatim -- what gets written
+    back, so indentation, tab style, comments and brace placement all
+    survive) and `code` (comment-stripped -- what every structural decision
+    is made on, so a comment can never hide a brace or a `color` line).
+    """
     lines = text.split('\n')
+    code = strip_comments(lines)
     out = []
     i = 0
     n = len(lines)
@@ -80,47 +144,69 @@ def migrate_text(text, stats, path_label=''):
 
     while i < n:
         line = lines[i]
-        m = KIND_RE.match(line)
+        m = KIND_RE.match(code[i])
         if not m:
             out.append(line)
             i += 1
             continue
 
         kind = m.group(1)
+        brace_on_keyword_line = m.group(2) is not None
 
-        # Collect the chunk: keyword line, `{` line, body, `}` line.  If the
-        # next non-blank line is not an opening brace this is not a chunk
-        # header (e.g. prose in a comment block that the regex let through);
-        # emit it untouched.
-        j = i + 1
-        while j < n and lines[j].strip() == '':
-            j += 1
-        if j >= n or lines[j].strip() != '{':
-            out.append(line)
-            i += 1
-            continue
+        # Locate the chunk's opening brace.  Either it is on the keyword line
+        # (`omni_light {`) or it is the next non-blank CODE line.  If that
+        # line is something else, this is not a chunk header (e.g. the
+        # keyword named in running prose); emit it untouched.
+        if brace_on_keyword_line:
+            start = i
+            head_offset = m.start(2)          # count braces from the `{` itself
+        else:
+            j = i + 1
+            while j < n and code[j].strip() == '':
+                j += 1
+            if j >= n or not code[j].lstrip().startswith('{'):
+                out.append(line)
+                i += 1
+                continue
+            start = j
+            head_offset = 0
 
+        # Brace-depth walk over the COMMENT-STRIPPED text, character by
+        # character rather than whole-line equality -- that is what the lexer
+        # does, and it is what makes `}\t# end` and `{ # note` (and a brace
+        # sharing a line with anything else) count correctly.
         depth = 0
         end = None
-        for k in range(j, n):
-            s = lines[k].strip()
-            if s == '{':
-                depth += 1
-            elif s == '}':
-                depth -= 1
-                if depth == 0:
-                    end = k
-                    break
+        for k in range(start, n):
+            seg = code[k][head_offset:] if k == start else code[k]
+            for ch in seg:
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end = k
+                        break
+            if end is not None:
+                break
         if end is None:
-            # Unterminated chunk -- leave the rest of the file alone.
+            # Unterminated chunk.  This is a real defect in the input (or in
+            # this scanner), not something to swallow: say so and make the
+            # process fail, rather than silently abandoning the rest of the
+            # file the way the pre-2026-09-02 version did.
+            stats['unterminated'] += 1
+            print('  ERROR %s: unterminated `%s` chunk starting at line %d '
+                  '(no matching `}`); the rest of the file was NOT scanned'
+                  % (path_label or '<text>', kind, i + 1), file=sys.stderr)
             out.extend(lines[i:])
             i = n
             break
 
         body = lines[i:end + 1]
+        body_code = code[i:end + 1]
         stats['chunks_seen'] += 1
 
-        if any(COLORSPACE_RE.match(b) for b in body):
+        if any(COLORSPACE_RE.match(b) for b in body_code):
             stats['skipped_has_colorspace'] += 1
             out.extend(body)
             i = end + 1
@@ -128,7 +214,7 @@ def migrate_text(text, stats, path_label=''):
 
         color_idx = None
         color_match = None
-        for idx, b in enumerate(body):
+        for idx, b in enumerate(body_code):
             cm = COLOR_RE.match(b)
             if cm:
                 color_idx = idx
@@ -178,25 +264,158 @@ def migrate_file(path, stats, dry_run=False, verbose=False):
     return changed
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--root', default='scenes')
-    ap.add_argument('--dry-run', action='store_true')
-    ap.add_argument('-v', '--verbose', action='store_true')
-    args = ap.parse_args()
-
-    stats = {
+def new_stats():
+    return {
         'chunks_seen': 0,
         'colors_encoded': 0,
         'skipped_neutral': 0,
         'skipped_no_color': 0,
         'skipped_has_colorspace': 0,
+        'unterminated': 0,
         'files_touched_set': set(),
     }
+
+
+#######################################################################
+# Self-test.  `python3 tools/migrate_scenes_light_colorspace.py --selftest`
+#
+# Every case here is a shape the pre-2026-09-02 scanner got WRONG (or a
+# shape it got right that the rewrite must not break).  The comment-on-a-
+# brace cases are the ones that motivated the rewrite: they made the walk
+# abandon the rest of the file with a 0 exit status, so a migration could
+# report success while leaving most of a scene un-migrated.
+#######################################################################
+
+_SELFTESTS = [
+    (
+        'trailing comment on the closing brace',
+        'omni_light\n{\nname a\ncolor 0.5 0.4 0.3\n}\t# end of key\n'
+        'omni_light\n{\nname b\ncolor 0.2 0.2 0.2\n}\n',
+        2, 2,
+    ),
+    (
+        'trailing comment on the opening brace',
+        'omni_light\n{ # the key light\nname a\ncolor 0.5 0.4 0.3\n}\n',
+        1, 1,
+    ),
+    (
+        'comment on the keyword line',
+        'omni_light  # key\n{\nname a\ncolor 0.5 0.4 0.3\n}\n',
+        1, 1,
+    ),
+    (
+        'opening brace on the keyword line',
+        'spot_light {\nname a\ncolor 0.5 0.4 0.3\ntarget 0 0 0\n}\n',
+        1, 1,
+    ),
+    (
+        'trailing comment on the colour line',
+        'omni_light\n{\nname a\ncolor 0.5 0.4 0.3   # picked off a swatch\n}\n',
+        1, 1,
+    ),
+    (
+        'block comment hiding a brace',
+        'omni_light\n{\nname a\ncolor 0.5 0.4 0.3\n/* a note\n   } not a real brace\n*/\n}\n',
+        1, 1,
+    ),
+    (
+        'a `#` inside a block comment does not end it',
+        'omni_light\n{\nname a\ncolor 0.5 0.4 0.3\n/* # still a comment\n*/\n}\n',
+        1, 1,
+    ),
+    (
+        'already migrated -- idempotent',
+        'omni_light\n{\nname a\ncolor 0.5 0.4 0.3\ncolorspace sRGB\n}\n',
+        1, 0,
+    ),
+    (
+        'transfer fixed point -- skipped as diff noise',
+        'omni_light\n{\nname a\ncolor 1 1 1\n}\n',
+        1, 0,
+    ),
+    (
+        'keyword inside a comment is not a chunk header',
+        '# an omni_light\nsphere_geometry\n{\nname g\nradius 1\n}\n',
+        0, 0,      # nothing here is a light chunk
+    ),
+    (
+        'bare keyword with no brace is not a chunk header',
+        'omni_light\nsphere_geometry\n{\nname g\nradius 1\n}\n',
+        0, 0,
+    ),
+    (
+        'nested braces do not close the chunk early',
+        'omni_light\n{\nname a\n{\n}\ncolor 0.5 0.4 0.3\n}\n',
+        1, 1,
+    ),
+]
+
+
+def selftest():
+    failures = 0
+
+    for label, text, want_chunks, want_encoded in _SELFTESTS:
+        stats = new_stats()
+        new_text, changed = migrate_text(text, stats, path_label='<selftest>')
+        ok = stats['chunks_seen'] == want_chunks \
+            and stats['colors_encoded'] == want_encoded \
+            and stats['unterminated'] == 0
+        if not ok:
+            failures += 1
+            print('  FAIL: %s -- chunks_seen=%d (want %d), colors_encoded=%d (want %d)'
+                  % (label, stats['chunks_seen'], want_chunks,
+                     stats['colors_encoded'], want_encoded), file=sys.stderr)
+            continue
+        # An encoding case must actually have inserted the line, and must be a
+        # FIXED POINT: re-running finds nothing left to do.
+        if want_encoded:
+            if 'colorspace' not in new_text or not changed:
+                failures += 1
+                print('  FAIL: %s -- no `colorspace` line landed' % label, file=sys.stderr)
+                continue
+            again = new_stats()
+            text2, changed2 = migrate_text(new_text, again, path_label='<selftest>')
+            if changed2 or text2 != new_text:
+                failures += 1
+                print('  FAIL: %s -- not idempotent on a second pass' % label, file=sys.stderr)
+                continue
+        elif changed:
+            failures += 1
+            print('  FAIL: %s -- expected no change but the text was rewritten' % label, file=sys.stderr)
+            continue
+        print('  ok: %s' % label)
+
+    # An UNTERMINATED chunk must be diagnosed and counted, not swallowed.
+    stats = new_stats()
+    migrate_text('omni_light\n{\nname a\ncolor 0.5 0.4 0.3\n', stats, path_label='<selftest>')
+    if stats['unterminated'] != 1:
+        failures += 1
+        print('  FAIL: unterminated chunk was not diagnosed', file=sys.stderr)
+    else:
+        print('  ok: unterminated chunk is diagnosed')
+
+    print('selftest: %d failure(s)' % failures, file=sys.stderr)
+    return 1 if failures else 0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--root', default='scenes')
+    ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument('--selftest', action='store_true',
+                    help='run the built-in scanner tests and exit')
+    args = ap.parse_args()
+
+    if args.selftest:
+        return selftest()
+
+    stats = new_stats()
 
     root = pathlib.Path(args.root)
     paths = sorted(root.rglob('*.RISEscene')) if root.is_dir() else [root]
     changed_count = 0
+    errors = 0
     for path in paths:
         try:
             if migrate_file(path, stats, dry_run=args.dry_run,
@@ -206,6 +425,7 @@ def main():
                     print('  %s: %s' % (
                         'would migrate' if args.dry_run else 'migrated', path))
         except Exception as e:                       # noqa: BLE001
+            errors += 1
             print('  ERROR %s: %s' % (path, e), file=sys.stderr)
 
     print('', file=sys.stderr)
@@ -222,7 +442,16 @@ def main():
           file=sys.stderr)
     print('  %d chunks skipped: already carry a `colorspace` line'
           % stats['skipped_has_colorspace'], file=sys.stderr)
+    if stats['unterminated'] or errors:
+        # NON-ZERO EXIT.  An unterminated chunk means part of a file went
+        # unscanned; a read/write error means a file went unprocessed.  Either
+        # way the corpus is NOT fully migrated, and a caller (or a CI step)
+        # that only checks the exit status must not be told otherwise.
+        print('  %d unterminated chunk(s), %d file error(s) -- the corpus was NOT '
+              'fully migrated' % (stats['unterminated'], errors), file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

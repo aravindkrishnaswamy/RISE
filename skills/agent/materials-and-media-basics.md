@@ -439,7 +439,7 @@ directional_light
 {
 	name		key
 	power		3.2
-	color		1 0.98 0.95
+	color		1.0 0.955 0.89
 	direction	0.4 0.55 0.8
 }
 ```
@@ -626,7 +626,7 @@ directional_light
 {
 	name		key
 	power		3.2
-	color		1 0.98 0.95
+	color		1.0 0.955 0.89
 	direction	0.35 0.6 0.75
 }
 ```
@@ -813,7 +813,7 @@ directional_light
 {
 	name		key
 	power		0.6
-	color		0.55 0.62 0.80
+	color		0.263 0.342 0.604
 	direction	0.3 0.5 0.85
 }
 ```

@@ -270,7 +270,7 @@ namespace RISE
 	bool RISE_API_CreatePointOmniLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const bool shootPhotons									///< [in] Should this light shoot photons for photon mapping?
 		);
 
@@ -279,7 +279,7 @@ namespace RISE
 	bool RISE_API_CreatePointSpotLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const Point3& foc,										///< [in] Point the center of the light is focussing on
 		const Scalar inner,										///< [in] Angle of the inner cone in radians
 		const Scalar outer,										///< [in] Angle of the outer cone in radians
@@ -291,7 +291,7 @@ namespace RISE
 	bool RISE_API_CreateAmbientLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color										///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color										///< [in] Color of the light in linear Rec.709 (RISEPel)
 		);
 
 	//! Creates a infinite directional light, coming from a particular direction
@@ -299,7 +299,7 @@ namespace RISE
 	bool RISE_API_CreateDirectionalLight(
 		ILightPriv** ppi,										///< [out] Pointer to recieve the light
 		const Scalar power,										///< [in] Power of the light in watts
-		const RISEPel color,									///< [in] Color of the light in the linear ProPhoto colorspace
+		const RISEPel color,									///< [in] Color of the light in linear Rec.709 (RISEPel)
 		const Vector3 vDir										///< [in] Direction the light is shining
 		);
 

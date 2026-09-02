@@ -96,6 +96,14 @@ sky, not a constant term.
 
 ## Three-point lighting
 
+> A light's `color` (on `omni_light`, `spot_light`, `directional_light`,
+> `ambient_light`) is **linear Rec.709** by default — a numerical weight,
+> the same convention `uniformcolor_painter`'s `color` uses, not a
+> perceptual value.  Add `colorspace sRGB` on the light chunk only when
+> pasting a colour-picker swatch or a hex code.  This has been the
+> convention since 2026-09-02; before that, lights silently gamma-decoded
+> `color` as sRGB.  See docs/SCENE_CONVENTIONS.md §4 ("Lights").
+
 Key = a spot aimed at the subject; fill = a dim omni opposite the key;
 rim = a directional from behind-above to separate subject from
 background.
@@ -231,7 +239,7 @@ spot_light
 {
 	name		key
 	power		60
-	color		1.0 0.95 0.85
+	color		1.0 0.89 0.692
 	position	3 4 4
 	target		0 0.5 0
 	inner		20
@@ -243,7 +251,7 @@ omni_light
 {
 	name		fill
 	power		12
-	color		0.7 0.8 1.0
+	color		0.448 0.604 1.0
 	position	-4 1 4
 }
 

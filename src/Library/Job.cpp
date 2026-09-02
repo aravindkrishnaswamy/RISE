@@ -143,11 +143,16 @@ namespace {
 		return true;
 	}
 
-	//! THE colour-space name -> RISEPel conversion.  One switch, shared by
-	//! every Add* that takes an authored RGB triple plus a colour-space name
-	//! (uniformcolor_painter, ramp_painter's stops, and -- since 2026-09-02 --
-	//! the four zero-area lights), so those surfaces cannot drift apart on
-	//! which names they accept or what each one means.
+	//! THE colour-space name -> RISEPel conversion.  ONE switch, and the ONLY
+	//! one: every Add* that takes an authored RGB triple plus a colour-space
+	//! name routes here -- `uniformcolor_painter`, `vertexcolor_painter`'s
+	//! fallback, `ramp_painter`'s stops, `stochastic_tile_painter`'s mean, and
+	//! -- since 2026-09-02 -- the four zero-area lights.  They cannot drift
+	//! apart on which names they accept or on what each one means, which is
+	//! the whole point: a light and a painter handed the same `colorspace`
+	//! land on the same RISEPel by construction, not by five switches
+	//! happening to agree.  Adding a colour space is one arm here (plus the
+	//! `enumValues` list each chunk descriptor offers its authors).
 	//!
 	//! `cspace` must be non-null; each caller supplies its OWN null-default
 	//! (the painters historically default to "sRGB", the lights to
@@ -1427,26 +1432,13 @@ bool Job::AddRampPainter(
 	stops.reserve( numStops );
 	for( unsigned int i = 0; i < numStops; ++i ) {
 		const double rgbIn[3] = { stopColors[i * 3 + 0], stopColors[i * 3 + 1], stopColors[i * 3 + 2] };
-		// Same colour-space -> RISEPel conversion switch as
-		// AddUniformColorPainter, applied per stop.
+		// THE shared colour-space switch (ColorSpaceNameToRISEPel), applied per stop.
+		// Painters default to sRGB when the chunk omits `colorspace`; the helper takes
+		// a non-null name so that default lives HERE, at the surface that owns it.
 		RISEPel c;
-		if( colorSpace ) {
-			if( strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) {
-				c = RISEPel( Rec709RGBPel( rgbIn ) );
-			} else if( strcmp( colorSpace, "sRGB" ) == 0 ) {
-				c = RISEPel( sRGBPel( rgbIn ) );
-			} else if( strcmp( colorSpace, "ROMMRGB_Linear" ) == 0 ) {
-				c = RISEPel( ROMMRGBPel( rgbIn ) );
-			} else if( strcmp( colorSpace, "ProPhotoRGB" ) == 0 ) {
-				c = RISEPel( ProPhotoRGBPel( rgbIn ) );
-			} else if( strcmp( colorSpace, "RISERGB" ) == 0 ) {
-				c = RISEPel( rgbIn );
-			} else {
-				GlobalLog()->PrintEx( eLog_Error, "AddRampPainter `%s`: unknown color space `%s`", name ? name : "noname", colorSpace );
-				return false;
-			}
-		} else {
-			c = RISEPel( sRGBPel( rgbIn ) );
+		if( !ColorSpaceNameToRISEPel( colorSpace ? colorSpace : "sRGB", rgbIn,
+		                              "AddRampPainter", name, c ) ) {
+			return false;
 		}
 		stops.push_back( Implementation::RampPainter::Stop( Scalar( stopPositions[i] ), c ) );
 	}
@@ -1591,26 +1583,11 @@ bool Job::AddStochasticTilePainter(
 		return false;
 	}
 
-	// Same colour-space -> RISEPel conversion switch as
-	// AddRampPainter/AddUniformColorPainter.
+	// THE shared colour-space switch (ColorSpaceNameToRISEPel); painter sRGB default.
 	RISEPel meanPel;
-	if( colorSpace ) {
-		if( strcmp( colorSpace, "Rec709RGB_Linear" ) == 0 ) {
-			meanPel = RISEPel( Rec709RGBPel( mean ) );
-		} else if( strcmp( colorSpace, "sRGB" ) == 0 ) {
-			meanPel = RISEPel( sRGBPel( mean ) );
-		} else if( strcmp( colorSpace, "ROMMRGB_Linear" ) == 0 ) {
-			meanPel = RISEPel( ROMMRGBPel( mean ) );
-		} else if( strcmp( colorSpace, "ProPhotoRGB" ) == 0 ) {
-			meanPel = RISEPel( ProPhotoRGBPel( mean ) );
-		} else if( strcmp( colorSpace, "RISERGB" ) == 0 ) {
-			meanPel = RISEPel( mean );
-		} else {
-			GlobalLog()->PrintEx( eLog_Error, "AddStochasticTilePainter `%s`: unknown color space `%s`", name ? name : "noname", colorSpace );
-			return false;
-		}
-	} else {
-		meanPel = RISEPel( sRGBPel( mean ) );
+	if( !ColorSpaceNameToRISEPel( colorSpace ? colorSpace : "sRGB", mean,
+	                              "AddStochasticTilePainter", name, meanPel ) ) {
+		return false;
 	}
 
 	IPainter* pPainter = 0;
@@ -2845,27 +2822,17 @@ bool Job::AddUniformColorPainter(
 							const char* cspace				///< [in] Color space of the given color
 							)
 {
-	IPainter* pPainter = 0;
-	if( cspace )
-	{
-		// Then a type of color is specified
-		if( strcmp( cspace, "Rec709RGB_Linear" ) == 0 ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, Rec709RGBPel(pel) );
-		} else if ( strcmp( cspace, "sRGB" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, sRGBPel(pel) );
-		} else if ( strcmp( cspace, "ROMMRGB_Linear" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, ROMMRGBPel(pel) );
-		} else if ( strcmp( cspace, "ProPhotoRGB" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, ProPhotoRGBPel(pel) );
-		} else if ( strcmp( cspace, "RISERGB" ) == 0  ) {
-			RISE_API_CreateUniformColorPainter( &pPainter, RISEPel(pel) );
-		} else {
-			GlobalLog()->PrintEx( eLog_Error, "Unknown color space: %s", cspace );
-			return false;
-		}
-	} else {	// we assume SRGB values by default
-		RISE_API_CreateUniformColorPainter( &pPainter, sRGBPel(pel) );
+	// THE shared colour-space switch (ColorSpaceNameToRISEPel).  This surface is the
+	// one the lights were made to match; a null `cspace` keeps its historical sRGB
+	// default (the lights' default is linear -- see ColorSpaceNameToRISEPel's doc).
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( cspace ? cspace : "sRGB", pel,
+	                              "AddUniformColorPainter", name, c ) ) {
+		return false;
 	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateUniformColorPainter( &pPainter, c );
 
 	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );
@@ -2878,26 +2845,16 @@ bool Job::AddVertexColorPainter(
 							const char* cspace
 							)
 {
-	IPainter* pPainter = 0;
-	if( cspace ) {
-		if( strcmp( cspace, "Rec709RGB_Linear" ) == 0 ) {
-			RISE_API_CreateVertexColorPainter( &pPainter, Rec709RGBPel(fallback) );
-		} else if ( strcmp( cspace, "sRGB" ) == 0  ) {
-			RISE_API_CreateVertexColorPainter( &pPainter, sRGBPel(fallback) );
-		} else if ( strcmp( cspace, "ROMMRGB_Linear" ) == 0  ) {
-			RISE_API_CreateVertexColorPainter( &pPainter, ROMMRGBPel(fallback) );
-		} else if ( strcmp( cspace, "ProPhotoRGB" ) == 0  ) {
-			RISE_API_CreateVertexColorPainter( &pPainter, ProPhotoRGBPel(fallback) );
-		} else if ( strcmp( cspace, "RISERGB" ) == 0  ) {
-			RISE_API_CreateVertexColorPainter( &pPainter, RISEPel(fallback) );
-		} else {
-			GlobalLog()->PrintEx( eLog_Error, "Unknown color space: %s", cspace );
-			return false;
-		}
-	} else {
-		// Default: treat fallback as sRGB (matches AddUniformColorPainter).
-		RISE_API_CreateVertexColorPainter( &pPainter, sRGBPel(fallback) );
+	// THE shared colour-space switch (ColorSpaceNameToRISEPel); null `cspace` keeps
+	// the historical sRGB default (matches AddUniformColorPainter).
+	RISEPel c;
+	if( !ColorSpaceNameToRISEPel( cspace ? cspace : "sRGB", fallback,
+	                              "AddVertexColorPainter", name, c ) ) {
+		return false;
 	}
+
+	IPainter* pPainter = 0;
+	RISE_API_CreateVertexColorPainter( &pPainter, c );
 
 	const bool ok = RegisterPainterDual( pPntManager, pFunc2DManager, pPainter, name );
 	safe_release( pPainter );

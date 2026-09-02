@@ -975,6 +975,25 @@ namespace RISE
 		//! (0) or a diagnosed re-derive (3).  Shared by the material/light/... CST branches.
 		bool RouteCstParamEdit_( const char* entityName, const char* entityKind, const char* role, const char* value );
 
+		//! Light-colour CST review fix (2026-09-02): a CST-routed light `color` edit writes the PROPERTY
+		//! PANEL's value, which is a LINEAR RISEPel read straight off `ILight::emissionColor()`.  When the
+		//! chunk still carries `colorspace sRGB` -- every scene `tools/migrate_scenes_light_colorspace.py`
+		//! touched -- the re-derive gamma-DECODES those already-linear digits a SECOND time, so a small
+		//! nudge in the colour well lands somewhere far darker than the user asked for.  Convert the chunk
+		//! to the linear convention (write `colorspace Rec709RGB_Linear`) as part of the same edit, so the
+		//! digits the panel writes mean what the panel means by them.  Self-healing and one-way: once a
+		//! chunk is linear it stays linear.  A no-op for any role but `color`, for a chunk with no
+		//! `colorspace` line (already the linear default), and on a legacy (no-Document) scene.  Returns
+		//! false only when the extra route itself failed, so the caller can refuse the whole edit with the
+		//! colour digits still untouched.
+		//!
+		//! NOT UNDOABLE, deliberately: the conversion is recorded in no history entry, so Undo of the colour
+		//! edit restores the light's COLOUR (which is what the user sees and what the history entry is
+		//! about) while leaving the chunk spelled `Rec709RGB_Linear`.  Restoring the sRGB spelling would
+		//! restore a convention the panel cannot speak -- the very trap this exists to close -- and the two
+		//! spellings describe the SAME light, so nothing observable is lost.
+		bool NormalizeCstLightColorSpace_( const char* lightName, const String& propertyName );
+
 		//! Shared-undo U1: inverse of an agent param edit that INSERTED a previously-absent param -- removes it
 		//! instead of re-setting a nonexistent prior value.  See SceneEditor.cpp for the full rationale.
 		//! P1-2 fix (round 1): `occ` selects which occurrence to remove (0 = first).

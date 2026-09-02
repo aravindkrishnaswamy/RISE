@@ -12150,7 +12150,10 @@ void SceneEditController::RefreshProperties()
 			if( !lights ) break;
 			const ILightPriv* light = lights->GetItem( selName.c_str() );
 			if( !light ) break;
-			out = LightIntrospection::Inspect( selName, *light );
+			// The Document is threaded in for the `colorspace` row alone -- a load-time
+			// interpretation the live ILight cannot answer (see LightIntrospection's
+			// ReadLightColorSpace).  Every other row still comes off the live light.
+			out = LightIntrospection::Inspect( selName, *light, mJob.GetCstDocument() );
 			// GUI redesign 2026-07-22: jump-to-definition metadata only
 			// (no value/editability change) -- see AnnotateReferenceRows.
 			CstIntrospection::AnnotateReferenceRows( out, mJob.GetCstDocument(), selName, "light" );

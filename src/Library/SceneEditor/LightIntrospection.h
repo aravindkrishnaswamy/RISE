@@ -32,14 +32,30 @@ namespace RISE
 	// the right order.
 	class ILight;
 
+	// Forward-declared for the same reason: the `colorspace` row reads the
+	// light's own chunk out of the retained CST Document, and Cst.h is a
+	// heavy include this header's consumers do not otherwise need.
+	namespace Cst { struct Document; }
+
 	class LightIntrospection
 	{
 	public:
 		//! Inspect a single light.  Returns the read-only property rows
 		//! the panel renders.  Empty vector if the light is degenerate.
+		//!
+		//! `doc` (optional) is the Job's retained CST Document.  It is
+		//! consulted for exactly ONE row -- `colorspace`, which is a
+		//! LOAD-TIME interpretation of the authored triple and therefore
+		//! not recoverable from the live ILight (which holds only the
+		//! already-converted RISEPel).  Pass it so the row reports what
+		//! the SCENE actually says; omit it (API-constructed / legacy
+		//! scene, or a caller with no Document to hand) and the row
+		//! reports the language default, `Rec709RGB_Linear`, which is
+		//! what such a light was in fact built with.
 		static std::vector<CameraProperty> Inspect(
 			const String& name,
-			const ILight& light );
+			const ILight& light,
+			const RISE::Cst::Document* doc = nullptr );
 	};
 }
 

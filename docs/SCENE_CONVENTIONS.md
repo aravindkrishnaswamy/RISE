@@ -425,7 +425,26 @@ is preserved exactly (verified: `CstDeriveGoldenTest` reports 0 drift
 across the migrated corpus, and it digests each light's colour at 9
 significant figures).  It skips chunks whose components are all 0 or 1 —
 the fixed points of the transfer function, where the line would be noise.
-The migrator is idempotent and takes `--dry-run`.
+The migrator is idempotent and takes `--dry-run` (and `--selftest`, which
+exercises its brace scanner against comment-decorated braces).
+
+**`colorspace` describes the AUTHORED `color` line, and nothing else.**
+Two places bypass it, both deliberately:
+
+- **Animation keyframes are always linear.**  A `color` keyframe reaches the
+  light through `ILight::KeyframeFromParameters`, which builds a `RISEPel`
+  straight from the digits — there is no colour-space hook on that path.  So
+  on a light that carries `colorspace sRGB`, the chunk's own `color` line is
+  decoded but every keyed value on its colour timeline is read as linear.
+  Author such a timeline in linear, or (simpler) convert the light to
+  `colorspace Rec709RGB_Linear` and write the decoded triple in the `color`
+  line, so the whole light speaks one convention.
+- **Editing a light's colour in the GUI converts the chunk to linear.**  The
+  properties panel shows the light's live, already-converted linear colour,
+  so the editor writes `colorspace Rec709RGB_Linear` alongside the new
+  `color` (otherwise the re-derive would decode the panel's linear digits a
+  second time).  The light's look is unchanged by the conversion itself; the
+  chunk simply stops carrying the legacy reading.  One-way and one-time.
 
 ### Anti-patterns
 

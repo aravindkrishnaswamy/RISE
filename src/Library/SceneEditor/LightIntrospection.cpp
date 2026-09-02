@@ -21,6 +21,7 @@
 #include "pch.h"
 #include "LightIntrospection.h"
 #include "ChunkDescriptorRegistry.h"
+#include "../Cst/Cst.h"                 // the `colorspace` row reads the light's own chunk
 #include "../Interfaces/ILight.h"
 #include "../Parsers/ChunkDescriptor.h"
 
@@ -71,6 +72,41 @@ const char* KeywordForLightType( ILight::LightType t )
 // descriptor describes.  Returns the formatted string (matching the
 // formats `KeyframeFromParameters` accepts on the way back in) or
 // empty for unknown / non-readable parameter names.
+// The light's authored `colorspace`, read out of its own chunk in the
+// retained CST Document.  This is the ONE descriptor row that cannot be
+// answered from the live ILight: the colour space is a LOAD-TIME
+// interpretation, consumed by Job::Add*Light before the light exists, and
+// what the light HOLDS (and what the `color` row prints) is the converted
+// linear RISEPel.
+//
+// Review fix (2026-09-02): this used to hard-code "Rec709RGB_Linear" for
+// every light, which is the language DEFAULT but a flat falsehood on the
+// (large) migrated corpus -- `tools/migrate_scenes_light_colorspace.py`
+// wrote `colorspace sRGB` onto 581 colour lines to preserve their look, and
+// the panel claimed every one of them was linear.  Reporting the chunk's
+// actual value is both honest and load-bearing for the reader: it explains
+// why the `color` row above does NOT match the digits in the scene file.
+//
+// Falls back to the language default when there is no Document (an
+// API-constructed light), when the light's chunk does not resolve, or when
+// the chunk omits the line -- all three are cases where the light really
+// was built with the linear reading.  LAST occurrence (ParamValueAsParsed),
+// matching what the derive reads.
+String ReadLightColorSpace( const RISE::Cst::Document* doc, const String& lightName )
+{
+	static const char* const kDefault = "Rec709RGB_Linear";
+	if( !doc || lightName.size() <= 1 ) return String( kDefault );
+	const RISE::Cst::NodeId id = RISE::Cst::DocFindByNameAnyRole(
+		*doc, lightName.c_str(), nullptr, "light", /*uniqueFallback=*/false );
+	if( id == 0 ) return String( kDefault );
+	const RISE::Cst::NodeRef chunk = RISE::Cst::DocResolveNodeId( *doc, id );
+	if( !chunk ) return String( kDefault );
+	bool present = false;
+	const std::string cs = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &present );
+	if( !present || cs.empty() ) return String( kDefault );
+	return String( cs.c_str() );
+}
+
 String ReadLightParam( const ILight& light, const std::string& paramName )
 {
 	char buf[128];
@@ -115,17 +151,8 @@ String ReadLightParam( const ILight& light, const std::string& paramName )
 	if( paramName == "shootphotons" ) {
 		return String( light.CanGeneratePhotons() ? "true" : "false" );
 	}
-	if( paramName == "colorspace" ) {
-		// `colorspace` is a LOAD-TIME interpretation of the authored
-		// triple, not light state: whatever the scene said, what the
-		// light HOLDS (and what the `color` row above prints) is the
-		// converted linear RISEPel.  So the honest read-back is the
-		// linear identity, and the row is not runtime-editable --
-		// re-interpreting an already-converted colour would silently
-		// re-decode it.  Change the scene text to change the
-		// interpretation.
-		return String( "Rec709RGB_Linear" );
-	}
+	// `colorspace` is deliberately NOT answered here -- it is not light
+	// state.  Inspect() fills it from the CST chunk (ReadLightColorSpace).
 	return String();
 }
 
@@ -141,8 +168,12 @@ String ReadLightParam( const ILight& light, const std::string& paramName )
 bool IsRuntimeEditable( ILight::LightType type, const std::string& paramName )
 {
 	if( paramName == "name" ) return false;  // shown as panel header
-	// See ReadLightParam's `colorspace` arm: a load-time interpretation,
-	// already consumed by the time the light exists.
+	// See ReadLightColorSpace's doc: a load-time interpretation, already
+	// consumed by the time the light exists.  Re-interpreting the
+	// already-converted RISEPel at runtime would silently re-decode it, so
+	// the row reports the scene's value and stays read-only -- change the
+	// scene text (or edit the colour, which converts the chunk to linear)
+	// to change the interpretation.
 	if( paramName == "colorspace" ) return false;
 	if( paramName == "shootphotons" ) {
 		return type == ILight::LightType::Point
@@ -164,12 +195,18 @@ const char* OverrideDescription( const std::string& paramName, const char* fallb
 	if( paramName == "outer" ) {
 		return "Outer cone full-angle (degrees).  Falls off from inner to zero at this angle.";
 	}
+	if( paramName == "colorspace" ) {
+		return "READ-ONLY.  How the scene file's `color` triple was interpreted when the light was built.  "
+		       "The `color` row above shows the CONVERTED linear value, so on a `colorspace sRGB` chunk the "
+		       "two deliberately disagree.  Editing `color` rewrites this to `Rec709RGB_Linear`.";
+	}
 	return fallback;
 }
 
 }  // namespace
 
-std::vector<CameraProperty> LightIntrospection::Inspect( const String& name, const ILight& light )
+std::vector<CameraProperty> LightIntrospection::Inspect(
+	const String& name, const ILight& light, const RISE::Cst::Document* doc )
 {
 	std::vector<CameraProperty> rows;
 	const ILight::LightType type = light.lightType();
@@ -207,7 +244,9 @@ std::vector<CameraProperty> LightIntrospection::Inspect( const String& name, con
 		cp.name        = String( p.name.c_str() );
 		cp.kind        = p.kind;
 		cp.description = String( OverrideDescription( p.name, p.description.c_str() ) );
-		cp.value       = ReadLightParam( light, p.name );
+		cp.value       = ( p.name == "colorspace" )
+			? ReadLightColorSpace( doc, name )     // scene text, not light state -- see its doc
+			: ReadLightParam( light, p.name );
 		cp.editable    = IsRuntimeEditable( type, p.name );
 		cp.presets     = p.presets;
 		cp.unitLabel   = String( p.unitLabel.c_str() );

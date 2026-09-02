@@ -56,9 +56,12 @@
 #include <unistd.h>
 #endif
 
+#include "../src/Library/Cst/Cst.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/ILight.h"
 #include "../src/Library/Interfaces/ILightManager.h"
+#include "../src/Library/SceneEditor/LightIntrospection.h"
+#include "../src/Library/SceneEditor/SceneEditController.h"
 #include "../src/Library/Utilities/Color/Color.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/RString.h"
@@ -320,6 +323,129 @@ static void TestUnknownColorSpaceRefused()
 	}
 }
 
+//----------------------------------------------------------------------
+// (d) THE EDITOR ROUND-TRIP.  A colour edit on a `colorspace sRGB` chunk
+//     must not double-decode, and undo must land back on the original.
+//
+// WHY THIS IS A SEPARATE HAZARD from everything above.  A CST-routed light
+// edit (SceneEditor::ApplyForwardMutation's SetLightProperty arm ->
+// RouteCstParamEdit_ -> Job::ApplyCstParamEdit) writes the PROPERTY PANEL's
+// value into the chunk and re-derives.  The panel's value is
+// `ILight::emissionColor()` -- already-converted, LINEAR.  The chunk's
+// `colorspace sRGB` line is not touched by that write, so the re-derive
+// gamma-DECODES the linear digits a SECOND time: nudging a swatch reading
+// (1, 0.0331, 0.0194) up to (1, 0.05, 0.02) lands the light on
+// (1, 0.0039, 0.0016) -- an order of magnitude the wrong way, compounding on
+// every further nudge.  Every check in Tests 1-3 passes with that bug
+// present, because none of them goes through the editor.
+//
+// The fix converts the chunk to the linear convention as part of the edit
+// (SceneEditor::NormalizeCstLightColorSpace_), which is why the assertions
+// below are BOTH about the light's colour AND about the chunk text.
+//
+// MUTATION-VERIFIED: dropping the NormalizeCstLightColorSpace_ call from the
+// forward arm turns "the edited colour is EXACTLY what the panel asked for"
+// red (the light lands on the double-decoded value); dropping it from the
+// revert arm turns the undo assertion red.
+//----------------------------------------------------------------------
+
+// A `colorspace sRGB` light -- i.e. exactly what
+// `tools/migrate_scenes_light_colorspace.py` left behind on 581 colour lines
+// -- plus the minimum around it for a clean CST derive + re-derive.
+static const char* const kEditorScene =
+	"omni_light\n{\nname L\npower 4\ncolor 1.0 0.2 0.15\ncolorspace sRGB\nposition 0 5 0\n}\n"
+	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+	"lambertian_material\n{\nname m\nreflectance p1\n}\n"
+	"sphere_geometry\n{\nname g\nradius 1\n}\n"
+	"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+
+static RISEPel LiveLightColor( IJobPriv& job )
+{
+	ILightManager* lm = job.GetLights();
+	const ILight* l = lm ? lm->GetItem( "L" ) : nullptr;
+	return l ? l->emissionColor() : RISEPel( -1, -1, -1 );
+}
+
+static std::string LiveDocText( IJobPriv& job )
+{
+	const RISE::Cst::Document* d = job.GetCstDocument();
+	return d ? RISE::Cst::SerializeCst( *d ) : std::string();
+}
+
+// The `colorspace` row LightIntrospection reports for light "L" (empty if
+// there is no such row).
+static std::string IntrospectedColorSpace( IJobPriv& job, const RISE::Cst::Document* doc )
+{
+	ILightManager* lm = job.GetLights();
+	const ILight* l = lm ? lm->GetItem( "L" ) : nullptr;
+	if( !l ) return std::string();
+	const std::vector<CameraProperty> rows =
+		LightIntrospection::Inspect( String( "L" ), *l, doc );
+	for( size_t i = 0; i < rows.size(); ++i )
+		if( rows[i].name == String( "colorspace" ) ) return std::string( rows[i].value.c_str() );
+	return std::string();
+}
+
+static void TestEditorColorEditOnSRGBChunk()
+{
+	std::cout << "Test 4: a CST-routed colour edit on a `colorspace sRGB` light" << std::endl;
+
+	const double kAuthored[3] = { 1.0, 0.2, 0.15 };
+	// The light's colour as the SCENE FILE means it: the authored digits
+	// decoded through the sRGB transfer function.  Computed here, not read
+	// back off the renderer.
+	const RISEPel expectOriginal = RISEPel( sRGBPel( kAuthored ) );
+	// What the user asks for when they nudge the panel's swatch.  The panel
+	// speaks LINEAR, so this is the light's colour verbatim.
+	const RISEPel expectEdited( 1.0, 0.05, 0.02 );
+
+	IJobPriv* pJob = LoadScene( kEditorScene, "edit" );
+	Check( pJob != nullptr, "editor scene loads via the CST path" );
+	if( !pJob ) return;
+	Check( pJob->HasRetainedCstDocument(), "the editor scene retains a CST Document (else the edit is not CST-routed)" );
+
+	Check( PelEq( LiveLightColor( *pJob ), expectOriginal, 1e-9 ),
+	       "PRECONDITION: the `colorspace sRGB` light loads DECODED -- got "
+	       + PelStr( LiveLightColor( *pJob ) ) + ", want " + PelStr( expectOriginal ) );
+	Check( IntrospectedColorSpace( *pJob, pJob->GetCstDocument() ) == "sRGB",
+	       "the panel's `colorspace` row reports the chunk's ACTUAL value (`sRGB`), not a hard-coded default" );
+	Check( IntrospectedColorSpace( *pJob, nullptr ) == "Rec709RGB_Linear",
+	       "with no Document (an API-constructed light) the row falls back to the language default" );
+
+	{
+		SceneEditController c( *pJob, /*interactiveRasterizer*/0 );
+		c.SetSelection( SceneEditController::Category::Light, String( "L" ) );
+		Check( c.SetPropertyForCategory( SceneEditController::Category::Light,
+		                                 String( "color" ), String( "1 0.05 0.02" ) ),
+		       "the colour edit applies" );
+
+		const double kEditedDigits[3] = { 1.0, 0.05, 0.02 };
+		const RISEPel doubleDecoded = RISEPel( sRGBPel( kEditedDigits ) );
+		const RISEPel edited = LiveLightColor( *pJob );
+		Check( PelEq( edited, expectEdited, 0.0 ),
+		       "MONEY ASSERTION -- the edited light is EXACTLY what the panel asked for: got "
+		       + PelStr( edited ) + ", want " + PelStr( expectEdited )
+		       + " (a second sRGB decode would give " + PelStr( doubleDecoded ) + ")" );
+
+		const std::string doc = LiveDocText( *pJob );
+		Check( doc.find( "Rec709RGB_Linear" ) != std::string::npos,
+		       "the chunk now carries `colorspace Rec709RGB_Linear`" );
+		Check( doc.find( "sRGB" ) == std::string::npos,
+		       "...and no longer carries `colorspace sRGB` (the conversion is a replacement, not an addition)" );
+		Check( IntrospectedColorSpace( *pJob, pJob->GetCstDocument() ) == "Rec709RGB_Linear",
+		       "the panel's `colorspace` row follows the chunk to linear" );
+
+		Check( c.Editor().Undo(), "undo of the colour edit returns true" );
+		const RISEPel reverted = LiveLightColor( *pJob );
+		Check( PelEq( reverted, expectOriginal, 1e-6 ),
+		       "undo restores the ORIGINAL DECODED colour -- got " + PelStr( reverted )
+		       + ", want " + PelStr( expectOriginal )
+		       + " (a revert written back under the old `colorspace sRGB` would decode it AGAIN)" );
+	}
+
+	safe_release( pJob );
+}
+
 int main()
 {
 	std::cout << "LightColorSpaceTest" << std::endl;
@@ -328,6 +454,7 @@ int main()
 	TestParsedColorSpaces();
 	TestParseAndKeyframeAgree();
 	TestUnknownColorSpaceRefused();
+	TestEditorColorEditOnSRGBChunk();
 
 	std::cout << "=== LightColorSpaceTest: " << passCount << " passed, "
 	          << failCount << " failed ===" << std::endl;
