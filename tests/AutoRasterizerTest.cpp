@@ -855,9 +855,13 @@ static std::string MakeAutoSpectralProbeScene(
 // CheckSpectralProbeRouteNotVCM -- variant for a scene whose probe
 // decision is DELIBERATELY marginal in its PT-vs-BDPT tail.  The only
 // invariant this scene locks is the documented one: the transport-reach
-// gate keeps VCM OUT (VCM-spectral's luminance-proxy merge can't reach
-// the dispersive caustic -- SPECTRAL_PARITY_AUDIT §3, design doc
-// §6.2.2).  After the reach gate rejects VCM, the general σ²·T
+// gate keeps VCM OUT (VCM-spectral's merges cannot reach the
+// dispersive caustic: its light pass is RGB, not wavelength-matched to
+// the eye pass, so a stored light vertex carries no per-wavelength
+// refraction history -- since Stage C its throughput is projected as
+// an illuminant spectrum rather than the old luminance proxy, which
+// fixes the merge's CHROMA but adds no dispersion energy;
+// SPECTRAL_PARITY_AUDIT §3, design doc §6.2.2).  After the reach gate rejects VCM, the general σ²·T
 // PT-vs-BDPT fallthrough reads right in the "marginal, not cheaply
 // separable, low-stakes" band the probe is DESIGNED to treat as noise
 // (see AutoRasterizer::RunProbe's τ_bdpt comment: marginal ~1.5× BDPT
@@ -1234,9 +1238,13 @@ int main()
 
 	// Probe routing (probe on): the spectral dispersive caustic.  DOCUMENTED
 	// LIMITATION (design doc §6.2.2): the median gate fires (~2.9x) but the
-	// transport-reach gate FAILS (~0.7x) because VCM-spectral's luminance-proxy
-	// merge loses dispersion energy (SPECTRAL_PARITY_AUDIT §3), so VCM's
-	// RGB-projected mean does NOT exceed PT's -> the reach gate rejects VCM.
+	// transport-reach gate FAILS (~0.7x) because VCM-spectral's merges lose
+	// dispersion energy: the light pass is RGB, not wavelength-matched, so a
+	// merged light vertex has no per-wavelength refraction history (Stage C
+	// replaced the luminance proxy with an illuminant-spectrum projection,
+	// which corrects the merge's chroma but cannot add dispersion energy --
+	// SPECTRAL_PARITY_AUDIT §3), so VCM's RGB-projected mean does NOT exceed
+	// PT's -> the reach gate rejects VCM.
 	// This LOCKS that behavior (a regression guard); closing it to VCM needs
 	// per-wavelength VCM photons (out of scope).
 	//
