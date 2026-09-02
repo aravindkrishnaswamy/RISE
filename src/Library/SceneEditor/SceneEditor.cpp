@@ -2247,10 +2247,12 @@ bool SceneEditor::RouteCstParamEdit_( const char* entityName, const char* entity
 // coincide for every chunk this composite can actually fire on, since Job::ApplyCstParamEdits REFUSES a
 // chunk that spells either param twice (its duplicate-occurrence guard) before anything is written.
 bool SceneEditor::LightColorCompositeState_( const char* lightName, const String& propertyName,
-                                             String& outPrevColorText, String& outPrevColorSpaceText ) const
+                                             String& outPrevColorText, String& outPrevColorSpaceText,
+                                             bool& outRefuse ) const
 {
 	outPrevColorText      = String();
 	outPrevColorSpaceText = String();
+	outRefuse             = false;
 	if( !( propertyName == String( "color" ) ) ) return false;   // only the colour row carries the convention
 	if( !mJob || !lightName || !lightName[0] ) return false;
 	const RISE::Cst::Document* doc = mJob->GetCstDocument();
@@ -2264,6 +2266,33 @@ bool SceneEditor::LightColorCompositeState_( const char* lightName, const String
 	bool present = false;
 	const std::string cspace = RISE::Cst::ParamValueAsParsed( chunk, "colorspace", &present );
 	if( !present || TrimTrivia_( cspace ) == "Rec709RGB_Linear" ) return false;
+
+	// Round-3 P3 fix: the presence/convention test just above reads the LAST occurrence
+	// (ParamValueAsParsed, the same last-wins rule the derive and CstIntrospection follow) while the capture
+	// below reads occurrence 0 -- correct ONLY when the chunk spells `color` / `colorspace` at most once.  On
+	// a chunk that doubles either, occurrence 0 can be a DEAD line (different digits than the one the scene
+	// derives from), so capturing it would hand Undo the wrong original text.  Self-sufficient rather than
+	// relying on Job::ApplyCstParamEdits' duplicate-occurrence guard to catch this downstream: decide HERE,
+	// before either capture runs.
+	//
+	// The two duplicates are NOT symmetric once the caller falls through to the single-param route, which
+	// always writes `color` (this function only ever fires on a `color` edit -- the early return at the
+	// top).  That route's own duplicate-occurrence guard checks the occurrence count of the role IT writes,
+	// i.e. `color`:
+	//   - `color` DUPLICATED: safe to just return false.  The single-param fallback addresses the same
+	//     duplicated role on the same chunk, so Job's own guard refuses it cleanly -- no half-applied write,
+	//     no history entry.  (This is also what the two-pair composite already does today: `color` is one of
+	//     its two pairs, so Job's per-pair check catches it there too -- this just makes that outcome not
+	//     depend on the composite firing at all.)
+	//   - `colorspace` DUPLICATED (colour singular): NOT safe to fall through.  The single-param route
+	//     never touches `colorspace`, so Job's guard -- keyed to the role it writes -- would not fire, and
+	//     the write would SUCCEED: new linear digits land in `color` while the chunk's derived `colorspace`
+	//     (last-wins) is still non-linear -- the double-decode this whole composite exists to prevent.
+	//     (Verified empirically: disabling this branch lets exactly that edit apply.)  outRefuse routes both
+	//     callers to refuse the entire edit instead, matching what the two-pair composite does today (Job's
+	//     per-pair check catches the `colorspace` pair and refuses the WHOLE atomic batch).
+	if( RISE::Cst::ParamOccurrenceCount( chunk, "color" ) > 1 ) return false;
+	if( RISE::Cst::ParamOccurrenceCount( chunk, "colorspace" ) > 1 ) { outRefuse = true; return false; }
 
 	// A chunk carrying `colorspace` but NO `color` line still needs the composite -- the panel's write
 	// INSERTS a colour line, and inserting linear digits under a non-linear `colorspace` is the very
@@ -2284,7 +2313,14 @@ bool SceneEditor::LightColorCompositeState_( const char* lightName, const String
 
 	outPrevColorText      = String( TrimTrivia_( prevColor ).c_str() );
 	outPrevColorSpaceText = String( TrimTrivia_( prevCspace ).c_str() );
-	if( outPrevColorText.size() <= 1 || outPrevColorSpaceText.size() <= 1 ) return false;
+	// Round-3 P3 fix: this used to be a PLAIN `return false`, which -- unlike the duplicate-occurrence
+	// refusal above -- is NOT safe to fall through on.  The chunk's `colorspace` IS present and non-linear
+	// (established above) and there is no duplicate line for Job's own guard to catch downstream, so the
+	// single-param route this falls to would write the panel's LINEAR digits under the still non-linear
+	// `colorspace` -- the exact double-decode this whole composite exists to prevent.  outRefuse tells both
+	// callers (CaptureForApply and the forward-apply branch) to refuse the ENTIRE edit instead of silently
+	// taking the single-param path.
+	if( outPrevColorText.size() <= 1 || outPrevColorSpaceText.size() <= 1 ) { outRefuse = true; return false; }
 	return true;
 }
 
@@ -3111,10 +3147,24 @@ bool SceneEditor::CaptureForApply( SceneEdit& edit )
 		// it is the live RISEPel `%g`-formatted, i.e. the DECODED colour, which written back under a
 		// restored `colorspace sRGB` would decode a second time.  FALSE for every other case (already
 		// linear, no chunk, legacy scene) -- those keep the single-param route untouched.
+		bool compositeRefused = false;
 		edit.lightCstColorSpaceComposite =
 			( mJob && mJob->HasRetainedCstDocument() && IsCstRoutedOp( edit.op ) )
 			&& LightColorCompositeState_( edit.objectName.c_str(), edit.propertyName,
-			                              edit.prevCstColorText, edit.prevCstColorSpaceText );
+			                              edit.prevCstColorText, edit.prevCstColorSpaceText, compositeRefused );
+		// Round-3 P3 fix: the composite is NEEDED (chunk is non-linear) but its original text could not be
+		// captured cleanly -- do NOT let the capture silently succeed with `lightCstColorSpaceComposite`
+		// false, which would route this edit through the single-param write and double-decode the panel's
+		// already-linear digits under the still non-linear `colorspace`.  Refuse the whole capture instead.
+		if( compositeRefused ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SceneEditor: light `%s` colour edit needs the colourspace-conversion composite (its chunk's "
+				"`colorspace` is present and non-linear) but the composite cannot safely capture or write it "
+				"(a duplicated `colorspace` line, or an unexpectedly empty original value); refusing the edit "
+				"rather than writing `color` alone under the still non-linear `colorspace`",
+				edit.objectName.c_str() );
+			return false;
+		}
 		// The keyframe-parse rejection is fused with the mutation;
 		// ApplyForwardMutation surfaces it so Apply rejects.
 		return true;
@@ -4191,10 +4241,23 @@ bool SceneEditor::ApplyForwardMutation( const SceneEdit& edit, bool isReplay )
 			// (sRGB again), not what it was at the original capture.  The capture-time flag governs the
 			// REVERT arm (which needs the captured texts); the forward arm needs today's truth.
 			String unusedColor, unusedSpace;
-			if( LightColorCompositeState_( edit.objectName.c_str(), edit.propertyName, unusedColor, unusedSpace ) ) {
+			bool compositeRefused = false;
+			if( LightColorCompositeState_( edit.objectName.c_str(), edit.propertyName, unusedColor, unusedSpace, compositeRefused ) ) {
 				if( !RouteCstLightColorComposite_( edit.objectName.c_str(), edit.propertyValue.c_str(), "Rec709RGB_Linear" ) ) return false;
 				mLastScope = Dirty_Camera;
 				return true;
+			}
+			// Round-3 P3 fix: the chunk NEEDS the composite (non-linear `colorspace`) but its state could
+			// not be captured cleanly -- refuse the whole edit rather than falling to the single-param write
+			// below, which would write the panel's linear digits under the still non-linear `colorspace`
+			// (the exact double-decode this composite exists to prevent).
+			if( compositeRefused ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SceneEditor: light `%s` colour edit needs the colourspace-conversion composite but its "
+					"chunk state could not be captured cleanly; refusing the edit rather than writing `color` "
+					"alone under the still non-linear `colorspace`",
+					edit.objectName.c_str() );
+				return false;
 			}
 			if( !RouteCstParamEdit_( edit.objectName.c_str(), "light", edit.propertyName.c_str(), edit.propertyValue.c_str() ) ) return false;
 			mLastScope = Dirty_Camera;

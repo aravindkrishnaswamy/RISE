@@ -385,6 +385,23 @@ static const char* const kDupColorScene =
 	"sphere_geometry\n{\nname g\nradius 1\n}\n"
 	"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
 
+// The same light with a DOUBLE `colorspace` line instead (`color` spelled once).  Round-3 P3 fix: this is
+// the asymmetric half of the duplicate-occurrence self-sufficiency fix in `LightColorCompositeState_` --
+// unlike a doubled `color`, a doubled `colorspace` is NOT safe for the composite to just decline and fall
+// through to the single-param route, because that route only ever writes `color` and Job's own
+// duplicate-occurrence guard is keyed to the role BEING written.  A doubled `colorspace` would sail straight
+// through that guard, land new linear digits in `color`, and leave the chunk's derived `colorspace`
+// (last-wins: `sRGB`) still non-linear -- reintroducing the double-decode this whole composite exists to
+// prevent.  (Verified empirically against this exact scene while developing the fix: disabling the
+// colorspace-duplicate branch let the malformed edit APPLY.)  `LightColorCompositeState_` must refuse the
+// WHOLE edit instead (`outRefuse`), not merely decline the composite.
+static const char* const kDupColorSpaceScene =
+	"omni_light\n{\nname L\npower 4\ncolor 1.0 0.2 0.15\ncolorspace ROMMRGB_Linear\ncolorspace sRGB\nposition 0 5 0\n}\n"
+	"uniformcolor_painter\n{\nname p1\ncolor 1 0 0\n}\n"
+	"lambertian_material\n{\nname m\nreflectance p1\n}\n"
+	"sphere_geometry\n{\nname g\nradius 1\n}\n"
+	"standard_object\n{\nname o\ngeometry g\nmaterial m\n}\n";
+
 static RISEPel LiveLightColor( IJobPriv& job )
 {
 	ILightManager* lm = job.GetLights();
@@ -396,6 +413,20 @@ static std::string LiveDocText( IJobPriv& job )
 {
 	const RISE::Cst::Document* d = job.GetCstDocument();
 	return d ? RISE::Cst::SerializeCst( *d ) : std::string();
+}
+
+// Round-3 P3 fix: what `LiveDocText` SHOULD return right after `LoadScene( sceneBody, ... )` -- the CST is a
+// concrete syntax tree, so a clean parse + re-serialize reproduces the file BYTE-FOR-BYTE, including the
+// version banner `LoadScene` prepends.  Anchors the file's several "undo restores the Document
+// BYTE-IDENTICALLY" checks to the test's OWN AUTHORED TEXT rather than to another `LiveDocText` call: without
+// this, those checks compare the serializer against itself (call it twice, get the same wrong answer twice,
+// and the check stays green) and can't tell "restored the original" from "restored SOME fixed point of
+// serialize-then-reparse that happens not to be what was authored".  Verified empirically against
+// `kEditorScene` and `kDupColorScene`: no whitespace/formatting normalisation happens for either constant --
+// this is a straight header-prepend, not a fuzzy match.
+static std::string ExpectedDocText( const char* sceneBody )
+{
+	return std::string( "RISE ASCII SCENE 7\n\n" ) + std::string( sceneBody );
 }
 
 // The `colorspace` row LightIntrospection reports for light "L" (empty if
@@ -431,6 +462,11 @@ static void TestEditorColorEditOnSRGBChunk()
 	Check( pJob->HasRetainedCstDocument(), "the editor scene retains a CST Document (else the edit is not CST-routed)" );
 
 	const std::string docOriginal = LiveDocText( *pJob );
+	// Round-3 P3 fix: anchor the round-trip to the test's OWN AUTHORED TEXT, not to a later `LiveDocText`
+	// call -- see ExpectedDocText's doc.  Without this, the "undo leaves the Document BYTE-IDENTICAL"
+	// check below is the serializer compared against itself.
+	Check( docOriginal == ExpectedDocText( kEditorScene ),
+	       "PRECONDITION: the freshly-loaded Document reproduces `kEditorScene` byte-for-byte (banner + body)" );
 	Check( docOriginal.find( "color 1.0 0.2 0.15" ) != std::string::npos
 	    && docOriginal.find( "colorspace sRGB" ) != std::string::npos,
 	       "PRECONDITION: the loaded Document really carries the authored `color` + `colorspace sRGB` lines" );
@@ -521,6 +557,10 @@ static void CheckColorEditRefusedChangesNothing( const char* sceneText, const ch
 	if( !pJob ) return;
 
 	const std::string docBefore = LiveDocText( *pJob );
+	// Round-3 P3 fix: anchor to the CALLER's own scene text -- see ExpectedDocText's doc.  Without this,
+	// the "the Document is BYTE-IDENTICAL afterwards" check further down is the serializer against itself.
+	Check( docBefore == ExpectedDocText( sceneText ),
+	       std::string( "PRECONDITION (" ) + why + "): the freshly-loaded Document reproduces the scene text byte-for-byte" );
 	const RISEPel colorBefore = LiveLightColor( *pJob );
 	Check( PelEq( colorBefore, expectColor, 1e-9 ),
 	       std::string( "PRECONDITION (" ) + why + "): the light loads at " + PelStr( expectColor )
@@ -574,6 +614,13 @@ static void TestEditorColorEditAtomicity()
 	// The live colour is the LAST line's (the parse is last-wins).
 	CheckColorEditRefusedChangesNothing( kDupColorScene, "atomdup", "1 0.05 0.02", expectOriginal,
 	                                     "the chunk spells `color` twice" );
+
+	// (d) A DOUBLED `colorspace` LINE (round-3 P3 fix).  `color` itself is singular here, so this pins the
+	// asymmetric half of the self-sufficiency fix: `LightColorCompositeState_` must refuse the WHOLE edit
+	// (not merely decline the composite and fall to the single-param route), because that route's own
+	// duplicate guard is keyed to `color` and would not see the doubled `colorspace` at all.
+	CheckColorEditRefusedChangesNothing( kDupColorSpaceScene, "atomdupcs", "1 0.05 0.02", expectOriginal,
+	                                     "the chunk spells `colorspace` twice" );
 }
 
 //----------------------------------------------------------------------
@@ -701,6 +748,11 @@ static void TestSharedUndoAgentThenPanel()
 	if( !pJob ) return;
 
 	const std::string docOriginal = LiveDocText( *pJob );
+	// Round-3 P3 fix: anchor to `kEditorScene` -- see ExpectedDocText's doc.  Without this, the "the
+	// Document is byte-identical to the originally-loaded text" check at the end of this test is the
+	// serializer against itself.
+	Check( docOriginal == ExpectedDocText( kEditorScene ),
+	       "PRECONDITION: the freshly-loaded Document reproduces `kEditorScene` byte-for-byte (banner + body)" );
 
 	{
 		SceneEditController c( *pJob, /*interactiveRasterizer*/0 );

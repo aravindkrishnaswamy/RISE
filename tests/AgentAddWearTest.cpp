@@ -1684,6 +1684,25 @@ static std::string OmniPowerAt( const std::string& name, double power, const cha
 	       "\n\tcolor 1 1 1\n\tposition " + position + "\n}\n\n";
 }
 
+//! N4c's fixture (round-3 P3 fix, DimLightColorMax_): a SHORT `color` (2 of 3 components -- the parser
+//! zero-fills the third) under an explicit non-linear `colorspace`, for the shape the `n < 3` bug used to
+//! shortcut on.  Always a bright, floor-clearing `power` -- N4c is coverage for the SHAPE (short colour +
+//! decode), not a magnitude probe: `DimLightIntensityIsNonTrivial_`'s only colour test is `colorMax > 0.0`,
+//! which a partial-but-positive triple clears identically whether `DimLightColorMax_` returns the raw
+//! literal (the old, buggy `n < 3` early return) or the correctly sRGB-decoded max (0.5 -> ~0.214) -- so
+//! this fixture cannot, on its own, tell the two implementations apart by the note's fire/silent outcome.
+//! What it DOES pin: the short-`color` + explicit-`colorspace` shape reaches `DimLightColorMax_` and
+//! `DimLightIntensityIsNonTrivial_` without an out-of-bounds read or an exception (the old code's `n < 3`
+//! guard, if ever reintroduced with an off-by-one, would read uninitialised `comp[1]`/`comp[2]` on exactly
+//! this input), and that a short-but-positive colour is never mistaken for authored black.
+static std::string OmniShortColorAt( const std::string& name, double power, const char* position )
+{
+	char buf[64];
+	std::snprintf( buf, sizeof( buf ), "%g", power );
+	return "omni_light\n{\n\tname " + name + "\n\tpower " + buf +
+	       "\n\tcolor 0.5 0.5\n\tcolorspace sRGB\n\tposition " + position + "\n}\n\n";
+}
+
 //! A lit slab, so every fixture has something for the lights to fall on
 //! and derives/renders like a real scene.
 static std::string DimLightSlab()
@@ -1914,6 +1933,31 @@ static void TestDimHeroLightNote()
 			               "does not have" );
 			pJobB->release();
 			std::remove( tmpB.c_str() );
+		}
+
+		// N4c (round-3 P3 fix): a SHORT `color` (2 of 3 components) under an
+		// explicit `colorspace sRGB` -- see OmniShortColorAt's doc for why this
+		// fixture pins the SHAPE (short colour reaches DimLightColorMax_'s
+		// decode path cleanly) rather than the exact colorMax number.
+		{
+			const std::string shortColor = Preamble() + DimLightSlab() +
+				OmniShortColorAt( "candle", 5.0, "0 3 0" );
+			const std::string tmpC = TempPath( "addwear_dim_n4c.RISEscene" );
+			Job* pJobC = LoadScene( shortColor, tmpC );
+			Check( pJobC != nullptr, "N4c short-colour fixture derives" );
+			if( pJobC ) {
+				std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJobC );
+				RecordSoloAudit( *sess, "candle", 0.3, 0.005 );
+				const std::vector<Agent::AgentDiagnostic> diags = sess->Validate( shortColor );
+				const Agent::AgentDiagnostic* d = hasCode( diags, kCode );
+				Check( d != nullptr,
+				       "N4c MONEY: `color 0.5 0.5` + `colorspace sRGB` (the parser zero-fills the third "
+				       "component) is read as a genuine, non-black colour -- DimLightColorMax_ decodes it "
+				       "rather than bailing out on the short triple, and clause (ii) still fires on the "
+				       "SAME authored power/share pair N4b does" );
+				pJobC->release();
+				std::remove( tmpC.c_str() );
+			}
 		}
 	}
 

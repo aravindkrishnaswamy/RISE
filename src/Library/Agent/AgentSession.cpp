@@ -5349,11 +5349,16 @@ namespace RISE
 			//! rather than guessed, matching the "never invent" rule above; the
 			//! derive refuses such a scene anyway).
 			//!
-			//! A triple is required to decode: ROMM / ProPhoto are MATRIX
-			//! conversions, so a channel's linear value depends on all three.  A
-			//! malformed value with fewer than three readable components keeps the
-			//! old literal reading of whatever parsed -- there is nothing to
-			//! convert, and this note never quotes such a slot anyway.
+			//! Round-3 P3 fix (2026-09-02): a triple is NOT required to decode.
+			//! `comp` is zero-filled up front and the chunk PARSER zero-fills any
+			//! component the author left off (`color 0.5 0.5` derives exactly as
+			//! `color 0.5 0.5 0.0`) -- so a value with 1 or 2 readable components
+			//! is a genuine, deriving colour, and decoding it through the chunk's
+			//! `colorspace` is both possible and necessary: `color 0.5 0.5` under
+			//! `colorspace sRGB` derives to max 0.214 (0.5 sRGB-decoded), not the
+			//! literal 0.5 the old `n < 3` early return reported.  Only a value
+			//! with NO readable component (`n < 1`, e.g. a stray token that isn't
+			//! a number) has nothing to decode.
 			double DimLightColorMax_( const NodeRef& item, double fallback )
 			{
 				const std::string s = ChunkParamString_( item, "color" );
@@ -5371,7 +5376,7 @@ namespace RISE
 					if( v > best ) best = v;
 					p = end;
 				}
-				if( n < 3 ) return best;   // not a triple: nothing to convert
+				if( n < 1 ) return best;   // nothing readable at all: nothing to convert
 
 				// The light's OWN chunk decides the reading; absent == the
 				// language default, which is linear (`Rec709RGB_Linear`) since

@@ -11994,6 +11994,29 @@ int Job::ApplyCstParamEditsImpl_( const char* entityName, const char* entityKind
 		plan.push_back( pw );
 	}
 
+	// CROSS-STRIP COLLISION REFUSAL (round-3 P3 fix).  Each pair's strip list above is derived from ITS OWN
+	// role in isolation -- it has no way to know what role a DIFFERENT pair in the same batch is about to
+	// write.  A batch like {{"matrix", M}, {"position", P}} plans `position`'s strip list as `{"matrix"}`
+	// (matrix outranks a per-field write), so the write loop below applies pair 0 (writes `matrix`) and THEN
+	// pair 1 (strips `matrix` -- deleting what pair 0 just wrote -- and writes `position`).  The batch would
+	// silently keep only the LAST-written pair's param and lose the others to their own masking rule, which
+	// defeats the "every pair takes effect" half of the atomicity contract just as surely as a mid-batch
+	// refusal would.  Unreachable today (the only caller pairs `colorspace` + `color`, neither of which
+	// strips anything), but this is a public IJob virtual -- a future caller must not be able to trip it
+	// silently.  Refuse the WHOLE batch rather than let one pair's write erase a sibling's.
+	for( size_t i = 0; i < plan.size(); ++i ) {
+		for( const char* const* s = plan[i].strip; *s; ++s ) {
+			for( size_t j = 0; j < edits.size(); ++j ) {
+				if( j == i || edits[j].first != *s ) continue;
+				GlobalLog()->PrintEx( eLog_Warning,
+					"Job::ApplyCstParamEdits:: `%s` (kind `%s`): parameter `%s`'s write masks `%s`, which this SAME "
+					"batch also writes -- one pair's write would silently erase another pair's. Edit rejected.",
+					entityName, ekind.c_str(), edits[i].first.c_str(), edits[j].first.c_str() );
+				return 0;
+			}
+		}
+	}
+
 	// EVERY pair validated -- now write them all into ONE copy and derive ONCE.
 	RISE::Cst::Document d1 = *pCstDocument;
 	std::string roleDiag;

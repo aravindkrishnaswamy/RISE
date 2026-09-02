@@ -1003,14 +1003,27 @@ namespace RISE
 		//! A chunk that spells `colorspace` TWICE is refused by Job::ApplyCstParamEdits' duplicate-occurrence
 		//! guard (the derive reads the LAST occurrence while the write addresses the first, so the write would
 		//! be a silent no-op) -- the refusal is logged naming the parameter, and the fix is to delete the dead
-		//! `colorspace` line.  The same applies to a doubled `color`.
+		//! `colorspace` line.  The same applies to a doubled `color`.  Round-3 P3 fix: `LightColorCompositeState_`
+		//! now checks this itself (`Cst::ParamOccurrenceCount` on both params) rather than relying on that
+		//! downstream guard -- it captures its original-text pair at occurrence 0, but the presence/convention
+		//! test just above it reads the LAST occurrence, so a doubled line would have captured a DEAD line's
+		//! digits as what Undo restores.  Self-sufficient: FALSE here, before either capture runs, is always
+		//! safe to fall through on for THIS case specifically, because the fall-through single-param write
+		//! lands on the very same duplicated param and Job's guard still refuses it cleanly.
 		//!
 		//! `LightColorCompositeState_` answers "does this edit need the composite" and, when it does, hands
 		//! back the two ORIGINAL value texts.  FALSE (and the plain single-param route stands, unchanged) for
 		//! any role but `color`, for a chunk whose `colorspace` is absent or already `Rec709RGB_Linear`, for a
-		//! light with no resolvable chunk, and on a legacy (no-Document) scene.
+		//! light with no resolvable chunk, on a legacy (no-Document) scene, and for the duplicate-occurrence
+		//! case above.  `outRefuse` is a SEPARATE signal from the FALSE return: it is set (still returning
+		//! FALSE) only when the composite is NEEDED (chunk is non-linear, no duplicate lines) but the original
+		//! text came back unexpectedly empty -- there the single-param fall-through is NOT safe (nothing
+		//! downstream would catch it), so both callers must refuse the whole edit instead of silently writing
+		//! `color` alone under the still non-linear `colorspace`, which is exactly the double-decode bug this
+		//! composite exists to close.
 		bool LightColorCompositeState_( const char* lightName, const String& propertyName,
-		                                String& outPrevColorText, String& outPrevColorSpaceText ) const;
+		                                String& outPrevColorText, String& outPrevColorSpaceText,
+		                                bool& outRefuse ) const;
 
 		//! The atomic write half of the composite above: `colorspace` + `color` in ONE Job::ApplyCstParamEdits
 		//! call (one Document copy, one derive, all-or-nothing).  Same rebind-on-D2 / mCstLiveSceneChanged

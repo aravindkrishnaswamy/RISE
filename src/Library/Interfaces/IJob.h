@@ -4313,7 +4313,15 @@ namespace RISE
 		//!
 		//! Every pair must name a non-empty role and a non-empty value, and every role must resolve to the SAME
 		//! owner chunk (the `override_object` transform walk is per-role, so a mixed-owner batch is refused
-		//! rather than silently split across two chunks).  Default 0 (only Job overrides).
+		//! rather than silently split across two chunks).
+		//!
+		//! CROSS-STRIP RULE: no pair's role may appear in another pair's transform-masking strip list (e.g.
+		//! a `position` pair strips `matrix`, so a batch also writing `matrix` is refused) -- writing the
+		//! batch in order would let one pair's masking strip silently delete a param a SIBLING pair in the
+		//! SAME batch just wrote, which is exactly the kind of partial, unnoticed loss atomicity exists to
+		//! prevent.  Refused (0) for the whole batch, named in the diagnostic.
+		//!
+		//! Default 0 (only Job overrides).
 		//! NB: appended at the IJob tail per the append-only ABI convention.
 		virtual int ApplyCstParamEdits( const char* entityName, const char* entityKind,
 		                                const std::vector< std::pair< std::string, std::string > >& edits ) { return 0; }
