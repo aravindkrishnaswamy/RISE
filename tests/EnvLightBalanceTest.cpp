@@ -1040,11 +1040,31 @@ static const TopologyBias kBiasEnvOnlySpectralNoHWSS = {
 //! per-wavelength bundle makes BDPT/VCM's tail far heavier than PT's,
 //! and OIDN was erasing exactly that.  p99 tolerance 0.10 -> 0.12: the
 //! measured p99 spread is 3.46 %, so the 3x rule demands 10.4 %.
+//!
+//! RE-DERIVED 2026-09-02 for Stage C (docs/SPECTRAL_ILLUMINANT_CONVENTION.md;
+//! commits 126cf9ec / 234156a5 / 474b3ef4): the JH LUT is now trained
+//! under D65 and the env painter radiates the illuminant spectrum, so
+//! every spectral row's shape changed.  Only THIS row's four ratio
+//! checks moved outside their bands; the hwss=false rows and both
+//! non-uniform rows stayed inside theirs.  What moved: PT-HWSS's red
+//! channel.  The old centres imply PT-HWSS red ~13 % ABOVE the 0.5
+//! closed form (old BDPT.mean R 1.1267 against BDPT's channel-flat
+//! 0.636); it now sits ~3 % below (PT (0.486, 0.497, 0.514) vs BDPT
+//! (0.636, 0.636, 0.635)) -- closer to truth, and the same shape the
+//! hwss=false PT row shows.  That residual per-channel skew is the PT
+//! spectral rasterizer's fixed 8-wavelength left-Riemann grid (doc
+//! s7.4), not transport: BDPT/VCM sample wavelength continuously and
+//! come out channel-flat at the same N.  Centres are the mean of 4
+//! independent runs at 474b3ef4 (run-to-run p99 spread <= 4 %):
+//!   BDPT mean (1.1267, 1.3017, 1.2394) -> (1.3133, 1.2784, 1.2403)
+//!   BDPT p99  (1.5304, 1.9208, 1.8052) -> (1.7867, 1.8975, 1.8010)
+//!   VCM  mean (1.0712, 1.2325, 1.1659) -> (1.2477, 1.2105, 1.1670)
+//!   VCM  p99  (1.2221, 1.5120, 1.4384) -> (1.4135, 1.4953, 1.4293)
 static const TopologyBias kBiasEnvOnlySpectralHWSS = {
-	/* bdpt */ { { { 1.1267, 1.3017, 1.2394 }, 0.06 },
-	             { { 1.5304, 1.9208, 1.8052 }, 0.12 } },
-	/* vcm  */ { { { 1.0712, 1.2325, 1.1659 }, 0.06 },
-	             { { 1.2221, 1.5120, 1.4384 }, 0.12 } },
+	/* bdpt */ { { { 1.3133, 1.2784, 1.2403 }, 0.06 },
+	             { { 1.7867, 1.8975, 1.8010 }, 0.12 } },
+	/* vcm  */ { { { 1.2477, 1.2105, 1.1670 }, 0.06 },
+	             { { 1.4135, 1.4953, 1.4293 }, 0.12 } },
 	kPeakCapUniformEnvSpectral
 };
 
@@ -1615,10 +1635,14 @@ static void TestEnvNonUniformOffCenterSpectral( bool hwss )
 // EXPECTED and not a transport error:  the env painter's RGB (1,1,1)
 // and the albedo's (0.5,0.5,0.5) are each uplifted to spectra through
 // the Jakob-Hanika LUT, multiplied per-wavelength, integrated against
-// the CMFs and converted back to Rec.709.  uplift(a)*uplift(b) is not
-// uplift(a*b), and the JH sigmoid fit has its own residual
-// (docs/JH_LUT_GAMUT.md records ~3.9 % gamut-edge cell failures), so a
-// per-channel round-trip error survives.
+// the CMFs and converted back to Rec.709.  Before Stage C (2026-09-02)
+// that error came from the flat-E-trained LUT (uplift(a)*uplift(b) is
+// not uplift(a*b) when every albedo carries a D65 tilt).  Since Stage
+// C the env painter radiates the D65-shaped illuminant and the 0.5
+// albedo uplifts flat, so what survives is the PT spectral
+// rasterizer's fixed 8-wavelength left-Riemann grid
+// (docs/SPECTRAL_ILLUMINANT_CONVENTION.md s7.4) -- BDPT/VCM sample
+// wavelength continuously and come out channel-flat on the same scene.
 //
 // MEASURED (PT spectral hwss=false, 512 spp, 4 runs, both rows):
 //   per channel  (0.47634, 0.49607, 0.51244) -> (-4.7 %, -0.8 %, +2.5 %)
