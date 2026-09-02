@@ -129,6 +129,24 @@ namespace RISE
 					) const;
 
 		public:
+			//! Cosine floor for the gap crossing -- see the definition's
+			//! comment in CompositeSPF.cpp for why it is 1e-3.
+			static const Scalar kMinCosTheta;
+
+			//! The slant distance a ray travels crossing the inter-layer gap:
+			//! `thickness / max(|dir . normal|, kMinCosTheta)`.
+			//!
+			//! Public (rather than a file-static in the .cpp) so
+			//! tests/CompositeExtinctionTest can check the grazing limit
+			//! directly -- the behaviour it guards fires for cos < 1e-3, which
+			//! is a ~1e-6 fraction of any cosine-weighted lobe and therefore
+			//! unreachable by a Monte-Carlo test at any practical sample count.
+			static Scalar GapPathLength(
+					const Vector3& dir,									///< [in] Normalised direction crossing the gap
+					const Vector3& normal,								///< [in] The slab normal (the top interface's onb.w())
+					const Scalar thickness								///< [in] Perpendicular gap thickness (already clamped >= 0)
+					);
+
 			CompositeSPF(
 				const ISPF& top_,
 				const ISPF& bottom_,

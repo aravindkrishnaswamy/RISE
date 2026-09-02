@@ -803,6 +803,119 @@ int main()
 	dielDisp->release();
 	sIorDisp->release();
 
+	// ------------------------------------------------------------
+	// 10. GEOMETRIC ADVANCE MATCHES THE BEER-LAMBERT PATH LENGTH.
+	//
+	//    The gap crossing has TWO consumers of its length: the composite's own
+	//    Beer-Lambert exponent, and `Ray::Advance`, which sets the origin the
+	//    next layer's Scatter() sees.  A stack-sensitive layer reads its OWN
+	//    absorption off `|ray.origin - ptIntersection|` -- DielectricSPF's
+	//    `tau^distance` from-inside branch, TranslucentSPF's and
+	//    GenericHumanTissueSPF's `exp(-distance * extinction)`.
+	//
+	//    Those two used to disagree by exactly 1/cos: the exponent used
+	//    `thickness / cosTheta` while Advance moved only `thickness`, so every
+	//    such layer understated its own absorption on every gap crossing.
+	//    Both now come from CompositeSPF::GapPathLength.
+	//
+	//    Sections 1-9 are all BLIND to this: their top layer has tau = 1.0, and
+	//    1^d is 1 for every d.  This fixture gives the top an ABSORBING
+	//    tau = 0.2 over a thick (2.0) gap, so the from-inside `tau^distance`
+	//    term on the return trip actually resolves the difference.  The bottom
+	//    is Lambertian (no distance read) and extinction is the near-transparent
+	//    0.001, so `tau^distance` is the ONLY term in play.
+	//
+	//    RED-PROOF (measured 2026-09-02 by rebuilding the four recursion sites
+	//    with `Advance( thickness )` in place of `Advance( pathLength )`):
+	//      Advance(thickness)  -- the bug   : crossed = 0.01536  total = 0.05536
+	//      Advance(pathLength) -- fixed     : crossed = 0.01028  total = 0.05028
+	//    The bug inflated the returning population by 49.4 %.  The sign is
+	//    forced, not fitted: the exponent it fed the coat was 2.0 (the
+	//    perpendicular crossing) where the true slant crossing is 2.0/cos >= 2.0,
+	//    so an absorbing coat could only ever come out too BRIGHT.
+	// ------------------------------------------------------------
+	std::cout << "\n10. Advance distance matches the Beer-Lambert path length\n";
+
+	UniformScalarPainter* sTauAbsorb = new UniformScalarPainter( 0.2 );  sTauAbsorb->addref();
+	DielectricSPF* dielAbsorb = new DielectricSPF( *sTauAbsorb, *sIor, *sScat, /*hg*/ false );
+	dielAbsorb->addref();
+	CompositeSPF* compAbsorb = new CompositeSPF(
+		*dielAbsorb, *lambertian, kMaxRecur, kMaxReflRecur, kMaxRefrRecur,
+		kMaxDiffRecur, kMaxTransRecur, 2.0, *extLo );
+	compAbsorb->addref();
+
+	const Measurement absorbM = Measure( *compAbsorb, 0.0 );
+	PrintMeasurement( "composite absorbing-top(tau=0.2) thick=2.0", absorbM );
+
+	// The band brackets the fixed value (0.01028) with ~20 % either side and
+	// excludes the buggy one (0.01536) by a further 23 %.
+	Check( absorbM.crossed > 0.0085 && absorbM.crossed < 0.0125,
+	       "return-trip tau^distance uses the SLANT path (crossed in [0.0085, 0.0125]; "
+	       "advancing by the perpendicular thickness instead lands at 0.0154)" );
+	// Direction statement, independent of the exact band: the slant path is
+	// never SHORTER than the perpendicular one, so a correct advance can only
+	// make an absorbing coat darker, never brighter.
+	Check( absorbM.crossed < lo.crossed,
+	       "an absorbing coat transmits strictly less than the tau=1 coat of section 1" );
+
+	compAbsorb->release();
+	dielAbsorb->release();
+	sTauAbsorb->release();
+
+	// ------------------------------------------------------------
+	// 11. GRAZING PATH LENGTH IS BOUNDED AND ON THE RIGHT SIDE.
+	//
+	//    `GapPathLength` used to read
+	//        (cosTheta > NEARZERO) ? thickness / cosTheta : thickness
+	//    which substituted the SHORTEST possible crossing (the perpendicular
+	//    one) for the MOST grazing rays, where the true slant distance runs the
+	//    other way and diverges.  It is now a clamped cosine, so the length is
+	//    monotone in cosTheta and bounded above by thickness / kMinCosTheta.
+	//
+	//    This is checked DIRECTLY rather than through a render: the old
+	//    fallback fires only for cos <= 1e-12, and even the new clamp only
+	//    engages below cos = 1e-3, which is a ~1e-6 fraction of a
+	//    cosine-weighted lobe.  No Monte-Carlo test at any practical sample
+	//    count reaches it -- which is exactly why the bug survived (sections
+	//    1-10 are byte-identical across this fix).
+	// ------------------------------------------------------------
+	std::cout << "\n11. Grazing gap-crossing path length (clamped cosine)\n";
+	{
+		const Vector3 N( 0, 0, 1 );
+		const Scalar  t = 0.02;
+		const Scalar  cap = t / CompositeSPF::kMinCosTheta;
+
+		// Perpendicular: exactly the thickness.
+		const Scalar perp = CompositeSPF::GapPathLength( Vector3( 0, 0, -1 ), N, t );
+		// 60 degrees: exactly twice the thickness (cos 60 = 0.5).
+		const Scalar sixty = CompositeSPF::GapPathLength(
+			Vector3Ops::Normalize( Vector3( std::sin( PI / 3 ), 0, -std::cos( PI / 3 ) ) ), N, t );
+		// Essentially parallel to the slab -- the old code's fallback case.
+		const Scalar graze = CompositeSPF::GapPathLength(
+			Vector3Ops::Normalize( Vector3( 1, 0, -1e-9 ) ), N, t );
+		// Just inside the clamp.
+		const Scalar nearGraze = CompositeSPF::GapPathLength(
+			Vector3Ops::Normalize( Vector3( 1, 0, -1e-4 ) ), N, t );
+
+		std::cout << "    perpendicular=" << std::fixed << std::setprecision( 6 ) << perp
+		          << "  60deg=" << sixty << "  cos~1e-4=" << nearGraze
+		          << "  cos~1e-9=" << graze << "  cap=" << cap << "\n";
+
+		Check( std::fabs( perp - t ) < 1e-12,
+		       "a perpendicular crossing travels exactly the thickness" );
+		Check( std::fabs( sixty - 2.0 * t ) < 1e-9,
+		       "a 60-degree crossing travels exactly twice the thickness" );
+		// THE red-proof line: the old ternary returned `thickness` here, the
+		// SHORTEST crossing there is, for the MOST grazing ray there is.
+		Check( graze > 10.0 * t,
+		       "a near-parallel crossing travels far MORE than the thickness "
+		       "(the old fallback returned exactly the thickness)" );
+		Check( std::fabs( graze - cap ) < 1e-12 && std::fabs( nearGraze - cap ) < 1e-12,
+		       "everything inside the clamp saturates at thickness / kMinCosTheta" );
+		Check( perp <= sixty && sixty <= nearGraze && nearGraze <= graze,
+		       "path length is monotone non-decreasing as the crossing gets more grazing" );
+	}
+
 	ceNaN->release();
 	ceNeg->release();
 	ceZero->release();

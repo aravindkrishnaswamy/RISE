@@ -129,6 +129,60 @@ static RISEPel GapAttenuation(
 	return ColorMath::exponential( RISEPel( e.v[0], e.v[1], e.v[2] ) * (-pathLength) );
 }
 
+// The slant distance a ray travels crossing the inter-layer gap.
+//
+// ONE function for all four recursion sites, and the reason it is a function
+// at all: this length has TWO consumers that must agree -- it is the
+// Beer-Lambert exponent's path length AND the distance the ray's origin is
+// advanced.  Those two used to be written separately at each of the four
+// sites, and they disagreed by exactly the 1/cos factor: the exponent used
+// `thickness / cosTheta` while `Ray::Advance` moved only `thickness`.  Either
+// layer can read its own absorption off `|ray.origin - ptIntersection|` --
+// DielectricSPF's from-inside `tau^distance` (which is what the TOP layer
+// applies on the return trip out of the gap), TranslucentSPF's and
+// GenericHumanTissueSPF's `exp(-distance * extinction)` -- and every one of
+// them was therefore handed the PERPENDICULAR crossing for a ray that had
+// actually travelled the slant one, understating its own absorption by 1/cos.
+// Deriving both from one value makes the disagreement unrepresentable.
+//
+// The clamped cosine, rather than `(cosTheta > NEARZERO) ? t/cosTheta : t`:
+// that ternary substituted the SHORTEST possible crossing (`thickness`, the
+// perpendicular one) for the most grazing rays, where the true slant distance
+// runs the other way and diverges.  A cosine floor is continuous and monotone
+// in cosTheta and keeps the limit on the correct side.
+//
+// kMinCosTheta is a genuine tuning knob (the quantity being guarded is not
+// mathematically zero -- it is unbounded), so it is picked from what the two
+// consumers can absorb rather than from FP noise:
+//
+//   * 1e-3 caps the crossing at 1000 x thickness.  For any physically
+//     meaningful extinction that is already total absorption -- the shipped
+//     composite_material scene's 8.0 over its 0.02 gap gives exp(-160) -- so
+//     the cap does not truncate attenuation that would have been visible.
+//   * It also caps the ORIGIN DISPLACEMENT at 1000 x thickness.  Without a
+//     floor, a cosTheta of 1e-12 advances the ray 1e12 gap-thicknesses, which
+//     is a nonsense position to hand a layer's Scatter() and, for a large
+//     authored thickness, overflows outright.
+//   * A cosine-weighted lobe puts P(cosTheta < 1e-3) = 1e-6 of its samples
+//     inside the clamp, so no ordinary population is affected at all.
+//
+// The residual error is bounded and one-sided: below the floor a nearly
+// transparent gap (extinction << 1/(1000 x thickness)) attenuates slightly
+// LESS than the true unbounded slant path would. That is the price of
+// bounding the displacement, and it is paid only by the 1-in-a-million ray
+// that runs within 0.06 degrees of the slab plane.
+const Scalar CompositeSPF::kMinCosTheta = 1e-3;
+
+Scalar CompositeSPF::GapPathLength(
+	const Vector3& dir,
+	const Vector3& normal,
+	const Scalar thickness
+	)
+{
+	const Scalar cosTheta = fabs( Vector3Ops::Dot( dir, normal ) );
+	return thickness / ( cosTheta > kMinCosTheta ? cosTheta : kMinCosTheta );
+}
+
 // ---------------------------------------------------------------------------
 //  THE TWO-STACK WALK
 //
@@ -312,11 +366,12 @@ void CompositeSPF::ProcessTopLayer(
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_top[i].ray.Dir()));
-				my_ri.ray.Advance( thickness );
 
-				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
-				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				// Apply Beer's law absorption through the layer.  The SAME slant
+				// length is both the exponent's path and the distance the ray
+				// actually travels -- see GapPathLength.
+				const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+				my_ri.ray.Advance( pathLength );
 				const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
 
 				ProcessBottomLayer( my_ri, scat_top[i].kray*importance*attenuation, sampler, scattered, steps+1, outside_stack, GapStackBelowTop( scat_top[i], gap_stack ) );
@@ -357,11 +412,12 @@ void CompositeSPF::ProcessBottomLayer(
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_bottom[i].ray.Dir()));
-				my_ri.ray.Advance( thickness );
 
-				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
-				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				// Apply Beer's law absorption through the layer.  The SAME slant
+				// length is both the exponent's path and the distance the ray
+				// actually travels -- see GapPathLength.
+				const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+				my_ri.ray.Advance( pathLength );
 				const RISEPel attenuation = GapAttenuation( extinction, ri, pathLength );
 
 				// gap_stack is passed through UNCHANGED -- see GapStackBelowTop.
@@ -404,11 +460,12 @@ void CompositeSPF::ProcessTopLayerNM(
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_top[i].ray.Dir()));
-				my_ri.ray.Advance( thickness );
 
-				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
-				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				// Apply Beer's law absorption through the layer.  The SAME slant
+				// length is both the exponent's path and the distance the ray
+				// actually travels -- see GapPathLength.
+				const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+				my_ri.ray.Advance( pathLength );
 				const Scalar extinctionNM = extinction.GetValueAtNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
@@ -451,11 +508,12 @@ void CompositeSPF::ProcessBottomLayerNM(
 				RayIntersectionGeometric my_ri(ri);
 				my_ri.ray.origin = ri.ptIntersection;
 				my_ri.ray.SetDir(Vector3Ops::Normalize(scat_bottom[i].ray.Dir()));
-				my_ri.ray.Advance( thickness );
 
-				// Apply Beer's law absorption through the layer
-				const Scalar cosTheta = fabs( Vector3Ops::Dot( my_ri.ray.Dir(), ri.onb.w() ) );
-				const Scalar pathLength = (cosTheta > NEARZERO) ? thickness / cosTheta : thickness;
+				// Apply Beer's law absorption through the layer.  The SAME slant
+				// length is both the exponent's path and the distance the ray
+				// actually travels -- see GapPathLength.
+				const Scalar pathLength = GapPathLength( my_ri.ray.Dir(), ri.onb.w(), thickness );
+				my_ri.ray.Advance( pathLength );
 				const Scalar extinctionNM = extinction.GetValueAtNM(ri, nm);
 				const Scalar attenuation = exp( -extinctionNM * pathLength );
 
