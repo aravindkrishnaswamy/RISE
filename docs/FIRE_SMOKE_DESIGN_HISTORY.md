@@ -5173,8 +5173,15 @@ it was already tried and refuted here.
   the 1,037-point sample as a proof; the replacement exhausts all `24346625`
   admitted binary32 temperatures and `24346624` adjacent midpoints. All
   `48693249` arguments pass on identity-bound libsystem_m/macOS build
-  `25F84`/arm64 with worst residual/bound `0.5192248117002557`; an environment
-  change requires requalification. An independent Q100 fixed-point atanh
+  `25F84`/arm64 with worst residual/bound `0.5192248117002557`. Review caught
+  that this originally bound only the CPU half of a Metal-produced measurement.
+  The corrected qualification also binds Apple M4 Max registry
+  `0x000000010000087d`/family `apple9`, Metal runtime `com.apple.Metal` `373.2`,
+  language `3.2`, safe math, the exact `newLibraryWithSource` bytes
+  (`293dd5e5...b990d4`), compiled function set (`6e409886...e87b7`), kernel
+  name, and pipeline traits. Every batch returns the same tuple. Any CPU libm,
+  OS, Metal device/runtime/options/source/function set, or pipeline-trait change
+  requires requalification. An independent Q100 fixed-point atanh
   interval proves the mathematical `ln(2)` remainder fits `2^-54`, while the
   zero binary64-projection residual is named separately. Interval-order
   uncertainty refuses, so r60/r170 no longer depend on cancellation or output

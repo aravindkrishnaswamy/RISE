@@ -5837,7 +5837,21 @@ sweep exhausts all `24346625` binary32 temperatures from 300 through 2200 K
 and all `24346624` adjacent midpoints: `48693249` arguments total. On the
 identity-bound `/usr/lib/system/libsystem_m.dylib`, macOS build `25F84`, kernel
 `25.5.0`, arm64 host, its worst residual/bound is `0.5192248117002557` at
-index 1. Any provider or OS change requires requalification. An independent
+index 1. The Metal half is independently bound to registry
+`0x000000010000087d` (`Apple M4 Max`, family `apple9`), Metal runtime
+`com.apple.Metal` version `373.2`, explicit language `3.2` and safe math, the
+exact resident-library source SHA-256
+`293dd5e520f9f7c9d330da9e128177127a2b8b90f9d4b31d9c0a3d9b44b990d4`,
+compiled function-set SHA-256
+`6e409886fb98102be190cc90c4c460a1c1c5e15184a05d21f50442f3575e87b7`,
+kernel name, and pipeline traits (`32`-wide execution, `1024` maximum threads,
+zero static threadgroup bytes). The source digest is computed from the exact
+string passed to `newLibraryWithSource`; the function-set digest comes back
+from the compiled library. Metal exposes no portable binary export, so these
+two digests plus the compiler/runtime/device/options tuple are the compiled
+library identity. All batches returned the identical tuple. Any CPU libm, OS,
+Metal device, runtime, language, math mode, source, function set, or pipeline-
+trait change requires requalification. An independent
 Q100 fixed-point atanh-series interval also proves mathematical `ln(2)` lies
 inside the packed triple's `2^-54` bound; the separately named binary64
 projection residual is zero on this provider. Every gate compares the

@@ -9372,6 +9372,22 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	const std::size_t logBatchCapacity=UINT64_C(1)<<18u;
 	std::vector<std::array<float,2> > logInputs;logInputs.reserve(logBatchCapacity);
 	std::vector<std::array<float,4> > logExpansion;bool logEnclosure=true;
+	FireProductionEOSLogMetalQualificationIdentity logMetalIdentity,batchMetalIdentity;
+	bool logMetalIdentitySet=false,logMetalIdentityConsistent=true;
+	auto sameLogMetalIdentity=[](const FireProductionEOSLogMetalQualificationIdentity& first,
+		const FireProductionEOSLogMetalQualificationIdentity& second){return
+		first.deviceRegistryId==second.deviceRegistryId&&first.deviceName==second.deviceName&&
+		first.deviceFamily==second.deviceFamily&&first.metalRuntimeImage==second.metalRuntimeImage&&
+		first.metalRuntimeBundleIdentifier==second.metalRuntimeBundleIdentifier&&
+		first.metalRuntimeBundleVersion==second.metalRuntimeBundleVersion&&
+		first.metalLanguageVersion==second.metalLanguageVersion&&
+		first.metalMathMode==second.metalMathMode&&
+		first.librarySourceSHA256==second.librarySourceSHA256&&
+		first.libraryFunctionSetSHA256==second.libraryFunctionSetSHA256&&
+		first.kernelName==second.kernelName&&
+		first.threadExecutionWidth==second.threadExecutionWidth&&
+		first.maximumThreadsPerThreadgroup==second.maximumThreadsPerThreadgroup&&
+		first.staticThreadgroupMemoryBytes==second.staticThreadgroupMemoryBytes;};
 	double maximumLogRatio=0.0;std::uint64_t checkedLogInputs=0u,worstLogIndex=0u;
 	for(std::uint64_t first=0u;first<totalLogInputs&&logEnclosure;first+=logBatchCapacity){
 		const std::uint64_t end=std::min(totalLogInputs,
@@ -9384,7 +9400,11 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 				std::memcpy(&upper,&upperBits,sizeof(upper));low=(upper-high)*0.5f;}
 			logInputs.push_back({{high,low}});}
 		logEnclosure=EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
-			logInputs,logExpansion,&error)&&logExpansion.size()==logInputs.size();
+			logInputs,logExpansion,batchMetalIdentity,&error)&&
+			logExpansion.size()==logInputs.size();
+		if(logEnclosure){if(!logMetalIdentitySet){logMetalIdentity=batchMetalIdentity;
+			logMetalIdentitySet=true;}else logMetalIdentityConsistent=
+				sameLogMetalIdentity(logMetalIdentity,batchMetalIdentity);}
 		for(std::size_t sample=0u;sample<logExpansion.size()&&logEnclosure;++sample){
 			const double center=static_cast<double>(logExpansion[sample][0])+
 				static_cast<double>(logExpansion[sample][1])+
@@ -9402,7 +9422,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	const bool logProviderBound=logSymbol&&dladdr(logSymbol,&logProvider)!=0&&
 		logProvider.dli_fname&&uname(&hostName)==0&&sysctlbyname("kern.osversion",osBuild,
 			&osBuildBytes,nullptr,0)==0&&osBuild[0]!='\0';
-	logEnclosure=logEnclosure&&checkedLogInputs==totalLogInputs&&logProviderBound;
+	logEnclosure=logEnclosure&&checkedLogInputs==totalLogInputs&&logProviderBound&&
+		logMetalIdentitySet&&logMetalIdentityConsistent;
 	const double ln2Triple=static_cast<double>(0.693147182464599609375f)+
 		static_cast<double>(-1.9046542121259336e-9f)+
 		static_cast<double>(-1.1102230246251565e-16f),ln2Bound=0x1p-54;
@@ -9434,13 +9455,30 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	std::fprintf(stderr,"RESIDENT_EOS_LOG_ENCLOSURE samples=%llu lattice=%llu midpoints=%llu "
 		"max_residual_over_bound=%.17g worst_index=%llu "
 		"ln2_binary64_projection_residual=%.17g ln2_bound=%.17g "
-		"ln2_high_precision=%d libm_image=%s os_build=%s os_release=%s machine=%s passed=%d\n",
+		"ln2_high_precision=%d libm_image=%s os_build=%s os_release=%s machine=%s "
+		"metal_device_registry_id=0x%016llx metal_device_name=\"%s\" metal_device_family=%s "
+		"metal_runtime_image=%s metal_runtime_bundle=%s metal_runtime_version=%s "
+		"metal_language=%s metal_math_mode=%s metal_library_source_sha256=%s "
+		"metal_function_set_sha256=%s metal_kernel=%s thread_execution_width=%zu "
+		"max_threads_per_threadgroup=%zu static_threadgroup_memory_bytes=%zu "
+		"metal_identity_consistent=%d passed=%d\n",
 		static_cast<unsigned long long>(totalLogInputs),static_cast<unsigned long long>(
 			latticeLogInputs),static_cast<unsigned long long>(midpointLogInputs),maximumLogRatio,
 		static_cast<unsigned long long>(worstLogIndex),std::fabs(std::log(2.0)-ln2Triple),ln2Bound,
 		ln2HighPrecisionEnclosed?1:0,logProviderBound?logProvider.dli_fname:"unavailable",
 		logProviderBound?osBuild:"unavailable",logProviderBound?hostName.release:"unavailable",
-		logProviderBound?hostName.machine:"unavailable",logEnclosure?1:0);
+		logProviderBound?hostName.machine:"unavailable",
+		static_cast<unsigned long long>(logMetalIdentity.deviceRegistryId),
+		logMetalIdentity.deviceName.c_str(),logMetalIdentity.deviceFamily.c_str(),
+		logMetalIdentity.metalRuntimeImage.c_str(),
+		logMetalIdentity.metalRuntimeBundleIdentifier.c_str(),
+		logMetalIdentity.metalRuntimeBundleVersion.c_str(),
+		logMetalIdentity.metalLanguageVersion.c_str(),logMetalIdentity.metalMathMode.c_str(),
+		logMetalIdentity.librarySourceSHA256.c_str(),
+		logMetalIdentity.libraryFunctionSetSHA256.c_str(),logMetalIdentity.kernelName.c_str(),
+		logMetalIdentity.threadExecutionWidth,logMetalIdentity.maximumThreadsPerThreadgroup,
+		logMetalIdentity.staticThreadgroupMemoryBytes,logMetalIdentityConsistent?1:0,
+		logEnclosure?1:0);
 	bool candidateBitEqual=observed.candidateConservativeValues.size()==9u*cells;
 	for(std::size_t component=0u;component<9u;++component)for(std::size_t cell=0u;cell<cells;++cell){
 		candidateBitEqual=candidateBitEqual&&sameFloatBits(observed.candidateConservativeValues[

@@ -1055,6 +1055,33 @@ namespace RISE
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
 #if defined(__APPLE__)
+	//! Exact Metal execution identity for the resident EOS logarithm
+	//! qualification. The compiled pipeline has no public binary-export API, so
+	//! its identity is the conjunction of the selected device, Metal runtime,
+	//! explicit compiler options, exact library source SHA-256, compiled
+	//! function-set SHA-256, and pipeline traits.
+	struct FireProductionEOSLogMetalQualificationIdentity
+	{
+		std::uint64_t deviceRegistryId;
+		std::string deviceName;
+		std::string deviceFamily;
+		std::string metalRuntimeImage;
+		std::string metalRuntimeBundleIdentifier;
+		std::string metalRuntimeBundleVersion;
+		std::string metalLanguageVersion;
+		std::string metalMathMode;
+		std::string librarySourceSHA256;
+		std::string libraryFunctionSetSHA256;
+		std::string kernelName;
+		std::size_t threadExecutionWidth;
+		std::size_t maximumThreadsPerThreadgroup;
+		std::size_t staticThreadgroupMemoryBytes;
+
+		FireProductionEOSLogMetalQualificationIdentity() : deviceRegistryId(0u),
+			threadExecutionWidth(0u),maximumThreadsPerThreadgroup(0u),
+			staticThreadgroupMemoryBytes(0u) {}
+	};
+
 	//! Matched-input qualification request for the private resident transport
 	//! authority.  This wrapper uploads immutable fixture inputs and stages only
 	//! the terminal coefficient fields; it cannot mint a live-owner publication.
@@ -1398,6 +1425,7 @@ namespace RISE
 	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
 		const std::vector<std::array<float,2> >& input,
 		std::vector<std::array<float,4> >& expansionAndBound,
+		FireProductionEOSLogMetalQualificationIdentity& identity,
 		std::string* error=0 );
 #endif
 

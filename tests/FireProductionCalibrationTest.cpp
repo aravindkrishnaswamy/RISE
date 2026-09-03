@@ -137,7 +137,19 @@ namespace
 				"0.5192248117002557 worst_index=1 ln2_binary64_projection_residual=0 "
 				"ln2_bound=5.5511151231257827e-17 ln2_high_precision=1 "
 				"libm_image=/usr/lib/system/libsystem_m.dylib os_build=25F84 "
-				"os_release=25.5.0 machine=arm64 passed=1")!=
+				"os_release=25.5.0 machine=arm64 "
+				"metal_device_registry_id=0x000000010000087d "
+				"metal_device_name=\"Apple M4 Max\" metal_device_family=apple9 "
+				"metal_runtime_image=/System/Library/Frameworks/Metal.framework/Versions/A/Metal "
+				"metal_runtime_bundle=com.apple.Metal metal_runtime_version=373.2 "
+				"metal_language=3.2 metal_math_mode=safe "
+				"metal_library_source_sha256="
+				"293dd5e520f9f7c9d330da9e128177127a2b8b90f9d4b31d9c0a3d9b44b990d4 "
+				"metal_function_set_sha256="
+				"6e409886fb98102be190cc90c4c460a1c1c5e15184a05d21f50442f3575e87b7 "
+				"metal_kernel=diagnose_eos_log_enclosure thread_execution_width=32 "
+				"max_threads_per_threadgroup=1024 static_threadgroup_memory_bytes=0 "
+				"metal_identity_consistent=1 passed=1")!=
 				std::string::npos&&
 			text.find("RESIDENT_EOS_ROUNDING_EDGE name=exact_zero_bin_center "
 				"expected_bits=0x00000000 accepted=1 failure=0x00000000 error= passed=1")!=
@@ -3762,14 +3774,14 @@ int main()
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateEvidence.begin(),residentEOSCandidateEvidence.end()))==
-			"aac7c7384a6e19fcfa725cea46fb66480e44ef095ffe4401479d9bf4ba4cd15c"&&
+			"2bf3e999d710f8e096a279a24c042df68c2969a6116b5b8152835af829281940"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSRawEvidence.begin(),residentEOSRawEvidence.end()))==
-			"f320afb20f6f9a79e5b056af817dabd76dbe4475b7e6341e5559afc59a620209"&&
+			"f67da702c6472f337da1b6856c237edb18514b27aa1965af7eaa0bc1db2f610c"&&
 		ValidateResidentEOSRawEvidence(residentEOSRawEvidence)&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateLiveBinding.begin(),residentEOSCandidateLiveBinding.end()))==
-			"a517ce415056ac53969199d72c42c368dd49e7bb79a7ba798e51a8ae9ef6833a"&&
+			"1455b9f0f478d777c44aca13f217bf1f1991f11e7b892782dcc9fde2eed3d4b1"&&
 		residentEOSCandidateLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 14\n")!=
 			std::string::npos&&
@@ -3815,11 +3827,33 @@ int main()
 			std::string::npos&&residentEOSCandidateEvidence.find(
 			"fp64_std_log_provider_image /usr/lib/system/libsystem_m.dylib\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
-			"fp64_std_log_environment_change_requires_requalification true\n")!=
-			std::string::npos&&residentEOSCandidateEvidence.find(
+				"metal_device_registry_id 0x000000010000087d\n")!=std::string::npos&&
+			residentEOSCandidateEvidence.find("metal_device_name Apple_M4_Max\n")!=
+				std::string::npos&&residentEOSCandidateEvidence.find(
+				"metal_device_family apple9\n")!=std::string::npos&&
+			residentEOSCandidateEvidence.find(
+				"metal_runtime_bundle_identifier com.apple.Metal\n")!=std::string::npos&&
+			residentEOSCandidateEvidence.find("metal_runtime_bundle_version 373.2\n")!=
+				std::string::npos&&residentEOSCandidateEvidence.find(
+				"metal_language_version 3.2\nmetal_math_mode safe\n")!=std::string::npos&&
+			residentEOSCandidateEvidence.find(
+				"metal_library_source_sha256 "
+				"293dd5e520f9f7c9d330da9e128177127a2b8b90f9d4b31d9c0a3d9b44b990d4\n")!=
+				std::string::npos&&residentEOSCandidateEvidence.find(
+				"metal_library_function_set_sha256 "
+				"6e409886fb98102be190cc90c4c460a1c1c5e15184a05d21f50442f3575e87b7\n")!=
+				std::string::npos&&residentEOSCandidateEvidence.find(
+				"metal_kernel_name diagnose_eos_log_enclosure\n")!=std::string::npos&&
+			residentEOSCandidateEvidence.find(
+				"metal_identity_consistent_across_all_batches true\n")!=std::string::npos&&
+			residentEOSCandidateEvidence.find(
+				"qualification_environment_change_requires_requalification "
+				"CPU_libm_or_OS_or_Metal_device_or_runtime_or_language_or_math_mode_or_"
+				"library_source_or_function_set_or_pipeline_traits\n")!=
+				std::string::npos&&residentEOSCandidateEvidence.find(
 			"binary32_publication whole_interval_must_fit_strictly_inside_one_rounding_bin\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
-			"raw_transcript_sha256 f320afb20f6f9a79e5b056af817dabd76dbe4475b7e6341e5559afc59a620209\n")!=
+				"raw_transcript_sha256 f67da702c6472f337da1b6856c237edb18514b27aa1965af7eaa0bc1db2f610c\n")!=
 			std::string::npos&&
 		residentEOSCandidateEvidence.find(
 			"deviation_acceptance device_bits_equal_fp64_mirror_binary32_projection_per_cell\n")!=

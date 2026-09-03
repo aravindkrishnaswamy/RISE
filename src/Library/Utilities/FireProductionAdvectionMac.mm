@@ -15,6 +15,7 @@
 #include "FireProductionForce.h"
 #include "FireSimulationRecords.h"
 #include "FireProductionTransport.h"
+#include "RISECBOR64.h"
 #include "FireCase.h"
 #include "ThreadPool.h"
 #include "../Interfaces/IOptions.h"
@@ -26,6 +27,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <dlfcn.h>
 #include <limits>
 #include <new>
 
@@ -66,6 +68,30 @@ namespace RISE
 			error+=" (default_present="+std::to_string(defaultPresent?1u:0u)+
 				", enumerated_count="+std::to_string(enumeratedCount)+")";
 			return nil;
+		}
+
+		std::string MetalString(NSString* value)
+		{
+			if(!value)return std::string();const char* utf8=[value UTF8String];
+			return utf8?std::string(utf8):std::string();
+		}
+
+		std::string ProductionMetalDeviceFamily(id<MTLDevice> device)
+		{
+			if(@available(macOS 10.15,*)){
+				const MTLGPUFamily appleFamilies[]={MTLGPUFamilyApple10,MTLGPUFamilyApple9,
+					MTLGPUFamilyApple8,MTLGPUFamilyApple7,MTLGPUFamilyApple6,
+					MTLGPUFamilyApple5,MTLGPUFamilyApple4,MTLGPUFamilyApple3,
+					MTLGPUFamilyApple2,MTLGPUFamilyApple1};
+				for(std::size_t index=0u;index<sizeof(appleFamilies)/sizeof(appleFamilies[0]);
+					++index)if([device supportsFamily:appleFamilies[index]])
+						return "apple"+std::to_string(10-static_cast<int>(index));
+				if([device supportsFamily:MTLGPUFamilyMac2])return "mac2";
+				if([device supportsFamily:MTLGPUFamilyCommon3])return "common3";
+				if([device supportsFamily:MTLGPUFamilyCommon2])return "common2";
+				if([device supportsFamily:MTLGPUFamilyCommon1])return "common1";
+			}
+			return "metal-family-unreported";
 		}
 
 		thread_local bool CompatibleMomentumDiagnosticActive=false;
@@ -1874,6 +1900,7 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLComputePipelineState> finalizeEOSCandidate;
 			id<MTLComputePipelineState> identifyEOS;
 			id<MTLComputePipelineState> diagnoseEOSLog;
+			FireProductionEOSLogMetalQualificationIdentity eosLogIdentity;
 			std::string error;
 
 			static const char* Source()
@@ -2547,7 +2574,10 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					device=DiscoverProductionMetalDevice("resident transport",error);
 					if(!device)return;
 					MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
-					if(@available(macOS 15.0,*))options.mathMode=MTLMathModeSafe;
+					if(@available(macOS 15.0,*)){
+						options.mathMode=MTLMathModeSafe;
+						options.languageVersion=MTLLanguageVersion3_2;
+					}
 					else{error="production resident transport requires Metal safe math mode";return;}
 					NSError* metalError=nil;NSString* source=[NSString stringWithUTF8String:Source()];
 					id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&metalError];
@@ -2573,13 +2603,48 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 						!diagnoseEOSLog){error=MetalError(
 						"production resident authority pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
+					const char* sourceBytes=Source();eosLogIdentity.deviceRegistryId=
+						static_cast<std::uint64_t>([device registryID]);
+					eosLogIdentity.deviceName=MetalString([device name]);
+					eosLogIdentity.deviceFamily=ProductionMetalDeviceFamily(device);
+					eosLogIdentity.metalLanguageVersion="3.2";
+					eosLogIdentity.metalMathMode="safe";
+					eosLogIdentity.librarySourceSHA256=RISECBOR64::SHA256Hex(
+						reinterpret_cast<const unsigned char*>(sourceBytes),std::strlen(sourceBytes));
+					NSArray<NSString*>* functionNames=[[library functionNames]
+						sortedArrayUsingSelector:@selector(compare:)];std::string functionSet;
+					for(NSString* name in functionNames){functionSet+=MetalString(name);functionSet+='\n';}
+					eosLogIdentity.libraryFunctionSetSHA256=RISECBOR64::SHA256Hex(
+						reinterpret_cast<const unsigned char*>(functionSet.data()),functionSet.size());
+					eosLogIdentity.kernelName="diagnose_eos_log_enclosure";
+					eosLogIdentity.threadExecutionWidth=static_cast<std::size_t>(
+						[diagnoseEOSLog threadExecutionWidth]);
+					eosLogIdentity.maximumThreadsPerThreadgroup=static_cast<std::size_t>(
+						[diagnoseEOSLog maxTotalThreadsPerThreadgroup]);
+					eosLogIdentity.staticThreadgroupMemoryBytes=static_cast<std::size_t>(
+						[diagnoseEOSLog staticThreadgroupMemoryLength]);
+					void* runtimeSymbol=dlsym(RTLD_DEFAULT,"MTLCreateSystemDefaultDevice");
+					Dl_info runtimeInfo={};if(runtimeSymbol&&dladdr(runtimeSymbol,&runtimeInfo)!=0&&
+						runtimeInfo.dli_fname)eosLogIdentity.metalRuntimeImage=runtimeInfo.dli_fname;
+					NSBundle* metalBundle=[NSBundle bundleWithPath:
+						@"/System/Library/Frameworks/Metal.framework"];
+					eosLogIdentity.metalRuntimeBundleIdentifier=MetalString(
+						[metalBundle bundleIdentifier]);
+					eosLogIdentity.metalRuntimeBundleVersion=MetalString(
+						[metalBundle objectForInfoDictionaryKey:@"CFBundleVersion"]);
 				}
 			}
 
 			bool Valid() const {return device&&queue&&evaluate&&identify&&physicalFlux&&
 				advectivePair&&finalizeAdvective&&composePair&&validatePhysical&&identifyPhysical&&
 				identifyEOSCandidate&&evaluateEOSCandidate&&
-				finalizeEOSCandidate&&identifyEOS&&diagnoseEOSLog&&error.empty();}
+				finalizeEOSCandidate&&identifyEOS&&diagnoseEOSLog&&
+				eosLogIdentity.deviceRegistryId!=0u&&!eosLogIdentity.deviceName.empty()&&
+				!eosLogIdentity.deviceFamily.empty()&&!eosLogIdentity.metalRuntimeImage.empty()&&
+				!eosLogIdentity.metalRuntimeBundleIdentifier.empty()&&
+				!eosLogIdentity.metalRuntimeBundleVersion.empty()&&
+				!eosLogIdentity.librarySourceSHA256.empty()&&
+				!eosLogIdentity.libraryFunctionSetSHA256.empty()&&error.empty();}
 		};
 
 		MetalRemapContext& Context()
@@ -8083,9 +8148,10 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 	bool EvaluateFireProductionEOSLogEnclosureMetalDiagnostic(
 		const std::vector<std::array<float,2> >& input,
 		std::vector<std::array<float,4> >& expansionAndBound,
+		FireProductionEOSLogMetalQualificationIdentity& identity,
 		std::string* error )
 	{
-		expansionAndBound.clear();
+		expansionAndBound.clear();identity=FireProductionEOSLogMetalQualificationIdentity();
 		try {
 			if(input.empty()){
 				if(error)*error="production EOS log diagnostic input is invalid";return false;}
@@ -8094,6 +8160,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				if(error)*error="production EOS log diagnostic input is invalid";return false;}
 			ResidentTransportMetalContext& context=ResidentTransportContext();
 			if(!context.Valid()){if(error)*error=context.error;return false;}
+			identity=context.eosLogIdentity;
 			@autoreleasepool {
 				id<MTLBuffer> deviceInput=[context.device newBufferWithBytes:input.data()
 					length:input.size()*sizeof(std::array<float,2>)
