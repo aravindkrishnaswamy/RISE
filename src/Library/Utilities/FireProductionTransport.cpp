@@ -1056,6 +1056,27 @@ namespace RISE
 		return seal.Matches(error);
 	}
 
+	bool FireProductionFrozenSourcePacketSealMatchesBeginningState(
+		const FireProductionFrozenSourcePacketSeal& seal,
+		const FireProductionProjectionShape& shape,
+		const std::vector<float>& conservativeValues,
+		const std::vector<float>& temperatureK,std::string* error )
+	{
+		if(!FireProductionFrozenSourcePacketSealMatches(seal,error))return false;
+		const FireProductionProjectionShape& sourceShape=seal.Shape();
+		const std::size_t cells=shape.CellCount();
+		if(sourceShape.nx!=shape.nx||sourceShape.ny!=shape.ny||sourceShape.nz!=shape.nz||
+			sourceShape.cellWidthM!=shape.cellWidthM||
+			conservativeValues.size()!=9u*cells||temperatureK.size()!=cells||
+			seal.BeginningTemperatureK().size()!=cells||
+			std::memcmp(seal.BeginningTemperatureK().data(),temperatureK.data(),
+				cells*sizeof(float))!=0||
+			seal.BeginningStateIdentity()!=CanonicalSourceBeginningStateIdentity(
+				shape,conservativeValues,temperatureK))return Fail(error,
+				"canonical frozen source beginning-state parent differs");
+		if(error)error->clear();return true;
+	}
+
 	bool FireProductionResidentTransportLiveIncrementWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
 	{

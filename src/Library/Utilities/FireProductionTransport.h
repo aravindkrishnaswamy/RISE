@@ -494,6 +494,16 @@ namespace RISE
 		const FireProductionFrozenSourcePacketSeal& seal,
 		std::string* error=0 );
 
+	//! Verifies that the opaque source publication was minted from this exact
+	//! binary32 beginning state and its canonical EOS temperatures.  This does
+	//! not mint authority; it closes the parent edge for resident consumers.
+	bool FireProductionFrozenSourcePacketSealMatchesBeginningState(
+		const FireProductionFrozenSourcePacketSeal& seal,
+		const FireProductionProjectionShape& shape,
+		const std::vector<float>& conservativeValues,
+		const std::vector<float>& temperatureK,
+		std::string* error=0 );
+
 	enum class FireProductionScalarDivergenceTargetRole : std::uint8_t
 	{
 		R0Base=1u,
@@ -1387,6 +1397,7 @@ namespace RISE
 		bool qualificationExactPositiveTailThreshold;
 		bool qualificationExactNegativeTailThreshold;
 		bool qualificationEOSAcceptedButUnlinked;
+		bool qualificationInjectInterstageFullGridTransfer;
 		//! 0=none, 1=shape, 2=face offsets, 3=cell width, 4=timestep,
 		//! 5=attempt, 6=boundary. Qualification-only stale-parent mutants.
 		std::uint32_t qualificationStaleTargetMetadataField;
@@ -1411,6 +1422,7 @@ namespace RISE
 			qualificationExactPositiveTailThreshold(false),
 			qualificationExactNegativeTailThreshold(false),
 			qualificationEOSAcceptedButUnlinked(false),
+			qualificationInjectInterstageFullGridTransfer(false),
 			qualificationStaleTargetMetadataField(0u),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};

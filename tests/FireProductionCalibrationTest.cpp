@@ -253,11 +253,12 @@ namespace
 			"RESIDENT_TARGET_RED name=")+name+" layer=device expected=0x00000800 "
 			"observed=0x00002800 attempted=1 read=1 target_identity=0 "
 			"consumer_identity=0 passed=1")==std::string::npos)return fail("unsealed RED");
-		const std::array<const char*,8> host={{"non_immediate_stale_candidate",
+		const std::array<const char*,10> host={{"non_immediate_stale_candidate",
 			"EOS_accepted_but_unlinked_candidate","CPU_produced_frozen_source",
 			"CPU_private_blit_frozen_source","mismatched_EOS_thermochemistry",
 			"CPU_produced_target_surface","CPU_forged_projection_metadata",
-			"understated_working_set"}};
+			"understated_working_set","wrong_parent_frozen_source_beginning",
+			"wrong_parent_frozen_source_case"}};
 		for(const char* name:host)if(text.find(std::string(
 			"RESIDENT_TARGET_RED name=")+name+" layer=host_preflight attempted=0 "
 			"read=0 target_identity=0 passed=1")==std::string::npos)return fail("host RED");
@@ -321,19 +322,23 @@ namespace
 					-std::numeric_limits<float>::infinity()))))&&
 			boundREDResidual>boundREDEnclosure&&boundREDRecord.find("passed=1")!=std::string::npos&&
 			identityRecord.find("all_nonzero=1")!=std::string::npos&&
-			CountText(text,"RESIDENT_TARGET_RED ")==23u&&text.find(
+			text.find("RESIDENT_TARGET_RED name=interstage_full_grid_transfer "
+			"layer=observed_transfer_ledger attempted=1 read=1 transfers=1 staging=1 ")!=
+				std::string::npos&&
+			CountText(text,"RESIDENT_TARGET_RED ")==26u&&text.find(
 			"RESIDENT_TARGET passed=1 tangent_bit_equal=1 source_bit_equal=1 "
 			"absolute_diagnostic_bit_equal=1 tail_bit_equal=1 assembled_bit_equal=1 "
 			"unsealed_transport=1 unsealed_physical=1 unsealed_candidate=1 "
 			"unsealed_eos=1 unsealed_source=1 stale_candidate=1 unlinked_eos=1 "
 			"cpu_source_refused=1 cpu_private_source_refused=1 source_packet_refused=1 "
+			"source_beginning_refused=1 source_case_refused=1 "
 			"eos_thermo_refused=1 stale_metadata_refused=1 cpu_target_refused=1 "
 			"cpu_projection_metadata_refused=1 "
 			"preauthored_refused=1 topology_refused=1 dormant_threshold_identity=1 "
 			"closed_branch_bitmap=0x03700180 closed_required=0x03700180 "
 			"open_branch_bitmap=0x02f00180 open_required=0x02f00180 "
 			"command_per_interval=1 reads_per_interval=1 transfers_per_interval=0 "
-			"enclosures=1 fixture_ws=1490944 actual_ws=131744 live_ws=196608")!=std::string::npos;
+			"enclosures=1 fixture_ws=1507328 actual_ws=132000 live_ws=196608")!=std::string::npos;
 	}
 	bool ValidateResidentTargetEvidenceAgainstRaw(const std::string& evidence,
 		const std::string& raw)
@@ -4166,6 +4171,14 @@ int main()
 		residentEOSCandidateEvidence.find("manifold_ceiling_reintroduced false\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
 			"interstage_full_grid_transfer_count 0\n")!=std::string::npos&&
+		residentTargetEvidence.find("transfer_ledger_derived_from_host_read_count false\n")!=
+			std::string::npos&&residentTargetEvidence.find(
+			"interstage_transfer_RED_observed_count 1\n")!=std::string::npos&&
+		residentTargetEvidence.find("case_record_id_reason "
+			"no_case_authored_semantic_or_input_change\n")!=std::string::npos&&
+		residentTargetEvidence.find("golden_checkpoint_sha256 "
+			"1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947\n")!=
+			std::string::npos&&
 		residentEOSCandidateEvidence.find("isolated_r60_failure_bitmap 0x00000010\n")!=
 			std::string::npos,
 		"r199 binds complete resident QStar lineage, per-cell EOS projection, monitored-manifold scope, and its non-self-referential live owners");
@@ -4175,17 +4188,17 @@ int main()
 	};
 	const bool residentTargetEvidenceHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetEvidence.begin(),residentTargetEvidence.end()))==
-		"75beb001f81ad1ad9ade6f77ef986114efea0c2991ec99439f8f1247d9a64d67";
+		"a57c1c75aed5fa6d288fd7fffce4660bde2cb902db9592523ab301d191afd519";
 	const bool residentTargetRawHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetRawEvidence.begin(),residentTargetRawEvidence.end()))==
-		"5968b41dc534a3fcd3d61f98f3b864c8f40046cfe23dff97fb0cb16e2c640109";
+		"b54ff82ed6d335e1501077b14ba7be81f94809804c363eab3e7a5a760c251c97";
 	const bool residentTargetRawStructureValid=
 		ValidateResidentTargetRawEvidence(residentTargetRawEvidence);
 	const bool residentTargetEvidenceSemanticsValid=
 		ValidateResidentTargetEvidenceAgainstRaw(residentTargetEvidence,residentTargetRawEvidence);
 	const bool residentTargetBindingHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetLiveBinding.begin(),residentTargetLiveBinding.end()))==
-		"cfa624359d6f8c68cadb41964659fced41f33cfeb79b2d34f8442985cd4d0a2f";
+		"4fa5005ca1bc57438119fc9d0c8879f3a35b49c68e26d557263c93d959a8578e";
 	Check(residentTargetEvidenceHashValid,"r200 evidence SHA binding");
 	Check(residentTargetRawHashValid,"r200 raw transcript SHA binding");
 	Check(residentTargetRawStructureValid,"r200 raw transcript structure and RED battery");
@@ -4222,6 +4235,9 @@ int main()
 			"transport_and_physical_flux_and_candidate_and_EOS_and_candidate_bound_frozen_source\n")!=
 			std::string::npos&&
 		residentTargetEvidence.find("frozen_source_CPU_private_blit_forgeable false\n")!=
+			std::string::npos&&residentTargetEvidence.find(
+			"wrong_beginning_canonical_source_refused true\n")!=std::string::npos&&
+		residentTargetEvidence.find("wrong_case_control_canonical_source_refused true\n")!=
 			std::string::npos&&residentTargetEvidence.find("target_EOS_thermochemistry_handle_binding "
 			"exact_candidate_parent\n")!=std::string::npos&&residentTargetEvidence.find(
 			"target_metadata_device_parent_checks shape_face_offsets_cell_width_timestep_attempt_boundary\n")!=
@@ -4280,7 +4296,7 @@ int main()
 			std::string::npos&&residentTargetEvidence.find(
 			"interstage_full_grid_transfer_count 0\n")!=std::string::npos&&
 		residentTargetEvidence.find("raw_transcript_sha256 "
-			"5968b41dc534a3fcd3d61f98f3b864c8f40046cfe23dff97fb0cb16e2c640109\n")!=
+			"b54ff82ed6d335e1501077b14ba7be81f94809804c363eab3e7a5a760c251c97\n")!=
 			std::string::npos&&solverDoc.find(
 			"### 7.56ag Authenticated resident target lineage (r200)")!=std::string::npos&&
 		historyDoc.find("r200 authenticated resident target lineage")!=std::string::npos,

@@ -9946,6 +9946,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=1u;
 	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
 		request.frozenSource,&error))return 213;
+	eos.physicalFlux.transport.temperatureK=request.frozenSource.BeginningTemperatureK();
 	eos.sourceDelta=request.frozenSource.SourceDelta();
 	for(std::size_t component=0u;component<9u;++component)eos.physicalFlux.ambient[component]=
 		eos.physicalFlux.transport.conservativeValues[component*cells];
@@ -10179,6 +10180,39 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const bool cpuPrivateSourceRefused=hostRefusal("CPU_private_blit_frozen_source",mutation);
 	mutation=request;mutation.qualificationMismatchedFrozenSourcePacket=true;
 	const bool mismatchedSourcePacket=deviceRefusal("mismatched_frozen_source_packet",mutation,2048u);
+	FireProductionFrozenMethaneSourceRequest wrongBeginningSourceRequest=sourceRequest;
+	wrongBeginningSourceRequest.timeStepS=request.eos.candidateTimeStepS;
+	wrongBeginningSourceRequest.beginningConservativeValues=
+		request.eos.physicalFlux.transport.conservativeValues;
+	for(std::size_t component=0u;component<9u;++component)
+		wrongBeginningSourceRequest.beginningConservativeValues[component*cells]=
+			wrongBeginningSourceRequest.beginningConservativeValues[component*cells+1u];
+	FireProductionFrozenSourcePacketSeal wrongBeginningSource;
+	const bool wrongBeginningSourceBuilt=
+		FireSim::FireProductionCanonicalSourceAuthority::Build(wrongBeginningSourceRequest,
+			wrongBeginningSource,&error)&&wrongBeginningSource.BeginningStateIdentity()!=
+			request.frozenSource.BeginningStateIdentity();
+	mutation=request;mutation.frozenSource=wrongBeginningSource;
+	mutation.eos.sourceDelta=wrongBeginningSource.SourceDelta();
+	const bool wrongBeginningSourceRefused=wrongBeginningSourceBuilt&&
+		hostRefusal("wrong_parent_frozen_source_beginning",mutation);
+	FireCase::AuthoredV1 wrongCaseAuthored=authored;wrongCaseAuthored.seed=201u;
+	FireCase::RecordV1 wrongCase;
+	const bool wrongCaseBuilt=FireCase::BuildMethaneV1(wrongCaseAuthored,fuel,
+		{fuel.RecordId(),sourceTransport.RecordId(),sourceOpacity.RecordId()},wrongCase,error);
+	FireProductionFrozenMethaneSourceRequest wrongCaseSourceRequest=sourceRequest;
+	wrongCaseSourceRequest.timeStepS=request.eos.candidateTimeStepS;
+	wrongCaseSourceRequest.caseRecordEnvelope=wrongCase.envelopeBytes;
+	wrongCaseSourceRequest.beginningConservativeValues=
+		request.eos.physicalFlux.transport.conservativeValues;
+	FireProductionFrozenSourcePacketSeal wrongCaseSource;
+	const bool wrongCaseSourceBuilt=wrongCaseBuilt&&
+		FireSim::FireProductionCanonicalSourceAuthority::Build(wrongCaseSourceRequest,
+			wrongCaseSource,&error)&&wrongCaseSource.CaseRecordId()!=request.frozenSource.CaseRecordId();
+	mutation=request;mutation.frozenSource=wrongCaseSource;
+	mutation.eos.sourceDelta=wrongCaseSource.SourceDelta();
+	const bool wrongCaseSourceRefused=wrongCaseSourceBuilt&&
+		hostRefusal("wrong_parent_frozen_source_case",mutation);
 	mutation=request;mutation.qualificationMismatchedEOSThermochemistry=true;
 	const bool mismatchedEOSThermochemistry=
 		hostRefusal("mismatched_EOS_thermochemistry",mutation);
@@ -10212,6 +10246,15 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				request.eos.physicalFlux.transport.conservativeValues[component*cells+safe];
 		dormant.eos.physicalFlux.transport.temperatureK[outlier]=
 			request.eos.physicalFlux.transport.temperatureK[safe];}
+	FireProductionFrozenMethaneSourceRequest dormantSourceRequest=sourceRequest;
+	dormantSourceRequest.timeStepS=dormant.eos.candidateTimeStepS;
+	dormantSourceRequest.beginningConservativeValues=
+		dormant.eos.physicalFlux.transport.conservativeValues;
+	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(dormantSourceRequest,
+		dormant.frozenSource,&error))return 224;
+	dormant.eos.physicalFlux.transport.temperatureK=
+		dormant.frozenSource.BeginningTemperatureK();
+	dormant.eos.sourceDelta=dormant.frozenSource.SourceDelta();
 	FireProductionResidentTargetLineageComparatorResult dormantBase,dormantAlternate;
 	std::string dormantBaseError,dormantAlternateError;
 	const bool dormantBaseAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
@@ -10271,6 +10314,20 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		liveCertified=FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(shape,liveBytes);
 	mutation=request;mutation.qualificationWorkingSetLimitBytes=fixtureBytes-1u;
 	const bool understatedRefused=hostRefusal("understated_working_set",mutation);
+	mutation=request;mutation.qualificationInjectInterstageFullGridTransfer=true;
+	FireProductionResidentTargetLineageComparatorResult transferred;error.clear();
+	const bool transferAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
+		mutation,transferred,&error);
+	const bool transferLedgerRefused=!transferAccepted&&transferred.deviceAttempted&&
+		transferred.terminalRead&&transferred.interstageFullGridTransferCount==1u&&
+		transferred.terminalStagingCount==1u&&transferred.targetPublicationIdentity!=0u;
+	std::fprintf(stderr,"RESIDENT_TARGET_RED name=interstage_full_grid_transfer "
+		"layer=observed_transfer_ledger attempted=%d read=%d transfers=%u staging=%u "
+		"target_identity=%llu passed=%d\n",transferred.deviceAttempted?1:0,
+		transferred.terminalRead?1:0,transferred.interstageFullGridTransferCount,
+		transferred.terminalStagingCount,
+		static_cast<unsigned long long>(transferred.targetPublicationIdentity),
+		transferLedgerRefused?1:0);
 	const std::uint32_t requiredClosedBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
 		(1u<<22u)|(1u<<24u)|(1u<<25u);
 	const std::uint32_t requiredOpenBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
@@ -10325,10 +10382,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		openTangentEqual&&openSourceEqual&&openDiagnosticEqual&&openTailEqual&&openAssembledEqual&&
 		unsealedTransport&&unsealedPhysical&&unsealedCandidate&&unsealedEOS&&unsealedSource&&
 		staleCandidate&&unlinkedEOS&&cpuSourceRefused&&cpuPrivateSourceRefused&&
+		wrongBeginningSourceRefused&&wrongCaseSourceRefused&&
 		mismatchedSourcePacket&&mismatchedEOSThermochemistry&&staleMetadataRefused&&
 		cpuTargetRefused&&cpuProjectionMetadataRefused&&
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
+		transferLedgerRefused&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
 		openObserved.terminalStagingCount==1u&&openObserved.interstageFullGridTransferCount==0u;
@@ -10336,7 +10395,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		"absolute_diagnostic_bit_equal=%d tail_bit_equal=%d assembled_bit_equal=%d "
 		"unsealed_transport=%d unsealed_physical=%d unsealed_candidate=%d unsealed_eos=%d "
 		"unsealed_source=%d stale_candidate=%d unlinked_eos=%d cpu_source_refused=%d "
-		"cpu_private_source_refused=%d source_packet_refused=%d eos_thermo_refused=%d "
+		"cpu_private_source_refused=%d source_packet_refused=%d "
+		"source_beginning_refused=%d source_case_refused=%d eos_thermo_refused=%d "
 		"stale_metadata_refused=%d cpu_target_refused=%d "
 		"cpu_projection_metadata_refused=%d preauthored_refused=%d "
 		"topology_refused=%d dormant_threshold_identity=%d closed_branch_bitmap=0x%08x "
@@ -10347,6 +10407,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		unsealedTransport?1:0,unsealedPhysical?1:0,unsealedCandidate?1:0,unsealedEOS?1:0,
 		unsealedSource?1:0,staleCandidate?1:0,unlinkedEOS?1:0,cpuSourceRefused?1:0,
 		cpuPrivateSourceRefused?1:0,mismatchedSourcePacket?1:0,
+		wrongBeginningSourceRefused?1:0,wrongCaseSourceRefused?1:0,
 		mismatchedEOSThermochemistry?1:0,staleMetadataRefused?1:0,cpuTargetRefused?1:0,
 		cpuProjectionMetadataRefused?1:0,preauthoredRefused?1:0,
 		topologyRefused?1:0,dormantThresholdIdentity?1:0,

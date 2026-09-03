@@ -5216,6 +5216,9 @@ it was already tried and refuted here.
   accepts only the opaque seal minted by the canonical FireSim source authority;
   no raw source-target field is an admissible input. The source field, sealed
   packet metadata, candidate-parent binding, and identity are issued on Metal;
+  exact beginning-state and case-record parents are recomputed at host preflight,
+  so genuine wrong-state and wrong-case canonical seals refuse even when dose
+  bytes agree;
   neither shared CPU bytes nor a private CPU blit can substitute. The conjunction is structural: an unsealed
   parent refuses on device, while a stale candidate or an EOS publication not
   immediately linked to that candidate refuses before command submission. A
@@ -5229,7 +5232,9 @@ it was already tried and refuted here.
   cell/field comparisons; every value bit-matches the fp64 mirror's binary32
   projection. Per-row binary64-reference residuals use local `s^-1` enclosures
   derived solely from half the larger adjacent binary32 spacing (with zero only
-  for the exact-copy source), and worst ratios remain below `1.0`; a displaced-
+  for the exact-copy source). The evidence artifact records all ten independent
+  per-field residual/bound/ratio triples; no pooled across-field acceptance
+  number is used. A displaced-
   exact RED proves the bound can fail. Positive/negative tail crossings and exact
   `2^-4` device no-drain cases are exercised independently through explicit
   qualification-only EOS injections under sealed lineage. An initial one-ULP tangent miss exposed float face-
@@ -5252,10 +5257,14 @@ it was already tried and refuted here.
   cases all refuse, as does a mismatched source packet. Exact handle binding
   refuses a same-size alternate EOS table. Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
   host preflight. Residency is one command, one terminal read, and zero
-  interstage full-grid transfers; fixture/actual/target-live bytes are
-  `1490944`/`131744`/`196608`. The live certificate includes the private source
+  interstage full-grid transfers. A scoped copy-seam ledger and a real
+  private-to-shared full-grid transfer mutant make the zero-transfer claim an
+  observed refusal invariant rather than a read-count inference;
+  fixture/actual/target-live bytes are `1507328`/`132000`/`196608`. The live certificate includes the private source
   field, source metadata, and candidate-bound source identity. Closed/open obligation bitmaps exactly equal
   their independently required `0x03700180`/`0x02f00180`, covering both tail
-  signs, term assembly, and both compatibility branches. `case_record_id` is unchanged, producer/run
-  identity inherits r200, and the golden checkpoint is untouched. Evidence is
+  signs, term assembly, and both compatibility branches. `case_record_id` is
+  unchanged because no case-authored semantic or input changed; producer/run
+  identity inherits r200, and golden checkpoint
+  `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947` is untouched. Evidence is
   staged for fresh boundary review; the next rung is the live Metal owner.

@@ -5920,7 +5920,12 @@ opaque device-produced frozen-source authority. Its issuer accepts only the
 opaque `FireProductionFrozenSourcePacketSeal` minted by the canonical FireSim
 source authority; no raw source-target field is accepted by the qualification
 surface. Metal publishes the seal's source field into private storage and binds
-its on-device identity to the exact candidate publication. Neither shared CPU
+its on-device identity to the exact candidate publication. Host preflight also
+recomputes the seal's beginning-state identity from the exact resident
+conservative and canonical-temperature fields and requires the exact case-record
+identity. Genuine canonical seals minted from a different beginning state or
+different case therefore refuse even when their source dose is byte-identical.
+Neither shared CPU
 bytes nor a byte-identical private CPU blit can substitute for that issued
 authority. It accepts no public candidate or target object. The child retains the five exact
 publication handles and the parent command; every parent must be nonzero on
@@ -5963,8 +5968,20 @@ mirror's binary32 projection. Each row also reports the error to its binary64
 reference against a same-cell, same-field enclosure in `s^-1`, derived solely
 from half the larger adjacent binary32 spacing of the published value; it does
 not consume the measured residual. Only the exact-copy source field has a zero
-bound. Worst residual/bound ratios are `0.970643` or less closed and
-`0.9999997` or less pressure-open. A displaced-exact RED exceeds the unchanged
+bound. The ten acceptance triples `(max residual, max local bound, worst
+residual/bound ratio)`, all in `s^-1` except the dimensionless ratio, are:
+closed tangent `(2.5014402105227873e-08, 2.9802322387695312e-08,
+0.97716035693883896)`; closed frozen source `(0, 0, 0)`; closed absolute
+diagnostic `(0, 0.000244140625, 0)`; closed monitored tail
+`(0, 6.103515625e-05, 0)`; closed assembled `(0.0001656421027291799,
+0.000244140625, 0.986663818359375)`; pressure-open tangent
+`(2.3924225600602256e-08, 2.9802322387695312e-08, 0.99220840632915497)`;
+pressure-open frozen source `(0, 0, 0)`; pressure-open absolute diagnostic
+`(0.0001367544009553967, 0.000244140625, 0.99999964237213135)`;
+pressure-open monitored tail `(1.4684030247735791e-05, 6.103515625e-05,
+0.90429652854800224)`; and pressure-open assembled
+`(0.00016326467721228255, 0.000244140625, 0.97005952894687653)`. A
+displaced-exact RED exceeds the unchanged
 local enclosure by 4x, proving that the bound can fail. There is no across-field
 acceptance statistic and no cancellation-sensitive bound. Integrated states
 exercise positive and negative deviations just below and above `2^-4`.
@@ -6003,6 +6020,7 @@ Byte-identical CPU metadata and CPU target substitutions both refuse at host
 preflight. The source issuer has no raw-field input surface; its two substitution
 REDs replace the exact issued handle with either the canonical seal's shared upload
 or a byte-identical private CPU blit, and both refuse before target issuance. A mismatched source packet,
+genuine wrong-beginning and wrong-case canonical source seals,
 and each stale target shape/face-offset/cell-width/timestep/attempt/boundary
 mutation, refuse on device with `0x2800`; an alternate same-size EOS table is
 refused by exact parent-handle identity before submission. The target identity now includes
@@ -6014,8 +6032,11 @@ issue no publication. These distinctions re-derive r189's refusal surface on
 device without claiming that a host-preflight refusal was a GPU observation.
 
 The qualification interval remains one command, one terminal staging read,
-and zero interstage full-grid transfers per valid interval. The fixture
-certificate is `1490944` bytes against `131744` bytes allocated. The target's
+and zero interstage full-grid transfers per valid interval. A scoped ledger at
+every copy seam records these independently of host reads. Its RED performs a
+real full-grid private-to-shared interstage blit without reading that buffer;
+the ledger observes one transfer and the publication certificate refuses. The
+fixture certificate is `1507328` bytes against `132000` bytes allocated. The target's
 live incremental certificate is `196608` bytes; it accounts for the private
 source field, its sealed metadata and candidate-bound identity, five per-cell
 target fields, target identity, the device-issued projection metadata and its
@@ -6026,9 +6047,11 @@ exactly `0x03700180` and `0x02f00180`, respectively; they bind below/above tail,
 both tail signs, term assembly, and both compatibility branches. The
 qualification result is a
 terminal tap only and is statically not
-convertible to projection authority. No case-authored input changed, so
-`case_record_id` remains stable; producer and later run identities inherit
-r200 semantics, and the golden checkpoint is untouched. Evidence is staged
+convertible to projection authority. No case-authored semantic or input changed,
+so `case_record_id` remains stable; producer and later run identities inherit
+r200 semantics, and golden checkpoint
+`1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947` is
+untouched. Evidence is staged
 for fresh review in
 `rendered/fire_production_calibration/r200_authenticated_device_target_lineage/`
 `resident_target_lineage_evidence.v1`; its final SHA is recorded only after the

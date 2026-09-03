@@ -7655,7 +7655,9 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 		// Canonical source-target upload plus private-substitution RED buffer, one
 		// source-metadata upload, an alternate private EOS table for the handle-
 		// lineage RED, target/projection metadata upload-private pairs, isolated
-		// target obligation word, and the sole terminal tap. The resident source
+		// target obligation word, the sole terminal tap, and a qualification-only
+		// shared full-grid transfer sink used by the observed transfer-ledger RED.
+		// The resident source
 		// authority itself is included in the live incremental certificate above.
 		return add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(MetalResidentTargetParameters))&&
@@ -7665,7 +7667,8 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&
 			add(sizeof(std::uint32_t))&&
 			add(5u*cells*sizeof(float)+7u*sizeof(std::uint64_t)+
-				2u*sizeof(std::uint32_t)+64u)&&bytes<=(UINT64_C(1)<<31u);
+				2u*sizeof(std::uint32_t)+64u)&&add(cells*sizeof(float))&&
+			bytes<=(UINT64_C(1)<<31u);
 	}
 
 	bool EvaluateFireProductionResidentTransportMetalComparator(
@@ -8449,7 +8452,16 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			const std::size_t cells=shape.CellCount();
 			const FireProductionFrozenSourcePacketSeal& frozenSource=request.frozenSource;
 			const FireProductionProjectionShape& sourceShape=frozenSource.Shape();
+			const FireSimulationMethaneRecord& methane=FireSimulationMethaneRecord::PhysicalV1();
+			RISE::FireCase::RecordV1 targetCase;std::string caseError;
 			if(!FireProductionFrozenSourcePacketSealMatches(frozenSource,error)||
+				!FireProductionFrozenSourcePacketSealMatchesBeginningState(frozenSource,shape,
+					request.eos.physicalFlux.transport.conservativeValues,
+					request.eos.physicalFlux.transport.temperatureK,error)||
+				!RISE::FireCase::ValidateMethaneEnvelopeV1(request.eos.caseRecordEnvelope,
+					methane,targetCase,caseError)||
+				frozenSource.CaseRecordId()!=targetCase.caseRecordId||
+				frozenSource.MethaneRecordId()!=methane.RecordId()||
 				sourceShape.nx!=shape.nx||sourceShape.ny!=shape.ny||sourceShape.nz!=shape.nz||
 				sourceShape.cellWidthM!=shape.cellWidthM||
 				frozenSource.TimeStepS()!=request.eos.candidateTimeStepS||
@@ -8610,8 +8622,10 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					eosObligations=privateBuffer(sizeof(std::uint32_t)),
 					targetObligations=privateBuffer(sizeof(std::uint32_t));
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:terminalBytes
+					options:MTLResourceStorageModeShared],
+					interstageTransferMutation=[context.device newBufferWithLength:fieldBytes
 					options:MTLResourceStorageModeShared];
-				const std::array<id<MTLBuffer>,51> buffers={{stateUpload,temperatureUpload,velocityUpload,
+				const std::array<id<MTLBuffer>,52> buffers={{stateUpload,temperatureUpload,velocityUpload,
 					fuelUpload,inflowUpload,thermoUpload,eosThermoUpload,transportUpload,ambientUpload,
 					physicalBasisUpload,advectiveBasisUpload,projectorUpload,transportParameterUpload,
 					physicalParameterUpload,eosParameterUpload,targetParameterUpload,
@@ -8622,7 +8636,8 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					eosParameter,targetParameter,
 					projectionParameter,
 					sourceDelta,sourceSubstitution,enthalpy,affineBuffer,fctParameter,failure,transportObligations,
-					physicalObligations,eosObligations,targetObligations,terminal}};
+					physicalObligations,eosObligations,targetObligations,terminal,
+					interstageTransferMutation}};
 				for(id<MTLBuffer> buffer:buffers)if(!buffer){
 					if(error)*error="production resident target buffer allocation failed";
 					return false;
@@ -8630,8 +8645,21 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
 				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
 				if(!blit){if(error)*error="production resident target upload encoder failed";return false;}
-				auto copy=[&](id<MTLBuffer> source,id<MTLBuffer> destination,const std::size_t length){
-					[blit copyFromBuffer:source sourceOffset:0 toBuffer:destination destinationOffset:0 size:length];};
+				enum class TransferPurpose { Internal,Terminal,InterstageFullGrid };
+				std::uint32_t interstageFullGridTransfers=0u,terminalStagingDestinations=0u;
+				id<MTLBuffer> terminalDestination=nil;
+				auto copy=[&](id<MTLBuffer> source,id<MTLBuffer> destination,
+					const std::size_t length,const TransferPurpose purpose=TransferPurpose::Internal,
+					const std::size_t destinationOffset=0u){
+					if([source storageMode]==MTLStorageModePrivate&&
+						[destination storageMode]==MTLStorageModeShared){
+						if(purpose==TransferPurpose::Terminal){
+							if(destination!=terminalDestination){terminalDestination=destination;
+								++terminalStagingDestinations;}
+						}else if(length>=fieldBytes)++interstageFullGridTransfers;
+					}
+					[blit copyFromBuffer:source sourceOffset:0 toBuffer:destination
+						destinationOffset:destinationOffset size:length];};
 				copy(stateUpload,state,stateBytes);copy(temperatureUpload,temperature,fieldBytes);
 				copy(velocityUpload,velocity,velocityBytes);copy(fuelUpload,fuel,fuelBytes);
 				copy(inflowUpload,inflow,inflowBytes);copy(thermoUpload,thermo,thermoBytes);
@@ -8680,8 +8708,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					blit=[command blitCommandEncoder];if(!blit){
 						if(error)*error="production resident source-substitution RED encoder failed";
 						return false;}
-					[blit copyFromBuffer:sourceAuthority.inputUpload sourceOffset:0
-						toBuffer:sourceSubstitution destinationOffset:0 size:fieldBytes];[blit endEncoding];
+					copy(sourceAuthority.inputUpload,sourceSubstitution,fieldBytes);[blit endEncoding];
 					sourceAuthority.values=sourceSubstitution;
 				}
 				if(request.qualificationNonImmediateCandidate)
@@ -8713,6 +8740,13 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					failure,targetObligations,
 					transportAuthority,physicalAuthority,
 					candidateAuthority,eosAuthority,sourceAuthority,targetParameters,targetAuthority,error))return false;
+				if(request.qualificationInjectInterstageFullGridTransfer){
+					blit=[command blitCommandEncoder];if(!blit){
+						if(error)*error="production resident target transfer RED encoder failed";
+						return false;}
+					copy(targetAuthority.assembled,interstageTransferMutation,fieldBytes,
+						TransferPurpose::InterstageFullGrid);[blit endEncoding];
+				}
 				blit=[command blitCommandEncoder];if(!blit){
 					if(error)*error="production resident target terminal encoder failed";
 					return false;
@@ -8720,21 +8754,20 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				const std::array<id<MTLBuffer>,5> fields={{targetAuthority.tangent,
 					targetAuthority.frozenSource,targetAuthority.absoluteDiagnostic,
 					targetAuthority.monitoredAbsolute,targetAuthority.assembled}};
-				for(unsigned int field=0u;field<fields.size();++field)[blit copyFromBuffer:fields[field]
-					sourceOffset:0 toBuffer:terminal destinationOffset:field*fieldBytes size:fieldBytes];
+				for(unsigned int field=0u;field<fields.size();++field)copy(fields[field],terminal,
+					fieldBytes,TransferPurpose::Terminal,field*fieldBytes);
 				const std::array<id<MTLBuffer>,8> identities={{transportAuthority.publicationIdentity,
 					physicalAuthority.publicationIdentity,candidateAuthority.publicationIdentity,
 					eosAuthority.publicationIdentity,sourceAuthority.publicationIdentity,
 					targetAuthority.publicationIdentity,
 					targetAuthority.projectionConsumerIdentity,
 					targetAuthority.consumerIdentity}};
-				for(unsigned int index=0u;index<identities.size();++index)[blit copyFromBuffer:identities[index]
-					sourceOffset:0 toBuffer:terminal destinationOffset:identityOffset+
-					index*sizeof(std::uint64_t) size:sizeof(std::uint64_t)];
-				[blit copyFromBuffer:failure sourceOffset:0 toBuffer:terminal destinationOffset:controlOffset
-					size:sizeof(std::uint32_t)];[blit copyFromBuffer:targetObligations sourceOffset:0
-					toBuffer:terminal destinationOffset:controlOffset+sizeof(std::uint32_t)
-					size:sizeof(std::uint32_t)];[blit endEncoding];
+				for(unsigned int index=0u;index<identities.size();++index)copy(identities[index],terminal,
+					sizeof(std::uint64_t),TransferPurpose::Terminal,identityOffset+
+					index*sizeof(std::uint64_t));
+				copy(failure,terminal,sizeof(std::uint32_t),TransferPurpose::Terminal,controlOffset);
+				copy(targetObligations,terminal,sizeof(std::uint32_t),TransferPurpose::Terminal,
+					controlOffset+sizeof(std::uint32_t));[blit endEncoding];
 				result.deviceAttempted=true;CommitTrackedMetalCommand(command);[command waitUntilCompleted];
 				result.commandCommitCount=1u;if([command status]!=MTLCommandBufferStatusCompleted){
 					if(error)*error="production resident target command failed";return false;}
@@ -8753,9 +8786,9 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				computed.projectionMetadataIdentity=identityValues[6];
 				computed.projectionConsumerIdentity=identityValues[7];
 				computed.commandCommitCount=static_cast<std::uint32_t>(MetalCommandCommitCount-beginningCommits);
-				computed.terminalStagingCount=static_cast<std::uint32_t>(MetalHostBufferReadCount-beginningReads);
-				computed.interstageFullGridTransferCount=computed.terminalStagingCount>0u?
-					computed.terminalStagingCount-1u:0u;computed.certifiedWorkingSetBytes=certified;
+				computed.terminalStagingCount=terminalStagingDestinations;
+				computed.interstageFullGridTransferCount=interstageFullGridTransfers;
+				computed.certifiedWorkingSetBytes=certified;
 				computed.actualMetalAllocationBytes=transportAuthority.allocationBytes+
 					physicalAuthority.allocationBytes+candidateAuthority.allocationBytes+
 					eosAuthority.allocationBytes+sourceAuthority.allocationBytes+
@@ -8781,13 +8814,16 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					computed.targetPublicationIdentity!=0u&&
 					computed.projectionMetadataIdentity!=0u&&
 					computed.projectionConsumerIdentity!=0u;
-				if(computed.commandCommitCount!=1u||computed.terminalStagingCount!=1u||
+				const std::uint64_t observedReads=MetalHostBufferReadCount-beginningReads;
+				if(computed.commandCommitCount!=1u||observedReads!=1u||
+					computed.terminalStagingCount!=1u||
 					computed.interstageFullGridTransferCount!=0u||!computed.deviceProduced||
 					computed.actualMetalAllocationBytes>computed.certifiedWorkingSetBytes||
 					!AllFinite(computed.tangentTargetPerS)||!AllFinite(computed.frozenSourceTargetPerS)||
 					!AllFinite(computed.absoluteReferenceDiagnosticPerS)||
 					!AllFinite(computed.monitoredAbsoluteReferenceTargetPerS)||
 					!AllFinite(computed.assembledTargetPerS)||!std::isfinite(computed.deviceElapsedMS)){
+					result=std::move(computed);
 					if(error)*error="production resident target publication failed its certificate";return false;}
 				result=std::move(computed);if(error)error->clear();return true;
 			}
