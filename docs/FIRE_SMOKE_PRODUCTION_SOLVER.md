@@ -5915,7 +5915,11 @@ ported replay.
 
 r200 completes the fourth r195 resident-lineage rung. A private Metal target
 issuer consumes the exact command-local publications made by r197a transport,
-r198 physical flux, r199's source-inclusive accepted `Q*`, and r199 EOS. It
+r198 physical flux, r199's source-inclusive accepted `Q*`, r199 EOS, and an
+opaque device-produced frozen-source authority. Qualification source bytes are
+copied by a Metal producer into a private field whose sealed packet metadata and
+publication identity are also created on device; neither shared bytes nor a
+private CPU blit can substitute for that opaque authority. It
 accepts no public candidate or target object. The child retains the four exact
 publication handles and the parent command; every parent must be nonzero on
 device, while the issuer separately requires pointer identity through the
@@ -5924,6 +5928,12 @@ candidate and an EOS publication relabelled onto a different candidate both
 refuse at host preflight, before a command is committed. Thus the r70 child can
 only attach to the projection/flux-produced candidate whose EOS was evaluated,
 not merely to an independently EOS-admissible state.
+The target also requires the exact EOS thermochemistry handle retained by the
+candidate. On device it compares shape, face offsets, cell width, timestep,
+attempt, and boundaries against the resident transport, FCT, and EOS parameter
+surfaces, and compares the source-packet identity against the sealed frozen-
+source metadata. Agreement between target and consumer metadata alone is not
+authority.
 
 The target is evaluated as independently published terms before composition:
 
@@ -5955,9 +5965,11 @@ bound. Worst residual/bound ratios are `0.95136` or less closed and
 `0.9999997` or less pressure-open. A displaced-exact RED exceeds the unchanged
 local enclosure by 4x, proving that the bound can fail. There is no across-field
 acceptance statistic and no cancellation-sensitive bound. Integrated states
-exercise positive and negative deviations just below and above `2^-4`; sealed
-positive and negative device candidates at exact equality both publish positive
-zero drain. During implementation, an
+exercise positive and negative deviations just below and above `2^-4`.
+Qualification-only device EOS injections publish positive and negative exact-
+threshold EOS surfaces under sealed lineage; both produce positive zero drain.
+This proves the device predicate without claiming a naturally evaluated exact-
+threshold candidate. During implementation, an
 initially float-evaluated face
 divergence missed one tangent result by one ULP. The remedy was to carry the
 already certified expansion arithmetic through the flux divergence, not to
@@ -5968,15 +5980,15 @@ r200 does not inherit r199's execution identity silently. The complete r199
 EOS sweep is re-run through the same resident context. All 48,693,249 log
 qualification arguments, 192 per-cell EOS comparisons, rounding-edge cases,
 and 13 device REDs pass unchanged. The current library source digest is
-`0068a59216abb75f5502f5b9e085a615f7f2eb797f06264553dbe1d557a02e7d`
+`34d00b9f6846bffdfbe17d171cf0753bcc98acee1f7eeb80cc4fb3831b844cb1`
 and its compiled function-set digest is
-`680f9ba2e399543061612b8b867398c75e53caa664c7069caf4f875ef78d0d33`.
+`55c16c115a76267ebf11956d769fbde27b9f245fd91fbd8374748be417440a9c`.
 The device/runtime/language/safe-math tuple remains the r199-qualified Apple
 M4 Max tuple. This control binds the parent EOS proof and the newly compiled
 target functions to one actual library identity.
 
 The device refusal surface is explicit. Zeroing any one of transport,
-physical-flux, candidate, or EOS publication produces failure bitmap `0x2800`
+physical-flux, candidate, EOS, or frozen-source publication produces failure bitmap `0x2800`
 (`0x0800` target-parent failure plus the downstream `0x2000` consumer refusal),
 with zero target and consumer identities. A preauthored target and a mismatched
 projection topology each reach the resident consumer and refuse with `0x2000`;
@@ -5987,7 +5999,11 @@ issues an opaque private metadata surface on device and binds its identity to
 the actual target publication; the consumer accepts that type, not uploaded bytes, and compares
 exact shape, cell width, timestep, attempt, and all boundary classes.
 Byte-identical CPU metadata and CPU target substitutions both refuse at host
-preflight. The target identity now includes
+preflight. Shared CPU source bytes and a byte-identical private CPU blit likewise
+cannot replace the device-issued frozen-source field. A mismatched source packet,
+and each stale target shape/face-offset/cell-width/timestep/attempt/boundary
+mutation, refuse on device with `0x2800`; an alternate same-size EOS table is
+refused by exact parent-handle identity before submission. The target identity now includes
 the exact `2^-4` bits: a one-ULP dormant threshold mutation leaves all five
 fields bit-identical but changes the target identity. The stale-candidate,
 EOS-accepted-but-unlinked, CPU-produced-
@@ -5997,7 +6013,7 @@ device without claiming that a host-preflight refusal was a GPU observation.
 
 The qualification interval remains one command, one terminal staging read,
 and zero interstage full-grid transfers per valid interval. The fixture
-certificate is `1409024` bytes against `127864` bytes allocated. The target's
+certificate is `1507328` bytes against `131840` bytes allocated. The target's
 live incremental certificate is `147456` bytes; it accounts for five per-cell
 fields, target identity, the device-issued projection metadata and its identity,
 and consumer identity while consuming rather than duplicating resident parents.

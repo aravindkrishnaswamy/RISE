@@ -1364,9 +1364,10 @@ namespace RISEFireProductionTrace
 
 	//! Qualification request for the private resident divergence-target authority.
 	//! The target issuer consumes the exact transport, physical-flux, Q* candidate,
-	//! and EOS publications produced in one command.  The frozen source term is an
-	//! immutable qualification input paired with its source-packet identity; the
-	//! live owner supplies the equivalent device-produced source authority.
+	//! and EOS publications produced in one command.  Qualification bytes for the
+	//! frozen source term are admitted only through a device producer that emits an
+	//! opaque source authority; the live owner supplies that producer's resident
+	//! input directly.
 	struct FireProductionResidentTargetLineageComparatorRequest
 	{
 		FireProductionResidentEOSCandidateComparatorRequest eos;
@@ -1377,8 +1378,12 @@ namespace RISEFireProductionTrace
 		bool qualificationUnsealedPhysicalFluxParent;
 		bool qualificationUnsealedEOSCandidateParent;
 		bool qualificationUnsealedEOSParent;
+		bool qualificationUnsealedFrozenSourceParent;
 		bool qualificationNonImmediateCandidate;
 		bool qualificationCPUProducedFrozenSource;
+		bool qualificationCPUPrivateBlitFrozenSource;
+		bool qualificationMismatchedFrozenSourcePacket;
+		bool qualificationMismatchedEOSThermochemistry;
 		bool qualificationCPUProducedTarget;
 		bool qualificationCPUForgedProjectionMetadata;
 		bool qualificationPreauthoredProjectionTarget;
@@ -1387,6 +1392,9 @@ namespace RISEFireProductionTrace
 		bool qualificationExactPositiveTailThreshold;
 		bool qualificationExactNegativeTailThreshold;
 		bool qualificationEOSAcceptedButUnlinked;
+		//! 0=none, 1=shape, 2=face offsets, 3=cell width, 4=timestep,
+		//! 5=attempt, 6=boundary. Qualification-only stale-parent mutants.
+		std::uint32_t qualificationStaleTargetMetadataField;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentTargetLineageComparatorRequest() :
@@ -1394,8 +1402,12 @@ namespace RISEFireProductionTrace
 			qualificationUnsealedPhysicalFluxParent(false),
 			qualificationUnsealedEOSCandidateParent(false),
 			qualificationUnsealedEOSParent(false),
+			qualificationUnsealedFrozenSourceParent(false),
 			qualificationNonImmediateCandidate(false),
 			qualificationCPUProducedFrozenSource(false),
+			qualificationCPUPrivateBlitFrozenSource(false),
+			qualificationMismatchedFrozenSourcePacket(false),
+			qualificationMismatchedEOSThermochemistry(false),
 			qualificationCPUProducedTarget(false),
 			qualificationCPUForgedProjectionMetadata(false),
 			qualificationPreauthoredProjectionTarget(false),
@@ -1404,6 +1416,7 @@ namespace RISEFireProductionTrace
 			qualificationExactPositiveTailThreshold(false),
 			qualificationExactNegativeTailThreshold(false),
 			qualificationEOSAcceptedButUnlinked(false),
+			qualificationStaleTargetMetadataField(0u),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 
@@ -1429,6 +1442,7 @@ namespace RISEFireProductionTrace
 		std::uint64_t physicalFluxPublicationIdentity;
 		std::uint64_t candidatePublicationIdentity;
 		std::uint64_t EOSPublicationIdentity;
+		std::uint64_t frozenSourcePublicationIdentity;
 		std::uint64_t targetPublicationIdentity;
 		std::uint64_t projectionMetadataIdentity;
 		std::uint64_t projectionConsumerIdentity;
@@ -1443,7 +1457,7 @@ namespace RISEFireProductionTrace
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
 			liveAuthorityAllocationBytes(0u),transportPublicationIdentity(0u),
 			physicalFluxPublicationIdentity(0u),candidatePublicationIdentity(0u),
-			EOSPublicationIdentity(0u),targetPublicationIdentity(0u),
+			EOSPublicationIdentity(0u),frozenSourcePublicationIdentity(0u),targetPublicationIdentity(0u),
 			projectionMetadataIdentity(0u),projectionConsumerIdentity(0u),
 			deviceElapsedMS(0.0),deviceAttempted(false),
 			terminalRead(false),deviceProduced(false) {}

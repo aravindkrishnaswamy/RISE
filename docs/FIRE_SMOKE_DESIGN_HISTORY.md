@@ -5211,8 +5211,10 @@ it was already tried and refuted here.
 
 - **r200 authenticated resident target lineage (2026-09-02):** completes the
   fourth r195 rung as a private device target producer consuming the exact
-  command-local r197a transport, r198 physical-flux, r199 accepted-`Q*`, and
-  r199 EOS publication handles. The conjunction is structural: an unsealed
+  command-local r197a transport, r198 physical-flux, r199 accepted-`Q*`, r199
+  EOS, and device-produced frozen-source publication handles. The source field,
+  sealed packet metadata, and identity are issued on Metal; neither shared CPU
+  bytes nor a private CPU blit can substitute. The conjunction is structural: an unsealed
   parent refuses on device, while a stale candidate or an EOS publication not
   immediately linked to that candidate refuses before command submission. A
   CPU-produced target surface cannot forge the private lineage. The target
@@ -5227,13 +5229,14 @@ it was already tried and refuted here.
   derived solely from half the larger adjacent binary32 spacing (with zero only
   for the exact-copy source), and worst ratios remain below `1.0`; a displaced-
   exact RED proves the bound can fail. Positive/negative tail crossings and exact
-  `2^-4` device no-drain cases are exercised independently. An initial one-ULP tangent miss exposed float face-
+  `2^-4` device no-drain cases are exercised independently through explicit
+  qualification-only EOS injections under sealed lineage. An initial one-ULP tangent miss exposed float face-
   divergence arithmetic and was fixed by carrying certified expansion
   arithmetic through the divergence, without tolerance widening. Adding the
   target functions changes Metal's library identity, so the full r199 EOS
   control is requalified rather than inherited: all 48,693,249 log arguments,
   192 EOS field rows, rounding edges, and 13 REDs pass under source digest
-  `0068a592...a02e7d` and function-set digest `680f9ba2...d0d33`. r189's
+  `34d00b9f...44cb1` and function-set digest `55c16c11...0a9c`. r189's
   preauthored-target and topology refusals re-run on device with `0x2000`. The
   latter mutates a projection request while preserving a valid target. A device
   stage issues opaque private projection metadata bound to that target identity;
@@ -5241,11 +5244,14 @@ it was already tried and refuted here.
   Byte-identical CPU target and metadata substitutions refuse. The dormant
   `2^-4` constant is identity-bearing:
   a one-ULP mutation changes identity with byte-identical output fields. All
-  four unsealed-parent cases produce `0x2800` and zero target/consumer IDs.
-  Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
+  five unsealed-parent cases produce `0x2800` and zero target/consumer IDs.
+  Target metadata is independently checked on device against transport/FCT/EOS
+  parents; stale shape, face offsets, cell width, timestep, attempt, and boundary
+  cases all refuse, as does a mismatched source packet. Exact handle binding
+  refuses a same-size alternate EOS table. Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
   host preflight. Residency is one command, one terminal read, and zero
   interstage full-grid transfers; fixture/actual/target-live bytes are
-  `1409024`/`127864`/`147456`. Closed/open obligation bitmaps exactly equal
+  `1507328`/`131840`/`147456`. Closed/open obligation bitmaps exactly equal
   their independently required `0x03700180`/`0x02f00180`, covering both tail
   signs, term assembly, and both compatibility branches. `case_record_id` is unchanged, producer/run
   identity inherits r200, and the golden checkpoint is untouched. Evidence is
