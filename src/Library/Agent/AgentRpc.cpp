@@ -1435,6 +1435,22 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): make_fabric's
+					// commit is one composite whole-document swap too -- up to
+					// four minted chunks (a dielectric-F0 painter, a substrate
+					// of the preset's class, a weave painter, the
+					// `fabric_material`) plus every bound object's `material`
+					// reference moved onto the wrapper -- so it is excluded
+					// from IsProposeSafeVerb for exactly the reason add_wetness
+					// above is, with the same message shape.
+					if( m == "make_fabric" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; make_fabric "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -4419,6 +4435,79 @@ namespace RISE
 					}
 					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( wr.qualifyingMaterials ) ) );
 					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( wr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// make_fabric {material?, fabric?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,fabricPreset,fabricMaterial,
+				//       baseMaterial,mintedSubstrate,mintedSubstrateKind,
+				//       substrateWasReused,originalNowUnreferenced,weavePainter,
+				//       rotationPainter,rebindObjectCount,geometry,geometryUniform,
+				//       qualifying,objects}
+				//   docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02): convert ONE
+				//   material into a `fabric_material` over a substrate of the
+				//   preset's class, MINTING that substrate when the bound base
+				//   is not already one (9.3: a preset cannot configure a
+				//   substrate it merely references).  `fabric` is the first
+				//   ENUM-typed argument on any of these verbs; an unknown
+				//   spelling is a refusal, not a silent fall back to `custom`.
+				//   A pre-commit refusal comes back as ok=false with the reason
+				//   in `message` -- a SUCCESSFUL response, not a JSON-RPC
+				//   error, the same shape add_wetness/add_wear use.
+				//--------------------------------------------------------------
+				if( m == "make_fabric" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr, fabricStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					if( const JsonValue* fv = params.find( "fabric" ) ) {
+						if( fv->isString() ) fabricStr = fv->asString();
+						else if( !fv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'fabric' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentMakeFabricResult fr =
+						s->MakeFabric( materialStr, fabricStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( fr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( fr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( fr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( fr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( fr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( fr.headVersion ) );
+					if( !fr.message.empty() )             result.set( "message",             JsonValue::MakeString( fr.message ) );
+					if( !fr.material.empty() )            result.set( "material",            JsonValue::MakeString( fr.material ) );
+					if( !fr.materialKind.empty() )        result.set( "materialKind",        JsonValue::MakeString( fr.materialKind ) );
+					if( !fr.fabricPreset.empty() )        result.set( "fabricPreset",        JsonValue::MakeString( fr.fabricPreset ) );
+					if( !fr.fabricMaterial.empty() )      result.set( "fabricMaterial",      JsonValue::MakeString( fr.fabricMaterial ) );
+					if( !fr.baseMaterial.empty() )        result.set( "baseMaterial",        JsonValue::MakeString( fr.baseMaterial ) );
+					if( !fr.mintedSubstrate.empty() )     result.set( "mintedSubstrate",     JsonValue::MakeString( fr.mintedSubstrate ) );
+					if( !fr.mintedSubstrateKind.empty() ) result.set( "mintedSubstrateKind", JsonValue::MakeString( fr.mintedSubstrateKind ) );
+					if( !fr.weavePainter.empty() )        result.set( "weavePainter",        JsonValue::MakeString( fr.weavePainter ) );
+					if( !fr.rotationPainter.empty() )     result.set( "rotationPainter",     JsonValue::MakeString( fr.rotationPainter ) );
+					if( fr.rebindObjectCount > 0 )        result.set( "rebindObjectCount",   JsonValue::MakeNumber( static_cast<double>( fr.rebindObjectCount ) ) );
+					if( !fr.geometryKind.empty() )        result.set( "geometry",            JsonValue::MakeString( fr.geometryKind ) );
+					if( !fr.material.empty() ) {
+						// The three substrate-decision bools and the geometry
+						// read are facts about the DOCUMENT, so they ship
+						// whenever a material was actually chosen -- including
+						// on a refusal that got far enough to read them.
+						result.set( "substrateWasReused",      JsonValue::MakeBool( fr.substrateWasReused ) );
+						result.set( "originalNowUnreferenced", JsonValue::MakeBool( fr.originalNowUnreferenced ) );
+						result.set( "geometryUniform",         JsonValue::MakeBool( fr.geometryUniform ) );
+					}
+					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( fr.qualifyingMaterials ) ) );
+					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( fr.boundObjects ) ) );
 					return MakeSuccess( idValue, result );
 				}
 

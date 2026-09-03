@@ -1,5 +1,5 @@
 # Materials and Media Basics
-> hook: Read before adding or editing materials (diffuse, glass, metal, PBR), scalar parameters like IOR/roughness, or participating media.
+> hook: Read before adding or editing materials (diffuse, glass, metal, PBR, CLOTH/FABRIC), scalar parameters like IOR/roughness, or participating media. Cloth is NOT a coloured Lambertian -- see "Cloth and fabric" below, or just call `make_fabric`.
 
 ## EFFICIENT MATERIAL WORKFLOW — reuse painters, pick the cheap chunk kind
 
@@ -1068,6 +1068,145 @@ reads patchily drier wherever a non-PT strategy contributed — and
 integrator by name.  Validate a wet-highlight render's numbers under PT
 with `oidn_denoise FALSE`; OIDN is measured to inflate exactly the kind
 of sharp, near-deterministic highlight a pooled coat produces.
+
+## Cloth and fabric — a sheen lobe over a weave-shaped substrate
+
+A cushion, a curtain, a jacket, upholstery, bedding: the single most
+common way these come out wrong is a `lambertian_material` with a
+cloth-coloured albedo, which reads as painted cardboard no matter how
+good the colour is.  Cloth has two things a diffuse surface does not.
+**A sheen lobe** — a bright grazing halo at the silhouette, from light
+scattering off the fuzz and the fibre ends — and **a substrate whose own
+highlight follows the weave**.  `fabric_material` is the chunk: an
+energy-compensated Charlie sheen over a restricted substrate, evaluated
+as the COMBINED response (so NEE and BDPT/VCM connections see the fabric,
+not the bare base) and subtracting the sheen's energy from the base, so a
+white fabric never returns more light than it receives at grazing.
+
+**Pick a `fabric` preset and bind a `base`; everything else has a
+calibrated default.**  The preset seeds `sheen_roughness` and, for
+`velvet`, a dark sheen colour.
+
+**The trap: a preset CANNOT configure the substrate.**  `fabric_material`
+holds a *reference* to an already-constructed base material — it can
+neither retype nor re-parameterise it.  So `fabric satin` bound over a
+Lambertian gives **chalk with a faint sheen** plus a warning, because the
+tight, directional, anisotropic highlight that *is* satin lives in a
+substrate the chunk cannot reach.  Pair each preset with the substrate it
+was calibrated for:
+
+| `fabric` | substrate to author yourself |
+|---|---|
+| `cotton` / `linen` / `wool` | `orennayar_material`, `roughness` (sigma) 0.4 / 0.5 / 0.6 |
+| `denim` / `silk` / `satin` | `ggx_material`, `alphax`/`alphay` 0.34-0.22 / 0.30-0.10 / 0.34-0.06 † |
+| `velvet` | a dark `lambertian_material` — a pile, not a weave, so **no anisotropy at all** |
+
+**† The single most likely way to hand-author a silent black satin.**
+`ggx_material.fresnel_mode` defaults to **`conductor`**, and `rs`
+("Specular reflectance / F0") is a **required colour-painter reference
+resolved BY NAME** — `rs 0.04 0.04 0.04` looks up a painter with that
+literal name, finds none, and fails the material outright.  A ggx base
+carrying only `rd`/`alphax`/`alphay` therefore gets `rs` unset, which
+resolves to the built-in `none` painter — **black** — under conductor
+Fresnel: **no dielectric specular at all**, i.e. no highlight, which is
+the entire reason ggx was chosen for those three.  So a hand-authored ggx
+fabric substrate needs BOTH `fresnel_mode schlick_f0` AND an `rs` bound
+to a ~0.04 dielectric-F0 `uniformcolor_painter` you declare yourself.
+
+**`sheen_roughness` is CLAMPED to `[0.04, 1]`, and the floor is real.**
+Below about 0.035 the Charlie lobe's baked directional-albedo table
+exceeds 1 near grazing and the base-energy subtraction would go negative,
+so the chunk clamps rather than letting a fabric emit more light than it
+receives.  Note that 0.04 is *tighter* than `sheen_material`'s own 1e-3
+floor — a value that was legal on the old chunk is not necessarily legal
+here.  Hand-typing a tighter velvet or satin than the preset (0.08 /
+0.12) therefore does nothing below the floor; if you want a narrower
+highlight than velvet's, the knob to reach for is the SUBSTRATE's
+roughness, not the sheen's.
+
+**`weave_rotation` steers the SUBSTRATE's frame, not the sheen lobe**
+(which is isotropic and unaffected).  Radians.  Paint it to make the
+twill wale, the satin float direction or the grain change across a seam
+follow the yarn; `0` is a bit-exact no-op.  There is deliberately no
+`weave` enum.
+
+Parses and renders today — the whole triad, in emission order
+(declare-before-use is not a style choice here: `base` and `rs` resolve
+out of already-registered managers, so a forward reference fails):
+
+```
+uniformcolor_painter
+{
+	name			dye_cushion
+	color			0.32 0.10 0.16
+	colorspace		Rec709RGB_Linear
+}
+
+# The dielectric F0 the ggx substrate's `rs` MUST name (see † above).
+uniformcolor_painter
+{
+	name			fabric_f0
+	color			0.04 0.04 0.04
+	colorspace		Rec709RGB_Linear
+}
+
+# The weave angle, in RADIANS -- 45 deg here.  A constant; make it a
+# painted field and the float direction follows the yarn across a seam.
+scalar_painter
+{
+	name			weave_angle
+	value			0.7853981633974483
+}
+
+# The SUBSTRATE.  satin's calibrated anisotropy ratio: this is where the
+# fabric's directional highlight lives, because the sheen lobe is
+# strictly isotropic.
+ggx_material
+{
+	name			cushion_base
+	rd				dye_cushion
+	rs				fabric_f0
+	alphax			0.34
+	alphay			0.06
+	fresnel_mode	schlick_f0
+}
+
+# The FABRIC.  `sheen_color` / `sheen_roughness` deliberately omitted --
+# the `fabric satin` preset seeds both, so retuning the preset later
+# moves this material with it.
+fabric_material
+{
+	name			cushion_fabric
+	fabric			satin
+	base			cushion_base
+	weave_rotation	weave_angle
+}
+```
+
+If you would rather not hand-type any of that, **`make_fabric`** — zero
+required arguments — does the whole conversion in one call, one
+headVersion bump, one undo step.  It takes the most prominent convertible
+material, infers the fabric from the object's own name where that is
+unambiguous (`denim_jacket` → denim; `cushion` names no fabric, so it
+falls back to cotton and SAYS so — pass `fabric` to be explicit), and
+**mints the substrate** when the bound base is not already the preset's
+class: the F0 painter, the ggx/orennayar/lambertian base carrying the
+preset's numbers, the weave painter, and the `fabric_material` itself —
+then moves every bound object onto the wrapper.  Your colour painter is
+**re-homed**, not re-authored, so a texture or expression graph survives
+untouched.  The original chunk is never edited, but after a mint nothing
+references it any more (the result says so as `originalNowUnreferenced`);
+when the base already matches the preset's class it does a pure wrap
+instead.  It refuses — changing nothing — on an already-fabric material,
+on a dielectric / emissive / hair / BSSRDF / already-coated base, on a
+material carrying none of `reflectance`/`base_color`/`rd` to re-home, and
+on planar-only geometry under a grazing-halo preset (velvet/satin/silk
+need a silhouette; cotton, linen, denim and wool read fine on a flat).
+
+**Wet fabric is not composable yet.**  `make_fabric` refuses on a
+material `add_wetness` has already coated, and vice versa —
+`coated_material` does not yet accept a `fabric_material` substrate.
+Pick one.
 
 ## A one-call route to a wired varied material
 

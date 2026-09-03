@@ -6734,6 +6734,218 @@ namespace RISE
 			AgentAddWetnessResult AddWetness( const std::string& material = std::string(),
 			                                   const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
+			//! docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02): what
+			//! `AgentSession::MakeFabric` did, or the reason it declined.
+			//! Mirrors `AgentAddWetnessResult` field-for-field where the two
+			//! verbs share shape (the whole-document-swap commit fields, the
+			//! qualifying count, the bound-object count) and adds the four
+			//! fields this verb's own SUBSTRATE DECISION needs -- which is the
+			//! part of its behaviour an author most needs to see, because it
+			//! is the one place `make_fabric` deviates from `add_wetness`'s
+			//! pure wrap: it can MINT a substrate.
+			struct AgentMakeFabricResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;        //!< the material that was converted (the ORIGINAL chunk's name -- never edited, see `originalNowUnreferenced`)
+				std::string materialKind;    //!< its chunk keyword, unchanged by this call
+				std::string fabricPreset;    //!< the `fabric` value that was used -- the argument, the inference, or the `cotton` fallback (`message` says which)
+
+				//! The name of the minted `fabric_material` chunk -- the
+				//! wrapper every bound object now points at.  Empty unless the
+				//! commit landed.
+				std::string fabricMaterial;
+
+				//! What the wrapper's `base` slot binds.  Either
+				//! `mintedSubstrate` (the mint path) or `material` itself (the
+				//! pure-wrap path, `substrateWasReused` true).
+				std::string baseMaterial;
+
+				//! 9.7 step 1: the substrate chunk this call created, and its
+				//! keyword (`ggx_material` / `orennayar_material` /
+				//! `lambertian_material` -- the preset's recommended class).
+				//! BOTH empty on the pure-wrap path.
+				std::string mintedSubstrate;
+				std::string mintedSubstrateKind;
+
+				//! True when the bound base ALREADY matched the preset's
+				//! recommended class, so nothing was minted and the original
+				//! material became the wrapper's substrate directly.  Its own
+				//! parameters are NOT retuned to the preset's -- the original
+				//! chunk is never edited, on either path.
+				bool substrateWasReused = false;
+
+				//! True on the MINT path: the original chunk is still in the
+				//! document, still byte-identical, and NOTHING REFERENCES IT
+				//! ANY MORE (its colour painter was re-homed onto the minted
+				//! substrate and every bound object moved to the wrapper).
+				//! That is a different and more surprising outcome than
+				//! `add_wetness`'s wrap, which leaves the original as the
+				//! substrate, so it is reported as its own field rather than
+				//! buried in the message.
+				bool originalNowUnreferenced = false;
+
+				//! 9.7 step 2's weave field.  `weavePainter` is the
+				//! `scalar_painter` chunk this call minted for the weave (only
+				//! for a preset whose look is SUBSTRATE anisotropy -- denim,
+				//! silk, satin; the isotropic presets mint none).
+				//! `rotationPainter` is what the wrapper's `weave_rotation`
+				//! slot actually binds, so it equals `weavePainter` when one
+				//! was minted and is EMPTY when the slot was left unwritten and
+				//! takes the chunk's own 0.0 default.  The minted painter is a
+				//! CONSTANT 0 -- a no-op rotation: the point is that the SLOT
+				//! exists, already wired, for the author to rebind to a real
+				//! angle field.
+				std::string weavePainter;
+				std::string rotationPainter;
+
+				int rebindObjectCount = 0;   //!< how many bound objects' `material` slot moved to `fabricMaterial`
+
+				//! One representative geometry kind the chosen material's
+				//! objects sit on, and whether EVERY one of them is curv-barren
+				//! (planar/patch).  The second drives refusal 3, but only for a
+				//! preset whose look is a grazing halo -- see MakeFabric's own
+				//! doc.
+				std::string geometryKind;
+				bool        geometryUniform = false;
+
+				int qualifyingMaterials = 0;   //!< how many materials this verb's predicate found
+				int boundObjects        = 0;   //!< how many objects bind the chosen material -- the blast radius
+			};
+
+			//! docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02): convert ONE
+			//! material into a FABRIC -- a `fabric_material` wrapper over a
+			//! substrate of the preset's recommended class -- in one composite
+			//! document swap.
+			//!
+			//! NAMED `make_fabric`, NOT `add_fabric`: this CONVERTS a material
+			//! rather than adding a layer of weather to it, and the `add_*`
+			//! prefix is load-bearing for the two weathering verbs that lock
+			//! each other out.
+			//!
+			//! TWO DELIBERATE DEVIATIONS from the `add_wear` / `add_wetness`
+			//! template, both flagged in 9.7 and both real:
+			//!
+			//!  1. THE ARGUMENT SHAPE.  Both precedent verbs take exactly an
+			//!     optional `material` and a `baseHeadVersion`; no enum-typed
+			//!     argument exists on either.  `fabric` is a closed ENUM for
+			//!     the same reason the chunk's own `fabric` slot is one: an
+			//!     enumerated value list surfaces in the tool schema and
+			//!     constrains the model toward a value that exists, where a
+			//!     free string invites "crushed burgundy velour" and a refusal.
+			//!     The verb's list is the chunk's list MINUS `custom`, which
+			//!     has no recommended substrate to mint and is already what an
+			//!     unnamed preset resolves to.
+			//!
+			//!  2. IT MINTS A SUBSTRATE.  `add_wetness` performs a pure wrap.
+			//!     A pure wrap is not sufficient here, for 9.3's reason: a
+			//!     preset CANNOT configure the substrate.  Wrapping a
+			//!     Lambertian in `fabric_material { fabric satin }` produces
+			//!     chalk with a faint sheen -- the tight, directional,
+			//!     anisotropic highlight that IS satin lives in a substrate the
+			//!     wrapper cannot reach.  So when the bound base does not match
+			//!     the preset's recommended class this call MINTS one, carrying
+			//!     the preset's calibrated parameters and RE-HOMING the colour
+			//!     painter that was already there, so the author's dye, texture
+			//!     or expression graph survives the conversion untouched.
+			//!
+			//! WHAT IT EMITS (9.7 steps 0-4), all in ONE swap:
+			//!   0. Find the original's colour painter by trying
+			//!      `reflectance`, then `base_color`, then `rd` -- the three
+			//!      names the four convertible kinds spell the albedo with,
+			//!      in class-frequency order.  NONE present is a refusal, not
+			//!      a mint with no dye.
+			//!   1. `<name>_fabric_base`, of the preset's class.  A minted
+			//!      `ggx_material` ALSO gets `fresnel_mode schlick_f0` and an
+			//!      `rs` binding, because `ggx_material.fresnel_mode` defaults
+			//!      to `conductor` and `rs` is a REQUIRED colour-painter
+			//!      reference resolved BY NAME (Job::AddGGXMaterial) -- a base
+			//!      with only `rd`/`alphax`/`alphay` renders with no dielectric
+			//!      specular at all, i.e. no highlight, which is the entire
+			//!      reason GGX was chosen for those presets.  `rs` cannot be
+			//!      written inline, so a fourth chunk `<name>_fabric_f0` (a
+			//!      `uniformcolor_painter` at 0.04 0.04 0.04, Rec709RGB_Linear)
+			//!      is minted for it.
+			//!   2. `<name>_fabric_weave`, a constant-0 `scalar_painter`, for
+			//!      the presets whose look is substrate anisotropy.  The 0 is a
+			//!      bit-exact no-op; the point is that the slot exists, wired,
+			//!      for the author to rebind to a real angle field.
+			//!   3. `<name>_fabric`, the `fabric_material` itself.
+			//!   4. Every bound object's `material` reference moves to it.
+			//!
+			//! So a `satin` conversion of a Lambertian mints FOUR chunks plus
+			//! the rebinds; a `wool` conversion mints TWO (an Oren-Nayar base
+			//! needs no F0 painter and an isotropic preset needs no weave
+			//! rotation).  When the bound base already matches the preset's
+			//! class the call does the PURE WRAP instead and says so
+			//! (`substrateWasReused`).
+			//!
+			//! THE ORIGINAL CHUNK IS NEVER EDITED on either path -- but on the
+			//! mint path NOTHING REFERENCES IT ANY MORE, which `add_wetness`'s
+			//! wrap cannot say.  Both facts are in `message` and the second is
+			//! `originalNowUnreferenced`.
+			//!
+			//! ZERO REQUIRED ARGUMENTS, for `vary_material`'s reason.  Called
+			//! bare it takes the most-referenced qualifying material (ties
+			//! broken lexicographically -- the identical rule
+			//! `SelectMaterialToWear_` / `SelectMaterialToWet_` use) and infers
+			//! the preset from the bound objects' own names where that is
+			//! unambiguous (`denim_jacket` -> denim; `cushion` -> nothing, so
+			//! `cotton`, and the message SAYS so).
+			//!
+			//! FIVE REFUSALS, each a no-op leaving the document, the head, the
+			//! history and the proposal queue byte-identical: (1) nothing
+			//! qualifies; (2) the material is already a `fabric_material` (or
+			//! already the substrate of one); (3) every bound object is planar
+			//! AND the requested preset's look is a grazing halo that a
+			//! constant normal field cannot show; (4) the base cannot be
+			//! converted into an allowlisted substrate -- a dielectric, an
+			//! emissive/luminaire, a hair material, a BSSRDF/subsurface
+			//! material, an existing coated/composite stack, or a material
+			//! carrying none of the three colour slots -- and the refusal NAMES
+			//! the allowlist; (5) collision with an `add_wetness` coat on the
+			//! same material (wet fabric is a legitimate composition, but it
+			//! needs `coated_material` to accept `fabric_material` as a
+			//! substrate, which is a separate slice, so Phase 1 refuses).
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
+			//! same commit path `AddWetness` / `AddWear` / `VaryMaterial` use,
+			//! and for the same reason it has no staged-proposal form under
+			//! External authority.
+			AgentMakeFabricResult MakeFabric( const std::string& material = std::string(),
+			                                   const std::string& fabric = std::string(),
+			                                   const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! CLOTH_FABRIC_DESIGN 9.7: the `fabric` ARGUMENT's closed value
+			//! list, published here so the two hand-authored tool texts
+			//! (AgentMcpAdapter.cpp's schema and AgentChatCodecs.cpp's
+			//! kToolDefs) and the verb's own validation read ONE array
+			//! rather than three copies -- kBuildPlanConstructionValues'
+			//! anti-drift arrangement, applied to this verb.
+			//!
+			//! It is `fabric_material`'s own descriptor enum MINUS `custom`:
+			//! that row's recommended substrate is `eFabricSubstrateAny`, so
+			//! there is nothing for this verb to mint, and it is already what
+			//! an omitted `fabric` resolves to inside the chunk.
+			//!
+			//! Order matches `FabricPresetTable()`'s row for row, so the tool
+			//! schema, the refusal messages and the table all read in one
+			//! order -- and `AgentMakeFabricTest`'s preset-parity case
+			//! ASSERTS that row by row rather than leaving it as a comment
+			//! that a reorder of the table would quietly falsify.
+			static const char* const kMakeFabricPresetValues[7];
+			static const std::size_t kMakeFabricPresetCount = 7;
+
+			//! kMakeFabricPresetValues, comma-separated -- for a refusal
+			//! message or a description, so neither restates the list.
+			static std::string MakeFabricPresetList();
+
 			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
 			//! reason it declined.
 			//!

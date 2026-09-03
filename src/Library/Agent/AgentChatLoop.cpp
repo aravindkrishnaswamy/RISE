@@ -459,6 +459,13 @@ namespace RISE
 				       // chunks plus the material's slots on a GGX/PBR base),
 				       // one head bump, one undo step, made without looking.
 				       v == "add_wetness" ||
+				       // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): ONE
+				       // make_fabric call is ONE blind mutation on the same
+				       // argument -- one composite document swap (up to four
+				       // minted chunks plus every bound object's material
+				       // reference), one head bump, one undo step, made
+				       // without looking.
+				       v == "make_fabric" ||
 				       // Doc 90 R2 (2026-08-23): ONE revert_to_revision call is
 				       // ONE blind mutation on the same argument -- one composite
 				       // document swap, one head bump, one undo step.  It counts
@@ -1454,6 +1461,7 @@ namespace RISE
 			//!   4g. name == "fix_blend_scale"            -> "<n> joint(s) clamped[ -- <k> more: call again]", or "refused: <=80 chars of message" (cat plan item 1: same empty-status-on-refusal shape as 4d, and "nothing to fix" is a common, honest outcome)
 			//!   4h. name == "add_wear"                  -> "`<material>` <colorSlot>[+<roughSlots>] -> wear fields", or "refused: <=80 chars of message" (GEOMETRY_SHADING_SIGNALS sec 11: same empty-status-on-refusal shape as 4d)
 			//!   4i. name == "add_wetness"                -> "`<material>` <reflectanceSlot>[+<scatteringSlots>] -> wetness fields", or "refused: <=80 chars of message" (WETNESS_COAT_DESIGN sec 6/13: same empty-status-on-refusal shape as 4h)
+			//!   4j. name == "make_fabric"                -> "`<material>` -> `<fabricMaterial>` (<preset>), minted <kind> `<name>` | substrate reused", or "refused: <=80 chars of message" (CLOTH_FABRIC_DESIGN 9.7: same empty-status-on-refusal shape as 4i)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1620,6 +1628,29 @@ namespace RISE
 						}
 					}
 					return "`" + result.get( "material" ).asString() + "` " + slots + " -> wetness fields";
+				}
+
+				// CLOTH_FABRIC_DESIGN 9.7 (2026-09-02) make_fabric: ONE atomic
+				// mutation, and not a count -- report which material is now
+				// cloth, which preset it took, and WHETHER A SUBSTRATE WAS
+				// MINTED, because that is the one fact about this verb an
+				// author cannot infer from the call.  Same empty-status-on-
+				// refusal shape as add_wetness above, so a refusal ("nothing
+				// qualifies", "already a fabric_material", "planar-only
+				// geometry", "collides with add_wetness") is reported HERE
+				// with its reason rather than reading like a success.
+				if( call.name == "make_fabric" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const std::string minted = result.get( "mintedSubstrate" ).asString();
+					return "`" + result.get( "material" ).asString() + "` -> `" +
+					       result.get( "fabricMaterial" ).asString() + "` (" +
+					       result.get( "fabricPreset" ).asString() + ")" +
+					       ( minted.empty()
+					         ? std::string( ", substrate reused" )
+					         : ( ", minted " + result.get( "mintedSubstrateKind" ).asString() +
+					             " `" + minted + "`" ) );
 				}
 
 			// 4b-3. 88 S5 (2026-08-20) vary_material: ONE atomic mutation, and

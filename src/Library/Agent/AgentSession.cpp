@@ -87,6 +87,8 @@
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Parsers/IAsciiChunkParser.h"
 #include "../Parsers/ChunkParserRegistry.h"   // F5 S3 (actionable insert_chunk diagnostics): CreateAllChunkParsers -- AllChunkKeywords' near-miss keyword set
+#include "../Materials/FabricPresets.h"     // make_fabric (CLOTH_FABRIC_DESIGN 9.7): the ONE preset table -- sheen half AND recommended-substrate half
+#include "../Materials/FabricMaterial.h"    // make_fabric: SubstrateAllowlistText(), so refusal 4 names the allowlist the engine actually enforces
 #include "../Utilities/RString.h"
 #include "../Utilities/MemoryBuffer.h"
 #include "../Utilities/FiniteMath.h"
@@ -37901,6 +37903,1212 @@ namespace RISE
 				if( !coatedMaterialName.empty() )   AttributeChunkToActiveElement_( coatedMaterialName, "coated_material" );
 				for( const std::string& f : roughFieldNames )
 					AttributeChunkToActiveElement_( f, roughColourPipe ? "expression_painter" : "scalar_painter" );
+			}
+
+			return out;
+		}
+
+		//! CLOTH_FABRIC_DESIGN 9.7's `fabric` argument list -- see the
+		//! declaration in AgentSession.h for why `custom` is absent.
+		//!
+		//! ORDER IS `FabricPresetTable()`'s, row for row, and that is a
+		//! contract rather than a coincidence: `AgentMakeFabricTest`'s
+		//! preset-parity case asserts `kMakeFabricPresetValues[i] ==
+		//! FabricPresetTable()[i].name` for every row and that row 7 is
+		//! `custom`, so reordering the table without reordering this array
+		//! (or the chat codec's hand-authored literal copy of it) fails
+		//! there rather than silently shipping two orders.
+		const char* const AgentSession::kMakeFabricPresetValues[7] = {
+			"cotton", "denim", "silk", "satin", "velvet", "wool", "linen"
+		};
+
+		std::string AgentSession::MakeFabricPresetList()
+		{
+			std::string s;
+			for( std::size_t i = 0; i < kMakeFabricPresetCount; ++i ) {
+				if( i ) s += ", ";
+				s += kMakeFabricPresetValues[i];
+			}
+			return s;
+		}
+
+		//==============================================================
+		// docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02) -- make_fabric.
+		//
+		// The sixth application of the collapse_to_instances /
+		// vary_material / add_wear / add_wetness shape, and the FIRST one
+		// that mints a MATERIAL rather than only painters.  9.3 is the
+		// reason it has to: `fabric_material` holds a REFERENCE to an
+		// already-constructed base material, so neither the parser nor
+		// `Job` can retype or re-parameterise it -- `fabric satin` over a
+		// Lambertian is chalk with a faint sheen, and a verb that shipped
+		// that would be WORSE than no verb, because it would look like it
+		// worked.
+		//
+		// EVERY NUMBER THIS VERB WRITES COMES FROM `FabricPresetTable()`
+		// (Materials/FabricPresets.h), which is also what the chunk's
+		// `Finalize` seeds from and what `Job::AddFabricMaterial` reads
+		// for its mismatch diagnostic.  ONE table, three consumers -- so
+		// retuning a preset against reference photography is one edit
+		// there, and this verb cannot drift from the chunk it emits.
+		//==============================================================
+		namespace
+		{
+			//! The `fabric` ARGUMENT's value list.  This is the chunk's
+			//! `enumValues` MINUS `custom`, and the subtraction is
+			//! deliberate rather than an oversight: `custom` is the row
+			//! whose recommended substrate is `eFabricSubstrateAny`, i.e.
+			//! there is nothing for this verb to mint, and it is already
+			//! what an omitted `fabric` resolves to inside the chunk.
+			//! Offering it here would advertise a call that could only
+			//! ever do the pure wrap, which is the one outcome 9.3 says
+			//! is not worth shipping on its own.
+			//!
+			//! Order matches `FabricPresetTable`'s minus that row, so the
+			//! tool schema, the refusal messages and the table read in one
+			//! order.
+			bool MakeFabricPresetIsSelectable_( const std::string& n )
+			{
+				for( std::size_t i = 0; i < AgentSession::kMakeFabricPresetCount; ++i )
+					if( n == AgentSession::kMakeFabricPresetValues[i] ) return true;
+				return false;
+			}
+
+			//! Refusal 3's gate: below which seeded `sheen_roughness` is a
+			//! preset's look a GRAZING HALO that a constant normal field
+			//! cannot show?
+			//!
+			//! The Charlie lobe's mass sits at grazing half-vectors.  On a
+			//! plane every shading point carries the SAME normal, so the
+			//! silhouette halo never appears -- what is left is a uniform
+			//! faint lift, and the tighter the sheen alpha the more
+			//! completely the preset's actual look vanishes.  0.25 splits
+			//! 9.3's own table between the three tight presets whose whole
+			//! description is a halo (velvet 0.08, satin 0.12, silk 0.20)
+			//! and the four whose look survives a flat surface (denim 0.45
+			//! -- its twill wale is SUBSTRATE anisotropy and reads fine on
+			//! a slab -- cotton 0.55, linen 0.65, wool 0.75).  It is read
+			//! off the table rather than being a private list of preset
+			//! names, so retuning a roughness there moves this gate with
+			//! it, which is the correct coupling: the gate is a claim
+			//! about the lobe, not about the fabric's name.
+			const double kFabricGrazingSheenAlphaGate = 0.25;
+
+			//! Which `FabricSubstrateClass` does an AUTHORED CHUNK KEYWORD
+			//! represent?  This decides the mint-vs-pure-wrap question, so
+			//! its one surprising row is worth stating: it answers
+			//! `eFabricSubstrateAny` for `pbr_metallic_roughness_material`
+			//! even though that kind RESOLVES to a `GGXMaterial` at
+			//! scene-build time (and therefore satisfies
+			//! `FabricMaterial::MatchesPresetSubstrate` at runtime).
+			//!
+			//! Treating it as a GGX match would be exactly the failure 9.3
+			//! warns about, one level up: a pbr chunk carries a single
+			//! isotropic `roughness` and has NO `alphax`/`alphay` to
+			//! express the preset's anisotropy ratio with -- and for
+			//! `silk`, `satin` and `denim` "the anisotropy ratio IS the
+			//! fabric".  Pure-wrapping one would produce an isotropic base
+			//! under a silk preset: the chalk-with-a-faint-sheen outcome,
+			//! reached by a different route.  So a pbr base always MINTS,
+			//! and the author's `base_color` painter is re-homed onto the
+			//! minted anisotropic base.
+			RISE::Implementation::FabricSubstrateClass FabricSubstrateClassOfChunkKind_( const std::string& kind )
+			{
+				if( kind == "lambertian_material" ) return RISE::Implementation::eFabricSubstrateLambertian;
+				if( kind == "orennayar_material" )  return RISE::Implementation::eFabricSubstrateOrenNayar;
+				if( kind == "ggx_material" )        return RISE::Implementation::eFabricSubstrateGGX;
+				return RISE::Implementation::eFabricSubstrateAny;
+			}
+
+			//! Refusal 4, phrased.  Returns EMPTY for the four kinds this
+			//! verb can re-home a colour painter from, and otherwise the
+			//! clause naming WHAT could not be carried across -- 9.7's
+			//! rule is that minting a substrate does not make this refusal
+			//! obsolete, it SHARPENS it: the verb must not silently
+			//! discard the physics of a material that is something else.
+			//!
+			//! `fabric_material` is deliberately NOT handled here; it is
+			//! refusal 2 and carries its own message.
+			std::string FabricUnconvertibleReason_( const std::string& kind )
+			{
+				if( kind == "lambertian_material" || kind == "orennayar_material" ||
+				    kind == "ggx_material"        || kind == "pbr_metallic_roughness_material" )
+					return std::string();
+
+				if( kind == "dielectric_material" || kind == "perfectrefractor_material" ||
+				    kind == "translucent_material" )
+					return "it is a dielectric (`" + kind + "`), whose IOR, dispersion and IOR-stack "
+						"behaviour have no counterpart in a fabric substrate -- converting it would "
+						"silently discard the physics that makes it glass";
+				if( kind == "lambertian_luminaire_material" || kind == "phong_luminaire_material" )
+					return "it EMITS (`" + kind + "`), and `fabric_material`'s layered model needs the "
+						"substrate's hemispherical albedo to subtract the sheen's energy honestly, which "
+						"a luminaire cannot supply";
+				if( kind == "hair_material" )
+					return "it is a hair material (`" + kind + "`), whose fibre-scattering lobes are a "
+						"different appearance model entirely -- for woven cloth build the fabric from a "
+						"surface material instead";
+				if( kind == "subsurfacescattering_material" || kind == "randomwalk_sss_material" ||
+				    kind == "donner_jensen_skin_bssrdf_material" || kind == "biospec_skin_material" ||
+				    kind == "generic_human_tissue_material" )
+					return "it is a BSSRDF / subsurface material (`" + kind + "`), whose volumetric random "
+						"walk has no hemispherical albedo for the sheen's energy subtraction to read";
+				if( kind == "coated_material" || kind == "composite_material" ||
+				    kind == "polished_material" || kind == "fabric_material" )
+					return "it is already a layered stack (`" + kind + "`), and Phase 1 does not compose "
+						"one stack inside another";
+				return "`" + kind + "` is not a kind this verb can re-home a colour painter from";
+			}
+
+			//! 9.7 step 0.  The reflectance slot is named differently by
+			//! predecessor class and there is NO common accessor, so the
+			//! three names are tried in CLASS-FREQUENCY order --
+			//! `reflectance` (lambertian_material, orennayar_material),
+			//! then `base_color` (pbr_metallic_roughness_material, where
+			//! it is `required`), then `rd` (ggx_material).  The order is
+			//! frequency, not preference: a chunk carries at most one of
+			//! them, so any hit is THE albedo.
+			//!
+			//! All three resolve BY NAME at assembly time (Job's
+			//! `pPntManager->GetItem`), so the value found here is a
+			//! painter NAME -- exactly what has to be re-homed onto the
+			//! minted substrate for the author's dye, texture or
+			//! expression graph to survive the conversion untouched.
+			bool FabricColorSlotOf_( const std::map<std::string, std::string>& params,
+			                         std::string& outSlot, std::string& outPainter )
+			{
+				static const char* const kOrder[] = { "reflectance", "base_color", "rd" };
+				for( std::size_t i = 0; i < sizeof( kOrder ) / sizeof( kOrder[0] ); ++i ) {
+					const std::map<std::string, std::string>::const_iterator it = params.find( kOrder[i] );
+					if( it == params.end() ) continue;
+					if( it->second.empty() || it->second == "none" ) continue;
+					outSlot    = kOrder[i];
+					outPainter = it->second;
+					return true;
+				}
+				return false;
+			}
+
+			//! Format a preset scalar as an inline literal the scalar
+			//! resolver accepts -- SHORTEST ROUND-TRIP, not `%.17g`.
+			//!
+			//! The chunk parser's own `PresetScalarText` uses `%.17g`
+			//! because it is building a string nobody reads: it hands it
+			//! straight to `ResolveOrDiagnoseScalar` and it never reaches a
+			//! document.  This verb's output DOES reach the document, and
+			//! an author opening it to retune the weave should find
+			//! `alphax 0.34`, not `alphax 0.34000000000000002` -- which is
+			//! what `%.17g` prints for the double nearest 0.34, and which
+			//! reads as spurious precision on a table whose own caveat is
+			//! "indicative, not measured".
+			//!
+			//! Exactness is not traded away for that: the loop widens the
+			//! precision until the printed text parses back to the SAME
+			//! double, so a future preset value that genuinely needs 17
+			//! digits gets them.  Every value in today's table round-trips
+			//! at 15.
+			std::string FabricScalarText_( const Scalar v )
+			{
+				char buf[64];
+				for( int prec = 15; prec <= 17; ++prec ) {
+					std::snprintf( buf, sizeof( buf ), "%.*g", prec, (double)v );
+					if( std::strtod( buf, nullptr ) == (double)v ) break;
+				}
+				return std::string( buf );
+			}
+
+			//! ONE material this verb can convert -- the qualifying unit.
+			//!
+			//! Deliberately NOT `WetnessMaterial_`/`WearMaterial_` reused:
+			//! both of those require the primary colour slot to bind a
+			//! `uniformcolor_painter` whose RGB is READABLE, because both
+			//! band an expression around that constant.  This verb bands
+			//! around nothing -- it re-homes the painter by NAME -- so a
+			//! textured or procedural albedo is not merely acceptable
+			//! here, it is the BEST input (the dye survives untouched),
+			//! and inheriting their constant-colour clause would exclude
+			//! precisely the strongest case.
+			struct FabricCandidate_
+			{
+				int         itemIndex = -1;
+				std::string name;
+				std::string kind;
+				int         objectCount = 0;
+				//! Every object chunk whose own `material` param names this
+				//! material -- captured at scan time so the rebind loop
+				//! never re-derives the bucket.
+				std::vector<std::string> boundObjectNames;
+				//! 9.7 step 0's answer.
+				std::string colorSlot;
+				std::string colorPainter;
+
+				//! Every reference to this material from a chunk this verb
+				//! does NOT rebind -- formatted `<kind> \`<name>\`.<param>`.
+				//!
+				//! REVIEW P1 (2026-09-03): this is what makes
+				//! `originalNowUnreferenced` a TRUTH rather than a guess.
+				//! The first cut derived "is anything still pointing at
+				//! this?" from material chunks' `base` slot alone, and then
+				//! told the caller, on every mint, that nothing referenced
+				//! the original any more and they could `remove_chunk` it.
+				//! `composite_material` references two materials through
+				//! `top`/`bottom` -- the legacy `CompositeMaterial(top =
+				//! sheen_material, bottom = base)` pairing that IS how
+				//! cloth-like sheen is composed in this tree today -- so a
+				//! material bound to an object AND used as a composite's
+				//! `top` was told it was garbage, and following that advice
+				//! left a dangling reference that breaks re-derive for every
+				//! object using the composite.
+				//!
+				//! The set is therefore derived from the DESCRIPTORS -- every
+				//! parameter on every chunk kind whose `semantics.pipe` is
+				//! `Material` or whose `referenceCategories` include the
+				//! Material category -- and not from a hand-kept slot list,
+				//! so a material-referencing parameter added to any chunk
+				//! later is seen without editing this function.  The one
+				//! deliberate exclusion is an Object-category chunk's own
+				//! `material` slot, which is exactly what step (9)'s rebind
+				//! loop moves onto the wrapper and therefore is NOT a
+				//! reference that survives the swap.
+				//!
+				//! A non-empty set is NOT a refusal: composing the original
+				//! into a `composite_material` is legal and may well be
+				//! deliberate.  It only means the "nothing points at this any
+				//! more" half of the message must not be said.
+				std::vector<std::string> foreignReferences;
+
+				//! REVIEW P3 (2026-09-03): the slots the predecessor carries
+				//! that the minted substrate does NOT carry across.  Only the
+				//! COLOUR painter is re-homed; every other slot parameterises
+				//! a different scattering model, and the minted base takes the
+				//! preset's numbers instead.  Worth naming in the message
+				//! because on a `pbr_metallic_roughness_material` those slots
+				//! can be spatially-varying MAPS, and losing a roughness map
+				//! is a real texture loss an author would not expect from a
+				//! verb whose headline promise is that the dye survives.
+				//! Empty on the pure-wrap path, where nothing is dropped.
+				std::vector<std::string> unportedSlots;
+				//! One representative geometry kind, and whether EVERY
+				//! bound object's geometry is curv-barren -- refusal 3's
+				//! input, applied only once the preset is known.
+				std::string geometryKind;
+				bool        geometryUniform = false;
+			};
+
+			//! `SelectMaterialToWear_` / `SelectMaterialToWet_`'s twin, and
+			//! deliberately the IDENTICAL rule (most objects bound, ties
+			//! broken lexicographically by name) rather than a third
+			//! private notion of prominence.
+			//!
+			//! It applies NO geometry filter, unlike `add_wear`'s picker.
+			//! Refusal 3 here is PRESET-DEPENDENT (a matte cotton reads
+			//! perfectly well on a slab; a velvet halo does not), and the
+			//! preset is not known until after the material is chosen --
+			//! the bare call infers it from the chosen material's own
+			//! bound-object names.  So the geometry question is asked
+			//! after this returns, not inside it.
+			const FabricCandidate_* SelectMaterialToMakeFabric_( const std::vector<FabricCandidate_>& mats )
+			{
+				const FabricCandidate_* best = nullptr;
+				for( const FabricCandidate_& m : mats ) {
+					if( !best ) { best = &m; continue; }
+					if( m.objectCount > best->objectCount ) { best = &m; continue; }
+					if( m.objectCount == best->objectCount && m.name < best->name ) best = &m;
+				}
+				return best;
+			}
+
+			//! 9.7's preset inference: read the preset off the names the
+			//! author already chose, and take it ONLY when it is
+			//! unambiguous.  "denim_jacket" -> denim; "cushion" -> nothing
+			//! (velvet is NOT inferable from it), so the caller falls back
+			//! to `cotton` and SAYS SO.
+			//!
+			//! A plain case-folded substring search, not a whole-word one:
+			//! the names that carry the signal are compounds
+			//! ("denim_jacket", "silkScarf", "wool-throw"), and a
+			//! word-boundary test would reject every one of them.  TWO
+			//! DIFFERENT presets matching is ambiguity, not a first-wins
+			//! race, so it returns false as well.
+			bool InferFabricPresetFromNames_( const std::vector<std::string>& names,
+			                                  std::string& outPreset )
+			{
+				std::string found;
+				for( const std::string& raw : names ) {
+					std::string n = raw;
+					for( char& ch : n ) ch = (char)std::tolower( (unsigned char)ch );
+					for( std::size_t i = 0; i < AgentSession::kMakeFabricPresetCount; ++i ) {
+						const char* const v = AgentSession::kMakeFabricPresetValues[i];
+						if( n.find( v ) == std::string::npos ) continue;
+						if( found.empty() )   found = v;
+						else if( found != v ) return false;   // ambiguous
+					}
+				}
+				if( found.empty() ) return false;
+				outPreset = found;
+				return true;
+			}
+
+			//======================================================
+			// The four emitted chunk texts.  EVERY parameter value is
+			// ONE physical line, for the reason add_wetness's own
+			// emitter block states: the chunk parser is line-based per
+			// parameter, so a wrapped value reads as an unknown
+			// parameter name and hard-fails.
+			//======================================================
+
+			//! 9.7 step 1's fourth chunk, and the one whose absence is
+			//! the silent failure.  `ggx_material.rs` ("Specular
+			//! reflectance / F0") is a REQUIRED colour-painter reference
+			//! resolved by NAME -- `IPainter* pRs = pPntManager->GetItem(
+			//! specular )` in `Job::AddGGXMaterial` -- so `rs 0.04 0.04
+			//! 0.04` would look up a painter with that literal name, find
+			//! none, and fail the material outright.  An UNSET `rs`
+			//! resolves to the built-in `none` painter, which is BLACK,
+			//! under the descriptor's default `conductor` Fresnel: no
+			//! dielectric specular at all, i.e. no satin, silk or denim
+			//! highlight, which is the entire reason GGX was chosen.
+			//!
+			//! `colorspace Rec709RGB_Linear` is not decoration either:
+			//! 0.04 is a LINEAR dielectric F0, and the verbatim-store
+			//! idiom since the 2026-05-24 colour-space migration is to say
+			//! so explicitly.
+			std::string BuildFabricF0PainterText_( const std::string& chunkName )
+			{
+				std::string t = "uniformcolor_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tcolor\t\t\t0.04 0.04 0.04\n";
+				t += "\tcolorspace\t\tRec709RGB_Linear\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! 9.7 step 2.  A CONSTANT 0 -- a bit-exact no-op rotation
+			//! (`MicrofacetUtils.h` skips the rotate outright under
+			//! 1e-9), so the wrapped material's frame is byte-identical
+			//! to the un-wrapped one's until the author says otherwise.
+			//! The chunk exists so the SLOT is already wired: rebinding
+			//! `value` to an `expression` body, or repointing
+			//! `weave_rotation` at a painted angle field, is then one
+			//! propose_patch rather than an authoring session.
+			//!
+			//! Minted only for the presets whose look is SUBSTRATE
+			//! anisotropy.  The isotropic presets get no weave chunk and
+			//! leave `weave_rotation` unwritten, taking the chunk's own
+			//! 0.0 default -- 9.3's "velvet wants no anisotropy at all;
+			//! it is a pile, not a weave".
+			std::string BuildFabricWeavePainterText_( const std::string& chunkName )
+			{
+				std::string t = "scalar_painter\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tvalue\t\t\t0.0\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! 9.7 step 1.  The preset's recommended class, its calibrated
+			//! parameters, and the ORIGINAL's colour painter re-homed by
+			//! name.  `alphax`/`alphay`/`roughness` are inline scalars
+			//! (they go through `ResolveOrDiagnoseScalar`, which accepts a
+			//! literal); `rd` / `reflectance` / `rs` are names, because
+			//! those three resolve by name only.
+			std::string BuildFabricSubstrateText_( const std::string& chunkName,
+			                                       const RISE::Implementation::FabricPreset& P,
+			                                       const std::string& colorPainter,
+			                                       const std::string& f0PainterName )
+			{
+				if( P.substrate == RISE::Implementation::eFabricSubstrateGGX ) {
+					std::string t = "ggx_material\n{\n";
+					t += "\tname\t\t\t" + chunkName + "\n";
+					t += "\trd\t\t\t\t" + colorPainter + "\n";
+					t += "\trs\t\t\t\t" + f0PainterName + "\n";
+					t += "\talphax\t\t\t" + FabricScalarText_( P.substrateAlphaX ) + "\n";
+					t += "\talphay\t\t\t" + FabricScalarText_( P.substrateAlphaY ) + "\n";
+					t += "\tfresnel_mode\tschlick_f0\n";
+					t += "}\n";
+					return t;
+				}
+				if( P.substrate == RISE::Implementation::eFabricSubstrateOrenNayar ) {
+					std::string t = "orennayar_material\n{\n";
+					t += "\tname\t\t\t" + chunkName + "\n";
+					t += "\treflectance\t\t" + colorPainter + "\n";
+					t += "\troughness\t\t" + FabricScalarText_( P.substrateRoughness ) + "\n";
+					t += "}\n";
+					return t;
+				}
+				// eFabricSubstrateLambertian -- velvet.  9.3's table reads
+				// "lambertian_material, dark" for it, and the DARK half is
+				// the preset's own sheen colour, which the chunk seeds; the
+				// substrate's reflectance stays the author's own painter.
+				// Darkening it here would invent an appearance nobody
+				// authored, which is the same rule step 0's refusal enforces
+				// at the other end.
+				std::string t = "lambertian_material\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\treflectance\t\t" + colorPainter + "\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! 9.7 step 3.  `sheen_color` and `sheen_roughness` are
+			//! DELIBERATELY omitted: the chunk's own `Has()`-driven preset
+			//! seeding supplies both from the same table this verb read,
+			//! so writing them here would duplicate the numbers into the
+			//! document and freeze them against a later retune.
+			//! `weave_rotation` is written only when a weave painter was
+			//! minted.
+			std::string BuildFabricMaterialText_( const std::string& chunkName,
+			                                      const std::string& presetName,
+			                                      const std::string& baseName,
+			                                      const std::string& weavePainterName )
+			{
+				std::string t = "fabric_material\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tfabric\t\t\t" + presetName + "\n";
+				t += "\tbase\t\t\t" + baseName + "\n";
+				if( !weavePainterName.empty() )
+					t += "\tweave_rotation\t" + weavePainterName + "\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The qualifying scan.  ONE walk of the document producing
+			//! both the candidate list and, for every material that is NOT
+			//! a candidate, the specific clause it tripped -- so a named
+			//! `make_fabric {material:...}` answers with the rule rather
+			//! than a generic "does not qualify", exactly as add_wear and
+			//! add_wetness do.
+			void ScanFabricCandidates_( const RISE::Cst::Document& doc,
+			                            std::vector<FabricCandidate_>& outCandidates,
+			                            std::map<std::string, std::string>& outDeclines )
+			{
+				std::vector<NodeRef>     items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+
+				struct MatRec_ { int itemIndex; std::string kind; std::map<std::string, std::string> params; };
+				std::vector<MatRec_>                              materials;
+				std::map<std::string, std::string>                geometryKindByName;
+				std::map<std::string, std::vector<std::string> >  objectNamesByMaterial;
+				std::map<std::string, std::vector<std::string> >  objectGeometriesByMaterial;
+				std::map<std::string, std::string>                expressionBodies;
+				//! material name -> the KIND of the chunk that binds it as
+				//! its `base` (and that chunk's own name).  Any material
+				//! kind with a `base` param counts -- coated, fabric,
+				//! polished, sheen -- so a future wrapper is seen without
+				//! editing a private keyword list.
+				std::map<std::string, std::string>                wrappedByKind;
+				std::map<std::string, std::string>                wrappedByName;
+				//! REVIEW P1: material name -> every reference to it this
+				//! verb will NOT rewrite, descriptor-derived (see
+				//! FabricCandidate_::foreignReferences for the whole reason).
+				std::map<std::string, std::vector<std::string> >  foreignRefs;
+
+				for( std::size_t i = 0; i < items.size(); ++i ) {
+					const NodeRef& item = items[i];
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					const std::string role = item->role;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
+					if( !d ) continue;
+
+					// REVIEW P1: the descriptor-derived material-reference
+					// sweep, run on EVERY chunk before the category branches
+					// below (each of which `continue`s).  A parameter counts
+					// when its audited pipe is Material, OR -- for a chunk
+					// family the pipe audit has not reached, where `pipe` is
+					// still `Unspecified` -- when its `referenceCategories`
+					// name the Material category.  Either alone would miss
+					// real references; both together is the closest thing to
+					// "asks the registry" this layer can do.
+					{
+						const std::string selfName = ChunkParamString_( item, "name" );
+						for( const ParameterDescriptor& pd : d->parameters ) {
+							const bool isMaterialRef =
+								( pd.semantics.pipe == ParameterPipe::Material ) ||
+								( std::find( pd.referenceCategories.begin(), pd.referenceCategories.end(),
+								             ChunkCategory::Material ) != pd.referenceCategories.end() );
+							if( !isMaterialRef ) continue;
+							// An Object chunk's own `material` slot is the ONE
+							// reference this verb rewrites (step 9's rebind
+							// loop), so it does not survive the swap and must
+							// not count as a surviving reference.
+							if( d->category == ChunkCategory::Object && pd.name == "material" ) continue;
+							for( const std::string& v : ChunkParamOccurrences_( item, pd.name ) ) {
+								if( v.empty() || v == "none" ) continue;
+								foreignRefs[v].push_back(
+									role + " `" + selfName + "`." + pd.name );
+							}
+						}
+					}
+
+					if( d->category == ChunkCategory::Geometry ) {
+						const std::string gnm = ChunkParamString_( item, "name" );
+						if( !gnm.empty() ) geometryKindByName[gnm] = role;
+						continue;
+					}
+					if( d->category == ChunkCategory::Object ) {
+						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator mat = pm.find( "material" );
+						const std::map<std::string, std::string>::const_iterator onm = pm.find( "name" );
+						if( mat == pm.end() || mat->second.empty() || mat->second == "none" ) continue;
+						if( onm == pm.end() || onm->second.empty() ) continue;
+						objectNamesByMaterial[mat->second].push_back( onm->second );
+						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
+						// An instancing chunk carries the `material`
+						// binding directly but no `geometry` of its own;
+						// it still needs rebinding, so it counts as a
+						// bound object and simply contributes no geometry
+						// kind to the curv-barren question.
+						if( geo != pm.end() && !geo->second.empty() && geo->second != "none" )
+							objectGeometriesByMaterial[mat->second].push_back( geo->second );
+						continue;
+					}
+					if( d->category == ChunkCategory::Painter ) {
+						const std::string pname = ChunkParamString_( item, "name" );
+						if( !pname.empty() ) {
+							if( role == "expression_painter" )
+								expressionBodies[pname] = ExpressionBodyText_( item, "expr" );
+							else if( role == "scalar_painter" && !ChunkParamString_( item, "expression" ).empty() )
+								expressionBodies[pname] = ExpressionBodyText_( item, "expression" );
+						}
+						continue;
+					}
+					if( d->category == ChunkCategory::Material ) {
+						MatRec_ m;
+						m.itemIndex = (int)i;
+						m.kind      = role;
+						m.params    = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator b = m.params.find( "base" );
+						if( b != m.params.end() && !b->second.empty() && b->second != "none" ) {
+							wrappedByKind[b->second] = role;
+							const std::map<std::string, std::string>::const_iterator wn = m.params.find( "name" );
+							wrappedByName[b->second] = ( wn != m.params.end() ) ? wn->second : std::string();
+						}
+						materials.push_back( m );
+					}
+				}
+
+				for( const MatRec_& m : materials ) {
+					const std::map<std::string, std::string>::const_iterator nm = m.params.find( "name" );
+					if( nm == m.params.end() || nm->second.empty() ) continue;
+					const std::string& name = nm->second;
+
+					// -- Refusal 2, in both its forms.
+					if( m.kind == "fabric_material" ) {
+						outDeclines[name] = "it is ALREADY a `fabric_material` -- retune it with "
+							"propose_patch on its `fabric` / `sheen_roughness` / `weave_rotation` lines "
+							"rather than wrapping a fabric in a fabric";
+						continue;
+					}
+					{
+						const std::map<std::string, std::string>::const_iterator w = wrappedByKind.find( name );
+						if( w != wrappedByKind.end() && w->second == "fabric_material" ) {
+							outDeclines[name] = "it is already the SUBSTRATE of the `fabric_material` `" +
+								wrappedByName[name] + "` -- retune that chunk instead of wrapping this one twice";
+							continue;
+						}
+						// -- Refusal 5.  Wet fabric is a legitimate and
+						// commonly wanted composition (a rain-soaked coat),
+						// but it needs `coated_material` to accept
+						// `fabric_material` as a substrate, which is a
+						// separate slice -- so Phase 1 refuses rather than
+						// emitting a stack the engine would reject.
+						if( w != wrappedByKind.end() &&
+						    ( w->second == "coated_material" || w->second == "polished_material" ) ) {
+							outDeclines[name] = "it is already wrapped by the `" + w->second + "` `" +
+								wrappedByName[name] + "` (this is what `add_wetness` emits for a Lambertian "
+								"base) -- wet fabric is a legitimate composition, but Phase 1 cannot compose "
+								"the two: `coated_material` does not yet accept a `fabric_material` substrate";
+							continue;
+						}
+					}
+
+					// -- Refusal 4, the kind half.
+					{
+						const std::string why = FabricUnconvertibleReason_( m.kind );
+						if( !why.empty() ) {
+							outDeclines[name] = why + " -- the substrates this verb can build from are " +
+								RISE::Implementation::FabricMaterial::SubstrateAllowlistText();
+							continue;
+						}
+					}
+
+					// -- Refusal 4, the colour half.  A material carrying
+					// none of the three slots has no dye to re-home, and
+					// minting a base without one would invent an appearance
+					// the author never authored.
+					std::string slot, painter;
+					if( !FabricColorSlotOf_( m.params, slot, painter ) ) {
+						outDeclines[name] = "it carries none of `reflectance` / `base_color` / `rd`, so "
+							"there is no colour painter to re-home onto the fabric's substrate -- a fabric "
+							"whose dye was silently dropped is worse than no fabric";
+						continue;
+					}
+
+					// -- Refusal 5, the in-place form.  `add_wetness`'s
+					// GGX/PBR branch does not wrap: it rebinds the colour
+					// slot to an expression_painter carrying its own
+					// `dryness`/`film_amount` prelude.  Same collision,
+					// different shape.
+					{
+						const std::map<std::string, std::string>::const_iterator b =
+							expressionBodies.find( painter );
+						if( b != expressionBodies.end() && WetnessBodyReadsPreludeDefs_( b->second ) ) {
+							outDeclines[name] = "its `" + slot + "` is bound to `" + painter +
+								"`, an expression carrying `add_wetness`'s own damp/wet prelude -- wet "
+								"fabric is a legitimate composition, but Phase 1 cannot compose the two";
+							continue;
+						}
+					}
+
+					// -- Refusal 1's named form: bound to nothing, so
+					// there is no object to move onto the wrapper and the
+					// conversion would be invisible.
+					const std::map<std::string, std::vector<std::string> >::const_iterator objs =
+						objectNamesByMaterial.find( name );
+					if( objs == objectNamesByMaterial.end() || objs->second.empty() ) {
+						outDeclines[name] = "no object binds it, so there is nothing to move onto the "
+							"fabric wrapper -- bind it to a `standard_object` first";
+						continue;
+					}
+
+					FabricCandidate_ c;
+					c.itemIndex        = m.itemIndex;
+					c.name             = name;
+					c.kind             = m.kind;
+					c.boundObjectNames = objs->second;
+					c.objectCount      = (int)objs->second.size();
+					c.colorSlot        = slot;
+					c.colorPainter     = painter;
+					{
+						const std::map<std::string, std::vector<std::string> >::const_iterator fr =
+							foreignRefs.find( name );
+						if( fr != foreignRefs.end() ) c.foreignReferences = fr->second;
+					}
+					// REVIEW P3: everything the predecessor authored that the
+					// minted substrate will not carry across.  `name` is not a
+					// slot, the colour slot IS carried across, and `variant`
+					// is scene-variant bookkeeping rather than appearance.
+					for( const std::pair<const std::string, std::string>& kv : m.params ) {
+						if( kv.first == "name" || kv.first == slot || kv.first == "variant" ) continue;
+						c.unportedSlots.push_back( kv.first );
+					}
+
+					// Refusal 3's inputs.  `geometryUniform` is true only
+					// when EVERY resolvable bound geometry is curv-barren;
+					// an object whose geometry name does not resolve
+					// (declared later, or an instancing chunk) is not
+					// evidence either way, so it is skipped rather than
+					// counted as barren.
+					{
+						bool anyResolved = false, allBarren = true;
+						const std::map<std::string, std::vector<std::string> >::const_iterator gs =
+							objectGeometriesByMaterial.find( name );
+						if( gs != objectGeometriesByMaterial.end() ) {
+							for( const std::string& g : gs->second ) {
+								const std::map<std::string, std::string>::const_iterator gk =
+									geometryKindByName.find( g );
+								if( gk == geometryKindByName.end() ) continue;
+								if( !anyResolved ) c.geometryKind = gk->second;
+								anyResolved = true;
+								if( !CurvBarrenGeometryKind_( gk->second ) ) allBarren = false;
+							}
+						}
+						c.geometryUniform = ( anyResolved && allBarren );
+					}
+
+					outCandidates.push_back( c );
+				}
+			}
+		}
+
+		AgentSession::AgentMakeFabricResult AgentSession::MakeFabric(
+			const std::string& material, const std::string& fabric,
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
+			// capture point -- see ProposePatch's / AddWetness's own copy of
+			// this line for the rule.
+			CaptureHeadRevisionSnapshot_();
+			AgentMakeFabricResult out;
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE; the commit re-checks it.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "make_fabric refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"make_fabric refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			// ---- (2) The `fabric` argument, validated against the SAME
+			// closed list the chunk's descriptor advertises.  An unknown
+			// spelling is refused rather than silently falling back to
+			// `custom` the way `LookupFabricPreset` does for API callers:
+			// the whole reason this argument is an enum is to keep
+			// "crushed burgundy velour" from reaching a preset table that
+			// would answer `custom` and produce a fabric with none of the
+			// look that was asked for.
+			if( !fabric.empty() && !MakeFabricPresetIsSelectable_( fabric ) ) {
+				out.message = "make_fabric refused: `" + fabric + "` is not a fabric preset -- `fabric` "
+					"must be one of " + AgentSession::MakeFabricPresetList() + " (the chunk's own list minus "
+					"`custom`, which has no recommended substrate to mint), or omit it entirely to infer "
+					"the preset from the object's name -- document unchanged";
+				return out;
+			}
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			std::vector<FabricCandidate_>      candidates;
+			std::map<std::string, std::string> declines;
+			ScanFabricCandidates_( headDoc, candidates, declines );
+			out.qualifyingMaterials = (int)candidates.size();
+
+			// ---- (3) Pick the material.
+			const FabricCandidate_* pick = nullptr;
+			if( !material.empty() ) {
+				for( const FabricCandidate_& m : candidates )
+					if( m.name == material ) { pick = &m; break; }
+				if( !pick ) {
+					const std::map<std::string, std::string>::const_iterator why = declines.find( material );
+					if( why != declines.end() ) {
+						out.message = "make_fabric refused: `" + material + "` cannot be converted -- " +
+							why->second + ". Call it with no arguments to take the most prominent material "
+							"that CAN be -- document unchanged";
+					}
+					else {
+						const bool exists = ( RISE::Cst::DocFindByNameAnyRole( headDoc, material ) ? true : false );
+						out.message = exists
+							? ( "make_fabric refused: `" + material + "` exists but is not a material chunk "
+							    "this verb converts -- it needs to be one of " +
+							    RISE::Implementation::FabricMaterial::SubstrateAllowlistText() +
+							    ". Call it with no arguments to take the most prominent material that DOES "
+							    "qualify -- document unchanged" )
+							: ( "make_fabric refused: no chunk named `" + material + "` is in this document "
+							    "-- `material` must name a material chunk (read_document to see the names), "
+							    "or omit it entirely to take the most prominent qualifying material -- "
+							    "document unchanged" );
+					}
+					return out;
+				}
+			}
+			else {
+				pick = SelectMaterialToMakeFabric_( candidates );
+				if( !pick ) {
+					// Refusal 1.
+					out.message = std::string( "make_fabric refused: no material in this document is a "
+						"convertible surface bound to at least one object -- it needs to be one of " ) +
+						RISE::Implementation::FabricMaterial::SubstrateAllowlistText() +
+						", carry a colour painter on `reflectance` / `base_color` / `rd`, not already be "
+						"(or sit under) a `fabric_material`, and not already be wrapped by `add_wetness`'s "
+						"coat. Author such a material first, or hand-author the triad -- a substrate of the "
+						"preset's class plus a `fabric_material` over it (read_skill "
+						"{\"name\":\"materials-and-media-basics\"}) -- document unchanged";
+					return out;
+				}
+			}
+
+			out.material     = pick->name;
+			out.materialKind = pick->kind;
+			out.geometryKind = pick->geometryKind;
+			out.boundObjects = pick->objectCount;
+
+			// ---- (4) Resolve the preset.  Argument wins; otherwise infer
+			// from the names the author already chose -- the BOUND OBJECTS'
+			// names first (9.7 says "the object's own name"), then the
+			// material's own name as a second read of the same authorial
+			// intent.  Ambiguous or silent -> `cotton`, and the message
+			// says which of the three happened, because "I guessed" is a
+			// fact the author needs.
+			std::string presetName = fabric;
+			bool inferred = false, inferFellBack = false;
+			if( presetName.empty() ) {
+				std::vector<std::string> namePool = pick->boundObjectNames;
+				namePool.push_back( pick->name );
+				if( InferFabricPresetFromNames_( namePool, presetName ) ) inferred = true;
+				else { presetName = "cotton"; inferFellBack = true; }
+			}
+			const RISE::Implementation::FabricPreset& P =
+				RISE::Implementation::LookupFabricPreset( presetName.c_str() );
+			out.fabricPreset      = presetName;
+			out.geometryUniform   = pick->geometryUniform;
+
+			// ---- (5) Refusal 3, now that the preset is known.  A grazing
+			// halo cannot appear on a constant normal field; the four
+			// broader presets read perfectly well on a slab and are NOT
+			// gated.
+			if( pick->geometryUniform && P.sheenRoughness <= kFabricGrazingSheenAlphaGate ) {
+				out.message = "make_fabric refused: every object bound to `" + pick->name +
+					"` sits on planar/patch geometry (" + pick->geometryKind + "), where the normal is "
+					"constant and `" + presetName + "`'s look -- a tight grazing halo at sheen_roughness " +
+					FabricScalarText_( P.sheenRoughness ) + " -- has no silhouette to appear on. It would "
+					"render as a uniform faint lift over the colour it started from. Use a broader preset "
+					"(cotton, linen, denim or wool read fine on a flat), or bind the material to curved "
+					"geometry first -- document unchanged";
+				return out;
+			}
+
+			// ---- (6) Mint or reuse?  9.7's central decision.
+			const RISE::Implementation::FabricSubstrateClass haveClass =
+				FabricSubstrateClassOfChunkKind_( pick->kind );
+			const bool reuseSubstrate = ( haveClass == P.substrate );
+			const bool needF0    = ( !reuseSubstrate && P.substrate == RISE::Implementation::eFabricSubstrateGGX );
+			const bool needWeave = ( P.substrate == RISE::Implementation::eFabricSubstrateGGX );
+
+			// ---- (7) Name every chunk, collision-safe against the
+			// document AND against every other name this one call is about
+			// to mint.
+			std::vector<std::string> minted;
+			std::string f0Name, substrateName, weaveName, fabricName;
+			auto mintName = [&]( const char* suffix, std::string& outName ) -> bool {
+				outName = WearMintChunkName_( headDoc, pick->name, suffix, minted );
+				if( outName.empty() ) {
+					out.message = "make_fabric refused: could not derive an unused chunk name from `" +
+						pick->name + "` -- rename or remove the colliding `" + pick->name + suffix +
+						"*` chunks and retry -- document unchanged";
+					return false;
+				}
+				minted.push_back( outName );
+				return true;
+			};
+			if( needF0    && !mintName( "_fabric_f0",    f0Name        ) ) return out;
+			if( !reuseSubstrate && !mintName( "_fabric_base", substrateName ) ) return out;
+			if( needWeave && !mintName( "_fabric_weave", weaveName     ) ) return out;
+			if( !mintName( "_fabric", fabricName ) ) return out;
+
+			const std::string baseName = reuseSubstrate ? pick->name : substrateName;
+
+			// ---- (8) Compose the candidate document.  EVERY minted chunk
+			// goes in AFTER the original material's item index and NOTHING
+			// before it is touched, which is what makes the ordering
+			// contract hold for free: the colour painter this verb
+			// re-homes is already declared ahead of the original (the
+			// original binds it and the document parsed), so it is ahead
+			// of the minted substrate too.
+			//
+			// Splicing repeatedly at the SAME fixed index is add_wetness's
+			// "last call lands first" trick, run in REVERSE emission order
+			// so the final text reads f0, weave, substrate, fabric_material
+			// -- declare-before-use, which for `base` and `rs` is not a
+			// style choice: `Job::AddFabricMaterial` and
+			// `Job::AddGGXMaterial` resolve those names out of the
+			// already-registered managers, so a forward reference fails to
+			// parse.
+			RISE::Cst::Document work     = headDoc;
+			const int           insertAt = pick->itemIndex + 1;
+			auto splice = [&]( const std::string& text, const char* whatKind ) -> bool {
+				const int before = RISE::Cst::DocItemCount( work );
+				work = CollapseSpliceChunkAt_( work, insertAt, text );
+				if( RISE::Cst::DocItemCount( work ) == before ) {
+					out.message = "make_fabric refused: internal -- the generated `" +
+						std::string( whatKind ) + "` chunk did not parse; nothing changed";
+					return false;
+				}
+				return true;
+			};
+			if( !splice( BuildFabricMaterialText_( fabricName, presetName, baseName, weaveName ),
+			             "fabric_material" ) ) return out;
+			if( !reuseSubstrate &&
+			    !splice( BuildFabricSubstrateText_( substrateName, P, pick->colorPainter, f0Name ),
+			             RISE::Implementation::FabricSubstrateClassText( P.substrate ) ) ) return out;
+			if( needWeave && !splice( BuildFabricWeavePainterText_( weaveName ), "scalar_painter" ) ) return out;
+			if( needF0    && !splice( BuildFabricF0PainterText_( f0Name ),       "uniformcolor_painter" ) ) return out;
+
+			// ---- (9) Move every bound object's `material` reference onto
+			// the wrapper.  `DocFindByNameAnyRole` is narrowed to the
+			// `object` role suffix for the reason add_wetness's own rebind
+			// loop documents: an empty suffix counts a bare-name match
+			// across EVERY chunk kind, and naming an object the same as
+			// its geometry is a routine idiom in this tree.
+			int rebindObjectCount = 0;
+			for( const std::string& objName : pick->boundObjectNames ) {
+				int occ = 0;
+				const RISE::Cst::NodeId objId =
+					RISE::Cst::DocFindByNameAnyRole( work, objName, &occ, "object" );
+				if( !objId || occ != 1 ) {
+					out.message = "make_fabric refused: internal -- bound object `" + objName +
+						"` could not be uniquely re-resolved in the document while rebinding it to `" +
+						fabricName + "`; nothing changed";
+					return out;
+				}
+				work = RISE::Cst::DocSetParamValue( work, objId, "material", 0, fabricName );
+				const RISE::Cst::NodeRef objRef = RISE::Cst::DocResolveNodeId( work, objId );
+				const std::string bound = RISE::Cst::ParamValueAtOccurrence( objRef, "material", 0 );
+				if( bound.find( fabricName ) == std::string::npos ) {
+					out.message = "make_fabric refused: internal -- rebinding `material` on `" + objName +
+						"` to `" + fabricName + "` did not take; document unchanged";
+					return out;
+				}
+				++rebindObjectCount;
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "make_fabric refused: internal -- the candidate document serialized to "
+					"nothing; document unchanged";
+				return out;
+			}
+			// A candidate byte-identical to the head would bump the head,
+			// create an undo step and report "applied" over a document
+			// nothing happened to.  Unreachable on any path above (this
+			// verb always mints at least the wrapper), and caught here
+			// anyway rather than after the commit -- add_wetness's own
+			// silent-no-op guard, kept for the same reason.
+			if( candidateText == snap.document ) {
+				out.message = "make_fabric refused: internal -- the composed document is byte-identical to "
+					"the current one, so there is nothing to commit; document unchanged";
+				return out;
+			}
+
+			// ---- (10) S1 cross-element arm, deliberately AFTER the
+			// candidate build (CheckBuildPlanGate_'s rule).
+			{
+				const std::string clause = CheckElementWindowForEdit_( "make_fabric", pick->name, &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (11) COMMIT: ONE whole-document swap, ONE dry-run-guarded
+			// re-derive, ONE head bump, ONE undo step.
+			AgentChunkResult commit;
+			commit.name = pick->name;
+			commit.kind = pick->kind;
+
+			if( mAuthority == AgentAuthority::External ) {
+				out.message = "make_fabric refused: this session is External-authority, and this verb has "
+					"no staged-proposal form (it is ONE composite document swap, not a single chunk edit "
+					"an Owner can approve card-by-card) -- do it in staged steps instead: insert_chunk the "
+					"substrate (and, for a ggx substrate, the 0.04 dielectric-F0 uniformcolor_painter its "
+					"`rs` must name), insert_chunk a `fabric_material` naming that substrate as `base`, "
+					"then propose_patch each object bound to `" + pick->name + "` to the wrapper's name -- "
+					"document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( pick->name.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "make_fabric" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "make_fabric refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			else {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"make_fabric refused: the head moved (revision %llu) while the conversion was "
+						"being composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "make_fabric" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 )      { commit.applied = true;  commit.status = "applied"; }
+				else if( code == 3 ) { commit.applied = false; commit.status = "diagnosed"; }
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (12) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			if( ResultMutatedDocument_( commit ) ) {
+				out.fabricMaterial          = fabricName;
+				out.baseMaterial            = baseName;
+				out.mintedSubstrate         = reuseSubstrate ? std::string() : substrateName;
+				out.mintedSubstrateKind     = reuseSubstrate ? std::string()
+					: std::string( RISE::Implementation::FabricSubstrateClassText( P.substrate ) );
+				out.substrateWasReused      = reuseSubstrate;
+				// REVIEW P1: unreferenced means UNREFERENCED -- no chunk of
+				// any kind still names the original in a Material-typed slot
+				// after the rebind.  On the pure-wrap path the wrapper's own
+				// `base` names it, so it is never unreferenced there; on the
+				// mint path it is unreferenced only if nothing outside the
+				// object bindings this call just moved was pointing at it.
+				out.originalNowUnreferenced = ( !reuseSubstrate && pick->foreignReferences.empty() );
+				out.weavePainter            = needWeave ? weaveName : std::string();
+				out.rotationPainter         = needWeave ? weaveName : std::string();
+				out.rebindObjectCount       = rebindObjectCount;
+			}
+
+			{
+				std::string m;
+				if( commit.applied ) {
+					m = "`" + pick->name + "` (" + pick->kind + ") now reads as " + presetName +
+						": a `fabric_material` `" + fabricName + "` over ";
+					if( reuseSubstrate ) {
+						m += "`" + pick->name + "` ITSELF -- the bound base already matched the class `" +
+							presetName + "` was calibrated for (" +
+							RISE::Implementation::FabricSubstrateClassText( P.substrate ) +
+							"), so nothing was minted and it became the substrate directly. Its own "
+							"parameters were NOT retuned to the preset's: this verb never edits the "
+							"original chunk";
+					}
+					else {
+						m += "a NEWLY MINTED " +
+							std::string( RISE::Implementation::FabricSubstrateClassText( P.substrate ) ) +
+							" `" + substrateName + "` carrying the preset's calibrated ";
+						if( P.substrate == RISE::Implementation::eFabricSubstrateGGX ) {
+							m += "alphax " + FabricScalarText_( P.substrateAlphaX ) + " / alphay " +
+								FabricScalarText_( P.substrateAlphaY ) + ", `fresnel_mode schlick_f0` and "
+								"`rs` bound to `" + f0Name + "` (a 0.04 dielectric F0 -- `rs` resolves BY "
+								"NAME and defaults to the black `none` painter under conductor Fresnel, so "
+								"a base without those two renders with no highlight at all, which is the "
+								"whole reason this preset wants a ggx substrate)";
+						}
+						else if( P.substrate == RISE::Implementation::eFabricSubstrateOrenNayar ) {
+							m += "roughness (sigma) " + FabricScalarText_( P.substrateRoughness );
+						}
+						else {
+							m += "shape -- velvet is a pile, not a weave, so its substrate is deliberately "
+								"isotropic and its depth comes from the preset's own dark sheen colour";
+						}
+						m += ". Your colour painter `" + pick->colorPainter + "` was RE-HOMED from `" +
+							pick->name + "`.`" + pick->colorSlot + "` onto it, so the dye, texture or "
+							"expression graph you authored survives untouched";
+						// REVIEW P3: ONLY the colour painter is re-homed, and
+						// on a pbr_metallic_roughness predecessor the dropped
+						// slots can be spatially-varying MAPS -- a real
+						// texture loss, from a verb whose headline promise is
+						// that the dye survives.  Say it rather than leave the
+						// author to discover it in a render.
+						if( !pick->unportedSlots.empty() ) {
+							m += ". NOTHING ELSE came across: `" + pick->name + "`'s ";
+							for( std::size_t i = 0; i < pick->unportedSlots.size() && i < 6; ++i ) {
+								if( i ) m += "/";
+								m += pick->unportedSlots[i];
+							}
+							if( pick->unportedSlots.size() > 6 ) m += "/...";
+							m += " parameterise a DIFFERENT scattering model, so the minted base carries "
+								"the `" + presetName + "` preset's numbers in their place -- if any of "
+								"them was bound to a PAINTER (a roughness or metallic map, say), that "
+								"spatial variation is no longer in effect and has to be re-authored on "
+								"`" + substrateName + "`";
+						}
+					}
+					m += ". " + std::to_string( rebindObjectCount ) + " bound object" +
+						( rebindObjectCount == 1 ? std::string() : std::string( "s" ) ) +
+						" had their `material` reference moved to `" + fabricName + "`";
+					if( needWeave ) {
+						m += ". A `scalar_painter` `" + weaveName + "` is bound to `weave_rotation` at a "
+							"CONSTANT 0 -- a bit-exact no-op today. The point is that the slot is already "
+							"WIRED: rebind it to a painted angle field (or give that chunk an "
+							"`expression`) to make the twill wale / float direction follow the yarn, "
+							"including across a seam. It rotates the frame handed to the SUBSTRATE, not "
+							"the sheen lobe, which is isotropic";
+					}
+					else {
+						m += ". `" + presetName + "` is isotropic on purpose, so no weave rotation was "
+							"minted and `weave_rotation` keeps the chunk's own 0.0 default";
+					}
+					m += ". `sheen_color` and `sheen_roughness` were deliberately left UNWRITTEN so the "
+						"chunk seeds them from the `" + presetName + "` preset itself (sheen_roughness " +
+						FabricScalarText_( P.sheenRoughness ) +
+						") -- retuning the preset later then moves this material with it";
+					m += ". THE ORIGINAL `" + pick->name + "` CHUNK WAS NOT EDITED";
+					if( reuseSubstrate ) {
+						m += "; it is now the fabric's substrate";
+					}
+					else if( out.originalNowUnreferenced ) {
+						m += " -- it is still in the document, byte-identical, but NOTHING REFERENCES IT "
+							"ANY MORE. remove_chunk it if you do not want it back";
+					}
+					else {
+						// REVIEW P1: the removal advice is WITHHELD here, and
+						// the reason is named.  Following it would leave a
+						// dangling reference and break re-derive for every
+						// object that reaches the original through the chunk
+						// below.  The composition is legal, so this is a
+						// report, not a refusal.
+						m += " -- it is still in the document, byte-identical, and STILL REFERENCED by " +
+							std::to_string( pick->foreignReferences.size() ) + " other chunk" +
+							( pick->foreignReferences.size() == 1 ? std::string() : std::string( "s" ) ) +
+							" (";
+						for( std::size_t i = 0; i < pick->foreignReferences.size() && i < 4; ++i ) {
+							if( i ) m += ", ";
+							m += pick->foreignReferences[i];
+						}
+						if( pick->foreignReferences.size() > 4 ) m += ", ...";
+						m += "), so do NOT remove it -- that would leave a dangling reference and the "
+							"document would stop deriving. Those chunks still see the UNCONVERTED "
+							"material; only the objects bound directly to it now read as fabric";
+					}
+					if( pick->geometryUniform )
+						m += ". Note that every bound object is planar/patch geometry (" +
+							pick->geometryKind + "), so the sheen reads as a uniform lift rather than a "
+							"silhouette halo -- this preset is broad enough for that to still look like "
+							"cloth, but a curved object shows far more of it";
+					if( inferred )
+						m += ". The preset was INFERRED from the names you already chose (nothing named a "
+							"fabric explicitly); pass `fabric` to override it";
+					if( inferFellBack )
+						m += ". NOTE: you passed no `fabric` and nothing in the object or material names "
+							"named one unambiguously, so this DEFAULTED to `cotton` -- if you wanted "
+							"velvet, silk, satin, denim, linen or wool, re-run with `fabric` set (undo "
+							"first, or point the objects back)";
+					m += ". ONE full re-derive, ONE undo step.";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "make_fabric NOT a clean success: the Document was mutated and the live managers "
+						"were replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT treat "
+						"as applied";
+				}
+				else {
+					m = "make_fabric rejected (NOTHING changed): the candidate document would not derive "
+						"-- head unchanged";
+				}
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
+			if( ResultMutatedDocument_( commit ) ) {
+				if( !f0Name.empty() )        AttributeChunkToActiveElement_( f0Name, "uniformcolor_painter" );
+				if( !weaveName.empty() )     AttributeChunkToActiveElement_( weaveName, "scalar_painter" );
+				if( !substrateName.empty() ) AttributeChunkToActiveElement_( substrateName,
+					RISE::Implementation::FabricSubstrateClassText( P.substrate ) );
+				AttributeChunkToActiveElement_( fabricName, "fabric_material" );
 			}
 
 			return out;

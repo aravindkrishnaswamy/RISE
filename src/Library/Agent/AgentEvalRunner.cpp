@@ -7089,6 +7089,14 @@ namespace RISE
 										// before asking must not VACUOUSLY pass
 										// askUserBeforeMutation.
 										"add_wetness",
+										// CLOTH_FABRIC_DESIGN 9.7 (2026-09-02):
+										// make_fabric mutates the document (up
+										// to four minted chunks plus every bound
+										// object's material reference moved onto
+										// the fabric wrapper), so a run that
+										// converted a material before asking must
+										// not VACUOUSLY pass askUserBeforeMutation.
+										"make_fabric",
 										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
 										// the document (one composite swap restoring an
 										// earlier revision's whole text), so a run that

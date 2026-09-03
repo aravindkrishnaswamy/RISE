@@ -413,6 +413,23 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): make_fabric's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! SAME rationale as kAddWetnessProposeRefusedNote above (it
+			//! mutates through one composite whole-document swap: up to four
+			//! minted chunks -- a dielectric-F0 painter, a substrate of the
+			//! preset's class, a weave painter and the `fabric_material`
+			//! itself -- plus every bound object's `material` reference moved
+			//! onto the wrapper; deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb rather than pay the counted-verb prose ripple
+			//! SourceHygieneTest's verb-parity scan pins; refused under
+			//! Propose exactly like Read; deliberately contains neither magic
+			//! substring the per-note counters key on).
+			const std::string kMakeFabricProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: make_fabric is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -1991,6 +2008,110 @@ namespace RISE
 					tools.push_back( MakeTool( "add_wetness", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// make_fabric (CLOTH_FABRIC_DESIGN 9.7, 2026-09-02).
+				// Hand-authored HERE and semantically identical to the
+				// chat-codec definition in AgentChatCodecs.cpp's kToolDefs
+				// (two texts, one verb -- a semantic change to either must
+				// land in both).
+				//
+				// TWO DELIBERATE DEVIATIONS from the two verbs above, both
+				// from 9.7: this is the FIRST verb carrying an ENUM-typed
+				// argument (a closed value list surfaces in the schema and
+				// constrains the model toward a preset that exists, where a
+				// free string invites "crushed burgundy velour" and a
+				// refusal), and it MINTS a substrate rather than performing
+				// add_wetness's pure wrap (9.3: a preset cannot configure the
+				// substrate, so wrapping a Lambertian in `fabric satin` is
+				// chalk with a faint sheen).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the material to convert into cloth. Omit it to take the "
+						"MOST PROMINENT convertible material bound to an object -- the no-argument call is "
+						"the intended one." ) );
+					{
+						// The ENUM, read off AgentSession's published array
+						// rather than restated here -- kBuildPlanConstructionValues'
+						// anti-drift arrangement.  9.7's rule is that the
+						// verb's list and the chunk's list must not diverge,
+						// since the argument seeds the chunk's slot.
+						JsonValue fab = StringProp( "" );
+						JsonValue vals = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kMakeFabricPresetCount; ++i )
+							vals.push_back( JsonValue::MakeString( AgentSession::kMakeFabricPresetValues[i] ) );
+						fab.set( "enum", vals );
+						fab.set( "description", JsonValue::MakeString(
+							"OPTIONAL. Which fabric. This picks BOTH the fabric_material's own slots AND "
+							"the substrate class and parameters the verb mints -- it is the one place a "
+							"preset gets to configure the substrate, because this verb, unlike the chunk, "
+							"can create chunks. cotton/linen/wool mint an orennayar_material (sigma 0.4 / "
+							"0.5 / 0.6); denim/silk/satin mint an ANISOTROPIC ggx_material (alphax/alphay "
+							"0.34-0.22 / 0.30-0.10 / 0.34-0.06) -- for those three the anisotropy ratio IS "
+							"the fabric; velvet mints a lambertian_material and no anisotropy at all "
+							"(it is a pile, not a weave). Omit it to infer the fabric from the object's "
+							"own name where that is unambiguous (`denim_jacket` -> denim; `cushion` names "
+							"no fabric, so it falls back to cotton and the message SAYS so). `custom` is "
+							"deliberately absent: it has no recommended substrate to mint." ) );
+						props.set( "fabric", fab );
+					}
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason add_wetness is:
+					// one composite whole-document swap is no
+					// AgentProposalKind an Owner could approve card-by-card.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kMakeFabricProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"TURN ONE MATERIAL INTO CLOTH in one call. Call this the moment a surface is meant "
+						"to read as FABRIC: a cushion, a curtain, a jacket, upholstery, a tablecloth, a "
+						"banner, bedding. What makes cloth look like cloth is a SHEEN LOBE -- a bright "
+						"grazing halo at the silhouette, from light scattering off the fuzz and the fibre "
+						"ends -- sitting over a substrate whose own highlight follows the WEAVE. A plain "
+						"lambertian_material with a cloth-coloured albedo has neither, and reads as "
+						"painted cardboard no matter how good the colour is. This writes the whole "
+						"composition: a `fabric_material` (an energy-compensated Charlie sheen over a "
+						"restricted substrate -- it SUBTRACTS the sheen's energy from the base, so a white "
+						"fabric never returns more light than it receives at grazing) wrapping a substrate "
+						"of the class the preset was calibrated for. WHEN THE BOUND BASE IS NOT THAT "
+						"CLASS IT MINTS ONE, re-homing the colour painter that is already there so your "
+						"dye, texture or expression graph survives the conversion untouched. That mint is "
+						"the point: a preset CANNOT configure a substrate it merely references, so "
+						"wrapping a Lambertian in `fabric satin` gives chalk with a faint sheen -- the "
+						"tight, directional, anisotropic highlight that IS satin lives in the substrate. A "
+						"minted ggx substrate also gets `fresnel_mode schlick_f0` and an `rs` bound to a "
+						"0.04 dielectric-F0 painter this call mints too, because `rs` resolves BY NAME and "
+						"an unset one is the BLACK `none` painter under conductor Fresnel -- i.e. no "
+						"highlight at all, the single most likely way to hand-author a silent black "
+						"satin. For the anisotropic presets it also mints a `weave_rotation` "
+						"scalar_painter at a constant 0: a no-op today, but the SLOT is then wired, so "
+						"making the twill wale or the satin float direction follow the yarn (including "
+						"across a seam) is one propose_patch. `sheen_color` and `sheen_roughness` are "
+						"left unwritten on purpose so the chunk seeds them from the same preset table. "
+						"THE ORIGINAL CHUNK IS NEVER EDITED -- but after a mint NOTHING REFERENCES IT ANY "
+						"MORE (every bound object moved to the wrapper), which the result reports as "
+						"`originalNowUnreferenced`; when the base already matches the preset's class it "
+						"does the pure wrap instead and says so. ONE headVersion bump, ONE undo step. "
+						"Pass NO ARGUMENTS to take the most prominent convertible material and infer the "
+						"fabric from the object's own name. It REFUSES, changing nothing and costing only "
+						"this call, when nothing qualifies; when the material is already a "
+						"`fabric_material` (or already the substrate of one); when every bound object is "
+						"PLANAR and the preset's look is a tight grazing halo that a constant normal "
+						"field cannot show (velvet/satin/silk -- cotton, linen, denim and wool read fine "
+						"on a flat); when the base cannot become an allowlisted substrate -- a "
+						"dielectric, an emissive/luminaire, a hair material, a BSSRDF/subsurface "
+						"material, an existing coated/composite stack, or a material carrying none of "
+						"`reflectance`/`base_color`/`rd` to re-home; and when it collides with an "
+						"`add_wetness` coat on the same material (wet fabric is a legitimate composition, "
+						"but it needs coated_material to accept a fabric substrate, which is a separate "
+						"slice). Returns {ok,applied,rawCode,status,retriable,headVersion,message,"
+						"material,materialKind,fabricPreset,fabricMaterial,baseMaterial,mintedSubstrate,"
+						"mintedSubstrateKind,substrateWasReused,originalNowUnreferenced,weavePainter,"
+						"rotationPainter,rebindObjectCount,geometry,geometryUniform,qualifying,objects}. "
+						"A PRE-COMMIT refusal is ok=false with an EMPTY status, so branch on `applied`. "
+						"Always pass the headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "make_fabric", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2522,6 +2643,7 @@ namespace RISE
 					"fix_blend_scale",         // cat plan item 1 (2026-08-25): MUTATING, the condition-J rewrite verb
 					"add_wear",                // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): MUTATING, the condition-L rewrite verb
 					"add_wetness",             // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): MUTATING, the condition-P rewrite verb
+					"make_fabric",             // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): MUTATING, the fabric conversion verb
 					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",
