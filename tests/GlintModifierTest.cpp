@@ -44,6 +44,12 @@
 //        normal is tilted past the view), GGXSPF never emits a
 //        tunnelling ray and Pdf/value agree it's zero/black for a
 //        probe pointing into the object.
+//    11. Mirrored-transform handedness preservation (audit-by-bug-
+//        pattern follow-up, docs/CLOTH_FABRIC_DESIGN.md 9.9 fix
+//        round): Modify()'s ONB rebuild must NOT silently right-hand
+//        a deliberately left-handed incoming frame (the mirrored-
+//        instance correction Object::IntersectRay / CSGObject::
+//        IntersectRay apply via OrthonormalBasis3D::FlipV).
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -1348,6 +1354,82 @@ static void TestHostileCoordinates()
 }
 
 // ============================================================
+//  Test 11 (audit-by-bug-pattern follow-up, docs/CLOTH_FABRIC_
+//  DESIGN.md 9.9 fix round): Modify() must PRESERVE a left-handed
+//  incoming ONB, not silently right-hand it.
+//
+//  Object::IntersectRay / CSGObject::IntersectRay's P1 fix
+//  (OrthonormalBasis3D::FlipV) deliberately leaves a mirrored
+//  instance's shading ONB LEFT-handed when the hit carries a real
+//  geometry-supplied tangent, so an authored `tangent_rotation`
+//  rotates the same sense on a mirrored panel as on its unmirrored
+//  twin.  GlintModifier::Modify has the SAME unconditional
+//  `ri.onb.CreateFromWU( newN, uProj )` rebuild pattern that
+//  NormalMap::Modify and BumpMap::Modify had before that same fix
+//  round -- CreateFromWU always emits a RIGHT-handed triple, so
+//  without a matching correction here, a mirrored + tangent-bearing
+//  hit that also carries a glint modifier would have the P1 fix
+//  silently undone downstream of Modify().
+// ============================================================
+
+static void TestMirroredHandednessPreserved()
+{
+	std::cout << "--- Test 11: Modify() preserves a left-handed (mirrored) incoming ONB ---" << std::endl;
+
+	// Gentle spread so most facet hits actually perturb the normal
+	// (matches TestModifyGuards's "gentle" idiom) without hitting the
+	// 60-degree ceiling often enough to matter here.
+	const GlintModifier& mod = *MakeMod( 2.0, 1.0, 1.0, 3.0, Vector3(1,1,1), Vector3(0,0,0), 9 );
+
+	// Non-canonical base tangent (same reasoning as TestModifyGuards:
+	// a canonical CreateFromW-derived tangent wouldn't discriminate a
+	// preserve-u rebuild from a plain CreateFromW one).
+	const Vector3 baseTangent = Vector3Ops::Normalize( Vector3( 0.4, 0.9, 0 ) );
+
+	RandomNumberGenerator rng( 73 );
+	int facetHits = 0, preserved = 0;
+	for( int i = 0; i < 20000 && facetHits < 2000; i++ )
+	{
+		const Point3 p( rng.CanonicalRandom() * 40.0, rng.CanonicalRandom() * 40.0, 0.0 );
+		RayIntersectionGeometric ri = MakeRI( p, Vector3Ops::Normalize( Vector3( 0.2, -0.3, -1 ) ) );
+
+		// Build a DELIBERATELY LEFT-HANDED incoming ONB -- exactly what
+		// Object::IntersectRay's P1 fix produces for a mirrored,
+		// tangent-bearing hit: CreateFromWU always gives a right-handed
+		// triple, so FlipV() (negate v only, leave u/w) is the same
+		// correction applied there.
+		ri.onb.CreateFromWU( Vector3( 0, 0, 1 ), baseTangent );
+		ri.onb.FlipV();
+		ri.bShadingTangentFromGeometry = true;
+		ri.bHasShadingTangent = true;
+
+		const Vector3 oldU = ri.onb.u();
+		const Vector3 oldV = ri.onb.v();
+		const Vector3 oldW = ri.onb.w();
+		const Scalar handednessBefore = Vector3Ops::Dot( oldU, Vector3Ops::Cross( oldV, oldW ) );
+		CHECK( handednessBefore < -0.999, "test setup bug -- incoming ONB is not left-handed ("
+			<< handednessBefore << ")" );
+
+		mod.Modify( ri );
+		if( Vector3Ops::Dot( ri.vNormal, Vector3( 0, 0, 1 ) ) > 1.0 - 1e-12 ) continue;	// no facet / unperturbed
+		facetHits++;
+
+		const Scalar handednessAfter = Vector3Ops::Dot( ri.onb.u(),
+			Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
+		if( handednessAfter < -0.999 ) {
+			preserved++;
+		}
+	}
+
+	std::cout << "  " << preserved << "/" << facetHits << " perturbed hits kept the left-handed frame" << std::endl;
+	CHECK( facetHits > 500, "too few facet hits for handedness test (" << facetHits << ")" );
+	CHECK( preserved == facetHits,
+		"GlintModifier::Modify flipped a mirrored (left-handed) ONB back to right-handed ("
+		<< preserved << "/" << facetHits << ") -- would silently undo the P1 mirrored-transform fix "
+		"for any mirrored, tangent-bearing hit carrying a glint modifier" );
+}
+
+// ============================================================
 //  Main
 // ============================================================
 
@@ -1370,6 +1452,7 @@ int main()
 	TestZeroGeomNormalFallback();
 	TestRayAnchoredGateDisagreementBand();
 	TestHostileCoordinates();
+	TestMirroredHandednessPreserved();
 
 	ReleaseMods();
 

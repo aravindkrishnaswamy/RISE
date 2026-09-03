@@ -139,24 +139,42 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// exists to serve.  For an un-mirrored object the sign is +1 and this is
 		// byte-identical to the previous expression.
 		B = Vector3Ops::Cross( N, T ) * ri.bitangentSign;
+	} else if( ri.bHasShadingTangent ) {
+		// P2 fix (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round): no imported
+		// TANGENT and no `ri.derivatives` (e.g. ClippedPlaneGeometry, which
+		// writes a geometry-supplied shading tangent but by design never
+		// populates `ri.derivatives` at all -- section 9.1), but the hit
+		// still carries a COHERENT, geometry-supplied tangent.
+		// Object::IntersectRay / CSGObject::IntersectRay already built
+		// `ri.onb` from exactly that tangent (via CreateFromWU, including
+		// this round's mirrored-transform V-sign correction), so
+		// `ri.onb.u()/v()` here are NOT the arbitrary CreateFromW frame the
+		// last-ditch warning below describes -- they are the surface's own
+		// UV/fiber-aligned frame, already correctly signed.  Use them
+		// directly, no warning: warning here would be a false positive on
+		// exactly the geometry this feature exists to serve (curtains,
+		// banners, swatches).
+		T = ri.onb.u();
+		B = ri.onb.v();
 	} else {
-		// Last-ditch fallback: no TANGENT and no surface derivatives
-		// (some non-triangle geometry, or future geometry types that
-		// don't populate derivatives.valid).  ri.onb.u()/v() are an
-		// arbitrary tangent frame derived from N alone; correct only
-		// when the normal map happens to be authored against an
-		// ONB-aligned UV space (which is essentially never).  Fire the
-		// warning so the user knows what's gone wrong.
+		// Last-ditch fallback: no TANGENT, no surface derivatives, and no
+		// geometry-supplied shading tangent (some non-triangle geometry, or
+		// future geometry types that populate none of the three).
+		// ri.onb.u()/v() are an arbitrary tangent frame derived from N
+		// alone; correct only when the normal map happens to be authored
+		// against an ONB-aligned UV space (which is essentially never).
+		// Fire the warning so the user knows what's gone wrong.
 		if( !g_warnedNoFrame.exchange( true ) ) {
 			GlobalLog()->PrintEasyWarning(
-				"NormalMap modifier: hit has neither imported TANGENT nor valid "
-				"surface derivatives (ri.derivatives.valid).  Falling back to "
-				"ONB-derived tangents, which is correct only when the normal "
-				"map's UV axes happen to align with the arbitrary ONB frame -- "
-				"i.e. essentially never.  Re-export the source asset with "
-				"TANGENT included, or attach the modifier to a triangle-mesh "
-				"geometry (which populates derivatives).  This warning fires "
-				"once per process; subsequent fallbacks are silent." );
+				"NormalMap modifier: hit has neither imported TANGENT, valid "
+				"surface derivatives (ri.derivatives.valid), nor a geometry-"
+				"supplied shading tangent (ri.bHasShadingTangent).  Falling "
+				"back to ONB-derived tangents, which is correct only when the "
+				"normal map's UV axes happen to align with the arbitrary ONB "
+				"frame -- i.e. essentially never.  Re-export the source asset "
+				"with TANGENT included, or attach the modifier to a triangle-"
+				"mesh geometry (which populates derivatives).  This warning "
+				"fires once per process; subsequent fallbacks are silent." );
 		}
 		T = ri.onb.u();
 		B = ri.onb.v();
@@ -170,25 +188,45 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 
 	// Rebuild the ONB so SPFs (refraction / reflection) sample around
 	// the perturbed normal, not the original geometric one.  When the
-	// hit carries a geometry-defined fiber tangent
-	// (ri.bHasShadingTangent -- HairGeometry; see the field's doc in
-	// RayIntersectionGeometric.h), ri.onb.u() at this point already IS
-	// that fiber tangent: Object::IntersectRay promoted it to world
-	// space and built the ONB from it before this modifier ran.  A
-	// plain CreateFromW would silently discard it for an arbitrary
-	// canonical-axis tangent and break the coherent along-fiber frame
-	// HairBSDF depends on -- the same failure mode GlintModifier.cpp
-	// avoids for its facet tilt.  Project the CURRENT u onto the new
-	// normal's tangent plane and rebuild with CreateFromWU instead;
-	// fall back to CreateFromW only if that projection degenerates
-	// (the perturbed normal swung onto the old tangent).  When
-	// bHasShadingTangent is false, this is skipped entirely and
-	// behaviour is byte-identical to before.
+	// hit carries ANY geometry-supplied coherent tangent
+	// (ri.bHasShadingTangent -- HairGeometry's fiber tangent, SDFGeometry
+	// heightfield mode, or (docs/CLOTH_FABRIC_DESIGN.md 9.1) an analytic
+	// primitive's dpdu, a UV-mapped mesh's dpdu, or an imported glTF
+	// TANGENT; see the field's doc in RayIntersectionGeometric.h),
+	// ri.onb.u() at this point already IS that tangent: Object::IntersectRay
+	// / CSGObject::IntersectRay promoted it to world space and built the
+	// ONB from it before this modifier ran.  A plain CreateFromW would
+	// silently discard it for an arbitrary canonical-axis tangent and
+	// break the coherent frame HairBSDF / anisotropic `tangent_rotation`
+	// depend on -- the same failure mode GlintModifier.cpp avoids for its
+	// facet tilt.  Project the CURRENT u onto the new normal's tangent
+	// plane and rebuild with CreateFromWU instead; fall back to
+	// CreateFromW only if that projection degenerates (the perturbed
+	// normal swung onto the old tangent).  When bHasShadingTangent is
+	// false, this is skipped entirely and behaviour is byte-identical to
+	// before.
+	//
+	// Handedness (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round, P1 follow-on):
+	// CreateFromWU ALWAYS emits a right-handed (u,v,w) triple, but a
+	// mirrored-instance hit's incoming `ri.onb` may deliberately be
+	// LEFT-handed here -- Object::IntersectRay's own P1 fix flips `v`
+	// (OrthonormalBasis3D::FlipV) to correct `tangent_rotation`'s sense
+	// under a negative-determinant transform.  Naively rebuilding with
+	// CreateFromWU would silently discard that correction for any
+	// mirrored, tangent-bearing hit that also carries a normal map.
+	// Capture the incoming handedness (sign of u.(v x w)) and restore it
+	// after rebuilding, so this modifier composes with the mirror fix
+	// instead of undoing it.
 	if( ri.bHasShadingTangent ) {
 		const Vector3 oldU = ri.onb.u();
+		const Scalar oldHandedness = Vector3Ops::Dot( oldU,
+			Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
 		const Vector3 uProj = oldU - ri.vNormal * Vector3Ops::Dot( oldU, ri.vNormal );
 		if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
 			ri.onb.CreateFromWU( ri.vNormal, uProj );
+			if( oldHandedness < Scalar(0) ) {
+				ri.onb.FlipV();
+			}
 		} else {
 			ri.onb.CreateFromW( ri.vNormal );
 		}

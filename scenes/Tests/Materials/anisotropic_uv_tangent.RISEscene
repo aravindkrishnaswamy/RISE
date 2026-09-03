@@ -1,0 +1,198 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           anisotropic_uv_tangent.RISEscene                                                        #
+#   Description:    Render-level regression scene for docs/CLOTH_FABRIC_DESIGN.md section 9.1 (the          #
+#                   UV-aligned mesh/primitive shading tangent).  Before that fix, the anisotropic GGX        #
+#                   highlight's orientation on a UV-mapped or analytic surface came from whatever            #
+#                   arbitrary, per-triangle-discontinuous axis OrthonormalBasis3D::CreateFromW picked        #
+#                   from the (possibly curved) shading normal -- incoherent wherever the normal varies.      #
+#                   After the fix, the tangent (u-axis) tracks the surface's own UV parameterisation.        #
+#                                                                                                             #
+#                   In a healthy render:                                                                     #
+#                     right  = cylinder (axis Z), alphax << alphay -- THE primary demonstration: its          #
+#                              normal varies continuously around the circumference, so the highlight must    #
+#                              wrap smoothly and continuously along that sweep (the analytic angular dpdu).  #
+#                              A pre-fix render (CreateFromW picking its canonical axis independently at     #
+#                              each hit) shows a visible seam/kink where that choice flips as the local       #
+#                              normal sweeps past a coordinate-axis boundary; post-fix there is none.         #
+#                     left   = flat quad, alphax << alphay -- a CONSTANT-normal surface can't show a          #
+#                              coherence *defect* either way (CreateFromW's axis choice is already constant  #
+#                              when the normal never changes), so this panel is a plain parse/render          #
+#                              smoke check for the OTHER new write site (ClippedPlaneGeometry, which never    #
+#                              populated `ri.derivatives` at all before this fix): confirms the material      #
+#                              combination renders a plausible, non-NaN specular response with the new        #
+#                              analytic-UV tangent feeding the ONB, not a demonstration of a visible streak.  #
+#                     centre = isotropic GGX control sphere (alphax == alphay) -- included so a viewer can    #
+#                              confirm the cylinder's wrap is an anisotropy effect, not a roughness artifact; #
+#                              the control's highlight is a plain, direction-independent specular lobe.       #
+#                                                                                                             #
+#                   No image-golden mechanism exists in this tree for scene-level pixel regression (see      #
+#                   tests/README.md and the CstDeriveGoldenTest / HairRenderTest precedent: golden coverage   #
+#                   here is PARSE/CST-level, not pixel-level).  This file is therefore a human-renderable     #
+#                   and CST-golden-covered companion, guarded by a smoke render only, per                     #
+#                   docs/CLOTH_FABRIC_DESIGN.md section 9.9 gate 3's bucket-A guidance: differences here      #
+#                   are EXPECTED (a real, justified appearance change), not a byte-identity target.           #
+#                                                                                                             #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-02                                                                               #
+#                                                                                                             #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pixelpel_rasterizer
+{
+	max_recursion		3
+	samples				64
+	lum_samples			1
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/anisotropic_uv_tangent
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			768
+	height			256
+}
+
+pinhole_camera
+{
+	location			0 0 6
+	lookat				0 0 0
+	up					0 1 0
+	fov					45.0
+}
+
+uniformcolor_painter
+{
+	name				pnt_black
+	color				0.02 0.02 0.02
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				pnt_silver_spec
+	color				0.9 0.9 0.9
+	colorspace			Rec709RGB_Linear
+}
+
+# Left: flat quad, world-X-aligned coherent tangent (dpdu = ptb-pta).
+ggx_material
+{
+	name				m_aniso_quad
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.06
+	alphay				0.5
+	ior					1.5
+	extinction			0.0
+}
+
+# Right: cylinder, circumferential coherent tangent.
+ggx_material
+{
+	name				m_aniso_cyl
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.02
+	alphay				0.35
+	ior					1.5
+	extinction			0.0
+}
+
+# Centre: isotropic control -- same roughness magnitude, alphax == alphay,
+# so its highlight is direction-independent and cannot show a coherence
+# artifact either way.  Included to disambiguate "streak direction changed"
+# from "roughness changed".
+ggx_material
+{
+	name				m_iso_control
+	rd					pnt_black
+	rs					pnt_silver_spec
+	alphax				0.15
+	alphay				0.15
+	ior					1.5
+	extinction			0.0
+}
+
+clippedplane_geometry
+{
+	name				quad_geo
+	pta					-0.9 -0.9 0
+	ptb					 0.9 -0.9 0
+	ptc					 0.9  0.9 0
+	ptd					-0.9  0.9 0
+	doublesided			TRUE
+}
+
+sphere_geometry
+{
+	name				control_sphere_geo
+	radius				0.7
+}
+
+cylinder_geometry
+{
+	name				cyl_geo
+	axis				z
+	radius				0.6
+	height				1.6
+	capped				TRUE
+}
+
+standard_object
+{
+	name				o_aniso_quad
+	geometry			quad_geo
+	material			m_aniso_quad
+	position			-2.1 0 0
+}
+
+standard_object
+{
+	name				o_iso_control
+	geometry			control_sphere_geo
+	material			m_iso_control
+	position			0.0 0 0
+}
+
+standard_object
+{
+	name				o_aniso_cyl
+	geometry			cyl_geo
+	material			m_aniso_cyl
+	position			2.1 0 0
+	orientation			90 0 0
+}
+
+##################################################
+# Lights -- key from upper-front-right (positive Z
+# component so the camera-facing hemisphere is lit;
+# see docs/SCENE_CONVENTIONS.md §1).
+##################################################
+
+directional_light
+{
+	name		key
+	power		3.14
+	color		1.0 1.0 1.0
+	direction	0.4 0.4 0.7
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.1
+	color		1.0 1.0 1.0
+}

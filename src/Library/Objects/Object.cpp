@@ -768,6 +768,50 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 				}
 			}
 			ri.geometric.onb.CreateFromWU( n, t );	// W = n (fixed); V = norm(W x t), U = V x W (double-cross => U = t projected into the W-plane)
+
+			// P1 fix (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round): applies to
+			// BOTH sub-branches above (a real supplied tangent, and the legacy
+			// world-X-projection fallback), for two related but distinct
+			// reasons:
+			//
+			//  * Supplied-tangent case: V = cross(W,t) = cross(n_world,
+			//    t_world), where n_world came from the INVERSE-TRANSPOSE and
+			//    t_world is the OBJECT-space tangent forward-transformed --
+			//    exactly the mismatched pair that makes
+			//    `bitangentSign *= m_tangentFrameSign` a few lines below
+			//    necessary for NormalMap's cross(N,T)-built bitangent.  Under
+			//    a mirrored instance (`scale -1 1 1`, m_tangentFrameSign ==
+			//    -1) `onb.v()` pointed the wrong way, so
+			//    `MicrofacetUtils::RotateTangent`'s `u*c + v*s` rotated an
+			//    authored `tangent_rotation` the opposite sense on a mirrored
+			//    panel versus its unmirrored twin.
+			//  * Legacy world-X fallback (SDFGeometry heightfield mode, or a
+			//    degenerate supplied tangent): `t` here is already a plain
+			//    world-space construction (world-X projected against the
+			//    already-promoted `n`), so there is no forward/inverse-
+			//    transpose mismatch to correct -- but this branch is also the
+			//    SDFGeometry-heightfield half of the doc's named
+			//    heightfield/cartesian_disk PAIRING (this file's own comment
+			//    a few lines up).  The mesh half of that pairing (once it has
+			//    a real UV tangent) takes the supplied-tangent branch above
+			//    and DOES get FlipV'd under mirroring -- so flipping V here
+			//    too is what keeps the pairing's `tangent_rotation` sense
+			//    coherent between the SDF and its mesh twin when EITHER is
+			//    mirrored, not an unrelated correctness claim about the
+			//    world-X convention in isolation.
+			//
+			// U is NOT touched in either case: it is the promoted tangent
+			// direction itself (forward-transformed dpdu / vTangent, or the
+			// world-X projection), which needs no correction --
+			// GeometryShadingTangentTest.cpp's money assertions pin `onb.u()`
+			// to exactly that value, mirrored transforms included.
+			// m_tangentFrameSign is +1 whenever this Object's own transform
+			// is orientation-preserving, so this is a no-op there -- the
+			// legacy `else` branch (CreateFromW, no geometry-supplied
+			// tangent at all) is untouched either way.
+			if( m_tangentFrameSign < Scalar( 0 ) ) {
+				ri.geometric.onb.FlipV();
+			}
 		} else {
 			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 		}

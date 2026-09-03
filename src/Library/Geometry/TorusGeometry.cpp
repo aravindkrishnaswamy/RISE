@@ -169,6 +169,13 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: this dpdu is a genuine
+				// surface parameterization with no discontinuous fallback
+				// branch (unlike the mesh sites), so hand it to the shading
+				// ONB unconditionally on sd.valid.
+				ri.bShadingTangentFromGeometry = true;
+				ri.vShadingTangent             = sd.dpdu;	// object space
+				ri.bHasShadingTangent          = true;
 			}
 		}
 	}

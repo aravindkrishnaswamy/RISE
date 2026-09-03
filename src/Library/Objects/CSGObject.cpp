@@ -1290,6 +1290,31 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 				}
 			}
 			ri.geometric.onb.CreateFromWU( n, t );	// W = n (fixed); V = norm(W x t), U = V x W
+
+			// P1 fix (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round), mirrors
+			// Object::IntersectRay's identical correction -- see that
+			// function's own (longer) comment for the full two-case
+			// rationale.  Summary: for a real supplied tangent, V =
+			// cross(n_world, t_world) mixes an inverse-transpose-promoted
+			// normal with a forward-promoted tangent, the same mismatched
+			// pair `bitangentSign *= m_tangentFrameSign` (below) corrects for
+			// NormalMap's cross(N,T) bitangent -- without this, a mirrored
+			// CSG operand's (or the composite's own mirrored transform's)
+			// `tangent_rotation` rotates the opposite sense from an
+			// unmirrored instance of the same child.  For the legacy
+			// world-X fallback (SDFGeometry heightfield mode), there is no
+			// forward/inverse-transpose mismatch in THIS `t`, but flipping V
+			// here too is what keeps the SDFGeometry-heightfield /
+			// cartesian_disk pairing's `tangent_rotation` sense coherent
+			// when either half is mirrored, matching what the mesh half
+			// (the supplied-tangent branch) gets once it carries a real UV
+			// tangent.  U is untouched -- it is the promoted tangent
+			// direction itself, which needs no correction.  A no-op
+			// (m_tangentFrameSign == +1) for an orientation-preserving transform;
+			// the legacy CreateFromW `else` branch is unaffected either way.
+			if( m_tangentFrameSign < Scalar( 0 ) ) {
+				ri.geometric.onb.FlipV();
+			}
 		} else {
 			ri.geometric.onb.CreateFromW( ri.geometric.vNormal );
 		}

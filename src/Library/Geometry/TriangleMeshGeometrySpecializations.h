@@ -308,6 +308,23 @@ namespace RISE
 				ri.derivatives.dndu = dndu;
 				ri.derivatives.dndv = dndv;
 				ri.derivatives.valid = true;
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: hand the shading ONB a
+				// COHERENT, UV-derived tangent instead of the arbitrary
+				// per-triangle-discontinuous axis CreateFromW would pick.
+				// Non-indexed meshes have no TANGENT accessor, so this is
+				// useUVJacobian-only (no bHasTangent branch -- see the
+				// indexed specialization for that).  When the UV Jacobian
+				// is degenerate (useUVJacobian false), dpdu is the
+				// discontinuous edge-frame fallback above -- writing THAT
+				// into vShadingTangent would be worse than doing nothing,
+				// so we deliberately write nothing and Object::IntersectRay
+				// falls through to CreateFromW, byte-identical to before
+				// this fix existed.
+				if( useUVJacobian ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = dpdu;	// object space
+					ri.bHasShadingTangent          = true;
+				}
 				// Phase-1 geometry-derived shading signals
 				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2): the
 				// characteristic length that makes the expression VM's

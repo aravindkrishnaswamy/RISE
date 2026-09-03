@@ -460,6 +460,31 @@ namespace RISE
 				ri.derivatives.dndu = dndu;
 				ri.derivatives.dndv = dndv;
 				ri.derivatives.valid = true;
+				// docs/CLOTH_FABRIC_DESIGN.md 9.1: hand the shading ONB a
+				// COHERENT, geometry-defined tangent instead of the
+				// arbitrary per-triangle-discontinuous axis CreateFromW
+				// would pick.  Priority: an authored glTF TANGENT (already
+				// interpolated into ri.vTangent / ri.bHasTangent above)
+				// wins outright -- it is the higher-authority signal and is
+				// also how a re-exported mirrored-UV asset (9.1 "Mirrored
+				// UV seams") recovers chirality.  Falling back to dpdu is
+				// second choice, ONLY when the UV Jacobian is
+				// non-degenerate.  When neither holds (no TANGENT array
+				// AND useUVJacobian false -- untextured mesh or a
+				// degenerate UV triangle), dpdu here is the discontinuous
+				// edge-frame fallback and writing it would be worse than
+				// doing nothing: leave the flags alone so
+				// Object::IntersectRay falls through to CreateFromW,
+				// byte-identical to before this fix existed.
+				if( ri.bHasTangent ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = ri.vTangent;	// object space
+					ri.bHasShadingTangent          = true;
+				} else if( useUVJacobian ) {
+					ri.bShadingTangentFromGeometry = true;
+					ri.vShadingTangent             = dpdu;	// object space
+					ri.bHasShadingTangent          = true;
+				}
 				// Phase-1 geometry-derived shading signals
 				// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 5.2): the
 				// characteristic length that makes the expression VM's

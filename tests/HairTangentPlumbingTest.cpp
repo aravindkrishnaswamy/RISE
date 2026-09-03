@@ -109,8 +109,10 @@
 //       onb.u() projected into that new normal's plane and normalized
 //       -- the CreateFromWU idiom GlintModifier already used.
 //   10. TestNormalMapNonHairByteMatchesLegacy -- the identical tilt
-//       through the identical modifier on a SphereGeometry hit
-//       (bHasShadingTangent == false).  Golden value is a fresh,
+//       through the identical modifier on a BoxGeometry hit
+//       (bHasShadingTangent == false; docs/CLOTH_FABRIC_DESIGN.md 9.1
+//       update -- SphereGeometry is no longer a valid control here, see
+//       that test's own comment).  Golden value is a fresh,
 //       independent `OrthonormalBasis3D::CreateFromW` call on the same
 //       perturbed normal -- the fix's guard must be a true no-op here.
 //   11. TestBumpMapPreservesHairFiberTangent -- same idea against
@@ -133,6 +135,7 @@
 #include <vector>
 
 #include "../src/Library/Functions/ConstantFunctions.h"
+#include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/Geometry.h"
 #include "../src/Library/Geometry/HairGeometry.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
@@ -909,7 +912,15 @@ static void TestNormalMapNonHairByteMatchesLegacy()
 {
 	std::cout << "NormalMap: non-hair hit byte-matches legacy CreateFromW rebuild..." << std::endl;
 
-	SphereGeometry* g = new SphereGeometry( 1.0 );
+	// docs/CLOTH_FABRIC_DESIGN.md 9.1 regression-sweep note: this control
+	// used to be a SphereGeometry hit, on the assumption that a sphere
+	// never supplies a shading tangent.  Section 9.1 gave SphereGeometry
+	// (among other analytic primitives) a REAL geometry-supplied tangent
+	// from its own closed-form dpdu, so a sphere hit no longer satisfies
+	// this test's precondition.  BoxGeometry is not one of that fix's
+	// eight write sites and still takes the legacy CreateFromW path
+	// unconditionally -- it is the control this test actually needs.
+	BoxGeometry* g = new BoxGeometry( 2.0, 2.0, 2.0 );
 	Object* o = new Object( g );
 	safe_release( g );
 	o->FinalizeTransformations();
@@ -918,8 +929,8 @@ static void TestNormalMapNonHairByteMatchesLegacy()
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( o, r, ri );
 
-	Check( ri.geometric.bHit, "Test10: ray hits the sphere" );
-	Check( !ri.geometric.bHasShadingTangent, "Test10: (precondition) sphere hit carries no supplied tangent" );
+	Check( ri.geometric.bHit, "Test10: ray hits the box" );
+	Check( !ri.geometric.bHasShadingTangent, "Test10: (precondition) box hit carries no supplied tangent" );
 
 	const Vector3 oldU = ri.geometric.onb.u();
 	const Vector3 oldV = ri.geometric.onb.v();
@@ -1012,7 +1023,10 @@ static void TestBumpMapNonHairByteMatchesLegacy()
 {
 	std::cout << "BumpMap: non-hair hit byte-matches legacy CreateFromW rebuild..." << std::endl;
 
-	SphereGeometry* g = new SphereGeometry( 1.0 );
+	// See TestNormalMapNonHairByteMatchesLegacy's comment: BoxGeometry,
+	// not SphereGeometry, is the control docs/CLOTH_FABRIC_DESIGN.md 9.1
+	// leaves on the legacy CreateFromW path.
+	BoxGeometry* g = new BoxGeometry( 2.0, 2.0, 2.0 );
 	Object* o = new Object( g );
 	safe_release( g );
 	o->FinalizeTransformations();
@@ -1021,8 +1035,8 @@ static void TestBumpMapNonHairByteMatchesLegacy()
 	RayIntersection ri( r, nullRasterizerState );
 	Hit( o, r, ri );
 
-	Check( ri.geometric.bHit, "Test12: ray hits the sphere" );
-	Check( !ri.geometric.bHasShadingTangent, "Test12: (precondition) sphere hit carries no supplied tangent" );
+	Check( ri.geometric.bHit, "Test12: ray hits the box" );
+	Check( !ri.geometric.bHasShadingTangent, "Test12: (precondition) box hit carries no supplied tangent" );
 
 	const Vector3 oldU = ri.geometric.onb.u();
 	const Vector3 oldV = ri.geometric.onb.v();

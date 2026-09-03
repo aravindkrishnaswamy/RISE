@@ -66,25 +66,45 @@ void BumpMap::Modify( RayIntersectionGeometric& ri ) const
 
 	// Also rebuild the ONB so that SPFs (refraction/reflection) use
 	// the perturbed normal, not the original geometric one.  When the
-	// hit carries a geometry-defined fiber tangent
-	// (ri.bHasShadingTangent -- HairGeometry; see the field's doc in
-	// RayIntersectionGeometric.h), ri.onb.u() at this point already IS
-	// that fiber tangent: Object::IntersectRay promoted it to world
-	// space and built the ONB from it before this modifier ran.  A
-	// plain CreateFromW would silently discard it for an arbitrary
-	// canonical-axis tangent and break the coherent along-fiber frame
-	// HairBSDF depends on -- the same failure mode GlintModifier.cpp
-	// avoids for its facet tilt.  Project the CURRENT u onto the new
-	// normal's tangent plane and rebuild with CreateFromWU instead;
-	// fall back to CreateFromW only if that projection degenerates
-	// (the perturbed normal swung onto the old tangent).  When
-	// bHasShadingTangent is false, this is skipped entirely and
-	// behaviour is byte-identical to before.
+	// hit carries ANY geometry-supplied coherent tangent
+	// (ri.bHasShadingTangent -- HairGeometry's fiber tangent, SDFGeometry
+	// heightfield mode, or (docs/CLOTH_FABRIC_DESIGN.md 9.1) an analytic
+	// primitive's dpdu, a UV-mapped mesh's dpdu, or an imported glTF
+	// TANGENT; see the field's doc in RayIntersectionGeometric.h),
+	// ri.onb.u() at this point already IS that tangent: Object::IntersectRay
+	// / CSGObject::IntersectRay promoted it to world space and built the
+	// ONB from it before this modifier ran.  A plain CreateFromW would
+	// silently discard it for an arbitrary canonical-axis tangent and
+	// break the coherent frame HairBSDF / anisotropic `tangent_rotation`
+	// depend on -- the same failure mode GlintModifier.cpp avoids for its
+	// facet tilt.  Project the CURRENT u onto the new normal's tangent
+	// plane and rebuild with CreateFromWU instead; fall back to
+	// CreateFromW only if that projection degenerates (the perturbed
+	// normal swung onto the old tangent).  When bHasShadingTangent is
+	// false, this is skipped entirely and behaviour is byte-identical to
+	// before.
+	//
+	// Handedness (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round, P1 follow-on):
+	// CreateFromWU ALWAYS emits a right-handed (u,v,w) triple, but a
+	// mirrored-instance hit's incoming `ri.onb` may deliberately be
+	// LEFT-handed here -- Object::IntersectRay's own P1 fix flips `v`
+	// (OrthonormalBasis3D::FlipV) to correct `tangent_rotation`'s sense
+	// under a negative-determinant transform.  Naively rebuilding with
+	// CreateFromWU would silently discard that correction for any
+	// mirrored, tangent-bearing hit that also carries a bump map.
+	// Capture the incoming handedness (sign of u.(v x w)) and restore it
+	// after rebuilding, so this modifier composes with the mirror fix
+	// instead of undoing it.
 	if( ri.bHasShadingTangent ) {
 		const Vector3 oldU = ri.onb.u();
+		const Scalar oldHandedness = Vector3Ops::Dot( oldU,
+			Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
 		const Vector3 uProj = oldU - ri.vNormal * Vector3Ops::Dot( oldU, ri.vNormal );
 		if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
 			ri.onb.CreateFromWU( ri.vNormal, uProj );
+			if( oldHandedness < Scalar(0) ) {
+				ri.onb.FlipV();
+			}
 		} else {
 			ri.onb.CreateFromW( ri.vNormal );
 		}

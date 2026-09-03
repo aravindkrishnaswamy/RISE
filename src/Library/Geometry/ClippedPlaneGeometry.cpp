@@ -189,6 +189,22 @@ void ClippedPlaneGeometry::IntersectRay( RayIntersectionGeometric& ri, const boo
 	ri.bGeomNormalOrientedToRay = isBackFaceHit;
 	ri.ptCoord = Point2( h.u, h.v );
 
+	// docs/CLOTH_FABRIC_DESIGN.md 9.1: `dpdu` above is the bilinear
+	// surface's own analytic UV tangent -- a genuine parameterisation
+	// with no per-triangle discontinuous fallback (unlike the mesh
+	// sites) -- so hand it to the shading ONB unconditionally.  Object-
+	// space, un-normalized; Object::IntersectRay normalizes after
+	// promoting with the forward matrix and clears the flag if the
+	// promoted result degenerates (e.g. a singular transform), so no
+	// local degeneracy guard is needed here.  This is a NEW write site:
+	// ClippedPlaneGeometry never populated `ri.derivatives` at all
+	// before this fix, and still does not -- only the shading tangent
+	// is written, not the full SurfaceDerivatives (mip-LOD / SMS
+	// curvature) payload, which is out of this fix's scope.
+	ri.bShadingTangentFromGeometry = true;
+	ri.vShadingTangent             = dpdu;	// object space
+	ri.bHasShadingTangent          = true;
+
 	if( bComputeExitInfo ) {
 		// The bilinear surface is single-sided — there is no genuine
 		// "exit" intersection for an external ray.  Mirror the legacy
