@@ -1763,6 +1763,13 @@ namespace RISEFireProductionTrace
 		FireProductionMetalDualMomentumResidentResult& result,
 		std::string* error=0 );
 #endif
+
+	//! Test-only probe for represented-binary32 identity comparisons in the
+	//! mechanically scalar-substituted roundoff mirror.
+	bool CalibrationSameRepresentedFloatVectorBits(
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& second );
+
 }
 
 #endif

@@ -5267,4 +5267,16 @@ it was already tried and refuted here.
   unchanged because no case-authored semantic or input changed; producer/run
   identity inherits r200, and golden checkpoint
   `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947` is untouched. Evidence is
-  staged for fresh boundary review; the next rung is the live Metal owner.
+  staged for fresh boundary review. That review caught a generated-roundoff-
+  mirror defect: scalar substitution had left raw `memcmp` operations reading
+  the first four bytes of a wider `TraceFloat`, rather than each value's
+  represented binary32 bits. The correction centralizes all transport bit-
+  identity comparisons, gives the trace generator an explicit rounded-value
+  implementation, and sweeps the same vector, periodic seam, gas-flux,
+  ambient, and FCT-seam consumers. REDs prove equal rounded values with
+  different trace lineage compare equal while a one-bit rounded mutation
+  refuses. The same review clarified that pressure-open target composition has
+  one binary32 projection, whereas closed topology has a composition projection
+  followed by constant-mode removal and a compatibility projection; the closed
+  `fp64_exact` rows begin after the first projection and certify the final one.
+  The next rung is the live Metal owner.

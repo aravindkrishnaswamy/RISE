@@ -5956,10 +5956,15 @@ threshold and enters `S_div^tail`. Tail magnitude consumes r199's authoritative
 binary32 absolute-deviation publication; the represented-pressure publication
 supplies only its sign. This closes the near-threshold alias where rounding the
 pressure ratio first can hide an above-threshold exact deviation. Tangent and
-tail remain expansion-valued through composition and the assembled term is
-rounded once; their separately published diagnostic fields retain their own
-binary32 projections. Closed topology then removes the constant mode;
-pressure-open topology preserves it.
+tail remain expansion-valued through composition; their separately published
+diagnostic fields retain their own binary32 projections. Pressure-open topology
+applies one binary32 projection to the assembled composition. Closed topology
+applies that composition projection, removes the constant mode, then applies a
+second binary32 compatibility projection. Accordingly the closed assembled
+rows' `fp64_exact` scope begins from the first projected composition, promoted
+to binary64 for exact mean subtraction; their half-ULP enclosure certifies only
+the final compatibility projection. It is not presented as a one-round bound
+on the entire closed formula.
 
 Closed and pressure-open 64-cell Metal fixtures separately compare tangent,
 frozen source, raw absolute-reference diagnostic, monitored tail, and final

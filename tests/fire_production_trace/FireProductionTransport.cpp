@@ -319,12 +319,18 @@ namespace RISEFireProductionTrace
 			return hash;
 		}
 
+		bool SameFloatBits( const FireProductionRoundoffTrace::TraceFloat first,const FireProductionRoundoffTrace::TraceFloat second )
+		{
+			const float firstRounded=first.Rounded(),secondRounded=second.Rounded();
+			return std::memcmp(&firstRounded,&secondRounded,sizeof(float))==0;
+		}
+
 		bool SameFloatVectorBits( const std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
 			const std::vector<FireProductionRoundoffTrace::TraceFloat>& second )
 		{
 			if(first.size()!=second.size())return false;
-			for(std::size_t value=0u;value<first.size();++value)if(std::memcmp(
-				&first[value],&second[value],sizeof(float))!=0)return false;
+			for(std::size_t value=0u;value<first.size();++value)
+				if(!SameFloatBits(first[value],second[value]))return false;
 			return true;
 		}
 
@@ -1072,8 +1078,7 @@ namespace RISEFireProductionTrace
 			sourceShape.cellWidthM!=shape.cellWidthM||
 			conservativeValues.size()!=9u*cells||temperatureK.size()!=cells||
 			seal.BeginningTemperatureK().size()!=cells||
-			std::memcmp(seal.BeginningTemperatureK().data(),temperatureK.data(),
-				cells*sizeof(float))!=0||
+			!SameFloatVectorBits(seal.BeginningTemperatureK(),temperatureK)||
 			seal.BeginningStateIdentity()!=CanonicalSourceBeginningStateIdentity(
 				shape,conservativeValues,temperatureK))return Fail(error,
 				"canonical frozen source beginning-state parent differs");
@@ -2341,25 +2346,23 @@ namespace RISEFireProductionTrace
 								FaceIndex(shape,axis,x,y,z),highPacked=expectedOffset[axis]+
 								FaceIndex(shape,axis,hx,hy,hz),lowFace=lowPacked-expectedOffset[axis],
 								highFace=highPacked-expectedOffset[axis];
-							auto same=[](const FireProductionRoundoffTrace::TraceFloat a,const FireProductionRoundoffTrace::TraceFloat b){return std::memcmp(
-								&a,&b,sizeof(float))==0;};
 							for(std::size_t component=0u;component<9u;++component)if(
-								!same(pair.lowFlux[component*allFaces+lowPacked],
+								!SameFloatBits(pair.lowFlux[component*allFaces+lowPacked],
 									pair.lowFlux[component*allFaces+highPacked])||
-								!same(pair.fluxDelta[component*allFaces+lowPacked],
+								!SameFloatBits(pair.fluxDelta[component*allFaces+lowPacked],
 									pair.fluxDelta[component*allFaces+highPacked]))return Fail(error,
 									"scalar Heun composite periodic seam differs");
-							for(std::size_t component=0u;component<8u;++component)if(!same(
+							for(std::size_t component=0u;component<8u;++component)if(!SameFloatBits(
 								stage.physicalMassFluxKGPerM2S[component*allFaces+lowPacked],
 								stage.physicalMassFluxKGPerM2S[component*allFaces+highPacked]))
 								return Fail(error,"scalar Heun physical periodic seam differs");
-							if(!same(stage.physicalEnergyFluxWPerM2[lowPacked],
+							if(!SameFloatBits(stage.physicalEnergyFluxWPerM2[lowPacked],
 								stage.physicalEnergyFluxWPerM2[highPacked])||
-								!same(stage.physicalGasFluxKGPerM2S[axis][lowFace],
+								!SameFloatBits(stage.physicalGasFluxKGPerM2S[axis][lowFace],
 									stage.physicalGasFluxKGPerM2S[axis][highFace])||
-								!same(stage.advectiveGasLowFluxKGPerM2S[axis][lowFace],
+								!SameFloatBits(stage.advectiveGasLowFluxKGPerM2S[axis][lowFace],
 									stage.advectiveGasLowFluxKGPerM2S[axis][highFace])||
-								!same(stage.advectiveGasFluxDeltaKGPerM2S[axis][lowFace],
+								!SameFloatBits(stage.advectiveGasFluxDeltaKGPerM2S[axis][lowFace],
 									stage.advectiveGasFluxDeltaKGPerM2S[axis][highFace]))return Fail(error,
 									"scalar Heun gas periodic seam differs");
 						}
@@ -2388,8 +2391,8 @@ namespace RISEFireProductionTrace
 						if(!std::isfinite(residual)||residual>
 							stage.physicalGasAveragingForwardErrorBoundKGPerM2S)return Fail(error,
 								"scalar Heun averaged J_g exceeds its forward bound");
-					}else if(std::memcmp(&gas,&stage.physicalGasFluxKGPerM2S[axis][face],
-						sizeof(float))!=0)return Fail(error,
+					}else if(!SameFloatBits(gas,stage.physicalGasFluxKGPerM2S[axis][face]))
+						return Fail(error,
 							"scalar Heun J_g differs from retained f_N bytes");
 				}
 			}
@@ -2431,9 +2434,9 @@ namespace RISEFireProductionTrace
 				physicalRequest.frozenVelocityMPerS[axis],
 				advectiveRequest.frozenVelocityMPerS[axis]))return Fail(error,
 					"scalar Heun raw stage velocity differs");
-			for(std::size_t component=0u;component<9u;++component)if(std::memcmp(
-				&physicalRequest.ambient[component],&advectiveRequest.ambient[component],
-				sizeof(float))!=0)return Fail(error,"scalar Heun raw stage ambient differs");
+			for(std::size_t component=0u;component<9u;++component)if(!SameFloatBits(
+				physicalRequest.ambient[component],advectiveRequest.ambient[component]))
+				return Fail(error,"scalar Heun raw stage ambient differs");
 			FireProductionScalarFCTFluxPair advectiveFluxPair;
 			if(!BuildFireProductionScalarFCTFluxPairCPU(
 				advectiveRequest,advectiveFluxPair,error))return false;
@@ -2531,8 +2534,8 @@ namespace RISEFireProductionTrace
 						advectiveLow+=advectiveFluxPair.lowFlux[index];
 						advectiveDelta+=advectiveFluxPair.fluxDelta[index];
 					}
-					if(std::memcmp(&physicalGas,&computed.physicalGasFluxKGPerM2S[axis][face],
-						sizeof(float))!=0)return Fail(error,
+					if(!SameFloatBits(physicalGas,
+						computed.physicalGasFluxKGPerM2S[axis][face]))return Fail(error,
 							"scalar Heun J_g input differs from published f_N bytes");
 					computed.advectiveGasLowFluxKGPerM2S[axis][face]=advectiveLow;
 					computed.advectiveGasFluxDeltaKGPerM2S[axis][face]=advectiveDelta;
@@ -3694,10 +3697,10 @@ namespace RISEFireProductionTrace
 							for(std::size_t component=0u;component<components;++component){
 								const std::size_t lowIndex=component*allFaces+low;
 								const std::size_t highIndex=component*allFaces+high;
-								if(std::memcmp(&computed.lowFlux[lowIndex],
-									&computed.lowFlux[highIndex],sizeof(float))!=0||
-									std::memcmp(&computed.fluxDelta[lowIndex],
-										&computed.fluxDelta[highIndex],sizeof(float))!=0)
+								if(!SameFloatBits(computed.lowFlux[lowIndex],
+									computed.lowFlux[highIndex])||
+									!SameFloatBits(computed.fluxDelta[lowIndex],
+										computed.fluxDelta[highIndex]))
 									return Fail(error,
 										"scalar FCT supplied periodic flux seam differs");
 							}
@@ -4143,4 +4146,12 @@ namespace RISEFireProductionTrace
 		}
 		return SolveFireProductionScalarFCTFluxPairCPU(request,fluxPair,result,error);
 	}
+
+	bool CalibrationSameRepresentedFloatVectorBits(
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& second )
+	{
+		return SameFloatVectorBits(first,second);
+	}
+
 }

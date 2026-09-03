@@ -95,6 +95,36 @@ def transform(text: str, name: str, suffix: str) -> str:
     text = text.replace("FireStateProducerPrecision", "RISE::FireStateProducerPrecision")
     text = re.sub(r"\bfloat\b", "FireProductionRoundoffTrace::TraceFloat", text)
     text = text.replace("sizeof(FireProductionRoundoffTrace::TraceFloat)", "sizeof(float)")
+    if name == "FireProductionTransport" and suffix == ".cpp":
+        # Production identity checks compare the represented binary32 bytes.
+        # A TraceFloat carries wider center/radius/lineage state, so mechanically
+        # comparing the first sizeof(float) bytes of that object is neither the
+        # represented value nor a valid mirror of the production predicate.
+        before = """\t\tbool SameFloatBits( const FireProductionRoundoffTrace::TraceFloat first,const FireProductionRoundoffTrace::TraceFloat second )
+\t\t{
+\t\t\treturn std::memcmp(&first,&second,sizeof(float))==0;
+\t\t}"""
+        after = """\t\tbool SameFloatBits( const FireProductionRoundoffTrace::TraceFloat first,const FireProductionRoundoffTrace::TraceFloat second )
+\t\t{
+\t\t\tconst float firstRounded=first.Rounded(),secondRounded=second.Rounded();
+\t\t\treturn std::memcmp(&firstRounded,&secondRounded,sizeof(float))==0;
+\t\t}"""
+        if text.count(before) != 1:
+            raise RuntimeError("represented-binary32 identity comparison seam changed")
+        text = text.replace(before, after)
+        closing = "\n}\n"
+        if not text.endswith(closing):
+            raise RuntimeError("transport source namespace closing seam changed")
+        probe = """
+
+\tbool CalibrationSameRepresentedFloatVectorBits(
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& second )
+\t{
+\t\treturn SameFloatVectorBits(first,second);
+\t}
+"""
+        text = text[:-len(closing)] + probe + closing
     text = re.sub(r"std::(min|max)\(([-+]?[0-9.]+f),",
                   r"std::\1(FireProductionRoundoffTrace::TraceFloat(\2),", text)
     text = text.replace("std::max(0x1p-126f,",
@@ -335,6 +365,19 @@ def transform(text: str, name: str, suffix: str) -> str:
                   "FireProductionTransport": "FIREPRODUCTIONTRANSPORT_",
                   "FireProductionForce": "FIRE_PRODUCTION_FORCE_H"}
         text = text.replace(guards[name], "TRACE_" + guards[name])
+        if name == "FireProductionTransport":
+            closing = "\n}\n\n#endif\n"
+            if not text.endswith(closing):
+                raise RuntimeError("transport header namespace closing seam changed")
+            probe = """
+
+\t//! Test-only probe for represented-binary32 identity comparisons in the
+\t//! mechanically scalar-substituted roundoff mirror.
+\tbool CalibrationSameRepresentedFloatVectorBits(
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& second );
+"""
+            text = text[:-len(closing)] + probe + closing
     if name == "FireProductionForce" and suffix == ".cpp":
         digest_word = ("std::uint32_t bits=0u;\n"
                        "\t\t\t\tstd::memcpy(&bits,&value,sizeof(bits));")
