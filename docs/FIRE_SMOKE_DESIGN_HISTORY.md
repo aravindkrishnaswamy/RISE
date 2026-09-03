@@ -5217,8 +5217,7 @@ it was already tried and refuted here.
   no raw source-target field is an admissible input. The source field, sealed
   packet metadata, candidate-parent binding, and identity are issued on Metal;
   exact beginning-state and case-record parents are recomputed at host preflight,
-  so genuine wrong-state and wrong-case canonical seals refuse even when dose
-  bytes agree;
+  so genuine wrong-state and wrong-case canonical seals refuse;
   neither shared CPU bytes nor a private CPU blit can substitute. The conjunction is structural: an unsealed
   parent refuses on device, while a stale candidate or an EOS publication not
   immediately linked to that candidate refuses before command submission. A
@@ -5289,4 +5288,6 @@ it was already tried and refuted here.
   one binary32 projection, whereas closed topology has a composition projection
   followed by constant-mode removal and a compatibility projection; the closed
   `fp64_exact` rows begin after the first projection and certify the final one.
+  Fresh lineage, Metal/residency, and numeric/mirror reviewers then reported
+  zero P1/P2 on `a7e45b51`; r200 is sealed as `r200h`.
   The next rung is the live Metal owner.

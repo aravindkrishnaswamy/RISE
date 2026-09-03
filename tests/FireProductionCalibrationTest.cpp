@@ -4189,7 +4189,7 @@ int main()
 	};
 	const bool residentTargetEvidenceHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetEvidence.begin(),residentTargetEvidence.end()))==
-		"3eecd992d9d85bccc70f029ec95af7ac184a63d8a86ee494d4868d255ab35017";
+		"f00212ef98f6bfc4fcc811238a23d86e3bfc5dde5b6d112c90faa77dcf4ad875";
 	const bool residentTargetRawHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetRawEvidence.begin(),residentTargetRawEvidence.end()))==
 		"b54ff82ed6d335e1501077b14ba7be81f94809804c363eab3e7a5a760c251c97";
@@ -4199,7 +4199,7 @@ int main()
 		ValidateResidentTargetEvidenceAgainstRaw(residentTargetEvidence,residentTargetRawEvidence);
 	const bool residentTargetBindingHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetLiveBinding.begin(),residentTargetLiveBinding.end()))==
-		"46b2c1616930ca8a9ec86d42a382b62bd9baffd07db990eeebb5ee7401987ffc";
+		"61f2d2ee7f72d9765262faa1a9245d560c5414a32df3a6987ecf4ecdab7eeb90";
 	Check(residentTargetEvidenceHashValid,"r200 evidence SHA binding");
 	Check(residentTargetRawHashValid,"r200 raw transcript SHA binding");
 	Check(residentTargetRawStructureValid,"r200 raw transcript structure and RED battery");
@@ -4208,7 +4208,7 @@ int main()
 	Check(residentTargetEvidenceHashValid&&residentTargetRawHashValid&&
 		residentTargetRawStructureValid&&residentTargetEvidenceSemanticsValid&&
 		residentTargetBindingHashValid&&
-		residentTargetLiveBinding.find("revision r200_review_pending\n")!=std::string::npos&&
+		residentTargetLiveBinding.find("revision r200h_sealed\n")!=std::string::npos&&
 		residentTargetLiveBinding.find("calibration_test_self_binding false\n")!=
 			std::string::npos&&residentTargetLiveBinding.find("owner_count 19\n")!=
 			std::string::npos&&
@@ -4234,7 +4234,12 @@ int main()
 			"r200_authenticated_device_target_lineage/resident_eos_control.raw")&&
 		residentTargetOwnerBound("rendered/fire_production_calibration/"
 			"r200_authenticated_device_target_lineage/resident_target_lineage_evidence.v1")&&
-		residentTargetEvidence.find("review_boundary_closed false\n")!=std::string::npos&&
+		residentTargetEvidence.find("review_boundary_closed true\n")!=std::string::npos&&
+		residentTargetEvidence.find("final_reviewed_commit a7e45b51\n")!=std::string::npos&&
+		residentTargetEvidence.find("final_review_lineage zero_P1_P2\n")!=std::string::npos&&
+		residentTargetEvidence.find("final_review_Metal_residency zero_P1_P2\n")!=
+			std::string::npos&&residentTargetEvidence.find(
+			"final_review_numeric_mirror zero_P1_P2\n")!=std::string::npos&&
 		residentTargetEvidence.find("parent_conjunction "
 			"transport_and_physical_flux_and_candidate_and_EOS_and_candidate_bound_frozen_source\n")!=
 			std::string::npos&&
