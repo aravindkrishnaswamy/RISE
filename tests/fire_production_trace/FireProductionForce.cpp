@@ -64,7 +64,8 @@ namespace RISEFireProductionTrace
 
 		bool SameFloatBytes( FireProductionRoundoffTrace::TraceFloat first, FireProductionRoundoffTrace::TraceFloat second )
 		{
-			return std::memcmp(&first,&second,sizeof(float))==0;
+			const float firstRounded=first.Rounded(),secondRounded=second.Rounded();
+			return std::memcmp(&firstRounded,&secondRounded,sizeof(float))==0;
 		}
 
 		std::uint64_t MomentumByteDigest(
@@ -1630,7 +1631,7 @@ namespace RISEFireProductionTrace
 		{
 			if(a.size()!=b.size())return false;
 			for(std::size_t i=0u;i<a.size();++i)
-				if(std::memcmp(&a[i],&b[i],sizeof(float))!=0)return false;
+				if(!SameFloatBytes(a[i],b[i]))return false;
 			return true;
 		}
 
@@ -3410,4 +3411,19 @@ namespace RISEFireProductionTrace
 			result.r1.acceptedCandidateIdentity==0u)return false;
 		return OwnerResultIdentity(result)==result.ownerIdentity_;
 	}
+
+	bool CalibrationSameRepresentedForceFloatBits(
+		const FireProductionRoundoffTrace::TraceFloat first,
+		const FireProductionRoundoffTrace::TraceFloat second )
+	{
+		return SameFloatBytes(first,second);
+	}
+
+	bool CalibrationSameRepresentedOwnerFloatVectorBits(
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& second )
+	{
+		return SameOwnerFloatBits(first,second);
+	}
+
 }

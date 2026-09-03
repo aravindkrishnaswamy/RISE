@@ -1010,6 +1010,16 @@ namespace RISEFireProductionTrace
 	//! Thread-local observed Metal commits, exposed only to bind fail-before-work
 	//! owner gates. Unsupported builds return zero.
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount();
+
+	//! Test-only probes for represented-binary32 identity comparisons in the
+	//! mechanically scalar-substituted force and projected-Heun owner mirror.
+	bool CalibrationSameRepresentedForceFloatBits(
+		FireProductionRoundoffTrace::TraceFloat first,
+		FireProductionRoundoffTrace::TraceFloat second );
+	bool CalibrationSameRepresentedOwnerFloatVectorBits(
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+		const std::vector<FireProductionRoundoffTrace::TraceFloat>& second );
+
 }
 
 #endif

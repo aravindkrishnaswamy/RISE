@@ -125,6 +125,33 @@ def transform(text: str, name: str, suffix: str) -> str:
 \t}
 """
         text = text[:-len(closing)] + probe + closing
+    if name == "FireProductionForce" and suffix == ".cpp":
+        scalar_before = """\t\tbool SameFloatBytes( FireProductionRoundoffTrace::TraceFloat first, FireProductionRoundoffTrace::TraceFloat second )
+\t\t{
+\t\t\treturn std::memcmp(&first,&second,sizeof(float))==0;
+\t\t}"""
+        scalar_after = """\t\tbool SameFloatBytes( FireProductionRoundoffTrace::TraceFloat first, FireProductionRoundoffTrace::TraceFloat second )
+\t\t{
+\t\t\tconst float firstRounded=first.Rounded(),secondRounded=second.Rounded();
+\t\t\treturn std::memcmp(&firstRounded,&secondRounded,sizeof(float))==0;
+\t\t}"""
+        owner_before = """\t\tbool SameOwnerFloatBits(const std::vector<FireProductionRoundoffTrace::TraceFloat>& a,const std::vector<FireProductionRoundoffTrace::TraceFloat>& b)
+\t\t{
+\t\t\tif(a.size()!=b.size())return false;
+\t\t\tfor(std::size_t i=0u;i<a.size();++i)
+\t\t\t\tif(std::memcmp(&a[i],&b[i],sizeof(float))!=0)return false;
+\t\t\treturn true;
+\t\t}"""
+        owner_after = """\t\tbool SameOwnerFloatBits(const std::vector<FireProductionRoundoffTrace::TraceFloat>& a,const std::vector<FireProductionRoundoffTrace::TraceFloat>& b)
+\t\t{
+\t\t\tif(a.size()!=b.size())return false;
+\t\t\tfor(std::size_t i=0u;i<a.size();++i)
+\t\t\t\tif(!SameFloatBytes(a[i],b[i]))return false;
+\t\t\treturn true;
+\t\t}"""
+        if text.count(scalar_before) != 1 or text.count(owner_before) != 1:
+            raise RuntimeError("force represented-binary32 identity comparison seams changed")
+        text = text.replace(scalar_before, scalar_after).replace(owner_before, owner_after)
     text = re.sub(r"std::(min|max)\(([-+]?[0-9.]+f),",
                   r"std::\1(FireProductionRoundoffTrace::TraceFloat(\2),", text)
     text = text.replace("std::max(0x1p-126f,",
@@ -378,6 +405,22 @@ def transform(text: str, name: str, suffix: str) -> str:
 \t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& second );
 """
             text = text[:-len(closing)] + probe + closing
+        if name == "FireProductionForce":
+            closing = "\n}\n\n#endif\n"
+            if not text.endswith(closing):
+                raise RuntimeError("force header namespace closing seam changed")
+            probe = """
+
+\t//! Test-only probes for represented-binary32 identity comparisons in the
+\t//! mechanically scalar-substituted force and projected-Heun owner mirror.
+\tbool CalibrationSameRepresentedForceFloatBits(
+\t\tFireProductionRoundoffTrace::TraceFloat first,
+\t\tFireProductionRoundoffTrace::TraceFloat second );
+\tbool CalibrationSameRepresentedOwnerFloatVectorBits(
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& second );
+"""
+            text = text[:-len(closing)] + probe + closing
     if name == "FireProductionForce" and suffix == ".cpp":
         digest_word = ("std::uint32_t bits=0u;\n"
                        "\t\t\t\tstd::memcpy(&bits,&value,sizeof(bits));")
@@ -387,6 +430,26 @@ def transform(text: str, name: str, suffix: str) -> str:
             "std::uint32_t bits=0u;\n"
             "\t\t\t\tconst float rounded=value.Rounded();"
             "std::memcpy(&bits,&rounded,sizeof(bits));")
+        closing = "\n}\n"
+        if not text.endswith(closing):
+            raise RuntimeError("force source namespace closing seam changed")
+        probe = """
+
+\tbool CalibrationSameRepresentedForceFloatBits(
+\t\tconst FireProductionRoundoffTrace::TraceFloat first,
+\t\tconst FireProductionRoundoffTrace::TraceFloat second )
+\t{
+\t\treturn SameFloatBytes(first,second);
+\t}
+
+\tbool CalibrationSameRepresentedOwnerFloatVectorBits(
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& first,
+\t\tconst std::vector<FireProductionRoundoffTrace::TraceFloat>& second )
+\t{
+\t\treturn SameOwnerFloatBits(first,second);
+\t}
+"""
+        text = text[:-len(closing)] + probe + closing
     if name == "FireProductionTransport" and suffix == ".cpp":
         cell_loop = ("for( unsigned int pass=0u;pass<5u;++pass ) {\n"
                      "\t\t\t\tstd::vector<FireProductionRoundoffTrace::TraceFloat>* "

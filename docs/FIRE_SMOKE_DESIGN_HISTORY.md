@@ -5273,9 +5273,19 @@ it was already tried and refuted here.
   represented binary32 bits. The correction centralizes all transport bit-
   identity comparisons, gives the trace generator an explicit rounded-value
   implementation, and sweeps the same vector, periodic seam, gas-flux,
-  ambient, and FCT-seam consumers. REDs prove equal rounded values with
+  ambient, and FCT-seam consumers. A repeated fresh sweep found the same
+  scalar-substitution error in force periodic-seam checks and the complete
+  projected-Heun owner's context/terminal lineage comparisons; both now use
+  explicit rounded-value helpers as well. REDs exercise transport, force, and
+  owner helper families independently, proving equal rounded values with
   different trace lineage compare equal while a one-bit rounded mutation
-  refuses. The same review clarified that pressure-open target composition has
+  refuses. The lineage review also split the exact-Q parent edge from the
+  temperature edge: a Q-only helper RED holds the canonical-temperature field
+  and the authenticated source seal fixed while changing one represented bit
+  of conservative Q, so refusal cannot hide behind the temperature or source-
+  content comparisons. A separate genuine alternate canonical seal continues
+  to prove the full wrong-parent refusal. The same review clarified that
+  pressure-open target composition has
   one binary32 projection, whereas closed topology has a composition projection
   followed by constant-mode removal and a compatibility projection; the closed
   `fp64_exact` rows begin after the first projection and certify the final one.

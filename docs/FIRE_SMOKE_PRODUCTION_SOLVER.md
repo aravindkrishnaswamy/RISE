@@ -5924,7 +5924,10 @@ its on-device identity to the exact candidate publication. Host preflight also
 recomputes the seal's beginning-state identity from the exact resident
 conservative and canonical-temperature fields and requires the exact case-record
 identity. Genuine canonical seals minted from a different beginning state or
-different case therefore refuse even when their source dose is byte-identical.
+different case therefore refuse. A separate Q-only RED keeps the canonical
+temperature field and source seal fixed while changing one represented bit of
+the conservative beginning state; it proves that the exact-Q edge refuses
+independently of temperature or source-content comparisons.
 Neither shared CPU
 bytes nor a byte-identical private CPU blit can substitute for that issued
 authority. It accepts no public candidate or target object. The child retains the five exact

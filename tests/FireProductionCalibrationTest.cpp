@@ -12,6 +12,7 @@
 #include "fire_production_fp64/FireProductionProjection.h"
 #include "fire_production_fp64/SourceManifest.h"
 #include "fire_production_trace/FireProductionAdvection.h"
+#include "fire_production_trace/FireProductionForce.h"
 #include "fire_production_trace/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
 #include "../tools/fire_simulator_core.h"
@@ -4188,7 +4189,7 @@ int main()
 	};
 	const bool residentTargetEvidenceHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetEvidence.begin(),residentTargetEvidence.end()))==
-		"86e4ad23bd11acebff9d55137aa7eb5dc340ceeb948faf8105361e4b3c29ffdc";
+		"3eecd992d9d85bccc70f029ec95af7ac184a63d8a86ee494d4868d255ab35017";
 	const bool residentTargetRawHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetRawEvidence.begin(),residentTargetRawEvidence.end()))==
 		"b54ff82ed6d335e1501077b14ba7be81f94809804c363eab3e7a5a760c251c97";
@@ -4198,7 +4199,7 @@ int main()
 		ValidateResidentTargetEvidenceAgainstRaw(residentTargetEvidence,residentTargetRawEvidence);
 	const bool residentTargetBindingHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetLiveBinding.begin(),residentTargetLiveBinding.end()))==
-		"a85dadb400854b460f9f7d41c036077c1e1fa8ad3772b8f193afd1d330609bb1";
+		"46b2c1616930ca8a9ec86d42a382b62bd9baffd07db990eeebb5ee7401987ffc";
 	Check(residentTargetEvidenceHashValid,"r200 evidence SHA binding");
 	Check(residentTargetRawHashValid,"r200 raw transcript SHA binding");
 	Check(residentTargetRawStructureValid,"r200 raw transcript structure and RED battery");
@@ -4209,7 +4210,7 @@ int main()
 		residentTargetBindingHashValid&&
 		residentTargetLiveBinding.find("revision r200_review_pending\n")!=std::string::npos&&
 		residentTargetLiveBinding.find("calibration_test_self_binding false\n")!=
-			std::string::npos&&residentTargetLiveBinding.find("owner_count 17\n")!=
+			std::string::npos&&residentTargetLiveBinding.find("owner_count 19\n")!=
 			std::string::npos&&
 		residentTargetOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
 		residentTargetOwnerBound("src/Library/Utilities/FireProductionAdvectionUnsupported.cpp")&&
@@ -4221,6 +4222,8 @@ int main()
 		residentTargetOwnerBound("tests/fire_production_fp64/SourceManifest.h")&&
 		residentTargetOwnerBound("tests/fire_production_trace/FireProductionTransport.cpp")&&
 		residentTargetOwnerBound("tests/fire_production_trace/FireProductionTransport.h")&&
+		residentTargetOwnerBound("tests/fire_production_trace/FireProductionForce.cpp")&&
+		residentTargetOwnerBound("tests/fire_production_trace/FireProductionForce.h")&&
 		residentTargetOwnerBound("tests/fire_production_trace/SourceManifest.h")&&
 		residentTargetOwnerBound("tools/generate_fire_production_roundoff_trace.py")&&
 		residentTargetOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")&&
@@ -4256,6 +4259,10 @@ int main()
 			"preserve_expansions_then_binary32_composition_projection_then_constant_mode_removal_then_binary32_compatibility_projection\n")!=
 			std::string::npos&&residentTargetEvidence.find("trace_equal_rounded_different_lineage_RED passed\n")!=
 			std::string::npos&&residentTargetEvidence.find("trace_one_bit_rounded_mutation_RED passed\n")!=
+			std::string::npos&&residentTargetEvidence.find("trace_force_equal_rounded_different_lineage_RED passed\n")!=
+			std::string::npos&&residentTargetEvidence.find("trace_force_one_bit_rounded_mutation_RED passed\n")!=
+			std::string::npos&&residentTargetEvidence.find("trace_owner_equal_rounded_different_lineage_RED passed\n")!=
+			std::string::npos&&residentTargetEvidence.find("trace_owner_one_bit_rounded_mutation_RED passed\n")!=
 			std::string::npos&&residentTargetEvidence.find(
 			"projection_consumer_metadata_device_issued_to_private_surface true\n")!=
 			std::string::npos&&residentTargetEvidence.find(
@@ -7316,8 +7323,22 @@ int main()
 	const bool oneBitRoundedMutationRefused=
 		!RISEFireProductionTrace::CalibrationSameRepresentedFloatVectorBits(
 			representedFirst,representedOneBit);
-	Check(equalRoundedDifferentTraceAccepted&&oneBitRoundedMutationRefused,
-		"roundoff mirror source lineage compares each represented binary32 value, not TraceFloat storage");
+	const bool equalRoundedForceAccepted=
+		RISEFireProductionTrace::CalibrationSameRepresentedForceFloatBits(
+			representedFirst[0u],representedSame[0u]);
+	const bool oneBitForceRefused=
+		!RISEFireProductionTrace::CalibrationSameRepresentedForceFloatBits(
+			representedFirst[0u],representedOneBit[0u]);
+	const bool equalRoundedOwnerAccepted=
+		RISEFireProductionTrace::CalibrationSameRepresentedOwnerFloatVectorBits(
+			representedFirst,representedSame);
+	const bool oneBitOwnerRefused=
+		!RISEFireProductionTrace::CalibrationSameRepresentedOwnerFloatVectorBits(
+			representedFirst,representedOneBit);
+	Check(equalRoundedDifferentTraceAccepted&&oneBitRoundedMutationRefused&&
+		equalRoundedForceAccepted&&oneBitForceRefused&&equalRoundedOwnerAccepted&&
+		oneBitOwnerRefused,
+		"roundoff transport, force, and owner mirrors compare represented binary32 values, not TraceFloat storage");
 	RISE::FireProductionFrozenMethaneSourceRequest sourceAttemptMutation=sourceRequest;
 	++sourceAttemptMutation.attemptIdentity;
 	RISE::FireProductionFrozenSourcePacketSeal sourceAttemptSeal;

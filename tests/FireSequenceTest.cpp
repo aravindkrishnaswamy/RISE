@@ -10192,9 +10192,19 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		FireSim::FireProductionCanonicalSourceAuthority::Build(wrongBeginningSourceRequest,
 			wrongBeginningSource,&error)&&wrongBeginningSource.BeginningStateIdentity()!=
 			request.frozenSource.BeginningStateIdentity();
+	std::vector<float> wrongBeginningQ=
+		request.eos.physicalFlux.transport.conservativeValues;
+	wrongBeginningQ[0u]=std::nextafter(wrongBeginningQ[0u],
+		std::numeric_limits<float>::infinity());
+	error.clear();
+	const bool wrongBeginningQOnlyRefused=
+		!FireProductionFrozenSourcePacketSealMatchesBeginningState(request.frozenSource,
+			request.eos.physicalFlux.transport.shape,wrongBeginningQ,
+			request.frozenSource.BeginningTemperatureK(),&error)&&
+		error=="canonical frozen source beginning-state parent differs";
 	mutation=request;mutation.frozenSource=wrongBeginningSource;
 	mutation.eos.sourceDelta=wrongBeginningSource.SourceDelta();
-	const bool wrongBeginningSourceRefused=wrongBeginningSourceBuilt&&
+	const bool wrongBeginningSourceRefused=wrongBeginningSourceBuilt&&wrongBeginningQOnlyRefused&&
 		hostRefusal("wrong_parent_frozen_source_beginning",mutation);
 	FireCase::AuthoredV1 wrongCaseAuthored=authored;wrongCaseAuthored.seed=201u;
 	FireCase::RecordV1 wrongCase;
