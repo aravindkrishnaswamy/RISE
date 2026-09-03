@@ -1398,6 +1398,95 @@ namespace RISEFireProductionFP64
 		FireProductionResidentEOSCandidateComparatorResult& result,
 		std::string* error=0 );
 
+	//! Qualification request for the private resident divergence-target authority.
+	//! The target issuer consumes the exact transport, physical-flux, Q* candidate,
+	//! and EOS publications produced in one command.  The frozen source term is an
+	//! immutable qualification input paired with its source-packet identity; the
+	//! live owner supplies the equivalent device-produced source authority.
+	struct FireProductionResidentTargetLineageComparatorRequest
+	{
+		FireProductionResidentEOSCandidateComparatorRequest eos;
+		std::vector<double> frozenSourceDivergenceTargetPerS;
+		std::uint64_t sourcePacketIdentity;
+		//! Refusal-only mutations.  They are not knobs on the live authority.
+		bool qualificationUnsealedTransportParent;
+		bool qualificationUnsealedPhysicalFluxParent;
+		bool qualificationUnsealedEOSCandidateParent;
+		bool qualificationUnsealedEOSParent;
+		bool qualificationNonImmediateCandidate;
+		bool qualificationCPUProducedTarget;
+		bool qualificationPreauthoredProjectionTarget;
+		bool qualificationMismatchedProjectionTopology;
+		bool qualificationEOSAcceptedButUnlinked;
+		std::uint64_t qualificationWorkingSetLimitBytes;
+
+		FireProductionResidentTargetLineageComparatorRequest() :
+			sourcePacketIdentity(0u),qualificationUnsealedTransportParent(false),
+			qualificationUnsealedPhysicalFluxParent(false),
+			qualificationUnsealedEOSCandidateParent(false),
+			qualificationUnsealedEOSParent(false),
+			qualificationNonImmediateCandidate(false),
+			qualificationCPUProducedTarget(false),
+			qualificationPreauthoredProjectionTarget(false),
+			qualificationMismatchedProjectionTopology(false),
+			qualificationEOSAcceptedButUnlinked(false),
+			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
+	};
+
+	//! Termwise terminal tap.  The bulk absolute-reference correction is recorded
+	//! but not summed.  monitoredAbsoluteReferenceTargetPerS is exactly zero below
+	//! the r170 2^-4 threshold and drains only the signed excess above it.
+	struct FireProductionResidentTargetLineageComparatorResult
+	{
+		std::vector<double> tangentTargetPerS;
+		std::vector<double> frozenSourceTargetPerS;
+		std::vector<double> absoluteReferenceDiagnosticPerS;
+		std::vector<double> monitoredAbsoluteReferenceTargetPerS;
+		std::vector<double> assembledTargetPerS;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t branchObligationBitmap;
+		std::uint32_t deviceFailureBitmap;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		std::uint64_t liveAuthorityAllocationBytes;
+		std::uint64_t transportPublicationIdentity;
+		std::uint64_t physicalFluxPublicationIdentity;
+		std::uint64_t candidatePublicationIdentity;
+		std::uint64_t EOSPublicationIdentity;
+		std::uint64_t targetPublicationIdentity;
+		std::uint64_t projectionConsumerIdentity;
+		double deviceElapsedMS;
+		bool deviceAttempted;
+		bool terminalRead;
+		bool deviceProduced;
+
+		FireProductionResidentTargetLineageComparatorResult() :
+			commandCommitCount(0u),interstageFullGridTransferCount(0u),
+			terminalStagingCount(0u),branchObligationBitmap(0u),deviceFailureBitmap(0u),
+			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			liveAuthorityAllocationBytes(0u),transportPublicationIdentity(0u),
+			physicalFluxPublicationIdentity(0u),candidatePublicationIdentity(0u),
+			EOSPublicationIdentity(0u),targetPublicationIdentity(0u),
+			projectionConsumerIdentity(0u),deviceElapsedMS(0.0),deviceAttempted(false),
+			terminalRead(false),deviceProduced(false) {}
+	};
+
+	bool FireProductionResidentTargetLineageMetalWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	bool FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	//! Qualification-only execution of the complete resident parent chain and the
+	//! private target issuer/consumer in one Metal command. No CPU target producer,
+	//! public authority object, or fallback is reachable through this surface.
+	bool EvaluateFireProductionResidentTargetLineageMetalComparator(
+		const FireProductionResidentTargetLineageComparatorRequest& request,
+		FireProductionResidentTargetLineageComparatorResult& result,
+		std::string* error=0 );
+
 	//! Fail-closed blocker. Metal qualification requires device candidates to be
 	//! checked against the fp64 N_C N_C^T forward-error certificate first.
 	bool BuildFireProductionScalarPhysicalFluxPrerequisiteMetal(

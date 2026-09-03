@@ -5208,3 +5208,35 @@ it was already tried and refuted here.
   `case_record_id` is unchanged, future producer/run identities inherit r199,
   and the golden checkpoint is untouched. The evidence SHA is sealed after
   fresh boundary review. The next rung is authenticated target lineage.
+
+- **r200 authenticated resident target lineage (2026-09-02):** completes the
+  fourth r195 rung as a private device target producer consuming the exact
+  command-local r197a transport, r198 physical-flux, r199 accepted-`Q*`, and
+  r199 EOS publication handles. The conjunction is structural: an unsealed
+  parent refuses on device, while a stale candidate or an EOS publication not
+  immediately linked to that candidate refuses before command submission. A
+  CPU-produced target surface cannot forge the private lineage. The target
+  publishes five fields separately before accepting their composition:
+  `dV(Q_stage)[D(f_N)]`, the frozen absolute source-packet target, the raw
+  absolute-reference diagnostic, r170's signed tail drain beyond `2^-4`, and
+  the compatible sum. Monitored-manifold policy is unchanged: the raw absolute
+  reference is recorded but not enforced in bulk; only the tail term enters
+  the projection target. Every one of 320 cell/field values bit-matches the
+  fp64 mirror's binary32 projection with `0 s^-1` residual and a zero exact-
+  projection bound. An initial one-ULP tangent miss exposed float face-
+  divergence arithmetic and was fixed by carrying certified expansion
+  arithmetic through the divergence, without tolerance widening. Adding the
+  target functions changes Metal's library identity, so the full r199 EOS
+  control is requalified rather than inherited: all 48,693,249 log arguments,
+  192 EOS field rows, rounding edges, and 13 REDs pass under source digest
+  `51463a15...b61cd0f` and function-set digest `ead731ea...e9ae36`. r189's
+  preauthored-target and topology refusals re-run on device with `0x2000`; all
+  four unsealed-parent cases produce `0x2800` and zero target/consumer IDs.
+  Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
+  host preflight. Residency is one command, one terminal read, and zero
+  interstage full-grid transfers; fixture/actual/target-live bytes are
+  `1343488`/`127656`/`114688`. The observed arithmetic-obligation bitmap is
+  exactly the independently required `0x01700180`, covering both tail sides,
+  term assembly, and closed compatibility. `case_record_id` is unchanged, producer/run
+  identity inherits r200, and the golden checkpoint is untouched. Evidence is
+  staged for fresh boundary review; the next rung is the live Metal owner.

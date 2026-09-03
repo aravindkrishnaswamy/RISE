@@ -5911,6 +5911,90 @@ The next separately committed and reviewed rung is authenticated target
 lineage; r199 does not claim the live R0/R1/R2 owner, final kernel sweep, or
 ported replay.
 
+### 7.56ag Authenticated resident target lineage (r200)
+
+r200 completes the fourth r195 resident-lineage rung. A private Metal target
+issuer consumes the exact command-local publications made by r197a transport,
+r198 physical flux, r199's source-inclusive accepted `Q*`, and r199 EOS. It
+accepts no public candidate or target object. The child retains the four exact
+publication handles and the parent command; every parent must be nonzero on
+device, while the issuer separately requires pointer identity through the
+immediate chain `transport -> physical flux -> Q* -> EOS`. A stale but valid
+candidate and an EOS publication relabelled onto a different candidate both
+refuse at host preflight, before a command is committed. Thus the r70 child can
+only attach to the projection/flux-produced candidate whose EOS was evaluated,
+not merely to an independently EOS-admissible state.
+
+The target is evaluated as independently published terms before composition:
+
+`S_div = dV(Q_stage)[D(f_N)] + S_div^source + S_div^tail`.
+
+The first term consumes r198's separately retained centered nonadvective mass
+and energy flux, with the exact r197a stage state and temperature. The second
+is the frozen absolute source-packet target. The EOS absolute-reference signal
+is published separately as `(P_rep/P0 - 1)/Delta t` for monitored diagnostics;
+it is not summed in the bulk. Only r170's signed tail excess beyond `2^-4` is
+drained toward that threshold and enters `S_div^tail`. The raw diagnostic and
+tail term both consume r199's already qualified binary32 represented-pressure
+publication. This compositional scope is deliberate: r199 proves that resident
+EOS field against its fp64 mirror, and r200 proves every consumer term from the
+exact bits r199 published. Closed topology removes the constant mode from the
+assembled target after summation; pressure-open topology preserves it.
+
+The 64-cell Metal fixture separately compares tangent, frozen source, raw
+absolute-reference diagnostic, monitored tail, and final compatible target.
+For every one of the 320 cell/field rows, the measured residual against the
+fp64 mirror's single binary32 projection is exactly `0 s^-1`; the local exact-
+projection bound is `0 s^-1`, so every reported worst residual/bound ratio is
+zero. There is no across-field acceptance statistic and no cancellation-
+sensitive bound. During implementation, an initially float-evaluated face
+divergence missed one tangent result by one ULP. The remedy was to carry the
+already certified expansion arithmetic through the flux divergence, not to
+widen a tolerance. The final five fields are byte-identical.
+
+Because adding these kernels changes the exact library compiled by Metal,
+r200 does not inherit r199's execution identity silently. The complete r199
+EOS sweep is re-run through the same resident context. All 48,693,249 log
+qualification arguments, 192 per-cell EOS comparisons, rounding-edge cases,
+and 13 device REDs pass unchanged. The current library source digest is
+`51463a15090728cbbbd95c6194a47e4ef35ea7cd88ac1cd0f27a55943b61cd0f`
+and its compiled function-set digest is
+`ead731eae57dda18d4f8548f2d4355014ee8e030b6dd2dc6ee7e521557e9ae36`.
+The device/runtime/language/safe-math tuple remains the r199-qualified Apple
+M4 Max tuple. This control binds the parent EOS proof and the newly compiled
+target functions to one actual library identity.
+
+The device refusal surface is explicit. Zeroing any one of transport,
+physical-flux, candidate, or EOS publication produces failure bitmap `0x2800`
+(`0x0800` target-parent failure plus the downstream `0x2000` consumer refusal),
+with zero target and consumer identities. A preauthored target and a mismatched
+projection topology each reach the resident consumer and refuse with `0x2000`;
+their otherwise valid target publication remains diagnostic, but consumer
+identity is zero. The stale-candidate, EOS-accepted-but-unlinked, CPU-produced-
+target, and understated-working-set cases refuse before device execution and
+issue no publication. These distinctions re-derive r189's refusal surface on
+device without claiming that a host-preflight refusal was a GPU observation.
+
+The qualification interval remains one command, one terminal staging read,
+and zero interstage full-grid transfers. The fixture certificate is `1343488`
+bytes against `127656` bytes allocated. The target's live incremental
+certificate is `114688` bytes; it accounts for five per-cell term/publication
+fields plus both identities and consumes rather than duplicates its resident
+parents. The independently required arithmetic-obligation bitmap is exactly
+`0x01700180`, equal to the observed bitmap; this binds both sides of the tail
+threshold, term assembly, and closed-topology compatibility paths instead of
+accepting a merely nonzero branch census. The qualification result is a
+terminal tap only and is statically not
+convertible to projection authority. No case-authored input changed, so
+`case_record_id` remains stable; producer and later run identities inherit
+r200 semantics, and the golden checkpoint is untouched. Evidence is staged
+for fresh review in
+`rendered/fire_production_calibration/r200_authenticated_device_target_lineage/`
+`resident_target_lineage_evidence.v1`; its final SHA is recorded only after the
+boundary review closes. The next separately reviewed rung is the complete
+R0/R1/R2 owner live on Metal. r200 does not claim that owner, the final kernel
+sweep, or the ported replay.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and
