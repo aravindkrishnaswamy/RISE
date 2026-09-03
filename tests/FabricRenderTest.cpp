@@ -794,17 +794,33 @@ static void TestBacklitSheerCurtain()
 		"curtain: MONEY ASSERTION -- `transmission thin` glows through from behind while "
 		"`transmission none` (the same scene otherwise) is exactly black" );
 
-	// NOT asserted here, but disclosed: under PATH TRACING specifically
-	// (this function's own rasterizer), the diffuse-transmission lobe's
-	// contribution scales close to `transmit^2` rather than linearly in
-	// `transmit` -- confirmed, round 3, to be a PT full-sphere NEE/MIS
-	// issue, NOT a WeaveBRDF/WeaveSPF defect (a Scatter()-only MC probe
-	// with no NEE/MIS is exactly linear; BDPT, sharing the same material
-	// code, is also exactly linear).  docs/CLOTH_FABRIC_DESIGN.md section
-	// 15 debt 21 has the full writeup and measured numbers; NOT YET
-	// FIXED and not yet covered by a dedicated regression test here --
-	// a separate diagnosis effort is in progress and may turn this into
-	// a fix (or a different root cause) in a future round.
+	// RESOLVED (docs/CLOTH_FABRIC_DESIGN.md section 15 debt 21).  What
+	// looked like a PT full-sphere NEE/MIS bug (the diffuse-transmission
+	// lobe's response scaling close to `transmit^2` instead of linearly)
+	// was NOT an MIS-weighting defect at all: the (p_light, p_bsdf) and
+	// (bsdfPdf, p_nee) pairs the power heuristic combines were verified
+	// to partition to 1 exactly, as they must algebraically.  The real
+	// bug was a shadow-ray SELF-INTERSECTION in
+	// `RayBilinearPatchIntersection` (shared by every
+	// `clippedplane_geometry` caller): the self-hit rejection compared
+	// `dRange` against the fixed absolute `NEARZERO` (1e-12), but a
+	// self-intersecting ray's `dRange` is FP noise that scales with the
+	// coordinate magnitude, not machine epsilon in absolute terms --
+	// measured at 1e-12 to 3e-12 on this scene's world-scale coordinates,
+	// straddling the threshold and spuriously self-shadowing ~94% of
+	// this curtain's own NEE shadow rays toward a light behind it (a
+	// point light's zero solid angle never triggers the analogous
+	// continuation-ray path, which is why the delta-light case in this
+	// same file was never affected).  As `transmit` grows, PT's MIS
+	// weight legitimately shifts share from the (broken) NEE strategy to
+	// the (unaffected) BSDF-sampling strategy, so the combined estimate
+	// climbed from mostly-broken toward mostly-correct -- an artificial
+	// super-linear curve manufactured by a masking geometry bug, not a
+	// weight-partition defect.  Fixed by making the self-intersection
+	// floor scale-relative (see `RayBilinearPatchIntersection.cpp`);
+	// every caller (shadow rays AND primary/continuation rays) benefits
+	// from the one fix.  See `TestAreaLitSheerWeave` below for the
+	// dedicated regression.
 
 	// PT-vs-BDPT on the thin scene is measured and PRINTED, but NOT
 	// asserted -- see the block comment above this function for the
@@ -830,6 +846,105 @@ static void TestBacklitSheerCurtain()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 4. AREA-LIT SHEER WEAVE -- docs/CLOTH_FABRIC_DESIGN.md 15 debt 21
+// (RESOLVED).  Regression guard for the shadow-ray self-intersection
+// fix in `RayBilinearPatchIntersection.cpp`.
+//
+// A `weave_material` curtain (`transmission thin`, `gap 0`) directly
+// in front of a MESH area light (`lambertian_luminaire_material` on a
+// `clippedplane_geometry`, well-separated so BDPT's own unguarded
+// vertex-connection geometric term -- debt 20, a SEPARATE, still-open
+// integrator limitation on this same material class -- does not fire;
+// confirmed empirically during the debt-21 diagnosis, and NOT the same
+// scene as `TestBacklitSheerCurtain`'s point light + touching-distance
+// curtain, which DOES trip debt 20).  Debt 21's actual mechanism had
+// nothing to do with the mesh vs. delta light distinction (both share
+// the same shadow-ray self-intersection producer), but a MESH light is
+// what the original bug report used and what exercises the
+// `LightSampler::EvaluateDirectLighting` mesh-luminary MIS branch
+// (`p_light` / `p_bsdf` / `PowerHeuristic`) end to end, so it stays the
+// regression's own light type.
+//
+// Two invariants, restored by the fix:
+//   (a) PT is LINEAR in `transmit`: PT(1.0)/PT(0.1) ~= 10, not the
+//       ~46.7x the pre-fix spurious self-shadowing produced.
+//   (b) PT and BDPT AGREE (this geometry does not trip debt 20): their
+//       means at `transmit = 1.0` match within a few percent.
+//
+// MEASURED (this machine, PT/BDPT both 1024 spp, 16x16,
+// `oidn_denoise FALSE`, seed base 1000): PT(0.1) = 0.02591,
+// PT(1.0) = 0.25871 (ratio 9.987); BDPT(1.0) = 0.25868
+// (PT/BDPT = 1.0001).  Tolerances below are set well outside that
+// margin for seed-to-seed MC noise, not tuned to this exact run.
+static std::string AreaLitCurtainCommon(
+	double transmit,
+	unsigned int width, unsigned int height )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_window\n\tcolor 1.0 1.0 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_window\n\texitance pnt_window\n\tmaterial none\n\tscale 1.0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname window_quad\n"
+			"\tpta -3.0 -3.0 -1.5\n\tptb 3.0 -3.0 -1.5\n\tptc 3.0 3.0 -1.5\n\tptd -3.0 3.0 -1.5\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname window_obj\n\tgeometry window_quad\n\tmaterial mat_window\n\tposition 0 0 0\n}\n\n"
+		"weave_material\n{\n\tname mat_curtain\n\tfabric custom\n\ttransmission thin\n\tgap 0.0\n"
+			"\twarp_transmit " << transmit << "\n\tweft_transmit " << transmit << "\n}\n\n"
+		"clippedplane_geometry\n{\n\tname curtain_quad\n"
+			"\tpta -2.0 -2.0 0\n\tptb 2.0 -2.0 0\n\tptc 2.0 2.0 0\n\tptd -2.0 2.0 0\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname curtain_obj\n\tgeometry curtain_quad\n\tmaterial mat_curtain\n\tposition 0 0 0\n}\n\n";
+	return ss.str();
+}
+
+static const double kAreaLitLinearityTol = 0.10;	// +/-10% of the ideal 10x ratio
+static const double kAreaLitPtBdptRatioTol = 0.05;	// +/-5% of PT/BDPT == 1
+
+static void TestAreaLitSheerWeave()
+{
+	std::cout << "=== 4. Area-lit sheer weave (debt 21 regression: shadow-ray self-intersection) ===" << std::endl;
+
+	const unsigned int W = 16, H = 16;
+	const unsigned int samples = 1024;
+
+	const ImageStats ptLo = RenderAndComputeStats(
+		AssembleScene( AreaLitCurtainCommon( 0.1, W, H ), RasterizerPTRgbNoEnv( samples, 6 ) ),
+		"arealit_pt_t01" );
+	const ImageStats ptHi = RenderAndComputeStats(
+		AssembleScene( AreaLitCurtainCommon( 1.0, W, H ), RasterizerPTRgbNoEnv( samples, 6 ) ),
+		"arealit_pt_t10" );
+	const ImageStats bdptHi = RenderAndComputeStats(
+		AssembleScene( AreaLitCurtainCommon( 1.0, W, H ), RasterizerBDPTRgbNoEnv( samples, 6, 6 ) ),
+		"arealit_bdpt_t10" );
+
+	Check( ptLo.valid && ptHi.valid && bdptHi.valid,
+		"area-lit weave: all three renders (PT t=0.1, PT t=1.0, BDPT t=1.0) produced output" );
+	if( !ptLo.valid || !ptHi.valid || !bdptHi.valid ) return;
+
+	Check( ptLo.luminance > 1e-6 && ptHi.luminance > 1e-6,
+		"area-lit weave: both PT renders are non-degenerate (not black frames)" );
+
+	const double linearityRatio = ptHi.luminance / std::fmax( ptLo.luminance, 1e-12 );
+	const double ptBdptRatio = ptHi.luminance / std::fmax( bdptHi.luminance, 1e-12 );
+
+	std::cout << "  PT(t=0.1) = " << ptLo.luminance
+		<< "   PT(t=1.0) = " << ptHi.luminance
+		<< "   BDPT(t=1.0) = " << bdptHi.luminance << std::endl;
+	std::cout << "  PT linearity ratio [PT(1.0)/PT(0.1)] = " << linearityRatio
+		<< "   (ideal 10.0, tolerance +/-" << (kAreaLitLinearityTol * 100.0) << "%)" << std::endl;
+	std::cout << "  PT/BDPT at t=1.0 = " << ptBdptRatio
+		<< "   (ideal 1.0, tolerance +/-" << (kAreaLitPtBdptRatioTol * 100.0) << "%)" << std::endl;
+
+	Check( std::fabs( linearityRatio - 10.0 ) <= 10.0 * kAreaLitLinearityTol,
+		"area-lit weave: PT is LINEAR in `transmit` (debt 21 fixed -- was ~46.7x pre-fix, exponent ~1.7)" );
+	Check( std::fabs( ptBdptRatio - 1.0 ) <= kAreaLitPtBdptRatioTol,
+		"area-lit weave: PT and BDPT agree within MC noise on this geometry (debt 20's G-term singularity does not fire here)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
@@ -847,6 +962,7 @@ int main( int argc, char** argv )
 	TestHwssInvariant();
 	TestPtVsBdpt();
 	TestBacklitSheerCurtain();
+	TestAreaLitSheerWeave();
 
 	std::cout << "==========================================================" << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

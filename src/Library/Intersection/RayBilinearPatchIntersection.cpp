@@ -72,9 +72,36 @@ namespace RISE
 		hit.dRange = RISE_INFINITY;
 		hit.dRange2 = RISE_INFINITY;
 
+		// Self-intersection floor for `dRange`, scale-relative to the
+		// coordinates actually involved rather than the fixed absolute
+		// `NEARZERO` (1e-12).  A shadow or continuation ray whose origin
+		// sits exactly on this patch (the common case: it just came from
+		// a hit on this same quad) has a MATHEMATICALLY zero root at
+		// t = 0, but `computet`'s (srfpos - ray.origin) numerator and the
+		// (u, v) that produced `srfpos` both carry FP round-off that
+		// scales with the MAGNITUDE of the patch/ray coordinates, not
+		// with machine epsilon in absolute terms -- at world-scale
+		// coordinates of a few units, that noise floor is ~1e-12 to
+		// 1e-11, straddling `NEARZERO` and letting roughly half of all
+		// self-intersections through as spurious tiny-positive hits
+		// (measured: ~94% spurious self-shadow rate on a flat curtain's
+		// own NEE shadow ray toward a light behind it -- see
+		// docs/CLOTH_FABRIC_DESIGN.md section 15 debt 21).  Same pattern
+		// as the torus shadow-ray speckle in
+		// docs/skills/precision-fix-the-formulation.md; fixed once here
+		// (the shared producer) rather than in each of `IntersectRay` /
+		// `IntersectRay_IntersectionOnly` (the anti-pattern that skill
+		// calls out) so every caller benefits.
+		Scalar coordScale = fabs(ray.origin.x) + fabs(ray.origin.y) + fabs(ray.origin.z);
+		for( int ci = 0; ci < 4; ci++ ) {
+			coordScale = r_max( coordScale,
+				fabs(patch.pts[ci].x) + fabs(patch.pts[ci].y) + fabs(patch.pts[ci].z) );
+		}
+		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
 		//
 		// Equation of the patch
-		// 
+		//
 		// P(u,v) = (1-u)(1-v)*patch.pts[0] + (1-u)v*patch.pts[1] + u(1-v)*patch.pts[2] + uv*patch.pts[3]
 		//
 
@@ -153,7 +180,7 @@ namespace RISE
 				const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
 				hit.dRange = computet(ray,pos1);
 
-				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > 0 ) {
+				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin ) {
 					hit.bHit = true;
 				}
 			}
@@ -166,14 +193,14 @@ namespace RISE
 				const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
 				hit.dRange = computet(ray,pos1); 
 
-				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > 0 ) {
+				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin ) {
 					hit.bHit = true;
 
 					const Scalar u = getu(sol[1],A2,A1,B2,B1,C2,C1,D2,D1);
 					if( u < 1+NEARZERO && u > NEARZERO ) {
 						const Point3 pos2 = GeometricUtilities::EvaluateBilinearPatchAt( patch, u, sol[1] );
 						const Scalar t2 = computet(ray,pos2);
-						if(t2 < 0 || hit.dRange < t2) { // t2 is bad or t1 is better
+						if(t2 < tMin || hit.dRange < t2) { // t2 is bad or t1 is better
 							return;
 						}
 						// other wise both t2 > 0 and t2 < t1
@@ -189,7 +216,7 @@ namespace RISE
 					const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
 					hit.dRange = computet(ray,pos1);
 
-					if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > 0 ) {
+					if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin ) {
 						hit.bHit = true;
 					}
 				}

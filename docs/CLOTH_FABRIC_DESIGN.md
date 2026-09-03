@@ -4,9 +4,11 @@
 SHIPPED 2026-09-03 (slice P2-A, the structured `weave_material` triad, then
 slice P2-B, thin-cloth transmission — see §10.1a; P2-B left two known
 integrator-side debts open, **debt 20** — BDPT/VCM 100–350x over-count a
-full-sphere-transmissive weave — and **debt 21** — PT's diffuse-transmission
-lobe scales near-`transmit²` instead of linearly — both diagnosed to the
-integrator layer, not the material, and both still open). Phase 3's
+full-sphere-transmissive weave, still open — and **debt 21** — PT's
+diffuse-transmission lobe scaled near-`transmit²`/`transmit^1.7` instead of
+linearly, **RESOLVED 2026-09-03**: not an integrator MIS defect at all, but a
+shadow-ray self-intersection epsilon bug in the shared
+`RayBilinearPatchIntersection` geometry routine — see §15 debt 21). Phase 3's
 weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
 **declined**, on the same precedent and for the same reasons as before; what
 shipped instead is the bounded `add_fuzz` verb — a sparse fuzz-shell groom
@@ -4747,58 +4749,159 @@ yet known (§10.1).
     the same entry for readers who start from the integrator side rather
     than the material side.
 
-21. **NEW 2026-09-03 (P2-B fix round 1/3, cross-checked round 3 —
-    REVIEW_P2R9.md) — under PATH TRACING, the diffuse-transmission
-    lobe's contribution scales close to `transmit²` instead of linearly
-    in `transmit`. Root-caused to PT's full-sphere NEE/MIS path, NOT
-    `WeaveBRDF`/`WeaveSPF` — confirmed two independent ways, still
-    untracked by a regression test.**
+21. **RESOLVED 2026-09-03 (three diagnosis rounds, then a fourth that found
+    the real cause). Originally filed as "under PATH TRACING, the
+    diffuse-transmission lobe's contribution scales close to `transmit²`
+    instead of linearly in `transmit`." The actual mechanism is a
+    GEOMETRY-LAYER shadow-ray self-intersection epsilon bug, not an
+    integrator MIS defect — full writeup below; fix landed in
+    `RayBilinearPatchIntersection.cpp`.**
 
-    **Measured** (isolated probe: a bright window filling the frame,
-    curtain directly in front, gap forced to 0 so only the diffuse lobe
-    is live): holding `gap = 0` and varying `transmit` alone,
+    **Original measurement** (isolated probe: a bright window filling the
+    frame, curtain directly in front, gap forced to 0 so only the diffuse
+    lobe is live): holding `gap = 0` and varying `transmit` alone,
     `transmit = 0.5` gave `0.21x` the `transmit = 1.0` response (not
-    `0.5x`), and `transmit = 0.25` gave `0.053x` (not `0.25x`) — under
-    the `pathtracing_pel_rasterizer`. The SAME configuration rendered
-    with `bdpt_pel_rasterizer` instead scales EXACTLY linearly:
-    `0.500x` and `0.250x`, to three figures.
+    `0.5x`), and `transmit = 0.25` gave `0.053x` (not `0.25x`) — under the
+    `pathtracing_pel_rasterizer`. The SAME configuration rendered with
+    `bdpt_pel_rasterizer` instead scaled EXACTLY linearly: `0.500x` and
+    `0.250x`, to three figures. **This specific measurement's numbers
+    (`0.21x`) turned out to be dominated by a SEPARATE, unrelated
+    artifact** — `file_rasterizeroutput`'s `color_space` parameter
+    defaults to `sRGB` even for 32-bit EXR, so a probe that reads
+    "linear radiance" from a default-configured EXR is actually reading
+    an sRGB-encoded value; the fixed exponent that mistake introduces
+    (~0.45) looks exactly like a sub-linear curve and was never load-
+    bearing evidence for the real, smaller bug found below. Every
+    measurement scene in this section must set `color_space
+    Rec709RGB_Linear` explicitly on `file_rasterizeroutput`.
 
-    **Ruled OUT, round 3 (REVIEW_P2R9.md), independently of the PT-vs-BDPT
-    comparison above.** A from-scratch Scatter()-only Monte Carlo probe
-    (no NEE, no MIS — just `Scatter()` + `kray`) on `linen` thin with
-    `gap` forced to 0 measured ratio(transmit=0.5)/ratio(transmit=0.25)
-    `= 1.998` and ratio(1.0)/ratio(0.25) `= 3.999` — linear, not the
-    `4x`/`16x` a `transmit²` dependence would give — and
+    **Ruled OUT, round 3 (REVIEW_P2R9.md).** A from-scratch
+    Scatter()-only Monte Carlo probe (no NEE, no MIS — just `Scatter()` +
+    `kray`) on `linen` thin with `gap` forced to 0 measured
+    ratio(transmit=0.5)/ratio(transmit=0.25) `= 1.998` and
+    ratio(1.0)/ratio(0.25) `= 3.999` — linear — and
     `(value(wi)·|cos|) / Pdf(...)` is CONSTANT (`0.858824`) across
-    `transmit` in `{0.25, 0.5, 1.0}`, which is only possible if
-    `value()` and `Pdf()` carry the SAME `transmit` weighting (a double
-    application in one but not the other would move this ratio). This
-    matches two other independent in-tree checks that were already
-    passing before this debt was opened: `SPFPdfConsistencyTest`'s
-    full-sphere `Pdf()` integral equals `(1-gap)` regardless of
-    `transmit`, and `LayeredWhiteFurnaceTest` rows 50-51's from-scratch
-    quadrature (`PredictSheerTotal`, §15 entry above debt 20's own
-    round) agrees with the measured total to `<= 0.0053` absolute.
-    `SPFBSDFConsistencyTest`'s pointwise `kray*pdf == BRDF*|cos|` table
-    (Part D2, added round 3) now also exercises `WeaveSPF`'s
-    transmission branch directly (two sheer-linen configurations, gap 0
-    and gap 0.2, 0.00% error) — a double application in the SPF would
-    show up there as a non-noise-shaped skew, and it does not.
+    `transmit` in `{0.25, 0.5, 1.0}`. `SPFPdfConsistencyTest`'s
+    full-sphere `Pdf()` integral, `LayeredWhiteFurnaceTest` rows 50-51's
+    quadrature, and `SPFBSDFConsistencyTest`'s pointwise
+    `kray*pdf == BRDF*|cos|` table all agreed: `WeaveBRDF::value()`/
+    `WeaveSPF::Pdf()`/`Scatter()` are exactly linear in `transmit_k`.
+    This conclusion **stands**; it correctly pointed at the integrator,
+    just not at the layer within it that was actually broken.
 
-    Conclusion: `WeaveBRDF::value()`/`WeaveSPF::Pdf()`/`Scatter()` are
-    linear in `transmit_k` by every check that can see them directly.
-    The `transmit²`-shaped deficit is real (BDPT reproduces the correct
-    linear scaling using the SAME material code) and lives in PT's
-    full-sphere next-event-estimation / MIS-weighting path — the code
-    that decides how much weight a `LightSampler`-driven direct-light
-    sample gets when the receiving material's own `Pdf()` toward that
-    light is itself `transmit`-weighted. **Not yet fixed, and not yet
-    covered by a dedicated regression test** — a separate diagnosis
-    effort is in progress as of this writing and may turn this into a
-    fix in a future round; this entry, `scenes/FeatureBased/README.md`'s
-    probe-numbers paragraph, and `tests/FabricRenderTest.cpp`'s own
-    comment should all be revisited together once it lands (or once the
-    diagnosis concludes the deficit is something else entirely).
+    **Round 4 (this fix): re-measured with the EXR colour-space artifact
+    removed, on a MESH area light (a `lambertian_luminaire_material`
+    behind the curtain, not the point light the earlier rounds used).**
+    With `color_space Rec709RGB_Linear` correctly set, PT's response was
+    STILL super-linear — `t = 0.1 → 1.0` gave a `46.7x` ratio (not the
+    ideal `10x`; exponent ≈ 1.7), while BDPT gave `9.98x` (linear, matching
+    the material's own proven linearity). This ruled the EXR artifact out
+    as the sole explanation and left a real, smaller, previously-masked
+    bug — this round's scratch diagnosis notes have the full reproduction
+    trail (EXR colour-space isolation, per-strategy render comparison,
+    the mesh-light NEE shadow-ray instrumentation) if a future session
+    needs to re-derive it.
+
+    **Mechanism, found by strategy isolation, not by inspection.**
+    Forcing PT to use EACH strategy alone and unweighted (NEE-only:
+    `w_light = 1`, BSDF-sampled emission suppressed; BSDF-only: the
+    reverse) showed NEE-only was linear in `transmit` but read only
+    ~10% of BSDF-only's mean — a ~10x gap between two estimators of the
+    SAME direct-lighting integral, which is impossible if both are
+    unbiased. Instrumenting the mesh-light NEE shadow ray
+    (`LightSampler::EvaluateDirectLighting`'s mesh-luminary branch) found
+    the cause directly: **93.6% of NEE shadow rays from the curtain
+    toward the light behind it were spuriously self-shadowed by the
+    curtain's own geometry.** The shadow ray's origin sits exactly on the
+    curtain's own `clippedplane_geometry` bilinear patch (it just
+    scattered from there); `RayBilinearPatchIntersection`'s self-hit
+    rejection compared the computed intersection distance `dRange`
+    against the fixed absolute `NEARZERO` (`1e-12`), but `dRange`'s
+    numerator (`computet`'s `srfpos - ray.origin`, fed by a `(u, v)` from
+    a quadratic solve over the patch's own corner coordinates) carries FP
+    round-off that scales with the MAGNITUDE of those coordinates, not
+    with machine epsilon in absolute terms. Measured directly on this
+    scene (world-scale coordinates of a few units): self-intersection
+    `dRange` values of `1e-12` to `3e-12` — straddling `NEARZERO`, so
+    roughly half of all self-intersections registered as genuine,
+    tiny-positive-distance hits and occluded the light.
+
+    **Why this masqueraded as an MIS bug, and why the delta-light
+    measurements in this same debt never caught it.** The (`p_light`,
+    `p_bsdf`) and (`bsdfPdf`, `p_nee`) pairs the power heuristic combines
+    were independently verified to be numerically IDENTICAL for the same
+    direction (same alias-table selection pdf, same `WeaveSPF::Pdf`
+    call) — the partition-of-unity `w_light + w_bsdf = 1` held exactly,
+    as it algebraically must. What was NOT constant was NEE's REALIZED
+    value: spuriously self-shadowed ~94% of the time (a purely geometric
+    effect, independent of `transmit`), so NEE under-delivered by a
+    roughly fixed multiplicative factor at every `transmit`. As
+    `transmit` grows, `bsdfPdf` grows, and MIS correctly shifts weight
+    share from NEE toward the (healthy) BSDF-sampling strategy — so the
+    combined estimate climbed from "mostly the broken, deflated NEE
+    estimator" toward "mostly the healthy BSDF estimator", an artificial
+    super-linear curve manufactured by a geometry bug hiding behind a
+    real, correctly-computed MIS weight shift. The earlier delta-light
+    (`omni_light`) measurements in this file never saw this: a delta
+    light's NEE row has no competing BSDF-sampling strategy (`w = 1`
+    unconditionally — see the MIS_HEURISTICS.md "mental model for delta
+    lights" table), so there is
+    no weight-shift to reveal the deflation — the same self-shadowing
+    still occurred there (documented as a "side finding" in the
+    diagnosis, ~65-70% on that scene's specific angles) but it only added
+    variance/noise to an otherwise-correct linear mean, never bias.
+
+    **Fix**, in `src/Library/Intersection/RayBilinearPatchIntersection.cpp`
+    (the shared ray-bilinear-patch solver — used by every
+    `ClippedPlaneGeometry` caller AND by `BilinearPatchGeometry`, the
+    `bilinearpatch_geometry` chunk area lights use;
+    `RayTriangleIntersectionWithDisplacement` also calls it but is dead,
+    never-invoked code): the self-intersection floor is now
+    scale-relative — `tMin = NEARZERO * (1 + coordScale)`, where
+    `coordScale` is the largest L1 magnitude among the ray origin and the
+    patch's four corners — instead of the bare `NEARZERO`. Fixed ONCE in
+    the shared producer (`RayBilinearPatchIntersection` itself) rather
+    than in each of `IntersectRay` / `IntersectRay_IntersectionOnly`
+    separately, per `docs/skills/precision-fix-the-formulation.md`'s
+    "fix it at one of the N callers" anti-pattern (that skill file
+    already carries the identically-shaped `RayTorusIntersection` shadow-
+    ray-speckle example) — the fix benefits primary/continuation rays
+    too, not just shadow rays, even though only the shadow-ray path's
+    binary occlusion made the deflation catastrophic enough to be
+    visible here.
+
+    **Verified fixed**: with the fix, the same mesh-light scene's PT
+    self-shadow rate drops to 0/420 (from 397/420), PT's `t=0.1 → 1.0`
+    ratio becomes `9.99x` (matching BDPT's `9.98x` and the material's
+    proven-linear `10x` ideal), and PT/BDPT means agree within ~4% at
+    every measured `transmit` (`0.1, 0.25, 0.5, 1.0`). Zero regressions
+    across `EnvLightBalanceTest` (116/116, unchanged), `HairRenderTest`,
+    `HairDirectionalBacklitTest`, `SPFPdfConsistencyTest`,
+    `SPFBSDFConsistencyTest`, `LayeredWhiteFurnaceTest`,
+    `WeaveMaterialChunkTest`, `ClippedPlaneGeometryTest`,
+    `DisplacedGeometryTest`, `GeometryUVRoundtripTest`,
+    `GeometrySurfaceDerivativesTest`, `TessellatedShapeDerivativesTest`,
+    `GeometryShadingTangentTest`, `RectLightChunkTest`,
+    `ShapeLightChunkTest`. Regression guard:
+    `tests/FabricRenderTest.cpp::TestAreaLitSheerWeave` (a mesh-lit sheer
+    curtain, asserting both PT's linearity in `transmit` and PT/BDPT
+    agreement). `scenes/FeatureBased/README.md`'s probe-numbers paragraph
+    is corrected to match.
+
+    **Measurement-methodology lesson, for the next diagnosis that sees
+    "PT disagrees with BDPT/VCM on an otherwise-clean scene":** the
+    power-heuristic partition-of-unity identity (`w1 + w2 = 1` for the
+    same `(p, q)` pair evaluated on both sides) is algebraic and cannot
+    silently break unless the two sides genuinely evaluate different
+    numbers for `p` or `q` — pointwise pdf tracing is the right first
+    check, but if it comes back clean, the bias can still be
+    manufactured entirely upstream of MIS, by one strategy's REALIZED
+    samples being biased (not its weight formula). Isolating each
+    strategy alone and unweighted, then comparing their means directly,
+    catches that class of bug in one render each; it does not require
+    walking a single pdf pair by hand. See also
+    `docs/skills/bdpt-vcm-mis-balance.md`'s step 0 (three known non-MIS
+    causes) — this is a fourth.
 
 ---
 

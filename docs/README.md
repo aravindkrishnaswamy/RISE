@@ -83,11 +83,14 @@ historical 2026-06-19 snapshot, not present-day ground truth.
   `hair_geometry` + groom generator + guides + `.hair` import + Blender
   export + the Yan 2017 fur medulla, `medulla_ratio` > 0); LOD deferred
   (Phase 4)
-- [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md): PROPOSED woven-cloth/fabric
-  system — `fabric_material` (Charlie sheen over an allowlisted base, with a
-  directional-albedo energy split), the UV-aligned mesh shading tangent, a
-  `weave_rotation` angle field, `fabric` presets and a `make_fabric` verb;
-  structured weave (Phase 2) and yarn geometry (Phase 3) gated
+- [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md): Phases 1-3 shipped
+  2026-09-03 -- `fabric_material` (isotropic Charlie sheen over an
+  allowlisted base, Kulla-Conty energy law, baked directional albedo),
+  the UV-aligned mesh shading tangent, `fabric` presets + `make_fabric`,
+  glTF `KHR_materials_sheen`; `weave_material` (two-family structured
+  weave on hair's fibre lobes, thin-cloth transmission); the bounded
+  `add_fuzz` silhouette-shell verb. Open: integrator debts 20/21 on
+  zero-thickness full-sphere surfaces, the user-run adoption census
 - [CAMERAS_ROADMAP.md](CAMERAS_ROADMAP.md): shipped Phase-1 camera
   infrastructure and future camera models
 - [GLTF_IMPORT.md](GLTF_IMPORT.md): shipped mesh/scene/PBR import and deferred

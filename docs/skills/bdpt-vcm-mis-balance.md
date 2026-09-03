@@ -54,12 +54,13 @@ description: |
 
 ## Procedure
 
-### 0. Rule out the three known non-MIS causes first
+### 0. Rule out the four known non-MIS causes first
 
-Three failure modes produce exactly the "bidirectional render
-disagrees with PT" symptom while the MIS arithmetic is perfectly
-healthy.  All are minutes to check; do them before any integrator
-instrumentation:
+Four failure modes produce exactly the "bidirectional render
+disagrees with PT" symptom (or, in cause 3's case, "PT itself
+disagrees with its own material's proven-linear response") while the
+MIS arithmetic is perfectly healthy.  All are minutes to check; do
+them before any integrator instrumentation:
 
 0. **PT may be the broken one — check IOR-stack seeding when the
    camera (or an emitter) sits inside a dielectric.**  (Found
@@ -117,6 +118,38 @@ instrumentation:
    structurally blind to it.  A density-histogram regression
    (`tests/GeometryUVRoundtripTest.cpp`, TestTorus) shows the
    pattern to copy for other primitives.
+
+3. **A strategy's REALIZED samples are biased, not its WEIGHT
+   formula — check for shadow-ray self-intersection before trusting
+   a pointwise pdf trace.**  (Found 2026-09-03 on a `weave_material`
+   full-sphere-transmissive curtain lit by a mesh area light: PT's
+   response to `transmit` looked super-linear, exponent ≈ 1.7, while
+   BDPT — sharing the identical material code — stayed exactly
+   linear.)  The `(p_light, p_bsdf)` / `(bsdfPdf, p_nee)` pairs
+   `PowerHeuristic` combines can be verified numerically IDENTICAL for
+   the same direction (same alias-table pdf, same `Pdf()` call) —
+   partition-of-unity holds exactly, as it algebraically must — and
+   the bug can still be real, because a strategy's REALIZED value can
+   be biased for a reason that has nothing to do with its weight.
+   Here, `ClippedPlaneGeometry`'s NEE shadow rays were spuriously
+   self-shadowed by their OWN originating surface ~94% of the time
+   (`RayBilinearPatchIntersection`'s self-hit epsilon, a fixed
+   absolute `NEARZERO`, was too tight for the FP noise actually
+   produced at the scene's coordinate scale) — a purely geometric
+   effect, independent of `transmit`, so the affected strategy
+   (NEE) stayed internally linear but deflated by a constant factor.
+   The super-linear SHAPE came from MIS correctly shifting weight
+   share toward the OTHER (healthy) strategy as the competing pdf
+   grew — a real, correctly-computed weight shift wearing a geometry
+   bug as a costume.  Fast diagnosis: force each strategy to fire
+   ALONE and UNWEIGHTED (the other's contribution suppressed) and
+   compare their means directly — two unbiased estimators of the
+   same integral must agree; if they don't, the pdf pairing is
+   probably fine and one strategy's own sampling is broken.  Full
+   mechanism and the geometry fix:
+   [precision-fix-the-formulation.md](precision-fix-the-formulation.md)'s
+   "Bilinear-patch shadow-ray self-shadowing" example and
+   [CLOTH_FABRIC_DESIGN.md §15 debt 21](../CLOTH_FABRIC_DESIGN.md).
 
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy

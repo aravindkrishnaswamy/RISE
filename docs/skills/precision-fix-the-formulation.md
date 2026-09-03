@@ -206,6 +206,79 @@ When the primary path was already valid with lower error we keep
 it; when the fallback wins we switch.  Both branches evaluated, no
 threshold guesswork, no missed roots.
 
+### Bilinear-patch shadow-ray self-shadowing (masqueraded as an MIS bug)
+
+Symptom: a `weave_material` curtain (`transmission thin`,
+`ScattersFullSphere() == true`) lit from behind by a mesh area light
+showed path tracing's transmitted radiance scaling super-linearly in
+the material's `transmit` parameter (`transmit = 1.0` gave ~47x
+`transmit = 0.1`'s response, not the ideal `10x`) while BDPT — sharing
+the identical material code — stayed exactly linear.  Every pointwise
+MIS check came back clean: the `(p_light, p_bsdf)` pair
+`LightSampler::EvaluateDirectLighting` computes for a mesh-luminary NEE
+sample and the `(bsdfPdf, p_nee)` pair `PathTracingIntegrator` computes
+for the matching BSDF-sampled emission hit were numerically identical
+for the same direction, so `PowerHeuristic`'s partition-of-unity held
+exactly, as it algebraically must.
+
+Wrong direction (the one the symptom points at): keep digging in the
+MIS weight code for a subtle pairing mismatch — a plausible-looking
+hypothesis (a full-sphere material's NEE and BSDF-hit sides using
+inconsistent `cosLight` sign conventions) that a `git grep` and careful
+derivation both ruled out.
+
+Right diagnosis: isolate each strategy alone and unweighted (NEE-only:
+force `w = 1`, suppress the competing BSDF-sampled emission; BSDF-only:
+the reverse) and compare their means directly.  Two unbiased estimators
+of the same integral must agree; they didn't — NEE-only read only ~10%
+of BSDF-only's mean, both linear in `transmit` individually.  That
+narrowed the search to "why is NEE's REALIZED value wrong", not "why is
+its WEIGHT wrong" — and instrumenting NEE's shadow ray found the answer
+directly: 93.6% of shadow rays from the curtain toward the light behind
+it were spuriously self-shadowed by the curtain's OWN geometry.
+
+The self-intersection distance is mathematically zero — the shadow
+ray's origin sits exactly on the same `clippedplane_geometry` bilinear
+patch it just scattered from.  `RayBilinearPatchIntersection`'s self-hit
+rejection compared the computed `dRange` against the fixed absolute
+`NEARZERO` (`1e-12`), but `dRange`'s numerator (a difference of two
+~O(1-3)-magnitude world coordinates, one of them reconstructed through a
+quadratic-solved `(u, v)`) carries FP round-off that scales with the
+MAGNITUDE of those coordinates.  Measured directly: self-intersection
+`dRange` values of `1e-12` to `3e-12` at this scene's coordinate scale —
+straddling `NEARZERO`, so roughly half of all self-intersections
+registered as genuine tiny-positive-distance hits.
+
+Why this was invisible as a simple linearity check: the self-shadow
+rate doesn't depend on `transmit` (it's pure geometry), so NEE-only was
+still exactly linear, just deflated by a constant factor.  The
+super-linear SHAPE came from MIS correctly shifting weight share from
+the (deflated) NEE strategy toward the (healthy) BSDF-sampling strategy
+as `transmit` grew and `bsdfPdf` grew with it — a real, correctly-computed
+weight shift, wearing a geometry bug as a costume.
+
+Wrong fix (rejected by inspection, matching the torus example above):
+widen `NEARZERO` inside `ClippedPlaneGeometry::IntersectRay_IntersectionOnly`
+alone.  Same three objections as the torus case — magic multiplier,
+leaves `IntersectRay` (primary/continuation rays) exposed to the
+identical noise, and the threshold lives in a caller of the noisy
+producer rather than in the producer itself.
+
+Right fix: in `RayBilinearPatchIntersection` (the shared producer, whose
+other LIVE caller is `BilinearPatchGeometry` — the `bilinearpatch_geometry`
+chunk area lights use; `RayTriangleIntersectionWithDisplacement` also
+calls it but is dead, never-invoked code), compute a scale-relative floor once —
+`tMin = NEARZERO * (1 + coordScale)`, `coordScale` the largest L1
+magnitude among the ray origin and the patch's four corners — and use
+`dRange > tMin` (not `dRange > 0` / `dRange > NEARZERO`) at all three
+of the function's hit-acceptance sites.  Every caller benefits: shadow
+rays, primary rays, and continuation rays after a scatter event.
+
+Full write-up, the MIS-side proof that the weights were never wrong,
+and the regression test: [CLOTH_FABRIC_DESIGN.md §15 debt
+21](../CLOTH_FABRIC_DESIGN.md) and
+[`tests/FabricRenderTest.cpp::TestAreaLitSheerWeave`](../../tests/FabricRenderTest.cpp).
+
 ## Anti-Patterns
 
 ### "Add an ε to the comparison"

@@ -229,7 +229,10 @@ bool ClippedPlaneGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const 
 		return false;
 	}
 
-	if( h.dRange < NEARZERO || h.dRange > dHowFar ) {
+	// The self-intersection floor lives in RayBilinearPatchIntersection
+	// (scale-relative tMin, 2026-09-03); a bare NEARZERO compare here would
+	// be a second, absolute threshold on the same noisy quantity.
+	if( h.dRange <= 0.0 || h.dRange > dHowFar ) {
 		return false;
 	}
 

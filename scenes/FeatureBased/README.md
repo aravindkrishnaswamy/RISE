@@ -274,28 +274,34 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   again at `transmission thin`, `sheer 0.2`, `warp_transmit`/`weft_transmit` 0.25, mean
   0.259 -- i.e. (c)/(a) = 20.3%, matching the delta lobe's OWN closed-form prediction
   (`sheer x L_window` = 0.2 x 1.273 = 0.2546) almost exactly, with only a small further
-  contribution from the diffuse-transmission lobe. That small residual is itself a finding:
-  isolating `transmit` alone (gap held at 0) found the diffuse lobe's response scales
-  close to `transmit^2` under PATH TRACING (0.5x transmit gave 0.21x the response, not
-  0.5x) while the SAME configuration under BDPT scales EXACTLY linearly (0.500x, 0.250x,
-  to three figures) -- since `WeaveBRDF::value`/`WeaveSPF::Pdf` are shared by both
-  integrators and are linear in `transmit_k` by construction, and BDPT (using the
-  identical formulas) confirms that linear behaviour empirically, this points at a
-  PATH-TRACING-side bug (most likely the full-sphere NEE/MIS weighting), not a
-  `weave_material` defect -- confirmed round 3 (REVIEW_P2R9.md) two more independent
-  ways: a Scatter()-only MC probe with no NEE/MIS at all is exactly linear in `transmit`
-  (ratios 1.998/3.999, not 4x/16x), and `SPFBSDFConsistencyTest`'s pointwise
-  `kray*pdf == BRDF*|cos|` table now exercises `WeaveSPF`'s transmission branch directly
-  (0.00% error) -- see docs/CLOTH_FABRIC_DESIGN.md 10.1a and section 15 debt 21 for the
-  full writeup, the numbered debt entry (NOT YET FIXED -- a separate diagnosis effort is
-  in progress and may turn this into a fix in a future round), and the separate,
-  already-known BDPT/VCM vertex-connection limitation (debt 20) on this same material
-  class. PRACTICAL CONSEQUENCE FOR THIS SCENE: `sheer` (the delta lobe) is
-  the reliable, exactly-linear brightness lever under PT and is what this scene actually
-  tunes for brightness (0.22, near the requested 0.15-0.25 range); `warp_transmit`/
-  `weft_transmit` are left near the linen preset's own default (0.30) rather than pushed
-  further to compensate, so the scene's own numbers stay legible against the probe table
-  above once the PT-side finding is fixed. The window's exitance scale (4.5) was picked
+  contribution from the diffuse-transmission lobe. An EARLIER pass through this same
+  probe reported the diffuse lobe's response scaling close to `transmit^2` (later
+  `transmit^1.7`) under PATH TRACING instead of linearly, while BDPT stayed exactly
+  linear -- **RESOLVED, docs/CLOTH_FABRIC_DESIGN.md section 15 debt 21**. Two
+  overlapping measurement issues produced that finding, neither of which was a
+  `weave_material` defect: (1) `file_rasterizeroutput`'s `color_space` parameter
+  defaults to `sRGB` even for 32-bit EXR, and an isolated probe that does not
+  override it to `Rec709RGB_Linear` reads a gamma-encoded value back as if it were
+  linear radiance -- every measurement scene in this table sets that override
+  explicitly for exactly this reason; (2) a genuine, smaller PT bug survived even
+  with the colour-space artifact removed: `ClippedPlaneGeometry`'s shadow rays were
+  spuriously self-shadowed by their OWN originating surface roughly 94% of the time,
+  because `RayBilinearPatchIntersection`'s self-intersection epsilon (`NEARZERO`,
+  a fixed `1e-12`) was too tight for the FP round-off actually produced at this
+  scene's coordinate scale -- fixed by making that epsilon scale-relative (see the
+  debt-21 writeup for the full mechanism and why it looked like an MIS-weighting
+  bug rather than a geometry one). With both fixed, PT is exactly linear in
+  `transmit` and matches BDPT within a few percent at every `transmit` value
+  tested; see `tests/FabricRenderTest.cpp::TestAreaLitSheerWeave` for the
+  regression guard. PRACTICAL CONSEQUENCE FOR THIS SCENE: `sheer` (the delta lobe)
+  and `warp_transmit`/`weft_transmit` (the diffuse lobe) are BOTH reliable, linear
+  brightness levers under PT now; `sheer` is tuned to 0.22 (near the requested
+  0.15-0.25 range) and `warp_transmit`/`weft_transmit` are left near the linen
+  preset's own default (0.30) rather than pushed further, since there is no longer
+  a PT-side non-linearity to route around. The separate, still-open BDPT/VCM
+  vertex-connection limitation on this material class (debt 20 -- a distinct bug,
+  triggered only at short curtain-to-light distance) does not apply to this scene's
+  geometry. The window's exitance scale (4.5) was picked
   by reading back the rendered EXR's direct-window and through-curtain pixel values this
   session rather than by eye; `weave_scale` is left at the linen preset's own shipped
   default (sub-pixel at this framing, by design).
