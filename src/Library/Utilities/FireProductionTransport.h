@@ -1378,6 +1378,7 @@ namespace RISE
 		bool qualificationCPUProducedTarget;
 		bool qualificationPreauthoredProjectionTarget;
 		bool qualificationMismatchedProjectionTopology;
+		bool qualificationAlternateDormantTailThreshold;
 		bool qualificationEOSAcceptedButUnlinked;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
@@ -1390,6 +1391,7 @@ namespace RISE
 			qualificationCPUProducedTarget(false),
 			qualificationPreauthoredProjectionTarget(false),
 			qualificationMismatchedProjectionTopology(false),
+			qualificationAlternateDormantTailThreshold(false),
 			qualificationEOSAcceptedButUnlinked(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
@@ -1417,6 +1419,7 @@ namespace RISE
 		std::uint64_t candidatePublicationIdentity;
 		std::uint64_t EOSPublicationIdentity;
 		std::uint64_t targetPublicationIdentity;
+		std::uint64_t projectionMetadataIdentity;
 		std::uint64_t projectionConsumerIdentity;
 		double deviceElapsedMS;
 		bool deviceAttempted;
@@ -1430,7 +1433,8 @@ namespace RISE
 			liveAuthorityAllocationBytes(0u),transportPublicationIdentity(0u),
 			physicalFluxPublicationIdentity(0u),candidatePublicationIdentity(0u),
 			EOSPublicationIdentity(0u),targetPublicationIdentity(0u),
-			projectionConsumerIdentity(0u),deviceElapsedMS(0.0),deviceAttempted(false),
+			projectionMetadataIdentity(0u),projectionConsumerIdentity(0u),
+			deviceElapsedMS(0.0),deviceAttempted(false),
 			terminalRead(false),deviceProduced(false) {}
 	};
 

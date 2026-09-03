@@ -9923,7 +9923,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const double temperatures[8]={325.0,425.0,700.0,950.0,1000.0,1000.25,1500.0,1900.0};
 	for(std::size_t cell=0u;cell<cells;++cell){std::array<float,9> state;
 		const double fraction=0.015625+0.00390625*static_cast<double>((cell+cell/4u)%8u);
-		if(!buildState(temperatures[cell%8u],fraction,cell==7u?1.08:1.0,state))return 213;
+		double pressureScale=1.0;
+		if(cell==7u)pressureScale=1.08;else if(cell==15u)pressureScale=0.92;
+		else if(cell==23u)pressureScale=1.06249;else if(cell==31u)pressureScale=1.0625057;
+		else if(cell==39u)pressureScale=1.06251;else if(cell==47u)pressureScale=0.93751;
+		else if(cell==55u)pressureScale=0.9375028;else if(cell==63u)pressureScale=0.93749;
+		if(!buildState(temperatures[cell%8u],fraction,pressureScale,state))return 213;
 		for(std::size_t component=0u;component<9u;++component)
 			eos.physicalFlux.transport.conservativeValues[component*cells+cell]=state[component];
 		eos.physicalFlux.transport.temperatureK[cell]=static_cast<float>(temperatures[cell%8u]);
@@ -9957,8 +9962,37 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	if(!EvaluateFireProductionResidentPhysicalFluxMetalComparator(eos.physicalFlux,flux,&error))return 215;
 	FireProductionResidentEOSCandidateComparatorResult candidate;
 	if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(eos,candidate,&error))return 216;
+	for(const std::size_t edge:{std::size_t(23u),std::size_t(31u),std::size_t(39u),
+		std::size_t(47u),std::size_t(55u),std::size_t(63u)})
+		std::fprintf(stderr,"RESIDENT_TARGET_THRESHOLD_PROBE cell=%zu ratio=%.9g deviation=%.9g\n",
+			edge,candidate.representedPressureRatio[edge],candidate.absoluteEOSDeviation[edge]);
+	const float tailThreshold=0x1p-4f;
+	const bool thresholdCoverage=candidate.representedPressureRatio[23u]>1.0f&&
+		candidate.absoluteEOSDeviation[23u]<tailThreshold&&
+		candidate.representedPressureRatio[31u]>1.0f&&
+		candidate.absoluteEOSDeviation[31u]>tailThreshold&&
+		candidate.representedPressureRatio[47u]<1.0f&&
+		candidate.absoluteEOSDeviation[47u]<tailThreshold&&
+		candidate.representedPressureRatio[55u]<1.0f&&
+		candidate.absoluteEOSDeviation[55u]>tailThreshold;
+	auto tailPolicyMirror=[&](const float ratio,const float deviation){return
+		deviation>tailThreshold?-std::copysign((static_cast<double>(deviation)-tailThreshold)/
+			eos.candidateTimeStepS,static_cast<double>(ratio)-1.0):0.0;};
+	const bool exactThresholdNoDrain=tailPolicyMirror(1.0f+tailThreshold,tailThreshold)==0.0&&
+		tailPolicyMirror(1.0f-tailThreshold,tailThreshold)==0.0;
+	std::fprintf(stderr,"RESIDENT_TARGET_THRESHOLD_COVERAGE integrated_positive_below=%d "
+		"integrated_positive_above=%d integrated_negative_below=%d integrated_negative_above=%d "
+		"mirror_positive_at_no_drain=%d mirror_negative_at_no_drain=%d passed=%d\n",
+		candidate.representedPressureRatio[23u]>1.0f&&candidate.absoluteEOSDeviation[23u]<tailThreshold,
+		candidate.representedPressureRatio[31u]>1.0f&&candidate.absoluteEOSDeviation[31u]>tailThreshold,
+		candidate.representedPressureRatio[47u]<1.0f&&candidate.absoluteEOSDeviation[47u]<tailThreshold,
+		candidate.representedPressureRatio[55u]<1.0f&&candidate.absoluteEOSDeviation[55u]>tailThreshold,
+		exactThresholdNoDrain?1:0,exactThresholdNoDrain?1:0,
+		thresholdCoverage&&exactThresholdNoDrain?1:0);
 	std::vector<float> tangentMirror(cells),sourceMirror=request.frozenSourceDivergenceTargetPerS,
 		diagnosticMirror(cells),tailMirror(cells),assembledMirror(cells);
+	std::vector<double> tangentExact(cells),diagnosticExact(cells),tailExact(cells),
+		assembledExact(cells);
 	const std::size_t allFaces=flux.physicalEnergyFluxWPerM2.size();
 	auto faceIndex=[&](const unsigned int axis,const std::size_t x,const std::size_t y,
 		const std::size_t z){return flux.packedFaceOffset[axis]+(axis==0u?
@@ -9980,17 +10014,23 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		double tangent=0.0;if(!fuel.DivergenceFromDiscreteRateByComponentOrder(state.data(),state.size(),
 			rate.data(),rate.size(),eos.physicalFlux.transport.temperatureK[cell],
 			FireStateProducerPrecision::Binary32,tangent,&error))return 217;
+		tangentExact[cell]=tangent;
 		tangentMirror[cell]=static_cast<float>(tangent);
 		const float representedRatio=candidate.representedPressureRatio[cell];
 		const double signedDeviation=static_cast<double>(representedRatio)-1.0;
-		diagnosticMirror[cell]=static_cast<float>(signedDeviation/eos.candidateTimeStepS);
-		tailMirror[cell]=std::fabs(signedDeviation)>0x1p-4?
-			static_cast<float>(-std::copysign((std::fabs(signedDeviation)-0x1p-4)/
-				eos.candidateTimeStepS,signedDeviation)):0.0f;
-		assembledMirror[cell]=(tangentMirror[cell]+sourceMirror[cell])+tailMirror[cell];}
+		diagnosticExact[cell]=signedDeviation/eos.candidateTimeStepS;
+		diagnosticMirror[cell]=static_cast<float>(diagnosticExact[cell]);
+		const double deviation=static_cast<double>(candidate.absoluteEOSDeviation[cell]);
+		tailExact[cell]=deviation>0x1p-4?
+			-std::copysign((deviation-0x1p-4)/eos.candidateTimeStepS,signedDeviation):0.0;
+		tailMirror[cell]=static_cast<float>(tailExact[cell]);
+		assembledExact[cell]=tangent+static_cast<double>(sourceMirror[cell])+tailExact[cell];
+		assembledMirror[cell]=static_cast<float>(assembledExact[cell]);}
 	double mean=0.0;for(const float value:assembledMirror)mean+=value;
-	mean/=static_cast<double>(cells);for(float& value:assembledMirror){
-		value=static_cast<float>(static_cast<double>(value)-mean);if(value==0.0f)value=0.0f;}
+	mean/=static_cast<double>(cells);for(std::size_t cell=0u;cell<cells;++cell){
+		assembledExact[cell]=static_cast<double>(assembledMirror[cell])-mean;
+		assembledMirror[cell]=static_cast<float>(assembledExact[cell]);
+		if(assembledMirror[cell]==0.0f)assembledMirror[cell]=0.0f;}
 	auto bitEqual=[](const std::vector<float>& first,const std::vector<float>& second){
 		return first.size()==second.size()&&std::memcmp(first.data(),second.data(),
 			first.size()*sizeof(float))==0;};
@@ -10014,6 +10054,66 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			observed.absoluteReferenceDiagnosticPerS[0])*eos.candidateTimeStepS);
 	if(!tailEqual)mismatch("tail",observed.monitoredAbsoluteReferenceTargetPerS,tailMirror);
 	if(!assembledEqual)mismatch("assembled",observed.assembledTargetPerS,assembledMirror);
+	FireProductionResidentTargetLineageComparatorRequest openRequest=request;
+	openRequest.eos.physicalFlux.transport.boundary[0]=FireProductionProjectionPressureOpen;
+	openRequest.eos.physicalFlux.transport.boundary[1]=FireProductionProjectionPressureOpen;
+	openRequest.eos.candidateTimeStepS=std::nextafter(request.eos.candidateTimeStepS,
+		std::numeric_limits<float>::infinity());
+	FireProductionResidentTargetLineageComparatorResult openObserved;
+	if(!EvaluateFireProductionResidentTargetLineageMetalComparator(openRequest,openObserved,&error)){
+		std::fprintf(stderr,"RESIDENT_TARGET_OPEN error=%s failure=0x%08x branch=0x%08x\n",
+			error.c_str(),openObserved.deviceFailureBitmap,openObserved.branchObligationBitmap);return 220;}
+	FireProductionResidentPhysicalFluxComparatorResult openFlux;
+	if(!EvaluateFireProductionResidentPhysicalFluxMetalComparator(openRequest.eos.physicalFlux,
+		openFlux,&error))return 221;
+	FireProductionResidentEOSCandidateComparatorResult openCandidate;
+	if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(openRequest.eos,
+		openCandidate,&error))return 222;
+	std::vector<float> openTangent(cells),openSource=openRequest.frozenSourceDivergenceTargetPerS,
+		openDiagnostic(cells),openTail(cells),openAssembled(cells);
+	std::vector<double> openTangentExact(cells),openDiagnosticExact(cells),openTailExact(cells),
+		openAssembledExact(cells);
+	const std::size_t openAllFaces=openFlux.physicalEnergyFluxWPerM2.size();
+	auto openFaceIndex=[&](const unsigned int axis,const std::size_t x,const std::size_t y,
+		const std::size_t z){return openFlux.packedFaceOffset[axis]+(axis==0u?
+		(z*shape.ny+y)*(shape.nx+1u)+x:(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:
+		(z*shape.ny+y)*shape.nx+x));};
+	for(std::size_t cell=0u;cell<cells;++cell){const std::size_t x=cell%shape.nx,
+		y=(cell/shape.nx)%shape.ny,z=cell/(shape.nx*shape.ny);std::array<double,9> state={{}},rate={{}};
+		for(std::size_t component=0u;component<9u;++component)state[component]=
+			openRequest.eos.physicalFlux.transport.conservativeValues[component*cells+cell];
+		for(unsigned int axis=0u;axis<3u;++axis){const std::size_t left=openFaceIndex(axis,x,y,z),
+			right=openFaceIndex(axis,x+(axis==0u),y+(axis==1u),z+(axis==2u));
+			for(std::size_t component=0u;component<8u;++component)rate[component]+=
+				(static_cast<double>(openFlux.physicalMassFluxKGPerM2S[component*openAllFaces+left])-
+				 static_cast<double>(openFlux.physicalMassFluxKGPerM2S[component*openAllFaces+right]))/
+				shape.cellWidthM;
+			rate[8u]+=(static_cast<double>(openFlux.physicalEnergyFluxWPerM2[left])-
+				static_cast<double>(openFlux.physicalEnergyFluxWPerM2[right]))/shape.cellWidthM;}
+		double tangent=0.0;if(!fuel.DivergenceFromDiscreteRateByComponentOrder(state.data(),state.size(),
+			rate.data(),rate.size(),openRequest.eos.physicalFlux.transport.temperatureK[cell],
+			FireStateProducerPrecision::Binary32,tangent,&error))return 223;
+		openTangentExact[cell]=tangent;openTangent[cell]=static_cast<float>(tangent);
+		const double signedDeviation=static_cast<double>(openCandidate.representedPressureRatio[cell])-1.0;
+		openDiagnosticExact[cell]=signedDeviation/openRequest.eos.candidateTimeStepS;
+		openDiagnostic[cell]=static_cast<float>(openDiagnosticExact[cell]);
+		const double deviation=static_cast<double>(openCandidate.absoluteEOSDeviation[cell]);
+		openTailExact[cell]=deviation>0x1p-4?
+			-std::copysign((deviation-0x1p-4)/openRequest.eos.candidateTimeStepS,
+				signedDeviation):0.0;
+		openTail[cell]=static_cast<float>(openTailExact[cell]);
+		openAssembledExact[cell]=tangent+static_cast<double>(openSource[cell])+openTailExact[cell];
+		openAssembled[cell]=static_cast<float>(openAssembledExact[cell]);}
+	const bool openTangentEqual=bitEqual(openObserved.tangentTargetPerS,openTangent),
+		openSourceEqual=bitEqual(openObserved.frozenSourceTargetPerS,openSource),
+		openDiagnosticEqual=bitEqual(openObserved.absoluteReferenceDiagnosticPerS,openDiagnostic),
+		openTailEqual=bitEqual(openObserved.monitoredAbsoluteReferenceTargetPerS,openTail),
+		openAssembledEqual=bitEqual(openObserved.assembledTargetPerS,openAssembled);
+	if(!openTangentEqual)mismatch("open_tangent",openObserved.tangentTargetPerS,openTangent);
+	if(!openDiagnosticEqual)mismatch("open_absolute_diagnostic",
+		openObserved.absoluteReferenceDiagnosticPerS,openDiagnostic);
+	if(!openTailEqual)mismatch("open_tail",openObserved.monitoredAbsoluteReferenceTargetPerS,openTail);
+	if(!openAssembledEqual)mismatch("open_assembled",openObserved.assembledTargetPerS,openAssembled);
 	auto deviceRefusal=[&](const char* name,
 		FireProductionResidentTargetLineageComparatorRequest mutation,
 		const std::uint32_t expected){FireProductionResidentTargetLineageComparatorResult refused;
@@ -10061,64 +10161,143 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	mutation=request;
 	mutation.qualificationMismatchedProjectionTopology=true;
 	const bool topologyRefused=deviceRefusal("mismatched_projection_topology",mutation,8192u);
+	FireProductionResidentTargetLineageComparatorRequest dormant=request;
+	dormant.eos.physicalFlux.transport.boundary[0]=FireProductionProjectionPressureOpen;
+	dormant.eos.physicalFlux.transport.boundary[1]=FireProductionProjectionPressureOpen;
+	for(const std::size_t outlier:{std::size_t(7u),std::size_t(15u),std::size_t(23u),
+		std::size_t(31u),std::size_t(39u),std::size_t(47u),std::size_t(55u),
+		std::size_t(63u)}){
+		const std::size_t safe=outlier-1u;
+		for(std::size_t component=0u;component<9u;++component)
+			dormant.eos.physicalFlux.transport.conservativeValues[component*cells+outlier]=
+				request.eos.physicalFlux.transport.conservativeValues[component*cells+safe];
+		dormant.eos.physicalFlux.transport.temperatureK[outlier]=
+			request.eos.physicalFlux.transport.temperatureK[safe];}
+	FireProductionResidentTargetLineageComparatorResult dormantBase,dormantAlternate;
+	std::string dormantBaseError,dormantAlternateError;
+	const bool dormantBaseAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
+		dormant,dormantBase,&dormantBaseError);
+	dormant.qualificationAlternateDormantTailThreshold=true;
+	const bool dormantAlternateAccepted=
+		EvaluateFireProductionResidentTargetLineageMetalComparator(dormant,dormantAlternate,
+			&dormantAlternateError);
+	const bool dormantFieldsEqual=dormantBaseAccepted&&dormantAlternateAccepted&&
+		bitEqual(dormantBase.tangentTargetPerS,dormantAlternate.tangentTargetPerS)&&
+		bitEqual(dormantBase.frozenSourceTargetPerS,dormantAlternate.frozenSourceTargetPerS)&&
+		bitEqual(dormantBase.absoluteReferenceDiagnosticPerS,
+			dormantAlternate.absoluteReferenceDiagnosticPerS)&&
+		bitEqual(dormantBase.monitoredAbsoluteReferenceTargetPerS,
+			dormantAlternate.monitoredAbsoluteReferenceTargetPerS)&&
+		bitEqual(dormantBase.assembledTargetPerS,dormantAlternate.assembledTargetPerS);
+	const bool dormantThresholdIdentity=dormantFieldsEqual&&
+		dormantBase.targetPublicationIdentity!=0u&&dormantAlternate.targetPublicationIdentity!=0u&&
+		dormantBase.targetPublicationIdentity!=dormantAlternate.targetPublicationIdentity;
+	std::fprintf(stderr,"RESIDENT_TARGET_RED name=dormant_tail_threshold_identity layer=device_identity "
+		"base_accepted=%d alternate_accepted=%d fields_bit_equal=%d base_failure=0x%08x "
+		"alternate_failure=0x%08x base_identity=%llu alternate_identity=%llu "
+		"base_error=%s alternate_error=%s passed=%d\n",
+		dormantBaseAccepted?1:0,dormantAlternateAccepted?1:0,
+		dormantFieldsEqual?1:0,dormantBase.deviceFailureBitmap,
+		dormantAlternate.deviceFailureBitmap,
+		static_cast<unsigned long long>(dormantBase.targetPublicationIdentity),
+		static_cast<unsigned long long>(dormantAlternate.targetPublicationIdentity),
+		dormantBaseError.c_str(),dormantAlternateError.c_str(),
+		dormantThresholdIdentity?1:0);
 	std::uint64_t fixtureBytes=0u,liveBytes=0u;
 	const bool fixtureCertified=FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,fixtureBytes),
 		liveCertified=FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(shape,liveBytes);
 	mutation=request;mutation.qualificationWorkingSetLimitBytes=fixtureBytes-1u;
 	const bool understatedRefused=hostRefusal("understated_working_set",mutation);
-	const std::uint32_t requiredBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
-		(1u<<22u)|(1u<<24u);
-	const bool branches=observed.branchObligationBitmap==requiredBranches;
-	const bool passed=tangentEqual&&sourceEqual&&diagnosticEqual&&tailEqual&&assembledEqual&&
+	const std::uint32_t requiredClosedBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
+		(1u<<22u)|(1u<<24u)|(1u<<25u);
+	const std::uint32_t requiredOpenBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
+		(1u<<22u)|(1u<<23u)|(1u<<25u);
+	const bool branches=observed.branchObligationBitmap==requiredClosedBranches&&
+		openObserved.branchObligationBitmap==requiredOpenBranches;
+	const bool passed=thresholdCoverage&&exactThresholdNoDrain&&
+		tangentEqual&&sourceEqual&&diagnosticEqual&&tailEqual&&assembledEqual&&
+		openTangentEqual&&openSourceEqual&&openDiagnosticEqual&&openTailEqual&&openAssembledEqual&&
 		unsealedTransport&&unsealedPhysical&&unsealedCandidate&&unsealedEOS&&staleCandidate&&
-		unlinkedEOS&&cpuRefused&&preauthoredRefused&&topologyRefused&&fixtureCertified&&
+		unlinkedEOS&&cpuRefused&&preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
-		observed.interstageFullGridTransferCount==0u;
+		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
+		openObserved.terminalStagingCount==1u&&openObserved.interstageFullGridTransferCount==0u;
 	std::fprintf(stderr,"RESIDENT_TARGET passed=%d tangent_bit_equal=%d source_bit_equal=%d "
 		"absolute_diagnostic_bit_equal=%d tail_bit_equal=%d assembled_bit_equal=%d "
 		"unsealed_transport=%d unsealed_physical=%d unsealed_candidate=%d unsealed_eos=%d "
 		"stale_candidate=%d unlinked_eos=%d cpu_refused=%d preauthored_refused=%d "
-		"topology_refused=%d branch_bitmap=0x%08x required=0x%08x command=%u reads=%u transfers=%u "
+		"topology_refused=%d dormant_threshold_identity=%d closed_branch_bitmap=0x%08x "
+		"closed_required=0x%08x open_branch_bitmap=0x%08x open_required=0x%08x "
+		"command_per_interval=%u reads_per_interval=%u transfers_per_interval=%u "
 		"fixture_ws=%llu actual_ws=%llu live_ws=%llu\n",passed?1:0,tangentEqual?1:0,
 		sourceEqual?1:0,diagnosticEqual?1:0,tailEqual?1:0,assembledEqual?1:0,
 		unsealedTransport?1:0,unsealedPhysical?1:0,unsealedCandidate?1:0,unsealedEOS?1:0,
 		staleCandidate?1:0,unlinkedEOS?1:0,cpuRefused?1:0,preauthoredRefused?1:0,
-		topologyRefused?1:0,observed.branchObligationBitmap,requiredBranches,
+		topologyRefused?1:0,dormantThresholdIdentity?1:0,
+		observed.branchObligationBitmap,requiredClosedBranches,
+		openObserved.branchObligationBitmap,requiredOpenBranches,
 		observed.commandCommitCount,
 		observed.terminalStagingCount,observed.interstageFullGridTransferCount,
 		static_cast<unsigned long long>(fixtureBytes),
 		static_cast<unsigned long long>(observed.actualMetalAllocationBytes),
 		static_cast<unsigned long long>(liveBytes));
-	std::fprintf(stderr,"RESIDENT_TARGET_TERM field=tangent units=s^-1 scope=every_cell "
-		"max_residual=0 local_bound=0 worst_residual_over_local_bound=0 passed=%d\n",tangentEqual?1:0);
-	std::fprintf(stderr,"RESIDENT_TARGET_TERM field=frozen_source units=s^-1 scope=every_cell "
-		"max_residual=0 local_bound=0 worst_residual_over_local_bound=0 passed=%d\n",sourceEqual?1:0);
-	std::fprintf(stderr,"RESIDENT_TARGET_TERM field=absolute_reference_diagnostic units=s^-1 "
-		"scope=every_cell max_residual=0 local_bound=0 worst_residual_over_local_bound=0 passed=%d\n",
-		diagnosticEqual?1:0);
-	std::fprintf(stderr,"RESIDENT_TARGET_TERM field=monitored_absolute_reference units=s^-1 "
-		"scope=every_cell max_residual=0 local_bound=0 worst_residual_over_local_bound=0 passed=%d\n",
-		tailEqual?1:0);
-	std::fprintf(stderr,"RESIDENT_TARGET_TERM field=assembled_compatible_target units=s^-1 "
-		"scope=every_cell max_residual=0 local_bound=0 worst_residual_over_local_bound=0 passed=%d\n",
-		assembledEqual?1:0);
 	const char* termName[5]={"tangent","frozen_source","absolute_reference_diagnostic",
 		"monitored_absolute_reference","assembled_compatible_target"};
-	const std::vector<float>* deviceTerm[5]={&observed.tangentTargetPerS,
-		&observed.frozenSourceTargetPerS,&observed.absoluteReferenceDiagnosticPerS,
-		&observed.monitoredAbsoluteReferenceTargetPerS,&observed.assembledTargetPerS};
-	const std::vector<float>* mirrorTerm[5]={&tangentMirror,&sourceMirror,&diagnosticMirror,
-		&tailMirror,&assembledMirror};
-	for(unsigned int term=0u;term<5u;++term)for(std::size_t cell=0u;cell<cells;++cell){
-		const bool equal=std::memcmp(&(*deviceTerm[term])[cell],&(*mirrorTerm[term])[cell],
-			sizeof(float))==0;const double residual=std::fabs(static_cast<double>(
-			(*deviceTerm[term])[cell])-static_cast<double>((*mirrorTerm[term])[cell]));
-		std::fprintf(stderr,"RESIDENT_TARGET_CELL field=%s cell=%zu units=s^-1 "
-			"device=%.9g fp64_mirror_binary32_projection=%.9g residual_s^-1=%.17g "
-			"local_termwise_enclosure_s^-1=0 residual_over_local_bound=%s bit_equal=%d\n",
-			termName[term],cell,(*deviceTerm[term])[cell],(*mirrorTerm[term])[cell],residual,
-			equal?"0":"infinity",equal?1:0);}
+	std::vector<double> sourceExact(cells);for(std::size_t cell=0u;cell<cells;++cell)
+		sourceExact[cell]=sourceMirror[cell];
+	std::vector<double> openSourceExact(cells);for(std::size_t cell=0u;cell<cells;++cell)
+		openSourceExact[cell]=openSource[cell];
+	auto localProjectionBound=[](const float projected,const double exact){
+		const double center=static_cast<double>(projected);
+		const double spacing=std::max(std::fabs(static_cast<double>(std::nextafter(
+			projected,std::numeric_limits<float>::infinity()))-center),
+			std::fabs(center-static_cast<double>(std::nextafter(projected,
+				-std::numeric_limits<float>::infinity()))));
+		return std::fabs(center-exact)+spacing;};
+	auto emitTerms=[&](const char* topology,
+		const FireProductionResidentTargetLineageComparatorResult& device,
+		const std::vector<float>& tangentValue,const std::vector<float>& sourceValue,
+		const std::vector<float>& diagnosticValue,const std::vector<float>& tailValue,
+		const std::vector<float>& assembledValue,const std::vector<double>& tangentReference,
+		const std::vector<double>& sourceReference,const std::vector<double>& diagnosticReference,
+		const std::vector<double>& tailReference,const std::vector<double>& assembledReference){
+		const std::vector<float>* localDevice[5]={&device.tangentTargetPerS,
+			&device.frozenSourceTargetPerS,&device.absoluteReferenceDiagnosticPerS,
+			&device.monitoredAbsoluteReferenceTargetPerS,&device.assembledTargetPerS};
+		const std::vector<float>* localMirror[5]={&tangentValue,&sourceValue,&diagnosticValue,
+			&tailValue,&assembledValue};
+		const std::vector<double>* localExact[5]={&tangentReference,&sourceReference,
+			&diagnosticReference,&tailReference,&assembledReference};
+		for(unsigned int term=0u;term<5u;++term){double maximumResidual=0.0,maximumBound=0.0,
+			worstRatio=0.0;for(std::size_t cell=0u;cell<cells;++cell){const double residual=
+			std::fabs(static_cast<double>((*localDevice[term])[cell])-(*localExact[term])[cell]);
+			const double bound=term==1u?0.0:localProjectionBound((*localMirror[term])[cell],
+				(*localExact[term])[cell]);maximumResidual=std::max(maximumResidual,residual);
+			maximumBound=std::max(maximumBound,bound);if(bound>0.0)worstRatio=std::max(worstRatio,
+				residual/bound);}
+			std::fprintf(stderr,"RESIDENT_TARGET_TERM topology=%s field=%s units=s^-1 "
+				"scope=every_cell max_residual_s^-1=%.17g max_local_termwise_enclosure_s^-1=%.17g "
+				"worst_residual_over_local_bound=%.17g bit_equal=%d passed=%d\n",topology,
+				termName[term],maximumResidual,maximumBound,worstRatio,
+				bitEqual(*localDevice[term],*localMirror[term])?1:0,
+				bitEqual(*localDevice[term],*localMirror[term])?1:0);}
+		for(unsigned int term=0u;term<5u;++term)for(std::size_t cell=0u;cell<cells;++cell){
+			const bool equal=std::memcmp(&(*localDevice[term])[cell],&(*localMirror[term])[cell],
+				sizeof(float))==0;const double residual=std::fabs(static_cast<double>(
+				(*localDevice[term])[cell])-(*localExact[term])[cell]);
+			const double bound=term==1u?0.0:localProjectionBound((*localMirror[term])[cell],
+				(*localExact[term])[cell]);const double ratio=bound>0.0?residual/bound:0.0;
+			std::fprintf(stderr,"RESIDENT_TARGET_CELL topology=%s field=%s cell=%zu units=s^-1 "
+				"device=%.9g fp64_mirror_binary32_projection=%.9g residual_s^-1=%.17g "
+				"local_termwise_enclosure_s^-1=%.17g residual_over_local_bound=%.17g bit_equal=%d\n",
+				topology,termName[term],cell,(*localDevice[term])[cell],(*localMirror[term])[cell],
+				residual,bound,ratio,equal?1:0);}};
+	emitTerms("closed",observed,tangentMirror,sourceMirror,diagnosticMirror,tailMirror,
+		assembledMirror,tangentExact,sourceExact,diagnosticExact,tailExact,assembledExact);
+	emitTerms("pressure_open",openObserved,openTangent,openSource,openDiagnostic,openTail,
+		openAssembled,openTangentExact,openSourceExact,openDiagnosticExact,openTailExact,
+		openAssembledExact);
 	return passed?0:219;
 }
 

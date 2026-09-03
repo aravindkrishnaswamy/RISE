@@ -5221,22 +5221,29 @@ it was already tried and refuted here.
   absolute-reference diagnostic, r170's signed tail drain beyond `2^-4`, and
   the compatible sum. Monitored-manifold policy is unchanged: the raw absolute
   reference is recorded but not enforced in bulk; only the tail term enters
-  the projection target. Every one of 320 cell/field values bit-matches the
-  fp64 mirror's binary32 projection with `0 s^-1` residual and a zero exact-
-  projection bound. An initial one-ULP tangent miss exposed float face-
+  the projection target. Closed and pressure-open fixtures provide 640
+  cell/field comparisons; every value bit-matches the fp64 mirror's binary32
+  projection. Per-row binary64-reference residuals use local `s^-1` enclosures
+  (projection error plus one binary32 spacing, with zero only for the exact-copy
+  source), and worst ratios remain below `0.334`. Positive and negative tail
+  crossings are exercised independently. An initial one-ULP tangent miss exposed float face-
   divergence arithmetic and was fixed by carrying certified expansion
   arithmetic through the divergence, without tolerance widening. Adding the
   target functions changes Metal's library identity, so the full r199 EOS
   control is requalified rather than inherited: all 48,693,249 log arguments,
   192 EOS field rows, rounding edges, and 13 REDs pass under source digest
-  `51463a15...b61cd0f` and function-set digest `ead731ea...e9ae36`. r189's
-  preauthored-target and topology refusals re-run on device with `0x2000`; all
+  `2a064a4a...f1991f4` and function-set digest `20d53607...39458`. r189's
+  preauthored-target and topology refusals re-run on device with `0x2000`. The
+  latter mutates an independently sealed projection parent while preserving a
+  valid target, whose consumer compares shape, cell width, timestep, attempt,
+  and boundaries on device. The dormant `2^-4` constant is identity-bearing:
+  a one-ULP mutation changes identity with byte-identical output fields. All
   four unsealed-parent cases produce `0x2800` and zero target/consumer IDs.
   Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
   host preflight. Residency is one command, one terminal read, and zero
   interstage full-grid transfers; fixture/actual/target-live bytes are
-  `1343488`/`127656`/`114688`. The observed arithmetic-obligation bitmap is
-  exactly the independently required `0x01700180`, covering both tail sides,
-  term assembly, and closed compatibility. `case_record_id` is unchanged, producer/run
+  `1392640`/`127800`/`131072`. Closed/open obligation bitmaps exactly equal
+  their independently required `0x03700180`/`0x02f00180`, covering both tail
+  signs, term assembly, and both compatibility branches. `case_record_id` is unchanged, producer/run
   identity inherits r200, and the golden checkpoint is untouched. Evidence is
   staged for fresh boundary review; the next rung is the live Metal owner.
