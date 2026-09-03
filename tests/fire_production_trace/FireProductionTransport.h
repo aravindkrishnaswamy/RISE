@@ -1364,15 +1364,13 @@ namespace RISEFireProductionTrace
 
 	//! Qualification request for the private resident divergence-target authority.
 	//! The target issuer consumes the exact transport, physical-flux, Q* candidate,
-	//! and EOS publications produced in one command.  Qualification bytes for the
-	//! frozen source term are admitted only through a device producer that emits an
-	//! opaque source authority; the live owner supplies that producer's resident
-	//! input directly.
+	//! and EOS publications produced in one command. The frozen source term enters
+	//! only through the canonical producer's opaque packet seal; the Metal issuer
+	//! exposes no raw source-target buffer surface.
 	struct FireProductionResidentTargetLineageComparatorRequest
 	{
 		FireProductionResidentEOSCandidateComparatorRequest eos;
-		std::vector<FireProductionRoundoffTrace::TraceFloat> frozenSourceDivergenceTargetPerS;
-		std::uint64_t sourcePacketIdentity;
+		FireProductionFrozenSourcePacketSeal frozenSource;
 		//! Refusal-only mutations.  They are not knobs on the live authority.
 		bool qualificationUnsealedTransportParent;
 		bool qualificationUnsealedPhysicalFluxParent;
@@ -1398,7 +1396,7 @@ namespace RISEFireProductionTrace
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentTargetLineageComparatorRequest() :
-			sourcePacketIdentity(0u),qualificationUnsealedTransportParent(false),
+			qualificationUnsealedTransportParent(false),
 			qualificationUnsealedPhysicalFluxParent(false),
 			qualificationUnsealedEOSCandidateParent(false),
 			qualificationUnsealedEOSParent(false),

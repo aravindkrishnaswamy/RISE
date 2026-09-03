@@ -2602,20 +2602,24 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
 kernel void produce_resident_frozen_source(device const float* input [[buffer(0)]],
  device float* output [[buffer(1)]],device FrozenSourceParams* sealed [[buffer(2)]],
  device atomic_uint* failure [[buffer(3)]],constant TargetParams& p [[buffer(4)]],
- uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
- if(p.cells==0u||p.attempt==0ul||p.sourcePacket==0ul||!isfinite(input[gid])||
+ device const ulong* candidateIdentity [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.cells)return;
+ if(p.cells==0u||p.attempt==0ul||p.sourcePacket==0ul||candidateIdentity[0]==0ul||!isfinite(input[gid])||
   (input[gid]==0.0f&&signbit(input[gid]))){atomic_fetch_or_explicit(failure,2048u,
    memory_order_relaxed);return;}output[gid]=input[gid];if(gid==0u){FrozenSourceParams value;
   value.cells=p.cells;value.pad0=0u;value.pad1=0u;value.pad2=0u;value.attempt=p.attempt;
   value.sourcePacket=p.sourcePacket;sealed[0]=value;}}
 kernel void identify_resident_frozen_source(device const float* source [[buffer(0)]],
  device const FrozenSourceParams* sealed [[buffer(1)]],device ulong* identity [[buffer(2)]],
- device atomic_uint* failure [[buffer(3)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ device atomic_uint* failure [[buffer(3)]],device const ulong* candidateIdentity [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||sealed[0].cells==0u||
-  sealed[0].attempt==0ul||sealed[0].sourcePacket==0ul){identity[0]=0ul;return;}
+  sealed[0].attempt==0ul||sealed[0].sourcePacket==0ul||candidateIdentity[0]==0ul){
+  identity[0]=0ul;return;}
  ulong hash=14695981039346656037ul;hash^=ulong(sealed[0].cells);hash*=1099511628211ul;
  hash^=sealed[0].attempt;hash*=1099511628211ul;hash^=sealed[0].sourcePacket;
- hash*=1099511628211ul;for(uint cell=0u;cell<sealed[0].cells;++cell){
+ hash*=1099511628211ul;hash^=candidateIdentity[0];hash*=1099511628211ul;
+ for(uint cell=0u;cell<sealed[0].cells;++cell){
   hash^=ulong(as_type<uint>(source[cell]));hash*=1099511628211ul;}
  identity[0]=hash==0ul?1ul:hash;}
 inline EOSDD target_cp_dd(device const float* thermo,uint species,EOSDD temperature,
@@ -6062,6 +6066,11 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			friend bool ::RISE::EvaluateFireProductionResidentTargetLineageMetalComparator(
 				const FireProductionResidentTargetLineageComparatorRequest&,
 				FireProductionResidentTargetLineageComparatorResult&,std::string*);
+			friend bool EncodeResidentFrozenSourceAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				const FireProductionFrozenSourcePacketSeal&,
+				const ResidentEOSCandidateMetalAuthority&,const MetalResidentTargetParameters&,
+				ResidentFrozenSourceMetalAuthority&,std::string*);
 			friend bool EncodeResidentProjectionTargetAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -6143,14 +6152,16 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		bool EncodeResidentFrozenSourceAuthority(
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
-			id<MTLBuffer>,id<MTLBuffer>,const MetalResidentTargetParameters&,
+			const FireProductionFrozenSourcePacketSeal&,
+			const ResidentEOSCandidateMetalAuthority&,const MetalResidentTargetParameters&,
 			ResidentFrozenSourceMetalAuthority&,std::string*);
 
 		class ResidentFrozenSourceMetalAuthority
 		{
 			friend bool EncodeResidentFrozenSourceAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
-				id<MTLBuffer>,id<MTLBuffer>,const MetalResidentTargetParameters&,
+				const FireProductionFrozenSourcePacketSeal&,
+				const ResidentEOSCandidateMetalAuthority&,const MetalResidentTargetParameters&,
 				ResidentFrozenSourceMetalAuthority&,std::string*);
 			friend bool EncodeResidentProjectionTargetAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -6163,17 +6174,22 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				const FireProductionResidentTargetLineageComparatorRequest&,
 				FireProductionResidentTargetLineageComparatorResult&,std::string*);
 		private:
+			id<MTLBuffer> inputUpload;
+			id<MTLBuffer> parameterUpload;
 			id<MTLBuffer> values;
 			id<MTLBuffer> issuedValues;
 			id<MTLBuffer> metadata;
 			id<MTLBuffer> issuedMetadata;
 			id<MTLBuffer> publicationIdentity;
 			id<MTLCommandBuffer> parentCommand;
+			id<MTLBuffer> parentCandidatePublicationIdentity;
 			std::size_t cells;
-			std::uint64_t allocationBytes;
-			ResidentFrozenSourceMetalAuthority() : values(nil),issuedValues(nil),metadata(nil),
-				issuedMetadata(nil),publicationIdentity(nil),parentCommand(nil),cells(0u),
-				allocationBytes(0u) {}
+			std::uint64_t allocationBytes,liveAllocationBytes;
+			ResidentFrozenSourceMetalAuthority() : inputUpload(nil),parameterUpload(nil),values(nil),
+				issuedValues(nil),metadata(nil),
+				issuedMetadata(nil),publicationIdentity(nil),parentCommand(nil),
+				parentCandidatePublicationIdentity(nil),cells(0u),allocationBytes(0u),
+				liveAllocationBytes(0u) {}
 			ResidentFrozenSourceMetalAuthority(const ResidentFrozenSourceMetalAuthority&)=delete;
 			ResidentFrozenSourceMetalAuthority& operator=(
 				const ResidentFrozenSourceMetalAuthority&)=delete;
@@ -6816,46 +6832,75 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		bool EncodeResidentFrozenSourceAuthority(
 			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
-			id<MTLBuffer> qualificationInput,id<MTLBuffer> targetParameters,
 			id<MTLBuffer> failure,id<MTLBuffer> obligations,
+			const FireProductionFrozenSourcePacketSeal& source,
+			const ResidentEOSCandidateMetalAuthority& candidateAuthority,
 			const MetalResidentTargetParameters& metadata,
 			ResidentFrozenSourceMetalAuthority& authority,std::string* error )
 		{
-			if(!command||!qualificationInput||!targetParameters||!failure||!obligations||
-				metadata.cells==0u||metadata.attemptIdentity==0u||metadata.sourcePacketIdentity==0u){
+			const FireProductionProjectionShape& sourceShape=source.Shape();
+			if(!command||!failure||!obligations||metadata.cells==0u||
+				metadata.attemptIdentity==0u||metadata.sourcePacketIdentity==0u||
+				!FireProductionFrozenSourcePacketSealMatches(source,error)||
+				sourceShape.nx!=metadata.nx||sourceShape.ny!=metadata.ny||
+				sourceShape.nz!=metadata.nz||sourceShape.cellWidthM!=metadata.cellWidthM||
+				source.TimeStepS()!=metadata.timeStepS||
+				source.AttemptIdentity()!=metadata.attemptIdentity||
+				source.PacketIdentity()!=metadata.sourcePacketIdentity||
+				source.DivergenceTargetPerS().size()!=metadata.cells||
+				source.SourceDelta().size()!=9u*metadata.cells||
+				candidateAuthority.parentCommand!=command||candidateAuthority.cells!=metadata.cells||
+				candidateAuthority.sourceDelta==nil||
+				candidateAuthority.publicationIdentity==nil){
 				if(error)*error="production resident frozen source metadata is invalid";return false;}
-			const std::array<id<MTLBuffer>,4> inputs={{qualificationInput,targetParameters,
-				failure,obligations}};
+			const std::array<id<MTLBuffer>,4> inputs={{candidateAuthority.sourceDelta,
+				candidateAuthority.publicationIdentity,failure,obligations}};
 			for(id<MTLBuffer> buffer:inputs)if([buffer device]!=context.device||
 				[buffer storageMode]!=MTLStorageModePrivate){
-				if(error)*error="production resident frozen source requires device-private inputs";
+				if(error)*error="production resident frozen source requires a resident candidate parent";
 				return false;
 			}
 			const std::size_t fieldBytes=metadata.cells*sizeof(float);
-			if([qualificationInput length]!=fieldBytes||
-				[targetParameters length]!=sizeof(MetalResidentTargetParameters)||
+			if([candidateAuthority.sourceDelta length]!=9u*fieldBytes||
+				[candidateAuthority.publicationIdentity length]!=sizeof(std::uint64_t)||
 				[failure length]!=sizeof(std::uint32_t)||[obligations length]!=sizeof(std::uint32_t)){
 				if(error)*error="production resident frozen source extent is invalid";return false;}
+			authority.inputUpload=[context.device newBufferWithBytes:
+				source.DivergenceTargetPerS().data() length:fieldBytes
+				options:MTLResourceStorageModeShared];
 			authority.values=[context.device newBufferWithLength:fieldBytes
 				options:MTLResourceStorageModePrivate];
 			authority.metadata=[context.device newBufferWithLength:
 				sizeof(MetalResidentFrozenSourceParameters) options:MTLResourceStorageModePrivate];
 			authority.publicationIdentity=[context.device newBufferWithLength:sizeof(std::uint64_t)
 				options:MTLResourceStorageModePrivate];
-			if(!authority.values||!authority.metadata||!authority.publicationIdentity){
+			if(!authority.inputUpload||!authority.values||!authority.metadata||
+				!authority.publicationIdentity){
 				if(error)*error="production resident frozen source allocation failed";return false;}
 			authority.issuedValues=authority.values;authority.issuedMetadata=authority.metadata;
-			authority.parentCommand=command;authority.cells=metadata.cells;
-			authority.allocationBytes=[authority.values allocatedSize]+[authority.metadata allocatedSize]+
+			authority.parentCommand=command;
+			authority.parentCandidatePublicationIdentity=candidateAuthority.publicationIdentity;
+			authority.cells=metadata.cells;
+			authority.parameterUpload=[context.device newBufferWithBytes:&metadata
+				length:sizeof(metadata) options:MTLResourceStorageModeShared];
+			if(!authority.parameterUpload){
+				if(error)*error="production resident frozen source parameter allocation failed";
+				return false;}
+			authority.allocationBytes=[authority.inputUpload allocatedSize]+
+				[authority.parameterUpload allocatedSize]+
+				[authority.values allocatedSize]+[authority.metadata allocatedSize]+
 				[authority.publicationIdentity allocatedSize];
+			authority.liveAllocationBytes=[authority.values allocatedSize]+
+				[authority.metadata allocatedSize]+[authority.publicationIdentity allocatedSize];
 			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
 			if(!encoder){if(error)*error="production resident frozen source encoder failed";return false;}
 			[encoder setComputePipelineState:context.produceFrozenSource];
-			[encoder setBuffer:qualificationInput offset:0 atIndex:0];
+			[encoder setBuffer:authority.inputUpload offset:0 atIndex:0];
 			[encoder setBuffer:authority.values offset:0 atIndex:1];
 			[encoder setBuffer:authority.metadata offset:0 atIndex:2];
 			[encoder setBuffer:failure offset:0 atIndex:3];
-			[encoder setBuffer:targetParameters offset:0 atIndex:4];
+			[encoder setBuffer:authority.parameterUpload offset:0 atIndex:4];
+			[encoder setBuffer:candidateAuthority.publicationIdentity offset:0 atIndex:5];
 			Dispatch(encoder,context.produceFrozenSource,metadata.cells);[encoder endEncoding];
 			encoder=[command computeCommandEncoder];
 			if(!encoder){if(error)*error="production resident frozen source identity encoder failed";
@@ -6865,6 +6910,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			[encoder setBuffer:authority.metadata offset:0 atIndex:1];
 			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:2];
 			[encoder setBuffer:failure offset:0 atIndex:3];
+			[encoder setBuffer:candidateAuthority.publicationIdentity offset:0 atIndex:4];
 			Dispatch(encoder,context.identifyFrozenSource,1u);[encoder endEncoding];return true;
 		}
 
@@ -6896,6 +6942,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				eosAuthority.parentTransportPublicationIdentity!=transportAuthority.publicationIdentity||
 				eosAuthority.parentPhysicalPublicationIdentity!=physicalAuthority.publicationIdentity||
 				eosAuthority.parentCandidatePublicationIdentity!=candidateAuthority.publicationIdentity||
+				sourceAuthority.parentCandidatePublicationIdentity!=candidateAuthority.publicationIdentity||
 				eosThermochemistry!=candidateAuthority.parentEOSThermochemistry||
 				candidateAuthority.cells!=metadata.cells||transportAuthority.parentCells!=metadata.cells||
 				physicalAuthority.parentCells!=metadata.cells||sourceAuthority.cells!=metadata.cells||
@@ -7582,9 +7629,12 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				requested+=increment;}
 			if(bytes>std::numeric_limits<std::uint64_t>::max()-requested)return false;
 			bytes+=requested;return true;};
-		// Five separate term/final fields, the device-issued projection metadata,
-		// the target/projection-metadata identities, and the consumer identity.
-		return add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
+		// Device-produced frozen-source field/metadata/identity, five separate
+		// target term/final fields, device-issued projection metadata, the target/
+		// projection-metadata identities, and the consumer identity.
+		return add(cells*sizeof(float))&&add(sizeof(MetalResidentFrozenSourceParameters))&&
+			add(sizeof(std::uint64_t))&&
+			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&add(sizeof(std::uint64_t))&&
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t));
@@ -7602,15 +7652,14 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			const std::uint64_t remainder=requested%quantum;if(remainder)requested+=quantum-remainder;
 			if(bytes>std::numeric_limits<std::uint64_t>::max()-requested)return false;
 			bytes+=requested;return true;};
-		// Qualification source/metadata upload-private pairs, the device-produced
-		// frozen-source field/metadata/identity, an alternate private EOS table for
-		// the handle-lineage RED, isolated target obligation word, and the sole
-		// terminal tap. The frozen-source authority is a resident parent and is not
-		// part of the target's live incremental certificate above.
+		// Canonical source-target upload plus private-substitution RED buffer, one
+		// source-metadata upload, an alternate private EOS table for the handle-
+		// lineage RED, target/projection metadata upload-private pairs, isolated
+		// target obligation word, and the sole terminal tap. The resident source
+		// authority itself is included in the live incremental certificate above.
 		return add(cells*sizeof(float))&&add(cells*sizeof(float))&&
-			add(sizeof(MetalResidentTargetParameters))&&add(sizeof(MetalResidentTargetParameters))&&
-			add(cells*sizeof(float))&&add(sizeof(MetalResidentFrozenSourceParameters))&&
-			add(sizeof(std::uint64_t))&&add(MetalEOSThermochemistryValues*sizeof(float))&&
+			add(sizeof(MetalResidentTargetParameters))&&
+			add(MetalEOSThermochemistryValues*sizeof(float))&&
 			add(sizeof(MetalResidentTargetParameters))&&add(sizeof(MetalResidentTargetParameters))&&
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&
@@ -8398,12 +8447,20 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			if(request.qualificationExactNegativeTailThreshold)eosParameters.padding[0]|=128u;
 			const FireProductionProjectionShape& shape=request.eos.physicalFlux.transport.shape;
 			const std::size_t cells=shape.CellCount();
-			if(request.frozenSourceDivergenceTargetPerS.size()!=cells||
-				request.sourcePacketIdentity==0u){
+			const FireProductionFrozenSourcePacketSeal& frozenSource=request.frozenSource;
+			const FireProductionProjectionShape& sourceShape=frozenSource.Shape();
+			if(!FireProductionFrozenSourcePacketSealMatches(frozenSource,error)||
+				sourceShape.nx!=shape.nx||sourceShape.ny!=shape.ny||sourceShape.nz!=shape.nz||
+				sourceShape.cellWidthM!=shape.cellWidthM||
+				frozenSource.TimeStepS()!=request.eos.candidateTimeStepS||
+				frozenSource.AttemptIdentity()!=request.eos.physicalFlux.transport.attemptIdentity||
+				frozenSource.SourceDelta().size()!=request.eos.sourceDelta.size()||
+				std::memcmp(frozenSource.SourceDelta().data(),request.eos.sourceDelta.data(),
+					request.eos.sourceDelta.size()*sizeof(float))!=0){
 				if(error)*error="production resident target frozen-source authority is invalid";
 				return false;
 			}
-			for(const float value:request.frozenSourceDivergenceTargetPerS)
+			for(const float value:frozenSource.DivergenceTargetPerS())
 				if(!std::isfinite(value)||(value==0.0f&&std::signbit(value))){
 					if(error)*error="production resident target frozen-source term is noncanonical";
 					return false;
@@ -8440,7 +8497,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					std::nextafter(0x1p-4f,std::numeric_limits<float>::infinity()):0x1p-4f,
 				request.qualificationPreauthoredProjectionTarget?1u:0u,
 				{0u,0u,0u},
-				request.eos.physicalFlux.transport.attemptIdentity,request.sourcePacketIdentity};
+				request.eos.physicalFlux.transport.attemptIdentity,frozenSource.PacketIdentity()};
 			for(unsigned int axis=0u;axis<3u;++axis)
 				targetParameters.faceOffset[axis]=static_cast<std::uint32_t>(faceOffset[axis]);
 			for(unsigned int side=0u;side<6u;++side)targetParameters.boundary[side]=
@@ -8524,11 +8581,9 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					transportParameterUpload=upload(&transportParameters,sizeof(transportParameters)),
 					physicalParameterUpload=upload(&physicalParameters,sizeof(physicalParameters)),
 					eosParameterUpload=upload(&eosParameters,sizeof(eosParameters)),
-					sourceParameterUpload=upload(&sourceParameters,sizeof(sourceParameters)),
 					targetParameterUpload=upload(&targetParameters,sizeof(targetParameters)),
 					projectionParameterUpload=upload(&projectionParameters,sizeof(projectionParameters)),
 					sourceDeltaUpload=upload(request.eos.sourceDelta.data(),stateBytes),
-					sourceTargetUpload=upload(request.frozenSourceDivergenceTargetPerS.data(),fieldBytes),
 					enthalpyUpload=upload(enthalpyBounds.data(),enthalpyBytes),
 					affineUpload=upload(affine.data(),affineBytes),
 					fctParameterUpload=upload(&fctParameters,sizeof(fctParameters));
@@ -8544,11 +8599,10 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					transportParameter=privateBuffer(sizeof(transportParameters)),
 					physicalParameter=privateBuffer(sizeof(physicalParameters)),
 					eosParameter=privateBuffer(sizeof(eosParameters)),
-					sourceParameter=privateBuffer(sizeof(sourceParameters)),
 					targetParameter=privateBuffer(sizeof(targetParameters)),
 					projectionParameter=privateBuffer(sizeof(projectionParameters)),
 					sourceDelta=privateBuffer(stateBytes),
-					sourceTarget=privateBuffer(fieldBytes),enthalpy=privateBuffer(enthalpyBytes),
+					sourceSubstitution=privateBuffer(fieldBytes),enthalpy=privateBuffer(enthalpyBytes),
 					affineBuffer=privateBuffer(affineBytes),fctParameter=privateBuffer(sizeof(fctParameters)),
 					failure=privateBuffer(sizeof(std::uint32_t)),
 					transportObligations=privateBuffer(sizeof(std::uint32_t)),
@@ -8557,17 +8611,17 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					targetObligations=privateBuffer(sizeof(std::uint32_t));
 				id<MTLBuffer> terminal=[context.device newBufferWithLength:terminalBytes
 					options:MTLResourceStorageModeShared];
-				const std::array<id<MTLBuffer>,54> buffers={{stateUpload,temperatureUpload,velocityUpload,
+				const std::array<id<MTLBuffer>,51> buffers={{stateUpload,temperatureUpload,velocityUpload,
 					fuelUpload,inflowUpload,thermoUpload,eosThermoUpload,transportUpload,ambientUpload,
 					physicalBasisUpload,advectiveBasisUpload,projectorUpload,transportParameterUpload,
-					physicalParameterUpload,eosParameterUpload,sourceParameterUpload,targetParameterUpload,
+					physicalParameterUpload,eosParameterUpload,targetParameterUpload,
 					projectionParameterUpload,sourceDeltaUpload,
-					sourceTargetUpload,enthalpyUpload,affineUpload,fctParameterUpload,controlUpload,state,
+					enthalpyUpload,affineUpload,fctParameterUpload,controlUpload,state,
 					temperature,velocity,fuel,inflow,thermo,eosThermo,eosThermoAlternate,transport,ambient,
 					physicalBasisBuffer,advectiveBasis,projector,transportParameter,physicalParameter,
-					eosParameter,sourceParameter,targetParameter,
+					eosParameter,targetParameter,
 					projectionParameter,
-					sourceDelta,sourceTarget,enthalpy,affineBuffer,fctParameter,failure,transportObligations,
+					sourceDelta,sourceSubstitution,enthalpy,affineBuffer,fctParameter,failure,transportObligations,
 					physicalObligations,eosObligations,targetObligations,terminal}};
 				for(id<MTLBuffer> buffer:buffers)if(!buffer){
 					if(error)*error="production resident target buffer allocation failed";
@@ -8589,10 +8643,9 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				copy(transportParameterUpload,transportParameter,sizeof(transportParameters));
 				copy(physicalParameterUpload,physicalParameter,sizeof(physicalParameters));
 				copy(eosParameterUpload,eosParameter,sizeof(eosParameters));
-				copy(sourceParameterUpload,sourceParameter,sizeof(sourceParameters));
 				copy(targetParameterUpload,targetParameter,sizeof(targetParameters));
 				copy(projectionParameterUpload,projectionParameter,sizeof(projectionParameters));
-				copy(sourceDeltaUpload,sourceDelta,stateBytes);copy(sourceTargetUpload,sourceTarget,fieldBytes);
+				copy(sourceDeltaUpload,sourceDelta,stateBytes);
 				copy(enthalpyUpload,enthalpy,enthalpyBytes);copy(affineUpload,affineBuffer,affineBytes);
 				copy(fctParameterUpload,fctParameter,sizeof(fctParameters));
 				copy(controlUpload,failure,sizeof(std::uint32_t));
@@ -8619,12 +8672,18 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					eosObligations,transportAuthority,physicalAuthority,candidateAuthority,eosParameters,
 					eosAuthority,error))return false;
 				ResidentFrozenSourceMetalAuthority sourceAuthority;
-				if(!EncodeResidentFrozenSourceAuthority(context,command,sourceTarget,sourceParameter,
-					failure,targetObligations,sourceParameters,sourceAuthority,error))return false;
+				if(!EncodeResidentFrozenSourceAuthority(context,command,failure,targetObligations,
+					frozenSource,candidateAuthority,sourceParameters,sourceAuthority,error))return false;
 				if(request.qualificationCPUProducedFrozenSource)
-					sourceAuthority.values=sourceTargetUpload;
-				if(request.qualificationCPUPrivateBlitFrozenSource)
-					sourceAuthority.values=sourceTarget;
+					sourceAuthority.values=sourceAuthority.inputUpload;
+				if(request.qualificationCPUPrivateBlitFrozenSource){
+					blit=[command blitCommandEncoder];if(!blit){
+						if(error)*error="production resident source-substitution RED encoder failed";
+						return false;}
+					[blit copyFromBuffer:sourceAuthority.inputUpload sourceOffset:0
+						toBuffer:sourceSubstitution destinationOffset:0 size:fieldBytes];[blit endEncoding];
+					sourceAuthority.values=sourceSubstitution;
+				}
 				if(request.qualificationNonImmediateCandidate)
 					candidateAuthority.parentPhysicalPublicationIdentity=transportAuthority.publicationIdentity;
 				if(request.qualificationEOSAcceptedButUnlinked)
@@ -8649,7 +8708,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					request.qualificationMismatchedEOSThermochemistry?eosThermoAlternate:eosThermo;
 				if(!EncodeResidentProjectionTargetAuthority(context,command,admittedEOSThermochemistry,
 					targetParameter,projectionParameter,
-					request.qualificationCPUProducedTarget?sourceTargetUpload:nil,
+					request.qualificationCPUProducedTarget?sourceAuthority.inputUpload:nil,
 					request.qualificationCPUForgedProjectionMetadata?projectionParameterUpload:nil,
 					failure,targetObligations,
 					transportAuthority,physicalAuthority,
@@ -8702,7 +8761,8 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					eosAuthority.allocationBytes+sourceAuthority.allocationBytes+
 					targetAuthority.allocationBytes;
 				for(id<MTLBuffer> buffer:buffers)computed.actualMetalAllocationBytes+=[buffer allocatedSize];
-				computed.liveAuthorityAllocationBytes=targetAuthority.allocationBytes;
+				computed.liveAuthorityAllocationBytes=sourceAuthority.liveAllocationBytes+
+					targetAuthority.allocationBytes;
 				computed.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
 				if(controls[0]!=0u){
 					result=std::move(computed);

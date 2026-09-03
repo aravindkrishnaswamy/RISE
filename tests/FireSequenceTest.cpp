@@ -9866,12 +9866,16 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		"qualification output must not become projection authority");
 	const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 	if(!fuel.IsValid())return 211;
+	const FireSimulationTransportRecord& sourceTransport=FireSimulationTransportRecord::OpenV1();
+	const FireSimulationGasOpacityRecord& sourceOpacity=
+		FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1();
 	FireCase::AuthoredV1 authored;authored.fuelRecordId=fuel.RecordId();
 	authored.poolDiameterM=0.03;authored.heatReleaseRateKW=0.10;
 	authored.envelope={{0.0,0.0},{0.5,1.0},{1.0,1.0}};authored.durationS=1.0;
 	authored.quality="draft";authored.seed=200u;authored.outputFramesPerS=4.0;
 	FireCase::RecordV1 sealedCase;std::string error;
-	if(!FireCase::BuildMethaneV1(authored,fuel,{fuel.RecordId()},sealedCase,error))return 212;
+	if(!FireCase::BuildMethaneV1(authored,fuel,
+		{fuel.RecordId(),sourceTransport.RecordId(),sourceOpacity.RecordId()},sealedCase,error))return 212;
 	FireProductionResidentTargetLineageComparatorRequest request;
 	FireProductionResidentEOSCandidateComparatorRequest& eos=request.eos;
 	eos.physicalFlux.transport.shape.nx=4u;eos.physicalFlux.transport.shape.ny=4u;
@@ -9884,12 +9888,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	eos.producingStage=FireProductionScalarEOSStage::QStar;
 	eos.producerPrecision=FireStateProducerPrecision::Binary32;
 	eos.candidateTimeStepS=0x1p-16f;eos.caseRecordEnvelope=sealedCase.envelopeBytes;
-	request.sourcePacketIdentity=UINT64_C(0x2000000000000004);
 	const FireProductionProjectionShape& shape=eos.physicalFlux.transport.shape;
 	const std::size_t cells=shape.CellCount();eos.sourceDelta.assign(9u*cells,0.0f);
 	eos.physicalFlux.transport.conservativeValues.assign(9u*cells,0.0f);
 	eos.physicalFlux.transport.temperatureK.resize(cells);
-	request.frozenSourceDivergenceTargetPerS.resize(cells);
 	for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
 		shape.ny*shape.nz:(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
 		eos.physicalFlux.transport.fuelInletBoundaryFace[side].assign(count,0u);
@@ -9932,9 +9934,19 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		for(std::size_t component=0u;component<9u;++component)
 			eos.physicalFlux.transport.conservativeValues[component*cells+cell]=state[component];
 		eos.physicalFlux.transport.temperatureK[cell]=static_cast<float>(temperatures[cell%8u]);
-		const int sourceClass=static_cast<int>(cell%5u)-2;
-		request.frozenSourceDivergenceTargetPerS[cell]=
-			static_cast<float>(sourceClass)*0x1p-8f;}
+	}
+	FireProductionFrozenMethaneSourceRequest sourceRequest;
+	sourceRequest.shape=shape;sourceRequest.timeStepS=eos.candidateTimeStepS;
+	sourceRequest.beginningTimeS=0.0;
+	sourceRequest.attemptIdentity=eos.physicalFlux.transport.attemptIdentity;
+	sourceRequest.caseRecordEnvelope=sealedCase.envelopeBytes;
+	sourceRequest.beginningConservativeValues=eos.physicalFlux.transport.conservativeValues;
+	sourceRequest.pilotCommandMask.assign(cells,0u);
+	sourceRequest.mixingTimeS.assign(cells,1.0);
+	sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=1u;
+	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
+		request.frozenSource,&error))return 213;
+	eos.sourceDelta=request.frozenSource.SourceDelta();
 	for(std::size_t component=0u;component<9u;++component)eos.physicalFlux.ambient[component]=
 		eos.physicalFlux.transport.conservativeValues[component*cells];
 	eos.physicalFlux.ambientTemperatureK=eos.physicalFlux.transport.temperatureK[0];
@@ -9989,7 +10001,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		candidate.representedPressureRatio[55u]<1.0f&&candidate.absoluteEOSDeviation[55u]>tailThreshold,
 		exactThresholdNoDrain?1:0,exactThresholdNoDrain?1:0,
 		thresholdCoverage&&exactThresholdNoDrain?1:0);
-	std::vector<float> tangentMirror(cells),sourceMirror=request.frozenSourceDivergenceTargetPerS,
+	std::vector<float> tangentMirror(cells),sourceMirror=request.frozenSource.DivergenceTargetPerS(),
 		diagnosticMirror(cells),tailMirror(cells),assembledMirror(cells);
 	std::vector<double> tangentExact(cells),diagnosticExact(cells),tailExact(cells),
 		assembledExact(cells);
@@ -10059,6 +10071,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	openRequest.eos.physicalFlux.transport.boundary[1]=FireProductionProjectionPressureOpen;
 	openRequest.eos.candidateTimeStepS=std::nextafter(request.eos.candidateTimeStepS,
 		std::numeric_limits<float>::infinity());
+	sourceRequest.timeStepS=openRequest.eos.candidateTimeStepS;
+	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
+		openRequest.frozenSource,&error))return 220;
+	openRequest.eos.sourceDelta=openRequest.frozenSource.SourceDelta();
 	FireProductionResidentTargetLineageComparatorResult openObserved;
 	if(!EvaluateFireProductionResidentTargetLineageMetalComparator(openRequest,openObserved,&error)){
 		std::fprintf(stderr,"RESIDENT_TARGET_OPEN error=%s failure=0x%08x branch=0x%08x\n",
@@ -10069,7 +10085,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	FireProductionResidentEOSCandidateComparatorResult openCandidate;
 	if(!EvaluateFireProductionResidentEOSCandidateMetalComparator(openRequest.eos,
 		openCandidate,&error))return 222;
-	std::vector<float> openTangent(cells),openSource=openRequest.frozenSourceDivergenceTargetPerS,
+	std::vector<float> openTangent(cells),openSource=openRequest.frozenSource.DivergenceTargetPerS(),
 		openDiagnostic(cells),openTail(cells),openAssembled(cells);
 	std::vector<double> openTangentExact(cells),openDiagnosticExact(cells),openTailExact(cells),
 		openAssembledExact(cells);

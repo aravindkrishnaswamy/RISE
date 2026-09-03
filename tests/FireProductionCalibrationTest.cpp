@@ -333,7 +333,7 @@ namespace
 			"closed_branch_bitmap=0x03700180 closed_required=0x03700180 "
 			"open_branch_bitmap=0x02f00180 open_required=0x02f00180 "
 			"command_per_interval=1 reads_per_interval=1 transfers_per_interval=0 "
-			"enclosures=1 fixture_ws=1507328 actual_ws=131840 live_ws=147456")!=std::string::npos;
+			"enclosures=1 fixture_ws=1490944 actual_ws=131744 live_ws=196608")!=std::string::npos;
 	}
 	bool ValidateResidentTargetEvidenceAgainstRaw(const std::string& evidence,
 		const std::string& raw)
@@ -364,6 +364,12 @@ namespace
 		const std::string rawSHA=RISE::RISECBOR64::SHA256Hex(
 			RISE::RISECBOR64::Bytes(raw.begin(),raw.end()));
 		if(evidence.find("raw_transcript_sha256 "+rawSHA+"\n")==std::string::npos)return false;
+		std::istringstream rawRows(raw);std::string rawRow,REDRows;
+		while(std::getline(rawRows,rawRow))if(rawRow.rfind("RESIDENT_TARGET_RED ",0u)==0u)
+			REDRows+=rawRow+"\n";
+		const std::string REDSHA=RISE::RISECBOR64::SHA256Hex(
+			RISE::RISECBOR64::Bytes(REDRows.begin(),REDRows.end()));
+		if(evidence.find("raw_RED_rows_sha256 "+REDSHA+"\n")==std::string::npos)return false;
 		const char* topologyNames[2]={"closed","pressure_open"};
 		const char* rawFields[5]={"tangent","frozen_source","absolute_reference_diagnostic",
 			"monitored_absolute_reference","assembled_compatible_target"};
@@ -397,6 +403,19 @@ namespace
 				!evidenceUInt64(evidenceIdentityKeys[index],evidenceValue)||
 				rawValue==0u||rawValue!=evidenceValue)return false;}
 		const std::string summary=lineFor(raw,"RESIDENT_TARGET passed=1 ");
+		const std::string evidenceMeasurement=lineFor(evidence,"measurement RESIDENT_TARGET ");
+		if(evidenceMeasurement.rfind("measurement ",0u)!=0u||
+			evidenceMeasurement.substr(12u)!=summary)return false;
+		const std::string dormant=lineFor(raw,
+			"RESIDENT_TARGET_RED name=dormant_tail_threshold_identity ");
+		std::uint64_t rawDormantBase=0u,rawDormantAlternate=0u,evidenceDormantBase=0u,
+			evidenceDormantAlternate=0u;
+		if(!taggedUInt64(dormant,"base_identity=",rawDormantBase)||
+			!taggedUInt64(dormant,"alternate_identity=",rawDormantAlternate)||
+			!evidenceUInt64("dormant_tail_threshold_base_identity",evidenceDormantBase)||
+			!evidenceUInt64("dormant_tail_threshold_alternate_identity",evidenceDormantAlternate)||
+			rawDormantBase!=evidenceDormantBase||
+			rawDormantAlternate!=evidenceDormantAlternate)return false;
 		const char* rawWorkingSetTags[3]={"fixture_ws=","actual_ws=","live_ws="};
 		const char* evidenceWorkingSetKeys[3]={"fixture_working_set_bytes",
 			"actual_fixture_allocation_bytes","live_increment_working_set_bytes"};
@@ -4156,17 +4175,17 @@ int main()
 	};
 	const bool residentTargetEvidenceHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetEvidence.begin(),residentTargetEvidence.end()))==
-		"1dc71b80dc48d1140f51f6acb962163a80741496112793fd8c2ac374b39bf29f";
+		"75beb001f81ad1ad9ade6f77ef986114efea0c2991ec99439f8f1247d9a64d67";
 	const bool residentTargetRawHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetRawEvidence.begin(),residentTargetRawEvidence.end()))==
-		"68b3ad79fc97e8982aac67d7ceaccbc395bfa832c1f894f1e84fb9a496a5454f";
+		"5968b41dc534a3fcd3d61f98f3b864c8f40046cfe23dff97fb0cb16e2c640109";
 	const bool residentTargetRawStructureValid=
 		ValidateResidentTargetRawEvidence(residentTargetRawEvidence);
 	const bool residentTargetEvidenceSemanticsValid=
 		ValidateResidentTargetEvidenceAgainstRaw(residentTargetEvidence,residentTargetRawEvidence);
 	const bool residentTargetBindingHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetLiveBinding.begin(),residentTargetLiveBinding.end()))==
-		"eae63c7c32063d79a2a32dcc7ba4874b2f614367994d809ec45c9bfa2b21bb15";
+		"cfa624359d6f8c68cadb41964659fced41f33cfeb79b2d34f8442985cd4d0a2f";
 	Check(residentTargetEvidenceHashValid,"r200 evidence SHA binding");
 	Check(residentTargetRawHashValid,"r200 raw transcript SHA binding");
 	Check(residentTargetRawStructureValid,"r200 raw transcript structure and RED battery");
@@ -4200,7 +4219,8 @@ int main()
 			"r200_authenticated_device_target_lineage/resident_target_lineage_evidence.v1")&&
 		residentTargetEvidence.find("review_boundary_closed false\n")!=std::string::npos&&
 		residentTargetEvidence.find("parent_conjunction "
-			"transport_and_physical_flux_and_candidate_and_EOS_and_frozen_source\n")!=std::string::npos&&
+			"transport_and_physical_flux_and_candidate_and_EOS_and_candidate_bound_frozen_source\n")!=
+			std::string::npos&&
 		residentTargetEvidence.find("frozen_source_CPU_private_blit_forgeable false\n")!=
 			std::string::npos&&residentTargetEvidence.find("target_EOS_thermochemistry_handle_binding "
 			"exact_candidate_parent\n")!=std::string::npos&&residentTargetEvidence.find(
@@ -4234,15 +4254,15 @@ int main()
 			std::string::npos&&
 		residentTargetEvidence.find("parent_EOS_current_library_requalified true\n")!=
 			std::string::npos&&residentTargetEvidence.find("metal_library_source_sha256 "
-			"34d00b9f6846bffdfbe17d171cf0753bcc98acee1f7eeb80cc4fb3831b844cb1\n")!=
+			"276e9263b0ae8264ba917eff46e8e845ce2e46efdb52f13d755049950c8edd22\n")!=
 			std::string::npos&&residentTargetEvidence.find("metal_library_function_set_sha256 "
 			"55c16c115a76267ebf11956d769fbde27b9f245fd91fbd8374748be417440a9c\n")!=
 			std::string::npos&&residentTargetEvidence.find("parent_EOS_control_sha256 "
-			"6b19e422decd65035255e3be62bf983c69dbc092ee0c4e6e8d0558b143b657a8\n")!=
+			"5a8378021fc4cf9049c25ce58beb8093c4e76f615d0120e796c0395c369fd3a1\n")!=
 			std::string::npos&&ValidateResidentEOSRawEvidence(ReadText(
 			"rendered/fire_production_calibration/r200_authenticated_device_target_lineage/"
 			"resident_eos_control.raw"),
-			"34d00b9f6846bffdfbe17d171cf0753bcc98acee1f7eeb80cc4fb3831b844cb1",
+			"276e9263b0ae8264ba917eff46e8e845ce2e46efdb52f13d755049950c8edd22",
 			"55c16c115a76267ebf11956d769fbde27b9f245fd91fbd8374748be417440a9c")&&
 		residentTargetEvidence.find("cancellation_sensitive_bound_used false\n")!=
 			std::string::npos&&residentTargetEvidence.find(
@@ -4260,7 +4280,7 @@ int main()
 			std::string::npos&&residentTargetEvidence.find(
 			"interstage_full_grid_transfer_count 0\n")!=std::string::npos&&
 		residentTargetEvidence.find("raw_transcript_sha256 "
-			"68b3ad79fc97e8982aac67d7ceaccbc395bfa832c1f894f1e84fb9a496a5454f\n")!=
+			"5968b41dc534a3fcd3d61f98f3b864c8f40046cfe23dff97fb0cb16e2c640109\n")!=
 			std::string::npos&&solverDoc.find(
 			"### 7.56ag Authenticated resident target lineage (r200)")!=std::string::npos&&
 		historyDoc.find("r200 authenticated resident target lineage")!=std::string::npos,

@@ -5212,9 +5212,11 @@ it was already tried and refuted here.
 - **r200 authenticated resident target lineage (2026-09-02):** completes the
   fourth r195 rung as a private device target producer consuming the exact
   command-local r197a transport, r198 physical-flux, r199 accepted-`Q*`, r199
-  EOS, and device-produced frozen-source publication handles. The source field,
-  sealed packet metadata, and identity are issued on Metal; neither shared CPU
-  bytes nor a private CPU blit can substitute. The conjunction is structural: an unsealed
+  EOS, and device-produced frozen-source publication handles. The source issuer
+  accepts only the opaque seal minted by the canonical FireSim source authority;
+  no raw source-target field is an admissible input. The source field, sealed
+  packet metadata, candidate-parent binding, and identity are issued on Metal;
+  neither shared CPU bytes nor a private CPU blit can substitute. The conjunction is structural: an unsealed
   parent refuses on device, while a stale candidate or an EOS publication not
   immediately linked to that candidate refuses before command submission. A
   CPU-produced target surface cannot forge the private lineage. The target
@@ -5235,8 +5237,8 @@ it was already tried and refuted here.
   arithmetic through the divergence, without tolerance widening. Adding the
   target functions changes Metal's library identity, so the full r199 EOS
   control is requalified rather than inherited: all 48,693,249 log arguments,
-  192 EOS field rows, rounding edges, and 13 REDs pass under source digest
-  `34d00b9f...44cb1` and function-set digest `55c16c11...0a9c`. r189's
+  192 EOS field rows, rounding edges, and 13 REDs pass under the library and
+  function-set digests recorded in the SHA-bound r200 evidence. r189's
   preauthored-target and topology refusals re-run on device with `0x2000`. The
   latter mutates a projection request while preserving a valid target. A device
   stage issues opaque private projection metadata bound to that target identity;
@@ -5251,7 +5253,8 @@ it was already tried and refuted here.
   refuses a same-size alternate EOS table. Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
   host preflight. Residency is one command, one terminal read, and zero
   interstage full-grid transfers; fixture/actual/target-live bytes are
-  `1507328`/`131840`/`147456`. Closed/open obligation bitmaps exactly equal
+  `1490944`/`131744`/`196608`. The live certificate includes the private source
+  field, source metadata, and candidate-bound source identity. Closed/open obligation bitmaps exactly equal
   their independently required `0x03700180`/`0x02f00180`, covering both tail
   signs, term assembly, and both compatibility branches. `case_record_id` is unchanged, producer/run
   identity inherits r200, and the golden checkpoint is untouched. Evidence is

@@ -5916,11 +5916,13 @@ ported replay.
 r200 completes the fourth r195 resident-lineage rung. A private Metal target
 issuer consumes the exact command-local publications made by r197a transport,
 r198 physical flux, r199's source-inclusive accepted `Q*`, r199 EOS, and an
-opaque device-produced frozen-source authority. Qualification source bytes are
-copied by a Metal producer into a private field whose sealed packet metadata and
-publication identity are also created on device; neither shared bytes nor a
-private CPU blit can substitute for that opaque authority. It
-accepts no public candidate or target object. The child retains the four exact
+opaque device-produced frozen-source authority. Its issuer accepts only the
+opaque `FireProductionFrozenSourcePacketSeal` minted by the canonical FireSim
+source authority; no raw source-target field is accepted by the qualification
+surface. Metal publishes the seal's source field into private storage and binds
+its on-device identity to the exact candidate publication. Neither shared CPU
+bytes nor a byte-identical private CPU blit can substitute for that issued
+authority. It accepts no public candidate or target object. The child retains the five exact
 publication handles and the parent command; every parent must be nonzero on
 device, while the issuer separately requires pointer identity through the
 immediate chain `transport -> physical flux -> Q* -> EOS`. A stale but valid
@@ -5961,7 +5963,7 @@ mirror's binary32 projection. Each row also reports the error to its binary64
 reference against a same-cell, same-field enclosure in `s^-1`, derived solely
 from half the larger adjacent binary32 spacing of the published value; it does
 not consume the measured residual. Only the exact-copy source field has a zero
-bound. Worst residual/bound ratios are `0.95136` or less closed and
+bound. Worst residual/bound ratios are `0.970643` or less closed and
 `0.9999997` or less pressure-open. A displaced-exact RED exceeds the unchanged
 local enclosure by 4x, proving that the bound can fail. There is no across-field
 acceptance statistic and no cancellation-sensitive bound. Integrated states
@@ -5979,10 +5981,9 @@ Because adding these kernels changes the exact library compiled by Metal,
 r200 does not inherit r199's execution identity silently. The complete r199
 EOS sweep is re-run through the same resident context. All 48,693,249 log
 qualification arguments, 192 per-cell EOS comparisons, rounding-edge cases,
-and 13 device REDs pass unchanged. The current library source digest is
-`34d00b9f6846bffdfbe17d171cf0753bcc98acee1f7eeb80cc4fb3831b844cb1`
-and its compiled function-set digest is
-`55c16c115a76267ebf11956d769fbde27b9f245fd91fbd8374748be417440a9c`.
+and 13 device REDs pass unchanged. The current library source and compiled
+function-set digests are recorded from that control in the SHA-bound r200
+evidence artifact, rather than inherited from r199.
 The device/runtime/language/safe-math tuple remains the r199-qualified Apple
 M4 Max tuple. This control binds the parent EOS proof and the newly compiled
 target functions to one actual library identity.
@@ -5999,8 +6000,9 @@ issues an opaque private metadata surface on device and binds its identity to
 the actual target publication; the consumer accepts that type, not uploaded bytes, and compares
 exact shape, cell width, timestep, attempt, and all boundary classes.
 Byte-identical CPU metadata and CPU target substitutions both refuse at host
-preflight. Shared CPU source bytes and a byte-identical private CPU blit likewise
-cannot replace the device-issued frozen-source field. A mismatched source packet,
+preflight. The source issuer has no raw-field input surface; its two substitution
+REDs replace the exact issued handle with either the canonical seal's shared upload
+or a byte-identical private CPU blit, and both refuse before target issuance. A mismatched source packet,
 and each stale target shape/face-offset/cell-width/timestep/attempt/boundary
 mutation, refuse on device with `0x2800`; an alternate same-size EOS table is
 refused by exact parent-handle identity before submission. The target identity now includes
@@ -6013,10 +6015,12 @@ device without claiming that a host-preflight refusal was a GPU observation.
 
 The qualification interval remains one command, one terminal staging read,
 and zero interstage full-grid transfers per valid interval. The fixture
-certificate is `1507328` bytes against `131840` bytes allocated. The target's
-live incremental certificate is `147456` bytes; it accounts for five per-cell
-fields, target identity, the device-issued projection metadata and its identity,
-and consumer identity while consuming rather than duplicating resident parents.
+certificate is `1490944` bytes against `131744` bytes allocated. The target's
+live incremental certificate is `196608` bytes; it accounts for the private
+source field, its sealed metadata and candidate-bound identity, five per-cell
+target fields, target identity, the device-issued projection metadata and its
+identity, and consumer identity while consuming rather than duplicating the
+other resident parents.
 Closed and pressure-open observed/required arithmetic-obligation bitmaps are
 exactly `0x03700180` and `0x02f00180`, respectively; they bind below/above tail,
 both tail signs, term assembly, and both compatibility branches. The
