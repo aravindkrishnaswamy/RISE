@@ -112,14 +112,34 @@ say Phase 5 would build.  `KHR_materials_clearcoat` now imports onto
 it: `clearcoat_factor` → `coat_weight`, `clearcoat_roughness_factor`
 (squared, perceptual-roughness → GGX-alpha) → `coat_roughness`,
 `coat_ior` fixed at 1.5 per the glTF spec (KHR_materials_clearcoat
-carries no IOR of its own).  **Sheen stays deferred, but no longer on
-composition-with-PBR grounds** — the real reason is MODELLING, not
-scope: sheen is a retro-reflective grazing lobe (Charlie/Neubelt),
-which is a physically different object from a transparent dielectric
-film, so `coated_material`'s `coat_weight`/`coat_roughness`/`coat_tint`
-surface cannot express it no matter how the composition problem is
-solved.  See §15 below for the delivered + deferred breakdown, and
-`GLTFSceneImporter.cpp`'s clearcoat block for the implementation.
+carries no IOR of its own).  **Sheen stayed deferred at the time, but no
+longer on composition-with-PBR grounds** — the real reason was
+MODELLING, not scope: sheen is a retro-reflective grazing lobe
+(Charlie/Neubelt), which is a physically different object from a
+transparent dielectric film, so `coated_material`'s
+`coat_weight`/`coat_roughness`/`coat_tint` surface cannot express it no
+matter how the composition problem is solved.
+
+**AMENDED (2026-09-03) — sheen delivered via `fabric_material`.**
+docs/CLOTH_FABRIC_DESIGN.md §7(B) shipped `fabric_material` — an
+energy-compensated Charlie sheen lobe over the same restricted
+substrate allowlist as `coated_material` (`lambertian_material` /
+`orennayar_material` / `ggx_material`, so `pbr_metallic_roughness_
+material` resolves transitively) — for an unrelated reason (the fabric
+verb), but it is exactly the dedicated layered-sheen primitive this
+section said sheen was waiting on.  `KHR_materials_sheen` now imports
+onto it: `sheenColorFactor` (+ sRGB `sheenColorTexture`) → `sheen_color`,
+`sheenRoughnessFactor` (+ the ALPHA channel of `sheenRoughnessTexture`)
+→ `sheen_roughness`, `fabric custom` (no preset seeding — glTF has no
+fabric-type concept), `weave_rotation 0` (glTF has no weave-direction
+concept).  **Clearcoat + sheen on the same material**: glTF layers
+base → sheen → clearcoat, but `coated_material` cannot wrap a
+`fabric_material` result (its substrate allowlist is the same three
+scattering classes `FabricMaterial`'s own is, and `FabricMaterial` is
+none of those) — sheen wins the wrap and the clearcoat layer is
+warn-and-skipped, keeping sheen.  See §15 below for the delivered +
+deferred breakdown, and `GLTFSceneImporter.cpp`'s clearcoat/sheen
+blocks for the implementation.
 
 ## Historical implementation snapshot
 
@@ -146,7 +166,7 @@ solved.  See §15 below for the delivered + deferred breakdown, and
 | **KHR_materials_unlit** | — | Importer detects `mat.unlit` and registers the material as `LambertianLuminaireMaterial(baseColor, zero-reflectance Lambertian, scale = π)` so the BSDF returns 0 and the emitter contributes baseColor as Lambertian radiance.  Supports alpha-mode interaction. | — |
 | **Per-pixel alpha (alpha-aware painter)** | — | New `IPainter::GetAlpha()` virtual (default 1.0); `TexturePainter` overrides to return the **straight** A channel.  `ChannelPainter` extended with `CHAN_A = 3` (clamped to [0,1]) so the chunk parser can route alpha through the standard channel-extraction flow.  Closes the Phase 3 `max(R,G,B)` proxy gap.  Phase 4 also fixed two latent bugs: (a) `BuildAlphaPainter` reads CHAN_A from the **raw** `baseColorTexturePainter`, not the composed product (a `BlendPainter` wouldn't propagate texture alpha and collapsed to the default 1.0); (b) `TexturePainter::GetColor` no longer pre-multiplies RGB by alpha (legacy semantic that double-dimmed glTF textures under BLEND once the shader-op also weighted by alpha). | — |
 | **alphaMode = BLEND** (`transparency_shaderop` wiring) | — | Per-material wiring: `BlendPainter(zero, white, alpha) = (1 − α)` produces the see-through factor for `transparency_shaderop`; composed via `advanced_shader` with operators `[+, +, =]` over `[DefaultEmission, DefaultDirectLighting, transparency]`.  PT-only (same integrator caveat as alphaMode = MASK). | — |
-| **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **Standalone-only** -- the glTF import-time layering over PBR stays deferred, but as of 2026-09-01 (WETNESS_COAT_DESIGN.md sec 13 item 9) the reason is MODELLING, not composition: sheen is a retro-reflective grazing lobe, a different physical object from `coated_material`'s transparent dielectric film, so it cannot be expressed there regardless of scope (see §15). | No `coated_material`-shaped path; needs a dedicated layered-sheen primitive or a revisit of `CompositeMaterial`'s deficiencies |
+| **KHR_materials_sheen** (Charlie / Neubelt BRDF) | — | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution + Neubelt visibility (Estevez & Kulla 2017).  **DELIVERED 2026-09-03** (docs/CLOTH_FABRIC_DESIGN.md §7(B)): the glTF import-time layer-over-PBR now imports onto `fabric_material` instead of `sheen_material`/`coated_material` -- see §15. | Per-pixel clearcoat/sheen textures beyond the two ALPHA/RGB channels already routed; clearcoat+sheen composes as sheen-wins (see §15) |
 | **KHR_materials_transmission + volume + ior (scalar subset)** | — | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium(σ_a derived from attenuation_color / attenuation_distance)`; the medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  IOR painter from KHR_materials_ior or default 1.5.  Requires `pathtracing_shaderop` for refraction (the legacy `DefaultDirectLighting` + `pixelpel_rasterizer` only evaluates BSDFs, and dielectrics have no BSDF).  **`transmission_texture` is NOT honoured** — assets that vary transmissivity per-pixel import as uniformly transmissive; importer emits a one-time warning per affected material. | Phase 5: per-pixel τ painter |
 | **KHR_materials_clearcoat** | — | **DELIVERED 2026-09-01** (WETNESS_COAT_DESIGN.md sec 13 item 9): imports onto `coated_material` over the PBR base -- `clearcoat_factor` -> `coat_weight`, `clearcoat_roughness_factor` squared -> `coat_roughness` (perceptual roughness -> GGX alpha), `coat_ior` fixed at 1.5 per spec.  The `clearcoat`/`clearcoatRoughness`/`clearcoatNormal` textures are not sampled -- uniform factors only, warned once per affected material. | Per-pixel clearcoat/roughness/normal textures |
 | **Animation / skinning / morph targets** | — | Importer warns once per file; no runtime support yet. | Phase 5+ |
@@ -612,7 +632,7 @@ Euler. Minimal change to the chunk parser; storage is the same internally
 - **Skinning.** No CPU skin pass + BVH refit pipeline yet (refit hook exists but unused for skinning).
 - **Morph targets.** Same.
 - **`KHR_draco_mesh_compression` / `EXT_meshopt_compression`.** Reject with clear error.
-- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.  *(Phase 4 update: `unlit`, `emissive_strength`, scalar `transmission` + `volume` + `ior` have since shipped; `clearcoat` and `sheen` as a layer-over-PBR remain warn-and-skip.  See §15.)*
+- **`KHR_materials_*`** beyond `unlit`, `emissive_strength`, `ior` (which feeds GGX directly). Warn-and-skip with the extension name in the warning so users know what was lost.  *(Phase 4 update: `unlit`, `emissive_strength`, scalar `transmission` + `volume` + `ior` have since shipped; `clearcoat` (2026-09-01, via `coated_material`) and `sheen` (2026-09-03, via `fabric_material`) as a layer-over-PBR have since shipped too.  See §15.)*
 - **alphaMode = BLEND.** Only OPAQUE and MASK in v1.  *(Phase 4 update: BLEND now ships via `transparency_shaderop`.  See §15.)*
 - **Multi-camera.** First camera wins.
 - **Multi-scene.** Honor `scene` field; ignore others.
@@ -1109,7 +1129,7 @@ The work split into two cohorts.
 
 | Feature | What landed |
 |---|---|
-| **`KHR_materials_sheen` (BRDF)** | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution `D(α, n·h) = (2 + 1/α)/(2π) · sin(θ_h)^(1/α)` + Neubelt visibility `V(n·l, n·v) = 1/(4·(n·l + n·v − n·l·n·v)·n·l·n·v)` (Estevez & Kulla 2017 / KHR_materials_sheen).  Cosine-hemisphere sampling for the SPF (no closed-form Charlie importance sample); the PDF mismatch is small for sheen's typical roughness range and is cleaned up by MIS in PT.  Both `SheenBRDF::value(NM)` and `SheenSPF::Pdf(NM)` flip the shading normal on back-face hits so the BRDF stays consistent with the sampling counterpart.  **Standalone-only** in this branch — see "Deferred to Phase 5" below. |
+| **`KHR_materials_sheen` (BRDF)** | New `Materials/SheenBRDF.{h,cpp}`, `SheenSPF.{h,cpp}`, `SheenMaterial.h` + `Job::AddSheenMaterial` + `RISE_API_CreateSheenMaterial` + `sheen_material` chunk parser.  Charlie microfacet distribution `D(α, n·h) = (2 + 1/α)/(2π) · sin(θ_h)^(1/α)` + Neubelt visibility `V(n·l, n·v) = 1/(4·(n·l + n·v − n·l·n·v)·n·l·n·v)` (Estevez & Kulla 2017 / KHR_materials_sheen).  Cosine-hemisphere sampling for the SPF (no closed-form Charlie importance sample); the PDF mismatch is small for sheen's typical roughness range and is cleaned up by MIS in PT.  Both `SheenBRDF::value(NM)` and `SheenSPF::Pdf(NM)` flip the shading normal on back-face hits so the BRDF stays consistent with the sampling counterpart.  Was standalone-only in this branch; **the glTF import-time layer-over-PBR was DELIVERED 2026-09-03 via `fabric_material`** — see "Delivered 2026-09-03" below. |
 | **`KHR_materials_transmission` + `KHR_materials_volume` + `KHR_materials_ior`** | Importer maps the trio to existing `DielectricMaterial(tau=white, ior, scattering=zero)` + `HomogeneousMedium`.  Beer-Lambert absorption coefficient derived from the volume's `attenuation_color` and `attenuation_distance`: `σ_a = -ln(attenuation_color) / attenuation_distance` (component-wise; per-wavelength absorption gives green / red / etc. tinted glass).  IOR taken from `KHR_materials_ior` or default 1.5.  The medium is bound to the per-primitive object via `SetObjectInteriorMedium` during the scene walk.  **Requires `pathtracing_shaderop`** for refraction: dielectrics have no BSDF (`GetBSDF()` returns `NULL`), so `DefaultDirectLighting` + `pixelpel_rasterizer` cannot shade them — render glass scenes with `pathtracing_pel_rasterizer`. |
 | **`KHR_materials_clearcoat`** | **DELIVERED 2026-09-01** — imports onto `coated_material` over the PBR base.  See the amended Test-assets §13 entry and "Delivered 2026-09-01" below; no longer warn-and-skip. |
 
@@ -1119,11 +1139,18 @@ The work split into two cohorts.
 |---|---|
 | **Layered `KHR_materials_clearcoat` over PBR, via `coated_material`** | The composition problem below was never actually about clearcoat specifically — it was that `CompositeMaterial`'s random-walk SPF doesn't compose with a 3-lobe PBR base.  `coated_material` (built for an unrelated reason, the wetness/varnish verb) sidesteps it entirely: its `base` slot allowlists `pbr_metallic_roughness_material` directly and its own closed-form layered transport (Weidlich-Wilkie + Kulla-Conty recycling) evaluates the combined response without a stochastic walk.  `clearcoat_factor` -> `coat_weight`; `clearcoat_roughness_factor` squared (perceptual roughness -> GGX alpha, matching the same convention `Job::AddPBRMetallicRoughnessMaterial` already applies to the base `roughness`) -> `coat_roughness`; `coat_ior` fixed at 1.5 (KHR_materials_clearcoat has no IOR field of its own, unlike KHR_materials_transmission/ior above).  `coat_thickness`/`coat_absorption`/`coat_tint` stay at their clear-film defaults -- clearcoat has no absorption or tint concept.  Textures (`clearcoatTexture`, `clearcoatRoughnessTexture`, `clearcoatNormalTexture`) are not sampled; uniform factors only, warned once per affected material. |
 
+### Delivered 2026-09-03 (docs/CLOTH_FABRIC_DESIGN.md §7(B))
+
+| Item | What landed |
+|---|---|
+| **Layered `KHR_materials_sheen` over PBR, via `fabric_material`** | `fabric_material` (docs/CLOTH_FABRIC_DESIGN.md Phase 1) is an energy-compensated Charlie sheen lobe over a restricted substrate allowlist -- `lambertian_material` / `orennayar_material` / `ggx_material`, and `pbr_metallic_roughness_material` resolves transitively to a `ggx_material` at scene-build time, so it lands on the allowlist the same way it does for `coated_material` above.  `sheenColorFactor` (+ `sheenColorTexture`, sRGB-decoded like `baseColorTexture`) -> `sheen_color`; `sheenRoughnessFactor` (+ the ALPHA channel of `sheenRoughnessTexture`, per spec `sheenRoughness = sheenRoughnessFactor × texture.a`) -> `sheen_roughness`, via a new `Job::AddPainterChannelScalarPainter` (scalar-typed analogue of `AddChannelPainter`, needed because `sheen_roughness` is an `IScalarPainter` slot and there was previously no importer-side way to derive one from a texture channel).  `fabric custom` (no preset seeding -- glTF has no fabric-type concept) and `weave_rotation 0` (glTF has no weave-direction concept).  `FabricBRDF` clamps `sheen_roughness` to its own `[0.04, 1]` floor at render time; the importer does not pre-clamp, but logs once when the authored factor lands below it.  A `sheenColorFactor` of `[0,0,0]` with no texture (the glTF default) imports nothing, mirroring `clearcoat_factor == 0`'s "nothing to drop" treatment.  **Clearcoat + sheen on the same material**: glTF's layering is base -> sheen -> clearcoat, but `coated_material` cannot wrap a `fabric_material` result -- its substrate allowlist is the same three scattering classes `FabricMaterial::IsSupportedSubstrate` checks, and `FabricMaterial` itself is none of them.  Sheen therefore wins the wrap (the final registered material is the `fabric_material`, over the bare PBR base) and the clearcoat layer is warn-and-skipped, naming both extensions in the message so the drop is said, not silent.  Sheen combined with `KHR_materials_unlit` or `KHR_materials_transmission` stays warn-and-skip too (neither branch registers a PBR base, so `fabric_material`'s allowlist correctly refuses them) -- same shape as clearcoat's equivalent combinations. |
+
 ### Deferred to Phase 5
 
 | Item | Why deferred |
 |---|---|
-| **Layered `KHR_materials_sheen` over PBR** | Not a composition problem any more (clearcoat's fix above would apply equally) -- a MODELLING one: sheen is a retro-reflective grazing lobe (Charlie/Neubelt), a physically different object from `coated_material`'s transparent dielectric film, so `coated_material`'s `coat_weight`/`coat_roughness`/`coat_tint` surface cannot express it regardless of scope.  The standalone `SheenMaterial` works fine for hand-authored fabric (see `scenes/Tests/Materials/sheen.RISEscene`), but the importer's `mat.sheen` path stays warn-and-skip pending either a dedicated layered-sheen primitive or a measured need to revisit `CompositeMaterial`'s own deficiencies. |
+| **Clearcoat UNDER sheen (base -> clearcoat -> sheen), or a genuine 3-layer base+clearcoat+sheen stack** | Not attempted this slice.  glTF itself only defines base -> sheen -> clearcoat layering, so a clearcoat-under-sheen composition isn't a spec requirement; expressing all three at once would need either `fabric_material` to grow a coat-over-sheen slot of its own or a new primitive, not an allowlist extension to `coated_material` (extending that allowlist to accept `FabricMaterial` was explicitly out of scope for this slice — see docs/CLOTH_FABRIC_DESIGN.md §7(B)). |
+| **Per-pixel `sheenColorTexture` UV/wrap edge cases beyond the shared `WrapWithUVTransform` path** | Uses the same per-binding `KHR_texture_transform` wrapper every other glTF texture role does; not independently stress-tested beyond the delivered test coverage. |
 | **Alpha mask + blend under BDPT / VCM / MLT** | Same constraint as Phase 3: those integrators bypass the shader-op pipeline and treat alpha as opaque.  Promoting alpha-test to a hit-time geometry concern is a substantial cross-cutting refactor. |
 | **Animation / skinning / morph targets** | Carried forward from Phase 3+. |
 | **Other `KHR_materials_*`** (`specular`, `anisotropy`, `iridescence`, `dispersion`) | Phase 5+. |

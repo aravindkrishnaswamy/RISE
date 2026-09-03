@@ -375,7 +375,12 @@ namespace
 		// (it's a tint applied to F0, not numeric data).  specularTexture is
 		// a coverage / strength value in [0, 1] — linear.
 		if( std::strcmp( role, "specular_color" ) == 0 ) return "sRGB";
-		// normal / mr / occlusion / specular / sheen_color / anisotropy --
+		// KHR_materials_sheen spec: sheenColorTexture's RGB is sRGB encoded
+		// (a tint, like baseColor/specular_color above); sheenRoughnessTexture
+		// (role "sheen_roughness") is numeric data in its ALPHA channel and
+		// stays on the linear default below.
+		if( std::strcmp( role, "sheen_color" ) == 0 ) return "sRGB";
+		// normal / mr / occlusion / specular / sheen_roughness / anisotropy --
 		// verbatim store, no matrix conversion.
 		return "Rec709RGB_Linear";
 	}
@@ -1045,6 +1050,24 @@ namespace
 		// produces the identical rendered result.
 		const bool clearcoatContributes = hasClearcoat && (double)mat.clearcoat.clearcoat_factor > 0.0;
 
+		// Mirrors clearcoatContributes above: glTF's own default
+		// `sheenColorFactor` is [0,0,0] (extension present, author didn't
+		// set a colour) -- a fully black sheen tint contributes nothing
+		// through `fabric_material`'s additive Charlie lobe regardless of
+		// `sheenRoughnessFactor`, so treat it as "no sheen" the same way a
+		// zero clearcoat factor is treated as "no clearcoat": skip the
+		// `fabric_material` wrapper and its naming/registration cost.  A
+		// sheenColorTexture is also treated as "contributes" even when the
+		// scalar factor happens to be zero-initialized alongside it --
+		// unlike clearcoat there is no separate coverage scalar here, the
+		// colour IS the coverage, so a texture always means "author wants
+		// per-pixel sheen".
+		const bool sheenContributes = hasSheen && (
+			mat.sheen.sheen_color_texture.texture != nullptr ||
+			(double)mat.sheen.sheen_color_factor[0] > 0.0 ||
+			(double)mat.sheen.sheen_color_factor[1] > 0.0 ||
+			(double)mat.sheen.sheen_color_factor[2] > 0.0 );
+
 		// KHR_materials_unlit: skip the BSDF entirely and treat baseColor
 		// as Lambertian radiant exitance.  RISE has no "BSDF-less" material
 		// class; the closest fit is LambertianLuminaireMaterial wrapping a
@@ -1344,7 +1367,19 @@ namespace
 			// false, `ok` goes false, and the existing "failed to register
 			// material" diagnostic a few lines down fires -- a documented
 			// check via the manager's own collision refusal, not a silent one.
-			const std::string pbrRegisterName = clearcoatContributes ? ( matName + "__cc_base" ) : baseMatName;
+			//
+			// Sheen (docs/CLOTH_FABRIC_DESIGN.md §7(B)) reuses this same
+			// intermediate-name mechanism: glTF layers base -> sheen ->
+			// clearcoat, and when sheen contributes it is the layer that
+			// ends up registered as `matName` (clearcoat cannot compose
+			// ON TOP of a `fabric_material` result -- `coated_material`'s
+			// substrate allowlist does not include it, see the clearcoat+
+			// sheen diagnostic below) -- so sheen takes priority over
+			// clearcoat when picking the intermediate name.
+			const std::string pbrRegisterName =
+				sheenContributes     ? ( matName + "__sheen_base" ) :
+				clearcoatContributes ? ( matName + "__cc_base" )    :
+				                       baseMatName;
 
 			ok = job.AddPBRMetallicRoughnessMaterial(
 				pbrRegisterName.c_str(),
@@ -1384,7 +1419,7 @@ namespace
 			// clearcoat textures (base/roughness/normal) are NOT sampled --
 			// uniform factors only, the same scope limit Phase 4 already
 			// accepts for KHR_materials_transmission's texture above.
-			if( ok && clearcoatContributes ) {
+			if( ok && clearcoatContributes && !sheenContributes ) {
 				const cgltf_clearcoat& cc = mat.clearcoat;
 				const double ccWeight = (double)cc.clearcoat_factor;
 				const double ccRoughSq = (double)cc.clearcoat_roughness_factor *
@@ -1411,6 +1446,137 @@ namespace
 						"clearcoat_factor (%.3f) and clearcoat_roughness_factor (%.3f) -- the "
 						"textures are ignored.  See docs/GLTF_IMPORT.md §15.",
 						matName.c_str(), ccWeight, (double)cc.clearcoat_roughness_factor );
+				}
+			}
+
+			// ----- Sheen layer, via fabric_material -----
+			// docs/CLOTH_FABRIC_DESIGN.md §7(B): `fabric_material` is
+			// `KHR_materials_sheen`'s second paying customer.  The layer is
+			// exactly a Charlie sheen lobe over an allowlisted base, and
+			// `pbr_metallic_roughness_material` resolves transitively to a
+			// `ggx_material` at scene-build time
+			// (`Job::AddPBRMetallicRoughnessMaterial`), which IS on
+			// `FabricMaterial::IsSupportedSubstrate`'s allowlist -- so
+			// `pbrRegisterName` (the PBR base registered a few lines above)
+			// is always a legal `base` here.
+			//
+			// Mapping: sheenColorFactor (+ sheenColorTexture, RGB, sRGB-
+			// decoded by the same texture-painter path every other sRGB
+			// colour texture in this importer uses) -> sheen_color;
+			// sheenRoughnessFactor (+ sheenRoughnessTexture's ALPHA channel,
+			// per the KHR_materials_sheen spec) -> sheen_roughness.  `fabric
+			// custom` (no preset seeding -- glTF carries no fabric-preset
+			// concept) and `weave_rotation 0` (glTF carries no weave-
+			// direction concept either).  `FabricBRDF` clamps
+			// sheen_roughness to its own [0.04, 1] Charlie-alpha floor at
+			// render time -- we do NOT pre-clamp the imported factor here,
+			// but DO log once when it lands below the floor so an asset's
+			// authored value and the rendered look don't quietly diverge.
+			if( ok && sheenContributes ) {
+				const cgltf_sheen& sh = mat.sheen;
+
+				std::string sheenColorPainter;
+				if( sh.sheen_color_texture.texture ) {
+					std::string scTex = CreateTexturePainter(
+						job, prefix, data, glbPath, sh.sheen_color_texture.texture,
+						"sheen_color", preRegisteredTextures, lowmemTextures );
+					scTex = WrapWithUVTransform( job, prefix, matIdx, "sheen_color",
+						scTex, sh.sheen_color_texture );
+					if( !scTex.empty() ) {
+						const bool factorIsWhite =
+							sh.sheen_color_factor[0] == 1.0f &&
+							sh.sheen_color_factor[1] == 1.0f &&
+							sh.sheen_color_factor[2] == 1.0f;
+						if( factorIsWhite ) {
+							sheenColorPainter = scTex;
+						} else {
+							const std::string nFactor = PainterName( prefix, "sheen_color_factor", matIdx );
+							const double fpel[3] = {
+								(double)sh.sheen_color_factor[0],
+								(double)sh.sheen_color_factor[1],
+								(double)sh.sheen_color_factor[2] };
+							job.AddUniformColorPainter( nFactor.c_str(), fpel, "Rec709RGB_Linear" );
+
+							const std::string nZero = PainterName( prefix, "sheen_color_zero", matIdx );
+							const double zPel[3] = { 0.0, 0.0, 0.0 };
+							job.AddUniformColorPainter( nZero.c_str(), zPel, "Rec709RGB_Linear" );
+
+							const std::string nProduct = PainterName( prefix, "sheen_color", matIdx );
+							job.AddBlendPainter( nProduct.c_str(),
+								scTex.c_str(), nZero.c_str(), nFactor.c_str() );
+							sheenColorPainter = nProduct;
+						}
+					}
+				}
+				if( sheenColorPainter.empty() ) {
+					const std::string n = PainterName( prefix, "sheen_color", matIdx );
+					const double pel[3] = {
+						(double)sh.sheen_color_factor[0],
+						(double)sh.sheen_color_factor[1],
+						(double)sh.sheen_color_factor[2] };
+					job.AddUniformColorPainter( n.c_str(), pel, "Rec709RGB_Linear" );
+					sheenColorPainter = n;
+				}
+
+				// sheen_roughness: sheenRoughnessFactor scales the
+				// sheenRoughnessTexture's ALPHA channel per the spec
+				// (`sheenRoughness = sheenRoughnessFactor * texture.a`);
+				// with no texture the factor alone is an inline scalar
+				// literal, matching AddDielectricMaterial's pattern above.
+				const double shRoughFactor = (double)sh.sheen_roughness_factor;
+				std::string sheenRoughnessScalar;
+				if( sh.sheen_roughness_texture.texture ) {
+					std::string srTex = CreateTexturePainter(
+						job, prefix, data, glbPath, sh.sheen_roughness_texture.texture,
+						"sheen_roughness", preRegisteredTextures, lowmemTextures );
+					srTex = WrapWithUVTransform( job, prefix, matIdx, "sheen_roughness",
+						srTex, sh.sheen_roughness_texture );
+					if( !srTex.empty() ) {
+						const std::string nShRough = PainterName( prefix, "sheen_rough", matIdx );
+						job.AddPainterChannelScalarPainter( nShRough.c_str(), srTex.c_str(),
+							/*chan A*/ 3, /*scale*/ shRoughFactor, /*bias*/ 0.0 );
+						sheenRoughnessScalar = nShRough;
+					}
+				}
+				if( sheenRoughnessScalar.empty() ) {
+					char buf[32];
+					std::snprintf( buf, sizeof( buf ), "%.6f", shRoughFactor );
+					sheenRoughnessScalar = buf;
+				}
+
+				if( shRoughFactor > 0.0 && shRoughFactor < 0.04 ) {
+					GlobalLog()->PrintEx( eLog_Info,
+						"GLTFSceneImporter:: material `%s` declares sheenRoughnessFactor %.4f, below "
+						"fabric_material's [0.04, 1] Charlie-alpha floor; the material clamps it at "
+						"render time, so the imported look will be slightly less rough than the raw "
+						"factor.",
+						matName.c_str(), shRoughFactor );
+				}
+
+				ok = job.AddFabricMaterial(
+					matName.c_str(),
+					"custom",					// fabric -- no preset seeding, glTF has no fabric-type concept
+					pbrRegisterName.c_str(),
+					sheenColorPainter.c_str(),
+					sheenRoughnessScalar.c_str(),
+					"0.0" );				// weave_rotation -- glTF has no weave-direction concept
+
+				// glTF layers base -> sheen -> clearcoat, but `coated_material`
+				// cannot wrap the fabric_material result (its substrate
+				// allowlist is the same three scattering classes as
+				// FabricMaterial's own -- LambertianMaterial /
+				// OrenNayarMaterial / GGXMaterial -- and FabricMaterial is
+				// none of those), so the clearcoat wrap above is gated off
+				// whenever sheen contributes.  Say so rather than dropping
+				// it silently.
+				if( ok && clearcoatContributes ) {
+					GlobalLog()->PrintEx( eLog_Warning,
+						"GLTFSceneImporter:: material `%s` declares KHR_materials_clearcoat "
+						"(factor=%.2f) together with KHR_materials_sheen; `coated_material`'s "
+						"substrate allowlist does not accept a fabric_material (the sheen result), "
+						"so the clearcoat layer is skipped, keeping sheen.  See "
+						"docs/GLTF_IMPORT.md §15.",
+						matName.c_str(), (double)mat.clearcoat.clearcoat_factor );
 				}
 			}
 		}
@@ -1446,36 +1612,40 @@ namespace
 				mat.unlit ? "luminaire" : "dielectric" );
 		}
 
-		// KHR_materials_sheen -- a retro-reflective grazing lobe, not a
-		// dielectric coat, so `coated_material` genuinely cannot express it
-		// (docs/WETNESS_COAT_DESIGN.md sec 13 item 9's own note: sheen
-		// stays deferred, unlike clearcoat above, on MODELLING grounds, not
-		// scope).  Log once per material so users know the layer was seen
-		// and skipped; the stand-alone `sheen_material` chunk remains the
-		// hand-authored route for fabric.
-		if( hasSheen ) {
+		// KHR_materials_sheen -- imported via `fabric_material` in the PBR
+		// (`else`) branch above.  Two residual cases stay unsupported and
+		// are said rather than dropped silently:
+		//   (a) sheenColorFactor == [0,0,0] and no sheenColorTexture: the
+		//       glTF default, genuinely nothing to import (mirrors
+		//       clearcoatContributes' factor-== 0 "nothing to drop, no
+		//       warning" rule) -- not diagnosed here.
+		//   (b) sheen combined with `unlit` or `KHR_materials_transmission`:
+		//       those branches register a LambertianLuminaireMaterial /
+		//       DielectricMaterial instead of a PBR base, neither of which
+		//       is on `FabricMaterial::IsSupportedSubstrate`'s allowlist --
+		//       diagnosed below.
+		if( sheenContributes && ( mat.unlit || mat.has_transmission ) ) {
 			GlobalLog()->PrintEx( eLog_Warning,
-				"GLTFSceneImporter:: material `%s` declares KHR_materials_sheen; sheen is a "
-				"retro-reflective grazing lobe, not a dielectric coat, so it cannot be expressed "
-				"via `coated_material` (unlike KHR_materials_clearcoat, which now imports onto "
-				"it) -- this layer is skipped.  Use the standalone `sheen_material` chunk for "
-				"hand-authored fabric.  See docs/GLTF_IMPORT.md §15.",
-				matName.c_str() );
+				"GLTFSceneImporter:: material `%s` declares KHR_materials_sheen together with "
+				"`%s`; the sheen layer imports only onto a PBR metallic-roughness base -- "
+				"`fabric_material`'s substrate allowlist does not accept a %s -- this layer is "
+				"skipped.  Use the standalone `fabric_material` chunk for hand-authored fabric.  "
+				"See docs/GLTF_IMPORT.md §15.",
+				matName.c_str(),
+				mat.unlit ? "KHR_materials_unlit" : "KHR_materials_transmission",
+				mat.unlit ? "luminaire" : "already-dielectric transmissive surface" );
 		}
 
-#if 0	// Sheen composite layering -- deferred, docs/WETNESS_COAT_DESIGN.md
-		// sec 13 item 9: `coated_material` cannot express sheen (a retro-
-		// reflective grazing lobe is a different physical object from a
-		// transparent dielectric film), so this stays on `CompositeMaterial`
-		// pending either a dedicated layered-sheen primitive or a measured
-		// need to revisit `CompositeMaterial`'s own known deficiencies
-		// (docs/PHYSICALLY_BASED_PIPELINE_PLAN.md).  Preserved for that
-		// future work rather than deleted -- it was reviewed and functional
-		// for the sheen-only case before this note was added.  `baseMatName`
-		// below is what the sheen composite would wrap; if this is ever
-		// re-enabled alongside clearcoat it needs to consume
-		// `pbrRegisterName`/`matName` instead, matching the coated_material
-		// wrap above rather than the old dual-CompositeMaterial stack.
+#if 0	// Superseded by the real `fabric_material` wrap in the PBR branch
+		// above (docs/CLOTH_FABRIC_DESIGN.md §7(B)) -- kept only as a
+		// pre-fabric_material reference for the CompositeMaterial-based
+		// approach this project considered and rejected (a bare
+		// `sheen_material` stacked via `composite_material` forwards only
+		// ONE sub-material's BSDF to NEE/BDPT/VCM, and nothing subtracted
+		// the sheen's energy from the base -- exactly the two defects
+		// `fabric_material`'s header comment documents `fabric_material`
+		// as closing).  `baseMatName` below is what the sheen composite
+		// would have wrapped.
 		std::string currentBottom = baseMatName;
 
 		// ----- Sheen layer -----
