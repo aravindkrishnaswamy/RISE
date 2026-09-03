@@ -3774,16 +3774,18 @@ int main()
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateEvidence.begin(),residentEOSCandidateEvidence.end()))==
-			"2bf3e999d710f8e096a279a24c042df68c2969a6116b5b8152835af829281940"&&
+			"c2758e870e85328242e2b42ec13a3f4b9a1b1bbee55013051e33c9b9f7a4777b"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSRawEvidence.begin(),residentEOSRawEvidence.end()))==
 			"f67da702c6472f337da1b6856c237edb18514b27aa1965af7eaa0bc1db2f610c"&&
 		ValidateResidentEOSRawEvidence(residentEOSRawEvidence)&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			residentEOSCandidateLiveBinding.begin(),residentEOSCandidateLiveBinding.end()))==
-			"1455b9f0f478d777c44aca13f217bf1f1991f11e7b892782dcc9fde2eed3d4b1"&&
+			"7009336399e88932f5b61a8629b25e1f7d0ec0db86728a982ecc0e4dd0ee0f01"&&
 		residentEOSCandidateLiveBinding.find("calibration_test_self_binding false\n")!=
-			std::string::npos&&residentEOSCandidateLiveBinding.find("owner_count 14\n")!=
+			std::string::npos&&residentEOSCandidateLiveBinding.find(
+			"revision r199g_sealed\n")!=std::string::npos&&
+		residentEOSCandidateLiveBinding.find("owner_count 14\n")!=
 			std::string::npos&&
 		residentEOSOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
 		residentEOSOwnerBound("src/Library/Utilities/FireProductionTransport.cpp")&&
@@ -3803,6 +3805,11 @@ int main()
 			"r199_resident_eos_candidate_identity/resident_eos_candidate_identity_evidence.v1")&&
 		residentEOSCandidateEvidence.find("authority_producer "
 			"Metal_device_complete_source_inclusive_FCT_QStar_commit\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find(
+			"revision r199g_sealed\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find("rung_complete true\n")!=std::string::npos&&
+		residentEOSCandidateEvidence.find("review_boundary_closed true\n")!=
+			std::string::npos&&
 		residentEOSCandidateEvidence.find("public_candidate_input_present false\n")!=
 			std::string::npos&&residentEOSCandidateEvidence.find(
 			"same_size_mismatched_EOS_table_refused true\n")!=std::string::npos&&
