@@ -5948,13 +5948,16 @@ Closed and pressure-open 64-cell Metal fixtures separately compare tangent,
 frozen source, raw absolute-reference diagnostic, monitored tail, and final
 compatible target. Every one of the 640 cell/field values bit-matches the fp64
 mirror's binary32 projection. Each row also reports the error to its binary64
-reference against a same-cell, same-field enclosure in `s^-1`, derived as the
-absolute projection error plus one local binary32 spacing; only the exact-copy
-source field has a zero bound. Worst residual/bound ratios are `0.32235` or
-less closed and `0.33334` or less pressure-open. There is no across-field
+reference against a same-cell, same-field enclosure in `s^-1`, derived solely
+from half the larger adjacent binary32 spacing of the published value; it does
+not consume the measured residual. Only the exact-copy source field has a zero
+bound. Worst residual/bound ratios are `0.95136` or less closed and
+`0.9999997` or less pressure-open. A displaced-exact RED exceeds the unchanged
+local enclosure by 4x, proving that the bound can fail. There is no across-field
 acceptance statistic and no cancellation-sensitive bound. Integrated states
-exercise positive and negative deviations just below and above `2^-4`; exact
-equality's no-drain rule is checked by the mirror. During implementation, an
+exercise positive and negative deviations just below and above `2^-4`; sealed
+positive and negative device candidates at exact equality both publish positive
+zero drain. During implementation, an
 initially float-evaluated face
 divergence missed one tangent result by one ULP. The remedy was to carry the
 already certified expansion arithmetic through the flux divergence, not to
@@ -5965,9 +5968,9 @@ r200 does not inherit r199's execution identity silently. The complete r199
 EOS sweep is re-run through the same resident context. All 48,693,249 log
 qualification arguments, 192 per-cell EOS comparisons, rounding-edge cases,
 and 13 device REDs pass unchanged. The current library source digest is
-`2a064a4acec0f42461af1dcb8b1de6fda09cb650eaf0b38a6638a29fcf1991f4`
+`0068a59216abb75f5502f5b9e085a615f7f2eb797f06264553dbe1d557a02e7d`
 and its compiled function-set digest is
-`20d5360776f63568146022a69140f2c5b817af78db35284afecb81bb8ef39458`.
+`680f9ba2e399543061612b8b867398c75e53caa664c7069caf4f875ef78d0d33`.
 The device/runtime/language/safe-math tuple remains the r199-qualified Apple
 M4 Max tuple. This control binds the parent EOS proof and the newly compiled
 target functions to one actual library identity.
@@ -5978,10 +5981,13 @@ physical-flux, candidate, or EOS publication produces failure bitmap `0x2800`
 with zero target and consumer identities. A preauthored target and a mismatched
 projection topology each reach the resident consumer and refuse with `0x2000`;
 their otherwise valid target publication remains diagnostic, but consumer
-identity is zero. The topology RED changes an independently device-sealed
-projection metadata authority while leaving the target authority intact; the
-device compares exact shape, cell width, timestep, attempt, and all boundary
-classes rather than trusting a host Boolean. The target identity now includes
+identity is zero. The topology RED changes the projection metadata request while
+leaving the target authority intact. The projection-consumer admission stage
+issues an opaque private metadata surface on device and binds its identity to
+the actual target publication; the consumer accepts that type, not uploaded bytes, and compares
+exact shape, cell width, timestep, attempt, and all boundary classes.
+Byte-identical CPU metadata and CPU target substitutions both refuse at host
+preflight. The target identity now includes
 the exact `2^-4` bits: a one-ULP dormant threshold mutation leaves all five
 fields bit-identical but changes the target identity. The stale-candidate,
 EOS-accepted-but-unlinked, CPU-produced-
@@ -5991,9 +5997,9 @@ device without claiming that a host-preflight refusal was a GPU observation.
 
 The qualification interval remains one command, one terminal staging read,
 and zero interstage full-grid transfers per valid interval. The fixture
-certificate is `1392640` bytes against `127800` bytes allocated. The target's
-live incremental certificate is `131072` bytes; it accounts for five per-cell
-fields, target identity, independently sealed projection metadata identity,
+certificate is `1409024` bytes against `127864` bytes allocated. The target's
+live incremental certificate is `147456` bytes; it accounts for five per-cell
+fields, target identity, the device-issued projection metadata and its identity,
 and consumer identity while consuming rather than duplicating resident parents.
 Closed and pressure-open observed/required arithmetic-obligation bitmaps are
 exactly `0x03700180` and `0x02f00180`, respectively; they bind below/above tail,

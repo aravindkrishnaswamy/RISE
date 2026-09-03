@@ -5224,25 +5224,28 @@ it was already tried and refuted here.
   the projection target. Closed and pressure-open fixtures provide 640
   cell/field comparisons; every value bit-matches the fp64 mirror's binary32
   projection. Per-row binary64-reference residuals use local `s^-1` enclosures
-  (projection error plus one binary32 spacing, with zero only for the exact-copy
-  source), and worst ratios remain below `0.334`. Positive and negative tail
-  crossings are exercised independently. An initial one-ULP tangent miss exposed float face-
+  derived solely from half the larger adjacent binary32 spacing (with zero only
+  for the exact-copy source), and worst ratios remain below `1.0`; a displaced-
+  exact RED proves the bound can fail. Positive/negative tail crossings and exact
+  `2^-4` device no-drain cases are exercised independently. An initial one-ULP tangent miss exposed float face-
   divergence arithmetic and was fixed by carrying certified expansion
   arithmetic through the divergence, without tolerance widening. Adding the
   target functions changes Metal's library identity, so the full r199 EOS
   control is requalified rather than inherited: all 48,693,249 log arguments,
   192 EOS field rows, rounding edges, and 13 REDs pass under source digest
-  `2a064a4a...f1991f4` and function-set digest `20d53607...39458`. r189's
+  `0068a592...a02e7d` and function-set digest `680f9ba2...d0d33`. r189's
   preauthored-target and topology refusals re-run on device with `0x2000`. The
-  latter mutates an independently sealed projection parent while preserving a
-  valid target, whose consumer compares shape, cell width, timestep, attempt,
-  and boundaries on device. The dormant `2^-4` constant is identity-bearing:
+  latter mutates a projection request while preserving a valid target. A device
+  stage issues opaque private projection metadata bound to that target identity;
+  its consumer compares shape, cell width, timestep, attempt, and boundaries.
+  Byte-identical CPU target and metadata substitutions refuse. The dormant
+  `2^-4` constant is identity-bearing:
   a one-ULP mutation changes identity with byte-identical output fields. All
   four unsealed-parent cases produce `0x2800` and zero target/consumer IDs.
   Stale, unlinked, CPU-substituted, and understated-working-set cases refuse at
   host preflight. Residency is one command, one terminal read, and zero
   interstage full-grid transfers; fixture/actual/target-live bytes are
-  `1392640`/`127800`/`131072`. Closed/open obligation bitmaps exactly equal
+  `1409024`/`127864`/`147456`. Closed/open obligation bitmaps exactly equal
   their independently required `0x03700180`/`0x02f00180`, covering both tail
   signs, term assembly, and both compatibility branches. `case_record_id` is unchanged, producer/run
   identity inherits r200, and the golden checkpoint is untouched. Evidence is

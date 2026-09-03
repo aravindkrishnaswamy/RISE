@@ -1375,10 +1375,14 @@ namespace RISE
 		bool qualificationUnsealedEOSCandidateParent;
 		bool qualificationUnsealedEOSParent;
 		bool qualificationNonImmediateCandidate;
+		bool qualificationCPUProducedFrozenSource;
 		bool qualificationCPUProducedTarget;
+		bool qualificationCPUForgedProjectionMetadata;
 		bool qualificationPreauthoredProjectionTarget;
 		bool qualificationMismatchedProjectionTopology;
 		bool qualificationAlternateDormantTailThreshold;
+		bool qualificationExactPositiveTailThreshold;
+		bool qualificationExactNegativeTailThreshold;
 		bool qualificationEOSAcceptedButUnlinked;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
@@ -1388,10 +1392,14 @@ namespace RISE
 			qualificationUnsealedEOSCandidateParent(false),
 			qualificationUnsealedEOSParent(false),
 			qualificationNonImmediateCandidate(false),
+			qualificationCPUProducedFrozenSource(false),
 			qualificationCPUProducedTarget(false),
+			qualificationCPUForgedProjectionMetadata(false),
 			qualificationPreauthoredProjectionTarget(false),
 			qualificationMismatchedProjectionTopology(false),
 			qualificationAlternateDormantTailThreshold(false),
+			qualificationExactPositiveTailThreshold(false),
+			qualificationExactNegativeTailThreshold(false),
 			qualificationEOSAcceptedButUnlinked(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};

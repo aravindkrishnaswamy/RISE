@@ -169,7 +169,13 @@ namespace
 			const char* first=line.c_str()+beginning+std::strlen(tag);char* end=nullptr;
 			value=std::strtod(first,&end);return end&&end!=first&&std::isfinite(value)&&
 				(*end==' '||*end=='\0');};
+		auto taggedUInt64=[](const std::string& line,const char* tag,std::uint64_t& value){
+			const std::size_t beginning=line.find(tag);if(beginning==std::string::npos)return false;
+			const char* first=line.c_str()+beginning+std::strlen(tag);char* end=nullptr;
+			value=std::strtoull(first,&end,10);return end&&end!=first&&(*end==' '||*end=='\0');};
 		std::array<std::array<std::array<bool,5>,64>,2> seen={};std::size_t rows=0u;
+		std::array<std::array<double,5>,2> rowMaximumResidual={},rowMaximumBound={},
+			rowMaximumRatio={};
 		std::istringstream input(text);std::string line;
 		while(std::getline(input,line)){
 			if(line.rfind("RESIDENT_TARGET_CELL topology=",0u)!=0u)continue;
@@ -192,21 +198,33 @@ namespace
 				ratio<0.0||ratio>1.0||((fieldIndex==1u)!=(bound==0.0))||
 				(bound==0.0&&residual!=0.0))return fail("cell criterion");
 			seen[topology][cell][fieldIndex]=true;++rows;
+			rowMaximumResidual[topology][fieldIndex]=std::max(
+				rowMaximumResidual[topology][fieldIndex],residual);
+			rowMaximumBound[topology][fieldIndex]=std::max(
+				rowMaximumBound[topology][fieldIndex],bound);
+			rowMaximumRatio[topology][fieldIndex]=std::max(
+				rowMaximumRatio[topology][fieldIndex],ratio);
 		}
 		if(rows!=640u)return fail("cell count");
 		for(const auto& topology:seen)for(const auto& cell:topology)
 			for(const bool field:cell)if(!field)return fail("cell coverage");
 		if(CountText(text,"RESIDENT_TARGET_TERM topology=")!=10u)return fail("term count");
-		for(const char* topology:{"closed","pressure_open"})for(const char* field:fields){
+		const std::array<const char*,2> topologyNames={{"closed","pressure_open"}};
+		for(std::size_t topology=0u;topology<topologyNames.size();++topology)
+		for(std::size_t fieldIndex=0u;fieldIndex<fields.size();++fieldIndex){
+			const char* topologyName=topologyNames[topology];const char* field=fields[fieldIndex];
 			const std::size_t position=text.find(std::string("RESIDENT_TARGET_TERM topology=")+
-				topology+" field="+field+" units=s^-1 scope=every_cell ");
+				topologyName+" field="+field+" units=s^-1 scope=every_cell ");
 			if(position==std::string::npos)return fail("term prefix");const std::size_t end=text.find('\n',position);
 			const std::string record=text.substr(position,end-position);double residual=0.0,bound=0.0,
 				ratio=0.0;if(!taggedDouble(record,"max_residual_s^-1=",residual)||
 				!taggedDouble(record,"max_local_termwise_enclosure_s^-1=",bound)||
 				!taggedDouble(record,"worst_residual_over_local_bound=",ratio)||
 				record.find("bit_equal=1 passed=1")==std::string::npos||residual<0.0||bound<0.0||
-				ratio<0.0||ratio>1.0||((std::strcmp(field,"frozen_source")==0)!=(bound==0.0)))
+				ratio<0.0||ratio>1.0||((std::strcmp(field,"frozen_source")==0)!=(bound==0.0))||
+				residual!=rowMaximumResidual[topology][fieldIndex]||
+				bound!=rowMaximumBound[topology][fieldIndex]||
+				ratio!=rowMaximumRatio[topology][fieldIndex])
 				return fail("term criterion");}
 		const std::array<const char*,4> unsealed={{"unsealed_transport_parent",
 			"unsealed_physical_flux_parent","unsealed_EOS_candidate_parent",
@@ -215,8 +233,9 @@ namespace
 			"RESIDENT_TARGET_RED name=")+name+" layer=device expected=0x00000800 "
 			"observed=0x00002800 attempted=1 read=1 target_identity=0 "
 			"consumer_identity=0 passed=1")==std::string::npos)return fail("unsealed RED");
-		const std::array<const char*,4> host={{"non_immediate_stale_candidate",
-			"EOS_accepted_but_unlinked_candidate","CPU_produced_target_surface",
+		const std::array<const char*,6> host={{"non_immediate_stale_candidate",
+			"EOS_accepted_but_unlinked_candidate","CPU_produced_frozen_source",
+			"CPU_produced_target_surface","CPU_forged_projection_metadata",
 			"understated_working_set"}};
 		for(const char* name:host)if(text.find(std::string(
 			"RESIDENT_TARGET_RED name=")+name+" layer=host_preflight attempted=0 "
@@ -234,26 +253,52 @@ namespace
 			"name=dormant_tail_threshold_identity layer=device_identity ");
 		if(dormant==std::string::npos)return fail("dormant RED prefix");const std::size_t dormantEnd=text.find('\n',dormant);
 		const std::string dormantRecord=text.substr(dormant,dormantEnd-dormant);
+		std::uint64_t dormantBaseIdentity=0u,dormantAlternateIdentity=0u;
+		const std::size_t identities=text.find("RESIDENT_TARGET_IDENTITIES ");
+		if(identities==std::string::npos)return fail("identity record");
+		const std::size_t identitiesEnd=text.find('\n',identities);
+		const std::string identityRecord=text.substr(identities,identitiesEnd-identities);
+		const std::array<const char*,7> identityTags={{"transport=","physical_flux=",
+			"candidate=","eos=","target=","projection_metadata=","consumer="}};
+		for(const char* tag:identityTags){std::uint64_t identity=0u;
+			if(!taggedUInt64(identityRecord,tag,identity)||identity==0u)
+				return fail("identity criterion");}
+		double boundREDResidual=0.0,boundREDEnclosure=0.0;
+		const std::size_t boundRED=text.find("RESIDENT_TARGET_BOUND_RED units=s^-1 ");
+		if(boundRED==std::string::npos)return fail("bound RED prefix");
+		const std::size_t boundREDEnd=text.find('\n',boundRED);
+		const std::string boundREDRecord=text.substr(boundRED,boundREDEnd-boundRED);
 		return dormantRecord.find("base_accepted=1 alternate_accepted=1 fields_bit_equal=1 ")!=
 			std::string::npos&&dormantRecord.find("base_failure=0x00000000 "
 			"alternate_failure=0x00000000 ")!=std::string::npos&&
-			dormantRecord.find("base_identity=0 ")==std::string::npos&&
-			dormantRecord.find("alternate_identity=0 ")==std::string::npos&&
+			taggedUInt64(dormantRecord,"base_identity=",dormantBaseIdentity)&&
+			taggedUInt64(dormantRecord,"alternate_identity=",dormantAlternateIdentity)&&
+			dormantBaseIdentity!=0u&&dormantAlternateIdentity!=0u&&
+			dormantBaseIdentity!=dormantAlternateIdentity&&
 			dormantRecord.find("passed=1")!=std::string::npos&&
 			text.find("RESIDENT_TARGET_THRESHOLD_COVERAGE integrated_positive_below=1 "
 			"integrated_positive_above=1 integrated_negative_below=1 "
 			"integrated_negative_above=1 mirror_positive_at_no_drain=1 "
 			"mirror_negative_at_no_drain=1 passed=1")!=std::string::npos&&
-			CountText(text,"RESIDENT_TARGET_RED ")==11u&&text.find(
+			text.find("RESIDENT_TARGET_THRESHOLD_DEVICE_EQUALITY positive_accepted=1 "
+			"negative_accepted=1 positive_tail_positive_zero=1 "
+			"negative_tail_positive_zero=1 positive_error= negative_error= passed=1")!=
+				std::string::npos&&
+			taggedDouble(boundREDRecord,"residual_s^-1=",boundREDResidual)&&
+			taggedDouble(boundREDRecord,"local_rounding_enclosure_s^-1=",boundREDEnclosure)&&
+			boundREDResidual>boundREDEnclosure&&boundREDRecord.find("passed=1")!=std::string::npos&&
+			identityRecord.find("all_nonzero=1")!=std::string::npos&&
+			CountText(text,"RESIDENT_TARGET_RED ")==13u&&text.find(
 			"RESIDENT_TARGET passed=1 tangent_bit_equal=1 source_bit_equal=1 "
 			"absolute_diagnostic_bit_equal=1 tail_bit_equal=1 assembled_bit_equal=1 "
 			"unsealed_transport=1 unsealed_physical=1 unsealed_candidate=1 "
-			"unsealed_eos=1 stale_candidate=1 unlinked_eos=1 cpu_refused=1 "
+			"unsealed_eos=1 stale_candidate=1 unlinked_eos=1 cpu_source_refused=1 "
+			"cpu_target_refused=1 cpu_projection_metadata_refused=1 "
 			"preauthored_refused=1 topology_refused=1 dormant_threshold_identity=1 "
 			"closed_branch_bitmap=0x03700180 closed_required=0x03700180 "
 			"open_branch_bitmap=0x02f00180 open_required=0x02f00180 "
 			"command_per_interval=1 reads_per_interval=1 transfers_per_interval=0 "
-			"fixture_ws=1392640 actual_ws=127800 live_ws=131072")!=std::string::npos;
+			"fixture_ws=1409024 actual_ws=127864 live_ws=147456")!=std::string::npos;
 	}
 	bool IndependentR60AndPeriodicCommuting(
 		const RISE::FireProductionScalarFCTRequest& request,
@@ -4005,15 +4050,15 @@ int main()
 	};
 	const bool residentTargetEvidenceHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetEvidence.begin(),residentTargetEvidence.end()))==
-		"53a160b370a0a0a5effb6d0c369a23e19ad3808520ede15099ec233febe5f79c";
+		"e1979bde531a0f4ea5d686ed9fe2572c08b5effd89beedc8613e5e48676b025b";
 	const bool residentTargetRawHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetRawEvidence.begin(),residentTargetRawEvidence.end()))==
-		"7e3e4025fd35914cbf52b601b0a5d26f6940867a547a3dc87062113ef5d60a34";
+		"a1ee3fcdaf285befeae756b125734bf34ac453b48ff6098fd2c2db03c5091dee";
 	const bool residentTargetRawStructureValid=
 		ValidateResidentTargetRawEvidence(residentTargetRawEvidence);
 	const bool residentTargetBindingHashValid=RISE::RISECBOR64::SHA256Hex(
 		RISE::RISECBOR64::Bytes(residentTargetLiveBinding.begin(),residentTargetLiveBinding.end()))==
-		"640ae420f9a13c3a387f2f06df18070f73e533cbf87481f46c1a4c028f1ee6db";
+		"4a120d6e482f197ea6215cd785f81e1aa3c6bb23b302bea43c0568c460d54f44";
 	Check(residentTargetEvidenceHashValid,"r200 evidence SHA binding");
 	Check(residentTargetRawHashValid,"r200 raw transcript SHA binding");
 	Check(residentTargetRawStructureValid,"r200 raw transcript structure and RED battery");
@@ -4056,7 +4101,9 @@ int main()
 		residentTargetEvidence.find("assembled_term_rounding "
 			"preserve_tangent_and_tail_expansions_then_one_binary32_projection\n")!=
 			std::string::npos&&residentTargetEvidence.find(
-			"projection_consumer_metadata_device_sealed_independently true\n")!=
+			"projection_consumer_metadata_device_issued_to_private_surface true\n")!=
+			std::string::npos&&residentTargetEvidence.find(
+			"projection_consumer_metadata_identity_bound_to_target_identity true\n")!=
 			std::string::npos&&residentTargetEvidence.find(
 			"dormant_threshold_mutation_identity_distinct true\n")!=std::string::npos&&
 		residentTargetEvidence.find("closed_required_branch_bitmap 0x03700180\n")!=
@@ -4065,18 +4112,23 @@ int main()
 		residentTargetEvidence.find("manifold_ceiling_reintroduced false\n")!=
 			std::string::npos&&residentTargetEvidence.find(
 			"across_field_acceptance_summary_used false\n")!=std::string::npos&&
+		residentTargetEvidence.find("bound_depends_on_measured_residual false\n")!=
+			std::string::npos&&residentTargetEvidence.find(
+			"threshold_exact_equality_device_positive_no_drain true\n")!=std::string::npos&&
+		residentTargetEvidence.find("threshold_exact_equality_device_negative_no_drain true\n")!=
+			std::string::npos&&
 		residentTargetEvidence.find("parent_EOS_current_library_requalified true\n")!=
 			std::string::npos&&residentTargetEvidence.find("metal_library_source_sha256 "
-			"2a064a4acec0f42461af1dcb8b1de6fda09cb650eaf0b38a6638a29fcf1991f4\n")!=
+			"0068a59216abb75f5502f5b9e085a615f7f2eb797f06264553dbe1d557a02e7d\n")!=
 			std::string::npos&&residentTargetEvidence.find("metal_library_function_set_sha256 "
-			"20d5360776f63568146022a69140f2c5b817af78db35284afecb81bb8ef39458\n")!=
+			"680f9ba2e399543061612b8b867398c75e53caa664c7069caf4f875ef78d0d33\n")!=
 			std::string::npos&&residentTargetEvidence.find("parent_EOS_control_sha256 "
-			"63c25031d3a3a155853932b2323ae025f62241bddaa822349c1a74403d5bbecb\n")!=
+			"151e147317cf7d4eddae3413fb8d015e737fa517b10da2e5385afbb1fd6bb5e3\n")!=
 			std::string::npos&&ValidateResidentEOSRawEvidence(ReadText(
 			"rendered/fire_production_calibration/r200_authenticated_device_target_lineage/"
 			"resident_eos_control.raw"),
-			"2a064a4acec0f42461af1dcb8b1de6fda09cb650eaf0b38a6638a29fcf1991f4",
-			"20d5360776f63568146022a69140f2c5b817af78db35284afecb81bb8ef39458")&&
+			"0068a59216abb75f5502f5b9e085a615f7f2eb797f06264553dbe1d557a02e7d",
+			"680f9ba2e399543061612b8b867398c75e53caa664c7069caf4f875ef78d0d33")&&
 		residentTargetEvidence.find("cancellation_sensitive_bound_used false\n")!=
 			std::string::npos&&residentTargetEvidence.find(
 			"all_five_fields_both_topologies_bit_equal true\n")!=std::string::npos&&
@@ -4089,7 +4141,7 @@ int main()
 			std::string::npos&&residentTargetEvidence.find(
 			"interstage_full_grid_transfer_count 0\n")!=std::string::npos&&
 		residentTargetEvidence.find("raw_transcript_sha256 "
-			"7e3e4025fd35914cbf52b601b0a5d26f6940867a547a3dc87062113ef5d60a34\n")!=
+			"a1ee3fcdaf285befeae756b125734bf34ac453b48ff6098fd2c2db03c5091dee\n")!=
 			std::string::npos&&solverDoc.find(
 			"### 7.56ag Authenticated resident target lineage (r200)")!=std::string::npos&&
 		historyDoc.find("r200 authenticated resident target lineage")!=std::string::npos,
