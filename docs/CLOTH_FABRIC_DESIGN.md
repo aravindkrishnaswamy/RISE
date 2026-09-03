@@ -1,14 +1,26 @@
 # Woven Cloth and Fabric — Weave-Structured Appearance as an Authorable, Summonable Material System
 
-**Status:** **LOCKED FOR IMPLEMENTATION 2026-09-02 — Phase 1 in progress.** No
-code has landed yet; what is locked is the design. Four review rounds (one
-citation audit, one adversarial design pass, two fresh-eyes rounds) have been
-applied in full — see the Amended block below for what moved and why. Phase 1's
-scope, the `fabric_material` contract (§9.2), the chunk surface (§9.3), the
-sampling decision (§9.4), the anisotropy split (§9.5) and the exit gates (§9.9)
-are the implementation brief; changing any of them is an amendment to this
-document, not an implementation choice. Phases 2 and 3 remain gated and are
-**not** locked.
+**Status:** **LOCKED FOR IMPLEMENTATION 2026-09-02 — Phase 1 in progress; the
+measurement gates are landing.** What is locked is the design. Four review
+rounds (one citation audit, one adversarial design pass, two fresh-eyes rounds)
+have been applied in full — see the Amended block below for what moved and why.
+Phase 1's scope, the `fabric_material` contract (§9.2), the chunk surface
+(§9.3), the sampling decision (§9.4), the anisotropy split (§9.5) and the exit
+gates (§9.9) are the implementation brief; changing any of them is an amendment
+to this document, not an implementation choice. Phases 2 and 3 remain gated and
+are **not** locked.
+
+**Gate status, 2026-09-03.** §9.9's gates now carry measured numbers rather than
+intentions: **gate 7** (HWSS invariant) is GREEN and asserted in
+[tests/FabricRenderTest.cpp](../tests/FabricRenderTest.cpp), which also carries
+a PT-vs-BDPT parity check reframed as a ratio-of-ratios so the documented +25 %
+env-MIS BDPT bias cancels instead of swamping it; **gates 9, 9b and 10** are
+RECORDING gates and are now recorded, measured through
+[tools/fabric_sheen_measure.py](../tools/fabric_sheen_measure.py); **gate 11**
+(scenes) is met by five scenes, two regressions and three showcases. Read each
+gate's own MEASURED block below for the numbers and for what they say about the
+Phase-2 entry conditions — in particular gate 9b, whose result §10.2's first
+condition consumes directly.
 **Date:** 2026-09-02.
 **Nature:** decision document + phased plan, in the mold of
 [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey →
@@ -124,6 +136,172 @@ design was locked:
   looks up `reflectance`, then `base_color`, then `rd` in that order to find the
   painter to re-home, and refuses under Refusal 4 if none is present (§9.7
   step 0).
+
+**Round 5 (implementation-time, 2026-09-02).** Phase 1 was built and the
+build measured the locked formula against its own exit gates. One
+measurement changed the model; three changed what the gates say. The
+recommendation, the triad, the allowlist, the preset mechanism and the
+weave-rotation mechanism are all unchanged.
+
+- **The `min`-form base scaling is replaced by the Kulla-Conty product
+  form, because the `min` provably cannot pass gate 3.** §9.2's
+  `min(1 − m·E(v), 1 − m·E(l))` is reciprocal but **cannot** conserve
+  energy: near normal incidence `E(v) → 0` while the `min` still picks
+  `1 − m·E(l)` for every `l`, so the base loses `Ē`'s worth of energy the
+  sheen lobe never returns. Measured on a white Lambertian base at
+  m = 1: ρ = 0.863 at normal incidence for α = 0.5, against gate 3's
+  required 1.000 ± 5 %. glTF's own **one-arm** form conserves energy
+  exactly and is **not** reciprocal — the two properties are in direct
+  tension and no combination of the two arms by `min` can hold both. The
+  form that holds both is the product
+  `(1 − m·E(v))·(1 − m·E(l)) / (1 − m·Ē)`, the closed form of the
+  adding-doubling inter-reflection series between a lossless fuzz layer
+  and the base: energy the fuzz intercepts is **re-scattered onto the
+  substrate**, which is the physics the `min` was discarding. It is
+  symmetric in `l`/`v` by inspection, and for a white Lambertian base at
+  **any** m and **any** α gives ρ = 1 identically (§9.2, §9.4, §9.9
+  gate 3).
+- **The `S(α, m)` kernel table is retired.** It existed only because a
+  `min` does not factor into (a function of `l`) × (a function of `v`),
+  so `hemisphericalAlbedo`'s double integral had to be baked. A product
+  factors, and route 1 collapses to the closed form
+  `substrate.hemisphericalAlbedo() · (1 − m·Ē) + sheenColor · Ē` — with
+  no interpolated table between it and the answer, and its
+  "exact for Lambertian" claim now exact in closed form rather than up
+  to a bake error. Routes 1b and 2 are retired with it: 1b was the
+  remedy for a table that no longer exists, and 2's bound is no longer
+  needed. `kSTable`, `SheenDirectionalAlbedo::S()` and the generator's
+  `ComputeS`/`BakeS`/`ClampedOneMinusME` are removed; `E` and `EMean`
+  are unchanged, bit-for-bit (§9.2, §9.4, §14).
+- **Gate 4's re-diagnosis came back positive, and it re-writes §4.2.**
+  The downward-ray probe measured `SheenSPF` emitting a downward ray in
+  **0 %** of draws at both θ = 0 and θ = 80 — identical to the GGX top
+  layer that furnace config 7 already indicts. `SheenSPF` is
+  reflection-only by construction, so `composite_material`'s random walk
+  **never reaches the substrate**, and config 6's ρ curve
+  `{0.0875, 0.1293, 0.2812, 0.5461}` reproduces bare sheen's
+  `{0.0875, 0.1283, 0.2810, 0.5453}` to MC noise. Config 6's old note
+  ("the composite walk amplifies sheen's intrinsic dissipation") was
+  wrong: configs 6 and 7 are **one** defect, not two (§4.2, debt 3).
+- **Gate 5b's residual is the substrate's, not fabric's, and it is
+  recorded as a new debt.** With the exact factorisation, fabric's own
+  uncorrelated-response error is ≤ 0.64 % (0 by construction for
+  Lambertian). The end-to-end error against a brute-force quadrature
+  reaches 15.7 %, and **all** of it is the substrate's own
+  `hemisphericalAlbedo`: `OrenNayarBRDF::hemisphericalAlbedo` returns
+  `Rd` verbatim, documented at
+  [OrenNayarBRDF.cpp:148-190](../src/Library/Materials/OrenNayarBRDF.cpp)
+  as up to 25.6 % high, and GGX's estimate runs high at grazing. No
+  change to `fabric_material` can fix that, and `coated_material`'s
+  recycling denominator already inherits the identical debt (§9.9
+  gate 5b, debt 16, new debt 17).
+
+**Round 6 (implementation review, 2026-09-02).** Three adversarial
+reviews of the built slice found one P1, in the *table* rather than in
+the model. Round 5's Kulla-Conty form survives unchanged; what changed is
+the axis it is evaluated on, and a bound it turned out to need.
+
+- **The `E` table's cosθ axis could not resolve the lobe near grazing,
+  and the energy identity broke by up to +1.05 ABSOLUTE.** The axis was
+  32 uniform nodes on [0, 1], so the first interior node sat at
+  μ = 0.0323 with an exact 0 at μ = 0 — the interpolant ramped linearly
+  from zero across the entire band the Charlie lobe occupies, when the
+  lobe is already near its peak by μ ≈ 0.005. Table 0.146 against a true
+  1.19 at α = 0.04, μ = 0.005. Because `value()` **emits** the true lobe
+  while suppressing the base by the **tabled** `E`,
+  ρ(v) ≈ 1 + (E_true − E_tab): a white Lambertian fabric returned up to
+  **2.05** under grazing illumination, at every roughness. Both arms
+  were affected, so it was a rim-light bug over whole surfaces, not just
+  a silhouette artefact. **Fixed by warping the axis** —
+  μ_j = (j/(N−1))², ~6 of the 32 nodes below μ = 0.03 — with the runtime
+  inverting it by `sqrt`. Re-measured: ρ within 0.06 % of 1 for
+  μ ≥ 0.0349 and within +0.30 % at μ = 0.005. *(Round 8: both figures
+  were measured at α = 0.04 and are not the worst case — see §9.2's
+  exactness table for the α-swept numbers.)*
+- **The gates could not see it, and now can.** `THETA_DEG` stops at 80°
+  (μ = 0.1736, five times the old first node), and the non-Lambertian
+  rows' prediction used the same `E` on both sides of the comparison.
+  §9.9 gate 3 gains a **grazing check** at θ ∈ {80, 85, 88, 89}, and the
+  non-Lambertian prediction is now re-derived in the test from
+  `SheenDirectionalAlbedo` alone instead of calling `FabricBRDF`'s own
+  helpers.
+- **A symmetric normaliser now bounds the sliver the floor cannot.**
+  With the band resolved, `E` exceeds 1 (reaching 1.152) even above the
+  roughness floor, inside μ < 0.03. The sheen lobe is divided by
+  `max(1, E(v), E(l))` and the base scaled by `Ê = min(E, 1)`; both are
+  symmetric in l/v, so reciprocity is untouched, and outside the sliver
+  both collapse to exactly 1 / exactly `E` — **bit-identical** to round
+  5 there. **The exactness class is now explicit: energy-CONSERVING for
+  n·v ≥ 0.03, energy-BOUNDED below it** (debt 18).
+- **The roughness floor's criterion is stated and re-scanned.** It is
+  *"the smallest α with max over μ ≥ 0.03 of E(α, μ) ≤ 1"* — not "over
+  all μ", which no α satisfies once the band is resolved. The generator
+  prints the scan on every bake; on the warped table the smallest
+  qualifying α is 0.028289, so **0.04 stands unchanged**, with both
+  bilinear-bracketing rows already under 1.
+- **`EMean` became `EHatMean`**: the mean of `Ê`, not of raw `E`, since
+  `Ê` is what the code multiplies by. Smaller items: `WeaveRotatedRI` is
+  non-copyable (its implicit copy left `pRef` dangling into the source);
+  the parameters and the rotated record are resolved **once** per
+  `Scatter` / `Pdf` rather than 3–4×; and `alpha` and `weave_rotation`
+  are read achromatically on the spectral pipe, for the same reason `m`
+  already was.
+
+**Round 7 (implementation review, 2026-09-03).** Two further adversarial
+reviews. One P1 in the table again, one P1 in this document's own
+description of a gate.
+
+- **The warped axis' FIRST CELL still ramped E from zero, and the
+  normaliser did not bound it.** Round 6 fixed the grazing band by
+  warping the cosθ axis, but node 0 still holds an analytically exact
+  `E = 0` at μ = 0 and node 1 sits at μ = 1/961 — so inside that one
+  cell the interpolant ramped up from zero across a region where the
+  true lobe is already at its **peak** (E_true = 0.53 at μ = 5e-6,
+  1.15 by node 1; the interpolant read 0.08). The same defect, one cell
+  narrower. **And §9.2's normaliser argument does not cover it**: `N =
+  max(1, E(v), E(l))` is built from the *tabled* E while `value()`
+  emits the *true* lobe, so where `E_tab < 1 < E_true` the normaliser
+  collapses to 1, the lobe is emitted undivided **and** the base is
+  barely suppressed. Measured white-Lambertian ρ reached **1.714**. The
+  header stated the bound as a proof; it was not one.
+  **Fixed** by flooring `SheenDirectionalAlbedo::E`'s cosθ argument at
+  node 1 — constant extrapolation below, now the table's documented
+  domain. Re-measured, ρ falls from 1.714 to **≤ 1.0067** across the
+  cell, decaying to 0.18 at μ = 1e-6; at and above μ₁ the floor is a
+  bit-identical no-op. *(Round 8 correction: this entry originally said
+  "ρ ≤ 1 across the cell", justified by E_true's monotonicity in μ. That
+  argument is incomplete — `E_tab(μ₁)` is a log-α interpolation across a
+  cell where E is concave in α, and under-reads the true lobe by up to
+  0.0067 near α = 0.9, which is where the residual +0.67 % comes from.)* `EHatMean` integrates the same floored function
+  (an analytic term for [0, μ₁] instead of trapezoiding the zero node).
+- **§9.9 gate 3 described a check that was never implemented.** This
+  document claimed the Lambertian rows were cross-checked per angle
+  against a closed form at "≤ 0.002"; the shipped test asserted only the
+  5 % posture band, and the non-Lambertian eps was 0.01, not the 0.02
+  the same passage stated. The closed-form check is **now implemented**
+  (deterministic quadrature, independent of `FabricBRDF`) at a derived
+  tolerance of 0.012, measuring 0.0024 — and gate 3's text now states
+  exactly what is asserted. Both misquoted numbers are corrected here
+  and in the test's own comment.
+- **Exactness class refined, and the residual restated honestly.** The
+  header quoted "+0.30 % at n·v = 0.005", which is the *best* case in
+  that band. Three regimes now, not two. *(Round 8 re-measured all three
+  over the full α range and every figure moved: +0.64 % / +1.67 % /
+  +0.67 %, all worst at α ≈ 0.9 rather than at the roughness floor
+  where rounds 6–7 sampled. See §9.2's table.)*
+- **Gate coverage extended to the band that hid both P1s**: θ = 89.9°
+  and 89.99° added to the grazing check, and off-node brute-force probes
+  plus floored-domain assertions added to `SheenDirectionalAlbedoTest`
+  (its slope-relative continuity check is blind to a *uniform* stencil
+  shift, and near-zero-margin at the flat high-μ end).
+- Smaller: `hemisphericalAlbedo{,NM}` clamped to [0,1] (an R > 1 drives
+  `coated_material`'s recycling denominator `1/(1 − r_i·R)` toward zero);
+  a NaN `sheen_roughness` is now gated rather than propagated; the
+  sheen-branch selection weight's under-selection near grazing is
+  documented as variance-not-bias; the substrate's non-horizon drop
+  paths are documented as a GGX defect fabric inherits in proportion;
+  and a **found-not-fixed** Cook-Torrance spectral defect is recorded as
+  debt 19.
 
 ---
 
@@ -766,18 +944,31 @@ Two parameters. That is the whole authoring surface for fabric in RISE today.
 
 §1 gap 1 gives the two mechanisms. Two refinements matter for the design.
 
-First, **the furnace suite has not independently re-diagnosed the sheen case.**
-Config 6, "Sheen / GGX-PBR", is `kPostureBounded` with the note "sheen-over-PBR
-inherits sheen's bounded dissipation"
-([LayeredWhiteFurnaceTest.cpp:736-738](../tests/LayeredWhiteFurnaceTest.cpp)) —
-it does *not* carry config 7's "substrate never reached" language. The code path
-is structurally identical (an upward-only top SPF), so the same limitation
-almost certainly applies, but **this document declines to assert it as measured
-fact**: config 7's diagnosis came from an explicit SPF-level probe that counted
-downward rays
-([LayeredWhiteFurnaceTest.cpp:758-765](../tests/LayeredWhiteFurnaceTest.cpp)),
-and no such probe has been run on config 6. §9.9 makes running it a Phase-1
-gate item, and §15 carries it as a debt.
+First, **the sheen case IS config 7's defect — measured 2026-09-02 (round 5),
+where the earlier text declined to assert it.** Config 6, "Sheen / GGX-PBR",
+used to be `kPostureBounded` with the note "sheen-over-PBR inherits sheen's
+bounded dissipation", which did *not* carry config 7's "substrate never
+reached" language; this document declined to assert the stronger reading
+without running config 7's SPF-level downward-ray probe against it. §9.9
+gate 4 made that a Phase-1 item, and the probe has now run:
+
+> **`SheenSPF` emits a downward ray in 0 % of draws at θ = 0 and 0 % at
+> θ = 80** — identical to config 7's GGX top layer.
+
+`SheenSPF` is reflection-only by construction: it draws a cosine-hemisphere
+direction about the *ray-facing* normal and gates anything below the
+geometric horizon
+([SheenSPF.cpp:73-99](../src/Library/Materials/SheenSPF.cpp)). So it never
+hands `CompositeSPF`'s random walk a downward ray, and **the substrate is
+never reached**. The furnace table corroborates it independently: config 6
+reads `{0.0875, 0.1293, 0.2812, 0.5461}` while config 2 — *bare sheen, no
+substrate at all* — reads `{0.0875, 0.1283, 0.2810, 0.5453}`. A composite
+that reached its GGX-PBR base could not land on the bare lobe's own curve.
+
+**Configs 6 and 7 are therefore one defect, not two**, and closing it needs a
+transmission path for reflection-only top layers rather than a walk fix.
+Config 6's note now carries the measured percentages, computed at test time
+rather than remembered. §15 debt 3 is closed on this evidence.
 
 Second, **`composite_material`'s `extinction`/`thickness` are not an energy
 split.** They are Beer-Lambert gap absorption between the layers
@@ -1313,7 +1504,7 @@ Attractive because it adds no material class. It fails on two counts. First,
 ([CompositeMaterial.h:56-63](../src/Library/Materials/CompositeMaterial.h)), so
 NEE and every BDPT connection would still miss the base — fixing the SPF walk
 does not fix the BSDF side, and fixing the BSDF side means writing a combined
-`value()` that sums two lobes with the albedo-scaling law, which *is* the new
+`value()` that sums two lobes with the Kulla-Conty energy split, which *is* the new
 material. Second, `CompositeSPF`'s `Pdf` is an admitted flat 50/50 average of the
 two sub-PDFs — `return 0.5 * (pdf_top + pdf_bottom);` under the comment "Equal
 weighting is the best approximation for this material"
@@ -1417,12 +1608,14 @@ useless alone:
    incoherent — and GGX, Ward and Ashikhmin-Shirley get a correct anisotropy
    base as a side effect.
 2. **The material.** `fabric_material` with a base-material reference, a Charlie
-   top lobe, and the glTF albedo-scaling energy split — a real closed-form
+   top lobe, and a **Kulla-Conty** energy split between them (round 5; the
+   earlier glTF-derived `min` form is withdrawn — §9.2) — a real closed-form
    `value()` so NEE and BDPT see both lobes, and a real mixture `Pdf`.
-3. **The energy table.** A baked directional-albedo `E(α, cosθ)` supplying both
-   the sheen lobe's own compensation and the base's scaling. Without it there
-   is no principled split and the furnace posture cannot rise above
-   `kPostureBounded`.
+3. **The energy table.** A baked directional-albedo `E(α, cosθ)` and its
+   hemispherical mean `Ē(α)`, supplying both the sheen lobe's own
+   compensation and the base's scaling. Without it there is no principled
+   split and the furnace posture cannot rise above `kPostureBounded`; with
+   it, and with the product form, the Lambertian rows reach `kPosturePass`.
 4. **The direction.** `weave_rotation` as an `IScalarPainter` angle field that
    rotates the basis `fabric_material` hands to its substrate's
    `value`/`Scatter`/`Pdf` — so anisotropic GGX, Ward and Ashikhmin-Shirley
@@ -1661,23 +1854,151 @@ closed-form `hemisphericalAlbedo` override
 it is already on `coated_material`'s list. The transitive PBR route is what lets
 glTF `KHR_materials_sheen` land on a PBR base.
 
-**`value` / `valueNM`.** Closed form, summing both lobes with the glTF
-albedo-scaling law of §3.3:
+**`value` / `valueNM`.** Closed form, summing both lobes with a
+**Kulla-Conty multiple-bounce coupling** between the fuzz layer and the
+substrate (`m = max3(sheenColor)`, `Ē = EMean(α)`):
 
 ```
 f(l, v) = sheenColor · D_Charlie(α, n·h) · V_Charlie(α, n·l, n·v)
-        + f_base(l, v) · min( 1 − max3(sheenColor)·E(α, n·v),
-                              1 − max3(sheenColor)·E(α, n·l) )
+        + f_base(l, v) · scale(l, v)
+
+               (1 − m·E(α, n·v)) · (1 − m·E(α, n·l))
+scale(l, v) =  ─────────────────────────────────────
+                          (1 − m·Ē(α))
 ```
 
-The base term calls straight through to the substrate's own `IBSDF::value`. The
-scaling factor is symmetric in `l`/`v` by construction (it is a `min` of the two
-symmetric-under-swap arms), which is what preserves reciprocity — the same
-discipline the `hemisphericalAlbedo` contract enforces for the coat
-([IBSDF.h:82-135](../src/Library/Interfaces/IBSDF.h)). `valueNM` is the identical
-algebra with `GuardedGetColorNM` on the tint and the substrate's `valueNM` for
-the base; `E` is achromatic (roughness and geometry only) and therefore does not
-disturb the spectral path — the same argument hair's achromatic pdf proxy makes.
+**Round 5 replaced a `min` here with this product, on a measurement — read
+the Amended block before changing it back.** The earlier text combined the
+two arms with `min(…)`, following glTF's albedo-scaling law of §3.3 but
+symmetrising it for reciprocity. That form is reciprocal and **cannot
+conserve energy**: near normal incidence `E(v) → 0` while the `min` still
+picks `1 − m·E(l)` for every `l`, so the base loses `Ē`'s worth of energy
+that the sheen lobe never returns — measured at ρ = 0.863 at normal
+incidence on a white Lambertian base at α = 0.5, against gate 3's required
+1.000. glTF's own **one-arm** form `1 − m·E(α, n·v)` conserves energy
+exactly and is **not reciprocal**. The two properties are in genuine
+tension, and the product form is the one that holds both.
+
+**What the denominator is.** `1/(1 − m·Ē)` is the sum of the
+adding-doubling inter-reflection series between a lossless fuzz layer and
+the base. Energy the fuzz intercepts on the way in is not deleted — it is
+re-scattered onto the substrate, bounces, and some of it comes back out.
+That is the physics the `min` was throwing away, and it is why the product
+form is not merely a fitted patch. Two consequences to expect and not
+mistake for bugs: `scale` **exceeds 1** away from grazing (its supremum is
+`1/(1 − m·Ē)`, measured 1.073 at α = 0.08 rising to 1.427 at α = 1, with
+the practically visible near-normal figure peaking around 1.10 at
+α ≈ 0.2), and that brightening is exactly balanced by the darkening at
+grazing — §9.9 gate 3's Lambertian rows landing on ρ = 1.000 is what
+proves the balance rather than assuming it.
+
+For a white Lambertian base at **any** `m` and **any** `α`:
+
+```
+ρ(v) = m·E(v) + (1 − m·E(v)) · (1 − m·Ē)/(1 − m·Ē) = 1        exactly
+```
+
+The base term calls straight through to the substrate's own `IBSDF::value`.
+The scaling factor is symmetric in `l`/`v` by inspection — the numerator's
+arms exchange under the swap and the denominator is direction-independent —
+which is what preserves reciprocity, the same discipline the
+`hemisphericalAlbedo` contract enforces for the coat
+([IBSDF.h:82-135](../src/Library/Interfaces/IBSDF.h)). `valueNM` is the
+identical algebra with `GuardedGetColorNM` on the tint and the substrate's
+`valueNM` for the base; `E` is achromatic (roughness and geometry only) and
+therefore does not disturb the spectral path — the same argument hair's
+achromatic pdf proxy makes. **`m` is taken from the authored RGB `max3` in
+both pipes**, deliberately: the scaling and the lobe-selection weight are
+achromatic quantities, and deriving `m` per-wavelength would make the
+mixture density wavelength-dependent and put `Scatter`'s stored hero pdf
+out of step with a companion-wavelength `Pdf()` call.
+
+**The energy bound needs TWO things, and round 6 found that out the hard
+way.** Estevez & Kulla's Charlie+Λ fit is production-friendly, not
+tightly energy-conserving: `E` exceeds 1 near grazing, where `1 − m·E`
+would go negative and the base term would *subtract* energy. Round 5
+claimed the roughness floor alone handled it. That was true of the
+table's **cells** and false of the **lobe** — the cosθ axis was uniform,
+so the whole grazing band was interpolated as a ramp from zero and the
+real peak was invisible (Round-6 note above). Both halves are now in
+place:
+
+1. **The `E` table's cosθ axis is warped toward grazing**
+   (μ_j = (j/(N−1))², ~6 nodes below μ = 0.03), so `E` is resolved where
+   the lobe actually lives.
+2. **A symmetric normaliser bounds what the floor cannot.** The resolved
+   lobe still reaches `E` = 1.152 above the floor, inside μ < 0.03, so
+   the sheen term is divided by `N(l,v) = max(1, E(v), E(l))` and the
+   base is scaled by `Ê = min(E, 1)`. Symmetric in l/v — a `max` of two
+   arms that exchange — so reciprocity is untouched, and both collapse
+   to exactly 1 / exactly `E` outside the sliver, leaving everything
+   there bit-identical.
+
+**The roughness floor's criterion, explicitly:** `kMinSheenAlpha` is the
+smallest α for which **max over μ ≥ 0.03 of `E(α, μ)` ≤ 1**. Not "over
+all μ", which no α satisfies. `tools/SheenDirectionalAlbedoGen.cpp`
+prints the scan on every bake; on the warped table the smallest
+qualifying α is **0.028289**, so **0.04 stands** with both
+bilinear-bracketing rows under 1. Re-run that scan after any change to
+`CharlieSheen` or to the bake extents rather than carrying the number
+forward on trust.
+
+**Exactness class, because it is not uniform over the hemisphere.**
+Three regimes, measured on a white Lambertian base at m = 1 through the
+shipped tables:
+
+| n·v | worst ρ | where |
+|---|---|---|
+| ≥ 0.0349 | **1.0064** (+0.64 %) | α ≈ 0.91 |
+| 1/961 … 0.0349 | **1.0167** (+1.67 %) | α ≈ 0.91, n·v ≈ 0.0023 |
+| < 1/961 | **1.0067** (+0.67 %) | α ≈ 0.91, n·v → μ₁ |
+
+Global maximum anywhere: **ρ = 1.0166**; nothing reaches 1.02.
+
+**Every one of these was previously understated, and the reason
+generalises.** Rounds 6 and 7 quoted 0.06 % / 1.1 % / "ρ ≤ 1" — all
+measured at **α = 0.04**, the roughness floor where the presets live.
+The worst case is not there. It is at **α ≈ 0.9**, in the last and
+widest log-α cell (0.800 → 1.000), where E at node 1 stops being
+monotone in α: it is *concave* with a peak near 0.9, so the log-α chord
+between the bracketing rows **under-reads** the true lobe by up to
+0.0067. That under-read drives all three bands — the lobe is emitted at
+its true strength while the normaliser and the base suppression are
+computed from the lower interpolated value. *Measure over the α range,
+not just over μ; a number taken at the roughness floor is not this
+model's worst case.*
+
+The middle band's residual is the E table's interpolation error
+*between* nodes; closing either it or the α-chord shortfall means more
+table resolution (an α node near 0.9, or more cos θ nodes), not an
+algebra change. Debt 18 tracks it.
+
+**The bottom band is the FLOORED DOMAIN, and it is a third mechanism —
+not the normaliser.** `SheenDirectionalAlbedo::E` floors its cosθ
+argument at node 1 (μ₁ = 1/961) and constant-extrapolates below.
+Without that, the first cell interpolates E up from the analytically
+exact 0 at μ = 0 across a region where the true lobe is at its peak, and
+**the normaliser does not save it**: `N` is built from the tabled E, so
+where `E_tab < 1 < E_true` it collapses to 1, the lobe is emitted
+undivided *and* the base is barely suppressed — measured ρ = 1.714.
+Constant extrapolation is **sound but not a proof**, and the earlier
+text wrote it as one. E_true is monotone increasing in μ on (0, μ₁), so
+`E_true(μ) ≤ E_true(μ₁)` — what does *not* follow is
+`E_tab(μ₁) ≥ E_true(μ)`, because `E_tab(μ₁)` is a linear interpolation
+in log-α across a cell where E is concave in α. Measured worst shortfall
+`E_true − E_tab(μ₁) = +0.0067` at α ≈ 0.90. So ρ creeps to **1.0067**
+below μ₁ rather than staying ≤ 1, decaying monotonically to 0.18 at
+μ = 1e-6. A bound, not a blow-up — but "ρ ≤ 1 below μ₁" was false as
+written. At and above μ₁ the floor is a bit-identical no-op.
+
+One more documented edge: for α ≲ 0.05 the fabric goes **exactly black**
+below μ ≈ 1e-6, because `CharlieSheen::V` hard-returns 0 once
+`n·l · n·v < 1e-6` while the floored `E(μ₁) ≥ 1` fully suppresses the
+base. Energy loss, not gain, and a sub-pixel sliver — but a step to
+zero, not a graceful tail.
+`sheen_material`'s own 1e-3 floor is deliberately left alone (it
+compensates nothing, and raising it would move every existing sheen
+render); that asymmetry is recorded as debt, not an oversight.
 
 **`Pdf` / `PdfNM`.** The real mixture: `w · pdf_sheen(wo) + (1 − w) ·
 pdf_base(wo)`, evaluated for an arbitrary `wo` with no memory of how anything
@@ -1746,80 +2067,76 @@ fabric entirely, on hair's precedent.
 **`albedo` (OIDN AOV).** `base.albedo(ri) · scaling + sheenColor · E(α, n·v)` —
 a genuinely noise-free estimate rather than sheen's current clamp-to-itself.
 
-**`hemisphericalAlbedo` — NOT a free closed form; this needs its own bake or an
-explicit bound.** The contract wants a single direction-independent number: the
+**`hemisphericalAlbedo` — a closed form after all, once the kernel factors.**
+The contract wants a single direction-independent number: the
 hemispherically-averaged directional-hemispherical reflectance, with
 implementations forbidden from reading `ri.ray`
-([IBSDF.h:82-106](../src/Library/Interfaces/IBSDF.h)). The sheen lobe's own
-share is easy — it is a bihemispherical average of `E`, one extra reduction over
-the table that is baked anyway. **The base term is not**, because the scaling
-factor is `min(1 − w(v), 1 − w(l))` and a `min` **does not factor** into (a
-function of `l`) × (a function of `v`). So the base's contribution is
-`∫∫ f_base(l,v) · min(1 − w(v), 1 − w(l)) dl dv`, which cannot be recovered by
-multiplying the substrate's own `hemisphericalAlbedo` by anything derived from
-`E` alone. Three honest routes, in preference order:
+([IBSDF.h:82-106](../src/Library/Interfaces/IBSDF.h)).
 
-1. **Tabulate the kernel — exact for Lambertian, an approximation above it.**
-   `w = max3(sheenColor) · E(α, cosθ)` depends on direction only through `E`, so
-   the double integral of the scaling factor alone is a function of just **two**
-   scalars, `(α, max3(sheenColor))`. Bake
-   `S(α, m) = ∫∫ min(1 − m·E(α, n·v), 1 − m·E(α, n·l)) dl dv` **once, in the
-   same generator pass that bakes `E`**, and return
-   `substrate.hemisphericalAlbedo() · S(α, m) + sheenAlbedo(α) · sheenColor`.
+**Round 5 made this simple, and retired a whole baked table.** Under the
+earlier `min` kernel the base's contribution was
+`∫∫ f_base(l,v) · min(1 − w(v), 1 − w(l)) dl dv`, and a `min` **does not
+factor** into (a function of `l`) × (a function of `v`) — so that double
+integral could only come out of a bake, which is what the `S(α, m)` table
+was. The product kernel factors, and the integral closes in two lines:
 
-   **Be precise about what that is worth.** Pulling the substrate's own albedo
-   out of the joint integral treats `f_base` and the `min(…)` kernel as
-   *uncorrelated*, which requires `f_base` to be **constant** in the integration
-   variables — i.e. it is **exact only for a Lambertian substrate**. Azimuthal
-   symmetry about the normal is *not* sufficient and is the wrong test: the
-   other two allowlisted substrates are genuinely joint in `l` and `v` and do
-   correlate with a grazing-peaked kernel. **Oren-Nayar** couples them through
-   `max(θ_l, θ_v)` / `min(θ_l, θ_v)` and the azimuthal difference term
-   ([OrenNayarBRDF.cpp:149-199](../src/Library/Materials/OrenNayarBRDF.cpp)), and
-   **GGX** depends on the half-vector `n·h`, `h = normalize(l + v)`. A toy
-   integral with an Oren-Nayar-shaped coupling against a Charlie-like
-   grazing-peaked `E` at `m = 0.8` put the factored form **~3 % off** the true
-   double integral — small, one-signed, and growing with substrate roughness.
-   So for Oren-Nayar and GGX this is an **uncorrelated-response approximation of
-   bounded-but-unmeasured error**, not an identity, and it must not be described
-   as exact. §9.9 gate 5 measures that error before it ships (see below).
-1b. **The exact alternative, if gate 5(b) says the ~3 % matters — one option,
-   not two.** Bake `S` **per substrate class**: a 3D table
-   `(α, m, substrate roughness)`, one surface per allowlisted class, which
-   restores exactness at roughly roughness-many times the table cost.
-   **A construction-time numerical `∫∫` using the substrate's real `value()` is
-   NOT an option, despite being the obvious one.** There is no
-   `RayIntersectionGeometric` at material-construction time, so such a
-   quadrature can only evaluate the substrate's *constant* parameters — and
-   every fabric this design is built around drives reflectance and roughness
-   from painters (§9.8's worked example does exactly that). It would therefore
-   return a number computed from whatever a painter reports at a synthetic
-   default hit, silently wrong wherever the material actually varies, and
-   *presented as exact*. That is a worse failure than the approximation it would
-   replace. Discarded.
+```
+∫∫ f_base(l,v) · (1 − m·E(v))(1 − m·E(l))/(1 − m·Ē) · (n·l)(n·v) dl dv
+    = ρ_base · (1 − m·Ē)² / (1 − m·Ē)
+    = ρ_base · (1 − m·Ē)
+```
 
-2. **Bound it.** `min(a, b) ≤ (a + b)/2`, and the mean form *does* factor, so
-   `1 − m·Ē` with `Ē` the hemispherical mean of `E` is a strict upper bound —
-   cheap, honestly conservative, and a legitimate answer since the contract
-   permits an estimate. This is the safe fallback if gate 5 is not run in time.
-3. **Return `false`.** The contract allows a material to decline, and callers
-   fall back. Correct but it forfeits the composability below.
+using `(1/π)∫ E(μ) μ dμ ≡ Ē` once per arm. Adding the sheen lobe's own
+bihemispherical share gives **route 1**, which is now the only route:
 
-Whichever route is taken, it must be stated in the header — with its exactness
-class named, not described as "closed form" — and **gate 5 must measure route
-1's substrate-coupling error directly**, by comparing the tabulated value
-against a brute-force `∫∫ f_base(l,v)·min(…)` quadrature for an Oren-Nayar and a
-GGX substrate at several roughnesses. That is a separate check from the
-`f(a→b) == f(b→a)` sweep on `value()`, which does **not** exercise
-`hemisphericalAlbedo` at all — this quantity is a diffuse-recycling term, so a
-reciprocity pass on `value()` would not surface an error here. Getting it wrong
-risks a smaller instance of exactly the defect the contract exists to prevent:
-a view-dependent stand-in in a shared term cost `coated_material`'s first cut
-~28 % asymmetry at grazing
-([IBSDF.h:87-97](../src/Library/Interfaces/IBSDF.h)).
-Getting this right is also what would let a future `coated_material` sit *over*
-a `fabric_material` — a waxed canvas — since that is the quantity the coat's
-recycling denominator consumes. §15 debt 16 tracks it.
+```
+out = substrate.hemisphericalAlbedo() · (1 − m·Ē(α))  +  sheenColor · Ē(α)
+```
+
+**`S(α, m)` is therefore retired** — `kSTable`,
+`SheenDirectionalAlbedo::S()`, and the generator's `ComputeS` / `BakeS` /
+`ClampedOneMinusME` are all removed. `E` and `EMean` are unchanged
+bit-for-bit. **Route 1b** (the per-substrate-class 3-D table `S(α, m,
+σ_base)`) was the remedy for a table that no longer exists, and **route 2**
+(the `min(a,b) ≤ (a+b)/2` bound) was a fallback for a quantity now available
+in closed form; both are retired with it. The
+construction-time-quadrature route stays discarded for its own separate
+reason — there is no `RayIntersectionGeometric` at material-construction
+time, so it could only evaluate a substrate's *constant* parameters and
+would be silently wrong wherever a painter varies, while presenting itself
+as exact.
+
+**Exactness class, stated precisely.** Pulling the substrate's own albedo
+out of the joint integral treats `f_base` and the kernel as
+**uncorrelated**, which requires `f_base` to be **constant** in the
+integration variables. So route 1 is:
+
+- **EXACT for a Lambertian substrate** — and now exact *in closed form*
+  rather than up to an interpolated table's bake error.
+- An **uncorrelated-response approximation** for Oren-Nayar (which couples
+  `l` and `v` through `max/min(θ_l, θ_v)` and the azimuthal difference) and
+  for GGX (which couples them through the half-vector). Azimuthal symmetry
+  is *not* sufficient and is the wrong test.
+
+**Measured (§9.9 gate 5b): ≤ 0.64 %,** against a pre-committed 5 % — and 0
+by construction on the Lambertian control row. The doc's earlier toy
+estimate of ~3 % was pessimistic.
+
+**A second, larger error lives one layer down and is not ours.** What this
+method returns also inherits whatever the *substrate's* own
+`hemisphericalAlbedo` reports, and that is an approximation with a measured
+size: `OrenNayarBRDF::hemisphericalAlbedo` returns `Rd` verbatim
+([OrenNayarBRDF.cpp:148-190](../src/Library/Materials/OrenNayarBRDF.cpp)
+documents it as 12.6 % high at roughness 0.5 and up to 25.6 % high at
+roughness 1), and GGX's runs high at grazing. End-to-end against a
+brute-force quadrature that reaches **15.7 %**, essentially all of it
+attributable there. No change to `fabric_material` can fix it, and
+`coated_material`'s recycling denominator already inherits the identical
+debt — §15 debt 17 tracks it as its own item.
+
+Getting route 1 right is what would let a future `coated_material` sit
+*over* a `fabric_material` — a waxed canvas — since this is the quantity the
+coat's recycling denominator consumes. §15 debt 16 tracks that composition.
 
 **`IsVolumetric`.** False. No Beer-Lambert in `kray`.
 
@@ -1991,16 +2308,37 @@ precedent to LTC means building a reference volumetric fibre-slab path tracer
 RISE already has, of exactly the shape `HairMedullaProfileGen` already performs,
 validated by the furnace harness RISE already runs.
 
-**The `E` table.** A 2D bake over (α, cos θ) — 32 × 32 doubles is 8 KB, an order
-of magnitude smaller than the 52.8 KB medulla table. The **same generator pass
-should also bake `S(α, max3(sheenColor))`**, the bihemispherical average of the
-scaling factor that §9.2's `hemisphericalAlbedo` needs and cannot get from `E`
-alone. The generator writes its
-own `.cpp` with the bake extents and the regeneration command stamped into the
-banner, exactly as the medulla generator does. Its test is the one the medulla
-table already has in a different form: assert the baked float count against the
-baked extents, and assert the runtime struct's capacity against the baked bin
-count.
+**The `E` table — and `Ê̄`, and nothing else.** A 2D bake over
+(α, cos θ) on a **grazing-warped** cosθ axis (μ_j = (j/(N−1))², round 6 —
+a uniform axis cannot resolve the lobe below μ = 0.0323 and broke the
+energy identity by up to +1.05 absolute), plus the hemispherical mean of
+the **clamped** lobe, `Ê̄(α) = 2∫min(E,1)·μ dμ` — the mean of the
+quantity the code actually multiplies by, so `hemisphericalAlbedo`'s
+closed form cannot disagree with `value()`'s own denominator. Shipped as 32 × 32 + 32 **floats**
+(4.125 KB, not the 8 KB this paragraph originally estimated for doubles),
+an order of magnitude smaller than the 52.8 KB medulla table. `Ē` is
+computed from the **stored** 32-point `E` row by the trapezoidal rule, not
+from an independent higher-resolution integral, so it is exactly
+reconstructable from the shipped table — one number, not two that could
+drift.
+
+**Round 5 removed a third table.** The earlier text had this same generator
+pass also bake `S(α, max3(sheenColor))`, the bihemispherical average of the
+`min`-form scaling factor, because a `min` does not factor and §9.2's
+`hemisphericalAlbedo` could not get that double integral from `E` alone.
+The product form factors, `hemisphericalAlbedo` closes in `Ē`, and `S` is
+retired — table, runtime lookup and generator code alike. `E` and `Ē` are
+byte-identical across the change.
+
+The generator writes its own `.cpp` with the bake extents and the
+regeneration command stamped into the banner, exactly as the medulla
+generator does. Its test is the one the medulla table already has in a
+different form: assert the baked float count against the baked extents, and
+assert the runtime struct's capacity against the baked bin count. **Determinism caveat (fix round, E1 P3):** the committed table is
+byte-identical only re-run on the SAME toolchain/platform — the adaptive bake
+calls `pow`/`exp`/`sqrt` through platform libm, which can differ in the last
+ULP across compilers/platforms, so "byte-identical across re-runs" is a
+same-toolchain claim, not a cross-platform one.
 
 **Sampling — Phase 1 KEEPS cosine-hemisphere sampling.** An earlier draft
 proposed replacing `SheenSPF`'s cosine sampling with D-importance sampling; that
@@ -2510,12 +2848,106 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
 3. **Furnace.** New `LayeredWhiteFurnaceTest` configurations: `fabric_material`
    over Lambertian, over Oren-Nayar, over isotropic GGX-PBR, and over an
    **anisotropic** GGX base (`alphax ≠ alphay`) with a non-zero
-   `weave_rotation`, at four roughnesses. **Posture target: `kPosturePass` at
-   5 %** — the `E` table's entire purpose is to lift sheen out of
-   `kPostureBounded`. The anisotropic row is now a *substrate* configuration
-   rather than an anisotropic sheen lobe (§9.5), so it should pass on the same
-   terms as the isotropic ones; if it does not, the fault is in the
-   frame-rotation plumbing, not in the lobe.
+   `weave_rotation`, at four roughnesses, **plus the bare-substrate reference
+   rows the non-Lambertian predictions are built from** (the Oren-Nayar and
+   anisotropic-GGX bases; the Lambertian and isotropic-GGX-PBR references
+   already exist as configs 0 and 17).
+
+   **Postures, per substrate — round 5.** The earlier text asked for
+   `kPosturePass` at 5 % on every row. That is achievable for a Lambertian
+   base and *only* for a Lambertian base, because a substrate that is not
+   itself energy-neutral cannot become so by being wrapped:
+
+   - **Lambertian rows: `kPosturePass` at 5 %.** The product form makes
+     ρ = 1 an **identity** here at any α and any m, so these must land on
+     1.000 and a deviation is a real regression. This row set is also what
+     proves the `1/(1 − m·Ē)` denominator's near-normal brightening
+     (§9.2) is **energy-neutral rather than a gain** — it is exactly
+     balanced by the darkening at grazing, and ρ = 1 is the statement
+     that the balance is exact.
+   - **Oren-Nayar and GGX rows: `kPostureMatchesPrediction`** against a
+     prediction derived *at run time* from the bare substrate's own
+     measured curve, using the closed form the product model gives:
+     `ρ_fabric(v) = E(α, cos v) + ρ_substrate(v)·(1 − E(α, cos v))`.
+     That is neither a locked-in measurement nor circular — the substrate
+     row is measured independently by the same driver, and the fabric row
+     must then equal an analytic function of it. It is the precise
+     statement of *the fabric layer neither adds nor removes energy over
+     the substrate's own posture*: Oren-Nayar dissipates by its own
+     design, and bare white GGX-PBR is already over unity at grazing
+     (config 17 records 1.1555 at θ = 80). `eps` is 0.02 rather than the
+     Lambertian rows' 0.002, covering route 1's uncorrelated-response
+     residual, which gate 5b measures directly and at full precision.
+
+   **The Lambertian rows carry a SECOND assertion: a per-angle
+   closed-form cross-check.** An earlier revision of this text described
+   one at "≤ 0.002" that had never been implemented — the number came
+   from a hand cross-check during development and the shipped test
+   asserted only the 5 % posture band (round 7, M5 review). It is
+   implemented now:
+
+   ```
+   ρ(v) = ∫_H D(α,n·h)·V(α,n·l,n·v) / N(v,l) · (n·l) dl
+        + (1 − m·Ê(v)) / (1 − m·Ê̄) · 2∫₀¹ (1 − m·Ê(μ_l))·μ_l dμ_l
+   ```
+
+   evaluated by deterministic 1024 × 512 quadrature and compared per
+   angle against the furnace's Monte-Carlo measurement. It re-derives
+   the product-form algebra from `CharlieSheen` and
+   `SheenDirectionalAlbedo` **without calling `FabricBRDF`**, so a
+   self-consistent error inside `ComputeTerms` / `BaseScaling` /
+   `SheenNormaliser` cannot appear on both sides.
+
+   **Tolerance 0.012, derived not fitted:** the furnace's 100k-sample MC
+   error puts 1σ near ρ = 1 at ~3e-3, the quadrature's own error is two
+   orders below that, and the table's interpolation residual *cancels*
+   (both sides read the same `E`). 0.012 is 4σ. **Measured worst
+   |measured − closed form| = 0.0024.**
+
+   **What gate 3 asserts, in full**, since the tolerances above were
+   previously misquoted in both this document and the test's own comment:
+
+   - Lambertian rows: `kPosturePass` at **5 %** around ρ = 1, **and** the
+     closed-form cross-check at **0.012**.
+   - Oren-Nayar / GGX rows: `kPostureMatchesPrediction` at eps **0.01**
+     (not the 0.02 an earlier draft stated).
+   - Grazing check: **5 %**, conserving above μ = 0.03, bounded below.
+
+   **THE PREDICTION MUST NOT CALL `FabricBRDF` (round 6).** The
+   non-Lambertian rows originally built `pred[]` from
+   `FabricBRDF::SheenTransmit` / `SheenTransmitMean` — the very statics
+   `value()` uses — which made the oracle "Scatter agrees with `value()`'s
+   own formula" rather than an independently rederived target: a
+   self-consistent error inside those helpers, one that still preserved
+   the Lambertian ρ = 1 identity, would have passed. The test now
+   re-derives the factors from `SheenDirectionalAlbedo` alone, so the
+   only surface shared with the model is the baked table — which has its
+   own independent brute-force test against `CharlieSheen.h`.
+
+   **A GRAZING CHECK, because the angle columns cannot reach the band
+   where this class of defect lives (round 6).** `THETA_DEG` stops at
+   80° (μ = 0.1736); the P1 that round 6 found lived below μ = 0.0323 and
+   every row stayed green throughout it. Adding columns would mean
+   re-measuring all nineteen pre-existing locked curves, so gate 3 gains
+   a separate sweep over the **Lambertian** fabric rows — the ones whose
+   expected answer is an identity rather than a locked number, and
+   therefore the only ones checkable at a new angle without
+   re-measurement — at θ ∈ {80, 85, 88, 89, **89.9, 89.99**}, with two
+   postures matching the model's own exactness class:
+
+   - μ ≥ 0.03 (θ ≤ 88.28°): **conserving**, |ρ − 1| ≤ 5 %.
+   - μ < 0.03: **bounded**, 0 ≤ ρ ≤ 1 + 5 %.
+
+   **89.9° and 89.99° were added in round 7** (μ = 1.7e-3 and 1.7e-4),
+   because 89° sits at μ = 0.0175 — seventeen times the E table's first
+   node — and the round-7 P1 lived below it. Measured after the fix:
+   ρ = 1.007–1.009 at 89.9° and **0.901–0.918 at 89.99°**, the
+   floored-domain regime. Before the fix that band reached **1.714**.
+
+   The anisotropic row is a *substrate* configuration rather than an
+   anisotropic sheen lobe (§9.5), so it should behave on the same terms as
+   the isotropic ones; if it does not, the fault is in the frame-rotation
+   plumbing, not in the lobe.
 4. **Re-diagnose furnace config 6.** Run config 7's SPF-level downward-ray probe
    against the existing sheen-over-PBR composite and update the note with the
    measured answer, whichever way it comes out (§4.2, §15 debt 3).
@@ -2526,17 +2958,30 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
    `RECIPROCITY_TOL = 1e-6`. Sheen's absence is a pre-existing hole this phase
    closes as a matter of course.
    (b) **`hemisphericalAlbedo`'s substrate-coupling error, measured** — §9.2
-   route 1's tabulated `substrate.hemisphericalAlbedo() · S(α, m)` compared
-   against a brute-force `∫∫ f_base(l,v)·min(1 − w(v), 1 − w(l)) dl dv`
-   quadrature, for an Oren-Nayar and a GGX substrate at several roughnesses and
-   several `m`. Route 1 is **exact only for Lambertian**; this puts a number on
-   what it costs above that (a toy estimate says ~3 %). **Pre-commit the
-   tolerance before measuring**, and if it is exceeded, switch to §9.2's exact
-   alternative — the per-substrate-class 3D table `S(α, m, σ_base)` — rather
-   than shipping the 2D kernel. (The construction-time quadrature is *not* the
-   fallback; §9.2 discards it because painters vary spatially.) Note this
-   is *not* covered by (a): `hemisphericalAlbedo` is a diffuse-recycling term
-   that the `f(a→b) == f(b→a)` sweep never evaluates.
+   route 1's closed form `substrate.hemisphericalAlbedo() · (1 − m·Ê̄)`
+   compared against a brute-force `∫∫ f_base(l,v)·scale(l,v) dl dv`
+   quadrature, for an Oren-Nayar and a GGX substrate at several roughnesses
+   and several `m`, with a Lambertian control row (where route 1 is exact by
+   construction, so a non-zero reading there indicts the quadrature rather
+   than the model). Pre-committed tolerance: **5 %**.
+
+   **The measurement must be DECOMPOSED, because two independent errors land
+   on the same number and only one of them is ours.** Round 5's result:
+
+   - **fabric's own uncorrelated-response error: ≤ 0.64 %** (0 on the
+     Lambertian control), well inside the pre-committed band and well under
+     this doc's earlier ~3 % toy estimate. This is the asserted quantity.
+   - **the substrate's own `hemisphericalAlbedo` error: up to 17.8 %**,
+     carrying the end-to-end figure to 15.7 %. This is *inherited*, not
+     introduced: `OrenNayarBRDF::hemisphericalAlbedo` returns `Rd` verbatim
+     and GGX's estimate runs high. It is reported unasserted, and tracked as
+     debt 17.
+
+   Round 4's remedy for an exceedance — switching to a per-substrate-class 3D
+   table `S(α, m, σ_base)` — is **obsolete**: the kernel table is gone, and a
+   3D table could not have touched the substrate's own error anyway. Note
+   this gate is *not* covered by (a): `hemisphericalAlbedo` is a
+   diffuse-recycling term that the `f(a→b) == f(b→a)` sweep never evaluates.
 6. **SPF↔BSDF and Pdf consistency.** `fabric_material` entries in both
    consistency suites, RGB and NM. **This gate is what proves §9.2's
    sample-then-reprice recipe was actually implemented**: it fails precisely
@@ -2545,38 +2990,387 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
    sampled directions reachable from *both* lobes (an ordinary mid-hemisphere
    `wo` on an Oren-Nayar or GGX base), since a sheen-only direction would not
    discriminate.
-7. **HWSS invariant.** `hwss=true ≡ hwss=false` within MC noise on a fabric
-   scene, on the hair Phase-1 pattern.
+7. **HWSS invariant — MEASURED 2026-09-03, GREEN.** `hwss=true ≡ hwss=false`
+   within MC noise on a fabric scene, on the hair Phase-1 pattern.
+   [tests/FabricRenderTest.cpp](../tests/FabricRenderTest.cpp), built on
+   [tests/HairRenderTest.cpp](../tests/HairRenderTest.cpp)'s harness: real
+   `RISE ASCII SCENE 7` text through the CST parser (so the CHUNK and its
+   preset seeding are exercised, not just the C++ class), a real rasterizer,
+   the output image inspected, `oidn_denoise FALSE` throughout.
+
+   Two rows, because they run different halves of the material — an
+   **anisotropic `ggx_material` with `weave_rotation 0.6`** (the frame-rotation
+   path of §9.5) and an **`orennayar_material`** (no rotation to steer, so the
+   sheen lobe's own spectral behaviour is isolated). Measured at 256 spp,
+   32×32, `num_wavelengths 8`, `spectral_samples 1`, n = 5 runs at **seed bases
+   1000 / 2000 / 3000 / 4000 / 5000**
+   (`for b in 1000 2000 3000 4000 5000; do ./bin/tests/FabricRenderTest $b; done`):
+
+   | row | `hwss=false` ≡ `hwss=true`, relative difference across the 5 bases |
+   |---|---|
+   | satin over anisotropic GGX | 0.38 / 0.38 / 0.48 / 0.72 / **0.74 %** |
+   | cotton over Oren-Nayar | 0.58 / 0.60 / 0.74 / 0.80 / **0.90 %** |
+
+   **On seeding — corrected 2026-09-03, and the correction matters.** An
+   earlier revision justified those repeats as independent because "renders
+   seed from the wall clock". That is **false for a test binary**:
+   `srand( GetMilliseconds() )` is called only in
+   `src/RISE/commandconsole.cpp`'s `main()`, and a test that calls
+   `RISE_CreateJobPriv` directly never runs it. The only run-to-run variation
+   was that every render worker constructs `RandomNumberGenerator random;`
+   (default `seed = rand()`) concurrently from `ThreadPool::ParallelFor` — an
+   **unsynchronised race on libc `rand()`'s global state**, which is undefined
+   behaviour and can just as easily collapse to correlated draws on a
+   single-worker machine or a different libc. That is not a basis for calling
+   five runs independent MC samples. The test now takes an optional **seed base
+   as `argv[1]`** and calls `std::srand( base + n )` before render `n`, so a
+   default invocation is reproducible in intent and a sweep over bases is
+   independent **by construction**. Bit-exactness within one base is *not*
+   claimed — the worker-side race still perturbs which worker draws which seed,
+   and closing that means changing how `RasterizeDispatchers` seeds its
+   workers, a renderer change outside this gate. The table above is the
+   re-derived post-correction spread.
+
+   Asserted at **3 %**, ≈3.3× the worst observed run. That is an order of
+   magnitude tighter than hair's own HWSS row (12 %), and the gap is
+   informative rather than incidental: hair's residual is the pre-existing
+   spectral-bundle bias acting on a strongly wavelength-dependent absorption
+   model, whereas a fabric's dye is an ordinary reflectance and its sheen an
+   achromatic lobe, so the bundle has almost nothing to disagree about. The
+   residual that remains is MC noise — its sign is not even consistent between
+   the two rows within a run.
+
+   **The same file carries a PT-vs-BDPT check, and it had to be reframed to
+   mean anything.** The raw numbers on this scene are PT 0.443, BDPT 0.557 —
+   **+25.8 %** — which no defensible parity tolerance would accept. That is
+   not a fabric defect: RISE's BDPT is a documented +28.5 % over closed-form
+   truth on env-only scenes ([PT_ENV_MIS_DOUBLECOUNT.md](PT_ENV_MIS_DOUBLECOUNT.md)
+   §4a, where `EnvLightBalanceTest` *bands* that bias rather than asserting
+   parity), and every scene in the file is env-lit. The test therefore renders
+   the scene **four** times — PT and BDPT over the bare `ggx_material`, and PT
+   and BDPT over the `fabric_material` wrapping it — and asserts that the two
+   **ratios** agree:
+
+   | | BDPT/PT across the same 5 seed bases |
+   |---|---|
+   | bare `ggx_material` | 1.25115 / 1.25196 / 1.25220 / 1.25232 / 1.25278 |
+   | satin over the same | 1.25694 / 1.25707 / 1.25741 / 1.25757 / 1.25854 |
+   | \|difference\| | 0.00463 / 0.00487 / 0.00561 / 0.00579 / **0.00622** |
+
+   So the wrapper moves the PT/BDPT relationship by at most **0.62 %** while
+   the inherited env bias it sits on is 25 % — nearly two orders of magnitude
+   between signal and confound. Asserted at 3 % (≈4.8× headroom); the raw
+   ratios are printed but not asserted, so a future change in the env-MIS
+   partition shows up in the log as a moving pair rather than as a mysterious
+   failure. Unlike hair's twin this row needed no `indirect_clamp` to be
+   assertable — there is no heavy-tailed transport in the scene — and unlike
+   hair it can afford a tight tolerance, because `fabric_material` is asserted
+   reciprocal to 1e-6 by gate 5a while the Chiang BCSDF is not reciprocal at
+   all.
 8. **Spectral parity.** An authored-white dye is bit-exact between the RGB and NM
    paths (the `GuardedGetColorNM` guard, exercised).
-9. **The cue-(c) measurement.** Render a backlit velvet swatch under the studio
-   rig's rim light, with `oidn_denoise FALSE`, and record the terminator profile
-   against a reference. **This number is the LTC gate.** Recording it, not
-   passing it, is the gate — Phase 1 is allowed to be worse than LTC; it is not
-   allowed to be worse than LTC by an unknown amount.
-9b. **The cue-(b) measurement — the Phase-2 gate's evidence.** Render
-    `fabric silk` and `fabric satin` on a draped subject under the studio rig,
-    `oidn_denoise FALSE`, and compare side by side against reference
-    photography of the same fabrics. **Record whether an isotropic Charlie sheen
-    over an anisotropic GGX substrate reads as *satin* or as *brushed metal*** — i.e. whether the visible
-    deficit is the missing pattern-scale structure (cue b) or the missing
-    multiple scattering (cue c, gate 9). This is a Phase-1 deliverable
-    precisely because §10.2's first Phase-2 gate condition consumes it; without
-    it, Phase 1 could close with all other gates green and Phase 2's entry
-    condition would have no evidence behind it. As with gate 9, **recording the
-    result is the gate, not passing it.**
-10. **Variance — the cosine-sampling cost, measured, as the D-sampling follow-up's
-    entry condition.** PT sample counts to a fixed noise floor at
-    α ∈ {0.08, 0.5, 1.0}, with and without NEE, per
+9. **The cue-(c) measurement — MEASURED 2026-09-03, RECORDED.** Render a
+   backlit velvet swatch under the studio rig's rim light, with
+   `oidn_denoise FALSE`, and record the terminator profile against a reference.
+   **This number is the LTC gate.** Recording it, not passing it, is the gate —
+   Phase 1 is allowed to be worse than LTC; it is not allowed to be worse than
+   LTC by an unknown amount.
+
+   Harness: [tools/fabric_sheen_measure.py](../tools/fabric_sheen_measure.py)
+   `terminator`. Subject a **unit sphere** rather than the showcase drape,
+   because the numbers are indexed by incidence angle and a sphere makes that
+   mapping analytic: viewed near-orthographically down +Z, the visible point at
+   normalized screen abscissa `s` has `N = (s, 0, sqrt(1-s²))`, so one scanline
+   sweeps a whole angular range with no unprojection. Dye 0.20/0.05/0.09, sheen
+   colour 0.90 white, **sheen α 0.08 (the `velvet` preset's own value)**;
+   reference is the SAME sphere with the bare `lambertian_material` substrate,
+   unwrapped. 1024 spp, 768×768, **32-bit EXR** (an LDR write would have put an
+   ACES tone curve on the exact quantity being measured — `display_transform`
+   defaults to `aces` for LDR formats), `oidn_denoise FALSE`.
+
+   **Two configurations, and the first one's null result is the finding.**
+
+   **(A) 90° rim — a true terminator.** Light at `direction 1 0 0`, exactly
+   perpendicular to the view, so the terminator lands on the disc's vertical
+   centre line and the scanline sweeps `θ_i` 0 → 90° while `θ_o` sweeps 90 → 0°.
+
+   | θ_i | θ_o | fabric L | bare L | fabric / bare |
+   |---:|---:|---:|---:|---:|
+   | 20° | 70° | 2.2607e-02 | 2.5090e-02 | **0.901** |
+   | 40° | 50° | 2.0638e-02 | 2.0297e-02 | **1.017** |
+   | 60° | 30° | 1.2896e-02 | 1.3164e-02 | **0.980** |
+   | 70° | 20° | 8.0003e-03 | 8.9774e-03 | **0.891** |
+   | 80° | 10° | 3.2025e-03 | 4.5359e-03 | **0.706** |
+   | 85° | 5° | 1.2461e-03 | 2.2588e-03 | **0.552** |
+   | 88° | 2° | 3.6390e-04 | 8.8366e-04 | **0.412** |
+
+   Falloff width, each profile normalized by its own value at θ_i = 20°
+   (one pixel spans 0.151° of incidence at the terminator):
+
+   | | 90 % at | 50 % at | 10 % at | 90→10 width |
+   |---|---:|---:|---:|---:|
+   | fabric | 41.00° | 63.33° | 82.26° | **41.25°** (273.7 px) |
+   | bare Lambertian | 31.82° | 61.53° | 84.45° | **52.63°** (349.2 px) |
+
+   **The sheen never rises above the bare substrate in this configuration, and
+   at grazing incidence it is 2.4× DARKER.** The terminator is *sharper* than
+   Lambert's, not softer — 41.25° of falloff against 52.63°. That is the exact
+   opposite of cue (c): a real velvet's multiple scattering *fills* the
+   terminator with a soft glow, and Phase 1 supplies none of it. The mechanism
+   is not a bug and is worth stating, because it will be re-derived otherwise:
+   on this scanline `θ_i + θ_o = 90°` identically, so the half vector never
+   leaves the neighbourhood of 45° and Charlie's `sin(θ_h)^(1/α)` — with
+   1/α = 12.5 at velvet's roughness — is nowhere near its peak. What the fabric
+   *does* do is the base-energy subtraction, `1 − max3(sheen_color)·E(α, cosθ_o)`,
+   which at near-normal VIEW is at its largest. Net: a small, uniform darkening.
+
+   **(B) On-axis light — the grazing halo.** Light at `direction 0 0 1`, on the
+   camera axis, where `θ_h = θ_i = θ_o = asin(r)` and the lobe's whole grazing
+   ramp lays itself along the disc radius. The image is rotationally symmetric,
+   so the profile is radially binned (0.5° bins) rather than read off a
+   scanline — which buys back the resolution `ds/dθ = cos θ` destroys near the
+   silhouette.
+
+   | θ (= θ_i = θ_o = θ_h) | fabric L | bare L | fabric / bare |
+   |---:|---:|---:|---:|
+   | 20° | 2.6979e-02 | 2.5435e-02 | 1.06 |
+   | 40° | 2.2727e-02 | 2.0950e-02 | 1.08 |
+   | 60° | 4.5484e-02 | 1.4005e-02 | **3.25** |
+   | 70° | 9.5600e-02 | 9.8411e-03 | **9.71** |
+   | 80° | 1.6104e-01 | 5.3777e-03 | **29.9** |
+   | 85° | 1.8478e-01 | 2.9296e-03 | **63.1** |
+   | 88° | 1.2598e-01 | 1.3333e-03 | **94.5** |
+
+   Halo onset — the smallest θ at which the fabric exceeds the bare substrate by
+   each factor: **1.10× at 41.75°, 1.50× at 51.25°, 2.00× at 55.25°, 3.00× at
+   59.25°**; peak **95.8×** at 88.25°.
+
+   **What this says for the LTC decision.** The lobe is emphatically alive and
+   its grazing ramp is enormous — 95× the substrate at 88° — so nothing is
+   missing in *magnitude*. What is missing is *where it lives*: the halo needs
+   BOTH the light and the eye near grazing (`cos θ_i + cos θ_o → 0` is the only
+   way to reach `θ_h → 90°` with both directions in the upper hemisphere), so a
+   single-scatter Charlie lobe contributes essentially nothing anywhere else,
+   including across a terminator. **An LTC / multiple-scattering sheen would be
+   expected to move configuration A, not configuration B** — it would fill the
+   41–53° falloff band and lift the 0.41 grazing-incidence ratio toward and past
+   1.0, while leaving B's already-large ramp roughly where it is. Phase 1's
+   distance from LTC is therefore bounded and now numbered: **on the terminator
+   it is a 2.4× deficit at θ_i = 88° and an 11.4° too-narrow falloff; on the
+   grazing halo it is not behind at all.** A scene-authoring consequence falls
+   straight out and is recorded in each showcase's header: light a fabric near
+   the VIEW PLANE, not from three-quarters, or the sheen does nothing.
+9b. **The cue-(b) measurement — MEASURED 2026-09-03, RECORDED. The verdict is
+    BRUSHED METAL, and the reason is not the one this gate was written to
+    suspect.** Render `fabric silk` and `fabric satin` on a draped subject under
+    the studio rig, `oidn_denoise FALSE`, and record whether an isotropic
+    Charlie sheen over an anisotropic GGX substrate reads as *satin* or as
+    *brushed metal* — i.e. whether the visible deficit is the missing
+    pattern-scale structure (cue b) or the missing multiple scattering (cue c,
+    gate 9). §10.2's first Phase-2 gate condition consumes this directly.
+
+    **Subject.** `scenes/FeatureBased/Materials/denim_and_satin_drape.RISEscene`
+    with `oidn_denoise FALSE` (the showcase default is on; a denoised frame is
+    not evidence about a highlight's structure, because the denoiser is free to
+    smear exactly what is being judged), plus a variant with the left half's
+    substrate swapped to silk's `alphax 0.30 / alphay 0.10`. Both at 1600×1000,
+    256 spp, PT, hard grazing key + back rim + dim dome.
+
+    **Re-measured 2026-09-03 after the weave-field correction, verdict
+    UNCHANGED and if anything sharper.** The evidence frames were first rendered
+    with cell-quantised weave fields, whose checkerboard was itself a visible
+    artefact competing with the judgement being made. Both frames were
+    regenerated from the corrected continuous-field scenes; the proxy numbers
+    below are **bit-identical** across the two rounds, because the proxy builds
+    its own sphere scenes with `weave_rotation 0.0` and never reads the showcase
+    painters at all — so it was never contaminated, and the visual half is now
+    made on a frame with no painted grid in it.
+
+    **Visual judgement: brushed metal.** Both halves show a broad, soft,
+    low-contrast highlight band running along the folds with a diffuse edge and
+    a sheen wash filling everything else. Silk (α_y 0.10) and satin (α_y 0.06)
+    are distinguishable but only just — the satin band is slightly tighter, not
+    qualitatively different. What real satin does and this does not: a *tight,
+    high-contrast, elongated float band that snaps on and off across a fold*,
+    with near-specular contrast against an almost black surround. What is on
+    screen instead is what an anisotropic microfacet lobe on a smooth curved
+    surface always looks like, which is a brushed or lacquered one. **There is
+    no pattern-scale structure of any kind**, and after the weave-field
+    correction there is not even a painted one to mistake for it: what is left
+    is a smooth anisotropic sheen on a smooth curved surface, which is what a
+    brushed or lacquered object looks like.
+
+    **The quantitative proxy, and the surprise in it.** Same harness,
+    `aniso` subcommand: a sphere under a light 25° off the view axis, the
+    substrate highlight's half-max extent measured ALONG the weave axis and
+    ACROSS it over the inner disc (r < 0.65), plus the outer annulus
+    (r ∈ [0.90, 0.995]) where the isotropic halo lives. 1024 spp, 768×768, EXR,
+    `oidn_denoise FALSE`.
+
+    | row | along (px) | across (px) | anisotropy ratio | rim annulus L |
+    |---|---:|---:|---:|---:|
+    | silk, bare `ggx_material` (0.30/0.10) | 158 | 51 | **3.098** | 1.663e-02 |
+    | silk, `fabric_material` over the same | 153 | 51 | **3.000** | 7.044e-02 |
+    | satin, bare `ggx_material` (0.34/0.06) | 182 | 31 | **5.871** | 1.673e-02 |
+    | satin, `fabric_material` over the same | 180 | 31 | **5.806** | 6.990e-02 |
+
+    **95 % (silk) and 99 % (satin) of the substrate's anisotropy survives the
+    sheen.** That refutes the hypothesis this gate was framed around. The
+    isotropic Charlie lobe is *not* washing the directional structure out — the
+    §9.5 delegation works, and works almost losslessly. What the sheen does add
+    is a **4.2× isotropic lift in the grazing annulus** on both presets, which
+    is the only thing competing with the directional structure, and it competes
+    only near the silhouette.
+
+    **Therefore the Phase-2 entry condition is met on cue (b), and gate 9 says
+    it is NOT met on cue (c).** The deficit is not amplitude, not the sheen
+    swamping the substrate, and not multiple scattering: it is that a single
+    elliptical GGX lobe with a painted rotation field has **no pattern scale**.
+    Real satin's look comes from discrete floats, each a short cylindrical
+    highlight with its own orientation and its own shadowing against its
+    neighbours; a per-point rotation of one continuous lobe cannot produce
+    them.
+
+    **And a discrete cell field cannot be used to fake them — measured, not
+    assumed.** The first pass at both showcase scenes built each weave from its
+    real §5.3 cell formula (`floor(u*N)`, `mod(i + k*j, 5)`). It renders as a
+    **blocky checkerboard**, because a cell field is piecewise constant and a
+    lobe as narrow as satin's (`alphay 0.06`) is either lit or dark on each side
+    of a cell boundary with nothing in between. Retuning the per-cell excursion
+    from 0.42 rad down to 0.11 rad produced a *fainter checkerboard of the same
+    size* — the discontinuity, not the amplitude, is the defect. Both scenes now
+    use a constant base angle plus a low-amplitude continuous fbm drift
+    (≤ 0.05 rad, `fw`-faded), which has no cell boundary at any zoom. The
+    general rule is written up as
+    [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §8.7.
+
+    So Phase 1 cannot reach cue (b) by authoring, only by modelling. **That is
+    precisely the structured two-yarn-family model §10 proposes, and this is the
+    evidence for it.**
+10. **Variance — MEASURED 2026-09-03. §9.4's argument survives contact with a
+    measurement; the normalised D-sampler is NOT justified.** PT sample counts
+    to a fixed noise floor at α ∈ {0.08, 0.5, 1.0}, per
     [variance-measurement](skills/variance-measurement.md). §9.4 accepts
     cosine-hemisphere sampling on the argument that MIS against NEE carries the
     variance; **that is an argument, not a measurement**, and this gate turns it
     into one. A large residual at α = 0.08 is what would justify building the
     normalised D-sampler.
-11. **Scenes.** `scenes/Tests/Materials/fabric_presets.RISEscene` (all seven
-    presets on one row, the `sheen.RISEscene` shape), plus
+
+    **The requested NEE on/off A/B could not be run as written, and the
+    substitute is stated rather than quietly swapped in.**
+    `pathtracing_pel_rasterizer` **exposes no NEE toggle** — its descriptor is
+    the base, pixel-filter, radiance-map, SMS, path-guiding, adaptive-sampling,
+    stability, transparent-shadow, optimal-MIS and progressive parameter blocks,
+    and none of them switches next-event estimation off (`choose_one_light` is a
+    legacy no-op). The A/B is therefore run as two LIGHTING configurations,
+    which is arguably the sharper experiment for what §9.4 actually claims:
+
+    - **DELTA** — one directional light. NEE is the *only* route to it (BSDF
+      sampling can never hit a delta light), so this row isolates the cosine
+      sampler's cost in the **indirect** bounces alone.
+    - **ENV** — a uniform radiance map, no directional light. Both routes live
+      and MIS combines them, so the mismatch between a cosine-hemisphere
+      proposal and a peaked Charlie lobe **is** exercised against the light.
+      This is the row §9.4's sentence is about.
+
+    K-trial protocol, K = 8 independent renders per cell at 64 spp — independent
+    because each is a separate `bin/rise` **process**, and `bin/rise`'s own
+    `main()` (`src/RISE/commandconsole.cpp:624`) calls
+    `srand( GetMilliseconds() )` at startup, so K sequential launches start
+    from K different clock states. (That is a property of the CLI entry point,
+    not of the renderer — which is exactly why gate 7's in-process test binary
+    cannot rely on it and sets its seed base explicitly instead.) Per-pixel
+    standard deviation across trials, averaged over the lit disc and normalized
+    by the per-pixel mean. Velvet sphere, 256×256, 32-bit EXR,
+    `oidn_denoise FALSE`. Harness:
+    [tools/fabric_sheen_measure.py](../tools/fabric_sheen_measure.py)
+    `variance`.
+
+    | config | sheen α | mean L | relative σ | spp for a 1 % relative-σ floor |
+    |---|---:|---:|---:|---:|
+    | DELTA | 0.08 | 1.5457e-02 | 0.00207 | **3** |
+    | DELTA | 0.50 | 3.2021e-02 | 0.00223 | **3** |
+    | DELTA | 1.00 | 4.1998e-02 | 0.00217 | **3** |
+    | ENV | 0.08 | 1.3800e-01 | 0.03378 | **730** |
+    | ENV | 0.50 | 2.6506e-01 | 0.03014 | **581** |
+    | ENV | 1.00 | 3.2593e-01 | 0.02482 | **394** |
+
+    (Sample count scales as 1/N, so the last column is
+    `64 · (relative σ / 0.01)²`.)
+
+    **Reading.** The DELTA rows are **flat in α to within their own noise** —
+    3 spp at every roughness — which is the direct statement that a tight sheen
+    lobe costs nothing when NEE is the route to the light, exactly as §9.4
+    predicted. The ENV rows do show a residual, and its shape is the right one:
+    **α = 0.08 costs 1.85× the samples of α = 1.00** (730 vs 394) to reach the
+    same floor. That is the cosine-hemisphere proposal failing to track the
+    lobe, and it is real.
+
+    **1.85× is not "large".** The pre-committed trigger for building the
+    normalised D-sampler was *a large residual at α = 0.08*; a factor under two,
+    on the one lighting configuration where BSDF sampling has to do the work,
+    against the several-fold speedups a bespoke sampler would have to earn back
+    against its own implementation, tabulation and Scatter↔Pdf-consistency
+    surface, does not clear it. **Recorded as: D-sampling follow-up NOT
+    triggered.** The number to beat, if it is ever revisited, is 730 spp at
+    α = 0.08 under a uniform env at a 1 % relative per-pixel noise floor.
+
+    Two caveats on the numbers themselves, so they are not over-read. The
+    absolute spp figures are specific to this subject, this film size and this
+    1 % floor — a 256×256 sphere is a small, smooth, entirely non-adversarial
+    scene, and the DELTA rows' 3 spp should be read as "below the measurement's
+    own resolution", not as a recommendation. What transfers is the **ratio**
+    across α within a configuration, and the qualitative gap between DELTA and
+    ENV.
+11. **Scenes — MET 2026-09-03, and exceeded.** `scenes/Tests/Materials/fabric_presets.RISEscene`
+    (all seven presets on one row, the `sheen.RISEscene` shape), plus
     `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` — §9.8, and the
-    scene the skill text points at.
+    scene the skill text points at. Shipped alongside them:
+    `scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene` (§9.1's own
+    bucket-A regression) and two more showcases,
+    `scenes/FeatureBased/Materials/fabric_swatches.RISEscene` (the seven presets
+    on draped swatches, matte to lustrous left to right) and
+    `denim_and_satin_drape.RISEscene` (the hero, and gate 9b's subject). Both
+    scene catalogues carry entries. Three authoring findings came out of
+    building them and are recorded where an author will hit them:
+
+    - **`curv`'s magnitude is a property of the SUBJECT, so §9.8's gains do not
+      transfer.** `curv` is `curvR` × the hit geometry's world bounding-box
+      diagonal, so on the cushion the flat panels already read 5–15 and §9.8's
+      `edge_wear 3.20` saturates `clamp(curv·edge_wear, 0, 1)` over the entire
+      convex body — the wear field then has nothing to pick out. 0.060 is the
+      value that reproduces the picture §9.8 describes on the shipped geometry
+      (0.035 on an earlier, flatter revision of it — which is the point: it is
+      fitted to the subject, not to the recipe). The recipe is unchanged;
+      the two gains are subject-fitted and stay `param`s. Recorded in the
+      scene's own header.
+    - **A cushion has to be flat-PANELLED for the wear field to work at all.**
+      `curv` on a plain dome is large and positive everywhere. The shipped
+      geometry is two flat-panelled superellipsoid halves welded around a thin
+      welt disc — which is also what a real piped cushion is.
+    - **Micro-relief belongs in a BUMP map, not a displacement.** `curv` comes
+      from the geometric normal field and is invariant under bump/normal maps,
+      so the nap creases add cloth relief without polluting the wear field a
+      displacement would have speckled. A second, separate finding on the same
+      subject: at showcase resolution a bump large enough to shape the gathers
+      also reads as *waxy smearing* where the SDF's cylindrical UV converges at
+      the pole. The fine pile texture belongs on `sheen_roughness` instead — a
+      high-frequency fbm there breaks the lobe's response without touching the
+      surface, and a smooth sheen over a smooth surface is exactly what makes a
+      velvet look lacquered.
+    - **A DISCRETE weave-cell field cannot drive an anisotropic lobe.** Both
+      weave scenes were first authored from §5.3's real cell formulas and both
+      rendered as checkerboards; the fix is a continuous field, and the rule is
+      written up as [SCENE_CONVENTIONS.md](SCENE_CONVENTIONS.md) §8.7. See gate
+      9b for the measurement.
+    - **A velvet needs a DOME, and a LOW rim.** Under directional lights alone
+      the cushion renders as dark glossy plastic — the look this material exists
+      to replace. Gate 9's own numbers say why: the halo needs the light *and*
+      the eye both near grazing, so only a dome supplies it everywhere on a
+      curved silhouette at once, and a rim at 30–55° elevation lands `N·L ≈ 0.6`
+      on a top-facing shoulder and produces no halo there at all. The shipped
+      rim is nearly horizontal (`0.55 0.08 -0.83`), which puts `N·L` within 0.03
+      of zero on exactly that shoulder.
 12. **Verb.** `tests/AgentMakeFabricTest.cpp` on `AgentAddWearTest.cpp`'s
     pattern, covering all five refusals and the non-destructive-wrap invariant
     (the original chunk byte-identical, exactly one `headVersion` bump).
@@ -2630,14 +3424,28 @@ follow-up talk's sampler, and says so.
 
 Three conditions, all of which must hold:
 
-1. **A named, measured deficit — produced by §9.9 exit-gate 9b, not assumed.**
-   That gate commits Phase 1 to the side-by-side of `fabric silk` and
-   `fabric satin` against reference photography; this condition is satisfied
-   when that comparison shows the isotropic-sheen-over-anisotropic-GGX
-   composition reads as *brushed metal* rather than as *satin* — i.e. that the missing pattern-scale
-   structure is the visible failure, not the missing multiple scattering. If
-   gate 9b instead points at the terminator (gate 9's cue-(c) number), the
-   correct Phase 2 is **LTC sheen**, which is a much smaller phase.
+1. **A named, measured deficit — produced by §9.9 exit-gate 9b, not assumed.
+   SATISFIED 2026-09-03.** That gate commits Phase 1 to the side-by-side of
+   `fabric silk` and `fabric satin`; this condition is satisfied when that
+   comparison shows the isotropic-sheen-over-anisotropic-GGX composition reads
+   as *brushed metal* rather than as *satin* — i.e. that the missing
+   pattern-scale structure is the visible failure, not the missing multiple
+   scattering. If gate 9b instead points at the terminator (gate 9's cue-(c)
+   number), the correct Phase 2 is **LTC sheen**, which is a much smaller phase.
+
+   **It read as brushed metal, and gate 9b's quantitative half rules out the
+   obvious alternative explanation**: 95 % (silk) / 99 % (satin) of the
+   substrate's highlight anisotropy survives being wrapped, so the isotropic
+   sheen is *not* washing the directional structure out and §9.5's delegation is
+   working almost losslessly. The deficit is the absence of a **pattern scale** —
+   a single elliptical lobe with a painted rotation field cannot make discrete
+   floats with their own orientation and mutual shadowing, and painting the
+   rotation harder produces a checkerboard rather than cloth (measured, §9.9
+   gate 9b). Note this does **not** discharge the LTC question: gate 9 measured a
+   genuine cue-(c) deficit on the terminator (a 2.4× darkening at θ_i = 88° and a
+   falloff 11.4° narrower than Lambert's). Both deficits are real; gate 9b's
+   condition is about which one is the *visible* failure on a structured fabric,
+   and on satin and silk it is this one.
 2. **Demand.** §13's census showing fabric authoring actually happens at a rate
    that justifies the cost, and that authors reach for structured fabrics
    (denim, satin) rather than only for velvet and cotton.
@@ -2928,11 +3736,25 @@ Applied to Phase 1's new files, following `coated_material`'s file split:
 | new file | kind | build touchpoints |
 |---|---|---|
 | `FabricMaterial.h` | header-only | 6 |
+| `FabricPresets.h` | header-only (the `fabric` enum's table) | 6 |
 | `FabricBRDF.{h,cpp}` | pair | 16 |
 | `FabricSPF.{h,cpp}` | pair | 16 |
-| `SheenDirectionalAlbedo.{h,cpp}` | pair (the `E` lookup) | 16 |
+| `SheenDirectionalAlbedo.{h,cpp}` | pair (the `E` / `Ē` lookups) | 16 |
 | `SheenDirectionalAlbedo_LUTData.cpp` | generated data | ~6 |
-| **subtotal** | **5-6 files** | **≈ 60** |
+| **subtotal** | **6-7 files** | **≈ 66** |
+
+The preset table is its own header rather than living inside
+`FabricMaterial.h` because **two** consumers read it and must never disagree:
+the chunk parser's `Finalize` seeds the chunk's own slots from it, and
+`Job::AddFabricMaterial` (and later `make_fabric`) reads the
+recommended-substrate half. §9.3's split table is a single struct.
+
+**The baked data file holds two tables, not three** (round 5): `E(α, cosθ)`
+and `Ē(α)`, 4.125 KB of floats. The `S(α, m)` kernel table that §9.2's
+earlier `min` form required is retired — the product form factors, so
+`hemisphericalAlbedo` closes in `Ē` alone. The generator's `ComputeS`,
+`BakeS` and `ClampedOneMinusME` are gone with it; `E` and `Ē` are
+byte-identical across the change.
 
 Plus edits to existing library files, which cost **no** build-project work:
 `Object.cpp` / `CSGObject.cpp` (verify the tangent branch; likely unchanged),
@@ -2952,10 +3774,11 @@ the sheen path), `src/Library/Parsers/README.md`.
 | Bake tool | 1 file, **0 build-project edits** | `tools/SheenDirectionalAlbedoGen.cpp`; the make `tools` target loops over `tools/` sources (`build/make/rise/Makefile:190-212`), on `HairMedullaProfileGen`'s precedent. **Verify the Windows/Xcode tool build separately** |
 | Verb plumbing surfaces | **8** | `AgentSession.h/.cpp`; `AgentMcpAdapter.cpp`; `AgentChatCodecs.cpp` (the hand-duplicated `kToolDefs`); `AgentChatLoop.cpp`; `AgentRpc.cpp`; `AgentLoopbackHttpServer.cpp`; `AgentDiagnostic.h`; `AgentEvalRunner.cpp` |
 | Verb emission complexity | **up to 4 minted chunks + N rebinds, one swap** | §9.7: `<name>_fabric_f0` (`uniformcolor_painter`, only for a GGX substrate — `rs` cannot be inline, [Job.cpp:4243-4244](../src/Library/Job.cpp)), `<name>_fabric_base`, the weave painter, `<name>_fabric`. `add_wetness`'s emitter mints at most 3 and never a *material*, so `AgentSession`'s share of the work is larger than the 8-surface count alone suggests — budget the substrate-minting and the three-name reflectance lookup (§9.7 step 0) as the two genuinely new pieces |
-| New test files | **2** | `tests/FabricMaterialChunkTest.cpp` (on `CoatedMaterialChunkTest.cpp`'s 873-line pattern), `tests/AgentMakeFabricTest.cpp` (on `AgentAddWearTest.cpp`'s ~248-`Check(` pattern). **Tests are glob-discovered — no build-file edits** |
+| New test files | **3** (was 2) | `tests/FabricMaterialChunkTest.cpp` (on `CoatedMaterialChunkTest.cpp`'s 873-line pattern), `tests/AgentMakeFabricTest.cpp` (on `AgentAddWearTest.cpp`'s ~248-`Check(` pattern), and — added during implementation — `tests/FabricRenderTest.cpp`, gate 7's own render-level suite on `HairRenderTest.cpp`'s harness. **Tests are glob-discovered — no build-file edits** |
 | Existing tests edited | **3** | `LayeredWhiteFurnaceTest.cpp` (new configs + the config-6 re-diagnosis), `SPFBSDFConsistencyTest.cpp` (fabric **and** sheen reciprocity entries), `SPFPdfConsistencyTest.cpp` |
-| Scenes | **2** | `scenes/Tests/Materials/fabric_presets.RISEscene`, `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` |
-| Docs | **4** | this file; `MATERIALS.md` §6/§8 catalogue; `SCENE_CONVENTIONS.md` (the weave-aliasing idiom of §5.5); `GLTF_IMPORT.md` §15 (sheen now imports) |
+| Scenes | **5** (was 2) | `scenes/Tests/Materials/fabric_presets.RISEscene`, `scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene` (§9.1's own bucket-A regression), and three showcases: `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` (§9.8), `fabric_swatches.RISEscene` (the seven presets on draped swatches), `denim_and_satin_drape.RISEscene` (the hero, and gate 9b's subject) |
+| Tools | **1** (new row) | `tools/fabric_sheen_measure.py` — the gate 9 / 9b / 10 measurement harness (EXR-reading, sphere-subject, K-trial), added during implementation because all three gates need the same renderer-driving + EXR-reading scaffolding and none of the existing `tools/` scripts read radiance |
+| Docs | **6** (was 4) | this file; `MATERIALS.md` §6/§8 catalogue; `SCENE_CONVENTIONS.md` §8.7 (the weave-aliasing idiom of §5.5); `GLTF_IMPORT.md` §15 (sheen now imports); and the two scene catalogues, `scenes/FeatureBased/README.md` and `scenes/Tests/README.md` |
 | Read-set edits | **2** | `materials-and-media-basics.md` (one parsing example), the materials skill hook-line rewrite |
 | Eval configs + committed results | **2 + 2** | pre/post runconfig + scenario, both runs' outputs committed under `evals/runs/` |
 
@@ -3004,12 +3827,27 @@ yet known (§10.1).
    long after the header comment was fixed, so **the descriptor text is part of
    the rename, not a follow-up to it** — and the same applies to the new
    `fabric_material` descriptor, which must not repeat the error.
-3. **Furnace config 6 is not independently diagnosed.** It is `kPostureBounded`
-   with a note about inherited dissipation, not config 7's measured
-   "substrate never reached." The code path is structurally identical, so the
-   same limitation almost certainly applies — but this document does not assert
-   it as measured. §9.9 gate 4 runs the probe. **The reports differed on this
-   point and the conservative reading is used.**
+3. **CLOSED 2026-09-02 (round 5) — furnace config 6 IS config 7's defect, now
+   measured.** The debt was that config 6 carried a note about "inherited
+   dissipation" rather than config 7's measured "substrate never reached", and
+   this document declined to assert the stronger reading without a
+   measurement. §9.9 gate 4 ran the probe and it came back unambiguous:
+   **`SheenSPF` emits a downward ray in 0 % of draws at both θ = 0 and
+   θ = 80**, identical to config 7's GGX top layer. `SheenSPF` is
+   reflection-only by construction — a cosine-hemisphere draw about the
+   ray-facing normal, gated below the geometric horizon
+   ([SheenSPF.cpp:73-99](../src/Library/Materials/SheenSPF.cpp)) — so
+   `CompositeSPF`'s random walk is never handed a downward ray and the
+   substrate is never reached. The corroborating number is in the furnace
+   table itself: config 6 reads `{0.0875, 0.1293, 0.2812, 0.5461}` and
+   config 2 (bare sheen, no substrate at all) reads
+   `{0.0875, 0.1283, 0.2810, 0.5453}` — the same curve to MC noise, which a
+   composite that reached its GGX-PBR base could not produce. **Configs 6 and
+   7 are one defect, not two**, and closing it needs a transmission path for
+   reflection-only top layers rather than a walk fix. `fabric_material` is
+   the shipped answer for the sheen case: it evaluates the combined closed
+   form instead of walking. Config 6's note now carries the measured
+   percentages, written at test time rather than remembered (§4.2).
 4. **Pipe split on the rotation angle — and it now bites harder, so schedule the
    alias in Phase 1.** GGX's `tangent_rotation` is Color-pipe by construction
    (an admitted oddball); `fabric_material`'s `weave_rotation` is Scalar-pipe.
@@ -3112,31 +3950,123 @@ yet known (§10.1).
     severity is measured rather than assumed. A `bitangentSign` companion on
     `vShadingTangent` — for meshes with mirrored UVs and *no* authored tangent —
     is the complete fix and is not in Phase 1's scope.
-16. **`fabric_material`'s `hemisphericalAlbedo` is not a free closed form, and
-    the recommended route is exact only for Lambertian.** §9.2. The
-    `min(1 − w(v), 1 − w(l))` scaling does not factor, so the substrate's own
-    override times something derived from `E` is *not* an identity. Route 1
-    bakes a second small 2D table `S(α, max3(sheenColor))` in the same generator
-    pass and pulls the substrate albedo out of the joint integral — which
-    assumes `f_base` and the grazing-peaked kernel are uncorrelated. That holds
-    exactly for a **constant** `f_base` (Lambertian) and **not** for Oren-Nayar
-    or GGX, both of which are genuinely joint in `l` and `v`; a toy integral put
-    the discrepancy at **~3 %**, growing with substrate roughness. So for the two
-    substrates this design most recommends as fabric bases, route 1 is an
-    **uncorrelated-response approximation of measured-but-not-yet-measured
-    error**. §9.9 gate 5(b) measures it against a brute-force quadrature.
-    **The construction-time-quadrature alternative an earlier draft proposed is
-    withdrawn** (2026-09-02): there is no hit context at material-construction
-    time, so such a quadrature could only evaluate *constant* parameters and
-    would silently produce a wrong answer for the spatially varying painters
-    this design is built around — a worse failure than the approximation it was
-    meant to replace, because it would look exact. The remaining options are
-    route 1 as recommended, a per-substrate-class 3D table `(α, m, substrate
-    roughness)` if gate 5(b) demands exactness, and route 2's strict upper bound
-    as the honest fallback. Until gate 5(b) reports, treat this slot as
-    **approximate with an unquantified bias** — a sharper statement than debt
-    5's, because here the approximation is identified and only its magnitude is
-    open.
+16. **REWRITTEN 2026-09-02 (round 5), and now a small, measured debt.**
+    `fabric_material`'s `hemisphericalAlbedo` **is** a closed form —
+    `substrate.hemisphericalAlbedo() · (1 − m·Ē) + sheenColor · Ē` — because
+    the product kernel factors where the `min` did not. The baked `S(α, m)`
+    table, the per-substrate-class 3D table (route 1b) and the `min(a,b) ≤
+    (a+b)/2` bound (route 2) are all **retired**; the
+    construction-time-quadrature route stays withdrawn for its own reason
+    (no hit context at construction, so it could only evaluate a substrate's
+    *constant* parameters and would look exact while being wrong wherever a
+    painter varies). §9.2.
+
+    What remains is only the **uncorrelated-response approximation**: pulling
+    the substrate's albedo out of the joint `(l, v)` integral requires
+    `f_base` to be constant in the integration variables, so route 1 is
+    **exact for Lambertian** and approximate for Oren-Nayar and GGX, both of
+    which are genuinely joint in `l` and `v`. §9.9 gate 5(b) measured it at
+    **≤ 0.64 %** against a pre-committed 5 % — smaller than this doc's
+    earlier ~3 % toy estimate, and 0 by construction on the Lambertian
+    control row. **The debt is therefore quantified and small**, which is a
+    materially different statement from the "unquantified bias" the earlier
+    text had to leave open.
+
+    The open item that survives is the **composition**: getting this quantity
+    right is what would let a `coated_material` sit *over* a
+    `fabric_material` — a waxed canvas — since this is exactly what the
+    coat's recycling denominator consumes. That composition is not built, and
+    `coated_material`'s substrate allowlist does not admit `fabric_material`
+    today.
+
+17. **NEW 2026-09-02 (round 5) — the substrate's own `hemisphericalAlbedo` is
+    the larger error, and it is not `fabric_material`'s to fix.** Gate 5(b)'s
+    end-to-end figure against a brute-force quadrature reaches **15.7 %**,
+    of which debt 16's factorisation accounts for at most 0.64 %. **All the
+    rest is inherited**: `OrenNayarBRDF::hemisphericalAlbedo` returns `Rd`
+    verbatim — its own header
+    ([OrenNayarBRDF.cpp:148-190](../src/Library/Materials/OrenNayarBRDF.cpp))
+    documents this as measured 12.6 % high at roughness 0.5 and up to 25.6 %
+    high at roughness 1, and mildly view-dependent besides — and GGX's
+    estimate runs high at grazing. Measured through the fabric wrapper:
+    Oren-Nayar σ = 0.6 reports **17.8 %** high, GGX α = 0.5 **6.8 %** high.
+
+    **Nothing in `fabric_material` can correct this**, and the round-4 remedy
+    it would have been mistaken for — a 3D `S(α, m, σ_base)` table — could
+    not have touched it either, because the error is the substrate
+    misreporting *its own* reflectance one layer down. **`coated_material`
+    already inherits the identical debt** through its Saunderson recycling
+    denominator `1/(1 − r_i·R)`, where an over-estimated `R` over-amplifies
+    the recycled term; OrenNayarBRDF's own note bounds that at roughly 20 %
+    of the recycled portion at extreme roughness.
+
+    The fix, if it is ever wanted, is a bake in `OrenNayarBRDF` (and a review
+    of GGX's estimator), validated on its own — *not* work in either layered
+    material. That file's note is explicit that no clean closed form exists
+    to correct it with, since the C3 and L2 terms add energy back in a way
+    that does not factor out of `Rd`. Recorded here so the next reader of
+    gate 5(b)'s output does not mistake a substrate debt for a fabric one.
+
+18. **NEW 2026-09-02 (round 6), FIGURES CORRECTED 2026-09-03 (round 8)
+    — fabric is energy-BOUNDED, not energy-CONSERVING.** Worst ρ over
+    the whole reachable domain (α ∈ [0.04, 1]) is **1.0167**, at
+    α ≈ 0.91 and n·v ≈ 0.0023 — *not* at the roughness floor, where
+    rounds 6–7 measured and reported 1.1 %. Per band: +0.64 % above
+    n·v = 0.0349, +1.67 % between there and μ₁, +0.67 % below μ₁. The
+    driver is that E at cos θ node 1 is **concave in α** with a peak near
+    0.9, so the log-α chord in the last (widest) cell under-reads the
+    true lobe by 0.0067. Closing it wants an α node near 0.9; closing
+    the middle band wants more cos θ nodes. Neither is an algebra change.
+    The original round-6 text follows. §9.2. Once the `E` table's cosθ
+    axis was warped toward grazing, the resolved Charlie lobe turned out
+    to exceed 1 (reaching 1.152) even above the roughness floor, inside a
+    narrow sliver at n·v < 0.03. A symmetric normaliser
+    `max(1, E(v), E(l))` on the sheen term and `Ê = min(E, 1)` on the
+    base keep ρ ≤ 1 there, but **exact conservation is knowingly given
+    up**: measured ρ within 0.06 % of 1 for n·v ≥ 0.0349 and within
+    +0.30 % at n·v = 0.005 (that last figure is the table's own
+    interpolation error between nodes, not the normaliser).
+
+    The residual is small and one-signed, and the sliver carries almost
+    no cosine-weighted energy — but it is a real departure from the
+    "ρ = 1 exactly, at ANY m and ANY α" claim round 5 made, and the
+    honest statement of the model is the two-regime one. Closing it
+    would mean either a finer warp / more cosθ nodes (the residual is
+    interpolation error, so it shrinks with resolution) or an
+    energy-compensated sheen lobe such as the LTC form §9.4 gates.
+    Neither is Phase-1 work. `tests/LayeredWhiteFurnaceTest.cpp`'s
+    grazing check is the guard, and it asserts the bounded posture
+    inside the sliver rather than pretending to the conserving one.
+
+19. **NEW 2026-09-03 (round 7) — FOUND, NOT FIXED: `CookTorranceSPF`'s
+    `PdfNM` reports a different mixture from `ScatterNM`.** Not a fabric
+    defect; surfaced by this phase's broadening of
+    `tests/SPFPdfConsistencyTest.cpp`'s spectral companion beyond the two
+    `fabric_material` rows it originally covered, and recorded here
+    because that broadening is this phase's work.
+
+    `CookTorranceSPF::ScatterNM` builds its 3-lobe selection weights
+    per-wavelength (`GetValueAtNM` on masking, `GuardedGetColorNM` on
+    diffuse and specular) while `PdfNM` is a bare `return Pdf(...)`,
+    which rebuilds them from the RGB `max3`. So the density stored on a
+    spectral sample is a different mixture from the one `PdfNM` reports
+    for that direction — the Scatter↔Pdf agreement MIS depends on.
+    **Measured `maxRelErr` 1.44e-4 at 30° and 1.55e-4 at 60°**, against
+    4e-16…1.6e-13 for every other row in that sweep (Lambertian,
+    Oren-Nayar, GGX iso/aniso, SSS, both coated rows, both fabric rows) —
+    eleven orders of magnitude out of family, so a real defect rather
+    than quadrature noise. The RGB pipe passes exactly, which is why
+    nothing caught it before the twins were compared.
+
+    **Bounded, not silenced**: the row stays in the sweep at a
+    row-specific `crossValTol = 1e-3` (~6× the measured worst) with its
+    true error printed unconditionally, so it cannot grow unnoticed.
+    Full write-up, both candidate fixes and the sibling-audit
+    instruction: [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+    §2.x. Note the choice is not obvious — `fabric_material` reads its
+    selection inputs achromatically on purpose (§9.2), while
+    `CoatedBRDF::ResolveCoat` reads per-wavelength, so there is
+    precedent both ways and whoever fixes it must say which and why.
 
 ---
 

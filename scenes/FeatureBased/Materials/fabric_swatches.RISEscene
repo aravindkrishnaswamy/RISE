@@ -1,0 +1,529 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           fabric_swatches.RISEscene                                                               #
+#   Description:    docs/CLOTH_FABRIC_DESIGN.md Phase 1: the SEVEN `fabric` presets on draped               #
+#                   swatches, read left to right, matte to lustrous:                                        #
+#                                                                                                           #
+#                     cotton   linen   wool   denim   silk   satin   velvet                                 #
+#                                                                                                           #
+#                   The companion to scenes/Tests/Materials/fabric_presets.RISEscene, which puts            #
+#                   the same seven on spheres.  A sphere is the right SHAPE for a controlled                #
+#                   regression -- one continuous normal sweep, nothing else changing -- and the             #
+#                   wrong shape for showing cloth, because cloth's whole appearance is what the             #
+#                   sheen does across a FOLD.  Each swatch here is the same hanging panel, so the           #
+#                   only thing that varies across the row is the material.                                  #
+#                                                                                                           #
+#                   EVERY PRESET IS PAIRED WITH ITS RECOMMENDED SUBSTRATE (9.3's split table).              #
+#                   The enum can seed `fabric_material`'s own slots and nothing else -- it holds a           #
+#                   reference to an already-constructed base material it can neither retype nor             #
+#                   re-parameterise -- so `fabric satin` over a Lambertian is chalk with a faint            #
+#                   sheen, and a warn-level diagnostic saying so.  Hand-authored here:                      #
+#                                                                                                           #
+#                     cotton / linen / wool  ->  orennayar_material, sigma 0.4 / 0.5 / 0.6                  #
+#                     denim / silk / satin   ->  ggx_material, alphax/alphay 0.34-0.22 /                    #
+#                                                0.30-0.10 / 0.34-0.06, `fresnel_mode schlick_f0`          #
+#                                                and `rs` bound to a 0.04 dielectric-F0 painter            #
+#                     velvet                 ->  a DARK lambertian_material (a pile, not a weave)          #
+#                                                                                                           #
+#                   Omitting `fresnel_mode schlick_f0` + `rs` on a GGX base is the single most              #
+#                   likely way to hand-author a silent black fabric: `ggx_material.fresnel_mode`            #
+#                   defaults to `conductor`, and `rs` is a required colour-PAINTER REFERENCE that           #
+#                   cannot be written inline, so a base carrying only `rd` and roughness renders            #
+#                   with no dielectric specular at all -- i.e. no highlight, which is the entire            #
+#                   reason GGX was chosen for those three.                                                  #
+#                                                                                                           #
+#                   WEAVE DIRECTION FOLLOWS THE SWATCH'S UV.  `weave_rotation` rotates the frame            #
+#                   the SUBSTRATE is evaluated in -- never the sheen lobe, which is strictly                #
+#                   isotropic in Phase 1 (Charlie's normaliser and its Lambda visibility are                #
+#                   isotropic-only fits, 9.5).  So the three anisotropic rows each get a painted            #
+#                   angle field over (u,v):                                                                 #
+#                                                                                                           #
+#                     denim  a 3/1 TWILL: 45 deg base with the wale's per-cell phase modulating it         #
+#                     silk   the WARP direction, running down the drape, with a slow slub drift            #
+#                     satin  the FLOAT direction, across the drape, with a 5-harness cell phase            #
+#                                                                                                           #
+#                   Each carries 5.5's ALIASING FADE, and that idiom is the reason those painters           #
+#                   are not two lines each.  A weave cell is sub-pixel over most of any real frame,         #
+#                   and every hard step (`floor`, `mod`, `step`) aliases because the procedural             #
+#                   painters have no footprint-aware filtering.  `fw` is the shading context's              #
+#                   filter width in the same units as the cell, and the correct limit of a weave            #
+#                   cell under minification is its MEAN -- so each field fades to its own base              #
+#                   angle as `fw` grows past the cell, and the anisotropy fades with it.  A woven           #
+#                   surface seen from far enough away IS isotropic.  `fw` is 0.0 where no footprint         #
+#                   is available (secondary bounces, non-mesh geometry) and `smoothstep(a,b,0)` is          #
+#                   0, so the fade correctly disengages there rather than snapping to the mean.             #
+#                                                                                                           #
+#                   LIGHTING is a hard raking key from the left plus a strong back-right rim, over          #
+#                   a dim dome used as LIGHT ONLY (`radiance_background FALSE` keeps the frame              #
+#                   black).  The dome is doing real work rather than filling in: the Charlie lobe's         #
+#                   mass sits at GRAZING half-vectors, and a dome is the only source that supplies          #
+#                   a grazing direction at every point of a folded surface at once.  Under                  #
+#                   directional lights alone the flanks of every fold go dead and the row reads as          #
+#                   seven painted panels.                                                                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-03                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+# The dome.  Declared first because the rasterizer chunk resolves `radiance_map`
+# by name at parse time.
+uniformcolor_painter
+{
+	name			studio_dome
+	color			0.115 0.122 0.140
+	colorspace		Rec709RGB_Linear
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				192
+	oidn_denoise		TRUE
+	radiance_map		studio_dome
+	radiance_scale		1.0
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/fabric_swatches
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			2240
+	height			640
+}
+
+pinhole_camera
+{
+	location			0 0.02 9.2
+	lookat				0 0.02 0
+	up					0 1 0
+	fov					15.2
+}
+
+#############################################################################################################
+# The swatch.  ONE geometry, instanced seven times, so the ONLY thing that
+# differs left to right is the material -- the whole point of a swatch card.
+#
+# A hanging panel: pinned along its top edge (`amp` goes to zero at v = 1) and
+# gathering into folds as it falls.  The fold count is an INTEGER number of
+# cycles in u, which costs nothing here and is what lets the same field be
+# butt-joined edge to edge in denim_and_satin_drape.RISEscene without a seam.
+#############################################################################################################
+
+expression_function2d
+{
+	name		drape_field
+	param		nu 2.0
+	def			amp   1.0 - smoothstep(0.20, 1.00, v)
+	def			f1    sin(tau*nu*u)
+	def			f2    0.32*sin(tau*2.0*nu*u + 1.1)
+	def			bulge 0.35*sin(pi*v)
+	expr		clamp( 0.5 + 0.30*amp*(f1 + f2) + 0.16*bulge, 0, 1 )
+}
+
+function2d_painter
+{
+	name		drape_disp
+	function2d	drape_field
+	scale		1.0
+	bias		0.0
+}
+
+clippedplane_geometry
+{
+	name		swatch_quad
+	pta			-0.50 -0.78 0
+	ptb			 0.50 -0.78 0
+	ptc			 0.50  0.78 0
+	ptd			-0.50  0.78 0
+	doublesided	TRUE
+}
+
+displaced_geometry
+{
+	name			swatch
+	base_geometry	swatch_quad
+	displacement	drape_disp
+	disp_scale		0.52
+	detail			224
+	uv_seam_fold	FALSE
+}
+
+#############################################################################################################
+# Painters -- dyes, sheen tints, and the shared dielectric F0
+#############################################################################################################
+
+# `rs` resolves BY NAME only, so `rs 0.04 0.04 0.04` would look up a painter with
+# that literal name, find none, and fail the material outright.
+uniformcolor_painter
+{
+	name				fabric_f0
+	color				0.04 0.04 0.04
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				dye_cotton
+	color				0.68 0.65 0.58
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_linen
+	color				0.72 0.66 0.50
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_wool
+	color				0.42 0.28 0.21
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_denim
+	color				0.085 0.135 0.255
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_silk
+	color				0.44 0.075 0.105
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_satin
+	color				0.075 0.235 0.205
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_velvet
+	color				0.155 0.070 0.205
+	colorspace			Rec709RGB_Linear
+}
+
+# Sheen tints.  `velvet` is deliberately left WITHOUT one, so the single preset
+# that seeds its own (dark) sheen colour is exercised through the omitted-slot
+# path rather than being overridden here.
+uniformcolor_painter
+{
+	name				sheen_neutral
+	color				0.94 0.93 0.91
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				sheen_warm
+	color				1.00 0.92 0.76
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				sheen_cool
+	color				0.82 0.86 0.95
+	colorspace			Rec709RGB_Linear
+}
+
+#############################################################################################################
+# Weave-direction fields.  Angles in RADIANS over the swatch's own surface.
+# Each is `scalar_painter { expression }` with `requireSingle` semantics -- a
+# per-channel triple would silently drop g and b on this slot.
+#
+# THESE ARE CONTINUOUS FIELDS, AND THAT IS A CORRECTION, NOT A STYLE CHOICE.
+# The first version of this scene built each weave from its real cell formula --
+# `floor(u*N)`, `mod(i + k*j, 5)` -- which is what 5.3 gives and what a weave
+# actually is.  It renders as a BLOCKY CHECKERBOARD.  The reason is specific and
+# worth stating: a discrete per-cell rotation applied to a TIGHT anisotropic GGX
+# lobe (satin is alphax 0.34 / alphay 0.06) flips that lobe on and off between
+# adjacent cells, so each cell is either lit or dark with nothing in between, and
+# the cell grid becomes the dominant visible structure at any amplitude large
+# enough to see.  Shrinking the per-cell excursion does not fix it -- it only
+# lowers the contrast of the checks.
+#
+# Phase 1 HAS NO PATTERN-SCALE STRUCTURE, by design (9.5, and measured by 9.9
+# gate 9b), and a cell-quantised rotation field is not a way to get one: it is a
+# way to draw a grid.  So each field here is a CONSTANT base angle -- the yarn
+# direction the preset is about -- plus a low-amplitude CONTINUOUS fbm drift
+# (<= 0.05 rad) that makes the highlight breathe along the fold instead of
+# sitting as one rigid band.  There is no cell boundary to see at any zoom.
+#
+# `drift` is sampled in WORLD space, so each swatch in the row gets its own
+# realisation rather than seven copies of one pattern.
+#
+# The `fw` fade of 5.5 is kept, on the DRIFT only: as the shading footprint grows
+# past the drift's finest octave the field relaxes to its constant base angle,
+# which is the correct minification limit.  `fbm` additionally fades its own
+# high octaves against `fw` internally, so the two mechanisms agree.  `fw` is 0.0
+# where no footprint is available (secondary bounces, non-mesh geometry) and
+# `smoothstep(a, b, 0)` is 0, so the fade disengages there rather than snapping.
+#############################################################################################################
+
+# DENIM -- the twill WALE runs at 45 degrees.  That constant angle is the
+# whole of denim's direction; the drift only keeps it from looking printed.
+scalar_painter
+{
+	name		weave_denim_twill
+	param		base        0.7853981633974483
+	param		drift_amp   0.045
+	param		drift_scale 7.0
+	param		grain_world 0.020
+	def			jitter vec3(4.7, 1.9, 8.3)
+	def			drift  drift_amp*fbm( P*drift_scale + jitter, 4, 0.5, 2.0 )
+	def			fade   smoothstep( grain_world*0.5, grain_world*2.0, fw )
+	expression	mix( base + drift, base, fade )
+}
+
+# SILK -- the WARP runs down the drape, a quarter turn off the twill.  Slightly
+# wider drift than the other two: silk's highlight is the one that should
+# visibly breathe along a fold.
+scalar_painter
+{
+	name		weave_silk_warp
+	param		base        1.5707963267948966
+	param		drift_amp   0.050
+	param		drift_scale 5.5
+	param		grain_world 0.020
+	def			jitter vec3(2.3, 6.1, 3.7)
+	def			drift  drift_amp*fbm( P*drift_scale + jitter, 4, 0.5, 2.0 )
+	def			fade   smoothstep( grain_world*0.5, grain_world*2.0, fw )
+	expression	mix( base + drift, base, fade )
+}
+
+# SATIN -- the FLOAT direction runs across the drape.  Tightest substrate ratio
+# in the table (alphax 0.34 / alphay 0.06), so it gets the SMALLEST drift: a
+# tight lobe converts a given angular wobble into the most visible change.
+scalar_painter
+{
+	name		weave_satin_float
+	param		base        0.0
+	param		drift_amp   0.030
+	param		drift_scale 8.0
+	param		grain_world 0.020
+	def			jitter vec3(8.9, 3.3, 1.1)
+	def			drift  drift_amp*fbm( P*drift_scale + jitter, 4, 0.5, 2.0 )
+	def			fade   smoothstep( grain_world*0.5, grain_world*2.0, fw )
+	expression	mix( base + drift, base, fade )
+}
+
+#############################################################################################################
+# Substrates -- 9.3's recommended class and parameters, per preset
+#############################################################################################################
+
+orennayar_material
+{
+	name				base_cotton
+	reflectance			dye_cotton
+	roughness			0.4
+}
+orennayar_material
+{
+	name				base_linen
+	reflectance			dye_linen
+	roughness			0.5
+}
+orennayar_material
+{
+	name				base_wool
+	reflectance			dye_wool
+	roughness			0.6
+}
+ggx_material
+{
+	name				base_denim
+	rd					dye_denim
+	rs					fabric_f0
+	alphax				0.34
+	alphay				0.22
+	fresnel_mode		schlick_f0
+}
+ggx_material
+{
+	name				base_silk
+	rd					dye_silk
+	rs					fabric_f0
+	alphax				0.30
+	alphay				0.10
+	fresnel_mode		schlick_f0
+}
+ggx_material
+{
+	name				base_satin
+	rd					dye_satin
+	rs					fabric_f0
+	alphax				0.34
+	alphay				0.06
+	fresnel_mode		schlick_f0
+}
+lambertian_material
+{
+	name				base_velvet
+	reflectance			dye_velvet
+}
+
+#############################################################################################################
+# The seven fabrics.  Only `fabric` + `base` (+ a tint, + a weave field where the
+# substrate is anisotropic) is authored; `sheen_roughness` comes from the preset
+# table -- cotton 0.55, linen 0.65, wool 0.75, denim 0.45, silk 0.20, satin 0.12,
+# velvet 0.08.
+#############################################################################################################
+
+fabric_material
+{
+	name				m_cotton
+	fabric				cotton
+	base				base_cotton
+	sheen_color			sheen_neutral
+}
+fabric_material
+{
+	name				m_linen
+	fabric				linen
+	base				base_linen
+	sheen_color			sheen_warm
+}
+fabric_material
+{
+	name				m_wool
+	fabric				wool
+	base				base_wool
+	sheen_color			sheen_warm
+}
+fabric_material
+{
+	name				m_denim
+	fabric				denim
+	base				base_denim
+	sheen_color			sheen_cool
+	weave_rotation		weave_denim_twill
+}
+fabric_material
+{
+	name				m_silk
+	fabric				silk
+	base				base_silk
+	sheen_color			sheen_warm
+	weave_rotation		weave_silk_warp
+}
+fabric_material
+{
+	name				m_satin
+	fabric				satin
+	base				base_satin
+	sheen_color			sheen_neutral
+	weave_rotation		weave_satin_float
+}
+
+# velvet: `sheen_color` deliberately OMITTED -- the preset's own dark sheen
+# colour binds, the only preset that sets one.
+fabric_material
+{
+	name				m_velvet
+	fabric				velvet
+	base				base_velvet
+}
+
+#############################################################################################################
+# Objects
+#############################################################################################################
+
+standard_object
+{
+	name		s_cotton
+	geometry	swatch
+	material	m_cotton
+	position	-3.36 0 0
+}
+standard_object
+{
+	name		s_linen
+	geometry	swatch
+	material	m_linen
+	position	-2.24 0 0
+}
+standard_object
+{
+	name		s_wool
+	geometry	swatch
+	material	m_wool
+	position	-1.12 0 0
+}
+standard_object
+{
+	name		s_denim
+	geometry	swatch
+	material	m_denim
+	position	0 0 0
+}
+standard_object
+{
+	name		s_silk
+	geometry	swatch
+	material	m_silk
+	position	1.12 0 0
+}
+standard_object
+{
+	name		s_satin
+	geometry	swatch
+	material	m_satin
+	position	2.24 0 0
+}
+standard_object
+{
+	name		s_velvet
+	geometry	swatch
+	material	m_velvet
+	position	3.36 0 0
+}
+
+#############################################################################################################
+# Lights.  `direction` is FROM the surface TO the light source, so a
+# camera-facing panel needs a POSITIVE Z component to be lit from the front
+# (docs/SCENE_CONVENTIONS.md 1).  Colours are LINEAR Rec.709 (the 2026-09-02
+# zero-area-light convention).
+#############################################################################################################
+
+# KEY: a hard rake from camera-left, almost in the panel plane, so it skims
+# across the fold flanks instead of flattening them.
+directional_light
+{
+	name		key
+	power		1.20
+	color		1.00 0.98 0.94
+	direction	-0.86 0.24 0.45
+}
+
+# RIM: back-right and low, the light that lifts the sheen off the right flank of
+# every fold.
+directional_light
+{
+	name		rim
+	power		1.20
+	color		0.90 0.94 1.00
+	direction	0.82 0.18 0.54
+}
+
+# A weak top fill so the pinned upper edge does not go black.
+directional_light
+{
+	name		fill
+	power		0.22
+	color		1.00 1.00 1.00
+	direction	0.05 0.90 0.43
+}

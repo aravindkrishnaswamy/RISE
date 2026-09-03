@@ -40,7 +40,40 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
 - `MLT/`: Metropolis light transport baselines and comparison renders
 - `Materials/`: isolated material demonstrations and regression scenes;
   `Materials/Enamel/` contains the silver, swatch, dome, SDF, and dimple
-  controls used to build the enamel-watch hero
+  controls used to build the enamel-watch hero.
+
+  Two scenes cover the `fabric_material` triad (docs/CLOTH_FABRIC_DESIGN.md
+  Phase 1).  `fabric_presets` is section 9.9 gate 11's own scene: all seven
+  `fabric` presets on one row of spheres (cotton, linen, denim, wool, silk,
+  satin, velvet), each paired with the SUBSTRATE its preset was calibrated
+  against — Oren-Nayar at sigma 0.4/0.5/0.6 for cotton/linen/wool, an
+  anisotropic `ggx_material` for denim/silk/satin, a dark Lambertian for
+  velvet — because the enum can seed the chunk's OWN slots and nothing else,
+  so `fabric satin` over a Lambertian is chalk with a faint sheen plus a
+  warn-level diagnostic.  The three GGX bases carry `fresnel_mode schlick_f0`
+  and an `rs` painter, and that is the scene's second job: without both,
+  `ggx_material` defaults to `conductor` with no specular reflectance bound
+  and renders BLACK, which is the single most likely way to hand-author a
+  silent black fabric.  `velvet` deliberately omits `sheen_color`, so the one
+  preset that seeds its own colour is exercised through the omitted-slot path.
+  Lighting is two near-grazing rims plus a soft front key, because the Charlie
+  lobe's mass sits at grazing half-vectors and a front-on key alone makes the
+  seven presets nearly indistinguishable.
+
+  `anisotropic_uv_tangent` is the UV-aligned shading tangent's own regression
+  (section 9.1): the tangent now tracks the surface's UV parameterisation
+  rather than whatever axis `OrthonormalBasis3D::CreateFromW` happened to pick
+  from the shading normal, which was incoherent wherever that normal varied.
+  Three subjects, one each: a Z-axis cylinder with `alphax << alphay` is the
+  primary demonstration (the highlight must wrap smoothly around the sweep;
+  a pre-fix render kinks where the arbitrary axis flips), a flat quad is a
+  parse/render smoke check for `ClippedPlaneGeometry`'s new derivative write
+  site, and an isotropic sphere is the control that proves the cylinder's wrap
+  is anisotropy and not a roughness artefact.  It is a bucket-A scene under
+  section 9.9 gate 3 — its appearance is EXPECTED to have moved, and the
+  guard is a smoke render plus CST-golden coverage, not pixel identity.  The
+  showcase companions to both live in
+  [../FeatureBased/Materials](../FeatureBased/README.md)
 - `Painters/`: painter- and texture-accessor-specific scenes
 - `Parser/`: parser-language regression scenes
 - `PathTracing/`: unidirectional PT baselines, path-guiding comparisons, and

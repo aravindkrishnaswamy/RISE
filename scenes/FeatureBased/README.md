@@ -139,7 +139,74 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   an authored-dry sheltered alcove (cross-object AO does not exist -- the dryness is
   an authored material choice, said so in-scene), a sunk flat puddle placed by the
   mirror reflection-point construction so it catches the lantern, and three housed
-  practicals -- every light in frame has fixture geometry)
+  practicals -- every light in frame has fixture geometry).
+
+  Three more are the `fabric_material` showcase suite (docs/CLOTH_FABRIC_DESIGN.md
+  Phase 1, section 9.9 gate 11).  All three are path traced, all three light the cloth
+  with a hard grazing key plus a back rim over a dim dome used as LIGHT ONLY
+  (`radiance_background FALSE`, so the frame stays black) -- and that rig is not a
+  style choice: the Charlie sheen lobe's mass sits at GRAZING half-vectors, so a
+  front-on key makes every preset look alike and a dome is the only source that
+  supplies a grazing direction at every point of a folded surface at once.
+
+  `velvet_cushion.RISEscene` is section 9.8's worked example as shipped: a buttoned
+  velvet cushion with a piped seam whose nap is WORN where the piping stands proud and
+  DUSTY where it tucks into the groove.  Its LIGHTING is derived from gate 9's
+  measurement rather than copied from the rig: the Charlie lobe peaks at a grazing
+  half vector, which needs the light AND the eye both near grazing, so the dome is
+  what wraps the fringe round the whole silhouette (directional lights alone render
+  this cushion as dark glossy plastic) and the rim is nearly HORIZONTAL -- at 30-55
+  degrees elevation `N.L` lands around 0.6 on a top-facing shoulder and no halo
+  appears there at all.  The two painters driving `sheen_color` and
+  `sheen_roughness` share a byte-identical `curv`+`occlusion()` prelude -- same params,
+  same seed, same defs, same order -- which section 9.8 states as a hard requirement
+  rather than a convention: let them drift and the tint and the roughness disagree
+  about where the seam is.  The body is an `sdf_geometry` (two flat-panelled
+  superellipsoid halves welded around a thin welt disc, with a crown tuft subtracted)
+  because `curv` is a true differential quantity on an implicit surface, so the wear
+  lands on the piping's real ridge line rather than on a tessellation artefact -- and
+  because a cushion has to be flat-PANELLED for the wear field to have anything to pick
+  out: `curv` on a plain dome is large and positive everywhere and saturates the mask.
+  The nap creases are a BUMP map, not a displacement, which is the point: `curv` comes
+  from the geometric normal field and is invariant under bump maps, so the creases add
+  cloth micro-relief without polluting the wear field.  Substrate is a dark
+  `lambertian_material`, not section 9.8's sketched Oren-Nayar, because the shipped
+  preset table calibrates `velvet` against Lambertian and warns for anything else.
+
+  `fabric_swatches.RISEscene` is the seven presets on draped swatches, read left to
+  right matte to lustrous -- cotton, linen, wool, denim, silk, satin, velvet -- one
+  shared displaced panel instanced seven times so the ONLY thing that varies across the
+  row is the material.  It is the drape companion to
+  [../Tests/Materials/fabric_presets](../Tests/README.md), which puts the same seven on
+  spheres: a sphere is the right shape for a controlled regression and the wrong shape
+  for showing cloth, whose whole appearance is what the sheen does across a fold.  Each
+  preset carries its recommended substrate, and the three anisotropic ones carry a
+  painted `weave_rotation` field -- denim the 45-degree twill wale, silk the warp
+  direction, satin the float direction across the drape.
+
+  Those fields are CONSTANT base angles plus a low-amplitude continuous fbm drift,
+  and that is a correction rather than a style choice. Built from their real
+  section 5.3 cell formulas (`floor(u*N)`, `mod(i + k*j, 5)`) they render as a
+  BLOCKY CHECKERBOARD: a cell field is piecewise constant, and a lobe as narrow as
+  satin's (`alphay 0.06`) is either lit or dark on each side of a cell boundary
+  with nothing in between. Retuning the per-cell excursion from 0.42 rad to
+  0.11 rad gave a fainter checkerboard of the same size -- the discontinuity, not
+  the amplitude, is the defect. Phase 1 has no pattern-scale structure by design
+  (section 9.5, measured by gate 9b) and a cell-quantised rotation is not a way to
+  acquire one. The general rule is written up as docs/SCENE_CONVENTIONS.md section
+  8.7; section 5.5's `fw` fade is kept on the drift, so the anisotropy relaxes to
+  the constant base angle under minification.
+
+  `denim_and_satin_drape.RISEscene` is the hero and the subject of section 9.9's
+  gate-9b measurement: one hanging cloth seamed down the middle, `fabric denim` left and
+  `fabric satin` right, differing in exactly the two things Phase 1 says a fabric is --
+  sheen roughness (0.45 vs 0.12) and substrate anisotropy ratio (1.5 vs 5.7) steered by
+  `weave_rotation`.  The sheen lobe is the same isotropic Charlie in both halves, so
+  every directional difference the eye sees is the substrate's elliptical GGX lobe being
+  steered by the weave field.  The two halves are two instances of one panel butt-joined
+  at x = 0 with an INTEGER number of fold cycles in u, so the join is C1-continuous and
+  every visible edge down the middle of the frame is a material boundary rather than a
+  modelling one -- which is what makes the halves comparable.
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

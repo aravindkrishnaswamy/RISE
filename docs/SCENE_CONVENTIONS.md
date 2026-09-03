@@ -952,6 +952,99 @@ invocations (e.g., `RISE-CLI --width A scene.RISEscene` then
 
 ---
 
+## 8.7. Don't drive an anisotropic lobe from a DISCRETE cell field
+
+A weave, a tile course, a brick bond — the natural way to author any of them is
+the cell formula: `floor(u*N)` for the cell index, `mod(i + k*j, 5)` for the
+phase. §5.3 of [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) gives exactly
+those formulas, and they are what a weave *is*.
+
+**Feeding one of them into an anisotropic material's direction slot produces a
+checkerboard, not a fabric.** This was measured while authoring
+`scenes/FeatureBased/Materials/fabric_swatches.RISEscene`, and it is worth
+stating as a rule because the failure looks like a bug in the renderer and is
+not one:
+
+- A `ggx_material` with `alphax 0.34 / alphay 0.06` — the `satin` preset's
+  substrate — has a highlight that is nearly a line. Rotating that lobe by even
+  a tenth of a radian moves the highlight completely off a given shading point.
+- A cell field is **piecewise constant**. So adjacent cells get lobes at
+  different angles, each cell is either lit or dark with nothing in between, and
+  the cell grid becomes the dominant visible structure in the frame.
+- **Shrinking the per-cell excursion does not fix it.** It lowers the contrast of
+  the checks and leaves the checks. The first pass used 0.42 rad and produced a
+  literal checkerboard; retuning to 0.11 rad produced a fainter checkerboard of
+  the same size. Only removing the discontinuity removed it.
+
+The tighter the anisotropy, the worse it is — which is exactly backwards from
+what an author wants, because the tight-anisotropy materials are the ones a
+weave direction is *for*.
+
+### Use a continuous field instead
+
+A constant base angle — the direction the material is actually about — plus a
+low-amplitude continuous drift:
+
+```
+scalar_painter
+{
+	name		weave_satin_float
+	param		base        0.0     # the float direction; a CONSTANT
+	param		drift_amp   0.030   # radians, and small: <= ~0.05
+	param		drift_scale 8.0     # world-space feature size = 1/scale
+	param		grain_world 0.020   # the drift's finest octave, in fw's units
+	def			jitter vec3(8.9, 3.3, 1.1)
+	def			drift  drift_amp*fbm( P*drift_scale + jitter, 4, 0.5, 2.0 )
+	def			fade   smoothstep( grain_world*0.5, grain_world*2.0, fw )
+	expression	mix( base + drift, base, fade )
+}
+```
+
+`fbm` is **signed with mean ~0**, so `drift_amp*fbm(...)` is already a zero-mean
+wobble about `base` — no remapping needed. Sampling at `P` (world space) rather
+than `(u,v)` means several objects sharing one painter each get their own
+realisation instead of looking copy-pasted, and it makes the field continuous
+across a seam between two abutting instances.
+
+Give the tightest lobe the *smallest* drift, not the largest: a narrow highlight
+converts a given angular wobble into the biggest visible change.
+
+### The `fw` fade, and what it is actually for
+
+`fw` is the shading footprint, in the same world units the field is written in,
+and it is a real always-available context variable. The `fade` above relaxes the
+drift to the constant base angle as the footprint outgrows the drift's finest
+octave — the correct minification limit, since a woven surface seen from far
+enough away *is* isotropic.
+
+Three things about it that are easy to get wrong:
+
+- **`grain_world` is the finest feature's size in WORLD units** — for the fbm
+  above, roughly `1 / (drift_scale · lacunarity^(octaves-1))`. It is the one
+  number to re-derive when the subject is rescaled.
+- **`fw` is `0.0` where no footprint is available** — secondary bounces, non-mesh
+  geometry — and `smoothstep(a, b, 0)` is `0`, so the fade correctly
+  *disengages* there rather than snapping to the mean.
+- **`fbm` already fades its own high octaves against `fw` internally.** The
+  explicit fade above is doing a different job — retiring the whole *anisotropy*,
+  not just the noise band — so the two are complementary, not redundant.
+
+For a field that genuinely must be discontinuous (a tile *colour*, a brick
+*albedo* — anything that is not steering a narrow lobe), the same `fw` fade is
+still the anti-aliasing tool, fading the cell value to the cell population's
+mean. The rule above is specifically about *direction* slots feeding anisotropic
+BSDFs.
+
+`stochastic_tile_painter` is the complementary tool for a different problem —
+visible repetition of a tiling source — so do not reach for it expecting
+anti-aliasing.
+
+Background: [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §5.5 for the
+footprint argument, §9.5 for why Phase-1 fabric has no pattern-scale structure
+to draw in the first place, and §9.9 gate 9b for the measurement.
+
+---
+
 ## 9. Sanity-check workflow
 
 When a new scene renders unexpectedly:

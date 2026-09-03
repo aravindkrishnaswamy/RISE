@@ -1,0 +1,333 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           denim_and_satin_drape.RISEscene                                                         #
+#   Description:    docs/CLOTH_FABRIC_DESIGN.md Phase 1's hero drape, and the subject of 9.9's              #
+#                   gate-9b measurement: ONE hanging cloth, seamed down the middle, `fabric denim`          #
+#                   on the left and `fabric satin` on the right, under a hard grazing key and a             #
+#                   back rim.                                                                               #
+#                                                                                                           #
+#                   THE COMPARISON IS THE SCENE.  Denim and satin share a preset column and differ          #
+#                   in exactly the two things Phase 1 says a fabric IS:                                     #
+#                                                                                                           #
+#                     sheen_roughness   denim 0.45 (broad, dusty fuzz)  vs  satin 0.12 (a tight             #
+#                                       float sheen that snaps on and off along a fold)                     #
+#                     substrate alphax / alphay                                                             #
+#                                       denim 0.34 / 0.22 (ratio 1.5)   vs  satin 0.34 / 0.06               #
+#                                       (ratio 5.7 -- the tightest in the table)                            #
+#                     weave_rotation    denim's 45-degree twill wale    vs  satin's across-the-drape        #
+#                                       float direction                                                     #
+#                                                                                                           #
+#                   The sheen lobe is the SAME isotropic Charlie in both halves; every directional          #
+#                   difference the eye sees is the substrate's elliptical GGX lobe being steered by          #
+#                   `weave_rotation` (9.5).  That is the claim this scene exists to expose, and             #
+#                   gate 9b is the honest recording of how far it gets: whether an isotropic sheen          #
+#                   over an anisotropic GGX base reads as SATIN, or as BRUSHED METAL.                       #
+#                                                                                                           #
+#                   THE SEAM IS INVISIBLE IN THE GEOMETRY, ON PURPOSE.  The two halves are two              #
+#                   instances of one displaced panel, butt-joined at x = 0.  The fold field is an           #
+#                   INTEGER number of cycles in u, so f(u=1) equals f(u=0) and their slopes match --         #
+#                   the join is C-1 continuous and the surface reads as a single piece of cloth.            #
+#                   Every visible edge down the middle of the frame is therefore a MATERIAL                 #
+#                   boundary, not a modelling one, which is what makes the two halves comparable.           #
+#                                                                                                           #
+#                   THE SUBSTRATES CARRY `fresnel_mode schlick_f0` AND AN `rs` PAINTER.  Without            #
+#                   both, `ggx_material` defaults to `conductor` with no specular reflectance bound,        #
+#                   which is a silently BLACK fabric -- no highlight at all, and the highlight is           #
+#                   the entire reason GGX is the substrate for these two presets.                           #
+#                                                                                                           #
+#                   `oidn_denoise` is the showcase default (on).  The gate-9b measurement renders           #
+#                   this scene with it OFF -- a denoised frame is not evidence about a highlight's          #
+#                   anisotropy, because the denoiser is free to smear exactly the structure being           #
+#                   measured.                                                                               #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-03                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+# Declared first: the rasterizer chunk resolves `radiance_map` by name at parse time.
+uniformcolor_painter
+{
+	name			studio_dome
+	color			0.095 0.100 0.118
+	colorspace		Rec709RGB_Linear
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				256
+	oidn_denoise		TRUE
+	radiance_map		studio_dome
+	radiance_scale		1.0
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/denim_and_satin_drape
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1600
+	height			1000
+}
+
+pinhole_camera
+{
+	location			0.20 0.06 7.30
+	lookat				0 -0.02 0
+	up					0 1 0
+	fov					25.0
+}
+
+#############################################################################################################
+# The cloth.  One panel geometry, instanced twice and butt-joined at x = 0.
+#
+# `nu` MUST stay an integer: it is what makes f(0,v) == f(1,v) with matching
+# slope, and therefore what makes the join seamless.  The u-phase is modulated by
+# a function of v alone, which wanders the folds vertically without breaking that
+# periodicity.
+#############################################################################################################
+
+expression_function2d
+{
+	name		drape_field
+	param		nu 3.0
+	def			amp   1.0 - smoothstep(0.16, 1.00, v)
+	def			ph    0.55*sin(tau*v) + 0.30*sin(tau*2.0*v + 1.9)
+	def			f1    sin(tau*nu*u + ph)
+	def			f2    0.26*sin(tau*2.0*nu*u + 1.3*ph + 1.1)
+	def			f3    0.12*sin(tau*3.0*nu*u + 2.4)
+	def			bulge 0.30*sin(pi*v)
+	expr		clamp( 0.5 + 0.30*amp*(f1 + f2 + f3) + 0.14*bulge, 0, 1 )
+}
+
+function2d_painter
+{
+	name		drape_disp
+	function2d	drape_field
+	scale		1.0
+	bias		0.0
+}
+
+clippedplane_geometry
+{
+	name		panel_quad
+	pta			-1.00 -1.30 0
+	ptb			 1.00 -1.30 0
+	ptc			 1.00  1.30 0
+	ptd			-1.00  1.30 0
+	doublesided	TRUE
+}
+
+displaced_geometry
+{
+	name			panel
+	base_geometry	panel_quad
+	displacement	drape_disp
+	disp_scale		0.60
+	detail			320
+	uv_seam_fold	FALSE
+}
+
+#############################################################################################################
+# Painters
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name				fabric_f0
+	color				0.04 0.04 0.04
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				dye_denim
+	color				0.070 0.115 0.230
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				dye_satin
+	color				0.310 0.115 0.045
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				sheen_denim
+	color				0.78 0.82 0.90
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				sheen_satin
+	color				0.98 0.94 0.88
+	colorspace			Rec709RGB_Linear
+}
+
+# --------------------------------------------------------------------------------------------------------
+# Weave-direction fields -- CONTINUOUS, and that is a correction rather than a
+# style choice.  Built from their real cell formulas (`floor(u*N)`,
+# `mod(i + k*j, 5)`) these render as a BLOCKY CHECKERBOARD: a discrete per-cell
+# rotation applied to a TIGHT anisotropic GGX lobe -- satin is alphax 0.34 /
+# alphay 0.06 -- flips that lobe on and off between adjacent cells, so each cell
+# is either lit or dark and the grid becomes the dominant visible structure.
+# Lowering the per-cell excursion only lowers the contrast of the checks; it does
+# not remove them.
+#
+# Phase 1 has NO pattern-scale structure by design (9.5, measured by 9.9 gate
+# 9b), and a cell-quantised rotation is not a way to acquire one -- it is a way
+# to draw a grid.  Each field below is therefore a CONSTANT base angle (the yarn
+# direction the preset is about) plus a low-amplitude CONTINUOUS fbm drift
+# (<= 0.05 rad), so the highlight breathes along the fold with no cell boundary
+# visible at any zoom.
+#
+# The drift is sampled in WORLD space, which also makes it continuous ACROSS THE
+# SEAM: the two halves are two instances at different world x sampling one
+# uninterrupted field, so the weave grain does not restart at the join any more
+# than the folds do.
+#
+# 5.5's `fw` fade is kept on the DRIFT: as the footprint grows past the drift's
+# finest octave the field relaxes to the constant base angle, the correct
+# minification limit.  `fbm` also fades its own high octaves against `fw`
+# internally, so the two agree.
+# --------------------------------------------------------------------------------------------------------
+
+# DENIM -- the twill wale, a constant 45 degrees.
+scalar_painter
+{
+	name		weave_denim_twill
+	param		base        0.7853981633974483
+	param		drift_amp   0.045
+	param		drift_scale 7.0
+	param		grain_world 0.020
+	def			jitter vec3(4.7, 1.9, 8.3)
+	def			drift  drift_amp*fbm( P*drift_scale + jitter, 4, 0.5, 2.0 )
+	def			fade   smoothstep( grain_world*0.5, grain_world*2.0, fw )
+	expression	mix( base + drift, base, fade )
+}
+
+# SATIN -- the float direction, across the drape.  Smallest drift of the two: a
+# tighter lobe turns a given angular wobble into a bigger visible change.
+scalar_painter
+{
+	name		weave_satin_float
+	param		base        0.0
+	param		drift_amp   0.030
+	param		drift_scale 8.0
+	param		grain_world 0.020
+	def			jitter vec3(8.9, 3.3, 1.1)
+	def			drift  drift_amp*fbm( P*drift_scale + jitter, 4, 0.5, 2.0 )
+	def			fade   smoothstep( grain_world*0.5, grain_world*2.0, fw )
+	expression	mix( base + drift, base, fade )
+}
+
+#############################################################################################################
+# Substrates and fabrics
+#############################################################################################################
+
+ggx_material
+{
+	name				base_denim
+	rd					dye_denim
+	rs					fabric_f0
+	alphax				0.34
+	alphay				0.22
+	fresnel_mode		schlick_f0
+}
+
+ggx_material
+{
+	name				base_satin
+	rd					dye_satin
+	rs					fabric_f0
+	alphax				0.34
+	alphay				0.06
+	fresnel_mode		schlick_f0
+}
+
+fabric_material
+{
+	name				m_denim
+	fabric				denim
+	base				base_denim
+	sheen_color			sheen_denim
+	weave_rotation		weave_denim_twill
+}
+
+fabric_material
+{
+	name				m_satin
+	fabric				satin
+	base				base_satin
+	sheen_color			sheen_satin
+	weave_rotation		weave_satin_float
+}
+
+#############################################################################################################
+# Objects -- the two halves, butt-joined at x = 0
+#############################################################################################################
+
+standard_object
+{
+	name		o_denim
+	geometry	panel
+	material	m_denim
+	position	-1.0 0 0
+}
+
+standard_object
+{
+	name		o_satin
+	geometry	panel
+	material	m_satin
+	position	1.0 0 0
+}
+
+#############################################################################################################
+# Lights.  `direction` is FROM the surface TO the light source
+# (docs/SCENE_CONVENTIONS.md 1); colours are LINEAR Rec.709.
+#############################################################################################################
+
+# KEY: a hard rake from camera-left, nearly in the cloth's own plane, so it skims
+# the fold flanks.  A frontal key flattens both halves into two coloured
+# rectangles and the comparison the scene exists for disappears.
+directional_light
+{
+	name		key
+	power		1.35
+	color		1.00 0.98 0.94
+	direction	-0.88 0.22 0.42
+}
+
+# RIM: back-right and low.
+directional_light
+{
+	name		rim
+	power		1.30
+	color		0.90 0.94 1.00
+	direction	0.84 0.16 0.52
+}
+
+directional_light
+{
+	name		fill
+	power		0.20
+	color		1.00 1.00 1.00
+	direction	0.06 0.90 0.43
+}

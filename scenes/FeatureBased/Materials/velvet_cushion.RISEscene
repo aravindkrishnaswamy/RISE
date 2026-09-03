@@ -1,0 +1,420 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           velvet_cushion.RISEscene                                                                #
+#   Description:    docs/CLOTH_FABRIC_DESIGN.md 9.8's worked example, AS SHIPPED -- the showcase            #
+#                   scene 9.9 gate 11 names.  A buttoned velvet cushion with a piped seam, whose            #
+#                   nap is WORN where the piping stands proud and DUSTY where it tucks into the             #
+#                   groove.                                                                                 #
+#                                                                                                           #
+#                   WHAT THIS SCENE PROVES, and why each piece is here:                                     #
+#                                                                                                           #
+#                   1. `fabric_material` seeds from ONE WORD.  `fabric velvet` supplies                     #
+#                      sheen_roughness 0.08 -- the tightest halo in the preset table -- and, as             #
+#                      the only preset that sets one, a dark sheen colour.  This scene OVERRIDES            #
+#                      both with painters, which is the other half of the contract: a slot the              #
+#                      author writes always wins over the preset.                                           #
+#                                                                                                           #
+#                   2. THE PRELUDE IS BYTE-IDENTICAL ACROSS THE TWO PAINTER CHUNKS.  9.8 states             #
+#                      this as a hard requirement, not a convention: `velvet_sheen_tint` and                #
+#                      `velvet_sheen_rough` share the same `param` block, the same `seed`, and the           #
+#                      same four `def` lines in the same order, so `wear_mask` and `crevice_mask`           #
+#                      agree POINTWISE.  Let them drift and the tint and the roughness disagree             #
+#                      about where the seam is -- a bloom with no crush, dust with no dulling.              #
+#                      add_wetness 6.1 makes the identical rule for its own mask prelude.                   #
+#                                                                                                           #
+#                   3. A SEAM IS `curv > 0`; A GROOVE IS `curv < 0` PLUS `occlusion`.  The piping            #
+#                      torus is welded to the cushion with a tight smin, so it stands proud (a               #
+#                      convex ridge -- worn nap, crushed and shinier) with a narrow re-entrant               #
+#                      channel on each side (concave AND genuinely enclosed -- dust, broader and            #
+#                      duller).  `curv` alone cannot tell that channel from a shallow dimple;                #
+#                      `occlusion(0.08)`'s cavity boost is exactly the split that distinction               #
+#                      needs, which is why 9.8 spends a bullet on it.                                       #
+#                                                                                                           #
+#                   4. THE GEOMETRY IS AN SDF ON PURPOSE.  `curv` is a true differential quantity           #
+#                      on an implicit surface rather than a per-vertex mesh approximation, so the           #
+#                      wear field lands on the real ridge line of the piping instead of on a                #
+#                      tessellation artefact.  Same reason docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md          #
+#                      builds its own showcase on `sdf_geometry`.                                           #
+#                                                                                                           #
+#                   SUBSTRATE: `lambertian_material`, not 9.8's sketch of an `orennayar_material`.           #
+#                   The shipped preset table calibrates `velvet` against a DARK Lambertian (velvet          #
+#                   is a pile, not a weave -- isotropic on purpose) and `Job::AddFabricMaterial`            #
+#                   emits a warn-level mismatch diagnostic naming that class for any other one.             #
+#                   9.8 predates the table; the table is what ships, so the table wins here.                #
+#                                                                                                           #
+#                   `edge_wear` AND `crevice_grime` ARE RETUNED FROM 9.8's LISTED VALUES, and the           #
+#                   reason is worth stating because it will recur on every new subject.  `curv` is          #
+#                   `curvR` multiplied by the hit geometry's world bounding-box DIAGONAL, so its            #
+#                   magnitude is a property of the SHAPE, not a universal scale.  On this cushion           #
+#                   the flat panels already read `curv` in the 5-15 range and the welt's edge far           #
+#                   above that -- so 9.8's `edge_wear 3.20` drives `clamp(curv*edge_wear, 0, 1)` to         #
+#                   1 over the ENTIRE convex body and the wear field has nothing left to pick out.          #
+#                   0.060 is the value at which the panels sit low, the rim rolls grade, and the            #
+#                   welt saturates, which is the picture 9.8 describes.  The recipe -- the shared           #
+#                   prelude, the two masks, the cavity boost -- is unchanged; only the two gains            #
+#                   are subject-fitted, and both remain `param`s with min/max/step so they stay             #
+#                   art-directable.  Re-derive them, do not copy them, for a subject of a                   #
+#                   different size or curvature.                                                            #
+#                                                                                                           #
+#                   LIGHTING -- the studio rig's key / fill / rim, with every placement DERIVED             #
+#                   from 9.9 gate 9's measurement rather than copied.  The Charlie lobe peaks at a          #
+#                   GRAZING half vector, and `cos(theta_i) + cos(theta_o) -> 0` with both                    #
+#                   directions in the upper hemisphere is only reachable when the light AND the eye         #
+#                   are both near grazing -- i.e. where the surface normal is perpendicular to BOTH         #
+#                   the view and the light.  Three consequences, each visible in the frame:                 #
+#                                                                                                           #
+#                     * THE DOME IS THE VELVET.  It is the only source that supplies a grazing              #
+#                       direction at every point of a curved silhouette at once, so it is what              #
+#                       wraps the fringe all the way round instead of leaving one bright sweep.             #
+#                       Directional lights alone render this cushion as dark glossy plastic --              #
+#                       that was the first draft, and it is exactly the look this material exists           #
+#                       to replace.  It is also the BACKGROUND (`radiance_background TRUE`): a              #
+#                       black void gave the silhouette nothing to be bright against.                        #
+#                     * THE RIM IS LOW, NOT HIGH.  On the top-far shoulder the normal points mostly         #
+#                       UP, so a rim at 30-55 degrees elevation lands N.L around 0.6 and produces no        #
+#                       halo there at all.  Dropping it to `0.55 0.08 -0.83` -- behind, and nearly          #
+#                       horizontal -- puts N.L within 0.03 of zero on exactly that shoulder, which          #
+#                       is what lights the top edge.                                                        #
+#                     * THE KEY IS WEAK.  A strong key at 45 degrees elevation puts the half vector         #
+#                       near 45 degrees, where the lobe is nowhere near its peak, and simply makes          #
+#                       the crown look shiny.  It is here for modelling, not for the sheen.                 #
+#                                                                                                           #
+#                   Gate 9's two configurations are the measurement behind all three: at 90 degrees         #
+#                   between light and view the sheen never rises above the bare Lambertian (0.90x           #
+#                   at 20 deg incidence, 0.41x at 88 deg), while on the camera axis it reaches 95x.         #
+#                   `direction` is the vector FROM the surface TO the light                                 #
+#                   (docs/SCENE_CONVENTIONS.md 1).                                                          #
+#                                                                                                           #
+#                   THE DYE IS DEEP, AND THAT IS LOAD-BEARING.  Velvet reads as a DARK matte mass           #
+#                   with a bright fringe; the fringe only exists as contrast.  Under a dome bright          #
+#                   enough to make the fringe, a mid-tone dye lifts the body until the two meet in          #
+#                   the middle and the whole thing goes pink and plastic.  The sheen tint's own             #
+#                   `base_r/g/b` is a much LIGHTER, less saturated version of the same hue -- the           #
+#                   nap catching light, which is genuinely far brighter than the pile it grows on.          #
+#                                                                                                           #
+#                   MICRO-RELIEF IS A LOW-AMPLITUDE BUMP PLUS A NAP BREAKUP ON THE ROUGHNESS.  The          #
+#                   bump (0.011) supplies the radial gathers a buttoned cushion pulls into its              #
+#                   crown; anything larger reads as lumps rather than cloth.  The fine nap texture          #
+#                   is instead a high-frequency fbm on `sheen_roughness` (`nap_scale` / `nap_amp`),         #
+#                   which breaks the lobe's response without touching the surface -- a smooth               #
+#                   sheen over a smooth surface is what makes a velvet look lacquered.                      #
+#                                                                                                           #
+#                   `oidn_denoise` is left at the showcase default (on).  The gate-9 / gate-10              #
+#                   measurement variants of this subject turn it OFF -- a denoised frame is not a           #
+#                   variance measurement.                                                                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-03                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+# The studio DOME.  A dim, slightly cool overhead-biased environment, used as
+# LIGHT only (`radiance_background FALSE` keeps the frame's background black, so
+# the cushion's own rim halo is the brightest thing in it).  This is not
+# decoration: the Charlie lobe's mass sits at GRAZING half-vectors, and a dome
+# is the only light that supplies a grazing direction at every point of a curved
+# silhouette at once.  Under three directional lights alone a velvet reads as
+# dark plastic with a highlight; under a dome it reads as nap.
+uniformcolor_painter
+{
+	name			studio_dome
+	color			0.34 0.355 0.405
+	colorspace		Rec709RGB_Linear
+}
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+# PT, because `curv` / `occlusion()` are fully correct only under unidirectional
+# path tracing -- BDPT/VCM/MLT evaluate them as their neutral fallback in parts
+# of their transport (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md).
+pathtracing_pel_rasterizer
+{
+	samples				128
+	oidn_denoise		TRUE
+	radiance_map		studio_dome
+	radiance_scale		1.0
+	radiance_background	TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/velvet_cushion
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1200
+	height			900
+}
+
+pinhole_camera
+{
+	location			3.55 1.46 4.98
+	lookat				0 0.00 0
+	up					0 1 0
+	fov					25.0
+}
+
+#############################################################################################################
+# The cushion.  superellipsoid (9.3's own "cushion/torso range" primitive) + a
+# piping torus welded on with a tight smin + a central button tuft subtracted
+# out of the crown.  The torus's ring radius equals the cushion's plan radius,
+# so the piping rides the equator exactly and the two re-entrant channels it
+# leaves are the grooves the wear prelude reads.
+#############################################################################################################
+
+sdf_geometry
+{
+	name			cushion
+	maxsteps		256
+	sampling_detail	96
+	#     prim            op        k      position       euler deg      scale            a     b     c      round
+	# Two flat-panelled superellipsoid halves welded around a thin welt disc.
+	# `e1` 0.35 is what makes the panels FLAT -- and flat is load-bearing here,
+	# not styling: `curv` on a plain dome is large and positive EVERYWHERE, so
+	# 9.8's `clamp(curv*edge_wear + ...)` would saturate over the whole cushion
+	# and the wear field would have nothing to pick out.  A real cushion is flat
+	# panels meeting at a piped rim, and that is exactly the geometry the
+	# prelude was written for.
+	part  superellipsoid  union     0      0  0.075 0     0 0 0          1.30 0.50 1.30   1.00  0.78  0.84   0
+	part  superellipsoid  smin      0.060  0 -0.075 0     0 0 0          1.30 0.50 1.30   1.00  0.78  0.84   0
+	# The welt (piping): a thin lens standing ~0.08 proud of the panels in plan,
+	# sharing their squarish e2 so it rides the rim exactly.  Its outer edge is
+	# the convex ridge (`curv > 0` -> worn nap); the two channels where it meets
+	# the panels are re-entrant (`curv < 0` AND enclosed -> dust).
+	part  superellipsoid  smin      0.080  0  0     0     0 0 0          1.375 0.052 1.375 1.00 0.90  0.84   0
+	# The button tuft: a shallow crown dimple.  A cavity `occlusion` can see and
+	# `curv` alone cannot distinguish from a gentle dip.
+	part  sphere          subtract  0.130  0.04  0.655 -0.03  0 0 0    1 1 1            0.285 0 0          0
+	# A shallow, OFF-CENTRE sag scooped out of the crown.  A stuffed cushion
+	# settles; a moulded one does not.  Kept well inside the welt's plan radius
+	# so it softens the top rather than denting the silhouette.
+	part  sphere          subtract  0.95   -0.30  1.62  0.22   0 0 0    1 1 1            1.30  0 0          0
+}
+
+# The floor: a plain matte sweep, dark enough that the cushion's own rim halo is
+# the brightest thing in frame.
+clippedplane_geometry
+{
+	name			floor
+	pta				-14 -0.58 -14
+ 	ptb				 14 -0.58 -14
+	ptc				 14 -0.58  14
+	ptd				-14 -0.58  14
+	doublesided		TRUE
+}
+
+#############################################################################################################
+# Painters
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name			velvet_dye
+	color			0.105 0.023 0.044
+	colorspace		Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name			floor_grey
+	color			0.090 0.086 0.082
+	colorspace		Rec709RGB_Linear
+}
+
+# --------------------------------------------------------------------------------------------------------
+# 9.8's WEAR PRELUDE, chunk 1 of 2: the sheen TINT.
+#
+# The dye lifted toward a desaturated bloom on the worn piping ridge, pushed
+# toward a dusty grey in the groove.  `base_r/g/b` carry the material's own
+# colour as params so the whole field stays retunable from the editor without
+# touching the expression.
+# --------------------------------------------------------------------------------------------------------
+expression_painter
+{
+	name			velvet_sheen_tint
+	param			edge_wear     0.060 min 0 max 0.4 step 0.005 label "Seam nap wear"
+	param			crevice_grime 0.90  min 0 max 4  step 0.02 label "Groove dust"
+	param			breakup_amp   0.30  min 0 max 1  step 0.01 label "Noise breakup"
+	param			breakup_scale 22.0  min 0.1 max 40 step 0.1 label "Wear noise scale"
+	param			grime_scale   9.0   min 0.1 max 40 step 0.1 label "Dust noise scale"
+	param			cavity_gain   1.40  min 0 max 4  step 0.05 label "Cavity deepening"
+	param			nap_scale     115.0 min 1 max 200 step 1 label "Nap breakup scale"
+	param			nap_amp       0.105 min 0 max 0.3 step 0.005 label "Nap breakup amount"
+	param			base_r 0.62
+	param			base_g 0.30
+	param			base_b 0.36
+	seed			11
+	def			jitter       vec3(seed, seed*1.7, seed*2.3)
+	def			wear_mask    clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			crevice_raw  clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			cavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))
+	def			crevice_mask clamp(crevice_raw*cavity_boost, 0, 1)
+	def			nap          fbm(P*nap_scale + jitter, 3, 0.55, 2.0)
+	def			base         vec3(base_r, base_g, base_b)
+	def			bloom        vec3(0.94, 0.84, 0.86)
+	def			dust         vec3(0.26, 0.23, 0.21)
+	expr			mix( mix( mix(base, bloom, wear_mask), dust, crevice_mask ), bloom, clamp(nap_amp*3.0*nap, 0, 1) )
+}
+
+# --------------------------------------------------------------------------------------------------------
+# 9.8's WEAR PRELUDE, chunk 2 of 2: the sheen ROUGHNESS, on the SAME masks.
+#
+# Everything above the final expression is byte-identical to the tint chunk --
+# same params, same values, same order, same seed, same defs.  That is the hard
+# requirement 9.8 states: crushed and shinier where the nap is worn flat on the
+# ridge, broader and duller where dust has collected.
+#
+# 0.04 is `fabric_material`'s hard floor on sheen alpha (below ~0.035 the baked
+# directional albedo exceeds 1 near grazing and the base-energy subtraction
+# would go negative), so `rough_crushed` sits exactly on it.
+# --------------------------------------------------------------------------------------------------------
+scalar_painter
+{
+	name			velvet_sheen_rough
+	param			edge_wear     0.060 min 0 max 0.4 step 0.005 label "Seam nap wear"
+	param			crevice_grime 0.90  min 0 max 4  step 0.02 label "Groove dust"
+	param			breakup_amp   0.30  min 0 max 1  step 0.01 label "Noise breakup"
+	param			breakup_scale 22.0  min 0.1 max 40 step 0.1 label "Wear noise scale"
+	param			grime_scale   9.0   min 0.1 max 40 step 0.1 label "Dust noise scale"
+	param			cavity_gain   1.40  min 0 max 4  step 0.05 label "Cavity deepening"
+	param			nap_scale     115.0 min 1 max 200 step 1 label "Nap breakup scale"
+	param			nap_amp       0.105 min 0 max 0.3 step 0.005 label "Nap breakup amount"
+	param			rough_pile    0.13  min 0.01 max 1 step 0.01 label "Undisturbed nap"
+	param			rough_crushed 0.06  min 0.01 max 1 step 0.01 label "Crushed nap"
+	param			rough_dusty   0.45  min 0.01 max 1 step 0.01 label "Dust-clogged nap"
+	seed			11
+	def			jitter       vec3(seed, seed*1.7, seed*2.3)
+	def			wear_mask    clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			crevice_raw  clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			cavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))
+	def			crevice_mask clamp(crevice_raw*cavity_boost, 0, 1)
+	def			nap          fbm(P*nap_scale + jitter, 3, 0.55, 2.0)
+	expression		clamp( mix( mix(rough_pile, rough_crushed, wear_mask), rough_dusty, crevice_mask ) + nap_amp*nap, 0.04, 1 )
+}
+
+#############################################################################################################
+# Materials
+#############################################################################################################
+
+lambertian_material
+{
+	name			velvet_base
+	reflectance		velvet_dye
+}
+
+lambertian_material
+{
+	name			m_floor
+	reflectance		floor_grey
+}
+
+# `fabric velvet` seeds every slot not written here; the two painters override
+# what they name.
+fabric_material
+{
+	name			m_velvet_cushion
+	fabric			velvet
+	base			velvet_base
+	sheen_color		velvet_sheen_tint
+	sheen_roughness	velvet_sheen_rough
+}
+
+#############################################################################################################
+# The nap creases.  A BUMP map, not a displacement, and that choice is the point:
+# `curv` and `curvR` come from the GEOMETRIC normal field, so they are invariant
+# under bump / normal maps (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md).  The
+# creases therefore add cloth micro-relief WITHOUT polluting the wear field that
+# the two painters above read -- the seam stays the seam.  Displacing instead
+# would fold the creases' own curvature into `curv` and speckle the wear mask.
+#
+# The SDF's texcoords are a cylindrical wrap (u = angle about local Y, v =
+# normalized height), so a field with a few dozen cycles in `u` gathers into
+# radial creases converging on the crown -- which is exactly how a buttoned
+# cushion gathers around its tuft.  The `pole` taper fades the field out at both
+# ends of `v`, where the wrap's own convergence would otherwise pinch the creases
+# into hard streaks.
+#############################################################################################################
+
+expression_function2d
+{
+	name	crease_field
+	param	nu 15.0
+	param	nv 5.0
+	def		w1   sin(tau*nu*u + 1.4*sin(tau*2.0*v))
+	def		w2   sin(tau*nv*v + 1.1*sin(tau*3.0*u))
+	def		w3   sin(tau*7.0*u + tau*3.0*v + 0.9)
+	def		pole smoothstep(0.04, 0.26, v) * (1.0 - smoothstep(0.64, 0.88, v))
+	expr	0.5 + 0.16*pole*(0.55*w1 + 0.30*w2 + 0.40*w3)
+}
+
+bumpmap_modifier
+{
+	name				creases
+	function			crease_field
+	scale				0.0075
+	windowsize			0.004
+	normalize_gradient	TRUE
+}
+
+#############################################################################################################
+# Objects
+#############################################################################################################
+
+standard_object
+{
+	name			o_cushion
+	geometry		cushion
+	material		m_velvet_cushion
+	modifier		creases
+	position		0 0 0
+}
+
+standard_object
+{
+	name			o_floor
+	geometry		floor
+	material		m_floor
+	position		0 0 0
+}
+
+#############################################################################################################
+# Lights -- the AgentSession.cpp material-look studio rig, key / fill / rim.
+# `direction` is FROM the surface TO the light; colours are LINEAR Rec.709.
+#############################################################################################################
+
+directional_light
+{
+	name		key
+	power		0.55
+	color		1.00 0.98 0.95
+	direction	-0.55 0.71 0.44
+}
+
+directional_light
+{
+	name		fill
+	power		0.15
+	color		0.90 0.94 1.00
+	direction	0.72 0.16 0.68
+}
+
+# The RIM: behind and above.  This is the light the Charlie lobe is built for --
+# remove it and the velvet reads as flat dark cloth.
+directional_light
+{
+	name		rim
+	power		3.00
+	color		1.00 0.95 0.88
+	direction	0.55 0.08 -0.83
+}
+
+
