@@ -1,0 +1,3301 @@
+# Woven Cloth and Fabric — Weave-Structured Appearance as an Authorable, Summonable Material System
+
+**Status:** **LOCKED FOR IMPLEMENTATION 2026-09-02 — Phase 1 in progress.** No
+code has landed yet; what is locked is the design. Four review rounds (one
+citation audit, one adversarial design pass, two fresh-eyes rounds) have been
+applied in full — see the Amended block below for what moved and why. Phase 1's
+scope, the `fabric_material` contract (§9.2), the chunk surface (§9.3), the
+sampling decision (§9.4), the anisotropy split (§9.5) and the exit gates (§9.9)
+are the implementation brief; changing any of them is an amendment to this
+document, not an implementation choice. Phases 2 and 3 remain gated and are
+**not** locked.
+**Date:** 2026-09-02.
+**Nature:** decision document + phased plan, in the mold of
+[UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) (survey →
+scored candidates against evidence → recommendation),
+[HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) (model survey → geometry survey →
+phased plan with exit gates), and
+[WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) (verb-first adoption ordering,
+observed-need-gated later phases).
+
+**Inputs.** A five-report survey of the tree and the literature, conducted this
+session. The RISE side: the sheen and layering stack
+([CharlieSheen.h](../src/Library/Materials/CharlieSheen.h),
+[SheenSPF.cpp](../src/Library/Materials/SheenSPF.cpp),
+[SheenBRDF.cpp](../src/Library/Materials/SheenBRDF.cpp),
+[CompositeMaterial.h](../src/Library/Materials/CompositeMaterial.h),
+[CompositeSPF.cpp](../src/Library/Materials/CompositeSPF.cpp),
+[CoatedMaterial.h](../src/Library/Materials/CoatedMaterial.h)); the tangent
+frame and geometry derivatives
+([Object.cpp](../src/Library/Objects/Object.cpp),
+[RayIntersectionGeometric.h](../src/Library/Intersection/RayIntersectionGeometric.h),
+[NormalMap.cpp](../src/Library/Modifiers/NormalMap.cpp),
+[TriangleMeshGeometryIndexedSpecializations.h](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h));
+the painter stack and expression VM
+([ExpressionEval.h](../src/Library/Painters/ExpressionEval.h),
+[ExpressionPainter.h](../src/Library/Painters/ExpressionPainter.h),
+[ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h),
+[ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp));
+the hair machinery available for reuse
+([HairBSDF.cpp](../src/Library/Materials/HairBSDF.cpp),
+[HairGeometry.h](../src/Library/Geometry/HairGeometry.h),
+[HairMedullaProfile.h](../src/Library/Materials/HairMedullaProfile.h));
+the verb, adoption and studio-rig surfaces
+([AgentMcpAdapter.cpp](../src/Library/Agent/AgentMcpAdapter.cpp),
+[AgentSession.cpp](../src/Library/Agent/AgentSession.cpp),
+`docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md`);
+the import status
+([GLTFSceneImporter.cpp](../src/Library/Importers/GLTFSceneImporter.cpp),
+[BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md)); and the
+energy/consistency harnesses
+([tests/LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp),
+[tests/SPFBSDFConsistencyTest.cpp](../tests/SPFBSDFConsistencyTest.cpp)).
+Contract conformance target: [MATERIALS.md](MATERIALS.md) §9. Spectral
+conformance: [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md)
+§7.1, [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md). External prior
+art enumerated in §17, each carrying the verification tag its survey assigned
+it.
+
+**On citation hygiene.** Literature claims below carry **[verified]** (confirmed
+this session against a primary or clearly authoritative secondary source) or
+**[from memory]** (stated from training knowledge, not re-checked). The survey
+corrected three author lists and one title that the original research brief had
+wrong; the corrected forms are used throughout and the corrections are recorded
+in §17. Where the reports disagreed with each other or with source, the source
+wins and the disagreement is stated in the text rather than resolved silently.
+
+**Amended 2026-09-02 (independent review).** A review round against the drafted
+document found two Phase-1 mechanisms that do not survive contact with the
+source, plus five narrower defects. Every finding was verified in the tree and
+accepted; the recommendation itself — a `fabric_material` triad built as
+`coated_material`'s sibling — is unchanged. What moved:
+
+- **The sheen lobe is now strictly isotropic.** The proposed *elliptical
+  Charlie* lobe is **withdrawn**: Charlie's `D` carries an isotropic-only
+  normaliser, its Λ masking term is a polynomial fit with no azimuthal
+  dependence, and a 2D `E(α, cosθ)` table cannot compensate a 4D anisotropic
+  albedo. Weave anisotropy is instead delivered by the **substrate**, with
+  `weave_rotation` rotating the basis `fabric_material` hands to the substrate's
+  `value`/`Scatter`/`Pdf`. `weave_anisotropy` and the `weave` enum are removed
+  from the Phase-1 chunk (§9.5; §9.3's preset table restructured; debt 5
+  rewritten as "anisotropic sheen deferred").
+- **Phase 1 keeps cosine-hemisphere sampling.** D-importance sampling of Charlie
+  has no VNDF, leaks below the horizon at grazing, and its rejection-corrected
+  density fails `SPFPdfConsistencyTest` Parts 2 and 3. Deferred behind a
+  sampler/pdf pair proven against those tests first (§9.4, §9.2, §12).
+- **The tangent write is conditional, prefers an authored `TANGENT`, and lands
+  at eight sites, not seven.** It is gated on `useUVJacobian` (both mesh sites
+  fall back to a per-triangle edge frame without it), prefers `ri.vTangent`
+  where `bHasTangent` is set (otherwise the mirrored-seam remedy this document
+  prescribes would have had no effect), and adds `clipped_plane_geometry`;
+  `bilinear_patch_geometry` is examined and deliberately excluded (§9.1).
+- **Presets cannot configure the substrate, so `make_fabric` mints one.** The
+  `fabric` enum seeds only `fabric_material`'s own slots; `Finalize` warns on a
+  substrate-class mismatch; the verb creates a matching base rather than
+  performing `add_wetness`'s pure wrap (§9.3, §9.7).
+- **The construction-time-quadrature route for `hemisphericalAlbedo` is
+  discarded** — no hit context exists at construction, so it could only evaluate
+  constant parameters (§9.2, debt 16).
+- Smaller: an omitted `sheen_color` resolves to white on the `coat_tint`
+  precedent rather than binding the built-in black painter (§9.3); the debt-2
+  rename must include the registry descriptor, which feeds auto-generated
+  schemas; debt 4 gains a Phase-1 checklist item to land GGX's Scalar-pipe
+  rotation alias in the same slice.
+
+A fourth round closed three remaining gaps in the amended text, after which the
+design was locked:
+
+- **A minted `ggx_material` substrate needs three fields the earlier text left
+  out, or it renders with no highlight at all.** `fresnel_mode` defaults to
+  `conductor` and `rs` (F0) is a required Color-painter reference, so a base
+  carrying only `rd`/`alphax`/`alphay` gets a black `rs` under conductor
+  Fresnel — no dielectric specular, i.e. no satin, silk or denim. And `rs`
+  **cannot be written inline**: `rd`/`rs` resolve by painter name only
+  ([Job.cpp:4243-4244](../src/Library/Job.cpp)), unlike `alphax`/`alphay`. So
+  `make_fabric` mints a fourth chunk, `<name>_fabric_f0`, and sets
+  `fresnel_mode schlick_f0` (§9.7 step 1; §9.3's † note; §14).
+- **The substrate-mismatch warning belongs in `Job::AddFabricMaterial`, not in
+  `Finalize`.** `IAsciiChunkParser::Finalize` sees only the substrate's *name*;
+  the runtime class is knowable only after the material manager resolves it,
+  which is exactly where `coated_material` runs its own check
+  ([Job.cpp:3265](../src/Library/Job.cpp)). `Finalize` forwards the preset name
+  and nothing more (§9.3).
+- **The reflectance slot is named three different things**, so `make_fabric`
+  looks up `reflectance`, then `base_color`, then `rd` in that order to find the
+  painter to re-home, and refuses under Refusal 4 if none is present (§9.7
+  step 0).
+
+---
+
+## 1. The question, and the answer
+
+A cushion, a curtain, a shirt, a sofa arm — these are the objects that make an
+interior render read as a photograph or as a product visualisation, and in RISE
+today they all read as rubber or as plastic. The reason is not that RISE lacks a
+sheen lobe. It has one, it is the right lobe, and it is correctly implemented.
+The reason is that there is **no way to put that lobe over a base material
+without losing the base**, no way to make a highlight follow a weave, and no way
+for an author — human or agent — to say the word "velvet" and get velvet.
+
+**The answer: RISE has the physics and none of the assembly. The assembly is one
+new material class of a shape RISE has already built once, plus a three-line
+geometry write repeated at eight call sites (~30 lines) that unlocks every
+anisotropic material in the tree, plus a preset
+surface that does not exist anywhere in RISE yet and therefore has to be
+invented rather than copied.**
+
+Five gaps, each verified in source:
+
+1. **The documented sheen-over-base idiom does not layer.** Three separate
+   places tell an author to write `composite_material(top = sheen_material,
+   bottom = <base>)`: the BRDF header
+   ([SheenBRDF.h:10-12](../src/Library/Materials/SheenBRDF.h)), the chunk
+   descriptor ("Designed as the top layer in a CompositeMaterial(top=sheen,
+   bottom=base) pairing",
+   [ChunkParserRegistry.cpp:4359](../src/Library/Parsers/ChunkParserRegistry.cpp)),
+   and [MATERIALS.md:262-263](MATERIALS.md). It does not work, for two
+   independent structural reasons. `CompositeMaterial::GetBSDF()` takes the
+   **top's BSDF whole** and never combines it with the bottom's
+   ([CompositeMaterial.h:56-63](../src/Library/Materials/CompositeMaterial.h)),
+   so NEE and every BDPT/VCM connection through the composite sees only the
+   sheen lobe. And `SheenSPF::Scatter` samples
+   `GeometricUtilities::CreateDiffuseVector` around the **outward** normal
+   ([SheenSPF.cpp:73-74](../src/Library/Materials/SheenSPF.cpp)) and emits
+   exactly one upward ray — so `CompositeSPF`'s walk, which hands the bottom
+   layer a ray only when the top emits a **downward** one
+   ([CompositeSPF.cpp:365-373](../src/Library/Materials/CompositeSPF.cpp)),
+   never reaches the substrate at all. This is the failure mode the furnace
+   suite already diagnosed and named for the structurally identical
+   GGX-over-PBR case: *"GGXSPF only ever emits UPWARD lobes … so a GGX top
+   layer never hands CompositeSPF's walk a downward ray and the SUBSTRATE IS
+   NEVER REACHED"*
+   ([LayeredWhiteFurnaceTest.cpp:756-761](../tests/LayeredWhiteFurnaceTest.cpp),
+   config 7, `kPostureKnownFailure`). **There is no working energy-correct
+   sheen-over-base recipe in RISE today.** This is the load-bearing gap.
+2. **`coated_material` cannot host sheen either.** Its substrate allowlist is a
+   hardcoded three-way `dynamic_cast` over `LambertianMaterial |
+   OrenNayarMaterial | GGXMaterial`
+   ([CoatedMaterial.h:130-132](../src/Library/Materials/CoatedMaterial.h)), and
+   its coat is a dielectric film with its own IOR and a Fresnel-based energy
+   split — not a Charlie lobe with an albedo-based one. The glTF importer says
+   so in its own words while skipping `KHR_materials_sheen`: *"a
+   retro-reflective grazing lobe, not a dielectric coat, so `coated_material`
+   genuinely cannot express it"*
+   ([GLTFSceneImporter.cpp:1449-1456](../src/Library/Importers/GLTFSceneImporter.cpp)).
+3. **A weave's warp direction does not get a UV-aligned tangent for free.** The
+   shading ONB's tangent on an ordinary mesh is whatever
+   `OrthonormalBasis3D::CreateFromW` picks from a canonical axis — the code says
+   so: *"the tangent (u-axis) is whatever CreateFromW picks from a canonical
+   axis — fine for isotropic materials, but an arbitrary base for anisotropic
+   GGX"* ([Object.cpp:688-690](../src/Library/Objects/Object.cpp), with the
+   `CreateFromW` fallback at [Object.cpp:772](../src/Library/Objects/Object.cpp)).
+   Triangle meshes **do** compute correct UV-derived `dpdu`/`dpdv` at
+   intersection
+   ([TriangleMeshGeometryIndexedSpecializations.h:458-462](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h)),
+   and `NormalMap::Modify` consumes them to build a local TBN
+   ([NormalMap.cpp:109-120](../src/Library/Modifiers/NormalMap.cpp)) — and then
+   throws that alignment away when it rebuilds the ONB, unless the hit carries
+   a geometry-supplied shading tangent
+   ([NormalMap.cpp:186-197](../src/Library/Modifiers/NormalMap.cpp)). GGX's
+   `tangent_rotation` painter therefore rotates from an arbitrary, per-triangle,
+   discontinuous base
+   ([ChunkParserRegistry.cpp:4193](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+   The general per-hit override that would fix this
+   (`bShadingTangentFromGeometry` + `vShadingTangent` + `bHasShadingTangent`,
+   [RayIntersectionGeometric.h:301-345](../src/Library/Intersection/RayIntersectionGeometric.h))
+   **already exists and is already consumed**
+   ([Object.cpp:699-772](../src/Library/Objects/Object.cpp),
+   `CSGObject.cpp:1234-1290`) — it simply has no mesh writer. Today only
+   `HairGeometry` (a real fibre tangent) and `SDFGeometry` heightfield mode (a
+   coherent world-X tangent) write it.
+4. **`sheen_material` is Charlie, is correct, and is unfinished.** The audit
+   result: `CharlieSheen::D` is the Estevez & Kulla exponentiated-sine NDF
+   ([CharlieSheen.h:39-50](../src/Library/Materials/CharlieSheen.h)) and
+   `CharlieSheen::V` is the full Λ-polynomial Charlie visibility, not the cheap
+   Neubelt closed form
+   ([CharlieSheen.h:71-112](../src/Library/Materials/CharlieSheen.h)). **The
+   "Charlie / Neubelt" naming in both the header comment
+   ([SheenBRDF.h:9,18](../src/Library/Materials/SheenBRDF.h)) and the chunk
+   description
+   ([ChunkParserRegistry.cpp:4358](../src/Library/Parsers/ChunkParserRegistry.cpp))
+   is stale** — the Neubelt form was replaced precisely because it blew up to
+   ρ ≈ 8.7 at grazing
+   ([LayeredWhiteFurnaceTest.cpp:661-670](../tests/LayeredWhiteFurnaceTest.cpp)).
+   What is missing: no directional-albedo compensation table (the furnace marks
+   sheen `kPostureBounded`, "ρ may legitimately fall below 1 … but must NOT
+   exceed 1", [LayeredWhiteFurnaceTest.cpp:667-669](../tests/LayeredWhiteFurnaceTest.cpp));
+   no D-importance sampling (cosine-hemisphere only,
+   [SheenSPF.cpp:73-74,116](../src/Library/Materials/SheenSPF.cpp)); no
+   reciprocity or SPF↔BSDF consistency coverage at all — the reciprocity sweep
+   lists only Lambertian, isotropic GGX and three Coated configurations
+   ([SPFBSDFConsistencyTest.cpp:1140-1146](../tests/SPFBSDFConsistencyTest.cpp)).
+5. **There is no fabric in the tree and no way to ask for one.** The only scene
+   using `sheen_material` is a three-sphere synthetic demo
+   (`scenes/Tests/Materials/sheen.RISEscene`); there is no cushion, curtain or
+   garment. glTF `KHR_materials_sheen` is warn-and-skip
+   ([GLTFSceneImporter.cpp:1456-1463](../src/Library/Importers/GLTFSceneImporter.cpp));
+   `KHR_materials_anisotropy` imports strength but drops per-texel rotation
+   ([GLTFSceneImporter.cpp:1300-1307](../src/Library/Importers/GLTFSceneImporter.cpp));
+   and the Blender bridge documents no sheen, anisotropic or velvet mapping at
+   all. **No material preset exists anywhere in RISE, and no `ValueKind::Enum`
+   anywhere seeds a multi-slot bundle** — every enum in the descriptor set is an
+   algorithm or mode selector (`oidn_quality`, `wrap_s`, Worley `metric`,
+   `blend_painter` `mode`). The closest prior art is
+   `ParameterDescriptor::presets`, a per-parameter list of named values for the
+   scene editor's quick-pick combo box
+   ([ChunkDescriptor.h:449](../src/Library/Parsers/ChunkDescriptor.h)), used on
+   `scene_options.scene_unit` ("Centimetres" → `0.01`) and on the two
+   `sensor_size` slots ("Full-frame 35mm" → `36`)
+   ([ChunkParserRegistry.cpp:4552-4563, 4612-4623, 4986-5003](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+   That is a **single-scalar editor affordance on one parameter**, not a name
+   that seeds several slots at once — which is the genuinely new part here.
+
+**Decision (recommended): a three-phase plan — foundations plus one material
+now, structured weave second and gated, yarn geometry third and probably
+declined.**
+
+- **Phase 1 — `fabric_material`, the UV-aligned tangent, and `make_fabric`.**
+  One new material triad in `coated_material`'s exact architectural shape (a
+  base-material reference with an allowlist, a closed-form `IBSDF::value` that
+  sums both lobes so NEE and BDPT see them, a real mixture `Pdf`), whose top
+  lobe is Charlie sheen with a **baked directional-albedo table** supplying both
+  the lobe's own energy compensation and the glTF-standard albedo-scaling of the
+  base. Plus the three-line geometry-side write of `vShadingTangent = dpdu`,
+  repeated at eight call sites (§9.1), which fixes anisotropy alignment for GGX,
+  Ward and Ashikhmin-Shirley at the same time. Plus a `weave_rotation` angle
+  field through `IScalarPainter` that rotates the frame handed to the
+  **substrate**, so an anisotropic base follows the weave — the sheen lobe
+  itself stays strictly isotropic (§9.5). Plus a **`fabric` enum** on the
+  chunk seeding named presets (cotton, denim, silk, satin, velvet, wool, linen)
+  and a **zero-required-argument `make_fabric` verb** that converts a flat
+  material into one.
+- **Phase 2 — structured weave, gated on Phase-1 evidence.** A weave-aware
+  two-yarn-family BSDF in the Zhu 2023 / Sadeghi 2013 surface lineage, with
+  transmission. Gated on a *named* Phase-1 deficit (satin floats and twill lines
+  that Phase 1 provably cannot produce) plus a census showing anyone asks.
+- **Phase 3 — yarn-level geometry for knits and fuzz halos. Observed-need gated
+  and likely to be declined**, on the [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md)
+  Phase-4 precedent. §11 carries the memory arithmetic that makes the case.
+
+**The order is not arbitrary.** Three separate causalities force it.
+
+*Adoption.* The measured laws
+(`docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §2)
+say advice converts approximately zero times — **C-ADV**: design notes naming
+`scalar_painter` fired up to 30×/session, were demonstrably read, and drove
+**0/24 lifetime adoptions**; voluntary tools **0/64**. **C-VERB**: when advice
+fails, ship a verb. Shipping a structured weave BSDF first and documenting how
+to reach it inverts the only causality RISE has actually measured. The verb and
+the preset enum have to land with the material, not after it.
+
+*Correctness.* The tangent fix is not cosmetic and not deferrable past the
+anisotropy work: a rotation field applied to a discontinuous per-triangle base
+produces a BSDF that is discontinuous across every triangle edge, which BDPT
+evaluates at both endpoints of every connection. Building weave anisotropy on
+today's base would be building on sand.
+
+*Evidence.* Phase 2 is the expensive phase and the literature is not settled
+enough to commit to it blind — the survey could confirm Zhu 2023's headline
+claims and its comparison against Irawan-Marschner, but **could not obtain its
+complete equation set or itemised parameter table** [R5's own flag]. Phase 2
+starts with a primary-source read, and that read is its own first gate.
+
+---
+
+## 2. The physics, distilled
+
+Cloth is not a surface. It is a woven or looped assembly of yarns, each a
+twisted bundle of plies, each ply a bundle of dyed filaments a few tens of
+microns across — a structure whose optical behaviour is genuinely volumetric,
+as the micro-CT literature established directly (Zhao et al. 2011 [verified];
+§3.7). Every model in §3 is an approximation to that, and the useful question is
+which *cues* each approximation delivers.
+
+Four cues make cloth read as cloth.
+
+**(a) Grazing brightening.** A fibre is a cylinder; light striking it near
+grazing forward-scatters strongly, and the aggregate over a field of near-normal
+fibres is a rim of brightness at the silhouette that no Lambertian or GGX
+surface produces. This is the single most diagnostic cue and it is the one
+`sheen_material` already delivers — the demo scene's own comment says the sphere
+"should look mostly dark in the centre with a bright halo around the silhouette"
+(`scenes/Tests/Materials/sheen.RISEscene:6-8`). Supplied by: any grazing-peaked
+microfacet distribution (Ashikhmin-Premoze-Shirley 2000, Charlie 2017) or any
+forward-peaked volumetric phase function (SGGX, SpongeCake).
+
+**(b) Weave-structured anisotropic highlights.** Satin's diagonal S-shaped
+sheen; denim's twill lines; taffeta's crossed warp/weft glint. These exist
+because the highlight geometry follows *which yarn is uppermost at each point*
+and *which way that yarn runs*. This cue needs three inputs no isotropic model
+has: a yarn direction, a weave-cell phase, and different behaviour for the two
+yarn families. Supplied by: Irawan-Marschner 2012 (an explicit pattern raster),
+Sadeghi 2013 (two statistical thread families, no raster), Montazeri 2020
+(plies), Zhu 2023 and Jin 2022 (surface-BSDF-cost anisotropy). **The entire
+sheen family — Charlie, LTC sheen, Ashikhmin velvet — is isotropic and
+structurally cannot produce it.**
+
+**(c) Soft terminator from multiple scattering.** Real cloth's light-to-shadow
+transition is wide and slightly desaturating, because light that enters a fibre
+bundle bounces many times before leaving. Base Charlie is single-scattering and
+does not model this; its albedo-scaling table is an energy patch, not a
+scattering term [verified via the Khronos glTF sheen spec text and Estevez &
+Kulla's own framing]. Explicitly targeted by Zeltner-Burley-Chiang 2022 (whose
+stated motivation is exactly that significant backward scattering was still
+missing after the albedo patch) and by SpongeCake's fitted multi-scatter lobe.
+Approximated non-physically by Filament's fixed `w = 0.5` wrap-diffuse
+[verified — Filament's own material docs].
+
+**(d) Silhouette fuzz.** The soft halo of stray fibres standing off a napped
+surface. **This is not a BSDF problem at all.** Every surface model in §3 —
+Irawan, Sadeghi, Charlie, LTC, Zhu — renders a hard geometric silhouette
+underneath its shading. Production closes this with geometry (fuzz cards, fin
+and shell passes) or with a volumetric shell. RISE's honest posture is to say so
+and route it to Phase 3, not to pretend a BSDF term supplies it.
+
+**No single model supplies all four.** The volumetric family gets (a), (c) and
+(d) but not (b) without an added orientation-map workflow; the Zhu/Jin
+surface-anisotropic lineage gets (a), (b) and partially (c) but not (d). That is
+the central tension this design resolves by phasing: Phase 1 buys (a) properly
+and (c) partially; Phase 2 buys (b); Phase 3 is the only route to (d) and is
+gated.
+
+**Spectral: dyed fibre vs RGB albedo.** RISE is a hero-wavelength spectral
+renderer with a per-wavelength NM twin on every material, so this deserves a
+straight answer. The literature's default posture is to fit RGB photographs and
+ship an RGB or loosely-spectral tint — *not* to derive from dye chemistry. Three
+tiers exist:
+
+| tier | what it is | who has it | RISE fit |
+|---|---|---|---|
+| **1. Per-wavelength absorption over a path length** | a real σ_a(λ) integrated by Beer-Lambert through the fibre | volumetric family only (SGGX-as-medium, SpongeCake, Zhao's CT volumes) — architecturally, though none ships dye spectra by default | This is what RISE's own hair BSDF already does (`HairBSDF.h`'s three colour tiers, incl. artist colour inverted through Chiang's σ_a fit at [HairBSDF.cpp:731](../src/Library/Materials/HairBSDF.cpp)) |
+| **2. Native per-λ reflectance spectra, no transport integral** | `kd`/`ks` authored as spectra | Irawan (natively spectral per yarn type), Sadeghi's per-thread tints | Reachable today: `spectral_painter` on a colour slot, read via `GetColorNM` |
+| **3. RGB tint on a physically agnostic lobe** | `sheenColor` multiplied onto the lobe | Charlie, LTC sheen, Ashikhmin velvet | What `sheen_material` does today |
+
+**Recommendation: Phase 1 stays at tier 2 and says so.** A `fabric_material`
+whose dye slot is an ordinary colour painter routed through `GuardedGetColorNM`
+gets tier-2 spectral fidelity for free and is exactly conformant with
+[SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.1's
+two-line rule — reflectance goes through `GetColorNM`, never `GetRadianceNM`;
+the white guard keeps an authored-white dye a bit-exact no-op on the NM path.
+Tier 1 requires a fibre-radius/path-length concept the sheen family does not
+have; it is a genuine RISE-specific opportunity (RISE is one of very few
+renderers with both a spectral hero path *and* a shipped σ_a fibre model to
+borrow from) but it is Phase-2-or-later work and depends on the yarn model, not
+the sheen lobe. §16 lists it as a non-goal for Phase 1 rather than a debt.
+
+---
+
+## 3. Cloth appearance models — survey and scoring
+
+### 3.1 Irawan & Marschner 2012 — *Specular Reflection from Woven Cloth*
+
+[verified: Piti Irawan and Steve Marschner, *ACM TOG* 31(1), Article 11, Feb
+2012, DOI 10.1145/2077341.2077352.]
+
+A procedural closed-form BRDF over a 2D tiling of a **weave pattern matrix**: at
+each cell the pattern says which yarn family is on top, and the yarn segment is
+shaded as a bent, twisted cylinder of parallel filaments — a fibre-cross-section
+specular term plus a diffuse stand-in for internal scattering. Neighbouring
+points share a segment, which is what produces cloth's *correlated* glints. This
+is the model that invented cue (b) in renderable form.
+
+**Parameters**, counted from the Mitsuba 0.5/0.6 `irawan` plugin, the de facto
+reference implementation [verified via source]: **~8 pattern-level fields + ~10
+per-yarn-type fields + the pattern raster**. Pattern: `alpha`, `beta`, `ss`,
+`hWidth`, `warpArea`, `weftArea`, `tileWidth`, `tileHeight`, four
+`d*UmaxOverD*` noise derivatives (whose whole job is to break the periodic
+look), `fineness`, `period`, `pattern`, `yarns`. Per yarn type: `type`, `psi`
+(fibre twist), `umax` (normal inclination across the yarn's width), `kappa`
+(spine curvature), `width`, `length`, `centerU`, `centerV`, `kd`, `ks` — the
+last two full spectra, which makes the model natively spectral. Irawan fit these
+to photographs for a library of canonical presets; essentially every production
+use is "pick a preset, tweak `kd`/`ks`."
+
+**Fatal for RISE as an implementation target: no published importance sampler.**
+Mitsuba's plugin samples it as a cosine-weighted diffuse lobe with the specular
+contribution evaluated on top, leaning on NEE [from memory, consistent with the
+plugin's documented behaviour]. Survivable in a NEE-dominant unidirectional
+renderer; not survivable in RISE, where every lobe needs a real `Pdf` for BDPT
+connections and VCM merges ([MATERIALS.md](MATERIALS.md) §9 item 2, enforced by
+[SPFPdfConsistencyTest.cpp](../tests/SPFPdfConsistencyTest.cpp)). Energy
+conservation is design intent, not furnace-exact [from memory — the paper's own
+claims]. No adoption in any mainstream commercial shading system.
+
+**Verdict: the fidelity baseline the whole field compares against, and Phase 2's
+validation target. Not the implementation target.**
+
+### 3.2 Sadeghi, Bisker, De Deken & Jensen 2013 — microcylinder
+
+[verified: *ACM TOG* 32(2), Article 14, 2013, DOI 10.1145/2451236.2451240.
+**The survey corrected an author list the research brief had wrong** —
+"Bisceglio, Joshi, Bloom" appear on no such paper.]
+
+Each *thread* is a microcylinder whose cross-sectional normal distribution is fit
+to measured BRDF data. The response factors hair-BSDF-style into a
+**longitudinal** term (highlight width along the thread axis, a Gaussian in the
+difference of longitudinal angles — Marschner's M) and an **azimuthal** term
+(highlight shape around the circumference, and the core-vs-glancing colour shift
+that gives shot silk its travel). Two thread families blend per shading point
+with a shadowing/masking term darkening the valleys between them.
+
+**~5 physically-motivated scalars per thread appearance class** — `eta`, `kd`,
+`gamma_s` (surface-lobe variance), `gamma_v` (volume-lobe variance, the
+multiple-scattering stand-in), and a longitudinal shift analogous to hair's
+cuticle tilt — plus two tangent directions and their weave fractions. Most
+fabrics need one or two classes.
+
+**Architecturally the closest model in the survey to machinery RISE already
+has.** Its longitudinal/azimuthal factorisation is the one `HairBSDF.cpp`
+implements, and the pieces are already stateless free functions in an anonymous
+namespace: `Mp` at [HairBSDF.cpp:174](../src/Library/Materials/HairBSDF.cpp),
+`TrimmedLogistic` at [:208](../src/Library/Materials/HairBSDF.cpp),
+`FrDielectric` at [:239](../src/Library/Materials/HairBSDF.cpp), `MakeGeom` at
+[:268](../src/Library/Materials/HairBSDF.cpp), `ComputeAp` at
+[:472](../src/Library/Materials/HairBSDF.cpp) — none touching
+`HairScatteringBase`'s painter state, so a header promotion is mechanical. Its
+two-tangent requirement is exactly what §1 gap 3's fix supplies.
+
+Weaknesses: no importance sampler in the base paper (a SIGGRAPH Asia 2013 talk,
+*Importance Sampling for a Microcylinder Based Cloth BSDF*, exists to fill the
+gap [verified as existing, not read]); no weave-pattern raster, so satin floats
+and twill lines need an external texture; published presets are RGB-photograph
+fits needing re-fit for genuine spectral work. Its validated fabric roster is
+**medium confidence** — not itemisable from the abstract alone.
+
+**Verdict: the reference architecture for Phase 2's per-thread lobe math.**
+
+### 3.3 The sheen family: Neubelt 2013 → Estevez & Kulla 2017 → Zeltner 2022
+
+**Neubelt & Pettineo 2013** [verified: *Crafting a Next-Gen Material Pipeline
+for The Order: 1886*, SIGGRAPH 2013 PBS course notes]. Contributed the cheap
+visibility approximation `V = 1/(4·(N·L + N·V − N·L·N·V))` everything downstream
+still cites [from memory of the widely-reproduced form, cross-checked against
+the Khronos glTF spec text this session].
+
+**Estevez & Kulla 2017 — "Charlie"** [verified: Sony Pictures Imageworks,
+SIGGRAPH 2017 PBS course notes]. The exponentiated-sine NDF, confirmed verbatim
+against the Khronos glTF spec [verified]:
+
+```
+alpha_g = sheenRoughness^2
+inv_r   = 1 / alpha_g
+D_Charlie = (2 + inv_r) * (1 - (N·H)^2)^(inv_r/2) / (2*pi)
+```
+
+paired with either Neubelt's V or a fuller Λ-based Charlie masking function.
+The paper also proposes a **directional-albedo table `E(θ)`** and the
+albedo-scaling composition [verified — glTF spec text]:
+
+```
+sheen_albedo_scaling = min( 1 - max3(sheenColor)*E(V·N),
+                            1 - max3(sheenColor)*E(L·N) )
+result = sheenColor * sheen_BRDF + base_material * sheen_albedo_scaling
+```
+
+**Two authorable parameters** — the reason for universal adoption: Filament
+(Charlie D + Neubelt V [verified — Google's own material docs]), Blender's Sheen
+BSDF, glTF 2.0 `KHR_materials_sheen` [verified], Enterprise PBR [verified], and
+OpenPBR's "fuzz" slab, moved to the top of its stack so it can sit over both
+base and coat [verified — OpenPBR spec text; the "descendant" framing is
+editorial, not independently sourced]. **RISE already has this, with the better
+visibility term** — §4.1.
+
+**Zeltner, Burley & Chiang 2022 — LTC sheen** [verified: *Practical
+Multiple-Scattering Sheen Using Linearly Transformed Cosines*, ACM SIGGRAPH 2022
+Talks, DOI 10.1145/3532836.3536240; reference implementation at
+github.com/tizian/ltc-sheen]. Reframes sheen as a thin volumetric layer of
+near-normally-oriented fibres, path-traces that layer for reference, and fits a
+Linearly Transformed Cosine to the result over roughness × incidence.
+Consequences: **energy-conserving by construction** (the fit's target already
+integrates correctly), **exact closed-form sampling** (an LTC is a linear
+transform of a cosine lobe), and **multiple scattering captured directly**
+rather than patched — closing cue (c), which is the paper's stated motivation.
+Same two art-facing parameters; billed as a drop-in for Charlie. Blender 4.0's
+Principled sheen switched to it [from memory — widely reported around the 4.0
+release; medium confidence, not re-checked against the changelog].
+
+**Whole-family weakness: all three are isotropic fuzz layers.** No weave
+direction, no pattern structure, no thread colour-shift. The wrong tool, alone,
+for satin and denim.
+
+### 3.4 Ashikhmin, Premoze & Shirley 2000 — velvet
+
+[verified: SIGGRAPH 2000, pp. 65-74.] A generator turning an arbitrary 2D
+microfacet-normal distribution into a reciprocal, energy-respecting BRDF through
+a generic shadowing term — a stronger formal guarantee than Charlie's later ad
+hoc albedo patch. Its velvet result feeds the generator an **inverted-Gaussian
+distribution peaked near grazing**, motivated by the authors' own microscopy:
+velvet is rows of filament bundles slanted roughly 40° off the normal
+[verified]. Three to four parameters. The commonly reproduced closed form is
+
+```
+D_velvet(θh; σ) ∝ exp(−tan²θh / σ²) / (σ² cos⁴θh)
+```
+
+[**from memory** — the exact normalisation constant, and whether the paper uses
+this closed form versus a numerically generated arbitrary distribution, was not
+confirmed against the primary PDF. **Verify before hard-coding any constant.**]
+
+**A naming trap worth recording**, because RISE has an unrelated
+Ashikhmin-coauthored BRDF in tree (`AshikminShirleyAnisotropicPhongBRDF.h`): the
+"Ashikhmin" in Blender's historical Velvet BSDF is *this* 2000 velvet
+distribution, not the Ashikhmin-Shirley anisotropic Phong model. Two different
+papers, unrelated formulas — ordinary bibliographic fact, not separately
+re-checked this session. Blender's Cycles later retired the Velvet
+node for a unified Sheen BSDF with a toggle between "Ashikhmin" and a newer
+microfiber multi-scatter method (the Zeltner class) [verified — PR title found].
+
+**Verdict: strictly superseded by Charlie for RISE.** Same grazing-peak physics,
+same isotropic limitation, older parameterisation, unverified normalisation. No
+reason to implement it when Charlie is already shipped.
+
+### 3.5 Wang, Jin, Hašan & Yan 2022 — SpongeCake
+
+[verified: *SpongeCake: A Layered Microflake **Surface** Appearance Model*, ACM
+TOG 41(6), 2022 (SIGGRAPH Asia 2022), arXiv 2110.07145. **The survey corrected
+both the title — "Surface", not "Volume" — and the author list** the research
+brief had assumed.]
+
+Each layer is a **volumetric slab of microflakes** with no explicit interfaces
+between layers, which is precisely what makes a **closed-form analytic
+single-scattering solution for an arbitrary layer count** derivable. Multiple
+scattering is a fitted extra single-scattering-shaped lobe plus a Lambertian
+term, with a small neural network regressing physical to fit parameters
+[verified from search summaries].
+
+Per layer: albedo (spectrum), thickness/density, an SGGX roughness `alpha`, and
+the SGGX shape matrix `S` — which continuously interpolates **surface-like**
+flakes (normals clustered about a normal) through **fibre-like** flakes (normals
+about a tangent). That continuum is the signature: one model spans satin-like
+sheen through velvet pile. It handles **silhouette fuzz — cue (d) — genuinely
+well**, because a phase function has no hard interface.
+
+**Cost to RISE: an entire missing infrastructure tier.** `grep -rni
+"microflake\|SGGX\|LTC\b\|linearly transformed"` over `src/Library` returns
+**zero hits**. RISE's phase functions are Henyey-Greenstein
+([HenyeyGreensteinPhaseFunction.h:53](../src/Library/Materials/HenyeyGreensteinPhaseFunction.h))
+and isotropic
+([IsotropicPhaseFunction.h:38](../src/Library/Materials/IsotropicPhaseFunction.h))
+only. And SpongeCake's layers are *media*, so it lands in participating-media
+transport, not the material slot. **No production adoption was corroborated; the
+research brief's suggestion of Adobe Substance 3D or Unity was explicitly not
+confirmed and must not be claimed.**
+
+### 3.6 Zhu, Jarabo, Aliaga, Yan & Chiang 2023 — surface-based cloth
+
+[verified: *A Realistic Surface-based Cloth Rendering Model*, SIGGRAPH 2023
+Conference Proceedings.] The most direct "Irawan-class fidelity at surface-BSDF
+cost" answer published. It reproduces the four signatures its authors identify
+as necessary — an **anisotropic S-shaped reflection highlight**, a
+**cross-shaped transmission highlight**, **delta transmission**, and
+**inter-ply/inter-yarn shadowing-masking** — with no explicit yarn geometry. Two
+capabilities distinguish it from Irawan: it models **transmission** (cloth's
+backlit glow-through, which a pure-reflection BRDF cannot express at all), and
+it generalises to **knitted and thin woven cloth**. Explicitly benchmarked
+against Irawan-Marschner and reported to exceed it on grazing appearance and
+pattern visibility thanks to the shadow-masking term [verified summary].
+Followed by *A Realistic Multi-scale Surface-based Cloth Appearance Model*
+(SIGGRAPH 2024) and Khattar et al.'s *A Texture-Free Practical Model for
+Realistic Surface-Based Rendering of Woven Fabrics* (CGF 2025) [both
+title/venue verified, neither read].
+
+**The survey could not obtain the complete equation set, the itemised parameter
+table, or a confirmed importance-sampling strategy.** That is a real gap, and it
+is why Phase 2's first gate is a primary-source read.
+
+### 3.7 The rest, briefly
+
+- **Zhao, Jakob, Marschner & Bala 2011**, *Building Volumetric Appearance Models
+  of Fabric Using Micro CT Imaging* [verified]. The fidelity reference: scan the
+  fabric, render it as a heterogeneous anisotropic medium with parameters
+  *extracted*, not authored. Prohibitively expensive; the ground truth
+  everything else validates against; the clearest evidence that cloth's true
+  structure is a volumetric fibre field.
+- **Khungurn, Schroeder, Zhao, Bala & Marschner 2015**, *Matching Real Fabrics
+  with Micro-Appearance Models* [verified, ACM TOG 35(1)]. Not a model — a
+  **fitting framework** optimising an existing model's parameters against
+  multi-light photographs through the renderer. Relevant methodologically: it is
+  direct evidence that these models' parameters, though individually physical,
+  are **not independently art-directable without measurement or a differentiable
+  fit**. That is the strongest argument in the survey *for* shipping named
+  presets rather than raw physical knobs.
+- **Heitz, Dupuy, Crassin & Dachsbacher 2015**, *The SGGX Microflake
+  Distribution* [verified, ACM TOG 34(4) Art. 48. **The survey corrected a
+  spurious "Iwasaki" co-author** the brief had included]. The phase-function
+  foundation: an anisotropic microflake distribution is characterised by its
+  projected area, parameterised as a 3×3 SPD matrix `S` with
+  `σ(ω) = sqrt(ωᵀ S ω)` [from memory — the central widely-reproduced result;
+  normalisation not re-read]. `S` composes under linear transforms, which is how
+  orientation mapping works in this family.
+- **Montazeri, Gammelmark, Zhao & Jensen 2020**, *A Practical Ply-Based
+  Appearance Model of Woven Fabrics* [verified, ACM TOG 39(6) Art. 251], with a
+  2021 knit follow-up [verified as existing]. Between Irawan (yarn-level BRDF)
+  and Zhao (fibre-level volume): plies with a lightweight closed-form BCSDF.
+  Needs ply-level geometry.
+- **Jin, Wang & Yan 2022**, *Woven Fabric Capture from a Single Photo*
+  [verified, SIGGRAPH Asia 2022; author list **medium confidence**]. A compact
+  SGGX-based woven material with an azimuthally-invariant microflake
+  multi-scatter term, parameterised specifically to be *identifiable from one
+  photograph*. Independently reaches nearly the same answer as Zhu 2023 from the
+  inverse-rendering direction — strong evidence that "few per-point knobs plus a
+  weave orientation field" is the right shape.
+
+### 3.8 Production calibration
+
+Every production and interchange system surveyed converges on **1-3 art-facing
+sheen parameters** on top of an otherwise standard base BRDF. Unreal's Cloth
+Shading Model exposes a `Cloth` mask plus a `Fuzz Color` [verified — Epic's own
+docs]. Filament exposes Charlie D + Neubelt V, an energy-conservative
+Lambertian, an explicitly non-physical subsurface term, a `sheenColor`, and a
+fixed non-tunable `w = 0.5` wrap diffuse; its docs credit Burley and Neubelt for
+the observation that this parameter set **blends robustly**, i.e. you can
+linearly interpolate two cloth materials and get a plausible in-between
+[verified]. **None of them attempts weave-structure fidelity.** That trade is
+made deliberately, in every single production system surveyed, in favour of
+parameter count and evaluation cost.
+
+That is a fact worth sitting with before proposing Phase 2.
+
+### 3.9 Scoring
+
+Weights reflect what RISE actually needs: a real `Pdf` is non-negotiable (BDPT
+and VCM are first-class); energy conservation is measured by a shipped harness;
+infrastructure cost is the dominant schedule risk; and adoption is the measured
+failure mode.
+
+| Criterion | Irawan 12 | Sadeghi 13 | **Charlie 17 (have it)** | LTC sheen 22 | Ashikhmin 00 | SpongeCake 22 | **Zhu 23** |
+|---|---|---|---|---|---|---|---|
+| Cue (a) grazing brightening | partial | yes | **yes** | yes | yes | yes | yes |
+| Cue (b) weave structure | **yes (raster)** | partial (statistical) | **no** | no | no | only via an `S` field | **yes** |
+| Cue (c) multiple scattering | implicit diffuse | `gamma_v` lobe | **no (patched)** | **yes** | no | yes (fitted) | yes |
+| Cue (d) silhouette fuzz | no | no | **no** | no | no | **yes** | no |
+| Authorable params | ~18 + raster | ~5/class + tangents | **2** | 2 | 3-4 | ~4/layer × N | small-med (unconfirmed) |
+| Art-directable without measurement | poor | poor | **excellent** | excellent | good | medium | unconfirmed |
+| Energy conservation | approx. | not claimed exact | **bounded (patchable)** | **exact by construction** | yes (generator) | single-scatter exact | approx./empirical |
+| Reciprocity | yes | yes | **yes by construction** | yes | yes | yes | yes |
+| **Real importance sampler (RISE-blocking)** | **none published** | none in base paper | **closed-form\*** | **exact (LTC)** | closed-form-ish | claimed | unconfirmed |
+| Eval cost | med-high | low-med | **very low** | very low | very low | low-med | BSDF-level |
+| New RISE infrastructure | pattern raster resource | tangent field (Phase 1 buys it) | **none** | **LTC table + eval/sample primitive + a bake tool** | none | **microflake phase fn + media path + a fitted network** | tangent field + weave phase |
+| Spectral suitability | excellent (native spectra) | good (tint; refit needed) | **good (tint)** | good (tint) | good (tint) | excellent | likely good |
+| Production adoption | academic only | academic only | **de facto standard** | Blender 4.0 [medium conf.] | historical (Blender, retired) | **none corroborated** | too recent |
+| **Fit as RISE's Phase-1 top lobe** | ✗ | ✗ | **✓** | ✓ but expensive | ✗ | ✗ | ✗ |
+| **Fit as RISE's Phase-2 target** | ✗ (no sampler) | ✓ (lobe math) | — | ✓ (cue c) | ✗ | ✗ (infra) | **✓ (reference arch.)** |
+
+\* Charlie's closed-form invertibility is **[from memory], not verified** — the
+survey never tagged that specific sentence and it is absent from its own
+verification summary. Check the paper before implementing an analytic inverse;
+§9.4 and §17 carry the same hedge, and §9.4 gives the tabulated-inverse-CDF
+fallback that makes the question non-blocking either way.
+
+---
+
+## 4. What RISE has today
+
+### 4.1 `sheen_material` — the audit
+
+**The model.** [CharlieSheen.h](../src/Library/Materials/CharlieSheen.h) is the
+single source of truth shared by `SheenBRDF.cpp` and `SheenSPF.cpp` — a
+deliberate design decision recorded in the header's own preamble. It implements
+Estevez & Kulla 2017's Charlie NDF
+`D(α, n·h) = (2 + 1/α)/(2π) · sin(θh)^(1/α)`
+([CharlieSheen.h:39-50](../src/Library/Materials/CharlieSheen.h)) and the **full
+Λ-polynomial Charlie visibility** — coefficients interpolated between the α = 0
+and α = 1 Table-1 endpoints with weight `w = (1 − α)²`, matching the Khronos
+sample renderer's `lambdaSheenNumericHelper` convention, and made C¹-continuous
+at `x = 0.5` by the reflection `Λ(x ≥ 0.5) = exp(2·L(0.5) − L(1 − x))`
+([CharlieSheen.h:71-102](../src/Library/Materials/CharlieSheen.h)), composed
+into `V = 1/((1 + Λ(l) + Λ(v))·4·n·l·n·v)`
+([CharlieSheen.h:104-112](../src/Library/Materials/CharlieSheen.h)).
+
+**The name is wrong in two places.** `SheenBRDF.h:9,18` and the chunk
+description ("Charlie / Neubelt sheen BRDF for fabric / cloth surfaces",
+[ChunkParserRegistry.cpp:4358](../src/Library/Parsers/ChunkParserRegistry.cpp))
+both say Neubelt. The Neubelt closed form was *replaced* precisely because it
+blew up to ρ ≈ 8.7 at θ = 80°, and the furnace suite records the switch
+([LayeredWhiteFurnaceTest.cpp:661-670](../tests/LayeredWhiteFurnaceTest.cpp)).
+This matters beyond tidiness: the chunk description is what the agent-facing
+schema generator and both GUI scene editors surface, so the stale name is on the
+authoring surface, not just in a comment.
+
+**Energy.** No directional-albedo table exists anywhere in the sheen code. The
+`albedo()` override is an OIDN AOV estimate that clamps sheen colour to itself
+([SheenBRDF.cpp:133-141](../src/Library/Materials/SheenBRDF.cpp)), explicitly
+not a directional-albedo model. The furnace configuration is therefore
+`kPostureBounded` — ρ must not exceed 1, but may legitimately fall below it,
+because Charlie is single-scattering and dissipates at grazing
+([LayeredWhiteFurnaceTest.cpp:668-671](../tests/LayeredWhiteFurnaceTest.cpp)).
+
+**Sampling.** Plain cosine-weighted hemisphere
+(`GeometricUtilities::CreateDiffuseVector`,
+[SheenSPF.cpp:73-74](../src/Library/Materials/SheenSPF.cpp)), stated in the
+header as a deliberate choice because "Charlie's distribution doesn't have a
+clean closed-form importance sample" (`SheenSPF.h:3-9`) — a claim §9.4 revisits.
+`pdf = nDotL · 1/π` ([SheenSPF.cpp:116](../src/Library/Materials/SheenSPF.cpp)),
+`kray = colour · D · V · π`
+([SheenSPF.cpp:110](../src/Library/Materials/SheenSPF.cpp)). **The scattered ray
+is tagged `eRayDiffuse`**
+([SheenSPF.cpp:113](../src/Library/Materials/SheenSPF.cpp)), so `max_diffuse_bounce`
+governs sheen depth today, not `max_glossy_bounce` — relevant to §12.
+There is also a geometric-horizon gate against `GlintModifier`'s shading-normal
+tilt ([SheenSPF.cpp:86-99](../src/Library/Materials/SheenSPF.cpp)), a detail any
+new fabric SPF must replicate rather than rediscover.
+
+**Spectral.** A full RGB/NM twin, not a stub: `SheenBRDF::valueNM`
+([SheenBRDF.cpp:100-131](../src/Library/Materials/SheenBRDF.cpp)) and
+`SheenSPF::ScatterNM`/`PdfNM`
+([SheenSPF.cpp:121-196](../src/Library/Materials/SheenSPF.cpp)), reading
+`pRoughness->GetValueAtNM` and `GuardedGetColorNM(*pColor, ri, nm)` — already
+conformant with the white-guard convention.
+
+**Reciprocity.** True by construction — `D` depends only on `n·h`, and `V` is
+symmetric in `nDotL`/`nDotV`. **Untested.** Sheen appears in no
+reciprocity or SPF↔BSDF-consistency sweep
+([SPFBSDFConsistencyTest.cpp:1140-1146](../tests/SPFBSDFConsistencyTest.cpp)
+lists Lambertian, isotropic GGX, and three Coated configurations only), and
+`grep -l Sheen tests/*.cpp` finds only the furnace test, the JH white-guard
+test, a rewire test, and the expression-VM test.
+
+**Chunk surface.** `sheen_material { name, sheen_color, sheen_roughness }` —
+`sheen_color` is a required Color-pipe painter reference, `sheen_roughness` is a
+Scalar-pipe reference with `requireSingle = true` and a `0.5` default hint,
+clamped to ≥ 1e-3 internally
+([ChunkParserRegistry.cpp:4344-4370](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+Two parameters. That is the whole authoring surface for fabric in RISE today.
+
+### 4.2 The layering gap, stated precisely
+
+§1 gap 1 gives the two mechanisms. Two refinements matter for the design.
+
+First, **the furnace suite has not independently re-diagnosed the sheen case.**
+Config 6, "Sheen / GGX-PBR", is `kPostureBounded` with the note "sheen-over-PBR
+inherits sheen's bounded dissipation"
+([LayeredWhiteFurnaceTest.cpp:736-738](../tests/LayeredWhiteFurnaceTest.cpp)) —
+it does *not* carry config 7's "substrate never reached" language. The code path
+is structurally identical (an upward-only top SPF), so the same limitation
+almost certainly applies, but **this document declines to assert it as measured
+fact**: config 7's diagnosis came from an explicit SPF-level probe that counted
+downward rays
+([LayeredWhiteFurnaceTest.cpp:758-765](../tests/LayeredWhiteFurnaceTest.cpp)),
+and no such probe has been run on config 6. §9.9 makes running it a Phase-1
+gate item, and §15 carries it as a debt.
+
+Second, **`composite_material`'s `extinction`/`thickness` are not an energy
+split.** They are Beer-Lambert gap absorption between the layers
+([CompositeSPF.cpp:121-136](../src/Library/Materials/CompositeSPF.cpp)), not an
+"attenuate the base by (1 − sheen albedo)" term. No such term exists anywhere in
+the sheen or composite code. The glTF albedo-scaling law of §3.3 has no
+implementation in RISE.
+
+Third, and structurally: `ScatteredRayContainer::kCapacity = 12`
+([ISPF.h:116](../src/Library/Interfaces/ISPF.h)) is a hard, **silently dropping**
+cap on lobes per `Scatter()` call. A fabric material assembled as a deep
+composite (specular yarn highlight + sheen + diffuse base, nested under something
+else) risks losing energy invisibly. This is an argument for a single triad that
+owns its lobes, not for stacking.
+
+### 4.3 Anisotropic BRDFs and the tangent frame
+
+**Which materials have anisotropy.** GGX (`alphaX`/`alphaY`,
+[GGXBRDF.h:47-48](../src/Library/Materials/GGXBRDF.h)); Ward (`alphaU`/`alphaV`);
+Ashikhmin-Shirley (`Nu`/`Nv` Phong exponents). **Cook-Torrance is isotropic
+only** — no anisotropy parameters exist on it.
+
+**Which have a rotation input.** GGX alone, via an optional
+`const IPainter* pTangentRotation` in radians applied by
+`MicrofacetUtils::RotateTangent`
+([GGXBRDF.cpp:120-127](../src/Library/Materials/GGXBRDF.cpp)). Ward and
+Ashikhmin-Shirley have none. The rotation binds through the **Color** pipe, and
+the descriptor says so and calls it what it is: *"an angle in radians by
+MEANING, plumbed through the Color pipe (IPainter) so an expression_function2d
+painter can drive a spatially-varying groove direction. A scalar_painter does
+NOT bind here"* — `p.semantics.note`, [ChunkParserRegistry.cpp:4193](../src/Library/Parsers/ChunkParserRegistry.cpp).
+
+**Where the tangent comes from — the finding.** §1 gap 3. What matters for the
+design is the *shape* of the fix. The general per-hit override already exists,
+is already consumed by `Object::IntersectRay` and `CSGObject::IntersectRay`, and
+already handles world-space promotion with the forward matrix, singular-transform
+clearing, degenerate-projection fallback, and CSG-nested write-back
+([Object.cpp:699-772](../src/Library/Objects/Object.cpp),
+[RayIntersectionGeometric.h:314-345](../src/Library/Intersection/RayIntersectionGeometric.h)).
+`HairGeometry` writes it in three lines:
+
+```cpp
+ri.bShadingTangentFromGeometry = true;
+ri.vShadingTangent  = T;
+ri.bHasShadingTangent = true;
+```
+
+**Nothing in the field declaration or the consuming branch restricts the writer
+to curve geometry.** A triangle mesh that already computed `dpdu` can write the
+same three lines and inherit the entire mechanism.
+
+Two implementation details found in source that shape the fix:
+
+- **Ordering.** `Object::IntersectRay` builds the ONB at lines 699-772 but
+  promotes `derivatives.dpdu` to world space at lines 832-836 — *after*. So the
+  write must happen at the **geometry** level in object space
+  (`vShadingTangent = dpdu` alongside the existing `derivatives.dpdu` write),
+  and the existing tangent-promotion branch does the rest. No reordering, no
+  new `Object`/`CSGObject` code path.
+- **Normal mapping survives it.** `NormalMap::Modify` rebuilds the ONB with
+  `CreateFromWU` from the projected current `u` **when and only when
+  `bHasShadingTangent` is set**, and with an arbitrary `CreateFromW` otherwise
+  ([NormalMap.cpp:186-197](../src/Library/Modifiers/NormalMap.cpp)). So a
+  geometry-level fix gives normal-mapped fabric a coherent tangent for free,
+  where a material-side `ResolveTangentONB` preference would not. **This is the
+  decisive argument for doing it at the geometry level.**
+
+The analytic primitives populate `dpdu` too — sphere, ellipsoid, torus, cylinder
+all write `ri.derivatives.dpdu` and `valid = true`
+(e.g. [SphereGeometry.cpp:159-163](../src/Library/Geometry/SphereGeometry.cpp)),
+so the same fix gives a cloth-on-sphere test scene a meaningful warp direction
+without a mesh.
+
+### 4.4 The painter stack for weave authoring
+
+**The pipes.** `IPainter` (colour/reflectance/emission, JH-uplifted on the
+spectral path) and `IScalarPainter` (physical scalars, `ScalarTriple`, **no
+colorspace anywhere**, no `GetColorNM` path at all — that absence is the
+structural guard, [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md)).
+`ParameterPipe` enumerates `Unspecified | Color | Scalar | Material | Function1D
+| Function2D | Geometry | Other`
+([ChunkDescriptor.h:184-194](../src/Library/Parsers/ChunkDescriptor.h)). **There
+is no vector-valued pipe and no `IVectorPainter`.** Live usage in the registry:
+Color 76, Scalar 60, Function 5, Material 5, Other 1.
+
+**The expression VM.** `ExpressionEval.h` is the source of truth. Context: `u`,
+`v` always; `P`, `Po`, `N` (vec3); `curv`, `curvR` (signed mean curvature from
+the **geometric** normal field — bump and normal maps do not move it); `fw`
+(world-space filter width, 0 where no footprint exists); `time`; plus any named
+`param` constants and ordered `def` let-bindings. Builtins: the unary/binary/
+ternary math set including `floor`, `mod`, `atan2`, `step`, `smoothstep`,
+`select`, `mix`, `ramp`; vec3 `dot`/`cross`/`length`/`normalize` and `.x/.y/.z`;
+the noise family `perlin`/`fbm`/`turbulence`/`ridged`/`worley_f1`/`f2`/`f2f1`/
+`id`/`cellhash`; and the two **arg-taking geometry-signal builtins**
+`occlusion(radius)` and `thickness(radius)`. Operators `+ - * / % ^` and the six
+comparisons (yielding 1.0/0.0).
+
+**Both a colour and a scalar expression painter exist**: `expression_painter`
+(Color pipe, full 3D context) and `scalar_painter { expression … }` (Scalar
+pipe, **also full 3D context** including `curv`, `fw` and the signal builtins —
+the descriptor is explicit; `expression_function2d` by contrast is UV-only). This
+matters for §5's pipe decision: the Scalar pipe loses nothing in expressiveness.
+
+**Painters flagged as most useful for weave.** `gabor3d_painter`
+([ChunkParserRegistry.cpp:2504](../src/Library/Parsers/ChunkParserRegistry.cpp)) —
+oriented band-limited noise, the closest existing "fibre flow" field.
+`voronoi2d_painter` ([:2851](../src/Library/Parsers/ChunkParserRegistry.cpp)) —
+explicit art-directed cells, each with its own painter; one cell per weave
+repeat is expressible. `mapping_painter` ([:6825](../src/Library/Parsers/ChunkParserRegistry.cpp)) —
+scale/rotate/translate/triplanar reprojection of the domain, the tiling tool.
+`stochastic_tile_painter` ([:6896](../src/Library/Parsers/ChunkParserRegistry.cpp)) —
+histogram-preserving hex tiling that kills visible repetition.
+`blend_painter` ([:3071](../src/Library/Parsers/ChunkParserRegistry.cpp)) — the
+composition verb. Notably, **`lines_painter`'s own descriptor redirects fabric
+authors away from itself**: "for real fabric weave … use gabor3d_painter /
+turbulence3d_painter instead"
+([:2025](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+
+**Filtering — the caveat that will bite.** `ri.txFootprint` exists
+(`{dudx, dudy, dvdx, dvdy, worldWidth, valid}`,
+[RayIntersectionGeometric.h:116-127](../src/Library/Intersection/RayIntersectionGeometric.h))
+and is consumed by `TexturePainter`'s mip path, `MappingPainter`'s domain
+transform, and the expression VM's `fw` variable. But `fw` fades octaves toward
+Nyquist **only inside `fbm`, `turbulence` and `ridged`**. The plain procedural
+painter chunks — `perlin3d_painter`, `worley3d_painter`, `perlin2d_painter`,
+`checker_painter`, `lines_painter` — carry **zero** references to `txFootprint`
+or `fw`. A high-frequency weave authored through them aliases under minification
+with no built-in mitigation. §5.5 gives the authoring answer.
+
+**Geometry signals and the `add_wear` precedent.** `curv`/`curvR` plus
+`occlusion(r)`/`thickness(r)` are the whole signal set; there is no "signal
+painter" chunk, the VM is the only consumer surface. `add_wear` is the shipped
+template for curvature-driven wear, and its mask prelude is worth quoting
+verbatim because §9.8's worked example is built on it
+([AgentSession.cpp:36610-36628](../src/Library/Agent/AgentSession.cpp)):
+
+```
+def   jitter        vec3(seed, seed*1.7, seed*2.3)
+def   wear_mask     clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter,4,0.5,2.0), 0, 1)
+def   crevice_raw   clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter,4,0.5,2.0), 0, 1)
+def   cavity_boost  1.0 + cavity_gain*(1.0 - occlusion(0.08))
+def   crevice_mask  clamp(crevice_raw*cavity_boost, 0, 1)
+```
+
+Positive curvature (edges) drives wear; negative curvature (crevices) drives
+grime, deepened by occlusion. **A seam is a locus of positive curvature.** This
+is already the right mechanism for fabric seam wear, already shipped, already
+callable as a verb.
+
+### 4.5 Hair machinery available for reuse
+
+Three things transfer, one does not.
+
+**Transfers: the lobe math.** `Mp`, `TrimmedLogistic`/`SampleTrimmedLogistic`,
+`FrDielectric`, `MakeGeom`, `ComputeAp` and friends are stateless free functions
+in an anonymous namespace in `HairBSDF.cpp` (opening at
+[HairBSDF.cpp:35](../src/Library/Materials/HairBSDF.cpp), member definitions
+starting only at :872). None takes `this`; all operate on small caller-supplied
+value structs. A header promotion — delete the anonymous namespace, promote the
+structs — is mechanical and low-risk, and is the prerequisite for a Sadeghi-class
+microcylinder lobe in Phase 2.
+
+**Transfers: the tangent mechanism.** §4.3.
+
+**Transfers: the scattering-profile LUT.** `HairMedullaProfile` is a generic
+azimuthal scattering profile of *one crossing of a unit-radius, infinitely long,
+non-absorbing scattering cylinder*
+([HairMedullaProfile.h:20-23](../src/Library/Materials/HairMedullaProfile.h)),
+indexed by impact parameter, optical depth and HG anisotropy — 8 × 10 × 5 cells
+× (32 azimuthal bins + 1 longitudinal variance) = 13,200 floats = **52.8 KB**.
+`Eval` and `Sample` are exact inverses by construction, which is exactly the
+property an importance-sampled lobe needs. Nothing about its axes is
+hair-specific; a yarn's forward-scattering term could re-bake it at
+yarn-appropriate (τ, g) ranges using RISE's own generator
+(`tools/HairMedullaProfileGen.cpp`). Measured overhead when engaged: ~1.36× on a
+furnace groom (952/955/957 ms at κ = 0 vs 1298/1293/1305 ms at κ = 0.7,
+[HairBSDF.h:267-275](../src/Library/Materials/HairBSDF.h)).
+
+**Does not transfer: the orchestration.** `HairScatteringBase` owns eleven
+painter pointers and a `Resolve` that reads them per hit; a fabric material needs
+its own painter set and its own resolve. And the *sampling* PMF is deliberately
+achromatic (a component-wise-minimum RGB proxy) so `EvaluateKrayNM` can
+reconstruct the hero pdf exactly — a convention a fabric BSDF should copy but
+cannot inherit.
+
+### 4.6 Scenes, tests, import
+
+**Scenes.** One: `scenes/Tests/Materials/sheen.RISEscene`, three spheres
+(velvet α = 0.1 white, satin α = 0.5 gold, blurred α = 1.0 pink) applied
+directly with **no composite base at all**, under a single directional key
+`0.4 0.4 0.7` and an ambient fill. No cushion, curtain, garment or drape exists
+anywhere in `scenes/`.
+
+**Tests.** [LayeredWhiteFurnaceTest.cpp](../tests/LayeredWhiteFurnaceTest.cpp)
+drives 19 configurations through a Monte-Carlo furnace at θ ∈ {0°, 30°, 60°,
+80°}, 100k samples per (config, angle), under four postures — `kPosturePass`,
+`kPostureBounded`, `kPostureMatchesPrediction`, `kPostureKnownFailure`. The
+harness is generic over any `ISPF&`, so **a new fabric SPF plugs in by adding
+one `add()`/`addPredicted()` line**. The reciprocity harness
+([SPFBSDFConsistencyTest.cpp:361-491](../tests/SPFBSDFConsistencyTest.cpp)) tests
+an exact property at `RECIPROCITY_TOL = 1e-6` relative over arbitrary direction
+pairs, max-channel comparison — and its sweep list has no sheen and no
+anisotropic entry.
+
+**Import.** glTF `KHR_materials_sheen`: detected, warned, skipped; the composite
+layering code sits `#if 0`'d and preserved for future work
+([GLTFSceneImporter.cpp:1449-1466](../src/Library/Importers/GLTFSceneImporter.cpp)).
+`KHR_materials_anisotropy`: strength imports, including per-pixel strength from
+the texture's B channel; **per-pixel rotation is explicitly dropped**, with the
+importer stating that an `atan2` painter primitive or a contract change would be
+needed
+([GLTFSceneImporter.cpp:1300-1307](../src/Library/Importers/GLTFSceneImporter.cpp)).
+Blender bridge: `grep -i "sheen|anisotrop|velvet"` over
+[BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md) returns **zero
+matches** — Principled BSDF's Sheen, Sheen-Tint, Anisotropic and
+Anisotropic-Rotation sockets are not in the supported-node table and not in the
+force-bake list. A silent gap, not an explicit rule.
+
+---
+
+## 5. Weave structure as a painter problem
+
+### 5.1 What a weave cell actually is
+
+A woven fabric is a periodic 2D lattice. In each cell, one of the two yarn
+families is uppermost. Three canonical bindings cover most cloth:
+
+- **Plain weave** (1/1): warp over, weft over, alternating in both directions.
+  Parity `(i + j) mod 2`. Cotton, linen, taffeta, poplin.
+- **Twill 2/1 or 3/1**: the crossing point advances by one cell per row, which
+  produces the diagonal wale. Parity `(i + k·j) mod N` for a shift `k`. Denim,
+  gabardine, chino.
+- **Satin, 5-harness**: a long *float* — one yarn passes over four before going
+  under one — arranged so crossings never touch. Parity `(i + s·j) mod N == 0`
+  for a satin step `s` coprime to `N`. Silk satin, sateen, duchesse.
+
+The visual difference between these three at a distance is **almost entirely a
+difference in highlight structure**, not in colour. That is cue (b), and it is
+why a weave-aware BSDF is a genuinely different thing from a sheen lobe.
+
+### 5.2 What a weave-aware BSDF needs per shading point
+
+Four inputs, and it is worth being precise about their types because the type is
+the design decision:
+
+| input | type | meaning |
+|---|---|---|
+| **yarn direction** | scalar angle (radians) in the tangent plane | which way the uppermost yarn runs; warp = 0, weft = π/2 |
+| **weave-cell phase** | scalar in [0,1] or a binary | which family is on top here; drives the family blend and the shadow-masking term |
+| **yarn normal variation** | a normal perturbation | the yarn's own cylindrical cross-section, which is what makes the highlight a band rather than a point |
+| **coverage** | scalar in [0,1] | how much yarn vs how much gap; the thin-cloth/openness parameter |
+
+**All four are scalar or normal-shaped fields. None of them is a 3-vector that
+must be authored as such.** That observation is what settles §5.4.
+
+### 5.3 Authoring each with painters that exist today
+
+**Weave-cell phase.** Directly expressible in the VM. The plain-weave parity —
+verified against the operator and function table (`floor` unary, `mod` binary,
+`+`/`*` in the grammar):
+
+```
+expression_function2d
+{
+	name			weave_plain
+	param			N 48.0
+	expr			mod( floor(u*N) + floor(v*N), 2.0 )
+}
+```
+
+Twill and satin are the same shape with a shift, using `%` or `mod`
+interchangeably:
+
+```
+expression_function2d
+{
+	name			weave_twill_3_1
+	param			N 48.0
+	param			shift 1.0
+	def			i floor(u*N)
+	def			j floor(v*N)
+	expr			step( 0.5, mod( i + shift*j, 4.0 ) ) * step( mod( i + shift*j, 4.0 ), 2.5 )
+}
+```
+
+```
+expression_function2d
+{
+	name			weave_satin5
+	param			N 40.0
+	param			step5 2.0
+	def			i floor(u*N)
+	def			j floor(v*N)
+	expr			1.0 - step( 0.5, mod( i + step5*j, 5.0 ) )
+}
+```
+
+The satin form yields 1.0 only on the one cell in five where the weft crosses,
+and 0.0 on the four float cells — which is the correct topology: a satin's face
+is almost entirely warp float, and that is *why* it is shiny.
+
+**Yarn direction.** A scalar angle field over the cell phase. Warp runs along
++U, weft along +V, so the angle is π/2 on weft-top cells and 0 on warp-top ones,
+with the float direction following the dominant family:
+
+```
+scalar_painter
+{
+	name			weave_angle_satin
+	param			N 40.0
+	param			step5 2.0
+	param			jitter_amp 0.06
+	seed			7
+	def			i floor(u*N)
+	def			j floor(v*N)
+	def			weft_on_top 1.0 - step( 0.5, mod( i + step5*j, 5.0 ) )
+	def			jitter jitter_amp * (fbm(P*90.0 + vec3(seed, seed*1.7, seed*2.3), 3, 0.5, 2.0) - 0.5)
+	expression		weft_on_top * 1.5707963 + jitter
+}
+```
+
+The `jitter` term is not decoration: it is the cheap analogue of Irawan's four
+`d*UmaxOverD*` noise derivatives, whose entire purpose is to break the perfectly
+periodic look that makes procedural cloth read as printed rather than woven.
+
+**Yarn normal variation.** `normal_map_modifier` already decodes tangent-space
+normals in the standard glTF convention, from either an imported `TANGENT`
+accessor or `dpdu`/`dpdv`
+([NormalMap.cpp:71-81, 109-120](../src/Library/Modifiers/NormalMap.cpp)). It is
+production code, not a proposal. The **authoring trap is documented and
+load-bearing**: the painter feeding it must be loaded with `color_space
+Rec709RGB_Linear` — no gamma decode, no colour-matrix conversion — or the
+decoded vector is wrong (`NormalMap.h:9-24`). Mipmapping is on by default for
+raster textures and must be explicitly disabled for vector-quantity textures
+(`Job.cpp:1951`).
+
+**Coverage.** Any scalar field; for a sheer curtain, `1 − weave_phase` scaled by
+an openness parameter.
+
+### 5.4 The pipe decision — angle field, not a vector pipe
+
+**Recommendation: author yarn direction as a scalar angle through
+`IScalarPainter`. Do not add a vector pipe.**
+
+The argument has three legs.
+
+*It is sufficient.* §5.2 established that all four weave inputs are scalar- or
+normal-shaped. A yarn direction lying in the tangent plane has exactly one
+degree of freedom, and the angle is it. The only thing a vector pipe would add
+is a genuinely non-planar yarn lay direction, which no surveyed model needs at
+BSDF level.
+
+*It is cheap.* The `weave_rotation` slot is one descriptor line
+(`p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;`)
+plus one `ResolveOrDiagnoseScalar` call in `Job::AddFabricMaterial`, which
+already emits the correct three-way diagnostic — bound-to-wrong-pipe,
+bound-to-unknown, bound-to-per-channel — with wording that `ConnectionLegality`
+quotes verbatim rather than re-deriving
+([ChunkDescriptor.h:64-72](../src/Library/Parsers/ChunkDescriptor.h),
+`Job.cpp:3463-3522`).
+
+*A vector pipe is not.* The survey enumerated fourteen touchpoints for a
+hypothetical `IVectorPainter`:
+
+| # | touchpoint |
+|---|---|
+| 1 | `IVectorPainter.h` + `IVectorPainterManager.h` |
+| 2 | Concrete implementations (uniform, per-UV, composition) |
+| 3 | `ParameterPipe::Vector` — **appended, never reordered** (the sibling `ChunkCategory` enum crosses the GUI ABI as a bare int, [ChunkDescriptor.h:281-286](../src/Library/Parsers/ChunkDescriptor.h)) |
+| 4 | `RISE_API_Create*VectorPainter` per implementation (10 such exist for `IScalarPainter`) |
+| 5 | `IJob`/`IJobPriv`/`Job` manager member + `ResolveVectorPainterArg`/`ResolveOrDiagnoseVector` |
+| 6 | A `vector_painter` `ChunkDescriptor` with its own form set |
+| 7 | 2-3 new `kVectorBoundTo…Fmt` diagnostic constants |
+| 8 | `ConnectionLegality::CheckConnection` pipe branch |
+| 9 | `PainterIntrospection` — the properties-panel pipe bitmask gains a third bit |
+| 10 | `Agent/SchemaGen.cpp` + `Agent/AgentDiagnostic.h` |
+| 11 | Every consuming material slot's descriptor line |
+| 12 | 5 build-project manifests per new `.cpp` |
+| 13 | `IVectorPainterTest.cpp` + `VectorPainterParserTest.cpp`, plus the `SceneEditorSuggestionsTest` keyword-count bump |
+| 14 | `gui/NODE_GRAPH_CANVAS.md` §6, `gui/MATERIAL_EDITOR.md` §6.4, `GUI_ROADMAP.md:361` — all describe the two-pipe model by name |
+
+And the precedent prices it honestly: the `IScalarPainter` refactor is laid out
+in ten phase headings, Phase 0 through Phase 9 — nine of them implementation
+phases after the Phase-0 design-and-baseline step — and is still not fully
+closed out (every checklist item under Phase 5's `Job.cpp` cleanup remains
+unticked). **A vector pipe is deferred and observed-need gated**; the observed
+need would be a genuine non-planar direction requirement that a Phase-2 model
+turns out to have, or glTF's per-texel `anisotropy_rotation` (whose R/G channels
+encode cos/sin) proving unrepresentable through an `atan2` expression — and note
+that the VM *has* `atan2`, so that particular blocker is already soluble without
+a new pipe.
+
+**The one honest cost of the Scalar choice: a pipe split with GGX.**
+`ggx_material.tangent_rotation` binds Color; `fabric_material.weave_rotation`
+would bind Scalar. An author who writes `expression_function2d` for one and tries
+it on the other gets a hard diagnostic rather than silence — but it is still a
+seam. §15 debt 4 records it with the recommended resolution: add a Scalar-pipe
+alias to GGX in a later slice and deprecate the Color binding, since the
+descriptor already calls the Color binding an oddball rather than a pattern.
+Note also that `scalar_painter { function2d <name> }` (form 7) lets an
+`expression_function2d` reach the Scalar pipe today, so nothing an author can
+express is lost.
+
+### 5.5 Aliasing — the caveat that will bite, and its answer
+
+A weave cell at N = 48 over a cushion is roughly a millimetre; at typical render
+resolutions it is sub-pixel over most of the frame. Every painter in §5.3 that
+produces a **hard step** — `floor`, `mod`, `step` — aliases, and §4.4 established
+that the plain procedural painters have no footprint-aware filtering at all.
+
+The VM can express the mitigation, because `fw` is a context variable and
+the correct limit of any weave cell under minification is its **mean**:
+
+```
+scalar_painter
+{
+	name			weave_angle_satin_af
+	param			N 40.0
+	param			step5 2.0
+	param			cell_world 0.0008
+	def			i floor(u*N)
+	def			j floor(v*N)
+	def			weft_on_top 1.0 - step( 0.5, mod( i + step5*j, 5.0 ) )
+	def			fade smoothstep( cell_world*0.5, cell_world*2.0, fw )
+	expression		mix( weft_on_top * 1.5707963, 0.7853981, fade )
+}
+```
+
+As the footprint `fw` grows past the cell size the angle field fades to π/4 —
+the mean of a two-family weave — and the anisotropy fades with it, which is
+exactly right: a woven surface seen from far enough away *is* isotropic. Note
+`fw` is **0.0 where no footprint is available** (secondary bounces, non-mesh
+geometry), and `smoothstep(a, b, 0)` is 0, so the fade correctly disengages on
+those hits rather than snapping to the mean. This idiom should be in the skill
+text, because no author will derive it.
+
+The complementary tool is `stochastic_tile_painter`, which addresses *tiling
+repetition* — a different problem from minification aliasing, and worth naming as
+such so nobody reaches for it expecting anti-aliasing.
+
+---
+
+## 6. Geometry-level versus BSDF-level
+
+### 6.1 Where the line falls
+
+| fabric class | dominant cue | correct level | why |
+|---|---|---|---|
+| Cotton, linen, poplin, canvas | (a) + weak (b) | **BSDF** | The weave is at or below the pixel; structure reads statistically |
+| Denim, gabardine, twill | (b) | **BSDF with a weave field** | Twill wales are visible but the yarn silhouette is not |
+| Silk, satin, sateen, taffeta | (b) strongly | **BSDF with a weave field** | Float direction is the whole look; the yarns are smooth and fine |
+| Velvet, suede, moleskin | (a) + (c) | **BSDF** | The pile is far below the pixel; it is the *distribution* that matters |
+| Wool, tweed, fleece | (a) + (c) + (d) | **BSDF, with (d) unserved** | Honest partial answer |
+| Chunky knits, macramé, rope, hero close-ups | (d) + real geometry | **geometry** | The loop silhouette is the subject |
+
+The line is drawn by **whether the yarn's silhouette is visible**. Below that,
+every model in §3 agrees a BSDF is the right abstraction and the debate is only
+which one.
+
+### 6.2 What a geometry route would cost
+
+RISE has a ready-made engine for many thin curved primitives over a shared
+surface: `HairGeometry`'s flat float control-point arrays, per-strand offsets and
+cumulative arc lengths, a `BVH<HairSegmentRef>` with `maxLeafSize = 4` and
+8-byte segment references, build-time per-span subdivision into up to 2³
+sub-segments chosen from the span's own curvature, and a `Realize()`-hook
+generator that area-samples a base mesh and rejection-filters by a
+`density_painter`
+([HairGeometry.h:107-178, 427-451](../src/Library/Geometry/HairGeometry.h),
+[HairGenerator.h:9-11,40-44,118-124](../src/Library/Geometry/HairGenerator.h)).
+
+Measured, from the hair arc:
+
+| quantity | measured value | source |
+|---|---|---|
+| Build, 100K strands | **647 ms** | commit `d579bcfa` message, carried from `HairGeometryTest` |
+| Memory, 100K strands | **73.7 MiB** | ibid. |
+| Traversal, 2K closest-hit rays | **12.7 ms** | ibid. |
+| Traversal, 50K closest-hit rays, 100K × 8 CPs | **287.5 ms ± 2.5 ms** | HAIR_FUR_DESIGN §7 Phase 4 |
+| Profile split | `RecursivePieceIntersect` 54 %, `BVH::IntersectRay` 20 %, `IntersectSegment` self 14 %, `EvalSpanCoefficients` 8 % | ibid. |
+| Best per-leaf optimisation found | **−3.64 %** (ray-frame hoist), not banked | ibid. |
+
+Now the arithmetic for a woven cushion face. Take 40 cm × 40 cm at 30 threads/cm:
+**1200 warp + 1200 weft = 2400 threads**. Resolving a plain weave's over/under
+crossing needs roughly four control points per crossing, and each thread crosses
+1200 others: **≈ 4800 CPs per thread**, hence **≈ 11.5 M control points**. The
+measured point is 100K strands × 8 CPs = 800K CPs at 73.7 MiB — that is
+77,279,232 bytes over 800K CPs, i.e. **~96.6 bytes per CP** all-in (binary units
+throughout; the source figure is `MiB` verbatim from the commit message).
+Extrapolating linearly:
+
+> **≈ 1.03 GiB and ≈ 9.3 s of build time for one cushion face.**
+
+**This is a linear extrapolation from a single measured point, not a
+measurement.** It is nonetheless decisive: it is off by more than an order of
+magnitude from anything usable, and it does not improve with a better BVH,
+because the cost is the control points themselves.
+
+**The saving grace of woven fabric is that it is periodic** — and that is exactly
+the primitive RISE does not have. No periodic or instanced placement primitive
+for strand-scale geometry exists. `path_instances_geometry` *duplicates* a
+template mesh per instance into one flat mesh with hard caps of 20 M vertices and
+100 K instances and is called "structurally unusable" at strand scale in
+[HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) itself; per-strand `standard_object`
+instancing is rejected in the same document (1.4 GB of overhead plus a TLAS of
+interpenetrating thin AABBs at 1 M strands). A knit or woven yarn system would
+need either its own `HairGeometry`-style flat-array primitive with one shared BVH
+over all loop segments, or genuinely new instancing infrastructure.
+
+### 6.3 Recommendation
+
+**Everything in §6.1's first five rows is BSDF work. Only the sixth row is
+geometry work, and it is gated behind a missing primitive.** Silhouette fuzz —
+cue (d) — is therefore honestly unserved by Phases 1 and 2, and §16 records that
+as a non-goal rather than pretending a BSDF term supplies it. If it is ever
+wanted, the cheapest partial answer is not yarn geometry but a **fuzz shell**: a
+thin offset surface carrying a very rough, very low-albedo fabric material, which
+softens the silhouette read without any new primitive. That is a Phase-3 sketch,
+not a recommendation.
+
+---
+
+## 7. Architectural options considered
+
+### (A) Fix layering, upgrade sheen in place, add UV tangents, ship presets via a verb — **REJECTED as insufficient**
+
+Keep `sheen_material`; make `composite_material` work by giving `SheenSPF` a
+downward transmission lobe; add the E table; add the tangent fix; deliver presets
+through a verb that emits a composite.
+
+Attractive because it adds no material class. It fails on two counts. First,
+`CompositeMaterial::GetBSDF()` still returns only the top's BSDF
+([CompositeMaterial.h:56-63](../src/Library/Materials/CompositeMaterial.h)), so
+NEE and every BDPT connection would still miss the base — fixing the SPF walk
+does not fix the BSDF side, and fixing the BSDF side means writing a combined
+`value()` that sums two lobes with the albedo-scaling law, which *is* the new
+material. Second, `CompositeSPF`'s `Pdf` is an admitted flat 50/50 average of the
+two sub-PDFs — `return 0.5 * (pdf_top + pdf_bottom);` under the comment "Equal
+weighting is the best approximation for this material"
+([CompositeSPF.cpp:586-598](../src/Library/Materials/CompositeSPF.cpp), with the
+identical `PdfNM` twin at :600-611) — which is not the mixture PDF the albedo
+split implies, so MIS weights would be wrong even with both lobes present.
+The composite is a stochastic compositor, not a layered BSDF, and no amount of
+patching makes it one — the same conclusion
+[WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) reached for the coat.
+
+### (B) A new `fabric_material` triad — **RECOMMENDED**
+
+One `IMaterial` + `IBSDF` + `ISPF` triad in `coated_material`'s architectural
+shape: a **base-material reference** with an allowlist, a closed-form `value` /
+`valueNM` that sums the Charlie lobe and the albedo-scaled base so NEE and BDPT
+see the whole response, a real mixture `Pdf`, a `weave_rotation` angle painter
+that rotates the frame handed to the substrate, a dye colour, and a `fabric`
+preset enum.
+
+The decisive argument is that **RISE has already built this exact shape once and
+reviewed it to zero P1**: `coated_material` is a Material + BRDF + SPF + Layer
+set with a `dynamic_cast` substrate allowlist, a view-independent
+`hemisphericalAlbedo` contract added specifically because a view-dependent
+`albedo()` in a shared term broke reciprocity by ~28 % at grazing
+([IBSDF.h:87-97](../src/Library/Interfaces/IBSDF.h)), and furnace + reciprocity
++ pdf-consistency coverage. `fabric_material` is its sibling: **same
+architecture, different top lobe, different energy split** (albedo-based per the
+glTF sheen law, not Fresnel-based per the coat law).
+
+It also unblocks glTF: `KHR_materials_sheen` is a sheen layer over a PBR base,
+which is precisely what a base-material-reference `fabric_material` accepts. That
+is the second paying customer, in the mould of clearcoat's for
+`coated_material`.
+
+### (C) Full Irawan-Marschner — **REJECTED**
+
+~18 parameters plus a pattern raster, a preset library that must be fit to
+photographs, **no published importance sampler** (§3.1), and no adoption in any
+mainstream shading system. The missing sampler alone disqualifies it: RISE's
+BDPT and VCM require a real `Pdf` per lobe, enforced by
+[SPFPdfConsistencyTest.cpp](../tests/SPFPdfConsistencyTest.cpp). Retained as
+Phase 2's fidelity comparison baseline, which is the role the rest of the
+literature also gives it.
+
+### (D) SpongeCake layered microflake — **REJECTED for now**
+
+The strongest model for cues (a), (c) and (d) simultaneously, and the only
+surveyed model that gets silhouette fuzz without geometry. Rejected on
+infrastructure: RISE has **zero** microflake/SGGX/LTC code, its phase functions
+are HG and isotropic only, its layers would be *media* rather than surfaces
+(landing in participating-media transport, not the material slot), and its
+multi-scatter term is a fitted neural network. No production adoption was
+corroborated. **Not rejected on merit** — if RISE ever wants a volumetric fabric
+tier, SGGX-as-a-phase-function is the right first brick, and it is a
+self-contained addition to machinery that already exists (heterogeneous media
+transport in PT and VCM). §16 lists it as a non-goal, not a dead end.
+
+### (E) Yarn-level geometry — **DEFERRED to Phase 3, likely declined**
+
+§6.2's arithmetic. ~1 GiB per cushion face without a periodic instancing
+primitive that does not exist.
+
+### (F) Extend `coated_material`'s substrate allowlist to accept sheen — **REJECTED**
+
+Adding `SheenMaterial` to the `dynamic_cast` list at
+[CoatedMaterial.h:130-132](../src/Library/Materials/CoatedMaterial.h) is a
+two-line change and it solves the wrong problem: it would let an author put a
+**dielectric coat over sheen**, when what fabric needs is sheen over a base. It
+also inverts the physical stack — sheen is the top layer in every production
+formulation surveyed, and OpenPBR moved its fuzz slab to the *top* of the stack
+specifically so it can sit over both base and coat [verified — OpenPBR spec
+text]. Recorded because it is the obvious cheap idea and it is wrong.
+
+### Scoring against [MATERIALS.md](MATERIALS.md) §9
+
+| §9 requirement | (A) patched composite | **(B) `fabric_material`** | (C) Irawan | (D) SpongeCake |
+|---|---|---|---|---|
+| 1. Right base | ✗ — composite is not a layered BSDF | **✓ fresh triad, coated_material's shape** | ✓ | ✗ — it is a medium |
+| 2. `value`/`valueNM`, `Scatter`/`ScatterNM`, `Pdf`/`PdfNM` | ✗ — no combined `value`, 50/50 `Pdf` | **✓ all six, closed form** | ✗ no sampler | ✓ claimed, unverified |
+| 3. `GetSpecularInfo` if delta | n/a — no delta lobe | **n/a** | n/a | n/a |
+| 4. `albedo` override for OIDN | inherits sheen's clamp | **✓ base albedo × scaling + sheen tint** | ✓ | ✓ |
+| 5. `IsVolumetric` | no | **no** | no | **yes** — different integrator contract |
+| 6. Parser + API + Job + 5 build projects | minimal | **full tax (§14)** | full | full + media plumbing |
+| 7. Furnace + reciprocity test + regression scene | possible | **✓ one `add()` line + sweep entries** | possible | needs a new harness |
+
+---
+
+## 8. The recommendation
+
+**Build `fabric_material` — option (B) — as the sibling of `coated_material`,
+land it together with the UV-aligned tangent fix and the `make_fabric` verb, and
+gate everything structured behind measured evidence.**
+
+Concretely, Phase 1 is five things that must ship together because each is
+useless alone:
+
+1. **The tangent.** Meshes and analytic primitives write `vShadingTangent =
+   dpdu` alongside their existing `derivatives.dpdu` write — three lines at each
+   of eight call sites (§9.1). Without it, weave
+   anisotropy rotates from an arbitrary base and the whole feature is
+   incoherent — and GGX, Ward and Ashikhmin-Shirley get a correct anisotropy
+   base as a side effect.
+2. **The material.** `fabric_material` with a base-material reference, a Charlie
+   top lobe, and the glTF albedo-scaling energy split — a real closed-form
+   `value()` so NEE and BDPT see both lobes, and a real mixture `Pdf`.
+3. **The energy table.** A baked directional-albedo `E(α, cosθ)` supplying both
+   the sheen lobe's own compensation and the base's scaling. Without it there
+   is no principled split and the furnace posture cannot rise above
+   `kPostureBounded`.
+4. **The direction.** `weave_rotation` as an `IScalarPainter` angle field that
+   rotates the basis `fabric_material` hands to its substrate's
+   `value`/`Scatter`/`Pdf` — so anisotropic GGX, Ward and Ashikhmin-Shirley
+   bases all follow the weave, and Ward and A-S gain a rotation input they do
+   not have today. **The sheen lobe is isotropic; there is no `weave` enum and
+   no anisotropic Charlie in Phase 1** (§9.5).
+5. **The summons.** A `fabric` preset enum on the chunk and a
+   zero-required-argument `make_fabric` verb, because **C-ADV** says the
+   material alone converts approximately zero times.
+
+Phase 2 buys cue (b) properly — structured, per-thread, with transmission — and
+is gated on a named Phase-1 deficit plus a census. Phase 3 buys cue (d) and is
+gated on a primitive that does not exist. §16 says so plainly rather than
+promising it.
+
+---
+
+## 9. Phase 1 — the cheapest honest win with the widest coverage
+
+### 9.1 The UV-aligned mesh tangent
+
+**Change — but conditionally, and not with a bare `dpdu`.** The naive version of
+this fix (write `vShadingTangent = dpdu` unconditionally wherever `dpdu` is
+written) is wrong twice over. Both defects are visible in the same source the
+fix touches.
+
+**Defect 1 — `dpdu` is not always a UV tangent.** Both mesh sites compute a
+`useUVJacobian` flag and fall back to the raw triangle edge `e1` when the mesh
+has no texture coordinates or the UV triangle is degenerate:
+`const bool useUVJacobian = ( fabs( uvDet ) > NEARZERO );` for the non-indexed
+mesh ([TriangleMeshGeometrySpecializations.h:224-228](../src/Library/Geometry/TriangleMeshGeometrySpecializations.h),
+fallback `dpdu = e1; dpdv = e2;` at [:238-243](../src/Library/Geometry/TriangleMeshGeometrySpecializations.h)),
+and the indexed mesh additionally requires all three `pCoords` to exist
+([TriangleMeshGeometryIndexedSpecializations.h:345-357](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h),
+fallback at [:372-376](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h)).
+`ri.derivatives.dpdu` is then written **unconditionally** either way
+([:458](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h),
+[:306](../src/Library/Geometry/TriangleMeshGeometrySpecializations.h)) — correct
+for its own consumers, which want *a* parameterisation, but fatal here: the
+edge-frame fallback is **per-triangle discontinuous**, so an unconditional write
+would hand every untextured mesh in the tree exactly the arbitrary,
+discontinuous tangent this fix exists to remove — and it would do it via a path
+that *claims* geometric coherence.
+
+**Defect 2 — an authored glTF `TANGENT` must win.** The indexed mesh already
+interpolates an authored tangent into `ri.vTangent` and sets `bHasTangent`
+([TriangleMeshGeometryIndexedSpecializations.h:283-300](../src/Library/Geometry/TriangleMeshGeometryIndexedSpecializations.h)),
+but `Object::IntersectRay` builds the shading ONB **only** from
+`vShadingTangent` ([Object.cpp:699-772](../src/Library/Objects/Object.cpp)) — it
+never consults `vTangent` for the basis. So a fix that wrote only `dpdu` would
+leave the authored tangent unused for anisotropy, and §9.1's own mirrored-seam
+remedy ("re-export with a `TANGENT` accessor") **would have no effect at all**.
+
+**The write, therefore:**
+
+```cpp
+// Indexed mesh: authored TANGENT wins, UV Jacobian second, else nothing.
+if( ri.bHasTangent ) {
+    ri.bShadingTangentFromGeometry = true;
+    ri.vShadingTangent             = ri.vTangent;   // object space
+    ri.bHasShadingTangent          = true;
+} else if( useUVJacobian ) {
+    ri.bShadingTangentFromGeometry = true;
+    ri.vShadingTangent             = dpdu;          // object space
+    ri.bHasShadingTangent          = true;
+}
+// else: leave the flags alone -- Object::IntersectRay falls through to
+// CreateFromW exactly as today, byte-identical.
+```
+
+The non-indexed mesh has no `TANGENT` path, so it carries the `useUVJacobian`
+branch only.
+
+**Both sources are object-space at this point, and both promote identically.**
+`ri.vTangent` is interpolated from the per-vertex array before any transform, in
+the same coordinate frame as `ri.vNormal`; `Object::IntersectRay` promotes
+`vTangent` with the **forward** matrix at
+[Object.cpp:792-794](../src/Library/Objects/Object.cpp) and `vShadingTangent`
+with the same forward matrix in the ONB branch at
+[Object.cpp:740-741](../src/Library/Objects/Object.cpp) — "a tangent transforms
+like a position, NOT inverse-transpose". So feeding either into
+`vShadingTangent` is frame-correct with no conversion.
+
+**The "otherwise" case is the important guarantee.** When neither branch fires —
+an untextured mesh, a degenerate UV triangle, a mesh with no `TANGENT` — nothing
+is written, `bShadingTangentFromGeometry` stays false, and `Object::IntersectRay`
+takes its existing `CreateFromW` path
+([Object.cpp:772](../src/Library/Objects/Object.cpp)). Those hits are
+**byte-identical to today**, which is what keeps §9.9 gate 1's bucket B finite.
+
+**The analytic primitives** write `dpdu` from a genuine surface
+parameterisation with no fallback branch, so they take the write unconditionally:
+[SphereGeometry.cpp:159](../src/Library/Geometry/SphereGeometry.cpp),
+`EllipsoidGeometry.cpp:181`, `TorusGeometry.cpp:164`, and
+`CylinderGeometry.cpp` at **two separate sites**, `:382` and `:510`.
+
+**One further site the earlier count missed: `clipped_plane_geometry`.**
+`ClippedPlaneGeometry::IntersectRay` computes an analytic UV tangent —
+`GeometricUtilities::BilinearTangentU(...)` at
+[ClippedPlaneGeometry.cpp:151-154](../src/Library/Geometry/ClippedPlaneGeometry.cpp)
+— and sets `ri.ptCoord = Point2(h.u, h.v)` at
+[:190](../src/Library/Geometry/ClippedPlaneGeometry.cpp), but **never writes
+`ri.derivatives` at all** (`grep -n derivatives` over that file returns only
+comments). It is therefore a *new* write site rather than an augmented one, and
+it matters disproportionately for this feature: curtains, banners, flags and
+material swatches are exactly what a clipped plane is used for.
+
+**Examined and deliberately NOT written: `bilinear_patch_geometry`.**
+`BilinearPatchGeometry::ComputeSurfaceDerivatives` sets `sd.dpdu = onb.u()` from
+`onb.CreateFromW( objSpaceNormal )`
+([BilinearPatchGeometry.cpp:399-402](../src/Library/Geometry/BilinearPatchGeometry.cpp))
+— that is **the arbitrary canonical-axis tangent itself**, not a UV tangent.
+Writing it into `vShadingTangent` would buy exactly nothing (it reproduces what
+`CreateFromW` already picks) while falsely advertising a coherent
+geometry-supplied tangent to every consumer that checks the flag. It is listed
+here so the omission reads as a decision rather than an oversight; it becomes a
+site the day the patch gains a real UV parameterisation.
+
+**Eight write sites, not one.** Two mesh specialisation headers (each carrying
+the two-branch form above), five analytic-primitive sites (sphere, ellipsoid,
+torus, cylinder ×2), and the new clipped-plane site: **≈ 30 lines across seven
+files**, counting the mesh sites' extra branch. It is still a mechanical change
+— the same few statements at sites that already have the vector in hand — but
+"a four-line fix" would be wrong, and the aggregate is what §14 costs.
+
+**Why the geometry level and not the material.** §4.3: `NormalMap::Modify`
+preserves a geometry-supplied tangent through `CreateFromWU` and discards
+anything else ([NormalMap.cpp:186-197](../src/Library/Modifiers/NormalMap.cpp)),
+so only the geometry-level write survives normal mapping. And `Object`'s
+derivative promotion happens *after* the ONB build (lines 832 vs 699-772), so an
+`Object`-side fix would need reordering; the object-space write needs none.
+
+**Blast radius — wider than the anisotropic materials, and this matters for how
+the gate is written.** There are two distinct effects, and conflating them will
+make the regression sweep unreadable.
+
+*Effect 1 — a real appearance change, on anisotropic materials only.* The
+tangent basis changes for **every anisotropic material on every UV-mapped mesh
+and on the analytic primitives** — GGX with `alphaX ≠ alphaY`, Ward,
+Ashikhmin-Shirley, and any authored `tangent_rotation`. Highlights rotate. This
+is a *correctness improvement* that is nonetheless a visible change on existing
+scenes, and each such change needs a justification.
+
+*Effect 2 — a benign noise-pattern shift, on essentially everything else.* The
+ONB's `u`/`v` axes are not read only by anisotropic lobes. **Isotropic sampling
+reads them too**, because a sampled direction is built by transforming a
+canonical-frame vector through the whole basis:
+`GeometricUtilities::CreateDiffuseVector` ends in `uvw.Transform(...)`
+([GeometricUtilities.cpp:85-97](../src/Library/Utilities/GeometricUtilities.cpp)),
+and that function is what `LambertianSPF`, `OrenNayarSPF` and `SheenSPF`
+([SheenSPF.cpp:73-74](../src/Library/Materials/SheenSPF.cpp)) all sample with.
+The microfacet SPFs read `onb.u()`/`onb.v()` directly for their sampling frame
+**whether or not `alphaX == alphaY`** (`GGXSPF.cpp`, `MicrofacetUtils.h`,
+`WardAnisotropicEllipticalGaussianSPF.cpp`,
+`AshikminShirleyAnisotropicPhongSPF.cpp`, `SchlickSPF.cpp`). So on every
+UV-mapped mesh, **the RNG-draw → direction mapping changes for every diffuse and
+glossy material**, and a pixel-level diff of a plain Lambertian scene will show
+differences.
+
+**The expectation is unchanged.** Cosine and microfacet sampling are
+rotationally invariant about the normal, so rotating `u`/`v` in the tangent
+plane re-labels which random draw produces which direction without altering the
+distribution. Effect 2 is a *different noise realisation of the same estimator*,
+not a bias. **But it means byte-identity is the wrong gate**, and a sweep that
+demands "no unexplained pixel differences" would flag every Lambertian scene in
+the tree. §9.9 gate 1 is written accordingly.
+
+Two further consequences for the plan: the sweep must be scoped and typed as
+§9.9 gate 1 specifies, and its
+interaction with `SDFGeometry` heightfield mode's deliberate world-X coherence
+(chosen so a shared `tangent_rotation` rotates from the same base on the SDF and
+on the `cartesian_disk` mesh, [Object.cpp:691-694](../src/Library/Objects/Object.cpp))
+must be checked — the mesh half of that pairing is exactly what this change
+alters.
+
+**Mirrored UV seams — the one real limitation, inherited knowingly.** A
+`dpdu`-derived frame is coherent within a UV island and can flip chirality
+across a *mirrored* seam. `NormalMap.cpp` names this failure mode in its own
+comment at the very site this fix borrows from: using `dpdu`/`dpdv` is
+"qualitatively correct on any connected UV chart — the only failure mode is
+across mirrored UV seams, where authored TANGENT.w is the only signal that
+recovers the chirality flip (and that signal is what's missing here)"
+([NormalMap.cpp:109-120](../src/Library/Modifiers/NormalMap.cpp)). That matters
+for fabric specifically, because mirrored islands are the normal way to UV a
+symmetric asset — a cushion's two faces, a garment's left and right panels — so
+a weave direction will be internally consistent per island and can mirror across
+the seam between them.
+
+`vShadingTangent` carries **no sign companion** to fix this: `vTangent` has
+`bitangentSign` and gets it folded through the transform's determinant, but the
+shading-tangent pair is just `Vector3 vShadingTangent; bool bHasShadingTangent;`
+([RayIntersectionGeometric.h:296-299](../src/Library/Intersection/RayIntersectionGeometric.h)
+vs [:344-345](../src/Library/Intersection/RayIntersectionGeometric.h)).
+
+**Recommendation: accept it as a known limitation in Phase 1, exactly as
+`NormalMap` already accepts it, and say so in the descriptor** — an asset whose
+weave must cross a mirrored seam should be re-exported with a `TANGENT`
+accessor, which is the same remedy `NormalMap`'s comment prescribes. It is a
+*better* limitation than today's state, where the direction is discontinuous at
+every triangle rather than at every mirrored island boundary. §15 debt 15
+records it, and §9.9 gate 1 puts a mirrored-UV asset in the sweep so the
+severity is measured rather than assumed.
+
+**Scope discipline.** Do *not* also change `NormalMap`'s TBN, `bHasTangent`
+handling, or the glTF `TANGENT` priority. The imported `TANGENT` accessor
+remains the higher-authority signal where present, and `dpdu` is the fallback —
+the same priority `NormalMap` already implements.
+
+### 9.2 `fabric_material` — the material contract
+
+The triad, checked against [MATERIALS.md](MATERIALS.md) §9 item by item.
+
+**Base.** A **material reference** with a `dynamic_cast` allowlist mirroring
+`coated_material`'s, which is **three C++ types**: `LambertianMaterial |
+OrenNayarMaterial | GGXMaterial`
+([CoatedMaterial.h:130-132](../src/Library/Materials/CoatedMaterial.h)).
+
+**Do not add a fourth cast target for PBR — there is no such class.**
+`coated_material`'s *user-facing* allowlist string names four scene keywords
+("lambertian_material, orennayar_material, ggx_material,
+pbr_metallic_roughness_material",
+[CoatedMaterial.h:112-113](../src/Library/Materials/CoatedMaterial.h)), and it
+is easy to mistake that for the cast list. It is not:
+`pbr_metallic_roughness_material` is **not its own material class** — it is
+resolved at scene-build time in `Job::AddPBRMetallicRoughnessMaterial` into a
+painter graph plus a single `ggx_material` in `eFresnelSchlickF0` mode
+([MATERIALS.md:247-250](MATERIALS.md)), so by the time
+`IsSupportedSubstrate` runs it *is* a `GGXMaterial` and passes transitively.
+`fabric_material` should reuse the same split: three `dynamic_cast`s, and a
+four-keyword diagnostic string kept as a single source of truth the way
+`SubstrateAllowlistText()` is.
+
+Oren-Nayar is the natural fabric base — it is rough-diffuse, it already has a
+closed-form `hemisphericalAlbedo` override
+([OrenNayarBRDF.cpp:149-199](../src/Library/Materials/OrenNayarBRDF.cpp)), and
+it is already on `coated_material`'s list. The transitive PBR route is what lets
+glTF `KHR_materials_sheen` land on a PBR base.
+
+**`value` / `valueNM`.** Closed form, summing both lobes with the glTF
+albedo-scaling law of §3.3:
+
+```
+f(l, v) = sheenColor · D_Charlie(α, n·h) · V_Charlie(α, n·l, n·v)
+        + f_base(l, v) · min( 1 − max3(sheenColor)·E(α, n·v),
+                              1 − max3(sheenColor)·E(α, n·l) )
+```
+
+The base term calls straight through to the substrate's own `IBSDF::value`. The
+scaling factor is symmetric in `l`/`v` by construction (it is a `min` of the two
+symmetric-under-swap arms), which is what preserves reciprocity — the same
+discipline the `hemisphericalAlbedo` contract enforces for the coat
+([IBSDF.h:82-135](../src/Library/Interfaces/IBSDF.h)). `valueNM` is the identical
+algebra with `GuardedGetColorNM` on the tint and the substrate's `valueNM` for
+the base; `E` is achromatic (roughness and geometry only) and therefore does not
+disturb the spectral path — the same argument hair's achromatic pdf proxy makes.
+
+**`Pdf` / `PdfNM`.** The real mixture: `w · pdf_sheen(wo) + (1 − w) ·
+pdf_base(wo)`, evaluated for an arbitrary `wo` with no memory of how anything
+was sampled. This is the line that `CompositeSPF` cannot deliver and that BDPT
+and VCM require. `CoatedSPF::PdfImpl` is the exact shape to copy — it returns
+`pCoat * qCoat + (1 - pCoat) * qBase`
+([CoatedSPF.cpp:58-96](../src/Library/Materials/CoatedSPF.cpp)), including the
+detail that it repeats the sampler's own geometric-horizon rejection so a
+direction `Scatter` can no longer emit carries zero density.
+
+**`Scatter` / `ScatterNM` — sample one lobe, then price the sample against the
+FULL mixture.** Selection uses a **discrete weight equal to the sheen's
+directional albedo**, `w_sheen = max3(sheenColor) · E(α, n·v)`, so the selection
+probability tracks the energy split rather than being an arbitrary constant.
+Selected sheen → **cosine-hemisphere sample**, exactly as `SheenSPF` does today
+([SheenSPF.cpp:73-74](../src/Library/Materials/SheenSPF.cpp)); §9.4 explains why
+D-importance sampling is deferred rather than adopted. Selected base → delegate
+to the substrate's `Scatter`, **handing it the weave-rotated basis** of §9.5.
+
+**Then, whichever branch produced `wo`, recompute the full mixture density at
+that direction and use it for both the weight and the reported pdf:**
+
+```
+q       = Pdf( ri, wo, ior_stack )        // the two-term mixture, above
+s.kray  = value( wo, ri ) * cos(wo) / q   // the closed-form SUM of both lobes
+s.pdf   = q
+```
+
+**Do not divide `kray` by the selection probability alone.** That convention is
+correct only for **delta** lobes, where `Pdf()` returns 0 by contract
+([ISPF.h:194](../src/Library/Interfaces/ISPF.h): "For delta distributions
+(perfect reflection/refraction), returns 0") and MIS routes around the density
+entirely through `GetSpecularInfo` — which is why the 2026-05 path-tree
+branching excision, whose subject was multi-lobe **delta** vertices at Fresnel
+splits, could use it. **Neither fabric lobe is delta.** Charlie sheen and every
+allowlisted substrate have full-hemisphere support, so a given `wo` is
+generically reachable from *both* branches, and the density that `Scatter` must
+report is the one it effectively sampled from — the whole mixture, not the
+branch-local term. Reporting `w · pdf_sheen(wo)` for a sheen-branch sample would
+disagree with an independent `Pdf(ri, wo)` call for that same `wo` whenever
+`pdf_base(wo) > 0`, which is exactly the Scatter↔Pdf mismatch
+[SPFPdfConsistencyTest.cpp](../tests/SPFPdfConsistencyTest.cpp) exists to catch
+and that §9.9 gate 6 commits Phase 1 to passing.
+
+`CoatedSPF` already does precisely this for its own continuum/continuum pair:
+it computes `q = PdfImpl(ri, wo, nm, ior_stack)` for the sampled direction
+([CoatedSPF.cpp:209](../src/Library/Materials/CoatedSPF.cpp)), then sets
+`s.kray = pBRDF->value(sw, ri) * (scos / sq)` and `s.pdf = sq`
+([CoatedSPF.cpp:253-257](../src/Library/Materials/CoatedSPF.cpp) for the
+substrate branch, rewritten in place; [:268-272](../src/Library/Materials/CoatedSPF.cpp)
+for the coat branch) — so `Pdf()` agrees with the carried pdf by construction.
+Copy that, including its `q <= 1e-12` guard, which zeroes the **throughput** of
+a degenerate sample but deliberately leaves the pdf alone, because a non-delta
+ray with `pdf == 0` is a live 0/0 hazard in a downstream MIS denominator
+([CoatedSPF.cpp:211-231](../src/Library/Materials/CoatedSPF.cpp)).
+
+**Also replicate `SheenSPF`'s geometric-horizon gate**
+([SheenSPF.cpp:86-99](../src/Library/Materials/SheenSPF.cpp)) — a `GlintModifier`
+tilt can otherwise send a continuation ray into the solid — and mirror it in
+`Pdf`, as `CoatedSPF::PdfImpl` does, so the sampler and the density agree about
+which directions are reachable.
+
+**`GetSpecularInfo`.** Not overridden. No lobe is delta; SMS correctly ignores
+fabric entirely, on hair's precedent.
+
+**`albedo` (OIDN AOV).** `base.albedo(ri) · scaling + sheenColor · E(α, n·v)` —
+a genuinely noise-free estimate rather than sheen's current clamp-to-itself.
+
+**`hemisphericalAlbedo` — NOT a free closed form; this needs its own bake or an
+explicit bound.** The contract wants a single direction-independent number: the
+hemispherically-averaged directional-hemispherical reflectance, with
+implementations forbidden from reading `ri.ray`
+([IBSDF.h:82-106](../src/Library/Interfaces/IBSDF.h)). The sheen lobe's own
+share is easy — it is a bihemispherical average of `E`, one extra reduction over
+the table that is baked anyway. **The base term is not**, because the scaling
+factor is `min(1 − w(v), 1 − w(l))` and a `min` **does not factor** into (a
+function of `l`) × (a function of `v`). So the base's contribution is
+`∫∫ f_base(l,v) · min(1 − w(v), 1 − w(l)) dl dv`, which cannot be recovered by
+multiplying the substrate's own `hemisphericalAlbedo` by anything derived from
+`E` alone. Three honest routes, in preference order:
+
+1. **Tabulate the kernel — exact for Lambertian, an approximation above it.**
+   `w = max3(sheenColor) · E(α, cosθ)` depends on direction only through `E`, so
+   the double integral of the scaling factor alone is a function of just **two**
+   scalars, `(α, max3(sheenColor))`. Bake
+   `S(α, m) = ∫∫ min(1 − m·E(α, n·v), 1 − m·E(α, n·l)) dl dv` **once, in the
+   same generator pass that bakes `E`**, and return
+   `substrate.hemisphericalAlbedo() · S(α, m) + sheenAlbedo(α) · sheenColor`.
+
+   **Be precise about what that is worth.** Pulling the substrate's own albedo
+   out of the joint integral treats `f_base` and the `min(…)` kernel as
+   *uncorrelated*, which requires `f_base` to be **constant** in the integration
+   variables — i.e. it is **exact only for a Lambertian substrate**. Azimuthal
+   symmetry about the normal is *not* sufficient and is the wrong test: the
+   other two allowlisted substrates are genuinely joint in `l` and `v` and do
+   correlate with a grazing-peaked kernel. **Oren-Nayar** couples them through
+   `max(θ_l, θ_v)` / `min(θ_l, θ_v)` and the azimuthal difference term
+   ([OrenNayarBRDF.cpp:149-199](../src/Library/Materials/OrenNayarBRDF.cpp)), and
+   **GGX** depends on the half-vector `n·h`, `h = normalize(l + v)`. A toy
+   integral with an Oren-Nayar-shaped coupling against a Charlie-like
+   grazing-peaked `E` at `m = 0.8` put the factored form **~3 % off** the true
+   double integral — small, one-signed, and growing with substrate roughness.
+   So for Oren-Nayar and GGX this is an **uncorrelated-response approximation of
+   bounded-but-unmeasured error**, not an identity, and it must not be described
+   as exact. §9.9 gate 5 measures that error before it ships (see below).
+1b. **The exact alternative, if gate 5(b) says the ~3 % matters — one option,
+   not two.** Bake `S` **per substrate class**: a 3D table
+   `(α, m, substrate roughness)`, one surface per allowlisted class, which
+   restores exactness at roughly roughness-many times the table cost.
+   **A construction-time numerical `∫∫` using the substrate's real `value()` is
+   NOT an option, despite being the obvious one.** There is no
+   `RayIntersectionGeometric` at material-construction time, so such a
+   quadrature can only evaluate the substrate's *constant* parameters — and
+   every fabric this design is built around drives reflectance and roughness
+   from painters (§9.8's worked example does exactly that). It would therefore
+   return a number computed from whatever a painter reports at a synthetic
+   default hit, silently wrong wherever the material actually varies, and
+   *presented as exact*. That is a worse failure than the approximation it would
+   replace. Discarded.
+
+2. **Bound it.** `min(a, b) ≤ (a + b)/2`, and the mean form *does* factor, so
+   `1 − m·Ē` with `Ē` the hemispherical mean of `E` is a strict upper bound —
+   cheap, honestly conservative, and a legitimate answer since the contract
+   permits an estimate. This is the safe fallback if gate 5 is not run in time.
+3. **Return `false`.** The contract allows a material to decline, and callers
+   fall back. Correct but it forfeits the composability below.
+
+Whichever route is taken, it must be stated in the header — with its exactness
+class named, not described as "closed form" — and **gate 5 must measure route
+1's substrate-coupling error directly**, by comparing the tabulated value
+against a brute-force `∫∫ f_base(l,v)·min(…)` quadrature for an Oren-Nayar and a
+GGX substrate at several roughnesses. That is a separate check from the
+`f(a→b) == f(b→a)` sweep on `value()`, which does **not** exercise
+`hemisphericalAlbedo` at all — this quantity is a diffuse-recycling term, so a
+reciprocity pass on `value()` would not surface an error here. Getting it wrong
+risks a smaller instance of exactly the defect the contract exists to prevent:
+a view-dependent stand-in in a shared term cost `coated_material`'s first cut
+~28 % asymmetry at grazing
+([IBSDF.h:87-97](../src/Library/Interfaces/IBSDF.h)).
+Getting this right is also what would let a future `coated_material` sit *over*
+a `fabric_material` — a waxed canvas — since that is the quantity the coat's
+recycling denominator consumes. §15 debt 16 tracks it.
+
+**`IsVolumetric`.** False. No Beer-Lambert in `kray`.
+
+**`ScattersFullSphere`.** **False in Phase 1** — this lobe is reflection-only.
+Phase 2's transmission lobe flips it to true and inherits the full-sphere-NEE
+machinery for free ([IMaterial.h:237](../src/Library/Interfaces/IMaterial.h)),
+which is the mechanism that recovered 6-8× on backlit hair.
+
+**`CouldLightPassThrough`.** False in Phase 1, true in Phase 2.
+
+### 9.3 The chunk
+
+```
+fabric_material
+{
+	name			<string>
+	fabric			<enum: cotton|denim|silk|satin|velvet|wool|linen|custom>   # preset seed, default custom
+	base			<material ref>          # lambertian | orennayar | ggx (pbr_metallic_roughness resolves to ggx)
+	sheen_color		<Color painter ref>     # the dye/fuzz tint; omitted = preset colour, else white
+	sheen_roughness		<Scalar painter ref, requireSingle>
+	weave_rotation		<Scalar painter ref, requireSingle>   # radians; rotates the frame handed to the SUBSTRATE (9.5)
+}
+```
+
+Five slots, of which the no-argument case needs **one** (`base`), because
+`fabric` seeds the rest. There is no `weave` enum and no `weave_anisotropy` —
+§9.5 explains why the sheen lobe is strictly isotropic and anisotropy is the
+substrate's job.
+
+**An omitted `sheen_color` must be handled explicitly, not resolved.** RISE's
+built-in `"none"` painter is **black**, so a slot that passes an unset name
+through the painter manager binds black and switches the lobe *off* — the exact
+trap `coated_material` already hit and documented for `coat_tint`: *"Resolving
+it through the painter manager would bind the built-in 'none' painter, which is
+BLACK — an opaque coat, the opposite of the intended default — so an owned white
+painter is synthesised instead"*
+([Job.cpp:3275-3289](../src/Library/Job.cpp)). `fabric_material` follows that
+precedent exactly: an omitted or `none` `sheen_color` resolves to **the preset's
+colour if the preset sets one, otherwise an owned uniform white painter**;
+a named painter still resolves normally, so an author who genuinely wants a
+black (disabled) sheen binds one explicitly.
+
+**Preset seeding rule, and why it needs care.** `bag.GetString(name, default)`
+cannot distinguish "the author omitted this" from "the author wrote the default
+value" — but `ParseStateBag::Has()` exists
+([ChunkDescriptor.h:316](../src/Library/Parsers/ChunkDescriptor.h)). The rule is
+therefore expressible and must be stated in the descriptor: **`fabric <name>`
+supplies the default for every slot the author did not write; any explicitly
+written slot wins.** In `Finalize`:
+
+```cpp
+const FabricPreset& P = LookupFabricPreset( bag.GetString( "fabric", "custom" ) );
+std::string rough = bag.Has( "sheen_roughness" )
+                  ? bag.GetString( "sheen_roughness", P.sheenRoughness )
+                  : P.sheenRoughness;
+```
+
+**A preset cannot configure the substrate, and pretending otherwise is the
+trap.** `fabric_material` holds a *reference* to an already-constructed base
+material; `Finalize` can neither retype it nor re-parameterise it. So
+`fabric satin` bound over a Lambertian base yields **chalk with a faint sheen** —
+the preset's whole point (a tight, directional, anisotropic silk highlight)
+lives in a substrate the chunk cannot reach. Two consequences, both required:
+
+- **The `fabric` enum seeds only `fabric_material`'s own slots.** The preset
+  table below is therefore split into what the preset *sets* and what it can
+  only *recommend*.
+- **A warn-level mismatch diagnostic — logged in `Job::AddFabricMaterial`, not
+  in `Finalize`.** The location is forced by the parser contract:
+  `IAsciiChunkParser::Finalize( const ParseStateBag&, IJob& )` sees only the
+  substrate's **name**, a string, and has no way to learn its runtime class. The
+  type check has to happen during assembly, where the material manager has
+  already resolved the name to a pointer — exactly where `coated_material` does
+  it: `CoatedMaterial::IsSupportedSubstrate( *pBase, &why )` is called from
+  [Job.cpp:3265](../src/Library/Job.cpp), inside `Job::AddCoatedMaterial`
+  ([:3245](../src/Library/Job.cpp)), *after* `pMatManager->GetItem` has resolved
+  `pBase`. **`Finalize` therefore only forwards the preset name through to
+  `Job::AddFabricMaterial`**, which resolves the base, `dynamic_cast`s it, and
+  logs once when the class does not match what the preset recommends:
+
+  ```
+  fabric_material `%s`: fabric `%s` expects a %s substrate for its
+  characteristic highlight, but `base` is bound to %s `%s`; the sheen lobe
+  will apply but the weave/anisotropy the preset implies will not.  See
+  docs/CLOTH_FABRIC_DESIGN.md 9.3, or call make_fabric which mints a
+  matching substrate.
+  ```
+
+  Warn, not error: the composition is legal and may be deliberate. Note the
+  contrast with `coated_material`, which *errors* and refuses on an unsupported
+  substrate ([Job.cpp:3266-3273](../src/Library/Job.cpp)) — there the substrate
+  is outside the BSDF's evaluable set, whereas here it is merely not the one the
+  preset was calibrated for.
+- **`make_fabric` closes the gap by minting the substrate** — §9.7.
+
+**What is actually new here, precisely.** RISE does have named values already:
+`ParameterDescriptor::presets` offers per-parameter quick-picks in the editor
+([ChunkDescriptor.h:449](../src/Library/Parsers/ChunkDescriptor.h); e.g.
+`scene_unit`, `sensor_size`). What does not exist is **a name that seeds several
+slots at once, resolved in `Finalize` rather than in the editor UI** — and no
+material carries a preset of any kind. That multi-slot seeding is the untested
+mechanism, and it is what §13's census measures. Every existing
+`ValueKind::Enum` is a mode or algorithm selector (§1 gap 5). That is not a
+reason not to do it — but it *is* a reason to say so, to price it, and to design
+the census that tests whether it works (§13).
+
+Indicative preset table (starting points to be tuned against reference
+photography, not measurements). **The left group is what the enum actually sets;
+the right group is what `make_fabric` mints and a hand-authored chunk must
+supply itself:**
+
+| `fabric` | **`fabric_material` slots (seeded)** | | **recommended substrate (verb-supplied)** | note |
+|---|---|---|---|---|
+| | `sheen_roughness` | sheen colour | class + parameters | |
+| `cotton` | 0.55 | dye, untinted white default | `orennayar_material`, σ ≈ 0.4 | matte; isotropic base is correct |
+| `linen` | 0.65 | dye | `orennayar_material`, σ ≈ 0.5 | coarser slub; pair with a `gabor3d_painter` breakup |
+| `denim` | 0.45 | dye | `ggx_material`†, `alphax` ≈ 0.34 / `alphay` ≈ 0.22, steered by `weave_rotation` | the twill wale is the look, and it is **substrate** anisotropy |
+| `wool` | 0.75 | dye | `orennayar_material`, σ ≈ 0.6 | broad, soft sheen; isotropic |
+| `silk` | 0.20 | dye | `ggx_material`†, `alphax` ≈ 0.30 / `alphay` ≈ 0.10 | strongly directional; the anisotropy ratio *is* the fabric |
+| `satin` | 0.12 | dye | `ggx_material`†, `alphax` ≈ 0.34 / `alphay` ≈ 0.06 | float direction dominates; the tightest ratio in the set |
+| `velvet` | 0.08 | dye, dark | `lambertian_material`, dark | pure grazing halo; **isotropic on purpose** — velvet is a pile, not a weave |
+
+**† A minted `ggx_material` substrate is not just `alphax`/`alphay`.**
+`fresnel_mode` defaults to `conductor`
+([ChunkParserRegistry.cpp:4189](../src/Library/Parsers/ChunkParserRegistry.cpp))
+and `rs` ("Specular reflectance / F0",
+[:4182](../src/Library/Parsers/ChunkParserRegistry.cpp)) is a required
+Color-painter *reference* that cannot be written inline, so a base carrying only
+roughness and `rd` renders with **no dielectric specular at all** — no highlight,
+which is the whole point of choosing GGX for these three. The three rows marked
+† therefore also require `fresnel_mode schlick_f0` and `rs` bound to a
+dielectric F0 ≈ 0.04 painter. §9.7 step 1 specifies exactly what `make_fabric`
+mints; **a hand-authored chunk must supply both itself**, and this is the single
+most likely way to hand-author a silent black satin.
+
+Two readings worth making explicit. **`velvet` wants no anisotropy at all** —
+its look is a pile, and the isotropic Charlie lobe over a dark Lambertian is
+exactly right; that the table can say so is itself an argument for presets over
+raw knobs. And **`silk`/`satin`/`denim` differ from the others only in the
+substrate**, which is precisely why the split-column form above is the honest
+one: an author who binds those three presets over a Lambertian base gets the
+diagnostic, not the fabric.
+
+### 9.4 Sheen upgrade — Charlie + `E` table now, LTC gated
+
+**Two candidates.**
+
+| | **Charlie + directional-albedo `E`** | **LTC sheen (Zeltner 2022)** |
+|---|---|---|
+| Energy conservation | patched — bounded, compensated | **exact by construction** |
+| Multiple scattering (cue c) | **no** | **yes** |
+| Importance sampling | **cosine-hemisphere, retained** (D-sampling deferred — no VNDF, below-horizon leakage; see below) | **exact, LTC-native** |
+| Art-facing parameters | 2 | 2 (drop-in) |
+| New RISE infrastructure | one 2D bake + a lookup | **LTC eval/sample primitive + a fitted 3×3 matrix table + a reference volumetric fibre-slab path tracer to fit against** |
+| Reuses shipped, furnace-tested code | **yes — `CharlieSheen.h` unchanged** | no — replaces it |
+| Table provenance | RISE bakes it (medulla precedent) | vendor from `tizian/ltc-sheen` (license review) **or** build the reference tracer and fit |
+
+**Recommendation: Charlie + `E` in Phase 1. LTC is the better model and is
+gated.**
+
+The reason is provenance, not merit. RISE's standing precedent is to **re-derive
+rather than vendor**: the medulla table committed at
+`HairMedullaProfile_LUTData.cpp` is produced by RISE's own Monte-Carlo bake in
+`tools/HairMedullaProfileGen.cpp` specifically so no third-party research code or
+data is vendored ([HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §11). Applying that
+precedent to LTC means building a reference volumetric fibre-slab path tracer
+*and* a per-cell nonlinear LTC fit — a real tool, not a weekend. Applying it to
+`E(α, cosθ)` means a straightforward directional-albedo integral over the lobe
+RISE already has, of exactly the shape `HairMedullaProfileGen` already performs,
+validated by the furnace harness RISE already runs.
+
+**The `E` table.** A 2D bake over (α, cos θ) — 32 × 32 doubles is 8 KB, an order
+of magnitude smaller than the 52.8 KB medulla table. The **same generator pass
+should also bake `S(α, max3(sheenColor))`**, the bihemispherical average of the
+scaling factor that §9.2's `hemisphericalAlbedo` needs and cannot get from `E`
+alone. The generator writes its
+own `.cpp` with the bake extents and the regeneration command stamped into the
+banner, exactly as the medulla generator does. Its test is the one the medulla
+table already has in a different form: assert the baked float count against the
+baked extents, and assert the runtime struct's capacity against the baked bin
+count.
+
+**Sampling — Phase 1 KEEPS cosine-hemisphere sampling.** An earlier draft
+proposed replacing `SheenSPF`'s cosine sampling with D-importance sampling; that
+proposal is **withdrawn**, because the obvious implementation is not merely
+suboptimal, it fails the shipped pdf tests.
+
+The standard microfacet recipe — sample `h ∝ D(h)·(n·h)`, then reflect `v` about
+`h` — has no **visible-normal (VNDF)** variant for Charlie: there is no published
+VNDF derivation for the exponentiated-sine distribution, and Charlie's mass sits
+near *grazing* half-vectors by construction (that is the entire point of the
+lobe). Reflecting `v` about such an `h` puts `wo` **below the horizon** for a
+substantial fraction of draws at grazing incidence. Rejecting those draws is the
+only available remedy, and rejection changes the density: the true pdf of an
+accepted sample becomes `D(h)·(n·h) / (4·(v·h)) · 1/C(v)` with an acceptance
+factor `C(v) < 1` that varies with the view direction and has no closed form.
+
+A `Pdf()` that returns the un-normalised density then **fails two of the three
+parts of the shipped consistency harness**:
+
+- **Part 2** integrates `Pdf` over the hemisphere on a 100 × 200 grid and
+  requires the result within `INTEGRAL_TOL = 0.05` of 1
+  ([SPFPdfConsistencyTest.cpp:84](../tests/SPFPdfConsistencyTest.cpp) for the
+  tolerance, [:297-326](../tests/SPFPdfConsistencyTest.cpp) for the integral and
+  its `fabs(pdfIntegral - 1.0) > integralTol` check). An un-normalised density
+  integrates to `C(v) < 1` and fails directly.
+- **Part 3**'s chi-squared histogram
+  ([SPFPdfConsistencyTest.cpp:329](../tests/SPFPdfConsistencyTest.cpp) onward,
+  `CHI2_ALPHA = 0.001`) compares sampled direction frequencies against the
+  reported density and would reject the mismatch independently.
+
+Normalising by `C(v)` requires computing it, which is a second tabulated
+quantity over `(α, cosθ)` — real work, and work whose correctness is exactly
+what the tests above would have to prove.
+
+**So Phase 1 retains cosine-hemisphere sampling, exactly as `SheenSPF` does
+today** (`GeometricUtilities::CreateDiffuseVector`,
+[SheenSPF.cpp:73-74](../src/Library/Materials/SheenSPF.cpp), with
+`pdf = nDotL · 1/π` at [:116](../src/Library/Materials/SheenSPF.cpp)). It is
+always below the horizon-safe, it integrates to 1 by construction, and its
+density is exact — so §9.2's mixture `Pdf` is exact too. **MIS against NEE
+carries the variance**: a sheen lobe is lit overwhelmingly by direct light at
+grazing, which is the regime light sampling handles well, and the mixture pdf of
+§9.2 gives MIS a correct weight to work with.
+
+**D-sampling becomes a gated follow-up, not a Phase-1 item.** Its entry
+condition is a *sampler/pdf pair proven against Part 2 and Part 3 first* —
+whether by an analytic inverse or a tabulated inverse CDF plus a tabulated
+`C(v)` normaliser. Note also that R5 reports Charlie's CDF in `sin θh` as
+closed-form invertible but **its own verification summary does not list that
+claim among the items confirmed against a primary source**, so treat the
+analytic route as [from memory] and check the paper before attempting it. §9.9
+gate 10 measures what the variance actually costs, which is what would justify
+the follow-up.
+
+**What Charlie + `E` does not buy: cue (c).** The albedo patch is a
+single-scatter energy correction, not a multiple-scattering term. Fabric will
+still have a slightly harder terminator than reference. **That is the named,
+measurable deficit that gates LTC**, and §9.9 makes measuring it a Phase-1 exit
+item rather than an assertion.
+
+### 9.5 Weave direction — an angle field that steers the SUBSTRATE, not the sheen
+
+**The sheen lobe is strictly isotropic in Phase 1. Weave anisotropy is delivered
+by the substrate.** An earlier draft of this document proposed an *elliptical
+Charlie* lobe — `α_along` stretched against `α_across` — and that proposal is
+**withdrawn**. Four independent reasons, each checkable in source:
+
+1. **Charlie's `D` has an isotropic-only normaliser.** It is an empirical
+   exponentiated sine, `D = (2 + 1/α)·sin(θ_h)^(1/α) / 2π`
+   ([CharlieSheen.h:39-50](../src/Library/Materials/CharlieSheen.h)); the
+   `(2 + 1/α)` factor is what makes it integrate correctly over the sphere for
+   a *single* α. Substituting a direction-dependent α does not carry that
+   normalisation with it, and there is no published anisotropic form to borrow.
+2. **The Λ visibility is a polynomial fit to the isotropic distribution.** It
+   takes exactly `(α, cosθ)` and has **no azimuthal dependence at all**
+   ([CharlieSheen.h:71-102](../src/Library/Materials/CharlieSheen.h)) — the
+   Estevez & Kulla Table-1 coefficients were fit against the isotropic NDF.
+   Feeding it an azimuth-dependent roughness silently uses the wrong masking
+   function.
+3. **A 2D `E(α, cosθ)` table cannot compensate a 4D anisotropic albedo.** The
+   directional albedo of an elliptical lobe depends on the azimuth of `v`
+   relative to the yarn as well as on `α` and `cosθ`, so the base scaling of
+   §9.2 would mis-compensate **by azimuth** — brightening the base along the
+   warp and darkening it across, or vice versa, with no way to tell from the
+   table.
+4. **The proposed fallback destroyed the feature.** The earlier text said that
+   if the furnace showed `ρ > 1`, the anisotropic path would fall back to the
+   isotropic lobe at the geometric-mean α — i.e. exactly whenever the feature
+   was energetically wrong, it would silently stop being a feature.
+
+**Every production system surveyed makes the same call**: glTF's
+`KHR_materials_sheen`, Filament's cloth model and OpenPBR's fuzz slab all keep
+sheen isotropic and put anisotropy in the base layer (§3.3, §3.8). RISE follows
+them.
+
+**The mechanism instead: `fabric_material` rotates the frame it hands the
+substrate.** `weave_rotation` is a `ParameterPipe::Scalar` reference with
+`requireSingle = true`, an angle in radians. `fabric_material` builds a rotated
+copy of the hit's basis with the helper GGX already uses —
+`MicrofacetUtils::RotateTangent(src, angle)`, which rotates `u`/`v` about `w`
+and returns a new `OrthonormalBasis3D`
+([MicrofacetUtils.h:50-61](../src/Library/Utilities/MicrofacetUtils.h)) — and
+passes a `RayIntersectionGeometric` carrying that rotated `onb` into the
+substrate's `value`, `Scatter` and `Pdf`. The sheen lobe itself ignores the
+rotation entirely, because it is isotropic and the rotation is a no-op on it.
+
+Three things fall out of that, and they are the whole argument for this design:
+
+- **Any anisotropic base now follows the weave.** A `ggx_material` substrate
+  with `alphax ≠ alphay` ([GGXBRDF.h:47-48](../src/Library/Materials/GGXBRDF.h))
+  gets its elliptical lobe steered per-point by the painter — real, published,
+  furnace-tested anisotropy instead of an invented one.
+- **Ward and Ashikhmin-Shirley gain a rotation input they do not have today.**
+  §4.3 established that GGX is the *only* anisotropic material in the tree with
+  a rotation slot. Under a `fabric_material` wrapper, all three get one, because
+  the rotation happens in the frame rather than in the lobe.
+- **It composes with GGX's own `tangent_rotation`.** Both are rotations about
+  the same `w`, so they simply add: the fabric's weave angle orients the yarn,
+  and the substrate's own rotation stays available for a finer per-material
+  offset. Composition order must be fixed and documented (weave first, then the
+  substrate's own), and it is exactly reproducible because both go through the
+  one shared helper.
+
+**Implementation notes.** The rotated basis must be handed to **all three** of
+the substrate's entry points identically — a `Scatter` that samples in a rotated
+frame while `Pdf` evaluates in the unrotated one is precisely the Scatter↔Pdf
+mismatch §9.2 exists to avoid. And the rotated `ri` must be a local copy;
+`RayIntersectionGeometric` is the shared hit record and the scene is immutable
+during the parallel pass.
+
+**There is no `weave` enum in Phase 1.** The earlier draft proposed
+`none|plain|twill|satin`, where the value picked "a fixed anisotropy ratio and a
+default cell-phase interpretation" — both of which were properties of the
+elliptical sheen lobe that no longer exists. With anisotropy delegated to the
+substrate, the enum has nothing left to select: the *rate* of anisotropy is the
+substrate's `alphax`/`alphay`, and the *pattern* is whatever the author's
+`weave_rotation` field says (§5.3 gives plain, twill and satin cell formulas
+that parse today). **The name `weave` is reserved, unused, for Phase 2's
+structured model**, where a genuine two-yarn-family BSDF will have real
+per-binding behaviour to select — and the descriptor should say so, so nobody
+reads its absence as an oversight.
+
+Phase 1 therefore does *not* introduce a pattern raster and does *not* claim
+pattern-scale structure. That limit is measured, not assumed, by §9.9 gate 9b.
+### 9.6 Presets — the `fabric` enum
+
+Argued in §9.3 for the mechanism. The adoption argument:
+
+**C-TYPE** says the failure mode is a slot-typing prior, not ignorance — models
+copy examples but do not derive a parameter set. Asked for "a velvet cushion,"
+no model is going to derive `sheen_roughness 0.08` + a dark Lambertian base +
+`weave none`. It *will* write `fabric velvet`, because enum values surface
+automatically in the right-click context menu and inline autocomplete in both GUI
+scene editors and in the agent-facing schema (`src/Library/Parsers/README.md`:
+"Populate `p.enumValues` for `ValueKind::Enum`"; a new chunk "automatically
+appears in… the right-click context menu and inline autocomplete").
+
+**The honest caveat: this is an untested hypothesis.** No document in the tree
+states a named-preset adoption law, and there is no evidence anywhere that
+presets-by-name have ever been *measured* against raw physical parameters for a
+RISE material. Note the precise scope (§9.3): named per-parameter quick-picks do
+exist in `ParameterDescriptor::presets`, but they are an editor affordance on
+one scalar, they have never been censused, and nothing anywhere seeds several
+slots from one name. The census in §13 is designed specifically to test the
+multi-slot form, and its stop rule allows for the outcome that the enum is what
+works and the verb is redundant — or the reverse.
+
+### 9.7 The `make_fabric` verb
+
+Template: `add_wear` / `add_wetness`
+([AgentMcpAdapter.cpp:1865-1991](../src/Library/Agent/AgentMcpAdapter.cpp)),
+which are hand-authored in two places — `AgentMcpAdapter.cpp` and
+`AgentChatCodecs.cpp`'s `kToolDefs` — with the rule stated in the code itself:
+*"two texts, one verb — a semantic change to either must land in both."*
+
+**Name.** `make_fabric`, not `add_fabric`: this converts a material into a
+fabric rather than adding a layer of weather to it, and the `add_*` prefix is
+already load-bearing for the two weathering verbs that mutually lock each other
+out.
+
+**Two deliberate deviations from the template, both flagged.** The first is the
+argument shape, below; the second is that `make_fabric` **mints a substrate**
+rather than performing `add_wetness`'s pure wrap — see "What it emits". Both
+precedent verbs
+take exactly two properties — an optional `material` string and
+`baseHeadVersion` ([AgentMcpAdapter.cpp:1871-1877](../src/Library/Agent/AgentMcpAdapter.cpp)
+and [:1929-1936](../src/Library/Agent/AgentMcpAdapter.cpp)); **no enum-typed
+argument exists on either.** `make_fabric`'s `fabric` argument is therefore a
+new shape, not a copy, and everything else in this section (refusal style,
+refusal style, return shape, commit-only registration, one-undo-step atomicity)
+*is* a copy. The enum is chosen over a free string for the same C-TYPE reason the chunk's own
+`fabric` slot is an enum: a closed, enumerated value list is what surfaces in
+the tool schema and constrains the model toward a value that exists, where a
+free string invites `"crushed burgundy velour"` and a refusal. The two must
+carry the **same** value list, since the verb's argument is seeding the chunk's
+slot.
+
+**Arg schema.**
+
+```
+material  : OPTIONAL string. The material to convert. Omit it to take the most
+            prominent flat-colour material bound to a non-planar object -- the
+            no-argument call is the intended one.
+fabric    : OPTIONAL enum { cotton denim silk satin velvet wool linen }.
+            Selects BOTH the fabric_material slot values AND the substrate
+            class/parameters the verb mints (9.3's split table) -- this is the
+            one place a preset gets to configure the substrate, because the
+            verb, unlike Finalize, can create chunks.
+            Omit it to infer from the object's own name where that is
+            unambiguous ("cushion" -> velvet is NOT inferable; "denim_jacket"
+            -> denim is), else default to cotton and say so in the message.
+baseHeadVersion : the standard optimistic-concurrency token.
+required  : {}   -- NOTHING is required.
+```
+
+**What it emits — and here is the second, larger deviation from the template.**
+`add_wetness` performs a *pure* non-destructive wrap: the original chunk stays
+byte-for-byte untouched and a `coated_material` is minted around it. A pure wrap
+is not sufficient here, for the reason §9.3 gives: **a preset cannot configure
+the substrate.** Wrapping a Lambertian base in `fabric_material { fabric satin }`
+produces chalk with a faint sheen — the tight, directional, anisotropic highlight
+that *is* satin lives in a substrate the wrapper cannot reach. A verb that
+shipped that would be worse than no verb, because it would look like it worked.
+
+So `make_fabric` **mints the substrate when the bound base does not match the
+preset's recommended class**:
+
+0. **Find the original's colour painter, by trying three slot names in order.**
+   The reflectance slot is named differently by predecessor class, and there is
+   no common accessor: `reflectance` on `lambertian_material`
+   ([ChunkParserRegistry.cpp:3276](../src/Library/Parsers/ChunkParserRegistry.cpp))
+   and on `orennayar_material` ([:4335](../src/Library/Parsers/ChunkParserRegistry.cpp));
+   `base_color` on `pbr_metallic_roughness_material`
+   ([:4249](../src/Library/Parsers/ChunkParserRegistry.cpp), and it is
+   `p.required = true` there); `rd` on `ggx_material`
+   ([:4181](../src/Library/Parsers/ChunkParserRegistry.cpp)) and on the other
+   `rd`/`rs` materials. The verb's CST inspection therefore looks up
+   **`reflectance`, then `base_color`, then `rd`**, in that order, and takes the
+   first present — the order is class-frequency, not preference, and any one of
+   them yields the painter *name* to re-home. **If none is present, the verb
+   refuses under Refusal 4** rather than minting a base with no colour: a fabric
+   whose dye was silently dropped is worse than no fabric.
+1. Mint `<name>_fabric_base` — a chunk of the preset's recommended class
+   (`orennayar_material` or `ggx_material` per §9.3's table), carrying the
+   preset's calibrated roughness / `alphax` / `alphay`, and **re-using the
+   painter found in step 0** so the author's colour, texture or expression graph
+   survives the conversion untouched.
+
+   **A minted `ggx_material` needs three more fields, or it renders black.**
+   This is the specific trap, and it is worth spelling out because the failure
+   is silent. `ggx_material.fresnel_mode` is a `ValueKind::String` **defaulting
+   to `conductor`** ([ChunkParserRegistry.cpp:4189](../src/Library/Parsers/ChunkParserRegistry.cpp)),
+   with `ior`/`extinction` defaulting to conductor constants; and `rs` —
+   "Specular reflectance / F0" — is a **required Color-painter reference**
+   ([:4182](../src/Library/Parsers/ChunkParserRegistry.cpp)). A base minted with
+   only `rd`/`alphax`/`alphay` would therefore get `rs` unset, which resolves to
+   the built-in `none` painter — **black** — under *conductor* Fresnel: no
+   dielectric specular at all, i.e. **no satin, silk or denim highlight**, which
+   is the entire reason the substrate was minted. So a minted GGX base must
+   carry:
+
+   - **`fresnel_mode schlick_f0`** — cloth fibres are dielectrics, not metals.
+   - **`rs` bound to a dielectric F0 of ≈ 0.04.** It cannot be written inline:
+     unlike `alphax`/`alphay`, which go through `ResolveOrDiagnoseScalar` and
+     accept an inline literal, `rd` and `rs` are resolved **by name only** —
+     `IPainter* pRs = pPntManager->GetItem(specular);`
+     ([Job.cpp:4243-4244](../src/Library/Job.cpp), inside
+     `Job::AddGGXMaterial` at [:4224](../src/Library/Job.cpp)) — so
+     `rs 0.04 0.04 0.04` would look up a painter with that name, find none, and
+     fail the material outright. **The verb therefore mints a fourth chunk,
+     `<name>_fabric_f0`, a `uniformcolor_painter` at `0.04 0.04 0.04` with
+     `colorspace Rec709RGB_Linear`,** and binds `rs` to it.
+   - **`alphax` / `alphay`** from the preset (§9.3's table), which *can* be
+     inline scalars.
+
+   An `orennayar_material` base needs no such treatment — `reflectance` plus
+   `roughness` is its whole surface.
+2. Mint the weave painters (`weave_rotation`, and the wear fields if the recipe
+   calls for them) ahead of it.
+3. Mint `<name>_fabric` — the `fabric_material` — with `<name>_fabric_base` as
+   its `base`.
+4. Move every bound object's `material` reference to the wrapper.
+
+So a `fabric satin` conversion of a Lambertian mints **four** chunks in one
+document swap — `<name>_fabric_f0`, `<name>_fabric_base`, the weave painter, and
+`<name>_fabric` — plus the rebinding. A `fabric wool` conversion mints two (an
+Oren-Nayar base needs no F0 painter, and a wool preset needs no weave rotation).
+
+**The original chunk is still never edited** — that invariant holds — but it is
+**no longer referenced** by anything after the swap, which `add_wetness`'s wrap
+cannot say. Both facts belong in the verb's result message, because "your
+material is still there, unedited, and nothing points at it any more" is a
+different and more surprising outcome than "your material is still there and is
+now the substrate." When the bound base *already* matches the preset's class,
+the verb does the pure wrap instead and says so. Either way: **one `headVersion`
+bump, one undo step**, one composite document swap.
+
+**Refusals (each a no-op, never a partial edit).**
+
+1. Nothing qualifies — no flat-readable material on a bound object.
+2. The material is already a `fabric_material`.
+3. All bound objects are planar and the requested preset needs curvature to
+   read (the `curv ≡ 0` refusal `add_wear` already implements).
+4. **The base cannot be converted into an allowlisted substrate** — refuse and
+   *name the allowlist*. Minting a substrate does not make this refusal
+   obsolete, it sharpens it: the verb can re-home a flat reflectance painter
+   from a Lambertian, Oren-Nayar, GGX or PBR material onto a new base of the
+   preset's class, but it must not silently discard the physics of a material
+   that is something else. A **dielectric** (its IOR, dispersion and IOR-stack
+   behaviour have no counterpart in a fabric substrate), an **emissive**
+   material or luminaire, a **hair** material, a **BSSRDF/subsurface** material,
+   an existing **coated** or **composite** stack — all refuse, naming what could
+   not be carried across. **Also refuse when step 0 finds no colour painter** —
+   a material carrying none of `reflectance` / `base_color` / `rd` has no dye to
+   re-home, and minting a base without one would invent an appearance the author
+   never authored.
+5. Collision with `add_wetness`'s coat wrap on the same material. Unlike the
+   `add_wear`/`add_wetness` mutual lockout, **wet fabric is a legitimate and
+   commonly wanted composition** — a rain-soaked coat. Phase 1 refuses (it is
+   the safe default, and the composition needs `coated_material` to accept
+   `fabric_material` as a substrate, which is a separate slice), but §13's
+   census counts how often a run wants both, which is the number that decides
+   whether the composition is worth building.
+
+**Return shape**, on the two shipped verbs' pattern: `{ok, applied, rawCode,
+status, retriable, headVersion, message, material, materialKind, fabricPreset,
+baseMaterial, mintedSubstrate, mintedSubstrateKind, substrateWasReused,
+originalNowUnreferenced, weavePainter, rotationPainter, rebindObjectCount,
+geometry, qualifying, objects}` — the three new fields relative to the precedent
+verbs report the substrate decision, which is the part of this verb's behaviour
+an author most needs to see.
+
+**Registration.** Mutating, commit-only (one composite whole-document swap is no
+`AgentProposalKind` an Owner could approve card-by-card), across the eight
+plumbing surfaces §14 enumerates.
+
+**Read-set placement (C-READ).** Exactly one execution-validated parsing example
+goes into `materials-and-media-basics.md` — one of the two proven pulls. The
+full reference goes to the materials skill with a hook-line rewrite; a pointer,
+not the content, goes anywhere else. The measured basis: `procedural-textures.md`
+— the skill every advisory pointed at — was read **0/6** in one probe batch.
+
+### 9.8 Worked example — a velvet cushion with seam wear
+
+Modelled on `add_wear`'s recipe (§4.4) and on
+[WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) §6.5's presentation. The
+camera, film, rasterizer and light preamble is elided; the material block is
+what matters.
+
+**Every painter chunk below parses today.** The `fabric_material` chunk is
+**proposed syntax and does not parse today** — it is marked as such rather than
+presented as a recipe.
+
+```
+RISE ASCII SCENE 7
+# --- velvet cushion: worn nap on the seam ridges, dust in the piping groove ---
+# Painters: PARSE TODAY.   fabric_material: PROPOSED (Phase 1).
+
+uniformcolor_painter
+{
+	name			velvet_dye
+	color			0.22 0.05 0.09
+	colorspace		Rec709RGB_Linear
+}
+
+# The sheen tint: the dye lifted toward a desaturated bloom on worn ridges,
+# pushed toward a dusty grey in the piping groove.  add_wear's prelude verbatim,
+# with the material's own colour carried as base_r/g/b so it stays retunable.
+expression_painter
+{
+	name			velvet_sheen_tint
+	param			edge_wear     3.20  min 0 max 12 step 0.1  label "Seam nap wear"
+	param			crevice_grime 2.80  min 0 max 12 step 0.1  label "Groove dust"
+	param			breakup_amp   0.30  min 0 max 1  step 0.01 label "Noise breakup"
+	param			breakup_scale 22.0  min 0.1 max 40 step 0.1 label "Wear noise scale"
+	param			grime_scale   9.0   min 0.1 max 40 step 0.1 label "Dust noise scale"
+	param			cavity_gain   1.40  min 0 max 4  step 0.05 label "Cavity deepening"
+	param			base_r 0.62
+	param			base_g 0.30
+	param			base_b 0.36
+	seed			11
+	def			jitter       vec3(seed, seed*1.7, seed*2.3)
+	def			wear_mask    clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			crevice_raw  clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			cavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))
+	def			crevice_mask clamp(crevice_raw*cavity_boost, 0, 1)
+	def			base         vec3(base_r, base_g, base_b)
+	def			bloom        vec3(0.86, 0.72, 0.74)
+	def			dust         vec3(0.30, 0.27, 0.26)
+	expr			mix( mix(base, bloom, wear_mask), dust, crevice_mask )
+}
+
+# Sheen roughness on the SAME masks: crushed and shinier where the nap is worn
+# flat on a seam ridge, broader and duller where dust has collected.
+scalar_painter
+{
+	name			velvet_sheen_rough
+	param			edge_wear     3.20  min 0 max 12 step 0.1  label "Seam nap wear"
+	param			crevice_grime 2.80  min 0 max 12 step 0.1  label "Groove dust"
+	param			breakup_amp   0.30  min 0 max 1  step 0.01 label "Noise breakup"
+	param			breakup_scale 22.0  min 0.1 max 40 step 0.1 label "Wear noise scale"
+	param			grime_scale   9.0   min 0.1 max 40 step 0.1 label "Dust noise scale"
+	param			cavity_gain   1.40  min 0 max 4  step 0.05 label "Cavity deepening"
+	param			rough_pile    0.08  min 0.01 max 1 step 0.01 label "Undisturbed nap"
+	param			rough_crushed 0.04  min 0.01 max 1 step 0.01 label "Crushed nap"
+	param			rough_dusty   0.42  min 0.01 max 1 step 0.01 label "Dust-clogged nap"
+	seed			11
+	def			jitter       vec3(seed, seed*1.7, seed*2.3)
+	def			wear_mask    clamp(curv*edge_wear + breakup_amp*fbm(P*breakup_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			crevice_raw  clamp(-curv*crevice_grime + breakup_amp*fbm(P*grime_scale + jitter, 4, 0.5, 2.0), 0, 1)
+	def			cavity_boost 1.0 + cavity_gain*(1.0 - occlusion(0.08))
+	def			crevice_mask clamp(crevice_raw*cavity_boost, 0, 1)
+	expression		mix( mix(rough_pile, rough_crushed, wear_mask), rough_dusty, crevice_mask )
+}
+
+orennayar_material
+{
+	name			velvet_base
+	reflectance		velvet_dye
+	roughness		0.55
+}
+
+# PROPOSED CHUNK -- does not parse today.  `fabric velvet` seeds every slot the
+# author did not write; the two painters below override what they name.
+fabric_material
+{
+	name			m_velvet_cushion
+	fabric			velvet
+	base			velvet_base
+	sheen_color		velvet_sheen_tint
+	sheen_roughness		velvet_sheen_rough
+}
+
+standard_object
+{
+	name			o_cushion
+	geometry		cushion_mesh
+	material		m_velvet_cushion
+	position		0 0 0
+}
+```
+
+Three things this example demonstrates that are worth stating explicitly.
+
+- **The prelude is byte-identical across the two painter chunks** — same names,
+  same values, same order, same `seed`. That is a hard requirement, not a
+  convention: the two masks must agree pointwise or the tint and the roughness
+  will disagree about where the seam is. `add_wetness` §6.1 makes the same rule.
+- **A seam is `curv > 0`.** The whole mechanism reduces to that one observation,
+  which is why `add_wear`'s prelude transfers unchanged.
+- **The `occlusion(0.08)` cavity boost is what distinguishes a piping groove
+  from a merely concave curve** — a fold two bumps wide reads as a cavity to
+  `occlusion` and as nothing much to `curv`. That is the split the signals design
+  exists to provide.
+
+For a **denim** variant, the same skeleton takes `fabric denim`, a
+`weave_rotation` bound to §5.3's `weave_twill_3_1` through
+`scalar_painter { function2d weave_twill_3_1 }`, and — the part that actually
+makes it denim — swaps the isotropic `orennayar_material` base for a
+`ggx_material` with `alphax ≈ 0.34`, `alphay ≈ 0.22`. The wale is **substrate**
+anisotropy steered by the weave field (§9.5); the sheen lobe is the same
+isotropic Charlie in both cases. That substrate swap is exactly what a
+hand-authored chunk must do for itself and what `make_fabric` mints on the
+author's behalf (§9.7) — and it is why §9.3's preset table has two columns.
+
+### 9.9 Phase-1 exit gates
+
+Gated in the [SMS_UNIFORM_SEEDING_PLAN.md](SMS_UNIFORM_SEEDING_PLAN.md) /
+[HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) style — build gate, baseline gate,
+validation gate — with the
+[implementation-review-loop](skills/implementation-review-loop.md) run to zero
+P1 before the phase closes.
+
+**Build gate.** All five build projects updated; clean-rebuild warning-free on
+both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
+
+**Baseline gate.**
+1. **The tangent-change regression sweep — two buckets, two different tests.**
+   §9.1's blast radius has two effects and the sweep must not conflate them.
+   - **Bucket A — anisotropic scenes: a real appearance change, justified
+     case by case.** Every scene using GGX with `alphaX ≠ alphaY`, Ward,
+     Ashikhmin-Shirley, or an authored `tangent_rotation`, re-rendered and
+     compared. Differences are *expected*; each must be justified as a
+     correctness improvement, and an unexplained one blocks.
+   - **Bucket B — every other scene containing a UV-mapped mesh or an analytic
+     primitive: a noise-realisation change, tested statistically.** Because
+     isotropic sampling also reads `onb.u()`/`onb.v()` (§9.1 effect 2), the
+     per-pixel diff on a plain Lambertian, Oren-Nayar, sheen or isotropic-GGX
+     scene will be non-zero and that is correct. **The gate here is statistical
+     equivalence, not byte-identity: converge both builds well past the scene's
+     usual sample count and require the per-channel means to agree within the
+     MC standard error, with no systematic spatial structure in the residual**
+     (a difference image that is zero-mean noise passes; one with a visible
+     shape does not). Byte-identity must **not** be required in bucket B, and
+     the sweep's tooling must say which bucket a scene is in before it reports.
+   - **A mirrored-UV asset is in bucket A explicitly**, to measure the §9.1
+     seam limitation rather than assume its severity.
+   - The `SDFGeometry`-heightfield / `cartesian_disk` pairing
+     ([Object.cpp:691-694](../src/Library/Objects/Object.cpp)) is re-checked
+     explicitly; it is a bucket-A case.
+2. No regression in the standing suites. **Note that any test asserting
+   byte-identical or golden pixel values on a mesh scene is in bucket B and will
+   need its oracle restated statistically** — identify these before starting,
+   not after they go red.
+
+**Validation gate.**
+3. **Furnace.** New `LayeredWhiteFurnaceTest` configurations: `fabric_material`
+   over Lambertian, over Oren-Nayar, over isotropic GGX-PBR, and over an
+   **anisotropic** GGX base (`alphax ≠ alphay`) with a non-zero
+   `weave_rotation`, at four roughnesses. **Posture target: `kPosturePass` at
+   5 %** — the `E` table's entire purpose is to lift sheen out of
+   `kPostureBounded`. The anisotropic row is now a *substrate* configuration
+   rather than an anisotropic sheen lobe (§9.5), so it should pass on the same
+   terms as the isotropic ones; if it does not, the fault is in the
+   frame-rotation plumbing, not in the lobe.
+4. **Re-diagnose furnace config 6.** Run config 7's SPF-level downward-ray probe
+   against the existing sheen-over-PBR composite and update the note with the
+   measured answer, whichever way it comes out (§4.2, §15 debt 3).
+5. **Reciprocity, plus the `hemisphericalAlbedo` error measurement — two
+   distinct checks, both required.**
+   (a) `fabric_material` **and, separately, bare `sheen_material`** added to
+   `SPFBSDFConsistencyTest`'s reciprocity sweep at the existing
+   `RECIPROCITY_TOL = 1e-6`. Sheen's absence is a pre-existing hole this phase
+   closes as a matter of course.
+   (b) **`hemisphericalAlbedo`'s substrate-coupling error, measured** — §9.2
+   route 1's tabulated `substrate.hemisphericalAlbedo() · S(α, m)` compared
+   against a brute-force `∫∫ f_base(l,v)·min(1 − w(v), 1 − w(l)) dl dv`
+   quadrature, for an Oren-Nayar and a GGX substrate at several roughnesses and
+   several `m`. Route 1 is **exact only for Lambertian**; this puts a number on
+   what it costs above that (a toy estimate says ~3 %). **Pre-commit the
+   tolerance before measuring**, and if it is exceeded, switch to §9.2's exact
+   alternative — the per-substrate-class 3D table `S(α, m, σ_base)` — rather
+   than shipping the 2D kernel. (The construction-time quadrature is *not* the
+   fallback; §9.2 discards it because painters vary spatially.) Note this
+   is *not* covered by (a): `hemisphericalAlbedo` is a diffuse-recycling term
+   that the `f(a→b) == f(b→a)` sweep never evaluates.
+6. **SPF↔BSDF and Pdf consistency.** `fabric_material` entries in both
+   consistency suites, RGB and NM. **This gate is what proves §9.2's
+   sample-then-reprice recipe was actually implemented**: it fails precisely
+   when `Scatter` reports a branch-local density instead of the full mixture,
+   which is the one mistake the delta-lobe convention would invite. Include
+   sampled directions reachable from *both* lobes (an ordinary mid-hemisphere
+   `wo` on an Oren-Nayar or GGX base), since a sheen-only direction would not
+   discriminate.
+7. **HWSS invariant.** `hwss=true ≡ hwss=false` within MC noise on a fabric
+   scene, on the hair Phase-1 pattern.
+8. **Spectral parity.** An authored-white dye is bit-exact between the RGB and NM
+   paths (the `GuardedGetColorNM` guard, exercised).
+9. **The cue-(c) measurement.** Render a backlit velvet swatch under the studio
+   rig's rim light, with `oidn_denoise FALSE`, and record the terminator profile
+   against a reference. **This number is the LTC gate.** Recording it, not
+   passing it, is the gate — Phase 1 is allowed to be worse than LTC; it is not
+   allowed to be worse than LTC by an unknown amount.
+9b. **The cue-(b) measurement — the Phase-2 gate's evidence.** Render
+    `fabric silk` and `fabric satin` on a draped subject under the studio rig,
+    `oidn_denoise FALSE`, and compare side by side against reference
+    photography of the same fabrics. **Record whether an isotropic Charlie sheen
+    over an anisotropic GGX substrate reads as *satin* or as *brushed metal*** — i.e. whether the visible
+    deficit is the missing pattern-scale structure (cue b) or the missing
+    multiple scattering (cue c, gate 9). This is a Phase-1 deliverable
+    precisely because §10.2's first Phase-2 gate condition consumes it; without
+    it, Phase 1 could close with all other gates green and Phase 2's entry
+    condition would have no evidence behind it. As with gate 9, **recording the
+    result is the gate, not passing it.**
+10. **Variance — the cosine-sampling cost, measured, as the D-sampling follow-up's
+    entry condition.** PT sample counts to a fixed noise floor at
+    α ∈ {0.08, 0.5, 1.0}, with and without NEE, per
+    [variance-measurement](skills/variance-measurement.md). §9.4 accepts
+    cosine-hemisphere sampling on the argument that MIS against NEE carries the
+    variance; **that is an argument, not a measurement**, and this gate turns it
+    into one. A large residual at α = 0.08 is what would justify building the
+    normalised D-sampler.
+11. **Scenes.** `scenes/Tests/Materials/fabric_presets.RISEscene` (all seven
+    presets on one row, the `sheen.RISEscene` shape), plus
+    `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` — §9.8, and the
+    scene the skill text points at.
+12. **Verb.** `tests/AgentMakeFabricTest.cpp` on `AgentAddWearTest.cpp`'s
+    pattern, covering all five refusals and the non-destructive-wrap invariant
+    (the original chunk byte-identical, exactly one `headVersion` bump).
+13. **Census.** §13's pre/post pair. The pre-verb baseline **must be run before
+    the first Phase-1 commit** — a baseline measured after shipping is not a
+    baseline.
+
+---
+
+## 10. Phase 2 — structured weave
+
+**Goal.** Cue (b) properly: satin's diagonal float sheen, denim's wale, and — the
+capability no reflection-only model has — thin cloth's backlit glow-through.
+
+### 10.1 The candidates, and the argument
+
+**Irawan-class (a pattern raster + yarn segments).** Rejected in §7(C) on the
+missing importance sampler. But the *pattern raster* idea is separable from the
+rest of Irawan and is worth keeping: a per-cell "which family is on top" lookup
+is exactly a `voronoi2d_painter`-shaped or `expression_function2d`-shaped
+resource RISE can already author, and Phase 2 should take that idea while
+leaving Irawan's yarn-segment geometry and its 18-parameter fit behind.
+
+**SpongeCake-class (layered microflake).** Rejected in §7(D) on infrastructure —
+a microflake phase function, an SGGX field, and a media-transport landing rather
+than a material-slot landing. The honest note is that this is the only route to
+cue (d) without geometry, so if silhouette fuzz becomes the observed need rather
+than structured highlights, **the Phase-2 answer changes**. That is a genuine
+fork, and §13's census is designed to tell which side of it the demand falls on.
+
+**Zhu 2023 / Sadeghi 2013 surface lineage — RECOMMENDED as the reference
+architecture.** Zhu 2023 is the published answer to exactly the question Phase 2
+asks (Irawan-class fidelity at surface-BSDF cost, with transmission, generalising
+to knits), and Jin 2022 independently converged on the same shape from the
+capture direction — which is the strongest available evidence that the shape is
+right rather than an artefact of one derivation. Sadeghi 2013 supplies the
+per-thread lobe math in the factorisation RISE's hair BSDF already implements as
+promotable free functions (§4.5).
+
+**Phase 2's first gate is a primary-source read**, because the survey could
+confirm Zhu 2023's citation, its four target signatures, and its
+comparison-to-Irawan claims, but **could not obtain its equation set, its
+parameter table, or a confirmed sampling strategy**. Committing to an
+implementation on an abstract summary would be exactly the failure
+[doc 90](agentic-redesign/90-iteration-ratchet.md) warns about. The read
+produces a one-page parameter-and-sampling summary; if it turns out there is no
+tractable sampler, Phase 2 falls back to Sadeghi's factorisation plus the
+follow-up talk's sampler, and says so.
+
+### 10.2 What Phase-1 evidence gates it
+
+Three conditions, all of which must hold:
+
+1. **A named, measured deficit — produced by §9.9 exit-gate 9b, not assumed.**
+   That gate commits Phase 1 to the side-by-side of `fabric silk` and
+   `fabric satin` against reference photography; this condition is satisfied
+   when that comparison shows the isotropic-sheen-over-anisotropic-GGX
+   composition reads as *brushed metal* rather than as *satin* — i.e. that the missing pattern-scale
+   structure is the visible failure, not the missing multiple scattering. If
+   gate 9b instead points at the terminator (gate 9's cue-(c) number), the
+   correct Phase 2 is **LTC sheen**, which is a much smaller phase.
+2. **Demand.** §13's census showing fabric authoring actually happens at a rate
+   that justifies the cost, and that authors reach for structured fabrics
+   (denim, satin) rather than only for velvet and cotton.
+3. **The read.** §10.1's primary-source summary in hand, with a tractable
+   sampler identified.
+
+### 10.3 Indicative shape and cost
+
+A `weave_material` (or a `weave` mode on `fabric_material` — decide after the
+read) carrying: two thread appearance classes, each with a longitudinal width, an
+azimuthal shape and a longitudinal shift; a weave-cell phase field; an
+inter-yarn shadow-masking term; and a transmission lobe. Roughly Sadeghi's five
+scalars per class plus the fields Phase 1 already plumbs.
+
+Cost is of `coated_material`'s order or larger — the honest precedent is commit
+`1f929fef`, **36 files changed, 4620 insertions**, for a triad plus layering
+plus tests. Phase 2 adds a transmission lobe (which flips `ScattersFullSphere`
+and `CouldLightPassThrough`, and therefore touches the NEE full-sphere path), so
+it is at the upper end of that.
+
+---
+
+## 11. Phase 3 — yarn-level geometry
+
+**Observed-need gated, and likely to be declined**, on the
+[HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) Phase-4 precedent, where LOD and
+elliptical fibres were declined on the same rule after the measurements came in.
+
+**What it would buy.** Cue (d) — genuine silhouette fuzz — and the chunky-knit
+class where the loop silhouette *is* the subject. Nothing else in this document
+supplies either.
+
+**What blocks it.** §6.2's arithmetic: ≈ 1.03 GiB and ≈ 9.3 s of build for one
+40 cm cushion face at 30 threads/cm, extrapolated linearly from the measured
+100K-strand point. Woven fabric is periodic and should be instanced, and **no
+periodic or instanced placement primitive at strand density exists** —
+`path_instances_geometry` is capped at 20 M vertices / 100 K instances and is
+called structurally unusable at this scale in the hair design itself; per-strand
+`standard_object` instancing is rejected there too.
+
+**What would make it tractable.** A `weave_geometry` primitive on
+`HairGeometry`'s exact pattern — flat float control-point arrays, one shared
+`BVH<>` over all yarn sub-segments, generated in a `Realize()` hook from the base
+mesh's UVs — but storing **one weave repeat** and referencing it periodically
+through the BVH rather than materialising every crossing. That is new
+infrastructure with no precedent in the tree, and it is the thing to cost before
+anything else in this phase.
+
+**The cheaper partial answer, if fuzz is the observed need.** A **fuzz shell**:
+a thin offset surface carrying a very rough, very low-albedo `fabric_material`
+with `weave none`. It softens the silhouette read without any new primitive and
+without a single new library file. It is not physically motivated and it should
+be described as what it is. This is a sketch, not a recommendation.
+
+**Decline criteria, pre-committed.** If the Phase-1 and Phase-2 censuses show no
+requests for knitwear, rope, or hero fabric close-ups, Phase 3 is declined and
+this section stands as the record of why — exactly as HAIR_FUR's Phase 4 does.
+
+---
+
+## 12. Integrator and renderer implications
+
+**PT is the default and the target.** Fabric is the rough-glossy-plus-diffuse
+regime where PT already wins the σ²·T matrix on 10 of 13 converged classes
+([UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md)), and it adds
+no caustic-class transport that would re-route it. The `auto_rasterizer` Tier-1
+fall-through `else → PT` routes fabric scenes correctly **with no new clause**.
+
+**Do not add a per-material routing tag.** None exists — the routing map in
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2 is a *scene-level*
+heuristic (indirect dominates direct; glossy bounces; enclosed geometry), not a
+per-chunk hint, and hair's own routing hint was declined for exactly this reason:
+"the hint would encode a decision the dispatcher already makes"
+([HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) §7). §16 records it as a non-goal.
+
+**Ray-type bucket.** `SheenSPF` tags its scattered ray `eRayDiffuse`
+([SheenSPF.cpp:113](../src/Library/Materials/SheenSPF.cpp)), so `max_diffuse_bounce`
+governs sheen depth today. `fabric_material` should tag the **sheen lobe
+`eRayReflection`** — it is a glossy grazing lobe, `max_glossy_bounce` is the
+right budget for it, and this is the same mapping decision hair made for all its
+lobes. The base lobe keeps whatever the substrate tags it. **This is a behaviour
+change relative to bare `sheen_material` and should be stated in the descriptor**,
+since a scene that tuned `max_diffuse_bounce` for a sheen composite will behave
+differently.
+
+**Anisotropy is the substrate's, and that keeps the integrator story boring.**
+Because Phase 1's sheen lobe is isotropic and the weave is delivered by rotating
+the basis handed to an ordinary anisotropic substrate (§9.5), fabric introduces
+**no new lobe shape to any integrator** — BDPT and VCM see a GGX/Ward/A-S lobe
+they already evaluate, in a rotated frame, plus an isotropic Charlie lobe they
+already evaluate. The one requirement this places on the implementation is that
+the rotated basis reach the substrate's `value`, `Scatter` **and** `Pdf`
+identically; a rotation applied in two of the three would be an MIS-visible
+inconsistency, not merely a shading one.
+
+**Sampling cost and grazing variance — a known, accepted Phase-1 cost.** Cosine
+sampling a lobe as sharp as Charlie at α = 0.08 is a genuine mismatch: the pdf is
+broad where the lobe is a thin ring near the horizon, so the estimator's weight
+spikes exactly at grazing, where the lobe is the whole point of the material.
+Phase 1 accepts that anyway, because the obvious remedy is worse than the disease
+— D-importance sampling of Charlie has no VNDF, leaks below the horizon, and its
+rejection-corrected density fails the shipped pdf harness (§9.4). **MIS against
+NEE is what carries the variance in the interim**, which is the right tool here:
+a sheen halo is lit overwhelmingly by direct light at grazing, the regime light
+sampling handles well, and §9.2's mixture `Pdf` gives MIS a correct weight. §9.9
+gate 10 measures the residual cost, and that number is the entry condition for
+the D-sampling follow-up.
+
+**BDPT and VCM.** A real evaluable-anywhere `IBSDF` with a real `Pdf` works
+through the shared `PathVertexEval.h` machinery with **no integrator changes** —
+hair's precedent. Two fabric-specific notes:
+
+- **Reciprocity is genuinely exact here**, which is better than hair. `D` depends
+  only on `n·h`, `V` is symmetric in `nDotL`/`nDotV`
+  ([CharlieSheen.h:104-112](../src/Library/Materials/CharlieSheen.h)), and the
+  albedo-scaling factor is a `min` of two symmetric-under-swap arms. So
+  `fabric_material` carries none of the model-level bias hair's near-field
+  h-conditioning and cuticle-tilt convention introduce. It should be *proven*
+  (§9.9 gate 5) rather than asserted.
+- **The tangent fix is a BDPT correctness prerequisite, not only a look fix.** A
+  rotation field over a discontinuous per-triangle base gives a BSDF that jumps
+  across every triangle edge; BDPT evaluates the BSDF at both endpoints of every
+  connection and MIS-weights against reverse PDFs computed there. Building weave
+  anisotropy on today's arbitrary base would inject a discontinuity into the MIS
+  denominators.
+
+**Full-sphere scattering.** Phase 1 is reflection-only, so `ScattersFullSphere()`
+stays false. Phase 2's transmission lobe flips it, and inherits the shipped
+full-sphere-NEE machinery ([IMaterial.h:237](../src/Library/Interfaces/IMaterial.h))
+— the same hook that recovered 6-8× on point-lit backlit hair and dropped the
+PT/BDPT ratio from 15.5-16.3× to 1.72-1.77×.
+
+**Multiple scattering in the fabric layer.** Not modelled in Phase 1 (§9.4). The
+consequence is a slightly harder terminator than reference. Named, gated,
+measured — not hidden.
+
+**HWSS and the spectral path.** The `E` table is achromatic (roughness and
+geometry only), so it multiplies identically at every wavelength and cannot
+introduce a spectral-bundle bias — the same structural argument hair's achromatic
+sampling proxy makes. The dye tint goes through `GuardedGetColorNM`, so authored
+white is a bit-exact no-op. §9.9 gate 7 measures `hwss=true ≡ hwss=false`
+regardless, because the env-IBL arc is the standing evidence that structural
+arguments about spectral bundles need measurements behind them.
+
+**SMS.** No lobe is delta; SMS correctly ignores fabric entirely, as it ignores
+hair.
+
+**OIDN — the transferable warning.** The hair arc measured this and the result is
+directly applicable: on high-frequency fibre structure, **`oidn_prefilter
+accurate` is strictly worse than `fast` at every sample count** (15-18 % vs
+25-30 % gradient-magnitude shortfall against reference), the deficit **does not
+close with sample count**, and the root cause is the aux *prefilter* smoothing
+one fibre's normal into its neighbours — not the aux capture. A resolved weave at
+texel-scale frequency is the same regime. **Rules for fabric: never
+`oidn_prefilter accurate` on a resolved weave; use `oidn_denoise FALSE` above
+~100 spp; and validate every fabric appearance measurement with `oidn_denoise
+FALSE`.** That last one is not a style preference — the `EnvLightBalanceTest`
+recalibration is the standing evidence that a suite can silently measure the
+denoiser's output for months.
+
+**Studio rig — no change needed, and here is why.** The rig
+([AgentSession.cpp:18274-18290](../src/Library/Agent/AgentSession.cpp)) already
+carries a **RIM light at 0.68 intensity, "behind and above"**, which is exactly
+the light a sheen halo needs, plus a neutral checker dome chosen because "the
+sharp-versus-smeared edge of a reflected check is the roughness read." Two
+observations:
+
+- For **isotropic sheen**, the halo reads by *self-grazing* on any curved
+  subject — the existing sheen scene's own comment makes this point, and it is
+  why that scene works with a single key and no rim. The rig is already better
+  than that scene.
+- For **anisotropic weave**, the read is the checker dome, not the directionals:
+  a reflected check smeared **along one axis and not the other** is the
+  anisotropy read, in the same way its sharpness is the roughness read. That is
+  already what the dome does.
+
+So the recommendation is **do not touch the rig**. The one thing worth adding is
+a *framing* note in the preset scene: a fabric preset previews best on a subject
+with a silhouette that turns through grazing — a cushion or a draped cloth, not a
+flat card — because the diagnostic cue is at the silhouette. That belongs in the
+scene's header comment, not in code.
+
+---
+
+## 13. Adoption and measurement
+
+**The laws this plan is built on** (`docs/agentic-redesign/88-…md` §2):
+
+- **C-ADV.** Advice ≈ 0. Design notes naming `scalar_painter` fired up to
+  30×/session, were demonstrably read, and drove **0/24** lifetime adoptions;
+  voluntary/opt-in tools **0/64**. *Consequence:* documenting `fabric_material`
+  and hoping is not a plan.
+- **C-TYPE.** The failure is a slot-typing prior, not ignorance. Worked examples
+  lifted painter *diversity* (floor 1→3) because models copy examples; the same
+  lever moved spatially-varying roughness **0/24**. *Consequence:* the preset
+  enum and the verb are the structural levers; the worked example is necessary
+  and not sufficient.
+- **C-VERB.** When advice fails, ship a verb. *Consequence:* `make_fabric`.
+- **C-READ.** The read-set is the knowledge boundary; teaching content goes in
+  the proven pulls with exactly one execution-validated parsing example.
+- **C-MEAS.** Census, not vibes. N=3 minimum; cross-provider before believing a
+  null; pre-committed stop rules.
+
+**The master triad applied**: *summoned category, price the inferior path,
+exactly one worked example that parses, and let the census say whether it moved.*
+Summoned category: asked for a cushion, a model reaches for the **material**
+category, and `fabric_material` is a material. Priced inferior path: the
+descriptor for `sheen_material` should name `fabric_material` as the layered
+route and say plainly that a bare sheen material has no base — pricing the thing
+that produces the dark, baseless sphere. One example: §9.8, shipped as a scene
+and pointed at from `materials-and-media-basics.md`.
+
+### 13.1 The measurement plan
+
+**Instrument.** A new `evals/scenarios/fabric_closeup.json` on
+`rich_material_closeup`'s shape, subject changed to an **upholstered chair arm in
+raking light** — chosen because it demands a fabric read, a curved silhouette,
+and a seam, i.e. all three Phase-1 mechanisms, without naming any of them.
+Gating checkpoints: a chunk-kind checkpoint that is a **disjunction** —
+`fabric_material` OR (`sheen_material` AND `composite_material`) OR
+`sheen_material` alone — so a run that reaches for today's (broken) idiom scores
+as an *attempt*, not a failure; a `any_param_references_kind:scalar_painter`
+checkpoint; and a render band on `meanLuma` **calibrated on the actual scene**,
+since a dark velvet is legitimately darker than the brass the existing band was
+set for.
+
+**Pre-verb run against today's tree, before the first Phase-1 commit.** Post-verb
+run with an identical config after Phase 1.
+
+**Metrics, pre-committed.**
+
+| metric | what it decides |
+|---|---|
+| `fabric_material` occurrence rate | whether the material converts at all |
+| **`fabric <preset>` vs. raw-parameter authoring** | **whether the preset-enum mechanism works — the novel hypothesis of this design** |
+| `make_fabric` call rate | whether the verb converts, and whether it is redundant with the enum |
+| Any `weave_rotation` binding vs. none | whether weave direction is reachable in practice or is dead surface |
+| Baseless-sheen occurrences (`sheen_material` with no base) | the specific failure the material exists to prevent |
+| "Flat plastic" failures (Lambertian or bare PBR on a named-fabric subject) | the pre-verb baseline's dominant mode; the number that should fall |
+| Runs wanting both `make_fabric` and `add_wetness` on one material | whether §9.7 refusal 5's composition is worth building |
+| Per-provider compliance; report-level pass@1 | standard |
+
+**Stop rules, pre-committed.**
+
+- If the post-verb `fabric_material` rate is **0/6 across both providers**, the
+  escalation is **not** more documentation (C-ADV). It is to check whether the
+  paired design note fires at all, on the `add_wear` causality model (note at
+  trajectory line 3 → call at line 97).
+- If `fabric_material` converts but **`fabric <preset>` is never used** while raw
+  parameters are, the preset-enum hypothesis is **falsified** — record it as such
+  in this document, because it is the first test of **multi-slot preset seeding**
+  anywhere in RISE (§9.3 — per-parameter quick-picks exist, but have never been
+  censused either) and the null result is as valuable as the positive one.
+- If **`make_fabric` is never called but `fabric_material` is authored directly**
+  at a healthy rate, the verb is redundant for this capability and that is a
+  finding about C-VERB's scope, not a failure.
+
+**Cross-provider before believing a null.** A single-provider zero is not a
+finding.
+
+**Altar-stress element.** One fabric element in an `altar_stress`-shaped
+instrument: *a draped velvet cloth over a plinth corner*, which quietly demands
+the sheen lobe, the curvature signal, and a curved silhouette. Graded against the
+per-element scoreboard narrative, re-run after each hardening commit.
+
+---
+
+## 14. Cost
+
+Structural counts, not measurements. No implementation exists.
+
+### 14.1 Phase 1 — library source files and the build tax
+
+The per-file tax is measured, not estimated
+(`grep -c` against a recently-added pair, `CoatedSPF.cpp`/`.h`):
+
+| build file | count per `.cpp`+`.h` pair | count per header-only |
+|---|---|---|
+| `build/make/rise/Filelist` | 1 | 0 |
+| `build/cmake/rise-android/rise_sources.cmake` | 1 | 0 |
+| `build/VS2022/Library/Library.vcxproj` | 2 | 1 |
+| `build/VS2022/Library/Library.vcxproj.filters` | 2 | 1 |
+| `build/XCode/rise/rise.xcodeproj/project.pbxproj` | 10 | 4 |
+| **total** | **16** | **6** |
+
+Applied to Phase 1's new files, following `coated_material`'s file split:
+
+| new file | kind | build touchpoints |
+|---|---|---|
+| `FabricMaterial.h` | header-only | 6 |
+| `FabricBRDF.{h,cpp}` | pair | 16 |
+| `FabricSPF.{h,cpp}` | pair | 16 |
+| `SheenDirectionalAlbedo.{h,cpp}` | pair (the `E` lookup) | 16 |
+| `SheenDirectionalAlbedo_LUTData.cpp` | generated data | ~6 |
+| **subtotal** | **5-6 files** | **≈ 60** |
+
+Plus edits to existing library files, which cost **no** build-project work:
+`Object.cpp` / `CSGObject.cpp` (verify the tangent branch; likely unchanged),
+the two triangle-mesh specialisation headers (two-branch form), the four
+analytic-primitive `.cpp`s carrying five write sites (cylinder has two), and
+`ClippedPlaneGeometry.cpp` (a new write site, not an augmented one) — **§9.1's
+write at eight call sites across seven files, ≈ 30 lines**; `RISE_API.{h,cpp}`,
+`IJob.h`, `Job.{h,cpp}`,
+`ChunkParserRegistry.cpp`, `MaterialIntrospection.cpp`, `SheenBRDF.h` and the
+sheen chunk description (the stale-name fix), `GLTFSceneImporter.cpp` (re-enable
+the sheen path), `src/Library/Parsers/README.md`.
+
+### 14.2 Phase 1 — everything else
+
+| item | cost | basis |
+|---|---|---|
+| Bake tool | 1 file, **0 build-project edits** | `tools/SheenDirectionalAlbedoGen.cpp`; the make `tools` target loops over `tools/` sources (`build/make/rise/Makefile:190-212`), on `HairMedullaProfileGen`'s precedent. **Verify the Windows/Xcode tool build separately** |
+| Verb plumbing surfaces | **8** | `AgentSession.h/.cpp`; `AgentMcpAdapter.cpp`; `AgentChatCodecs.cpp` (the hand-duplicated `kToolDefs`); `AgentChatLoop.cpp`; `AgentRpc.cpp`; `AgentLoopbackHttpServer.cpp`; `AgentDiagnostic.h`; `AgentEvalRunner.cpp` |
+| Verb emission complexity | **up to 4 minted chunks + N rebinds, one swap** | §9.7: `<name>_fabric_f0` (`uniformcolor_painter`, only for a GGX substrate — `rs` cannot be inline, [Job.cpp:4243-4244](../src/Library/Job.cpp)), `<name>_fabric_base`, the weave painter, `<name>_fabric`. `add_wetness`'s emitter mints at most 3 and never a *material*, so `AgentSession`'s share of the work is larger than the 8-surface count alone suggests — budget the substrate-minting and the three-name reflectance lookup (§9.7 step 0) as the two genuinely new pieces |
+| New test files | **2** | `tests/FabricMaterialChunkTest.cpp` (on `CoatedMaterialChunkTest.cpp`'s 873-line pattern), `tests/AgentMakeFabricTest.cpp` (on `AgentAddWearTest.cpp`'s ~248-`Check(` pattern). **Tests are glob-discovered — no build-file edits** |
+| Existing tests edited | **3** | `LayeredWhiteFurnaceTest.cpp` (new configs + the config-6 re-diagnosis), `SPFBSDFConsistencyTest.cpp` (fabric **and** sheen reciprocity entries), `SPFPdfConsistencyTest.cpp` |
+| Scenes | **2** | `scenes/Tests/Materials/fabric_presets.RISEscene`, `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` |
+| Docs | **4** | this file; `MATERIALS.md` §6/§8 catalogue; `SCENE_CONVENTIONS.md` (the weave-aliasing idiom of §5.5); `GLTF_IMPORT.md` §15 (sheen now imports) |
+| Read-set edits | **2** | `materials-and-media-basics.md` (one parsing example), the materials skill hook-line rewrite |
+| Eval configs + committed results | **2 + 2** | pre/post runconfig + scenario, both runs' outputs committed under `evals/runs/` |
+
+**Reference precedent for the whole.** `coated_material` — commit `1f929fef`,
+**36 files changed, 4620 insertions, 21 deletions** — is the honest comparable:
+a triad plus layering plus tests plus the five build projects plus interface
+changes to `IBSDF.h` and `IJob.h`. Phase 1 is that **plus** the bake tool, the
+verb's eight surfaces, and the tangent fix's cross-cutting regression sweep, so
+**40-50 files is the honest expectation**, not 36.
+
+**Per-hit render cost.** The `E` lookup is two clamped table reads and a bilinear
+blend per evaluation — negligible against the Charlie `pow` it accompanies. The
+mixture `Pdf` costs one extra sub-`Pdf` call. The tangent write costs one vector
+copy, two bool stores and one predictable branch per hit on geometry that already
+computes `dpdu`. The weave rotation costs one `RotateTangent` (two trig calls,
+skipped outright when the angle is under 1e-9 —
+[MicrofacetUtils.h:50-52](../src/Library/Utilities/MicrofacetUtils.h)) plus a
+local `RayIntersectionGeometric` copy per substrate call. **The one real new cost
+is variance at low roughness**, because Phase 1 keeps cosine-hemisphere sampling
+under a sharp lobe (§9.4) and leans on MIS with NEE to carry it — a claim with a
+measurement attached (§9.9 gate 10), not an assertion, and the number that gates
+the D-sampling follow-up.
+
+**Phase 2 cost.** `coated_material`'s order or larger; a transmission lobe pulls
+in the full-sphere NEE path. Not costed further here — the parameter set is not
+yet known (§10.1).
+
+---
+
+## 15. Correctness debts and open items
+
+1. **Sheen has no reciprocity or consistency coverage.** Pre-existing.
+   [SPFBSDFConsistencyTest.cpp:1140-1146](../tests/SPFBSDFConsistencyTest.cpp)
+   lists Lambertian, isotropic GGX and three Coated configurations. Phase 1
+   closes it (§9.9 gate 5). **No anisotropic material of any kind is in that
+   sweep either** — Ward and Ashikhmin-Shirley are equally uncovered, and the
+   tangent change of §9.1 alters their basis. Adding at least anisotropic GGX
+   alongside is strongly advised.
+2. **The "Charlie / Neubelt" name is stale in two places, and the rename must
+   include the descriptor.** [SheenBRDF.h:9,18](../src/Library/Materials/SheenBRDF.h)
+   is a comment; **[ChunkParserRegistry.cpp:4358](../src/Library/Parsers/ChunkParserRegistry.cpp)
+   is not** — `cd.description` is the authoring surface, read verbatim by the
+   agent-facing schema generator, the right-click context menu and inline
+   autocomplete in both GUI scene editors, and the properties panel. Leaving it
+   would keep publishing a wrong model attribution into auto-generated schemas
+   long after the header comment was fixed, so **the descriptor text is part of
+   the rename, not a follow-up to it** — and the same applies to the new
+   `fabric_material` descriptor, which must not repeat the error.
+3. **Furnace config 6 is not independently diagnosed.** It is `kPostureBounded`
+   with a note about inherited dissipation, not config 7's measured
+   "substrate never reached." The code path is structurally identical, so the
+   same limitation almost certainly applies — but this document does not assert
+   it as measured. §9.9 gate 4 runs the probe. **The reports differed on this
+   point and the conservative reading is used.**
+4. **Pipe split on the rotation angle — and it now bites harder, so schedule the
+   alias in Phase 1.** GGX's `tangent_rotation` is Color-pipe by construction
+   (an admitted oddball); `fabric_material`'s `weave_rotation` is Scalar-pipe.
+   Under §9.5 the two rotations **compose on the same surface** — the fabric's
+   weave angle orients the yarn and the substrate's own rotation offsets within
+   it — so an author now has a concrete reason to drive both from *one* painter,
+   and cannot: the same field would have to be authored twice, once per pipe.
+   **Phase-1 checklist item:** add a Scalar-pipe alias for
+   `ggx_material.tangent_rotation` concurrently with `fabric_material` (accept
+   either pipe on that slot, prefer Scalar, keep the Color binding working and
+   mark it deprecated in the descriptor). It is a descriptor line plus a
+   resolve-order branch, and doing it in the same slice avoids shipping a
+   composition the scene language cannot express cleanly. `scalar_painter
+   { function2d … }` bridges in the interim.
+5. **Anisotropic sheen is deferred, not solved.** *(Rewritten 2026-09-02: this
+   debt previously described an elliptical Charlie lobe as a Phase-1 feature.
+   That feature is withdrawn — §9.5.)* Phase 1's sheen lobe is strictly
+   isotropic, and weave directionality reaches the render through the substrate.
+   That is the right call and it matches every production system surveyed, but
+   it is not free: a genuinely **anisotropic fuzz** — a nap that is
+   directionally combed, so the *grazing halo itself* is elongated — is
+   inexpressible in Phase 1. Nothing in the surveyed literature supplies one
+   cheaply: an anisotropic Charlie would need a re-derived normaliser, a
+   masking term with azimuthal dependence, and a 4D (not 2D) directional-albedo
+   table. If the need is ever observed, the LTC route (§9.4) is the more
+   promising base for it, since an LTC's linear transform is naturally
+   anisotropic.
+6. **The Ashikhmin-Premoze-Shirley velvet normalisation is unverified.** §3.4's
+   closed form is [from memory]. Not implemented here, so not blocking — but
+   recorded so nobody hard-codes the constant from this document.
+7. **Zhu 2023 and Jin 2022 parameter sets are unobtained.** Phase 2's first gate.
+8. **BDPT/VCM/MLT read the geometry signals as neutral** in parts of their
+   transport, because those integrators hand-build `RayIntersectionGeometric`
+   records omitting `derivatives` and `signals`. Inherited, not created, by this
+   design. Consequence: **a `curv`-driven seam-wear fabric will not match between
+   a PT render and a BDPT or VCM render of the same scene**, and
+   `auto_rasterizer` can route there without the author choosing it. The same
+   debt [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) §12 item 1 carries.
+9. **`ScatteredRayContainer::kCapacity = 12` drops silently**
+   ([ISPF.h:116](../src/Library/Interfaces/ISPF.h)). A `fabric_material` nested
+   under a deep composite could lose energy invisibly. An argument for the
+   single-triad design, and a reason not to document composite nesting as a
+   fabric idiom.
+10. **Weave aliasing has no automatic mitigation.** §5.5's `fw` fade is an
+    authoring idiom, not a mechanism; the plain procedural painters remain
+    unfiltered. If weave fields become common, a footprint-aware `checker` or a
+    filtered step builtin in the VM becomes worth costing.
+11. **The multi-slot preset hypothesis is unmeasured.** Named per-parameter
+    quick-picks already exist
+    ([`ParameterDescriptor::presets`, ChunkDescriptor.h:449](../src/Library/Parsers/ChunkDescriptor.h)),
+    but they are an editor affordance on one scalar and have themselves never
+    been censused; what is new is **one name seeding several slots in
+    `Finalize`**, and no material carries a preset of any kind. §13's stop rules
+    include its falsification.
+12. **glTF per-texel `anisotropy_rotation` is still dropped**
+    ([GLTFSceneImporter.cpp:1300-1307](../src/Library/Importers/GLTFSceneImporter.cpp)).
+    The importer says an `atan2` painter primitive would be needed — but the
+    expression VM **has** `atan2` (confirmed against its function table), so
+    this looks solvable today with no new primitive: extract the texture's R and
+    G through two `channel_painter`s remapped from [0,1] to [−1,1], then
+
+    ```
+    scalar_painter
+    {
+    	name			aniso_rotation
+    	param			dummy 0.0
+    	expression		atan2( 2.0*rotG - 1.0, 2.0*rotR - 1.0 )
+    }
+    ```
+
+    with `rotR`/`rotG` supplied as `scalar_painter { painter <chan> }` inputs.
+    **Sketch only — not execution-validated**, and it would bind to
+    `fabric_material`'s Scalar-pipe `weave_rotation`, not to GGX's Color-pipe
+    `tangent_rotation` (debt 4). Worth a look; not in Phase 1's scope.
+13. **The Blender bridge has no sheen, anisotropic or velvet mapping at all**,
+    documented or otherwise. A silent gap. Phase 1's `fabric_material` is the
+    natural target for Principled's Sheen sockets, but the bridge work is a
+    separate slice.
+14. **Tier-1 spectral dye (per-wavelength absorption through a fibre path) is
+    not attempted.** §2's table. It is a genuine RISE-specific opportunity given
+    the hair σ_a machinery already in tree, and it depends on a yarn model rather
+    than a sheen lobe.
+15. **Mirrored UV seams flip the weave direction.** §9.1. A `dpdu`-derived
+    tangent is coherent within a UV island but can mirror across a seam, and
+    `vShadingTangent` has no `bitangentSign` companion to recover the chirality
+    the way `vTangent` does
+    ([RayIntersectionGeometric.h:296-299](../src/Library/Intersection/RayIntersectionGeometric.h)
+    vs [:344-345](../src/Library/Intersection/RayIntersectionGeometric.h)).
+    Accepted as a known limitation on `NormalMap`'s own precedent
+    ([NormalMap.cpp:109-120](../src/Library/Modifiers/NormalMap.cpp)); the
+    remedy is the same one that comment prescribes, re-export with a `TANGENT`
+    accessor. **That remedy is only real because of §9.1's tangent-precedence
+    branch** — an earlier draft prescribed it while writing `dpdu`
+    unconditionally, and since `Object::IntersectRay` builds the ONB solely from
+    `vShadingTangent` ([Object.cpp:699-772](../src/Library/Objects/Object.cpp))
+    and never consults `vTangent`, re-exporting with a `TANGENT` accessor would
+    have changed nothing at all. The indexed-mesh site now prefers
+    `ri.bHasTangent ? ri.vTangent : dpdu`, which is what makes the advice
+    actionable. §9.9 gate 1 puts a mirrored-UV asset in bucket A so the residual
+    severity is measured rather than assumed. A `bitangentSign` companion on
+    `vShadingTangent` — for meshes with mirrored UVs and *no* authored tangent —
+    is the complete fix and is not in Phase 1's scope.
+16. **`fabric_material`'s `hemisphericalAlbedo` is not a free closed form, and
+    the recommended route is exact only for Lambertian.** §9.2. The
+    `min(1 − w(v), 1 − w(l))` scaling does not factor, so the substrate's own
+    override times something derived from `E` is *not* an identity. Route 1
+    bakes a second small 2D table `S(α, max3(sheenColor))` in the same generator
+    pass and pulls the substrate albedo out of the joint integral — which
+    assumes `f_base` and the grazing-peaked kernel are uncorrelated. That holds
+    exactly for a **constant** `f_base` (Lambertian) and **not** for Oren-Nayar
+    or GGX, both of which are genuinely joint in `l` and `v`; a toy integral put
+    the discrepancy at **~3 %**, growing with substrate roughness. So for the two
+    substrates this design most recommends as fabric bases, route 1 is an
+    **uncorrelated-response approximation of measured-but-not-yet-measured
+    error**. §9.9 gate 5(b) measures it against a brute-force quadrature.
+    **The construction-time-quadrature alternative an earlier draft proposed is
+    withdrawn** (2026-09-02): there is no hit context at material-construction
+    time, so such a quadrature could only evaluate *constant* parameters and
+    would silently produce a wrong answer for the spatially varying painters
+    this design is built around — a worse failure than the approximation it was
+    meant to replace, because it would look exact. The remaining options are
+    route 1 as recommended, a per-substrate-class 3D table `(α, m, substrate
+    roughness)` if gate 5(b) demands exactness, and route 2's strict upper bound
+    as the honest fallback. Until gate 5(b) reports, treat this slot as
+    **approximate with an unquantified bias** — a sharper statement than debt
+    5's, because here the approximation is identified and only its magnitude is
+    open.
+
+---
+
+## 16. Non-goals
+
+- **No cloth simulation or dynamics.** Drape is a modelling problem; this
+  document is about appearance.
+- **No micro-CT or measured-BRDF capture pipeline.** Khungurn 2015's fitting
+  framework is cited as the reason presets exist, not as something to build.
+- **No new painter pipe.** §5.4. A vector/tangent pipe is deferred and
+  observed-need gated at fourteen enumerated touchpoints.
+- **No LTC infrastructure in Phase 1.** §9.4. Gated on a measured cue-(c)
+  deficit, not declined.
+- **No microflake / SGGX / volumetric fabric tier.** §7(D). Rejected on
+  infrastructure, not on merit; SGGX-as-a-phase-function remains the right first
+  brick if RISE ever wants one.
+- **No pattern raster in Phase 1.** §9.5. Phase 1 has no `weave` enum at all;
+  the name is reserved for Phase 2's structured model, and the descriptor must
+  say so rather than leave its absence looking like an oversight.
+- **No anisotropic sheen lobe.** §9.5, debt 5. Charlie's normaliser, its Λ
+  masking fit and the `E` table are all isotropic-only; weave directionality is
+  delivered by rotating the frame handed to an anisotropic *substrate*, exactly
+  as glTF, Filament and OpenPBR all do.
+- **No D-importance sampling of the sheen lobe in Phase 1.** §9.4. There is no
+  VNDF for Charlie, the naive sampler leaks below the horizon, and the
+  rejection-corrected density fails `SPFPdfConsistencyTest` Parts 2 and 3.
+  Deferred behind a sampler/pdf pair proven against those tests.
+- **No SMS involvement.** No fabric lobe is delta.
+- **No BDPT/VCM fabric-specific strategies.** Fabric rides the existing
+  vertex-eval machinery.
+- **No `auto_rasterizer` per-material routing tag.** §12. It would encode a
+  decision the dispatcher already makes.
+- **No silhouette fuzz (cue d) in Phases 1 or 2.** It is a geometry problem, it
+  is gated behind a missing primitive, and this document says so rather than
+  implying a BSDF term supplies it.
+- **No real-time or preview fabric path.**
+- **No emissive fabric.** `CanBeAreaLight() = false`.
+
+---
+
+## 17. References
+
+### Papers
+
+- **Ashikhmin, Premože & Shirley**, *A Microfacet-Based BRDF Generator*,
+  SIGGRAPH 2000, pp. 65-74. [verified — citation; velvet's ~40° filament-bundle
+  tilt verified; **the closed-form normalisation constant of the
+  inverted-Gaussian distribution is [from memory] and must be checked against the
+  primary PDF before any implementation**.] *Naming trap:* the "Ashikhmin" in
+  Blender's historical Velvet BSDF is this paper, **not** the Ashikhmin-Shirley
+  anisotropic Phong BRDF RISE already implements.
+- **Zhao, Jakob, Marschner & Bala**, *Building Volumetric Appearance Models of
+  Fabric Using Micro CT Imaging*, SIGGRAPH 2011. [verified]
+- **Irawan & Marschner**, *Specular Reflection from Woven Cloth*, ACM TOG 31(1),
+  Article 11, February 2012, DOI 10.1145/2077341.2077352. [verified; parameter
+  list counted from the Mitsuba 0.5/0.6 `irawan` plugin source, verified. The
+  underlying Cornell PhD thesis, *The Appearance of Woven Cloth*, is [from
+  memory] as to exact title and year.]
+- **Neubelt & Pettineo**, *Crafting a Next-Gen Material Pipeline for The Order:
+  1886*, SIGGRAPH 2013 Physically Based Shading course notes. [verified —
+  citation; the visibility formula is [from memory] of the widely-reproduced
+  form, cross-checked against the Khronos glTF sheen spec text.]
+- **Sadeghi, Bisker, De Deken & Jensen**, *A Practical Microcylinder Appearance
+  Model for Cloth Rendering*, ACM TOG 32(2), Article 14, 2013,
+  DOI 10.1145/2451236.2451240. [verified — **this corrects the author list the
+  research brief carried** ("Bisceglio, Joshi, Bloom" appear on no such paper).
+  The follow-up SIGGRAPH Asia 2013 talk *Importance Sampling for a Microcylinder
+  Based Cloth BSDF* is verified as existing, not read. The validated-fabric
+  roster is **medium confidence**.]
+- **Heitz, Dupuy, Crassin & Dachsbacher**, *The SGGX Microflake Distribution*,
+  ACM TOG 34(4), Article 48, 2015. [verified — **this corrects a spurious
+  "Iwasaki" co-author** in the research brief. The projected-area quadratic form
+  `σ(ω) = sqrt(ωᵀ S ω)` is [from memory] of the widely-reproduced result.]
+- **Khungurn, Schroeder, Zhao, Bala & Marschner**, *Matching Real Fabrics with
+  Micro-Appearance Models*, ACM TOG 35(1), Article 1, 2015. [verified]
+- **Estevez & Kulla**, *Production Friendly Microfacet Sheen BRDF*, SIGGRAPH 2017
+  Physically Based Shading course notes. [verified — citation; the Charlie NDF
+  and the `sheen_albedo_scaling` composition verified **verbatim** against the
+  Khronos glTF `KHR_materials_sheen` spec text. **The claim that the Charlie CDF
+  is closed-form invertible is [from memory]** and should be checked before
+  implementing an analytic inverse.]
+- **Montazeri, Gammelmark, Zhao & Jensen**, *A Practical Ply-Based Appearance
+  Model of Woven Fabrics*, ACM TOG 39(6), Article 251, SIGGRAPH Asia 2020.
+  [verified; the 2021 knit follow-up, arXiv 2105.02475, verified as existing.]
+- **Wang, Jin, Hašan & Yan**, *SpongeCake: A Layered Microflake **Surface**
+  Appearance Model*, ACM TOG 41(6), 2022 (SIGGRAPH Asia 2022), arXiv 2110.07145.
+  [verified — **this corrects both the title** (the research brief said "Volume")
+  **and the author list**. **No production adoption is corroborated**; the
+  brief's suggestion of Adobe Substance 3D or Unity was explicitly not confirmed
+  and is not claimed here.]
+- **Zeltner, Burley & Chiang**, *Practical Multiple-Scattering Sheen Using
+  Linearly Transformed Cosines*, ACM SIGGRAPH 2022 Talks,
+  DOI 10.1145/3532836.3536240; reference implementation at
+  github.com/tizian/ltc-sheen. [verified. Blender 4.0's adoption is [from
+  memory], medium confidence.]
+- **Jin, Wang & Yan**, *Woven Fabric Capture from a Single Photo*, SIGGRAPH Asia
+  2022. [verified — citation and the two-term single/multiple-scatter
+  description; **author list medium confidence**.] Follow-ons *Woven Fabric
+  Capture with a Reflection-Transmission Photo Pair* (SIGGRAPH 2024) and
+  *Fiber-level Woven Fabric Capture from a Single Photo* (arXiv 2409.06368)
+  verified as to title/venue, not read.
+- **Zhu, Jarabo, Aliaga, Yan & Chiang**, *A Realistic Surface-based Cloth
+  Rendering Model*, SIGGRAPH 2023 Conference Proceedings. [verified — citation,
+  the four target signatures, and the comparison-to-Irawan claims. **The
+  equation set, the itemised parameter table, and the sampling strategy were not
+  obtained** — this is Phase 2's first gate.] Follow-on *A Realistic Multi-scale
+  Surface-based Cloth Appearance Model* (SIGGRAPH 2024) and, in the same lineage,
+  Khattar et al., *A Texture-Free Practical Model for Realistic Surface-Based
+  Rendering of Woven Fabrics* (CGF 2025), verified as to title/venue, not read.
+
+**Explicitly omitted rather than fabricated.** No "Tang et al. 2024/2025"
+real-time yarn-level woven-fabric paper was surfaced by any search this session;
+per the cite-only-if-verified rule it is omitted.
+
+### Specifications and production implementations
+
+- **Khronos glTF 2.0 `KHR_materials_sheen`** — Charlie D, a choice of Neubelt or
+  full-Λ visibility, and the `sheen_albedo_scaling` composition. [verified,
+  fetched verbatim.]
+- **Filament** (Google) — Charlie D + Neubelt V, an energy-conservative
+  Lambertian, a documented non-physical subsurface term, `sheenColor`, and a
+  fixed non-tunable `w = 0.5` wrap diffuse; credits Burley and Neubelt for the
+  robust-blending property. [verified — Filament's own material docs.]
+- **Unreal Engine Cloth Shading Model** — a `Cloth` mask plus a `Fuzz Color` on
+  top of the standard model. [verified — Epic's own docs.]
+- **Enterprise PBR** (Dassault Systèmes) — a Charlie-class sheen term and the
+  `E(θ)` energy-compensation LUT the glTF spec cites. [verified via the glTF
+  spec's own citation.]
+- **OpenPBR** — the "fuzz" slab, moved to the top of the stack specifically so it
+  can sit over both base and coat. [verified — OpenPBR spec text.]
+- **Mitsuba 0.5/0.6 `irawan` plugin** — the canonical open Irawan-Marschner
+  implementation and the source of §3.1's parameter list. [verified via source.]
+
+### In-tree
+
+- [MATERIALS.md](MATERIALS.md) §9 — the new-BSDF checklist this plan instantiates.
+- [WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md) — `coated_material`'s
+  architecture, the verb-first ordering, and the layered-material contract this
+  design's Phase 1 mirrors.
+- [HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) — the model-survey/geometry-survey/
+  phased-plan shape, the fibre-tangent plumbing, the OIDN measurement, the
+  re-derive-don't-vendor precedent, and the observed-need decline rule.
+- [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) —
+  `curv` / `occlusion` / `thickness` and the `add_wear` verb.
+- [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md) — the two-pipe model
+  and the cost precedent for adding a third.
+- [SPECTRAL_ILLUMINANT_CONVENTION.md](SPECTRAL_ILLUMINANT_CONVENTION.md) §7.1 —
+  `GetColorNM` vs `GetRadianceNM` and the `GuardedGetColorNM` rationale.
+- [UNIFIED_INTEGRATOR_DECISION.md](UNIFIED_INTEGRATOR_DECISION.md) +
+  [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md) §2 — PT-default routing.
+- [OIDN.md](OIDN.md) — the AOV contract behind §12's denoiser rules.
+- [GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md) — the `dpdu`/`dpdv` contract
+  §9.1's fix builds on.
+- [GLTF_IMPORT.md](GLTF_IMPORT.md) §15 — the sheen skip this design unblocks.
+- [BLENDER_MATERIAL_TRANSLATION.md](BLENDER_MATERIAL_TRANSLATION.md) — debt 13.
+- `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md` §2,
+  §4, §7 — C-ADV / C-TYPE / C-VERB / C-READ / C-TEXT / C-MEAS and the master
+  adoption triad.
+- [skills/implementation-review-loop.md](skills/implementation-review-loop.md),
+  [skills/variance-measurement.md](skills/variance-measurement.md),
+  [skills/write-highly-effective-tests.md](skills/write-highly-effective-tests.md)
+  — the process gates §9.9 invokes.
