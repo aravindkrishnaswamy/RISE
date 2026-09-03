@@ -99,6 +99,23 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   guard is a smoke render plus CST-golden coverage, not pixel identity.  The
   showcase companions to both live in
   [../FeatureBased/Materials](../FeatureBased/README.md)
+
+  `wool_fuzz_halo_A_bare` / `wool_fuzz_halo_B_fuzz` are the Phase 3
+  (docs/CLOTH_FABRIC_DESIGN.md section 11, `add_fuzz`) regression pair,
+  kept from the evaluation that justified the verb: one `fabric_material
+  wool` sphere BSDF-only (A) next to the identical sphere plus the exact
+  `hair_geometry`/`hair_material`/`standard_object` triad
+  `add_fuzz(amount:"medium")` mints for a 0.15-unit-radius sphere (count
+  24000, length 3.5mm, width_root/tip 0.06/0.02mm, seed 7, base_detail 48,
+  frizz 0.35 — AgentSession::AddFuzz's own calibration baseline). Lighting
+  is a 3/4 key plus a rim light near the camera's own view axis, so the
+  terminator nearly coincides with the camera-visible limb — the fuzz
+  shell's fringe is genuinely GEOMETRIC (B's visible material extends
+  measurably past A's analytic silhouette; no BSDF term can do that), not
+  a shading illusion. `tests/AgentAddFuzzTest.cpp` covers the verb's own
+  mint/refusal/render contract in-process; this pair is the human-
+  renderable, CST-golden-covered companion, mirroring the Hair/ entry's
+  own split between `tests/HairRenderTest.cpp` and its scene companions.
 - `Painters/`: painter- and texture-accessor-specific scenes
 - `Parser/`: parser-language regression scenes
 - `PathTracing/`: unidirectional PT baselines, path-guiding comparisons, and

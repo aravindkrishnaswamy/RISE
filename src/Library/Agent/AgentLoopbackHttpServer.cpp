@@ -362,6 +362,10 @@ namespace
 		    // the whole document in one call, exactly like add_wetness --
 		    // same per-call leverage, same rate-limit membership.
 		    name == "make_fabric" ||
+		    // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): add_fuzz rewrites
+		    // the whole document in one call, exactly like make_fabric --
+		    // same per-call leverage, same rate-limit membership.
+		    name == "add_fuzz" ||
 		    // Doc 90 slice R2 (2026-08-23): revert_to_revision replaces the
 		    // whole document in one call, exactly like the three swaps above --
 		    // same per-call leverage, same rate-limit membership.  Metering the

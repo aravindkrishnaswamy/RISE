@@ -892,8 +892,8 @@ static void TestMcpLayer()
 		const std::string resp = mcpRead.HandleLine( Req( 2, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 2 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 42,
-		       "tools/list under Read STILL lists all 42 tools (mutating tools are ANNOTATED, not hidden)" );
+		Check( tools.isArray() && tools.size() == 43,
+		       "tools/list under Read STILL lists all 43 tools (mutating tools are ANNOTATED, not hidden)" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove
@@ -902,6 +902,7 @@ static void TestMcpLayer()
 		bool sawCollapseToInstances = false;       // 88 step 2 (2026-08-19): the condition-C rewrite verb
 		bool sawVaryMaterial = false;             // 88 S5 (2026-08-20): the condition-D rewrite verb
 		bool sawMakeFabric = false;               // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): the fabric conversion verb
+		bool sawAddFuzz = false;                  // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): the fuzz-shell verb
 		bool sawRender = false, sawListProposals = false, sawResolveProposal = false;
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
@@ -945,6 +946,7 @@ static void TestMcpLayer()
 			// independent regressions -- one tool losing its annotation while
 			// another gained one -- would cancel in the count and survive.
 			if( name == "make_fabric" ) { sawMakeFabric = true; Check( annotated, "make_fabric tool description is ANNOTATED under Read" ); }
+			if( name == "add_fuzz" ) { sawAddFuzz = true; Check( annotated, "add_fuzz tool description is ANNOTATED under Read" ); }
 			if( name == "remove_chunk" )    { sawRemoveChunk    = true; Check( annotated, "remove_chunk tool description is ANNOTATED under Read" ); }
 			// R1a (2026-08-09): the batch remove is a mutating verb like its singular
 			// sibling, so it must be ANNOTATED under Read, never silently hidden.
@@ -963,10 +965,11 @@ static void TestMcpLayer()
 		Check( sawProposePatch && sawProposePatches && sawInsertChunk && sawInsertChunks && sawInsertMaterialScaffold &&
 		       sawInsertGeometryScaffold && sawReplaceGeometryScaffold && sawCollapseToInstances && sawVaryMaterial &&
 		       sawMakeFabric &&
+		       sawAddFuzz &&
 		       sawRemoveChunk && sawRemoveChunks &&
 		       sawRender && sawListProposals && sawResolveProposal,
 		       "all mutating tools + render + list_proposals + resolve_proposal were found in tools/list under Read" );
-		Check( annotatedCount == 22, "EXACTLY 22 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, S2 (2026-08-11) build_element/place_element, arc 81 (2026-08-12) light_scene, arc 82 (2026-08-12) populate_scene and -- arc 83 slices 5 and 6, 2026-08-13 -- environment_scene and frame_scene, and -- 88 step 2, 2026-08-19 -- collapse_to_instances, and -- 88 S5, 2026-08-20 -- vary_material, and -- doc 90 R2, 2026-08-23 -- revert_to_revision, and -- cat plan item 1, 2026-08-25 -- fix_blend_scale, and -- GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30 -- add_wear, and -- WETNESS_COAT_DESIGN sec 6/13, 2026-08-31 -- add_wetness, and -- CLOTH_FABRIC_DESIGN 9.7, 2026-09-02 -- make_fabric, no more no less; resolve_proposal has its own distinct note)" );
+		Check( annotatedCount == 23, "EXACTLY 23 tool descriptions carry the generic read-refusal note under Read (the mutating set incl. propose_patches/insert_chunks/remove_chunks/insert_material_scaffold/insert_geometry_scaffold/replace_geometry_scaffold, S2 (2026-08-11) build_element/place_element, arc 81 (2026-08-12) light_scene, arc 82 (2026-08-12) populate_scene and -- arc 83 slices 5 and 6, 2026-08-13 -- environment_scene and frame_scene, and -- 88 step 2, 2026-08-19 -- collapse_to_instances, and -- 88 S5, 2026-08-20 -- vary_material, and -- doc 90 R2, 2026-08-23 -- revert_to_revision, and -- cat plan item 1, 2026-08-25 -- fix_blend_scale, and -- GEOMETRY_SHADING_SIGNALS sec 11, 2026-08-30 -- add_wear, and -- WETNESS_COAT_DESIGN sec 6/13, 2026-08-31 -- add_wetness, and -- CLOTH_FABRIC_DESIGN 9.7, 2026-09-02 -- make_fabric, and -- CLOTH_FABRIC_DESIGN Phase 3, 2026-09-03 -- add_fuzz, no more no less; resolve_proposal has its own distinct note)" );
 	}
 
 	// tools/list under Commit: no annotation anywhere (including
@@ -976,7 +979,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpCommit.HandleLine( Req( 3, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 3 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 42, "tools/list under Commit lists all 42 tools" );
+		Check( tools.isArray() && tools.size() == 43, "tools/list under Commit lists all 43 tools" );
 		int annotatedCount = 0;
 		for( std::size_t i = 0; i < tools.size(); ++i ) {
 			const std::string desc = tools.at( i ).get( "description" ).asString();
@@ -1014,7 +1017,7 @@ static void TestMcpLayer()
 		const std::string resp = mcpPropose.HandleLine( Req( 5, "tools/list", JsonValue::MakeObject() ) );
 		JsonValue env = ParseResponse( resp, 5 );
 		const JsonValue& tools = env.get( "result" ).get( "tools" );
-		Check( tools.isArray() && tools.size() == 42, "tools/list under Propose lists all 42 tools" );
+		Check( tools.isArray() && tools.size() == 43, "tools/list under Propose lists all 43 tools" );
 
 		bool sawProposePatch = false, sawProposePatches = false, sawInsertChunk = false, sawInsertChunks = false, sawRemoveChunk = false;
 		bool sawRemoveChunks = false;   // R1a (2026-08-09): the ATOMIC batch remove

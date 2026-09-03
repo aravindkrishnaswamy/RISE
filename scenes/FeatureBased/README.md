@@ -299,6 +299,30 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   by reading back the rendered EXR's direct-window and through-curtain pixel values this
   session rather than by eye; `weave_scale` is left at the linen preset's own shipped
   default (sub-pixel at this framing, by design).
+
+  `wool_throw_fuzz` is the docs/CLOTH_FABRIC_DESIGN.md Phase 3 (`add_fuzz`)
+  showcase: a rolled wool bolster (an `sdf_geometry` roundbox -- genuinely
+  CURVED on every side, unlike a flat panel, whose only "edge" is a
+  straight rectangular boundary a normal-grown strand does not cross on its
+  own) with `fabric_material wool` over an Oren-Nayar substrate, plus a
+  fuzz shell -- a hair_geometry/hair_material/standard_object triad grown
+  on the SAME geometry, the exact triad shape `add_fuzz` mints -- under a
+  LIGHT studio dome (`radiance_background TRUE`, ~0.36, velvet_cushion
+  .RISEscene's own rig) with a strong rim light behind-and-above. An
+  earlier revision used a flat displaced panel against a black background
+  and read as plain cloth with no visible fringe at all -- two compounding
+  mistakes the Phase 3 evaluation's own findings predicted: a flat
+  silhouette gives a normal-grown strand nothing to cross on its own, and
+  the evaluation's own `D_brightbg` probe found the fringe reads AGAINST a
+  bright background and nearly vanishes against black. Fixing both at once
+  (curved subject, light background) produces an unmistakable, clearly
+  visible fibrous halo along the entire silhouette. The fuzz recipe is
+  hand-tuned rather than run through `add_fuzz`'s own auto-scaling (kept as
+  a single inspectable file); `add_fuzz`'s density model itself was fixed
+  this same round to read each object's REAL surface area
+  (`IObject::GetArea()`) rather than an equivalent-sphere estimate off its
+  bounding box, specifically so it no longer over-mints a flat object the
+  way an earlier revision of this scene's own fuzz shell did.
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

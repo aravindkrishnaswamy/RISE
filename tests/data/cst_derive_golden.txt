@@ -49,6 +49,7 @@ scenes/FeatureBased/Materials/rainwet_courtyard_night.RISEscene  8f41525f906b220
 scenes/FeatureBased/Materials/sheer_curtain.RISEscene  08767459618facf8fa100bb28e61cd021ebbb39f9ca371235957663c602e8a85  2195  41
 scenes/FeatureBased/Materials/thinfilm_heattint_showcase.RISEscene  e9c922dff2a06e73ea07f7a1ad69725cd623d427f5780a238cf992e5bbc25fa3  2789  47
 scenes/FeatureBased/Materials/velvet_cushion.RISEscene  ab4ae1c79b0a4587b81bab3790aacbd5ae25d0fb7c0c37cdea538513efb8a6f6  1401  31
+scenes/FeatureBased/Materials/wool_throw_fuzz.RISEscene  ca26f54b1f4a8c4997a6bd924c4fbf26db3f222737af55fb5830c36470036443  1157  28
 scenes/FeatureBased/Parser/kaleidoscope_atrium.RISEscene  88b48779488bee285f7d475aa407d92634d9539ff15cf04f3aeb6139387f06d1  43251  417
 scenes/FeatureBased/Parser/photon_cloister.RISEscene  edb805650807c2b039af746e6f9d7cedc98be770c41e1d88787c4fceb3643af3  14545  156
 scenes/FeatureBased/Parser/pillow.RISEscene  40528f38e3ab17897e6b35f8ebd077a9aed032fb1377a78367602ae745f52b7d  55402  528
@@ -250,6 +251,8 @@ scenes/Tests/Materials/transmission.RISEscene  345b610722e06038eba428fefb4c06b4a
 scenes/Tests/Materials/unlit.RISEscene  471054128d11910d04bff1416c84a7f872f582aad070fde10684e1b6bf2ccb02  1516  40
 scenes/Tests/Materials/weave_presets.RISEscene  ec5a57ada15d40a295b7b83bb4869e38ef36f8f0986d64e6d0f35025e8cb2559  1616  29
 scenes/Tests/Materials/wetness_prelude_validation.RISEscene  f828aa6551701b1e6729df59d1c313028ac08d1c442163ac8dbee827476f4d6f  1439  33
+scenes/Tests/Materials/wool_fuzz_halo_A_bare.RISEscene  7671aa8f3fa53df1d381b51aa2d5d2fa6a59b2f509946d61dfb3abae188055e1  907  25
+scenes/Tests/Materials/wool_fuzz_halo_B_fuzz.RISEscene  94627481092a6ecc5a1c8904c210bffc832f6e4e360466125ae23703d7e97631  1131  28
 scenes/Tests/Painters/blackbodyradiator.RISEscene  5ace2dcb9ec88da1a58b4f4c97c7f935b07acd8398d24ddcd09f29bf687d5728  15868  228
 scenes/Tests/Painters/composite_displaced_sphere.RISEscene  d474a823167cd2541daa7e37f3f49f781bddc75a5f1e20648869b166e04f0012  740  28
 scenes/Tests/Painters/composite_polynomial_catalog.RISEscene  947a27a731ddd647224326ddc5d3c5c64bf21abf99e1960edb08194b97974791  2465  53

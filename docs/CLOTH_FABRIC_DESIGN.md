@@ -1,13 +1,25 @@
 # Woven Cloth and Fabric — Weave-Structured Appearance as an Authorable, Summonable Material System
 
-**Status:** **Phase 1 SHIPPED 2026-09-02. Phase 2 slice P2-A SHIPPED
-2026-09-03.** What is locked is the design. Four review rounds (one citation
-audit, one adversarial design pass, two fresh-eyes rounds) have been applied in
-full — see the Amended block below for what moved and why. Phase 1's scope, the
-`fabric_material` contract (§9.2), the chunk surface (§9.3), the sampling
-decision (§9.4), the anisotropy split (§9.5) and the exit gates (§9.9) are the
-implementation brief; changing any of them is an amendment to this document, not
-an implementation choice. Phase 3 remains gated and is **not** locked.
+**Status:** **Phases 1–3 in the tree.** Phase 1 SHIPPED 2026-09-02. Phase 2
+SHIPPED 2026-09-03 (slice P2-A, the structured `weave_material` triad, then
+slice P2-B, thin-cloth transmission — see §10.1a; P2-B left two known
+integrator-side debts open, **debt 20** — BDPT/VCM 100–350x over-count a
+full-sphere-transmissive weave — and **debt 21** — PT's diffuse-transmission
+lobe scales near-`transmit²` instead of linearly — both diagnosed to the
+integrator layer, not the material, and both still open). Phase 3's
+weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
+**declined**, on the same precedent and for the same reasons as before; what
+shipped instead is the bounded `add_fuzz` verb — a sparse fuzz-shell groom
+reusing the existing `hair_geometry`/`hair_material` machinery — SHIPPED
+2026-09-03 (§11.3). What is locked is the design. Four review rounds (one
+citation audit, one adversarial design pass, two fresh-eyes rounds) have been
+applied in full — see the Amended block below for what moved and why. Phase
+1's scope, the `fabric_material` contract (§9.2), the chunk surface (§9.3),
+the sampling decision (§9.4), the anisotropy split (§9.5) and the exit gates
+(§9.9) are the implementation brief; changing any of them is an amendment to
+this document, not an implementation choice. Phase 3's weave-resolving-geometry
+scope remains gated and is **not** locked; its bounded `add_fuzz` slice is
+locked as shipped (§11.3).
 
 **Phase 2 status, 2026-09-03 — slice P2-A is in the tree.** All three of
 §10.2's entry conditions were satisfied (the gate-9b deficit, the demand
@@ -3913,41 +3925,197 @@ multi-order split, none of which a woven thread has.
    the research report rather than against the paper does not "fix" a
    defect that exists only in the intermediate summary.
 
-## 11. Phase 3 — yarn-level geometry
+## 11. Phase 3 — bounded: fuzz shell verb; weave-resolving geometry declined
 
-**Observed-need gated, and likely to be declined**, on the
-[HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) Phase-4 precedent, where LOD and
-elliptical fibres were declined on the same rule after the measurements came in.
+**Split verdict, evaluated 2026-09-02/03.** Phase 3 as originally scoped —
+resolving the weave itself at yarn density — remains **declined**, on the
+[HAIR_FUR_DESIGN.md](HAIR_FUR_DESIGN.md) Phase-4 precedent, for the exact
+reasons below. But the cheapest partial answer this section used to only
+*sketch* ("a fuzz shell... a thin offset surface... this is a sketch, not a
+recommendation") was evaluated properly rather than left as a sketch, and
+the evaluation reversed the sketch's own pessimism: it is not a new,
+unphysical shading trick — it is the already-shipped `hair_geometry` /
+`hair_material` machinery, grown sparse, and it produces a real, measured,
+*geometric* silhouette effect no BSDF term can. That bounded item shipped
+as the `add_fuzz` verb (docs below, this section's own history stays
+intact above the fold).
 
-**What it would buy.** Cue (d) — genuine silhouette fuzz — and the chunky-knit
-class where the loop silhouette *is* the subject. Nothing else in this document
-supplies either.
+### 11.1 What was declined, and why (unchanged from the original Phase 3 scope)
 
-**What blocks it.** §6.2's arithmetic: ≈ 1.03 GiB and ≈ 9.3 s of build for one
-40 cm cushion face at 30 threads/cm, extrapolated linearly from the measured
-100K-strand point. Woven fabric is periodic and should be instanced, and **no
-periodic or instanced placement primitive at strand density exists** —
-`path_instances_geometry` is capped at 20 M vertices / 100 K instances and is
-called structurally unusable at this scale in the hair design itself; per-strand
-`standard_object` instancing is rejected there too.
+**What weave-resolving geometry would buy.** Cue (d) — genuine silhouette
+fuzz — and the chunky-knit class where the loop silhouette *is* the
+subject. Nothing else in this document supplies either.
+
+**What blocks it.** §6.2's arithmetic: ≈ 1.03 GiB and ≈ 9.3 s of build for
+one 40 cm cushion face at 30 threads/cm, extrapolated linearly from the
+measured 100K-strand point. Woven fabric is periodic and should be
+instanced, and **no periodic or instanced placement primitive at strand
+density exists** — `path_instances_geometry` is capped at 20 M vertices /
+100 K instances and is called structurally unusable at this scale in the
+hair design itself; per-strand `standard_object` instancing is rejected
+there too.
 
 **What would make it tractable.** A `weave_geometry` primitive on
-`HairGeometry`'s exact pattern — flat float control-point arrays, one shared
-`BVH<>` over all yarn sub-segments, generated in a `Realize()` hook from the base
-mesh's UVs — but storing **one weave repeat** and referencing it periodically
-through the BVH rather than materialising every crossing. That is new
-infrastructure with no precedent in the tree, and it is the thing to cost before
-anything else in this phase.
+`HairGeometry`'s exact pattern — flat float control-point arrays, one
+shared `BVH<>` over all yarn sub-segments, generated in a `Realize()` hook
+from the base mesh's UVs — but storing **one weave repeat** and
+referencing it periodically through the BVH rather than materialising
+every crossing. That is new infrastructure with no precedent in the tree,
+and it remains the thing to cost before anything else in this scope.
 
-**The cheaper partial answer, if fuzz is the observed need.** A **fuzz shell**:
-a thin offset surface carrying a very rough, very low-albedo `fabric_material`
-with `weave none`. It softens the silhouette read without any new primitive and
-without a single new library file. It is not physically motivated and it should
-be described as what it is. This is a sketch, not a recommendation.
+**Decline criteria, pre-committed and unchanged.** If the Phase-1 and
+Phase-2 censuses show no requests for knitwear, rope, or hero fabric
+close-ups, weave-resolving geometry stays declined — exactly as
+HAIR_FUR's Phase 4 does. No such request has been recorded as of this
+evaluation.
 
-**Decline criteria, pre-committed.** If the Phase-1 and Phase-2 censuses show no
-requests for knitwear, rope, or hero fabric close-ups, Phase 3 is declined and
-this section stands as the record of why — exactly as HAIR_FUR's Phase 4 does.
+### 11.2 The fuzz-shell evaluation (2026-09-02/03)
+
+The experiment (full writeup: the P3 evaluation this section summarizes)
+used RISE's *shipped* `hair_geometry`/`hair_material` machinery, grown
+sparse over a `fabric_material` wool sphere (0.15 scene-unit radius, 24000
+strands, 3.5mm length, 0.06/0.02mm root/tip width — no comb/clump/gravity/
+curl, the cheapest possible groom recipe), rim-lit near the camera's own
+view axis so a single directional light's terminator coincides with the
+camera-visible limb.
+
+**Finding: no shipped-chunk obstacle.** `hair_geometry` bound to a plain
+`sphere_geometry` base and a `fabric_material`-wrapped `standard_object`
+sharing that base worked on the first try. The same is expected (not yet
+tested end-to-end) on the actual Phase-1/2 drape swatch geometry
+(`clippedplane_geometry` + `displaced_geometry`), since `hair_geometry`'s
+own descriptor names a `displaced_geometry` base as accepted.
+
+**Finding: the effect is real and geometric, not a shading illusion.**
+Measured on 512-spp 32-bit EXR renders, comparing the bare material
+against the fuzzed one over 21 columns crossing the rim-lit limb:
+
+- The fuzzed render's visible material extends a mean of **3.7 px past**
+  the bare render's analytic silhouette edge — categorically impossible
+  for any BSDF term, since the ray-traced sphere boundary is exact
+  regardless of shading model.
+- The fuzzed edge's luminance falloff is **14.6× more non-monotonic**
+  (more sign changes in the first difference) than the bare render's
+  smooth falloff — the signature of discrete strand hits rather than a
+  continuous shading gradient.
+
+**Finding: the body is not degraded** at the tested density (24,000
+strands over 0.283 m², ≈ 85,000 strands/m²) — no visible fur texture away
+from the silhouette beyond ordinary Monte-Carlo noise.
+
+**Finding: cost at fuzz-shell density is three orders of magnitude
+cheaper than resolving the weave.** §6.2's reference case (2400 threads ×
+~4800 CPs/thread ≈ 11.5M control points, ≈ 1.0-1.6 GiB, ≈ 9.3 s build) is
+about *resolving the weave itself* — a completely different regime from a
+*sparse fuzz shell*, which only needs silhouette-scale fibre density. The
+same 85,000 strands/m² density scaled to a 0.16 m² cushion face is only
+≈ 13,600 strands (≈ 54,400 control points, ≈ 7.6 MiB by this experiment's
+own measured 140.5 bytes/CP) — no new infrastructure, no periodic-
+instancing primitive needed, because a fuzz shell never has to resolve a
+single yarn crossing.
+
+**Caveat, stated rather than hidden, and resolved in the showcase.** The
+tested rig's near-camera-axis rim light does not, on its own, produce a
+bright "glowing" halo — it proves the geometric silhouette effect exists
+and is measurable, but a genuinely backlit, glowing fringe needs a true
+rim/back light and a background the fringe can read against (the
+evaluation's own `D_brightbg` probe: a fuzz shell reads AGAINST a bright
+background and nearly vanishes against black). The `add_fuzz` showcase
+scene (`scenes/FeatureBased/Materials/wool_throw_fuzz.RISEscene`) applies
+both corrections together — a genuinely CURVED subject (a rolled wool
+bolster, `sdf_geometry` roundbox, not a flat panel: a flat panel's
+silhouette is a straight rectangular boundary a normal-grown strand does
+not cross on its own, unlike a curving limb) under a light studio dome
+(`radiance_background TRUE`, ~0.36) with a strong rim behind-and-above —
+and produces an unmistakable, clearly visible fibrous halo along the
+entire silhouette at showcase quality (256 spp, 18 s). Before/after PNGs
+in the final report.
+
+### 11.3 What shipped: `add_fuzz`
+
+A zero-required-argument verb (`add_fuzz(material?, amount? in {light,
+medium, heavy}, baseHeadVersion)`, per the C-VERB adoption law — see
+`docs/skills/adversarial-code-review.md`'s sibling census and doc 88 §13)
+that grows a fuzz shell over every object bound to a `fabric_material` or
+`weave_material` (or, when named explicitly, a plain diffuse
+`orennayar_material`/`lambertian_material`). For every bound object it
+mints, and ONLY mints — it never edits or rebinds the target material or
+its bound objects:
+
+- `<obj>_fuzz` — a `hair_geometry` grown on that object's own geometry.
+  `count` (density) reads the object's own REAL world-space surface area
+  (`IObject::GetArea()`), falling back to an equivalent-sphere estimate
+  off its bounding box only when that area is unavailable/zero/unbounded
+  — so `light`/`medium`/`heavy` mean the SAME strands-per-unit-area on a
+  flat object and a round one alike (a flat panel and a sphere of equal
+  real area realize the same count, proven by `TestFlatVsRoundAreaParity`).
+  `length`/`width_root`/`width_tip` scale off the bbox's SMALLEST extent
+  (so a thin flat object gets short fibres, not absurdly long ones), off
+  this evaluation's own tuned recipe, so `amount:"medium"` reproduces the
+  evaluation's numbers unscaled for an object matching its calibration
+  sphere. `segments`/`base_detail`/`frizz` stay at the evaluation's own
+  tuned constants (4/48/0.35) regardless of `amount`; no comb/clump/
+  gravity/curl is written. A raw count exceeding hair_geometry's own
+  2,000,000 hard cap is clamped, and the report SAYS SO.
+- `<obj>_fuzz_material` — a `hair_material` whose `color` reads the
+  fabric's own dye: `fabric_material.sheen_color` when bound, else the
+  chunk's OWN documented default (the preset's colour where the preset
+  sets one — velvet only — and otherwise WHITE, never the wrapped base's
+  reflectance); `weave_material.warp_color`; or the named plain-diffuse
+  material's own colour slot. The value is never re-typed, but
+  `hair_material.color`, like every colour-painter slot, resolves STRICTLY
+  by name (only scalar slots accept an inline literal) — an inline-literal
+  value is minted into its own `uniformcolor_painter` first and bound by
+  name; a name-shaped value is bound directly.
+- `<obj>_fuzz_object` — a `standard_object` binding the two, `parent`-ed
+  to the target object with no transform fields of its own, so it tracks
+  the target's placement exactly, including any later edit to it.
+
+Four refusals, each a no-op leaving the document byte-identical: nothing
+qualifies; a `<obj>_fuzz`/`<obj>_fuzz_material`/`<obj>_fuzz_object` name
+already exists (an existing fuzz shell); a bound object's own geometry
+cannot host a groom (an `infiniteplane_geometry`, another `hair_geometry`,
+or no resolvable geometry); the picked material resolves to the `silk` or
+`satin` fabric preset (their tight, glossy structural sheen reads wrong
+with a fibrous fringe. A scene with fewer than two NON-AMBIENT light
+chunks is NOT refused — the message WARNS instead, since the shell mints
+correctly either way and only its look needs a rim/back light to glow
+(`ambient_light` is excluded from the count: it contributes no
+directional information, so it can never itself produce a rim highlight).
+
+**Known limitation, RESOLVED in the fix round.** An earlier revision used
+an equivalent-SPHERE model for density (half the bbox's largest extent as
+a radius, that radius's sphere area) which over-minted a large flat
+object by well over an order of magnitude, because a flat object's real
+surface area is far smaller than the equivalent sphere its own largest
+extent implies (measured directly: a showcase panel scene minted ~1e6
+strands and read as a uniformly furry blanket, not cloth with a fringe).
+Density now reads the object's own REAL surface area
+(`IObject::GetArea()`) first, falling back to the equivalent-sphere
+estimate only when that area is genuinely unavailable (a null-geometry
+container object) or unbounded (an `infiniteplane_geometry`). A residual,
+smaller limitation remains and is worth naming: `IObject::GetArea()`'s
+own accuracy is whatever the underlying geometry's `GetArea()` provides
+— exact for analytic primitives (sphere, box) and a tessellated mesh's
+real post-displacement area for `displaced_geometry`, but a documented
+PARALLELOGRAM APPROXIMATION for `clippedplane_geometry` (exact for an
+axis-aligned rectangle, which is the common case) — not a defect this
+verb introduces, just a downstream precision bound worth knowing about.
+
+**Tests:** `tests/AgentAddFuzzTest.cpp` (mint fields, both multi-object and
+single-object mints, all four refusals, the light-count WARN, amount-band
+scaling, colour-derivation across all four source shapes, undo/redo,
+bare-call selection + determinism, full wire-surface coverage on MCP/RPC/
+chat-codec/autonomy postures, and a real render proving strands exist via
+a per-pixel "newly lit" comparison against the bare material's exactly-
+zero background). Regression scene pair:
+`scenes/Tests/Materials/wool_fuzz_halo_{A_bare,B_fuzz}.RISEscene` (the
+evaluation's own sphere scenes; `B_fuzz` is the ACTUAL `add_fuzz()` output
+on `A_bare`, hand-copied from a real run rather than approximated by hand
+— see the FIX ROUND section's P2-1 note). Showcase:
+`scenes/FeatureBased/Materials/wool_throw_fuzz.RISEscene` (a rolled wool
+bolster, genuinely curved on every side, backlit under a light studio
+dome — an unmistakable fibrous halo at showcase quality).
 
 ---
 

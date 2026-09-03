@@ -1246,6 +1246,13 @@ material carrying none of `reflectance`/`base_color`/`rd` to re-home, and
 on planar-only geometry under a grazing-halo preset (velvet/satin/silk
 need a silhouette; cotton, linen, denim and wool read fine on a flat).
 
+`add_fuzz(material?, amount? in {light,medium,heavy})` grows a sparse
+hair_geometry/hair_material fuzz shell over a fabric_material's own
+object(s), giving the silhouette a genuine fibrous fringe no BSDF can —
+call it after make_fabric on anything whose fibre ends should read at the
+edge (a wool throw, a felted cushion), and pair it with a rim/back light
+or the fringe reads dark rather than glowing.
+
 **Wet fabric is not composable yet.**  `make_fabric` refuses on a
 material `add_wetness` has already coated, and vice versa —
 `coated_material` does not yet accept a `fabric_material` substrate.

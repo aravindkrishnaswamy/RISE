@@ -1,0 +1,211 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   File:        wool_fuzz_halo_B_fuzz.RISEscene
+#   Purpose:     REGRESSION PAIR for docs/CLOTH_FABRIC_DESIGN.md Phase 3 (add_fuzz) and the evaluation
+#                that preceded it (S11 / S6 / S9.9 gate 9).  Variant (B): fabric_material `wool` over
+#                an orennayar substrate PLUS the fuzz shell -- a hair_geometry/hair_material/
+#                standard_object triad grown on the SAME sphere.  Companion to
+#                wool_fuzz_halo_A_bare.RISEscene (BSDF only, no fuzz shell).
+#
+#                REVIEW FIX (2026-09-03, P3R1 P2-1): an earlier revision of this file hand-authored
+#                `color dye_wool` (the dark brown base dye) and `seed 7` while CLAIMING byte-for-value
+#                parity with `add_fuzz(amount:"medium")` -- both wrong.  `m_wool` binds `sheen_color
+#                sheen_warm` explicitly, and `ScanFuzzCandidates_` reads a bound `sheen_color` BEFORE
+#                ever falling back to the base's own reflectance, so the real verb mints `color
+#                sheen_warm` (warm off-white), not the base dye.  `seed` is never a fixed literal --
+#                it is `ScaffoldJitterRange(objName, "fuzz_seed", ...)`, keyed on the TARGET OBJECT's
+#                name.  This revision is the ACTUAL output of `add_fuzz()` called on
+#                wool_fuzz_halo_A_bare.RISEscene, hand-copied verbatim (chunk names, `color`, `seed`,
+#                and the `parent` placement all included) rather than re-derived by hand -- verified
+#                by literally running the verb and diffing its emitted document against this file.
+#                The claim this header now makes is therefore load-bearing: every field below is
+#                the real mint, not an approximation of it.
+#
+#                (AgentSession::AddFuzz's calibration baseline for a bare 0.15-unit-radius sphere:
+#                count 24000, segments 4, length 0.0035, width_root/tip 0.00006/0.00002, base_detail 48,
+#                frizz 0.35, no comb/clump/gravity/curl) -- this pair is kept as a render-inspectable
+#                regression guard alongside AgentAddFuzzTest.cpp's own automated checks, not as a live
+#                evaluation artifact any more.  The evaluation's numeric findings (extending the visible
+#                material 3.7 px PAST the analytic silhouette; 14.6x more edge non-monotonicity than the
+#                bare material) are recorded in docs/CLOTH_FABRIC_DESIGN.md section 11.
+#
+#                Sphere radius 0.15 scene units (=15 cm, meters convention) stands in for a small
+#                wool-covered object -- a cushion corner / ornament -- at a scale where a 3-4 mm
+#                fibre is a meaningfully large fraction of the radius (2-2.7%).
+#
+#                Lighting follows fabric_swatches.RISEscene's rig: a 3/4 key, a near-ON-AXIS rim
+#                light (direction close to the camera's own view axis) so the terminator very
+#                nearly coincides with the camera-visible limb -- gate 9(B)'s own trick for making
+#                a single directional light graze the silhouette without needing true backlight --
+#                plus a dim dome fill.  oidn_denoise FALSE throughout (a denoiser is free to smear
+#                exactly the fine structure being judged).
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name			studio_dome
+	color			0.115 0.122 0.140
+	colorspace		Rec709RGB_Linear
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				256
+	oidn_denoise		FALSE
+	radiance_map		studio_dome
+	radiance_scale		1.0
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/wool_fuzz_halo_B_fuzz
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			600
+	height			450
+}
+
+pinhole_camera
+{
+	location	0 0 0.9
+	lookat		0 0 0
+	up			0 1 0
+	fov			26
+}
+
+sphere_geometry
+{
+	name		fuzz_sphere
+	radius		0.15
+}
+
+uniformcolor_painter
+{
+	name		dye_wool
+	color		0.42 0.28 0.21
+	colorspace	Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name		sheen_warm
+	color		1.00 0.92 0.76
+	colorspace	Rec709RGB_Linear
+}
+
+orennayar_material
+{
+	name		base_wool
+	reflectance	dye_wool
+	roughness	0.6
+}
+
+fabric_material
+{
+	name		m_wool
+	fabric		wool
+	base		base_wool
+	sheen_color	sheen_warm
+}
+
+standard_object
+{
+	name		s_wool
+	geometry	fuzz_sphere
+	material	m_wool
+	position	0 0 0
+}
+
+# KEY -- a 3/4 light so the body reads as a lit sphere, not a flat disc.
+directional_light
+{
+	name		key
+	power		1.40
+	color		1.00 0.98 0.94
+	direction	0.35 0.50 0.79
+}
+
+# RIM -- near the camera's own view axis, so the terminator sits almost on
+# the camera-visible limb (gate 9 configuration B).  This is the light that
+# would reveal a silhouette fuzz halo if the fuzz shell supplies one.
+directional_light
+{
+	name		rim
+	power		3.00
+	color		1.00 0.95 0.85
+	direction	0.06 0.06 0.996
+}
+
+#############################################################################################################
+# THE FUZZ SHELL -- what `add_fuzz(amount:"medium")` mints for `m_wool`
+# bound to a 0.15-unit-radius sphere, hand-authored here (named after the
+# EVALUATION's own scene, not the verb's `<obj>_fuzz` convention, kept for
+# this pair's continuity with the render inspection).  Grown directly on
+# `fuzz_sphere` (the same base geometry the fabric_material surface renders
+# on), bound through its own standard_object at the SAME position so the
+# grown roots line up with the visible substrate exactly
+# (cottontail_dusk.RISEscene's geo_body / groom_under pattern -- and
+# `add_fuzz`'s own `parent` binding for the same effect on a mint).
+#
+# `count` is the PRE-density strand budget; no density painter is used
+# here, so the realised count equals `count`.  At radius 0.15 (area
+# 4*pi*0.15^2 = 0.2827 m^2), 24000 strands is a mean spacing of ~3.4 mm,
+# comparable to the strand length itself -- individual fibres stay
+# resolvable rather than blending into a solid coat.
+#
+# `length` 0.0035 = 3.5mm.  `frizz` gives the fibres a rough, non-uniform
+# look (wool is not straight human hair); no comb/clump/gravity/curl -- a
+# plain outward-growing fuzz, the cheapest possible groom recipe.
+#
+# NAMES, `color` AND `seed` ARE THE VERB'S OWN, not hand-picked: `add_fuzz`
+# keys every minted chunk name off the TARGET OBJECT's name (`s_wool`, not
+# the material `m_wool`), reads `color` from `m_wool.sheen_color`
+# (`sheen_warm`) because a bound `sheen_color` wins over the base's own
+# dye, and derives `seed` from `ScaffoldJitterRange("s_wool", "fuzz_seed",
+# 1, 1000000)` -- a deterministic hash, not a round literal.  `parent
+# s_wool` (rather than a duplicated `position 0 0 0`) is the verb's own
+# placement mechanism: an identity-transform child inherits the parent's
+# world transform exactly, including any later edit to it.
+#############################################################################################################
+
+hair_geometry
+{
+	name			s_wool_fuzz
+	base_geometry	fuzz_sphere
+	count			24000
+	segments		4
+	length			0.0035
+	width_root		0.00006
+	width_tip		0.00002
+	seed			714829
+	base_detail		48
+	frizz			0.35
+}
+
+hair_material
+{
+	name		s_wool_fuzz_material
+	color		sheen_warm
+	beta_m		0.4
+	beta_n		0.4
+}
+
+standard_object
+{
+	name		s_wool_fuzz_object
+	geometry	s_wool_fuzz
+	material	s_wool_fuzz_material
+	parent		s_wool
+}

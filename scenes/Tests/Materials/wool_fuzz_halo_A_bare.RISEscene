@@ -1,0 +1,134 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   File:        wool_fuzz_halo_A_bare.RISEscene
+#   Purpose:     REGRESSION PAIR for docs/CLOTH_FABRIC_DESIGN.md Phase 3 (add_fuzz) and the evaluation
+#                that preceded it (S11 / S6 / S9.9 gate 9).  Variant (A): fabric_material `wool` over
+#                an orennayar substrate, BSDF ONLY -- no hair_geometry fuzz shell.  Companion to
+#                wool_fuzz_halo_B_fuzz.RISEscene, which adds the EXACT hair_geometry/hair_material/
+#                standard_object triad `add_fuzz(amount:"medium")` mints for a 0.15-unit-radius sphere
+#                (count 24000, length 0.0035, width_root/tip 0.00006/0.00002, seed 7, base_detail 48,
+#                frizz 0.35 -- AgentSession::AddFuzz's own calibration baseline), grown on the SAME
+#                sphere, to keep a hand-authored, render-inspectable proof that the fuzz shell reads
+#                as a genuine silhouette fringe next to the verb that mints it.  The evaluation itself
+#                (which found: extending the visible material 3.7 px PAST the analytic silhouette,
+#                14.6x more edge non-monotonicity than the bare material) is recorded in
+#                docs/CLOTH_FABRIC_DESIGN.md section 11.
+#
+#                Sphere radius 0.15 scene units (=15 cm, meters convention) stands in for a small
+#                wool-covered object -- a cushion corner / ornament -- at a scale where a 3-4 mm
+#                fibre is a meaningfully large fraction of the radius (2-2.7%).
+#
+#                Lighting follows fabric_swatches.RISEscene's rig: a 3/4 key, a near-ON-AXIS rim
+#                light (direction close to the camera's own view axis) so the terminator very
+#                nearly coincides with the camera-visible limb -- gate 9(B)'s own trick for making
+#                a single directional light graze the silhouette without needing true backlight --
+#                plus a dim dome fill.  oidn_denoise FALSE throughout (a denoiser is free to smear
+#                exactly the fine structure being judged).
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name			studio_dome
+	color			0.115 0.122 0.140
+	colorspace		Rec709RGB_Linear
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				256
+	oidn_denoise		FALSE
+	radiance_map		studio_dome
+	radiance_scale		1.0
+	radiance_background	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/wool_fuzz_halo_A_bare
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			600
+	height			450
+}
+
+pinhole_camera
+{
+	location	0 0 0.9
+	lookat		0 0 0
+	up			0 1 0
+	fov			26
+}
+
+sphere_geometry
+{
+	name		fuzz_sphere
+	radius		0.15
+}
+
+uniformcolor_painter
+{
+	name		dye_wool
+	color		0.42 0.28 0.21
+	colorspace	Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name		sheen_warm
+	color		1.00 0.92 0.76
+	colorspace	Rec709RGB_Linear
+}
+
+orennayar_material
+{
+	name		base_wool
+	reflectance	dye_wool
+	roughness	0.6
+}
+
+fabric_material
+{
+	name		m_wool
+	fabric		wool
+	base		base_wool
+	sheen_color	sheen_warm
+}
+
+standard_object
+{
+	name		s_wool
+	geometry	fuzz_sphere
+	material	m_wool
+	position	0 0 0
+}
+
+# KEY -- a 3/4 light so the body reads as a lit sphere, not a flat disc.
+directional_light
+{
+	name		key
+	power		1.40
+	color		1.00 0.98 0.94
+	direction	0.35 0.50 0.79
+}
+
+# RIM -- near the camera's own view axis, so the terminator sits almost on
+# the camera-visible limb (gate 9 configuration B).  This is the light that
+# would reveal a silhouette fuzz halo if the fuzz shell supplies one.
+directional_light
+{
+	name		rim
+	power		3.00
+	color		1.00 0.95 0.85
+	direction	0.06 0.06 0.996
+}

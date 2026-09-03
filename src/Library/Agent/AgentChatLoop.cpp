@@ -466,6 +466,13 @@ namespace RISE
 				       // reference), one head bump, one undo step, made
 				       // without looking.
 				       v == "make_fabric" ||
+				       // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): ONE
+				       // add_fuzz call is ONE blind mutation on the same
+				       // argument -- one composite document swap (a
+				       // hair_geometry/hair_material/standard_object triad
+				       // per bound object), one head bump, one undo step,
+				       // made without looking.
+				       v == "add_fuzz" ||
 				       // Doc 90 R2 (2026-08-23): ONE revert_to_revision call is
 				       // ONE blind mutation on the same argument -- one composite
 				       // document swap, one head bump, one undo step.  It counts
@@ -1462,6 +1469,7 @@ namespace RISE
 			//!   4h. name == "add_wear"                  -> "`<material>` <colorSlot>[+<roughSlots>] -> wear fields", or "refused: <=80 chars of message" (GEOMETRY_SHADING_SIGNALS sec 11: same empty-status-on-refusal shape as 4d)
 			//!   4i. name == "add_wetness"                -> "`<material>` <reflectanceSlot>[+<scatteringSlots>] -> wetness fields", or "refused: <=80 chars of message" (WETNESS_COAT_DESIGN sec 6/13: same empty-status-on-refusal shape as 4h)
 			//!   4j. name == "make_fabric"                -> "`<material>` -> `<fabricMaterial>` (<preset>), minted <kind> `<name>` | substrate reused", or "refused: <=80 chars of message" (CLOTH_FABRIC_DESIGN 9.7: same empty-status-on-refusal shape as 4i)
+			//!   4k. name == "add_fuzz"                   -> "`<material>` -> <n> fuzz object(s), first `<fuzzObject>` (<strandCount> strands)", or "refused: <=80 chars of message" (CLOTH_FABRIC_DESIGN Phase 3: same empty-status-on-refusal shape as 4j)
 			//!   5. name in {insert_chunk,propose_patch,remove_chunk}
 			//!      AND result.applied == true               -> "applied: <kind> `<name>`" (propose_patch has no kind/name echo -> "applied")
 			//!   6. name == "render"                         -> "<w>x<h>, luma <2dp>" (+ " [<renderMode>]" when renderMode isn't "" or "beauty")
@@ -1651,6 +1659,24 @@ namespace RISE
 					         ? std::string( ", substrate reused" )
 					         : ( ", minted " + result.get( "mintedSubstrateKind" ).asString() +
 					             " `" + minted + "`" ) );
+				}
+
+				// CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03) add_fuzz: ONE
+				// atomic ADD (never an edit), and not a count -- report
+				// which material grew fuzz, how many objects got a triad,
+				// and the FIRST triad's strand count, because that is the
+				// one fact an author needs to sanity-check the density.
+				// Same empty-status-on-refusal shape as make_fabric above.
+				if( call.name == "add_fuzz" ) {
+					if( !result.get( "applied" ).asBool() ) {
+						return "refused: " + TruncateForOutcome( result.get( "message" ).asString(), 80 );
+					}
+					const long long minted = static_cast<long long>( result.get( "mintedObjectCount" ).asNumber() );
+					const long long strands = static_cast<long long>( result.get( "strandCount" ).asNumber() );
+					return "`" + result.get( "material" ).asString() + "` -> " + std::to_string( minted ) +
+					       " fuzz object" + ( minted == 1 ? std::string() : std::string( "s" ) ) +
+					       ", first `" + result.get( "fuzzObject" ).asString() + "` (" +
+					       std::to_string( strands ) + " strands)";
 				}
 
 			// 4b-3. 88 S5 (2026-08-20) vary_material: ONE atomic mutation, and

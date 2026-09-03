@@ -37932,6 +37932,22 @@ namespace RISE
 			return s;
 		}
 
+		//! `AddFuzz`'s `amount` argument's value list -- see the header's
+		//! own doc for why it is a closed enum rather than a free scalar.
+		const char* const AgentSession::kAddFuzzAmountValues[3] = {
+			"light", "medium", "heavy"
+		};
+
+		std::string AgentSession::AddFuzzAmountList()
+		{
+			std::string s;
+			for( std::size_t i = 0; i < kAddFuzzAmountCount; ++i ) {
+				if( i ) s += ", ";
+				s += kAddFuzzAmountValues[i];
+			}
+			return s;
+		}
+
 		//==============================================================
 		// docs/CLOTH_FABRIC_DESIGN.md 9.7 (2026-09-02) -- make_fabric.
 		//
@@ -38706,6 +38722,375 @@ namespace RISE
 					outCandidates.push_back( c );
 				}
 			}
+			//==============================================================
+			// docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03) -- add_fuzz.
+			//
+			// A SILHOUETTE FUZZ SHELL, not a material edit: this verb ADDS a
+			// sparse hair_geometry/hair_material/standard_object triad next to
+			// a fabric's own objects rather than rewriting anything.  The
+			// Phase 3 evaluation (scratchpad P3_EVAL.md, folded into
+			// CLOTH_FABRIC_DESIGN.md section 11) found the shipped hair
+			// machinery already produces a measurable, geometric silhouette
+			// fringe (3.7 px past the analytic edge, 14.6x more edge
+			// non-monotonicity) at a fuzz-shell density three orders of
+			// magnitude cheaper than resolving the weave itself -- this verb
+			// is that recipe, packaged as a zero-argument verb per the C-VERB
+			// adoption law.
+			//==============================================================
+
+			//! One qualifying material and everything this verb needs to fuzz
+			//! every object bound to it.  Deliberately NOT `FabricCandidate_`:
+			//! that struct's whole shape is about CONVERTING a material
+			//! (mint-or-reuse a substrate, re-home ONE colour slot) -- this
+			//! verb never converts anything, it only reads a colour slot's
+			//! raw STRING and grows hair off objects that are already bound.
+			struct FuzzCandidate_
+			{
+				int         itemIndex = -1;
+				std::string name;
+				std::string kind;              //!< "fabric_material" / "weave_material" / an explicitly-named plain-diffuse kind
+				std::string fabricPreset;      //!< the `fabric` enum value bound (fabric_material AND weave_material both carry one); empty when the kind has none
+				std::string colorValue;        //!< the dye slot's raw text -- a chunk name OR an inline "r g b" literal, copied verbatim
+				std::vector<std::string> boundObjectNames;
+				std::vector<std::string> boundObjectGeometries;   //!< parallel to boundObjectNames; empty entry = unresolved/no geometry
+			};
+
+			//! `fabric_material` / `weave_material` -- the BARE-CALL pool.  A
+			//! plain diffuse kind only ever reaches `FuzzCandidate_` through
+			//! an EXPLICIT `material` argument (see `AddFuzz`'s own doc for
+			//! why), so it is intentionally absent here.
+			bool IsFuzzBareCallKind_( const std::string& kind )
+			{
+				return kind == "fabric_material" || kind == "weave_material";
+			}
+
+			//! The plain-diffuse allowlist a NAMED `material` argument may
+			//! additionally resolve to.  Deliberately narrower than
+			//! `FabricMaterial`'s own substrate allowlist: a glossy GGX
+			//! surface is not what an author means by "plain diffuse", and
+			//! offering it here would let a bare rough-metal material sprout
+			//! fibre for no documented reason.
+			bool IsFuzzNamedDiffuseKind_( const std::string& kind )
+			{
+				return kind == "orennayar_material" || kind == "lambertian_material";
+			}
+
+			//! Tries `reflectance`, then `base_color`, then `rd` -- the same
+			//! three names `make_fabric`'s own colour-slot probe uses,
+			//! duplicated in miniature here rather than shared: that probe
+			//! also classifies WHICH kinds carry each slot for the
+			//! mint-or-reuse decision this verb never makes, and pairing them
+			//! would leak that decision into a verb that has none.
+			std::string FuzzDiffuseColorValue_( const std::map<std::string, std::string>& params )
+			{
+				static const char* const kSlots[] = { "reflectance", "base_color", "rd" };
+				for( const char* s : kSlots ) {
+					const std::map<std::string, std::string>::const_iterator it = params.find( s );
+					if( it != params.end() && !it->second.empty() && it->second != "none" ) return it->second;
+				}
+				return std::string();
+			}
+
+			//! Is `v` an INLINE literal (whitespace-separated finite
+			//! numbers) rather than a bare chunk-name token?
+			//!
+			//! BUG FOUND THIS FIX ROUND (2026-09-03): EVERY colour-painter
+			//! slot in RISE resolves STRICTLY by painter NAME --
+			//! `Job::AddHairMaterial` does `pPntManager->GetItem(color)`,
+			//! and `fabric_material.sheen_color`, `weave_material.warp_color`
+			//! and `lambertian_material.reflectance` do exactly the same
+			//! (there is no inline-literal colour fallback anywhere; only
+			//! SCALAR slots go through `ResolveOrDiagnoseScalar`, which
+			//! accepts a literal).  This verb's original design assumed a
+			//! dye value could be "copied verbatim, name or inline literal
+			//! alike" into `hair_material.color`; an inline value such as
+			//! this verb's OWN white / velvet-grey default for an absent
+			//! `sheen_color` therefore failed to derive ("painter `1.0 1.0
+			//! 1.0` not found").  Every test fixture happened to use a NAMED
+			//! painter for its dye, which is why this stayed latent until
+			//! the P2-4 white-default fix generated the first inline value.
+			//! The fix is not "never accept an inline value" -- it is "mint
+			//! a one-line `uniformcolor_painter` to hold it and reference
+			//! THAT by name", which the `<obj>_fuzz_dye` mint in
+			//! `MakeFuzz`'s emitter below does (see the
+			//! `FuzzColorValueIsInlineLiteral_` call site).
+			bool FuzzColorValueIsInlineLiteral_( const std::string& v )
+			{
+				if( v.empty() ) return false;
+				std::size_t i = 0;
+				int count = 0;
+				while( i < v.size() ) {
+					while( i < v.size() && std::isspace( static_cast<unsigned char>( v[i] ) ) ) ++i;
+					if( i >= v.size() ) break;
+					const std::size_t start = i;
+					while( i < v.size() && !std::isspace( static_cast<unsigned char>( v[i] ) ) ) ++i;
+					const std::string tok = v.substr( start, i - start );
+					char* end = nullptr;
+					std::strtod( tok.c_str(), &end );
+					if( !end || *end != '\0' ) return false;   // not a clean numeric token -- a name
+					++count;
+				}
+				return count > 0;
+			}
+
+			//! The KIND of the geometry chunk named `geomName` ("" if the
+			//! name is empty, unresolved, or ambiguous) -- refusal 3's input.
+			std::string FuzzGeometryKindOfName_( const RISE::Cst::Document& doc, const std::string& geomName )
+			{
+				if( geomName.empty() || geomName == "none" ) return std::string();
+				int occ = 0;
+				const RISE::Cst::NodeId gid = RISE::Cst::DocFindByNameAnyRole( doc, geomName, &occ, "geometry" );
+				if( !gid || occ != 1 ) return std::string();
+				const RISE::Cst::NodeRef gref = RISE::Cst::DocResolveNodeId( doc, gid );
+				return gref ? gref->role : std::string();
+			}
+
+			//! hair_geometry's own base-geometry requirement (see its
+			//! descriptor's own words: "any analytic primitive, mesh,
+			//! sdf_geometry, lathe/sweep/skin, or a displaced_geometry ...
+			//! An infinite plane, or another hair_geometry, is refused").
+			bool FuzzGeometryKindHostsHair_( const std::string& geometryKind )
+			{
+				return !geometryKind.empty() &&
+					geometryKind != "infiniteplane_geometry" && geometryKind != "hair_geometry";
+			}
+
+			//! The scan.  ONE walk of the document, mirroring
+			//! `ScanFabricCandidates_`'s own shape (geometry names, object ->
+			//! material buckets, then a materials pass) but built for THIS
+			//! verb's question: which materials are fuzz-eligible, and what
+			//! is each bound object's own dye and geometry.
+			void ScanFuzzCandidates_( const RISE::Cst::Document& doc,
+			                         const std::string& explicitMaterial,
+			                         std::vector<FuzzCandidate_>& outCandidates,
+			                         std::map<std::string, std::string>& outDeclines )
+			{
+				std::vector<NodeRef>     items;
+				std::vector<std::size_t> starts;
+				CollectItems( doc, items, starts );
+
+				struct MatRec_ { int itemIndex; std::string kind; std::map<std::string, std::string> params; };
+				std::vector<MatRec_>                              materials;
+				std::map<std::string, std::vector<std::string> >  objectNamesByMaterial;
+				std::map<std::string, std::vector<std::string> >  objectGeometriesByMaterial;
+
+				for( std::size_t i = 0; i < items.size(); ++i ) {
+					const NodeRef& item = items[i];
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					const std::string role = item->role;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( role.c_str() ) );
+					if( !d ) continue;
+
+					if( d->category == ChunkCategory::Object ) {
+						const std::map<std::string, std::string> pm = ChunkParamMap_( item );
+						const std::map<std::string, std::string>::const_iterator mat = pm.find( "material" );
+						const std::map<std::string, std::string>::const_iterator onm = pm.find( "name" );
+						if( mat == pm.end() || mat->second.empty() || mat->second == "none" ) continue;
+						if( onm == pm.end() || onm->second.empty() ) continue;
+						objectNamesByMaterial[mat->second].push_back( onm->second );
+						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
+						objectGeometriesByMaterial[mat->second].push_back(
+							( geo != pm.end() ) ? geo->second : std::string() );
+						continue;
+					}
+					if( d->category == ChunkCategory::Material ) {
+						MatRec_ m;
+						m.itemIndex = (int)i;
+						m.kind      = role;
+						m.params    = ChunkParamMap_( item );
+						materials.push_back( m );
+					}
+				}
+
+				for( const MatRec_& m : materials ) {
+					const std::map<std::string, std::string>::const_iterator nm = m.params.find( "name" );
+					if( nm == m.params.end() || nm->second.empty() ) continue;
+					const std::string& name = nm->second;
+
+					const bool wantedExplicitly = ( !explicitMaterial.empty() && explicitMaterial == name );
+					const bool eligibleKind = IsFuzzBareCallKind_( m.kind ) ||
+						( wantedExplicitly && IsFuzzNamedDiffuseKind_( m.kind ) );
+					if( !eligibleKind ) {
+						if( wantedExplicitly ) {
+							outDeclines[name] = "it is a `" + m.kind + "`, not a fabric_material, weave_material, or a "
+								"plain diffuse (orennayar_material / lambertian_material) -- add_fuzz only grows hair "
+								"over one of those";
+						}
+						continue;
+					}
+
+					const std::map<std::string, std::vector<std::string> >::const_iterator objs =
+						objectNamesByMaterial.find( name );
+					if( objs == objectNamesByMaterial.end() || objs->second.empty() ) {
+						outDeclines[name] = "no object binds it, so there is nothing to grow a fuzz shell on -- bind "
+							"it to a standard_object first";
+						continue;
+					}
+
+					FuzzCandidate_ c;
+					c.itemIndex        = m.itemIndex;
+					c.name             = name;
+					c.kind             = m.kind;
+					c.boundObjectNames = objs->second;
+					{
+						const std::map<std::string, std::vector<std::string> >::const_iterator gs =
+							objectGeometriesByMaterial.find( name );
+						if( gs != objectGeometriesByMaterial.end() ) c.boundObjectGeometries = gs->second;
+						c.boundObjectGeometries.resize( c.boundObjectNames.size() );
+					}
+
+					if( m.kind == "fabric_material" ) {
+						const std::map<std::string, std::string>::const_iterator f = m.params.find( "fabric" );
+						c.fabricPreset = ( f != m.params.end() ) ? f->second : std::string();
+						const std::map<std::string, std::string>::const_iterator sc = m.params.find( "sheen_color" );
+						if( sc != m.params.end() && !sc->second.empty() && sc->second != "none" ) {
+							c.colorValue = sc->second;
+						}
+						else {
+							// REVIEW P3R1 P2-4 (2026-09-03): an ABSENT
+							// `sheen_color` is NOT "go read the base's own
+							// dye" -- the chunk's own descriptor is explicit
+							// that `none` (the default) resolves to the
+							// PRESET's colour where the preset sets one
+							// (velvet only) and otherwise WHITE, "NOT read as
+							// the built-in black `none` painter".  That is
+							// what the fabric's sheen tint actually renders
+							// as, so it is what the fuzz shell's dye should
+							// match too -- falling back to the base's raw
+							// reflectance was a DIFFERENT colour than the
+							// material's own visible sheen for every
+							// non-velvet preset (which is all of them except
+							// velvet: every other row's table colour is
+							// white).  `LookupFabricPreset` safely resolves
+							// an empty/unknown `fabric` to `custom`, whose
+							// own sheen default is also white, so this
+							// covers the omitted-`fabric` case too.
+							const RISE::Implementation::FabricPreset& P =
+								RISE::Implementation::LookupFabricPreset( c.fabricPreset.c_str() );
+							char buf[96];
+							if( P.setsSheenColor ) {
+								std::snprintf( buf, sizeof( buf ), "%s %s %s",
+									FabricScalarText_( P.sheenColor.r ).c_str(),
+									FabricScalarText_( P.sheenColor.g ).c_str(),
+									FabricScalarText_( P.sheenColor.b ).c_str() );
+							}
+							else {
+								std::snprintf( buf, sizeof( buf ), "1.0 1.0 1.0" );
+							}
+							c.colorValue = buf;
+						}
+					}
+					else if( m.kind == "weave_material" ) {
+						const std::map<std::string, std::string>::const_iterator f = m.params.find( "fabric" );
+						c.fabricPreset = ( f != m.params.end() ) ? f->second : std::string();
+						const std::map<std::string, std::string>::const_iterator wc = m.params.find( "warp_color" );
+						if( wc != m.params.end() && !wc->second.empty() && wc->second != "none" )
+							c.colorValue = wc->second;
+					}
+					else {
+						c.colorValue = FuzzDiffuseColorValue_( m.params );
+					}
+
+					if( c.colorValue.empty() ) {
+						outDeclines[name] = "its dye could not be resolved to a colour value (no `sheen_color`, "
+							"wrapped-base reflectance/base_color/rd, `warp_color`, or own colour slot) -- the fuzz "
+							"shell would have no dye to read the same colour as the fabric";
+						continue;
+					}
+
+					outCandidates.push_back( c );
+				}
+			}
+
+			//! `SelectMaterialToMakeFabric_`'s own rule (most bound objects,
+			//! ties broken lexicographically) -- restricted to the BARE-CALL
+			//! pool, since a bare call must never silently reach a
+			//! plain-diffuse candidate that only an explicit `material`
+			//! argument may select.
+			const FuzzCandidate_* SelectMaterialToFuzz_( const std::vector<FuzzCandidate_>& mats )
+			{
+				const FuzzCandidate_* best = nullptr;
+				for( const FuzzCandidate_& m : mats ) {
+					if( !IsFuzzBareCallKind_( m.kind ) ) continue;
+					if( !best ) { best = &m; continue; }
+					if( m.boundObjectNames.size() > best->boundObjectNames.size() ) { best = &m; continue; }
+					if( m.boundObjectNames.size() == best->boundObjectNames.size() && m.name < best->name ) best = &m;
+				}
+				return best;
+			}
+
+			//! Density / length / width multipliers per `amount` tier.
+			//! `medium` is the Phase 3 evaluation's own tuned recipe,
+			//! UNSCALED (density and length multiplier both 1.0); `light` and
+			//! `heavy` are documented multipliers on it, not independently
+			//! measured -- the evaluation tested exactly one density.
+			struct FuzzAmountTuning_ { double densityMult; double lengthMult; double widthMult; };
+			FuzzAmountTuning_ FuzzAmountTuningFor_( const std::string& amount )
+			{
+				if( amount == "light" ) return FuzzAmountTuning_{ 0.5, 0.85, 0.85 };
+				if( amount == "heavy" ) return FuzzAmountTuning_{ 2.0, 1.30, 1.20 };
+				return FuzzAmountTuning_{ 1.0, 1.0, 1.0 };   // "medium"
+			}
+
+			//! hair_geometry / hair_material / standard_object, ALL parameter
+			//! values ONE physical line each -- the same line-based-parser
+			//! reason `make_fabric`'s own emitters document.
+			std::string BuildFuzzHairGeometryText_( const std::string& chunkName, const std::string& baseGeometry,
+			                                        unsigned int count, double length,
+			                                        double widthRoot, double widthTip, unsigned int seed )
+			{
+				std::string t = "hair_geometry\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tbase_geometry\t" + baseGeometry + "\n";
+				t += "\tcount\t\t\t" + std::to_string( count ) + "\n";
+				t += "\tsegments\t\t4\n";
+				t += "\tlength\t\t\t" + FabricScalarText_( length ) + "\n";
+				t += "\twidth_root\t\t" + FabricScalarText_( widthRoot ) + "\n";
+				t += "\twidth_tip\t\t" + FabricScalarText_( widthTip ) + "\n";
+				t += "\tseed\t\t\t" + std::to_string( seed ) + "\n";
+				t += "\tbase_detail\t\t48\n";
+				t += "\tfrizz\t\t\t0.35\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! The evaluation's own tuned Chiang-lobe roughness (beta_m /
+			//! beta_n 0.4/0.4) -- constant across `amount`, the same way
+			//! `hair_geometry`'s `segments`/`base_detail`/`frizz` are.
+			//! `color` is the raw dye string, copied VERBATIM (see `AddFuzz`'s
+			//! own doc for why that is safe: a Color-pipe Reference parameter
+			//! accepts a chunk name OR an inline "r g b" literal identically,
+			//! so the string that worked on the source slot works here
+			//! unchanged).
+			std::string BuildFuzzHairMaterialText_( const std::string& chunkName, const std::string& colorValue )
+			{
+				std::string t = "hair_material\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tcolor\t\t\t" + colorValue + "\n";
+				t += "\tbeta_m\t\t\t0.4\n";
+				t += "\tbeta_n\t\t\t0.4\n";
+				t += "}\n";
+				return t;
+			}
+
+			//! `parent <targetObject>` with no position/orientation/scale of
+			//! its own is the whole trick: a standard_object with an identity
+			//! LOCAL transform under a parent renders at exactly the parent's
+			//! world transform, and keeps tracking it if the parent is edited
+			//! later -- cheaper and more durable than copying the target's
+			//! own transform fields into a second, independent chunk.
+			std::string BuildFuzzObjectText_( const std::string& chunkName, const std::string& geometryName,
+			                                  const std::string& materialName, const std::string& parentObject )
+			{
+				std::string t = "standard_object\n{\n";
+				t += "\tname\t\t\t" + chunkName + "\n";
+				t += "\tgeometry\t\t" + geometryName + "\n";
+				t += "\tmaterial\t\t" + materialName + "\n";
+				t += "\tparent\t\t\t" + parentObject + "\n";
+				t += "}\n";
+				return t;
+			}
+
 		}
 
 		AgentSession::AgentMakeFabricResult AgentSession::MakeFabric(
@@ -39205,6 +39590,557 @@ namespace RISE
 				if( !substrateName.empty() ) AttributeChunkToActiveElement_( substrateName,
 					RISE::Implementation::FabricSubstrateClassText( P.substrate ) );
 				AttributeChunkToActiveElement_( fabricName, "fabric_material" );
+			}
+
+			return out;
+		}
+
+		//==============================================================
+		// docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03) -- add_fuzz.
+		// See AgentSession.h's own doc comment for the full contract;
+		// this is the ADD half of the mint/rebind/atomicity/refusals
+		// shape make_fabric established -- ADD because this verb never
+        // rebinds or edits anything, it only grows new sibling chunks.
+		//==============================================================
+		AgentSession::AgentAddFuzzResult AgentSession::AddFuzz(
+			const std::string& material, const std::string& amount,
+			const RISE::Cst::CstHeadVersion* baseOrNull )
+		{
+			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
+			// capture point -- see MakeFabric's / AddWetness's own copy of
+			// this line for the rule.
+			CaptureHeadRevisionSnapshot_();
+			AgentAddFuzzResult out;
+			BuildPlanGiveUpFold_ s1Fold{ out.message, std::string() };
+
+			// ---- (1) Snapshot the head ONCE; the commit re-checks it.
+			const AgentDocumentSnapshot snap = ReadDocumentSnapshot();
+			if( !snap.hasDocument ) {
+				out.message = "add_fuzz refused: no retained CST Document -- this verb needs a "
+					"CST-loaded head";
+				return out;
+			}
+			if( baseOrNull && *baseOrNull != snap.headVersion ) {
+				char buf[192];
+				std::snprintf( buf, sizeof( buf ),
+					"add_fuzz refused: baseHeadVersion does not match the current head "
+					"(revision %llu) -- re-read and re-propose -- document unchanged",
+					static_cast<unsigned long long>( snap.headVersion.revision ) );
+				out.ok          = true;
+				out.status      = "conflict";
+				out.headVersion = snap.headVersion;
+				out.message     = buf;
+				return out;
+			}
+
+			// ---- (2) `amount`, validated against the closed list.
+			std::string amountUsed = amount;
+			if( amountUsed.empty() ) amountUsed = "medium";
+			bool amountKnown = false;
+			for( std::size_t i = 0; i < kAddFuzzAmountCount; ++i )
+				if( amountUsed == kAddFuzzAmountValues[i] ) { amountKnown = true; break; }
+			if( !amountKnown ) {
+				out.message = "add_fuzz refused: `" + amount + "` is not an `amount` -- it must be one of " +
+					AgentSession::AddFuzzAmountList() + ", or omit it entirely for `medium` -- document unchanged";
+				return out;
+			}
+			out.amount = amountUsed;
+
+			const RISE::Cst::Document headDoc = RISE::Cst::ParseToCst( snap.document );
+
+			std::vector<FuzzCandidate_>        candidates;
+			std::map<std::string, std::string> declines;
+			ScanFuzzCandidates_( headDoc, material, candidates, declines );
+			out.qualifyingMaterials = (int)candidates.size();
+
+			// ---- (3) Pick the material.
+			const FuzzCandidate_* pick = nullptr;
+			if( !material.empty() ) {
+				for( const FuzzCandidate_& m : candidates )
+					if( m.name == material ) { pick = &m; break; }
+				if( !pick ) {
+					const std::map<std::string, std::string>::const_iterator why = declines.find( material );
+					if( why != declines.end() ) {
+						out.message = "add_fuzz refused: `" + material + "` cannot be fuzzed -- " + why->second +
+							". Call it with no arguments to take the most prominent fabric/weave material -- "
+							"document unchanged";
+					}
+					else {
+						const bool exists = ( RISE::Cst::DocFindByNameAnyRole( headDoc, material ) ? true : false );
+						out.message = exists
+							? ( "add_fuzz refused: `" + material + "` exists but is not a material chunk this "
+							    "verb fuzzes -- it needs to be a fabric_material, a weave_material, or (when "
+							    "named explicitly) a plain diffuse orennayar_material/lambertian_material. Call "
+							    "it with no arguments to take the most prominent fabric/weave material -- "
+							    "document unchanged" )
+							: ( "add_fuzz refused: no chunk named `" + material + "` is in this document -- "
+							    "`material` must name a material chunk (read_document to see the names), or "
+							    "omit it entirely to take the most prominent fabric/weave material -- document "
+							    "unchanged" );
+					}
+					return out;
+				}
+			}
+			else {
+				pick = SelectMaterialToFuzz_( candidates );
+				if( !pick ) {
+					out.message = "add_fuzz refused: no fabric_material or weave_material in this document is "
+						"bound to at least one object with a resolvable dye -- author one first (make_fabric "
+						"mints one), or pass `material` naming a plain diffuse (orennayar_material / "
+						"lambertian_material) surface explicitly -- document unchanged";
+					return out;
+				}
+			}
+
+			out.material     = pick->name;
+			out.materialKind = pick->kind;
+			out.boundObjects = (int)pick->boundObjectNames.size();
+
+			// ---- (4) Refusal 4: silk/satin read wrong with a fibrous
+			// fringe (a tight, glossy structural sheen, not a fuzzy one).
+			if( pick->fabricPreset == "silk" || pick->fabricPreset == "satin" ) {
+				out.message = "add_fuzz refused: `" + pick->name + "` resolves to the `" + pick->fabricPreset +
+					"` fabric preset -- a fibrous silhouette fringe reads as WRONG on a tight, glossy structural "
+					"sheen (satin and silk are calibrated for a smooth, directional highlight, not a fuzzy "
+					"halo). Use add_fuzz on a broader preset (cotton, linen, denim or wool all read fine) -- "
+					"document unchanged";
+				return out;
+			}
+
+			// ---- (4b) If the dye is an INLINE LITERAL rather than a
+			// bare chunk name, mint a one-line `uniformcolor_painter` to
+			// hold it.  `hair_material.color` resolves STRICTLY by name
+			// (see `FuzzColorValueIsInlineLiteral_`'s own doc for the bug
+			// this fixes) -- writing an inline literal straight into it
+			// fails to derive.  `effectiveColorValue` is what every
+			// minted `hair_material` actually binds; `pick->colorValue`
+			// stays the ORIGINAL value for reporting.
+			std::string effectiveColorValue = pick->colorValue;
+			std::string mintedDyeName;
+			if( FuzzColorValueIsInlineLiteral_( pick->colorValue ) ) {
+				std::vector<std::string> noneTakenYet;
+				mintedDyeName = WearMintChunkName_( headDoc, pick->name, "_fuzz_dye", noneTakenYet );
+				if( mintedDyeName.empty() ) {
+					out.message = "add_fuzz refused: could not derive an unused chunk name for the minted "
+						"dye painter from `" + pick->name + "` -- rename or remove the colliding `" +
+						pick->name + "_fuzz_dye*` chunks and retry -- document unchanged";
+					return out;
+				}
+				effectiveColorValue = mintedDyeName;
+			}
+
+			// ---- (5) Refusals 2 and 3, per bound object, ALL-OR-NOTHING
+			// (mirroring make_fabric's own rebind loop, which touches
+			// every bound object unconditionally): if ANY bound object
+			// cannot host a fuzz shell, the WHOLE call refuses rather than
+			// minting a fuzz shell on some objects and silently skipping
+			// others.
+			for( std::size_t i = 0; i < pick->boundObjectNames.size(); ++i ) {
+				const std::string& objName = pick->boundObjectNames[i];
+				const std::string  geomName = ( i < pick->boundObjectGeometries.size() )
+					? pick->boundObjectGeometries[i] : std::string();
+				const std::string  geomKind = FuzzGeometryKindOfName_( headDoc, geomName );
+				if( !FuzzGeometryKindHostsHair_( geomKind ) ) {
+					out.message = "add_fuzz refused: bound object `" + objName + "`'s own geometry " +
+						( geomKind.empty()
+							? ( geomName.empty() ? std::string( "could not be resolved (no geometry, or a "
+							    "container/instancing object)" )
+							    : ( "`" + geomName + "` could not be resolved" ) )
+							: ( "`" + geomName + "` is a `" + geomKind + "`, which hair_geometry refuses as a "
+							    "base (an infinite plane has no finite area to grow on; another hair_geometry "
+							    "is not itself tessellatable)" ) ) +
+						" -- add_fuzz needs EVERY object bound to `" + pick->name + "` to host a groom, so the "
+						"whole call refuses rather than fuzzing some objects and silently skipping this one -- "
+						"document unchanged";
+					return out;
+				}
+				if( CollapseNameTaken_( headDoc, objName + "_fuzz" ) ||
+				    CollapseNameTaken_( headDoc, objName + "_fuzz_material" ) ||
+				    CollapseNameTaken_( headDoc, objName + "_fuzz_object" ) ) {
+					out.message = "add_fuzz refused: `" + objName + "_fuzz`, `" + objName + "_fuzz_material` or "
+						"`" + objName + "_fuzz_object` already exists -- `" + objName + "` already has a fuzz "
+						"shell (or a same-named chunk is in the way). Remove or rename it first, then re-run -- "
+						"document unchanged";
+					return out;
+				}
+			}
+
+			// ---- (6) Per-object recipe: SURFACE-AREA-scaled density,
+			// bbox-scaled length/width, off the Phase 3 evaluation's tuned
+			// baseline (a 0.15-unit-radius sphere, 24000 strands, 3.5 mm
+			// strand length, 0.06/0.02 mm root/tip width).
+			//
+			// FIX ROUND (2026-09-03): the first cut used an
+			// EQUIVALENT-SPHERE model for BOTH density and length/width --
+			// `L` = half the bbox's largest extent, `S` = that radius's
+			// sphere area (4*pi*L^2).  Exact at the calibration sphere, but
+			// for a large, nearly-FLAT object (a draped panel) the real
+			// surface area is far smaller than the equivalent sphere its
+			// own largest extent implies, over-minting strand COUNT by
+			// well over an order of magnitude (measured: a showcase panel
+			// scene minted ~1e6 strands and read as a uniformly furry
+			// blanket, not woven cloth with a fringe).  Density now reads
+			// the object's own REAL world-space surface area via
+			// `IObject::GetArea()` (Object.cpp: `pGeometry->GetArea() *
+			// m_worldAreaScale`, exact for a tessellated mesh -- e.g.
+			// `DisplacedGeometry::GetArea()` returns the POST-displacement
+			// tessellated mesh area, not the flat base's) whenever that
+			// area is a usable finite positive number, so "light"/"medium"/
+			// "heavy" now mean the SAME STRANDS-PER-UNIT-AREA on a round
+			// object and a flat one alike -- a flat panel and a sphere of
+			// equal real area realize the same strand count.  The
+			// equivalent-sphere estimate is kept ONLY as the fallback for
+			// when `GetArea()` is unavailable (`CanBeAreaLight()`-style
+			// null-geometry objects, or the unbounded/degenerate sentinel
+			// an `infiniteplane_geometry` or a botched transform would
+			// give) or returns exactly zero.
+			//
+			// LENGTH/WIDTH scale with `Lsmall` -- the bbox's SMALLEST
+			// extent (not the largest), so a thin/flat object gets
+			// correspondingly short fibres (a throw's own thickness is a
+			// far better proxy for "how deep is the nap" than its lateral
+			// span) while a round object's smallest extent still equals
+			// its largest (dx=dy=dz for a sphere), so the calibration
+			// sphere is unaffected: `Lsmall` = R there exactly, same as
+			// the old `L`.
+			//
+			// The baseline is used UNSCALED (both S and Lsmall) whenever a
+			// bound object's live bounding box cannot be measured at all
+			// (no attached job, the name did not resolve, or the box is
+			// degenerate/unbounded) -- noted in the report rather than
+			// silently guessed away.
+			const FuzzAmountTuning_ tuning = FuzzAmountTuningFor_( amountUsed );
+			constexpr double kBaselineRadius       = 0.15;
+			constexpr double kBaselineSurfaceArea  = 4.0 * 3.14159265358979323846 * kBaselineRadius * kBaselineRadius;
+			constexpr double kBaselineDensityPerM2 = 24000.0 / kBaselineSurfaceArea;
+			constexpr double kBaselineLengthPerL   = 0.0035  / kBaselineRadius;
+			constexpr double kBaselineWRootPerL    = 0.00006 / kBaselineRadius;
+			constexpr double kBaselineWTipPerL     = 0.00002 / kBaselineRadius;
+			constexpr double kUnboundedSentinel_   = 1e29;
+
+			struct FuzzPlan_ {
+				std::string objName, geomName, hairGeomName, hairMatName, fuzzObjName;
+				unsigned int count; double length, widthRoot, widthTip; unsigned int seed;
+			};
+			std::vector<FuzzPlan_> plans;
+			bool anyBboxFallback = false;
+			// REVIEW P3R1 P2-3 (2026-09-03): the 2,000,000 cap below is
+			// hair_geometry's own hard ceiling (its `count` parameter's
+			// documented limit), silently reached on a `heavy` call over a
+			// large real surface area -- named here so the report can say
+			// so rather than leaving an author to wonder why a huge object
+			// did not get a proportionally huger groom.
+			bool anyCountClamped = false;
+
+			for( std::size_t i = 0; i < pick->boundObjectNames.size(); ++i ) {
+				const std::string& objName = pick->boundObjectNames[i];
+				const std::string  geomName = ( i < pick->boundObjectGeometries.size() )
+					? pick->boundObjectGeometries[i] : std::string();
+
+				double Lsmall = kBaselineRadius, S = kBaselineSurfaceArea;
+				bool measured = false;
+				bool areaFromRealGetArea = false;
+				if( mJob ) {
+					if( IObjectManager* objMgr = mJob->GetObjects() ) {
+						if( IObjectPriv* op = objMgr->GetItem( objName.c_str() ) ) {
+							const IObject* o = static_cast<const IObject*>( op );
+
+							// (a) Real world-space surface area, tried FIRST.
+							const double realArea = (double)o->GetArea();
+							if( RISE::IsFiniteDouble( realArea ) && realArea > 0.0 &&
+							    realArea < kUnboundedSentinel_ ) {
+								S = realArea;
+								areaFromRealGetArea = true;
+							}
+
+							// (b) The bounding box -- always read for Lsmall
+							// (length/width scaling), and for the
+							// equivalent-sphere S fallback when (a) didn't
+							// produce a usable area.
+							const BoundingBox bb = o->getBoundingBox();
+							const double lo[3] = { bb.ll.x, bb.ll.y, bb.ll.z };
+							const double hi[3] = { bb.ur.x, bb.ur.y, bb.ur.z };
+							bool finite = true;
+							for( int a = 0; a < 3; ++a )
+								if( !RISE::IsFiniteDouble( lo[a] ) || !RISE::IsFiniteDouble( hi[a] ) ||
+								    std::fabs( lo[a] ) >= kUnboundedSentinel_ || std::fabs( hi[a] ) >= kUnboundedSentinel_ )
+									finite = false;
+							const double dx = hi[0] - lo[0], dy = hi[1] - lo[1], dz = hi[2] - lo[2];
+							if( finite && RISE::IsFiniteDouble( dx ) && RISE::IsFiniteDouble( dy ) && RISE::IsFiniteDouble( dz ) &&
+							    dx > 0.0 && dy > 0.0 && dz > 0.0 ) {
+								// `Lsmall` = half the SMALLEST extent (a
+								// sphere's bbox has dx=dy=dz=2R, so this is
+								// R exactly, matching the calibration).
+								Lsmall = 0.5 * std::min( dx, std::min( dy, dz ) );
+								measured = true;
+								if( !areaFromRealGetArea ) {
+									// Equivalent-sphere FALLBACK only: `Llarge`
+									// = half the LARGEST extent, `S` = that
+									// radius's sphere area.  Kept only for
+									// objects `GetArea()` cannot answer for.
+									const double Llarge = 0.5 * std::max( dx, std::max( dy, dz ) );
+									S = 4.0 * 3.14159265358979323846 * Llarge * Llarge;
+								}
+							}
+						}
+					}
+				}
+				if( !measured && !areaFromRealGetArea ) anyBboxFallback = true;
+
+				FuzzPlan_ p;
+				p.objName     = objName;
+				p.geomName    = geomName;
+				p.hairGeomName = objName + "_fuzz";
+				p.hairMatName  = objName + "_fuzz_material";
+				p.fuzzObjName  = objName + "_fuzz_object";
+				const double rawCount = kBaselineDensityPerM2 * S * tuning.densityMult;
+				if( rawCount > 2000000.0 ) anyCountClamped = true;
+				p.count      = (unsigned int)std::max( 200.0, std::min( 2000000.0, std::floor( rawCount + 0.5 ) ) );
+				p.length     = std::max( 1e-6, kBaselineLengthPerL * Lsmall * tuning.lengthMult );
+				p.widthRoot  = std::max( 1e-6, kBaselineWRootPerL * Lsmall * tuning.widthMult );
+				p.widthTip   = std::max( 1e-6, kBaselineWTipPerL  * Lsmall * tuning.widthMult );
+				p.seed       = (unsigned int)ScaffoldJitterRange( objName, "fuzz_seed", 1.0, 1000000.0 );
+				plans.push_back( p );
+			}
+
+			// ---- (7) Light-count WARN (not a refusal): the fuzz shell
+			// mints correctly either way, but a rim/back light is what
+			// makes the fringe glow rather than read as a dark static
+			// fuzz (Phase 3 evaluation section 3's own caveat).
+			//
+			// REVIEW P3R1 P2-2 (2026-09-03): a plain `Light`-category
+			// count is too coarse in one specific, easy-to-hit way --
+			// `ambient_light` contributes NO directional information at
+			// all (it lights every point equally regardless of normal),
+			// so a scene with an ambient fill plus one key light would
+			// have counted "2 lights" and suppressed the warning despite
+			// having no candidate rim/back source whatsoever.  Excluding
+			// `ambient_light` from the count fixes that specific false
+			// negative.  This is still deliberately NOT a full direction-
+			// relative-to-camera check (that would need the live scene's
+			// camera and each light's own placement, and a coarse count
+			// is what "the halo needs a rim light" can honestly say
+			// without reasoning about geometry this verb never sees) --
+			// a scene with two non-ambient lights that both happen to be
+			// front keys still gets no warning, and that residual is
+			// named here rather than silently pretended away.
+			bool fewLights = false;
+			{
+				std::vector<NodeRef>     items;
+				std::vector<std::size_t> starts;
+				CollectItems( headDoc, items, starts );
+				int lightCount = 0;
+				for( const NodeRef& item : items ) {
+					if( !item || item->kind != NodeKind::Chunk ) continue;
+					if( item->role == "ambient_light" ) continue;
+					const ChunkDescriptor* d = DescriptorForKeyword( String( item->role.c_str() ) );
+					if( d && d->category == ChunkCategory::Light ) ++lightCount;
+				}
+				fewLights = ( lightCount < 2 );
+			}
+
+			// ---- (8) Compose the candidate document.  Every triad is
+			// APPENDED at the current end of the document rather than
+			// spliced mid-document: its two dependencies (the object's
+			// own `geometry`, and the `parent` object itself) are both
+			// already declared earlier, so declare-before-use holds
+			// trivially at the end, with none of make_fabric's
+			// same-index reverse-splice bookkeeping.
+			RISE::Cst::Document work = headDoc;
+			auto appendChunk = [&]( const std::string& text, const char* whatKind ) -> bool {
+				const int before = RISE::Cst::DocItemCount( work );
+				const int at     = before;
+				work = CollapseSpliceChunkAt_( work, at, text );
+				if( RISE::Cst::DocItemCount( work ) == before ) {
+					out.message = "add_fuzz refused: internal -- the generated `" + std::string( whatKind ) +
+						"` chunk did not parse; nothing changed";
+					return false;
+				}
+				return true;
+			};
+			if( !mintedDyeName.empty() ) {
+				std::string dyeText = "uniformcolor_painter\n{\n\tname\t\t\t" + mintedDyeName +
+					"\n\tcolor\t\t\t" + pick->colorValue + "\n\tcolorspace\t\tRec709RGB_Linear\n}\n";
+				if( !appendChunk( dyeText, "uniformcolor_painter" ) ) return out;
+			}
+			for( const FuzzPlan_& p : plans ) {
+				if( !appendChunk( BuildFuzzHairGeometryText_( p.hairGeomName, p.geomName, p.count, p.length,
+				                                              p.widthRoot, p.widthTip, p.seed ),
+				                  "hair_geometry" ) ) return out;
+				if( !appendChunk( BuildFuzzHairMaterialText_( p.hairMatName, effectiveColorValue ),
+				                  "hair_material" ) ) return out;
+				if( !appendChunk( BuildFuzzObjectText_( p.fuzzObjName, p.hairGeomName, p.hairMatName, p.objName ),
+				                  "standard_object" ) ) return out;
+			}
+
+			const std::string candidateText = RISE::Cst::SerializeCst( work );
+			if( candidateText.empty() ) {
+				out.message = "add_fuzz refused: internal -- the candidate document serialized to nothing; "
+					"document unchanged";
+				return out;
+			}
+			if( candidateText == snap.document ) {
+				out.message = "add_fuzz refused: internal -- the composed document is byte-identical to the "
+					"current one, so there is nothing to commit; document unchanged";
+				return out;
+			}
+
+			// ---- (9) S1 cross-element arm, deliberately AFTER the
+			// candidate build (CheckBuildPlanGate_'s rule).
+			{
+				const std::string clause = CheckElementWindowForEdit_( "add_fuzz", pick->name, &s1Fold.notice );
+				if( !clause.empty() ) {
+					out.message = clause;
+					return out;
+				}
+			}
+
+			// ---- (10) COMMIT: ONE whole-document swap, ONE dry-run-guarded
+			// re-derive, ONE head bump, ONE undo step.
+			AgentChunkResult commit;
+			commit.name = pick->name;
+			commit.kind = pick->kind;
+
+			if( mAuthority == AgentAuthority::External ) {
+				out.message = "add_fuzz refused: this session is External-authority, and this verb has no "
+					"staged-proposal form (it is ONE composite document swap, not a single chunk edit an Owner "
+					"can approve card-by-card) -- do it in staged steps instead: insert_chunk a hair_geometry "
+					"per bound object naming that object's own geometry as `base_geometry`, insert_chunk a "
+					"hair_material for each naming the fabric's own dye on `color`, then insert_chunk a "
+					"standard_object per pair with `parent` set to the bound object -- document unchanged";
+				return out;
+			}
+
+			if( mController ) {
+				const SceneEditController::AgentCommitResult cr =
+					mController->ApplyAgentReplaceGeometry( String( pick->name.c_str() ),
+					                                        String( candidateText.c_str() ),
+					                                        &snap.headVersion,
+					                                        "add_fuzz" );
+				commit.applied     = cr.applied;
+				commit.retriable   = cr.retriable;
+				commit.rawCode     = cr.rawCode;
+				commit.status      = cr.status.c_str();
+				commit.headVersion = cr.headVersion;
+				commit.message     = cr.message.c_str();
+			}
+			else if( !mJob || !mJob->HasRetainedCstDocument() ) {
+				out.message = "add_fuzz refused: no retained CST Document -- this verb needs a CST-loaded head";
+				return out;
+			}
+			else {
+				const RISE::Cst::CstHeadVersion cur = mJob->GetCstHeadVersion();
+				if( cur != snap.headVersion ) {
+					char buf[192];
+					std::snprintf( buf, sizeof( buf ),
+						"add_fuzz refused: the head moved (revision %llu) while the fuzz shell was being "
+						"composed -- re-read and retry -- document unchanged",
+						static_cast<unsigned long long>( cur.revision ) );
+					out.ok          = true;
+					out.status      = "conflict";
+					out.headVersion = cur;
+					out.message     = buf;
+					return out;
+				}
+				char diagBuf[512]; diagBuf[0] = '\0';
+				const int code = mJob->ApplyCstReplaceDocumentText( candidateText.c_str(),
+				                                                    /*restoreActiveRasterizer*/ true,
+				                                                    diagBuf, sizeof( diagBuf ),
+				                                                    "add_fuzz" );
+				commit.rawCode     = ( code < 0 ) ? 0 : code;
+				commit.headVersion = mJob->GetCstHeadVersion();
+				if( code == 2 )      { commit.applied = true;  commit.status = "applied"; }
+				else if( code == 3 ) { commit.applied = false; commit.status = "diagnosed"; }
+				else {
+					commit.applied = false;
+					commit.status  = "rejected";
+					if( diagBuf[0] ) commit.message = diagBuf;
+				}
+			}
+
+			// ---- (11) Report.
+			out.ok          = true;
+			out.status      = commit.status;
+			out.retriable   = commit.retriable;
+			out.rawCode     = commit.rawCode;
+			out.applied     = commit.applied;
+			out.headVersion = commit.headVersion;
+			if( ResultMutatedDocument_( commit ) && !plans.empty() ) {
+				out.fuzzGeometry      = plans[0].hairGeomName;
+				out.fuzzMaterial      = plans[0].hairMatName;
+				out.fuzzObject        = plans[0].fuzzObjName;
+				out.strandCount       = (int)plans[0].count;
+				out.mintedObjectCount = (int)plans.size();
+			}
+
+			{
+				std::string m;
+				if( commit.applied ) {
+					m = "`" + pick->name + "` (" + pick->kind + ") grew a `" + amountUsed + "` fuzz shell over " +
+						std::to_string( plans.size() ) + " bound object" +
+						( plans.size() == 1 ? std::string() : std::string( "s" ) ) + ": ";
+					for( std::size_t i = 0; i < plans.size() && i < 6; ++i ) {
+						if( i ) m += ", ";
+						m += "`" + plans[i].objName + "` -> `" + plans[i].hairGeomName + "` (" +
+							std::to_string( plans[i].count ) + " strands) + `" + plans[i].hairMatName + "` + `" +
+							plans[i].fuzzObjName + "`";
+					}
+					if( plans.size() > 6 ) m += ", ...";
+					m += ". Each fuzz object is `parent`-ed to its own target with no transform of its own, so "
+						"it inherits that object's placement exactly, now and after any later edit to it. Each "
+						"hair_material's `color` reads `" + pick->name + "`'s own dye";
+					if( !mintedDyeName.empty() )
+						m += " -- an INLINE literal (`" + pick->colorValue + "`), which `hair_material.color` "
+							"cannot resolve directly (it binds a painter strictly by name), so it was minted "
+							"into a one-line `uniformcolor_painter` `" + mintedDyeName + "` and every "
+							"hair_material binds THAT by name instead";
+					else
+						m += " -- the exact string copied VERBATIM, never re-resolved";
+					m += ". `count` was scaled from "
+						"each object's own REAL live surface area (IObject::GetArea(), falling back to an "
+						"equivalent-sphere estimate off its bounding box only when the real area is "
+						"unavailable) so `light`/`medium`/`heavy` mean the same strands-per-unit-area on a flat "
+						"object and a round one alike; `length`/`width_root`/`width_tip` were scaled from each "
+						"object's own live bounding box's SMALLEST extent -- off the Phase 3 evaluation's tuned "
+						"recipe (a 0.15-unit-radius sphere, 24000 strands, 3.5 mm strands)";
+					if( anyBboxFallback )
+						m += " -- at least one bound object's bounding box could not be measured from a live "
+							"scene, so its recipe used the evaluation's baseline size UNSCALED";
+					if( anyCountClamped )
+						m += " -- at least one object's computed strand count exceeded hair_geometry's own "
+							"2,000,000 hard cap and was clamped to it, so its realized density is LOWER than "
+							"the `amount` multiplier alone would imply";
+					m += ". `segments`/`base_detail`/`frizz` stay at the evaluation's own tuned constants "
+						"(4/48/0.35) regardless of `amount`, and no comb/clump/gravity/curl was written -- the "
+						"cheapest groom recipe the evaluation measured. NEITHER `" + pick->name +
+						"` NOR ANY OF ITS BOUND OBJECTS WAS EDITED -- this call only added chunks";
+					if( fewLights )
+						m += ". WARNING: this scene has fewer than two non-ambient light chunks -- the fuzz shell mints "
+							"correctly either way, but the halo look this verb exists for needs a rim/back "
+							"light; add one, or the fringe will read as a dark, static-looking edge rather "
+							"than a glowing one";
+					m += ". ONE full re-derive, ONE undo step.";
+				}
+				else if( commit.status == "diagnosed" ) {
+					m = "add_fuzz NOT a clean success: the Document was mutated and the live managers were "
+						"replaced, BUT the re-derive emitted diagnostics (see log) -- do NOT treat as applied";
+				}
+				else {
+					m = "add_fuzz rejected (NOTHING changed): the candidate document would not derive -- head "
+						"unchanged";
+				}
+				if( !commit.message.empty() && !commit.applied ) m += " [engine: " + commit.message + "]";
+				out.message = m;
+			}
+
+			if( ResultMutatedDocument_( commit ) ) {
+				if( !mintedDyeName.empty() )
+					AttributeChunkToActiveElement_( mintedDyeName, "uniformcolor_painter" );
+				for( const FuzzPlan_& p : plans ) {
+					AttributeChunkToActiveElement_( p.hairGeomName, "hair_geometry" );
+					AttributeChunkToActiveElement_( p.hairMatName,  "hair_material" );
+					AttributeChunkToActiveElement_( p.fuzzObjName,  "standard_object" );
+				}
 			}
 
 			return out;

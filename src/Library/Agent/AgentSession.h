@@ -6946,6 +6946,135 @@ namespace RISE
 			//! message or a description, so neither restates the list.
 			static std::string MakeFabricPresetList();
 
+			//! docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03): what
+			//! `AgentSession::AddFuzz` did, or the reason it declined.  A
+			//! SILHOUETTE FUZZ SHELL -- a sparse `hair_geometry`/
+			//! `hair_material` pair grown over a fabric's own substrate --
+			//! rather than a material edit, so its shape is closer to
+			//! `AgentMakeFabricResult`'s MINT half than to
+			//! `AgentAddWetnessResult`'s pure wrap: this verb never edits or
+			//! rebinds the target material or its bound objects, it only ADDS
+			//! new sibling chunks alongside them.
+			struct AgentAddFuzzResult
+			{
+				bool ok        = false;
+				bool applied   = false;
+				bool retriable = false;
+				int  rawCode   = 0;
+				std::string status;
+				RISE::Cst::CstHeadVersion headVersion;
+				std::string message;
+
+				std::string material;       //!< the fabric_material / weave_material / (named) plain-diffuse material the fuzz was grown from
+				std::string materialKind;   //!< its chunk keyword, unchanged by this call
+				std::string amount;         //!< "light" / "medium" / "heavy" -- the argument, or the "medium" default
+
+				//! The FIRST minted triad's names -- the common one-object
+				//! case reads these directly.  When the target material is
+				//! bound to more than one object, every bound object gets its
+				//! OWN triad (`mintedObjectCount` says how many); these three
+				//! plus `strandCount` describe the first one, in
+				//! `boundObjectNames` scan order.
+				std::string fuzzGeometry;   //!< the minted `hair_geometry` chunk
+				std::string fuzzMaterial;   //!< the minted `hair_material` chunk
+				std::string fuzzObject;     //!< the minted `standard_object` binding the two, `parent`-ed to the target so it inherits its transform exactly
+				int strandCount = 0;        //!< the first minted `hair_geometry`'s realized `count`
+
+				int mintedObjectCount = 0;  //!< how many fuzz triads this call minted (usually 1)
+				int boundObjects      = 0;  //!< how many objects are bound to `material` -- the blast radius
+				int qualifyingMaterials = 0;
+			};
+
+			//! docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03): grow a SPARSE
+			//! `hair_geometry` fuzz shell over every object bound to a
+			//! fabric-like material, giving its silhouette a fibrous fringe
+			//! that no BSDF term can produce (the Phase 3 evaluation measured
+			//! the fringe extending 3.7 px PAST the analytic silhouette, with
+			//! 14.6x more edge non-monotonicity than the bare material).
+			//!
+			//! ZERO REQUIRED ARGUMENTS, `vary_material`'s reason: called bare
+			//! it takes the most-referenced qualifying material (ties broken
+			//! lexicographically, `SelectMaterialToMakeFabric_`'s own rule)
+			//! from the BARE-CALL POOL -- `fabric_material` and
+			//! `weave_material` chunks only.  A plain diffuse substrate
+			//! (`orennayar_material` / `lambertian_material`) is eligible ONLY
+			//! when `material` names it explicitly: fuzz on an arbitrary
+			//! diffuse surface is a much bigger claim than fuzz on something
+			//! already declared to be cloth, and a silent bare-call pick
+			//! should never reach past that boundary.
+			//!
+			//! WHAT IT EMITS, per bound object of the picked material: a
+			//! `hair_geometry` (`<obj>_fuzz`) grown on THAT object's own
+			//! `geometry`, a `hair_material` (`<obj>_fuzz_material`) whose
+			//! `color` tier reads the fabric's own dye -- `fabric_material
+			//! .sheen_color` when bound, else the chunk's own documented
+			//! default (the PRESET's colour where the preset sets one --
+			//! velvet only -- and otherwise WHITE, never the wrapped
+			//! `base`'s own reflectance); `weave_material`'s `warp_color`;
+			//! or the named plain-diffuse material's own colour slot.  The
+			//! VALUE is never re-typed, but `hair_material.color` resolves
+			//! STRICTLY by name (no inline-literal fallback the way
+			//! `fabric_material.sheen_color` has), so a value that is an
+			//! inline literal rather than a bare chunk name is minted into
+			//! its own one-line `uniformcolor_painter` first and every
+			//! `hair_material` binds THAT by name -- a name-shaped value is
+			//! bound directly, with no mint at all.  A `standard_object`
+			//! (`<obj>_fuzz_object`) binding the two with `parent <obj>` and
+			//! no transform fields of its own, so it inherits the target's
+			//! placement exactly and keeps inheriting it across any later
+			//! edit to that placement.  `count` scales with the object's own
+			//! REAL live surface area (`IObject::GetArea()`, falling back to
+			//! an equivalent-sphere estimate off its bounding box only when
+			//! the real area is unavailable) so `light`/`medium`/`heavy`
+			//! mean the same strands-per-unit-area on a flat object and a
+			//! round one alike; `length`/`width_root`/`width_tip` scale with
+			//! the SMALLEST extent of the object's own world-space bounding
+			//! box -- off the Phase 3 evaluation's tuned recipe (a
+			//! 0.15-unit-radius sphere, 24000 strands, 3.5 mm strands) so
+			//! `light` looks the same fuzz on a cushion and on a sofa;
+			//! `amount` scales density/length/width by a fixed multiplier
+			//! (`medium` reproduces the evaluation's own recipe unscaled).
+			//! `segments`, `base_detail`
+			//! and `frizz` stay at the evaluation's tuned constants regardless
+			//! of `amount` -- no comb/clump/gravity/curl is written, the
+			//! "cheapest possible groom recipe" the evaluation itself
+			//! measured.  THE TARGET MATERIAL AND ITS BOUND OBJECTS ARE NEVER
+			//! EDITED -- this verb only adds.
+			//!
+			//! FOUR REFUSALS, each leaving the document byte-identical: (1)
+			//! nothing qualifies (no fabric/weave material bound to an
+			//! object, and no explicitly-named diffuse material either); (2)
+			//! a `<obj>_fuzz` / `<obj>_fuzz_material` / `<obj>_fuzz_object`
+			//! name already exists for a bound object (an existing fuzz
+			//! shell -- re-run add_fuzz only after removing or renaming it);
+			//! (3) a bound object's own geometry cannot host a groom (an
+			//! `infiniteplane_geometry`, another `hair_geometry`, or no
+			//! resolvable geometry at all -- hair_geometry's own base
+			//! requirement); (4) the picked material resolves to the `silk`
+			//! or `satin` fabric preset (a tight, glossy structural sheen a
+			//! fibrous fringe reads as wrong on, per the design doc's own
+			//! recommendation).  A scene with fewer than two non-ambient light
+			//! chunks is NOT refused -- it WARNS in the message instead, because the
+			//! fuzz shell mints correctly either way and only its LOOK
+			//! depends on a rim/back light being present.
+			//!
+			//! ONE whole-document swap, ONE head bump, ONE undo step --
+			//! `MakeFabric`'s own commit path, and for the same reason it has
+			//! no staged-proposal form under External authority.
+			AgentAddFuzzResult AddFuzz( const std::string& material = std::string(),
+			                            const std::string& amount = std::string(),
+			                            const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
+
+			//! `AddFuzz`'s `amount` argument's closed value list -- kept next
+			//! to `kMakeFabricPresetValues` for the same anti-drift reason
+			//! (AgentMcpAdapter.cpp's schema, AgentChatCodecs.cpp's kToolDefs,
+			//! and the verb's own validation read ONE array).
+			static const char* const kAddFuzzAmountValues[3];
+			static const std::size_t kAddFuzzAmountCount = 3;
+
+			//! kAddFuzzAmountValues, comma-separated.
+			static std::string AddFuzzAmountList();
+
 			//! Doc 90 slice R2 (2026-08-23): what RevertToRevision did, or the
 			//! reason it declined.
 			//!

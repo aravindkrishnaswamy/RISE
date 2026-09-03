@@ -7097,6 +7097,14 @@ namespace RISE
 										// converted a material before asking must
 										// not VACUOUSLY pass askUserBeforeMutation.
 										"make_fabric",
+										// CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03):
+										// add_fuzz mutates the document (a
+										// hair_geometry/hair_material/
+										// standard_object triad per bound
+										// object), so a run that grew a fuzz
+										// shell before asking must not
+										// VACUOUSLY pass askUserBeforeMutation.
+										"add_fuzz",
 										// Doc 90 R2 (2026-08-23): revert_to_revision mutates
 										// the document (one composite swap restoring an
 										// earlier revision's whole text), so a run that

@@ -430,6 +430,21 @@ namespace RISE
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
 				"--agent-autonomy=commit to use it)] ";
 
+			//! CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): add_fuzz's own
+			//! annotation under AgentAutonomy::Propose SPECIFICALLY -- the
+			//! SAME rationale as kMakeFabricProposeRefusedNote above (it
+			//! mutates through one composite whole-document swap: a
+			//! hair_geometry/hair_material/standard_object triad per bound
+			//! object; deliberately excluded from AgentRpc.cpp's
+			//! IsProposeSafeVerb rather than pay the counted-verb prose
+			//! ripple SourceHygieneTest's verb-parity scan pins; refused
+			//! under Propose exactly like Read; deliberately contains
+			//! neither magic substring the per-note counters key on).
+			const std::string kAddFuzzProposeRefusedNote =
+				"[UNAVAILABLE at --agent-autonomy=propose: add_fuzz is not on the "
+				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
+				"--agent-autonomy=commit to use it)] ";
+
 			const std::string kBuildElementProposeRefusedNote =
 				"[UNAVAILABLE at --agent-autonomy=propose: build_element is not on the "
 				"Propose-autonomy allowlist and is refused here exactly as under Read (relaunch with "
@@ -2114,6 +2129,81 @@ namespace RISE
 					tools.push_back( MakeTool( "make_fabric", desc, ObjectProp( "", props, required ) ) );
 				}
 
+				// add_fuzz (CLOTH_FABRIC_DESIGN Phase 3, 2026-09-03).
+				// Hand-authored HERE and semantically identical to the
+				// chat-codec definition in AgentChatCodecs.cpp's kToolDefs
+				// (two texts, one verb -- a semantic change to either must
+				// land in both).
+				//
+				// NEVER edits or rebinds the target material or its bound
+				// objects -- unlike every verb above, it only ADDS new
+				// sibling chunks (a hair_geometry/hair_material/
+				// standard_object triad per bound object).
+				{
+					JsonValue props = JsonValue::MakeObject();
+					props.set( "material", StringProp(
+						"OPTIONAL. The name of the fabric_material or weave_material to grow a fuzz shell "
+						"over. Omit it to take the MOST PROMINENT fabric_material/weave_material bound to "
+						"an object -- the no-argument call is the intended one. Name a plain diffuse "
+						"material (orennayar_material / lambertian_material) explicitly to fuzz it too -- "
+						"a bare call never reaches one on its own." ) );
+					{
+						JsonValue amt = StringProp( "" );
+						JsonValue vals = JsonValue::MakeArray();
+						for( std::size_t i = 0; i < AgentSession::kAddFuzzAmountCount; ++i )
+							vals.push_back( JsonValue::MakeString( AgentSession::kAddFuzzAmountValues[i] ) );
+						amt.set( "enum", vals );
+						amt.set( "description", JsonValue::MakeString(
+							"OPTIONAL. How dense/long the fuzz shell is. `medium` (the default) reproduces "
+							"the Phase 3 evaluation's own tuned recipe unscaled; `light` is half the density "
+							"and shorter/thinner strands; `heavy` is double the density and longer/thicker "
+							"strands. All three scale with the target object's own bounding box, so the same "
+							"`amount` looks the same fuzz on a small object and a large one." ) );
+						props.set( "amount", amt );
+					}
+					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
+					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
+					// Commit-only, and for the SAME reason make_fabric is:
+					// one composite whole-document swap is no
+					// AgentProposalKind an Owner could approve card-by-card.
+					const std::string desc = ( readOnly ? kAutonomyReadNote
+					                          : proposeOnly ? kAddFuzzProposeRefusedNote
+					                          : std::string() ) + std::string(
+						"GROW A SILHOUETTE FUZZ SHELL over a fabric -- a sparse hair_geometry/hair_material "
+						"pair added alongside a fabric_material/weave_material's own object(s), giving the "
+						"silhouette a fibrous fringe no BSDF term can produce (the fringe extends PAST the "
+						"analytic edge; measured 3.7 px extension and 14.6x more edge non-monotonicity than "
+						"the bare material). Call this the moment a fabric's edge should read as fuzzy rather "
+						"than a mathematically perfect curve: a wool throw, a felted cushion, a chenille "
+						"blanket, anything whose fibre ends should be visible at the silhouette. This ADDS "
+						"chunks; it NEVER edits or rebinds the target material or its bound objects. For "
+						"EVERY object bound to the picked material it mints a hair_geometry (`<obj>_fuzz`) "
+						"grown on that object's own geometry, a hair_material (`<obj>_fuzz_material`) whose "
+						"`color` is the fabric's own dye copied VERBATIM (name or inline literal alike, "
+						"never re-resolved), and a standard_object (`<obj>_fuzz_object`) binding the two "
+						"with `parent <obj>` and no transform of its own, so it exactly tracks the target's "
+						"placement including any LATER edit to it. Density/length/width scale with each "
+						"object's own live bounding box off a tuned baseline recipe, so `amount` looks "
+						"consistent across differently-sized objects. `segments`/`base_detail`/`frizz` stay "
+						"at the tuned recipe's constants regardless of `amount`; no comb/clump/gravity/curl "
+						"is written -- the cheapest groom that measurably produces the fringe. It REFUSES, "
+						"changing nothing and costing only this call, when nothing qualifies (no fabric/"
+						"weave material bound to an object, and no explicitly-named diffuse either); when a "
+						"`<obj>_fuzz`/`<obj>_fuzz_material`/`<obj>_fuzz_object` name already exists for a "
+						"bound object (an existing fuzz shell); when a bound object's own geometry cannot "
+						"host a groom (an infiniteplane_geometry, another hair_geometry, or no resolvable "
+						"geometry); or when the picked material resolves to the `silk` or `satin` fabric "
+						"preset (their tight, glossy structural sheen reads wrong with a fibrous fringe). A "
+						"scene with fewer than two non-ambient lights is NOT refused -- the message WARNS instead, "
+						"because the shell mints correctly either way and only its LOOK needs a rim/back "
+						"light to glow rather than read dark. Returns {ok,applied,rawCode,status,retriable,"
+						"headVersion,message,material,materialKind,amount,fuzzGeometry,fuzzMaterial,"
+						"fuzzObject,strandCount,mintedObjectCount,boundObjects,qualifying}. A PRE-COMMIT "
+						"refusal is ok=false with an EMPTY status, so branch on `applied`. Always pass the "
+						"headVersion you last read as baseHeadVersion." );
+					tools.push_back( MakeTool( "add_fuzz", desc, ObjectProp( "", props, required ) ) );
+				}
+
 				// remove_chunk
 				{
 					JsonValue props = JsonValue::MakeObject();
@@ -2646,6 +2736,7 @@ namespace RISE
 					"add_wear",                // GEOMETRY_SHADING_SIGNALS sec 11 (2026-08-30): MUTATING, the condition-L rewrite verb
 					"add_wetness",             // WETNESS_COAT_DESIGN sec 6/13 (2026-08-31): MUTATING, the condition-P rewrite verb
 					"make_fabric",             // CLOTH_FABRIC_DESIGN 9.7 (2026-09-02): MUTATING, the fabric conversion verb
+					"add_fuzz",                // CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): MUTATING, the fuzz-shell verb
 					"revert_to_revision",      // doc 90 R2 (2026-08-23): MUTATING, the ratchet's way back
 					"render", "render_status", "render_wait", "render_cancel",
 					"read_image", "read_viewport", "query_object_at",

@@ -1451,6 +1451,20 @@ namespace RISE
 							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
 							"and STAGE proposals as usual" );
 					}
+					// CLOTH_FABRIC_DESIGN Phase 3 (2026-09-03): add_fuzz's
+					// commit is one composite whole-document swap too -- a
+					// hair_geometry/hair_material/standard_object triad per
+					// bound object -- so it is excluded from
+					// IsProposeSafeVerb for exactly the reason make_fabric
+					// above is, with the same message shape.
+					if( m == "add_fuzz" ) {
+						return MakeProposeAutonomyRefusedError( idValue, m,
+							"refused: this session runs with --agent-autonomy=propose; add_fuzz "
+							"is not on the Propose-autonomy allowlist and is unavailable at this posture "
+							"(relaunch at --agent-autonomy=commit to reach it) -- insert_chunk/insert_chunks/"
+							"propose_patch/propose_patches/remove_chunk/remove_chunks remain available under Propose "
+							"and STAGE proposals as usual" );
+					}
 					// S2 (2026-08-11): build_element and place_element are the
 					// two clean-room verbs.  BOTH mutate (build_element inserts
 					// through InsertChunks, place_element patches through
@@ -4508,6 +4522,63 @@ namespace RISE
 					}
 					result.set( "qualifying", JsonValue::MakeNumber( static_cast<double>( fr.qualifyingMaterials ) ) );
 					result.set( "objects",    JsonValue::MakeNumber( static_cast<double>( fr.boundObjects ) ) );
+					return MakeSuccess( idValue, result );
+				}
+
+				//--------------------------------------------------------------
+				// add_fuzz {material?, amount?, baseHeadVersion?}
+				//   -> {ok,applied,rawCode,status,retriable,headVersion,message,
+				//       material,materialKind,amount,fuzzGeometry,fuzzMaterial,
+				//       fuzzObject,strandCount,mintedObjectCount,boundObjects,
+				//       qualifying}
+				//   docs/CLOTH_FABRIC_DESIGN.md Phase 3 (2026-09-03): grow a
+				//   sparse hair_geometry/hair_material fuzz shell over every
+				//   object bound to a fabric-like material.  NEVER edits or
+				//   rebinds the target material or its bound objects -- it
+				//   only ADDS new sibling chunks.  A pre-commit refusal comes
+				//   back as ok=false with the reason in `message` -- a
+				//   SUCCESSFUL response, not a JSON-RPC error, the same shape
+				//   make_fabric/add_wetness/add_wear use.
+				//--------------------------------------------------------------
+				if( m == "add_fuzz" ) {
+					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
+					std::string materialStr, amountStr;
+					if( const JsonValue* mv = params.find( "material" ) ) {
+						if( mv->isString() ) materialStr = mv->asString();
+						else if( !mv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'material' must be a string" );
+					}
+					if( const JsonValue* av = params.find( "amount" ) ) {
+						if( av->isString() ) amountStr = av->asString();
+						else if( !av->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'amount' must be a string" );
+					}
+					RISE::Cst::CstHeadVersion base;
+					std::string bErr;
+					const int b = ParseBaseHeadVersionParam( params, base, bErr );
+					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
+
+					const AgentSession::AgentAddFuzzResult zr =
+						s->AddFuzz( materialStr, amountStr, ( b == 1 ) ? &base : nullptr );
+
+					JsonValue result = JsonValue::MakeObject();
+					result.set( "ok",          JsonValue::MakeBool( zr.ok ) );
+					result.set( "applied",     JsonValue::MakeBool( zr.applied ) );
+					result.set( "rawCode",     JsonValue::MakeNumber( static_cast<double>( zr.rawCode ) ) );
+					result.set( "status",      JsonValue::MakeString( zr.status ) );
+					result.set( "retriable",   JsonValue::MakeBool( zr.retriable ) );
+					result.set( "headVersion", HeadVersionJson( zr.headVersion ) );
+					if( !zr.message.empty() )      result.set( "message",      JsonValue::MakeString( zr.message ) );
+					if( !zr.material.empty() )     result.set( "material",     JsonValue::MakeString( zr.material ) );
+					if( !zr.materialKind.empty() ) result.set( "materialKind", JsonValue::MakeString( zr.materialKind ) );
+					if( !zr.amount.empty() )       result.set( "amount",       JsonValue::MakeString( zr.amount ) );
+					if( !zr.fuzzGeometry.empty() ) result.set( "fuzzGeometry", JsonValue::MakeString( zr.fuzzGeometry ) );
+					if( !zr.fuzzMaterial.empty() ) result.set( "fuzzMaterial", JsonValue::MakeString( zr.fuzzMaterial ) );
+					if( !zr.fuzzObject.empty() )   result.set( "fuzzObject",   JsonValue::MakeString( zr.fuzzObject ) );
+					if( zr.strandCount > 0 )       result.set( "strandCount",       JsonValue::MakeNumber( static_cast<double>( zr.strandCount ) ) );
+					if( zr.mintedObjectCount > 0 ) result.set( "mintedObjectCount", JsonValue::MakeNumber( static_cast<double>( zr.mintedObjectCount ) ) );
+					result.set( "boundObjects", JsonValue::MakeNumber( static_cast<double>( zr.boundObjects ) ) );
+					result.set( "qualifying",   JsonValue::MakeNumber( static_cast<double>( zr.qualifyingMaterials ) ) );
 					return MakeSuccess( idValue, result );
 				}
 
