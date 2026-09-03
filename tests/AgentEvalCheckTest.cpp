@@ -102,6 +102,7 @@
 #include <cstring>   // std::memset (WriteSyntheticSolidPng's z_stream init)
 #include <filesystem>
 #include <fstream>
+#include <iostream>  // T6b: on-failure dump of the offending diagnostics
 #include <iterator>
 #include <sstream>
 #include <string>
@@ -1079,8 +1080,31 @@ static void TestDiagnosticsLiveDocInvariant()
 			// inPiecesPhase deliberately omitted (defaults false): these WrapJob
 			// fixtures never drive the build-protocol RPC surface, the only
 			// path that reaches AgentBuildPhase::Pieces -- reviewer P3, doc 91.
+			// Severity-aware, matching T6c/T6d's convention below: an Info-severity
+			// DESIGN_* advisory (AppendDesignDiagnostics_) is not "unclean" -- only
+			// an Error- or Warning-severity diagnostic is.  kScene may legitimately
+			// trip an advisory (e.g. DESIGN_ORPHANED_PAINTERS, cf. cf5c2f56) without
+			// that being evidence the rejected edit leaked through.
 			const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( session->ReadDocument() );
-			Check( diags.empty(), "the live document is STILL validate-clean after the rejected edit (0 diagnostics) -- "
+			bool sawNonInfo = false;
+			for( const AgentDiagnostic& d : diags )
+				if( d.severity != AgentDiagnostic::Severity::Info ) sawNonInfo = true;
+			if( sawNonInfo ) {
+				auto sevName = []( AgentDiagnostic::Severity s ) {
+					switch( s ) {
+						case AgentDiagnostic::Severity::Error:   return "error";
+						case AgentDiagnostic::Severity::Warning: return "warning";
+						case AgentDiagnostic::Severity::Info:    return "info";
+					}
+					return "error";
+				};
+				std::cout << "    T6b offending diagnostics:" << std::endl;
+				for( const AgentDiagnostic& d : diags )
+					std::cout << "      [" << sevName( d.severity ) << "] "
+						<< d.code << ": " << d.message << std::endl;
+			}
+			Check( !sawNonInfo, "the live document is STILL validate-clean after the rejected edit "
+				"(no error/warning-severity diagnostic; Info-severity DESIGN_* advisories are fine) -- "
 				"a validate-dirty live document is unreachable by construction" );
 
 			// Drive the checker's diagnostics "clean" branch to a real PASS
