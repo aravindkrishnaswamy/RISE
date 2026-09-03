@@ -178,6 +178,15 @@
 		0A1E196AAF1A6EECBD0D7150 /* FabricSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = 79B4165CF9F27419ED9F1EA3 /* FabricSPF.h */; };
 		FCA0236FC78BE6E186DCF416 /* FabricMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = B92A329A3FEFA671EF1D4839 /* FabricMaterial.h */; };
 		B49DBBAAC940D890242AC8F6 /* FabricPresets.h in Headers */ = {isa = PBXBuildFile; fileRef = D8B3FFD7547FE168876698DE /* FabricPresets.h */; };
+		CC2E00000000000000000008 /* FibreLobeMath.h in Headers */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000001 /* FibreLobeMath.h */; };
+		CC2E00000000000000000009 /* WeavePresets.h in Headers */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000002 /* WeavePresets.h */; };
+		CC2E0000000000000000000A /* WeaveBRDF.h in Headers */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000003 /* WeaveBRDF.h */; };
+		CC2E0000000000000000000B /* WeaveBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000004 /* WeaveBRDF.cpp */; };
+		CC2E0000000000000000000C /* WeaveBRDF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000004 /* WeaveBRDF.cpp */; };
+		CC2E0000000000000000000D /* WeaveSPF.h in Headers */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000005 /* WeaveSPF.h */; };
+		CC2E0000000000000000000E /* WeaveSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000006 /* WeaveSPF.cpp */; };
+		CC2E0000000000000000000F /* WeaveSPF.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000006 /* WeaveSPF.cpp */; };
+		CC2E00000000000000000010 /* WeaveMaterial.h in Headers */ = {isa = PBXBuildFile; fileRef = CC2E00000000000000000007 /* WeaveMaterial.h */; };
 		CACC0D1DA2A40C557C9FE827 /* ScatterPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = BE7496E31374360455F82362 /* ScatterPainter.h */; };
 		CC0F00000000000000000003 /* CompositeFunction2DPainter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */; };
 		CC0F00000000000000000004 /* CompositeFunction2DPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = CC0F00000000000000000002 /* CompositeFunction2DPainter.h */; };
@@ -2124,6 +2133,13 @@
 		79B4165CF9F27419ED9F1EA3 /* FabricSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FabricSPF.h; sourceTree = "<group>"; };
 		B92A329A3FEFA671EF1D4839 /* FabricMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FabricMaterial.h; sourceTree = "<group>"; };
 		D8B3FFD7547FE168876698DE /* FabricPresets.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FabricPresets.h; sourceTree = "<group>"; };
+		CC2E00000000000000000001 /* FibreLobeMath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FibreLobeMath.h; sourceTree = "<group>"; };
+		CC2E00000000000000000002 /* WeavePresets.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WeavePresets.h; sourceTree = "<group>"; };
+		CC2E00000000000000000003 /* WeaveBRDF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WeaveBRDF.h; sourceTree = "<group>"; };
+		CC2E00000000000000000004 /* WeaveBRDF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WeaveBRDF.cpp; sourceTree = "<group>"; };
+		CC2E00000000000000000005 /* WeaveSPF.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WeaveSPF.h; sourceTree = "<group>"; };
+		CC2E00000000000000000006 /* WeaveSPF.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = WeaveSPF.cpp; sourceTree = "<group>"; };
+		CC2E00000000000000000007 /* WeaveMaterial.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = WeaveMaterial.h; sourceTree = "<group>"; };
 		BE7496E31374360455F82362 /* ScatterPainter.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = ScatterPainter.h; sourceTree = "<group>"; };
 		CC0F00000000000000000001 /* CompositeFunction2DPainter.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = CompositeFunction2DPainter.cpp; sourceTree = "<group>"; };
 		CC0F00000000000000000002 /* CompositeFunction2DPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = CompositeFunction2DPainter.h; sourceTree = "<group>"; };
@@ -3596,6 +3612,13 @@
 				79B4165CF9F27419ED9F1EA3 /* FabricSPF.h */,
 				B92A329A3FEFA671EF1D4839 /* FabricMaterial.h */,
 				D8B3FFD7547FE168876698DE /* FabricPresets.h */,
+				CC2E00000000000000000001 /* FibreLobeMath.h */,
+				CC2E00000000000000000002 /* WeavePresets.h */,
+				CC2E00000000000000000003 /* WeaveBRDF.h */,
+				CC2E00000000000000000004 /* WeaveBRDF.cpp */,
+				CC2E00000000000000000005 /* WeaveSPF.h */,
+				CC2E00000000000000000006 /* WeaveSPF.cpp */,
+				CC2E00000000000000000007 /* WeaveMaterial.h */,
 				F24C545E2F84597B009AF16D /* GGXSPF.h */,
 				F24C545F2F84597B009AF16D /* GGXSPF.cpp */,
 				9B1936B0DA6BD983BD655075 /* HairBSDF.h */,
@@ -4612,6 +4635,11 @@
 				0A1E196AAF1A6EECBD0D7150 /* FabricSPF.h in Headers */,
 				FCA0236FC78BE6E186DCF416 /* FabricMaterial.h in Headers */,
 				B49DBBAAC940D890242AC8F6 /* FabricPresets.h in Headers */,
+				CC2E00000000000000000008 /* FibreLobeMath.h in Headers */,
+				CC2E00000000000000000009 /* WeavePresets.h in Headers */,
+				CC2E0000000000000000000A /* WeaveBRDF.h in Headers */,
+				CC2E0000000000000000000D /* WeaveSPF.h in Headers */,
+				CC2E00000000000000000010 /* WeaveMaterial.h in Headers */,
 				F2C5D55E2F6CD86F00546C97 /* BSPTreeSAH.h in Headers */,
 				F28639642F9245040009D9AE /* PreviewScheduler.h in Headers */,
 				F2C5D55F2F6CD86F00546C97 /* BSPTreeSAHNode.h in Headers */,
@@ -5539,6 +5567,8 @@
 				DC47B95138CCFE4873BDEE8B /* SheenDirectionalAlbedo_LUTData.cpp in Sources */,
 				CF05237640B7B52A6963AC94 /* FabricBRDF.cpp in Sources */,
 				7C4A5B39AAC92D641AE49EA6 /* FabricSPF.cpp in Sources */,
+				CC2E0000000000000000000B /* WeaveBRDF.cpp in Sources */,
+				CC2E0000000000000000000E /* WeaveSPF.cpp in Sources */,
 				F2C0EE20069C42910069C9E5 /* JPEGReader.cpp in Sources */,
 				F2C0EE22069C42910069C9E5 /* stb_image.cpp in Sources */,
 				F2C0EF22069C42910069C9E5 /* cgltf.cpp in Sources */,
@@ -6524,6 +6554,8 @@
 				7FA72AB2C3746F6E7732505A /* SheenDirectionalAlbedo_LUTData.cpp in Sources */,
 				6CD8A61EFD736512758288FE /* FabricBRDF.cpp in Sources */,
 				78BF53D4E6FD206498E48684 /* FabricSPF.cpp in Sources */,
+				CC2E0000000000000000000C /* WeaveBRDF.cpp in Sources */,
+				CC2E0000000000000000000F /* WeaveSPF.cpp in Sources */,
 				F24B74272F52A632008304C4 /* Constants.h in Sources */,
 				F24B74282F52A632008304C4 /* Direction.h in Sources */,
 				F24B74292F52A632008304C4 /* Math3D.cpp in Sources */,

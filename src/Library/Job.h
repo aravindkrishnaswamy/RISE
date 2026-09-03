@@ -1208,6 +1208,32 @@ namespace RISE
 									const char* weave_rotation		///< [in] Weave angle in radians (physical scalar)
 									);
 
+		//! Adds a Weave material -- the structured two-thread-family
+		//! cloth BSDF.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddWeaveMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* weave,				///< [in] Draft name; empty = the preset's
+									const char* fabric,				///< [in] Preset name (see WeavePresets.h)
+									const char* weave_scale,		///< [in] Cells per UV unit (physical scalar)
+									const char* weave_rotation,		///< [in] Warp direction in radians (physical scalar)
+									const char* weft_skew,			///< [in] Weft offset from perpendicular, radians (physical scalar)
+									const char* coverage,			///< [in] `custom` draft only: warp-coverage field (physical scalar)
+									const char* gap,				///< [in] Uncovered fraction (physical scalar)
+									const char* warp_color,			///< [in] Warp dye (colour painter)
+									const char* weft_color,			///< [in] Weft dye (colour painter)
+									const char* warp_ior,			///< [in] Warp fibre IOR (physical scalar)
+									const char* weft_ior,			///< [in] Weft fibre IOR (physical scalar)
+									const char* warp_width,			///< [in] Warp longitudinal width, radians (physical scalar)
+									const char* weft_width,			///< [in] Weft longitudinal width, radians (physical scalar)
+									const char* warp_azimuth,		///< [in] Warp azimuthal width, radians (physical scalar)
+									const char* weft_azimuth,		///< [in] Weft azimuthal width, radians (physical scalar)
+									const char* warp_kd,			///< [in] Warp isotropic volume-scattering fraction (physical scalar)
+									const char* weft_kd,			///< [in] Weft isotropic volume-scattering fraction (physical scalar)
+									const char* warp_tilt,			///< [in] Warp float tilt, radians (physical scalar)
+									const char* weft_tilt			///< [in] Weft float tilt, radians (physical scalar)
+									);
+
 		//! Adds a channel-extraction SCALAR painter.  See IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddPainterChannelScalarPainter(

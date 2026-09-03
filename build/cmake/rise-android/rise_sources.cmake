@@ -129,6 +129,8 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Materials/CoatedSPF.cpp"
     "${RISE_LIB}/Materials/FabricBRDF.cpp"
     "${RISE_LIB}/Materials/FabricSPF.cpp"
+    "${RISE_LIB}/Materials/WeaveBRDF.cpp"
+    "${RISE_LIB}/Materials/WeaveSPF.cpp"
     "${RISE_LIB}/Materials/CompositeEmitter.cpp"
     "${RISE_LIB}/Materials/CompositeSPF.cpp"
     "${RISE_LIB}/Materials/CookTorranceBRDF.cpp"

@@ -16,33 +16,37 @@ RISE ASCII SCENE 7
 #                   diagnostic.  This scene therefore hand-authors each recommended base:                   #
 #                                                                                                           #
 #                     cotton / linen / wool  ->  orennayar_material, sigma 0.4 / 0.5 / 0.6                  #
-#                     denim / silk / satin   ->  ggx_material, alphax/alphay 0.34-0.22 /                    #
-#                                                0.30-0.10 / 0.34-0.06                                      #
+#                     denim / silk / satin   ->  a `weave_material` carrying the same-named             #
+#                                                weave preset (PHASE 2, 2026-09-03 -- these            #
+#                                                three used to want an anisotropic                     #
+#                                                ggx_material, and 9.9 gate 9b measured that           #
+#                                                shape and found it reads as brushed metal)            #
 #                     velvet                 ->  a DARK lambertian_material (a pile, not a                  #
 #                                                weave -- isotropic on purpose)                             #
 #                                                                                                           #
-#                   THE THREE GGX BASES CARRY `fresnel_mode schlick_f0` AND AN `rs` PAINTER,                #
-#                   and that is not decoration.  `ggx_material.fresnel_mode` defaults to                    #
-#                   `conductor` and `rs` ("Specular reflectance / F0") is a required COLOUR-                #
-#                   PAINTER REFERENCE that cannot be written inline -- so a base carrying                   #
-#                   only roughness and `rd` renders with NO dielectric specular at all, i.e.                #
-#                   no highlight, which is the entire reason GGX was chosen for these three.                #
-#                   That is the single most likely way to hand-author a silent black satin                  #
-#                   (9.3's dagger note).  `fabric_f0` below is the shared 0.04 dielectric F0.               #
+#                   THE THREE WEAVE BASES CARRY ONLY `fabric`, two dyes and a `weave_scale`.                #
+#                   Everything else -- the draft, both IORs, both longitudinal widths, both                 #
+#                   azimuthal widths, both k_d fractions, both float tilts and the gap --                   #
+#                   comes from the weave preset table.  Both dyes are authored here rather                  #
+#                   than only the warp's, because the presets' own generic weft tones clash                 #
+#                   with this scene's palette and make the rows read as speckle; each weft                  #
+#                   is a darker relative of its warp, so the two families stay unmistakably                 #
+#                   different -- which is what makes a lost draft obvious.                                  #
 #                                                                                                           #
 #                   `weave_rotation` steers the SUBSTRATE's frame, not the sheen lobe (9.5):                #
-#                   denim gets 45 deg (the twill wale) and satin 90 deg (the float                          #
-#                   direction), silk stays at 0 so the three anisotropic rows differ in                     #
-#                   orientation as well as in ratio.  Every other preset leaves it unset,                   #
-#                   where the rotation is a bit-exact no-op.                                                #
+#                   denim gets 45 deg and satin 90 deg on the FABRIC wrapper, which rotates                 #
+#                   the frame its weave substrate is evaluated in.  Silk stays at 0, so the                 #
+#                   three directional rows differ in orientation as well as in draft.  Every                #
+#                   other preset leaves it unset, where the rotation is a bit-exact no-op.                  #
 #                                                                                                           #
 #                   LIGHTING is a near-grazing rim plus a soft front key, because the sheen                 #
 #                   lobe's mass sits at grazing half-vectors: under a front-on key alone the                #
 #                   presets are nearly indistinguishable and the scene proves nothing.  In a                #
 #                   healthy render each sphere shows a bright silhouette halo -- narrow and                 #
 #                   tight on satin/velvet (alpha 0.12 / 0.08), broad and soft on wool                       #
-#                   (alpha 0.75) -- over a substrate whose own highlight is elongated along                 #
-#                   the weave on the three GGX rows.                                                        #
+#                   (alpha 0.75) -- over a substrate whose own draft is visible on the three                #
+#                   weave rows: denim a diagonal 3/1 twill wale, silk and satin a 5-harness                 #
+#                   satin float.                                                                            #
 #                                                                                                           #
 #                   Note that `directional_light.direction` is the vector FROM the surface                  #
 #                   TO the light, so a camera-facing hemisphere needs a POSITIVE Z                          #
@@ -92,17 +96,6 @@ pinhole_camera
 # Painters
 #############################################################################################################
 
-# The shared dielectric F0 for every minted GGX base.  `rs` resolves BY
-# NAME only (Job::AddGGXMaterial: `pPntManager->GetItem(specular)`), so
-# `rs 0.04 0.04 0.04` would look up a painter with that literal name,
-# find none, and fail the material outright.
-uniformcolor_painter
-{
-	name				fabric_f0
-	color				0.04 0.04 0.04
-	colorspace			Rec709RGB_Linear
-}
-
 # Substrate reflectances (the "cloth" colour under the sheen).
 uniformcolor_painter
 {
@@ -138,6 +131,29 @@ uniformcolor_painter
 {
 	name				dye_satin
 	color				0.20 0.42 0.38
+	colorspace			Rec709RGB_Linear
+}
+# The WEFT dyes for the three weave rows.  The presets seed both families,
+# but their generic second tone clashes with this scene's own warp dyes and
+# makes the row read as speckle rather than as a draft.  Each is a darker
+# relative of its warp, so the two families stay unmistakably DIFFERENT --
+# which is what makes a lost draft obvious -- without fighting the colour.
+uniformcolor_painter
+{
+	name				dye_denim_weft
+	color				0.58 0.55 0.47
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_silk_weft
+	color				0.34 0.09 0.12
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_satin_weft
+	color				0.10 0.22 0.20
 	colorspace			Rec709RGB_Linear
 }
 uniformcolor_painter
@@ -188,34 +204,36 @@ orennayar_material
 	roughness			0.6
 }
 
-ggx_material
+# PHASE 2 (2026-09-03): denim, silk and satin now recommend a
+# `weave_material`, so that is what they are paired with here.  `weave_scale`
+# is authored because no preset can know this sphere's UV scale or this
+# framing; 26 puts about a dozen cells across each visible face, which is
+# where the draft reads.
+weave_material
 {
 	name				base_denim
-	rd					dye_denim
-	rs					fabric_f0
-	alphax				0.34
-	alphay				0.22
-	fresnel_mode		schlick_f0
+	fabric				denim
+	warp_color			dye_denim
+	weft_color			dye_denim_weft
+	weave_scale			26.0
 }
 
-ggx_material
+weave_material
 {
 	name				base_silk
-	rd					dye_silk
-	rs					fabric_f0
-	alphax				0.30
-	alphay				0.10
-	fresnel_mode		schlick_f0
+	fabric				silk
+	warp_color			dye_silk
+	weft_color			dye_silk_weft
+	weave_scale			26.0
 }
 
-ggx_material
+weave_material
 {
 	name				base_satin
-	rd					dye_satin
-	rs					fabric_f0
-	alphax				0.34
-	alphay				0.06
-	fresnel_mode		schlick_f0
+	fabric				satin
+	warp_color			dye_satin
+	weft_color			dye_satin_weft
+	weave_scale			26.0
 }
 
 lambertian_material

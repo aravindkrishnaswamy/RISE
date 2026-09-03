@@ -68,6 +68,7 @@
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/FabricMaterial.h"
+#include "WeaveTestFixture.h"
 #include "../src/Library/Materials/SheenBRDF.h"
 #include "../src/Library/Materials/SheenSPF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
@@ -816,6 +817,44 @@ int main()
     ISPF*  fabricAnisoSPF  = fabricAnisoMat->GetSPF();
     IBSDF* fabricAnisoBRDF = fabricAnisoMat->GetBSDF();
 
+    // weave_material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+    //
+    // RECIPROCITY IS THE GATE THIS MATERIAL WAS SHAPED AROUND, and the
+    // shaping is visible in what it does NOT implement.  Sadeghi et al.
+    // 2013 normalise their two-family mixture by a factor Q (his
+    // Eq. 15) that reads the VIEW direction and nothing else -- that
+    // form cannot be reciprocal, so `WeaveBRDF` replaces it with a
+    // direction-independent gap scalar and keeps only the parts of his
+    // Eq. 7-15 that are symmetric under an i/o swap (the masking blend,
+    // whose two arms exchange).  Every other term was chosen the same
+    // way: `Mp` is symmetric in its two directions by construction, the
+    // trimmed logistic is EVEN in phi_d, and the Kim 2002 Fresnel
+    // argument cos(theta_d) cos(phi_d/2) is even in both angles, each of
+    // which flips sign under the swap.
+    //
+    // "By construction" is exactly the claim `coated_material`'s first
+    // cut also made before it was measured at ~28 % asymmetry at
+    // grazing.  Hence these rows.
+    //
+    // TWO PRESETS, chosen to make the sweep discriminating:
+    //   * `denim` with a NON-ZERO weave_rotation and zero tilt -- the
+    //     row that fails if the two families' frames are built
+    //     asymmetrically, since the rotation is a frame change and
+    //     nothing else;
+    //   * `satin` with the shipped NON-ZERO OPPOSITE TILTS, which is
+    //     the configuration where each family's fibre frame leans out
+    //     of the surface plane and its cross-section basis has to be
+    //     re-derived per family.  An asymmetry in that derivation --
+    //     e.g. projecting one direction in the tilted frame and the
+    //     other in the flat one -- shows up here and essentially
+    //     nowhere else.
+    RISE::WeaveTest::PresetWeave weaveDenim( "denim", 0.7853981633974483 );
+    RISE::WeaveTest::PresetWeave weaveSatin( "satin" );
+    ISPF*  weaveDenimSPF  = weaveDenim.SPF();
+    IBSDF* weaveDenimBRDF = weaveDenim.BSDF();
+    ISPF*  weaveSatinSPF  = weaveSatin.SPF();
+    IBSDF* weaveSatinBRDF = weaveSatin.BSDF();
+
     // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
     // this is a PRE-EXISTING HOLE this phase closes as a matter of
     // course: SheenBRDF has never been in the reciprocity sweep, even
@@ -978,6 +1017,22 @@ int main()
         //--------------------------------------------------------------
         { "Fabric_Lambertian",                 fabricLambSPF,   fabricLambBRDF,     true,  FURNACE_TOL },
         { "Fabric_GGXaniso_weave45",           fabricAnisoSPF,  fabricAnisoBRDF,    true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // weave_material -- docs/CLOTH_FABRIC_DESIGN.md Phase 2.
+        //
+        // singleLobe = TRUE: `WeaveSPF` emits ONE ray per Scatter
+        // carrying kray = value * cos / mixturePdf, so
+        // kray * pdf == value * cos identically for every sample
+        // REGARDLESS OF WHICH OF THE FOUR LOBES DREW IT.  Part D
+        // therefore checks the sample-then-reprice recipe POINTWISE,
+        // which is the check that fails if `Scatter` ever reports a
+        // branch-local density instead of the full mixture -- the one
+        // mistake Zhu 2024 5.1's `f/(p_a p_l)` phrasing would invite if
+        // it were taken literally for lobes whose supports overlap.
+        //--------------------------------------------------------------
+        { "Weave_denim_rot45",                 weaveDenimSPF,   weaveDenimBRDF,     true,  FURNACE_TOL },
+        { "Weave_satin_tilted",                weaveSatinSPF,   weaveSatinBRDF,     true,  FURNACE_TOL },
     };
     const int numPaired = sizeof(pairedMaterials) / sizeof(pairedMaterials[0]);
 
@@ -1020,6 +1075,8 @@ int main()
         { "Coated_GGX",                        coatedGgxSPF,    false },
         { "Fabric_Lambertian",                 fabricLambSPF,   false },
         { "Fabric_GGXaniso_weave45",           fabricAnisoSPF,  false },
+        { "Weave_denim_rot45",                 weaveDenimSPF,   false },
+        { "Weave_satin_tilted",                weaveSatinSPF,   false },
         { "PerfectReflector",                  perfReflSPF,     true  },
         { "PerfectRefractor",                  perfRefrSPF,     true  },
         { "Dielectric",                        dielectricSPF,   true  },
@@ -1221,6 +1278,11 @@ int main()
         { "Sheen (Charlie, pre-existing hole)", bareSheenBRDF   },
         { "Fabric_Lambertian",                  fabricLambBRDF  },
         { "Fabric_GGXaniso_weave45",            fabricAnisoBRDF },
+        // Phase 2.  See the construction site above for why these two
+        // configurations, and for the list of terms whose symmetry the
+        // model depends on.
+        { "Weave_denim_rot45",                  weaveDenimBRDF  },
+        { "Weave_satin_tilted",                 weaveSatinBRDF  },
     };
 
     for( const ReciprocityEntry& e : reciprocityMaterials )

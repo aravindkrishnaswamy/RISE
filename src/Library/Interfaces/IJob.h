@@ -4396,6 +4396,57 @@ namespace RISE
 									const double bias				///< [in] Additive offset after scale
 									) = 0;
 
+		//! Adds a Weave material -- a structured TWO-THREAD-FAMILY cloth
+		//! BSDF (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+		//!
+		//! `weave` is the DRAFT (plain | twill_2_1 | twill_3_1 |
+		//! satin_5 | custom) and `fabric` is the PRESET (denim | silk |
+		//! satin | linen | custom).  They are independent: the preset
+		//! SEEDS the draft along with every other slot, and any slot the
+		//! author wrote explicitly wins -- the `Has()` rule
+		//! `fabric_material` established.  An empty string on any slot
+		//! below means "the preset's value".
+		//!
+		//! Like `AddFabricMaterial`, the preset name reaches this method
+		//! rather than being fully consumed in the parser, because the
+		//! preset's two DYES are RGB triples rather than painter names
+		//! and only a layer that can synthesise an owned uniform painter
+		//! can honour them.  Unlike `AddFabricMaterial` there is no
+		//! substrate and therefore no allowlist check and no
+		//! preset-mismatch warning: this material IS the BSDF.
+		//!
+		//! `coverage` is read ONLY when the resolved draft is `custom`.
+		//!
+		//! DECLARED HERE, at the tail: IJob's policy is append-only (the
+		//! "ABI POLICY" comment above `SetActiveRasterizer`, and the same
+		//! note on `AddFabricMaterial`).  Slotting it next to its sibling
+		//! renumbers every vtable slot after it --
+		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
+		//! exactly that.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddWeaveMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* weave,				///< [in] Draft name; empty = the preset's
+									const char* fabric,				///< [in] Preset name (denim|silk|satin|linen|custom)
+									const char* weave_scale,		///< [in] Cells per UV unit (physical scalar)
+									const char* weave_rotation,		///< [in] Warp direction in RADIANS (physical scalar)
+									const char* weft_skew,			///< [in] Weft offset from perpendicular, RADIANS (physical scalar)
+									const char* coverage,			///< [in] `custom` draft only: warp-coverage field (physical scalar)
+									const char* gap,				///< [in] Uncovered fraction, clamped to [0, 0.3] (physical scalar)
+									const char* warp_color,			///< [in] Warp dye (colour painter; empty = preset colour, else white)
+									const char* weft_color,			///< [in] Weft dye (colour painter; empty = preset colour, else white)
+									const char* warp_ior,			///< [in] Warp fibre IOR (physical scalar)
+									const char* weft_ior,			///< [in] Weft fibre IOR (physical scalar)
+									const char* warp_width,			///< [in] Warp longitudinal width beta, RADIANS (physical scalar)
+									const char* weft_width,			///< [in] Weft longitudinal width beta, RADIANS (physical scalar)
+									const char* warp_azimuth,		///< [in] Warp azimuthal width gamma, RADIANS (physical scalar)
+									const char* weft_azimuth,		///< [in] Weft azimuthal width gamma, RADIANS (physical scalar)
+									const char* warp_kd,			///< [in] Warp isotropic volume-scattering fraction (physical scalar)
+									const char* weft_kd,			///< [in] Weft isotropic volume-scattering fraction (physical scalar)
+									const char* warp_tilt,			///< [in] Warp float tilt out of plane, RADIANS (physical scalar)
+									const char* weft_tilt			///< [in] Weft float tilt out of plane, RADIANS (physical scalar)
+									) = 0;
+
 	};
 
 

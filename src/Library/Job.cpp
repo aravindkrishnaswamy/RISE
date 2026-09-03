@@ -23,6 +23,7 @@
 #include "Materials/CoatedMaterial.h"	// AddCoatedMaterial: the substrate allowlist predicate + its text
 #include "Materials/FabricMaterial.h"	// AddFabricMaterial: the allowlist predicate + the preset-mismatch check
 #include "Materials/FabricPresets.h"	// AddFabricMaterial: the `fabric` enum's preset table
+#include "Materials/WeavePresets.h"	// AddWeaveMaterial: the `weave` draft enum + the Phase-2 `fabric` preset table
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES
@@ -3490,6 +3491,220 @@ bool Job::AddFabricMaterial(
 	safe_release( pRoughness );
 	safe_release( pRotation );
 	safe_release( pColorOwned );
+
+	return ok;
+}
+
+//! Adds a Weave material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice
+//! P2-A).
+//!
+//! ALL PRESET SEEDING HAPPENS HERE, in ONE place, and that is a
+//! deliberate departure from `fabric_material`.  There the parser seeds
+//! `sheen_roughness` while this layer seeds the sheen COLOUR, because
+//! the colour is an RGB triple rather than a painter name and only a
+//! layer able to synthesise an owned painter can honour it.  This
+//! material has EIGHTEEN slots and TWO such colours; splitting the rule
+//! across two files would have meant eighteen chances for the two
+//! halves to disagree about what "the author did not write this" means.
+//! So the parser forwards the AUTHORED string or an EMPTY one, and
+//! every empty slot is filled from the preset below.
+//!
+//! An empty string is therefore the wire protocol for "unset", which is
+//! why the parser must NOT substitute its own defaults -- if it did,
+//! selecting `fabric satin` would silently get `plain`'s numbers.
+//!
+//! There is NO substrate here and therefore neither of
+//! `AddFabricMaterial`'s two diagnostics: no allowlist to enforce
+//! (this material IS the BSDF, not a layer over one) and no
+//! preset-vs-substrate mismatch to warn about.  What IS diagnosed is
+//! the one authoring mistake this chunk makes possible: selecting the
+//! `custom` draft and then not binding a `coverage` field, which would
+//! otherwise render as a uniform 50/50 blend of the two families with
+//! no structure at all -- a fabric silently missing the very thing the
+//! material exists to produce.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddWeaveMaterial(
+							const char* name,
+							const char* weave,
+							const char* fabric,
+							const char* weave_scale,
+							const char* weave_rotation,
+							const char* weft_skew,
+							const char* coverage,
+							const char* gap,
+							const char* warp_color,
+							const char* weft_color,
+							const char* warp_ior,
+							const char* weft_ior,
+							const char* warp_width,
+							const char* weft_width,
+							const char* warp_azimuth,
+							const char* weft_azimuth,
+							const char* warp_kd,
+							const char* weft_kd,
+							const char* warp_tilt,
+							const char* weft_tilt
+							)
+{
+	const WeavePreset& P = LookupWeavePreset( fabric );
+
+	// `weave` wins over the preset's draft when the author wrote one.
+	const bool  weaveSet = ( weave && weave[0] );
+	const char* weaveName = weaveSet ? weave : WeavePatternText( P.weave );
+	const WeavePatternKind pattern = LookupWeavePattern( weaveName );
+
+	// %.17g round-trips a double exactly, so a seeded value is
+	// bit-identical to the table's rather than merely close.
+	struct Fmt {
+		char buf[64];
+		const char* operator()( const Scalar v ) {
+			std::snprintf( buf, sizeof(buf), "%.17g", (double)v );
+			return buf;
+		}
+	};
+	// One formatter per slot: `Fmt::operator()` returns a pointer into
+	// its OWN buffer, so a single shared instance would leave every
+	// earlier string pointing at the last value formatted.
+	Fmt fScale, fSkew, fGap;
+	Fmt fWIor, fFIor, fWWid, fFWid, fWAzi, fFAzi, fWKd, fFKd, fWTilt, fFTilt;
+
+	auto pick = []( const char* authored, const char* seeded ) -> const char* {
+		return ( authored && authored[0] ) ? authored : seeded;
+	};
+
+	const char* sScale = pick( weave_scale,    fScale( P.weaveScale ) );
+	const char* sRot   = pick( weave_rotation, "0.0" );		// no preset paints an angle field
+	const char* sSkew  = pick( weft_skew,      fSkew( Scalar(0) ) );
+	const char* sGap   = pick( gap,            fGap( P.gap ) );
+
+	const char* sWIor  = pick( warp_ior,     fWIor( P.warp.ior ) );
+	const char* sFIor  = pick( weft_ior,     fFIor( P.weft.ior ) );
+	const char* sWWid  = pick( warp_width,   fWWid( P.warp.width ) );
+	const char* sFWid  = pick( weft_width,   fFWid( P.weft.width ) );
+	const char* sWAzi  = pick( warp_azimuth, fWAzi( P.warp.azimuth ) );
+	const char* sFAzi  = pick( weft_azimuth, fFAzi( P.weft.azimuth ) );
+	const char* sWKd   = pick( warp_kd,      fWKd( P.warp.kd ) );
+	const char* sFKd   = pick( weft_kd,      fFKd( P.weft.kd ) );
+	const char* sWTilt = pick( warp_tilt,    fWTilt( P.warp.tilt ) );
+	const char* sFTilt = pick( weft_tilt,    fFTilt( P.weft.tilt ) );
+
+	// The two DYES.  An unset slot becomes an OWNED uniform painter
+	// carrying the preset's colour, or WHITE where the preset sets none
+	// (`custom`).  Resolving an unset name through the painter manager
+	// would instead bind the built-in `none` painter, which is BLACK --
+	// a weave whose volume lobe is switched off, i.e. the specular
+	// skeleton of a fabric with no cloth in it.  That is exactly the
+	// trap `coated_material`'s `coat_tint` and `fabric_material`'s
+	// `sheen_color` already documented; an author who genuinely wants a
+	// black thread binds an explicit black painter by name.
+	IPainter* pWarpOwned = 0;
+	IPainter* pWeftOwned = 0;
+	IPainter* pWarpCol   = 0;
+	IPainter* pWeftCol   = 0;
+
+	const bool warpUnset = ( !warp_color || !warp_color[0] || std::string( warp_color ) == "none" );
+	const bool weftUnset = ( !weft_color || !weft_color[0] || std::string( weft_color ) == "none" );
+
+	if( warpUnset ) {
+		RISE_API_CreateUniformColorPainter( &pWarpOwned,
+			P.setsSlots ? P.warp.color : RISEPel( 1.0, 1.0, 1.0 ) );
+		pWarpCol = pWarpOwned;
+	} else {
+		pWarpCol = pPntManager->GetItem( warp_color );
+	}
+	if( weftUnset ) {
+		RISE_API_CreateUniformColorPainter( &pWeftOwned,
+			P.setsSlots ? P.weft.color : RISEPel( 1.0, 1.0, 1.0 ) );
+		pWeftCol = pWeftOwned;
+	} else {
+		pWeftCol = pPntManager->GetItem( weft_color );
+	}
+
+	if( !pWarpCol || !pWeftCol ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"weave_material `%s`: %s `%s` is not a registered colour painter",
+			name,
+			!pWarpCol ? "warp_color" : "weft_color",
+			!pWarpCol ? warp_color : weft_color );
+		safe_release( pWarpOwned );
+		safe_release( pWeftOwned );
+		return false;
+	}
+
+	// requireSingle = true on EVERY scalar.  All fourteen are read as
+	// `.v[0]` by `WeaveBRDF::ResolveWeave`, so a per-channel painter
+	// bound to any of them would have its green and blue silently
+	// ignored on the RGB pipe while the spectral pipe read a DIFFERENT
+	// number through `GetValueAtNM`.  Refuse at parse time instead.
+	IScalarPainter* pScale = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weave_scale",    sScale, true );
+	IScalarPainter* pRot   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weave_rotation", sRot,   true );
+	IScalarPainter* pSkew  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_skew",      sSkew,  true );
+	IScalarPainter* pGap   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "gap",            sGap,   true );
+	IScalarPainter* pWIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_ior",       sWIor,  true );
+	IScalarPainter* pFIor  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_ior",       sFIor,  true );
+	IScalarPainter* pWWid  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_width",     sWWid,  true );
+	IScalarPainter* pFWid  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_width",     sFWid,  true );
+	IScalarPainter* pWAzi  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_azimuth",   sWAzi,  true );
+	IScalarPainter* pFAzi  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_azimuth",   sFAzi,  true );
+	IScalarPainter* pWKd   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_kd",        sWKd,   true );
+	IScalarPainter* pFKd   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_kd",        sFKd,   true );
+	IScalarPainter* pWTilt = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_tilt",      sWTilt, true );
+	IScalarPainter* pFTilt = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_tilt",      sFTilt, true );
+
+	// `coverage` is bound ONLY for the `custom` draft.  Binding it under
+	// a built-in draft would be a slot nothing reads.
+	IScalarPainter* pCov = 0;
+	if( pattern == eWeaveCustom ) {
+		if( coverage && coverage[0] ) {
+			pCov = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "coverage", coverage, true );
+		} else {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"weave_material `%s`: `weave custom` selects an AUTHORED coverage field but no "
+				"`coverage` painter is bound, so the warp and weft will blend uniformly at 50/50 "
+				"and the material will have no weave structure at all.  Bind a scalar painter "
+				"whose value is the warp's share in [0,1], or pick a built-in draft (%s).",
+				name, WeavePatternNamesText() );
+		}
+	} else if( coverage && coverage[0] ) {
+		GlobalLog()->PrintEx( eLog_Warning,
+			"weave_material `%s`: `coverage` is bound but `weave` is `%s`, which computes its own "
+			"coverage field from the draft; the painter will be IGNORED.  Set `weave custom` to "
+			"use it.",
+			name, WeavePatternText( pattern ) );
+	}
+
+	const bool resolved = pScale && pRot && pSkew && pGap
+	                   && pWIor && pFIor && pWWid && pFWid && pWAzi && pFAzi
+	                   && pWKd && pFKd && pWTilt && pFTilt;
+
+	IMaterial* pMaterial = 0;
+	bool ok = false;
+	if( resolved ) {
+		RISE_API_CreateWeaveMaterial( &pMaterial, weaveName,
+			*pScale, *pRot, *pSkew, pCov, *pGap,
+			*pWarpCol, *pWIor, *pWWid, *pWAzi, *pWKd, *pWTilt,
+			*pWeftCol, *pFIor, *pFWid, *pFAzi, *pFKd, *pFTilt );
+		ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
+	}
+
+	safe_release( pMaterial );
+	safe_release( pCov );
+	safe_release( pFTilt );
+	safe_release( pWTilt );
+	safe_release( pFKd );
+	safe_release( pWKd );
+	safe_release( pFAzi );
+	safe_release( pWAzi );
+	safe_release( pFWid );
+	safe_release( pWWid );
+	safe_release( pFIor );
+	safe_release( pWIor );
+	safe_release( pGap );
+	safe_release( pSkew );
+	safe_release( pRot );
+	safe_release( pScale );
+	safe_release( pWeftOwned );
+	safe_release( pWarpOwned );
 
 	return ok;
 }

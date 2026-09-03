@@ -21,27 +21,34 @@ RISE ASCII SCENE 7
 #                   sheen, and a warn-level diagnostic saying so.  Hand-authored here:                      #
 #                                                                                                           #
 #                     cotton / linen / wool  ->  orennayar_material, sigma 0.4 / 0.5 / 0.6                  #
-#                     denim / silk / satin   ->  ggx_material, alphax/alphay 0.34-0.22 /                    #
-#                                                0.30-0.10 / 0.34-0.06, `fresnel_mode schlick_f0`          #
-#                                                and `rs` bound to a 0.04 dielectric-F0 painter            #
+#                     denim / silk / satin   ->  a `weave_material` carrying that fabric's own             #
+#                                                draft (PHASE 2, updated 2026-09-03)                        #
 #                     velvet                 ->  a DARK lambertian_material (a pile, not a weave)          #
 #                                                                                                           #
-#                   Omitting `fresnel_mode schlick_f0` + `rs` on a GGX base is the single most              #
-#                   likely way to hand-author a silent black fabric: `ggx_material.fresnel_mode`            #
-#                   defaults to `conductor`, and `rs` is a required colour-PAINTER REFERENCE that           #
-#                   cannot be written inline, so a base carrying only `rd` and roughness renders            #
-#                   with no dielectric specular at all -- i.e. no highlight, which is the entire            #
-#                   reason GGX was chosen for those three.                                                  #
+#                   THOSE THREE USED TO BE AN ANISOTROPIC ggx_material, and the change is the              #
+#                   whole content of Phase 2.  9.9 gate 9b measured the GGX shape and found that           #
+#                   95-99 % of its anisotropy survived being wrapped in the isotropic Charlie              #
+#                   sheen -- the delegation works almost losslessly -- and that the frame STILL            #
+#                   read as brushed metal, because a single elliptical lobe with a painted                 #
+#                   rotation field has no PATTERN SCALE.  A `weave_material` has two thread                #
+#                   families with their own directions, dyes and fibre lobes, mixed by a weave             #
+#                   DRAFT: denim's 3/1 twill wale, silk's and satin's 5-harness satin float.               #
 #                                                                                                           #
-#                   WEAVE DIRECTION FOLLOWS THE SWATCH'S UV.  `weave_rotation` rotates the frame            #
-#                   the SUBSTRATE is evaluated in -- never the sheen lobe, which is strictly                #
-#                   isotropic in Phase 1 (Charlie's normaliser and its Lambda visibility are                #
-#                   isotropic-only fits, 9.5).  So the three anisotropic rows each get a painted            #
-#                   angle field over (u,v):                                                                 #
+#                   THE DYE GOES ON THE WARP ONLY.  All three drafts put the warp on top most of           #
+#                   the time (3/4 twill, 4/5 satin), so the authored colour stays dominant while           #
+#                   the preset's own WEFT colour survives to carry the fabric's two-tone.  Denim           #
+#                   IS an indigo warp floating over an undyed weft.                                        #
 #                                                                                                           #
-#                     denim  a 3/1 TWILL: 45 deg base with the wale's per-cell phase modulating it         #
-#                     silk   the WARP direction, running down the drape, with a slow slub drift            #
-#                     satin  the FLOAT direction, across the drape, with a 5-harness cell phase            #
+#                   THE WEAVE DIRECTION IS NOW BOUND ON THE WEAVE, not on the fabric wrapper.              #
+#                   `weave_material.weave_rotation` turns BOTH thread families together, which is          #
+#                   the cloth's grain; `fabric_material.weave_rotation` rotates the frame its               #
+#                   substrate is evaluated in, and writing the same field on both would ADD the            #
+#                   two rotations and turn the yarn twice.  So the three painted angle fields              #
+#                   below moved down one layer and the wrappers leave their own slot unwritten:            #
+#                                                                                                           #
+#                     denim  the twill WALE at 45 deg                                                      #
+#                     silk   the WARP direction, running down the drape                                    #
+#                     satin  the FLOAT direction, across the drape                                         #
 #                                                                                                           #
 #                   Each carries 5.5's ALIASING FADE, and that idiom is the reason those painters           #
 #                   are not two lines each.  A weave cell is sub-pixel over most of any real frame,         #
@@ -163,17 +170,13 @@ displaced_geometry
 }
 
 #############################################################################################################
-# Painters -- dyes, sheen tints, and the shared dielectric F0
+# Painters -- dyes and sheen tints.
+#
+# The shared 0.04 dielectric-F0 painter this scene used to carry is GONE with
+# the three GGX bases it fed: a `weave_material` carries its own per-family
+# Fresnel (`warp_ior` / `weft_ior`, 1.345-1.539 across the presets) and has no
+# `rs` slot for an F0 painter to name.
 #############################################################################################################
-
-# `rs` resolves BY NAME only, so `rs 0.04 0.04 0.04` would look up a painter with
-# that literal name, find none, and fail the material outright.
-uniformcolor_painter
-{
-	name				fabric_f0
-	color				0.04 0.04 0.04
-	colorspace			Rec709RGB_Linear
-}
 
 uniformcolor_painter
 {
@@ -202,13 +205,36 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				dye_silk
-	color				0.44 0.075 0.105
+	color				0.62 0.115 0.145
 	colorspace			Rec709RGB_Linear
 }
 uniformcolor_painter
 {
 	name				dye_satin
-	color				0.075 0.235 0.205
+	color				0.145 0.420 0.360
+	colorspace			Rec709RGB_Linear
+}
+# The WEFT dyes.  The presets seed both families, but a preset's weft colour is
+# a generic one and this row is a showcase, so each fabric's second tone is
+# authored to go with the first: denim's undyed cotton weft under its indigo
+# warp, silk's lighter shot tone, satin's own darker ground.  A two-tone IS what
+# a weave gives that a single lobe cannot.
+uniformcolor_painter
+{
+	name				dye_denim_weft
+	color				0.520 0.480 0.400
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_silk_weft
+	color				0.430 0.095 0.080
+	colorspace			Rec709RGB_Linear
+}
+uniformcolor_painter
+{
+	name				dye_satin_weft
+	color				0.100 0.300 0.255
 	colorspace			Rec709RGB_Linear
 }
 uniformcolor_painter
@@ -241,27 +267,27 @@ uniformcolor_painter
 }
 
 #############################################################################################################
-# Weave-direction fields.  Angles in RADIANS over the swatch's own surface.
+# Weave-direction fields.  Angles in RADIANS over the swatch's own surface,
+# bound to the three `weave_material` substrates' own `weave_rotation`.
 # Each is `scalar_painter { expression }` with `requireSingle` semantics -- a
 # per-channel triple would silently drop g and b on this slot.
 #
-# THESE ARE CONTINUOUS FIELDS, AND THAT IS A CORRECTION, NOT A STYLE CHOICE.
-# The first version of this scene built each weave from its real cell formula --
-# `floor(u*N)`, `mod(i + k*j, 5)` -- which is what 5.3 gives and what a weave
-# actually is.  It renders as a BLOCKY CHECKERBOARD.  The reason is specific and
-# worth stating: a discrete per-cell rotation applied to a TIGHT anisotropic GGX
-# lobe (satin is alphax 0.34 / alphay 0.06) flips that lobe on and off between
-# adjacent cells, so each cell is either lit or dark with nothing in between, and
-# the cell grid becomes the dominant visible structure at any amplitude large
-# enough to see.  Shrinking the per-cell excursion does not fix it -- it only
-# lowers the contrast of the checks.
+# THESE ARE CONTINUOUS FIELDS, AND THEY STAY CONTINUOUS UNDER PHASE 2.
+# An earlier version of this scene built each weave from its real cell formula --
+# `floor(u*N)`, `mod(i + k*j, 5)` -- as an ANGLE field, and it rendered as a
+# blocky checkerboard: a discrete per-cell rotation applied to a tight
+# anisotropic lobe flips that lobe on and off between adjacent cells, so each
+# cell is either lit or dark with nothing in between.  Shrinking the excursion
+# only lowered the contrast of the checks.
 #
-# Phase 1 HAS NO PATTERN-SCALE STRUCTURE, by design (9.5, and measured by 9.9
-# gate 9b), and a cell-quantised rotation field is not a way to get one: it is a
-# way to draw a grid.  So each field here is a CONSTANT base angle -- the yarn
-# direction the preset is about -- plus a low-amplitude CONTINUOUS fbm drift
-# (<= 0.05 rad) that makes the highlight breathe along the fold instead of
-# sitting as one rigid band.  There is no cell boundary to see at any zoom.
+# THE CELL STRUCTURE NOW LIVES WHERE IT BELONGS -- inside `weave_material`, as a
+# COVERAGE field with smoothed yarn edges and a footprint fade to the draft's own
+# mean, which is what makes it anti-alias instead of tile.  So these fields keep
+# doing the ONE job an angle field is right for: they carry the yarn DIRECTION.
+# Each is a constant base angle -- the direction the preset is about -- plus a
+# low-amplitude CONTINUOUS fbm drift (<= 0.05 rad) that makes the highlight
+# breathe along the fold instead of sitting as one rigid band.  There is no cell
+# boundary in them at any zoom, and there does not need to be.
 #
 # `drift` is sampled in WORLD space, so each swatch in the row gets its own
 # realisation rather than seven copies of one pattern.
@@ -274,8 +300,8 @@ uniformcolor_painter
 # `smoothstep(a, b, 0)` is 0, so the fade disengages there rather than snapping.
 #############################################################################################################
 
-# DENIM -- the twill WALE runs at 45 degrees.  That constant angle is the
-# whole of denim's direction; the drift only keeps it from looking printed.
+# DENIM -- the twill WALE runs at 45 degrees.  The 3/1 draft inside the
+# `weave_material` is what MAKES the wale; this angle is what points it.
 scalar_painter
 {
 	name		weave_denim_twill
@@ -343,32 +369,61 @@ orennayar_material
 	reflectance			dye_wool
 	roughness			0.6
 }
-ggx_material
+# PHASE 2: denim, silk and satin sit on a `weave_material` -- the structured
+# two-thread-family cloth BSDF -- rather than on an anisotropic ggx_material.
+# The swap is the point of the phase and it is what 9.9 gate 9b's verdict asked
+# for: the GGX shape kept 95-99 % of its anisotropy under the sheen and STILL
+# read as brushed metal, because one elliptical lobe with a painted rotation
+# field has no PATTERN SCALE.  These three carry a real draft.
+#
+# Only `fabric`, the author's dye and the yarn direction are written.  Both
+# thread classes' IORs, lobe widths, azimuthal widths, k_d fractions and float
+# tilts -- and the draft itself -- come from the preset table.
+#
+# `weave_scale` IS UNAUTHORED HERE, DELIBERATELY, and that is a correction to
+# an earlier revision of this scene rather than an oversight.  This panel's
+# UV span covers roughly a 1x1.5m swatch (`swatch_quad` below), and the
+# earlier revision authored 170-190 cells per UV unit -- a coarse ~6mm cell
+# that rendered as diagonal PRINTED STRIPES (a supervisor render caught this:
+# denim read as coarse stripes, satin as a near-black body with a hard
+# highlight, neither as fabric).  WeavePresets.h's shipped defaults
+# (denim 2500, silk 8000, satin 6000 cells per UV unit) are the thread-count
+# reading instead -- a real shirting weave, sub-pixel at this framing -- and
+# are left UNOVERRIDDEN so the material's own footprint fade (9.9 gate 9b's
+# second finding) takes over: what should be visible at this distance is the
+# float DIRECTION and each family's own lobe, not individually resolved
+# threads.
+#
+# THE DYE GOES ON THE WARP AND ONLY THE WARP.  All three drafts here put the
+# warp on top most of the time (3/4 for the twill, 4/5 for the satin), so the
+# authored colour stays the dominant tone while the preset's own WEFT colour
+# survives to carry the two-tone the fabric actually has.  Denim IS an indigo
+# warp floating over an undyed weft; painting both families one colour would
+# flatten exactly the thing the weave is here for.
+weave_material
 {
 	name				base_denim
-	rd					dye_denim
-	rs					fabric_f0
-	alphax				0.34
-	alphay				0.22
-	fresnel_mode		schlick_f0
+	fabric				denim
+	warp_color			dye_denim
+	weft_color			dye_denim_weft
+	weave_scale			350.0
+	weave_rotation		weave_denim_twill
 }
-ggx_material
+weave_material
 {
 	name				base_silk
-	rd					dye_silk
-	rs					fabric_f0
-	alphax				0.30
-	alphay				0.10
-	fresnel_mode		schlick_f0
+	fabric				silk
+	warp_color			dye_silk
+	weft_color			dye_silk_weft
+	weave_rotation		weave_silk_warp
 }
-ggx_material
+weave_material
 {
 	name				base_satin
-	rd					dye_satin
-	rs					fabric_f0
-	alphax				0.34
-	alphay				0.06
-	fresnel_mode		schlick_f0
+	fabric				satin
+	warp_color			dye_satin
+	weft_color			dye_satin_weft
+	weave_rotation		weave_satin_float
 }
 lambertian_material
 {
@@ -410,7 +465,6 @@ fabric_material
 	fabric				denim
 	base				base_denim
 	sheen_color			sheen_cool
-	weave_rotation		weave_denim_twill
 }
 fabric_material
 {
@@ -418,7 +472,6 @@ fabric_material
 	fabric				silk
 	base				base_silk
 	sheen_color			sheen_warm
-	weave_rotation		weave_silk_warp
 }
 fabric_material
 {
@@ -426,7 +479,6 @@ fabric_material
 	fabric				satin
 	base				base_satin
 	sheen_color			sheen_neutral
-	weave_rotation		weave_satin_float
 }
 
 # velvet: `sheen_color` deliberately OMITTED -- the preset's own dark sheen

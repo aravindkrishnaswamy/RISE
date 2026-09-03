@@ -76,6 +76,8 @@
 #include "../src/Library/Materials/CoatedLayer.h"
 #include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/FabricMaterial.h"
+#include "../src/Library/Materials/FibreLobeMath.h"
+#include "WeaveTestFixture.h"
 #include "../src/Library/Materials/SheenDirectionalAlbedo.h"
 #include "../src/Library/Materials/CharlieSheen.h"
 #include "../src/Library/Utilities/MicrofacetUtils.h"
@@ -619,6 +621,193 @@ static void PrintReport( const std::vector<ConfigReport>& rs )
 		std::cout << "\n";
 	}
 	std::cout << "============================================================================\n";
+}
+
+// ============================================================
+//  Independent white-weave energy floor -- REVIEW_P2R3.md P1-1/P1-2.
+//
+//  WHY THIS EXISTS.  Every other weave gate (locked curve, reciprocity,
+//  the pdf hemisphere integral, `hemisphericalAlbedo`'s own 20% band)
+//  either compares `value()` against ITSELF at a different time, or
+//  against a closed form (`hemisphericalAlbedo`) that is DERIVED
+//  assuming the BRDF's own normalisers are exact -- so none of them
+//  would have caught the `C_v = 2(1+k_d)` defect this session found:
+//  a normaliser that was a genuine, self-consistent LOOSE BOUND rather
+//  than the exact integral, silently halving the volume lobe.  The
+//  locked curve pinned the buggy number; the hemispherical-albedo band
+//  compared the buggy `value()` against a closed form that cancels
+//  `C_v` symbolically and so agreed with it regardless.
+//
+//  This block re-derives `ComputeThreadTerms` FROM SCRATCH -- plain
+//  doubles, no RISE material classes -- reusing only the shared,
+//  separately-regression-tested `FibreLobeMath.h` primitives (`Mp`,
+//  `TrimmedLogistic`, `FrDielectric`, `SafeASin`, `SafeSqrt`, `Clamp`),
+//  and its own independently-written closed form for the volume
+//  normaliser `C_v`.  It never calls `WeaveBRDF::value()`,
+//  `ComputeThreadTerms` or any other WeaveBRDF/WeaveSPF method, so a
+//  bug in THOSE would show up as a mismatch here rather than being
+//  invisible because both sides share the same buggy arithmetic.
+// ============================================================
+
+namespace WeaveIndependentCheck
+{
+	using namespace RISE::FibreLobeMath;
+
+	struct V3 { double x, y, z; };
+	static inline V3    Sub( const V3& a, const V3& b ) { return V3{ a.x - b.x, a.y - b.y, a.z - b.z }; }
+	static inline V3    Add( const V3& a, const V3& b ) { return V3{ a.x + b.x, a.y + b.y, a.z + b.z }; }
+	static inline V3    Mul( const V3& a, double s )    { return V3{ a.x * s, a.y * s, a.z * s }; }
+	static inline double Dot( const V3& a, const V3& b ){ return a.x * b.x + a.y * b.y + a.z * b.z; }
+	static inline V3    Cross( const V3& a, const V3& b ){ return V3{ a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x }; }
+	static inline double Mag( const V3& a )             { return std::sqrt( Dot( a, a ) ); }
+
+	static const double kQPI    = 3.14159265358979323846;
+	static const double kQTwoPI = 2.0 * kQPI;
+
+	static inline double QWrapPi( double x )
+	{
+		x = std::fmod( x + kQPI, kQTwoPI );
+		if( x < 0 ) x += kQTwoPI;
+		return x - kQPI;
+	}
+
+	struct Thread { V3 tangent; double eta, vSurf, vVol, s, kd; };
+	struct FF     { V3 t, nk, bk; bool valid; };
+	struct DA     { double sinTheta, cosTheta, phi, cosPhi; };
+
+	static FF MakeFrame( const V3& tangent, const V3& n )
+	{
+		FF f; f.t = tangent; f.valid = false;
+		const double sinAlpha = Dot( n, tangent );
+		const V3     perp     = Sub( n, Mul( tangent, sinAlpha ) );
+		const double len      = Mag( perp );
+		if( !( len > 1e-9 ) ) { f.nk = n; f.bk = n; return f; }
+		f.nk = Mul( perp, 1.0 / len );
+		f.bk = Cross( tangent, f.nk );
+		f.valid = true;
+		return f;
+	}
+
+	static DA Project( const FF& f, const V3& w )
+	{
+		DA a;
+		a.sinTheta = Clamp( Dot( w, f.t ), -1.0, 1.0 );
+		a.cosTheta = SafeSqrt( 1.0 - a.sinTheta * a.sinTheta );
+		const double e1 = Dot( w, f.nk ), e2 = Dot( w, f.bk );
+		const double h  = std::sqrt( e1 * e1 + e2 * e2 );
+		a.phi    = std::atan2( e2, e1 );
+		a.cosPhi = ( h > 1e-12 ) ? ( e1 / h ) : 1.0;
+		return a;
+	}
+
+	//! `C_v`'s k_d term, re-derived independently (matches the closed
+	//! form documented at WeaveBRDF.cpp's `VolumeKdIntegral`, but is a
+	//! separate hand-written copy, not a call to it).
+	static double VolumeKdIntegral( double c )
+	{
+		c = Clamp( c, 0.0, 1.0 );
+		const double s2 = 1.0 - c * c;
+		if( !( s2 > 1e-9 ) ) return 2.0 * ( 4.0 - kQPI );		// c -> 1 limit
+		const double t = std::atan( std::sqrt( ( 1.0 - c ) / ( 1.0 + c ) ) );
+		return 2.0 * ( ( 2.0 - c * kQPI ) + c * c * 4.0 / std::sqrt( s2 ) * t );
+	}
+
+	struct TT { bool valid; double surface, volume; };
+
+	static TT ComputeTerms( const Thread& t, const V3& n, const V3& wi, const V3& wo )
+	{
+		TT out{ false, 0.0, 0.0 };
+		const FF f = MakeFrame( t.tangent, n );
+		if( !f.valid ) return out;
+		const DA a = Project( f, wi ), b = Project( f, wo );
+		const double thetaI = SafeASin( a.sinTheta ), thetaO = SafeASin( b.sinTheta );
+		const double thetaD = ( thetaI - thetaO ) * 0.5;
+		const double phiD   = QWrapPi( a.phi - b.phi );
+		const double cosGamma = std::cos( thetaD ) * std::cos( phiD * 0.5 );
+		const double F = FrDielectric( cosGamma, t.eta );
+
+		const double mI = ( a.cosPhi > 0 ) ? a.cosPhi : 0.0;
+		const double mO = ( b.cosPhi > 0 ) ? b.cosPhi : 0.0;
+		const double sigma = 20.0 * kQPI / 180.0;
+		const double u = std::exp( -( phiD * phiD ) / ( 2.0 * sigma * sigma ) );
+		const double mask = ( 1.0 - u ) * mI * mO + u * std::min( mI, mO );
+		if( !( mask > 0.0 ) ) return out;
+
+		// The surface lobe's untrimmed [-pi,pi] azimuthal normaliser is
+		// used here rather than `value()`'s visible-interval trim
+		// (`AzimuthalTrimBoost`) -- a <= ~8% correction on a lobe that
+		// carries a few percent of a white weave's total energy (P2-2),
+		// well inside this check's tolerance.
+		out.surface = F * Mp( a.cosTheta, b.cosTheta, a.sinTheta, b.sinTheta, t.vSurf )
+		            * TrimmedLogistic( phiD, t.s, -kQPI, kQPI ) * mask;
+
+		const double denom   = std::max( 1e-3, a.cosTheta + b.cosTheta );
+		const double bracket = ( 1.0 - t.kd ) * Mp( a.cosTheta, b.cosTheta, a.sinTheta, b.sinTheta, t.vVol ) + t.kd;
+		const double jd      = std::sqrt( VolumeKdIntegral( a.cosTheta ) * VolumeKdIntegral( b.cosTheta ) );
+		const double Cv      = ( 1.0 - t.kd ) + jd * t.kd;
+		out.volume = ( 1.0 - F ) * bracket / ( denom * Cv ) * mask;
+
+		out.valid = true;
+		return out;
+	}
+
+	//! Bihemispherical directional albedo of ONE thread family at a
+	//! fixed view, by brute-force quadrature.
+	static double IntegrateFamily( const Thread& t, const V3& n, const V3& wo, int NT, int NP )
+	{
+		double acc = 0.0;
+		for( int i = 0; i < NT; ++i )
+		{
+			const double th  = ( i + 0.5 ) * ( kQPI * 0.5 ) / NT;
+			const double ct  = std::cos( th ), st = std::sin( th );
+			const double dth = ( kQPI * 0.5 ) / NT;
+			for( int j = 0; j < NP; ++j )
+			{
+				const double ph  = ( j + 0.5 ) * kQTwoPI / NP;
+				const double dph = kQTwoPI / NP;
+				const V3 wi{ st * std::cos( ph ), st * std::sin( ph ), ct };
+				const TT tt = ComputeTerms( t, n, wi, wo );
+				const double w = ct * st * dth * dph;		// dw = cos(th) sin(th) dth dph
+				acc += ( tt.surface + tt.volume ) * w;
+			}
+		}
+		return acc;
+	}
+
+	//! The independent prediction for a WHITE (both dyes forced to 1)
+	//! two-family weave's directional albedo at view latitude
+	//! `thetaViewDeg`, view azimuth 0, zero `weave_rotation` and a
+	//! STATED constant `aWarp` (the fixture forces coverage to the
+	//! draft's own mean, so this prediction does not have to guess
+	//! where in the cell the harness's ray lands).
+	static double PredictWhiteRho( const RISE::Implementation::WeavePreset& P, double aWarp, double thetaViewDeg )
+	{
+		const V3 n{ 0, 0, 1 };
+		const V3 warpU{ 1, 0, 0 };
+		const V3 weftU{ 0, 1, 0 };
+		const Thread W{
+			Add( Mul( warpU, std::cos( (double)P.warp.tilt ) ), Mul( n, std::sin( (double)P.warp.tilt ) ) ),
+			(double)P.warp.ior, (double)P.warp.width * (double)P.warp.width,
+			4.0 * (double)P.warp.width * (double)P.warp.width,
+			(double)P.warp.azimuth * 0.5513288954217921, (double)P.warp.kd };
+		const Thread F{
+			Add( Mul( weftU, std::cos( (double)P.weft.tilt ) ), Mul( n, std::sin( (double)P.weft.tilt ) ) ),
+			(double)P.weft.ior, (double)P.weft.width * (double)P.weft.width,
+			4.0 * (double)P.weft.width * (double)P.weft.width,
+			(double)P.weft.azimuth * 0.5513288954217921, (double)P.weft.kd };
+
+		const double th = thetaViewDeg * kQPI / 180.0;
+		const V3 wo{ std::sin( th ), 0, std::cos( th ) };
+		const double rw = IntegrateFamily( W, n, wo, 220, 440 );
+		const double rf = IntegrateFamily( F, n, wo, 220, 440 );
+		// `available = 1 - gap` is a direction-independent energy factor
+		// (WeaveBRDF.h section "THE GAP IS AN ENERGY FACTOR"), applied
+		// here too -- linen is the one shipped preset with a real gap
+		// (0.10) and was the tell when this was first omitted: its
+		// measured/predicted ratio sat at ~0.90, exactly `1 - gap`.
+		const double available = 1.0 - (double)P.gap;
+		return available * ( aWarp * rw + ( 1.0 - aWarp ) * rf );
+	}
 }
 
 // ============================================================
@@ -1801,6 +1990,302 @@ int main()
 		r.passed = grazePassed;
 	}
 
+	// ================================================================
+	// 39-47.  weave_material -- docs/CLOTH_FABRIC_DESIGN.md Phase 2,
+	//         slice P2-A.
+	//
+	// EIGHT ROWS: the four shipped presets, each at TWO VIEW SETS.  The
+	// second set is the same preset with a 45 deg `weave_rotation`,
+	// which -- because the harness's incident directions are fixed --
+	// presents each family's yarn axis to the light at a different set
+	// of fibre latitudes.  That matters here in a way it would not for
+	// an isotropic material: every term in this BSDF is expressed in the
+	// FIBRE frame, so rotating the weave under a fixed view is the
+	// cheapest way to sample a genuinely different part of the model.
+	//
+	// POSTURE: kPostureBounded, and the choice is the physics, not a
+	// concession.  This model is provably energy-BOUNDED (WeaveBRDF.h
+	// section 2's argument: the surface lobe inherits Mp's d'Eon
+	// normalisation and the trimmed logistic's; the volume lobe is
+	// divided by `C_v`, the EXACT hemispherical integral of its bracket
+	// at zero tilt -- not a loose bound, since an earlier revision's
+	// `C_v = 2(1+k_d)` bound-used-as-normaliser was itself a 2.0-2.3x
+	// darkening defect, found and fixed this session) and it is NOT
+	// energy-conserving, for reasons the source model shares: Sadeghi
+	// et al. 2013 state plainly that their model "ignores the effect of
+	// multiple scattering between different threads", and the masking
+	// term (their Eq. 7-9) removes energy that nothing here puts back --
+	// their own Eq. 15 reweighting normaliser Q would partially, and it
+	// is not reciprocal (WeaveBRDF.h section 1d; docs/CLOTH_FABRIC_
+	// DESIGN.md 10.3 debt 7 records the resulting grazing-only loss), so
+	// it is not used.  A kPosturePass row would therefore be asserting
+	// something the model does not claim.
+	//
+	// WHAT THE BOUNDED POSTURE ALONE WOULD MISS, and hence the locked
+	// curve below it: a [0, 1.05] band cannot tell a working weave from
+	// one that has quietly gone dark -- exactly the failure mode the
+	// `C_v` defect above produced, undetected, until an outside review
+	// integrated the BRDF independently of this harness.  So the
+	// measured curve is LOCKED as a second, synthesized row, AND (right
+	// after it) four more rows measure WHITE-DYED presets against a
+	// closed-form prediction computed independently of `value()` --
+	// see the "independent white-weave energy floor" block below, which
+	// is what actually would have caught the `C_v` defect: the locked
+	// curve only compares today's number against yesterday's, and
+	// yesterday's was itself the bug.
+	//
+	// The 9th row is FABRIC OVER WEAVE: the Phase-1 fuzz layer on the
+	// Phase-2 substrate, which is the composition the allowlist was
+	// extended for and the one an author actually ships.  It must also
+	// stay bounded -- the Charlie layer ADDS its own lobe and scales the
+	// substrate down, and a scaling that failed to compensate would show
+	// here as a row above 1.
+	// ================================================================
+
+	struct WeaveRow { const char* preset; double rotationDeg; };
+	static const WeaveRow kWeaveRows[] = {
+		{ "denim", 0.0 }, { "denim", 45.0 },
+		{ "silk",  0.0 }, { "silk",  45.0 },
+		{ "satin", 0.0 }, { "satin", 45.0 },
+		{ "linen", 0.0 }, { "linen", 45.0 },
+	};
+	const int kNumWeaveRows = (int)( sizeof(kWeaveRows) / sizeof(kWeaveRows[0]) );
+
+	//! THE LOCKED CURVE.  Measured 2026-09-03 at FURNACE_SAMPLES =
+	//! 100000, printed by this very test; NOT a prediction from an
+	//! independent model, and the difference matters -- these numbers
+	//! say "the shipped presets still behave as they did", not "the
+	//! model is right".  What says the model is right is the reciprocity
+	//! sweep, the pdf integral and the energy bound, each of which
+	//! checks a property rather than a value.
+	//!
+	//! eps 0.006 absolute, and it is NOT sized for Monte-Carlo noise:
+	//! this harness seeds its own RNG deterministically, so three
+	//! consecutive runs on one toolchain reproduce every digit above
+	//! BIT-IDENTICALLY (verified 2026-09-03).  What the eps covers is
+	//! cross-platform libm drift in the transcendentals this model leans
+	//! on -- exp/log inside `Mp`'s Bessel branch, `acos` in the visible-
+	//! azimuth bound, `atan2` in the fibre-frame projection -- amplified
+	//! by the narrow lobes (satin's v is 1.9e-3).  0.006 is ~5 % of the
+	//! smallest locked value and ~2.5 % of the largest, which is loose
+	//! enough for that and far tighter than the [0, 1.05] band the
+	//! Bounded posture applies.  A preset retune legitimately moves
+	//! these; update them in the same commit and say so.
+	//! THE @45 ROWS ARE MUCH DARKER AT GRAZING, AND THAT IS THE POINT.
+	//! At rotation 0 the harness's incident directions lie in the plane
+	//! containing the warp axis, so at theta = 80 the view runs almost
+	//! ALONG the yarn: the fibre-frame cosines both collapse, the
+	//! Chandrasekhar denominator 1/(cos theta_i + cos theta_o) blows up,
+	//! and the surface returns its brightest.  Rotate the weave 45 deg
+	//! and the same view is off-axis, the denominator relaxes, and the
+	//! same fabric returns a quarter as much.  That gap -- 0.0996 vs
+	//! 0.0265 on denim, 0.2051 vs 0.0633 on linen -- IS the yarn-aligned
+	//! grazing sheen this material exists to produce, and a row set
+	//! whose two view sets agreed would mean the fibre frame was not
+	//! being used at all.
+	//! RE-MEASURED THIS SESSION (2026-09-03, second pass).  The previous
+	//! numbers here were captured BEFORE the `C_v` fix (P1-1 above) and
+	//! were never re-measured after it landed -- they are ~2.0-3.0x the
+	//! post-fix values, i.e. they silently locked in the very defect
+	//! this file's other gates exist to catch.  Caught by the new
+	//! independent white-weave floor check below (which does NOT derive
+	//! from `value()`), not by this array, which is the point of having
+	//! both.
+	//!
+	//! RE-MEASURED AGAIN, THIRD PASS (2026-09-03, P2R4 fix round): the
+	//! masking-pole seam fix (`ProjectDir`'s pole conditioning +
+	//! `SmoothedRamp`'s C1 masking gate, replacing the hard
+	//! `max(cosPhi,0)` hinge) moves any configuration whose (wi,wo) pair
+	//! passes near the masking term's geometric horizon `cosPhi = 0`,
+	//! not only the ones near the coordinate pole -- so a few rows shift
+	//! by a small, real amount even though none of their tilts are near
+	//! the old defect's danger zone.  Only ONE row moved past
+	//! `kWeaveLockEps`: satin (rotation 0) at theta=80, 0.2272 -> 0.2164
+	//! (-4.8% relative, -0.0108 absolute) -- the untilted satin row's
+	//! grazing configuration happens to sit close to that horizon at
+	//! this harness's fixed theta=80 direction.  Every other row moved
+	//! by <= 0.0002, well inside the existing eps.  All eight rows
+	//! restated here for a clean baseline.
+	static const double kWeaveLocked[8][NUM_THETA] = {
+		{ 0.2047, 0.1983, 0.1819, 0.1810 },		// denim
+		{ 0.2050, 0.1972, 0.1478, 0.0571 },		// denim, weave 45
+		{ 0.4687, 0.4525, 0.4000, 0.3547 },		// silk
+		{ 0.4704, 0.4371, 0.2928, 0.0792 },		// silk, weave 45
+		{ 0.3916, 0.3672, 0.2992, 0.2164 },		// satin -- theta=80 moved, see note above
+		{ 0.3928, 0.3606, 0.2340, 0.0589 },		// satin, weave 45
+		{ 0.4974, 0.4797, 0.4241, 0.3885 },		// linen
+		{ 0.4966, 0.4776, 0.3535, 0.1354 },		// linen, weave 45
+	};
+	const double kWeaveLockEps = 0.006;
+
+	std::vector<RISE::WeaveTest::PresetWeave*> weaveFixtures;
+	double weaveMeasured[8][NUM_THETA];
+
+	for( int wr = 0; wr < kNumWeaveRows; ++wr )
+	{
+		const WeaveRow& row = kWeaveRows[wr];
+		RISE::WeaveTest::PresetWeave* pw =
+			new RISE::WeaveTest::PresetWeave( row.preset, row.rotationDeg * PI / 180.0 );
+		weaveFixtures.push_back( pw );
+
+		std::ostringstream nm;
+		nm << ( 39 + wr ) << ". weave / " << row.preset;
+		if( row.rotationDeg != 0 ) nm << " (weave_rotation " << (int)row.rotationDeg << " deg)";
+
+		ConfigReport& r = add( nm.str(), kPostureBounded, 0.05,
+			"Phase 2 slice P2-A: energy-BOUNDED by construction (Mp's d'Eon normalisation + the "
+			"trimmed logistic's + the volume lobe's exact C_v hemispherical-integral normaliser), "
+			"and deliberately not conserving -- the source model states it ignores inter-thread "
+			"multiple scattering, and the masking term removes energy nothing puts back.  The "
+			"measured curve is locked separately below" );
+		Run( r, *pw->SPF() );
+		for( int i = 0; i < NUM_THETA; ++i ) weaveMeasured[wr][i] = r.albedo[i];
+	}
+
+	//  ---- the locked-curve check, as one synthesized row.
+	{
+		std::cout << "\n";
+		std::cout << "  Phase 2 -- LOCKED weave_material curves (measured 2026-09-03)\n";
+		std::cout << "  eps " << kWeaveLockEps << " absolute, ~4 sigma of this harness's MC error\n";
+		std::cout << "  " << std::left << std::setw( 34 ) << "config";
+		for( int i = 0; i < NUM_THETA; ++i ) {
+			std::ostringstream h; h << "th" << (int)THETA_DEG[i];
+			std::cout << std::right << std::setw( 20 ) << h.str();
+		}
+		std::cout << "\n";
+
+		bool lockPassed = true;
+		for( int wr = 0; wr < kNumWeaveRows; ++wr )
+		{
+			std::ostringstream lbl;
+			lbl << kWeaveRows[wr].preset;
+			if( kWeaveRows[wr].rotationDeg != 0 ) lbl << " @45";
+			std::cout << "  " << std::left << std::setw( 34 ) << lbl.str();
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				const double d = std::fabs( weaveMeasured[wr][i] - kWeaveLocked[wr][i] );
+				const bool   ok = ( d <= kWeaveLockEps );
+				if( !ok ) lockPassed = false;
+				std::ostringstream cell;
+				cell << std::fixed << std::setprecision( 4 )
+				     << weaveMeasured[wr][i] << "/" << kWeaveLocked[wr][i] << ( ok ? "" : " !" );
+				std::cout << std::right << std::setw( 20 ) << cell.str();
+			}
+			std::cout << "\n";
+		}
+		if( !lockPassed ) {
+			std::cout << "    FAIL: a weave_material row moved off its locked curve by more than "
+			          << kWeaveLockEps << " (marked with ! above).  If this was a deliberate preset "
+			             "or model retune, update kWeaveLocked in the same commit and say so in the "
+			             "message; if it was not, something changed the BSDF.\n";
+		}
+		// Folded into the suite's own tally as one extra unit.  The
+		// albedo columns on THIS row are a pass/fail indicator, not
+		// measurements -- the real numbers are in the table above.
+		ConfigReport& r = add( "47. Phase-2 locked weave curves", kPosturePass, 0.01,
+			"pass/fail indicator only -- the measured/locked pairs are in the table printed above "
+			"the report" );
+		for( int i = 0; i < NUM_THETA; ++i ) r.albedo[i] = lockPassed ? 1.0 : 0.0;
+		r.passed = lockPassed;
+	}
+
+	//  ---- fabric OVER weave: the composition the allowlist exists for.
+	UniformScalarPainter* fowAlpha = new UniformScalarPainter( 0.3 );  fowAlpha->addref();
+	RISE::WeaveTest::PresetWeave fowBase( "satin" );
+	FabricMaterial* fabricOverWeave = new FabricMaterial(
+		*fowBase.Material(), *one, *fowAlpha, *sWeave0 );
+	fabricOverWeave->addref();
+	{
+		ConfigReport& r = add( "48. fabric (white sheen, alpha 0.3) / weave satin",
+			kPostureBounded, 0.05,
+			"Phase 2: the fuzz-over-weave stack the substrate allowlist was extended for.  Bounded, "
+			"not Pass: the Kulla-Conty product form conserves EXACTLY only over a Lambertian base, "
+			"and this substrate is neither Lambertian nor conserving itself -- the fabric layer "
+			"inherits the weave's own deficit and adds the sheen lobe's share on top, which is "
+			"exactly what the row is here to show stays under 1" );
+		Run( r, *fabricOverWeave->GetSPF() );
+	}
+
+	//  ---- 49. THE INDEPENDENT WHITE-WEAVE ENERGY FLOOR -- the check
+	//  that would have caught the `C_v = 2(1+k_d)` defect, since neither
+	//  the locked curve above (which pinned the buggy number) nor
+	//  `hemisphericalAlbedo`'s 20% band (which is derived assuming the
+	//  BRDF's own normalisers are exact) can.  See
+	//  `WeaveIndependentCheck` above main() for the from-scratch
+	//  reimplementation this compares against.
+	//
+	//  FOUR PRESETS, both dyes forced to white, coverage forced to the
+	//  draft's own mean (so the prediction does not depend on where in
+	//  the cell the harness's fixed shading point happens to land),
+	//  measured at theta = 0 and 30 deg only -- the independent
+	//  quadrature above does not reproduce `value()`'s
+	//  `AzimuthalTrimBoost` visible-interval renormalisation (a <= ~8%
+	//  correction confined to the surface lobe, P2-2), and that
+	//  correction grows toward grazing as the visible azimuthal range
+	//  narrows, so 60/80 deg are left to the locked curve and the
+	//  reciprocity/pdf gates instead of being asserted here.
+	//
+	//  TWO INDEPENDENT ASSERTIONS per (preset, angle):
+	//    (i)  |measured - predicted| <= kWhiteFloorEps -- catches an
+	//         amplitude bug (the C_v class) even though both sides use
+	//         DIFFERENT code (Monte-Carlo Scatter() vs a from-scratch
+	//         quadrature).
+	//    (ii) measured >= kWhiteFloorMin (0.55) at theta <= 30 -- the
+	//         literal physical floor: a lossless-ish dielectric weave
+	//         (eta 1.35-1.54, k_d 0.1-0.7) cannot legitimately return an
+	//         order of magnitude under Sadeghi's own measured 0.5-0.8
+	//         band for white fabrics, so a future regression that
+	//         quietly halves the volume lobe again fails HERE even if
+	//         it also moved the independent prediction (a shared-root
+	//         bug in `FibreLobeMath.h` could, in principle, move both).
+	{
+		static const char* const kWhitePresets[] = { "denim", "silk", "satin", "linen" };
+		const int kNumWhitePresets = (int)( sizeof( kWhitePresets ) / sizeof( kWhitePresets[0] ) );
+		static const double kWhiteThetas[2] = { 0.0, 30.0 };
+		const double kWhiteFloorEps = 0.04;
+		const double kWhiteFloorMin = 0.55;
+
+		std::cout << "\n";
+		std::cout << "  Phase 2 -- INDEPENDENT white-weave energy floor (from-scratch quadrature)\n";
+		std::cout << "  eps " << kWhiteFloorEps << " absolute vs the independent prediction; "
+		          << "floor " << kWhiteFloorMin << " at theta <= 30\n";
+
+		bool whiteFloorPassed = true;
+		for( int p = 0; p < kNumWhitePresets; ++p )
+		{
+			const RISE::Implementation::WeavePreset& P =
+				RISE::Implementation::LookupWeavePreset( kWhitePresets[p] );
+			const double meanCov = (double)RISE::Implementation::WeavePatternMeanCoverage( P.weave );
+
+			RISE::WeaveTest::PresetWeave white( kWhitePresets[p], 0.0, meanCov, /*whiteDyes=*/true );
+
+			std::cout << "  " << std::left << std::setw( 10 ) << kWhitePresets[p];
+			for( int i = 0; i < 2; ++i )
+			{
+				const double measured  = DirectionalAlbedo( *white.SPF(), kWhiteThetas[i] * PI / 180.0 );
+				const double predicted = WeaveIndependentCheck::PredictWhiteRho( P, meanCov, kWhiteThetas[i] );
+				const double diff      = std::fabs( measured - predicted );
+				const bool   predOk    = diff <= kWhiteFloorEps;
+				const bool   floorOk   = ( kWhiteThetas[i] > 30.0 ) || ( measured >= kWhiteFloorMin );
+				if( !predOk || !floorOk ) whiteFloorPassed = false;
+
+				std::ostringstream cell;
+				cell << std::fixed << std::setprecision( 4 )
+				     << "th" << (int)kWhiteThetas[i] << "=" << measured << "/" << predicted
+				     << ( predOk ? "" : " !pred" ) << ( floorOk ? "" : " !floor" );
+				std::cout << "  " << std::setw( 26 ) << cell.str();
+			}
+			std::cout << "\n";
+		}
+		if( !whiteFloorPassed ) {
+			std::cout << "    FAIL: a white-weave row missed the independent prediction (!pred) or fell "
+			             "below the 0.55 physical floor (!floor) -- see the annotated cells above.\n";
+		}
+		ConfigReport& r = add( "49. Phase-2 white-weave independent energy floor", kPosturePass, 0.01,
+			"pass/fail indicator only -- measured/predicted pairs are in the table printed above" );
+		for( int i = 0; i < NUM_THETA; ++i ) r.albedo[i] = whiteFloorPassed ? 1.0 : 0.0;
+		r.passed = whiteFloorPassed;
+	}
+
 	PrintReport( reports );
 
 	// Tally pass/fail across the suite.
@@ -1816,6 +2301,9 @@ int main()
 
 	// Cleanup (matches existing test pattern; not strictly necessary
 	// for a one-shot test process but exercises the destructor chain).
+	safe_release( fabricOverWeave );
+	safe_release( fowAlpha );
+	for( RISE::WeaveTest::PresetWeave* pw : weaveFixtures ) delete pw;
 	for( FabricMaterial* fm : fabricMats )            safe_release( fm );
 	for( UniformScalarPainter* sp : fabricAlphaPnts ) safe_release( sp );
 	safe_release( sWeave45 );

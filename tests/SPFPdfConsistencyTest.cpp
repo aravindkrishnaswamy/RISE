@@ -66,6 +66,7 @@
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/FabricMaterial.h"
+#include "WeaveTestFixture.h"
 
 #include "TestStubObject.h"
 
@@ -768,6 +769,42 @@ int main()
     ISPF* fabricLamb  = fabricLambMat->GetSPF();
     ISPF* fabricAniso = fabricAnisoMat->GetSPF();
 
+    // weave_material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+    //
+    // THE SUB-TEST THAT MATTERS MOST HERE IS PART 2, THE HEMISPHERE
+    // INTEGRAL, and it is testing something structural rather than
+    // arithmetic.  A fibre frame's (theta, phi) parametrisation covers
+    // the whole SPHERE, so a naive surface-lobe sampler would put a
+    // large fraction of its density below the surface plane and this
+    // integral would land near 0.5 -- section 9.4 rejected the Charlie
+    // D-sampler for exactly that failure mode.  `WeaveSPF` avoids it by
+    // TRIMMING the azimuthal logistic to the visible azimuth range at
+    // each fibre latitude, which is exact (the trimmed logistic is
+    // normalised over whatever interval it is given).  If that
+    // construction is ever broken or removed, this row's integral is
+    // what says so.
+    //
+    // Part 1 (cross-validation) carries the same force it does for
+    // fabric: `WeaveSPF` reprices every sample against the FULL
+    // four-lobe mixture, so a branch-local density would show up here
+    // and nowhere else.
+    //
+    // TWO PRESETS, CHOSEN TO BE DISCRIMINATING:
+    //   * `satin` has the narrowest longitudinal lobe in the shipped
+    //     table (0.044 rad) and NON-ZERO OPPOSITE TILTS, which is the
+    //     configuration where the azimuth trimming has real work to do
+    //     -- a tilted family's visible azimuth range is latitude-
+    //     dependent rather than a flat +-pi/2.
+    //   * `denim` has zero tilt and a broad lobe, and carries a
+    //     non-zero `weave_rotation`, so a Scatter that sampled in the
+    //     rotated frame while Pdf evaluated in the unrotated one would
+    //     surface as a cross-validation failure -- the same frame-
+    //     hand-off check the fabric rows make one layer up.
+    RISE::WeaveTest::PresetWeave weaveSatin( "satin" );
+    RISE::WeaveTest::PresetWeave weaveDenim( "denim", 0.7853981633974483 );
+    ISPF* weaveSatinSPF = weaveSatin.SPF();
+    ISPF* weaveDenimSPF = weaveDenim.SPF();
+
     //------------------------------------------------------------------
     // Per-material test configuration
     //
@@ -998,6 +1035,26 @@ int main()
         //--------------------------------------------------------------
         { "Fabric_Lambertian",                 fabricLamb,  true,  true,  false, false, INTEGRAL_TOL },
         { "Fabric_GGXaniso_weave45",           fabricAniso, true,  true,  false, true,  INTEGRAL_TOL },
+
+        //--------------------------------------------------------------
+        // weave_material.  singleLobe / exactSelectedPdf both TRUE:
+        // WeaveSPF emits ONE ray per Scatter carrying the full four-lobe
+        // mixture density, so cross-validation is exact at
+        // CROSS_VAL_TOL = 1e-6 and the hemisphere integral applies at
+        // full strength.
+        //
+        // CHI2 IS SKIPPED ON BOTH ROWS, and the reason is binning
+        // resolution rather than a density mismatch -- the same reason
+        // Coated_GGX and Fabric_GGXaniso_weave45 skip it.  The surface
+        // lobe is a specular CONE about the yarn (0.044 rad wide for
+        // satin, 0.24 for denim), which the histogram's 20 x 40 angular
+        // bins cannot resolve at NUM_SAMPLES: the test would reject on
+        // the binning, not on the sampler.  Cross-validation -- the
+        // sub-test that actually catches a wrong density -- stays ON for
+        // both, and so does the integral.
+        //--------------------------------------------------------------
+        { "Weave_satin",                       weaveSatinSPF, true, true, false, true, INTEGRAL_TOL },
+        { "Weave_denim_rot45",                 weaveDenimSPF, true, true, false, true, INTEGRAL_TOL },
     };
 
     double incomingAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
@@ -1120,6 +1177,46 @@ int main()
             numFailed++;
         }
 
+        // THE SAME PREMISE, FOR THE WEAVE ROWS, and it needs its own
+        // check rather than inheriting fabric's: the two mixtures are
+        // built from different lobes.  `weave_material`'s cosine branch
+        // has density cos(wo)/pi, so a `Scatter` that reported its OWN
+        // branch's density would be accidentally right at every
+        // direction where the surface lobe's density happens to equal
+        // it.  Asserting that the surface lobe's density at this
+        // direction genuinely DIFFERS from the cosine one is what makes
+        // the cross-validations above discriminating rather than
+        // decorative -- exactly the argument
+        // `MeasureLobeDiscrimination`'s header makes for fabric.
+        {
+            RayIntersectionGeometric wri = MakeIntersection( 30.0 * DEG_TO_RAD );
+            IORStack wStack = MakeTestIORStack( g_stubObject );
+            const Scalar qCos = r_max( Scalar(0), Vector3Ops::Dot( midWo, wri.onb.w() ) ) * INV_PI;
+
+            struct WeaveProbe { const char* name; ISPF* spf; };
+            const WeaveProbe probes[] = {
+                { "Weave_satin",       weaveSatinSPF },
+                { "Weave_denim_rot45", weaveDenimSPF }
+            };
+            int weaveDiscriminating = 0;
+            for( const WeaveProbe& wp : probes ) {
+                const Scalar qMix = wp.spf->Pdf( wri, midWo, wStack );
+                const bool   diff = ( fabs( qMix - qCos ) > 1e-6 * r_max( qMix, qCos ) );
+                std::cout << "    " << wp.name << "  qMix=" << qMix
+                          << "  qCosineBranch=" << qCos
+                          << "  -> " << ( diff ? "DISCRIMINATES"
+                                               : "coincident lobes (control only)" )
+                          << std::endl;
+                if( diff ) ++weaveDiscriminating;
+            }
+            if( weaveDiscriminating == 0 ) {
+                std::cout << "  FAIL: no weave configuration discriminates a branch-local "
+                             "density from the mixture -- the weave rows prove nothing as "
+                             "configured" << std::endl;
+                numFailed++;
+            }
+        }
+
         // EVERY SPF that carries an EXACT selected pdf on the RGB pipe,
         // not just the two fabric rows.
         //
@@ -1194,6 +1291,23 @@ int main()
             { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL },
             { "Fabric_Lambertian",       fabricLamb,   CROSS_VAL_TOL },
             { "Fabric_GGXaniso_weave45", fabricAniso,  CROSS_VAL_TOL },
+
+            //----------------------------------------------------------
+            // weave_material.  Its RGB cross-validation is exact, so the
+            // NM question is meaningful; and `WeaveBRDF::ResolveWeave`
+            // reads every one of its FOURTEEN geometric scalars
+            // achromatically in both regimes for exactly the reason the
+            // CookTorrance note above spells out.  These two rows are
+            // what makes that a measured claim rather than a comment.
+            //
+            // Note in particular that the tint enters the SELECTION
+            // WEIGHT (`SurfaceSelectWeight` reads max3(A)), which is why
+            // `ResolveWeave` keeps the RGB `tint` populated on the NM
+            // path as well: reading the hero-wavelength dye there would
+            // reproduce CookTorrance's defect exactly.
+            //----------------------------------------------------------
+            { "Weave_satin",             weaveSatinSPF, CROSS_VAL_TOL },
+            { "Weave_denim_rot45",       weaveDenimSPF, CROSS_VAL_TOL },
         };
         const double nmAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
         const char*  nmAngleNames[] = { "30deg", "60deg" };

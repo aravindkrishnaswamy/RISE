@@ -180,33 +180,76 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   [../Tests/Materials/fabric_presets](../Tests/README.md), which puts the same seven on
   spheres: a sphere is the right shape for a controlled regression and the wrong shape
   for showing cloth, whose whole appearance is what the sheen does across a fold.  Each
-  preset carries its recommended substrate, and the three anisotropic ones carry a
-  painted `weave_rotation` field -- denim the 45-degree twill wale, silk the warp
-  direction, satin the float direction across the drape.
+  preset carries its recommended substrate, and since Phase 2 (2026-09-03) the three
+  DIRECTIONAL ones -- denim, silk, satin -- sit on a `weave_material` rather than on an
+  anisotropic `ggx_material`.  That swap is the whole content of the phase: gate 9b
+  measured the GGX shape, found that 95-99 % of its anisotropy survived being wrapped in
+  the isotropic sheen (so the sheen was not washing the direction out), and found it
+  still read as brushed metal, because a single elliptical lobe with a painted rotation
+  field has no PATTERN SCALE.  A `weave_material` has two thread families with their own
+  directions, dyes and fibre lobes, mixed by a weave draft: denim's 3/1 twill wale, silk's
+  and satin's 5-harness satin float.  Each carries its authored dye on the WARP and a
+  companion tone on the WEFT -- all three drafts float the warp most of the time, so the
+  authored colour stays dominant while the weft supplies the second tone a weave has and
+  a single lobe cannot.
 
-  Those fields are CONSTANT base angles plus a low-amplitude continuous fbm drift,
-  and that is a correction rather than a style choice. Built from their real
-  section 5.3 cell formulas (`floor(u*N)`, `mod(i + k*j, 5)`) they render as a
-  BLOCKY CHECKERBOARD: a cell field is piecewise constant, and a lobe as narrow as
-  satin's (`alphay 0.06`) is either lit or dark on each side of a cell boundary
-  with nothing in between. Retuning the per-cell excursion from 0.42 rad to
-  0.11 rad gave a fainter checkerboard of the same size -- the discontinuity, not
-  the amplitude, is the defect. Phase 1 has no pattern-scale structure by design
-  (section 9.5, measured by gate 9b) and a cell-quantised rotation is not a way to
-  acquire one. The general rule is written up as docs/SCENE_CONVENTIONS.md section
-  8.7; section 5.5's `fw` fade is kept on the drift, so the anisotropy relaxes to
-  the constant base angle under minification.
+  `weave_scale` is left at WeavePresets.h's shipped thread-count default for silk and
+  satin (8000 / 6000 cells per UV unit -- sub-pixel at this ~1x1.5m swatch framing) and
+  overridden to 350 for denim.  Confirmed by rendering and inspecting the PNG this
+  session: at the shipped default, silk and satin show their intended broad directional
+  float sheen with no visible cell structure at all (this is what a satin identity is --
+  the sheen, not the grain), while denim at the SAME default fades to a flat, textureless
+  blue -- physically bounded, but missing the fine diagonal grain that is a twill's own
+  visual signature even at a distance. 350 was chosen by iterating and re-rendering until
+  the wale read as a subtle diagonal texture rather than as printed stripes (an earlier
+  revision's 170-190 override, since corrected -- see docs/CLOTH_FABRIC_DESIGN.md 10.3's
+  `weave_scale` debt).
+
+  The three painted angle fields survive the swap and moved down one layer: they now bind
+  `weave_material.weave_rotation`, which turns both thread families together (the cloth's
+  grain), and the `fabric_material` wrappers leave their own rotation slot unwritten,
+  because writing the same field on both would ADD the two rotations and turn the yarn
+  twice.  The fields remain CONSTANT base angles plus a low-amplitude continuous fbm
+  drift.  Built instead from their real section 5.3 cell formulas (`floor(u*N)`,
+  `mod(i + k*j, 5)`) they rendered as a BLOCKY CHECKERBOARD -- a cell field is piecewise
+  constant, and a narrow lobe is either lit or dark on each side of a cell boundary with
+  nothing in between; retuning the per-cell excursion from 0.42 rad to 0.11 rad gave a
+  fainter checkerboard of the same size, so the discontinuity rather than the amplitude
+  was the defect (docs/SCENE_CONVENTIONS.md section 8.7).  The cell structure now lives
+  where it belongs, INSIDE `weave_material`, as a coverage field with smoothed yarn edges
+  and a footprint fade to the draft's own mean -- which is what makes it anti-alias
+  instead of tile.  Section 5.5's `fw` fade stays on the drift, so the grain direction
+  relaxes to its constant base angle under minification.
 
   `denim_and_satin_drape.RISEscene` is the hero and the subject of section 9.9's
   gate-9b measurement: one hanging cloth seamed down the middle, `fabric denim` left and
-  `fabric satin` right, differing in exactly the two things Phase 1 says a fabric is --
-  sheen roughness (0.45 vs 0.12) and substrate anisotropy ratio (1.5 vs 5.7) steered by
-  `weave_rotation`.  The sheen lobe is the same isotropic Charlie in both halves, so
-  every directional difference the eye sees is the substrate's elliptical GGX lobe being
-  steered by the weave field.  The two halves are two instances of one panel butt-joined
-  at x = 0 with an INTEGER number of fold cycles in u, so the join is C1-continuous and
-  every visible edge down the middle of the frame is a material boundary rather than a
-  modelling one -- which is what makes the halves comparable.
+  `fabric satin` right.  Under Phase 1 the two halves differed only in sheen roughness
+  (0.45 vs 0.12) and substrate anisotropy ratio (1.5 vs 5.7) steered by `weave_rotation`,
+  and gate 9b's verdict on that frame was BRUSHED METAL.  Both halves now sit on a
+  `weave_material`, so what separates them is what separates the real fabrics: denim's
+  3/1 twill draft against satin's 5-harness float, and a broad 14-degree yarn lobe against
+  the 2.5-degree flat float that is the tightest in the reference table.
+
+  `weave_scale` differs between the halves, and NOT for the reason an earlier revision of
+  this file claimed.  That revision authored 190 (denim) / 310 (satin) and asserted the
+  render showed "a diagonal wale across the whole drape" and "a tight, high-contrast float
+  band" -- an unverified claim that a fresh render CONTRADICTED (denim read as coarse
+  diagonal stripes, satin as a near-black body with a hard highlight; see
+  docs/CLOTH_FABRIC_DESIGN.md 10.3's `weave_scale` debt and REVIEW_P2R3.md finding P1-3).
+  Measured instead, this session: at WeavePresets.h's shipped thread-count defaults (denim
+  2500, satin 6000 cells per UV unit -- sub-pixel at this panel's ~2x2.6m framing) satin's
+  half shows the intended broad, high-contrast directional float sheen banding along each
+  fold with NO visible cell structure, confirmed by inspecting the rendered PNG. Denim's
+  half at the SAME default fades to a flat, textureless blue -- physically bounded, but
+  without the fine diagonal grain that is denim's own visual signature even at a distance
+  (unlike satin, whose identity is the sheen rather than the grain).  Denim is therefore
+  authored at 380, a deliberate hero-close-up override (the kind
+  docs/CLOTH_FABRIC_DESIGN.md WeavePresets.h documents as always available): confirmed by
+  inspection to put the wale at a few pixels per cell, fine enough to read as fabric grain
+  rather than as 190's printed-stripe failure.  The two halves are two instances of one
+  panel butt-joined at x = 0 with an INTEGER number of fold cycles in u, so the join is
+  C1-continuous and every visible edge down the middle of the frame is a material boundary
+  rather than a modelling one -- which is what makes the halves comparable.
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

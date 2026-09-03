@@ -320,8 +320,13 @@ it can neither retype nor re-parameterise), so a preset bound over the
 wrong substrate class logs a **warning** and still builds; contrast
 `coated_material`, which *errors* on a substrate outside its allowlist.
 The allowlist itself is the same one: `lambertian_material`,
-`orennayar_material`, `ggx_material`, and `pbr_metallic_roughness_material`
-transitively.
+`orennayar_material`, `ggx_material`, `pbr_metallic_roughness_material`
+transitively — and, since Phase 2, **`weave_material`** (§6.3), which is
+the physical stack: surface fuzz is loose fibre ends standing off the
+woven cloth underneath. `silk`, `satin` and `denim` now *recommend* that
+substrate rather than an anisotropic GGX one, and a GGX base under those
+three warns; the GGX numbers stay in `FabricPresets.h` as the documented
+Phase-1 fallback, and the composition is still legal.
 
 Guards: `LayeredWhiteFurnaceTest` configs 21–36 (energy: the Lambertian
 rows `kPosturePass` on the exact identity, the Oren-Nayar and GGX rows
@@ -339,6 +344,96 @@ measurement — decomposed into fabric's own uncorrelated-response
 residual and the substrate's pre-existing `hemisphericalAlbedo` debt —
 and spectral parity), and
 [`scenes/Tests/Materials/fabric_presets.RISEscene`](../scenes/Tests/Materials/fabric_presets.RISEscene).
+
+## 6.3 `weave_material` — cloth with a pattern scale
+
+[`WeaveMaterial`](../src/Library/Materials/WeaveMaterial.h) +
+[`WeaveBRDF`](../src/Library/Materials/WeaveBRDF.h) +
+[`WeaveSPF`](../src/Library/Materials/WeaveSPF.h), with the draft
+functions and the preset table in
+[`WeavePresets.h`](../src/Library/Materials/WeavePresets.h) and the
+fibre-lobe primitives shared with `hair_material` in
+[`FibreLobeMath.h`](../src/Library/Materials/FibreLobeMath.h).
+Full design: [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §10.
+
+**Why it exists.** §9.9 gate 9b measured `fabric_material`'s limit and
+named it. An isotropic Charlie sheen over an anisotropic GGX substrate
+preserves **95 % (silk) / 99 % (satin)** of the substrate's highlight
+anisotropy — so §9.5's delegation works almost losslessly — and the frame
+*still* reads as brushed metal. The deficit is the absence of a **pattern
+scale**: a single elliptical lobe with a painted rotation field cannot
+make discrete floats with their own orientation and mutual shadowing, and
+painting the rotation harder produces a checkerboard rather than cloth.
+
+**The model.** Two thread families, warp and weft, each with its own
+tangent, dye and pair of lobes, mixed by a weave-draft coverage field:
+
+    f(i,o) = (1 − gap) · Σ_k a_k · M_k(i,o) · [ f_surf,k + A_k · f_vol,k ]
+
+- The **surface lobe** is Sadeghi et al. 2013's microcylinder R-lobe
+  built on RISE's *hair* primitives: a Kim-2002 cylinder-geometry
+  Fresnel, d'Eon's energy-conserving longitudinal `Mp` in place of
+  Sadeghi's plain Gaussian, and a trimmed logistic in place of his bare
+  `cos(φ_d/2)`. It is **untinted** — a dielectric's specular reflection
+  preserves the incident spectrum, so a coloured fabric keeps a white
+  highlight, which is one of the four places Sadeghi demonstrates
+  Irawan-Marschner failing.
+- The **volume lobe** is his `f_r,v` with the Chandrasekhar
+  `1/(cos θ_i + cos θ_o)` form, a second `Mp` at **twice** the surface
+  width (Table II's γ_v ≈ 2 γ_s recurs in all six of its rows, so it is
+  derived rather than authored), and the dye.
+- **Masking** is his Eq. 7–9 verbatim, correlation width fixed at 20°.
+  His Eq. 15 normaliser `Q` is *not* used: it reads the view direction
+  and nothing else, so it cannot be reciprocal, and the gap is carried
+  instead as a direction-independent energy factor.
+
+**Drafts.** `weave plain|twill_2_1|twill_3_1|satin_5|custom`, with exact
+mean warp coverages 1/2, 2/3, 3/4, 4/5. The field is **continuous**, not
+a cell lookup: yarn edges are smooth ramps and the whole pattern fades to
+its own mean as the pixel footprint outgrows the cell, which is both the
+correct minification limit and the anti-aliasing. `custom` binds a
+`coverage` scalar painter instead.
+
+**Sampling** is Zhu et al. 2024 §5.1's attenuation-proportional
+lobe-selection sampler — family by coverage, then surface-vs-volume by a
+Fresnel-vs-dye split — with the sample **repriced against the full
+four-lobe mixture**, because the lobes' supports overlap. The surface
+lobe is drawn in the fibre frame with d'Eon's exact longitudinal inverse
+and the trimmed logistic's exact azimuthal one, and the logistic is
+**trimmed to the visible azimuth range at each fibre latitude**, which is
+what keeps the density normalised over the hemisphere rather than over
+the sphere without a view-dependent acceptance factor.
+
+**Energy** is *bounded*, not conserving, and the model says so: the
+source model ignores inter-thread multiple scattering and the masking
+term removes energy nothing puts back. The volume lobe's normaliser
+`C_v` is the *exact* hemispherical integral of its bracket at zero tilt
+(not a loose bound — an earlier revision's `C_v = 2(1+k_d)` WAS a loose
+bound used as if exact, and was ~2-2.3× too large, the session's one
+substantive fix; see §10.3). `hemisphericalAlbedo` is now a closed form
+with **no fitted constants**, exact at normal incidence, with a stated
+±40% exactness class for its bihemispherical approximation.
+
+**Presets.** `fabric denim|silk|satin|linen|custom` seeds every slot
+including the draft. Reflection-only in this phase:
+`ScattersFullSphere` and `CouldLightPassThrough` stay false, and the
+backlit glow-through cue is slice P2-B.
+
+Guards: `LayeredWhiteFurnaceTest` configs 39–49 (energy: `kPostureBounded`
+plus a locked measured curve per preset at two view sets, the
+fabric-over-weave row, and an independent white-weave energy-floor check
+built from a from-scratch quadrature rather than `value()`),
+`SPFBSDFConsistencyTest` (value↔Scatter pointwise, and reciprocity at
+~2e-15 / ~5e-15 with a non-zero weave rotation and non-zero float tilts
+respectively), `SPFPdfConsistencyTest` (the four-lobe mixture PDF, RGB
+and NM, with the hemisphere integral at ≥ 0.998), `WeaveMaterialChunkTest`
+(the draft functions enumerated exhaustively, the footprint fade and the
+yarn edge's continuity, the preset table slot by slot, the two `coverage`
+diagnostics, fabric-over-weave, and the `hemisphericalAlbedo` error
+measurement), `FibreLobeMathTest` (a deterministic value table pinning the
+shared fibre-scattering primitives against both `hair_material` and this
+material silently drifting), and
+[`scenes/Tests/Materials/weave_presets.RISEscene`](../scenes/Tests/Materials/weave_presets.RISEscene).
 
 ## 7. Luminaires — materials that emit
 
@@ -397,7 +492,13 @@ file for parameter-by-parameter behaviour.
 - `fabric_material` — an **energy-compensated** Charlie sheen lobe over
   a **restricted** substrate, with the weave direction delivered as a
   rotation of the frame the *substrate* is evaluated in (§6.2). The
-  cloth material.
+  cloth FUZZ material.
+- `weave_material` — a structured **two-thread-family** cloth BSDF: warp
+  and weft, each with their own direction, dye and pair of fibre lobes,
+  mixed by a weave-draft coverage field (§6.3). It is what makes satin's
+  float sheen and denim's twill wale; it has no sheen term of its own,
+  and it is an accepted `fabric_material` substrate, which is the
+  physical stack (fuzz over weave).
 - `composite_material` — top/bottom layered composition (§6).
 - `sheen_material` — Charlie sheen lobe, **uncompensated and standalone**
   (intended to layer over a base via `composite_material`, which does

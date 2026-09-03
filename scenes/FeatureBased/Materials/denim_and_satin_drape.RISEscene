@@ -7,22 +7,25 @@ RISE ASCII SCENE 7
 #                   on the left and `fabric satin` on the right, under a hard grazing key and a             #
 #                   back rim.                                                                               #
 #                                                                                                           #
-#                   THE COMPARISON IS THE SCENE.  Denim and satin share a preset column and differ          #
-#                   in exactly the two things Phase 1 says a fabric IS:                                     #
+#                   THE COMPARISON IS THE SCENE.  Denim and satin share a preset column and now             #
+#                   differ in what actually separates the real fabrics:                                     #
 #                                                                                                           #
-#                     sheen_roughness   denim 0.45 (broad, dusty fuzz)  vs  satin 0.12 (a tight             #
-#                                       float sheen that snaps on and off along a fold)                     #
-#                     substrate alphax / alphay                                                             #
-#                                       denim 0.34 / 0.22 (ratio 1.5)   vs  satin 0.34 / 0.06               #
-#                                       (ratio 5.7 -- the tightest in the table)                            #
-#                     weave_rotation    denim's 45-degree twill wale    vs  satin's across-the-drape        #
-#                                       float direction                                                     #
+#                     weave draft       denim's 3/1 TWILL (warp over three, under one, on a                 #
+#                                       diagonal -- the wale)  vs  satin's 5-HARNESS SATIN float            #
+#                                       (one scattered weft point per five, so no wale forms)               #
+#                     yarn lobe width   denim 0.24-0.26 rad (a broad, matte cotton yarn)  vs                #
+#                                       satin's 0.044 rad flat float -- the tightest longitudinal           #
+#                                       lobe in the reference table, and what makes a float band            #
+#                                       snap on and off across a fold                                       #
+#                     sheen_roughness   denim 0.45 (broad, dusty fuzz)  vs  satin 0.12                      #
+#                     weave_rotation    denim's 45-degree wale  vs  satin's across-the-drape float          #
 #                                                                                                           #
-#                   The sheen lobe is the SAME isotropic Charlie in both halves; every directional          #
-#                   difference the eye sees is the substrate's elliptical GGX lobe being steered by          #
-#                   `weave_rotation` (9.5).  That is the claim this scene exists to expose, and             #
-#                   gate 9b is the honest recording of how far it gets: whether an isotropic sheen          #
-#                   over an anisotropic GGX base reads as SATIN, or as BRUSHED METAL.                       #
+#                   UNDER PHASE 1 the two halves differed only in sheen roughness and in an                 #
+#                   anisotropic GGX substrate's alphax/alphay ratio (1.5 vs 5.7) steered by                 #
+#                   `weave_rotation`, and gate 9b's verdict on that frame was BRUSHED METAL: 95-99 %        #
+#                   of the substrate's anisotropy survived the isotropic sheen, so the sheen was            #
+#                   not washing the direction out -- there was simply no PATTERN SCALE for a single         #
+#                   elliptical lobe to have.  This frame is the answer to that measurement.                 #
 #                                                                                                           #
 #                   THE SEAM IS INVISIBLE IN THE GEOMETRY, ON PURPOSE.  The two halves are two              #
 #                   instances of one displaced panel, butt-joined at x = 0.  The fold field is an           #
@@ -31,10 +34,13 @@ RISE ASCII SCENE 7
 #                   Every visible edge down the middle of the frame is therefore a MATERIAL                 #
 #                   boundary, not a modelling one, which is what makes the two halves comparable.           #
 #                                                                                                           #
-#                   THE SUBSTRATES CARRY `fresnel_mode schlick_f0` AND AN `rs` PAINTER.  Without            #
-#                   both, `ggx_material` defaults to `conductor` with no specular reflectance bound,        #
-#                   which is a silently BLACK fabric -- no highlight at all, and the highlight is           #
-#                   the entire reason GGX is the substrate for these two presets.                           #
+#                   THE SUBSTRATES ARE `weave_material`s SINCE PHASE 2, and the Phase-1 GGX pair            #
+#                   they replaced is what gate 9b measured.  A weave carries its own per-family             #
+#                   Fresnel (`warp_ior` / `weft_ior`), so the 0.04 dielectric-F0 painter the GGX            #
+#                   bases' `rs` had to name is gone with them -- which also removes the single              #
+#                   most likely way to hand-author a silently BLACK fabric here                             #
+#                   (`ggx_material.fresnel_mode` defaults to `conductor`, and an unset `rs` binds           #
+#                   the built-in black `none` painter).                                                     #
 #                                                                                                           #
 #                   `oidn_denoise` is the showcase default (on).  The gate-9b measurement renders           #
 #                   this scene with it OFF -- a denoised frame is not evidence about a highlight's          #
@@ -147,13 +153,6 @@ displaced_geometry
 
 uniformcolor_painter
 {
-	name				fabric_f0
-	color				0.04 0.04 0.04
-	colorspace			Rec709RGB_Linear
-}
-
-uniformcolor_painter
-{
 	name				dye_denim
 	color				0.070 0.115 0.230
 	colorspace			Rec709RGB_Linear
@@ -162,7 +161,25 @@ uniformcolor_painter
 uniformcolor_painter
 {
 	name				dye_satin
-	color				0.310 0.115 0.045
+	color				0.420 0.160 0.065
+	colorspace			Rec709RGB_Linear
+}
+
+# The WEFT dyes.  The presets seed both families, but a preset's second tone is
+# generic and this is a hero frame, so each half's companion colour is authored
+# to go with its first: denim's undyed cotton weft under its indigo warp, and a
+# deeper ground under satin's copper float.
+uniformcolor_painter
+{
+	name				dye_denim_weft
+	color				0.520 0.480 0.400
+	colorspace			Rec709RGB_Linear
+}
+
+uniformcolor_painter
+{
+	name				dye_satin_weft
+	color				0.230 0.085 0.035
 	colorspace			Rec709RGB_Linear
 }
 
@@ -241,33 +258,75 @@ scalar_painter
 # Substrates and fabrics
 #############################################################################################################
 
-ggx_material
+# PHASE 2 (2026-09-03).  Both halves now sit on a `weave_material` -- the
+# structured two-thread-family cloth BSDF -- rather than on an anisotropic
+# `ggx_material`.  That swap is what this scene was measured to demand: gate
+# 9b's verdict on the GGX shape was BRUSHED METAL, and its quantitative half
+# ruled out the obvious explanation (95 % of silk's and 99 % of satin's
+# substrate anisotropy survived the isotropic sheen, so the sheen was not
+# washing the direction out).  What was missing was a PATTERN SCALE, and it is
+# what these two chunks bring: a 3/1 twill draft under the left half and a
+# 5-harness satin float under the right, each with two thread families carrying
+# their own dye, IOR, longitudinal width, azimuthal width, isotropy fraction and
+# float tilt.
+#
+# `weave_scale` -- correcting an earlier revision of this scene that
+# overrode BOTH halves to 190/310 cells per UV unit.  This panel's UV span
+# covers roughly a 2x2.6m drape (`panel_quad` below), and at 190-310 the
+# cell is a coarse ~1cm -- a supervisor render of that revision showed the
+# denim wale as coarse diagonal stripes and the satin as a near-black body
+# with a hard highlight, neither reading as fabric.
+#
+# SATIN is left UNOVERRIDDEN at WeavePresets.h's shipped default (6000
+# cells per UV unit, sub-pixel at this framing) so the footprint fade takes
+# over entirely: what reads at this distance is the float DIRECTION and its
+# lobe (the broad directional sheen band below), not individually resolved
+# thread crossings -- and measured, that is exactly what it does.
+#
+# DENIM authors 380 rather than taking the shipped default (2500): at 2500
+# the twill fully fades to its mean coverage on this panel's framing and
+# renders as a flat, textureless blue -- physically bounded, but missing
+# denim's own signature cue, a fine visible diagonal grain, that a real
+# twill keeps even at arm's length (unlike a flat-float satin, whose
+# identity is the sheen, not the grain).  380 is a deliberate HERO-CLOSE-UP
+# override in the sense docs/CLOTH_FABRIC_DESIGN.md 10.3's `weave_scale`
+# debt describes -- it puts the diagonal wale at a few pixels per cell,
+# fine enough to read as texture rather than as the printed-stripe failure
+# 190 produced, coarse enough to survive this render's resolution.
+#
+# The author's dye goes on the WARP and a companion tone on the WEFT.  Both
+# drafts float the warp most of the time (3/4 and 4/5), so the warp carries the
+# fabric's identity while the weft supplies the second tone a weave has and a
+# single lobe cannot.
+weave_material
 {
 	name				base_denim
-	rd					dye_denim
-	rs					fabric_f0
-	alphax				0.34
-	alphay				0.22
-	fresnel_mode		schlick_f0
+	fabric				denim
+	warp_color			dye_denim
+	weft_color			dye_denim_weft
+	weave_scale			380.0
+	weave_rotation		weave_denim_twill
 }
 
-ggx_material
+weave_material
 {
 	name				base_satin
-	rd					dye_satin
-	rs					fabric_f0
-	alphax				0.34
-	alphay				0.06
-	fresnel_mode		schlick_f0
+	fabric				satin
+	warp_color			dye_satin
+	weft_color			dye_satin_weft
+	weave_rotation		weave_satin_float
 }
 
+# The fuzz layer.  `weave_rotation` is DELIBERATELY unwritten on both: the
+# grain now lives on the weave below, and `fabric_material.weave_rotation`
+# rotates the frame its substrate is evaluated in, so writing the same field
+# here as well would ADD the two rotations and turn the yarn twice.
 fabric_material
 {
 	name				m_denim
 	fabric				denim
 	base				base_denim
 	sheen_color			sheen_denim
-	weave_rotation		weave_denim_twill
 }
 
 fabric_material
@@ -276,7 +335,6 @@ fabric_material
 	fabric				satin
 	base				base_satin
 	sheen_color			sheen_satin
-	weave_rotation		weave_satin_float
 }
 
 #############################################################################################################

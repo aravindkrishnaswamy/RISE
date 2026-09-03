@@ -23,19 +23,31 @@
 //
 //  THE SUBSTRATE ALLOWLIST (9.2).
 //
-//  `base` is NOT "any IMaterial".  It is exactly THREE C++ types --
+//  `base` is NOT "any IMaterial".  It is exactly FOUR C++ types --
 //
-//    LambertianMaterial | OrenNayarMaterial | GGXMaterial
+//    LambertianMaterial | OrenNayarMaterial | GGXMaterial |
+//    WeaveMaterial
 //
-//  -- and FOUR user-facing scene keywords, because
+//  -- and FIVE user-facing scene keywords, because
 //  `pbr_metallic_roughness_material` is NOT its own material class: it
 //  is resolved at scene-build time in
 //  `Job::AddPBRMetallicRoughnessMaterial` into a painter graph plus a
 //  single `ggx_material` in eFresnelSchlickF0 mode
 //  (docs/MATERIALS.md 8), so by the time `IsSupportedSubstrate` runs it
-//  IS a GGXMaterial and passes TRANSITIVELY.  Do not add a fourth cast
+//  IS a GGXMaterial and passes TRANSITIVELY.  Do not add another cast
 //  target for it; there is no such class.  That transitive route is
 //  what lets a glTF `KHR_materials_sheen` asset land on a PBR base.
+//
+//  `weave_material` JOINED THE LIST IN PHASE 2, and the composition it
+//  enables -- an isotropic fuzz layer over a structured weave -- is the
+//  PHYSICAL stack rather than a convenience: surface fuzz is loose
+//  fibre ends standing off the woven cloth underneath.  It qualifies on
+//  both of the criteria below without an exception: `WeaveBRDF`
+//  implements `hemisphericalAlbedo` (an upper-bound closed form, whose
+//  exactness class that file states), and `WeaveSPF` emits at most one
+//  ray per `Scatter` call.  This is also what makes 9.3's split table
+//  finally close for silk, satin and denim: the "verb-supplied" column
+//  can now name a substrate that actually carries the weave.
 //
 //  Two independent reasons for the restriction, both inherited from
 //  `coated_material`:
@@ -101,6 +113,7 @@
 #include "LambertianMaterial.h"
 #include "OrenNayarMaterial.h"
 #include "GGXMaterial.h"
+#include "WeaveMaterial.h"
 
 namespace RISE
 {
@@ -127,7 +140,7 @@ namespace RISE
 			static const char* SubstrateAllowlistText()
 			{
 				return "lambertian_material, orennayar_material, ggx_material, "
-				       "pbr_metallic_roughness_material";
+				       "pbr_metallic_roughness_material, weave_material";
 			}
 
 			//! Allowlist predicate (9.2).  On refusal, `reason` (when
@@ -146,7 +159,8 @@ namespace RISE
 				}
 				if( dynamic_cast<const LambertianMaterial*>( &base ) ||
 				    dynamic_cast<const OrenNayarMaterial*>( &base ) ||
-				    dynamic_cast<const GGXMaterial*>( &base ) ) {
+				    dynamic_cast<const GGXMaterial*>( &base ) ||
+				    dynamic_cast<const WeaveMaterial*>( &base ) ) {
 					return true;
 				}
 				if( reason ) *reason = "the substrate is not one of the supported scattering classes";
@@ -169,6 +183,7 @@ namespace RISE
 				if( dynamic_cast<const LambertianMaterial*>( &base ) ) return "lambertian_material";
 				if( dynamic_cast<const OrenNayarMaterial*>( &base ) )  return "orennayar_material";
 				if( dynamic_cast<const GGXMaterial*>( &base ) )        return "ggx_material (or a pbr_metallic_roughness_material, which resolves to one)";
+				if( dynamic_cast<const WeaveMaterial*>( &base ) )      return "weave_material";
 				return "an unsupported material";
 			}
 
@@ -189,6 +204,20 @@ namespace RISE
 						return dynamic_cast<const OrenNayarMaterial*>( &base ) != 0;
 					case eFabricSubstrateGGX:
 						return dynamic_cast<const GGXMaterial*>( &base ) != 0;
+					case eFabricSubstrateWeave:
+						// A `weave_material` base satisfies a weave
+						// recommendation and a GGX one does NOT -- even
+						// though GGX is what Phase 1 recommended for
+						// silk / satin / denim and remains a legal,
+						// shipping composition.  The warning is the whole
+						// point: `fabric silk` over a bare anisotropic
+						// GGX is exactly the configuration 9.9 gate 9b
+						// measured and found wanting (95-99 % of the
+						// substrate's anisotropy survives, and it still
+						// reads as brushed metal), so an author who still
+						// has one should be told what the preset now
+						// wants.  Nothing is refused.
+						return dynamic_cast<const WeaveMaterial*>( &base ) != 0;
 					case eFabricSubstrateAny:
 					default:
 						return true;

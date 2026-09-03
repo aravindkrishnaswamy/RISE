@@ -289,7 +289,7 @@ static std::string SceneLambertian()
 //======================================================================
 static void TestMintFourChunks()
 {
-	std::printf( "A: MINT -- a Lambertian + `fabric satin` mints four chunks and wires them\n" );
+	std::printf( "A: MINT -- a Lambertian + `fabric satin` mints three chunks and wires them\n" );
 	const std::string tmp = TempPath( "makefabric_a.RISEscene" );
 	Job* pJob = LoadScene( SceneLambertian(), tmp );
 	Check( pJob != nullptr, "A: fixture derives" );
@@ -310,12 +310,12 @@ static void TestMintFourChunks()
 
 	Check( r.fabricMaterial   == "cloth_fabric",       "A: the wrapper is `cloth_fabric`" );
 	Check( r.mintedSubstrate  == "cloth_fabric_base",  "A: the substrate is `cloth_fabric_base`" );
-	Check( r.mintedSubstrateKind == "ggx_material",
-	       "A MONEY: satin's recommended substrate is a ggx_material, and a Lambertian is not one, "
-	       "so one was MINTED -- 9.3's whole point is that the preset cannot retype the base it "
-	       "merely references" );
+	Check( r.mintedSubstrateKind == "weave_material",
+	       "A MONEY: satin's recommended substrate is a weave_material since Phase 2, and a "
+	       "Lambertian is not one, so one was MINTED -- 9.3's whole point is that the preset "
+	       "cannot retype the base it merely references" );
 	Check( r.baseMaterial     == "cloth_fabric_base",  "A: the wrapper's `base` names the minted substrate" );
-	Check( r.weavePainter     == "cloth_fabric_weave", "A: a weave painter was minted (satin is anisotropic)" );
+	Check( r.weavePainter     == "cloth_fabric_weave", "A: a weave painter was minted (satin is directional)" );
 	Check( r.rotationPainter  == r.weavePainter,
 	       "A: rotationPainter reports what `weave_rotation` actually binds, which IS the minted "
 	       "painter here" );
@@ -328,40 +328,54 @@ static void TestMintFourChunks()
 	const std::string doc = sess->ReadDocument();
 	Check( doc != docBefore, "A: the document really changed" );
 
-	// -- The four minted chunks, read back out of the DOCUMENT.
-	Check( ChunkBinds( doc, "uniformcolor_painter", "cloth_fabric_f0", "color", "0.04 0.04 0.04" ),
-	       "A MONEY: the F0 painter is a 0.04 dielectric F0 -- `rs` resolves BY NAME "
-	       "(Job::AddGGXMaterial's pPntManager->GetItem), so `rs 0.04 0.04 0.04` would look up a "
-	       "painter with that literal name, find none, and fail the material outright" );
-	Check( ChunkBinds( doc, "uniformcolor_painter", "cloth_fabric_f0", "colorspace", "Rec709RGB_Linear" ),
-	       "A: ...and says its colourspace, since 0.04 is a LINEAR F0" );
+	// -- The minted chunks, read back out of the DOCUMENT.
+	//
+	// PHASE 2 CHANGED THE SHAPE HERE FROM FOUR CHUNKS TO THREE, and the
+	// chunk that went away is the point.  The Phase-1 mint was an
+	// anisotropic `ggx_material` plus a 0.04 dielectric-F0
+	// `uniformcolor_painter` its `rs` had to name; 9.9 gate 9b measured
+	// that composition and found it reads as BRUSHED METAL (95-99 % of
+	// the substrate's anisotropy survives the sheen, and there is still
+	// no pattern scale).  A `weave_material` carries its own fibre model
+	// and its own Fresnel, so there is no `rs` to name and no F0 painter
+	// to mint.
+	Check( doc.find( "cloth_fabric_f0" ) == std::string::npos,
+	       "A MONEY: NO F0 painter is minted any more -- it existed only to feed a ggx substrate's "
+	       "`rs`, which resolves BY NAME and would otherwise bind the built-in BLACK `none` "
+	       "painter.  A weave_material has no such slot" );
 
-	Check( ChunkBinds( doc, "ggx_material", "cloth_fabric_base", "rs", "cloth_fabric_f0" ),
-	       "A MONEY: the minted base's `rs` names the minted F0 painter -- an UNSET `rs` resolves to "
-	       "the built-in `none` painter, which is BLACK, and under the descriptor's default "
-	       "conductor Fresnel that is no dielectric specular at all: a silent black satin" );
-	Check( ChunkBinds( doc, "ggx_material", "cloth_fabric_base", "fresnel_mode", "schlick_f0" ),
-	       "A MONEY: ...and `fresnel_mode schlick_f0`, because cloth fibres are dielectrics, not "
-	       "metals -- the descriptor's default is `conductor`" );
-	Check( ChunkBinds( doc, "ggx_material", "cloth_fabric_base", "alphax", "0.34" ) &&
-	       ChunkBinds( doc, "ggx_material", "cloth_fabric_base", "alphay", "0.06" ),
-	       "A MONEY: alphax/alphay carry satin's calibrated ANISOTROPY RATIO from the one preset "
-	       "table (0.34 / 0.06) -- the tightest ratio in the set, and the thing that IS satin" );
-	Check( ChunkBinds( doc, "ggx_material", "cloth_fabric_base", "rd", "dye" ),
-	       "A MONEY: the ORIGINAL colour painter was RE-HOMED onto the minted base -- the author's "
-	       "dye, texture or expression graph survives the conversion untouched rather than being "
-	       "re-authored as a constant" );
+	Check( ChunkBinds( doc, "weave_material", "cloth_fabric_base", "fabric", "satin" ),
+	       "A MONEY: the minted substrate names satin's WEAVE preset, which is what carries the "
+	       "5-harness float draft, the 2.5-degree flat warp and the opposite float tilts -- the "
+	       "things that are actually satin" );
+	Check( ChunkBinds( doc, "weave_material", "cloth_fabric_base", "warp_color", "dye" ),
+	       "A MONEY: the ORIGINAL colour painter was RE-HOMED onto the minted substrate's WARP -- "
+	       "the author's dye, texture or expression graph survives the conversion untouched.  The "
+	       "warp specifically, because satin_5 puts it on top 4/5 of the time, so the author's "
+	       "tone stays dominant while the preset's own WEFT colour survives to carry the two-tone" );
+	Check( !ChunkHasParam( doc, "weave_material", "cloth_fabric_base", "weft_color" ),
+	       "A MONEY: ...and `weft_color` is DELIBERATELY unwritten, so the chunk seeds it from the "
+	       "same preset table -- overwriting both families with one painter would flatten exactly "
+	       "the two-tone the weave was minted for" );
+	Check( !ChunkHasParam( doc, "weave_material", "cloth_fabric_base", "warp_width" ) &&
+	       !ChunkHasParam( doc, "weave_material", "cloth_fabric_base", "weave" ),
+	       "A: every other slot is left to the chunk's own preset seeding -- writing the numbers "
+	       "into the document would freeze them against a later retune" );
 
 	Check( ChunkBinds( doc, "scalar_painter", "cloth_fabric_weave", "value", "0.0" ),
 	       "A: the weave painter is a CONSTANT 0 -- a bit-exact no-op rotation; the point is that "
 	       "the slot is wired for the author to rebind" );
+	Check( ChunkBinds( doc, "weave_material", "cloth_fabric_base", "weave_rotation", "cloth_fabric_weave" ),
+	       "A MONEY: the rotation is bound on the WEAVE, not on the fabric wrapper -- the weave is "
+	       "the thing with a grain, and writing it in both places would ADD the two rotations and "
+	       "turn the yarn twice" );
+	Check( !ChunkHasParam( doc, "fabric_material", "cloth_fabric", "weave_rotation" ),
+	       "A: ...and the wrapper leaves its own `weave_rotation` unwritten, taking the 0.0 default" );
 
 	Check( ChunkBinds( doc, "fabric_material", "cloth_fabric", "fabric", "satin" ),
 	       "A: the wrapper names the preset" );
 	Check( ChunkBinds( doc, "fabric_material", "cloth_fabric", "base", "cloth_fabric_base" ),
 	       "A: ...binds the minted substrate as `base`" );
-	Check( ChunkBinds( doc, "fabric_material", "cloth_fabric", "weave_rotation", "cloth_fabric_weave" ),
-	       "A: ...and binds the minted weave painter to `weave_rotation`" );
 	Check( !ChunkHasParam( doc, "fabric_material", "cloth_fabric", "sheen_roughness" ) &&
 	       !ChunkHasParam( doc, "fabric_material", "cloth_fabric", "sheen_color" ),
 	       "A MONEY: `sheen_color` and `sheen_roughness` are DELIBERATELY unwritten, so the chunk "
@@ -376,13 +390,14 @@ static void TestMintFourChunks()
 	// -- Declare-before-use, which for `base` and `rs` is not a style
 	//    choice: both resolve out of already-registered managers.
 	{
-		const std::size_t f0   = doc.find( "name\t\t\tcloth_fabric_f0" );
-		const std::size_t base = doc.find( "name\t\t\tcloth_fabric_base" );
-		const std::size_t wrap = doc.find( "name\t\t\tcloth_fabric\n" );
-		Check( f0 != std::string::npos && base != std::string::npos && wrap != std::string::npos &&
-		       f0 < base && base < wrap,
-		       "A MONEY: the emitted order is F0 painter, then substrate, then wrapper -- a forward "
-		       "reference does not merely read badly here, it FAILS TO PARSE" );
+		const std::size_t weave = doc.find( "name\t\t\tcloth_fabric_weave" );
+		const std::size_t base  = doc.find( "name\t\t\tcloth_fabric_base" );
+		const std::size_t wrap  = doc.find( "name\t\t\tcloth_fabric\n" );
+		Check( weave != std::string::npos && base != std::string::npos && wrap != std::string::npos &&
+		       weave < base && base < wrap,
+		       "A MONEY: the emitted order is weave painter, then substrate, then wrapper -- a "
+		       "forward reference does not merely read badly here, it FAILS TO PARSE, because "
+		       "`base` and `weave_rotation` both resolve out of already-registered managers" );
 	}
 
 	// -- The rebinds.
@@ -397,7 +412,7 @@ static void TestMintFourChunks()
 		std::string offender;
 		Check( ValidatesClean( doc, offender ),
 		       "A MONEY: the re-derived document carries NO error/warning diagnostic -- in "
-		       "particular no `fabric_material ... expects a ggx_material substrate` mismatch "
+		       "particular no `fabric_material ... expects a weave_material substrate` mismatch "
 		       "warning, which is exactly the diagnostic this verb exists to make unnecessary"
 		       + ( offender.empty() ? std::string() : ( " [" + offender + "]" ) ) );
 	}
@@ -472,11 +487,18 @@ static void TestMintTwoChunks()
 //======================================================================
 static void TestPureWrap()
 {
-	std::printf( "C: PURE WRAP -- a ggx base + `fabric silk` mints no substrate\n" );
+	std::printf( "C: PURE WRAP -- an orennayar base + `fabric wool` mints no substrate\n" );
+	// PHASE 2 MOVED THIS CASE.  It used to be a ggx base under `silk`,
+	// which was the pure-wrap path while silk recommended a GGX
+	// substrate; silk now recommends a `weave_material`, so that same
+	// pair MINTS.  The pure-wrap path itself is unchanged and still
+	// needs a positive case, so the fixture moved to a preset whose
+	// recommendation Phase 2 did not touch -- and the silk-over-ggx pair
+	// is kept below as the MINT case it has become, because a change
+	// that quietly stopped minting there would otherwise go unnoticed.
 	std::string scene = Preamble();
 	scene += Sphere( "sph" );
-	scene += "ggx_material\n{\n\tname shot\n\trd dye\n\trs spec\n\talphax 0.3\n\talphay 0.1\n"
-	         "\tfresnel_mode schlick_f0\n}\n\n";
+	scene += "orennayar_material\n{\n\tname shot\n\treflectance dye\n\troughness 0.25\n}\n\n";
 	scene += Obj( "o1", "sph", "shot", 0 );
 
 	const std::string tmp = TempPath( "makefabric_c.RISEscene" );
@@ -485,10 +507,10 @@ static void TestPureWrap()
 	if( !pJob ) return;
 
 	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
-	const Agent::AgentSession::AgentMakeFabricResult r = sess->MakeFabric( "shot", "silk" );
+	const Agent::AgentSession::AgentMakeFabricResult r = sess->MakeFabric( "shot", "wool" );
 	Check( r.ok && r.applied, std::string( "C: applied -- " ) + r.message );
 	Check( r.substrateWasReused,
-	       "C MONEY: the bound base ALREADY matched silk's recommended class, so nothing was minted "
+	       "C MONEY: the bound base ALREADY matched wool's recommended class, so nothing was minted "
 	       "-- 9.7's pure-wrap path, which is add_wetness's whole shape and this verb's exception" );
 	Check( r.mintedSubstrate.empty() && r.mintedSubstrateKind.empty(),
 	       "C: no substrate is reported, because none was minted" );
@@ -497,16 +519,15 @@ static void TestPureWrap()
 	Check( !r.originalNowUnreferenced,
 	       "C MONEY: the original is NOT reported unreferenced on this path -- it is the substrate, "
 	       "and telling the author otherwise would invite them to delete a live chunk" );
-	Check( r.weavePainter == "shot_fabric_weave",
-	       "C: the weave painter is STILL minted -- the slot's value is the whole reason it exists, "
-	       "and a reused ggx base can follow a painted yarn direction as well as a minted one" );
+	Check( r.weavePainter.empty(),
+	       "C: and NO weave painter is minted -- wool is isotropic, so there is no yarn direction "
+	       "for the slot to steer" );
 
 	const std::string doc = sess->ReadDocument();
 	Check( doc.find( "shot_fabric_base" ) == std::string::npos, "C: no substrate chunk landed" );
 	Check( doc.find( "shot_fabric_f0" )   == std::string::npos, "C: and no F0 painter" );
-	Check( ChunkBinds( doc, "ggx_material", "shot", "alphax", "0.3" ) &&
-	       ChunkBinds( doc, "ggx_material", "shot", "alphay", "0.1" ),
-	       "C MONEY: the reused substrate's OWN alphax/alphay were NOT retuned to silk's -- this "
+	Check( ChunkBinds( doc, "orennayar_material", "shot", "roughness", "0.25" ),
+	       "C MONEY: the reused substrate's OWN roughness was NOT retuned to wool's 0.6 -- this "
 	       "verb never edits the original chunk, on either path, and the message says so" );
 	Check( ChunkBinds( doc, "standard_object", "o1", "material", "shot_fabric" ),
 	       "C: the bound object moved to the wrapper" );
@@ -514,6 +535,108 @@ static void TestPureWrap()
 		std::string offender;
 		Check( ValidatesClean( doc, offender ),
 		       "C: the re-derived document carries no error/warning diagnostic"
+		       + ( offender.empty() ? std::string() : ( " [" + offender + "]" ) ) );
+	}
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//======================================================================
+static void TestGgxUnderSilkNowMints()
+{
+	std::printf( "C2: a ggx base + `fabric silk` MINTS a weave, because Phase 2 moved the "
+	             "recommendation\n" );
+	// The pair this case is built from -- an anisotropic ggx_material
+	// under `silk` -- was Phase 1's pure-wrap path, and it is exactly the
+	// composition 9.9 gate 9b measured and found wanting: 95 % of the
+	// substrate's anisotropy survives the sheen and the frame still reads
+	// as brushed metal, because one elliptical lobe has no pattern scale.
+	// So the verb must now MINT rather than reuse, and it must do so
+	// without touching the original chunk.
+	std::string scene = Preamble();
+	scene += Sphere( "sph" );
+	scene += "ggx_material\n{\n\tname shot\n\trd dye\n\trs spec\n\talphax 0.3\n\talphay 0.1\n"
+	         "\tfresnel_mode schlick_f0\n}\n\n";
+	scene += Obj( "o1", "sph", "shot", 0 );
+
+	const std::string tmp = TempPath( "makefabric_c2.RISEscene" );
+	Job* pJob = LoadScene( scene, tmp );
+	Check( pJob != nullptr, "C2: fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentMakeFabricResult r = sess->MakeFabric( "shot", "silk" );
+	Check( r.ok && r.applied, std::string( "C2: applied -- " ) + r.message );
+	Check( !r.substrateWasReused && r.mintedSubstrateKind == "weave_material",
+	       "C2 MONEY: a ggx base under `silk` now MINTS a weave_material -- the Phase-1 pure-wrap "
+	       "path for this pair is gone, because the composition it produced is the one gate 9b "
+	       "measured as brushed metal" );
+
+	const std::string doc = sess->ReadDocument();
+	Check( ChunkBinds( doc, "weave_material", "shot_fabric_base", "fabric", "silk" ) &&
+	       ChunkBinds( doc, "weave_material", "shot_fabric_base", "warp_color", "dye" ),
+	       "C2: the minted weave names silk's preset and re-homes the original's `rd` painter" );
+	Check( ChunkBinds( doc, "ggx_material", "shot", "alphax", "0.3" ) &&
+	       ChunkBinds( doc, "ggx_material", "shot", "alphay", "0.1" ),
+	       "C2 MONEY: the ORIGINAL ggx chunk is untouched -- this verb never edits it, and the "
+	       "author still has their old material to fall back on" );
+	{
+		std::string offender;
+		Check( ValidatesClean( doc, offender ),
+		       "C2: the re-derived document carries no error/warning diagnostic"
+		       + ( offender.empty() ? std::string() : ( " [" + offender + "]" ) ) );
+	}
+	sess.reset();
+	pJob->release();
+	std::remove( tmp.c_str() );
+}
+
+//======================================================================
+static void TestWeaveBaseReuses()
+{
+	std::printf( "C3: a `weave_material` base + `fabric satin` PURE-WRAPS -- REVIEW_P2R2.md P2\n" );
+	// The predecessor to C2: an author has ALREADY bound a correct
+	// `weave_material` (satin's own recommended class since Phase 2) as
+	// the base.  `FabricSubstrateClassOfChunkKind_` must map
+	// "weave_material" to `eFabricSubstrateWeave` -- without that row the
+	// verb cannot tell this base apart from an unrelated one and would
+	// MINT A SECOND, REDUNDANT weave_material on top of an already-
+	// correct one, exactly the "minting when nothing was needed" defect
+	// 9.7's pure-wrap path exists to avoid for lambertian/orennayar/ggx.
+	std::string scene = Preamble();
+	scene += Sphere( "sph" );
+	scene += "weave_material\n{\n\tname wbase\n\tfabric satin\n\twarp_color dye\n}\n\n";
+	scene += Obj( "o1", "sph", "wbase", 0 );
+
+	const std::string tmp = TempPath( "makefabric_c3.RISEscene" );
+	Job* pJob = LoadScene( scene, tmp );
+	Check( pJob != nullptr, "C3: fixture derives" );
+	if( !pJob ) return;
+
+	std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+	const Agent::AgentSession::AgentMakeFabricResult r = sess->MakeFabric( "wbase", "satin" );
+	Check( r.ok && r.applied, std::string( "C3: applied -- " ) + r.message );
+	Check( r.substrateWasReused,
+	       "C3 MONEY: the bound base is ALREADY a weave_material, satin's own recommended class, "
+	       "so nothing is minted -- the pure-wrap path C/C2 established for lambertian/orennayar/"
+	       "ggx also covers an already-correct weave base" );
+	Check( r.mintedSubstrate.empty() && r.mintedSubstrateKind.empty(),
+	       "C3: no substrate is reported minted" );
+	Check( r.baseMaterial == "wbase",
+	       "C3: the wrapper's `base` names the ORIGINAL weave_material, now the substrate" );
+	Check( !r.originalNowUnreferenced,
+	       "C3: the original weave_material is NOT reported unreferenced -- it IS the substrate" );
+
+	const std::string doc = sess->ReadDocument();
+	Check( doc.find( "wbase_fabric_base" ) == std::string::npos,
+	       "C3: no second weave_material chunk landed" );
+	Check( ChunkBinds( doc, "weave_material", "wbase", "fabric", "satin" ),
+	       "C3: the ORIGINAL weave_material chunk is untouched" );
+	{
+		std::string offender;
+		Check( ValidatesClean( doc, offender ),
+		       "C3: the re-derived document carries no error/warning diagnostic"
 		       + ( offender.empty() ? std::string() : ( " [" + offender + "]" ) ) );
 	}
 	sess.reset();
@@ -566,11 +689,12 @@ static void TestColourLookupOrder()
 		std::remove( tmp.c_str() );
 	}
 
-	// A pbr predecessor under an ANISOTROPIC preset always MINTS, even
-	// though pbr_metallic_roughness_material resolves to a GGXMaterial at
-	// scene-build time: the chunk carries one isotropic `roughness` and has
-	// no alphax/alphay to express the ratio with, and for silk "the
-	// anisotropy ratio IS the fabric".
+	// A pbr predecessor under a DIRECTIONAL preset always MINTS.  Under
+	// Phase 1 the reason was that pbr_metallic_roughness_material
+	// resolves to a GGXMaterial at scene-build time but its CHUNK has one
+	// isotropic `roughness` and no alphax/alphay to express the ratio
+	// with.  Under Phase 2 the reason is simpler and stronger: the
+	// recommended class is `weave_material`, which no predecessor is.
 	{
 		std::string scene = Preamble();
 		scene += Sphere( "sph" );
@@ -584,14 +708,13 @@ static void TestColourLookupOrder()
 			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
 			const Agent::AgentSession::AgentMakeFabricResult r = sess->MakeFabric( "m", "silk" );
 			Check( r.ok && r.applied && !r.substrateWasReused &&
-			       r.mintedSubstrateKind == "ggx_material",
-			       "D MONEY: a pbr predecessor under `silk` MINTS an anisotropic ggx substrate rather "
-			       "than pure-wrapping -- it resolves to a GGXMaterial at build time, but the CHUNK "
-			       "has no alphax/alphay, so wrapping it would give an isotropic base under a preset "
-			       "whose entire look is the ratio" );
+			       r.mintedSubstrateKind == "weave_material",
+			       "D MONEY: a pbr predecessor under `silk` MINTS -- Phase 1 minted an anisotropic "
+			       "ggx substrate here because the pbr CHUNK has no alphax/alphay to express the "
+			       "ratio with; Phase 2 mints a weave_material, which has the whole draft" );
 			const std::string doc = sess->ReadDocument();
-			Check( ChunkBinds( doc, "ggx_material", "m_fabric_base", "rd", "dye" ),
-			       "D: ...with `base_color`'s painter re-homed onto the minted base's `rd`" );
+			Check( ChunkBinds( doc, "weave_material", "m_fabric_base", "warp_color", "dye" ),
+			       "D: ...with `base_color`'s painter re-homed onto the minted weave's WARP dye" );
 			sess.reset();
 			pJob->release();
 			std::remove( tmp.c_str() );
@@ -620,8 +743,9 @@ static void TestInference()
 			Check( r.fabricPreset == "denim",
 			       "E1 MONEY: `denim_jacket` -> denim, with NO argument at all -- the no-argument call "
 			       "is the intended one, and the author's own naming is the cheapest signal there is" );
-			Check( r.mintedSubstrateKind == "ggx_material",
-			       "E1: ...and the inferred preset drives the SUBSTRATE too, not just the sheen" );
+			Check( r.mintedSubstrateKind == "weave_material",
+			       "E1: ...and the inferred preset drives the SUBSTRATE too, not just the sheen -- "
+			       "`denim_jacket` mints a weave carrying the 3/1 twill draft that IS the wale" );
 			Check( r.message.find( "INFERRED" ) != std::string::npos,
 			       "E1: the message says it inferred rather than being told" );
 			sess.reset(); pJob->release(); std::remove( tmp.c_str() );
@@ -1316,6 +1440,8 @@ int main()
 	TestMintFourChunks();
 	TestMintTwoChunks();
 	TestPureWrap();
+	TestGgxUnderSilkNowMints();
+	TestWeaveBaseReuses();
 	TestColourLookupOrder();
 	TestInference();
 	TestRefusals();

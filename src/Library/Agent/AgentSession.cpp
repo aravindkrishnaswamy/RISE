@@ -38017,6 +38017,14 @@ namespace RISE
 				if( kind == "lambertian_material" ) return RISE::Implementation::eFabricSubstrateLambertian;
 				if( kind == "orennayar_material" )  return RISE::Implementation::eFabricSubstrateOrenNayar;
 				if( kind == "ggx_material" )        return RISE::Implementation::eFabricSubstrateGGX;
+				// PHASE 2.  Without this row an author who has ALREADY
+				// bound a correct `weave_material` as the base -- the
+				// composition denim, silk and satin now recommend -- would
+				// never take the pure-wrap path, because `reuseSubstrate`
+				// compares this against the preset's recommended class.
+				// The verb would mint a SECOND, redundant weave on top of
+				// a correct one.
+				if( kind == "weave_material" )      return RISE::Implementation::eFabricSubstrateWeave;
 				return RISE::Implementation::eFabricSubstrateAny;
 			}
 
@@ -38033,6 +38041,18 @@ namespace RISE
 			{
 				if( kind == "lambertian_material" || kind == "orennayar_material" ||
 				    kind == "ggx_material"        || kind == "pbr_metallic_roughness_material" )
+					return std::string();
+
+				// PHASE 2.  A `weave_material` is CONVERTIBLE, and on the
+				// pure-wrap path specifically: it is already the substrate
+				// denim, silk and satin recommend, so the verb wraps it
+				// rather than minting a second weave over a correct one.
+				// It has no single `reflectance`-shaped colour slot, which
+				// is fine -- `FabricColorSlotOf_` returns false, nothing
+				// needs re-homing because the weave already carries its
+				// own two dyes, and step 0's "no colour painter to
+				// re-home" refusal is skipped for exactly this kind.
+				if( kind == "weave_material" )
 					return std::string();
 
 				if( kind == "dielectric_material" || kind == "perfectrefractor_material" ||
@@ -38057,6 +38077,7 @@ namespace RISE
 				    kind == "polished_material" || kind == "fabric_material" )
 					return "it is already a layered stack (`" + kind + "`), and Phase 1 does not compose "
 						"one stack inside another";
+
 				return "`" + kind + "` is not a kind this verb can re-home a colour painter from";
 			}
 
@@ -38292,11 +38313,22 @@ namespace RISE
 			//! `weave_rotation` at a painted angle field, is then one
 			//! propose_patch rather than an authoring session.
 			//!
-			//! Minted only for the presets whose look is SUBSTRATE
-			//! anisotropy.  The isotropic presets get no weave chunk and
-			//! leave `weave_rotation` unwritten, taking the chunk's own
-			//! 0.0 default -- 9.3's "velvet wants no anisotropy at all;
-			//! it is a pile, not a weave".
+			//! Minted only for the presets whose look is DIRECTIONAL --
+			//! since Phase 2 that means a `weave_material` substrate
+			//! (denim, silk, satin), and it would still mean an
+			//! anisotropic GGX one if a table row were flipped back.  The
+			//! isotropic presets get no weave chunk and leave
+			//! `weave_rotation` unwritten, taking the chunk's own 0.0
+			//! default -- 9.3's "velvet wants no anisotropy at all; it is
+			//! a pile, not a weave".
+			//!
+			//! WHICH CHUNK IT IS BOUND ON DIFFERS, and that is the whole
+			//! reason the caller passes the name to one emitter or the
+			//! other rather than to both: on a GGX substrate the angle is
+			//! `fabric_material`'s (9.5 rotates the frame the substrate
+			//! is evaluated in), on a weave substrate it is the WEAVE's
+			//! own, because the weave is the thing with a grain.  Writing
+			//! it in both places would ADD the two rotations.
 			std::string BuildFabricWeavePainterText_( const std::string& chunkName )
 			{
 				std::string t = "scalar_painter\n{\n";
@@ -38315,8 +38347,54 @@ namespace RISE
 			std::string BuildFabricSubstrateText_( const std::string& chunkName,
 			                                       const RISE::Implementation::FabricPreset& P,
 			                                       const std::string& colorPainter,
-			                                       const std::string& f0PainterName )
+			                                       const std::string& f0PainterName,
+			                                       const std::string& weavePainterName )
 			{
+				// PHASE 2: denim, silk and satin now recommend a
+				// `weave_material`, which is what actually carries their
+				// look -- a 3/1 twill wale, a 5-harness satin float.
+				// 9.9 gate 9b measured the Phase-1 shape they used to
+				// mint (an anisotropic GGX under an isotropic sheen) and
+				// found it reads as brushed metal: 95-99 % of the
+				// substrate's anisotropy survives the sheen and there is
+				// still no pattern scale.
+				//
+				// THE AUTHOR'S COLOUR GOES ON THE WARP, and only the
+				// warp.  Every draft these three presets use puts the
+				// warp on top most of the time (3/4 for the twill, 4/5
+				// for the satin), so the author's dye stays the dominant
+				// tone -- which is what refusal 4 exists to protect --
+				// while the preset's own WEFT colour survives to carry
+				// the two-tone the fabric actually has.  Denim IS an
+				// indigo warp floating over an undyed weft; overwriting
+				// both families with one painter would flatten exactly
+				// the thing the weave was minted for.
+				//
+				// Everything else is left to the chunk's own preset
+				// seeding rather than written out, for the same reason
+				// step 3 omits `sheen_color` and `sheen_roughness`:
+				// duplicating the table into the document freezes it
+				// against a later retune.
+				if( P.substrate == RISE::Implementation::eFabricSubstrateWeave ) {
+					std::string t = "weave_material\n{\n";
+					t += "\tname\t\t\t" + chunkName + "\n";
+					t += "\tfabric\t\t\t" + std::string( P.weavePreset ? P.weavePreset : "custom" ) + "\n";
+					t += "\twarp_color\t\t" + colorPainter + "\n";
+					if( !weavePainterName.empty() )
+						t += "\tweave_rotation\t" + weavePainterName + "\n";
+					t += "}\n";
+					return t;
+				}
+
+				// NO SHIPPED PRESET SELECTS THIS ARM since Phase 2 moved
+				// silk, satin and denim to `weave_material`.  It stays
+				// because `substrateAlphaX` / `substrateAlphaY` stay in
+				// FabricPresets.h as the documented Phase-1 FALLBACK: an
+				// anisotropic GGX under one of those presets is still a
+				// legal, shipping composition (it is what every
+				// pre-Phase-2 scene has), and flipping a table row back
+				// to it must not also require re-deriving this emitter
+				// and its F0 painter.
 				if( P.substrate == RISE::Implementation::eFabricSubstrateGGX ) {
 					std::string t = "ggx_material\n{\n";
 					t += "\tname\t\t\t" + chunkName + "\n";
@@ -38536,9 +38614,17 @@ namespace RISE
 					// -- Refusal 4, the colour half.  A material carrying
 					// none of the three slots has no dye to re-home, and
 					// minting a base without one would invent an appearance
-					// the author never authored.
+					// the author never authored.  SKIPPED for
+					// `weave_material`, matching `FabricUnconvertibleReason_`'s
+					// own comment: a weave already carries its own two dyes
+					// (`warp_color`/`weft_color`), it is never MINTED from
+					// (only ever pure-wrapped, since it is already an
+					// allowlisted substrate), and this check used to fire
+					// unconditionally, declining every already-correct
+					// weave base and defeating the pure-wrap path Phase 2
+					// added it for (REVIEW_P2R2.md P2).
 					std::string slot, painter;
-					if( !FabricColorSlotOf_( m.params, slot, painter ) ) {
+					if( m.kind != "weave_material" && !FabricColorSlotOf_( m.params, slot, painter ) ) {
 						outDeclines[name] = "it carries none of `reflectance` / `base_color` / `rd`, so "
 							"there is no colour painter to re-home onto the fabric's substrate -- a fabric "
 							"whose dye was silently dropped is worse than no fabric";
@@ -38765,7 +38851,15 @@ namespace RISE
 				FabricSubstrateClassOfChunkKind_( pick->kind );
 			const bool reuseSubstrate = ( haveClass == P.substrate );
 			const bool needF0    = ( !reuseSubstrate && P.substrate == RISE::Implementation::eFabricSubstrateGGX );
-			const bool needWeave = ( P.substrate == RISE::Implementation::eFabricSubstrateGGX );
+			// A rotation slot is minted for BOTH directional substrates,
+			// but it is BOUND IN DIFFERENT PLACES: on a GGX substrate the
+			// angle belongs to `fabric_material`, which rotates the frame
+			// the substrate is evaluated in (9.5); on a `weave_material`
+			// it belongs to the WEAVE, which is the thing with a grain,
+			// and writing it on both would ADD the two rotations and turn
+			// the yarn twice.
+			const bool substrateIsWeave = ( P.substrate == RISE::Implementation::eFabricSubstrateWeave );
+			const bool needWeave = ( P.substrate == RISE::Implementation::eFabricSubstrateGGX ) || substrateIsWeave;
 
 			// ---- (7) Name every chunk, collision-safe against the
 			// document AND against every other name this one call is about
@@ -38818,10 +38912,12 @@ namespace RISE
 				}
 				return true;
 			};
-			if( !splice( BuildFabricMaterialText_( fabricName, presetName, baseName, weaveName ),
+			if( !splice( BuildFabricMaterialText_( fabricName, presetName, baseName,
+			                                       substrateIsWeave ? std::string() : weaveName ),
 			             "fabric_material" ) ) return out;
 			if( !reuseSubstrate &&
-			    !splice( BuildFabricSubstrateText_( substrateName, P, pick->colorPainter, f0Name ),
+			    !splice( BuildFabricSubstrateText_( substrateName, P, pick->colorPainter, f0Name,
+			                                        substrateIsWeave ? weaveName : std::string() ),
 			             RISE::Implementation::FabricSubstrateClassText( P.substrate ) ) ) return out;
 			if( needWeave && !splice( BuildFabricWeavePainterText_( weaveName ), "scalar_painter" ) ) return out;
 			if( needF0    && !splice( BuildFabricF0PainterText_( f0Name ),       "uniformcolor_painter" ) ) return out;

@@ -24,6 +24,7 @@
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/CoatedMaterial.h"
 #include "../Materials/FabricMaterial.h"
+#include "../Materials/WeaveMaterial.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
@@ -182,6 +183,7 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	if( dynamic_cast<const PolishedMaterial*>( &material ) )                            return String( "Polished" );
 	if( dynamic_cast<const CoatedMaterial*>( &material ) )                              return String( "Coated" );
 	if( dynamic_cast<const FabricMaterial*>( &material ) )                              return String( "Fabric" );
+	if( dynamic_cast<const WeaveMaterial*>( &material ) )                               return String( "Weave" );
 	if( dynamic_cast<const DielectricMaterial*>( &material ) )                          return String( "Dielectric" );
 	if( dynamic_cast<const PerfectReflectorMaterial*>( &material ) )                    return String( "Perfect Reflector" );
 	if( dynamic_cast<const PerfectRefractorMaterial*>( &material ) )                    return String( "Perfect Refractor" );
@@ -382,6 +384,70 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildScalarPainterSlot( "weave_rotation", fab->GetWeaveRotation(),
 			scalarPainters, composed,
 			"Scalar painter for the weave angle in RADIANS.  Rotates the tangent frame handed to the SUBSTRATE, not the sheen lobe (which is isotropic).  Paint it to make an anisotropic ggx base follow the yarn; it ADDS to the substrate's own tangent_rotation, weave first.  0 is a no-op." ) );
+	}
+	else if( const WeaveMaterial* wv = dynamic_cast<const WeaveMaterial*>( &material ) ) {
+		// `weave` (the draft) has no row: it is an ENUM, not a painter
+		// slot, and MaterialSlotRef models Painter / ScalarPainter only.
+		// It also decides whether `coverage` is read at all, so changing
+		// it re-authors the material's structure rather than one of its
+		// fields -- re-author the chunk.  Same call as
+		// `fabric_material`'s non-rebindable `base`.
+		rows.push_back( BuildScalarPainterSlot( "weave_scale", wv->GetWeaveScale(),
+			scalarPainters, composed,
+			"Scalar painter for the weave cells per unit of surface UV.  Higher = finer cloth.  This is what decides whether the weave READS: below roughly one cell per two pixels the built-in footprint fade takes over and the surface becomes its own mean coverage." ) );
+		rows.push_back( BuildScalarPainterSlot( "weave_rotation", wv->GetWeaveRotation(),
+			scalarPainters, composed,
+			"Scalar painter for the warp direction in RADIANS about the shading normal.  Rotates BOTH families together, so it turns the cloth rather than shearing it (weft_skew shears it).  Paint it to make the grain follow a seam or a drape." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_skew", wv->GetWeftSkew(),
+			scalarPainters, composed,
+			"Scalar painter for how far the weft departs from perpendicular to the warp, in RADIANS.  0 is the orthogonal weave every built-in draft assumes; non-zero is a sheared or bias-cut cloth." ) );
+		// `coverage` is bound only under the `custom` draft, so the row
+		// appears only when there is something to show -- an always-
+		// present row would claim a binding that does not exist.
+		if( const IScalarPainter* cov = wv->GetCoverage() ) {
+			rows.push_back( BuildScalarPainterSlot( "coverage", *cov,
+				scalarPainters, composed,
+				"Scalar painter for the warp's share of the surface at each point, in [0,1] (`weave custom` only).  1 = pure warp, 0 = pure weft." ) );
+		}
+		rows.push_back( BuildScalarPainterSlot( "gap", wv->GetGap(),
+			scalarPainters, composed,
+			"Scalar painter for the fraction of the surface covered by NEITHER family -- the holes in an open weave.  Clamped to [0, 0.3].  In this phase a gap DARKENS the response rather than letting light through: there is no transmission lobe yet." ) );
+		rows.push_back( BuildPainterSlot( "warp_color", wv->GetWarpColor(),
+			painters, composed,
+			"Painter for the warp's DYE.  It tints the VOLUME lobe only -- a dielectric's specular reflection preserves the incident spectrum, so a coloured fabric keeps a white highlight." ) );
+		rows.push_back( BuildPainterSlot( "weft_color", wv->GetWeftColor(),
+			painters, composed,
+			"Painter for the weft's DYE.  Giving the two families different dyes is what makes a shot fabric, a chambray or a denim (indigo warp floating over an undyed weft)." ) );
+		rows.push_back( BuildScalarPainterSlot( "warp_ior", wv->GetWarpIOR(),
+			scalarPainters, composed,
+			"Scalar painter for the warp fibre's refractive index.  Splits the two lobes: higher reflects more at the surface and admits less into the dyed volume, so it reads shinier and less saturated.  1.345 silk, 1.46 cellulose, 1.539 polyester." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_ior", wv->GetWeftIOR(),
+			scalarPainters, composed,
+			"Scalar painter for the weft fibre's refractive index.  See warp_ior." ) );
+		rows.push_back( BuildScalarPainterSlot( "warp_width", wv->GetWarpWidth(),
+			scalarPainters, composed,
+			"Scalar painter for the LONGITUDINAL width of the warp's highlight, in RADIANS -- the spread of the specular band ALONG the yarn, and the single most important appearance knob here.  0.044 is a flat satin float (tight, high contrast); 0.52 is a twisted matte thread.  The volume lobe's width is derived as twice this." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_width", wv->GetWeftWidth(),
+			scalarPainters, composed,
+			"Scalar painter for the longitudinal width of the weft's highlight, in RADIANS.  Making the two families different -- a flat shiny float crossing a twisted matte ground -- is much of why real satin reads as satin." ) );
+		rows.push_back( BuildScalarPainterSlot( "warp_azimuth", wv->GetWarpAzimuth(),
+			scalarPainters, composed,
+			"Scalar painter for the AZIMUTHAL width of the warp's highlight, in RADIANS -- how far AROUND the yarn it spreads.  Broad by nature (a smooth cylinder scatters over most of its visible circumference); around 1.2-1.4 is the reference behaviour." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_azimuth", wv->GetWeftAzimuth(),
+			scalarPainters, composed,
+			"Scalar painter for the azimuthal width of the weft's highlight, in RADIANS.  See warp_azimuth." ) );
+		rows.push_back( BuildScalarPainterSlot( "warp_kd", wv->GetWarpKd(),
+			scalarPainters, composed,
+			"Scalar painter for how ISOTROPICALLY the warp's volume scatters, in [0,1].  0 keeps transmitted light in a forward cone (silk, polyester); 1 spreads it evenly (cotton and linen really do, which is why they read matte)." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_kd", wv->GetWeftKd(),
+			scalarPainters, composed,
+			"Scalar painter for how isotropically the weft's volume scatters, in [0,1].  See warp_kd." ) );
+		rows.push_back( BuildScalarPainterSlot( "warp_tilt", wv->GetWarpTilt(),
+			scalarPainters, composed,
+			"Scalar painter for the warp's FLOAT TILT out of the surface plane, in RADIANS.  A woven yarn rides over and under its crossings; tilting the two families in OPPOSITE directions is what gives a satin face its asymmetric highlight.  Clamped to [-0.6, 0.6]; small values (~0.14) are what the presets use." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_tilt", wv->GetWeftTilt(),
+			scalarPainters, composed,
+			"Scalar painter for the weft's float tilt, in RADIANS.  Give it the opposite sign to the warp's." ) );
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		rows.push_back( BuildScalarPainterSlot( "tau", die->GetTransmittance(),
@@ -746,6 +812,31 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &fab->GetWeaveRotation(); return out;
 		}
 	}
+	else if( const WeaveMaterial* wv = dynamic_cast<const WeaveMaterial*>( &material ) ) {
+		if( slotName == String( "weave_scale" ) )    { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeaveScale();    return out; }
+		if( slotName == String( "weave_rotation" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeaveRotation(); return out; }
+		if( slotName == String( "weft_skew" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftSkew();      return out; }
+		if( slotName == String( "coverage" ) ) {
+			// Only resolvable when the `custom` draft actually bound one.
+			if( const IScalarPainter* cov = wv->GetCoverage() ) {
+				out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = cov; return out;
+			}
+			return out;
+		}
+		if( slotName == String( "gap" ) )            { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetGap();           return out; }
+		if( slotName == String( "warp_color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &wv->GetWarpColor();     return out; }
+		if( slotName == String( "weft_color" ) )     { out.kind = MaterialSlotRef::Painter;       out.painter       = &wv->GetWeftColor();     return out; }
+		if( slotName == String( "warp_ior" ) )       { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpIOR();       return out; }
+		if( slotName == String( "weft_ior" ) )       { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftIOR();       return out; }
+		if( slotName == String( "warp_width" ) )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpWidth();     return out; }
+		if( slotName == String( "weft_width" ) )     { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftWidth();     return out; }
+		if( slotName == String( "warp_azimuth" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpAzimuth();   return out; }
+		if( slotName == String( "weft_azimuth" ) )   { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftAzimuth();   return out; }
+		if( slotName == String( "warp_kd" ) )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpKd();        return out; }
+		if( slotName == String( "weft_kd" ) )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftKd();        return out; }
+		if( slotName == String( "warp_tilt" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTilt();      return out; }
+		if( slotName == String( "weft_tilt" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTilt();      return out; }
+	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		if( slotName == String( "tau" ) ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
@@ -956,6 +1047,44 @@ bool MaterialIntrospection::SetSlot(
 			return true;
 		}
 		return false;		// `base` is a material, not a rebindable painter slot
+	}
+	if( WeaveMaterial* wv = dynamic_cast<WeaveMaterial*>( &material ) ) {
+		// Only the BRDF is rebound; WeaveSPF reads every parameter back
+		// through it, so there is no second copy to keep in lockstep.
+		if( slotName == String( "warp_color" ) ) {
+			if( !painter ) return false;
+			wv->SetWarpColor( *painter );
+			return true;
+		}
+		if( slotName == String( "weft_color" ) ) {
+			if( !painter ) return false;
+			wv->SetWeftColor( *painter );
+			return true;
+		}
+		if( !scalarPainter ) return false;
+		if( slotName == String( "weave_scale" ) )    { wv->SetWeaveScale( *scalarPainter );    return true; }
+		if( slotName == String( "weave_rotation" ) ) { wv->SetWeaveRotation( *scalarPainter ); return true; }
+		if( slotName == String( "weft_skew" ) )      { wv->SetWeftSkew( *scalarPainter );      return true; }
+		if( slotName == String( "coverage" ) ) {
+			// Rebinding `coverage` on a built-in draft is permitted and
+			// simply not read until the draft is `custom`; refusing would
+			// make the editor's writable slot set depend on an enum it
+			// cannot change.
+			wv->SetCoverage( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "gap" ) )            { wv->SetGap( *scalarPainter );           return true; }
+		if( slotName == String( "warp_ior" ) )       { wv->SetWarpIOR( *scalarPainter );       return true; }
+		if( slotName == String( "weft_ior" ) )       { wv->SetWeftIOR( *scalarPainter );       return true; }
+		if( slotName == String( "warp_width" ) )     { wv->SetWarpWidth( *scalarPainter );     return true; }
+		if( slotName == String( "weft_width" ) )     { wv->SetWeftWidth( *scalarPainter );     return true; }
+		if( slotName == String( "warp_azimuth" ) )   { wv->SetWarpAzimuth( *scalarPainter );   return true; }
+		if( slotName == String( "weft_azimuth" ) )   { wv->SetWeftAzimuth( *scalarPainter );   return true; }
+		if( slotName == String( "warp_kd" ) )        { wv->SetWarpKd( *scalarPainter );        return true; }
+		if( slotName == String( "weft_kd" ) )        { wv->SetWeftKd( *scalarPainter );        return true; }
+		if( slotName == String( "warp_tilt" ) )      { wv->SetWarpTilt( *scalarPainter );      return true; }
+		if( slotName == String( "weft_tilt" ) )      { wv->SetWeftTilt( *scalarPainter );      return true; }
+		return false;		// `weave` is an enum, not a rebindable painter slot
 	}
 	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {
 		if( slotName == String( "tau" ) ) {

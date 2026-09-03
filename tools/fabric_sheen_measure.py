@@ -213,7 +213,7 @@ def _rim_light():
 def sphere_scene(kind, *, samples, width=768, height=768,
                  dye=(0.20, 0.05, 0.09), sheen=(0.90, 0.90, 0.90),
                  sheen_alpha=0.08, preset="velvet",
-                 alphax=0.34, alphay=0.06, weave_rot=None,
+                 alphax=0.34, alphay=0.06, weave_rot=None, weave_scale=60.0,
                  env_lit=False, light=True, axial=False):
     """One sphere, one material.
 
@@ -221,6 +221,14 @@ def sphere_scene(kind, *, samples, width=768, height=768,
           "bare_lambert"   -- the same lambertian_material, unwrapped (gate 9's reference)
           "fabric_ggx"     -- fabric_material over an anisotropic ggx_material
           "bare_ggx"       -- the same ggx_material, unwrapped (gate 9b's reference)
+          "bare_weave"     -- a weave_material alone (PHASE 2)
+          "fabric_weave"   -- fabric_material over that weave_material (PHASE 2, the
+                              composition the substrate allowlist was extended for)
+
+    `weave_scale` matters for the two weave kinds and is passed explicitly by the
+    caller rather than defaulted, because the whole point of the Phase-2 half of
+    gate 9b is to measure the SAME material at a scale where its draft is
+    resolvable and at one where it is not.
     """
     s = _preamble(width, height)
     s += _painters(dye, sheen, sheen_alpha)
@@ -229,6 +237,12 @@ def sphere_scene(kind, *, samples, width=768, height=768,
 
     if kind in ("fabric_lambert", "bare_lambert"):
         s += "lambertian_material\n{\n\tname base_sub\n\treflectance pnt_dye\n}\n\n"
+    elif kind in ("fabric_weave", "bare_weave"):
+        # The author's dye on the WARP, the preset's own colour left on the
+        # weft -- the same split `make_fabric` mints and the showcase scenes
+        # author, so the number measured here is the one a scene actually gets.
+        s += ("weave_material\n{\n\tname base_sub\n\tfabric %s\n\twarp_color pnt_dye\n"
+              "\tweave_scale %g\n\tweave_rotation 0.0\n}\n\n" % (preset, weave_scale))
     else:
         s += ("ggx_material\n{\n\tname base_sub\n\trd pnt_dye\n\trs pnt_f0\n"
               "\talphax %g\n\talphay %g\n\tfresnel_mode schlick_f0\n}\n\n" % (alphax, alphay))
@@ -495,6 +509,45 @@ def _rim_lift(img, lo=0.90, hi=0.995):
     return float(lum[ring].mean()) if ring.any() else float("nan")
 
 
+def _pattern_energy(img, rmax=0.65, k=9):
+    """PATTERN-SCALE ENERGY: relative RMS of the high-passed inner disc.
+
+    Gate 9b's original proxy measures the highlight's ANISOTROPY, and its
+    verdict was that anisotropy was never the problem -- 95-99 % of the
+    substrate's survived the sheen and the frame still read as brushed metal.
+    What was missing was structure AT THE SCALE OF A YARN CROSSING, and that has
+    no anisotropy signature at all: a weave and a smooth lobe can have identical
+    highlight extents.  So the Phase-2 half of this gate needs its own number.
+
+    This one is deliberately crude and deliberately CONTROLLED.  It box-blurs the
+    luminance over `k` pixels, subtracts, and reports rms(residual)/mean over the
+    inner disc.  That statistic cannot by itself tell pattern from MONTE CARLO
+    NOISE, which is also high-frequency -- so it is never read alone.  Every
+    weave row below is paired with a control row that is the SAME material at a
+    weave scale fine enough to put the draft below one pixel, where the fade
+    takes over and the only high-frequency content left is the noise.  The
+    difference between the two is the structure.
+    """
+    lum = luminance(img)
+    r = _disc_radius_map(lum)
+    region = r < rmax
+    if not region.any():
+        return float("nan")
+    # Separable box blur via a cumulative sum, with the disc's own mean used
+    # outside it so the blur does not drag the silhouette in.
+    fill = float(lum[region].mean())
+    a2 = np.where(region, lum, fill)
+    pad = k // 2
+    ap = np.pad(a2, pad, mode="edge")
+    cs = np.cumsum(np.cumsum(ap, axis=0), axis=1)
+    cs = np.pad(cs, ((1, 0), (1, 0)), mode="constant")
+    h, w = a2.shape
+    blur = (cs[k:k + h, k:k + w] - cs[0:h, k:k + w]
+            - cs[k:k + h, 0:w] + cs[0:h, 0:w]) / float(k * k)
+    resid = (a2 - blur)[region]
+    return float(np.sqrt((resid ** 2).mean()) / fill) if fill > 0 else float("nan")
+
+
 def gate9b(samples=2048):
     print("=" * 78)
     print("GATE 9b -- cue (b): does an ISOTROPIC sheen over an ANISOTROPIC GGX")
@@ -551,6 +604,88 @@ def gate9b(samples=2048):
               % (preset, rb, rf, surv))
         print("         isotropic rim annulus %.4e bare -> %.4e wrapped  (x%.1f)"
               % (rimb, rimf, rimf / rimb if rimb > 0 else float("nan")))
+    print()
+
+    # ------------------------------------------------------------------
+    # PHASE 2.  The block above measures ANISOTROPY, and its Phase-1 verdict
+    # was that anisotropy was never the deficit.  This block measures the thing
+    # that was -- PATTERN SCALE -- on the same subject, with the Phase-1 rows as
+    # the floor and a deliberately-minified weave as the noise control.
+    # ------------------------------------------------------------------
+    print("-" * 78)
+    print("PHASE 2 -- the deficit gate 9b actually named: PATTERN SCALE")
+    print("-" * 78)
+    print("proxy 3: relative RMS of the high-passed inner disc (9-px box high-pass,")
+    print("         r < 0.65).  High-frequency content is pattern OR Monte-Carlo")
+    print("         noise, so it is never read alone: the last row of each preset is")
+    print("         the SAME weave at a scale fine enough to put its draft below one")
+    print("         pixel, where the material's own footprint fade takes over and the")
+    print("         only high-frequency content left IS the noise.  The gap between a")
+    print("         weave row and its own control is the structure.")
+    print()
+    print("  THE `aniso ratio` COLUMN IS NOT MEANINGFUL ON THE WEAVE ROWS and is")
+    print("  printed only so the phase-1 rows can be read against the block above.")
+    print("  Proxy 1 takes the bounding box of everything above half-max after a")
+    print("  median pedestal subtraction; on a PATTERNED disc the above-threshold set")
+    print("  is the yarn field rather than one highlight, so the box measures the")
+    print("  draft's own footprint and the ratio says nothing about a lobe.  The")
+    print("  proxy that speaks to the weave rows is `pattern rms`.")
+    print()
+    print("  preset  configuration              aniso ratio   pattern rms   rim annulus L")
+
+    p2rows = [
+        ("silk",  "bare ggx (phase 1)",       "bare_ggx",    0.0,    0.30, 0.10, 0.20),
+        ("silk",  "fabric/ggx (phase 1)",     "fabric_ggx",  0.0,    0.30, 0.10, 0.20),
+        ("silk",  "weave, scale 60",          "bare_weave",  60.0,   0.30, 0.10, 0.20),
+        ("silk",  "fabric/weave, scale 60",   "fabric_weave",60.0,   0.30, 0.10, 0.20),
+        ("silk",  "weave, scale 4000 (ctrl)", "bare_weave",  4000.0, 0.30, 0.10, 0.20),
+        ("satin", "bare ggx (phase 1)",       "bare_ggx",    0.0,    0.34, 0.06, 0.12),
+        ("satin", "fabric/ggx (phase 1)",     "fabric_ggx",  0.0,    0.34, 0.06, 0.12),
+        ("satin", "weave, scale 60",          "bare_weave",  60.0,   0.34, 0.06, 0.12),
+        ("satin", "fabric/weave, scale 60",   "fabric_weave",60.0,   0.34, 0.06, 0.12),
+        ("satin", "weave, scale 4000 (ctrl)", "bare_weave",  4000.0, 0.34, 0.06, 0.12),
+    ]
+    p2 = {}
+    for preset, label, kind, wscale, ax, ay, alpha in p2rows:
+        sc = sphere_scene(kind, samples=samples, preset=preset,
+                          alphax=ax, alphay=ay, weave_scale=wscale,
+                          weave_rot=(0.0 if kind.startswith("fabric") else None),
+                          dye=(0.18, 0.16, 0.15), sheen=(0.92, 0.90, 0.88),
+                          sheen_alpha=alpha)
+        sc = sc.replace("\tdirection 1.0 0.0 0.0\n", lightdir)
+        tag = "g9b2_%s_%s_%g" % (preset, kind, wscale)
+        img = render(sc, tag.replace(".", "p"))
+        _, _, ratio = _highlight_extent(img)
+        pe = _pattern_energy(img)
+        rim = _rim_lift(img)
+        p2[(preset, label)] = (ratio, pe, rim)
+        print("  %-7s %-26s %8.3f   %11.5f   %.6e" % (preset, label, ratio, pe, rim))
+    print()
+    print("  A CONFOUND, STATED BEFORE THE NUMBERS ARE READ.  The weave rows are")
+    print("  materially DARKER than the phase-1 rows -- their rim annulus runs 3-8x")
+    print("  lower -- so at a fixed sample count their RELATIVE Monte-Carlo noise is")
+    print("  correspondingly higher, and a raw rms comparison across the two shapes")
+    print("  would be measuring brightness as much as structure.  That is exactly why")
+    print("  each weave row is compared against ITS OWN minified control, which shares")
+    print("  its brightness and therefore its noise.  Pattern and noise are independent,")
+    print("  so they add IN QUADRATURE and the structure alone is")
+    print("      sqrt( rms(weave)^2 - rms(control)^2 ).")
+    print("  The phase-1 rows need no such subtraction: they have no periodic content")
+    print("  to separate out, so their rms IS their noise floor.")
+    print()
+    for preset in ("silk", "satin"):
+        base = p2[(preset, "fabric/ggx (phase 1)")][1]
+        weave = p2[(preset, "fabric/weave, scale 60")][1]
+        ctrl = p2[(preset, "weave, scale 4000 (ctrl)")][1]
+        print("  %-5s: pattern rms  phase-1 fabric/ggx %.5f   phase-2 fabric/weave %.5f"
+              "   minified control %.5f" % (preset, base, weave, ctrl))
+        if weave > ctrl:
+            struct = math.sqrt(weave * weave - ctrl * ctrl)
+            print("         -> STRUCTURE ALONE (quadrature-subtracted): %.5f, against a"
+                  " phase-1 shape that has none" % struct)
+        else:
+            print("         -> NO structure above the noise floor -- the weave row did not"
+                  " exceed its own control, which would mean the draft is not resolving")
     print()
 
 

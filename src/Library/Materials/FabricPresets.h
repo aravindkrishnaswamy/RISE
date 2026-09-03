@@ -58,7 +58,16 @@ namespace RISE
 			eFabricSubstrateAny = 0,	///< `custom`: no recommendation, never warns
 			eFabricSubstrateLambertian,
 			eFabricSubstrateOrenNayar,
-			eFabricSubstrateGGX
+			eFabricSubstrateGGX,
+			//! PHASE 2.  `weave_material` -- the structured
+			//! two-thread-family cloth BSDF.  Recommended by exactly the
+			//! three presets whose look IS pattern-scale structure
+			//! (denim's wale, silk's and satin's floats), and by none of
+			//! the others: cotton, linen and wool read statistically at
+			//! any sane thread count, and velvet is a PILE, not a weave
+			//! -- giving any of them a weave draft would author structure
+			//! the fabric does not have.
+			eFabricSubstrateWeave
 		};
 
 		struct FabricPreset
@@ -76,6 +85,22 @@ namespace RISE
 			Scalar					substrateAlphaX;	///< GGX alphax; 0 when not applicable
 			Scalar					substrateAlphaY;	///< GGX alphay; 0 when not applicable
 
+			//! PHASE 2.  The `weave_material` PRESET name this fabric
+			//! wants under it, meaningful only when
+			//! `substrate == eFabricSubstrateWeave`.  `make_fabric` mints
+			//! a `weave_material` carrying it.
+			//!
+			//! `substrateAlphaX` / `substrateAlphaY` are KEPT on those
+			//! three rows rather than zeroed, and that is deliberate:
+			//! they are the documented Phase-1 FALLBACK.  An anisotropic
+			//! `ggx_material` under one of these presets is still a
+			//! legal, shipping composition -- it is what every
+			//! pre-Phase-2 scene has -- it is simply not what the preset
+			//! now recommends, and the WARN-level diagnostic says so.
+			//! Deleting the numbers would make the fallback
+			//! undiscoverable.
+			const char*				weavePreset;		///< NULL when not applicable
+
 			const char*				note;				///< one line, for diagnostics and docs
 		};
 
@@ -88,6 +113,7 @@ namespace RISE
 				case eFabricSubstrateLambertian: return "lambertian_material";
 				case eFabricSubstrateOrenNayar:  return "orennayar_material";
 				case eFabricSubstrateGGX:        return "ggx_material";
+				case eFabricSubstrateWeave:      return "weave_material";
 				case eFabricSubstrateAny:
 				default:                         return "any";
 			}
@@ -119,28 +145,28 @@ namespace RISE
 				// requested name and the `custom` fallback by strcmp, so
 				// reordering this table cannot change behaviour.
 				//
-				// name       rough  setsCol  colour                       substrate                  sigma  ax     ay
-				{ "cotton",   0.55,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateOrenNayar, 0.40,  0.0,   0.0,
+				// name       rough  setsCol  colour                       substrate                  sigma  ax     ay     weavePreset
+				{ "cotton",   0.55,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateOrenNayar, 0.40,  0.0,   0.0,   0,
 				  "matte; isotropic base is correct" },
-				{ "denim",    0.45,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateGGX,       0.0,   0.34,  0.22,
-				  "the twill wale is the look, and it is SUBSTRATE anisotropy steered by weave_rotation" },
-				{ "silk",     0.20,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateGGX,       0.0,   0.30,  0.10,
-				  "strongly directional; the anisotropy ratio IS the fabric" },
-				{ "satin",    0.12,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateGGX,       0.0,   0.34,  0.06,
-				  "float direction dominates; the tightest ratio in the set" },
+				{ "denim",    0.45,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateWeave,     0.0,   0.34,  0.22,  "denim",
+				  "the twill wale is the look, and since Phase 2 it is a weave_material's 3/1 draft, not substrate anisotropy" },
+				{ "silk",     0.20,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateWeave,     0.0,   0.30,  0.10,  "silk",
+				  "strongly directional; a flat warp crossing a twisted weft, on a 5-harness satin draft" },
+				{ "satin",    0.12,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateWeave,     0.0,   0.34,  0.06,  "satin",
+				  "float direction dominates; the tightest longitudinal lobe in the set" },
 				// Velvet is the ONE preset that sets a colour: 9.3's table
 				// reads "dye, dark" for its sheen column and "lambertian_material,
 				// dark" for its substrate.  The pile's deep tone is the dye;
 				// the bright rim comes from the Charlie lobe's own grazing
 				// peak, not from a white tint.  Indicative, per the table's
 				// own caveat.
-				{ "velvet",   0.08,  true,    RISEPel(0.30,0.30,0.30),     eFabricSubstrateLambertian,0.0,   0.0,   0.0,
+				{ "velvet",   0.08,  true,    RISEPel(0.30,0.30,0.30),     eFabricSubstrateLambertian,0.0,   0.0,   0.0,   0,
 				  "pure grazing halo; ISOTROPIC on purpose -- velvet is a pile, not a weave" },
-				{ "wool",     0.75,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateOrenNayar, 0.60,  0.0,   0.0,
+				{ "wool",     0.75,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateOrenNayar, 0.60,  0.0,   0.0,   0,
 				  "broad, soft sheen; isotropic" },
-				{ "linen",    0.65,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateOrenNayar, 0.50,  0.0,   0.0,
-				  "coarser slub; pair with a gabor3d_painter breakup" },
-				{ "custom",   0.50,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateAny,       0.0,   0.0,   0.0,
+				{ "linen",    0.65,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateOrenNayar, 0.50,  0.0,   0.0,   0,
+				  "coarser slub; pair with a gabor3d_painter breakup, or with a weave_material linen for a real plain draft" },
+				{ "custom",   0.50,  false,   RISEPel(1.0,1.0,1.0),        eFabricSubstrateAny,       0.0,   0.0,   0.0,   0,
 				  "no preset; every slot is the author's own" }
 			};
 			count = (unsigned int)( sizeof( kPresets ) / sizeof( kPresets[0] ) );

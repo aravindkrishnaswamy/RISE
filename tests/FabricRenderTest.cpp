@@ -323,6 +323,16 @@ static std::string FabricSphereCommon(
 		"uniformcolor_painter\n{\n\tname pnt_dye\n\tcolor 0.34 0.27 0.21\n\tcolorspace Rec709RGB_Linear\n}\n\n"
 		"uniformcolor_painter\n{\n\tname pnt_sheen\n\tcolor 0.88 0.86 0.83\n\tcolorspace Rec709RGB_Linear\n}\n\n";
 
+	// THE GGX ROW EMITS A PRESET-MISMATCH WARNING SINCE PHASE 2, AND THAT IS
+	// EXPECTED.  `satin`'s recommended substrate moved from `ggx_material` to
+	// `weave_material` on 2026-09-03 (gate 9b's verdict), so this pairing is now
+	// the documented FALLBACK rather than the recommendation, and
+	// `Job::AddFabricMaterial` says so at warn level.  The configuration is kept
+	// UNCHANGED anyway, deliberately: every locked luminance in this file was
+	// measured against this exact substrate and this exact `sheen_roughness`
+	// 0.12, and swapping the preset to silence a warning would invalidate the
+	// numbers the file exists to hold.  What is under test here is a transport
+	// invariant (HWSS, and PT-vs-BDPT parity), not a preset recommendation.
 	if( kind == kAnisoGGX ) {
 		ss <<
 			"ggx_material\n{\n\tname base_sub\n\trd pnt_dye\n\trs pnt_f0\n"

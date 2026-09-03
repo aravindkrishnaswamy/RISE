@@ -4044,6 +4044,7 @@ namespace RISE
 #include "Materials/PolishedMaterial.h"
 #include "Materials/CoatedMaterial.h"
 #include "Materials/FabricMaterial.h"
+#include "Materials/WeaveMaterial.h"
 #include "Materials/DielectricMaterial.h"
 #include "Materials/SubSurfaceScatteringMaterial.h"
 #include "Materials/RandomWalkSSSMaterial.h"
@@ -4186,6 +4187,52 @@ namespace RISE
 
 		(*ppi) = new FabricMaterial( base, sheen_color, sheen_roughness, weave_rotation );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "fabric material" );
+		return true;
+	}
+
+	bool RISE_API_CreateWeaveMaterial(
+								IMaterial** ppi,
+								const char* weave,
+								const IScalarPainter& weave_scale,
+								const IScalarPainter& weave_rotation,
+								const IScalarPainter& weft_skew,
+								const IScalarPainter* coverage,
+								const IScalarPainter& gap,
+								const IPainter& warp_color,
+								const IScalarPainter& warp_ior,
+								const IScalarPainter& warp_width,
+								const IScalarPainter& warp_azimuth,
+								const IScalarPainter& warp_kd,
+								const IScalarPainter& warp_tilt,
+								const IPainter& weft_color,
+								const IScalarPainter& weft_ior,
+								const IScalarPainter& weft_width,
+								const IScalarPainter& weft_azimuth,
+								const IScalarPainter& weft_kd,
+								const IScalarPainter& weft_tilt
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// The draft.  An unrecognised spelling resolves to `plain` rather
+		// than failing: the scene-language path already constrains the
+		// slot to the enum values, so this fallback is a defence for API
+		// callers and matches `LookupWeavePreset`'s own convention.
+		const WeavePatternKind pattern = LookupWeavePattern( weave );
+
+		// `coverage` is meaningful ONLY for `custom`, and is dropped
+		// otherwise rather than retained: holding a reference to a
+		// painter no code path reads would keep it alive for the scene's
+		// lifetime and make the editor's slot list claim a binding that
+		// does nothing.
+		const IScalarPainter* cov = ( pattern == eWeaveCustom ) ? coverage : 0;
+
+		(*ppi) = new WeaveMaterial( pattern, weave_scale, weave_rotation, weft_skew, cov, gap,
+		                            warp_color, warp_ior, warp_width, warp_azimuth, warp_kd, warp_tilt,
+		                            weft_color, weft_ior, weft_width, weft_azimuth, weft_kd, weft_tilt );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "weave material" );
 		return true;
 	}
 

@@ -1098,8 +1098,22 @@ was calibrated for:
 | `fabric` | substrate to author yourself |
 |---|---|
 | `cotton` / `linen` / `wool` | `orennayar_material`, `roughness` (sigma) 0.4 / 0.5 / 0.6 |
-| `denim` / `silk` / `satin` | `ggx_material`, `alphax`/`alphay` 0.34-0.22 / 0.30-0.10 / 0.34-0.06 † |
+| `denim` / `silk` / `satin` | a **`weave_material`** carrying the same-named preset (see below) ‡ |
 | `velvet` | a dark `lambertian_material` — a pile, not a weave, so **no anisotropy at all** |
+
+**‡ Those three changed.** They used to want an anisotropic `ggx_material`
+(`alphax`/`alphay` 0.34-0.22 / 0.30-0.10 / 0.34-0.06, with the † trap
+below).  That composition was measured and it reads as **brushed metal**:
+95-99 % of the substrate's anisotropy survives the sheen, so the sheen is
+not the problem — a single elliptical lobe with a painted rotation field
+simply has no **pattern scale**, no discrete floats with their own
+orientation and mutual shadowing.  `weave_material` is that pattern
+scale: two thread families, warp and weft, each with their own direction,
+dye and pair of fibre lobes, mixed by a weave DRAFT.  Bind one as
+`fabric_material`'s `base` (fuzz over weave is the physical stack), or
+just call `make_fabric`, which now mints one.  The GGX numbers are still
+in the preset table as the documented fallback and the composition still
+builds; it just warns.
 
 **† The single most likely way to hand-author a silent black satin.**
 `ggx_material.fresnel_mode` defaults to **`conductor`**, and `rs`
@@ -1126,9 +1140,33 @@ roughness, not the sheen's.
 
 **`weave_rotation` steers the SUBSTRATE's frame, not the sheen lobe**
 (which is isotropic and unaffected).  Radians.  Paint it to make the
-twill wale, the satin float direction or the grain change across a seam
-follow the yarn; `0` is a bit-exact no-op.  There is deliberately no
-`weave` enum.
+grain change across a seam follow the yarn; `0` is a bit-exact no-op.
+When the substrate is a `weave_material`, put the angle on the WEAVE's
+own `weave_rotation` instead and leave this one unwritten — both are
+rotations about the same normal, so writing it in two places ADDS them
+and turns the yarn twice.
+
+**`weave_material` — the DRAFT, and the two slots that decide whether it
+reads.**  `weave plain|twill_2_1|twill_3_1|satin_5|custom` picks which
+family is on top per cell (a 3/1 twill is denim's wale; a 5-harness satin
+is silk's and satin's float), and `fabric denim|silk|satin|linen|custom`
+seeds every other slot including the draft.  Two things need your
+attention and nothing else does:
+
+- **`weave_scale`** — cells per unit of surface UV, and the one slot no
+  preset can get right, because it depends on your geometry's UV scale
+  and your framing.  Too coarse and the cloth reads as tiles; too fine
+  and the material's own footprint fade takes over and the surface
+  becomes its own mean coverage, which is correct but structureless.
+  Aim for roughly one cell per four to eight pixels in the frame you
+  care about, and expect to try a value and look.
+- **`warp_color` / `weft_color`** — the two DYES, and the reason a weave
+  looks like cloth.  Give the families DIFFERENT tones: denim IS an
+  indigo warp floating over an undyed weft.  They tint the volume lobe
+  only, so a coloured fabric correctly keeps a white highlight.
+
+Reflection only for now: a `weave_material` has no transmission lobe, so
+`gap` DARKENS an open weave rather than letting light through it.
 
 Parses and renders today — the whole triad, in emission order
 (declare-before-use is not a style choice here: `base` and `rs` resolve
@@ -1190,8 +1228,8 @@ material, infers the fabric from the object's own name where that is
 unambiguous (`denim_jacket` → denim; `cushion` names no fabric, so it
 falls back to cotton and SAYS so — pass `fabric` to be explicit), and
 **mints the substrate** when the bound base is not already the preset's
-class: the F0 painter, the ggx/orennayar/lambertian base carrying the
-preset's numbers, the weave painter, and the `fabric_material` itself —
+class: the weave/orennayar/lambertian base carrying the preset's numbers,
+the weave painter, and the `fabric_material` itself —
 then moves every bound object onto the wrapper.  Your colour painter is
 **re-homed**, not re-authored, so a texture or expression graph survives
 untouched.  The original chunk is never edited, but after a mint nothing

@@ -1,0 +1,220 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           weave_presets.RISEscene                                                                 #
+#   Description:    docs/CLOTH_FABRIC_DESIGN.md Phase 2 (slice P2-A): all FOUR `weave_material`             #
+#                   presets on one row, on scenes/Tests/Materials/fabric_presets.RISEscene's                #
+#                   shape.                                                                                  #
+#                                                                                                           #
+#                     denim   silk   satin   linen                                                          #
+#                                                                                                           #
+#                   WHAT THIS SCENE IS FOR, AND WHY IT IS NOT THE PHASE-1 ONE AGAIN.                        #
+#                   `fabric_presets.RISEscene` puts an isotropic Charlie sheen over an                      #
+#                   anisotropic GGX substrate; 9.9 gate 9b measured that composition and found              #
+#                   that 95-99 % of the substrate's anisotropy survives the sheen and it STILL              #
+#                   reads as brushed metal, because a single elliptical lobe with a painted                 #
+#                   rotation field has no PATTERN SCALE.  This scene is the answer: each sphere             #
+#                   carries a `weave_material`, whose two thread families each have their own               #
+#                   direction, dye and pair of fibre lobes, mixed by a weave-DRAFT coverage                 #
+#                   field that says which yarn is on top at each point.                                     #
+#                                                                                                           #
+#                   In a healthy render each sphere shows, at the size stated below:                        #
+#                     denim  a DIAGONAL wale marching across the surface (the 3/1 twill's                   #
+#                            (i - j) predicate), indigo warp over undyed weft                               #
+#                     silk   a fine 5-harness satin float, a flat 5-degree warp crossing a                  #
+#                            twisted 18-degree weft, so the two families' highlights differ                 #
+#                     satin  the same draft with the TIGHTEST lobe in the reference table                   #
+#                            (2.5 degrees), which is what makes a float band snap on and off                #
+#                     linen  a plain 1/1 alternation with a real GAP -- a plain linen weave is              #
+#                            not watertight, and in this phase a gap DARKENS (there is no                   #
+#                            transmission lobe yet)                                                         #
+#                                                                                                           #
+#                   `weave_scale` IS OVERRIDDEN ON EVERY ROW, deliberately.  The presets ship               #
+#                   36-80 cells per UV unit, which is right for cloth at arm's length and                   #
+#                   SUB-PIXEL on a sphere at this framing -- where the material's own footprint             #
+#                   fade correctly takes over and every row becomes its own mean coverage, i.e.             #
+#                   structureless.  That fade is the anti-aliasing and it is tested directly by             #
+#                   tests/WeaveMaterialChunkTest.cpp; what THIS scene has to show is the draft,             #
+#                   so every row is coarsened to 22 cells, putting roughly ten cells across each            #
+#                   visible face at ~25 px per cell.  A row that renders as a flat sphere with              #
+#                   no visible weave has either lost the draft or lost the scale override.                  #
+#                                                                                                           #
+#                   `weave_rotation` turns BOTH families together (it rotates the cloth, it does            #
+#                   not shear it), and denim gets 20 degrees so its wale is not axis-aligned --             #
+#                   an axis-aligned diagonal on a sphere is easy to mistake for a UV artefact.              #
+#                                                                                                           #
+#                   OIDN IS OFF.  A denoised frame is not evidence about a weave: the denoiser              #
+#                   is free to smear exactly the per-cell structure being judged, and at this               #
+#                   cell size it does.                                                                      #
+#                                                                                                           #
+#                   LIGHTING is a hard GRAZING key plus a back rim and a dim fill.  The                     #
+#                   material's brightest response is a view running ALONG a yarn at grazing                 #
+#                   incidence (the Chandrasekhar denominator collapses there), so a front-on key            #
+#                   alone would show the dyes and none of the direction -- measured: the same               #
+#                   preset returns four times as much at theta 80 along the warp as across it               #
+#                   (LayeredWhiteFurnaceTest's locked curves, rows 39-46).                                  #
+#                                                                                                           #
+#                   Note `directional_light.direction` is the vector FROM the surface TO the                #
+#                   light, so a camera-facing hemisphere needs a POSITIVE Z component                       #
+#                   (docs/SCENE_CONVENTIONS.md 1).                                                          #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-03                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				96
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/weave_presets
+	type				PNG
+	bpp					8
+	color_space			sRGB
+}
+
+film
+{
+	width			1400
+	height			360
+}
+
+pinhole_camera
+{
+	location			0 0 8
+	lookat				0 0 0
+	up					0 1 0
+	fov					26.0
+}
+
+#############################################################################################################
+# The four presets.
+#
+# Only `fabric` + `weave_scale` (+ a rotation on denim) is authored: every
+# other slot -- the draft, both dyes, both IORs, both lobe widths, both
+# azimuthal widths, both k_d fractions, both float tilts and the gap --
+# comes from the preset table, which is the whole point of the enum.
+#############################################################################################################
+
+weave_material
+{
+	name				w_denim
+	fabric				denim
+	weave_scale			22.0
+	weave_rotation		0.3490658503988659
+}
+
+weave_material
+{
+	name				w_silk
+	fabric				silk
+	weave_scale			22.0
+}
+
+weave_material
+{
+	name				w_satin
+	fabric				satin
+	weave_scale			22.0
+}
+
+weave_material
+{
+	name				w_linen
+	fabric				linen
+	weave_scale			22.0
+}
+
+#############################################################################################################
+# Geometry
+#############################################################################################################
+
+sphere_geometry
+{
+	name				sph
+	radius				0.8
+}
+
+standard_object
+{
+	name				s_denim
+	geometry			sph
+	material			w_denim
+	position			-2.85 0 0
+}
+
+standard_object
+{
+	name				s_silk
+	geometry			sph
+	material			w_silk
+	position			-0.95 0 0
+}
+
+standard_object
+{
+	name				s_satin
+	geometry			sph
+	material			w_satin
+	position			0.95 0 0
+}
+
+standard_object
+{
+	name				s_linen
+	geometry			sph
+	material			w_linen
+	position			2.85 0 0
+}
+
+#############################################################################################################
+# Lights.  `direction` is FROM the surface TO the light source, so a
+# camera-facing hemisphere needs a POSITIVE Z (docs/SCENE_CONVENTIONS.md 1).
+# Colours are LINEAR Rec.709 (the 2026-09-02 zero-area-light convention).
+#############################################################################################################
+
+# The GRAZING key.  Nearly perpendicular to the view, which is where a
+# yarn's own highlight lives.
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 0.98 0.94
+	direction	0.94 0.26 0.22
+}
+
+# A back rim from the other side, so a sphere's far limb is not dead.
+directional_light
+{
+	name		rim
+	power		1.8
+	color		0.88 0.93 1.0
+	direction	-0.92 0.24 0.32
+}
+
+# A soft front fill, so the two families' DYES are readable rather than
+# silhouette-only.
+directional_light
+{
+	name		fill
+	power		0.9
+	color		1.0 1.0 1.0
+	direction	0.10 0.40 0.91
+}
+
+ambient_light
+{
+	name		ambient
+	power		0.12
+	color		1.0 1.0 1.0
+}

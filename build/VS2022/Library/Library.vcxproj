@@ -222,6 +222,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\CoatedBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\FabricBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\WeaveBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\WeaveSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\FabricSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeEmitter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp" />
@@ -746,6 +748,11 @@
     <ClInclude Include="..\..\..\src\Library\Materials\FabricBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\FabricMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\FabricPresets.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FibreLobeMath.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeavePresets.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\WeaveSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\FabricSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h" />

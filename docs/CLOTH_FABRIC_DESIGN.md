@@ -1,17 +1,88 @@
 # Woven Cloth and Fabric — Weave-Structured Appearance as an Authorable, Summonable Material System
 
-**Status:** **LOCKED FOR IMPLEMENTATION 2026-09-02 — Phase 1 in progress; the
-measurement gates are landing.** What is locked is the design. Four review
-rounds (one citation audit, one adversarial design pass, two fresh-eyes rounds)
-have been applied in full — see the Amended block below for what moved and why.
-Phase 1's scope, the `fabric_material` contract (§9.2), the chunk surface
-(§9.3), the sampling decision (§9.4), the anisotropy split (§9.5) and the exit
-gates (§9.9) are the implementation brief; changing any of them is an amendment
-to this document, not an implementation choice. Phases 2 and 3 remain gated and
-are **not** locked.
+**Status:** **Phase 1 SHIPPED 2026-09-02. Phase 2 slice P2-A SHIPPED
+2026-09-03.** What is locked is the design. Four review rounds (one citation
+audit, one adversarial design pass, two fresh-eyes rounds) have been applied in
+full — see the Amended block below for what moved and why. Phase 1's scope, the
+`fabric_material` contract (§9.2), the chunk surface (§9.3), the sampling
+decision (§9.4), the anisotropy split (§9.5) and the exit gates (§9.9) are the
+implementation brief; changing any of them is an amendment to this document, not
+an implementation choice. Phase 3 remains gated and is **not** locked.
 
-**Gate status, 2026-09-03.** §9.9's gates now carry measured numbers rather than
-intentions: **gate 7** (HWSS invariant) is GREEN and asserted in
+**Phase 2 status, 2026-09-03 — slice P2-A is in the tree.** All three of
+§10.2's entry conditions were satisfied (the gate-9b deficit, the demand
+census, and §10.1's primary-source read), the read was done against the
+primary PDFs, and `weave_material` — a structured two-thread-family cloth
+BSDF — shipped as its own triad rather than as a mode on `fabric_material`.
+§10.1 and §10.3 below are rewritten with what the read actually found and
+what was built. **Slice P2-B, the transmission lobe, has NOT shipped**:
+`ScattersFullSphere` and `CouldLightPassThrough` stay false, so the backlit
+glow-through cue is still unserved, and the §10 goal's third clause is the
+part still outstanding.
+
+**Fix round 2, 2026-09-03 (same day, third pass).** Two more fresh reviews
+(REVIEW_P2R4.md, REVIEW_P2R5.md) found one further P1: `ProjectDir`'s
+per-family azimuth has a coordinate pole at view latitude `90 - tilt_deg`
+(where a direction approaches the fibre axis and "front of thread" vs "back
+of thread" is undefined), and the masking term's hard `max(cosPhi,0)` hinge
+turned that pole into a real, in-spec discontinuity: at the old
+`kMaxTilt = 0.6` rad the pole sat at an ordinary ~55.6 deg view angle and
+produced a 48.9% brightness drop in a 0.5 deg step. Fixed three ways, all in
+`WeaveBRDF.cpp`/`.h`: (a) `ProjectDir` blends the azimuth ratio toward the
+pole's own neutral value (0) as the in-plane projection vanishes, rather
+than trusting `atan2`'s sign arbitrarily close to the pole; (b) the masking
+gate itself is `SmoothedRamp`, a C1 quadratic mollification of the SAME
+`max(x,0)` hinge (matching value, not just clamping) so it stays the graded
+cosine-weighted occlusion factor Sadeghi's model is, rather than becoming a
+saturating front/back gate (a saturating smoothstep was tried first and
+rejected -- it inflated denim's hemispherical albedo 25-30%); (c)
+`kMaxTilt` is bounded to 0.17 rad (~10 deg) so the pole cannot sit inside
+80 deg for any in-range tilt, on top of (a)+(b) rather than instead of
+them. `WeaveMaterialChunkTest`'s new `MaskingPoleSeam` sweeps view latitude
+in 0.25 deg steps at `tilt = kMaxTilt` for both families and asserts no
+adjacent-sample ratio exceeds 1.10 below 87.75 deg (measured post-fix
+worst case: 1.0019 at the new `kMaxTilt`, and 1.0091 even at the OLD 0.6 rad
+tilt that produced the original 48.9% drop) -- the mutation-catching guard
+neither review round before it had. One `LayeredWhiteFurnaceTest` row moved
+outside its locked eps as a real consequence of fixing the masking gate
+(satin, rotation 0, theta=80: 0.2272 -> 0.2164, -4.8%) and was re-locked
+with the delta stated in its own comment; every other row moved by
+<= 0.0002. Reciprocity and the pdf hemisphere integrals were re-verified
+unchanged (the smoothing is applied identically to `wi` and `wo`).
+
+**Fix round, 2026-09-03 (same day, second pass).** Three independent reviews
+of the just-landed slice found the volume lobe's normaliser `C_v` was a loose
+analytic BOUND shipped as if it were the exact one — 2.0–2.3× too large,
+halving every fabric's dominant lobe — plus five smaller correctness/honesty
+findings (the surface lobe trimming its azimuth over a different interval
+than the sampler's own density; the "Eq. 15 reweighting degenerates to a
+constant" claim being false for a two-family weave; two fitted "realised
+fraction" constants retuning the reported albedo to agree with the dark BRDF
+rather than fixing it; `make_fabric`'s pure-wrap path silently unreachable
+for an already-correct `weave_material` base; and showcase `weave_scale`
+values 4–8× coarser than the shipped presets, rendering as printed stripes
+rather than cloth). All are fixed in this pass: `C_v` is now the exact,
+reciprocity-symmetrised hemispherical integral; the fitted constants are
+gone and `hemisphericalAlbedo` is an honest closed form; the azimuthal trim
+mismatch is closed with a symmetrised boost; the Q claim is corrected (§10.1)
+with the resulting grazing-only loss recorded as debt 7; `make_fabric`'s
+weave-reuse path is fixed (`ScanFabricCandidates_`'s colour-refusal check was
+unconditionally declining every weave base); and the two showcase scenes
+were re-tuned and re-rendered against the corrected energy. A NEW guard,
+`LayeredWhiteFurnaceTest`'s independent white-weave energy floor (row 49),
+exists specifically because none of the pre-existing gates would have caught
+the `C_v` defect — see §10.3.
+
+**Gate status, 2026-09-03 (Phase 2 slice P2-A).** Gate **9b has been
+RE-MEASURED** on the shipped `weave_material`, and its Phase-1 numbers reproduce
+to every printed digit while the new pattern-scale proxy records structure where
+Phase 1 had none (silk 0.035, satin 0.105 quadrature-subtracted structure rms,
+against a Phase-1 shape whose entire high-frequency content is its noise floor).
+Gate **11**'s scene count is now **six**: `weave_presets.RISEscene` joined the
+regressions, and the two showcases moved to fabric-over-weave.
+
+**Gate status, 2026-09-03 (Phase 1).** §9.9's gates carry measured numbers rather
+than intentions: **gate 7** (HWSS invariant) is GREEN and asserted in
 [tests/FabricRenderTest.cpp](../tests/FabricRenderTest.cpp), which also carries
 a PT-vs-BDPT parity check reframed as a ratio-of-ratios so the documented +25 %
 env-MIS BDPT bias cancels instead of swamping it; **gates 9, 9b and 10** are
@@ -3247,6 +3318,56 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
     So Phase 1 cannot reach cue (b) by authoring, only by modelling. **That is
     precisely the structured two-yarn-family model §10 proposes, and this is the
     evidence for it.**
+
+    **RE-MEASURED 2026-09-03 AFTER PHASE 2 SLICE P2-A, on the same subject and
+    the same harness.** The Phase-1 rows reproduce to every printed digit
+    (silk 3.098 → 3.000, satin 5.871 → 5.806, rim annulus ×4.2 on both), which
+    is the control that says the harness and the Phase-1 material are unchanged.
+    The new half measures the deficit this gate actually named — pattern scale —
+    because *anisotropy was never the deficit* and no anisotropy proxy can see
+    the thing that was.
+
+    **Proxy 3, and the confound stated before the numbers.** Relative RMS of the
+    high-passed inner disc (9-px box high-pass, r < 0.65). High-frequency
+    content is pattern OR Monte-Carlo noise, and the weave rows are 3–8× darker
+    in the rim annulus than the Phase-1 rows, so at a fixed 2048 spp their
+    *relative* noise is correspondingly higher and a raw cross-shape comparison
+    would be measuring brightness. Each weave row is therefore compared against
+    **its own minified control** — the same material at `weave_scale 4000`,
+    where the draft falls below one pixel and the material's own footprint fade
+    leaves nothing but the noise. Pattern and noise are independent, so they add
+    in quadrature and the structure alone is `sqrt(rms_weave² − rms_control²)`.
+
+    | preset | configuration | pattern rms |
+    |---|---|---:|
+    | silk | fabric / ggx (Phase 1) | 0.00488 |
+    | silk | fabric / weave, scale 60 | 0.05544 |
+    | silk | weave, scale 4000 (control) | 0.04313 |
+    | satin | fabric / ggx (Phase 1) | 0.01277 |
+    | satin | fabric / weave, scale 60 | 0.14523 |
+    | satin | weave, scale 4000 (control) | 0.10030 |
+
+    **Structure alone: silk 0.03483, satin 0.10503 — against a Phase-1 shape
+    that has none.** The Phase-1 rows need no subtraction: they carry no
+    periodic content at all, so their rms *is* their noise floor.
+
+    **The visual half, which is this gate's primary instrument, changed
+    verdict.** `denim_and_satin_drape.RISEscene` re-rendered with both halves on
+    a `weave_material`: the left half now shows a diagonal twill wale running
+    across the whole drape, and the right a tight, high-contrast float band that
+    snaps on and off along each fold ridge over a fine grain — which is
+    word-for-word what this gate's Phase-1 block described real satin as doing
+    and Phase 1 as not doing. It does not alias into a checkerboard, because the
+    coverage field is continuous and fades to the draft's own mean under
+    minification.
+
+    **One honest caveat about the table's other column.** The `aniso ratio`
+    proxy is meaningless on a patterned disc — it takes the bounding box of
+    everything above half-max, which on a weave is the yarn field rather than
+    one highlight — so its weave-row values (0.05–0.36) say nothing about a
+    lobe and must not be read as "the anisotropy vanished". The caveat is now
+    printed by the harness itself; it was added after this run, so the recorded
+    output above does not contain it.
 10. **Variance — MEASURED 2026-09-03. §9.4's argument survives contact with a
     measurement; the normalised D-sampler is NOT justified.** PT sample counts
     to a fixed noise floor at α ∈ {0.08, 0.5, 1.0}, per
@@ -3385,40 +3506,156 @@ both `make` and the Xcode `RISE-GUI` target ([AGENTS.md](../AGENTS.md)).
 **Goal.** Cue (b) properly: satin's diagonal float sheen, denim's wale, and — the
 capability no reflection-only model has — thin cloth's backlit glow-through.
 
-### 10.1 The candidates, and the argument
+### 10.1 The read, and what was built — SLICE P2-A SHIPPED 2026-09-03
 
-**Irawan-class (a pattern raster + yarn segments).** Rejected in §7(C) on the
-missing importance sampler. But the *pattern raster* idea is separable from the
-rest of Irawan and is worth keeping: a per-cell "which family is on top" lookup
-is exactly a `voronoi2d_painter`-shaped or `expression_function2d`-shaped
-resource RISE can already author, and Phase 2 should take that idea while
-leaving Irawan's yarn-segment geometry and its 18-parameter fit behind.
+**The gate was a primary-source read, and it was done.** §10.2's third condition
+required the equation set, the parameter table and a confirmed sampling strategy
+in hand before committing, because the survey could confirm Zhu 2023's citation
+and its comparison claims but not its maths. Zhu 2023 (main paper + its
+supplementary document), Zhu 2024 and Sadeghi 2013 were fetched and read in
+full. Three findings changed the plan.
 
-**SpongeCake-class (layered microflake).** Rejected in §7(D) on infrastructure —
-a microflake phase function, an SGGX field, and a media-transport landing rather
-than a material-slot landing. The honest note is that this is the only route to
-cue (d) without geometry, so if silhouette fuzz becomes the observed need rather
-than structured highlights, **the Phase-2 answer changes**. That is a genuine
-fork, and §13's census is designed to tell which side of it the demand falls on.
+**Finding 1 — Zhu 2023 alone has no directional importance sampler, confirmed
+exhaustively.** Its only sampling discussion (§4.4.1) is *spatial*: one
+stochastic point per shading evaluation inside the pixel footprint, with ray
+differentials defining the footprint. That answers "which texel do I shade", not
+"which outgoing direction do I sample", and nothing in the main paper or the
+supplement addresses the latter. This is what §10.1's original text suspected
+and it is now confirmed rather than suspected.
 
-**Zhu 2023 / Sadeghi 2013 surface lineage — RECOMMENDED as the reference
-architecture.** Zhu 2023 is the published answer to exactly the question Phase 2
-asks (Irawan-class fidelity at surface-BSDF cost, with transmission, generalising
-to knits), and Jin 2022 independently converged on the same shape from the
-capture direction — which is the strongest available evidence that the shape is
-right rather than an artefact of one derivation. Sadeghi 2013 supplies the
-per-thread lobe math in the factorisation RISE's hair BSDF already implements as
-promotable free functions (§4.5).
+**Finding 2 — Zhu 2024 supplies the sampler, so no fallback was needed.** Its
+§5.1 is a complete, shipped, closed-form lobe-selection sampler: compute an
+attenuation `A(p)` per lobe, select with pmf `p_a = A(p)/Σ A(p)`,
+importance-sample the selected lobe for `p_l`, return `w = f_p/(p_a·p_l)`. That
+is exactly RISE's own multi-lobe convention. It is **adopted**, with one
+addition RISE's harness forces: the sample is repriced against the FULL mixture
+density rather than against the lobe that drew it, because these lobes' supports
+overlap everywhere and a branch-local density would disagree with an independent
+`Pdf()` call — the mismatch `SPFPdfConsistencyTest` exists to catch.
 
-**Phase 2's first gate is a primary-source read**, because the survey could
-confirm Zhu 2023's citation, its four target signatures, and its
-comparison-to-Irawan claims, but **could not obtain its equation set, its
-parameter table, or a confirmed sampling strategy**. Committing to an
-implementation on an abstract summary would be exactly the failure
-[doc 90](agentic-redesign/90-iteration-ratchet.md) warns about. The read
-produces a one-page parameter-and-sampling summary; if it turns out there is no
-tractable sampler, Phase 2 falls back to Sadeghi's factorisation plus the
-follow-up talk's sampler, and says so.
+**Finding 3 — the shape came from Sadeghi, not from Zhu, and that was a
+decision.** Zhu 2023's headline contribution is a per-texel **Anisotropic
+Spherical Gaussian fit of the visibility function** (5 floats/texel, built by a
+radial horizon search with online covariance fitting, §4.4.2). It is a bake
+pass, a storage format and a fitting procedure — real infrastructure, not a
+closed form — and its reflection lobe additionally needs an **SGGX microflake
+distribution with a Smith Λ** and its VNDF sampler, of which RISE has none
+(`grep -rni SGGX src/Library` is still empty). Sadeghi's cardinal-direction
+masking (his Eq. 7–9) is a closed form that needs neither, and RISE already owns
+better versions of both of his lobe factors. So the shipped model is
+**Sadeghi-lineage lobe math on RISE's hair primitives, with Zhu 2024's sampler
+on top**, and the ASG bake is deliberately NOT adopted.
+
+**What shipped.** `weave_material` — a new triad
+([WeaveMaterial.h](../src/Library/Materials/WeaveMaterial.h),
+[WeaveBRDF](../src/Library/Materials/WeaveBRDF.h),
+[WeaveSPF](../src/Library/Materials/WeaveSPF.h),
+[WeavePresets.h](../src/Library/Materials/WeavePresets.h)) — rather than a
+`weave` mode on `fabric_material`. §10.3's original text left that choice open
+"after the read"; it was decided on the read's own evidence. Nothing in this
+model is a sheen lobe, the two parameter sets are disjoint, and the fuzz layer
+belongs ON TOP of the weave rather than beside it — so `fabric_material`'s
+substrate allowlist was extended to accept `weave_material` instead, which is
+the physical stack.
+
+Two thread families, warp and weft, each with its own tangent, dye and pair of
+lobes, mixed by a weave-draft coverage field:
+
+```
+f(i,o) = (1 − gap) · Σ_k a_k · M_k(i,o) · [ f_surf,k(i,o) + A_k · f_vol,k(i,o) ]
+```
+
+- **Surface lobe**, Sadeghi Eq. 2 with both factors upgraded:
+  `F(η_k, cos θ_d · cos(φ_d/2)) · Mp(θ_i,θ_o; β_k²) · TrimmedLogistic(φ_d; γ_k)`.
+  `Mp` is d'Eon's energy-conserving longitudinal lobe, **promoted out of
+  `HairBSDF.cpp` into a shared [FibreLobeMath.h](../src/Library/Materials/FibreLobeMath.h)**;
+  it replaces Sadeghi's plain Gaussian and is normalised at every width rather
+  than only in the narrow-angle limit. The trimmed logistic replaces his bare
+  `cos(φ_d/2)`, which has **no independently normalised closed-form sampler** —
+  his own conclusion names importance sampling as open work — where RISE's has an
+  exact CDF and an exact inverse. The lobe is **untinted**: a dielectric's
+  specular reflection preserves the incident spectrum, which is one of the four
+  places his §7 shows Irawan-Marschner failing.
+- **Volume lobe**, his Eq. 3: `(1−F) · [(1−k_d)·Mp(θ_i,θ_o; (2β_k)²) + k_d] /
+  ((cos θ_i + cos θ_o) · C_v)`. The second `Mp`'s width is **twice** the
+  surface lobe's — Table II's `γ_v ≈ 2 γ_s` recurs in all six of its rows, so it
+  is derived rather than authored, cutting a parameter.
+- **Masking**, his Eq. 7–9 verbatim, with Ashikhmin's correlation blend at a
+  fixed 20°. His Eq. 15 normaliser `Q` is **not** implemented and its absence is
+  a decision: `Q` reads `ω_r` and nothing else, so a model carrying it cannot be
+  reciprocal, and §9.9's reciprocity gate is non-negotiable. The gap it carries
+  is expressed instead as a direction-independent energy factor.
+  **CORRECTION (P2R1 review finding P2-3):** an earlier revision of this
+  paragraph claimed his *reweighting* (Eq. 11–15) "degenerates to a constant"
+  under P2-A's one-tangent-per-family simplification and was therefore absent
+  rather than forgotten — that claim is **wrong** for a two-family weave. `Q`
+  sums the one-direction quantity `P(t,ω_r)` over *both* families while the
+  reweighted numerator carries the two-direction `P(t,ω_i,ω_r)` for the *one*
+  family being evaluated; those cancel only for a single-family weave, which
+  P2-A never is. Dropping `Q` is therefore a real energy loss concentrated at
+  grazing views along a family's own axis (measured on the shipped satin
+  preset: `Q ≈ 0.336` at 80° off the warp axis, i.e. a missing factor of
+  ~3×). A reciprocal substitute, `Q_sym = √(Q(ω_i)·Q(ω_o))`, was tried and
+  rejected: at the same grazing configuration `Q_sym` runs as low as 0.30–0.34
+  (the geometric mean does not rescue two individually-small arms the way an
+  arithmetic mean would), so `1/Q_sym` reaches ~3× and pushes white presets
+  past the furnace's 1.05 ceiling. `Q` therefore stays out on the same
+  reciprocity grounds as before, and the resulting grazing-only deficit is
+  debt 7 below rather than a silently-wrong "cancels" claim.
+
+**The draft is a closed form, not a baked map.** Zhu 2023 takes its
+warp/weft ID map as an authored texture (§4.1). P2-A ships four analytic drafts
+— `plain`, `twill_2_1`, `twill_3_1`, `satin_5`, with exact mean warp coverages
+1/2, 2/3, 3/4, 4/5 — plus `custom`, which binds a `coverage` scalar painter and
+is the escape hatch that recovers Zhu's authored-map route. The field is
+**continuous**: yarn edges are smoothed ramps and the whole pattern fades to its
+own mean as the pixel footprint outgrows the cell. That fade is not decoration.
+Gate 9b's second finding is that a piecewise-constant cell field renders as a
+blocky checkerboard and that lowering its amplitude only lowers the contrast of
+the checks — the discontinuity is the defect — so the anti-aliasing had to be
+intrinsic to the material rather than left to an author's expression.
+
+**Energy is BOUNDED, not conserving, and the model says so.** Both lobes inherit
+normalisations that bound the directional albedo by construction (`Mp`'s d'Eon
+normalisation and the trimmed logistic's for the surface lobe; the volume
+lobe's `C_v` is divided by the *exact* hemispherical integral of its bracket
+at zero tilt, reciprocity-symmetrised across the two view latitudes), so no
+baked table was needed — in contrast to Phase 1, which needed one because
+Charlie's albedo has no closed form. It is not conserving for the reason the
+source model states plainly: it ignores inter-thread multiple scattering, and
+the masking term removes energy that nothing puts back.
+
+**CORRECTION, and the one substantive bug this slice shipped with.** A first
+cut used the *loose bound* `C_v = 2(1+k_d)` **as if it were the exact
+normaliser** — it is 2.00–2.33× too large across the authorable `k_d` range,
+and because the volume lobe carries ~90–96 % of a white weave's energy, that
+one constant *was* the "every fabric renders 3–8× dark" defect a fresh review
+found and this session fixed (`WeaveBRDF.cpp`'s `ComputeThreadTerms`; full
+derivation in `WeaveBRDF.h` §2). It shipped past this document's own review
+because the tests that could have caught it either measured `value()` against
+itself at a fixed point in time (`LayeredWhiteFurnaceTest`'s locked curve,
+which pinned the buggy numbers) or against a closed form
+(`hemisphericalAlbedo`) that is *derived assuming `C_v` is exact* and so
+agreed with the bug. The fix added a genuinely independent check —
+`LayeredWhiteFurnaceTest`'s white-weave energy floor, a from-scratch
+quadrature reimplementation compared against Monte-Carlo `value()` — see the
+guard table below.
+
+Measured on the four shipped presets with both dyes forced to white
+(`WeaveTest::PresetWeave`'s `whiteDyes` flag), coverage at the draft's own
+mean: directional albedo runs **0.65–0.76** at normal incidence and stays
+**≥ 0.55** through 30° — comfortably inside Sadeghi's own measured 0.5–0.8
+band for white fabrics, and the actual number `LayeredWhiteFurnaceTest`'s
+independent floor check now guards rather than the stale "0.785 max" this
+paragraph used to assert (that figure conflated the masking term's *own*
+cosine-weighted hemispherical mean, π/4, with a directional-albedo bound it
+does not derive).
+
+**Transmission did NOT ship.** `ScattersFullSphere` and
+`CouldLightPassThrough` stay false. Zhu 2023's delta-transmission term
+`δ(i+o)/(i·n_s)` is the model for it and it is slice **P2-B**; claiming the
+flags without the lobe would send the full-sphere NEE machinery hunting for
+transmission that does not exist.
 
 ### 10.2 What Phase-1 evidence gates it
 
@@ -3452,21 +3689,130 @@ Three conditions, all of which must hold:
 3. **The read.** §10.1's primary-source summary in hand, with a tractable
    sampler identified.
 
-### 10.3 Indicative shape and cost
+### 10.3 What it cost, and what it is guarded by
 
-A `weave_material` (or a `weave` mode on `fabric_material` — decide after the
-read) carrying: two thread appearance classes, each with a longitudinal width, an
-azimuthal shape and a longitudinal shift; a weave-cell phase field; an
-inter-yarn shadow-masking term; and a transmission lobe. Roughly Sadeghi's five
-scalars per class plus the fields Phase 1 already plumbs.
+**Cost, actual.** The §10.3 estimate was "of `coated_material`'s order or
+larger — the honest precedent is commit `1f929fef`, 36 files changed, 4620
+insertions — and at the upper end of that, because a transmission lobe touches
+the NEE full-sphere path." Slice P2-A came in **below** that estimate, and the
+reason is exactly the clause that did not apply: transmission was split out into
+P2-B. What landed is the triad, the shared `FibreLobeMath.h` promotion, the
+chunk, the API/IJob/Job plumbing, the editor introspection, the
+`make_fabric` change, six test files (a seventh, `FibreLobeMathTest`,
+added in the same-day fix round below) and three scenes.
 
-Cost is of `coated_material`'s order or larger — the honest precedent is commit
-`1f929fef`, **36 files changed, 4620 insertions**, for a triad plus layering
-plus tests. Phase 2 adds a transmission lobe (which flips `ScattersFullSphere`
-and `CouldLightPassThrough`, and therefore touches the NEE full-sphere path), so
-it is at the upper end of that.
+**The promotion is worth naming separately.** `Mp`, `TrimmedLogistic`,
+`SampleTrimmedLogistic` and `FrDielectric` (with their closed subgraph) moved
+out of `HairBSDF.cpp`'s anonymous namespace into `FibreLobeMath.h`, and
+`HairBSDF.cpp` now consumes that header through using-declarations so every call
+site is textually unchanged. §3.2 predicted this was available; it was, and the
+proof that it cost nothing is that `HairBSDFTest`'s output is **byte-identical**
+across the move. `MakeGeom` and `ComputeAp` were deliberately NOT promoted:
+they carry the fibre radius, the medulla geometry and the R/TT/TRT
+multi-order split, none of which a woven thread has.
 
----
+**What guards it.**
+
+| Guard | What it pins |
+|---|---|
+| `LayeredWhiteFurnaceTest` 39–49 | energy: `kPostureBounded` per preset at two view sets, a **locked measured curve** (eps 0.006, re-measured this session after the `C_v` fix), the fabric-over-weave row, and an **independent white-weave energy floor** (row 49) -- a from-scratch quadrature reimplementation, sharing only `FibreLobeMath.h`, checked against Monte-Carlo `value()` and against a literal ≥0.55 physical floor at θ≤30° |
+| `SPFBSDFConsistencyTest` | reciprocity at **~2e-15** (denim, non-zero weave rotation) and **~5e-15** (satin, non-zero opposite float tilts); `kray·pdf == value·cos` pointwise; MC-vs-quadrature furnace to 0.11–2.2 % |
+| `SPFPdfConsistencyTest` | the four-lobe mixture density, RGB and NM, cross-validated exactly (~1e-14) with the hemisphere integral at **0.9986–1.00003**, plus an explicit check that the configuration can *discriminate* a branch-local density |
+| `WeaveMaterialChunkTest` | the drafts enumerated exhaustively against their literal rationals; the footprint fade's exactness and the yarn edge's continuity; the preset table slot by slot; both `coverage` diagnostics; fabric-over-weave; the `hemisphericalAlbedo` error, measured; the masking-pole seam (a 0.25 deg sweep at `tilt = kMaxTilt`, ratio bound 1.10) |
+| `HairBSDFTest` / `HairRenderTest` | the promotion changed nothing |
+| `scenes/Tests/Materials/weave_presets.RISEscene` | the four drafts, legible |
+
+**Debts, recorded rather than hidden.**
+
+1. **`hemisphericalAlbedo` was a two-constant estimate; it no longer is, and
+   the reason it changed is worth recording.** The original design fitted two
+   "realised fraction" constants (surface 0.18, volume 0.30) to reconcile a
+   loose analytic bound against `value()` — but `value()` was, at the time,
+   2.0–2.3× dark from the `C_v` defect (debt-turned-fix, see the "Energy is
+   BOUNDED" correction above), so the constants were silently retuning the
+   *reported* albedo down until it agreed with the *wrong* render, and the
+   test guarding them compared the fit against the very `value()` it was fit
+   to — a tautology a fresh review caught (REVIEW_P2R3.md P1-2). With `C_v`
+   corrected, `hemisphericalAlbedo` is now an EXACT closed form at normal
+   incidence (`rho_vol(0) = A_k(1-F_k(1))·π/4`, `rho_surf(0) = F_k(1)·G(s_k)`,
+   derivation at `WeaveBRDF.cpp`'s definition site) with no fitted constant at
+   all. Its remaining inexactness is real but different in kind: `IBSDF`'s
+   contract asks for a *bihemispherical* average and this form is exact only
+   at normal incidence, pre-committed at **±40 % relative** for the
+   view-dependence and tilt cases it does not track (`WeaveBRDF.cpp`'s
+   `hemisphericalAlbedo` banner states the class before it was measured).
+   `WeaveMaterialChunkTest`'s `TestHemisphericalAlbedoError` checks a **25 %**
+   band against brute-force quadrature of the real `value()` on all four
+   presets, all three channels — tighter than the pre-committed ±40 % class
+   because it is now a legitimate independent check (the closed form is no
+   longer fit to `value()`, so agreement between them is evidence rather
+   than circularity) and because 25 % was set from the actual measured worst
+   case (denim channel 0, 21.2 %) with a margin. The deviation is
+   systematic and explained, not noise: the closed form is exact only at
+   theta_o = 0, where `C_v` is at its minimum, and `C_v` GROWS toward
+   grazing (the Chandrasekhar denominator relaxes), so the true
+   bihemispherical integral runs below the theta=0 closed form on every
+   preset -- including the untilted ones, which rules out tilt as the sole
+   cause.
+   Closing the residual view/tilt dependence means baking a directional-
+   albedo table over (width, azimuth, k_d, η, tilt) — several axes against
+   `fabric_material`'s two — and no shipping consumer needs it to better than
+   this.
+2. **The sampler wastes effort at a grazing view along a tilted yarn.** When the
+   specular cone lands in the latitude band a float tilt has buried, the surface
+   branch emits nothing: 51 % of draws on satin at θ_o = 80°, 19 % on silk, 0 %
+   on the untilted presets and ≤ 0.1 % below 60°. It is variance, not bias — the
+   density reports zero there too and the furnace confirms MC against quadrature
+   — and recovering it would make the branch probability depend on the drawn
+   latitude, which destroys the closed-form mixture density.
+3. **One tangent per family, not Sadeghi's tangent CURVE.** His Table II spends
+   up to 8 segments with individual lengths per family, and that is how he
+   reproduces satin's three-highlight asymmetry. P2-A ships one scalar float
+   tilt per family. The full curve is Phase-3 material.
+4. **Cross-family masking is not modelled** — warp does not shadow weft. That is
+   the source model's own scope ("we do not compute masking between different
+   threads").
+5. **`weave_scale` is the one slot no preset can get right**, because it depends
+   on the geometry's UV scale and the framing. Every shipped scene authors it.
+6. **The volume lobe is sampled by a cosine hemisphere, and it is not purely
+   diffuse.** Its `(1 − k_d)` share carries a second `Mp` at twice the surface
+   width — 5° for a flat satin float, a genuinely narrow forward cone by design
+   — which a cosine proposal under-samples. Measured on a 2048-spp direct-lit
+   sphere at the shipped satin preset, the peakiness ratio max/p99 over the lit
+   disc is **1.5, identical to the Phase-1 shape's 1.5** on the same subject, so
+   at the shipped parameters it produces no fireflies; a narrow lobe's energy
+   arrives overwhelmingly through NEE, which evaluates `value` directly. A scene
+   lit only by indirect bounces off that lobe is the case to re-measure. Fixing
+   it means a three-term-per-family mixture density, and the estimator's
+   tractability rests on that density staying closed-form and cheap.
+7. **Sadeghi's Eq. 15 reweighting normaliser `Q` is dropped, and the loss is
+   real and grazing-concentrated.** §10.1's masking paragraph above has the
+   corrected argument: `Q` is not reciprocal (it reads `ω_r` alone), a
+   reciprocal symmetrised substitute `Q_sym = √(Q(ω_i)Q(ω_o))` was tried and
+   pushes white presets past the furnace's 1.05 ceiling at grazing (measured
+   `Q_sym` as low as 0.30–0.34 there, i.e. `1/Q_sym ≈ 3×`), so `Q` stays out
+   entirely. Concretely: at a view 80° off the warp axis on the shipped satin
+   preset, `Q ≈ 0.336`, so the undivided form under-represents that
+   configuration by a factor of ~3× relative to what Sadeghi's full model
+   would return there. This is a genuine, measured, unrecovered energy loss,
+   confined to grazing views closely aligned with a family's own tangent —
+   not a general darkening, which is why it does not show up as a furnace
+   failure (the harness's fixed incident set does not sit in that narrow
+   configuration) but would show up as a slightly-too-dark silhouette on a
+   fabric lit edge-on along its warp or weft. No fix is proposed; a reciprocal
+   `Q` that does not blow through the energy ceiling would need a different
+   derivation than the geometric-mean symmetrisation this file uses
+   elsewhere, and the grazing-edge-lit case has not been reported as visually
+   material.
+8. **The research report's Eq. 3 transcription has a bracketing error; the
+   code is not affected.** `P2_ZHU_READ.md` §"Volume lobe" transcribes
+   Sadeghi's Eq. 3 with `k_d` alone over the Chandrasekhar denominator
+   (`[(1-k_d)·g(γ_v,θ_h) + k_d/(cosθ_i+cosθ_r)]`); the paper's own text puts
+   the *whole bracket* over the denominator, and that is what
+   `WeaveBRDF.cpp`'s `ComputeThreadTerms` implements (matches §10.1's `f_vol`
+   formula above). Recorded so a future reader who compares the code against
+   the research report rather than against the paper does not "fix" a
+   defect that exists only in the intermediate summary.
 
 ## 11. Phase 3 — yarn-level geometry
 
@@ -3776,7 +4122,7 @@ the sheen path), `src/Library/Parsers/README.md`.
 | Verb emission complexity | **up to 4 minted chunks + N rebinds, one swap** | §9.7: `<name>_fabric_f0` (`uniformcolor_painter`, only for a GGX substrate — `rs` cannot be inline, [Job.cpp:4243-4244](../src/Library/Job.cpp)), `<name>_fabric_base`, the weave painter, `<name>_fabric`. `add_wetness`'s emitter mints at most 3 and never a *material*, so `AgentSession`'s share of the work is larger than the 8-surface count alone suggests — budget the substrate-minting and the three-name reflectance lookup (§9.7 step 0) as the two genuinely new pieces |
 | New test files | **3** (was 2) | `tests/FabricMaterialChunkTest.cpp` (on `CoatedMaterialChunkTest.cpp`'s 873-line pattern), `tests/AgentMakeFabricTest.cpp` (on `AgentAddWearTest.cpp`'s ~248-`Check(` pattern), and — added during implementation — `tests/FabricRenderTest.cpp`, gate 7's own render-level suite on `HairRenderTest.cpp`'s harness. **Tests are glob-discovered — no build-file edits** |
 | Existing tests edited | **3** | `LayeredWhiteFurnaceTest.cpp` (new configs + the config-6 re-diagnosis), `SPFBSDFConsistencyTest.cpp` (fabric **and** sheen reciprocity entries), `SPFPdfConsistencyTest.cpp` |
-| Scenes | **5** (was 2) | `scenes/Tests/Materials/fabric_presets.RISEscene`, `scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene` (§9.1's own bucket-A regression), and three showcases: `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` (§9.8), `fabric_swatches.RISEscene` (the seven presets on draped swatches), `denim_and_satin_drape.RISEscene` (the hero, and gate 9b's subject) |
+| Scenes | **6** (Phase 2 added one; was 5, was 2) | `scenes/Tests/Materials/weave_presets.RISEscene` (Phase 2's own regression: the four weave presets, drafts legible), plus `scenes/Tests/Materials/fabric_presets.RISEscene`, `scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene` (§9.1's own bucket-A regression), and three showcases: `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` (§9.8), `fabric_swatches.RISEscene` (the seven presets on draped swatches), `denim_and_satin_drape.RISEscene` (the hero, and gate 9b's subject).  The last two moved to fabric-over-weave in Phase 2 |
 | Tools | **1** (new row) | `tools/fabric_sheen_measure.py` — the gate 9 / 9b / 10 measurement harness (EXR-reading, sphere-subject, K-trial), added during implementation because all three gates need the same renderer-driving + EXR-reading scaffolding and none of the existing `tools/` scripts read radiance |
 | Docs | **6** (was 4) | this file; `MATERIALS.md` §6/§8 catalogue; `SCENE_CONVENTIONS.md` §8.7 (the weave-aliasing idiom of §5.5); `GLTF_IMPORT.md` §15 (sheen now imports); and the two scene catalogues, `scenes/FeatureBased/README.md` and `scenes/Tests/README.md` |
 | Read-set edits | **2** | `materials-and-media-basics.md` (one parsing example), the materials skill hook-line rewrite |

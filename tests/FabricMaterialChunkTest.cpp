@@ -625,6 +625,39 @@ void TestAllowlistAccepts()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////
+// 3a. The allowlist TEXT itself -- REVIEW_P2R2.md P1: `IsSupportedSubstrate`
+//     and `SubstrateClassText` were extended for `weave_material` in the
+//     same diff that left `SubstrateAllowlistText()` unchanged, so the
+//     refusal/diagnostic MESSAGE still named only four classes while a
+//     fifth was silently accepted.  No test asserted the literal string,
+//     so the omission went undetected.  This pins the exact text --
+//     Job::AddFabricMaterial and RISE_API_CreateFabricMaterial print it
+//     verbatim on refusal, and AgentSession's make_fabric refusal
+//     messages quote it too, so a drift here is a drift everywhere an
+//     author or the agent sees "Supported:".
+//////////////////////////////////////////////////////////////////////
+
+void TestAllowlistTextNamesWeave()
+{
+	std::cout << "AllowlistTextNamesWeave" << std::endl;
+
+	const std::string text = RISE::Implementation::FabricMaterial::SubstrateAllowlistText();
+	Check( text.find( "lambertian_material" ) != std::string::npos,
+	       "allowlist text names lambertian_material" );
+	Check( text.find( "orennayar_material" ) != std::string::npos,
+	       "allowlist text names orennayar_material" );
+	Check( text.find( "ggx_material" ) != std::string::npos,
+	       "allowlist text names ggx_material" );
+	Check( text.find( "pbr_metallic_roughness_material" ) != std::string::npos,
+	       "allowlist text names pbr_metallic_roughness_material" );
+	Check( text.find( "weave_material" ) != std::string::npos,
+	       "allowlist text names weave_material -- REVIEW_P2R2.md P1's omission" );
+	Check( text == "lambertian_material, orennayar_material, ggx_material, "
+	               "pbr_metallic_roughness_material, weave_material",
+	       "allowlist text is exactly the FIVE-class string Job/RISE_API/AgentSession all quote" );
+}
+
 void TestAllowlistRefusals()
 {
 	std::cout << "AllowlistRefusals" << std::endl;
@@ -736,7 +769,16 @@ void TestPresetSubstrateMismatchWarns()
 		ParseBodyCapturing( "mismatch_satin", body, *job, out );
 		Check( IsFabric( *job, "cloth" ),
 		       "satin-over-lambertian STILL REGISTERS (the composition is legal)" );
-		Check( Contains( out.c_str(), "expects a ggx_material substrate" ),
+		// PHASE 2 MOVED THIS EXPECTATION, and the move is the point of
+		// the update rather than an incidental edit: `satin` used to
+		// recommend an anisotropic `ggx_material`, and 9.9 gate 9b
+		// measured that composition and found it reads as brushed metal
+		// (95-99 % of the substrate's anisotropy survives the sheen and
+		// it STILL has no pattern scale).  The preset now recommends a
+		// `weave_material`, so the class this diagnostic names moved
+		// with it.  The GGX numbers stay in FabricPresets.h as the
+		// documented Phase-1 fallback.
+		Check( Contains( out.c_str(), "expects a weave_material substrate" ),
 		       "satin-over-lambertian warns, naming the class the preset wanted" );
 		Check( Contains( out.c_str(), "make_fabric" ),
 		       "the mismatch warning points at the verb that would fix it" );
@@ -762,7 +804,47 @@ void TestPresetSubstrateMismatchWarns()
 	}
 
 	// The matching case must be SILENT -- otherwise the warning is
-	// noise, not information.
+	// noise, not information.  `cotton` over an `orennayar_material` is
+	// used because it is a preset whose recommendation Phase 2 did NOT
+	// move; picking one of the three that moved would make this control
+	// a moving target every time the table is retuned.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		std::string out;
+		std::string body = ColorPainter( "pd", "0.6 0.4 0.3" )
+		                 + OrenNayarMat( "base", "pd", 0.4 )
+		                 + FabricMat( "cloth", "base", "cotton" );
+		g_mismatchLog->Reset();
+		ParseBodyCapturing( "mismatch_ok", body, *job, out );
+		Check( IsFabric( *job, "cloth" ), "cotton-over-orennayar registers" );
+		Check( !Contains( out.c_str(), "expects a" ),
+		       "cotton-over-OrenNayar does NOT warn (the preset's class matched)" );
+		Check( g_mismatchLog->Count() == 0,
+		       "cotton-over-OrenNayar emits NO mismatch diagnostic at any severity" );
+		safe_release( job );
+	}
+
+	// AND THE PHASE-2 MATCH: `satin` over a `weave_material` is now the
+	// composition the preset recommends, so it must be the silent one.
+	// Its Phase-1 shape -- satin over a bare anisotropic GGX -- must now
+	// WARN, and both halves are checked here because a change that
+	// forgot one of them would leave the diagnostic pointing at the
+	// wrong composition without failing anything.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		std::string out;
+		std::string body = "weave_material\n{\n\tname\twbase\n\tfabric\tsatin\n}\n"
+		                 + FabricMat( "cloth", "wbase", "satin" );
+		g_mismatchLog->Reset();
+		ParseBodyCapturing( "mismatch_weave_ok", body, *job, out );
+		Check( IsFabric( *job, "cloth" ), "satin-over-weave registers" );
+		Check( !Contains( out.c_str(), "expects a" ),
+		       "satin-over-WEAVE does NOT warn (Phase 2's recommended class)" );
+		Check( g_mismatchLog->Count() == 0,
+		       "satin-over-WEAVE emits NO mismatch diagnostic at any severity" );
+		safe_release( job );
+	}
+
 	{
 		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
 		std::string out;
@@ -771,12 +853,11 @@ void TestPresetSubstrateMismatchWarns()
 		                 + GgxMat( "base", "pd", "ps", 0.34, 0.06 )
 		                 + FabricMat( "cloth", "base", "satin" );
 		g_mismatchLog->Reset();
-		ParseBodyCapturing( "mismatch_ok", body, *job, out );
-		Check( IsFabric( *job, "cloth" ), "satin-over-ggx registers" );
-		Check( !Contains( out.c_str(), "expects a" ),
-		       "satin-over-GGX does NOT warn (the preset's class matched)" );
-		Check( g_mismatchLog->Count() == 0,
-		       "satin-over-GGX emits NO mismatch diagnostic at any severity" );
+		ParseBodyCapturing( "mismatch_satin_ggx", body, *job, out );
+		Check( IsFabric( *job, "cloth" ), "satin-over-ggx STILL REGISTERS (still legal)" );
+		Check( Contains( out.c_str(), "expects a weave_material substrate" ),
+		       "satin-over-GGX now WARNS -- the Phase-1 shape is the documented fallback, "
+		       "not the recommendation" );
 		safe_release( job );
 	}
 
@@ -798,23 +879,33 @@ void TestPresetSubstrateMismatchWarns()
 		safe_release( job );
 	}
 
-	// A PBR base satisfies a GGX recommendation TRANSITIVELY -- the same
-	// reason the allowlist admits it.  If this warned, every glTF sheen
-	// asset would emit a spurious diagnostic.
+	// A PBR BASE.  This row used to prove that PBR satisfies a GGX
+	// recommendation TRANSITIVELY (it resolves to a `ggx_material` at
+	// scene-build time), driven by `silk` -- whose recommendation moved
+	// to `weave_material` in Phase 2, so silk-over-PBR now warns like
+	// any other non-matching class.  The transitive-ALLOWLIST claim,
+	// which is the one that matters for glTF import, is unaffected and
+	// is checked by TestAllowlistAccepts.
+	//
+	// What is checked here instead is that a PBR base does not emit a
+	// SPURIOUS diagnostic under a preset that recommends nothing --
+	// `fabric custom`, which is what the glTF importer actually mints
+	// (it carries no preset).  A warning there would put a diagnostic on
+	// every imported KHR_materials_sheen asset.
 	{
 		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
 		std::string out;
 		std::string body = ColorPainter( "pbase", "0.6 0.4 0.3" )
 		                 + "pbr_metallic_roughness_material\n{\n\tname\tbase\n"
 		                   "\tbase_color\tpbase\n\tmetallic\t0.0\n\troughness\t0.4\n}\n"
-		                 + FabricMat( "cloth", "base", "silk" );
+		                 + FabricMat( "cloth", "base", "custom" );
 		g_mismatchLog->Reset();
 		ParseBodyCapturing( "mismatch_pbr", body, *job, out );
-		Check( IsFabric( *job, "cloth" ), "silk-over-PBR registers" );
+		Check( IsFabric( *job, "cloth" ), "custom-over-PBR registers" );
 		Check( !Contains( out.c_str(), "expects a" ),
-		       "silk-over-PBR does NOT warn (PBR resolves to ggx transitively)" );
+		       "custom-over-PBR does NOT warn (the glTF importer's own shape)" );
 		Check( g_mismatchLog->Count() == 0,
-		       "silk-over-PBR emits NO mismatch diagnostic at any severity" );
+		       "custom-over-PBR emits NO mismatch diagnostic at any severity" );
 		safe_release( job );
 	}
 }
@@ -1646,6 +1737,7 @@ int main()
 	TestPresetsSeedTheSlots();
 	TestExplicitSlotsWin();
 	TestAllowlistAccepts();
+	TestAllowlistTextNamesWeave();
 	TestAllowlistRefusals();
 	TestPresetSubstrateMismatchWarns();
 	TestSheenColorDefault();

@@ -42,7 +42,32 @@ printf "render\nquit\n" | ./bin/rise scenes/Tests/Geometry/shapes.RISEscene
   `Materials/Enamel/` contains the silver, swatch, dome, SDF, and dimple
   controls used to build the enamel-watch hero.
 
-  Two scenes cover the `fabric_material` triad (docs/CLOTH_FABRIC_DESIGN.md
+  `weave_presets` covers the `weave_material` triad
+  (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A): all four `fabric`
+  presets on one row of spheres — denim, silk, satin, linen — each showing
+  its own weave DRAFT, which is what Phase 1 could not make.  Confirmed by
+  rendering and inspecting the PNG this session: denim shows a diagonal 3/1
+  twill wale, silk and satin a 5-harness satin float (a narrow vertical
+  band on silk, a tighter one on satin), linen a plain 1/1 checkerboard.
+  `weave_scale` is overridden on every row to 22 cells per UV unit,
+  deliberately: WeavePresets.h's shipped defaults are THREAD-COUNT based
+  (2000–8000 cells per UV unit, calibrated so a real garment-scale UV span
+  puts the weave at or below pixel size — see WeavePresets.h's own
+  rationale) and are sub-pixel at this framing, where the material's own
+  footprint fade correctly takes over and every row becomes its own mean
+  coverage. That fade is what stops a weave aliasing into a checkerboard and
+  is tested directly by `tests/WeaveMaterialChunkTest.cpp`; what THIS scene
+  exists to show is the draft itself, so every row is deliberately
+  coarsened until the draft reads — the opposite intent from a showcase
+  scene, which wants the default (sub-pixel, direction-and-sheen-only) look
+  instead (see `scenes/FeatureBased/Materials/fabric_swatches.RISEscene`'s
+  README entry for that comparison, including the one preset it hero-
+  overrides for a visible grain).  A row that renders as a flat sphere has
+  lost either the draft or the scale override.  `oidn_denoise` is FALSE —
+  a denoised frame is not evidence about a weave, because the denoiser is
+  free to smear exactly the per-cell structure being judged.
+
+  Two more scenes cover the `fabric_material` triad (docs/CLOTH_FABRIC_DESIGN.md
   Phase 1).  `fabric_presets` is section 9.9 gate 11's own scene: all seven
   `fabric` presets on one row of spheres (cotton, linen, denim, wool, silk,
   satin, velvet), each paired with the SUBSTRATE its preset was calibrated

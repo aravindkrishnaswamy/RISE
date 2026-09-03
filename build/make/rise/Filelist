@@ -178,6 +178,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/CoatedSPF.cpp									\
 	$(PATHLIBRARY)Materials/FabricBRDF.cpp									\
 	$(PATHLIBRARY)Materials/FabricSPF.cpp									\
+	$(PATHLIBRARY)Materials/WeaveBRDF.cpp									\
+	$(PATHLIBRARY)Materials/WeaveSPF.cpp									\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
 	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\
 	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\

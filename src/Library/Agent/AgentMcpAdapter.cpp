@@ -2045,12 +2045,14 @@ namespace RISE
 							"the substrate class and parameters the verb mints -- it is the one place a "
 							"preset gets to configure the substrate, because this verb, unlike the chunk, "
 							"can create chunks. cotton/linen/wool mint an orennayar_material (sigma 0.4 / "
-							"0.5 / 0.6); denim/silk/satin mint an ANISOTROPIC ggx_material (alphax/alphay "
-							"0.34-0.22 / 0.30-0.10 / 0.34-0.06) -- for those three the anisotropy ratio IS "
-							"the fabric; velvet mints a lambertian_material and no anisotropy at all "
-							"(it is a pile, not a weave). Omit it to infer the fabric from the object's "
-							"own name where that is unambiguous (`denim_jacket` -> denim; `cushion` names "
-							"no fabric, so it falls back to cotton and the message SAYS so). `custom` is "
+							"0.5 / 0.6); denim/silk/satin mint a `weave_material` -- the structured "
+							"two-thread-family cloth BSDF -- carrying that fabric's own draft (denim a 3/1 "
+							"twill wale, silk and satin a 5-harness satin float), because for those three "
+							"the PATTERN is the fabric and a single anisotropic lobe cannot make one; "
+							"velvet mints a lambertian_material and no direction at all (it is a pile, not "
+							"a weave). Omit it to infer the fabric from the object's own name where that "
+							"is unambiguous (`denim_jacket` -> denim; `cushion` names no fabric, so it "
+							"falls back to cotton and the message SAYS so). `custom` is "
 							"deliberately absent: it has no recommended substrate to mint." ) );
 						props.set( "fabric", fab );
 					}

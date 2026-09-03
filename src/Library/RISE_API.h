@@ -810,6 +810,59 @@ namespace RISE
 								const IScalarPainter& weave_rotation	///< [in] Weave angle in RADIANS, applied to the SUBSTRATE's frame
 								);
 
+	//! Creates a Weave material -- a structured TWO-THREAD-FAMILY cloth
+	//! BSDF (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-A).
+	//!
+	//! `weave` is the DRAFT's name -- one of `plain`, `twill_2_1`,
+	//! `twill_3_1`, `satin_5`, `custom` (WeavePresets.h's
+	//! `WeavePatternNamesText`).  It is passed as a STRING rather than as
+	//! an enum so this public header need not include a Materials header;
+	//! an unrecognised spelling resolves to `plain`, matching the chunk
+	//! descriptor's own default.
+	//!
+	//! `coverage` is read ONLY when `weave` is `custom`, and may be NULL
+	//! otherwise; passing NULL with `custom` yields a uniform 0.5 split.
+	//!
+	//! `warp_color` / `weft_color` are genuinely colours (the DYES) and
+	//! ride `IPainter`.  EVERY other slot is a physical scalar and rides
+	//! `IScalarPainter` -- including the two IORs, the two longitudinal
+	//! widths, the two azimuthal widths, the two k_d fractions and the
+	//! two float tilts, none of which may go through the JH spectral
+	//! uplift (docs/ISCALARPAINTER_REFACTOR.md).
+	//!
+	//! There is NO substrate and no allowlist: unlike
+	//! `fabric_material`, this material IS the BSDF rather than a layer
+	//! over one.  It is itself accepted as a `fabric_material` substrate,
+	//! which is the physical stack (fuzz over weave).
+	//!
+	//! NOTE the same deliberate asymmetry with the SCENE-LANGUAGE path
+	//! that `RISE_API_CreateFabricMaterial` has: the `fabric` PRESET is a
+	//! scene-language affordance consumed in the parser and in
+	//! `Job::AddWeaveMaterial`; this factory takes no preset and every
+	//! slot must be supplied.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateWeaveMaterial(
+								IMaterial** ppi,						///< [out] Pointer to recieve the material
+								const char* weave,						///< [in] Draft name; unrecognised => `plain`
+								const IScalarPainter& weave_scale,		///< [in] Cells per UV unit
+								const IScalarPainter& weave_rotation,	///< [in] Warp direction, RADIANS, about the shading normal
+								const IScalarPainter& weft_skew,		///< [in] Weft offset from perpendicular, RADIANS
+								const IScalarPainter* coverage,			///< [in] `custom` only: warp-coverage field; may be NULL
+								const IScalarPainter& gap,				///< [in] Uncovered fraction, clamped to [0, 0.3]
+								const IPainter& warp_color,				///< [in] Warp dye (tints the VOLUME lobe only)
+								const IScalarPainter& warp_ior,			///< [in] Warp fibre IOR
+								const IScalarPainter& warp_width,		///< [in] Warp longitudinal width beta, RADIANS
+								const IScalarPainter& warp_azimuth,		///< [in] Warp azimuthal width gamma, RADIANS
+								const IScalarPainter& warp_kd,			///< [in] Warp isotropic volume-scattering fraction
+								const IScalarPainter& warp_tilt,		///< [in] Warp float tilt out of plane, RADIANS
+								const IPainter& weft_color,				///< [in] Weft dye
+								const IScalarPainter& weft_ior,			///< [in] Weft fibre IOR
+								const IScalarPainter& weft_width,		///< [in] Weft longitudinal width beta, RADIANS
+								const IScalarPainter& weft_azimuth,		///< [in] Weft azimuthal width gamma, RADIANS
+								const IScalarPainter& weft_kd,			///< [in] Weft isotropic volume-scattering fraction
+								const IScalarPainter& weft_tilt			///< [in] Weft float tilt out of plane, RADIANS
+								);
+
 	//! Creates a Dielectric material.  Scalar params (tau, IOR, scattering)
 	//! are physical scalars carried by `IScalarPainter` — see
 	//! docs/ISCALARPAINTER_REFACTOR.md.
