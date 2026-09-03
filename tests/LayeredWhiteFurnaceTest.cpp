@@ -254,6 +254,56 @@ static double DirectionalAlbedo(
 }
 
 // ============================================================
+//  Full-sphere furnace driver -- P2-B (docs/CLOTH_FABRIC_DESIGN.md 10,
+//  thin-cloth transmission).
+//
+//  Identical to `DirectionalAlbedo` above EXCEPT for the one thing that
+//  must differ: it does NOT skip `cosO <= 0`.  `DirectionalAlbedo`'s own
+//  comment explains why THAT gate is right for it -- "those are
+//  below-surface paths the integrator wouldn't propagate" -- which is
+//  true for every P2-A material and every OTHER row this file measures,
+//  none of which report `IMaterial::ScattersFullSphere()`.  A
+//  `transmission thin` weave is the one case in this suite where it is
+//  wrong: `WeaveSPF`'s transmit-side rays are exactly the below-horizon
+//  paths the integrator DOES propagate (LightSampler's full-sphere NEE
+//  block, on HairMaterial's precedent), and `kray` for those rays
+//  already carries the correct `|cos|` weighting (WeaveSPF.cpp's
+//  `absCosWi`), so summing every emitted ray's `kray` regardless of
+//  which side of the shading normal it lands on gives the material's
+//  TOTAL directional throughput -- reflection plus transmission -- in
+//  one number.  That total is exactly what item 2's "reflection +
+//  transmission hemispherical sum" bound is stated against.
+// ============================================================
+
+static double DirectionalAlbedoFullSphere(
+	ISPF& spf,
+	double incomingThetaRad )
+{
+	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+	RandomNumberGenerator rng;
+	IndependentSampler sampler( rng );
+	IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+	double sum = 0;
+
+	for( int i = 0; i < FURNACE_SAMPLES; ++i )
+	{
+		ScatteredRayContainer scattered;
+		spf.Scatter( ri, sampler, scattered, iorStack );
+
+		for( unsigned int j = 0; j < scattered.Count(); ++j )
+		{
+			const ScatteredRay& scat = scattered[j];
+			const double kMax = ColorMath::MaxValue( scat.kray );
+			if( kMax >= 0 && kMax < 1e6 ) {
+				sum += kMax;
+			}
+		}
+	}
+	return sum / (double)FURNACE_SAMPLES;
+}
+
+// ============================================================
 //  Downward-ray probe (docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 4)
 //
 //  Config 7's 2026-09-01 re-diagnosis rested on a direct measurement:
@@ -752,10 +802,16 @@ namespace WeaveIndependentCheck
 	}
 
 	//! Bihemispherical directional albedo of ONE thread family at a
-	//! fixed view, by brute-force quadrature.
-	static double IntegrateFamily( const Thread& t, const V3& n, const V3& wo, int NT, int NP )
+	//! fixed view, by brute-force quadrature -- SURFACE and VOLUME kept
+	//! separate (R8 P2-2) so a P2-B caller can apply the `(1-transmit_k)`
+	//! budget split to the volume share ONLY, exactly as
+	//! `WeaveBRDF::ValueWithParams`'s reflect branch does.  Row 49's own
+	//! caller (`PredictWhiteRho`) just sums the two back together, so its
+	//! numbers are UNCHANGED by this refactor.
+	struct FamilyIntegral { double surf, vol; };
+	static FamilyIntegral IntegrateFamily( const Thread& t, const V3& n, const V3& wo, int NT, int NP )
 	{
-		double acc = 0.0;
+		FamilyIntegral acc{ 0.0, 0.0 };
 		for( int i = 0; i < NT; ++i )
 		{
 			const double th  = ( i + 0.5 ) * ( kQPI * 0.5 ) / NT;
@@ -768,7 +824,8 @@ namespace WeaveIndependentCheck
 				const V3 wi{ st * std::cos( ph ), st * std::sin( ph ), ct };
 				const TT tt = ComputeTerms( t, n, wi, wo );
 				const double w = ct * st * dth * dph;		// dw = cos(th) sin(th) dth dph
-				acc += ( tt.surface + tt.volume ) * w;
+				acc.surf += tt.surface * w;
+				acc.vol  += tt.volume  * w;
 			}
 		}
 		return acc;
@@ -798,15 +855,81 @@ namespace WeaveIndependentCheck
 
 		const double th = thetaViewDeg * kQPI / 180.0;
 		const V3 wo{ std::sin( th ), 0, std::cos( th ) };
-		const double rw = IntegrateFamily( W, n, wo, 220, 440 );
-		const double rf = IntegrateFamily( F, n, wo, 220, 440 );
+		const FamilyIntegral rw = IntegrateFamily( W, n, wo, 220, 440 );
+		const FamilyIntegral rf = IntegrateFamily( F, n, wo, 220, 440 );
 		// `available = 1 - gap` is a direction-independent energy factor
 		// (WeaveBRDF.h section "THE GAP IS AN ENERGY FACTOR"), applied
 		// here too -- linen is the one shipped preset with a real gap
 		// (0.10) and was the tell when this was first omitted: its
 		// measured/predicted ratio sat at ~0.90, exactly `1 - gap`.
 		const double available = 1.0 - (double)P.gap;
-		return available * ( aWarp * rw + ( 1.0 - aWarp ) * rf );
+		return available * ( aWarp * ( rw.surf + rw.vol ) + ( 1.0 - aWarp ) * ( rf.surf + rf.vol ) );
+	}
+
+	//! R8 P2-2: the P2-B extension of `PredictWhiteRho` -- an
+	//! INDEPENDENT (quadrature, not `value()`/`Scatter()`) prediction of
+	//! BOTH the reflect-side total AND the diffuse-transmission total
+	//! for a white, `transmission thin` two-family weave, so
+	//! LayeredWhiteFurnaceTest's rows 50/51 can compare against a number
+	//! that was never derived from the code under test.
+	//!
+	//! REFLECT SIDE: identical quadrature to `PredictWhiteRho`, with the
+	//! volume share of EACH family scaled by `(1 - transmit_k)` before
+	//! summing -- the same "one budget, split" rule
+	//! `WeaveBRDF::ValueWithParams`'s reflect branch applies
+	//! (`volumeScale = 1 - transmit`).
+	//!
+	//! TRANSMIT SIDE, CLOSED FORM, NO QUADRATURE NEEDED: the diffuse
+	//! transmission lobe is `f_t,d,k = (1-gap) * transmit_k * T_k / pi`,
+	//! a Lambertian BTDF with NO directional dependence at all (WeaveBRDF.h
+	//! section 2a).  A Lambertian lobe `rho/pi` illuminated by a UNIT
+	//! furnace (constant incident radiance 1 from every direction of the
+	//! FAR hemisphere) integrates to EXACTLY `rho`, independent of the
+	//! view direction:
+	//!
+	//!     INT_hemisphere (rho/pi) * cos(theta_i) dw_i
+	//!       = (rho/pi) * INT cos(theta) sin(theta) dtheta dphi
+	//!       = (rho/pi) * pi = rho
+	//!
+	//! (the standard closed-form Lambertian hemispherical-integral
+	//! identity -- `d'Eon`/microfacet texts derive the same INT cos dw
+	//! = pi step for any cosine-weighted hemisphere).  So the transmit
+	//! total is the closed form `available * Sum_k cov_k * transmit_k *
+	//! T_k`, with `T_k = 1` for the forced-white dyes this check uses --
+	//! no separate quadrature loop is needed, and this term is EXACT
+	//! (not an approximation), unlike the reflect side's brute-force
+	//! quadrature.
+	struct SheerPrediction { double reflectTotal, transmitTotal; };
+	static SheerPrediction PredictSheerTotal(
+		const RISE::Implementation::WeavePreset& P, double aWarp, double thetaViewDeg,
+		double transmitWarp, double transmitWeft )
+	{
+		const V3 n{ 0, 0, 1 };
+		const V3 warpU{ 1, 0, 0 };
+		const V3 weftU{ 0, 1, 0 };
+		const Thread W{
+			Add( Mul( warpU, std::cos( (double)P.warp.tilt ) ), Mul( n, std::sin( (double)P.warp.tilt ) ) ),
+			(double)P.warp.ior, (double)P.warp.width * (double)P.warp.width,
+			4.0 * (double)P.warp.width * (double)P.warp.width,
+			(double)P.warp.azimuth * 0.5513288954217921, (double)P.warp.kd };
+		const Thread F{
+			Add( Mul( weftU, std::cos( (double)P.weft.tilt ) ), Mul( n, std::sin( (double)P.weft.tilt ) ) ),
+			(double)P.weft.ior, (double)P.weft.width * (double)P.weft.width,
+			4.0 * (double)P.weft.width * (double)P.weft.width,
+			(double)P.weft.azimuth * 0.5513288954217921, (double)P.weft.kd };
+
+		const double th = thetaViewDeg * kQPI / 180.0;
+		const V3 wo{ std::sin( th ), 0, std::cos( th ) };
+		const FamilyIntegral rw = IntegrateFamily( W, n, wo, 220, 440 );
+		const FamilyIntegral rf = IntegrateFamily( F, n, wo, 220, 440 );
+		const double available = 1.0 - (double)P.gap;
+
+		SheerPrediction out;
+		out.reflectTotal = available * (
+			aWarp         * ( rw.surf + ( 1.0 - transmitWarp ) * rw.vol ) +
+			( 1.0 - aWarp ) * ( rf.surf + ( 1.0 - transmitWeft ) * rf.vol ) );
+		out.transmitTotal = available * ( aWarp * transmitWarp + ( 1.0 - aWarp ) * transmitWeft );
+		return out;
 	}
 }
 
@@ -2284,6 +2407,161 @@ int main()
 			"pass/fail indicator only -- measured/predicted pairs are in the table printed above" );
 		for( int i = 0; i < NUM_THETA; ++i ) r.albedo[i] = whiteFloorPassed ? 1.0 : 0.0;
 		r.passed = whiteFloorPassed;
+	}
+
+	//  ---- 50/51. P2-B thin-cloth transmission (docs/CLOTH_FABRIC_DESIGN.md
+	//  10): a sheer white linen's TOTAL (reflection + transmission)
+	//  energy, and the delta gap lobe measured IN ISOLATION.
+	{
+		std::cout << "\n";
+		std::cout << "  Phase 2-B -- thin-cloth transmission energy\n";
+
+		// 50. SHEER WHITE LINEN: gap 0.2 (well inside WeaveBRDF::kMaxGap
+		// 0.3), transmit 0.25 on both families, both dyes forced to
+		// white -- the same `whiteDyes` energy-statement convention row
+		// 49 uses.  R8 P2-2: the bound is now an INDEPENDENT prediction
+		// (`WeaveIndependentCheck::PredictSheerTotal`, a from-scratch
+		// quadrature + a closed-form Lambertian identity -- see that
+		// function's own derivation) compared at a tight epsilon,
+		// replacing the old self-referential "reflect-only twin minus
+		// transmit" bound, which a transmission formula wrong by up to
+		// ~2x low would still have passed (R8 P2-2's own finding).
+		const double kSheerGap      = 0.2;
+		const double kSheerTransmit = 0.25;
+		const double kSheerCeiling  = 1.05;
+		// EPSILON DERIVATION, MEASURED THIS SESSION (not assumed).  With
+		// the delta lobe's own exact `gap` contribution correctly added
+		// to the prediction (see the comment at `predictedRow[i]`
+		// below), measured-vs-predicted at FURNACE_SAMPLES = 100000
+		// reads 0.8542/0.8500 (theta 0), 0.8379/0.8344 (30),
+		// 0.7841/0.7813 (60), 0.7507/0.7454 (80) -- absolute differences
+		// 0.0042 / 0.0035 / 0.0028 / 0.0053, i.e. <= 0.006 at every
+		// angle this check runs.  0.01 is roughly double the largest
+		// observed gap: tight enough that a transmission formula wrong
+		// by even a few percent (let alone the old bound's "up to ~2x
+		// low" blind spot, R8 P2-2) fails loudly, with headroom for
+		// ordinary run-to-run float/libm drift rather than for a
+		// genuine model discrepancy.
+		const double kSheerPredictEps = 0.01;
+
+		bool sheerPassed = true;
+		std::cout << "  " << std::left << std::setw( 34 ) << "config";
+		for( int i = 0; i < NUM_THETA; ++i ) {
+			std::ostringstream h; h << "th" << (int)THETA_DEG[i];
+			std::cout << std::right << std::setw( 16 ) << h.str();
+		}
+		std::cout << "\n";
+
+		double totalRow[NUM_THETA], predictedRow[NUM_THETA];
+		{
+			// `coverage` pinned at linen's own draft mean (0.5) so the
+			// prediction does not depend on where in the weave cell the
+			// harness's fixed shading point lands -- same device row 49
+			// uses.
+			RISE::WeaveTest::PresetWeave sheer( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+			                                    /*thin=*/true, kSheerTransmit, kSheerTransmit, kSheerGap );
+			const RISE::Implementation::WeavePreset& linenP =
+				RISE::Implementation::LookupWeavePreset( "linen" );
+
+			std::cout << "  " << std::left << std::setw( 34 ) << "sheer linen (measured total)";
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				totalRow[i] = DirectionalAlbedoFullSphere( *sheer.SPF(), THETA_DEG[i] * PI / 180.0 );
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 4 ) << totalRow[i];
+				std::cout << std::right << std::setw( 16 ) << cell.str();
+			}
+			std::cout << "\n  " << std::left << std::setw( 34 ) << "sheer linen (independent predicted)";
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				// `linenP.gap` is the PRESET's own 0.10; the fixture's
+				// `gapOverride` (kSheerGap = 0.2) is what the measured
+				// material actually uses, so the prediction must read
+				// `available` off the SAME overridden value, not the
+				// preset's.  `PredictSheerTotal` takes `P` only for the
+				// per-family shape parameters (ior/width/azimuth/kd/tilt)
+				// and reads `available` from `P.gap` internally -- pass a
+				// COPY with `gap` overridden to match the fixture.
+				RISE::Implementation::WeavePreset overriddenP = linenP;
+				overriddenP.gap = kSheerGap;
+				const WeaveIndependentCheck::SheerPrediction pred =
+					WeaveIndependentCheck::PredictSheerTotal( overriddenP, 0.5, THETA_DEG[i],
+					                                          kSheerTransmit, kSheerTransmit );
+				// `DirectionalAlbedoFullSphere` sums EVERY emitted ray,
+				// `isDelta` included (its own doc comment) -- so the
+				// comparable independent prediction is the delta lobe's
+				// OWN exact contribution (`gap`, row 51's own closed
+				// form) PLUS the continuum (reflect + diffuse-transmit)
+				// this function predicts.  Omitting the delta term here
+				// was the bug this session's own first measurement
+				// caught: predicted 0.65 vs measured 0.85 at theta=0,
+				// and 0.85 - 0.65 = 0.20 = kSheerGap exactly.
+				predictedRow[i] = kSheerGap + pred.reflectTotal + pred.transmitTotal;
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 4 ) << predictedRow[i];
+				std::cout << std::right << std::setw( 16 ) << cell.str();
+			}
+			std::cout << "\n";
+
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				const bool ceilingOk = totalRow[i] <= kSheerCeiling;
+				const bool predictOk = std::fabs( totalRow[i] - predictedRow[i] ) <= kSheerPredictEps;
+				if( !ceilingOk || !predictOk ) sheerPassed = false;
+			}
+		}
+		if( !sheerPassed ) {
+			std::cout << "    FAIL: sheer white linen's total (reflect+transmit) energy either exceeded "
+			             << kSheerCeiling << " or missed the independent prediction by more than "
+			             << kSheerPredictEps << ".\n";
+		}
+		ConfigReport& r50 = add( "50. Phase 2-B sheer white linen (gap 0.2, transmit 0.25) total energy",
+			kPosturePass, 0.01,
+			"pass/fail indicator only -- reflect+transmit total vs its INDEPENDENT prediction "
+			"(quadrature + closed-form Lambertian identity, not value()/Scatter()) is in the table above" );
+		for( int i = 0; i < NUM_THETA; ++i ) r50.albedo[i] = sheerPassed ? 1.0 : 0.0;
+		r50.passed = sheerPassed;
+
+		// 51. THE DELTA GAP LOBE, ISOLATED.  `f_delta = gap(x) *
+		// delta(i+o) / (i.n_s)`, selected with probability EXACTLY
+		// `gap(x)` and weighted `kray = 1` (WeaveSPF.cpp) -- so summing
+		// kray ONLY over `isDelta` rays and dividing by the sample count
+		// must converge to `gap` regardless of what the continuum lobes
+		// do (they are a disjoint branch of the same pmf).  This is the
+		// literal "a gap-only row (all delta) must sum to gap exactly"
+		// -- read as the delta branch's OWN Monte-Carlo estimate, since
+		// `WeaveBRDF::kMaxGap` (0.3) makes an actually gap-ONLY material
+		// (100% delta) unreachable through the public `gap`/`sheer` slot.
+		{
+			RISE::WeaveTest::PresetWeave deltaOnly( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+			                                        /*thin=*/true, 0.0, 0.0, kSheerGap );
+			RandomNumberGenerator rng;
+			IndependentSampler sampler( rng );
+			IORStack iorStack = MakeTestIORStack( g_stubObject );
+			RayIntersectionGeometric ri = MakeIntersection( 0.0 );
+
+			double deltaSum = 0;
+			for( int i = 0; i < FURNACE_SAMPLES; ++i ) {
+				ScatteredRayContainer scattered;
+				deltaOnly.SPF()->Scatter( ri, sampler, scattered, iorStack );
+				for( unsigned int j = 0; j < scattered.Count(); ++j ) {
+					if( scattered[j].isDelta ) {
+						deltaSum += ColorMath::MaxValue( scattered[j].kray );
+					}
+				}
+			}
+			const double deltaMeasured = deltaSum / (double)FURNACE_SAMPLES;
+			const double deltaEps = 0.01;	// ~8 sigma of a Bernoulli(0.2) estimator at N=100000
+			const bool deltaOk = std::fabs( deltaMeasured - kSheerGap ) <= deltaEps;
+
+			std::cout << "  delta-only (should equal gap = " << kSheerGap << "): "
+			          << std::fixed << std::setprecision( 4 ) << deltaMeasured
+			          << ( deltaOk ? "" : "  !" ) << "\n";
+			if( !deltaOk ) {
+				std::cout << "    FAIL: the isolated delta branch's Monte-Carlo estimate did not converge "
+				             "to `gap` within " << deltaEps << ".\n";
+			}
+			ConfigReport& r51 = add( "51. Phase 2-B delta gap lobe sums to gap exactly",
+				kPosturePass, 0.01,
+				"pass/fail indicator only -- the isolated delta-branch estimate vs `gap` is printed above" );
+			for( int i = 0; i < NUM_THETA; ++i ) r51.albedo[i] = deltaOk ? 1.0 : 0.0;
+			r51.passed = deltaOk;
+		}
 	}
 
 	PrintReport( reports );

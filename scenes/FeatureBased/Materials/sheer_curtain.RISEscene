@@ -1,0 +1,292 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                                                                                           #
+#   File:           sheer_curtain.RISEscene                                                                 #
+#   Description:    docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice P2-B (thin-cloth transmission) hero          #
+#                   scene.  See docs/CLOTH_FABRIC_DESIGN.md 10.1a and scenes/FeatureBased/README.md for     #
+#                   the verified composition, the probe numbers behind the light-level tuning, and the      #
+#                   disclosed PT diffuse-transmission finding this scene works around (the delta/`sheer`    #
+#                   lobe, not `transmit`, is the reliable brightness lever here -- see those two docs for   #
+#                   why).                                                                                   #
+#                                                                                                           #
+#   Author:         Aravind Krishnaswamy                                                                    #
+#   Birthdate:      2026-09-03                                                                              #
+#                                                                                                           #
+#############################################################################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				384
+	rr_min_depth		4
+	oidn_denoise		TRUE
+}
+
+file_rasterizeroutput
+{
+	pattern				rendered/sheer_curtain
+	type				PNG
+	bpp					8
+	color_space			sRGB
+	display_transform	aces
+}
+
+film
+{
+	width			1000
+	height			1250
+}
+
+pinhole_camera
+{
+	location			0 0.0 3.0
+	lookat				0 0.0 0.0
+	up					0 1 0
+	fov					55.0
+}
+
+#############################################################################################################
+# The room.  A back wall (at the window's own depth) tiled from three dark
+# strips around a rectangular window opening -- top, left, right; the wall's
+# bottom edge coincides with the window's bottom edge and the floor line, so
+# no bottom strip is needed.  A floor extends from that line toward camera.
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		pnt_wall
+	color		0.22 0.19 0.17
+	colorspace	Rec709RGB_Linear
+}
+
+orennayar_material
+{
+	name		mat_wall
+	reflectance	pnt_wall
+	roughness	0.9
+}
+
+# Window opening: x [-1.6,1.6], y [-1.8,1.8], z = -1.5.
+clippedplane_geometry
+{
+	name		wall_top
+	pta			-20.0  1.8 -1.5
+	ptb			 20.0  1.8 -1.5
+	ptc			 20.0  20.0 -1.5
+	ptd			-20.0  20.0 -1.5
+	doublesided	TRUE
+}
+clippedplane_geometry
+{
+	name		wall_left
+	pta			-20.0 -1.8 -1.5
+	ptb			-1.6  -1.8 -1.5
+	ptc			-1.6   1.8 -1.5
+	ptd			-20.0  1.8 -1.5
+	doublesided	TRUE
+}
+clippedplane_geometry
+{
+	name		wall_right
+	pta			 1.6  -1.8 -1.5
+	ptb			 20.0 -1.8 -1.5
+	ptc			 20.0  1.8 -1.5
+	ptd			 1.6   1.8 -1.5
+	doublesided	TRUE
+}
+
+standard_object
+{
+	name		wall_top_obj
+	geometry	wall_top
+	material	mat_wall
+	position	0 0 0
+}
+standard_object
+{
+	name		wall_left_obj
+	geometry	wall_left
+	material	mat_wall
+	position	0 0 0
+}
+standard_object
+{
+	name		wall_right_obj
+	geometry	wall_right
+	material	mat_wall
+	position	0 0 0
+}
+
+uniformcolor_painter
+{
+	name		pnt_floor
+	color		0.30 0.26 0.22
+	colorspace	Rec709RGB_Linear
+}
+
+orennayar_material
+{
+	name		mat_floor
+	reflectance	pnt_floor
+	roughness	0.5
+}
+
+clippedplane_geometry
+{
+	name		floor_quad
+	pta			-20.0 -1.8  4.5
+	ptb			 20.0 -1.8  4.5
+	ptc			 20.0 -1.8 -1.5
+	ptd			-20.0 -1.8 -1.5
+	doublesided	TRUE
+}
+
+standard_object
+{
+	name		floor_obj
+	geometry	floor_quad
+	material	mat_floor
+	position	0 0 0
+}
+
+#############################################################################################################
+# The window -- fills the wall opening, WIDER (angularly, from the camera)
+# than the curtain in front of it, so a sliver of direct window light shows
+# on both sides of the curtain.  `scale` tuned this session against the
+# rendered EXR -- see docs/CLOTH_FABRIC_DESIGN.md 10.1a for the exact
+# linear-radiance figures this was calibrated to.
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name		pnt_window
+	color		1.0 0.90 0.74
+	colorspace	Rec709RGB_Linear
+}
+
+lambertian_luminaire_material
+{
+	name		mat_window
+	exitance	pnt_window
+	material	none
+	scale		4.5
+}
+
+clippedplane_geometry
+{
+	name		window_quad
+	pta			-1.6 -1.8 -1.5
+	ptb			 1.6 -1.8 -1.5
+	ptc			 1.6  1.8 -1.5
+	ptd			-1.6  1.8 -1.5
+	doublesided	TRUE
+}
+
+standard_object
+{
+	name		window_obj
+	geometry	window_quad
+	material	mat_window
+	position	0 0 0
+}
+
+#############################################################################################################
+# The curtain -- closer to camera than the window (so it reads narrower on
+# screen despite spanning a comparable fraction of the opening in world
+# units), hanging from near the top with deep, high-frequency folds so
+# front-lit shading reads the cloth shape.
+#############################################################################################################
+
+expression_function2d
+{
+	name		curtain_drape_field
+	param		nu 4.0
+	def			amp   1.0 - smoothstep(0.06, 0.92, v)
+	def			f1    sin(tau*nu*u)
+	def			f2    0.35*sin(tau*2.3*nu*u + 0.9)
+	def			bulge 0.30*sin(pi*v)
+	expr		clamp( 0.5 + 0.34*amp*(f1 + f2) + 0.16*bulge, 0, 1 )
+}
+
+function2d_painter
+{
+	name		curtain_disp
+	function2d	curtain_drape_field
+	scale		1.0
+	bias		0.0
+}
+
+clippedplane_geometry
+{
+	name		curtain_quad
+	pta			-0.90 -1.10 0
+	ptb			 0.90 -1.10 0
+	ptc			 0.90  1.10 0
+	ptd			-0.90  1.10 0
+	doublesided	TRUE
+}
+
+displaced_geometry
+{
+	name			curtain_geo
+	base_geometry	curtain_quad
+	displacement	curtain_disp
+	disp_scale		0.40
+	detail			320
+	uv_seam_fold	FALSE
+}
+
+weave_material
+{
+	name			mat_curtain
+	fabric			linen
+	transmission	thin
+	sheer			0.22
+	warp_transmit	0.30
+	weft_transmit	0.30
+}
+
+standard_object
+{
+	name			curtain_obj
+	geometry		curtain_geo
+	material		mat_curtain
+	position		0 0 0
+}
+
+#############################################################################################################
+# Lighting.  The window is the strong source; a dim ambient plus a soft
+# front/rim pair let the room-facing side of the curtain, the wall and the
+# floor read as more than pure black, and let the fold GEOMETRY shade
+# normally under ordinary front light -- the cue the folds actually rely on
+# (the transmission lobes themselves do not encode fold direction: the
+# delta lobe is a straight, undeviated pass-through).
+#############################################################################################################
+
+ambient_light
+{
+	name		room_fill
+	power		0.09
+	color		1.0 1.0 1.0
+}
+
+directional_light
+{
+	name		room_key
+	power		0.9
+	color		0.92 0.90 0.98
+	direction	0.35 0.55 0.85
+}
+
+directional_light
+{
+	name		room_rim
+	power		0.30
+	color		0.80 0.85 0.98
+	direction	-0.30 0.45 0.85
+}

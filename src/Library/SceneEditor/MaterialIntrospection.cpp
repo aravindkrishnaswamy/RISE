@@ -448,6 +448,15 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildScalarPainterSlot( "weft_tilt", wv->GetWeftTilt(),
 			scalarPainters, composed,
 			"Scalar painter for the weft's float tilt, in RADIANS.  Give it the opposite sign to the warp's." ) );
+		// P2-B: only meaningful under `transmission thin`; shown
+		// unconditionally (like every other slot here) since `transmission`
+		// itself is not rebindable and the rows are always the same set.
+		rows.push_back( BuildScalarPainterSlot( "warp_transmit", wv->GetWarpTransmit(),
+			scalarPainters, composed,
+			"`transmission thin` only: the warp's share of its own volume budget redirected to diffuse transmission through the yarn, in [0,1].  The reflect-side volume lobe is scaled down by (1 - warp_transmit) so the two never exceed the pre-P2-B total.  Ignored under `transmission none`." ) );
+		rows.push_back( BuildScalarPainterSlot( "weft_transmit", wv->GetWeftTransmit(),
+			scalarPainters, composed,
+			"`transmission thin` only: the weft's diffuse-transmission share, in [0,1].  See warp_transmit." ) );
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		rows.push_back( BuildScalarPainterSlot( "tau", die->GetTransmittance(),
@@ -836,6 +845,8 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 		if( slotName == String( "weft_kd" ) )        { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftKd();        return out; }
 		if( slotName == String( "warp_tilt" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTilt();      return out; }
 		if( slotName == String( "weft_tilt" ) )      { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTilt();      return out; }
+		if( slotName == String( "warp_transmit" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWarpTransmit(); return out; }
+		if( slotName == String( "weft_transmit" ) ) { out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &wv->GetWeftTransmit(); return out; }
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		if( slotName == String( "tau" ) ) {
@@ -1084,6 +1095,8 @@ bool MaterialIntrospection::SetSlot(
 		if( slotName == String( "weft_kd" ) )        { wv->SetWeftKd( *scalarPainter );        return true; }
 		if( slotName == String( "warp_tilt" ) )      { wv->SetWarpTilt( *scalarPainter );      return true; }
 		if( slotName == String( "weft_tilt" ) )      { wv->SetWeftTilt( *scalarPainter );      return true; }
+		if( slotName == String( "warp_transmit" ) ) { wv->SetWarpTransmit( *scalarPainter ); return true; }
+		if( slotName == String( "weft_transmit" ) ) { wv->SetWeftTransmit( *scalarPainter ); return true; }
 		return false;		// `weave` is an enum, not a rebindable painter slot
 	}
 	if( DielectricMaterial* die = dynamic_cast<DielectricMaterial*>( &material ) ) {

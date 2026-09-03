@@ -250,6 +250,55 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   panel butt-joined at x = 0 with an INTEGER number of fold cycles in u, so the join is
   C1-continuous and every visible edge down the middle of the frame is a material boundary
   rather than a modelling one -- which is what makes the halves comparable.
+
+  `sheer_curtain.RISEscene` is the Phase-2 slice P2-B (thin-cloth transmission) hero: a
+  linen `weave_material` curtain, `transmission thin`, hangs in front of a bright window
+  cut into a back wall, with a floor catching the transmitted glow. The camera sees room
+  context on both axes -- dark wall framing the opening, a bright sliver of DIRECT window
+  light on both sides of the curtain (narrower than the opening from the camera's own
+  perspective), the curtain's own soft glow in between, and a warm floor bounce in the
+  foreground -- confirmed by rendering and inspecting both the OIDN-denoised (the
+  showcase default) and the raw PNG this session; the raw twin confirms the denoiser is
+  not inventing the window/fold/wall contrast. Folds come from `fabric_swatches.RISEscene`'s
+  own drape recipe (a pinned-top `expression_function2d`, `displaced_geometry` over
+  `clippedplane_geometry`) and read through ordinary FRONT-lit shading of the displaced
+  surface, not through the transmission lobes themselves -- the delta lobe is a straight,
+  undeviated pass-through with no directional dependence on the local fold tangent, so it
+  cannot by itself encode "this fold is thinner/thicker"; a room key + rim pair front-lights
+  the cloth so the fold geometry reads the way any hanging cloth's would.
+
+  VERIFIED, NOT ASSUMED: three isolated probes (a bright window filling the frame, camera
+  facing it directly, EXR output, linear radiance read back per pixel) measured, this
+  session: (a) window alone, mean linear radiance 1.273240; (b) the SAME window behind a
+  linen curtain at `transmission none`, mean EXACTLY 0.0 (opaque, correct); (c) the same
+  again at `transmission thin`, `sheer 0.2`, `warp_transmit`/`weft_transmit` 0.25, mean
+  0.259 -- i.e. (c)/(a) = 20.3%, matching the delta lobe's OWN closed-form prediction
+  (`sheer x L_window` = 0.2 x 1.273 = 0.2546) almost exactly, with only a small further
+  contribution from the diffuse-transmission lobe. That small residual is itself a finding:
+  isolating `transmit` alone (gap held at 0) found the diffuse lobe's response scales
+  close to `transmit^2` under PATH TRACING (0.5x transmit gave 0.21x the response, not
+  0.5x) while the SAME configuration under BDPT scales EXACTLY linearly (0.500x, 0.250x,
+  to three figures) -- since `WeaveBRDF::value`/`WeaveSPF::Pdf` are shared by both
+  integrators and are linear in `transmit_k` by construction, and BDPT (using the
+  identical formulas) confirms that linear behaviour empirically, this points at a
+  PATH-TRACING-side bug (most likely the full-sphere NEE/MIS weighting), not a
+  `weave_material` defect -- confirmed round 3 (REVIEW_P2R9.md) two more independent
+  ways: a Scatter()-only MC probe with no NEE/MIS at all is exactly linear in `transmit`
+  (ratios 1.998/3.999, not 4x/16x), and `SPFBSDFConsistencyTest`'s pointwise
+  `kray*pdf == BRDF*|cos|` table now exercises `WeaveSPF`'s transmission branch directly
+  (0.00% error) -- see docs/CLOTH_FABRIC_DESIGN.md 10.1a and section 15 debt 21 for the
+  full writeup, the numbered debt entry (NOT YET FIXED -- a separate diagnosis effort is
+  in progress and may turn this into a fix in a future round), and the separate,
+  already-known BDPT/VCM vertex-connection limitation (debt 20) on this same material
+  class. PRACTICAL CONSEQUENCE FOR THIS SCENE: `sheer` (the delta lobe) is
+  the reliable, exactly-linear brightness lever under PT and is what this scene actually
+  tunes for brightness (0.22, near the requested 0.15-0.25 range); `warp_transmit`/
+  `weft_transmit` are left near the linen preset's own default (0.30) rather than pushed
+  further to compensate, so the scene's own numbers stay legible against the probe table
+  above once the PT-side finding is fixed. The window's exitance scale (4.5) was picked
+  by reading back the rendered EXR's direct-window and through-curtain pixel values this
+  session rather than by eye; `weave_scale` is left at the linen preset's own shipped
+  default (sub-pixel at this framing, by design).
 - `Parser/`: parser-generated showcase scenes
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes

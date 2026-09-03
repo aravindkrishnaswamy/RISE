@@ -1215,11 +1215,12 @@ namespace RISE
 									const char* name,				///< [in] Name of the material
 									const char* weave,				///< [in] Draft name; empty = the preset's
 									const char* fabric,				///< [in] Preset name (see WeavePresets.h)
+									const char* transmission,		///< [in] P2-B: `none`/`thin`; empty = the preset's
 									const char* weave_scale,		///< [in] Cells per UV unit (physical scalar)
 									const char* weave_rotation,		///< [in] Warp direction in radians (physical scalar)
 									const char* weft_skew,			///< [in] Weft offset from perpendicular, radians (physical scalar)
 									const char* coverage,			///< [in] `custom` draft only: warp-coverage field (physical scalar)
-									const char* gap,				///< [in] Uncovered fraction (physical scalar)
+									const char* gap,				///< [in] Uncovered fraction; P2-B: also the `thin` delta lobe's aperture (physical scalar); `sheer` is an accepted alias
 									const char* warp_color,			///< [in] Warp dye (colour painter)
 									const char* weft_color,			///< [in] Weft dye (colour painter)
 									const char* warp_ior,			///< [in] Warp fibre IOR (physical scalar)
@@ -1231,7 +1232,9 @@ namespace RISE
 									const char* warp_kd,			///< [in] Warp isotropic volume-scattering fraction (physical scalar)
 									const char* weft_kd,			///< [in] Weft isotropic volume-scattering fraction (physical scalar)
 									const char* warp_tilt,			///< [in] Warp float tilt, radians (physical scalar)
-									const char* weft_tilt			///< [in] Weft float tilt, radians (physical scalar)
+									const char* weft_tilt,			///< [in] Weft float tilt, radians (physical scalar)
+									const char* warp_transmit,		///< [in] P2-B: warp's diffuse-transmission share, [0,1] (physical scalar)
+									const char* weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1] (physical scalar)
 									);
 
 		//! Adds a channel-extraction SCALAR painter.  See IJob.h for the doc.

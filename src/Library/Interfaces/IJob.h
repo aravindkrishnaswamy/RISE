@@ -4424,15 +4424,24 @@ namespace RISE
 		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
 		//! exactly that.
 		/// \return TRUE if successful, FALSE otherwise
+		//! P2-B (docs/CLOTH_FABRIC_DESIGN.md 10) added `transmission`
+		//! (`none`/`thin`; empty = the preset's), inserted right after
+		//! `fabric` (mid-signature, next to the other whole-material
+		//! enums), and a per-family `transmit` scalar APPENDED at the
+		//! tail (after `weft_tilt`).  Neither is a pure tail append, so
+		//! this is a signature CHANGE to an existing pure virtual;
+		//! update tests/IJobVtableManifest.txt in the same commit
+		//! (`RISE_REGEN_IJOB_VTABLE_MANIFEST=1`).
 		virtual bool AddWeaveMaterial(
 									const char* name,				///< [in] Name of the material
 									const char* weave,				///< [in] Draft name; empty = the preset's
 									const char* fabric,				///< [in] Preset name (denim|silk|satin|linen|custom)
+									const char* transmission,		///< [in] P2-B: `none`/`thin`; empty = the preset's
 									const char* weave_scale,		///< [in] Cells per UV unit (physical scalar)
 									const char* weave_rotation,		///< [in] Warp direction in RADIANS (physical scalar)
 									const char* weft_skew,			///< [in] Weft offset from perpendicular, RADIANS (physical scalar)
 									const char* coverage,			///< [in] `custom` draft only: warp-coverage field (physical scalar)
-									const char* gap,				///< [in] Uncovered fraction, clamped to [0, 0.3] (physical scalar)
+									const char* gap,				///< [in] Uncovered fraction, clamped to [0, 0.3] (physical scalar); P2-B: also the `thin` delta lobe's aperture; `sheer` is an accepted alias
 									const char* warp_color,			///< [in] Warp dye (colour painter; empty = preset colour, else white)
 									const char* weft_color,			///< [in] Weft dye (colour painter; empty = preset colour, else white)
 									const char* warp_ior,			///< [in] Warp fibre IOR (physical scalar)
@@ -4444,7 +4453,9 @@ namespace RISE
 									const char* warp_kd,			///< [in] Warp isotropic volume-scattering fraction (physical scalar)
 									const char* weft_kd,			///< [in] Weft isotropic volume-scattering fraction (physical scalar)
 									const char* warp_tilt,			///< [in] Warp float tilt out of plane, RADIANS (physical scalar)
-									const char* weft_tilt			///< [in] Weft float tilt out of plane, RADIANS (physical scalar)
+									const char* weft_tilt,			///< [in] Weft float tilt out of plane, RADIANS (physical scalar)
+									const char* warp_transmit,		///< [in] P2-B: warp's diffuse-transmission share, [0,1] (physical scalar)
+									const char* weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1] (physical scalar)
 									) = 0;
 
 	};

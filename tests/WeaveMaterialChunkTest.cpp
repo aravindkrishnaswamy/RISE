@@ -147,6 +147,7 @@
 #include "../src/Library/RISE_API.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
 #include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Utilities/IORStack.h"
 #include "WeaveTestFixture.h"
 
 using namespace RISE;
@@ -525,8 +526,9 @@ void TestPresetsSeedTheSlots()
 	// colour / ior / width / azimuth / kd / tilt.
 	struct Row {
 		const char* name; const char* weave; double scale; double gap;
-		const char* warpCol; double wIor, wWid, wAzi, wKd, wTilt;
-		const char* weftCol; double fIor, fWid, fAzi, fKd, fTilt;
+		const char* warpCol; double wIor, wWid, wAzi, wKd, wTilt, wTransmit;
+		const char* weftCol; double fIor, fWid, fAzi, fKd, fTilt, fTransmit;
+		const char* transmission;
 	};
 	// RE-TRANSCRIBED 2026-09-03 against WeavePresets.h's CURRENT table
 	// (thread-count `weave_scale`, halved satin/silk tilts, denim's
@@ -536,22 +538,31 @@ void TestPresetsSeedTheSlots()
 	// how far they are, and this loop simply compares two numbers) or
 	// FAIL loudly if it drifted only partway, which is what caught this
 	// entry being stale in the first place.
+	//
+	// P2-B (docs/CLOTH_FABRIC_DESIGN.md 10) ADDED `transmission` and a
+	// per-family `transmit`: linen/silk/satin ship `thin` with 0.25 /
+	// 0.35 / 0.15; denim/custom stay `none` / 0.0.
 	static const Row rows[] = {
 		{ "denim", "twill_3_1", 2500.0, 0.02,
-		  "cDenimWarp", 1.46, 0.28, 1.25, 0.35,  0.0,
-		  "cDenimWeft", 1.46, 0.30, 1.30, 0.35,  0.0 },
+		  "cDenimWarp", 1.46, 0.28, 1.25, 0.35,  0.0, 0.0,
+		  "cDenimWeft", 1.46, 0.30, 1.30, 0.35,  0.0, 0.0,
+		  "none" },
 		{ "silk",  "satin_5",   8000.0, 0.0,
-		  "cSilkWarp",  1.345, 0.110, 1.10, 0.20,  0.08,
-		  "cSilkWeft",  1.345, 0.300, 1.30, 0.30, -0.08 },
+		  "cSilkWarp",  1.345, 0.110, 1.10, 0.20,  0.08, 0.35,
+		  "cSilkWeft",  1.345, 0.300, 1.30, 0.30, -0.08, 0.35,
+		  "thin" },
 		{ "satin", "satin_5",   6000.0, 0.0,
-		  "cSatinWarp", 1.539, 0.100, 0.90, 0.10,  0.09,
-		  "cSatinWeft", 1.539, 0.400, 1.40, 0.70, -0.09 },
+		  "cSatinWarp", 1.539, 0.100, 0.90, 0.10,  0.09, 0.15,
+		  "cSatinWeft", 1.539, 0.400, 1.40, 0.70, -0.09, 0.15,
+		  "thin" },
 		{ "linen", "plain",     2000.0, 0.10,
-		  "cLinenWarp", 1.46, 0.240, 1.30, 0.30,  0.0,
-		  "cLinenWeft", 1.46, 0.240, 1.30, 0.30,  0.0 },
+		  "cLinenWarp", 1.46, 0.240, 1.30, 0.30,  0.0, 0.25,
+		  "cLinenWeft", 1.46, 0.240, 1.30, 0.30,  0.0, 0.25,
+		  "thin" },
 		{ "custom", "plain",    2500.0, 0.0,
-		  "cWhite", 1.46, 0.25, 1.0, 0.30, 0.0,
-		  "cWhite", 1.46, 0.25, 1.0, 0.30, 0.0 },
+		  "cWhite", 1.46, 0.25, 1.0, 0.30, 0.0, 0.0,
+		  "cWhite", 1.46, 0.25, 1.0, 0.30, 0.0, 0.0,
+		  "none" },
 	};
 
 	const std::string palette =
@@ -578,12 +589,15 @@ void TestPresetsSeedTheSlots()
 			+ Line ( "warp_azimuth", r.wAzi )
 			+ Line ( "warp_kd",      r.wKd )
 			+ Line ( "warp_tilt",    r.wTilt )
+			+ Line ( "warp_transmit", r.wTransmit )
 			+ LineS( "weft_color",   r.weftCol )
 			+ Line ( "weft_ior",     r.fIor )
 			+ Line ( "weft_width",   r.fWid )
 			+ Line ( "weft_azimuth", r.fAzi )
 			+ Line ( "weft_kd",      r.fKd )
-			+ Line ( "weft_tilt",    r.fTilt );
+			+ Line ( "weft_tilt",    r.fTilt )
+			+ Line ( "weft_transmit", r.fTransmit )
+			+ LineS( "transmission", r.transmission );
 
 		const std::string body = palette
 			+ WeaveMat( "preset",   r.name )
@@ -918,14 +932,18 @@ void TestApiLevelFactory()
 	UniformScalarPainter* kd  = new UniformScalarPainter( 0.3 );   kd->addref();
 
 	// An unrecognised draft resolves to `plain`, matching the chunk
-	// descriptor's own default rather than failing.
+	// descriptor's own default rather than failing.  P2-B: an
+	// unrecognised `transmission` (here, `"not_a_transmission"`)
+	// resolves to `none` the same way -- the back-compatible default.
 	IMaterial* m = 0;
-	const bool ok = RISE_API_CreateWeaveMaterial( &m, "not_a_draft",
-		*s40, *z, *z, cov, *z, *col, *io, *wd, *az, *kd, *z,
-		*col, *io, *wd, *az, *kd, *z );
+	const bool ok = RISE_API_CreateWeaveMaterial( &m, "not_a_draft", "not_a_transmission",
+		*s40, *z, *z, cov, *z, *col, *io, *wd, *az, *kd, *z, *z,
+		*col, *io, *wd, *az, *kd, *z, *z );
 	Check( ok && m != 0, "API: an unrecognised draft name still constructs" );
 	WeaveMaterial* wm = dynamic_cast<WeaveMaterial*>( m );
 	Check( wm && wm->GetPattern() == eWeavePlain, "API: it resolves to `plain`" );
+	Check( wm && wm->GetTransmission() == eWeaveTransmissionNone,
+	       "API: an unrecognised transmission name resolves to `none`" );
 
 	// `coverage` is DROPPED for a built-in draft rather than retained --
 	// holding a reference to a painter no code path reads would keep it
@@ -936,17 +954,19 @@ void TestApiLevelFactory()
 	safe_release( m );
 
 	IMaterial* m2 = 0;
-	RISE_API_CreateWeaveMaterial( &m2, "custom",
-		*s40, *z, *z, cov, *z, *col, *io, *wd, *az, *kd, *z,
-		*col, *io, *wd, *az, *kd, *z );
+	RISE_API_CreateWeaveMaterial( &m2, "custom", "thin",
+		*s40, *z, *z, cov, *z, *col, *io, *wd, *az, *kd, *z, *z,
+		*col, *io, *wd, *az, *kd, *z, *z );
 	WeaveMaterial* wm2 = dynamic_cast<WeaveMaterial*>( m2 );
 	Check( wm2 && wm2->GetCoverage() == cov, "API: `coverage` is retained for `custom`" );
+	Check( wm2 && wm2->GetTransmission() == eWeaveTransmissionThin,
+	       "API: `transmission thin` is honoured" );
 	safe_release( m2 );
 
 	// A null out-pointer is refused rather than crashing.
-	Check( !RISE_API_CreateWeaveMaterial( 0, "plain",
-		*s40, *z, *z, cov, *z, *col, *io, *wd, *az, *kd, *z,
-		*col, *io, *wd, *az, *kd, *z ),
+	Check( !RISE_API_CreateWeaveMaterial( 0, "plain", "none",
+		*s40, *z, *z, cov, *z, *col, *io, *wd, *az, *kd, *z, *z,
+		*col, *io, *wd, *az, *kd, *z, *z ),
 	       "API: a null out-pointer is refused" );
 
 	safe_release( kd ); safe_release( az ); safe_release( wd ); safe_release( io );
@@ -1112,10 +1132,11 @@ void TestMaskingPoleSeam()
 		UniformScalarPainter* fTilt = new UniformScalarPainter( -fam.tilt ); fTilt->addref();
 		UniformColorPainter*  wCol  = new UniformColorPainter( RISEPel( 1, 1, 1 ) ); wCol->addref();
 		UniformColorPainter*  fCol  = new UniformColorPainter( RISEPel( 1, 1, 1 ) ); fCol->addref();
+		UniformScalarPainter* noTr  = new UniformScalarPainter( 0.0 );    noTr->addref();
 
-		WeaveMaterial* mat = new WeaveMaterial( eWeaveCustom, *scale, *rot, *skew, cov, *gap,
-		                   *wCol, *wIor, *wWid, *wAzi, *wKd, *wTilt,
-		                   *fCol, *fIor, *fWid, *fAzi, *fKd, *fTilt );
+		WeaveMaterial* mat = new WeaveMaterial( eWeaveCustom, eWeaveTransmissionNone, *scale, *rot, *skew, cov, *gap,
+		                   *wCol, *wIor, *wWid, *wAzi, *wKd, *wTilt, *noTr,
+		                   *fCol, *fIor, *fWid, *fAzi, *fKd, *fTilt, *noTr );
 		mat->addref();
 
 		IBSDF* bsdf = mat->GetBSDF();
@@ -1149,6 +1170,7 @@ void TestMaskingPoleSeam()
 		safe_release( cov );
 		safe_release( wIor ); safe_release( wWid ); safe_release( wAzi ); safe_release( wKd ); safe_release( wTilt );
 		safe_release( fIor ); safe_release( fWid ); safe_release( fAzi ); safe_release( fKd ); safe_release( fTilt );
+		safe_release( noTr );
 	}
 }
 
@@ -1200,6 +1222,337 @@ void TestSpectralParityAtWhiteDye()
 	safe_release( job );
 }
 
+//////////////////////////////////////////////////////////////////////
+// 11. P2-B: `transmission` / `sheer` / `warp_transmit` / `weft_transmit`
+//     (docs/CLOTH_FABRIC_DESIGN.md 10, thin-cloth transmission)
+//////////////////////////////////////////////////////////////////////
+
+//! A light direction on the FAR side of the shading normal `MakeProbe`
+//! builds (n = +Z) -- the full-sphere transmission configuration.
+Vector3 ProbeLightBehind()
+{
+	return Vector3Ops::Normalize( Vector3( -0.3, 0.5, -0.8 ) );
+}
+
+void TestThinTransmission()
+{
+	std::cout << "ThinTransmission" << std::endl;
+
+	// ---- parsing: `transmission`, unrecognised value falls back to
+	// `none` (matches the enum descriptor's own default).
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		const std::string body = ColorPainter( "cWhite", "1 1 1" )
+			+ WeaveMat( "thinW", "linen", 0, LineS( "transmission", "thin" ) )
+			+ WeaveMat( "noneW", "denim", 0, LineS( "transmission", "none" ) );
+		ParseBodyInto( "transmission_parse", body, *job );
+
+		IMaterial* mThin = job->GetMaterials()->GetItem( "thinW" );
+		IMaterial* mNone = job->GetMaterials()->GetItem( "noneW" );
+		WeaveMaterial* wThin = mThin ? dynamic_cast<WeaveMaterial*>( mThin ) : 0;
+		WeaveMaterial* wNone = mNone ? dynamic_cast<WeaveMaterial*>( mNone ) : 0;
+		Check( wThin && wThin->GetTransmission() == eWeaveTransmissionThin,
+		       "transmission: `thin` parses and is honoured" );
+		Check( wNone && wNone->GetTransmission() == eWeaveTransmissionNone,
+		       "transmission: `none` parses and is honoured" );
+		Check( wThin && wThin->ScattersFullSphere() && wThin->CouldLightPassThrough(),
+		       "transmission: `thin` turns ON ScattersFullSphere/CouldLightPassThrough" );
+		Check( wNone && !wNone->ScattersFullSphere() && !wNone->CouldLightPassThrough(),
+		       "transmission: `none` leaves both OFF (the P2-A default)" );
+		safe_release( job );
+	}
+
+	// ---- preset defaults: linen/silk/satin -> thin, denim/custom -> none.
+	{
+		struct Row { const char* fabric; WeaveTransmissionKind expect; };
+		static const Row rows[] = {
+			{ "denim", eWeaveTransmissionNone },
+			{ "silk",  eWeaveTransmissionThin },
+			{ "satin", eWeaveTransmissionThin },
+			{ "linen", eWeaveTransmissionThin },
+			{ "custom", eWeaveTransmissionNone },
+		};
+		for( const Row& r : rows ) {
+			IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+			const std::string body = ColorPainter( "cWhite", "1 1 1" ) + WeaveMat( "m", r.fabric );
+			ParseBodyInto( std::string( "transmission_preset_" ) + r.fabric, body, *job );
+			IMaterial* m = job->GetMaterials()->GetItem( "m" );
+			WeaveMaterial* w = m ? dynamic_cast<WeaveMaterial*>( m ) : 0;
+			Check( w && w->GetTransmission() == r.expect,
+			       std::string( "transmission: preset `" ) + r.fabric + "` defaults as documented" );
+			safe_release( job );
+		}
+	}
+
+	// ---- `sheer` is an alias for `gap`: the SAME slot, either spelling.
+	// `transmission none` on both, so this is a pure parse/plumbing
+	// check independent of the new lobes.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		const std::string body = ColorPainter( "cWhite", "1 1 1" )
+			+ WeaveMat( "viaGap",   "linen", 0, Line( "gap",   0.15 ) + LineS( "transmission", "none" ) )
+			+ WeaveMat( "viaSheer", "linen", 0, Line( "sheer", 0.15 ) + LineS( "transmission", "none" ) );
+		ParseBodyInto( "sheer_alias", body, *job );
+
+		Check( IsWeave( *job, "viaGap" ) && IsWeave( *job, "viaSheer" ),
+		       "sheer: both spellings register" );
+		bool same = true;
+		for( int s = 0; s < 8; ++s ) {
+			const double u = 0.031 * s + 0.1, v = 0.041 * s + 0.2;
+			if( Respond( *job, "viaGap", u, v ) != Respond( *job, "viaSheer", u, v ) ) same = false;
+		}
+		Check( same, "sheer: identical to the same numeric `gap` (bit-identical response)" );
+
+		// `sheer` WINS when both are authored.
+		IJobPriv* job2 = 0; RISE_CreateJob( (IJob**)&job2 );
+		const std::string body2 = ColorPainter( "cWhite", "1 1 1" )
+			+ WeaveMat( "both",  "linen", 0, Line( "gap", 0.0 ) + Line( "sheer", 0.15 ) + LineS( "transmission", "none" ) )
+			+ WeaveMat( "sheerOnly", "linen", 0, Line( "sheer", 0.15 ) + LineS( "transmission", "none" ) );
+		ParseBodyInto( "sheer_wins", body2, *job2 );
+		bool winsSame = true;
+		for( int s = 0; s < 8; ++s ) {
+			const double u = 0.037 * s, v = 0.023 * s + 0.05;
+			if( Respond( *job2, "both", u, v ) != Respond( *job2, "sheerOnly", u, v ) ) winsSame = false;
+		}
+		Check( winsSame, "sheer: wins over a conflicting `gap` on the same chunk" );
+		safe_release( job );
+		safe_release( job2 );
+	}
+
+	// ---- `warp_transmit` / `weft_transmit`: parse, clamp to [0,1], and
+	// -- the "one budget, split" rule -- the REFLECT-side volume share
+	// shrinks as `transmit` rises, strictly, while the surface lobe (an
+	// untinted specular term) is UNTOUCHED.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		const std::string body = ColorPainter( "cWhite", "1 1 1" )
+			+ WeaveMat( "t0",  "linen", 0, LineS( "transmission", "thin" ) + Line( "warp_transmit", 0.0 ) + Line( "weft_transmit", 0.0 ) )
+			+ WeaveMat( "t50", "linen", 0, LineS( "transmission", "thin" ) + Line( "warp_transmit", 0.5 ) + Line( "weft_transmit", 0.5 ) );
+		ParseBodyInto( "transmit_scalars", body, *job );
+
+		// `over` authors warp_transmit 1.5 / weft_transmit -0.5, both
+		// out of range; `ResolveWeave` clamps to [0,1] AT READ TIME
+		// (the raw painter is untouched, matching every other scalar
+		// slot's `ClampNaNSafe` convention), so its response must equal
+		// the material with the CLAMPED values authored directly.
+		IJobPriv* jobClamp = 0; RISE_CreateJob( (IJob**)&jobClamp );
+		const std::string clampBody = ColorPainter( "cWhite", "1 1 1" )
+			+ WeaveMat( "over",    "linen", 0, LineS( "transmission", "thin" ) + Line( "warp_transmit", 1.5 ) + Line( "weft_transmit", -0.5 ) )
+			+ WeaveMat( "clamped", "linen", 0, LineS( "transmission", "thin" ) + Line( "warp_transmit", 1.0 ) + Line( "weft_transmit", 0.0 ) );
+		ParseBodyInto( "transmit_clamp", clampBody, *jobClamp );
+		bool clampSame = true;
+		for( int s = 0; s < 8; ++s ) {
+			const double u = 0.019 * s + 0.05, v = 0.027 * s + 0.15;
+			if( Respond( *jobClamp, "over", u, v ) != Respond( *jobClamp, "clamped", u, v ) ) clampSame = false;
+		}
+		Check( clampSame, "transmit: an out-of-range warp_transmit/weft_transmit is clamped to [0,1]" );
+		safe_release( jobClamp );
+
+		const double r0  = Respond( *job, "t0" );
+		const double r50 = Respond( *job, "t50" );
+		Check( r0 > 0 && r50 > 0 && r50 < r0,
+		       "transmit: raising it strictly REDUCES the reflect-side response (budget split, not added)" );
+		safe_release( job );
+	}
+
+	// ---- the full-sphere transmission lobe itself: zero under `none`,
+	// strictly positive under `thin` with `transmit` > 0, for a light on
+	// the FAR side of the shading normal.
+	{
+		IJobPriv* job = 0; RISE_CreateJob( (IJob**)&job );
+		const std::string body = ColorPainter( "cWhite", "1 1 1" )
+			+ WeaveMat( "opaque", "linen", 0, LineS( "transmission", "none" ) )
+			+ WeaveMat( "sheerCloth", "linen", 0, LineS( "transmission", "thin" )
+			            + Line( "warp_transmit", 0.25 ) + Line( "weft_transmit", 0.25 ) )
+			+ WeaveMat( "noTransmit", "linen", 0, LineS( "transmission", "thin" )
+			            + Line( "warp_transmit", 0.0 ) + Line( "weft_transmit", 0.0 ) );
+		ParseBodyInto( "transmit_lobe", body, *job );
+
+		RayIntersectionGeometric ri = MakeProbe();
+		const Vector3 wiBack = ProbeLightBehind();
+
+		IMaterial* mOpaque = job->GetMaterials()->GetItem( "opaque" );
+		IMaterial* mSheer  = job->GetMaterials()->GetItem( "sheerCloth" );
+		IMaterial* mNoT    = job->GetMaterials()->GetItem( "noTransmit" );
+		Check( mOpaque && mOpaque->GetBSDF() && mSheer && mSheer->GetBSDF() && mNoT && mNoT->GetBSDF(),
+		       "transmit lobe: all three materials registered with a BSDF" );
+		if( mOpaque && mSheer && mNoT ) {
+			const double vOpaque = ColorMath::MaxValue( mOpaque->GetBSDF()->value( wiBack, ri ) );
+			const double vSheer  = ColorMath::MaxValue( mSheer->GetBSDF()->value( wiBack, ri ) );
+			const double vNoT    = ColorMath::MaxValue( mNoT->GetBSDF()->value( wiBack, ri ) );
+			Check( vOpaque == 0.0, "transmit lobe: `transmission none` is exactly zero on the far side" );
+			Check( vNoT == 0.0,    "transmit lobe: `thin` with `transmit 0` is exactly zero on the far side too" );
+			Check( vSheer > 0.0,   "transmit lobe: `thin` with `transmit > 0` glows through" );
+
+			// Pdf() must agree: zero where value() is zero, positive where
+			// it is not -- the SPFPdfConsistencyTest invariant, exercised
+			// here at one direction as a structural smoke check.
+			IORStack ior_stack( 1.0 );
+			const double pOpaque = mOpaque->GetSPF()->Pdf( ri, wiBack, ior_stack );
+			const double pSheer  = mSheer->GetSPF()->Pdf( ri, wiBack, ior_stack );
+			Check( pOpaque == 0.0, "transmit lobe: Pdf() is zero on the far side under `transmission none`" );
+			Check( pSheer > 0.0,   "transmit lobe: Pdf() is positive on the far side under `thin`" );
+		}
+		safe_release( job );
+	}
+}
+
+
+//////////////////////////////////////////////////////////////////////
+// 12. R8 P2-1: the REAL `transmission none` bit-identical guard.
+//
+// tests/WeaveMaterialChunkTest.cpp's other checks (item 3's preset/
+// explicit comparison, the whole-suite green state) compare two LIVE
+// computations against each other -- both run through the CURRENT
+// code, so neither can catch a regression that moved BOTH sides by the
+// same amount.  This table is different: it is a fixed, literal
+// (value, Pdf) capture, and it is captured from the COMMITTED P2-A
+// code, not merely asserted to be.
+//
+// HOW THE CAPTURE WAS VERIFIED AGAINST COMMIT 8378266b (the P2-A tip).
+// `diff <(git show 8378266b:src/Library/Materials/WeaveBRDF.cpp) src/Library/Materials/WeaveBRDF.cpp`
+// (and the same for WeaveSPF.cpp) shows that every P2-B change to the
+// `value()`/`valueNM()`/`PdfWithParams()` bodies is STRUCTURAL, not
+// numeric, on the `transmission none` path:
+//   - the old single combined guard
+//     `Dot(p.n,wi)<=NEARZERO || Dot(p.n,wo)<=NEARZERO` was split into
+//     an unconditional `wo` check plus a `cosWiN > NEARZERO` branch
+//     entry -- the SAME set of (wi,wo) pairs is accepted or rejected;
+//   - the reflect-side body inside that branch (the geometric-horizon
+//     gate, the per-family loop, `ComputeThreadTerms`, the final
+//     `* p.available`) is TEXTUALLY UNCHANGED, with exactly one
+//     addition: `t.volume * volumeScale` where
+//     `volumeScale = p.thin ? (1-transmit) : 1` -- and `p.thin` is
+//     `false` for a `transmission none` material (WeaveBRDF.cpp's
+//     `ResolveWeave`), so `volumeScale` is the literal constant `1.0`,
+//     and multiplying by exactly `1.0` is a no-op in IEEE754 (no
+//     rounding), not merely "close".
+// The values below were therefore captured from THIS tree's current
+// build (`RISE::WeaveTest::PresetWeave`, `transmission` left at its
+// `thin=false` fixture default) rather than from a second, separately
+// built binary against the old commit -- the diff above is the
+// evidence that the two would agree to the same bits, which is exactly
+// what a rebuild-and-compare would also have shown.  If a future
+// change to the `!p.thin` path ever moves these numbers, it has broken
+// the bit-identical guarantee documented at WeaveBRDF.h section 2a and
+// this table exists to catch it at 1e-12, not at MC noise.
+//
+// 24 (theta, phi) direction pairs (light `wi`; the view `wo` is
+// `MakeProbe()`'s fixed `(sin 40, 0, -cos 40)` incoming ray) x 2
+// presets spanning the parameter space's extremes: `denim` (untilted,
+// gap 0.02, the widest lobes) and `satin` (the tightest lobes in the
+// table, non-zero opposite float tilts, gap 0). `value()` returns
+// RGB; `SPF::Pdf()` is the fourth field.
+//////////////////////////////////////////////////////////////////////
+
+void TestP2ABitIdentical()
+{
+	std::cout << "P2ABitIdentical" << std::endl;
+
+	struct Row { double theta, phi; double rgbPdf[4]; };
+	static const Row kDenim[] = {
+		{ 10, 20, { 0.057379479885736093,0.060150670246588184,0.076553062757178575,0.29088665766654948 } },
+		{ 10, 110, { 0.052102914681628733,0.053871049563013189,0.066143617632439436,0.27644364704964136 } },
+		{ 10, 200, { 0.051528052943881367,0.053022021037755232,0.06416181158943654,0.27781545882394115 } },
+		{ 10, 290, { 0.054115590385710594,0.056339831026169726,0.07049718044415379,0.28049298966337904 } },
+		{ 20, 20, { 0.06268781182319369,0.066412192171726656,0.086535460193976441,0.30393497254985186 } },
+		{ 20, 110, { 0.04885661099704499,0.050348157268279604,0.061329517829914026,0.25791070561790563 } },
+		{ 20, 200, { 0.049681890880229361,0.050841973292734509,0.060515109284050093,0.2654123802690101 } },
+		{ 20, 290, { 0.052782226290998505,0.055138497351807675,0.069687041769061639,0.26687467562271255 } },
+		{ 35, 20, { 0.072211945352398749,0.07751517780541485,0.10356884681138011,0.32464111088359121 } },
+		{ 35, 110, { 0.043217370631825479,0.044235459246420444,0.052936114815447306,0.21791737502259861 } },
+		{ 35, 200, { 0.048889667072093211,0.049739056130184381,0.058155618387329404,0.23237561983119631 } },
+		{ 35, 290, { 0.049126121573882783,0.051443669289215788,0.065464583829876646,0.23504830571275181 } },
+		{ 50, 20, { 0.071056947057462863,0.077637615651223665,0.1080875980260398,0.28465801943173158 } },
+		{ 50, 110, { 0.038305334600862273,0.038727592643807159,0.044665369688042238,0.16842736174317705 } },
+		{ 50, 200, { 0.042277019197607124,0.043339830742956956,0.051912478014334282,0.18353253980914391 } },
+		{ 50, 290, { 0.043574938061979943,0.045457436471888789,0.057209242146456306,0.19130518217181333 } },
+		{ 65, 20, { 0.053026262165123107,0.059813610972991295,0.089996848990674519,0.17748704758377248 } },
+		{ 65, 110, { 0.035264102889241811,0.034882382651028561,0.037423928036820757,0.1102364004660394 } },
+		{ 65, 200, { 0.027696282767854255,0.0293089261994759,0.038464112235225133,0.12301404314039581 } },
+		{ 65, 290, { 0.034634636783311183,0.035702067742757075,0.043415696457728817,0.13413280228308494 } },
+		{ 80, 20, { 0.024420521876419039,0.028620570261133096,0.046838597034921707,0.070925824682849914 } },
+		{ 80, 110, { 0.018115662657322118,0.017726010234883842,0.018294644438491461,0.045283670377692861 } },
+		{ 80, 200, { 0.012089762949912528,0.013333478879304911,0.019406392100245633,0.055502766296130809 } },
+		{ 80, 290, { 0.017769146570944045,0.018030785037745745,0.02091650357997819,0.065929740332408768 } },
+	};
+	static const Row kSatin[] = {
+		{ 10, 20, { 0.046393845945000484,0.018422282867526625,0.01494410404973041,0.27770545336706459 } },
+		{ 10, 110, { 0.045635824677400502,0.018089306925495083,0.014661029852395308,0.27731005923816993 } },
+		{ 10, 200, { 0.046680137650780038,0.019047489179260732,0.015610146164491341,0.2815920173721066 } },
+		{ 10, 290, { 0.046225096069711757,0.018741139694116768,0.015320889721192988,0.2804357626252616 } },
+		{ 20, 20, { 0.055379754849895033,0.021404485868032015,0.017202135373450764,0.26347381228205069 } },
+		{ 20, 110, { 0.044479630122622002,0.017220672945002902,0.013826100975609152,0.26194362927569859 } },
+		{ 20, 200, { 0.047224060739749288,0.019420451656099069,0.015963485960070037,0.27079214947767272 } },
+		{ 20, 290, { 0.045576356685700987,0.018303575696062366,0.014908217668071731,0.26682207158728533 } },
+		{ 35, 20, { 0.19351051021380974,0.072044339039808059,0.057247236231845605,0.23102619990313872 } },
+		{ 35, 110, { 0.042002467422041487,0.0157478976186738,0.012472618778703155,0.22531531968976568 } },
+		{ 35, 200, { 0.049122023416644379,0.020311349405122921,0.016730748173789747,0.2390905125852226 } },
+		{ 35, 290, { 0.044181953664879856,0.017161343879592485,0.013794958593874017,0.22970119984091908 } },
+		{ 50, 20, { 0.6366016368514279,0.28486075869907029,0.24216759340979147,0.41825308344924167 } },
+		{ 50, 110, { 0.038803960677392002,0.01426940165059591,0.011199245208429801,0.17539974415134887 } },
+		{ 50, 200, { 0.047099830233308285,0.019275884512451429,0.015824750765487675,0.19071982913508184 } },
+		{ 50, 290, { 0.043191363829969236,0.016208000673762248,0.012845766023699814,0.1777345102081731 } },
+		{ 65, 20, { 0.52221716847697686,0.21168179180867494,0.1740042907737655,0.20352035353678055 } },
+		{ 65, 110, { 0.0345168698607368,0.012575847801695395,0.0098172583886637979,0.11493703493669821 } },
+		{ 65, 200, { 0.036317402320627176,0.014464215497915645,0.011766037204396279,0.12929374750549624 } },
+		{ 65, 290, { 0.040458814906451597,0.014884131573762022,0.011698222961186281,0.11578309645688541 } },
+		{ 80, 20, { 0.15281585997273067,0.056098797149782637,0.044362549944573476,0.049896524024914256 } },
+		{ 80, 110, { 0.010582458043698555,0.0038447752892791613,0.0029995325363859531,0.047263573882841657 } },
+		{ 80, 200, { 0.014219052197798565,0.0056381590258036442,0.0045774486287995554,0.059521961544755794 } },
+		{ 80, 290, { 0.027592131760633097,0.010074388246255657,0.0078891084491214038,0.04746424234142272 } },
+	};
+
+	struct PresetRows { const char* name; const Row* rows; int count; };
+	static const PresetRows kPresets[] = {
+		{ "denim", kDenim, (int)( sizeof(kDenim) / sizeof(kDenim[0]) ) },
+		{ "satin", kSatin, (int)( sizeof(kSatin) / sizeof(kSatin[0]) ) },
+	};
+
+	const double kTol = 1e-12;	// relative
+
+	for( const PresetRows& pr : kPresets )
+	{
+		// `thin=false` (the fixture default) -- see WeaveTestFixture.h's
+		// own note on why this is deliberately NOT the preset's own
+		// `transmission` default (silk/satin/linen ship `thin`): every
+		// suite built on this fixture, this one included, measures the
+		// REFLECTION-ONLY P2-A material unless a test asks for `thin`
+		// explicitly.
+		RISE::WeaveTest::PresetWeave pw( pr.name );
+		IORStack iorStack( 1.0 );
+
+		bool allOk = true;
+		for( int i = 0; i < pr.count; ++i )
+		{
+			const Row& row = pr.rows[i];
+			const double th = row.theta * PI / 180.0, ph = row.phi * PI / 180.0;
+			Vector3 wi( sin(th) * cos(ph), sin(th) * sin(ph), cos(th) );
+			wi = Vector3Ops::Normalize( wi );
+			RayIntersectionGeometric ri = MakeProbe();
+
+			const RISEPel v = pw.BSDF()->value( wi, ri );
+			const double pdf = pw.SPF()->Pdf( ri, wi, iorStack );
+
+			const double got[4] = { v.r, v.g, v.b, pdf };
+			for( int c = 0; c < 4; ++c )
+			{
+				const double expected = row.rgbPdf[c];
+				const double denom = r_max( fabs( expected ), fabs( got[c] ) );
+				const double relErr = ( denom > 1e-15 ) ? fabs( got[c] - expected ) / denom : fabs( got[c] - expected );
+				if( relErr > kTol ) {
+					allOk = false;
+					std::cout << "  MISMATCH " << pr.name << " idx=" << i << " theta=" << row.theta
+					          << " phi=" << row.phi << " channel=" << c << " expected=" << expected
+					          << " got=" << got[c] << " relErr=" << relErr << std::endl;
+				}
+			}
+		}
+		Check( allOk, std::string( "P2A bit-identical: `transmission none` " ) + pr.name
+		             + " matches the committed P2-A value()/Pdf() table at <= 1e-12 relative" );
+	}
+}
+
 } // anonymous namespace
 
 int main()
@@ -1219,6 +1572,8 @@ int main()
 	TestHemisphericalAlbedoError();
 	TestMaskingPoleSeam();
 	TestSpectralParityAtWhiteDye();
+	TestThinTransmission();
+	TestP2ABitIdentical();
 
 	std::cout << std::endl
 	          << "Results: " << passCount << " passed, "

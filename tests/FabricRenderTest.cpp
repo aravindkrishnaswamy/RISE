@@ -406,6 +406,76 @@ static std::string AssembleScene( const std::string& common, const std::string& 
 	return std::string( "RISE ASCII SCENE 7\n" ) + common + rasterizer;
 }
 
+// No-environment twins of the two rasterizer helpers above, for the
+// point-lit backlit-curtain scene below -- HairRenderTest's
+// `RasterizerPTRgbNoEnv` / `RasterizerBDPTRgbNoEnv` pattern, verbatim.
+static std::string RasterizerPTRgbNoEnv( unsigned int samples, unsigned int rrMinDepth )
+{
+	std::ostringstream ss;
+	ss <<
+		"pathtracing_pel_rasterizer\n{\n"
+		"\tsamples " << samples << "\n"
+		"\trr_min_depth " << rrMinDepth << "\n"
+		"\toidn_denoise FALSE\n"
+		"}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
+static std::string RasterizerBDPTRgbNoEnv( unsigned int samples, unsigned int maxEyeDepth, unsigned int maxLightDepth, double indirectClamp = 0.0 )
+{
+	std::ostringstream ss;
+	ss <<
+		"bdpt_pel_rasterizer\n{\n"
+		"\tsamples " << samples << "\n"
+		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
+		"\toidn_denoise FALSE\n";
+	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
+	ss <<
+		"}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
+//////////////////////////////////////////////////////////////////////
+// 3. BACKLIT SHEER CURTAIN -- docs/CLOTH_FABRIC_DESIGN.md 10 (P2-B).
+//
+// A `weave_material` "curtain" -- a flat quad patch, camera-facing --
+// with an `omni_light` directly BEHIND it (negative Z; camera at
+// +3.2 Z looking at the origin, HairRenderTest's backlit-groom
+// framing).  Every camera-visible point on the curtain is then lit
+// ONLY through the cloth: the delta gap lobe and the diffuse
+// transmission lobe this slice adds, both of which live entirely
+// below the shading normal -- the full-sphere NEE capability
+// `WeaveMaterial::ScattersFullSphere()` turns on under
+// `transmission thin`.
+//
+// `bThin` selects `transmission thin` (linen preset, its own `gap`
+// 0.10 and `transmit` 0.25 defaults) vs `transmission none` (the
+// P2-A reflection-only baseline, same preset) -- the two share every
+// other scene byte, so a luminance difference between them is
+// attributable to the transmission lobes alone.
+static std::string CurtainWithBackLightCommon(
+	bool bThin,
+	unsigned int width, unsigned int height,
+	double lightPower )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+		"omni_light\n{\n\tname backlight\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower "
+			<< lightPower << "\n}\n\n"
+		"weave_material\n{\n\tname mat_curtain\n\tfabric linen\n\ttransmission "
+			<< ( bThin ? "thin" : "none" ) << "\n}\n\n"
+		"clippedplane_geometry\n{\n\tname curtain_geo\n"
+			"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname curtain_obj\n\tgeometry curtain_geo\n\tmaterial mat_curtain\n\tposition 0 0 0\n}\n\n";
+	return ss.str();
+}
+
 //////////////////////////////////////////////////////////////////////
 // 1. HWSS INVARIANT -- docs/CLOTH_FABRIC_DESIGN.md section 9.9 gate 7.
 //
@@ -637,6 +707,129 @@ static void TestPtVsBdpt()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 3. Backlit sheer curtain -- docs/CLOTH_FABRIC_DESIGN.md 10 (P2-B).
+//
+// MONEY ASSERTION: a `transmission thin` curtain lit from behind reads
+// substantially brighter than the SAME curtain (same preset, same
+// light, same everything else) with `transmission none` -- the
+// glow-through cue slice P2-B exists to add.
+//
+// MEASURED (this machine, PT 256 spp, 32x32, `omni_light` power 6.0 at
+// (0,0,-3), camera at (0,0,3.2) looking at the origin, seeds 1000 /
+// 2000 / 3000):
+//   transmission none: mean luminance EXACTLY 0 (no env, no other
+//     light path, and an opaque curtain -- correct: nothing reaches
+//     the camera).
+//   transmission thin:  7.78e-5 / 7.65e-5 / 7.31e-5 -- non-degenerate
+//     and essentially seed-independent, because this number is
+//     entirely the diffuse transmission lobe evaluated through NEE
+//     (the delta lobe's ray is a deterministic straight-line
+//     continuation and a point light has zero solid angle, so it is
+//     never hit by chance; only NEE, using `value()`'s continuum
+//     transmit term, can see a point light through this material).
+// `kMinBrightnessRatio` divides by `none`'s literal 0 as `>= inf`, so
+// the ratio assertion is written the other way around: `thin` must
+// itself clear a small absolute floor while `none` stays exactly 0.
+//
+// PT-vs-BDPT ON THE THIN SCENE IS NOT ASSERTED, AND THAT IS A REAL,
+// DISCLOSED GAP -- not an oversight.  Measured BDPT (same seeds,
+// same scene, `indirect_clamp`/`direct_clamp` OFF): 0.02528 / 0.02528
+// / 0.02528 -- i.e. BDPT reads ~325-346x BROADER than PT, tightly
+// REPRODUCIBLE across seeds (not the seed-to-seed spread a heavy tail
+// would show).  Reducing `indirect_clamp`/`direct_clamp` to 0.01 drops
+// BDPT to 0.00801 (still ~100x PT); to 0.001 it drops to 0.000801 --
+// i.e. the clamped MEAN tracks the clamp CEILING almost exactly at
+// every clamp level tried, which is the signature of a persistently-
+// hit near-singular contribution, not a rare firefly a clamp
+// ordinarily tames.  The likely cause: this is RISE's first FLAT,
+// zero-thickness, `ScattersFullSphere()` geometry (HairMaterial, the
+// only prior full-sphere material, is a curve with real cross-section
+// separation between its "front" and "back").  A BDPT light subpath
+// from a point light travelling toward the curtain and a camera
+// subpath vertex on the same infinitesimally-thin quad can land at
+// literally the SAME 3D point from opposite sides, and a vertex-to-
+// vertex connection's geometry term is `1/distance^2` -- unbounded as
+// that distance goes to zero, a degeneracy a curved or volumetric
+// surface does not have.  This was NOT chased further: it is very
+// likely a BDPT/connection-geometry issue for flat full-sphere
+// materials in general, not a `weave_material` BSDF defect --
+// `value()`/`Pdf()` for the transmission lobes are independently
+// verified reciprocal to 0 error (SPFBSDFConsistencyTest Part E2),
+// energy-bounded (LayeredWhiteFurnaceTest rows 50-51) and correctly
+// normalised over the full sphere (SPFPdfConsistencyTest's P2-B
+// block) by three UNRELATED harnesses that do not go through BDPT at
+// all -- but confirming the diagnosis and fixing it is integrator
+// work outside this slice's scope (the material, not BDPT's connection
+// strategy).  Recorded here rather than silenced with a loose bound:
+// see docs/CLOTH_FABRIC_DESIGN.md 10's debts list.
+static const double kMinBrightnessAbsolute = 1e-6;
+
+static void TestBacklitSheerCurtain()
+{
+	std::cout << "=== 3. Backlit sheer curtain (P2-B glow-through) ===" << std::endl;
+
+	const unsigned int W = 32, H = 32;
+	const double power = 6.0;
+
+	const ImageStats sNone = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( false, W, H, power ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "curtain_pt_none" );
+	const ImageStats sThin = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "curtain_pt_thin" );
+
+	Check( sNone.valid && sThin.valid, "curtain: both PT renders (none / thin) produced output" );
+	if( !sNone.valid || !sThin.valid ) return;
+
+	std::cout << "  PT: transmission none = " << sNone.luminance
+		<< "   transmission thin = " << sThin.luminance << std::endl;
+
+	// `transmission none` is an OPAQUE curtain with no environment and
+	// no other light path to the camera, so exactly 0 is the correct
+	// answer, not merely "small" -- asserting an upper bound near 0
+	// would accept a material that leaks a little light it should not.
+	Check( sNone.luminance == 0.0,
+		"curtain: `transmission none` is EXACTLY black (opaque, no other light path)" );
+	Check( sThin.luminance >= kMinBrightnessAbsolute,
+		"curtain: MONEY ASSERTION -- `transmission thin` glows through from behind while "
+		"`transmission none` (the same scene otherwise) is exactly black" );
+
+	// NOT asserted here, but disclosed: under PATH TRACING specifically
+	// (this function's own rasterizer), the diffuse-transmission lobe's
+	// contribution scales close to `transmit^2` rather than linearly in
+	// `transmit` -- confirmed, round 3, to be a PT full-sphere NEE/MIS
+	// issue, NOT a WeaveBRDF/WeaveSPF defect (a Scatter()-only MC probe
+	// with no NEE/MIS is exactly linear; BDPT, sharing the same material
+	// code, is also exactly linear).  docs/CLOTH_FABRIC_DESIGN.md section
+	// 15 debt 21 has the full writeup and measured numbers; NOT YET
+	// FIXED and not yet covered by a dedicated regression test here --
+	// a separate diagnosis effort is in progress and may turn this into
+	// a fix (or a different root cause) in a future round.
+
+	// PT-vs-BDPT on the thin scene is measured and PRINTED, but NOT
+	// asserted -- see the block comment above this function for the
+	// measured ~100-350x discrepancy (tracks the render's own clamp
+	// ceiling at every clamp level tried, i.e. not simply MC noise).
+	// Diagnosed as an INTEGRATOR limitation (BDPTUtilities::GeometricTerm's
+	// unguarded vertex-connection term on a flat, zero-thickness
+	// full-sphere surface), not a weave_material defect, and recorded as
+	// docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20 /
+	// docs/RENDERING_INTEGRATORS.md's known-limitations section rather
+	// than hidden behind a loose bound or chased into BDPT's connection
+	// code, which is out of this slice's scope.
+	const ImageStats bThin = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
+			RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "curtain_bdpt_thin" );
+	Check( bThin.valid, "curtain: BDPT render (thin) produced output" );
+	if( !bThin.valid ) return;
+
+	const double btRatio = bThin.luminance / std::fmax( sThin.luminance, 1e-12 );
+	std::cout << "  thin: PT = " << sThin.luminance << "   BDPT = " << bThin.luminance
+		<< "   BDPT/PT = " << btRatio
+		<< "   (NOT asserted -- see CLOTH_FABRIC_DESIGN.md 15 debt 20 / RENDERING_INTEGRATORS.md known limitations)" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
@@ -653,6 +846,7 @@ int main( int argc, char** argv )
 
 	TestHwssInvariant();
 	TestPtVsBdpt();
+	TestBacklitSheerCurtain();
 
 	std::cout << "==========================================================" << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

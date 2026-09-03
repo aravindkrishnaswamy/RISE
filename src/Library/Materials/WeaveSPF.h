@@ -181,8 +181,52 @@
 //  the COMPANION wavelength, and dividing by the wrong density is a
 //  bias, not an approximation.
 //
-//  NO `GetSpecularInfo` OVERRIDE.  Neither lobe is delta, so SMS
-//  correctly ignores this material, on hair's and fabric's precedent.
+//  NO `GetSpecularInfo` OVERRIDE for the two P2-A lobes -- and, P2-B,
+//  none for the new delta gap lobe either (WeaveBRDF.h section 2a: it
+//  is a trivial undeviated pass-through, not a refractive boundary SMS
+//  would usefully chain through).  SMS ignores this material in every
+//  configuration.
+//
+//  ============================================================
+//  P2-B (`transmission thin`) -- ONE MORE OUTER DRAW, ONE MORE
+//  WITHIN-FAMILY SPLIT
+//  ============================================================
+//
+//  `ScatterImpl` gains exactly two new branch points, both REACHED ONLY
+//  WHEN `p.thin`, so a `transmission none` material draws the SAME
+//  random numbers in the SAME order as the committed P2-A code (no
+//  extra `sampler.Get1D()` call executes) and is bit-identical:
+//
+//    1. BEFORE the family draw: with probability `gap(x)`
+//       (`1 - p.available`), select the DELTA transmission lobe instead
+//       -- a mandatory, undeviated pass-through (`wi = ri.ray.Dir()`,
+//       i.e. `-view`), reported `isDelta = true`, `pdf = 1.0` (RISE's
+//       delta marker, matching `DielectricSPF`), `kray = 1` (the
+//       lobe's own coefficient `gap(x)` and its selection probability
+//       are the SAME number and cancel exactly).  `Pdf()` reports 0 for
+//       it, per the brief's convention and `SPFPdfConsistencyTest`'s
+//       delta-skip handling (`isDelta` rows are excluded from its
+//       hemisphere-integral and chi-squared checks, the same way it
+//       already treats a pure-delta SPF).
+//    2. WITHIN a chosen family, after the surface-vs-volume draw picks
+//       "volume": a second draw, with probability `transmit_k`, retargets
+//       that draw from the reflect-side cosine hemisphere to the
+//       TRANSMIT-side one (`wi` flipped to the back of the shading
+//       normal) -- the diffuse transmission lobe.  Same cosine-hemisphere
+//       machinery, opposite side; see WeaveBRDF.h's "one budget, split"
+//       rule for why this does not add a third free energy source.
+//
+//  The CONTINUUM density `PdfWithParams` mirrors both additions: for a
+//  reflect-side `wi` it is unchanged in SHAPE from P2-A (the volume
+//  branch's share is split `(1-transmit_k)` reflect / `transmit_k`
+//  transmit, so the reflect-side total is scaled down accordingly) and,
+//  P2-B only, it also answers for a TRANSMIT-side `wi` (opposite
+//  hemisphere).  Both are additionally scaled by `(1 - gap(x))` -- the
+//  "continuum share" the delta branch did not take -- exactly the
+//  convention `DielectricSPF` uses in the limit where ALL its mass is
+//  delta (`Pdf() == 0` everywhere).  `!p.thin` reproduces the ORIGINAL
+//  P2-A expression textually, unscaled: `gap(x)` never enters a `!thin`
+//  sampler at all.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4

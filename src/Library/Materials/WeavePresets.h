@@ -119,6 +119,39 @@ namespace RISE
 			return eWeavePlain;
 		}
 
+		//! P2-B (docs/CLOTH_FABRIC_DESIGN.md 10, thin-cloth transmission).
+		//! `none` is the P2-A behaviour, bit-for-bit: no delta gap lobe, no
+		//! diffuse-transmission lobe, `ScattersFullSphere()` /
+		//! `CouldLightPassThrough()` both false.  `thin` turns both on.
+		//! Default `none`, so an existing scene that never mentions
+		//! `transmission` is byte-identical to the committed P2-A code --
+		//! that identity is WeaveMaterialChunkTest's own guard.
+		enum WeaveTransmissionKind
+		{
+			eWeaveTransmissionNone = 0,
+			eWeaveTransmissionThin
+		};
+
+		inline const char* WeaveTransmissionNamesText()
+		{
+			return "none, thin";
+		}
+
+		inline const char* WeaveTransmissionText( const WeaveTransmissionKind k )
+		{
+			return ( k == eWeaveTransmissionThin ) ? "thin" : "none";
+		}
+
+		//! Case-sensitive lookup; an unrecognised or null spelling falls
+		//! back to `none` -- the safe, back-compatible default.
+		inline WeaveTransmissionKind LookupWeaveTransmission( const char* name )
+		{
+			if( name && std::strcmp( name, "thin" ) == 0 ) {
+				return eWeaveTransmissionThin;
+			}
+			return eWeaveTransmissionNone;
+		}
+
 		//! The fraction of the repeating unit on which the WARP is the
 		//! top thread.  This is the pattern's exact mean and it is the
 		//! value `WeaveCoverageAt` fades to under minification -- both
@@ -283,24 +316,26 @@ namespace RISE
 		//! has to remember which convention it is holding.
 		struct WeaveThreadPreset
 		{
-			RISEPel		color;			///< A_k, the dye (tints the VOLUME lobe only)
+			RISEPel		color;			///< A_k, the dye (tints the VOLUME lobe, and -- P2-B -- the diffuse TRANSMISSION lobe)
 			Scalar		ior;			///< eta_k
 			Scalar		width;			///< beta_k, longitudinal width (rad)
 			Scalar		azimuth;		///< gamma_k, azimuthal width (rad)
 			Scalar		kd;				///< Sadeghi's isotropic volume-scattering fraction
 			Scalar		tilt;			///< float tilt out of the surface plane (rad)
+			Scalar		transmit;		///< P2-B: k_t, the family's share of the volume budget sent to diffuse transmission, [0,1]
 		};
 
 		struct WeavePreset
 		{
-			const char*			name;
-			bool				setsSlots;		///< false only for `custom`
-			WeavePatternKind	weave;
-			Scalar				weaveScale;		///< cells per UV unit
-			Scalar				gap;
-			WeaveThreadPreset	warp;
-			WeaveThreadPreset	weft;
-			const char*			note;			///< one line, for diagnostics and docs
+			const char*				name;
+			bool					setsSlots;		///< false only for `custom`
+			WeavePatternKind		weave;
+			Scalar					weaveScale;		///< cells per UV unit
+			Scalar					gap;
+			WeaveTransmissionKind	transmission;	///< P2-B: `none` for denim/custom, `thin` for linen/silk/satin
+			WeaveThreadPreset		warp;
+			WeaveThreadPreset		weft;
+			const char*				note;			///< one line, for diagnostics and docs
 		};
 
 		//! The Phase-2 preset table.
@@ -392,32 +427,46 @@ namespace RISE
 		//! as coarse diagonal stripes -- carbon fibre, not denim.  An
 		//! author with a hero close-up overrides this; nobody should have
 		//! to override it to get cloth.
+		//! P2-B (docs/CLOTH_FABRIC_DESIGN.md 10, thin-cloth transmission)
+		//! adds `transmission` (per row) and `transmit` (per family).
+		//! linen/silk/satin ship `transmission thin` with `transmit` 0.25
+		//! / 0.35 / 0.15 -- the brief's own defaults, read as "these three
+		//! are naturally sheer or light-admitting weaves" (silk and satin
+		//! chiefly through the yarn itself, linen also through its
+		//! authored `gap`).  denim and custom stay `transmission none` /
+		//! `transmit 0.0`: a 3/1 twill at this weight is not sheer cloth,
+		//! and `custom` is the author's own canvas.  `gap` is UNCHANGED --
+		//! it keeps its P2-A role (an energy-only hole) and, since P2-B,
+		//! ALSO supplies the delta transmission lobe's aperture when
+		//! `transmission thin` (see WeaveBRDF.h); it is never read for
+		//! transmission on a `transmission none` row, so denim's existing
+		//! `gap 0.02` is unaffected.
 		inline const WeavePreset* WeavePresetTable( unsigned int& count )
 		{
 			static const WeavePreset kPresets[] = {
-				{ "denim", true, eWeaveTwill31, 2500.0, 0.02,
-				  /* warp */ { RISEPel( 0.062, 0.084, 0.175 ), 1.46, 0.28, 1.25, 0.35, 0.0 },
-				  /* weft */ { RISEPel( 0.640, 0.600, 0.520 ), 1.46, 0.30, 1.30, 0.35, 0.0 },
+				{ "denim", true, eWeaveTwill31, 2500.0, 0.02, eWeaveTransmissionNone,
+				  /* warp */ { RISEPel( 0.062, 0.084, 0.175 ), 1.46, 0.28, 1.25, 0.35, 0.0, 0.0 },
+				  /* weft */ { RISEPel( 0.640, 0.600, 0.520 ), 1.46, 0.30, 1.30, 0.35, 0.0, 0.0 },
 				  "3/1 twill; indigo warp over undyed weft -- the wale IS the 3/1 draft, not a rotation field" },
 
-				{ "silk", true, eWeaveSatin5, 8000.0, 0.0,
-				  /* warp */ { RISEPel( 0.640, 0.570, 0.320 ), 1.345, 0.110, 1.10, 0.20,  0.08 },
-				  /* weft */ { RISEPel( 0.520, 0.460, 0.255 ), 1.345, 0.300, 1.30, 0.30, -0.08 },
+				{ "silk", true, eWeaveSatin5, 8000.0, 0.0, eWeaveTransmissionThin,
+				  /* warp */ { RISEPel( 0.640, 0.570, 0.320 ), 1.345, 0.110, 1.10, 0.20,  0.08, 0.35 },
+				  /* weft */ { RISEPel( 0.520, 0.460, 0.255 ), 1.345, 0.300, 1.30, 0.30, -0.08, 0.35 },
 				  "Table II (b) crepe de chine: a flat warp against a twisted weft, on a 5-harness float" },
 
-				{ "satin", true, eWeaveSatin5, 6000.0, 0.0,
-				  /* warp */ { RISEPel( 0.520, 0.190, 0.150 ), 1.539, 0.100, 0.90, 0.10,  0.09 },
-				  /* weft */ { RISEPel( 0.430, 0.155, 0.120 ), 1.539, 0.400, 1.40, 0.70, -0.09 },
+				{ "satin", true, eWeaveSatin5, 6000.0, 0.0, eWeaveTransmissionThin,
+				  /* warp */ { RISEPel( 0.520, 0.190, 0.150 ), 1.539, 0.100, 0.90, 0.10,  0.09, 0.15 },
+				  /* weft */ { RISEPel( 0.430, 0.155, 0.120 ), 1.539, 0.400, 1.40, 0.70, -0.09, 0.15 },
 				  "Table II (c) charmeuse: the flattest, shiniest float in the set" },
 
-				{ "linen", true, eWeavePlain, 2000.0, 0.10,
-				  /* warp */ { RISEPel( 0.740, 0.680, 0.560 ), 1.46, 0.240, 1.30, 0.30, 0.0 },
-				  /* weft */ { RISEPel( 0.720, 0.660, 0.540 ), 1.46, 0.240, 1.30, 0.30, 0.0 },
+				{ "linen", true, eWeavePlain, 2000.0, 0.10, eWeaveTransmissionThin,
+				  /* warp */ { RISEPel( 0.740, 0.680, 0.560 ), 1.46, 0.240, 1.30, 0.30, 0.0, 0.25 },
+				  /* weft */ { RISEPel( 0.720, 0.660, 0.540 ), 1.46, 0.240, 1.30, 0.30, 0.0, 0.25 },
 				  "Table II (a) plain flax; the one preset with a real gap -- plain linen is not watertight" },
 
-				{ "custom", false, eWeavePlain, 2500.0, 0.0,
-				  /* warp */ { RISEPel( 1.0, 1.0, 1.0 ), 1.46, 0.25, 1.0, 0.30, 0.0 },
-				  /* weft */ { RISEPel( 1.0, 1.0, 1.0 ), 1.46, 0.25, 1.0, 0.30, 0.0 },
+				{ "custom", false, eWeavePlain, 2500.0, 0.0, eWeaveTransmissionNone,
+				  /* warp */ { RISEPel( 1.0, 1.0, 1.0 ), 1.46, 0.25, 1.0, 0.30, 0.0, 0.0 },
+				  /* weft */ { RISEPel( 1.0, 1.0, 1.0 ), 1.46, 0.25, 1.0, 0.30, 0.0, 0.0 },
 				  "no preset; every slot is the author's own" }
 			};
 			count = (unsigned int)( sizeof( kPresets ) / sizeof( kPresets[0] ) );

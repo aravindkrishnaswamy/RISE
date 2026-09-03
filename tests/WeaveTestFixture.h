@@ -56,10 +56,35 @@ namespace RISE
 			//!                    warp share -- for a test that wants a stated
 			//!                    two-family mix independent of where in the
 			//!                    weave cell the harness's fixed `ptCoord` lands
+			//! @param thin        P2-B (docs/CLOTH_FABRIC_DESIGN.md 10).  DEFAULT
+			//!                    FALSE, and DELIBERATELY NOT the preset table's
+			//!                    own `transmission` default: every suite this
+			//!                    fixture already served (SPFBSDFConsistencyTest,
+			//!                    SPFPdfConsistencyTest, LayeredWhiteFurnaceTest,
+			//!                    WeaveMaterialChunkTest) has locked numbers
+			//!                    measured against the REFLECTION-ONLY P2-A
+			//!                    material, for every preset including silk /
+			//!                    satin / linen (whose `fabric` chunk default
+			//!                    flipped to `transmission thin` in P2-B).  A
+			//!                    fixture that silently followed the preset's new
+			//!                    default would retune every one of those locked
+			//!                    numbers out from under the suites that pinned
+			//!                    them.  Pass `true` explicitly to build the
+			//!                    `thin` material P2-B's own tests exercise.
+			//! @param warpTransmit / weftTransmit  when `thin` and >= 0,
+			//!                    OVERRIDE the preset's own per-family
+			//!                    `transmit`; ignored (and the field is always 0)
+			//!                    when `thin` is false.
+			//! @param gapOverride  when >= 0, OVERRIDES the preset's own `gap`
+			//!                    (P2-B: also the `thin` delta lobe's aperture).
 			explicit PresetWeave( const char* presetName,
 			                      const Scalar rotation = 0,
 			                      const Scalar coverage = -1,
-			                      const bool whiteDyes = false )
+			                      const bool whiteDyes = false,
+			                      const bool thin = false,
+			                      const Scalar warpTransmit_ = -1,
+			                      const Scalar weftTransmit_ = -1,
+			                      const Scalar gapOverride = -1 )
 			{
 				using namespace RISE::Implementation;
 				const WeavePreset& P = LookupWeavePreset( presetName );
@@ -77,7 +102,7 @@ namespace RISE
 				scale   = mkScalar( P.weaveScale );
 				rot     = mkScalar( rotation );
 				skew    = mkScalar( 0 );
-				gap     = mkScalar( P.gap );
+				gap     = mkScalar( gapOverride >= 0 ? gapOverride : P.gap );
 
 				warpIor = mkScalar( P.warp.ior );
 				warpWid = mkScalar( P.warp.width );
@@ -91,6 +116,11 @@ namespace RISE
 				weftKd  = mkScalar( P.weft.kd );
 				weftTil = mkScalar( P.weft.tilt );
 
+				const Scalar wTransmitVal = thin ? ( warpTransmit_ >= 0 ? warpTransmit_ : P.warp.transmit ) : Scalar( 0 );
+				const Scalar fTransmitVal = thin ? ( weftTransmit_ >= 0 ? weftTransmit_ : P.weft.transmit ) : Scalar( 0 );
+				warpTransmit = mkScalar( wTransmitVal );
+				weftTransmit = mkScalar( fTransmitVal );
+
 				cov = 0;
 				WeavePatternKind pattern = P.weave;
 				if( coverage >= 0 ) {
@@ -98,9 +128,11 @@ namespace RISE
 					cov = mkScalar( coverage );
 				}
 
-				mat = new WeaveMaterial( pattern, *scale, *rot, *skew, cov, *gap,
-				                         *warpColor, *warpIor, *warpWid, *warpAzi, *warpKd, *warpTil,
-				                         *weftColor, *weftIor, *weftWid, *weftAzi, *weftKd, *weftTil );
+				const WeaveTransmissionKind transKind = thin ? eWeaveTransmissionThin : eWeaveTransmissionNone;
+
+				mat = new WeaveMaterial( pattern, transKind, *scale, *rot, *skew, cov, *gap,
+				                         *warpColor, *warpIor, *warpWid, *warpAzi, *warpKd, *warpTil, *warpTransmit,
+				                         *weftColor, *weftIor, *weftWid, *weftAzi, *weftKd, *weftTil, *weftTransmit );
 				mat->addref();
 			}
 
@@ -155,6 +187,8 @@ namespace RISE
 			Implementation::UniformScalarPainter*	weftAzi;
 			Implementation::UniformScalarPainter*	weftKd;
 			Implementation::UniformScalarPainter*	weftTil;
+			Implementation::UniformScalarPainter*	warpTransmit;
+			Implementation::UniformScalarPainter*	weftTransmit;
 			Implementation::WeaveMaterial*			mat;
 		};
 	}

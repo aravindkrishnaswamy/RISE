@@ -63,6 +63,32 @@ namespace
 	//! refractive caustics.  One early-out object enumeration (stops at
 	//! the first match).  Mirrors the `MediaScan` idiom in
 	//! LightSampler::Prepare (return false = stop, true = continue).
+	//!
+	//! `CouldLightPassThrough() && !ScattersFullSphere()`, NOT
+	//! `CouldLightPassThrough()` ALONE (docs/CLOTH_FABRIC_DESIGN.md §15,
+	//! REVIEW_P2R7.md P2).  A `weave_material` under `transmission thin`
+	//! ALSO reports `CouldLightPassThrough() == true` (P2-B) since it
+	//! genuinely lets light through — but it is a THIN CLOTH with a
+	//! full-sphere CONTINUUM response (a delta gap lobe plus a Lambertian
+	//! diffuse-transmission lobe spread over the whole far hemisphere),
+	//! not a dielectric boundary that concentrates refracted energy into
+	//! a caustic the way glass/water/gems do.  Routing it to VCM on this
+	//! signal alone reproduces the same unbounded
+	//! `BDPTUtilities::GeometricTerm` vertex-connection singularity a
+	//! flat, zero-thickness two-sided surface triggers in BDPT (measured
+	//! 100-350x over PT, tests/FabricRenderTest.cpp) — VCM shares that
+	//! same unguarded `cosA*cosB/dist^2` connection term
+	//! (`VCMIntegrator.cpp`).  `ScattersFullSphere()` is exactly the
+	//! signal that tells the two apart WITHOUT needing a live ray hit
+	//! (which `IMaterial::GetSpecularInfo()` would, and this is a cheap
+	//! static per-material scan): every material in the tree that reports
+	//! `CouldLightPassThrough()` today is either a delta-only dielectric
+	//! (`DielectricMaterial`/`PerfectRefractorMaterial`, `ScattersFullSphere()`
+	//! stays at the IMaterial default `false`) or `weave_material` under
+	//! `thin` (`ScattersFullSphere() == true`, P2-B) — so the conjunction
+	//! keeps the former on the VCM caustic path and routes the latter
+	//! through the `hasTransmissive && hasPositional` test as `false`,
+	//! falling through to PT below.
 	bool SceneHasTransmissiveMaterial( const IScene& scene )
 	{
 		struct TransmissiveScan : public IEnumCallback<IObject>
@@ -72,7 +98,7 @@ namespace
 			bool operator()( const IObject& obj )
 			{
 				const IMaterial* mat = obj.GetMaterial();
-				if( mat && mat->CouldLightPassThrough() ) {
+				if( mat && mat->CouldLightPassThrough() && !mat->ScattersFullSphere() ) {
 					found = true;
 					return false;   // one is enough — stop enumeration
 				}

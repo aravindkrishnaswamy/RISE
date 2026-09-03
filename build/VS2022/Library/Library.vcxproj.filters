@@ -2568,6 +2568,9 @@
     <ClInclude Include="..\..\..\src\Library\Interfaces\ISurfaceSignalProvider.h">
       <Filter>Interfaces</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Interfaces\WeaveBidirectionalWarning.h">
+      <Filter>Interfaces</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IScalarPainterManager.h">
       <Filter>Interfaces</Filter>
     </ClInclude>

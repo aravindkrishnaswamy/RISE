@@ -4193,6 +4193,7 @@ namespace RISE
 	bool RISE_API_CreateWeaveMaterial(
 								IMaterial** ppi,
 								const char* weave,
+								const char* transmission,
 								const IScalarPainter& weave_scale,
 								const IScalarPainter& weave_rotation,
 								const IScalarPainter& weft_skew,
@@ -4204,12 +4205,14 @@ namespace RISE
 								const IScalarPainter& warp_azimuth,
 								const IScalarPainter& warp_kd,
 								const IScalarPainter& warp_tilt,
+								const IScalarPainter& warp_transmit,
 								const IPainter& weft_color,
 								const IScalarPainter& weft_ior,
 								const IScalarPainter& weft_width,
 								const IScalarPainter& weft_azimuth,
 								const IScalarPainter& weft_kd,
-								const IScalarPainter& weft_tilt
+								const IScalarPainter& weft_tilt,
+								const IScalarPainter& weft_transmit
 								)
 	{
 		if( !ppi ) {
@@ -4222,6 +4225,10 @@ namespace RISE
 		// callers and matches `LookupWeavePreset`'s own convention.
 		const WeavePatternKind pattern = LookupWeavePattern( weave );
 
+		// P2-B: an unrecognised spelling resolves to `none`, the
+		// back-compatible, bit-identical-to-P2-A default.
+		const WeaveTransmissionKind trans = LookupWeaveTransmission( transmission );
+
 		// `coverage` is meaningful ONLY for `custom`, and is dropped
 		// otherwise rather than retained: holding a reference to a
 		// painter no code path reads would keep it alive for the scene's
@@ -4229,9 +4236,9 @@ namespace RISE
 		// does nothing.
 		const IScalarPainter* cov = ( pattern == eWeaveCustom ) ? coverage : 0;
 
-		(*ppi) = new WeaveMaterial( pattern, weave_scale, weave_rotation, weft_skew, cov, gap,
-		                            warp_color, warp_ior, warp_width, warp_azimuth, warp_kd, warp_tilt,
-		                            weft_color, weft_ior, weft_width, weft_azimuth, weft_kd, weft_tilt );
+		(*ppi) = new WeaveMaterial( pattern, trans, weave_scale, weave_rotation, weft_skew, cov, gap,
+		                            warp_color, warp_ior, warp_width, warp_azimuth, warp_kd, warp_tilt, warp_transmit,
+		                            weft_color, weft_ior, weft_width, weft_azimuth, weft_kd, weft_tilt, weft_transmit );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "weave material" );
 		return true;
 	}

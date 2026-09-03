@@ -415,9 +415,28 @@ with **no fitted constants**, exact at normal incidence, with a stated
 ±40% exactness class for its bihemispherical approximation.
 
 **Presets.** `fabric denim|silk|satin|linen|custom` seeds every slot
-including the draft. Reflection-only in this phase:
-`ScattersFullSphere` and `CouldLightPassThrough` stay false, and the
-backlit glow-through cue is slice P2-B.
+including the draft.
+
+**Transmission (slice P2-B, shipped).** `transmission none|thin` (default
+`none`; linen/silk/satin default to `thin`, denim/custom stay `none`).
+Under `thin`, `ScattersFullSphere` and `CouldLightPassThrough` both become
+`true` and two lobes activate: a DELTA transmission through the open gaps
+(`f_delta = gap(x)·δ(i+o)/(i·n_s)`, weighted by the SAME `gap` field P2-A
+shipped — the chunk also accepts `sheer` as an alias for it — reported
+`isDelta = true`, `kray = 1`, since its coefficient and its selection
+probability cancel exactly) and a Lambertian diffuse transmission through
+the yarn itself (`f_t,d,k = (1-gap)·transmit_k·T_k/π` per family, reusing
+the family's own dye; `warp_transmit`/`weft_transmit`, preset defaults
+linen 0.25 / silk 0.35 / satin 0.15 / denim 0.0). The diffuse lobe's
+budget is carved out of the SAME volume lobe rather than added on top —
+the reflect-side volume term is scaled by `(1 - transmit_k)` — so the
+total never exceeds the pre-P2-B budget. `transmission none` is
+bit-identical to the original slice-A code: every new expression is
+reached only through a `thin`-gated branch. Full detail, including a
+disclosed BDPT limitation for this material class (a flat, zero-thickness
+`ScattersFullSphere()` geometry — RISE's first — appears to trip a
+near-singular BDPT connection; PT is unaffected and independently
+verified), is in CLOTH_FABRIC_DESIGN.md §10.1a.
 
 Guards: `LayeredWhiteFurnaceTest` configs 39–49 (energy: `kPostureBounded`
 plus a locked measured curve per preset at two view sets, the
@@ -432,8 +451,13 @@ yarn edge's continuity, the preset table slot by slot, the two `coverage`
 diagnostics, fabric-over-weave, and the `hemisphericalAlbedo` error
 measurement), `FibreLobeMathTest` (a deterministic value table pinning the
 shared fibre-scattering primitives against both `hair_material` and this
-material silently drifting), and
-[`scenes/Tests/Materials/weave_presets.RISEscene`](../scenes/Tests/Materials/weave_presets.RISEscene).
+material silently drifting), `LayeredWhiteFurnaceTest` rows 50–51 and the
+new cross-hemisphere block in `SPFBSDFConsistencyTest`/`SPFPdfConsistencyTest`
+and `WeaveMaterialChunkTest::TestThinTransmission` (P2-B transmission; see
+§10.1a for what each pins), `tests/FabricRenderTest.cpp`'s backlit-curtain
+render test, and
+[`scenes/Tests/Materials/weave_presets.RISEscene`](../scenes/Tests/Materials/weave_presets.RISEscene) /
+[`scenes/FeatureBased/Materials/sheer_curtain.RISEscene`](../scenes/FeatureBased/Materials/sheer_curtain.RISEscene).
 
 ## 7. Luminaires — materials that emit
 

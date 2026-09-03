@@ -841,26 +841,35 @@ namespace RISE
 	//! `Job::AddWeaveMaterial`; this factory takes no preset and every
 	//! slot must be supplied.
 	/// \return TRUE if successful, FALSE otherwise
+	//! P2-B (docs/CLOTH_FABRIC_DESIGN.md 10) adds `transmission` (`none`
+	//! or `thin`; unrecognised => `none`, matching the chunk descriptor's
+	//! default) and a per-family `transmit` scalar in [0,1] -- the share
+	//! of that family's volume budget redirected to diffuse transmission
+	//! (WeaveBRDF.h section 2a).  `transmission none` with `transmit`
+	//! left at 0 reproduces the P2-A factory exactly.
 	bool RISE_API_CreateWeaveMaterial(
 								IMaterial** ppi,						///< [out] Pointer to recieve the material
 								const char* weave,						///< [in] Draft name; unrecognised => `plain`
+								const char* transmission,				///< [in] `none` or `thin`; unrecognised => `none`
 								const IScalarPainter& weave_scale,		///< [in] Cells per UV unit
 								const IScalarPainter& weave_rotation,	///< [in] Warp direction, RADIANS, about the shading normal
 								const IScalarPainter& weft_skew,		///< [in] Weft offset from perpendicular, RADIANS
 								const IScalarPainter* coverage,			///< [in] `custom` only: warp-coverage field; may be NULL
-								const IScalarPainter& gap,				///< [in] Uncovered fraction, clamped to [0, 0.3]
-								const IPainter& warp_color,				///< [in] Warp dye (tints the VOLUME lobe only)
+								const IScalarPainter& gap,				///< [in] Uncovered fraction, clamped to [0, 0.3]; also the `thin` delta lobe's aperture
+								const IPainter& warp_color,				///< [in] Warp dye (tints the VOLUME lobe and, `thin`, the diffuse TRANSMISSION lobe)
 								const IScalarPainter& warp_ior,			///< [in] Warp fibre IOR
 								const IScalarPainter& warp_width,		///< [in] Warp longitudinal width beta, RADIANS
 								const IScalarPainter& warp_azimuth,		///< [in] Warp azimuthal width gamma, RADIANS
 								const IScalarPainter& warp_kd,			///< [in] Warp isotropic volume-scattering fraction
 								const IScalarPainter& warp_tilt,		///< [in] Warp float tilt out of plane, RADIANS
+								const IScalarPainter& warp_transmit,	///< [in] P2-B: warp's diffuse-transmission share, [0,1]
 								const IPainter& weft_color,				///< [in] Weft dye
 								const IScalarPainter& weft_ior,			///< [in] Weft fibre IOR
 								const IScalarPainter& weft_width,		///< [in] Weft longitudinal width beta, RADIANS
 								const IScalarPainter& weft_azimuth,		///< [in] Weft azimuthal width gamma, RADIANS
 								const IScalarPainter& weft_kd,			///< [in] Weft isotropic volume-scattering fraction
-								const IScalarPainter& weft_tilt			///< [in] Weft float tilt out of plane, RADIANS
+								const IScalarPainter& weft_tilt,			///< [in] Weft float tilt out of plane, RADIANS
+								const IScalarPainter& weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1]
 								);
 
 	//! Creates a Dielectric material.  Scalar params (tau, IOR, scattering)

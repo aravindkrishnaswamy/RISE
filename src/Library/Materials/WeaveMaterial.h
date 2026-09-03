@@ -34,13 +34,16 @@
 //  which one subtracts the sheen's energy from the substrate -- the
 //  exact double-counting `fabric_material` was built to end.
 //
-//  PHASE 2 SLICE A IS REFLECTION-ONLY.  `IsVolumetric`,
-//  `ScattersFullSphere` and `CouldLightPassThrough` all stay at their
-//  IMaterial defaults (false).  The backlit glow-through cue is slice
-//  P2-B: it needs Zhu 2023's delta-transmission lobe
-//  `delta(i+o)/(i.n_s)` and the full-sphere NEE machinery, and claiming
-//  the flags without the lobe would send NEE hunting for transmission
-//  that does not exist.
+//  P2-B: `transmission thin` OVERRIDES `ScattersFullSphere()` AND
+//  `CouldLightPassThrough()` TO TRUE.  Both stay at their IMaterial
+//  defaults (false) for `transmission none`, so a scene that never
+//  authors `transmission` sees no behaviour change at all -- the
+//  overrides read the SAME `WeaveBRDF::GetTransmission()` the BSDF/SPF
+//  gate their own new lobes on, so the flag and the lobes it advertises
+//  can never disagree.  `IsVolumetric` stays at its default either way:
+//  the gap's delta lobe and the diffuse transmission lobe are both
+//  ordinary (if full-sphere) BSDF terms, not a medium the integrator
+//  marches.
 //
 //  NO `GetSpecularInfo` OVERRIDE, for the same reason
 //  `fabric_material` has none: neither lobe is a delta distribution, so
@@ -88,6 +91,7 @@ namespace RISE
 		public:
 			WeaveMaterial(
 				const WeavePatternKind pattern,
+				const WeaveTransmissionKind transmission,		///< P2-B: `none` or `thin`
 				const IScalarPainter& weaveScale,
 				const IScalarPainter& weaveRotation,
 				const IScalarPainter& weftSkew,
@@ -99,17 +103,19 @@ namespace RISE
 				const IScalarPainter& warpAzimuth,
 				const IScalarPainter& warpKd,
 				const IScalarPainter& warpTilt,
+				const IScalarPainter& warpTransmit,			///< P2-B
 				const IPainter& weftColor,
 				const IScalarPainter& weftIOR,
 				const IScalarPainter& weftWidth,
 				const IScalarPainter& weftAzimuth,
 				const IScalarPainter& weftKd,
-				const IScalarPainter& weftTilt
+				const IScalarPainter& weftTilt,
+				const IScalarPainter& weftTransmit				///< P2-B
 				)
 			{
-				pBRDF = new WeaveBRDF( pattern, weaveScale, weaveRotation, weftSkew, coverage, gap,
-				                       warpColor, warpIOR, warpWidth, warpAzimuth, warpKd, warpTilt,
-				                       weftColor, weftIOR, weftWidth, weftAzimuth, weftKd, weftTilt );
+				pBRDF = new WeaveBRDF( pattern, transmission, weaveScale, weaveRotation, weftSkew, coverage, gap,
+				                       warpColor, warpIOR, warpWidth, warpAzimuth, warpKd, warpTilt, warpTransmit,
+				                       weftColor, weftIOR, weftWidth, weftAzimuth, weftKd, weftTilt, weftTransmit );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new WeaveSPF( *pBRDF );
@@ -125,10 +131,21 @@ namespace RISE
 			/// \return NULL: a weave never emits.
 			inline IEmitter* GetEmitter() const { return 0; }
 
+			//! P2-B: TRUE iff `transmission thin` -- see the file header.
+			//! `false` (the IMaterial default) for `transmission none`,
+			//! matching the committed P2-A behaviour exactly.
+			inline bool ScattersFullSphere() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin; }
+
+			//! P2-B: same condition as `ScattersFullSphere()` -- the gap's
+			//! delta lobe is a genuine see-through aperture only when
+			//! `transmission thin`.
+			inline bool CouldLightPassThrough() const { return pBRDF->GetTransmission() == eWeaveTransmissionThin; }
+
 			//! Read-back for the interactive editor / snapshot clone.
 			//! Every slot is forwarded from the BRDF, which holds the one
 			//! copy of the state.
 			inline WeavePatternKind      GetPattern()       const { return pBRDF->GetPattern(); }
+			inline WeaveTransmissionKind GetTransmission()  const { return pBRDF->GetTransmission(); }
 			inline const IScalarPainter& GetWeaveScale()    const { return pBRDF->GetWeaveScale(); }
 			inline const IScalarPainter& GetWeaveRotation() const { return pBRDF->GetWeaveRotation(); }
 			inline const IScalarPainter& GetWeftSkew()      const { return pBRDF->GetWeftSkew(); }
@@ -140,12 +157,14 @@ namespace RISE
 			inline const IScalarPainter& GetWarpAzimuth()   const { return pBRDF->GetWarpAzimuth(); }
 			inline const IScalarPainter& GetWarpKd()        const { return pBRDF->GetWarpKd(); }
 			inline const IScalarPainter& GetWarpTilt()      const { return pBRDF->GetWarpTilt(); }
+			inline const IScalarPainter& GetWarpTransmit()  const { return pBRDF->GetWarpTransmit(); }
 			inline const IPainter&       GetWeftColor()     const { return pBRDF->GetWeftColor(); }
 			inline const IScalarPainter& GetWeftIOR()       const { return pBRDF->GetWeftIOR(); }
 			inline const IScalarPainter& GetWeftWidth()     const { return pBRDF->GetWeftWidth(); }
 			inline const IScalarPainter& GetWeftAzimuth()   const { return pBRDF->GetWeftAzimuth(); }
 			inline const IScalarPainter& GetWeftKd()        const { return pBRDF->GetWeftKd(); }
 			inline const IScalarPainter& GetWeftTilt()      const { return pBRDF->GetWeftTilt(); }
+			inline const IScalarPainter& GetWeftTransmit()  const { return pBRDF->GetWeftTransmit(); }
 
 			//! Rebind for the interactive editor.  Only the BRDF is
 			//! touched -- `WeaveSPF` reads every parameter back through it
@@ -170,12 +189,14 @@ namespace RISE
 			inline void SetWarpAzimuth( const IScalarPainter& v )   { pBRDF->SetWarpAzimuth( v ); }
 			inline void SetWarpKd( const IScalarPainter& v )        { pBRDF->SetWarpKd( v ); }
 			inline void SetWarpTilt( const IScalarPainter& v )      { pBRDF->SetWarpTilt( v ); }
+			inline void SetWarpTransmit( const IScalarPainter& v )  { pBRDF->SetWarpTransmit( v ); }
 			inline void SetWeftColor( const IPainter& v )           { pBRDF->SetWeftColor( v ); }
 			inline void SetWeftIOR( const IScalarPainter& v )       { pBRDF->SetWeftIOR( v ); }
 			inline void SetWeftWidth( const IScalarPainter& v )     { pBRDF->SetWeftWidth( v ); }
 			inline void SetWeftAzimuth( const IScalarPainter& v )   { pBRDF->SetWeftAzimuth( v ); }
 			inline void SetWeftKd( const IScalarPainter& v )        { pBRDF->SetWeftKd( v ); }
 			inline void SetWeftTilt( const IScalarPainter& v )      { pBRDF->SetWeftTilt( v ); }
+			inline void SetWeftTransmit( const IScalarPainter& v )  { pBRDF->SetWeftTransmit( v ); }
 		};
 	}
 }

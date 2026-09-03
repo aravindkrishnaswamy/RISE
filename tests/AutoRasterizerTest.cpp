@@ -381,6 +381,40 @@ standard_object
 }
 )SCENE";
 
+// P2-B / REVIEW_P2R7.md P2: a `weave_material` under `transmission thin` is
+// ALSO `CouldLightPassThrough() == true` (docs/CLOTH_FABRIC_DESIGN.md 10/15),
+// but it is a full-sphere CONTINUUM material (a delta gap lobe plus a
+// Lambertian diffuse-transmission lobe), not the dielectric-caustic kind
+// `hasTransmissive && hasPositional` exists to route to VCM -- routing it
+// there reproduces BDPT/VCM's shared unguarded vertex-connection geometric-
+// term singularity on a flat, zero-thickness surface (measured 100-350x over
+// PT, tests/FabricRenderTest.cpp).  Append to a body to add the "thin weave
+// present" signal, on `kGlassSphere`'s own pattern.
+static const char* kWeaveThinCurtain = R"SCENE(
+weave_material
+{
+	name mat_weave_thin
+	fabric linen
+	transmission thin
+	sheer 0.2
+}
+clippedplane_geometry
+{
+	name weavequad
+	pta -0.4 -0.4 0.5
+	ptb 0.4 -0.4 0.5
+	ptc 0.4 0.4 0.5
+	ptd -0.4 0.4 0.5
+	doublesided TRUE
+}
+standard_object
+{
+	name obj_weave_thin
+	geometry weavequad
+	material mat_weave_thin
+}
+)SCENE";
+
 // Same diffuse receiver + mesh AREA emitter as kSceneCommon, but with NO
 // omni light -> lit purely by the area emitter (no positional delta
 // light).  A complete renderable body on its own.
@@ -1153,6 +1187,14 @@ int main()
 	//     from VCM's cost.
 	CheckStaticRoute( "dielectric, area-lit only -> PT",
 		kAutoAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "p2_diel_nopos", AutoIntegratorChoice::PT );
+
+	// (c2) P2-B / REVIEW_P2R7.md P2: a `transmission thin` weave_material
+	// PLUS a positional point light -- the exact `hasTransmissive &&
+	// hasPositional` shape the shipped sheer-curtain scene has -- must NOT
+	// route to VCM.  `SceneHasTransmissiveMaterial`'s `!ScattersFullSphere()`
+	// conjunction (AutoRasterizer.cpp) is what keeps this on PT.
+	CheckStaticRoute( "thin weave + point light -> PT (not VCM)",
+		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::PT );
 
 	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
 	//     the static tier.  BDPT is NOT statically separable from the

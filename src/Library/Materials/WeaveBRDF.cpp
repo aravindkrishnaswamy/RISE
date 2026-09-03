@@ -167,6 +167,7 @@ namespace
 
 WeaveBRDF::WeaveBRDF(
 	const WeavePatternKind pattern_,
+	const WeaveTransmissionKind transmission_,
 	const IScalarPainter& weaveScale,
 	const IScalarPainter& weaveRotation,
 	const IScalarPainter& weftSkew,
@@ -178,14 +179,17 @@ WeaveBRDF::WeaveBRDF(
 	const IScalarPainter& warpAzimuth,
 	const IScalarPainter& warpKd,
 	const IScalarPainter& warpTilt,
+	const IScalarPainter& warpTransmit,
 	const IPainter& weftColor,
 	const IScalarPainter& weftIOR,
 	const IScalarPainter& weftWidth,
 	const IScalarPainter& weftAzimuth,
 	const IScalarPainter& weftKd,
-	const IScalarPainter& weftTilt
+	const IScalarPainter& weftTilt,
+	const IScalarPainter& weftTransmit
 	) :
   pattern( pattern_ ),
+  transmission( transmission_ ),
   pScale( &weaveScale ),
   pRotation( &weaveRotation ),
   pSkew( &weftSkew ),
@@ -197,12 +201,14 @@ WeaveBRDF::WeaveBRDF(
   pWarpAzimuth( &warpAzimuth ),
   pWarpKd( &warpKd ),
   pWarpTilt( &warpTilt ),
+  pWarpTransmit( &warpTransmit ),
   pWeftColor( &weftColor ),
   pWeftIOR( &weftIOR ),
   pWeftWidth( &weftWidth ),
   pWeftAzimuth( &weftAzimuth ),
   pWeftKd( &weftKd ),
-  pWeftTilt( &weftTilt )
+  pWeftTilt( &weftTilt ),
+  pWeftTransmit( &weftTransmit )
 {
 	pScale->addref();
 	pRotation->addref();
@@ -217,22 +223,26 @@ WeaveBRDF::WeaveBRDF(
 	pWarpAzimuth->addref();
 	pWarpKd->addref();
 	pWarpTilt->addref();
+	pWarpTransmit->addref();
 	pWeftColor->addref();
 	pWeftIOR->addref();
 	pWeftWidth->addref();
 	pWeftAzimuth->addref();
 	pWeftKd->addref();
 	pWeftTilt->addref();
+	pWeftTransmit->addref();
 }
 
 WeaveBRDF::~WeaveBRDF()
 {
+	safe_release( pWeftTransmit );
 	safe_release( pWeftTilt );
 	safe_release( pWeftKd );
 	safe_release( pWeftAzimuth );
 	safe_release( pWeftWidth );
 	safe_release( pWeftIOR );
 	safe_release( pWeftColor );
+	safe_release( pWarpTransmit );
 	safe_release( pWarpTilt );
 	safe_release( pWarpKd );
 	safe_release( pWarpAzimuth );
@@ -273,12 +283,14 @@ WEAVE_SETTER( WarpWidth,     pWarpWidth,   IScalarPainter )
 WEAVE_SETTER( WarpAzimuth,   pWarpAzimuth, IScalarPainter )
 WEAVE_SETTER( WarpKd,        pWarpKd,      IScalarPainter )
 WEAVE_SETTER( WarpTilt,      pWarpTilt,    IScalarPainter )
+WEAVE_SETTER( WarpTransmit,  pWarpTransmit,IScalarPainter )
 WEAVE_SETTER( WeftColor,     pWeftColor,   IPainter )
 WEAVE_SETTER( WeftIOR,       pWeftIOR,     IScalarPainter )
 WEAVE_SETTER( WeftWidth,     pWeftWidth,   IScalarPainter )
 WEAVE_SETTER( WeftAzimuth,   pWeftAzimuth, IScalarPainter )
 WEAVE_SETTER( WeftKd,        pWeftKd,      IScalarPainter )
 WEAVE_SETTER( WeftTilt,      pWeftTilt,    IScalarPainter )
+WEAVE_SETTER( WeftTransmit,  pWeftTransmit,IScalarPainter )
 
 #undef WEAVE_SETTER
 
@@ -740,6 +752,7 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 	// --- the coverage field.
 	const Scalar gap = ClampNaNSafe( pGap->GetValuesAt( ri ).v[0], Scalar( 0 ), kMaxGap );
 	out.available = Scalar( 1 ) - gap;
+	out.thin      = ( transmission == eWeaveTransmissionThin );
 
 	if( pattern == eWeaveCustom ) {
 		out.aWarp = pCoverage
@@ -772,12 +785,13 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 		const IScalarPainter*	azimuth;
 		const IScalarPainter*	kd;
 		const IScalarPainter*	tilt;
+		const IScalarPainter*	transmit;
 		const OrthonormalBasis3D* frame;
 		ThreadParams*			dst;
 	};
 	const Slots slots[2] = {
-		{ pWarpColor, pWarpIOR, pWarpWidth, pWarpAzimuth, pWarpKd, pWarpTilt, &warpONB, &out.warp },
-		{ pWeftColor, pWeftIOR, pWeftWidth, pWeftAzimuth, pWeftKd, pWeftTilt, &weftONB, &out.weft }
+		{ pWarpColor, pWarpIOR, pWarpWidth, pWarpAzimuth, pWarpKd, pWarpTilt, pWarpTransmit, &warpONB, &out.warp },
+		{ pWeftColor, pWeftIOR, pWeftWidth, pWeftAzimuth, pWeftKd, pWeftTilt, pWeftTransmit, &weftONB, &out.weft }
 	};
 
 	for( int k = 0; k < 2; ++k )
@@ -809,6 +823,15 @@ void WeaveBRDF::ResolveWeave( const RayIntersectionGeometric& ri, const Scalar n
 		d.s = gamma * Scalar( 0.5513288954217921 );
 
 		d.kd = ClampNaNSafe( s.kd->GetValuesAt( ri ).v[0], Scalar( 0 ), Scalar( 1 ) );
+
+		// P2-B.  `transmit` is read UNCONDITIONALLY OF `out.thin` for
+		// simplicity here, but every CONSUMER of it (`ValueWithParams`,
+		// `PdfWithParams`, `ScatterImpl`) gates its effect behind
+		// `p.thin` at the point of use rather than trusting this field to
+		// be zero -- so a `transmission none` material is bit-identical
+		// to the committed P2-A code even if a scene mis-authors
+		// `warp_transmit` on it.  See WeaveBRDF.h section 2a.
+		d.transmit = ClampNaNSafe( s.transmit->GetValuesAt( ri ).v[0], Scalar( 0 ), Scalar( 1 ) );
 
 		// The dye.  CLAMPED to [0,1] per channel, and that clamp is
 		// load-bearing rather than defensive: `A_k` multiplies a lobe
@@ -858,33 +881,65 @@ RISEPel WeaveBRDF::ValueWithParams(
 	const Vector3 wi = Vector3Ops::Normalize( vLightIn );
 	const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
 
-	if( Vector3Ops::Dot( p.n, wi ) <= NEARZERO || Vector3Ops::Dot( p.n, wo ) <= NEARZERO ) {
+	// `wo` must always be on the shading-normal-facing side -- unaffected
+	// by P2-B, since `p.n` is already the ray-facing normal the VIEW sits
+	// on by construction (ResolveWeave's FlipW).
+	if( Vector3Ops::Dot( p.n, wo ) <= NEARZERO ) {
 		return RISEPel( 0, 0, 0 );
 	}
-	// Geometric-horizon gate, symmetric in i and o so it cannot break
-	// reciprocity.  Mirrors FabricBRDF::ComputeTerms exactly, and
-	// WeaveSPF applies the same one so a direction Scatter can no longer
-	// emit carries zero density.
-	const Vector3 geomN = GeomNormal( ri, p.n );
-	if( Vector3Ops::Dot( wi, geomN ) <= 0 || Vector3Ops::Dot( wo, geomN ) <= 0 ) {
-		return RISEPel( 0, 0, 0 );
-	}
+	const Scalar cosWiN = Vector3Ops::Dot( p.n, wi );
 
 	const ThreadParams* fam[2] = { &p.warp, &p.weft };
 	const Scalar        cov[2] = { p.aWarp, Scalar( 1 ) - p.aWarp };
 
-	RISEPel out( 0, 0, 0 );
-	for( int k = 0; k < 2; ++k ) {
-		if( !( cov[k] > 0 ) ) {
-			continue;
+	if( cosWiN > NEARZERO )
+	{
+		// REFLECT SIDE.  BIT-IDENTICAL to the committed P2-A expression:
+		// same geometric-horizon gate, same loop, same final
+		// `* p.available` -- the only addition is `volumeScale`, which is
+		// EXACTLY 1 (a no-op multiply, not merely "close to 1") whenever
+		// `!p.thin`, regardless of what a mis-authored `transmit` painter
+		// holds.  See WeaveBRDF.h section 2a.
+		const Vector3 geomN = GeomNormal( ri, p.n );
+		if( Vector3Ops::Dot( wi, geomN ) <= 0 || Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+			return RISEPel( 0, 0, 0 );
 		}
-		const ThreadTerms t = ComputeThreadTerms( *fam[k], p.n, wi, wo );
-		if( !t.valid ) {
-			continue;
+
+		RISEPel out( 0, 0, 0 );
+		for( int k = 0; k < 2; ++k ) {
+			if( !( cov[k] > 0 ) ) {
+				continue;
+			}
+			const ThreadTerms t = ComputeThreadTerms( *fam[k], p.n, wi, wo );
+			if( !t.valid ) {
+				continue;
+			}
+			const Scalar volumeScale = p.thin ? ( Scalar( 1 ) - fam[k]->transmit ) : Scalar( 1 );
+			out = out + ( RISEPel( t.surface, t.surface, t.surface ) + fam[k]->tint * ( t.volume * volumeScale ) ) * cov[k];
 		}
-		out = out + ( RISEPel( t.surface, t.surface, t.surface ) + fam[k]->tint * t.volume ) * cov[k];
+		return out * p.available;
 	}
-	return out * p.available;
+
+	if( p.thin && cosWiN < -NEARZERO )
+	{
+		// TRANSMIT SIDE (full sphere).  `i` and `o` are on OPPOSITE sides
+		// of the shading normal -- Zhu's Lambertian-shaped diffuse
+		// transmission, `(1-gap)*transmit_k*T_k/pi` per family
+		// (WeaveBRDF.h section 2a).  No geometric-horizon gate: this IS
+		// the below-horizon transport `ScattersFullSphere()` exists to
+		// admit, on HairMaterial's precedent ("NO GEOMETRIC-HORIZON GATE"
+		// for the far side).
+		RISEPel out( 0, 0, 0 );
+		for( int k = 0; k < 2; ++k ) {
+			if( !( cov[k] > 0 ) ) {
+				continue;
+			}
+			out = out + fam[k]->tint * ( fam[k]->transmit * INV_PI * cov[k] );
+		}
+		return out * p.available;
+	}
+
+	return RISEPel( 0, 0, 0 );
 }
 
 Scalar WeaveBRDF::ValueNMWithParams(
@@ -896,34 +951,55 @@ Scalar WeaveBRDF::ValueNMWithParams(
 	const Vector3 wi = Vector3Ops::Normalize( vLightIn );
 	const Vector3 wo = Vector3Ops::Normalize( -ri.ray.Dir() );
 
-	if( Vector3Ops::Dot( p.n, wi ) <= NEARZERO || Vector3Ops::Dot( p.n, wo ) <= NEARZERO ) {
+	if( Vector3Ops::Dot( p.n, wo ) <= NEARZERO ) {
 		return 0;
 	}
-	const Vector3 geomN = GeomNormal( ri, p.n );
-	if( Vector3Ops::Dot( wi, geomN ) <= 0 || Vector3Ops::Dot( wo, geomN ) <= 0 ) {
-		return 0;
-	}
+	const Scalar cosWiN = Vector3Ops::Dot( p.n, wi );
 
 	const ThreadParams* fam[2] = { &p.warp, &p.weft };
 	const Scalar        cov[2] = { p.aWarp, Scalar( 1 ) - p.aWarp };
 
-	Scalar out = 0;
-	for( int k = 0; k < 2; ++k ) {
-		if( !( cov[k] > 0 ) ) {
-			continue;
+	if( cosWiN > NEARZERO )
+	{
+		const Vector3 geomN = GeomNormal( ri, p.n );
+		if( Vector3Ops::Dot( wi, geomN ) <= 0 || Vector3Ops::Dot( wo, geomN ) <= 0 ) {
+			return 0;
 		}
-		const ThreadTerms t = ComputeThreadTerms( *fam[k], p.n, wi, wo );
-		if( !t.valid ) {
-			continue;
+
+		Scalar out = 0;
+		for( int k = 0; k < 2; ++k ) {
+			if( !( cov[k] > 0 ) ) {
+				continue;
+			}
+			const ThreadTerms t = ComputeThreadTerms( *fam[k], p.n, wi, wo );
+			if( !t.valid ) {
+				continue;
+			}
+			// TEXTUALLY PARALLEL to the RGB twin above, parenthesisation
+			// included: `tint * (t.volume * volumeScale)` against
+			// `tintNM * (t.volume * volumeScale)`.  The chunk test's
+			// spectral-parity check measures their agreement at an
+			// authored white, so an association difference here would
+			// surface there as a guard failure it is not.
+			const Scalar volumeScale = p.thin ? ( Scalar( 1 ) - fam[k]->transmit ) : Scalar( 1 );
+			out += ( t.surface + fam[k]->tintNM * ( t.volume * volumeScale ) ) * cov[k];
 		}
-		// TEXTUALLY PARALLEL to the RGB twin above, parenthesisation
-		// included: `tint * t.volume` against `tintNM * t.volume`.  The
-		// chunk test's spectral-parity check measures their agreement at
-		// an authored white, so an association difference here would
-		// surface there as a guard failure it is not.
-		out += ( t.surface + fam[k]->tintNM * t.volume ) * cov[k];
+		return out * p.available;
 	}
-	return out * p.available;
+
+	if( p.thin && cosWiN < -NEARZERO )
+	{
+		Scalar out = 0;
+		for( int k = 0; k < 2; ++k ) {
+			if( !( cov[k] > 0 ) ) {
+				continue;
+			}
+			out += fam[k]->tintNM * ( fam[k]->transmit * INV_PI * cov[k] );
+		}
+		return out * p.available;
+	}
+
+	return 0;
 }
 
 RISEPel WeaveBRDF::value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const
@@ -1063,7 +1139,13 @@ bool WeaveBRDF::hemisphericalAlbedo( const RayIntersectionGeometric& ri, RISEPel
 		}
 		const Scalar F1    = FrDielectric( Scalar( 1 ), fam[k]->eta );
 		const Scalar sTerm = F1 * SurfaceAzimuthShape( fam[k]->s );
-		const Scalar vTerm = ( Scalar( 1 ) - F1 ) * PI_OV_FOUR;
+		// P2-B: this is the FRONT-hemisphere REFLECT budget only (what
+		// `fabric_material`'s substrate-energy accounting consumes), so
+		// the share diverted to diffuse transmission is excluded from it,
+		// same `volumeScale` rule as ValueWithParams.  Exactly 1 (a no-op
+		// multiply) when `!p.thin`.
+		const Scalar volumeScale = p.thin ? ( Scalar( 1 ) - fam[k]->transmit ) : Scalar( 1 );
+		const Scalar vTerm = ( Scalar( 1 ) - F1 ) * PI_OV_FOUR * volumeScale;
 		out = out + ( RISEPel( sTerm, sTerm, sTerm ) + fam[k]->tint * vTerm ) * cov[k];
 	}
 	out = out * p.available;
@@ -1085,8 +1167,9 @@ bool WeaveBRDF::hemisphericalAlbedoNM( const RayIntersectionGeometric& ri, const
 			continue;
 		}
 		const Scalar F1 = FrDielectric( Scalar( 1 ), fam[k]->eta );
+		const Scalar volumeScale = p.thin ? ( Scalar( 1 ) - fam[k]->transmit ) : Scalar( 1 );
 		out += ( F1 * SurfaceAzimuthShape( fam[k]->s )
-		       + fam[k]->tintNM * ( Scalar( 1 ) - F1 ) * PI_OV_FOUR ) * cov[k];
+		       + fam[k]->tintNM * ( Scalar( 1 ) - F1 ) * PI_OV_FOUR * volumeScale ) * cov[k];
 	}
 	out *= p.available;
 	const Scalar loOut = r_max( Scalar( 0 ), out );

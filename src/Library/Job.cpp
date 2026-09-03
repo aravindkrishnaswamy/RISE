@@ -3496,7 +3496,15 @@ bool Job::AddFabricMaterial(
 }
 
 //! Adds a Weave material (docs/CLOTH_FABRIC_DESIGN.md Phase 2, slice
-//! P2-A).
+//! P2-A + P2-B thin-cloth transmission).
+//!
+//! P2-B's `transmission` follows `weave`'s own pattern exactly: empty
+//! string wins the preset's value, an authored one overrides it.  `gap`
+//! is UNCHANGED -- the chunk parser accepts `sheer` as an alias for the
+//! identical slot (both spellings reach this method as the one `gap`
+//! parameter; see WeaveMaterialAsciiChunkParser::Finalize) -- and
+//! `warp_transmit`/`weft_transmit` follow every other per-family scalar's
+//! seeding rule below.
 //!
 //! ALL PRESET SEEDING HAPPENS HERE, in ONE place, and that is a
 //! deliberate departure from `fabric_material`.  There the parser seeds
@@ -3527,6 +3535,7 @@ bool Job::AddWeaveMaterial(
 							const char* name,
 							const char* weave,
 							const char* fabric,
+							const char* transmission,
 							const char* weave_scale,
 							const char* weave_rotation,
 							const char* weft_skew,
@@ -3543,7 +3552,9 @@ bool Job::AddWeaveMaterial(
 							const char* warp_kd,
 							const char* weft_kd,
 							const char* warp_tilt,
-							const char* weft_tilt
+							const char* weft_tilt,
+							const char* warp_transmit,
+							const char* weft_transmit
 							)
 {
 	const WeavePreset& P = LookupWeavePreset( fabric );
@@ -3552,6 +3563,14 @@ bool Job::AddWeaveMaterial(
 	const bool  weaveSet = ( weave && weave[0] );
 	const char* weaveName = weaveSet ? weave : WeavePatternText( P.weave );
 	const WeavePatternKind pattern = LookupWeavePattern( weaveName );
+
+	// P2-B.  `transmission` wins over the preset's when the author wrote
+	// one, exactly like `weave` above.  `RISE_API_CreateWeaveMaterial`
+	// re-resolves `transName` through `LookupWeaveTransmission` itself
+	// (the same `weaveName`/`LookupWeavePattern` split `weave` already
+	// uses), so no local `WeaveTransmissionKind` is needed here.
+	const bool  transSet  = ( transmission && transmission[0] );
+	const char* transName = transSet ? transmission : WeaveTransmissionText( P.transmission );
 
 	// %.17g round-trips a double exactly, so a seeded value is
 	// bit-identical to the table's rather than merely close.
@@ -3567,6 +3586,7 @@ bool Job::AddWeaveMaterial(
 	// earlier string pointing at the last value formatted.
 	Fmt fScale, fSkew, fGap;
 	Fmt fWIor, fFIor, fWWid, fFWid, fWAzi, fFAzi, fWKd, fFKd, fWTilt, fFTilt;
+	Fmt fWTrans, fFTrans;		///< P2-B
 
 	auto pick = []( const char* authored, const char* seeded ) -> const char* {
 		return ( authored && authored[0] ) ? authored : seeded;
@@ -3587,6 +3607,13 @@ bool Job::AddWeaveMaterial(
 	const char* sFKd   = pick( weft_kd,      fFKd( P.weft.kd ) );
 	const char* sWTilt = pick( warp_tilt,    fWTilt( P.warp.tilt ) );
 	const char* sFTilt = pick( weft_tilt,    fFTilt( P.weft.tilt ) );
+	// P2-B.  Empty (unauthored) resolves to the PRESET's `transmit`,
+	// which is 0.0 for every row whose `transmission` is `none` (denim,
+	// custom) -- so an unauthored `warp_transmit`/`weft_transmit` on a
+	// `transmission none` material is always 0, matching the "read
+	// unconditionally, gate at use" defence in WeaveBRDF.cpp.
+	const char* sWTrans = pick( warp_transmit, fWTrans( P.warp.transmit ) );
+	const char* sFTrans = pick( weft_transmit, fFTrans( P.weft.transmit ) );
 
 	// The two DYES.  An unset slot becomes an OWNED uniform painter
 	// carrying the preset's colour, or WHITE where the preset sets none
@@ -3650,6 +3677,8 @@ bool Job::AddWeaveMaterial(
 	IScalarPainter* pFKd   = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_kd",        sFKd,   true );
 	IScalarPainter* pWTilt = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_tilt",      sWTilt, true );
 	IScalarPainter* pFTilt = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_tilt",      sFTilt, true );
+	IScalarPainter* pWTrans = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "warp_transmit", sWTrans, true );
+	IScalarPainter* pFTrans = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "weave_material", name, "weft_transmit", sFTrans, true );
 
 	// `coverage` is bound ONLY for the `custom` draft.  Binding it under
 	// a built-in draft would be a slot nothing reads.
@@ -3675,20 +3704,22 @@ bool Job::AddWeaveMaterial(
 
 	const bool resolved = pScale && pRot && pSkew && pGap
 	                   && pWIor && pFIor && pWWid && pFWid && pWAzi && pFAzi
-	                   && pWKd && pFKd && pWTilt && pFTilt;
+	                   && pWKd && pFKd && pWTilt && pFTilt && pWTrans && pFTrans;
 
 	IMaterial* pMaterial = 0;
 	bool ok = false;
 	if( resolved ) {
-		RISE_API_CreateWeaveMaterial( &pMaterial, weaveName,
+		RISE_API_CreateWeaveMaterial( &pMaterial, weaveName, transName,
 			*pScale, *pRot, *pSkew, pCov, *pGap,
-			*pWarpCol, *pWIor, *pWWid, *pWAzi, *pWKd, *pWTilt,
-			*pWeftCol, *pFIor, *pFWid, *pFAzi, *pFKd, *pFTilt );
+			*pWarpCol, *pWIor, *pWWid, *pWAzi, *pWKd, *pWTilt, *pWTrans,
+			*pWeftCol, *pFIor, *pFWid, *pFAzi, *pFKd, *pFTilt, *pFTrans );
 		ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
 	}
 
 	safe_release( pMaterial );
 	safe_release( pCov );
+	safe_release( pFTrans );
+	safe_release( pWTrans );
 	safe_release( pFTilt );
 	safe_release( pWTilt );
 	safe_release( pFKd );

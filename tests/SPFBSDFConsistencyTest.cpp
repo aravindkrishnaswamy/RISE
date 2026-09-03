@@ -319,7 +319,16 @@ static PointwiseResult PointwiseTest(
 
         Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
         double cosO = Vector3Ops::Dot( wo, normal );
-        if( cosO <= 0 ) continue;
+        // R9 P2: `cosO == 0` (grazing, degenerate) is skipped either way;
+        // `cosO < 0` is a legitimate draw from a full-sphere material's
+        // TRANSMISSION branch (`ScattersFullSphere()`, e.g. a
+        // `transmission thin` weave) and must be tested with `fabs(cosO)`,
+        // not rejected -- an ordinary reflect-only SPF's `Scatter()` never
+        // emits a `cosO < 0` ray in the first place (cosine-hemisphere
+        // sampling about the ray-facing normal), so this is a strict
+        // superset of the old behaviour: unreached, hence unchanged, for
+        // every pre-existing row.
+        if( cosO == 0 ) continue;
 
         result.numSamples++;
 
@@ -327,10 +336,12 @@ static PointwiseResult PointwiseTest(
         double krayMax = ColorMath::MaxValue( scat.kray );
         double spfProduct = krayMax * scat.pdf;
 
-        // BRDF side: BRDF::value(wo, ri) * cos(theta_o)
+        // BRDF side: BRDF::value(wo, ri) * cos(theta_o) -- |cos| so a
+        // transmission-branch draw (cosO < 0) compares against the
+        // diffuse-transmit lobe's own magnitude rather than its sign.
         RISEPel brdfVal = brdf.value( wo, ri );
         double brdfMax = ColorMath::MaxValue( brdfVal );
-        double brdfProduct = brdfMax * cosO;
+        double brdfProduct = brdfMax * fabs( cosO );
 
         // Compare
         double denom = r_max( fabs(spfProduct), fabs(brdfProduct) );
@@ -492,6 +503,108 @@ static ReciprocityResult ReciprocityTest( const std::string& name, IBSDF& brdf )
     }
 
     result.passed = ( result.numFailures == 0 );
+    return result;
+}
+
+// ============================================================
+//  Part E2 (P2-B, docs/CLOTH_FABRIC_DESIGN.md 10): reciprocity for a
+//  FULL-SPHERE material's TRANSMISSION lobes -- `f(i->o) == f(o->i)`
+//  where `i` and `o` are on OPPOSITE sides of the shading normal.
+//
+//  `MakeIntersectionFromView`'s normal is the fixed `(0,0,1)` `ri.onb`
+//  BEFORE `WeaveBRDF::ResolveWeave`'s own ray-facing flip, and that
+//  flip is what makes reusing `ReciprocityTest`'s machinery correct
+//  here: it re-orients `p.n` to `(0, 0, sign(view.z))`, so `wo` (`-ray.
+//  Dir()`) lands on `p.n`'s positive side FOR EITHER VIEW HEMISPHERE,
+//  and a direction pair straddling `z = 0` in WORLD space is exactly a
+//  pair straddling the shading normal in the material's OWN frame --
+//  the transmission configuration.  `ReciprocityTest` itself never
+//  reaches this: its fixed `thetaDeg` set (10-85) keeps every direction
+//  on the SAME (+Z) side.
+//
+//  WHAT THIS DOES AND DOES NOT PROVE (R8 P3-4).  The shipped diffuse
+//  transmission lobe, `f_t,d,k = (1-gap)*transmit_k*T_k/pi`, has NO
+//  directional dependence beyond the hemisphere-crossing gate itself --
+//  it is a flat value once `i`/`o` straddle the normal.  Combined with
+//  this harness's single fixed shading point (`MakeIntersectionFromView`
+//  always uses `ptCoord = (0.5, 0.5)`), `f(a->b)` and `f(b->a)` are
+//  computed from LITERALLY IDENTICAL inputs to the same flat expression
+//  -- which is why the measured error is exactly `0.000e+00`, not
+//  merely small.  This is STRUCTURAL, not an empirical demonstration of
+//  reciprocity: it is a regression tripwire that will catch a future
+//  change which accidentally introduces a directional asymmetry (e.g. a
+//  specular transmission lobe, or a `Q`-style view-only normaliser), not
+//  evidence that today's flat lobe is "reciprocal" in any sense beyond
+//  "the same formula evaluated twice returns the same number."
+// ============================================================
+
+static ReciprocityResult ReciprocityTestCrossHemisphere( const std::string& name, IBSDF& brdf )
+{
+    ReciprocityResult result;
+    result.name = name;
+    result.numPairs = 0;
+    result.numFailures = 0;
+    result.maxRelError = 0;
+    result.maxRelErrorNM = 0;
+
+    // theta spans BOTH hemispheres (10 deg past each pole down to 10
+    // deg short of the equator on each side), crossed with the same
+    // azimuth spread `ReciprocityTest` uses.
+    static const double thetaDeg[] = { 10.0, 40.0, 70.0, 110.0, 140.0, 170.0 };
+    static const double phiDeg[]   = { 0.0, 60.0, 140.0, 230.0, 310.0 };
+
+    std::vector<Vector3> dirs;
+    for( double t : thetaDeg ) {
+        for( double p : phiDeg ) {
+            const double th = t * DEG_TO_RAD, ph = p * DEG_TO_RAD;
+            dirs.push_back( Vector3Ops::Normalize(
+                Vector3( sin(th) * cos(ph), sin(th) * sin(ph), cos(th) ) ) );
+        }
+    }
+
+    const double kNM = 550.0;
+
+    for( size_t i = 0; i < dirs.size(); i++ )
+    {
+        for( size_t j = i + 1; j < dirs.size(); j++ )
+        {
+            const Vector3& a = dirs[i];
+            const Vector3& b = dirs[j];
+
+            // Only pairs that straddle the equator exercise the
+            // transmission lobe at all; same-side pairs are already
+            // covered by `ReciprocityTest` and would just re-measure
+            // the (unaffected) reflect-side lobes here.
+            if( ( a.z > 0 ) == ( b.z > 0 ) ) continue;
+
+            RayIntersectionGeometric riB = MakeIntersectionFromView( b );
+            RayIntersectionGeometric riA = MakeIntersectionFromView( a );
+
+            const double fab = ColorMath::MaxValue( brdf.value( a, riB ) );
+            const double fba = ColorMath::MaxValue( brdf.value( b, riA ) );
+            const double fabNM = brdf.valueNM( a, riB, kNM );
+            const double fbaNM = brdf.valueNM( b, riA, kNM );
+
+            result.numPairs++;
+
+            const double den   = r_max( fabs(fab),   fabs(fba)   );
+            const double denNM = r_max( fabs(fabNM), fabs(fbaNM) );
+            const double rel   = ( den   > 1e-12 ) ? fabs(fab   - fba  ) / den   : 0.0;
+            const double relNM = ( denNM > 1e-12 ) ? fabs(fabNM - fbaNM) / denNM : 0.0;
+
+            if( rel   > result.maxRelError   ) result.maxRelError   = rel;
+            if( relNM > result.maxRelErrorNM ) result.maxRelErrorNM = relNM;
+
+            if( rel > RECIPROCITY_TOL || relNM > RECIPROCITY_TOL ) {
+                result.numFailures++;
+            }
+        }
+    }
+
+    // A row with zero pairs would silently "pass" without ever having
+    // exercised the transmission lobe at all -- assert there IS
+    // cross-hemisphere coverage, not just that none of it failed.
+    result.passed = ( result.numFailures == 0 ) && ( result.numPairs > 0 );
     return result;
 }
 
@@ -854,6 +967,33 @@ int main()
     IBSDF* weaveDenimBRDF = weaveDenim.BSDF();
     ISPF*  weaveSatinSPF  = weaveSatin.SPF();
     IBSDF* weaveSatinBRDF = weaveSatin.BSDF();
+
+    // P2-B (docs/CLOTH_FABRIC_DESIGN.md 10).  `transmission thin`, both
+    // families' `transmit` nonzero -- the diffuse transmission lobe
+    // this file's new cross-hemisphere reciprocity block (Part E2)
+    // exercises.  Non-zero tilts (satin's shipped values) so the
+    // reciprocity check also covers a tilted fibre frame's transmit
+    // side, not only the untilted case.
+    RISE::WeaveTest::PresetWeave weaveSatinThin( "satin", 0.0, -1, false, /*thin=*/true );
+    IBSDF* weaveSatinThinBRDF = weaveSatinThin.BSDF();
+
+    // R9 P2 (REVIEW_P2R9.md): Part D's pointwise `kray*pdf == BRDF*cos`
+    // table never exercised WeaveSPF's TRANSMISSION branch -- only the
+    // BRDF half of a thin weave was ever constructed above, and only
+    // Part E2's reciprocity check (structural, not this magnitude check)
+    // used it.  Two sheer LINEN configurations, both `transmission thin`:
+    // `gap 0` (continuum only -- every drawn ray lands in the diffuse-
+    // transmit branch once it crosses the hemisphere, no delta lobe to
+    // skip) and `gap 0.2` (the shipped showcase's own value, so the
+    // delta lobe IS present and must be excluded the same way every
+    // other row here already is -- `PointwiseTest`'s own
+    // `if (scat.isDelta) continue`, not a special case for these rows).
+    RISE::WeaveTest::PresetWeave weaveLinenThinGap0(  "linen", 0.0, -1, false, /*thin=*/true, -1, -1, /*gapOverride=*/0.0 );
+    RISE::WeaveTest::PresetWeave weaveLinenThinGap02( "linen", 0.0, -1, false, /*thin=*/true, -1, -1, /*gapOverride=*/0.2 );
+    ISPF*  weaveLinenThinGap0SPF   = weaveLinenThinGap0.SPF();
+    IBSDF* weaveLinenThinGap0BRDF  = weaveLinenThinGap0.BSDF();
+    ISPF*  weaveLinenThinGap02SPF  = weaveLinenThinGap02.SPF();
+    IBSDF* weaveLinenThinGap02BRDF = weaveLinenThinGap02.BSDF();
 
     // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
     // this is a PRE-EXISTING HOLE this phase closes as a matter of
@@ -1247,6 +1387,84 @@ int main()
     std::cout << std::endl;
 
     // ================================================================
+    //  Part D2 (R9 P2, REVIEW_P2R9.md): Pointwise kray*pdf vs BRDF*cos,
+    //  TRANSMISSION-direction rows for a `transmission thin` weave.
+    //
+    //  A DEDICATED loop, not two more `pairedMaterials[]` entries: that
+    //  array also feeds Part C's furnace test (`FurnaceTest`, a
+    //  REFLECT-HEMISPHERE-only quadrature never audited against a
+    //  full-sphere material's transmitted energy) -- adding rows there
+    //  would risk a spurious Part C failure unrelated to what this block
+    //  exists to check.  This loop reuses `PointwiseTest` exactly as
+    //  Part D does (same function, same `POINTWISE_TOL`, same delta-lobe
+    //  exclusion via `scat.isDelta`), at the SAME `incomingAngles`
+    //  (30/60 degrees) Part D already uses -- NOT a steeper "transmission
+    //  angle" of its own. `WeaveBRDF::ResolveWeave`'s `FlipW` re-orients
+    //  the shading normal to the ray-facing side, so which absolute
+    //  hemisphere the VIEW sits in is not what selects the transmit
+    //  branch; `WeaveSPF::ScatterImpl` picks reflect-surface,
+    //  reflect-volume or diffuse-transmit stochastically at ANY view
+    //  angle (the `(1-w)` bucket splits between reflect-volume and
+    //  diffuse-transmit by `transmit_k` regardless of `w`), so a plain
+    //  10000-sample draw at the existing angles already lands a solid
+    //  fraction of samples on the transmit side -- exactly the samples
+    //  the extended `cosO < 0 -> fabs(cosO)` handling above now tests
+    //  instead of silently discarding.
+    //
+    //  Two sheer LINEN configurations: `gap 0` (continuum only, no delta
+    //  lobe present at all) and `gap 0.2` (the shipped showcase's own
+    //  value -- the delta lobe IS present here and is excluded by
+    //  `PointwiseTest`'s existing `isDelta` skip, not a special case).
+    //  If `WeaveSPF` ever applied `transmit_k` twice (once in its own
+    //  density, once more via a stray repricing) `kray*pdf` would still
+    //  reproduce whatever `WeaveSPF::Pdf` used, but `BRDF::value()` would
+    //  not move with it -- so a double-application shows up here as a
+    //  systematic, non-noise-shaped `kray*pdf > BRDF*|cos|` skew, exactly
+    //  the class of defect REVIEW_P2R9.md's from-scratch MC probe (linear
+    //  in `transmit`, not the `transmit^2` a double-application would
+    //  give) already ruled out by a different method -- this is the
+    //  permanent regression harness for that same claim.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part D2: Pointwise, transmission direction (P2-B)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    struct TransmissionPairedEntry { std::string name; ISPF* spf; IBSDF* brdf; };
+    TransmissionPairedEntry transmissionPaired[] = {
+        { "Weave_linen_thin_gap0 (transmission)",   weaveLinenThinGap0SPF,  weaveLinenThinGap0BRDF  },
+        { "Weave_linen_thin_gap0.2 (transmission)", weaveLinenThinGap02SPF, weaveLinenThinGap02BRDF },
+    };
+
+    for( int a = 0; a < 2; a++ )
+    {
+        std::cout << "--- Incoming angle: " << angleNames[a] << " ---" << std::endl;
+        for( const TransmissionPairedEntry& e : transmissionPaired )
+        {
+            std::string fullName = e.name + " @ " + angleNames[a];
+            std::cout << "  Testing " << fullName << "..." << std::flush;
+
+            PointwiseResult pr = PointwiseTest( fullName, *e.spf, *e.brdf,
+                                                incomingAngles[a], /*singleLobe=*/true );
+            pointwiseResults.push_back( pr );
+
+            std::cout << " samples=" << pr.numSamples
+                      << " failures=" << pr.numFailures
+                      << " maxErr=" << std::setprecision(4) << pr.maxRelError * 100 << "%"
+                      << " avgErr=" << pr.avgRelError * 100 << "%";
+
+            if( pr.passed )
+                std::cout << " -> PASS" << std::endl;
+            else
+            {
+                std::cout << " -> FAIL" << std::endl;
+                numFailed++;
+            }
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
     //  Part E: Helmholtz reciprocity  f(a->b) == f(b->a)
     //
     //  Run on the LAYERED materials, which are the ones whose shared
@@ -1288,6 +1506,41 @@ int main()
     for( const ReciprocityEntry& e : reciprocityMaterials )
     {
         ReciprocityResult rr = ReciprocityTest( e.name, *e.brdf );
+
+        std::cout << "  " << e.name << ": pairs=" << rr.numPairs
+                  << " failures=" << rr.numFailures
+                  << " maxRelErr(RGB)=" << std::scientific << std::setprecision(3) << rr.maxRelError
+                  << " maxRelErr(NM)=" << rr.maxRelErrorNM << std::fixed;
+
+        if( rr.passed )
+            std::cout << " -> PASS" << std::endl;
+        else
+        {
+            std::cout << " -> FAIL" << std::endl;
+            numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  Part E2 (P2-B): reciprocity across the surface, for the
+    //  TRANSMISSION lobes -- `transmission thin` materials only, since
+    //  every other row here returns 0 for a cross-hemisphere pair by
+    //  construction (its `ScattersFullSphere()` is false) and would
+    //  just add a zero-vs-zero pass that proves nothing.
+    // ================================================================
+
+    std::cout << "========================================" << std::endl;
+    std::cout << "  Part E2: Cross-hemisphere reciprocity (P2-B transmission)" << std::endl;
+    std::cout << "========================================" << std::endl;
+
+    ReciprocityEntry crossHemisphereMaterials[] = {
+        { "Weave_satin_thin (transmission)",   weaveSatinThinBRDF },
+    };
+
+    for( const ReciprocityEntry& e : crossHemisphereMaterials )
+    {
+        ReciprocityResult rr = ReciprocityTestCrossHemisphere( e.name, *e.brdf );
 
         std::cout << "  " << e.name << ": pairs=" << rr.numPairs
                   << " failures=" << rr.numFailures

@@ -3618,14 +3618,40 @@ namespace RISE
 					std::string name   = bag.GetString( "name",   "noname" );
 					std::string weave  = bag.GetString( "weave",  "" );
 					std::string fabric = bag.GetString( "fabric", "custom" );
+					std::string transmission = bag.GetString( "transmission", "" );
+
+					// P2-B: `sheer` is an accepted ALIAS for `gap` -- the
+					// identical slot, under the more honest name once it can
+					// actually transmit (docs/CLOTH_FABRIC_DESIGN.md 10).
+					// `sheer` wins if both are authored; a scene that only
+					// ever wrote `gap` (every P2-A scene) is unaffected.
+					// R8 P3-3: authoring BOTH on the same chunk is legal
+					// (silently preferring `sheer` is not a parse error) but
+					// is very likely a mistake -- the two spellings binding
+					// the SAME slot means one of them does nothing, and an
+					// author who does not know that would reasonably expect
+					// them to combine.  Diagnose it rather than staying
+					// silent.
+					if( bag.Has( "gap" ) && bag.Has( "sheer" ) ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"weave_material `%s`: both `gap` and `sheer` are authored on the "
+							"same chunk -- they are the SAME slot (`sheer` is an alias for `gap`), "
+							"not two separate ones, so `sheer` (`%s`) wins and `gap` (`%s`) is "
+							"ignored.  Author only one.",
+							name.c_str(), bag.GetString( "sheer", "" ).c_str(), bag.GetString( "gap", "" ).c_str() );
+					}
+					std::string gap = bag.GetString( "sheer", "" );
+					if( gap.empty() ) {
+						gap = bag.GetString( "gap", "" );
+					}
 
 					return pJob.AddWeaveMaterial(
-						name.c_str(), weave.c_str(), fabric.c_str(),
+						name.c_str(), weave.c_str(), fabric.c_str(), transmission.c_str(),
 						bag.GetString( "weave_scale",    "" ).c_str(),
 						bag.GetString( "weave_rotation", "" ).c_str(),
 						bag.GetString( "weft_skew",      "" ).c_str(),
 						bag.GetString( "coverage",       "" ).c_str(),
-						bag.GetString( "gap",            "" ).c_str(),
+						gap.c_str(),
 						bag.GetString( "warp_color",     "" ).c_str(),
 						bag.GetString( "weft_color",     "" ).c_str(),
 						bag.GetString( "warp_ior",       "" ).c_str(),
@@ -3637,14 +3663,16 @@ namespace RISE
 						bag.GetString( "warp_kd",        "" ).c_str(),
 						bag.GetString( "weft_kd",        "" ).c_str(),
 						bag.GetString( "warp_tilt",      "" ).c_str(),
-						bag.GetString( "weft_tilt",      "" ).c_str() );
+						bag.GetString( "weft_tilt",      "" ).c_str(),
+						bag.GetString( "warp_transmit",  "" ).c_str(),
+						bag.GetString( "weft_transmit",  "" ).c_str() );
 				}
 
 				const ChunkDescriptor& Describe() const override {
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "weave_material"; cd.category = ChunkCategory::Material;
-						cd.description = "Cloth with STRUCTURE: two thread families (warp and weft), each with its own direction, its own dye and its own pair of fibre lobes, mixed by a weave-draft coverage field that says which yarn is on top at each point.  This is what makes satin's directional float sheen and denim's twill wale -- `fabric_material` cannot, because an isotropic sheen over one elliptical GGX lobe has no PATTERN SCALE (measured: 95-99 % of the substrate's anisotropy survives the sheen and it still reads as brushed metal).  Pick a `fabric` preset and a `weave` draft; everything else has a calibrated default.  It has NO sheen term of its own -- for the fuzz layer, wrap it in a `fabric_material` as the `base` (fuzz over weave is the physical stack).  Reflection only in this phase: no transmission, so no backlit glow-through yet.";
+						cd.description = "Cloth with STRUCTURE: two thread families (warp and weft), each with its own direction, its own dye and its own pair of fibre lobes, mixed by a weave-draft coverage field that says which yarn is on top at each point.  This is what makes satin's directional float sheen and denim's twill wale -- `fabric_material` cannot, because an isotropic sheen over one elliptical GGX lobe has no PATTERN SCALE (measured: 95-99 % of the substrate's anisotropy survives the sheen and it still reads as brushed metal).  Pick a `fabric` preset and a `weave` draft; everything else has a calibrated default.  It has NO sheen term of its own -- for the fuzz layer, wrap it in a `fabric_material` as the `base` (fuzz over weave is the physical stack).  Set `transmission thin` (or pick a `fabric` that defaults to it -- linen, silk, satin) for a backlit, see-through cloth: a delta lobe glows through the open weave and a Lambertian lobe glows through the yarn itself.  Default `transmission none` is reflection-only and bit-identical to the original Phase-2 slice.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name"; p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "fabric"; p.kind = ValueKind::Enum;
@@ -3655,6 +3683,10 @@ namespace RISE
 						  p.enumValues = {"plain","twill_2_1","twill_3_1","satin_5","custom"};
 						  p.defaultValueHint = "per `fabric` (custom: plain)";
 						  p.description = "The DRAFT: which family is on top in each cell of the repeating unit, and therefore the warp's mean coverage.  plain = 1/1 alternation (mean 1/2); twill_2_1 = warp over two under one on a diagonal (2/3); twill_3_1 = the denim wale (3/4); satin_5 = 5-harness satin with step 2, long warp floats and no wale at all (4/5); custom = bind your own `coverage` field.  The diagonal is what makes a twill a twill -- the predicate reads (i - j), so the float run marches one cell across for every cell down.  The field is CONTINUOUS, not a per-cell lookup: yarn edges are smooth ramps and the whole pattern fades to its own mean as the pixel footprint outgrows the cell, so it anti-aliases instead of turning into a checkerboard."; }
+						{ auto& p = P(); p.name = "transmission"; p.kind = ValueKind::Enum;
+						  p.enumValues = {"none","thin"};
+						  p.defaultValueHint = "per `fabric` (custom: none)";
+						  p.description = "Phase-2 slice P2-B (docs/CLOTH_FABRIC_DESIGN.md 10): `none` (the original slice-A behaviour, bit-identical) or `thin` -- a thin, backlit-glowing cloth.  `thin` adds a DELTA transmission lobe through the open gaps (weighted by `gap`/`sheer`) and a Lambertian diffuse-transmission lobe through the yarn itself (weighted per family by `warp_transmit`/`weft_transmit`), and turns on full-sphere next-event estimation so a light BEHIND the cloth is sampled directly.  linen, silk and satin default to `thin`; denim and custom default to `none` (a 3/1 twill at typical weight is not sheer, and `custom` is the author's own canvas)."; }
 						{ auto& p = P(); p.name = "weave_scale"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 40)";
 						  p.description = "Weave cells per unit of surface UV (physical SCALAR: a scalar_painter name or a single inline scalar).  Higher = finer cloth.  This is the knob that decides whether the weave READS at all: below roughly one cell per two pixels the footprint fade takes over and the surface becomes its own mean, which is correct but structureless.  Match it to the UV scale of your geometry, not to a physical thread count."; }
 						{ auto& p = P(); p.name = "weave_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0";
@@ -3664,7 +3696,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "coverage"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "none";
 						  p.description = "`weave custom` ONLY: the warp's share of the surface at each point, in [0,1] (physical SCALAR).  1 = pure warp, 0 = pure weft, and intermediate values blend the two families' lobes.  Bind an expression or texture painter to author a draft the four built-ins do not cover, or to vary the weave across the surface.  IGNORED (with a warning) under a built-in draft, which computes its own field; and selecting `custom` WITHOUT binding this warns too, because the result is a structureless uniform 50/50 blend."; }
 						{ auto& p = P(); p.name = "gap"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)";
-						  p.description = "The fraction of the surface covered by NEITHER family -- the holes in an open weave (physical SCALAR).  CLAMPED to [0, 0.3].  In this phase a gap simply DARKENS the response, because there is no transmission lobe yet: light that finds a hole is lost rather than passed through.  It is the honest bookkeeping for an open weave's reduced reflected energy, not a see-through effect."; }
+						  p.description = "The fraction of the surface covered by NEITHER family -- the holes in an open weave (physical SCALAR).  CLAMPED to [0, 0.3].  Under `transmission none` (the default) a gap simply DARKENS the response: light that finds a hole is lost rather than passed through.  Under `transmission thin` this SAME field is ALSO the aperture of a delta transmission lobe -- light passes straight through the hole undeviated -- which is why `sheer` (below) is the more honest spelling for a thin-cloth author; both names bind the identical slot."; }
+						{ auto& p = P(); p.name = "sheer"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)";
+						  p.description = "ALIAS for `gap` -- the identical slot, under the name that actually describes it once `transmission thin` is set: the open-gap fraction that a delta transmission lobe lets straight through.  If both `gap` and `sheer` are authored on the same chunk, `sheer` wins.  Prefer this spelling for a thin/see-through weave; `gap` remains for the reflection-only, `transmission none` case and for back-compatibility with Phase-2 slice A scenes."; }
 						{ auto& p = P(); p.name = "warp_color"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
 						  p.description = "The warp's DYE (COLOUR painter -- one of only two genuinely-colour slots on this chunk).  It tints the VOLUME lobe ONLY: a dielectric's specular reflection preserves the incident spectrum, so the surface lobe stays untinted and a coloured fabric keeps a white highlight.  That is the physically correct behaviour and it is what lets a two-tone shot fabric work.  `none` (the default) means the PRESET's colour, or WHITE where the preset sets none -- it is NOT the built-in black `none` painter, which would switch the volume lobe off."; }
 						{ auto& p = P(); p.name = "weft_color"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
@@ -3689,6 +3723,10 @@ namespace RISE
 						  p.description = "FLOAT TILT: how far the warp leans out of the surface plane, in RADIANS (physical SCALAR).  A woven yarn does not lie flat -- it rides over and under its crossings -- and tilting the two families in OPPOSITE directions is what gives a satin face its asymmetric highlight, the one a symmetric lobe cannot produce.  CLAMPED to [-0.17, 0.17] (~10 degrees) -- bounded there, not further out, because the masking term's per-family azimuth has a coordinate pole at view latitude (90 - tilt in degrees); beyond this clamp the pole would sit inside an ordinary, in-frame view angle instead of staying past 80 degrees.  Small opposite values (about +-0.08 to +-0.09) are what the satin and silk presets use.  Large tilts bury whole bands of the yarn below the horizon and cost the sampler a little efficiency, so prefer small ones."; }
 						{ auto& p = P(); p.name = "weft_tilt"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)";
 						  p.description = "Float tilt of the weft, in RADIANS (physical SCALAR).  See `warp_tilt` -- give it the OPPOSITE sign to the warp's."; }
+						{ auto& p = P(); p.name = "warp_transmit"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)";
+						  p.description = "`transmission thin` ONLY: the warp's share of its OWN volume-scattering budget that is redirected to diffuse transmission through the yarn, CLAMPED to [0,1] (physical SCALAR).  One budget, split -- the reflect-side volume lobe is scaled down by `(1 - warp_transmit)` so the two together never exceed the pre-P2-B total.  Ignored (and always 0) under `transmission none`.  Presets: linen 0.25, silk 0.35, satin 0.15, denim/custom 0.0."; }
+						{ auto& p = P(); p.name = "weft_transmit"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0)";
+						  p.description = "`transmission thin` ONLY: the weft's diffuse-transmission share, in [0,1] (physical SCALAR).  See `warp_transmit`."; }
 						AddVariantTagParam( cd );
 						return cd;
 					}();

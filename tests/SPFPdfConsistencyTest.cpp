@@ -1363,6 +1363,64 @@ int main()
         std::cout << std::endl;
     }
 
+    // ================================================================
+    //  P2-B (docs/CLOTH_FABRIC_DESIGN.md 10): the CONTINUUM pdf integral
+    //  over the FULL SPHERE for a `transmission thin` material.
+    //
+    //  `TestSPF`'s own Part 2 integrates theta over [0, pi/2] ONLY (a
+    //  hemisphere) and asserts ~1 -- correct for every reflection-only
+    //  material in `spfs[]` above, and WRONG for a full-sphere one: a
+    //  thin weave's reflect-side alone integrates to well under 1 (the
+    //  delta branch and the transmit-side share both took some of the
+    //  mass), so running it through the shared harness unmodified would
+    //  either need a tolerance loose enough to hide a real regression or
+    //  fail a materially correct implementation.  This block instead
+    //  integrates over the WHOLE SPHERE (theta 0..pi) and checks the
+    //  result against `(1 - gap)` -- the CONTINUUM's own share of the
+    //  pmf, `Pdf()`'s brief-mandated convention (WeaveSPF.h's P2-B
+    //  section): the delta branch is excluded from `Pdf()` by
+    //  construction (it reports 0 for that direction), so the honest
+    //  target for the continuum's integral is "1 minus whatever went to
+    //  the delta spike", not 1.
+    // ================================================================
+    {
+        std::cout << "=== P2-B: continuum PDF integral over the FULL SPHERE (thin weave) ===" << std::endl;
+
+        const double kGap = 0.2;
+        RISE::WeaveTest::PresetWeave weaveThinFull( "satin", 0.0, -1, false, /*thin=*/true, -1, -1, kGap );
+
+        RayIntersectionGeometric ri = MakeIntersection( 30.0 * PI / 180.0 );
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        const int INTEGRAL_THETA_FULL = 200;	// full sphere: twice the hemisphere-only resolution
+        const int INTEGRAL_PHI_FULL   = 200;
+        double pdfIntegralFull = 0.0;
+        for( int t = 0; t < INTEGRAL_THETA_FULL; t++ )
+        {
+            const double theta = ( t + 0.5 ) * PI / INTEGRAL_THETA_FULL;	// 0..pi, the FULL sphere
+            const double sinT = sin( theta ), cosT = cos( theta );
+            const double dTheta = PI / INTEGRAL_THETA_FULL;
+            for( int p = 0; p < INTEGRAL_PHI_FULL; p++ )
+            {
+                const double phi = ( p + 0.5 ) * TWO_PI / INTEGRAL_PHI_FULL;
+                const double dPhi = TWO_PI / INTEGRAL_PHI_FULL;
+                Vector3 wo( sinT * cos(phi), sinT * sin(phi), cosT );
+                wo = Vector3Ops::Normalize( wo );
+                const Scalar pdfVal = weaveThinFull.SPF()->Pdf( ri, wo, iorStack );
+                pdfIntegralFull += pdfVal * sinT * dTheta * dPhi;
+            }
+        }
+
+        const double expected = 1.0 - kGap;
+        const double fullSphereTol = 0.05;
+        const bool fullSpherePassed = fabs( pdfIntegralFull - expected ) <= fullSphereTol;
+        std::cout << "  Weave_satin_thin_gap0.2: full-sphere integral=" << pdfIntegralFull
+                  << "  expected (1-gap)=" << expected
+                  << "  " << ( fullSpherePassed ? "-> PASS" : "-> FAIL" ) << std::endl;
+        if( !fullSpherePassed ) numFailed++;
+    }
+    std::cout << std::endl;
+
     // Coated triad: materials own the BRDF/SPF borrowed above, so
     // release them before their substrates and painters.  (This file
     // does not otherwise release its fixtures -- one-shot process --

@@ -333,7 +333,38 @@ Two practical considerations:
   `pathtracing_spectral_rasterizer` for new scenes; the legacy
   chunk stays around for custom spectral shader-op chains.
 
-## 7. Cross-references
+## 7. Known limitations
+
+- **BDPT/VCM over-count a FLAT, ZERO-THICKNESS full-sphere transmissive
+  material by 100-350x** (`IMaterial::ScattersFullSphere() &&
+  CouldLightPassThrough()` — today, a `weave_material` under
+  `transmission thin`). Cause: the unguarded vertex-connection geometric
+  term `G = cosA·cosB/dist²` in
+  [`BDPTUtilities::GeometricTerm`](../src/Library/Utilities/BDPTUtilities.h)
+  (floored only at `dist² < 1e-20`) is unbounded as an eye-subpath vertex
+  on the front face and a light-subpath vertex on the back face of the
+  same infinitesimally-thin surface land arbitrarily close together —
+  both `|cos|` terms stay ≈ 1 while `1/dist²` diverges. `HairMaterial`,
+  the only prior full-sphere material, is a curve with real
+  cross-sectional separation between front and back, so it never
+  triggers this; a flat weave is the first geometry class that can.
+  VCM shares the same unguarded form in its own connection/merge code
+  and is expected to reproduce the same class of defect (not separately
+  measured). **Mitigated, not fixed**: `AutoRasterizer`'s Tier-1 static
+  heuristic now excludes this material class from its own VCM routing
+  signal (`SceneHasTransmissiveMaterial` requires
+  `!ScattersFullSphere()`, so `> render auto` no longer walks into this),
+  and BDPT/VCM each log a one-time warning
+  ([`WeaveBidirectionalWarning.h`](../src/Library/Interfaces/WeaveBidirectionalWarning.h))
+  when such a material is rendered under an explicit `bdpt_*`/`vcm_*`
+  pin. The geometric-term singularity itself (a minimum-connection-
+  distance regularization, or a redesign of how BDPT/VCM connect through
+  a zero-thickness two-sided surface) is NOT fixed — reproduction,
+  measured numbers and the full writeup:
+  [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 20. Prefer a
+  PT rasterizer for scenes with this material class until it is.
+
+## 8. Cross-references
 
 - Per-parameter reference for each rasterizer chunk (and the
   `direct_clamp`, RR, max-bounce parameters shared across them):

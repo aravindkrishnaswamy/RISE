@@ -4651,8 +4651,24 @@ int main()
 				size_t at = 0;
 				bool claims = false;
 				while( ( at = bflat.find( "ScattersFullSphere() const", at ) ) != std::string::npos ) {
-					const std::string window = bflat.substr( at, 80 );
-					if( window.find( "return true" ) != std::string::npos ) { claims = true; break; }
+					// 100, not 80: WeaveMaterial.h's conditional form
+					// (`return pBRDF->GetTransmission() == eWeaveTransmissionThin;`)
+					// runs to character 89 from this point, and an 80-char
+					// window cut "eWeaveTransmissionThin" off mid-identifier.
+					const std::string window = bflat.substr( at, 100 );
+					// An UNCONDITIONAL `return true` (HairMaterial.h) is one
+					// deliberate form of claiming the capability.  P2-B
+					// (docs/CLOTH_FABRIC_DESIGN.md 10) added a second,
+					// CONDITIONAL form: WeaveMaterial.h returns true only
+					// under `transmission thin`, so the literal substring
+					// "return true" never appears -- match the specific
+					// enumerator its condition tests instead, rather than
+					// broadening to "contains return" (which would also
+					// false-claim IMaterial.h's own `return false;` default).
+					if( window.find( "return true" ) != std::string::npos
+					 || window.find( "eWeaveTransmissionThin" ) != std::string::npos ) {
+						claims = true; break;
+					}
 					at += 1;
 				}
 				if( claims ) {
@@ -4664,11 +4680,11 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 1 && claimers[0] == "HairMaterial.h",
-		       "full-sphere NEE: HairMaterial is the ONLY material claiming "
-		       "ScattersFullSphere() -- adding another is a deliberate act that must update "
-		       "this expectation in the same commit (see IMaterial::ScattersFullSphere's doc "
-		       "for what claiming it wrongly costs)" );
+		Check( claimers.size() == 2 && claimers[0] == "HairMaterial.h" && claimers[1] == "WeaveMaterial.h",
+		       "full-sphere NEE: HairMaterial (unconditional) and WeaveMaterial (conditional on "
+		       "`transmission thin`, P2-B) are the ONLY materials claiming ScattersFullSphere() -- "
+		       "adding another is a deliberate act that must update this expectation in the same "
+		       "commit (see IMaterial::ScattersFullSphere's doc for what claiming it wrongly costs)" );
 	}
 
 	std::cout << std::endl

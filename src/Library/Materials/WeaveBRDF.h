@@ -277,14 +277,85 @@
 //  ever reduce, so the whole mixture stays bounded.
 //
 //  ============================================================
+//  2a.  P2-B -- THIN-CLOTH TRANSMISSION (docs/CLOTH_FABRIC_DESIGN.md 10,
+//  status "P2-B shipped")
+//  ============================================================
+//
+//  `transmission thin` (default `none`) adds TWO lobes on top of the
+//  P2-A pair above, both gated so a `transmission none` material is
+//  BIT-IDENTICAL to the committed P2-A code -- every new term below is
+//  reached only through a `p.thin` branch, never mixed into the
+//  original expressions.
+//
+//  DELTA TRANSMISSION THROUGH THE GAPS (Zhu 2023 Eq. 2):
+//
+//      f_delta(x,i,o) = gap(x) * delta(i+o) / (i.n_s)
+//
+//  `gap` is the SAME field P2-A already had -- it keeps its P2-A energy
+//  role (`available = 1-gap` darkens the two-family reflect budget)
+//  and, ONLY when `transmission thin`, additionally supplies this
+//  lobe's aperture: a `weave_material` chunk may also spell it `sheer`
+//  (an accepted alias for the identical slot -- see the chunk
+//  descriptor), which is the more honest name once the field can
+//  actually transmit.  The delta ray is chosen with probability
+//  `gap(x)` in `WeaveSPF`'s outer selection (mirroring Zhu 2024 5.1's
+//  attenuation-proportional pmf, extended with this one delta entry),
+//  reported with `isDelta = true`, `pdf = 1.0` (RISE's delta-ray pdf
+//  marker, matching `DielectricSPF`) and `kray = 1` -- selection
+//  probability and lobe coefficient are the SAME number, so they
+//  cancel exactly and the emitted ray carries the gap's full,
+//  untinted, unattenuated transmission.  `Pdf()` reports 0 for it, and
+//  the CONTINUUM density below is scaled by `(1 - gap(x))` to stay
+//  truthful about how much of the sampler's mass the delta branch took
+//  -- exactly `SPFPdfConsistencyTest`'s "continuum share" convention
+//  for a mixed delta+continuum SPF (DielectricSPF's own Pdf() is 0
+//  everywhere for the same reason: ALL its mass is delta).
+//
+//  DIFFUSE TRANSMISSION THROUGH THE YARN (Sadeghi-shaped, Lambertian):
+//
+//      f_t,d,k(i,o) = (1 - gap) * transmit_k * T_k / pi
+//
+//  active only when `i` and `o` are on OPPOSITE sides of the shading
+//  normal (the full-sphere case).  `T_k` is the family's own dye
+//  (`warp_color` / `weft_color`, reused -- Zhu's `T_k` and Sadeghi's
+//  `A_k` are the same "this family's colour" slot) and `transmit_k`
+//  ("warp_transmit" / "weft_transmit", default per preset: linen 0.25,
+//  silk 0.35, satin 0.15, denim 0.0) is the family's share of its
+//  OWN volume budget that is redirected to transmission rather than
+//  reflection: the reflect-side volume lobe (section 1c above) is
+//  scaled by `(1 - transmit_k)` -- SAME formula, SAME `Mp`/`C_v`
+//  machinery, just multiplied down -- so the two together never exceed
+//  the pre-P2-B volume budget `A_k(1-F)`.  This is the "SPLIT
+//  (1-transmit)*reflect + transmit*transmit" rule: one budget, divided
+//  between two exits, not two budgets added.  A specular (SGGX-like)
+//  transmission lobe (Zhu's `f_t,s`) is NOT in scope; the yarn's
+//  transmitted light is modelled as Lambertian only, matching the
+//  brief's "Lambertian-shaped back-face lobe".
+//
+//  FULL SPHERE.  `WeaveMaterial::ScattersFullSphere()` and
+//  `CouldLightPassThrough()` both report `true` when `transmission` is
+//  `thin` (and `false`, the P2-A answer, otherwise) -- see
+//  `IMaterial::ScattersFullSphere`'s own doc for what that turns on in
+//  `LightSampler` (the generic full-sphere NEE machinery HairMaterial
+//  already exercises; nothing there needed to change for this
+//  material).
+//
+//  WHAT P2-B DOES NOT DO.  No SMS / `GetSpecularInfo` reporting for the
+//  gap's delta lobe: it is a trivial undeviated pass-through (not a
+//  refractive boundary a specular-manifold chain would bend through),
+//  so there is nothing for SMS to usefully do with it, on the same
+//  "defer, do not report" call P2-A already made for its two continuum
+//  lobes.  No per-family transmission tint distinct from the reflect
+//  dye, and no specular transmission lobe (both named above).
+//
+//  ============================================================
 //  3.  WHAT THIS PHASE DOES NOT DO
 //  ============================================================
 //
-//  NO TRANSMISSION.  `ScattersFullSphere` and `CouldLightPassThrough`
-//  stay false; the backlit glow-through cue is slice P2-B, and claiming
-//  it here would put the full-sphere NEE machinery behind a lobe that
-//  does not exist.  Zhu 2023's delta-transmission term
-//  `delta(i+o)/(i.n_s)` is the model for it when that slice lands.
+//  (P2-A text, preserved: P2-B's additions are section 2a above.)
+//  Absent `transmission thin`, `ScattersFullSphere` and
+//  `CouldLightPassThrough` stay false, matching the committed P2-A
+//  code exactly.
 //
 //  NO PER-TEXEL ASG VISIBILITY BAKE.  Zhu 2023's headline contribution
 //  is a per-texel Anisotropic-Spherical-Gaussian fit of the visibility
@@ -405,6 +476,7 @@ namespace RISE
 				Scalar	kd;
 				RISEPel	tint;		///< A_k, RGB regime (undefined on the NM path)
 				Scalar	tintNM;		///< A_k at the hero wavelength (undefined on the RGB path)
+				Scalar	transmit;	///< P2-B: k_t in [0,1]; 0 unless `transmission thin`
 			};
 
 			//! Everything the evaluator and the sampler both need,
@@ -416,6 +488,7 @@ namespace RISE
 				Vector3			n;			///< ray-facing shading normal
 				Scalar			aWarp;		///< warp-coverage field in [0,1]; the lobe-selection pmf
 				Scalar			available;	///< 1 - gap; an ENERGY factor only (see the banner)
+				bool			thin;		///< P2-B: `transmission thin`?  Gates every new lobe.
 				ThreadParams	warp;
 				ThreadParams	weft;
 			};
@@ -433,6 +506,7 @@ namespace RISE
 
 			WeaveBRDF(
 				const WeavePatternKind pattern,
+				const WeaveTransmissionKind transmission,		///< P2-B: `none` or `thin`
 				const IScalarPainter& weaveScale,
 				const IScalarPainter& weaveRotation,
 				const IScalarPainter& weftSkew,
@@ -444,12 +518,14 @@ namespace RISE
 				const IScalarPainter& warpAzimuth,
 				const IScalarPainter& warpKd,
 				const IScalarPainter& warpTilt,
+				const IScalarPainter& warpTransmit,			///< P2-B
 				const IPainter& weftColor,
 				const IScalarPainter& weftIOR,
 				const IScalarPainter& weftWidth,
 				const IScalarPainter& weftAzimuth,
 				const IScalarPainter& weftKd,
-				const IScalarPainter& weftTilt
+				const IScalarPainter& weftTilt,
+				const IScalarPainter& weftTransmit				///< P2-B
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
@@ -606,7 +682,8 @@ namespace RISE
 			                           const Scalar nm,
 			                           const WeaveParams& p ) const;
 
-			inline WeavePatternKind GetPattern() const { return pattern; }
+			inline WeavePatternKind      GetPattern()      const { return pattern; }
+			inline WeaveTransmissionKind GetTransmission() const { return transmission; }
 
 			//! Read-back for the interactive editor / snapshot clone.
 			inline const IScalarPainter& GetWeaveScale()    const { return *pScale; }
@@ -620,12 +697,14 @@ namespace RISE
 			inline const IScalarPainter& GetWarpAzimuth()   const { return *pWarpAzimuth; }
 			inline const IScalarPainter& GetWarpKd()        const { return *pWarpKd; }
 			inline const IScalarPainter& GetWarpTilt()      const { return *pWarpTilt; }
+			inline const IScalarPainter& GetWarpTransmit()  const { return *pWarpTransmit; }
 			inline const IPainter&       GetWeftColor()     const { return *pWeftColor; }
 			inline const IScalarPainter& GetWeftIOR()       const { return *pWeftIOR; }
 			inline const IScalarPainter& GetWeftWidth()     const { return *pWeftWidth; }
 			inline const IScalarPainter& GetWeftAzimuth()   const { return *pWeftAzimuth; }
 			inline const IScalarPainter& GetWeftKd()        const { return *pWeftKd; }
 			inline const IScalarPainter& GetWeftTilt()      const { return *pWeftTilt; }
+			inline const IScalarPainter& GetWeftTransmit()  const { return *pWeftTransmit; }
 
 			//! Rebind for the interactive editor's MaterialIntrospection.
 			//! Like `FabricBRDF` -- and UNLIKE the GGX / Sheen triads --
@@ -645,17 +724,20 @@ namespace RISE
 			void SetWarpAzimuth( const IScalarPainter& v );
 			void SetWarpKd( const IScalarPainter& v );
 			void SetWarpTilt( const IScalarPainter& v );
+			void SetWarpTransmit( const IScalarPainter& v );
 			void SetWeftColor( const IPainter& v );
 			void SetWeftIOR( const IScalarPainter& v );
 			void SetWeftWidth( const IScalarPainter& v );
 			void SetWeftAzimuth( const IScalarPainter& v );
 			void SetWeftKd( const IScalarPainter& v );
 			void SetWeftTilt( const IScalarPainter& v );
+			void SetWeftTransmit( const IScalarPainter& v );
 
 		protected:
 			virtual ~WeaveBRDF();
 
 			WeavePatternKind		pattern;
+			WeaveTransmissionKind	transmission;	///< P2-B; NOT rebindable (re-author the chunk -- same call as `pattern`)
 
 			const IScalarPainter*	pScale;
 			const IScalarPainter*	pRotation;
@@ -669,6 +751,7 @@ namespace RISE
 			const IScalarPainter*	pWarpAzimuth;
 			const IScalarPainter*	pWarpKd;
 			const IScalarPainter*	pWarpTilt;
+			const IScalarPainter*	pWarpTransmit;
 
 			const IPainter*			pWeftColor;
 			const IScalarPainter*	pWeftIOR;
@@ -676,6 +759,7 @@ namespace RISE
 			const IScalarPainter*	pWeftAzimuth;
 			const IScalarPainter*	pWeftKd;
 			const IScalarPainter*	pWeftTilt;
+			const IScalarPainter*	pWeftTransmit;
 		};
 	}
 }

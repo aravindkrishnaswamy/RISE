@@ -1165,8 +1165,13 @@ attention and nothing else does:
   indigo warp floating over an undyed weft.  They tint the volume lobe
   only, so a coloured fabric correctly keeps a white highlight.
 
-Reflection only for now: a `weave_material` has no transmission lobe, so
-`gap` DARKENS an open weave rather than letting light through it.
+Set `transmission thin` for a backlit, see-through cloth (a sheer curtain,
+a lampshade) — it adds a delta lobe glowing straight through the open gaps
+(weighted by `gap`, which you can also spell `sheer`) and a Lambertian lobe
+glowing through the yarn itself (`warp_transmit`/`weft_transmit`, [0,1]);
+default `transmission none` is reflection-only and `gap` just darkens, as
+before. `linen`/`silk`/`satin` default to `thin`; `denim`/`custom` default
+to `none`.
 
 Parses and renders today — the whole triad, in emission order
 (declare-before-use is not a style choice here: `base` and `rs` resolve

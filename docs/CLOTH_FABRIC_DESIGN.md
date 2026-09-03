@@ -3651,11 +3651,110 @@ paragraph used to assert (that figure conflated the masking term's *own*
 cosine-weighted hemispherical mean, π/4, with a directional-albedo bound it
 does not derive).
 
-**Transmission did NOT ship.** `ScattersFullSphere` and
-`CouldLightPassThrough` stay false. Zhu 2023's delta-transmission term
-`δ(i+o)/(i·n_s)` is the model for it and it is slice **P2-B**; claiming the
-flags without the lobe would send the full-sphere NEE machinery hunting for
-transmission that does not exist.
+**Transmission did NOT ship in P2-A.** `ScattersFullSphere` and
+`CouldLightPassThrough` stayed false. Zhu 2023's delta-transmission term
+`δ(i+o)/(i·n_s)` is the model for it and it was slice **P2-B**; claiming the
+flags without the lobe would have sent the full-sphere NEE machinery hunting
+for transmission that did not exist.
+
+### 10.1a P2-B — thin-cloth transmission, SHIPPED 2026-09-03
+
+**What shipped.** A `transmission` enum (`none`|`thin`, default `none`) and a
+per-family `transmit` scalar on `weave_material`. `transmission none` is
+bit-identical to the committed P2-A code by construction: every new
+expression is reached only through a `p.thin` branch (`WeaveBRDF.cpp`,
+`WeaveSPF.cpp`), never mixed into the original ones, and `1 - transmit`
+multiplying the volume term is a no-op multiply by exactly `1.0` when
+`!p.thin` regardless of what a `transmit` painter happens to hold. The
+existing P2-A suite (`LayeredWhiteFurnaceTest`, `SPFBSDFConsistencyTest`,
+`SPFPdfConsistencyTest`) passed unmodified against its own pre-existing
+locked numbers after the change, which is the "value table" proof rather
+than a separately-captured one.
+
+Two new lobes, gated on `transmission thin`:
+
+1. **Delta transmission through the gaps** (Zhu 2023 Eq. 2):
+   `f_delta = gap(x) · δ(i+o) / (i·n_s)`. `gap` is the SAME field P2-A
+   shipped — it keeps its P2-A energy role (`available = 1 - gap` darkens
+   the reflect budget) and, only under `thin`, additionally supplies this
+   lobe's aperture. The chunk accepts `sheer` as an alias for the identical
+   slot — the more honest name once the field can transmit — with `sheer`
+   winning if both are authored on the same chunk. The delta ray is chosen
+   with probability `gap(x)` in `WeaveSPF`'s outer selection, reported
+   `isDelta = true`, `pdf = 1` (RISE's delta marker, matching
+   `DielectricSPF`), `kray = 1` (the lobe's coefficient and its selection
+   probability are the same number and cancel exactly). `Pdf()` reports 0
+   for it; the continuum density is scaled by `(1 - gap)` — the continuum's
+   own share — matching `SPFPdfConsistencyTest`'s convention for a mixed
+   delta+continuum SPF.
+2. **Diffuse transmission through the yarn**, Lambertian:
+   `f_t,d,k = (1 - gap) · transmit_k · T_k / π`, active only when `i` and
+   `o` are on opposite sides of the shading normal. `T_k` reuses the
+   family's own dye (`warp_color`/`weft_color` — Zhu's `T_k` and Sadeghi's
+   `A_k` are the same "this family's colour" slot). `transmit_k`
+   (`warp_transmit`/`weft_transmit`, preset defaults linen 0.25, silk 0.35,
+   satin 0.15, denim/custom 0.0) is the family's share of its OWN volume
+   budget redirected to transmission — the reflect-side volume lobe is
+   scaled by `(1 - transmit_k)`, so the two together never exceed the
+   pre-P2-B budget (**one budget, split**, not two budgets added). A
+   specular (SGGX-like) transmission lobe (Zhu's `f_t,s`) is NOT in scope —
+   deferred, matching P2-A's own SGGX deferral.
+
+`WeaveMaterial::ScattersFullSphere()` and `CouldLightPassThrough()` both
+return `true` iff `transmission thin`, reading the same
+`WeaveBRDF::GetTransmission()` the BSDF/SPF gate their own lobes on, so the
+flag and the lobes it advertises can never disagree. The generic full-sphere
+NEE machinery `LightSampler.cpp` already had for `HairMaterial` needed no
+changes.
+
+**Presets.** linen/silk/satin default to `transmission thin` (linen keeps
+its existing `gap 0.10`; silk/satin keep `gap 0.0`, so their transmission is
+entirely the diffuse lobe, no delta glow-through). denim and `custom` stay
+`transmission none`.
+
+**Verified with three isolated probes** (window filling the frame, camera
+facing it directly, EXR linear readback), the numbers behind both the
+furnace prediction below and the showcase scene's light-level tuning:
+(a) window alone, mean linear radiance **1.273240**; (b) the same window
+behind a linen curtain at `transmission none`, mean **EXACTLY 0.0** (opaque,
+correct); (c) the same again at `transmission thin`, `sheer 0.2`,
+`warp_transmit`/`weft_transmit` 0.25, mean **0.259** — (c)/(a) = 20.3%,
+matching the delta lobe's own closed-form prediction (`sheer × L_window`
+= 0.2546) almost exactly, with a small further contribution from the
+diffuse-transmission lobe.
+
+**Guards, new this slice.**
+
+| Guard | What it pins |
+|---|---|
+| `WeaveMaterialChunkTest::TestP2ABitIdentical` (R8 P2-1) | a LITERAL captured `(value, Pdf)` table — 24 (θ,φ) direction pairs × 2 presets (denim, satin) — verified against commit 8378266b by a full-file diff showing every P2-B change to the `!p.thin` path is structural (a `× 1.0` no-op), not numeric; asserted at ≤ 1e-12 relative. Replaces the earlier claim that the unmodified `LayeredWhiteFurnaceTest` locked curve was "the value table proof" — that table is Monte-Carlo `Scatter()` sampling at `kWeaveLockEps = 0.006` absolute (~4σ MC noise) and would not have caught a low-single-digit-percent regression (R8 P2-1 finding) |
+| `SPFBSDFConsistencyTest` Part E2 | cross-hemisphere reciprocity for the transmission lobes: 225 direction pairs on a tilted, thin satin, 0 failures, exactly `0.000e+00` relative error. **Labelled STRUCTURAL, not empirical** (R8 P3-4): the diffuse-transmission lobe has no directional dependence beyond the hemisphere-crossing gate, and the harness's single fixed shading point means `f(a→b)`/`f(b→a)` are the same flat expression evaluated on identical inputs — a real regression tripwire for a future directional term, not evidence that today's flat lobe is "reciprocal" in any deeper sense |
+| `LayeredWhiteFurnaceTest` rows 50-51 (R8 P2-2) | a sheer white linen's TOTAL (reflect+transmit) energy compared against an INDEPENDENT prediction — `WeaveIndependentCheck::PredictSheerTotal`, a from-scratch quadrature (reflect side, `(1-transmit_k)`-scaled) plus a closed-form Lambertian hemispherical-integral identity (transmit side, exact) plus the delta lobe's own exact `gap` contribution — at `≤ 0.01` absolute (measured agreement `≤ 0.0053` at every angle, N=100000), replacing the old self-referential "reflect-only twin minus transmit" bound that a transmission formula wrong by up to ~2x low would still have passed (R8 P2-2 finding); the delta lobe measured IN ISOLATION (summing `kray` only over `isDelta` rays) converges to `gap` exactly (measured 0.2028 vs 0.2, N=100000) |
+| `SPFPdfConsistencyTest` (new block) | the continuum `Pdf()` integral over the FULL SPHERE for a thin material equals `(1 - gap)`, not 1 (measured 0.800025 vs expected 0.8) |
+| `WeaveMaterialChunkTest::TestThinTransmission` | `transmission`/`sheer`/`warp_transmit`/`weft_transmit` parsing, the `sheer`-wins-over-`gap` alias rule (now diagnosed with a warning when BOTH are authored, R8 P3-3), preset defaults, `[0,1]` CLAMPING (descriptor wording fixed, R8 P3-6), and that the transmission lobe is exactly zero under `transmission none` / `transmit 0` and strictly positive otherwise, on both `value()` and `Pdf()` |
+| `tests/FabricRenderTest.cpp::TestBacklitSheerCurtain` | a backlit curtain scene: `transmission none` renders EXACTLY black (opaque, no other light path); `transmission thin` glows (money assertion) |
+| `tests/AutoRasterizerTest.cpp` (new case, R7 P2) | "thin weave + point light -> PT (not VCM)" — the exact `hasTransmissive && hasPositional` shape the shipped sheer-curtain scene has no longer routes to VCM |
+| `scenes/FeatureBased/Materials/sheer_curtain.RISEscene` | the showcase render — reworked, verified against the three probes above, and rendered/inspected this session (see the scene's own header and `scenes/FeatureBased/README.md`) |
+
+**Debt 20: BDPT/VCM over-count this material by 100-350x — diagnosed as an
+INTEGRATOR limitation and mitigated, not fixed, in this slice.** Full
+reproduction, root cause and disposition: §15 debt 20 (and
+[RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)'s known-limitations
+section for the integrator-side reader). Summary: the unguarded
+`cosA·cosB/dist²` vertex-connection geometric term in
+`BDPTUtilities::GeometricTerm` is unbounded as an eye-subpath vertex and a
+light-subpath vertex on opposite faces of this FLAT, zero-thickness
+`ScattersFullSphere()` surface — RISE's first — land arbitrarily close
+together; `HairMaterial`, the only prior full-sphere material, is a curve
+with real front/back separation and never triggers this. Two mitigations
+shipped this round: `AutoRasterizer`'s Tier-1 heuristic no longer routes
+such a material to VCM (`CouldLightPassThrough() && !ScattersFullSphere()`,
+`tests/AutoRasterizerTest.cpp`), and BDPT/VCM each log a one-time warning
+when rendering one under an explicit pin
+([`WeaveBidirectionalWarning.h`](../src/Library/Interfaces/WeaveBidirectionalWarning.h)).
+The geometric-term singularity itself is integrator-core work outside this
+slice's scope. Flagged as a follow-up investigation
+(task_93ff4a8a in the session that shipped this).
 
 ### 10.2 What Phase-1 evidence gates it
 
@@ -4413,6 +4512,125 @@ yet known (§10.1).
     selection inputs achromatically on purpose (§9.2), while
     `CoatedBRDF::ResolveCoat` reads per-wavelength, so there is
     precedent both ways and whoever fixes it must say which and why.
+
+20. **NEW 2026-09-03 (P2-B fix round, REVIEW_P2R7.md) — BDPT/VCM
+    over-count a `transmission thin` weave by 100-350x on the shipped
+    backlit-curtain scene; diagnosed as an INTEGRATOR limitation, not a
+    material defect, and NOT fixed in this slice.**
+
+    **Reproduction.** `tests/FabricRenderTest.cpp::TestBacklitSheerCurtain`:
+    a flat `weave_material` curtain (`fabric linen`, `transmission thin`)
+    in front of an `omni_light`, 256 spp, 32x32, `oidn_denoise FALSE`.
+    PT mean luminance ≈ 7.3-7.9e-5 across independent seeds; BDPT mean
+    ≈ 0.0253, a stable, REPRODUCIBLE ≈ 325-350x (not a heavy tail's usual
+    seed-to-seed spread). Reducing `indirect_clamp`/`direct_clamp` from
+    off → 0.01 → 0.001 tracked BDPT's mean down roughly in proportion to
+    the clamp ceiling itself (0.0253 → 0.008 → 0.0008) — the signature
+    of a persistently-hit near-singular contribution, not rare fireflies
+    a clamp ordinarily tames.
+
+    **Diagnosis (REVIEW_P2R7.md, independently re-derived from first
+    principles after ruling out every material-side candidate).** The
+    unguarded vertex-connection geometric term
+    `G = cosA·cosB/dist²` in [`BDPTUtilities::GeometricTerm`](../src/Library/Utilities/BDPTUtilities.h)
+    (floored only at `dist² < 1e-20`) is unbounded as `dist -> 0` while
+    both `|cos|` terms stay ≈ 1. A `weave_material` sheer curtain is
+    RISE's FIRST flat, zero-thickness `ScattersFullSphere()` surface —
+    `HairMaterial`, the only prior full-sphere material, is a curve with
+    real cross-sectional separation between its front and back, so an
+    eye-subpath vertex and a light-subpath vertex sampled from opposite
+    faces can never coincide there. On an infinitesimally-thin quad they
+    can land arbitrarily close together, driving the geometric term
+    toward infinity. VCM shares the same unguarded `cosA·cosB/dist²`
+    form in its own connection/merge paths
+    (`src/Library/Rendering/VCMRasterizerBase.cpp` /
+    `src/Library/Shaders/BDPTIntegrator.cpp`'s shared merge code) and is
+    expected to reproduce the same class of defect, though it was not
+    separately measured this session.
+
+    **What WAS fixed this session, and what was deliberately NOT.**
+    (a) `AutoRasterizer.cpp`'s Tier-1 static heuristic
+    (`SceneHasTransmissiveMaterial`) no longer routes a scene to VCM on
+    `CouldLightPassThrough()` alone — it now requires
+    `CouldLightPassThrough() && !ScattersFullSphere()`, which correctly
+    excludes a full-sphere continuum transmissive material (this weave
+    class) while keeping the genuine delta-dielectric caustic case
+    (glass/water/gems: `DielectricMaterial`/`PerfectRefractorMaterial`,
+    neither of which overrides `ScattersFullSphere()`) on the VCM path
+    unchanged. Covered by `tests/AutoRasterizerTest.cpp`'s "thin weave +
+    point light -> PT (not VCM)" case. (b) A one-time
+    [`WarnIfBidirectionalRenderHasFullSphereTransmissive`](../src/Library/Interfaces/WeaveBidirectionalWarning.h)
+    diagnostic fires from BDPT's and VCM's own pre-render hooks
+    (`BDPTPelRasterizer`/`BDPTSpectralRasterizer::PreRenderSetup`,
+    `VCMRasterizerBase::PreRenderSetup`) when a full-sphere transmissive
+    material is present, naming the limitation, for the author who pins
+    `bdpt_*`/`vcm_*` explicitly despite (a). (c) The unguarded geometric
+    term itself — a minimum-connection-distance regularization, or an
+    architectural fix to how BDPT/VCM handle a zero-thickness two-sided
+    surface — is NOT fixed. That is integrator-core work (BDPTUtilities,
+    BDPTIntegrator, VCMRasterizerBase) well outside a material slice's
+    scope, and risks perturbing every other BDPT/VCM scene in the
+    regression corpus. `FabricRenderTest`'s own printed BDPT diagnostic
+    line references this debt by number rather than asserting a bound
+    that would either hide the gap behind a loose ceiling or fail a
+    materially-correct P2-B implementation.
+
+    `docs/RENDERING_INTEGRATORS.md`'s known-limitations section carries
+    the same entry for readers who start from the integrator side rather
+    than the material side.
+
+21. **NEW 2026-09-03 (P2-B fix round 1/3, cross-checked round 3 —
+    REVIEW_P2R9.md) — under PATH TRACING, the diffuse-transmission
+    lobe's contribution scales close to `transmit²` instead of linearly
+    in `transmit`. Root-caused to PT's full-sphere NEE/MIS path, NOT
+    `WeaveBRDF`/`WeaveSPF` — confirmed two independent ways, still
+    untracked by a regression test.**
+
+    **Measured** (isolated probe: a bright window filling the frame,
+    curtain directly in front, gap forced to 0 so only the diffuse lobe
+    is live): holding `gap = 0` and varying `transmit` alone,
+    `transmit = 0.5` gave `0.21x` the `transmit = 1.0` response (not
+    `0.5x`), and `transmit = 0.25` gave `0.053x` (not `0.25x`) — under
+    the `pathtracing_pel_rasterizer`. The SAME configuration rendered
+    with `bdpt_pel_rasterizer` instead scales EXACTLY linearly:
+    `0.500x` and `0.250x`, to three figures.
+
+    **Ruled OUT, round 3 (REVIEW_P2R9.md), independently of the PT-vs-BDPT
+    comparison above.** A from-scratch Scatter()-only Monte Carlo probe
+    (no NEE, no MIS — just `Scatter()` + `kray`) on `linen` thin with
+    `gap` forced to 0 measured ratio(transmit=0.5)/ratio(transmit=0.25)
+    `= 1.998` and ratio(1.0)/ratio(0.25) `= 3.999` — linear, not the
+    `4x`/`16x` a `transmit²` dependence would give — and
+    `(value(wi)·|cos|) / Pdf(...)` is CONSTANT (`0.858824`) across
+    `transmit` in `{0.25, 0.5, 1.0}`, which is only possible if
+    `value()` and `Pdf()` carry the SAME `transmit` weighting (a double
+    application in one but not the other would move this ratio). This
+    matches two other independent in-tree checks that were already
+    passing before this debt was opened: `SPFPdfConsistencyTest`'s
+    full-sphere `Pdf()` integral equals `(1-gap)` regardless of
+    `transmit`, and `LayeredWhiteFurnaceTest` rows 50-51's from-scratch
+    quadrature (`PredictSheerTotal`, §15 entry above debt 20's own
+    round) agrees with the measured total to `<= 0.0053` absolute.
+    `SPFBSDFConsistencyTest`'s pointwise `kray*pdf == BRDF*|cos|` table
+    (Part D2, added round 3) now also exercises `WeaveSPF`'s
+    transmission branch directly (two sheer-linen configurations, gap 0
+    and gap 0.2, 0.00% error) — a double application in the SPF would
+    show up there as a non-noise-shaped skew, and it does not.
+
+    Conclusion: `WeaveBRDF::value()`/`WeaveSPF::Pdf()`/`Scatter()` are
+    linear in `transmit_k` by every check that can see them directly.
+    The `transmit²`-shaped deficit is real (BDPT reproduces the correct
+    linear scaling using the SAME material code) and lives in PT's
+    full-sphere next-event-estimation / MIS-weighting path — the code
+    that decides how much weight a `LightSampler`-driven direct-light
+    sample gets when the receiving material's own `Pdf()` toward that
+    light is itself `transmit`-weighted. **Not yet fixed, and not yet
+    covered by a dedicated regression test** — a separate diagnosis
+    effort is in progress as of this writing and may turn this into a
+    fix in a future round; this entry, `scenes/FeatureBased/README.md`'s
+    probe-numbers paragraph, and `tests/FabricRenderTest.cpp`'s own
+    comment should all be revisited together once it lands (or once the
+    diagnosis concludes the deficit is something else entirely).
 
 ---
 
