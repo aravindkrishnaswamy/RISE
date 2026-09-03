@@ -23,6 +23,7 @@
 #include "../Materials/LambertianMaterial.h"
 #include "../Materials/PolishedMaterial.h"
 #include "../Materials/CoatedMaterial.h"
+#include "../Materials/FabricMaterial.h"
 #include "../Materials/DielectricMaterial.h"
 #include "../Materials/PerfectReflectorMaterial.h"
 #include "../Materials/PerfectRefractorMaterial.h"
@@ -180,6 +181,7 @@ String MaterialIntrospection::GetTypeName( const IMaterial& material )
 	if( dynamic_cast<const LambertianMaterial*>( &material ) )                          return String( "Lambertian" );
 	if( dynamic_cast<const PolishedMaterial*>( &material ) )                            return String( "Polished" );
 	if( dynamic_cast<const CoatedMaterial*>( &material ) )                              return String( "Coated" );
+	if( dynamic_cast<const FabricMaterial*>( &material ) )                              return String( "Fabric" );
 	if( dynamic_cast<const DielectricMaterial*>( &material ) )                          return String( "Dielectric" );
 	if( dynamic_cast<const PerfectReflectorMaterial*>( &material ) )                    return String( "Perfect Reflector" );
 	if( dynamic_cast<const PerfectRefractorMaterial*>( &material ) )                    return String( "Perfect Refractor" );
@@ -364,6 +366,22 @@ std::vector<CameraProperty> MaterialIntrospection::Inspect(
 		rows.push_back( BuildPainterSlot( "coat_tint", coat->GetCoatTint(),
 			painters, composed,
 			"Painter for the colour transmitted by one normal-incidence traversal of the coat.  The one coat slot that is genuinely a colour (a tinted lacquer); white is untinted." ) );
+	}
+	else if( const FabricMaterial* fab = dynamic_cast<const FabricMaterial*>( &material ) ) {
+		// `base` is a MATERIAL, not a painter, so it has no row here --
+		// MaterialSlotRef models Painter / ScalarPainter only.  Changing
+		// the substrate means re-authoring the chunk (it has to re-run
+		// the allowlist and rebuild the BRDF and SPF).  Same call as
+		// coated_material above.
+		rows.push_back( BuildPainterSlot( "sheen_color", fab->GetSheenColor(),
+			painters, composed,
+			"Painter for the dye / fuzz tint (Charlie sheen lobe) -- the one fabric slot that is genuinely a colour.  Its MAX CHANNEL is also the energy split: the substrate is scaled by 1 - max3(sheen_color)*E(alpha, cos), so a white sheen suppresses the base most and a black one not at all." ) );
+		rows.push_back( BuildScalarPainterSlot( "sheen_roughness", fab->GetSheenRoughness(),
+			scalarPainters, composed,
+			"Scalar painter for the Charlie alpha.  Low = a tight grazing halo (velvet 0.08, satin 0.12), high = a broad soft sheen (wool 0.75).  Clamped to [0.04, 1] -- tighter than sheen_material's 1e-3 floor, because below ~0.035 the lobe's baked directional albedo exceeds 1 near grazing and the base-energy subtraction would go negative." ) );
+		rows.push_back( BuildScalarPainterSlot( "weave_rotation", fab->GetWeaveRotation(),
+			scalarPainters, composed,
+			"Scalar painter for the weave angle in RADIANS.  Rotates the tangent frame handed to the SUBSTRATE, not the sheen lobe (which is isotropic).  Paint it to make an anisotropic ggx base follow the yarn; it ADDS to the substrate's own tangent_rotation, weave first.  0 is a no-op." ) );
 	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		rows.push_back( BuildScalarPainterSlot( "tau", die->GetTransmittance(),
@@ -717,6 +735,17 @@ MaterialSlotRef MaterialIntrospection::GetSlot(
 			out.kind = MaterialSlotRef::Painter; out.painter = &coat->GetCoatTint(); return out;
 		}
 	}
+	else if( const FabricMaterial* fab = dynamic_cast<const FabricMaterial*>( &material ) ) {
+		if( slotName == String( "sheen_color" ) ) {
+			out.kind = MaterialSlotRef::Painter; out.painter = &fab->GetSheenColor(); return out;
+		}
+		if( slotName == String( "sheen_roughness" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &fab->GetSheenRoughness(); return out;
+		}
+		if( slotName == String( "weave_rotation" ) ) {
+			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &fab->GetWeaveRotation(); return out;
+		}
+	}
 	else if( const DielectricMaterial* die = dynamic_cast<const DielectricMaterial*>( &material ) ) {
 		if( slotName == String( "tau" ) ) {
 			out.kind = MaterialSlotRef::ScalarPainter; out.scalarPainter = &die->GetTransmittance(); return out;
@@ -902,6 +931,28 @@ bool MaterialIntrospection::SetSlot(
 		if( slotName == String( "coat_tint" ) ) {
 			if( !painter ) return false;
 			coat->SetCoatTint( *painter );
+			return true;
+		}
+		return false;		// `base` is a material, not a rebindable painter slot
+	}
+	if( FabricMaterial* fab = dynamic_cast<FabricMaterial*>( &material ) ) {
+		// Only the BRDF is rebound; FabricSPF reads every fabric
+		// parameter back through it, so there is no second copy to keep
+		// in lockstep (contrast SheenMaterial, which must forward to
+		// BOTH its BRDF and its SPF).
+		if( slotName == String( "sheen_color" ) ) {
+			if( !painter ) return false;
+			fab->SetSheenColor( *painter );
+			return true;
+		}
+		if( slotName == String( "sheen_roughness" ) ) {
+			if( !scalarPainter ) return false;
+			fab->SetSheenRoughness( *scalarPainter );
+			return true;
+		}
+		if( slotName == String( "weave_rotation" ) ) {
+			if( !scalarPainter ) return false;
+			fab->SetWeaveRotation( *scalarPainter );
 			return true;
 		}
 		return false;		// `base` is a material, not a rebindable painter slot

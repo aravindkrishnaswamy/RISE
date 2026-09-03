@@ -217,6 +217,7 @@ scenes/Tests/Materials/Enamel/enamel_dome_dial.RISEscene  ac2a57ec3bb2f25e59b0f7
 scenes/Tests/Materials/Enamel/enamel_swatch_goldruby.RISEscene  4c4f15812743dc4074c3a0e17ace60dfe3a3e8adf420f7e4f56c48a152f5cf61  813  26
 scenes/Tests/Materials/Enamel/enamel_swatch_silver.RISEscene  9fdd38d5ee2f073cd99e56ee3dcfa3fe2db24336459e499409b22a6bc288813f  825  27
 scenes/Tests/Materials/Enamel/silver_reference.RISEscene  cb9f119e24d46516ccb6ab8b820d309d76b09b5ef14d9749bc35569d4d8647aa  700  24
+scenes/Tests/Materials/anisotropic_uv_tangent.RISEscene  87b7e334017ec0459ce536ed17a15d8ea9745ecac196e3349ce54c9c88a3a51d  1251  29
 scenes/Tests/Materials/coated_material.RISEscene  abb1740227a1e32dcb57cbd82e698dced69db22f65823f7e818cfe7cc0a397b4  1676  34
 scenes/Tests/Materials/composite_material.RISEscene  58135c8bc5a158f50f8372473fc32faca6a1a1dc8d96b361d7f218b63eae0878  4065  65
 scenes/Tests/Materials/cooktorrance_multiscatter_test.RISEscene  9c5107f0c869c23cc9757ff83dc801875f6486ebbdeb670be1aadc47fb80d599  3232  56
@@ -224,6 +225,7 @@ scenes/Tests/Materials/cooktorrance_vndf_test.RISEscene  8f45eb9acb2cf228b1f1f31
 scenes/Tests/Materials/dielectric_dispersion.RISEscene  6843c048fd724879528e8866e63d930b7e781dc431a16a18fe9c0d4488472812  1544  33
 scenes/Tests/Materials/dielectrics_changing_ior.RISEscene  067049c3617e92fe34f7f79e61c4e54ab4a46244082784a5ccb60c4b5f855e81  1601  37
 scenes/Tests/Materials/dielectrics_changing_scat.RISEscene  565861f6299aa197488c5785145d53662737900dde6039964cd489d880795144  1600  37
+scenes/Tests/Materials/fabric_presets.RISEscene  883edf650076ecbf8b17de6436441ad3eaec9b66980fa0d2d166d97d9f77c23e  2329  52
 scenes/Tests/Materials/ggx_anisotropy_sweep.RISEscene  51c4b7ed36eee38c593388e0614ce954b3fa84a8af48f7605372722c7150e4b1  3378  57
 scenes/Tests/Materials/ggx_anisotropy_sweep_bdpt.RISEscene  51c4b7ed36eee38c593388e0614ce954b3fa84a8af48f7605372722c7150e4b1  3378  57
 scenes/Tests/Materials/ggx_roughness_sweep.RISEscene  c322bef6cae8a33d1f09d9182d5db4d3fb35f88adfbebfbde6998b44d21db703  3074  55

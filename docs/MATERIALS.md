@@ -130,7 +130,10 @@ layer-stacking primitive; PBR-style additive lobes (sheen + base)
 are expressed as their own dedicated materials (`sheen_material`).
 
 **But for a transparent film over an opaque substrate — water, oil,
-lacquer, clearcoat — reach for `coated_material` (§6.1) instead.**
+lacquer, clearcoat — reach for `coated_material` (§6.1) instead, and for
+cloth — a sheen lobe over a diffuse or microfacet weave — reach for
+`fabric_material` (§6.2). Both exist because the composite route does
+not merely approximate those cases, it evaluates the wrong BSDF.**
 
 ## 6.1 `coated_material` — a film with *coverage*, and a real layered BSDF
 
@@ -204,6 +207,139 @@ and reciprocity), `SPFPdfConsistencyTest` (the real mixture PDF),
 `CoatedMaterialChunkTest` (parser, allowlist, editor introspection),
 and [`scenes/Tests/Materials/coated_material.RISEscene`](../scenes/Tests/Materials/coated_material.RISEscene).
 
+## 6.2 `fabric_material` — sheen with its energy paid for, and a weave direction
+
+[`FabricMaterial`](../src/Library/Materials/FabricMaterial.h) +
+[`FabricBRDF`](../src/Library/Materials/FabricBRDF.h) +
+[`FabricSPF`](../src/Library/Materials/FabricSPF.h), with the preset
+table in [`FabricPresets.h`](../src/Library/Materials/FabricPresets.h)
+and the baked directional-albedo tables in
+[`SheenDirectionalAlbedo.h`](../src/Library/Materials/SheenDirectionalAlbedo.h).
+Full design: [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §9.
+
+**Why it exists rather than reusing `sheen_material` + `composite_material`.**
+That stack has two independent defects, and the second was *measured*
+rather than assumed:
+
+1. `composite_material` forwards ONE sub-material's BSDF, so NEE and
+   BDPT/VCM connections see a bare substrate — the same defect §6.1
+   opens with.
+2. **The substrate is never reached at all.** `SheenSPF` is
+   reflection-only (a cosine-hemisphere draw about the ray-facing
+   normal), so it never hands `CompositeSPF`'s random walk a downward
+   ray. `LayeredWhiteFurnaceTest`'s downward-ray probe measures **0 %**
+   downward emission at both θ = 0 and θ = 80, and config 6
+   (sheen-over-PBR) consequently reproduces config 2 (bare sheen) to MC
+   noise. It is the same structural defect config 7 documents for a GGX
+   top layer.
+
+And a third that neither route could fix: nothing anywhere subtracts
+the sheen's energy from the base, so a white sheen over a white diffuse
+returns more light than it receives at grazing.
+
+**The model.** A **Kulla-Conty multiple-bounce coupling** between the
+fuzz layer and the substrate:
+
+```
+f(l, v) = sheenColor · D_Charlie · V_Charlie / N(l, v)  +  f_base(l, v) · scale(l, v)
+
+N(l, v)     = max( 1, E(α, n·v), E(α, n·l) )                            m = max3(sheenColor)
+scale(l, v) = (1 − m·Ê(α, n·v)) · (1 − m·Ê(α, n·l)) / (1 − m·Ê̄(α))      Ê = min(E, 1)
+```
+
+`E` is RISE's own bake of the Charlie lobe's directional albedo, on a
+**grazing-warped** cos θ axis, and `Ê̄` the hemispherical mean of the
+clamped lobe (`tools/SheenDirectionalAlbedoGen.cpp` →
+`SheenDirectionalAlbedo_LUTData.cpp`), on the medulla table's
+re-derive-rather-than-vendor precedent.
+
+`N` is the energy bound: the Charlie fit exceeds 1 near grazing (E()
+reaches ~1.196 even above the roughness floor), so the sheen term is
+divided by a **symmetric** normaliser and the base scaled by the clamped
+`Ê`. Both are exactly 1 / exactly `E` outside that sliver, so nothing
+else moves. The table's cos θ axis is additionally **floored at its
+first node** (μ₁ = 1/961) with constant extrapolation below — without
+that, the first cell interpolates E up from zero across the lobe's peak
+and a white fabric returns ρ = 1.71.
+
+**Exactness class: energy-bounded, and nearly conserving.** Worst ρ
+measured over the whole reachable domain (α ∈ [0.04, 1], white
+Lambertian base, m = 1): **1.0064** for n·v ≥ 0.0349, **1.0167** between
+there and μ₁, **1.0067** below μ₁ — global max **1.0166**, nothing
+reaching 1.02. All three worst cases sit at **α ≈ 0.9**, not at the
+roughness floor: E at cos θ node 1 is concave in α, so the log-α chord
+in the last (widest) cell under-reads the true lobe by 0.0067. Closing
+it wants more table resolution, not an algebra change.
+
+**Why this form and not glTF's.** The design doc originally specified
+the glTF `KHR_materials_sheen` scaling with the two arms combined by a
+`min`. Implementation-time measurement rejected it, and the arithmetic
+is worth keeping because the trap recurs:
+
+- glTF's own form is the **single arm** `1 − m·E(α, n·v)`. It conserves
+  energy *exactly* over a white Lambertian base — `ρ = m·E(v) + (1 −
+  m·E(v)) = 1` — and is **not reciprocal**.
+- `min(1 − m·E(v), 1 − m·E(l))` restores reciprocity and destroys the
+  energy identity: near normal incidence `E(v) → 0` while the `min`
+  still picks `1 − m·E(l)` for every `l`, so the base loses `Ē`'s worth
+  of energy the sheen never returns. Measured at ρ = 0.863 at normal
+  incidence for α = 0.5, against a required 1.000.
+- The **product** form above is both. It is the closed form of the
+  adding-doubling inter-reflection series between a lossless fuzz layer
+  and the base — energy the fuzz intercepts on the way in is
+  re-scattered onto the substrate rather than deleted — and
+  `1/(1 − m·Ê̄)` is that series' sum. For a white Lambertian base at
+  **any** m and **any** α — wherever the normaliser `N` is 1, i.e.
+  n·v ≥ 0.03 — `ρ(v) = m·E(v) + (1 − m·E(v))·(1 − m·Ê̄)/(1 − m·Ê̄) = 1`
+  exactly.
+
+**Two consequences worth stating up front.** The denominator
+*brightens* the base away from grazing — its supremum is `1/(1 − m·Ê̄)`,
+measured 1.081 at α = 0.08 rising to 1.434 at α = 1 —
+because that is where the intercepted energy is re-emitted. It is
+exactly balanced by the darkening at grazing, which is what
+`LayeredWhiteFurnaceTest`'s Lambertian fabric rows landing on ρ = 1.000
+prove. And the sheen roughness is clamped to **[0.04, 1]**, tighter than
+`sheen_material`'s 1e-3. Its criterion is *"the smallest α with
+max over μ ≥ 0.03 of E(α, μ) ≤ 1"*; the generator prints the scan on
+every bake, and 0.04 clears it.
+
+**Weave direction is the substrate's job.** The sheen lobe is strictly
+isotropic (Charlie's `D` normaliser and its Λ visibility are both
+isotropic-only fits, and a 2-D `E(α, cosθ)` table cannot compensate a 4-D
+anisotropic albedo). `weave_rotation` instead rotates the tangent frame
+handed to the substrate, via the same `MicrofacetUtils::RotateTangent`
+helper GGX's own `tangent_rotation` uses — so the two simply add, and
+`ward_*` / `ashikminshirley_*` gain a rotation input they do not have on
+their own.
+
+**Presets.** `fabric cotton|linen|denim|wool|silk|satin|velvet|custom`
+seeds every slot the author did not write — RISE's first *multi-slot*
+preset. It cannot configure the substrate (the chunk holds a reference
+it can neither retype nor re-parameterise), so a preset bound over the
+wrong substrate class logs a **warning** and still builds; contrast
+`coated_material`, which *errors* on a substrate outside its allowlist.
+The allowlist itself is the same one: `lambertian_material`,
+`orennayar_material`, `ggx_material`, and `pbr_metallic_roughness_material`
+transitively.
+
+Guards: `LayeredWhiteFurnaceTest` configs 21–36 (energy: the Lambertian
+rows `kPosturePass` on the exact identity, the Oren-Nayar and GGX rows
+pinned to the exact directional albedo built from independently measured
+bare-substrate reference rows 19–20 and re-derived from the baked table
+rather than from the material's own helpers, plus a **grazing check** at
+θ ∈ {80, 85, 88, 89} — the band the angle columns cannot reach, and where
+a uniform cos θ axis once broke the identity by +1.05 absolute), `SPFBSDFConsistencyTest` (value↔Scatter pointwise, and
+reciprocity — which now also covers bare `sheen_material`, a
+pre-existing hole), `SPFPdfConsistencyTest` (the real mixture PDF, RGB
+and NM, with an explicit check that the configuration under test can
+*discriminate* a branch-local density), `FabricMaterialChunkTest`
+(parser, presets, allowlist, the `hemisphericalAlbedo` error
+measurement — decomposed into fabric's own uncorrelated-response
+residual and the substrate's pre-existing `hemisphericalAlbedo` debt —
+and spectral parity), and
+[`scenes/Tests/Materials/fabric_presets.RISEscene`](../scenes/Tests/Materials/fabric_presets.RISEscene).
+
 ## 7. Luminaires — materials that emit
 
 Luminaire materials add an `IEmitter` to the triad:
@@ -258,9 +394,14 @@ file for parameter-by-parameter behaviour.
   **restricted** substrate, with the film's *coverage* as a first-class
   spatially varying slot (§6.1). The wetness / clearcoat / varnish /
   oil-film material.
+- `fabric_material` — an **energy-compensated** Charlie sheen lobe over
+  a **restricted** substrate, with the weave direction delivered as a
+  rotation of the frame the *substrate* is evaluated in (§6.2). The
+  cloth material.
 - `composite_material` — top/bottom layered composition (§6).
-- `sheen_material` — Charlie-style sheen lobe (intended to layer over a
-  base via `composite_material`).
+- `sheen_material` — Charlie sheen lobe, **uncompensated and standalone**
+  (intended to layer over a base via `composite_material`, which does
+  not actually reach the base — see §6.2). Prefer `fabric_material`.
 - `schlick_material` — Schlick approximation as a standalone material.
 
 **Subsurface scattering:**

@@ -4043,6 +4043,7 @@ namespace RISE
 #include "Materials/PhongLuminaireMaterial.h"
 #include "Materials/PolishedMaterial.h"
 #include "Materials/CoatedMaterial.h"
+#include "Materials/FabricMaterial.h"
 #include "Materials/DielectricMaterial.h"
 #include "Materials/SubSurfaceScatteringMaterial.h"
 #include "Materials/RandomWalkSSSMaterial.h"
@@ -4154,6 +4155,37 @@ namespace RISE
 		(*ppi) = new CoatedMaterial( base, coat_weight, coat_ior, coat_roughness,
 		                             coat_thickness, coat_absorption, coat_tint );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "coated material" );
+		return true;
+	}
+
+	bool RISE_API_CreateFabricMaterial(
+								IMaterial** ppi,
+								const IMaterial& base,
+								const IPainter& sheen_color,
+								const IScalarPainter& sheen_roughness,
+								const IScalarPainter& weave_rotation
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// Substrate allowlist (docs/CLOTH_FABRIC_DESIGN.md 9.2).
+		// Enforced HERE as well as in Job::AddFabricMaterial so a caller
+		// that bypasses the scene language -- the glTF importer, the
+		// interactive editor, a test -- gets the same refusal instead of
+		// a quietly wrong render.
+		const char* why = 0;
+		if( !FabricMaterial::IsSupportedSubstrate( base, &why ) ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"RISE_API_CreateFabricMaterial: unsupported substrate -- %s.  "
+				"fabric_material accepts: %s",
+				why ? why : "unsupported", FabricMaterial::SubstrateAllowlistText() );
+			return false;
+		}
+
+		(*ppi) = new FabricMaterial( base, sheen_color, sheen_roughness, weave_rotation );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "fabric material" );
 		return true;
 	}
 
@@ -4751,7 +4783,9 @@ namespace RISE
 		return true;
 	}
 
-	//! Creates a Charlie / Neubelt sheen material
+	//! Creates a Charlie sheen material (Estevez & Kulla 2017 --
+	//! Lambda-polynomial visibility, NOT the Neubelt closed form; see
+	//! SheenBRDF.h)
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSheenMaterial(
 								IMaterial** ppi,

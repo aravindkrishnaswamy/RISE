@@ -203,6 +203,54 @@ This is the only listed gap that's a **correctness** issue, not a feature gap. I
 
 ---
 
+### 2.x `CookTorranceSPF` — `PdfNM` reports a DIFFERENT mixture from `ScatterNM` ✗ (OPEN, found 2026-09-03)
+
+**Not an integrator gap — a per-material RGB/NM parity defect**, filed here
+because this document is where spectral-vs-Pel divergences are tracked. Found
+while broadening `tests/SPFPdfConsistencyTest.cpp`'s spectral companion beyond
+the two `fabric_material` rows it originally covered; **pre-existing, not
+introduced by that change**.
+
+- **The divergence.** `CookTorranceSPF::ScatterNM` builds its 3-lobe selection
+  weights **per wavelength** —
+  `alpha = pMasking->GetValueAtNM(ri, nm)`,
+  `wd = GuardedGetColorNM(*pDiffuse, ri, nm)`,
+  `ws = GuardedGetColorNM(*pSpecular, ri, nm)` — while
+  `CookTorranceSPF::PdfNM` is a bare `return Pdf( ri, wo, ior_stack );`, and
+  `Pdf` rebuilds the same weights from the **RGB max3**
+  (`ColorMath::MaxValue( pDiffuse->GetColor(ri) )`, etc.), with
+  `wms = ws * (1 - LookupEss(cosWi, alpha))` inheriting both. So the density
+  stored on a spectral sample is a different mixture from the one `PdfNM`
+  reports for that same direction whenever a painter's spectral sample differs
+  from its RGB max3 — which, under the Jakob-Hanika uplift, it always does
+  slightly.
+- **Why it matters.** The Scatter↔Pdf agreement is what MIS and path guiding
+  consume. The RGB pipe satisfies it exactly; the spectral pipe does not.
+- **Measured** (660 nm, grey 0.5 diffuse / 0.3 specular, 50k samples):
+  `maxRelErr` **1.44e-4** at 30° and **1.55e-4** at 60°, on ~49.6k of 50k
+  samples. For scale, every *other* row in that sweep — Lambertian, Oren-Nayar,
+  GGX isotropic and anisotropic, SubSurfaceScattering, both `coated_material`
+  rows and both `fabric_material` rows — lands between **4e-16 and 1.6e-13**,
+  so Cook-Torrance is ~11 orders of magnitude out of family. This is a real
+  defect, not quadrature noise.
+- **Current disposition: bounded, not silenced.** The row stays in the sweep
+  with a row-specific `crossValTol = 1e-3` (~6× the measured worst) and its true
+  `maxRelErr` printed unconditionally, so it cannot grow unnoticed. Search
+  `tests/SPFPdfConsistencyTest.cpp` for *"CookTorrance: a REAL RGB/NM twin
+  divergence"*.
+- **Fix, when someone takes it.** Either give `PdfNM` a real body with
+  per-wavelength weights, or make `ScatterNM` use the achromatic RGB weights.
+  `fabric_material` chose the latter deliberately — see the note on
+  `FabricBRDF::ResolveFabric`'s declaration, which argues a wavelength-dependent
+  selection weight puts `Scatter`'s stored hero-wavelength pdf out of step with a
+  companion-wavelength `Pdf()` call — while `CoatedBRDF::ResolveCoat` reads its
+  scalars per-wavelength, so there is precedent both ways and the choice must be
+  stated. Then tighten that row back to `CROSS_VAL_TOL`. **Audit the siblings in
+  the same pass**: grep for `PdfNM` bodies that are a bare `return Pdf(...)` and
+  compare each against its own `ScatterNM`.
+
+---
+
 ## 3. Special section — VCM-spectral merging via `RISEPelToNMProxy`
 
 > **Status update (2026-09-02, Stage C slice 2 follow-up).** `RISEPelToNMProxy` **no

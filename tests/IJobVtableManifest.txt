@@ -342,3 +342,5 @@ virtual bool AddHairGeometryFromFile(const char*name,const HairFileGroomDescript
 virtual void EnumerateHairGuideNames(IEnumCallback<const char*>&cb)const=0;
 virtual bool AddCoatedMaterial(const char*name,const char*base,const char*coat_weight,const char*coat_ior,const char*coat_roughness,const char*coat_thickness,const char*coat_absorption,const char*coat_tint)=0;
 virtual int ApplyCstParamEdits(const char*entityName,const char*entityKind,const std::vector< std::pair< std::string,std::string > >&edits){ return 0;}
+virtual bool AddFabricMaterial(const char*name,const char*fabric,const char*base,const char*sheen_color,const char*sheen_roughness,const char*weave_rotation)=0;
+virtual bool AddPainterChannelScalarPainter(const char*name,const char*source,const char channel,const double scale,const double bias)=0;

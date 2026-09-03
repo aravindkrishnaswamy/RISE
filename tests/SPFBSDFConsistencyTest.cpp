@@ -67,6 +67,9 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/FabricMaterial.h"
+#include "../src/Library/Materials/SheenBRDF.h"
+#include "../src/Library/Materials/SheenSPF.h"
 #include "../src/Library/Materials/SubSurfaceScatteringSPF.h"
 #include "../src/Library/Materials/CompositeSPF.h"
 #include "../src/Library/Materials/PerfectReflectorSPF.h"
@@ -776,6 +779,51 @@ int main()
     ISPF*  coatedGgxSPF   = coatedGgxMat->GetSPF();
     IBSDF* coatedGgxBRDF  = coatedGgxMat->GetBSDF();
 
+    // fabric_material (docs/CLOTH_FABRIC_DESIGN.md Phase 1, 9.9 gate
+    // 5a).  Built through the MATERIAL for the same structural reason
+    // the coated triad is: FabricSPF is the importance sampler FOR a
+    // specific FabricBRDF and holds a reference to it, which is what
+    // makes `kray * pdf == value * cos` hold exactly (FabricSPF.h).
+    //
+    // Two substrates, chosen to make the RECIPROCITY sweep
+    // discriminating rather than decorative:
+    //   * over a LAMBERTIAN, where the sheen lobe, its symmetric
+    //     normaliser and the product scaling factor are the only
+    //     l/v-coupled terms, so any asymmetry in any of them is
+    //     unmasked;
+    //   * over an ANISOTROPIC GGX with a NON-ZERO weave_rotation, which
+    //     is the configuration where a frame handed to the substrate
+    //     inconsistently between the two directions of the swap would
+    //     show up -- and 9.5's whole mechanism is exactly such a frame
+    //     hand-off.
+    UniformScalarPainter* fabAlphaSc = new UniformScalarPainter( 0.3 );  fabAlphaSc->addref();
+    UniformScalarPainter* fabWeaveSc = new UniformScalarPainter( 0.7853981633974483 );  fabWeaveSc->addref();
+    UniformScalarPainter* fabZeroSc  = new UniformScalarPainter( 0.0 );  fabZeroSc->addref();
+
+    GGXMaterial* fabBaseAnisoMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalar, *extinctionSc, eFresnelSchlickF0 );
+    fabBaseAnisoMat->addref();
+
+    FabricMaterial* fabricLambMat = new FabricMaterial(
+        *coatBaseLambMat, *one, *fabAlphaSc, *fabZeroSc );
+    fabricLambMat->addref();
+    FabricMaterial* fabricAnisoMat = new FabricMaterial(
+        *fabBaseAnisoMat, *gray, *fabAlphaSc, *fabWeaveSc );
+    fabricAnisoMat->addref();
+
+    ISPF*  fabricLambSPF   = fabricLambMat->GetSPF();
+    IBSDF* fabricLambBRDF  = fabricLambMat->GetBSDF();
+    ISPF*  fabricAnisoSPF  = fabricAnisoMat->GetSPF();
+    IBSDF* fabricAnisoBRDF = fabricAnisoMat->GetBSDF();
+
+    // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
+    // this is a PRE-EXISTING HOLE this phase closes as a matter of
+    // course: SheenBRDF has never been in the reciprocity sweep, even
+    // though it is the lobe fabric_material is built on, so a
+    // non-reciprocity there would have surfaced first as a fabric
+    // failure with no way to tell which layer owned it.
+    SheenBRDF* bareSheenBRDF = new SheenBRDF( *one, *fabAlphaSc );  bareSheenBRDF->addref();
+
     std::cout << " done." << std::endl;
 
     // Delta SPFs
@@ -914,6 +962,22 @@ int main()
         //--------------------------------------------------------------
         { "Coated_Lambertian",                 coatedLambSPF,   coatedLambBRDF,     true,  FURNACE_TOL },
         { "Coated_GGX",                        coatedGgxSPF,    coatedGgxBRDF,      true,  FURNACE_TOL },
+
+        //--------------------------------------------------------------
+        // fabric_material -- docs/CLOTH_FABRIC_DESIGN.md Phase 1.
+        //
+        // singleLobe = TRUE for both, for the same reason as the coated
+        // rows and with the same force: FabricSPF emits one ray per
+        // Scatter carrying kray = value * cos / mixturePdf, so
+        // kray * pdf == value * cos identically for every sample
+        // REGARDLESS OF WHICH BRANCH DREW IT.  Part D therefore checks
+        // 9.2's sample-then-reprice recipe POINTWISE.  This is the check
+        // that fails if `Scatter` ever reports a branch-local density
+        // instead of the full mixture -- the one mistake the delta-lobe
+        // convention would invite.
+        //--------------------------------------------------------------
+        { "Fabric_Lambertian",                 fabricLambSPF,   fabricLambBRDF,     true,  FURNACE_TOL },
+        { "Fabric_GGXaniso_weave45",           fabricAnisoSPF,  fabricAnisoBRDF,    true,  FURNACE_TOL },
     };
     const int numPaired = sizeof(pairedMaterials) / sizeof(pairedMaterials[0]);
 
@@ -954,6 +1018,8 @@ int main()
         { "Composite",                         compositeSPF,    false },
         { "Coated_Lambertian",                 coatedLambSPF,   false },
         { "Coated_GGX",                        coatedGgxSPF,    false },
+        { "Fabric_Lambertian",                 fabricLambSPF,   false },
+        { "Fabric_GGXaniso_weave45",           fabricAnisoSPF,  false },
         { "PerfectReflector",                  perfReflSPF,     true  },
         { "PerfectRefractor",                  perfRefrSPF,     true  },
         { "Dielectric",                        dielectricSPF,   true  },
@@ -1143,6 +1209,18 @@ int main()
         { "Coated_Lambertian",                 coatedLambBRDF },
         { "Coated_GGX",                        coatedGgxBRDF  },
         { "Coated_GGX_tinted_absorbing_c0.5",  coatedFullMat->GetBSDF() },
+        // 9.9 gate 5(a).  `Sheen (Charlie)` is the pre-existing hole:
+        // the lobe has been shipping since 2026-04 and has never been in
+        // this sweep.  The two fabric rows are the layered form -- 9.2's
+        // scaling factor is a PRODUCT of two arms that exchange under an
+        // l/v swap, divided by a direction-independent denominator, and
+        // the sheen lobe's normaliser is a MAX of the same two arms, so
+        // both are symmetric BY CONSTRUCTION.  "By construction" is
+        // exactly the claim coated_material's first cut also made before
+        // it was measured at ~28 % asymmetry at grazing.
+        { "Sheen (Charlie, pre-existing hole)", bareSheenBRDF   },
+        { "Fabric_Lambertian",                  fabricLambBRDF  },
+        { "Fabric_GGXaniso_weave45",            fabricAnisoBRDF },
     };
 
     for( const ReciprocityEntry& e : reciprocityMaterials )
@@ -1190,6 +1268,16 @@ int main()
                   << "  maxErr=" << std::setprecision(2) << pr.maxRelError * 100 << "%"
                   << std::endl;
     }
+
+    // Fabric triad: same ownership discipline as the coated one below --
+    // the MATERIAL owns the BRDF/SPF the tables above borrowed.
+    safe_release( bareSheenBRDF );
+    safe_release( fabricAnisoMat );
+    safe_release( fabricLambMat );
+    safe_release( fabBaseAnisoMat );
+    safe_release( fabZeroSc );
+    safe_release( fabWeaveSc );
+    safe_release( fabAlphaSc );
 
     // Coated triad: release the materials (which own the BRDF/SPF the
     // tables above borrowed) before their substrates and painters.

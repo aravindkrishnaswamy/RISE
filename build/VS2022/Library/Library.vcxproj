@@ -221,6 +221,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\BurleyNormalizedDiffusionProfile.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CoatedBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricBRDF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeEmitter.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\CookTorranceBRDF.cpp" />
@@ -235,6 +237,8 @@
     <ClCompile Include="..\..\..\src\Library\Materials\HairMedullaProfile_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenBRDF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo_LUTData.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\GenericHumanTissueSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.cpp" />
     <ClCompile Include="..\..\..\src\Library\Materials\HeterogeneousMedium.cpp" />
@@ -739,6 +743,10 @@
     <ClInclude Include="..\..\..\src\Library\Materials\CoatedLayer.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CoatedMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CoatedSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricBRDF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricMaterial.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricPresets.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\CookTorranceBRDF.h" />
@@ -1123,6 +1131,7 @@
     <ClInclude Include="..\..\..\src\Library\Materials\SheenBRDF.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenMaterial.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h" />
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HeterogeneousMedium.h" />
     <ClInclude Include="..\..\..\src\Library\Materials\HomogeneousMedium.h" />

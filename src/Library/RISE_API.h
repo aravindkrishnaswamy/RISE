@@ -778,6 +778,38 @@ namespace RISE
 								const IPainter& coat_tint				///< [in] Coat transmission colour for one normal-incidence traversal
 								);
 
+	//! Creates a Fabric material -- an energy-compensated Charlie sheen
+	//! lobe over a RESTRICTED substrate, with the weave direction
+	//! delivered as a rotation of the frame the SUBSTRATE is evaluated
+	//! in.  docs/CLOTH_FABRIC_DESIGN.md Phase 1 (9.2-9.6).
+	//!
+	//! `sheen_color` is genuinely a colour (the dye / fuzz tint) and
+	//! rides `IPainter`; `sheen_roughness` and `weave_rotation` are
+	//! physical scalars and ride `IScalarPainter` (no JH spectral
+	//! uplift).  See docs/ISCALARPAINTER_REFACTOR.md.
+	//!
+	//! `base` MUST be one of `lambertian_material`, `orennayar_material`,
+	//! `ggx_material` or `pbr_metallic_roughness_material` (which
+	//! resolves to a `ggx_material` at scene-build time and is therefore
+	//! admitted transitively), and must not emit.  Anything else is
+	//! REFUSED here (returns FALSE, `*ppi` left untouched) with a logged
+	//! message naming the allowlist, rather than rendering something
+	//! quietly wrong -- the layered model needs the substrate's
+	//! hemispherical albedo, which an arbitrary material cannot supply.
+	//!
+	//! NOTE the deliberate asymmetry with the SCENE-LANGUAGE path: the
+	//! preset-vs-substrate MISMATCH warning (9.3) lives in
+	//! `Job::AddFabricMaterial`, not here, because a preset is a
+	//! scene-language affordance and this factory takes no preset.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateFabricMaterial(
+								IMaterial** ppi,						///< [out] Pointer to recieve the material
+								const IMaterial& base,					///< [in] Substrate material (allowlisted -- see above)
+								const IPainter& sheen_color,			///< [in] Sheen / dye tint (colour painter)
+								const IScalarPainter& sheen_roughness,	///< [in] Charlie alpha, clamped to [0.04, 1]
+								const IScalarPainter& weave_rotation	///< [in] Weave angle in RADIANS, applied to the SUBSTRATE's frame
+								);
+
 	//! Creates a Dielectric material.  Scalar params (tau, IOR, scattering)
 	//! are physical scalars carried by `IScalarPainter` — see
 	//! docs/ISCALARPAINTER_REFACTOR.md.
@@ -1122,7 +1154,9 @@ namespace RISE
 								const IPainter* anisotropy_rotation = nullptr	///< [in] Landing 8 / KHR_materials_anisotropy.  NULL = no rotation.
 								);
 
-	//! Creates a Charlie / Neubelt sheen material for fabric / cloth.
+	//! Creates a Charlie sheen material for fabric / cloth (Estevez &
+	//! Kulla 2017 -- Lambda-polynomial visibility, NOT the Neubelt closed
+	//! form, which was replaced in 2026-05; see SheenBRDF.h).
 	//! Designed as the top layer in a CompositeMaterial(top=sheen,
 	//! bottom=baseGGX) pairing for glTF KHR_materials_sheen assets.
 	/// \return TRUE if successful, FALSE otherwise

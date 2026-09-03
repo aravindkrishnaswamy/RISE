@@ -1199,6 +1199,25 @@ namespace RISE
 									const char* coat_tint			///< [in] Coat transmission colour (colour painter)
 									);
 
+		bool AddFabricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* fabric,				///< [in] Preset name (see FabricPresets.h)
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* sheen_color,		///< [in] Sheen / dye tint (colour painter; empty or `none` = preset colour, else white)
+									const char* sheen_roughness,	///< [in] Charlie alpha (physical scalar)
+									const char* weave_rotation		///< [in] Weave angle in radians (physical scalar)
+									);
+
+		//! Adds a channel-extraction SCALAR painter.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddPainterChannelScalarPainter(
+									const char* name,				///< [in] Name of the scalar painter
+									const char* source,				///< [in] Source colour painter (already registered)
+									const char  channel,			///< [in] 0=R, 1=G, 2=B, 3=A
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
+									);
+
 		//! Creates a Dielectric material
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddDielectricMaterial(

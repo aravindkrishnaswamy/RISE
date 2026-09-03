@@ -711,6 +711,12 @@
     <ClCompile Include="..\..\..\src\Library\Materials\CoatedSPF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricBRDF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\FabricSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\CompositeSPF.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
@@ -805,6 +811,12 @@
       <Filter>Materials</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Materials\SheenSPF.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.cpp">
+      <Filter>Materials</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo_LUTData.cpp">
       <Filter>Materials</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Scene.cpp">
@@ -1998,6 +2010,18 @@
     <ClInclude Include="..\..\..\src\Library\Materials\CoatedSPF.h">
       <Filter>Materials</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricBRDF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricMaterial.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricPresets.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\FabricSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\CompositeSPF.h">
       <Filter>Materials</Filter>
     </ClInclude>
@@ -3003,6 +3027,9 @@
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\SheenSPF.h">
+      <Filter>Materials</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Materials\SheenDirectionalAlbedo.h">
       <Filter>Materials</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Materials\HenyeyGreensteinPhaseFunction.h">

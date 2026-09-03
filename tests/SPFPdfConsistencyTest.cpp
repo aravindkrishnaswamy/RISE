@@ -65,6 +65,7 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
+#include "../src/Library/Materials/FabricMaterial.h"
 
 #include "TestStubObject.h"
 
@@ -452,6 +453,166 @@ static TestResult TestSPF(
 }
 
 // ============================================================
+//  Spectral (NM) companion -- docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 6
+//  asks for the pdf consistency check "RGB and NM", and the harness
+//  above is RGB-only: TestSPF drives `Scatter` / `Pdf` and there is no
+//  ScatterNM / PdfNM anywhere in it.
+//
+//  That is a real hole rather than a stylistic one.  The RGB and NM
+//  paths are TWINS, and docs/skills/audit-by-bug-pattern.md's whole
+//  subject is that RISE twins drift: an NM path that reported a
+//  branch-local density while the RGB path reported the mixture would
+//  sail through every check above.  So this runs the two sub-tests that
+//  transfer -- Part 1's exact cross-validation and Part 2's
+//  hemispherical integral -- against `ScatterNM` / `PdfNM` at a hero
+//  wavelength.
+//
+//  (Part 3's chi-squared is deliberately not repeated: it is a
+//  statement about the SAMPLER's angular frequencies, and ScatterImpl
+//  draws its direction from the same code and the same sampler in both
+//  regimes -- only the throughput and the density evaluation differ,
+//  which is what Parts 1 and 2 measure.)
+// ============================================================
+
+struct NMResult {
+    std::string name;
+    int    crossValFailures;
+    double maxCrossValError;
+    double pdfIntegral;
+    bool   passed;
+};
+
+static NMResult TestSPFNM(
+    const std::string& name,
+    ISPF& spf,
+    double incomingTheta,
+    double nm,
+    double integralTol,
+    //! Per-entry cross-validation tolerance.  CROSS_VAL_TOL (1e-6) for
+    //! every SPF that satisfies the contract; relaxed ONLY where a
+    //! DOCUMENTED pre-existing defect is being bounded rather than
+    //! asserted away.  See the `nmEntries` table.
+    double crossValTol
+    )
+{
+    NMResult result;
+    result.name = name;
+    result.crossValFailures = 0;
+    result.maxCrossValError = 0;
+
+    RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
+    RandomNumberGenerator rng;
+    Implementation::IndependentSampler sampler( rng );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    // Part 1 (NM): the pdf stored on the sampled ray must equal an
+    // independent PdfNM() call for that same direction.
+    for( int i = 0; i < NUM_CROSS_VALIDATE; i++ )
+    {
+        ScatteredRayContainer scattered;
+        spf.ScatterNM( ri, sampler, nm, scattered, iorStack );
+        if( scattered.Count() == 0 ) continue;
+
+        const ScatteredRay& sel = scattered[0];
+        if( sel.isDelta ) continue;
+        if( sel.pdf <= 0 ) continue;
+
+        const Vector3 wo = Vector3Ops::Normalize( sel.ray.Dir() );
+        const Scalar pdfEval = spf.PdfNM( ri, wo, nm, iorStack );
+
+        const double err   = fabs( sel.pdf - pdfEval );
+        const double denom = r_max( fabs( sel.pdf ), fabs( pdfEval ) );
+        const double relErr = ( denom > 1e-10 ) ? err / denom : err;
+
+        if( relErr > crossValTol ) {
+            result.crossValFailures++;
+        }
+        // Track the worst error regardless of the tolerance, so a
+        // relaxed row still REPORTS its true magnitude and a regression
+        // in it is visible in the output even before it trips the bound.
+        if( relErr > result.maxCrossValError ) result.maxCrossValError = relErr;
+    }
+
+    // Part 2 (NM): PdfNM must integrate to 1 over the hemisphere.
+    const int INTEGRAL_THETA = 100;
+    const int INTEGRAL_PHI   = 200;
+    double pdfIntegral = 0.0;
+    for( int t = 0; t < INTEGRAL_THETA; t++ )
+    {
+        const double theta = ( t + 0.5 ) * PI_OV_TWO / INTEGRAL_THETA;
+        const double sinT = sin( theta ), cosT = cos( theta );
+        const double dTheta = PI_OV_TWO / INTEGRAL_THETA;
+        for( int p = 0; p < INTEGRAL_PHI; p++ )
+        {
+            const double phi = ( p + 0.5 ) * TWO_PI / INTEGRAL_PHI;
+            const double dPhi = TWO_PI / INTEGRAL_PHI;
+            Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+            wo = Vector3Ops::Normalize( wo );
+            pdfIntegral += spf.PdfNM( ri, wo, nm, iorStack ) * sinT * dTheta * dPhi;
+        }
+    }
+    result.pdfIntegral = pdfIntegral;
+
+    result.passed = ( result.crossValFailures == 0 )
+                 && ( fabs( pdfIntegral - 1.0 ) <= integralTol );
+    return result;
+}
+
+//! Does a given `wo` actually DISCRIMINATE a branch-local density from
+//! the full mixture?  9.9 gate 6 is explicit that "a sheen-only
+//! direction would not discriminate", and the same caveat -- which the
+//! doc does not state -- applies from the other side:
+//!
+//!   THE SHEEN LOBE IS A COSINE HEMISPHERE, AND SO IS EVERY DIFFUSE
+//!   SUBSTRATE'S SAMPLER.  For a LAMBERTIAN (or Oren-Nayar) base both
+//!   mixture components have density cos(wo)/pi, so
+//!   `w*q_sheen + (1-w)*q_base == q_sheen == q_base` IDENTICALLY, and a
+//!   `Scatter` that wrongly reported its branch's own density would be
+//!   accidentally right.  Those rows are still worth running -- they are
+//!   the only fabric rows whose chi-squared histogram can resolve, and
+//!   they exercise the integral and the repricing arithmetic -- but they
+//!   CANNOT catch the branch-local mistake gate 6 exists for.
+//!
+//!   A substrate whose sampler is NOT cosine is required for that, which
+//!   is why the GGX row carries the gate.
+//!
+//! Returns the three densities so the caller can print them, and says
+//! whether this configuration discriminates.  Asserting the premise
+//! rather than assuming it is the point: without it, a future change
+//! that made every fabric row non-discriminating would leave the gate
+//! green and testing nothing.
+struct LobeDiscrimination {
+    double qMix;
+    double qBase;
+    double qSheen;
+    bool   baseReaches;
+    bool   discriminates;
+};
+
+static LobeDiscrimination MeasureLobeDiscrimination(
+    ISPF& fabricSPF,
+    ISPF& baseSPF,
+    double incomingTheta,
+    const Vector3& wo )
+{
+    RayIntersectionGeometric ri = MakeIntersection( incomingTheta );
+    IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+    LobeDiscrimination d;
+    d.qMix  = fabricSPF.Pdf( ri, wo, iorStack );
+    d.qBase = baseSPF.Pdf( ri, wo, iorStack );
+    // The fabric's sheen branch is a cosine hemisphere about the
+    // ray-facing normal, so its density is exactly cos(wo)/pi.
+    d.qSheen = r_max( Scalar(0), Vector3Ops::Dot( wo, ri.onb.w() ) ) * INV_PI;
+    d.baseReaches = ( d.qBase > 0 );
+    // Discriminating iff the two components genuinely differ, so that
+    // reporting either one alone would disagree with the mixture.
+    d.discriminates = d.baseReaches
+                   && ( fabs( d.qBase - d.qSheen ) > 1e-6 * r_max( d.qBase, d.qSheen ) );
+    return d;
+}
+
+// ============================================================
 //  Main
 // ============================================================
 
@@ -568,6 +729,44 @@ int main()
 
     ISPF* coatedLamb = coatedLambMat->GetSPF();
     ISPF* coatedGgx  = coatedGgxMat->GetSPF();
+
+    // fabric_material (docs/CLOTH_FABRIC_DESIGN.md Phase 1, 9.9 gate 6).
+    //
+    // THIS IS THE GATE THAT PROVES 9.2'S SAMPLE-THEN-REPRICE RECIPE WAS
+    // ACTUALLY IMPLEMENTED.  Part 1 (cross-validation) fails precisely
+    // when `Scatter` reports a BRANCH-LOCAL density instead of the full
+    // mixture -- the one mistake the delta-lobe `kray / selectProb`
+    // convention would invite, and one that would be invisible to every
+    // other check in the suite.  Part 2 (the hemispherical integral of
+    // Pdf) is what would fail if the mixture weights did not sum to 1,
+    // and Part 3's chi-squared would independently reject a sampler
+    // whose actual frequencies disagreed with the reported density.
+    //
+    // Two substrates, so a direction is reachable from BOTH lobes in
+    // both cases (9.9 gate 6: "a sheen-only direction would not
+    // discriminate").  The Lambertian base has full-hemisphere support
+    // by definition; the ANISOTROPIC GGX with a non-zero
+    // weave_rotation additionally exercises 9.5's frame hand-off -- a
+    // Scatter that sampled in the rotated frame while Pdf evaluated in
+    // the unrotated one would show up here as a cross-validation
+    // failure, which is exactly what that gate is for.
+    UniformScalarPainter* fabAlphaSc = new UniformScalarPainter( 0.3 );  fabAlphaSc->addref();
+    UniformScalarPainter* fabZeroSc  = new UniformScalarPainter( 0.0 );  fabZeroSc->addref();
+    UniformScalarPainter* fabWeaveSc = new UniformScalarPainter( 0.7853981633974483 );  fabWeaveSc->addref();
+
+    GGXMaterial* fabBaseAnisoMat = new GGXMaterial(
+        *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalarTop, *extinctionSc, eFresnelSchlickF0 );
+    fabBaseAnisoMat->addref();
+
+    FabricMaterial* fabricLambMat = new FabricMaterial(
+        *coatBaseLambMat, *coatTintOne, *fabAlphaSc, *fabZeroSc );
+    fabricLambMat->addref();
+    FabricMaterial* fabricAnisoMat = new FabricMaterial(
+        *fabBaseAnisoMat, *gray, *fabAlphaSc, *fabWeaveSc );
+    fabricAnisoMat->addref();
+
+    ISPF* fabricLamb  = fabricLambMat->GetSPF();
+    ISPF* fabricAniso = fabricAnisoMat->GetSPF();
 
     //------------------------------------------------------------------
     // Per-material test configuration
@@ -780,6 +979,25 @@ int main()
         //--------------------------------------------------------------
         { "Coated_Lambertian",                 coatedLamb,  true,  true,  false, false, INTEGRAL_TOL },
         { "Coated_GGX",                        coatedGgx,   true,  true,  false, true,  INTEGRAL_TOL },
+
+        //--------------------------------------------------------------
+        // fabric_material.  singleLobe / exactSelectedPdf both TRUE, and
+        // NOTHING is skipped for the Lambertian row: FabricSPF emits one
+        // ray carrying the FULL mixture density, so cross-validation,
+        // the integral and the chi-squared histogram all apply at full
+        // strength.  That is the whole content of gate 6.
+        //
+        // The anisotropic-GGX row skips CHI2 ONLY, for the same reason
+        // Coated_GGX does: the histogram's 20 x 40 angular bins cannot
+        // resolve a narrow anisotropic specular lobe (alphay = 0.3 vs
+        // alphax = 0.2 through a 45 deg weave rotation) at
+        // NUM_SAMPLES, so the test would reject on binning resolution
+        // rather than on a density mismatch.  Cross-validation -- the
+        // sub-test that actually catches a branch-local pdf -- stays ON
+        // for both rows, and it is exact (CROSS_VAL_TOL = 1e-6).
+        //--------------------------------------------------------------
+        { "Fabric_Lambertian",                 fabricLamb,  true,  true,  false, false, INTEGRAL_TOL },
+        { "Fabric_GGXaniso_weave45",           fabricAniso, true,  true,  false, true,  INTEGRAL_TOL },
     };
 
     double incomingAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
@@ -860,6 +1078,152 @@ int main()
         std::cout << std::endl;
     }
 
+    // ---- gate 6's NM half ----
+    std::cout << "--- Spectral (NM) companion (9.9 gate 6; fabric + every "
+                 "exact-selected-pdf SPF) ---" << std::endl;
+    {
+        // Premise check first: at a mid-hemisphere direction reachable
+        // from both lobes, at least one fabric configuration must
+        // genuinely DISCRIMINATE a branch-local density from the
+        // mixture, or the cross-validations below prove nothing.
+        const Vector3 midWo = Vector3Ops::Normalize( Vector3( 0.35, 0.25, 0.90 ) );
+        const LobeDiscrimination dLamb = MeasureLobeDiscrimination(
+            *fabricLamb, *coatBaseLambMat->GetSPF(), 30.0 * DEG_TO_RAD, midWo );
+        const LobeDiscrimination dAniso = MeasureLobeDiscrimination(
+            *fabricAniso, *fabBaseAnisoMat->GetSPF(), 30.0 * DEG_TO_RAD, midWo );
+
+        std::cout << "  mid-hemisphere lobe densities at wo=(0.35,0.25,0.90):" << std::endl;
+        std::cout << "    Fabric_Lambertian        qMix=" << dLamb.qMix
+                  << "  qBase=" << dLamb.qBase << "  qSheen=" << dLamb.qSheen
+                  << "  -> " << ( dLamb.discriminates ? "DISCRIMINATES"
+                                                      : "coincident lobes (control only)" )
+                  << std::endl;
+        std::cout << "    Fabric_GGXaniso_weave45  qMix=" << dAniso.qMix
+                  << "  qBase=" << dAniso.qBase << "  qSheen=" << dAniso.qSheen
+                  << "  -> " << ( dAniso.discriminates ? "DISCRIMINATES"
+                                                       : "coincident lobes (control only)" )
+                  << std::endl;
+
+        // Both must at least be REACHED by the substrate (a sheen-only
+        // direction tests nothing at all), and the GGX row must
+        // discriminate -- it is the row that carries the gate.
+        if( !dLamb.baseReaches || !dAniso.baseReaches ) {
+            std::cout << "  FAIL: the mid-hemisphere direction is not reachable from the "
+                         "substrate lobe -- gate 6 would be testing the sheen lobe alone"
+                      << std::endl;
+            numFailed++;
+        }
+        if( !dAniso.discriminates ) {
+            std::cout << "  FAIL: no fabric configuration discriminates a branch-local "
+                         "density from the mixture -- gate 6 proves nothing as configured"
+                      << std::endl;
+            numFailed++;
+        }
+
+        // EVERY SPF that carries an EXACT selected pdf on the RGB pipe,
+        // not just the two fabric rows.
+        //
+        // The NM companion was fabric-only when it was added, which
+        // satisfied gate 6's literal text but left the harness a
+        // fabric-specific bolt-on rather than a general capability (M3
+        // review, 2026-09-02).  The RGB/NM twins drift across this whole
+        // directory, so the rows below are the ones whose RGB
+        // cross-validation is already exact -- i.e. the ones for which
+        // "does ScatterNM's stored pdf equal PdfNM?" is a meaningful
+        // question with a known-good answer on the sibling pipe.
+        //
+        // The `skipCrossVal` multi-lobe rows are deliberately NOT here:
+        // their RGB cross-validation is skipped for a documented
+        // model limitation (the selection weights do not match the
+        // reported mixture), so an NM failure there would be that same
+        // pre-existing limitation, not a twin-drift finding.
+        // `crossValTol` is CROSS_VAL_TOL (1e-6) everywhere except the one
+        // row with a MEASURED, PRE-EXISTING defect -- see CookTorrance
+        // below.  The relaxed row is deliberately kept IN the sweep and
+        // BOUNDED rather than skipped: skipping would let the defect
+        // grow silently, which is the failure mode this whole broadening
+        // exists to prevent.
+        struct NMEntry { const char* name; ISPF* spf; double crossValTol; };
+        const NMEntry nmEntries[] = {
+            { "Lambertian",              lambertian,   CROSS_VAL_TOL },
+            { "OrenNayar",               orenNayar,    CROSS_VAL_TOL },
+
+            //----------------------------------------------------------
+            // CookTorrance: a REAL RGB/NM twin divergence, found by this
+            // broadening on 2026-09-03 and NOT introduced by it.
+            //
+            // `CookTorranceSPF::ScatterNM` builds its 3-lobe mixture
+            // weights PER-WAVELENGTH --
+            //     wd    = GuardedGetColorNM( *pDiffuse,  ri, nm )
+            //     ws    = GuardedGetColorNM( *pSpecular, ri, nm )
+            //     alpha = pMasking->GetValueAtNM( ri, nm )
+            // (CookTorranceSPF.cpp, ScatterNM's head) -- while
+            // `CookTorranceSPF::PdfNM` simply FORWARDS TO `Pdf`, which
+            // builds the same weights from the RGB max3:
+            //     wd = MaxValue( pDiffuse->GetColor(ri) ), etc.
+            // So the density stored on a spectral sample is a DIFFERENT
+            // mixture from the one PdfNM reports for that same direction
+            // whenever a painter's spectral sample differs from its RGB
+            // max3 -- which, under the Jakob-Hanika uplift, it always
+            // does by a little.
+            //
+            // MEASURED here: maxRelErr 1.44e-4 at 30 deg and 1.55e-4 at
+            // 60 deg, on ~49.6k of 50k samples.  The RGB pipe passes
+            // exactly (0 failures), which is precisely why nothing
+            // caught this before: the twins are only compared now.
+            //
+            // NOT FIXED HERE -- it is CookTorrance's defect, in a
+            // material this slice does not touch, and the fix (make
+            // PdfNM's weights match ScatterNM's, or make ScatterNM read
+            // the RGB weights) is a behaviour change to a shipped
+            // material that needs its own measurement.  Bounded at 1e-3,
+            // ~6x the measured worst, so a regression still fails.
+            //
+            // Note this is exactly the hazard `fabric_material` was
+            // designed against: FabricBRDF::ResolveFabric reads alpha, m
+            // and weaveAngle achromatically in BOTH regimes precisely so
+            // Scatter's stored hero pdf cannot drift from a
+            // companion-wavelength Pdf() call.  See its declaration.
+            //----------------------------------------------------------
+            { "CookTorrance",            cookTorrance, 1e-3 },
+
+            { "GGX_Isotropic",           ggxIso,       CROSS_VAL_TOL },
+            { "GGX_Anisotropic",         ggxAniso,     CROSS_VAL_TOL },
+            { "SubSurfaceScattering",    sss,          CROSS_VAL_TOL },
+            { "Coated_Lambertian",       coatedLamb,   CROSS_VAL_TOL },
+            { "Coated_GGX",              coatedGgx,    CROSS_VAL_TOL },
+            { "Fabric_Lambertian",       fabricLamb,   CROSS_VAL_TOL },
+            { "Fabric_GGXaniso_weave45", fabricAniso,  CROSS_VAL_TOL },
+        };
+        const double nmAngles[] = { 30.0 * DEG_TO_RAD, 60.0 * DEG_TO_RAD };
+        const char*  nmAngleNames[] = { "30deg", "60deg" };
+
+        for( const NMEntry& e : nmEntries )
+        {
+            for( int a = 0; a < 2; ++a )
+            {
+                // 660 nm: the wavelength where the Jakob-Hanika white
+                // corner was historically worst, so an NM path that
+                // diverged from RGB through the tint would diverge here
+                // first (docs/SPECTRAL_ILLUMINANT_CONVENTION.md).
+                NMResult r = TestSPFNM( std::string( e.name ) + " @ " + nmAngleNames[a],
+                                        *e.spf, nmAngles[a], 660.0, INTEGRAL_TOL,
+                                        e.crossValTol );
+                std::cout << "  " << ( r.passed ? "PASS" : "FAIL" ) << "  " << r.name
+                          << "  crossValFailures=" << r.crossValFailures
+                          << "  maxRelErr=" << r.maxCrossValError
+                          << "  pdfIntegral=" << r.pdfIntegral;
+                if( e.crossValTol != CROSS_VAL_TOL ) {
+                    std::cout << "   [cross-val bounded at " << e.crossValTol
+                              << " -- documented pre-existing RGB/NM gap, see source]";
+                }
+                std::cout << std::endl;
+                if( !r.passed ) numFailed++;
+            }
+        }
+    }
+    std::cout << std::endl;
+
     // Summary
     std::cout << "===== Summary =====" << std::endl;
     const int numSPFs = (int)(sizeof(spfs)/sizeof(spfs[0]));
@@ -889,6 +1253,12 @@ int main()
     // release them before their substrates and painters.  (This file
     // does not otherwise release its fixtures -- one-shot process --
     // but the coated chain has a real ownership graph worth exercising.)
+    safe_release( fabricAnisoMat );
+    safe_release( fabricLambMat );
+    safe_release( fabBaseAnisoMat );
+    safe_release( fabWeaveSc );
+    safe_release( fabZeroSc );
+    safe_release( fabAlphaSc );
     safe_release( coatedGgxMat );
     safe_release( coatedLambMat );
     safe_release( coatBaseGgxMat );

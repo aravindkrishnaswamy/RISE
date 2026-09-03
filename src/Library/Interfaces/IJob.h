@@ -1104,7 +1104,9 @@ namespace RISE
 			const char* anisotropy_rotation = "0.0"						///< [in] Landing 8 / KHR_materials_anisotropy: scalar painter or scalar string with the tangent-frame rotation in RADIANS.  Default 0 = aligned with the geometry's TANGENT attribute (or the dpdu fallback).  NOTE: Phase 1 implementation reads but does not yet APPLY the rotation — it requires a tangent-frame rotation layer that's pending.  Anisotropy_factor is fully wired; the rotation is a no-op for now.  Document for forward compatibility.
 			) = 0;
 
-		//! Adds a Charlie / Neubelt sheen material for fabric / cloth.
+		//! Adds a Charlie sheen material for fabric / cloth (Estevez &
+		//! Kulla 2017 -- Lambda-polynomial visibility, NOT the Neubelt
+		//! closed form; see SheenBRDF.h).
 		//! Designed to compose as the top layer in a CompositeMaterial
 		//! pairing for glTF KHR_materials_sheen, but usable standalone
 		//! for hand-authored fabric scenes.
@@ -4325,6 +4327,74 @@ namespace RISE
 		//! NB: appended at the IJob tail per the append-only ABI convention.
 		virtual int ApplyCstParamEdits( const char* entityName, const char* entityKind,
 		                                const std::vector< std::pair< std::string, std::string > >& edits ) { return 0; }
+
+		//! Adds a Fabric material -- an energy-compensated Charlie sheen
+		//! lobe over a RESTRICTED substrate, with the weave direction
+		//! delivered as a rotation of the frame the SUBSTRATE is
+		//! evaluated in (docs/CLOTH_FABRIC_DESIGN.md Phase 1).
+		//!
+		//! `base` names an already-registered material and must be one
+		//! of lambertian / orennayar / ggx / pbr_metallic_roughness and
+		//! must not emit; anything else is REFUSED here with a
+		//! diagnostic naming the allowlist, because the layered model
+		//! needs the substrate's hemispherical albedo.
+		//!
+		//! `fabric` is the PRESET NAME (FabricPresets.h).  It reaches
+		//! this method rather than being fully consumed in the parser
+		//! for two reasons the parser contract forces:
+		//!   1. The preset's SHEEN COLOUR is an RGB triple, not a
+		//!      painter name, so only this layer -- which can synthesise
+		//!      an owned uniform painter -- can honour it.
+		//!   2. The preset's RECOMMENDED SUBSTRATE CLASS can only be
+		//!      checked once the material manager has resolved `base` to
+		//!      a pointer, which `IAsciiChunkParser::Finalize` cannot do
+		//!      (it sees a name, a string).  A mismatch is a WARNING,
+		//!      not an error -- the composition is legal, it just is not
+		//!      the fabric the preset names.
+		//!
+		//! An empty / `none` `sheen_color` resolves to the preset's
+		//! colour where it sets one, otherwise to an OWNED UNIFORM WHITE
+		//! painter -- NOT to the painter manager's built-in `none`,
+		//! which is BLACK and would switch the sheen lobe off (the trap
+		//! `coated_material`'s `coat_tint` documented).
+		//!
+		//! DECLARED HERE, at the tail: IJob's policy is append-only (the
+		//! "ABI POLICY" comment above `SetActiveRasterizer`, and the
+		//! same note on `AddCoatedMaterial`).  Slotting it next to its
+		//! sibling renumbers every vtable slot after it --
+		//! tests/SourceHygieneTest.cpp's IJob vtable manifest catches
+		//! exactly that.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddFabricMaterial(
+									const char* name,				///< [in] Name of the material
+									const char* fabric,				///< [in] Preset name (cotton|linen|denim|wool|silk|satin|velvet|custom)
+									const char* base,				///< [in] Name of the substrate material (allowlisted)
+									const char* sheen_color,		///< [in] Sheen / dye tint (colour painter; empty or `none` = preset colour, else white)
+									const char* sheen_roughness,	///< [in] Charlie alpha, clamped to [0.04, 1] (physical scalar)
+									const char* weave_rotation		///< [in] Weave angle in RADIANS for the SUBSTRATE's frame (physical scalar)
+									) = 0;
+
+		//! Adds a channel-extraction SCALAR painter: scale * source.channel + bias,
+		//! as a genuine `IScalarPainter` (no colourspace conversion, no JH uplift) --
+		//! the scalar-typed analogue of `AddChannelPainter`.  Needed because several
+		//! physical-scalar material slots (e.g. `fabric_material`'s `sheen_roughness`)
+		//! can only bind a registered `IScalarPainter` name or an inline numeric
+		//! literal (see docs/ISCALARPAINTER_REFACTOR.md); there was previously no way
+		//! to derive one of those from a single channel of an already-registered
+		//! colour/texture painter (e.g. glTF KHR_materials_sheen's
+		//! `sheenRoughnessTexture` ALPHA channel).  Thin wrapper over
+		//! `RISE_API_CreatePainterChannelScalarPainter`.
+		//!
+		//! DECLARED HERE, at the tail: see the ABI-append-only note on
+		//! `AddFabricMaterial` immediately above.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddPainterChannelScalarPainter(
+									const char* name,				///< [in] Name of the scalar painter
+									const char* source,				///< [in] Source colour painter (already registered)
+									const char  channel,			///< [in] 0=R, 1=G, 2=B, 3=A
+									const double scale,				///< [in] Multiplier on extracted channel
+									const double bias				///< [in] Additive offset after scale
+									) = 0;
 
 	};
 

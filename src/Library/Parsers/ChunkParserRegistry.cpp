@@ -41,6 +41,7 @@
 #include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
+#include "../Materials/FabricPresets.h"   // fabric_material: the `fabric` enum's preset table (multi-slot seeding)
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "AsciiCommandParser.h"
@@ -3461,6 +3462,128 @@ namespace RISE
 				}
 			};
 
+			//! `fabric_material` -- docs/CLOTH_FABRIC_DESIGN.md Phase 1
+			//! (9.2 - 9.6).
+			//!
+			//! MULTI-SLOT PRESET SEEDING, WHICH IS NEW IN RISE.  RISE
+			//! already has per-parameter named quick-picks
+			//! (`ParameterDescriptor::presets`, e.g. `scene_unit`), but
+			//! those are an editor affordance on ONE scalar.  Nothing
+			//! anywhere seeded SEVERAL slots from one name, and no
+			//! material carried a preset of any kind.  `fabric <name>`
+			//! is that mechanism: it supplies the default for every slot
+			//! the author did not write, and ANY EXPLICITLY WRITTEN SLOT
+			//! WINS.
+			//!
+			//! `bag.GetString(name, default)` alone CANNOT express that
+			//! rule -- it cannot distinguish "the author omitted this"
+			//! from "the author wrote the default value" -- so the
+			//! seeding below goes through `ParseStateBag::Has()`.
+			//!
+			//! A PRESET CANNOT CONFIGURE THE SUBSTRATE, and pretending
+			//! otherwise is the trap.  This chunk holds a REFERENCE to
+			//! an already-constructed base material; `Finalize` can
+			//! neither retype it nor re-parameterise it, and it does not
+			//! even know its runtime class (it sees a NAME, a string).
+			//! So `fabric satin` over a Lambertian base yields chalk
+			//! with a faint sheen -- the tight anisotropic silk
+			//! highlight lives in a substrate this chunk cannot reach.
+			//! The WARN-level mismatch diagnostic therefore lives in
+			//! `Job::AddFabricMaterial`, where the material manager has
+			//! resolved the name to a pointer; the preset name is
+			//! forwarded there for exactly that purpose (and so the
+			//! preset's sheen COLOUR, an RGB triple rather than a
+			//! painter name, can be honoured by a layer able to
+			//! synthesise an owned painter).
+			//!
+			//! THERE IS NO `weave` ENUM IN PHASE 1, and its absence is
+			//! deliberate rather than an oversight: with anisotropy
+			//! delegated to the substrate (9.5), a weave enum has
+			//! nothing left to select -- the RATE of anisotropy is the
+			//! substrate's alphax/alphay and the PATTERN is whatever the
+			//! author's `weave_rotation` field says.  The name is
+			//! RESERVED, unused, for Phase 2's structured two-yarn-family
+			//! model, which will have real per-binding behaviour.
+			struct FabricMaterialAsciiChunkParser : public IAsciiChunkParser
+			{
+				//! Format a preset scalar as an inline literal the
+				//! scalar-painter resolver accepts.  %.17g round-trips a
+				//! double exactly, so the seeded value is bit-identical
+				//! to the table's.
+				static std::string PresetScalarText( const Scalar v )
+				{
+					char buf[64];
+					std::snprintf( buf, sizeof(buf), "%.17g", (double)v );
+					return std::string( buf );
+				}
+
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string fabric = bag.GetString( "fabric", "custom" );
+					std::string base   = bag.GetString( "base",   "none" );
+
+					const RISE::Implementation::FabricPreset& P =
+						RISE::Implementation::LookupFabricPreset( fabric.c_str() );
+
+					// `sheen_color` is genuinely a COLOUR (the dye), so it
+					// rides the IPainter colourspace + JH-uplift pipe.  The
+					// default is the "none" sentinel, which
+					// Job::AddFabricMaterial reads as "use the preset's
+					// colour, else WHITE" -- NOT as the "none" manager
+					// entry, which is black and would switch the sheen lobe
+					// off entirely.  A genuinely black (disabled) sheen is
+					// authored by binding an explicit black painter by name.
+					std::string color = bag.GetString( "sheen_color", "none" );
+
+					// PRESET SEEDING, the `Has()` rule.  An author who
+					// writes `sheen_roughness` wins over the preset; an
+					// author who omits it gets the preset's calibrated
+					// value, not a fixed global default.
+					const std::string presetRough = PresetScalarText( P.sheenRoughness );
+					std::string rough = bag.Has( "sheen_roughness" )
+						? bag.GetString( "sheen_roughness", presetRough )
+						: presetRough;
+
+					// No preset sets a weave angle: the ANGLE is a spatial
+					// field the author paints (9.5), and a preset that
+					// baked in one constant rotation would be authoring
+					// geometry it cannot see.  0 = unrotated, which makes
+					// the substrate's frame byte-identical to the
+					// un-wrapped material's.
+					std::string rot = bag.GetString( "weave_rotation", "0.0" );
+
+					return pJob.AddFabricMaterial(
+						name.c_str(), fabric.c_str(), base.c_str(),
+						color.c_str(), rough.c_str(), rot.c_str() );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "fabric_material"; cd.category = ChunkCategory::Material;
+						cd.description = "Cloth: an ENERGY-COMPENSATED Charlie sheen lobe over a restricted substrate, with the weave direction delivered as a rotation of the frame the SUBSTRATE is evaluated in.  Unlike stacking `sheen_material` under `composite_material`, its BSDF is the COMBINED response -- so NEE and BDPT/VCM connections evaluate the fabric rather than the bare substrate -- and it SUBTRACTS the sheen's energy from the base via a baked directional-albedo table, so a white fabric no longer returns more light than it receives at grazing.  Pick a `fabric` preset and bind a `base`; everything else has a calibrated default.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "fabric"; p.kind = ValueKind::Enum;
+						  p.enumValues = {"cotton","denim","silk","satin","velvet","wool","linen","custom"};
+						  p.defaultValueHint = "custom";
+						  p.description = "Fabric PRESET.  Supplies the default for every slot below that you did not write; any slot you DO write wins.  Seeds `sheen_roughness` (cotton 0.55, linen 0.65, denim 0.45, wool 0.75, silk 0.20, satin 0.12, velvet 0.08, custom 0.50) and, for `velvet` only, a dark `sheen_color`.  IT CANNOT CONFIGURE THE SUBSTRATE: this chunk holds a reference to a base material it can neither retype nor re-parameterise, so `silk`, `satin` and `denim` -- whose whole look is an ANISOTROPIC ggx_material base (silk alphax 0.30 / alphay 0.10, satin 0.34 / 0.06, denim 0.34 / 0.22, all with `fresnel_mode schlick_f0` and `rs` bound to a ~0.04 dielectric-F0 painter) -- read as chalk with a faint sheen over a Lambertian.  Binding one of those presets over a base of the wrong class logs a WARNING naming the class it wanted; the composition is still legal.  cotton/linen/wool want an `orennayar_material` (sigma ~0.4 / 0.5 / 0.6); velvet wants a DARK `lambertian_material` and no anisotropy at all -- it is a pile, not a weave."; }
+						{ auto& p = P(); p.name = "base";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.required = true; p.semantics.pipe = ParameterPipe::Material;
+						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material` and `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's hemispherical albedo to subtract the sheen's energy honestly, which a luminaire, a BSSRDF or a volumetric random walk cannot supply.  THIS IS WHERE ANISOTROPY LIVES: the sheen lobe is strictly isotropic (Charlie's normaliser and its Lambda visibility are isotropic-only fits), so a directional weave is a `ggx_material` base with alphax != alphay, steered per-point by `weave_rotation`."; }
+						{ auto& p = P(); p.name = "sheen_color"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Color; p.defaultValueHint = "none";
+						  p.description = "The dye / fuzz tint (COLOUR painter -- this is the one fabric slot that is genuinely a colour).  Its max channel is also the ENERGY SPLIT: the base is scaled by 1 - max3(sheen_color)*E(alpha, cos), so a white sheen suppresses the substrate most and a black one not at all.  `none` (the default) means the PRESET's colour where the preset sets one (velvet) and otherwise WHITE -- it is NOT read as the built-in black `none` painter, which would switch the lobe off.  Bind an explicit black painter by name if a disabled sheen is what you want."; }
+						{ auto& p = P(); p.name = "sheen_roughness"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "per `fabric` (custom: 0.5)";
+						  p.description = "Charlie alpha of the sheen lobe (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter: this slot is read as one value, so an `r g b` triple would silently drop g and b).  Low = a tight grazing halo (velvet 0.08, satin 0.12), high = a broad soft sheen (wool 0.75).  CLAMPED to [0.04, 1] -- note the 0.04 floor, which is TIGHTER than `sheen_material`'s 1e-3: below ~0.035 the Charlie lobe's baked directional albedo exceeds 1 near grazing, and the base-energy subtraction would go negative.  Omit it to take the `fabric` preset's calibrated value."; }
+						{ auto& p = P(); p.name = "weave_rotation"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "0.0";
+						  p.description = "Weave angle in RADIANS (physical SCALAR: a scalar_painter name or a single inline scalar; per-channel painters are refused).  Rotates the tangent frame handed to the SUBSTRATE -- not the sheen lobe, which is isotropic and unaffected.  Paint it to make an anisotropic `ggx_material` base follow the yarn: a twill wale, a satin float direction, the grain change across a seam.  It ADDS to the substrate's own `tangent_rotation` (both are rotations about the same normal, weave first), so a ggx base keeps its finer per-material offset.  It also gives `ward_material` and `ashikminshirley_material` -- which have no rotation slot of their own -- one, because the rotation happens in the frame rather than in the lobe.  0 (the default) is a no-op: the substrate's frame is byte-identical to the un-wrapped material's.  There is deliberately NO `weave` enum in Phase 1; that name is reserved for the structured two-yarn model."; }
+						AddVariantTagParam( cd );
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct DielectricMaterialAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -4355,7 +4478,12 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "sheen_material"; cd.category = ChunkCategory::Material;
-						cd.description = "Charlie / Neubelt sheen BRDF for fabric / cloth surfaces.  "
+						// NOT "Charlie / Neubelt": CharlieSheen::V is the full
+						// Lambda-polynomial Estevez & Kulla visibility, and the
+						// cheap Neubelt closed form was REPLACED in 2026-05
+						// because it blew up to rho ~ 8.7 at grazing.  Corrected
+						// per docs/CLOTH_FABRIC_DESIGN.md section 2 debt 4.
+						cd.description = "Charlie sheen BRDF (Estevez & Kulla 2017, with the full Lambda-polynomial visibility) for fabric / cloth surfaces.  "
 							"Designed as the top layer in a CompositeMaterial(top=sheen, bottom=base) "
 							"pairing for glTF KHR_materials_sheen, but usable standalone.  No diffuse "
 							"or Fresnel — the layer just adds the colour-tinted grazing scatter "
@@ -13144,6 +13272,7 @@ namespace RISE
 		add( "donner_jensen_skin_bssrdf_material",    new DonnerJensenSkinBSSRDFMaterialAsciiChunkParser() );
 		add( "generic_human_tissue_material",         new GenericHumanTissueMaterialAsciiChunkParser() );
 		add( "coated_material",                       new CoatedMaterialAsciiChunkParser() );
+		add( "fabric_material",                       new FabricMaterialAsciiChunkParser() );
 		add( "composite_material",                    new CompositeMaterialAsciiChunkParser() );
 		add( "ward_isotropic_material",               new WardIsotropicGaussianMaterialAsciiChunkParser() );
 		add( "ward_anisotropic_material",             new WardAnisotropicEllipticalGaussianMaterialAsciiChunkParser() );

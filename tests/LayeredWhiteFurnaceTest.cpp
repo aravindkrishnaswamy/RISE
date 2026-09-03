@@ -21,6 +21,12 @@
 //    8-10. polished_material (docs/WETNESS_COAT_DESIGN.md §6.2/§13
 //          Phase-1 exit gate) at tau in {1.0, 0.5, 0.9} — puts a
 //          measured number on the Rd·Rs·(1−c) coverage-mask deficit
+//    11-18. coated_material (docs/WETNESS_COAT_DESIGN.md Phase 2)
+//    19-20. substrate reference rows for the fabric block below
+//    21-36. fabric_material (docs/CLOTH_FABRIC_DESIGN.md Phase 1,
+//           9.9 gate 3, round 5) — Charlie sheen + Kulla-Conty
+//           product-form base compensation over four substrate shapes
+//           x four sheen roughnesses
 //
 //  Build (matches existing GGXWhiteFurnaceTest / SPFBSDFConsistencyTest
 //  patterns):
@@ -43,6 +49,7 @@
 #include <vector>
 #include <string>
 #include <cmath>
+#include <algorithm>   // std::min / std::max -- used by the fabric energy helpers
 #include <cstdlib>
 
 #include "../src/Library/Utilities/Math3D/Math3D.h"
@@ -67,6 +74,11 @@
 #include "../src/Library/Materials/GGXMaterial.h"
 #include "../src/Library/Materials/CoatedMaterial.h"
 #include "../src/Library/Materials/CoatedLayer.h"
+#include "../src/Library/Materials/OrenNayarMaterial.h"
+#include "../src/Library/Materials/FabricMaterial.h"
+#include "../src/Library/Materials/SheenDirectionalAlbedo.h"
+#include "../src/Library/Materials/CharlieSheen.h"
+#include "../src/Library/Utilities/MicrofacetUtils.h"
 
 #include "TestStubObject.h"
 
@@ -235,6 +247,247 @@ static double DirectionalAlbedo(
 	if( outRejectionRate ) {
 		*outRejectionRate = ( FURNACE_SAMPLES > 0 )
 			? ( 1.0 - (double)validSamples / (double)FURNACE_SAMPLES ) : 0.0;
+	}
+	return sum / (double)FURNACE_SAMPLES;
+}
+
+// ============================================================
+//  Downward-ray probe (docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 4)
+//
+//  Config 7's 2026-09-01 re-diagnosis rested on a direct measurement:
+//  GGXSPF only ever emits UPWARD lobes, so a GGX top layer never hands
+//  CompositeSPF's random walk a downward ray and the substrate is NEVER
+//  REACHED.  That measurement was made by hand and written into the
+//  note.  Gate 4 asks for the same probe to be run against config 6's
+//  top layer (Charlie sheen), and for config 6's note to record the
+//  answer whichever way it comes out -- because if sheen also emits no
+//  downward ray, then config 6's deficit is the SAME structural defect
+//  as config 7's, not the "sheen's intrinsic dissipation, amplified"
+//  the old note asserted.
+//
+//  Returns the fraction of Scatter draws that produced at least one ray
+//  with cos(wo, n) < 0 -- i.e. a ray the composite walk could carry
+//  INTO the substrate.
+// ============================================================
+
+static double DownwardRayFraction( ISPF& spf, double incomingThetaRad, int samples )
+{
+	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+	RandomNumberGenerator rng;
+	IndependentSampler sampler( rng );
+	IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+	const Vector3 normal = ri.onb.w();
+	int down = 0;
+
+	for( int i = 0; i < samples; ++i )
+	{
+		ScatteredRayContainer scattered;
+		spf.Scatter( ri, sampler, scattered, iorStack );
+		for( unsigned int j = 0; j < scattered.Count(); ++j )
+		{
+			const Vector3 wo = Vector3Ops::Normalize( scattered[j].ray.Dir() );
+			if( Vector3Ops::Dot( wo, normal ) < 0 ) { ++down; break; }
+		}
+	}
+	return ( samples > 0 ) ? ( (double)down / (double)samples ) : 0.0;
+}
+
+// ============================================================
+//  Substrate albedo with the fuzz layer's per-direction transmission
+//  folded in -- the exact quantity fabric's directional albedo needs.
+//
+//      W(v) = INT f_base(l, v) * (1 - m*E(alpha, n.l)) * (n.l) dl
+//
+//  IDENTICAL to DirectionalAlbedo above except for the extra per-ray
+//  weight, deliberately: the two share the estimator, the sample count
+//  and the normalise-by-ALL-draws convention, so they cannot disagree
+//  about anything but the weight itself.
+//
+//  WHY THIS EXISTS RATHER THAN REUSING rho_substrate.  Fabric's
+//  directional albedo is
+//
+//      rho(v) = sheenColor*E(v) + (1 - m*E(v))/(1 - m*Ebar) * W(v)
+//
+//  and the tempting shortcut is W(v) = rho_substrate(v) * (1 - m*Ebar),
+//  i.e. pulling the substrate's albedo out of the integral.  That is
+//  route 1's uncorrelated-response approximation, and at GRAZING it is
+//  not small: a GGX substrate's own grazing over-unity comes from a
+//  narrow specular lobe near the mirror direction, which at theta_v =
+//  80 deg sits exactly where E(l) is LARGE, so the (1 - m*E(l)) factor
+//  suppresses it far more than an uncorrelated model predicts.
+//  Measured: the shortcut over-predicts the iso-GGX row by 0.029 at
+//  theta = 80, an order of magnitude more than the bihemispherical
+//  residual gate 5b reports (<= 0.64 %), because the bihemispherical
+//  average dilutes exactly that corner.
+//
+//  So this measures W directly and the prediction carries NO
+//  approximation -- which is what lets the tolerance below be set from
+//  MC noise rather than from whichever value happens to pass.
+// ============================================================
+
+// ============================================================
+//  The fuzz-layer factors, RE-DERIVED IN THE TEST from the baked
+//  table alone -- deliberately NOT FabricBRDF's own statics.
+//
+//  M3 review, 2026-09-02: the gate-3 prediction used to call
+//  `FabricBRDF::SheenTransmit` / `SheenTransmitMean`, i.e. the very
+//  functions `FabricBRDF::value` uses.  That made the non-Lambertian
+//  rows' oracle "Scatter agrees with value()'s own formula" rather than
+//  an independently rederived physical target: a self-consistent error
+//  inside those two helpers -- one that still preserved the Lambertian
+//  rho = 1 identity, which IS independent -- would have passed.
+//
+//  These read `SheenDirectionalAlbedo` and nothing else, so the only
+//  shared surface left between the model and its oracle is the baked
+//  table, which has its own independent test
+//  (tests/SheenDirectionalAlbedoTest.cpp, brute-force spot checks
+//  against CharlieSheen.h).
+// ============================================================
+
+//! `1 - m*Ehat(alpha, cosTheta)`, Ehat = min(E, 1).
+static double FuzzTransmit( double alpha, double m, double cosTheta )
+{
+	const double eHat = std::min( 1.0, (double)SheenDirectionalAlbedo::E( alpha, cosTheta ) );
+	return 1.0 - std::min( 1.0, m * eHat );
+}
+
+//! `1 - m*EhatMean(alpha)`.
+static double FuzzTransmitMean( double alpha, double m )
+{
+	return 1.0 - std::min( 1.0, m * (double)SheenDirectionalAlbedo::EHatMean( alpha ) );
+}
+
+//! `max(1, E(v), E(l))` -- the symmetric normaliser, re-derived.
+static double FuzzNormaliser( double alpha, double cosV, double cosL )
+{
+	return std::max( 1.0, std::max( (double)SheenDirectionalAlbedo::E( alpha, cosV ),
+	                                (double)SheenDirectionalAlbedo::E( alpha, cosL ) ) );
+}
+
+// ============================================================
+//  THE CLOSED-FORM DIRECTIONAL ALBEDO of a WHITE Lambertian fabric.
+//
+//  docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 3 claims the Lambertian rows are
+//  cross-checked against a closed form, and until now they were not --
+//  the shipped assertion was the flat 5 % posture band alone, and the
+//  "<= 0.002" in the doc came from a cross-check done by hand during
+//  development and never committed (M5 review, 2026-09-03).  This is
+//  that check, implemented.
+//
+//      rho(v) = INT_H D(a,n.h) V(a,n.l,n.v) / N(v,l) * (n.l) dl
+//             + (1 - m*Ehat(v)) / (1 - m*EhatMean)
+//               * 2 INT_0^1 (1 - m*Ehat(mu_l)) mu_l dmu_l
+//
+//  The second line is `f_base = 1/pi` folded through the product
+//  scaling; the first is the sheen lobe divided by the symmetric
+//  normaliser.
+//
+//  INDEPENDENCE.  This calls `CharlieSheen` (the lobe definition) and
+//  `SheenDirectionalAlbedo` (the baked table) and re-derives the
+//  product-form algebra locally.  It does NOT call FabricBRDF, so a
+//  self-consistent error inside `ComputeTerms` / `BaseScaling` /
+//  `SheenNormaliser` cannot appear on both sides of the comparison.
+//  It is a genuinely different route to the same number: a deterministic
+//  quadrature of the model against the furnace's Monte-Carlo sampling of
+//  the implementation.
+// ============================================================
+
+static double LambertianFabricRhoClosedForm( double alpha, double m, double muV )
+{
+	// Deterministic 2-D midpoint quadrature.  1024 x 512 puts the
+	// quadrature error two orders below the furnace's MC noise, which is
+	// what sets the tolerance below.
+	static const int kNMu  = 1024;
+	static const int kNPhi = 512;
+
+	const double sinV = std::sqrt( std::max( 0.0, 1.0 - muV * muV ) );
+	const double dmu  = 1.0 / (double)kNMu;
+	const double dphi = 2.0 * PI / (double)kNPhi;
+
+	double sheen = 0.0;
+	for( int j = 0; j < kNMu; ++j )
+	{
+		const double muL = ( j + 0.5 ) * dmu;
+		const double V = CharlieSheen::V( alpha, muL, muV );
+		if( V <= 0 ) continue;
+		const double invN = 1.0 / FuzzNormaliser( alpha, muV, muL );
+		const double sinL = std::sqrt( std::max( 0.0, 1.0 - muL * muL ) );
+
+		double row = 0.0;
+		for( int k = 0; k < kNPhi; ++k )
+		{
+			const double phi = ( k + 0.5 ) * dphi;
+			const double hx = sinL * std::cos( phi ) + sinV;
+			const double hy = sinL * std::sin( phi );
+			const double hz = muL + muV;
+			const double hlen = std::sqrt( hx * hx + hy * hy + hz * hz );
+			if( hlen < 1e-12 ) continue;
+			row += CharlieSheen::D( alpha, hz / hlen );
+		}
+		sheen += row * V * muL * invN;
+	}
+	sheen *= dmu * dphi;
+
+	// 2 INT (1 - m*Ehat(mu)) mu dmu, over the runtime's own interpolant
+	// (including its cosTheta floor), which is what the material
+	// integrates.
+	double baseInner = 0.0;
+	for( int j = 0; j < kNMu; ++j ) {
+		const double muL = ( j + 0.5 ) * dmu;
+		baseInner += 2.0 * FuzzTransmit( alpha, m, muL ) * muL * dmu;
+	}
+
+	return sheen + FuzzTransmit( alpha, m, muV ) / FuzzTransmitMean( alpha, m ) * baseInner;
+}
+
+static double SubstrateAlbedoFuzzWeighted(
+	ISPF& spf,
+	double incomingThetaRad,
+	double alpha,
+	double m,
+	double weaveAngle )
+{
+	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+
+	// THE WEAVE ROTATION MUST BE APPLIED HERE TOO, and this is not a
+	// detail: FabricSPF hands the substrate a frame rotated by
+	// `weave_rotation` (9.5), so W(v) is a property of the substrate IN
+	// THAT FRAME.  For an ANISOTROPIC substrate the two differ
+	// materially -- the view sits in the x-z plane, so rotating the
+	// tangent frame by 45 deg changes which of alphax / alphay the lobe
+	// presents along the view azimuth.  Measured: omitting this made
+	// the aniso rows miss by more than 0.01 at low sheen alpha while
+	// every isotropic row passed, which is exactly the signature of a
+	// prediction evaluated in the wrong frame.  Same helper the
+	// material uses, so the two cannot drift.
+	ri.onb = MicrofacetUtils::RotateTangent( ri.onb, weaveAngle );
+	RandomNumberGenerator rng;
+	IndependentSampler sampler( rng );
+	IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+	const Vector3 normal = ri.onb.w();
+	double sum = 0;
+
+	for( int i = 0; i < FURNACE_SAMPLES; ++i )
+	{
+		ScatteredRayContainer scattered;
+		spf.Scatter( ri, sampler, scattered, iorStack );
+
+		for( unsigned int j = 0; j < scattered.Count(); ++j )
+		{
+			const ScatteredRay& scat = scattered[j];
+			const Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
+			const double cosO = Vector3Ops::Dot( wo, normal );
+			if( cosO <= 0 ) continue;
+
+			const double kMax = ColorMath::MaxValue( scat.kray );
+			if( kMax >= 0 && kMax < 1e6 ) {
+				// Re-derived here, NOT FabricBRDF's own helper -- see
+				// the block comment above.
+				sum += kMax * FuzzTransmit( alpha, m, cosO );
+			}
+		}
 	}
 	return sum / (double)FURNACE_SAMPLES;
 }
@@ -618,6 +871,36 @@ int main()
 		/*recyclingCompensation*/ false );
 	coatedWaterNoRecycle->addref();
 
+	// ---------- Gate 4: config 7's downward-ray probe, run against
+	//            config 6's top layer (docs/CLOTH_FABRIC_DESIGN.md 9.9) ----------
+	//
+	// Run BEFORE the config list so config 6's note can carry the
+	// measured answer rather than a remembered one.
+	const double kSheenDownAt0  = DownwardRayFraction( *sheen,         0.0,                    20000 );
+	const double kSheenDownAt80 = DownwardRayFraction( *sheen,         80.0 * PI / 180.0,      20000 );
+	const double kCoatDownAt0   = DownwardRayFraction( *clearcoatDiel, 0.0,                    20000 );
+	const double kCoatDownAt80  = DownwardRayFraction( *clearcoatDiel, 80.0 * PI / 180.0,      20000 );
+
+	std::cout << "\n";
+	std::cout << "  Gate 4 -- downward-ray probe (fraction of Scatter draws emitting a\n";
+	std::cout << "  ray with cos(wo, n) < 0, i.e. one CompositeSPF's walk could carry\n";
+	std::cout << "  into the substrate):\n";
+	std::cout << "    config 6 top layer (SheenSPF, Charlie):      theta=0 " << kSheenDownAt0
+	          << "   theta=80 " << kSheenDownAt80 << "\n";
+	std::cout << "    config 7 top layer (GGXSPF clearcoat, ref):  theta=0 " << kCoatDownAt0
+	          << "   theta=80 " << kCoatDownAt80 << "\n";
+
+	std::ostringstream config6Note;
+	config6Note << "GATE 4 (docs/CLOTH_FABRIC_DESIGN.md 9.9), MEASURED: SheenSPF emits a downward ray "
+	            << "in " << ( kSheenDownAt0 * 100.0 ) << " % of draws at theta=0 and "
+	            << ( kSheenDownAt80 * 100.0 ) << " % at theta=80 (config 7's GGX top layer, the "
+	            << "reference: " << ( kCoatDownAt0 * 100.0 ) << " % / " << ( kCoatDownAt80 * 100.0 )
+	            << " %).  SheenSPF is reflection-only by construction (cosine-hemisphere about the "
+	            << "ray-facing normal), so like config 7 the SUBSTRATE IS NEVER REACHED through the "
+	            << "composite walk and this row is NOT 'sheen's dissipation amplified' -- it is the "
+	            << "SAME structural defect config 7 documents.  fabric_material (configs 19+) is the "
+	            << "shipped answer: it evaluates the combined closed form instead of walking.";
+
 	// ---------- Configurations ----------
 
 	std::vector<ConfigReport> reports;
@@ -728,13 +1011,40 @@ int main()
 	{ ConfigReport& r = add( "5. GGX / GGX-PBR (clearcoat over PBR)", kPosturePass, 0.06, 0 );
 	  Run( r, *compGgxPbr ); }
 
-	// 6. Composite: Sheen top over GGX-PBR base.  Tracks the standalone-
-	//    sheen behaviour after the Imageworks-Charlie fix (config #2).
-	//    Still bounded above by 1 (no longer a known failure), but the
-	//    composite walk amplifies sheen's intrinsic energy dissipation
-	//    so ρ stays well under unity even at θ=0.  5% tolerance.
+	// 6. Composite: Sheen top over GGX-PBR base.
+	//
+	//    2026-09-02 RE-DIAGNOSIS (docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 4).
+	//    The previous note here said "the composite walk amplifies sheen's
+	//    intrinsic energy dissipation".  That diagnosis was WRONG, and
+	//    gate 4 asked for it to be re-measured with the same downward-ray
+	//    probe that corrected config 7.  MEASURED (the probe runs above
+	//    and writes its numbers into this row's note at runtime):
+	//    SheenSPF emits a downward ray in 0 % of draws at BOTH theta = 0
+	//    and theta = 80, identically to config 7's GGX top layer.
+	//
+	//    SheenSPF is reflection-only by construction -- it draws a
+	//    cosine-hemisphere direction about the RAY-FACING normal
+	//    (SheenSPF.cpp:73-74) and gates anything below the geometric
+	//    horizon -- so it never hands CompositeSPF's walk a downward ray
+	//    and THE SUBSTRATE IS NEVER REACHED.  The corroborating number is
+	//    in the table itself: this row is {0.0875, 0.1293, 0.2812,
+	//    0.5461} and config 2 (BARE sheen, no substrate at all) is
+	//    {0.0875, 0.1283, 0.2810, 0.5453} -- the same curve to MC noise.
+	//    A composite that reached its GGX-PBR base could not possibly
+	//    land there.
+	//
+	//    So config 6 and config 7 are ONE defect, not two, and closing it
+	//    needs a transmission path for reflection-only top layers rather
+	//    than a walk fix.  `fabric_material` (configs 19-34) is the
+	//    shipped answer for the sheen case specifically: it evaluates the
+	//    COMBINED closed form instead of walking, so the substrate is
+	//    reached by construction.
+	//
+	//    Stays kPostureBounded at 5 %: the row is a record of the
+	//    composite path's limitation, and the number it should hold is
+	//    "config 2's curve", which kPostureBounded already brackets.
 	{ ConfigReport& r = add( "6. Sheen / GGX-PBR (sheen over PBR)", kPostureBounded, 0.05,
-	    "Energy-bounded; sheen-over-PBR inherits sheen's bounded dissipation" );
+	    config6Note.str().c_str() );
 	  Run( r, *compSheenPbr ); }
 
 	// 7. Finding D verification: clearcoat (F0 = 0.04) over a
@@ -1096,6 +1406,401 @@ int main()
 	    "reference row: A_base(theta) for config 15's analytic check" );
 	  Run( r, *redGgxMat->GetSPF() ); }
 
+	// ================================================================
+	// 19-36.  fabric_material -- docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 3
+	//         (round 5, 2026-09-02).
+	//
+	// FOUR SUBSTRATE SHAPES x FOUR SHEEN ROUGHNESSES, all white-input,
+	// plus the two SUBSTRATE REFERENCE ROWS (19, 20) the predictions
+	// below are built from.  The four shapes are gate 3's: a Lambertian,
+	// an Oren-Nayar, an ISOTROPIC GGX-PBR, and an ANISOTROPIC GGX
+	// (alphax != alphay) with a NON-ZERO weave_rotation -- the last
+	// being the row that would fail if 9.5's frame-rotation plumbing
+	// were wrong, since the rotation is a substrate-frame change and
+	// nothing else.
+	//
+	// WHAT CHANGED IN ROUND 5, AND WHY THESE POSTURES.
+	//
+	// Round 4 specified the glTF sheen scaling with the two arms
+	// combined by a `min`.  Implementation-time measurement rejected it:
+	// the `min` is reciprocal but CANNOT conserve energy (near normal
+	// incidence E(v) -> 0 while the min still picks 1 - m*E(l) for every
+	// l, so the base loses Ebar's worth of energy the sheen never
+	// returns), and glTF's own one-arm form conserves energy but is NOT
+	// reciprocal.  Round 5 adopted the Kulla-Conty PRODUCT form
+	//
+	//     scale(l,v) = (1 - m*E(v)) * (1 - m*E(l)) / (1 - m*Ebar)
+	//
+	// which is BOTH.  It is the closed form of the adding-doubling
+	// inter-reflection series between a lossless fuzz layer and the
+	// base: energy the fuzz intercepts is re-scattered onto the
+	// substrate rather than deleted.
+	//
+	// So the postures are now the ones the physics earns, per substrate:
+	//
+	//  * LAMBERTIAN rows (21-24): kPosturePass at 5 %.  For a white
+	//    Lambertian base the identity is exact at ANY m and ANY alpha --
+	//    rho(v) = m*E(v) + (1 - m*E(v))*(1 - m*Ebar)/(1 - m*Ebar) = 1 --
+	//    so these must land on 1.000 and a deviation is a real
+	//    regression.  This is the row set that PROVES the denominator's
+	//    near-normal brightening (up to ~1.10 pointwise at alpha ~ 0.2;
+	//    see FabricBRDF.h's measured table) is energy-NEUTRAL rather
+	//    than a gain: it is exactly balanced by the darkening at
+	//    grazing, and rho == 1 is what says the balance is exact.
+	//
+	//  * NON-LAMBERTIAN rows (25-36): kPostureMatchesPrediction against
+	//    a prediction DERIVED AT RUN TIME from the bare substrate's own
+	//    measured curve, using the closed form the product model gives:
+	//
+	//        rho_fabric(v) = E(alpha, cos v)
+	//                      + rho_substrate(v) * (1 - E(alpha, cos v))
+	//
+	//    (m == 1 and the dye is white here, as everything in this
+	//    furnace is.)  That is NOT a locked-in measurement and NOT
+	//    circular: the substrate row is measured independently by the
+	//    same Monte-Carlo driver, and the fabric row is then required to
+	//    equal an analytic function of it.  It is the honest statement
+	//    of "the fabric layer neither adds nor removes energy over the
+	//    substrate's own posture" -- Oren-Nayar loses energy by its own
+	//    design and GGX-PBR gains at grazing pre-existingly (config 17
+	//    records the bare white GGX-PBR at 1.1555 at theta = 80), and
+	//    this form inherits exactly those and nothing more.
+	//
+	//    eps is 0.01, set from the combined MC noise of the two
+	//    independent 100k-sample estimates this check compares (the
+	//    fabric row and W), each with a 1-sigma near rho = 1 of ~3e-3.
+	//    The prediction itself carries no approximation, which is what
+	//    makes a tolerance that tight legitimate.
+	//
+	//  WHAT IS ACTUALLY ASSERTED, since an earlier revision of this
+	//  comment and of the design doc both quoted numbers (0.002, 0.02)
+	//  that were never in the code:
+	//    * Lambertian rows: kPosturePass at 5 % around rho = 1, AND the
+	//      per-angle closed-form cross-check at 0.012 (the block below
+	//      the config loop).
+	//    * Oren-Nayar / GGX rows: kPostureMatchesPrediction at eps 0.01.
+	//    * Grazing check: 5 %, conserving above mu = 0.03 and bounded
+	//      below it.
+	// ================================================================
+
+	// Substrates.  White inputs throughout, so any loss is the fabric's.
+	UniformScalarPainter* sOnSigma = new UniformScalarPainter( 0.4 );  sOnSigma->addref();
+	OrenNayarMaterial* whiteOnMat = new OrenNayarMaterial( *one, *sOnSigma );  whiteOnMat->addref();
+
+	UniformScalarPainter* sAnisoX = new UniformScalarPainter( 0.34 );  sAnisoX->addref();
+	UniformScalarPainter* sAnisoY = new UniformScalarPainter( 0.06 );  sAnisoY->addref();
+	GGXMaterial* anisoGgxMat = new GGXMaterial(
+		*one, *dielF0, *sAnisoX, *sAnisoY, *iorSc, *zeroSc, eFresnelSchlickF0 );
+	anisoGgxMat->addref();
+
+	// A non-zero weave angle for the anisotropic row only; every other
+	// row leaves the rotation at 0, where WeaveRotatedRI's fast path
+	// hands the substrate the caller's own record unchanged.
+	UniformScalarPainter* sWeave0  = new UniformScalarPainter( 0.0 );   sWeave0->addref();
+	UniformScalarPainter* sWeave45 = new UniformScalarPainter( 0.7853981633974483 );  sWeave45->addref();
+
+	// 19-20.  The two substrate reference rows that do not already exist
+	//         in this file (config 0 is the Lambertian, config 17 the
+	//         white iso GGX-PBR).  Same placement idiom as configs 17/18.
+	{ ConfigReport& r = add( "19. White Oren-Nayar(0.4) base alone (ref for 25-28)", kPostureBounded, 0.06,
+	    "reference row: rho_substrate(theta) for the Oren-Nayar fabric rows' analytic check.  "
+	    "Oren-Nayar dissipates by its own design (OrenNayarBRDF.cpp documents Rd as up to 25.6 % "
+	    "high at roughness 1), which is why this is Bounded and not Pass" );
+	  Run( r, *whiteOnMat->GetSPF() ); }
+
+	{ ConfigReport& r = add( "20. White aniso GGX + F0=0.04 alone (ref for 33-36)", kPostureKnownFailure, 0.0,
+	    "reference row: rho_substrate(theta) for the anisotropic fabric rows.  Over-unity at "
+	    "grazing is GGX's own low-F0 behaviour -- same disposition as config 17" );
+	  Run( r, *anisoGgxMat->GetSPF() ); }
+
+	struct FabricShape { const char* label; IMaterial* base; IScalarPainter* weave; bool lambertian; };
+	const FabricShape fabricShapes[] = {
+		{ "Lambertian",           whiteLambMat, sWeave0,  true  },
+		{ "OrenNayar(0.4)",       whiteOnMat,   sWeave0,  false },
+		{ "iso GGX-PBR",          whiteGgxMat,  sWeave0,  false },
+		{ "aniso GGX + weave 45", anisoGgxMat,  sWeave45, false },
+	};
+	static const double kFabricAlphas[] = { 0.08, 0.2, 0.5, 1.0 };
+
+	std::vector<UniformScalarPainter*> fabricAlphaPnts;
+	std::vector<FabricMaterial*>       fabricMats;
+
+	//! Per-angle closed-form cross-check for the Lambertian rows, 9.9
+	//! gate 3.  Collected during the config loop, reported and asserted
+	//! after it.
+	struct LamCheck { double alpha; double measured[NUM_THETA]; double predicted[NUM_THETA]; };
+	std::vector<LamCheck> lamClosedForm;
+
+	{
+		int row = 0;
+		for( int si = 0; si < 4; ++si )
+		{
+			const FabricShape& shape = fabricShapes[si];
+			for( double fa : kFabricAlphas )
+			{
+				UniformScalarPainter* sa = new UniformScalarPainter( fa );  sa->addref();
+				fabricAlphaPnts.push_back( sa );
+
+				FabricMaterial* fm = new FabricMaterial( *shape.base, *one, *sa, *shape.weave );
+				fm->addref();
+				fabricMats.push_back( fm );
+
+				std::ostringstream nm;
+				nm << ( 21 + row ) << ". fabric / " << shape.label
+				   << "  (sheen alpha " << fa << ")";
+
+				if( shape.lambertian )
+				{
+					// The exact identity.  5 % is the harness's standard
+					// MC band; the row should sit on 1.000 to ~0.001.
+					ConfigReport& r = add( nm.str(), kPosturePass, 0.05,
+						"9.9 gate 3: the Kulla-Conty product form conserves energy EXACTLY over a "
+						"white Lambertian base at any alpha and any m -- rho == 1 is an identity "
+						"here, not a fit, and it is what proves the denominator's near-normal "
+						"brightening is energy-neutral.  ALSO cross-checked per angle against the "
+						"closed form, printed after the report" );
+					Run( r, *fm->GetSPF() );
+
+					// The per-angle closed-form cross-check (9.9 gate 3).
+					lamClosedForm.emplace_back();
+					LamCheck& lc = lamClosedForm.back();
+					lc.alpha = fa;
+					for( int ti = 0; ti < NUM_THETA; ++ti ) {
+						const double cosT = std::cos( THETA_DEG[ti] * PI / 180.0 );
+						lc.measured[ti]  = r.albedo[ti];
+						lc.predicted[ti] = LambertianFabricRhoClosedForm( fa, 1.0, cosT );
+					}
+				}
+				else
+				{
+					// The EXACT directional albedo of the product form:
+					//
+					//   rho(v) = E(v) + (1 - m*E(v))/(1 - m*Ebar) * W(v)
+					//
+					// with W(v) measured directly off the substrate's own
+					// SPF (see SubstrateAlbedoFuzzWeighted's header for why
+					// the rho_substrate shortcut is NOT usable at grazing).
+					// m == 1 and the dye is white, as everything in this
+					// furnace is.
+					const double kM = 1.0;
+					double pred[NUM_THETA];
+					for( int ti = 0; ti < NUM_THETA; ++ti ) {
+						const double rad  = THETA_DEG[ti] * PI / 180.0;
+						const double cosT = std::cos( rad );
+						// Ehat, not raw E: the sheen lobe's own directional
+						// albedo is bounded by the symmetric normaliser, so
+						// the prediction must be too.
+						const double ev   = SheenDirectionalAlbedo::E( fa, cosT );
+						const double w    = SubstrateAlbedoFuzzWeighted(
+							*shape.base->GetSPF(), rad, fa, kM,
+							shape.weave->GetValuesAt( MakeIntersection( rad ) ).v[0] );
+						pred[ti] = std::min( 1.0, ev )
+						         + FuzzTransmit( fa, kM, cosT )
+						           / FuzzTransmitMean( fa, kM ) * w;
+					}
+					// eps 0.01 is set from MC NOISE, not from what passes:
+					// this compares two INDEPENDENT 100k-sample estimates
+					// (the fabric row and W), each with a 1-sigma on the
+					// mean of ~3e-3 near rho = 1, so their difference has
+					// ~4e-3 -- and 0.01 is ~2.5 sigma of headroom.  The
+					// prediction itself carries no approximation, which is
+					// what makes a tolerance this tight legitimate.
+					ConfigReport& r = addPredicted( nm.str(),
+						"9.9 gate 3 (round 5): pinned to the EXACT directional albedo "
+						"E(v) + (1-m*E(v))/(1-m*Ebar) * W(v), with W(v) = INT f_base(l,v)(1-m*E(l))cos dl "
+						"measured directly off the substrate's own SPF -- so the fabric layer is "
+						"required to inherit the substrate's energy posture and add nothing, with "
+						"no uncorrelated-response assumption anywhere.  eps 0.01 is ~2.5 sigma of "
+						"the two 100k-sample estimates' combined MC noise",
+						pred, 0.01 );
+					Run( r, *fm->GetSPF() );
+				}
+				++row;
+			}
+		}
+	}
+
+	// ================================================================
+	//  CLOSED-FORM CROSS-CHECK on the Lambertian fabric rows -- 9.9
+	//  gate 3's second assertion, alongside the 5 % posture band.
+	//
+	//  TOLERANCE, derived rather than fitted.  Two error sources:
+	//    * the furnace's Monte-Carlo error -- 100k samples puts the
+	//      1-sigma on the mean near rho = 1 at ~3e-3;
+	//    * the closed form's own quadrature -- 1024 x 512 midpoint,
+	//      two orders below that, so it does not move the budget.
+	//  The E table's interpolation residual CANCELS: both sides read the
+	//  same `SheenDirectionalAlbedo::E`, so the closed form predicts what
+	//  the material should produce GIVEN the table, not what the true
+	//  lobe would give.  (Gate 3's grazing check and the 5 % posture
+	//  band are what bound the table's own error.)
+	//
+	//  0.012 is 4 sigma of the MC term.  A tighter bound would flag
+	//  sampling noise; a looser one would stop discriminating, since the
+	//  defects this catches -- a wrong normaliser, a dropped
+	//  denominator, an l/v asymmetry -- move rho by whole percent.
+	// ================================================================
+	{
+		std::cout << "\n";
+		std::cout << "  Gate 3 -- CLOSED-FORM cross-check, Lambertian fabric rows\n";
+		std::cout << "  (deterministic quadrature of the product form against the furnace's\n";
+		std::cout << "   MC sampling of the implementation; re-derived from CharlieSheen +\n";
+		std::cout << "   SheenDirectionalAlbedo, NOT from FabricBRDF):\n";
+		std::cout << "    " << std::setw( 8 ) << "alpha";
+		for( int ti = 0; ti < NUM_THETA; ++ti ) {
+			std::cout << std::setw( 21 ) << ( "theta=" + std::to_string( (int)THETA_DEG[ti] ) );
+		}
+		std::cout << "\n";
+
+		static const double kClosedFormTol = 0.012;
+		double worstDelta = 0.0;
+
+		for( const LamCheck& lc : lamClosedForm )
+		{
+			std::cout << "    " << std::setw( 8 ) << std::fixed << std::setprecision( 2 ) << lc.alpha;
+			for( int ti = 0; ti < NUM_THETA; ++ti ) {
+				const double d = std::fabs( lc.measured[ti] - lc.predicted[ti] );
+				worstDelta = std::max( worstDelta, d );
+				std::ostringstream cell;
+				cell << std::fixed << std::setprecision( 5 )
+				     << lc.measured[ti] << "/" << lc.predicted[ti];
+				std::cout << std::setw( 21 ) << cell.str();
+			}
+			std::cout << "\n";
+		}
+		std::cout << std::defaultfloat;
+		std::cout << "    worst |measured - closed form| = " << worstDelta
+		          << "   (tolerance " << kClosedFormTol << ", = 4 sigma of the 100k-sample MC error)\n";
+
+		ConfigReport& r = add( "38. Gate 3 closed-form cross-check (Lambertian fabric)",
+			kPosturePass, kClosedFormTol,
+			"pass/fail indicator only -- the measured/predicted pairs are in the table printed "
+			"above the report" );
+		const bool ok = ( worstDelta <= kClosedFormTol ) && !lamClosedForm.empty();
+		for( int i = 0; i < NUM_THETA; ++i ) r.albedo[i] = ok ? 1.0 : 0.0;
+		r.passed = ok;
+		if( !ok ) {
+			std::cout << "    FAIL: a Lambertian row missed the closed form by more than "
+			          << kClosedFormTol << "\n";
+		}
+	}
+
+	// ================================================================
+	//  GRAZING CHECK -- docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 3, the half
+	//  the angle columns cannot reach.
+	//
+	//  WHY THIS EXISTS, and it is not hypothetical.  THETA_DEG stops at
+	//  80 deg, i.e. mu = 0.1736.  Until 2026-09-02 the E table's cosTheta
+	//  axis was UNIFORM, so its first interior node sat at mu = 0.0323
+	//  and the lookup ramped linearly from an exact 0 across the entire
+	//  band the Charlie lobe occupies -- and because `value()` EMITS the
+	//  true lobe while suppressing the base by the TABLED E, the
+	//  white-furnace identity broke by up to +1.05 ABSOLUTE (rho ~ 2.05)
+	//  under grazing illumination, at every roughness.  Every row above
+	//  stayed green throughout: 0.1736 is five times the first node, so
+	//  the columns never entered the broken band.
+	//
+	//  Adding 85/88/89 deg as COLUMNS would have meant re-measuring and
+	//  re-locking all nineteen pre-existing prediction curves (configs 3,
+	//  9, 10, 14-16 carry NUM_THETA-wide literals), so this is a separate
+	//  sweep over the Lambertian fabric rows -- the ones whose expected
+	//  answer is an identity rather than a locked number, and therefore
+	//  the ones that can be checked at a new angle without re-measuring
+	//  anything.
+	//
+	//  TWO POSTURES, matching the model's own exactness class:
+	//    * mu >= 0.03 (theta <= 88.28 deg): CONSERVING.  |rho - 1| <= 5 %.
+	//    * mu <  0.03: BOUNDED.  0 <= rho <= 1 + 5 %.  Inside that sliver
+	//      the raw lobe still exceeds 1 (E reaches 1.152 even above the
+	//      roughness floor) and a symmetric normaliser max(1, E(v), E(l))
+	//      is what holds the total down; exact conservation is knowingly
+	//      given up there.
+	// ================================================================
+	{
+		std::cout << "\n";
+		std::cout << "  Gate 3 -- GRAZING check on the Lambertian fabric rows\n";
+		std::cout << "  (the band THETA_DEG cannot reach; conserving for mu >= 0.03,\n";
+		std::cout << "   bounded below it -- see the block comment in the source):\n";
+		std::cout << "    " << std::setw( 8 ) << "theta"
+		          << std::setw( 10 ) << "mu"
+		          << std::setw( 12 ) << "a=0.08"
+		          << std::setw( 12 ) << "a=0.2"
+		          << std::setw( 12 ) << "a=0.5"
+		          << std::setw( 12 ) << "a=1.0"
+		          << "   posture\n";
+
+		// 89.9 and 89.99 reach mu = 1.7e-3 and 1.7e-4 -- INSIDE and
+		// BELOW the E table's first cell (node 1 is mu = 1/961 =
+		// 1.04e-3).  That band is where the M4 review found rho reaching
+		// 1.714 with the cell un-floored, and where 89 deg (mu = 0.0175,
+		// 17x above node 1) could not see it.  Both are `bounded`
+		// posture: the floored domain deliberately over-reads E there so
+		// the base is fully suppressed, which drives rho DOWN toward the
+		// true E -> 0 limit rather than to 1.
+		static const double kGrazeDeg[] = { 80.0, 85.0, 88.0, 89.0, 89.9, 89.99 };
+		// TIGHTENED 0.05 -> 0.03 (round 8).  At 5 % this band admitted an
+		// ~80x growth of the residual before failing, which is no gate at
+		// all for a quantity whose measured worst is +1.7 %.  Measured
+		// margins at 0.03: the conserving rows' worst |rho - 1| is
+		// 0.00475 (theta 85, alpha 0.08) -- 6.3x of headroom -- and the
+		// bounded rows' worst rho is 1.00929 (theta 89.9, alpha 0.2).
+		//
+		// NOT tight enough to catch the GLOBAL worst, and that is a
+		// known coverage gap rather than an oversight: the true maximum
+		// over the reachable domain sits at alpha ~ 0.90, theta ~ 89.87,
+		// and this sweep runs alpha in {0.08, 0.2, 0.5, 1.0} at
+		// theta in {80, 85, 88, 89, 89.9, 89.99}, so neither coordinate
+		// is sampled.  Closing that would mean a fifth Lambertian
+		// fabric row at alpha 0.9; the exactness class in FabricBRDF.h
+		// carries the measured number in the meantime.
+		static const double kGrazeTol   = 0.03;
+		bool grazePassed = true;
+
+		for( double td : kGrazeDeg )
+		{
+			const double rad = td * PI / 180.0;
+			const double mu  = std::cos( rad );
+			const bool conserving = ( mu >= 0.03 );
+
+			std::cout << "    " << std::setw( 8 ) << td
+			          << std::setw( 10 ) << std::fixed << std::setprecision( 5 ) << mu;
+
+			for( int k = 0; k < 4; ++k )
+			{
+				// fabricMats is shape-major: the first four entries are
+				// the Lambertian rows, one per kFabricAlphas value.
+				const double rho = DirectionalAlbedo( *fabricMats[k]->GetSPF(), rad );
+				std::cout << std::setw( 12 ) << std::setprecision( 5 ) << rho;
+
+				const bool ok = conserving
+					? ( std::fabs( rho - 1.0 ) <= kGrazeTol )
+					: ( rho >= 0.0 && rho <= 1.0 + kGrazeTol );
+				if( !ok ) {
+					grazePassed = false;
+					std::cout << "!";
+				}
+			}
+			std::cout << "   " << ( conserving ? "conserving" : "bounded" ) << "\n";
+		}
+		std::cout << std::defaultfloat;
+
+		if( !grazePassed ) {
+			std::cout << "    FAIL: a Lambertian fabric row missed its grazing posture "
+			             "(marked with ! above)\n";
+		}
+		// Fold into the same tally the configs use, as one extra unit,
+		// so a grazing failure exits the suite non-zero like any other.
+		// The albedo columns on THIS row are a pass/fail indicator (1 or
+		// 0), not measurements -- the real per-angle rho values are in
+		// the table printed just above, which THETA_DEG cannot express.
+		ConfigReport& r = add( "37. Gate 3 grazing check (Lambertian fabric, theta 80-89)",
+			kPosturePass, kGrazeTol,
+			"pass/fail indicator only -- the measured rho per angle is in the grazing table "
+			"printed above the report; conserving for mu >= 0.03, bounded below it" );
+		for( int i = 0; i < NUM_THETA; ++i ) r.albedo[i] = grazePassed ? 1.0 : 0.0;
+		r.passed = grazePassed;
+	}
+
 	PrintReport( reports );
 
 	// Tally pass/fail across the suite.
@@ -1111,6 +1816,15 @@ int main()
 
 	// Cleanup (matches existing test pattern; not strictly necessary
 	// for a one-shot test process but exercises the destructor chain).
+	for( FabricMaterial* fm : fabricMats )            safe_release( fm );
+	for( UniformScalarPainter* sp : fabricAlphaPnts ) safe_release( sp );
+	safe_release( sWeave45 );
+	safe_release( sWeave0 );
+	safe_release( anisoGgxMat );
+	safe_release( sAnisoY );
+	safe_release( sAnisoX );
+	safe_release( whiteOnMat );
+	safe_release( sOnSigma );
 	safe_release( coatedWaterNoRecycle );
 	safe_release( coatedClearcoatRedGgx );
 	safe_release( coatedClearcoatWhiteGgx );

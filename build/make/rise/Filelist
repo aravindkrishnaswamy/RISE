@@ -176,6 +176,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/MultipoleDiffusion.cpp						\
 	$(PATHLIBRARY)Materials/CoatedBRDF.cpp									\
 	$(PATHLIBRARY)Materials/CoatedSPF.cpp									\
+	$(PATHLIBRARY)Materials/FabricBRDF.cpp									\
+	$(PATHLIBRARY)Materials/FabricSPF.cpp									\
 	$(PATHLIBRARY)Materials/CompositeEmitter.cpp							\
 	$(PATHLIBRARY)Materials/CompositeSPF.cpp								\
 	$(PATHLIBRARY)Materials/CookTorranceBRDF.cpp							\
@@ -189,6 +191,8 @@ SRCLIBMATERIALS =\
 	$(PATHLIBRARY)Materials/HairMedullaProfile_LUTData.cpp					\
 	$(PATHLIBRARY)Materials/SheenBRDF.cpp									\
 	$(PATHLIBRARY)Materials/SheenSPF.cpp									\
+	$(PATHLIBRARY)Materials/SheenDirectionalAlbedo.cpp						\
+	$(PATHLIBRARY)Materials/SheenDirectionalAlbedo_LUTData.cpp				\
 	$(PATHLIBRARY)Materials/GenericHumanTissueSPF.cpp						\
 	$(PATHLIBRARY)Materials/HenyeyGreensteinPhaseFunction.cpp				\
 	$(PATHLIBRARY)Materials/HeterogeneousMedium.cpp						\

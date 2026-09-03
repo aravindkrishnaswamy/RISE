@@ -21,6 +21,8 @@
 #include "Geometry/SDFGeometry.h"
 #include "Geometry/HairGenerator.h"	// ValidateHairGuides (AddHairGuides shares the generator's checks)
 #include "Materials/CoatedMaterial.h"	// AddCoatedMaterial: the substrate allowlist predicate + its text
+#include "Materials/FabricMaterial.h"	// AddFabricMaterial: the allowlist predicate + the preset-mismatch check
+#include "Materials/FabricPresets.h"	// AddFabricMaterial: the `fabric` enum's preset table
 #include <cstring>
 #include <cstdint>
 #define _USE_MATH_DEFINES
@@ -3031,6 +3033,35 @@ bool Job::AddChannelPainter(
 	return ok;
 }
 
+//! Adds a channel-extraction SCALAR painter.  See IJob.h for the doc.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddPainterChannelScalarPainter(
+							const char* name,
+							const char* source,
+							const char  channel,
+							const double scale,
+							const double bias
+							)
+{
+	IPainter* pSrc = pPntManager->GetItem( source );
+	if( !pSrc ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPainterChannelScalarPainter:: source painter `%s` not found", source );
+		return false;
+	}
+	if( channel < 0 || channel > 3 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"Job::AddPainterChannelScalarPainter:: channel %d out of range (0=R, 1=G, 2=B, 3=A)", (int)channel );
+		return false;
+	}
+
+	IScalarPainter* pPainter = 0;
+	RISE_API_CreatePainterChannelScalarPainter( &pPainter, *pSrc, channel, scale, bias );
+	const bool ok = pPainter ? RegisterOrDiag( pScalarPntManager, pPainter, name, "scalar painter" ) : false;
+	safe_release( pPainter );
+	return ok;
+}
+
 //! Adds a TEXCOORD_1 selector painter.  See IJob.h for the doc.
 /// \return TRUE if successful, FALSE otherwise
 bool Job::AddTexCoord1Painter(
@@ -3330,6 +3361,135 @@ bool Job::AddCoatedMaterial(
 	safe_release( pThickness );
 	safe_release( pAbsorption );
 	safe_release( pTintOwned );
+
+	return ok;
+}
+
+//! Adds a Fabric material (docs/CLOTH_FABRIC_DESIGN.md Phase 1, 9.2-9.3).
+//!
+//! THREE THINGS HAPPEN HERE THAT CANNOT HAPPEN IN THE PARSER, and they
+//! are the whole reason the preset name is forwarded this far:
+//!
+//!  1. The substrate ALLOWLIST is enforced (an ERROR, refusing the
+//!     material), because the layered model consumes the substrate's
+//!     `hemisphericalAlbedo` and an arbitrary material cannot supply
+//!     one.  RISE_API_CreateFabricMaterial repeats the check for
+//!     callers that bypass the scene language; this site exists so the
+//!     author of a scene file gets the diagnostic with THEIR material's
+//!     name in it.
+//!
+//!  2. The PRESET-vs-SUBSTRATE mismatch is diagnosed (a WARNING, NOT an
+//!     error).  `IAsciiChunkParser::Finalize` sees only the substrate's
+//!     NAME -- a string -- and has no way to learn its runtime class;
+//!     the check has to happen after `pMatManager->GetItem` has
+//!     resolved it.  Note the deliberate contrast with
+//!     `coated_material`, which ERRORS on an unsupported substrate:
+//!     there the substrate is outside the BSDF's evaluable set, whereas
+//!     here it is merely not the one the preset was calibrated for, and
+//!     the composition is legal (`fabric satin` over a Lambertian is
+//!     chalk with a faint sheen -- a real thing, just not satin).
+//!
+//!  3. An omitted `sheen_color` becomes the PRESET's colour where the
+//!     preset sets one (velvet), otherwise an OWNED UNIFORM WHITE
+//!     painter.  The preset's colour is an RGB triple, not a painter
+//!     name, so only this layer can honour it -- and resolving the
+//!     unset name through the painter manager would bind the built-in
+//!     `none` painter, which is BLACK: a sheen lobe switched off, the
+//!     opposite of the intended default.  That is exactly the trap
+//!     `coated_material`'s `coat_tint` already documented (see
+//!     AddCoatedMaterial above).  A named painter still resolves
+//!     normally, so an author who genuinely wants a black (disabled)
+//!     sheen binds one explicitly.
+/// \return TRUE if successful, FALSE otherwise
+bool Job::AddFabricMaterial(
+							const char* name,				///< [in] Name of the material
+							const char* fabric,				///< [in] Preset name
+							const char* base,				///< [in] Name of the substrate material
+							const char* sheen_color,		///< [in] Sheen / dye tint
+							const char* sheen_roughness,	///< [in] Charlie alpha
+							const char* weave_rotation		///< [in] Weave angle in radians
+							)
+{
+	IMaterial* pBase = pMatManager->GetItem( base );
+	if( !pBase ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"fabric_material `%s`: base material `%s` is not a registered material",
+			name, base );
+		return false;
+	}
+
+	const char* why = 0;
+	if( !FabricMaterial::IsSupportedSubstrate( *pBase, &why ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"fabric_material `%s`: base `%s` is not a supported substrate -- %s.  "
+			"Supported: %s.  (pbr_metallic_roughness_material resolves to a "
+			"ggx_material at scene-build time, so it is accepted.)",
+			name, base, why ? why : "unsupported",
+			FabricMaterial::SubstrateAllowlistText() );
+		return false;
+	}
+
+	const FabricPreset& preset = LookupFabricPreset( fabric );
+
+	// WARN, not error: the composition is legal and may be deliberate.
+	if( !FabricMaterial::MatchesPresetSubstrate( *pBase, preset ) ) {
+		// Name the class the author ACTUALLY bound, not just its name --
+		// docs/CLOTH_FABRIC_DESIGN.md 9.3's worked message is
+		// "bound to %s `%s`" (class + name).  Without the class the
+		// author learns what was expected but not what they wrote, which
+		// is the half of the diagnostic they cannot look up themselves.
+		GlobalLog()->PrintEx( eLog_Warning,
+			"fabric_material `%s`: fabric `%s` expects a %s substrate for its "
+			"characteristic highlight, but `base` is bound to %s `%s`; the sheen "
+			"lobe will apply but the weave/anisotropy the preset implies will "
+			"not.  See docs/CLOTH_FABRIC_DESIGN.md 9.3, or call make_fabric "
+			"which mints a matching substrate.",
+			name, preset.name, FabricSubstrateClassText( preset.substrate ),
+			FabricMaterial::SubstrateClassText( *pBase ), base );
+	}
+
+	IPainter* pColorOwned = 0;
+	IPainter* pColor = 0;
+	const bool colorUnset = ( !sheen_color || !sheen_color[0] || std::string( sheen_color ) == "none" );
+	if( colorUnset ) {
+		RISE_API_CreateUniformColorPainter( &pColorOwned,
+			preset.setsSheenColor ? preset.sheenColor : RISEPel( 1.0, 1.0, 1.0 ) );
+		pColor = pColorOwned;
+	} else {
+		pColor = pPntManager->GetItem( sheen_color );
+	}
+	if( !pColor ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"fabric_material `%s`: sheen_color `%s` is not a registered colour painter",
+			name, sheen_color );
+		return false;
+	}
+
+	// requireSingle=true on BOTH scalars.  `sheen_roughness` is read as
+	// `.v[0]` / GetValueAtNM by FabricBRDF::ResolveFabric, and
+	// `weave_rotation` is ONE angle; a per-channel painter bound to
+	// either would have its green and blue silently ignored on the RGB
+	// pipe while the spectral pipe read a DIFFERENT number through
+	// GetValueAtNM.  Refuse at parse time instead.
+	IScalarPainter* pRoughness = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "fabric_material", name, "sheen_roughness", sheen_roughness, /*requireSingle*/ true );
+	IScalarPainter* pRotation  = ResolveOrDiagnoseScalar( pScalarPntManager, pPntManager, "fabric_material", name, "weave_rotation",  weave_rotation,  /*requireSingle*/ true );
+
+	if( !pRoughness || !pRotation ) {
+		safe_release( pRoughness );
+		safe_release( pRotation );
+		safe_release( pColorOwned );
+		return false;
+	}
+
+	IMaterial* pMaterial = 0;
+	RISE_API_CreateFabricMaterial( &pMaterial, *pBase, *pColor, *pRoughness, *pRotation );
+
+	const bool ok = pMaterial ? RegisterOrDiag( pMatManager, pMaterial, name, "material" ) : false;
+
+	safe_release( pMaterial );
+	safe_release( pRoughness );
+	safe_release( pRotation );
+	safe_release( pColorOwned );
 
 	return ok;
 }
