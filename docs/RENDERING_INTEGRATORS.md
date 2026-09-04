@@ -335,34 +335,56 @@ Two practical considerations:
 
 ## 7. Known limitations
 
-- **BDPT/VCM over-count a FLAT, ZERO-THICKNESS full-sphere transmissive
-  material by 100-350x** (`IMaterial::ScattersFullSphere() &&
-  CouldLightPassThrough()` — today, a `weave_material` under
-  `transmission thin`). Cause: the unguarded vertex-connection geometric
+- **RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a).** This entry used to
+  read "BDPT/VCM over-count a FLAT, ZERO-THICKNESS full-sphere
+  transmissive material by 100-350x" (`IMaterial::ScattersFullSphere()
+  && CouldLightPassThrough()` — a `weave_material` under `transmission
+  thin`), diagnosed against the unguarded vertex-connection geometric
   term `G = cosA·cosB/dist²` in
   [`BDPTUtilities::GeometricTerm`](../src/Library/Utilities/BDPTUtilities.h)
-  (floored only at `dist² < 1e-20`) is unbounded as an eye-subpath vertex
-  on the front face and a light-subpath vertex on the back face of the
-  same infinitesimally-thin surface land arbitrarily close together —
-  both `|cos|` terms stay ≈ 1 while `1/dist²` diverges. `HairMaterial`,
-  the only prior full-sphere material, is a curve with real
-  cross-sectional separation between front and back, so it never
-  triggers this; a flat weave is the first geometry class that can.
-  VCM shares the same unguarded form in its own connection/merge code
-  and is expected to reproduce the same class of defect (not separately
-  measured). **Mitigated, not fixed**: `AutoRasterizer`'s Tier-1 static
-  heuristic now excludes this material class from its own VCM routing
-  signal (`SceneHasTransmissiveMaterial` requires
-  `!ScattersFullSphere()`, so `> render auto` no longer walks into this),
-  and BDPT/VCM each log a one-time warning
-  ([`WeaveBidirectionalWarning.h`](../src/Library/Interfaces/WeaveBidirectionalWarning.h))
-  when such a material is rendered under an explicit `bdpt_*`/`vcm_*`
-  pin. The geometric-term singularity itself (a minimum-connection-
-  distance regularization, or a redesign of how BDPT/VCM connect through
-  a zero-thickness two-sided surface) is NOT fixed — reproduction,
-  measured numbers and the full writeup:
-  [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 20. Prefer a
-  PT rasterizer for scenes with this material class until it is.
+  (floored only at `dist² < 1e-20`), theorised to diverge when an
+  eye-subpath vertex on the front face and a light-subpath vertex on the
+  back face of the same infinitesimally-thin surface land arbitrarily
+  close together. **That measurement does not reproduce.** Re-run
+  against the exact scene it was taken on
+  (`tests/FabricRenderTest.cpp::TestBacklitSheerCurtain`) with
+  `oidn_denoise FALSE`, BDPT/PT settles at 0.899-0.900 and VCM/PT at
+  0.932-0.933, stable across five independent seed bases at 256 and 1024
+  spp, on both the MEAN and the MAX-pixel luminance (no residual
+  firefly); a harsher touching-distance mesh-area-light stress scene
+  (`TestTouchingAreaLitCurtainAllIntegrators`, deliberately shaped to
+  maximise same-object near-coincident vertex connections) gives
+  BDPT/PT = VCM/PT = 1.01 with 0 fireflies.
+  The root cause was the OTHER side of an unrelated, same-day fix: PT's
+  own NEE shadow ray toward a light behind the curtain had no epsilon
+  bump of its own and relied entirely on
+  `RayBilinearPatchIntersection`'s self-hit rejection, which pre-fix
+  (commit `d01a320a`, docs/CLOTH_FABRIC_DESIGN.md §15 debt 21) accepted
+  ANY positive `dRange` — spuriously self-occluding the large majority
+  of those shadow rays and deflating PT's OWN reference value by ~370x
+  on this exact scene. BDPT's and VCM's connection-visibility shadow
+  rays were never meaningfully exposed to that bug: both apply their own
+  `BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON` (`= 1e-6`, six orders of
+  magnitude above the ~1e-12 FP-noise floor debt 21 measured) via
+  `Ray::Advance()` before casting, so their absolute output barely moved
+  across the debt-21 fix — the "100-350x" figure was a stable BDPT/VCM
+  number compared against a broken PT reference, the "PT may be the
+  broken one" trap
+  [bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)'s step 0
+  pre-flight names. The theoretical risk this entry described
+  (`GeometricTerm` has no PRINCIPLED floor beyond the generic
+  `dist < BDPT_RAY_EPSILON` / `distSq < 1e-20` checks) remains
+  architecturally true — a future full-sphere material on a code path
+  lacking BDPT/VCM's own epsilon-bump protection could still, in
+  principle, trigger it — but it is not, and evidently never was, what
+  this scene's measurement showed. `AutoRasterizer`'s Tier-1 routing
+  exclusion for this material class has been LIFTED (it routes like any
+  other `CouldLightPassThrough()` material now) and the one-time BDPT/VCM
+  warning has been removed. A smaller, separate ~7-10% BDPT/VCM-under-PT
+  residual remains on the delta-point-light backlit scene specifically
+  (it is <2% on the mesh-arealight stress scene) — not root-caused,
+  flagged as a follow-up, not blocking. Full writeup:
+  [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 20.
 
 ## 8. Cross-references
 

@@ -30,7 +30,6 @@
 #include "../Utilities/AdaptiveSamplingConfig.h"
 #include "../Utilities/Color/CIE_XYZ.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"
-#include "../Interfaces/WeaveBidirectionalWarning.h"
 #include "../Interfaces/ILog.h"
 #include <stdint.h>
 
@@ -55,9 +54,6 @@ namespace RISE
 				// §14 item 11) -- see WarnIfNonPTRenderHasLiveSignalConsumer's
 				// own doc comment (ISurfaceSignalProvider.h).
 				WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "BDPT" );
-				// P2-B (docs/CLOTH_FABRIC_DESIGN.md 10/15) -- see
-				// WeaveBidirectionalWarning.h's own doc comment.
-				WarnIfBidirectionalRenderHasFullSphereTransmissive( pScene, GlobalLog(), "BDPT" );
 			}
 
 			/// Override to use BDPTRasterizerBase::stabilityConfig instead of

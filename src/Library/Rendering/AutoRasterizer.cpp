@@ -64,31 +64,51 @@ namespace
 	//! the first match).  Mirrors the `MediaScan` idiom in
 	//! LightSampler::Prepare (return false = stop, true = continue).
 	//!
-	//! `CouldLightPassThrough() && !ScattersFullSphere()`, NOT
-	//! `CouldLightPassThrough()` ALONE (docs/CLOTH_FABRIC_DESIGN.md §15,
-	//! REVIEW_P2R7.md P2).  A `weave_material` under `transmission thin`
-	//! ALSO reports `CouldLightPassThrough() == true` (P2-B) since it
-	//! genuinely lets light through — but it is a THIN CLOTH with a
-	//! full-sphere CONTINUUM response (a delta gap lobe plus a Lambertian
-	//! diffuse-transmission lobe spread over the whole far hemisphere),
-	//! not a dielectric boundary that concentrates refracted energy into
-	//! a caustic the way glass/water/gems do.  Routing it to VCM on this
-	//! signal alone reproduces the same unbounded
-	//! `BDPTUtilities::GeometricTerm` vertex-connection singularity a
-	//! flat, zero-thickness two-sided surface triggers in BDPT (measured
-	//! 100-350x over PT, tests/FabricRenderTest.cpp) — VCM shares that
-	//! same unguarded `cosA*cosB/dist^2` connection term
-	//! (`VCMIntegrator.cpp`).  `ScattersFullSphere()` is exactly the
-	//! signal that tells the two apart WITHOUT needing a live ray hit
-	//! (which `IMaterial::GetSpecularInfo()` would, and this is a cheap
-	//! static per-material scan): every material in the tree that reports
-	//! `CouldLightPassThrough()` today is either a delta-only dielectric
-	//! (`DielectricMaterial`/`PerfectRefractorMaterial`, `ScattersFullSphere()`
-	//! stays at the IMaterial default `false`) or `weave_material` under
-	//! `thin` (`ScattersFullSphere() == true`, P2-B) — so the conjunction
-	//! keeps the former on the VCM caustic path and routes the latter
-	//! through the `hasTransmissive && hasPositional` test as `false`,
-	//! falling through to PT below.
+	//! `CouldLightPassThrough()` ALONE.  A `weave_material` under
+	//! `transmission thin` also reports `CouldLightPassThrough() == true`
+	//! (P2-B) — a flat, zero-thickness `ScattersFullSphere()` continuum
+	//! material — and this signal used to carry a
+	//! `&& !mat->ScattersFullSphere()` exclusion (docs/CLOTH_FABRIC_DESIGN.md
+	//! §15 debt 20, REVIEW_P2R7.md P2) after a `100-350x over PT` BDPT/VCM
+	//! measurement on the shipped backlit-curtain scene
+	//! (tests/FabricRenderTest.cpp).
+	//!
+	//! RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a): that measurement did
+	//! not reproduce a BDPT/VCM-side defect.  Re-run against the identical
+	//! scene on top of commit `d01a320a` (the SAME-DAY, otherwise-unrelated
+	//! debt-21 fix — a scale-relative self-hit floor in
+	//! `RayBilinearPatchIntersection`, the shared ray-vs-quad routine used
+	//! by every ray cast against this curtain: primary, continuation AND
+	//! shadow) gives BDPT/PT = 0.899-0.900 and VCM/PT = 0.932-0.933,
+	//! stable across five independent seed bases at 256 and 1024 spp, on
+	//! BOTH the mean and the max-pixel luminance (no residual firefly
+	//! signature); a harsher "touching-distance" mesh-area-light stress
+	//! scene (light plane 0.01 units behind the curtain,
+	//! `max_light_depth 12`, deliberately shaped to maximise same-object
+	//! near-coincident vertex connections) gives BDPT/PT = VCM/PT = 1.01,
+	//! 0 fireflies by a 4x-neighbourhood-median criterion.  The root
+	//! cause was the debt-21 bug itself, from the OTHER side: PT's own
+	//! NEE shadow ray toward a light behind the curtain had no epsilon
+	//! bump of its own and relied entirely on the geometry routine's
+	//! self-hit rejection, which pre-fix accepted ANY positive `dRange`
+	//! (literally `dRange > 0`, not even an absolute `NEARZERO` compare)
+	//! — spuriously self-occluding the overwhelming majority of those
+	//! shadow rays and deflating PT's OWN reference value by ~370x on
+	//! this exact scene.  BDPT's and VCM's connection-visibility shadow
+	//! rays were never meaningfully exposed to that bug: both apply their
+	//! own `BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON` (`= 1e-6`, six orders of
+	//! magnitude above the ~1e-12 FP-noise floor debt 21 measured) via
+	//! `Ray::Advance()` before casting (BDPTIntegrator.cpp / VCMIntegrator.cpp),
+	//! so their absolute output barely moved across the debt-21 fix
+	//! (BDPT read ~0.0253 before AND after) — the "100-350x" figure was
+	//! comparing a stable BDPT/VCM number against a PT reference that was
+	//! itself broken, the "PT may be the broken one" trap
+	//! docs/skills/bdpt-vcm-mis-balance.md's step 0 warns about.  Full
+	//! writeup: CLOTH_FABRIC_DESIGN.md §15 debt 20.  The exclusion below
+	//! is therefore LIFTED — this material class routes through the same
+	//! `hasTransmissive && hasPositional` test as any other dielectric —
+	//! see `tests/AutoRasterizerTest.cpp`'s "thin weave + point light" case
+	//! for the (now VCM-routing) regression.
 	bool SceneHasTransmissiveMaterial( const IScene& scene )
 	{
 		struct TransmissiveScan : public IEnumCallback<IObject>
@@ -98,7 +118,7 @@ namespace
 			bool operator()( const IObject& obj )
 			{
 				const IMaterial* mat = obj.GetMaterial();
-				if( mat && mat->CouldLightPassThrough() && !mat->ScattersFullSphere() ) {
+				if( mat && mat->CouldLightPassThrough() ) {
 					found = true;
 					return false;   // one is enough — stop enumeration
 				}

@@ -381,15 +381,16 @@ standard_object
 }
 )SCENE";
 
-// P2-B / REVIEW_P2R7.md P2: a `weave_material` under `transmission thin` is
-// ALSO `CouldLightPassThrough() == true` (docs/CLOTH_FABRIC_DESIGN.md 10/15),
-// but it is a full-sphere CONTINUUM material (a delta gap lobe plus a
-// Lambertian diffuse-transmission lobe), not the dielectric-caustic kind
-// `hasTransmissive && hasPositional` exists to route to VCM -- routing it
-// there reproduces BDPT/VCM's shared unguarded vertex-connection geometric-
-// term singularity on a flat, zero-thickness surface (measured 100-350x over
-// PT, tests/FabricRenderTest.cpp).  Append to a body to add the "thin weave
-// present" signal, on `kGlassSphere`'s own pattern.
+// A `weave_material` under `transmission thin` is `CouldLightPassThrough()
+// == true` (docs/CLOTH_FABRIC_DESIGN.md 10/15) -- a full-sphere CONTINUUM
+// material (a delta gap lobe plus a Lambertian diffuse-transmission lobe),
+// not the dielectric-caustic kind, but it now routes through the same
+// `hasTransmissive && hasPositional` -> VCM test as any other transmissive
+// material (docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20, RESOLVED
+// 2026-09-04: the "100-350x over PT" measurement that once excluded it was
+// an UNRELATED PT-side bug, not a BDPT/VCM defect -- see the routing
+// assertion below).  Append to a body to add the "thin weave present"
+// signal, on `kGlassSphere`'s own pattern.
 static const char* kWeaveThinCurtain = R"SCENE(
 weave_material
 {
@@ -1188,13 +1189,25 @@ int main()
 	CheckStaticRoute( "dielectric, area-lit only -> PT",
 		kAutoAuto, std::string(kSceneAreaLitOnly) + kGlassSphere, "p2_diel_nopos", AutoIntegratorChoice::PT );
 
-	// (c2) P2-B / REVIEW_P2R7.md P2: a `transmission thin` weave_material
-	// PLUS a positional point light -- the exact `hasTransmissive &&
-	// hasPositional` shape the shipped sheer-curtain scene has -- must NOT
-	// route to VCM.  `SceneHasTransmissiveMaterial`'s `!ScattersFullSphere()`
-	// conjunction (AutoRasterizer.cpp) is what keeps this on PT.
-	CheckStaticRoute( "thin weave + point light -> PT (not VCM)",
-		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::PT );
+	// (c2) RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a; was P2-B /
+	// REVIEW_P2R7.md P2's "must NOT route to VCM" guard).  A
+	// `transmission thin` weave_material PLUS a positional point light --
+	// the exact `hasTransmissive && hasPositional` shape the shipped
+	// sheer-curtain scene has -- was excluded from VCM routing
+	// (`SceneHasTransmissiveMaterial`'s `!ScattersFullSphere()`
+	// conjunction) after a "100-350x over PT" BDPT/VCM measurement on
+	// this material class turned out to be measuring an UNRELATED PT-side
+	// bug (debt 21's shadow-ray self-intersection, fixed same-day in
+	// `RayBilinearPatchIntersection`), not a BDPT/VCM defect -- re-measured
+	// post-fix at BDPT/PT 0.90, VCM/PT 0.93 (five seed bases, mean and
+	// max-pixel luminance) and BDPT/PT = VCM/PT = 1.01 on a harsher
+	// touching-distance stress scene.  Full writeup:
+	// docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20.  The exclusion is
+	// lifted (`AutoRasterizer.cpp`'s `SceneHasTransmissiveMaterial` is
+	// `CouldLightPassThrough()` alone again), so this shape now routes
+	// like any other `hasTransmissive && hasPositional` scene -- VCM.
+	CheckStaticRoute( "thin weave + point light -> VCM (debt 20 resolved)",
+		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::VCM );
 
 	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
 	//     the static tier.  BDPT is NOT statically separable from the

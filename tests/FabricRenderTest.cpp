@@ -190,6 +190,10 @@ struct ImageStats
 {
 	double mean[3];
 	double luminance;	// mean(mean[0..2]) -- the scalar every check below uses
+	double maxLum;		// Max per-pixel luminance, to catch a residual
+						// firefly-style blow-up that a healthy MEAN could
+						// hide (the mean/median/p99/max battery
+						// docs/skills/bdpt-vcm-mis-balance.md calls for).
 	bool   valid;
 };
 
@@ -201,13 +205,17 @@ static ImageStats ComputeStats( const CapturingRasterizerOutput& cap )
 	}
 
 	double sum[3] = { 0, 0, 0 };
+	double maxLum = 0.0;
 	for( const RISEColor& c : cap.pixels ) {
 		sum[0] += c.base.r;
 		sum[1] += c.base.g;
 		sum[2] += c.base.b;
+		const double pixLum = (c.base.r + c.base.g + c.base.b) / 3.0;
+		if( pixLum > maxLum ) maxLum = pixLum;
 	}
 	for( int c = 0; c < 3; c++ ) s.mean[c] = sum[c] / double(cap.pixels.size());
 	s.luminance = (s.mean[0] + s.mean[1] + s.mean[2]) / 3.0;
+	s.maxLum = maxLum;
 	s.valid = true;
 	return s;
 }
@@ -432,6 +440,23 @@ static std::string RasterizerBDPTRgbNoEnv( unsigned int samples, unsigned int ma
 		"\toidn_denoise FALSE\n";
 	if( indirectClamp > 0.0 ) ss << "\tindirect_clamp " << indirectClamp << "\n\tdirect_clamp " << indirectClamp << "\n";
 	ss <<
+		"}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
+// VCM twin of RasterizerBDPTRgbNoEnv -- docs/CLOTH_FABRIC_DESIGN.md section
+// 15 debt 20's VCM measurement (never taken when that debt was originally
+// filed; see TestBacklitSheerCurtain).
+static std::string RasterizerVCMRgbNoEnv( unsigned int samples, unsigned int maxEyeDepth, unsigned int maxLightDepth )
+{
+	std::ostringstream ss;
+	ss <<
+		"vcm_pel_rasterizer\n{\n"
+		"\tsamples " << samples << "\n"
+		"\tmax_eye_depth " << maxEyeDepth << "\n\tmax_light_depth " << maxLightDepth << "\n"
+		"\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n"
+		"\toidn_denoise FALSE\n"
 		"}\n\n"
 		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
 	return ss.str();
@@ -731,38 +756,72 @@ static void TestPtVsBdpt()
 // the ratio assertion is written the other way around: `thin` must
 // itself clear a small absolute floor while `none` stays exactly 0.
 //
-// PT-vs-BDPT ON THE THIN SCENE IS NOT ASSERTED, AND THAT IS A REAL,
-// DISCLOSED GAP -- not an oversight.  Measured BDPT (same seeds,
-// same scene, `indirect_clamp`/`direct_clamp` OFF): 0.02528 / 0.02528
-// / 0.02528 -- i.e. BDPT reads ~325-346x BROADER than PT, tightly
-// REPRODUCIBLE across seeds (not the seed-to-seed spread a heavy tail
-// would show).  Reducing `indirect_clamp`/`direct_clamp` to 0.01 drops
-// BDPT to 0.00801 (still ~100x PT); to 0.001 it drops to 0.000801 --
-// i.e. the clamped MEAN tracks the clamp CEILING almost exactly at
-// every clamp level tried, which is the signature of a persistently-
-// hit near-singular contribution, not a rare firefly a clamp
-// ordinarily tames.  The likely cause: this is RISE's first FLAT,
-// zero-thickness, `ScattersFullSphere()` geometry (HairMaterial, the
-// only prior full-sphere material, is a curve with real cross-section
-// separation between its "front" and "back").  A BDPT light subpath
-// from a point light travelling toward the curtain and a camera
-// subpath vertex on the same infinitesimally-thin quad can land at
-// literally the SAME 3D point from opposite sides, and a vertex-to-
-// vertex connection's geometry term is `1/distance^2` -- unbounded as
-// that distance goes to zero, a degeneracy a curved or volumetric
-// surface does not have.  This was NOT chased further: it is very
-// likely a BDPT/connection-geometry issue for flat full-sphere
-// materials in general, not a `weave_material` BSDF defect --
-// `value()`/`Pdf()` for the transmission lobes are independently
-// verified reciprocal to 0 error (SPFBSDFConsistencyTest Part E2),
-// energy-bounded (LayeredWhiteFurnaceTest rows 50-51) and correctly
-// normalised over the full sphere (SPFPdfConsistencyTest's P2-B
-// block) by three UNRELATED harnesses that do not go through BDPT at
-// all -- but confirming the diagnosis and fixing it is integrator
-// work outside this slice's scope (the material, not BDPT's connection
-// strategy).  Recorded here rather than silenced with a loose bound:
-// see docs/CLOTH_FABRIC_DESIGN.md 10's debts list.
+// PT-vs-BDPT/VCM ON THE THIN SCENE -- RESOLVED 2026-09-04 (chip 4 /
+// task_93ff4a8a; docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20).  This
+// comment used to record "BDPT reads ~325-346x BROADER than PT" and
+// leave the ratio unasserted.  That measurement was retaken with
+// `oidn_denoise FALSE` and the debt-21 self-hit-floor fix
+// (`RayBilinearPatchIntersection.cpp`, commit `d01a320a`, landed the
+// SAME DAY as the original 100-350x measurement but a couple of hours
+// later) already in tree, and it does not reproduce: BDPT/PT settles at
+// 0.899-0.900 and VCM/PT at 0.932-0.933, stable across five independent
+// seed bases at both 256 and 1024 spp, on the MEAN and the MAX-pixel
+// luminance (no residual firefly).
+//
+// Diagnosis: the "100-350x" figure was comparing a STABLE BDPT/VCM
+// number against a PT reference that was itself broken by an UNRELATED
+// bug -- debt 21.  PT's own NEE shadow ray toward the point light behind
+// the curtain has no epsilon bump of its own and relied entirely on
+// `RayBilinearPatchIntersection`'s self-hit rejection, which pre-fix
+// accepted ANY positive `dRange` (literally `dRange > 0` at the three
+// hit-acceptance sites, not even an absolute `NEARZERO` compare) --
+// spuriously self-occluding the large majority of those shadow rays and
+// deflating PT's reference value by roughly 370x on this exact scene
+// (this file's own historical measurement, `7.3-7.8e-5`, is that
+// deflated number; today's healthy PT reads `0.0281`).  BDPT's and
+// VCM's OWN connection-visibility shadow rays were never meaningfully
+// exposed to that bug: both apply a much larger epsilon bump of their
+// own (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON = 1e-6`, six orders of
+// magnitude above the ~1e-12 FP-noise floor debt 21 measured) via
+// `Ray::Advance()` before casting (BDPTIntegrator.cpp / VCMIntegrator.cpp),
+// so their absolute output barely moved across the debt-21 fix -- BDPT
+// read ~0.0253 both before and after.  This is the "PT may be the
+// broken one" trap docs/skills/bdpt-vcm-mis-balance.md's step 0
+// pre-flight warns about, generalised: the theoretical risk this debt
+// named (`BDPTUtilities::GeometricTerm`'s `cosA*cosB/dist^2` has no
+// PRINCIPLED floor beyond the existing `dist < BDPT_RAY_EPSILON` /
+// `distSq < 1e-20` checks, so a flat, zero-thickness, two-sided
+// material COULD in principle drive it unbounded) is architecturally
+// still true and worth remembering if a future full-sphere material
+// lands on a code path that lacks BDPT/VCM's own epsilon-bump
+// protection -- but it is not, and evidently was never, the thing this
+// scene's 100-350x measurement was showing.
+//
+// A harsher "touching-distance" stress scene (`TestTouchingAreaLitCurtainAllIntegrators`
+// below: a MESH area light 0.01 units behind the curtain, `max_light_depth
+// 12`, deliberately shaped to maximise same-object near-coincident
+// vertex connections) gives BDPT/PT = VCM/PT = 1.01 with 0 fireflies --
+// the most aggressive repro this session could construct still does not
+// trip the theoretical singularity.
+//
+// A smaller, separate ~7-10% BDPT/VCM-under-PT residual remains on THIS
+// delta-point-light scene specifically (it is <2% on the mesh-arealight
+// stress scene) -- NOT root-caused this round, flagged as a follow-up,
+// and bounded generously below rather than tightened to a number that
+// was not actually derived.
 static const double kMinBrightnessAbsolute = 1e-6;
+
+// Empirically measured (five seed bases, 256 and 1024 spp): BDPT/PT
+// stable at 0.899-0.900, VCM/PT stable at 0.932-0.933, on both mean and
+// max-pixel luminance.  20% gives ~2x headroom over the measured
+// residual while still failing hard on any regression toward the old
+// 100-350x singularity.
+static const double kThinCurtainBdptPtTol = 0.20;
+static const double kThinCurtainVcmPtTol = 0.20;
+// The old defect tracked the render's own clamp ceiling at 100-350x of
+// PT on both mean AND max; a firefly-free regime keeps max/mean well
+// under 2x even accounting for a dim, noisy 256-spp image.
+static const double kThinCurtainMaxRatioBound = 3.0;
 
 static void TestBacklitSheerCurtain()
 {
@@ -808,10 +867,29 @@ static void TestBacklitSheerCurtain()
 	// coordinate magnitude, not machine epsilon in absolute terms --
 	// measured at 1e-12 to 3e-12 on this scene's world-scale coordinates,
 	// straddling the threshold and spuriously self-shadowing ~94% of
-	// this curtain's own NEE shadow rays toward a light behind it (a
-	// point light's zero solid angle never triggers the analogous
-	// continuation-ray path, which is why the delta-light case in this
-	// same file was never affected).  As `transmit` grows, PT's MIS
+	// this curtain's own NEE shadow rays toward a light behind it.
+	// CORRECTION 2026-09-04 (chip 4 / task_93ff4a8a): this paragraph
+	// used to add "a point light's zero solid angle never triggers the
+	// analogous continuation-ray path, which is why the delta-light
+	// case in this same file was never affected" -- that is WRONG.  A
+	// point light's shadow ray is exactly as exposed to this bug as a
+	// mesh light's (both originate ON the curtain and travel toward a
+	// light position, through the identical `RayBilinearPatchIntersection`
+	// self-hit check); "never affected" was true only for the SUPER-
+	// LINEAR-CURVE symptom this debt-21 paragraph is about (a delta
+	// light has no competing BSDF-sampling strategy for MIS to shift
+	// share toward, so the bug shows as a flat multiplicative deflation
+	// of the mean rather than a curve-shape distortion) -- it was NOT
+	// true of the deflation itself.  `TestBacklitSheerCurtain` below
+	// measured this directly: its own `transmission thin` PT mean on
+	// the delta-light scene moved from `7.3-7.8e-5` (this debt's
+	// original measurement, before the fix below existed) to `0.0281`
+	// (after) -- a ~370x correction, fully consistent with the ~94%
+	// self-shadow rate this paragraph quotes for the mesh-light case.
+	// See that function's own comment block for the follow-on: this is
+	// also the real explanation behind debt 20's "BDPT reads 100-350x
+	// over PT" measurement on the SAME delta-light scene -- PT, not
+	// BDPT, was the broken reference.  As `transmit` grows, PT's MIS
 	// weight legitimately shifts share from the (broken) NEE strategy to
 	// the (unaffected) BSDF-sampling strategy, so the combined estimate
 	// climbed from mostly-broken toward mostly-correct -- an artificial
@@ -822,17 +900,10 @@ static void TestBacklitSheerCurtain()
 	// from the one fix.  See `TestAreaLitSheerWeave` below for the
 	// dedicated regression.
 
-	// PT-vs-BDPT on the thin scene is measured and PRINTED, but NOT
-	// asserted -- see the block comment above this function for the
-	// measured ~100-350x discrepancy (tracks the render's own clamp
-	// ceiling at every clamp level tried, i.e. not simply MC noise).
-	// Diagnosed as an INTEGRATOR limitation (BDPTUtilities::GeometricTerm's
-	// unguarded vertex-connection term on a flat, zero-thickness
-	// full-sphere surface), not a weave_material defect, and recorded as
-	// docs/CLOTH_FABRIC_DESIGN.md section 15 debt 20 /
-	// docs/RENDERING_INTEGRATORS.md's known-limitations section rather
-	// than hidden behind a loose bound or chased into BDPT's connection
-	// code, which is out of this slice's scope.
+	// PT-vs-BDPT/VCM on the thin scene -- RESOLVED debt 20 (see the block
+	// comment above this function for the mechanism and the full
+	// before/after numbers).  Now asserted, both mean and max, at the
+	// tolerances derived there.
 	const ImageStats bThin = RenderAndComputeStats(
 		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
 			RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "curtain_bdpt_thin" );
@@ -840,9 +911,32 @@ static void TestBacklitSheerCurtain()
 	if( !bThin.valid ) return;
 
 	const double btRatio = bThin.luminance / std::fmax( sThin.luminance, 1e-12 );
-	std::cout << "  thin: PT = " << sThin.luminance << "   BDPT = " << bThin.luminance
-		<< "   BDPT/PT = " << btRatio
-		<< "   (NOT asserted -- see CLOTH_FABRIC_DESIGN.md 15 debt 20 / RENDERING_INTEGRATORS.md known limitations)" << std::endl;
+	const double btMaxRatio = bThin.maxLum / std::fmax( sThin.maxLum, 1e-12 );
+	std::cout << "  thin: PT = " << sThin.luminance << " (max " << sThin.maxLum << ")"
+		<< "   BDPT = " << bThin.luminance << " (max " << bThin.maxLum << ")"
+		<< "   BDPT/PT = " << btRatio << "   BDPT_max/PT_max = " << btMaxRatio << std::endl;
+	Check( std::fabs( btRatio - 1.0 ) <= kThinCurtainBdptPtTol,
+		"curtain: BDPT/PT within tolerance on thin weave (debt 20 resolved -- was 100-350x)" );
+	Check( btMaxRatio <= kThinCurtainMaxRatioBound,
+		"curtain: BDPT shows no residual firefly on thin weave (max/max bounded)" );
+
+	// VCM on the same scene -- never separately measured when debt 20
+	// was filed (the design doc's own text says so); now measured and
+	// asserted alongside BDPT.
+	const ImageStats vThin = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power ),
+			RasterizerVCMRgbNoEnv( 256, 8, 8 ) ), "curtain_vcm_thin" );
+	Check( vThin.valid, "curtain: VCM render (thin) produced output" );
+	if( !vThin.valid ) return;
+	const double vtRatio = vThin.luminance / std::fmax( sThin.luminance, 1e-12 );
+	const double vtMaxRatio = vThin.maxLum / std::fmax( sThin.maxLum, 1e-12 );
+	std::cout << "  thin: PT = " << sThin.luminance << " (max " << sThin.maxLum << ")"
+		<< "   VCM = " << vThin.luminance << " (max " << vThin.maxLum << ")"
+		<< "   VCM/PT = " << vtRatio << "   VCM_max/PT_max = " << vtMaxRatio << std::endl;
+	Check( std::fabs( vtRatio - 1.0 ) <= kThinCurtainVcmPtTol,
+		"curtain: VCM/PT within tolerance on thin weave (debt 20 resolved -- was 100-350x)" );
+	Check( vtMaxRatio <= kThinCurtainMaxRatioBound,
+		"curtain: VCM shows no residual firefly on thin weave (max/max bounded)" );
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -852,18 +946,16 @@ static void TestBacklitSheerCurtain()
 //
 // A `weave_material` curtain (`transmission thin`, `gap 0`) directly
 // in front of a MESH area light (`lambertian_luminaire_material` on a
-// `clippedplane_geometry`, well-separated so BDPT's own unguarded
-// vertex-connection geometric term -- debt 20, a SEPARATE, still-open
-// integrator limitation on this same material class -- does not fire;
-// confirmed empirically during the debt-21 diagnosis, and NOT the same
-// scene as `TestBacklitSheerCurtain`'s point light + touching-distance
-// curtain, which DOES trip debt 20).  Debt 21's actual mechanism had
-// nothing to do with the mesh vs. delta light distinction (both share
-// the same shadow-ray self-intersection producer), but a MESH light is
-// what the original bug report used and what exercises the
-// `LightSampler::EvaluateDirectLighting` mesh-luminary MIS branch
-// (`p_light` / `p_bsdf` / `PowerHeuristic`) end to end, so it stays the
-// regression's own light type.
+// `clippedplane_geometry`, well-separated -- debt 20's own investigation
+// used this exact geometry as a "control" that does not trip it, and
+// debt 20 turned out to be resolved anyway, see `TestBacklitSheerCurtain`
+// and `TestTouchingAreaLitCurtainAllIntegrators` below).  Debt 21's
+// actual mechanism had nothing to do with the mesh vs. delta light
+// distinction (both share the same shadow-ray self-intersection
+// producer), but a MESH light is what the original bug report used and
+// what exercises the `LightSampler::EvaluateDirectLighting` mesh-luminary
+// MIS branch (`p_light` / `p_bsdf` / `PowerHeuristic`) end to end, so it
+// stays the regression's own light type.
 //
 // Two invariants, restored by the fix:
 //   (a) PT is LINEAR in `transmit`: PT(1.0)/PT(0.1) ~= 10, not the
@@ -945,6 +1037,112 @@ static void TestAreaLitSheerWeave()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 5. TOUCHING-DISTANCE STRESS -- docs/CLOTH_FABRIC_DESIGN.md 15 debt 20
+// (RESOLVED).  The most aggressive repro this session could construct
+// for the theoretical BDPT/VCM vertex-connection G-term singularity:
+// a MESH area light 0.01 units directly behind the curtain (not the
+// well-separated 1.5-unit gap `AreaLitCurtainCommon` uses), `gap 0` (so
+// every scattered ray uses the CONTINUUM diffuse-transmission lobe, not
+// the delta pass-through lobe), and `max_light_depth 12` / `max_eye_depth
+// 12` to give BDPT/VCM many chances to connect an eye-subpath vertex on
+// the curtain's front face to a light-subpath vertex on its back face at
+// near-zero separation.  If the theoretical singularity fires anywhere,
+// it is here.
+//
+// MEASURED (this machine, 1024 spp, 24x24, `oidn_denoise FALSE`):
+// PT mean 0.6293, BDPT mean 0.6369 (BDPT/PT 1.012), VCM mean 0.6368
+// (VCM/PT 1.012); max/mean 1.1x (PT), 1.1x (BDPT), 1.7x (VCM, a single
+// corner pixel, not a divergent blow-up); 0 firefly pixels by a
+// 4x-neighbourhood-median criterion on all three
+// (tools/ExrFireflyInspect.cpp).  Tolerances below are set well outside
+// that margin.
+static std::string TouchingAreaLitCurtainCommon( unsigned int width, unsigned int height )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 40.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_window\n\tcolor 1.0 1.0 1.0\n\tcolorspace Rec709RGB_Linear\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_window\n\texitance pnt_window\n\tmaterial none\n\tscale 4.0\n}\n\n"
+		"clippedplane_geometry\n{\n\tname window_quad\n"
+			"\tpta -1.4 -1.4 -0.01\n\tptb 1.4 -1.4 -0.01\n\tptc 1.4 1.4 -0.01\n\tptd -1.4 1.4 -0.01\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname window_obj\n\tgeometry window_quad\n\tmaterial mat_window\n\tposition 0 0 0\n}\n\n"
+		"weave_material\n{\n\tname mat_curtain\n\tfabric custom\n\ttransmission thin\n\tgap 0.0\n"
+			"\twarp_transmit 0.5\n\tweft_transmit 0.5\n}\n\n"
+		"clippedplane_geometry\n{\n\tname curtain_quad\n"
+			"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname curtain_obj\n\tgeometry curtain_quad\n\tmaterial mat_curtain\n\tposition 0 0 0\n}\n\n";
+	return ss.str();
+}
+
+static std::string RasterizerBDPTRgbNoEnvDeep( unsigned int samples )
+{
+	std::ostringstream ss;
+	ss <<
+		"bdpt_pel_rasterizer\n{\n\tsamples " << samples << "\n"
+		"\tmax_eye_depth 12\n\tmax_light_depth 12\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
+static std::string RasterizerVCMRgbNoEnvDeep( unsigned int samples )
+{
+	std::ostringstream ss;
+	ss <<
+		"vcm_pel_rasterizer\n{\n\tsamples " << samples << "\n"
+		"\tmax_eye_depth 12\n\tmax_light_depth 12\n"
+		"\tmerge_radius 0.0\n\tvc_enabled true\n\tvm_enabled true\n\toidn_denoise FALSE\n}\n\n"
+		"file_rasterizeroutput\n{\n\tpattern /tmp/fabric_render_test_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n";
+	return ss.str();
+}
+
+static const double kTouchingBdptPtTol = 0.15;
+static const double kTouchingVcmPtTol = 0.15;
+static const double kTouchingMaxRatioBound = 3.0;
+
+static void TestTouchingAreaLitCurtainAllIntegrators()
+{
+	std::cout << "=== 6. Touching-distance area-lit curtain, all integrators (debt 20 stress regression) ===" << std::endl;
+
+	const unsigned int W = 24, H = 24;
+	const unsigned int samples = 1024;
+	const std::string body = TouchingAreaLitCurtainCommon( W, H );
+
+	const ImageStats pt = RenderAndComputeStats(
+		AssembleScene( body, RasterizerPTRgbNoEnv( samples, 8 ) ), "touch_pt" );
+	const ImageStats bdpt = RenderAndComputeStats(
+		AssembleScene( body, RasterizerBDPTRgbNoEnvDeep( samples ) ), "touch_bdpt" );
+	const ImageStats vcm = RenderAndComputeStats(
+		AssembleScene( body, RasterizerVCMRgbNoEnvDeep( samples ) ), "touch_vcm" );
+
+	Check( pt.valid && bdpt.valid && vcm.valid,
+		"touching-distance curtain: all three renders (PT, BDPT, VCM) produced output" );
+	if( !pt.valid || !bdpt.valid || !vcm.valid ) return;
+	Check( pt.luminance > 1e-6, "touching-distance curtain: PT render is non-degenerate (not a black frame)" );
+
+	const double bdptRatio = bdpt.luminance / std::fmax( pt.luminance, 1e-12 );
+	const double vcmRatio = vcm.luminance / std::fmax( pt.luminance, 1e-12 );
+	const double bdptMaxRatio = bdpt.maxLum / std::fmax( pt.maxLum, 1e-12 );
+	const double vcmMaxRatio = vcm.maxLum / std::fmax( pt.maxLum, 1e-12 );
+
+	std::cout << "  PT = " << pt.luminance << " (max " << pt.maxLum << ")"
+		<< "   BDPT = " << bdpt.luminance << " (max " << bdpt.maxLum << ")"
+		<< "   VCM = " << vcm.luminance << " (max " << vcm.maxLum << ")" << std::endl;
+	std::cout << "  BDPT/PT = " << bdptRatio << "   VCM/PT = " << vcmRatio
+		<< "   BDPT_max/PT_max = " << bdptMaxRatio << "   VCM_max/PT_max = " << vcmMaxRatio << std::endl;
+
+	Check( std::fabs( bdptRatio - 1.0 ) <= kTouchingBdptPtTol,
+		"touching-distance curtain: BDPT/PT within tolerance (debt 20's singularity does not fire even at touching distance)" );
+	Check( std::fabs( vcmRatio - 1.0 ) <= kTouchingVcmPtTol,
+		"touching-distance curtain: VCM/PT within tolerance (debt 20's singularity does not fire even at touching distance)" );
+	Check( bdptMaxRatio <= kTouchingMaxRatioBound && vcmMaxRatio <= kTouchingMaxRatioBound,
+		"touching-distance curtain: no residual firefly on BDPT or VCM (max/max bounded)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
@@ -963,6 +1161,7 @@ int main( int argc, char** argv )
 	TestPtVsBdpt();
 	TestBacklitSheerCurtain();
 	TestAreaLitSheerWeave();
+	TestTouchingAreaLitCurtainAllIntegrators();
 
 	std::cout << "==========================================================" << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

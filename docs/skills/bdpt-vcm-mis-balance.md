@@ -54,13 +54,15 @@ description: |
 
 ## Procedure
 
-### 0. Rule out the four known non-MIS causes first
+### 0. Rule out the five known non-MIS causes first
 
-Four failure modes produce exactly the "bidirectional render
+Five failure modes produce exactly the "bidirectional render
 disagrees with PT" symptom (or, in cause 3's case, "PT itself
-disagrees with its own material's proven-linear response") while the
-MIS arithmetic is perfectly healthy.  All are minutes to check; do
-them before any integrator instrumentation:
+disagrees with its own material's proven-linear response"; or, in
+cause 4's case, "BDPT/VCM looks like it's over-counting when PT is
+actually the one under-counting") while the MIS arithmetic is
+perfectly healthy.  All are minutes to check; do them before any
+integrator instrumentation:
 
 0. **PT may be the broken one — check IOR-stack seeding when the
    camera (or an emitter) sits inside a dielectric.**  (Found
@@ -150,6 +152,46 @@ them before any integrator instrumentation:
    [precision-fix-the-formulation.md](precision-fix-the-formulation.md)'s
    "Bilinear-patch shadow-ray self-shadowing" example and
    [CLOTH_FABRIC_DESIGN.md §15 debt 21](../CLOTH_FABRIC_DESIGN.md).
+
+4. **The SAME geometry-layer bug that biases PT can also make a
+   PERFECTLY CORRECT BDPT/VCM look like the thing that's over-counting
+   — check whether PT's own reference value moved before trusting a
+   "BDPT/VCM reads Nx over PT" measurement.**  (Found 2026-09-04 on the
+   SAME `weave_material` full-sphere-transmissive curtain as cause 3,
+   this time lit by a DELTA `omni_light`: a prior session had measured
+   "BDPT reads 100-350x over PT" and filed it as a BDPT/VCM
+   vertex-connection geometric-term singularity —
+   `BDPTUtilities::GeometricTerm`'s `cosA·cosB/dist²`, plausible in
+   principle for a flat, zero-thickness, two-sided surface.  The
+   measurement does not reproduce once cause 3's fix lands.)  Cause 3's
+   own fast-diagnosis technique — "force each strategy to fire ALONE
+   and UNWEIGHTED, compare their means" — does NOT catch this variant:
+   a delta light has no competing BSDF-sampling strategy for NEE to be
+   compared against (`w = 1` unconditionally), so there is no SHAPE
+   distortion to notice, only a flat multiplicative deflation of PT's
+   mean that looks exactly like "PT is small and correct, BDPT/VCM are
+   huge and wrong" if you don't separately ask whether PT's number
+   itself is trustworthy.  Here, PT's own NEE shadow ray toward the
+   point light suffered the identical `RayBilinearPatchIntersection`
+   self-hit bug cause 3 describes — spuriously self-occluded ~94% of
+   the time, deflating PT's reference value by ~370x — while BDPT's and
+   VCM's OWN connection-visibility shadow rays were shielded from the
+   same bug by their own, much larger epsilon bump
+   (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON = 1e-6`, applied via
+   `Ray::Advance()` before casting — six orders of magnitude above the
+   ~1e-12 FP-noise floor the underlying bug produces), so BDPT's
+   absolute output barely moved across the fix (~0.0253 before and
+   after).  The "100-350x" figure was a STABLE BDPT/VCM number compared
+   against a PT reference that was itself broken.  **Diagnostic
+   takeaway**: before accepting a "BDPT/VCM over-counts by Nx"
+   conclusion, check whether BDPT/VCM's OWN connection/shadow-ray code
+   has an epsilon bump the PT code path you're comparing against
+   lacks — if it does, re-derive PT's reference value with that bug
+   fixed before trusting the ratio, exactly like step 0's "PT may be
+   the broken one" cause 0 says for the IOR-stack case, generalized to
+   any code path where BDPT/VCM happen to carry their own protective
+   margin and PT does not.  Full mechanism and numbers:
+   [CLOTH_FABRIC_DESIGN.md §15 debt 20](../CLOTH_FABRIC_DESIGN.md).
 
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy

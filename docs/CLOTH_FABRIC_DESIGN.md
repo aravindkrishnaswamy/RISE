@@ -4,10 +4,12 @@
 SHIPPED 2026-09-03 (slice P2-A, the structured `weave_material` triad, then
 slice P2-B, thin-cloth transmission — see §10.1a; P2-B left two known
 integrator-side debts open, **debt 20** — BDPT/VCM 100–350x over-count a
-full-sphere-transmissive weave, still open — and **debt 21** — PT's
-diffuse-transmission lobe scaled near-`transmit²`/`transmit^1.7` instead of
-linearly, **RESOLVED 2026-09-03**: not an integrator MIS defect at all, but a
-shadow-ray self-intersection epsilon bug in the shared
+full-sphere-transmissive weave, **RESOLVED 2026-09-04**: the measurement did
+not reproduce once an unrelated same-day fix (debt 21, below) corrected the
+PT reference it was compared against — see §15 debt 20 — and **debt 21** —
+PT's diffuse-transmission lobe scaled near-`transmit²`/`transmit^1.7` instead
+of linearly, **RESOLVED 2026-09-03**: not an integrator MIS defect at all,
+but a shadow-ray self-intersection epsilon bug in the shared
 `RayBilinearPatchIntersection` geometry routine — see §15 debt 21). Phase 3's
 weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
 **declined**, on the same precedent and for the same reasons as before; what
@@ -3750,27 +3752,30 @@ diffuse-transmission lobe.
 | `tests/AutoRasterizerTest.cpp` (new case, R7 P2) | "thin weave + point light -> PT (not VCM)" — the exact `hasTransmissive && hasPositional` shape the shipped sheer-curtain scene has no longer routes to VCM |
 | `scenes/FeatureBased/Materials/sheer_curtain.RISEscene` | the showcase render — reworked, verified against the three probes above, and rendered/inspected this session (see the scene's own header and `scenes/FeatureBased/README.md`) |
 
-**Debt 20: BDPT/VCM over-count this material by 100-350x — diagnosed as an
-INTEGRATOR limitation and mitigated, not fixed, in this slice.** Full
-reproduction, root cause and disposition: §15 debt 20 (and
+**Debt 20: BDPT/VCM over-count this material by 100-350x — RESOLVED
+2026-09-04 (chip 4 / task_93ff4a8a).** Full reproduction, root cause and
+disposition: §15 debt 20 (and
 [RENDERING_INTEGRATORS.md](RENDERING_INTEGRATORS.md)'s known-limitations
-section for the integrator-side reader). Summary: the unguarded
-`cosA·cosB/dist²` vertex-connection geometric term in
-`BDPTUtilities::GeometricTerm` is unbounded as an eye-subpath vertex and a
-light-subpath vertex on opposite faces of this FLAT, zero-thickness
-`ScattersFullSphere()` surface — RISE's first — land arbitrarily close
-together; `HairMaterial`, the only prior full-sphere material, is a curve
-with real front/back separation and never triggers this. Two mitigations
-shipped this round: `AutoRasterizer`'s Tier-1 heuristic no longer routes
-such a material to VCM (`CouldLightPassThrough() && !ScattersFullSphere()`,
-`tests/AutoRasterizerTest.cpp`), and BDPT/VCM each log a one-time warning
-when rendering one under an explicit pin
-([`WeaveBidirectionalWarning.h`](../src/Library/Interfaces/WeaveBidirectionalWarning.h)).
-The geometric-term singularity itself is integrator-core work outside this
-slice's scope. Flagged as a follow-up investigation
-(task_93ff4a8a in the session that shipped this).
+section for the integrator-side reader). Summary: the "100-350x" measurement
+does not reproduce once an unrelated, same-day fix (debt 21's
+`RayBilinearPatchIntersection` scale-relative self-hit floor) corrects the
+PT reference it was compared against — BDPT/PT and VCM/PT now settle at
+0.90-0.93 on the original scene and 1.01 on a harsher touching-distance
+stress scene, both stable and firefly-free. The mitigations shipped in the
+P2-B round (`AutoRasterizer`'s Tier-1 routing exclusion and the one-time
+BDPT/VCM warning) have been LIFTED/removed accordingly.
 
 ### 10.2 What Phase-1 evidence gates it
+
+*Coverage addendum (2026-09-04, review follow-up):* the theoretical
+exposure — `GeometricTerm` floors only below 1e-10 — was stressed with a
+DOUBLED thin weave (two coincident `transmission thin` quads at 1e-4, 1e-3
+and 1e-2 units, mesh area light behind, 256 spp): BDPT/PT 1.006–1.012 and
+VCM/PT 0.944–0.950 at every separation, max/mean identical across the three
+integrators, so the coincident front/back-vertex singularity does not
+manifest in practice. The ~5–10 % BDPT/VCM-under-PT residual on delta-light
+scenes stays an open, numbered follow-up guarded by the 20 %/15 % regression
+bands in `FabricRenderTest`, not hidden by them.
 
 Three conditions, all of which must hold:
 
@@ -4730,12 +4735,15 @@ yet known (§10.1).
     change. Full detail: [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
     §2.x follow-up.
 
-20. **NEW 2026-09-03 (P2-B fix round, REVIEW_P2R7.md) — BDPT/VCM
-    over-count a `transmission thin` weave by 100-350x on the shipped
+20. **RESOLVED 2026-09-04 (chip 4 / task_93ff4a8a). Originally filed
+    2026-09-03 (P2-B fix round, REVIEW_P2R7.md) as "BDPT/VCM over-count
+    a `transmission thin` weave by 100-350x on the shipped
     backlit-curtain scene; diagnosed as an INTEGRATOR limitation, not a
-    material defect, and NOT fixed in this slice.**
+    material defect." The measurement does not reproduce — the real
+    cause was the OTHER side of an unrelated, same-day bug (debt 21,
+    below), not a BDPT/VCM defect.**
 
-    **Reproduction.** `tests/FabricRenderTest.cpp::TestBacklitSheerCurtain`:
+    **Original reproduction.** `tests/FabricRenderTest.cpp::TestBacklitSheerCurtain`:
     a flat `weave_material` curtain (`fabric linen`, `transmission thin`)
     in front of an `omni_light`, 256 spp, 32x32, `oidn_denoise FALSE`.
     PT mean luminance ≈ 7.3-7.9e-5 across independent seeds; BDPT mean
@@ -4746,9 +4754,9 @@ yet known (§10.1).
     of a persistently-hit near-singular contribution, not rare fireflies
     a clamp ordinarily tames.
 
-    **Diagnosis (REVIEW_P2R7.md, independently re-derived from first
-    principles after ruling out every material-side candidate).** The
-    unguarded vertex-connection geometric term
+    **Original diagnosis (REVIEW_P2R7.md, independently re-derived from
+    first principles after ruling out every material-side candidate).**
+    The unguarded vertex-connection geometric term
     `G = cosA·cosB/dist²` in [`BDPTUtilities::GeometricTerm`](../src/Library/Utilities/BDPTUtilities.h)
     (floored only at `dist² < 1e-20`) is unbounded as `dist -> 0` while
     both `|cos|` terms stay ≈ 1. A `weave_material` sheer curtain is
@@ -4758,43 +4766,91 @@ yet known (§10.1).
     eye-subpath vertex and a light-subpath vertex sampled from opposite
     faces can never coincide there. On an infinitesimally-thin quad they
     can land arbitrarily close together, driving the geometric term
-    toward infinity. VCM shares the same unguarded `cosA·cosB/dist²`
-    form in its own connection/merge paths
-    (`src/Library/Rendering/VCMRasterizerBase.cpp` /
-    `src/Library/Shaders/BDPTIntegrator.cpp`'s shared merge code) and is
-    expected to reproduce the same class of defect, though it was not
-    separately measured this session.
+    toward infinity — a theoretically sound argument that this session
+    confirmed is architecturally still true, but which this scene's
+    measurement was NOT actually demonstrating (see below).
 
-    **What WAS fixed this session, and what was deliberately NOT.**
-    (a) `AutoRasterizer.cpp`'s Tier-1 static heuristic
-    (`SceneHasTransmissiveMaterial`) no longer routes a scene to VCM on
-    `CouldLightPassThrough()` alone — it now requires
-    `CouldLightPassThrough() && !ScattersFullSphere()`, which correctly
-    excludes a full-sphere continuum transmissive material (this weave
-    class) while keeping the genuine delta-dielectric caustic case
-    (glass/water/gems: `DielectricMaterial`/`PerfectRefractorMaterial`,
-    neither of which overrides `ScattersFullSphere()`) on the VCM path
-    unchanged. Covered by `tests/AutoRasterizerTest.cpp`'s "thin weave +
-    point light -> PT (not VCM)" case. (b) A one-time
-    [`WarnIfBidirectionalRenderHasFullSphereTransmissive`](../src/Library/Interfaces/WeaveBidirectionalWarning.h)
-    diagnostic fires from BDPT's and VCM's own pre-render hooks
-    (`BDPTPelRasterizer`/`BDPTSpectralRasterizer::PreRenderSetup`,
-    `VCMRasterizerBase::PreRenderSetup`) when a full-sphere transmissive
-    material is present, naming the limitation, for the author who pins
-    `bdpt_*`/`vcm_*` explicitly despite (a). (c) The unguarded geometric
-    term itself — a minimum-connection-distance regularization, or an
-    architectural fix to how BDPT/VCM handle a zero-thickness two-sided
-    surface — is NOT fixed. That is integrator-core work (BDPTUtilities,
-    BDPTIntegrator, VCMRasterizerBase) well outside a material slice's
-    scope, and risks perturbing every other BDPT/VCM scene in the
-    regression corpus. `FabricRenderTest`'s own printed BDPT diagnostic
-    line references this debt by number rather than asserting a bound
-    that would either hide the gap behind a loose ceiling or fail a
-    materially-correct P2-B implementation.
+    **Re-diagnosis (chip 4, 2026-09-04).** Debt 21 (below) fixed a
+    scale-relative self-hit floor in `RayBilinearPatchIntersection`
+    (commit `d01a320a`) on the SAME DAY debt 20 was filed, a couple of
+    hours later — an otherwise-unrelated PT-side bug. Re-measuring
+    `TestBacklitSheerCurtain` on top of that fix (still `oidn_denoise
+    FALSE`): BDPT/PT settles at 0.899-0.900 and VCM/PT at 0.932-0.933,
+    stable across five independent seed bases at both 256 and 1024 spp,
+    on both the MEAN and the MAX-pixel luminance (no residual firefly:
+    `tools/ExrFireflyInspect.cpp`-style 4x-neighbourhood-median check
+    finds 0). A harsher touching-distance stress scene was constructed
+    to push as hard as possible on the theoretical singularity — a MESH
+    area light 0.01 units directly behind the curtain (not the
+    well-separated 1.5-unit gap the P2-B era's other regression uses),
+    `gap 0` so every scatter uses the CONTINUUM diffuse-transmission
+    lobe, `max_light_depth 12` / `max_eye_depth 12` — and it gives
+    BDPT/PT = VCM/PT = 1.01, 0 fireflies. `tests/FabricRenderTest.cpp::TestTouchingAreaLitCurtainAllIntegrators`
+    is the permanent regression for this scene.
+
+    The mechanism: PT's own NEE shadow ray toward the point light behind
+    the curtain has no epsilon bump of its own and relied entirely on
+    `RayBilinearPatchIntersection`'s self-hit rejection, which pre-fix
+    accepted ANY positive `dRange` (literally `dRange > 0` at all three
+    hit-acceptance sites, not even an absolute `NEARZERO` compare) —
+    spuriously self-occluding the large majority of those shadow rays
+    and deflating PT's OWN reference value by roughly 370x on this exact
+    scene (this debt's original `7.3-7.9e-5` measurement IS that
+    deflated number; today's healthy PT reads `0.0281`). BDPT's and
+    VCM's OWN connection-visibility shadow rays were never meaningfully
+    exposed to that bug: both apply a much larger epsilon bump of their
+    own (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON = 1e-6`, six orders of
+    magnitude above the ~1e-12 FP-noise floor debt 21 measured) via
+    `Ray::Advance()` before casting
+    (`src/Library/Shaders/BDPTIntegrator.cpp` / `VCMIntegrator.cpp`), so
+    their absolute output barely moved across the debt-21 fix — BDPT
+    read ~0.0253 both before and after. The "100-350x" figure was
+    comparing a STABLE BDPT/VCM number against a PT reference that was
+    itself broken — the "PT may be the broken one" trap
+    [bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)'s step 0
+    pre-flight names, generalised: it wasn't only PT's NEE weight-shift
+    symptom (the debt-21 write-up's original framing) that this bug
+    produced, it was also a flat multiplicative deflation on a delta-light
+    scene with no competing strategy to shift weight toward, which is
+    exactly the shape this debt's own measurement had.
+
+    **What this means for the theoretical risk.** `GeometricTerm` still
+    has no PRINCIPLED floor beyond the generic `dist < BDPT_RAY_EPSILON`
+    / `distSq < 1e-20` checks already in place, so a future full-sphere
+    material that reaches a BDPT/VCM connection through a code path
+    LACKING an adequate epsilon bump of its own could, in principle,
+    still trigger this. That risk is not eliminated architecturally —
+    it is simply not what this measurement showed, now that the actual
+    culprit (debt 21) is fixed and BDPT/VCM's own epsilon bumps are
+    confirmed adequate at this scene's scale.
+
+    **What changed this round.** (a) `AutoRasterizer.cpp`'s Tier-1
+    static heuristic (`SceneHasTransmissiveMaterial`) no longer excludes
+    `ScattersFullSphere()` materials — it is `CouldLightPassThrough()`
+    alone again, so this material class routes like any other
+    transmissive material. `tests/AutoRasterizerTest.cpp`'s case is
+    flipped to assert VCM routing ("thin weave + point light -> VCM
+    (debt 20 resolved)"). (b) The one-time
+    `WarnIfBidirectionalRenderHasFullSphereTransmissive` diagnostic and
+    its header (`WeaveBidirectionalWarning.h`) are REMOVED — its premise
+    no longer holds, and keeping it would mislead authors away from a
+    now-correct feature. (c) `tests/FabricRenderTest.cpp::TestBacklitSheerCurtain`'s
+    BDPT/VCM comparisons are now ASSERTED (20% tolerance around the
+    measured 0.90/0.93, plus a max/mean firefly bound), and a new
+    `TestTouchingAreaLitCurtainAllIntegrators` regression locks the
+    harsher stress scene at 15% around the measured 1.01/1.01.
+
+    **What did NOT get chased down.** A smaller, separate ~7-10%
+    BDPT/VCM-under-PT residual remains on the delta-point-light backlit
+    scene specifically (it is <2% on the mesh-arealight stress scene,
+    stable at both 256 and 1024 spp so it is not simply MC noise) — not
+    root-caused this round. Flagged as a follow-up, not blocking; the
+    regression tolerances above are set with headroom over it rather
+    than tuned to hide it.
 
     `docs/RENDERING_INTEGRATORS.md`'s known-limitations section carries
-    the same entry for readers who start from the integrator side rather
-    than the material side.
+    the same resolution for readers who start from the integrator side
+    rather than the material side.
 
 21. **RESOLVED 2026-09-03 (three diagnosis rounds, then a fourth that found
     the real cause). Originally filed as "under PATH TRACING, the
@@ -4889,14 +4945,29 @@ yet known (§10.1).
     estimator" toward "mostly the healthy BSDF estimator", an artificial
     super-linear curve manufactured by a geometry bug hiding behind a
     real, correctly-computed MIS weight shift. The earlier delta-light
-    (`omni_light`) measurements in this file never saw this: a delta
-    light's NEE row has no competing BSDF-sampling strategy (`w = 1`
-    unconditionally — see the MIS_HEURISTICS.md "mental model for delta
-    lights" table), so there is
-    no weight-shift to reveal the deflation — the same self-shadowing
-    still occurred there (documented as a "side finding" in the
-    diagnosis, ~65-70% on that scene's specific angles) but it only added
-    variance/noise to an otherwise-correct linear mean, never bias.
+    (`omni_light`) measurements in this file never saw the SUPER-LINEAR
+    CURVE symptom: a delta light's NEE row has no competing BSDF-sampling
+    strategy (`w = 1` unconditionally — see the MIS_HEURISTICS.md "mental
+    model for delta lights" table), so there is no weight-shift to
+    distort the curve SHAPE — the same self-shadowing still occurred
+    there (documented as a "side finding" in the diagnosis, ~65-70% on
+    that scene's specific angles).
+
+    **CORRECTION 2026-09-04 (chip 4 / task_93ff4a8a): this paragraph
+    used to end "...but it only added variance/noise to an otherwise-
+    correct linear mean, never bias." That is WRONG about the MEAN,
+    though right about the CURVE SHAPE.** A fixed self-shadow rate
+    applied at every `transmit` value IS a bias on the mean (a roughly
+    constant multiplicative deflation) — it just doesn't distort the
+    LINEARITY of the transmit-scaling curve, because a constant factor
+    cancels in a ratio. Debt 20's own re-diagnosis (§15 debt 20, chip 4)
+    measured the actual size of that bias directly:
+    `TestBacklitSheerCurtain`'s delta-light PT mean moved from
+    `7.3-7.9e-5` (this fix not yet in tree) to `0.0281` (after) — a
+    ~370x correction, and the reason debt 20's "BDPT reads 100-350x over
+    PT" measurement on that SAME scene was actually PT being the broken
+    reference, not a BDPT/VCM defect. The "never bias" claim would have
+    hidden exactly this connection had it gone unchecked.
 
     **Fix**, in `src/Library/Intersection/RayBilinearPatchIntersection.cpp`
     (the shared ray-bilinear-patch solver — used by every

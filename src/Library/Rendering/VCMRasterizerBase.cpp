@@ -53,7 +53,6 @@
 #include "../Shaders/BDPTVertex.h"
 #include "../RasterImages/RasterImage.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"
-#include "../Interfaces/WeaveBidirectionalWarning.h"
 #include "../Interfaces/ILog.h"
 
 #include <atomic>
@@ -335,10 +334,6 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 	// warning concerns the render about to start, independent of whether
 	// this particular call finds an integrator/store already set up.
 	WarnIfNonPTRenderHasLiveSignalConsumer( GlobalLog(), "VCM" );
-
-	// P2-B (docs/CLOTH_FABRIC_DESIGN.md 10/15) -- see
-	// WeaveBidirectionalWarning.h's own doc comment.
-	WarnIfBidirectionalRenderHasFullSphereTransmissive( pScene, GlobalLog(), "VCM" );
 
 	if( !pIntegrator || !pLightVertexStore ) {
 		return;
