@@ -10027,7 +10027,9 @@ class ResidentOwnerTransportFP32 final : public FireProductionProjectedHeunTrans
 {
 public:
 	explicit ResidentOwnerTransportFP32(
-		const FireProductionResidentPhysicalFluxComparatorRequest& fixture) : fixture_(fixture) {}
+		const FireProductionResidentPhysicalFluxComparatorRequest& fixture,
+		const bool qualificationEffectiveAsMolecular=false) : fixture_(fixture),
+		qualificationEffectiveAsMolecular_(qualificationEffectiveAsMolecular) {}
 	bool Evaluate(const FireProductionProjectedHeunTransportContext& context,
 		FireProductionProjectedHeunTransportCoefficients& result,
 		std::string* error) const override
@@ -10064,10 +10066,15 @@ public:
 			for(std::size_t face=0u;face<boundary.bottomFuelMask.size();++face)
 				boundary.bottomFuelMask[face]=fixture_.transport.fuelInletBoundaryFace[4][face]!=0u;
 			boundary.bottomFuelMassFluxKGPerM2S.assign(boundary.bottomFuelMask.size(),0.0);}
-		std::vector<double> diffusivity,conductivity,dynamicViscosity;
+		std::vector<CellMolecularTransportEvaluation> molecular;
+		std::vector<double> diffusivity,conductivity,effectiveViscosity;
+		if(!BuildCellMolecularTransportEvaluations3D(state,temperature,
+			FireSimulationMethaneRecord::PhysicalV1(),FireSimulationTransportRecord::OpenV1(),
+			FireStateProducerPrecision::Binary32,molecular,error,1u))return false;
 		if(!BuildOpenStageTransport3D(shape,state,temperature,velocity,boundary,false,
 			FireSimulationMethaneRecord::PhysicalV1(),FireSimulationTransportRecord::OpenV1(),
-			FireStateProducerPrecision::Binary32,diffusivity,conductivity,dynamicViscosity,error))
+			FireStateProducerPrecision::Binary32,diffusivity,conductivity,effectiveViscosity,error,
+			1u,&molecular))
 			return false;
 		result.stage=context.stage;result.attemptIdentity=context.attemptIdentity;
 		result.parentCandidateIdentity=context.parentCandidateIdentity;
@@ -10077,13 +10084,15 @@ public:
 		result.molecularKinematicViscosityM2PerS.resize(cells);
 		for(std::size_t cell=0u;cell<cells;++cell){double density=0.0;
 			for(std::size_t component=1u;component<=6u;++component)density+=state[cell][component];
-			result.molecularKinematicViscosityM2PerS[cell]=
-				static_cast<float>(dynamicViscosity[cell]/density);}
+			result.molecularKinematicViscosityM2PerS[cell]=static_cast<float>(
+				(qualificationEffectiveAsMolecular_?effectiveViscosity[cell]:
+					molecular[cell].molecularViscosityPaS)/density);}
 		result.publicationIdentity=FireProductionProjectedHeunTransportPublicationIdentity(
 			context,result);if(error)error->clear();return true;
 	}
 private:
 	FireProductionResidentPhysicalFluxComparatorRequest fixture_;
+	bool qualificationEffectiveAsMolecular_;
 };
 
 class ResidentOwnerTransportFP64 final :
@@ -10130,10 +10139,15 @@ public:
 				boundary.bottomFuelMask[face]=fixture_.transport.fuelInletBoundaryFace[4][face]!=0u;
 			boundary.bottomFuelMassFluxKGPerM2S.assign(boundary.bottomFuelMask.size(),0.0);
 		}
-		std::vector<double> diffusivity,conductivity,dynamicViscosity;
+		std::vector<CellMolecularTransportEvaluation> molecular;
+		std::vector<double> diffusivity,conductivity,effectiveViscosity;
+		if(!BuildCellMolecularTransportEvaluations3D(state,temperature,
+			FireSimulationMethaneRecord::PhysicalV1(),FireSimulationTransportRecord::OpenV1(),
+			FireStateProducerPrecision::Binary32,molecular,error,1u))return false;
 		if(!BuildOpenStageTransport3D(shape,state,temperature,velocity,boundary,false,
 			FireSimulationMethaneRecord::PhysicalV1(),FireSimulationTransportRecord::OpenV1(),
-			FireStateProducerPrecision::Binary32,diffusivity,conductivity,dynamicViscosity,error))
+			FireStateProducerPrecision::Binary32,diffusivity,conductivity,effectiveViscosity,error,
+			1u,&molecular))
 			return false;
 		result.stage=context.stage;result.attemptIdentity=context.attemptIdentity;
 		result.parentCandidateIdentity=context.parentCandidateIdentity;
@@ -10143,7 +10157,8 @@ public:
 		for(std::size_t cell=0u;cell<cells;++cell){double density=0.0;
 			for(std::size_t component=1u;component<=6u;++component)
 				density+=state[cell][component];
-			result.molecularKinematicViscosityM2PerS[cell]=dynamicViscosity[cell]/density;}
+			result.molecularKinematicViscosityM2PerS[cell]=
+				molecular[cell].molecularViscosityPaS/density;}
 		result.publicationIdentity=
 			::RISEFireProductionFP64::FireProductionProjectedHeunTransportPublicationIdentity(
 				context,result);
@@ -10734,6 +10749,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	ownerRequest.projectionTolerancePerS=1.0e-3f;
 	ownerRequest.endpointVelocityToleranceMPerS=1.0e-4f;
 	ownerRequest.maximumPicardIterations=16u;
+	ownerRequest.qualificationCaptureIterationTrace=true;
 	for(unsigned int axis=0u;axis<3u;++axis)
 		ownerRequest.beginningMomentumKGPerM2S[axis].assign(
 			FireProductionProjectionFaceCount(shape,axis),0.0f);
@@ -10744,8 +10760,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	FireProductionResidentStepResult ownerResidentObserved;
 	FireProductionProjectedHeunMetalOwnerResult ownerResidentDiagnostics;
 	std::string ownerResidentError;
+	FireProductionProjectedHeunMetalOwnerRequest productionOwnerRequest=ownerRequest;
+	productionOwnerRequest.qualificationCaptureIterationTrace=false;
 	const bool ownerResidentAccepted=AttemptFireProductionProjectedHeunResidentStepMetal(
-		ownerRequest,ownerResidentObserved,&ownerResidentDiagnostics,&ownerResidentError);
+		productionOwnerRequest,ownerResidentObserved,&ownerResidentDiagnostics,&ownerResidentError);
 	auto ownerRED=[&](const char* name,
 		const std::function<void(FireProductionProjectedHeunMetalOwnerRequest&)>& mutate){
 		FireProductionProjectedHeunMetalOwnerRequest redRequest=ownerRequest;mutate(redRequest);
@@ -10854,6 +10872,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	ownerRequest64.projectionTolerancePerS=ownerRequest.projectionTolerancePerS;
 	ownerRequest64.endpointVelocityToleranceMPerS=ownerRequest.endpointVelocityToleranceMPerS;
 	ownerRequest64.maximumPicardIterations=ownerRequest.maximumPicardIterations;
+	ownerRequest64.qualificationCaptureIterationTrace=true;
 	FireProductionProjectedHeunOwnerRequest ownerRequest32;
 	ownerRequest32.attemptIdentity=ownerEOS.physicalFlux.transport.attemptIdentity;
 	ownerRequest32.source=ownerLineage.frozenSource;
@@ -10888,6 +10907,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	ownerRequest32.projectionTolerancePerS=ownerRequest.projectionTolerancePerS;
 	ownerRequest32.endpointVelocityToleranceMPerS=ownerRequest.endpointVelocityToleranceMPerS;
 	ownerRequest32.maximumPicardIterations=ownerRequest.maximumPicardIterations;
+	ownerRequest32.qualificationCaptureIterationTrace=true;
 	ResidentOwnerTransportFP32 ownerTransport32(ownerEOS.physicalFlux);
 	FireProductionProjectedHeunCPUOwner owner32;
 	FireProductionProjectedHeunOwnerResult ownerObserved32;
@@ -10907,6 +10927,344 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const bool owner64R1=owner64R0&&owner64.SolveR1(ownerTransport64,&owner64Error);
 	const bool owner64Accepted=owner64R1&&
 		owner64.SolveR2(ownerTransport64,ownerObserved64,&owner64Error);
+	ResidentOwnerTransportFP32 effectiveAsMolecularTransport(ownerEOS.physicalFlux,true);
+	FireProductionProjectedHeunCPUOwner effectiveAsMolecularOwner;
+	FireProductionProjectedHeunOwnerResult effectiveAsMolecularObserved;
+	std::string effectiveAsMolecularError;
+	const bool effectiveAsMolecularBegin=ownerSourceBuilt&&ownerEnthalpy&&
+		effectiveAsMolecularOwner.Begin(ownerRequest32,&effectiveAsMolecularError);
+	const bool effectiveAsMolecularR0=effectiveAsMolecularBegin&&
+		effectiveAsMolecularOwner.SolveR0(effectiveAsMolecularTransport,
+			&effectiveAsMolecularError);
+	const bool effectiveAsMolecularR1=effectiveAsMolecularR0&&
+		effectiveAsMolecularOwner.SolveR1(effectiveAsMolecularTransport,
+			&effectiveAsMolecularError);
+	const bool effectiveAsMolecularAccepted=effectiveAsMolecularR1&&
+		effectiveAsMolecularOwner.SolveR2(effectiveAsMolecularTransport,
+			effectiveAsMolecularObserved,&effectiveAsMolecularError);
+	double correctStressResidual=0.0,effectiveAsMolecularStressResidual=0.0;
+	if(owner32Accepted&&owner64Accepted&&effectiveAsMolecularAccepted)
+		for(unsigned int axis=0u;axis<3u;++axis)for(std::size_t face=0u;face<
+			ownerObserved32.r1.nonpressure.stressMomentumRateKGPerM2S2[axis].size();++face){
+			correctStressResidual=std::max(correctStressResidual,std::fabs(static_cast<double>(
+				ownerObserved32.r1.nonpressure.stressMomentumRateKGPerM2S2[axis][face])-
+				ownerObserved64.r1.nonpressure.stressMomentumRateKGPerM2S2[axis][face]));
+			effectiveAsMolecularStressResidual=std::max(effectiveAsMolecularStressResidual,
+				std::fabs(static_cast<double>(effectiveAsMolecularObserved.r1.nonpressure.
+					stressMomentumRateKGPerM2S2[axis][face])-
+					ownerObserved64.r1.nonpressure.stressMomentumRateKGPerM2S2[axis][face]));
+		}
+	const bool effectiveAsMolecularRED=owner32Accepted&&owner64Accepted&&
+		effectiveAsMolecularAccepted&&effectiveAsMolecularStressResidual>
+			1000.0*std::max(correctStressResidual,std::numeric_limits<double>::denorm_min());
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+		"name=effective_viscosity_substituted_for_molecular reference=reviewed_r190_fp64_owner "
+		"correct_stress_residual_kg_m^-2_s^-2=%.17g mutant_stress_residual_kg_m^-2_s^-2=%.17g "
+		"mutant_accepted=%d error=%s passed=%d\n",correctStressResidual,
+		effectiveAsMolecularStressResidual,effectiveAsMolecularAccepted?1:0,
+		effectiveAsMolecularError.c_str(),effectiveAsMolecularRED?1:0);
+	bool ownerIterationTraceBounded=ownerAccepted&&owner64Accepted;
+	std::array<std::vector<double>,3> ownerTerminalProjectionTargetBounds,
+		ownerTerminalAcceptedTargetBounds;
+	if(ownerAccepted&&owner64Accepted){
+		auto traceVector=[&](const std::vector<float>& device,const std::vector<double>& mirror){
+			double maximum=0.0;std::size_t worst=0u,mismatches=0u;
+			if(device.size()!=mirror.size())return std::array<double,3>{{
+				std::numeric_limits<double>::infinity(),0.0,
+				static_cast<double>(std::max(device.size(),mirror.size()))}};
+			for(std::size_t index=0u;index<device.size();++index){const double residual=
+				std::fabs(static_cast<double>(device[index])-mirror[index]);
+				if(residual>maximum){maximum=residual;worst=index;}
+				const float projected=static_cast<float>(mirror[index]);
+				mismatches+=std::memcmp(&device[index],&projected,sizeof(float))!=0?1u:0u;}
+			return std::array<double,3>{{maximum,static_cast<double>(worst),
+				static_cast<double>(mismatches)}};};
+		auto traceAxes=[&](const std::array<std::vector<float>,3>& device,
+			const std::array<std::vector<double>,3>& mirror){std::array<double,3> result={{0.0,0.0,0.0}};
+			std::size_t offset=0u;for(unsigned int axis=0u;axis<3u;++axis){const auto local=
+				traceVector(device[axis],mirror[axis]);if(local[0]>result[0]){
+					result[0]=local[0];result[1]=static_cast<double>(offset)+local[1];}
+				result[2]+=local[2];offset+=device[axis].size();}return result;};
+		auto sameClasses=[](const std::array<std::vector<unsigned char>,6>& a,
+			const std::array<std::vector<unsigned char>,6>& b){return a==b;};
+		auto traceVector32=[](const std::vector<float>& first,const std::vector<float>& second){
+			double maximum=0.0;std::size_t mismatches=0u;
+			if(first.size()!=second.size())return std::array<double,2>{{
+				std::numeric_limits<double>::infinity(),static_cast<double>(
+					std::max(first.size(),second.size()))}};
+			for(std::size_t index=0u;index<first.size();++index){maximum=std::max(maximum,
+				std::fabs(static_cast<double>(first[index])-static_cast<double>(second[index])));
+				mismatches+=std::memcmp(&first[index],&second[index],sizeof(float))!=0?1u:0u;}
+			return std::array<double,2>{{maximum,static_cast<double>(mismatches)}};};
+		auto traceAxes32=[&](const std::array<std::vector<float>,3>& first,
+			const std::array<std::vector<float>,3>& second){std::array<double,2> result={{0.0,0.0}};
+			for(unsigned int axis=0u;axis<3u;++axis){const auto local=
+				traceVector32(first[axis],second[axis]);result[0]=std::max(result[0],local[0]);
+				result[1]+=local[1];}return result;};
+		const ::RISEFireProductionFP64::FireProductionProjectedHeunCoupledStageResult*
+			traceStages64[3]={&ownerObserved64.r0,&ownerObserved64.r1,&ownerObserved64.r2};
+		const FireProductionProjectedHeunCoupledStageResult* traceStages32[3]=
+			{&ownerObserved32.r0,&ownerObserved32.r1,&ownerObserved32.r2};
+		const double traceGamma256=(256.0*std::numeric_limits<float>::epsilon())/
+			(1.0-256.0*std::numeric_limits<float>::epsilon());
+		auto targetTermwiseEnclosure=[&](const unsigned int stage,
+			const FireProductionProjectedHeunIterationTrace& device,
+			const ::RISEFireProductionFP64::FireProductionProjectedHeunIterationTrace& mirror,
+			const std::size_t cell,const double inputTargetBound,bool& valid){
+			std::array<double,9> deviceState={{}},mirrorState={{}},basis={{}};
+			for(std::size_t component=0u;component<9u;++component){
+				deviceState[component]=device.transportConservativeValues[component*cells+cell];
+				mirrorState[component]=mirror.transportConservativeValues[component*cells+cell];}
+			const std::size_t allFaces=device.physicalEnergyFluxWPerM2.size();
+			const std::size_t mirrorFaces=mirror.physicalEnergyFluxWPerM2.size();
+			if(allFaces==0u||allFaces!=mirrorFaces||device.physicalMassFluxKGPerM2S.size()!=
+				8u*allFaces||mirror.physicalMassFluxKGPerM2S.size()!=8u*allFaces){valid=false;return 0.0;}
+			const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
+				z=cell/(shape.nx*shape.ny);const double inverseWidth=1.0/shape.cellWidthM;
+			double propagation=0.0,termScale=0.0;
+			const bool endpointBase=stage==2u||
+				device.iteration==std::numeric_limits<std::uint32_t>::max();
+			if(endpointBase)termScale=std::fabs(
+				ownerLineage.frozenSource.DivergenceTargetPerS()[cell]);
+			if(endpointBase)for(std::size_t component=1u;component<9u;++component){
+				basis.fill(0.0);basis[component]=1.0;double deviceCoefficient=0.0,
+					mirrorCoefficient=0.0;std::string coefficientError;
+				if(!fuel.DivergenceFromDiscreteRateByComponentOrder(deviceState.data(),9u,
+					basis.data(),9u,device.transportTemperatureK[cell],
+					FireStateProducerPrecision::Binary32,deviceCoefficient,&coefficientError)||
+					!fuel.DivergenceFromDiscreteRateByComponentOrder(mirrorState.data(),9u,
+						basis.data(),9u,mirror.transportTemperatureK[cell],
+						FireStateProducerPrecision::Binary32,mirrorCoefficient,&coefficientError))
+					{valid=false;return 0.0;}
+				for(unsigned int axis=0u;axis<3u;++axis){
+					const std::size_t offset=axis==0u?0u:
+						FireProductionProjectionFaceCount(shape,0u)+(axis==1u?0u:
+							FireProductionProjectionFaceCount(shape,1u));
+					auto localFace=[&](const std::size_t fx,const std::size_t fy,
+						const std::size_t fz){return axis==0u?(fz*shape.ny+fy)*(shape.nx+1u)+fx:
+							(axis==1u?(fz*(shape.ny+1u)+fy)*shape.nx+fx:
+							 (fz*shape.ny+fy)*shape.nx+fx);};
+					std::size_t rx=x,ry=y,rz=z;if(axis==0u)++rx;else if(axis==1u)++ry;else ++rz;
+					const std::size_t left=offset+localFace(x,y,z),right=offset+localFace(rx,ry,rz);
+					for(unsigned int side=0u;side<2u;++side){const std::size_t face=side?right:left;
+						const double sign=side?-inverseWidth:inverseWidth;
+						const double deviceFlux=component==8u?
+							device.physicalEnergyFluxWPerM2[face]:
+							device.physicalMassFluxKGPerM2S[component*allFaces+face];
+						const double mirrorFlux=component==8u?
+							mirror.physicalEnergyFluxWPerM2[face]:
+							mirror.physicalMassFluxKGPerM2S[component*allFaces+face];
+						const double deviceTerm=sign*deviceCoefficient*deviceFlux;
+						const double mirrorTerm=sign*mirrorCoefficient*mirrorFlux;
+						propagation+=std::fabs(deviceTerm-mirrorTerm);
+						termScale+=std::fabs(deviceTerm)+std::fabs(mirrorTerm);
+					}
+				}
+			}
+			if(stage<2u&&device.iteration!=std::numeric_limits<std::uint32_t>::max()){
+				if(device.representedPressureRatio.size()!=cells||
+					mirror.representedPressureRatio.size()!=cells){valid=false;return 0.0;}
+				double deviceTail=0.0,mirrorTail=0.0;
+				FireProductionMonitoredManifoldPolicy::SignedTailDrainPerS(
+					device.representedPressureRatio[cell],ownerEOS.candidateTimeStepS,deviceTail,0);
+				::RISEFireProductionFP64::FireProductionMonitoredManifoldPolicy::
+					SignedTailDrainPerS(mirror.representedPressureRatio[cell],
+						double(ownerEOS.candidateTimeStepS),mirrorTail,0);
+				propagation+=std::fabs(deviceTail-mirrorTail)+inputTargetBound;
+				termScale+=std::fabs(deviceTail)+std::fabs(mirrorTail)+std::fabs(
+					device.projectionTargetPerS[cell])+std::fabs(mirror.projectionTargetPerS[cell]);
+			}
+			return propagation+traceGamma256*std::max(termScale,
+				std::numeric_limits<double>::min());
+		};
+		for(unsigned int stage=0u;stage<3u;++stage){const auto& deviceTrace=
+			ownerObserved.qualificationIterationTrace[stage];const auto& mirrorTrace=
+			traceStages64[stage]->qualificationIterationTrace;
+			std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_TRACE_COUNT stage=R%u metal=%zu "
+				"fp64=%zu qualification_staging=%u\n",stage,deviceTrace.size(),mirrorTrace.size(),
+				ownerObserved.qualificationTraceStagingCount);
+			std::vector<double> priorTargetBounds(cells,0.0);
+			for(std::size_t iteration=0u;iteration<std::min(deviceTrace.size(),mirrorTrace.size());
+				++iteration){const auto& device=deviceTrace[iteration];const auto& mirror=mirrorTrace[iteration];
+				const auto inputTarget=traceVector(device.projectionTargetPerS,mirror.projectionTargetPerS);
+				const auto outputTarget=traceVector(device.producedTargetPerS,mirror.producedTargetPerS);
+				const auto alpha=traceAxes(device.sharedFaceAlpha,mirror.sharedFaceAlpha);
+				const auto velocity=traceAxes(device.projectedVelocityMPerS,mirror.projectedVelocityMPerS);
+				const auto transportState=traceVector(device.transportConservativeValues,
+					mirror.transportConservativeValues);
+				const auto transportTemperature=traceVector(device.transportTemperatureK,
+					mirror.transportTemperatureK);
+				const auto diffusivity=traceVector(device.diffusivityM2PerS,mirror.diffusivityM2PerS);
+				const auto conductivity=traceVector(device.conductivityWPerMK,mirror.conductivityWPerMK);
+				const auto molecular=traceVector(device.molecularKinematicViscosityM2PerS,
+					mirror.molecularKinematicViscosityM2PerS);
+				const auto density=traceVector(device.gasDensityKGPerM3,mirror.gasDensityKGPerM3);
+				const auto faceDensity=traceAxes(device.faceDensityKGPerM3,mirror.faceDensityKGPerM3);
+				const auto momentum=traceAxes(device.projectedMomentumKGPerM2S,
+					mirror.projectedMomentumKGPerM2S);
+				const auto stress=traceAxes(device.stressMomentumRateKGPerM2S2,
+					mirror.stressMomentumRateKGPerM2S2);
+				double targetWorstRatio=0.0,targetMaximumResidual=0.0,targetMaximumBound=0.0;
+				std::vector<double> currentTargetBounds(cells,0.0);
+				std::size_t targetWorstCell=0u;bool targetBounded=true,enclosureValid=true;
+				for(std::size_t cell=0u;cell<cells;++cell){const double targetResidual=std::fabs(
+					static_cast<double>(device.producedTargetPerS[cell])-mirror.producedTargetPerS[cell]);
+					const double targetBound=targetTermwiseEnclosure(stage,device,mirror,cell,
+						priorTargetBounds[cell],enclosureValid);currentTargetBounds[cell]=targetBound;
+					const double targetRatio=targetBound>0.0?targetResidual/targetBound:
+						(targetResidual==0.0?0.0:std::numeric_limits<double>::infinity());
+					targetMaximumResidual=std::max(targetMaximumResidual,targetResidual);
+					targetMaximumBound=std::max(targetMaximumBound,targetBound);
+					if(targetRatio>targetWorstRatio){targetWorstRatio=targetRatio;targetWorstCell=cell;}
+					targetBounded=targetBounded&&enclosureValid&&std::isfinite(targetBound)&&
+						targetResidual<=targetBound;}
+				ownerIterationTraceBounded=ownerIterationTraceBounded&&targetBounded&&
+					sameClasses(device.activeClass,mirror.activeClass)&&
+					sameClasses(device.nextActiveClass,mirror.nextActiveClass);
+				std::fprintf(stderr,"PROJECTED_HEUN_OWNER_TARGET_ENCLOSURE stage=R%u iteration=%zu "
+					"units=s^-1 scope=every_cell worst_cell=%zu max_residual=%.17g "
+					"max_local_termwise_enclosure=%.17g worst_residual_over_local_bound=%.17g passed=%d\n",
+					stage,iteration,targetWorstCell,targetMaximumResidual,targetMaximumBound,
+					targetWorstRatio,targetBounded?1:0);
+				if((device.iteration&UINT32_C(0x80000000))!=0u){
+					ownerTerminalProjectionTargetBounds[stage]=priorTargetBounds;
+					ownerTerminalAcceptedTargetBounds[stage]=currentTargetBounds;}
+				priorTargetBounds=std::move(currentTargetBounds);
+				std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_TRACE stage=R%u iteration=%zu "
+					"active_equal=%d next_active_equal=%d input_target_residual=%.17g "
+					"input_target_bit_mismatches=%.0f output_target_residual=%.17g "
+					"output_target_bit_mismatches=%.0f alpha_residual=%.17g alpha_bit_mismatches=%.0f "
+					"velocity_residual=%.17g velocity_bit_mismatches=%.0f transport_state_residual=%.17g "
+					"transport_temperature_residual=%.17g diffusivity_residual=%.17g "
+					"conductivity_residual=%.17g molecular_nu_residual=%.17g gas_density_residual=%.17g "
+					"molecular_nu_worst=%.0f molecular_nu_metal=%.17g molecular_nu_fp64=%.17g "
+					"face_density_residual=%.17g momentum_residual=%.17g stress_residual=%.17g\n",
+					stage,iteration,sameClasses(device.activeClass,mirror.activeClass)?1:0,
+					sameClasses(device.nextActiveClass,mirror.nextActiveClass)?1:0,inputTarget[0],inputTarget[2],
+					outputTarget[0],outputTarget[2],alpha[0],alpha[2],velocity[0],velocity[2],
+					transportState[0],transportTemperature[0],
+					diffusivity[0],conductivity[0],molecular[0],density[0],molecular[1],
+					static_cast<double>(device.molecularKinematicViscosityM2PerS[
+						static_cast<std::size_t>(molecular[1])]),mirror.molecularKinematicViscosityM2PerS[
+					static_cast<std::size_t>(molecular[1])],faceDensity[0],momentum[0],stress[0]);
+				auto emitFirstClassPredicate=[&](const char* kind,
+					const std::array<std::vector<unsigned char>,6>& deviceClass,
+					const std::array<std::vector<unsigned char>,6>& mirrorClass){
+					for(unsigned int side=0u;side<6u;++side)for(std::size_t local=0u;
+						local<std::min(deviceClass[side].size(),mirrorClass[side].size());++local){
+						if(deviceClass[side][local]==mirrorClass[side][local])continue;
+						const unsigned int axis=side/2u;const bool positive=(side&1u)!=0u;
+						const std::size_t firstCount=axis==0u?shape.ny:shape.nx;
+						const std::size_t first=local%firstCount,second=local/firstCount;
+						std::size_t x=0u,y=0u,z=0u;
+						if(axis==0u){x=positive?shape.nx:0u;y=first;z=second;}
+						if(axis==1u){x=first;y=positive?shape.ny:0u;z=second;}
+						if(axis==2u){x=first;y=second;z=positive?shape.nz:0u;}
+						const std::size_t face=axis==0u?(z*shape.ny+y)*(shape.nx+1u)+x:
+							(axis==1u?(z*(shape.ny+1u)+y)*shape.nx+x:
+							 (z*shape.ny+y)*shape.nx+x);
+						const double outwardDevice=(positive?1.0:-1.0)*
+							static_cast<double>(device.projectedVelocityMPerS[axis][face]);
+						const double outwardMirror=(positive?1.0:-1.0)*
+							mirror.projectedVelocityMPerS[axis][face];
+						const double projectionRadius=(static_cast<double>(
+							device.maximumPostProjectionResidualPerS)+mirror.
+							maximumPostProjectionResidualPerS)*shape.cellWidthM;
+						const double lower=std::min(outwardDevice,outwardMirror)-projectionRadius;
+						const double upper=std::max(outwardDevice,outwardMirror)+projectionRadius;
+						const double tolerance=ownerRequest.endpointVelocityToleranceMPerS;
+						const bool negativeCrosses=lower+tolerance<=0.0&&upper+tolerance>=0.0;
+						const bool positiveCrosses=lower-tolerance<=0.0&&upper-tolerance>=0.0;
+						std::fprintf(stderr,"PROJECTED_HEUN_OWNER_CLASS_PREDICATE stage=R%u "
+							"iteration=%zu kind=%s side=%u local=%zu device_class=%u fp64_class=%u "
+							"outward_device_m_s=%.17g outward_fp64_m_s=%.17g "
+							"projection_radius_m_s=%.17g negative_threshold_interval=[%.17g,%.17g] "
+							"positive_threshold_interval=[%.17g,%.17g] negative_crosses_zero=%d "
+							"positive_crosses_zero=%d\n",stage,iteration,kind,side,local,
+							deviceClass[side][local],mirrorClass[side][local],outwardDevice,
+							outwardMirror,projectionRadius,lower+tolerance,upper+tolerance,
+							lower-tolerance,upper-tolerance,negativeCrosses?1:0,
+							positiveCrosses?1:0);return;
+					}};
+				if(!sameClasses(device.activeClass,mirror.activeClass))emitFirstClassPredicate(
+					"active_set",device.activeClass,mirror.activeClass);
+				if(!sameClasses(device.nextActiveClass,mirror.nextActiveClass))emitFirstClassPredicate(
+					"next_active_set",device.nextActiveClass,mirror.nextActiveClass);
+				if(iteration<traceStages32[stage]->qualificationIterationTrace.size()){
+					const auto& fp32=traceStages32[stage]->qualificationIterationTrace[iteration];
+					const auto input32=traceVector32(device.projectionTargetPerS,fp32.projectionTargetPerS);
+					const auto output32=traceVector32(device.producedTargetPerS,fp32.producedTargetPerS);
+					const auto alpha32=traceAxes32(device.sharedFaceAlpha,fp32.sharedFaceAlpha);
+					const auto velocity32=traceAxes32(device.projectedVelocityMPerS,fp32.projectedVelocityMPerS);
+					const auto transportState32=traceVector32(device.transportConservativeValues,
+						fp32.transportConservativeValues);
+					const auto transportTemperature32=traceVector32(device.transportTemperatureK,
+						fp32.transportTemperatureK);
+					const auto diffusivity32=traceVector32(device.diffusivityM2PerS,fp32.diffusivityM2PerS);
+					const auto conductivity32=traceVector32(device.conductivityWPerMK,fp32.conductivityWPerMK);
+					const auto molecular32=traceVector32(device.molecularKinematicViscosityM2PerS,
+						fp32.molecularKinematicViscosityM2PerS);
+					const auto density32=traceVector32(device.gasDensityKGPerM3,fp32.gasDensityKGPerM3);
+					const auto faceDensity32=traceAxes32(device.faceDensityKGPerM3,fp32.faceDensityKGPerM3);
+					const auto momentum32=traceAxes32(device.projectedMomentumKGPerM2S,
+						fp32.projectedMomentumKGPerM2S);
+					const auto stress32=traceAxes32(device.stressMomentumRateKGPerM2S2,
+						fp32.stressMomentumRateKGPerM2S2);
+					std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_TRACE_FP32 stage=R%u iteration=%zu "
+						"active_equal=%d next_active_equal=%d input_target_residual=%.17g input_target_mismatches=%.0f "
+						"output_target_residual=%.17g output_target_mismatches=%.0f alpha_residual=%.17g "
+						"alpha_mismatches=%.0f velocity_residual=%.17g velocity_mismatches=%.0f "
+						"transport_state_residual=%.17g transport_temperature_residual=%.17g "
+						"diffusivity_residual=%.17g conductivity_residual=%.17g molecular_nu_residual=%.17g "
+						"gas_density_residual=%.17g face_density_residual=%.17g momentum_residual=%.17g "
+						"stress_residual=%.17g\n",stage,iteration,
+						sameClasses(device.activeClass,fp32.activeClass)?1:0,
+						sameClasses(device.nextActiveClass,fp32.nextActiveClass)?1:0,input32[0],input32[1],
+						output32[0],output32[1],alpha32[0],alpha32[1],velocity32[0],velocity32[1],
+						transportState32[0],transportTemperature32[0],
+						diffusivity32[0],conductivity32[0],molecular32[0],density32[0],faceDensity32[0],
+						momentum32[0],stress32[0]);
+				}
+				if(stage==0u&&iteration==1u){
+					FireProductionResidentTransportComparatorRequest replay=
+						ownerEOS.physicalFlux.transport;
+					replay.stage=FireProductionProjectedHeunStage::R0;
+					replay.parentCandidateIdentity=UINT64_C(0x2010000000000001);
+					replay.projectionIdentity=UINT64_C(0x2010000000000002);
+					replay.conservativeValues=device.transportConservativeValues;
+					replay.temperatureK=device.transportTemperatureK;
+					replay.projectedVelocityMPerS=device.projectedVelocityMPerS;
+					FireProductionResidentTransportComparatorResult replayed;
+					std::string replayError;const bool replayAccepted=
+						EvaluateFireProductionResidentTransportMetalComparator(replay,replayed,&replayError);
+					const auto replayMolecular=replayAccepted?traceVector32(
+						device.molecularKinematicViscosityM2PerS,
+						replayed.molecularKinematicViscosityM2PerS):
+						std::array<double,2>{{std::numeric_limits<double>::infinity(),1.0}};
+					std::fprintf(stderr,"PROJECTED_HEUN_OWNER_TRANSPORT_REPLAY stage=R0 iteration=0 "
+						"accepted=%d molecular_residual=%.17g molecular_bit_mismatches=%.0f error=%s\n",
+						replayAccepted?1:0,replayMolecular[0],replayMolecular[1],replayError.c_str());
+					FireProductionResidentTransportComparatorRequest zeroVelocityReplay=replay;
+					for(auto& axis:zeroVelocityReplay.projectedVelocityMPerS)
+						std::fill(axis.begin(),axis.end(),0.0f);
+					FireProductionResidentTransportComparatorResult zeroVelocityResult;
+					std::string zeroVelocityError;const bool zeroVelocityAccepted=
+						EvaluateFireProductionResidentTransportMetalComparator(zeroVelocityReplay,
+							zeroVelocityResult,&zeroVelocityError);
+					const auto velocityIndependentMolecular=replayAccepted&&zeroVelocityAccepted?
+						traceVector32(replayed.molecularKinematicViscosityM2PerS,
+							zeroVelocityResult.molecularKinematicViscosityM2PerS):
+						std::array<double,2>{{std::numeric_limits<double>::infinity(),1.0}};
+					std::fprintf(stderr,"PROJECTED_HEUN_OWNER_TRANSPORT_INVARIANT_RED "
+						"name=molecular_nu_velocity_independence live_accepted=%d zero_accepted=%d "
+						"max_residual_m2_s^-1=%.17g bit_mismatches=%.0f live_error=%s zero_error=%s passed=%d\n",
+						replayAccepted?1:0,zeroVelocityAccepted?1:0,velocityIndependentMolecular[0],
+						velocityIndependentMolecular[1],replayError.c_str(),zeroVelocityError.c_str(),
+						velocityIndependentMolecular[1]==0.0?1:0);
+				}
+			}
+		}
+	}
 	bool owner32StressBitEqual=owner32Accepted;double owner32StressMaximumResidual=0.0;
 	if(owner32Accepted&&ownerAccepted)for(unsigned int axis=0u;axis<3u;++axis)
 		for(std::size_t face=0u;face<ownerObserved.heunStressMomentumRateKGPerM2S2[axis].size();
@@ -11080,7 +11438,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const double ownerGamma8=(8.0*std::numeric_limits<float>::epsilon())/
 		(1.0-8.0*std::numeric_limits<float>::epsilon());
 	struct OwnerFieldBound{double maximumResidual,maximumBound,worstRatio;std::size_t worst,
-		bitMismatchCount;bool passed;OwnerFieldBound():maximumResidual(0.0),maximumBound(0.0),
+		bitMismatchCount;std::vector<double> localBounds;bool passed;OwnerFieldBound():maximumResidual(0.0),maximumBound(0.0),
 			worstRatio(0.0),worst(0u),bitMismatchCount(0u),passed(true){}};
 	auto evaluateOwnerField=[&](const char* field,const char* units,
 		const std::vector<float>& device,const std::vector<double>& mirror,
@@ -11088,8 +11446,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		if(device.size()!=mirror.size()){std::fprintf(stderr,
 			"PROJECTED_HEUN_METAL_OWNER_FIELD field=%s units=%s size_match=0 passed=0\n",
 			field,units);result.passed=false;return result;}
+		result.localBounds.resize(device.size());
 		for(std::size_t index=0u;index<device.size();++index){const double residual=std::fabs(
 			static_cast<double>(device[index])-mirror[index]),localBound=bound(index);
+			result.localBounds[index]=localBound;
 			const float projected=static_cast<float>(mirror[index]);
 			result.bitMismatchCount+=std::memcmp(&device[index],&projected,sizeof(float))!=0?1u:0u;
 			const double ratio=localBound>0.0?residual/localBound:(residual==0.0?0.0:
@@ -11214,18 +11574,37 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				packMirrorFaces(advection64),"R1_heun_advection","kg_m^-2_s^-2");
 			streamBound(packDeviceFaces(ownerObserved.heunBuoyancyMomentumRateKGPerM2S2),
 				packMirrorFaces(buoyancy64),"R1_heun_buoyancy","kg_m^-2_s^-2");
-			streamBound(packDeviceFaces(ownerObserved.heunStressMomentumRateKGPerM2S2),
-				packMirrorFaces(stress64),"R1_heun_stress","kg_m^-2_s^-2");
+			const std::vector<float> r0StressDevice=packDeviceFaces(
+				ownerObserved.qualificationIterationTrace[0].back().stressMomentumRateKGPerM2S2);
+			const std::vector<float> r1StressDevice=packDeviceFaces(
+				ownerObserved.qualificationIterationTrace[1].back().stressMomentumRateKGPerM2S2);
+			const std::vector<double> r0StressMirror=packMirrorFaces(
+				ownerObserved64.r0.nonpressure.stressMomentumRateKGPerM2S2);
+			const std::vector<double> r1StressMirror=packMirrorFaces(
+				ownerObserved64.r1.nonpressure.stressMomentumRateKGPerM2S2);
+			const std::vector<float> heunStressDevice=packDeviceFaces(
+				ownerObserved.heunStressMomentumRateKGPerM2S2);
+			const std::vector<double> heunStressMirror=packMirrorFaces(stress64);
+			const OwnerFieldBound heunStressBound=evaluateOwnerField("R1_heun_stress",
+				"kg_m^-2_s^-2",heunStressDevice,heunStressMirror,[&](std::size_t face){
+					return ownerGamma512*(std::fabs(static_cast<double>(r0StressDevice[face]))+
+						std::fabs(static_cast<double>(r1StressDevice[face]))+
+						std::fabs(r0StressMirror[face])+std::fabs(r1StressMirror[face]));});
+			ownerMirrorBounded=ownerMirrorBounded&&heunStressBound.passed;
 			streamBound(packDeviceFaces(ownerObserved.heunPhaseSourceMomentumRateKGPerM2S2),
 				packMirrorFaces(phase64),"R1_heun_phase_source","kg_m^-2_s^-2");
 			streamBound(ownerObserved.acceptedFaceAlpha,acceptedAlpha64,
 				"R1_accepted_face_alpha","dimensionless");
 			streamBound(ownerObserved.heunEddyKinematicViscosityM2PerS,eddy64,
 				"R1_heun_eddy_viscosity","m^2_s^-1");
-			streamBound(ownerObserved.representedPressureRatio,representedRatio64,
+			const OwnerFieldBound representedRatioBound=streamBound(
+				ownerObserved.representedPressureRatio,representedRatio64,
 				"R1_represented_pressure_ratio","dimensionless");
-			streamBound(ownerObserved.absoluteEOSDeviation,absoluteDeviation64,
-				"R1_absolute_EOS_deviation","dimensionless");
+			const OwnerFieldBound absoluteDeviationBound=evaluateOwnerField(
+				"R1_absolute_EOS_deviation","dimensionless",ownerObserved.absoluteEOSDeviation,
+				absoluteDeviation64,[&](std::size_t cell){return representedRatioBound.localBounds[cell]+
+					localProjectionBound(static_cast<float>(absoluteDeviation64[cell]));});
+			ownerMirrorBounded=ownerMirrorBounded&&absoluteDeviationBound.passed;
 		}
 		const std::vector<double>* projectionTargets64[3]={
 			&ownerObserved64.r0.projectionTarget.TargetPerS(),
@@ -11245,16 +11624,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		const ::RISEFireProductionFP64::FireProductionProjectedHeunCoupledStageResult*
 			stages64[3]={&ownerObserved64.r0,&ownerObserved64.r1,&ownerObserved64.r2};
 		for(unsigned int stage=0u;stage<3u;++stage){
+			const bool terminalBoundsPresent=ownerTerminalProjectionTargetBounds[stage].size()==cells&&
+				ownerTerminalAcceptedTargetBounds[stage].size()==cells;
 			const std::string projectionName="R"+std::to_string(stage)+"_projection_target";
 			const std::string acceptedName="R"+std::to_string(stage)+"_accepted_target";
 			const OwnerFieldBound projectionTargetBound=evaluateOwnerField(projectionName.c_str(),
 				"s^-1",ownerObserved.projectionTargetPerS[stage],*projectionTargets64[stage],
-				[&,stage](std::size_t cell){return localProjectionBound(
-					static_cast<float>((*projectionTargets64[stage])[cell]));});
+				[&,stage](std::size_t cell){return terminalBoundsPresent?
+					ownerTerminalProjectionTargetBounds[stage][cell]:0.0;});
 			const OwnerFieldBound acceptedTargetBound=evaluateOwnerField(acceptedName.c_str(),
 				"s^-1",ownerObserved.acceptedTargetPerS[stage],*acceptedTargets64[stage],
-				[&,stage](std::size_t cell){return localProjectionBound(
-					static_cast<float>((*acceptedTargets64[stage])[cell]));});
+				[&,stage](std::size_t cell){return terminalBoundsPresent?
+					ownerTerminalAcceptedTargetBounds[stage][cell]:0.0;});
 			const bool iterationsMatch=ownerObserved.projectionTargetCorrectionIteration[stage]==
 				projectionTargetIterations64[stage]&&
 				ownerObserved.acceptedTargetCorrectionIteration[stage]==
@@ -11272,18 +11653,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				ownerObserved.picardResidualPerS[stage],stages64[stage]->picardResidualPerS,
 				[&,stage](std::size_t iteration){return localProjectionBound(static_cast<float>(
 					stages64[stage]->picardResidualPerS[iteration]));});
-			const bool targetBitsMatch=projectionTargetBound.bitMismatchCount==0u&&
-				acceptedTargetBound.bitMismatchCount==0u;
-			ownerMirrorBounded=ownerMirrorBounded&&targetBitsMatch&&iterationsMatch&&
-				residualTraceBound.bitMismatchCount==0u;
+			const bool targetEnvelopePassed=terminalBoundsPresent&&projectionTargetBound.passed&&
+				acceptedTargetBound.passed;
+			ownerMirrorBounded=ownerMirrorBounded&&targetEnvelopePassed&&iterationsMatch&&
+				ownerIterationTraceBounded;
 			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_TARGET_TRACE stage=R%u "
 				"projection_iteration_device=%u projection_iteration_fp64=%u "
 				"accepted_iteration_device=%u accepted_iteration_fp64=%u passed=%d\n",stage,
 				ownerObserved.projectionTargetCorrectionIteration[stage],
 				projectionTargetIterations64[stage],
 				ownerObserved.acceptedTargetCorrectionIteration[stage],
-				acceptedTargetIterations64[stage],iterationsMatch&&targetBitsMatch&&
-				residualTraceBound.bitMismatchCount==0u?1:0);
+				acceptedTargetIterations64[stage],iterationsMatch&&targetEnvelopePassed&&
+				ownerIterationTraceBounded?1:0);
 		}
 		const std::size_t acceptedAllFaces=ownerObserved64.r1.scalarAcceptance.
 			packedFaceOffset[2u]+FireProductionProjectionFaceCount(shape,2u);
@@ -11301,8 +11682,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			// Its conditioning scale must therefore include all same-unit mass terms
 			// for a mass component; otherwise a nominally-zero constituent receives
 			// a false zero bound despite taking the shared-alpha branch decisions.
-			const std::size_t firstScaleComponent=component;
-			const std::size_t endScaleComponent=component+1u;
+			const std::size_t firstScaleComponent=component<8u?0u:8u;
+			const std::size_t endScaleComponent=component<8u?8u:9u;
 			double scale=0.0;
 			for(std::size_t scaleComponent=firstScaleComponent;
 				scaleComponent<endScaleComponent;++scaleComponent)
@@ -11447,11 +11828,11 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerResidentObserved.interstageFullGridTransferCount==0u&&
 		ownerResidentObserved.terminalStagingCount==1u;
 	const bool ownerSmokePassed=ownerAccepted&&ownerMirrorBounded&&ownerArithmeticBoundCanFail&&
-		projectionBracketRED&&
+		projectionBracketRED&&effectiveAsMolecularRED&&
 		ownerProductionEntryPassed&&
 		ownerObserved.ownerPublicationIdentity!=0u&&
 		ownerObserved.terminalStagingCount==1u&&
-		ownerObserved.interstageFullGridTransferCount==0u&&ownerDeviceTimingMS.size()==5u&&
+		ownerObserved.qualificationTraceStagingCount>0u&&ownerDeviceTimingMS.size()==5u&&
 		ownerStaleRefused&&ownerOrderRefused&&ownerForgedRefused&&ownerCallbackRefused&&
 		ownerAtomicRefused&&ownerPolicyDivergenceRefused&&
 		ownerStaleTargetPublicationRefused&&ownerUnverifiedPrivateBufferRefused&&

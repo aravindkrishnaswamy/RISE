@@ -252,10 +252,43 @@ namespace RISEFireProductionTrace
 		FireProductionRoundoffTrace::TraceFloat projectionTolerancePerS;
 		FireProductionRoundoffTrace::TraceFloat endpointVelocityToleranceMPerS;
 		std::uint32_t maximumPicardIterations;
+		//! Qualification-only Picard-map trace.  It never changes an accepted
+		//! state or its owner identity; the sealed evidence artifact binds it.
+		bool qualificationCaptureIterationTrace;
 
 		FireProductionProjectedHeunOwnerRequest() : attemptIdentity(0u),
 			projectionTolerancePerS(0.0f),endpointVelocityToleranceMPerS(0.0f),
-			maximumPicardIterations(64u) {}
+			maximumPicardIterations(64u),qualificationCaptureIterationTrace(false) {}
+	};
+
+	//! One evaluation of the coupled Picard map.  The fields are the actual
+	//! operands consumed by that evaluation, before any terminal publication.
+	//! This is qualification evidence, not a second authority surface.
+	struct FireProductionProjectedHeunIterationTrace
+	{
+		std::uint32_t iteration;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> projectionTargetPerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> producedTargetPerS;
+		std::array<std::vector<unsigned char>,6> activeClass;
+		std::array<std::vector<unsigned char>,6> nextActiveClass;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> sharedFaceAlpha;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> projectedVelocityMPerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> transportConservativeValues;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> transportTemperatureK;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> diffusivityM2PerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> conductivityWPerMK;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> molecularKinematicViscosityM2PerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> gasDensityKGPerM3;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> physicalMassFluxKGPerM2S;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> physicalEnergyFluxWPerM2;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> representedPressureRatio;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> faceDensityKGPerM3;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> projectedMomentumKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> stressMomentumRateKGPerM2S2;
+		FireProductionRoundoffTrace::TraceFloat maximumPostProjectionResidualPerS;
+
+		FireProductionProjectedHeunIterationTrace() : iteration(0u),
+			maximumPostProjectionResidualPerS(0.0f) {}
 	};
 
 	struct FireProductionProjectedHeunCoupledStageResult
@@ -271,6 +304,7 @@ namespace RISEFireProductionTrace
 		FireProductionScalarProjectionTargetSeal projectionTarget;
 		FireProductionScalarProjectionTargetSeal target;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> picardResidualPerS;
+		std::vector<FireProductionProjectedHeunIterationTrace> qualificationIterationTrace;
 		std::uint64_t parentCandidateIdentity;
 		std::uint64_t acceptedCandidateIdentity;
 		std::uint32_t acceptedIterationCount;
@@ -407,6 +441,7 @@ namespace RISEFireProductionTrace
 		//! tableau; the second restores the rejected mixed-alpha R0 cache.
 		bool qualificationThreeQuarterHeunWeighting;
 		bool qualificationReuseR0LimiterAlpha;
+		bool qualificationCaptureIterationTrace;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
 		std::uint64_t qualificationWorkingSetLimitBytes;
@@ -427,6 +462,7 @@ namespace RISEFireProductionTrace
 			qualificationDisableLimiterCertification(false),
 			qualificationThreeQuarterHeunWeighting(false),
 			qualificationReuseR0LimiterAlpha(false),
+			qualificationCaptureIterationTrace(false),
 			qualificationWorkingSetLimitBytes(0u)
 		{ gravityMPerS2.fill(0.0f); }
 	};
@@ -450,6 +486,8 @@ namespace RISEFireProductionTrace
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> projectionTargetPerS;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> acceptedTargetPerS;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> picardResidualPerS;
+		std::array<std::vector<FireProductionProjectedHeunIterationTrace>,3>
+			qualificationIterationTrace;
 		std::array<std::uint32_t,3> projectionTargetCorrectionIteration;
 		std::array<std::uint32_t,3> acceptedTargetCorrectionIteration;
 		std::array<std::uint32_t,3> acceptedPicardIterations;
@@ -468,6 +506,7 @@ namespace RISEFireProductionTrace
 		std::uint32_t commandCommitCount;
 		std::uint32_t interstageFullGridTransferCount;
 		std::uint32_t terminalStagingCount;
+		std::uint32_t qualificationTraceStagingCount;
 		std::uint32_t residentProjectionInvocationCount;
 		std::uint64_t certifiedWorkingSetBytes;
 		std::uint64_t actualMetalAllocationBytes;
@@ -483,7 +522,8 @@ namespace RISEFireProductionTrace
 
 		FireProductionProjectedHeunMetalOwnerResult() : ownerPublicationIdentity(0u),
 			commandCommitCount(0u),interstageFullGridTransferCount(0u),
-			terminalStagingCount(0u),residentProjectionInvocationCount(0u),
+			terminalStagingCount(0u),qualificationTraceStagingCount(0u),
+			residentProjectionInvocationCount(0u),
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
 			deviceElapsedMS(0.0),wallElapsedMS(0.0),residentProjectionDeviceElapsedMS(0.0),
 			residentNonprojectionDeviceElapsedMS(0.0),maximumCommutingResidualKGPerM3(0.0f),

@@ -2472,6 +2472,70 @@ namespace RISEFireProductionTrace
 				}
 				selectedClass=provedCycleBranches[selected];return true;
 			};
+			auto captureIterationTrace=[&](const std::uint32_t iteration,
+				const FireProductionScalarProjectionTargetSeal& projectionTarget,
+				const FireProductionScalarProjectionTargetSeal& producedTarget,
+				const FireProductionProjectionResult& projection,
+				const OpenClass& nextClass,
+				const FireProductionProjectedHeunTransportCoefficients& coefficients,
+				const FireProductionScalarFCTResult& scalarAcceptance,
+				const FireProductionScalarHeunFluxStage& flux,
+				const FireProductionNonpressureMomentumRHSResult& nonpressure){
+				if(!request_.qualificationCaptureIterationTrace)return;
+				FireProductionProjectedHeunIterationTrace trace;trace.iteration=iteration;
+				trace.projectionTargetPerS=projectionTarget.TargetPerS();
+				trace.producedTargetPerS=producedTarget.TargetPerS();
+				trace.activeClass=projection.pressureOpenInflow;trace.nextActiveClass=nextClass;
+				trace.sharedFaceAlpha=scalarAcceptance.sharedFaceAlpha;
+				trace.projectedVelocityMPerS=projection.velocityMPerS;
+				trace.transportConservativeValues=state;trace.transportTemperatureK=temperatureK;
+				trace.diffusivityM2PerS=coefficients.diffusivityM2PerS;
+				trace.conductivityWPerMK=coefficients.conductivityWPerMK;
+				trace.molecularKinematicViscosityM2PerS=
+					coefficients.molecularKinematicViscosityM2PerS;
+				OwnerGasDensity(shape,state,trace.gasDensityKGPerM3);
+				trace.physicalMassFluxKGPerM2S=flux.physicalMassFluxKGPerM2S;
+				trace.physicalEnergyFluxWPerM2=flux.physicalEnergyFluxWPerM2;
+				trace.representedPressureRatio.resize(cells);
+				for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> tuple={{}};
+					for(std::size_t component=0u;component<9u;++component)tuple[component]=
+						static_cast<double>(scalarAcceptance.accepted[component*cells+cell]);
+					double ratio=0.0;RISE::FireSimulationMethaneRecord::PhysicalV1().
+						AcceptedConservativeVolumeRatioByComponentOrder(tuple.data(),tuple.size(),
+							RISE::FireStateProducerPrecision::Binary32,ratio,0);
+					trace.representedPressureRatio[cell]=static_cast<FireProductionRoundoffTrace::TraceFloat>(ratio);}
+				trace.faceDensityKGPerM3=projection.faceDensityKGPerM3;
+				trace.projectedMomentumKGPerM2S=projection.momentumKGPerM2S;
+				trace.stressMomentumRateKGPerM2S2=nonpressure.stressMomentumRateKGPerM2S2;
+				trace.maximumPostProjectionResidualPerS=
+					projection.maximumPostProjectionResidualPerS;
+				result.qualificationIterationTrace.push_back(std::move(trace));
+			};
+			if(request_.qualificationCaptureIterationTrace){
+				FireProductionProjectedHeunIterationTrace trace;
+				trace.iteration=std::numeric_limits<std::uint32_t>::max();
+				trace.projectionTargetPerS.assign(cells,0.0f);
+				trace.producedTargetPerS=target.TargetPerS();
+				trace.activeClass=firstProjection.pressureOpenInflow;
+				trace.nextActiveClass=OwnerNextOpenClass(shape,request_.scalarContract.boundary,
+					firstProjection.pressureOpenInflow,firstProjection.velocityMPerS,
+					request_.endpointVelocityToleranceMPerS);
+				trace.projectedVelocityMPerS=firstProjection.velocityMPerS;
+				trace.transportConservativeValues=state;trace.transportTemperatureK=temperatureK;
+				trace.diffusivityM2PerS=firstCoefficients.diffusivityM2PerS;
+				trace.conductivityWPerMK=firstCoefficients.conductivityWPerMK;
+				trace.molecularKinematicViscosityM2PerS=
+					firstCoefficients.molecularKinematicViscosityM2PerS;
+				OwnerGasDensity(shape,state,trace.gasDensityKGPerM3);
+				trace.physicalMassFluxKGPerM2S=firstFlux.physicalMassFluxKGPerM2S;
+				trace.physicalEnergyFluxWPerM2=firstFlux.physicalEnergyFluxWPerM2;
+				trace.faceDensityKGPerM3=firstProjection.faceDensityKGPerM3;
+				trace.projectedMomentumKGPerM2S=firstProjection.momentumKGPerM2S;
+				trace.stressMomentumRateKGPerM2S2=firstNonpressure.stressMomentumRateKGPerM2S2;
+				trace.maximumPostProjectionResidualPerS=
+					firstProjection.maximumPostProjectionResidualPerS;
+				result.qualificationIterationTrace.push_back(std::move(trace));
+			}
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;
 				++iteration){
 				FireProductionProjectionRequest projection=projectionRequest(&target,
@@ -2569,6 +2633,8 @@ namespace RISEFireProductionTrace
 					candidate,correctionCandidateIdentity,static_cast<std::uint8_t>(stage),
 					parentCandidateIdentity,fluxIdentity,scalarAcceptance.sharedFaceAlpha,
 					corrected,error))return false;
+				captureIterationTrace(iteration,target,corrected,projected,nextClass,
+					coefficients,scalarAcceptance,flux,nonpressure);
 				FireProductionRoundoffTrace::TraceFloat targetResidual=0.0f,momentumResidual=0.0f,coefficientResidual=0.0f;
 				for(std::size_t cell=0u;cell<cells;++cell)targetResidual=std::max(
 					targetResidual,std::fabs(corrected.TargetPerS()[cell]-target.TargetPerS()[cell]));
@@ -2741,6 +2807,9 @@ namespace RISEFireProductionTrace
 						certifiedScalar.accepted,certifiedIdentity,
 						static_cast<std::uint8_t>(stage),parentCandidateIdentity,
 						verifiedFluxIdentity,selectedAlpha,certifiedTarget,error))return false;
+					captureIterationTrace(iteration|UINT32_C(0x80000000),corrected,
+						certifiedTarget,verifiedProjection,terminalNextClass,verifiedCoefficients,
+						certifiedScalar,verifiedFlux,verifiedNonpressure);
 					FireProductionRoundoffTrace::TraceFloat verificationResidual=0.0f;
 					for(std::size_t cell=0u;cell<cells;++cell)verificationResidual=std::max(
 						verificationResidual,std::fabs(certifiedTarget.TargetPerS()[cell]-
@@ -3068,6 +3137,47 @@ namespace RISEFireProductionTrace
 			bool postFreezeThirdClassInjected=false;
 			bool terminalFirstTransitionInjected=false,terminalFirstTransitionPending=false,
 				terminalFirstTransitionTerminalPending=false;
+			auto captureIterationTrace=[&](const std::uint32_t iteration,
+				const FireProductionScalarProjectionTargetSeal* projectionTarget,
+				const FireProductionScalarProjectionTargetSeal& producedTarget,
+				const FireProductionProjectionResult& projection,
+				const OpenClass& activeClass,
+				const OpenClass& nextClass,
+				const FireProductionProjectedHeunTransportCoefficients& coefficients,
+				const FireProductionScalarPhysicalFluxPrerequisiteResult& flux){
+				if(!request_.qualificationCaptureIterationTrace)return;
+				FireProductionProjectedHeunIterationTrace trace;trace.iteration=iteration;
+				if(projectionTarget)trace.projectionTargetPerS=projectionTarget->TargetPerS();
+				else trace.projectionTargetPerS.assign(cells,0.0f);
+				trace.producedTargetPerS=producedTarget.TargetPerS();
+				trace.activeClass=activeClass;trace.nextActiveClass=nextClass;
+				trace.projectedVelocityMPerS=projection.velocityMPerS;
+				trace.transportConservativeValues=work_.conservativeValues;
+				trace.transportTemperatureK=work_.committedEOS.temperatureK;
+				trace.diffusivityM2PerS=coefficients.diffusivityM2PerS;
+				trace.conductivityWPerMK=coefficients.conductivityWPerMK;
+				trace.molecularKinematicViscosityM2PerS=
+					coefficients.molecularKinematicViscosityM2PerS;
+				trace.gasDensityKGPerM3=gasDensity;
+				trace.physicalMassFluxKGPerM2S=flux.physicalMassFluxKGPerM2S;
+				trace.physicalEnergyFluxWPerM2=flux.physicalEnergyFluxWPerM2;
+				trace.representedPressureRatio.resize(cells);
+				for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> tuple={{}};
+					for(std::size_t component=0u;component<9u;++component)tuple[component]=
+						static_cast<double>(work_.conservativeValues[component*cells+cell]);
+					double ratio=0.0;RISE::FireSimulationMethaneRecord::PhysicalV1().
+						AcceptedConservativeVolumeRatioByComponentOrder(tuple.data(),tuple.size(),
+							RISE::FireStateProducerPrecision::Binary32,ratio,0);
+					trace.representedPressureRatio[cell]=static_cast<FireProductionRoundoffTrace::TraceFloat>(ratio);}
+				trace.faceDensityKGPerM3=projection.faceDensityKGPerM3;
+				trace.projectedMomentumKGPerM2S=projection.momentumKGPerM2S;
+				trace.maximumPostProjectionResidualPerS=
+					projection.maximumPostProjectionResidualPerS;
+				r2.qualificationIterationTrace.push_back(std::move(trace));
+			};
+			captureIterationTrace(std::numeric_limits<std::uint32_t>::max(),
+				nullptr,endpointTarget,
+				bootstrapProjection,bootstrapClass,active,bootstrapCoefficients,bootstrapFlux);
 			auto addCycleBranch=[&](const OpenClass& branch){
 				if(std::find(provedCycleBranches.begin(),provedCycleBranches.end(),branch)==
 					provedCycleBranches.end())provedCycleBranches.push_back(branch);
@@ -3224,6 +3334,8 @@ namespace RISEFireProductionTrace
 				if(!FireProductionProjectedHeunTargetAuthority::EndpointBase(flux,
 					work_.conservativeValues,work_.committedEOS.temperatureK,request_.source,
 					nextTarget,error))return false;
+				captureIterationTrace(iteration,&endpointTarget,nextTarget,projected,
+					projectedClass,projected.pressureOpenInflow,coefficients,flux);
 				FireProductionRoundoffTrace::TraceFloat targetResidual=0.0f,momentumResidual=0.0f,coefficientResidual=0.0f;
 				for(std::size_t cell=0u;cell<cells;++cell)targetResidual=std::max(
 					targetResidual,std::fabs(nextTarget.TargetPerS()[cell]-
@@ -3315,6 +3427,9 @@ namespace RISEFireProductionTrace
 					if(!FireProductionProjectedHeunTargetAuthority::EndpointBase(terminalFlux,
 						work_.conservativeValues,work_.committedEOS.temperatureK,request_.source,
 						terminalTarget,error))return false;
+					captureIterationTrace(iteration|UINT32_C(0x80000000),&nextTarget,
+						terminalTarget,terminalProjection,terminalUsedClass,terminalNextClass,
+						terminalCoefficients,terminalFlux);
 					FireProductionRoundoffTrace::TraceFloat verificationResidual=0.0f;
 					for(std::size_t cell=0u;cell<cells;++cell)verificationResidual=std::max({
 						verificationResidual,std::fabs(terminalTarget.TargetPerS()[cell]-

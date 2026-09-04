@@ -6880,7 +6880,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				integratedOpenHead_;
 			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
 			std::vector<std::shared_ptr<unsigned char> > issuedTargetCapabilities_;
+			std::array<std::vector<FireProductionProjectedHeunIterationTrace>,3>
+				qualificationTrace_;
 			std::uint32_t commits_,projectionInvocations_,interstageFullGridTransfers_;
+			std::uint32_t qualificationTraceStagingCount_;
 			enum class OwnerTransferPhase { Setup,Interstage,Publication } transferPhase_;
 			std::uint64_t actualBytes_,deviceAllocationBaseline_,deviceAllocationPeak_;
 			double deviceMS_,projectionDeviceMS_;
@@ -7346,6 +7349,68 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				}
 				output.deviceMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;return true;
 			}
+			bool CaptureIterationTrace(const unsigned int stage,const std::uint32_t iteration,
+				id<MTLBuffer> state,id<MTLBuffer> temperature,
+				const ResidentProjectionTargetMetalAuthority& projectionTarget,
+				const Stage& value,std::string* error)
+			{
+				if(!request_.qualificationCaptureIterationTrace)return true;
+				const std::size_t floatCount=17u*cells_+14u*allFaces_;
+				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_;
+				id<MTLBuffer> staging=[context_.device newBufferWithLength:byteCount
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!staging||!blit)return false;
+				std::size_t offset=0u;
+				auto copy=[&](id<MTLBuffer> source,const std::size_t bytes){
+					Copy(blit,source,0u,staging,offset,bytes,TransferKind::Terminal);offset+=bytes;};
+				copy(projectionTarget.assembled,cells_*sizeof(float));
+				copy(value.target->assembled,cells_*sizeof(float));
+				copy(value.projection.pressureOpenInflow,boundaryFaces_);
+				copy(value.nextOpenClass,boundaryFaces_);
+				copy(value.candidate->faceAlpha,allFaces_*sizeof(float));
+				copy(value.packedVelocity,allFaces_*sizeof(float));
+				copy(state,9u*cells_*sizeof(float));copy(temperature,cells_*sizeof(float));
+				copy(value.transport->coefficients,3u*cells_*sizeof(float));
+				copy(value.gasDensity,cells_*sizeof(float));
+				copy(value.physical->physicalMass,8u*allFaces_*sizeof(float));
+				copy(value.physical->physicalEnergy,allFaces_*sizeof(float));
+				copy(value.eos->representedPressureRatio,cells_*sizeof(float));
+				copy(value.packedDensity,allFaces_*sizeof(float));
+				copy(value.packedMomentum,allFaces_*sizeof(float));
+				copy(value.nonpressure.stressMomentumRateKGPerM2S2,allFaces_*sizeof(float));
+				[blit endEncoding];if(!Commit(command,error))return false;
+				const unsigned char* bytes=static_cast<const unsigned char*>(
+					Read(staging,TransferKind::Terminal));if(!bytes)return false;
+				FireProductionProjectedHeunIterationTrace trace;trace.iteration=iteration;offset=0u;
+				auto floats=[&](std::vector<float>& destination,const std::size_t count){
+					const float* source=reinterpret_cast<const float*>(bytes+offset);
+					destination.assign(source,source+count);offset+=count*sizeof(float);};
+				auto classes=[&](std::array<std::vector<unsigned char>,6>& destination){
+					for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
+						shape_.ny*shape_.nz:(side<4u?shape_.nx*shape_.nz:shape_.nx*shape_.ny);
+						destination[side].assign(bytes+offset,bytes+offset+count);offset+=count;}};
+				auto faces=[&](std::array<std::vector<float>,3>& destination){
+					for(unsigned int axis=0u;axis<3u;++axis)
+						floats(destination[axis],FireProductionProjectionFaceCount(shape_,axis));};
+				floats(trace.projectionTargetPerS,cells_);floats(trace.producedTargetPerS,cells_);
+				classes(trace.activeClass);classes(trace.nextActiveClass);
+				faces(trace.sharedFaceAlpha);faces(trace.projectedVelocityMPerS);
+				floats(trace.transportConservativeValues,9u*cells_);
+				floats(trace.transportTemperatureK,cells_);
+				floats(trace.diffusivityM2PerS,cells_);floats(trace.conductivityWPerMK,cells_);
+				floats(trace.molecularKinematicViscosityM2PerS,cells_);
+				floats(trace.gasDensityKGPerM3,cells_);
+				floats(trace.physicalMassFluxKGPerM2S,8u*allFaces_);
+				floats(trace.physicalEnergyFluxWPerM2,allFaces_);
+				floats(trace.representedPressureRatio,cells_);faces(trace.faceDensityKGPerM3);
+				faces(trace.projectedMomentumKGPerM2S);faces(trace.stressMomentumRateKGPerM2S2);
+				trace.maximumPostProjectionResidualPerS=
+					value.projectionDiagnostics.maximumPostProjectionResidualPerS;
+				qualificationTrace_[stage].push_back(std::move(trace));
+				++qualificationTraceStagingCount_;return true;
+			}
 			bool Prepare(std::string* error);
 			bool SolveStage(unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
 				id<MTLBuffer> momentum,id<MTLBuffer> parentIdentity,
@@ -7364,7 +7429,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				eosObligations_(nil),targetObligations_(nil),zeroTarget_(nil),
 				zeroTargetIdentity_(nil),zeroTargetConsumerIdentity_(nil),rootCandidateIdentity_(nil),
 				integratedOpenHead_(nil),commits_(0u),
-				projectionInvocations_(0u),interstageFullGridTransfers_(0u),transferPhase_(OwnerTransferPhase::Setup),actualBytes_(0u),
+				projectionInvocations_(0u),interstageFullGridTransfers_(0u),
+				qualificationTraceStagingCount_(0u),transferPhase_(OwnerTransferPhase::Setup),actualBytes_(0u),
 				deviceAllocationBaseline_(context_.device?static_cast<std::uint64_t>(
 					[context_.device currentAllocatedSize]):0u),deviceAllocationPeak_(0u),
 				deviceMS_(0.0),projectionDeviceMS_(0.0)
@@ -7615,6 +7681,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				initialSealedInflow,sealedHead,
 				*seed,error)||!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,
 				*bootstrapTarget_,false,nil,*seed,r0,error))return false;
+			if(!CaptureIterationTrace(stage,std::numeric_limits<std::uint32_t>::max(),state,temperature,
+				*bootstrapTarget_,*seed,error))return false;
 			id<MTLBuffer> activeClass=seed->projection.pressureOpenInflow;
 			std::unique_ptr<Stage> prior=std::move(seed);bool havePrior=false,frozenCycle=false;
 			float lastResidual=std::numeric_limits<float>::infinity();
@@ -7676,6 +7744,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				}else if(!frozenCycle)activeClass=current->nextOpenClass;
 				if(!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,*prior->target,
 					stage!=2u,nil,*current,r0,error))return false;
+				if(!CaptureIterationTrace(stage,iteration,state,temperature,*prior->target,*current,error))
+					return false;
 				float currentResidual=0.0f;if(!residual(*current,*prior,havePrior,currentResidual,
 					&lastResidualComponents))return false;
 				lastResidual=currentResidual;lastClassStable=classStable;
@@ -7732,6 +7802,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 							stage!=2u,selectedAlpha,*certified,r0,error))return false;
 						certified->limiterDiscontinuousClass=true;
 					}else certified=std::move(verified);
+					if(!CaptureIterationTrace(stage,iteration|UINT32_C(0x80000000),state,
+						temperature,*current->target,*certified,error))return false;
 					float verificationResidual=0.0f;if(!residual(*certified,*current,true,
 						verificationResidual,0))return false;
 					if(terminalTransition||verificationResidual>request_.projectionTolerancePerS){
@@ -8039,6 +8111,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				r1->acceptedIterationCount,r2->acceptedIterationCount}};
 			result.picardResidualPerS={{r0->picardResidualPerS,r1->picardResidualPerS,
 				r2->picardResidualPerS}};
+			result.qualificationIterationTrace=qualificationTrace_;
+			result.qualificationTraceStagingCount=qualificationTraceStagingCount_;
 			result.activeSetCycleLength={{r0->activeSetCycleLength,r1->activeSetCycleLength,
 				r2->activeSetCycleLength}};
 			result.activeSetCanonicalProjectionCount={{r0->activeSetCanonicalProjectionCount,
