@@ -68,7 +68,8 @@
 //      the mean of the raw E would make `hemisphericalAlbedo`'s closed
 //      form disagree with `value()`'s own denominator.
 //
-//      Computed HERE from the BAKED 32-point E row -- trapezoid over
+//      Computed HERE from the BAKED 64-point E row (round 9: 32 -> 64,
+//      2026-09-04) -- trapezoid over
 //      the WARPED node spacing for [mu1, 1], plus an analytic
 //      constant-extrapolation term for [0, mu1] mirroring the runtime's
 //      floor (see ComputeEHatMeanFromRow) -- not from a separate
@@ -136,7 +137,7 @@
 //              as alpha -> 0, and only a LOG grid puts enough nodes in
 //              that regime for the low end of the table to track the
 //              curvature of E(alpha, .) there -- a linear grid would
-//              spend 31 of its 32 samples above alpha ~= 0.03 and
+//              spend 63 of its 64 samples above alpha ~= 0.03 and
 //              completely miss the interesting part of the curve below
 //              it.  Endpoints are INCLUDED (node i is
 //              kAlphaMin * (kAlphaMax/kAlphaMin)^(i/(N-1))), matching
@@ -144,14 +145,18 @@
 //              GenerateMicrofacetEnergyLUT's alpha axis.
 //
 //   cosTheta:  kNumCosThetaBins entries, GRAZING-WARPED --
-//              node j at mu = (j/(N-1))^2 -- endpoints INCLUDED.  Node 1
-//              therefore sits at 1/961 = 0.00104 and about SIX of the 32
-//              nodes fall below mu = 0.03.  A UNIFORM axis (which this
-//              generator used until 2026-09-02) put its first interior
-//              node at 0.0323, so the runtime interpolant ramped from
-//              the exact 0 at node 0 across the entire band the Charlie
-//              lobe occupies -- and the lobe is already near its PEAK by
-//              mu ~ 0.005.  See the "WHY THE WARP" note on CosThetaAt.
+//              node j at mu = (j/(N-1))^2 -- endpoints INCLUDED.  At
+//              N = 64 (round 9, 2026-09-04) node 1 sits at
+//              1/63^2 = 1/3969 = 2.52e-4, and about ELEVEN of the 64
+//              nodes fall below mu = 0.03 -- roughly double the density
+//              of the N = 32 table's ~SIX, since the warp is quadratic
+//              and doubling N halves the node spacing near the origin
+//              too.  A UNIFORM axis (which this generator used until
+//              2026-09-02) put its first interior node at 0.0323, so the
+//              runtime interpolant ramped from the exact 0 at node 0
+//              across the entire band the Charlie lobe occupies -- and
+//              the lobe is already near its PEAK by mu ~ 0.005.  See the
+//              "WHY THE WARP" note on CosThetaAt.
 //
 //              cosTheta == 0 remains an exact node (E is analytically
 //              zero there) and cosTheta == 1 an exact node at normal
@@ -167,11 +172,11 @@
 //  SIZE
 //  ------------------------------------------------------------------
 //
-//  E: 32 x 32 floats == 4 KB.  EMean: 32 floats == 128 B.  Total table
-//  payload 4.125 KB -- half the 8 KB the design doc estimates for E
-//  alone (the doc was estimating doubles; this bakes floats, like every
-//  other RISE LUT), and down from 6.25 KB before the S table was
-//  retired.
+//  RAISED 32x32 -> 64x64 (round 9, 2026-09-04, debt 18): E: 64 x 64
+//  floats == 16 KB.  EMean: 64 floats == 256 B.  Total table payload
+//  16.25 KB -- ~4x the 4.125 KB of the N = 32 table (uniform refinement
+//  on both axes is a 4x cell count), still an order of magnitude below
+//  the 52.8 KB medulla table.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -195,8 +200,12 @@ namespace
 	namespace CS = RISE::Implementation::CharlieSheen;
 
 	// ---- table extents (must match SheenDirectionalAlbedo.h) -------
-	const unsigned int kNumAlphaBins    = 32;
-	const unsigned int kNumCosThetaBins = 32;
+	// RAISED 32 -> 64 on BOTH axes (round 9, 2026-09-04, debt 18): a
+	// UNIFORM refinement, not an ad-hoc node -- see SheenDirectionalAlbedo.h
+	// and docs/CLOTH_FABRIC_DESIGN.md 9.2/15 debt 18 for the residual this
+	// closes and what it leaves open.
+	const unsigned int kNumAlphaBins    = 64;
+	const unsigned int kNumCosThetaBins = 64;
 
 	const double kAlphaMin = 1e-3;
 	const double kAlphaMax = 1.0;
@@ -225,7 +234,10 @@ namespace
 	}
 
 	//! GRAZING-WARPED cosTheta node.  `mu_j = (j/(N-1))^2`, so node 1
-	//! sits at 1/961 = 0.00104 instead of a uniform grid's 0.0323.
+	//! sits at `1/(N-1)^2` -- 1/961 = 0.00104 at the original N = 32,
+	//! 1/3969 = 2.52e-4 since round 9's (2026-09-04) 32 -> 64 uniform
+	//! refinement (docs/CLOTH_FABRIC_DESIGN.md 15 debt 18) -- instead of
+	//! a uniform grid's 0.0323.
 	//!
 	//! WHY THE WARP (M1 review, 2026-09-02).  The Charlie lobe is
 	//! already near its PEAK by mu ~ 0.005: E(alpha=0.04, mu=0.005) is
@@ -237,7 +249,8 @@ namespace
 	//! lobe while suppressing the base by the TABLED E, the white-furnace
 	//! identity broke by up to +1.05 absolute (rho ~ 2.05) under grazing
 	//! illumination -- at every roughness.  A quadratic warp puts ~6
-	//! nodes below mu = 0.03 where the old axis had none.
+	//! nodes below mu = 0.03 where the old axis had none (~11 of the 64
+	//! nodes, at round 9's doubled resolution).
 	//!
 	//! mu = 0 stays an exact node (E is analytically 0 there:
 	//! CharlieSheen::V's geometric cutoff fires for every incident
@@ -593,6 +606,17 @@ int main( int argc, char** argv )
 
 	const double eDelta = eStats.worstDelta;
 
+	// mu1 and the below-0.03 node count are DERIVED here (not hard-coded
+	// into the banner text below) so a future re-bake at a different
+	// kNumCosThetaBins cannot leave a stale number in the emitted file --
+	// exactly the kind of drift round 9 (2026-09-04, debt 18) found and
+	// fixed when the axis moved from 32 to 64 nodes.
+	const double mu1 = 1.0 / (double)( (kNumCosThetaBins - 1) * (kNumCosThetaBins - 1) );
+	unsigned int belowGrazeCount = 0;
+	for( unsigned int ci = 0; ci < kNumCosThetaBins; ci++ ) {
+		if( CosThetaAt( ci ) < 0.03 ) belowGrazeCount++;
+	}
+
 	// ---- emit --------------------------------------------------------
 	FILE* f = fopen( outPath.c_str(), "wb" );
 	if( !f ) {
@@ -618,7 +642,7 @@ int main( int argc, char** argv )
 		"//  header.\n"
 		"//\n"
 		"//  cosTheta axis: GRAZING-WARPED, mu_j = (j/(N-1))^2, so node 1 sits\n"
-		"//  at 0.00104 and ~6 of the 32 nodes fall below mu = 0.03.  A\n"
+		"//  at %.6g and %u of the %u nodes fall below mu = 0.03.  A\n"
 		"//  UNIFORM axis (which this table used until 2026-09-02) has its\n"
 		"//  first interior node at mu = 0.0323 with an exact 0 at mu = 0, so\n"
 		"//  the runtime interpolant ramped LINEARLY FROM ZERO across the\n"
@@ -691,6 +715,7 @@ int main( int argc, char** argv )
 		"\t\textern const float kAlphaMin = %s;\n"
 		"\t\textern const float kAlphaMax = %s;\n"
 		"\n",
+		mu1, belowGrazeCount, kNumCosThetaBins,
 		kEMuStart, kEPhiStart, kETol, kEMuCap,
 		eDelta, gReachableWorstDelta, eMeanDelta, eMin, eMax,
 		gReachableMin, gReachableMax, gReachableMax, gSmallestSafeAlpha,

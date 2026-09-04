@@ -258,18 +258,25 @@ reaches ~1.196 even above the roughness floor), so the sheen term is
 divided by a **symmetric** normaliser and the base scaled by the clamped
 `Ê`. Both are exactly 1 / exactly `E` outside that sliver, so nothing
 else moves. The table's cos θ axis is additionally **floored at its
-first node** (μ₁ = 1/961) with constant extrapolation below — without
-that, the first cell interpolates E up from zero across the lobe's peak
-and a white fabric returns ρ = 1.71.
+first node** (μ₁ = 1/3969 since round 9, 2026-09-04's 32→64 rebake; was
+1/961) with constant extrapolation below — without that, the first cell
+interpolates E up from zero across the lobe's peak and a white fabric
+returns ρ = 1.71.
 
 **Exactness class: energy-bounded, and nearly conserving.** Worst ρ
 measured over the whole reachable domain (α ∈ [0.04, 1], white
-Lambertian base, m = 1): **1.0064** for n·v ≥ 0.0349, **1.0167** between
-there and μ₁, **1.0067** below μ₁ — global max **1.0166**, nothing
-reaching 1.02. All three worst cases sit at **α ≈ 0.9**, not at the
-roughness floor: E at cos θ node 1 is concave in α, so the log-α chord
-in the last (widest) cell under-reads the true lobe by 0.0067. Closing
-it wants more table resolution, not an algebra change.
+Lambertian base, m = 1), on the round-9 64×64 table: **1.0019** for
+n·v ≥ 0.0349, **1.0075** between there and μ₁, **1.0018** below μ₁ —
+global max **1.0075**, nothing reaching 1.01. The outer and inner bands
+sit at **α ≈ 0.95**: E at cos θ node 1 is concave in α, so the log-α
+chord in the last (widest) cell under-reads the true lobe. The middle
+band's worst has relocated to **α ≈ 0.065**, near the roughness floor —
+doubling the table resolution roughly halved the other two bands but
+only reduced this one by about half as much, because its dominant
+driver moved once the α ≈ 0.9 mechanism shrank below it. Closing the
+middle band's residual further wants a fresh root-cause hunt near the
+floor, not another blind resolution doubling (see [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md)
+§9.2 and §15 debt 18).
 
 **Why this form and not glTF's.** The design doc originally specified
 the glTF `KHR_materials_sheen` scaling with the two arms combined by a

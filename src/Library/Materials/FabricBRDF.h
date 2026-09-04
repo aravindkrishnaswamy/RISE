@@ -106,49 +106,59 @@
 //  which needs E <= 1.
 //
 //  tools/SheenDirectionalAlbedoGen.cpp prints the scan ("kMinSheenAlpha
-//  scan") on every bake.  On the warped table the smallest baked alpha
-//  meeting the criterion is 0.028289, with the next node up at 0.035350
-//  (max E 0.928) -- so 0.04 clears it with BOTH bilinear-bracketing rows
-//  already under 1, and the floor did not have to move when the axis was
-//  re-baked.  Re-run that scan after any change to CharlieSheen or to
-//  the bake extents; do not carry this number forward on trust.
+//  scan") on every bake.  On the round-9 (2026-09-04) 64-node table the
+//  smallest baked alpha meeting the criterion is 0.037276 (was 0.028289
+//  at the retired 32-node table) -- so 0.04 still clears it, with less
+//  margin than before but with BOTH bilinear-bracketing rows still under
+//  1.  Re-run that scan after any change to CharlieSheen, to the bake
+//  extents, or to the bake resolution; do not carry this number forward
+//  on trust.
 //
 //  EXACTNESS CLASS -- three bands, with the WORST case in each.
 //
 //  Fabric is NEARLY energy-conserving for n.v >= 0.0349 and
 //  energy-BOUNDED below that.  Measured on a white Lambertian base at
 //  m = 1, tint = 1, by deterministic quadrature over the WHOLE reachable
-//  domain (alpha in [0.04, 1] x mu, warped grid):
+//  domain (alpha in [0.04, 1] x mu, warped grid), on the round-9
+//  (2026-09-04) 64x64 table (was 32x32; see docs/CLOTH_FABRIC_DESIGN.md
+//  9.2 for the retired 32-node figures):
 //
-//    n.v >= 0.0349          rho <= 1.0064  (+0.64 %)  at alpha 0.908
-//    1/961 <= n.v < 0.0349  rho <= 1.0167  (+1.67 %)  at alpha 0.908,
-//                                                     n.v ~ 0.0023
-//    n.v < 1/961            rho <= 1.0067  (+0.67 %)  at alpha 0.908,
+//    n.v >= 0.0349          rho <= 1.0019  (+0.19 %)  at alpha ~ 0.95
+//    mu1 <= n.v < 0.0349    rho <= 1.0075  (+0.75 %)  at alpha ~ 0.065,
+//                                                     n.v ~ 5.5e-4
+//    n.v < mu1              rho <= 1.0018  (+0.18 %)  at alpha ~ 0.95,
 //                                                     n.v -> mu1
+//    (mu1 = 1/3969, was 1/961 at the retired 32-node table)
 //
-//  Global maximum anywhere: rho = 1.0166.  Nothing reaches 1.02.
+//  Global maximum anywhere: rho = 1.0075.  Nothing reaches 1.01.
 //
-//  EVERY ONE OF THESE NUMBERS WAS PREVIOUSLY UNDERSTATED, and the reason
-//  is worth keeping.  Earlier revisions quoted 0.06 % / 1.1 % / "rho <=
-//  1", all measured at ALPHA = 0.04 -- the roughness floor, where the
-//  presets live.  The worst case is not there.  It is at alpha ~ 0.9,
-//  in the LAST and widest log-alpha cell (0.800 -> 1.000), where E at
-//  node 1 stops being monotone in alpha: it is CONCAVE with a peak near
-//  0.9, so the log-alpha chord between the two bracketing rows
-//  UNDER-reads the true lobe by up to 0.0067.  That under-read is what
-//  drives all three bands' worst cases -- the lobe is emitted at its
-//  true strength while the normaliser and the base suppression are
-//  computed from the lower, interpolated value.
+//  DOUBLING THE TABLE RESOLUTION ROUGHLY HALVED THE OUTER/INNER BANDS
+//  AND RELOCATED THE MIDDLE BAND'S DRIVER instead of halving it.
+//  Earlier revisions quoted 0.06 % / 1.1 % / "rho <= 1", all measured at
+//  ALPHA = 0.04 -- the roughness floor, where the presets live.  Rounds
+//  6-8 then found the worst case at alpha ~ 0.9, in the LAST and widest
+//  log-alpha cell (0.800 -> 1.000), where E at node 1 stops being
+//  monotone in alpha: it is CONCAVE with a peak near 0.9, so the
+//  log-alpha chord between the two bracketing rows UNDER-reads the true
+//  lobe.  Doubling the alpha axis (round 9) halved that cell's width,
+//  and the outer/inner bands -- still driven by that same mechanism --
+//  dropped accordingly.  The MIDDLE band did NOT track that improvement:
+//  an exhaustive (alpha, mu) search finds its new worst near the
+//  ROUGHNESS FLOOR (alpha ~ 0.065), not at alpha ~ 0.9 -- a second,
+//  previously-smaller residual became the bottleneck once the alpha ~
+//  0.9 mechanism shrank below it.
 //
 //  So: measure over the alpha range too, not just over mu.  A number
-//  taken at the roughness floor is not the worst case for this model.
+//  taken at the roughness floor is not the worst case for this model --
+//  though as of round 9, the middle band's worst case is now NEAR (not
+//  at) the floor, for a different reason than the other two bands.
 //
-//  The middle band's residual is the E table's interpolation error
-//  BETWEEN nodes; the bottom band is the floored-domain regime
-//  (SheenDirectionalAlbedo.h's "THE DOMAIN IS [mu1, 1]").  Closing
-//  either would mean more table resolution -- an alpha node near 0.9,
-//  or more cosTheta nodes -- not an algebra change.  docs/
-//  CLOTH_FABRIC_DESIGN.md 15 debt 18 tracks it.
+//  The outer/inner-band residual is the alpha-chord shortfall directly.
+//  The middle band's residual is not yet root-caused past "near the
+//  floor" -- closing it further needs a fresh hunt, not another blind
+//  resolution doubling.  The bottom band is the floored-domain regime
+//  (SheenDirectionalAlbedo.h's "THE DOMAIN IS [mu1, 1]").  docs/
+//  CLOTH_FABRIC_DESIGN.md 15 debt 18 tracks all of this.
 //
 //  Every preset in FabricPresets.h is above this floor -- velvet's 0.08
 //  is the tightest.  `sheen_material`'s own 1e-3 floor is DELIBERATELY

@@ -26,7 +26,7 @@
 //     albedo Ehat = min(E, 1):
 //       EHatMean(alpha) = 2 * integral_0^1 min(E(alpha, mu), 1) * mu dmu
 //     MicrofacetEnergyLUT.h's E_avg, for Ehat rather than E.  Baked
-//     directly from the STORED 32-point E row by a trapezoid IN mu
+//     directly from the STORED 64-point E row by a trapezoid IN mu
 //     (the nodes are not uniformly spaced -- see the axis note below),
 //     not from an independent higher-resolution integral, so it is
 //     exactly reconstructable from the shipped E table alone -- see
@@ -77,30 +77,35 @@
 //
 //      the smallest alpha for which  max over mu >= 0.03 of E  <=  1
 //
-//  -- NOT "max over the whole row", which NO alpha satisfies.  Row 16
-//  (alpha = 0.035350) has a whole-row max of 1.251216; what is <= 1
-//  there is its max restricted to mu >= 0.03 (0.928138).  (An earlier
-//  revision quoted 1.152228 as row 16's whole-row max; that is row
-//  17's, alpha = 0.044173.  The restricted figure beside it was and is
-//  correct.)  For the runtime the relevant statement is the
-//  INTERPOLATED one: max E() over alpha >= 0.04 and mu >= 0.03 is
-//  0.961508 -- the criterion holds -- while max E() over alpha >= 0.04
-//  at ANY mu is ~1.196, at alpha = 0.04, mu ~ 0.0041, which is exactly
-//  the sliver the normaliser exists for.  An earlier
-//  revision of this comment stated the unrestricted form and quoted a
-//  pre-warp number; it was false against the shipped table and would
-//  have authorised the wrong floor at the next re-bake.  The generator
-//  prints the scan under "kMinSheenAlpha scan" on every run --
-//  consult that, not this sentence.  A defensive min() in
-//  `FabricBRDF::SheenTransmit` and the symmetric normaliser in
-//  `FabricBRDF::SheenNormaliser` bound whatever remains above 1 inside
-//  the near-grazing sliver.
+//  -- NOT "max over the whole row", which NO alpha satisfies.  At the
+//  round-9 (2026-09-04) 64-node table, row 33 (alpha = 0.037276) has a
+//  whole-row max of 1.226688; what is <= 1 there is its max restricted
+//  to mu >= 0.03 (0.974896).  (At the retired 32-node table this same
+//  illustration used row 16, alpha = 0.035350, whole-row max 1.251216,
+//  restricted max 0.928138 -- the rebake moved both the qualifying row
+//  and every number beside it, which is exactly why this passage names
+//  the row rather than just quoting a bare number: a stale copy would
+//  silently describe a table this codebase no longer ships.)  For the
+//  runtime the relevant statement is the INTERPOLATED one: max E() over
+//  alpha >= 0.04 and mu >= 0.03 is 0.961254 -- the criterion holds --
+//  while max E() over alpha >= 0.04 at ANY mu is ~1.195, at
+//  alpha = 0.04, mu ~ 0.0040, which is exactly the sliver the
+//  normaliser exists for.  (Both figures are within 3e-4 of the
+//  32-node table's 0.961508 / ~1.196 -- alpha = 0.04 is fixed by
+//  `FabricBRDF::kMinSheenAlpha`, not by the table resolution, so E's
+//  shape there was already well-resolved and the rebake mostly
+//  sharpens OTHER cells.)  The generator prints the scan under
+//  "kMinSheenAlpha scan" on every run -- consult that, not this
+//  sentence.  A defensive min() in `FabricBRDF::SheenTransmit` and the
+//  symmetric normaliser in `FabricBRDF::SheenNormaliser` bound whatever
+//  remains above 1 inside the near-grazing sliver.
 //
 //  ------------------------------------------------------------------
 //  THE DOMAIN IS [mu1, 1], WITH CONSTANT EXTRAPOLATION BELOW
 //  ------------------------------------------------------------------
 //
-//  `E()` FLOORS its cosTheta argument at node 1, mu1 = 1/961, so
+//  `E()` FLOORS its cosTheta argument at node 1, mu1 = 1/3969 (was
+//  1/961 at the retired 32-node table; round 9, 2026-09-04), so
 //  everything below that reads E(alpha, mu1).  This is the table's
 //  stated domain, not a clamp of convenience, and it is load-bearing.
 //
@@ -122,20 +127,29 @@
 //  `E_tab(mu1)` is a LINEAR INTERPOLATION IN LOG-ALPHA and E at node 1
 //  is CONCAVE in alpha with a peak near alpha ~ 0.9:
 //
-//      row 30  alpha = 0.800250   kETable[30][1] = 0.872837
-//      row 31  alpha = 1.000000   kETable[31][1] = 0.866264
-//      chord at alpha = 0.8983                   = 0.869430
-//      E_true at alpha = 0.8983, mu = mu1        = 0.876104
+//      row 62  alpha = 0.896151   kETable[62][1] = 0.805897
+//      row 63  alpha = 1.000000   kETable[63][1] = 0.797108
+//      chord at alpha = 0.9490                   = 0.801307
+//      E_true at alpha = 0.9490, mu = mu1        = 0.803116
+//
+//  (at the retired 32-node table this was rows 30/31, chord at
+//  alpha = 0.8983 = 0.869430 against E_true = 0.876104 -- a shortfall
+//  of 0.0067; round 9's uniform refinement halves the log-alpha cell
+//  width here too, and the shortfall drops to 0.0018, see below.)
 //
 //  -- so in the last, widest log-alpha cell the chord UNDER-reads the
-//  true lobe by up to 0.0067, and the domination property fails there.
-//  Measured worst shortfall (E_true - E_tab(mu1)) over
-//  alpha in [0.04, 1] x mu in (0, mu1]: +0.00675 at alpha = 0.898.
+//  true lobe by up to 0.0018 (was 0.0067 at the retired 32-node table),
+//  and the domination property fails there.  Measured worst shortfall
+//  (E_true - E_tab(mu1)) over alpha in [0.04, 1] x mu in (0, mu1]:
+//  +0.0018 at alpha ~ 0.95 (was +0.00675 at alpha = 0.898 at the
+//  retired 32-node table; see tests/SheenDirectionalAlbedoTest.cpp's
+//  TestESpotChecks for the exhaustively-searched figure, +0.001772).
 //
 //  CONSEQUENCE, and it is a bound rather than a blow-up: where
 //  E_tab < 1 the normaliser collapses to 1 and the base is only ~87 %
-//  suppressed, so rho creeps above 1 -- measured max 1.0067 (+0.67 %)
-//  as mu -> mu1 from below, decaying monotonically to 0.18 at
+//  suppressed, so rho creeps above 1 -- measured max 1.0018 (+0.18 %)
+//  as mu -> mu1 from below (was 1.0067, +0.67 %, at the retired 32-node
+//  table), decaying monotonically to 0.18 at
 //  mu = 1e-6.  Not "rho <= 1", which an earlier revision of this
 //  comment claimed.
 //
@@ -190,8 +204,11 @@
 //              grid puts enough nodes where E(alpha, .) actually
 //              curves.
 //   cosTheta:  kNumCosThetaBins nodes, GRAZING-WARPED:
-//              mu_j = (j/(N-1))^2, so node 1 sits at 0.00104 and about
-//              SIX of the 32 nodes fall below mu = 0.03.  cosTheta==0
+//              mu_j = (j/(N-1))^2, so node 1 sits at 1/(N-1)^2 -- 1/3969
+//              = 2.52e-4 since round 9's (2026-09-04) 32 -> 64
+//              refinement (was 1/961 = 0.00104 at N = 32) -- and about
+//              ELEVEN of the 64 nodes fall below mu = 0.03 (was SIX of
+//              32).  cosTheta==0
 //              and cosTheta==1 are both still exact nodes (E is
 //              analytically 0 at mu==0 -- CharlieSheen::V's geometric
 //              cutoff fires for every incident direction when n.v == 0).
@@ -233,8 +250,14 @@ namespace RISE
 		//! extents, which are `extern` runtime values) -- doing so lets
 		//! the static_asserts below catch a mismatched regenerated data
 		//! file AT COMPILE TIME rather than only in a unit test.
-		static const unsigned int kNumAlphaBins    = 32;
-		static const unsigned int kNumCosThetaBins = 32;
+		//! RAISED 32 -> 64 on BOTH axes (round 9, 2026-09-04): a uniform
+		//! refinement -- not a single ad-hoc node -- closing part of
+		//! debt 18's residual (docs/CLOTH_FABRIC_DESIGN.md 15).  Every
+		//! interpolation argument in this header (log-alpha stencil,
+		//! grazing-warped mu = (j/(N-1))^2, the node-1 floor) is written
+		//! in terms of these constants and stays true at either size.
+		static const unsigned int kNumAlphaBins    = 64;
+		static const unsigned int kNumCosThetaBins = 64;
 
 		//! Alpha axis endpoints.  Defined in SheenDirectionalAlbedo_LUTData.cpp
 		//! alongside the tables themselves.

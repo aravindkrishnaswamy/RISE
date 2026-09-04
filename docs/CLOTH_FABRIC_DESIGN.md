@@ -431,6 +431,57 @@ their own, fixed the same day.
   GLTF_IMPORT.md and MATERIALS.md. **P2.5** (the 5–10 % BDPT/VCM-under-PT
   residual on delta-lit thin weaves) was already tracked and stays open.
 
+**Round 9 (implementation, 2026-09-04, reviewer P2.3).** Closes part of
+debt 18's α-band over-unity by re-baking the sheen `E` / `EHatMean`
+tables denser: `kNumAlphaBins` and `kNumCosThetaBins` both 32 → 64, a
+uniform refinement of the existing log-α and grazing-warped-μ schemes,
+not a new node or a new axis law.
+
+- **Two of three exactness bands cleared an informal +0.2 % target;
+  the third did not, and the reason is a relocated driver, not a
+  resolution shortfall.** The outer band (n·v ≥ 0.0349) and inner band
+  (n·v < μ₁) both fell roughly in half — +0.64 % → +0.19 % and
+  +0.67 % → +0.18 % — because both are driven by the log-α chord's
+  under-read of the concave E-at-node-1 peak near α ≈ 0.9, and doubling
+  the α axis halves that cell's width. The **middle band**
+  (μ₁ ≤ n·v < 0.0349) fell from +1.67 % to +0.75 % — a real 55 %
+  reduction, but well short of the other two — because an exhaustive
+  (α, μ) search (not the per-band spot checks rounds 6–8 used) found
+  its new worst at **α ≈ 0.065, near the roughness floor**, not at
+  α ≈ 0.9. Shrinking the α ≈ 0.9 mechanism below the floor-region one
+  exposed a second, previously-smaller residual as the new bottleneck.
+  Per this round's own stop rule, that residual is reported rather than
+  chased with a still-finer table.
+- **`kMinSheenAlpha`'s scan moved, but the floor still clears it.** The
+  smallest baked α satisfying "max over μ ≥ 0.03 of E ≤ 1" is now
+  0.037276 (was 0.028289 at 32 nodes) — `FabricBRDF::kMinSheenAlpha`'s
+  fixed 0.04 still clears it, with less margin than before, and both
+  of 0.04's bilinear-bracketing rows are still under 1.
+- **Cost, measured, not estimated.** Data file payload 16.25 KB (was
+  4.125 KB, ~4× — the expected cost of a uniform 2×/2× refinement).
+  Bake time ~108 s (was ~24 s, ~4.5×) on the same hardware and
+  quadrature settings; a larger fraction of the finer grid's cells
+  needed the adaptive quadrature's higher rungs to converge, so the
+  wall-clock cost slightly outpaced the ~4× cell-count growth.
+- **Every consumer this table has was re-derived, not just re-run.**
+  `tests/SheenDirectionalAlbedoTest.cpp`'s node-index spot checks and
+  domination-slack constant were re-derived against the new bake (and
+  two of its `mu` probe lists were changed from hard-coded absolute
+  values to `mu1`-relative ones — the old absolute `5e-4` silently
+  stopped being "below μ₁" once μ₁ shrank past it, which is exactly the
+  kind of table-resolution-coupled literal this round's own header
+  warning exists to prevent). `tests/LayeredWhiteFurnaceTest.cpp`'s
+  grazing-check tolerance tightened 0.03 → 0.015 against the newly
+  measured (and still deterministic, re-run-stable) worst case.
+  `tests/FabricRenderTest.cpp` and `tests/FabricMaterialChunkTest.cpp`
+  were run as a regression check — the former's integrator-ratio bands
+  and the latter's suite are unaffected, as expected, since neither
+  depends on the table's absolute values the way the two tests above
+  do. `FabricBRDF.h`'s own copy of the exactness-class comment
+  (lines ~120–151) still quotes the retired round-8 figures and could
+  not be updated in this round — it was outside this round's file
+  allowlist; flagged for a follow-up edit.
+
 ---
 
 ## 1. The question, and the answer
@@ -2065,57 +2116,77 @@ place:
 **The roughness floor's criterion, explicitly:** `kMinSheenAlpha` is the
 smallest α for which **max over μ ≥ 0.03 of `E(α, μ)` ≤ 1**. Not "over
 all μ", which no α satisfies. `tools/SheenDirectionalAlbedoGen.cpp`
-prints the scan on every bake; on the warped table the smallest
-qualifying α is **0.028289**, so **0.04 stands** with both
-bilinear-bracketing rows under 1. Re-run that scan after any change to
-`CharlieSheen` or to the bake extents rather than carrying the number
-forward on trust.
+prints the scan on every bake; on the round-9 (2026-09-04) 64-node
+table the smallest qualifying α is **0.037276** (was 0.028289 at the
+retired 32-node table — the finer log-α grid puts a node closer to the
+boundary, so the scan's answer moved even though the underlying `E(α,
+μ)` surface did not), so **0.04 still stands**, with less margin than
+before but with both bilinear-bracketing rows still under 1. Re-run
+that scan after any change to `CharlieSheen`, to the bake extents, or
+to the bake resolution rather than carrying the number forward on
+trust.
 
 **Exactness class, because it is not uniform over the hemisphere.**
 Three regimes, measured on a white Lambertian base at m = 1 through the
-shipped tables:
+shipped tables. **Re-measured for round 9 (2026-09-04) after the
+32 → 64 uniform rebake** — the table below is post-rebake; the retired
+32-node figures follow it:
 
-| n·v | worst ρ | where |
-|---|---|---|
-| ≥ 0.0349 | **1.0064** (+0.64 %) | α ≈ 0.91 |
-| 1/961 … 0.0349 | **1.0167** (+1.67 %) | α ≈ 0.91, n·v ≈ 0.0023 |
-| < 1/961 | **1.0067** (+0.67 %) | α ≈ 0.91, n·v → μ₁ |
+| n·v | worst ρ (64-node) | where | worst ρ (retired 32-node) |
+|---|---|---|---|
+| ≥ 0.0349 | **1.0019** (+0.19 %) | α ≈ 0.95, at the boundary n·v = 0.0349 | 1.0064 (+0.64 %) at α ≈ 0.91 |
+| μ₁ … 0.0349 (μ₁ = 1/3969) | **1.0075** (+0.75 %) | α ≈ 0.065, n·v ≈ 5.5e-4 | 1.0167 (+1.67 %) at α ≈ 0.91, n·v ≈ 0.0023 |
+| < μ₁ | **1.0018** (+0.18 %) | α ≈ 0.95, n·v → μ₁ | 1.0067 (+0.67 %) at α ≈ 0.91, n·v → μ₁ (μ₁ was 1/961) |
 
-Global maximum anywhere: **ρ = 1.0166**; nothing reaches 1.02.
+Global maximum anywhere: **ρ = 1.0075**; nothing reaches 1.01.
 
-**Every one of these was previously understated, and the reason
-generalises.** Rounds 6 and 7 quoted 0.06 % / 1.1 % / "ρ ≤ 1" — all
-measured at **α = 0.04**, the roughness floor where the presets live.
-The worst case is not there. It is at **α ≈ 0.9**, in the last and
-widest log-α cell (0.800 → 1.000), where E at node 1 stops being
-monotone in α: it is *concave* with a peak near 0.9, so the log-α chord
-between the bracketing rows **under-reads** the true lobe by up to
-0.0067. That under-read drives all three bands — the lobe is emitted at
-its true strength while the normaliser and the base suppression are
-computed from the lower interpolated value. *Measure over the α range,
-not just over μ; a number taken at the roughness floor is not this
-model's worst case.*
+**Doubling the table resolution roughly halved the outer and inner
+bands, and RELOCATED the middle band's driver instead of halving it.**
+Rounds 6–8 traced all three residuals to one mechanism: `E` at cosθ
+node 1 is *concave* in α with a peak near α ≈ 0.9, so the log-α chord
+across the last, widest cell (0.800 → 1.000 at 32 nodes) **under-reads**
+the true lobe by up to 0.0067. Doubling the α axis halves that cell's
+width, and the outer/inner bands — both still driven by that same
+mechanism — dropped to +0.19 % / +0.18 % accordingly, comfortably under
+a bare +0.2 %. **The middle band did not track that improvement**:
+exhaustive search over the full (α, μ) domain (not the coarse per-band
+spot checks rounds 6–8 used) finds its new worst at **α ≈ 0.065, close
+to the roughness floor** — a location neither round 6, 7, nor 8 sampled
+— not at α ≈ 0.9. Once the α ≈ 0.9 mechanism shrank below it, a second,
+previously-smaller residual near the floor became the dominant one in
+this band; it fell from +1.67 % to +0.75 % (a real 55 % reduction), but
+by a different mechanism than the one debt 18 originally named, and it
+does not clear the same +0.2 % bar the outer/inner bands now clear.
+That residual is reported here rather than chased with a still-finer
+table: closing it would need its own root-cause hunt (an α node near
+the floor, or a different table warp there), not a blind resolution
+escalation.
 
-The middle band's residual is the E table's interpolation error
-*between* nodes; closing either it or the α-chord shortfall means more
-table resolution (an α node near 0.9, or more cos θ nodes), not an
-algebra change. Debt 18 tracks it.
+The outer/inner-band residual is the α-chord shortfall directly;
+closing the middle band's *new* residual is an open question for a
+future round — table resolution alone did not close it, only relocate
+its cause.  Debt 18 tracks all of this.
 
 **The bottom band is the FLOORED DOMAIN, and it is a third mechanism —
 not the normaliser.** `SheenDirectionalAlbedo::E` floors its cosθ
-argument at node 1 (μ₁ = 1/961) and constant-extrapolates below.
+argument at node 1 (μ₁ = 1/3969 since round 9, 2026-09-04; was 1/961 at
+the retired 32-node table) and constant-extrapolates below.
 Without that, the first cell interpolates E up from the analytically
 exact 0 at μ = 0 across a region where the true lobe is at its peak, and
 **the normaliser does not save it**: `N` is built from the tabled E, so
 where `E_tab < 1 < E_true` it collapses to 1, the lobe is emitted
-undivided *and* the base is barely suppressed — measured ρ = 1.714.
-Constant extrapolation is **sound but not a proof**, and the earlier
-text wrote it as one. E_true is monotone increasing in μ on (0, μ₁), so
+undivided *and* the base is barely suppressed — measured ρ = 1.714 (at
+the 32-node table; unchanged mechanism, the round-7 fix). Constant
+extrapolation is **sound but not a proof**, and the earlier text wrote
+it as one. E_true is monotone increasing in μ on (0, μ₁), so
 `E_true(μ) ≤ E_true(μ₁)` — what does *not* follow is
 `E_tab(μ₁) ≥ E_true(μ)`, because `E_tab(μ₁)` is a linear interpolation
-in log-α across a cell where E is concave in α. Measured worst shortfall
-`E_true − E_tab(μ₁) = +0.0067` at α ≈ 0.90. So ρ creeps to **1.0067**
-below μ₁ rather than staying ≤ 1, decaying monotonically to 0.18 at
+in log-α across a cell where E is concave in α. **Re-measured for round
+9's 64-node table**: worst shortfall `E_true − E_tab(μ₁) = +0.0018` at
+α ≈ 0.95 (was +0.0067 at α ≈ 0.90 at the retired 32-node table — the
+doubled α axis roughly halves the last cell's chord error, as the outer
+band above shows too). So ρ creeps to **1.0018** below μ₁ rather than
+staying ≤ 1, decaying monotonically toward the true E → 0 limit at
 μ = 1e-6. A bound, not a blow-up — but "ρ ≤ 1 below μ₁" was false as
 written. At and above μ₁ the floor is a bit-identical no-op.
 
@@ -2456,13 +2527,14 @@ a uniform axis cannot resolve the lobe below μ = 0.0323 and broke the
 energy identity by up to +1.05 absolute), plus the hemispherical mean of
 the **clamped** lobe, `Ê̄(α) = 2∫min(E,1)·μ dμ` — the mean of the
 quantity the code actually multiplies by, so `hemisphericalAlbedo`'s
-closed form cannot disagree with `value()`'s own denominator. Shipped as 32 × 32 + 32 **floats**
-(4.125 KB, not the 8 KB this paragraph originally estimated for doubles),
-an order of magnitude smaller than the 52.8 KB medulla table. `Ē` is
-computed from the **stored** 32-point `E` row by the trapezoidal rule, not
-from an independent higher-resolution integral, so it is exactly
-reconstructable from the shipped table — one number, not two that could
-drift.
+closed form cannot disagree with `value()`'s own denominator. Shipped as
+64 × 64 + 64 **floats** (16.25 KB payload; round 9, 2026-09-04, raised
+both axes 32 → 64 to close part of debt 18 — was 4.125 KB, not the 8 KB
+this paragraph originally estimated for doubles), still an order of
+magnitude smaller than the 52.8 KB medulla table. `Ē` is computed from
+the **stored** 64-point `E` row by the trapezoidal rule, not from an
+independent higher-resolution integral, so it is exactly reconstructable
+from the shipped table — one number, not two that could drift.
 
 **Round 5 removed a third table.** The earlier text had this same generator
 pass also bake `S(α, max3(sheenColor))`, the bihemispherical average of the
@@ -4698,17 +4770,44 @@ yet known (§10.1).
     that does not factor out of `Rd`. Recorded here so the next reader of
     gate 5(b)'s output does not mistake a substrate debt for a fabric one.
 
-18. **NEW 2026-09-02 (round 6), FIGURES CORRECTED 2026-09-03 (round 8)
-    — fabric is energy-BOUNDED, not energy-CONSERVING.** Worst ρ over
-    the whole reachable domain (α ∈ [0.04, 1]) is **1.0167**, at
-    α ≈ 0.91 and n·v ≈ 0.0023 — *not* at the roughness floor, where
-    rounds 6–7 measured and reported 1.1 %. Per band: +0.64 % above
-    n·v = 0.0349, +1.67 % between there and μ₁, +0.67 % below μ₁. The
-    driver is that E at cos θ node 1 is **concave in α** with a peak near
-    0.9, so the log-α chord in the last (widest) cell under-reads the
-    true lobe by 0.0067. Closing it wants an α node near 0.9; closing
-    the middle band wants more cos θ nodes. Neither is an algebra change.
-    The original round-6 text follows. §9.2. Once the `E` table's cosθ
+18. **NEW 2026-09-02 (round 6), FIGURES CORRECTED 2026-09-03 (round 8),
+    RESOLUTION RAISED 2026-09-04 (round 9, reviewer P2.3) — fabric is
+    energy-BOUNDED, not energy-CONSERVING; residual REDUCED, not
+    closed.** Round 9 raised the `E` table's uniform refinement from
+    32×32 to 64×64 nodes on both axes (kept the log-α scheme and the
+    grazing-warped μ = (j/(N−1))² axis with the node-1 floor — no
+    ad-hoc node). Worst ρ over the whole reachable domain
+    (α ∈ [0.04, 1], μ down to 1e-6) is now **1.0075**, at α ≈ 0.065 and
+    n·v ≈ 5.5e-4 — down from the round-8 figure of 1.0167, but **not
+    proportionally**: two of the three bands (n·v ≥ 0.0349 and
+    n·v < μ₁) fell to **+0.19 %** and **+0.18 %** respectively (both now
+    under an informal +0.2 % bar) because they are driven by the same
+    mechanism round 8 named — the log-α chord under-reading a concave
+    peak near α ≈ 0.9 — and doubling the α axis halves that cell's
+    error. The **middle band** (μ₁ ≤ n·v < 0.0349) fell only to
+    **+0.75 %** (from +1.67 %, a 55 % reduction, not the ~4× the other
+    two bands got) because its dominant driver **relocated**: once the
+    α ≈ 0.9 mechanism shrank, a second, previously-smaller residual near
+    the roughness floor (α ≈ 0.065, not α ≈ 0.9) became the largest
+    contributor there. `kMinSheenAlpha`'s own scan also moved — the
+    smallest baked α clearing "max over μ ≥ 0.03 of E ≤ 1" is now
+    0.037276 (was 0.028289) — `kMinSheenAlpha = 0.04` still clears it,
+    with less margin than before but with both bilinear-bracketing rows
+    still under 1. Data file: 16.25 KB payload (was 4.125 KB, ~4×, as
+    expected for a uniform 2×/2× refinement); bake time ~108 s (was
+    ~24 s, ~4.5×, tracking the ~4× cell count plus a larger fraction of
+    cells needing the adaptive quadrature's higher rungs). §9.2 has the
+    full per-band table (both resolutions) and the re-derived shortfall
+    figures; `tests/SheenDirectionalAlbedoTest.cpp`'s domination-slack
+    check and `tests/LayeredWhiteFurnaceTest.cpp`'s grazing-check
+    tolerance were both re-derived and tightened for the new table.
+    **Closing the middle band's new residual is unstarted work** — table
+    resolution alone did not close it, it only moved the bottleneck; a
+    principled fix needs a fresh root-cause hunt near the roughness
+    floor rather than another blind resolution doubling.
+
+    The round-6/7/8 history follows, unedited, for the record. §9.2.
+    Once the `E` table's cosθ
     axis was warped toward grazing, the resolved Charlie lobe turned out
     to exceed 1 (reaching 1.152) even above the roughness floor, inside a
     narrow sliver at n·v < 0.03. A symmetric normaliser

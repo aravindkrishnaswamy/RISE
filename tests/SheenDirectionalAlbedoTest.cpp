@@ -120,7 +120,8 @@ namespace
 	//! The GRAZING-WARPED cosTheta node, mirroring
 	//! SheenDirectionalAlbedoGen's CosThetaAt (and inverted at runtime
 	//! by SheenDirectionalAlbedo.cpp's CosThetaPos).  Node 1 sits at
-	//! 1/961 = 0.00104, not a uniform axis's 0.0323.
+	//! 1/3969 = 2.52e-4 (was 1/961 = 0.00104 at the retired 32-node
+	//! table; round 9, 2026-09-04), not a uniform axis's 0.0323.
 	double CosThetaAt( unsigned int i )
 	{
 		const double t = (double)i / (double)( SDA::kNumCosThetaBins - 1 );
@@ -233,12 +234,30 @@ void TestESpotChecks()
 {
 	std::cout << "Testing E spot checks against independent brute force..." << std::endl;
 
+	// RE-DERIVED for the round-9 (2026-09-04) 64x64 bake: indices are
+	// rescaled proportionally from the retired 32x32 table's spots
+	// (ai/31, ci/31 -> round(*63)) rather than kept at their old
+	// literal values, which would now sample different (alpha, cosTheta)
+	// pairs than the comments beside them claim.
+	//
+	// The FIRST spot is NOT literally ai=0 (the generator's own worst
+	// per-cell doubling delta, per SheenDirectionalAlbedo_LUTData.cpp's
+	// banner, is alpha[0]=kAlphaMin, cosTheta[4]) -- that cell needs the
+	// generator's own adaptive quadrature (up to 4096 mu-samples) to
+	// converge, and this test's fixed 500x1000 BruteForceE call
+	// disagrees with the shipped (converged) value there by ~5.7e-3,
+	// well past kTol.  (The retired 32-node table's own "hardest cell"
+	// label had the same property one node further in: its true worst
+	// cell per that bake's stderr was ai=0, not the ai=1 this spot list
+	// used -- so ai=1 was already the deliberate choice of a NEAR-hard
+	// cell that a modest brute force can still referee, not the literal
+	// argmax.)  This spot keeps that precedent at the new resolution.
 	struct Spot { unsigned int ai, ci; };
 	const Spot spots[] = {
-		{ 1,  5  },		// the generator's hardest cell
-		{ 10, 16 },		// moderate alpha, mid cosTheta
-		{ 31, 31 },		// alpha == 1 (roughest), normal incidence
-		{ 4,  10 },		// low alpha, moderate-grazing cosTheta
+		{ 1,  10 },		// near the generator's hardest region (low alpha, low mu)
+		{ 20, 32 },		// moderate alpha, mid cosTheta
+		{ 63, 63 },		// alpha == 1 (roughest), normal incidence
+		{ 8,  20 },		// low alpha, moderate-grazing cosTheta
 	};
 
 	const double kTol = 2e-3;
@@ -315,10 +334,12 @@ void TestESpotChecks()
 	{
 		std::cout << "  -- off-node probes vs brute force (stencil-shift guard):" << std::endl;
 		struct OffNode { double alpha, mu, tol; };
+		// Node brackets re-derived for the round-9 (2026-09-04) 64-node
+		// axis (were nodes 7/8 and 29/30 at the retired 32-node axis).
 		const OffNode probes[] = {
-			{ 0.20, 0.0620, 2.0e-3 },	// between nodes 7 and 8
+			{ 0.20, 0.0620, 2.0e-3 },	// between nodes 15 and 16
 			{ 0.50, 0.3000, 2.0e-3 },	// mid-axis
-			{ 1.00, 0.9000, 2.0e-3 },	// between nodes 29 and 30 -- the flat end
+			{ 1.00, 0.9000, 2.0e-3 },	// between nodes 59 and 60 -- the flat end
 			{ 0.08, 0.6200, 2.0e-3 },	// a second alpha row, upper-mid
 		};
 		for( const OffNode& o : probes )
@@ -335,8 +356,9 @@ void TestESpotChecks()
 
 	// ---- THE FLOORED DOMAIN, asserted as the documented behaviour.
 	//
-	// `E()` floors its argument at node 1 (mu1 = 1/961) and
-	// constant-extrapolates below -- the table's stated domain, and the
+	// `E()` floors its argument at node 1 (mu1 = 1/3969 at the round-9,
+	// 2026-09-04, 64-node table; was 1/961 at the retired 32-node one)
+	// and constant-extrapolates below -- the table's stated domain, and the
 	// fix for the M4 review's P1 (an un-floored first cell ramped E from
 	// zero across the lobe's peak and let a white Lambertian fabric
 	// return rho = 1.714).  Below mu1 the correct oracle is NOT the true
@@ -353,28 +375,52 @@ void TestESpotChecks()
 		//
 		// It fails because `E_tab(mu1)` is a LINEAR INTERPOLATION IN
 		// LOG-ALPHA, and E at node 1 is CONCAVE in alpha with a peak
-		// near 0.9: in the last, widest log-alpha cell (0.800 -> 1.000)
-		// the chord UNDER-reads the true lobe.  Measured worst shortfall
-		// over this grid: E_true - E_tab(mu1) = +0.006674 at
-		// alpha = 0.90, mu = 0.999*mu1.  The shipped consequence is a
-		// bound, not a blow-up -- rho <= 1.0067 there (FabricBRDF.h's
-		// exactness class) -- but the PROPERTY is "dominates to within
-		// 0.0068", not "dominates".
+		// near 0.9: in the last, widest log-alpha cell the chord
+		// UNDER-reads the true lobe.  RE-MEASURED for the round-9
+		// (2026-09-04) 64-node bake: E_true - E_tab(mu1) = +0.001772 at
+		// alpha = 0.95, mu = 0.999*mu1 -- down from +0.006674 at the
+		// retired 32-node table (alpha = 0.90), because doubling the
+		// alpha axis halves the width of this same last log-alpha cell.
+		// The shipped consequence is a bound, not a blow-up -- rho <=
+		// 1.0018 there (FabricBRDF.h's exactness class, re-measured) --
+		// but the PROPERTY is "dominates to within 0.0018", not
+		// "dominates".
 		//
-		// kDominationSlack = 0.008 is that measured 0.006674 plus ~20 %
-		// headroom for the resolution of BruteForceE below.  It is NOT a
+		// kDominationSlack = 0.0025 is that measured 0.001772 plus ~40 %
+		// headroom for the resolution of BruteForceE below (retired
+		// 32-node value was 0.008, ~20 % over its own 0.006674 --
+		// this round keeps proportionally more headroom because the
+		// measurement itself is a smaller number, so the same absolute
+		// quadrature noise is a larger fraction of it).  It is NOT a
 		// free parameter: tightening it fails, and loosening it past
-		// ~0.01 would stop discriminating, since a genuine regression
+		// ~0.004 would stop discriminating, since a genuine regression
 		// here (a dropped floor, a wrong node) moves E by 0.1 or more.
-		static const double kDominationSlack = 0.008;
+		static const double kDominationSlack = 0.0025;
 
 		std::cout << "  -- floored domain below mu1 = " << mu1
 		          << " (domination slack " << kDominationSlack << "):" << std::endl;
 
 		// The alpha set now BRACKETS AND ENTERS the failing region, and
 		// the mu set reaches mu1 where the shortfall is largest -- the
-		// property degrades toward mu1, so probing only mu <= 5e-4
-		// sampled the easy end of the cell.
+		// property degrades toward mu1, so probing only points close to
+		// zero would sample the easy end of the cell.
+		//
+		// EVERY mu PROBE BELOW IS EXPRESSED RELATIVE TO mu1, NOT AS A
+		// HARD-CODED ABSOLUTE VALUE, and that is load-bearing after
+		// round 9 (2026-09-04): the retired 32-node table had
+		// mu1 = 1/961 = 1.04e-3, comfortably above a literal "5e-4"
+		// probe, so `{ ..., 5e-4, mu1 * 0.999 }` used to sample two
+		// genuinely different points below the floor.  At the 64-node
+		// table mu1 = 1/3969 = 2.52e-4 -- BELOW that same literal
+		// 5e-4 -- so that absolute probe silently moved OUTSIDE the
+		// floored domain, where (a)'s exact-equality assertion is
+		// simply false (E() legitimately interpolates there) and (b)'s
+		// "shortfall" stopped measuring the floor's domination property
+		// at all.  A hard-coded absolute mu here is exactly the kind of
+		// argument the header promises stays true "at either size"
+		// (SheenDirectionalAlbedo.h) -- this block just was not one of
+		// them.  Every probe is now a fraction of mu1 so it re-scales
+		// with the table automatically.
 		double worstShortfall = -1e9;
 		double worstAlpha = 0, worstMu = 0;
 		for( double alpha : { 0.04, 0.2, 0.6, 0.8, 0.9, 0.95, 1.0 } )
@@ -384,14 +430,19 @@ void TestESpotChecks()
 			// (a) CONSTANT below the floor -- exactly, not approximately.
 			//     This is the check a regression that DROPS the floor
 			//     fails first: unfloored, E(alpha, 0) is 0, not atNode.
-			for( double mu : { 0.0, 1e-6, 1e-5, 1e-4, 5e-4, mu1 * 0.999 } ) {
+			for( double mu : { 0.0, 1e-6, mu1 * 0.01, mu1 * 0.1, mu1 * 0.5, mu1 * 0.999 } ) {
 				assert( SDA::E( alpha, mu ) == atNode );
 			}
 
 			// (b) the floored value dominates the true lobe across the
 			//     cell TO WITHIN kDominationSlack, which is what makes
-			//     constant extrapolation energy-bounded.
-			for( double mu : { 1e-5, 1e-4, 5e-4, mu1 * 0.9, mu1 * 0.999 } ) {
+			//     constant extrapolation energy-bounded.  1e-6 is kept
+			//     as an absolute anchor (not mu1-relative): it sits at
+			//     CharlieSheen::V's own geometric-cutoff threshold
+			//     (n.l * n.v < 1e-6 -> V = 0), a property of the lobe
+			//     itself rather than of this table's resolution, so it
+			//     stays a meaningful probe at any mu1.
+			for( double mu : { 1e-6, mu1 * 0.01, mu1 * 0.5, mu1 * 0.9, mu1 * 0.999 } ) {
 				const double trueE = BruteForceE( alpha, mu, 3000, 1500 );
 				const double shortfall = trueE - atNode;
 				if( shortfall > worstShortfall ) {

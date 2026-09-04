@@ -62,7 +62,8 @@ namespace
 	//! lobe while suppressing the substrate by whatever this function
 	//! returns, that under-read broke the white-furnace energy identity
 	//! by up to +1.05 ABSOLUTE under grazing illumination, at every
-	//! roughness.  The warp puts ~6 nodes below mu = 0.03.
+	//! roughness.  The warp puts ~11 nodes below mu = 0.03 (round 9,
+	//! 2026-09-04, 32 -> 64; was ~6 of 32).
 	Scalar CosThetaPos( const Scalar cosTheta )
 	{
 		// FLOORED AT NODE 1 -- constant extrapolation below it, and this
@@ -71,7 +72,8 @@ namespace
 		//
 		// Node 0 sits at mu = 0 holding E = 0 (analytically exact: V's
 		// geometric cutoff fires for every incident direction when
-		// n.v == 0), and node 1 at mu = 1/961.  Interpolating between
+		// n.v == 0), and node 1 at mu = 1/3969 (was 1/961 at the
+		// retired 32-node table; round 9, 2026-09-04).  Interpolating between
 		// them ramps E from ZERO across a cell in which the true lobe is
 		// already at its PEAK -- E_true(alpha=0.04, mu=5e-6) is 0.53 and
 		// rises to 1.15 by node 1, while the un-floored interpolant
