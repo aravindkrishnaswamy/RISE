@@ -6200,3 +6200,54 @@ kernel sweep all pass. Evidence and raw-log hashes are sealed in
 No case-authored input changed, so
 `case_record_id` is stable; the producer executable identity changes. The
 golden checkpoint remains untouched.
+
+### r201f owner-level branch obligations and producer-authenticated endpoint classes
+
+The final per-iteration trace keeps the two pre-registered readings separate.
+A continuous difference must remain inside its independently derived local,
+same-unit enclosure. A class difference is eligible for the r123/r124
+two-successor rule only when the class predicate's certified interval crosses
+zero and both successor trajectories have certified envelopes. Without those
+successor envelopes, exact class agreement remains required. A class mismatch
+whose predicate interval does not cross zero is always a defect. This extends
+the existing flux branch-obligation contract to shared-alpha and active-set
+classes; it does not relax any numeric bound.
+
+The observed first divergence remains the continuous R2 physical-energy-flux
+failure reported by r201e, while both Metal and fp64 class sequences agree. Its
+cause was deeper than a buffer-pointer check: the live owner could mint an
+endpoint authority for a valid-looking private buffer that the projection had
+not produced. The repaired owner alone issues an opaque producer capability
+for its exact endpoint-class buffer. Admission proves that buffer, the producing
+command, projection and transport publications, stage, attempt, topology,
+endpoint tolerance, and forced-cycle policy. A CPU-produced or merely private
+class cannot forge that chain. Changing only the endpoint tolerance while
+leaving class bytes unchanged changes identity from `17359917141162959369` to
+`12007895591197233533`; the old R2 schedule is refused before physical flux.
+
+The repaired trace propagates prior state, temperature, and velocity
+uncertainty into every downstream term. Positive mixture and harmonic-mean
+ranges use their physical simplex and positivity domains. The Vreman
+zero-predicate enclosure uses the positive-semidefinite identity that the sum
+of the principal two-by-two minors is at most one half of `trace(beta)^2`.
+Energy carries the enthalpy/cp, temperature, and conductivity terms; stress
+replays the local force stencil with gradient, density, molecular-viscosity,
+and eddy-viscosity inputs. All are termwise additions, never cancellation-based
+output scaling. A live two-face RED demonstrates why the scope matters: a
+`0.0012033462303574498 kg m^-2 s^-1` error fails the quiet face's zero local
+bound even though a pooled `0.0024066924607148996` loud-face bound would admit
+it.
+
+At exact source commit `1d464754`, every class sequence agrees and every
+continuous trajectory quantity passes its local enclosure. The worst
+per-iteration ratio is `0.017464279358075967` (R2 iteration 0 projected
+velocity), the worst produced-target ratio is `3.3674477901984226e-06`, and
+the terminal-owner worst remains `0.46579926702613617` on R1 Heun advection.
+The former pooled `16383` ratio is descriptive only. The independent kernel
+sweep is green; the live production entry has zero interstage full-grid
+transfers, and qualification timing is `919.730583 ms` device p95 and
+`944.964458 ms` wall p95. The trace did not require a two-successor envelope,
+so that path is pre-registered and RED-tested but not claimed as exercised.
+Evidence and raw-log hashes are sealed in
+`r201_projected_heun_metal_owner/r201f_owner_branch_obligation_gate.v1`.
+The tier-8 replay remains blocked pending a fresh zero-P1/P2 review round.

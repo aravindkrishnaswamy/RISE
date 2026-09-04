@@ -5524,3 +5524,37 @@ Its SHA-256 is
 `d59578af38051f238df5e470c01ea068f10506c63af353c64db1bbfdf19bf699`.
 The sealed tier-8 ported replay remains the next measurement; no three-way
 verdict is claimed here. Golden checkpoint `1b944176...4947` is untouched.
+
+### r201f — owner gate becomes a local-enclosure or discharged-class-envelope contract
+
+The continued r201 review corrected both the numeric scope and the endpoint
+provenance boundary. The owner gate never accepts a pooled ratio: every
+continuous target, transport, flux, EOS, momentum, and stress value is compared
+per cell and field in identical units against a local termwise enclosure. The
+old `16383` figure remains only a description of the rejected trajectory.
+
+The alternate class reading is now explicit at owner level. Shared-alpha,
+active-set, and flux branch predicates follow the r123/r124 obligation rule: a
+class split is admissible only if the predicate interval crosses zero and both
+successor envelopes are attached and discharged. A crossing interval alone is
+not authority; a noncrossing class split is a defect. The repaired trace has
+identical class sequences, so it uses the continuous path and does not activate
+the alternate envelope.
+
+The endpoint-class seal is now issued only by the projection owner for the
+exact device buffer it produced. Its opaque capability binds the projection and
+transport publications, producing command, stage, attempt, topology, endpoint
+tolerance, and forced-cycle policy. This closes the reviewed escape in which a
+valid-looking private buffer could acquire authority after the fact. The old R2
+schedule and an unverified private-buffer mutant are named refusals; a
+same-bytes/different-predicate RED proves that predicate semantics participate
+in identity.
+
+The exact Apple M4 Max run at commit `1d464754` passes all R0/R1/R2 traces and
+the independent kernel sweep. Its worst per-iteration local ratio is
+`0.017464279358075967`, its worst target ratio is
+`3.3674477901984226e-06`, and its terminal owner worst is
+`0.46579926702613617`. Device/wall p95 are `919.730583/944.964458 ms`; the
+production entry records zero interstage full-grid transfers. Evidence is
+`r201_projected_heun_metal_owner/r201f_owner_branch_obligation_gate.v1`.
+Fresh numeric, provenance, and RED reviews gate the sealed tier-8 replay.
