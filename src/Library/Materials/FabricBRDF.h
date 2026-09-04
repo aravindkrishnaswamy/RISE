@@ -479,15 +479,17 @@ namespace RISE
 			struct FabricTerms
 			{
 				bool	valid;		///< false => the direction pair is gated off; both terms are 0
-				//! TRUE => `l` and `v` are on OPPOSITE sides of the
-				//! shading normal, i.e. this pair is the substrate's
-				//! For a TRANSMISSION pair (only reachable when the
+				//! For a TRANSMISSION pair (`l` and `v` on opposite
+				//! sides of the shading normal -- only reachable when the
 				//! substrate reports `ScattersFullSphere()`) `sheen` is
 				//! 0 -- the Charlie lobe is reflection-only and has no
 				//! transmission to contribute -- and `scaling` carries
-				//! the two-crossing attenuation the header derives.
-				//! Callers tell the two cases apart by the sign of
-				//! n.l they already hold; no flag is stored.
+				//! the two-crossing attenuation the header derives.  No
+				//! flag marks the case and the two consumers
+				//! (`ValueWithParams` / `ValueNMWithParams`) never branch
+				//! on it: `tint * sheen + f_base * scaling` is the right
+				//! sum on both sides of the surface precisely because
+				//! `sheen` is structurally 0 below the horizon.
 				Scalar	sheen;		///< D * V / max(1, E(v), E(l))
 				Scalar	scaling;	///< the base scaling factor
 			};

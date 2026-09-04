@@ -417,7 +417,8 @@ their own, fixed the same day.
   45-row value lock). §15 debt 22 has the derivation, the furnace table
   (wrapped totals 0.871 → 0.810 over 0°–80°, T within 0.001–0.01 of the
   closed form) and the backlit render parity (BDPT/PT 0.913, VCM/PT
-  0.945, inside the existing 0.20 band).
+  0.946, inside the existing 0.20 band; runs re-seed from the wall
+  clock, so the third digit wanders by ±0.001).
 - **P2.4 / P2.2 / P2.1 / P2.3** — `add_fuzz`'s refusal on CSG,
   instanced and container hosts now names the host shape and a concrete
   route; `make_fabric`'s weave mint discloses that only `warp_color` took
