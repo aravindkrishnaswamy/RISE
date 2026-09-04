@@ -31,6 +31,12 @@ Chunk syntax rules:
 - The opening `{` must be on its own line.
 - The closing `}` must be on its own line.
 - Comments are stripped before the chunk-specific parser sees the chunk body.
+- This is enforced, not just documented (since task_7f42984d): a `{`/`}` sharing a line with the
+  keyword or a parameter is a hard PASS-1 derive error ("chunk braces must be on their own lines",
+  naming the source line) via `ChunkBraceViolations` in `Cst.cpp`'s `ResolveChunkParams` -- not a
+  silently-accepted second syntax. `ParseToCst` itself stays lossless/permissive about the bytes
+  (an editor must still be able to open a file that violates this), so the rejection happens at
+  derive time, the same PASS-1 layer that rejects an unknown chunk type or a value-less parameter.
 
 Note on light colour (2026-09-02): `omni_light`, `spot_light`,
 `directional_light` and `ambient_light` each take a `colorspace`

@@ -438,6 +438,208 @@ int main()
 		}
 	}
 
+	//----------------------------------------------------------------------
+	// [chunk-brace-formatting] task_7f42984d: a chunk written with its `{` (and/or
+	// `}`) sharing a line with the keyword or a parameter -- e.g.
+	// `standard_object { name x geometry g material m }` all on one line -- used
+	// to be SILENTLY ACCEPTED and silently WRONG: ParseChunk's per-param
+	// same-line value-collection loop (Cst.cpp) has no newline to stop at, so it
+	// swallows every token after the first param's name as MORE pvalue tokens of
+	// THAT param. The chunk keeps its keyword but loses every param after the
+	// first -- a `standard_object` derived this way has no `geometry`/`material`
+	// at all, and Finalize used to emit an object with neither, silently, with
+	// zero diagnostics (the reported bug: a showcase scene's wall objects
+	// vanished with no error). ChunkBraceViolations (Cst.cpp, ResolveChunkParams)
+	// now hard-rejects BOTH malformed forms at PASS-1, before any param is ever
+	// read off such a chunk, with a diagnostic naming the exact source line and
+	// quoting the documented rule text verbatim ("chunk braces must be on their
+	// own lines" -- CLAUDE.md / docs/SCENE_CONVENTIONS.md / Parsers/README.md).
+	//
+	// RED-PROVEN: with ChunkBraceViolations' body replaced by
+	// `openSameLine = closeSameLine = false;` (i.e. the check disabled), every
+	// `Check` in this block that expects a brace-formatting diagnostic FAILS --
+	// the [open-brace-glued] and [close-brace-trailing] cases instead derive
+	// "successfully" with `wall`'s object missing its geometry/material params
+	// exactly as the original report described, proving this block is not
+	// tautological.  Restoring ChunkBraceViolations makes the whole file pass
+	// again.
+	//----------------------------------------------------------------------
+	std::printf( "[chunk-brace-formatting] a brace not on its own line is a hard PASS-1 error naming the line + rule\n" );
+	{
+		// (a) THE REPORTED BUG'S EXACT SHAPE: the whole chunk on one line. Both the
+		// opening `{` and the closing `}` share a line with other content, so BOTH
+		// sub-checks fire; either is sufficient to refuse the whole derive. HDR is
+		// one line ("RISE ASCII SCENE 7\n"), so the chunk -- and every brace in it
+		// -- starts on line 2.
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "standard_object { name wall geometry plane_g material wall_m }\n",
+			*j, &diags );
+		Check( n == 0, "single-line chunk (open+close both glued): refused (n == 0)" );
+		bool sawRuleOnLine2 = false;
+		for( const std::string& d : diags )
+			if( d.find( "chunk braces must be on their own lines" ) != std::string::npos && d.find( "line 2" ) != std::string::npos )
+				sawRuleOnLine2 = true;
+		Check( sawRuleOnLine2, "single-line chunk: a diagnostic quotes the rule text AND names line 2" );
+		Check( j->GetObjects() == nullptr || j->GetObjects()->GetItem( "wall" ) == 0,
+			"single-line chunk: `wall` was NOT silently created with missing geometry/material" );
+		j->release();
+	}
+	{
+		// (b) [open-brace-glued] `keyword {` sharing the keyword's line, but the
+		// body (and the closing `}`) correctly on their own lines afterward --
+		// the "with or without the `}`" case from the task: this form does NOT
+		// lose any param (every param still gets its own line), but it still
+		// violates the documented convention and must still hard-error, not
+		// silently accept a second brace syntax. Chunk starts line 2; `{` is on
+		// line 2 too (glued).
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "standard_object {\nname wall2\ngeometry plane_g\nmaterial wall_m\n}\n",
+			*j, &diags );
+		Check( n == 0, "open-brace-glued chunk (well-formed body otherwise): refused (n == 0)" );
+		bool sawRuleOnLine2 = false;
+		for( const std::string& d : diags )
+			if( d.find( "chunk braces must be on their own lines" ) != std::string::npos && d.find( "line 2" ) != std::string::npos )
+				sawRuleOnLine2 = true;
+		Check( sawRuleOnLine2, "open-brace-glued chunk: a diagnostic quotes the rule text AND names line 2 (the `{`'s line)" );
+		j->release();
+	}
+	{
+		// (c) [close-brace-trailing] the sibling case named in the task: `{` alone
+		// on its own line (well-formed opening), but the closing `}` trails the
+		// LAST parameter's line instead of getting its own. This does NOT lose
+		// data (Tokenize splits `}` as its own token even glued to `wall_m`, so
+		// ParseChunk never swallows it as a pvalue) but it is still the same
+		// documented-convention violation and must still hard-error for
+		// consistency -- accepting it would let scenes drift onto a second,
+		// undocumented brace syntax. Lines: kw=2, `{`=3, name=4, geometry=5,
+		// `material wall_m }`=6 (the `}` shares line 6).
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "standard_object\n{\nname wall3\ngeometry plane_g\nmaterial wall_m }\n",
+			*j, &diags );
+		Check( n == 0, "close-brace-trailing chunk (well-formed opening otherwise): refused (n == 0)" );
+		bool sawRuleOnLine6 = false;
+		for( const std::string& d : diags )
+			if( d.find( "chunk braces must be on their own lines" ) != std::string::npos && d.find( "line 6" ) != std::string::npos )
+				sawRuleOnLine6 = true;
+		Check( sawRuleOnLine6, "close-brace-trailing chunk: a diagnostic quotes the rule text AND names line 6 (the `}`'s line)" );
+		j->release();
+	}
+	{
+		// (d) refuse-all boundary applies here too, exactly as for every other
+		// PASS-1 violation ([refuse-all] above): a VALID sibling chunk sharing the
+		// document with a single-line chunk is NOT applied either -- the existing
+		// documented policy ("if ANY chunk fails validation, apply NOTHING") is
+		// unchanged by this fix, just extended to cover one more violation kind.
+		int baseGeo;
+		{ Job* b = new Job(); baseGeo = b->GetGeometries()->getItemCount(); b->release(); }
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR +
+			"sphere_geometry\n{\nname plane_g\nradius 1\n}\n"
+			"standard_object { name wall geometry plane_g material wall_m }\n",
+			*j, &diags );
+		Check( n == 0 && !diags.empty()
+			&& j->GetGeometries()->getItemCount() == baseGeo,
+			"refuse-all: a single-line chunk refuses the WHOLE document -- the valid sibling geometry is NOT applied" );
+		j->release();
+	}
+	{
+		// (e) SELF-PROVING control: the identical two-chunk document, with the
+		// `standard_object` reformatted to the canonical multi-line form (braces
+		// each on their own line, one param per line) -- both chunks MUST apply,
+		// so (a)-(d) are not vacuously passing because this shape can never
+		// derive cleanly for some unrelated reason (e.g. a bad geometry/material
+		// reference).
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR +
+			"sphere_geometry\n{\nname plane_g\nradius 1\n}\n"
+			"lambertian_material\n{\nname wall_m\nreflectance none\n}\n"
+			"standard_object\n{\nname wall\ngeometry plane_g\nmaterial wall_m\n}\n",
+			*j, &diags );
+		Check( n == 3 && diags.empty(), "self-proving control: the same chunks, canonically formatted, derive cleanly (all 3 apply)" );
+		Check( j->GetObjects() && j->GetObjects()->GetItem( "wall" ) != 0, "...and `wall` the object actually exists" );
+		j->release();
+	}
+	{
+		// (f) [open-brace-content] REVIEW_CHIP1 P1 follow-up: `{` correctly on
+		// its OWN line (kw and `{` do NOT share a line -- the ORIGINAL
+		// ChunkBraceViolations already accepted this much) but content follows
+		// `{` on `{`'s own line instead of the body starting on the line after --
+		// `kw\n{ name x geometry g material m\n}`. Before the follow-up fix this
+		// shape reported ZERO violations (kw/`{` differ in line; `}` is alone on
+		// its own line) while ParseChunk's same-line value loop still swallowed
+		// `geometry`/`material` into `name`'s value -- the exact "vanished wall
+		// objects, zero diagnostics" defect survived under this one disguise.
+		// Lines: kw=2, `{ name wall geometry plane_g material wall_m`=3, `}`=4.
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "standard_object\n{ name wall geometry plane_g material wall_m\n}\n",
+			*j, &diags );
+		Check( n == 0, "open-brace-content chunk (content glued to `{`'s own line): refused (n == 0)" );
+		bool sawRuleOnLine3 = false;
+		for( const std::string& d : diags )
+			if( d.find( "chunk braces must be on their own lines" ) != std::string::npos && d.find( "line 3" ) != std::string::npos )
+				sawRuleOnLine3 = true;
+		Check( sawRuleOnLine3, "open-brace-content chunk: a diagnostic quotes the rule text AND names line 3 (the `{`'s line)" );
+		Check( j->GetObjects() == nullptr || j->GetObjects()->GetItem( "wall" ) == 0,
+			"open-brace-content chunk: `wall` was NOT silently created with missing geometry/material" );
+		j->release();
+	}
+	{
+		// (g) [close-brace-content] the DOCUMENT-level mirror of (f): `}`
+		// correctly closes its own chunk's body with nothing preceding it on its
+		// line, but the NEXT top-level chunk's keyword is glued directly onto
+		// that same line with no separating newline --
+		// `sphere_geometry\n{\n...\n}lambertian_material\n{\n...\n}`. This isn't a
+		// silent-data-loss shape the way (f) is (ParseToCst's top-level loop
+		// still finds the next chunk correctly regardless of the missing
+		// newline), but it's the same documented "each of `{` and `}` must be on
+		// its own line" violation, so it must still hard-refuse for consistency
+		// -- accepting it would let scenes drift onto an undocumented second
+		// brace-adjacency convention. The second chunk is a self-contained
+		// `lambertian_material` (no reference to resolve) so the ONLY diagnostic
+		// in play is the brace one. Lines: sphere_geometry=2, `{`=3,
+		// `name plane_g`=4, `radius 1`=5, `}lambertian_material`=6 (the `}`
+		// shares line 6 with the next chunk's keyword).
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst(
+			HDR + "sphere_geometry\n{\nname plane_g\nradius 1\n}lambertian_material\n{\nname wall_m\nreflectance none\n}\n",
+			*j, &diags );
+		Check( n == 0, "close-brace-content chunk (next keyword glued to `}`'s line): refused (n == 0)" );
+		bool sawRuleOnLine6 = false;
+		for( const std::string& d : diags )
+			if( d.find( "chunk braces must be on their own lines" ) != std::string::npos && d.find( "line 6" ) != std::string::npos )
+				sawRuleOnLine6 = true;
+		Check( sawRuleOnLine6, "close-brace-content chunk: a diagnostic quotes the rule text AND names line 6 (the `}`'s line)" );
+		j->release();
+	}
+	{
+		// (h) [empty-one-line-chunk] POLICY DECISION: an empty chunk whose `{`
+		// and `}` both sit on ONE line together -- `kw\n{ }\n` -- is a violation
+		// too. Neither brace is "on its own line" when they share a line with
+		// EACH OTHER, even though no param is at risk of being swallowed (there
+		// is none). Accepting this shape would carve out a silent exception to
+		// "each of `{` and `}` must be on its own line" for the empty case only,
+		// which the documented rule (docs/SCENE_CONVENTIONS.md #0,
+		// src/Library/Parsers/README.md) does not carve out -- so both braces
+		// fire (openSameLine via forward-of-`{`, closeSameLine via
+		// backward-of-`}`), both naming the shared line. Lines:
+		// sphere_geometry=2, `{ }`=3.
+		Job* j = new Job(); std::vector<std::string> diags;
+		const int n = DeriveCst( HDR + "sphere_geometry\n{ }\n", *j, &diags );
+		Check( n == 0, "empty one-line chunk `{ }`: refused (n == 0)" );
+		bool sawRuleOnLine3 = false;
+		for( const std::string& d : diags )
+			if( d.find( "chunk braces must be on their own lines" ) != std::string::npos && d.find( "line 3" ) != std::string::npos )
+				sawRuleOnLine3 = true;
+		Check( sawRuleOnLine3, "empty one-line chunk `{ }`: a diagnostic quotes the rule text AND names line 3 (the shared line)" );
+		j->release();
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

@@ -14072,14 +14072,19 @@ int Job::ApplyCstFilmEdit( const char* width, const char* height, const char* pi
 		const unsigned int liveH = pLiveFilm->GetHeight();
 		const double       liveP = static_cast<double>( pLiveFilm->GetPixelAR() );
 
-		// Build `film { width <liveW> height <liveH> [pixelAR <liveP>] }` -- pixelAR ONLY when it differs from the 1.0
-		// default (don't spuriously write the default).  pixelAR uses %.17g (the FIX-1 widened, round-trip-exact format
-		// matching FormatMatrix16 / FormatVec3 / the Cst derive path); width/height are exact %u.
+		// Build `film\n{\nwidth <liveW>\nheight <liveH>\n[pixelAR <liveP>]\n}` -- pixelAR ONLY when it differs
+		// from the 1.0 default (don't spuriously write the default).  pixelAR uses %.17g (the FIX-1 widened,
+		// round-trip-exact format matching FormatMatrix16 / FormatVec3 / the Cst derive path); width/height
+		// are exact %u.  The opening `{` gets its OWN line (task_7f42984d): a `film {` glued onto the keyword's
+		// line parses into a tree (ParseToCst stays lossless) but is now a hard PASS-1 refusal at the NEXT
+		// derive (ChunkBraceViolations / ResolveChunkParams) -- this insert used to emit exactly that glued
+		// form, so a Job that ever took this path (SetFilm + ApplyCstFilmEdit with no prior `film` chunk) would
+		// derive fine in-memory but fail to reload after a save (CstSliceThreeExpansionTest's FILM8 caught it).
 		char chunkText[256];
 		if( liveP != 1.0 ) {
-			std::snprintf( chunkText, sizeof(chunkText), "film {\n\twidth %u\n\theight %u\n\tpixelAR %.17g\n}", liveW, liveH, liveP );
+			std::snprintf( chunkText, sizeof(chunkText), "film\n{\n\twidth %u\n\theight %u\n\tpixelAR %.17g\n}", liveW, liveH, liveP );
 		} else {
-			std::snprintf( chunkText, sizeof(chunkText), "film {\n\twidth %u\n\theight %u\n}", liveW, liveH );
+			std::snprintf( chunkText, sizeof(chunkText), "film\n{\n\twidth %u\n\theight %u\n}", liveW, liveH );
 		}
 
 		// Parse to a throwaway Document and extract its first CHUNK item (defensive against a leading trivia leaf) --

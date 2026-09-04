@@ -1019,10 +1019,13 @@ Document ParseToCst( const std::string& bytes )
 	std::vector<NodeRef> items;
 	while( i < t.size() ) {
 		if( t[i].trivia ) { items.push_back( Leaf(NodeKind::Trivia, t[i++].text, "") ); continue; }
-		// A chunk is `keyword {` (brace may be on the next line). A bare word not
-		// followed by `{` -- e.g. each token of the `RISE ASCII SCENE 7` header --
-		// is preserved losslessly as a stray Token, NOT swallowed as a never-closed
-		// chunk. (A dedicated version-header node is a later item.)
+		// A chunk is `keyword {` (brace may be on the next line, or -- structurally -- the same
+		// line; this recognition step stays permissive so the tree is always lossless). A bare word
+		// not followed by `{` -- e.g. each token of the `RISE ASCII SCENE 7` header -- is preserved
+		// losslessly as a stray Token, NOT swallowed as a never-closed chunk. (A dedicated
+		// version-header node is a later item.) Whether the brace actually sat on its own line, as
+		// the authoring convention requires, is a DERIVE-time (PASS-1) check -- see
+		// ChunkBraceViolations / ResolveChunkParams below -- not a parse-time one.
 		size_t j = i + 1;
 		while( j < t.size() && t[j].trivia ) ++j;
 		if( j < t.size() && !t[j].trivia && t[j].text == "{" ) items.push_back( ParseChunk( t, i ) );
@@ -1431,17 +1434,158 @@ static bool ChunkParamPairs( const NodeRef& c, const LetBindings& lets,
 	return true;
 }
 
+//! Does sibling `c->kids[idx]` (a brace Token) share its physical line with the DIRECT sibling
+//! found by walking `c->kids` outward in `dir` (+1 forward, -1 backward)?  Walks past any number
+//! of intervening Trivia siblings (in practice at most one -- Tokenize always merges a run of
+//! whitespace/comments into a single Trivia token, so two Trivia siblings never sit back to back)
+//! stopping the FIRST TIME either: (a) a Trivia sibling's text contains a newline -- the brace's
+//! line ends there with nothing else on it in this direction, not a violation; or (b) a non-Trivia
+//! sibling is reached with no newline yet seen -- that sibling is content sharing the brace's line,
+//! a violation.  Reaching past the end of `c->kids` in `dir` (the brace is the first/last kid, or
+//! only Trivia remains) is NOT itself a violation -- for the forward direction off the closing `}`
+//! this is actually the norm (see NextDocContentSharesLine below for what that direction needs
+//! instead, since `}` is always `c`'s last kid and can have no forward sibling within the chunk).
+static bool SharesLineWithSibling( const NodeRef& c, std::size_t idx, int dir )
+{
+	for( std::size_t k = idx; ; ) {
+		if( dir > 0 ) { if( k + 1 >= c->kids.size() ) return false; ++k; }
+		else          { if( k == 0 ) return false; --k; }
+		const NodeRef& sib = c->kids[k];
+		if( sib->kind == NodeKind::Trivia ) { if( sib->text.find( '\n' ) != std::string::npos ) return false; continue; }
+		return true;
+	}
+}
+
+//! Does content immediately FOLLOW top-level item `itemIndex` (chunk `c`, whose closing `}` is
+//! that item's last kid) on the SAME physical line as that `}` -- i.e. is there a next chunk /
+//! stray token glued onto this one's close brace with no newline between?  `}` is always the last
+//! kid of its own Chunk node (ParseChunk stops the instant depth reaches 0), so nothing in `c`'s
+//! own kids can answer this; it requires peeking at the DOCUMENT's next top-level item(s).  Cheap:
+//! SeqItemAt is O(log N) and a Trivia run is always maximal (Tokenize never emits two adjacent
+//! Trivia items), so this loop is bounded at two iterations in practice, never a document scan.
+static bool NextDocContentSharesLine( const Document& doc, std::size_t itemIndex )
+{
+	const int n = DocItemCount( doc );
+	for( int k = (int)itemIndex + 1; k < n; ++k ) {
+		const NodeRef item = SeqItemAt( doc.items, k );
+		if( !item ) return false;
+		if( item->kind == NodeKind::Trivia ) {
+			if( item->text.find( '\n' ) != std::string::npos ) return false;
+			continue;   // whitespace/comment run with no newline: keep looking at what follows it
+		}
+		return true;   // a chunk (or stray token) starts right after `}` before any newline
+	}
+	return false;   // `}` is the last thing in the document
+}
+
+//! Does chunk `c` violate "each of `{` and `}` must be on its own line" -- the documented
+//! authoring convention (CLAUDE.md / docs/SCENE_CONVENTIONS.md / Parsers/README.md)?  ParseChunk
+//! itself stays permissive about this (a brace-sharing / one-line chunk still parses losslessly
+//! into a tree -- see ParseToCst's "Lossless" contract, and WithParamValueOrInsert's defensive
+//! handling further down, which predates this check); this function backs a DERIVE-time (PASS-1)
+//! validation, the same layer "unknown chunk type" / "value-less parameter" are diagnosed at, so a
+//! violation refuses the WHOLE derive (see DeriveToJob's two-tier boundary comment in Cst.h)
+//! instead of quietly deriving a chunk whose params silently merged into one another. THE ACTUAL
+//! BUG THIS CLOSES: `standard_object { name x geometry g material m }` written on one line has no
+//! newline anywhere in its body, so the per-param same-line value-collection loop in ParseChunk
+//! (above) swallows `geometry g material m` as MORE pvalue tokens of `name` -- the chunk keeps its
+//! keyword but silently loses every param after the first, and Finalize used to emit an object
+//! with no geometry/material instead of erroring (the "vanished wall objects, zero diagnostics"
+//! report).
+//!
+//! `openSameLine` fires when `{` shares its line with EITHER side: the keyword before it, or
+//! whatever follows it (a param, `}` on an empty one-line chunk, or nested content) -- this second
+//! half is task_7f42984d's closed gap: `kw\n{ name x geometry g material m\n}` used to report ZERO
+//! violations (kw/`{` are on different lines, and `}` is alone on its own line) while ParseChunk's
+//! same-line value loop still swallowed every param after `name` exactly as in the fully-glued
+//! case, re-opening the silent-loss hole this check exists to close.  `closeSameLine` fires when
+//! `}` shares its line with EITHER side: whatever precedes it (a param value, or `{` itself, on an
+//! empty chunk) -- covered locally via `c->kids` -- or whatever follows it at the DOCUMENT level (a
+//! sibling chunk glued on with no intervening newline) -- covered via NextDocContentSharesLine,
+//! which needs `doc`/`itemIndex` (both optional; omitting them only disables that half of the
+//! close-brace check, matching every existing call site that always has them available).  A brace
+//! comment (`{   # note`) is NOT a violation: `#`-to-EOL is folded into ONE Trivia token by
+//! Tokenize, and that token's text still contains the terminating `\n`, so SharesLineWithSibling's
+//! newline scan sees it and stops -- verified in tests/CstDeriveContractsTest.cpp.
+static void ChunkBraceViolations( const Document* doc, std::size_t itemIndex, const NodeRef& c,
+	bool& openSameLine, bool& closeSameLine )
+{
+	openSameLine = false;
+	closeSameLine = false;
+	if( !c ) return;
+	std::size_t lbraceIdx = (std::size_t)-1, rbraceIdx = (std::size_t)-1;
+	for( std::size_t k = 0; k < c->kids.size(); ++k ) {
+		if( c->kids[k]->kind != NodeKind::Token ) continue;
+		if( c->kids[k]->role == "lbrace" && lbraceIdx == (std::size_t)-1 ) lbraceIdx = k;
+		else if( c->kids[k]->role == "rbrace" ) rbraceIdx = k;   // depth-0 close: unique, always the last kid
+	}
+	if( lbraceIdx != (std::size_t)-1 )
+		openSameLine = SharesLineWithSibling( c, lbraceIdx, -1 ) || SharesLineWithSibling( c, lbraceIdx, +1 );
+	if( rbraceIdx != (std::size_t)-1 ) {
+		closeSameLine = SharesLineWithSibling( c, rbraceIdx, -1 );
+		if( !closeSameLine && doc != nullptr && itemIndex != (std::size_t)-1 )
+			closeSameLine = NextDocContentSharesLine( *doc, itemIndex );
+	}
+}
+
+//! 1-based line number of chunk `c` (top-level item `itemIndex` in `doc`)'s opening `{`
+//! (isClose=false) or closing `}` (isClose=true) -- feeds the ChunkBraceViolations diagnostic
+//! ONLY. Reserializes the whole document to count newlines up to the brace's byte offset: an O(N)
+//! cost that is acceptable here because this is reached EXCLUSIVELY on the rare violation path (a
+//! normal, well-formed derive never calls it) -- never on a per-chunk or per-derive hot path.
+//! `intra` sums the serialized width of every kid BEFORE the target brace -- for isClose that's
+//! everything up to (not including) `rbrace`; for !isClose it's everything up to (not including)
+//! `lbrace`, i.e. just the keyword (+ its trailing trivia). Getting the !isClose case wrong reports
+//! the KEYWORD's line instead of `{`'s -- invisible whenever they share a line (the common
+//! kw-glued-to-`{` violation), but wrong the moment `{` is on its own line and STILL violates (e.g.
+//! content glued to `{`'s own line, one line down from `kw`) -- exactly the shape
+//! [open-brace-content] in tests/CstDeriveContractsTest.cpp exists to catch.
+static int LineOfChunkBrace( const Document& doc, std::size_t itemIndex, const NodeRef& c, bool isClose )
+{
+	const size_t chunkOff = DocByteOffsetOfItem( doc, (int)itemIndex );
+	if( chunkOff == (size_t)-1 ) return -1;
+	const char* targetRole = isClose ? "rbrace" : "lbrace";
+	size_t intra = 0;
+	for( const auto& k : c->kids ) {
+		if( k->kind == NodeKind::Token && k->role == targetRole ) break;
+		std::string s; Serialize( k, s ); intra += s.size();
+	}
+	const std::string full = SerializeCst( doc );
+	size_t off = chunkOff + intra;
+	if( off > full.size() ) off = full.size();
+	return 1 + (int)std::count( full.begin(), full.begin() + off, '\n' );
+}
+
 static const IAsciiChunkParser* ResolveChunkParams(
 	const NodeRef& c,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
 	IAsciiChunkParser::ParamsList& plist,
 	std::vector<std::string>& diags,
 	const LetBindings& lets,
-	const InstanceVars* iv = nullptr )
+	const InstanceVars* iv = nullptr,
+	const Document* doc = nullptr,
+	std::size_t itemIndex = (std::size_t)-1 )
 {
 	const std::string& kw = c->role;
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
 	if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); return nullptr; }
+	// Hard-reject BEFORE any param is read: on a violation, the params extracted below cannot be
+	// trusted anyway (see ChunkBraceViolations' header for the swallow mechanism), and we must not
+	// go on to silently apply a chunk missing every param after the one that absorbed its siblings.
+	bool openSameLine = false, closeSameLine = false;
+	ChunkBraceViolations( doc, itemIndex, c, openSameLine, closeSameLine );
+	if( openSameLine || closeSameLine ) {
+		const bool haveLoc = doc != nullptr && itemIndex != (std::size_t)-1;
+		if( openSameLine ) {
+			const int line = haveLoc ? LineOfChunkBrace( *doc, itemIndex, c, false ) : -1;
+			diags.push_back( kw + ( line > 0 ? " (line " + std::to_string( line ) + ")" : "" ) + ": chunk braces must be on their own lines" );
+		}
+		if( closeSameLine ) {
+			const int line = haveLoc ? LineOfChunkBrace( *doc, itemIndex, c, true ) : -1;
+			diags.push_back( kw + ( line > 0 ? " (line " + std::to_string( line ) + ")" : "" ) + ": chunk braces must be on their own lines" );
+		}
+		return nullptr;
+	}
 	for( const auto& kid : c->kids )
 		if( kid->kind == NodeKind::Token && kid->role == "pname" )
 			diags.push_back( kw + ": value-less parameter '" + kid->text + "'" );
@@ -3046,7 +3190,7 @@ int DeriveToJob( const Document& doc, IJob& pJob, std::vector<std::string>* diag
 		// of calling its Finalize.
 		const InstanceVars instZero = { 0, 0, 0.0, 0.0 };
 		IAsciiChunkParser::ParamsList plist;
-		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags, lets, isSrc ? &instZero : nullptr );
+		const IAsciiChunkParser* parser = ResolveChunkParams( c, registry, plist, diags, lets, isSrc ? &instZero : nullptr, &doc, i );
 		if( !parser ) continue;                       // unknown chunk type (diagnostic already pushed)
 		ParseStateBag bag( &parser->Describe() );
 		if( !DispatchChunkParameters( parser->Describe(), bag, plist ) ) {
@@ -3493,7 +3637,7 @@ int DeriveToJobIncremental( const Document& doc, IJob& pJob, const std::vector<N
 		IAsciiChunkParser::ParamsList plist;
 		// #5 slice 3: NO lets collected on the O(closure) path (collecting them is O(N)); a closure expr
 		// referencing a let then refuses + the caller full-derives (which has the lets).  Plain / PI/E exprs work.
-		const IAsciiChunkParser* parser = ResolveChunkParams( node, registry, plist, diags, LetBindings() );
+		const IAsciiChunkParser* parser = ResolveChunkParams( node, registry, plist, diags, LetBindings(), nullptr, &doc, (std::size_t)idx );
 		if( !parser ) return 0;                                  // unknown chunk type (diagnostic pushed)
 		const ChunkCategory cat = parser->Describe().category;
 		std::string name; ParamValue( node.get(), "name", name );
@@ -4402,8 +4546,13 @@ static NodeRef WithParamValueOrInsert( const NodeRef& chunk, const std::string& 
 	NodeRef param = Internal( NodeKind::Param, std::move( pk ), role );
 
 	// Splice it in before the closing brace.  The "braces on their own lines" rule is an AUTHORING convention
-	// the CST loader does NOT enforce -- a brace-sharing / one-line chunk parses cleanly -- so we must NOT rely
-	// on the pre-brace trivia ending the previous line.  Emit a LEADING newline whenever that trivia lacks one,
+	// the CST TOKENIZER/parser does not enforce structurally -- ParseChunk stays lossless and still builds a
+	// tree for a brace-sharing / one-line chunk (see ChunkBraceViolations' header) -- DERIVE now hard-rejects
+	// such a chunk (ResolveChunkParams, PASS-1), so by the time an already-loaded document reaches this editor
+	// function no live chunk carries the violation.  This splice logic is kept defensive regardless (a
+	// programmatically-built or mid-edit node shape this function has never actually been proven immune to),
+	// so we still must NOT rely on the pre-brace trivia ending the previous line.  Emit a LEADING newline
+	// whenever that trivia lacks one,
 	// else the relexer would glue the new tokens onto the previous param's value list (the parser's same-line
 	// value loop) and save+reload would derive a DIFFERENT scene than the in-memory edit -- a Slice-4 round-trip
 	// corruption (the material's slot reference would absorb `<role> <value>` and become unresolvable).

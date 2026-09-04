@@ -161,15 +161,24 @@ int main()
 	//----------------------------------------------------------------------
 	std::printf( "[insert] DocSetOrAddParamValue inserts an absent param that re-lexes faithfully even when the closing brace shares the last param's line (no glue)\n" );
 	{
-		// The closing brace SHARES name's line (the loader accepts this; "braces on own lines" is an
-		// unenforced convention).  Inserting reflectance must put it on its OWN line, else the relexer
-		// would swallow `reflectance grn` into name's value list -> save+reload derives a different scene.
+		// lambertian_material's closing brace SHARES name's line.  This is a documented HARD
+		// PARSE ERROR since task_7f42984d (ChunkBraceViolations / ResolveChunkParams in Cst.cpp
+		// PASS-1 -- "chunk braces must be on their own lines"), but ParseToCst itself stays
+		// permissive/lossless about it (see ChunkBraceViolations' header comment), so it still
+		// parses into a tree here for the low-level CST-editing API (DocSetOrAddParamValue) to
+		// operate on directly -- this block is about THAT function's behavior, not about whether
+		// the raw text would load.  Inserting reflectance must put it on its OWN line, else the
+		// relexer would swallow `reflectance grn` into name's value list -> save+reload derives a
+		// different scene; the sibling chunks are canonically formatted so the derive checks below
+		// (which DO run the whole document through DeriveToJob) are not vacuously refused for an
+		// unrelated reason -- see the [chunk-brace-formatting] block in CstDeriveContractsTest.cpp
+		// for the "whole document refuses" coverage this one deliberately does NOT re-test.
 		const char* S =
 			"RISE ASCII SCENE 7\n"
-			"uniformcolor_painter { name grn color 0 1 0 }\n"
+			"uniformcolor_painter\n{\nname grn\ncolor 0 1 0\n}\n"
 			"lambertian_material\n{\nname m }\n"            // brace shares name's line; reflectance defaulted
-			"sphere_geometry { name s radius 1 }\n"
-			"standard_object { name obj geometry s material m }\n";
+			"sphere_geometry\n{\nname s\nradius 1\n}\n"
+			"standard_object\n{\nname obj\ngeometry s\nmaterial m\n}\n";
 		Document d = ParseToCst( S );
 		const NodeId m = DocFindByName( d, "lambertian_material/m" );
 		Check( m != 0, "[insert] brace-sharing material located" );

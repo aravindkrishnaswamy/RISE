@@ -13,6 +13,27 @@ this doc is the reference, the skill is the procedure.
 
 ---
 
+## 0. Chunk braces must be on their own line — this is a hard parse error
+
+`{` and `}` each need their own line (see
+[src/Library/Parsers/README.md](../src/Library/Parsers/README.md)'s chunk
+syntax rules); `standard_object { name x geometry g material m }` written on
+one line is not a second, more compact syntax.  Since task_7f42984d this is
+enforced, not just documented: a shared-line brace is a hard PASS-1 derive
+error ("chunk braces must be on their own lines", naming the source line),
+refusing the whole scene the same way an unknown chunk type or a value-less
+parameter does — never a silent partial load.  Before that fix it was the
+opposite of loud: the parser's per-param value-collection loop has no
+newline to stop at when a whole chunk shares one line, so it swallowed every
+token after the first param's name as more values of that param — a
+`standard_object` written this way silently kept its name but lost its
+`geometry`/`material`, and the object it produced (with neither) rendered
+as nothing, with zero diagnostics.  If a scene you are authoring by hand
+(or generating with a script) ever collapses a chunk onto one line to save
+space, expect a load failure naming the line, not a quietly wrong render.
+
+---
+
 ## 1. Directional light `direction` is FROM-surface-TO-light
 
 This has bitten us at least twice; capturing it loudly so it stops.
