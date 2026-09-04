@@ -6067,6 +6067,57 @@ boundary review closes. The next separately reviewed rung is the complete
 R0/R1/R2 owner live on Metal. r200 does not claim that owner, the final kernel
 sweep, or the ported replay.
 
+### 7.56ah Complete resident projected-Heun owner (r201b)
+
+The live production entry is the r190 owner itself, resident through R0, R1,
+and R2. It consumes the r197a transport, r198 physical flux, r199 EOS
+candidate, and r200 target authorities by their private device seals. It does
+not recompute any of those surfaces on the host. R1 forms the Heun momentum
+update as `M^n + dt/2 (A0 + A1)`; the earlier form-level prototype's effective
+`3/4 A0 + 1/4 A1` weighting is forbidden. Each Picard stage projects against
+its current target, corrects that target from the resulting authenticated
+projection/flux candidate, and, after convergence or canonical two-class
+selection, performs a terminal projection and complete re-derivation against
+the accepted current target before publishing.
+
+Target identity is necessary but not sufficient authority. The r200 issuer now
+also mints an opaque device capability, and the projection publication hashes
+the conjunction. The owner admits only capabilities in its issuer registry and
+requires each corrected target's parent capability to be the immediately prior
+projection target. A CPU-controlled private buffer cannot forge this relation.
+All terminal transport, physical-flux, candidate, EOS, frozen-source, target,
+and prior-candidate parents are checked stage by stage. The r70 correction is
+therefore bound only to the actual projection/flux-produced candidate.
+
+The production and fp64 owners call the same
+`FireProductionMonitoredManifoldPolicy` predicate. The absolute-reference
+diagnostic remains monitored, not globally restored; only the signed r170 tail
+beyond `2^-4` enters the target, and `2^-2` remains the physicality bound. The
+r190 two-class active-set and minimum-alpha limiter rules are implemented on
+device and have forced-cycle/discontinuity REDs. A current-target trace retains
+the projected and accepted target for every stage and their correction
+iterations, preventing a converged-but-stale terminal state from passing.
+
+The primary acceptance comparison is the fp64 r190 owner at matched inputs.
+Every published cell/field is tested independently in identical units against
+a local termwise arithmetic enclosure. Acceptance does not use a pooled field
+statistic, a cancellation-sensitive output scale, the r60 feasibility slack,
+or a physical-admissibility tolerance as a numeric error bound. The projection
+term brackets both owners' measured terminal residuals and uses local face
+density for momentum. The compatible momentum path separately gates
+`D_i I_i = I_rho,i D` on device.
+
+Every copy and read within the owner passes through a scoped transfer ledger.
+The valid step has zero interstage full-grid transfers and one terminal staging;
+a real private-to-shared interstage transfer mutant is observed and refused.
+The working-set certificate combines the outer resident live allocation with
+the projection owner's measured allocation rather than subtracting borrowed
+buffers twice. r201b is gated on Apple M4 Max at exact source commit
+`87bc6dee`, with its executable SHA and raw owner/kernel transcripts recorded in
+`rendered/fire_production_calibration/r201_projected_heun_metal_owner/`.
+The kernel sweep is a separate evidence rung. Neither this section nor that
+sweep claims the sealed tier-8 replay verdict.
+
 ## 8. Rejected directions and future work
 
 - Per-step porting of the fp64 certificate stack: cannot meet the target and

@@ -5376,3 +5376,66 @@ it was already tried and refuted here.
   Golden checkpoint `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`
   remains untouched. Corrected rejection evidence SHA-256 is
   `3d97d0fb62af96b43cf2e8087aa5f9c41570a2c3423bbb447c656e7b05bdfc97`.
+
+- **r201b resident-owner repair and exact gate (2026-09-04):** replaces the
+  rejected prototype with the actual r190 R0/R1/R2 owner on Metal. R1 now
+  constructs momentum from `1/2(A0+A1)` exactly; the rejected
+  `3/4 A0+1/4 A1` path is a named RED. Every converged stage performs the
+  terminal projection against its current corrected target and re-derives the
+  candidate, flux, EOS, source, and target before publication. The terminal
+  qualification tap retains both the projected and accepted target for R0,
+  R1, and R2 plus their correction-iteration identities; all six fields and
+  iteration counts agree with the fp64 owner. An implementation defect caught
+  by this gate subtracted packed global face offsets from already axis-local
+  velocity buffers in the pressure-open classifier; fixing that indexing made
+  the R2 current-target solve contract again without changing a tolerance.
+
+  Provenance is extended rather than relaxed. The projection consumes a
+  device-issued target capability in addition to the target publication
+  identity; the resident owner maintains the issuer registry and binds each
+  target to its exact prior projection target. A valid-looking private buffer
+  made from CPU-controlled bytes and a valid-but-stale target both refuse in
+  the ordinary projection consumer. Terminal publication checks immediate
+  transport, physical-flux, candidate, EOS, frozen-source, target, and prior-
+  candidate parents for all three stages. Stale candidate, out-of-order stage,
+  forged lineage, callback mutation, and atomic-publication REDs re-derive on
+  device. The r70 correction is admitted only for the projection/flux-produced
+  candidate carrying that chain.
+
+  The monitored-manifold policy now has one shared production/fp64 predicate.
+  Nine branch cases cover both signs below, at, and above `2^-4`, nonfinite
+  input, zero timestep, and overflow; the two implementations agree exactly.
+  Global absolute-reference restoration remains off, r170 tail drainage is
+  the only absolute target, and a divergent-policy owner refuses. Forced
+  two-class cycles at each R0/R1/R2 stage select the reviewed r190 canonical
+  endpoint after four canonical projections; disabling that rule refuses.
+  The limiter-discontinuous class likewise selects the minimum certified alpha
+  and its uncertified mutant refuses.
+
+  The primary gate is the fp64 owner, not the implementation's self-consistency.
+  Twenty-two published per-cell/per-field surfaces pass same-unit local
+  termwise enclosures; no pooled across-field statistic or physical
+  admissibility slack is used. The worst passing residual/bound is
+  `0.37884271534887276` on R1's projection target. The nominally-zero CO and
+  carbon bounds use the complete same-unit mass-row operation scale because
+  r60's shared alpha is selected from that coupled row; using the already-
+  cancelled component result is explicitly rejected. A numeric mutant exceeds
+  its arithmetic bound by 2x while remaining far inside the old feasibility
+  slack, proving the arithmetic gate can fail. Projection comparisons use the
+  sum of the two owners' independently measured terminal residuals times `dx`,
+  with local face density in the momentum term. The compatible-flux identity
+  holds at `1.1920929e-07 kg m^-3` against `8.1519056e-06 kg m^-3`.
+
+  Residency is observed: all owner copies and reads pass through a scoped
+  transfer ledger, the real private-to-shared full-grid mutant is counted and
+  refused, and the valid owner records one terminal staging and zero interstage
+  transfers. The measured live peak is `425984` bytes against a `9928704`-byte
+  certificate. The exact-commit M4 gate at `87bc6dee` records `922.419833 ms`
+  device and `949.885792 ms` wall p95 on the 4-cubed qualification fixture.
+  The separately executed kernel sweep is green. Both raw transcripts are
+  bound to executable SHA `93803ceb...6a1f`; the immutable evidence is
+  `projected_heun_metal_owner_evidence.v2`. Case inputs and therefore
+  `case_record_id` are unchanged, while the producer executable identity
+  changes. Golden checkpoint `1b944176...4947` is untouched. The ported half
+  of the sealed tier-8 replay is the next measurement; no replay verdict is
+  claimed here.
