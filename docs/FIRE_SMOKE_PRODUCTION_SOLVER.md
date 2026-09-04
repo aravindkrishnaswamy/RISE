@@ -6209,9 +6209,12 @@ same-unit enclosure. A class difference is eligible for the r123/r124
 two-successor rule only when the class predicate's certified interval crosses
 zero and both successor trajectories have certified envelopes. Without those
 successor envelopes, exact class agreement remains required. A class mismatch
-whose predicate interval does not cross zero is always a defect. This extends
-the existing flux branch-obligation contract to shared-alpha and active-set
-classes; it does not relax any numeric bound.
+whose predicate interval does not cross zero is always a defect. Because this
+trace took the continuous-defect reading and all repaired class sequences
+agree, the alpha/active-set two-successor alternative is specified but not
+implemented or exercised here. Owner acceptance remains exact-class until an
+authenticated two-successor certificate exists. The existing flux obligations
+remain unchanged; no numeric bound is relaxed.
 
 The observed first divergence remains the continuous R2 physical-energy-flux
 failure reported by r201e, while both Metal and fp64 class sequences agree. Its
@@ -6247,7 +6250,9 @@ The former pooled `16383` ratio is descriptive only. The independent kernel
 sweep is green; the live production entry has zero interstage full-grid
 transfers, and qualification timing is `919.730583 ms` device p95 and
 `944.964458 ms` wall p95. The trace did not require a two-successor envelope,
-so that path is pre-registered and RED-tested but not claimed as exercised.
+so that path is pre-registered only. The RED proves that a crossing predicate
+without an authenticated successor certificate still refuses; it does not
+pretend that a boolean flag discharges either successor trajectory.
 Evidence and raw-log hashes are sealed in
 `r201_projected_heun_metal_owner/r201f_owner_branch_obligation_gate.v1`.
 The tier-8 replay remains blocked pending a fresh zero-P1/P2 review round.

@@ -4460,14 +4460,18 @@ int main()
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
 			"acceptance per_quantity_per_cell_per_field_same_unit_enclosures true\n")!=
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
-			"ambiguous_predicate_without_successor_refused true\n")!=std::string::npos&&
+			"ambiguous_predicate_without_authenticated_certificate_refused true\n")!=
+			std::string::npos&&projectedHeunIterationTraceEvidence.find(
+			"owner_branch_obligation_implementation not_implemented_under_continuous_ruling\n")!=
+			std::string::npos&&
 		projectedHeunIterationTraceEvidence.find("r201c_16383_ratio descriptive_not_acceptance\n")!=
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
 			"kernel_sweep_passed true\n")!=std::string::npos&&
 		projectedHeunIterationTraceEvidence.find(
 			"cpu_or_unverified_private_endpoint_refused true\n")!=std::string::npos&&
 		projectedHeunIterationTraceEvidence.find(
-			"noncrossing_predicate_mismatch_refused_even_with_successors true\n")!=std::string::npos&&
+			"noncrossing_predicate_without_authenticated_certificate_refused true\n")!=
+			std::string::npos&&
 		projectedHeunIterationTraceRaw.find("name=R2_physical_flux_consumes_sealed_input_class "
 			"mutant_accepted=0 class_sequences_agree=0 ")!=std::string::npos&&
 		projectedHeunIterationTraceRaw.find("PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 "

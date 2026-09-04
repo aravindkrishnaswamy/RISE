@@ -5534,12 +5534,13 @@ per cell and field in identical units against a local termwise enclosure. The
 old `16383` figure remains only a description of the rejected trajectory.
 
 The alternate class reading is now explicit at owner level. Shared-alpha,
-active-set, and flux branch predicates follow the r123/r124 obligation rule: a
-class split is admissible only if the predicate interval crosses zero and both
-successor envelopes are attached and discharged. A crossing interval alone is
-not authority; a noncrossing class split is a defect. The repaired trace has
-identical class sequences, so it uses the continuous path and does not activate
-the alternate envelope.
+active-set, and flux branch predicates are specified to follow the r123/r124
+obligation rule: a class split could be admissible only if the predicate
+interval crosses zero and both successor envelopes are authenticated and
+discharged. A crossing interval alone is not authority; a noncrossing class
+split is a defect. The repaired trace has identical class sequences and took
+the continuous path, so the alpha/active-set successor alternative is neither
+implemented nor exercised in r201f. Exact class matching remains the gate.
 
 The endpoint-class seal is now issued only by the projection owner for the
 exact device buffer it produced. Its opaque capability binds the projection and
