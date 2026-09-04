@@ -497,11 +497,73 @@ namespace
 
 }
 
+//! Runtime-matching bilinear read of a baked E table, used ONLY to
+//! derive banner numbers (the log-alpha bracket, its fractional
+//! position, and the interpolated corner value) so a re-bake at a
+//! different table size or reachable-alpha threshold cannot leave a
+//! stale literal in the emitted file -- see round 9's follow-up fix
+//! (debt 18 residual) for what this replaced.  Mirrors
+//! SheenDirectionalAlbedo.cpp's AlphaPos / CosThetaPos / BuildStencil /
+//! E exactly (log-alpha stencil, sqrt-inverted grazing warp, bilinear
+//! blend); kept as a separate copy here rather than #including that
+//! .cpp because the generator only ever needs the DOUBLE-precision
+//! table it just baked, not the shipped float table.
+double AlphaPosOf( double alpha )
+{
+	const double t = std::log( alpha / kAlphaMin ) / std::log( kAlphaMax / kAlphaMin );
+	const double tc = std::min( std::max( t, 0.0 ), 1.0 );
+	return tc * (double)( kNumAlphaBins - 1 );
+}
+
+double CosThetaPosOf( double mu )
+{
+	const double t = (double)( kNumCosThetaBins - 1 );
+	const double mu1 = 1.0 / ( t * t );
+	const double muFloored = std::max( mu, mu1 );
+	return std::sqrt( std::min( std::max( muFloored, 0.0 ), 1.0 ) ) * t;
+}
+
+struct StencilOf
+{
+	unsigned int i0, i1;
+	double frac;
+};
+
+StencilOf BuildStencilOf( double pos, unsigned int n )
+{
+	StencilOf s;
+	double p = std::min( std::max( pos, 0.0 ), (double)( n - 1 ) );
+	s.i0 = (unsigned int)p;
+	if( s.i0 >= n - 1 ) { s.i0 = n - 2; }
+	s.i1 = s.i0 + 1;
+	s.frac = std::min( std::max( p - (double)s.i0, 0.0 ), 1.0 );
+	return s;
+}
+
+double EInterpOf( const std::vector<std::vector<double>>& table, double alpha, double mu )
+{
+	const StencilOf sa = BuildStencilOf( AlphaPosOf( alpha ), kNumAlphaBins );
+	const StencilOf sc = BuildStencilOf( CosThetaPosOf( mu ), kNumCosThetaBins );
+
+	const double v00 = table[sa.i0][sc.i0];
+	const double v01 = table[sa.i0][sc.i1];
+	const double v10 = table[sa.i1][sc.i0];
+	const double v11 = table[sa.i1][sc.i1];
+
+	const double row0 = ( 1.0 - sc.frac ) * v00 + sc.frac * v01;
+	const double row1 = ( 1.0 - sc.frac ) * v10 + sc.frac * v11;
+	return ( 1.0 - sa.frac ) * row0 + sa.frac * row1;
+}
+
 //! Scan results, hoisted so the emitted banner can quote them.
 static double gSmallestSafeAlpha  = 0.0;
 static double gReachableMin       = 0.0;
 static double gReachableMax       = 0.0;
 static double gReachableWorstDelta = 0.0;
+static unsigned int gAlphaBracketLo = 0;
+static unsigned int gAlphaBracketHi = 0;
+static double gAlphaBracketPos    = 0.0;
+static double gEAtReachableCorner = 0.0;
 
 int main( int argc, char** argv )
 {
@@ -601,6 +663,25 @@ int main( int argc, char** argv )
 		fprintf( stderr, "SheenDirectionalAlbedoGen: REACHABLE rows only (alpha >= %.2f): "
 		                  "E range [%.6f, %.6f], worst per-cell doubling delta %.3e\n",
 		         kReachableAlpha, rMin, rMax, rWorstDelta );
+
+		// The banner below discusses the specific runtime-interpolated
+		// corner (alpha = kReachableAlpha, mu = kFloorScanMu) -- DERIVED
+		// here with the same log-alpha stencil / sqrt-warp / bilinear
+		// blend SheenDirectionalAlbedo.cpp's E() uses (see EInterpOf
+		// above), so a re-bake at a different table size or threshold
+		// cannot leave the bracketing rows, the fractional position, or
+		// the interpolated value stale in the emitted file the way the
+		// hard-coded "rows 16 AND 17 / position 16.556 / 0.961508" was
+		// left behind by the 32 -> 64 node round-9 rebake.
+		gAlphaBracketPos = AlphaPosOf( kReachableAlpha );
+		const StencilOf alphaBracket = BuildStencilOf( gAlphaBracketPos, kNumAlphaBins );
+		gAlphaBracketLo = alphaBracket.i0;
+		gAlphaBracketHi = alphaBracket.i1;
+		gEAtReachableCorner = EInterpOf( eTable, kReachableAlpha, kFloorScanMu );
+		fprintf( stderr, "SheenDirectionalAlbedoGen: interpolated E(%.2f, %.2f) = %.6f "
+		                  "(log-alpha position %.3f, bracketing rows %u/%u)\n",
+		         kReachableAlpha, kFloorScanMu, gEAtReachableCorner,
+		         gAlphaBracketPos, gAlphaBracketLo, gAlphaBracketHi );
 	}
 
 
@@ -669,10 +750,10 @@ int main( int argc, char** argv )
 		"//  E range, whole table:      [%.6f, %.6f]\n"
 		"//  E range, REACHABLE ROWS:   [%.6f, %.6f]  -- rows whose alpha is\n"
 		"//    >= 0.04.  NOT the runtime-reachable max, which is ~1.196: at\n"
-		"//    alpha = 0.04 the bilinear reads rows 16 AND 17 (log-alpha\n"
-		"//    position 16.556), so E() interpolates ABOVE the larger of the\n"
+		"//    alpha = 0.04 the bilinear reads rows %u AND %u (log-alpha\n"
+		"//    position %.3f), so E() interpolates ABOVE the larger of the\n"
 		"//    two shipped rows.  The floor's criterion is unaffected --\n"
-		"//    max E() over alpha >= 0.04 AND mu >= 0.03 is 0.961508.\n"
+		"//    max E() over alpha >= 0.04 AND mu >= 0.03 is %.6f.\n"
 		"//\n"
 		"//  E EXCEEDS 1 AND THAT IS THE LOBE, NOT THE BAKE.  Estevez &\n"
 		"//  Kulla's Charlie+Lambda fit is production-friendly, not tightly\n"
@@ -718,7 +799,9 @@ int main( int argc, char** argv )
 		mu1, belowGrazeCount, kNumCosThetaBins,
 		kEMuStart, kEPhiStart, kETol, kEMuCap,
 		eDelta, gReachableWorstDelta, eMeanDelta, eMin, eMax,
-		gReachableMin, gReachableMax, gReachableMax, gSmallestSafeAlpha,
+		gReachableMin, gReachableMax,
+		gAlphaBracketLo, gAlphaBracketHi, gAlphaBracketPos, gEAtReachableCorner,
+		gReachableMax, gSmallestSafeAlpha,
 		FloatLit( kAlphaMin ).c_str(), FloatLit( kAlphaMax ).c_str() );
 
 	fprintf( f, "\t\textern const float kETable[ kNumAlphaBins ][ kNumCosThetaBins ] = {\n" );

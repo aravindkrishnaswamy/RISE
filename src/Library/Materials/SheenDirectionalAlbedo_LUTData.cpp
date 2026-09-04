@@ -42,10 +42,10 @@
 //  E range, whole table:      [0.000000, 6.087191]
 //  E range, REACHABLE ROWS:   [0.000000, 1.177779]  -- rows whose alpha is
 //    >= 0.04.  NOT the runtime-reachable max, which is ~1.196: at
-//    alpha = 0.04 the bilinear reads rows 16 AND 17 (log-alpha
-//    position 16.556), so E() interpolates ABOVE the larger of the
+//    alpha = 0.04 the bilinear reads rows 33 AND 34 (log-alpha
+//    position 33.643), so E() interpolates ABOVE the larger of the
 //    two shipped rows.  The floor's criterion is unaffected --
-//    max E() over alpha >= 0.04 AND mu >= 0.03 is 0.961508.
+//    max E() over alpha >= 0.04 AND mu >= 0.03 is 0.961254.
 //
 //  E EXCEEDS 1 AND THAT IS THE LOBE, NOT THE BAKE.  Estevez &
 //  Kulla's Charlie+Lambda fit is production-friendly, not tightly
