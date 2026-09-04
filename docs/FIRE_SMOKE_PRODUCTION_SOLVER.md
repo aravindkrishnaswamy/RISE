@@ -6256,3 +6256,36 @@ pretend that a boolean flag discharges either successor trajectory.
 Evidence and raw-log hashes are sealed in
 `r201_projected_heun_metal_owner/r201f_owner_branch_obligation_gate.v1`.
 The tier-8 replay remains blocked pending a fresh zero-P1/P2 review round.
+
+### r201g continuous owner trajectory and non-vacuous transport proof
+
+The Metal/fp64 iteration trace takes the continuous reading. Shared-alpha,
+active-set, and next-active-set class bytes agree at every R0/R1/R2 iteration,
+so owner acceptance requires exact class agreement and applies local termwise
+enclosures to every continuous value. The r123/r124 two-successor rule is
+registered for a future genuinely ambiguous predicate, but is not implemented
+or exercised in this trace. A nonadjacent alpha split must cross both the zero
+and one predicates before it could even become eligible for that rule.
+
+The transport enclosure now follows the transport record rather than generic
+Hermite interval arithmetic. Analytic PCHIP derivative enclosures bound input
+temperature uncertainty, and a 32-operation binary32 gamma bounds evaluation
+rounding. This preserves the certified positivity that generic expansion lost.
+State bounds include the complete FCT face-flux/shared-alpha/divergence DAG;
+pressure ratio is bounded through the represented ideal-gas functional; target
+coefficients use independent state and temperature intervals. None uses the
+observed residual or cancellation to expand acceptance.
+
+The historical r201 continuous witness is now a binding numeric RED:
+`10714.999585621501 W m^-2` is refused against the actual local
+`1054.3086242196669 W m^-2` enclosure (ratio
+`10.163057893557564`). An active quiet-face RED separately proves that the
+per-face gate refuses a residual that a pooled field maximum would accept.
+
+Exact commit `3ebe2974` passes the owner and independent kernel sweep. The worst
+passing per-iteration ratio is `0.0179217` on R1 iteration 1 projected
+velocity; the target worst is `4.5734126738973112e-07`, and the terminal owner
+worst is `0.46579926702613617`. Qualification costs
+`920.102417 ms` device p95 and `946.22475 ms` wall p95. The live production
+entry retains zero interstage full-grid transfers. The sealed tier-8 replay
+remains blocked until the fresh three-reviewer boundary is zero P1/P2.

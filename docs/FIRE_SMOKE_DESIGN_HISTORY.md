@@ -5559,3 +5559,41 @@ the independent kernel sweep. Its worst per-iteration local ratio is
 production entry records zero interstage full-grid transfers. Evidence is
 `r201_projected_heun_metal_owner/r201f_owner_branch_obligation_gate.v1`.
 Fresh numeric, provenance, and RED reviews gate the sealed tier-8 replay.
+
+### r201g — the iteration trace selects the continuous contract
+
+The repaired per-iteration trace selects the first pre-registered reading:
+there is no class divergence. Metal and fp64 use identical shared-alpha,
+active-set, and next-active-set class sequences throughout R0/R1/R2, and every
+continuous quantity lies inside its per-cell, per-field, same-unit enclosure.
+The r123/r124 owner-level extension therefore remains a registered alternative,
+not an implemented acceptance path. Exact class agreement stays mandatory
+unless a future change authenticates and discharges both successor envelopes.
+For alpha, a nonadjacent low/high split must certify both separating predicates;
+crossing only one cannot authorize it.
+
+The rejected r201f numeric proof was repaired rather than widened. Its generic
+Hermite interval lost the correlation between positive and negative PCHIP basis
+terms, falsely allowing positive transport curves to cross zero and forcing a
+global fallback. r201g consumes the record's analytic PCHIP derivative
+enclosures and an explicit binary32 operation-count bound. FCT state uncertainty
+now includes the face-flux, shared-alpha, divergence, and nullspace-projection
+DAG. Pressure and target coefficients use their physical functionals directly;
+no observed Metal/fp64 residual enlarges its own bound.
+
+The consequence is measurable: the largest physical-energy-flux enclosure is
+`1054.3086242196669 W m^-2`, so the historical
+`10714.999585621501 W m^-2` continuous failure is refused at ratio
+`10.163057893557564`. The pooled-bound RED now mutates an actual active fixture
+face: `8.1415688327979296e-05 kg m^-2 s^-1` exceeds that face's
+`9.9261966297258673e-07` enclosure while remaining below the pooled
+`0.00016183876239438298` maximum.
+
+At exact source commit `3ebe2974`, the worst passing iteration ratio is
+`0.0179217`, the worst produced-target ratio is
+`4.5734126738973112e-07`, and the terminal-owner worst remains
+`0.46579926702613617`. The independent kernel sweep passes; device/wall p95 are
+`920.102417/946.22475 ms`, and the production path records zero interstage
+full-grid transfers. Evidence is
+`r201_projected_heun_metal_owner/r201g_continuous_trajectory_gate.v1`. Fresh
+numeric, provenance, and RED reviews still gate the sealed tier-8 replay.

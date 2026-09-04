@@ -3937,16 +3937,16 @@ int main()
 		"kernel_sweep.v2.raw");
 	const std::string projectedHeunIterationTraceEvidence=ReadText(
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
-		"r201f_owner_branch_obligation_gate.v1");
+		"r201g_continuous_trajectory_gate.v1");
 	const std::string projectedHeunIterationTraceLiveBinding=ReadText(
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
-		"r201f_owner_branch_obligation_live_binding.v1");
+		"r201g_continuous_trajectory_live_binding.v1");
 	const std::string projectedHeunIterationTraceRaw=ReadText(
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
-		"repaired_exact_1d464754/owner_gate.log");
+		"repaired_exact_3ebe2974/owner_gate.log");
 	const std::string projectedHeunIterationKernelSweep=ReadText(
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
-		"repaired_exact_1d464754/kernel_sweep.log");
+		"repaired_exact_3ebe2974/kernel_sweep.log");
 	const auto liveOwnerBound=[&](const std::string& path,const std::string& sha256) {
 		const std::string current=sourceSHA(path.c_str());
 		const bool bound=projectedHeunLiveBinding.find("owner "+path+" sha256 "+sha256+"\n")!=
@@ -4416,46 +4416,45 @@ int main()
 			std::string::npos&&historyDoc.find("r201b resident-owner repair and exact gate")!=
 			std::string::npos,
 		"r201b binds the exact resident r190 owner, fp64 primary gate, transfer ledger, and separate kernel sweep");
-	const auto r201fOwnerBound=[&](const char* path) {
+	const auto r201gOwnerBound=[&](const char* path) {
 		return projectedHeunIterationTraceLiveBinding.find(std::string("owner ")+path+
 			" sha256 "+sourceSHA(path)+"\n")!=std::string::npos;
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunIterationTraceEvidence.begin(),
 			projectedHeunIterationTraceEvidence.end()))==
-			"c9cf5b952e5b0672ae5135a3445ced90638e4560d8d4325c34c8b48bcb9b2e6b"&&
+			"441fa1dd2caf1b8721d622eea7f07de16d87aeb9e6ff0228640406dd52331d80"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunIterationTraceLiveBinding.begin(),
 			projectedHeunIterationTraceLiveBinding.end()))==
-			"47b05009890ee7b5a727c4025c515aa47b635d0239186b227c9aab14dddc6a78"&&
+			"f9f8077d2346230533803b02f3fa3f28308b4cceb2376a2c0b28ed13f0285eed"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunIterationTraceRaw.begin(),projectedHeunIterationTraceRaw.end()))==
-			"8cf90afc83b7013071e6be14b2fe916f80d2cc155f3103ba200ab14d21dc5d43"&&
+			"a5f67e0cca7f9daba8971b51f536959e9f1c7c6d6204aeb45e6d31b884a71ed9"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunIterationKernelSweep.begin(),
 			projectedHeunIterationKernelSweep.end()))==
-			"9a4e6606002af77b8fddd37af3f13903bc6c8d61b19f17e7d604cd20aa9ce854"&&
+			"dbf019efa5818fc597bcb813fbd92019c5dd9680a8c2ac8391d8398af7ccec99"&&
 		projectedHeunIterationTraceLiveBinding.find("source_commit "
-			"1d464754a6a0778a1002496bdc3763d60606e233\n")!=std::string::npos&&
+			"3ebe297421c72014e2767e54ff05c9c485ba7608\n")!=std::string::npos&&
 		projectedHeunIterationTraceLiveBinding.find("owner_count 23\n")!=
 			std::string::npos&&projectedHeunIterationTraceLiveBinding.find(
 			"calibration_test_self_binding false\n")!=std::string::npos&&
-		r201fOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
-		r201fOwnerBound("src/Library/Utilities/FireProductionTransport.cpp")&&
-		r201fOwnerBound("src/Library/Utilities/FireProductionTransport.h")&&
-		r201fOwnerBound("src/Library/Utilities/FireProductionForce.h")&&
-		r201fOwnerBound("tests/FireSequenceTest.cpp")&&
-		r201fOwnerBound("tests/fire_production_fp64/SourceManifest.h")&&
-		r201fOwnerBound("tests/fire_production_trace/SourceManifest.h")&&
-		r201fOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md")&&
-		r201fOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")&&
-		projectedHeunIterationTraceEvidence.find("first_divergence_class "
-			"continuous_physical_energy_flux\n")!=std::string::npos&&
-		projectedHeunIterationTraceEvidence.find("first_divergence_active_class_sequences_agree true\n")!=
+		r201gOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
+		r201gOwnerBound("src/Library/Utilities/FireProductionTransport.cpp")&&
+		r201gOwnerBound("src/Library/Utilities/FireProductionTransport.h")&&
+		r201gOwnerBound("src/Library/Utilities/FireProductionForce.h")&&
+		r201gOwnerBound("tests/FireSequenceTest.cpp")&&
+		r201gOwnerBound("tests/fire_production_fp64/SourceManifest.h")&&
+		r201gOwnerBound("tests/fire_production_trace/SourceManifest.h")&&
+		r201gOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md")&&
+		r201gOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")&&
+		projectedHeunIterationTraceEvidence.find("observed_reading continuous\n")!=
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
-			"first_divergence_defect R2_physical_flux_consumed_projection_input_class_instead_of_force_inclusive_endpoint_class\n")!=
-			std::string::npos&&projectedHeunIterationTraceEvidence.find(
-			"same_bytes_different_predicate_identity_RED passed\n")!=std::string::npos&&
+			"observed_active_class_sequences_all_equal true\n")!=std::string::npos&&
+		projectedHeunIterationTraceEvidence.find(
+			"historical_r201_continuous_defect_numerically_refused true\n")!=
+			std::string::npos&&
 		projectedHeunIterationTraceEvidence.find("successor_envelope_activated false\n")!=
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
 			"acceptance per_quantity_per_cell_per_field_same_unit_enclosures true\n")!=
@@ -4464,6 +4463,10 @@ int main()
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
 			"owner_branch_obligation_implementation not_implemented_under_continuous_ruling\n")!=
 			std::string::npos&&
+		projectedHeunIterationTraceEvidence.find(
+			"alpha_nonadjacent_class_requires_both_separating_predicates true\n")!=
+			std::string::npos&&projectedHeunIterationTraceEvidence.find(
+			"observed_difference_used_to_inflate_bound false\n")!=std::string::npos&&
 		projectedHeunIterationTraceEvidence.find("r201c_16383_ratio descriptive_not_acceptance\n")!=
 			std::string::npos&&projectedHeunIterationTraceEvidence.find(
 			"kernel_sweep_passed true\n")!=std::string::npos&&
@@ -4474,6 +4477,10 @@ int main()
 			std::string::npos&&
 		projectedHeunIterationTraceRaw.find("name=R2_physical_flux_consumes_sealed_input_class "
 			"mutant_accepted=0 class_sequences_agree=0 ")!=std::string::npos&&
+		projectedHeunIterationTraceRaw.find("name=recorded_r201_continuous_defect_rejected "
+			"historical_residual_W_m^-2=10714.999585621501 ")!=std::string::npos&&
+		projectedHeunIterationTraceRaw.find("alpha_nonadjacent_requires_both_thresholds=1 ")!=
+			std::string::npos&&
 		projectedHeunIterationTraceRaw.find("PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 "
 			"r0=1 r1=1 accepted=1 criterion=conjunction_of_per_cell_per_field_same_unit_enclosures "
 			"error= passed=1\n")!=std::string::npos&&
@@ -4481,11 +4488,11 @@ int main()
 		projectedHeunIterationKernelSweep.find("RESIDENT_TRANSPORT_METAL_FP64 passed=1 ")!=
 			std::string::npos&&projectedHeunIterationKernelSweep.find(
 			"COMPATIBLE_MOMENTUM_METAL_FP64 passed=1 ")!=std::string::npos&&
-		solverDoc.find("### r201f owner-level branch obligations and producer-authenticated endpoint classes")!=
+		solverDoc.find("### r201g continuous owner trajectory and non-vacuous transport proof")!=
 			std::string::npos&&historyDoc.find(
-			"### r201f — owner gate becomes a local-enclosure or discharged-class-envelope contract")!=
+			"### r201g — the iteration trace selects the continuous contract")!=
 			std::string::npos,
-		"r201f binds the continuous trajectory repair, producer-authenticated endpoint classes, owner-level branch obligations, and exact green owner/kernel gates");
+		"r201g binds the continuous trajectory, non-vacuous local enclosures, producer-authenticated endpoint classes, and exact green owner/kernel gates");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
 		"authenticated_eos_prerequisite.v1");
