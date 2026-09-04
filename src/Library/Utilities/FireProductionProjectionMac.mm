@@ -450,16 +450,18 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
  maximumVelocity[gid]=mv;complementarity[gid]=mc;
 }
 kernel void identify_resident_projection(device const float* target [[buffer(0)]],
- device const ulong* targetIdentity [[buffer(1)]],device const float* pressure [[buffer(2)]],
- device const float* dx [[buffer(3)]],device const float* dy [[buffer(4)]],
- device const float* dz [[buffer(5)]],device const float* mx [[buffer(6)]],
- device const float* my [[buffer(7)]],device const float* mz [[buffer(8)]],
- device const float* vx [[buffer(9)]],device const float* vy [[buffer(10)]],
- device const float* vz [[buffer(11)]],device const uchar* inflow [[buffer(12)]],
- device ulong* identity [[buffer(13)]],constant LevelParams& p [[buffer(14)]],
+ device const ulong* targetIdentity [[buffer(1)]],device const ulong* targetConsumer [[buffer(2)]],
+ device const float* pressure [[buffer(3)]],device const float* dx [[buffer(4)]],
+ device const float* dy [[buffer(5)]],device const float* dz [[buffer(6)]],
+ device const float* mx [[buffer(7)]],device const float* my [[buffer(8)]],
+ device const float* mz [[buffer(9)]],device const float* vx [[buffer(10)]],
+ device const float* vy [[buffer(11)]],device const float* vz [[buffer(12)]],
+ device const uchar* inflow [[buffer(13)]],device ulong* identity [[buffer(14)]],
+ constant LevelParams& p [[buffer(15)]],
  uint gid [[thread_position_in_grid]]){
- if(gid!=0u)return;if(targetIdentity[0]==0ul){identity[0]=0ul;return;}
+ if(gid!=0u)return;if(targetIdentity[0]==0ul||targetConsumer[0]==0ul){identity[0]=0ul;return;}
  ulong hash=14695981039346656037ul;hash^=targetIdentity[0];hash*=1099511628211ul;
+ hash^=targetConsumer[0];hash*=1099511628211ul;
  uint cells=p.nx*p.ny*p.nz;for(uint cell=0u;cell<cells;++cell){
   hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(pressure[cell]));hash*=1099511628211ul;}
@@ -840,6 +842,14 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					if(error)*error="production fire projection target identity is not private device authority";
 					return false;
 				}
+				if(residentInput->targetPublicationIdentity&&(
+					!residentInput->targetConsumerIdentity||
+					[residentInput->targetConsumerIdentity storageMode]!=MTLStorageModePrivate||
+					[residentInput->targetConsumerIdentity length]!=sizeof(std::uint64_t)||
+					[residentInput->targetConsumerIdentity device]!=[packed device])){
+					if(error)*error="production fire projection target capability is not private device authority";
+					return false;
+				}
 				const std::size_t boundaryCount=2u*(request.shape.ny*request.shape.nz+
 					request.shape.nx*request.shape.nz+request.shape.nx*request.shape.ny);
 				if(residentInput->sealedPressureOpenInflow&&(
@@ -1047,6 +1057,7 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 				std::fill_n(static_cast<float*>(ProjectionBufferContents(diagnostics,
 					ProjectionMetadataAccess)),12u,0.0f);
 
+				double metadataDeviceElapsedMS=0.0;
 				if(authenticatedResident){
 					id<MTLCommandBuffer> metadataCommand=[context.queue commandBuffer];
 					id<MTLBlitCommandEncoder> metadataBlit=metadataCommand?
@@ -1069,6 +1080,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 						if(error)*error="production fire projection resident metadata upload failed";
 						return false;
 					}
+					metadataDeviceElapsedMS=([metadataCommand GPUEndTime]-
+						[metadataCommand GPUStartTime])*1000.0;
 				}
 				if( !resident ) {
 					id<MTLCommandBuffer> uploadCommand=InjectedFailure("upload_command")?
@@ -1233,16 +1246,17 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					if(!Begin(command,encoder,error,"resident publication identity"))return false;
 					[encoder setBuffer:target offset:0 atIndex:0];
 					[encoder setBuffer:residentInput->targetPublicationIdentity offset:0 atIndex:1];
-					[encoder setBuffer:fineLevel.pressure offset:0 atIndex:2];
+					[encoder setBuffer:residentInput->targetConsumerIdentity offset:0 atIndex:2];
+					[encoder setBuffer:fineLevel.pressure offset:0 atIndex:3];
 					for(unsigned int axis=0u;axis<3u;++axis)
-						[encoder setBuffer:stored[axis] offset:0 atIndex:3u+axis];
+						[encoder setBuffer:stored[axis] offset:0 atIndex:4u+axis];
 					for(unsigned int axis=0u;axis<3u;++axis)
-						[encoder setBuffer:momentum[axis] offset:0 atIndex:6u+axis];
+						[encoder setBuffer:momentum[axis] offset:0 atIndex:7u+axis];
 					for(unsigned int axis=0u;axis<3u;++axis)
-						[encoder setBuffer:velocity[axis] offset:0 atIndex:9u+axis];
-					[encoder setBuffer:inflow offset:0 atIndex:12];
-					[encoder setBuffer:projectionIdentity offset:0 atIndex:13];
-					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:14];
+						[encoder setBuffer:velocity[axis] offset:0 atIndex:10u+axis];
+					[encoder setBuffer:inflow offset:0 atIndex:13];
+					[encoder setBuffer:projectionIdentity offset:0 atIndex:14];
+					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:15];
 					Dispatch(encoder,context.identifyResident,1u);[encoder endEncoding];
 				}
 				id<MTLBuffer> injectedInterstageStage=nil;
@@ -1467,7 +1481,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 						result.validationPassed);
 				if( !validBand ) {
 					result=FireProductionProjectionResult();if( error ) *error="production fire projection validation band overflowed";return false;}
-				result.deviceElapsedMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;
+				result.deviceElapsedMS=metadataDeviceElapsedMS+
+					([command GPUEndTime]-[command GPUStartTime])*1000.0;
 				result.deviceStartTimeS=[command GPUStartTime];
 				result.deviceEndTimeS=[command GPUEndTime];
 				if( InjectedFailure("output")&&!result.pressurePa.empty() )

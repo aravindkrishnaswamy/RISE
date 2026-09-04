@@ -271,8 +271,8 @@ namespace RISE
 		struct MetalProjectedHeunOwnerParameters
 		{
 			std::uint32_t cells,allFaces,faceOffset[3],stage;
-			float timeStepS,cellWidthM;
-			std::uint32_t padding[2];
+			float timeStepS,cellWidthM,endpointVelocityToleranceMPerS;
+			std::uint32_t forceActiveCycle;
 			std::uint64_t attemptIdentity;
 		};
 
@@ -2010,7 +2010,8 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 			id<MTLComputePipelineState> ownerIssueBootstrap,ownerPackFaces,ownerAverageField,
 				ownerGasSource,ownerPredictMomentum,
 				ownerHeunMomentum,ownerBindTransport,ownerAverageFlux,ownerBindAveragedFlux,
-				ownerBindCandidate,ownerResidual,ownerClassResidual,ownerIntegratedOpenHead,
+				ownerBindCandidate,ownerComposeTarget,ownerIdentifyTarget,ownerNextOpenClass,
+				ownerMinimumField,ownerHalfField,ownerResidual,ownerClassResidual,ownerIntegratedOpenHead,
 				ownerIssueStageSeal,ownerIssuePublication;
 			FireProductionEOSLogMetalQualificationIdentity eosLogIdentity;
 			std::string error;
@@ -2770,6 +2771,7 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
 	constant EOSFCTParams& fctParameters [[buffer(23)]],
 	constant EOSParams& eosParameters [[buffer(24)]],
 	device const ulong* candidatePhysicalIdentity [[buffer(25)]],
+	device float* baseAssembled [[buffer(26)]],
 	uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;bool metadataMatches=
 	 p.nx==transportParameters.nx&&p.ny==transportParameters.ny&&
 	 p.nz==transportParameters.nz&&p.cells==transportParameters.cells&&
@@ -2831,7 +2833,10 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
   value=eos_add(value,eos_mul(coefficient,rate[species+1u]));}
  value=eos_sub(value,eos_mul(eos_div(enthalpy[6u],capacityTemperature),rate[7u]));
  EOSDD signedDeviation=eos_sub(eos_dd(pressureRatio[gid]),eos_dd(1.0f));
- EOSDD magnitude=eos_dd(absoluteDeviation[gid]);
+ // The resident policy consumes the represented pressure ratio exactly like
+ // FireProductionMonitoredManifoldPolicy; the separately published absolute
+ // deviation remains diagnostic and may not become a second policy source.
+ EOSDD magnitude=eos_abs(signedDeviation);
  EOSDD tail=eos_dd(0.0f);int beyond=eos_order(magnitude,eos_dd(p.tailThreshold));
  if(beyond==2){atomic_fetch_or_explicit(failure,16384u,memory_order_relaxed);return;}
  if(beyond>0){EOSDD excess=eos_sub(magnitude,eos_dd(p.tailThreshold));
@@ -2856,7 +2861,11 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
   !isfinite(sourceTarget[gid]))return;
  tangent[gid]=tangentValue;source[gid]=sourceTarget[gid];
  absoluteDiagnostic[gid]=diagnosticValue;monitoredAbsolute[gid]=tailValue;
- EOSDD combinedDD=eos_add(eos_add(value,eos_dd(sourceTarget[gid])),tail);float combined=0.0f;
+ EOSDD baseDD=eos_add(value,eos_dd(sourceTarget[gid]));float baseValue=0.0f;
+ if(!eos_unique_binary32_round(baseDD,baseValue)||!isfinite(baseValue)){
+  atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}
+ baseAssembled[gid]=baseValue==0.0f?0.0f:baseValue;
+ EOSDD combinedDD=eos_add(baseDD,tail);float combined=0.0f;
  if(!eos_unique_binary32_round(combinedDD,combined)||!isfinite(combined)){
   atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}assembled[gid]=combined;
  atomic_fetch_or_explicit(obligations,1u<<22u,memory_order_relaxed);}
@@ -2945,18 +2954,19 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 // compose the Heun operands, and apply the stage algebra. No physical term is
 // recomputed here.
 struct OwnerParams {uint cells;uint allFaces;uint faceOffset[3];uint stage;
- float dt;float dx;uint padding[2];ulong attempt;};
+ float dt;float dx;float endpointTolerance;uint forceActiveCycle;ulong attempt;};
 kernel void owner_issue_bootstrap_target(device const float* target [[buffer(0)]],
  device const float* state [[buffer(1)]],device const float* source [[buffer(2)]],
  device ulong* targetIdentity [[buffer(3)]],device ulong* rootCandidateIdentity [[buffer(4)]],
- constant OwnerParams& p [[buffer(5)]],
+ device ulong* targetConsumerIdentity [[buffer(5)]],constant OwnerParams& p [[buffer(6)]],
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;ulong hash=14695981039346656037ul;
  for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
  for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(source[word]));hash*=1099511628211ul;}
  hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
  targetIdentity[0]=hash==0ul?1ul:hash;hash^=0x726f6f745f71306eul;hash*=1099511628211ul;
- rootCandidateIdentity[0]=hash==0ul?1ul:hash;}
+ rootCandidateIdentity[0]=hash==0ul?1ul:hash;hash^=0x6273745f63617031ul;
+ hash*=1099511628211ul;targetConsumerIdentity[0]=hash==0ul?1ul:hash;}
 kernel void owner_pack_faces(device const float* x [[buffer(0)]],device const float* y [[buffer(1)]],
  device const float* z [[buffer(2)]],device float* packed [[buffer(3)]],
  constant OwnerParams& p [[buffer(4)]],uint gid [[thread_position_in_grid]]){
@@ -3026,6 +3036,53 @@ kernel void owner_bind_candidate(device const float* state [[buffer(0)]],
  for(uint face=0u;face<p.allFaces;++face){hash^=ulong(as_type<uint>(alpha[face]));hash*=1099511628211ul;}
  hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
  identity[0]=hash==0ul?1ul:hash;}
+kernel void owner_compose_target(device const float* base [[buffer(0)]],
+ device const float* tail [[buffer(1)]],device const float* parent [[buffer(2)]],
+ device float* output [[buffer(3)]],constant OwnerParams& p [[buffer(4)]],
+ constant uint& correction [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.cells)return;if(correction==0u){output[gid]=base[gid];return;}
+ EOSDD value=eos_add(eos_dd(parent[gid]),eos_dd(tail[gid]));float rounded=0.0f;
+ if(!eos_unique_binary32_round(value,rounded)||!isfinite(rounded))rounded=NAN;
+ output[gid]=rounded==0.0f?0.0f:rounded;}
+kernel void owner_identify_target(device const float* tangent [[buffer(0)]],
+ device const float* source [[buffer(1)]],device const float* diagnostic [[buffer(2)]],
+ device const float* tail [[buffer(3)]],device const float* assembled [[buffer(4)]],
+ device const ulong* transport [[buffer(5)]],device const ulong* physical [[buffer(6)]],
+ device const ulong* candidate [[buffer(7)]],device const ulong* eos [[buffer(8)]],
+ device const ulong* frozen [[buffer(9)]],device const ulong* parentTarget [[buffer(10)]],
+ device ulong* output [[buffer(11)]],constant OwnerParams& p [[buffer(12)]],
+ constant uint& correction [[buffer(13)]],uint gid [[thread_position_in_grid]]){
+ if(gid!=0u)return;if(transport[0]==0ul||physical[0]==0ul||candidate[0]==0ul||
+  eos[0]==0ul||frozen[0]==0ul||parentTarget[0]==0ul||p.attempt==0ul){output[0]=0ul;return;}
+ ulong hash=14695981039346656037ul;ulong parents[6]={transport[0],physical[0],candidate[0],
+  eos[0],frozen[0],parentTarget[0]};for(uint i=0u;i<6u;++i){hash^=parents[i];hash*=1099511628211ul;}
+ for(uint cell=0u;cell<p.cells;++cell){float values[5]={tangent[cell],source[cell],diagnostic[cell],
+  tail[cell],assembled[cell]};for(uint i=0u;i<5u;++i){hash^=ulong(as_type<uint>(values[i]));
+  hash*=1099511628211ul;}}hash^=ulong(correction);hash*=1099511628211ul;
+ hash^=ulong(p.stage);hash*=1099511628211ul;hash^=p.attempt;hash*=1099511628211ul;
+ output[0]=hash==0ul?1ul:hash;}
+kernel void owner_next_open_class(device const uchar* used [[buffer(0)]],
+ device const float* vx [[buffer(1)]],device const float* vy [[buffer(2)]],
+ device const float* vz [[buffer(3)]],device uchar* next [[buffer(4)]],
+ constant TransportParams& t [[buffer(5)]],constant OwnerParams& p [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=t.sideOffset[5]+t.nx*t.ny)return;
+ uint side=0u;for(uint s=1u;s<6u;++s)if(gid>=t.sideOffset[s])side=s;
+ next[gid]=used[gid];if(t.boundary[side]!=1u)return;uint axis=side/2u;
+ bool positive=(side&1u)!=0u;uint local=gid-t.sideOffset[side];uint firstCount=axis==0u?t.ny:t.nx;
+ uint first=local%firstCount,second=local/firstCount,x=0u,y=0u,z=0u;
+ if(axis==0u){x=positive?t.nx:0u;y=first;z=second;}else if(axis==1u){x=first;y=positive?t.ny:0u;z=second;}
+ else{x=first;y=second;z=positive?t.nz:0u;}uint face=tr_face(t,axis,x,y,z)-t.faceOffset[axis];
+ float velocity=axis==0u?vx[face]:(axis==1u?vy[face]:vz[face]);float outward=(positive?1.0f:-1.0f)*velocity;
+ if(outward < -p.endpointTolerance)next[gid]=1u;else if(outward > p.endpointTolerance)next[gid]=0u;
+ bool firstOpen=true;for(uint earlier=0u;earlier<side;++earlier)
+  firstOpen=firstOpen&&t.boundary[earlier]!=1u;
+ if(p.forceActiveCycle!=0u&&firstOpen&&gid==t.sideOffset[side])next[gid]=uchar(used[gid]^1u);}
+kernel void owner_minimum_field(device const float* a [[buffer(0)]],device const float* b [[buffer(1)]],
+ device float* output [[buffer(2)]],constant uint& count [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ if(gid<count)output[gid]=min(a[gid],b[gid]);}
+kernel void owner_half_field(device const float* input [[buffer(0)]],device float* output [[buffer(1)]],
+ constant uint& count [[buffer(2)]],uint gid [[thread_position_in_grid]]){
+ if(gid<count)output[gid]=0.5f*input[gid];}
 kernel void owner_residual(device const float* current [[buffer(0)]],
  device const float* prior [[buffer(1)]],device atomic_uint* maximumBits [[buffer(2)]],
  constant uint& count [[buffer(3)]],constant float& scale [[buffer(4)]],
@@ -3114,6 +3171,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				diagnoseEOSLog(nil),ownerIssueBootstrap(nil),ownerPackFaces(nil),ownerAverageField(nil),ownerGasSource(nil),
 				ownerPredictMomentum(nil),ownerHeunMomentum(nil),ownerBindTransport(nil),
 				ownerAverageFlux(nil),ownerBindAveragedFlux(nil),ownerBindCandidate(nil),
+				ownerComposeTarget(nil),ownerIdentifyTarget(nil),ownerNextOpenClass(nil),ownerMinimumField(nil),
+				ownerHalfField(nil),
 				ownerResidual(nil),ownerClassResidual(nil),ownerIntegratedOpenHead(nil),
 				ownerIssueStageSeal(nil),ownerIssuePublication(nil)
 			{
@@ -3161,6 +3220,11 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					ownerAverageFlux=pipeline("owner_average_flux");
 					ownerBindAveragedFlux=pipeline("owner_bind_averaged_flux");
 					ownerBindCandidate=pipeline("owner_bind_candidate");
+					ownerComposeTarget=pipeline("owner_compose_target");
+					ownerIdentifyTarget=pipeline("owner_identify_target");
+					ownerNextOpenClass=pipeline("owner_next_open_class");
+					ownerMinimumField=pipeline("owner_minimum_field");
+					ownerHalfField=pipeline("owner_half_field");
 					ownerResidual=pipeline("owner_residual");
 					ownerClassResidual=pipeline("owner_class_residual");
 					ownerIntegratedOpenHead=pipeline("owner_integrated_open_head");
@@ -3175,6 +3239,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						!diagnoseEOSLog||!ownerIssueBootstrap||!ownerPackFaces||!ownerAverageField||!ownerGasSource||
 						!ownerPredictMomentum||!ownerHeunMomentum||!ownerBindTransport||
 						!ownerAverageFlux||!ownerBindAveragedFlux||!ownerBindCandidate||
+						!ownerComposeTarget||!ownerIdentifyTarget||!ownerNextOpenClass||!ownerMinimumField||
+						!ownerHalfField||
 						!ownerResidual||!ownerClassResidual||!ownerIntegratedOpenHead||
 						!ownerIssueStageSeal||
 						!ownerIssuePublication){error=MetalError(
@@ -6427,6 +6493,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> parentEOSThermochemistry;
 			id<MTLBuffer> parentEOSParameters;
 			id<MTLBuffer> parentFCTParameters;
+			std::shared_ptr<unsigned char> capability,parentCandidateCapability;
+			bool rootParent;
 			std::size_t cells;
 			std::uint64_t allocationBytes;
 			ResidentEOSCandidateMetalAuthority() : conservative(nil),sourceDelta(nil),faceAlpha(nil),
@@ -6434,7 +6502,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				parentCommand(nil),parentPhysicalPublicationIdentity(nil),
 				parentTransportPublicationIdentity(nil),parentEOSThermochemistry(nil),
 				parentEOSParameters(nil),parentFCTParameters(nil),
-				cells(0u),allocationBytes(0u) {}
+				rootParent(false),cells(0u),allocationBytes(0u) {}
 			ResidentEOSCandidateMetalAuthority(const ResidentEOSCandidateMetalAuthority&)=delete;
 			ResidentEOSCandidateMetalAuthority& operator=(
 				const ResidentEOSCandidateMetalAuthority&)=delete;
@@ -6589,10 +6657,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> frozenSource;
 			id<MTLBuffer> absoluteDiagnostic;
 			id<MTLBuffer> monitoredAbsolute;
+			id<MTLBuffer> baseAssembled;
 			id<MTLBuffer> assembled;
 			id<MTLBuffer> publicationIdentity;
 			id<MTLBuffer> projectionConsumerIdentity;
 			id<MTLBuffer> consumerIdentity;
+			id<MTLBuffer> projectionMetadata;
 			id<MTLCommandBuffer> parentCommand;
 			id<MTLBuffer> parentTransportPublicationIdentity;
 			id<MTLBuffer> parentTangentPhysicalPublicationIdentity;
@@ -6600,15 +6670,19 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> parentCandidatePublicationIdentity;
 			id<MTLBuffer> parentEOSPublicationIdentity;
 			id<MTLBuffer> parentFrozenSourcePublicationIdentity;
+			std::shared_ptr<unsigned char> capability,parentTargetCapability;
+			bool bootstrapAuthority;
+			std::uint32_t correctionIteration;
 			std::size_t cells;
 			std::uint64_t allocationBytes;
 			ResidentProjectionTargetMetalAuthority() : tangent(nil),frozenSource(nil),
-				absoluteDiagnostic(nil),monitoredAbsolute(nil),assembled(nil),publicationIdentity(nil),
-				projectionConsumerIdentity(nil),consumerIdentity(nil),parentCommand(nil),
+				absoluteDiagnostic(nil),monitoredAbsolute(nil),baseAssembled(nil),assembled(nil),publicationIdentity(nil),
+				projectionConsumerIdentity(nil),consumerIdentity(nil),projectionMetadata(nil),parentCommand(nil),
 				parentTransportPublicationIdentity(nil),
 				parentTangentPhysicalPublicationIdentity(nil),
 				parentPhysicalPublicationIdentity(nil),parentCandidatePublicationIdentity(nil),
 				parentEOSPublicationIdentity(nil),parentFrozenSourcePublicationIdentity(nil),
+				bootstrapAuthority(false),correctionIteration(0u),
 				cells(0u),allocationBytes(0u) {}
 			ResidentProjectionTargetMetalAuthority(
 				const ResidentProjectionTargetMetalAuthority&)=delete;
@@ -6743,6 +6817,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			std::vector<unsigned char>&,std::vector<unsigned char>&,
 			std::vector<float>&,std::string*);
 
+		// R201_RESIDENT_OWNER_TRANSFER_SURFACE_BEGIN
 		class ResidentProjectedHeunMetalOwner
 		{
 			struct Stage
@@ -6758,16 +6833,24 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				std::unique_ptr<ResidentProjectionTargetMetalAuthority> target;
 				FireProductionMetalNonpressureMomentumRHSResidentResult nonpressure;
 				id<MTLBuffer> packedVelocity,packedDensity,packedMomentum,gasDensity,
-					gasSource,advectionRate,nextMomentum,lineageSeal,issuedLineageSeal;
+					gasSource,advectionRate,nextMomentum,nextOpenClass,projectionTargetAssembled,
+					lineageSeal,issuedLineageSeal;
+				std::shared_ptr<unsigned char> projectionTargetCapability;
 				double deviceMS;
 				std::uint64_t allocationBytes;
 				std::uint32_t acceptedIterationCount;
 				bool terminalReprojectionVerified;
+				std::uint32_t activeSetCycleLength,activeSetCanonicalProjectionCount,
+					projectionTargetCorrectionIteration;
+				bool activeSetDiscontinuousClass,limiterDiscontinuousClass;
 				Stage() : packedVelocity(nil),packedDensity(nil),packedMomentum(nil),
 					gasDensity(nil),gasSource(nil),advectionRate(nil),nextMomentum(nil),
-					lineageSeal(nil),issuedLineageSeal(nil),
+					nextOpenClass(nil),projectionTargetAssembled(nil),lineageSeal(nil),issuedLineageSeal(nil),
 					deviceMS(0.0),allocationBytes(0u),acceptedIterationCount(0u),
-					terminalReprojectionVerified(false) {}
+					terminalReprojectionVerified(false),activeSetCycleLength(0u),
+					activeSetCanonicalProjectionCount(0u),projectionTargetCorrectionIteration(0u),
+					activeSetDiscontinuousClass(false),
+					limiterDiscontinuousClass(false) {}
 			};
 
 			const FireProductionProjectedHeunMetalOwnerRequest& request_;
@@ -6788,8 +6871,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				affine_,fctParameters_[3],transportParameters_[3],physicalParameters_,
 				eosParameters_[3],targetParameters_[3],projectionParameters_,ownerParameters_[3],
 				failure_,transportObligations_,physicalObligations_,eosObligations_,
-				targetObligations_,zeroTarget_,zeroTargetIdentity_,rootCandidateIdentity_,
+				targetObligations_,zeroTarget_,zeroTargetIdentity_,zeroTargetConsumerIdentity_,rootCandidateIdentity_,
 				integratedOpenHead_;
+			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
+			std::vector<std::shared_ptr<unsigned char> > issuedTargetCapabilities_;
 			std::uint32_t commits_,projectionInvocations_,interstageFullGridTransfers_;
 			std::uint64_t actualBytes_,deviceAllocationBaseline_,deviceAllocationPeak_;
 			double deviceMS_,projectionDeviceMS_;
@@ -6816,6 +6901,35 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					options:MTLResourceStorageModeShared];
 				if(value){actualBytes_+=[value allocatedSize];ObserveDeviceAllocation();}
 				return value;
+			}
+			enum class TransferKind { Upload,Internal,Control,Terminal,InterstageFullGrid };
+			void Copy(id<MTLBlitCommandEncoder> encoder,id<MTLBuffer> source,
+				const std::size_t sourceOffset,id<MTLBuffer> destination,
+				const std::size_t destinationOffset,const std::size_t bytes,
+				const TransferKind kind)
+			{
+				[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
+					destinationOffset:destinationOffset size:bytes];
+				if(kind==TransferKind::InterstageFullGrid)++interstageFullGridTransfers_;
+			}
+			const void* Read(id<MTLBuffer> buffer,const TransferKind kind)
+			{
+				if(kind==TransferKind::InterstageFullGrid)++interstageFullGridTransfers_;
+				return ReadTrackedMetalBuffer(buffer);
+			}
+			bool ReadOpenClass(id<MTLBuffer> source,std::vector<unsigned char>& bytes,
+				std::string* error)
+			{
+				id<MTLBuffer> staging=[context_.device newBufferWithLength:boundaryFaces_
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> encoder=command?[command blitCommandEncoder]:nil;
+				if(!staging||!encoder)return false;
+				Copy(encoder,source,0u,staging,0u,boundaryFaces_,TransferKind::Control);
+				[encoder endEncoding];if(!Commit(command,error))return false;
+				const unsigned char* value=static_cast<const unsigned char*>(
+					Read(staging,TransferKind::Control));if(!value)return false;
+				bytes.assign(value,value+boundaryFaces_);return true;
 			}
 			bool Encode(id<MTLCommandBuffer> command,id<MTLComputePipelineState> pipeline,
 				const std::initializer_list<id<MTLBuffer> >& buffers,const std::size_t threads)
@@ -6847,10 +6961,30 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				deviceMS_+=([command GPUEndTime]-[command GPUStartTime])*1000.0;
 				ObserveDeviceAllocation();return true;
 			}
-			bool Project(id<MTLBuffer> state,id<MTLBuffer> momentum,id<MTLBuffer> target,
-				id<MTLBuffer> targetIdentity,id<MTLBuffer> sealedInflow,id<MTLBuffer> sealedHead,
-				const bool deriveEndpoint,Stage& output,std::string* error)
+			bool Project(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> momentum,
+				const ResidentProjectionTargetMetalAuthority& targetAuthority,
+				const std::shared_ptr<unsigned char>& expectedParentCapability,
+				id<MTLBuffer> sealedInflow,id<MTLBuffer> sealedHead,
+				Stage& output,std::string* error)
 			{
+				const bool authenticatedBootstrap=targetAuthority.bootstrapAuthority&&
+					bootstrapTarget_.get()==&targetAuthority&&targetAuthority.assembled==zeroTarget_&&
+					targetAuthority.publicationIdentity==zeroTargetIdentity_&&
+					targetAuthority.consumerIdentity==zeroTargetConsumerIdentity_&&
+					targetAuthority.capability;
+				const bool issuedCapability=std::find(issuedTargetCapabilities_.begin(),
+					issuedTargetCapabilities_.end(),targetAuthority.capability)!=
+					issuedTargetCapabilities_.end();
+				const bool authenticatedDerived=!targetAuthority.bootstrapAuthority&&
+					targetAuthority.parentCommand&&targetAuthority.assembled&&
+					targetAuthority.publicationIdentity&&targetAuthority.consumerIdentity&&
+					targetAuthority.projectionConsumerIdentity&&targetAuthority.capability&&
+					issuedCapability&&targetAuthority.parentTargetCapability&&expectedParentCapability&&
+					targetAuthority.parentTargetCapability==expectedParentCapability;
+				if(!authenticatedBootstrap&&!authenticatedDerived){
+					if(error)*error="projected-Heun projection refuses unsealed target capability";
+					return false;
+				}
 				FireProductionProjectionRequest projection;
 				projection.shape=shape_;projection.timeStepS=ownerMetadata_.timeStepS;
 				projection.ambientDensityKGPerM3=request_.ambientDensityKGPerM3;
@@ -6862,9 +6996,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					FireProductionProjectionDeriveOpenClassification;
 				projection.openHeadMode=sealedHead?FireProductionProjectionUseSealedOpenHead:
 					FireProductionProjectionDeriveCurrentOpenHead;
-				projection.outputClassificationMode=deriveEndpoint?
-					FireProductionProjectionDeriveEndpointOpenClassification:
-					FireProductionProjectionPreserveOpenClassification;
+				projection.outputClassificationMode=FireProductionProjectionPreserveOpenClassification;
 				projection.endpointVelocityToleranceMPerS=request_.endpointVelocityToleranceMPerS;
 				if(sealedInflow||sealedHead)for(unsigned int side=0u;side<6u;++side){
 					const std::size_t count=side<2u?shape_.ny*shape_.nz:
@@ -6884,20 +7016,44 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				input.provisionalMomentumKGPerM2S.fill(momentum);
 				for(unsigned int axis=0u;axis<3u;++axis)
 					input.provisionalMomentumByteOffset[axis]=faceOffset_[axis]*sizeof(float);
-				input.divergenceTargetPerS=target;input.targetPublicationIdentity=targetIdentity;
+				input.divergenceTargetPerS=targetAuthority.assembled;
+				input.targetPublicationIdentity=targetAuthority.publicationIdentity;
+				input.targetConsumerIdentity=targetAuthority.consumerIdentity;
 				input.sealedPressureOpenInflow=sealedInflow;
 				input.sealedPressureOpenDynamicPressurePa=sealedHead;
+				const std::uint64_t allocationBeforeProjection=static_cast<std::uint64_t>(
+					[context_.device currentAllocatedSize]);
+				const std::uint64_t outerLiveBeforeProjection=
+					allocationBeforeProjection>=deviceAllocationBaseline_?
+					allocationBeforeProjection-deviceAllocationBaseline_:0u;
 				if(!ProjectFireProductionMetalResidentState(projection,input,output.projection,
 					output.projectionDiagnostics,error))return false;
-				ObserveDeviceAllocation();
+				output.projectionTargetCapability=targetAuthority.capability;
+				interstageFullGridTransfers_+=
+					output.projectionDiagnostics.residentInterstageDeviceToHostTransferCount;
+				if(outerLiveBeforeProjection<=std::numeric_limits<std::uint64_t>::max()-
+					output.projectionDiagnostics.residentActualMetalAllocationBytes)
+					deviceAllocationPeak_=std::max(deviceAllocationPeak_,outerLiveBeforeProjection+
+						output.projectionDiagnostics.residentActualMetalAllocationBytes);
+				else deviceAllocationPeak_=std::numeric_limits<std::uint64_t>::max();
 				++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
 				projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+				output.nextOpenClass=Private(boundaryFaces_);
+				id<MTLCommandBuffer> classCommand=TrackedMetalCommandBuffer(context_.queue);
+				if(!output.nextOpenClass||!classCommand||!Encode(classCommand,context_.ownerNextOpenClass,
+					{output.projection.pressureOpenInflow,output.projection.velocityMPerS[0],
+					 output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
+					 output.nextOpenClass,transportParameters_[stage],ownerParameters_[stage]},
+					 boundaryFaces_)||!Commit(classCommand,error))return false;
 				return output.projection.publicationIdentity!=nil&&
-					[output.projection.pressureOpenInflow storageMode]==MTLStorageModePrivate;
+					[output.projection.pressureOpenInflow storageMode]==MTLStorageModePrivate&&
+					[output.nextOpenClass storageMode]==MTLStorageModePrivate;
 			}
 			bool CustomCandidate(id<MTLCommandBuffer> command,const unsigned int stage,
 				const ResidentTransportMetalAuthority& transport,
 				ResidentPhysicalFluxMetalAuthority& physical,id<MTLBuffer> parentIdentity,
+				const ResidentEOSCandidateMetalAuthority* parentCandidateAuthority,
+				id<MTLBuffer> selectedAlpha,
 				ResidentEOSCandidateMetalAuthority& candidate,std::string* error)
 			{
 				const std::size_t stateBytes=9u*cells_*sizeof(float);
@@ -6913,26 +7069,38 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					transport.publicationIdentity;candidate.parentEOSThermochemistry=eosThermo_;
 				candidate.parentEOSParameters=eosParameters_[stage];
 				candidate.parentFCTParameters=fctParameters_[stage];candidate.cells=cells_;
+				candidate.capability=std::make_shared<unsigned char>(0u);
+				candidate.parentCandidateCapability=parentCandidateAuthority?
+					parentCandidateAuthority->capability:std::shared_ptr<unsigned char>();
+				candidate.rootParent=stage==0u;
 				candidate.allocationBytes=[candidate.conservative allocatedSize]+
 					[candidate.faceAlpha allocatedSize]+[candidate.producerIdentity allocatedSize]+
 					[candidate.publicationIdentity allocatedSize]+[lowState allocatedSize]+[ratio allocatedSize];
 				if(stage==2u){
 					id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];if(!blit)return false;
-					[blit copyFromBuffer:transport.parentState sourceOffset:0
-						toBuffer:candidate.conservative destinationOffset:0 size:stateBytes];
+					Copy(blit,transport.parentState,0u,candidate.conservative,0u,stateBytes,
+						TransferKind::Internal);
 					[blit fillBuffer:candidate.faceAlpha range:NSMakeRange(0,
 						allFaces_*sizeof(float)) value:0u];[blit endEncoding];
 				}else if(!Encode(command,fct_.buildRatios,{stage==1u?q0_:transport.parentState,sourceDelta_,
 					physical.lowComposite,physical.advectiveDelta,enthalpy_,lowState,ratio,failure_,
-					fctParameters_[stage]},11u*cells_)||
+					fctParameters_[stage]},11u*cells_)||(!selectedAlpha&&
 					!Encode(command,fct_.buildFaceAlpha,{physical.advectiveDelta,ratio,enthalpy_,
-						candidate.faceAlpha,failure_,fctParameters_[stage]},allFaces_)||
-					!Encode(command,fct_.commitScalar,{lowState,physical.advectiveDelta,
+						candidate.faceAlpha,failure_,fctParameters_[stage]},allFaces_))||
+					(!selectedAlpha&&!Encode(command,fct_.commitScalar,{lowState,physical.advectiveDelta,
 						candidate.faceAlpha,enthalpy_,affine_,candidate.conservative,failure_,
-						fctParameters_[stage]},cells_)){
+						fctParameters_[stage]},cells_))){
 					if(error)*error="projected-Heun resident candidate FCT encoder failed";
 					return false;
 				}
+				if(stage!=2u&&selectedAlpha){id<MTLBlitCommandEncoder> selected=[command blitCommandEncoder];
+					if(!selected)return false;Copy(selected,selectedAlpha,0u,candidate.faceAlpha,0u,
+						allFaces_*sizeof(float),TransferKind::Internal);
+					[selected endEncoding];
+					// The selected alpha must be installed before the scalar commit.
+					if(!Encode(command,fct_.commitScalar,{lowState,physical.advectiveDelta,
+						candidate.faceAlpha,enthalpy_,affine_,candidate.conservative,failure_,
+						fctParameters_[stage]},cells_))return false;}
 				if(
 					!Encode(command,context_.ownerBindCandidate,{candidate.conservative,
 						candidate.faceAlpha,transport.publicationIdentity,physical.publicationIdentity,
@@ -6942,8 +7110,46 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					if(error)*error="projected-Heun resident candidate encoder failed";return false;}
 				return true;
 			}
+			bool CorrectTargetAuthority(id<MTLCommandBuffer> command,const unsigned int stage,
+				const ResidentProjectionTargetMetalAuthority& parent,const bool correction,
+				const ResidentTransportMetalAuthority& transport,
+				const ResidentPhysicalFluxMetalAuthority& physical,
+				const ResidentEOSCandidateMetalAuthority& candidate,
+				const ResidentEOSMetalAuthority& eos,const ResidentFrozenSourceMetalAuthority& source,
+				ResidentProjectionTargetMetalAuthority& target,std::string* error)
+			{
+				const std::uint32_t correctionValue=correction?parent.correctionIteration+1u:0u;
+				id<MTLBuffer> correctionBuffer=Upload(&correctionValue,sizeof(correctionValue));
+				if(!correctionBuffer||!Encode(command,context_.ownerComposeTarget,
+					{target.baseAssembled,target.monitoredAbsolute,parent.assembled,target.assembled,
+					 ownerParameters_[stage],correctionBuffer},cells_)||
+					!Encode(command,context_.finalizeTarget,{target.assembled,failure_,targetObligations_,
+					 targetParameters_[stage]},1u)||
+					!Encode(command,context_.ownerIdentifyTarget,{target.tangent,target.frozenSource,
+					 target.absoluteDiagnostic,target.monitoredAbsolute,target.assembled,
+					 transport.publicationIdentity,physical.publicationIdentity,candidate.publicationIdentity,
+					 eos.publicationIdentity,source.publicationIdentity,parent.publicationIdentity,
+					 target.publicationIdentity,ownerParameters_[stage],correctionBuffer},1u)||
+					!Encode(command,context_.identifyProjectionConsumer,{projectionParameters_,
+					 target.publicationIdentity,target.projectionMetadata,
+					 target.projectionConsumerIdentity,failure_},1u)||
+					!Encode(command,context_.consumeTarget,{target.assembled,target.publicationIdentity,
+					 transport.publicationIdentity,physical.publicationIdentity,candidate.publicationIdentity,
+					 eos.publicationIdentity,target.consumerIdentity,target.projectionConsumerIdentity,
+					 failure_,targetParameters_[stage],target.projectionMetadata},1u)){
+					if(error)*error="projected-Heun owner target correction encoder failed";return false;}
+				target.capability=std::make_shared<unsigned char>(0u);
+				issuedTargetCapabilities_.push_back(target.capability);
+				target.parentTargetCapability=parent.capability;
+				target.correctionIteration=correctionValue;
+				return true;
+			}
+
 			bool BuildStage(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
-				id<MTLBuffer> parentIdentity,Stage& output,const Stage* r0,std::string* error)
+				id<MTLBuffer> parentIdentity,const ResidentEOSCandidateMetalAuthority* parentCandidate,
+				const ResidentProjectionTargetMetalAuthority& projectionTarget,
+				const bool applyTailCorrection,id<MTLBuffer> selectedAlpha,
+				Stage& output,const Stage* r0,std::string* error)
 			{
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
 				if(!command||!ResetControls(command))return false;
@@ -7015,6 +7221,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					*output.averagedPhysical:*output.physical;
 				output.candidate.reset(new ResidentEOSCandidateMetalAuthority);
 				if(!CustomCandidate(command,stage,*output.transport,candidatePhysical,parentIdentity,
+					parentCandidate,selectedAlpha,
 					*output.candidate,error))return false;
 				output.eos.reset(new ResidentEOSMetalAuthority);
 				if(!EncodeResidentEOSAuthority(context_,command,thermo_,eosThermo_,eosParameters_[stage],
@@ -7030,6 +7237,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					*output.transport,*output.physical,candidatePhysical,
 					*output.candidate,*output.eos,*output.source,
 					targetMetadata_,*output.target,error))return false;
+				if(!CorrectTargetAuthority(command,stage,projectionTarget,applyTailCorrection,
+					*output.transport,candidatePhysical,*output.candidate,*output.eos,*output.source,
+					*output.target,error))return false;
 				output.lineageSeal=Private(sizeof(std::uint64_t));
 				output.issuedLineageSeal=output.lineageSeal;
 				if(!output.lineageSeal||!Encode(command,context_.ownerIssueStageSeal,
@@ -7053,9 +7263,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				id<MTLBuffer> molecular=Private(cells_*sizeof(float));
 				id<MTLBlitCommandEncoder> coefficientBlit=[command blitCommandEncoder];
 				if(!molecular||!coefficientBlit)return false;
-				[coefficientBlit copyFromBuffer:output.transport->coefficients
-					sourceOffset:2u*cells_*sizeof(float) toBuffer:molecular destinationOffset:0
-					size:cells_*sizeof(float)];[coefficientBlit endEncoding];
+				Copy(coefficientBlit,output.transport->coefficients,2u*cells_*sizeof(float),
+					molecular,0u,cells_*sizeof(float),TransferKind::Internal);
+				[coefficientBlit endEncoding];
 				rhs.molecularKinematicViscosityM2PerS=molecular;
 				if(!EvaluateFireProductionNonpressureMomentumRHSMetalResident(rhs,output.nonpressure,
 					rhsDiagnostics,error)||!Encode(command,fct_.compatibleStageRate,
@@ -7075,11 +7285,11 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					options:MTLResourceStorageModeShared];
 				id<MTLBlitCommandEncoder> stageBlit=command?[command blitCommandEncoder]:nil;
 				if(!stageFailure||!stageBlit)return false;
-				[stageBlit copyFromBuffer:failure_ sourceOffset:0 toBuffer:stageFailure
-					destinationOffset:0 size:sizeof(std::uint32_t)];[stageBlit endEncoding];
+				Copy(stageBlit,failure_,0u,stageFailure,0u,sizeof(std::uint32_t),TransferKind::Control);
+				[stageBlit endEncoding];
 				if(!Commit(command,error))return false;
 				const std::uint32_t stageFailureBitmap=
-					*static_cast<const std::uint32_t*>(ReadTrackedMetalBuffer(stageFailure));
+					*static_cast<const std::uint32_t*>(Read(stageFailure,TransferKind::Control));
 				if(stageFailureBitmap!=0u){
 					if(error)*error="projected-Heun resident stage device validation failed: stage="+
 						std::to_string(stage)+" bitmap="+std::to_string(stageFailureBitmap);
@@ -7092,12 +7302,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						if(diagnostic&&diagnosticBlit){const id<MTLBuffer> fields[]={output.target->tangent,
 							output.target->frozenSource,output.target->absoluteDiagnostic,
 							output.target->monitoredAbsolute};
-							for(unsigned int field=0u;field<4u;++field)[diagnosticBlit copyFromBuffer:
-								fields[field] sourceOffset:0 toBuffer:diagnostic
-								destinationOffset:field*cells_*sizeof(float) size:cells_*sizeof(float)];
+							for(unsigned int field=0u;field<4u;++field)Copy(diagnosticBlit,
+								fields[field],0u,diagnostic,field*cells_*sizeof(float),
+								cells_*sizeof(float),TransferKind::Terminal);
 							[diagnosticBlit endEncoding];
 							if(Commit(diagnosticCommand,0)){const float* values=
-								static_cast<const float*>(ReadTrackedMetalBuffer(diagnostic));
+									static_cast<const float*>(Read(diagnostic,TransferKind::Terminal));
 								for(std::size_t cell=0u;cell<cells_;++cell)if(std::isnan(values[cell])){
 									std::uint32_t hiBits=0u,loBits=0u,boundBits=0u;
 									std::memcpy(&hiBits,&values[cells_+cell],sizeof(hiBits));
@@ -7116,7 +7326,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			}
 			bool Prepare(std::string* error);
 			bool SolveStage(unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
-				id<MTLBuffer> momentum,id<MTLBuffer> parentIdentity,const Stage* r0,
+				id<MTLBuffer> momentum,id<MTLBuffer> parentIdentity,
+				const ResidentEOSCandidateMetalAuthority* parentCandidate,const Stage* r0,
 				id<MTLBuffer> initialSealedInflow,id<MTLBuffer> sealedHead,
 				std::unique_ptr<Stage>& accepted,std::string* error);
 		public:
@@ -7129,7 +7340,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				enthalpy_(nil),affine_(nil),physicalParameters_(nil),projectionParameters_(nil),
 				failure_(nil),transportObligations_(nil),physicalObligations_(nil),
 				eosObligations_(nil),targetObligations_(nil),zeroTarget_(nil),
-				zeroTargetIdentity_(nil),rootCandidateIdentity_(nil),integratedOpenHead_(nil),commits_(0u),
+				zeroTargetIdentity_(nil),zeroTargetConsumerIdentity_(nil),rootCandidateIdentity_(nil),
+				integratedOpenHead_(nil),commits_(0u),
 				projectionInvocations_(0u),interstageFullGridTransfers_(0u),actualBytes_(0u),
 				deviceAllocationBaseline_(context_.device?static_cast<std::uint64_t>(
 					[context_.device currentAllocatedSize]):0u),deviceAllocationPeak_(0u),
@@ -7163,6 +7375,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				request_.beginningMomentumKGPerM2S[2].size()!=
 					FireProductionProjectionFaceCount(shape_,2u)||
 				request_.maximumPicardIterations<2u||request_.maximumPicardIterations>64u||
+				request_.qualificationForcedActiveCycleStage>3u||
 				!std::isfinite(request_.projectionTolerancePerS)||
 				request_.projectionTolerancePerS<0.0f)return false;
 			std::array<float,MetalResidentTransportSpeciesCount*
@@ -7214,7 +7427,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			ownerMetadata_={static_cast<std::uint32_t>(cells_),static_cast<std::uint32_t>(allFaces_),
 				{static_cast<std::uint32_t>(faceOffset_[0]),static_cast<std::uint32_t>(faceOffset_[1]),
 				 static_cast<std::uint32_t>(faceOffset_[2])},0u,request_.lineage.eos.candidateTimeStepS,
-				shape_.cellWidthM,{0u,0u},flux.transport.attemptIdentity};
+				shape_.cellWidthM,request_.endpointVelocityToleranceMPerS,0u,
+				flux.transport.attemptIdentity};
 			std::vector<float> packedMomentum;packedMomentum.reserve(allFaces_);
 			for(const auto& axis:request_.beginningMomentumKGPerM2S)
 				packedMomentum.insert(packedMomentum.end(),axis.begin(),axis.end());
@@ -7248,19 +7462,22 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				eosParameters_[stage]=copyIn(&eos,sizeof(eos));
 				targetParameters_[stage]=copyIn(&targetMetadata_,sizeof(targetMetadata_));
 				MetalProjectedHeunOwnerParameters owner=ownerMetadata_;owner.stage=stage;
+				owner.forceActiveCycle=request_.qualificationForcedActiveCycleStage==stage+1u?1u:0u;
 				ownerParameters_[stage]=copyIn(&owner,sizeof(owner));}
 			failure_=Private(sizeof(std::uint32_t));transportObligations_=Private(sizeof(std::uint32_t));
 			physicalObligations_=Private(sizeof(std::uint32_t));eosObligations_=Private(sizeof(std::uint32_t));
 			targetObligations_=Private(sizeof(std::uint32_t));zeroTarget_=Private(fieldBytes);
-			zeroTargetIdentity_=Private(sizeof(std::uint64_t));rootCandidateIdentity_=Private(sizeof(std::uint64_t));
+			zeroTargetIdentity_=Private(sizeof(std::uint64_t));
+			zeroTargetConsumerIdentity_=Private(sizeof(std::uint64_t));
+			rootCandidateIdentity_=Private(sizeof(std::uint64_t));
 			if(!q0_||!t0_||!m0_||!sourceDelta_||!fuel_||!initialInflow_||!thermo_||
 				!eosThermo_||!transportData_||!ambient_||!physicalBasis_||!advectiveBasis_||
 				!projector_||!enthalpy_||!affine_||!failure_||!zeroTarget_||
-				!zeroTargetIdentity_||!rootCandidateIdentity_)return false;
+				!zeroTargetIdentity_||!zeroTargetConsumerIdentity_||!rootCandidateIdentity_)return false;
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
 			id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;if(!blit)return false;
-			for(const Pair& pair:copies)[blit copyFromBuffer:pair.upload sourceOffset:0
-				toBuffer:pair.device destinationOffset:0 size:pair.bytes];
+			for(const Pair& pair:copies)Copy(blit,pair.upload,0u,pair.device,0u,pair.bytes,
+				TransferKind::Upload);
 			[blit fillBuffer:zeroTarget_ range:NSMakeRange(0,fieldBytes) value:0u];
 			const id<MTLBuffer> controls[]={failure_,transportObligations_,physicalObligations_,
 				eosObligations_,targetObligations_};
@@ -7269,120 +7486,256 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			}
 			[blit endEncoding];
 			if(!Encode(command,context_.ownerIssueBootstrap,{zeroTarget_,q0_,sourceDelta_,
-				zeroTargetIdentity_,rootCandidateIdentity_,ownerParameters_[0]},1u)||
+				zeroTargetIdentity_,rootCandidateIdentity_,zeroTargetConsumerIdentity_,
+				ownerParameters_[0]},1u)||
 				!Commit(command,error))return false;
+			bootstrapTarget_.reset(new ResidentProjectionTargetMetalAuthority);
+			bootstrapTarget_->assembled=zeroTarget_;
+			bootstrapTarget_->publicationIdentity=zeroTargetIdentity_;
+			bootstrapTarget_->consumerIdentity=zeroTargetConsumerIdentity_;
+			bootstrapTarget_->projectionConsumerIdentity=zeroTargetConsumerIdentity_;
+			bootstrapTarget_->capability=std::make_shared<unsigned char>(0u);
+			issuedTargetCapabilities_.push_back(bootstrapTarget_->capability);
+			bootstrapTarget_->bootstrapAuthority=true;bootstrapTarget_->cells=cells_;
 			return true;
 		}
 
 		bool ResidentProjectedHeunMetalOwner::SolveStage(const unsigned int stage,
 			id<MTLBuffer> state,id<MTLBuffer> temperature,id<MTLBuffer> momentum,
-			id<MTLBuffer> parentIdentity,const Stage* r0,id<MTLBuffer> initialSealedInflow,
+			id<MTLBuffer> parentIdentity,
+			const ResidentEOSCandidateMetalAuthority* parentCandidate,const Stage* r0,
+			id<MTLBuffer> initialSealedInflow,
 			id<MTLBuffer> sealedHead,std::unique_ptr<Stage>& accepted,
 			std::string* error)
 		{
-			std::unique_ptr<Stage> seed(new Stage);
-			if(!Project(state,momentum,zeroTarget_,zeroTargetIdentity_,initialSealedInflow,
-				sealedHead,stage==2u,*seed,error)||
-				!BuildStage(stage,state,temperature,parentIdentity,*seed,r0,error))return false;
-			std::unique_ptr<Stage> prior=std::move(seed);unsigned int stable=0u;
-			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;++iteration){
-				std::unique_ptr<Stage> current(new Stage);
-				id<MTLBuffer> classSeed=stage==2u?prior->projection.pressureOpenInflow:nil;
-				if(!Project(state,momentum,prior->target->assembled,
-					prior->target->publicationIdentity,classSeed,sealedHead,stage==2u,*current,error)||
-					!BuildStage(stage,state,temperature,parentIdentity,*current,r0,error))return false;
-				id<MTLBuffer> maximum=Private(sizeof(std::uint32_t));
-				id<MTLBuffer> classChanged=Private(sizeof(std::uint32_t));
-				id<MTLBuffer> terminal=[context_.device newBufferWithLength:2u*sizeof(std::uint32_t)
-					options:MTLResourceStorageModeShared];
+			using OpenClassBytes=std::vector<unsigned char>;
+			auto classBytes=[&](id<MTLBuffer> value,OpenClassBytes& bytes){
+				return ReadOpenClass(value,bytes,error);};
+			auto residual=[&](const Stage& current,const Stage& prior,
+				const bool includeIterationHistory,float& value,
+				std::array<float,3>* components)->bool{
 				id<MTLBuffer> cellCount=Upload(&ownerMetadata_.cells,sizeof(std::uint32_t));
 				id<MTLBuffer> faceCount=Upload(&ownerMetadata_.allFaces,sizeof(std::uint32_t));
 				const std::uint32_t coefficientCount=3u*ownerMetadata_.cells;
-				id<MTLBuffer> coefficientCountBuffer=Upload(&coefficientCount,
-					sizeof(coefficientCount));
+				id<MTLBuffer> coefficientCountBuffer=Upload(&coefficientCount,sizeof(coefficientCount));
 				const float one=1.0f,inverseDX=1.0f/shape_.cellWidthM;
-				id<MTLBuffer> unit=Upload(&one,sizeof(one)),momentumScale=Upload(&inverseDX,sizeof(inverseDX));
+				id<MTLBuffer> unit=Upload(&one,sizeof(one));
+				id<MTLBuffer> momentumScale=Upload(&inverseDX,sizeof(inverseDX));
+				std::array<id<MTLBuffer>,3> maximum={{Private(sizeof(std::uint32_t)),
+					Private(sizeof(std::uint32_t)),Private(sizeof(std::uint32_t))}};
+				id<MTLBuffer> terminal=[context_.device newBufferWithLength:3u*sizeof(std::uint32_t)
+					options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
-				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
-				const std::uint32_t boundaryCount=static_cast<std::uint32_t>(boundaryFaces_);
-				id<MTLBuffer> boundaryCountBuffer=Upload(&boundaryCount,sizeof(boundaryCount));
-				if(!maximum||!classChanged||!terminal||!cellCount||!faceCount||
-					!coefficientCountBuffer||!boundaryCountBuffer||
-					!unit||!momentumScale||!blit)return false;
-				[blit fillBuffer:maximum range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];[blit endEncoding];
-				blit=[command blitCommandEncoder];if(!blit)return false;
-				[blit fillBuffer:classChanged range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];[blit endEncoding];
-				if(!Encode(command,context_.ownerResidual,{current->target->assembled,
-					prior->target->assembled,maximum,cellCount,unit},cells_)||
-					!Encode(command,context_.ownerResidual,{current->packedMomentum,
-					prior->packedMomentum,maximum,faceCount,momentumScale},allFaces_)||
-					!Encode(command,context_.ownerResidual,{current->transport->coefficients,
-					prior->transport->coefficients,maximum,coefficientCountBuffer,unit},
-					3u*cells_)||(stage==2u&&!Encode(command,context_.ownerClassResidual,
-					{current->projection.pressureOpenInflow,classSeed,classChanged,boundaryCountBuffer},
-					boundaryFaces_)))return false;
-				blit=[command blitCommandEncoder];if(!blit)return false;
-				[blit copyFromBuffer:maximum sourceOffset:0 toBuffer:terminal destinationOffset:0
-					size:sizeof(std::uint32_t)];
-				[blit copyFromBuffer:classChanged sourceOffset:0 toBuffer:terminal
-					destinationOffset:sizeof(std::uint32_t) size:sizeof(std::uint32_t)];
-				[blit endEncoding];if(!Commit(command,error))return false;
-				const std::uint32_t bits=*static_cast<const std::uint32_t*>(
-					ReadTrackedMetalBuffer(terminal));float residual=0.0f;std::memcpy(&residual,&bits,sizeof(bits));
-				const bool classStable=stage!=2u||static_cast<const std::uint32_t*>(
-					ReadTrackedMetalBuffer(terminal))[1]==0u;
-				stable=residual<=request_.projectionTolerancePerS&&classStable?stable+1u:0u;
-				if(stable>=2u){
-					if(request_.qualificationStaleTargetPublication){
-						if(error)*error="projected-Heun publication from stale-target state refused";
-						return false;
-					}
+				id<MTLBlitCommandEncoder> clear=command?[command blitCommandEncoder]:nil;
+				if(!cellCount||!faceCount||!coefficientCountBuffer||!unit||!momentumScale||
+					!maximum[0]||!maximum[1]||!maximum[2]||!terminal||!command||!clear)return false;
+				for(id<MTLBuffer> buffer:maximum)
+					[clear fillBuffer:buffer range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];
+				[clear endEncoding];
+				if(!Encode(command,context_.ownerResidual,{current.target->assembled,
+					prior.target->assembled,maximum[0],cellCount,unit},cells_))return false;
+				if(includeIterationHistory&&(!Encode(command,context_.ownerResidual,
+					{current.packedMomentum,prior.packedMomentum,maximum[1],faceCount,momentumScale},
+					allFaces_)||!Encode(command,context_.ownerResidual,
+					{current.transport->coefficients,prior.transport->coefficients,maximum[2],
+					 coefficientCountBuffer,unit},3u*cells_)))return false;
+				id<MTLBlitCommandEncoder> copy=[command blitCommandEncoder];if(!copy)return false;
+				for(std::size_t index=0u;index<maximum.size();++index)Copy(copy,maximum[index],0u,
+					terminal,index*sizeof(std::uint32_t),sizeof(std::uint32_t),TransferKind::Control);
+				[copy endEncoding];if(!Commit(command,error))return false;
+				const std::uint32_t* bits=static_cast<const std::uint32_t*>(
+					Read(terminal,TransferKind::Control));std::array<float,3> local;
+				for(std::size_t index=0u;index<local.size();++index)
+					std::memcpy(&local[index],bits+index,sizeof(std::uint32_t));
+				value=std::max({local[0],local[1],local[2]});if(components)*components=local;return true;
+			};
+			auto alphaResidual=[&](id<MTLBuffer> a,id<MTLBuffer> b,float& value)->bool{
+				id<MTLBuffer> maximum=Private(sizeof(std::uint32_t));
+				id<MTLBuffer> terminal=[context_.device newBufferWithLength:sizeof(std::uint32_t)
+					options:MTLResourceStorageModeShared];
+				const std::uint32_t count=static_cast<std::uint32_t>(allFaces_);const float one=1.0f;
+				id<MTLBuffer> countBuffer=Upload(&count,sizeof(count));id<MTLBuffer> unit=Upload(&one,sizeof(one));
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> clear=command?[command blitCommandEncoder]:nil;
+				if(!maximum||!terminal||!countBuffer||!unit||!clear)return false;
+				[clear fillBuffer:maximum range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];[clear endEncoding];
+				if(!Encode(command,context_.ownerResidual,{a,b,maximum,countBuffer,unit},allFaces_))return false;
+				id<MTLBlitCommandEncoder> copy=[command blitCommandEncoder];if(!copy)return false;
+				Copy(copy,maximum,0u,terminal,0u,sizeof(std::uint32_t),TransferKind::Control);[copy endEncoding];
+				if(!Commit(command,error))return false;const std::uint32_t bits=
+					*static_cast<const std::uint32_t*>(Read(terminal,TransferKind::Control));
+				std::memcpy(&value,&bits,sizeof(bits));return true;
+			};
+			if(stage==0u&&request_.qualificationUnverifiedPrivateLineageBuffer){
+				ResidentProjectionTargetMetalAuthority forged;forged.assembled=Private(cells_*sizeof(float));
+				forged.publicationIdentity=Private(sizeof(std::uint64_t));
+				forged.consumerIdentity=Private(sizeof(std::uint64_t));
+				forged.projectionConsumerIdentity=Private(sizeof(std::uint64_t));
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> copy=command?[command blitCommandEncoder]:nil;
+				if(!forged.assembled||!forged.publicationIdentity||!forged.consumerIdentity||
+					!forged.projectionConsumerIdentity||!copy)return false;
+				Copy(copy,zeroTarget_,0u,forged.assembled,0u,cells_*sizeof(float),TransferKind::Internal);
+				Copy(copy,zeroTargetIdentity_,0u,forged.publicationIdentity,0u,sizeof(std::uint64_t),
+					TransferKind::Internal);Copy(copy,zeroTargetConsumerIdentity_,0u,forged.consumerIdentity,
+					0u,sizeof(std::uint64_t),TransferKind::Internal);Copy(copy,
+					zeroTargetConsumerIdentity_,0u,forged.projectionConsumerIdentity,0u,
+					sizeof(std::uint64_t),TransferKind::Internal);[copy endEncoding];
+				forged.parentCommand=command;forged.capability=std::make_shared<unsigned char>(0u);
+				forged.parentTargetCapability=bootstrapTarget_->capability;
+				if(!Commit(command,error))return false;Stage refused;
+				return Project(stage,state,momentum,forged,bootstrapTarget_->capability,
+					initialSealedInflow,sealedHead,refused,error);
+			}
+			std::unique_ptr<Stage> seed(new Stage);
+			if(!Project(stage,state,momentum,*bootstrapTarget_,std::shared_ptr<unsigned char>(),
+				initialSealedInflow,sealedHead,
+				*seed,error)||!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,
+				*bootstrapTarget_,false,nil,*seed,r0,error))return false;
+			id<MTLBuffer> activeClass=seed->projection.pressureOpenInflow;
+			std::unique_ptr<Stage> prior=std::move(seed);bool havePrior=false,frozenCycle=false;
+			float lastResidual=std::numeric_limits<float>::infinity();
+			std::array<float,3> lastResidualComponents={{0.0f,0.0f,0.0f}};
+			std::vector<float> residualHistory;
+			bool lastClassStable=false;
+			std::vector<id<MTLBuffer> > activeHistory,cycleBranches;
+			std::vector<OpenClassBytes> activeHistoryBytes,cycleBranchBytes;
+			std::uint32_t canonicalCount=0u;
+			auto addHistory=[&](id<MTLBuffer> buffer,const OpenClassBytes& bytes){
+				if(activeHistoryBytes.empty()||activeHistoryBytes.back()!=bytes){
+					activeHistory.push_back(buffer);activeHistoryBytes.push_back(bytes);}};
+			auto addBranch=[&](id<MTLBuffer> buffer,const OpenClassBytes& bytes){
+				if(std::find(cycleBranchBytes.begin(),cycleBranchBytes.end(),bytes)==cycleBranchBytes.end()){
+					cycleBranches.push_back(buffer);cycleBranchBytes.push_back(bytes);}};
+			auto canonicalProjection=[&](const ResidentProjectionTargetMetalAuthority& target,
+				const std::shared_ptr<unsigned char>& expectedTargetParent,
+				std::unique_ptr<Stage>& selected)->bool{
+				if(cycleBranches.empty())return false;
+				if(request_.qualificationDisableCanonicalCycle){
+					if(error)*error="projected-Heun two-class canonical selection mutant refused";
+					return false;
+				}
+				std::size_t best=0u;float bestDiscrepancy=0.0f;bool haveBest=false;
+				for(std::size_t index=0u;index<cycleBranches.size();++index){
+					std::unique_ptr<Stage> branch(new Stage);
+					if(!Project(stage,state,momentum,target,expectedTargetParent,
+						cycleBranches[index],sealedHead,
+						*branch,error))return false;
+					++canonicalCount;
+					const float discrepancy=branch->projectionDiagnostics.
+						maximumOpenComplementarityDiscrepancyMPerS;
+					if(!haveBest||discrepancy<bestDiscrepancy||(discrepancy==bestDiscrepancy&&
+						cycleBranchBytes[index]<cycleBranchBytes[best])){
+						best=index;bestDiscrepancy=discrepancy;selected=std::move(branch);haveBest=true;}}
+				activeClass=cycleBranches[best];return haveBest;
+			};
+			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;++iteration){
+				if(stage==2u&&havePrior&&request_.qualificationStaleTargetPublication)
+					prior->target->parentTargetCapability=bootstrapTarget_->capability;
+				std::unique_ptr<Stage> current(new Stage);
+				if(!Project(stage,state,momentum,*prior->target,prior->projectionTargetCapability,
+					activeClass,sealedHead,*current,error))return false;
+				OpenClassBytes usedBytes,nextBytes;if(!classBytes(current->projection.pressureOpenInflow,
+					usedBytes)||!classBytes(current->nextOpenClass,nextBytes))return false;
+				bool classStable=frozenCycle||usedBytes==nextBytes;
+				if(frozenCycle){addBranch(current->projection.pressureOpenInflow,usedBytes);
+					addBranch(current->nextOpenClass,nextBytes);}
+				if(!frozenCycle&&!classStable){addHistory(current->projection.pressureOpenInflow,usedBytes);
+					auto repeated=std::find(activeHistoryBytes.begin(),activeHistoryBytes.end(),nextBytes);
+					if(repeated!=activeHistoryBytes.end()){
+						const std::size_t first=static_cast<std::size_t>(repeated-activeHistoryBytes.begin());
+						for(std::size_t index=first;index<activeHistory.size();++index)
+							addBranch(activeHistory[index],activeHistoryBytes[index]);
+						if(!canonicalProjection(*prior->target,prior->projectionTargetCapability,
+							current))return false;
+						frozenCycle=true;classStable=true;
+					}else activeClass=current->nextOpenClass;
+				}else if(!frozenCycle)activeClass=current->nextOpenClass;
+				if(!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,*prior->target,
+					stage!=2u,nil,*current,r0,error))return false;
+				float currentResidual=0.0f;if(!residual(*current,*prior,havePrior,currentResidual,
+					&lastResidualComponents))return false;
+				lastResidual=currentResidual;lastClassStable=classStable;
+				residualHistory.push_back(currentResidual);
+				if(havePrior&&classStable&&currentResidual<=request_.projectionTolerancePerS){
 					std::unique_ptr<Stage> verified(new Stage);
-					id<MTLBuffer> terminalClassSeed=stage==2u?
-						current->projection.pressureOpenInflow:nil;
-					if(!Project(state,momentum,current->target->assembled,
-						current->target->publicationIdentity,terminalClassSeed,sealedHead,
-						stage==2u,*verified,error)||
-						!BuildStage(stage,state,temperature,parentIdentity,*verified,r0,error))return false;
-					id<MTLCommandBuffer> verification=TrackedMetalCommandBuffer(context_.queue);
-					id<MTLBlitCommandEncoder> clear=verification?
-						[verification blitCommandEncoder]:nil;
-					if(!clear)return false;
-					[clear fillBuffer:maximum range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];
-					[clear fillBuffer:classChanged range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];
-					[clear endEncoding];
-					if(!Encode(verification,context_.ownerResidual,{verified->target->assembled,
-						current->target->assembled,maximum,cellCount,unit},cells_)||
-						!Encode(verification,context_.ownerResidual,{verified->packedMomentum,
-						current->packedMomentum,maximum,faceCount,momentumScale},allFaces_)||
-						!Encode(verification,context_.ownerResidual,{verified->transport->coefficients,
-						current->transport->coefficients,maximum,coefficientCountBuffer,unit},
-						3u*cells_)||(stage==2u&&!Encode(verification,context_.ownerClassResidual,
-						{verified->projection.pressureOpenInflow,terminalClassSeed,classChanged,
-						boundaryCountBuffer},boundaryFaces_)))return false;
-					clear=[verification blitCommandEncoder];if(!clear)return false;
-					[clear copyFromBuffer:maximum sourceOffset:0 toBuffer:terminal destinationOffset:0
-						size:sizeof(std::uint32_t)];
-					[clear copyFromBuffer:classChanged sourceOffset:0 toBuffer:terminal
-						destinationOffset:sizeof(std::uint32_t) size:sizeof(std::uint32_t)];
-					[clear endEncoding];if(!Commit(verification,error))return false;
-					const std::uint32_t verificationBits=*static_cast<const std::uint32_t*>(
-						ReadTrackedMetalBuffer(terminal));
-					float verificationResidual=0.0f;
-					std::memcpy(&verificationResidual,&verificationBits,sizeof(verificationBits));
-					const bool verificationClassStable=stage!=2u||
-						static_cast<const std::uint32_t*>(ReadTrackedMetalBuffer(terminal))[1]==0u;
-					if(verificationResidual<=request_.projectionTolerancePerS&&
-						verificationClassStable){
-						verified->acceptedIterationCount=iteration+1u;
-						verified->terminalReprojectionVerified=true;
-						accepted=std::move(verified);return true;
-					}
-					prior=std::move(verified);stable=0u;continue;
+					if(!Project(stage,state,momentum,*current->target,
+						current->projectionTargetCapability,
+						current->projection.pressureOpenInflow,sealedHead,
+						*verified,error))return false;
+					OpenClassBytes terminalUsed,terminalNext;if(!classBytes(
+						verified->projection.pressureOpenInflow,terminalUsed)||
+						!classBytes(verified->nextOpenClass,terminalNext))return false;
+					bool terminalTransition=!frozenCycle&&terminalUsed!=terminalNext;
+					if(frozenCycle){addBranch(verified->projection.pressureOpenInflow,terminalUsed);
+						addBranch(verified->nextOpenClass,terminalNext);
+						if(!canonicalProjection(*current->target,current->projectionTargetCapability,
+							verified))return false;
+						terminalTransition=false;}
+					if(!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,*current->target,
+						stage!=2u,nil,*verified,r0,error))return false;
+					id<MTLBuffer> comparisonAlpha=verified->candidate->faceAlpha;
+					id<MTLBuffer> forcedAlpha=nil;
+					if(stage==1u&&request_.qualificationForceLimiterDiscontinuity){
+						forcedAlpha=Private(allFaces_*sizeof(float));
+						const std::uint32_t count=static_cast<std::uint32_t>(allFaces_);
+						id<MTLBuffer> countBuffer=Upload(&count,sizeof(count));
+						id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+						if(!forcedAlpha||!countBuffer||!command||!Encode(command,context_.ownerHalfField,
+							{comparisonAlpha,forcedAlpha,countBuffer},allFaces_)||!Commit(command,error))return false;
+						comparisonAlpha=forcedAlpha;}
+					float limiterResidual=0.0f;if(stage!=2u&&!alphaResidual(current->candidate->faceAlpha,
+						comparisonAlpha,limiterResidual))return false;
+					const bool limiterDiscontinuous=stage!=2u&&
+						limiterResidual>request_.projectionTolerancePerS;
+					std::unique_ptr<Stage> certified;
+					if(limiterDiscontinuous){
+						if(request_.qualificationDisableLimiterCertification){
+							if(error)*error="projected-Heun limiter-discontinuity mutant refused";
+							return false;
+						}
+						id<MTLBuffer> selectedAlpha=Private(allFaces_*sizeof(float));
+						const std::uint32_t count=static_cast<std::uint32_t>(allFaces_);
+						id<MTLBuffer> countBuffer=Upload(&count,sizeof(count));
+						id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+						if(!selectedAlpha||!countBuffer||!command||!Encode(command,context_.ownerMinimumField,
+							{current->candidate->faceAlpha,comparisonAlpha,selectedAlpha,countBuffer},allFaces_)||
+							!Commit(command,error))return false;
+						certified.reset(new Stage);certified->projection=verified->projection;
+						certified->projectionDiagnostics=verified->projectionDiagnostics;
+						certified->nextOpenClass=verified->nextOpenClass;
+						certified->projectionTargetCapability=verified->projectionTargetCapability;
+						if(!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,*current->target,
+							stage!=2u,selectedAlpha,*certified,r0,error))return false;
+						certified->limiterDiscontinuousClass=true;
+					}else certified=std::move(verified);
+					float verificationResidual=0.0f;if(!residual(*certified,*current,true,
+						verificationResidual,0))return false;
+					if(terminalTransition||verificationResidual>request_.projectionTolerancePerS){
+						activeClass=certified->nextOpenClass;prior=std::move(certified);havePrior=true;continue;}
+					certified->acceptedIterationCount=iteration+1u;
+					certified->terminalReprojectionVerified=true;
+					certified->projectionTargetAssembled=current->target->assembled;
+					certified->projectionTargetCorrectionIteration=
+						current->target->correctionIteration;
+					certified->activeSetDiscontinuousClass=frozenCycle;
+					certified->activeSetCycleLength=static_cast<std::uint32_t>(cycleBranches.size());
+					certified->activeSetCanonicalProjectionCount=canonicalCount;
+					accepted=std::move(certified);return true;
 				}
 				prior=std::move(current);
+				havePrior=true;
 			}
-			if(error)*error="projected-Heun resident Picard stage did not converge";return false;
+			if(error){*error="projected-Heun resident Picard stage did not converge: stage="+
+				std::to_string(stage)+" residual="+std::to_string(lastResidual)+
+				" target="+std::to_string(lastResidualComponents[0])+
+				" momentum="+std::to_string(lastResidualComponents[1])+
+				" transport="+std::to_string(lastResidualComponents[2])+
+				" class_stable="+std::to_string(lastClassStable?1u:0u)+
+				" frozen_cycle="+std::to_string(frozenCycle?1u:0u)+" history=";
+				for(const float residualValue:residualHistory)*error+=
+					std::to_string(residualValue)+",";}
+			return false;
 		}
 
 		bool ResidentProjectedHeunMetalOwner::Run(
@@ -7391,9 +7744,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			result=FireProductionProjectedHeunMetalOwnerResult();
 			const auto wallStart=std::chrono::steady_clock::now();if(!Prepare(error))return false;
 			std::unique_ptr<Stage> r0,r1,r2;
-			if(!SolveStage(0u,q0_,t0_,m0_,rootCandidateIdentity_,0,nil,nil,r0,error))return false;
+			if(!SolveStage(0u,q0_,t0_,m0_,rootCandidateIdentity_,0,0,nil,nil,r0,error))return false;
 			if(!SolveStage(1u,r0->candidate->conservative,r0->eos->temperature,r0->nextMomentum,
-				r0->candidate->publicationIdentity,r0.get(),nil,nil,r1,error))return false;
+				r0->candidate->publicationIdentity,r0->candidate.get(),r0.get(),nil,nil,r1,error))return false;
 			integratedOpenHead_=Private(boundaryFaces_*sizeof(float));
 			id<MTLBuffer> ambientDensity=Upload(&request_.ambientDensityKGPerM3,
 				sizeof(request_.ambientDensityKGPerM3));
@@ -7404,7 +7757,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				integratedOpenHead_,transportParameters_[0],ambientDensity},boundaryFaces_)||
 				!Commit(headCommand,error))return false;
 			if(!SolveStage(2u,r1->candidate->conservative,r1->eos->temperature,r1->nextMomentum,
-				r1->candidate->publicationIdentity,r0.get(),r1->projection.pressureOpenInflow,
+				r1->candidate->publicationIdentity,r1->candidate.get(),r0.get(),
+				r1->projection.pressureOpenInflow,
 				integratedOpenHead_,r2,error))return false;
 			if(!r0->terminalReprojectionVerified||!r1->terminalReprojectionVerified||
 				!r2->terminalReprojectionVerified){
@@ -7418,30 +7772,29 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				id<MTLBlitCommandEncoder> transfer=transferCommand?
 					[transferCommand blitCommandEncoder]:nil;
 				if(!staged||!transfer)return false;
-				[transfer copyFromBuffer:r1->candidate->conservative sourceOffset:0
-					toBuffer:staged destinationOffset:0 size:9u*cells_*sizeof(float)];
+				Copy(transfer,r1->candidate->conservative,0u,staged,0u,9u*cells_*sizeof(float),
+					TransferKind::InterstageFullGrid);
 				[transfer endEncoding];if(!Commit(transferCommand,error))return false;
-				if(!ReadTrackedMetalBuffer(staged))return false;
-				++interstageFullGridTransfers_;
+				if(!Read(staged,TransferKind::Control))return false;
 				if(error)*error="projected-Heun resident owner observed interstage full-grid transfer";
 				return false;
 			}
-			if(request_.qualificationUnverifiedPrivateLineageBuffer){
-				id<MTLBuffer> unverified=Private(sizeof(std::uint64_t));
-				id<MTLCommandBuffer> forgedCommand=TrackedMetalCommandBuffer(context_.queue);
-				id<MTLBlitCommandEncoder> forged=forgedCommand?
-					[forgedCommand blitCommandEncoder]:nil;
-				if(!unverified||!forged)return false;
-				[forged fillBuffer:unverified range:NSMakeRange(0,sizeof(std::uint64_t)) value:1u];
-				[forged endEncoding];if(!Commit(forgedCommand,error))return false;
-				r1->lineageSeal=unverified;
-			}
-			auto sealedStage=[&](const Stage& value){
+			if(request_.qualificationStaleCandidate)
+				r2->candidate->parentCandidateCapability=r0->candidate->capability;
+			auto sealedStage=[&](const Stage& value,
+				const ResidentEOSCandidateMetalAuthority* expectedCandidateParent){
 				const ResidentPhysicalFluxMetalAuthority* candidatePhysical=
 					value.averagedPhysical?value.averagedPhysical.get():value.physical.get();
 				return value.lineageSeal&&value.lineageSeal==value.issuedLineageSeal&&
 					value.projection.publicationIdentity&&value.transport&&value.physical&&
 					candidatePhysical&&value.candidate&&value.eos&&value.source&&value.target&&
+					value.candidate->capability&&value.target->capability&&
+					((value.candidate->rootParent&&expectedCandidateParent==0&&
+						!value.candidate->parentCandidateCapability)||
+					 (!value.candidate->rootParent&&expectedCandidateParent&&
+						value.candidate->parentCandidateCapability==expectedCandidateParent->capability))&&
+					value.projectionTargetCapability&&
+					value.target->parentTargetCapability==value.projectionTargetCapability&&
 					value.physical->parentTransportPublicationIdentity==
 						value.transport->publicationIdentity&&
 					candidatePhysical->parentTransportPublicationIdentity==
@@ -7470,7 +7823,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					value.target->parentFrozenSourcePublicationIdentity==
 						value.source->publicationIdentity;
 			};
-			if(!sealedStage(*r0)||!sealedStage(*r1)||!sealedStage(*r2)){
+			if(!sealedStage(*r0,0)||!sealedStage(*r1,r0->candidate.get())||
+				!sealedStage(*r2,r1->candidate.get())){
 				if(error)*error="projected-Heun publication refuses unsealed parent relationship";
 				return false;
 			}
@@ -7491,7 +7845,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> positiveHalfBuffer=Upload(&positiveHalf,sizeof(positiveHalf));
 			id<MTLBuffer> negativeHalfBuffer=Upload(&negativeHalf,sizeof(negativeHalf));
 			const std::size_t stateBytes=9u*cells_*sizeof(float),fieldBytes=cells_*sizeof(float);
-			const std::size_t terminalBytes=stateBytes+13u*allFaces_*sizeof(float)+4u*fieldBytes+
+			const std::size_t terminalBytes=stateBytes+13u*allFaces_*sizeof(float)+10u*fieldBytes+
 				2u*sizeof(std::uint32_t)+22u*sizeof(std::uint64_t);
 			id<MTLBuffer> terminal=[context_.device newBufferWithLength:terminalBytes
 				options:MTLResourceStorageModeShared];
@@ -7533,11 +7887,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				!Encode(command,fct_.commutingIdentity,{q0_,sourceDelta_,
 					r1->candidate->conservative,ambient_,identityRate,commutingResidual,
 					commutingScale,failure_,fctParameters_[1]},allFaces_))return false;
-			if(request_.qualificationStaleCandidate||request_.qualificationForgedLineage||
+			if(request_.qualificationForgedLineage||
 				request_.qualificationCallbackMutation||request_.qualificationAtomicPublicationFailure){
 				id<MTLBlitCommandEncoder> red=[command blitCommandEncoder];if(!red)return false;
-				if(request_.qualificationStaleCandidate)[red fillBuffer:r1->candidate->publicationIdentity
-					range:NSMakeRange(0,sizeof(std::uint64_t)) value:0u];
 				if(request_.qualificationForgedLineage)[red fillBuffer:r2->physical->publicationIdentity
 					range:NSMakeRange(0,sizeof(std::uint64_t)) value:0u];
 				if(request_.qualificationCallbackMutation)[red fillBuffer:r0->transport->publicationIdentity
@@ -7567,8 +7919,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ownerIdentity,failure_,publicationParameters},1u))return false;
 			id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];if(!blit)return false;
 			std::size_t offset=0u;auto publish=[&](id<MTLBuffer> source,std::size_t bytes,
-				std::size_t sourceOffset=0u){[blit copyFromBuffer:source sourceOffset:sourceOffset
-					toBuffer:terminal destinationOffset:offset size:bytes];offset+=bytes;};
+				std::size_t sourceOffset=0u){Copy(blit,source,sourceOffset,terminal,offset,bytes,
+					TransferKind::Terminal);offset+=bytes;};
 			publish(r1->candidate->conservative,stateBytes);
 			for(unsigned int axis=0u;axis<3u;++axis)publish(r2->projection.momentumKGPerM2S[axis],
 				FireProductionProjectionFaceCount(shape_,axis)*sizeof(float));
@@ -7582,6 +7934,11 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			publish(r1->candidate->faceAlpha,allFaces_*sizeof(float));
 			publish(r1->eos->temperature,fieldBytes);publish(r1->eos->representedPressureRatio,fieldBytes);
 			publish(r1->eos->absoluteDeviation,fieldBytes);publish(heunEddy,fieldBytes);
+			const Stage* acceptedStages[3]={r0.get(),r1.get(),r2.get()};
+			for(const Stage* acceptedStage:acceptedStages)
+				publish(acceptedStage->projectionTargetAssembled,fieldBytes);
+			for(const Stage* acceptedStage:acceptedStages)
+				publish(acceptedStage->target->assembled,fieldBytes);
 			publish(commutingResidual,sizeof(std::uint32_t));
 			publish(commutingScale,sizeof(std::uint32_t));
 			const id<MTLBuffer> identities[]={r0->projection.publicationIdentity,
@@ -7598,7 +7955,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			for(id<MTLBuffer> identity:identities)publish(identity,sizeof(std::uint64_t));
 			publish(ownerIdentity,sizeof(std::uint64_t));[blit endEncoding];
 			if(!Commit(command,error))return false;const unsigned char* bytes=
-				static_cast<const unsigned char*>(ReadTrackedMetalBuffer(terminal));if(!bytes)return false;
+				static_cast<const unsigned char*>(Read(terminal,TransferKind::Terminal));if(!bytes)return false;
 			offset=0u;auto floats=[&](std::vector<float>& destination,std::size_t count){const float* value=
 				reinterpret_cast<const float*>(bytes+offset);destination.assign(value,value+count);
 				offset+=count*sizeof(float);};floats(result.conservativeValues,9u*cells_);
@@ -7619,6 +7976,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			floats(result.acceptedFaceAlpha,allFaces_);
 			floats(result.temperatureK,cells_);floats(result.representedPressureRatio,cells_);
 			floats(result.absoluteEOSDeviation,cells_);floats(result.heunEddyKinematicViscosityM2PerS,cells_);
+			for(unsigned int stage=0u;stage<3u;++stage)floats(result.projectionTargetPerS[stage],cells_);
+			for(unsigned int stage=0u;stage<3u;++stage)floats(result.acceptedTargetPerS[stage],cells_);
 			const std::uint32_t* commutingBits=reinterpret_cast<const std::uint32_t*>(bytes+offset);
 			std::memcpy(&result.maximumCommutingResidualKGPerM3,&commutingBits[0],sizeof(float));
 			std::memcpy(&result.commutingIdentityScaleKGPerM3,&commutingBits[1],sizeof(float));
@@ -7641,6 +8000,18 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			}
 			result.acceptedPicardIterations={{r0->acceptedIterationCount,
 				r1->acceptedIterationCount,r2->acceptedIterationCount}};
+			result.activeSetCycleLength={{r0->activeSetCycleLength,r1->activeSetCycleLength,
+				r2->activeSetCycleLength}};
+			result.activeSetCanonicalProjectionCount={{r0->activeSetCanonicalProjectionCount,
+				r1->activeSetCanonicalProjectionCount,r2->activeSetCanonicalProjectionCount}};
+			result.activeSetDiscontinuousClass={{r0->activeSetDiscontinuousClass,
+				r1->activeSetDiscontinuousClass,r2->activeSetDiscontinuousClass}};
+			result.limiterDiscontinuousClass={{r0->limiterDiscontinuousClass,
+				r1->limiterDiscontinuousClass,r2->limiterDiscontinuousClass}};
+			result.projectionTargetCorrectionIteration={{r0->projectionTargetCorrectionIteration,
+				r1->projectionTargetCorrectionIteration,r2->projectionTargetCorrectionIteration}};
+			result.acceptedTargetCorrectionIteration={{r0->target->correctionIteration,
+				r1->target->correctionIteration,r2->target->correctionIteration}};
 			result.projection=r2->projectionDiagnostics;
 			result.projection.momentumKGPerM2S=result.momentumKGPerM2S;
 			result.projection.velocityMPerS=result.velocityMPerS;
@@ -7666,6 +8037,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			if(!result.accepted){if(error)*error="projected-Heun resident owner certificate failed";return false;}
 			if(error)error->clear();return true;
 		}
+
+		// R201_RESIDENT_OWNER_TRANSFER_SURFACE_END
 
 		bool EncodeResidentPhysicalFluxAuthority(
 			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
@@ -8280,14 +8653,16 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				options:MTLResourceStorageModePrivate];};
 			authority.tangent=make(fieldBytes);authority.frozenSource=make(fieldBytes);
 			authority.absoluteDiagnostic=make(fieldBytes);authority.monitoredAbsolute=make(fieldBytes);
-			authority.assembled=make(fieldBytes);authority.publicationIdentity=make(sizeof(std::uint64_t));
+			authority.baseAssembled=make(fieldBytes);authority.assembled=make(fieldBytes);
+			authority.publicationIdentity=make(sizeof(std::uint64_t));
 			ResidentProjectionMetadataMetalAuthority projectionAuthority;
 			projectionAuthority.metadata=make(sizeof(MetalResidentProjectionConsumerParameters));
 			projectionAuthority.publicationIdentity=make(sizeof(std::uint64_t));
 			authority.projectionConsumerIdentity=projectionAuthority.publicationIdentity;
+			authority.projectionMetadata=projectionAuthority.metadata;
 			authority.consumerIdentity=make(sizeof(std::uint64_t));
-			const std::array<id<MTLBuffer>,9> outputs={{authority.tangent,authority.frozenSource,
-				authority.absoluteDiagnostic,authority.monitoredAbsolute,authority.assembled,
+			const std::array<id<MTLBuffer>,10> outputs={{authority.tangent,authority.frozenSource,
+				authority.absoluteDiagnostic,authority.monitoredAbsolute,authority.baseAssembled,authority.assembled,
 				authority.publicationIdentity,projectionAuthority.metadata,
 				authority.projectionConsumerIdentity,
 				authority.consumerIdentity}};
@@ -8335,6 +8710,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:candidateAuthority.parentFCTParameters offset:0 atIndex:23];
 			[encoder setBuffer:candidateAuthority.parentEOSParameters offset:0 atIndex:24];
 			[encoder setBuffer:candidatePhysicalAuthority.publicationIdentity offset:0 atIndex:25];
+			[encoder setBuffer:authority.baseAssembled offset:0 atIndex:26];
 			Dispatch(encoder,context.evaluateTargetTerms,cells);[encoder endEncoding];
 			encoder=encoderFor(context.finalizeTarget);if(!encoder){
 				if(error)*error="production resident target compatibility encoder failed";return false;}
@@ -8368,13 +8744,13 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			Dispatch(encoder,context.identifyProjectionConsumer,1u);[encoder endEncoding];
 			if(qualificationCPUTarget)authority.assembled=qualificationCPUTarget;
 			if(qualificationCPUMetadata)projectionAuthority.metadata=qualificationCPUMetadata;
-			if(authority.assembled!=outputs[4]||[authority.assembled storageMode]!=MTLStorageModePrivate){
+			if(authority.assembled!=outputs[5]||[authority.assembled storageMode]!=MTLStorageModePrivate){
 				if(error)*error="production resident target consumer refuses CPU-produced target";
 				return false;
 			}
 			if(projectionAuthority.parentCommand!=command||
 				projectionAuthority.parentTargetPublicationIdentity!=authority.publicationIdentity||
-				projectionAuthority.metadata!=outputs[6]||
+				projectionAuthority.metadata!=outputs[7]||
 				[projectionAuthority.metadata storageMode]!=MTLStorageModePrivate){
 				if(error)*error="production resident target consumer refuses CPU-produced projection metadata";
 				return false;
@@ -9064,12 +9440,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			if(bytes>std::numeric_limits<std::uint64_t>::max()-requested)return false;
 			bytes+=requested;return true;};
 		// Device-produced frozen-source field/metadata/identity, five separate
-		// target term/final fields, device-issued projection metadata, the target/
+		// target term/base/final fields, device-issued projection metadata, the target/
 		// projection-metadata identities, and the consumer identity.
 		return add(cells*sizeof(float))&&add(sizeof(MetalResidentFrozenSourceParameters))&&
 			add(sizeof(std::uint64_t))&&
 			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
-			add(cells*sizeof(float))&&add(cells*sizeof(float))&&
+			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&add(sizeof(std::uint64_t))&&
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t));
 	}
@@ -9100,7 +9476,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&
 			add(sizeof(std::uint32_t))&&
-			add(5u*cells*sizeof(float)+7u*sizeof(std::uint64_t)+
+			add(6u*cells*sizeof(float)+7u*sizeof(std::uint64_t)+
 				2u*sizeof(std::uint32_t)+64u)&&add(cells*sizeof(float))&&
 			bytes<=(UINT64_C(1)<<31u);
 	}

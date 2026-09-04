@@ -213,13 +213,17 @@ namespace RISEFireProductionTrace
 		//! projected-Heun owners must provide it; legacy resident callers leave it
 		//! nil and consequently receive no projection publication identity.
 		id<MTLBuffer> targetPublicationIdentity;
+		//! Device-issued consumer capability for the exact target publication.  An
+		//! identity alone is not authority: live owners provide both, and the
+		//! projection publication hashes the conjunction.
+		id<MTLBuffer> targetConsumerIdentity;
 		//! Optional private, device-produced pressure-open authorities. When
 		//! present they replace the request's structural placeholder seals.
 		id<MTLBuffer> sealedPressureOpenInflow;
 		id<MTLBuffer> sealedPressureOpenDynamicPressurePa;
 
 		FireProductionMetalProjectionResidentInput() : gasDensityKGPerM3(nil),
-			divergenceTargetPerS(nil),targetPublicationIdentity(nil),
+			divergenceTargetPerS(nil),targetPublicationIdentity(nil),targetConsumerIdentity(nil),
 			sealedPressureOpenInflow(nil),sealedPressureOpenDynamicPressurePa(nil)
 		{
 			provisionalMomentumKGPerM2S.fill(nil);

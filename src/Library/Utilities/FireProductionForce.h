@@ -394,6 +394,12 @@ namespace RISE
 		bool qualificationDivergentManifoldPolicy;
 		bool qualificationStaleTargetPublication;
 		bool qualificationUnverifiedPrivateLineageBuffer;
+		//! Active-set and limiter control-flow REDs.  A value 1, 2, or 3 forces
+		//! the r190 two-class cycle at R0, R1, or R2 respectively; zero is live.
+		std::uint32_t qualificationForcedActiveCycleStage;
+		bool qualificationDisableCanonicalCycle;
+		bool qualificationForceLimiterDiscontinuity;
+		bool qualificationDisableLimiterCertification;
 
 		FireProductionProjectedHeunMetalOwnerRequest() : ambientDensityKGPerM3(1.0f),
 			vremanCoefficient(0.07f),projectionTolerancePerS(0.0f),
@@ -404,7 +410,11 @@ namespace RISE
 			qualificationInjectInterstageTransfer(false),
 			qualificationDivergentManifoldPolicy(false),
 			qualificationStaleTargetPublication(false),
-			qualificationUnverifiedPrivateLineageBuffer(false)
+			qualificationUnverifiedPrivateLineageBuffer(false),
+			qualificationForcedActiveCycleStage(0u),
+			qualificationDisableCanonicalCycle(false),
+			qualificationForceLimiterDiscontinuity(false),
+			qualificationDisableLimiterCertification(false)
 		{ gravityMPerS2.fill(0.0f); }
 	};
 
@@ -424,7 +434,15 @@ namespace RISE
 		std::vector<float> temperatureK;
 		std::vector<float> representedPressureRatio;
 		std::vector<float> absoluteEOSDeviation;
+		std::array<std::vector<float>,3> projectionTargetPerS;
+		std::array<std::vector<float>,3> acceptedTargetPerS;
+		std::array<std::uint32_t,3> projectionTargetCorrectionIteration;
+		std::array<std::uint32_t,3> acceptedTargetCorrectionIteration;
 		std::array<std::uint32_t,3> acceptedPicardIterations;
+		std::array<std::uint32_t,3> activeSetCycleLength;
+		std::array<std::uint32_t,3> activeSetCanonicalProjectionCount;
+		std::array<bool,3> activeSetDiscontinuousClass;
+		std::array<bool,3> limiterDiscontinuousClass;
 		std::array<std::uint64_t,3> projectionPublicationIdentity;
 		std::array<std::uint64_t,3> transportPublicationIdentity;
 		std::array<std::uint64_t,3> physicalFluxPublicationIdentity;
@@ -459,6 +477,10 @@ namespace RISE
 			commutingIdentityPassed(false),accepted(false)
 		{
 			acceptedPicardIterations.fill(0u);projectionPublicationIdentity.fill(0u);
+			projectionTargetCorrectionIteration.fill(0u);
+			acceptedTargetCorrectionIteration.fill(0u);
+			activeSetCycleLength.fill(0u);activeSetCanonicalProjectionCount.fill(0u);
+			activeSetDiscontinuousClass.fill(false);limiterDiscontinuousClass.fill(false);
 			transportPublicationIdentity.fill(0u);physicalFluxPublicationIdentity.fill(0u);
 			candidatePublicationIdentity.fill(0u);EOSPublicationIdentity.fill(0u);
 			frozenSourcePublicationIdentity.fill(0u);targetPublicationIdentity.fill(0u);

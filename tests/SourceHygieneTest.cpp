@@ -4023,6 +4023,28 @@ int main()
 			"r197 evidence seals the non-forgeable transport surface, numerical classification, residency, and identity policy" );
 	}
 
+	{
+		const fs::path repoRoot=fs::weakly_canonical(fs::absolute(testsDir)).parent_path();
+		std::ifstream input(repoRoot/"src"/"Library"/"Utilities"/
+			"FireProductionAdvectionMac.mm",std::ios::binary);
+		const std::string metal((std::istreambuf_iterator<char>(input)),
+			std::istreambuf_iterator<char>());
+		const std::size_t begin=metal.find("R201_RESIDENT_OWNER_TRANSFER_SURFACE_BEGIN");
+		const std::size_t end=metal.find("R201_RESIDENT_OWNER_TRANSFER_SURFACE_END",begin);
+		const std::string owner=begin!=std::string::npos&&end!=std::string::npos?
+			metal.substr(begin,end-begin):std::string();
+		auto countToken=[](const std::string& text,const std::string& token){
+			std::size_t count=0u,position=0u;
+			while((position=text.find(token,position))!=std::string::npos){
+				++count;position+=token.size();}
+			return count;};
+		Check(!owner.empty()&&countToken(owner,"copyFromBuffer:")==1u&&
+			countToken(owner,"ReadTrackedMetalBuffer(")==1u&&
+			owner.find("TransferKind::InterstageFullGrid")!=std::string::npos&&
+			owner.find("Copy(transfer,r1->candidate->conservative")!=std::string::npos,
+			"resident projected-Heun owner routes every copy/read through its measured transfer ledger" );
+	}
+
 	std::cout << std::endl
 	          << "(scanned " << scanned << " test files) "
 	          << passCount << " passed, " << failCount << " failed." << std::endl;
