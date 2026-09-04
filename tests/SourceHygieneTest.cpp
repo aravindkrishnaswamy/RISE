@@ -3879,6 +3879,7 @@ int main()
 			"FireProductionTransport.cpp");
 		const std::string calibration=readFile(repoRoot/"tests"/
 			"FireProductionCalibrationTest.cpp");
+		const std::string sequence=readFile(repoRoot/"tests"/"FireSequenceTest.cpp");
 		const std::string fp64=readFile(repoRoot/"tests"/"fire_production_fp64"/
 			"FireProductionForce.cpp");
 		const std::string trace=readFile(repoRoot/"tests"/"fire_production_trace"/
@@ -3921,6 +3922,7 @@ int main()
 			"FireProductionForce.cpp";
 		const fs::path calibrationPath=repoRoot/"tests"/
 			"FireProductionCalibrationTest.cpp";
+		const fs::path sequencePath=repoRoot/"tests"/"FireSequenceTest.cpp";
 		const fs::path hygienePath=repoRoot/"tests"/"SourceHygieneTest.cpp";
 		for(const auto& entry:fs::recursive_directory_iterator(repoRoot)){
 			const std::string extension=entry.path().extension().string();
@@ -3931,7 +3933,8 @@ int main()
 				extension==".tpp"||extension==".metal"||extension==".s"||
 				extension==".S"||extension==".asm"||extension==".pch";
 			if(!entry.is_regular_file()||!sourceFile||entry.path()==forcePath||
-				entry.path()==calibrationPath||entry.path()==hygienePath)continue;
+				entry.path()==calibrationPath||entry.path()==sequencePath||
+				entry.path()==hygienePath)continue;
 			productionProbeOwnershipClean=productionProbeOwnershipClean&&
 				readFile(entry.path()).find(hookSymbol)==std::string::npos;
 		}
@@ -3941,6 +3944,8 @@ int main()
 			force.find(hookDeclaration+"\r\n{")==std::string::npos&&
 			countToken(calibration,hookSymbol)==1u&&calibration.find(
 				"extern \"C\" bool RISEProjectedHeunOwnerTestFailureProbe(const char* name)\n{")!=
+				std::string::npos&&countToken(sequence,hookSymbol)==1u&&sequence.find(
+				"extern \"C\" bool RISEProjectedHeunOwnerTestFailureProbe(const char*)\n{")!=
 				std::string::npos;
 		Check(productionProbeOwnershipClean,
 			"projected-Heun test probe has declarations/calls but no shipped definition" );
@@ -4040,7 +4045,8 @@ int main()
 			return count;};
 		Check(!owner.empty()&&countToken(owner,"copyFromBuffer:")==1u&&
 			countToken(owner,"ReadTrackedMetalBuffer(")==1u&&
-			owner.find("TransferKind::InterstageFullGrid")!=std::string::npos&&
+			owner.find("transferPhase_==OwnerTransferPhase::Interstage")!=std::string::npos&&
+			owner.find("[source storageMode]==MTLStorageModePrivate")!=std::string::npos&&
 			owner.find("Copy(transfer,r1->candidate->conservative")!=std::string::npos,
 			"resident projected-Heun owner routes every copy/read through its measured transfer ledger" );
 	}

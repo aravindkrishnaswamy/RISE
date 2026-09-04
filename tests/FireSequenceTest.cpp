@@ -53,6 +53,14 @@
 #include <string>
 #include <thread>
 #include <tuple>
+
+// This executable exercises the production owner directly for the r201
+// cross-precision localization.  It does not expose fault injection.
+extern "C" bool RISEProjectedHeunOwnerTestFailureProbe(const char*)
+{
+	return false;
+}
+
 #include <type_traits>
 #include <vector>
 
@@ -10015,6 +10023,69 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	return passed?0:210;
 }
 
+class ResidentOwnerTransportFP32 final : public FireProductionProjectedHeunTransportProvider
+{
+public:
+	explicit ResidentOwnerTransportFP32(
+		const FireProductionResidentPhysicalFluxComparatorRequest& fixture) : fixture_(fixture) {}
+	bool Evaluate(const FireProductionProjectedHeunTransportContext& context,
+		FireProductionProjectedHeunTransportCoefficients& result,
+		std::string* error) const override
+	{
+		const FireProductionProjectionShape& sourceShape=fixture_.transport.shape;
+		const std::size_t cells=sourceShape.CellCount();
+		if(!context.conservativeValues||context.conservativeValues->size()!=9u*cells||
+			!context.temperatureK||context.temperatureK->size()!=cells||
+			!context.projectedVelocityMPerS)return false;
+		PeriodicMACShape shape;shape.nx=sourceShape.nx;shape.ny=sourceShape.ny;
+		shape.nz=sourceShape.nz;shape.cellWidthM=sourceShape.cellWidthM;
+		std::vector<ConservativeVector> state(cells);
+		for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+			component<9u;++component)state[cell][component]=
+				(*context.conservativeValues)[component*cells+cell];
+		std::vector<double> temperature(context.temperatureK->begin(),context.temperatureK->end());
+		OpenMACField3D velocity;for(unsigned int axis=0u;axis<3u;++axis)
+			velocity.component[axis].assign((*context.projectedVelocityMPerS)[axis].begin(),
+				(*context.projectedVelocityMPerS)[axis].end());
+		OpenBoundaryConfig3D boundary;
+		for(unsigned int side=0u;side<6u;++side)boundary.kind[side]=
+			fixture_.transport.boundary[side]==FireProductionProjectionPressureOpen?
+				PressureOpenBoundary3D:AdiabaticWallBoundary3D;
+		for(std::size_t component=0u;component<9u;++component){
+			boundary.ambientState[component]=fixture_.ambient[component];
+			boundary.injectedState[component]=fixture_.ambient[component];}
+		boundary.ambientDensityKGPerM3=0.0;for(std::size_t component=1u;component<=6u;++component)
+			boundary.ambientDensityKGPerM3+=fixture_.ambient[component];
+		boundary.injectedGasDensityKGPerM3=boundary.ambientDensityKGPerM3;
+		boundary.fuelMassFluxKGPerM2S=0.0;boundary.velocityToleranceMPerS=0.0;
+		boundary.pressureTolerancePa=1.0e-3;
+		if(boundary.kind[4]==AdiabaticWallBoundary3D){
+			boundary.bottomFuelMask.resize(fixture_.transport.fuelInletBoundaryFace[4].size());
+			for(std::size_t face=0u;face<boundary.bottomFuelMask.size();++face)
+				boundary.bottomFuelMask[face]=fixture_.transport.fuelInletBoundaryFace[4][face]!=0u;
+			boundary.bottomFuelMassFluxKGPerM2S.assign(boundary.bottomFuelMask.size(),0.0);}
+		std::vector<double> diffusivity,conductivity,dynamicViscosity;
+		if(!BuildOpenStageTransport3D(shape,state,temperature,velocity,boundary,false,
+			FireSimulationMethaneRecord::PhysicalV1(),FireSimulationTransportRecord::OpenV1(),
+			FireStateProducerPrecision::Binary32,diffusivity,conductivity,dynamicViscosity,error))
+			return false;
+		result.stage=context.stage;result.attemptIdentity=context.attemptIdentity;
+		result.parentCandidateIdentity=context.parentCandidateIdentity;
+		result.projectionIdentity=context.projectionIdentity;
+		result.diffusivityM2PerS.assign(diffusivity.begin(),diffusivity.end());
+		result.conductivityWPerMK.assign(conductivity.begin(),conductivity.end());
+		result.molecularKinematicViscosityM2PerS.resize(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){double density=0.0;
+			for(std::size_t component=1u;component<=6u;++component)density+=state[cell][component];
+			result.molecularKinematicViscosityM2PerS[cell]=
+				static_cast<float>(dynamicViscosity[cell]/density);}
+		result.publicationIdentity=FireProductionProjectedHeunTransportPublicationIdentity(
+			context,result);if(error)error->clear();return true;
+	}
+private:
+	FireProductionResidentPhysicalFluxComparatorRequest fixture_;
+};
+
 class ResidentOwnerTransportFP64 final :
 	public ::RISEFireProductionFP64::FireProductionProjectedHeunTransportProvider
 {
@@ -10709,6 +10780,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const bool ownerActualInterstageTransferRefused=ownerRED(
 		"actual_interstage_full_grid_transfer",[](auto& value){
 			value.qualificationInjectInterstageTransfer=true;});
+	std::uint64_t ownerCertifiedPreflightBytes=0u;
+	const bool ownerPreflightSizeKnown=FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
+		shape,ownerCertifiedPreflightBytes);
+	const bool ownerWorkingSetPreflightRefused=ownerPreflightSizeKnown&&ownerRED(
+		"combined_owner_working_set_preflight",[&](auto& value){
+			value.qualificationWorkingSetLimitBytes=ownerCertifiedPreflightBytes-1u;});
 	std::vector<double> ownerDeviceTimingMS,ownerWallTimingMS;
 	if(ownerAccepted){ownerDeviceTimingMS.push_back(ownerObserved.deviceElapsedMS);
 		ownerWallTimingMS.push_back(ownerObserved.wallElapsedMS);
@@ -10777,6 +10854,49 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	ownerRequest64.projectionTolerancePerS=ownerRequest.projectionTolerancePerS;
 	ownerRequest64.endpointVelocityToleranceMPerS=ownerRequest.endpointVelocityToleranceMPerS;
 	ownerRequest64.maximumPicardIterations=ownerRequest.maximumPicardIterations;
+	FireProductionProjectedHeunOwnerRequest ownerRequest32;
+	ownerRequest32.attemptIdentity=ownerEOS.physicalFlux.transport.attemptIdentity;
+	ownerRequest32.source=ownerLineage.frozenSource;
+	ownerRequest32.caseRecordEnvelope=ownerEOS.caseRecordEnvelope;
+	ownerRequest32.beginningConservativeValues=ownerEOS.physicalFlux.transport.conservativeValues;
+	ownerRequest32.scalarContract.shape=shape;ownerRequest32.physicalContract.shape=shape;
+	ownerRequest32.forceContract.shape=shape;
+	ownerRequest32.scalarContract.timeStepS=ownerEOS.candidateTimeStepS;
+	ownerRequest32.forceContract.timeStepS=ownerEOS.candidateTimeStepS;
+	ownerRequest32.scalarContract.boundary=ownerEOS.physicalFlux.transport.boundary;
+	ownerRequest32.physicalContract.boundary=ownerEOS.physicalFlux.transport.boundary;
+	ownerRequest32.forceContract.boundary=ownerEOS.physicalFlux.transport.boundary;
+	ownerRequest32.scalarContract.ambient=ownerEOS.physicalFlux.ambient;
+	ownerRequest32.physicalContract.ambient=ownerEOS.physicalFlux.ambient;
+	ownerRequest32.scalarContract.nullity=ownerEOS.physicalFlux.nullity;
+	ownerRequest32.scalarContract.nullspaceBasis=ownerEOS.physicalFlux.nullspaceBasis;
+	ownerRequest32.scalarContract.coordinateProjector=ownerEOS.physicalFlux.coordinateProjector;
+	for(std::size_t species=0u;species<7u;++species){
+		ownerRequest32.scalarContract.enthalpyBoundsJPerKG[species]=
+			static_cast<float>(ownerMinimumEnthalpy[species]);
+		ownerRequest32.scalarContract.enthalpyBoundsJPerKG[7u+species]=
+			static_cast<float>(ownerMaximumEnthalpy[species]);}
+	ownerRequest32.scalarContract.feasibilityFactor=static_cast<float>(
+		ownerRequest64.scalarContract.feasibilityFactor);
+	ownerRequest32.scalarContract.assemblyReserveFactor=static_cast<float>(
+		ownerRequest64.scalarContract.assemblyReserveFactor);
+	ownerRequest32.physicalContract.ambientTemperatureK=ownerEOS.physicalFlux.ambientTemperatureK;
+	ownerRequest32.forceContract.ambientDensityKGPerM3=ownerRequest.ambientDensityKGPerM3;
+	ownerRequest32.forceContract.vremanCoefficient=ownerRequest.vremanCoefficient;
+	ownerRequest32.forceContract.gravityMPerS2=ownerRequest.gravityMPerS2;
+	ownerRequest32.beginningMomentumKGPerM2S=ownerRequest.beginningMomentumKGPerM2S;
+	ownerRequest32.projectionTolerancePerS=ownerRequest.projectionTolerancePerS;
+	ownerRequest32.endpointVelocityToleranceMPerS=ownerRequest.endpointVelocityToleranceMPerS;
+	ownerRequest32.maximumPicardIterations=ownerRequest.maximumPicardIterations;
+	ResidentOwnerTransportFP32 ownerTransport32(ownerEOS.physicalFlux);
+	FireProductionProjectedHeunCPUOwner owner32;
+	FireProductionProjectedHeunOwnerResult ownerObserved32;
+	std::string owner32Error;
+	const bool owner32Begin=ownerSourceBuilt&&ownerEnthalpy&&owner32.Begin(ownerRequest32,&owner32Error);
+	const bool owner32R0=owner32Begin&&owner32.SolveR0(ownerTransport32,&owner32Error);
+	const bool owner32R1=owner32R0&&owner32.SolveR1(ownerTransport32,&owner32Error);
+	const bool owner32Accepted=owner32R1&&owner32.SolveR2(
+		ownerTransport32,ownerObserved32,&owner32Error);
 	ResidentOwnerTransportFP64 ownerTransport64(ownerEOS.physicalFlux);
 	::RISEFireProductionFP64::FireProductionProjectedHeunCPUOwner owner64;
 	::RISEFireProductionFP64::FireProductionProjectedHeunOwnerResult ownerObserved64;
@@ -10787,6 +10907,65 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const bool owner64R1=owner64R0&&owner64.SolveR1(ownerTransport64,&owner64Error);
 	const bool owner64Accepted=owner64R1&&
 		owner64.SolveR2(ownerTransport64,ownerObserved64,&owner64Error);
+	bool owner32StressBitEqual=owner32Accepted;double owner32StressMaximumResidual=0.0;
+	if(owner32Accepted&&ownerAccepted)for(unsigned int axis=0u;axis<3u;++axis)
+		for(std::size_t face=0u;face<ownerObserved.heunStressMomentumRateKGPerM2S2[axis].size();
+			++face){const float expected=0.5f*(ownerObserved32.r0.nonpressure.
+				stressMomentumRateKGPerM2S2[axis][face]+ownerObserved32.r1.nonpressure.
+				stressMomentumRateKGPerM2S2[axis][face]);
+			owner32StressMaximumResidual=std::max(owner32StressMaximumResidual,std::fabs(
+				static_cast<double>(ownerObserved.heunStressMomentumRateKGPerM2S2[axis][face])-expected));
+			owner32StressBitEqual=owner32StressBitEqual&&std::memcmp(&expected,
+				&ownerObserved.heunStressMomentumRateKGPerM2S2[axis][face],sizeof(float))==0;}
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_FP32_DIAGNOSTIC owner_begin=%d r0=%d r1=%d "
+		"accepted=%d heun_stress_bit_equal=%d heun_stress_max_residual=%.17g error=%s\n",
+		owner32Begin?1:0,owner32R0?1:0,owner32R1?1:0,owner32Accepted?1:0,
+		owner32StressBitEqual?1:0,owner32StressMaximumResidual,owner32Error.c_str());
+	for(unsigned int diagnosticStage=0u;diagnosticStage<2u&&owner32Accepted;++diagnosticStage){
+		const FireProductionProjectedHeunCoupledStageResult& stage=diagnosticStage==0u?
+			ownerObserved32.r0:ownerObserved32.r1;
+		const std::vector<float>& stageState=diagnosticStage==0u?
+			ownerRequest32.beginningConservativeValues:ownerObserved32.r0.scalarAcceptance.accepted;
+		const std::vector<float>& stageTemperature=diagnosticStage==0u?
+			ownerRequest32.source.BeginningTemperatureK():ownerObserved32.predictorEOS.temperatureK;
+		FireProductionProjectedHeunTransportContext context;
+		context.stage=stage.stage;context.attemptIdentity=ownerRequest32.attemptIdentity;
+		context.parentCandidateIdentity=stage.parentCandidateIdentity;
+		context.projectionIdentity=UINT64_C(1);context.conservativeValues=&stageState;
+		context.temperatureK=&stageTemperature;context.projectedVelocityMPerS=
+			&stage.projection.velocityMPerS;
+		FireProductionProjectedHeunTransportCoefficients coefficients;
+		std::string diagnosticError;
+		const bool coefficientsBuilt=ownerTransport32.Evaluate(context,coefficients,&diagnosticError);
+		FireProductionNonpressureMomentumRHSRequest rhs;rhs.force=ownerRequest32.forceContract;
+		rhs.force.cellGasDensityKGPerM3.assign(cells,0.0f);
+		for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;component<=6u;
+			++component)rhs.force.cellGasDensityKGPerM3[cell]+=stageState[component*cells+cell];
+		rhs.force.molecularKinematicViscosityM2PerS=
+			coefficients.molecularKinematicViscosityM2PerS;
+		rhs.force.faceDensityKGPerM3=stage.projection.faceDensityKGPerM3;
+		rhs.force.beginningMomentumKGPerM2S=stage.projection.momentumKGPerM2S;
+		rhs.cellGasPhaseSourceRateKGPerM3S.assign(cells,0.0f);
+		for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=1u;component<=6u;
+			++component)rhs.cellGasPhaseSourceRateKGPerM3S[cell]+=
+				ownerRequest32.source.SourceDelta()[component*cells+cell]/
+				ownerRequest32.source.TimeStepS();
+		FireProductionNonpressureMomentumRHSResult metalRHS;
+		FireProductionNonpressureMomentumRHSMetalDiagnostics metalRHSDiagnostics;
+		const bool metalRHSAccepted=coefficientsBuilt&&EvaluateFireProductionNonpressureMomentumRHSMetal(
+			rhs,metalRHS,metalRHSDiagnostics,&diagnosticError);
+		double stressResidual=0.0;bool stressBits=metalRHSAccepted;
+		if(metalRHSAccepted)for(unsigned int axis=0u;axis<3u;++axis)
+			for(std::size_t face=0u;face<metalRHS.stressMomentumRateKGPerM2S2[axis].size();++face){
+				stressResidual=std::max(stressResidual,std::fabs(static_cast<double>(
+					metalRHS.stressMomentumRateKGPerM2S2[axis][face]-
+					stage.nonpressure.stressMomentumRateKGPerM2S2[axis][face])));
+				stressBits=stressBits&&std::memcmp(&metalRHS.stressMomentumRateKGPerM2S2[axis][face],
+					&stage.nonpressure.stressMomentumRateKGPerM2S2[axis][face],sizeof(float))==0;}
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RHS_DIAGNOSTIC stage=R%u accepted=%d "
+			"stress_bit_equal=%d stress_max_residual=%.17g error=%s\n",diagnosticStage,
+			metalRHSAccepted?1:0,stressBits?1:0,stressResidual,diagnosticError.c_str());
+	}
 	bool activeCycleREDs=true;
 	for(std::uint32_t stage=1u;stage<=3u;++stage){
 		FireProductionProjectedHeunMetalOwnerRequest cycleRequest=ownerRequest;
@@ -10834,6 +11013,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		limiterMetal.limiterDiscontinuousClass[1]?1:0,
 		!limiterMutantAttempted?1:0,limiterMetalError.c_str(),
 		limiterMutantError.c_str(),limiterOutcomeRED?1:0);
+	FireProductionProjectedHeunMetalOwnerRequest heunWeightingRequest=ownerRequest;
+	heunWeightingRequest.qualificationThreeQuarterHeunWeighting=true;
+	FireProductionProjectedHeunMetalOwnerResult heunWeightingMutant;
+	std::string heunWeightingMutantError;
+	const bool heunWeightingMutantAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+		heunWeightingRequest,heunWeightingMutant,&heunWeightingMutantError);
 	bool heunWeightingRED=false;
 	if(owner64Accepted){
 		::RISEFireProductionFP64::FireProductionCompatibleFCTMomentumResult advection0,advection1;
@@ -10856,16 +11041,40 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					const double beginning=ownerRequest64.beginningMomentumKGPerM2S[axis][face];
 					const float reviewedR1=static_cast<float>(beginning+0.5*
 						ownerRequest64.scalarContract.timeStepS*(rate0+rate1));
-					const float threeQuarterMutant=static_cast<float>(beginning+
-						ownerRequest64.scalarContract.timeStepS*(0.75*rate0+0.25*rate1));
-					heunWeightingRED=std::memcmp(&reviewedR1,&threeQuarterMutant,
-						sizeof(float))!=0;
+					const float metalMutant=heunWeightingMutantAccepted?
+						heunWeightingMutant.provisionalMomentumKGPerM2S[axis][face]:reviewedR1;
+					heunWeightingRED=std::memcmp(&reviewedR1,&metalMutant,sizeof(float))!=0;
 				}
 		}
 	}
 	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=three_quarter_one_quarter_R1 "
-		"oracle=reviewed_r190_fp64_owner binary32_bit_mismatch=%d passed=%d\n",
-		heunWeightingRED?1:0,heunWeightingRED?1:0);
+		"oracle=reviewed_r190_fp64_owner metal_mutant_accepted=%d binary32_bit_mismatch=%d "
+		"error=%s passed=%d\n",heunWeightingMutantAccepted?1:0,heunWeightingRED?1:0,
+		heunWeightingMutantError.c_str(),heunWeightingMutantAccepted&&heunWeightingRED?1:0);
+	FireProductionProjectedHeunMetalOwnerRequest sharedAlphaRequest=ownerRequest;
+	sharedAlphaRequest.qualificationForceLimiterDiscontinuity=true;
+	FireProductionProjectedHeunMetalOwnerResult sharedAlphaCorrect,sharedAlphaMutant;
+	std::string sharedAlphaCorrectError,sharedAlphaMutantError;
+	const bool sharedAlphaCorrectAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+		sharedAlphaRequest,sharedAlphaCorrect,&sharedAlphaCorrectError);
+	sharedAlphaRequest.qualificationReuseR0LimiterAlpha=true;
+	const bool sharedAlphaMutantAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+		sharedAlphaRequest,sharedAlphaMutant,&sharedAlphaMutantError);
+	bool sharedAlphaRED=sharedAlphaCorrectAccepted&&sharedAlphaMutantAccepted&&
+		ByteIdenticalVector(sharedAlphaCorrect.acceptedFaceAlpha,sharedAlphaMutant.acceptedFaceAlpha);
+	bool sharedAlphaMomentumMismatch=false;
+	for(unsigned int axis=0u;axis<3u;++axis)sharedAlphaMomentumMismatch=
+		sharedAlphaMomentumMismatch||!ByteIdenticalVector(
+			sharedAlphaCorrect.provisionalMomentumKGPerM2S[axis],
+			sharedAlphaMutant.provisionalMomentumKGPerM2S[axis]);
+	sharedAlphaRED=sharedAlphaRED&&sharedAlphaMomentumMismatch;
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=shared_heun_alpha_R0_recompute "
+		"correct_accepted=%d mixed_alpha_mutant_accepted=%d accepted_alpha_bit_equal=%d "
+		"provisional_momentum_bit_mismatch=%d correct_error=%s mutant_error=%s passed=%d\n",
+		sharedAlphaCorrectAccepted?1:0,sharedAlphaMutantAccepted?1:0,
+		sharedAlphaCorrect.acceptedFaceAlpha==sharedAlphaMutant.acceptedFaceAlpha?1:0,
+		sharedAlphaMomentumMismatch?1:0,sharedAlphaCorrectError.c_str(),
+		sharedAlphaMutantError.c_str(),sharedAlphaRED?1:0);
 	const double ownerGamma512=(512.0*std::numeric_limits<float>::epsilon())/
 		(1.0-512.0*std::numeric_limits<float>::epsilon());
 	const double ownerGamma8=(8.0*std::numeric_limits<float>::epsilon())/
@@ -10929,6 +11138,95 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerFP64TerminalResidual*shape.cellWidthM,projectionBracketProbe,
 		twoSidedProjectionBound,projectionBracketRED?1:0);
 	if(ownerAccepted&&owner64Accepted){
+		::RISEFireProductionFP64::FireProductionCompatibleFCTMomentumResult
+			ownerAdvection0,ownerAdvection1;
+		std::string ownerAdvectionError;
+		const bool ownerAdvectionBuilt=
+			::RISEFireProductionFP64::EvaluateFireProductionCompatibleHeunMomentumCPU(
+				ownerObserved64.r0.flux,ownerObserved64.heunSolve,
+				ownerObserved64.r0.projection.velocityMPerS,ownerAdvection0,
+				&ownerAdvectionError)&&
+			::RISEFireProductionFP64::EvaluateFireProductionCompatibleHeunMomentumCPU(
+				ownerObserved64.r1.flux,ownerObserved64.heunSolve,
+				ownerObserved64.r1.projection.velocityMPerS,ownerAdvection1,
+				&ownerAdvectionError);
+		auto packDeviceFaces=[&](const std::array<std::vector<float>,3>& source){
+			std::vector<float> packed;
+			for(const auto& axis:source)packed.insert(packed.end(),axis.begin(),axis.end());
+			return packed;};
+		auto packMirrorFaces=[&](const std::array<std::vector<double>,3>& source){
+			std::vector<double> packed;
+			for(const auto& axis:source)packed.insert(packed.end(),axis.begin(),axis.end());
+			return packed;};
+		std::array<std::vector<double>,3> provisional64,advection64,buoyancy64,
+			stress64,phase64;
+		std::vector<double> acceptedAlpha64,eddy64,representedRatio64,absoluteDeviation64;
+		if(ownerAdvectionBuilt){
+			for(unsigned int axis=0u;axis<3u;++axis){
+				const std::size_t faces=ownerRequest64.beginningMomentumKGPerM2S[axis].size();
+				provisional64[axis].resize(faces);advection64[axis].resize(faces);
+				buoyancy64[axis].resize(faces);stress64[axis].resize(faces);
+				phase64[axis].resize(faces);
+				for(std::size_t face=0u;face<faces;++face){
+					advection64[axis][face]=-0.5*(ownerAdvection0.advectionRateKGPerM2S2[axis][face]+
+						ownerAdvection1.advectionRateKGPerM2S2[axis][face]);
+					buoyancy64[axis][face]=0.5*(ownerObserved64.r0.nonpressure.
+						buoyancyMomentumRateKGPerM2S2[axis][face]+ownerObserved64.r1.nonpressure.
+						buoyancyMomentumRateKGPerM2S2[axis][face]);
+					stress64[axis][face]=0.5*(ownerObserved64.r0.nonpressure.
+						stressMomentumRateKGPerM2S2[axis][face]+ownerObserved64.r1.nonpressure.
+						stressMomentumRateKGPerM2S2[axis][face]);
+					phase64[axis][face]=0.5*(ownerObserved64.r0.nonpressure.
+						phaseSourceMomentumRateKGPerM2S2[axis][face]+ownerObserved64.r1.nonpressure.
+						phaseSourceMomentumRateKGPerM2S2[axis][face]);
+					provisional64[axis][face]=ownerRequest64.beginningMomentumKGPerM2S[axis][face]+
+						ownerRequest64.scalarContract.timeStepS*(advection64[axis][face]+
+						buoyancy64[axis][face]+stress64[axis][face]+phase64[axis][face]);
+				}
+			}
+			for(unsigned int axis=0u;axis<3u;++axis)acceptedAlpha64.insert(
+				acceptedAlpha64.end(),ownerObserved64.heunSolve.scalar.sharedFaceAlpha[axis].begin(),
+				ownerObserved64.heunSolve.scalar.sharedFaceAlpha[axis].end());
+			eddy64.resize(cells);for(std::size_t cell=0u;cell<cells;++cell)
+				eddy64[cell]=0.5*(ownerObserved64.r0.nonpressure.eddyKinematicViscosityM2PerS[cell]+
+					ownerObserved64.r1.nonpressure.eddyKinematicViscosityM2PerS[cell]);
+			representedRatio64.resize(cells);absoluteDeviation64.resize(cells);
+			for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> state;
+				for(std::size_t component=0u;component<9u;++component)
+					state[component]=ownerObserved64.conservativeValues[component*cells+cell];
+				double ratio=0.0;if(!fuel.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+					state.data(),state.size(),static_cast<double>(static_cast<float>(
+					ownerObserved64.committedEOS.temperatureK[cell])),
+					FireStateProducerPrecision::Binary32,ratio,&ownerAdvectionError)){
+					ownerMirrorBounded=false;break;}
+				representedRatio64[cell]=ratio;absoluteDeviation64[cell]=std::fabs(ratio-1.0);}
+		}
+		auto streamBound=[&](const std::vector<float>& device,const std::vector<double>& mirror,
+			const char* name,const char* units){const OwnerFieldBound checked=evaluateOwnerField(
+				name,units,device,mirror,[&](std::size_t index){return ownerGamma512*(
+					std::fabs(static_cast<double>(device[index]))+std::fabs(mirror[index]));});
+			ownerMirrorBounded=ownerMirrorBounded&&checked.passed;return checked;};
+		ownerMirrorBounded=ownerMirrorBounded&&ownerAdvectionBuilt;
+		if(ownerAdvectionBuilt){
+			streamBound(packDeviceFaces(ownerObserved.provisionalMomentumKGPerM2S),
+				packMirrorFaces(provisional64),"R1_provisional_momentum","kg_m^-2_s^-1");
+			streamBound(packDeviceFaces(ownerObserved.heunAdvectionMomentumRateKGPerM2S2),
+				packMirrorFaces(advection64),"R1_heun_advection","kg_m^-2_s^-2");
+			streamBound(packDeviceFaces(ownerObserved.heunBuoyancyMomentumRateKGPerM2S2),
+				packMirrorFaces(buoyancy64),"R1_heun_buoyancy","kg_m^-2_s^-2");
+			streamBound(packDeviceFaces(ownerObserved.heunStressMomentumRateKGPerM2S2),
+				packMirrorFaces(stress64),"R1_heun_stress","kg_m^-2_s^-2");
+			streamBound(packDeviceFaces(ownerObserved.heunPhaseSourceMomentumRateKGPerM2S2),
+				packMirrorFaces(phase64),"R1_heun_phase_source","kg_m^-2_s^-2");
+			streamBound(ownerObserved.acceptedFaceAlpha,acceptedAlpha64,
+				"R1_accepted_face_alpha","dimensionless");
+			streamBound(ownerObserved.heunEddyKinematicViscosityM2PerS,eddy64,
+				"R1_heun_eddy_viscosity","m^2_s^-1");
+			streamBound(ownerObserved.representedPressureRatio,representedRatio64,
+				"R1_represented_pressure_ratio","dimensionless");
+			streamBound(ownerObserved.absoluteEOSDeviation,absoluteDeviation64,
+				"R1_absolute_EOS_deviation","dimensionless");
+		}
 		const std::vector<double>* projectionTargets64[3]={
 			&ownerObserved64.r0.projectionTarget.TargetPerS(),
 			&ownerObserved64.r1.projectionTarget.TargetPerS(),
@@ -10944,33 +11242,48 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			ownerObserved64.r0.target.CorrectionIteration(),
 			ownerObserved64.r1.target.CorrectionIteration(),
 			ownerObserved64.r2.target.CorrectionIteration()};
+		const ::RISEFireProductionFP64::FireProductionProjectedHeunCoupledStageResult*
+			stages64[3]={&ownerObserved64.r0,&ownerObserved64.r1,&ownerObserved64.r2};
 		for(unsigned int stage=0u;stage<3u;++stage){
 			const std::string projectionName="R"+std::to_string(stage)+"_projection_target";
 			const std::string acceptedName="R"+std::to_string(stage)+"_accepted_target";
 			const OwnerFieldBound projectionTargetBound=evaluateOwnerField(projectionName.c_str(),
 				"s^-1",ownerObserved.projectionTargetPerS[stage],*projectionTargets64[stage],
-				[&,stage](std::size_t cell){return ownerGamma512*(std::fabs(
-					static_cast<double>(ownerObserved.projectionTargetPerS[stage][cell]))+
-					std::fabs((*projectionTargets64[stage])[cell]));});
+				[&,stage](std::size_t cell){return localProjectionBound(
+					static_cast<float>((*projectionTargets64[stage])[cell]));});
 			const OwnerFieldBound acceptedTargetBound=evaluateOwnerField(acceptedName.c_str(),
 				"s^-1",ownerObserved.acceptedTargetPerS[stage],*acceptedTargets64[stage],
-				[&,stage](std::size_t cell){return ownerGamma512*(std::fabs(
-					static_cast<double>(ownerObserved.acceptedTargetPerS[stage][cell]))+
-					std::fabs((*acceptedTargets64[stage])[cell]));});
+				[&,stage](std::size_t cell){return localProjectionBound(
+					static_cast<float>((*acceptedTargets64[stage])[cell]));});
 			const bool iterationsMatch=ownerObserved.projectionTargetCorrectionIteration[stage]==
 				projectionTargetIterations64[stage]&&
 				ownerObserved.acceptedTargetCorrectionIteration[stage]==
-				acceptedTargetIterations64[stage];
-			ownerMirrorBounded=ownerMirrorBounded&&projectionTargetBound.passed&&
-				acceptedTargetBound.passed&&iterationsMatch;
+				acceptedTargetIterations64[stage]&&
+				ownerObserved.acceptedPicardIterations[stage]==stages64[stage]->acceptedIterationCount&&
+				ownerObserved.activeSetCycleLength[stage]==stages64[stage]->activeSetCycleLength&&
+				ownerObserved.activeSetCanonicalProjectionCount[stage]==
+					stages64[stage]->activeSetCanonicalProjectionCount&&
+				ownerObserved.activeSetDiscontinuousClass[stage]==
+					stages64[stage]->activeSetDiscontinuousClass&&
+				ownerObserved.limiterDiscontinuousClass[stage]==
+					stages64[stage]->limiterDiscontinuousClass;
+			const OwnerFieldBound residualTraceBound=evaluateOwnerField(
+				("R"+std::to_string(stage)+"_picard_residual_trace").c_str(),"s^-1",
+				ownerObserved.picardResidualPerS[stage],stages64[stage]->picardResidualPerS,
+				[&,stage](std::size_t iteration){return localProjectionBound(static_cast<float>(
+					stages64[stage]->picardResidualPerS[iteration]));});
+			const bool targetBitsMatch=projectionTargetBound.bitMismatchCount==0u&&
+				acceptedTargetBound.bitMismatchCount==0u;
+			ownerMirrorBounded=ownerMirrorBounded&&targetBitsMatch&&iterationsMatch&&
+				residualTraceBound.bitMismatchCount==0u;
 			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_TARGET_TRACE stage=R%u "
 				"projection_iteration_device=%u projection_iteration_fp64=%u "
 				"accepted_iteration_device=%u accepted_iteration_fp64=%u passed=%d\n",stage,
 				ownerObserved.projectionTargetCorrectionIteration[stage],
 				projectionTargetIterations64[stage],
 				ownerObserved.acceptedTargetCorrectionIteration[stage],
-				acceptedTargetIterations64[stage],iterationsMatch&&projectionTargetBound.passed&&
-				acceptedTargetBound.passed?1:0);
+				acceptedTargetIterations64[stage],iterationsMatch&&targetBitsMatch&&
+				residualTraceBound.bitMismatchCount==0u?1:0);
 		}
 		const std::size_t acceptedAllFaces=ownerObserved64.r1.scalarAcceptance.
 			packedFaceOffset[2u]+FireProductionProjectionFaceCount(shape,2u);
@@ -10988,8 +11301,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			// Its conditioning scale must therefore include all same-unit mass terms
 			// for a mass component; otherwise a nominally-zero constituent receives
 			// a false zero bound despite taking the shared-alpha branch decisions.
-			const std::size_t firstScaleComponent=component<8u?0u:component;
-			const std::size_t endScaleComponent=component<8u?8u:component+1u;
+			const std::size_t firstScaleComponent=component;
+			const std::size_t endScaleComponent=component+1u;
 			double scale=0.0;
 			for(std::size_t scaleComponent=firstScaleComponent;
 				scaleComponent<endScaleComponent;++scaleComponent)
@@ -11156,6 +11469,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
 		transferLedgerRefused&&ownerSmokePassed&&heunWeightingRED&&
+		heunWeightingMutantAccepted&&sharedAlphaRED&&ownerWorkingSetPreflightRefused&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
 		openObserved.terminalStagingCount==1u&&openObserved.interstageFullGridTransferCount==0u;

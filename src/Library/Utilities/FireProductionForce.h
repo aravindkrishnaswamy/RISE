@@ -400,6 +400,13 @@ namespace RISE
 		bool qualificationDisableCanonicalCycle;
 		bool qualificationForceLimiterDiscontinuity;
 		bool qualificationDisableLimiterCertification;
+		//! RED-only owner mutations.  The first restores the rejected 3/4--1/4
+		//! tableau; the second restores the rejected mixed-alpha R0 cache.
+		bool qualificationThreeQuarterHeunWeighting;
+		bool qualificationReuseR0LimiterAlpha;
+		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
+		//! complete-owner working set is refused before Metal work begins.
+		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionProjectedHeunMetalOwnerRequest() : ambientDensityKGPerM3(1.0f),
 			vremanCoefficient(0.07f),projectionTolerancePerS(0.0f),
@@ -414,7 +421,10 @@ namespace RISE
 			qualificationForcedActiveCycleStage(0u),
 			qualificationDisableCanonicalCycle(false),
 			qualificationForceLimiterDiscontinuity(false),
-			qualificationDisableLimiterCertification(false)
+			qualificationDisableLimiterCertification(false),
+			qualificationThreeQuarterHeunWeighting(false),
+			qualificationReuseR0LimiterAlpha(false),
+			qualificationWorkingSetLimitBytes(0u)
 		{ gravityMPerS2.fill(0.0f); }
 	};
 
@@ -436,6 +446,7 @@ namespace RISE
 		std::vector<float> absoluteEOSDeviation;
 		std::array<std::vector<float>,3> projectionTargetPerS;
 		std::array<std::vector<float>,3> acceptedTargetPerS;
+		std::array<std::vector<float>,3> picardResidualPerS;
 		std::array<std::uint32_t,3> projectionTargetCorrectionIteration;
 		std::array<std::uint32_t,3> acceptedTargetCorrectionIteration;
 		std::array<std::uint32_t,3> acceptedPicardIterations;

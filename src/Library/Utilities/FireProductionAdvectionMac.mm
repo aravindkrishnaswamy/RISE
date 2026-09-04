@@ -272,7 +272,7 @@ namespace RISE
 		{
 			std::uint32_t cells,allFaces,faceOffset[3],stage;
 			float timeStepS,cellWidthM,endpointVelocityToleranceMPerS;
-			std::uint32_t forceActiveCycle;
+			std::uint32_t forceActiveCycle,threeQuarterHeunWeighting;
 			std::uint64_t attemptIdentity;
 		};
 
@@ -2954,7 +2954,8 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 // compose the Heun operands, and apply the stage algebra. No physical term is
 // recomputed here.
 struct OwnerParams {uint cells;uint allFaces;uint faceOffset[3];uint stage;
- float dt;float dx;float endpointTolerance;uint forceActiveCycle;ulong attempt;};
+ float dt;float dx;float endpointTolerance;uint forceActiveCycle;uint threeQuarterHeunWeighting;
+ ulong attempt;};
 kernel void owner_issue_bootstrap_target(device const float* target [[buffer(0)]],
  device const float* state [[buffer(1)]],device const float* source [[buffer(2)]],
  device ulong* targetIdentity [[buffer(3)]],device ulong* rootCandidateIdentity [[buffer(4)]],
@@ -2992,8 +2993,10 @@ kernel void owner_heun_momentum(device const float* beginning [[buffer(0)]],
  device const float* advection0 [[buffer(3)]],device const float* advection1 [[buffer(4)]],
  device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
  constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){
- if(gid>=p.allFaces)return;float value=beginning[gid]+0.5f*p.dt*(nonpressure0[gid]+
-  nonpressure1[gid]-advection0[gid]-advection1[gid]);
+ if(gid>=p.allFaces)return;float rate0=nonpressure0[gid]-advection0[gid];
+ float rate1=nonpressure1[gid]-advection1[gid];
+ float value=beginning[gid]+p.dt*(p.threeQuarterHeunWeighting!=0u?
+  (0.75f*rate0+0.25f*rate1):0.5f*(rate0+rate1));
  if(!isfinite(value))atomic_fetch_or_explicit(failure,1u<<21u,memory_order_relaxed);output[gid]=value;}
 kernel void owner_bind_transport(device const ulong* candidate [[buffer(0)]],
  device const ulong* projection [[buffer(1)]],device ulong* transport [[buffer(2)]],
@@ -6833,7 +6836,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				std::unique_ptr<ResidentProjectionTargetMetalAuthority> target;
 				FireProductionMetalNonpressureMomentumRHSResidentResult nonpressure;
 				id<MTLBuffer> packedVelocity,packedDensity,packedMomentum,gasDensity,
-					gasSource,advectionRate,nextMomentum,nextOpenClass,projectionTargetAssembled,
+					gasSource,advectionRate,heunR0AdvectionRate,nextMomentum,nextOpenClass,
+					projectionTargetAssembled,
 					lineageSeal,issuedLineageSeal;
 				std::shared_ptr<unsigned char> projectionTargetCapability;
 				double deviceMS;
@@ -6843,8 +6847,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				std::uint32_t activeSetCycleLength,activeSetCanonicalProjectionCount,
 					projectionTargetCorrectionIteration;
 				bool activeSetDiscontinuousClass,limiterDiscontinuousClass;
+				std::vector<float> picardResidualPerS;
 				Stage() : packedVelocity(nil),packedDensity(nil),packedMomentum(nil),
-					gasDensity(nil),gasSource(nil),advectionRate(nil),nextMomentum(nil),
+					gasDensity(nil),gasSource(nil),advectionRate(nil),heunR0AdvectionRate(nil),nextMomentum(nil),
 					nextOpenClass(nil),projectionTargetAssembled(nil),lineageSeal(nil),issuedLineageSeal(nil),
 					deviceMS(0.0),allocationBytes(0u),acceptedIterationCount(0u),
 					terminalReprojectionVerified(false),activeSetCycleLength(0u),
@@ -6876,6 +6881,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			std::unique_ptr<ResidentProjectionTargetMetalAuthority> bootstrapTarget_;
 			std::vector<std::shared_ptr<unsigned char> > issuedTargetCapabilities_;
 			std::uint32_t commits_,projectionInvocations_,interstageFullGridTransfers_;
+			enum class OwnerTransferPhase { Setup,Interstage,Publication } transferPhase_;
 			std::uint64_t actualBytes_,deviceAllocationBaseline_,deviceAllocationPeak_;
 			double deviceMS_,projectionDeviceMS_;
 
@@ -6902,7 +6908,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(value){actualBytes_+=[value allocatedSize];ObserveDeviceAllocation();}
 				return value;
 			}
-			enum class TransferKind { Upload,Internal,Control,Terminal,InterstageFullGrid };
+			enum class TransferKind { Upload,Internal,Control,Terminal };
 			void Copy(id<MTLBlitCommandEncoder> encoder,id<MTLBuffer> source,
 				const std::size_t sourceOffset,id<MTLBuffer> destination,
 				const std::size_t destinationOffset,const std::size_t bytes,
@@ -6910,11 +6916,19 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			{
 				[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
 					destinationOffset:destinationOffset size:bytes];
-				if(kind==TransferKind::InterstageFullGrid)++interstageFullGridTransfers_;
+				(void)kind;
+				const bool privateToHost=source&&destination&&
+					[source storageMode]==MTLStorageModePrivate&&
+					[destination storageMode]!=MTLStorageModePrivate;
+				const std::size_t fullStateBytes=cells_<=
+					std::numeric_limits<std::size_t>::max()/(9u*sizeof(float))?
+					9u*cells_*sizeof(float):std::numeric_limits<std::size_t>::max();
+				if(transferPhase_==OwnerTransferPhase::Interstage&&privateToHost&&
+					bytes>=fullStateBytes)++interstageFullGridTransfers_;
 			}
 			const void* Read(id<MTLBuffer> buffer,const TransferKind kind)
 			{
-				if(kind==TransferKind::InterstageFullGrid)++interstageFullGridTransfers_;
+				(void)kind;
 				return ReadTrackedMetalBuffer(buffer);
 			}
 			bool ReadOpenClass(id<MTLBuffer> source,std::vector<unsigned char>& bytes,
@@ -7159,6 +7173,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				output.gasDensity=Private(cells_*sizeof(float));
 				output.gasSource=Private(cells_*sizeof(float));
 				output.advectionRate=Private(allFaces_*sizeof(float));
+				output.heunR0AdvectionRate=stage==1u&&r0?Private(allFaces_*sizeof(float)):nil;
 				output.nextMomentum=Private(allFaces_*sizeof(float));
 				if(!output.packedVelocity||!output.packedDensity||!output.packedMomentum||
 					!output.gasDensity||!output.gasSource||!output.advectionRate||!output.nextMomentum)
@@ -7272,13 +7287,20 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					{output.physical->lowComposite,output.physical->advectiveDelta,
 					 output.candidate->faceAlpha,output.projection.velocityMPerS[0],
 					 output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
-					 output.advectionRate,failure_,fctParameters_[stage]},allFaces_))return false;
+					 output.advectionRate,failure_,fctParameters_[stage]},allFaces_)||
+					(stage==1u&&r0&&!Encode(command,fct_.compatibleStageRate,
+					 {r0->physical->lowComposite,r0->physical->advectiveDelta,
+					  output.candidate->faceAlpha,r0->projection.velocityMPerS[0],
+					  r0->projection.velocityMPerS[1],r0->projection.velocityMPerS[2],
+					  output.heunR0AdvectionRate,failure_,fctParameters_[stage]},allFaces_)))return false;
 				if(stage==0u){if(!Encode(command,context_.ownerPredictMomentum,{m0_,
 					output.nonpressure.combinedMomentumRateKGPerM2S2,output.advectionRate,
 					output.nextMomentum,failure_,ownerParameters_[stage]},allFaces_))return false;}
-				else if(r0){if(!Encode(command,context_.ownerHeunMomentum,{m0_,
+				else if(r0){id<MTLBuffer> r0HeunAdvection=
+					request_.qualificationReuseR0LimiterAlpha?r0->advectionRate:output.heunR0AdvectionRate;
+					if(!Encode(command,context_.ownerHeunMomentum,{m0_,
 					r0->nonpressure.combinedMomentumRateKGPerM2S2,
-					output.nonpressure.combinedMomentumRateKGPerM2S2,r0->advectionRate,
+					output.nonpressure.combinedMomentumRateKGPerM2S2,r0HeunAdvection,
 					output.advectionRate,output.nextMomentum,failure_,ownerParameters_[stage]},allFaces_))
 					return false;}
 				id<MTLBuffer> stageFailure=[context_.device newBufferWithLength:sizeof(std::uint32_t)
@@ -7342,7 +7364,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				eosObligations_(nil),targetObligations_(nil),zeroTarget_(nil),
 				zeroTargetIdentity_(nil),zeroTargetConsumerIdentity_(nil),rootCandidateIdentity_(nil),
 				integratedOpenHead_(nil),commits_(0u),
-				projectionInvocations_(0u),interstageFullGridTransfers_(0u),actualBytes_(0u),
+				projectionInvocations_(0u),interstageFullGridTransfers_(0u),transferPhase_(OwnerTransferPhase::Setup),actualBytes_(0u),
 				deviceAllocationBaseline_(context_.device?static_cast<std::uint64_t>(
 					[context_.device currentAllocatedSize]):0u),deviceAllocationPeak_(0u),
 				deviceMS_(0.0),projectionDeviceMS_(0.0)
@@ -7428,6 +7450,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				{static_cast<std::uint32_t>(faceOffset_[0]),static_cast<std::uint32_t>(faceOffset_[1]),
 				 static_cast<std::uint32_t>(faceOffset_[2])},0u,request_.lineage.eos.candidateTimeStepS,
 				shape_.cellWidthM,request_.endpointVelocityToleranceMPerS,0u,
+				request_.qualificationThreeQuarterHeunWeighting?1u:0u,
 				flux.transport.attemptIdentity};
 			std::vector<float> packedMomentum;packedMomentum.reserve(allFaces_);
 			for(const auto& axis:request_.beginningMomentumKGPerM2S)
@@ -7721,6 +7744,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					certified->activeSetDiscontinuousClass=frozenCycle;
 					certified->activeSetCycleLength=static_cast<std::uint32_t>(cycleBranches.size());
 					certified->activeSetCanonicalProjectionCount=canonicalCount;
+					certified->picardResidualPerS=residualHistory;
 					accepted=std::move(certified);return true;
 				}
 				prior=std::move(current);
@@ -7742,7 +7766,19 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			FireProductionProjectedHeunMetalOwnerResult& result,std::string* error)
 		{
 			result=FireProductionProjectedHeunMetalOwnerResult();
-			const auto wallStart=std::chrono::steady_clock::now();if(!Prepare(error))return false;
+			const auto wallStart=std::chrono::steady_clock::now();
+			std::uint64_t preflightBytes=0u;
+			const FireProductionProjectionShape& preflightShape=
+				request_.lineage.eos.physicalFlux.transport.shape;
+			if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes)||
+				(request_.qualificationWorkingSetLimitBytes!=0u&&
+				 preflightBytes>request_.qualificationWorkingSetLimitBytes)){
+				if(error)*error="projected-Heun complete-owner working-set preflight refused";
+				return false;
+			}
+			result.certifiedWorkingSetBytes=preflightBytes;
+			if(!Prepare(error))return false;
+			transferPhase_=OwnerTransferPhase::Interstage;
 			std::unique_ptr<Stage> r0,r1,r2;
 			if(!SolveStage(0u,q0_,t0_,m0_,rootCandidateIdentity_,0,0,nil,nil,r0,error))return false;
 			if(!SolveStage(1u,r0->candidate->conservative,r0->eos->temperature,r0->nextMomentum,
@@ -7773,7 +7809,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					[transferCommand blitCommandEncoder]:nil;
 				if(!staged||!transfer)return false;
 				Copy(transfer,r1->candidate->conservative,0u,staged,0u,9u*cells_*sizeof(float),
-					TransferKind::InterstageFullGrid);
+					TransferKind::Internal);
 				[transfer endEncoding];if(!Commit(transferCommand,error))return false;
 				if(!Read(staged,TransferKind::Control))return false;
 				if(error)*error="projected-Heun resident owner observed interstage full-grid transfer";
@@ -7828,6 +7864,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(error)*error="projected-Heun publication refuses unsealed parent relationship";
 				return false;
 			}
+			transferPhase_=OwnerTransferPhase::Publication;
 			id<MTLBuffer> ownerIdentity=Private(sizeof(std::uint64_t));
 			id<MTLBuffer> unitVelocity=Private(allFaces_*sizeof(float));
 			id<MTLBuffer> identityRate=Private(allFaces_*sizeof(float));
@@ -7861,7 +7898,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[commutingClear fillBuffer:commutingScale range:NSMakeRange(0,sizeof(std::uint32_t))
 				value:0u];
 			[commutingClear endEncoding];
-			if(!Encode(command,context_.ownerAverageField,{r0->advectionRate,r1->advectionRate,
+			if(!Encode(command,context_.ownerAverageField,{r1->heunR0AdvectionRate,r1->advectionRate,
 				heunAdvection,faceCount,negativeHalfBuffer},allFaces_)||
 				!Encode(command,context_.ownerAverageField,
 					{r0->nonpressure.buoyancyMomentumRateKGPerM2S2,
@@ -8000,6 +8037,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			}
 			result.acceptedPicardIterations={{r0->acceptedIterationCount,
 				r1->acceptedIterationCount,r2->acceptedIterationCount}};
+			result.picardResidualPerS={{r0->picardResidualPerS,r1->picardResidualPerS,
+				r2->picardResidualPerS}};
 			result.activeSetCycleLength={{r0->activeSetCycleLength,r1->activeSetCycleLength,
 				r2->activeSetCycleLength}};
 			result.activeSetCanonicalProjectionCount={{r0->activeSetCanonicalProjectionCount,
@@ -8021,7 +8060,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			result.terminalStagingCount=1u;
 			result.interstageFullGridTransferCount=interstageFullGridTransfers_;
 			ObserveDeviceAllocation();result.actualMetalAllocationBytes=deviceAllocationPeak_;
-			FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape_,result.certifiedWorkingSetBytes);
+			result.certifiedWorkingSetBytes=preflightBytes;
 			result.deviceElapsedMS=deviceMS_;result.wallElapsedMS=std::chrono::duration<double,std::milli>(
 				std::chrono::steady_clock::now()-wallStart).count();
 			result.residentProjectionDeviceElapsedMS=projectionDeviceMS_;
