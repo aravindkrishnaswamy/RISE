@@ -2116,11 +2116,15 @@ int main()
 		          << std::setw( 12 ) << "a=1.0"
 		          << "   posture\n";
 
-		// 89.9 and 89.99 reach mu = 1.7e-3 and 1.7e-4 -- INSIDE and
-		// BELOW the E table's first cell (node 1 is mu = 1/961 =
-		// 1.04e-3).  That band is where the M4 review found rho reaching
-		// 1.714 with the cell un-floored, and where 89 deg (mu = 0.0175,
-		// 17x above node 1) could not see it.  Both are `bounded`
+		// 89.9 and 89.99 reach mu = 1.7e-3 and 1.7e-4.  When the E
+		// table had 32 cos-theta nodes (node 1 at mu = 1/961 = 1.04e-3)
+		// those sat INSIDE and BELOW its first cell, which is where the
+		// M4 review found rho reaching 1.714 with the cell un-floored,
+		// and where 89 deg (mu = 0.0175, 17x above that node) could not
+		// see it.  Since the round-9 64-node bake node 1 is mu = 1/3969
+		// = 2.52e-4: 89.99 still probes the first cell, 89.9 now sits
+		// ~7 nodes above it -- both angles stay because the grazing
+		// band's worst case is what kGrazeTol guards, wherever it lands.  Both are `bounded`
 		// posture: the floored domain deliberately over-reads E there so
 		// the base is fully suppressed, which drives rho DOWN toward the
 		// true E -> 0 limit rather than to 1.

@@ -473,14 +473,19 @@ not a new node or a new axis law.
   warning exists to prevent). `tests/LayeredWhiteFurnaceTest.cpp`'s
   grazing-check tolerance tightened 0.03 → 0.015 against the newly
   measured (and still deterministic, re-run-stable) worst case.
-  `tests/FabricRenderTest.cpp` and `tests/FabricMaterialChunkTest.cpp`
-  were run as a regression check — the former's integrator-ratio bands
-  and the latter's suite are unaffected, as expected, since neither
-  depends on the table's absolute values the way the two tests above
-  do. `FabricBRDF.h`'s own copy of the exactness-class comment
-  (lines ~120–151) still quotes the retired round-8 figures and could
-  not be updated in this round — it was outside this round's file
-  allowlist; flagged for a follow-up edit.
+  `tests/FabricRenderTest.cpp` (42 checks) is unaffected — its
+  integrator-ratio bands do not depend on the table's absolute values.
+  `tests/FabricMaterialChunkTest.cpp`'s two 45-row value locks DO (they
+  pin E-dependent reflect-side values) and were re-captured from the
+  post-bake binary, their comment rewritten to say what they now lock,
+  and the re-capture proven live by a 2e-8 mutation of one row that
+  fails the suite; the reflect-side code is unchanged since c81fedf4,
+  which is why re-capturing preserves the lock's purpose. `FabricBRDF.h`'s
+  own copy of the exactness-class comment (lines ~100–151),
+  `SheenDirectionalAlbedo.h`'s narrative and MATERIALS.md were rewritten
+  to the round-9 figures in the same commit (the port worker's note that
+  the header "could not be updated" was drafting text from the worktree
+  stage, where it was out of scope; it was in scope for the port).
 
 ---
 
@@ -4513,7 +4518,8 @@ the chunk parser's `Finalize` seeds the chunk's own slots from it, and
 recommended-substrate half. §9.3's split table is a single struct.
 
 **The baked data file holds two tables, not three** (round 5): `E(α, cosθ)`
-and `Ē(α)`, 4.125 KB of floats. The `S(α, m)` kernel table that §9.2's
+and `Ē(α)`, 4.125 KB of floats at the 32×32 bake (16.25 KB since the
+round-9 64×64 re-bake). The `S(α, m)` kernel table that §9.2's
 earlier `min` form required is retired — the product form factors, so
 `hemisphericalAlbedo` closes in `Ē` alone. The generator's `ComputeS`,
 `BakeS` and `ClampedOneMinusME` are gone with it; `E` and `Ē` are
@@ -5291,7 +5297,10 @@ yet known (§10.1).
     `transmission none` is exactly 0, wrapped `thin` reads 0.02887 against
     the bare curtain's 0.02809 (ratio 1.028, inside the closed-form
     supremum `1/(1−Ē(0.65))` ≈ 1.34), BDPT/PT 0.913 and VCM/PT 0.946 —
-    inside the SAME bands the unwrapped thin curtain uses, not loosened.
+    inside the SAME bands the unwrapped thin curtain uses, not loosened
+    (measured at the 32×32 sheen table; an integrator ratio does not
+    depend on the table's absolute values, and round 9's re-run of the
+    suite after the 64×64 re-bake kept all 42 checks green).
 
     **Guards.** `FabricMaterialChunkTest::TestReflectionOnlyUnchanged` (a
     45-row absolute value/valueNM/Pdf table over a Lambertian and a

@@ -271,8 +271,9 @@ global max **1.0075**, nothing reaching 1.01. The outer and inner bands
 sit at **α ≈ 0.95**: E at cos θ node 1 is concave in α, so the log-α
 chord in the last (widest) cell under-reads the true lobe. The middle
 band's worst has relocated to **α ≈ 0.065**, near the roughness floor —
-doubling the table resolution roughly halved the other two bands but
-only reduced this one by about half as much, because its dominant
+doubling the table resolution cut the other two bands by about 70 %
+(0.64 → 0.19 %, 0.67 → 0.18 %) but this one by only 55 % (1.67 →
+0.75 %), because its dominant
 driver moved once the α ≈ 0.9 mechanism shrank below it. Closing the
 middle band's residual further wants a fresh root-cause hunt near the
 floor, not another blind resolution doubling (see [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md)
