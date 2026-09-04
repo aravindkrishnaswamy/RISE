@@ -135,6 +135,20 @@ def transform(text: str, name: str, suffix: str) -> str:
     # Decimal and hexadecimal floating literals use the same expression tree;
     # only their storage suffix changes.
     text = re.sub(r"(?<=[0-9])f\b", "", text)
+    if name == "FireProductionTransport" and suffix == ".cpp":
+        # The R1 accepted-state temperature remains a binary32 authority even
+        # inside the arithmetic mirror.  Mechanical scalar promotion must not
+        # turn that boundary rule into a binary64 identity requirement.
+        boundary = (
+            "if(canonicalTemperatureK[cell]!=physicalRequest.temperatureK[cell])"
+        )
+        if text.count(boundary) != 1:
+            raise RuntimeError("binary32 R1 temperature-authority seam changed")
+        text = text.replace(
+            boundary,
+            "if(static_cast<float>(canonicalTemperatureK[cell])!="
+            "static_cast<float>(physicalRequest.temperatureK[cell]))",
+        )
     if suffix == ".cpp" and name in ("FireProductionTransport", "FireProductionForce"):
         # Positive-zero commuting checks inspect the complete storage word.
         # After the scalar transform that word is binary64, so retaining the

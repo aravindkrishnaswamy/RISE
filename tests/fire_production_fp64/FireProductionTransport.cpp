@@ -2636,7 +2636,7 @@ namespace RISEFireProductionFP64
 						RISE::FireStateProducerPrecision::Binary32,temperatureK,pressureRatio,error))return false;
 					canonicalTemperatureK[cell]=static_cast<double>(temperatureK);
 				}
-				if(canonicalTemperatureK[cell]!=physicalRequest.temperatureK[cell])return Fail(error,
+				if(static_cast<float>(canonicalTemperatureK[cell])!=static_cast<float>(physicalRequest.temperatureK[cell]))return Fail(error,
 						"scalar base divergence-target temperature lacks accepted-state authority");
 			}
 			if(role==FireProductionScalarDivergenceTargetRole::R0Base&&

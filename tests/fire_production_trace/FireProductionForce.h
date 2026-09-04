@@ -373,6 +373,103 @@ namespace RISEFireProductionTrace
 		FireProductionNonpressureMomentumRHSMetalDiagnostics& diagnostics,
 		std::string* error=0 );
 
+	//! Live Metal counterpart of the complete r190 projected-Heun owner.  The
+	//! target-lineage request supplies the canonical device bootstrap operands;
+	//! beginning momentum is the sole additional full-grid step input.  The
+	//! qualification switches are RED-only and cannot select an alternate live
+	//! algorithm.
+	struct FireProductionProjectedHeunMetalOwnerRequest
+	{
+		FireProductionResidentTargetLineageComparatorRequest lineage;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> beginningMomentumKGPerM2S;
+		FireProductionRoundoffTrace::TraceFloat ambientDensityKGPerM3;
+		FireProductionRoundoffTrace::TraceFloat vremanCoefficient;
+		std::array<FireProductionRoundoffTrace::TraceFloat,3> gravityMPerS2;
+		FireProductionRoundoffTrace::TraceFloat projectionTolerancePerS;
+		FireProductionRoundoffTrace::TraceFloat endpointVelocityToleranceMPerS;
+		std::uint32_t maximumPicardIterations;
+		bool qualificationStaleCandidate;
+		bool qualificationOutOfOrderStage;
+		bool qualificationForgedLineage;
+		bool qualificationCallbackMutation;
+		bool qualificationAtomicPublicationFailure;
+		bool qualificationInjectInterstageTransfer;
+
+		FireProductionProjectedHeunMetalOwnerRequest() : ambientDensityKGPerM3(1.0f),
+			vremanCoefficient(0.07f),projectionTolerancePerS(0.0f),
+			endpointVelocityToleranceMPerS(0.0f),maximumPicardIterations(64u),
+			qualificationStaleCandidate(false),qualificationOutOfOrderStage(false),
+			qualificationForgedLineage(false),qualificationCallbackMutation(false),
+			qualificationAtomicPublicationFailure(false),
+			qualificationInjectInterstageTransfer(false)
+		{ gravityMPerS2.fill(0.0f); }
+	};
+
+	struct FireProductionProjectedHeunMetalOwnerResult
+	{
+		std::vector<FireProductionRoundoffTrace::TraceFloat> conservativeValues;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> momentumKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> velocityMPerS;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> provisionalMomentumKGPerM2S;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunAdvectionMomentumRateKGPerM2S2;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunBuoyancyMomentumRateKGPerM2S2;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunStressMomentumRateKGPerM2S2;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> heunPhaseSourceMomentumRateKGPerM2S2;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> acceptedFaceAlpha;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> heunEddyKinematicViscosityM2PerS;
+		FireProductionProjectionResult projection;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> temperatureK;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> representedPressureRatio;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> absoluteEOSDeviation;
+		std::array<std::uint32_t,3> acceptedPicardIterations;
+		std::array<std::uint64_t,3> projectionPublicationIdentity;
+		std::array<std::uint64_t,3> transportPublicationIdentity;
+		std::array<std::uint64_t,3> physicalFluxPublicationIdentity;
+		std::array<std::uint64_t,3> candidatePublicationIdentity;
+		std::array<std::uint64_t,3> EOSPublicationIdentity;
+		std::array<std::uint64_t,3> frozenSourcePublicationIdentity;
+		std::array<std::uint64_t,3> targetPublicationIdentity;
+		std::uint64_t ownerPublicationIdentity;
+		std::uint32_t commandCommitCount;
+		std::uint32_t interstageFullGridTransferCount;
+		std::uint32_t terminalStagingCount;
+		std::uint32_t residentProjectionInvocationCount;
+		std::uint64_t certifiedWorkingSetBytes;
+		std::uint64_t actualMetalAllocationBytes;
+		double deviceElapsedMS;
+		double wallElapsedMS;
+		double residentProjectionDeviceElapsedMS;
+		double residentNonprojectionDeviceElapsedMS;
+		FireProductionRoundoffTrace::TraceFloat maximumCommutingResidualKGPerM3;
+		FireProductionRoundoffTrace::TraceFloat commutingIdentityScaleKGPerM3;
+		FireProductionRoundoffTrace::TraceFloat commutingIdentityBoundKGPerM3;
+		bool commutingIdentityPassed;
+		bool accepted;
+
+		FireProductionProjectedHeunMetalOwnerResult() : ownerPublicationIdentity(0u),
+			commandCommitCount(0u),interstageFullGridTransferCount(0u),
+			terminalStagingCount(0u),residentProjectionInvocationCount(0u),
+			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
+			deviceElapsedMS(0.0),wallElapsedMS(0.0),residentProjectionDeviceElapsedMS(0.0),
+			residentNonprojectionDeviceElapsedMS(0.0),maximumCommutingResidualKGPerM3(0.0f),
+			commutingIdentityScaleKGPerM3(0.0f),commutingIdentityBoundKGPerM3(0.0f),
+			commutingIdentityPassed(false),accepted(false)
+		{
+			acceptedPicardIterations.fill(0u);projectionPublicationIdentity.fill(0u);
+			transportPublicationIdentity.fill(0u);physicalFluxPublicationIdentity.fill(0u);
+			candidatePublicationIdentity.fill(0u);EOSPublicationIdentity.fill(0u);
+			frozenSourcePublicationIdentity.fill(0u);targetPublicationIdentity.fill(0u);
+		}
+	};
+
+	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
+	bool AttemptFireProductionProjectedHeunMetalOwner(
+		const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionProjectedHeunMetalOwnerResult& result,
+		std::string* error=0 );
+
 	//! Standalone Metal comparison wrapper for the same beginning-state frozen
 	//! fields. Platforms without Metal fail honestly; no CPU fallback is hidden
 	//! behind this entry point. The later resident P3 seam reuses these kernels.
@@ -723,6 +820,7 @@ namespace RISEFireProductionTrace
 		std::uint32_t terminalStagingCount;
 		std::uint64_t combinedCertifiedWorkingSetBytes;
 		std::uint64_t combinedActualMetalAllocationBytes;
+		std::uint64_t projectedHeunOwnerIdentity;
 		double deviceElapsedMS;
 		double deviceMakespanMS;
 		FireProductionRoundoffTrace::TraceFloat representedTimeStepS;
@@ -759,6 +857,7 @@ namespace RISEFireProductionTrace
 			sourceCommandCommitCount(0u),residentProjectionInvocationCount(0u),
 			interstageFullGridTransferCount(0u),terminalStagingCount(0u),
 			combinedCertifiedWorkingSetBytes(0u),combinedActualMetalAllocationBytes(0u),
+			projectedHeunOwnerIdentity(0u),
 			deviceElapsedMS(0.0),deviceMakespanMS(0.0),
 			representedTimeStepS(0.0f),maximumManifoldGeneration(0.0),
 			maximumAcceptedManifoldDeviation(0.0),acceptedManifoldDeviationP95(0.0),
@@ -787,7 +886,20 @@ namespace RISEFireProductionTrace
 			const FireProductionResidentStepRequest&,
 			FireProductionResidentStepResult&,
 			std::string* );
+		friend bool AttemptFireProductionProjectedHeunResidentStepMetal(
+			const FireProductionProjectedHeunMetalOwnerRequest&,
+			FireProductionResidentStepResult&,
+			FireProductionProjectedHeunMetalOwnerResult*,std::string* );
 	};
+
+	//! Authority-bearing production entry for the resident Section 3.7 owner.
+	//! It publishes the ordinary accepted-step token only after the complete
+	//! device owner, monitored-manifold diagnostics, and payload identities agree.
+	bool AttemptFireProductionProjectedHeunResidentStepMetal(
+		const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionResidentStepResult& result,
+		FireProductionProjectedHeunMetalOwnerResult* diagnostics=0,
+		std::string* error=0 );
 
 	//! Single owner predicate for accepted-token issuance.  Diagnostics alone do
 	//! not mint authority; both projection validations are structural inputs.

@@ -5291,3 +5291,49 @@ it was already tried and refuted here.
   Fresh lineage, Metal/residency, and numeric/mirror reviewers then reported
   zero P1/P2 on `a7e45b51`; r200 is sealed as `r200h`.
   The next rung is the live Metal owner.
+
+- **r201 complete projected-Heun owner live on Metal; replay cost stop
+  (2026-09-03):** completes the structural r190 keystone: the resident owner
+  runs R0/R1/R2 on Apple M4 Max, consumes r197a/r198/r199/r200 authorities by
+  private seal, binds the r70 correction only to the actual projection/flux-
+  produced candidate, and publishes atomically after the terminal projection.
+  Stale-candidate, out-of-order-stage, forged-lineage, callback-mutation,
+  atomic-publication, and zero-interstage-transfer REDs all pass. The fp64
+  owner comparison passes as a conjunction of per-cell/per-field same-unit
+  enclosures, with worst residual/bound `0.04204359591443161`; the device
+  compatible-flux identity has residual `1.1920929e-07 kg m^-3` against its
+  derived `8.1519056e-06 kg m^-3` bound. The complete kernel sweep is green
+  (`c63a5b9d...145f243`). Its 4-cubed qualification fixture records
+  `1052.15354 ms` device and `1072.18375 ms` wall p95, zero interstage
+  transfers, and the certified working set.
+
+  The sealed tier-8 replay is deliberately **not** claimed. Three accepted
+  from-zero prefix steps at the r194 state cost `74.528`, `79.701`, and
+  `79.777 s` device (`75.913`, `81.130`, `81.200 s` wall). At the initial
+  `1.6462659696 ms` CFL step, the 3 s equal-time replay projects to `39.48`
+  device-hours / `40.20` wall-hours by the mean, before any 15/30/60 m/s
+  crossing evidence exists. A separately sealed one-step decomposition gives
+  `2442.054 ms` projection and `72076.371 ms` nonprojection device time:
+  projection is `3.277%`, while `96.723%` is serial full-payload identity
+  hashing across the resident transport, physical-flux, candidate/EOS,
+  target/consumer, owner, and projection authority surfaces. Host residual is
+  only `1373.997 ms`. Thus neither projection nor host scheduling is the
+  primary cost.
+
+  Two minutes-class shortcuts were rejected before use. Dropping payload
+  authentication in favor of parent capability seals would relax r195's
+  content-authenticated provenance; an unordered XOR fold has no derived
+  collision/composition argument and is not mirror-validated. The honest
+  unblock is a versioned, device-only parallel content-authenticated tree
+  digest with an explicit collision bound, an fp64 CPU mirror, zero-transfer
+  and no-CPU-substitution REDs, and a revised working-set/case-record identity.
+  That changes an owner-locked provenance invariant, so r201 stops before the
+  ported replay verdict rather than spending roughly 40 wall-hours or silently
+  weakening lineage. The 15/30/60 m/s bundles, the matched 159.01-class
+  observation, and the three-way verdict remain absent. Sandboxed execution
+  still reproduces `MTLCreateSystemDefaultDevice() == nil`; the identical
+  binary runs on Apple M4 Max/Metal 4 outside that context, so the device gate
+  classifies this as `execution_context_blocked`, not `no_device`. Golden
+  checkpoint `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`
+  remains untouched. Evidence SHA-256 is
+  `5e3b6ddcf2202c689234f6d9ef1a4a1e37a68860a638c33ef68bcdde025212cb`.

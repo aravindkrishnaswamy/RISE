@@ -399,9 +399,22 @@ namespace RISEFireProductionFP64
 		std::uint64_t attemptIdentity;
 		RISE::RISECBOR64::Bytes caseRecordEnvelope;
 		std::vector<double> beginningConservativeValues;
+		//! Optional established source-producer evaluation temperature.  The
+		//! canonical authority admits it only if forward EOS evaluation rounds
+		//! exactly to the represented sensible-energy component; the resident EOS
+		//! parent remains the independently derived binary32 temperature surface.
+		std::vector<double> sourceEvaluationTemperatureK;
+		//! The accepted pre-injection state from which ignition connectivity is
+		//! derived.  Empty means beginningConservativeValues (the non-inlet case).
+		//! This is raw state, never a caller-authored eligibility decision.
+		std::vector<double> eligibilityBeginningConservativeValues;
 		//! Identity-bound upstream controller decision.  The source producer still
 		//! derives ignition connectivity and the continuous pilot command itself.
 		std::vector<unsigned char> pilotCommandMask;
+		//! Identity-bound source-topology classification used by the canonical
+		//! producer to derive the established flame-holder extension itself.
+		std::vector<unsigned char> sourceBoundaryContactMask;
+		bool pilotEstablished;
 		//! Stage-derived mixing time is an input coefficient, not a source dose.
 		//! Its exact bytes and the canonical transport record identity are bound.
 		std::vector<double> mixingTimeS;
@@ -409,7 +422,7 @@ namespace RISEFireProductionFP64
 		unsigned int workerCount;
 
 		FireProductionFrozenMethaneSourceRequest() : timeStepS(0.0),
-			beginningTimeS(0.0),attemptIdentity(0u),predictiveRadiation(false),
+			beginningTimeS(0.0),attemptIdentity(0u),pilotEstablished(false),predictiveRadiation(false),
 			workerCount(1u) {}
 	};
 

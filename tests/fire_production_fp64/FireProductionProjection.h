@@ -208,9 +208,18 @@ namespace RISEFireProductionFP64
 		std::array<id<MTLBuffer>,3> provisionalMomentumKGPerM2S;
 		std::array<std::size_t,3> provisionalMomentumByteOffset;
 		id<MTLBuffer> divergenceTargetPerS;
+		//! Optional device-issued identity of the exact target surface.  Live
+		//! projected-Heun owners must provide it; legacy resident callers leave it
+		//! nil and consequently receive no projection publication identity.
+		id<MTLBuffer> targetPublicationIdentity;
+		//! Optional private, device-produced pressure-open authorities. When
+		//! present they replace the request's structural placeholder seals.
+		id<MTLBuffer> sealedPressureOpenInflow;
+		id<MTLBuffer> sealedPressureOpenDynamicPressurePa;
 
 		FireProductionMetalProjectionResidentInput() : gasDensityKGPerM3(nil),
-			divergenceTargetPerS(nil)
+			divergenceTargetPerS(nil),targetPublicationIdentity(nil),
+			sealedPressureOpenInflow(nil),sealedPressureOpenDynamicPressurePa(nil)
 		{
 			provisionalMomentumKGPerM2S.fill(nil);
 			provisionalMomentumByteOffset.fill(0u);
@@ -221,6 +230,9 @@ namespace RISEFireProductionFP64
 	{
 		id<MTLBuffer> pressurePa;
 		id<MTLBuffer> pressureOpenInflow;
+		//! Private device publication.  It hashes the consumed target identity and
+		//! every projected full-grid result; it is never synthesized on the host.
+		id<MTLBuffer> publicationIdentity;
 		std::array<id<MTLBuffer>,3> faceDensityKGPerM3;
 		std::array<id<MTLBuffer>,3> momentumKGPerM2S;
 		std::array<id<MTLBuffer>,3> velocityMPerS;
@@ -230,7 +242,7 @@ namespace RISEFireProductionFP64
 		bool restoration;
 
 		FireProductionMetalProjectionResidentState() : pressurePa(nil),
-			pressureOpenInflow(nil),restoration(false)
+			pressureOpenInflow(nil),publicationIdentity(nil),restoration(false)
 		{
 			faceDensityKGPerM3.fill(nil);momentumKGPerM2S.fill(nil);
 			velocityMPerS.fill(nil);provisionalMomentumKGPerM2S.fill(nil);

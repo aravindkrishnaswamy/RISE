@@ -29,6 +29,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <limits>
+#include <memory>
 #include <new>
 
 namespace RISE
@@ -264,6 +265,14 @@ namespace RISE
 			std::uint32_t nx,ny,nz,cells;
 			std::uint32_t boundary[6],padding[2];
 			float cellWidthM,timeStepS;
+			std::uint64_t attemptIdentity;
+		};
+
+		struct MetalProjectedHeunOwnerParameters
+		{
+			std::uint32_t cells,allFaces,faceOffset[3],stage;
+			float timeStepS,cellWidthM;
+			std::uint32_t padding[2];
 			std::uint64_t attemptIdentity;
 		};
 
@@ -1825,6 +1834,67 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
  for(uint component=2u;component<=6u;++component)gas+=accepted[component*p.cells+gid];
  density[gid]=gas;
 }
+kernel void fct_fill_one(device float* values [[buffer(0)]],
+ constant uint& count [[buffer(1)]],uint gid [[thread_position_in_grid]]){
+ if(gid<count)values[gid]=1.0f;
+}
+inline float fct_cell_gas(device const float* q,constant FCTParams& p,uint cell){
+ float gas=q[p.cells+cell];for(uint component=2u;component<=6u;++component)
+  gas+=q[component*p.cells+cell];return gas;
+}
+inline float fct_restricted_cell_gas(device const float* q,device const float* ambient,
+ constant FCTParams& p,uint component,uint x,uint y,uint z){
+ uint normal=fct_coordinate(component,x,y,z),extent=fct_extent(p,component);
+ bool boundaryFace=normal==0u||normal==extent;
+ uint lowX=x,lowY=y,lowZ=z,highX=x,highY=y,highZ=z;
+ if(!boundaryFace){fct_set_coordinate(component,normal-1u,lowX,lowY,lowZ);
+  return 0.5f*(fct_cell_gas(q,p,fct_cell(p,lowX,lowY,lowZ))+
+   fct_cell_gas(q,p,fct_cell(p,highX,highY,highZ)));}
+ uint side=2u*component+(normal==extent?1u:0u);
+ if(p.boundary[side]==0u){fct_set_coordinate(component,extent-1u,lowX,lowY,lowZ);
+  fct_set_coordinate(component,0u,highX,highY,highZ);
+  return 0.5f*(fct_cell_gas(q,p,fct_cell(p,lowX,lowY,lowZ))+
+   fct_cell_gas(q,p,fct_cell(p,highX,highY,highZ)));}
+ fct_set_coordinate(component,normal==extent?extent-1u:0u,highX,highY,highZ);
+ float ambientGas=ambient[1];for(uint species=2u;species<=6u;++species)
+  ambientGas+=ambient[species];
+ return 0.5f*(fct_cell_gas(q,p,fct_cell(p,highX,highY,highZ))+ambientGas);
+}
+kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
+ device const float* sourceDelta [[buffer(1)]],device const float* accepted [[buffer(2)]],
+ device const float* ambient [[buffer(3)]],device const float* unitVelocityRate [[buffer(4)]],
+ device atomic_uint* maximumResidualBits [[buffer(5)]],device atomic_uint* maximumScaleBits [[buffer(6)]],
+ device atomic_uint* failure [[buffer(7)]],constant FCTParams& p [[buffer(8)]],
+ uint gid [[thread_position_in_grid]]){
+ uint all=fct_all_faces(p);if(gid>=all)return;uint component,x,y,z;
+ fct_decode_face(p,gid,component,x,y,z);uint normal=fct_coordinate(component,x,y,z),
+  extent=fct_extent(p,component);bool boundaryFace=normal==0u||normal==extent;
+ uint side=2u*component+(normal==extent?1u:0u);
+ if(boundaryFace&&p.boundary[side]==2u){
+  if(as_type<uint>(unitVelocityRate[gid])!=0u)
+   atomic_fetch_or_explicit(failure,4096u,memory_order_relaxed);return;}
+ // Form the integrated-source restriction directly so the ambient boundary
+ // state is not spuriously added to a delta field.
+ uint lowX=x,lowY=y,lowZ=z,highX=x,highY=y,highZ=z;
+ float sourceRestricted=0.0f;
+ if(!boundaryFace){fct_set_coordinate(component,normal-1u,lowX,lowY,lowZ);
+  sourceRestricted=0.5f*(fct_cell_gas(sourceDelta,p,fct_cell(p,lowX,lowY,lowZ))+
+   fct_cell_gas(sourceDelta,p,fct_cell(p,highX,highY,highZ)));}
+ else if(p.boundary[side]==0u){fct_set_coordinate(component,extent-1u,lowX,lowY,lowZ);
+  fct_set_coordinate(component,0u,highX,highY,highZ);
+  sourceRestricted=0.5f*(fct_cell_gas(sourceDelta,p,fct_cell(p,lowX,lowY,lowZ))+
+   fct_cell_gas(sourceDelta,p,fct_cell(p,highX,highY,highZ)));}
+ else {fct_set_coordinate(component,normal==extent?extent-1u:0u,highX,highY,highZ);
+  sourceRestricted=0.5f*fct_cell_gas(sourceDelta,p,fct_cell(p,highX,highY,highZ));}
+ float base=fct_restricted_cell_gas(beginning,ambient,p,component,x,y,z)+sourceRestricted;
+ float acceptedRestricted=fct_restricted_cell_gas(accepted,ambient,p,component,x,y,z);
+ float advanced=base-p.dt*unitVelocityRate[gid];
+ float residual=abs(acceptedRestricted-advanced),scale=max(abs(base),abs(acceptedRestricted));
+ if(!isfinite(residual)||!isfinite(scale)){
+  atomic_fetch_or_explicit(failure,8192u,memory_order_relaxed);return;}
+ atomic_fetch_max_explicit(maximumResidualBits,as_type<uint>(residual),memory_order_relaxed);
+ atomic_fetch_max_explicit(maximumScaleBits,as_type<uint>(scale),memory_order_relaxed);
+}
 )METAL";
 		}
 
@@ -1856,12 +1926,14 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLComputePipelineState> compatibleStageRate;
 			id<MTLComputePipelineState> applyMomentumRate;
 			id<MTLComputePipelineState> extractGasDensity;
+			id<MTLComputePipelineState> fillOne;
+			id<MTLComputePipelineState> commutingIdentity;
 			std::string error;
 
 			SingleStageFCTMetalContext() : device(nil),queue(nil),buildFluxPair(nil),
 				averageFluxPair(nil),validateFluxPair(nil),buildRatios(nil),
 				buildFaceAlpha(nil),commitScalar(nil),compatibleStageRate(nil),applyMomentumRate(nil),
-				extractGasDensity(nil)
+				extractGasDensity(nil),fillOne(nil),commutingIdentity(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -1889,9 +1961,12 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 					commitScalar=makePipeline("fct_commit_scalar");
 					compatibleStageRate=makePipeline("fct_compatible_stage_rate");
 					applyMomentumRate=makePipeline("fct_apply_momentum_rate");
-					extractGasDensity=makePipeline("fct_extract_gas_density");
+				extractGasDensity=makePipeline("fct_extract_gas_density");
+				fillOne=makePipeline("fct_fill_one");
+				commutingIdentity=makePipeline("fct_commuting_identity");
 					if(!buildFluxPair||!averageFluxPair||!validateFluxPair||!buildRatios||!buildFaceAlpha||!commitScalar||
-						!compatibleStageRate||!applyMomentumRate||!extractGasDensity){error=MetalError(
+						!compatibleStageRate||!applyMomentumRate||!extractGasDensity||!fillOne||
+						!commutingIdentity){error=MetalError(
 						"production single-stage FCT diagnostic pipeline creation failed",
 						metalError);return;}
 					queue=[device newCommandQueue];
@@ -1903,7 +1978,8 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			bool Valid() const
 			{
 				return device&&queue&&buildFluxPair&&averageFluxPair&&validateFluxPair&&buildRatios&&buildFaceAlpha&&commitScalar&&
-					compatibleStageRate&&applyMomentumRate&&extractGasDensity&&error.empty();
+					compatibleStageRate&&applyMomentumRate&&extractGasDensity&&fillOne&&
+					commutingIdentity&&error.empty();
 			}
 		};
 
@@ -1931,6 +2007,11 @@ kernel void fct_extract_gas_density(device const float* accepted [[buffer(0)]],
 			id<MTLComputePipelineState> identifyProjectionConsumer;
 			id<MTLComputePipelineState> consumeTarget;
 			id<MTLComputePipelineState> diagnoseEOSLog;
+			id<MTLComputePipelineState> ownerIssueBootstrap,ownerPackFaces,ownerAverageField,
+				ownerGasSource,ownerPredictMomentum,
+				ownerHeunMomentum,ownerBindTransport,ownerAverageFlux,ownerBindAveragedFlux,
+				ownerBindCandidate,ownerResidual,ownerClassResidual,ownerIntegratedOpenHead,
+				ownerIssuePublication;
 			FireProductionEOSLogMetalQualificationIdentity eosLogIdentity;
 			std::string error;
 
@@ -2402,10 +2483,25 @@ inline int eos_order(EOSDD first,EOSDD second){EOSDD difference=eos_sub(first,se
    (difference.lo==0.0f&&difference.tail<0.0f)));return negative?-1:1;}
 inline bool eos_proved_leq(EOSDD first,EOSDD second){int order=eos_order(first,second);
  return order==-1||order==0;}
+// Exact grow-expansion walker for the six signed face samples in a 3-D
+// divergence numerator.  Every input is binary32 and no term is discarded;
+// therefore an all-zero terminal expansion proves the real numerator is zero.
+inline bool eos_six_term_sum_is_exact_zero(thread float* terms){
+ float expansion[7],next[7];uint count=0u;
+ for(uint term=0u;term<6u;++term){float q=terms[term];uint nextCount=0u;
+  for(uint index=0u;index<count;++index){EOSDD pair=eos_two_sum(q,expansion[index]);
+   if(pair.lo!=0.0f)next[nextCount++]=pair.lo;q=pair.hi;}
+  if(q!=0.0f||nextCount==0u)next[nextCount++]=q;
+  count=nextCount;for(uint index=0u;index<count;++index)expansion[index]=next[index];}
+ for(uint index=0u;index<count;++index)if(expansion[index]!=0.0f)return false;
+ return true;}
 inline float eos_scale_tiny_by_2p126(float value){uint bits=as_type<uint>(value),
  magnitude=bits&0x7fffffffu;if(magnitude==0u)return value;
  if((magnitude&0x7f800000u)==0u){float scaled=float(magnitude)*0x1p-23f;
   return (bits&0x80000000u)!=0u?-scaled:scaled;}return ldexp(value,126);}
+inline EOSDD eos_scale_power_of_two(EOSDD value,int exponent){return eos_renorm(
+ ldexp(value.hi,exponent),ldexp(value.lo,exponent),ldexp(value.tail,exponent),
+ ldexp(value.bound,exponent));}
 inline EOSDD eos_load_dd(device const float* source,uint offset){float tail=source[offset+2u];
  return eos_dd(source[offset],source[offset+1u],tail,eos_local_spacing(tail));}
 inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int exponent=int((bits>>23u)&255u)-127;
@@ -2446,8 +2542,28 @@ inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
   upperMidpoint=eos_add(eos_dd(scaledRounded),eos_dd((upper-scaledRounded)*0.5f));
  }else{lowerMidpoint=eos_add(eos_dd(rounded),eos_dd(lowerHalf));
   upperMidpoint=eos_add(eos_dd(rounded),eos_dd(upperHalf));}
+ // For small normal results, compare the certified expansion to its rounding
+ // midpoints after an exact common power-of-two scale.  This prevents the
+ // subtraction proof itself from collapsing to binary32 minimum-subnormal
+ // resolution; it changes neither the value nor its rounding interval.
+ uint exponentField=(magnitude>>23u)&255u;
+ if(!tiny&&exponentField>0u&&exponentField<96u){int proofScale=127-int(exponentField);
+  normalized=eos_scale_power_of_two(normalized,proofScale);
+  lowerMidpoint=eos_scale_power_of_two(lowerMidpoint,proofScale);
+  upperMidpoint=eos_scale_power_of_two(upperMidpoint,proofScale);}
  return eos_order(lowerMidpoint,normalized)==-1&&
   eos_order(normalized,upperMidpoint)==-1;}
+// Materialize an interval-certified binary32 value when correct-rounding is
+// undecidable at a midpoint.  The fallback is admitted only if the complete
+// propagated interval places the real value within one local binary32 spacing
+// of hi.  This is an absolute per-cell enclosure, never a cancellation-derived
+// relative bound; callers record the branch in their obligation bitmap.
+inline bool eos_binary32_round_or_local_enclosure(EOSDD value,thread float& rounded,
+ thread bool& usedEnclosure){usedEnclosure=false;
+ if(eos_unique_binary32_round(value,rounded))return true;rounded=value.hi;
+ float uncertainty=eos_up_add(eos_up_add(abs(value.lo),abs(value.tail)),value.bound);
+ float spacing=eos_local_spacing(rounded);if(isfinite(rounded)&&isfinite(uncertainty)&&
+  isfinite(spacing)&&uncertainty<=spacing){usedEnclosure=true;return true;}return false;}
 inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD temperature,
  thread uint& offset,device atomic_uint* obligations,thread bool& valid){uint base=96u*species,
  segments=uint(thermo[base+3u]);
@@ -2673,14 +2789,31 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
  if(transportIdentity[0]==0ul||physicalIdentity[0]==0ul||candidateIdentity[0]==0ul||
 	 eosIdentity[0]==0ul||sourceIdentity[0]==0ul||!metadataMatches){atomic_fetch_or_explicit(failure,2048u,
    memory_order_relaxed);return;}uint x=gid%p.nx,y=(gid/p.nx)%p.ny,z=gid/(p.nx*p.ny);
- EOSDD rate[9];for(uint component=0u;component<9u;++component)rate[component]=eos_dd(0.0f);
+ EOSDD rate[9],divergenceNumerator[9];for(uint component=0u;component<9u;++component){
+  rate[component]=eos_dd(0.0f);divergenceNumerator[component]=eos_dd(0.0f);}
+ // Exact-zero walker: bit-identical opposing face terms make every component
+ // of D(f_N) exactly zero.  Resolve that algebraic branch before interval
+ // rounding so a conservative DD enclosure around zero cannot manufacture an
+ // ambiguity.  This is a device proof branch, not a tolerance or host fallback.
+ float divergenceTerms[9][6];
  for(uint axis=0u;axis<3u;++axis){uint rx=x+(axis==0u),ry=y+(axis==1u),rz=z+(axis==2u);
   uint left=target_face(p,axis,x,y,z);uint right=target_face(p,axis,rx,ry,rz);
-  for(uint component=0u;component<8u;++component)rate[component]=eos_add(rate[component],
-   eos_div(eos_sub(eos_dd(physicalMass[component*(p.faceOffset[2]+p.nx*p.ny*(p.nz+1u))+left]),
-    eos_dd(physicalMass[component*(p.faceOffset[2]+p.nx*p.ny*(p.nz+1u))+right])),eos_dd(p.dx)));
-  rate[8u]=eos_add(rate[8u],eos_div(eos_sub(eos_dd(physicalEnergy[left]),
-   eos_dd(physicalEnergy[right])),eos_dd(p.dx)));}
+  for(uint component=0u;component<8u;++component){float leftMass=
+   physicalMass[component*(p.faceOffset[2]+p.nx*p.ny*(p.nz+1u))+left],rightMass=
+   physicalMass[component*(p.faceOffset[2]+p.nx*p.ny*(p.nz+1u))+right];
+   divergenceTerms[component][2u*axis]=leftMass;
+   divergenceTerms[component][2u*axis+1u]=-rightMass;
+   divergenceNumerator[component]=eos_add(divergenceNumerator[component],
+    eos_sub(eos_dd(leftMass),eos_dd(rightMass)));}
+  float leftEnergy=physicalEnergy[left],rightEnergy=physicalEnergy[right];
+  divergenceTerms[8u][2u*axis]=leftEnergy;
+  divergenceTerms[8u][2u*axis+1u]=-rightEnergy;
+  divergenceNumerator[8u]=eos_add(divergenceNumerator[8u],
+   eos_sub(eos_dd(leftEnergy),eos_dd(rightEnergy)));}
+ bool divergenceBitZero=true;for(uint component=0u;component<9u;++component)
+  divergenceBitZero=divergenceBitZero&&eos_six_term_sum_is_exact_zero(divergenceTerms[component]);
+ for(uint component=0u;component<9u;++component)
+  rate[component]=eos_div(divergenceNumerator[component],eos_dd(p.dx));
  bool valid=true;EOSDD gas=eos_dd(0.0f),inverseWeight=eos_dd(0.0f),heatCapacity=eos_dd(0.0f);
  EOSDD enthalpy[7];EOSDD T=eos_dd(temperature[gid]);for(uint species=0u;species<7u;++species){
   EOSDD density=eos_dd(max(0.0f,state[(species+1u)*p.cells+gid]));
@@ -2706,10 +2839,16 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
  else atomic_fetch_or_explicit(obligations,1u<<20u,memory_order_relaxed);
  float tangentValue=0.0f,tailValue=0.0f;
  float diagnosticValue=(pressureRatio[gid]-1.0f)/p.dt;
- bool tangentRounded=eos_unique_binary32_round(value,tangentValue);
+ bool tangentRounded=divergenceBitZero,tangentEnclosed=false;
+ if(divergenceBitZero){tangentValue=0.0f;
+  atomic_fetch_or_explicit(obligations,1u<<26u,memory_order_relaxed);}
+ else tangentRounded=eos_binary32_round_or_local_enclosure(value,tangentValue,tangentEnclosed);
+ if(tangentEnclosed)atomic_fetch_or_explicit(obligations,1u<<27u,memory_order_relaxed);
  bool tailRounded=eos_unique_binary32_round(tail,tailValue);
  if(!valid)atomic_fetch_or_explicit(failure,32768u,memory_order_relaxed);
- if(!tangentRounded)atomic_fetch_or_explicit(failure,65536u,memory_order_relaxed);
+ if(!tangentRounded){atomic_fetch_or_explicit(failure,65536u,memory_order_relaxed);
+  tangent[gid]=NAN;source[gid]=value.hi;absoluteDiagnostic[gid]=value.lo;
+  monitoredAbsolute[gid]=value.bound;}
  if(!tailRounded)atomic_fetch_or_explicit(failure,262144u,memory_order_relaxed);
  if(!valid||!tangentRounded||!isfinite(diagnosticValue)||!tailRounded||
   !isfinite(sourceTarget[gid]))return;
@@ -2795,6 +2934,136 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
  EOSDD value=eos_log_dd(eos_dd(input[2u*gid],input[2u*gid+1u]));output[4u*gid]=value.hi;
  output[4u*gid+1u]=value.lo;output[4u*gid+2u]=value.tail;
  output[4u*gid+3u]=value.bound;}
+// r201 live-owner glue. These kernels only bind qualified resident surfaces,
+// compose the Heun operands, and apply the stage algebra. No physical term is
+// recomputed here.
+struct OwnerParams {uint cells;uint allFaces;uint faceOffset[3];uint stage;
+ float dt;float dx;uint padding[2];ulong attempt;};
+kernel void owner_issue_bootstrap_target(device const float* target [[buffer(0)]],
+ device const float* state [[buffer(1)]],device const float* source [[buffer(2)]],
+ device ulong* targetIdentity [[buffer(3)]],device ulong* rootCandidateIdentity [[buffer(4)]],
+ constant OwnerParams& p [[buffer(5)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;ulong hash=14695981039346656037ul;
+ for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
+ for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(source[word]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
+ targetIdentity[0]=hash==0ul?1ul:hash;hash^=0x726f6f745f71306eul;hash*=1099511628211ul;
+ rootCandidateIdentity[0]=hash==0ul?1ul:hash;}
+kernel void owner_pack_faces(device const float* x [[buffer(0)]],device const float* y [[buffer(1)]],
+ device const float* z [[buffer(2)]],device float* packed [[buffer(3)]],
+ constant OwnerParams& p [[buffer(4)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.allFaces)return;uint axis=gid>=p.faceOffset[2]?2u:(gid>=p.faceOffset[1]?1u:0u);
+ uint local=gid-p.faceOffset[axis];packed[gid]=axis==0u?x[local]:(axis==1u?y[local]:z[local]);}
+kernel void owner_average_field(device const float* first [[buffer(0)]],
+ device const float* second [[buffer(1)]],device float* output [[buffer(2)]],
+ constant uint& count [[buffer(3)]],constant float& scale [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){if(gid<count)output[gid]=scale*(first[gid]+second[gid]);}
+kernel void owner_gas_source(device const float* sourceDelta [[buffer(0)]],
+ device float* rate [[buffer(1)]],constant OwnerParams& p [[buffer(2)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;float value=sourceDelta[p.cells+gid];
+ for(uint component=2u;component<=6u;++component)value+=sourceDelta[component*p.cells+gid];
+ rate[gid]=value/p.dt;}
+kernel void owner_predict_momentum(device const float* beginning [[buffer(0)]],
+ device const float* nonpressure [[buffer(1)]],device const float* advection [[buffer(2)]],
+ device float* output [[buffer(3)]],device atomic_uint* failure [[buffer(4)]],
+ constant OwnerParams& p [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.allFaces)return;float value=beginning[gid]+p.dt*(nonpressure[gid]-advection[gid]);
+ if(!isfinite(value))atomic_fetch_or_explicit(failure,1u<<20u,memory_order_relaxed);output[gid]=value;}
+kernel void owner_heun_momentum(device const float* beginning [[buffer(0)]],
+ device const float* nonpressure0 [[buffer(1)]],device const float* nonpressure1 [[buffer(2)]],
+ device const float* advection0 [[buffer(3)]],device const float* advection1 [[buffer(4)]],
+ device float* output [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){
+ if(gid>=p.allFaces)return;float value=beginning[gid]+0.5f*p.dt*(nonpressure0[gid]+
+  nonpressure1[gid]-advection0[gid]-advection1[gid]);
+ if(!isfinite(value))atomic_fetch_or_explicit(failure,1u<<21u,memory_order_relaxed);output[gid]=value;}
+kernel void owner_bind_transport(device const ulong* candidate [[buffer(0)]],
+ device const ulong* projection [[buffer(1)]],device ulong* transport [[buffer(2)]],
+ device atomic_uint* failure [[buffer(3)]],constant OwnerParams& p [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;if(candidate[0]==0ul||projection[0]==0ul||
+ transport[0]==0ul||p.attempt==0ul||p.stage>2u){transport[0]=0ul;
+ atomic_fetch_or_explicit(failure,1u<<22u,memory_order_relaxed);return;}ulong hash=transport[0];
+ hash^=candidate[0];hash*=1099511628211ul;hash^=projection[0];hash*=1099511628211ul;
+ hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
+ transport[0]=hash==0ul?1ul:hash;}
+kernel void owner_average_flux(device const float* low0 [[buffer(0)]],
+ device const float* delta0 [[buffer(1)]],device const float* low1 [[buffer(2)]],
+ device const float* delta1 [[buffer(3)]],device float* low [[buffer(4)]],
+ device float* delta [[buffer(5)]],device float* high [[buffer(6)]],
+ constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){
+ uint count=9u*p.allFaces;if(gid>=count)return;float l=0.5f*(low0[gid]+low1[gid]);
+ float d=0.5f*(delta0[gid]+delta1[gid]);low[gid]=l;delta[gid]=d;high[gid]=l+d;}
+kernel void owner_bind_averaged_flux(device const float* low [[buffer(0)]],
+ device const float* delta [[buffer(1)]],device const ulong* r0 [[buffer(2)]],
+ device const ulong* r1 [[buffer(3)]],device const ulong* transport [[buffer(4)]],
+ device ulong* identity [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ if(r0[0]==0ul||r1[0]==0ul||transport[0]==0ul){identity[0]=0ul;
+ atomic_fetch_or_explicit(failure,1u<<23u,memory_order_relaxed);return;}ulong hash=14695981039346656037ul;
+ hash^=r0[0];hash*=1099511628211ul;hash^=r1[0];hash*=1099511628211ul;
+ hash^=transport[0];hash*=1099511628211ul;for(uint word=0u;word<9u*p.allFaces;++word){
+  hash^=ulong(as_type<uint>(low[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(delta[word]));hash*=1099511628211ul;}
+ identity[0]=hash==0ul?1ul:hash;}
+kernel void owner_bind_candidate(device const float* state [[buffer(0)]],
+ device const float* alpha [[buffer(1)]],device const ulong* transport [[buffer(2)]],
+ device const ulong* flux [[buffer(3)]],device const ulong* parent [[buffer(4)]],
+ device ulong* identity [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
+ constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ if(transport[0]==0ul||flux[0]==0ul||parent[0]==0ul||p.attempt==0ul){identity[0]=0ul;
+ atomic_fetch_or_explicit(failure,1u<<24u,memory_order_relaxed);return;}ulong hash=14695981039346656037ul;
+ hash^=transport[0];hash*=1099511628211ul;hash^=flux[0];hash*=1099511628211ul;
+ hash^=parent[0];hash*=1099511628211ul;for(uint word=0u;word<9u*p.cells;++word){
+  hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;}
+ for(uint face=0u;face<p.allFaces;++face){hash^=ulong(as_type<uint>(alpha[face]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
+ identity[0]=hash==0ul?1ul:hash;}
+kernel void owner_residual(device const float* current [[buffer(0)]],
+ device const float* prior [[buffer(1)]],device atomic_uint* maximumBits [[buffer(2)]],
+ constant uint& count [[buffer(3)]],constant float& scale [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){if(gid>=count)return;float value=abs(current[gid]-prior[gid])*scale;
+ if(!isfinite(value))value=INFINITY;atomic_fetch_max_explicit(maximumBits,as_type<uint>(value),memory_order_relaxed);}
+kernel void owner_class_residual(device const uchar* current [[buffer(0)]],
+ device const uchar* prior [[buffer(1)]],device atomic_uint* changed [[buffer(2)]],
+ constant uint& count [[buffer(3)]],uint gid [[thread_position_in_grid]]){
+ if(gid<count&&current[gid]!=prior[gid])atomic_store_explicit(changed,1u,memory_order_relaxed);}
+kernel void owner_integrated_open_head(device const float* velocity0 [[buffer(0)]],
+ device const float* velocity1 [[buffer(1)]],device const uchar* inflow0 [[buffer(2)]],
+ device const uchar* inflow1 [[buffer(3)]],device float* head [[buffer(4)]],
+ constant TransportParams& p [[buffer(5)]],constant float& ambientDensity [[buffer(6)]],
+ uint gid [[thread_position_in_grid]]){uint side=0u;for(uint s=1u;s<6u;++s)if(gid>=p.sideOffset[s])side=s;
+ uint local=gid-p.sideOffset[side],axis=side/2u;bool positive=(side&1u)!=0u;
+ uint firstCount=axis==0u?p.ny:p.nx;uint first=local%firstCount,second=local/firstCount;
+ if(p.boundary[side]!=1u){head[gid]=0.0f;return;}uint x=0u,y=0u,z=0u,cx=0u,cy=0u,cz=0u;
+ if(axis==0u){x=positive?p.nx:0u;y=first;z=second;cx=positive?p.nx-1u:0u;cy=y;cz=z;}
+ else if(axis==1u){x=first;y=positive?p.ny:0u;z=second;cx=x;cy=positive?p.ny-1u:0u;cz=z;}
+ else{x=first;y=second;z=positive?p.nz:0u;cx=x;cy=y;cz=positive?p.nz-1u:0u;}
+ uint face=tr_face(p,axis,x,y,z);float u0=velocity0[face],u1=velocity1[face];
+ float speed0=u0*u0,speed1=u1*u1;for(uint tangent=0u;tangent<3u;++tangent)if(tangent!=axis){
+  float t0=tr_cell_velocity(velocity0,p,tangent,cx,cy,cz);
+  float t1=tr_cell_velocity(velocity1,p,tangent,cx,cy,cz);speed0+=t0*t0;speed1+=t1*t1;}
+ float value=-0.25f*ambientDensity*((inflow0[gid]!=0u?speed0:0.0f)+
+  (inflow1[gid]!=0u?speed1:0.0f));head[gid]=isfinite(value)?value:0.0f;}
+kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
+ device const ulong* p1 [[buffer(1)]],device const ulong* p2 [[buffer(2)]],
+ device const ulong* t0 [[buffer(3)]],device const ulong* t1 [[buffer(4)]],
+ device const ulong* t2 [[buffer(5)]],device const ulong* f0 [[buffer(6)]],
+ device const ulong* f1 [[buffer(7)]],device const ulong* f2 [[buffer(8)]],
+ device const ulong* c0 [[buffer(9)]],device const ulong* c1 [[buffer(10)]],
+ device const ulong* c2 [[buffer(11)]],device const ulong* e0 [[buffer(12)]],
+ device const ulong* e1 [[buffer(13)]],device const ulong* e2 [[buffer(14)]],
+ device const ulong* s0 [[buffer(15)]],device const ulong* s1 [[buffer(16)]],
+ device const ulong* s2 [[buffer(17)]],device const ulong* d0 [[buffer(18)]],
+ device const ulong* d1 [[buffer(19)]],device const ulong* d2 [[buffer(20)]],
+ device ulong* output [[buffer(21)]],device atomic_uint* failure [[buffer(22)]],
+ constant OwnerParams& p [[buffer(23)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ device const ulong* words[21]={p0,p1,p2,t0,t1,t2,f0,f1,f2,c0,c1,c2,e0,e1,e2,s0,s1,s2,d0,d1,d2};
+ if(p.stage!=2u||p.attempt==0ul||atomic_load_explicit(failure,memory_order_relaxed)!=0u){
+  output[0]=0ul;atomic_fetch_or_explicit(failure,1u<<25u,memory_order_relaxed);return;}
+ ulong hash=14695981039346656037ul;for(uint i=0u;i<21u;++i){if(words[i][0]==0ul){output[0]=0ul;
+  atomic_fetch_or_explicit(failure,1u<<25u,memory_order_relaxed);return;}hash^=words[i][0];hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;output[0]=hash==0ul?1ul:hash;}
 )METAL";
 				return source.c_str();
 			}
@@ -2806,7 +3075,10 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 				produceFrozenSource(nil),identifyFrozenSource(nil),
 				evaluateTargetTerms(nil),finalizeTarget(nil),identifyTarget(nil),
 				identifyProjectionConsumer(nil),consumeTarget(nil),
-				diagnoseEOSLog(nil)
+				diagnoseEOSLog(nil),ownerIssueBootstrap(nil),ownerPackFaces(nil),ownerAverageField(nil),ownerGasSource(nil),
+				ownerPredictMomentum(nil),ownerHeunMomentum(nil),ownerBindTransport(nil),
+				ownerAverageFlux(nil),ownerBindAveragedFlux(nil),ownerBindCandidate(nil),
+				ownerResidual(nil),ownerClassResidual(nil),ownerIntegratedOpenHead(nil),ownerIssuePublication(nil)
 			{
 				@autoreleasepool {
 					device=DiscoverProductionMetalDevice("resident transport",error);
@@ -2842,13 +3114,31 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 					identifyProjectionConsumer=pipeline("issue_resident_projection_consumer");
 					consumeTarget=pipeline("consume_resident_target");
 					diagnoseEOSLog=pipeline("diagnose_eos_log_enclosure");
+					ownerIssueBootstrap=pipeline("owner_issue_bootstrap_target");
+					ownerPackFaces=pipeline("owner_pack_faces");
+					ownerAverageField=pipeline("owner_average_field");
+					ownerGasSource=pipeline("owner_gas_source");
+					ownerPredictMomentum=pipeline("owner_predict_momentum");
+					ownerHeunMomentum=pipeline("owner_heun_momentum");
+					ownerBindTransport=pipeline("owner_bind_transport");
+					ownerAverageFlux=pipeline("owner_average_flux");
+					ownerBindAveragedFlux=pipeline("owner_bind_averaged_flux");
+					ownerBindCandidate=pipeline("owner_bind_candidate");
+					ownerResidual=pipeline("owner_residual");
+					ownerClassResidual=pipeline("owner_class_residual");
+					ownerIntegratedOpenHead=pipeline("owner_integrated_open_head");
+					ownerIssuePublication=pipeline("owner_issue_publication");
 					if(!evaluate||!identify||!physicalFlux||!advectivePair||!finalizeAdvective||!composePair||
 						!validatePhysical||!identifyPhysical||
 						!identifyEOSCandidate||!evaluateEOSCandidate||!finalizeEOSCandidate||!identifyEOS||
 						!produceFrozenSource||!identifyFrozenSource||
 						!evaluateTargetTerms||!finalizeTarget||!identifyTarget||
 						!identifyProjectionConsumer||!consumeTarget||
-						!diagnoseEOSLog){error=MetalError(
+						!diagnoseEOSLog||!ownerIssueBootstrap||!ownerPackFaces||!ownerAverageField||!ownerGasSource||
+						!ownerPredictMomentum||!ownerHeunMomentum||!ownerBindTransport||
+						!ownerAverageFlux||!ownerBindAveragedFlux||!ownerBindCandidate||
+						!ownerResidual||!ownerClassResidual||!ownerIntegratedOpenHead||
+						!ownerIssuePublication){error=MetalError(
 						"production resident authority pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
 					const char* sourceBytes=Source();eosLogIdentity.deviceRegistryId=
@@ -5888,6 +6178,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 		class ResidentFrozenSourceMetalAuthority;
 		class ResidentProjectionMetadataMetalAuthority;
 		class ResidentProjectionTargetMetalAuthority;
+		class ResidentProjectedHeunMetalOwner;
 		bool EncodeResidentEOSQualificationCandidate(
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -5902,6 +6193,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		class ResidentTransportMetalAuthority
 		{
+			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentTransportAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -5979,6 +6271,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		class ResidentPhysicalFluxMetalAuthority
 		{
+			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentPhysicalFluxAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -6048,6 +6341,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		class ResidentEOSCandidateMetalAuthority
 		{
+			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentEOSAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
@@ -6113,6 +6407,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		class ResidentEOSMetalAuthority
 		{
+			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentEOSAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
@@ -6158,6 +6453,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		class ResidentFrozenSourceMetalAuthority
 		{
+			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentFrozenSourceAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				const FireProductionFrozenSourcePacketSeal&,
@@ -6229,6 +6525,7 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 
 		class ResidentProjectionTargetMetalAuthority
 		{
+			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentProjectionTargetAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -6388,6 +6685,770 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			parameters.parentCandidateIdentity=request.parentCandidateIdentity;
 			parameters.projectionIdentity=request.projectionIdentity;
 			return true;
+		}
+
+		bool PrepareResidentEOSCandidateRequest(
+			const FireProductionResidentEOSCandidateComparatorRequest&,
+			MetalResidentTransportParameters&,MetalResidentPhysicalFluxParameters&,
+			MetalResidentEOSParameters&,std::array<std::size_t,3>&,std::size_t&,
+			std::vector<unsigned char>&,std::vector<unsigned char>&,
+			std::vector<float>&,std::string*);
+
+		class ResidentProjectedHeunMetalOwner
+		{
+			struct Stage
+			{
+				FireProductionMetalProjectionResidentState projection;
+				FireProductionProjectionResult projectionDiagnostics;
+				std::unique_ptr<ResidentTransportMetalAuthority> transport;
+				std::unique_ptr<ResidentPhysicalFluxMetalAuthority> physical;
+				std::unique_ptr<ResidentEOSCandidateMetalAuthority> candidate;
+				std::unique_ptr<ResidentEOSMetalAuthority> eos;
+				std::unique_ptr<ResidentFrozenSourceMetalAuthority> source;
+				std::unique_ptr<ResidentProjectionTargetMetalAuthority> target;
+				FireProductionMetalNonpressureMomentumRHSResidentResult nonpressure;
+				id<MTLBuffer> packedVelocity,packedDensity,packedMomentum,gasDensity,
+					gasSource,advectionRate,nextMomentum;
+				double deviceMS;
+				std::uint64_t allocationBytes;
+				std::uint32_t acceptedIterationCount;
+				Stage() : packedVelocity(nil),packedDensity(nil),packedMomentum(nil),
+					gasDensity(nil),gasSource(nil),advectionRate(nil),nextMomentum(nil),
+					deviceMS(0.0),allocationBytes(0u),acceptedIterationCount(0u) {}
+			};
+
+			const FireProductionProjectedHeunMetalOwnerRequest& request_;
+			ResidentTransportMetalContext& context_;
+			SingleStageFCTMetalContext& fct_;
+			FireProductionProjectionShape shape_;
+			std::size_t cells_,allFaces_,boundaryFaces_;
+			std::array<std::size_t,3> faceOffset_;
+			MetalResidentTransportParameters transportMetadata_;
+			MetalResidentPhysicalFluxParameters physicalMetadata_;
+			MetalResidentEOSParameters eosMetadata_;
+			MetalSingleStageFCTParameters fctMetadata_;
+			MetalResidentTargetParameters targetMetadata_;
+			MetalResidentProjectionConsumerParameters projectionMetadata_;
+			MetalProjectedHeunOwnerParameters ownerMetadata_;
+			id<MTLBuffer> q0_,t0_,m0_,sourceDelta_,fuel_,initialInflow_,thermo_,eosThermo_,
+				transportData_,ambient_,physicalBasis_,advectiveBasis_,projector_,enthalpy_,
+				affine_,fctParameters_[3],transportParameters_[3],physicalParameters_,
+				eosParameters_[3],targetParameters_[3],projectionParameters_,ownerParameters_[3],
+				failure_,transportObligations_,physicalObligations_,eosObligations_,
+				targetObligations_,zeroTarget_,zeroTargetIdentity_,rootCandidateIdentity_,
+				integratedOpenHead_;
+			std::uint32_t commits_,projectionInvocations_;
+			std::uint64_t actualBytes_;
+			double deviceMS_,projectionDeviceMS_;
+
+			id<MTLBuffer> Private(const std::size_t bytes)
+			{
+				id<MTLBuffer> value=[context_.device newBufferWithLength:bytes
+					options:MTLResourceStorageModePrivate];
+				if(value)actualBytes_+=[value allocatedSize];
+				return value;
+			}
+			id<MTLBuffer> Upload(const void* bytes,const std::size_t length)
+			{
+				id<MTLBuffer> value=[context_.device newBufferWithBytes:bytes length:length
+					options:MTLResourceStorageModeShared];
+				if(value)actualBytes_+=[value allocatedSize];
+				return value;
+			}
+			bool Encode(id<MTLCommandBuffer> command,id<MTLComputePipelineState> pipeline,
+				const std::initializer_list<id<MTLBuffer> >& buffers,const std::size_t threads)
+			{
+				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				if(!encoder)return false;[encoder setComputePipelineState:pipeline];
+				std::size_t index=0u;for(id<MTLBuffer> buffer:buffers)
+					[encoder setBuffer:buffer offset:0 atIndex:index++];
+				Dispatch(encoder,pipeline,threads);[encoder endEncoding];return true;
+			}
+			bool ResetControls(id<MTLCommandBuffer> command)
+			{
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!blit)return false;const id<MTLBuffer> controls[]={failure_,transportObligations_,
+					physicalObligations_,eosObligations_,targetObligations_};
+				for(id<MTLBuffer> value:controls){
+					[blit fillBuffer:value range:NSMakeRange(0,[value length]) value:0u];
+				}
+				[blit endEncoding];return true;
+			}
+			bool Commit(id<MTLCommandBuffer> command,std::string* error)
+			{
+				CommitTrackedMetalCommand(command);[command waitUntilCompleted];++commits_;
+				if([command status]!=MTLCommandBufferStatusCompleted){
+					if(error)*error=MetalError("projected-Heun resident owner command failed",
+						[command error]);
+					return false;
+				}
+				deviceMS_+=([command GPUEndTime]-[command GPUStartTime])*1000.0;return true;
+			}
+			bool Project(id<MTLBuffer> state,id<MTLBuffer> momentum,id<MTLBuffer> target,
+				id<MTLBuffer> targetIdentity,id<MTLBuffer> sealedInflow,id<MTLBuffer> sealedHead,
+				const bool deriveEndpoint,Stage& output,std::string* error)
+			{
+				FireProductionProjectionRequest projection;
+				projection.shape=shape_;projection.timeStepS=ownerMetadata_.timeStepS;
+				projection.ambientDensityKGPerM3=request_.ambientDensityKGPerM3;
+				projection.boundary=request_.lineage.eos.physicalFlux.transport.boundary;
+				projection.gasDensityKGPerM3.assign(cells_,request_.ambientDensityKGPerM3);
+				projection.divergenceTargetPerS.assign(cells_,0.0f);
+				projection.openClassificationMode=sealedInflow?
+					FireProductionProjectionUseSealedOpenClassification:
+					FireProductionProjectionDeriveOpenClassification;
+				projection.openHeadMode=sealedHead?FireProductionProjectionUseSealedOpenHead:
+					FireProductionProjectionDeriveCurrentOpenHead;
+				projection.outputClassificationMode=deriveEndpoint?
+					FireProductionProjectionDeriveEndpointOpenClassification:
+					FireProductionProjectionPreserveOpenClassification;
+				projection.endpointVelocityToleranceMPerS=request_.endpointVelocityToleranceMPerS;
+				if(sealedInflow||sealedHead)for(unsigned int side=0u;side<6u;++side){
+					const std::size_t count=side<2u?shape_.ny*shape_.nz:
+						(side<4u?shape_.nx*shape_.nz:shape_.nx*shape_.ny);
+					if(sealedInflow)projection.sealedPressureOpenInflow[side].assign(count,0u);
+					if(sealedHead)projection.sealedPressureOpenDynamicPressurePa[side].assign(count,0.0f);}
+				for(unsigned int axis=0u;axis<3u;++axis)
+					projection.provisionalMomentumKGPerM2S[axis].assign(
+						FireProductionProjectionFaceCount(shape_,axis),0.0f);
+				id<MTLBuffer> gasDensity=Private(cells_*sizeof(float));
+				id<MTLCommandBuffer> densityCommand=TrackedMetalCommandBuffer(context_.queue);
+				if(!densityCommand||!Encode(densityCommand,fct_.extractGasDensity,
+					{state,gasDensity,fctParameters_[0]},cells_)){
+					if(error)*error="projected-Heun resident density encoder failed";return false;}
+				if(!Commit(densityCommand,error))return false;
+				FireProductionMetalProjectionResidentInput input;input.gasDensityKGPerM3=gasDensity;
+				input.provisionalMomentumKGPerM2S.fill(momentum);
+				for(unsigned int axis=0u;axis<3u;++axis)
+					input.provisionalMomentumByteOffset[axis]=faceOffset_[axis]*sizeof(float);
+				input.divergenceTargetPerS=target;input.targetPublicationIdentity=targetIdentity;
+				input.sealedPressureOpenInflow=sealedInflow;
+				input.sealedPressureOpenDynamicPressurePa=sealedHead;
+				if(!ProjectFireProductionMetalResidentState(projection,input,output.projection,
+					output.projectionDiagnostics,error))return false;
+				++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+				projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+				return output.projection.publicationIdentity!=nil&&
+					[output.projection.pressureOpenInflow storageMode]==MTLStorageModePrivate;
+			}
+			bool CustomCandidate(id<MTLCommandBuffer> command,const unsigned int stage,
+				const ResidentTransportMetalAuthority& transport,
+				ResidentPhysicalFluxMetalAuthority& physical,id<MTLBuffer> parentIdentity,
+				ResidentEOSCandidateMetalAuthority& candidate,std::string* error)
+			{
+				const std::size_t stateBytes=9u*cells_*sizeof(float);
+				candidate.conservative=Private(stateBytes);candidate.sourceDelta=sourceDelta_;
+				candidate.faceAlpha=Private(allFaces_*sizeof(float));
+				candidate.producerIdentity=Private(sizeof(std::uint64_t));
+				candidate.publicationIdentity=Private(sizeof(std::uint64_t));
+				id<MTLBuffer> lowState=Private(stateBytes),ratio=Private(11u*cells_*sizeof(float));
+				if(!candidate.conservative||!candidate.faceAlpha||!candidate.producerIdentity||
+					!candidate.publicationIdentity||!lowState||!ratio)return false;
+				candidate.parentCommand=command;candidate.parentPhysicalPublicationIdentity=
+					physical.publicationIdentity;candidate.parentTransportPublicationIdentity=
+					transport.publicationIdentity;candidate.parentEOSThermochemistry=eosThermo_;
+				candidate.parentEOSParameters=eosParameters_[stage];
+				candidate.parentFCTParameters=fctParameters_[stage];candidate.cells=cells_;
+				candidate.allocationBytes=[candidate.conservative allocatedSize]+
+					[candidate.faceAlpha allocatedSize]+[candidate.producerIdentity allocatedSize]+
+					[candidate.publicationIdentity allocatedSize]+[lowState allocatedSize]+[ratio allocatedSize];
+				if(stage==2u){
+					id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];if(!blit)return false;
+					[blit copyFromBuffer:transport.parentState sourceOffset:0
+						toBuffer:candidate.conservative destinationOffset:0 size:stateBytes];
+					[blit fillBuffer:candidate.faceAlpha range:NSMakeRange(0,
+						allFaces_*sizeof(float)) value:0u];[blit endEncoding];
+				}else if(!Encode(command,fct_.buildRatios,{stage==1u?q0_:transport.parentState,sourceDelta_,
+					physical.lowComposite,physical.advectiveDelta,enthalpy_,lowState,ratio,failure_,
+					fctParameters_[stage]},11u*cells_)||
+					!Encode(command,fct_.buildFaceAlpha,{physical.advectiveDelta,ratio,enthalpy_,
+						candidate.faceAlpha,failure_,fctParameters_[stage]},allFaces_)||
+					!Encode(command,fct_.commitScalar,{lowState,physical.advectiveDelta,
+						candidate.faceAlpha,enthalpy_,affine_,candidate.conservative,failure_,
+						fctParameters_[stage]},cells_)){
+					if(error)*error="projected-Heun resident candidate FCT encoder failed";
+					return false;
+				}
+				if(
+					!Encode(command,context_.ownerBindCandidate,{candidate.conservative,
+						candidate.faceAlpha,transport.publicationIdentity,physical.publicationIdentity,
+						parentIdentity,candidate.producerIdentity,failure_,ownerParameters_[stage]},1u)||
+					!Encode(command,context_.finalizeEOSCandidate,{candidate.producerIdentity,
+						candidate.publicationIdentity,failure_},1u)){
+					if(error)*error="projected-Heun resident candidate encoder failed";return false;}
+				return true;
+			}
+			bool BuildStage(const unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
+				id<MTLBuffer> parentIdentity,Stage& output,const Stage* r0,std::string* error)
+			{
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				if(!command||!ResetControls(command))return false;
+				output.packedVelocity=Private(allFaces_*sizeof(float));
+				output.packedDensity=Private(allFaces_*sizeof(float));
+				output.packedMomentum=Private(allFaces_*sizeof(float));
+				output.gasDensity=Private(cells_*sizeof(float));
+				output.gasSource=Private(cells_*sizeof(float));
+				output.advectionRate=Private(allFaces_*sizeof(float));
+				output.nextMomentum=Private(allFaces_*sizeof(float));
+				if(!output.packedVelocity||!output.packedDensity||!output.packedMomentum||
+					!output.gasDensity||!output.gasSource||!output.advectionRate||!output.nextMomentum)
+					return false;
+				if(!Encode(command,context_.ownerPackFaces,{output.projection.velocityMPerS[0],
+					output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
+					output.packedVelocity,ownerParameters_[stage]},allFaces_)||
+					!Encode(command,context_.ownerPackFaces,{output.projection.faceDensityKGPerM3[0],
+						output.projection.faceDensityKGPerM3[1],output.projection.faceDensityKGPerM3[2],
+						output.packedDensity,ownerParameters_[stage]},allFaces_)||
+					!Encode(command,context_.ownerPackFaces,{output.projection.momentumKGPerM2S[0],
+						output.projection.momentumKGPerM2S[1],output.projection.momentumKGPerM2S[2],
+						output.packedMomentum,ownerParameters_[stage]},allFaces_)||
+					!Encode(command,fct_.extractGasDensity,{state,output.gasDensity,
+						fctParameters_[stage]},cells_)||
+					!Encode(command,context_.ownerGasSource,{sourceDelta_,output.gasSource,
+						ownerParameters_[stage]},cells_))return false;
+				output.transport.reset(new ResidentTransportMetalAuthority);
+				if(!EncodeResidentTransportAuthority(context_,command,state,temperature,
+					output.packedVelocity,thermo_,transportData_,fuel_,transportParameters_[stage],
+					failure_,transportObligations_,cells_,allFaces_,boundaryFaces_,
+					*output.transport,error)||!Encode(command,context_.ownerBindTransport,
+					{parentIdentity,output.projection.publicationIdentity,
+					output.transport->publicationIdentity,failure_,ownerParameters_[stage]},1u))return false;
+				output.physical.reset(new ResidentPhysicalFluxMetalAuthority);
+				if(!EncodeResidentPhysicalFluxAuthority(context_,command,state,temperature,
+					output.packedVelocity,thermo_,ambient_,output.projection.pressureOpenInflow,
+					physicalBasis_,advectiveBasis_,projector_,transportParameters_[stage],
+					physicalParameters_,failure_,physicalObligations_,*output.transport,cells_,allFaces_,
+					physicalMetadata_,*output.physical,error))return false;
+				if(stage==1u&&r0){
+					id<MTLBuffer> low=Private(9u*allFaces_*sizeof(float));
+					id<MTLBuffer> delta=Private(9u*allFaces_*sizeof(float));
+					id<MTLBuffer> high=Private(9u*allFaces_*sizeof(float));
+					id<MTLBuffer> identity=Private(sizeof(std::uint64_t));
+					if(!low||!delta||!high||!identity||!Encode(command,context_.ownerAverageFlux,
+						{r0->physical->lowComposite,r0->physical->advectiveDelta,
+						 output.physical->lowComposite,output.physical->advectiveDelta,low,delta,high,
+						 ownerParameters_[stage]},9u*allFaces_)||
+						!Encode(command,context_.ownerBindAveragedFlux,{low,delta,
+						 r0->physical->publicationIdentity,output.physical->publicationIdentity,
+						 output.transport->publicationIdentity,identity,failure_,ownerParameters_[stage]},1u))
+						return false;
+					output.physical->lowComposite=low;output.physical->advectiveDelta=delta;
+					output.physical->highComposite=high;output.physical->publicationIdentity=identity;
+					output.physical->parentTransportPublicationIdentity=
+						output.transport->publicationIdentity;
+				}
+				output.candidate.reset(new ResidentEOSCandidateMetalAuthority);
+				if(!CustomCandidate(command,stage,*output.transport,*output.physical,parentIdentity,
+					*output.candidate,error))return false;
+				output.eos.reset(new ResidentEOSMetalAuthority);
+				if(!EncodeResidentEOSAuthority(context_,command,thermo_,eosThermo_,eosParameters_[stage],
+					failure_,eosObligations_,*output.transport,*output.physical,*output.candidate,
+					eosMetadata_,*output.eos,error))return false;
+				output.source.reset(new ResidentFrozenSourceMetalAuthority);
+				if(!EncodeResidentFrozenSourceAuthority(context_,command,failure_,targetObligations_,
+					request_.lineage.frozenSource,*output.candidate,targetMetadata_,*output.source,error))
+					return false;
+				output.target.reset(new ResidentProjectionTargetMetalAuthority);
+				if(!EncodeResidentProjectionTargetAuthority(context_,command,eosThermo_,
+					targetParameters_[stage],projectionParameters_,nil,nil,failure_,targetObligations_,
+					*output.transport,*output.physical,*output.candidate,*output.eos,*output.source,
+					targetMetadata_,*output.target,error))return false;
+				FireProductionMetalNonpressureMomentumRHSResidentInput rhs;
+				rhs.shape=shape_;rhs.ambientDensityKGPerM3=request_.ambientDensityKGPerM3;
+				rhs.vremanCoefficient=request_.vremanCoefficient;rhs.gravityMPerS2=request_.gravityMPerS2;
+				rhs.boundary=request_.lineage.eos.physicalFlux.transport.boundary;
+				rhs.commandBuffer=command;rhs.cellGasDensityKGPerM3=output.gasDensity;
+				rhs.molecularKinematicViscosityM2PerS=output.transport->coefficients;
+				rhs.cellGasPhaseSourceRateKGPerM3S=output.gasSource;
+				rhs.packedFaceDensityKGPerM3=output.packedDensity;
+				rhs.packedMomentumKGPerM2S=output.packedMomentum;
+				FireProductionNonpressureMomentumRHSMetalDiagnostics rhsDiagnostics;
+				// The resident RHS API currently has no byte offset, so copy the third
+				// coefficient plane into a private view without exposing it to the host.
+				id<MTLBuffer> molecular=Private(cells_*sizeof(float));
+				id<MTLBlitCommandEncoder> coefficientBlit=[command blitCommandEncoder];
+				if(!molecular||!coefficientBlit)return false;
+				[coefficientBlit copyFromBuffer:output.transport->coefficients
+					sourceOffset:2u*cells_*sizeof(float) toBuffer:molecular destinationOffset:0
+					size:cells_*sizeof(float)];[coefficientBlit endEncoding];
+				rhs.molecularKinematicViscosityM2PerS=molecular;
+				if(!EvaluateFireProductionNonpressureMomentumRHSMetalResident(rhs,output.nonpressure,
+					rhsDiagnostics,error)||!Encode(command,fct_.compatibleStageRate,
+					{output.physical->lowComposite,output.physical->advectiveDelta,
+					 output.candidate->faceAlpha,output.projection.velocityMPerS[0],
+					 output.projection.velocityMPerS[1],output.projection.velocityMPerS[2],
+					 output.advectionRate,failure_,fctParameters_[stage]},allFaces_))return false;
+				if(stage==0u){if(!Encode(command,context_.ownerPredictMomentum,{m0_,
+					output.nonpressure.combinedMomentumRateKGPerM2S2,output.advectionRate,
+					output.nextMomentum,failure_,ownerParameters_[stage]},allFaces_))return false;}
+				else if(r0){if(!Encode(command,context_.ownerHeunMomentum,{m0_,
+					r0->nonpressure.combinedMomentumRateKGPerM2S2,
+					output.nonpressure.combinedMomentumRateKGPerM2S2,r0->advectionRate,
+					output.advectionRate,output.nextMomentum,failure_,ownerParameters_[stage]},allFaces_))
+					return false;}
+				id<MTLBuffer> stageFailure=[context_.device newBufferWithLength:sizeof(std::uint32_t)
+					options:MTLResourceStorageModeShared];
+				id<MTLBlitCommandEncoder> stageBlit=command?[command blitCommandEncoder]:nil;
+				if(!stageFailure||!stageBlit)return false;
+				[stageBlit copyFromBuffer:failure_ sourceOffset:0 toBuffer:stageFailure
+					destinationOffset:0 size:sizeof(std::uint32_t)];[stageBlit endEncoding];
+				if(!Commit(command,error))return false;
+				const std::uint32_t stageFailureBitmap=
+					*static_cast<const std::uint32_t*>(ReadTrackedMetalBuffer(stageFailure));
+				if(stageFailureBitmap!=0u){
+					if(error)*error="projected-Heun resident stage device validation failed: stage="+
+						std::to_string(stage)+" bitmap="+std::to_string(stageFailureBitmap);
+					if((stageFailureBitmap&65536u)!=0u&&output.target){
+						id<MTLBuffer> diagnostic=[context_.device newBufferWithLength:
+							4u*cells_*sizeof(float) options:MTLResourceStorageModeShared];
+						id<MTLCommandBuffer> diagnosticCommand=TrackedMetalCommandBuffer(context_.queue);
+						id<MTLBlitCommandEncoder> diagnosticBlit=diagnosticCommand?
+							[diagnosticCommand blitCommandEncoder]:nil;
+						if(diagnostic&&diagnosticBlit){const id<MTLBuffer> fields[]={output.target->tangent,
+							output.target->frozenSource,output.target->absoluteDiagnostic,
+							output.target->monitoredAbsolute};
+							for(unsigned int field=0u;field<4u;++field)[diagnosticBlit copyFromBuffer:
+								fields[field] sourceOffset:0 toBuffer:diagnostic
+								destinationOffset:field*cells_*sizeof(float) size:cells_*sizeof(float)];
+							[diagnosticBlit endEncoding];
+							if(Commit(diagnosticCommand,0)){const float* values=
+								static_cast<const float*>(ReadTrackedMetalBuffer(diagnostic));
+								for(std::size_t cell=0u;cell<cells_;++cell)if(std::isnan(values[cell])){
+									std::uint32_t hiBits=0u,loBits=0u,boundBits=0u;
+									std::memcpy(&hiBits,&values[cells_+cell],sizeof(hiBits));
+									std::memcpy(&loBits,&values[2u*cells_+cell],sizeof(loBits));
+									std::memcpy(&boundBits,&values[3u*cells_+cell],sizeof(boundBits));
+									if(error)*error+=" tangent_cell="+std::to_string(cell)+
+										" hi_bits="+std::to_string(hiBits)+
+										" lo_bits="+std::to_string(loBits)+
+										" bound_bits="+std::to_string(boundBits);
+									break;}}
+						}
+					}
+					return false;
+				}
+				output.deviceMS=([command GPUEndTime]-[command GPUStartTime])*1000.0;return true;
+			}
+			bool Prepare(std::string* error);
+			bool SolveStage(unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
+				id<MTLBuffer> momentum,id<MTLBuffer> parentIdentity,const Stage* r0,
+				id<MTLBuffer> initialSealedInflow,id<MTLBuffer> sealedHead,
+				std::unique_ptr<Stage>& accepted,std::string* error);
+		public:
+			explicit ResidentProjectedHeunMetalOwner(
+				const FireProductionProjectedHeunMetalOwnerRequest& request) : request_(request),
+				context_(ResidentTransportContext()),fct_(SingleStageFCTContext()),cells_(0u),
+				allFaces_(0u),boundaryFaces_(0u),q0_(nil),t0_(nil),m0_(nil),sourceDelta_(nil),
+				fuel_(nil),initialInflow_(nil),thermo_(nil),eosThermo_(nil),transportData_(nil),
+				ambient_(nil),physicalBasis_(nil),advectiveBasis_(nil),projector_(nil),
+				enthalpy_(nil),affine_(nil),physicalParameters_(nil),projectionParameters_(nil),
+				failure_(nil),transportObligations_(nil),physicalObligations_(nil),
+				eosObligations_(nil),targetObligations_(nil),zeroTarget_(nil),
+				zeroTargetIdentity_(nil),rootCandidateIdentity_(nil),integratedOpenHead_(nil),commits_(0u),
+				projectionInvocations_(0u),actualBytes_(0u),deviceMS_(0.0),projectionDeviceMS_(0.0)
+			{fctParameters_[0]=fctParameters_[1]=fctParameters_[2]=nil;
+			 transportParameters_[0]=transportParameters_[1]=transportParameters_[2]=nil;
+			 eosParameters_[0]=eosParameters_[1]=eosParameters_[2]=nil;
+			 targetParameters_[0]=targetParameters_[1]=targetParameters_[2]=nil;
+			 ownerParameters_[0]=ownerParameters_[1]=ownerParameters_[2]=nil;}
+			bool Run(FireProductionProjectedHeunMetalOwnerResult& result,std::string* error);
+		};
+
+		bool ResidentProjectedHeunMetalOwner::Prepare(std::string* error)
+		{
+			if(!context_.Valid()||!fct_.Valid()||context_.device!=fct_.device){
+				if(error)*error="projected-Heun resident owner Metal context is unavailable";
+				return false;
+			}
+			std::vector<unsigned char> packedFuel,packedInflow;std::vector<float> physicalBasis;
+			if(!PrepareResidentEOSCandidateRequest(request_.lineage.eos,transportMetadata_,
+				physicalMetadata_,eosMetadata_,faceOffset_,allFaces_,packedFuel,packedInflow,
+				physicalBasis,error))return false;
+			shape_=request_.lineage.eos.physicalFlux.transport.shape;cells_=shape_.CellCount();
+			boundaryFaces_=packedFuel.size();
+			if(request_.lineage.frozenSource.Shape().nx!=shape_.nx||
+				!FireProductionFrozenSourcePacketSealMatches(request_.lineage.frozenSource,error)||
+				request_.beginningMomentumKGPerM2S[0].size()!=
+					FireProductionProjectionFaceCount(shape_,0u)||
+				request_.beginningMomentumKGPerM2S[1].size()!=
+					FireProductionProjectionFaceCount(shape_,1u)||
+				request_.beginningMomentumKGPerM2S[2].size()!=
+					FireProductionProjectionFaceCount(shape_,2u)||
+				request_.maximumPicardIterations<2u||request_.maximumPicardIterations>64u||
+				!std::isfinite(request_.projectionTolerancePerS)||
+				request_.projectionTolerancePerS<0.0f)return false;
+			std::array<float,MetalResidentTransportSpeciesCount*
+				MetalResidentTransportSpeciesStride> packedTransport;
+			std::array<float,MetalManifoldCertificateValues> packedThermo;
+			std::array<float,MetalEOSThermochemistryValues> packedEOSThermo;
+			MetalManifoldParameters manifold={};std::array<double,7> lower,upper;
+			std::vector<float> fctBasis,fctProjector,affine;
+			std::array<float,14> enthalpy={{}};float feasibility=0.0f,reserve=0.0f;
+			if(!PackMetalResidentTransport(packedTransport,transportMetadata_,error)||
+				!PackMetalMethaneThermochemistry(packedThermo,manifold,lower,upper,error)||
+				!PackMetalEOSDoubleDoubleThermochemistry(packedEOSThermo,error)||
+				!PackMetalSingleStageFCTCertificate(fctBasis,fctProjector,enthalpy,affine,
+					feasibility,reserve,error))return false;
+			const auto& flux=request_.lineage.eos.physicalFlux;
+			fctMetadata_={static_cast<std::uint32_t>(shape_.nx),static_cast<std::uint32_t>(shape_.ny),
+				static_cast<std::uint32_t>(shape_.nz),static_cast<std::uint32_t>(cells_),9u,11u,
+				static_cast<std::uint32_t>(flux.nullity),static_cast<std::uint32_t>(affine.size()/8u),
+				{},{},shape_.cellWidthM,request_.lineage.eos.candidateTimeStepS,feasibility,reserve};
+			std::size_t sideOffset=0u;for(unsigned int side=0u;side<6u;++side){
+				fctMetadata_.boundary[side]=static_cast<std::uint32_t>(flux.transport.boundary[side]);
+				fctMetadata_.sideOffset[side]=static_cast<std::uint32_t>(sideOffset);
+				sideOffset+=flux.pressureOpenInflow[side].size();}
+			targetMetadata_={static_cast<std::uint32_t>(shape_.nx),static_cast<std::uint32_t>(shape_.ny),
+				static_cast<std::uint32_t>(shape_.nz),static_cast<std::uint32_t>(cells_),{},{},
+				shape_.cellWidthM,request_.lineage.eos.candidateTimeStepS,0x1p-4f,0u,{0u,0u,0u},
+				flux.transport.attemptIdentity,request_.lineage.frozenSource.PacketIdentity()};
+			for(unsigned int axis=0u;axis<3u;++axis)targetMetadata_.faceOffset[axis]=
+				static_cast<std::uint32_t>(faceOffset_[axis]);
+			for(unsigned int side=0u;side<6u;++side)targetMetadata_.boundary[side]=
+				static_cast<std::uint32_t>(flux.transport.boundary[side]);
+			projectionMetadata_={static_cast<std::uint32_t>(shape_.nx),
+				static_cast<std::uint32_t>(shape_.ny),static_cast<std::uint32_t>(shape_.nz),
+				static_cast<std::uint32_t>(cells_),{},{0u,0u},shape_.cellWidthM,
+				request_.lineage.eos.candidateTimeStepS,flux.transport.attemptIdentity};
+			for(unsigned int side=0u;side<6u;++side)projectionMetadata_.boundary[side]=
+				targetMetadata_.boundary[side];
+			ownerMetadata_={static_cast<std::uint32_t>(cells_),static_cast<std::uint32_t>(allFaces_),
+				{static_cast<std::uint32_t>(faceOffset_[0]),static_cast<std::uint32_t>(faceOffset_[1]),
+				 static_cast<std::uint32_t>(faceOffset_[2])},0u,request_.lineage.eos.candidateTimeStepS,
+				shape_.cellWidthM,{0u,0u},flux.transport.attemptIdentity};
+			std::vector<float> packedMomentum;packedMomentum.reserve(allFaces_);
+			for(const auto& axis:request_.beginningMomentumKGPerM2S)
+				packedMomentum.insert(packedMomentum.end(),axis.begin(),axis.end());
+			const std::size_t stateBytes=9u*cells_*sizeof(float),fieldBytes=cells_*sizeof(float);
+			struct Pair{id<MTLBuffer> upload,device;std::size_t bytes;};std::vector<Pair> copies;
+			auto copyIn=[&](const void* values,const std::size_t bytes){Pair pair={Upload(values,bytes),
+				Private(bytes),bytes};copies.push_back(pair);return pair.device;};
+			q0_=copyIn(flux.transport.conservativeValues.data(),stateBytes);
+			t0_=copyIn(flux.transport.temperatureK.data(),fieldBytes);
+			m0_=copyIn(packedMomentum.data(),allFaces_*sizeof(float));
+			sourceDelta_=copyIn(request_.lineage.eos.sourceDelta.data(),stateBytes);
+			fuel_=copyIn(packedFuel.data(),packedFuel.size());
+			initialInflow_=copyIn(packedInflow.data(),packedInflow.size());
+			thermo_=copyIn(packedThermo.data(),packedThermo.size()*sizeof(float));
+			eosThermo_=copyIn(packedEOSThermo.data(),packedEOSThermo.size()*sizeof(float));
+			transportData_=copyIn(packedTransport.data(),packedTransport.size()*sizeof(float));
+			ambient_=copyIn(flux.ambient.data(),9u*sizeof(float));
+			physicalBasis_=copyIn(physicalBasis.data(),physicalBasis.size()*sizeof(float));
+			advectiveBasis_=copyIn(flux.nullspaceBasis.data(),flux.nullspaceBasis.size()*sizeof(float));
+			projector_=copyIn(flux.coordinateProjector.data(),flux.coordinateProjector.size()*sizeof(float));
+			enthalpy_=copyIn(enthalpy.data(),enthalpy.size()*sizeof(float));
+			affine_=copyIn(affine.data(),affine.size()*sizeof(float));
+			physicalParameters_=copyIn(&physicalMetadata_,sizeof(physicalMetadata_));
+			projectionParameters_=copyIn(&projectionMetadata_,sizeof(projectionMetadata_));
+			for(unsigned int stage=0u;stage<3u;++stage){
+				MetalResidentTransportParameters transport=transportMetadata_;transport.stage=stage;
+				transport.parentCandidateIdentity=transport.projectionIdentity=flux.transport.attemptIdentity;
+				transportParameters_[stage]=copyIn(&transport,sizeof(transport));
+				fctParameters_[stage]=copyIn(&fctMetadata_,sizeof(fctMetadata_));
+				MetalResidentEOSParameters eos=eosMetadata_;eos.stage=stage==0u?1u:2u;
+				eosParameters_[stage]=copyIn(&eos,sizeof(eos));
+				targetParameters_[stage]=copyIn(&targetMetadata_,sizeof(targetMetadata_));
+				MetalProjectedHeunOwnerParameters owner=ownerMetadata_;owner.stage=stage;
+				ownerParameters_[stage]=copyIn(&owner,sizeof(owner));}
+			failure_=Private(sizeof(std::uint32_t));transportObligations_=Private(sizeof(std::uint32_t));
+			physicalObligations_=Private(sizeof(std::uint32_t));eosObligations_=Private(sizeof(std::uint32_t));
+			targetObligations_=Private(sizeof(std::uint32_t));zeroTarget_=Private(fieldBytes);
+			zeroTargetIdentity_=Private(sizeof(std::uint64_t));rootCandidateIdentity_=Private(sizeof(std::uint64_t));
+			if(!q0_||!t0_||!m0_||!sourceDelta_||!fuel_||!initialInflow_||!thermo_||
+				!eosThermo_||!transportData_||!ambient_||!physicalBasis_||!advectiveBasis_||
+				!projector_||!enthalpy_||!affine_||!failure_||!zeroTarget_||
+				!zeroTargetIdentity_||!rootCandidateIdentity_)return false;
+			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+			id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;if(!blit)return false;
+			for(const Pair& pair:copies)[blit copyFromBuffer:pair.upload sourceOffset:0
+				toBuffer:pair.device destinationOffset:0 size:pair.bytes];
+			[blit fillBuffer:zeroTarget_ range:NSMakeRange(0,fieldBytes) value:0u];
+			const id<MTLBuffer> controls[]={failure_,transportObligations_,physicalObligations_,
+				eosObligations_,targetObligations_};
+			for(id<MTLBuffer> value:controls){
+				[blit fillBuffer:value range:NSMakeRange(0,[value length]) value:0u];
+			}
+			[blit endEncoding];
+			if(!Encode(command,context_.ownerIssueBootstrap,{zeroTarget_,q0_,sourceDelta_,
+				zeroTargetIdentity_,rootCandidateIdentity_,ownerParameters_[0]},1u)||
+				!Commit(command,error))return false;
+			return true;
+		}
+
+		bool ResidentProjectedHeunMetalOwner::SolveStage(const unsigned int stage,
+			id<MTLBuffer> state,id<MTLBuffer> temperature,id<MTLBuffer> momentum,
+			id<MTLBuffer> parentIdentity,const Stage* r0,id<MTLBuffer> initialSealedInflow,
+			id<MTLBuffer> sealedHead,std::unique_ptr<Stage>& accepted,
+			std::string* error)
+		{
+			std::unique_ptr<Stage> seed(new Stage);
+			if(!Project(state,momentum,zeroTarget_,zeroTargetIdentity_,initialSealedInflow,
+				sealedHead,stage==2u,*seed,error)||
+				!BuildStage(stage,state,temperature,parentIdentity,*seed,r0,error))return false;
+			std::unique_ptr<Stage> prior=std::move(seed);unsigned int stable=0u;
+			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;++iteration){
+				std::unique_ptr<Stage> current(new Stage);
+				id<MTLBuffer> classSeed=stage==2u?prior->projection.pressureOpenInflow:nil;
+				if(!Project(state,momentum,prior->target->assembled,
+					prior->target->publicationIdentity,classSeed,sealedHead,stage==2u,*current,error)||
+					!BuildStage(stage,state,temperature,parentIdentity,*current,r0,error))return false;
+				id<MTLBuffer> maximum=Private(sizeof(std::uint32_t));
+				id<MTLBuffer> classChanged=Private(sizeof(std::uint32_t));
+				id<MTLBuffer> terminal=[context_.device newBufferWithLength:2u*sizeof(std::uint32_t)
+					options:MTLResourceStorageModeShared];
+				id<MTLBuffer> cellCount=Upload(&ownerMetadata_.cells,sizeof(std::uint32_t));
+				id<MTLBuffer> faceCount=Upload(&ownerMetadata_.allFaces,sizeof(std::uint32_t));
+				const std::uint32_t coefficientCount=3u*ownerMetadata_.cells;
+				id<MTLBuffer> coefficientCountBuffer=Upload(&coefficientCount,
+					sizeof(coefficientCount));
+				const float one=1.0f,inverseDX=1.0f/shape_.cellWidthM;
+				id<MTLBuffer> unit=Upload(&one,sizeof(one)),momentumScale=Upload(&inverseDX,sizeof(inverseDX));
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				const std::uint32_t boundaryCount=static_cast<std::uint32_t>(boundaryFaces_);
+				id<MTLBuffer> boundaryCountBuffer=Upload(&boundaryCount,sizeof(boundaryCount));
+				if(!maximum||!classChanged||!terminal||!cellCount||!faceCount||
+					!coefficientCountBuffer||!boundaryCountBuffer||
+					!unit||!momentumScale||!blit)return false;
+				[blit fillBuffer:maximum range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];[blit endEncoding];
+				blit=[command blitCommandEncoder];if(!blit)return false;
+				[blit fillBuffer:classChanged range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];[blit endEncoding];
+				if(!Encode(command,context_.ownerResidual,{current->target->assembled,
+					prior->target->assembled,maximum,cellCount,unit},cells_)||
+					!Encode(command,context_.ownerResidual,{current->packedMomentum,
+					prior->packedMomentum,maximum,faceCount,momentumScale},allFaces_)||
+					!Encode(command,context_.ownerResidual,{current->transport->coefficients,
+					prior->transport->coefficients,maximum,coefficientCountBuffer,unit},
+					3u*cells_)||(stage==2u&&!Encode(command,context_.ownerClassResidual,
+					{current->projection.pressureOpenInflow,classSeed,classChanged,boundaryCountBuffer},
+					boundaryFaces_)))return false;
+				blit=[command blitCommandEncoder];if(!blit)return false;
+				[blit copyFromBuffer:maximum sourceOffset:0 toBuffer:terminal destinationOffset:0
+					size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:classChanged sourceOffset:0 toBuffer:terminal
+					destinationOffset:sizeof(std::uint32_t) size:sizeof(std::uint32_t)];
+				[blit endEncoding];if(!Commit(command,error))return false;
+				const std::uint32_t bits=*static_cast<const std::uint32_t*>(
+					ReadTrackedMetalBuffer(terminal));float residual=0.0f;std::memcpy(&residual,&bits,sizeof(bits));
+				const bool classStable=stage!=2u||static_cast<const std::uint32_t*>(
+					ReadTrackedMetalBuffer(terminal))[1]==0u;
+				stable=residual<=request_.projectionTolerancePerS&&classStable?stable+1u:0u;
+				if(stable>=2u){current->acceptedIterationCount=iteration+1u;
+					accepted=std::move(current);return true;}
+				prior=std::move(current);
+			}
+			if(error)*error="projected-Heun resident Picard stage did not converge";return false;
+		}
+
+		bool ResidentProjectedHeunMetalOwner::Run(
+			FireProductionProjectedHeunMetalOwnerResult& result,std::string* error)
+		{
+			result=FireProductionProjectedHeunMetalOwnerResult();
+			const auto wallStart=std::chrono::steady_clock::now();if(!Prepare(error))return false;
+			std::unique_ptr<Stage> r0,r1,r2;
+			if(!SolveStage(0u,q0_,t0_,m0_,rootCandidateIdentity_,0,nil,nil,r0,error))return false;
+			if(!SolveStage(1u,r0->candidate->conservative,r0->eos->temperature,r0->nextMomentum,
+				r0->candidate->publicationIdentity,r0.get(),nil,nil,r1,error))return false;
+			integratedOpenHead_=Private(boundaryFaces_*sizeof(float));
+			id<MTLBuffer> ambientDensity=Upload(&request_.ambientDensityKGPerM3,
+				sizeof(request_.ambientDensityKGPerM3));
+			id<MTLCommandBuffer> headCommand=TrackedMetalCommandBuffer(context_.queue);
+			if(!integratedOpenHead_||!ambientDensity||!headCommand||!Encode(headCommand,
+				context_.ownerIntegratedOpenHead,{r0->packedVelocity,r1->packedVelocity,
+				r0->projection.pressureOpenInflow,r1->projection.pressureOpenInflow,
+				integratedOpenHead_,transportParameters_[0],ambientDensity},boundaryFaces_)||
+				!Commit(headCommand,error))return false;
+			if(!SolveStage(2u,r1->candidate->conservative,r1->eos->temperature,r1->nextMomentum,
+				r1->candidate->publicationIdentity,r0.get(),r1->projection.pressureOpenInflow,
+				integratedOpenHead_,r2,error))return false;
+			id<MTLBuffer> ownerIdentity=Private(sizeof(std::uint64_t));
+			id<MTLBuffer> unitVelocity=Private(allFaces_*sizeof(float));
+			id<MTLBuffer> identityRate=Private(allFaces_*sizeof(float));
+			id<MTLBuffer> commutingResidual=Private(sizeof(std::uint32_t));
+			id<MTLBuffer> commutingScale=Private(sizeof(std::uint32_t));
+			id<MTLBuffer> heunAdvection=Private(allFaces_*sizeof(float));
+			id<MTLBuffer> heunBuoyancy=Private(allFaces_*sizeof(float));
+			id<MTLBuffer> heunStress=Private(allFaces_*sizeof(float));
+			id<MTLBuffer> heunPhaseSource=Private(allFaces_*sizeof(float));
+			id<MTLBuffer> heunEddy=Private(cells_*sizeof(float));
+			id<MTLBuffer> faceCount=Upload(&ownerMetadata_.allFaces,sizeof(std::uint32_t));
+			const std::uint32_t cellCountValue=static_cast<std::uint32_t>(cells_);
+			id<MTLBuffer> cellCount=Upload(&cellCountValue,sizeof(cellCountValue));
+			const float positiveHalf=0.5f,negativeHalf=-0.5f;
+			id<MTLBuffer> positiveHalfBuffer=Upload(&positiveHalf,sizeof(positiveHalf));
+			id<MTLBuffer> negativeHalfBuffer=Upload(&negativeHalf,sizeof(negativeHalf));
+			const std::size_t stateBytes=9u*cells_*sizeof(float),fieldBytes=cells_*sizeof(float);
+			const std::size_t terminalBytes=stateBytes+13u*allFaces_*sizeof(float)+4u*fieldBytes+
+				2u*sizeof(std::uint32_t)+22u*sizeof(std::uint64_t);
+			id<MTLBuffer> terminal=[context_.device newBufferWithLength:terminalBytes
+				options:MTLResourceStorageModeShared];
+			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+			if(!ownerIdentity||!unitVelocity||!identityRate||!commutingResidual||
+				!commutingScale||!heunAdvection||!heunBuoyancy||!heunStress||!heunPhaseSource||
+				!heunEddy||!faceCount||!cellCount||!positiveHalfBuffer||!negativeHalfBuffer||
+				!terminal||!ResetControls(command))return false;
+			id<MTLBlitCommandEncoder> commutingClear=[command blitCommandEncoder];
+			if(!commutingClear)return false;
+			[commutingClear fillBuffer:commutingResidual range:NSMakeRange(0,sizeof(std::uint32_t))
+				value:0u];
+			[commutingClear fillBuffer:commutingScale range:NSMakeRange(0,sizeof(std::uint32_t))
+				value:0u];
+			[commutingClear endEncoding];
+			if(!Encode(command,context_.ownerAverageField,{r0->advectionRate,r1->advectionRate,
+				heunAdvection,faceCount,negativeHalfBuffer},allFaces_)||
+				!Encode(command,context_.ownerAverageField,
+					{r0->nonpressure.buoyancyMomentumRateKGPerM2S2,
+					r1->nonpressure.buoyancyMomentumRateKGPerM2S2,heunBuoyancy,faceCount,
+					positiveHalfBuffer},allFaces_)||
+				!Encode(command,context_.ownerAverageField,
+					{r0->nonpressure.stressMomentumRateKGPerM2S2,
+					r1->nonpressure.stressMomentumRateKGPerM2S2,heunStress,faceCount,
+					positiveHalfBuffer},allFaces_)||
+				!Encode(command,context_.ownerAverageField,
+					{r0->nonpressure.phaseSourceMomentumRateKGPerM2S2,
+					r1->nonpressure.phaseSourceMomentumRateKGPerM2S2,heunPhaseSource,faceCount,
+					positiveHalfBuffer},allFaces_)||
+				!Encode(command,context_.ownerAverageField,
+					{r0->nonpressure.eddyKinematicViscosityM2PerS,
+					r1->nonpressure.eddyKinematicViscosityM2PerS,heunEddy,cellCount,
+					positiveHalfBuffer},cells_)||
+				!Encode(command,fct_.fillOne,{unitVelocity,faceCount},allFaces_)||
+				!Encode(command,fct_.compatibleStageRate,{r1->physical->lowComposite,
+					r1->physical->advectiveDelta,r1->candidate->faceAlpha,unitVelocity,
+					unitVelocity,unitVelocity,identityRate,failure_,fctParameters_[1]},allFaces_)||
+				!Encode(command,fct_.commutingIdentity,{q0_,sourceDelta_,
+					r1->candidate->conservative,ambient_,identityRate,commutingResidual,
+					commutingScale,failure_,fctParameters_[1]},allFaces_))return false;
+			if(request_.qualificationStaleCandidate||request_.qualificationForgedLineage||
+				request_.qualificationCallbackMutation||request_.qualificationAtomicPublicationFailure){
+				id<MTLBlitCommandEncoder> red=[command blitCommandEncoder];if(!red)return false;
+				if(request_.qualificationStaleCandidate)[red fillBuffer:r1->candidate->publicationIdentity
+					range:NSMakeRange(0,sizeof(std::uint64_t)) value:0u];
+				if(request_.qualificationForgedLineage)[red fillBuffer:r2->physical->publicationIdentity
+					range:NSMakeRange(0,sizeof(std::uint64_t)) value:0u];
+				if(request_.qualificationCallbackMutation)[red fillBuffer:r0->transport->publicationIdentity
+					range:NSMakeRange(0,sizeof(std::uint64_t)) value:0u];
+				if(request_.qualificationAtomicPublicationFailure){[red fillBuffer:failure_
+					range:NSMakeRange(0,sizeof(std::uint32_t)) value:1u];}
+				[red endEncoding];
+			}
+			MetalProjectedHeunOwnerParameters publicationMetadata=ownerMetadata_;
+			publicationMetadata.stage=request_.qualificationOutOfOrderStage?3u:2u;
+			id<MTLBuffer> publicationParameters=Upload(&publicationMetadata,
+				sizeof(publicationMetadata));
+			if(!publicationParameters||!Encode(command,context_.ownerIssuePublication,
+				{r0->projection.publicationIdentity,r1->projection.publicationIdentity,
+				r2->projection.publicationIdentity,r0->transport->publicationIdentity,
+				r1->transport->publicationIdentity,r2->transport->publicationIdentity,
+				r0->physical->publicationIdentity,r1->physical->publicationIdentity,
+				r2->physical->publicationIdentity,r0->candidate->publicationIdentity,
+				r1->candidate->publicationIdentity,r2->candidate->publicationIdentity,
+				r0->eos->publicationIdentity,r1->eos->publicationIdentity,r2->eos->publicationIdentity,
+				r0->source->publicationIdentity,r1->source->publicationIdentity,
+				r2->source->publicationIdentity,r0->target->publicationIdentity,
+				r1->target->publicationIdentity,r2->target->publicationIdentity,
+				ownerIdentity,failure_,publicationParameters},1u))return false;
+			id<MTLBlitCommandEncoder> blit=[command blitCommandEncoder];if(!blit)return false;
+			std::size_t offset=0u;auto publish=[&](id<MTLBuffer> source,std::size_t bytes,
+				std::size_t sourceOffset=0u){[blit copyFromBuffer:source sourceOffset:sourceOffset
+					toBuffer:terminal destinationOffset:offset size:bytes];offset+=bytes;};
+			publish(r1->candidate->conservative,stateBytes);
+			for(unsigned int axis=0u;axis<3u;++axis)publish(r2->projection.momentumKGPerM2S[axis],
+				FireProductionProjectionFaceCount(shape_,axis)*sizeof(float));
+			for(unsigned int axis=0u;axis<3u;++axis)publish(r2->projection.velocityMPerS[axis],
+				FireProductionProjectionFaceCount(shape_,axis)*sizeof(float));
+			for(unsigned int axis=0u;axis<3u;++axis)publish(r2->projection.faceDensityKGPerM3[axis],
+				FireProductionProjectionFaceCount(shape_,axis)*sizeof(float));
+			publish(r1->nextMomentum,allFaces_*sizeof(float));
+			publish(heunAdvection,allFaces_*sizeof(float));publish(heunBuoyancy,allFaces_*sizeof(float));
+			publish(heunStress,allFaces_*sizeof(float));publish(heunPhaseSource,allFaces_*sizeof(float));
+			publish(r1->candidate->faceAlpha,allFaces_*sizeof(float));
+			publish(r1->eos->temperature,fieldBytes);publish(r1->eos->representedPressureRatio,fieldBytes);
+			publish(r1->eos->absoluteDeviation,fieldBytes);publish(heunEddy,fieldBytes);
+			publish(commutingResidual,sizeof(std::uint32_t));
+			publish(commutingScale,sizeof(std::uint32_t));
+			const id<MTLBuffer> identities[]={r0->projection.publicationIdentity,
+				r1->projection.publicationIdentity,r2->projection.publicationIdentity,
+				r0->transport->publicationIdentity,r1->transport->publicationIdentity,
+				r2->transport->publicationIdentity,r0->physical->publicationIdentity,
+				r1->physical->publicationIdentity,r2->physical->publicationIdentity,
+				r0->candidate->publicationIdentity,r1->candidate->publicationIdentity,
+				r2->candidate->publicationIdentity,r0->eos->publicationIdentity,
+				r1->eos->publicationIdentity,r2->eos->publicationIdentity,
+				r0->source->publicationIdentity,r1->source->publicationIdentity,
+				r2->source->publicationIdentity,r0->target->publicationIdentity,
+				r1->target->publicationIdentity,r2->target->publicationIdentity};
+			for(id<MTLBuffer> identity:identities)publish(identity,sizeof(std::uint64_t));
+			publish(ownerIdentity,sizeof(std::uint64_t));[blit endEncoding];
+			if(request_.qualificationInjectInterstageTransfer){result.interstageFullGridTransferCount=1u;
+				if(error)*error="projected-Heun resident owner interstage transfer RED engaged";return false;}
+			if(!Commit(command,error))return false;const unsigned char* bytes=
+				static_cast<const unsigned char*>(ReadTrackedMetalBuffer(terminal));if(!bytes)return false;
+			offset=0u;auto floats=[&](std::vector<float>& destination,std::size_t count){const float* value=
+				reinterpret_cast<const float*>(bytes+offset);destination.assign(value,value+count);
+				offset+=count*sizeof(float);};floats(result.conservativeValues,9u*cells_);
+			for(unsigned int axis=0u;axis<3u;++axis)floats(result.momentumKGPerM2S[axis],
+				FireProductionProjectionFaceCount(shape_,axis));
+			for(unsigned int axis=0u;axis<3u;++axis)floats(result.velocityMPerS[axis],
+				FireProductionProjectionFaceCount(shape_,axis));
+			std::array<std::vector<float>,3> finalFaceDensity;for(unsigned int axis=0u;axis<3u;++axis)
+				floats(finalFaceDensity[axis],FireProductionProjectionFaceCount(shape_,axis));
+			auto packedFaces=[&](std::array<std::vector<float>,3>& destination){
+				for(unsigned int axis=0u;axis<3u;++axis)floats(destination[axis],
+					FireProductionProjectionFaceCount(shape_,axis));};
+			packedFaces(result.provisionalMomentumKGPerM2S);
+			packedFaces(result.heunAdvectionMomentumRateKGPerM2S2);
+			packedFaces(result.heunBuoyancyMomentumRateKGPerM2S2);
+			packedFaces(result.heunStressMomentumRateKGPerM2S2);
+			packedFaces(result.heunPhaseSourceMomentumRateKGPerM2S2);
+			floats(result.acceptedFaceAlpha,allFaces_);
+			floats(result.temperatureK,cells_);floats(result.representedPressureRatio,cells_);
+			floats(result.absoluteEOSDeviation,cells_);floats(result.heunEddyKinematicViscosityM2PerS,cells_);
+			const std::uint32_t* commutingBits=reinterpret_cast<const std::uint32_t*>(bytes+offset);
+			std::memcpy(&result.maximumCommutingResidualKGPerM3,&commutingBits[0],sizeof(float));
+			std::memcpy(&result.commutingIdentityScaleKGPerM3,&commutingBits[1],sizeof(float));
+			offset+=2u*sizeof(std::uint32_t);
+			const std::uint64_t* ids=
+				reinterpret_cast<const std::uint64_t*>(bytes+offset);
+			for(unsigned int index=0u;index<3u;++index)result.projectionPublicationIdentity[index]=ids[index];
+			for(unsigned int index=0u;index<3u;++index)result.transportPublicationIdentity[index]=ids[3u+index];
+			for(unsigned int index=0u;index<3u;++index){
+				result.physicalFluxPublicationIdentity[index]=ids[6u+index];
+				result.candidatePublicationIdentity[index]=ids[9u+index];
+				result.EOSPublicationIdentity[index]=ids[12u+index];
+				result.frozenSourcePublicationIdentity[index]=ids[15u+index];
+				result.targetPublicationIdentity[index]=ids[18u+index];}
+			result.ownerPublicationIdentity=ids[21];
+			if(request_.qualificationAtomicPublicationFailure||result.ownerPublicationIdentity==0u){
+				result=FireProductionProjectedHeunMetalOwnerResult();
+				if(error)*error="projected-Heun resident owner atomic publication refused";
+				return false;
+			}
+			result.acceptedPicardIterations={{r0->acceptedIterationCount,
+				r1->acceptedIterationCount,r2->acceptedIterationCount}};
+			result.projection=r2->projectionDiagnostics;
+			result.projection.momentumKGPerM2S=result.momentumKGPerM2S;
+			result.projection.velocityMPerS=result.velocityMPerS;
+			result.projection.faceDensityKGPerM3=std::move(finalFaceDensity);
+			result.commandCommitCount=commits_;
+			result.residentProjectionInvocationCount=projectionInvocations_;
+			result.terminalStagingCount=1u;result.interstageFullGridTransferCount=0u;
+			result.actualMetalAllocationBytes=actualBytes_+[terminal allocatedSize];
+			FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape_,result.certifiedWorkingSetBytes);
+			result.deviceElapsedMS=deviceMS_;result.wallElapsedMS=std::chrono::duration<double,std::milli>(
+				std::chrono::steady_clock::now()-wallStart).count();
+			result.residentProjectionDeviceElapsedMS=projectionDeviceMS_;
+			result.residentNonprojectionDeviceElapsedMS=std::max(0.0,deviceMS_-projectionDeviceMS_);
+			const float unitRoundoff=0x1p-24f;
+			const float gamma128=(128.0f*unitRoundoff)/(1.0f-128.0f*unitRoundoff);
+			result.commutingIdentityBoundKGPerM3=
+				gamma128*result.commutingIdentityScaleKGPerM3;
+			result.commutingIdentityPassed=result.maximumCommutingResidualKGPerM3<=
+				result.commutingIdentityBoundKGPerM3;
+			result.accepted=result.actualMetalAllocationBytes<=result.certifiedWorkingSetBytes;
+			result.accepted=result.accepted&&result.commutingIdentityPassed;
+			if(!result.accepted){if(error)*error="projected-Heun resident owner certificate failed";return false;}
+			if(error)error->clear();return true;
 		}
 
 		bool EncodeResidentPhysicalFluxAuthority(
@@ -6840,19 +7901,24 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 		{
 			const FireProductionProjectionShape& sourceShape=source.Shape();
 			if(!command||!failure||!obligations||metadata.cells==0u||
-				metadata.attemptIdentity==0u||metadata.sourcePacketIdentity==0u||
-				!FireProductionFrozenSourcePacketSealMatches(source,error)||
-				sourceShape.nx!=metadata.nx||sourceShape.ny!=metadata.ny||
-				sourceShape.nz!=metadata.nz||sourceShape.cellWidthM!=metadata.cellWidthM||
-				source.TimeStepS()!=metadata.timeStepS||
-				source.AttemptIdentity()!=metadata.attemptIdentity||
-				source.PacketIdentity()!=metadata.sourcePacketIdentity||
-				source.DivergenceTargetPerS().size()!=metadata.cells||
-				source.SourceDelta().size()!=9u*metadata.cells||
-				candidateAuthority.parentCommand!=command||candidateAuthority.cells!=metadata.cells||
-				candidateAuthority.sourceDelta==nil||
-				candidateAuthority.publicationIdentity==nil){
-				if(error)*error="production resident frozen source metadata is invalid";return false;}
+				metadata.attemptIdentity==0u||metadata.sourcePacketIdentity==0u){
+				if(error)*error="production resident frozen source authority input is absent";return false;}
+			if(!FireProductionFrozenSourcePacketSealMatches(source,error))return false;
+			if(sourceShape.nx!=metadata.nx||sourceShape.ny!=metadata.ny||
+				sourceShape.nz!=metadata.nz||sourceShape.cellWidthM!=metadata.cellWidthM){
+				if(error)*error="production resident frozen source shape metadata differs";return false;}
+			if(source.TimeStepS()!=metadata.timeStepS){
+				if(error)*error="production resident frozen source timestep metadata differs";return false;}
+			if(source.AttemptIdentity()!=metadata.attemptIdentity){
+				if(error)*error="production resident frozen source attempt metadata differs";return false;}
+			if(source.PacketIdentity()!=metadata.sourcePacketIdentity){
+				if(error)*error="production resident frozen source packet metadata differs";return false;}
+			if(source.DivergenceTargetPerS().size()!=metadata.cells||
+				source.SourceDelta().size()!=9u*metadata.cells){
+				if(error)*error="production resident frozen source extent metadata differs";return false;}
+			if(candidateAuthority.parentCommand!=command||candidateAuthority.cells!=metadata.cells||
+				candidateAuthority.sourceDelta==nil||candidateAuthority.publicationIdentity==nil){
+				if(error)*error="production resident frozen source candidate parent differs";return false;}
 			const std::array<id<MTLBuffer>,4> inputs={{candidateAuthority.sourceDelta,
 				candidateAuthority.publicationIdentity,failure,obligations}};
 			for(id<MTLBuffer> buffer:inputs)if([buffer device]!=context.device||
@@ -7484,6 +8550,142 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 			}
 			return parameters;
 		}
+	}
+
+	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		bytes=0u;std::uint64_t projection=0u,target=0u,nonpressure=0u;
+		if(!FireProductionProjectionWorkingSetBytes(shape,projection)||
+			!FireProductionResidentTargetLineageMetalWorkingSetBytes(shape,target)||
+			!FireProductionNonpressureMomentumRHSMetalWorkingSetBytes(shape,nonpressure))return false;
+		auto add=[&](const std::uint64_t value){const std::uint64_t rounded=
+			(value+UINT64_C(16383))&~UINT64_C(16383);
+			if(rounded<value||bytes>std::numeric_limits<std::uint64_t>::max()-rounded)return false;
+			bytes+=rounded;return true;};
+		// Two adjacent Picard candidates must coexist for the residual proof; R1
+		// additionally retains the accepted R0 flux/RHS until its Heun publication.
+		if(!add(4u*projection)||!add(4u*target)||!add(3u*nonpressure)||
+			!add((54u*shape.CellCount()+48u*(FireProductionProjectionFaceCount(shape,0u)+
+				FireProductionProjectionFaceCount(shape,1u)+
+				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float)))return false;
+		return bytes<=(UINT64_C(2)<<30u);
+	}
+
+	bool AttemptFireProductionProjectedHeunMetalOwner(
+		const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )
+	{
+		try {
+			ResidentProjectedHeunMetalOwner owner(request);
+			return owner.Run(result,error);
+		} catch(const std::bad_alloc&) {
+			result=FireProductionProjectedHeunMetalOwnerResult();
+			if(error)try{*error="projected-Heun resident owner allocation failed";}
+				catch(const std::bad_alloc&){}
+			return false;
+		}
+	}
+
+	bool AttemptFireProductionProjectedHeunResidentStepMetal(
+		const FireProductionProjectedHeunMetalOwnerRequest& request,
+		FireProductionResidentStepResult& result,
+		FireProductionProjectedHeunMetalOwnerResult* diagnostics,std::string* error )
+	{
+		result=FireProductionResidentStepResult();
+		FireProductionProjectedHeunMetalOwnerResult owner;
+		if(!AttemptFireProductionProjectedHeunMetalOwner(request,owner,error))return false;
+		const FireProductionProjectionShape& shape=request.lineage.eos.physicalFlux.transport.shape;
+		const std::size_t cells=shape.CellCount();
+		if(!owner.accepted||owner.ownerPublicationIdentity==0u||
+			owner.conservativeValues.size()!=9u*cells||owner.absoluteEOSDeviation.size()!=cells||
+			owner.representedPressureRatio.size()!=cells){
+			if(error)*error="projected-Heun resident owner terminal payload is invalid";
+			return false;
+		}
+		FireProductionResidentStepResult computed;
+		computed.conservativeValues=owner.conservativeValues;
+		computed.projection=owner.projection;computed.physicalProjection=owner.projection;
+		computed.transportedDual.momentum=owner.provisionalMomentumKGPerM2S;
+		computed.transportedDual.auxiliaryFaceDensity=owner.projection.faceDensityKGPerM3;
+		computed.cellSubmapCount=2u;computed.dualSubmapCount=2u;
+		computed.sourceCommandCommitCount=3u;
+		computed.residentProjectionInvocationCount=owner.residentProjectionInvocationCount;
+		computed.interstageFullGridTransferCount=owner.interstageFullGridTransferCount;
+		computed.terminalStagingCount=owner.terminalStagingCount;
+		computed.combinedCertifiedWorkingSetBytes=owner.certifiedWorkingSetBytes;
+		computed.combinedActualMetalAllocationBytes=owner.actualMetalAllocationBytes;
+		computed.projectedHeunOwnerIdentity=owner.ownerPublicationIdentity;
+		computed.deviceElapsedMS=owner.deviceElapsedMS;computed.deviceMakespanMS=owner.deviceElapsedMS;
+		computed.representedTimeStepS=request.lineage.eos.candidateTimeStepS;
+		std::vector<double> signedDeviation(cells);std::vector<double> ordered(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){const double magnitude=
+			static_cast<double>(owner.absoluteEOSDeviation[cell]);ordered[cell]=magnitude;
+			signedDeviation[cell]=std::copysign(magnitude,
+				static_cast<double>(owner.representedPressureRatio[cell])-1.0);}
+		std::sort(ordered.begin(),ordered.end());
+		computed.maximumAcceptedManifoldDeviation=ordered.empty()?0.0:ordered.back();
+		computed.acceptedManifoldDeviationP50=ordered[(ordered.size()-1u)/2u];
+		computed.acceptedManifoldDeviationP95=ordered[static_cast<std::size_t>(
+			std::floor(0.95*static_cast<double>(ordered.size()-1u)))];
+		FireProductionManifoldTailTarget tail;
+		if(!DeriveFireProductionManifoldTailTarget(signedDeviation,
+			static_cast<double>(computed.representedTimeStepS),shape.cellWidthM,tail,error))return false;
+		computed.manifoldTailRestorationApplied=tail.outlierCellCount>0u;
+		computed.manifoldTailCellCount=tail.outlierCellCount;
+		computed.manifoldTailExcessSum=tail.excessSum;
+		computed.manifoldTailDrainedVolumeM3=tail.drainedVolumeM3;
+		computed.manifoldDynamicsBoundPassed=computed.maximumAcceptedManifoldDeviation<=0x1p-2;
+		computed.maximumManifoldGeneration=0.0;computed.maximumPredictedAdvectiveManifoldAnomaly=0.0;
+		computed.manifoldStageGeneration={{0.0,0.0,0.0}};
+		computed.manifoldMapCellCount=static_cast<std::uint32_t>(cells);
+		computed.manifoldScalarDeviceToHostTransferCount=1u;
+		computed.manifoldFullGridDeviceToHostTransferCount=0u;
+		computed.advectiveAnomalyClosurePassCount=0u;
+		computed.manifoldDiagnosticsMonitored=true;computed.manifoldPlateauEnforced=false;
+		computed.manifoldAllowanceExceeded=computed.maximumAcceptedManifoldDeviation>
+			((1.0-0x1p-2)*0x1p-5);
+		computed.manifoldCeilingExceeded=computed.maximumAcceptedManifoldDeviation>0x1p-5;
+		computed.manifoldPlateauPassed=computed.manifoldDynamicsBoundPassed;
+		computed.manifoldGenerationAuthoritative=false;
+		computed.requiredRestorationDrainFraction=0.0;computed.deliveredRestorationDrainFraction=0.0;
+		computed.restorationResidualBandPerS=0.0;computed.manifoldNextTimeStepAvailable=false;
+		computed.suggestedManifoldTimeStepS=0.0;
+		computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
+		computed.acceptedShape=shape;
+		if(!FireProductionResidentStepEligibleForAcceptedManifoldToken(computed)){
+			if(error)*error="projected-Heun resident owner acceptance contract failed";return false;}
+		computed.acceptedManifoldToken_.available_=true;
+		computed.acceptedManifoldToken_.representedTimeStepS_=computed.representedTimeStepS;
+		computed.acceptedManifoldToken_.maximumGeneration_=computed.maximumManifoldGeneration;
+		computed.acceptedManifoldToken_.maximumAcceptedDeviation_=
+			computed.maximumAcceptedManifoldDeviation;
+		computed.acceptedManifoldToken_.acceptedDeviationP95_=computed.acceptedManifoldDeviationP95;
+		computed.acceptedManifoldToken_.acceptedDeviationP50_=computed.acceptedManifoldDeviationP50;
+		computed.acceptedManifoldToken_.tailRestorationApplied_=computed.manifoldTailRestorationApplied;
+		computed.acceptedManifoldToken_.tailCellCount_=computed.manifoldTailCellCount;
+		computed.acceptedManifoldToken_.tailExcessSum_=computed.manifoldTailExcessSum;
+		computed.acceptedManifoldToken_.tailDrainedVolumeM3_=computed.manifoldTailDrainedVolumeM3;
+		computed.acceptedManifoldToken_.dynamicsBoundPassed_=computed.manifoldDynamicsBoundPassed;
+		computed.acceptedManifoldToken_.requiredDrainFraction_=0.0;
+		computed.acceptedManifoldToken_.deliveredDrainFraction_=0.0;
+		computed.acceptedManifoldToken_.maximumPostResidualPerS_=0.0;
+		computed.acceptedManifoldToken_.physicalMaximumPreResidualPerS_=
+			computed.physicalProjection.maximumPreProjectionResidualPerS;
+		computed.acceptedManifoldToken_.physicalMaximumPostResidualPerS_=
+			computed.physicalProjection.maximumPostProjectionResidualPerS;
+		computed.acceptedManifoldToken_.payloadDigest_=
+			FireProductionAcceptedManifoldPayloadDigest(computed);
+		computed.acceptedManifoldToken_.acceptedStateDigest_=FireProductionAcceptedStatePayloadDigestFast(
+			shape,computed.conservativeValues,computed.projection.momentumKGPerM2S,
+			computed.projection.velocityMPerS);
+		computed.acceptedManifoldToken_.acceptedStateDigestVersion_=2u;
+		computed.acceptedManifoldToken_.generationAuthoritative_=false;
+		computed.acceptedManifoldToken_.plateauEnforced_=false;
+		if(!computed.AcceptedManifoldTokenMatchesCurrentPayload()){
+			if(error)*error="projected-Heun resident owner token publication failed";return false;}
+		result=std::move(computed);if(diagnostics)*diagnostics=std::move(owner);
+		if(error)error->clear();return true;
 	}
 
 	bool FireProductionResidentTransportMetalWorkingSetBytes(

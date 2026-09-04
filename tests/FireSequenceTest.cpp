@@ -1087,6 +1087,7 @@ namespace
 		bool compatibleMomentumDiagnostic=false;
 		bool singleStageFCTDiagnostic=false;
 		bool sealedLegacyMomentumReplay=false;
+		bool sealedProjectedHeunReplay=false;
 		std::filesystem::path replayProtocolPath;
 		std::string replayProtocolDigest;
 		double productionMomentumObservationTimeS=0.0;
@@ -1099,6 +1100,74 @@ namespace
 		std::filesystem::path productionOnsetDiagnosticDirectory;
 		double productionOnsetStopVelocityMPerS=0.0;
 	};
+
+	bool BuildProductionProjectedHeunOwnerRequest(
+		const RISE::FireProductionResidentStepRequest& ordinary,
+		const RISE::FireProductionFrozenSourcePacketSeal& source,
+		const RISE::RISECBOR64::Bytes& caseRecordEnvelope,
+		const float projectionTolerancePerS,const float endpointVelocityToleranceMPerS,
+		RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,std::string& error)
+	{
+		owner=RISE::FireProductionProjectedHeunMetalOwnerRequest();
+		if(!source.IsSealed()){error="projected-Heun production source authority is unsealed";
+			return false;}
+		if(source.SourceDelta()!=ordinary.cellSourceIncrement){
+			std::size_t mismatch=0u;while(mismatch<ordinary.cellSourceIncrement.size()&&
+				source.SourceDelta()[mismatch]==ordinary.cellSourceIncrement[mismatch])++mismatch;
+			std::ostringstream message;message<<std::setprecision(17)
+				<<"projected-Heun production source authority dose changed after construction: source_size="
+				<<source.SourceDelta().size()<<" ordinary_size="<<ordinary.cellSourceIncrement.size()
+				<<" index="<<mismatch;
+			if(mismatch<source.SourceDelta().size()&&mismatch<ordinary.cellSourceIncrement.size())
+				message<<" source="<<source.SourceDelta()[mismatch]<<" ordinary="
+					<<ordinary.cellSourceIncrement[mismatch];
+			error=message.str();return false;
+		}
+		if(source.TimeStepS()!=ordinary.force.timeStepS){std::ostringstream mismatch;
+			mismatch<<std::setprecision(17)<<"projected-Heun production source timestep mismatch: source="
+				<<source.TimeStepS()<<" ordinary="<<ordinary.force.timeStepS;
+			error=mismatch.str();return false;}
+		auto& eos=owner.lineage.eos;auto& flux=eos.physicalFlux;auto& transport=flux.transport;
+		transport.shape=ordinary.force.shape;transport.boundary=ordinary.force.boundary;
+		transport.stage=RISE::FireProductionProjectedHeunStage::R0;
+		transport.attemptIdentity=source.AttemptIdentity();
+		transport.parentCandidateIdentity=source.BeginningStateIdentity();
+		transport.projectionIdentity=source.PacketIdentity();
+		if(transport.parentCandidateIdentity==0u)transport.parentCandidateIdentity=UINT64_C(1);
+		if(transport.projectionIdentity==0u)transport.projectionIdentity=UINT64_C(2);
+		transport.conservativeValues=ordinary.cellTransport.conservativeValues;
+		transport.temperatureK=source.BeginningTemperatureK();
+		transport.projectedVelocityMPerS=ordinary.cellTransport.frozenVelocityMPerS;
+		for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
+			transport.shape.ny*transport.shape.nz:(side<4u?transport.shape.nx*transport.shape.nz:
+			transport.shape.nx*transport.shape.ny);transport.fuelInletBoundaryFace[side].assign(count,0u);
+			flux.pressureOpenInflow[side].assign(count,0u);}
+		if(ordinary.cellTransport.ambientValues.size()!=9u){error=
+			"projected-Heun production ambient tuple is invalid";return false;}
+		for(std::size_t component=0u;component<9u;++component)
+			flux.ambient[component]=ordinary.cellTransport.ambientValues[component];
+		flux.ambientTemperatureK=300.0f;
+		const FireCertifiedNullspace& reconstruction=
+			FireSimulationMethaneRecord::PhysicalV1().ConservativeReconstruction();
+		flux.nullity=reconstruction.nullity;
+		flux.nullspaceBasis.resize(reconstruction.orthonormalBasis.size());
+		for(std::size_t index=0u;index<flux.nullspaceBasis.size();++index)
+			flux.nullspaceBasis[index]=static_cast<float>(reconstruction.orthonormalBasis[index]);
+		flux.coordinateProjector.assign(flux.nullity*flux.nullity,0.0f);
+		for(std::size_t index=0u;index<flux.nullity;++index)
+			flux.coordinateProjector[index*flux.nullity+index]=1.0f;
+		eos.sourceDelta=source.SourceDelta();eos.producingStage=RISE::FireProductionScalarEOSStage::QStar;
+		eos.producerPrecision=FireStateProducerPrecision::Binary32;
+		eos.caseRecordEnvelope=caseRecordEnvelope;eos.candidateTimeStepS=ordinary.force.timeStepS;
+		owner.lineage.frozenSource=source;
+		owner.beginningMomentumKGPerM2S=ordinary.force.beginningMomentumKGPerM2S;
+		owner.ambientDensityKGPerM3=ordinary.force.ambientDensityKGPerM3;
+		owner.vremanCoefficient=ordinary.force.vremanCoefficient;
+		owner.gravityMPerS2=ordinary.force.gravityMPerS2;
+		owner.projectionTolerancePerS=projectionTolerancePerS;
+		owner.endpointVelocityToleranceMPerS=endpointVelocityToleranceMPerS;
+		owner.maximumPicardIterations=64u;return true;
+	}
 
 	void AppendReplayUInt64(RISECBOR64::Bytes& bytes,const std::uint64_t value)
 	{
@@ -2967,7 +3036,7 @@ namespace
 		ConservativeAdvance3DResult advanced;
 		if(persistence.productionMetal)for(unsigned int axis=0u;axis<3u;++axis)
 			advanced.velocityMPerS.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
-		if(persistence.sealedLegacyMomentumReplay){
+		if(persistence.sealedLegacyMomentumReplay||persistence.sealedProjectedHeunReplay){
 			if(persistence.resume||persistence.replayProtocolPath.empty()||
 				persistence.replayProtocolDigest.size()!=64u||
 				DigestFile(persistence.replayProtocolPath)!=persistence.replayProtocolDigest||
@@ -2980,7 +3049,9 @@ namespace
 				"from_zero_identity.v1",std::ios::trunc);
 			identity<<std::setprecision(17)
 				<<"schema rise.fire.production.r193_from_zero_identity.v1\n"
-				<<"operator ordinary_independent_dual_momentum_resident_step\n"
+				<<"operator "<<(persistence.sealedProjectedHeunReplay?
+					"section_3_7_projected_heun_resident_owner":
+					"ordinary_independent_dual_momentum_resident_step")<<"\n"
 				<<"resolution_tier "<<resolutionTier<<"\nseed "<<authored.seed<<"\n"
 				<<"case_record_id "<<caseRecord.caseRecordId<<"\n"
 				<<"initial_state_sha256 "<<initialStateDigest<<"\n"
@@ -3136,7 +3207,11 @@ namespace
 			std::ofstream trajectory(persistence.productionOnsetDiagnosticDirectory/
 				"maximum_velocity_trajectory.csv",std::ios::trunc);
 			trajectory<<"accepted_step,time_s,dt_s,maximum_velocity_m_per_s,axis,face,x,y,z,"
-				"manifold_max,manifold_p95,manifold_p50,tail_cells,tail_drained_m3\n";
+				"manifold_max,manifold_p95,manifold_p50,tail_cells,tail_drained_m3,"
+				"device_ms,wall_ms,owner_identity,owner_commits,owner_projections,"
+				"owner_r0_iterations,owner_r1_iterations,owner_r2_iterations,"
+				"owner_actual_working_set_bytes,owner_certified_working_set_bytes,"
+				"owner_projection_device_ms,owner_nonprojection_device_ms\n";
 			if(!trajectory){values.structuredError="production_onset_trajectory_failure";
 				return values;}
 			std::ofstream retries(persistence.productionOnsetDiagnosticDirectory/
@@ -3564,11 +3639,59 @@ namespace
 									static_cast<float>(value);
 							}
 						});
+						RISE::FireProductionFrozenSourcePacketSeal projectedHeunSource;
+						if(persistence.sealedProjectedHeunReplay){
+							RISE::FireProductionFrozenMethaneSourceRequest sourceRequest;
+							sourceRequest.shape=request.force.shape;sourceRequest.timeStepS=request.force.timeStepS;
+							sourceRequest.beginningTimeS=simulationTimeS;
+							sourceRequest.attemptIdentity=RISE::FireProductionAcceptedStatePayloadDigestFast(
+								request.force.shape,request.cellTransport.conservativeValues,
+								request.force.beginningMomentumKGPerM2S,
+								request.cellTransport.frozenVelocityMPerS);
+							std::uint64_t timeBits=0u;std::memcpy(&timeBits,&simulationTimeS,sizeof(timeBits));
+							std::uint32_t dtBits=0u;std::memcpy(&dtBits,&request.force.timeStepS,sizeof(dtBits));
+							sourceRequest.attemptIdentity^=timeBits^(static_cast<std::uint64_t>(dtBits)<<32u);
+							if(sourceRequest.attemptIdentity==0u)sourceRequest.attemptIdentity=1u;
+							sourceRequest.caseRecordEnvelope=caseRecord.envelopeBytes;
+							sourceRequest.beginningConservativeValues=request.cellTransport.conservativeValues;
+							sourceRequest.sourceEvaluationTemperatureK.resize(shape.CellCount());
+							sourceRequest.eligibilityBeginningConservativeValues.resize(9u*shape.CellCount());
+							sourceRequest.pilotCommandMask.resize(shape.CellCount());
+							sourceRequest.sourceBoundaryContactMask.resize(shape.CellCount());
+							sourceRequest.mixingTimeS.resize(shape.CellCount());
+							for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+								sourceRequest.sourceEvaluationTemperatureK[cell]=
+									packetBeginning[cell].temperatureK;
+								for(std::size_t component=0u;component<9u;++component)
+									sourceRequest.eligibilityBeginningConservativeValues[
+										component*shape.CellCount()+cell]=static_cast<float>(beginning[cell][component]);
+								sourceRequest.pilotCommandMask[cell]=ProductionPilotCommandCell(cell,shape.nx,
+									shape.ny,canonicalPilotMask,sourcePattern)?1u:0u;
+								sourceRequest.sourceBoundaryContactMask[cell]=
+									ProductionSourceBoundaryContactCell(cell,shape.nx,shape.ny,
+										canonicalPilotMask,sourcePattern)?1u:0u;
+								sourceRequest.mixingTimeS[cell]=reactions[cell].mixingTimeS;}
+							sourceRequest.pilotEstablished=simulationTimeS>=pilotEndS;
+							sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=workerCount;
+							packetOK=FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
+								projectedHeunSource,&error);
+							if(packetOK&&projectedHeunSource.SourceDelta()!=request.cellSourceIncrement){
+								std::size_t mismatch=0u;while(mismatch<request.cellSourceIncrement.size()&&
+									projectedHeunSource.SourceDelta()[mismatch]==
+										request.cellSourceIncrement[mismatch])++mismatch;
+								std::ostringstream mismatchMessage;mismatchMessage<<std::setprecision(17)
+									<<"projected-Heun canonical source differs from persisted source fields: index="
+									<<mismatch<<" canonical="<<projectedHeunSource.SourceDelta()[mismatch]
+									<<" persisted="<<request.cellSourceIncrement[mismatch];
+								error=mismatchMessage.str();packetOK=false;
+							}
+						}
 						profileLayoutMS=std::chrono::duration<double,std::milli>(
 							std::chrono::steady_clock::now()-profileStageStart).count();
 						profileStageStart=std::chrono::steady_clock::now();
 						solverPhase="production resident attempt";
 						RISE::FireProductionResidentStepResult production;
+						RISE::FireProductionProjectedHeunMetalOwnerResult projectedHeunDiagnostics;
 						RISE::FireProductionSingleStageFCTDiagnosticResult singleStageFCT;
 						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
 						for(;;){
@@ -3608,6 +3731,15 @@ namespace
 										FireStateProducerPrecision::Binary32;
 									production.acceptedShape=request.force.shape;
 								}
+							}else if(persistence.sealedProjectedHeunReplay){
+								RISE::FireProductionProjectedHeunMetalOwnerRequest ownerRequest;
+								attemptComputed=packetOK&&BuildProductionProjectedHeunOwnerRequest(request,
+									projectedHeunSource,caseRecord.envelopeBytes,
+									static_cast<float>(config.projectionTolerancePerS),
+									static_cast<float>(config.openBoundary.velocityToleranceMPerS),
+									ownerRequest,error)&&
+									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(ownerRequest,
+										production,&projectedHeunDiagnostics,&error);
 							}else attemptComputed=persistence.compatibleMomentumDiagnostic?
 								RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
 									request,production,&error):
@@ -3860,11 +3992,13 @@ namespace
 								RISE::AdvanceFireProductionFrozenForceMetalResidentStateComparator(
 									request.force,forceCPU,forceAuditDiagnostics,&physicalOnlyError);
 							const bool forceDiagnosticsIdentity=forceComparatorOK&&
-								forceAuditDiagnostics.outwardLambdaPerS==
-									production.forceDiagnostics.outwardLambdaPerS;
+								(persistence.sealedProjectedHeunReplay||
+								 forceAuditDiagnostics.outwardLambdaPerS==
+									production.forceDiagnostics.outwardLambdaPerS);
 							const bool forceScheduleIdentity=forceDiagnosticsIdentity&&
-								forceCPU.schedule.substepCount==production.forceSchedule.substepCount&&
-								forceCPU.schedule.substepTimeS==production.forceSchedule.substepTimeS;
+								(persistence.sealedProjectedHeunReplay||
+								 (forceCPU.schedule.substepCount==production.forceSchedule.substepCount&&
+								  forceCPU.schedule.substepTimeS==production.forceSchedule.substepTimeS));
 							const bool forceFieldsOK=forceScheduleIdentity&&
 								RISE::BuildFireProductionFrozenForceFieldsCPU(
 									request.force,forceFieldsCPU,&physicalOnlyError);
@@ -3950,17 +4084,23 @@ namespace
 									const double beginning=request.force.beginningMomentumKGPerM2S[2][face];
 									const double gravity=forceFieldsCPU.
 										gravityMomentumIncrementKGPerM2S[2][face];
-									const double stress=(forceCPU.momentumKGPerM2S[2][face]-beginning-gravity)/
-										representedStep;
-									const double buoyancy=gravity/representedStep;
-									const double source=request.momentumSourceIncrement[2][face]/representedStep;
-									const double advection=(production.transportedDual.momentum[2][face]-
-										request.momentumSourceIncrement[2][face]-
-										forceCPU.momentumKGPerM2S[2][face])/representedStep;
-									const double pressure=(columnPhysicalMomentum[z]-
+									const double stress=persistence.sealedProjectedHeunReplay?
+										projectedHeunDiagnostics.heunStressMomentumRateKGPerM2S2[2][face]:
+										(forceCPU.momentumKGPerM2S[2][face]-beginning-gravity)/representedStep;
+									const double buoyancy=persistence.sealedProjectedHeunReplay?
+										projectedHeunDiagnostics.heunBuoyancyMomentumRateKGPerM2S2[2][face]:
+										gravity/representedStep;
+									const double source=persistence.sealedProjectedHeunReplay?
+										projectedHeunDiagnostics.heunPhaseSourceMomentumRateKGPerM2S2[2][face]:
+										request.momentumSourceIncrement[2][face]/representedStep;
+									const double advection=persistence.sealedProjectedHeunReplay?
+										projectedHeunDiagnostics.heunAdvectionMomentumRateKGPerM2S2[2][face]:
+										(production.transportedDual.momentum[2][face]-
+										 request.momentumSourceIncrement[2][face]-
+										 forceCPU.momentumKGPerM2S[2][face])/representedStep;
+									const double pressure=(production.projection.momentumKGPerM2S[2][face]-
 										production.transportedDual.momentum[2][face])/representedStep;
-									const double restoration=(production.projection.momentumKGPerM2S[2][face]-
-										columnPhysicalMomentum[z])/representedStep;
+									const double restoration=0.0;
 									const double total=(production.projection.momentumKGPerM2S[2][face]-beginning)/
 										representedStep;
 									const double closure=total-(stress+buoyancy+advection+source+pressure+restoration);
@@ -3970,9 +4110,11 @@ namespace
 										request.force.shape.ny*lowerZ);
 									const std::size_t upperCell=columnX+request.force.shape.nx*(columnY+
 										request.force.shape.ny*upperZ);
-									const double lowerVreman=
+									const double lowerVreman=persistence.sealedProjectedHeunReplay?
+										projectedHeunDiagnostics.heunEddyKinematicViscosityM2PerS[lowerCell]:
 										forceFieldsCPU.eddyKinematicViscosityM2PerS[lowerCell];
-									const double upperVreman=
+									const double upperVreman=persistence.sealedProjectedHeunReplay?
+										projectedHeunDiagnostics.heunEddyKinematicViscosityM2PerS[upperCell]:
 										forceFieldsCPU.eddyKinematicViscosityM2PerS[upperCell];
 									columnStressMaximum=std::max(columnStressMaximum,std::fabs(stress));
 									columnBuoyancyMaximum=std::max(columnBuoyancyMaximum,std::fabs(buoyancy));
@@ -4213,7 +4355,17 @@ namespace
 										production.acceptedManifoldDeviationP95<<','<<
 										production.acceptedManifoldDeviationP50<<','<<
 										production.manifoldTailCellCount<<','<<
-										production.manifoldTailDrainedVolumeM3<<'\n';
+										production.manifoldTailDrainedVolumeM3<<','<<deviceMS<<','<<wallMS<<','<<
+										projectedHeunDiagnostics.ownerPublicationIdentity<<','<<
+										projectedHeunDiagnostics.commandCommitCount<<','<<
+										projectedHeunDiagnostics.residentProjectionInvocationCount<<','<<
+										projectedHeunDiagnostics.acceptedPicardIterations[0]<<','<<
+										projectedHeunDiagnostics.acceptedPicardIterations[1]<<','<<
+										projectedHeunDiagnostics.acceptedPicardIterations[2]<<','<<
+										projectedHeunDiagnostics.actualMetalAllocationBytes<<','<<
+										projectedHeunDiagnostics.certifiedWorkingSetBytes<<','<<
+										projectedHeunDiagnostics.residentProjectionDeviceElapsedMS<<','<<
+										projectedHeunDiagnostics.residentNonprojectionDeviceElapsedMS<<'\n';
 									if(!trajectory){advancedOK=false;
 										error="production onset trajectory publication failed";}
 									if(advancedOK&&persistence.productionOnsetStopVelocityMPerS>0.0&&
@@ -6598,13 +6750,15 @@ namespace
 	int RunProductionOnsetCampaignChild(const double resolutionTier,
 		const std::filesystem::path& outputDirectory,const bool sealedLegacyReplay=false,
 		const std::filesystem::path& replayProtocolPath=std::filesystem::path(),
-		const std::string& replayProtocolDigest=std::string())
+		const std::string& replayProtocolDigest=std::string(),
+		const bool sealedProjectedReplay=false)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)outputDirectory;return 90;
 #else
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return 91;
-		if(sealedLegacyReplay&&(resolutionTier!=8.0||std::filesystem::exists(outputDirectory)||
+		if((sealedLegacyReplay||sealedProjectedReplay)&&(resolutionTier!=8.0||
+			sealedLegacyReplay==sealedProjectedReplay||std::filesystem::exists(outputDirectory)||
 			replayProtocolDigest.size()!=64u||DigestFile(replayProtocolPath)!=replayProtocolDigest||
 			std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")||
 			std::getenv("RISE_FIRE_SINGLE_STAGE_FCT_ONSET")||
@@ -6634,21 +6788,22 @@ namespace
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
-		double targetTimeS=sealedLegacyReplay?3.0:2.2;
-		if(!sealedLegacyReplay)if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
+		double targetTimeS=(sealedLegacyReplay||sealedProjectedReplay)?3.0:2.2;
+		if(!sealedLegacyReplay&&!sealedProjectedReplay)if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
 			char* end=nullptr;targetTimeS=std::strtod(target,&end);
 			if(!end||*end!='\0'||!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
 		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
 		persistence.sealedLegacyMomentumReplay=sealedLegacyReplay;
+		persistence.sealedProjectedHeunReplay=sealedProjectedReplay;
 		persistence.replayProtocolPath=replayProtocolPath;
 		persistence.replayProtocolDigest=replayProtocolDigest;
-		persistence.singleStageFCTDiagnostic=!sealedLegacyReplay&&
+		persistence.singleStageFCTDiagnostic=!sealedLegacyReplay&&!sealedProjectedReplay&&
 			std::getenv("RISE_FIRE_SINGLE_STAGE_FCT_ONSET")!=nullptr;
-		persistence.compatibleMomentumDiagnostic=!sealedLegacyReplay&&
+		persistence.compatibleMomentumDiagnostic=!sealedLegacyReplay&&!sealedProjectedReplay&&
 			!persistence.singleStageFCTDiagnostic;
-		if(sealedLegacyReplay){
+		if(sealedLegacyReplay||sealedProjectedReplay){
 			persistence.productionMomentumObservationTimeS=2.1079791976176079;
 			persistence.productionMomentumObservationColumnX=38u;
 			persistence.productionMomentumObservationColumnY=42u;
@@ -6711,8 +6866,9 @@ namespace
 			<<"resolution_tier "<<resolutionTier<<"\n"
 			<<"operator_mode "<<(sealedLegacyReplay?
 				"ordinary_independent_dual_momentum_resident_step":
+				(sealedProjectedReplay?"section_3_7_projected_heun_resident_owner":
 				(persistence.singleStageFCTDiagnostic?
-				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic"))<<"\n"
+				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic")))<<"\n"
 			<<"compatible_momentum_diagnostic "<<
 				(persistence.compatibleMomentumDiagnostic?1:0)<<"\n"
 			<<"single_stage_fct_diagnostic "<<
@@ -6766,7 +6922,7 @@ namespace
 				"threshold_"<<threshold<<"_event_sha256 "<<
 				DigestFile(budget.string()+".event.v1")<<"\n";
 		}
-		if(sealedLegacyReplay&&!reachedTarget)
+		if((sealedLegacyReplay||sealedProjectedReplay)&&!reachedTarget)
 			for(const unsigned int threshold:{15u,30u,60u})
 				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 					std::filesystem::exists(outputDirectory/"budgets"/
@@ -9859,6 +10015,73 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	return passed?0:210;
 }
 
+class ResidentOwnerTransportFP64 final :
+	public ::RISEFireProductionFP64::FireProductionProjectedHeunTransportProvider
+{
+public:
+	explicit ResidentOwnerTransportFP64(
+		const FireProductionResidentPhysicalFluxComparatorRequest& fixture) : fixture_(fixture) {}
+	bool Evaluate(
+		const ::RISEFireProductionFP64::FireProductionProjectedHeunTransportContext& context,
+		::RISEFireProductionFP64::FireProductionProjectedHeunTransportCoefficients& result,
+		std::string* error) const override
+	{
+		const FireProductionProjectionShape& sourceShape=fixture_.transport.shape;
+		const std::size_t cells=sourceShape.CellCount();
+		if(!context.conservativeValues||context.conservativeValues->size()!=9u*cells||
+			!context.temperatureK||context.temperatureK->size()!=cells||
+			!context.projectedVelocityMPerS)return false;
+		PeriodicMACShape shape;shape.nx=sourceShape.nx;shape.ny=sourceShape.ny;
+		shape.nz=sourceShape.nz;shape.cellWidthM=sourceShape.cellWidthM;
+		std::vector<ConservativeVector> state(cells);
+		for(std::size_t cell=0u;cell<cells;++cell)for(std::size_t component=0u;
+			component<9u;++component)state[cell][component]=
+				(*context.conservativeValues)[component*cells+cell];
+		std::vector<double> temperature(context.temperatureK->begin(),context.temperatureK->end());
+		OpenMACField3D velocity;for(unsigned int axis=0u;axis<3u;++axis)
+			velocity.component[axis].assign((*context.projectedVelocityMPerS)[axis].begin(),
+				(*context.projectedVelocityMPerS)[axis].end());
+		OpenBoundaryConfig3D boundary;
+		for(unsigned int side=0u;side<6u;++side)boundary.kind[side]=
+			fixture_.transport.boundary[side]==FireProductionProjectionPressureOpen?
+				PressureOpenBoundary3D:AdiabaticWallBoundary3D;
+		for(std::size_t component=0u;component<9u;++component){
+			boundary.ambientState[component]=fixture_.ambient[component];
+			boundary.injectedState[component]=fixture_.ambient[component];}
+		boundary.ambientDensityKGPerM3=0.0;for(std::size_t component=1u;component<=6u;++component)
+			boundary.ambientDensityKGPerM3+=fixture_.ambient[component];
+		boundary.injectedGasDensityKGPerM3=boundary.ambientDensityKGPerM3;
+		boundary.fuelMassFluxKGPerM2S=0.0;boundary.velocityToleranceMPerS=0.0;
+		boundary.pressureTolerancePa=1.0e-3;
+		if(boundary.kind[4]==AdiabaticWallBoundary3D){
+			boundary.bottomFuelMask.resize(fixture_.transport.fuelInletBoundaryFace[4].size());
+			for(std::size_t face=0u;face<boundary.bottomFuelMask.size();++face)
+				boundary.bottomFuelMask[face]=fixture_.transport.fuelInletBoundaryFace[4][face]!=0u;
+			boundary.bottomFuelMassFluxKGPerM2S.assign(boundary.bottomFuelMask.size(),0.0);
+		}
+		std::vector<double> diffusivity,conductivity,dynamicViscosity;
+		if(!BuildOpenStageTransport3D(shape,state,temperature,velocity,boundary,false,
+			FireSimulationMethaneRecord::PhysicalV1(),FireSimulationTransportRecord::OpenV1(),
+			FireStateProducerPrecision::Binary32,diffusivity,conductivity,dynamicViscosity,error))
+			return false;
+		result.stage=context.stage;result.attemptIdentity=context.attemptIdentity;
+		result.parentCandidateIdentity=context.parentCandidateIdentity;
+		result.projectionIdentity=context.projectionIdentity;
+		result.diffusivityM2PerS=diffusivity;result.conductivityWPerMK=conductivity;
+		result.molecularKinematicViscosityM2PerS.resize(cells);
+		for(std::size_t cell=0u;cell<cells;++cell){double density=0.0;
+			for(std::size_t component=1u;component<=6u;++component)
+				density+=state[cell][component];
+			result.molecularKinematicViscosityM2PerS[cell]=dynamicViscosity[cell]/density;}
+		result.publicationIdentity=
+			::RISEFireProductionFP64::FireProductionProjectedHeunTransportPublicationIdentity(
+				context,result);
+		if(error)error->clear();return true;
+	}
+private:
+	FireProductionResidentPhysicalFluxComparatorRequest fixture_;
+};
+
 int RunProductionResidentTargetLineageMetalFP64Fixture()
 {
 	static_assert(!std::is_convertible<FireProductionResidentTargetLineageComparatorResult,
@@ -10386,6 +10609,290 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		boundREDDisplacedExact);
 	const bool independentBoundCanFail=!insideEnclosure(boundREDProjection,
 		boundREDDisplacedExact,false)&&boundREDResidual>boundREDLocal;
+	FireProductionResidentTargetLineageComparatorRequest ownerLineage=request;
+	ownerLineage.eos.physicalFlux.transport.boundary.fill(
+		FireProductionProjectionPressureOpen);
+	for(const std::size_t outlier:{std::size_t(7u),std::size_t(15u),std::size_t(23u),
+		std::size_t(31u),std::size_t(39u),std::size_t(47u),std::size_t(55u),
+		std::size_t(63u)}){
+		const std::size_t safe=outlier-1u;
+		for(std::size_t component=0u;component<9u;++component)
+			ownerLineage.eos.physicalFlux.transport.conservativeValues[
+				component*cells+outlier]=ownerLineage.eos.physicalFlux.transport.
+				conservativeValues[component*cells+safe];
+		ownerLineage.eos.physicalFlux.transport.temperatureK[outlier]=
+			ownerLineage.eos.physicalFlux.transport.temperatureK[safe];}
+	FireProductionFrozenMethaneSourceRequest ownerSourceRequest=sourceRequest;
+	ownerSourceRequest.timeStepS=ownerLineage.eos.candidateTimeStepS;
+	ownerSourceRequest.beginningConservativeValues=
+		ownerLineage.eos.physicalFlux.transport.conservativeValues;
+	std::string ownerSourceError;
+	const bool ownerSourceBuilt=FireSim::FireProductionCanonicalSourceAuthority::Build(
+		ownerSourceRequest,ownerLineage.frozenSource,&ownerSourceError);
+	ownerLineage.eos.physicalFlux.transport.temperatureK=
+		ownerLineage.frozenSource.BeginningTemperatureK();
+	ownerLineage.eos.sourceDelta=ownerLineage.frozenSource.SourceDelta();
+	const FireProductionResidentEOSCandidateComparatorRequest& ownerEOS=ownerLineage.eos;
+	FireProductionProjectedHeunMetalOwnerRequest ownerRequest;
+	ownerRequest.lineage=ownerLineage;
+	ownerRequest.projectionTolerancePerS=1.0e-3f;
+	ownerRequest.endpointVelocityToleranceMPerS=1.0e-4f;
+	ownerRequest.maximumPicardIterations=16u;
+	for(unsigned int axis=0u;axis<3u;++axis)
+		ownerRequest.beginningMomentumKGPerM2S[axis].assign(
+			FireProductionProjectionFaceCount(shape,axis),0.0f);
+	FireProductionProjectedHeunMetalOwnerResult ownerObserved;
+	std::string ownerError;
+	const bool ownerAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+		ownerRequest,ownerObserved,&ownerError);
+	FireProductionResidentStepResult ownerResidentObserved;
+	FireProductionProjectedHeunMetalOwnerResult ownerResidentDiagnostics;
+	std::string ownerResidentError;
+	const bool ownerResidentAccepted=AttemptFireProductionProjectedHeunResidentStepMetal(
+		ownerRequest,ownerResidentObserved,&ownerResidentDiagnostics,&ownerResidentError);
+	auto ownerRED=[&](const char* name,
+		const std::function<void(FireProductionProjectedHeunMetalOwnerRequest&)>& mutate){
+		FireProductionProjectedHeunMetalOwnerRequest redRequest=ownerRequest;mutate(redRequest);
+		FireProductionProjectedHeunMetalOwnerResult redResult;std::string redError;
+		const bool attempted=AttemptFireProductionProjectedHeunMetalOwner(redRequest,redResult,&redError);
+		const bool refused=!attempted&&!redResult.accepted&&redResult.ownerPublicationIdentity==0u&&
+			redResult.conservativeValues.empty()&&redResult.terminalStagingCount==0u;
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=%s layer=device "
+			"attempted=%d owner_identity=%llu payload_words=%zu staging=%u error=%s passed=%d\n",
+			name,attempted?1:0,static_cast<unsigned long long>(redResult.ownerPublicationIdentity),
+			redResult.conservativeValues.size(),redResult.terminalStagingCount,redError.c_str(),
+			refused?1:0);return refused;};
+	const bool ownerStaleRefused=ownerRED("stale_candidate",[](auto& value){
+		value.qualificationStaleCandidate=true;});
+	const bool ownerOrderRefused=ownerRED("out_of_order_stage",[](auto& value){
+		value.qualificationOutOfOrderStage=true;});
+	const bool ownerForgedRefused=ownerRED("forged_lineage",[](auto& value){
+		value.qualificationForgedLineage=true;});
+	const bool ownerCallbackRefused=ownerRED("callback_mutation",[](auto& value){
+		value.qualificationCallbackMutation=true;});
+	const bool ownerAtomicRefused=ownerRED("atomic_publication",[](auto& value){
+		value.qualificationAtomicPublicationFailure=true;});
+	std::vector<double> ownerDeviceTimingMS,ownerWallTimingMS;
+	if(ownerAccepted){ownerDeviceTimingMS.push_back(ownerObserved.deviceElapsedMS);
+		ownerWallTimingMS.push_back(ownerObserved.wallElapsedMS);
+		for(unsigned int sample=1u;sample<5u;++sample){
+			FireProductionProjectedHeunMetalOwnerResult timingResult;std::string timingError;
+			if(!AttemptFireProductionProjectedHeunMetalOwner(ownerRequest,timingResult,&timingError))break;
+			ownerDeviceTimingMS.push_back(timingResult.deviceElapsedMS);
+			ownerWallTimingMS.push_back(timingResult.wallElapsedMS);}}
+	auto ownerP95=[](std::vector<double> values){if(values.empty())return 0.0;
+		std::sort(values.begin(),values.end());return values[static_cast<std::size_t>(
+			std::ceil(0.95*static_cast<double>(values.size())))-1u];};
+	const double ownerDeviceP95=ownerP95(ownerDeviceTimingMS),ownerWallP95=ownerP95(ownerWallTimingMS);
+	::RISEFireProductionFP64::FireProductionProjectedHeunOwnerRequest ownerRequest64;
+	ownerRequest64.attemptIdentity=ownerEOS.physicalFlux.transport.attemptIdentity;
+	ownerRequest64.source=
+		::RISEFireProductionFP64::FireProductionFrozenSourcePacketSeal::CalibrationImport(
+			ownerLineage.frozenSource);
+	ownerRequest64.caseRecordEnvelope=ownerEOS.caseRecordEnvelope;
+	ownerRequest64.beginningConservativeValues.assign(
+		ownerEOS.physicalFlux.transport.conservativeValues.begin(),
+		ownerEOS.physicalFlux.transport.conservativeValues.end());
+	auto copyOwnerShape64=[](const FireProductionProjectionShape& from,
+		::RISEFireProductionFP64::FireProductionProjectionShape& to){
+		to.nx=from.nx;to.ny=from.ny;to.nz=from.nz;to.cellWidthM=from.cellWidthM;};
+	copyOwnerShape64(shape,ownerRequest64.scalarContract.shape);
+	copyOwnerShape64(shape,ownerRequest64.physicalContract.shape);
+	copyOwnerShape64(shape,ownerRequest64.forceContract.shape);
+	ownerRequest64.scalarContract.timeStepS=ownerEOS.candidateTimeStepS;
+	ownerRequest64.forceContract.timeStepS=ownerEOS.candidateTimeStepS;
+	for(unsigned int side=0u;side<6u;++side){
+		const auto boundary64=static_cast<::RISEFireProductionFP64::
+			FireProductionProjectionBoundary>(ownerEOS.physicalFlux.transport.boundary[side]);
+		ownerRequest64.scalarContract.boundary[side]=boundary64;
+		ownerRequest64.physicalContract.boundary[side]=boundary64;
+		ownerRequest64.forceContract.boundary[side]=boundary64;}
+	for(std::size_t component=0u;component<9u;++component){
+		ownerRequest64.scalarContract.ambient[component]=ownerEOS.physicalFlux.ambient[component];
+		ownerRequest64.physicalContract.ambient[component]=ownerEOS.physicalFlux.ambient[component];}
+	ownerRequest64.scalarContract.nullity=ownerEOS.physicalFlux.nullity;
+	ownerRequest64.scalarContract.nullspaceBasis.assign(
+		ownerEOS.physicalFlux.nullspaceBasis.begin(),ownerEOS.physicalFlux.nullspaceBasis.end());
+	ownerRequest64.scalarContract.coordinateProjector.assign(
+		ownerEOS.physicalFlux.coordinateProjector.begin(),ownerEOS.physicalFlux.coordinateProjector.end());
+	std::array<double,7> ownerMinimumEnthalpy,ownerMaximumEnthalpy;
+	const bool ownerEnthalpy=fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(
+		fuel.TemperatureMinK(),ownerMinimumEnthalpy.data(),ownerMinimumEnthalpy.size(),&error)&&
+		fuel.SensibleEnthalpiesBySpeciesOrderJPerKG(fuel.TemperatureMaxK(),
+			ownerMaximumEnthalpy.data(),ownerMaximumEnthalpy.size(),&error);
+	for(std::size_t species=0u;species<7u;++species){
+		ownerRequest64.scalarContract.enthalpyBoundsJPerKG[species]=ownerMinimumEnthalpy[species];
+		ownerRequest64.scalarContract.enthalpyBoundsJPerKG[7u+species]=ownerMaximumEnthalpy[species];}
+	const FireAcceptedStateFeasibilityEnvelope& ownerEnvelope=
+		fuel.AcceptedStateFeasibilityEnvelope();
+	ownerRequest64.scalarContract.feasibilityFactor=ownerEnvelope.kappaEpsilon32*
+		std::numeric_limits<float>::epsilon();
+	ownerRequest64.scalarContract.assemblyReserveFactor=ownerEnvelope.remapFactorEpsilon32*
+		std::numeric_limits<float>::epsilon();
+	ownerRequest64.physicalContract.ambientTemperatureK=ownerEOS.physicalFlux.ambientTemperatureK;
+	ownerRequest64.forceContract.ambientDensityKGPerM3=ownerRequest.ambientDensityKGPerM3;
+	ownerRequest64.forceContract.vremanCoefficient=ownerRequest.vremanCoefficient;
+	for(unsigned int axis=0u;axis<3u;++axis){
+		ownerRequest64.forceContract.gravityMPerS2[axis]=ownerRequest.gravityMPerS2[axis];
+		ownerRequest64.beginningMomentumKGPerM2S[axis].assign(
+			ownerRequest.beginningMomentumKGPerM2S[axis].begin(),
+			ownerRequest.beginningMomentumKGPerM2S[axis].end());}
+	ownerRequest64.projectionTolerancePerS=ownerRequest.projectionTolerancePerS;
+	ownerRequest64.endpointVelocityToleranceMPerS=ownerRequest.endpointVelocityToleranceMPerS;
+	ownerRequest64.maximumPicardIterations=ownerRequest.maximumPicardIterations;
+	ResidentOwnerTransportFP64 ownerTransport64(ownerEOS.physicalFlux);
+	::RISEFireProductionFP64::FireProductionProjectedHeunCPUOwner owner64;
+	::RISEFireProductionFP64::FireProductionProjectedHeunOwnerResult ownerObserved64;
+	std::string owner64Error;
+	const bool owner64Begin=ownerSourceBuilt&&ownerEnthalpy&&
+		owner64.Begin(ownerRequest64,&owner64Error);
+	const bool owner64R0=owner64Begin&&owner64.SolveR0(ownerTransport64,&owner64Error);
+	const bool owner64R1=owner64R0&&owner64.SolveR1(ownerTransport64,&owner64Error);
+	const bool owner64Accepted=owner64R1&&
+		owner64.SolveR2(ownerTransport64,ownerObserved64,&owner64Error);
+	const double ownerGamma512=(512.0*std::numeric_limits<float>::epsilon())/
+		(1.0-512.0*std::numeric_limits<float>::epsilon());
+	struct OwnerFieldBound{double maximumResidual,maximumBound,worstRatio;std::size_t worst;
+		bool passed;OwnerFieldBound():maximumResidual(0.0),maximumBound(0.0),worstRatio(0.0),
+			worst(0u),passed(true){}};
+	auto evaluateOwnerField=[&](const char* field,const char* units,
+		const std::vector<float>& device,const std::vector<double>& mirror,
+		const std::function<double(std::size_t)>& bound){OwnerFieldBound result;
+		if(device.size()!=mirror.size()){std::fprintf(stderr,
+			"PROJECTED_HEUN_METAL_OWNER_FIELD field=%s units=%s size_match=0 passed=0\n",
+			field,units);result.passed=false;return result;}
+		for(std::size_t index=0u;index<device.size();++index){const double residual=std::fabs(
+			static_cast<double>(device[index])-mirror[index]),localBound=bound(index);
+			const double ratio=localBound>0.0?residual/localBound:(residual==0.0?0.0:
+				std::numeric_limits<double>::infinity());result.maximumResidual=std::max(
+				result.maximumResidual,residual);result.maximumBound=std::max(result.maximumBound,
+				localBound);if(ratio>result.worstRatio){result.worstRatio=ratio;result.worst=index;}
+			result.passed=result.passed&&std::isfinite(localBound)&&localBound>=0.0&&residual<=localBound;}
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_FIELD field=%s units=%s scope=every_value "
+			"worst_index=%zu device=%.17g fp64=%.17g max_residual=%.17g "
+			"max_local_termwise_enclosure=%.17g worst_residual_over_local_bound=%.17g passed=%d\n",
+			field,units,result.worst,static_cast<double>(device[result.worst]),mirror[result.worst],
+			result.maximumResidual,result.maximumBound,result.worstRatio,result.passed?1:0);
+		return result;};
+	bool ownerMirrorBounded=owner64Accepted;
+	if(ownerAccepted&&owner64Accepted){
+		double maximumEnthalpyMagnitude=0.0;for(const double value:
+			ownerRequest64.scalarContract.enthalpyBoundsJPerKG)maximumEnthalpyMagnitude=
+			std::max(maximumEnthalpyMagnitude,std::fabs(value));
+		auto localMassScale=[&](const std::size_t cell){double scale=0.0;
+			for(std::size_t component=1u;component<=7u;++component){scale+=std::fabs(
+				ownerRequest64.beginningConservativeValues[component*cells+cell])+
+				std::fabs(ownerRequest64.source.SourceDelta()[component*cells+cell])+
+				std::fabs(ownerObserved64.conservativeValues[component*cells+cell]);}
+			return scale;};
+		const char* conservativeName[9]={"rhoZ","CH4","O2","CO2","H2O","N2","CO",
+			"carbon","sensible_energy"};
+		for(std::size_t component=0u;component<9u;++component){std::vector<float> device(cells);
+			std::vector<double> mirror(cells);for(std::size_t cell=0u;cell<cells;++cell){
+				device[cell]=ownerObserved.conservativeValues[component*cells+cell];
+				mirror[cell]=ownerObserved64.conservativeValues[component*cells+cell];}
+			const OwnerFieldBound bound=evaluateOwnerField(conservativeName[component],
+				component==8u?"J_m^-3":"kg_m^-3",device,mirror,[&,component](std::size_t cell){
+				const double termMagnitude=std::fabs(ownerRequest64.beginningConservativeValues[
+					component*cells+cell])+std::fabs(ownerRequest64.source.SourceDelta()[
+					component*cells+cell])+std::fabs(mirror[cell])+std::fabs(
+					static_cast<double>(device[cell]));
+				const double affineScale=component==8u?localMassScale(cell)*
+					maximumEnthalpyMagnitude:localMassScale(cell);
+				return ownerGamma512*termMagnitude+
+					ownerRequest64.scalarContract.feasibilityFactor*affineScale;});
+			ownerMirrorBounded=ownerMirrorBounded&&bound.passed;}
+		for(unsigned int axis=0u;axis<3u;++axis){const std::string momentum="momentum_"+
+			std::to_string(axis),velocity="velocity_"+std::to_string(axis);
+			const double velocityImpulse=3.0*std::fabs(ownerRequest.gravityMPerS2[axis])*
+				ownerEOS.candidateTimeStepS;
+			// The fixed-point owner may stop on opposite sides of its binary32/fp64
+			// comparison only inside the declared target-rate residual.  Multiplying
+			// that absolute (not cancellation-derived) residual by dx converts it to
+			// a local face-velocity enclosure; density gives the momentum enclosure.
+			const double projectionVelocityEnclosure=
+				ownerRequest.projectionTolerancePerS*shape.cellWidthM;
+			const OwnerFieldBound momentumBound=evaluateOwnerField(momentum.c_str(),
+				"kg_m^-2_s^-1",ownerObserved.momentumKGPerM2S[axis],
+				ownerObserved64.momentumKGPerM2S[axis],[&,axis,velocityImpulse](std::size_t face){
+				const double impulseScale=ownerRequest.ambientDensityKGPerM3*velocityImpulse;
+				return ownerGamma512*(std::fabs(ownerRequest.beginningMomentumKGPerM2S[axis][face])+
+					std::fabs(static_cast<double>(ownerObserved.momentumKGPerM2S[axis][face]))+
+					std::fabs(ownerObserved64.momentumKGPerM2S[axis][face])+impulseScale)+
+					ownerRequest.ambientDensityKGPerM3*projectionVelocityEnclosure;});
+			const OwnerFieldBound velocityBound=evaluateOwnerField(velocity.c_str(),"m_s^-1",
+				ownerObserved.velocityMPerS[axis],ownerObserved64.velocityMPerS[axis],
+				[&,axis,velocityImpulse](std::size_t face){return ownerGamma512*(
+					std::fabs(static_cast<double>(ownerObserved.velocityMPerS[axis][face]))+
+					std::fabs(ownerObserved64.velocityMPerS[axis][face])+velocityImpulse)+
+					projectionVelocityEnclosure;});
+			ownerMirrorBounded=ownerMirrorBounded&&momentumBound.passed&&velocityBound.passed;}
+		const double temperatureSpan=fuel.TemperatureMaxK()-fuel.TemperatureMinK();
+		const OwnerFieldBound temperatureBound=evaluateOwnerField("temperature","K",
+			ownerObserved.temperatureK,ownerObserved64.committedEOS.temperatureK,
+			[&](std::size_t cell){return ownerGamma512*(std::fabs(ownerEOS.physicalFlux.transport.
+				temperatureK[cell])+std::fabs(static_cast<double>(ownerObserved.temperatureK[cell]))+
+				std::fabs(ownerObserved64.committedEOS.temperatureK[cell]))+
+				ownerRequest64.scalarContract.feasibilityFactor*temperatureSpan;});
+		ownerMirrorBounded=ownerMirrorBounded&&temperatureBound.passed;}
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_FP64 source=%d begin=%d r0=%d r1=%d "
+		"accepted=%d criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error=%s passed=%d\n",
+		ownerSourceBuilt?1:0,owner64Begin?1:0,owner64R0?1:0,owner64R1?1:0,
+		owner64Accepted?1:0,ownerSourceBuilt?owner64Error.c_str():ownerSourceError.c_str(),
+		ownerMirrorBounded?1:0);
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_SMOKE accepted=%d owner_identity=%llu "
+		"iterations=%u/%u/%u commits=%u projections=%u staging=%u transfers=%u "
+		"actual_ws=%llu certified_ws=%llu commuting_residual=%.9g commuting_scale=%.9g "
+		"commuting_bound=%.9g commuting_passed=%d device_ms=%.9g wall_ms=%.9g error=%s\n",
+		ownerAccepted?1:0,static_cast<unsigned long long>(ownerObserved.ownerPublicationIdentity),
+		ownerObserved.acceptedPicardIterations[0],ownerObserved.acceptedPicardIterations[1],
+		ownerObserved.acceptedPicardIterations[2],ownerObserved.commandCommitCount,
+		ownerObserved.residentProjectionInvocationCount,ownerObserved.terminalStagingCount,
+		ownerObserved.interstageFullGridTransferCount,
+		static_cast<unsigned long long>(ownerObserved.actualMetalAllocationBytes),
+		static_cast<unsigned long long>(ownerObserved.certifiedWorkingSetBytes),
+		ownerObserved.maximumCommutingResidualKGPerM3,
+		ownerObserved.commutingIdentityScaleKGPerM3,
+		ownerObserved.commutingIdentityBoundKGPerM3,
+		ownerObserved.commutingIdentityPassed?1:0,
+		ownerObserved.deviceElapsedMS,ownerObserved.wallElapsedMS,ownerError.c_str());
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_PRODUCTION_ENTRY accepted=%d "
+		"token=%d token_matches=%d owner_identity=%llu diagnostic_identity=%llu "
+		"monitored=%d enforced=%d transfers=%u staging=%u error=%s passed=%d\n",
+		ownerResidentAccepted?1:0,ownerResidentObserved.HasAcceptedManifoldToken()?1:0,
+		ownerResidentObserved.AcceptedManifoldTokenMatchesCurrentPayload()?1:0,
+		static_cast<unsigned long long>(ownerResidentObserved.projectedHeunOwnerIdentity),
+		static_cast<unsigned long long>(ownerResidentDiagnostics.ownerPublicationIdentity),
+		ownerResidentObserved.manifoldDiagnosticsMonitored?1:0,
+		ownerResidentObserved.manifoldPlateauEnforced?1:0,
+		ownerResidentObserved.interstageFullGridTransferCount,
+		ownerResidentObserved.terminalStagingCount,ownerResidentError.c_str(),
+		ownerResidentAccepted&&ownerResidentObserved.HasAcceptedManifoldToken()&&
+		ownerResidentObserved.AcceptedManifoldTokenMatchesCurrentPayload()&&
+		ownerResidentObserved.projectedHeunOwnerIdentity==
+			ownerResidentDiagnostics.ownerPublicationIdentity&&
+		ownerResidentObserved.manifoldDiagnosticsMonitored&&
+		!ownerResidentObserved.manifoldPlateauEnforced&&
+		ownerResidentObserved.interstageFullGridTransferCount==0u&&
+		ownerResidentObserved.terminalStagingCount==1u?1:0);
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_TIMING samples=%zu device_p95_ms=%.9g "
+		"wall_p95_ms=%.9g passed=%d\n",ownerDeviceTimingMS.size(),ownerDeviceP95,ownerWallP95,
+		ownerDeviceTimingMS.size()==5u?1:0);
+	const bool ownerProductionEntryPassed=ownerResidentAccepted&&
+		ownerResidentObserved.HasAcceptedManifoldToken()&&
+		ownerResidentObserved.AcceptedManifoldTokenMatchesCurrentPayload()&&
+		ownerResidentObserved.projectedHeunOwnerIdentity==
+			ownerResidentDiagnostics.ownerPublicationIdentity&&
+		ownerResidentObserved.manifoldDiagnosticsMonitored&&
+		!ownerResidentObserved.manifoldPlateauEnforced&&
+		ownerResidentObserved.interstageFullGridTransferCount==0u&&
+		ownerResidentObserved.terminalStagingCount==1u;
+	const bool ownerSmokePassed=ownerAccepted&&ownerMirrorBounded&&ownerProductionEntryPassed&&
+		ownerObserved.ownerPublicationIdentity!=0u&&
+		ownerObserved.terminalStagingCount==1u&&
+		ownerObserved.interstageFullGridTransferCount==0u&&ownerDeviceTimingMS.size()==5u&&
+		ownerStaleRefused&&ownerOrderRefused&&ownerForgedRefused&&ownerCallbackRefused&&
+		ownerAtomicRefused;
 	const bool passed=thresholdCoverage&&exactThresholdNoDrain&&deviceExactPositiveNoDrain&&
 		deviceExactNegativeNoDrain&&independentBoundCanFail&&allBoundsPass&&
 		tangentEqual&&sourceEqual&&diagnosticEqual&&tailEqual&&assembledEqual&&
@@ -10397,7 +10904,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		cpuTargetRefused&&cpuProjectionMetadataRefused&&
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
-		transferLedgerRefused&&
+		transferLedgerRefused&&ownerSmokePassed&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
 		openObserved.terminalStagingCount==1u&&openObserved.interstageFullGridTransferCount==0u;
@@ -10562,6 +11069,8 @@ int main(int argc,char** argv)
 	}
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-r193-baseline")==0)
 		return RunProductionOnsetCampaignChild(8.0,argv[2],true,argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-r201-ported")==0)
+		return RunProductionOnsetCampaignChild(8.0,argv[2],false,argv[3],argv[4],true);
 	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
 		double target=0.0;if(!ParsePositiveDoubleArgument(argv[2],target))return 91;
 		return RunOracleRetainedTrajectoryChild(target,argv[3]);

@@ -90,8 +90,8 @@ namespace RISE
 			// Request Q/mixing/mask, sealed 11F+8D result, and the simultaneously
 			// live canonical two-pass reaction/radiation scratch. vector<bool> is
 			// deliberately charged as one full byte for each of its three maps.
-			const std::uint64_t bytesPerCell=20u*sizeof(float)+
-				11u*sizeof(double)+3u*sizeof(MethaneCellState)+
+			const std::uint64_t bytesPerCell=29u*sizeof(float)+
+				12u*sizeof(double)+5u*sizeof(MethaneCellState)+
 				sizeof(MethaneReactionStep)+3u*sizeof(MethaneSourcePacket)+5u;
 			// The persistent pool is topology-bounded.  Charge an explicit conservative
 			// stack reservation for every admitted worker; sizeof(std::thread) alone is
@@ -134,7 +134,14 @@ namespace RISE
 					request.attemptIdentity==0u||request.workerCount==0u||
 					request.workerCount>FireWorkerCapacity()||
 					request.beginningConservativeValues.size()!=9u*cells||
-					request.pilotCommandMask.size()!=cells||request.mixingTimeS.size()!=cells)
+					(!request.sourceEvaluationTemperatureK.empty()&&
+					 request.sourceEvaluationTemperatureK.size()!=cells)||
+					(!request.eligibilityBeginningConservativeValues.empty()&&
+					 request.eligibilityBeginningConservativeValues.size()!=9u*cells)||
+					request.pilotCommandMask.size()!=cells||
+					(!request.sourceBoundaryContactMask.empty()&&
+					 request.sourceBoundaryContactMask.size()!=cells)||
+					request.mixingTimeS.size()!=cells)
 					return Fail(error,"production canonical source request is malformed");
 				const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 				const FireSimulationTransportRecord& transport=FireSimulationTransportRecord::OpenV1();
@@ -151,15 +158,25 @@ namespace RISE
 				if(!hasReference(fuel.RecordId())||!hasReference(transport.RecordId())||
 					!hasReference(opacity.RecordId()))return Fail(error,
 						"production canonical source case omits a required record identity");
-				std::vector<MethaneCellState> beginning(cells);
+				std::vector<MethaneCellState> beginning(cells),sourceBeginning(cells),
+					eligibilityBeginning(cells);
 				std::vector<float> canonicalTemperatureK(cells,0.0f);
+				const std::vector<float>& eligibilityValues=
+					request.eligibilityBeginningConservativeValues.empty()?
+					request.beginningConservativeValues:
+					request.eligibilityBeginningConservativeValues;
 				for(std::size_t cell=0u;cell<cells;++cell){
-					ConservativeVector tuple;
+					ConservativeVector tuple,eligibilityTuple;
 					for(std::size_t component=0u;component<9u;++component){
 						const float value=request.beginningConservativeValues[component*cells+cell];
+						const float eligibilityValue=eligibilityValues[component*cells+cell];
 						if(!std::isfinite(value)||(value==0.0f&&std::signbit(value)))return Fail(error,
 							"production canonical source beginning state is noncanonical");
+						if(!std::isfinite(eligibilityValue)||(eligibilityValue==0.0f&&
+							std::signbit(eligibilityValue)))return Fail(error,
+							"production canonical source eligibility state is noncanonical");
 						tuple[component]=static_cast<double>(value);
+						eligibilityTuple[component]=static_cast<double>(eligibilityValue);
 					}
 					beginning[cell]=FromConservativeVector(tuple,FireStateProducerPrecision::Binary32);
 					double invertedTemperatureK=0.0,pressureRatio=0.0;
@@ -167,8 +184,7 @@ namespace RISE
 						tuple.value.size(),fireCase.derived.pilotAmbientTemperatureK,
 						fireCase.derived.maximumAcceptedTemperatureK,
 						FireStateProducerPrecision::Binary32,invertedTemperatureK,
-						pressureRatio,error))
-						return false;
+						pressureRatio,error))return false;
 					canonicalTemperatureK[cell]=static_cast<float>(invertedTemperatureK);
 					if(!std::isfinite(canonicalTemperatureK[cell])||
 						canonicalTemperatureK[cell]>=fireCase.derived.maximumAcceptedTemperatureK){
@@ -179,20 +195,74 @@ namespace RISE
 						return Fail(error,message.str());
 					}
 					beginning[cell].temperatureK=static_cast<double>(canonicalTemperatureK[cell]);
+					sourceBeginning[cell]=beginning[cell];
+					if(!request.sourceEvaluationTemperatureK.empty()){
+						const double evaluationTemperatureK=
+							request.sourceEvaluationTemperatureK[cell];
+						if(!std::isfinite(evaluationTemperatureK)||
+							evaluationTemperatureK<fuel.TemperatureMinK()||
+							evaluationTemperatureK>fuel.TemperatureMaxK())return Fail(error,
+							"production canonical source evaluation temperature is invalid");
+						sourceBeginning[cell].temperatureK=evaluationTemperatureK;
+						double representedEnergy=0.0;
+						if(!SignedMixtureSensibleEnergy(sourceBeginning[cell],evaluationTemperatureK,
+							fuel,representedEnergy,error)||static_cast<float>(representedEnergy)!=
+								request.beginningConservativeValues[8u*cells+cell])return Fail(error,
+							"production canonical source evaluation temperature fails forward EOS closure");
+					}
+					eligibilityBeginning[cell]=FromConservativeVector(eligibilityTuple,
+						FireStateProducerPrecision::Binary32);
+					double eligibilityTemperatureK=0.0,eligibilityPressureRatio=0.0;
+					if(!fuel.InvertAcceptedConservativeStateByComponentOrder(
+						eligibilityTuple.value.data(),eligibilityTuple.value.size(),
+						fireCase.derived.pilotAmbientTemperatureK,
+						fireCase.derived.maximumAcceptedTemperatureK,
+						FireStateProducerPrecision::Binary32,eligibilityTemperatureK,
+						eligibilityPressureRatio,error))return false;
+					eligibilityBeginning[cell].temperatureK=eligibilityTemperatureK;
 					if(!ValidateCellState(beginning[cell],error)||
 						!AcceptedMethaneCellStateAdmissible(beginning[cell],fuel,
+							FireStateProducerPrecision::Binary32,error)||
+						!ValidateCellState(sourceBeginning[cell],error)||
+						!ValidateCellState(eligibilityBeginning[cell],error)||
+						!AcceptedMethaneCellStateAdmissible(eligibilityBeginning[cell],fuel,
 							FireStateProducerPrecision::Binary32,error))return false;
 					if((request.pilotCommandMask[cell]!=0u&&request.pilotCommandMask[cell]!=1u)||
+						(!request.sourceBoundaryContactMask.empty()&&
+						 request.sourceBoundaryContactMask[cell]!=0u&&
+						 request.sourceBoundaryContactMask[cell]!=1u)||
 						!std::isfinite(request.mixingTimeS[cell])||request.mixingTimeS[cell]<=0.0)
 						return Fail(error,"production canonical source control is invalid");
 				}
 				IgnitionGrid ignition;ignition.nx=request.shape.nx;ignition.ny=request.shape.ny;
-				ignition.nz=request.shape.nz;ignition.cells=beginning;
+				ignition.nz=request.shape.nz;ignition.cells=eligibilityBeginning;
 				ignition.pilotMask.resize(cells,false);
 				for(std::size_t cell=0u;cell<cells;++cell)
 					ignition.pilotMask[cell]=request.pilotCommandMask[cell]!=0u;
 				std::vector<bool> eligible;
 				if(!BuildIgnitionEligibility(ignition,fuel,fuel,transport,eligible,error))return false;
+				if(!request.sourceBoundaryContactMask.empty()){
+					const std::vector<double>& ambientMassFraction=fuel.AmbientMassFractions();
+					const double ambientProductMassFraction=ambientMassFraction[MethaneCO2]+
+						ambientMassFraction[MethaneH2O];
+					const double productWitness=std::nextafter(ambientProductMassFraction,
+						std::numeric_limits<double>::infinity());
+					for(std::size_t cell=0u;cell<cells;++cell){
+						if(request.sourceBoundaryContactMask[cell]==0u)continue;
+						const MethaneCellState& candidate=sourceBeginning[cell];
+						const double gasDensity=candidate.GasDensity();
+						if(!(gasDensity>0.0)||candidate.constituent[MethaneCH4]<=0.0||
+							candidate.constituent[MethaneO2]<=0.0)continue;
+						if(!request.pilotEstablished&&
+							(candidate.constituent[MethaneCO2]+candidate.constituent[MethaneH2O])/
+								gasDensity<productWitness)continue;
+						double adiabaticTemperatureK=0.0;
+						if(!TrialAdiabaticTemperatureK(candidate,fuel,fuel,adiabaticTemperatureK,error))
+							return false;
+						if(adiabaticTemperatureK>=transport.CriticalFlameTemperatureK())
+							eligible[cell]=true;
+					}
+				}
 				std::vector<MethaneReactionStep> reactions(cells);
 				for(std::size_t cell=0u;cell<cells;++cell){
 					reactions[cell].deltaTimeS=static_cast<double>(request.timeStepS);
@@ -213,7 +283,7 @@ namespace RISE
 				const double volume=std::pow(static_cast<double>(request.shape.cellWidthM),3.0);
 				std::vector<double> cellVolume(cells,volume);
 				std::vector<MethaneSourcePacket> packets;RadiationEscapeFactor factor;
-				if(!BuildFrozenMethaneSourcePackets(beginning,reactions,cellVolume,
+				if(!BuildFrozenMethaneSourcePackets(sourceBeginning,reactions,cellVolume,
 					fireCase.derived.pilotAmbientTemperatureK,
 					fireCase.derived.referenceHeatReleaseRateW,
 					fireCase.derived.effectiveRadiativeFraction,request.predictiveRadiation,
@@ -252,8 +322,8 @@ namespace RISE
 					candidate.pilotExpansionIntegral_[cell]=packets[cell].pilotExpansionIntegral;
 					candidate.radiativeCoolingWPerM3_[cell]=packets[cell].radiativeCoolingWPerM3;
 					double scaled=0.0;
-					if(!FrozenSourcePacketExpansionAdmissible(ToConservativeVector(beginning[cell]),
-						beginning[cell].temperatureK,packets[cell],request.timeStepS,fuel,
+					if(!FrozenSourcePacketExpansionAdmissible(ToConservativeVector(sourceBeginning[cell]),
+						sourceBeginning[cell].temperatureK,packets[cell],request.timeStepS,fuel,
 						FireStateProducerPrecision::Binary32,&scaled,error))return false;
 					candidate.maximumScaledExpansion_=std::max(
 						candidate.maximumScaledExpansion_,scaled);
@@ -280,9 +350,14 @@ namespace RISE
 				candidate.beginningTemperatureK_=std::move(canonicalTemperatureK);
 				candidate.reactionControlIdentity_=UINT64_C(14695981039346656037);
 				HashDomain(candidate.reactionControlIdentity_,
-					"RISE canonical frozen source reaction control v1");
+					"RISE canonical frozen source reaction control v2");
 				HashDoubleValues(candidate.reactionControlIdentity_,request.mixingTimeS);
 				HashByteValues(candidate.reactionControlIdentity_,request.pilotCommandMask);
+				HashDoubleValues(candidate.reactionControlIdentity_,
+					request.sourceEvaluationTemperatureK);
+				HashFloatValues(candidate.reactionControlIdentity_,eligibilityValues);
+				HashByteValues(candidate.reactionControlIdentity_,request.sourceBoundaryContactMask);
+				HashUInt64(candidate.reactionControlIdentity_,request.pilotEstablished?1u:0u);
 				HashDouble(candidate.reactionControlIdentity_,
 					fireCase.derived.maximumAcceptedTemperatureK);
 				HashDouble(candidate.reactionControlIdentity_,
@@ -294,7 +369,7 @@ namespace RISE
 				HashString(candidate.reactionControlIdentity_,transport.RecordId());
 				candidate.sourceInputIdentity_=UINT64_C(14695981039346656037);
 				HashDomain(candidate.sourceInputIdentity_,
-					"RISE canonical frozen source raw input v1");
+					"RISE canonical frozen source raw input v2");
 				HashUInt64(candidate.sourceInputIdentity_,request.attemptIdentity);
 				HashFloat(candidate.sourceInputIdentity_,request.timeStepS);
 				HashDouble(candidate.sourceInputIdentity_,request.beginningTimeS);

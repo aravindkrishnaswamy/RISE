@@ -445,6 +445,15 @@ namespace RISE
 			value.manifoldTailExcessSum<0.0||!std::isfinite(value.manifoldTailDrainedVolumeM3)||
 			value.manifoldTailDrainedVolumeM3<0.0||
 			value.manifoldTailRestorationApplied!=(value.manifoldTailCellCount>0u))return false;
+		if(value.projectedHeunOwnerIdentity!=0u)return !value.manifoldPlateauEnforced&&
+			value.projection.validationPassed&&value.physicalProjection.validationPassed&&
+			value.residentProjectionInvocationCount>=3u&&value.terminalStagingCount==1u&&
+			value.manifoldScalarDeviceToHostTransferCount==1u&&
+			value.advectiveAnomalyClosurePassCount==0u&&
+			value.requiredRestorationDrainFraction==0.0&&
+			value.deliveredRestorationDrainFraction==0.0&&
+			value.restorationResidualBandPerS==0.0&&
+			!value.manifoldNextTimeStepAvailable&&value.suggestedManifoldTimeStepS==0.0;
 		if(value.manifoldPlateauEnforced)return !value.manifoldTailRestorationApplied&&
 			value.manifoldTailCellCount==0u&&value.manifoldTailExcessSum==0.0&&
 			value.manifoldTailDrainedVolumeM3==0.0&&value.physicalProjection.validationPassed&&

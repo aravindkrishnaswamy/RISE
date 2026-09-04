@@ -449,6 +449,33 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
  }
  maximumVelocity[gid]=mv;complementarity[gid]=mc;
 }
+kernel void identify_resident_projection(device const float* target [[buffer(0)]],
+ device const ulong* targetIdentity [[buffer(1)]],device const float* pressure [[buffer(2)]],
+ device const float* dx [[buffer(3)]],device const float* dy [[buffer(4)]],
+ device const float* dz [[buffer(5)]],device const float* mx [[buffer(6)]],
+ device const float* my [[buffer(7)]],device const float* mz [[buffer(8)]],
+ device const float* vx [[buffer(9)]],device const float* vy [[buffer(10)]],
+ device const float* vz [[buffer(11)]],device const uchar* inflow [[buffer(12)]],
+ device ulong* identity [[buffer(13)]],constant LevelParams& p [[buffer(14)]],
+ uint gid [[thread_position_in_grid]]){
+ if(gid!=0u)return;if(targetIdentity[0]==0ul){identity[0]=0ul;return;}
+ ulong hash=14695981039346656037ul;hash^=targetIdentity[0];hash*=1099511628211ul;
+ uint cells=p.nx*p.ny*p.nz;for(uint cell=0u;cell<cells;++cell){
+  hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(pressure[cell]));hash*=1099511628211ul;}
+ device const float* density[3]={dx,dy,dz};device const float* momentum[3]={mx,my,mz};
+ device const float* velocity[3]={vx,vy,vz};for(uint axis=0u;axis<3u;++axis){
+  uint count=face_count(p,axis);for(uint face=0u;face<count;++face){
+   hash^=ulong(as_type<uint>(density[axis][face]));hash*=1099511628211ul;
+   hash^=ulong(as_type<uint>(momentum[axis][face]));hash*=1099511628211ul;
+   hash^=ulong(as_type<uint>(velocity[axis][face]));hash*=1099511628211ul;}}
+ uint boundaryFaces=p.sideOffset[5]+p.nx*p.ny;for(uint face=0u;face<boundaryFaces;++face){
+  hash^=ulong(inflow[face]);hash*=1099511628211ul;}
+ hash^=ulong(p.nx);hash*=1099511628211ul;hash^=ulong(p.ny);hash*=1099511628211ul;
+ hash^=ulong(p.nz);hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.sx));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.dt));hash*=1099511628211ul;for(uint side=0u;side<6u;++side){
+  hash^=ulong(p.boundary[side]);hash*=1099511628211ul;}identity[0]=hash==0ul?1ul:hash;
+}
 )METAL";
 		}
 
@@ -459,14 +486,14 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 			id<MTLComputePipelineState> buildFaces,buildDiagonal,restrictAverage,
 				setupVelocity,classifyOpen,classifyEndpoint,buildRHS,jacobi,computeResidual,
 				prolongate,clearValues,copyReduction,sumPass,maxPass,subtractMean,
-				storeRoot,correctFaces,copySeam,postResidual,validationMetrics;
+				storeRoot,correctFaces,copySeam,postResidual,validationMetrics,identifyResident;
 			std::string error;
 
 			MetalProjectionContext() : device(nil),queue(nil),buildFaces(nil),buildDiagonal(nil),
 				restrictAverage(nil),setupVelocity(nil),classifyOpen(nil),classifyEndpoint(nil),buildRHS(nil),
 				jacobi(nil),computeResidual(nil),prolongate(nil),clearValues(nil),
 				copyReduction(nil),sumPass(nil),maxPass(nil),subtractMean(nil),storeRoot(nil),
-				correctFaces(nil),copySeam(nil),postResidual(nil),validationMetrics(nil)
+				correctFaces(nil),copySeam(nil),postResidual(nil),validationMetrics(nil),identifyResident(nil)
 			{
 				@autoreleasepool {
 					device=MTLCreateSystemDefaultDevice();
@@ -491,11 +518,12 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					storeRoot=make("store_root");correctFaces=make("correct_faces");
 					copySeam=make("copy_periodic_seam");postResidual=make("cell_post_residual");
 					validationMetrics=make("cell_validation_metrics");
+					identifyResident=make("identify_resident_projection");
 				if( !buildFaces||!buildDiagonal||!restrictAverage||!setupVelocity||!classifyOpen||
 					!classifyEndpoint||
 						!buildRHS||!jacobi||!computeResidual||!prolongate||!clearValues||!copyReduction||
 						!sumPass||!maxPass||!subtractMean||!storeRoot||!correctFaces||!copySeam||
-						!postResidual||!validationMetrics ) {
+						!postResidual||!validationMetrics||!identifyResident ) {
 						error=MetalError("production fire projection pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];
 					if( !queue ) error="production fire projection command queue allocation failed";
@@ -752,6 +780,11 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					return false;
 				certifiedWorkingSetBytes+=allocation;
 			}
+			if(residentInput&&residentInput->targetPublicationIdentity&&(
+				certifiedWorkingSetBytes>std::numeric_limits<std::uint64_t>::max()-UINT64_C(16384)))
+				return false;
+			if(residentInput&&residentInput->targetPublicationIdentity)
+				certifiedWorkingSetBytes+=UINT64_C(16384);
 			if( residentInput ) {
 				const std::size_t cellBytes=request.shape.CellCount()*sizeof(float);
 				id<MTLBuffer> packed=residentInput->provisionalMomentumKGPerM2S[0];
@@ -799,6 +832,35 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					residentInput->gasDensityKGPerM3==residentInput->divergenceTargetPerS ) {
 					if( error ) *error="production fire projection resident buffer ownership is invalid";
 					return false;
+				}
+				if(residentInput->targetPublicationIdentity&&(
+					[residentInput->targetPublicationIdentity storageMode]!=MTLStorageModePrivate||
+					[residentInput->targetPublicationIdentity length]!=sizeof(std::uint64_t)||
+					[residentInput->targetPublicationIdentity device]!=[packed device])){
+					if(error)*error="production fire projection target identity is not private device authority";
+					return false;
+				}
+				const std::size_t boundaryCount=2u*(request.shape.ny*request.shape.nz+
+					request.shape.nx*request.shape.nz+request.shape.nx*request.shape.ny);
+				if(residentInput->sealedPressureOpenInflow&&(
+					[residentInput->sealedPressureOpenInflow storageMode]!=MTLStorageModePrivate||
+					[residentInput->sealedPressureOpenInflow length]!=boundaryCount||
+					[residentInput->sealedPressureOpenInflow device]!=[packed device])){
+					if(error)*error="production fire projection open-class seal is not private device authority";
+					return false;
+				}
+				if(residentInput->sealedPressureOpenDynamicPressurePa&&(
+					[residentInput->sealedPressureOpenDynamicPressurePa storageMode]!=MTLStorageModePrivate||
+					[residentInput->sealedPressureOpenDynamicPressurePa length]!=boundaryCount*sizeof(float)||
+					[residentInput->sealedPressureOpenDynamicPressurePa device]!=[packed device])){
+					if(error)*error="production fire projection open-head seal is not private device authority";
+					return false;
+				}
+				if((request.openClassificationMode==FireProductionProjectionUseSealedOpenClassification)!=
+					(residentInput->sealedPressureOpenInflow!=nil)||
+					(request.openHeadMode==FireProductionProjectionUseSealedOpenHead)!=
+					(residentInput->sealedPressureOpenDynamicPressurePa!=nil)){
+					if(error)*error="production fire projection device seal mode differs";return false;
 				}
 			}
 			MetalProjectionContext& context=Context();
@@ -862,12 +924,22 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				id<MTLBuffer> targetUpload=resident?nil:NewBufferWithBytes(context.device,
 					request.divergenceTargetPerS.data(),cells*sizeof(float));
 				const std::size_t boundaryCount=2u*(shape.ny*shape.nz+shape.nx*shape.nz+shape.nx*shape.ny);
-				id<MTLBuffer> boundaryPressure=NewSharedBuffer(context.device,boundaryCount*sizeof(float));
-				id<MTLBuffer> inflow=NewSharedBuffer(context.device,boundaryCount*sizeof(unsigned char));
+				const bool authenticatedResident=resident&&stateOnly&&
+					residentInput->targetPublicationIdentity;
+				id<MTLBuffer> boundaryPressure=authenticatedResident?
+					NewBuffer(context.device,boundaryCount*sizeof(float)):
+					NewSharedBuffer(context.device,boundaryCount*sizeof(float));
+				id<MTLBuffer> inflow=authenticatedResident?
+					NewBuffer(context.device,boundaryCount*sizeof(unsigned char)):
+					NewSharedBuffer(context.device,boundaryCount*sizeof(unsigned char));
 				id<MTLBuffer> scratch=NewBuffer(context.device,finePadded*sizeof(float));
 				id<MTLBuffer> diagnostics=NewSharedBuffer(context.device,12u*sizeof(float));
+				id<MTLBuffer> projectionIdentity=resident&&stateOnly&&
+					residentInput->targetPublicationIdentity?
+					NewBuffer(context.device,sizeof(std::uint64_t)):nil;
 				bool allocated=fine.density&&target&&boundaryPressure&&inflow&&scratch&&diagnostics&&
-					(resident||(densityUpload&&targetUpload));
+					(resident||(densityUpload&&targetUpload))&&
+					(!residentInput||!residentInput->targetPublicationIdentity||!stateOnly||projectionIdentity);
 				for( const MetalLevel& level:hierarchy ) allocated=allocated&&level.density&&level.rhs&&
 					level.pressure&&level.temporary&&level.residual&&level.diagonal&&level.parameters&&
 					level.beta[0]&&level.beta[1]&&level.beta[2];
@@ -876,8 +948,10 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				if( InjectedFailure("buffer") ) allocated=false;
 				if( !allocated ) {if( error ) *error="production fire projection buffer allocation failed";return false;}
 				bool storageModes=[target storageMode]==MTLStorageModePrivate&&
-					[boundaryPressure storageMode]==MTLStorageModeShared&&
-					[inflow storageMode]==MTLStorageModeShared&&
+					[boundaryPressure storageMode]==(authenticatedResident?MTLStorageModePrivate:
+						MTLStorageModeShared)&&
+					[inflow storageMode]==(authenticatedResident?MTLStorageModePrivate:
+						MTLStorageModeShared)&&
 					[scratch storageMode]==MTLStorageModePrivate&&
 					[diagnostics storageMode]==MTLStorageModeShared;
 				for( const MetalLevel& level:hierarchy ) storageModes=storageModes&&
@@ -917,8 +991,10 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					for( id<MTLBuffer> buffer:levelBuffers ) if( !addAllocation(buffer,residentBytes) )
 						return false;
 				}
-				const id<MTLBuffer> fixedResident[]={target,boundaryPressure,inflow,scratch,diagnostics};
-				for( id<MTLBuffer> buffer:fixedResident ) if( !addAllocation(buffer,residentBytes) ) return false;
+				const id<MTLBuffer> fixedResident[]={target,boundaryPressure,inflow,scratch,diagnostics,
+					projectionIdentity};
+				for( id<MTLBuffer> buffer:fixedResident ) if(buffer&&
+					!addAllocation(buffer,residentBytes))return false;
 				for( unsigned int axis=0u;axis<3u;++axis ) {
 					const id<MTLBuffer> faceResident[]={stored[axis],momentum[axis],velocity[axis]};
 					for( id<MTLBuffer> buffer:faceResident ) if( !addAllocation(buffer,residentBytes) ) return false;
@@ -950,33 +1026,50 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 					if( error ) *error="production fire projection actual allocation exceeds certificate";
 					return false;
 				}
-				float* representedBoundaryPressure=static_cast<float*>(
-					ProjectionBufferContents(boundaryPressure,ProjectionMetadataAccess));
-				if(request.openHeadMode==FireProductionProjectionUseSealedOpenHead){
-					std::size_t offset=0u;
-					for(unsigned int side=0u;side<6u;++side){
-						const std::vector<float>& sealed=
-							request.sealedPressureOpenDynamicPressurePa[side];
-						std::copy(sealed.begin(),sealed.end(),representedBoundaryPressure+offset);
-						offset+=sealed.size();
-					}
-				}else std::fill_n(representedBoundaryPressure,boundaryCount,0.0f);
-				unsigned char* representedInflow=static_cast<unsigned char*>(
-					ProjectionBufferContents(inflow,ProjectionMetadataAccess));
-				if(request.openClassificationMode==
-					FireProductionProjectionUseSealedOpenClassification){
-					std::size_t offset=0u;
-					for(unsigned int side=0u;side<6u;++side){
-						const std::vector<unsigned char>& sealed=
-							request.sealedPressureOpenInflow[side];
-						std::copy(sealed.begin(),sealed.end(),representedInflow+offset);
-						offset+=sealed.size();
-					}
-				}else std::fill_n(representedInflow,boundaryCount,
-					static_cast<unsigned char>(0u));
+				if(!authenticatedResident){
+					float* representedBoundaryPressure=static_cast<float*>(
+						ProjectionBufferContents(boundaryPressure,ProjectionMetadataAccess));
+					if(request.openHeadMode==FireProductionProjectionUseSealedOpenHead){
+						std::size_t offset=0u;for(unsigned int side=0u;side<6u;++side){
+							const std::vector<float>& sealed=request.sealedPressureOpenDynamicPressurePa[side];
+							std::copy(sealed.begin(),sealed.end(),representedBoundaryPressure+offset);
+							offset+=sealed.size();}
+					}else std::fill_n(representedBoundaryPressure,boundaryCount,0.0f);
+					unsigned char* representedInflow=static_cast<unsigned char*>(
+						ProjectionBufferContents(inflow,ProjectionMetadataAccess));
+					if(request.openClassificationMode==FireProductionProjectionUseSealedOpenClassification){
+						std::size_t offset=0u;for(unsigned int side=0u;side<6u;++side){
+							const std::vector<unsigned char>& sealed=request.sealedPressureOpenInflow[side];
+							std::copy(sealed.begin(),sealed.end(),representedInflow+offset);
+							offset+=sealed.size();}
+					}else std::fill_n(representedInflow,boundaryCount,static_cast<unsigned char>(0u));
+				}
 				std::fill_n(static_cast<float*>(ProjectionBufferContents(diagnostics,
 					ProjectionMetadataAccess)),12u,0.0f);
 
+				if(authenticatedResident){
+					id<MTLCommandBuffer> metadataCommand=[context.queue commandBuffer];
+					id<MTLBlitCommandEncoder> metadataBlit=metadataCommand?
+						[metadataCommand blitCommandEncoder]:nil;
+					if(!metadataBlit){
+						if(error)*error="production fire projection resident metadata encoder failed";
+						return false;
+					}
+					if(residentInput->sealedPressureOpenInflow)CopyProjectionBuffer(metadataBlit,
+						residentInput->sealedPressureOpenInflow,0u,inflow,0u,boundaryCount);
+					else [metadataBlit fillBuffer:inflow range:NSMakeRange(0,boundaryCount) value:0u];
+					if(residentInput->sealedPressureOpenDynamicPressurePa)CopyProjectionBuffer(metadataBlit,
+						residentInput->sealedPressureOpenDynamicPressurePa,0u,boundaryPressure,0u,
+						boundaryCount*sizeof(float));
+					else [metadataBlit fillBuffer:boundaryPressure range:NSMakeRange(0,
+						boundaryCount*sizeof(float)) value:0u];
+					[metadataBlit endEncoding];CommitProjectionCommand(metadataCommand);
+					[metadataCommand waitUntilCompleted];
+					if([metadataCommand status]!=MTLCommandBufferStatusCompleted){
+						if(error)*error="production fire projection resident metadata upload failed";
+						return false;
+					}
+				}
 				if( !resident ) {
 					id<MTLCommandBuffer> uploadCommand=InjectedFailure("upload_command")?
 						nil:[context.queue commandBuffer];
@@ -1136,6 +1229,22 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				if( !EncodeReduction(context,command,fineLevel.residual,cells,scratch,diagnostics,
 					2u,true,error)||!EncodeReduction(context,command,fineLevel.temporary,cells,scratch,
 					diagnostics,3u,true,error) ) return false;
+				if(projectionIdentity){
+					if(!Begin(command,encoder,error,"resident publication identity"))return false;
+					[encoder setBuffer:target offset:0 atIndex:0];
+					[encoder setBuffer:residentInput->targetPublicationIdentity offset:0 atIndex:1];
+					[encoder setBuffer:fineLevel.pressure offset:0 atIndex:2];
+					for(unsigned int axis=0u;axis<3u;++axis)
+						[encoder setBuffer:stored[axis] offset:0 atIndex:3u+axis];
+					for(unsigned int axis=0u;axis<3u;++axis)
+						[encoder setBuffer:momentum[axis] offset:0 atIndex:6u+axis];
+					for(unsigned int axis=0u;axis<3u;++axis)
+						[encoder setBuffer:velocity[axis] offset:0 atIndex:9u+axis];
+					[encoder setBuffer:inflow offset:0 atIndex:12];
+					[encoder setBuffer:projectionIdentity offset:0 atIndex:13];
+					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:14];
+					Dispatch(encoder,context.identifyResident,1u);[encoder endEncoding];
+				}
 				id<MTLBuffer> injectedInterstageStage=nil;
 				if( InjectedFailure("interstage_transfer") ) {
 					injectedInterstageStage=NewSharedBuffer(context.device,cells*sizeof(float));
@@ -1260,6 +1369,7 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				} else {
 					residentState->pressurePa=fineLevel.pressure;
 					residentState->pressureOpenInflow=inflow;
+					residentState->publicationIdentity=projectionIdentity;
 					residentState->restoration=restoration;
 					for( unsigned int axis=0u;axis<3u;++axis ) {
 						residentState->faceDensityKGPerM3[axis]=stored[axis];
@@ -1324,7 +1434,7 @@ kernel void cell_validation_metrics(device const float* px [[buffer(0)]],
 				const std::uint64_t trackedBytes=projectionBufferAllocationBytes-
 					beginningAllocationBytes;
 				const std::uint64_t expectedCount=10u*hierarchy.size()+
-					(resident?(terminal?25u:12u):32u);
+					(resident?(terminal?25u:12u+(authenticatedResident?1u:0u)):32u);
 				if( residentBytes>std::numeric_limits<std::uint64_t>::max()-uploadBytes||
 					residentBytes+uploadBytes>std::numeric_limits<std::uint64_t>::max()-stagingBytes||
 					trackedBytes>std::numeric_limits<std::uint64_t>::max()-borrowedBytes||
