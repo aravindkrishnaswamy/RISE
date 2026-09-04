@@ -1312,6 +1312,10 @@ namespace RISEFireProductionTrace
 		bool qualificationMinimumSubnormalDeviationRounding;
 		bool qualificationAmbiguousZeroDeviationRounding;
 		bool qualificationAmbiguousSubnormalDeviationRounding;
+		//! Qualification-only two-cell witness: cell 0 fails represented-pressure
+		//! rounding and cell 1 fails deviation rounding.  The returned first witness
+		//! must pair cell 0 with term 1, never the global {1|2} bitmap.
+		bool qualificationTwoCellDistinctEOSFailures;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
@@ -1334,6 +1338,7 @@ namespace RISEFireProductionTrace
 			qualificationMinimumSubnormalDeviationRounding(false),
 			qualificationAmbiguousZeroDeviationRounding(false),
 			qualificationAmbiguousSubnormalDeviationRounding(false),
+			qualificationTwoCellDistinctEOSFailures(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 
@@ -1355,6 +1360,8 @@ namespace RISEFireProductionTrace
 		std::uint32_t terminalStagingCount;
 		std::uint32_t branchObligationBitmap;
 		std::uint32_t deviceFailureBitmap;
+		std::uint32_t firstEOSFailureCell;
+		std::uint32_t firstEOSFailureTermBitmap;
 		std::uint64_t certifiedWorkingSetBytes;
 		std::uint64_t actualMetalAllocationBytes;
 		std::uint64_t liveAuthorityAllocationBytes;
@@ -1372,6 +1379,8 @@ namespace RISEFireProductionTrace
 			producerPrecision(RISE::FireStateProducerPrecision::Binary32),
 			commandCommitCount(0u),interstageFullGridTransferCount(0u),
 			terminalStagingCount(0u),branchObligationBitmap(0u),deviceFailureBitmap(0u),
+			firstEOSFailureCell(std::numeric_limits<std::uint32_t>::max()),
+			firstEOSFailureTermBitmap(0u),
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
 			liveAuthorityAllocationBytes(0u),
 			transportPublicationIdentity(0u),physicalFluxPublicationIdentity(0u),
@@ -1430,6 +1439,7 @@ namespace RISEFireProductionTrace
 		//! Forces a finite multi-ULP arithmetic enclosure without changing the
 		//! mathematical target.  Qualification-only obligation-path RED.
 		bool qualificationCertifiedContinuousEnclosure;
+		bool qualificationCorruptContinuousEnclosurePublication;
 		//! 0=none, 1=shape, 2=face offsets, 3=cell width, 4=timestep,
 		//! 5=attempt, 6=boundary. Qualification-only stale-parent mutants.
 		std::uint32_t qualificationStaleTargetMetadataField;
@@ -1456,6 +1466,7 @@ namespace RISEFireProductionTrace
 			qualificationEOSAcceptedButUnlinked(false),
 			qualificationInjectInterstageFullGridTransfer(false),
 			qualificationCertifiedContinuousEnclosure(false),
+			qualificationCorruptContinuousEnclosurePublication(false),
 			qualificationStaleTargetMetadataField(0u),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
@@ -1470,6 +1481,9 @@ namespace RISEFireProductionTrace
 		std::vector<FireProductionRoundoffTrace::TraceFloat> absoluteReferenceDiagnosticPerS;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> monitoredAbsoluteReferenceTargetPerS;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> assembledTargetPerS;
+		//! Authenticated absolute same-unit radii around the device materializations.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> tangentEnclosurePerS;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> assembledEnclosurePerS;
 		std::uint32_t commandCommitCount;
 		std::uint32_t interstageFullGridTransferCount;
 		std::uint32_t terminalStagingCount;

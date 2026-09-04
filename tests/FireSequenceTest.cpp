@@ -9926,6 +9926,27 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	FireProductionResidentEOSCandidateComparatorRequest splitCase=request;
 	splitCase.qualificationMismatchedDeviceCase=true;
 	const bool splitCaseRefused=hostRefused(splitCase);
+	FireProductionResidentEOSCandidateComparatorRequest pairedWitness=request;
+	pairedWitness.qualificationTwoCellDistinctEOSFailures=true;
+	FireProductionResidentEOSCandidateComparatorResult pairedWitnessResult;error.clear();
+	const bool pairedWitnessAccepted=EvaluateFireProductionResidentEOSCandidateMetalComparator(
+		pairedWitness,pairedWitnessResult,&error);
+	const bool pairedWitnessRefused=!pairedWitnessAccepted&&noPublication(pairedWitnessResult)&&
+		pairedWitnessResult.deviceAttempted&&pairedWitnessResult.terminalRead&&
+		pairedWitnessResult.commandCommitCount==1u&&
+		pairedWitnessResult.terminalStagingCount==1u&&
+		pairedWitnessResult.deviceFailureBitmap==512u&&
+		pairedWitnessResult.firstEOSFailureCell==0u&&
+		pairedWitnessResult.firstEOSFailureTermBitmap==1u;
+	std::fprintf(stderr,"RESIDENT_EOS_RED name=paired_first_eos_failure_witness "
+		"expected_failure=0x00000200 observed_failure=0x%08x expected_cell=0 "
+		"observed_cell=%u expected_term=0x00000001 observed_term=0x%08x "
+		"attempted=%d read=%d commands=%u staging=%u passed=%d\n",
+		pairedWitnessResult.deviceFailureBitmap,pairedWitnessResult.firstEOSFailureCell,
+		pairedWitnessResult.firstEOSFailureTermBitmap,
+		pairedWitnessResult.deviceAttempted?1:0,pairedWitnessResult.terminalRead?1:0,
+		pairedWitnessResult.commandCommitCount,pairedWitnessResult.terminalStagingCount,
+		pairedWitnessRefused?1:0);
 	FireProductionResidentEOSCandidateComparatorRequest parentMutation=request;
 	++parentMutation.physicalFlux.transport.parentCandidateIdentity;
 	FireProductionResidentEOSCandidateComparatorResult parentMutationResult;
@@ -9972,7 +9993,8 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		roundedHardBoundPrepared&&roundedHardBoundRefused&&
 		fp64LabelRefused&&shortCandidateRefused&&invalidConservationRefused&&finalStageRefused&&
 		wrongProducerRefused&&eosTableMutationRefused&&splitStageRefused&&splitPrecisionRefused&&
-		splitAttemptRefused&&splitCellsRefused&&splitTimeStepRefused&&splitCaseRefused&&limitedFCTBitEqual&&
+		splitAttemptRefused&&splitCellsRefused&&splitTimeStepRefused&&splitCaseRefused&&
+		pairedWitnessRefused&&limitedFCTBitEqual&&
 		parentIdentityDistinct&&fixtureCertified&&liveCertified&&ownerCertified&&
 		observed.liveAuthorityAllocationBytes<=liveIncrement&&understatedRefused;
 	std::fprintf(stderr,"RESIDENT_EOS passed=%d candidate_bit_equal=%d temperature_bit_equal=%d pressure_bit_equal=%d "
@@ -10614,7 +10636,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			dormantAlternate.absoluteReferenceDiagnosticPerS)&&
 		bitEqual(dormantBase.monitoredAbsoluteReferenceTargetPerS,
 			dormantAlternate.monitoredAbsoluteReferenceTargetPerS)&&
-		bitEqual(dormantBase.assembledTargetPerS,dormantAlternate.assembledTargetPerS);
+		bitEqual(dormantBase.assembledTargetPerS,dormantAlternate.assembledTargetPerS)&&
+		bitEqual(dormantBase.tangentEnclosurePerS,dormantAlternate.tangentEnclosurePerS)&&
+		bitEqual(dormantBase.assembledEnclosurePerS,dormantAlternate.assembledEnclosurePerS);
 	const bool dormantThresholdIdentity=dormantFieldsEqual&&
 		dormantBase.targetPublicationIdentity!=0u&&dormantAlternate.targetPublicationIdentity!=0u&&
 		dormantBase.targetPublicationIdentity!=dormantAlternate.targetPublicationIdentity;
@@ -10672,22 +10696,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		transferred.terminalStagingCount,
 		static_cast<unsigned long long>(transferred.targetPublicationIdentity),
 		transferLedgerRefused?1:0);
-	mutation=request;mutation.qualificationCertifiedContinuousEnclosure=true;
-	FireProductionResidentTargetLineageComparatorResult enclosed;error.clear();
-	const bool enclosureAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
-		mutation,enclosed,&error);
-	const bool continuousEnclosureRED=enclosureAccepted&&
-		(enclosed.branchObligationBitmap&(1u<<27u))!=0u&&
-		enclosed.targetPublicationIdentity!=0u&&
-		enclosed.targetPublicationIdentity!=observed.targetPublicationIdentity;
-	std::fprintf(stderr,"RESIDENT_TARGET_RED name=certified_continuous_multi_ulp_enclosure "
-		"layer=device_materialization accepted=%d obligation=%d identity_distinct=%d "
-		"error=%s passed=%d\n",enclosureAccepted?1:0,
-		(enclosed.branchObligationBitmap&(1u<<27u))!=0u?1:0,
-		enclosed.targetPublicationIdentity!=observed.targetPublicationIdentity?1:0,
-		error.c_str(),continuousEnclosureRED?1:0);
 	const std::uint32_t requiredClosedBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
-		(1u<<22u)|(1u<<24u)|(1u<<25u);
+		(1u<<22u)|(1u<<24u)|(1u<<25u)|(1u<<30u);
 	const std::uint32_t requiredOpenBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
 		(1u<<22u)|(1u<<23u)|(1u<<25u);
 	const bool branches=observed.branchObligationBitmap==requiredClosedBranches&&
@@ -10699,28 +10709,68 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			std::fabs(center-static_cast<double>(std::nextafter(projected,
 				-std::numeric_limits<float>::infinity()))));
 		return 0.5*spacing;};
-	auto insideEnclosure=[&](const float projected,const double exact,const bool exactCopy){
+	auto insideEnclosure=[&](const float projected,const double exact,const double bound){
 		const double residual=std::fabs(static_cast<double>(projected)-exact);
-		return exactCopy?residual==0.0:residual<=localProjectionBound(projected);};
-	auto allEnclosed=[&](const FireProductionResidentTargetLineageComparatorResult& device,
+		return std::isfinite(bound)&&bound>=0.0&&residual<=bound;};
+	auto allEnclosed=[&](const char* topology,
+		const FireProductionResidentTargetLineageComparatorResult& device,
 		const std::vector<double>& tangentReference,const std::vector<double>& sourceReference,
 		const std::vector<double>& diagnosticReference,const std::vector<double>& tailReference,
 		const std::vector<double>& assembledReference){
+		if(device.tangentEnclosurePerS.size()!=cells||
+			device.assembledEnclosurePerS.size()!=cells)return false;
 		const std::vector<float>* values[5]={&device.tangentTargetPerS,
 			&device.frozenSourceTargetPerS,&device.absoluteReferenceDiagnosticPerS,
 			&device.monitoredAbsoluteReferenceTargetPerS,&device.assembledTargetPerS};
 		const std::vector<double>* exact[5]={&tangentReference,&sourceReference,
 			&diagnosticReference,&tailReference,&assembledReference};
-		for(unsigned int term=0u;term<5u;++term)for(std::size_t cell=0u;cell<cells;++cell)
-			if(!insideEnclosure((*values[term])[cell],(*exact[term])[cell],term==1u))return false;
+		for(unsigned int term=0u;term<5u;++term)for(std::size_t cell=0u;cell<cells;++cell){
+			const double bound=term==0u?device.tangentEnclosurePerS[cell]:
+				(term==1u?0.0:(term==4u?device.assembledEnclosurePerS[cell]:
+				localProjectionBound((*values[term])[cell])));
+			if(!insideEnclosure((*values[term])[cell],(*exact[term])[cell],bound)){
+				std::fprintf(stderr,"RESIDENT_TARGET_ENCLOSURE_FAILURE topology=%s term=%u cell=%zu "
+					"device=%.17g exact=%.17g residual=%.17g authenticated_radius=%.17g\n",
+					topology,term,cell,static_cast<double>((*values[term])[cell]),
+					(*exact[term])[cell],std::fabs(static_cast<double>((*values[term])[cell])-
+					(*exact[term])[cell]),bound);return false;}}
 		return true;};
 	std::vector<double> sourceExact(cells);for(std::size_t cell=0u;cell<cells;++cell)
 		sourceExact[cell]=sourceMirror[cell];
 	std::vector<double> openSourceExact(cells);for(std::size_t cell=0u;cell<cells;++cell)
 		openSourceExact[cell]=openSource[cell];
-	const bool allBoundsPass=allEnclosed(observed,tangentExact,sourceExact,diagnosticExact,
-		tailExact,assembledExact)&&allEnclosed(openObserved,openTangentExact,openSourceExact,
+	const bool allBoundsPass=allEnclosed("closed",observed,tangentExact,sourceExact,diagnosticExact,
+		tailExact,assembledExact)&&allEnclosed("pressure_open",openObserved,openTangentExact,openSourceExact,
 		openDiagnosticExact,openTailExact,openAssembledExact);
+	mutation=request;mutation.qualificationCertifiedContinuousEnclosure=true;
+	FireProductionResidentTargetLineageComparatorResult enclosed;error.clear();
+	const bool enclosureAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
+		mutation,enclosed,&error);
+	bool hasMultiULPRadius=false;for(std::size_t cell=0u;cell<cells&&enclosureAccepted;++cell)
+		hasMultiULPRadius=hasMultiULPRadius||enclosed.tangentEnclosurePerS[cell]>
+			localProjectionBound(enclosed.tangentTargetPerS[cell])*2.0;
+	const bool enclosureNumericallyDischarged=enclosureAccepted&&allEnclosed("multi_ulp",enclosed,
+		tangentExact,sourceExact,diagnosticExact,tailExact,assembledExact);
+	const bool continuousEnclosureRED=enclosureNumericallyDischarged&&hasMultiULPRadius&&
+		(enclosed.branchObligationBitmap&(1u<<27u))!=0u&&
+		enclosed.targetPublicationIdentity!=0u&&
+		enclosed.targetPublicationIdentity!=observed.targetPublicationIdentity;
+	std::fprintf(stderr,"RESIDENT_TARGET_RED name=certified_continuous_multi_ulp_enclosure "
+		"layer=device_materialization accepted=%d numerically_discharged=%d multi_ulp=%d "
+		"obligation=%d identity_distinct=%d error=%s passed=%d\n",enclosureAccepted?1:0,
+		enclosureNumericallyDischarged?1:0,hasMultiULPRadius?1:0,
+		(enclosed.branchObligationBitmap&(1u<<27u))!=0u?1:0,
+		enclosed.targetPublicationIdentity!=observed.targetPublicationIdentity?1:0,
+		error.c_str(),continuousEnclosureRED?1:0);
+	mutation=request;mutation.qualificationCorruptContinuousEnclosurePublication=true;
+	FireProductionResidentTargetLineageComparatorResult corruptedEnclosure;error.clear();
+	const bool corruptedPublished=EvaluateFireProductionResidentTargetLineageMetalComparator(
+		mutation,corruptedEnclosure,&error);
+	const bool outOfEnclosureRED=corruptedPublished&&!allEnclosed("corrupted",corruptedEnclosure,
+		tangentExact,sourceExact,diagnosticExact,tailExact,assembledExact);
+	std::fprintf(stderr,"RESIDENT_TARGET_RED name=out_of_enclosure_continuous_publication "
+		"layer=fp64_consumer device_published=%d consumer_refused=%d error=%s passed=%d\n",
+		corruptedPublished?1:0,outOfEnclosureRED?1:0,error.c_str(),outOfEnclosureRED?1:0);
 	const float boundREDProjection=1.0f;
 	const double boundREDSpacing=std::max(std::fabs(static_cast<double>(std::nextafter(
 		boundREDProjection,std::numeric_limits<float>::infinity()))-
@@ -11035,13 +11085,43 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			{&ownerObserved32.r0,&ownerObserved32.r1,&ownerObserved32.r2};
 		const double traceGamma256=(256.0*std::numeric_limits<float>::epsilon())/
 			(1.0-256.0*std::numeric_limits<float>::epsilon());
+		const double traceGamma4096=(4096.0*std::numeric_limits<float>::epsilon())/
+			(1.0-4096.0*std::numeric_limits<float>::epsilon());
+		struct IterationFieldGate{double maximumResidual,maximumBound,worstRatio;
+			std::size_t worst;bool passed;IterationFieldGate():maximumResidual(0.0),
+				maximumBound(0.0),worstRatio(0.0),worst(0u),passed(true){}};
+		auto gateIterationField=[&](const unsigned int stage,const std::size_t iteration,
+			const char* field,const char* units,const std::vector<float>& device,
+			const std::vector<double>& mirror,const std::function<double(std::size_t)>& bound){
+			IterationFieldGate result;const bool shapeValid=device.size()==mirror.size()&&!device.empty();
+			result.passed=shapeValid;
+			for(std::size_t index=0u;shapeValid&&index<device.size();++index){
+				const double localBound=bound(index),residual=std::fabs(
+					static_cast<double>(device[index])-mirror[index]);
+				const double ratio=localBound>0.0?residual/localBound:(residual==0.0?0.0:
+					std::numeric_limits<double>::infinity());
+				result.maximumResidual=std::max(result.maximumResidual,residual);
+				result.maximumBound=std::max(result.maximumBound,localBound);
+				if(ratio>result.worstRatio){result.worstRatio=ratio;result.worst=index;}
+				result.passed=result.passed&&std::isfinite(localBound)&&localBound>=0.0&&
+					residual<=localBound;}
+			std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_FIELD stage=R%u iteration=%zu "
+				"field=%s units=%s scope=every_value worst_index=%zu max_residual=%.17g "
+				"max_local_termwise_enclosure=%.17g worst_residual_over_local_bound=%.17g "
+				"passed=%d\n",stage,iteration,field,units,result.worst,result.maximumResidual,
+				result.maximumBound,result.worstRatio,result.passed?1:0);return result;};
+		auto packFloatAxes=[](const std::array<std::vector<float>,3>& source){
+			std::vector<float> packed;for(const auto& axis:source){
+				packed.insert(packed.end(),axis.begin(),axis.end());}return packed;};
+		auto packDoubleAxes=[](const std::array<std::vector<double>,3>& source){
+			std::vector<double> packed;for(const auto& axis:source){
+				packed.insert(packed.end(),axis.begin(),axis.end());}return packed;};
 		auto targetTermwiseEnclosure=[&](const unsigned int stage,
 			const FireProductionProjectedHeunIterationTrace& device,
 			const ::RISEFireProductionFP64::FireProductionProjectedHeunIterationTrace& mirror,
 			const std::size_t cell,const double inputTargetBound,bool& valid){
-			std::array<double,9> deviceState={{}},mirrorState={{}},basis={{}};
+			std::array<double,9> mirrorState={{}},basis={{}};
 			for(std::size_t component=0u;component<9u;++component){
-				deviceState[component]=device.transportConservativeValues[component*cells+cell];
 				mirrorState[component]=mirror.transportConservativeValues[component*cells+cell];}
 			const std::size_t allFaces=device.physicalEnergyFluxWPerM2.size();
 			const std::size_t mirrorFaces=mirror.physicalEnergyFluxWPerM2.size();
@@ -11050,17 +11130,17 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			const std::size_t x=cell%shape.nx,y=(cell/shape.nx)%shape.ny,
 				z=cell/(shape.nx*shape.ny);const double inverseWidth=1.0/shape.cellWidthM;
 			double propagation=0.0,termScale=0.0;
+			// Every produced target consumes a freshly evaluated physical tangent.
+			// The frozen source is endpoint-only, but omitting the R0/R1 tangent
+			// made those iteration enclosures incomplete.
 			const bool endpointBase=stage==2u||
 				device.iteration==std::numeric_limits<std::uint32_t>::max();
 			if(endpointBase)termScale=std::fabs(
 				ownerLineage.frozenSource.DivergenceTargetPerS()[cell]);
-			if(endpointBase)for(std::size_t component=1u;component<9u;++component){
-				basis.fill(0.0);basis[component]=1.0;double deviceCoefficient=0.0,
-					mirrorCoefficient=0.0;std::string coefficientError;
-				if(!fuel.DivergenceFromDiscreteRateByComponentOrder(deviceState.data(),9u,
-					basis.data(),9u,device.transportTemperatureK[cell],
-					FireStateProducerPrecision::Binary32,deviceCoefficient,&coefficientError)||
-					!fuel.DivergenceFromDiscreteRateByComponentOrder(mirrorState.data(),9u,
+			for(std::size_t component=1u;component<9u;++component){
+				basis.fill(0.0);basis[component]=1.0;double mirrorCoefficient=0.0;
+				std::string coefficientError;
+				if(!fuel.DivergenceFromDiscreteRateByComponentOrder(mirrorState.data(),9u,
 						basis.data(),9u,mirror.transportTemperatureK[cell],
 						FireStateProducerPrecision::Binary32,mirrorCoefficient,&coefficientError))
 					{valid=false;return 0.0;}
@@ -11076,31 +11156,24 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					const std::size_t left=offset+localFace(x,y,z),right=offset+localFace(rx,ry,rz);
 					for(unsigned int side=0u;side<2u;++side){const std::size_t face=side?right:left;
 						const double sign=side?-inverseWidth:inverseWidth;
-						const double deviceFlux=component==8u?
-							device.physicalEnergyFluxWPerM2[face]:
-							device.physicalMassFluxKGPerM2S[component*allFaces+face];
 						const double mirrorFlux=component==8u?
 							mirror.physicalEnergyFluxWPerM2[face]:
 							mirror.physicalMassFluxKGPerM2S[component*allFaces+face];
-						const double deviceTerm=sign*deviceCoefficient*deviceFlux;
 						const double mirrorTerm=sign*mirrorCoefficient*mirrorFlux;
-						propagation+=std::fabs(deviceTerm-mirrorTerm);
-						termScale+=std::fabs(deviceTerm)+std::fabs(mirrorTerm);
+						termScale+=2.0*std::fabs(mirrorTerm);
 					}
 				}
 			}
 			if(stage<2u&&device.iteration!=std::numeric_limits<std::uint32_t>::max()){
 				if(device.representedPressureRatio.size()!=cells||
 					mirror.representedPressureRatio.size()!=cells){valid=false;return 0.0;}
-				double deviceTail=0.0,mirrorTail=0.0;
-				FireProductionMonitoredManifoldPolicy::SignedTailDrainPerS(
-					device.representedPressureRatio[cell],ownerEOS.candidateTimeStepS,deviceTail,0);
+				double mirrorTail=0.0;
 				::RISEFireProductionFP64::FireProductionMonitoredManifoldPolicy::
 					SignedTailDrainPerS(mirror.representedPressureRatio[cell],
 						double(ownerEOS.candidateTimeStepS),mirrorTail,0);
-				propagation+=std::fabs(deviceTail-mirrorTail)+inputTargetBound;
-				termScale+=std::fabs(deviceTail)+std::fabs(mirrorTail)+std::fabs(
-					device.projectionTargetPerS[cell])+std::fabs(mirror.projectionTargetPerS[cell]);
+				propagation+=inputTargetBound;
+				termScale+=2.0*(std::fabs(mirrorTail)+
+					std::fabs(mirror.projectionTargetPerS[cell]));
 			}
 			return propagation+traceGamma256*std::max(termScale,
 				std::numeric_limits<double>::min());
@@ -11111,6 +11184,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_TRACE_COUNT stage=R%u metal=%zu "
 				"fp64=%zu qualification_staging=%u\n",stage,deviceTrace.size(),mirrorTrace.size(),
 				ownerObserved.qualificationTraceStagingCount);
+			ownerIterationTraceBounded=ownerIterationTraceBounded&&
+				deviceTrace.size()==mirrorTrace.size()&&!deviceTrace.empty();
 			std::vector<double> priorTargetBounds(cells,0.0);
 			for(std::size_t iteration=0u;iteration<std::min(deviceTrace.size(),mirrorTrace.size());
 				++iteration){const auto& device=deviceTrace[iteration];const auto& mirror=mirrorTrace[iteration];
@@ -11132,6 +11207,127 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					mirror.projectedMomentumKGPerM2S);
 				const auto stress=traceAxes(device.stressMomentumRateKGPerM2S2,
 					mirror.stressMomentumRateKGPerM2S2);
+				bool traceFieldsPassed=device.iteration==mirror.iteration;
+				double inputTargetMaximumBound=0.0;for(const double value:priorTargetBounds)
+					inputTargetMaximumBound=std::max(inputTargetMaximumBound,value);
+				const double domainLength=shape.cellWidthM*static_cast<double>(
+					std::max({shape.nx,shape.ny,shape.nz}));
+				const double projectionVelocityBound=domainLength*(inputTargetMaximumBound+
+					static_cast<double>(device.maximumPostProjectionResidualPerS)+
+					mirror.maximumPostProjectionResidualPerS);
+				const std::vector<float> packedAlpha=packFloatAxes(device.sharedFaceAlpha);
+				const std::vector<double> packedAlpha64=packDoubleAxes(mirror.sharedFaceAlpha);
+				const std::vector<float> packedVelocity=packFloatAxes(device.projectedVelocityMPerS);
+				const std::vector<double> packedVelocity64=packDoubleAxes(mirror.projectedVelocityMPerS);
+				const std::vector<float> packedFaceDensity=packFloatAxes(device.faceDensityKGPerM3);
+				const std::vector<double> packedFaceDensity64=packDoubleAxes(mirror.faceDensityKGPerM3);
+				const std::vector<float> packedMomentum=packFloatAxes(device.projectedMomentumKGPerM2S);
+				const std::vector<double> packedMomentum64=packDoubleAxes(mirror.projectedMomentumKGPerM2S);
+				const std::vector<float> packedStress=packFloatAxes(device.stressMomentumRateKGPerM2S2);
+				const std::vector<double> packedStress64=packDoubleAxes(mirror.stressMomentumRateKGPerM2S2);
+				const std::vector<double>& traceSourceDelta=ownerRequest64.source.SourceDelta();
+				auto combineGate=[&](const IterationFieldGate& value){traceFieldsPassed=
+					traceFieldsPassed&&value.passed;};
+				combineGate(gateIterationField(stage,iteration,"projection_target","s^-1",
+					device.projectionTargetPerS,mirror.projectionTargetPerS,[&](std::size_t cell){
+						return priorTargetBounds[cell];}));
+				const bool alphaApplicable=!packedAlpha.empty()||!packedAlpha64.empty();
+				if(alphaApplicable)combineGate(gateIterationField(stage,iteration,"shared_alpha",
+					"dimensionless",packedAlpha,packedAlpha64,[&](std::size_t){return traceGamma4096;}));
+				else std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_FIELD stage=R%u iteration=%zu "
+					"field=shared_alpha units=dimensionless scope=not_applicable passed=1\n",stage,iteration);
+				combineGate(gateIterationField(stage,iteration,"projected_velocity","m_s^-1",
+					packedVelocity,packedVelocity64,[&](std::size_t face){return projectionVelocityBound+
+						traceGamma4096*std::fabs(packedVelocity64[face]);}));
+				const char* traceStateName[9]={"transport_rhoZ","transport_CH4","transport_O2",
+					"transport_CO2","transport_H2O","transport_N2","transport_CO","transport_carbon",
+					"transport_sensible_energy"};
+				for(std::size_t component=0u;component<9u;++component){
+					std::vector<float> deviceComponent(cells);std::vector<double> mirrorComponent(cells);
+					for(std::size_t cell=0u;cell<cells;++cell){deviceComponent[cell]=
+						device.transportConservativeValues[component*cells+cell];mirrorComponent[cell]=
+						mirror.transportConservativeValues[component*cells+cell];}
+					combineGate(gateIterationField(stage,iteration,traceStateName[component],
+						component==8u?"J_m^-3":"kg_m^-3",deviceComponent,mirrorComponent,
+						[&,component](std::size_t cell){double scale=0.0;
+							const std::size_t first=component<8u?0u:8u,end=component<8u?8u:9u;
+							for(std::size_t row=first;row<end;++row){const std::size_t index=row*cells+cell;
+								scale+=std::fabs(mirror.transportConservativeValues[index])+
+									std::fabs(ownerRequest64.beginningConservativeValues[index])+
+									std::fabs(traceSourceDelta[index]);}return traceGamma4096*scale;}));}
+				combineGate(gateIterationField(stage,iteration,"transport_temperature","K",
+					device.transportTemperatureK,mirror.transportTemperatureK,[&](std::size_t cell){
+						return traceGamma4096*std::max(std::fabs(mirror.transportTemperatureK[cell]),
+							fuel.TemperatureMaxK());}));
+				auto positiveFieldGate=[&](const char* name,const char* units,
+					const std::vector<float>& a,const std::vector<double>& b){double scale=0.0;
+					for(const double value:b)scale=std::max(scale,std::fabs(value));
+					combineGate(gateIterationField(stage,iteration,name,units,a,b,
+						[&](std::size_t index){return traceGamma4096*std::max(scale,std::fabs(b[index]));}));};
+				positiveFieldGate("diffusivity","m^2_s^-1",device.diffusivityM2PerS,
+					mirror.diffusivityM2PerS);
+				positiveFieldGate("conductivity","W_m^-1_K^-1",device.conductivityWPerMK,
+					mirror.conductivityWPerMK);
+				positiveFieldGate("molecular_kinematic_viscosity","m^2_s^-1",
+					device.molecularKinematicViscosityM2PerS,mirror.molecularKinematicViscosityM2PerS);
+				double maximumGasDensity=ownerRequest.ambientDensityKGPerM3;
+				for(const double value:mirror.gasDensityKGPerM3)
+					maximumGasDensity=std::max(maximumGasDensity,std::fabs(value));
+				positiveFieldGate("gas_density","kg_m^-3",device.gasDensityKGPerM3,
+					mirror.gasDensityKGPerM3);
+				double maximumDiffusivity=0.0;for(const double value:mirror.diffusivityM2PerS)
+					maximumDiffusivity=std::max(maximumDiffusivity,std::fabs(value));
+				const double physicalMassTermScale=2.0*maximumGasDensity*maximumDiffusivity/
+					(0.5*shape.cellWidthM);
+				const char* physicalMassName[8]={"physical_rhoZ_flux","physical_CH4_flux",
+					"physical_O2_flux","physical_CO2_flux","physical_H2O_flux","physical_N2_flux",
+					"physical_CO_flux","physical_carbon_flux"};
+				for(std::size_t component=0u;component<8u;++component){
+					std::vector<float> deviceComponent(allFaces);std::vector<double> mirrorComponent(allFaces);
+					for(std::size_t face=0u;face<allFaces;++face){deviceComponent[face]=
+						device.physicalMassFluxKGPerM2S[component*allFaces+face];mirrorComponent[face]=
+						mirror.physicalMassFluxKGPerM2S[component*allFaces+face];}
+					combineGate(gateIterationField(stage,iteration,physicalMassName[component],
+						"kg_m^-2_s^-1",deviceComponent,mirrorComponent,[&](std::size_t){return
+							traceGamma4096*physicalMassTermScale;}));}
+				double maximumConductivity=0.0,maximumEnthalpyMagnitude=0.0;
+				for(const double value:mirror.conductivityWPerMK)
+					maximumConductivity=std::max(maximumConductivity,std::fabs(value));
+				for(std::size_t species=0u;species<7u;++species)maximumEnthalpyMagnitude=std::max({
+					maximumEnthalpyMagnitude,std::fabs(ownerMinimumEnthalpy[species]),
+					std::fabs(ownerMaximumEnthalpy[species])});
+				combineGate(gateIterationField(stage,iteration,"physical_energy_flux","W_m^-2",
+					device.physicalEnergyFluxWPerM2,mirror.physicalEnergyFluxWPerM2,
+					[&](std::size_t face){double scale=maximumConductivity*(fuel.TemperatureMaxK()-
+						fuel.TemperatureMinK())/(0.5*shape.cellWidthM);
+						for(std::size_t component=1u;component<8u;++component){scale+=
+							maximumEnthalpyMagnitude*std::fabs(mirror.physicalMassFluxKGPerM2S[
+								component*allFaces+face]);}return traceGamma4096*scale;}));
+				const bool ratioApplicable=!device.representedPressureRatio.empty()||
+					!mirror.representedPressureRatio.empty();
+				if(ratioApplicable)positiveFieldGate("represented_pressure_ratio","dimensionless",
+					device.representedPressureRatio,mirror.representedPressureRatio);
+				else std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_FIELD stage=R%u iteration=%zu "
+					"field=represented_pressure_ratio units=dimensionless scope=not_applicable passed=1\n",
+					stage,iteration);
+				combineGate(gateIterationField(stage,iteration,"face_density","kg_m^-3",
+					packedFaceDensity,packedFaceDensity64,[&](std::size_t face){return traceGamma4096*
+						std::max(maximumGasDensity,std::fabs(packedFaceDensity64[face]));}));
+				combineGate(gateIterationField(stage,iteration,"projected_momentum","kg_m^-2_s^-1",
+					packedMomentum,packedMomentum64,[&](std::size_t face){return maximumGasDensity*
+						projectionVelocityBound+traceGamma4096*(std::fabs(packedMomentum64[face])+
+						maximumGasDensity*std::fabs(packedVelocity64[face]));}));
+				const bool stressApplicable=!packedStress.empty()||!packedStress64.empty();
+				if(stressApplicable){double maximumViscosity=0.0;for(std::size_t cell=0u;cell<cells;++cell)
+					maximumViscosity=std::max(maximumViscosity,std::fabs(
+						mirror.molecularKinematicViscosityM2PerS[cell])+std::fabs(
+						mirror.diffusivityM2PerS[cell]));
+					combineGate(gateIterationField(stage,iteration,"stress_input","kg_m^-2_s^-2",
+						packedStress,packedStress64,[&](std::size_t face){return traceGamma4096*
+							std::fabs(packedStress64[face])+8.0*maximumGasDensity*maximumViscosity*
+							projectionVelocityBound/shape.cellWidthM;}));}
+				else std::fprintf(stderr,"PROJECTED_HEUN_OWNER_ITERATION_FIELD stage=R%u iteration=%zu "
+					"field=stress_input units=kg_m^-2_s^-2 scope=not_applicable passed=1\n",stage,iteration);
 				double targetWorstRatio=0.0,targetMaximumResidual=0.0,targetMaximumBound=0.0;
 				std::vector<double> currentTargetBounds(cells,0.0);
 				std::size_t targetWorstCell=0u;bool targetBounded=true,enclosureValid=true;
@@ -11146,7 +11342,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					if(targetRatio>targetWorstRatio){targetWorstRatio=targetRatio;targetWorstCell=cell;}
 					targetBounded=targetBounded&&enclosureValid&&std::isfinite(targetBound)&&
 						targetResidual<=targetBound;}
-				ownerIterationTraceBounded=ownerIterationTraceBounded&&targetBounded&&
+				ownerIterationTraceBounded=ownerIterationTraceBounded&&traceFieldsPassed&&targetBounded&&
 					sameClasses(device.activeClass,mirror.activeClass)&&
 					sameClasses(device.nextActiveClass,mirror.nextActiveClass);
 				std::fprintf(stderr,"PROJECTED_HEUN_OWNER_TARGET_ENCLOSURE stage=R%u iteration=%zu "
@@ -11292,6 +11488,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				}
 			}
 		}
+		const std::vector<float> traceMutantDevice(1u,1.0f);
+		const double traceMutantBound=traceGamma4096;
+		const std::vector<double> traceMutantMirror(1u,1.0+2.0*traceMutantBound);
+		const IterationFieldGate traceMutant=gateIterationField(3u,0u,
+			"physical_energy_flux_mutant","W_m^-2",traceMutantDevice,traceMutantMirror,
+			[&](std::size_t){return traceMutantBound;});
+		const bool intermediateContinuousRED=!traceMutant.passed;
+		ownerIterationTraceBounded=ownerIterationTraceBounded&&intermediateContinuousRED;
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+			"name=intermediate_physical_flux_outside_enclosure residual_W_m^-2=%.17g "
+			"local_termwise_enclosure_W_m^-2=%.17g passed=%d\n",2.0*traceMutantBound,
+			traceMutantBound,intermediateContinuousRED?1:0);
 	}
 	bool owner32StressBitEqual=owner32Accepted;double owner32StressMaximumResidual=0.0;
 	if(owner32Accepted&&ownerAccepted)for(unsigned int axis=0u;axis<3u;++axis)
@@ -11676,14 +11884,28 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					stages64[stage]->activeSetDiscontinuousClass&&
 				ownerObserved.limiterDiscontinuousClass[stage]==
 					stages64[stage]->limiterDiscontinuousClass;
-			const OwnerFieldBound residualTraceBound=evaluateOwnerField(
-				("R"+std::to_string(stage)+"_picard_residual_trace").c_str(),"s^-1",
-				ownerObserved.picardResidualPerS[stage],stages64[stage]->picardResidualPerS,
-				[&,stage](std::size_t iteration){return localProjectionBound(static_cast<float>(
-					stages64[stage]->picardResidualPerS[iteration]));});
+			// The owner residual is a control diagnostic: max(target, momentum/dx,
+			// transport-coefficient change).  It intentionally pools unlike units
+			// and contains subtractive differences, so treating its binary32 ULP as
+			// an arithmetic enclosure would violate the termwise-bound rule.  Gate
+			// the contributing fields above and the exact class/iteration outcomes;
+			// retain this aggregate only as a descriptive trace.
+			const bool residualTraceShapeMatch=ownerObserved.picardResidualPerS[stage].size()==
+				stages64[stage]->picardResidualPerS.size();
+			double residualTraceMaximumDifference=0.0;
+			for(std::size_t iteration=0u;residualTraceShapeMatch&&iteration<
+				ownerObserved.picardResidualPerS[stage].size();++iteration)
+				residualTraceMaximumDifference=std::max(residualTraceMaximumDifference,std::fabs(
+					static_cast<double>(ownerObserved.picardResidualPerS[stage][iteration])-
+					stages64[stage]->picardResidualPerS[iteration]));
+			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_PICARD_RESIDUAL_TRACE stage=R%u "
+				"scope=descriptive_not_acceptance mixed_quantity_maximum=1 shape_match=%d "
+				"maximum_difference=%.17g\n",stage,residualTraceShapeMatch?1:0,
+				residualTraceMaximumDifference);
 			const bool targetEnvelopePassed=terminalBoundsPresent&&projectionTargetBound.passed&&
 				acceptedTargetBound.passed;
 			ownerMirrorBounded=ownerMirrorBounded&&targetEnvelopePassed&&iterationsMatch&&
+				residualTraceShapeMatch&&
 				ownerIterationTraceBounded;
 			std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_TARGET_TRACE stage=R%u "
 				"projection_iteration_device=%u projection_iteration_fp64=%u "
@@ -11691,7 +11913,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				ownerObserved.projectionTargetCorrectionIteration[stage],
 				projectionTargetIterations64[stage],
 				ownerObserved.acceptedTargetCorrectionIteration[stage],
-				acceptedTargetIterations64[stage],iterationsMatch&&targetEnvelopePassed&&
+				acceptedTargetIterations64[stage],iterationsMatch&&residualTraceShapeMatch&&
+				targetEnvelopePassed&&
 				ownerIterationTraceBounded?1:0);
 		}
 		const std::size_t acceptedAllFaces=ownerObserved64.r1.scalarAcceptance.
@@ -11879,7 +12102,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
 		transferLedgerRefused&&ownerSmokePassed&&heunWeightingRED&&
-		continuousEnclosureRED&&
+		continuousEnclosureRED&&outOfEnclosureRED&&
 		heunWeightingMutantAccepted&&sharedAlphaRED&&ownerWorkingSetPreflightRefused&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
@@ -11950,9 +12173,11 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		for(unsigned int term=0u;term<5u;++term){double maximumResidual=0.0,maximumBound=0.0,
 			worstRatio=0.0;bool termBounded=true;for(std::size_t cell=0u;cell<cells;++cell){const double residual=
 			std::fabs(static_cast<double>((*localDevice[term])[cell])-(*localExact[term])[cell]);
-			const double bound=term==1u?0.0:localProjectionBound((*localMirror[term])[cell]);
+			const double bound=term==0u?device.tangentEnclosurePerS[cell]:
+				(term==1u?0.0:(term==4u?device.assembledEnclosurePerS[cell]:
+				localProjectionBound((*localMirror[term])[cell])));
 			termBounded=termBounded&&insideEnclosure((*localDevice[term])[cell],
-				(*localExact[term])[cell],term==1u);
+				(*localExact[term])[cell],bound);
 			maximumResidual=std::max(maximumResidual,residual);
 			maximumBound=std::max(maximumBound,bound);if(bound>0.0)worstRatio=std::max(worstRatio,
 				residual/bound);}
@@ -11966,7 +12191,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			const bool equal=std::memcmp(&(*localDevice[term])[cell],&(*localMirror[term])[cell],
 				sizeof(float))==0;const double residual=std::fabs(static_cast<double>(
 				(*localDevice[term])[cell])-(*localExact[term])[cell]);
-			const double bound=term==1u?0.0:localProjectionBound((*localMirror[term])[cell]);
+			const double bound=term==0u?device.tangentEnclosurePerS[cell]:
+				(term==1u?0.0:(term==4u?device.assembledEnclosurePerS[cell]:
+				localProjectionBound((*localMirror[term])[cell])));
 			const double ratio=bound>0.0?residual/bound:0.0;
 			std::fprintf(stderr,"RESIDENT_TARGET_CELL topology=%s field=%s cell=%zu units=s^-1 "
 				"device=%.9g fp64_mirror_binary32_projection=%.9g fp64_exact=%.17g residual_s^-1=%.17g "

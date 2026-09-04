@@ -1173,9 +1173,9 @@ namespace RISEFireProductionFP64
 			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(cells,sizeof(double),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint64_t),bytes)&&
-			// Device-side first-failure witness: minimum cell and EOS subterm bitmap.
+			// Device-side first-failure witness: minimum cell plus per-cell EOS subterm map.
 			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&
-			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&
+			AddMetalValueBuffer(cells,sizeof(std::uint32_t),bytes)&&
 			AddMetalValueBuffer(256u,sizeof(unsigned char),bytes)&&
 			AddMetalValueBuffer(1u,sizeof(std::uint32_t),bytes)&&bytes<=(UINT64_C(1)<<31u);
 	}

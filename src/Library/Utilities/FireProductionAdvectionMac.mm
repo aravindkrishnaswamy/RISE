@@ -2560,10 +2560,12 @@ inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
 // obligation bitmap, and qualification compares the materialized value with
 // the fp64 owner against the independently propagated termwise enclosure.
 inline bool eos_binary32_round_or_local_enclosure(EOSDD value,thread float& rounded,
- thread bool& usedEnclosure){usedEnclosure=false;
- if(eos_unique_binary32_round(value,rounded))return true;rounded=value.hi;
+ thread float& radius,thread bool& usedEnclosure){usedEnclosure=false;
+ if(eos_unique_binary32_round(value,rounded)){radius=eos_up_mul(0.5f,
+  eos_local_spacing(rounded));return isfinite(radius);}rounded=value.hi;
  float uncertainty=eos_up_add(eos_up_add(abs(value.lo),abs(value.tail)),value.bound);
- if(isfinite(rounded)&&isfinite(uncertainty)){usedEnclosure=true;return true;}return false;}
+ if(isfinite(rounded)&&isfinite(uncertainty)){radius=uncertainty;usedEnclosure=true;return true;}
+ return false;}
 inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD temperature,
  thread uint& offset,device atomic_uint* obligations,thread bool& valid){uint base=96u*species,
  segments=uint(thermo[base+3u]);
@@ -2662,7 +2664,7 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
  device float* pressureRatio [[buffer(5)]],device float* deviation [[buffer(6)]],
  device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
  constant EOSParams& p [[buffer(9)]],device atomic_uint* firstFailureCell [[buffer(10)]],
- device atomic_uint* failureTerm [[buffer(11)]],
+ device uint* failureTerm [[buffer(11)]],
  uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
  if(candidateIdentity[0]==0ul||!eos_state_admissible(candidate,eosThermo,p,gid,obligations)){
   atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);return;}
@@ -2689,6 +2691,10 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
   as_type<float>(1u));
  if((p.pad0&64u)!=0u){ratioDD=eos_dd(1.0625f);deviationDD=eos_dd(0.0625f);}
  if((p.pad0&128u)!=0u){ratioDD=eos_dd(0.9375f);deviationDD=eos_dd(0.0625f);}
+ if((p.pad1&1u)!=0u&&gid==0u){float adjacent=nextafter(1.0f,INFINITY);
+  ratioDD=eos_add(eos_dd(1.0f),eos_dd((adjacent-1.0f)*0.5f));}
+ if((p.pad1&1u)!=0u&&gid==1u){float adjacent=nextafter(0.125f,INFINITY);
+  deviationDD=eos_add(eos_dd(0.125f),eos_dd((adjacent-0.125f)*0.5f));}
  float ratio=0.0f,absoluteDeviation=0.0f;
  bool ratioRounded=eos_unique_binary32_round(ratioDD,ratio);
  // The represented ratio is the monitored-policy authority.  Derive its
@@ -2696,7 +2702,7 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
  // cannot become a second, independently rounded absolute-reference source.
  // Qualification mutations still exercise and refuse the retired independent
  // deviation-rounding path.
- bool independentDeviation=(p.pad0&254u)!=0u;
+ bool independentDeviation=(p.pad0&254u)!=0u||((p.pad1&1u)!=0u&&gid<2u);
  bool deviationRounded=independentDeviation?
   eos_unique_binary32_round(deviationDD,absoluteDeviation):ratioRounded;
  if(!independentDeviation&&ratioRounded)absoluteDeviation=abs(ratio-1.0f);
@@ -2704,8 +2710,8 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
  bool deviationPhysical=isfinite(absoluteDeviation);
  if(!ratioRounded||!deviationRounded||!ratioPhysical||!deviationPhysical){uint terms=
   (!ratioRounded?1u:0u)|(!deviationRounded?2u:0u)|(!ratioPhysical?4u:0u)|
-  (!deviationPhysical?8u:0u);atomic_fetch_min_explicit(firstFailureCell,gid,memory_order_relaxed);
-  atomic_fetch_or_explicit(failureTerm,terms,memory_order_relaxed);
+  (!deviationPhysical?8u:0u);failureTerm[gid]=terms;
+  atomic_fetch_min_explicit(firstFailureCell,gid,memory_order_relaxed);
   atomic_fetch_or_explicit(failure,512u,memory_order_relaxed);return;}
  temperature[gid]=T;pressureRatio[gid]=ratio;deviation[gid]=absoluteDeviation;
  atomic_fetch_or_explicit(obligations,1u<<5u,memory_order_relaxed);
@@ -2785,6 +2791,7 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
 	constant EOSParams& eosParameters [[buffer(24)]],
 	device const ulong* candidatePhysicalIdentity [[buffer(25)]],
 	device float* baseAssembled [[buffer(26)]],
+	device float* tangentRadius [[buffer(27)]],device float* assembledRadius [[buffer(28)]],
 	uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;bool metadataMatches=
 	 p.nx==transportParameters.nx&&p.ny==transportParameters.ny&&
 	 p.nz==transportParameters.nz&&p.cells==transportParameters.cells&&
@@ -2862,12 +2869,14 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
    atomic_fetch_or_explicit(obligations,1u<<21u,memory_order_relaxed);}
   else atomic_fetch_or_explicit(obligations,1u<<25u,memory_order_relaxed);}
  else atomic_fetch_or_explicit(obligations,1u<<20u,memory_order_relaxed);
- float tangentValue=0.0f,tailValue=0.0f;
+ float tangentValue=0.0f,tangentBound=0.0f,tailValue=0.0f;
  float diagnosticValue=(pressureRatio[gid]-1.0f)/p.dt;
  bool tangentRounded=divergenceBitZero,tangentEnclosed=false;
  if(divergenceBitZero){tangentValue=0.0f;
+  tangentBound=0.0f;
   atomic_fetch_or_explicit(obligations,1u<<26u,memory_order_relaxed);}
- else tangentRounded=eos_binary32_round_or_local_enclosure(value,tangentValue,tangentEnclosed);
+ else tangentRounded=eos_binary32_round_or_local_enclosure(value,tangentValue,tangentBound,
+  tangentEnclosed);
  if(tangentEnclosed)atomic_fetch_or_explicit(obligations,1u<<27u,memory_order_relaxed);
  bool tailRounded=eos_unique_binary32_round(tail,tailValue);
  if(!valid)atomic_fetch_or_explicit(failure,32768u,memory_order_relaxed);
@@ -2877,33 +2886,45 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
  if(!tailRounded)atomic_fetch_or_explicit(failure,262144u,memory_order_relaxed);
  if(!valid||!tangentRounded||!isfinite(diagnosticValue)||!tailRounded||
   !isfinite(sourceTarget[gid]))return;
+ tangentRadius[gid]=tangentBound;
+ // Qualification-only publication corruption.  The independently carried
+ // radius must make this visible to the fp64 consumer-side RED.
+ if((p.pad1&1u)!=0u)for(uint step=0u;step<8u;++step)
+  tangentValue=nextafter(tangentValue,INFINITY);
  tangent[gid]=tangentValue;source[gid]=sourceTarget[gid];
  absoluteDiagnostic[gid]=diagnosticValue;monitoredAbsolute[gid]=tailValue;
  EOSDD baseDD=eos_add(value,eos_dd(sourceTarget[gid]));float baseValue=0.0f;
- bool baseEnclosed=false;
- if(!eos_binary32_round_or_local_enclosure(baseDD,baseValue,baseEnclosed)||!isfinite(baseValue)){
+ bool baseEnclosed=false;float baseRadius=0.0f;
+ if(!eos_binary32_round_or_local_enclosure(baseDD,baseValue,baseRadius,baseEnclosed)||!isfinite(baseValue)){
   atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}
  if(baseEnclosed)atomic_fetch_or_explicit(obligations,1u<<28u,memory_order_relaxed);
  baseAssembled[gid]=baseValue==0.0f?0.0f:baseValue;
  EOSDD combinedDD=eos_add(baseDD,tail);float combined=0.0f;
- bool combinedEnclosed=false;
- if(!eos_binary32_round_or_local_enclosure(combinedDD,combined,combinedEnclosed)||!isfinite(combined)){
+ bool combinedEnclosed=false;float combinedRadius=0.0f;
+ if(!eos_binary32_round_or_local_enclosure(combinedDD,combined,combinedRadius,combinedEnclosed)||
+  !isfinite(combined)){
   atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}assembled[gid]=combined;
+ assembledRadius[gid]=combinedRadius;
  if(combinedEnclosed)atomic_fetch_or_explicit(obligations,1u<<29u,memory_order_relaxed);
  atomic_fetch_or_explicit(obligations,1u<<22u,memory_order_relaxed);}
 kernel void finalize_resident_target(device float* target [[buffer(0)]],
  device atomic_uint* failure [[buffer(1)]],device atomic_uint* obligations [[buffer(2)]],
- constant TargetParams& p [[buffer(3)]],uint gid [[thread_position_in_grid]]){if(gid!=0u||
+ constant TargetParams& p [[buffer(3)]],device float* radius [[buffer(4)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u||
  atomic_load_explicit(failure,memory_order_relaxed)!=0u)return;bool pressureOpen=false;
  for(uint side=0u;side<6u;++side)pressureOpen=pressureOpen||p.boundary[side]==1u;
  if(pressureOpen){atomic_fetch_or_explicit(obligations,1u<<23u,memory_order_relaxed);return;}
- EOSDD sum=eos_dd(0.0f);for(uint cell=0u;cell<p.cells;++cell)sum=eos_add(sum,eos_dd(target[cell]));
- EOSDD mean=eos_div(sum,eos_dd(float(p.cells)));bool anyEnclosed=false;
+ EOSDD sum=eos_dd(0.0f);float radiusSum=0.0f;for(uint cell=0u;cell<p.cells;++cell){
+  sum=eos_add(sum,eos_dd(target[cell]));radiusSum=eos_up_add(radiusSum,radius[cell]);}
+ EOSDD mean=eos_div(sum,eos_dd(float(p.cells)));
+ mean.bound=eos_up_add(mean.bound,eos_up_div(radiusSum,float(p.cells)));bool anyEnclosed=false;
  for(uint cell=0u;cell<p.cells;++cell){float value=0.0f;
+  EOSDD center=eos_dd(target[cell]);center.bound=radius[cell];float localRadius=0.0f;
   bool enclosed=false;if(!eos_binary32_round_or_local_enclosure(
-   eos_sub(eos_dd(target[cell]),mean),value,enclosed)){
+   eos_sub(center,mean),value,localRadius,enclosed)){
    atomic_fetch_or_explicit(failure,4096u,memory_order_relaxed);return;}
-  anyEnclosed=anyEnclosed||enclosed;target[cell]=value==0.0f?0.0f:value;}
+  anyEnclosed=anyEnclosed||enclosed;target[cell]=value==0.0f?0.0f:value;
+  radius[cell]=localRadius;}
  // One device-wide obligation is sufficient: the target identity authenticates
  // every materialized cell, and qualification discharges each local enclosure.
  if(anyEnclosed)atomic_fetch_or_explicit(obligations,1u<<30u,memory_order_relaxed);
@@ -2916,6 +2937,7 @@ kernel void identify_resident_target(device const float* tangent [[buffer(0)]],
  device ulong* identity [[buffer(9)]],device atomic_uint* failure [[buffer(10)]],
  device const ulong* sourceIdentity [[buffer(11)]],constant TargetParams& p [[buffer(12)]],
 	device const ulong* candidatePhysicalIdentity [[buffer(13)]],
+	device const float* tangentRadius [[buffer(14)]],device const float* assembledRadius [[buffer(15)]],
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul||
   tangentPhysicalIdentity[0]==0ul||candidatePhysicalIdentity[0]==0ul||
@@ -2930,7 +2952,9 @@ kernel void identify_resident_target(device const float* tangent [[buffer(0)]],
   hash^=ulong(as_type<uint>(source[cell]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(absoluteDiagnostic[cell]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(monitoredAbsolute[cell]));hash*=1099511628211ul;
-  hash^=ulong(as_type<uint>(assembled[cell]));hash*=1099511628211ul;}
+  hash^=ulong(as_type<uint>(assembled[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(tangentRadius[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(assembledRadius[cell]));hash*=1099511628211ul;}
  hash^=ulong(p.nx);hash*=1099511628211ul;hash^=ulong(p.ny);hash*=1099511628211ul;
  hash^=ulong(p.nz);hash*=1099511628211ul;hash^=ulong(p.cells);hash*=1099511628211ul;
  for(uint axis=0u;axis<3u;++axis){hash^=ulong(p.faceOffset[axis]);hash*=1099511628211ul;}
@@ -6697,6 +6721,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> monitoredAbsolute;
 			id<MTLBuffer> baseAssembled;
 			id<MTLBuffer> assembled;
+			id<MTLBuffer> tangentEnclosure;
+			id<MTLBuffer> assembledEnclosure;
 			id<MTLBuffer> publicationIdentity;
 			id<MTLBuffer> projectionConsumerIdentity;
 			id<MTLBuffer> consumerIdentity;
@@ -6714,7 +6740,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			std::size_t cells;
 			std::uint64_t allocationBytes;
 			ResidentProjectionTargetMetalAuthority() : tangent(nil),frozenSource(nil),
-				absoluteDiagnostic(nil),monitoredAbsolute(nil),baseAssembled(nil),assembled(nil),publicationIdentity(nil),
+				absoluteDiagnostic(nil),monitoredAbsolute(nil),baseAssembled(nil),assembled(nil),
+				tangentEnclosure(nil),assembledEnclosure(nil),publicationIdentity(nil),
 				projectionConsumerIdentity(nil),consumerIdentity(nil),projectionMetadata(nil),parentCommand(nil),
 				parentTransportPublicationIdentity(nil),
 				parentTangentPhysicalPublicationIdentity(nil),
@@ -7237,8 +7264,14 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					{parentIdentity,output.projection.publicationIdentity,
 					output.transport->publicationIdentity,failure_,ownerParameters_[stage]},1u))return false;
 				output.physical.reset(new ResidentPhysicalFluxMetalAuthority);
+				// R2 derives the endpoint class from the force-inclusive projected
+				// velocity.  Its physical flux must consume that immediate class, as
+				// the reviewed fp64 owner does; the sealed Picard class is only the
+				// projection solve's input.  R0/R1 retain their sealed-stage class.
+				id<MTLBuffer> physicalInflow=stage==2u?output.nextOpenClass:
+					output.projection.pressureOpenInflow;
 				if(!EncodeResidentPhysicalFluxAuthority(context_,command,state,temperature,
-					output.packedVelocity,thermo_,ambient_,output.projection.pressureOpenInflow,
+					output.packedVelocity,thermo_,ambient_,physicalInflow,
 					physicalBasis_,advectiveBasis_,projector_,transportParameters_[stage],
 					physicalParameters_,failure_,physicalObligations_,*output.transport,cells_,allFaces_,
 					physicalMetadata_,*output.physical,error))return false;
@@ -7361,13 +7394,20 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						id<MTLBlitCommandEncoder> witnessBlit=witnessCommand?
 							[witnessCommand blitCommandEncoder]:nil;
 						if(witness&&witnessBlit){Copy(witnessBlit,output.eos->firstFailureCell,0u,
-							witness,0u,sizeof(std::uint32_t),TransferKind::Control);
-							Copy(witnessBlit,output.eos->failureTerm,0u,witness,sizeof(std::uint32_t),
-								sizeof(std::uint32_t),TransferKind::Control);[witnessBlit endEncoding];
+							witness,0u,sizeof(std::uint32_t),TransferKind::Control);[witnessBlit endEncoding];
 							if(Commit(witnessCommand,0)){const std::uint32_t* values=
 								static_cast<const std::uint32_t*>(Read(witness,TransferKind::Control));
-								if(values&&error)*error+=" eos_failure_cell="+std::to_string(values[0])+
-									" eos_failure_term_bitmap="+std::to_string(values[1]);}}
+								const std::uint32_t cell=values?values[0]:std::numeric_limits<std::uint32_t>::max();
+								if(values&&cell<cells_){id<MTLCommandBuffer> termCommand=
+									TrackedMetalCommandBuffer(context_.queue);id<MTLBlitCommandEncoder> termBlit=
+									termCommand?[termCommand blitCommandEncoder]:nil;
+									if(termBlit){Copy(termBlit,output.eos->failureTerm,
+										cell*sizeof(std::uint32_t),witness,sizeof(std::uint32_t),
+										sizeof(std::uint32_t),TransferKind::Control);[termBlit endEncoding];
+									if(Commit(termCommand,0)){values=static_cast<const std::uint32_t*>(
+											Read(witness,TransferKind::Control));if(values&&error)*error+=
+											" eos_failure_cell="+std::to_string(values[0])+
+											" eos_failure_term_bitmap="+std::to_string(values[1]);}}}}}
 					}
 					if((stageFailureBitmap&65536u)!=0u&&output.target){
 						id<MTLBuffer> diagnostic=[context_.device newBufferWithLength:
@@ -7492,6 +7532,19 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				floats(trace.physicalEnergyFluxWPerM2,allFaces_);
 				floats(trace.representedPressureRatio,cells_);faces(trace.faceDensityKGPerM3);
 				faces(trace.projectedMomentumKGPerM2S);faces(trace.stressMomentumRateKGPerM2S2);
+				// R0/R1 bootstrap has no accepted shared limiter yet; R2 projects a
+				// frozen accepted state and owns neither a new alpha nor a force RHS.
+				// Keep those non-applicable surfaces empty in both owners so trace
+				// scope disagreement is a refusal rather than an infinity-shaped log.
+				if(iteration==std::numeric_limits<std::uint32_t>::max()||stage==2u)
+					for(auto& axis:trace.sharedFaceAlpha)axis.clear();
+				// R0/R1 bootstrap precedes an accepted scalar candidate.  Its EOS
+				// buffer is private scratch, not a represented-pressure authority;
+				// exposing it would compare NaN scratch against the fp64 owner's
+				// deliberately absent surface.
+				if(iteration==std::numeric_limits<std::uint32_t>::max()&&stage<2u)
+					trace.representedPressureRatio.clear();
+				if(stage==2u)for(auto& axis:trace.stressMomentumRateKGPerM2S2)axis.clear();
 				trace.maximumPostProjectionResidualPerS=
 					value.projectionDiagnostics.maximumPostProjectionResidualPerS;
 				qualificationTrace_[stage].push_back(std::move(trace));
@@ -8627,7 +8680,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.temperature=make(fieldBytes);authority.representedPressureRatio=make(fieldBytes);
 			authority.absoluteDeviation=make(fieldBytes);authority.publicationIdentity=make(sizeof(std::uint64_t));
 			authority.firstFailureCell=make(sizeof(std::uint32_t));
-			authority.failureTerm=make(sizeof(std::uint32_t));
+			authority.failureTerm=make(fieldBytes);
 			authority.parentCommand=command;
 			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
 			authority.parentPhysicalPublicationIdentity=physicalAuthority.publicationIdentity;
@@ -8644,7 +8697,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
 			if(!clear){if(error)*error="production resident EOS witness clear encoder failed";return false;}
 			[clear fillBuffer:authority.firstFailureCell range:NSMakeRange(0,sizeof(std::uint32_t)) value:0xffu];
-			[clear fillBuffer:authority.failureTerm range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];
+			[clear fillBuffer:authority.failureTerm range:NSMakeRange(0,fieldBytes) value:0u];
 			[clear endEncoding];
 			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
 			if(!encoder){
@@ -8868,6 +8921,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.tangent=make(fieldBytes);authority.frozenSource=make(fieldBytes);
 			authority.absoluteDiagnostic=make(fieldBytes);authority.monitoredAbsolute=make(fieldBytes);
 			authority.baseAssembled=make(fieldBytes);authority.assembled=make(fieldBytes);
+			authority.tangentEnclosure=make(fieldBytes);authority.assembledEnclosure=make(fieldBytes);
 			authority.publicationIdentity=make(sizeof(std::uint64_t));
 			ResidentProjectionMetadataMetalAuthority projectionAuthority;
 			projectionAuthority.metadata=make(sizeof(MetalResidentProjectionConsumerParameters));
@@ -8875,8 +8929,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.projectionConsumerIdentity=projectionAuthority.publicationIdentity;
 			authority.projectionMetadata=projectionAuthority.metadata;
 			authority.consumerIdentity=make(sizeof(std::uint64_t));
-			const std::array<id<MTLBuffer>,10> outputs={{authority.tangent,authority.frozenSource,
+			const std::array<id<MTLBuffer>,12> outputs={{authority.tangent,authority.frozenSource,
 				authority.absoluteDiagnostic,authority.monitoredAbsolute,authority.baseAssembled,authority.assembled,
+				authority.tangentEnclosure,authority.assembledEnclosure,
 				authority.publicationIdentity,projectionAuthority.metadata,
 				authority.projectionConsumerIdentity,
 				authority.consumerIdentity}};
@@ -8925,11 +8980,14 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:candidateAuthority.parentEOSParameters offset:0 atIndex:24];
 			[encoder setBuffer:candidatePhysicalAuthority.publicationIdentity offset:0 atIndex:25];
 			[encoder setBuffer:authority.baseAssembled offset:0 atIndex:26];
+			[encoder setBuffer:authority.tangentEnclosure offset:0 atIndex:27];
+			[encoder setBuffer:authority.assembledEnclosure offset:0 atIndex:28];
 			Dispatch(encoder,context.evaluateTargetTerms,cells);[encoder endEncoding];
 			encoder=encoderFor(context.finalizeTarget);if(!encoder){
 				if(error)*error="production resident target compatibility encoder failed";return false;}
 			[encoder setBuffer:authority.assembled offset:0 atIndex:0];[encoder setBuffer:failure offset:0 atIndex:1];
 			[encoder setBuffer:obligations offset:0 atIndex:2];[encoder setBuffer:targetParameters offset:0 atIndex:3];
+			[encoder setBuffer:authority.assembledEnclosure offset:0 atIndex:4];
 			Dispatch(encoder,context.finalizeTarget,1u);[encoder endEncoding];
 			encoder=encoderFor(context.identifyTarget);if(!encoder){
 				if(error)*error="production resident target identity encoder failed";return false;}
@@ -8947,6 +9005,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:sourceAuthority.publicationIdentity offset:0 atIndex:11];
 			[encoder setBuffer:targetParameters offset:0 atIndex:12];
 			[encoder setBuffer:candidatePhysicalAuthority.publicationIdentity offset:0 atIndex:13];
+			[encoder setBuffer:authority.tangentEnclosure offset:0 atIndex:14];
+			[encoder setBuffer:authority.assembledEnclosure offset:0 atIndex:15];
 			Dispatch(encoder,context.identifyTarget,1u);[encoder endEncoding];
 			encoder=encoderFor(context.identifyProjectionConsumer);if(!encoder){
 				if(error)*error="production resident projection-consumer identity encoder failed";return false;}
@@ -8964,7 +9024,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			}
 			if(projectionAuthority.parentCommand!=command||
 				projectionAuthority.parentTargetPublicationIdentity!=authority.publicationIdentity||
-				projectionAuthority.metadata!=outputs[7]||
+				projectionAuthority.metadata!=outputs[9]||
 				[projectionAuthority.metadata storageMode]!=MTLStorageModePrivate){
 				if(error)*error="production resident target consumer refuses CPU-produced projection metadata";
 				return false;
@@ -9640,9 +9700,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			add(9u*cells*sizeof(float))&&add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t))&&
 			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint32_t))&&
-			add(sizeof(std::uint32_t))&&add(sizeof(std::uint32_t))&&
-			add((12u*cells+faces)*sizeof(float)+4u*sizeof(std::uint64_t)+
-				2u*sizeof(std::uint32_t)+64u)&&bytes<=(UINT64_C(1)<<31u);
+			add(sizeof(std::uint32_t))&&add(cells*sizeof(std::uint32_t))&&
+			add((12u*cells+faces)*sizeof(float)+cells*sizeof(std::uint32_t)+
+				4u*sizeof(std::uint64_t)+3u*sizeof(std::uint32_t)+64u)&&
+			bytes<=(UINT64_C(1)<<31u);
 	}
 
 	bool FireProductionResidentTargetLineageLiveIncrementWorkingSetBytes(
@@ -9660,13 +9721,15 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				requested+=increment;}
 			if(bytes>std::numeric_limits<std::uint64_t>::max()-requested)return false;
 			bytes+=requested;return true;};
-		// Device-produced frozen-source field/metadata/identity, five separate
-		// target term/base/final fields, device-issued projection metadata, the target/
+		// Device-produced frozen-source field/metadata/identity, six separate
+		// target term/base/final fields plus two authenticated enclosure fields,
+		// device-issued projection metadata, the target/
 		// projection-metadata identities, and the consumer identity.
 		return add(cells*sizeof(float))&&add(sizeof(MetalResidentFrozenSourceParameters))&&
 			add(sizeof(std::uint64_t))&&
 			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
+			add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(MetalResidentProjectionConsumerParameters))&&add(sizeof(std::uint64_t))&&
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t));
 	}
@@ -10179,6 +10242,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				deviceEOSParameters.padding[0]|=16u;
 			if(request.qualificationAmbiguousSubnormalDeviationRounding)
 				deviceEOSParameters.padding[0]|=32u;
+			if(request.qualificationTwoCellDistinctEOSFailures)
+				deviceEOSParameters.padding[1]|=1u;
 			MetalResidentEOSParameters candidateEOSParameters=deviceEOSParameters;
 			if(request.qualificationMismatchedDeviceCase)++candidateEOSParameters.caseIdentity;
 			std::array<float,MetalResidentTransportSpeciesCount*
@@ -10228,7 +10293,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			const std::size_t alphaOffset=stateBytes+3u*fieldBytes,
 				identityOffset=(alphaOffset+allFaces*sizeof(float)+7u)&~std::size_t(7u),
 				controlOffset=identityOffset+4u*sizeof(std::uint64_t),
-				terminalBytes=controlOffset+2u*sizeof(std::uint32_t);
+				failureMapOffset=controlOffset+3u*sizeof(std::uint32_t),
+				terminalBytes=failureMapOffset+fieldBytes;
 			std::uint64_t certified=0u;
 			if(!FireProductionResidentEOSCandidateMetalWorkingSetBytes(shape,certified)){
 				if(error)*error="production resident EOS working-set certificate failed";return false;}
@@ -10391,6 +10457,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					destinationOffset:controlOffset size:sizeof(std::uint32_t)];
 				[blit copyFromBuffer:eosObligations sourceOffset:0 toBuffer:terminal
 					destinationOffset:controlOffset+sizeof(std::uint32_t) size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:eosAuthority.firstFailureCell sourceOffset:0 toBuffer:terminal
+					destinationOffset:controlOffset+2u*sizeof(std::uint32_t) size:sizeof(std::uint32_t)];
+				[blit copyFromBuffer:eosAuthority.failureTerm sourceOffset:0 toBuffer:terminal
+					destinationOffset:failureMapOffset size:fieldBytes];
 				[blit endEncoding];result.deviceAttempted=true;CommitTrackedMetalCommand(command);
 				result.commandCommitCount=1u;[command waitUntilCompleted];
 				if([command status]!=MTLCommandBufferStatusCompleted){
@@ -10409,6 +10479,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				computed.EOSPublicationIdentity=identityValues[3];
 				computed.deviceAttempted=true;computed.terminalRead=true;
 				computed.deviceFailureBitmap=controls[0];
+				computed.firstEOSFailureCell=controls[2];
+				if(computed.firstEOSFailureCell<cells){const std::uint32_t* failureTerms=
+					reinterpret_cast<const std::uint32_t*>(bytes+failureMapOffset);
+					computed.firstEOSFailureTermBitmap=failureTerms[computed.firstEOSFailureCell];}
 				computed.commandCommitCount=static_cast<std::uint32_t>(
 					MetalCommandCommitCount-beginningCommits);
 				computed.terminalStagingCount=static_cast<std::uint32_t>(
@@ -10548,6 +10622,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			const MetalResidentTargetParameters sourceParameters=targetParameters;
 			if(request.qualificationCertifiedContinuousEnclosure)
 				targetParameters.padding[0]=1u;
+			if(request.qualificationCorruptContinuousEnclosurePublication)
+				targetParameters.padding[1]=1u;
 			if(request.qualificationMismatchedFrozenSourcePacket)
 				targetParameters.sourcePacketIdentity+=1u;
 			switch(request.qualificationStaleTargetMetadataField){
@@ -10593,7 +10669,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				advectiveBasisBytes=request.eos.physicalFlux.nullspaceBasis.size()*sizeof(float),
 				projectorBytes=request.eos.physicalFlux.coordinateProjector.size()*sizeof(float),
 				enthalpyBytes=enthalpyBounds.size()*sizeof(float),affineBytes=affine.size()*sizeof(float);
-			const std::size_t identityOffset=5u*fieldBytes,
+			const std::size_t identityOffset=7u*fieldBytes,
 				controlOffset=identityOffset+8u*sizeof(std::uint64_t),
 				terminalBytes=controlOffset+2u*sizeof(std::uint32_t);
 			std::uint64_t certified=0u;
@@ -10784,9 +10860,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					if(error)*error="production resident target terminal encoder failed";
 					return false;
 				}
-				const std::array<id<MTLBuffer>,5> fields={{targetAuthority.tangent,
+				const std::array<id<MTLBuffer>,7> fields={{targetAuthority.tangent,
 					targetAuthority.frozenSource,targetAuthority.absoluteDiagnostic,
-					targetAuthority.monitoredAbsolute,targetAuthority.assembled}};
+					targetAuthority.monitoredAbsolute,targetAuthority.assembled,
+					targetAuthority.tangentEnclosure,targetAuthority.assembledEnclosure}};
 				for(unsigned int field=0u;field<fields.size();++field)copy(fields[field],terminal,
 					fieldBytes,TransferPurpose::Terminal,field*fieldBytes);
 				const std::array<id<MTLBuffer>,8> identities={{transportAuthority.publicationIdentity,
@@ -10841,12 +10918,18 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				computed.absoluteReferenceDiagnosticPerS.assign(values+2u*cells,values+3u*cells);
 				computed.monitoredAbsoluteReferenceTargetPerS.assign(values+3u*cells,values+4u*cells);
 				computed.assembledTargetPerS.assign(values+4u*cells,values+5u*cells);
+				computed.tangentEnclosurePerS.assign(values+5u*cells,values+6u*cells);
+				computed.assembledEnclosurePerS.assign(values+6u*cells,values+7u*cells);
 				computed.deviceProduced=computed.transportPublicationIdentity!=0u&&
 					computed.physicalFluxPublicationIdentity!=0u&&computed.candidatePublicationIdentity!=0u&&
 					computed.EOSPublicationIdentity!=0u&&computed.frozenSourcePublicationIdentity!=0u&&
 					computed.targetPublicationIdentity!=0u&&
 					computed.projectionMetadataIdentity!=0u&&
 					computed.projectionConsumerIdentity!=0u;
+				bool enclosureNonnegative=true;for(const float value:computed.tangentEnclosurePerS)
+					enclosureNonnegative=enclosureNonnegative&&value>=0.0f;
+				for(const float value:computed.assembledEnclosurePerS)
+					enclosureNonnegative=enclosureNonnegative&&value>=0.0f;
 				const std::uint64_t observedReads=MetalHostBufferReadCount-beginningReads;
 				if(computed.commandCommitCount!=1u||observedReads!=1u||
 					computed.terminalStagingCount!=1u||
@@ -10855,7 +10938,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					!AllFinite(computed.tangentTargetPerS)||!AllFinite(computed.frozenSourceTargetPerS)||
 					!AllFinite(computed.absoluteReferenceDiagnosticPerS)||
 					!AllFinite(computed.monitoredAbsoluteReferenceTargetPerS)||
-					!AllFinite(computed.assembledTargetPerS)||!std::isfinite(computed.deviceElapsedMS)){
+					!AllFinite(computed.assembledTargetPerS)||
+					!AllFinite(computed.tangentEnclosurePerS)||
+					!AllFinite(computed.assembledEnclosurePerS)||!enclosureNonnegative||
+					!std::isfinite(computed.deviceElapsedMS)){
 					result=std::move(computed);
 					if(error)*error="production resident target publication failed its certificate";return false;}
 				result=std::move(computed);if(error)error->clear();return true;
