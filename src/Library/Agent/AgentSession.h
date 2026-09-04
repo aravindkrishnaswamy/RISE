@@ -6805,6 +6805,21 @@ namespace RISE
 				std::string weavePainter;
 				std::string rotationPainter;
 
+				//! Round 9 (reviewer P2.4): the `weftColor` ARGUMENT's own
+				//! outcome.  EMPTY unless the call both (a) took a
+				//! `weftColor` argument and (b) minted a `weave_material`
+				//! substrate for it to land on -- i.e. it is empty on every
+				//! path the pre-round-9 behaviour already covered (no
+				//! argument, a non-weave preset, or a reused weave base),
+				//! so an existing caller that never passes the argument
+				//! sees this field stay unset, byte-for-byte the same as
+				//! before the argument existed.  When set, it is the
+				//! painter now bound to the minted substrate's
+				//! `weft_color` -- either `pick->colorPainter` (the
+				//! warp's own painter, for `weftColor == "match"`) or the
+				//! named painter chunk itself.
+				std::string weftColorPainter;
+
 				int rebindObjectCount = 0;   //!< how many bound objects' `material` slot moved to `fabricMaterial`
 
 				//! One representative geometry kind the chosen material's
@@ -6914,12 +6929,39 @@ namespace RISE
 			//! needs `coated_material` to accept `fabric_material` as a
 			//! substrate, which is a separate slice, so Phase 1 refuses).
 			//!
+			//! OPTIONAL `weftColor` (round 9, reviewer P2.4): C-VERB law --
+			//! the zero-argument call keeps working unchanged, and this
+			//! argument may never become required or change the default
+			//! path's output.  It ONLY has somewhere to land on the MINT
+			//! side of the weave branch (denim/silk/satin, no bound base
+			//! already a `weave_material`): `"match"` binds the minted
+			//! substrate's `weft_color` to the SAME painter `warp_color`
+			//! took (a uniform dye across both thread families, overriding
+			//! the preset's own two-tone weft), or a bare painter chunk
+			//! name binds that painter instead.  Three MORE no-op refusals
+			//! guard it, validated before the composite swap like every
+			//! other refusal above: the preset does not mint a weave at
+			//! all (cotton/linen/wool/velvet); the weave base was REUSED
+			//! rather than minted (this verb never edits an existing
+			//! chunk, so the refusal names `weft_color` on that chunk as
+			//! the route instead); or the named value is neither `match`
+			//! nor an existing COLOUR painter chunk -- the gate is
+			//! colour-PIPE-aware, not just Painter-category-aware, so a
+			//! `scalar_painter` name (IScalarPainter, Painter-category but
+			//! the wrong pipe) is refused too (round 9, reviewer P2.4 fix:
+			//! it used to pass a category-only check and fail later,
+			//! opaquely, inside `Job::AddWeaveMaterial`).
+			//! `weftColorPainter` reports the outcome, and the success message names the
+			//! painter the weft took in place of the no-argument path's
+			//! own "weft_color was left unwritten" disclosure.
+			//!
 			//! ONE whole-document swap, ONE head bump, ONE undo step -- the
 			//! same commit path `AddWetness` / `AddWear` / `VaryMaterial` use,
 			//! and for the same reason it has no staged-proposal form under
 			//! External authority.
 			AgentMakeFabricResult MakeFabric( const std::string& material = std::string(),
 			                                   const std::string& fabric = std::string(),
+			                                   const std::string& weftColor = std::string(),
 			                                   const RISE::Cst::CstHeadVersion* baseOrNull = nullptr );
 
 			//! CLOTH_FABRIC_DESIGN 9.7: the `fabric` ARGUMENT's closed value

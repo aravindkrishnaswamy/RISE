@@ -2071,6 +2071,24 @@ namespace RISE
 							"deliberately absent: it has no recommended substrate to mint." ) );
 						props.set( "fabric", fab );
 					}
+					// Round 9 (reviewer P2.4): OPTIONAL, and it only has
+					// somewhere to land on the MINT half of the weave
+					// branch (denim/silk/satin, no reused weave base) --
+					// see AgentSession::MakeFabric's own doc for the three
+					// refusals that guard it.
+					props.set( "weft_color", StringProp(
+						"OPTIONAL, and only meaningful when this call MINTS a weave_material substrate "
+						"(the denim/silk/satin presets, and only when the bound base is not already one). "
+						"`\"match\"` binds the minted substrate's `weft_color` to the SAME painter "
+						"`warp_color` just took, for a single uniform dye across both thread families "
+						"instead of the preset's own two-tone weft. Otherwise, name an existing painter "
+						"chunk in this document to bind THAT painter instead. Omit it entirely to leave "
+						"`weft_color` unwritten, so the chunk seeds it from the preset's own weft dye -- "
+						"the no-argument path, unchanged. Refused, changing nothing, when the preset does "
+						"not mint a weave (cotton/linen/wool/velvet); when the bound base is already a "
+						"weave_material and is therefore REUSED rather than minted (set `weft_color` on "
+						"that existing chunk directly instead); or when the named value is neither "
+						"`match` nor an existing painter chunk." ) );
 					props.set( "baseHeadVersion", BaseHeadVersionSchema() );
 					std::vector<std::string> required;   // NOTHING is required -- the no-argument call is the intended one
 					// Commit-only, and for the SAME reason add_wetness is:
@@ -2120,10 +2138,14 @@ namespace RISE
 						"`reflectance`/`base_color`/`rd` to re-home; and when it collides with an "
 						"`add_wetness` coat on the same material (wet fabric is a legitimate composition, "
 						"but it needs coated_material to accept a fabric substrate, which is a separate "
-						"slice). Returns {ok,applied,rawCode,status,retriable,headVersion,message,"
+						"slice); and, when `weft_color` was passed, when the preset does not mint a weave, "
+						"when the weave base was REUSED rather than minted, or when the named value is "
+						"neither `match` nor an existing painter chunk. Returns "
+						"{ok,applied,rawCode,status,retriable,headVersion,message,"
 						"material,materialKind,fabricPreset,fabricMaterial,baseMaterial,mintedSubstrate,"
 						"mintedSubstrateKind,substrateWasReused,originalNowUnreferenced,weavePainter,"
-						"rotationPainter,rebindObjectCount,geometry,geometryUniform,qualifying,objects}. "
+						"rotationPainter,weftColorPainter,rebindObjectCount,geometry,geometryUniform,"
+						"qualifying,objects}. "
 						"A PRE-COMMIT refusal is ok=false with an EMPTY status, so branch on `applied`. "
 						"Always pass the headVersion you last read as baseHeadVersion." );
 					tools.push_back( MakeTool( "make_fabric", desc, ObjectProp( "", props, required ) ) );

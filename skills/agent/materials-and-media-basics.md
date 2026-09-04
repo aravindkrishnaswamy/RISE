@@ -1241,7 +1241,16 @@ untouched.  On a weave substrate (`denim`/`silk`/`satin`) your colour lands
 on `warp_color` only — the weft keeps the preset's own weft dye (denim's
 undyed ecru, silk's champagne, satin's rose; the result message prints the
 triple), which is denim's real indigo-warp-over-undyed-weft look; bind
-`weft_color` on the minted base yourself for a uniform dye.  The original chunk is never edited, but after a mint nothing
+`weft_color` on the minted base yourself for a uniform dye — or pass the
+verb's own `weft_color` argument (`"match"` to bind the SAME painter the
+warp took, or the name of an existing COLOUR painter chunk — a
+`scalar_painter` name is refused, since the gate is colour-pipe-aware,
+not just Painter-category-aware) and it does that binding for you in
+the same call, on the same mint; the argument is a
+no-op refusal (never a required argument, never a change to the
+zero-argument call) when the preset does not mint a weave at all, or when
+the base was already a weave and so REUSED rather than minted (bind
+`weft_color` on that existing chunk yourself instead).  The original chunk is never edited, but after a mint nothing
 references it any more (the result says so as `originalNowUnreferenced`);
 when the base already matches the preset's class it does a pure wrap
 instead.  It refuses — changing nothing — on an already-fabric material,

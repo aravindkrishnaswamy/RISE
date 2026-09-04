@@ -4473,7 +4473,7 @@ namespace RISE
 				//--------------------------------------------------------------
 				if( m == "make_fabric" ) {
 					if( !s ) return MakeError( idValue, kInternalError, "no session loaded" );
-					std::string materialStr, fabricStr;
+					std::string materialStr, fabricStr, weftColorStr;
 					if( const JsonValue* mv = params.find( "material" ) ) {
 						if( mv->isString() ) materialStr = mv->asString();
 						else if( !mv->isNull() )
@@ -4484,13 +4484,21 @@ namespace RISE
 						else if( !fv->isNull() )
 							return MakeError( idValue, kInvalidParams, "Invalid params: 'fabric' must be a string" );
 					}
+					// Round 9 (reviewer P2.4): OPTIONAL `weft_color` -- see
+					// AgentSession::MakeFabric's own doc for its two
+					// accepted shapes (`"match"`, or a bare painter name).
+					if( const JsonValue* wv = params.find( "weft_color" ) ) {
+						if( wv->isString() ) weftColorStr = wv->asString();
+						else if( !wv->isNull() )
+							return MakeError( idValue, kInvalidParams, "Invalid params: 'weft_color' must be a string" );
+					}
 					RISE::Cst::CstHeadVersion base;
 					std::string bErr;
 					const int b = ParseBaseHeadVersionParam( params, base, bErr );
 					if( b < 0 ) return MakeError( idValue, kInvalidParams, bErr );
 
 					const AgentSession::AgentMakeFabricResult fr =
-						s->MakeFabric( materialStr, fabricStr, ( b == 1 ) ? &base : nullptr );
+						s->MakeFabric( materialStr, fabricStr, weftColorStr, ( b == 1 ) ? &base : nullptr );
 
 					JsonValue result = JsonValue::MakeObject();
 					result.set( "ok",          JsonValue::MakeBool( fr.ok ) );
@@ -4509,6 +4517,7 @@ namespace RISE
 					if( !fr.mintedSubstrateKind.empty() ) result.set( "mintedSubstrateKind", JsonValue::MakeString( fr.mintedSubstrateKind ) );
 					if( !fr.weavePainter.empty() )        result.set( "weavePainter",        JsonValue::MakeString( fr.weavePainter ) );
 					if( !fr.rotationPainter.empty() )     result.set( "rotationPainter",     JsonValue::MakeString( fr.rotationPainter ) );
+					if( !fr.weftColorPainter.empty() )    result.set( "weftColorPainter",    JsonValue::MakeString( fr.weftColorPainter ) );
 					if( fr.rebindObjectCount > 0 )        result.set( "rebindObjectCount",   JsonValue::MakeNumber( static_cast<double>( fr.rebindObjectCount ) ) );
 					if( !fr.geometryKind.empty() )        result.set( "geometry",            JsonValue::MakeString( fr.geometryKind ) );
 					if( !fr.material.empty() ) {

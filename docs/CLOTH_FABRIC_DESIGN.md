@@ -2692,6 +2692,16 @@ fabric    : OPTIONAL enum { cotton denim silk satin velvet wool linen }.
             Omit it to infer from the object's own name where that is
             unambiguous ("cushion" -> velvet is NOT inferable; "denim_jacket"
             -> denim is), else default to cotton and say so in the message.
+weft_color : OPTIONAL string (round 9, reviewer P2.4). `match` binds the
+            warp's own re-homed colour painter to the minted
+            weave_material's `weft_color` too -- a uniform dye; or the NAME
+            of an existing painter chunk. Meaningful only when the verb
+            MINTS a weave substrate (denim / silk / satin); given on a preset
+            that mints something else, or when the base already IS a weave
+            and is reused, it is a refusal (make_fabric never edits an
+            existing chunk -- the message names `weft_color` on that chunk
+            as the route). Omitted: the weft keeps the preset's own dye and
+            the message says so (round 8, P2.2).
 baseHeadVersion : the standard optimistic-concurrency token.
 required  : {}   -- NOTHING is required.
 ```
@@ -2808,10 +2818,11 @@ bump, one undo step**, one composite document swap.
 **Return shape**, on the two shipped verbs' pattern: `{ok, applied, rawCode,
 status, retriable, headVersion, message, material, materialKind, fabricPreset,
 baseMaterial, mintedSubstrate, mintedSubstrateKind, substrateWasReused,
-originalNowUnreferenced, weavePainter, rotationPainter, rebindObjectCount,
-geometry, qualifying, objects}` — the three new fields relative to the precedent
-verbs report the substrate decision, which is the part of this verb's behaviour
-an author most needs to see.
+originalNowUnreferenced, weavePainter, rotationPainter, weftColorPainter,
+rebindObjectCount, geometry, qualifying, objects}` — the three new fields
+relative to the precedent verbs report the substrate decision, which is the
+part of this verb's behaviour an author most needs to see; `weftColorPainter`
+(round 9) is empty unless `weft_color` was given.
 
 **Registration.** Mutating, commit-only (one composite whole-document swap is no
 `AgentProposalKind` an Owner could approve card-by-card), across the eight

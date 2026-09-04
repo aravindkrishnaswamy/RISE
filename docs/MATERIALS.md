@@ -351,7 +351,19 @@ colour where one is set, white/undyed otherwise). This is deliberate, not
 an omission: denim's look *is* an indigo warp floating over an undyed
 weft, and the draft decides how much of each shows. The verb's own
 success message names it; bind `weft_color` explicitly afterward for a
-single uniform dye across both families.
+single uniform dye across both families — or pass the verb's OPTIONAL
+`weft_color` argument (round 9, reviewer P2.4) and it binds that chunk's
+`weft_color` for you as part of the same mint: `"match"` binds the SAME
+painter `warp_color` took, or name any existing COLOUR painter chunk to
+bind that one instead — the gate is colour-PIPE-aware, so a
+`scalar_painter` name is refused even though it is Painter-category too
+(round 9, reviewer P2.4 fix: it used to pass a category-only check and
+fail later, opaquely, inside `Job::AddWeaveMaterial`). The argument only
+has somewhere to land on the MINT half of this path — it refuses,
+changing nothing, when the preset does
+not mint a weave at all, or when the bound base was already a
+`weave_material` and so REUSED rather than minted (bind `weft_color` on
+that existing chunk directly instead).
 
 Guards: `LayeredWhiteFurnaceTest` configs 21–36 (energy: the Lambertian
 rows `kPosturePass` on the exact identity, the Oren-Nayar and GGX rows

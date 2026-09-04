@@ -84,6 +84,7 @@
 #include "../SceneEditor/SceneEditController.h"   // Facet 5 slice 1b: LIVE-mode routing through the render-safe edit path
 #include "../SceneEditor/CameraIntrospection.h"   // preview-render: ephemeral camera-pose override
 #include "../SceneEditor/ChunkDescriptorRegistry.h"
+#include "../SceneEditor/ConnectionLegality.h"    // round 9 (reviewer P2.4): ConnectionLegality::IsColorCapable -- the shared colour-PIPE predicate `weft_color` validation gates on, instead of the category-only DocFindByNameAnyRole("painter") narrowing (which a scalar_painter or a piecewise_linear_function2d also passes)
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Parsers/IAsciiChunkParser.h"
 #include "../Parsers/ChunkParserRegistry.h"   // F5 S3 (actionable insert_chunk diagnostics): CreateAllChunkParsers -- AllChunkKeywords' near-miss keyword set
@@ -38365,7 +38366,8 @@ namespace RISE
 			                                       const RISE::Implementation::FabricPreset& P,
 			                                       const std::string& colorPainter,
 			                                       const std::string& f0PainterName,
-			                                       const std::string& weavePainterName )
+			                                       const std::string& weavePainterName,
+			                                       const std::string& weftColorName = std::string() )
 			{
 				// PHASE 2: denim, silk and satin now recommend a
 				// `weave_material`, which is what actually carries their
@@ -38397,6 +38399,14 @@ namespace RISE
 					t += "\tname\t\t\t" + chunkName + "\n";
 					t += "\tfabric\t\t\t" + std::string( P.weavePreset ? P.weavePreset : "custom" ) + "\n";
 					t += "\twarp_color\t\t" + colorPainter + "\n";
+					// Round 9 (reviewer P2.4): the `weftColor` argument's
+					// own outcome, validated by the caller BEFORE this text
+					// is composed -- empty on every pre-round-9 path (no
+					// argument at all), so the line is omitted exactly as
+					// before and the chunk keeps seeding `weft_color` from
+					// the preset table.
+					if( !weftColorName.empty() )
+						t += "\tweft_color\t\t" + weftColorName + "\n";
 					if( !weavePainterName.empty() )
 						t += "\tweave_rotation\t" + weavePainterName + "\n";
 					t += "}\n";
@@ -39114,6 +39124,7 @@ namespace RISE
 
 		AgentSession::AgentMakeFabricResult AgentSession::MakeFabric(
 			const std::string& material, const std::string& fabric,
+			const std::string& weftColor,
 			const RISE::Cst::CstHeadVersion* baseOrNull )
 		{
 			// Doc 90 slice R2 (2026-08-23): the revision ring's mutating-verb
@@ -39265,6 +39276,87 @@ namespace RISE
 			const bool substrateIsWeave = ( P.substrate == RISE::Implementation::eFabricSubstrateWeave );
 			const bool needWeave = ( P.substrate == RISE::Implementation::eFabricSubstrateGGX ) || substrateIsWeave;
 
+			// ---- (6b) `weft_color`, round 9 (reviewer P2.4).  OPTIONAL,
+			// and it only has somewhere to land on the MINT half of the
+			// weave branch -- validated here, before any chunk is named or
+			// spliced, on the SAME "no-op refusal" contract every other
+			// clause in this verb uses.  `weftPainterName` stays empty on
+			// every path that existed before this argument did (no
+			// argument at all; a non-weave preset; a reused weave base),
+			// which is what keeps the zero-argument call's output
+			// byte-identical (C-VERB law).
+			std::string weftPainterName;
+			if( !weftColor.empty() ) {
+				if( !substrateIsWeave ) {
+					out.message = "make_fabric refused: `weft_color` was given, but `" + presetName +
+						"` does not mint a weave substrate (it mints a(n) " +
+						std::string( RISE::Implementation::FabricSubstrateClassText( P.substrate ) ) +
+						") -- `weft_color` only applies to denim, silk and satin, the three presets that "
+						"mint a `weave_material` -- document unchanged";
+					return out;
+				}
+				if( reuseSubstrate ) {
+					out.message = "make_fabric refused: `weft_color` was given, but the bound base `" +
+						pick->name + "` already IS the class `" + presetName + "` recommends, so this call "
+						"reuses it as the substrate directly instead of minting one -- make_fabric never "
+						"edits an existing chunk, so there is no minted weave_material for `weft_color` to "
+						"land on. Set `weft_color <painter>` on `" + pick->name + "` yourself instead -- "
+						"document unchanged";
+					return out;
+				}
+				if( weftColor == "match" ) {
+					weftPainterName = pick->colorPainter;
+				}
+				else {
+					// Round 9 (reviewer P2.4): the narrowed lookup below
+					// (`roleKindSuffix "painter"`) is CATEGORY-aware, not
+					// PIPE-aware -- `RoleMatchesKindConstraint` accepts any
+					// role whose registry category is Painter OR Function,
+					// which is exactly what lets a `scalar_painter`
+					// (IScalarPainter, category Painter) or a
+					// `piecewise_linear_function2d` (category Function)
+					// through here, only to fail later, opaquely, in
+					// Job::AddWeaveMaterial's colour-painter manager
+					// lookup. `weft_color`'s own descriptor declares
+					// `semantics.pipe = ParameterPipe::Color`, so the
+					// gate belongs on the PIPE: `ConnectionLegality::
+					// IsColorCapable` is the shared predicate the S17
+					// connection-legality validator itself uses for every
+					// Color-pipe slot (ConnectionLegality.cpp's
+					// `CheckColorPipe`) -- true for all 36 colour-painter
+					// kinds plus `expression_painter`, and for
+					// `piecewise_linear_function` (Job.cpp dual-registers
+					// it into the colour-painter manager too), false for
+					// `scalar_painter`, every other Function chunk, and
+					// every non-painter category.
+					int occ = 0;
+					const RISE::Cst::NodeId wid =
+						RISE::Cst::DocFindByNameAnyRole( headDoc, weftColor, &occ, "painter" );
+					bool colorCapable = false;
+					if( wid && occ == 1 ) {
+						const RISE::Cst::NodeRef witem = RISE::Cst::DocResolveNodeId( headDoc, wid );
+						const ChunkDescriptor* wdesc =
+							witem ? DescriptorForKeyword( String( witem->role.c_str() ) ) : nullptr;
+						colorCapable = wdesc &&
+							RISE::ConnectionLegality::IsColorCapable( witem->role, wdesc->category );
+					}
+					if( !colorCapable ) {
+						const bool existsAnyKind =
+							( RISE::Cst::DocFindByNameAnyRole( headDoc, weftColor ) ? true : false );
+						out.message = existsAnyKind
+							? ( "make_fabric refused: `" + weftColor + "` exists but is not a colour painter "
+							    "-- `weft_color` must name an existing colour painter (IPainter) chunk, or be "
+							    "`match` to bind the warp's own painter -- document unchanged" )
+							: ( "make_fabric refused: no chunk named `" + weftColor + "` is in this "
+							    "document -- `weft_color` must name an existing colour painter chunk "
+							    "(read_document to see the names), or be `match` to bind the warp's own "
+							    "painter -- document unchanged" );
+						return out;
+					}
+					weftPainterName = weftColor;
+				}
+			}
+
 			// ---- (7) Name every chunk, collision-safe against the
 			// document AND against every other name this one call is about
 			// to mint.
@@ -39321,7 +39413,8 @@ namespace RISE
 			             "fabric_material" ) ) return out;
 			if( !reuseSubstrate &&
 			    !splice( BuildFabricSubstrateText_( substrateName, P, pick->colorPainter, f0Name,
-			                                        substrateIsWeave ? weaveName : std::string() ),
+			                                        substrateIsWeave ? weaveName : std::string(),
+			                                        substrateIsWeave ? weftPainterName : std::string() ),
 			             RISE::Implementation::FabricSubstrateClassText( P.substrate ) ) ) return out;
 			if( needWeave && !splice( BuildFabricWeavePainterText_( weaveName ), "scalar_painter" ) ) return out;
 			if( needF0    && !splice( BuildFabricF0PainterText_( f0Name ),       "uniformcolor_painter" ) ) return out;
@@ -39470,6 +39563,7 @@ namespace RISE
 				out.originalNowUnreferenced = ( !reuseSubstrate && pick->foreignReferences.empty() );
 				out.weavePainter            = needWeave ? weaveName : std::string();
 				out.rotationPainter         = needWeave ? weaveName : std::string();
+				out.weftColorPainter        = ( substrateIsWeave && !reuseSubstrate ) ? weftPainterName : std::string();
 				out.rebindObjectCount       = rebindObjectCount;
 			}
 
@@ -39539,16 +39633,35 @@ namespace RISE
 						// and satin), rather than let it be found in a
 						// render.
 						if( substrateIsWeave ) {
-							const RISE::Implementation::WeavePreset& W =
-								RISE::Implementation::LookupWeavePreset( P.weavePreset ? P.weavePreset : "custom" );
-							const RISE::RISEPel& wc = W.weft.color;
-							const bool weftWhite = ( wc[0] >= 0.999 && wc[1] >= 0.999 && wc[2] >= 0.999 );
-							m += ". `" + pick->colorPainter + "` landed on `warp_color` only: `" +
-								substrateName + "`'s weft keeps " + std::string( W.name ) + "'s own weft dye (" +
-								( weftWhite ? std::string( "undyed white" )
-								            : ( "linear Rec.709 " + FabricScalarText_( wc[0] ) + " " +
-								                FabricScalarText_( wc[1] ) + " " + FabricScalarText_( wc[2] ) ) ) +
-								") -- set `weft_color <painter>` on `" + substrateName + "` for a uniform dye";
+							if( !weftPainterName.empty() ) {
+								// Round 9 (reviewer P2.4): `weft_color` was
+								// given and validated above, so the minted
+								// weave_material's `weft_color` is bound to
+								// a real painter -- name it, in place of
+								// the R8 P2.2 disclosure below (which only
+								// applies to the no-argument path, where
+								// the slot is left at the preset's own
+								// default).
+								m += ". `weft_color` on `" + substrateName + "` is bound to `" +
+									weftPainterName + "`" +
+									( weftColor == "match"
+									      ? std::string( " -- the SAME painter the warp received, so both "
+									                      "thread families read as one uniform dye" )
+									      : std::string( ", the painter you named" ) ) +
+									", instead of `" + presetName + "`'s own weft dye";
+							}
+							else {
+								const RISE::Implementation::WeavePreset& W =
+									RISE::Implementation::LookupWeavePreset( P.weavePreset ? P.weavePreset : "custom" );
+								const RISE::RISEPel& wc = W.weft.color;
+								const bool weftWhite = ( wc[0] >= 0.999 && wc[1] >= 0.999 && wc[2] >= 0.999 );
+								m += ". `" + pick->colorPainter + "` landed on `warp_color` only: `" +
+									substrateName + "`'s weft keeps " + std::string( W.name ) + "'s own weft dye (" +
+									( weftWhite ? std::string( "undyed white" )
+									            : ( "linear Rec.709 " + FabricScalarText_( wc[0] ) + " " +
+									                FabricScalarText_( wc[1] ) + " " + FabricScalarText_( wc[2] ) ) ) +
+									") -- set `weft_color <painter>` on `" + substrateName + "` for a uniform dye";
+							}
 						}
 						// REVIEW P3: ONLY the colour painter is re-homed, and
 						// on a pbr_metallic_roughness predecessor the dropped
