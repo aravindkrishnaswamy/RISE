@@ -10672,6 +10672,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		value.qualificationCallbackMutation=true;});
 	const bool ownerAtomicRefused=ownerRED("atomic_publication",[](auto& value){
 		value.qualificationAtomicPublicationFailure=true;});
+	const bool ownerPolicyDivergenceRefused=ownerRED(
+		"policy_divergence_between_owners",[](auto& value){
+			value.qualificationDivergentManifoldPolicy=true;});
+	const bool ownerStaleTargetPublicationRefused=ownerRED(
+		"stale_target_publication",[](auto& value){
+			value.qualificationStaleTargetPublication=true;});
+	const bool ownerUnverifiedPrivateBufferRefused=ownerRED(
+		"unverified_private_buffer_valid_identity",[](auto& value){
+			value.qualificationUnverifiedPrivateLineageBuffer=true;});
+	const bool ownerActualInterstageTransferRefused=ownerRED(
+		"actual_interstage_full_grid_transfer",[](auto& value){
+			value.qualificationInjectInterstageTransfer=true;});
 	std::vector<double> ownerDeviceTimingMS,ownerWallTimingMS;
 	if(ownerAccepted){ownerDeviceTimingMS.push_back(ownerObserved.deviceElapsedMS);
 		ownerWallTimingMS.push_back(ownerObserved.wallElapsedMS);
@@ -10750,11 +10762,43 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const bool owner64R1=owner64R0&&owner64.SolveR1(ownerTransport64,&owner64Error);
 	const bool owner64Accepted=owner64R1&&
 		owner64.SolveR2(ownerTransport64,ownerObserved64,&owner64Error);
+	bool heunWeightingRED=false;
+	if(owner64Accepted){
+		::RISEFireProductionFP64::FireProductionCompatibleFCTMomentumResult advection0,advection1;
+		std::string weightingError;
+		if(::RISEFireProductionFP64::EvaluateFireProductionCompatibleHeunMomentumCPU(
+			ownerObserved64.r0.flux,ownerObserved64.heunSolve,
+			ownerObserved64.r0.projection.velocityMPerS,advection0,&weightingError)&&
+			::RISEFireProductionFP64::EvaluateFireProductionCompatibleHeunMomentumCPU(
+				ownerObserved64.r1.flux,ownerObserved64.heunSolve,
+				ownerObserved64.r1.projection.velocityMPerS,advection1,&weightingError)){
+			for(unsigned int axis=0u;axis<3u&&!heunWeightingRED;++axis)
+				for(std::size_t face=0u;face<ownerRequest64.beginningMomentumKGPerM2S[axis].size();
+					++face){
+					const double rate0=ownerObserved64.r0.nonpressure.
+						combinedMomentumRateKGPerM2S2[axis][face]-
+						advection0.advectionRateKGPerM2S2[axis][face];
+					const double rate1=ownerObserved64.r1.nonpressure.
+						combinedMomentumRateKGPerM2S2[axis][face]-
+						advection1.advectionRateKGPerM2S2[axis][face];
+					const double beginning=ownerRequest64.beginningMomentumKGPerM2S[axis][face];
+					const float reviewedR1=static_cast<float>(beginning+0.5*
+						ownerRequest64.scalarContract.timeStepS*(rate0+rate1));
+					const float threeQuarterMutant=static_cast<float>(beginning+
+						ownerRequest64.scalarContract.timeStepS*(0.75*rate0+0.25*rate1));
+					heunWeightingRED=std::memcmp(&reviewedR1,&threeQuarterMutant,
+						sizeof(float))!=0;
+				}
+		}
+	}
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=three_quarter_one_quarter_R1 "
+		"oracle=reviewed_r190_fp64_owner binary32_bit_mismatch=%d passed=%d\n",
+		heunWeightingRED?1:0,heunWeightingRED?1:0);
 	const double ownerGamma512=(512.0*std::numeric_limits<float>::epsilon())/
 		(1.0-512.0*std::numeric_limits<float>::epsilon());
-	struct OwnerFieldBound{double maximumResidual,maximumBound,worstRatio;std::size_t worst;
-		bool passed;OwnerFieldBound():maximumResidual(0.0),maximumBound(0.0),worstRatio(0.0),
-			worst(0u),passed(true){}};
+	struct OwnerFieldBound{double maximumResidual,maximumBound,worstRatio;std::size_t worst,
+		bitMismatchCount;bool passed;OwnerFieldBound():maximumResidual(0.0),maximumBound(0.0),
+			worstRatio(0.0),worst(0u),bitMismatchCount(0u),passed(true){}};
 	auto evaluateOwnerField=[&](const char* field,const char* units,
 		const std::vector<float>& device,const std::vector<double>& mirror,
 		const std::function<double(std::size_t)>& bound){OwnerFieldBound result;
@@ -10763,6 +10807,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			field,units);result.passed=false;return result;}
 		for(std::size_t index=0u;index<device.size();++index){const double residual=std::fabs(
 			static_cast<double>(device[index])-mirror[index]),localBound=bound(index);
+			const float projected=static_cast<float>(mirror[index]);
+			result.bitMismatchCount+=std::memcmp(&device[index],&projected,sizeof(float))!=0?1u:0u;
 			const double ratio=localBound>0.0?residual/localBound:(residual==0.0?0.0:
 				std::numeric_limits<double>::infinity());result.maximumResidual=std::max(
 				result.maximumResidual,residual);result.maximumBound=std::max(result.maximumBound,
@@ -10770,9 +10816,11 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			result.passed=result.passed&&std::isfinite(localBound)&&localBound>=0.0&&residual<=localBound;}
 		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_FIELD field=%s units=%s scope=every_value "
 			"worst_index=%zu device=%.17g fp64=%.17g max_residual=%.17g "
-			"max_local_termwise_enclosure=%.17g worst_residual_over_local_bound=%.17g passed=%d\n",
+			"max_local_termwise_enclosure=%.17g worst_residual_over_local_bound=%.17g "
+			"fp64_binary32_projection_bit_mismatches=%zu passed=%d\n",
 			field,units,result.worst,static_cast<double>(device[result.worst]),mirror[result.worst],
-			result.maximumResidual,result.maximumBound,result.worstRatio,result.passed?1:0);
+			result.maximumResidual,result.maximumBound,result.worstRatio,result.bitMismatchCount,
+			result.passed?1:0);
 		return result;};
 	bool ownerMirrorBounded=owner64Accepted;
 	if(ownerAccepted&&owner64Accepted){
@@ -10815,11 +10863,14 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			const OwnerFieldBound momentumBound=evaluateOwnerField(momentum.c_str(),
 				"kg_m^-2_s^-1",ownerObserved.momentumKGPerM2S[axis],
 				ownerObserved64.momentumKGPerM2S[axis],[&,axis,velocityImpulse](std::size_t face){
-				const double impulseScale=ownerRequest.ambientDensityKGPerM3*velocityImpulse;
-				return ownerGamma512*(std::fabs(ownerRequest.beginningMomentumKGPerM2S[axis][face])+
-					std::fabs(static_cast<double>(ownerObserved.momentumKGPerM2S[axis][face]))+
-					std::fabs(ownerObserved64.momentumKGPerM2S[axis][face])+impulseScale)+
-					ownerRequest.ambientDensityKGPerM3*projectionVelocityEnclosure;});
+					const double localFaceDensity=std::max(std::fabs(static_cast<double>(
+						ownerObserved.projection.faceDensityKGPerM3[axis][face])),std::fabs(
+						ownerObserved64.r2.projection.faceDensityKGPerM3[axis][face]));
+					const double impulseScale=localFaceDensity*velocityImpulse;
+					return ownerGamma512*(std::fabs(ownerRequest.beginningMomentumKGPerM2S[axis][face])+
+						std::fabs(static_cast<double>(ownerObserved.momentumKGPerM2S[axis][face]))+
+						std::fabs(ownerObserved64.momentumKGPerM2S[axis][face])+impulseScale)+
+						localFaceDensity*projectionVelocityEnclosure;});
 			const OwnerFieldBound velocityBound=evaluateOwnerField(velocity.c_str(),"m_s^-1",
 				ownerObserved.velocityMPerS[axis],ownerObserved64.velocityMPerS[axis],
 				[&,axis,velocityImpulse](std::size_t face){return ownerGamma512*(
@@ -10892,7 +10943,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerObserved.terminalStagingCount==1u&&
 		ownerObserved.interstageFullGridTransferCount==0u&&ownerDeviceTimingMS.size()==5u&&
 		ownerStaleRefused&&ownerOrderRefused&&ownerForgedRefused&&ownerCallbackRefused&&
-		ownerAtomicRefused;
+		ownerAtomicRefused&&ownerPolicyDivergenceRefused&&
+		ownerStaleTargetPublicationRefused&&ownerUnverifiedPrivateBufferRefused&&
+		ownerActualInterstageTransferRefused;
 	const bool passed=thresholdCoverage&&exactThresholdNoDrain&&deviceExactPositiveNoDrain&&
 		deviceExactNegativeNoDrain&&independentBoundCanFail&&allBoundsPass&&
 		tangentEqual&&sourceEqual&&diagnosticEqual&&tailEqual&&assembledEqual&&
@@ -10904,7 +10957,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		cpuTargetRefused&&cpuProjectionMetadataRefused&&
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
-		transferLedgerRefused&&ownerSmokePassed&&
+		transferLedgerRefused&&ownerSmokePassed&&heunWeightingRED&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&
 		openObserved.terminalStagingCount==1u&&openObserved.interstageFullGridTransferCount==0u;

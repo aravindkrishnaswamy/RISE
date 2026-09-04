@@ -2788,6 +2788,24 @@ namespace RISEFireProductionFP64
 		return hash;
 	}
 
+	bool FireProductionMonitoredManifoldPolicy::SignedTailDrainPerS(
+		const double representedPressureRatio,const double timeStepS,
+		double& drainPerS,std::string* error )
+	{
+		drainPerS=0.0;
+		if(!std::isfinite(representedPressureRatio)||!std::isfinite(timeStepS)||
+			timeStepS<=0.0)return Fail(error,
+				"monitored-manifold tail policy input is invalid");
+		const double signedDeviation=representedPressureRatio-1.0;
+		const double magnitude=std::fabs(signedDeviation);
+		if(magnitude<=EngagementThreshold){if(error)error->clear();return true;}
+		drainPerS=-std::copysign((magnitude-EngagementThreshold)/timeStepS,
+			signedDeviation);
+		if(!std::isfinite(drainPerS))return Fail(error,
+			"monitored-manifold tail policy overflowed");
+		if(error)error->clear();return true;
+	}
+
 	bool FireProductionProjectedHeunTargetAuthority::Correct(
 		const FireProductionScalarProjectionTargetSeal& current,
 		const std::vector<double>& acceptedCandidate,
@@ -2822,9 +2840,8 @@ namespace RISEFireProductionFP64
 				double volumeRatio=0.0;
 				if(!record.AcceptedConservativeVolumeRatioByComponentOrder(tuple.data(),
 					tuple.size(),RISE::FireStateProducerPrecision::Binary32,volumeRatio,error))return false;
-				correction[cell]=(volumeRatio-1.0)/static_cast<double>(current.TimeStepS());
-				if(!std::isfinite(correction[cell]))return Fail(error,
-					"projected-Heun r70 candidate correction is nonfinite");
+				if(!FireProductionMonitoredManifoldPolicy::SignedTailDrainPerS(volumeRatio,
+					static_cast<double>(current.TimeStepS()),correction[cell],error))return false;
 				corrected[cell]=static_cast<double>(current.TargetPerS()[cell])+
 					correction[cell];
 				mean+=corrected[cell];

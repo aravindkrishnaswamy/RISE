@@ -394,6 +394,9 @@ namespace RISEFireProductionTrace
 		bool qualificationCallbackMutation;
 		bool qualificationAtomicPublicationFailure;
 		bool qualificationInjectInterstageTransfer;
+		bool qualificationDivergentManifoldPolicy;
+		bool qualificationStaleTargetPublication;
+		bool qualificationUnverifiedPrivateLineageBuffer;
 
 		FireProductionProjectedHeunMetalOwnerRequest() : ambientDensityKGPerM3(1.0f),
 			vremanCoefficient(0.07f),projectionTolerancePerS(0.0f),
@@ -401,7 +404,10 @@ namespace RISEFireProductionTrace
 			qualificationStaleCandidate(false),qualificationOutOfOrderStage(false),
 			qualificationForgedLineage(false),qualificationCallbackMutation(false),
 			qualificationAtomicPublicationFailure(false),
-			qualificationInjectInterstageTransfer(false)
+			qualificationInjectInterstageTransfer(false),
+			qualificationDivergentManifoldPolicy(false),
+			qualificationStaleTargetPublication(false),
+			qualificationUnverifiedPrivateLineageBuffer(false)
 		{ gravityMPerS2.fill(0.0f); }
 	};
 

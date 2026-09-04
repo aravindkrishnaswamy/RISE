@@ -669,6 +669,19 @@ namespace RISEFireProductionTrace
 		const FireProductionScalarProjectionTargetSeal& seal,
 		std::string* error=0 );
 
+	//! Single source of truth for the monitored-manifold policy consumed by the
+	//! fp64/CPU owner and serialized into the resident Metal target metadata.
+	//! The absolute reference remains diagnostic inside the bulk; only the r170
+	//! tail beyond 2^-4 contributes a restoration target.
+	struct FireProductionMonitoredManifoldPolicy
+	{
+		static constexpr double EngagementThreshold=0x1p-4;
+		static constexpr std::uint32_t IdentityVersion=UINT32_C(0x72313730);
+		static bool SignedTailDrainPerS(
+			double representedPressureRatio,double timeStepS,
+			double& drainPerS,std::string* error=0 );
+	};
+
 	//! Owner-private r70 target authority.  Only the complete projected-Heun
 	//! owner may call its methods; no public function can attach an arbitrary
 	//! state to a projection target or mint accepted-step authority.
