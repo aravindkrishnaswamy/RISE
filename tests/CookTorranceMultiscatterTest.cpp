@@ -535,23 +535,51 @@ static bool TestBRDFvsSPFMultiscatter()
 		Stack stk( alpha, rs );
 		CookTorranceSPF* spf = stk.MakeSPF();
 
-		// SPF lobe-selection weights (ScatterNM): wd=GuardedGetColorNM(diffuse)=0,
-		// ws=GuardedGetColorNM(spec).  H6 (2026-07): wms is now DIRECTION-AWARE --
-		// ws*(1-Ess(cosWi,alpha)), not ws*(1-Eavg) -- see MicrofacetEnergyLUT.h
-		// header comment above MSLobeZ/SampleMSCosTheta/MSPdf and
-		// GGXSPF.cpp/CookTorranceSPF.cpp's "H6:" comments.  pMSSelect = wms/total.
-		// Guarded (IPainter.h) to match CookTorranceSPF::ScatterNM exactly:
-		// at rs==1 (authored white) the library reads exactly 1.0, not the
-		// raw JH-uplifted sample, which is off by ~1e-6 at 560nm and blew
-		// the 1e-9 twin tolerance below before this test was updated.
-		const Scalar wd = GuardedGetColorNM( *stk.diffuse, ri, nm );	// 0
+		// SPF lobe-SELECTION weights (ScatterNM): FIXED 2026-09-03 to be
+		// ACHROMATIC (RGB max3 of the painter's GetColor(), same source
+		// Scatter()/Pdf() use) -- see the long note on CookTorranceSPF.cpp's
+		// ScatterNM `alpha` and the docs/SPECTRAL_PARITY_AUDIT.md entry this
+		// closed.  wdSel/wsSel feed total/wms/pDiffuseSelect/pSpecSelect and
+		// therefore pMSSelect; they must mirror ScatterNM exactly here or
+		// this test's "expected" kray silently drifts from what the SPF
+		// actually produces.
+		//
+		// REVIEW_CHIP3 P1 closure (2026-09-04): ScatterNM now floors wdSel/
+		// wsSel at kSelFloor (ComputeLobeWeights, CookTorranceSPF.cpp) before
+		// normalising, so an authored pure-black slot -- exactly this stack's
+		// `diffuse` painter -- stays reachable despite GuardedGetColorNM's
+		// ~2.5e-5 JH black-cell leak (docs/SPECTRAL_PARITY_AUDIT.md
+		// "CookTorranceSPF -- achromatic selection floor").  Replicated here
+		// bit-for-bit (same constant, same r_max) so this test's "expected"
+		// pMSSelect matches what the SPF's own floored weights actually give
+		// it -- without the floor, wdSel stays exactly 0 (unaffected) but
+		// `total` no longer matches the SPF's floored total, throwing off
+		// pMSSelect by ~kSelFloor/total (~0.1%, matching the rel errors this
+		// test showed before this update).  H6 (2026-07): wms is
+		// DIRECTION-AWARE -- ws*(1-Ess(cosWi,alpha)), not ws*(1-Eavg) -- see
+		// MicrofacetEnergyLUT.h header comment above MSLobeZ/SampleMSCosTheta/
+		// MSPdf and GGXSPF.cpp/CookTorranceSPF.cpp's "H6:" comments.
+		// pMSSelect = wms/total.
+		//
+		// `ws` (per-wavelength, GuardedGetColorNM) is kept SEPARATELY for
+		// the VALUE pipe below (specColor feeding F_ms) -- that part of
+		// ScatterNM is unaffected by either fix.  Guarded (IPainter.h) to
+		// match CookTorranceSPF::ScatterNM exactly: at rs==1 (authored white)
+		// the library reads exactly 1.0, not the raw JH-uplifted sample,
+		// which is off by ~1e-6 at 560nm and blew the 1e-9 twin tolerance
+		// below before this test was updated.
+		const Scalar kSelFloor = Scalar( 1e-3 );	// MUST match CookTorranceSPF.cpp's kSelFloor
+		const Scalar wdSelRGB = ColorMath::MaxValue( stk.diffuse->GetColor( ri ) );	// 0
+		const Scalar wsSelRGB = ColorMath::MaxValue( stk.specular->GetColor( ri ) );
+		const Scalar wdSel = r_max( wdSelRGB, kSelFloor );
+		const Scalar wsSel = r_max( wsSelRGB, kSelFloor );
 		const Scalar ws = GuardedGetColorNM( *stk.specular, ri, nm );
 		const Scalar cosWi = Vector3Ops::Dot( Vector3Ops::Normalize( -ri.ray.Dir() ), n );
 		const Scalar Ess_i = MicrofacetEnergyLUT::LookupEss( cosWi, alpha );
-		const Scalar wms = ws * ( 1.0 - Ess_i );
-		const Scalar total = wd + ws + wms;
-		const Scalar pDiffuseSelect = ( total > 1e-10 ) ? wd / total : 1.0;
-		const Scalar pSpecSelect    = ( total > 1e-10 ) ? ws / total : 0.0;
+		const Scalar wms = wsSel * ( 1.0 - Ess_i );
+		const Scalar total = wdSel + wsSel + wms;
+		const Scalar pDiffuseSelect = ( total > 1e-10 ) ? wdSel / total : 1.0;
+		const Scalar pSpecSelect    = ( total > 1e-10 ) ? wsSel / total : 0.0;
 		const Scalar pMSSelect = 1.0 - pDiffuseSelect - pSpecSelect;
 		const Scalar msZ = MicrofacetEnergyLUT::MSLobeZ( alpha );
 

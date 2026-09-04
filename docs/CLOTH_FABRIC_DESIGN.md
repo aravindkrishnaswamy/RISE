@@ -385,8 +385,8 @@ description of a gate.
   sheen-branch selection weight's under-selection near grazing is
   documented as variance-not-bias; the substrate's non-horizon drop
   paths are documented as a GGX defect fabric inherits in proportion;
-  and a **found-not-fixed** Cook-Torrance spectral defect is recorded as
-  debt 19.
+  and a Cook-Torrance spectral defect was found and (in a follow-up pass)
+  fixed, recorded as debt 19.
 
 ---
 
@@ -4653,35 +4653,82 @@ yet known (§10.1).
     grazing check is the guard, and it asserts the bounded posture
     inside the sliver rather than pretending to the conserving one.
 
-19. **NEW 2026-09-03 (round 7) — FOUND, NOT FIXED: `CookTorranceSPF`'s
-    `PdfNM` reports a different mixture from `ScatterNM`.** Not a fabric
-    defect; surfaced by this phase's broadening of
-    `tests/SPFPdfConsistencyTest.cpp`'s spectral companion beyond the two
-    `fabric_material` rows it originally covered, and recorded here
-    because that broadening is this phase's work.
+19. **CLOSED 2026-09-03 (round 8) — `CookTorranceSPF`'s `PdfNM` reported a
+    different mixture from `ScatterNM`; fixed by adopting `fabric_material`'s
+    achromatic-selection convention.** Not a fabric defect; surfaced by
+    round 7's broadening of `tests/SPFPdfConsistencyTest.cpp`'s spectral
+    companion beyond the two `fabric_material` rows it originally covered,
+    and closed in a follow-up pass because the broadening that found it is
+    this phase's work.
 
-    `CookTorranceSPF::ScatterNM` builds its 3-lobe selection weights
+    `CookTorranceSPF::ScatterNM` built its 3-lobe selection weights
     per-wavelength (`GetValueAtNM` on masking, `GuardedGetColorNM` on
-    diffuse and specular) while `PdfNM` is a bare `return Pdf(...)`,
+    diffuse and specular) while `PdfNM` was a bare `return Pdf(...)`,
     which rebuilds them from the RGB `max3`. So the density stored on a
-    spectral sample is a different mixture from the one `PdfNM` reports
+    spectral sample was a different mixture from the one `PdfNM` reported
     for that direction — the Scatter↔Pdf agreement MIS depends on.
-    **Measured `maxRelErr` 1.44e-4 at 30° and 1.55e-4 at 60°**, against
-    4e-16…1.6e-13 for every other row in that sweep (Lambertian,
-    Oren-Nayar, GGX iso/aniso, SSS, both coated rows, both fabric rows) —
-    eleven orders of magnitude out of family, so a real defect rather
-    than quadrature noise. The RGB pipe passes exactly, which is why
-    nothing caught it before the twins were compared.
+    **Measured before the fix: `maxRelErr` 1.44e-4 at 30° and 1.55e-4 at
+    60°**, against 4e-16…1.6e-13 for every other row in that sweep
+    (Lambertian, Oren-Nayar, GGX iso/aniso, SSS, both coated rows, both
+    fabric rows) — eleven orders of magnitude out of family. The RGB pipe
+    passed exactly, which is why nothing caught it before the twins were
+    compared.
 
-    **Bounded, not silenced**: the row stays in the sweep at a
-    row-specific `crossValTol = 1e-3` (~6× the measured worst) with its
-    true error printed unconditionally, so it cannot grow unnoticed.
-    Full write-up, both candidate fixes and the sibling-audit
-    instruction: [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
-    §2.x. Note the choice is not obvious — `fabric_material` reads its
-    selection inputs achromatically on purpose (§9.2), while
-    `CoatedBRDF::ResolveCoat` reads per-wavelength, so there is
-    precedent both ways and whoever fixes it must say which and why.
+    **The fix**: `ScatterNM`'s lobe-selection weights (and `alpha`) are now
+    read ACHROMATICALLY — the same RGB `max3` / `GetValuesAt(ri).v[0]`
+    source `Pdf()` already used — exactly the convention
+    `fabric_material` chose on purpose (§9.2's `ResolveFabric` note).
+    `PdfNM`'s bare forward to `Pdf()` is therefore correct by construction
+    now, for every wavelength; no code change was needed there beyond a
+    comment. The per-wavelength VALUE (`kray`/`krayNM`) is unchanged.
+    **Measured after the fix: `maxRelErr` 1.18e-13 at 30° and 1.27e-13 at
+    60°** — squarely inside the family every other row occupies; the
+    row-specific `crossValTol = 1e-3` relaxation was removed and the row
+    now uses the shared `CROSS_VAL_TOL` like every other exact row.
+    `tests/CookTorranceMultiscatterTest.cpp`'s Test E (an independent
+    white-box reconstruction of the same selection weights) needed the
+    identical achromatic correction to stay a valid oracle — a sibling of
+    the same pattern found one hop outside the material itself.
+    `tests/CookTorranceHWSSTest.cpp` (new) proves the render-level
+    consequence: a tinted Cook-Torrance sphere's `hwss=true` PT-spectral
+    render agrees with `hwss=false` within ~1% (tolerance 5%), reusing
+    `FabricRenderTest.cpp`'s reference-free HWSS-invariant pattern.
+    Sibling audit across every `PdfNM` in `src/Library/Materials`
+    confirmed CookTorranceSPF was the only site carrying the pattern; full
+    table in [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md) §2.x.
+
+    **Follow-up 2026-09-04 (REVIEW_CHIP3): the achromatic fix above traded
+    the pdf-mismatch bug for a smaller dropped-lobe bias, now also
+    closed.** Making the selection weights an *exact* RGB `max3` meant an
+    authored PURE-BLACK diffuse or specular slot gave an exact-0 selection
+    weight — permanently unreachable from `ScatterNM` — while
+    `GuardedGetColorNM` on that same slot leaks `~2.5e-5` (the JH LUT's
+    black cell cannot represent exact black), a value `CookTorranceBRDF::
+    valueNM` (NEE) still reported every time. Fixed by flooring the
+    selection weights at `kSelFloor = 1e-3` (`ComputeLobeWeights`, a single
+    helper shared by `Scatter`/`ScatterNM`/`Pdf`) before normalising —
+    unbiased for any floor in `(0,1]` since the sampled `kray`/`krayNM`
+    still divides by the probability it was drawn with (the floor spends a
+    fixed extra 0.1% of samples on a possibly-dead lobe; that is variance,
+    not bias), and algebraically a no-op for any material whose RGB `max3`
+    exceeds the floor (ordinary tinted/white rows are bit-identical to
+    before). Proof: the existing `CookTorrance` row unchanged
+    (`1.18e-13`/`1.27e-13`); two new rows with one authored-black slot
+    each pass at the same exact tolerance; a direct reachability count
+    (200k trials) confirms the floored lobe now fires at the predicted
+    floor rate in the NM pipe (previously exactly 0); `CookTorranceMulti
+    scatterTest`'s Test E — which already used a black diffuse painter —
+    needed its own replicated formula updated to match, confirming the
+    old formula and the new floored one disagree by exactly the floor's
+    order of magnitude; a furnace/energy check on the base tinted fixture
+    confirms the floor does not move a non-near-black material's
+    directional albedo. Sibling audit: `WeaveBRDF::SurfaceSelectWeight`
+    already floors (`kMinLobeWeight = 0.15`); `FabricBRDF::
+    ValueNMWithParams` already caps the value at the selection weight
+    (`tintNMCapped = min(tintNM, m)`) instead of flooring the weight at
+    the value — a different but equally valid guard. Neither needed a
+    change. Full detail: [SPECTRAL_PARITY_AUDIT.md](SPECTRAL_PARITY_AUDIT.md)
+    §2.x follow-up.
 
 20. **NEW 2026-09-03 (P2-B fix round, REVIEW_P2R7.md) — BDPT/VCM
     over-count a `transmission thin` weave by 100-350x on the shipped

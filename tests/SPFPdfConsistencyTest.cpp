@@ -41,6 +41,7 @@
 #include "../src/Library/Utilities/RandomNumbers.h"
 #include "../src/Library/Utilities/IndependentSampler.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
+#include "../src/Library/Utilities/MicrofacetEnergyLUT.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Interfaces/ISPF.h"
 #include "../src/Library/Interfaces/IPainter.h"
@@ -666,6 +667,21 @@ int main()
     OrenNayarSPF* orenNayar = new OrenNayarSPF( *white, *roughnessSc );  orenNayar->addref();
     IsotropicPhongSPF* phong = new IsotropicPhongSPF( *gray, *spec, *highExpSc );  phong->addref();
     CookTorranceSPF* cookTorrance = new CookTorranceSPF( *gray, *spec, *lowSc, *iorScalarTop, *extinctionSc );  cookTorrance->addref();
+
+    // REVIEW_CHIP3 P1 closure (achromatic-selection floor,
+    // docs/SPECTRAL_PARITY_AUDIT.md "CookTorranceSPF -- achromatic
+    // selection floor"): two more CookTorranceSPF fixtures with an
+    // AUTHORED PURE-BLACK slot, one on each side of the mixture, to
+    // prove the floor keeps every lobe reachable and Scatter<->Pdf /
+    // ScatterNM<->PdfNM exact even at the RGB-max3==0 corner the review
+    // flagged -- the base `cookTorrance` fixture above never hits an
+    // exact zero, so it could not have caught the hole the floor fixes.
+    // Same `lowSc`/`iorScalarTop`/`extinctionSc` as the base row: a
+    // minimal one-slot-at-a-time variation of an already-covered
+    // configuration, not a new untested combination.
+    UniformColorPainter* black = new UniformColorPainter( RISEPel(0.0, 0.0, 0.0) );  black->addref();
+    CookTorranceSPF* cookTorranceBlackDiffuse  = new CookTorranceSPF( *black, *spec, *lowSc, *iorScalarTop, *extinctionSc );  cookTorranceBlackDiffuse->addref();
+    CookTorranceSPF* cookTorranceBlackSpecular = new CookTorranceSPF( *gray,  *black, *lowSc, *iorScalarTop, *extinctionSc );  cookTorranceBlackSpecular->addref();
     GGXSPF* ggxIso = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallSc, *iorScalarTop, *extinctionSc );  ggxIso->addref();
     GGXSPF* ggxAniso = new GGXSPF( *gray, *spec, *alphaSmallSc, *alphaSmallYSc, *iorScalarTop, *extinctionSc );  ggxAniso->addref();
     SchlickSPF* schlick = new SchlickSPF( *gray, *spec, *roughnessSc, *isotropySc );  schlick->addref();
@@ -868,6 +884,20 @@ int main()
         { "IsotropicPhong",                    phong,       false, false, true,  true,  INTEGRAL_TOL },
 
         { "CookTorrance",                      cookTorrance,false, true,  false, false, INTEGRAL_TOL },
+        //--------------------------------------------------------------
+        // CookTorrance with an authored PURE-BLACK diffuse or specular
+        // slot (REVIEW_CHIP3 P1 closure).  RGB max3 == 0 exactly for
+        // the black slot, so ComputeLobeWeights' kSelFloor is the ONLY
+        // thing keeping that lobe's selection weight above zero --
+        // exercising exactly the corner the base CookTorrance row above
+        // (all-tinted, no exact zeros) does not reach.  Same
+        // exactSelectedPdf contract as the base row: Scatter's stored
+        // mixPdf must still equal Pdf() exactly, proving the floor
+        // didn't reintroduce a Scatter<->Pdf mismatch at the corner it
+        // was added to fix.
+        //--------------------------------------------------------------
+        { "CookTorrance_BlackDiffuse",          cookTorranceBlackDiffuse,  false, true, false, false, INTEGRAL_TOL },
+        { "CookTorrance_BlackSpecular",         cookTorranceBlackSpecular, false, true, false, false, INTEGRAL_TOL },
         //--------------------------------------------------------------
         // GGX Isotropic / Anisotropic (height-correlated G2):
         //
@@ -1246,43 +1276,42 @@ int main()
             { "OrenNayar",               orenNayar,    CROSS_VAL_TOL },
 
             //----------------------------------------------------------
-            // CookTorrance: a REAL RGB/NM twin divergence, found by this
-            // broadening on 2026-09-03 and NOT introduced by it.
+            // CookTorrance: FIXED 2026-09-03.  `CookTorranceSPF::ScatterNM`
+            // used to build its 3-lobe mixture SELECTION weights (and
+            // `alpha`) PER-WAVELENGTH -- GuardedGetColorNM on diffuse/
+            // specular, GetValueAtNM on the masking scalar -- while
+            // `CookTorranceSPF::PdfNM` forwarded to `Pdf`, which built the
+            // same weights from the RGB max3.  The density stored on a
+            // spectral sample was therefore a DIFFERENT mixture from the
+            // one PdfNM reported for that same direction (measured
+            // maxRelErr 1.44e-4 at 30 deg / 1.55e-4 at 60 deg, ~11 orders
+            // of magnitude out of family with every other row here).
             //
-            // `CookTorranceSPF::ScatterNM` builds its 3-lobe mixture
-            // weights PER-WAVELENGTH --
-            //     wd    = GuardedGetColorNM( *pDiffuse,  ri, nm )
-            //     ws    = GuardedGetColorNM( *pSpecular, ri, nm )
-            //     alpha = pMasking->GetValueAtNM( ri, nm )
-            // (CookTorranceSPF.cpp, ScatterNM's head) -- while
-            // `CookTorranceSPF::PdfNM` simply FORWARDS TO `Pdf`, which
-            // builds the same weights from the RGB max3:
-            //     wd = MaxValue( pDiffuse->GetColor(ri) ), etc.
-            // So the density stored on a spectral sample is a DIFFERENT
-            // mixture from the one PdfNM reports for that same direction
-            // whenever a painter's spectral sample differs from its RGB
-            // max3 -- which, under the Jakob-Hanika uplift, it always
-            // does by a little.
-            //
-            // MEASURED here: maxRelErr 1.44e-4 at 30 deg and 1.55e-4 at
-            // 60 deg, on ~49.6k of 50k samples.  The RGB pipe passes
-            // exactly (0 failures), which is precisely why nothing
-            // caught this before: the twins are only compared now.
-            //
-            // NOT FIXED HERE -- it is CookTorrance's defect, in a
-            // material this slice does not touch, and the fix (make
-            // PdfNM's weights match ScatterNM's, or make ScatterNM read
-            // the RGB weights) is a behaviour change to a shipped
-            // material that needs its own measurement.  Bounded at 1e-3,
-            // ~6x the measured worst, so a regression still fails.
-            //
-            // Note this is exactly the hazard `fabric_material` was
-            // designed against: FabricBRDF::ResolveFabric reads alpha, m
-            // and weaveAngle achromatically in BOTH regimes precisely so
-            // Scatter's stored hero pdf cannot drift from a
-            // companion-wavelength Pdf() call.  See its declaration.
+            // Fixed by making `ScatterNM`'s selection weights and `alpha`
+            // ACHROMATIC -- the same RGB max3 / RGB masking source `Pdf`
+            // already used -- exactly the convention `fabric_material`
+            // adopted for the identical reason (FabricBRDF::ResolveFabric
+            // reads alpha, m and weaveAngle achromatically in both
+            // regimes so Scatter's stored hero pdf cannot drift from a
+            // companion-wavelength Pdf() call; see its declaration).
+            // `PdfNM`'s bare forward to `Pdf` is now correct by
+            // construction and stays unchanged.  Only the per-wavelength
+            // VALUE (kray/krayNM) still varies with `nm`; re-measured at
+            // CROSS_VAL_TOL (1e-6), maxRelErr now lands in the same
+            // 1e-15-to-1e-13 family as every other row.
             //----------------------------------------------------------
-            { "CookTorrance",            cookTorrance, 1e-3 },
+            { "CookTorrance",            cookTorrance, CROSS_VAL_TOL },
+
+            //----------------------------------------------------------
+            // CookTorrance with an authored PURE-BLACK slot
+            // (REVIEW_CHIP3 P1 closure).  Exact CROSS_VAL_TOL, NOT
+            // relaxed: the floor makes ScatterNM's selection weights
+            // agree with Pdf/PdfNM bit-for-bit at the RGB-max3==0
+            // corner too, so this is new coverage the P1 fix needed --
+            // not a bounded pre-existing gap like the comment above.
+            //----------------------------------------------------------
+            { "CookTorrance_BlackDiffuse",  cookTorranceBlackDiffuse,  CROSS_VAL_TOL },
+            { "CookTorrance_BlackSpecular", cookTorranceBlackSpecular, CROSS_VAL_TOL },
 
             { "GGX_Isotropic",           ggxIso,       CROSS_VAL_TOL },
             { "GGX_Anisotropic",         ggxAniso,     CROSS_VAL_TOL },
@@ -1362,6 +1391,278 @@ int main()
             std::cout << " [chi2: " << r.chi2Stat << " > " << r.chi2Crit << "]";
         std::cout << std::endl;
     }
+
+    // ================================================================
+    //  REVIEW_CHIP3 P1 closure: achromatic-selection FLOOR reachability.
+    //
+    //  The cross-validation and integral rows above (CookTorrance_Black-
+    //  Diffuse / _BlackSpecular, RGB and NM) prove the floor keeps
+    //  Scatter<->Pdf and ScatterNM<->PdfNM CONSISTENT at an authored
+    //  pure-black slot.  They do NOT by themselves prove the black
+    //  lobe is actually SAMPLED -- a floor that was somehow zeroed out
+    //  or shadowed by a different guard could still pass every
+    //  consistency check while never firing.  This block runs the
+    //  sampler directly and counts.
+    //
+    //  Disambiguating which lobe fired, from OUTSIDE CookTorranceSPF:
+    //    * Specular is unambiguous by TYPE: only the specular branch
+    //      emits eRayReflection: both diffuse and multiscatter emit
+    //      eRayDiffuse.
+    //    * Diffuse vs multiscatter, on the RGB pipe, is unambiguous by
+    //      VALUE: CookTorranceSPF::Scatter's diffuse branch adds its ray
+    //      UNCONDITIONALLY (no kray>0 gate), and for an authored
+    //      pure-black diffuse painter `pDiffuse->GetColor(ri)` is
+    //      EXACTLY (0,0,0), so diffuse.kray is exactly (0,0,0) on every
+    //      fire. The multiscatter branch only ever adds a ray when
+    //      `MaxValue(kray) > 0` STRICTLY (see the `if` gate in
+    //      CookTorranceSPF.cpp) -- so an added eRayDiffuse ray with
+    //      MaxValue(kray) exactly 0 can only have come from the diffuse
+    //      branch.
+    //    * Diffuse vs multiscatter, on the NM pipe, needs a different
+    //      test: GuardedGetColorNM's black-cell leak means krayNM is
+    //      NOT exactly 0, so the exact-zero trick doesn't apply. But
+    //      `wdValNM` and `pDiffuseSelect` are both computed from `ri`/
+    //      `nm` ALONE (never from the sampled `wo`), so the diffuse
+    //      branch's krayNM is the SAME deterministic constant on every
+    //      fire. Predicting that constant independently (same painter,
+    //      same formula) and matching fired rays against it separates
+    //      diffuse fires from multiscatter's wo-dependent krayNM.
+    // ================================================================
+    {
+        std::cout << "=== REVIEW_CHIP3 P1 closure: achromatic-selection floor reachability ===" << std::endl;
+
+        const int   kReachTrials = 200000;
+        const double kReachTheta = 30.0 * DEG_TO_RAD;
+        const double kReachNM    = 660.0;
+        // MUST match CookTorranceSPF.cpp's anonymous-namespace kSelFloor.
+        // Duplicated here deliberately (the same way the harness above
+        // calls Pdf() independently to cross-validate Scatter(), rather
+        // than reaching into production internals): an independent
+        // prediction that later drifts from production is a visible
+        // test failure, not a silent tautology.
+        const double kSelFloorTest = 1e-3;
+
+        RayIntersectionGeometric reachRi = MakeIntersection( kReachTheta );
+        IORStack reachIorStack = MakeTestIORStack( g_stubObject );
+        RandomNumberGenerator reachRng;
+        Implementation::IndependentSampler reachSampler( reachRng );
+
+        const double cosWiReach = cos( kReachTheta );
+        const double reachAlpha = 0.1;   // matches `lowSc`
+        const double Ess_iReach = MicrofacetEnergyLUT::LookupEss( cosWiReach, reachAlpha );
+
+        // cookTorranceBlackDiffuse: diffuse = black (RGB max3 == 0),
+        // specular = `spec` (RGB max3 == 0.3).  wd is the one floored.
+        const double wdBD_RGB   = 0.0;   // `black` painter's RGB max3
+        const double wsBD_RGB   = 0.3;   // `spec` painter's RGB max3
+        const double wdBD       = r_max( wdBD_RGB, kSelFloorTest );
+        const double wsBD       = r_max( wsBD_RGB, kSelFloorTest );
+        const double wmsBD      = wsBD * ( 1.0 - Ess_iReach );
+        const double totalBD    = wdBD + wsBD + wmsBD;
+        const double pDiffuseSelectPred = wdBD / totalBD;
+
+        // cookTorranceBlackSpecular: diffuse = `gray` (RGB max3 == 0.5),
+        // specular = black (RGB max3 == 0).  ws is the one floored --
+        // an INDEPENDENT computation from the block above, not a
+        // roles-swapped reuse of it (wms depends on ws, which differs
+        // between the two fixtures).
+        const double wdBS_RGB   = 0.5;   // `gray` painter's RGB max3
+        const double wsBS_RGB   = 0.0;   // `black` painter's RGB max3
+        const double wdBS       = r_max( wdBS_RGB, kSelFloorTest );
+        const double wsBS       = r_max( wsBS_RGB, kSelFloorTest );
+        const double wmsBS      = wsBS * ( 1.0 - Ess_iReach );
+        const double totalBS    = wdBS + wsBS + wmsBS;
+        const double pSpecSelectPred = wsBS / totalBS;
+
+        const double wdValNMReach = GuardedGetColorNM( *black, reachRi, kReachNM );
+        const double expectedDiffuseKrayNM = wdValNMReach / pDiffuseSelectPred;
+
+        // --- Black diffuse: RGB pipe -----------------------------------
+        {
+            int diffuseFires = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackDiffuse->Scatter( reachRi, reachSampler, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    if( s.type == ScatteredRay::eRayDiffuse && ColorMath::MaxValue( s.kray ) == 0.0 )
+                        diffuseFires++;
+                }
+            }
+            const double observedRate = (double)diffuseFires / (double)kReachTrials;
+            // Order-of-magnitude band, not a tight statistical bound: the
+            // point is proving the floored lobe fires at a rate SET BY
+            // THE FLOOR (was exactly 0 before this fix), not pinning the
+            // MC estimate to high precision.
+            const bool ok = ( diffuseFires > 0 )
+                          && ( observedRate > pDiffuseSelectPred * 0.3 )
+                          && ( observedRate < pDiffuseSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackDiffuse RGB: diffuse-lobe fires=" << diffuseFires
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pDiffuseSelect=" << pDiffuseSelectPred
+                      << "  (kray exactly (0,0,0) on every fire, as authored) "
+                      << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !ok ) numFailed++;
+        }
+
+        // --- Black diffuse: NM pipe --------------------------------------
+        {
+            int diffuseFires = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackDiffuse->ScatterNM( reachRi, reachSampler, kReachNM, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    const ScatteredRay& s = scattered[j];
+                    if( s.type != ScatteredRay::eRayDiffuse ) continue;
+                    const double relErr = fabs( s.krayNM - expectedDiffuseKrayNM )
+                                        / r_max( 1e-30, r_max( fabs(s.krayNM), fabs(expectedDiffuseKrayNM) ) );
+                    if( relErr < 1e-6 ) diffuseFires++;
+                }
+            }
+            const double observedRate = (double)diffuseFires / (double)kReachTrials;
+            const bool ok = ( diffuseFires > 0 )
+                          && ( observedRate > pDiffuseSelectPred * 0.3 )
+                          && ( observedRate < pDiffuseSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackDiffuse NM@660: diffuse-lobe fires=" << diffuseFires
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pDiffuseSelect=" << pDiffuseSelectPred
+                      << "  krayNM on fire=" << expectedDiffuseKrayNM
+                      << " (nonzero: the ~2.5e-5 JH black-cell leak is now SAMPLED, not"
+                      << " permanently unreachable) " << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !ok ) numFailed++;
+        }
+
+        // --- Black specular: RGB and NM pipes ----------------------------
+        // Unambiguous by TYPE alone (eRayReflection), so both pipes share
+        // one loop shape; no value-matching trick needed here.
+        //
+        // THE RGB AND NM EXPECTATIONS ARE DELIBERATELY DIFFERENT, and that
+        // asymmetry is a PRE-EXISTING, UNRELATED-TO-THIS-FIX design point,
+        // not a gap in the floor.  CookTorranceSPF::Scatter's specular
+        // branch only calls AddScatteredRay when `MaxValue(kray) > 0`
+        // STRICTLY (unlike the diffuse branch above, which adds
+        // unconditionally) -- a correct optimisation, since a ray that is
+        // KNOWN to contribute exactly zero need not be traced further. For
+        // an authored pure-black specular painter, RGB `kray` is the exact
+        // literal (0,0,0) (no JH uplift in the RGB pipe), so the branch is
+        // ENTERED at the floored selection rate (consuming the sampler's
+        // randoms, as `Pdf()`'s matching mixture weight above assumes) but
+        // never ADDS a ray -- fires == 0 is therefore the CORRECT RGB
+        // expectation, not a regression of the floor.  On the NM pipe the
+        // JH black-cell leaves `wsValNM` at ~2.5e-5 (not exactly 0), so
+        // `krayNM > 0` is true and the branch DOES add a ray -- this is the
+        // actual case the P1 fix was for, and it is asserted against the
+        // floor-based rate exactly like the diffuse rows above.
+        {
+            int specFiresRGB = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackSpecular->Scatter( reachRi, reachSampler, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    if( scattered[j].type == ScatteredRay::eRayReflection ) specFiresRGB++;
+                }
+            }
+            const bool ok = ( specFiresRGB == 0 );
+            std::cout << "  CookTorrance_BlackSpecular RGB: specular-lobe fires=" << specFiresRGB
+                      << "/" << kReachTrials << " (expected exactly 0: RGB kray is the literal"
+                      << " (0,0,0), no JH leak, and Scatter's specular branch only adds a ray"
+                      << " when kray>0 strictly -- the lobe is still ENTERED at the floored rate,"
+                      << " it just correctly contributes nothing) " << ( ok ? "-> PASS" : "-> FAIL" )
+                      << std::endl;
+            if( !ok ) numFailed++;
+        }
+        {
+            int specFiresNM = 0;
+            for( int i = 0; i < kReachTrials; i++ )
+            {
+                ScatteredRayContainer scattered;
+                cookTorranceBlackSpecular->ScatterNM( reachRi, reachSampler, kReachNM, scattered, reachIorStack );
+                for( unsigned int j = 0; j < scattered.Count(); j++ )
+                {
+                    if( scattered[j].type == ScatteredRay::eRayReflection ) specFiresNM++;
+                }
+            }
+            const double observedRate = (double)specFiresNM / (double)kReachTrials;
+            const bool ok = ( specFiresNM > 0 )
+                          && ( observedRate > pSpecSelectPred * 0.3 )
+                          && ( observedRate < pSpecSelectPred * 3.0 );
+            std::cout << "  CookTorrance_BlackSpecular NM@660: specular-lobe fires=" << specFiresNM
+                      << "/" << kReachTrials << "  observedRate=" << observedRate
+                      << "  predicted pSpecSelect=" << pSpecSelectPred
+                      << " (nonzero: the ~2.5e-5 JH black-cell leak is now SAMPLED, not"
+                      << " permanently unreachable) " << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !ok ) numFailed++;
+        }
+    }
+    std::cout << std::endl;
+
+    // ================================================================
+    //  REVIEW_CHIP3 proof point 4: the floor changes VARIANCE, not
+    //  EXPECTATION, for a tinted (non-near-black) Cook-Torrance material.
+    //
+    //  For the base `cookTorrance` fixture above (rd=0.5 gray, rs=0.3
+    //  spec -- both well above kSelFloor=1e-3), ComputeLobeWeights'
+    //  `r_max(wdRGB, kSelFloor)` / `r_max(wsRGB, kSelFloor)` are NO-OPs:
+    //  r_max(0.5, 0.001) == 0.5 and r_max(0.3, 0.001) == 0.3 bit-for-bit,
+    //  so `wd`/`ws`/`wms`/`total` -- and therefore every kray, mixPdf, and
+    //  Pdf() value -- are IDENTICAL to what the pre-fix code computed for
+    //  this material.  The floor provably does not touch this row at all;
+    //  "unchanged within MC noise" is the WEAKER claim the algebra already
+    //  guarantees.  This block measures the directional-hemispherical
+    //  reflectance anyway, as the concrete number the review asked for and
+    //  as a live regression guard: an energy-conservation break in a
+    //  future change to ComputeLobeWeights (e.g. a floor that leaked into
+    //  a tinted material's weights) would move this number.
+    //
+    //  Estimator: kray IS the light-transport throughput factor
+    //  (f*cos/pdf), so its RGB-channel MEAN over many Scatter() calls at a
+    //  fixed incoming direction is a standard Monte Carlo estimate of the
+    //  directional-hemispherical reflectance rho(wi) -- must land in
+    //  (0, 1) for an energy-conserving BRDF.
+    // ================================================================
+    {
+        std::cout << "=== Furnace / energy check: white(ish) CookTorrance directional albedo, floor is a no-op here ===" << std::endl;
+
+        const int kFurnaceTrials = 200000;
+        RayIntersectionGeometric fRi = MakeIntersection( 30.0 * DEG_TO_RAD );
+        IORStack fIorStack = MakeTestIORStack( g_stubObject );
+        RandomNumberGenerator fRng;
+        Implementation::IndependentSampler fSampler( fRng );
+
+        RISEPel sum( 0, 0, 0 );
+        long long nRays = 0;
+        for( int i = 0; i < kFurnaceTrials; i++ )
+        {
+            ScatteredRayContainer scattered;
+            cookTorrance->Scatter( fRi, fSampler, scattered, fIorStack );
+            for( unsigned int j = 0; j < scattered.Count(); j++ )
+            {
+                sum = sum + scattered[j].kray;
+                nRays++;
+            }
+        }
+        const RISEPel rho = sum * ( 1.0 / (double)kFurnaceTrials );
+        const double rhoMax = ColorMath::MaxValue( rho );
+        // Generous band: this is a regression guard on gross energy
+        // conservation, not a tight closed-form check (no closed-form
+        // reference is being computed here) -- (0, 1) with headroom.
+        const bool ok = ( rhoMax > 0.0 ) && ( rhoMax < 0.95 );
+        std::cout << "  CookTorrance rd=0.5,rs=0.3,alpha=0.1 @ 30deg: rays=" << nRays
+                  << "/" << kFurnaceTrials << "  rho=(" << rho[0] << "," << rho[1] << "," << rho[2]
+                  << ")  max=" << rhoMax
+                  << "  (floor is algebraically inert here: r_max(0.5,1e-3)=0.5,"
+                  << " r_max(0.3,1e-3)=0.3 bit-for-bit, so this number is identical"
+                  << " pre- and post-fix by construction, not merely within MC noise) "
+                  << ( ok ? "-> PASS" : "-> FAIL" ) << std::endl;
+        if( !ok ) numFailed++;
+    }
+    std::cout << std::endl;
 
     // ================================================================
     //  P2-B (docs/CLOTH_FABRIC_DESIGN.md 10): the CONTINUUM pdf integral

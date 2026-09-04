@@ -203,7 +203,7 @@ This is the only listed gap that's a **correctness** issue, not a feature gap. I
 
 ---
 
-### 2.x `CookTorranceSPF` — `PdfNM` reports a DIFFERENT mixture from `ScatterNM` ✗ (OPEN, found 2026-09-03)
+### 2.x `CookTorranceSPF` — `PdfNM` reports a DIFFERENT mixture from `ScatterNM` ✓ (FIXED 2026-09-03)
 
 **Not an integrator gap — a per-material RGB/NM parity defect**, filed here
 because this document is where spectral-vs-Pel divergences are tracked. Found
@@ -211,43 +211,186 @@ while broadening `tests/SPFPdfConsistencyTest.cpp`'s spectral companion beyond
 the two `fabric_material` rows it originally covered; **pre-existing, not
 introduced by that change**.
 
-- **The divergence.** `CookTorranceSPF::ScatterNM` builds its 3-lobe selection
+- **The divergence.** `CookTorranceSPF::ScatterNM` built its 3-lobe selection
   weights **per wavelength** —
   `alpha = pMasking->GetValueAtNM(ri, nm)`,
   `wd = GuardedGetColorNM(*pDiffuse, ri, nm)`,
   `ws = GuardedGetColorNM(*pSpecular, ri, nm)` — while
-  `CookTorranceSPF::PdfNM` is a bare `return Pdf( ri, wo, ior_stack );`, and
+  `CookTorranceSPF::PdfNM` was a bare `return Pdf( ri, wo, ior_stack );`, and
   `Pdf` rebuilds the same weights from the **RGB max3**
   (`ColorMath::MaxValue( pDiffuse->GetColor(ri) )`, etc.), with
   `wms = ws * (1 - LookupEss(cosWi, alpha))` inheriting both. So the density
-  stored on a spectral sample is a different mixture from the one `PdfNM`
-  reports for that same direction whenever a painter's spectral sample differs
-  from its RGB max3 — which, under the Jakob-Hanika uplift, it always does
-  slightly.
+  stored on a spectral sample was a different mixture from the one `PdfNM`
+  reported for that same direction whenever a painter's spectral sample
+  differed from its RGB max3 — which, under the Jakob-Hanika uplift, it
+  always does slightly.
 - **Why it matters.** The Scatter↔Pdf agreement is what MIS and path guiding
-  consume. The RGB pipe satisfies it exactly; the spectral pipe does not.
-- **Measured** (660 nm, grey 0.5 diffuse / 0.3 specular, 50k samples):
-  `maxRelErr` **1.44e-4** at 30° and **1.55e-4** at 60°, on ~49.6k of 50k
-  samples. For scale, every *other* row in that sweep — Lambertian, Oren-Nayar,
-  GGX isotropic and anisotropic, SubSurfaceScattering, both `coated_material`
-  rows and both `fabric_material` rows — lands between **4e-16 and 1.6e-13**,
-  so Cook-Torrance is ~11 orders of magnitude out of family. This is a real
-  defect, not quadrature noise.
-- **Current disposition: bounded, not silenced.** The row stays in the sweep
-  with a row-specific `crossValTol = 1e-3` (~6× the measured worst) and its true
-  `maxRelErr` printed unconditionally, so it cannot grow unnoticed. Search
-  `tests/SPFPdfConsistencyTest.cpp` for *"CookTorrance: a REAL RGB/NM twin
-  divergence"*.
-- **Fix, when someone takes it.** Either give `PdfNM` a real body with
-  per-wavelength weights, or make `ScatterNM` use the achromatic RGB weights.
-  `fabric_material` chose the latter deliberately — see the note on
-  `FabricBRDF::ResolveFabric`'s declaration, which argues a wavelength-dependent
-  selection weight puts `Scatter`'s stored hero-wavelength pdf out of step with a
-  companion-wavelength `Pdf()` call — while `CoatedBRDF::ResolveCoat` reads its
-  scalars per-wavelength, so there is precedent both ways and the choice must be
-  stated. Then tighten that row back to `CROSS_VAL_TOL`. **Audit the siblings in
-  the same pass**: grep for `PdfNM` bodies that are a bare `return Pdf(...)` and
-  compare each against its own `ScatterNM`.
+  consume. The RGB pipe satisfies it exactly; the spectral pipe did not.
+- **Measured before the fix** (660 nm, grey 0.5 diffuse / 0.3 specular, 50k
+  samples): `maxRelErr` **1.44e-4** at 30° and **1.55e-4** at 60°, on ~49.6k
+  of 50k samples. For scale, every *other* row in that sweep — Lambertian,
+  Oren-Nayar, GGX isotropic and anisotropic, SubSurfaceScattering, both
+  `coated_material` rows and both `fabric_material` rows — lands between
+  **4e-16 and 1.6e-13**, so Cook-Torrance was ~11 orders of magnitude out of
+  family. A real defect, not quadrature noise.
+- **The fix.** `ScatterNM`'s lobe-SELECTION weights (`wdSel`/`wsSel`, feeding
+  `total`/`wms`/`pDiffuseSelect`/`pSpecSelect`/every `mixPdf` site) and its
+  `alpha` are now read **ACHROMATICALLY** — the identical RGB max3 /
+  `GetValuesAt(ri).v[0]` sources `Pdf()` already used — so `PdfNM`'s bare
+  forward to `Pdf()` is now correct **by construction**, for every `nm`, not
+  approximately. This is the convention `fabric_material` chose deliberately
+  (see the note on `FabricBRDF::ResolveFabric`'s declaration: a
+  wavelength-dependent selection weight puts `Scatter`'s stored
+  hero-wavelength pdf out of step with a companion-wavelength `Pdf()` call).
+  `CoatedBRDF::ResolveCoat` and `GGXSPF` take the OTHER precedent
+  (per-wavelength weights on both `ScatterNM` AND `PdfNM`, using the SAME
+  `nm` on both sides, so they stay internally self-consistent) — CookTorrance's
+  actual bug was neither convention applied consistently, but the achromatic
+  one mixing with the per-wavelength one across the `ScatterNM`/`PdfNM` pair.
+  The per-wavelength **VALUE** (`wdValNM`/`wsValNM`, feeding `kray`/`krayNM`
+  via `GuardedGetColorNM`) is UNCHANGED — only the selection weights and
+  `alpha` moved to the achromatic source. `PdfNM` itself needed no code
+  change beyond a comment recording why the bare forward is now provably
+  correct.
+- **Measured after the fix**: `tests/SPFPdfConsistencyTest.cpp`'s CookTorrance
+  NM row now lands at `maxRelErr` **1.18e-13** at 30° and **1.27e-13** at
+  60° — squarely inside the 4e-16-to-1.6e-13 family every other row occupies.
+  The row's `crossValTol` override was removed; it now uses the shared
+  `CROSS_VAL_TOL` (1e-6) like every other exact row.
+- **Sibling audit** (docs/skills/audit-by-bug-pattern.md): every `PdfNM` body
+  in `src/Library/Materials` was read against its own `ScatterNM`.
+  CookTorranceSPF was the **only** site carrying the pattern (an achromatic
+  `PdfNM`/`Pdf` paired with a per-wavelength `ScatterNM`). Verdicts:
+  - **Already correct, achromatic by design** (matches CookTorrance's new
+    convention): `FabricSPF`/`FabricBRDF`, `WeaveSPF`/`WeaveBRDF`,
+    `HairSPF` (all selection-relevant scalars read via `GetValuesAt`/no `nm`,
+    documented and independently audited).
+  - **Already correct, per-wavelength self-consistent** (matches the OTHER
+    precedent — `PdfNM` recomputes weights from the SAME `nm` `ScatterNM`
+    used, so the pair never drifts even though neither is achromatic):
+    `GGXSPF`, `CoatedSPF`/`CoatedBRDF`.
+  - **Single-lobe or delta-only — no selection-weight mixture to desync**:
+    `LambertianSPF`, `OrenNayarSPF`, `SheenSPF`, `SubSurfaceScatteringSPF`
+    (pure geometry/IOR branch, no color-weighted mixture),
+    `PerfectReflectorSPF`, `PerfectRefractorSPF`, `DielectricSPF` (`Pdf`/
+    `PdfNM` both trivially 0).
+  - **Fixed-constant weight, not color-derived**: `CompositeSPF` (0.5/0.5
+    coin flip between top/bottom, wavelength-independent by construction).
+  - **Pre-existing, DIFFERENT, already-documented model limitation — RGB
+    pipe is ALSO inexact, so this is not a NM-vs-RGB twin-drift bug**:
+    `AshikminShirleyAnisotropicPhongSPF`, `IsotropicPhongSPF`, `SchlickSPF`,
+    `WardIsotropicGaussianSPF`, `WardAnisotropicEllipticalGaussianSPF`,
+    `PolishedSPF`, `TranslucentSPF`. These emit multiple lobes as
+    INDEPENDENT scattered rays, each carrying its own single-lobe pdf (not a
+    combined mixture pdf); `Pdf()`/`PdfNM()` approximate a combined density
+    using a "representative weight at the mirror direction" that was never
+    exact even on the RGB pipe (`SPFPdfConsistencyTest`'s own
+    `skipCrossVal=true` rows, with the comment "the actual selection
+    probability in RandomlySelect is proportional to kray magnitude computed
+    at shading time, may differ from static painter weights"). Out of scope
+    for this fix; a different defect class.
+
+#### Follow-up (2026-09-04, REVIEW_CHIP3): `CookTorranceSPF` — achromatic selection floor
+
+Adversarial review of the fix above (`REVIEW_CHIP3.md`) found a NEW, smaller
+bias the achromatic-selection fix itself introduced.
+
+- **The hole.** `wdSel`/`wsSel` are an *exact* RGB max3 (`ColorMath::MaxValue`
+  of the diffuse/specular painter's `GetColor`). An authored PURE-BLACK slot
+  (RGB `(0,0,0)`) therefore gives an exact-0 selection weight when the other
+  lobe is non-black — that lobe is permanently unreachable from `ScatterNM`.
+  But `GuardedGetColorNM` on the same black slot is NOT exactly 0: the JH
+  LUT's black cell bakes to coefficients `(0,0,-100)`, and the sigmoid uplift
+  `0.5 + x/(2*sqrt(1+x^2))` at `x=-100` evaluates to `~2.5e-5`, not 0
+  (`RGBToSpectrumTable_LUTData.cpp`). `CookTorranceBRDF::valueNM` (consumed by
+  NEE) still reports that `~2.5e-5` term every time, so the true spectral
+  value is nonzero everywhere while BSDF sampling could never reach it — a
+  real, if small, dropped-lobe bias. Neither the grey/tinted rows above nor
+  `CookTorranceMultiscatterTest`/`CookTorranceHWSSTest` exercise a black
+  slot, so nothing in the existing coverage caught it.
+- **The fix.** A single shared helper (`ComputeLobeWeights`, anonymous
+  namespace in `CookTorranceSPF.cpp`) computes `wd`/`ws`/`wms`/`total` from
+  `wdRGB`/`wsRGB` for `Scatter`, `ScatterNM`, and `Pdf` (`PdfNM` still
+  bare-forwards to `Pdf`), flooring `wd`/`ws` at `kSelFloor = 1e-3` before
+  normalising: `wd = r_max(wdRGB, kSelFloor)`, same for `ws`; `wms` and
+  `total` are derived from the FLOORED `wd`/`ws`, so `Σw == 1` after
+  normalising. `kSelFloor` is ~40x the ~2.5e-5 JH black-cell leak — the
+  sampled `kray`/`krayNM` already divides by the selection probability it
+  was drawn with, so the estimator is unbiased for ANY floor in `(0,1]`
+  (the floor steers effort, it does not change the expectation); 1e-3 is a
+  negligible extra-sampling tax against the bias it removes. Both painters
+  are unconditionally bound in `CookTorranceSPF` (no "disabled lobe" state),
+  so the floor applies unconditionally to both; it is algebraically INERT
+  for any material whose RGB max3 exceeds `kSelFloor` (`r_max` is a no-op
+  there), so ordinary tinted/white materials are bit-identical to the
+  pre-floor code.
+- **Proof.**
+  - `SPFPdfConsistencyTest`'s `CookTorrance` row (grey/tinted, no exact
+    zeros) is unaffected: `maxRelErr` unchanged at `1.18e-13`/`1.27e-13`.
+  - Two new rows, `CookTorrance_BlackDiffuse` / `CookTorrance_BlackSpecular`
+    (one authored-black slot each, non-black on the other side), pass
+    cross-validation at the same `CROSS_VAL_TOL = 1e-6` — `maxRelErr`
+    `5.3e-15`-`1.3e-13` — proving the floor keeps `Scatter<->Pdf` and
+    `ScatterNM<->PdfNM` exact at the RGB-max3==0 corner too.
+  - A dedicated reachability block runs the sampler directly (200k trials)
+    and counts which lobe fired, disambiguated from outside the class by
+    type (`eRayReflection` is specular-only) and, where both diffuse and
+    multiscatter share `eRayDiffuse`, by value (the diffuse branch's
+    `kray`/`krayNM` is a fixed per-call constant that the multiscatter
+    branch's `wo`-dependent value cannot coincidentally match). Measured:
+    `CookTorrance_BlackDiffuse` RGB fires 667/200000 (rate 0.003335)
+    against a predicted floor-driven `pDiffuseSelect` of 0.0032759, with
+    `kray` exactly `(0,0,0)` on every fire (correct — the RGB pipe has no
+    JH leak, so the floored lobe legitimately contributes nothing there);
+    NM fires 677/200000 (rate 0.003385) at the same predicted rate, with
+    `krayNM = 0.00763` on every fire — the previously-unreachable ~2.5e-5
+    leak is now sampled. `CookTorrance_BlackSpecular` RGB fires exactly
+    0/200000: the lobe is still ENTERED at the floored rate (consistent
+    with `Pdf()`'s matching mixture weight above), but `Scatter`'s specular
+    branch only calls `AddScatteredRay` when `kray > 0` strictly, and RGB
+    `kray` is the literal `(0,0,0)` (no JH leak on the RGB pipe) — a
+    pre-existing, unrelated optimisation, not a regression. NM fires
+    407/200000 (rate 0.002035) against a predicted `pSpecSelect` of
+    0.0019960 — the JH leak makes `krayNM > 0` strictly, so the branch adds
+    a ray, and the rate matches the floor prediction.
+  - `CookTorranceMultiscatterTest`'s Test E (BRDF/SPF multiscatter twin,
+    which happens to use an authored pure-black diffuse painter already)
+    needed its own replicated selection-weight formula updated to apply the
+    same floor — without it, the test's independently-computed `pMSSelect`
+    drifted from the SPF's own (now-floored) value by ~0.1-0.3%, which is
+    exactly the order of `kSelFloor` relative to this fixture's `total`.
+    17/17 pass after the update; `CookTorranceHWSSTest` unaffected (4/4
+    pass, 0.84% RGB/spectral luminance delta, well under its 5% gate).
+  - Furnace/energy check: the base grey(0.5)/spec(0.3) `CookTorrance`
+    fixture's directional-hemispherical reflectance (200k-sample MC mean of
+    `kray`) measures `rho = 0.512` at 30° incidence — energy-conserving, and
+    by the algebraic no-op argument above, bit-identical to what the
+    pre-floor code would have measured for this material (the floor never
+    activates when RGB max3 exceeds `1e-3`), so this is a stronger
+    guarantee than "unchanged within MC noise."
+- **Sibling audit** (docs/skills/audit-by-bug-pattern.md): does
+  `FabricSPF`/`FabricBRDF`'s sheen selection weight (`m = max3(tint)`) or
+  `WeaveSPF`/`WeaveBRDF`'s `SurfaceSelectWeight` (`w`, derived from
+  `max3(tint)`) have the same hole? **No — both already guard it, by two
+  different mechanisms:**
+  - `WeaveBRDF::SurfaceSelectWeight` ([WeaveBRDF.cpp:548](../src/Library/Materials/WeaveBRDF.cpp#L548))
+    already floors: `r_max(kMinLobeWeight, raw)` clamped to
+    `[kMinLobeWeight, 1-kMinLobeWeight]` with `kMinLobeWeight = 0.15`
+    ([WeaveBRDF.cpp:45](../src/Library/Materials/WeaveBRDF.cpp#L45)) — a
+    selection weight can only be exactly 0 when the whole thread family is
+    genuinely absent (`f.valid == false`), which matches this fix's own
+    "genuinely absent lobe keeps weight 0" carve-out. Same shared static
+    helper called from every `WeaveSPF` Scatter/ScatterNM/Pdf/PdfNM site.
+  - `FabricBRDF` takes the OTHER valid approach — capping the VALUE at the
+    selection weight instead of flooring the weight at the value:
+    `ValueNMWithParams` computes
+    `tintNMCapped = r_min(p.tintNM, p.m)`
+    ([FabricBRDF.cpp:343](../src/Library/Materials/FabricBRDF.cpp#L343)),
+    so when `m == 0` (authored-black sheen tint) the reported spectral
+    value is capped to exactly 0 regardless of `tintNM`'s ~2.5e-5 JH leak —
+    selection-weight-0 and value-exactly-0 stay consistent by construction,
+    so there is no bias to floor away. (`m == 0` here is also physically
+    correct: no sheen tint means no sheen lobe, not a residual to preserve.)
 
 ---
 
