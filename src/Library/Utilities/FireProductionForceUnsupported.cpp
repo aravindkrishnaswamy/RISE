@@ -39,6 +39,36 @@ namespace RISE
 		return false;
 	}
 
+	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
+		const FireProductionProjectionShape&,std::uint64_t& bytes )
+	{
+		bytes=0u;return false;
+	}
+
+	bool AttemptFireProductionProjectedHeunMetalOwner(
+		const FireProductionProjectedHeunMetalOwnerRequest&,
+		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )
+	{
+		result=FireProductionProjectedHeunMetalOwnerResult();
+		if( error ) try {
+			*error="projected-Heun resident owner unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
+	bool AttemptFireProductionProjectedHeunResidentStepMetal(
+		const FireProductionProjectedHeunMetalOwnerRequest&,
+		FireProductionResidentStepResult& result,
+		FireProductionProjectedHeunMetalOwnerResult* diagnostics,std::string* error )
+	{
+		result=FireProductionResidentStepResult();
+		if( diagnostics ) *diagnostics=FireProductionProjectedHeunMetalOwnerResult();
+		if( error ) try {
+			*error="projected-Heun resident step unavailable: Metal is not linked";
+		} catch( const std::bad_alloc& ) { error->clear(); }
+		return false;
+	}
+
 	bool AdvanceFireProductionFrozenForceMetal(
 		const FireProductionFrozenForceRequest&,
 		bool,
