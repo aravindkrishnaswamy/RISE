@@ -412,6 +412,38 @@ static void TestHeightfieldFlatTopEntry()
 		safe_release( slab ); }
 }
 
+// Heightfield mode's domain is a DISK of radius R centred at the origin in the
+// local XY plane, NOT the square [-R,R]^2 that older comments/descriptor text
+// claimed (see SDFGeometry::Map's "Clip the heightfield to a CIRCULAR disk"
+// branch, which max()s the field against rho = sqrt(x^2+y^2) - R).  A corner
+// point at 0.99R on both axes sits inside the square but at radius
+// 0.99R*sqrt(2) ~= 1.40R from the origin -- outside the disk -- and must MISS
+// entirely; a point at 0.7R on both axes sits at 0.7R*sqrt(2) ~= 0.99R, just
+// inside the disk, and must HIT.  This is a regression guard for the
+// descriptor-text fix (docs previously described this domain as a square).
+static void TestHeightfieldDiskDomain()
+{
+	std::cout << "Test 4e: heightfield SDF domain is a DISK of radius R, not the square [-R,R]^2" << std::endl;
+	const Scalar R = Scalar(1.6), S = Scalar(0.30);
+	ConstantFunction2D* flat = new ConstantFunction2D( Scalar(1.0) );   // f(u,v) == 1
+	SDFGeometry* g = new SDFGeometry( flat, R, S, 512, Scalar(0.0) );   // 0.0 = scene auto epsilon
+
+	// Inside the square, outside the disk (corner-ish point at 0.99R, 0.99R):
+	// the straight-down eye ray must miss the field entirely.
+	{	RayIntersectionGeometric ri = MkRI( Point3(Scalar(0.99)*R, Scalar(0.99)*R, 5), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( !ri.bHit, "heightfield: point at (0.99R,0.99R) is outside the DISK (would be inside a square) -> miss" ); }
+
+	// Inside the disk (0.7R, 0.7R is at radius ~0.99R < R): the ray must hit
+	// the top face as usual.
+	{	RayIntersectionGeometric ri = MkRI( Point3(Scalar(0.7)*R, Scalar(0.7)*R, 5), Vector3(0,0,-1) );
+		g->IntersectRay( ri, true, true, false );
+		Check( ri.bHit && IsClose( ri.ptIntersection.z, S, 5e-3 ), "heightfield: point at (0.7R,0.7R) is inside the disk -> hits the top face" ); }
+
+	safe_release( g );
+	safe_release( flat );
+}
+
 static void TestShadowQuery()
 {
 	std::cout << "Test 5: IntersectRay_IntersectionOnly (shadow) hit/miss + dHowFar" << std::endl;
@@ -3098,6 +3130,7 @@ int main()
 	TestBoundingBoxOpAware();
 	TestWideThinTopFaceEntry();
 	TestHeightfieldFlatTopEntry();
+	TestHeightfieldDiskDomain();
 	TestShadowQuery();
 	TestMiss();
 	TestInsideStartExits();

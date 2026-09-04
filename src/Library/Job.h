@@ -1745,7 +1745,7 @@ namespace RISE
 		bool AddSDFHeightfieldGeometry(
 					const char* name,						///< [in] Name of the geometry
 					const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v)
-					const double radius,					///< [in] Half-extent of the square domain
+					const double radius,					///< [in] Radius of the disk domain, centred at the origin in local XY
 					const double scale,						///< [in] World amplitude
 					const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
 					const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)

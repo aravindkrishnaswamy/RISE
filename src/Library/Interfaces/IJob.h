@@ -3260,10 +3260,11 @@ namespace RISE
 			) = 0;
 
 		//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
-		//! z = scale*field(u,v) over the square [-radius,radius]^2
-		//! (u=(x+R)/2R, v=(y+R)/2R), sphere-traced with O(1) memory -- the
-		//! exact-geometry ground-truth twin of a `displaced_geometry` on a
-		//! `cartesian_disk_geometry` (which tessellates).  `heightfieldFunction`
+		//! z = scale*field(u,v), clipped to a DISK of radius `radius` centred at
+		//! the origin in the local XY plane -- not a square -- via u=(x+R)/2R,
+		//! v=(y+R)/2R, sphere-traced with O(1) memory -- the exact-geometry
+		//! ground-truth twin of a `displaced_geometry` on a `cartesian_disk_geometry`
+		//! (which tessellates and shares this circular domain).  `heightfieldFunction`
 		//! names an already-registered IFunction2D (an expression_function2d,
 		//! noise, polynomial, composite, etc.).  Appended after AddSDFGeometry
 		//! per the append-only IJob tail (preserves every prior vtable slot).
@@ -3271,7 +3272,7 @@ namespace RISE
 		virtual bool AddSDFHeightfieldGeometry(
 			const char* name,						///< [in] Name of the geometry
 			const char* heightfieldFunction,		///< [in] Named IFunction2D giving f(u,v) in [0,1]
-			const double radius,					///< [in] Half-extent of the square domain (object units)
+			const double radius,					///< [in] Radius of the disk domain, centred at the origin in local XY (object units)
 			const double scale,						///< [in] World amplitude (surface z = scale*f(u,v))
 			const unsigned int maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
 			const double surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)

@@ -273,7 +273,7 @@ namespace RISE
 			// order without disturbing the parts-ctor's order above.
 			bool                m_isHeightfield = false;
 			const IFunction2D*  m_pHeightfield  = 0;	//!< height field f(u,v) in [0,1]; addref'd
-			Scalar              m_hfRadius      = 0;	//!< R: half-extent of the square domain (object units)
+			Scalar              m_hfRadius      = 0;	//!< R: radius of the disk domain, centred at the origin in local XY (object units)
 			Scalar              m_hfScale       = 0;	//!< world amplitude: surface z = m_hfScale*f(u,v)
 			Scalar              m_hfLip         = 2;	//!< Lipschitz bound sqrt(1+maxslope^2) for safe sphere-tracing
 

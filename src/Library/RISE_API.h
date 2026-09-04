@@ -496,18 +496,20 @@ namespace RISE
 						);
 
 	//! Creates a HEIGHTFIELD SDF geometry: the exact analytic surface
-	//! z = scale*field(u,v) over the square [-radius,radius]^2 (u=(x+R)/2R,
+	//! z = scale*field(u,v), clipped to a DISK of radius `radius` centred at
+	//! the origin in the local XY plane -- not a square -- via u=(x+R)/2R,
 	//! v=(y+R)/2R), sphere-traced with O(1) memory.  The exact-geometry
 	//! ground-truth twin of a `displaced_geometry` on a `cartesian_disk_geometry`
-	//! (which tessellates).  This is the C-API construction boundary for the SDF
-	//! heightfield mode; IJob::AddSDFHeightfieldGeometry and the scene parser both
-	//! route through here.  `field` is an already-constructed IFunction2D
-	//! (caller-owned; the geometry addref's it).
+	//! (which tessellates and shares this circular domain).  This is the C-API
+	//! construction boundary for the SDF heightfield mode;
+	//! IJob::AddSDFHeightfieldGeometry and the scene parser both route through
+	//! here.  `field` is an already-constructed IFunction2D (caller-owned; the
+	//! geometry addref's it).
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateSDFHeightfieldGeometry(
 						IGeometry**          ppGeometry,		///< [out] Pointer to receive the geometry
 						const IFunction2D*   field,				///< [in] Height field f(u,v) in [0,1] (addref'd by the geometry)
-						const double         radius,			///< [in] Half-extent of the square domain (object units)
+						const double         radius,			///< [in] Radius of the disk domain, centred at the origin in local XY (object units)
 						const double         scale,				///< [in] World amplitude (surface z = scale*f(u,v))
 						const unsigned int   maxSteps,			///< [in] Sphere-trace step cap (0 = default 256)
 						const double         surfaceEpsilonFraction,	///< [in] Surface epsilon as a fraction of the bbox diagonal (0 = auto)
