@@ -115,6 +115,9 @@
 #include "../src/Library/Interfaces/IRasterImage.h"
 #include "../src/Library/Utilities/Reference.h"
 #include "../src/Library/Utilities/Color/Color_Template.h"
+// R8 P1.1: test 7 reads the shipped Charlie directional-albedo table to
+// derive its own bound rather than hard-coding one.
+#include "../src/Library/Materials/SheenDirectionalAlbedo.h"
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -480,10 +483,27 @@ static std::string RasterizerVCMRgbNoEnv( unsigned int samples, unsigned int max
 // P2-A reflection-only baseline, same preset) -- the two share every
 // other scene byte, so a luminance difference between them is
 // attributable to the transmission lobes alone.
+// `bWrap` (R8 P1.1, docs/CLOTH_FABRIC_DESIGN.md 15 debt 22) additionally
+// puts a `fabric_material` sheen layer OVER the weave -- the composition
+// `FabricMaterial`'s substrate allowlist exists for, and the one that
+// used to render the curtain 100 % opaque no matter what `transmission`
+// said.  Everything else about the scene is byte-identical, so a
+// luminance difference between the wrapped and unwrapped renders is
+// attributable to the wrapper alone.
+//
+// `fabric linen` is spelled deliberately, as the brief for this fix
+// asks.  Linen's preset RECOMMENDS an `orennayar_material` substrate, so
+// binding it over a `weave_material` logs the WARN-level
+// preset-vs-substrate mismatch `Job::AddFabricMaterial` emits.  That is
+// the documented, legal composition (FabricMaterial.h's "ERROR vs
+// WARNING" note) -- the warning is information for a scene author, not a
+// refusal, and this test wants the author-facing spelling rather than
+// the `fabric custom` that would silence it.
 static std::string CurtainWithBackLightCommon(
 	bool bThin,
 	unsigned int width, unsigned int height,
-	double lightPower )
+	double lightPower,
+	bool bWrap = false )
 {
 	std::ostringstream ss;
 	ss <<
@@ -492,8 +512,12 @@ static std::string CurtainWithBackLightCommon(
 		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
 		"omni_light\n{\n\tname backlight\n\tposition 0 0 -3.0\n\tcolor 1.0 1.0 1.0\n\tpower "
 			<< lightPower << "\n}\n\n"
-		"weave_material\n{\n\tname mat_curtain\n\tfabric linen\n\ttransmission "
-			<< ( bThin ? "thin" : "none" ) << "\n}\n\n"
+		"weave_material\n{\n\tname " << ( bWrap ? "mat_weave" : "mat_curtain" ) << "\n\tfabric linen\n\ttransmission "
+			<< ( bThin ? "thin" : "none" ) << "\n}\n\n";
+	if( bWrap ) {
+		ss << "fabric_material\n{\n\tname mat_curtain\n\tfabric linen\n\tbase mat_weave\n}\n\n";
+	}
+	ss <<
 		"clippedplane_geometry\n{\n\tname curtain_geo\n"
 			"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
 			"\tdoublesided TRUE\n}\n\n"
@@ -1143,6 +1167,158 @@ static void TestTouchingAreaLitCurtainAllIntegrators()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 7. WRAPPED BACKLIT SHEER CURTAIN -- R8 P1.1,
+// docs/CLOTH_FABRIC_DESIGN.md 15 debt 22.
+//
+// THE DEFECT.  `fabric_material` accepts `weave_material` as a
+// substrate, and since P2-B a weave under `transmission thin` carries a
+// delta gap lobe and a diffuse back-face lobe.  The wrapper reported
+// neither full-sphere flag, `FabricBRDF::value` rejected every
+// opposite-hemisphere pair and `FabricSPF::ScatterImpl` zeroed every
+// transmit-side sample -- so putting a sheen layer over a sheer curtain
+// made it 100 % OPAQUE, with no diagnostic and no test in the tree able
+// to see it.  Test 3 above renders the BARE curtain; this renders the
+// WRAPPED one, through the same scene, the same light and the same three
+// integrators.
+//
+// FOUR ASSERTIONS.
+//   (a) wrapped + `transmission none` is EXACTLY black.  Same argument
+//       test 3 makes for the bare case: no environment and an opaque
+//       curtain leave no light path to the camera at all, so 0 is the
+//       correct answer rather than merely "small" -- and it is the
+//       control that proves (b) is measuring transmission and not some
+//       other leak the wrapper introduced.
+//   (b) wrapped + `transmission thin` GLOWS THROUGH.  This is the money
+//       assertion and the direct regression for debt 22.
+//   (c) the wrapped/bare ratio lands inside the CLOSED-FORM bound the
+//       Kulla-Conty scale allows.  See the long note below -- this is
+//       NOT "the sheen can only attenuate", which is true of the
+//       hemispherically INTEGRATED transmitted share and false of the
+//       per-direction value a delta light's NEE actually evaluates.
+//   (d) PT / BDPT / VCM still agree, at the SAME tolerances test 3 uses
+//       -- deliberately NOT loosened.  The wrapper is a per-direction
+//       scalar on a transport path all three integrators already
+//       handled, so if it moved them apart that would be a real finding.
+//
+// WHY (c) IS A BAND AROUND 1 AND NOT A CEILING AT 1 -- a real finding
+// from writing this test, and worth stating rather than tuning away.
+// The first cut asserted `wrapped <= bare` and MEASURED 1.028.  That is
+// correct behaviour, not a defect, and the two facts that look
+// contradictory are about different quantities:
+//
+//   * The hemispherically INTEGRATED transmitted share is
+//     `bare_T * (1 - m*Ehat(alpha, n.v))`, an attenuation at every view
+//     angle -- the recycling denominator cancels against the l-integral
+//     of the other arm (FabricBRDF.h's transmission section), and
+//     LayeredWhiteFurnaceTest row 52 asserts exactly that.
+//   * The PER-DIRECTION value carries the uncancelled denominator:
+//     `scale(l,v) = (1-m*Ehat(|n.v|))(1-m*Ehat(|n.l|)) / (1-m*Ebar)`,
+//     which EXCEEDS 1 wherever both directions are far from the sheen
+//     lobe's grazing peak.  This scene is exactly that configuration --
+//     a point light 3 units directly behind a 2.8-unit curtain, seen
+//     head-on, so `|n.l|` and `|n.v|` are both near 1 over most of the
+//     frame -- and a delta light's NEE evaluates the per-direction
+//     value, never the integral.
+//
+// This is the SAME posture the reflect side has had since round 5
+// ("THE DENOMINATOR BRIGHTENS THE BASE AWAY FROM GRAZING, AND THAT IS
+// THE POINT, NOT A BUG"), and it is bounded by the same supremum:
+// `scale <= 1/(1 - m*Ebar(alpha))`, computed below from the shipped
+// table rather than hard-coded, so a re-bake moves the bound with the
+// model.  For linen's seeded `sheen_roughness` 0.65 at m = 1 that is
+// ~1.34, and the measured 1.028 sits comfortably under it.  Energy
+// conservation is NOT this row's job -- the furnace's rows 50-53 own it
+// -- so the ceiling here is a sanity bound, and the FLOOR is what
+// carries the regression weight: a wrapper that had extinguished the
+// transmission would read 0.
+//
+// MEASURED (this machine, 32x32, 256 spp, seed base 1000,
+// `oidn_denoise FALSE`): bare thin 0.02809, wrapped none 0 exactly,
+// wrapped thin 0.02887 -> ratio 1.0277; BDPT/PT 0.913, VCM/PT 0.946.
+static const double kWrappedAttenLo = 0.50;		// wrapped/bare must exceed this ("not extinguished")
+static const double kWrappedSheenAlpha = 0.65;	// linen's seeded `sheen_roughness` (FabricPresets.h)
+
+static void TestWrappedBacklitSheerCurtain()
+{
+	std::cout << "=== 7. Backlit sheer curtain UNDER a fabric wrapper (R8 P1.1 / debt 22) ===" << std::endl;
+
+	const unsigned int W = 32, H = 32;
+	const double power = 6.0;
+
+	const ImageStats bareThin = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/false ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "wrapcurtain_pt_bare_thin" );
+	const ImageStats wrapNone = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( false, W, H, power, /*bWrap=*/true ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "wrapcurtain_pt_none" );
+	const ImageStats wrapThin = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/true ),
+			RasterizerPTRgbNoEnv( 256, 8 ) ), "wrapcurtain_pt_thin" );
+
+	Check( bareThin.valid && wrapNone.valid && wrapThin.valid,
+		"wrapped curtain: all three PT renders (bare thin / wrapped none / wrapped thin) produced output" );
+	if( !bareThin.valid || !wrapNone.valid || !wrapThin.valid ) return;
+
+	std::cout << "  PT: bare thin = " << bareThin.luminance
+		<< "   wrapped none = " << wrapNone.luminance
+		<< "   wrapped thin = " << wrapThin.luminance << std::endl;
+
+	Check( wrapNone.luminance == 0.0,
+		"wrapped curtain: `transmission none` UNDER the wrapper is EXACTLY black "
+		"(the wrapper opens no aperture the substrate does not have)" );
+	Check( wrapThin.luminance >= kMinBrightnessAbsolute,
+		"wrapped curtain: MONEY ASSERTION -- a `fabric_material` over a `transmission thin` weave "
+		"GLOWS THROUGH from behind (debt 22: this rendered exactly black before R8 P1.1)" );
+
+	// The supremum of the per-direction Kulla-Conty scale, `1/(1 -
+	// m*Ebar(alpha))`, read from the SHIPPED table so a re-bake moves the
+	// bound with the model instead of leaving a stale literal behind.
+	// `m` is 1: `fabric linen` leaves `sheen_color` at its
+	// preset-else-white default.
+	const double eBar = (double)SheenDirectionalAlbedo::EHatMean( kWrappedSheenAlpha );
+	const double kWrappedAttenHi = 1.0 / std::fmax( 1e-6, 1.0 - eBar );
+
+	const double atten = wrapThin.luminance / std::fmax( bareThin.luminance, 1e-12 );
+	std::cout << "  wrapped/bare = " << atten
+		<< "   (allowed band [" << kWrappedAttenLo << ", " << kWrappedAttenHi
+		<< "]; the ceiling is 1/(1-m*Ebar(" << kWrappedSheenAlpha << ")) = the Kulla-Conty"
+		<< " scale's own supremum, Ebar = " << eBar << ")" << std::endl;
+	Check( atten > 0.0 && atten <= kWrappedAttenHi,
+		"wrapped curtain: the wrapper's effect stays inside the Kulla-Conty scale's closed-form "
+		"supremum 1/(1-m*Ebar) -- see the block comment for why the per-direction value may "
+		"legitimately exceed 1 while the integrated transmitted share cannot" );
+	Check( atten >= kWrappedAttenLo,
+		"wrapped curtain: the transmission is MODULATED, not extinguished (debt 22 would read 0)" );
+
+	// (d) the three integrators, at test 3's own tolerances.
+	const ImageStats bdpt = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/true ),
+			RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "wrapcurtain_bdpt_thin" );
+	const ImageStats vcm = RenderAndComputeStats(
+		AssembleScene( CurtainWithBackLightCommon( true, W, H, power, /*bWrap=*/true ),
+			RasterizerVCMRgbNoEnv( 256, 8, 8 ) ), "wrapcurtain_vcm_thin" );
+	Check( bdpt.valid && vcm.valid, "wrapped curtain: BDPT and VCM renders produced output" );
+	if( !bdpt.valid || !vcm.valid ) return;
+
+	const double bRatio = bdpt.luminance / std::fmax( wrapThin.luminance, 1e-12 );
+	const double vRatio = vcm.luminance  / std::fmax( wrapThin.luminance, 1e-12 );
+	const double bMax   = bdpt.maxLum / std::fmax( wrapThin.maxLum, 1e-12 );
+	const double vMax   = vcm.maxLum  / std::fmax( wrapThin.maxLum, 1e-12 );
+	std::cout << "  wrapped thin: PT = " << wrapThin.luminance << " (max " << wrapThin.maxLum << ")"
+		<< "   BDPT = " << bdpt.luminance << " (max " << bdpt.maxLum << ")"
+		<< "   VCM = " << vcm.luminance << " (max " << vcm.maxLum << ")" << std::endl;
+	std::cout << "  BDPT/PT = " << bRatio << "   VCM/PT = " << vRatio
+		<< "   BDPT_max/PT_max = " << bMax << "   VCM_max/PT_max = " << vMax << std::endl;
+
+	Check( std::fabs( bRatio - 1.0 ) <= kThinCurtainBdptPtTol,
+		"wrapped curtain: BDPT/PT within the SAME band the unwrapped thin curtain uses" );
+	Check( std::fabs( vRatio - 1.0 ) <= kThinCurtainVcmPtTol,
+		"wrapped curtain: VCM/PT within the SAME band the unwrapped thin curtain uses" );
+	Check( bMax <= kThinCurtainMaxRatioBound && vMax <= kThinCurtainMaxRatioBound,
+		"wrapped curtain: no residual firefly on BDPT or VCM (max/max bounded)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
@@ -1162,6 +1338,7 @@ int main( int argc, char** argv )
 	TestBacklitSheerCurtain();
 	TestAreaLitSheerWeave();
 	TestTouchingAreaLitCurtainAllIntegrators();
+	TestWrappedBacklitSheerCurtain();
 
 	std::cout << "==========================================================" << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

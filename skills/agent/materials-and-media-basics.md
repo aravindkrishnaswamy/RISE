@@ -1237,7 +1237,11 @@ class: the weave/orennayar/lambertian base carrying the preset's numbers,
 the weave painter, and the `fabric_material` itself —
 then moves every bound object onto the wrapper.  Your colour painter is
 **re-homed**, not re-authored, so a texture or expression graph survives
-untouched.  The original chunk is never edited, but after a mint nothing
+untouched.  On a weave substrate (`denim`/`silk`/`satin`) your colour lands
+on `warp_color` only — the weft keeps the preset's own weft dye (denim's
+undyed ecru, silk's champagne, satin's rose; the result message prints the
+triple), which is denim's real indigo-warp-over-undyed-weft look; bind
+`weft_color` on the minted base yourself for a uniform dye.  The original chunk is never edited, but after a mint nothing
 references it any more (the result says so as `originalNowUnreferenced`);
 when the base already matches the preset's class it does a pure wrap
 instead.  It refuses — changing nothing — on an already-fabric material,

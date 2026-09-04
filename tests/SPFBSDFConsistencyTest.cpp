@@ -564,6 +564,10 @@ static ReciprocityResult ReciprocityTestCrossHemisphere( const std::string& name
 
     const double kNM = 550.0;
 
+    //! Largest magnitude any straddling pair produced -- the
+    //! non-degeneracy guard at the bottom of this function.
+    double liveMax = 0.0;
+
     for( size_t i = 0; i < dirs.size(); i++ )
     {
         for( size_t j = i + 1; j < dirs.size(); j++ )
@@ -592,6 +596,9 @@ static ReciprocityResult ReciprocityTestCrossHemisphere( const std::string& name
             const double rel   = ( den   > 1e-12 ) ? fabs(fab   - fba  ) / den   : 0.0;
             const double relNM = ( denNM > 1e-12 ) ? fabs(fabNM - fbaNM) / denNM : 0.0;
 
+            if( den   > liveMax ) liveMax = den;
+            if( denNM > liveMax ) liveMax = denNM;
+
             if( rel   > result.maxRelError   ) result.maxRelError   = rel;
             if( relNM > result.maxRelErrorNM ) result.maxRelErrorNM = relNM;
 
@@ -604,7 +611,17 @@ static ReciprocityResult ReciprocityTestCrossHemisphere( const std::string& name
     // A row with zero pairs would silently "pass" without ever having
     // exercised the transmission lobe at all -- assert there IS
     // cross-hemisphere coverage, not just that none of it failed.
-    result.passed = ( result.numFailures == 0 ) && ( result.numPairs > 0 );
+    //
+    // AND A ROW THAT IS IDENTICALLY ZERO IS THE SAME HOLE ONE LEVEL DOWN
+    // (R8 P1.1).  `0 == 0` is perfectly reciprocal, so a material whose
+    // transmission had been extinguished -- exactly what
+    // `fabric_material` did to a sheer weave until 2026-09-04, debt 22 --
+    // would post `pairs=225 failures=0 maxRelErr=0` and read as a clean
+    // pass.  Require that at least one straddling pair actually carried
+    // a value, so the check is about a LIVE transmission lobe.
+    result.passed = ( result.numFailures == 0 )
+                 && ( result.numPairs > 0 )
+                 && ( liveMax > 1e-12 );
     return result;
 }
 
@@ -994,6 +1011,50 @@ int main()
     IBSDF* weaveLinenThinGap0BRDF  = weaveLinenThinGap0.BSDF();
     ISPF*  weaveLinenThinGap02SPF  = weaveLinenThinGap02.SPF();
     IBSDF* weaveLinenThinGap02BRDF = weaveLinenThinGap02.BSDF();
+
+    // R8 P1.1 (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22): the SAME two
+    // sheer linens WRAPPED IN A FABRIC.  Until 2026-09-04 the wrapper
+    // returned 0 for every opposite-hemisphere pair and zeroed every
+    // transmit-side sample, so `fabric_material` over a sheer curtain
+    // was 100 % opaque -- and neither of the two checks these feed could
+    // see it, because both compare a material against ITSELF and the
+    // wrapper was self-consistently zero.  They ARE the guard now that
+    // the transmission is nonzero:
+    //
+    //   Part D2  -- `kray * pdf == value * |cos|` on the transmit side.
+    //               This is what catches the two arms of the Kulla-Conty
+    //               scale being applied on one side of the estimator and
+    //               not the other: `FabricSPF` reprices against its own
+    //               `Pdf`, but `FabricBRDF::value` is an independent
+    //               body, so a mismatch between them cannot cancel.
+    //   Part E2  -- reciprocity ACROSS the surface.  The transmit scale
+    //               is a product of two arms that exchange under an l/v
+    //               swap; a one-armed form (glTF's own, which the banner
+    //               rejects for the reflect side) would fail here.
+    //
+    // `gap 0` and `gap 0.2` for the same reason the bare rows use both:
+    // the second has a live delta lobe, which `PointwiseTest` skips via
+    // its existing `isDelta` guard -- so between them the two rows prove
+    // the wrapper handles a substrate with and without one.
+    UniformScalarPainter* fabThinAlphaSc = new UniformScalarPainter( 0.3 );  fabThinAlphaSc->addref();
+    FabricMaterial* fabricThinGap0Mat = new FabricMaterial(
+        *weaveLinenThinGap0.Material(), *one, *fabThinAlphaSc, *fabZeroSc );
+    fabricThinGap0Mat->addref();
+    FabricMaterial* fabricThinGap02Mat = new FabricMaterial(
+        *weaveLinenThinGap02.Material(), *one, *fabThinAlphaSc, *fabZeroSc );
+    fabricThinGap02Mat->addref();
+    ISPF*  fabricThinGap0SPF   = fabricThinGap0Mat->GetSPF();
+    IBSDF* fabricThinGap0BRDF  = fabricThinGap0Mat->GetBSDF();
+    ISPF*  fabricThinGap02SPF  = fabricThinGap02Mat->GetSPF();
+    IBSDF* fabricThinGap02BRDF = fabricThinGap02Mat->GetBSDF();
+
+    // A wrapped `transmission thin` SATIN for Part E2, matching the bare
+    // `weaveSatinThin` row above so the two are directly comparable --
+    // tilted fibre frames on the transmit side, under the fuzz layer.
+    FabricMaterial* fabricSatinThinMat = new FabricMaterial(
+        *weaveSatinThin.Material(), *one, *fabThinAlphaSc, *fabZeroSc );
+    fabricSatinThinMat->addref();
+    IBSDF* fabricSatinThinBRDF = fabricSatinThinMat->GetBSDF();
 
     // BARE sheen_material's own triad.  9.9 gate 5(a) is explicit that
     // this is a PRE-EXISTING HOLE this phase closes as a matter of
@@ -1434,6 +1495,12 @@ int main()
     TransmissionPairedEntry transmissionPaired[] = {
         { "Weave_linen_thin_gap0 (transmission)",   weaveLinenThinGap0SPF,  weaveLinenThinGap0BRDF  },
         { "Weave_linen_thin_gap0.2 (transmission)", weaveLinenThinGap02SPF, weaveLinenThinGap02BRDF },
+        // R8 P1.1 / debt 22: the same two, WRAPPED.  See the construction
+        // site for what each catches.  `singleLobe` stays TRUE below --
+        // `FabricSPF` emits at most one ray per Scatter call over a weave
+        // substrate exactly as it does over every other allowlisted one.
+        { "Fabric/Weave_linen_thin_gap0 (transmission)",   fabricThinGap0SPF,  fabricThinGap0BRDF  },
+        { "Fabric/Weave_linen_thin_gap0.2 (transmission)", fabricThinGap02SPF, fabricThinGap02BRDF },
     };
 
     for( int a = 0; a < 2; a++ )
@@ -1535,7 +1602,15 @@ int main()
     std::cout << "========================================" << std::endl;
 
     ReciprocityEntry crossHemisphereMaterials[] = {
-        { "Weave_satin_thin (transmission)",   weaveSatinThinBRDF },
+        { "Weave_satin_thin (transmission)",          weaveSatinThinBRDF },
+        // R8 P1.1 / debt 22.  The wrapped twin of the row above: the
+        // fabric layer's transmit scale is
+        // `(1-m*Ehat(|n.v|))(1-m*Ehat(|n.l|)) / (1-m*Ebar)`, whose two
+        // arms EXCHANGE under an l/v swap, so this row is what proves
+        // the wrapper did not reach for glTF's one-armed form (which the
+        // FabricBRDF banner rejects for the reflect side for exactly
+        // this reason) on the way through the surface.
+        { "Fabric/Weave_satin_thin (transmission)",   fabricSatinThinBRDF },
     };
 
     for( const ReciprocityEntry& e : crossHemisphereMaterials )
@@ -1587,6 +1662,10 @@ int main()
     // Fabric triad: same ownership discipline as the coated one below --
     // the MATERIAL owns the BRDF/SPF the tables above borrowed.
     safe_release( bareSheenBRDF );
+    safe_release( fabricSatinThinMat );
+    safe_release( fabricThinGap02Mat );
+    safe_release( fabricThinGap0Mat );
+    safe_release( fabThinAlphaSc );
     safe_release( fabricAnisoMat );
     safe_release( fabricLambMat );
     safe_release( fabBaseAnisoMat );

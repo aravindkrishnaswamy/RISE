@@ -700,6 +700,120 @@ static void TestRefusals()
 		}
 		std::remove( tmp.c_str() );
 	}
+
+	// R8 P2.4: E3 covers ONE shape of "the bound geometry cannot host a
+	// groom" -- a resolved-but-refused geometry kind (infiniteplane_geometry).
+	// The OTHER shape is an UNRESOLVED `geometry` param -- which is not one
+	// thing but THREE different object shapes (a csg_object, a `source`
+	// instance, a pure container), each wanting a DIFFERENT recommendation.
+	// E6/E7/E8 distinguish them by message content, per the review round's
+	// demand that the refusal name the object's actual shape and the route
+	// forward rather than a single hedge covering all three.
+
+	// E6: the bound object is a csg_object -- no `geometry` param exists on
+	// that chunk at all (its shape comes from `obja`/`objb`/`operation`), so
+	// there is nothing for hair_geometry's `base_geometry` to reference.
+	{
+		std::string s = Preamble();
+		s += Sphere( "s1" );
+		s += Sphere( "s2" );
+		s += "orennayar_material\n{\n\tname wool_base\n\treflectance dye\n\troughness 0.6\n}\n\n";
+		s += "fabric_material\n{\n\tname wool_fab\n\tfabric wool\n\tbase wool_base\n}\n\n";
+		// The two CSG operands carry no material of their own (`none`) so
+		// they are excluded from the fuzz scan entirely -- `o1`, the
+		// csg_object combining them, is the ONLY object bound to `wool_fab`.
+		s += Obj( "o1a", "s1", "none", -1 );
+		s += Obj( "o1b", "s2", "none",  1 );
+		s += "csg_object\n{\n\tname o1\n\tobja o1a\n\tobjb o1b\n\toperation union\n\tmaterial wool_fab\n}\n\n";
+		const std::string tmp = TempPath( "addfuzz_e6.RISEscene" );
+		Job* pJob = LoadScene( s, tmp );
+		Check( pJob != nullptr, "E6: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			const Agent::AgentSession::AgentAddFuzzResult r = sess->AddFuzz();
+			Check( !r.ok && !r.applied, "E6: refused -- a csg_object owns no geometry chunk" );
+			Check( r.message.find( "csg_object" ) != std::string::npos &&
+			       r.message.find( "`o1`" ) != std::string::npos,
+			       "E6 MONEY: the refusal NAMES the object and its actual shape (`csg_object`) -- " +
+			       r.message );
+			Check( r.message.find( "sdf_geometry" ) != std::string::npos,
+			       "E6 MONEY: the refusal recommends the concrete route -- rebuild the boolean "
+			       "combination as an `sdf_geometry` -- " + r.message );
+			Check( r.message.find( "no chunk takes an Object and emits a Geometry" ) != std::string::npos,
+			       "E6: the refusal is honest that RISE has no object-to-mesh bake/tessellate verb -- " +
+			       r.message );
+			Check( sess->ReadDocument() == before, "E6: document byte-identical" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// E7: the bound object is a `source` INSTANCE -- it copies another
+	// object's geometry binding rather than owning geometry of its own.
+	{
+		std::string s = Preamble();
+		s += Sphere( "s1" );
+		s += "orennayar_material\n{\n\tname wool_base\n\treflectance dye\n\troughness 0.6\n}\n\n";
+		s += "fabric_material\n{\n\tname wool_fab\n\tfabric wool\n\tbase wool_base\n}\n\n";
+		// `root` owns the geometry and is bound to a DIFFERENT material, so
+		// it is not itself a fuzz candidate -- `o1`, the instance of it, is
+		// the only object bound to `wool_fab`.
+		s += "lambertian_material\n{\n\tname root_mat\n\treflectance dye\n}\n\n";
+		s += Obj( "root", "s1", "root_mat", -1 );
+		s += "standard_object\n{\n\tname o1\n\tsource root\n\tmaterial wool_fab\n\tposition 1 0 0\n}\n\n";
+		const std::string tmp = TempPath( "addfuzz_e7.RISEscene" );
+		Job* pJob = LoadScene( s, tmp );
+		Check( pJob != nullptr, "E7: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			const Agent::AgentSession::AgentAddFuzzResult r = sess->AddFuzz();
+			Check( !r.ok && !r.applied, "E7: refused -- a `source` instance owns no geometry of its own" );
+			Check( r.message.find( "INSTANCE" ) != std::string::npos &&
+			       r.message.find( "`o1`" ) != std::string::npos &&
+			       r.message.find( "source root" ) != std::string::npos,
+			       "E7 MONEY: the refusal NAMES the object, its actual shape (an INSTANCE), and the "
+			       "`source` it copies -- " + r.message );
+			Check( r.message.find( "`root`" ) != std::string::npos,
+			       "E7 MONEY: the refusal recommends the concrete route -- grow the fuzz shell on the "
+			       "SOURCE object instead -- " + r.message );
+			Check( sess->ReadDocument() == before, "E7: document byte-identical" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
+
+	// E8: the bound object is a pure CONTAINER -- neither `geometry` nor
+	// `source`, just a transform other objects parent to.
+	{
+		std::string s = Preamble();
+		s += "orennayar_material\n{\n\tname wool_base\n\treflectance dye\n\troughness 0.6\n}\n\n";
+		s += "fabric_material\n{\n\tname wool_fab\n\tfabric wool\n\tbase wool_base\n}\n\n";
+		s += "standard_object\n{\n\tname o1\n\tmaterial wool_fab\n}\n\n";
+		const std::string tmp = TempPath( "addfuzz_e8.RISEscene" );
+		Job* pJob = LoadScene( s, tmp );
+		Check( pJob != nullptr, "E8: fixture derives" );
+		if( pJob ) {
+			std::unique_ptr<Agent::AgentSession> sess = Agent::AgentSession::WrapJob( pJob );
+			const std::string before = sess->ReadDocument();
+			const Agent::AgentSession::AgentAddFuzzResult r = sess->AddFuzz();
+			Check( !r.ok && !r.applied, "E8: refused -- a pure container owns no geometry" );
+			Check( r.message.find( "CONTAINER" ) != std::string::npos &&
+			       r.message.find( "`o1`" ) != std::string::npos,
+			       "E8 MONEY: the refusal NAMES the object and its actual shape (a pure CONTAINER) -- " +
+			       r.message );
+			Check( r.message.find( "no `geometry`" ) != std::string::npos &&
+			       r.message.find( "no `source`" ) != std::string::npos,
+			       "E8: the refusal says WHY it is a container -- neither slot is set -- " + r.message );
+			Check( sess->ReadDocument() == before, "E8: document byte-identical" );
+			sess.reset();
+			pJob->release();
+		}
+		std::remove( tmp.c_str() );
+	}
 }
 
 //======================================================================

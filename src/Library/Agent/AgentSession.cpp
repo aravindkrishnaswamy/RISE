@@ -88,6 +88,7 @@
 #include "../Parsers/IAsciiChunkParser.h"
 #include "../Parsers/ChunkParserRegistry.h"   // F5 S3 (actionable insert_chunk diagnostics): CreateAllChunkParsers -- AllChunkKeywords' near-miss keyword set
 #include "../Materials/FabricPresets.h"     // make_fabric (CLOTH_FABRIC_DESIGN 9.7): the ONE preset table -- sheen half AND recommended-substrate half
+#include "../Materials/WeavePresets.h"      // make_fabric weft disclosure: the minted weave's own weft dye, read from the table it will be seeded from
 #include "../Materials/FabricMaterial.h"    // make_fabric: SubstrateAllowlistText(), so refusal 4 names the allowlist the engine actually enforces
 #include "../Utilities/RString.h"
 #include "../Utilities/MemoryBuffer.h"
@@ -38753,6 +38754,8 @@ namespace RISE
 				std::string colorValue;        //!< the dye slot's raw text -- a chunk name OR an inline "r g b" literal, copied verbatim
 				std::vector<std::string> boundObjectNames;
 				std::vector<std::string> boundObjectGeometries;   //!< parallel to boundObjectNames; empty entry = unresolved/no geometry
+				std::vector<std::string> boundObjectRoles;        //!< parallel to boundObjectNames; the bound object's OWN chunk keyword ("standard_object" / "csg_object")
+				std::vector<std::string> boundObjectSources;      //!< parallel to boundObjectNames; the bound object's `source` value when it is an instance, else ""
 			};
 
 			//! `fabric_material` / `weave_material` -- the BARE-CALL pool.  A
@@ -38873,6 +38876,8 @@ namespace RISE
 				std::vector<MatRec_>                              materials;
 				std::map<std::string, std::vector<std::string> >  objectNamesByMaterial;
 				std::map<std::string, std::vector<std::string> >  objectGeometriesByMaterial;
+				std::map<std::string, std::vector<std::string> >  objectRolesByMaterial;
+				std::map<std::string, std::vector<std::string> >  objectSourcesByMaterial;
 
 				for( std::size_t i = 0; i < items.size(); ++i ) {
 					const NodeRef& item = items[i];
@@ -38891,6 +38896,10 @@ namespace RISE
 						const std::map<std::string, std::string>::const_iterator geo = pm.find( "geometry" );
 						objectGeometriesByMaterial[mat->second].push_back(
 							( geo != pm.end() ) ? geo->second : std::string() );
+						objectRolesByMaterial[mat->second].push_back( role );
+						const std::map<std::string, std::string>::const_iterator src = pm.find( "source" );
+						objectSourcesByMaterial[mat->second].push_back(
+							( src != pm.end() ) ? src->second : std::string() );
 						continue;
 					}
 					if( d->category == ChunkCategory::Material ) {
@@ -38937,6 +38946,16 @@ namespace RISE
 							objectGeometriesByMaterial.find( name );
 						if( gs != objectGeometriesByMaterial.end() ) c.boundObjectGeometries = gs->second;
 						c.boundObjectGeometries.resize( c.boundObjectNames.size() );
+
+						const std::map<std::string, std::vector<std::string> >::const_iterator rs =
+							objectRolesByMaterial.find( name );
+						if( rs != objectRolesByMaterial.end() ) c.boundObjectRoles = rs->second;
+						c.boundObjectRoles.resize( c.boundObjectNames.size() );
+
+						const std::map<std::string, std::vector<std::string> >::const_iterator ss =
+							objectSourcesByMaterial.find( name );
+						if( ss != objectSourcesByMaterial.end() ) c.boundObjectSources = ss->second;
+						c.boundObjectSources.resize( c.boundObjectNames.size() );
 					}
 
 					if( m.kind == "fabric_material" ) {
@@ -39482,6 +39501,17 @@ namespace RISE
 						else if( P.substrate == RISE::Implementation::eFabricSubstrateOrenNayar ) {
 							m += "roughness (sigma) " + FabricScalarText_( P.substrateRoughness );
 						}
+						else if( substrateIsWeave ) {
+							// REVIEW R8 P2.2 fix-in-passing: this arm used to
+							// fall through to the Lambertian/velvet text below
+							// (the if/else-if chain above only named GGX and
+							// OrenNayar explicitly), so a MINTED weave
+							// substrate -- satin, silk, denim -- reported
+							// "velvet is a pile, not a weave" in its own
+							// success message.  Give it its own words.
+							m += "draft -- a two-family warp/weft weave, which is the whole reason `" +
+								presetName + "` recommends it over a single-lobe substrate";
+						}
 						else {
 							m += "shape -- velvet is a pile, not a weave, so its substrate is deliberately "
 								"isotropic and its depth comes from the preset's own dark sheen colour";
@@ -39489,6 +39519,37 @@ namespace RISE
 						m += ". Your colour painter `" + pick->colorPainter + "` was RE-HOMED from `" +
 							pick->name + "`.`" + pick->colorSlot + "` onto it, so the dye, texture or "
 							"expression graph you authored survives untouched";
+						// REVIEW R8 P2.2: `BuildFabricSubstrateText_` writes
+						// the author's colour painter into `warp_color`
+						// ONLY -- `weft_color` is left unwritten, so it
+						// resolves to the chunk's own default: the weave
+						// preset's OWN weft dye (Job::AddWeaveMaterial seeds
+						// `P.weft.color` whenever the preset sets slots --
+						// every named preset does: denim's is undyed ecru,
+						// silk's champagne, satin's rose -- and white only
+						// for `custom`).  This is DELIBERATE (denim's look
+						// IS an indigo warp over an undyed weft; the draft
+						// decides how much of each shows), not an omission
+						// -- but an author who wanted a single uniform dye
+						// across both families would be surprised to find
+						// only the warp took their colour, so say so, with
+						// the actual dye read from the same table the
+						// chunk will be seeded from (REVIEW R8 C.1: a
+						// hard-coded "undyed (white)" was wrong for silk
+						// and satin), rather than let it be found in a
+						// render.
+						if( substrateIsWeave ) {
+							const RISE::Implementation::WeavePreset& W =
+								RISE::Implementation::LookupWeavePreset( P.weavePreset ? P.weavePreset : "custom" );
+							const RISE::RISEPel& wc = W.weft.color;
+							const bool weftWhite = ( wc[0] >= 0.999 && wc[1] >= 0.999 && wc[2] >= 0.999 );
+							m += ". `" + pick->colorPainter + "` landed on `warp_color` only: `" +
+								substrateName + "`'s weft keeps " + std::string( W.name ) + "'s own weft dye (" +
+								( weftWhite ? std::string( "undyed white" )
+								            : ( "linear Rec.709 " + FabricScalarText_( wc[0] ) + " " +
+								                FabricScalarText_( wc[1] ) + " " + FabricScalarText_( wc[2] ) ) ) +
+								") -- set `weft_color <painter>` on `" + substrateName + "` for a uniform dye";
+						}
 						// REVIEW P3: ONLY the colour painter is re-homed, and
 						// on a pbr_metallic_roughness predecessor the dropped
 						// slots can be spatially-varying MAPS -- a real
@@ -39739,16 +39800,68 @@ namespace RISE
 				const std::string& objName = pick->boundObjectNames[i];
 				const std::string  geomName = ( i < pick->boundObjectGeometries.size() )
 					? pick->boundObjectGeometries[i] : std::string();
+				const std::string  objRole = ( i < pick->boundObjectRoles.size() )
+					? pick->boundObjectRoles[i] : std::string();
+				const std::string  objSource = ( i < pick->boundObjectSources.size() )
+					? pick->boundObjectSources[i] : std::string();
 				const std::string  geomKind = FuzzGeometryKindOfName_( headDoc, geomName );
 				if( !FuzzGeometryKindHostsHair_( geomKind ) ) {
-					out.message = "add_fuzz refused: bound object `" + objName + "`'s own geometry " +
-						( geomKind.empty()
-							? ( geomName.empty() ? std::string( "could not be resolved (no geometry, or a "
-							    "container/instancing object)" )
-							    : ( "`" + geomName + "` could not be resolved" ) )
-							: ( "`" + geomName + "` is a `" + geomKind + "`, which hair_geometry refuses as a "
-							    "base (an infinite plane has no finite area to grow on; another hair_geometry "
-							    "is not itself tessellatable)" ) ) +
+					// REVIEW R8 P2.4: the OLD message for an unnamed/empty
+					// `geometry` lumped THREE different shapes into one
+					// unhelpful "no geometry, or a container/instancing
+					// object" hedge and gave no route forward.  Distinguish
+					// them so the author knows exactly what to do next:
+					//   - a `csg_object` has NO `geometry` param at all (its
+					//     shape comes from `obja`/`objb`/`operation`, not a
+					//     Geometry chunk) -- there is genuinely no mesh-bake
+					//     verb in RISE (`TessellateToMesh` is a Geometry-chunk
+					//     contract; nothing takes an Object and emits a
+					//     Geometry), so the honest route is to rebuild the
+					//     same boolean combination as an `sdf_geometry`
+					//     (which composes primitives with union/intersection/
+					//     subtraction and IS tessellatable), or author a mesh.
+					//   - a `standard_object` with `source` set is an INSTANCE
+					//     -- it copies another object's geometry binding, so
+					//     the real geometry lives on the SOURCE; grow the fuzz
+					//     shell there instead.
+					//   - a `standard_object` with neither `geometry` nor
+					//     `source` is a pure CONTAINER (a transform node for
+					//     parenting); bind the fabric material to one of its
+					//     child objects that actually owns geometry.
+					std::string why;
+					if( !geomKind.empty() ) {
+						why = "bound object `" + objName + "`'s own geometry `" + geomName + "` is a `" +
+							geomKind + "`, which hair_geometry refuses as a base (an infinite plane has no "
+							"finite area to grow on; another hair_geometry is not itself tessellatable)";
+					}
+					else if( !geomName.empty() ) {
+						why = "bound object `" + objName + "`'s own geometry `" + geomName +
+							"` could not be resolved";
+					}
+					else if( objRole == "csg_object" ) {
+						why = "bound object `" + objName + "` is a `csg_object` -- a boolean combination of "
+							"two other objects (`obja`/`objb`/`operation`), not a Geometry chunk in its own "
+							"right, so there is nothing for hair_geometry's `base_geometry` to reference. RISE "
+							"has no object-to-mesh bake/tessellate verb (`TessellateToMesh` is a Geometry-chunk "
+							"contract used by displaced_geometry / hair_geometry / path_instances_geometry -- "
+							"no chunk takes an Object and emits a Geometry): rebuild the same combination as an "
+							"`sdf_geometry` instead (it composes primitives with union/intersection/subtraction, "
+							"sphere-traced, and IS tessellatable), or author a mesh directly";
+					}
+					else if( !objSource.empty() ) {
+						why = "bound object `" + objName + "` is an INSTANCE (`source " + objSource +
+							"`) -- it copies another object's geometry binding rather than owning geometry of "
+							"its own, so there is nothing for hair_geometry's `base_geometry` to reference. "
+							"Grow the fuzz shell on `" + objSource + "` (the object it instances) instead, or "
+							"give `" + objName + "` its own `geometry`";
+					}
+					else {
+						why = "bound object `" + objName + "` is a pure CONTAINER (`standard_object` with no "
+							"`geometry` and no `source` -- just a transform other objects parent to), so it "
+							"owns no geometry for hair_geometry's `base_geometry` to reference. Bind `" +
+							pick->name + "` to one of its child objects that owns geometry instead";
+					}
+					out.message = why +
 						" -- add_fuzz needs EVERY object bound to `" + pick->name + "` to host a groom, so the "
 						"whole call refuses rather than fuzzing some objects and silently skipping this one -- "
 						"document unchanged";

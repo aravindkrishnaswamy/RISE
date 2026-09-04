@@ -61,13 +61,61 @@
 //
 //  LOBE BUDGET.  This SPF emits at most ONE ray per Scatter call: the
 //  sheen branch adds one, and every material on the substrate allowlist
-//  (Lambertian, Oren-Nayar, GGX) emits at most one itself.  The loop
-//  below still rewrites EVERY ray the base added, so no stale
+//  (Lambertian, Oren-Nayar, GGX, weave) emits at most one itself.  The
+//  loop below still rewrites EVERY ray the base added, so no stale
 //  base-weight ray can escape if that ever changes.
 //
-//  NOT DELTA, NO GetSpecularInfo OVERRIDE.  Neither lobe is a delta
-//  distribution, so the ISPF default is correct; SMS correctly ignores
-//  fabric entirely, on hair's precedent.  See FabricMaterial.h.
+//  ============================================================
+//  R8 P1.1 -- A SUBSTRATE THAT TRANSMITS
+//  (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22)
+//  ============================================================
+//
+//  When the base reports `IMaterial::ScattersFullSphere()` -- today only
+//  a `weave_material` under `transmission thin` -- its `Scatter` can
+//  return TWO kinds of ray this class used to throw away:
+//
+//    1. A CONTINUUM back-face ray (`eRayTranslucent`, `cos(wo) < 0`).
+//       Repriced exactly as every reflect-side sample is, against the
+//       full mixture, with `|cos(wo)|` in place of `cos(wo)`:
+//
+//           q(wo)  =  (1 - w) * q_base(wo)          [wo below]
+//           kray   =  f_fabric(wi, wo) * |cos(wo)| / q(wo)
+//
+//       The sheen arm is absent below the horizon because the Charlie
+//       lobe is a cosine hemisphere about the ray-facing normal and can
+//       never draw there.  `Pdf()` reports the same expression, so
+//       cross-validation stays exact.
+//
+//    2. A DELTA ray (the gap pass-through, `isDelta = true`,
+//       `pdf = 1`).  Its convention is PRESERVED, not converted: only
+//       `kray` is repriced, by the two SINGLE-CROSSING sheen arms over
+//       this branch's own selection probability `(1 - w)`.  It does NOT
+//       carry `BaseScaling`'s `1/(1 - m*EhatMean)` recycling factor --
+//       a measure-zero direction receives none of a diffusely
+//       redistributed series -- so the wrapper can only ATTENUATE an
+//       aperture, never brighten it.  See the long note at the site in
+//       FabricSPF.cpp for the full argument, for why the two factors
+//       are algebraically one, and why it is still written as a
+//       quotient.
+//
+//  THE CONTINUUM DENSITY THEN INTEGRATES TO `w + (1 - w) * S` over the
+//  SPHERE, where `S` is the substrate's own continuum share (`1 - gap`
+//  for a thin weave).  The missing `(1 - w) * (1 - S)` is precisely the
+//  mass the substrate's delta lobe took, which `Pdf()` excludes by
+//  contract -- the same convention `WeaveSPF` and `DielectricSPF` use.
+//  SPFPdfConsistencyTest's full-sphere block asserts that number.
+//
+//  A SUBSTRATE THAT DOES NOT TRANSMIT IS UNTOUCHED: every branch above
+//  is gated on `FabricBRDF::BaseScattersFullSphere()`, and with it false
+//  `PdfWithParams` returns the committed `cosWo <= 0 -> 0` and the
+//  substrate can produce neither ray kind.
+//
+//  NOT DELTA ITSELF, NO GetSpecularInfo OVERRIDE.  Neither of THIS
+//  class's own lobes is a delta distribution, and no allowlisted
+//  substrate overrides `GetSpecularInfo` either (`WeaveSPF` deliberately
+//  does not report its gap lobe there), so the ISPF default is the right
+//  answer for the wrapper too; SMS correctly ignores fabric entirely, on
+//  hair's precedent.  See FabricMaterial.h.
 //
 //  NO EvaluateKrayNM OVERRIDE, deliberately -- CoatedSPF.h point 3's
 //  argument transfers verbatim.  The ISPF default (-1) routes

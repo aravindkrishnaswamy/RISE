@@ -177,6 +177,85 @@
 //  change a bihemispherical average), so it passes the caller's own
 //  record and pays no copy.
 //
+//  ============================================================
+//  TRANSMISSION THROUGH THE FUZZ LAYER (R8 P1.1,
+//  docs/CLOTH_FABRIC_DESIGN.md 15 debt 22)
+//  ============================================================
+//
+//  A `weave_material` substrate under `transmission thin` carries two
+//  BELOW-HORIZON lobes (a delta gap pass-through and a Lambertian
+//  back-face lobe, WeaveBRDF.h section 2a).  Until 2026-09-04 this BRDF
+//  returned 0 for every opposite-hemisphere (l, v) pair, so wrapping a
+//  sheer curtain in a sheen layer made it 100 % OPAQUE -- silently.
+//  The fix is to FORWARD the substrate's transmission and MODULATE it:
+//
+//      f(l, v) = f_base(l, v) * scale(l, v)        for  (n.l)(n.v) < 0
+//
+//      scale(l, v) = (1 - m*Ehat(a, |n.v|)) * (1 - m*Ehat(a, |n.l|))
+//                    -----------------------------------------------
+//                              (1 - m*EhatMean(a))
+//
+//  -- the SAME Kulla-Conty product law the reflect branch uses, with
+//  |n.l| in place of n.l, and NO sheen term (the Charlie lobe is
+//  reflection-only: it has no transmission of its own to add).
+//
+//  WHY BOTH ARMS, not one.  `FabricBRDF` is TWO-SIDED: `RayFacingNormal`
+//  flips the shading normal to whichever side the ray arrived on, so the
+//  fuzz layer exists on BOTH faces of the cloth.  A transmitted path
+//  therefore crosses a fuzz layer TWICE -- once entering on the light's
+//  side, once leaving on the view's -- and each crossing costs the same
+//  single-arm factor `1 - m*Ehat` the reflect branch charges per
+//  direction.  A one-armed form would be non-reciprocal for exactly the
+//  reason the banner's glTF discussion gives, and reciprocity across the
+//  surface is measured (SPFBSDFConsistencyTest Part E2).
+//
+//  WHY THE SAME `1/(1 - m*EhatMean)` NORMALISER.  It is the sum of the
+//  adding-doubling series between the fuzz layer and the substrate, and
+//  that series is a property of the LAYER PAIR, not of which exit the
+//  light eventually takes: energy the fuzz intercepts is re-scattered
+//  onto the substrate, which then re-splits it between its own reflect
+//  and transmit lobes in the substrate's own proportion.  Using a
+//  different (or no) normaliser on the transmit branch would make the
+//  two exits recycle at different rates from one interception.
+//
+//  THE ENERGY CLAIM THIS IMPLIES, stated as a CLOSED FORM so it can be
+//  checked rather than assumed.  The weave's diffuse transmission lobe
+//  is Lambertian-shaped -- `f_t = T/pi`, constant in l (WeaveBRDF.h
+//  section 2a) -- so the wrapper's transmitted DIRECTIONAL share is
+//
+//    INT_below f_t * scale(v,l) |n.l| dl
+//      = (T/pi) * (1 - m*Ehat(v))/(1 - m*Ebar) * INT (1-m*Ehat(mu)) mu dw
+//      = (T/pi) * (1 - m*Ehat(v))/(1 - m*Ebar) * pi * (1 - m*Ebar)
+//      = T * (1 - m*Ehat(v))
+//
+//  using `(1/pi) INT Ehat(mu) mu dw == Ebar` -- the SAME identity
+//  `hemisphericalAlbedo`'s derivation uses twice.  The recycling
+//  denominator CANCELS EXACTLY, and what is left is the single view-side
+//  arm, which is <= 1.  So:
+//
+//    * the transmitted share is the BARE weave's times `1 - m*Ehat(n.v)`
+//      -- an attenuation, never a gain, at every view angle;
+//    * it is > 0 wherever the bare weave's is;
+//    * and the total (reflect + transmit) stays under the furnace's 1.05
+//      ceiling.
+//
+//  LayeredWhiteFurnaceTest rows 52/53 assert all three against that
+//  closed form rather than against a locked curve.  (The DELTA gap lobe
+//  is priced separately and deliberately differently -- see
+//  FabricSPF.cpp: a measure-zero direction receives none of the
+//  recycled series, so it carries the two arms and NOT the denominator,
+//  giving `gap * (1 - m*Ehat(n.v))^2`.)
+//
+//  A SUBSTRATE THAT DOES NOT TRANSMIT IS BIT-IDENTICAL.  The branch is
+//  gated on `BaseScattersFullSphere()`, captured at construction from
+//  `IMaterial::ScattersFullSphere()` (the flag cannot change afterwards:
+//  a weave's `transmission` enum is explicitly NOT rebindable, and
+//  `base` is not rebindable on this material either).  With the flag
+//  false the opposite-hemisphere early-out is the committed one, so
+//  every Lambertian / Oren-Nayar / GGX / `transmission none` weave stack
+//  answers exactly as before -- pinned, absolutely, by
+//  FabricMaterialChunkTest's `TestReflectionOnlyUnchanged` value lock.
+//
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
 //
@@ -274,7 +353,15 @@ namespace RISE
 				const IBSDF& base,					///< [in] Substrate BSDF (allowlisted -- see FabricMaterial)
 				const IPainter& sheenColor,
 				const IScalarPainter& sheenRoughness,
-				const IScalarPainter& weaveRotation
+				const IScalarPainter& weaveRotation,
+				//! [in] The substrate material's `ScattersFullSphere()`.
+				//! Passed in rather than derived because `IBSDF` carries
+				//! no such flag -- it is an `IMaterial` property, and
+				//! `FabricMaterial` is the only thing that holds both.
+				//! Captured once: the only substrate that can set it is a
+				//! `weave_material`, whose `transmission` enum is not
+				//! rebindable, and `base` is not rebindable here either.
+				const bool baseScattersFullSphere
 				);
 
 			virtual RISEPel value( const Vector3& vLightIn, const RayIntersectionGeometric& ri ) const;
@@ -392,6 +479,15 @@ namespace RISE
 			struct FabricTerms
 			{
 				bool	valid;		///< false => the direction pair is gated off; both terms are 0
+				//! TRUE => `l` and `v` are on OPPOSITE sides of the
+				//! shading normal, i.e. this pair is the substrate's
+				//! For a TRANSMISSION pair (only reachable when the
+				//! substrate reports `ScattersFullSphere()`) `sheen` is
+				//! 0 -- the Charlie lobe is reflection-only and has no
+				//! transmission to contribute -- and `scaling` carries
+				//! the two-crossing attenuation the header derives.
+				//! Callers tell the two cases apart by the sign of
+				//! n.l they already hold; no flag is stored.
 				Scalar	sheen;		///< D * V / max(1, E(v), E(l))
 				Scalar	scaling;	///< the base scaling factor
 			};
@@ -430,6 +526,12 @@ namespace RISE
 			//! evaluate the full mixture after sampling either branch.
 			inline const IBSDF& GetBase() const { return *pBase; }
 
+			//! Does the SUBSTRATE scatter over the full sphere (R8 P1.1)?
+			//! `FabricSPF` reads it back through here so the sampler and
+			//! the evaluator are gated on literally the same bit -- one
+			//! copy of the state, `FabricSPF`'s standing contract.
+			inline bool BaseScattersFullSphere() const { return bBaseFullSphere; }
+
 			//! Read-back for the interactive editor / snapshot clone.
 			inline const IPainter&       GetSheenColor()     const { return *pSheenColor; }
 			inline const IScalarPainter& GetSheenRoughness() const { return *pSheenRoughness; }
@@ -457,6 +559,7 @@ namespace RISE
 			const IPainter*			pSheenColor;
 			const IScalarPainter*	pSheenRoughness;
 			const IScalarPainter*	pWeaveRotation;
+			bool					bBaseFullSphere;	///< see the ctor parameter and the header's transmission section
 		};
 	}
 }

@@ -1722,6 +1722,136 @@ int main()
     }
     std::cout << std::endl;
 
+    // ================================================================
+    //  R8 P1.1 (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22): the SAME
+    //  full-sphere continuum identity, and cross-validation, for a
+    //  `fabric_material` WRAPPING that thin weave.
+    //
+    //  WHY IT NEEDS ITS OWN TARGET.  The wrapper mixes a REFLECTION-ONLY
+    //  sheen lobe (cosine hemisphere about the ray-facing normal, so it
+    //  places no mass below it) with the substrate's full-sphere
+    //  continuum, at the substrate's own selection probability `1 - w`:
+    //
+    //      INT_sphere q  =  w * 1  +  (1 - w) * (1 - gap)
+    //
+    //  where `w = FabricBRDF::SheenSelectWeight(alpha, m, cos theta_v)`.
+    //  It is NOT `1 - gap` (the bare weave's answer) and it is NOT 1: the
+    //  delta branch's share of the pmf shrank by exactly the factor the
+    //  wrapper diverted to its own lobe, and `Pdf()` must be truthful
+    //  about that or every MIS denominator downstream is wrong.
+    //
+    //  BOTH FAILURE DIRECTIONS ARE CAUGHT.  Reporting 0 below the
+    //  horizon -- the pre-P1.1 behaviour -- lands the integral at
+    //  `w + (1-w)*R` with `R` the reflect-only share (~0.62 here, well
+    //  outside the band); forgetting the `(1 - w)` factor on the
+    //  transmit arm lands it high by `w * (1 - gap - R)`.
+    //
+    //  CROSS-VALIDATION is the other half and is the one that would catch
+    //  a BRANCH-LOCAL density on the transmit side: `Scatter` must store
+    //  the same number an independent `Pdf(ri, wo)` call returns for that
+    //  same direction, to `CROSS_VAL_TOL`.  Run over BOTH regimes, since
+    //  the RGB and NM paths reach the substrate through different entry
+    //  points.
+    // ================================================================
+    {
+        std::cout << "=== R8 P1.1: fabric over a thin weave -- full-sphere continuum pdf + cross-validation ===" << std::endl;
+
+        const double kGapF = 0.2;
+        RISE::WeaveTest::PresetWeave thinBase( "linen", 0.0, 0.5, false, /*thin=*/true, -1, -1, kGapF );
+        FabricMaterial* fabThinMat = new FabricMaterial(
+            *thinBase.Material(), *coatTintOne, *fabAlphaSc, *fabZeroSc );
+        fabThinMat->addref();
+        ISPF* fabThinSPF = fabThinMat->GetSPF();
+
+        IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+        for( int a = 0; a < 2; a++ )
+        {
+            const double theta = incomingAngles[a];
+            RayIntersectionGeometric ri = MakeIntersection( theta );
+
+            // `m` is 1 (the shared white `coatTintOne`) and alpha 0.3 is
+            // above the 0.04 floor, so the selection weight is known in
+            // closed form here.  This DOES call the material's own static
+            // -- deliberately: the claim under test is that `Pdf()`
+            // apportions its mass by the SAME weight the sampler selects
+            // with, which is a statement about one number being used
+            // twice, not about that number's value.
+            const double w = (double)FabricBRDF::SheenSelectWeight( 0.3, 1.0, std::cos( theta ) );
+            const double expected = w * 1.0 + ( 1.0 - w ) * ( 1.0 - kGapF );
+
+            const int NT = 200, NP = 200;
+            double integ = 0.0, integNM = 0.0;
+            for( int t = 0; t < NT; t++ )
+            {
+                const double th = ( t + 0.5 ) * PI / NT;      // 0..pi, the FULL sphere
+                const double sinT = sin( th ), cosT = cos( th );
+                const double dTheta = PI / NT;
+                for( int p = 0; p < NP; p++ )
+                {
+                    const double phi = ( p + 0.5 ) * TWO_PI / NP;
+                    const double dPhi = TWO_PI / NP;
+                    Vector3 wo( sinT * cos( phi ), sinT * sin( phi ), cosT );
+                    wo = Vector3Ops::Normalize( wo );
+                    integ   += fabThinSPF->Pdf( ri, wo, iorStack )          * sinT * dTheta * dPhi;
+                    integNM += fabThinSPF->PdfNM( ri, wo, 550.0, iorStack ) * sinT * dTheta * dPhi;
+                }
+            }
+
+            const double tol = 0.05;
+            const bool okRGB = fabs( integ   - expected ) <= tol;
+            const bool okNM  = fabs( integNM - expected ) <= tol;
+            std::cout << "  Fabric/Weave_linen_thin_gap0.2 @ " << angleNames[a]
+                      << ": full-sphere integral=" << integ << " (NM " << integNM << ")"
+                      << "  expected w+(1-w)(1-gap)=" << expected
+                      << "  [w=" << w << "]  "
+                      << ( ( okRGB && okNM ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( !okRGB || !okNM ) numFailed++;
+
+            // ---- cross-validation, both regimes.
+            RandomNumberGenerator rng;
+            Implementation::IndependentSampler sampler( rng );
+            int checked = 0, mismatches = 0, deltas = 0, belowHorizon = 0;
+            double worst = 0.0;
+            for( int i = 0; i < 20000; i++ )
+            {
+                const bool bNM = ( i % 2 ) != 0;
+                ScatteredRayContainer scattered;
+                if( bNM ) {
+                    fabThinSPF->ScatterNM( ri, sampler, 550.0, scattered, iorStack );
+                } else {
+                    fabThinSPF->Scatter( ri, sampler, scattered, iorStack );
+                }
+                if( scattered.Count() == 0 ) continue;
+                const ScatteredRay& s = scattered[0];
+                const Vector3 wo = Vector3Ops::Normalize( s.ray.Dir() );
+                if( Vector3Ops::Dot( wo, ri.onb.w() ) < 0 ) belowHorizon++;
+                if( s.isDelta ) { deltas++; continue; }
+                if( s.pdf <= 0 ) continue;
+
+                const double q = bNM ? (double)fabThinSPF->PdfNM( ri, wo, 550.0, iorStack )
+                                     : (double)fabThinSPF->Pdf( ri, wo, iorStack );
+                const double rel = fabs( q - s.pdf ) / std::max( 1e-30, (double)s.pdf );
+                if( rel > worst ) worst = rel;
+                if( rel > CROSS_VAL_TOL ) mismatches++;
+                checked++;
+            }
+
+            // Non-degeneracy: the transmit side and the delta branch must
+            // both be LIVE, or the two checks above would be measuring a
+            // reflection-only material and proving nothing about P1.1.
+            const bool live = ( belowHorizon > 0 ) && ( deltas > 0 );
+            std::cout << "    cross-val @ " << angleNames[a] << ": checked=" << checked
+                      << " mismatches=" << mismatches << " maxRel=" << worst
+                      << "  (below-horizon draws=" << belowHorizon << ", delta draws=" << deltas << ")  "
+                      << ( ( mismatches == 0 && live ) ? "-> PASS" : "-> FAIL" ) << std::endl;
+            if( mismatches != 0 || !live ) numFailed++;
+        }
+
+        safe_release( fabThinMat );
+    }
+    std::cout << std::endl;
+
     // Coated triad: materials own the BRDF/SPF borrowed above, so
     // release them before their substrates and painters.  (This file
     // does not otherwise release its fixtures -- one-shot process --

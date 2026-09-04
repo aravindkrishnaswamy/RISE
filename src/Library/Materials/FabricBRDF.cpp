@@ -57,12 +57,14 @@ FabricBRDF::FabricBRDF(
 	const IBSDF& base,
 	const IPainter& sheenColor,
 	const IScalarPainter& sheenRoughness,
-	const IScalarPainter& weaveRotation
+	const IScalarPainter& weaveRotation,
+	const bool baseScattersFullSphere
 	) :
   pBase( &base ),
   pSheenColor( &sheenColor ),
   pSheenRoughness( &sheenRoughness ),
-  pWeaveRotation( &weaveRotation )
+  pWeaveRotation( &weaveRotation ),
+  bBaseFullSphere( baseScattersFullSphere )
 {
 	pBase->addref();
 	pSheenColor->addref();
@@ -251,7 +253,54 @@ FabricBRDF::FabricTerms FabricBRDF::ComputeTerms(
 
 	const Scalar nDotL = Vector3Ops::Dot( n, l );
 	const Scalar nDotV = Vector3Ops::Dot( n, v );
-	if( nDotL <= NEARZERO || nDotV <= NEARZERO ) {
+
+	// The VIEW must be on the shading-normal side.  `n` is the ray-facing
+	// normal, so this is a degeneracy guard rather than a real gate.
+	if( nDotV <= NEARZERO ) {
+		return t;
+	}
+
+	if( nDotL <= NEARZERO )
+	{
+		// TRANSMISSION (R8 P1.1; see FabricBRDF.h's transmission
+		// section for the derivation and the energy claim).
+		//
+		// BIT-IDENTICAL TO THE COMMITTED CODE when the substrate cannot
+		// transmit: `bBaseFullSphere` is false for every Phase-1
+		// substrate and for a `transmission none` weave, so the whole
+		// block collapses to the original `nDotL <= NEARZERO -> return
+		// t` early-out, with `t` still the all-zero, invalid record it
+		// was initialised to.  Nothing below is reached, and no
+		// substrate call is made.
+		//
+		// The `< -NEARZERO` band around the horizon is deliberate and
+		// symmetric with the `<= NEARZERO` above: a direction sitting
+		// exactly IN the surface plane belongs to neither lobe, and
+		// admitting it would hand `BaseScaling` a `|n.l|` of ~0, where
+		// `Ehat` is at its grazing peak, for a direction that carries no
+		// cosine weight anyway.
+		if( !bBaseFullSphere || !( nDotL < -NEARZERO ) ) {
+			return t;
+		}
+
+		// NO GEOMETRIC-HORIZON GATE.  This IS the below-horizon
+		// transport `ScattersFullSphere()` exists to admit -- the same
+		// call `WeaveBRDF::ValueWithParams`'s transmit branch and
+		// `HairBSDF` both make for the far side.
+		//
+		// `t.sheen` stays 0: the Charlie lobe is reflection-only, so it
+		// contributes nothing here.  Leaving it at 0 (rather than
+		// branching in the two `*WithParams` bodies) is what keeps the
+		// RGB and NM twins TEXTUALLY PARALLEL -- `tint * t.sheen`
+		// against `tintNMCapped * t.sheen`, both exactly zero -- which
+		// is the structural half of the twin discipline those bodies
+		// document.
+		// The two crossings of the fuzz layer, over the one
+		// adding-doubling normaliser.  Symmetric under an l/v swap by
+		// construction (the arms exchange, `|.|` is even), which is the
+		// cross-hemisphere reciprocity argument.
+		t.scaling  = BaseScaling( p.alpha, p.m, nDotV, -nDotL );
+		t.valid    = true;
 		return t;
 	}
 
@@ -300,6 +349,13 @@ FabricBRDF::FabricTerms FabricBRDF::ComputeTerms(
 // (spectral parity at an authored-white dye) measures their agreement
 // in ulps, so an association difference here would surface there as a
 // guard failure it is not.
+//
+// THE TRANSMISSION CASE NEEDS NO BRANCH HERE, and that is by design.
+// `ComputeTerms` reports an opposite-hemisphere pair with `t.sheen == 0`
+// and `t.scaling` carrying the two-crossing attenuation, so the SAME
+// expression evaluates to `f_base(l,v) * scale(l,v)` -- exactly the form
+// FabricBRDF.h's transmission section derives.  One body, both sides of
+// the surface, no second place for the RGB and NM twins to drift.
 //////////////////////////////////////////////////////////////////////
 
 RISEPel FabricBRDF::ValueWithParams(
@@ -509,6 +565,18 @@ RISEPel FabricBRDF::albedo( const RayIntersectionGeometric& ri ) const
 // 5b prints both errors separately for exactly this reason: no change
 // here can fix that one, and `coated_material`'s recycling denominator
 // already inherits the same debt.
+//
+// A TRANSMISSIVE SUBSTRATE NEEDS NOTHING EXTRA HERE (R8 P1.1), and the
+// reason is on the substrate's side rather than ours:
+// `WeaveBRDF::hemisphericalAlbedo` already reports the FRONT-hemisphere
+// REFLECT budget only -- its own `volumeScale = 1 - transmit_k` excludes
+// the share diverted to the diffuse transmission lobe, and the delta gap
+// lobe never entered that number at all.  So `R` below is still "what
+// the substrate returns to the front", which is exactly the quantity the
+// product form's derivation integrates, and adding the transmitted share
+// to it would make this method claim energy that never comes back up.
+// `coated_material`'s Saunderson recycling denominator consumes this
+// number and would be actively wrong if it did.
 //
 // DELIBERATELY NOT WEAVE-ROTATED.  Unlike the six evaluation entry
 // points, this quantity is a bihemispherical average, which a rotation

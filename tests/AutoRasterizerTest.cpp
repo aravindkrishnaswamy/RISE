@@ -416,6 +416,47 @@ standard_object
 }
 )SCENE";
 
+// R8 P1.1 (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22): the SAME sheer
+// curtain with a `fabric_material` sheen layer over it -- the physical
+// stack the substrate allowlist exists for.  Until 2026-09-04
+// `FabricMaterial` reported neither full-sphere flag, so this scene
+// looked OPAQUE to `SceneHasTransmissiveMaterial` and routed to PT while
+// the bare curtain one line above routed to VCM: the same cloth,
+// classified two different ways depending on whether it wore a fuzz
+// layer.  The flags are forwarded now, and this is the routing guard for
+// that -- it exercises `AutoRasterizer`'s Tier-1 signal through the
+// wrapper, which no other test in this file does.
+static const char* kWeaveThinCurtainWrapped = R"SCENE(
+weave_material
+{
+	name mat_weave_thin
+	fabric linen
+	transmission thin
+	sheer 0.2
+}
+fabric_material
+{
+	name mat_fabric_over_weave
+	fabric linen
+	base mat_weave_thin
+}
+clippedplane_geometry
+{
+	name weavequad
+	pta -0.4 -0.4 0.5
+	ptb 0.4 -0.4 0.5
+	ptc 0.4 0.4 0.5
+	ptd -0.4 0.4 0.5
+	doublesided TRUE
+}
+standard_object
+{
+	name obj_weave_thin
+	geometry weavequad
+	material mat_fabric_over_weave
+}
+)SCENE";
+
 // Same diffuse receiver + mesh AREA emitter as kSceneCommon, but with NO
 // omni light -> lit purely by the area emitter (no positional delta
 // light).  A complete renderable body on its own.
@@ -1208,6 +1249,15 @@ int main()
 	// like any other `hasTransmissive && hasPositional` scene -- VCM.
 	CheckStaticRoute( "thin weave + point light -> VCM (debt 20 resolved)",
 		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtain, "p2_weave_thin", AutoIntegratorChoice::VCM );
+
+	// (c3) R8 P1.1 / debt 22.  The SAME shape with a `fabric_material`
+	// sheen layer over the weave must route the SAME WAY: the wrapper
+	// forwards `CouldLightPassThrough()` from its substrate, so a sheer
+	// curtain does not stop being transmissive by acquiring fuzz.  Before
+	// the fix this routed PT while the bare twin above routed VCM.
+	CheckStaticRoute( "fabric over thin weave + point light -> VCM (debt 22)",
+		kAutoAuto, std::string(kSceneCommon) + kWeaveThinCurtainWrapped, "p2_weave_thin_wrapped",
+		AutoIntegratorChoice::VCM );
 
 	// (d) Strong-indirect, purely area-lit (a gi_spheres analog) -> PT in
 	//     the static tier.  BDPT is NOT statically separable from the

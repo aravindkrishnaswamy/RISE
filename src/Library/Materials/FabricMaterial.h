@@ -78,20 +78,56 @@
 //      the split; `make_fabric` (9.7) is what closes the gap by minting
 //      a matching substrate.
 //
-//  NO GetSpecularInfo OVERRIDE, DELIBERATELY.  Neither lobe is delta:
-//  the Charlie lobe is cosine-sampled with a full-hemisphere density,
-//  and every allowlisted substrate has a real sampling density.  SMS
-//  therefore ignores fabric entirely, which is correct and matches
-//  hair's precedent.  `SpecularInfo` also carries `canRefract` + `ior`,
-//  which the SMS solver and IOR-stack seeding read as "rays cross a
-//  refractive boundary here" -- nothing crosses a boundary in this
-//  material, so reporting one would be a lie to those subsystems.
+//  NO GetSpecularInfo OVERRIDE, DELIBERATELY -- AND NOTHING TO FORWARD.
+//  The Charlie lobe is cosine-sampled with a full-hemisphere density,
+//  and no allowlisted substrate OVERRIDES `ISPF::GetSpecularInfo`
+//  either: `WeaveSPF` explicitly declines to report its `transmission
+//  thin` gap lobe there (WeaveBRDF.h section 2a, "WHAT P2-B DOES NOT
+//  DO") because an undeviated pass-through is not a refractive boundary
+//  a specular-manifold chain would bend through.  So the ISPF default is
+//  the substrate's answer AND the wrapper's, and adding an override here
+//  could only invent information neither layer has.  What DOES have to
+//  survive the wrapper -- and does, see `FabricSPF::ScatterImpl` -- is
+//  the per-ray `ScatteredRay::isDelta` flag on that gap sample, which is
+//  what PT / BDPT / VCM actually read to keep a delta lobe out of the
+//  MIS density.  SMS therefore ignores fabric entirely, which is correct
+//  and matches hair's precedent.  `SpecularInfo` also carries
+//  `canRefract` + `ior`, which the SMS solver and IOR-stack seeding read
+//  as "rays cross a refractive boundary here" -- nothing crosses a
+//  boundary in this material, so reporting one would be a lie to those
+//  subsystems.
 //
-//  PHASE 1 IS REFLECTION-ONLY.  `IsVolumetric`, `ScattersFullSphere`
-//  and `CouldLightPassThrough` all stay at their IMaterial defaults
-//  (false).  Phase 2's transmission lobe is what flips the latter two
-//  and inherits the full-sphere-NEE machinery that recovered 6-8x on
-//  backlit hair; Phase 1 deliberately does not claim it.
+//  THE TWO FULL-SPHERE FLAGS ARE FORWARDED FROM THE SUBSTRATE (R8 P1.1,
+//  docs/CLOTH_FABRIC_DESIGN.md 15 debt 22).  `ScattersFullSphere()` and
+//  `CouldLightPassThrough()` both return the BASE's answer, because this
+//  material's transmission IS the base's transmission -- modulated by
+//  the fuzz layer's two-crossing attenuation (FabricBRDF.h's
+//  transmission section), never created or destroyed by it.  For every
+//  Phase-1 substrate and for a `transmission none` weave the base
+//  answers false, so this is the committed Phase-1 behaviour unchanged;
+//  for a `transmission thin` weave it is what stops the wrapper from
+//  silently extinguishing a sheer curtain.
+//
+//  Both flags are honest rather than merely permissive.
+//  `ScattersFullSphere()` is a promise that `value()` is genuinely
+//  non-zero below the horizon -- claiming it wrongly would have
+//  `LightSampler` light back faces at full weight (IMaterial.h says so)
+//  -- and with the forwarding in place `FabricBRDF::value()` returns
+//  `f_base * scale` there, which is nonzero exactly when the base's is.
+//  `CouldLightPassThrough()` reaches `AutoRasterizer`'s Tier-1
+//  transmissive-material signal and the GUI's x-ray view; both should
+//  see a sheen-wrapped sheer curtain the same way they see the bare one.
+//
+//  `IsVolumetric` DELIBERATELY STAYS FALSE AND IS *NOT* FORWARDED.  It
+//  means something the other two do not: "BDPT must use `kray` for
+//  throughput instead of BSDF*cos/pdf, because the SPF's kray carries
+//  weighting the BSDF cannot reproduce" (IMaterial.h).  `FabricSPF`
+//  OVERWRITES every emitted ray's kray with `f_fabric * cos / q` -- the
+//  BSDF-derived quantity -- so fabric's kray is precisely what BDPT
+//  would compute itself, and claiming volumetric transport would be a
+//  false statement about this material's estimator.  No allowlisted
+//  substrate reports it either, so forwarding would be a no-op today
+//  AND wrong the moment one did.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -234,7 +270,16 @@ namespace RISE
 			{
 				pBase->addref();
 
-				pBRDF = new FabricBRDF( *base.GetBSDF(), sheenColor, sheenRoughness, weaveRotation );
+				// The substrate's full-sphere capability is captured here
+				// and handed to the BRDF, because `IBSDF` has no such
+				// flag -- it lives on `IMaterial`, and this constructor
+				// is the one place both are in hand.  Safe to capture
+				// once: `base` is not rebindable on this material, and
+				// the only substrate that can answer TRUE is a
+				// `weave_material`, whose `transmission` enum is
+				// explicitly not rebindable either (WeaveMaterial.h).
+				pBRDF = new FabricBRDF( *base.GetBSDF(), sheenColor, sheenRoughness, weaveRotation,
+				                        base.ScattersFullSphere() );
 				GlobalLog()->PrintNew( pBRDF, __FILE__, __LINE__, "BRDF" );
 
 				pSPF = new FabricSPF( *pBRDF, *base.GetSPF() );
@@ -251,6 +296,19 @@ namespace RISE
 			/// \return NULL: fabric never emits (the allowlist refuses
 			///         emissive substrates).
 			inline IEmitter* GetEmitter() const { return 0; }
+
+			//! R8 P1.1: the SUBSTRATE's answer, verbatim.  See the file
+			//! header ("THE TWO FULL-SPHERE FLAGS ARE FORWARDED") for why
+			//! this is honest rather than merely permissive, and why
+			//! `IsVolumetric` is deliberately NOT forwarded alongside.
+			//! False for every Phase-1 substrate and for a `transmission
+			//! none` weave, so this is the committed behaviour unchanged
+			//! on everything that shipped before 2026-09-04.
+			inline bool ScattersFullSphere() const { return pBase->ScattersFullSphere(); }
+
+			//! Same forwarding, same reason: a sheen layer neither opens
+			//! nor closes an aperture the substrate does not have.
+			inline bool CouldLightPassThrough() const { return pBase->CouldLightPassThrough(); }
 
 			//! Read-back for the interactive editor / snapshot clone.
 			inline const IMaterial&      GetBase()           const { return *pBase; }

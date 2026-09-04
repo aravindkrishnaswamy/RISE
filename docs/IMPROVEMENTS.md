@@ -1401,6 +1401,30 @@ furnace test with a conductor-mode bare row rather than assuming.
 
 ---
 
+## Clearcoat over `fabric_material` — not composable, unowned
+
+`coated_material`'s substrate allowlist admits `lambertian_material` /
+`orennayar_material` / `ggx_material` only (three of the four scattering
+classes `FabricMaterial::IsSupportedSubstrate` checks — fabric also admits
+`weave_material`) — `fabric_material` is none of those, so
+`coated_material` cannot wrap one.  A glTF asset
+combining `KHR_materials_sheen` + `KHR_materials_clearcoat` (lacquered
+fabric, coated upholstery) loses the clearcoat layer on import as a
+result: sheen wins the wrap (the registered material is the
+`fabric_material` over the bare PBR base) and the clearcoat layer is
+warn-and-skipped, naming both extensions in the message so the drop is
+said, not silent ([docs/GLTF_IMPORT.md](GLTF_IMPORT.md) §15;
+`GLTFSceneImporter.cpp`'s clearcoat/sheen composition warning).
+
+**Unblocks when** `CoatedMaterial` can wrap a `FabricMaterial` substrate
+— its allowlist and its closed-form layered-transport evaluation
+(Weidlich-Wilkie + Kulla-Conty recycling) would need to grow a fourth
+scattering class.  Nobody has scoped that work yet; extending
+`coated_material`'s allowlist to `FabricMaterial` was explicitly out of
+scope for the sheen-import slice (docs/CLOTH_FABRIC_DESIGN.md §7(B)).
+
+---
+
 ## Explicit Non-Goals
 
 These are interesting but should not displace the ranked items above:

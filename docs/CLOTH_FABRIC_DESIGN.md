@@ -10,7 +10,14 @@ PT reference it was compared against — see §15 debt 20 — and **debt 21** �
 PT's diffuse-transmission lobe scaled near-`transmit²`/`transmit^1.7` instead
 of linearly, **RESOLVED 2026-09-03**: not an integrator MIS defect at all,
 but a shadow-ray self-intersection epsilon bug in the shared
-`RayBilinearPatchIntersection` geometry routine — see §15 debt 21). Phase 3's
+`RayBilinearPatchIntersection` geometry routine — see §15 debt 21). P2-B also
+left one MATERIAL-side defect that no gate then in the tree could see, found
+in review round 8 and fixed the same day: **debt 22** — a
+`fabric_material` wrapping a `transmission thin` `weave_material` silently
+extinguished the weave's transmission, so a sheen layer over a sheer curtain
+rendered it 100 % opaque, **RESOLVED 2026-09-04** by forwarding the two
+full-sphere flags and modulating the substrate's transmission with the same
+Kulla-Conty product law the reflect side uses — see §15 debt 22. Phase 3's
 weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
 **declined**, on the same precedent and for the same reasons as before; what
 shipped instead is the bounded `add_fuzz` verb — a sparse fuzz-shell groom
@@ -389,6 +396,39 @@ description of a gate.
   paths are documented as a GGX defect fabric inherits in proportion;
   and a Cook-Torrance spectral defect was found and (in a follow-up pass)
   fixed, recorded as debt 19.
+
+**Round 8 (external review of the shipped range f2ef553a..73d0c983,
+2026-09-04).** One P1 and five P2s from an independent reviewer of the
+whole arc; three fresh adversarial reviewers on the fix returned one P1 of
+their own, fixed the same day.
+
+- **P1.1 — `fabric_material` over a `transmission thin` weave was 100 %
+  opaque, silently.** The allowlist admitted `weave_material` (§7.3) but
+  the wrapper never forwarded `ScattersFullSphere` /
+  `CouldLightPassThrough`, `FabricBRDF` rejected every opposite-hemisphere
+  pair and `FabricSPF` zeroed every below-horizon draw, delta gap ray
+  included. This document's own header text said Phase 2 "flips the
+  latter two"; it never did. **Fixed** by forward-and-modulate — the
+  transmitted lobe carries the same Kulla-Conty product law as the
+  reflect side, the delta gap lobe carries the two sheen arms without the
+  recycling denominator (a measure-zero direction receives none of the
+  diffusely redistributed series; charging it measured 1.13× brightening
+  of an aperture), and a non-transmissive substrate is bit-identical (a
+  45-row value lock). §15 debt 22 has the derivation, the furnace table
+  (wrapped totals 0.871 → 0.810 over 0°–80°, T within 0.001–0.01 of the
+  closed form) and the backlit render parity (BDPT/PT 0.913, VCM/PT
+  0.945, inside the existing 0.20 band).
+- **P2.4 / P2.2 / P2.1 / P2.3** — `add_fuzz`'s refusal on CSG,
+  instanced and container hosts now names the host shape and a concrete
+  route; `make_fabric`'s weave mint discloses that only `warp_color` took
+  the author's colour and prints the preset's real weft dye (the fresh
+  reviewers' one P1: a first cut said "undyed (white)" for every preset,
+  which is true of denim and false of silk's champagne and satin's rose —
+  the message now reads the triple from `WeavePresets.h` and the test pins
+  satin's); clearcoat-over-fabric is a tracked IMPROVEMENTS.md backlog
+  entry; the 0.04 sheen-roughness floor has a migration note in
+  GLTF_IMPORT.md and MATERIALS.md. **P2.5** (the 5–10 % BDPT/VCM-under-PT
+  residual on delta-lit thin weaves) was already tracked and stays open.
 
 ---
 
@@ -2227,12 +2267,26 @@ coat's recycling denominator consumes. §15 debt 16 tracks that composition.
 
 **`IsVolumetric`.** False. No Beer-Lambert in `kray`.
 
-**`ScattersFullSphere`.** **False in Phase 1** — this lobe is reflection-only.
-Phase 2's transmission lobe flips it to true and inherits the full-sphere-NEE
-machinery for free ([IMaterial.h:237](../src/Library/Interfaces/IMaterial.h)),
-which is the mechanism that recovered 6-8× on backlit hair.
+**`ScattersFullSphere`.** **FORWARDED FROM THE SUBSTRATE since R8 P1.1**
+(2026-09-04, §15 debt 22). The Charlie lobe itself is reflection-only, so this
+material's transmission *is* its substrate's — modulated by the fuzz layer's
+two-crossing attenuation, never created by it. It therefore returns
+`base.ScattersFullSphere()`: false for every Phase-1 substrate and for a
+`transmission none` weave (the committed Phase-1 answer, unchanged), true over a
+`transmission thin` `weave_material`, where it inherits the full-sphere-NEE
+machinery ([IMaterial.h:237](../src/Library/Interfaces/IMaterial.h)) that
+recovered 6-8× on backlit hair.
 
-**`CouldLightPassThrough`.** False in Phase 1, true in Phase 2.
+The doc used to say "false in Phase 1 — Phase 2's transmission lobe flips it".
+**That never happened**: P2-B flipped it on `weave_material` and nobody flipped
+it here, so a sheen layer over a sheer curtain rendered the curtain 100 % opaque,
+silently, for the whole of P2-B and P3. §15 debt 22 has the mechanism and the
+numbers.
+
+**`CouldLightPassThrough`.** Forwarded from the substrate for the same reason,
+with the same before/after. It reaches `AutoRasterizer`'s Tier-1
+transmissive-material signal and the GUI's x-ray view, both of which should see a
+sheen-wrapped sheer curtain exactly as they see the bare one.
 
 ### 9.3 The chunk
 
@@ -4192,11 +4246,16 @@ hair's precedent. Two fabric-specific notes:
   anisotropy on today's arbitrary base would inject a discontinuity into the MIS
   denominators.
 
-**Full-sphere scattering.** Phase 1 is reflection-only, so `ScattersFullSphere()`
-stays false. Phase 2's transmission lobe flips it, and inherits the shipped
-full-sphere-NEE machinery ([IMaterial.h:237](../src/Library/Interfaces/IMaterial.h))
-— the same hook that recovered 6-8× on point-lit backlit hair and dropped the
-PT/BDPT ratio from 15.5-16.3× to 1.72-1.77×.
+**Full-sphere scattering.** The Charlie lobe is reflection-only, so
+`fabric_material` originates no transmission of its own; what it does is
+**forward its substrate's** (`ScattersFullSphere()` / `CouldLightPassThrough()`
+both return the base's answer, R8 P1.1 / §15 debt 22), attenuating it by the same
+Kulla-Conty product law the reflect side uses. Over a `transmission thin`
+`weave_material` that inherits the shipped full-sphere-NEE machinery
+([IMaterial.h:237](../src/Library/Interfaces/IMaterial.h)) — the same hook that
+recovered 6-8× on point-lit backlit hair and dropped the PT/BDPT ratio from
+15.5-16.3× to 1.72-1.77×. Over every other allowlisted substrate it is false, and
+the material behaves exactly as the Phase-1 code did.
 
 **Multiple scattering in the fabric layer.** Not modelled in Phase 1 (§9.4). The
 consequence is a slightly harder terminator than reference. Named, gated,
@@ -5020,6 +5079,131 @@ yet known (§10.1).
     walking a single pdf pair by hand. See also
     `docs/skills/bdpt-vcm-mis-balance.md`'s step 0 (three known non-MIS
     causes) — this is a fourth.
+
+22. **RESOLVED 2026-09-04 (R8 P1.1) — a `fabric_material` over a
+    `transmission thin` `weave_material` extinguished the weave's
+    transmission, silently.**
+
+    **Mechanism.** `FabricMaterial::IsSupportedSubstrate` has admitted
+    `weave_material` since Phase 2, and P2-B gave a `transmission thin`
+    weave two below-horizon lobes (a delta gap pass-through and a
+    Lambertian back-face lobe) plus `ScattersFullSphere()` /
+    `CouldLightPassThrough()` overrides. Nothing propagated any of that
+    through the wrapper. Three independent sites each dropped it:
+
+    - `FabricMaterial` neither overrode nor forwarded the two flags, so
+      `LightSampler` never ran full-sphere NEE at a wrapped shading point
+      and `AutoRasterizer`'s Tier-1 transmissive signal never saw the
+      material;
+    - `FabricBRDF::ComputeTerms` returned an invalid (all-zero) record for
+      every `n·l <= 0` pair, so `value()` / `valueNM()` were 0 across the
+      surface — which is what NEE and every BDPT/VCM connection evaluate;
+    - `FabricSPF::ScatterImpl` treated `cos(wo) <= 0` as invalid and zeroed
+      the sample's `kray`, killing both the continuum back-face ray and the
+      delta gap ray, and `PdfWithParams` returned 0 below the horizon.
+
+    Net effect: a sheen layer over a sheer curtain rendered it **100 %
+    opaque**, with no diagnostic. The design intent was the opposite —
+    §9.2's own text said "Phase 2's transmission lobe flips [the two
+    flags]" — and it simply never happened; that sentence has been
+    corrected in §9.2 and §12 rather than left to mislead the next reader.
+
+    **Fix: FORWARD AND MODULATE.** The Charlie lobe is reflection-only, so
+    the material originates no transmission of its own; what it must do is
+    pass the substrate's through, attenuated by the fuzz layer:
+
+    - the two flags return `base.ScattersFullSphere()` /
+      `base.CouldLightPassThrough()`. `IsVolumetric` is deliberately NOT
+      forwarded — it means "BDPT must use `kray` instead of BSDF·cos/pdf",
+      and `FabricSPF` overwrites every `kray` with exactly BSDF·cos/pdf, so
+      claiming it would be a false statement about the estimator;
+    - `FabricBRDF` evaluates an opposite-hemisphere pair as
+      `f_base(l,v) · scale(l,v)` with the SAME Kulla-Conty product law the
+      reflect branch uses, `|n·l|` in place of `n·l` and no sheen term.
+      **Both** arms, because `FabricBRDF` is two-sided (it flips to the
+      ray-facing normal), so a transmitted path crosses a fuzz layer on
+      entry *and* on exit; the same `1/(1 − m·Ē)` normaliser, because the
+      adding-doubling series is a property of the layer pair, not of which
+      exit the light eventually takes;
+    - `FabricSPF` prices a transmit-side continuum sample against the full
+      mixture exactly as a reflect sample, with `|cos|`; and reprices the
+      substrate's DELTA sample by the two single-crossing arms over this
+      branch's selection probability `(1 − w)`, keeping `isDelta` and the
+      `pdf = 1` marker untouched.
+
+    **The delta lobe deliberately does NOT carry the `1/(1 − m·Ē)`
+    recycling factor**, and that asymmetry is the one judgement call in the
+    fix. That denominator is the sum of the multiple-bounce series between
+    the fuzz and the substrate — energy the fuzz intercepts, re-scattered
+    *diffusely* back down. A delta lobe is a measure-zero direction, so
+    none of a diffusely redistributed series lands on it; charging it the
+    denominator brightens an aperture above the light that arrived at it
+    (measured 1.13× at `alpha` 0.3, normal view, and rising with
+    roughness). With the bare two-arm product the wrapper can only
+    attenuate a pass-through, which is both the physical statement and a
+    closed form: `gap · (1 − m·Ê(n·v))²`.
+
+    **The energy claims, as closed forms rather than locked curves.** The
+    weave's diffuse transmission lobe is Lambertian-shaped, so the
+    recycling denominator cancels against the *l*-integral of the other arm
+    (using `(1/π)∫Ê(μ)μ dω ≡ Ē`, the same identity
+    `hemisphericalAlbedo`'s derivation uses twice) and the wrapper's
+    **integrated** transmitted share is exactly `bare_T · (1 − m·Ê(n·v))` —
+    an attenuation at every view angle. The **per-direction** value is not,
+    and must not be: it carries the uncancelled denominator and exceeds 1
+    away from grazing, exactly as the reflect side has since round 5. A
+    first cut of the render regression asserted the pointwise ratio ≤ 1 and
+    failed at 1.028; the assertion was wrong, not the model. Both
+    statements are now asserted separately, against the right quantity.
+
+    **Measured** (`LayeredWhiteFurnaceTest` rows 52/53, sheer white linen,
+    `gap 0.2`, `transmit 0.25`, white sheen `alpha 0.3`, reflect/transmit/delta
+    per exit):
+
+    | θ | bare R/T/δ | wrapped R/T/δ | predicted T | predicted δ (gap-only) |
+    |---|---|---|---|---|
+    | 0°  | 0.454 / 0.199 / 0.199 | 0.494 / 0.193 / 0.184 | 0.192 | 0.1845 (meas. 0.1855) |
+    | 30° | 0.439 / 0.201 / 0.196 | 0.496 / 0.182 / 0.173 | 0.186 | 0.1717 (meas. 0.1717) |
+    | 60° | 0.387 / 0.197 / 0.200 | 0.515 / 0.158 / 0.125 | 0.155 | 0.1246 (meas. 0.1243) |
+    | 80° | 0.349 / 0.202 / 0.200 | 0.648 / 0.106 / 0.056 | 0.106 | 0.0555 (meas. 0.0553) |
+
+    Wrapped totals stay under the furnace's 1.05 ceiling at every angle
+    (0.871 at 0°, 0.810 at 80°). `SPFPdfConsistencyTest`: the wrapped
+    continuum density integrates over the FULL SPHERE to
+    `w + (1−w)(1−gap)` — 0.814569 vs 0.814694 at 30°, 0.842191 vs 0.842171
+    at 60° — and Scatter-vs-Pdf cross-validation is exact to 3e-15 across
+    RGB and NM with both the transmit side (≈6 800 draws) and the delta
+    branch (≈3 600 draws) live. `SPFBSDFConsistencyTest`: `kray·pdf ==
+    value·|cos|` with 0 failures on both wrapped sheer linens at 30°/60°,
+    and cross-hemisphere reciprocity exact. `FabricRenderTest` test 7
+    (backlit sheer curtain, 32×32, 256 spp, `oidn_denoise FALSE`): wrapped
+    `transmission none` is exactly 0, wrapped `thin` reads 0.02887 against
+    the bare curtain's 0.02809 (ratio 1.028, inside the closed-form
+    supremum `1/(1−Ē(0.65))` ≈ 1.34), BDPT/PT 0.913 and VCM/PT 0.946 —
+    inside the SAME bands the unwrapped thin curtain uses, not loosened.
+
+    **Guards.** `FabricMaterialChunkTest::TestReflectionOnlyUnchanged` (a
+    45-row absolute value/valueNM/Pdf table over a Lambertian and a
+    `transmission none` satin, captured off the pre-fix binary — the
+    "nothing that did not transmit before, moved" lock; the four other
+    fabric suites' full outputs are additionally byte-identical
+    before/after), `::TestTransmissiveSubstrateForwarding` (the flags, plus
+    the transmitted value against an independently re-derived closed form,
+    plus opaque negative controls), furnace rows 52/53,
+    `SPFBSDFConsistencyTest` Parts D2/E2 wrapped rows,
+    `SPFPdfConsistencyTest`'s wrapped full-sphere block, `FabricRenderTest`
+    test 7, and `SourceHygieneTest`'s full-sphere claimer census (now 3,
+    and taught to recognise a *delegating* claimer — a wrapper that
+    forwards the flag would otherwise have slipped it entirely, which is
+    the one outcome that census exists to prevent).
+
+    **Audit-by-bug-pattern, one hop out.** The sibling wrapper is
+    `coated_material`, whose substrate allowlist does **not** include
+    `weave_material`, so the same extinction is unreachable there today; if
+    that allowlist is ever widened, `CoatedBRDF`/`CoatedSPF` carry the
+    identical opposite-hemisphere early-outs and would need the identical
+    treatment. `composite_material` is unaffected (it forwards one
+    sub-material's BSDF wholesale rather than gating on hemisphere).
 
 ---
 

@@ -304,6 +304,21 @@ prove. And the sheen roughness is clamped to **[0.04, 1]**, tighter than
 max over μ ≥ 0.03 of E(α, μ) ≤ 1"*; the generator prints the scan on
 every bake, and 0.04 clears it.
 
+**Migrating from `sheen_material`.** That floor is not arbitrary and it
+is not going to move: it is the baked `SheenDirectionalAlbedo` table's
+own exactness criterion above, which the energy-compensation term needs
+to stay energy-bounded (§ above). `sheen_material` carries no such
+compensation term, so it has nothing forcing the same floor and keeps
+its much looser `1e-3`. A material re-pointed from `sheen_material` onto
+`fabric_material` — by hand, or via `add_wetness`'s glTF import path
+(docs/GLTF_IMPORT.md §15) — with a `sheen_roughness` authored below 0.04
+therefore renders visibly differently: what was a tight, near-mirror
+highlight under `sheen_material` clamps to the `0.04` floor under
+`fabric_material`, i.e. a BROADER, SOFTER highlight, not a bug in the
+migration. If a material genuinely needs `sheen_roughness` below 0.04,
+keep it on a standalone `sheen_material` (uncompensated, but unfloored)
+rather than wrapping it as `fabric_material`.
+
 **Weave direction is the substrate's job.** The sheen lobe is strictly
 isotropic (Charlie's `D` normaliser and its Λ visibility are both
 isotropic-only fits, and a 2-D `E(α, cosθ)` table cannot compensate a 4-D
@@ -327,6 +342,16 @@ woven cloth underneath. `silk`, `satin` and `denim` now *recommend* that
 substrate rather than an anisotropic GGX one, and a GGX base under those
 three warns; the GGX numbers stay in `FabricPresets.h` as the documented
 Phase-1 fallback, and the composition is still legal.
+
+**`make_fabric`'s warp-only mint.** The agent verb that mints a
+`weave_material` substrate for `denim`/`silk`/`satin` writes the author's
+re-homed colour painter onto `warp_color` **only** — `weft_color` is left
+unwritten, so it resolves to the chunk's own default (the preset's weft
+colour where one is set, white/undyed otherwise). This is deliberate, not
+an omission: denim's look *is* an indigo warp floating over an undyed
+weft, and the draft decides how much of each shows. The verb's own
+success message names it; bind `weft_color` explicitly afterward for a
+single uniform dye across both families.
 
 Guards: `LayeredWhiteFurnaceTest` configs 21–36 (energy: the Lambertian
 rows `kPosturePass` on the exact identity, the Oren-Nayar and GGX rows
@@ -516,7 +541,11 @@ file for parameter-by-parameter behaviour.
 - `fabric_material` — an **energy-compensated** Charlie sheen lobe over
   a **restricted** substrate, with the weave direction delivered as a
   rotation of the frame the *substrate* is evaluated in (§6.2). The
-  cloth FUZZ material.
+  cloth FUZZ material.  It also **forwards its substrate's
+  transmission**: over a `weave_material` under `transmission thin` the
+  stack stays see-through, with the sheen layer attenuating the light
+  that passes rather than blocking it (CLOTH_FABRIC_DESIGN.md §15
+  debt 22).
 - `weave_material` — a structured **two-thread-family** cloth BSDF: warp
   and weft, each with their own direction, dye and pair of fibre lobes,
   mixed by a weave-draft coverage field (§6.3). It is what makes satin's

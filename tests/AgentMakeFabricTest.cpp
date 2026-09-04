@@ -362,6 +362,29 @@ static void TestMintFourChunks()
 	       "A: every other slot is left to the chunk's own preset seeding -- writing the numbers "
 	       "into the document would freeze them against a later retune" );
 
+	// R8 P2.2: the warp-only dye is deliberate (see the `weft_color` check
+	// just above) but was previously UNDISCLOSED -- an author who wanted a
+	// single uniform dye across both thread families had no way to learn
+	// that only the warp took their colour short of reading the source.
+	// The verb's own return message must say so whenever it MINTS a weave
+	// substrate.
+	Check( r.message.find( "warp_color" ) != std::string::npos &&
+	       r.message.find( "cloth_fabric_base" ) != std::string::npos,
+	       "A MONEY: the disclosure names the slot the colour landed on and the minted chunk that "
+	       "carries it -- " + r.message );
+	Check( r.message.find( "weft_color <painter>" ) != std::string::npos &&
+	       r.message.find( "uniform dye" ) != std::string::npos,
+	       "A MONEY: the disclosure names the concrete fix -- bind `weft_color` on the minted base "
+	       "for a uniform dye -- " + r.message );
+	// R8 review C.1: the disclosure must state the weft dye the chunk
+	// will ACTUALLY be seeded with, read from WeavePresets.h -- satin's
+	// weft is a rose RISEPel(0.430, 0.155, 0.120), not "undyed white",
+	// which a hard-coded first cut claimed for every weave preset.
+	Check( r.message.find( "satin's own weft dye (linear Rec.709 0.43 0.155 0.12)" ) != std::string::npos,
+	       "A MONEY: the disclosure prints satin's real weft dye from the preset table -- " + r.message );
+	Check( r.message.find( "undyed" ) == std::string::npos,
+	       "A MONEY: satin's weft is dyed; the message must not call it undyed -- " + r.message );
+
 	Check( ChunkBinds( doc, "scalar_painter", "cloth_fabric_weave", "value", "0.0" ),
 	       "A: the weave painter is a CONSTANT 0 -- a bit-exact no-op rotation; the point is that "
 	       "the slot is wired for the author to rebind" );
@@ -463,6 +486,14 @@ static void TestMintTwoChunks()
 	       "B MONEY: NO F0 painter -- an orennayar_material's whole surface is `reflectance` plus "
 	       "`roughness`; the F0 chunk exists only to satisfy ggx's by-name `rs`" );
 	Check( doc.find( "felt_fabric_weave" ) == std::string::npos, "B: ...and no weave chunk" );
+	// R8 P2.2: the warp-only-dye disclosure is a weave_material-specific
+	// fact (only that chunk has separate `warp_color`/`weft_color` slots)
+	// -- an orennayar_material substrate has neither, so the disclosure
+	// must be ABSENT here, not just harmlessly repeated.
+	Check( r.message.find( "warp_color" ) == std::string::npos &&
+	       r.message.find( "weft_color" ) == std::string::npos,
+	       "B MONEY: NO warp/weft dye disclosure for a non-weave (orennayar_material) substrate -- " +
+	       r.message );
 	Check( !ChunkHasParam( doc, "fabric_material", "felt_fabric", "weave_rotation" ),
 	       "B: the wrapper leaves `weave_rotation` unwritten, taking the chunk's own 0.0 default" );
 	Check( ChunkBinds( doc, "orennayar_material", "felt_fabric_base", "reflectance", "dye" ),

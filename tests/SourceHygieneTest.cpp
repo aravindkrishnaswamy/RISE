@@ -4665,8 +4665,18 @@ int main()
 					// enumerator its condition tests instead, rather than
 					// broadening to "contains return" (which would also
 					// false-claim IMaterial.h's own `return false;` default).
+					// R8 P1.1 (debt 22) added a THIRD form: a DELEGATING
+					// claimer, `return pBase->ScattersFullSphere();` on
+					// FabricMaterial.h, which is true exactly when its
+					// substrate's is.  It matches neither literal above and
+					// would otherwise have slipped the census entirely --
+					// which is the one outcome this block exists to prevent,
+					// since a wrapper that forwards the flag inherits the
+					// full weight of the "claiming it wrongly is real bias"
+					// warning without ever writing `true` itself.
 					if( window.find( "return true" ) != std::string::npos
-					 || window.find( "eWeaveTransmissionThin" ) != std::string::npos ) {
+					 || window.find( "eWeaveTransmissionThin" ) != std::string::npos
+					 || window.find( "return pBase->ScattersFullSphere" ) != std::string::npos ) {
 						claims = true; break;
 					}
 					at += 1;
@@ -4680,11 +4690,16 @@ int main()
 		for( const std::string& c : claimers ) {
 			std::cout << "  full-sphere material: " << c << std::endl;
 		}
-		Check( claimers.size() == 2 && claimers[0] == "HairMaterial.h" && claimers[1] == "WeaveMaterial.h",
-		       "full-sphere NEE: HairMaterial (unconditional) and WeaveMaterial (conditional on "
-		       "`transmission thin`, P2-B) are the ONLY materials claiming ScattersFullSphere() -- "
-		       "adding another is a deliberate act that must update this expectation in the same "
-		       "commit (see IMaterial::ScattersFullSphere's doc for what claiming it wrongly costs)" );
+		Check( claimers.size() == 3
+		    && claimers[0] == "FabricMaterial.h"
+		    && claimers[1] == "HairMaterial.h"
+		    && claimers[2] == "WeaveMaterial.h",
+		       "full-sphere NEE: HairMaterial (unconditional), WeaveMaterial (conditional on "
+		       "`transmission thin`, P2-B) and FabricMaterial (DELEGATING -- it is full-sphere "
+		       "exactly when its substrate is, R8 P1.1 / debt 22) are the ONLY materials claiming "
+		       "ScattersFullSphere() -- adding another is a deliberate act that must update this "
+		       "expectation in the same commit (see IMaterial::ScattersFullSphere's doc for what "
+		       "claiming it wrongly costs)" );
 	}
 
 	std::cout << std::endl

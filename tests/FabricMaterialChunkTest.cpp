@@ -145,6 +145,7 @@
 #include "../src/Library/Materials/LambertianMaterial.h"
 #include "../src/Library/Materials/OrenNayarMaterial.h"
 #include "../src/Library/Materials/GGXMaterial.h"
+#include "WeaveTestFixture.h"
 #include "../src/Library/Materials/PerfectReflectorMaterial.h"
 #include "../src/Library/Interfaces/ILogPriv.h"
 #include "../src/Library/Interfaces/ILogPrinter.h"
@@ -1238,6 +1239,424 @@ void TestApiLevelAllowlist()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 8b. THE "REFLECTION-ONLY UNCHANGED" LOCK (R8 P1.1).
+//
+//  WHY THIS EXISTS.  P1.1 taught `fabric_material` to forward a
+//  substrate's TRANSMISSION (a `transmission thin` `weave_material`
+//  underneath used to be rendered 100 % opaque by the wrapper -- see
+//  docs/CLOTH_FABRIC_DESIGN.md 15 debt 22).  The whole safety argument
+//  for that change is that a substrate which does NOT transmit is
+//  UNTOUCHED: every new term in `FabricBRDF` / `FabricSPF` is reached
+//  only through a branch the wrapper takes when
+//  `IMaterial::ScattersFullSphere()` is true on the base, so a
+//  reflection-only stack must answer exactly as the committed code did.
+//
+//  NOTHING ELSE IN THE SUITE PINS THAT.  LayeredWhiteFurnaceTest's
+//  fabric rows are Monte-Carlo directional albedos with 1-6 % pass
+//  bands; SPFBSDFConsistencyTest and SPFPdfConsistencyTest compare the
+//  material against ITSELF (kray*pdf vs value*cos, sampler vs density),
+//  so a uniform scale on the reflect lobe would satisfy both. This block
+//  pins the ABSOLUTE numbers, captured off the COMMITTED (pre-P1.1)
+//  binary before a line of `src/` was edited, at a hand-picked grid that
+//  covers normal / mid / grazing views, in-plane and out-of-plane
+//  lights, and the two below-horizon rows (which must stay EXACTLY 0 for
+//  a reflection-only substrate -- the single most likely way to break
+//  this is a transmission branch that forgets to ask whether the base
+//  can transmit at all).
+//
+//  TWO SUBSTRATES, deliberately: a Lambertian (the class the product
+//  form is exact over) and a `transmission none` satin weave (the class
+//  P1.1 actually touches -- the SAME material the thin rows use, with
+//  its one enum flipped).
+//
+//  WHY 1e-9 RELATIVE AND NOT `==`.  The intent IS bit-identity, and on
+//  this machine every row reproduces to the last digit. The comparison
+//  is banded at 1e-9 relative only so a last-ulp `pow`/`exp`/`atan`
+//  difference in another platform's libm cannot fail the suite for a
+//  reason that has nothing to do with the model: 1e-9 is ~7 orders
+//  tighter than the smallest change any of P1.1's branches could make
+//  (they either leave the reflect path alone entirely or move it by
+//  O(1)).
+//////////////////////////////////////////////////////////////////////
+
+//! Defined with the gate-5b helpers further down; declared here so this
+//! block and 8c can sit next to the allowlist tests they belong with.
+RayIntersectionGeometric MakeIntersectionFromView( const Vector3& view );
+double LocalBaseScaling( double alpha, double m, double cosV, double cosL );
+
+//! One locked probe: view latitude, light latitude (SIGNED -- negative
+//! is below the shading normal), light azimuth, and the three numbers
+//! the committed code returned there.
+struct FabricReflectLockRow
+{
+	double	muV;			//!< cos of the view latitude, > 0
+	double	muL;			//!< cos of the light latitude; NEGATIVE = below the horizon
+	double	phiL;			//!< light azimuth, radians
+	double	value0;			//!< FabricBRDF::value(...)[0]
+	double	valueNM;		//!< FabricBRDF::valueNM(..., 550 nm)
+	double	pdf;			//!< FabricSPF::Pdf(...)
+};
+
+//! The probe grid, shared by both substrates so a row index means the
+//! same geometry in either table.
+static const double kFabricLockMuV[]  = { 1.0, 0.7071067811865476, 0.17364817766693041 };
+static const double kFabricLockMuL[]  = { 0.9, 0.5, 0.1, -0.5, -0.9 };
+static const double kFabricLockPhiL[] = { 0.0, 1.2, 2.9 };
+
+void RunFabricReflectLock(
+	const char* label,
+	const IMaterial& fab,
+	const FabricReflectLockRow* locked,
+	const size_t nLocked,
+	const bool bEmitCapture )
+{
+	IORStack iorStack( 1.0 );
+	size_t idx = 0;
+	int    mismatches = 0;
+	int    belowHorizonNonZero = 0;
+
+	for( size_t iv = 0; iv < sizeof( kFabricLockMuV ) / sizeof( kFabricLockMuV[0] ); ++iv )
+	{
+		const double muV = kFabricLockMuV[iv];
+		const double sV  = std::sqrt( std::max( 0.0, 1.0 - muV * muV ) );
+		const RayIntersectionGeometric ri = MakeIntersectionFromView( Vector3( sV, 0, muV ) );
+
+		for( size_t il = 0; il < sizeof( kFabricLockMuL ) / sizeof( kFabricLockMuL[0] ); ++il )
+		{
+			const double muL = kFabricLockMuL[il];
+			const double sL  = std::sqrt( std::max( 0.0, 1.0 - muL * muL ) );
+			for( size_t ip = 0; ip < sizeof( kFabricLockPhiL ) / sizeof( kFabricLockPhiL[0] ); ++ip )
+			{
+				const double phi = kFabricLockPhiL[ip];
+				const Vector3 l( sL * std::cos( phi ), sL * std::sin( phi ), muL );
+
+				const double v0  = fab.GetBSDF()->value( l, ri )[0];
+				const double vNM = fab.GetBSDF()->valueNM( l, ri, 550.0 );
+				const double pdf = fab.GetSPF()->Pdf( ri, l, iorStack );
+
+				if( muL < 0 && ( v0 != 0.0 || vNM != 0.0 || pdf != 0.0 ) ) {
+					++belowHorizonNonZero;
+				}
+
+				if( bEmitCapture ) {
+					std::printf( "\t{ %.17g, %.17g, %.17g, %.17g, %.17g, %.17g },\n",
+					             muV, muL, phi, v0, vNM, pdf );
+				} else if( idx < nLocked ) {
+					const FabricReflectLockRow& L = locked[idx];
+					const double got[3] = { v0, vNM, pdf };
+					const double exp3[3] = { L.value0, L.valueNM, L.pdf };
+					for( int k = 0; k < 3; ++k ) {
+						const double denom = std::max( 1e-30, std::fabs( exp3[k] ) );
+						if( std::fabs( got[k] - exp3[k] ) / denom > 1e-9 ) {
+							++mismatches;
+							std::printf( "    LOCK MISMATCH %s row %d field %d: got %.17g expected %.17g\n",
+							             label, (int)idx, k, got[k], exp3[k] );
+						}
+					}
+				}
+				++idx;
+			}
+		}
+	}
+
+	if( bEmitCapture ) {
+		return;
+	}
+
+	char buf[192];
+	std::snprintf( buf, sizeof( buf ),
+	               "reflection-only lock: %s -- row count matches the locked table", label );
+	Check( idx == nLocked, buf );
+	std::snprintf( buf, sizeof( buf ),
+	               "reflection-only lock: %s -- every value/valueNM/Pdf matches the PRE-P1.1 "
+	               "committed number to 1e-9 relative", label );
+	Check( mismatches == 0, buf );
+	std::snprintf( buf, sizeof( buf ),
+	               "reflection-only lock: %s -- a below-horizon light is EXACTLY zero "
+	               "(value, valueNM AND Pdf), because this substrate cannot transmit", label );
+	Check( belowHorizonNonZero == 0, buf );
+}
+
+// Captured 2026-09-04 off the committed pre-P1.1 binary (HEAD 73d0c983)
+// by running this file with `kFabricLockCapture = true`.  DO NOT retune
+// these to make a change pass -- they are the definition of "the
+// reflection-only path did not move".
+static const FabricReflectLockRow kFabricLockLambertian[] = {
+	{ 1, 0.90000000000000002, 0, 0.24021944635299111, 0.2402467648223503, 0.28647889756541162 },
+	{ 1, 0.90000000000000002, 1.2, 0.24021944635299111, 0.2402467648223503, 0.28647889756541173 },
+	{ 1, 0.90000000000000002, 2.8999999999999999, 0.24021944635299111, 0.2402467648223503, 0.28647889756541162 },
+	{ 1, 0.5, 0, 0.22008781209757053, 0.22011085334578737, 0.15915494309189537 },
+	{ 1, 0.5, 1.2, 0.22008781209757047, 0.22011085334578731, 0.15915494309189537 },
+	{ 1, 0.5, 2.8999999999999999, 0.22008781209757047, 0.22011085334578731, 0.15915494309189535 },
+	{ 1, 0.10000000000000001, 0, 0.15998498430331512, 0.15999711382879292, 0.031830988618379068 },
+	{ 1, 0.10000000000000001, 1.2, 0.1599849843033152, 0.159997113828793, 0.031830988618379082 },
+	{ 1, 0.10000000000000001, 2.8999999999999999, 0.15998498430331512, 0.15999711382879292, 0.031830988618379068 },
+	{ 1, -0.5, 0, 0, 0, 0 },
+	{ 1, -0.5, 1.2, 0, 0, 0 },
+	{ 1, -0.5, 2.8999999999999999, 0, 0, 0 },
+	{ 1, -0.90000000000000002, 0, 0, 0, 0 },
+	{ 1, -0.90000000000000002, 1.2, 0, 0, 0 },
+	{ 1, -0.90000000000000002, 2.8999999999999999, 0, 0, 0 },
+	{ 0.70710678118654757, 0.90000000000000002, 0, 0.24911039588901623, 0.24913535666852837, 0.28647889756541162 },
+	{ 0.70710678118654757, 0.90000000000000002, 1.2, 0.23854341668694792, 0.23856837746646009, 0.28647889756541173 },
+	{ 0.70710678118654757, 0.90000000000000002, 2.8999999999999999, 0.21892221458820876, 0.2189471753677209, 0.28647889756541162 },
+	{ 0.70710678118654757, 0.5, 0, 0.28162558817363337, 0.28164664087277486, 0.15915494309189537 },
+	{ 0.70710678118654757, 0.5, 1.2, 0.25907157907748801, 0.25909263177662956, 0.15915494309189537 },
+	{ 0.70710678118654757, 0.5, 2.8999999999999999, 0.18505799189119854, 0.18507904459034002, 0.15915494309189535 },
+	{ 0.70710678118654757, 0.10000000000000001, 0, 0.2917965945436411, 0.29180767724403173, 0.031830988618379068 },
+	{ 0.70710678118654757, 0.10000000000000001, 1.2, 0.26771161436117141, 0.2677226970615621, 0.031830988618379082 },
+	{ 0.70710678118654757, 0.10000000000000001, 2.8999999999999999, 0.109735663336575, 0.10974674603696565, 0.031830988618379068 },
+	{ 0.70710678118654757, -0.5, 0, 0, 0, 0 },
+	{ 0.70710678118654757, -0.5, 1.2, 0, 0, 0 },
+	{ 0.70710678118654757, -0.5, 2.8999999999999999, 0, 0, 0 },
+	{ 0.70710678118654757, -0.90000000000000002, 0, 0, 0, 0 },
+	{ 0.70710678118654757, -0.90000000000000002, 1.2, 0, 0, 0 },
+	{ 0.70710678118654757, -0.90000000000000002, 2.8999999999999999, 0, 0, 0 },
+	{ 0.17364817766693041, 0.90000000000000002, 0, 0.23254401388031021, 0.23255899210191505, 0.28647889756541162 },
+	{ 0.17364817766693041, 0.90000000000000002, 1.2, 0.21318059018232918, 0.21319556840393405, 0.28647889756541173 },
+	{ 0.17364817766693041, 0.90000000000000002, 2.8999999999999999, 0.14832836050487433, 0.14834333872647917, 0.28647889756541162 },
+	{ 0.17364817766693041, 0.5, 0, 0.37940190576147759, 0.37941453886025434, 0.15915494309189537 },
+	{ 0.17364817766693041, 0.5, 1.2, 0.35666751306392463, 0.35668014616270138, 0.15915494309189537 },
+	{ 0.17364817766693041, 0.5, 2.8999999999999999, 0.12052057971342069, 0.12053321281219743, 0.15915494309189535 },
+	{ 0.17364817766693041, 0.10000000000000001, 0, 0.82093637999749791, 0.82094303039647087, 0.031830988618379068 },
+	{ 0.17364817766693041, 0.10000000000000001, 1.2, 0.80991101763273921, 0.80991766803171217, 0.031830988618379082 },
+	{ 0.17364817766693041, 0.10000000000000001, 2.8999999999999999, 0.2527008060076103, 0.25270745640658321, 0.031830988618379068 },
+	{ 0.17364817766693041, -0.5, 0, 0, 0, 0 },
+	{ 0.17364817766693041, -0.5, 1.2, 0, 0, 0 },
+	{ 0.17364817766693041, -0.5, 2.8999999999999999, 0, 0, 0 },
+	{ 0.17364817766693041, -0.90000000000000002, 0, 0, 0, 0 },
+	{ 0.17364817766693041, -0.90000000000000002, 1.2, 0, 0, 0 },
+	{ 0.17364817766693041, -0.90000000000000002, 2.8999999999999999, 0, 0, 0 },
+};
+static const FabricReflectLockRow kFabricLockWeaveNone[] = {
+	{ 1, 0.90000000000000002, 0, 0.20058142302250609, 0.084271780865640245, 0.26460649146109561 },
+	{ 1, 0.90000000000000002, 1.2, 0.42287021313633538, 0.20718199087585465, 0.44866624181912279 },
+	{ 1, 0.90000000000000002, 2.8999999999999999, 0.057694015415843562, 0.025784403976089738, 0.25652164985874637 },
+	{ 1, 0.5, 0, 0.05347613811081902, 0.033377431291895646, 0.14574495818717656 },
+	{ 1, 0.5, 1.2, 0.1628275141583212, 0.078144437458396929, 0.15670115060460274 },
+	{ 1, 0.5, 2.8999999999999999, 0.052102763984241782, 0.032589713577046389, 0.14326268842760709 },
+	{ 1, 0.10000000000000001, 0, 0.068649287101749154, 0.05987464281926546, 0.03402042688904347 },
+	{ 1, 0.10000000000000001, 1.2, 0.065092861139260064, 0.058402056173172186, 0.028771384294276153 },
+	{ 1, 0.10000000000000001, 2.8999999999999999, 0.055834026099828349, 0.054737494139072598, 0.0320978938879189 },
+	{ 1, -0.5, 0, 0, 0, 0 },
+	{ 1, -0.5, 1.2, 0, 0, 0 },
+	{ 1, -0.5, 2.8999999999999999, 0, 0, 0 },
+	{ 1, -0.90000000000000002, 0, 0, 0, 0 },
+	{ 1, -0.90000000000000002, 1.2, 0, 0, 0 },
+	{ 1, -0.90000000000000002, 2.8999999999999999, 0, 0, 0 },
+	{ 0.70710678118654757, 0.90000000000000002, 0, 0.073882559019115585, 0.049785233041783013, 0.2628656555870974 },
+	{ 0.70710678118654757, 0.90000000000000002, 1.2, 0.060633082294016288, 0.037001549708642473, 0.25407270529698239 },
+	{ 0.70710678118654757, 0.90000000000000002, 2.8999999999999999, 0.38483723545508819, 0.16812671372073845, 0.31845846126218247 },
+	{ 0.70710678118654757, 0.5, 0, 0.13215673419699286, 0.11250519162466863, 0.15297612401431851 },
+	{ 0.70710678118654757, 0.5, 1.2, 0.10368691333258848, 0.086443180372481471, 0.13897991826189907 },
+	{ 0.70710678118654757, 0.5, 2.8999999999999999, 0.12639994800406801, 0.051286620181832526, 0.14198614119987443 },
+	{ 0.70710678118654757, 0.10000000000000001, 0, 0.21102873275425554, 0.20141741038253844, 0.040479640182373607 },
+	{ 0.70710678118654757, 0.10000000000000001, 1.2, 0.17256092121622127, 0.17150834562186065, 0.027898411766998685 },
+	{ 0.70710678118654757, 0.10000000000000001, 2.8999999999999999, 0.014495129924751875, 0.013533105264439174, 0.029860205972170435 },
+	{ 0.70710678118654757, -0.5, 0, 0, 0, 0 },
+	{ 0.70710678118654757, -0.5, 1.2, 0, 0, 0 },
+	{ 0.70710678118654757, -0.5, 2.8999999999999999, 0, 0, 0 },
+	{ 0.70710678118654757, -0.90000000000000002, 0, 0, 0, 0 },
+	{ 0.70710678118654757, -0.90000000000000002, 1.2, 0, 0, 0 },
+	{ 0.70710678118654757, -0.90000000000000002, 2.8999999999999999, 0, 0, 0 },
+	{ 0.17364817766693041, 0.90000000000000002, 0, 0.12108612910135154, 0.10956756233649459, 0.23420486428562601 },
+	{ 0.17364817766693041, 0.90000000000000002, 1.2, 0.099671944720272701, 0.089258809080487736, 0.21349581726773598 },
+	{ 0.17364817766693041, 0.90000000000000002, 2.8999999999999999, 0.037632029845143494, 0.025566040150138667, 0.2142089789827962 },
+	{ 0.17364817766693041, 0.5, 0, 0.29094335065915705, 0.27794797413052186, 0.15749165569592477 },
+	{ 0.17364817766693041, 0.5, 1.2, 0.25598048774399668, 0.25010758815096551, 0.11405185346966858 },
+	{ 0.17364817766693041, 0.5, 2.8999999999999999, 0.5497640686204327, 0.23954914861989321, 0.20547349830387998 },
+	{ 0.17364817766693041, 0.10000000000000001, 0, 0.78191481160212661, 0.77051123381734477, 0.070981621153956398 },
+	{ 0.17364817766693041, 0.10000000000000001, 1.2, 0.75317031948344015, 0.75232464634538632, 0.023581456820924107 },
+	{ 0.17364817766693041, 0.10000000000000001, 2.8999999999999999, 0.25067443499269881, 0.22251782767231698, 0.33895812384832691 },
+	{ 0.17364817766693041, -0.5, 0, 0, 0, 0 },
+	{ 0.17364817766693041, -0.5, 1.2, 0, 0, 0 },
+	{ 0.17364817766693041, -0.5, 2.8999999999999999, 0, 0, 0 },
+	{ 0.17364817766693041, -0.90000000000000002, 0, 0, 0, 0 },
+	{ 0.17364817766693041, -0.90000000000000002, 1.2, 0, 0, 0 },
+	{ 0.17364817766693041, -0.90000000000000002, 2.8999999999999999, 0, 0, 0 },
+};
+
+//! Flip to `true`, rebuild and run to RE-CAPTURE the two tables above
+//! (the output is paste-ready).  Left in the file on purpose: a future
+//! deliberate model change needs a documented way to re-derive them.
+static const bool kFabricLockCapture = false;
+
+void TestReflectionOnlyUnchanged()
+{
+	std::cout << "ReflectionOnlyUnchanged (R8 P1.1 -- the pre-change value lock)" << std::endl;
+
+	UniformColorPainter*  white = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) ); white->addref();
+	UniformColorPainter*  grey  = new UniformColorPainter( RISEPel( 0.7, 0.7, 0.7 ) ); grey->addref();
+	UniformScalarPainter* alph  = new UniformScalarPainter( kSheenAlpha ); alph->addref();
+	UniformScalarPainter* zeroS = new UniformScalarPainter( 0.0 ); zeroS->addref();
+
+	{
+		LambertianMaterial* lamb = new LambertianMaterial( *grey ); lamb->addref();
+		FabricMaterial* fab = new FabricMaterial( *lamb, *white, *alph, *zeroS ); fab->addref();
+		if( kFabricLockCapture ) {
+			std::printf( "  --- capture: kFabricLockLambertian ---\n" );
+		}
+		RunFabricReflectLock( "fabric / lambertian", *fab,
+		                      kFabricLockLambertian,
+		                      sizeof( kFabricLockLambertian ) / sizeof( kFabricLockLambertian[0] ),
+		                      kFabricLockCapture );
+		safe_release( fab );
+		safe_release( lamb );
+	}
+
+	{
+		// The SAME satin the P2-B thin rows use, with `transmission`
+		// left at `none`: this is the substrate class P1.1 actually
+		// touches, so it is the one whose non-thin behaviour has to be
+		// proven untouched.
+		RISE::WeaveTest::PresetWeave satin( "satin" );
+		FabricMaterial* fab = new FabricMaterial( *satin.Material(), *white, *alph, *zeroS );
+		fab->addref();
+		if( kFabricLockCapture ) {
+			std::printf( "  --- capture: kFabricLockWeaveNone ---\n" );
+		}
+		RunFabricReflectLock( "fabric / weave satin (transmission none)", *fab,
+		                      kFabricLockWeaveNone,
+		                      sizeof( kFabricLockWeaveNone ) / sizeof( kFabricLockWeaveNone[0] ),
+		                      kFabricLockCapture );
+		safe_release( fab );
+	}
+
+	safe_release( zeroS ); safe_release( alph );
+	safe_release( grey ); safe_release( white );
+}
+
+//////////////////////////////////////////////////////////////////////
+// 8c. THE SUBSTRATE'S TRANSMISSION SURVIVES THE WRAPPER
+//     (R8 P1.1, docs/CLOTH_FABRIC_DESIGN.md 15 debt 22).
+//
+//  THE DEFECT THIS PINS.  `fabric_material` admits `weave_material` as a
+//  substrate, and since P2-B a weave under `transmission thin` carries
+//  two below-horizon lobes.  The wrapper reported neither flag and
+//  returned 0 for every opposite-hemisphere pair, so a sheen layer over
+//  a sheer curtain made it 100 % OPAQUE -- with no diagnostic anywhere.
+//
+//  THREE THINGS ARE CHECKED, and all three are needed:
+//    (a) the FLAGS forward (`ScattersFullSphere` / `CouldLightPassThrough`),
+//        which is what turns on `LightSampler`'s full-sphere NEE and
+//        `AutoRasterizer`'s transmissive-material signal;
+//    (b) `value()` is actually NON-ZERO below the horizon -- claiming
+//        (a) while still returning 0 there would be strictly WORSE than
+//        the bug, because NEE would then spend shadow rays on a
+//        direction that contributes nothing;
+//    (c) the wrapped value equals the bare weave's times the CLOSED-FORM
+//        Kulla-Conty factor, re-derived here from `SheenDirectionalAlbedo`
+//        (via this file's own `LocalBaseScaling`, which shares no code
+//        with `FabricBRDF::BaseScaling`) -- so a wrapper that transmitted
+//        SOMETHING but with the wrong law still fails.
+//
+//  Plus the negative controls: over a `transmission none` weave and over
+//  a Lambertian, both flags stay false and below-horizon stays exactly 0.
+//////////////////////////////////////////////////////////////////////
+
+void TestTransmissiveSubstrateForwarding()
+{
+	std::cout << "TransmissiveSubstrateForwarding (R8 P1.1 / debt 22)" << std::endl;
+
+	UniformColorPainter*  white = new UniformColorPainter( RISEPel( 1.0, 1.0, 1.0 ) ); white->addref();
+	UniformColorPainter*  grey  = new UniformColorPainter( RISEPel( 0.7, 0.7, 0.7 ) ); grey->addref();
+	UniformScalarPainter* alph  = new UniformScalarPainter( kSheenAlpha ); alph->addref();
+	UniformScalarPainter* zeroS = new UniformScalarPainter( 0.0 ); zeroS->addref();
+
+	// The showcase configuration: sheer white linen, gap 0.2, transmit
+	// 0.25 on both families -- the same numbers LayeredWhiteFurnaceTest's
+	// P2-B rows use, so the two suites talk about one material.
+	RISE::WeaveTest::PresetWeave thin( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+	                                   /*thin=*/true, 0.25, 0.25, /*gapOverride=*/0.2 );
+	RISE::WeaveTest::PresetWeave opaque( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+	                                     /*thin=*/false, -1, -1, /*gapOverride=*/0.2 );
+	LambertianMaterial* lamb = new LambertianMaterial( *grey ); lamb->addref();
+
+	FabricMaterial* fabThin = new FabricMaterial( *thin.Material(), *white, *alph, *zeroS );
+	fabThin->addref();
+	FabricMaterial* fabOpaque = new FabricMaterial( *opaque.Material(), *white, *alph, *zeroS );
+	fabOpaque->addref();
+	FabricMaterial* fabLamb = new FabricMaterial( *lamb, *white, *alph, *zeroS );
+	fabLamb->addref();
+
+	// (a) the flags.
+	Check( thin.Material()->ScattersFullSphere() && thin.Material()->CouldLightPassThrough(),
+	       "premise: the BARE `transmission thin` weave reports both full-sphere flags" );
+	Check( fabThin->ScattersFullSphere(),
+	       "fabric over a `transmission thin` weave FORWARDS ScattersFullSphere()" );
+	Check( fabThin->CouldLightPassThrough(),
+	       "fabric over a `transmission thin` weave FORWARDS CouldLightPassThrough()" );
+	Check( !fabOpaque->ScattersFullSphere() && !fabOpaque->CouldLightPassThrough(),
+	       "fabric over a `transmission none` weave reports NEITHER flag (Phase-1 behaviour intact)" );
+	Check( !fabLamb->ScattersFullSphere() && !fabLamb->CouldLightPassThrough(),
+	       "fabric over a Lambertian reports NEITHER flag" );
+
+	// (b) + (c): the below-horizon response, against the closed form.
+	//
+	// `m` is 1 (an authored-white sheen) and `alpha` is kSheenAlpha,
+	// which is above the 0.04 floor, so the resolved parameters are known
+	// exactly here without asking the material for them.
+	static const double kMuV[] = { 1.0, 0.7071067811865476, 0.3420201433256687 };
+	static const double kMuL[] = { -0.25, -0.6, -0.95 };
+	const double relTol = 1e-9;
+
+	int    probes = 0, positives = 0, lawFailures = 0, opaqueLeaks = 0;
+	double worstRel = 0.0;
+
+	for( size_t iv = 0; iv < sizeof( kMuV ) / sizeof( kMuV[0] ); ++iv )
+	{
+		const double muV = kMuV[iv];
+		const double sV  = std::sqrt( std::max( 0.0, 1.0 - muV * muV ) );
+		const RayIntersectionGeometric ri = MakeIntersectionFromView( Vector3( sV, 0, muV ) );
+
+		for( size_t il = 0; il < sizeof( kMuL ) / sizeof( kMuL[0] ); ++il )
+		{
+			const double muL = kMuL[il];
+			const double sL  = std::sqrt( std::max( 0.0, 1.0 - muL * muL ) );
+			const Vector3 l( sL * 0.6, sL * 0.8, muL );		// an out-of-plane azimuth
+
+			const double bare    = thin.BSDF()->value( l, ri )[0];
+			const double wrapped = fabThin->GetBSDF()->value( l, ri )[0];
+			// Re-derived from the baked table, NOT FabricBRDF's helper --
+			// same discipline gate 5b's quadrature follows.
+			const double expected = bare * LocalBaseScaling( kSheenAlpha, 1.0, muV, -muL );
+
+			++probes;
+			if( bare > 0 && wrapped > 0 ) ++positives;
+			const double denom = std::max( 1e-30, std::fabs( expected ) );
+			const double rel   = std::fabs( wrapped - expected ) / denom;
+			if( rel > worstRel ) worstRel = rel;
+			if( rel > relTol ) ++lawFailures;
+
+			// Negative controls at the SAME pair.
+			if( fabOpaque->GetBSDF()->value( l, ri )[0] != 0.0 ) ++opaqueLeaks;
+			if( fabLamb->GetBSDF()->value( l, ri )[0] != 0.0 )   ++opaqueLeaks;
+		}
+	}
+
+	std::printf( "    below-horizon probes = %d, non-zero on BOTH bare and wrapped = %d, "
+	             "worst |wrapped - bare*scale| / expected = %.3g\n",
+	             probes, positives, worstRel );
+
+	Check( positives == probes,
+	       "MONEY: `fabric_material` over a `transmission thin` weave is NON-ZERO below the "
+	       "horizon at every probed pair -- the silent extinction (debt 22) is gone" );
+	Check( lawFailures == 0,
+	       "the transmitted value is the substrate's times the CLOSED-FORM two-arm Kulla-Conty "
+	       "scale (1-m*Ehat(|n.v|))(1-m*Ehat(|n.l|))/(1-m*Ebar), re-derived independently" );
+	Check( opaqueLeaks == 0,
+	       "negative control: fabric over a `transmission none` weave AND over a Lambertian both "
+	       "stay EXACTLY zero below the horizon" );
+
+	safe_release( fabLamb );
+	safe_release( fabOpaque );
+	safe_release( fabThin );
+	safe_release( lamb );
+	safe_release( zeroS ); safe_release( alph );
+	safe_release( grey ); safe_release( white );
+}
+
+//////////////////////////////////////////////////////////////////////
 // 9. GATE 5b -- hemisphericalAlbedo's substrate-coupling error,
 //    MEASURED against a brute-force double quadrature of the REAL
 //    fabric value().
@@ -1746,6 +2165,8 @@ int main()
 	TestRequireSingleOnScalarSlots();
 	TestEditorIntrospection();
 	TestApiLevelAllowlist();
+	TestReflectionOnlyUnchanged();
+	TestTransmissiveSubstrateForwarding();
 	TestHemisphericalAlbedoError();
 	TestSpectralParityAtWhiteDye();
 

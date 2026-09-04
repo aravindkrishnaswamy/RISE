@@ -304,6 +304,81 @@ static double DirectionalAlbedoFullSphere(
 }
 
 // ============================================================
+//  Full-sphere furnace driver, SPLIT BY EXIT -- R8 P1.1
+//  (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22).
+//
+//  `DirectionalAlbedoFullSphere` above returns ONE number, which is all
+//  P2-B's own rows needed.  Rows 52/53 need the three exits separately,
+//  because the closed forms they check are DIFFERENT for each:
+//
+//    reflect   -- everything above the shading normal (delta or not);
+//                 no closed form asserted here, it is the P2-A machinery
+//                 rows 47-50 already own.
+//    transmit  -- the CONTINUUM diffuse back-face lobe.  Under a fabric
+//                 wrapper this must be the BARE weave's own transmitted
+//                 share times `1 - m*Ehat(alpha, n.v)` EXACTLY -- the
+//                 recycling denominator cancels against the l-integral
+//                 of the other arm (FabricBRDF.h's transmission section
+//                 derives it in three lines).
+//    delta     -- the gap pass-through, priced with the two arms and NO
+//                 recycling denominator, so its share is
+//                 `gap * (1 - m*Ehat(alpha, n.v))^2`.
+//
+//  Summing them and mixing the two laws -- which is what a single-number
+//  driver forces -- would let an error in one be absorbed by the other.
+// ============================================================
+
+struct FullSphereSplit
+{
+	double reflect;		//!< sum of kray over rays with cos(wo) > 0
+	double transmit;	//!< sum of kray over CONTINUUM rays with cos(wo) < 0
+	double delta;		//!< sum of kray over `isDelta` rays (either side)
+	double total() const { return reflect + transmit + delta; }
+};
+
+static FullSphereSplit DirectionalAlbedoSplit(
+	ISPF& spf,
+	double incomingThetaRad )
+{
+	RayIntersectionGeometric ri = MakeIntersection( incomingThetaRad );
+	const Vector3 normal = ri.onb.w();
+	RandomNumberGenerator rng;
+	IndependentSampler sampler( rng );
+	IORStack iorStack = MakeTestIORStack( g_stubObject );
+
+	FullSphereSplit acc = { 0, 0, 0 };
+
+	for( int i = 0; i < FURNACE_SAMPLES; ++i )
+	{
+		ScatteredRayContainer scattered;
+		spf.Scatter( ri, sampler, scattered, iorStack );
+
+		for( unsigned int j = 0; j < scattered.Count(); ++j )
+		{
+			const ScatteredRay& scat = scattered[j];
+			const double kMax = ColorMath::MaxValue( scat.kray );
+			if( !( kMax >= 0 && kMax < 1e6 ) ) continue;	// NaN / inf guard, as above
+
+			if( scat.isDelta ) {
+				acc.delta += kMax;
+				continue;
+			}
+			const Vector3 wo = Vector3Ops::Normalize( scat.ray.Dir() );
+			if( Vector3Ops::Dot( wo, normal ) < 0 ) {
+				acc.transmit += kMax;
+			} else {
+				acc.reflect += kMax;
+			}
+		}
+	}
+
+	acc.reflect  /= (double)FURNACE_SAMPLES;
+	acc.transmit /= (double)FURNACE_SAMPLES;
+	acc.delta    /= (double)FURNACE_SAMPLES;
+	return acc;
+}
+
+// ============================================================
 //  Downward-ray probe (docs/CLOTH_FABRIC_DESIGN.md 9.9 gate 4)
 //
 //  Config 7's 2026-09-01 re-diagnosis rested on a direct measurement:
@@ -2562,6 +2637,193 @@ int main()
 			for( int i = 0; i < NUM_THETA; ++i ) r51.albedo[i] = deltaOk ? 1.0 : 0.0;
 			r51.passed = deltaOk;
 		}
+	}
+
+	//  ---- 52/53. R8 P1.1 -- A FABRIC WRAPPER OVER A SHEER WEAVE
+	//  (docs/CLOTH_FABRIC_DESIGN.md 15 debt 22).
+	//
+	//  Row 48 above is the fuzz-over-weave stack with the weave OPAQUE.
+	//  These two are the same stack with the weave SHEER, and they exist
+	//  because until 2026-09-04 `fabric_material` returned 0 for every
+	//  opposite-hemisphere pair: wrapping a sheer curtain in a sheen
+	//  layer made it 100 % opaque, silently, and NOTHING in this suite
+	//  could see it -- row 48's substrate is `transmission none`, and
+	//  rows 50/51 measure the BARE weave.
+	//
+	//  Both rows assert CLOSED FORMS, not locked curves.  The wrapper's
+	//  effect on each exit is exactly derivable (FabricBRDF.h's
+	//  transmission section; FabricSPF.cpp's delta note), and the
+	//  predictions here are re-derived from `SheenDirectionalAlbedo`
+	//  through this file's own `FuzzTransmit` -- which shares no code
+	//  with `FabricBRDF`'s statics, the same independence discipline the
+	//  gate-3 rows follow.
+	{
+		std::cout << "\n";
+		std::cout << "  R8 P1.1 -- fabric (white sheen, alpha 0.3) over a SHEER weave\n";
+
+		const double kSheerGap52      = 0.2;
+		const double kSheerTransmit52 = 0.25;
+		const double kFabricSheerAlpha = 0.3;		// `fowAlpha` / `sheerAlpha` below
+		const double kCeiling52       = 1.05;
+
+		UniformScalarPainter* sheerAlpha = new UniformScalarPainter( kFabricSheerAlpha );
+		sheerAlpha->addref();
+
+		// ---- 52. THE SHEER STACK: total energy, and the transmitted
+		// share against its closed form.
+		//
+		// EPSILON.  Both sides of the transmit comparison are Monte-Carlo
+		// estimates at FURNACE_SAMPLES = 100000 of quantities of order
+		// 0.1, so their combined noise is ~1e-3; 0.01 is ~10x that and
+		// still an order of magnitude tighter than the 0.25 -> 0 error a
+		// wrapper that dropped the transmission entirely would show (and
+		// than the ~30 % error a wrong-law wrapper would show at grazing,
+		// where `1 - m*Ehat` runs 0.6-0.7).
+		const double kSheerPredEps52 = 0.01;
+
+		bool row52Passed = true;
+		double wrapTotal[NUM_THETA], wrapTransmit[NUM_THETA], predTransmit[NUM_THETA];
+		{
+			RISE::WeaveTest::PresetWeave sheer( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+			                                    /*thin=*/true, kSheerTransmit52, kSheerTransmit52,
+			                                    kSheerGap52 );
+			FabricMaterial* fabSheer = new FabricMaterial(
+				*sheer.Material(), *one, *sheerAlpha, *sWeave0 );
+			fabSheer->addref();
+
+			std::cout << "  " << std::left << std::setw( 34 ) << "config";
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				std::ostringstream h; h << "th" << (int)THETA_DEG[i];
+				std::cout << std::right << std::setw( 18 ) << h.str();
+			}
+			std::cout << "\n";
+
+			std::cout << "  " << std::left << std::setw( 34 ) << "bare sheer weave (R / T / delta)";
+			double bareTransmit[NUM_THETA];
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				const FullSphereSplit b = DirectionalAlbedoSplit( *sheer.SPF(), THETA_DEG[i] * PI / 180.0 );
+				bareTransmit[i] = b.transmit;
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 3 )
+					<< b.reflect << "/" << b.transmit << "/" << b.delta;
+				std::cout << std::right << std::setw( 18 ) << cell.str();
+			}
+			std::cout << "\n  " << std::left << std::setw( 34 ) << "fabric / sheer  (R / T / delta)";
+			FullSphereSplit wrap[NUM_THETA];
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				wrap[i] = DirectionalAlbedoSplit( *fabSheer->GetSPF(), THETA_DEG[i] * PI / 180.0 );
+				wrapTotal[i]    = wrap[i].total();
+				wrapTransmit[i] = wrap[i].transmit;
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 3 )
+					<< wrap[i].reflect << "/" << wrap[i].transmit << "/" << wrap[i].delta;
+				std::cout << std::right << std::setw( 18 ) << cell.str();
+			}
+			std::cout << "\n  " << std::left << std::setw( 34 ) << "predicted T = bare_T * (1-m*Ehat(v))";
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				const double muV = std::cos( THETA_DEG[i] * PI / 180.0 );
+				// m == 1: the sheen dye is the shared white `one` painter.
+				predTransmit[i] = bareTransmit[i] * FuzzTransmit( kFabricSheerAlpha, 1.0, muV );
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 3 ) << predTransmit[i];
+				std::cout << std::right << std::setw( 18 ) << cell.str();
+			}
+			std::cout << "\n";
+
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				// (a) energy stays bounded;
+				if( !( wrapTotal[i] <= kCeiling52 ) ) row52Passed = false;
+				// (b) the transmission is NOT extinguished -- the whole
+				//     content of debt 22;
+				if( !( wrapTransmit[i] > 0.0 ) ) row52Passed = false;
+				// (c) the sheen can only ATTENUATE it (a strict
+				//     consequence of (d), asserted separately so a wrong
+				//     law that happened to land near the prediction at
+				//     one angle still trips something);
+				if( !( wrapTransmit[i] <= bareTransmit[i] + kSheerPredEps52 ) ) row52Passed = false;
+				// (d) and it matches the closed form.
+				if( std::fabs( wrapTransmit[i] - predTransmit[i] ) > kSheerPredEps52 ) row52Passed = false;
+			}
+			if( !row52Passed ) {
+				std::cout << "    FAIL: the wrapped sheer stack either exceeded " << kCeiling52
+				          << ", extinguished its transmission, brightened it above the bare weave's, "
+				             "or missed the closed-form prediction by more than "
+				          << kSheerPredEps52 << ".\n";
+			}
+
+			safe_release( fabSheer );
+		}
+		ConfigReport& r52 = add( "52. R8 P1.1 fabric / sheer weave -- transmission survives the wrapper",
+			kPosturePass, 0.01,
+			"pass/fail indicator only -- the per-exit split (reflect / transmit / delta) for the bare "
+			"and wrapped materials, and the transmit prediction bare_T*(1-m*Ehat(n.v)), are in the "
+			"table printed above" );
+		for( int i = 0; i < NUM_THETA; ++i ) r52.albedo[i] = row52Passed ? 1.0 : 0.0;
+		r52.passed = row52Passed;
+
+		// ---- 53. THE GAP-ONLY SUBSTRATE UNDER SHEEN, CLOSED FORM.
+		//
+		// `transmit 0` on both families leaves the gap's DELTA lobe as
+		// the material's only transmission.  Its share under the wrapper
+		// is exactly
+		//
+		//     gap * (1 - m*Ehat(alpha, n.v))^2
+		//
+		// -- the two fuzz crossings, and NO `1/(1 - m*Ebar)` recycling
+		// factor, because a measure-zero direction receives none of a
+		// diffusely redistributed series (FabricSPF.cpp's delta note).
+		// Row 51 is the bare twin of this row and lands on `gap` itself.
+		//
+		// EPSILON.  The estimator is `Bernoulli((1-w)*gap)` scaled by
+		// `(1-m*Ehat(v))^2/(1-w)`, i.e. mean ~0.19 and per-sample
+		// variance ~0.15 at theta=0, so one sigma at FURNACE_SAMPLES is
+		// ~1.2e-3.  0.01 is ~8 sigma -- the same posture row 51 takes for
+		// the same reason, and far tighter than the two error modes that
+		// matter: dropping the delta lobe (-> 0) or charging it the
+		// recycling denominator (which would read ~13 % HIGH at theta 0
+		// and more at higher roughness).
+		const double kDeltaEps53 = 0.01;
+
+		bool row53Passed = true;
+		{
+			RISE::WeaveTest::PresetWeave gapOnly( "linen", 0.0, 0.5, /*whiteDyes=*/true,
+			                                      /*thin=*/true, 0.0, 0.0, kSheerGap52 );
+			FabricMaterial* fabGapOnly = new FabricMaterial(
+				*gapOnly.Material(), *one, *sheerAlpha, *sWeave0 );
+			fabGapOnly->addref();
+
+			std::cout << "  " << std::left << std::setw( 34 ) << "fabric / gap-only: delta measured";
+			double meas[NUM_THETA], pred[NUM_THETA];
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				meas[i] = DirectionalAlbedoSplit( *fabGapOnly->GetSPF(), THETA_DEG[i] * PI / 180.0 ).delta;
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 4 ) << meas[i];
+				std::cout << std::right << std::setw( 18 ) << cell.str();
+			}
+			std::cout << "\n  " << std::left << std::setw( 34 ) << "  predicted gap*(1-m*Ehat(v))^2";
+			for( int i = 0; i < NUM_THETA; ++i ) {
+				const double muV = std::cos( THETA_DEG[i] * PI / 180.0 );
+				const double t   = FuzzTransmit( kFabricSheerAlpha, 1.0, muV );
+				pred[i] = kSheerGap52 * t * t;
+				std::ostringstream cell; cell << std::fixed << std::setprecision( 4 ) << pred[i];
+				std::cout << std::right << std::setw( 18 ) << cell.str();
+				if( std::fabs( meas[i] - pred[i] ) > kDeltaEps53 ) row53Passed = false;
+				// The bound the closed form implies, asserted directly:
+				// a fuzz layer can never pass MORE light through an
+				// aperture than arrived at it.
+				if( !( meas[i] <= kSheerGap52 + kDeltaEps53 ) ) row53Passed = false;
+			}
+			std::cout << "\n";
+			if( !row53Passed ) {
+				std::cout << "    FAIL: the wrapped gap-only delta share missed `gap*(1-m*Ehat(v))^2` by "
+				             "more than " << kDeltaEps53 << ", or exceeded `gap` itself.\n";
+			}
+
+			safe_release( fabGapOnly );
+		}
+		ConfigReport& r53 = add( "53. R8 P1.1 fabric / gap-only weave -- delta share is gap*(1-m*Ehat)^2",
+			kPosturePass, 0.01,
+			"pass/fail indicator only -- the measured/predicted delta pairs are in the table above" );
+		for( int i = 0; i < NUM_THETA; ++i ) r53.albedo[i] = row53Passed ? 1.0 : 0.0;
+		r53.passed = row53Passed;
+
+		safe_release( sheerAlpha );
 	}
 
 	PrintReport( reports );
