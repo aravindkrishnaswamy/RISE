@@ -10801,6 +10801,20 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	std::uint64_t ownerCertifiedPreflightBytes=0u;
 	const bool ownerPreflightSizeKnown=FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
 		shape,ownerCertifiedPreflightBytes);
+	FireProductionProjectionShape tier8OwnerShape=shape;
+	tier8OwnerShape.nx=69u;tier8OwnerShape.ny=69u;tier8OwnerShape.nz=106u;
+	tier8OwnerShape.cellWidthM=static_cast<float>(0.30/9.80665);
+	std::uint64_t tier8OwnerCertifiedBytes=0u;
+	const bool tier8OwnerWorkingSetScales=
+		FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
+			tier8OwnerShape,tier8OwnerCertifiedBytes)&&
+		tier8OwnerCertifiedBytes>(UINT64_C(2)<<30u);
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+		"name=legacy_fixed_two_gibibyte_cap tier=8 dimensions=69x69x106 "
+		"certified_working_set_bytes=%llu historical_cap_bytes=%llu passed=%d\n",
+		static_cast<unsigned long long>(tier8OwnerCertifiedBytes),
+		static_cast<unsigned long long>(UINT64_C(2)<<30u),
+		tier8OwnerWorkingSetScales?1:0);
 	const bool ownerWorkingSetPreflightRefused=ownerPreflightSizeKnown&&ownerRED(
 		"combined_owner_working_set_preflight",[&](auto& value){
 			value.qualificationWorkingSetLimitBytes=ownerCertifiedPreflightBytes-1u;});
@@ -11836,7 +11850,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerStaleRefused&&ownerOrderRefused&&ownerForgedRefused&&ownerCallbackRefused&&
 		ownerAtomicRefused&&ownerPolicyDivergenceRefused&&
 		ownerStaleTargetPublicationRefused&&ownerUnverifiedPrivateBufferRefused&&
-		ownerActualInterstageTransferRefused&&activeCycleREDs&&limiterOutcomeRED;
+		ownerActualInterstageTransferRefused&&tier8OwnerWorkingSetScales&&
+		activeCycleREDs&&limiterOutcomeRED;
 	const bool passed=thresholdCoverage&&exactThresholdNoDrain&&policyOwnersIdentical&&
 		deviceExactPositiveNoDrain&&
 		deviceExactNegativeNoDrain&&independentBoundCanFail&&allBoundsPass&&

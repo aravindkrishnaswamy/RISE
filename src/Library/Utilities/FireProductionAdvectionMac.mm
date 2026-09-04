@@ -7848,6 +7848,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(error)*error="projected-Heun complete-owner working-set preflight refused";
 				return false;
 			}
+			const std::uint64_t deviceWorkingSetBytes=context_.device?
+				static_cast<std::uint64_t>([context_.device recommendedMaxWorkingSetSize]):0u;
+			if(deviceWorkingSetBytes==0u||preflightBytes>deviceWorkingSetBytes){
+				if(error)*error="projected-Heun complete-owner working set exceeds the Metal device limit";
+				return false;
+			}
 			result.certifiedWorkingSetBytes=preflightBytes;
 			if(!Prepare(error))return false;
 			transferPhase_=OwnerTransferPhase::Interstage;
@@ -9290,7 +9296,13 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			!add((54u*shape.CellCount()+48u*(FireProductionProjectionFaceCount(shape,0u)+
 				FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float)))return false;
-		return bytes<=(UINT64_C(2)<<30u);
+		// The complete owner intentionally retains adjacent Picard candidates.  Its
+		// peak can exceed the historical process-agnostic two-GiB fixture ceiling at
+		// production grids even when it is comfortably inside the active Metal
+		// device's advertised working set.  Run() binds this certificate to that
+		// device limit before allocating; qualificationWorkingSetLimitBytes remains
+		// the deterministic under-statement RED.
+		return true;
 	}
 
 	bool AttemptFireProductionProjectedHeunMetalOwner(
