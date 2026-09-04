@@ -6130,3 +6130,18 @@ sweep claims the sealed tier-8 replay verdict.
   recreates the stalls this architecture is meant to remove.
 - Altering the reference multigrid's measured 41,600 smoother sweeps/step:
   remains a separate class-B oracle campaign and is not part of production.
+
+### r201c owner qualification boundary
+
+The resident projected-Heun owner is not qualified by a green final publication
+alone. The r201c repair closes the shared-alpha Heun operator, working-set
+preflight, and observational residency defects, but its reviewed-fp64 primary
+gate remains RED on the coupled projection-to-stress trajectory. Matched-input
+RHS kernels agree at roughly `6e-11 kg m^-2 s^-2`; end-to-end Heun stress differs
+by `4.82e-5 kg m^-2 s^-2`. Until the per-iteration parent trajectory is published
+and bounded term-by-term, no cancellation-sensitive or output-magnitude bound is
+admissible, and neither the device kernel sweep nor tier-8 ported replay can be
+claimed as the r201 completion gate.
+
+Rejection evidence SHA-256:
+`1122bf199f02a75c3fc6802fbc6e292b17a8a1ab26f6d718490ccd6b8c2e88ed`.

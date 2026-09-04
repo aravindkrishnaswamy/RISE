@@ -5439,3 +5439,26 @@ it was already tried and refuted here.
   changes. Golden checkpoint `1b944176...4947` is untouched. The ported half
   of the sealed tier-8 replay is the next measurement; no replay verdict is
   claimed here.
+
+### r201c — resident owner repair remains rejected on the coupled stress trajectory
+
+The r201 review rejection was acted on at `7584466b`. R1 now recomputes the R0
+compatible momentum flux with the accepted Heun shared alpha and applies exactly
+one half of each stage rate. Metal mutants for the rejected 3/4--1/4 tableau and
+the stale R0-alpha cache both bit-mismatch the reviewed result. The complete-owner
+working-set cap is a pre-allocation preflight, and forbidden full-state transfers
+are classified from storage modes, byte extent, and owner phase rather than a
+caller label.
+
+The broadened primary gate did not pass. At the worst R1 face the Metal/fp64 Heun
+stress difference is `4.8190833271536445e-05 kg m^-2 s^-2`, 16,383 times the
+provisional output-scale bound; R1 provisional momentum and the R2 Picard path
+then separate. A production-fp32 owner reproduces the end-to-end separation, but
+the same Metal RHS kernel evaluated at matched R0/R1 inputs differs from the fp32
+RHS by only `2.91e-11` / `5.82e-11 kg m^-2 s^-2`. The kernel port is therefore not
+exonerated by a widened tolerance, nor is it named as the defect: the missing
+instrument is the per-iteration coupled input trajectory (target, active class,
+shared alpha, projected velocity, transport, then stress). Kernel sweep and the
+sealed tier-8 replay remain blocked. Evidence:
+`r201_projected_heun_metal_owner/r201c_repair_gate_rejection.v1`, SHA-256
+`1122bf199f02a75c3fc6802fbc6e292b17a8a1ab26f6d718490ccd6b8c2e88ed`.
