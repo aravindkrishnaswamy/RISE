@@ -5462,3 +5462,65 @@ shared alpha, projected velocity, transport, then stress). Kernel sweep and the
 sealed tier-8 replay remain blocked. Evidence:
 `r201_projected_heun_metal_owner/r201c_repair_gate_rejection.v1`, SHA-256
 `1122bf199f02a75c3fc6802fbc6e292b17a8a1ab26f6d718490ccd6b8c2e88ed`.
+
+### r201e — iteration trace names and closes the R2 parent-class defect
+
+The per-iteration Metal/fp64 trace resolves r201c under the first pre-registered
+reading: the first disagreement is continuous and far outside its independent
+termwise enclosure, not an ambiguous discrete class decision. At R2 trace index
+1, active and next-active class sequences still agree, but the old schedule's
+physical-energy flux differs by `10715.419921875 W m^-2` against a local
+`20.884440972136915 W m^-2` enclosure (ratio `513.08148186350945`). The
+resulting target differs by `1.7315866886720452 s^-1` against
+`4.0301125282914901e-05 s^-1` (ratio `42966.211898954774`). The exact named
+mutant reproduces both failures.
+
+The defect is an immediate-parent error. R2 projects using its sealed Picard
+class and derives a new endpoint class from the force-inclusive projected
+velocity. The fp64 r190 owner evaluates R2 physical flux with that derived
+endpoint class; Metal incorrectly reused the projection-input class. The repair
+does not merely pass a private `nextOpenClass` buffer. A device-produced
+endpoint-class authority now seals the class bytes to the immediate projection
+publication, resident transport publication, stage, attempt, topology, and
+predicate parameters; physical-flux publication consumes that identity. R0/R1
+and R2 all use this same authority path. A valid-looking unverified private
+buffer is refused before publication. No tolerance changed and no two-path
+class envelope was activated.
+
+After the repair, every R0/R1/R2 trace quantity is gated independently:
+projection target, active classes, shared alpha, projected velocity, each
+transport-state row and coefficient, each physical-flux row, EOS ratio, face
+density, projected momentum, and stress. The transport enclosure is local and
+nullspace-basis-weighted; the target enclosure propagates coefficient and flux
+uncertainty with `|c| delta_f + |f| delta_c + delta_c delta_f`, without
+subtractive cancellation. A quiet-face RED proves that a former across-field
+maximum can no longer hide a local error. All class sequences agree. The worst
+per-iteration passing residual/local-bound ratio is `0.056515593864491342`; the
+worst target-trajectory ratio is `4.4228756676445552e-05`. The terminal owner
+gate passes with worst ratio `0.46579926702613617` on R1 Heun advection. The
+Picard residual history remains a descriptive mixed-quantity maximum rather
+than an acceptance bound; the earlier `16383` stress ratio is likewise only a
+description of the rejected trajectory.
+
+The alternate owner-level branch-obligation ruling remains pre-registered: if
+future alpha, active-set, or other class sequences first diverge where the
+certified predicate interval crosses zero, the r123/r124 two-successor envelope
+applies after the predicate obligation is discharged. A predicate interval
+alone is not an acceptance envelope; the current gate therefore still requires
+matching classes. A predicate interval that does not cross zero is a defect.
+This exact trace did not enter the alternate case.
+
+The EOS refusal witness is also repaired: an atomic minimum identifies the
+first failing cell, while a per-cell term map supplies that same cell's reason.
+A two-cell RED makes cell 0 fail represented-pressure rounding and cell 1 fail
+deviation rounding, then requires both paired witnesses. The exact M4 owner
+gate and complete kernel sweep pass at source commit `e45783a0`, with
+`919.722709 ms` device and `948.861708 ms` wall p95 on the qualification
+fixture. The live production entry records zero interstage full-grid transfers;
+the trace-only gate records its deliberate terminal captures separately.
+Evidence is
+`r201_projected_heun_metal_owner/r201e_authenticated_endpoint_owner_gate.v1`.
+Its SHA-256 is
+`d59578af38051f238df5e470c01ea068f10506c63af353c64db1bbfdf19bf699`.
+The sealed tier-8 ported replay remains the next measurement; no three-way
+verdict is claimed here. Golden checkpoint `1b944176...4947` is untouched.

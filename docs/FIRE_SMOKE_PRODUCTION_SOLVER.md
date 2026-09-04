@@ -6145,3 +6145,58 @@ claimed as the r201 completion gate.
 
 Rejection evidence SHA-256:
 `1122bf199f02a75c3fc6802fbc6e292b17a8a1ab26f6d718490ccd6b8c2e88ed`.
+
+### r201e iteration-trajectory qualification and endpoint-class authority
+
+The owner comparison gates the coupled trajectory before terminal publication.
+For every R0/R1/R2 Picard trace it compares the projection target, active and
+next-active pressure-open classes, shared alpha, projected velocity, all nine
+transport-state rows, temperature, diffusivity, conductivity, molecular
+viscosity, gas and face density, the eight physical mass-flux rows, physical
+energy flux, represented pressure ratio, projected momentum, and stress. Every
+continuous value uses a same-unit local termwise enclosure; no observed
+Metal/fp64 difference is allowed to enlarge its own downstream bound. The
+mixed-unit, subtractive Picard maximum is retained only as a descriptive
+control trace. Acceptance uses the contributing quantities and exact
+iteration/class outcomes.
+
+This trace found a real schedule defect before any class ambiguity. The R2
+projection-input class and its immediately derived endpoint class can differ
+even when the Metal and fp64 class sequences agree. Physical flux must consume
+the latter. Reusing the former produces `10715.419921875 W m^-2` of
+physical-energy-flux disagreement (513 times its enclosure) and then
+`1.7315866886720452 s^-1` of target disagreement (7299 times its independently
+propagated enclosure). The live path now creates an endpoint-class authority on
+device, sealing its bytes to the immediate projection and transport
+publications plus stage, attempt, topology, and predicate parameters. Physical
+flux consumes that authority by seal; an unverified private class buffer is a
+named refusal RED. A qualification-only mutant restores the old edge and must
+reproduce both continuous failures.
+
+Every bound has the same scope and units as the quantity it gates. Transport
+state reconstruction uses per-output nullspace-basis weights. Physical flux is
+bounded per face and field. Target coefficient/input uncertainty is propagated
+without cancellation as `|c| delta_f + |f| delta_c + delta_c delta_f`. A
+quiet-face mutant that sat below the former across-field maximum now fails its
+zero local enclosure.
+
+If a later trace instead first diverges at an alpha, active-set, or branch
+decision whose certified predicate interval crosses zero, qualification may
+use the r123/r124 two-successor envelope for that decision only after the
+predicate obligation and both successor bounds are discharged. Predicate
+crossing alone never admits a value. If the interval does not cross zero, the
+difference is a defect. r201e does not activate this alternative because all
+class sequences match.
+
+At exact source commit `e45783a0`, the per-iteration worst passing ratio is
+`0.056515593864491342`, the target-trajectory worst is
+`4.4228756676445552e-05`, and the terminal owner worst is
+`0.46579926702613617`. R0/R1/R2 target traces, the live production entry, and
+the independent transport/physical-flux/EOS/target/FCT/compatible-momentum
+kernel sweep all pass. Evidence and raw-log hashes are sealed in
+`rendered/fire_production_calibration/r201_projected_heun_metal_owner/`
+`r201e_authenticated_endpoint_owner_gate.v1` (SHA-256
+`d59578af38051f238df5e470c01ea068f10506c63af353c64db1bbfdf19bf699`).
+No case-authored input changed, so
+`case_record_id` is stable; the producer executable identity changes. The
+golden checkpoint remains untouched.
