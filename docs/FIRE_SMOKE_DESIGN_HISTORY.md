@@ -5337,3 +5337,42 @@ it was already tried and refuted here.
   checkpoint `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`
   remains untouched. Evidence SHA-256 is
   `5e3b6ddcf2202c689234f6d9ef1a4a1e37a68860a638c33ef68bcdde025212cb`.
+
+- **r201a fresh-review rejection and containment (2026-09-04):** supersedes
+  r201's acceptance language before integration or a replay verdict. Three
+  independent reviews of exact commit `9fa2691a` found eight P1 contract
+  failures. First, the Metal R1 path replaced its raw flux by the R0/R1
+  average before forming the R1 momentum rate, then averaged that rate with
+  R0 again; the resulting momentum update is approximately
+  `3/4 A0 + 1/4 A1`, not Heun's `1/2(A0+A1)`. Second, a converged Picard
+  iteration publishes the stage derived from the preceding target without the
+  CPU owner's terminal projection and re-derivation against the current
+  target. Third, terminal publication checks only 21 nonzero identity words,
+  not their stage/parent relationships or current payload binding. Fourth,
+  the projection seam treats any private `MTLBuffer` as authority, so a CPU
+  blit can substitute a nonzero target/class/head value. Fifth, the device
+  target implements monitored r170 tail drainage while the fp64 owner still
+  applies global r70 correction, so the compared owners solve different
+  policies. Sixth, owner and sweep were combined despite r196's one-rung-per-
+  commit order. Seventh, the `96.723%` payload-hashing attribution was not
+  measured: it is only total device time minus projection time and also
+  contains transport, flux, FCT, EOS, target, owner, and terminal work.
+  Eighth, the sweep/prefix transcript predates `9fa2691a` and records neither
+  the exact commit nor executable SHA; the build identity names parent
+  `f7a89ab` plus a dirty diff.
+
+  Review also rejected the residency and working-set proof: the transfer
+  counter is synthesized, its mutant performs no transfer, and allocation
+  accounting is cumulative and omits projection/resident-authority
+  allocations rather than observing live peak. Mirror coverage omits
+  intermediate/published fields and its momentum enclosure uses ambient
+  rather than local face density. Finally, `1822.307` is a fractional step
+  equivalent; the fixed-initial-step ceiling is 1,823 steps and about `40.214`
+  wall-hours, still only an initial-prefix extrapolation rather than a bound
+  under the replay's evolving CFL schedule. The earlier tree-digest proposal
+  is therefore demoted to an unruled candidate pending isolated profiling.
+  The prototype stays contained on `codex/r183-fct`; it is not admissible for
+  the ported replay and must not be integrated onto `fire-smoke-design`.
+  Golden checkpoint `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`
+  remains untouched. Corrected rejection evidence SHA-256 is
+  `3d97d0fb62af96b43cf2e8087aa5f9c41570a2c3423bbb447c656e7b05bdfc97`.
