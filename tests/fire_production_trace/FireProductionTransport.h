@@ -1362,6 +1362,8 @@ namespace RISEFireProductionTrace
 		std::uint32_t deviceFailureBitmap;
 		std::uint32_t firstEOSFailureCell;
 		std::uint32_t firstEOSFailureTermBitmap;
+		std::uint32_t secondEOSFailureCell;
+		std::uint32_t secondEOSFailureTermBitmap;
 		std::uint64_t certifiedWorkingSetBytes;
 		std::uint64_t actualMetalAllocationBytes;
 		std::uint64_t liveAuthorityAllocationBytes;
@@ -1381,6 +1383,8 @@ namespace RISEFireProductionTrace
 			terminalStagingCount(0u),branchObligationBitmap(0u),deviceFailureBitmap(0u),
 			firstEOSFailureCell(std::numeric_limits<std::uint32_t>::max()),
 			firstEOSFailureTermBitmap(0u),
+			secondEOSFailureCell(std::numeric_limits<std::uint32_t>::max()),
+			secondEOSFailureTermBitmap(0u),
 			certifiedWorkingSetBytes(0u),actualMetalAllocationBytes(0u),
 			liveAuthorityAllocationBytes(0u),
 			transportPublicationIdentity(0u),physicalFluxPublicationIdentity(0u),

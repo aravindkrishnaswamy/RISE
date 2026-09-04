@@ -442,6 +442,9 @@ namespace RISE
 		//! sealed projection-input class instead of the force-inclusive
 		//! projection's immediately derived endpoint class.
 		bool qualificationR2SealedClassPhysicalFlux;
+		//! Replaces the class buffer after its device identity was issued.  The
+		//! physical-flux authority must refuse it before any publication.
+		bool qualificationUnverifiedEndpointClassBuffer;
 		bool qualificationCaptureIterationTrace;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
@@ -464,6 +467,7 @@ namespace RISE
 			qualificationThreeQuarterHeunWeighting(false),
 			qualificationReuseR0LimiterAlpha(false),
 			qualificationR2SealedClassPhysicalFlux(false),
+			qualificationUnverifiedEndpointClassBuffer(false),
 			qualificationCaptureIterationTrace(false),
 			qualificationWorkingSetLimitBytes(0u)
 		{ gravityMPerS2.fill(0.0f); }

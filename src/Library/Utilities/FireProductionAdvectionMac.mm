@@ -2013,7 +2013,8 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 				ownerGasSource,ownerPredictMomentum,
 				ownerHeunMomentum,ownerBindTransport,ownerAverageFlux,ownerBindAveragedFlux,
 				ownerBindCandidate,ownerComposeTarget,ownerIdentifyTarget,ownerNextOpenClass,
-				ownerMinimumField,ownerHalfField,ownerResidual,ownerClassResidual,ownerIntegratedOpenHead,
+				ownerIdentifyEndpointClass,ownerMinimumField,ownerHalfField,ownerResidual,
+				ownerClassResidual,ownerIntegratedOpenHead,
 				ownerIssueStageSeal,ownerIssuePublication;
 			FireProductionEOSLogMetalQualificationIdentity eosLogIdentity;
 			std::string error;
@@ -2354,12 +2355,14 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
  device const float* faceEnthalpy [[buffer(9)]],device const ulong* transportIdentity [[buffer(10)]],
  device const float* ambient [[buffer(11)]],device const uchar* inflow [[buffer(12)]],
  device const float* physicalBasis [[buffer(13)]],device const float* advectiveBasis [[buffer(14)]],
- device const float* projector [[buffer(15)]],device ulong* identity [[buffer(16)]],
- device atomic_uint* failure [[buffer(17)]],constant TransportParams& p [[buffer(18)]],
- constant PhysicalParams& extra [[buffer(19)]],
+ device const float* projector [[buffer(15)]],device const ulong* endpointClassIdentity [[buffer(16)]],
+ device ulong* identity [[buffer(17)]],device atomic_uint* failure [[buffer(18)]],
+ constant TransportParams& p [[buffer(19)]],constant PhysicalParams& extra [[buffer(20)]],
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
- if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul){identity[0]=0ul;return;}
+ if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul||
+  endpointClassIdentity[0]==0ul){identity[0]=0ul;return;}
  ulong hash=14695981039346656037ul,all=pf_all_faces(p);hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=endpointClassIdentity[0];hash*=1099511628211ul;
  for(uint word=0u;word<9u*all;++word){hash^=ulong(as_type<uint>(donor[word]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(advectiveDelta[word]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(highAdvective[word]));hash*=1099511628211ul;
@@ -3136,6 +3139,20 @@ kernel void owner_next_open_class(device const uchar* used [[buffer(0)]],
  bool firstOpen=true;for(uint earlier=0u;earlier<side;++earlier)
   firstOpen=firstOpen&&t.boundary[earlier]!=1u;
  if(p.forceActiveCycle!=0u&&firstOpen&&gid==t.sideOffset[side])next[gid]=uchar(used[gid]^1u);}
+kernel void identify_resident_endpoint_class(device const uchar* classes [[buffer(0)]],
+ device const ulong* projectionIdentity [[buffer(1)]],
+ device const ulong* transportIdentity [[buffer(2)]],device ulong* identity [[buffer(3)]],
+ device atomic_uint* failure [[buffer(4)]],constant TransportParams& t [[buffer(5)]],
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ if(projectionIdentity[0]==0ul||transportIdentity[0]==0ul||t.attempt==0ul){identity[0]=0ul;
+  atomic_fetch_or_explicit(failure,1u<<26u,memory_order_relaxed);return;}
+ ulong hash=14695981039346656037ul;hash^=projectionIdentity[0];hash*=1099511628211ul;
+ hash^=transportIdentity[0];hash*=1099511628211ul;uint count=t.sideOffset[5]+t.nx*t.ny;
+ for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
+ hash^=ulong(t.stage);hash*=1099511628211ul;hash^=t.attempt;hash*=1099511628211ul;
+ for(uint side=0u;side<6u;++side){hash^=ulong(t.boundary[side]);hash*=1099511628211ul;
+  hash^=ulong(t.sideOffset[side]);hash*=1099511628211ul;}
+ identity[0]=hash==0ul?1ul:hash;}
 kernel void owner_minimum_field(device const float* a [[buffer(0)]],device const float* b [[buffer(1)]],
  device float* output [[buffer(2)]],constant uint& count [[buffer(3)]],uint gid [[thread_position_in_grid]]){
  if(gid<count)output[gid]=min(a[gid],b[gid]);}
@@ -3230,7 +3247,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				diagnoseEOSLog(nil),ownerIssueBootstrap(nil),ownerPackFaces(nil),ownerAverageField(nil),ownerGasSource(nil),
 				ownerPredictMomentum(nil),ownerHeunMomentum(nil),ownerBindTransport(nil),
 				ownerAverageFlux(nil),ownerBindAveragedFlux(nil),ownerBindCandidate(nil),
-				ownerComposeTarget(nil),ownerIdentifyTarget(nil),ownerNextOpenClass(nil),ownerMinimumField(nil),
+				ownerComposeTarget(nil),ownerIdentifyTarget(nil),ownerNextOpenClass(nil),
+				ownerIdentifyEndpointClass(nil),ownerMinimumField(nil),
 				ownerHalfField(nil),
 				ownerResidual(nil),ownerClassResidual(nil),ownerIntegratedOpenHead(nil),
 				ownerIssueStageSeal(nil),ownerIssuePublication(nil)
@@ -3282,6 +3300,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					ownerComposeTarget=pipeline("owner_compose_target");
 					ownerIdentifyTarget=pipeline("owner_identify_target");
 					ownerNextOpenClass=pipeline("owner_next_open_class");
+					ownerIdentifyEndpointClass=pipeline("identify_resident_endpoint_class");
 					ownerMinimumField=pipeline("owner_minimum_field");
 					ownerHalfField=pipeline("owner_half_field");
 					ownerResidual=pipeline("owner_residual");
@@ -3298,7 +3317,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						!diagnoseEOSLog||!ownerIssueBootstrap||!ownerPackFaces||!ownerAverageField||!ownerGasSource||
 						!ownerPredictMomentum||!ownerHeunMomentum||!ownerBindTransport||
 						!ownerAverageFlux||!ownerBindAveragedFlux||!ownerBindCandidate||
-						!ownerComposeTarget||!ownerIdentifyTarget||!ownerNextOpenClass||!ownerMinimumField||
+						!ownerComposeTarget||!ownerIdentifyTarget||!ownerNextOpenClass||
+						!ownerIdentifyEndpointClass||!ownerMinimumField||
 						!ownerHalfField||
 						!ownerResidual||!ownerClassResidual||!ownerIntegratedOpenHead||
 						!ownerIssueStageSeal||
@@ -6336,6 +6356,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 	namespace
 	{
 		class ResidentTransportMetalAuthority;
+		struct ResidentEndpointClassMetalAuthority;
 		class ResidentPhysicalFluxMetalAuthority;
 		class ResidentEOSCandidateMetalAuthority;
 		class ResidentEOSMetalAuthority;
@@ -6368,11 +6389,17 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				FireProductionResidentTransportComparatorResult&,std::string*);
 			friend bool EncodeResidentPhysicalFluxAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
-				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentEndpointClassMetalAuthority&,
 				std::size_t,std::size_t,const MetalResidentPhysicalFluxParameters&,
 				ResidentPhysicalFluxMetalAuthority&,std::string*);
+			friend bool EncodeResidentEndpointClassAuthority(
+				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				const ResidentTransportMetalAuthority&,std::size_t,std::size_t,std::size_t,
+				bool,ResidentEndpointClassMetalAuthority&,std::string*);
 			friend bool ::RISE::EvaluateFireProductionResidentPhysicalFluxMetalComparator(
 				const FireProductionResidentPhysicalFluxComparatorRequest&,
 				FireProductionResidentPhysicalFluxComparatorResult&,std::string*);
@@ -6426,11 +6453,44 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const ResidentTransportMetalAuthority&)=delete;
 		};
 
+		struct ResidentEndpointClassMetalAuthority
+		{
+			id<MTLBuffer> classes;
+			id<MTLBuffer> sealedClasses;
+			id<MTLBuffer> publicationIdentity;
+			id<MTLCommandBuffer> parentCommand;
+			id<MTLBuffer> parentProjectionPublicationIdentity;
+			id<MTLBuffer> parentTransportPublicationIdentity;
+			id<MTLBuffer> parentTransportParameters;
+			std::size_t parentBoundaryFaces;
+			std::size_t parentCells;
+			std::size_t parentAllFaces;
+			bool projectionBound;
+			std::uint64_t allocationBytes;
+			ResidentEndpointClassMetalAuthority() : classes(nil),sealedClasses(nil),
+				publicationIdentity(nil),parentCommand(nil),
+				parentProjectionPublicationIdentity(nil),
+				parentTransportPublicationIdentity(nil),parentTransportParameters(nil),
+				parentBoundaryFaces(0u),parentCells(0u),parentAllFaces(0u),
+				projectionBound(false),allocationBytes(0u) {}
+			ResidentEndpointClassMetalAuthority(
+				const ResidentEndpointClassMetalAuthority&)=delete;
+			ResidentEndpointClassMetalAuthority& operator=(
+				const ResidentEndpointClassMetalAuthority&)=delete;
+		};
+
+		bool EncodeResidentEndpointClassAuthority(
+			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+			const ResidentTransportMetalAuthority&,std::size_t,std::size_t,std::size_t,
+			bool,ResidentEndpointClassMetalAuthority&,std::string*);
+
 		bool EncodeResidentPhysicalFluxAuthority(
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
-			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 			id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 			id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+			const ResidentEndpointClassMetalAuthority&,
 			std::size_t,std::size_t,const MetalResidentPhysicalFluxParameters&,
 			ResidentPhysicalFluxMetalAuthority&,std::string*);
 
@@ -6439,9 +6499,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			friend class ResidentProjectedHeunMetalOwner;
 			friend bool EncodeResidentPhysicalFluxAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,
-				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
+				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				id<MTLBuffer>,id<MTLBuffer>,const ResidentTransportMetalAuthority&,
+				const ResidentEndpointClassMetalAuthority&,
 				std::size_t,std::size_t,const MetalResidentPhysicalFluxParameters&,
 				ResidentPhysicalFluxMetalAuthority&,std::string*);
 			friend bool ::RISE::EvaluateFireProductionResidentPhysicalFluxMetalComparator(
@@ -6490,6 +6551,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> parentState;
 			id<MTLBuffer> parentThermochemistry;
 			id<MTLBuffer> parentTransportPublicationIdentity;
+			id<MTLBuffer> parentEndpointClassPublicationIdentity;
 			std::size_t parentCells,parentAllFaces;
 			std::uint64_t allocationBytes;
 			ResidentPhysicalFluxMetalAuthority() : donorAdvective(nil),advectiveDelta(nil),
@@ -6497,6 +6559,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				faceLogTemperature(nil),faceSensibleEnthalpy(nil),lowComposite(nil),
 				highComposite(nil),publicationIdentity(nil),parentCommand(nil),parentState(nil),
 				parentThermochemistry(nil),parentTransportPublicationIdentity(nil),
+				parentEndpointClassPublicationIdentity(nil),
 				parentCells(0u),parentAllFaces(0u),
 				allocationBytes(0u) {}
 			ResidentPhysicalFluxMetalAuthority(
@@ -6890,6 +6953,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				FireProductionMetalProjectionResidentState projection;
 				FireProductionProjectionResult projectionDiagnostics;
 				std::unique_ptr<ResidentTransportMetalAuthority> transport;
+				std::unique_ptr<ResidentEndpointClassMetalAuthority> endpointClass;
 				std::unique_ptr<ResidentPhysicalFluxMetalAuthority> physical;
 				std::unique_ptr<ResidentPhysicalFluxMetalAuthority> averagedPhysical;
 				std::unique_ptr<ResidentEOSCandidateMetalAuthority> candidate;
@@ -7271,10 +7335,18 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				id<MTLBuffer> physicalInflow=stage==2u&&
 					!request_.qualificationR2SealedClassPhysicalFlux?output.nextOpenClass:
 					output.projection.pressureOpenInflow;
+				output.endpointClass.reset(new ResidentEndpointClassMetalAuthority);
+				if(!EncodeResidentEndpointClassAuthority(context_,command,physicalInflow,
+					output.projection.publicationIdentity,transportParameters_[stage],failure_,
+					*output.transport,cells_,allFaces_,boundaryFaces_,true,*output.endpointClass,error))
+					return false;
+				if(request_.qualificationUnverifiedEndpointClassBuffer&&stage==2u)
+					output.endpointClass->classes=Private(boundaryFaces_);
 				if(!EncodeResidentPhysicalFluxAuthority(context_,command,state,temperature,
-					output.packedVelocity,thermo_,ambient_,physicalInflow,
+					output.packedVelocity,thermo_,ambient_,
 					physicalBasis_,advectiveBasis_,projector_,transportParameters_[stage],
-					physicalParameters_,failure_,physicalObligations_,*output.transport,cells_,allFaces_,
+					physicalParameters_,failure_,physicalObligations_,*output.transport,
+					*output.endpointClass,cells_,allFaces_,
 					physicalMetadata_,*output.physical,error))return false;
 				if(stage==1u&&r0){
 					id<MTLBuffer> low=Private(9u*allFaces_*sizeof(float));
@@ -8049,6 +8121,14 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						value.candidate->parentCandidateCapability==expectedCandidateParent->capability))&&
 					value.projectionTargetCapability&&
 					value.target->parentTargetCapability==value.projectionTargetCapability&&
+					value.endpointClass&&value.endpointClass->projectionBound&&
+					value.endpointClass->classes==value.endpointClass->sealedClasses&&
+					value.endpointClass->parentProjectionPublicationIdentity==
+						value.projection.publicationIdentity&&
+					value.endpointClass->parentTransportPublicationIdentity==
+						value.transport->publicationIdentity&&
+					value.physical->parentEndpointClassPublicationIdentity==
+						value.endpointClass->publicationIdentity&&
 					value.physical->parentTransportPublicationIdentity==
 						value.transport->publicationIdentity&&
 					candidatePhysical->parentTransportPublicationIdentity==
@@ -8299,22 +8379,90 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 
 		// R201_RESIDENT_OWNER_TRANSFER_SURFACE_END
 
+		bool EncodeResidentEndpointClassAuthority(
+			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
+			id<MTLBuffer> classes,id<MTLBuffer> projectionPublicationIdentity,
+			id<MTLBuffer> transportParameters,id<MTLBuffer> failure,
+			const ResidentTransportMetalAuthority& transportAuthority,
+			const std::size_t cells,const std::size_t allFaces,
+			const std::size_t boundaryFaces,const bool projectionBound,
+			ResidentEndpointClassMetalAuthority& authority,std::string* error )
+		{
+			if(!command||!classes||!projectionPublicationIdentity||!transportParameters||!failure||
+				cells==0u||allFaces==0u||boundaryFaces==0u){
+				if(error)*error="production resident endpoint-class authority input is absent";
+				return false;
+			}
+			if(command!=transportAuthority.parentCommand||
+				transportParameters!=transportAuthority.parentParameters||
+				failure!=transportAuthority.parentFailure||cells!=transportAuthority.parentCells||
+				allFaces!=transportAuthority.parentAllFaces||
+				boundaryFaces!=transportAuthority.parentBoundaryFaces){
+				if(error)*error="production resident endpoint-class parent lineage is stale";
+				return false;
+			}
+			const std::array<id<MTLBuffer>,6> inputs={{classes,projectionPublicationIdentity,
+				transportAuthority.publicationIdentity,transportParameters,failure,
+				transportAuthority.coefficients}};
+			for(id<MTLBuffer> buffer:inputs)if(!buffer||[buffer device]!=context.device||
+				[buffer storageMode]!=MTLStorageModePrivate){if(error)*error=
+					"production resident endpoint-class authority requires device-private lineage";
+				return false;}
+			if([classes length]!=boundaryFaces*sizeof(unsigned char)||
+				[projectionPublicationIdentity length]!=sizeof(std::uint64_t)||
+				[transportAuthority.publicationIdentity length]!=sizeof(std::uint64_t)||
+				[transportParameters length]!=sizeof(MetalResidentTransportParameters)||
+				[failure length]!=sizeof(std::uint32_t)){
+				if(error)*error="production resident endpoint-class authority extent is invalid";
+				return false;
+			}
+			authority.classes=classes;authority.sealedClasses=classes;
+			authority.publicationIdentity=[context.device newBufferWithLength:sizeof(std::uint64_t)
+				options:MTLResourceStorageModePrivate];
+			if(!authority.publicationIdentity){
+				if(error)*error="production resident endpoint-class identity allocation failed";
+				return false;
+			}
+			authority.parentCommand=command;
+			authority.parentProjectionPublicationIdentity=projectionPublicationIdentity;
+			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
+			authority.parentTransportParameters=transportParameters;
+			authority.parentBoundaryFaces=boundaryFaces;authority.parentCells=cells;
+			authority.parentAllFaces=allFaces;authority.projectionBound=projectionBound;
+			authority.allocationBytes=[authority.publicationIdentity allocatedSize];
+			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			if(!encoder){if(error)*error="production resident endpoint-class identity encoder failed";
+				return false;}
+			[encoder setComputePipelineState:context.ownerIdentifyEndpointClass];
+			[encoder setBuffer:classes offset:0 atIndex:0];
+			[encoder setBuffer:projectionPublicationIdentity offset:0 atIndex:1];
+			[encoder setBuffer:transportAuthority.publicationIdentity offset:0 atIndex:2];
+			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:3];
+			[encoder setBuffer:failure offset:0 atIndex:4];
+			[encoder setBuffer:transportParameters offset:0 atIndex:5];
+			Dispatch(encoder,context.ownerIdentifyEndpointClass,1u);[encoder endEncoding];
+			return true;
+		}
+
 		bool EncodeResidentPhysicalFluxAuthority(
 			ResidentTransportMetalContext& context,id<MTLCommandBuffer> command,
 			id<MTLBuffer> state,id<MTLBuffer> temperature,id<MTLBuffer> velocity,
-			id<MTLBuffer> thermochemistry,id<MTLBuffer> ambient,id<MTLBuffer> inflow,
+			id<MTLBuffer> thermochemistry,id<MTLBuffer> ambient,
 			id<MTLBuffer> physicalBasis,id<MTLBuffer> advectiveBasis,id<MTLBuffer> projector,
 			id<MTLBuffer> transportParameters,id<MTLBuffer> physicalParameters,
 			id<MTLBuffer> failure,id<MTLBuffer> obligations,
 			const ResidentTransportMetalAuthority& transportAuthority,
+			const ResidentEndpointClassMetalAuthority& endpointClassAuthority,
 			const std::size_t cells,const std::size_t allFaces,
 			const MetalResidentPhysicalFluxParameters& metadata,
 			ResidentPhysicalFluxMetalAuthority& authority,std::string* error )
 		{
-			const std::array<id<MTLBuffer>,15> inputs={{state,temperature,velocity,
+			id<MTLBuffer> inflow=endpointClassAuthority.classes;
+			const std::array<id<MTLBuffer>,16> inputs={{state,temperature,velocity,
 				thermochemistry,ambient,inflow,physicalBasis,advectiveBasis,projector,
 				transportParameters,physicalParameters,failure,obligations,
-				transportAuthority.coefficients,transportAuthority.publicationIdentity}};
+				transportAuthority.coefficients,transportAuthority.publicationIdentity,
+				endpointClassAuthority.publicationIdentity}};
 			if(!command||cells==0u||allFaces==0u||metadata.advectiveNullity==0u||
 				metadata.advectiveNullity>8u||metadata.physicalNullity==0u||
 				metadata.physicalNullity>8u){
@@ -8329,6 +8477,17 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				failure!=transportAuthority.parentFailure||
 				cells!=transportAuthority.parentCells||allFaces!=transportAuthority.parentAllFaces){
 				if(error)*error="production resident physical-flux parent candidate lineage is stale";
+				return false;
+			}
+			if(command!=endpointClassAuthority.parentCommand||
+				endpointClassAuthority.classes!=endpointClassAuthority.sealedClasses||
+				endpointClassAuthority.parentTransportPublicationIdentity!=
+					transportAuthority.publicationIdentity||
+				endpointClassAuthority.parentTransportParameters!=transportParameters||
+				endpointClassAuthority.parentCells!=cells||
+				endpointClassAuthority.parentAllFaces!=allFaces||
+				endpointClassAuthority.parentBoundaryFaces!=transportAuthority.parentBoundaryFaces){
+				if(error)*error="production resident physical-flux endpoint-class lineage is stale";
 				return false;
 			}
 			for(id<MTLBuffer> buffer:inputs)if(!buffer||[buffer device]!=context.device||
@@ -8385,6 +8544,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.parentCommand=command;authority.parentState=state;
 			authority.parentThermochemistry=thermochemistry;
 			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
+			authority.parentEndpointClassPublicationIdentity=
+				endpointClassAuthority.publicationIdentity;
 			authority.parentCells=cells;authority.parentAllFaces=allFaces;
 			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
 			if(!encoder){if(error)*error="production resident physical-flux encoder failed";return false;}
@@ -8473,9 +8634,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:ambient offset:0 atIndex:11];[encoder setBuffer:inflow offset:0 atIndex:12];
 			[encoder setBuffer:physicalBasis offset:0 atIndex:13];
 			[encoder setBuffer:advectiveBasis offset:0 atIndex:14];[encoder setBuffer:projector offset:0 atIndex:15];
-			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:16];
-			[encoder setBuffer:failure offset:0 atIndex:17];[encoder setBuffer:transportParameters offset:0 atIndex:18];
-			[encoder setBuffer:physicalParameters offset:0 atIndex:19];
+			[encoder setBuffer:endpointClassAuthority.publicationIdentity offset:0 atIndex:16];
+			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:17];
+			[encoder setBuffer:failure offset:0 atIndex:18];[encoder setBuffer:transportParameters offset:0 atIndex:19];
+			[encoder setBuffer:physicalParameters offset:0 atIndex:20];
 			Dispatch(encoder,context.identifyPhysical,1u);[encoder endEncoding];
 			return true;
 		}
@@ -9451,7 +9613,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		if(!add(4u*projection)||!add(4u*target)||!add(3u*nonpressure)||
 			!add((54u*shape.CellCount()+48u*(FireProductionProjectionFaceCount(shape,0u)+
 				FireProductionProjectionFaceCount(shape,1u)+
-				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float)))return false;
+				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float))||
+			!add(3u*sizeof(std::uint64_t)))return false;
 		// The complete owner intentionally retains adjacent Picard candidates.  Its
 		// peak can exceed the historical process-agnostic two-GiB fixture ceiling at
 		// production grids even when it is comfortably inside the active Metal
@@ -9482,6 +9645,28 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		FireProductionProjectedHeunMetalOwnerResult* diagnostics,std::string* error )
 	{
 		result=FireProductionResidentStepResult();
+		const bool qualificationSelected=request.qualificationStaleCandidate||
+			request.qualificationOutOfOrderStage||request.qualificationForgedLineage||
+			request.qualificationCallbackMutation||request.qualificationAtomicPublicationFailure||
+			request.qualificationInjectInterstageTransfer||
+			request.qualificationDivergentManifoldPolicy||
+			request.qualificationStaleTargetPublication||
+			request.qualificationUnverifiedPrivateLineageBuffer||
+			request.qualificationForcedActiveCycleStage!=0u||
+			request.qualificationDisableCanonicalCycle||
+			request.qualificationForceLimiterDiscontinuity||
+			request.qualificationDisableLimiterCertification||
+			request.qualificationThreeQuarterHeunWeighting||
+			request.qualificationReuseR0LimiterAlpha||
+			request.qualificationR2SealedClassPhysicalFlux||
+			request.qualificationUnverifiedEndpointClassBuffer||
+			request.qualificationCaptureIterationTrace||
+			request.qualificationWorkingSetLimitBytes!=0u;
+		if(qualificationSelected){
+			if(diagnostics)*diagnostics=FireProductionProjectedHeunMetalOwnerResult();
+			if(error)*error="production resident step refuses qualification-only owner controls";
+			return false;
+		}
 		FireProductionProjectedHeunMetalOwnerResult owner;
 		if(!AttemptFireProductionProjectedHeunMetalOwner(request,owner,error))return false;
 		const FireProductionProjectionShape& shape=request.lineage.eos.physicalFlux.transport.shape;
@@ -10105,11 +10290,16 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					thermo,transport,fuel,transportParameter,failure,transportObligations,cells,allFaces,
 					packedFuelInlet.size(),transportAuthority,error))return false;
 				ResidentPhysicalFluxMetalAuthority physicalAuthority;
+				ResidentEndpointClassMetalAuthority endpointClassAuthority;
+				if(!EncodeResidentEndpointClassAuthority(context,command,inflow,
+					transportAuthority.publicationIdentity,transportParameter,failure,
+					transportAuthority,cells,allFaces,packedPressureInflow.size(),false,
+					endpointClassAuthority,error))return false;
 				id<MTLBuffer> childState=mismatchedState?mismatchedState:state;
 				if(!EncodeResidentPhysicalFluxAuthority(context,command,childState,temperature,velocity,
-					thermo,ambient,inflow,physicalBasisBuffer,advectiveBasis,projector,
+					thermo,ambient,physicalBasisBuffer,advectiveBasis,projector,
 					transportParameter,physicalParameter,failure,physicalObligations,transportAuthority,
-					cells,allFaces,physicalParameters,physicalAuthority,error))return false;
+					endpointClassAuthority,cells,allFaces,physicalParameters,physicalAuthority,error))return false;
 				blit=[command blitCommandEncoder];if(!blit){
 					if(error)*error="production resident physical-flux terminal encoder failed";
 					return false;
@@ -10412,11 +10602,16 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					transport,fuel,transportParameter,failure,transportObligations,cells,allFaces,
 					packedFuelInlet.size(),transportAuthority,error))return false;
 				ResidentPhysicalFluxMetalAuthority physicalAuthority;
+				ResidentEndpointClassMetalAuthority endpointClassAuthority;
+				if(!EncodeResidentEndpointClassAuthority(context,command,inflow,
+					transportAuthority.publicationIdentity,transportParameter,failure,
+					transportAuthority,cells,allFaces,packedPressureInflow.size(),false,
+					endpointClassAuthority,error))return false;
 				id<MTLBuffer> childState=mismatchedState?mismatchedState:state;
 				if(!EncodeResidentPhysicalFluxAuthority(context,command,childState,temperature,velocity,
-					thermo,ambient,inflow,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
-					physicalParameter,failure,physicalObligations,transportAuthority,cells,allFaces,
-					physicalParameters,physicalAuthority,error))return false;
+					thermo,ambient,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
+					physicalParameter,failure,physicalObligations,transportAuthority,
+					endpointClassAuthority,cells,allFaces,physicalParameters,physicalAuthority,error))return false;
 				ResidentEOSCandidateMetalAuthority candidateAuthority;
 				id<MTLBuffer> forbiddenCPUCandidate=request.qualificationCPUProducedCandidate?
 					stateUpload:nil;
@@ -10481,9 +10676,16 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				computed.deviceAttempted=true;computed.terminalRead=true;
 				computed.deviceFailureBitmap=controls[0];
 				computed.firstEOSFailureCell=controls[2];
-				if(computed.firstEOSFailureCell<cells){const std::uint32_t* failureTerms=
+				const std::uint32_t* failureTerms=
 					reinterpret_cast<const std::uint32_t*>(bytes+failureMapOffset);
-					computed.firstEOSFailureTermBitmap=failureTerms[computed.firstEOSFailureCell];}
+				if(computed.firstEOSFailureCell<cells){
+					computed.firstEOSFailureTermBitmap=failureTerms[computed.firstEOSFailureCell];
+					for(std::size_t cell=computed.firstEOSFailureCell+1u;cell<cells;++cell){
+						if(failureTerms[cell]==0u)continue;
+						computed.secondEOSFailureCell=static_cast<std::uint32_t>(cell);
+						computed.secondEOSFailureTermBitmap=failureTerms[cell];break;
+					}
+				}
 				computed.commandCommitCount=static_cast<std::uint32_t>(
 					MetalCommandCommitCount-beginningCommits);
 				computed.terminalStagingCount=static_cast<std::uint32_t>(
@@ -10796,9 +10998,15 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					transport,fuel,transportParameter,failure,transportObligations,cells,allFaces,
 					packedFuelInlet.size(),transportAuthority,error))return false;
 				ResidentPhysicalFluxMetalAuthority physicalAuthority;
+				ResidentEndpointClassMetalAuthority endpointClassAuthority;
+				if(!EncodeResidentEndpointClassAuthority(context,command,inflow,
+					transportAuthority.publicationIdentity,transportParameter,failure,
+					transportAuthority,cells,allFaces,packedPressureInflow.size(),false,
+					endpointClassAuthority,error))return false;
 				if(!EncodeResidentPhysicalFluxAuthority(context,command,state,temperature,velocity,thermo,
-					ambient,inflow,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
-					physicalParameter,failure,physicalObligations,transportAuthority,cells,allFaces,
+					ambient,physicalBasisBuffer,advectiveBasis,projector,transportParameter,
+					physicalParameter,failure,physicalObligations,transportAuthority,
+					endpointClassAuthority,cells,allFaces,
 					physicalParameters,physicalAuthority,error))return false;
 				ResidentEOSCandidateMetalAuthority candidateAuthority;
 				if(!EncodeResidentEOSQualificationCandidate(context,command,nil,sourceDelta,enthalpy,
