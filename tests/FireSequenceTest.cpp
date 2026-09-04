@@ -9664,7 +9664,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 			state.size(),static_cast<double>(expectedTemperature),FireStateProducerPrecision::Binary32,
 			representedRatio,&error))return 209;
 		const float expectedRatio=static_cast<float>(representedRatio),
-			expectedDeviation=static_cast<float>(std::fabs(representedRatio-1.0));
+			expectedDeviation=std::fabs(expectedRatio-1.0f);
 		auto localProjectionEnclosure=[](const float expected){return 0.5*std::fabs(
 			static_cast<double>(std::nextafter(expected,std::numeric_limits<float>::infinity()))-
 			static_cast<double>(expected));};
@@ -10672,6 +10672,20 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		transferred.terminalStagingCount,
 		static_cast<unsigned long long>(transferred.targetPublicationIdentity),
 		transferLedgerRefused?1:0);
+	mutation=request;mutation.qualificationCertifiedContinuousEnclosure=true;
+	FireProductionResidentTargetLineageComparatorResult enclosed;error.clear();
+	const bool enclosureAccepted=EvaluateFireProductionResidentTargetLineageMetalComparator(
+		mutation,enclosed,&error);
+	const bool continuousEnclosureRED=enclosureAccepted&&
+		(enclosed.branchObligationBitmap&(1u<<27u))!=0u&&
+		enclosed.targetPublicationIdentity!=0u&&
+		enclosed.targetPublicationIdentity!=observed.targetPublicationIdentity;
+	std::fprintf(stderr,"RESIDENT_TARGET_RED name=certified_continuous_multi_ulp_enclosure "
+		"layer=device_materialization accepted=%d obligation=%d identity_distinct=%d "
+		"error=%s passed=%d\n",enclosureAccepted?1:0,
+		(enclosed.branchObligationBitmap&(1u<<27u))!=0u?1:0,
+		enclosed.targetPublicationIdentity!=observed.targetPublicationIdentity?1:0,
+		error.c_str(),continuousEnclosureRED?1:0);
 	const std::uint32_t requiredClosedBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
 		(1u<<22u)|(1u<<24u)|(1u<<25u);
 	const std::uint32_t requiredOpenBranches=(1u<<7u)|(1u<<8u)|(1u<<20u)|(1u<<21u)|
@@ -11865,6 +11879,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
 		transferLedgerRefused&&ownerSmokePassed&&heunWeightingRED&&
+		continuousEnclosureRED&&
 		heunWeightingMutantAccepted&&sharedAlphaRED&&ownerWorkingSetPreflightRefused&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&

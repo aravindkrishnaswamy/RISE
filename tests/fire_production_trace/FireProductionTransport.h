@@ -1427,6 +1427,9 @@ namespace RISEFireProductionTrace
 		bool qualificationExactNegativeTailThreshold;
 		bool qualificationEOSAcceptedButUnlinked;
 		bool qualificationInjectInterstageFullGridTransfer;
+		//! Forces a finite multi-ULP arithmetic enclosure without changing the
+		//! mathematical target.  Qualification-only obligation-path RED.
+		bool qualificationCertifiedContinuousEnclosure;
 		//! 0=none, 1=shape, 2=face offsets, 3=cell width, 4=timestep,
 		//! 5=attempt, 6=boundary. Qualification-only stale-parent mutants.
 		std::uint32_t qualificationStaleTargetMetadataField;
@@ -1452,6 +1455,7 @@ namespace RISEFireProductionTrace
 			qualificationExactNegativeTailThreshold(false),
 			qualificationEOSAcceptedButUnlinked(false),
 			qualificationInjectInterstageFullGridTransfer(false),
+			qualificationCertifiedContinuousEnclosure(false),
 			qualificationStaleTargetMetadataField(0u),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};

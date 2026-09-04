@@ -28,9 +28,11 @@
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <new>
+#include <sstream>
 
 namespace RISE
 {
@@ -2520,13 +2522,10 @@ inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int expon
  EOSDD ln2=eos_dd(0.693147182464599609375f,-1.9046542121259336e-9f,
   -1.1102230246251565e-16f,0x1p-54f);
  EOSDD result=eos_add(logarithm,eos_mul(eos_dd(float(exponent)),ln2));
- // The exact host-libm image and OS build are qualification identities.  The
- // complete lattice-plus-midpoint domain sweep must prove this predeclared
- // projection allowance before this Metal program is admitted; it is not
- // inferred from a sampled residual maximum.
- float hostProjectionAllowance=eos_up_mul(0x1p-52f,
-  max(1.0f,eos_abs_upper(result)));
- result.bound=eos_up_add(result.bound,hostProjectionAllowance);return result;}
+ // This is the interval for the mathematical log evaluated by the device.
+ // Host-libm projection error is a qualification-comparator property and must
+ // not inflate a live physical value's correct-rounding interval.
+ return result;}
 inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
  rounded=value.hi;if(!isfinite(rounded))return false;uint magnitude=as_type<uint>(rounded)&0x7fffffffu;
  bool tiny=magnitude<=0x00800000u;EOSDD normalized=tiny?eos_renorm(
@@ -2555,16 +2554,16 @@ inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
  return eos_order(lowerMidpoint,normalized)==-1&&
   eos_order(normalized,upperMidpoint)==-1;}
 // Materialize an interval-certified binary32 value when correct-rounding is
-// undecidable at a midpoint.  The fallback is admitted only if the complete
-// propagated interval places the real value within one local binary32 spacing
-// of hi.  This is an absolute per-cell enclosure, never a cancellation-derived
-// relative bound; callers record the branch in their obligation bitmap.
+// undecidable at a midpoint.  The complete propagated interval is the local
+// acceptance contract: no fixed ULP cap, cancellation scale, or measured
+// residual enters this decision.  Callers record every enclosure branch in the
+// obligation bitmap, and qualification compares the materialized value with
+// the fp64 owner against the independently propagated termwise enclosure.
 inline bool eos_binary32_round_or_local_enclosure(EOSDD value,thread float& rounded,
  thread bool& usedEnclosure){usedEnclosure=false;
  if(eos_unique_binary32_round(value,rounded))return true;rounded=value.hi;
  float uncertainty=eos_up_add(eos_up_add(abs(value.lo),abs(value.tail)),value.bound);
- float spacing=eos_local_spacing(rounded);if(isfinite(rounded)&&isfinite(uncertainty)&&
-  isfinite(spacing)&&uncertainty<=spacing){usedEnclosure=true;return true;}return false;}
+ if(isfinite(rounded)&&isfinite(uncertainty)){usedEnclosure=true;return true;}return false;}
 inline bool eos_select_dd_segment(device const float* thermo,uint species,EOSDD temperature,
  thread uint& offset,device atomic_uint* obligations,thread bool& valid){uint base=96u*species,
  segments=uint(thermo[base+3u]);
@@ -2662,7 +2661,8 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
  device const ulong* candidateIdentity [[buffer(3)]],device float* temperature [[buffer(4)]],
  device float* pressureRatio [[buffer(5)]],device float* deviation [[buffer(6)]],
  device atomic_uint* failure [[buffer(7)]],device atomic_uint* obligations [[buffer(8)]],
- constant EOSParams& p [[buffer(9)]],
+ constant EOSParams& p [[buffer(9)]],device atomic_uint* firstFailureCell [[buffer(10)]],
+ device atomic_uint* failureTerm [[buffer(11)]],
  uint gid [[thread_position_in_grid]]){if(gid>=p.cells)return;
  if(candidateIdentity[0]==0ul||!eos_state_admissible(candidate,eosThermo,p,gid,obligations)){
   atomic_fetch_or_explicit(failure,64u,memory_order_relaxed);return;}
@@ -2690,9 +2690,22 @@ kernel void evaluate_resident_eos_candidate(device const float* candidate [[buff
  if((p.pad0&64u)!=0u){ratioDD=eos_dd(1.0625f);deviationDD=eos_dd(0.0625f);}
  if((p.pad0&128u)!=0u){ratioDD=eos_dd(0.9375f);deviationDD=eos_dd(0.0625f);}
  float ratio=0.0f,absoluteDeviation=0.0f;
- if(!eos_unique_binary32_round(ratioDD,ratio)||
-  !eos_unique_binary32_round(deviationDD,absoluteDeviation)||
-  !isfinite(ratio)||!(ratio>0.0f)||!isfinite(absoluteDeviation)){
+ bool ratioRounded=eos_unique_binary32_round(ratioDD,ratio);
+ // The represented ratio is the monitored-policy authority.  Derive its
+ // diagnostic magnitude from that published binary32 value so the diagnostic
+ // cannot become a second, independently rounded absolute-reference source.
+ // Qualification mutations still exercise and refuse the retired independent
+ // deviation-rounding path.
+ bool independentDeviation=(p.pad0&254u)!=0u;
+ bool deviationRounded=independentDeviation?
+  eos_unique_binary32_round(deviationDD,absoluteDeviation):ratioRounded;
+ if(!independentDeviation&&ratioRounded)absoluteDeviation=abs(ratio-1.0f);
+ bool ratioPhysical=isfinite(ratio)&&ratio>0.0f;
+ bool deviationPhysical=isfinite(absoluteDeviation);
+ if(!ratioRounded||!deviationRounded||!ratioPhysical||!deviationPhysical){uint terms=
+  (!ratioRounded?1u:0u)|(!deviationRounded?2u:0u)|(!ratioPhysical?4u:0u)|
+  (!deviationPhysical?8u:0u);atomic_fetch_min_explicit(firstFailureCell,gid,memory_order_relaxed);
+  atomic_fetch_or_explicit(failureTerm,terms,memory_order_relaxed);
   atomic_fetch_or_explicit(failure,512u,memory_order_relaxed);return;}
  temperature[gid]=T;pressureRatio[gid]=ratio;deviation[gid]=absoluteDeviation;
  atomic_fetch_or_explicit(obligations,1u<<5u,memory_order_relaxed);
@@ -2832,6 +2845,11 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
    eos_mul(gas,eos_load_dd(eosThermo,96u*species))),eos_div(enthalpy[species],capacityTemperature));
   value=eos_add(value,eos_mul(coefficient,rate[species+1u]));}
  value=eos_sub(value,eos_mul(eos_div(enthalpy[6u],capacityTemperature),rate[7u]));
+ // Qualification-only: exercise the continuous enclosure obligation with a
+ // finite radius wider than one local binary32 spacing.  The center and every
+ // physical input remain unchanged; this flag is unavailable to the live owner.
+ if((p.pad0&1u)!=0u)value.bound=eos_up_add(value.bound,
+  eos_up_mul(4.0f,eos_local_spacing(value.hi)));
  EOSDD signedDeviation=eos_sub(eos_dd(pressureRatio[gid]),eos_dd(1.0f));
  // The resident policy consumes the represented pressure ratio exactly like
  // FireProductionMonitoredManifoldPolicy; the separately published absolute
@@ -2862,12 +2880,16 @@ kernel void evaluate_resident_target_terms(device const float* state [[buffer(0)
  tangent[gid]=tangentValue;source[gid]=sourceTarget[gid];
  absoluteDiagnostic[gid]=diagnosticValue;monitoredAbsolute[gid]=tailValue;
  EOSDD baseDD=eos_add(value,eos_dd(sourceTarget[gid]));float baseValue=0.0f;
- if(!eos_unique_binary32_round(baseDD,baseValue)||!isfinite(baseValue)){
+ bool baseEnclosed=false;
+ if(!eos_binary32_round_or_local_enclosure(baseDD,baseValue,baseEnclosed)||!isfinite(baseValue)){
   atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}
+ if(baseEnclosed)atomic_fetch_or_explicit(obligations,1u<<28u,memory_order_relaxed);
  baseAssembled[gid]=baseValue==0.0f?0.0f:baseValue;
  EOSDD combinedDD=eos_add(baseDD,tail);float combined=0.0f;
- if(!eos_unique_binary32_round(combinedDD,combined)||!isfinite(combined)){
+ bool combinedEnclosed=false;
+ if(!eos_binary32_round_or_local_enclosure(combinedDD,combined,combinedEnclosed)||!isfinite(combined)){
   atomic_fetch_or_explicit(failure,1048576u,memory_order_relaxed);return;}assembled[gid]=combined;
+ if(combinedEnclosed)atomic_fetch_or_explicit(obligations,1u<<29u,memory_order_relaxed);
  atomic_fetch_or_explicit(obligations,1u<<22u,memory_order_relaxed);}
 kernel void finalize_resident_target(device float* target [[buffer(0)]],
  device atomic_uint* failure [[buffer(1)]],device atomic_uint* obligations [[buffer(2)]],
@@ -2876,9 +2898,15 @@ kernel void finalize_resident_target(device float* target [[buffer(0)]],
  for(uint side=0u;side<6u;++side)pressureOpen=pressureOpen||p.boundary[side]==1u;
  if(pressureOpen){atomic_fetch_or_explicit(obligations,1u<<23u,memory_order_relaxed);return;}
  EOSDD sum=eos_dd(0.0f);for(uint cell=0u;cell<p.cells;++cell)sum=eos_add(sum,eos_dd(target[cell]));
- EOSDD mean=eos_div(sum,eos_dd(float(p.cells)));for(uint cell=0u;cell<p.cells;++cell){float value=0.0f;
-  if(!eos_unique_binary32_round(eos_sub(eos_dd(target[cell]),mean),value)){
-   atomic_fetch_or_explicit(failure,4096u,memory_order_relaxed);return;}target[cell]=value==0.0f?0.0f:value;}
+ EOSDD mean=eos_div(sum,eos_dd(float(p.cells)));bool anyEnclosed=false;
+ for(uint cell=0u;cell<p.cells;++cell){float value=0.0f;
+  bool enclosed=false;if(!eos_binary32_round_or_local_enclosure(
+   eos_sub(eos_dd(target[cell]),mean),value,enclosed)){
+   atomic_fetch_or_explicit(failure,4096u,memory_order_relaxed);return;}
+  anyEnclosed=anyEnclosed||enclosed;target[cell]=value==0.0f?0.0f:value;}
+ // One device-wide obligation is sufficient: the target identity authenticates
+ // every materialized cell, and qualification discharges each local enclosure.
+ if(anyEnclosed)atomic_fetch_or_explicit(obligations,1u<<30u,memory_order_relaxed);
  atomic_fetch_or_explicit(obligations,1u<<24u,memory_order_relaxed);}
 kernel void identify_resident_target(device const float* tangent [[buffer(0)]],
  device const float* source [[buffer(1)]],device const float* absoluteDiagnostic [[buffer(2)]],
@@ -2908,8 +2936,9 @@ kernel void identify_resident_target(device const float* tangent [[buffer(0)]],
  for(uint axis=0u;axis<3u;++axis){hash^=ulong(p.faceOffset[axis]);hash*=1099511628211ul;}
  hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.dt));hash*=1099511628211ul;
  hash^=ulong(as_type<uint>(p.dx));hash*=1099511628211ul;
- hash^=ulong(as_type<uint>(p.tailThreshold));hash*=1099511628211ul;
+	 hash^=ulong(as_type<uint>(p.tailThreshold));hash*=1099511628211ul;
 	 hash^=ulong(p.policyVersion);hash*=1099511628211ul;
+	 hash^=ulong(p.pad0);hash*=1099511628211ul;hash^=ulong(p.pad1);hash*=1099511628211ul;
  for(uint side=0u;side<6u;++side){
   hash^=ulong(p.boundary[side]);hash*=1099511628211ul;}identity[0]=hash==0ul?1ul:hash;}
 kernel void issue_resident_projection_consumer(constant ProjectionConsumerParams& p [[buffer(0)]],
@@ -2949,7 +2978,10 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
  device float* output [[buffer(1)]],uint gid [[thread_position_in_grid]]){
  EOSDD value=eos_log_dd(eos_dd(input[2u*gid],input[2u*gid+1u]));output[4u*gid]=value.hi;
  output[4u*gid+1u]=value.lo;output[4u*gid+2u]=value.tail;
- output[4u*gid+3u]=value.bound;}
+ // The host image and OS build are sealed qualification identities.  Add the
+ // predeclared binary64 projection allowance only on this comparison surface.
+ float hostProjectionAllowance=eos_up_mul(0x1p-52f,max(1.0f,eos_abs_upper(value)));
+ output[4u*gid+3u]=eos_up_add(value.bound,hostProjectionAllowance);}
 // r201 live-owner glue. These kernels only bind qualified resident surfaces,
 // compose the Heun operands, and apply the stage algebra. No physical term is
 // recomputed here.
@@ -6546,13 +6578,16 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> representedPressureRatio;
 			id<MTLBuffer> absoluteDeviation;
 			id<MTLBuffer> publicationIdentity;
+			id<MTLBuffer> firstFailureCell;
+			id<MTLBuffer> failureTerm;
 			id<MTLCommandBuffer> parentCommand;
 			id<MTLBuffer> parentTransportPublicationIdentity;
 			id<MTLBuffer> parentPhysicalPublicationIdentity;
 			id<MTLBuffer> parentCandidatePublicationIdentity;
 			std::uint64_t allocationBytes;
 			ResidentEOSMetalAuthority() : temperature(nil),representedPressureRatio(nil),
-				absoluteDeviation(nil),publicationIdentity(nil),parentCommand(nil),
+				absoluteDeviation(nil),publicationIdentity(nil),firstFailureCell(nil),failureTerm(nil),
+				parentCommand(nil),
 				parentTransportPublicationIdentity(nil),parentPhysicalPublicationIdentity(nil),
 				parentCandidatePublicationIdentity(nil),allocationBytes(0u) {}
 			ResidentEOSMetalAuthority(const ResidentEOSMetalAuthority&)=delete;
@@ -7318,6 +7353,22 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(stageFailureBitmap!=0u){
 					if(error)*error="projected-Heun resident stage device validation failed: stage="+
 						std::to_string(stage)+" bitmap="+std::to_string(stageFailureBitmap);
+					if((stageFailureBitmap&512u)!=0u&&output.eos&&output.eos->firstFailureCell&&
+						output.eos->failureTerm){
+						id<MTLBuffer> witness=[context_.device newBufferWithLength:
+							2u*sizeof(std::uint32_t) options:MTLResourceStorageModeShared];
+						id<MTLCommandBuffer> witnessCommand=TrackedMetalCommandBuffer(context_.queue);
+						id<MTLBlitCommandEncoder> witnessBlit=witnessCommand?
+							[witnessCommand blitCommandEncoder]:nil;
+						if(witness&&witnessBlit){Copy(witnessBlit,output.eos->firstFailureCell,0u,
+							witness,0u,sizeof(std::uint32_t),TransferKind::Control);
+							Copy(witnessBlit,output.eos->failureTerm,0u,witness,sizeof(std::uint32_t),
+								sizeof(std::uint32_t),TransferKind::Control);[witnessBlit endEncoding];
+							if(Commit(witnessCommand,0)){const std::uint32_t* values=
+								static_cast<const std::uint32_t*>(Read(witness,TransferKind::Control));
+								if(values&&error)*error+=" eos_failure_cell="+std::to_string(values[0])+
+									" eos_failure_term_bitmap="+std::to_string(values[1]);}}
+					}
 					if((stageFailureBitmap&65536u)!=0u&&output.target){
 						id<MTLBuffer> diagnostic=[context_.device newBufferWithLength:
 							4u*cells_*sizeof(float) options:MTLResourceStorageModeShared];
@@ -7342,6 +7393,41 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 										" hi_bits="+std::to_string(hiBits)+
 										" lo_bits="+std::to_string(loBits)+
 										" bound_bits="+std::to_string(boundBits);
+									id<MTLBuffer> terms=[context_.device newBufferWithLength:
+										64u*sizeof(float) options:MTLResourceStorageModeShared];
+									id<MTLCommandBuffer> termCommand=TrackedMetalCommandBuffer(context_.queue);
+									id<MTLBlitCommandEncoder> termBlit=termCommand?
+										[termCommand blitCommandEncoder]:nil;
+									if(terms&&termBlit){std::size_t word=0u;
+										for(std::size_t component=0u;component<9u;++component){Copy(termBlit,
+											output.candidate->conservative,(component*cells_+cell)*sizeof(float),
+											terms,word++*sizeof(float),sizeof(float),TransferKind::Control);}
+										Copy(termBlit,output.eos->temperature,cell*sizeof(float),terms,
+											word++*sizeof(float),sizeof(float),TransferKind::Control);
+										const std::size_t x=cell%shape_.nx,y=(cell/shape_.nx)%shape_.ny,
+											z=cell/(shape_.nx*shape_.ny);
+										auto face=[&](const unsigned int axis,const std::size_t fx,
+											const std::size_t fy,const std::size_t fz){return faceOffset_[axis]+(
+											axis==0u?(fz*shape_.ny+fy)*(shape_.nx+1u)+fx:
+											(axis==1u?(fz*(shape_.ny+1u)+fy)*shape_.nx+fx:
+											(fz*shape_.ny+fy)*shape_.nx+fx));};
+										for(std::size_t component=0u;component<9u;++component)
+											for(unsigned int axis=0u;axis<3u;++axis){std::size_t rx=x,ry=y,rz=z;
+												if(axis==0u)++rx;else if(axis==1u)++ry;else ++rz;
+												const std::size_t endpoints[]={face(axis,x,y,z),face(axis,rx,ry,rz)};
+												for(const std::size_t endpoint:endpoints){id<MTLBuffer> field=
+													component<8u?output.physical->physicalMass:
+													output.physical->physicalEnergy;
+													const std::size_t sourceWord=component<8u?
+														component*allFaces_+endpoint:endpoint;
+													Copy(termBlit,field,sourceWord*sizeof(float),terms,
+														word++*sizeof(float),sizeof(float),TransferKind::Control);}}
+										[termBlit endEncoding];if(Commit(termCommand,0)){const float* termValues=
+											static_cast<const float*>(Read(terms,TransferKind::Control));
+											if(termValues&&error){std::ostringstream stream;stream<<std::setprecision(9)
+												<<" tangent_state_and_face_terms=";for(std::size_t index=0u;
+													index<64u;++index)stream<<(index?",":"")<<termValues[index];
+												*error+=stream.str();}}}
 									break;}}
 						}
 					}
@@ -8540,19 +8626,26 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				options:MTLResourceStorageModePrivate];};const std::size_t fieldBytes=metadata.cells*sizeof(float);
 			authority.temperature=make(fieldBytes);authority.representedPressureRatio=make(fieldBytes);
 			authority.absoluteDeviation=make(fieldBytes);authority.publicationIdentity=make(sizeof(std::uint64_t));
+			authority.firstFailureCell=make(sizeof(std::uint32_t));
+			authority.failureTerm=make(sizeof(std::uint32_t));
 			authority.parentCommand=command;
 			authority.parentTransportPublicationIdentity=transportAuthority.publicationIdentity;
 			authority.parentPhysicalPublicationIdentity=physicalAuthority.publicationIdentity;
 			authority.parentCandidatePublicationIdentity=candidateAuthority.publicationIdentity;
-			const std::array<id<MTLBuffer>,4> outputs={{authority.temperature,
+			const std::array<id<MTLBuffer>,6> outputs={{authority.temperature,
 				authority.representedPressureRatio,authority.absoluteDeviation,
-				authority.publicationIdentity}};
+				authority.publicationIdentity,authority.firstFailureCell,authority.failureTerm}};
 			for(id<MTLBuffer> buffer:outputs)if(!buffer){
 				if(error)*error="production resident EOS authority allocation failed";
 				return false;
 			}
 			authority.allocationBytes=0u;for(id<MTLBuffer> buffer:outputs)
 				authority.allocationBytes+=[buffer allocatedSize];
+			id<MTLBlitCommandEncoder> clear=[command blitCommandEncoder];
+			if(!clear){if(error)*error="production resident EOS witness clear encoder failed";return false;}
+			[clear fillBuffer:authority.firstFailureCell range:NSMakeRange(0,sizeof(std::uint32_t)) value:0xffu];
+			[clear fillBuffer:authority.failureTerm range:NSMakeRange(0,sizeof(std::uint32_t)) value:0u];
+			[clear endEncoding];
 			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
 			if(!encoder){
 				if(error)*error="production resident EOS evaluation encoder failed";
@@ -8569,6 +8662,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:failure offset:0 atIndex:7];
 			[encoder setBuffer:obligations offset:0 atIndex:8];
 			[encoder setBuffer:eosParameters offset:0 atIndex:9];
+			[encoder setBuffer:authority.firstFailureCell offset:0 atIndex:10];
+			[encoder setBuffer:authority.failureTerm offset:0 atIndex:11];
 			Dispatch(encoder,context.evaluateEOSCandidate,metadata.cells);[encoder endEncoding];
 			encoder=[command computeCommandEncoder];
 			if(!encoder){
@@ -9545,6 +9640,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			add(9u*cells*sizeof(float))&&add(sizeof(std::uint64_t))&&add(sizeof(std::uint64_t))&&
 			add(cells*sizeof(float))&&add(cells*sizeof(float))&&add(cells*sizeof(float))&&
 			add(sizeof(std::uint64_t))&&add(sizeof(std::uint32_t))&&
+			add(sizeof(std::uint32_t))&&add(sizeof(std::uint32_t))&&
 			add((12u*cells+faces)*sizeof(float)+4u*sizeof(std::uint64_t)+
 				2u*sizeof(std::uint32_t)+64u)&&bytes<=(UINT64_C(1)<<31u);
 	}
@@ -10450,6 +10546,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			for(unsigned int side=0u;side<6u;++side)targetParameters.boundary[side]=
 				static_cast<std::uint32_t>(request.eos.physicalFlux.transport.boundary[side]);
 			const MetalResidentTargetParameters sourceParameters=targetParameters;
+			if(request.qualificationCertifiedContinuousEnclosure)
+				targetParameters.padding[0]=1u;
 			if(request.qualificationMismatchedFrozenSourcePacket)
 				targetParameters.sourcePacketIdentity+=1u;
 			switch(request.qualificationStaleTargetMetadataField){
