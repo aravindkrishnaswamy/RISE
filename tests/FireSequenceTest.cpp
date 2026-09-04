@@ -11042,6 +11042,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		effectiveAsMolecularStressResidual,effectiveAsMolecularAccepted?1:0,
 		effectiveAsMolecularError.c_str(),effectiveAsMolecularRED?1:0);
 	bool ownerIterationTraceBounded=ownerAccepted&&owner64Accepted;
+	bool r2ImmediateEndpointClassRED=false;
 	std::array<std::vector<double>,3> ownerTerminalProjectionTargetBounds,
 		ownerTerminalAcceptedTargetBounds;
 	if(ownerAccepted&&owner64Accepted){
@@ -11488,6 +11489,67 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				}
 			}
 		}
+		FireProductionProjectedHeunMetalOwnerRequest sealedClassMutation=ownerRequest;
+		sealedClassMutation.qualificationR2SealedClassPhysicalFlux=true;
+		FireProductionProjectedHeunMetalOwnerResult sealedClassResult;
+		std::string sealedClassError;
+		const bool sealedClassAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+			sealedClassMutation,sealedClassResult,&sealedClassError);
+		double sealedClassEnergyResidual=0.0,sealedClassEnergyBound=0.0,
+			sealedClassEnergyWorstRatio=0.0,sealedClassTargetResidual=0.0,
+			sealedClassTargetBound=0.0,sealedClassTargetWorstRatio=0.0;
+		bool sealedClassSequencesAgree=false;
+		if(sealedClassAccepted&&sealedClassResult.qualificationIterationTrace[2].size()>1u&&
+			traceStages64[2]->qualificationIterationTrace.size()>1u){const auto& mutatedBootstrap=
+				sealedClassResult.qualificationIterationTrace[2][0];const auto& mirrorBootstrap=
+				traceStages64[2]->qualificationIterationTrace[0];const auto& mutated=
+				sealedClassResult.qualificationIterationTrace[2][1];const auto& mirror=
+				traceStages64[2]->qualificationIterationTrace[1];
+			sealedClassSequencesAgree=sameClasses(mutated.activeClass,mirror.activeClass)&&
+				sameClasses(mutated.nextActiveClass,mirror.nextActiveClass);
+			double maximumConductivity=0.0,maximumEnthalpyMagnitude=0.0;
+			for(const double value:mirror.conductivityWPerMK)
+				maximumConductivity=std::max(maximumConductivity,std::fabs(value));
+			for(std::size_t species=0u;species<7u;++species)maximumEnthalpyMagnitude=std::max({
+				maximumEnthalpyMagnitude,std::fabs(ownerMinimumEnthalpy[species]),
+				std::fabs(ownerMaximumEnthalpy[species])});
+			for(std::size_t face=0u;face<allFaces;++face){const double residual=std::fabs(
+				static_cast<double>(mutated.physicalEnergyFluxWPerM2[face])-
+				mirror.physicalEnergyFluxWPerM2[face]);double scale=maximumConductivity*
+				(fuel.TemperatureMaxK()-fuel.TemperatureMinK())/(0.5*shape.cellWidthM);
+				for(std::size_t component=1u;component<8u;++component){scale+=
+					maximumEnthalpyMagnitude*std::fabs(mirror.physicalMassFluxKGPerM2S[
+						component*allFaces+face]);}
+				const double bound=traceGamma4096*scale,
+					ratio=bound>0.0?residual/bound:std::numeric_limits<double>::infinity();
+				if(residual>sealedClassEnergyResidual)sealedClassEnergyResidual=residual;
+				if(ratio>sealedClassEnergyWorstRatio){sealedClassEnergyWorstRatio=ratio;
+					sealedClassEnergyBound=bound;}}
+			std::vector<double> bootstrapBounds(cells,0.0);bool enclosureValid=true;
+			for(std::size_t cell=0u;cell<cells;++cell)bootstrapBounds[cell]=
+				targetTermwiseEnclosure(2u,mutatedBootstrap,mirrorBootstrap,cell,0.0,
+					enclosureValid);
+			for(std::size_t cell=0u;cell<cells;++cell){const double residual=std::fabs(
+				static_cast<double>(mutated.producedTargetPerS[cell])-
+				mirror.producedTargetPerS[cell]);const double bound=targetTermwiseEnclosure(
+					2u,mutated,mirror,cell,bootstrapBounds[cell],enclosureValid),ratio=
+					bound>0.0?residual/bound:std::numeric_limits<double>::infinity();
+				if(residual>sealedClassTargetResidual)sealedClassTargetResidual=residual;
+				if(ratio>sealedClassTargetWorstRatio){sealedClassTargetWorstRatio=ratio;
+					sealedClassTargetBound=bound;}}
+			r2ImmediateEndpointClassRED=enclosureValid&&sealedClassSequencesAgree&&
+				sealedClassEnergyWorstRatio>1.0&&sealedClassTargetWorstRatio>1.0;}
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+			"name=R2_physical_flux_consumes_sealed_input_class "
+			"mutant_accepted=%d class_sequences_agree=%d "
+			"physical_energy_max_residual_W_m^-2=%.17g "
+			"physical_energy_local_termwise_bound_W_m^-2=%.17g "
+			"physical_energy_worst_ratio=%.17g target_max_residual_s^-1=%.17g "
+			"target_local_termwise_bound_s^-1=%.17g target_worst_ratio=%.17g "
+			"error=%s passed=%d\n",sealedClassAccepted?1:0,sealedClassSequencesAgree?1:0,
+			sealedClassEnergyResidual,sealedClassEnergyBound,sealedClassEnergyWorstRatio,
+			sealedClassTargetResidual,sealedClassTargetBound,sealedClassTargetWorstRatio,
+			sealedClassError.c_str(),r2ImmediateEndpointClassRED?1:0);
 		const std::vector<float> traceMutantDevice(1u,1.0f);
 		const double traceMutantBound=traceGamma4096;
 		const std::vector<double> traceMutantMirror(1u,1.0+2.0*traceMutantBound);
@@ -12080,6 +12142,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerResidentObserved.terminalStagingCount==1u;
 	const bool ownerSmokePassed=ownerAccepted&&ownerMirrorBounded&&ownerArithmeticBoundCanFail&&
 		projectionBracketRED&&effectiveAsMolecularRED&&
+		r2ImmediateEndpointClassRED&&
 		ownerProductionEntryPassed&&
 		ownerObserved.ownerPublicationIdentity!=0u&&
 		ownerObserved.terminalStagingCount==1u&&

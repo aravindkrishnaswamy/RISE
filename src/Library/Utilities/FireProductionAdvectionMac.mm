@@ -7268,7 +7268,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				// velocity.  Its physical flux must consume that immediate class, as
 				// the reviewed fp64 owner does; the sealed Picard class is only the
 				// projection solve's input.  R0/R1 retain their sealed-stage class.
-				id<MTLBuffer> physicalInflow=stage==2u?output.nextOpenClass:
+				id<MTLBuffer> physicalInflow=stage==2u&&
+					!request_.qualificationR2SealedClassPhysicalFlux?output.nextOpenClass:
 					output.projection.pressureOpenInflow;
 				if(!EncodeResidentPhysicalFluxAuthority(context_,command,state,temperature,
 					output.packedVelocity,thermo_,ambient_,physicalInflow,

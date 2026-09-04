@@ -441,6 +441,10 @@ namespace RISEFireProductionTrace
 		//! tableau; the second restores the rejected mixed-alpha R0 cache.
 		bool qualificationThreeQuarterHeunWeighting;
 		bool qualificationReuseR0LimiterAlpha;
+		//! Restores the rejected R2 schedule defect: physical flux consumes the
+		//! sealed projection-input class instead of the force-inclusive
+		//! projection's immediately derived endpoint class.
+		bool qualificationR2SealedClassPhysicalFlux;
 		bool qualificationCaptureIterationTrace;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
@@ -462,6 +466,7 @@ namespace RISEFireProductionTrace
 			qualificationDisableLimiterCertification(false),
 			qualificationThreeQuarterHeunWeighting(false),
 			qualificationReuseR0LimiterAlpha(false),
+			qualificationR2SealedClassPhysicalFlux(false),
 			qualificationCaptureIterationTrace(false),
 			qualificationWorkingSetLimitBytes(0u)
 		{ gravityMPerS2.fill(0.0f); }
