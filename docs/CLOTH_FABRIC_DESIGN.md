@@ -5820,8 +5820,9 @@ yet known (§10.1).
     no curvature for round-off to punch through, so plane, disk, box,
     torus and the patches read 1.000 at 1000× — but a triangle MESH is
     not immune: the PLY quad read 1.005 and a tessellated sphere 1.029
-    (1.076 with a small displacement), a 0.5–3 % effect the same floor
-    also closes. Trigger (i) engages every primitive, at whatever
+    (1.076 with a small displacement) — a 0.5–3 % effect at zero
+    displacement, 7.6 % with a small one — which the same floor also
+    closes. Trigger (i) engages every primitive, at whatever
     coordinate scale the crossing geometry demands (for a
     full-sphere-transmissive material, every scale, including unit).
 
@@ -5911,10 +5912,13 @@ yet known (§10.1).
     its unit twin through the real path, PT vs BDPT, 45 checks in ~5 s:
     closed shells banded ±8 % (they share the box's ~3 % residual), flat
     surfaces and the Lambertian rows ±3 %, bands derived over n = 5 seed
-    bases in its own comment. Red-proved against the pre-fix sources:
-    8 checks fail with the original ratios (sphere 3.16, disk 430, plane
-    344, mesh 163, Lambertian 1000× 1.61), the two controls and the unit
-    twin stay green.
+    bases in its own comment. Red-proved against the pre-fix sources
+    (`8d97645f`; the table is in the test's header): 8 checks fail — the
+    seven non-control rows by an order of magnitude or worse (the test's
+    own run read sphere 3.16, disk 430, plane 344, mesh 163, against the
+    sweep's 3.12 / 393 / 354 / 157 above — Monte Carlo noise on ratios
+    whose PT denominators are near zero) and the Lambertian 1000× row at
+    1.61 — while the two controls and the unit twin stay green.
 
     **What this does NOT close.** The gap > 0 rows do not converge with
     this fix — filed as **debt 27** below. And a small residual remains at

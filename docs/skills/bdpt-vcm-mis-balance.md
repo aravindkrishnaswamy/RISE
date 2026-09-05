@@ -256,7 +256,9 @@ minutes to check; do them before any integrator instrumentation:
    unadvanced NEE shadow ray — check the primitive before the
    integrators.**  (Found 2026-09-05 on `box_geometry` carrying a
    `weave_material` with `transmission thin`: a closed box read
-   BDPT/VCM ≈ 0.17× PT with the light outside the box and ≈ 2.25× PT
+   BDPT/VCM ≈ 0.17× PT with the light outside the box (0.28× in the
+   fix's own 256-spp measurement, the table in this file's Concrete
+   examples) and ≈ 2.25× PT
    with the light inside, while the SAME SIX FACES built as
    free-standing `clippedplane_geometry` quads read 1.00 either way.)
    A ray whose origin is a hit point `Object::IntersectRay` published

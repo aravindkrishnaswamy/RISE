@@ -65,13 +65,26 @@
 //    (docs/CLOTH_FABRIC_DESIGN.md section 15 debt 25's sibling-audit
 //    scenes), not reinvented here.
 //
-//  RED-PROOF (see this file's own header comment further down, near the
-//    tolerance constants, for the numbers): with
-//    `src/Library/Intersection/*.cpp` and `CylinderGeometry.cpp` checked
-//    out to their pre-fix (8d97645f) state and the library rebuilt, every
-//    row below except the two controls fails its band by an order of
-//    magnitude or worse -- see the recorded pre-fix ratios in the
-//    tolerance-derivation comments.
+//  RED-PROOF: with `src/Library/Intersection/*.cpp` and
+//    `CylinderGeometry.cpp` checked out to their pre-fix (8d97645f) state
+//    and the library rebuilt, this binary reads 37 passed / 8 failed --
+//    every row below except the two controls and the unit-scale twin
+//    fails its band by an order of magnitude or worse.  Measured
+//    2026-09-05 at seed base 1000 (BDPT/PT; the sweep that motivated the
+//    fix read the same rows at 3.12 / 2.80 / 2.19 / 2.82 / 393 / 354 /
+//    157 / 1.61 -- the differences are Monte Carlo noise on ratios whose
+//    denominators are near-zero PT images):
+//
+//        sphere                3.155   FAIL      box (control)          0.965   pass
+//        ellipsoid             2.787   FAIL      clippedplane (control) 1.000   pass
+//        capped cylinder       2.175   FAIL      Lambertian S=1 twin    0.9999  pass
+//        open tube (side-on)   2.873   FAIL
+//        circular disk         429.7   FAIL
+//        infinite plane        344.2   FAIL
+//        triangle mesh         163.2   FAIL
+//        Lambertian S=1000     1.613   FAIL
+//
+//    Post-fix (this tree): 45 passed / 0 failed in ~5 s.
 //
 //  SEEDING.  Identical convention and identical justification to
 //    tests/FabricRenderTest.cpp (read that file's header for the full
