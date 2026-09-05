@@ -5926,7 +5926,9 @@ yet known (§10.1).
     (sphere and cylinder add the radius; the box answers its per-axis band
     divided by the incidence cosine, which is algebraically the probe's
     existing band term; meshes and patches use their bounding-box corner
-    L1; Bezier its 1e-6; SDF twice its march epsilon; displaced delegates
+    L1; Bezier its 1e-6; SDF twice its march epsilon and the torus the
+    generic default — both corrected by the 7923bf2f follow-up further
+    down; displaced delegates
     to its baked mesh; `Object` forwards, `CSGObject` takes the max over
     its operands mapped into each child's frame and seeds at ZERO — seeding
     at the generic default re-imported the transverse coupling and turned
@@ -5952,8 +5954,10 @@ yet known (§10.1).
     on-surface DEFLATION test (`|C₄| ≤ 1e-10·quartScale` drops the near
     root outright, so a point inside that relative band reports the far
     wall) — 133× the default at R = 4, r = 1 in the fix's own bisection
-    (the review's probe points read 1250×; both numbers are recorded in
-    the code); the override now returns the deflation band's own distance
+    (1.20e-9 against 9.0e-12; the review's probe, at a different point on
+    the tube, read a minimum accepted standoff of 3.33e-9 at unit scale
+    and 3.33e-6 at 1000×; both are recorded in the code); the override
+    now returns the deflation band's own distance
     along the ray, `2·1e-10·quartScale / max(|∇F·dir|, 0.05·|∇F|)`, and
     bisects to exactly 2× headroom at unit and 1000× scale, normal and
     oblique (obliquity via a lateral offset of R/2 — a ray through the
@@ -5969,14 +5973,17 @@ yet known (§10.1).
     floor when the box is unbuilt, and the probe returns false (graceful
     entry-payload fallback) on any non-finite floor or margin. Also from
     that review: `CSGObject::SelfHitRootFloor` no longer lets an unrelated
-    sibling inflate the answer (a triangle 1e4 units from the probed face
+    sibling inflate the answer (a triangle-mesh lobe 1e4 units from the
+    probed face, whose bounding-box-corner floor is a collection floor,
     had widened the window 7494×) — only operands whose surface CONTAINS
     the point contribute, tested with a 2δ ray along the normal
     (δ = 1e-6·(1 + |o|₁), fired in the composite's frame since each
     operand applies its own inverse transform), falling back to the max
-    over both if none owns it; and the SDF window (~0.15 % of the shape,
-    scale-invariant) is accepted and documented — a second SDF lobe within
-    it would be adopted as the same face. Pinned by torus and SDF rows in
+    over both if none owns it; and the SDF window (`2·epsFrac / lipschitz`
+    of the shape itself: 0.01 % at the 5e-5 scene default with uniform
+    parts, ~0.07 % at the 0.15-shrink test case, scale-invariant) is
+    accepted and documented — a second SDF lobe within it would be
+    adopted as the same face. Pinned by torus and SDF rows in
     `BoxGeometryTest`'s floor contract and by the new
     `tests/CsgProbeFloorTest.cpp` (35 checks: the empty-mesh guard, the
     sibling filter, and the combined case whose fields must stay finite).
