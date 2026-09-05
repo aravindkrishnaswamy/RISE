@@ -286,10 +286,10 @@ now lives in `RaySphereIntersection` (both overloads), `RayQuadricIntersection`,
 intersection paths, closing the identical bug class each of those
 producers had: a self-hit root at the origin's own published point,
 sized by the SAME coordinates the fixed absolute `NEARZERO` never scaled
-with. The worst measured case was `RayPlaneIntersection`: an
-`infiniteplane_geometry` (or `circulardisk_geometry`) curtain lit from
-behind by a full-sphere-transmissive `weave_material` read PT at 1/354 of
-BDPT before the floor and 1.000 after, at unit scale — no large
+with. The worst measured cases were `RayPlaneIntersection`'s: a
+`circulardisk_geometry` / `infiniteplane_geometry` curtain lit from
+behind by a full-sphere-transmissive `weave_material` read PT at 1/393
+and 1/354 of BDPT before the floor and 1.000 after, at unit scale — no large
 coordinates needed, because a shadow ray that CROSSES a flat surface hits
 this the same way at any scale. `box_geometry` does not take this fix; it
 keeps the per-axis plane-distance band below, because a box's self-hit

@@ -5810,14 +5810,20 @@ yet known (§10.1).
     hit's own range carries enough absolute round-off (~1e-12 at this
     scale) to publish a point on the wrong side of the surface outright —
     a double-precision emulation of `RaySphereIntersection` on the
-    published point found 16 % of points landing INSIDE the sphere at
-    r = 1000, and 8.8 % of NEE rays self-hitting with roots up to 6.6e-9.
-    Flat-family primitives (plane, disk, box, torus, mesh, bilinear/Bezier
-    patch) do not show trigger (ii) — a flat or already-fixed-topology
-    surface has no curvature for round-off to punch through — so only
-    trigger (i) engages them, and only at whatever coordinate scale the
-    crossing geometry demands (for a full-sphere-transmissive material,
-    every scale, including unit).
+    published point (a scratch Python script, not in the tree: 20,000
+    camera rays from (0, 0, 4000) at a radius-1000 sphere, light at
+    (4000, 0, 1200), the point published exactly as `Object::IntersectRay`
+    does, the quadratic solved exactly as the routine does) found 16 % of
+    points landing INSIDE the sphere and 8.8 % of NEE rays self-hitting,
+    with self roots up to 6.6e-9 at the most grazing exits. Flat-family
+    primitives are far less exposed to trigger (ii) — a flat surface has
+    no curvature for round-off to punch through, so plane, disk, box,
+    torus and the patches read 1.000 at 1000× — but a triangle MESH is
+    not immune: the PLY quad read 1.005 and a tessellated sphere 1.029
+    (1.076 with a small displacement), a 0.5–3 % effect the same floor
+    also closes. Trigger (i) engages every primitive, at whatever
+    coordinate scale the crossing geometry demands (for a
+    full-sphere-transmissive material, every scale, including unit).
 
     **Trigger (ii) sweep** — Lambertian, omni light, camera oblique,
     48×48/256 spp, BDPT/PT, unit scale vs 1000× (light power ×1e6):
@@ -5839,7 +5845,7 @@ yet known (§10.1).
     | displaced tessellated sphere (disp 0.02·r) | 1.000 | 1.076 (disp 0 control: 1.029) |
 
     Mechanism confirmed two ways: advancing PT's NEE shadow ray 1e-6 in a
-    scratch build took the sphere cell from 1.612 to 1.0006 (the same
+    scratch build took the sphere cell from 1.61 to 1.0006 (the same
     `Advance()` convention BDPT/VCM already use); and the double-precision
     emulation above independently explains the same figure from the
     producer side. Angle-independent — grazing and overhead read within
@@ -5882,7 +5888,8 @@ yet known (§10.1).
     an exactly-on-surface root (a relative 1e-10 test on the quartic's
     leading coefficient `C[4]`); adding the scale-relative floor to its
     remaining root gate did nothing at unit scale and made the 1000× cell
-    slightly WORSE (0.846 → 0.792), so it was reverted. The torus's mild
+    slightly WORSE (0.846 → 0.792 in the scratch build that carried it,
+    beyond the ~0.005 noise floor), so it was reverted. The torus's mild
     PT-OVER residual (0.89 unit / 0.85 at 1000×, both light-behind; clean
     with the light inside) is recorded as open, mechanism unknown —
     probably the deflated cubic's conditioning, not the same self-hit-floor
@@ -5897,10 +5904,17 @@ yet known (§10.1).
     panel lit from behind was affected, not just the closed-solid case
     above.
 
-    **Regression test.** `tests/PrimitiveSelfHitTest.cpp` (written
-    alongside this fix by a separate worker) pins the scale-relative floor
-    per producer across the primitives in the tables above; its
-    acceptance bands are derived in its own comment, not reproduced here.
+    **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
+    trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube
+    side-on, circular disk, infinite plane, two-triangle PLY quad; box and
+    clippedplane as controls) and the radius-1000 Lambertian sphere with
+    its unit twin through the real path, PT vs BDPT, 45 checks in ~5 s:
+    closed shells banded ±8 % (they share the box's ~3 % residual), flat
+    surfaces and the Lambertian rows ±3 %, bands derived over n = 5 seed
+    bases in its own comment. Red-proved against the pre-fix sources:
+    8 checks fail with the original ratios (sphere 3.16, disk 430, plane
+    344, mesh 163, Lambertian 1000× 1.61), the two controls and the unit
+    twin stay green.
 
     **What this does NOT close.** The gap > 0 rows do not converge with
     this fix — filed as **debt 27** below. And a small residual remains at
