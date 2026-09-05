@@ -6396,3 +6396,34 @@ description. R0/R1/R2 traces count 4/4, 4/4, and 6/6, compatible momentum is
 zero interstage full-grid transfers. Qualification device/wall p95 are
 `918.464667/945.649167 ms`. SHA-bound evidence is
 `r201_projected_heun_metal_owner/r201j_actual_candidate_trajectory_gate.v1`.
+
+Fresh provenance review rejected r201j before replay: its transfer ledger used
+a nine-field state as the minimum counted transfer, observed only
+Private-to-host copies, and its transfer mutant returned before the common
+publication gate. A one-field readback or host-to-Private substitution could
+therefore escape while the published result reported zero transfers.
+
+### r201k full-field residency publication gate
+
+The owner ledger now defines a full-grid transfer as one scalar cell field,
+`cells*sizeof(float)`, and counts host-visible crossings in both directions
+during R0/R1/R2. The requested per-iteration qualification trace is explicitly
+classified and recorded by its separate staging counter; it is diagnostic and
+does not become a production authority transfer. Every other full-field
+crossing makes the common atomic publication gate refuse before any terminal
+payload is staged.
+
+The named RED performs both a one-field Private-to-host readback and a
+one-field host-to-Private substitution, then continues to the shared gate. The
+gate observes count 2 and refuses with zero owner identity, zero payload words,
+and zero terminal stagings. The normal production entry still records zero
+interstage transfers and one terminal staging.
+
+At exact source `b9360ae690f8de19db2fa37a02bff1d9483efac5`, the full owner gate
+and independent kernel sweep exit zero. R0/R1/R2 trace and class results are
+unchanged; compatible momentum remains `1.1175870895385742e-07` against
+`3.1200230559651367e-05`. Qualification device/wall p95 are
+`922.160751/949.934625 ms`; certified/measured working sets remain
+`10,223,616/1,245,184` bytes. Evidence is
+`r201_projected_heun_metal_owner/r201k_full_field_residency_gate.v1`. The sealed
+tier-8 replay remains gated on a fresh zero-P1/P2 three-reviewer round.

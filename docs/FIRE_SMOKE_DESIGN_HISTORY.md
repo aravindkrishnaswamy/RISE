@@ -5712,3 +5712,29 @@ full-grid transfers and one terminal staging. Qualification device/wall p95 are
 `10,223,616/1,245,184` bytes. Evidence is
 `r201_projected_heun_metal_owner/r201j_actual_candidate_trajectory_gate.v1`.
 The sealed tier-8 replay remains gated on the fresh three-reviewer round.
+
+### r201k — full-field residency is an atomic publication precondition
+
+Fresh provenance review rejected r201j before replay. Its owner ledger counted
+only Private-to-host transfers at least as large as a nine-field conservative
+state, and its transfer mutant refused directly instead of exercising the
+common publication decision. That left one-field readbacks and host-to-Private
+substitutions outside the claimed zero-transfer invariant.
+
+The repaired ledger's unit is one complete scalar field and its direction test
+is symmetric across the host-visible boundary. Qualification trace staging is
+an explicit diagnostic class with its own count. All other full-field
+crossings during R0/R1/R2 are accumulated and the common atomic publication
+gate requires the count to be zero. The named RED performs a one-field
+readback followed by a one-field substitution, reaches that gate, records two
+crossings, and refuses before identity or payload publication. Thus residency
+is now enforced by the same decision that grants owner authority, rather than
+asserted by a test-only early return.
+
+Exact source `b9360ae690f8de19db2fa37a02bff1d9483efac5` passes the live M4
+owner gate and independent kernel sweep. The normal production owner records
+zero interstage transfers and one terminal staging; the primary per-quantity
+enclosure gate, class sequences, and compatible-flux identity remain green.
+SHA-bound evidence is
+`r201_projected_heun_metal_owner/r201k_full_field_residency_gate.v1`. Replay is
+still blocked until a fresh three-reviewer round returns zero P1/P2.
