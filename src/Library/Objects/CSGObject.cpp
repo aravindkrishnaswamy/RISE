@@ -490,7 +490,29 @@ namespace
 		// operand's own SURFACE_INTERSEC_ERROR self-hit gate; marginal
 		// cases miss the probe and take the graceful entry-payload
 		// fallback (quality only, never a decoy-payload correctness bug).
-		const Scalar margin = std::max( Scalar(1e-12), kUlpFactor * dirWeightedAbs );
+		//
+		// Second floor (2026-09-05, debt-25 review round 1, P2-1): the
+		// probe must ALSO clear the operand primitive's own self-hit
+		// tolerance, or the primitive will treat the probe origin as a
+		// point ON the face it is trying to re-hit and drop that root.
+		// BoxGeometry::DropSelfHitRoot classifies any origin within
+		// NEARZERO * (1 + coordinate magnitude) of a face PLANE as that
+		// face's own published hit point (there is no provenance to tell a
+		// deliberate 1e-12 standoff from Object::IntersectRay's 1e-12
+		// back-off -- the two carry identical geometric information), so a
+		// 1e-12 margin here landed inside that band for every box operand
+		// and the probe silently took the graceful entry-payload fallback
+		// on EVERY box exit face.  8x that tolerance keeps the probe
+		// outside the band for exit angles down to |cos| ~ 1/8 (~83
+		// degrees off-normal; steeper exits miss the probe and fall back,
+		// the marginal-case outcome the paragraph above already accepts)
+		// while the acceptance window (~2.1 x margin, ~4e-11 at unit
+		// coordinates) stays ~50x below the ~2e-9 decoy-face radius the
+		// r6 revert above rejected.
+		const Scalar coordScale =
+			std::fabs( ptExitLocal.x ) + std::fabs( ptExitLocal.y ) + std::fabs( ptExitLocal.z );
+		const Scalar selfHitFloor = Scalar(8.0) * NEARZERO * ( Scalar(1) + coordScale );
+		const Scalar margin = std::max( std::max( Scalar(1e-12), selfHitFloor ), kUlpFactor * dirWeightedAbs );
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
 			ptExitLocal.y + dir.y * margin,

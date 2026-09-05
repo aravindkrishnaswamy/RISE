@@ -164,6 +164,16 @@ namespace {
 // i.e. the surviving hit is an EXIT face reached from the origin's own
 // entry face -- the caller treats that like an origin that began inside
 // the box for the front/back-face flag rule.
+//
+// Known, accepted limits (debt-25 review round 1, P3-2 / P3-3): the test
+// is on the PLANE, not on provenance, so (a) a ray within ~1e-9 rad of
+// parallel to the origin's face whose genuine entry root lies far along
+// the ray is also dropped (|dir.n| < eps / t -- measure-zero in a
+// render), and (b) a hit point published by an UNRELATED object whose
+// face is exactly coplanar with one of ours reads as our own face
+// (enclosed exact-contact regions only).  A deliberate standoff that
+// wants to re-hit the face it stands off from -- CSGObject's exit-face
+// payload probe -- must therefore stand off by MORE than `eps`; it does.
 // ================================================================
 inline Scalar FaceBound( const int side, const Point3& ll, const Point3& ur )
 {
@@ -196,7 +206,9 @@ inline bool DropSelfHitRoot( const Ray& ray, BOX_HIT& h, const Point3& ll, const
 	const Point3& o = ray.origin;
 	const Scalar coordScale =
 		std::fabs( o.x ) + std::fabs( o.y ) + std::fabs( o.z ) +
-		std::fabs( ur.x ) + std::fabs( ur.y ) + std::fabs( ur.z );
+		std::max( std::fabs( ll.x ), std::fabs( ur.x ) ) +
+		std::max( std::fabs( ll.y ), std::fabs( ur.y ) ) +
+		std::max( std::fabs( ll.z ), std::fabs( ur.z ) );
 	const Scalar eps = NEARZERO * ( Scalar(1) + coordScale );
 
 	const bool selfA = std::fabs( OriginAxis( h.sideA, o ) - FaceBound( h.sideA, ll, ur ) ) <= eps;
@@ -215,13 +227,17 @@ inline bool DropSelfHitRoot( const Ray& ray, BOX_HIT& h, const Point3& ll, const
 		return false;
 	}
 
-	// Same publish convention as RayBoxIntersection's origin-inside
-	// branch: primary = the exit root, secondary = the (~0) entry root.
-	const Scalar tSelf = h.dRange;
+	// Publish as RaySphereIntersection does when it skips a root at the
+	// origin: primary = the exit root, dRange2 = 0 -- the "single root,
+	// origin inside" sentinel CSGObject reads (`range2 == 0`) and that
+	// Object::IntersectRay's exit-info block leaves alone.  (Carrying the
+	// ~1e-12 self-root as dRange2 instead would publish an exit BEHIND the
+	// entry, which CSG's range ordering misreads.)  sideB keeps the
+	// origin's own face so bComputeExitInfo still names a face.
 	const int sideSelf = h.sideA;
 	h.dRange = h.dRange2;
 	h.sideA = h.sideB;
-	h.dRange2 = tSelf;
+	h.dRange2 = Scalar(0);
 	h.sideB = sideSelf;
 	return true;
 }
@@ -249,6 +265,8 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	// front/back-face rule is decided on that combined predicate rather
 	// than on the strict inside test alone (which calls an on-face origin
 	// "outside" and used to reject the far face under back-faces-only).
+	// Note (false, false) now yields no hit, where the removed early-out
+	// let it through; no caller passes that combination.
 	const bool bExitHit = DropSelfHitRoot( ri.ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
 	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
 		h.bHit = false;

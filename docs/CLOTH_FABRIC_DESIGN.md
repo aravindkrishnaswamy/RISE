@@ -5719,6 +5719,26 @@ yet known (§10.1).
     values use a different box size and weave preset than the original
     review handoff's; the RATIOS are what carry the finding.
 
+    **Review round 1 follow-ups (2026-09-05).** The self-hit band is a
+    test on the face PLANE, not on provenance, so a deliberate standoff
+    that wants to re-hit the face it stands off from reads as that face's
+    own published point: `CSGObject::AdoptCsgExitFacePayloadViaProbe`'s
+    1e-12 probe margin fell inside the band for every `box_geometry`
+    operand and silently took its graceful entry-payload fallback on
+    every box exit face (wrong material / UV at CSG exit faces; a P2, not
+    an image-breaking P1). Its margin floor is now
+    `8 × NEARZERO × (1 + |ptExit|)` — outside the band for exit angles
+    down to |cos| ≈ 1/8, with the acceptance window still ~50× below the
+    ~2e-9 decoy-face radius CSG's own review history rejected — and
+    `tests/BoxGeometryTest.cpp::RunCsgExitProbeContract` pins the two
+    constants against each other at normal and oblique exits, at unit
+    and 1000× scale. The promoted root now publishes `range2 = 0`, the
+    `RaySphereIntersection` / CSG inside-sentinel convention, instead of
+    carrying the ~1e-12 self-root as an exit BEHIND the entry. Two
+    measure-zero limits of the plane test are recorded in the helper's
+    comment (a ray within ~1e-9 rad of parallel to its own face; an
+    unrelated object's exactly coplanar face).
+
     **What this does NOT close.** The gap > 0 rows do not converge with
     this fix — filed as **debt 27** below. And a small residual remains at
     gap 0: over n = 5 seed bases the fixed box reads BDPT/PT 0.969 ± 0.003
