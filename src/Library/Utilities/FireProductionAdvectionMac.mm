@@ -34,6 +34,8 @@
 #include <memory>
 #include <new>
 #include <sstream>
+#include <map>
+#include <mutex>
 
 namespace RISE
 {
@@ -709,6 +711,116 @@ namespace RISE
 
 		thread_local std::uint64_t MetalCommandCommitCount=0u;
 		thread_local std::uint64_t MetalHostBufferReadCount=0u;
+		std::mutex ProducerKernelNameMutex;
+		std::map<const void*,std::string> ProducerKernelNames;
+		id<MTLComputePipelineState> NameProducerKernel(id<MTLComputePipelineState> pipeline,
+			const char* name)
+		{
+			if(pipeline&&std::getenv("RISE_FIRE_PRODUCER_KERNEL_PROFILE")){
+				std::lock_guard<std::mutex> lock(ProducerKernelNameMutex);
+				ProducerKernelNames[(__bridge const void*)pipeline]=name;
+			}
+			return pipeline;
+		}
+		class ProducerKernelProfile;
+		thread_local ProducerKernelProfile* ActiveProducerKernelProfile=nullptr;
+		class ProducerKernelProfile
+		{
+			struct Row {id<MTLComputeCommandEncoder> encoder;std::string name;
+				std::size_t threads=0u;unsigned int dispatches=0u;};
+			id<MTLCommandBuffer> command_;
+			id<MTLCounterSampleBuffer> samples_;
+			std::vector<Row> rows_;
+			MTLTimestamp cpuBegin_=0u,gpuBegin_=0u;
+			unsigned int stage_,iteration_;
+			bool enabled_,valid_;
+		public:
+			ProducerKernelProfile(id<MTLCommandBuffer> command,unsigned int stage,unsigned int iteration)
+				:command_(command),samples_(nil),stage_(stage),iteration_(iteration),
+				enabled_(std::getenv("RISE_FIRE_PRODUCER_KERNEL_PROFILE")!=nullptr),valid_(!enabled_)
+			{
+				if(!enabled_)return;
+				if(std::strcmp(std::getenv("RISE_FIRE_PRODUCER_KERNEL_PROFILE"),"1")!=0||
+					ActiveProducerKernelProfile||!command)return;
+				id<MTLDevice> device=[command device];
+				if(![device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary])return;
+				id<MTLCounterSet> timestamps=nil;
+				for(id<MTLCounterSet> candidate in [device counterSets])
+					if([[candidate name] isEqualToString:MTLCommonCounterSetTimestamp])timestamps=candidate;
+				if(!timestamps)return;
+				MTLCounterSampleBufferDescriptor* descriptor=[MTLCounterSampleBufferDescriptor new];
+				descriptor.counterSet=timestamps;descriptor.storageMode=MTLStorageModeShared;
+				descriptor.sampleCount=1024u;NSError* error=nil;
+				samples_=[device newCounterSampleBufferWithDescriptor:descriptor error:&error];
+				if(!samples_)return;
+				[device sampleTimestamps:&cpuBegin_ gpuTimestamp:&gpuBegin_];
+				valid_=true;ActiveProducerKernelProfile=this;
+			}
+			~ProducerKernelProfile(){if(ActiveProducerKernelProfile==this)ActiveProducerKernelProfile=nullptr;}
+			bool Valid()const{return valid_;}
+			id<MTLComputeCommandEncoder> Encoder(id<MTLCommandBuffer> command)
+			{
+				if(command!=command_)return [command computeCommandEncoder];
+				if(!valid_||2u*(rows_.size()+1u)>[samples_ sampleCount]){valid_=false;return nil;}
+				MTLComputePassDescriptor* pass=[MTLComputePassDescriptor computePassDescriptor];
+				pass.dispatchType=MTLDispatchTypeSerial;
+				pass.sampleBufferAttachments[0].sampleBuffer=samples_;
+				pass.sampleBufferAttachments[0].startOfEncoderSampleIndex=2u*rows_.size();
+				pass.sampleBufferAttachments[0].endOfEncoderSampleIndex=2u*rows_.size()+1u;
+				id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoderWithDescriptor:pass];
+				if(encoder)rows_.push_back(Row{encoder,"",0u,0u});else valid_=false;
+				return encoder;
+			}
+			void DispatchRecord(id<MTLComputeCommandEncoder> encoder,id<MTLComputePipelineState> pipeline,
+				std::size_t threads)
+			{
+				for(Row& row:rows_)if(row.encoder==encoder){
+					std::lock_guard<std::mutex> lock(ProducerKernelNameMutex);
+					auto found=ProducerKernelNames.find((__bridge const void*)pipeline);
+					if(found==ProducerKernelNames.end()){valid_=false;return;}
+					row.name=found->second;row.threads=threads;++row.dispatches;return;
+				}
+			}
+			bool Report()
+			{
+				if(!enabled_)return true;
+				if(!valid_||[command_ status]!=MTLCommandBufferStatusCompleted||rows_.empty())return false;
+				MTLTimestamp cpuEnd=0u,gpuEnd=0u;
+				[[command_ device] sampleTimestamps:&cpuEnd gpuTimestamp:&gpuEnd];
+				if(cpuEnd<=cpuBegin_||gpuEnd<=gpuBegin_)return false;
+				NSData* data=[samples_ resolveCounterRange:NSMakeRange(0u,2u*rows_.size())];
+				if(!data||[data length]!=2u*rows_.size()*sizeof(MTLCounterResultTimestamp))return false;
+				const auto* times=static_cast<const MTLCounterResultTimestamp*>([data bytes]);
+				const double millisecondsPerTick=static_cast<double>(cpuEnd-cpuBegin_)/
+					static_cast<double>(gpuEnd-gpuBegin_)/1e6;
+				// MTLDevice's correlated CPU timestamps are nanoseconds (not raw
+				// mach_absolute_time ticks). Encoder intervals may overlap; their sum
+				// is not an exclusive decomposition of command elapsed time.
+				std::fprintf(stderr,"PRODUCER_COMMAND_V1 stage=%u raw_iteration=%u "
+					"cpu_begin=%llu cpu_end=%llu gpu_begin=%llu gpu_end=%llu "
+					"device_ms=%.17g encoders=%zu interval_scope=possibly_overlapping\n",
+					stage_,iteration_,static_cast<unsigned long long>(cpuBegin_),
+					static_cast<unsigned long long>(cpuEnd),static_cast<unsigned long long>(gpuBegin_),
+					static_cast<unsigned long long>(gpuEnd),
+					([command_ GPUEndTime]-[command_ GPUStartTime])*1000.0,rows_.size());
+				for(std::size_t index=0u;index<rows_.size();++index){const Row& row=rows_[index];
+					const std::uint64_t begin=times[2u*index].timestamp,end=times[2u*index+1u].timestamp;
+					if(row.dispatches!=1u||begin==MTLCounterErrorValue||end==MTLCounterErrorValue||
+						end<begin||begin<gpuBegin_||end>gpuEnd)return false;
+					std::fprintf(stderr,"PRODUCER_KERNEL_V1 stage=%u raw_iteration=%u ordinal=%zu "
+						"kernel=%s threads=%zu begin_tick=%llu end_tick=%llu ms_per_tick=%.17g device_ms=%.17g\n",
+						stage_,iteration_,index,row.name.c_str(),row.threads,
+						static_cast<unsigned long long>(begin),static_cast<unsigned long long>(end),
+						millisecondsPerTick,(end-begin)*millisecondsPerTick);
+				}
+				return true;
+			}
+		};
+		id<MTLComputeCommandEncoder> ProducerProfileEncoder(id<MTLCommandBuffer> command)
+		{
+			return ActiveProducerKernelProfile?ActiveProducerKernelProfile->Encoder(command):
+				[command computeCommandEncoder];
+		}
 
 		id<MTLCommandBuffer> TrackedMetalCommandBuffer( id<MTLCommandQueue> queue )
 		{
@@ -1436,8 +1548,8 @@ kernel void fold_methane_advective_anomaly_target(device const float2* deviation
 					auto makePipeline=[&](const char* name) -> id<MTLComputePipelineState> {
 						id<MTLFunction> function=[library newFunctionWithName:
 							[NSString stringWithUTF8String:name]];
-						return function ? [device newComputePipelineStateWithFunction:function
-							error:&metalError] : nil;
+						return function ? NameProducerKernel([device newComputePipelineStateWithFunction:function
+							error:&metalError],name) : nil;
 					};
 					reconstruct=makePipeline("reconstruct");
 					scan=makePipeline("scan_lines");
@@ -1954,8 +2066,8 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 					auto makePipeline=[&](const char* name)->id<MTLComputePipelineState>{
 						id<MTLFunction> function=[library newFunctionWithName:
 							[NSString stringWithUTF8String:name]];
-						return function?[device newComputePipelineStateWithFunction:function
-							error:&metalError]:nil;};
+						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function
+							error:&metalError],name):nil;};
 					buildFluxPair=makePipeline("fct_build_flux_pair");
 					averageFluxPair=makePipeline("fct_average_flux_pair");
 					validateFluxPair=makePipeline("fct_validate_flux_pair");
@@ -2349,6 +2461,32 @@ kernel void validate_resident_physical_flux(device const float* donor [[buffer(0
   as_type<uint>(high[gid])!=as_type<uint>(highAdvective[gid]+physical))
   atomic_fetch_or_explicit(failure,8u,memory_order_relaxed);
  else atomic_fetch_or_explicit(obligations,1u<<10u,memory_order_relaxed);}
+// Scheduling-only gather: every SIMD lane replays exactly the original FNV
+// word order. Loads are coalesced; no XOR reduction or changed digest scheme.
+inline ulong payload_fnv_words(ulong hash,device const float* input,uint count,
+ uint lane,uint width){for(uint base=0u;base<count;base+=width){uint word=base+lane;
+ uint value=word<count?as_type<uint>(input[word]):0u;
+ for(uint i=0u;i<min(width,count-base);++i){hash^=ulong(simd_shuffle(value,i));
+  hash*=1099511628211ul;}}return hash;}
+inline ulong payload_fnv_five(ulong hash,device const float* a,device const float* b,
+ device const float* c,device const float* d,device const float* e,uint count,
+ uint lane,uint width){for(uint base=0u;base<count;base+=width){uint word=base+lane;
+ uint av=word<count?as_type<uint>(a[word]):0u,bv=word<count?as_type<uint>(b[word]):0u,
+ cv=word<count?as_type<uint>(c[word]):0u,dv=word<count?as_type<uint>(d[word]):0u,
+ ev=word<count?as_type<uint>(e[word]):0u;
+ for(uint i=0u;i<min(width,count-base);++i){hash^=ulong(simd_shuffle(av,i));hash*=1099511628211ul;
+  hash^=ulong(simd_shuffle(bv,i));hash*=1099511628211ul;
+  hash^=ulong(simd_shuffle(cv,i));hash*=1099511628211ul;
+  hash^=ulong(simd_shuffle(dv,i));hash*=1099511628211ul;
+  hash^=ulong(simd_shuffle(ev,i));hash*=1099511628211ul;}}return hash;}
+inline ulong payload_fnv_three(ulong hash,device const float* a,device const float* b,
+ device const float* c,uint count,uint lane,uint width){
+ for(uint base=0u;base<count;base+=width){uint word=base+lane;
+ uint av=word<count?as_type<uint>(a[word]):0u,bv=word<count?as_type<uint>(b[word]):0u,
+ cv=word<count?as_type<uint>(c[word]):0u;
+ for(uint i=0u;i<min(width,count-base);++i){hash^=ulong(simd_shuffle(av,i));hash*=1099511628211ul;
+  hash^=ulong(simd_shuffle(bv,i));hash*=1099511628211ul;
+  hash^=ulong(simd_shuffle(cv,i));hash*=1099511628211ul;}}return hash;}
 kernel void identify_resident_physical_flux(device const float* donor [[buffer(0)]],
  device const float* advectiveDelta [[buffer(1)]],device const float* highAdvective [[buffer(2)]],
  device const float* physicalMass [[buffer(3)]],device const float* physicalEnergy [[buffer(4)]],
@@ -2360,26 +2498,22 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
  device const float* projector [[buffer(15)]],device const ulong* endpointClassIdentity [[buffer(16)]],
  device ulong* identity [[buffer(17)]],device atomic_uint* failure [[buffer(18)]],
  constant TransportParams& p [[buffer(19)]],constant PhysicalParams& extra [[buffer(20)]],
- uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
+ uint gid [[thread_position_in_grid]],uint width [[threads_per_simdgroup]]){
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul||
-  endpointClassIdentity[0]==0ul){identity[0]=0ul;return;}
+  endpointClassIdentity[0]==0ul){if(gid==0u)identity[0]=0ul;return;}
  ulong hash=14695981039346656037ul,all=pf_all_faces(p);hash^=transportIdentity[0];hash*=1099511628211ul;
  hash^=endpointClassIdentity[0];hash*=1099511628211ul;
- for(uint word=0u;word<9u*all;++word){hash^=ulong(as_type<uint>(donor[word]));hash*=1099511628211ul;
-  hash^=ulong(as_type<uint>(advectiveDelta[word]));hash*=1099511628211ul;
-  hash^=ulong(as_type<uint>(highAdvective[word]));hash*=1099511628211ul;
-  hash^=ulong(as_type<uint>(low[word]));hash*=1099511628211ul;hash^=ulong(as_type<uint>(high[word]));hash*=1099511628211ul;}
- for(uint word=0u;word<8u*all;++word){hash^=ulong(as_type<uint>(physicalMass[word]));hash*=1099511628211ul;}
- for(uint word=0u;word<all;++word){hash^=ulong(as_type<uint>(physicalEnergy[word]));hash*=1099511628211ul;
-  hash^=ulong(as_type<uint>(physicalGas[word]));hash*=1099511628211ul;
-  hash^=ulong(as_type<uint>(faceLogTemperature[word]));hash*=1099511628211ul;}
- for(uint word=0u;word<7u*all;++word){hash^=ulong(as_type<uint>(faceEnthalpy[word]));hash*=1099511628211ul;}
+ hash=payload_fnv_five(hash,donor,advectiveDelta,highAdvective,low,high,9u*all,gid,width);
+ hash=payload_fnv_words(hash,physicalMass,8u*all,gid,width);
+ hash=payload_fnv_three(hash,physicalEnergy,physicalGas,faceLogTemperature,all,gid,width);
+ hash=payload_fnv_words(hash,faceEnthalpy,7u*all,gid,width);
  for(uint word=0u;word<9u;++word){hash^=ulong(as_type<uint>(ambient[word]));hash*=1099511628211ul;}
  uint inflowWords=p.sideOffset[5]+p.nx*p.ny;for(uint word=0u;word<inflowWords;++word){hash^=ulong(inflow[word]);hash*=1099511628211ul;}
  for(uint word=0u;word<8u*extra.physicalNullity;++word){hash^=ulong(as_type<uint>(physicalBasis[word]));hash*=1099511628211ul;}
  for(uint word=0u;word<8u*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(advectiveBasis[word]));hash*=1099511628211ul;}
  for(uint word=0u;word<extra.advectiveNullity*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(projector[word]));hash*=1099511628211ul;}
- hash^=ulong(as_type<uint>(extra.ambientT));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
+ hash^=ulong(as_type<uint>(extra.ambientT));hash*=1099511628211ul;
+ if(gid==0u)identity[0]=hash==0ul?1ul:hash;}
 kernel void identify_resident_eos_candidate(device const float* candidate [[buffer(0)]],
  device const float* sourceDelta [[buffer(1)]],device const float* alpha [[buffer(2)]],
  device const ulong* physicalIdentity [[buffer(3)]],device const ulong* transportIdentity [[buffer(4)]],
@@ -2531,8 +2665,8 @@ inline EOSDD eos_log_dd(EOSDD value){uint bits=as_type<uint>(value.hi);int expon
  // Host-libm projection error is a qualification-comparator property and must
  // not inflate a live physical value's correct-rounding interval.
  return result;}
-inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
- rounded=value.hi;if(!isfinite(rounded))return false;uint magnitude=as_type<uint>(rounded)&0x7fffffffu;
+inline bool eos_proves_binary32_bin(EOSDD value,float rounded){
+ if(!isfinite(rounded))return false;uint magnitude=as_type<uint>(rounded)&0x7fffffffu;
  bool tiny=magnitude<=0x00800000u;EOSDD normalized=tiny?eos_renorm(
   eos_scale_tiny_by_2p126(value.hi),eos_scale_tiny_by_2p126(value.lo),
   eos_scale_tiny_by_2p126(value.tail),eos_scale_tiny_by_2p126(value.bound)):
@@ -2558,6 +2692,16 @@ inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
   upperMidpoint=eos_scale_power_of_two(upperMidpoint,proofScale);}
  return eos_order(lowerMidpoint,normalized)==-1&&
   eos_order(normalized,upperMidpoint)==-1;}
+inline bool eos_unique_binary32_round(EOSDD value,thread float& rounded){
+ rounded=value.hi;if(eos_proves_binary32_bin(value,rounded))return true;
+ // A renormalized triple's leading float can round a midpoint tie before its
+ // trailing component decides the side. The interval, not hi, owns rounding.
+ // Test adjacent bins with the SAME strict proof; a straddling interval still
+ // fails all three. No radius, threshold, or accepted uncertainty is changed.
+ float below=nextafter(value.hi,-INFINITY),above=nextafter(value.hi,INFINITY);
+ if(eos_proves_binary32_bin(value,below)){rounded=below;return true;}
+ if(eos_proves_binary32_bin(value,above)){rounded=above;return true;}
+ return false;}
 // Materialize an interval-certified binary32 value when correct-rounding is
 // undecidable at a midpoint.  The complete propagated interval is the local
 // acceptance contract: no fixed ULP cap, cancellation scale, or measured
@@ -3285,7 +3429,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					if(!library){error=MetalError("production resident transport library compilation failed",metalError);return;}
 					auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{id<MTLFunction> function=
 						[library newFunctionWithName:[NSString stringWithUTF8String:name]];
-						return function?[device newComputePipelineStateWithFunction:function error:&metalError]:nil;};
+						return function?NameProducerKernel([device newComputePipelineStateWithFunction:function error:&metalError],name):nil;};
 					evaluate=pipeline("evaluate_resident_transport");identify=pipeline("identify_resident_transport");
 					physicalFlux=pipeline("evaluate_resident_physical_flux");
 					advectivePair=pipeline("evaluate_resident_advective_pair");
@@ -3418,6 +3562,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		void Dispatch( id<MTLComputeCommandEncoder> encoder,
 			id<MTLComputePipelineState> pipeline, std::size_t count )
 		{
+			if(ActiveProducerKernelProfile)ActiveProducerKernelProfile->DispatchRecord(encoder,pipeline,count);
 			const std::size_t width=std::min<std::size_t>(256u,
 				static_cast<std::size_t>([pipeline maxTotalThreadsPerThreadgroup]));
 			[encoder setComputePipelineState:pipeline];
@@ -7214,7 +7359,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			bool Encode(id<MTLCommandBuffer> command,id<MTLComputePipelineState> pipeline,
 				const std::initializer_list<id<MTLBuffer> >& buffers,const std::size_t threads)
 			{
-				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 				if(!encoder)return false;[encoder setComputePipelineState:pipeline];
 				std::size_t index=0u;for(id<MTLBuffer> buffer:buffers)
 					[encoder setBuffer:buffer offset:0 atIndex:index++];
@@ -7229,6 +7374,115 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					[blit fillBuffer:value range:NSMakeRange(0,[value length]) value:0u];
 				}
 				[blit endEncoding];return true;
+			}
+			void ReportEOSRefusalInputs(const Stage& stageResult,id<MTLBuffer> parentState,
+				unsigned int stage,std::uint32_t cell)
+			{
+				const char* enabled=std::getenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
+				if(!enabled||std::strcmp(enabled,"1")!=0)return;
+				if(cell>=cells_||!stageResult.candidate)return;
+				id<MTLBuffer> staging=[context_.device newBufferWithLength:36u*sizeof(float)
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;
+				if(!staging||!blit)return;
+				const id<MTLBuffer> fields[]={stageResult.candidate->conservative,parentState,q0_,sourceDelta_};
+				for(std::size_t field=0u;field<4u;++field)for(std::size_t component=0u;component<9u;++component)
+					Copy(blit,fields[field],(component*cells_+cell)*sizeof(float),staging,
+						(field*9u+component)*sizeof(float),sizeof(float),TransferKind::Control);
+				[blit endEncoding];if(!Commit(command,nullptr))return;
+				const auto* values=static_cast<const float*>(Read(staging,TransferKind::Control));
+				if(!values)return;
+				std::fprintf(stderr,"EOS_REFUSAL_INPUT_V1 stage=%u raw_iteration=%u cell=%u "
+					"nx=%zu ny=%zu nz=%zu Tmin=%.9g Tmax=%.9g pressure=%.9g dynamics_bound=%.9g "
+					"scope=failed_candidate_only publication=false\n",stage,profileIteration_,cell,
+					shape_.nx,shape_.ny,shape_.nz,eosMetadata_.temperatureMinK,
+					eosMetadata_.temperatureMaxK,eosMetadata_.pressurePa,eosMetadata_.dynamicsValidityBound);
+				for(std::size_t field=0u;field<4u;++field)for(std::size_t component=0u;component<9u;++component){
+					std::uint32_t bits=0u;std::memcpy(&bits,&values[field*9u+component],sizeof(bits));
+					std::fprintf(stderr,"EOS_REFUSAL_COMPONENT field=%zu component=%zu bits=%u value=%.17g\n",
+						field,component,bits,static_cast<double>(values[field*9u+component]));
+				}
+				std::array<double,9> candidate;
+				for(std::size_t component=0u;component<candidate.size();++component)
+					candidate[component]=values[component];
+				const FireSimulationMethaneRecord& record=FireSimulationMethaneRecord::PhysicalV1();
+				double temperature=0.0,ratio=0.0;std::string mirrorError;
+				bool mirrorAccepted=record.InvertAcceptedConservativeStateByComponentOrder(
+					candidate.data(),candidate.size(),eosMetadata_.temperatureMinK,
+					eosMetadata_.temperatureMaxK,FireStateProducerPrecision::Binary32,
+					temperature,ratio,&mirrorError);
+				const float publishedTemperature=static_cast<float>(temperature);
+				if(mirrorAccepted)mirrorAccepted=
+					record.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+						candidate.data(),candidate.size(),publishedTemperature,
+						FireStateProducerPrecision::Binary32,ratio,&mirrorError);
+				const float projectedRatio=static_cast<float>(ratio);
+				const double lowerMidpoint=(static_cast<double>(std::nextafter(projectedRatio,
+					-std::numeric_limits<float>::infinity()))+projectedRatio)*0.5;
+				const double upperMidpoint=(static_cast<double>(std::nextafter(projectedRatio,
+					std::numeric_limits<float>::infinity()))+projectedRatio)*0.5;
+				std::fprintf(stderr,"EOS_REFUSAL_FP64 accepted=%d temperature_K=%.17g "
+					"pressure_ratio=%.17g projected_ratio=%.17g lower_midpoint=%.17g "
+					"upper_midpoint=%.17g lower_distance_ratio=%.17g upper_distance_ratio=%.17g "
+					"error=%s\n",mirrorAccepted?1:0,temperature,ratio,
+					static_cast<double>(projectedRatio),lowerMidpoint,upperMidpoint,
+					ratio-lowerMidpoint,upperMidpoint-ratio,mirrorError.c_str());
+				// Refusal-only witness: consume the original private candidate/table,
+				// never a CPU reconstruction, and issue no authority or publication.
+				const std::string witnessSource=std::string(ResidentTransportMetalContext::Source())+R"METAL(
+kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
+ device const float* thermo [[buffer(1)]],constant EOSParams& p [[buffer(2)]],
+ constant uint& cell [[buffer(3)]],device float* output [[buffer(4)]],
+ device atomic_uint* obligations [[buffer(5)]],uint gid [[thread_position_in_grid]]){
+ if(gid!=0u)return;float T=0.0f;bool ok=eos_temperature(candidate,thermo,p,cell,obligations,T);
+ EOSDD gas=eos_dd(0.0f),molar=eos_dd(0.0f);
+ for(uint species=0u;species<6u;++species){float density=max(0.0f,candidate[(species+1u)*p.cells+cell]);
+ gas=eos_add(gas,eos_dd(density));molar=eos_add(molar,eos_div(eos_dd(density),eos_load_dd(thermo,96u*species)));}
+ EOSDD meanWeight=eos_div(gas,molar),represented=eos_div(eos_mul(eos_mul(gas,
+ eos_load_dd(thermo,7u*96u)),eos_dd(T)),meanWeight);
+ EOSDD ratio=eos_div(represented,eos_load_dd(thermo,7u*96u+3u));float rounded=0.0f;
+ bool unique=eos_unique_binary32_round(ratio,rounded);
+ output[0]=ok?T:NAN;output[1]=ratio.hi;output[2]=ratio.lo;output[3]=ratio.tail;
+ output[4]=ratio.bound;output[5]=rounded;output[6]=unique?1.0f:0.0f;
+ float below=nextafter(ratio.hi,-INFINITY),above=nextafter(ratio.hi,INFINITY);
+ EOSDD lower=eos_add(eos_dd(ratio.hi),eos_dd((below-ratio.hi)*0.5f));
+ EOSDD upper=eos_add(eos_dd(ratio.hi),eos_dd((above-ratio.hi)*0.5f));
+ output[7]=float(eos_order(lower,ratio));output[8]=float(eos_order(ratio,upper));
+}
+)METAL";
+				MTLCompileOptions* options=[MTLCompileOptions new];
+				if(@available(macOS 15.0,*)){
+					options.mathMode=MTLMathModeSafe;options.languageVersion=MTLLanguageVersion3_2;
+				}else return;
+				NSError* witnessError=nil;
+				id<MTLLibrary> library=[context_.device newLibraryWithSource:
+					[NSString stringWithUTF8String:witnessSource.c_str()] options:options error:&witnessError];
+				id<MTLFunction> function=[library newFunctionWithName:@"refusal_ratio_witness"];
+				id<MTLComputePipelineState> pipeline=function?[context_.device
+					newComputePipelineStateWithFunction:function error:&witnessError]:nil;
+				id<MTLBuffer> witness=[context_.device newBufferWithLength:9u*sizeof(float)
+					options:MTLResourceStorageModeShared];
+				id<MTLCommandBuffer> witnessCommand=TrackedMetalCommandBuffer(context_.queue);
+				id<MTLComputeCommandEncoder> encoder=[witnessCommand computeCommandEncoder];
+				if(!pipeline||!witness||!encoder)return;
+				[encoder setComputePipelineState:pipeline];
+				[encoder setBuffer:stageResult.candidate->conservative offset:0 atIndex:0];
+				[encoder setBuffer:eosThermo_ offset:0 atIndex:1];
+				[encoder setBuffer:eosParameters_[stage] offset:0 atIndex:2];
+				[encoder setBytes:&cell length:sizeof(cell) atIndex:3];
+				[encoder setBuffer:witness offset:0 atIndex:4];
+				[encoder setBuffer:eosObligations_ offset:0 atIndex:5];
+				[encoder dispatchThreads:MTLSizeMake(1u,1u,1u)
+					threadsPerThreadgroup:MTLSizeMake(1u,1u,1u)];[encoder endEncoding];
+				if(!Commit(witnessCommand,nullptr))return;
+				const auto* expansion=static_cast<const float*>(Read(witness,TransferKind::Control));
+				if(!expansion)return;
+				std::fprintf(stderr,"EOS_REFUSAL_EXPANSION temperature=%.17g hi=%.17g lo=%.17g "
+					"tail=%.17g bound=%.17g rounded=%.17g unique=%g lower_order=%g upper_order=%g\n",
+					double(expansion[0]),double(expansion[1]),double(expansion[2]),double(expansion[3]),
+					double(expansion[4]),double(expansion[5]),double(expansion[6]),
+					double(expansion[7]),double(expansion[8]));
 			}
 			bool Commit(id<MTLCommandBuffer> command,std::string* error)
 			{
@@ -7454,6 +7708,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ProfileScope profile(*this,"BuildStageProducerGroup");
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
 				if(!command||!ResetControls(command))return false;
+				ProducerKernelProfile kernelProfile(command,stage,profileIteration_);
+				if(!kernelProfile.Valid()){if(error)*error="producer kernel counters unavailable";return false;}
 				output.packedVelocity=Private(allFaces_*sizeof(float));
 				output.packedDensity=Private(allFaces_*sizeof(float));
 				output.packedMomentum=Private(allFaces_*sizeof(float));
@@ -7643,6 +7899,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				Copy(stageBlit,failure_,0u,stageFailure,0u,sizeof(std::uint32_t),TransferKind::Control);
 				[stageBlit endEncoding];
 				if(!Commit(command,error))return false;
+				if(!kernelProfile.Report()){if(error)*error="producer kernel counter qualification failed";return false;}
 				const std::uint32_t stageFailureBitmap=
 					*static_cast<const std::uint32_t*>(Read(stageFailure,TransferKind::Control));
 				if(stageFailureBitmap!=0u){
@@ -7660,6 +7917,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 							if(Commit(witnessCommand,0)){const std::uint32_t* values=
 								static_cast<const std::uint32_t*>(Read(witness,TransferKind::Control));
 								const std::uint32_t cell=values?values[0]:std::numeric_limits<std::uint32_t>::max();
+								ReportEOSRefusalInputs(output,state,stage,cell);
 								if(values&&cell<cells_){id<MTLCommandBuffer> termCommand=
 									TrackedMetalCommandBuffer(context_.queue);id<MTLBlitCommandEncoder> termBlit=
 									termCommand?[termCommand blitCommandEncoder]:nil;
@@ -8703,7 +8961,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.parentBoundaryFaces=boundaryFaces;authority.parentCells=cells;
 			authority.parentAllFaces=allFaces;authority.projectionBound=projectionBound;
 			authority.allocationBytes=[authority.publicationIdentity allocatedSize];
-			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			id<MTLComputeCommandEncoder> encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production resident endpoint-class identity encoder failed";
 				return false;}
 			[encoder setComputePipelineState:producer?context.ownerIdentifyProducedEndpointClass:
@@ -8829,7 +9087,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.parentEndpointClassPublicationIdentity=
 				endpointClassAuthority.publicationIdentity;
 			authority.parentCells=cells;authority.parentAllFaces=allFaces;
-			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			id<MTLComputeCommandEncoder> encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production resident physical-flux encoder failed";return false;}
 			[encoder setComputePipelineState:context.physicalFlux];
 			[encoder setBuffer:state offset:0 atIndex:0];[encoder setBuffer:temperature offset:0 atIndex:1];
@@ -8846,7 +9104,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:transportParameters offset:0 atIndex:14];
 			[encoder setBuffer:physicalParameters offset:0 atIndex:15];
 			Dispatch(encoder,context.physicalFlux,allFaces);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];if(!encoder){
+			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident advective-flux encoder failed";
 				return false;
 			}
@@ -8858,7 +9116,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:obligations offset:0 atIndex:8];[encoder setBuffer:transportParameters offset:0 atIndex:9];
 			[encoder setBuffer:physicalParameters offset:0 atIndex:10];
 			Dispatch(encoder,context.advectivePair,9u*allFaces);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];if(!encoder){
+			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident MC-MUSCL finalization encoder failed";
 				return false;
 			}
@@ -8868,7 +9126,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:authority.mcMusclAdvective offset:0 atIndex:2];
 			[encoder setBuffer:transportParameters offset:0 atIndex:3];
 			Dispatch(encoder,context.finalizeAdvective,9u*allFaces);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];if(!encoder){
+			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident flux composition encoder failed";
 				return false;
 			}
@@ -8882,7 +9140,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:transportParameters offset:0 atIndex:6];
 			[encoder setBuffer:physicalParameters offset:0 atIndex:7];
 			Dispatch(encoder,context.composePair,9u*allFaces);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];if(!encoder){
+			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident shared-f_N validation encoder failed";
 				return false;
 			}
@@ -8897,7 +9155,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:failure offset:0 atIndex:7];[encoder setBuffer:obligations offset:0 atIndex:8];
 			[encoder setBuffer:transportParameters offset:0 atIndex:9];
 			Dispatch(encoder,context.validatePhysical,9u*allFaces);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];if(!encoder){
+			encoder=ProducerProfileEncoder(command);if(!encoder){
 				if(error)*error="production resident physical-flux identity encoder failed";
 				return false;
 			}
@@ -8920,7 +9178,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:authority.publicationIdentity offset:0 atIndex:17];
 			[encoder setBuffer:failure offset:0 atIndex:18];[encoder setBuffer:transportParameters offset:0 atIndex:19];
 			[encoder setBuffer:physicalParameters offset:0 atIndex:20];
-			Dispatch(encoder,context.identifyPhysical,1u);[encoder endEncoding];
+			Dispatch(encoder,context.identifyPhysical,[context.identifyPhysical threadExecutionWidth]);
+			[encoder endEncoding];
 			return true;
 		}
 
@@ -9023,7 +9282,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				[lowState allocatedSize]+[ratio allocatedSize]+
 				[authority.producerIdentity allocatedSize]+[authority.publicationIdentity allocatedSize];
 			auto encoderFor=[&](id<MTLComputePipelineState> pipeline){
-				id<MTLComputeCommandEncoder> value=[command computeCommandEncoder];
+				id<MTLComputeCommandEncoder> value=ProducerProfileEncoder(command);
 				if(value)[value setComputePipelineState:pipeline];return value;};
 			id<MTLComputeCommandEncoder> encoder=encoderFor(fct.buildRatios);if(!encoder){
 				if(error)*error="production resident EOS candidate ratio encoder failed";
@@ -9056,7 +9315,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:affine offset:0 atIndex:4];[encoder setBuffer:authority.conservative offset:0 atIndex:5];
 			[encoder setBuffer:failure offset:0 atIndex:6];[encoder setBuffer:fctParameters offset:0 atIndex:7];
 			Dispatch(encoder,fct.commitScalar,metadata.cells);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];
+			encoder=ProducerProfileEncoder(command);
 			if(!encoder){
 				if(error)*error="production resident EOS candidate identity encoder failed";
 				return false;
@@ -9144,7 +9403,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[clear fillBuffer:authority.firstFailureCell range:NSMakeRange(0,sizeof(std::uint32_t)) value:0xffu];
 			[clear fillBuffer:authority.failureTerm range:NSMakeRange(0,fieldBytes) value:0u];
 			[clear endEncoding];
-			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			id<MTLComputeCommandEncoder> encoder=ProducerProfileEncoder(command);
 			if(!encoder){
 				if(error)*error="production resident EOS evaluation encoder failed";
 				return false;
@@ -9163,7 +9422,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:authority.firstFailureCell offset:0 atIndex:10];
 			[encoder setBuffer:authority.failureTerm offset:0 atIndex:11];
 			Dispatch(encoder,context.evaluateEOSCandidate,metadata.cells);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];
+			encoder=ProducerProfileEncoder(command);
 			if(!encoder){
 				if(error)*error="production resident EOS candidate finalization encoder failed";
 				return false;
@@ -9173,7 +9432,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:candidateAuthority.publicationIdentity offset:0 atIndex:1];
 			[encoder setBuffer:failure offset:0 atIndex:2];
 			Dispatch(encoder,context.finalizeEOSCandidate,1u);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];
+			encoder=ProducerProfileEncoder(command);
 			if(!encoder){
 				if(error)*error="production resident EOS publication encoder failed";
 				return false;
@@ -9270,7 +9529,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				[authority.publicationIdentity allocatedSize];
 			authority.liveAllocationBytes=[authority.values allocatedSize]+
 				[authority.metadata allocatedSize]+[authority.publicationIdentity allocatedSize];
-			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			id<MTLComputeCommandEncoder> encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production resident frozen source encoder failed";return false;}
 			[encoder setComputePipelineState:context.produceFrozenSource];
 			[encoder setBuffer:authority.inputUpload offset:0 atIndex:0];
@@ -9280,7 +9539,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:authority.parameterUpload offset:0 atIndex:4];
 			[encoder setBuffer:candidateAuthority.publicationIdentity offset:0 atIndex:5];
 			Dispatch(encoder,context.produceFrozenSource,metadata.cells);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];
+			encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production resident frozen source identity encoder failed";
 				return false;}
 			[encoder setComputePipelineState:context.identifyFrozenSource];
@@ -9406,7 +9665,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.cells=cells;authority.allocationBytes=0u;
 			for(id<MTLBuffer> buffer:outputs)authority.allocationBytes+=[buffer allocatedSize];
 			auto encoderFor=[&](id<MTLComputePipelineState> pipeline){
-				id<MTLComputeCommandEncoder> value=[command computeCommandEncoder];
+				id<MTLComputeCommandEncoder> value=ProducerProfileEncoder(command);
 				if(value)[value setComputePipelineState:pipeline];return value;};
 			id<MTLComputeCommandEncoder> encoder=encoderFor(context.evaluateTargetTerms);
 			if(!encoder){if(error)*error="production resident target term encoder failed";return false;}
@@ -9691,7 +9950,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.parentParameters=parameters;authority.parentFailure=failure;
 			authority.parentObligations=obligations;authority.parentCells=cells;
 			authority.parentAllFaces=allFaces;authority.parentBoundaryFaces=boundaryFaces;
-			id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+			id<MTLComputeCommandEncoder> encoder=ProducerProfileEncoder(command);
 			if(!encoder){
 				if(error)*error="production resident transport evaluation encoder failed";
 				return false;
@@ -9707,7 +9966,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:parameters offset:0 atIndex:8];
 			[encoder setBuffer:fuelInlet offset:0 atIndex:9];
 			Dispatch(encoder,context.evaluate,cells);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];
+			encoder=ProducerProfileEncoder(command);
 			if(!encoder){
 				if(error)*error="production resident transport identity encoder failed";
 				return false;
@@ -11515,7 +11774,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(error)*error="production scalar FCT Metal flux allocation failed";return false;}
 			std::memset([failure contents],0,sizeof(std::uint32_t));
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
-			id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+			id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 			if(!encoder){if(error)*error="production scalar FCT Metal flux encoder failed";return false;}
 			[encoder setComputePipelineState:context.buildFluxPair];
 			[encoder setBuffer:beginning offset:0 atIndex:0];
@@ -11526,7 +11785,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			[encoder setBuffer:low offset:0 atIndex:8];[encoder setBuffer:delta offset:0 atIndex:9];
 			[encoder setBuffer:parameter offset:0 atIndex:10];Dispatch(encoder,
 				context.buildFluxPair,9u*allFaces);[encoder endEncoding];
-			encoder=[command computeCommandEncoder];
+			encoder=ProducerProfileEncoder(command);
 			if(!encoder){if(error)*error="production scalar FCT Metal flux validation encoder failed";
 				return false;}
 			[encoder setComputePipelineState:context.validateFluxPair];
@@ -11590,7 +11849,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			std::memset([failure contents],0,sizeof(std::uint32_t));
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
 			auto validate=[&](id<MTLBuffer> pairLow,id<MTLBuffer> pairDelta){
-				id<MTLComputeCommandEncoder> check=command?[command computeCommandEncoder]:nil;
+				id<MTLComputeCommandEncoder> check=command?ProducerProfileEncoder(command):nil;
 				if(!check)return false;[check setComputePipelineState:context.validateFluxPair];
 				[check setBuffer:pairLow offset:0 atIndex:0];[check setBuffer:pairDelta offset:0 atIndex:1];
 				[check setBuffer:failure offset:0 atIndex:2];[check setBuffer:parameter offset:0 atIndex:3];
@@ -11600,7 +11859,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(error)*error="production scalar FCT Metal average validation encoder failed";
 				return false;
 			}
-			id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+			id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 			if(!encoder){if(error)*error="production scalar FCT Metal average encoder failed";return false;}
 			[encoder setComputePipelineState:context.averageFluxPair];
 			[encoder setBuffer:first.lowFlux offset:0 atIndex:0];
@@ -11679,7 +11938,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			std::memset([failure contents],0,sizeof(std::uint32_t));
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
 			auto encoderFor=[&](id<MTLComputePipelineState> pipeline){
-				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 				if(encoder)[encoder setComputePipelineState:pipeline];return encoder;};
 			id<MTLComputeCommandEncoder> encoder=encoderFor(context.validateFluxPair);
 			if(!encoder){if(error)*error="production scalar FCT Metal solve validation encoder failed";
@@ -11909,7 +12168,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					return false;}
 				std::memset([failure contents],0,sizeof(std::uint32_t));
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
-				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 				if(!encoder){if(error)*error="production scalar FCT commit diagnostic encoder failed";
 					return false;}
 				[encoder setComputePipelineState:context.commitScalar];
@@ -11953,7 +12212,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(!deviceInput||!deviceOutput){
 					if(error)*error="production EOS log diagnostic allocation failed";return false;}
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
-				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 				if(!encoder){if(error)*error="production EOS log diagnostic encoder failed";
 					return false;}
 				[encoder setComputePipelineState:context.diagnoseEOSLog];
@@ -12270,7 +12529,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			result.phase=FireProductionSingleStageFCTDiagnosticPhase::FCTSolve;
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context.queue);
 			auto encoderFor=[&](id<MTLComputePipelineState> pipeline){
-				id<MTLComputeCommandEncoder> encoder=command?[command computeCommandEncoder]:nil;
+				id<MTLComputeCommandEncoder> encoder=command?ProducerProfileEncoder(command):nil;
 				if(encoder)[encoder setComputePipelineState:pipeline];return encoder;};
 			auto finishKernel=[](id<MTLComputeCommandEncoder> encoder,
 				id<MTLComputePipelineState> pipeline,const std::size_t count){

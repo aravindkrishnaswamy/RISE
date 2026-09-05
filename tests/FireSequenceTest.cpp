@@ -1098,9 +1098,10 @@ namespace
 		bool sealedLegacyMomentumReplay=false;
 		bool sealedProjectedHeunReplay=false;
 		bool projectedHeunCostDiagnostic=false;
+		bool projectedHeunEOSDiagnostic=false;
 		bool UsesProjectedHeunOwner() const
 		{
-			return sealedProjectedHeunReplay||projectedHeunCostDiagnostic;
+			return sealedProjectedHeunReplay||projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic;
 		}
 		std::filesystem::path replayProtocolPath;
 		std::string replayProtocolDigest;
@@ -2849,6 +2850,21 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.projectedHeunEOSDiagnostic&&(!persistence.productionMetal||
+			!persistence.resume||!persistence.isolatedEquivalenceProbe||
+			persistence.isolatedExpectedCheckpointBuildId.size()!=64u||
+			persistence.isolatedExpectedCheckpointDigest.size()!=64u||
+			persistence.stopAfterAdditionalAcceptedSteps!=8u||persistence.checkpointPath.empty()||
+			persistence.checkpointCadenceWallS!=std::numeric_limits<double>::max()||
+			persistence.killAfterFirstCheckpoint||
+			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
+			!persistence.equivalenceSnapshotDirectory.empty()||!persistence.temporalSnapshotDirectory.empty()||
+			persistence.sealedProjectedHeunReplay||persistence.sealedLegacyMomentumReplay||
+			persistence.projectedHeunCostDiagnostic||persistence.singleStageFCTDiagnostic||
+			persistence.compatibleMomentumDiagnostic||persistence.forceZeroSourceForTest||
+			resolutionTier!=8.0||caseDurationS!=3.0||caseFramesPerS!=1.0)){
+			values.structuredError="owner_eos_diagnostic_scope_conflict";return values;
+		}
 		if(persistence.projectedHeunCostDiagnostic&&(!persistence.productionMetal||
 			persistence.resume||persistence.sealedProjectedHeunReplay||
 			persistence.sealedLegacyMomentumReplay||persistence.singleStageFCTDiagnostic||
@@ -6807,9 +6823,44 @@ namespace
 			"RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST","RISE_FIRE_MANIFOLD_TAIL_THRESHOLD_RED",
 			"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE","RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES",
 			"RISE_FIRE_HOST_RESIDUAL_PROBE","RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE",
-			"RISE_FIRE_ONSET_TARGET_S"})if(std::getenv(name))return false;
-		const char* profile=std::getenv("RISE_FIRE_OWNER_PROFILE");
-		return !profile||std::strcmp(profile,"1")==0;
+			"RISE_FIRE_ONSET_TARGET_S","RISE_FIRE_EOS_REFUSAL_INPUTS"})if(std::getenv(name))return false;
+		for(const char* name:{"RISE_FIRE_OWNER_PROFILE","RISE_FIRE_PRODUCER_KERNEL_PROFILE"}){
+			const char* profile=std::getenv(name);if(profile&&std::strcmp(profile,"1")!=0)return false;
+		}
+		return true;
+	}
+
+	int RunProductionOwnerEOSRefusalChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& outputDirectory)
+	{
+		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			checkpoint.dimensions!=std::array<std::size_t,3>{{69u,69u,106u}})return 92;
+		const std::string digest=DigestFile(checkpointPath);if(digest.size()!=64u)return 92;
+		std::filesystem::create_directories(outputDirectory/"budgets");
+		std::fprintf(stderr,"OWNER_EOS_DIAGNOSTIC checkpoint_sha256=%s build=%s "
+			"accepted_steps=%llu beginning_s=%.17g migration_authority=false\n",digest.c_str(),
+			checkpoint.producerBuildId.c_str(),static_cast<unsigned long long>(checkpoint.acceptedSteps),
+			checkpoint.simulationTimeS);
+		RunPersistenceOptions persistence;persistence.productionMetal=true;
+		persistence.projectedHeunEOSDiagnostic=true;persistence.resume=true;
+		persistence.isolatedEquivalenceProbe=true;persistence.checkpointPath=checkpointPath;
+		persistence.isolatedExpectedCheckpointBuildId=checkpoint.producerBuildId;
+		persistence.isolatedExpectedCheckpointDigest=digest;persistence.stopAfterAdditionalAcceptedSteps=8u;
+		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
+		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
+		if(setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
+		const bool unchanged=DigestFile(checkpointPath)==digest;
+		std::fprintf(stderr,"OWNER_EOS_DIAGNOSTIC_END solver_accepted=%d checkpoint_unchanged=%d "
+			"migration_authority=false error=%s\n",result.succeeded?1:0,unchanged?1:0,
+			result.structuredError.c_str());
+		return unchanged&&!result.succeeded&&result.structuredError.find("eos_failure_cell=")!=
+			std::string::npos?0:93;
 	}
 
 	int RunProductionOwnerCostPrefixChild(const std::filesystem::path& outputDirectory)
@@ -6907,6 +6958,8 @@ namespace
 			std::getenv("RISE_FIRE_PRODUCTION_STEP_FAILURE")||
 			std::getenv("RISE_FIRE_PROFILE")||
 			std::getenv("RISE_FIRE_OWNER_PROFILE")||
+			std::getenv("RISE_FIRE_PRODUCER_KERNEL_PROFILE")||
+			std::getenv("RISE_FIRE_EOS_REFUSAL_INPUTS")||
 			std::getenv("RISE_FIRE_PROJECTION_TEST_FAILURE")||
 			std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE")||
 			std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT")||
@@ -9904,7 +9957,74 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 		"temperature_classes=4 composition_classes=main_64_cell_fixture scale_min=%.9g "
 		"scale_max=%.9g passed=%d\n",proofScale[0],proofScale[3],
 		arithmeticBoundarySweep?1:0);
-	float firstLogTemperature=300.0f,lastLogTemperature=2200.0f;
+	// The last temperature float below Tmax is not necessarily an admissible
+	// state: the upper-energy feasibility reserve applies before inversion.
+	FireProductionResidentEOSCandidateComparatorRequest endpointFixture;
+	const float endpointTemperature=std::nextafter(
+		static_cast<float>(sealedCase.derived.maximumAcceptedTemperatureK),
+		-std::numeric_limits<float>::infinity());
+	bool endpointPrepared=uniformRequest(endpointTemperature,1.0f,endpointFixture);
+	std::array<double,9> endpointState;
+	if(endpointPrepared)for(std::size_t component=0u;component<9u;++component)
+		endpointState[component]=endpointFixture.physicalFlux.transport.conservativeValues[component*cells];
+	double endpointT=0.0,endpointRatio=0.0;std::string endpointError;
+	const bool endpointCPUInverted=endpointPrepared&&fuel.InvertAcceptedConservativeStateByComponentOrder(
+		endpointState.data(),endpointState.size(),sealedCase.derived.pilotAmbientTemperatureK,
+		sealedCase.derived.maximumAcceptedTemperatureK,FireStateProducerPrecision::Binary32,
+		endpointT,endpointRatio,&endpointError);
+	// Match EvaluateFireProductionScalarEOSAcceptanceCPU's publication check:
+	// the record may clamp to Tmax, but a production surface cannot publish it.
+	const bool endpointCPURefused=endpointPrepared&&(!endpointCPUInverted||
+		endpointT>=sealedCase.derived.maximumAcceptedTemperatureK);
+	FireProductionResidentEOSCandidateComparatorResult endpointObserved;
+	const bool endpointDeviceRefused=endpointPrepared&&
+		!EvaluateFireProductionResidentEOSCandidateMetalComparator(endpointFixture,endpointObserved,&error)&&
+		endpointObserved.deviceAttempted&&endpointObserved.terminalRead&&
+		endpointObserved.candidatePublicationIdentity==0u&&endpointObserved.EOSPublicationIdentity==0u;
+	const bool endpointReserveRED=endpointCPURefused&&endpointDeviceRefused;
+	std::fprintf(stderr,"RESIDENT_EOS_ENDPOINT_RESERVE_RED temperature_K=%.17g "
+		"cpu_refused=%d device_refused=%d device_bitmap=%u cpu_temperature_K=%.17g cpu_error=%s passed=%d\n",
+		double(endpointTemperature),endpointCPURefused?1:0,endpointDeviceRefused?1:0,
+		endpointObserved.deviceFailureBitmap,endpointT,endpointError.c_str(),endpointReserveRED?1:0);
+	// r203: actual failed candidate at (53,44,37), step 45. The expansion
+	// leading float is 1, but its certified tail proves the adjacent lower bin.
+	const std::uint32_t refusalBits[9]={2911411995u,2921228213u,1049346736u,
+		1063658519u,776277514u,776624364u,772830492u,2906723385u,772006681u};
+	FireProductionResidentEOSCandidateComparatorRequest refusalFixture;
+	bool refusalCellRequalified=uniformRequest(300.0,1.0f,refusalFixture);
+	for(std::size_t component=0u;component<9u;++component){float value=0.0f;
+		std::memcpy(&value,&refusalBits[component],sizeof(value));
+		refusalFixture.physicalFlux.ambient[component]=value;
+		for(std::size_t cell=0u;cell<cells;++cell)
+			refusalFixture.physicalFlux.transport.conservativeValues[component*cells+cell]=value;}
+	FireProductionResidentEOSCandidateComparatorResult refusalObserved;
+	refusalCellRequalified=refusalCellRequalified&&
+		EvaluateFireProductionResidentEOSCandidateMetalComparator(refusalFixture,refusalObserved,&error)&&
+		ByteIdenticalVector(refusalObserved.candidateConservativeValues,
+			refusalFixture.physicalFlux.transport.conservativeValues)&&
+		refusalObserved.temperatureK.size()==cells&&refusalObserved.representedPressureRatio.size()==cells;
+	for(std::size_t cell=0u;cell<cells&&refusalCellRequalified;++cell){
+		std::array<double,9> state;
+		for(std::size_t component=0u;component<9u;++component)
+			state[component]=refusalObserved.candidateConservativeValues[component*cells+cell];
+		double ratio=0.0;
+		refusalCellRequalified=fuel.AcceptedConservativePressureRatioAtTemperatureByComponentOrder(
+			state.data(),state.size(),300.0,FireStateProducerPrecision::Binary32,ratio,&error)&&
+			sameFloatBits(refusalObserved.temperatureK[cell],300.0f)&&
+			sameFloatBits(refusalObserved.representedPressureRatio[cell],static_cast<float>(ratio));
+		std::fprintf(stderr,"RESIDENT_EOS_R203_CELL cell=%zu temperature_K=%.9g "
+			"observed_ratio=%.17g fp64_projected_ratio=%.17g bit_equal=%d\n",cell,
+			refusalObserved.temperatureK[cell],double(refusalObserved.representedPressureRatio[cell]),
+			double(static_cast<float>(ratio)),refusalCellRequalified?1:0);
+	}
+	std::fprintf(stderr,"RESIDENT_EOS_R203_REFUSAL_CELL passed=%d cells=%zu error=%s\n",
+		refusalCellRequalified?1:0,cells,error.c_str());
+	// Inversion evaluates both endpoints even when it clamps to Tmin. Qualify
+	// the actual case interval, not only the former sampled interior range.
+	float firstLogTemperature=static_cast<float>(sealedCase.derived.pilotAmbientTemperatureK),
+		lastLogTemperature=static_cast<float>(sealedCase.derived.maximumAcceptedTemperatureK);
+	std::fprintf(stderr,"RESIDENT_EOS_LOG_DOMAIN lower_K=%.9g upper_K=%.9g "
+		"scope=case_endpoints_and_all_binary32_lattice_midpoints\n",firstLogTemperature,lastLogTemperature);
 	std::uint32_t firstLogBits=0u,lastLogBits=0u;
 	std::memcpy(&firstLogBits,&firstLogTemperature,sizeof(firstLogBits));
 	std::memcpy(&lastLogBits,&lastLogTemperature,sizeof(lastLogBits));
@@ -10363,7 +10483,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 				item.temperatureMinK<=sealedCase.derived.maximumAcceptedTemperatureK)
 				requiredBranches|=1u<<(7u+std::min<std::size_t>(segment,2u));}}
 	const bool passed=r60Prepared&&r60Adjacent&&r60Accepted&&r60Refused&&
-		arithmeticBoundarySweep&&logEnclosure&&candidateBitEqual&&
+		arithmeticBoundarySweep&&endpointReserveRED&&refusalCellRequalified&&logEnclosure&&candidateBitEqual&&
 		sharedAlphaBitEqual&&temperatureBitEqual&&pressureBitEqual&&deviationBitEqual&&
 		observed.branchObligationBitmap==requiredBranches&&observed.commandCommitCount==1u&&
 		observed.terminalStagingCount==1u&&observed.interstageFullGridTransferCount==0u&&
@@ -14549,6 +14669,8 @@ int main(int argc,char** argv)
 #if defined(RISE_ENABLE_OPENVDB)
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-cost-prefix")==0)
 		return RunProductionOwnerCostPrefixChild(argv[2]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-owner-eos-refusal")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3]);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);
