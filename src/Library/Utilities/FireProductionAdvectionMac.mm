@@ -188,7 +188,7 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 		// host. The command owns every private level until its terminal root copy.
 		bool EncodePayloadMerkle(PayloadMerkleContext& context,id<MTLCommandBuffer> command,
 			id<MTLBuffer> payload,std::size_t bytes,unsigned int width,id<MTLBuffer> root,
-			std::string& error)
+			std::string& error,unsigned int qualificationFailTreeAllocation=0u)
 		{
 			if(!context.error.empty()){error=context.error;return false;}
 			if(!command||!payload||bytes>[payload length]||!root||[root length]<32u||
@@ -197,19 +197,24 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 				bytes/4096u+(bytes%4096u!=0u)>UINT32_MAX){error="payload-merkle-v2 invalid device span or dispatch";return false;}
 			std::size_t count=std::max<std::size_t>(1u,bytes/4096u+(bytes%4096u!=0u));
 			const std::size_t leafCount=count;std::uint64_t level=0u;
+			unsigned int allocationIndex=0u;
+			auto allocate=[&](std::size_t size)->id<MTLBuffer>{
+				if(++allocationIndex==qualificationFailTreeAllocation)return nil;
+				return [context.device newBufferWithLength:size options:MTLResourceStorageModePrivate];};
 			auto encode=[&](id<MTLComputePipelineState> pipeline,id<MTLBuffer> input,
 				id<MTLBuffer> output,std::size_t inputCount,std::size_t outputCount){
+				if(!output)return false;
 				id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
-				if(!encoder||!output)return false;
+				if(!encoder)return false;
 				const std::uint64_t params[]={bytes,inputCount,level};
 				[encoder setComputePipelineState:pipeline];[encoder setBuffer:input offset:0 atIndex:0];
 				[encoder setBuffer:output offset:0 atIndex:1];[encoder setBytes:params length:sizeof(params) atIndex:2];
 				[encoder dispatchThreads:MTLSizeMake(outputCount,1,1) threadsPerThreadgroup:MTLSizeMake(width,1,1)];
 				[encoder endEncoding];return true;};
-			id<MTLBuffer> previous=[context.device newBufferWithLength:count*32u options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> previous=allocate(count*32u);
 			if(!encode(context.leaf,payload,previous,count,count)){error="payload-merkle-v2 leaf allocation/encoder";return false;}
 			while(count>1u){++level;const std::size_t nextCount=count/16u+(count%16u!=0u);
-				id<MTLBuffer> next=[context.device newBufferWithLength:nextCount*32u options:MTLResourceStorageModePrivate];
+				id<MTLBuffer> next=allocate(nextCount*32u);
 				if(!encode(context.node,previous,next,count,nextCount)){error="payload-merkle-v2 node allocation/encoder";return false;}
 				previous=next;count=nextCount;}
 			if(!encode(context.root,previous,root,leafCount,1u)){error="payload-merkle-v2 root encoder";return false;}
@@ -12976,7 +12981,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 
 	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>& bytes,
 		unsigned int dispatchWidth,FireProductionPayloadDigestV2& result,double& deviceMS,
-		std::string* error)
+		std::string* error,unsigned int qualificationFailTreeAllocation)
 	{
 		result=FireProductionPayloadDigestV2();deviceMS=0.0;
 		@autoreleasepool {
@@ -12996,7 +13001,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			if(!ingress){failure="payload-merkle-v2 qualification ingress";return fail();}
 			[ingress copyFromBuffer:upload sourceOffset:0 toBuffer:payload destinationOffset:0 size:[payload length]];
 			[ingress endEncoding];
-			if(!EncodePayloadMerkle(context,command,payload,bytes.size(),dispatchWidth,root,failure))return fail();
+			if(!EncodePayloadMerkle(context,command,payload,bytes.size(),dispatchWidth,root,failure,
+				qualificationFailTreeAllocation))return fail();
 			id<MTLBlitCommandEncoder> egress=[command blitCommandEncoder];
 			if(!egress){failure="payload-merkle-v2 qualification egress";return fail();}
 			[egress copyFromBuffer:root sourceOffset:0 toBuffer:terminal destinationOffset:0 size:32u];

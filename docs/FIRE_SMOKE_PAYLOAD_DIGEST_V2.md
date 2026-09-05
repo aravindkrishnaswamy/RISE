@@ -68,6 +68,14 @@ edge and the last byte change the root and still match the CPU implementation.
 The Python REDs additionally reject wrong version/format/chunk/fan-in/length/root,
 appended bytes, reordered chunks, and all eight bit positions at selected edges.
 Invalid CPU pointers and invalid dispatch widths refuse with empty results.
+Review round 1 found an allocation-failure encoder-lifetime defect and two bridge
+validation gaps. The encoder now checks allocation before it is created; Metal
+validation-enabled REDs inject refusal at all three private levels of a 17-leaf
+tree. Bridge integer metadata rejects bool/float aliases, and the historical
+inventory is pinned to the preservation commit rather than the invocation's
+HEAD. A temporary-repository RED commits a mutation and then a deletion; both
+refuse against that baseline. The existing checked-in bridge remains unchanged.
+The standalone CPU lifetime/parallelism fixture is also run under ASan/UBSan.
 
 Reproduction:
 
@@ -77,6 +85,8 @@ make -C build/make/rise -j8 build-test/FireSequenceTest
 ./bin/tests/FireSequenceTest --fire-production-payload-merkle-cpu
 ./bin/tests/FireSequenceTest --fire-production-payload-merkle-metal
 ./bin/tests/FireSequenceTest --fire-production-payload-merkle-file /Users/aravind/Working/RISE/rendered/fire_methane_capstone/tier10.run.checkpoint
+clang++ -std=c++17 -O1 -g -Isrc/Library -fsanitize=address,undefined -ffunction-sections -fdata-sections -Wl,-dead_strip tools/fire_payload_digest_sanitizer.cpp src/Library/Utilities/FireProductionAdvection.cpp src/Library/Utilities/RISECBOR64.cpp -o /private/tmp/r204-payload-sanitizer
+/private/tmp/r204-payload-sanitizer
 ```
 
 Metal qualification requires the device-visible execution context. Historical

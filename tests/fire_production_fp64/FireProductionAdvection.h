@@ -35,7 +35,7 @@ namespace RISEFireProductionFP64
 	//! resident buffers, without a CPU-produced digest authority.
 	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>& bytes,
 		unsigned int dispatchWidth,FireProductionPayloadDigestV2& result,
-		double& deviceMS,std::string* error=0);
+		double& deviceMS,std::string* error=0,unsigned int qualificationFailTreeAllocation=0u);
 
 	enum FireProductionRemapBoundary
 	{

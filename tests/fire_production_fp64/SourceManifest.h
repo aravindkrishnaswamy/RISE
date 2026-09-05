@@ -3,8 +3,8 @@
 #define FIRE_PRODUCTION_FP64_SOURCE_MANIFEST_H
 
 namespace RISEFireProductionFP64 { namespace SourceManifest {
-inline constexpr const char* FireProductionAdvectionHeader="e1b01d4477fe4520af76b35a7d3ebcb1ca6277003c85ebcba80260f22fbbd352";
-inline constexpr const char* FireProductionAdvectionSource="11e288f5b9eb44b05b03d689c546e3293112067ed500730a07518e8cad5f88da";
+inline constexpr const char* FireProductionAdvectionHeader="3a6bfb2fd111a206484573b43e932b28e6f0540b7aaf2247f6e15e98195db47f";
+inline constexpr const char* FireProductionAdvectionSource="2f1a82602fbb9bc9b34996534217fbfb8dbf8165d4b7283de51ab3d8f3655a44";
 inline constexpr const char* FireProductionProjectionHeader="86e16242ef664c4ef9730559e8ae458443bafb925d8bd5c76e5fc286f8213d91";
 inline constexpr const char* FireProductionProjectionSource="8a9f5e648d43fdcea7fcad43f9681eaf5aee6b9f011246b5da6ec2b44ca628db";
 inline constexpr const char* FireProductionTransportHeader="d0ff530387858ab83d0466925109ab4611ab651b4d9f4dce680a19a964b6f104";

@@ -73,7 +73,7 @@ namespace RISE
 
 #if !defined(__APPLE__)
 	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>&,
-		unsigned int,FireProductionPayloadDigestV2& result,double& deviceMS,std::string* error)
+		unsigned int,FireProductionPayloadDigestV2& result,double& deviceMS,std::string* error,unsigned int)
 	{
 		result=FireProductionPayloadDigestV2();deviceMS=0.0;
 		if(error)*error="digest-v2 Metal device unavailable on this platform";return false;

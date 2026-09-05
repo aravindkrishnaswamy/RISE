@@ -11,10 +11,12 @@ from pathlib import Path
 import struct
 import re
 import subprocess
+import tempfile
 
 CHUNK_BYTES = 4096
 FAN_IN = 16
 FORMAT = "rise-payload-sha256-merkle"
+HISTORICAL_COMMIT = "c22e301d8482a8ceaff8ab5386f88c49803dcc7e"
 
 
 def merkle(payload):
@@ -40,10 +42,14 @@ def pattern(size):
 
 
 def verify(payload, seal):
+    if not isinstance(seal, dict) or type(seal.get("digest_version")) is not int:
+        return False
     if seal.get("digest_format") == "sha256-bytes" and seal.get("digest_version") == 1:
         return seal == {"digest_format": "sha256-bytes", "digest_version": 1,
                         "sha256": hashlib.sha256(payload).hexdigest()}
     if seal.get("digest_format") != FORMAT or seal.get("digest_version") != 2:
+        return False
+    if any(type(seal.get(key)) is not int for key in ("chunk_bytes", "fan_in", "payload_bytes")):
         return False
     return seal == merkle(payload)
 
@@ -54,6 +60,14 @@ def self_test():
     assert verify(payload, sealed)
     assert verify(payload, {"digest_format": "sha256-bytes", "digest_version": 1,
                             "sha256": hashlib.sha256(payload).hexdigest()})
+    for sample in (b"", b"a", payload):
+        for key in ("digest_version", "chunk_bytes", "fan_in", "payload_bytes"):
+            valid = merkle(sample)
+            for bad in (float(valid[key]), bool(valid[key])):
+                assert not verify(sample, dict(valid, **{key: bad})), key
+    for bad in (True, 1.0):
+        assert not verify(payload, {"digest_format": "sha256-bytes", "digest_version": bad,
+                                   "sha256": hashlib.sha256(payload).hexdigest()})
     for key, value in (("digest_format", "sha256-bytes"), ("digest_version", 1),
                        ("chunk_bytes", 2048), ("fan_in", 8), ("payload_bytes", 65536),
                        ("root_sha256", "0" * 64)):
@@ -66,7 +80,58 @@ def self_test():
             mutant = bytearray(payload)
             mutant[i] ^= 1 << bit
             assert not verify(mutant, sealed)
+    with tempfile.TemporaryDirectory(prefix="rise-r204-bridge-red-") as directory:
+        repository = Path(directory)
+        def git(*args):
+            return subprocess.check_output(["git", "-c", "user.name=RISE qualification",
+                                            "-c", "user.email=qualification@localhost", *args],
+                                           cwd=repository, stderr=subprocess.PIPE, text=True).strip()
+        git("init", "-q")
+        relative = "rendered/fire_production_calibration/r203_fixture/evidence.v1"
+        artifact = repository / relative
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"preserved")
+        git("add", "--", relative)
+        git("commit", "-qm", "historical baseline")
+        baseline = git("rev-parse", "HEAD")
+        assert len(preserved_records(repository, baseline)) == 1
+        artifact.write_bytes(b"committed mutation")
+        git("add", "--", relative)
+        git("commit", "-qm", "mutation RED")
+        try:
+            preserved_records(repository, baseline)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("committed historical mutation accepted")
+        git("rm", "-q", "--", relative)
+        git("commit", "-qm", "deletion RED")
+        try:
+            preserved_records(repository, baseline)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AssertionError("committed historical deletion accepted")
     print("MERKLE_V2_PYTHON_RED_PASS version format shape length order bit_mutations historical_v1")
+    print("MERKLE_V2_BRIDGE_RED_PASS committed_mutation committed_deletion pinned_inventory")
+
+
+def preserved_records(repository, commit):
+    files = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", commit, "--",
+                                     "rendered/fire_production_calibration"], cwd=repository, text=True).splitlines()
+    selected = [path for path in files if re.search(r"/r(?:18[0-9]|19[0-9]|20[0-3])(?:_|/)", path)]
+    if not selected:
+        raise ValueError("bridge cannot omit the preserved r18x-r203 evidence tree")
+    records = []
+    for path in selected:
+        payload = (repository / path).read_bytes()
+        historical = subprocess.check_output(["git", "show", f"{commit}:{path}"], cwd=repository)
+        if payload != historical:
+            raise ValueError(f"historical evidence differs from pinned commit: {path}")
+        records.append({"role": "preserved-evidence", "path": path,
+                        "v1": {"digest_format": "sha256-bytes", "digest_version": 1,
+                               "sha256": hashlib.sha256(payload).hexdigest()}, "v2": merkle(payload)})
+    return records
 
 
 def bridge(repository, golden, output):
@@ -78,20 +143,8 @@ def bridge(repository, golden, output):
     records = [{"role": "golden-checkpoint", "path": str(golden.resolve()),
                 "v1": {"digest_format": "sha256-bytes", "digest_version": 1, "sha256": golden_sha},
                 "v2": merkle(payload)}]
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
-    files = subprocess.check_output(["git", "ls-tree", "-r", "--name-only", commit, "--",
-                                     "rendered/fire_production_calibration"], cwd=repository, text=True).splitlines()
-    selected = [path for path in files if re.search(r"/r(?:18[0-9]|19[0-9]|20[0-3])(?:_|/)", path)]
-    if not selected:
-        raise ValueError("bridge cannot omit the preserved r18x-r203 evidence tree")
-    for path in selected:
-        payload = (repository / path).read_bytes()
-        historical = subprocess.check_output(["git", "show", f"{commit}:{path}"], cwd=repository)
-        if payload != historical:
-            raise ValueError(f"historical evidence differs from pinned commit: {path}")
-        records.append({"role": "preserved-evidence", "path": path,
-                        "v1": {"digest_format": "sha256-bytes", "digest_version": 1,
-                               "sha256": hashlib.sha256(payload).hexdigest()}, "v2": merkle(payload)})
+    commit = HISTORICAL_COMMIT
+    records.extend(preserved_records(repository, commit))
     record = {"schema": "rise.fire.payload-digest-bridge.v2", "historical_tree_commit": commit,
               "scope": "unchanged golden checkpoint and every tracked r180-r203 calibration artifact",
               "digest_format": FORMAT, "digest_version": 2, "records": records}

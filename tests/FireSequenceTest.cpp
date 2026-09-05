@@ -14698,6 +14698,12 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 	if(digest({},0u,refused,ms)||!refused.rootSHA256.empty())return 98;
 	if(digest({},UINT_MAX,refused,ms)||!refused.rootSHA256.empty())return 98;
 	if(FireProductionPayloadDigestCPU(0,1u,1u,refused,&error)||!refused.rootSHA256.empty())return 98;
+	if(metal){const std::vector<unsigned char> threeLevels(65537u,42u);
+		for(unsigned int allocation=1u;allocation<=3u;++allocation){
+			if(FireProductionPayloadDigestMetal(threeLevels,64u,refused,ms,&error,allocation)||
+				!refused.rootSHA256.empty()||ms!=0.0||error.find("allocation/encoder")==std::string::npos)return 98;
+			std::fprintf(stdout,"MERKLE_V2_ALLOCATION_RED level_allocation=%u atomic_refusal=1\n",allocation);
+		}}
 	std::fprintf(stdout,"MERKLE_V2_PASS device=%u pin_parallelism=1,3,8,32,64,256 boundary_mutations=pass invalid_input_atomic=pass\n",metal?1u:0u);
 	return 0;
 }
