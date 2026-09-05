@@ -5736,8 +5736,10 @@ yet known (§10.1).
     Test 14 guards (an assembly at world X = 1e12 turned the margin into
     eight world units and adopted a decoy face), and the box's own band
     (which then summed the half-extents) made the floor insufficient for
-    operands wider than ~20 units or scaled up. Final formulation, both
-    sides coordinate-free: the box band is per axis,
+    operands wider than ~20 units or scaled up. Final formulation of THIS
+    round, both sides coordinate-free (superseded for non-box operands by
+    the 4b141ad3 follow-up further down, which adds the operand's own
+    root floor as a second term): the box band is per axis,
     `eps = 4 × NEARZERO + 64·DBL_EPSILON × |origin.axis|` (the plane
     distance is an exact subtraction, so only that coordinate's rounding
     matters); the CSG probe's floor is that band doubled and divided by
