@@ -5905,6 +5905,42 @@ yet known (§10.1).
     panel lit from behind was affected, not just the closed-solid case
     above.
 
+    **Review follow-up (2026-09-05, 4b141ad3) — the CSG exit-face probe must ask
+    the operand for its floor.** The producer floors above are RANGE
+    floors of size ~1e-12·(1 + |o|₁ + size), while
+    `CSGObject::AdoptCsgExitFacePayloadViaProbe`'s standoff was derived from
+    the box's plane-distance band (~8e-12 at unit scale): once a sphere
+    operand is larger than ~3.5 units (ellipsoid ~8, cylinder ~8) the probe's
+    re-entry root fell under the operand's own floor, the probe missed, and
+    a carved cavity's far wall silently took the near wall's UV, derivatives
+    and tangent (measured: box half-extent 20 minus a sphere of radius 4, the
+    far wall reported the ANTIPODAL UV; radius 1–3 fine; pre-floor fine at
+    every radius). Fix: a `SelfHitRootFloor(localOrigin, localDir,
+    localNormal)` virtual on `IGeometry` and `IObject` — "the smallest ray
+    parameter this geometry accepts as a genuine hit from this point off
+    this face" — defaulted to the generic floor, overridden per class
+    (sphere and cylinder add the radius; the box answers its per-axis band
+    divided by the incidence cosine, which is algebraically the probe's
+    existing band term; meshes and patches use their bounding-box corner
+    L1; Bezier its 1e-6; SDF twice its march epsilon; displaced delegates
+    to its baked mesh; `Object` forwards, `CSGObject` takes the max over
+    its operands mapped into each child's frame and seeds at ZERO — seeding
+    at the generic default re-imported the transverse coupling and turned
+    Test 14 red). The probe now takes the max of that answer (a range,
+    divided by the stretch) and the box band (a plane distance, divided by
+    the rate). `CsgSurfacePayloadTest` Test 27 pins it (box minus sphere at
+    radius 4 and 20, red without the term), and `BoxGeometryTest` gains a
+    contract case that bisects each routine's real gate and compares it to
+    the class's answer — a fixed 2×/0.5× bracket was too loose (dropping
+    the sphere's radius term under-states by at most 2×). Two measured
+    rulings from the same round: the triangle floor now uses the largest of
+    the three vertices' L1 (its comment had promised that); and the
+    suggested perpendicular-only plane floor `|n·o|` was implemented and
+    REJECTED — the self root a crossing shadow ray produces is
+    `1e-12·|cos in|/|cos out|`, an ANGLE effect that the coordinate term
+    happens to bound, so tightening the plane floor to its round-off put
+    the disk and infinite-plane rows straight back to ~367× dark.
+
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube
     side-on, circular disk, infinite plane, two-triangle PLY quad; box and
