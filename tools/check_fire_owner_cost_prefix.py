@@ -43,6 +43,8 @@ def bind_profile(profile, probe):
     for tree, row in zip(profile, probe):
         root = tree[0]
         measured = float(row["device_ms"])
+        if not math.isfinite(measured) or measured < 0:
+            raise ValueError("invalid trajectory device time")
         # The profile prints nine decimal places; the CSV prints 17 significant
         # digits. This bound covers formatting only, never solver arithmetic.
         if abs(root["device_sum_ms"] - measured) > 1e-9 + 4 * math.ulp(measured):
@@ -100,6 +102,15 @@ def self_test():
             continue
         raise AssertionError("profile/trajectory association RED escaped")
     print("profile/trajectory association REDs: 6 passed")
+    for invalid in ("nan", "inf", "-inf"):
+        mutant = copy.deepcopy(probe)
+        mutant[0]["device_ms"] = invalid
+        try:
+            bind_profile(profile, mutant)
+        except ValueError:
+            continue
+        raise AssertionError("nonfinite trajectory timing RED escaped")
+    print("nonfinite trajectory timing REDs: 3 passed")
 
 
 def main():

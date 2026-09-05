@@ -192,6 +192,26 @@ testable hypothesis, not a selected production constant.
 
 ## Evidence identities
 
+The measured producer-stage table above is the exact `edb4afb6` build; its
+artifacts remain immutable under `exact_edb4afb6/`. A fresh review of `919a604a`
+found no P1 and four distinct P2 diagnostic-hardening gaps: snapshot destinations
+missing from the cost-scope guard; unassociated timing trees; off/on artifacts
+compared without their run seals; and unchecked timing/class records. These
+were repaired in `827608d5` and the following checker hardening. Named REDs
+refuse both snapshot destinations, reordered/duplicated/counter-mismatched
+profiles, stale-equal artifacts, absent fp64 qualification, duplicate RED names,
+nonfinite timings, and invalid stage/iteration tags. Outcome digests bind the
+profile log to the source/case protocol, and root timing plus counters and stage
+schedules associate each timing tree with its trajectory row. These repairs
+change neither the resident owner's kernels nor its numerical stopping rule.
+
+`exact_827608d5/` records the repaired-build off/on qualification and repeated
+three-step cost diagnostic. `instrumentation_live_binding.v2` binds current
+sources, the measurement binary, and both generations of evidence without
+rewriting v1. Both three-step probes are diagnostics, not an onset verdict or
+independent steady-state performance trials. The checkpoint-source request
+harness and candidate-momentum convergence certificate remain unimplemented.
+
 - Accepted trajectory SHA-256:
   `0f86f47d9b0b9426c89e81fdaf97c5872ab07f51e729ee37e1f899aca496fa5e`.
 - Rejected-attempt record SHA-256:

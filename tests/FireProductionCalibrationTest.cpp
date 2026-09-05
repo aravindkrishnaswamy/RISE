@@ -4006,13 +4006,13 @@ int main()
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
 		"r201m_owner_iteration_trace_live_binding.v1");
 	const std::string ownerCostLiveBinding=ReadText(
-		"rendered/fire_production_calibration/r202_owner_cost/instrumentation_live_binding.v1");
+		"rendered/fire_production_calibration/r202_owner_cost/instrumentation_live_binding.v2");
 	const std::string ownerCostGate=ReadText(
-		"rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v1");
+		"rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v2");
 	const std::string ownerCostOffRaw=ReadText(
-		"rendered/fire_production_calibration/r202_owner_cost/exact_edb4afb6/fixture_off.log");
+		"rendered/fire_production_calibration/r202_owner_cost/exact_827608d5/fixture_off.log");
 	const std::string ownerCostOnRaw=ReadText(
-		"rendered/fire_production_calibration/r202_owner_cost/exact_edb4afb6/fixture_on.log");
+		"rendered/fire_production_calibration/r202_owner_cost/exact_827608d5/fixture_on.log");
 	const auto ownerCostBound=[&](const char* path){return ownerCostLiveBinding.find(
 		std::string("owner ")+path+" sha256 "+sourceSHA(path)+"\n")!=std::string::npos;};
 	bool ownerCostAllEntriesBound=true;std::size_t ownerCostEntryCount=0u;
@@ -4024,11 +4024,11 @@ int main()
 		++ownerCostEntryCount;
 	}
 	Check(sourceSHA("rendered/fire_production_calibration/r202_owner_cost/"
-		"instrumentation_live_binding.v1")==
-			"1525ff533192251453ad25793b0d86d223c976c2f62bff04cd7d1ef48b831fcf"&&
-		sourceSHA("rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v1")==
-			"fab38edf34e7271af96e2881cb46dfc5c2e4c29b8be7590ef20612c5d447ecac"&&
-		ownerCostAllEntriesBound&&ownerCostEntryCount==29u&&
+		"instrumentation_live_binding.v2")==
+			"c500d19853c5d6ca159bea7d05d59e47807188e0e74dab461352a22257ef69e8"&&
+		sourceSHA("rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v2")==
+			"c6bdd2cbf1d10bcc8e085a9b30d2bc53477389663c7ee4d0e6ff6282f32960aa"&&
+		ownerCostAllEntriesBound&&ownerCostEntryCount==47u&&
 		ownerCostBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
 		ownerCostBound("tests/FireSequenceTest.cpp")&&
 		ownerCostBound("tests/FireProductionOwnerConvergenceProbe.h")&&
