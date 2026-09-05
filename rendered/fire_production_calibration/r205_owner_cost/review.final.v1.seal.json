@@ -1,0 +1,24 @@
+{
+  "clean_export.v1.log": {
+    "sha256_v1": "509be65a51a0b8b04dc51447f2b49d3717555d3dc143e6a418ceb92376d27ee2",
+    "v2": {
+      "chunk_bytes": 4096,
+      "digest_format": "rise-payload-sha256-merkle",
+      "digest_version": 2,
+      "fan_in": 16,
+      "payload_bytes": 110,
+      "root_sha256": "20fa6006abb075f9ac808fc82f6e54e940482bfda8795cd98fb5d81db7f4a3f3"
+    }
+  },
+  "review.final.v1.md": {
+    "sha256_v1": "ebf983cbf59cb05bf02d0553f2fe8aa5e4c7294996120d031bae61bb658ce3b5",
+    "v2": {
+      "chunk_bytes": 4096,
+      "digest_format": "rise-payload-sha256-merkle",
+      "digest_version": 2,
+      "fan_in": 16,
+      "payload_bytes": 2985,
+      "root_sha256": "a1b0e51274d0f693d692b20a16cb005595276f91db03abee48426d055feb6023"
+    }
+  }
+}
