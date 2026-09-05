@@ -5752,7 +5752,7 @@ yet known (§10.1).
     the ~2e-9 decoy radius that suite's Test 15 pins (the window scales
     with 1/rate: ~3e-10 at the grazing clamp, and with the operand's own
     scale). `CsgSurfacePayloadTest` is now in the gate (the binary reports
-    299 checks passed — 298 call sites, one of which runs twice —
+    299 checks passed; the static `Check(` site count is 298 —
     including the round-3 scaled-operand and oblique-exit cases and the
     round-4 stretched-slab + oblique case, Test 26, which is the only one
     that goes red under the old `|M⁻¹dir| · |dir·n|` factorisation) and
