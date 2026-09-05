@@ -35,25 +35,25 @@ namespace RISE
 			// Tessellates the sphere to a triangle mesh with (detail+1) x (detail+1) vertices.
 			// `detail` is the number of segments along each natural parameter axis (theta, phi).
 			// Seam vertices at u=0 / u=1 are duplicated to keep UV continuous under displacement.
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const; 
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest( ) const { return false; };
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override; 
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest( ) const override { return false; };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea( ) const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea( ) const override;
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- RaySphereIntersection's own gate,
 			//! `NEARZERO * (1 + |origin|_1 + radius)`.  Direction-independent (it
 			//! is a floor on the quadratic's roots, not a plane distance), so
 			//! `localDir` / `localNormal` are unused.
-			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
 			{
 				(void)localDir; (void)localNormal;
 				return NEARZERO * ( Scalar(1) +
@@ -62,9 +62,9 @@ namespace RISE
 			}
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData( );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData( ) override;
 		};
 	}
 }

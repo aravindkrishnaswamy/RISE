@@ -88,12 +88,13 @@ namespace RISE
 			void ResetRuntimeData() const;
 
 			//! IObject::SelfHitRootFloor -- a CSG composite has no geometry of
-			//! its own, so answer with the WORST of what its two operands would
-			//! answer, each asked in ITS OWN local frame and the answer brought
-			//! back into ours.  A ray standing off by more than this clears
-			//! whichever operand actually owns the boundary at that point, which
-			//! is all the caller (AdoptCsgExitFacePayloadViaProbe on a NESTED
-			//! CSG operand) can determine without re-running the algebra.
+			//! its own, so answer with the worst of what the operands that
+			//! actually OWN the face at `localOrigin` would answer, each asked in
+			//! ITS OWN local frame and the answer brought back into ours.
+			//! Ownership is settled with a short two-sided probe through the face
+			//! (P2-1; see the .cpp for the derivation and the 7494x sibling
+			//! inflation that motivated it); a face no operand claims falls back
+			//! to the max over both, since over-stating is the safe direction.
 			//! (No `override` -- see the CloneSnapshot note above: this class
 			//! deliberately omits the keyword throughout.)
 			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const;

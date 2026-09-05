@@ -21,6 +21,9 @@
 #include "../Interfaces/IGeometry.h"
 #include "../Utilities/Reference.h"
 
+#include <algorithm>	// std::max (BoundingBoxRootFloor)
+#include <cmath>		// std::fabs / std::isfinite (same)
+
 namespace RISE
 {
 	namespace Implementation
@@ -51,25 +54,56 @@ namespace RISE
 			//! every contained vertex or control point.  Conservative -- never
 			//! UNDER-states a primitive's own gate, which is the direction
 			//! `SelfHitRootFloor`'s contract requires.
+			//!
+			//! UNBUILT / UNBOUNDED GUARD (adversarial review of 4b141ad3, P1-3):
+			//! an empty collection reports the DEFAULT `BoundingBox()`, whose
+			//! corners are +-RISE_INFINITY (== DBL_MAX) -- an unbuilt
+			//! `TriangleMeshGeometryIndexed` (null BVH) and an empty
+			//! `BilinearPatchGeometry` (empty tree) both do.  Summing three of
+			//! those OVERFLOWS to +inf, so the floor came back INFINITE, and the
+			//! one caller -- `CSGObject::AdoptCsgExitFacePayloadViaProbe` -- then
+			//! built an infinite margin, a probe origin carrying a NaN component
+			//! (0 * inf on any zero direction component), and a
+			//! `range > maxAcceptRange` rejection that can NEVER fire, because
+			//! every comparison against NaN is false.  So a bbox that is not a
+			//! real, built, finite box contributes NOTHING: fall back to the same
+			//! generic `NEARZERO * (1 + |o|_1)` floor `IGeometry::SelfHitRootFloor`
+			//! defaults to.  That is not an under-statement in any case that
+			//! matters -- there are no primitives there to gate.  (The probe carries
+			//! its own `std::isfinite` guard as a second layer, for any other
+			//! source of a non-finite floor.)
 			static Scalar BoundingBoxRootFloor( const BoundingBox& bb, const Point3& localOrigin )
 			{
-				Scalar coordScale =
+				const Scalar coordScale =
 					std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z );
-				Scalar cornerMax = Scalar(0);
-				for( int c = 0; c < 8; c++ ) {
-					const Scalar x = ( c & 1 ) ? bb.ur.x : bb.ll.x;
-					const Scalar y = ( c & 2 ) ? bb.ur.y : bb.ll.y;
-					const Scalar z = ( c & 4 ) ? bb.ur.z : bb.ll.z;
-					const Scalar l1 = std::fabs( x ) + std::fabs( y ) + std::fabs( z );
-					if( l1 > cornerMax ) {
-						cornerMax = l1;
-					}
+				const Scalar generic = NEARZERO * ( Scalar(1) + coordScale );
+
+				// max over the 8 corners of (|x| + |y| + |z|), taken PER AXIS so a
+				// sentinel box cannot overflow the sum before it can be tested.  The
+				// three axes are independent, so this is exactly the corner maximum
+				// the loop it replaces computed.
+				const Scalar ax = std::max( std::fabs( bb.ll.x ), std::fabs( bb.ur.x ) );
+				const Scalar ay = std::max( std::fabs( bb.ll.y ), std::fabs( bb.ur.y ) );
+				const Scalar az = std::max( std::fabs( bb.ll.z ), std::fabs( bb.ur.z ) );
+
+				// 1e30 is RISE's own "effectively unbounded" coordinate sentinel
+				// (Ray::RecomputeInvDir), far above any real scene coordinate and far
+				// below DBL_MAX -- it catches the +-RISE_INFINITY default box without
+				// rejecting anything an author could plausibly build.  The ll <= ur
+				// test catches an INVERTED (empty-seeded) box as well.
+				const Scalar kMaxSaneCoord = Scalar(1e30);
+				const bool built =
+					bb.ll.x <= bb.ur.x && bb.ll.y <= bb.ur.y && bb.ll.z <= bb.ur.z &&
+					std::isfinite( ax ) && std::isfinite( ay ) && std::isfinite( az ) &&
+					ax < kMaxSaneCoord && ay < kMaxSaneCoord && az < kMaxSaneCoord;
+				if( !built ) {
+					return generic;
 				}
+
 				// The triangle gate ADDS the vertex scale to the origin's; the
 				// patch gate MAXes them.  Adding is the larger (and so the
 				// safe) of the two for both.
-				coordScale += cornerMax;
-				return NEARZERO * ( Scalar(1) + coordScale );
+				return NEARZERO * ( Scalar(1) + coordScale + ax + ay + az );
 			}
 		};
 	}

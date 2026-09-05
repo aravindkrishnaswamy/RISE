@@ -48,19 +48,19 @@ namespace RISE
 			// Tessellates the 6 box faces, each as a (detail+1) x (detail+1) grid in face-local UV.
 			// Edges between faces are NOT shared — each face gets its own vertices with the face's
 			// own UV and normal.  Minimum detail = 1 (two triangles per face).
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const; 
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest( ) const { return false; };
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override; 
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest( ) const override { return false; };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea( ) const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea( ) const override;
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- unlike every other primitive the
 			//! box's self-hit gate (DropSelfHitRoot's `onFace`) is a PLANE
@@ -77,7 +77,7 @@ namespace RISE
 			//! fallback it has.  The axis is picked by `localNormal`'s largest
 			//! component -- box faces are axis-aligned in this frame, so that
 			//! names the face exactly.
-			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
 			{
 				const Scalar ax = std::fabs( localNormal.x );
 				const Scalar ay = std::fabs( localNormal.y );
@@ -94,9 +94,9 @@ namespace RISE
 			}
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData( );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData( ) override;
 		};
 	}
 }

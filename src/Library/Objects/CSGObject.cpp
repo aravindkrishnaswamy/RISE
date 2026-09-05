@@ -12,7 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
-#include <cmath>			// std::isfinite (AdoptCsgExitFacePayloadViaProbe range2 guard)
+#include <cmath>			// std::isfinite / std::fabs (the probe's range2 + margin guards, CSGObject::SelfHitRootFloor's ownership window)
 #include "CSGObject.h"
 
 using namespace RISE;
@@ -616,6 +616,22 @@ namespace
 		// the 1e-12 term's own; with selfHitFloor in the max() the window
 		// is ~1.7e-11 at unit scale -- the figure that now governs.)
 		const Scalar margin = std::max( std::max( Scalar(1e-12), selfHitFloor ), kUlpFactor * dirWeightedAbs );
+
+		// NON-FINITE GUARD (adversarial review of 4b141ad3, P1-3).  A floor of
+		// +inf makes `margin` infinite, `probeOrigin` NaN on every axis where
+		// `dir` has a zero component (0 * inf), and -- worse -- makes the
+		// `range > maxAcceptRange` rejection below UNREACHABLE, because every
+		// comparison against a NaN is false: the probe would then adopt whatever
+		// the operand happened to report, at any distance, and stamp NaN
+		// coordinates into the composite hit.  The one known producer (an
+		// unbuilt / unbounded collection bbox) is fixed at its own layer in
+		// `Geometry::BoundingBoxRootFloor`; this is the caller-side backstop, and
+		// it degrades to the SAME graceful outcome as any other probe miss --
+		// the caller keeps the operand's entry-face payload.
+		if( !std::isfinite( selfHitFloor ) || !std::isfinite( margin ) ) {
+			return false;
+		}
+
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
 			ptExitLocal.y + dir.y * margin,
@@ -1806,6 +1822,44 @@ void CSGObject::ResetRuntimeData() const
 // than divided by: it cannot be re-hit along this ray at all, so it contributes
 // no requirement.  Recursion terminates on the operand tree, which AssignObjects
 // keeps acyclic.
+//
+// OWNERSHIP FILTER (adversarial review of 4b141ad3, P2-1).  Taking the max over
+// BOTH operands unconditionally lets an operand that has nothing to do with the
+// face being re-hit set the composite's floor.  Measured (CsgProbeFloorTest
+// Test 2): a nested CSG_UNION of a box (half-extent 1, own floor 4.014e-12)
+// with a triangle-mesh lobe parked 1e4 units away (bbox-corner floor 3.008e-8
+// -- correct FOR THAT MESH, and 7494x the box's) made the parent claim the
+// MESH's figure on the BOX's face.  The probe doubles its margin and adds 10 %
+// slack, so the same-face acceptance window went to ~1.3e-7 -- ~250x WIDER than
+// the 5e-10 decoy gap CsgSurfacePayloadTest Test 15 exists to guard, i.e.
+// straight back into the decoy-payload adoption trade that test bounds.
+//
+// The fix is to charge only operands that could actually own the face at
+// `localOrigin`: stand off `delta` on the INSIDE of the face (along -normal) and
+// fire a `delta`-short ray back out through it.  A child whose surface passes
+// through that window owns (or shares) the face and its gate is a real
+// requirement; a child that does not is 1e4 units away and its gate is not.
+// `delta = 1e-6 * (1 + |localOrigin|_1)` is scale-relative for the same reason
+// every gate here is -- an absolute epsilon is below the representable
+// granularity of a coordinate at 1e12 (Test 14's own scale) and the probe would
+// degenerate to a zero-length ray.  The window straddles the face so a child
+// whose surface sits fractionally either side of the reported point still
+// counts, and both face flags are passed because the owner may present either
+// facing (a SUBTRACTION's carve wall is the subtrahend's OUTWARD face reported
+// inverted).
+//
+// The ray is fired in THIS composite's own local frame, NOT a child's:
+// `IObjectPriv::IntersectRay_IntersectionOnly` takes the ray in its CALLER's
+// frame and applies its own inverse transform internally (see Object::
+// IntersectRay_IntersectionOnly), exactly as the main IntersectRay hands its
+// CSG-local ray to both operands.  Only the FLOOR query needs the child frame.
+//
+// If NO child claims the face -- which should not happen for a genuine exit
+// face, but can if `localNormal` is unusable (a geometry that never set
+// vGeomNormal2) or the face sits on a seam the short probe misses -- fall back
+// to the max over both, i.e. exactly the previous behaviour.  Over-stating is
+// the safe direction for the contract; the filter only removes a requirement
+// when it can positively show the requirement is someone else's.
 Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
 {
 	// Seeded at ZERO, deliberately NOT at IObject's generic
@@ -1819,7 +1873,24 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	// requirement comes from a leaf, and a leaf reports its own gate against
 	// the coordinate that actually matters to it (a box reads only the face
 	// axis; see BoxGeometry::SelfHitRootFloor).
-	Scalar worst = Scalar(0);
+	Scalar worst = Scalar(0);			// max over children that OWN the face
+	Scalar worstAny = Scalar(0);		// max over every child -- the fallback
+	bool anyOwner = false;
+
+	// Containment window, in THIS composite's frame (see the note above).
+	// Child-independent, so it is built once and re-fired per child.
+	const Scalar delta = Scalar(1e-6) * ( Scalar(1) +
+		std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z ) );
+	const Scalar nMagLocal = Vector3Ops::Magnitude( localNormal );
+	const bool canTestOwnership = ( nMagLocal > NEARZERO ) && std::isfinite( delta );
+	const Vector3 nUnit = canTestOwnership
+		? Vector3( localNormal.x / nMagLocal, localNormal.y / nMagLocal, localNormal.z / nMagLocal )
+		: Vector3( 0, 0, 1 );
+	const Ray ownRay(
+		Point3( localOrigin.x - nUnit.x * delta,
+		        localOrigin.y - nUnit.y * delta,
+		        localOrigin.z - nUnit.z * delta ),
+		nUnit );
 
 	IObjectPriv* const operands[2] = { pObjectA, pObjectB };
 	for( int i = 0; i < 2; i++ ) {
@@ -1843,9 +1914,14 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 			? Vector3( nChildUnnorm.x / nMag, nChildUnnorm.y / nMag, nChildUnnorm.z / nMag )
 			: localNormal;
 
-		const Scalar floorChild = child->SelfHitRootFloor( oChild, dChild, nChild );
-		worst = std::max( worst, floorChild / s );
+		const Scalar floorChild = child->SelfHitRootFloor( oChild, dChild, nChild ) / s;
+		worstAny = std::max( worstAny, floorChild );
+
+		if( canTestOwnership && child->IntersectRay_IntersectionOnly( ownRay, Scalar(2) * delta, true, true ) ) {
+			anyOwner = true;
+			worst = std::max( worst, floorChild );
+		}
 	}
 
-	return worst;
+	return anyOwner ? worst : worstAny;
 }

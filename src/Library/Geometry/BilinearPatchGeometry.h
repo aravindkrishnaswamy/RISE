@@ -68,11 +68,11 @@ namespace RISE
 				);
 
 			// Adds a new patch to the list
-			void AddPatch( const BilinearPatch& patch );
+			void AddPatch( const BilinearPatch& patch ) override;
 
 			// Instructs that addition of new patches is complete and that
 			// we can prepare for rendering
-			void Prepare();
+			void Prepare() override;
 
 			// Tessellates every stored bilinear patch as a (detail+1) x (detail+1) bilinear grid,
 			// concatenated.  Per-patch corner mapping is the CANONICAL RISE convention:
@@ -81,17 +81,17 @@ namespace RISE
 			// which disagreed with the body, EvaluateBilinearPatchAt and
 			// RayBilinearPatchIntersection; it misled the 2026-07 area-light work.)
 			// Normals recomputed from triangle topology.
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const; 
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest( ) const { return true; };
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override; 
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest( ) const override { return true; };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea( ) const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea( ) const override;
 
 			//! \return False when there is no sampleable surface, so this
 			//! geometry is never registered as a luminary in that state.
@@ -100,9 +100,9 @@ namespace RISE
 			//! returned a hardcoded 1.0 -- a `bilinearpatch_geometry` bound to
 			//! an emissive material became a silently broken area light whose
 			//! every NEE sample landed on the object's local origin.
-			bool CanBeAreaLight() const { return !patches.empty() && dTotalArea > 0; }
+			bool CanBeAreaLight() const override { return !patches.empty() && dTotalArea > 0; }
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- RayBilinearPatchIntersection's
 			//! debt-21 gate applies to the ONE patch being tested; this
@@ -110,24 +110,24 @@ namespace RISE
 			//! point, so bound them all at once via
 			//! Geometry::BoundingBoxRootFloor (see its note).
 			//! Direction-independent.
-			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const;
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override;
 
 			// From TreeElementProcessor
 			typedef const BilinearPatch*		MYOBJ;
-				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
-				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const;
-				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const;
-				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const;
+				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				void RayElementIntersection( RayIntersection& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+				bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
+				BoundingBox GetElementBoundingBox( const MYOBJ elem ) const override;
+				bool ElementBoxIntersection( const MYOBJ elem, const BoundingBox& bbox ) const override;
+				char WhichSideofPlaneIsElement( const MYOBJ elem, const Plane& plane ) const override;
 
-			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const;
-			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const;
+			void SerializeElement( IWriteBuffer& buffer, const MYOBJ elem ) const override;
+			void DeserializeElement( IReadBuffer& buffer, MYOBJ& ret ) const override;
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ){ return 0; };
-			void SetIntermediateValue( const IKeyframeParameter& val ){};
-			void RegenerateData( ){};
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override{ return 0; };
+			void SetIntermediateValue( const IKeyframeParameter& val ) override{};
+			void RegenerateData( ) override{};
 		};
 	}
 }

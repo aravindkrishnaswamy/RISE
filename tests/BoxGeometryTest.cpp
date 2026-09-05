@@ -37,11 +37,14 @@
 #include <iostream>
 #include <cassert>
 #include <cmath>
+#include <vector>
 #include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/CircularDiskGeometry.h"
 #include "../src/Library/Geometry/CylinderGeometry.h"
 #include "../src/Library/Geometry/InfinitePlaneGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/SDFGeometry.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
@@ -543,13 +546,20 @@ static bool AcceptsStandoff(
 	return ri.bHit && ri.range <= 2.1 * standoff;
 }
 
+// `hiFrac` is the upper bisection bracket as a fraction of `scale` -- it must
+// be a standoff the routine certainly ACCEPTS, and still far below any feature
+// of the geometry under test.  1e-5 covers every analytic primitive's ulp-scale
+// gate; the SDF row raises it, because a sphere-tracer's gate is m_epsFrac of
+// the field's bounding-box diagonal (~1e-4 of the shape at the usual 1e-5
+// fraction) rather than ulp-scale, i.e. six orders of magnitude coarser.
 static void CheckFloorBrackets(
 	const IGeometry* pGeom,
 	const char* what,
 	const Point3& ptFace,
 	const Vector3& exitDir,       // the direction the original ray was travelling
 	const Vector3& faceNormal,    // outward unit normal of the face being re-hit
-	double scale )
+	double scale,
+	double hiFrac = 1e-5 )
 {
 	const Vector3 probeDir( -exitDir.x, -exitDir.y, -exitDir.z );
 	const double floorAt = pGeom->SelfHitRootFloor( ptFace, probeDir, faceNormal );
@@ -560,7 +570,7 @@ static void CheckFloorBrackets(
 	// above them all, and still far below any feature these test geometries
 	// have) so the bisection never runs on an unbracketed interval.
 	double lo = 1e-18 * ( scale > 1.0 ? scale : 1.0 );
-	double hi = 1e-5  * ( scale > 1.0 ? scale : 1.0 );
+	double hi = hiFrac * ( scale > 1.0 ? scale : 1.0 );
 	if( AcceptsStandoff( pGeom, ptFace, exitDir, lo ) ) {
 		std::cout << "    FAILED bracket: lo accepted for " << what << " scale " << scale << std::endl;
 	}
@@ -701,6 +711,91 @@ static void RunSelfHitRootFloorContract( double scale )
 		CircularDiskGeometry* g = new CircularDiskGeometry( 16.0 * scale, 'z' );
 		const Point3 ptFace( 8.0 * scale, 8.0 * scale, 0.0 );
 		CheckFloorBrackets( g, "circular disk, offset in-plane", ptFace, dir, nOut, scale );
+		safe_release( g );
+	}
+
+	// --- TorusGeometry -> RayTorusIntersection's QUARTIC DEFLATION test ---
+	// The torus is the one primitive whose real gate is not a root
+	// comparison at all.  RayTorusIntersection drops the near root outright
+	// whenever the quartic's constant coefficient sits inside a RELATIVE
+	// band of the quartic's own scale (|C[4]| <= 1e-10 * quartScale), on the
+	// theory that only an on-surface origin can put it there.  A probe
+	// standing off less than the width of that band is inside it and gets
+	// the FAR wall, so a torus CSG operand's exit probe missed and the
+	// composite adopted the entry face's payload.  Measured here: the real
+	// gate is 1.20e-9 at R = 4, r = 1 unit scale (1.20e-6 at 1000x) against
+	// the generic default's 9.0e-12 -- a 133x UNDER-statement, which is
+	// exactly what the assertion below catches.  Two shapes (fat R/r = 4 and
+	// slim R/r = 2.5) and two incidences, at both scales, because the band
+	// width is a ratio of two position-dependent quantities and a formula
+	// that happened to work at one geometry could fail at another.
+	{
+		const Scalar rr[2][2] = { { 4.0, 1.0 }, { 1.0, 0.4 } };
+		const char* names[2][2] = {
+			{ "torus R=4 r=1, normal incidence",   "torus R=4 r=1, oblique incidence"   },
+			{ "torus R=1 r=0.4, normal incidence", "torus R=1 r=0.4, oblique incidence" }
+		};
+		for( int t = 0; t < 2; t++ ) {
+			const Scalar R = rr[t][0] * scale;
+			TorusGeometry* g = new TorusGeometry( R, rr[t][1] * scale );
+			// Both rays travel -Z in the ring's own plane (y = 0), so they
+			// really do cross the tube; the LATERAL OFFSET is what sets the
+			// incidence at the exit wall.  x = 0 meets it head-on (cos 1); the
+			// off-axis row meets it at cos 0.75 (R/r = 4) / 0.55 (R/r = 2.5),
+			// which is what exercises the |grad F . dir| projection.  Tilting
+			// the DIRECTION instead would not: a ray through the torus' axis
+			// hits every wall normally, by rotational symmetry.  The offset is
+			// R/2 rather than something closer to the hole: at exactly R - r the
+			// ray is TANGENT to the inner wall, the quartic has a double root
+			// there, and no standoff at all re-hits it cleanly (measured: the
+			// bisection runs off its upper bracket).  R/2 clears R - r for every
+			// R > 2r, which both shapes here are.
+			const Scalar offsets[2] = { Scalar(0), Scalar(0.5) * R };
+			for( int k = 0; k < 2; k++ ) {
+				const Point3 o( offsets[k], 0.0, 20.0 * scale );
+				RayIntersectionGeometric riCam = MakeIntersection( o, dir );
+				g->IntersectRay( riCam, true, true, true );
+				assert( riCam.bHit );
+				assert( riCam.range2 > riCam.range );
+				const Point3 ptExit = Ray( o, dir ).PointAtLength( riCam.range2 );
+				// The torus floor is direction-driven, not normal-driven, so the
+				// reported exit normal is passed through only for completeness.
+				CheckFloorBrackets( g, names[t][k], ptExit, dir, riCam.vNormal2, scale );
+			}
+			safe_release( g );
+		}
+	}
+
+	// --- SDFGeometry -> March's step-off band, DIVIDED by the part's
+	//     Lipschitz shrink factor ---
+	// A sphere part scaled (0.15, 1, 1) is an ellipsoid whose field, along
+	// the two UN-squashed axes, grows at only 0.15 units per unit of travel
+	// (partEval multiplies the unit-frame primitive distance by the part's
+	// conservative minScale).  So March's `|Map(origin)| <= 2*m_eps`
+	// step-off keeps firing until the standoff reaches 2*m_eps/0.15 -- 6.7x
+	// the bare band the override used to claim.  Inside that, the step-off
+	// marches the probe straight THROUGH the intended face to the far side.
+	// A uniformly-scaled part would pass either way, which is why the row
+	// is deliberately anisotropic.
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart(
+			SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3( 0, 0, 0 ), 0, 0, 0,
+			Vector3( 0.15, 1.0, 1.0 ),          // squashed in X only: minScale/maxScale = 0.15
+			4.0 * scale, 0, 0, 0 ) );
+		SDFGeometry* g = new SDFGeometry( parts, 512, Scalar(1e-5) );
+		// Exit along -Z, the axis the part does NOT squash -- that is where
+		// the field under-reports distance by the full 0.15.
+		const Point3 farOrigin( 0.0, 0.0, 12.0 * scale );
+		RayIntersectionGeometric riCam = MakeIntersection( farOrigin, dir );
+		g->IntersectRay( riCam, true, true, true );
+		assert( riCam.bHit );
+		assert( riCam.range2 > riCam.range );
+		const Point3 ptExit = Ray( farOrigin, dir ).PointAtLength( riCam.range2 );
+		// hiFrac 1e-1: the sphere-tracer's gate is ~1e-3 at unit scale (see
+		// CheckFloorBrackets' own note), far above the analytic rows' 1e-5.
+		CheckFloorBrackets( g, "SDF sphere part scaled (0.15,1,1)", ptExit, dir, nOut, scale, 1e-1 );
 		safe_release( g );
 	}
 

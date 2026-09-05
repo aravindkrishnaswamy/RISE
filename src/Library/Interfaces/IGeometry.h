@@ -263,9 +263,16 @@ namespace RISE
 		//! a grazing query returns a finite (if large) answer rather than
 		//! infinity.
 		//!
-		//! Declared last + defaulted so adding it keeps every existing IGeometry
-		//! vtable slot ABI-stable for out-of-tree implementers, matching
-		//! CanBeAreaLight / CanTessellate above.
+		//! DEFAULTED (a real body, not `= 0`) so an out-of-tree IGeometry
+		//! implementer that predates this method still COMPILES and gets the
+		//! generic floor, the same reason CanBeAreaLight / CanTessellate carry
+		//! bodies.  It is NOT declared last -- CanTessellate follows it -- so it
+		//! makes no vtable-slot claim: this is a source-compatibility promise
+		//! only.  (An earlier draft of this comment asserted both; corrected in
+		//! the adversarial review of 4b141ad3.)  In-tree, `src/3DSMax`'s
+		//! MAXGeometry is one such default-inheriting implementer -- it is not
+		//! part of any in-tree build, and it never acts as a CSG operand, so the
+		//! generic floor is all it needs.
 		virtual Scalar SelfHitRootFloor(
 			const Point3&  localOrigin,		///< [in] Ray origin, this geometry's object space
 			const Vector3& localDir,		///< [in] UNIT ray direction, same space

@@ -127,8 +127,12 @@ namespace RISE
 		//! the answer mapped back through that child's stretch.  Concrete
 		//! `Object` overrides to forward to its geometry.  Default here is the
 		//! same generic `NEARZERO * (1 + |localOrigin|_1)` floor as
-		//! `IGeometry`'s default, so an out-of-tree IObject implementer needs no
-		//! change (ABI-stable: declared among the trailing defaulted slots).
+		//! `IGeometry`'s default, so an out-of-tree IObject implementer that
+		//! predates this method still COMPILES and gets that floor.  It is NOT
+		//! declared last -- GetShader / GetModifier / GetRadianceMap and more
+		//! follow it -- so it makes no vtable-slot claim: this is a
+		//! source-compatibility promise only.  (An earlier draft of this comment
+		//! asserted both; corrected in the adversarial review of 4b141ad3.)
 		virtual Scalar SelfHitRootFloor(
 			const Point3&  localOrigin,
 			const Vector3& localDir,

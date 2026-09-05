@@ -36,6 +36,8 @@
 #include <cstddef>		// std::size_t (NumParts() et al.) -- <vector> is not required to declare it
 #include <mutex>		// std::once_flag for the lazily-built surface-sampling structure
 #include <memory>		// std::unique_ptr<std::once_flag> -- resettable for animated fields
+#include <algorithm>	// std::min / std::max (SelfHitRootFloor's Lipschitz scan)
+#include <cmath>		// std::fabs (same)
 
 namespace RISE
 {
@@ -370,10 +372,68 @@ namespace RISE
 			//! requires.  Direction-independent.  (m_eps is set at
 			//! construction and refreshed in the realize pass; before that it
 			//! carries its constructed value, never zero.)
+			//!
+			//! BUT the band is 2*m_eps in FIELD VALUE, not in DISTANCE, and
+			//! `Map` is only 1-Lipschitz -- it may report LESS than the true
+			//! distance (adversarial review of 4b141ad3, P1-2).  `partEval`
+			//! evaluates each primitive in its own unit-scaled frame and
+			//! multiplies by the part's conservative `minScale` Lipschitz
+			//! factor, so along the part's LARGEST-scaled axis the field grows
+			//! at only `minScale / maxScale` per unit of object-space travel.
+			//! A probe standing `d` off the surface therefore reads
+			//! |Map| ~= (minScale/maxScale) * d, and the step-off keeps firing
+			//! until d >= 2*m_eps * maxScale/minScale -- measured EXACTLY 1/0.15
+			//! times the plain 2*m_eps for a sphere part scaled (0.15, 1, 1), i.e.
+			//! the old claim under-stated the real gate by 6.7x and a probe that
+			//! trusted it was marched straight past the face it was aiming at.
+			//!
+			//! So divide by the smallest such ratio ANY part can apply -- the
+			//! global minimum over the parts list, since the query names a point
+			//! but the fold that produced the field at that point may involve any
+			//! of them.  The ratio is <= 1 by construction (minScale <= maxScale),
+			//! so this only ever widens the claim; a uniformly-scaled part
+			//! contributes exactly 1 and leaves the answer at 2*m_eps.  Note that
+			//! the plain `minScale` (rather than the ratio) would be WRONG in the
+			//! other direction for a part scaled up non-uniformly -- e.g.
+			//! (2, 3, 3) has minScale 2 > 1 yet still shrinks the field by 2/3.
+			//! Heightfield mode has no parts and keeps the bare band.
+			//!
+			//! P2-2 (accepted, documented): this is a RELATIVE window, unlike every
+			//! other geometry's ulp-scale gate.  m_eps is `m_epsFrac` of the bbox
+			//! diagonal, so the window is `2 * m_epsFrac / lipschitz` OF THE SHAPE
+			//! ITSELF -- 0.01 % at the 5e-5 scene default with uniform parts, ~0.07 %
+			//! at the 0.15 shrink BoxGeometryTest's row uses -- and it is
+			//! SCALE-INVARIANT, so it does not tighten on a bigger SDF.  A SECOND
+			//! lobe of the field lying within that window of the intended face
+			//! cannot be told apart from it by the probe, and would be adopted as
+			//! the same face.  There is
+			//! no cheaper discriminator available at this layer (the sphere-tracer
+			//! has no notion of primitive identity along a ray), and the outcome
+			//! is a payload from a face a fraction of a percent away rather than a
+			//! wrong-side antipodal one, so it is accepted rather than guarded.
+			//! Not accounted for: `sminP`/`smaxP` blending can flatten the field's
+			//! gradient further near a seam (two opposed unit gradients average
+			//! toward zero), widening the band there beyond what this bound
+			//! predicts.  A probe on such a seam misses and takes the probe's own
+			//! graceful entry-payload fallback -- quality, never a wrong-face
+			//! adoption -- which is why no blend term is charged here.
 			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
 			{
 				(void)localOrigin; (void)localDir; (void)localNormal;
-				return Scalar(2) * m_eps;
+
+				Scalar lipschitz = Scalar(1);		// worst field-growth-per-unit-distance factor
+				for( std::size_t i = 0; i < m_parts.size(); i++ ) {
+					const Vector3& s = m_parts[i].scale;
+					const Scalar maxScale = std::max( std::fabs( s.x ), std::max( std::fabs( s.y ), std::fabs( s.z ) ) );
+					const Scalar minScale = std::min( std::fabs( s.x ), std::min( std::fabs( s.y ), std::fabs( s.z ) ) );
+					if( maxScale > Scalar(0) && minScale > Scalar(0) ) {
+						lipschitz = std::min( lipschitz, minScale / maxScale );
+					}
+				}
+				if( !( lipschitz > Scalar(0) ) ) {
+					lipschitz = Scalar(1);			// degenerate (zero-scale) part: no usable ratio
+				}
+				return Scalar(2) * m_eps / lipschitz;
 			}
 
 			//! Number of authored SDF primitives folded into this geometry's

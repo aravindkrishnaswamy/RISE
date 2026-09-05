@@ -54,19 +54,19 @@ namespace RISE
 			// Tessellates the cylinder side to (detail+1) x (detail+1) vertices (duplicating the
 			// u=0/u=1 seam).  When m_bCapped, appends a triangle fan for each end cap so the
 			// tessellation is a closed solid matching the analytic intersection.
-			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const;
+			bool TessellateToMesh( IndexTriangleListType& tris, VerticesListType& vertices, NormalsListType& normals, TexCoordsListType& coords, const unsigned int detail ) const override;
 
-			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const;
-			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const;
+			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
+			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
-			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const; 
-			BoundingBox GenerateBoundingBox() const;
-			inline bool DoPreHitTest( ) const { return true; };
+			void GenerateBoundingSphere( Point3& ptCenter, Scalar& radius ) const override; 
+			BoundingBox GenerateBoundingBox() const override;
+			inline bool DoPreHitTest( ) const override { return true; };
 
-			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const;
-			Scalar GetArea( ) const;
+			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
+			Scalar GetArea( ) const override;
 
-			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
 			//! IGeometry::SelfHitRootFloor -- the gate both
 			//! CylinderGeometry::IntersectCappedSolid and the open-tube
@@ -74,7 +74,7 @@ namespace RISE
 			//! `NEARZERO * (1 + |origin|_1 + radius)` (the axis passes through
 			//! this frame's origin, so their axO/raO/rbO split is exactly the
 			//! origin's L1).  Direction-independent.
-			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
 			{
 				(void)localDir; (void)localNormal;
 				return NEARZERO * ( Scalar(1) +
@@ -83,9 +83,9 @@ namespace RISE
 			}
 
 			// Keyframable interface
-			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
-			void SetIntermediateValue( const IKeyframeParameter& val );
-			void RegenerateData( );
+			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value ) override;
+			void SetIntermediateValue( const IKeyframeParameter& val ) override;
+			void RegenerateData( ) override;
 		};
 	}
 }
