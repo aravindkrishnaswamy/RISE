@@ -6289,3 +6289,68 @@ worst is `0.46579926702613617`. Qualification costs
 `920.102417 ms` device p95 and `946.22475 ms` wall p95. The live production
 entry retains zero interstage full-grid transfers. The sealed tier-8 replay
 remains blocked until the fresh three-reviewer boundary is zero P1/P2.
+
+### r201h published-input owner trace and boundary obligation
+
+The final owner trace follows the resident publication graph rather than a
+recursively widened surrogate. Each accepted scalar producer is qualified
+before its exact device bytes and publication identity become the next stage's
+input authority. Continuous projection, transport, flux, EOS, target,
+momentum, and stress quantities are then gated in their own units. Shared-alpha
+and open-active classes agree throughout this fixture, so exact class agreement
+selects the same-class enclosure path. The r123/r124 two-successor path remains
+the authenticated alternative for a future certified zero-crossing, not a
+blanket relaxation.
+
+Projection qualification uses the production boundary semantics
+`Periodic=0`, `PressureOpen=1`, `Wall=2` and an independent a-posteriori
+Poincare/density/residual certificate. The terminal streaming proof consumes
+the actual published binary32 pressure, density, provisional momentum, and
+sealed pressure-open head. Sealed head applies to every pressure-open face;
+conditioning it on the inflow class was a trace-adapter defect exposed at R2
+iteration 2. The corrected trace passes, while a named mutant that clears four
+nonzero outflow heads refuses. This is an ordering correction, not a larger
+numeric allowance.
+
+Exact source commit `fcc45f52` passes the full owner gate and independent
+Metal/fp64 kernel sweep. R0/R1/R2 trace counts are 4/4, 4/4, and 6/6; all
+continuous, target, and projection-operation gates pass. The R1 scalar
+publication discharges 34 inactive-row zero-boundary cases through the existing
+r60 affine envelope. The resident production entry has zero interstage
+full-grid transfers, and qualification device/wall p95 are
+`922.292251/948.459583 ms`. The full evidence and raw-log hashes are in
+`r201_projected_heun_metal_owner/r201h_owner_iteration_contract.v1`. The next
+operation after zero P1/P2 review is the sealed tier-8 ported replay.
+
+### r201i resident-parent trajectory binding
+
+r201h was not an acceptance point. Fresh review rejected observed-output
+certificates for provisional momentum and open-head publication, an RMS
+projection certificate used as a facewise bound, and a projection residual
+reconstructed on the CPU. The repaired gate derives those quantities from the
+sealed producer DAG: beginning momentum and the separately traced advection,
+buoyancy, stress, and phase-source rates; a `sqrt(cell_count)` norm conversion;
+the divergence of the captured Metal velocity; and the R0/R1 density-velocity
+head expression. Named mutations of every parent path refuse. The former broad
+r60 fallback is absent from the passing path.
+
+The first remaining divergence was R1 carbon cell 6's averaged lower z-face
+donor flux. Its apparent binary32 value came from the standalone CPU owner,
+which had followed a different continuous Picard trajectory. Substituting that
+surface for a resident authority violated r195 even though both computations
+were individually valid. The trace now captures the exact device-produced R0
+and R1 low-order and antidiffusive candidates, then averages those parents for
+the R1 publication proof. The actual resident value lies inside the fp64 trace;
+the CPU surrogate does not, and
+`cpu_flux_trajectory_substituted_for_resident_parent` records the standing RED.
+Class sequences agree throughout, so no r123/r124 successor hull is activated.
+
+At exact source `eb7d1d87ab9131bbdd6dc009a1ee679fbfd1e0be`, the complete
+owner and independent Metal/fp64 kernel sweep pass. R0 and R1 producer
+certificates pass with zero two-path exceptions. The compatible-momentum sweep
+reports `1.1175870895385742e-07` maximum absolute difference against the
+derived `3.1200230559651367e-05` bound. Production has zero interstage
+full-grid transfers. Qualification device/wall p95 are
+`921.637333/949.226291 ms`; the updated working-set certificate is
+`10,223,616` bytes against `1,245,184` measured. SHA-bound evidence is in
+`r201_projected_heun_metal_owner/r201i_resident_parent_trajectory_gate.v1`.

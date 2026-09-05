@@ -5597,3 +5597,73 @@ At exact source commit `3ebe2974`, the worst passing iteration ratio is
 full-grid transfers. Evidence is
 `r201_projected_heun_metal_owner/r201g_continuous_trajectory_gate.v1`. Fresh
 numeric, provenance, and RED reviews still gate the sealed tier-8 replay.
+
+### r201h — the owner gate follows published bytes and the actual boundary DAG
+
+The continued r201 trace keeps the pre-registered decision rule local. Metal
+and fp64 retain identical shared-alpha, active-set, and next-active-set class
+sequences at every R0/R1/R2 iteration. The binding owner gate is therefore the
+same-class, per-cell/per-field enclosure. The former `16383` ratio remains
+descriptive only. A future class split is eligible for the r123/r124 two-path
+envelope only after its predicate interval crosses the decision boundary and
+both immediate successor envelopes are authenticated; otherwise it refuses.
+
+Two proof-harness defects were found without widening. The independent
+projection walker had inherited the wrong numeric boundary label and treated
+`Wall=2` as pressure-open; production is `Periodic=0`, `PressureOpen=1`,
+`Wall=2`. After correcting that semantic, the raw recursive multigrid interval
+exposed dependency loss and remains diagnostic rather than acceptance
+authority. The accepted projection bound is the independent a-posteriori Poincare/density/residual
+certificate evaluated from the published binary32 terminal streaming inputs.
+
+That terminal trace then found the first apparent R2 difference at iteration 2,
+axis 0, face 9. It was an adapter ordering defect: sealed pressure-open head is
+part of the projection boundary condition on every pressure-open face, but the
+adapter incorrectly zeroed it on outflow faces before checking sealed-head
+mode. Moving sealed-head consumption ahead of active-class conditioning makes
+all 14 projection traces pass. A named mutant zeros the four nonzero outflow
+heads and is refused. No tolerance changed.
+
+Scalar publication is producer-first. R0 and R1 endpoint bytes and identities
+are proved before becoming successor inputs; R1 contains 34 inactive-row
+zero-boundary values discharged by the existing r60 affine two-path envelope.
+Every other invalid interval refuses. At exact source commit `fcc45f52`, the
+owner gate and independent kernel sweep exit zero. The compatible identity is
+`1.1920929e-07` against `8.1519056e-06 kg m^-3`; the production entry records
+zero interstage transfers and one terminal staging. Qualification timing is
+`922.292251/948.459583 ms` device/wall p95. Evidence is
+`r201_projected_heun_metal_owner/r201h_owner_iteration_contract.v1`; the sealed
+tier-8 replay remains gated on the fresh three-reviewer round.
+
+### r201i — bind the trace to the resident parent trajectory
+
+r201h remained rejected after fresh review. Its provisional-momentum radius was
+self-authored from the observed residual, its projection RMS certificate was
+being applied per face, the projection residual came from a CPU reconstruction,
+and the sealed R2 open-head bound was an observed chord. Each was replaced by a
+producer proof: the beginning state plus the four force/advection rate parents,
+an explicit `sqrt(cell_count)` L2-to-face enclosure, divergence recomputed from
+the captured Metal velocity, and the R0/R1 velocity-density expression that
+produces the head. The four associated mutants refuse. The broad r60 fallback
+was removed; no r60/two-path publication exception is used in the passing run.
+
+The per-iteration trace then localized the sole remaining apparent difference
+to the R1 terminal carbon row, cell 6, averaged lower z-face donor flux. The
+trace interval was centered at `4.3857394361072537e-18` with radius
+`5.8482121475114491e-19 kg m^-2 s^-1`. The value outside it,
+`5.36183642935701e-18`, came from a separately evolved CPU-binary32 owner; it
+was not the resident parent. The actual device-produced parent was
+`4.5354131006547746e-18`, inside the enclosure. This is a continuous
+validation-adapter defect under the pre-registered rule, not a production
+kernel defect and not a class-envelope case. The trace now stages the exact
+resident low and antidiffusive flux candidates and a named CPU-substitution
+mutant refuses. No tolerance changed.
+
+Exact source commit `eb7d1d87ab9131bbdd6dc009a1ee679fbfd1e0be` passes the
+complete owner gate and kernel sweep. The compatible identity remains
+`1.1920929e-07` against `8.1519056e-06 kg m^-3`; the production entry has zero
+interstage full-grid transfers and one terminal staging. The expanded trace is
+covered by the `10,223,616`-byte working-set certificate; measured allocation
+is `1,245,184` bytes. Device/wall p95 are `921.637333/949.226291 ms`.
+Evidence is `r201_projected_heun_metal_owner/r201i_resident_parent_trajectory_gate.v1`.
+The tier-8 replay remains blocked until the fresh review round is zero P1/P2.
