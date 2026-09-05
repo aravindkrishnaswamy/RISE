@@ -45,7 +45,7 @@
 //      `union(sphere R=3 uniform, sphere R=3 scaled (0.02,1,1) at x=8)`,
 //      queried on the exit face of the UNIFORM lobe, claimed 1.39e-2
 //      against a bisected gate of 2.79e-4 -- a 50x over-statement, 6x
-//      past the contract's 8x bound, and a ~2.9e-2 WORLD-UNIT same-face
+//      past the contract's bound (4x now, 8x when first measured), and a ~2.9e-2 WORLD-UNIT same-face
 //      acceptance window once the probe's 2x margin and 10 % slack are
 //      applied.  That is the decoy-face trade CsgSurfacePayloadTest
 //      Test 15 bounds, re-opened at a scale where a whole second lobe

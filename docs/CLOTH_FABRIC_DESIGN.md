@@ -6029,7 +6029,9 @@ yet known (§10.1).
     `CsgSurfacePayloadTest` Test 28 finally exercises the composite's OWN
     child-frame recursion (a 60°-rotated, 30×-stretched inner CSG): dropping
     the child-frame scale or the normal remap fails its four money checks,
-    while seeding at the generic default trips Test 14, not 28. Suites:
+    while seeding at the generic default trips Test 14, not 28. Suites
+    at this branch's HEAD (the three worker commits' own gate lines say
+    332 for the first because their worktrees predate Test 28):
     `CsgSurfacePayloadTest` 348, `CsgProbeFloorTest` 49, the new
     `tests/CsgFloorOwnershipTest.cpp` 27 (coincident SDF + box face,
     shared box edge, two-lobe SDF at the same 4× bracket, and the
