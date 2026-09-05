@@ -25,7 +25,7 @@ def build_environment(inherited=None):
     environment = dict(os.environ if inherited is None else inherited)
     # Parent make invocations may export dry-run/touch/question flags or
     # command-line overrides. None may turn qualification into a cache check.
-    for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES"):
+    for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MAKEFILES"):
         environment.pop(name, None)
     return environment
 

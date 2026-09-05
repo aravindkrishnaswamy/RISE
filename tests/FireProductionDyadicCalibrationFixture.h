@@ -1912,11 +1912,14 @@ namespace FireProductionDyadicCalibration
 		encoded.front()^=1u;
 		const bool manifestMutationRefused=!HistoricalR136TraceAccepted(encoded,mutantDigest);
 		encoded.front()^=1u;
+		// Missing restoration must not turn the two mutations into refusals at
+		// the prefix precondition while labelling historical framing as current.
+		if(RISECBOR64::SHA256Hex(encoded)!=traceDigest)return 238;
 		RISE::FireProductionPayloadDigestV2 currentTraceV2;
 		if(!RISE::FireProductionPayloadDigestCPU(encoded.data(),encoded.size(),8u,
 			currentTraceV2,&error))return 238;
 		if(!numericMutationRefused||!manifestMutationRefused)return 238;
-		std::fprintf(stderr,"R136_BRIDGE_NUMERIC_MUTATION_RED same_acceptance_path=1 manifest_mutation=1 passed=1\n");
+		std::fprintf(stderr,"R136_BRIDGE_NUMERIC_MUTATION_RED same_acceptance_path=1 manifest_mutation=1 current_framing_restored=1 passed=1\n");
 		std::fprintf(stderr,"r205 r136_bridge historical_digest_version=1 historical_sha256=%s "
 			"current_sha256=%s digest_version=%u chunk_bytes=%u fan_in=%u bytes=%llu "
 			"current_root=%s historical_manifest_sha256=%s current_manifest_sha256=%s\n",

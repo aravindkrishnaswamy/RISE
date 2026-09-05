@@ -5,7 +5,11 @@ The first fresh review found four P1 publication/build-attribution issues and
 four P2 test/accounting gaps. Its fixes passed a forced rebuild, the live owner
 gate, and the full suite at `bfca0246`. The second fresh round found one P1
 (inherited make flags could skip compilation) and four P2 validation/RED gaps;
-their repairs are implemented, with the new gate and fresh review pending. No warm-start optimization,
+their repairs passed the complete gate at `b97f46c9`. A third fresh round found
+one P1 (MAKEFILES could reintroduce dry-run after environment sanitization) and
+one P2 (current-framing restoration needed an explicit bridge assertion). Both
+are repaired; the resulting gate and fresh review remain separate requirements.
+No warm-start optimization,
 fixed-k choice, focusing verdict, window, or new movie is claimed here.
 
 ## Fixture repairs authorized by the owner
@@ -98,7 +102,7 @@ its owner/build qualification record SHA is
 These identify the pre-review-fix gate, not the forthcoming forced-rebuild gate.
 
 The second-round build repair removes inherited MAKEFLAGS, MFLAGS,
-GNUMAKEFLAGS, and MAKEOVERRIDES from the build subprocess environment. Its RED
+GNUMAKEFLAGS, MAKEOVERRIDES, and MAKEFILES from the build subprocess environment. Its RED
 first demonstrates both dry-run and touch modes preserving a foreign object,
 then proves the actual qualification environment rebuilds it. Python publication
 validation now refuses pending files/directories and a v1 digest relabelled in
@@ -108,6 +112,10 @@ REDs traverse the real checkpoint loader with an interrupted marker and a
 corrupted seal, requiring refusal without altering the output object or payload.
 The apparent frame-sync concern was rejected after tracing `WriteFrame`'s
 existing durable sync; no redundant hot-path synchronization was added.
+The MAKEFILES RED separately demonstrates a site include reintroducing dry-run,
+then verifies the sanitized build executes the recipe. Before v2 sealing, the
+bridge now re-hashes its restored buffer against the exact pre-bridge digest;
+omitting restoration can no longer pass via the prefix-refusal path.
 
 ## Ordered next work and acceptance
 

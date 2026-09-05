@@ -47,6 +47,22 @@ class QualificationREDs(unittest.TestCase):
                                env=build_environment(environment))
                 self.assertEqual((root / "cached.o").read_bytes(), b"current source")
 
+    def test_inherited_makefile_cannot_reintroduce_dry_run(self):
+        with tempfile.TemporaryDirectory(prefix="rise-r205-makefiles-red-") as temporary:
+            root = Path(temporary)
+            (root / "source.cpp").write_bytes(b"current source")
+            (root / "cached.o").write_bytes(b"foreign object")
+            (root / "Makefile").write_text("all: cached.o\ncached.o: source.cpp\n\tcp source.cpp cached.o\n")
+            injected = root / "site.mk"
+            injected.write_text("MAKEFLAGS = -n\n")
+            environment = build_environment()
+            environment["MAKEFILES"] = str(injected)
+            command = build_command(root, "all")
+            subprocess.run(command, check=True, capture_output=True, env=environment)
+            self.assertEqual((root / "cached.o").read_bytes(), b"foreign object")
+            subprocess.run(command, check=True, capture_output=True, env=build_environment(environment))
+            self.assertEqual((root / "cached.o").read_bytes(), b"current source")
+
     def test_orphan_sidecar_refused(self):
         with tempfile.TemporaryDirectory(prefix="rise-r205-orphan-red-") as temporary:
             root = Path(temporary)
