@@ -8,7 +8,11 @@ gate, and the full suite at `bfca0246`. The second fresh round found one P1
 their repairs passed the complete gate at `b97f46c9`. A third fresh round found
 one P1 (MAKEFILES could reintroduce dry-run after environment sanitization) and
 one P2 (current-framing restoration needed an explicit bridge assertion). Both
-are repaired; the resulting gate and fresh review remain separate requirements.
+passed the gate at `7dc6bbf5`. Round four found a compiler-level diagnostic flag
+escape (P1) and absent-verdict/zero-exit qualification gap (P2). The build now
+inherits only platform process/SDK variables, and qualification requires the
+explicit publication and complete per-field owner verdicts. Fresh review of
+these final qualification repairs remains required.
 No warm-start optimization,
 fixed-k choice, focusing verdict, window, or new movie is claimed here.
 
@@ -116,6 +120,14 @@ The MAKEFILES RED separately demonstrates a site include reintroducing dry-run,
 then verifies the sanitized build executes the recipe. Before v2 sealing, the
 bridge now re-hashes its restored buffer against the exact pre-bridge digest;
 omitting restoration can no longer pass via the prefix-refusal path.
+The final environment policy is an allowlist, superseding that incremental
+denylist: inherited `CXXARCHFLAGS`, `CXXFLAGS_DEPS`, and all other recipe controls
+are excluded. A real-compiler RED seeds an object returning 1, changes its source
+to return 0, demonstrates `-###` preserving old behavior without a warning, then
+proves qualification rebuilds the new behavior. A mock-subprocess RED exercises
+the actual qualifier `main()` with successful exits but absent publication or
+owner verdicts; neither may create an attestation. These findings do not assert
+that any recorded build used those flags or omitted its real owner gate.
 
 ## Ordered next work and acceptance
 

@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import subprocess
 
+from seal_fire_payload_placement import gate
+
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -23,11 +25,26 @@ def build_command(directory="build/make/rise", target="build-test/FireSequenceTe
 
 def build_environment(inherited=None):
     environment = dict(os.environ if inherited is None else inherited)
-    # Parent make invocations may export dry-run/touch/question flags or
-    # command-line overrides. None may turn qualification into a cache check.
-    for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES", "MAKEFILES"):
-        environment.pop(name, None)
-    return environment
+    # Recipe inputs come from the versioned build configuration, not inherited
+    # make/compiler flags. A denylist misses compiler-level dry runs (-###).
+    platform_inputs = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
+                       "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "DEVELOPER_DIR", "SDKROOT",
+                       "MACOSX_DEPLOYMENT_TARGET", "LANG", "LC_ALL", "LC_CTYPE"}
+    return {name: value for name, value in environment.items() if name in platform_inputs}
+
+
+def validate_run_log(name, log):
+    if name == "owner":
+        # Exit zero is insufficient: unsupported CLI modes can run the ordinary
+        # suite without ever invoking a Metal owner. Require its full verdict.
+        gate(log)
+    elif name == "publication":
+        lines = [line for line in log.read_text().splitlines() if line.startswith("PUBLICATION_RED ")]
+        if len(lines) != 1 or any(token not in lines[0].split() for token in (
+                "mutable_advance=pass", "interrupted_pair_refused=pass", "immutable_bytes_preserved=pass",
+                "final_equivalence_not_mutable=pass", "orphan_refused=pass", "empty_refused=pass",
+                "pending_refused=pass", "foreign_case_unchanged=pass", "kernel_library_mutants=5")):
+            raise ValueError("missing publication gate verdict")
 
 
 def main():
@@ -52,6 +69,7 @@ def main():
                                        env=build_environment() if name == "build" else None)
         if completed.returncode:
             raise RuntimeError(name + " failed: " + str(completed.returncode))
+        validate_run_log(name, log)
         if name == "build":
             if "warning:" in log.read_text():
                 raise RuntimeError("build warning gate failed")

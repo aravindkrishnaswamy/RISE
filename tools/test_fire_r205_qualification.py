@@ -1,22 +1,75 @@
 #!/usr/bin/env python3
 """CPU REDs for r205 review findings. All mutations stay in temporary fixtures."""
 import hashlib
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from analyze_fire_whole_owner import analyze
 from fire_payload_merkle import merkle
 from qualify_fire_payload_placement import build_command, build_environment
+import qualify_fire_payload_placement as qualification
 from seal_fire_payload_placement import sidecars
 
 
 class QualificationREDs(unittest.TestCase):
+    def test_compiler_diagnostic_mode_cannot_preserve_foreign_object(self):
+        with tempfile.TemporaryDirectory(prefix="rise-r205-compiler-mode-red-") as temporary:
+            root = Path(temporary)
+            compiler = shutil.which("c++")
+            self.assertIsNotNone(compiler)
+            source, obj, executable = root / "source.cpp", root / "cached.o", root / "program"
+            source.write_text("int main(){return 1;}\n")
+            subprocess.run([compiler, "-c", str(source), "-o", str(obj)], check=True, capture_output=True,
+                           env=build_environment())
+            source.write_text("int main(){return 0;}\n")
+            (root / "Makefile").write_text("all: program\nprogram: cached.o\n\t" + compiler +
+                " cached.o -o program\ncached.o: source.cpp\n\t" + compiler +
+                " $(CXXARCHFLAGS) -c source.cpp -o cached.o\n")
+            environment = build_environment()
+            environment["CXXARCHFLAGS"] = "-###"
+            command = build_command(root, "all")
+            unqualified = subprocess.run(command, check=True, capture_output=True, env=environment)
+            self.assertNotIn(b"warning:", unqualified.stdout + unqualified.stderr)
+            self.assertEqual(subprocess.run([str(executable)], check=False).returncode, 1)
+            subprocess.run(command, check=True, capture_output=True, env=build_environment(environment))
+            self.assertEqual(subprocess.run([str(executable)], check=False).returncode, 0)
+            self.assertNotIn("CXXFLAGS_DEPS", build_environment(dict(environment, CXXFLAGS_DEPS="-M")))
+
+    def test_zero_exit_without_actual_gate_cannot_be_attested(self):
+        evidence = Path(__file__).resolve().parents[1] / "rendered/fire_production_calibration/r205_owner_cost"
+        with tempfile.TemporaryDirectory(prefix="rise-r205-empty-gate-red-") as temporary:
+            for missing in ("publication", "owner"):
+                output = Path(temporary) / (missing + ".json")
+                def mock_run(command, **kwargs):
+                    stream = kwargs.get("stdout")
+                    if hasattr(stream, "write"):
+                        mode = ("publication" if "--fire-production-payload-publication" in command
+                                else "owner" if "--fire-production-resident-target-metal" in command
+                                else "build")
+                        if mode == "build":
+                            stream.write(b"Compiling fixture\n")
+                        elif mode != missing:
+                            stream.write((evidence / ("qualification.round3.v1.json." + mode + ".log")).read_bytes())
+                    return subprocess.CompletedProcess(command, 0)
+                with mock.patch.object(sys, "argv", ["qualify", str(output)]), \
+                     mock.patch.object(qualification.subprocess, "check_output", return_value="a" * 40), \
+                     mock.patch.object(qualification.subprocess, "run", side_effect=mock_run), \
+                     mock.patch.object(qualification, "sha", return_value="b" * 64), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(ValueError):
+                        qualification.main()
+                self.assertFalse(output.exists())
+
     def test_foreign_newer_object_is_rebuilt(self):
         with tempfile.TemporaryDirectory(prefix="rise-r205-build-red-") as temporary:
             root = Path(temporary)
