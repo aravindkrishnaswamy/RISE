@@ -2625,7 +2625,9 @@ namespace RISE
 				const FireProductionProjectedHeunTransportCoefficients& coefficients,
 				const FireProductionScalarFCTResult& scalarAcceptance,
 				const FireProductionScalarHeunFluxStage& flux,
-				const FireProductionNonpressureMomentumRHSResult& nonpressure){
+				const FireProductionNonpressureMomentumRHSResult& nonpressure,
+				const std::array<std::vector<float>,3>& provisionalMomentum,
+				const std::uint64_t candidateIdentity){
 				if(!request_.qualificationCaptureIterationTrace)return;
 				FireProductionProjectedHeunIterationTrace trace;trace.iteration=iteration;
 				trace.projectionTargetPerS=projectionTarget.TargetPerS();
@@ -2633,7 +2635,11 @@ namespace RISE
 				trace.activeClass=projection.pressureOpenInflow;trace.nextActiveClass=nextClass;
 				trace.sharedFaceAlpha=scalarAcceptance.sharedFaceAlpha;
 				trace.projectedVelocityMPerS=projection.velocityMPerS;
-				trace.transportConservativeValues=state;trace.transportTemperatureK=temperatureK;
+				trace.provisionalMomentumKGPerM2S=provisionalMomentum;
+				trace.transportConservativeValues=state;
+				trace.acceptedConservativeValues=scalarAcceptance.accepted;
+				trace.acceptedCandidateIdentity=candidateIdentity;
+				trace.transportTemperatureK=temperatureK;
 				trace.diffusivityM2PerS=coefficients.diffusivityM2PerS;
 				trace.conductivityWPerMK=coefficients.conductivityWPerMK;
 				trace.molecularKinematicViscosityM2PerS=
@@ -2666,6 +2672,7 @@ namespace RISE
 					firstProjection.pressureOpenInflow,firstProjection.velocityMPerS,
 					request_.endpointVelocityToleranceMPerS);
 				trace.projectedVelocityMPerS=firstProjection.velocityMPerS;
+				trace.provisionalMomentumKGPerM2S=provisionalMomentum;
 				trace.transportConservativeValues=state;trace.transportTemperatureK=temperatureK;
 				trace.diffusivityM2PerS=firstCoefficients.diffusivityM2PerS;
 				trace.conductivityWPerMK=firstCoefficients.conductivityWPerMK;
@@ -2779,7 +2786,8 @@ namespace RISE
 					parentCandidateIdentity,fluxIdentity,scalarAcceptance.sharedFaceAlpha,
 					corrected,error))return false;
 				captureIterationTrace(iteration,target,corrected,projected,nextClass,
-					coefficients,scalarAcceptance,flux,nonpressure);
+					coefficients,scalarAcceptance,flux,nonpressure,provisionalMomentum,
+					candidateIdentity);
 				float targetResidual=0.0f,momentumResidual=0.0f,coefficientResidual=0.0f;
 				for(std::size_t cell=0u;cell<cells;++cell)targetResidual=std::max(
 					targetResidual,std::fabs(corrected.TargetPerS()[cell]-target.TargetPerS()[cell]));
@@ -2954,7 +2962,8 @@ namespace RISE
 						verifiedFluxIdentity,selectedAlpha,certifiedTarget,error))return false;
 					captureIterationTrace(iteration|UINT32_C(0x80000000),corrected,
 						certifiedTarget,verifiedProjection,terminalNextClass,verifiedCoefficients,
-						certifiedScalar,verifiedFlux,verifiedNonpressure);
+						certifiedScalar,verifiedFlux,verifiedNonpressure,provisionalMomentum,
+						certifiedIdentity);
 					float verificationResidual=0.0f;
 					for(std::size_t cell=0u;cell<cells;++cell)verificationResidual=std::max(
 						verificationResidual,std::fabs(certifiedTarget.TargetPerS()[cell]-
@@ -3297,7 +3306,11 @@ namespace RISE
 				trace.producedTargetPerS=producedTarget.TargetPerS();
 				trace.activeClass=activeClass;trace.nextActiveClass=nextClass;
 				trace.projectedVelocityMPerS=projection.velocityMPerS;
+				trace.provisionalMomentumKGPerM2S=heunMomentum_;
+				trace.sealedPressureOpenDynamicPressurePa=integratedHead;
 				trace.transportConservativeValues=work_.conservativeValues;
+				trace.acceptedConservativeValues=work_.conservativeValues;
+				trace.acceptedCandidateIdentity=work_.committedEOS.acceptanceIdentity;
 				trace.transportTemperatureK=work_.committedEOS.temperatureK;
 				trace.diffusivityM2PerS=coefficients.diffusivityM2PerS;
 				trace.conductivityWPerMK=coefficients.conductivityWPerMK;

@@ -7617,12 +7617,14 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			}
 			bool CaptureIterationTrace(const unsigned int stage,const std::uint32_t iteration,
 				id<MTLBuffer> state,id<MTLBuffer> temperature,
+				id<MTLBuffer> sealedHead,
 				const ResidentProjectionTargetMetalAuthority& projectionTarget,
 				const Stage& value,std::string* error)
 			{
 				if(!request_.qualificationCaptureIterationTrace)return true;
-				const std::size_t floatCount=17u*cells_+14u*allFaces_;
-				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_;
+				const std::size_t floatCount=26u*cells_+15u*allFaces_+boundaryFaces_;
+				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_+
+					sizeof(std::uint64_t);
 				id<MTLBuffer> staging=[context_.device newBufferWithLength:byteCount
 					options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
@@ -7631,12 +7633,22 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				std::size_t offset=0u;
 				auto copy=[&](id<MTLBuffer> source,const std::size_t bytes){
 					Copy(blit,source,0u,staging,offset,bytes,TransferKind::Terminal);offset+=bytes;};
+				auto copyRange=[&](id<MTLBuffer> source,const std::size_t sourceOffset,
+					const std::size_t bytes){Copy(blit,source,sourceOffset,staging,offset,bytes,
+						TransferKind::Terminal);offset+=bytes;};
 				copy(projectionTarget.assembled,cells_*sizeof(float));
 				copy(value.target->assembled,cells_*sizeof(float));
 				copy(value.projection.pressureOpenInflow,boundaryFaces_);
 				copy(value.nextOpenClass,boundaryFaces_);
 				copy(value.candidate->faceAlpha,allFaces_*sizeof(float));
 				copy(value.packedVelocity,allFaces_*sizeof(float));
+				for(unsigned int axis=0u;axis<3u;++axis)copyRange(
+					value.projection.provisionalMomentumKGPerM2S[axis],
+					value.projection.provisionalMomentumByteOffset[axis],
+					FireProductionProjectionFaceCount(shape_,axis)*sizeof(float));
+				if(sealedHead)copy(sealedHead,boundaryFaces_*sizeof(float));
+				else{[blit fillBuffer:staging range:NSMakeRange(offset,
+					boundaryFaces_*sizeof(float)) value:0u];offset+=boundaryFaces_*sizeof(float);}
 				copy(state,9u*cells_*sizeof(float));copy(temperature,cells_*sizeof(float));
 				copy(value.transport->coefficients,3u*cells_*sizeof(float));
 				copy(value.gasDensity,cells_*sizeof(float));
@@ -7646,6 +7658,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				copy(value.packedDensity,allFaces_*sizeof(float));
 				copy(value.packedMomentum,allFaces_*sizeof(float));
 				copy(value.nonpressure.stressMomentumRateKGPerM2S2,allFaces_*sizeof(float));
+				copy(value.candidate->conservative,9u*cells_*sizeof(float));
+				copy(value.candidate->publicationIdentity,sizeof(std::uint64_t));
 				[blit endEncoding];if(!Commit(command,error))return false;
 				const unsigned char* bytes=static_cast<const unsigned char*>(
 					Read(staging,TransferKind::Terminal));if(!bytes)return false;
@@ -7663,6 +7677,11 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				floats(trace.projectionTargetPerS,cells_);floats(trace.producedTargetPerS,cells_);
 				classes(trace.activeClass);classes(trace.nextActiveClass);
 				faces(trace.sharedFaceAlpha);faces(trace.projectedVelocityMPerS);
+				faces(trace.provisionalMomentumKGPerM2S);
+				for(unsigned int side=0u;side<6u;++side){const std::size_t count=side<2u?
+					shape_.ny*shape_.nz:(side<4u?shape_.nx*shape_.nz:shape_.nx*shape_.ny);
+					floats(trace.sealedPressureOpenDynamicPressurePa[side],count);}
+				if(stage<2u)for(auto& side:trace.sealedPressureOpenDynamicPressurePa)side.clear();
 				floats(trace.transportConservativeValues,9u*cells_);
 				floats(trace.transportTemperatureK,cells_);
 				floats(trace.diffusivityM2PerS,cells_);floats(trace.conductivityWPerMK,cells_);
@@ -7672,6 +7691,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				floats(trace.physicalEnergyFluxWPerM2,allFaces_);
 				floats(trace.representedPressureRatio,cells_);faces(trace.faceDensityKGPerM3);
 				faces(trace.projectedMomentumKGPerM2S);faces(trace.stressMomentumRateKGPerM2S2);
+				floats(trace.acceptedConservativeValues,9u*cells_);
+				std::memcpy(&trace.acceptedCandidateIdentity,bytes+offset,sizeof(std::uint64_t));
+				offset+=sizeof(std::uint64_t);
 				// R0/R1 bootstrap has no accepted shared limiter yet; R2 projects a
 				// frozen accepted state and owns neither a new alpha nor a force RHS.
 				// Keep those non-applicable surfaces empty in both owners so trace
@@ -7961,7 +7983,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				*seed,error)||!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,
 				*bootstrapTarget_,false,nil,*seed,r0,error))return false;
 			if(!CaptureIterationTrace(stage,std::numeric_limits<std::uint32_t>::max(),state,temperature,
-				*bootstrapTarget_,*seed,error))return false;
+				sealedHead,*bootstrapTarget_,*seed,error))return false;
 			id<MTLBuffer> activeClass=seed->projection.pressureOpenInflow;
 			std::unique_ptr<Stage> prior=std::move(seed);bool havePrior=false,frozenCycle=false;
 			float lastResidual=std::numeric_limits<float>::infinity();
@@ -8023,7 +8045,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				}else if(!frozenCycle)activeClass=current->nextOpenClass;
 				if(!BuildStage(stage,state,temperature,parentIdentity,parentCandidate,*prior->target,
 					stage!=2u,nil,*current,r0,error))return false;
-				if(!CaptureIterationTrace(stage,iteration,state,temperature,*prior->target,*current,error))
+				if(!CaptureIterationTrace(stage,iteration,state,temperature,sealedHead,
+					*prior->target,*current,error))
 					return false;
 				float currentResidual=0.0f;if(!residual(*current,*prior,havePrior,currentResidual,
 					&lastResidualComponents))return false;
@@ -8085,7 +8108,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						certified->limiterDiscontinuousClass=true;
 					}else certified=std::move(verified);
 					if(!CaptureIterationTrace(stage,iteration|UINT32_C(0x80000000),state,
-						temperature,*current->target,*certified,error))return false;
+						temperature,sealedHead,*current->target,*certified,error))return false;
 					float verificationResidual=0.0f;if(!residual(*certified,*current,true,
 						verificationResidual,0))return false;
 					if(terminalTransition||verificationResidual>request_.projectionTolerancePerS){

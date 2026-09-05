@@ -497,6 +497,11 @@ namespace FireProductionRoundoffWalker
 			ProjectionAposterioriGraphVariant::Certified)
 	{
 		certificate=ProjectionAposterioriCertificate();
+		// The independent walker receives the production boundary enum as unsigned
+		// values: Periodic=0, PressureOpen=1, Wall=2.  Keeping the named semantic
+		// here is load-bearing: treating Wall as the pressure anchor certifies the
+		// wrong operator topology.
+		constexpr unsigned int pressureOpenBoundary=1u;
 		if(!(spacing>0.0&&densityLower>0.0&&densityUpper>=densityLower&&
 			acceptedRoundedResidual>=0.0&&residualEvaluationRoundingUpper>=0.0&&
 			crossPrecisionResidualUpper>=0.0&&maximumRoundedVelocity>=0.0&&
@@ -518,8 +523,8 @@ namespace FireProductionRoundoffWalker
 		double dimensionlessLower=0.0;bool hasOpen=false;
 		for(unsigned int axis=0u;axis<3u;++axis){
 			if(!extent[axis])return false;
-			const unsigned int openCount=(boundary[2u*axis]==2u?1u:0u)+
-				(boundary[2u*axis+1u]==2u?1u:0u);
+			const unsigned int openCount=(boundary[2u*axis]==pressureOpenBoundary?1u:0u)+
+				(boundary[2u*axis+1u]==pressureOpenBoundary?1u:0u);
 			hasOpen=hasOpen||openCount!=0u;
 			if(openCount){const double n=static_cast<double>(extent[axis]);
 				double term=static_cast<double>(openCount==2u?4u:1u)/(n*n);

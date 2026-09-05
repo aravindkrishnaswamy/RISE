@@ -270,7 +270,19 @@ namespace RISE
 		std::array<std::vector<unsigned char>,6> nextActiveClass;
 		std::array<std::vector<float>,3> sharedFaceAlpha;
 		std::array<std::vector<float>,3> projectedVelocityMPerS;
+		//! Force-inclusive momentum consumed by this exact projection application.
+		//! Qualification captures it so the projection enclosure walks the actual
+		//! resident DAG instead of substituting an output-derived norm estimate.
+		std::array<std::vector<float>,3> provisionalMomentumKGPerM2S;
+		//! R2's sealed physical-open head; empty on R0/R1 where the projection
+		//! derives its current open head from the same provisional state.
+		std::array<std::vector<float>,6> sealedPressureOpenDynamicPressurePa;
 		std::vector<float> transportConservativeValues;
+		//! Candidate published by this Picard-map evaluation.  The qualification
+		//! trace binds these bytes to acceptedCandidateIdentity so the next stage's
+		//! input chord cannot be self-authored or swapped.
+		std::vector<float> acceptedConservativeValues;
+		std::uint64_t acceptedCandidateIdentity;
 		std::vector<float> transportTemperatureK;
 		std::vector<float> diffusivityM2PerS;
 		std::vector<float> conductivityWPerMK;
@@ -285,6 +297,7 @@ namespace RISE
 		float maximumPostProjectionResidualPerS;
 
 		FireProductionProjectedHeunIterationTrace() : iteration(0u),
+			acceptedCandidateIdentity(0u),
 			maximumPostProjectionResidualPerS(0.0f) {}
 	};
 

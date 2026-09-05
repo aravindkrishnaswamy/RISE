@@ -119,9 +119,16 @@ namespace FireProductionRoundoffAdapter
 			double maximumRoundedVelocity=0.0,maximumRoundedTarget=0.0;
 			double maximumBeginningVelocityRoundingUpper=0.0;
 			double projectionCorrectionL2PerCell=0.0;
+			double firstVelocityResidual=0.0,firstVelocityRadius=0.0;
+			double firstVelocityPublished=0.0,firstVelocityCenter=0.0,
+				firstVelocityReconstructedRounded=0.0,firstVelocityProjectionCenter=0.0,
+				firstVelocityProjectionRadius=0.0;
 			float maximumRoundedResidual=0.0f,validationToleranceRounded=0.0f;
 			double validationToleranceRadius=0.0;
 			std::uint64_t residualCellCount=0u,velocityFaceCount=0u;
+			std::size_t firstVelocityFace=std::numeric_limits<std::size_t>::max();
+			unsigned int firstVelocityAxis=3u;
+			std::uint64_t activeSetAmbiguousCount=0u,activeSetSeparatedMismatchCount=0u;
 			bool roundedResidualMatches=false,roundedVelocityMatches=false,
 				openActiveSetMatches=false,validationAccepted=false;
 		};
@@ -174,6 +181,8 @@ namespace FireProductionRoundoffAdapter
 				for(std::size_t x=0u;x<ex;++x){const std::size_t face=faceIndex(axis,x,y,z);
 					const auto densityValue=projection.faceDensityKGPerM3[axis][face];
 					IncludeProjectionDensityEnvelope(densityValue,evidence);
+					const FireProductionRoundoffTrace::TraceFloat densityRounded(
+						densityValue.Rounded());
 					const std::size_t coordinate=axis==0u?x:(axis==1u?y:z);
 					const std::size_t extent=axis==0u?nx:(axis==1u?ny:nz);
 					const unsigned int side=2u*axis+(coordinate==extent?1u:0u);
@@ -181,12 +190,12 @@ namespace FireProductionRoundoffAdapter
 						request.boundary[side]==Trace::FireProductionProjectionWall;
 					beginning[axis][face]=wall?FireProductionRoundoffTrace::TraceFloat(0.0f):
 						FireProductionRoundoffTrace::TraceFloat(
-							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/densityValue;
+							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/densityRounded;
 					beginning64[axis][face]=wall?
 						FireProductionRoundoffWalker::Binary64Interval::Exact(0.0):
 						FireProductionRoundoffWalker::Binary64Interval::Exact(
 							request.provisionalMomentumKGPerM2S[axis][face].Rounded())/
-						FireProductionRoundoffWalker::Binary64Interval::Exact(densityValue.Center());
+						FireProductionRoundoffWalker::Binary64Interval::Exact(densityValue.Rounded());
 					evidence.maximumBeginningVelocityRoundingUpper=std::max(
 						evidence.maximumBeginningVelocityRoundingUpper,
 						beginning[axis][face].Radius());
@@ -258,10 +267,26 @@ namespace FireProductionRoundoffAdapter
 					if(axis==1u){x=first;y=positive?ny:0u;z=second;}
 					if(axis==2u){x=first;y=second;z=positive?nz:0u;}
 					const std::size_t index=second*firstCount+first;
-					const bool exactInflow=((positive?1.0:-1.0)*
-						beginning[axis][faceIndex(axis,x,y,z)].Center())<0.0;
+					const auto& normalVelocity=beginning[axis][faceIndex(axis,x,y,z)];
+					const double orientedCenter=(positive?1.0:-1.0)*normalVelocity.Center();
+					const double orientedRadius=normalVelocity.Radius();
+					const bool exactInflow=orientedCenter<0.0;
 					const bool roundedInflow=projection.pressureOpenInflow[side][index]!=0u;
-					activeSetMatches=activeSetMatches&&exactInflow==roundedInflow;
+					if(request.openClassificationMode==
+						Trace::FireProductionProjectionDeriveOpenClassification&&
+						exactInflow!=roundedInflow){const bool crossesZero=
+						orientedCenter-orientedRadius<=0.0&&orientedCenter+orientedRadius>=0.0;
+						if(crossesZero)++evidence.activeSetAmbiguousCount;
+						else{++evidence.activeSetSeparatedMismatchCount;activeSetMatches=false;}}
+					if(request.openHeadMode==Trace::FireProductionProjectionUseSealedOpenHead){
+						if(index>=request.sealedPressureOpenDynamicPressurePa[side].size())return false;
+						const auto& sealed=request.sealedPressureOpenDynamicPressurePa[side][index];
+						boundaryPressure[side][index]=FireProductionRoundoffTrace::TraceFloat(
+							sealed.Rounded());
+						boundaryPressure64[side][index]=
+							FireProductionRoundoffWalker::Binary64Interval::Exact(sealed.Rounded());
+						continue;
+					}
 					if(restoration||!roundedInflow)continue;
 					FireProductionRoundoffTrace::TraceFloat speed2=
 						beginning[axis][faceIndex(axis,x,y,z)]*
@@ -360,8 +385,22 @@ namespace FireProductionRoundoffAdapter
 							(p64-pb64)/h64;}}
 					const auto momentum=FireProductionRoundoffTrace::TraceFloat(
 						request.provisionalMomentumKGPerM2S[axis][face].Rounded())-dt*gradient;
-					const auto velocity=momentum/projection.faceDensityKGPerM3[axis][face];
-					velocityMatches=velocityMatches&&velocity.Rounded()==published[axis][face].Rounded();
+					const auto velocity=momentum/FireProductionRoundoffTrace::TraceFloat(
+						projection.faceDensityKGPerM3[axis][face].Rounded());
+					const double velocityResidual=std::fabs(static_cast<double>(
+						published[axis][face].Rounded())-velocity.Center());
+					if(velocityResidual>velocity.Radius()&&evidence.firstVelocityAxis==3u){
+						evidence.firstVelocityAxis=axis;evidence.firstVelocityFace=face;
+						evidence.firstVelocityResidual=velocityResidual;
+						evidence.firstVelocityRadius=velocity.Radius();
+						evidence.firstVelocityPublished=published[axis][face].Rounded();
+						evidence.firstVelocityCenter=velocity.Center();
+						evidence.firstVelocityReconstructedRounded=velocity.Rounded();
+						evidence.firstVelocityProjectionCenter=
+							projection.velocityMPerS[axis][face].Center();
+						evidence.firstVelocityProjectionRadius=
+							projection.velocityMPerS[axis][face].Radius();}
+					velocityMatches=velocityMatches&&velocityResidual<=velocity.Radius();
 					exactTerminal[axis][face]=velocity;
 					faceRadius[axis][face]=velocity.Radius();
 					const auto momentum64=FireProductionRoundoffWalker::Binary64Interval::Exact(
