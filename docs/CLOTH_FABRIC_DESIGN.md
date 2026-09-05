@@ -5790,8 +5790,8 @@ yet known (§10.1).
     `LightSampler` path (not the direct-construction probe) confirms the
     self-hit-floor bug class reproduces on every quadric-family sibling at
     large world coordinates, and on every flat- and quadric-family sibling
-    whose shadow ray can CROSS the surface, and closes both by applying the
-    same scale-relative floor `RayBilinearPatchIntersection`'s debt-21 fix
+    whose shadow ray can CROSS the surface, and closes both (a8bef210) by
+    applying the same scale-relative floor `RayBilinearPatchIntersection`'s debt-21 fix
     uses (`tMin = NEARZERO × (1 + coordScale)`) at each PRODUCER rather than
     a caller: `RaySphereIntersection` (both overloads; `coordScale = |origin|₁
     + radius`), `RayQuadricIntersection` (`|origin|₁`), `RayPlaneIntersection`

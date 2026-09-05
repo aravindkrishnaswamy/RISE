@@ -279,7 +279,7 @@ and the regression test: [CLOTH_FABRIC_DESIGN.md §15 debt
 21](../CLOTH_FABRIC_DESIGN.md) and
 [`tests/FabricRenderTest.cpp::TestAreaLitSheerWeave`](../../tests/FabricRenderTest.cpp).
 
-**Sibling audit, closed 2026-09-05.** The same scale-relative floor —
+**Sibling audit, closed 2026-09-05 (a8bef210).** The same scale-relative floor —
 computed once at the producer, `tMin = NEARZERO * (1 + coordScale)` —
 now lives in `RaySphereIntersection` (both overloads), `RayQuadricIntersection`,
 `RayPlaneIntersection`, `RayTriangleIntersection`, and both cylinder

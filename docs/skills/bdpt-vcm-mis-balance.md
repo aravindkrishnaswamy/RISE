@@ -919,7 +919,7 @@ the near layer's continuum lobe — filed as debt 27, not closed by this
 fix.  Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
 25](../CLOTH_FABRIC_DESIGN.md) (debt 27 two items later, after debt 26).
 
-**Sibling audit, closed 2026-09-05:** the same producer-level floor
+**Sibling audit, closed 2026-09-05 (a8bef210):** the same producer-level floor
 (`RaySphereIntersection`, `RayQuadricIntersection`, `RayPlaneIntersection`,
 `RayTriangleIntersection`, both cylinder paths) closes the identical bug
 class on sphere, ellipsoid, cylinder, disk, infinite plane and triangle
