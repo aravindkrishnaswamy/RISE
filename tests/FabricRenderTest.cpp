@@ -1591,7 +1591,7 @@ static const double kClosedBoxVcmPtTol = 0.08;
 static const double kClosedBoxVsPlanesRatioBound = 1.15;
 // Lower bound on the same ratio: the pre-fix bug's OTHER failure mode
 // (self-occlusion, PT reading 0.44x with the light inside) would show up
-// here as a DARK box; n=5 reads 1.010 +/- 0.002, so 0.85 is ~65 sigma
+// here as a DARK box; n=5 reads 1.010 +/- 0.0023, so 0.85 is ~70 sigma
 // below the mean and still trips on a 0.44x recurrence.
 static const double kClosedBoxVsPlanesRatioFloor = 0.85;
 

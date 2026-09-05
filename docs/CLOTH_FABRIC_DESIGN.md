@@ -5214,7 +5214,7 @@ yet known (§10.1).
     catches that class of bug in one render each; it does not require
     walking a single pdf pair by hand. See also
     `docs/skills/bdpt-vcm-mis-balance.md`'s step 0 (three known non-MIS
-    causes) — this is a fourth.
+    causes when this was written; eight as of 2026-09-05) — this is a fourth.
 
 22. **RESOLVED 2026-09-04 (R8 P1.1) — a `fabric_material` over a
     `transmission thin` `weave_material` extinguished the weave's
@@ -5737,7 +5737,16 @@ yet known (§10.1).
     carrying the ~1e-12 self-root as an exit BEHIND the entry. Two
     measure-zero limits of the plane test are recorded in the helper's
     comment (a ray within ~1e-9 rad of parallel to its own face; an
-    unrelated object's exactly coplanar face).
+    unrelated object's exactly coplanar face). **Sibling primitives are
+    NOT closed by this.** A probe-level sweep (primitives constructed
+    directly, bypassing `Object`'s transform and the `LightSampler` NEE
+    path) flagged sphere at 1000× coordinates, open-tube cylinder, torus,
+    circular disk and infinite plane for the same self-root class, but
+    the only claim spot-checked by render did not reproduce
+    (`infiniteplane_geometry` floor under a ~4° light: PT/BDPT 0.9986,
+    same as a `clippedplane` control), so those remain unverified
+    suspects; a follow-up to re-audit through the real Object path is
+    filed.
 
     **What this does NOT close.** The gap > 0 rows do not converge with
     this fix — filed as **debt 27** below. And a small residual remains at

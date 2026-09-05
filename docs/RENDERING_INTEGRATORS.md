@@ -421,7 +421,8 @@ Two practical considerations:
   `VCMStrategyBalanceTest` topology A moved 1.0082 → 0.9975;
   `EnvLightBalanceTest` stays 116/116 with no band moved.
 
-  **Two findings surfaced by the same round** (§15 debts 25 and 26).
+  **Two findings surfaced by the same round, and a third that closing
+  the first unmasked** (§15 debts 25, 26 and 27).
   Debt 25 — a CLOSED solid whose material is a thin-transmissive weave
   read BDPT/VCM ≈ **0.17×** PT while free-standing weave planes read
   1.000 — is **CLOSED 2026-09-05**: PT was the broken reference, not

@@ -314,6 +314,19 @@ minutes to check; do them before any integrator instrumentation:
    (after cause 0's IOR seeding, cause 4's bilinear self-hit, and
    cause 6's legacy rasterizer).
 
+   **Sibling primitives — audit state (2026-09-05).**  A probe that
+   constructed primitives DIRECTLY (bypassing `Object`'s world↔local
+   transform and the `LightSampler` NEE path) flagged the same
+   self-root class on sphere at 1000× coordinates, open-tube cylinder,
+   torus, circular disk and infinite plane; but the one claim
+   spot-checked by an actual render did NOT reproduce (an
+   `infiniteplane_geometry` floor under a light at ~4° elevation reads
+   PT/BDPT 0.9986, identical to a `clippedplane` control), so those
+   numbers are unverified.  Re-auditing through the real Object path is
+   a filed follow-up; until it lands, treat "PT dark/bright vs BDPT on a
+   closed ANALYTIC solid" as the box-confirmed symptom and the other
+   primitives as suspects, not findings.
+
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy
 SUM across integrators, not the mix — balance vs power-2
