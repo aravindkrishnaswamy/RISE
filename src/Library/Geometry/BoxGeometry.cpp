@@ -114,6 +114,120 @@ bool BoxGeometry::TessellateToMesh(
 	return true;
 }
 
+namespace {
+
+// ================================================================
+// Self-hit root suppression -- an origin ON one of the box's own faces.
+//
+// RayBoxIntersection is a slab test: it returns the entry root (tmin)
+// as the primary hit whenever tmin > 0, however small.  A ray whose
+// origin was PUBLISHED from a hit on this box -- Object::IntersectRay
+// backs the hit point off along the incoming ray by
+// SURFACE_INTERSEC_ERROR (1e-12, object-local) -- therefore sits
+// ~1e-12 outside (entry face) or inside (exit face) the plane it just
+// hit, and a continuation / shadow ray leaving that point re-crosses
+// that plane at t = (1e-12 * |d_in.axis|) / |d_out.axis|: a tiny,
+// DIRECTION-DEPENDENT root that straddles NEARZERO.  Downstream, every
+// closed two-root primitive is consumed as "the FIRST root is the hit"
+// (IntersectRay_IntersectionOnly rejects the whole primitive when that
+// root is < NEARZERO), so the straddle produced BOTH failure modes on
+// the same box:
+//   * root < NEARZERO  -> the ENTIRE box was discarded, including the
+//     genuine far face -- a shadow ray from the front face toward a
+//     light behind the box saw no occluder and lit the front face as if
+//     the back face did not exist (PT read a closed thin-transmissive
+//     box 3.5x BRIGHTER than the same six faces as separate planes);
+//   * root >= NEARZERO -> the box occluded its OWN origin face -- a
+//     shadow ray toward a light INSIDE the box was self-shadowed (PT
+//     read 0.44x).
+// BDPT / VCM never saw either because they Advance() every shadow and
+// continuation ray by 1e-6 first, which is why they agreed with each
+// other, with PT-on-six-planes, and not with PT-on-the-box
+// (docs/CLOTH_FABRIC_DESIGN.md section 15 debt 25).
+//
+// RaySphereIntersection already handles this class at the producer:
+// it skips any root <= NEARZERO and returns the NEXT one.  A box can do
+// better than a range threshold, because "the origin is on this face"
+// is a PLANE-DISTANCE fact, independent of the ray's angle to the
+// face: |origin.axis - bound| is at the back-off / round-off floor.
+// So each root is tested against the face it belongs to, and a root
+// on the origin's own face is dropped in favour of the other root --
+// exactly what would have happened had the origin been published a
+// hair further along the ray.  Tolerance is the same scale-relative
+// floor RayBilinearPatchIntersection uses for its own self-hit fix
+// (docs/CLOTH_FABRIC_DESIGN.md debt 21, docs/skills/precision-fix-the-
+// formulation.md): NEARZERO * (1 + coordinate magnitude), which the
+// 1e-12 back-off always sits under and genuine faces of any box thicker
+// than ~1e-11 never do.
+//
+// Returns true when the primary root was replaced by the far root,
+// i.e. the surviving hit is an EXIT face reached from the origin's own
+// entry face -- the caller treats that like an origin that began inside
+// the box for the front/back-face flag rule.
+// ================================================================
+inline Scalar FaceBound( const int side, const Point3& ll, const Point3& ur )
+{
+	// RayBoxIntersection side ids: SIDE_X0=0, SIDE_X1=1, SIDE_Y0=2, SIDE_Y1=3, SIDE_Z0=4, SIDE_Z1=5.
+	switch( side ) {
+	case 0: return ll.x;
+	case 1: return ur.x;
+	case 2: return ll.y;
+	case 3: return ur.y;
+	case 4: return ll.z;
+	default: return ur.z;
+	}
+}
+
+inline Scalar OriginAxis( const int side, const Point3& o )
+{
+	switch( side / 2 ) {
+	case 0: return o.x;
+	case 1: return o.y;
+	default: return o.z;
+	}
+}
+
+inline bool DropSelfHitRoot( const Ray& ray, BOX_HIT& h, const Point3& ll, const Point3& ur )
+{
+	if( !h.bHit ) {
+		return false;
+	}
+
+	const Point3& o = ray.origin;
+	const Scalar coordScale =
+		std::fabs( o.x ) + std::fabs( o.y ) + std::fabs( o.z ) +
+		std::fabs( ur.x ) + std::fabs( ur.y ) + std::fabs( ur.z );
+	const Scalar eps = NEARZERO * ( Scalar(1) + coordScale );
+
+	const bool selfA = std::fabs( OriginAxis( h.sideA, o ) - FaceBound( h.sideA, ll, ur ) ) <= eps;
+	if( !selfA ) {
+		return false;
+	}
+
+	// The primary root is the origin's own face.  The other root is the
+	// hit -- if it is ahead of the origin and not ALSO the origin's own
+	// face (an edge / corner origin leaving the box).
+	const bool selfB = std::fabs( OriginAxis( h.sideB, o ) - FaceBound( h.sideB, ll, ur ) ) <= eps;
+	if( h.dRange2 <= eps || selfB ) {
+		h.bHit = false;
+		h.dRange = RISE_INFINITY;
+		h.dRange2 = RISE_INFINITY;
+		return false;
+	}
+
+	// Same publish convention as RayBoxIntersection's origin-inside
+	// branch: primary = the exit root, secondary = the (~0) entry root.
+	const Scalar tSelf = h.dRange;
+	const int sideSelf = h.sideA;
+	h.dRange = h.dRange2;
+	h.sideA = h.sideB;
+	h.dRange2 = tSelf;
+	h.sideB = sideSelf;
+	return true;
+}
+
+} // anonymous namespace
+
 void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const
 {
 	Point3		ptLowerLeft = Point3( -dWidthOV2, -dHeightOV2, -dDepthOV2 );
@@ -121,19 +235,24 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 
 	// If the point is inside the box and we are to ONLY hit the front faces, then
 	// we cannot possible hit a front face, so beat it!
-	bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ri.ray.origin, ptLowerLeft, ptUpperRight );
+	const bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ri.ray.origin, ptLowerLeft, ptUpperRight );
 	if( bHitFrontFaces && !bHitBackFaces && RayBeginsInBox ) {
-		return;
-	}
-
-	// Accordingly, if we are outside the box but we are not supposed to hit front faces and 
-	// only back faces, then we can't hit anything!
-	if( !bHitFrontFaces && bHitBackFaces && !RayBeginsInBox ) {
 		return;
 	}
 
 	BOX_HIT	h;
 	RayBoxIntersection( ri.ray, h, ptLowerLeft, ptUpperRight );
+
+	// An origin on one of our own faces: drop that root (see
+	// DropSelfHitRoot above).  The surviving hit is then an EXIT face,
+	// exactly as for an origin that began strictly inside -- so the
+	// front/back-face rule is decided on that combined predicate rather
+	// than on the strict inside test alone (which calls an on-face origin
+	// "outside" and used to reject the far face under back-faces-only).
+	const bool bExitHit = DropSelfHitRoot( ri.ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
+	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
+		h.bHit = false;
+	}
 
 	ri.bHit = h.bHit;
 	ri.range = h.dRange;
@@ -217,19 +336,23 @@ bool BoxGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dH
 
 	// If the point is inside the box and we are to ONLY hit the front faces, then
 	// we cannot possible hit a front face, so beat it!
-	bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ray.origin, ptLowerLeft, ptUpperRight );
+	const bool RayBeginsInBox = GeometricUtilities::IsPointInsideBox( ray.origin, ptLowerLeft, ptUpperRight );
 	if( bHitFrontFaces && !bHitBackFaces && RayBeginsInBox ) {
-		return false;
-	}
-
-	// Accordingly, if we are outside the box but we are not supposed to hit front faces and 
-	// only back faces, then we can't hit anything!
-	if( !bHitFrontFaces && bHitBackFaces && !RayBeginsInBox ) {
 		return false;
 	}
 
 	BOX_HIT	h;
 	RayBoxIntersection( ray, h, ptLowerLeft, ptUpperRight );
+
+	// An origin on one of our own faces: drop that root rather than
+	// letting a ~1e-12 self-root either occlude the origin's own face or
+	// (when it falls under NEARZERO below) discard the genuine far face
+	// along with it -- see DropSelfHitRoot above.  Same exit-vs-entry
+	// flag rule as IntersectRay.
+	const bool bExitHit = DropSelfHitRoot( ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
+	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
+		h.bHit = false;
+	}
 
 	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
 		h.bHit = false;
