@@ -15,20 +15,21 @@ def sha(path):
 
 
 def clean_source(commit):
-    subprocess.run(["git", "diff", "--exit-code", commit, "--"],
-                   check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "diff", "--no-ext-diff", "--exit-code", commit, "--"],
+                   check=True, stdout=subprocess.DEVNULL, env=build_environment())
     # Vendored decoders are linked too, and the trace/mirror source lists use
     # wildcards. Ignored build products are not sources; nonignored additions
     # under compilation roots must be committed before source attestation.
     untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard",
-                                        "-z", "--", "src", "tests", "extlib"])
+                                        "-z", "--", "src", "tests", "extlib"], env=build_environment())
     if untracked:
         raise ValueError("uncommitted compilation input")
     # Ignore rules do not remove files from make's wildcard inputs or C/C++
     # include lookup. Check source-like ignored files in the source-owned roots
     # too; installed third-party SDK trees are toolchain inputs, not this list.
     hidden = subprocess.check_output(["git", "ls-files", "--others", "-z", "--",
-                                      "src", "tests", "extlib/stb", "extlib/cgltf", "build/make/rise"])
+                                      "src", "tests", "extlib/stb", "extlib/cgltf", "build/make/rise"],
+                                     env=build_environment())
     source_suffixes = {".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".h", ".hh", ".hpp",
                        ".hxx", ".inl", ".inc", ".ipp", ".tpp", ".tcc", ".metal"}
     # The tracked make recipe forcibly regenerates this exact header before
@@ -44,7 +45,7 @@ def build_configuration(commit):
     # This is the macOS/Metal qualifier. Config.specific is intentionally
     # ignored by git and may be a copy; authenticate its bytes, not its name.
     canonical = "build/make/rise/Config.OSX"
-    expected = subprocess.check_output(["git", "show", commit + ":" + canonical])
+    expected = subprocess.check_output(["git", "show", commit + ":" + canonical], env=build_environment())
     selected = Path("build/make/rise/Config.specific")
     if selected.read_bytes() != expected:
         raise ValueError("unqualified local build configuration")
@@ -86,7 +87,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, env=build_environment()).strip()
     configuration = clean_source(commit)
     executable = Path("bin/tests/FireSequenceTest")
     # Rebuild every linked object, not just objects older than their sources:

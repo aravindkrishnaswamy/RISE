@@ -64,6 +64,20 @@ class QualificationREDs(unittest.TestCase):
                     vendor.write_text("// committed decoder\n")
                     if extra.exists():
                         extra.unlink()
+                alternate = root / "alternate"
+                alternate.mkdir()
+                for name in (".gitignore", "build/make/rise/Config.OSX", "extlib/stb/stb_image.h"):
+                    destination = alternate / name
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(root / name, destination)
+                vendor.write_text("// local modification hidden by inherited work-tree override\n")
+                with mock.patch.dict(os.environ, {"GIT_WORK_TREE": str(alternate)}):
+                    # Even a whole tracked diff can inspect the wrong worktree
+                    # if Git and the compiler inherit different location rules.
+                    subprocess.run(["git", "diff", "--exit-code", "HEAD", "--"],
+                                   check=True, capture_output=True)
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        qualification.clean_source("HEAD")
             finally:
                 os.chdir(previous)
 

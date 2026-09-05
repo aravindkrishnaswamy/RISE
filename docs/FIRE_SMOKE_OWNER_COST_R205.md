@@ -155,6 +155,10 @@ requires refusal; it cannot hide behind exclude-standard discovery.
 It also injects a header in the build include root, where it could shadow a
 system include. That must refuse before compilation. The one generated-header
 exception is explicit, not a general exclusion of the build directory.
+The source-audit Git subprocesses use the same platform-environment allowlist
+as the build. A sibling RED proves an inherited GIT_WORK_TREE can make an
+ordinary diff inspect a pristine alternate tree; actual admission must still
+see and refuse the changed source in the compiling worktree.
 
 ## Native diagnostic: remaining host payload walks
 
