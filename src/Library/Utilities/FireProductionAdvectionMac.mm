@@ -6640,6 +6640,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				const FireProductionFrozenSourcePacketSeal&,
 				const ResidentEOSCandidateMetalAuthority&,const MetalResidentTargetParameters&,
+				id<MTLBuffer>,id<MTLBuffer>,
 				ResidentFrozenSourceMetalAuthority&,std::string*);
 			friend bool EncodeResidentProjectionTargetAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -6732,6 +6733,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 			const FireProductionFrozenSourcePacketSeal&,
 			const ResidentEOSCandidateMetalAuthority&,const MetalResidentTargetParameters&,
+			id<MTLBuffer>,id<MTLBuffer>,
 			ResidentFrozenSourceMetalAuthority&,std::string*);
 
 		class ResidentFrozenSourceMetalAuthority
@@ -6741,6 +6743,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
 				const FireProductionFrozenSourcePacketSeal&,
 				const ResidentEOSCandidateMetalAuthority&,const MetalResidentTargetParameters&,
+				id<MTLBuffer>,id<MTLBuffer>,
 				ResidentFrozenSourceMetalAuthority&,std::string*);
 			friend bool EncodeResidentProjectionTargetAuthority(
 				ResidentTransportMetalContext&,id<MTLCommandBuffer>,id<MTLBuffer>,id<MTLBuffer>,
@@ -7046,7 +7049,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			MetalResidentTargetParameters targetMetadata_;
 			MetalResidentProjectionConsumerParameters projectionMetadata_;
 			MetalProjectedHeunOwnerParameters ownerMetadata_;
-			id<MTLBuffer> q0_,t0_,m0_,sourceDelta_,fuel_,initialInflow_,thermo_,eosThermo_,
+			id<MTLBuffer> q0_,t0_,m0_,sourceDelta_,frozenSource_,fuel_,initialInflow_,thermo_,eosThermo_,
 				transportData_,ambient_,physicalBasis_,advectiveBasis_,projector_,enthalpy_,
 				affine_,fctParameters_[3],transportParameters_[3],physicalParameters_,
 				eosParameters_[3],targetParameters_[3],projectionParameters_,ownerParameters_[3],
@@ -7059,6 +7062,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				qualificationTrace_;
 			std::uint32_t commits_,projectionInvocations_,interstageFullGridTransfers_;
 			std::uint32_t qualificationTraceStagingCount_;
+			bool qualificationInterstageUploadInjected_,qualificationInterstageSourceUploadInjected_;
 			enum class OwnerTransferPhase { Setup,Interstage,Publication } transferPhase_;
 			std::uint64_t actualBytes_,deviceAllocationBaseline_,deviceAllocationPeak_;
 			double deviceMS_,projectionDeviceMS_;
@@ -7083,7 +7087,17 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			{
 				id<MTLBuffer> value=[context_.device newBufferWithBytes:bytes length:length
 					options:MTLResourceStorageModeShared];
-				if(value){actualBytes_+=[value allocatedSize];ObserveDeviceAllocation();}
+				if(value){
+					actualBytes_+=[value allocatedSize];ObserveDeviceAllocation();
+					const std::size_t fullFieldBytes=cells_<=
+						std::numeric_limits<std::size_t>::max()/sizeof(float)?
+						cells_*sizeof(float):std::numeric_limits<std::size_t>::max();
+					// newBufferWithBytes is itself a host-to-Metal transfer; it has no
+					// blit for Copy() to observe.  A stage-sized upload is therefore
+					// publication-blocking under the same ledger.
+					if(transferPhase_==OwnerTransferPhase::Interstage&&cells_!=0u&&
+						length>=fullFieldBytes)++interstageFullGridTransfers_;
+				}
 				return value;
 			}
 			enum class TransferKind { Upload,Internal,Control,QualificationTrace,Terminal };
@@ -7455,6 +7469,18 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				}
 				ResidentPhysicalFluxMetalAuthority& candidatePhysical=output.averagedPhysical?
 					*output.averagedPhysical:*output.physical;
+				std::vector<float> uploadedAlpha;
+				if(request_.qualificationInjectInterstageTransfer&&stage==1u&&
+					!qualificationInterstageUploadInjected_){
+					// RED-only direct CPU upload: it is consumed as the selected limiter
+					// field while all transport/physical parent seals remain valid-looking.
+					// Upload() and its installation Copy() must both reach the common
+					// residency ledger; neither is allowed to publish.
+					uploadedAlpha.assign(allFaces_,0.0f);
+					selectedAlpha=Upload(uploadedAlpha.data(),uploadedAlpha.size()*sizeof(float));
+					if(!selectedAlpha)return false;
+					qualificationInterstageUploadInjected_=true;
+				}
 				output.candidate.reset(new ResidentEOSCandidateMetalAuthority);
 				if(!CustomCandidate(command,stage,*output.transport,candidatePhysical,parentIdentity,
 					parentCandidate,selectedAlpha,
@@ -7464,9 +7490,22 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					failure_,eosObligations_,*output.transport,candidatePhysical,*output.candidate,
 					eosMetadata_,*output.eos,error))return false;
 				output.source.reset(new ResidentFrozenSourceMetalAuthority);
+				const bool injectDirectSourceUpload=request_.qualificationInjectInterstageTransfer&&
+					stage==1u&&!qualificationInterstageSourceUploadInjected_;
 				if(!EncodeResidentFrozenSourceAuthority(context_,command,failure_,targetObligations_,
-					request_.lineage.frozenSource,*output.candidate,targetMetadata_,*output.source,error))
+					request_.lineage.frozenSource,*output.candidate,targetMetadata_,
+					injectDirectSourceUpload?nil:frozenSource_,
+					injectDirectSourceUpload?nil:targetParameters_[stage],*output.source,error))
 					return false;
+				if(injectDirectSourceUpload){
+					qualificationInterstageSourceUploadInjected_=true;
+					// The fallback comparator path has just consumed one CPU-authored
+					// Shared source field.  It is legal only as this RED and must arrive
+					// at the owner's common atomic publication gate as a counted transfer.
+					if([output.source->inputUpload storageMode]!=MTLStorageModePrivate&&
+						[output.source->inputUpload length]>=cells_*sizeof(float))
+						++interstageFullGridTransfers_;
+				}
 				output.target.reset(new ResidentProjectionTargetMetalAuthority);
 				if(!EncodeResidentProjectionTargetAuthority(context_,command,eosThermo_,
 					targetParameters_[stage],projectionParameters_,nil,nil,failure_,targetObligations_,
@@ -7749,6 +7788,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const FireProductionProjectedHeunMetalOwnerRequest& request) : request_(request),
 				context_(ResidentTransportContext()),fct_(SingleStageFCTContext()),cells_(0u),
 				allFaces_(0u),boundaryFaces_(0u),q0_(nil),t0_(nil),m0_(nil),sourceDelta_(nil),
+				frozenSource_(nil),
 				fuel_(nil),initialInflow_(nil),thermo_(nil),eosThermo_(nil),transportData_(nil),
 				ambient_(nil),physicalBasis_(nil),advectiveBasis_(nil),projector_(nil),
 				enthalpy_(nil),affine_(nil),physicalParameters_(nil),projectionParameters_(nil),
@@ -7757,7 +7797,9 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				zeroTargetIdentity_(nil),zeroTargetConsumerIdentity_(nil),rootCandidateIdentity_(nil),
 				integratedOpenHead_(nil),commits_(0u),
 				projectionInvocations_(0u),interstageFullGridTransfers_(0u),
-				qualificationTraceStagingCount_(0u),transferPhase_(OwnerTransferPhase::Setup),actualBytes_(0u),
+				qualificationTraceStagingCount_(0u),qualificationInterstageUploadInjected_(false),
+				qualificationInterstageSourceUploadInjected_(false),
+				transferPhase_(OwnerTransferPhase::Setup),actualBytes_(0u),
 				deviceAllocationBaseline_(context_.device?static_cast<std::uint64_t>(
 					[context_.device currentAllocatedSize]):0u),deviceAllocationPeak_(0u),
 				deviceMS_(0.0),projectionDeviceMS_(0.0)
@@ -7856,6 +7898,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			t0_=copyIn(flux.transport.temperatureK.data(),fieldBytes);
 			m0_=copyIn(packedMomentum.data(),allFaces_*sizeof(float));
 			sourceDelta_=copyIn(request_.lineage.eos.sourceDelta.data(),stateBytes);
+			frozenSource_=copyIn(request_.lineage.frozenSource.DivergenceTargetPerS().data(),
+				fieldBytes);
 			fuel_=copyIn(packedFuel.data(),packedFuel.size());
 			initialInflow_=copyIn(packedInflow.data(),packedInflow.size());
 			thermo_=copyIn(packedThermo.data(),packedThermo.size()*sizeof(float));
@@ -7886,7 +7930,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			zeroTargetIdentity_=Private(sizeof(std::uint64_t));
 			zeroTargetConsumerIdentity_=Private(sizeof(std::uint64_t));
 			rootCandidateIdentity_=Private(sizeof(std::uint64_t));
-			if(!q0_||!t0_||!m0_||!sourceDelta_||!fuel_||!initialInflow_||!thermo_||
+			if(!q0_||!t0_||!m0_||!sourceDelta_||!frozenSource_||!fuel_||!initialInflow_||!thermo_||
 				!eosThermo_||!transportData_||!ambient_||!physicalBasis_||!advectiveBasis_||
 				!projector_||!enthalpy_||!affine_||!failure_||!zeroTarget_||
 				!zeroTargetIdentity_||!zeroTargetConsumerIdentity_||!rootCandidateIdentity_)return false;
@@ -9064,6 +9108,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			const FireProductionFrozenSourcePacketSeal& source,
 			const ResidentEOSCandidateMetalAuthority& candidateAuthority,
 			const MetalResidentTargetParameters& metadata,
+			id<MTLBuffer> residentValues,id<MTLBuffer> residentParameters,
 			ResidentFrozenSourceMetalAuthority& authority,std::string* error )
 		{
 			const FireProductionProjectionShape& sourceShape=source.Shape();
@@ -9098,9 +9143,18 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				[candidateAuthority.publicationIdentity length]!=sizeof(std::uint64_t)||
 				[failure length]!=sizeof(std::uint32_t)||[obligations length]!=sizeof(std::uint32_t)){
 				if(error)*error="production resident frozen source extent is invalid";return false;}
-			authority.inputUpload=[context.device newBufferWithBytes:
-				source.DivergenceTargetPerS().data() length:fieldBytes
-				options:MTLResourceStorageModeShared];
+			const bool residentInputs=residentValues||residentParameters;
+			if(residentInputs&&(!residentValues||!residentParameters||
+				[residentValues device]!=context.device||[residentParameters device]!=context.device||
+				[residentValues storageMode]!=MTLStorageModePrivate||
+				[residentParameters storageMode]!=MTLStorageModePrivate||
+				[residentValues length]!=fieldBytes||[residentParameters length]!=sizeof(metadata))){
+				if(error)*error="production resident frozen source setup authority is invalid";
+				return false;
+			}
+			authority.inputUpload=residentInputs?residentValues:
+				[context.device newBufferWithBytes:source.DivergenceTargetPerS().data()
+					length:fieldBytes options:MTLResourceStorageModeShared];
 			authority.values=[context.device newBufferWithLength:fieldBytes
 				options:MTLResourceStorageModePrivate];
 			authority.metadata=[context.device newBufferWithLength:
@@ -9114,13 +9168,14 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			authority.parentCommand=command;
 			authority.parentCandidatePublicationIdentity=candidateAuthority.publicationIdentity;
 			authority.cells=metadata.cells;
-			authority.parameterUpload=[context.device newBufferWithBytes:&metadata
-				length:sizeof(metadata) options:MTLResourceStorageModeShared];
+			authority.parameterUpload=residentInputs?residentParameters:
+				[context.device newBufferWithBytes:&metadata length:sizeof(metadata)
+					options:MTLResourceStorageModeShared];
 			if(!authority.parameterUpload){
 				if(error)*error="production resident frozen source parameter allocation failed";
 				return false;}
-			authority.allocationBytes=[authority.inputUpload allocatedSize]+
-				[authority.parameterUpload allocatedSize]+
+			authority.allocationBytes=(residentInputs?0u:[authority.inputUpload allocatedSize])+
+				(residentInputs?0u:[authority.parameterUpload allocatedSize])+
 				[authority.values allocatedSize]+[authority.metadata allocatedSize]+
 				[authority.publicationIdentity allocatedSize];
 			authority.liveAllocationBytes=[authority.values allocatedSize]+
@@ -9761,7 +9816,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 		// The face term also covers the qualification staging of both exact resident
 		// scalar-flux candidates used by the producer-lineage proof.
 		if(!add(4u*projection)||!add(4u*target)||!add(3u*nonpressure)||
-			!add((54u*shape.CellCount()+66u*(FireProductionProjectionFaceCount(shape,0u)+
+			!add((55u*shape.CellCount()+66u*(FireProductionProjectionFaceCount(shape,0u)+
 				FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float))||
 			!add(3u*sizeof(std::uint64_t)))return false;
@@ -11170,7 +11225,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					eosAuthority,error))return false;
 				ResidentFrozenSourceMetalAuthority sourceAuthority;
 				if(!EncodeResidentFrozenSourceAuthority(context,command,failure,targetObligations,
-					frozenSource,candidateAuthority,sourceParameters,sourceAuthority,error))return false;
+					frozenSource,candidateAuthority,sourceParameters,nil,nil,sourceAuthority,error))
+					return false;
 				if(request.qualificationCPUProducedFrozenSource)
 					sourceAuthority.values=sourceAuthority.inputUpload;
 				if(request.qualificationCPUPrivateBlitFrozenSource){

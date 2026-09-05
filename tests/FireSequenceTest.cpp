@@ -11120,9 +11120,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerTransferResult.conservativeValues.empty()&&
 		ownerTransferResult.terminalStagingCount==0u&&
 		ownerTransferError==
-			"projected-Heun atomic publication refuses interstage full-grid transfer: count=2";
+			"projected-Heun atomic publication refuses interstage full-grid transfer: count=5";
 	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
-		"name=single_field_bidirectional_transfer_ledger_common_publication_gate "
+		"name=direct_source_upload_alpha_upload_and_bidirectional_transfer_common_publication_gate "
 		"layer=device attempted=%d owner_identity=%llu payload_words=%zu staging=%u "
 		"error=%s passed=%d\n",ownerTransferAttempted?1:0,
 		static_cast<unsigned long long>(ownerTransferResult.ownerPublicationIdentity),
