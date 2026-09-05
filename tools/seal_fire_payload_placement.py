@@ -53,7 +53,14 @@ def check_rows(rows, baseline):
 def sidecars(directory, case_id=None):
     count = 0
     for path in sorted(directory.rglob("*")):
-        if not path.is_file() or path.name.endswith(".payload-v2.json"):
+        if path.is_symlink():
+            raise ValueError("publication refuses symlinks: " + str(path))
+        if path.name.endswith(".payload-v2.json"):
+            base = Path(str(path)[:-len(".payload-v2.json")])
+            if not path.is_file() or not base.is_file() or base.is_symlink():
+                raise ValueError("orphan publication sidecar: " + str(path))
+            continue
+        if not path.is_file():
             continue
         payload = path.read_bytes()
         seal = json.loads(Path(str(path) + ".payload-v2.json").read_text())

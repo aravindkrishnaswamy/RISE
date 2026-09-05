@@ -239,6 +239,21 @@ namespace FireProductionDyadicCalibration
 		bytes.insert(bytes.end(),value,value+length);
 	}
 
+	bool HistoricalR136TraceAccepted(RISECBOR64::Bytes& encoded,std::string& historicalDigest)
+	{
+		RISECBOR64::Bytes historicalPrefix,currentPrefix;
+		for(const char* field:FireProductionR136TraceBridge::HistoricalManifest)
+			AppendText(historicalPrefix,field);
+		for(const char* field:FireProductionRoundoffAdapter::TraceSourceManifestFields())
+			AppendText(currentPrefix,field);
+		if(historicalPrefix.size()!=currentPrefix.size()||encoded.size()<=currentPrefix.size()||
+			!std::equal(currentPrefix.begin(),currentPrefix.end(),encoded.begin()))return false;
+		std::copy(historicalPrefix.begin(),historicalPrefix.end(),encoded.begin());
+		historicalDigest=RISECBOR64::SHA256Hex(encoded);
+		std::copy(currentPrefix.begin(),currentPrefix.end(),encoded.begin());
+		return historicalDigest==FireProductionR136TraceBridge::HistoricalTraceSHA256;
+	}
+
 	std::string AnalyticStateDigest(const MethaneRunCheckpoint& state)
 	{
 		RISECBOR64::Bytes bytes;
@@ -1888,19 +1903,20 @@ namespace FireProductionDyadicCalibration
 			AppendText(currentPrefix,field);
 		if(historicalPrefix.size()!=currentPrefix.size()||encoded.size()<=currentPrefix.size()||
 			!std::equal(currentPrefix.begin(),currentPrefix.end(),encoded.begin()))return 238;
-		std::copy(historicalPrefix.begin(),historicalPrefix.end(),encoded.begin());
-		const std::string historicalTraceDigest=RISECBOR64::SHA256Hex(encoded);
-		// The bridge cannot mask even one changed numeric transcript byte.
+		std::string historicalTraceDigest,mutantDigest;
+		const bool historicalAccepted=HistoricalR136TraceAccepted(encoded,historicalTraceDigest);
+		// Exercise the same acceptance function on actual mutated current input.
 		encoded.back()^=1u;
-		const bool numericMutationRefused=RISECBOR64::SHA256Hex(encoded)!=
-			FireProductionR136TraceBridge::HistoricalTraceSHA256;
+		const bool numericMutationRefused=!HistoricalR136TraceAccepted(encoded,mutantDigest);
 		encoded.back()^=1u;
-		std::copy(currentPrefix.begin(),currentPrefix.end(),encoded.begin());
+		encoded.front()^=1u;
+		const bool manifestMutationRefused=!HistoricalR136TraceAccepted(encoded,mutantDigest);
+		encoded.front()^=1u;
 		RISE::FireProductionPayloadDigestV2 currentTraceV2;
 		if(!RISE::FireProductionPayloadDigestCPU(encoded.data(),encoded.size(),8u,
 			currentTraceV2,&error))return 238;
-		if(!numericMutationRefused)return 238;
-		std::fprintf(stderr,"R136_BRIDGE_NUMERIC_MUTATION_RED passed=1\n");
+		if(!numericMutationRefused||!manifestMutationRefused)return 238;
+		std::fprintf(stderr,"R136_BRIDGE_NUMERIC_MUTATION_RED same_acceptance_path=1 manifest_mutation=1 passed=1\n");
 		std::fprintf(stderr,"r205 r136_bridge historical_digest_version=1 historical_sha256=%s "
 			"current_sha256=%s digest_version=%u chunk_bytes=%u fan_in=%u bytes=%llu "
 			"current_root=%s historical_manifest_sha256=%s current_manifest_sha256=%s\n",
@@ -1942,7 +1958,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			historicalTraceDigest!=FireProductionR136TraceBridge::HistoricalTraceSHA256||
+			!historicalAccepted||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||

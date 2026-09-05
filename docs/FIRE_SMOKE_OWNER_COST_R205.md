@@ -1,7 +1,9 @@
 # r205 — historical fixture isolation and whole-owner cost
 
-Status: the repaired full FireSequenceTest suite passes; fresh independent
-review and the owner qualification are pending. No warm-start optimization,
+Status: the initial repaired full FireSequenceTest suite and live owner gate pass.
+The first fresh review found four P1 publication/build-attribution issues and
+four P2 test/accounting gaps; fixes and named REDs are implemented, with the
+post-fix full gate and fresh review pending. No warm-start optimization,
 fixed-k choice, focusing verdict, window, or new movie is claimed here.
 
 ## Fixture repairs authorized by the owner
@@ -57,6 +59,41 @@ producer interval union leaves 187.268 ms over the nine steps uncaptured
 (force-RHS encoders, blits, and gaps). Projection internals and the non-producer
 owner kernels are phase-resolved, not yet individually kernel-resolved.
 Wall-minus-device is elapsed residual, not a measured CPU-utilization claim.
+The CSV wall interval includes an additional 71.288 ms outside the inner
+`OwnerRun` timing scope on the selected step. The inner tree contains 0.636 ms of
+observer output overhead. The revised decomposition exposes both explicitly:
+exclusive phase walls + observer overhead + outer-call residual = CSV wall time.
+
+## First fresh review and repairs
+
+- Historical mutation RED now calls the very same bridge acceptance function on
+  original, numeric-mutated, and manifest-mutated current input. A subprocess
+  exercises synthetic opt-in with durable capstone output set, and must publish
+  no file.
+- Frame and projected-checkpoint payloads are prepared at separate pending paths.
+  Existing payload/seal pairs are verified before public bytes change; changed
+  immutable payloads and foreign/corrupt prior seals refuse unchanged. Only an
+  explicitly selected mutable-current checkpoint can advance. Final and
+  equivalence snapshots remain immutable even if their path aliases the current
+  checkpoint name. New pair files are completed and synced before replacement;
+  interruption between the two renames is detectable and fails closed, not an
+  accepted mismatched pair. Failed pair completion preserves a pending marker;
+  checkpoint admission refuses that marker and verifies any extant v2 sidecar.
+  Historical checkpoints without v2 sidecars retain their versioned admission.
+- Both C++ finalization and Python validation refuse orphan sidecars; empty
+  publication is refused. Named REDs retain and compare payload and certificate
+  bytes after rejected replacement.
+- Qualification forces all linked inputs to rebuild with `make -B`. A miniature
+  actual make dependency graph RED seeds a newer foreign cache: ordinary make
+  leaves it in place; the qualification command rebuilds it from current input.
+- The r204 analyzer pins the attested inventory, validates outcome-to-CSV
+  binding, and reconciles wall scopes. A re-sealed incomplete inventory refuses.
+
+The initial post-commit executable SHA is
+`671802c60b94c1600101beb5d6992b1ff89bab78f6b910525a5eb0cd029d5881`;
+its owner/build qualification record SHA is
+`49aa385c42b2e1a9efaa29638302f850462051c13bf4ba28bb69c0ac7a0282c6`.
+These identify the pre-review-fix gate, not the forthcoming forced-rebuild gate.
 
 ## Ordered next work and acceptance
 

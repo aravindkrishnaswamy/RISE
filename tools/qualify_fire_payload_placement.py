@@ -16,6 +16,10 @@ def clean_source(commit):
                    check=True, stdout=subprocess.DEVNULL)
 
 
+def build_command(directory="build/make/rise", target="build-test/FireSequenceTest"):
+    return ["make", "-B", "-C", str(directory), "-j8", target]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
@@ -23,7 +27,9 @@ def main():
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     clean_source(commit)
     executable = Path("bin/tests/FireSequenceTest")
-    commands = [("build", ["make", "-C", "build/make/rise", "-j8", "build-test/FireSequenceTest"]),
+    # Rebuild every linked object, not just objects older than their sources:
+    # ignored caches and prior flag variants are not source attestations.
+    commands = [("build", build_command()),
                 ("publication", [str(executable.resolve()), "--fire-production-payload-publication"]),
                 ("owner", [str(executable.resolve()), "--fire-production-resident-target-metal"])]
     result = {"schema": "rise.fire.executed-build-and-owner-gate.v1", "source_commit": commit, "runs": {}}

@@ -2315,8 +2315,8 @@ namespace
 #endif
 	}
 
-	bool PublishPayloadMerkleSidecar(const std::filesystem::path& path,
-		const std::string& caseRecordId,std::string& error,bool advancingCheckpoint=false)
+	bool BuildPayloadMerkleCertificate(const std::filesystem::path& path,
+		const std::string& caseRecordId,std::string& certificateText,std::string& error)
 	{
 		if(caseRecordId.size()!=64u||!std::all_of(caseRecordId.begin(),caseRecordId.end(),
 			[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})){
@@ -2326,8 +2326,6 @@ namespace
 			error="payload publication is incomplete";return false;}
 		FireProductionPayloadDigestV2 digest;
 		if(!FireProductionPayloadDigestCPU(bytes.data(),bytes.size(),8u,digest,&error))return false;
-		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
-		const auto temporary=std::filesystem::path(sidecar.string()+".pending");
 		std::ostringstream certificate;
 		const std::string prefix="{\"schema\":\"rise.fire.published-payload.v2\",\"case_record_id\":\""+caseRecordId+"\"";
 		certificate<<prefix
@@ -2335,15 +2333,80 @@ namespace
 			<<"\"digest_format\":\"rise-payload-sha256-merkle\",\"digest_version\":2,"
 			<<"\"chunk_bytes\":4096,\"fan_in\":16,\"payload_bytes\":"<<bytes.size()
 			<<",\"root_sha256\":\""<<digest.rootSHA256<<"\"}}\n";
+		certificateText=certificate.str();return true;
+	}
+
+	bool PublishPayloadMerkleSidecar(const std::filesystem::path& path,
+		const std::string& caseRecordId,std::string& error)
+	{
+		std::string certificate;if(!BuildPayloadMerkleCertificate(path,caseRecordId,certificate,error))return false;
+		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
+		const auto temporary=std::filesystem::path(sidecar.string()+".pending");
+		if(std::filesystem::is_symlink(sidecar)||std::filesystem::exists(temporary)||
+			std::filesystem::is_symlink(temporary)){
+			error="publication refuses occupied seal preparation";return false;}
 		if(std::filesystem::exists(sidecar)){
 			const auto priorBytes=ReadFileBytes(sidecar);const std::string prior(priorBytes.begin(),priorBytes.end());
-			if(prior==certificate.str())return true;
-			if(!advancingCheckpoint||prior.compare(0u,prefix.size(),prefix)!=0){
-				error="publication refuses to replace an existing artifact seal";return false;}
+			if(prior==certificate)return true;
+			error="publication refuses to replace an existing artifact seal";return false;
 		}
-		std::ofstream output(temporary,std::ios::binary|std::ios::trunc);output<<certificate.str();
+		std::ofstream output(temporary,std::ios::binary|std::ios::trunc);output<<certificate;
 		output.close();if(!output){error="payload publication seal write failed";return false;}
 		return DurableSyncFileAndDirectory(temporary,error)&&AtomicReplaceCheckpoint(temporary,sidecar,error);
+	}
+
+	enum class PayloadPublicationPolicy { Immutable,MutableCurrentCheckpoint };
+	bool ExistingPayloadCertificateValid(const std::filesystem::path& path,
+		const std::string& caseRecordId,std::string& error)
+	{
+		const auto pending=std::filesystem::path(path.string()+".preparation.pending.payload-v2.json");
+		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
+		if(std::filesystem::exists(pending)||std::filesystem::is_symlink(pending)){
+			error="payload publication pair is incomplete";return false;}
+		// Historical checkpoints without v2 certificates retain their existing
+		// versioned admission path; an extant v2 certificate must verify.
+		if(!std::filesystem::exists(sidecar)&&!std::filesystem::is_symlink(sidecar))return true;
+		if(std::filesystem::is_symlink(sidecar)){error="payload certificate is aliased";return false;}
+		std::string expected;if(!BuildPayloadMerkleCertificate(path,caseRecordId,expected,error))return false;
+		const auto bytes=ReadFileBytes(sidecar);
+		if(std::string(bytes.begin(),bytes.end())!=expected){error="payload certificate does not match";return false;}
+		return true;
+	}
+	void CleanupPreparedPayload(const std::filesystem::path& prepared,const bool published)
+	{
+		const bool unrenamed=std::filesystem::exists(prepared);
+		std::error_code cleanupError;std::filesystem::remove(prepared,cleanupError);
+		// If the payload rename occurred but the pair did not finish, keep the
+		// prepared certificate as an explicit incomplete-publication marker.
+		if(published||unrenamed)std::filesystem::remove(prepared.string()+".payload-v2.json",cleanupError);
+	}
+	bool PublishPreparedPayload(const std::filesystem::path& prepared,
+		const std::filesystem::path& target,const std::string& caseRecordId,
+		const PayloadPublicationPolicy policy,std::string& error)
+	{
+		const std::filesystem::path sidecar=target.string()+".payload-v2.json";
+		const std::filesystem::path preparedSeal=prepared.string()+".payload-v2.json";
+		const bool exists=std::filesystem::exists(target),sealed=std::filesystem::exists(sidecar);
+		if(prepared==target||std::filesystem::is_symlink(prepared)||exists!=sealed||std::filesystem::is_symlink(target)||
+			std::filesystem::is_symlink(sidecar)){
+			error="publication refuses incomplete or aliased prior output";return false;}
+		std::string nextCertificate;
+		if(!BuildPayloadMerkleCertificate(prepared,caseRecordId,nextCertificate,error))return false;
+		if(exists){
+			std::string priorCertificate;
+			if(!BuildPayloadMerkleCertificate(target,caseRecordId,priorCertificate,error))return false;
+			const auto priorBytes=ReadFileBytes(sidecar);
+			if(std::string(priorBytes.begin(),priorBytes.end())!=priorCertificate){
+				error="publication refuses corrupt or foreign prior output";return false;}
+			if(priorCertificate==nextCertificate)return true;
+			if(policy!=PayloadPublicationPolicy::MutableCurrentCheckpoint){
+				error="publication refuses changed immutable payload";return false;}
+		}
+		// Finish and sync both new files before either public name changes. An
+		// interrupted pair is refused by its digest; no mismatched pair is accepted.
+		if(!PublishPayloadMerkleSidecar(prepared,caseRecordId,error))return false;
+		return AtomicReplaceCheckpoint(prepared,target,error)&&
+			AtomicReplaceCheckpoint(preparedSeal,sidecar,error);
 	}
 
 	// Finalization boundary for a newly created run directory. Mutable working
@@ -2355,13 +2418,20 @@ namespace
 		std::vector<std::filesystem::path> files;
 		for(const auto& entry:std::filesystem::recursive_directory_iterator(directory)){
 			if(entry.is_symlink()){error="run publication refuses symlinks";return false;}
-			if(!entry.is_regular_file())continue;
 			const std::string name=entry.path().filename().string();
-			if(name.size()>=16u&&name.compare(name.size()-16u,16u,".payload-v2.json")==0)continue;
+			if(name.size()>=16u&&name.compare(name.size()-16u,16u,".payload-v2.json")==0){
+				const auto base=std::filesystem::path(entry.path().string().substr(0u,
+					entry.path().string().size()-16u));
+				if(!entry.is_regular_file()||!std::filesystem::is_regular_file(base)||std::filesystem::is_symlink(base)){
+					error="run publication refuses orphan sidecar";return false;}
+				continue;
+			}
+			if(!entry.is_regular_file())continue;
 			if(name.find(".pending")!=std::string::npos){error="run publication has a pending output";return false;}
 			files.push_back(entry.path());
 		}
 		std::sort(files.begin(),files.end());
+		if(files.empty()){error="run publication has no payloads";return false;}
 		for(const auto& file:files)if(!PublishPayloadMerkleSidecar(file,caseRecordId,error))return false;
 		return true;
 	}
@@ -2373,6 +2443,8 @@ namespace
 	{
 		stream.close();return static_cast<bool>(stream);
 	}
+	PayloadPublicationPolicy CheckpointPublicationPolicy(const std::filesystem::path& output,
+		const std::filesystem::path& current,bool finalDue,bool equivalenceDue);
 	int RunPayloadPublicationFixture()
 	{
 		const auto root=std::filesystem::temp_directory_path()/("rise-r204-publication-"+
@@ -2388,8 +2460,50 @@ namespace
 			!SealPublishedRunDirectory(root,identity,error)||
 			std::filesystem::exists(payload.string()+".payload-v2.json.payload-v2.json"))return 98;
 		const auto sealedBytes=ReadFileBytes(payload.string()+".payload-v2.json");
+		const auto originalPayload=ReadFileBytes(payload);
+		const auto prepared=root/"candidate.pending";
+		{std::ofstream output(prepared,std::ios::binary);output<<"different payload";}
+		if(PublishPreparedPayload(prepared,payload,identity,PayloadPublicationPolicy::Immutable,error)||
+			ReadFileBytes(payload)!=originalPayload||ReadFileBytes(payload.string()+".payload-v2.json")!=sealedBytes)
+			return 98;
+		for(const auto flags:{std::array<bool,2>{{true,false}},std::array<bool,2>{{false,true}}}){
+			const auto policy=CheckpointPublicationPolicy(payload,payload,flags[0],flags[1]);
+			if(policy!=PayloadPublicationPolicy::Immutable||PublishPreparedPayload(prepared,payload,identity,
+				policy,error)||ReadFileBytes(payload)!=originalPayload||
+				ReadFileBytes(payload.string()+".payload-v2.json")!=sealedBytes)return 98;
+		}
+		if(CheckpointPublicationPolicy(payload,payload,false,false)!=PayloadPublicationPolicy::MutableCurrentCheckpoint||
+			CheckpointPublicationPolicy(payload,root/"other",false,false)!=PayloadPublicationPolicy::Immutable)return 98;
+		std::filesystem::remove(prepared);
+		std::filesystem::remove(payload);
+		if(SealPublishedRunDirectory(root,identity,error)||error!="run publication refuses orphan sidecar")return 98;
+		{std::ofstream output(payload,std::ios::binary);output.write(reinterpret_cast<const char*>(originalPayload.data()),
+			static_cast<std::streamsize>(originalPayload.size()));}
+		std::filesystem::create_directories(root/"empty");
+		if(SealPublishedRunDirectory(root/"empty",identity,error)||error!="run publication has no payloads")return 98;
 		if(SealPublishedRunDirectory(root,std::string(64u,'b'),error)||
 			ReadFileBytes(payload.string()+".payload-v2.json")!=sealedBytes)return 98;
+		const auto mutableTarget=root/"current.checkpoint";
+		for(const char* value:{"first accepted state","next accepted state"}){
+			{std::ofstream output(prepared);output<<value;}
+			if(!PublishPreparedPayload(prepared,mutableTarget,identity,
+				PayloadPublicationPolicy::MutableCurrentCheckpoint,error)||
+				!ExistingPayloadCertificateValid(mutableTarget,identity,error))return 98;
+		}
+		const auto mutableBytes=ReadFileBytes(mutableTarget),mutableSeal=
+			ReadFileBytes(mutableTarget.string()+".payload-v2.json");
+		{std::ofstream output(prepared);output<<"foreign state";}
+		if(PublishPreparedPayload(prepared,mutableTarget,std::string(64u,'b'),
+			PayloadPublicationPolicy::MutableCurrentCheckpoint,error)||ReadFileBytes(mutableTarget)!=mutableBytes||
+			ReadFileBytes(mutableTarget.string()+".payload-v2.json")!=mutableSeal)return 98;
+		CleanupPreparedPayload(prepared,false);
+		const auto interrupted=std::filesystem::path(mutableTarget.string()+".preparation.pending");
+		{std::ofstream marker(interrupted.string()+".payload-v2.json");marker<<"incomplete pair";}
+		CleanupPreparedPayload(interrupted,false);
+		if(ExistingPayloadCertificateValid(mutableTarget,identity,error)||
+			error!="payload publication pair is incomplete"||
+			!std::filesystem::exists(interrupted.string()+".payload-v2.json"))return 98;
+		std::filesystem::remove(interrupted.string()+".payload-v2.json");
 		{std::ofstream pending(root/"not_complete.pending");pending<<"partial";}
 		if(SealPublishedRunDirectory(root,identity,error))return 98;
 		std::filesystem::remove(root/"not_complete.pending");
@@ -2409,7 +2523,7 @@ namespace
 		for(std::size_t i=0u;i<libraries.size();++i){auto mutant=libraries;mutant[i][0]='0';
 			if(FireProductionOwnerKernelSetSHA256(mutant)==kernelRoot)return 98;}
 		libraries[0].clear();if(!FireProductionOwnerKernelSetSHA256(libraries).empty())return 98;
-		std::fprintf(stdout,"PUBLICATION_RED projected_mode=pass all_disabled_refused=pass invalid_case=pass "
+		std::fprintf(stdout,"PUBLICATION_RED mutable_advance=pass interrupted_pair_refused=pass immutable_bytes_preserved=pass final_equivalence_not_mutable=pass orphan_refused=pass empty_refused=pass projected_mode=pass all_disabled_refused=pass invalid_case=pass "
 			"pending_refused=pass foreign_case_unchanged=pass writer_failure_refused=pass symlink_refused=platform recursive_sidecars=absent kernel_library_mutants=5 root=%s\n",root.string().c_str());
 		return 0;
 	}
@@ -2442,6 +2556,26 @@ namespace
 		if(!DurableSyncFileAndDirectory(temporary,error)||
 			!AtomicReplaceCheckpoint(temporary,path,error)){rejectTemporary();return false;}
 		return true;
+	}
+
+	PayloadPublicationPolicy CheckpointPublicationPolicy(const std::filesystem::path& output,
+		const std::filesystem::path& current,const bool finalDue,const bool equivalenceDue)
+	{
+		return !finalDue&&!equivalenceDue&&!current.empty()&&output==current?
+			PayloadPublicationPolicy::MutableCurrentCheckpoint:PayloadPublicationPolicy::Immutable;
+	}
+
+	bool SavePublishedCheckpoint(const std::filesystem::path& path,
+		const MethaneRunCheckpoint& checkpoint,const PayloadPublicationPolicy policy,std::string& error)
+	{
+		const std::filesystem::path prepared=path.string()+".preparation.pending";
+		const std::filesystem::path preparedSeal=prepared.string()+".payload-v2.json";
+		if(std::filesystem::exists(prepared)||std::filesystem::exists(preparedSeal)||
+			std::filesystem::is_symlink(prepared)||std::filesystem::is_symlink(preparedSeal)){
+			error="checkpoint preparation already exists";return false;}
+		const bool saved=SaveMethaneRunCheckpoint(prepared,checkpoint,error)&&
+			PublishPreparedPayload(prepared,path,checkpoint.caseRecordId,policy,error);
+		CleanupPreparedPayload(prepared,saved);return saved;
 	}
 
 	bool VerifyCheckpointPayloadChecksum(const std::filesystem::path& path,
@@ -2534,6 +2668,7 @@ namespace
 				path.string(),payloadBytes,checksum,version,stateView,lifecycle,
 				decoded.productionManifoldObservation,&error))return false;
 		}
+		if(!ExistingPayloadCertificateValid(path,decoded.caseRecordId,error))return false;
 		checkpoint=std::move(decoded);
 		return true;
 	}
@@ -5013,9 +5148,11 @@ namespace
 						HomogeneousStateProducerPrecision(checkpoint.states,checkpointOutputPrecision)&&
 						(checkpointOutputPrecision!=FireStateProducerPrecision::Binary64||
 							IssueBinary64CheckpointAuthority(checkpoint));
-					const bool checkpointSaved=checkpointAuthorized&&SaveMethaneRunCheckpoint(
-						checkpointOutput,checkpoint,error)&&(!persistence.UsesProjectedHeunOwner()||
-						PublishPayloadMerkleSidecar(checkpointOutput,caseRecord.caseRecordId,error,true));
+					const bool checkpointSaved=checkpointAuthorized&&
+						(persistence.UsesProjectedHeunOwner()?SavePublishedCheckpoint(checkpointOutput,
+							checkpoint,CheckpointPublicationPolicy(checkpointOutput,persistence.checkpointPath,
+								finalCheckpointDue,equivalenceSnapshotDue),error):
+							SaveMethaneRunCheckpoint(checkpointOutput,checkpoint,error));
 					bool retainedCheckpointSaved=true;
 					std::filesystem::path retainedCheckpointOutput;
 					if(checkpointSaved&&!persistence.retainedCheckpointDirectory.empty()&&
@@ -5029,6 +5166,9 @@ namespace
 							persistence.retainedCheckpointDirectory/retainedName.str();
 						if(retentionDirectoryError){error="cannot create retained checkpoint directory";
 							retainedCheckpointSaved=false;
+						}else if(persistence.UsesProjectedHeunOwner()){
+							retainedCheckpointSaved=SavePublishedCheckpoint(retainedCheckpointOutput,
+								checkpoint,PayloadPublicationPolicy::Immutable,error);
 						}else if(std::filesystem::exists(retainedCheckpointOutput)){
 							retainedCheckpointSaved=DigestFile(retainedCheckpointOutput)==
 								DigestFile(checkpointOutput);
@@ -5036,9 +5176,6 @@ namespace
 								"retained checkpoint step identity already has different bytes";
 						}else retainedCheckpointSaved=SaveMethaneRunCheckpoint(
 							retainedCheckpointOutput,checkpoint,error);
-						if(retainedCheckpointSaved&&persistence.UsesProjectedHeunOwner())
-							retainedCheckpointSaved=PublishPayloadMerkleSidecar(retainedCheckpointOutput,
-								caseRecord.caseRecordId,error);
 					}
 					if((!checkpointSaved||!retainedCheckpointSaved)&&(reportCapstoneProgress||
 						!persistence.temporalSnapshotDirectory.empty())){
@@ -6190,8 +6327,13 @@ namespace
 		const SolverFrameValues& values)
 	{
 		std::string error;
-		return WriteFrame(path,FrameMutation{},0.0f,true,values,0.8f)&&
-			PublishPayloadMerkleSidecar(path,values.caseRecordId,error);
+		const std::filesystem::path prepared=path.string()+".preparation.pending";
+		const std::filesystem::path preparedSeal=prepared.string()+".payload-v2.json";
+		if(std::filesystem::exists(prepared)||std::filesystem::exists(preparedSeal)||
+			std::filesystem::is_symlink(prepared)||std::filesystem::is_symlink(preparedSeal))return false;
+		const bool saved=WriteFrame(prepared,FrameMutation{},0.0f,true,values,0.8f)&&
+			PublishPreparedPayload(prepared,path,values.caseRecordId,PayloadPublicationPolicy::Immutable,error);
+		CleanupPreparedPayload(prepared,saved);return saved;
 	}
 
 	int RunProductionFrameWriteBenchmarkChild(const std::filesystem::path& checkpointPath,
@@ -6234,6 +6376,25 @@ namespace
 	int RunCheckpointChild(const std::string& mode,const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& framePath,const unsigned int workerCount)
 	{
+		if(mode=="synthetic-capstone-refusal"){
+#if defined(_WIN32)
+			if(::_putenv_s("RISE_FIRE_CAPSTONE_OUTPUT",checkpointPath.string().c_str())!=0)return 97;
+#else
+			if(::setenv("RISE_FIRE_CAPSTONE_OUTPUT",checkpointPath.string().c_str(),1)!=0)return 97;
+#endif
+			if(WriteFrame(framePath,FrameMutation{FrameMutation::SyntheticColdChemistry},0.0f,true)||
+				std::filesystem::exists(framePath)||std::filesystem::exists(framePath.string()+".payload-v2.json"))return 97;
+			std::fprintf(stdout,"SYNTHETIC_CAPSTONE_SUBPROCESS_RED passed=1\n");return 0;
+		}
+		if(mode=="immutable-frame-refusal"){
+			SolverFrameValues fixture;fixture.caseRecordId=std::string(64u,'c');fixture.temperatureK=300.0f;
+			if(!WriteProductionTemporalFrame(framePath,fixture))return 97;
+			const auto bytes=ReadFileBytes(framePath),seal=ReadFileBytes(framePath.string()+".payload-v2.json");
+			fixture.temperatureK=600.0f;
+			if(WriteProductionTemporalFrame(framePath,fixture)||ReadFileBytes(framePath)!=bytes||
+				ReadFileBytes(framePath.string()+".payload-v2.json")!=seal)return 97;
+			std::fprintf(stdout,"IMMUTABLE_FRAME_BYTES_SUBPROCESS_RED passed=1\n");return 0;
+		}
 		if(mode!="baseline"&&mode!="kill"&&mode!="resume"&&mode!="resume-final"&&
 			mode!="resume-one-fp64-reject"&&mode!="retain"&&
 			mode!="syncfail")return 96;
@@ -15414,6 +15575,12 @@ int main(int argc,char** argv)
 	const std::filesystem::path baselineCheckpointFrame=checkpointFixture/"baseline.vdb";
 	const std::filesystem::path resumedCheckpointFrame=checkpointFixture/"resumed.vdb";
 	const std::filesystem::path self=std::filesystem::absolute(argv[0]);
+	Check(RunCheckpointSubprocess(self,"synthetic-capstone-refusal",checkpointPath,
+		checkpointFixture/"forbidden_synthetic.vdb",1u)==0,
+		"r205 durable capstone environment refuses synthetic opt-in in a separate process without publication");
+	Check(RunCheckpointSubprocess(self,"immutable-frame-refusal",checkpointPath,
+		checkpointFixture/"immutable_frame.vdb",1u)==0,
+		"r205 changed duplicate temporal frame refuses while preserving payload and seal bytes");
 	const int baselineCheckpointExit=RunCheckpointSubprocess(self,"baseline",checkpointPath,
 		baselineCheckpointFrame,1u);
 	std::string checkpointFixtureError;
