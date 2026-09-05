@@ -1753,17 +1753,18 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 	const Scalar sphereR = 1.5;             // B: carving mesh sphere, radius 1.5
 	const unsigned int detail = 40;
 
-	// A MUST be an analytic SPHERE, not a box: CSGObject.cpp's "inside"
-	// signal is `range2 == 0` EXACTLY, and RaySphereIntersection.cpp
-	// hard-codes `hit.dRange2 = 0.0` for an inside-origin hit (the
-	// one-positive-root case; the torus and quadric/ellipsoid intersectors
-	// and SDFGeometry do likewise, but a BOX does not).
-	// RayBoxIntersection.cpp instead reports the
-	// (negative) tmin verbatim, which Object::IntersectRay's own exit-info
-	// promotion then converts to a POSITIVE magnitude via
-	// `range2 = Magnitude(ptExit - origin)` -- never exactly 0 -- so a box
-	// operand A would silently misroute this test into a DIFFERENT switch
-	// branch than the one under test.
+	// A is an analytic SPHERE: CSGObject.cpp's "inside" signal is
+	// `range2 == 0` EXACTLY, and RaySphereIntersection.cpp hard-codes
+	// `hit.dRange2 = 0.0` for an inside-origin hit (the one-positive-root
+	// case; the torus and quadric/ellipsoid intersectors and SDFGeometry
+	// do likewise).  A BOX did NOT when this test was written --
+	// RayBoxIntersection.cpp reported the (negative) tmin verbatim, which
+	// Object::IntersectRay's exit-info promotion converted to a POSITIVE
+	// magnitude via `range2 = Magnitude(ptExit - origin)`, never exactly
+	// 0, misrouting a box operand into a different switch branch -- but
+	// since 2026-09-05 (docs/CLOTH_FABRIC_DESIGN.md debt 25, review
+	// round 3) BoxGeometry publishes range2 = 0 for an interior origin
+	// too, so the sphere is now a choice, not a requirement.
 	SphereGeometry* gA = new SphereGeometry( sphereA );
 	Object* oA = new Object( gA );
 	safe_release( gA );
@@ -1926,7 +1927,8 @@ void TestSubtraction_CavityWall_DndvSignMatchesFDAndCurvature()
 // REACHABILITY: this branch requires BOTH riObjA.range2==0 AND
 // riObjB.range2==0.  Only ANALYTIC geometries report range2=0 for an
 // inside-origin hit (the sphere, torus, and quadric/ellipsoid
-// intersectors hard-code it; SDFGeometry sets it directly);
+// intersectors hard-code it; SDFGeometry sets it directly; BoxGeometry
+// since 2026-09-05);
 // TriangleMeshGeometry(Indexed)::IntersectRay ignores bComputeExitInfo
 // entirely, so a mesh operand's range2 never reads as exactly 0.
 //

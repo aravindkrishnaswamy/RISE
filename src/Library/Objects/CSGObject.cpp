@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include <cmath>			// std::isfinite (AdoptCsgExitFacePayloadViaProbe range2 guard)
 #include "CSGObject.h"
 
 using namespace RISE;
@@ -542,8 +543,11 @@ namespace
 		// earlier factorisation stretch * |cos_world| (|M^-1 dir| times
 		// the WORLD cosine) under-estimates it by s_j * |M^-1 dir| on an
 		// anisotropic stretch whose stretched-up axis is the face normal
-		// -- a 2:1 stretch with an oblique rotation already pushed the
-		// probe back inside the band.  Both ingredients were already in
+		// -- a non-cubic operand (a slab) stretched 4x along its exit
+		// normal and hit obliquely already pushed the probe back inside
+		// the band; no rotation is needed, and a cube cannot show it (the
+		// exit face is then the max-|M^-1 dir| axis, which bounds the
+		// shortfall at sqrt(3)).  Both ingredients were already in
 		// hand; the clamp is 1/20 of the local direction's length, the
 		// same grazing floor as before expressed in the local frame.
 		// With NO usable exit normal (a geometry that leaves vGeomNormal2
@@ -1044,8 +1048,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// derivatives at intersection time (design doc 5.4), and
 					// they are exactly the geometries that report range2 == 0
 					// for an inside-origin hit (BoxGeometry joined them
-					// 2026-09-05 for an origin ON one of its faces, via
-					// DropSelfHitRoot's promoted root) -- so this branch is now
+					// 2026-09-05: first for an origin ON one of its faces, via
+					// DropSelfHitRoot's promoted root, then for any strictly
+					// interior origin) -- so this branch is now
 					// reachable WITH valid derivatives and the negation below
 					// is LIVE, not defensive.  The SDF family reaches it too,
 					// through the direct `curvature` field rather than

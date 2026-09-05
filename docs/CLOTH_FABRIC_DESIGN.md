@@ -5744,8 +5744,10 @@ yet known (§10.1).
     the exact operand-local plane-distance rate of a world-unit standoff,
     `2·eps / max(|M⁻¹dir · n̂_local|, |M⁻¹dir|/20)` (round 3 replaced the
     factorised `|M⁻¹dir| · |dir·n|`, which under-estimates the rate by
-    the stretched axis's factor on an anisotropic operand — a 2:1
-    stretch with an oblique rotation already fell back) — 8e-12 at unit
+    the stretched axis's factor on an anisotropic operand — a slab
+    stretched 4× along its exit normal and hit obliquely already fell
+    back; no rotation needed, and a cube cannot show it since its exit
+    face is then the max-|M⁻¹dir| axis) — 8e-12 at unit
     scale and normal incidence, acceptance window ~1.7e-11, ~100× under
     the ~2e-9 decoy radius that suite's Test 15 pins (the window scales
     with 1/rate: ~3e-10 at the grazing clamp, and with the operand's own
