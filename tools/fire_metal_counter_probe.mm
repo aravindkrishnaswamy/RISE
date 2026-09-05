@@ -15,12 +15,14 @@ int main()
             std::printf("counter_set=%s\n",[[counterSet name] UTF8String]);
         NSError* error=nil;
         id<MTLLibrary> library=[device newLibraryWithSource:
-            @"#include <metal_stdlib>\nusing namespace metal; kernel void counter_probe(uint i [[thread_position_in_grid]]) {}"
+            @"#include <metal_stdlib>\nusing namespace metal; kernel void counter_probe() {}"
             options:nil error:&error];
+        if(!library)return 2;
         id<MTLComputePipelineState> pipeline=[device newComputePipelineStateWithFunction:
             [library newFunctionWithName:@"counter_probe"] error:&error];
         if(!pipeline)return 2;
-        std::printf("pipeline_label=%s\n",[[pipeline label] UTF8String]);
+        const char* label=[[pipeline label] UTF8String];
+        std::printf("pipeline_label=%s\n",label?label:"<unset>");
     }
     return 0;
 }

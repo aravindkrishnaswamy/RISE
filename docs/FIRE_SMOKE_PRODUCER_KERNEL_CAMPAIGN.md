@@ -157,3 +157,25 @@ remain green. The full case-domain sweep and final code are sealed separately
 from exploratory timing. No fixed-k variant is selected: no crossing-state
 momentum-settling evidence exists yet. The next performance work must make
 producers affordable before spending another verdict run on this serial cost.
+
+## Reproduction
+
+From the durable r203 worktree, build `FireSequenceTest` with
+`make -C build/make/rise -j8 build-test/FireSequenceTest`. Wait for the build to
+finish before invoking it. Metal commands require the device-visible execution
+context; run them sequentially. Use fresh output paths, never overwrite evidence.
+
+```
+RISE_FIRE_OWNER_PROFILE=1 RISE_FIRE_PRODUCER_KERNEL_PROFILE=1 \
+  ./bin/tests/FireSequenceTest --fire-production-owner-cost-prefix NEW_PREFIX_DIRECTORY
+./bin/tests/FireSequenceTest --fire-production-owner-eos-refusal CHECKPOINT NEW_DIAGNOSTIC_DIRECTORY
+./bin/tests/FireSequenceTest --fire-production-metal-fp64-kernel-sweep
+./bin/tests/FireSequenceTest --fire-production-owner-convergence-fixture NEW_TRACE_PATH
+python3 tools/analyze_fire_producer_kernels.py PROFILE_LOG --output NEW_REPORT.json
+python3 tools/analyze_fire_producer_kernels.py --self-test
+```
+
+The refusal CLI expects a refusal and has no production-continuation authority;
+after the repair, a different outcome is not a successful migration certificate.
+The final evidence manifest binds qualification to its source commit and exact
+executable SHA, while separately labeling the earlier timing probes exploratory.
