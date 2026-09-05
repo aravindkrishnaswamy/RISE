@@ -19,6 +19,7 @@
 #include "../Intersection/RayIntersectionGeometric.h"
 #include "../Utilities/BoundingBox.h"
 #include "../Polygon.h"
+#include <cmath>			// std::fabs (SelfHitRootFloor's default body)
 
 namespace RISE
 {
@@ -222,6 +223,59 @@ namespace RISE
 		//! ObjectManager::PrepareForRendering, also const).  Default: cheap
 		//! geometries (sphere, mesh, ...) are always realized — no-op.
 		virtual void Realize() const {}
+
+		//! The smallest ray parameter this geometry's intersection routines will
+		//! accept as a genuine hit, for a ray leaving `localOrigin` (which sits on
+		//! or immediately off the face whose OUTWARD unit normal is `localNormal`)
+		//! along the UNIT direction `localDir`.  Everything is in this geometry's
+		//! OWN object space, and the return value is a range in those units.
+		//!
+		//! Every RISE intersector gates its roots with a self-hit floor so that a
+		//! ray published FROM a surface (Object::IntersectRay backs the hit point
+		//! off SURFACE_INTERSEC_ERROR = 1e-12 along the incoming ray) does not
+		//! re-hit that same surface at t ~ 0.  Since a8bef210 those floors are
+		//! SCALE-RELATIVE, so they are no longer a single global constant a caller
+		//! can hard-code: a sphere of radius 4 rejects roots below ~9e-12, a
+		//! 1000-unit one below ~2e-9.  Any caller that deliberately stands a ray
+		//! off a surface in order to re-hit it must clear the floor of the
+		//! geometry it is aiming at, so it has to be able to ASK.  The one such
+		//! caller today is CSGObject's exit-face payload probe
+		//! (AdoptCsgExitFacePayloadViaProbe), which stood off by a box-derived
+		//! band and silently fell back to the ENTRY face's payload -- an
+		//! antipodal UV on the far cavity wall -- on any operand bigger than a few
+		//! units.
+		//!
+		//! Default: the generic `NEARZERO * (1 + |localOrigin|_1)` floor that
+		//! RayQuadricIntersection (EllipsoidGeometry) and RayPlaneIntersection
+		//! (InfinitePlaneGeometry, CircularDiskGeometry) use verbatim.  Override
+		//! wherever the geometry's own gate is different (a larger coordinate
+		//! scale, a plane-distance band, a ray-march surface epsilon).  A
+		//! geometry whose gate is SMALLER than the default may leave it alone --
+		//! over-stating is the safe direction for the contract below, just
+		//! conservative (HairGeometry, whose curve gate is a flat NEARZERO, does
+		//! exactly that).
+		//!
+		//! Contract for overriders: the return must be an UPPER bound on the
+		//! geometry's own gate along `localDir` -- a caller standing off by more
+		//! than this and firing back must get the hit.  A geometry whose gate is
+		//! a PLANE DISTANCE rather than a range (BoxGeometry) must therefore
+		//! divide the band by |localDir . localNormal|, clamped away from zero so
+		//! a grazing query returns a finite (if large) answer rather than
+		//! infinity.
+		//!
+		//! Declared last + defaulted so adding it keeps every existing IGeometry
+		//! vtable slot ABI-stable for out-of-tree implementers, matching
+		//! CanBeAreaLight / CanTessellate above.
+		virtual Scalar SelfHitRootFloor(
+			const Point3&  localOrigin,		///< [in] Ray origin, this geometry's object space
+			const Vector3& localDir,		///< [in] UNIT ray direction, same space
+			const Vector3& localNormal		///< [in] Unit outward normal of the face being re-hit
+			) const
+		{
+			(void)localDir; (void)localNormal;
+			return NEARZERO * ( Scalar(1) +
+				std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z ) );
+		}
 
 		//! Cheap, static capability hint: can this geometry produce a triangle
 		//! mesh via TessellateToMesh (after Realize, if deferred)?  Used at SCENE-

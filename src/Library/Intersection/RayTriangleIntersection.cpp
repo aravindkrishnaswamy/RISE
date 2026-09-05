@@ -14,6 +14,7 @@
 #include "pch.h"
 #include "RayPrimitiveIntersections.h"
 #include "../Utilities/Profiling.h"
+#include <algorithm>		// std::max (self-hit floor's largest-vertex coordinate scale)
 
 namespace RISE
 {
@@ -70,10 +71,20 @@ namespace RISE
 		// PLY quad carrying a full-sphere transmissive weave lit from
 		// behind read PT 1/157 of BDPT at unit scale; a Lambertian
 		// tessellated sphere at radius 1000 read PT 3-8 % dark.  The
-		// coordinate scale is the origin's plus the vertex's.
-		const Scalar coordScale =
-			fabs( ray.origin.x ) + fabs( ray.origin.y ) + fabs( ray.origin.z ) +
-			fabs( vPt1.x ) + fabs( vPt1.y ) + fabs( vPt1.z );
+		// coordinate scale is the origin's plus the LARGEST of the three
+		// vertices' -- vPt1, vPt1+vEdgeA, vPt1+vEdgeB.  a8bef210 charged
+		// vPt1's alone, which is only the largest by accident of which corner
+		// the mesh happened to store first: a sliver whose far corner sits at
+		// 1e4 while vPt1 sits at the origin got a unit-scale floor, exactly
+		// the under-estimate this floor exists to prevent (adversarial review
+		// of a8bef210, P2-2 -- the commit's own comment already said "the
+		// vertex's", which reads as the triangle's extent).  Matches
+		// RayBilinearPatchIntersection, which maxes over all four corners.
+		const Scalar oL1 = fabs( ray.origin.x ) + fabs( ray.origin.y ) + fabs( ray.origin.z );
+		const Scalar v1L1 = fabs( vPt1.x ) + fabs( vPt1.y ) + fabs( vPt1.z );
+		const Scalar v2L1 = fabs( vPt1.x + vEdgeA.x ) + fabs( vPt1.y + vEdgeA.y ) + fabs( vPt1.z + vEdgeA.z );
+		const Scalar v3L1 = fabs( vPt1.x + vEdgeB.x ) + fabs( vPt1.y + vEdgeB.y ) + fabs( vPt1.z + vEdgeB.z );
+		const Scalar coordScale = oL1 + std::max( v1L1, std::max( v2L1, v3L1 ) );
 		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
 
 		if( hit.dRange >= tMin ) {

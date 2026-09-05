@@ -327,6 +327,12 @@ BoundingBox BilinearPatchGeometry::GenerateBoundingBox() const
 	return BoundingBox();
 }
 
+Scalar BilinearPatchGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+{
+	(void)localDir; (void)localNormal;
+	return Geometry::BoundingBoxRootFloor( GenerateBoundingBox(), localOrigin );
+}
+
 void BilinearPatchGeometry::UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const
 {
 	// Area-proportional sampling over every (patch, cell) pair via the single

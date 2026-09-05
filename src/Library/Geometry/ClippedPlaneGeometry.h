@@ -16,6 +16,7 @@
 #define CLIPPEDPLANE_GEOMETRY_
 
 #include "Geometry.h"
+#include <algorithm>		// std::max (SelfHitRootFloor over the four corners)
 
 namespace RISE
 {
@@ -55,6 +56,21 @@ namespace RISE
 			Scalar GetArea( ) const;
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
+
+			//! IGeometry::SelfHitRootFloor -- RayBilinearPatchIntersection's
+			//! debt-21 gate, `NEARZERO * (1 + max(|origin|_1, max corner |.|_1))`.
+			//! Direction-independent.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+			{
+				(void)localDir; (void)localNormal;
+				Scalar coordScale =
+					std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z );
+				for( int ci = 0; ci < 4; ci++ ) {
+					coordScale = std::max( coordScale,
+						std::fabs( vP[ci].x ) + std::fabs( vP[ci].y ) + std::fabs( vP[ci].z ) );
+				}
+				return NEARZERO * ( Scalar(1) + coordScale );
+			}
 
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );

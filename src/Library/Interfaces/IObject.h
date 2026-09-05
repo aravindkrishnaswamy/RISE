@@ -17,6 +17,7 @@
 #include "IReference.h"
 #include "ITransformable.h"
 #include "../Utilities/BoundingBox.h"
+#include <cmath>			// std::fabs (SelfHitRootFloor's default body)
 
 namespace RISE
 {
@@ -110,6 +111,33 @@ namespace RISE
 			(void)outWorldDpdu; (void)outWorldDpdv;
 			(void)outWorldDndu; (void)outWorldDndv;
 			return false;
+		}
+
+		//! Object-level lift of `IGeometry::SelfHitRootFloor` -- see that
+		//! declaration for the full contract.  `localOrigin` / `localDir` /
+		//! `localNormal` are in THIS object's own local frame (i.e. already
+		//! through `GetFinalInverseTransformMatrix()`, the same frame the
+		//! object hands its geometry), `localDir` is unit, and the answer is a
+		//! range in those units.
+		//!
+		//! The lift exists because CSGObject's exit-face payload probe queries
+		//! an `IObjectPriv*` operand, which may be a NESTED CSGObject and so has
+		//! no single geometry to ask: `CSGObject` overrides this to return the
+		//! max over its two operands, each queried in ITS OWN local frame and
+		//! the answer mapped back through that child's stretch.  Concrete
+		//! `Object` overrides to forward to its geometry.  Default here is the
+		//! same generic `NEARZERO * (1 + |localOrigin|_1)` floor as
+		//! `IGeometry`'s default, so an out-of-tree IObject implementer needs no
+		//! change (ABI-stable: declared among the trailing defaulted slots).
+		virtual Scalar SelfHitRootFloor(
+			const Point3&  localOrigin,
+			const Vector3& localDir,
+			const Vector3& localNormal
+			) const
+		{
+			(void)localDir; (void)localNormal;
+			return NEARZERO * ( Scalar(1) +
+				std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z ) );
 		}
 
 		//! Retrieves the shader associated with this object (or null

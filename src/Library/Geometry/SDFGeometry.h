@@ -357,6 +357,25 @@ namespace RISE
 			void UniformRandomPoint( Point3* point, Vector3* normal, Point2* coord, const Point3& prand ) const override;
 			Scalar GetArea() const override;
 
+			//! IGeometry::SelfHitRootFloor -- the sphere-tracer has no root
+			//! gate; what it has instead is `March`'s step-off: a ray whose
+			//! ORIGIN reads |Map(o)| <= 2*m_eps is treated as spawned ON the
+			//! surface and marched forward in 4*m_eps steps until it clears
+			//! that band, which walks straight PAST the face a probe was
+			//! standing off from.  So the smallest standoff that still
+			//! re-hits the intended face is the band itself, 2*m_eps, and the
+			//! distance field's value is a perpendicular distance -- equal to
+			//! the range at normal incidence and less than it otherwise, so
+			//! this is an upper bound along any direction, as the contract
+			//! requires.  Direction-independent.  (m_eps is set at
+			//! construction and refreshed in the realize pass; before that it
+			//! carries its constructed value, never zero.)
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
+			{
+				(void)localOrigin; (void)localDir; (void)localNormal;
+				return Scalar(2) * m_eps;
+			}
+
 			//! Number of authored SDF primitives folded into this geometry's
 			//! field.  Exact and blend-independent (unlike GetArea(), which a
 			//! small smin-blended duplicate primitive can shift by less than

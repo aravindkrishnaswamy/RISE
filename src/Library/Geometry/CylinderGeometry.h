@@ -68,6 +68,20 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
 
+			//! IGeometry::SelfHitRootFloor -- the gate both
+			//! CylinderGeometry::IntersectCappedSolid and the open-tube
+			//! Ray{X,Y,Z}CylinderIntersection apply,
+			//! `NEARZERO * (1 + |origin|_1 + radius)` (the axis passes through
+			//! this frame's origin, so their axO/raO/rbO split is exactly the
+			//! origin's L1).  Direction-independent.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+			{
+				(void)localDir; (void)localNormal;
+				return NEARZERO * ( Scalar(1) +
+					std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z ) +
+					std::fabs( m_dRadius ) );
+			}
+
 			// Keyframable interface
 			IKeyframeParameter* KeyframeFromParameters( const String& name, const String& value );
 			void SetIntermediateValue( const IKeyframeParameter& val );

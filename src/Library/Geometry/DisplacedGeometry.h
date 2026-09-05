@@ -163,6 +163,18 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! IGeometry::SelfHitRootFloor -- DELEGATE, exactly as IntersectRay
+			//! does: this geometry's rays are answered by the baked mesh, so
+			//! the mesh owns the gate.  Before the bake (or after a failed one)
+			//! there is no surface to re-hit and the base default is the honest
+			//! answer.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
+			{
+				return m_pMesh
+					? m_pMesh->SelfHitRootFloor( localOrigin, localDir, localNormal )
+					: IGeometry::SelfHitRootFloor( localOrigin, localDir, localNormal );
+			}
+
 			//! Smoothing-aware analytical query.  Composes the BASE geometry's
 			//! analytical derivatives with the displacement painter via the
 			//! standard chain rule, scaling `disp_scale` by `(1 - smoothing)`.

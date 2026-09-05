@@ -87,6 +87,17 @@ namespace RISE
 
 			void ResetRuntimeData() const;
 
+			//! IObject::SelfHitRootFloor -- a CSG composite has no geometry of
+			//! its own, so answer with the WORST of what its two operands would
+			//! answer, each asked in ITS OWN local frame and the answer brought
+			//! back into ours.  A ray standing off by more than this clears
+			//! whichever operand actually owns the boundary at that point, which
+			//! is all the caller (AdoptCsgExitFacePayloadViaProbe on a NESTED
+			//! CSG operand) can determine without re-running the algebra.
+			//! (No `override` -- see the CloneSnapshot note above: this class
+			//! deliberately omits the keyword throughout.)
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const;
+
 			// Deferred-realization (IObject): the realize pass enumerates only
 			// world-VISIBLE objects, but AssignObjects() hides our two operands,
 			// so they are never reached directly.  Cascade into them here so a

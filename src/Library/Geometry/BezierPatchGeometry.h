@@ -106,6 +106,20 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
 
+			//! IGeometry::SelfHitRootFloor -- the Bezier path does NOT use the
+			//! scale-relative NEARZERO family at all: its (F1,F2) 2D Newton
+			//! polish has a residual floor around 1e-10 in t, so
+			//! RayBezierPatchIntersection gates on a flat
+			//! BEZIER_SELF_HIT_EPSILON = 1e-6 (see the rationale at that
+			//! constant).  Report it, so a caller standing a ray off a Bezier
+			//! surface stands off by ~1e-6 rather than the ~1e-12 the generic
+			//! floor would suggest.  Direction-independent.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+			{
+				(void)localOrigin; (void)localDir; (void)localNormal;
+				return Scalar(1e-6);
+			}
+
 			// From TreeElementProcessor
 			typedef MYBEZIERPATCH		MYOBJ;
 				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;

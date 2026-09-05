@@ -116,6 +116,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iostream>
+#include <string>
 
 #include "../src/Library/Functions/ConstantFunctions.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
@@ -2971,6 +2972,144 @@ void TestSubtraction_ExitProbe_AnisotropicStretchObliqueRayUsesExactRate()
 	safe_release( oB );
 }
 
+//
+// Test 27: CSG_SUBTRACTION exit-probe must clear the OPERAND PRIMITIVE'S OWN
+// scale-relative root floor, not just BoxGeometry's per-axis band.
+// (adversarial review of a8bef210 -- the P1.)
+//
+// a8bef210 gave every primitive a scale-relative self-hit floor so a ray
+// published FROM its surface cannot re-hit it at t ~ 0:
+//
+//   RaySphereIntersection:  tMin = NEARZERO * (1 + |origin|_1 + radius)
+//   RayQuadricIntersection: tMin = NEARZERO * (1 + |origin|_1)
+//   ... and the same shape for plane, triangle and cylinder.
+//
+// AdoptCsgExitFacePayloadViaProbe stands a probe origin `margin` PAST the
+// operand's exit face and fires back at it, accepting a hit inside
+// ~2.1 * margin and otherwise falling back to the operand's ENTRY-face
+// payload.  Its margin floor was derived from BoxGeometry's band alone,
+//   2 * (4*NEARZERO + 64*DBL_EPSILON*|exitLocal . n|) / rate,
+// ~= 8e-12 at unit scale -- which is BELOW the primitives' own floors as
+// soon as the operand is more than a few units across.  For a sphere the
+// crossover is R ~ 3.5:  at R = 4 the sphere's floor is
+// NEARZERO*(1 + |exit|_1 + 4) ~ 9e-12 against a margin of ~8.1e-12, so
+// RaySphereIntersection drops the probe's root as a self-hit, the probe
+// misses, and the composite reports the ENTRY face's payload on the FAR
+// cavity wall -- the ANTIPODAL point of the carving sphere.  Reproduced
+// end to end (UV (0.0049, 0.4798) reported where the truth is
+// (0.4950, 0.4794)); R = 1..3 were correct, which is how this survived
+// the debt-25 review rounds.
+//
+// The fix asks the operand instead of assuming: IObject/IGeometry::
+// SelfHitRootFloor reports the gate in the operand's own local frame, and
+// the probe maps it back by dividing by `stretch` (a ROOT floor is a range
+// along the local ray) rather than by `rate` (the box band is a plane
+// distance).  This test pins the end-to-end consequence at two radii on
+// either side of the crossover, plus a control at R = 1 where the OLD
+// margin was already sufficient.
+//
+// Geometry: a box of half-extent 20 minus a sphere of radius R centred on
+// the box's front face (world x = -20), so the sphere carves a cavity
+// whose FAR wall is the visible surface for a camera ray coming in along
+// +x.  The ray is deliberately a little off-axis so entry and exit UVs are
+// unambiguously different points.
+//
+// RED-PROOF: deleting the `SelfHitRootFloor` term from the margin in
+// AdoptCsgExitFacePayloadViaProbe fails the R = 4 and R = 20 money
+// assertions and leaves the R = 1 control passing.
+//
+static void RunCavityFarWallProbeContract( const Scalar R, const std::string& label )
+{
+	BoxGeometry* gA = new BoxGeometry( 40.0, 40.0, 40.0 );   // half-extent 20
+	SphereGeometry* gB = new SphereGeometry( R );
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oB->SetPosition( Point3( -20, 0, 0 ) );      // straddles A's front face
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, ( "Test27 (" + label + "): composite takes A/B operands" ).c_str() );
+	csg->FinalizeTransformations();
+
+	// Ordinary camera ray from well outside everything, slightly off the
+	// x axis so the near and far cavity walls carry clearly distinct UVs.
+	const Point3 o( -200.0, 0.13, 0.07 );
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( 1.0, 0.0007, 0.0003 ) );
+	Ray r( o, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, ( "Test27 (" + label + "): (control) ray hits the composite at all" ).c_str() );
+
+	// B's own ENTRY hit -- the NEAR cavity wall, and the payload the
+	// composite falls back to when the probe misses.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, ( "Test27 (" + label + "): (control) ray hits standalone B" ).c_str() );
+
+	// Sanity: the exit-designated branch fired -- the composite reports
+	// B's EXIT range, i.e. the far cavity wall.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-6 ),
+		( "Test27 (" + label + "): (sanity) composite range == B's exit range (range2)" ).c_str() );
+
+	// Oracle for the FAR wall: stand well clear of it (4R past the exit
+	// point, far outside any self-hit band at any radius here) and come
+	// back at it.  Deliberately NOT the production margin -- an oracle
+	// that reused the code under test could not fail.
+	const Point3 ptExit = r.PointAtLength( refBEntry.geometric.range2 );
+	const Point3 probeOrigin(
+		ptExit.x + dir.x * 4.0 * R,
+		ptExit.y + dir.y * 4.0 * R,
+		ptExit.z + dir.z * 4.0 * R );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, ( "Test27 (" + label + "): (control) direct probe hits B's exit face" ).c_str() );
+
+	// Sanity: near and far wall payloads are genuinely different (they are
+	// antipodal on the sphere, so this is a wide margin, not a hair).
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ),
+		( "Test27 (" + label + "): (sanity) far-wall ptCoord differs from near-wall ptCoord" ).c_str() );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ),
+		( "Test27 (" + label + "): (sanity) far-wall ptObjIntersec differs from near-wall ptObjIntersec" ).c_str() );
+
+	// MONEY: the composite's payload is the FAR wall's, not the near wall's.
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ),
+		( "Test27 (" + label + "): MONEY ASSERTION -- composite ptCoord matches the FAR cavity wall" ).c_str() );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ),
+		( "Test27 (" + label + "): MONEY ASSERTION -- composite ptObjIntersec matches the FAR cavity wall" ).c_str() );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ),
+		( "Test27 (" + label + "): composite ptCoord is NOT the near-wall (entry) payload" ).c_str() );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ),
+		( "Test27 (" + label + "): composite ptObjIntersec is NOT the near-wall (entry) payload" ).c_str() );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+void TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin clears the OPERAND's own scale-relative root floor (a8bef210 review P1)..." << std::endl;
+
+	// R = 1: below the crossover -- the box-band margin alone already
+	// cleared the sphere's floor, so this passes with or without the fix.
+	// It is the control that proves the two failing rows below are about
+	// the operand's SCALE, not about the scene.
+	RunCavityFarWallProbeContract( 1.0, "sphere R=1, control -- old margin sufficed" );
+	// R = 4: just past the crossover (sphere floor ~9e-12 vs box-band
+	// margin ~8.1e-12) -- the reported P1 radius.
+	RunCavityFarWallProbeContract( 4.0, "sphere R=4, just past the crossover" );
+	// R = 20: far past it (sphere floor ~4.1e-11, 5x the old margin).
+	RunCavityFarWallProbeContract( 20.0, "sphere R=20, far past the crossover" );
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -2999,6 +3138,7 @@ int main()
 	TestSubtraction_ExitProbe_ScaledOperandMarginUsesStretch();
 	TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit();
 	TestSubtraction_ExitProbe_AnisotropicStretchObliqueRayUsesExactRate();
+	TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor();
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }

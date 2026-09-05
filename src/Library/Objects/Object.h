@@ -196,6 +196,23 @@ namespace RISE
 			virtual const IMaterial* GetMaterial() const override;
 			virtual const IShader*   GetShader() const override { return pShader; }
 			virtual const IGeometry* GetGeometry() const override { return pGeometry; }
+
+			//! IObject::SelfHitRootFloor -- forward to the geometry, which is
+			//! the thing that actually owns the gate.  Our local frame IS the
+			//! geometry's object space (Object::IntersectRay hands the geometry
+			//! exactly this frame, with a unit-normalized local direction), so
+			//! the arguments pass straight through.  With no geometry assigned
+			//! the base default (the generic floor) is the honest answer.
+			virtual Scalar SelfHitRootFloor(
+				const Point3&  localOrigin,
+				const Vector3& localDir,
+				const Vector3& localNormal
+				) const override
+			{
+				return pGeometry
+					? pGeometry->SelfHitRootFloor( localOrigin, localDir, localNormal )
+					: IObject::SelfHitRootFloor( localOrigin, localDir, localNormal );
+			}
 			virtual const IRayIntersectionModifier* GetModifier() const override { return pModifier; }
 			virtual const IRadianceMap* GetRadianceMap() const override { return pRadianceMap; }
 

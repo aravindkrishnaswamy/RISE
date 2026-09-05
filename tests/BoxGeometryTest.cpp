@@ -38,6 +38,11 @@
 #include <cassert>
 #include <cmath>
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/CircularDiskGeometry.h"
+#include "../src/Library/Geometry/CylinderGeometry.h"
+#include "../src/Library/Geometry/InfinitePlaneGeometry.h"
+#include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Utilities/GeometricUtilities.h"
 
@@ -456,10 +461,285 @@ static void RunStandoffReentryContract( double scale )
 	std::cout << "  ...Passed!" << std::endl;
 }
 
+//////////////////////////////////////////////////////////////////////
+// SelfHitRootFloor contract, per geometry (adversarial review of
+// a8bef210).
+//
+// a8bef210 made every primitive's self-hit gate SCALE-RELATIVE, which
+// means a caller that deliberately stands a ray off a surface in order to
+// re-hit it can no longer hard-code a constant: the required standoff now
+// depends on the geometry, its size, and where on it the point sits.  A
+// sphere of radius 4 rejects roots below ~5e-12; a 1000-unit one below
+// ~2e-9.  `CSGObject::AdoptCsgExitFacePayloadViaProbe` is that caller, and
+// it was standing off by a BOX-derived band -- correct for a box operand,
+// short for every other primitive past a few units, at which point the
+// probe missed and the composite silently reported the operand's ENTRY
+// face payload on its EXIT face (the antipodal point of a carving sphere;
+// see CsgSurfacePayloadTest Test 27 for the end-to-end version).
+//
+// The fix is `IGeometry::SelfHitRootFloor( localOrigin, localDir,
+// localNormal )` -- each geometry reports its own gate -- and THIS test
+// pins each override against the intersection routine it claims to
+// describe, which is the only thing that keeps the two from drifting
+// apart again:
+//
+//   (a) a re-entry ray standing off by 2 x floor MUST hit that same face,
+//       at a range within ~2.1 x the standoff (not the far side);
+//   (b) one standing off by 0.5 x floor MUST NOT report that face -- it
+//       is inside the gate, so the routine drops the root and the ray
+//       either reports the far surface or misses entirely.
+//
+// (b) is the half that matters: it proves the reported floor is not
+// wildly over-stated (an over-stated floor would inflate CSG's same-face
+// acceptance radius and re-open decoy-payload adoption, the trade
+// CsgSurfacePayloadTest Test 15 guards).  Together they bracket the true
+// gate within a factor of 4.
+//
+// Each case is run at unit scale AND at 1000x, because a floor that is
+// accidentally absolute rather than scale-relative passes at one and
+// fails at the other.  BoxGeometry is included even though its own
+// standoff contract is pinned above, so that its `SelfHitRootFloor`
+// (which must additionally divide the per-axis band by the incidence
+// cosine) is checked against the same routine.
+//////////////////////////////////////////////////////////////////////
+
+// MEASURE the routine's real gate and compare the geometry's CLAIM to it.
+//
+// A fixed 2x-accept / 0.5x-reject bracket is a factor-of-four window, which
+// is too loose to catch the mistakes that actually happen here: dropping
+// the sphere's `+ radius` term, for instance, under-states its floor by at
+// most 2x (a point on a sphere of radius R has |o|_1 in [R, sqrt(3) R], so
+// the true and truncated floors are always within a factor of two) and
+// would sail through such a bracket.  So instead of asserting AROUND the
+// claim, BISECT for the smallest standoff the intersection routine actually
+// accepts, and compare the claim to that measurement:
+//
+//   floor >= sMin   -- never UNDER-states.  This is the property CSGObject's
+//                      exit-face probe depends on; violating it is the P1.
+//   floor <= 8 sMin -- never wildly OVER-states.  An inflated floor inflates
+//                      the probe's same-face acceptance radius and re-opens
+//                      decoy-payload adoption (CsgSurfacePayloadTest Test 15's
+//                      trade).  8x leaves room for the deliberate slack in a
+//                      conservative bound (the mesh / patch classes bound
+//                      every primitive at once via the bounding box) without
+//                      admitting an order of magnitude.
+//
+// `Accept(s)` is the probe the production caller performs: stand off `s`
+// past the face along the original ray direction, fire back, and require a
+// hit at range <= 2.1 s -- i.e. THIS face, not the far side (a rejected root
+// makes the ray report the far surface, or nothing at all on an open one).
+static bool AcceptsStandoff(
+	const IGeometry* pGeom,
+	const Point3& ptFace,
+	const Vector3& exitDir,
+	double standoff )
+{
+	const Vector3 probeDir( -exitDir.x, -exitDir.y, -exitDir.z );
+	const Point3 o( ptFace.x + exitDir.x * standoff,
+	                ptFace.y + exitDir.y * standoff,
+	                ptFace.z + exitDir.z * standoff );
+	RayIntersectionGeometric ri = MakeIntersection( o, probeDir );
+	pGeom->IntersectRay( ri, true, true, false );
+	return ri.bHit && ri.range <= 2.1 * standoff;
+}
+
+static void CheckFloorBrackets(
+	const IGeometry* pGeom,
+	const char* what,
+	const Point3& ptFace,
+	const Vector3& exitDir,       // the direction the original ray was travelling
+	const Vector3& faceNormal,    // outward unit normal of the face being re-hit
+	double scale )
+{
+	const Vector3 probeDir( -exitDir.x, -exitDir.y, -exitDir.z );
+	const double floorAt = pGeom->SelfHitRootFloor( ptFace, probeDir, faceNormal );
+	assert( floorAt > 0.0 );
+
+	// Bracket the bisection: `lo` must be rejected, `hi` accepted.  Both are
+	// generous (1e-18 is far below every gate in play; 1e-5 x scale is far
+	// above them all, and still far below any feature these test geometries
+	// have) so the bisection never runs on an unbracketed interval.
+	double lo = 1e-18 * ( scale > 1.0 ? scale : 1.0 );
+	double hi = 1e-5  * ( scale > 1.0 ? scale : 1.0 );
+	if( AcceptsStandoff( pGeom, ptFace, exitDir, lo ) ) {
+		std::cout << "    FAILED bracket: lo accepted for " << what << " scale " << scale << std::endl;
+	}
+	assert( !AcceptsStandoff( pGeom, ptFace, exitDir, lo ) );
+	if( !AcceptsStandoff( pGeom, ptFace, exitDir, hi ) ) {
+		std::cout << "    FAILED bracket: hi rejected for " << what << " scale " << scale << std::endl;
+	}
+	assert( AcceptsStandoff( pGeom, ptFace, exitDir, hi ) );
+
+	// 200 halvings of the log interval is far more than enough to pin the
+	// crossing to well inside the 8x window asserted below.
+	for( int i = 0; i < 200; i++ ) {
+		const double mid = std::sqrt( lo * hi );
+		if( AcceptsStandoff( pGeom, ptFace, exitDir, mid ) ) {
+			hi = mid;
+		} else {
+			lo = mid;
+		}
+		if( hi <= lo * 1.000001 ) {
+			break;
+		}
+	}
+	const double sMin = hi;   // smallest standoff the routine actually accepts
+
+	// 0.999, not 1.0: the bisection measures the smallest standoff whose
+	// RECOMPUTED root survives the gate, and that root is recomputed from
+	// coordinates carrying their own ulp of round-off, so the measurement
+	// lands a few parts in 1e5 ABOVE the analytic gate (e.g. 9.00036e-12
+	// measured against the sphere's exact 9e-12 at R = 4).  A 0.1 % slack
+	// absorbs that and nothing else -- every mistake this assertion exists
+	// to catch is a factor of two or more.
+	if( !( floorAt >= sMin * 0.999 ) ) {
+		std::cout << "    FAILED: claimed floor UNDER-states the routine's gate: " << what
+		          << " scale " << scale << " claim " << floorAt << " measured " << sMin << std::endl;
+	}
+	assert( floorAt >= sMin * 0.999 );
+
+	if( !( floorAt <= 8.0 * sMin ) ) {
+		std::cout << "    FAILED: claimed floor OVER-states the routine's gate: " << what
+		          << " scale " << scale << " claim " << floorAt << " measured " << sMin << std::endl;
+	}
+	assert( floorAt <= 8.0 * sMin );
+
+	// And the contract as the caller uses it: standing off by the claim (with
+	// the production probe's own 2x headroom) re-hits the SAME face.
+	if( !AcceptsStandoff( pGeom, ptFace, exitDir, 2.0 * floorAt ) ) {
+		std::cout << "    FAILED: 2x the claimed floor does not re-hit the face: " << what
+		          << " scale " << scale << std::endl;
+	}
+	assert( AcceptsStandoff( pGeom, ptFace, exitDir, 2.0 * floorAt ) );
+}
+
+static void RunSelfHitRootFloorContract( double scale )
+{
+	std::cout << "Testing SelfHitRootFloor per-geometry contract (scale " << scale << ")..." << std::endl;
+
+	// Ray direction used throughout: straight down -Z, so the exit face
+	// of each closed primitive is its -Z pole / face, outward normal
+	// (0,0,-1).  The exact surface point is read from the geometry's own
+	// `range2` rather than assumed, so nothing here depends on a
+	// hand-computed coordinate.
+	const Vector3 dir( 0.0, 0.0, -1.0 );
+	const Vector3 nOut( 0.0, 0.0, -1.0 );
+	const Point3  camOrigin( 0.0, 0.0, 3.0 * scale );
+
+	// --- SphereGeometry -> RaySphereIntersection ---
+	// Radius deliberately > ~3.5 at unit scale: that is exactly where the
+	// sphere's floor (NEARZERO*(1+|o|_1+R)) overtakes the box band the CSG
+	// probe used to assume, i.e. the P1's own crossover.
+	{
+		SphereGeometry* g = new SphereGeometry( 4.0 * scale );
+		RayIntersectionGeometric riCam = MakeIntersection( camOrigin, dir );
+		// The camera origin must be outside a 4-unit sphere: push it out.
+		const Point3 farOrigin( 0.0, 0.0, 12.0 * scale );
+		riCam = MakeIntersection( farOrigin, dir );
+		g->IntersectRay( riCam, true, true, true );
+		assert( riCam.bHit );
+		const Point3 ptExit = Ray( farOrigin, dir ).PointAtLength( riCam.range2 );
+		CheckFloorBrackets( g, "sphere R=4", ptExit, dir, nOut, scale );
+		safe_release( g );
+	}
+
+	// --- CylinderGeometry (capped solid) -> IntersectCappedSolid ---
+	// Axis along Z so the -Z CAP is the exit face; radius 4 puts it past
+	// the same crossover.
+	{
+		CylinderGeometry* g = new CylinderGeometry( 'z', 4.0 * scale, 6.0 * scale, true );
+		const Point3 farOrigin( 0.5 * scale, 0.0, 12.0 * scale );
+		RayIntersectionGeometric riCam = MakeIntersection( farOrigin, dir );
+		g->IntersectRay( riCam, true, true, true );
+		assert( riCam.bHit );
+		const Point3 ptExit = Ray( farOrigin, dir ).PointAtLength( riCam.range2 );
+		CheckFloorBrackets( g, "capped cylinder R=4", ptExit, dir, nOut, scale );
+		safe_release( g );
+	}
+
+	// --- BoxGeometry -> DropSelfHitRoot's per-axis band / |cos| ---
+	// Both normal AND oblique incidence, since the box is the one
+	// geometry whose floor is angle-dependent.
+	{
+		BoxGeometry* g = new BoxGeometry( 8.0 * scale, 8.0 * scale, 8.0 * scale );
+		const Vector3 dirs[2] = {
+			Vector3( 0.0, 0.0, -1.0 ),
+			Vector3Ops::Normalize( Vector3( 0.0, 0.8, -0.6 ) )
+		};
+		for( int k = 0; k < 2; k++ ) {
+			const Vector3& d = dirs[k];
+			const Point3 o( 0.0, -d.y * ( 12.0 * scale / std::fabs( d.z ) ), 12.0 * scale );
+			RayIntersectionGeometric riCam = MakeIntersection( o, d );
+			g->IntersectRay( riCam, true, true, true );
+			assert( riCam.bHit );
+			const Point3 ptExit = Ray( o, d ).PointAtLength( riCam.range2 );
+			CheckFloorBrackets( g, k == 0 ? "box, normal incidence" : "box, oblique incidence",
+				ptExit, d, nOut, scale );
+		}
+		safe_release( g );
+	}
+
+	// --- InfinitePlaneGeometry -> RayPlaneIntersection ---
+	// The plane and the disk take IGeometry's DEFAULT floor, so these two
+	// rows are what pins that default against RayPlaneIntersection.  The
+	// probe point sits far out IN the plane (x, y ~ 8*scale), where the
+	// routine's |o|_1 coordinate scale is eight times the perpendicular
+	// one -- so a "tightening" of either side to the perpendicular
+	// component alone (the shape an adversarial review of a8bef210
+	// proposed, and which measurement rejected: see the note in
+	// RayPlaneIntersection.cpp) shows up here as an over-statement rather
+	// than passing silently.
+	{
+		InfinitePlaneGeometry* g = new InfinitePlaneGeometry( 1.0, 1.0 );
+		const Point3 ptFace( 8.0 * scale, 8.0 * scale, 0.0 );
+		CheckFloorBrackets( g, "infinite plane, offset in-plane", ptFace, dir, nOut, scale );
+		safe_release( g );
+	}
+
+	// --- CircularDiskGeometry -> RayPlaneIntersection ---
+	{
+		CircularDiskGeometry* g = new CircularDiskGeometry( 16.0 * scale, 'z' );
+		const Point3 ptFace( 8.0 * scale, 8.0 * scale, 0.0 );
+		CheckFloorBrackets( g, "circular disk, offset in-plane", ptFace, dir, nOut, scale );
+		safe_release( g );
+	}
+
+	// --- TriangleMeshGeometryIndexed -> RayTriangleIntersection ---
+	// One big triangle in the z = 0 plane whose FAR corner carries a much
+	// larger coordinate than the first-stored vertex -- the P2-2 shape:
+	// charging vPt1's L1 alone would under-state the floor here, and (a)
+	// would then pass at a standoff the routine actually rejects.
+	{
+		TriangleMeshGeometryIndexed* g = new TriangleMeshGeometryIndexed(
+			true,    // double sided
+			true );  // use face normals
+		g->BeginIndexedTriangles();
+		g->AddVertex( Point3( -1.0 * scale, -1.0 * scale, 0.0 ) );
+		g->AddVertex( Point3( 40.0 * scale, -1.0 * scale, 0.0 ) );
+		g->AddVertex( Point3( -1.0 * scale, 40.0 * scale, 0.0 ) );
+		g->AddTexCoord( Point2( 0, 0 ) );
+		g->AddTexCoord( Point2( 1, 0 ) );
+		g->AddTexCoord( Point2( 0, 1 ) );
+		IndexedTriangle t;
+		t.iVertices[0] = 0; t.iVertices[1] = 1; t.iVertices[2] = 2;
+		t.iCoords[0]   = 0; t.iCoords[1]   = 1; t.iCoords[2]   = 2;
+		g->AddIndexedTriangle( t );
+		g->DoneIndexedTriangles();
+		const Point3 ptFace( 1.0 * scale, 1.0 * scale, 0.0 );
+		CheckFloorBrackets( g, "indexed triangle, far corner dominates", ptFace, dir, nOut, scale );
+		safe_release( g );
+	}
+
+	std::cout << "  ...Passed!" << std::endl;
+}
+
 int main()
 {
 	RunStandoffReentryContract( 1.0 );
 	RunStandoffReentryContract( 1000.0 );
+
+	RunSelfHitRootFloorContract( 1.0 );
+	RunSelfHitRootFloorContract( 1000.0 );
 
 	RunFrontFaceIngoingSweep( 1.0 );
 	RunBackFaceIngoingOutgoing( 1.0 );

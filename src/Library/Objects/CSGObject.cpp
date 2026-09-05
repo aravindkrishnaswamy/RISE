@@ -553,6 +553,41 @@ namespace
 		// With NO usable exit normal (a geometry that leaves vGeomNormal2
 		// unset) the floor degrades to the bare doubled band at rate 1:
 		// no coordinate term at all -- never the max-component formula.
+		//
+		// THIRD floor (2026-09-05, adversarial review of a8bef210 -- the P1):
+		// the band above is the BOX's gate, and it was standing in for every
+		// operand.  Since a8bef210 the OTHER primitives gained scale-relative
+		// ROOT floors of their own -- a sphere rejects roots below
+		// NEARZERO*(1 + |o|_1 + radius), a quadric/mesh below
+		// NEARZERO*(1 + |o|_1) -- and those OVERTAKE the box band as soon as
+		// the operand is more than a few units across (sphere R >~ 3.5,
+		// ellipsoid semi-axis >~ 8).  Past that the probe stood off by LESS
+		// than the operand's own gate, the operand dropped the probe's root as
+		// a self-hit, and every such CSG boundary silently took the
+		// entry-face-payload fallback: measured end to end on
+		// `CSG_SUBTRACTION(box half-extent 20, sphere R=4 at its front face)`,
+		// the far cavity wall reported the ENTRY face's UV (0.0049, 0.4798)
+		// instead of the truth (0.4950, 0.4794) -- the ANTIPODAL point, i.e. a
+		// texture read from the opposite side of the carving sphere.  R = 1..3
+		// were correct, which is why this survived the debt-25 rounds.
+		//
+		// So ASK the operand instead of assuming: IObject::SelfHitRootFloor
+		// (IGeometry::SelfHitRootFloor under it, CSGObject's own max-over-
+		// operands override for a nested composite) reports the gate in the
+		// operand's OWN local frame, as a RANGE along a unit local direction.
+		//
+		// The two terms map back differently and must not be conflated:
+		//   * the box BAND is a PLANE DISTANCE, and a standoff of `m` along
+		//     `dir` covers `m * rate` of plane distance -- divide by `rate`;
+		//   * a ROOT floor is a RANGE, and a standoff of `m` along `dir` is
+		//     `m * stretch` of local range -- divide by `stretch`.
+		// Both keep the same 2x headroom, and the 1/20 grazing clamp stays on
+		// `rate` (the geometry-side query does its own clamping where its gate
+		// is angle-dependent -- see BoxGeometry::SelfHitRootFloor).  Taking
+		// the max of the two is deliberately conservative: for a box operand
+		// the two terms are algebraically identical (band/|cos| / stretch ==
+		// band / rate), and for every other operand the box band remains a
+		// harmless lower bound that nothing depends on.
 		Scalar selfHitFloor = Scalar(8) * NEARZERO;
 		{
 			const Matrix4 mxInv = operand->GetFinalInverseTransformMatrix();
@@ -570,6 +605,11 @@ namespace
 					Scalar(0.05) * stretch );
 				const Scalar bandLocal = Scalar(4) * NEARZERO + kUlpFactor * alongNormalLocal;
 				selfHitFloor = Scalar(2) * bandLocal / rate;
+
+				const Vector3 dirLocalUnit( dirLocal.x / stretch, dirLocal.y / stretch, dirLocal.z / stretch );
+				const Vector3 nLocalUnit( nLocalUnnorm.x / nLocalMag, nLocalUnnorm.y / nLocalMag, nLocalUnnorm.z / nLocalMag );
+				const Scalar rootFloorLocal = operand->SelfHitRootFloor( exitLocal, dirLocalUnit, nLocalUnit );
+				selfHitFloor = std::max( selfHitFloor, Scalar(2) * rootFloorLocal / stretch );
 			}
 		}
 		// (The r6 paragraph above's "~2.1e-12 acceptance window" figure is
@@ -1746,4 +1786,66 @@ void CSGObject::ResetRuntimeData() const
 	if( pObjectB ) {
 		pObjectB->ResetRuntimeData();
 	}
+}
+
+// IObject::SelfHitRootFloor for a composite -- see the header's note.
+//
+// Frame bookkeeping (the whole content of this function): the arguments are in
+// THIS composite's local frame; a child geometry's gate is expressed in the
+// CHILD's local frame.  For a child whose inverse transform is M^-1:
+//
+//   * the origin maps as a point;
+//   * the UNIT direction maps to M^-1 d, whose LENGTH `s` is child-local units
+//     per unit of ours along that direction -- so it must be re-normalized
+//     before the query (the interface takes a unit direction) and the child's
+//     answer, a range in child units, comes back to ours by DIVIDING by `s`;
+//   * the normal maps with the transpose of the FORWARD matrix (normals go
+//     world->local that way), re-normalized.
+//
+// A child whose transform collapses this direction (s ~ 0) is skipped rather
+// than divided by: it cannot be re-hit along this ray at all, so it contributes
+// no requirement.  Recursion terminates on the operand tree, which AssignObjects
+// keeps acyclic.
+Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+{
+	// Seeded at ZERO, deliberately NOT at IObject's generic
+	// `NEARZERO * (1 + |localOrigin|_1)` default: a composite has no surface
+	// of its own, so it has no gate of its own to contribute, and charging
+	// the generic one would re-import exactly the TRANSVERSE-coordinate
+	// coupling the probe's r4 fix removed -- at the world X = 1e12 of
+	// CsgSurfacePayloadTest's Test 14 that default is a full WORLD UNIT,
+	// which inflates the probe margin (and with it the same-face acceptance
+	// radius) far enough to adopt a decoy face's payload.  Every real
+	// requirement comes from a leaf, and a leaf reports its own gate against
+	// the coordinate that actually matters to it (a box reads only the face
+	// axis; see BoxGeometry::SelfHitRootFloor).
+	Scalar worst = Scalar(0);
+
+	IObjectPriv* const operands[2] = { pObjectA, pObjectB };
+	for( int i = 0; i < 2; i++ ) {
+		IObjectPriv* const child = operands[i];
+		if( !child ) {
+			continue;
+		}
+		const Matrix4 mxInv = child->GetFinalInverseTransformMatrix();
+		const Vector3 dChildUnnorm = Vector3Ops::Transform( mxInv, localDir );
+		const Scalar s = Vector3Ops::Magnitude( dChildUnnorm );
+		if( !( s > NEARZERO ) ) {
+			continue;
+		}
+		const Point3 oChild = Point3Ops::Transform( mxInv, localOrigin );
+		const Vector3 dChild( dChildUnnorm.x / s, dChildUnnorm.y / s, dChildUnnorm.z / s );
+
+		const Matrix4 mxFwdT = Matrix4Ops::Transpose( child->GetFinalTransformMatrix() );
+		const Vector3 nChildUnnorm = Vector3Ops::Transform( mxFwdT, localNormal );
+		const Scalar nMag = Vector3Ops::Magnitude( nChildUnnorm );
+		const Vector3 nChild = ( nMag > NEARZERO )
+			? Vector3( nChildUnnorm.x / nMag, nChildUnnorm.y / nMag, nChildUnnorm.z / nMag )
+			: localNormal;
+
+		const Scalar floorChild = child->SelfHitRootFloor( oChild, dChild, nChild );
+		worst = std::max( worst, floorChild / s );
+	}
+
+	return worst;
 }

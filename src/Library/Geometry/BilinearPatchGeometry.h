@@ -104,6 +104,14 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const;
 
+			//! IGeometry::SelfHitRootFloor -- RayBilinearPatchIntersection's
+			//! debt-21 gate applies to the ONE patch being tested; this
+			//! geometry holds a whole tree of them and the query names only a
+			//! point, so bound them all at once via
+			//! Geometry::BoundingBoxRootFloor (see its note).
+			//! Direction-independent.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const;
+
 			// From TreeElementProcessor
 			typedef const BilinearPatch*		MYOBJ;
 				void RayElementIntersection( RayIntersectionGeometric& ri, const MYOBJ elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const;

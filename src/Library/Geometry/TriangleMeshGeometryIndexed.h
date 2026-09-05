@@ -198,6 +198,24 @@ namespace RISE
 
 			SurfaceDerivatives ComputeSurfaceDerivatives( const Point3& objSpacePoint, const Vector3& objSpaceNormal ) const override;
 
+			//! IGeometry::SelfHitRootFloor -- RayTriangleIntersection's gate,
+			//! `NEARZERO * (1 + |origin|_1 + max vertex |.|_1)`, is per
+			//! TRIANGLE and the query names only a point, so bound every
+			//! triangle at once via Geometry::BoundingBoxRootFloor (see its
+			//! note).  Direction-independent.
+			//!
+			//! No in-tree caller needs this today -- CSGObject's exit-face
+			//! probe is the only consumer and a mesh operand never reaches it
+			//! (a mesh publishes an infinite `range2`, which the probe's own
+			//! guard rejects up front) -- but the DEFAULT would under-state
+			//! the gate by the whole vertex term, so leaving it unreported
+			//! would be a live trap for the next caller.
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
+			{
+				(void)localDir; (void)localNormal;
+				return Geometry::BoundingBoxRootFloor( GenerateBoundingBox(), localOrigin );
+			}
+
 			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin on
 			//! the mesh family (design doc §7).  Reads the per-vertex AO bake
 			//! for `radiusFraction`, building it on this first call if it
