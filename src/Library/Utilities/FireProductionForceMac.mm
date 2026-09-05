@@ -10,6 +10,7 @@
 #import <Metal/Metal.h>
 
 #include "FireProductionForce.h"
+#include "RISECBOR64.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1557,5 +1558,10 @@ kernel void snapshot_momentum(device const float* momentum [[buffer(0)]],device 
 		FireProductionResidentForceDiagnostics unpublishedDiagnostics;
 		return AdvanceFireProductionFrozenForceMetalImpl(forceRequest,false,&divergenceTargetPerS,
 			&result,0,unpublishedForce,unpublishedDiagnostics,error);
+	}
+	std::string FireProductionForceMetalKernelSourceSHA256()
+	{
+		const char* source=ForceSource();
+		return RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(source),std::strlen(source));
 	}
 }

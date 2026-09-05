@@ -24,8 +24,10 @@ qualified owner. No new replay or fixed-k selection is claimed yet.
 ## Production placement and publication
 
 The owner binds an ordered, length-described copy of its actual private ingress
-buffers to a v2 root, together with the compiled producer source SHA and function
-inventory SHA. No CPU-produced physics authority is admitted. Domain-separated
+buffers to a v2 root, together with the compiled producer/FCT/force/projection/
+payload library source SHAs and producer function inventory SHA. Separately
+adapted force and acceptance controls are included by their exact bit patterns.
+No CPU-produced physics authority is admitted. Domain-separated
 internal tokens derive from that root and the existing attempt/stage/immediate-
 parent identities. Tokens are protocol identities, **not** payload digests; their
 format is `qualified-kernel-stage-token`, version 2. Internal arithmetic is
@@ -51,11 +53,17 @@ per tree (4-KiB leaves, 32-byte hashes, geometric interior sum). The retained
 full-owner working set is not claimed to fit the historical two-GiB fixture cap.
 
 The r190 gate remains primary. Diagnostic versus production sealing additionally
-bit-compares 36 numerical fields; all match on the qualified fixture. A separate
+bit-compares 41 numerical fields (including face densities and both commuting
+witnesses). A separate
 CPU reconstruction of the **complete terminal packet** matches the device root;
 a bit mutation changes it and a copied result loses the root capability. The
 stale/order/forged-parent/callback/atomic-publication/policy/unverified-buffer and
 residency REDs exercise production token mode, not just the diagnostic path.
+Placement review found a projected-replay summary-mode exclusion, omitted
+publication siblings, and missing ingress controls/library identities. The
+fixes add all five library hashes, seven scalar controls plus the iteration cap,
+new-directory finalization on the sibling commands, and CPU publication REDs.
+Each library identity and each omitted control has an independent mutation test.
 
 Exploratory tier-8 profile (three accepted cold-prefix steps, not an onset run):
 42 producer commands. EOS mean 553.579 ms, target terms mean 112.951 ms;

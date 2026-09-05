@@ -10,6 +10,7 @@
 #define FIREPRODUCTIONADVECTION_
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@ namespace RISE
 		std::uint64_t payloadBytes=0u;
 		std::string rootSHA256;
 	};
+	//! Ordered producer/FCT/force/projection/payload library source identities.
+	std::string FireProductionOwnerKernelSetSHA256(const std::array<std::string,5>& sources);
 	//! Parallelism is execution metadata, never part of the digest preimage.
 	bool FireProductionPayloadDigestCPU(const unsigned char* bytes,std::size_t count,
 		unsigned int parallelism,FireProductionPayloadDigestV2& result,std::string* error=0);

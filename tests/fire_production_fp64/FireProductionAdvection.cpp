@@ -20,6 +20,17 @@
 
 namespace RISEFireProductionFP64
 {
+	std::string FireProductionOwnerKernelSetSHA256(const std::array<std::string,5>& sources)
+	{
+		const char* labels[]={"producer", "fct", "force", "projection", "payload"};
+		std::string manifest="rise.owner.kernel-set.v2\nproducer_payload_metal=3.2\nfct_force_projection_metal=SDK_default\nphysics_math=safe\npayload_math=SDK_default_integer_only\n";
+		for(std::size_t i=0u;i<sources.size();++i){
+			if(sources[i].size()!=64u||!std::all_of(sources[i].begin(),sources[i].end(),
+				[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');}))return std::string();
+			manifest+=std::string(labels[i])+"="+sources[i]+"\n";
+		}
+		return RISE::RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(manifest.data()),manifest.size());
+	}
 	bool FireProductionPayloadDigestCPU(const unsigned char* bytes,std::size_t count,
 		unsigned int parallelism,FireProductionPayloadDigestV2& result,std::string* error)
 	{

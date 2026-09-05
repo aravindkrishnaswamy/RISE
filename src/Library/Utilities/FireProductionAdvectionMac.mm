@@ -7380,6 +7380,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			const FireProductionProjectedHeunMetalOwnerRequest& request_;
 			ResidentTransportMetalContext& context_;
 			id<MTLBuffer> inputPayloadDigest_=nil;
+			std::string qualifiedKernelSetSHA256_;
 			SingleStageFCTMetalContext& fct_;
 			FireProductionProjectionShape shape_;
 			std::size_t cells_,allFaces_,boundaryFaces_;
@@ -8451,6 +8452,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			eosThermo_=copyIn(packedEOSThermo.data(),packedEOSThermo.size()*sizeof(float));
 			transportData_=copyIn(packedTransport.data(),packedTransport.size()*sizeof(float));
 			ambient_=copyIn(flux.ambient.data(),9u*sizeof(float));
+			// These authored controls enter separately compiled force/projection
+			// adapters later. Bind their exact bit representations at ingress too.
+			const std::array<float,7> adapterControls={{request_.ambientDensityKGPerM3,
+				request_.vremanCoefficient,request_.gravityMPerS2[0],request_.gravityMPerS2[1],
+				request_.gravityMPerS2[2],request_.projectionTolerancePerS,request_.endpointVelocityToleranceMPerS}};
+			copyIn(adapterControls.data(),sizeof(adapterControls));
+			copyIn(&request_.maximumPicardIterations,sizeof(request_.maximumPicardIterations));
 			physicalBasis_=copyIn(physicalBasis.data(),physicalBasis.size()*sizeof(float));
 			advectiveBasis_=copyIn(flux.nullspaceBasis.data(),flux.nullspaceBasis.size()*sizeof(float));
 			projector_=copyIn(flux.coordinateProjector.data(),flux.coordinateProjector.size()*sizeof(float));
@@ -8483,10 +8491,17 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			// Canonical descriptor fixes input segment order and lengths and binds
 			// the actually compiled producer kernel set. Payload bytes are copied
 			// from the private buffers consumed by the owner, not reserialized Q.
-			std::string descriptor="rise.owner.device-inputs.v2\n"+
-				context_.eosLogIdentity.librarySourceSHA256+"\n"+
+			auto sourceSHA=[](const char* source){return RISECBOR64::SHA256Hex(
+				reinterpret_cast<const unsigned char*>(source),std::strlen(source));};
+			qualifiedKernelSetSHA256_=FireProductionOwnerKernelSetSHA256({{
+				context_.eosLogIdentity.librarySourceSHA256,sourceSHA(MetalRemapContext::SingleStageFCTSource()),
+				FireProductionForceMetalKernelSourceSHA256(),FireProductionProjectionMetalKernelSourceSHA256(),
+				sourceSHA(PayloadMerkleSource())}});
+			if(qualifiedKernelSetSHA256_.empty())return false;
+			std::string descriptor="rise.owner.device-inputs.v2\n"+qualifiedKernelSetSHA256_+"\n"+
 				context_.eosLogIdentity.libraryFunctionSetSHA256+"\n";
 			std::size_t inputBytes=0u;for(const Pair& pair:copies){
+				if(!pair.upload||!pair.device)return false;
 				if(pair.bytes>std::numeric_limits<std::size_t>::max()-inputBytes)return false;
 				inputBytes+=pair.bytes;descriptor+=std::to_string(pair.bytes)+"\n";}
 			descriptor+="end\n";
@@ -9047,7 +9062,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				for(unsigned int i=0u;i<32u;++i){text+=alphabet[root[i]>>4u];text+=alphabet[root[i]&15u];}return text;};
 			result.intermediateSealFormat=context_.productionStageTokens?"qualified-kernel-stage-token":"legacy-resident-fnv64";
 			result.intermediateDigestVersion=context_.productionStageTokens?2u:1u;
-			result.qualifiedKernelSetSHA256=context_.eosLogIdentity.librarySourceSHA256;
+			result.qualifiedKernelSetSHA256=qualifiedKernelSetSHA256_;
 			result.inputPayloadRootSHA256=hexRoot(bytes+publicationBytes-32u);
 			result.publicationPayloadRootSHA256=hexRoot(bytes+publicationBytes);
 			result.publicationPayloadBytes=publicationBytes;

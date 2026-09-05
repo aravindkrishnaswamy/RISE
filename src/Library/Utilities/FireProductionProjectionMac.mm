@@ -10,6 +10,7 @@
 #import <Metal/Metal.h>
 
 #include "FireProductionProjection.h"
+#include "RISECBOR64.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1691,5 +1692,10 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 			}
 			return false;
 		}
+	}
+	std::string FireProductionProjectionMetalKernelSourceSHA256()
+	{
+		const char* source=ProjectionSource();
+		return RISECBOR64::SHA256Hex(reinterpret_cast<const unsigned char*>(source),std::strlen(source));
 	}
 }

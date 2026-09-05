@@ -2357,6 +2357,45 @@ namespace
 		for(const auto& file:files)if(!PublishPayloadMerkleSidecar(file,caseRecordId,error))return false;
 		return true;
 	}
+	bool OnsetPublicationModeAccepted(bool legacy,bool projected,bool compatible,bool single)
+	{
+		return legacy||projected||compatible||single;
+	}
+	int RunPayloadPublicationFixture()
+	{
+		const auto root=std::filesystem::temp_directory_path()/("rise-r204-publication-"+
+			std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+		std::filesystem::create_directories(root/"budgets");
+		const auto payload=root/"budgets"/"fixture.bin";
+		{std::ofstream output(payload,std::ios::binary);output<<"published payload";}
+		std::string error;const std::string identity(64u,'a');
+		if(PublishPayloadMerkleSidecar(payload,"invalid",error)||
+			std::filesystem::exists(payload.string()+".payload-v2.json"))return 98;
+		if(!SealPublishedRunDirectory(root,identity,error)||
+			!std::filesystem::is_regular_file(payload.string()+".payload-v2.json")||
+			!SealPublishedRunDirectory(root,identity,error)||
+			std::filesystem::exists(payload.string()+".payload-v2.json.payload-v2.json"))return 98;
+		{std::ofstream pending(root/"not_complete.pending");pending<<"partial";}
+		if(SealPublishedRunDirectory(root,identity,error))return 98;
+		std::filesystem::remove(root/"not_complete.pending");
+#if !defined(_WIN32)
+		std::filesystem::create_symlink(payload,root/"alias");
+		if(SealPublishedRunDirectory(root,identity,error))return 98;
+		std::filesystem::remove(root/"alias");
+#endif
+		if(!OnsetPublicationModeAccepted(false,true,false,false)||
+			OnsetPublicationModeAccepted(false,false,false,false))return 98;
+		std::array<std::string,5> libraries;
+		for(std::size_t i=0u;i<libraries.size();++i)libraries[i]=std::string(64u,char('a'+i));
+		const std::string kernelRoot=FireProductionOwnerKernelSetSHA256(libraries);
+		if(kernelRoot.size()!=64u)return 98;
+		for(std::size_t i=0u;i<libraries.size();++i){auto mutant=libraries;mutant[i][0]='0';
+			if(FireProductionOwnerKernelSetSHA256(mutant)==kernelRoot)return 98;}
+		libraries[0].clear();if(!FireProductionOwnerKernelSetSHA256(libraries).empty())return 98;
+		std::fprintf(stdout,"PUBLICATION_RED projected_mode=pass all_disabled_refused=pass invalid_case=pass "
+			"pending_refused=pass symlink_refused=platform recursive_sidecars=absent kernel_library_mutants=5 root=%s\n",root.string().c_str());
+		return 0;
+	}
 
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
@@ -6125,7 +6164,8 @@ namespace
 		for(std::size_t sample=0u;sample<measuredMS.size();++sample)
 			result<<"sorted_wall_ms_"<<sample<<' '<<measuredMS[sample]<<'\n';
 		result<<"p95_max_order_statistic_ms "<<measuredMS.back()<<'\n';
-		if(!result)return 94;
+		result.close();if(!result)return 94;
+		if(!SealPublishedRunDirectory(outputDirectory,checkpoint.values.caseRecordId,error))return 94;
 		std::fprintf(stderr,"PRODUCTION_FRAME_WRITE_BENCHMARK p95_ms=%.17g frame_sha256=%s\n",
 			measuredMS.back(),referenceDigest.c_str());return 0;
 	}
@@ -6860,6 +6900,7 @@ namespace
 			summary<<"frame_"<<std::setw(5)<<std::setfill('0')<<frame<<"_sha256="<<
 				frameDigests[frame]<<"\n";
 		summary.close();
+		if(!summary||!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error))return 98;
 		std::fprintf(stderr,"PRODUCTION_TEMPORAL_CAPSTONE tier=%.0f time=%.17g steps=%zu "
 			"frames=%zu wall_s=%.17g summary=%s\n",resolutionTier,result.simulatedTimeS,
 			result.acceptedTimeStepHistoryS.size(),frameDigests.size(),wallS,
@@ -6918,6 +6959,7 @@ namespace
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
 		const bool unchanged=DigestFile(checkpointPath)==digest;
+		if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error))return 94;
 		std::fprintf(stderr,"OWNER_EOS_DIAGNOSTIC_END solver_accepted=%d checkpoint_unchanged=%d "
 			"migration_authority=false error=%s\n",result.succeeded?1:0,unchanged?1:0,
 			result.structuredError.c_str());
@@ -7205,11 +7247,11 @@ namespace
 			<<"reference_composition_candidate_event_sha256 "<<
 				DigestFile(exactObservation.string()+".event.v1")<<"\n";
 		summary.close();
-		if(!summary||(!sealedLegacyReplay&&!persistence.compatibleMomentumDiagnostic&&
-			!persistence.singleStageFCTDiagnostic)||DigestFile(trajectory).empty()||
+		if(!summary||!OnsetPublicationModeAccepted(sealedLegacyReplay,sealedProjectedReplay,
+			persistence.compatibleMomentumDiagnostic,persistence.singleStageFCTDiagnostic)||DigestFile(trajectory).empty()||
 			DigestFile(retryTrajectory).empty()||
 			!capturedThresholdBundlesComplete||
-			(sealedLegacyReplay&&(DigestFile(outputDirectory/"from_zero_identity.v1").empty()||
+			((sealedLegacyReplay||sealedProjectedReplay)&&(DigestFile(outputDirectory/"from_zero_identity.v1").empty()||
 				DigestFile(exactObservation).empty()||
 				DigestFile(exactObservation.string()+".column.csv").empty()||
 				DigestFile(exactObservation.string()+".source_context.csv").empty()||
@@ -11414,6 +11456,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		const std::string suffix="_"+std::to_string(axis);
 		sealField(("M"+suffix).c_str(),ownerObserved.momentumKGPerM2S[axis],ownerResidentDiagnostics.momentumKGPerM2S[axis]);
 		sealField(("u"+suffix).c_str(),ownerObserved.velocityMPerS[axis],ownerResidentDiagnostics.velocityMPerS[axis]);
+		sealField(("face_density"+suffix).c_str(),ownerObserved.projection.faceDensityKGPerM3[axis],ownerResidentDiagnostics.projection.faceDensityKGPerM3[axis]);
 		sealField(("provisional_M"+suffix).c_str(),ownerObserved.provisionalMomentumKGPerM2S[axis],ownerResidentDiagnostics.provisionalMomentumKGPerM2S[axis]);
 		sealField(("advection"+suffix).c_str(),ownerObserved.heunAdvectionMomentumRateKGPerM2S2[axis],ownerResidentDiagnostics.heunAdvectionMomentumRateKGPerM2S2[axis]);
 		sealField(("buoyancy"+suffix).c_str(),ownerObserved.heunBuoyancyMomentumRateKGPerM2S2[axis],ownerResidentDiagnostics.heunBuoyancyMomentumRateKGPerM2S2[axis]);
@@ -11423,6 +11466,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		sealField(("accepted_target_R"+suffix).c_str(),ownerObserved.acceptedTargetPerS[axis],ownerResidentDiagnostics.acceptedTargetPerS[axis]);
 		sealField(("picard_residual_R"+suffix).c_str(),ownerObserved.picardResidualPerS[axis],ownerResidentDiagnostics.picardResidualPerS[axis]);
 	}
+	sealField("commuting_residual",{ownerObserved.maximumCommutingResidualKGPerM3},{ownerResidentDiagnostics.maximumCommutingResidualKGPerM3});
+	sealField("commuting_scale",{ownerObserved.commutingIdentityScaleKGPerM3},{ownerResidentDiagnostics.commutingIdentityScaleKGPerM3});
 	ownerSealingEquivalent=ownerSealingEquivalent&&ownerObserved.acceptedPicardIterations==ownerResidentDiagnostics.acceptedPicardIterations&&
 		ownerResidentDiagnostics.intermediateSealFormat=="qualified-kernel-stage-token"&&
 		ownerResidentDiagnostics.intermediateDigestVersion==2u&&ownerResidentDiagnostics.payloadDigestVersion==2u&&
@@ -11462,6 +11507,23 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::fprintf(stderr,"OWNER_PUBLICATION_DIGEST_RED full_packet_cpu_match=%d bit_mutation_refused=%d copied_authority_refused=%d\n",
 			rootMatch?1:0,mutationRefused?1:0,copyRefused?1:0);
 		ownerSealingEquivalent=ownerSealingEquivalent&&rootMatch&&mutationRefused&&copyRefused;
+	}
+	for(unsigned int control=0u;control<8u;++control){
+		auto changed=productionOwnerRequest;
+		float* inputs[]={&changed.ambientDensityKGPerM3,&changed.vremanCoefficient,
+			&changed.gravityMPerS2[0],&changed.gravityMPerS2[1],&changed.gravityMPerS2[2],
+			&changed.projectionTolerancePerS,&changed.endpointVelocityToleranceMPerS};
+		if(control<7u)*inputs[control]=std::nextafter(*inputs[control],1.0e10f);
+		else ++changed.maximumPicardIterations;
+		FireProductionResidentStepResult changedResident;FireProductionProjectedHeunMetalOwnerResult changedDiagnostics;
+		std::string changedError;
+		const bool changedAccepted=AttemptFireProductionProjectedHeunResidentStepMetal(changed,
+			changedResident,&changedDiagnostics,&changedError);
+		const bool bound=changedAccepted&&changedDiagnostics.inputPayloadRootSHA256.size()==64u&&
+			changedDiagnostics.inputPayloadRootSHA256!=ownerResidentDiagnostics.inputPayloadRootSHA256;
+		std::fprintf(stderr,"OWNER_INGRESS_CONTROL_RED control=%u accepted=%d input_root_changed=%d error=%s\n",
+			control,changedAccepted?1:0,bound?1:0,changedError.c_str());
+		ownerSealingEquivalent=ownerSealingEquivalent&&bound;
 	}
 	std::fprintf(stderr,"OWNER_SEALING_EQUIVALENCE passed=%d input_root=%s output_root=%s kernel_set=%s\n",ownerSealingEquivalent?1:0,
 		ownerResidentDiagnostics.inputPayloadRootSHA256.c_str(),ownerResidentDiagnostics.publicationPayloadRootSHA256.c_str(),
@@ -14844,6 +14906,8 @@ static int RunProductionPayloadMerkleFixture(bool metal)
 
 int main(int argc,char** argv)
 {
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-payload-publication")==0)
+		return RunPayloadPublicationFixture();
 	if(argc==3&&std::strcmp(argv[1],"--fire-production-payload-merkle-file")==0){
 		if(!std::filesystem::is_regular_file(argv[2]))return 98;
 		const auto payload=ReadFileBytes(argv[2]);std::string error;

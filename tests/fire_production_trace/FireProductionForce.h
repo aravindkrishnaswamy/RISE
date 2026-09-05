@@ -25,6 +25,10 @@
 
 namespace RISEFireProductionTrace
 {
+#if defined(__APPLE__)
+	//! Identity of the exact source compiled by the resident force library.
+	std::string FireProductionForceMetalKernelSourceSHA256();
+#endif
 	//! Shared bound for fail-closed step reductions.  The binary64 trajectory
 	//! owner and the production manifold owner use the same rejection budget.
 	constexpr unsigned int FireStepRejectionRetryCap=20u;
