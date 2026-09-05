@@ -1589,6 +1589,11 @@ static void TestGappedWeaveWithAreaLight()
 static const double kClosedBoxBdptPtTol = 0.08;
 static const double kClosedBoxVcmPtTol = 0.08;
 static const double kClosedBoxVsPlanesRatioBound = 1.15;
+// Lower bound on the same ratio: the pre-fix bug's OTHER failure mode
+// (self-occlusion, PT reading 0.44x with the light inside) would show up
+// here as a DARK box; n=5 reads 1.010 +/- 0.002, so 0.85 is ~65 sigma
+// below the mean and still trips on a 0.44x recurrence.
+static const double kClosedBoxVsPlanesRatioFloor = 0.85;
 
 static std::string ClosedBoxThinWeaveCommon(
 	bool bBox,				// true: box_geometry; false: six clippedplane quads at the same faces
@@ -1677,6 +1682,8 @@ static void TestClosedBoxThinWeave()
 
 	Check( boxVsPlanes < kClosedBoxVsPlanesRatioBound,
 		"closed box: PT(box) agrees with PT(six planes) (debt 25 resolved -- was ~3.5x pre-fix)" );
+	Check( boxVsPlanes > kClosedBoxVsPlanesRatioFloor,
+		"closed box: PT(box) is not DARKER than PT(six planes) (self-occlusion failure mode)" );
 	Check( std::fabs( bdptRatio - 1.0 ) <= kClosedBoxBdptPtTol,
 		"closed box: BDPT/PT within tolerance (BDPT was never wrong; box path now matches)" );
 	Check( std::fabs( vcmRatio - 1.0 ) <= kClosedBoxVcmPtTol,
@@ -1691,7 +1698,7 @@ static void TestClosedBoxThinWeave()
 // twin site for MEDIUM vertices in the SAME two functions
 // (`GenerateEyeSubpathImpl` line ~1819, `GenerateLightSubpathImpl` line
 // ~5510 of src/Library/Shaders/BDPTIntegrator.cpp -- both shared
-// VERBATIM by VCM, see BDPTIntegrator.h's "reuse lynchpin" note) that had
+// VERBATIM by VCM, see VCMIntegrator.cpp's "reuse lynchpin" note) that had
 // no end-to-end regression guard until this case.
 //
 // A closed `box_geometry` (2.8 x 2.8 x 1.0) with `gap 0.1` (so the

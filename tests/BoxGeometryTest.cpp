@@ -15,8 +15,9 @@
 //  `Object::IntersectRay` uses -- `p = ray.PointAtLength(ri.range -
 //  1e-12)` from an entry (outside) hit and from an exit (inside) hit --
 //  across a sweep of continuation-ray angles down to grazing incidence,
-//  the four front/back-face flag combinations the fix's exit/entry
-//  predicate governs, and one coordinate-scale check (~1000) to confirm
+//  the three front/back-face flag combinations the fix's exit/entry
+//  predicate governs ((false,false) rejects regardless), and one
+//  coordinate-scale check (~1000) to confirm
 //  the self-hit floor's scale-relative tolerance
 //  (`NEARZERO * (1 + coordinate magnitude)`) tracks genuine faces at any
 //  scale rather than a fixed absolute threshold.
@@ -143,8 +144,11 @@ static void RunFrontFaceIngoingSweep( double scale )
 	}
 
 	// OUTGOING: continuing straight away from the box through the same
-	// face p sits on -- nothing remains ahead, so this must be NO HIT
-	// (the pre-fix bug's other failure mode: self-occluding this case).
+	// face p sits on -- nothing remains ahead, so this must be NO HIT.
+	// (Degenerate-case guard only: p sits OUTSIDE the box here, so both
+	// slab roots are already behind the ray and the pre-fix code passes
+	// this too.  The pre-fix self-occlusion failure mode is pinned by the
+	// INSIDE-published outgoing check in RunBackFaceIngoingOutgoing.)
 	{
 		const Vector3 outDir( 0.0, 0.0, 1.0 );
 		RayIntersectionGeometric ri = MakeIntersection( p, outDir );
