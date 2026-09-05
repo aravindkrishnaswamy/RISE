@@ -5635,6 +5635,11 @@ zero interstage transfers and one terminal staging. Qualification timing is
 `r201_projected_heun_metal_owner/r201h_owner_iteration_contract.v1`; the sealed
 tier-8 replay remains gated on the fresh three-reviewer round.
 
+Historical-status correction: the r201h artifact and its exact-run directory
+were never repository-bound. They are rejected, unsealed diagnostics and carry
+no acceptance authority; r201j is the first subsequent binding that includes
+the actual R1 device-candidate surface and supersedes this claim.
+
 ### r201i — bind the trace to the resident parent trajectory
 
 r201h remained rejected after fresh review. Its provisional-momentum radius was
@@ -5667,3 +5672,43 @@ covered by the `10,223,616`-byte working-set certificate; measured allocation
 is `1,245,184` bytes. Device/wall p95 are `921.637333/949.226291 ms`.
 Evidence is `r201_projected_heun_metal_owner/r201i_resident_parent_trajectory_gate.v1`.
 The tier-8 replay remains blocked until the fresh review round is zero P1/P2.
+
+### r201j — bind R1 qualification to the actual averaged device candidate
+
+Fresh review rejected r201i before replay. The trace exposed the unaveraged
+physical flux correctly, but used that same surface as the R1 scalar candidate;
+the resident owner actually consumes the output of `ownerAverageFlux`. The test
+then averaged separately staged CPU-binary32 R0/R1 buffers, so a defect in the
+Metal averaging kernel or either of its parent selections could escape. Thus
+r201i is historical rejected evidence, not an acceptance point.
+
+The repair gives the stage flux and accepted-candidate flux distinct trace
+authorities. Physical-flux and compatible-advection evidence retain the
+unaveraged stage flux; scalar acceptance, EOS identity, and the r70 target chain
+consume the device-produced candidate (R0 physical, R1 averaged). A named
+wrong-parent mutant substitutes R1's high candidate for the sealed R0 donor
+parent. Its first scalar-low-flux escape is index 493:
+`1.0336661114425708e-04` residual against a local
+`7.1009089028567054e-05 kg m^-2 s^-1` enclosure (ratio `1.45567`), and the gate
+refuses it. No tolerance changed.
+
+Two fresh-review P2 gaps were also made causal REDs. Removing a sealed terminal
+force/advection parent now reruns the same provisional-momentum composition and
+is refused. A nonzero invalid arithmetic certificate with valid-looking class
+metadata is driven through the actual producer-publication gate and refused;
+the former generic class-metadata fallback is gone. This fixture has identical
+alpha, active-set, and next-active-set sequences, so the same-class local
+enclosures apply. A future discrete split still requires a predicate interval
+crossing zero plus authenticated r123/r124 successor envelopes; otherwise it
+refuses.
+
+Exact source `a0c3a824df43229c87b0be9b230d2c58ddf15df8` passes the complete
+owner gate and kernel sweep. R0/R1/R2 traces are 4/4, 4/4, and 6/6; the worst
+terminal local ratio is `0.46579926702613617` on R1 Heun advection. Compatible
+momentum remains `1.1175870895385742e-07` against
+`3.1200230559651367e-05`. The production entry records zero interstage
+full-grid transfers and one terminal staging. Qualification device/wall p95 are
+`918.464667/945.649167 ms`; certified/measured working sets are
+`10,223,616/1,245,184` bytes. Evidence is
+`r201_projected_heun_metal_owner/r201j_actual_candidate_trajectory_gate.v1`.
+The sealed tier-8 replay remains gated on the fresh three-reviewer round.

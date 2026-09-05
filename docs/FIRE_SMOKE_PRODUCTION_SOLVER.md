@@ -6322,6 +6322,10 @@ full-grid transfers, and qualification device/wall p95 are
 `r201_projected_heun_metal_owner/r201h_owner_iteration_contract.v1`. The next
 operation after zero P1/P2 review is the sealed tier-8 ported replay.
 
+Historical-status correction: neither that r201h artifact nor its exact-run
+directory was repository-bound. It is rejected, unsealed diagnostic material,
+not an acceptance authority; the live binding resumes at r201j.
+
 ### r201i resident-parent trajectory binding
 
 r201h was not an acceptance point. Fresh review rejected observed-output
@@ -6354,3 +6358,41 @@ full-grid transfers. Qualification device/wall p95 are
 `921.637333/949.226291 ms`; the updated working-set certificate is
 `10,223,616` bytes against `1,245,184` measured. SHA-bound evidence is in
 `r201_projected_heun_metal_owner/r201i_resident_parent_trajectory_gate.v1`.
+
+### r201j actual resident candidate trajectory
+
+Fresh review rejected r201i because its R1 trace did not expose the candidate
+the limiter actually consumed. R1 physical flux is unaveraged, while R1 scalar
+acceptance consumes the resident `ownerAverageFlux` output. The old proof
+reconstructed that average from separately staged CPU-binary32 buffers, so it
+could not detect a device averaging or parent-selection defect.
+
+The iteration record therefore has two explicit roles. Stage physical mass,
+energy, and compatible momentum advection are certified from the unaveraged
+physical authority. Candidate low and antidiffusive fluxes are certified from
+the exact resident candidate authority: the stage flux at R0 and device Heun
+average at R1. Both remain downstream of the same sealed r197a/r198 parents;
+this is additional visibility, not host substitution. The wrong-parent RED
+changes the first Heun donor parent to R1's high candidate. It escapes the
+normal R1 local enclosure at scalar-low-flux index 493 by
+`1.0336661114425708e-04` versus `7.1009089028567054e-05 kg m^-2 s^-1` and is
+refused.
+
+The publication gate now has no generic invalid-arithmetic fallback keyed by a
+single class Boolean. Exact zero-flux identities remain the r60 special case.
+All other invalid arithmetic refuses unless a future owner qualification
+materializes and authenticates the r123/r124 two-successor envelopes for the
+specific predicate whose interval crosses zero. On this run alpha, active-set,
+and next-active-set classes agree at every iteration, so no such envelope is
+used. Parent removal is replayed through the provisional-momentum expression,
+and a valid-looking non-r60 invalid certificate is replayed through the actual
+publication function; both named REDs refuse.
+
+At exact source `a0c3a824df43229c87b0be9b230d2c58ddf15df8`, the owner and
+independent kernel sweep exit zero. The primary gate is the conjunction of
+per-cell/per-field same-unit enclosures; the historical `16383` ratio is only a
+description. R0/R1/R2 traces count 4/4, 4/4, and 6/6, compatible momentum is
+`1.1175870895385742e-07` against `3.1200230559651367e-05`, and production has
+zero interstage full-grid transfers. Qualification device/wall p95 are
+`918.464667/945.649167 ms`. SHA-bound evidence is
+`r201_projected_heun_metal_owner/r201j_actual_candidate_trajectory_gate.v1`.
