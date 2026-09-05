@@ -1,0 +1,259 @@
+{
+  "schema": "rise.fire.producer_kernel_profile.v1",
+  "input_sha256": "d63ad3f58033c57348e138869df1da36c255a868e74cafa729fc238696b7fcfc",
+  "units": "milliseconds",
+  "kernel_scope": "inclusive_encoder_intervals",
+  "warning": "Kernel intervals can overlap. Only their union is additive.",
+  "uncaptured_scope": "force-RHS encoders in another translation unit, blits, and gaps",
+  "producer_commands": 42,
+  "command_elapsed_total_ms": 196057.23062390462,
+  "encoder_union_total_ms": 196031.83387999993,
+  "uncaptured_total_ms": 25.396743904682808,
+  "kernels": {
+    "identify_resident_physical_flux": {
+      "calls": 42,
+      "mean_ms": 2330.596971238095,
+      "stdev_ms": 4.812956482480358,
+      "p95_ms": 2335.582333,
+      "inclusive_total_ms": 97885.07279199999
+    },
+    "identify_resident_transport": {
+      "calls": 42,
+      "mean_ms": 583.4633889047619,
+      "stdev_ms": 0.5523155423079843,
+      "p95_ms": 584.105208,
+      "inclusive_total_ms": 24505.462334000003
+    },
+    "evaluate_resident_eos_candidate": {
+      "calls": 42,
+      "mean_ms": 553.6011081428571,
+      "stdev_ms": 4.427783987427705,
+      "p95_ms": 560.899125,
+      "inclusive_total_ms": 23251.246541999997
+    },
+    "owner_bind_candidate": {
+      "calls": 42,
+      "mean_ms": 436.1343670714285,
+      "stdev_ms": 0.9041921265218622,
+      "p95_ms": 437.581958,
+      "inclusive_total_ms": 18317.643417
+    },
+    "owner_bind_averaged_flux": {
+      "calls": 14,
+      "mean_ms": 1124.6516815,
+      "stdev_ms": 3.5980310279805923,
+      "p95_ms": 1130.128375,
+      "inclusive_total_ms": 15745.123541
+    },
+    "evaluate_resident_target_terms": {
+      "calls": 42,
+      "mean_ms": 113.52060811904761,
+      "stdev_ms": 0.2161281201502202,
+      "p95_ms": 113.79912499999999,
+      "inclusive_total_ms": 4767.865540999999
+    },
+    "consume_resident_target": {
+      "calls": 84,
+      "mean_ms": 36.083179559523806,
+      "stdev_ms": 0.4212423605585032,
+      "p95_ms": 36.679916999999996,
+      "inclusive_total_ms": 3030.987082999999
+    },
+    "identify_resident_target": {
+      "calls": 42,
+      "mean_ms": 57.44175014285714,
+      "stdev_ms": 0.5419300271623846,
+      "p95_ms": 58.027167,
+      "inclusive_total_ms": 2412.553506
+    },
+    "owner_identify_target": {
+      "calls": 42,
+      "mean_ms": 51.04725992857143,
+      "stdev_ms": 0.6089174005855578,
+      "p95_ms": 51.682542,
+      "inclusive_total_ms": 2143.9849169999998
+    },
+    "identify_resident_eos": {
+      "calls": 42,
+      "mean_ms": 44.090462238095235,
+      "stdev_ms": 0.6467234673917137,
+      "p95_ms": 44.745374999999996,
+      "inclusive_total_ms": 1851.7994139999992
+    },
+    "identify_resident_frozen_source": {
+      "calls": 42,
+      "mean_ms": 32.871933547619044,
+      "stdev_ms": 0.8103235021488282,
+      "p95_ms": 33.882833,
+      "inclusive_total_ms": 1380.6212090000004
+    },
+    "evaluate_resident_advective_pair": {
+      "calls": 42,
+      "mean_ms": 7.153345214285714,
+      "stdev_ms": 0.16836927164631035,
+      "p95_ms": 7.498708,
+      "inclusive_total_ms": 300.4404990000001
+    },
+    "identify_resident_owner_endpoint_class": {
+      "calls": 42,
+      "mean_ms": 2.446238023809524,
+      "stdev_ms": 0.04756866145283105,
+      "p95_ms": 2.463208,
+      "inclusive_total_ms": 102.74199700000001
+    },
+    "fct_build_ratios": {
+      "calls": 28,
+      "mean_ms": 3.60271425,
+      "stdev_ms": 0.02674317462058378,
+      "p95_ms": 3.6451659999999997,
+      "inclusive_total_ms": 100.87599900000001
+    },
+    "evaluate_resident_physical_flux": {
+      "calls": 42,
+      "mean_ms": 1.1741905,
+      "stdev_ms": 0.06829897586285341,
+      "p95_ms": 1.3145419999999999,
+      "inclusive_total_ms": 49.316001
+    },
+    "compose_resident_flux_pair": {
+      "calls": 42,
+      "mean_ms": 0.8843006428571428,
+      "stdev_ms": 0.0024116031690449673,
+      "p95_ms": 0.8872089999999999,
+      "inclusive_total_ms": 37.14062700000001
+    },
+    "validate_resident_physical_flux": {
+      "calls": 42,
+      "mean_ms": 0.8832629047619047,
+      "stdev_ms": 0.12670965777710358,
+      "p95_ms": 1.2648329999999999,
+      "inclusive_total_ms": 37.097042
+    },
+    "fct_compatible_stage_rate": {
+      "calls": 56,
+      "mean_ms": 0.5201606964285714,
+      "stdev_ms": 0.0588322082795778,
+      "p95_ms": 0.528416,
+      "inclusive_total_ms": 29.12899899999999
+    },
+    "evaluate_resident_transport": {
+      "calls": 42,
+      "mean_ms": 0.6159859999999999,
+      "stdev_ms": 0.08343729842719783,
+      "p95_ms": 0.664125,
+      "inclusive_total_ms": 25.871411999999996
+    },
+    "finalize_resident_advective_high": {
+      "calls": 42,
+      "mean_ms": 0.4301537619047619,
+      "stdev_ms": 0.06649056973583235,
+      "p95_ms": 0.422125,
+      "inclusive_total_ms": 18.066458
+    },
+    "owner_pack_faces": {
+      "calls": 126,
+      "mean_ms": 0.13875992063492062,
+      "stdev_ms": 0.1752117353440278,
+      "p95_ms": 0.485042,
+      "inclusive_total_ms": 17.48375
+    },
+    "owner_average_flux": {
+      "calls": 14,
+      "mean_ms": 0.8091546428571428,
+      "stdev_ms": 0.00503497134064325,
+      "p95_ms": 0.8196249999999999,
+      "inclusive_total_ms": 11.328165
+    },
+    "fct_build_face_alpha": {
+      "calls": 28,
+      "mean_ms": 0.26444632142857144,
+      "stdev_ms": 0.002892314683119819,
+      "p95_ms": 0.267083,
+      "inclusive_total_ms": 7.404497000000001
+    },
+    "owner_gas_source": {
+      "calls": 42,
+      "mean_ms": 0.14582828571428572,
+      "stdev_ms": 0.12035734368533374,
+      "p95_ms": 0.393875,
+      "inclusive_total_ms": 6.124788000000001
+    },
+    "fct_commit_scalar": {
+      "calls": 28,
+      "mean_ms": 0.19021282142857143,
+      "stdev_ms": 0.0018450986936078648,
+      "p95_ms": 0.193,
+      "inclusive_total_ms": 5.325959000000002
+    },
+    "owner_heun_momentum": {
+      "calls": 28,
+      "mean_ms": 0.09148364285714286,
+      "stdev_ms": 0.0011551940101377793,
+      "p95_ms": 0.093667,
+      "inclusive_total_ms": 2.5615419999999993
+    },
+    "owner_compose_target": {
+      "calls": 42,
+      "mean_ms": 0.05543066666666667,
+      "stdev_ms": 0.024206671120074467,
+      "p95_ms": 0.0785,
+      "inclusive_total_ms": 2.3280879999999993
+    },
+    "fct_extract_gas_density": {
+      "calls": 42,
+      "mean_ms": 0.04957940476190476,
+      "stdev_ms": 0.035743210177025246,
+      "p95_ms": 0.05275,
+      "inclusive_total_ms": 2.0823349999999996
+    },
+    "produce_resident_frozen_source": {
+      "calls": 42,
+      "mean_ms": 0.03744454761904762,
+      "stdev_ms": 0.04635305470093026,
+      "p95_ms": 0.0315,
+      "inclusive_total_ms": 1.5726710000000002
+    },
+    "owner_predict_momentum": {
+      "calls": 14,
+      "mean_ms": 0.049080428571428567,
+      "stdev_ms": 0.00047616330655090823,
+      "p95_ms": 0.049999999999999996,
+      "inclusive_total_ms": 0.687126
+    },
+    "finalize_resident_target": {
+      "calls": 84,
+      "mean_ms": 0.005584392857142856,
+      "stdev_ms": 0.02277105574908948,
+      "p95_ms": 0.0034159999999999998,
+      "inclusive_total_ms": 0.4690889999999999
+    },
+    "issue_resident_projection_consumer": {
+      "calls": 84,
+      "mean_ms": 0.005337321428571428,
+      "stdev_ms": 0.010712738547383461,
+      "p95_ms": 0.0045,
+      "inclusive_total_ms": 0.44833499999999993
+    },
+    "finalize_resident_eos_candidate": {
+      "calls": 84,
+      "mean_ms": 0.002829845238095238,
+      "stdev_ms": 0.0001783505749007065,
+      "p95_ms": 0.0031249999999999997,
+      "inclusive_total_ms": 0.23770699999999984
+    },
+    "owner_bind_transport": {
+      "calls": 42,
+      "mean_ms": 0.0052509761904761905,
+      "stdev_ms": 0.00995471849019004,
+      "p95_ms": 0.004875,
+      "inclusive_total_ms": 0.22054100000000004
+    },
+    "owner_issue_stage_seal": {
+      "calls": 42,
+      "mean_ms": 0.0033680238095238095,
+      "stdev_ms": 0.0001427591333364952,
+      "p95_ms": 0.003583,
+      "inclusive_total_ms": 0.14145700000000005
+    }
+  }
+}
