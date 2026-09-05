@@ -5678,10 +5678,13 @@ yet known (§10.1).
     **Fix.** `BoxGeometry::DropSelfHitRoot`
     (`src/Library/Geometry/BoxGeometry.cpp`, commit `40e78b69`), called
     from both `IntersectRay` and `IntersectRay_IntersectionOnly`: a root
-    belonging to a face the origin lies on (`|origin.axis − bound| ≤
-    NEARZERO · (1 + coordinate magnitude)`, the same scale-relative floor
-    `RayBilinearPatchIntersection`'s debt-21 fix uses — see
-    `docs/skills/precision-fix-the-formulation.md`) is dropped in favour of
+    belonging to a face the origin lies on (per axis, `|origin.axis − bound|
+    ≤ 4·NEARZERO + 64·DBL_EPSILON·|origin.axis|` since review round 2 —
+    NOT the coordinate-summed floor `RayBilinearPatchIntersection`'s
+    debt-21 fix uses, which the fix commit first mirrored; the "Review
+    rounds 1–2 follow-ups" below and
+    `docs/skills/precision-fix-the-formulation.md` say why that pattern
+    does not transfer to a box) is dropped in favour of
     the other root, mirroring `RaySphereIntersection` (which already skips
     roots at the origin and returns the next one) but as a plane-distance
     test rather than a range threshold. The survivor is then treated as an

@@ -18,9 +18,9 @@
 //  the three front/back-face flag combinations the fix's exit/entry
 //  predicate governs ((false,false) rejects regardless), and one
 //  coordinate-scale check (~1000) to confirm
-//  the self-hit floor's scale-relative tolerance
-//  (`NEARZERO * (1 + coordinate magnitude)`) tracks genuine faces at any
-//  scale rather than a fixed absolute threshold.
+//  the self-hit band's per-axis tolerance
+//  (`4 * NEARZERO + 64 * DBL_EPSILON * |origin.axis|`) tracks genuine
+//  faces at any scale rather than a fixed absolute threshold.
 //
 //  Style follows tests/ClippedPlaneGeometryTest.cpp: plain asserts,
 //  the geometry class constructed directly, `RayIntersectionGeometric(
@@ -443,8 +443,8 @@ int main()
 	RunBackFaceIngoingOutgoing( 1.0 );
 	RunFrontBackFaceFlagRules( 1.0 );
 
-	// Coordinate-scale check (~1000): the self-hit floor is
-	// NEARZERO * (1 + coordinate magnitude), so re-running the same
+	// Coordinate-scale check (~1000): the self-hit band is
+	// 4 * NEARZERO + 64 * DBL_EPSILON * |origin.axis|, so re-running the same
 	// suites at 1000x scale confirms it tracks genuine faces rather than
 	// firing on a fixed absolute threshold that would be swamped at this
 	// scale, or failing to fire on a scale that would swamp it.

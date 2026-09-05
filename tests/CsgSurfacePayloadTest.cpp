@@ -1244,6 +1244,17 @@ void TestIntersectRay_CompressedCsg_ClosestHitNotCulledByOperandPretest()
 //   decoy gap (real exit face at z=-2, decoy near face at z=-1.99): 0.01
 //     -- inside the OLD accept window (0.01 < 0.02984), outside the NEW
 //     one (0.01 >> 2.1e-12).
+//   2026-09-05 (debt-25 review, 655f352a): the margin's max() gained a
+//   third term, the operand primitive's own self-hit band mapped
+//   through its stretch and exit angle (selfHitFloor in
+//   AdoptCsgExitFacePayloadViaProbe), which dominates here:
+//     margin ~= 2 * (4*NEARZERO + kUlpFactor*|z_exit|) / (1 * 1) ~= 8.06e-12
+//     maxAcceptRange ~= 1.69e-11
+//   -- still 6e8x under the 0.01 gap.  That term reads ONLY the exit
+//   point's component along the face normal, which is what keeps this
+//   test's transverse 1e12 out of it (an L1-of-ptExit floor turned the
+//   margin into 8 world units here and adopted the decoy; that is the
+//   regression this test caught during that review).
 //
 void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 {
@@ -1384,6 +1395,12 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 //     decoyNearZ by ~5e-10 -- backward search finds the REAL exit face
 //     first (~1e-12 away, inside the 2.1e-12 window), never reaching
 //     the decoy.  RECOVERS THE REAL FACE (correct).
+//   2026-09-05 (debt-25 review, 655f352a): the margin's max() gained the
+//   operand primitive's self-hit band term (selfHitFloor), which now
+//   dominates: margin ~= 8.06e-12, maxAcceptRange ~= 1.69e-11 -- still
+//   ~30x BEFORE the decoy's near face (gap 5e-10), so the same
+//   conclusion holds; this test is what bounds that term from above
+//   (a floor >= ~2.4e-10 at normal incidence would overshoot here).
 //
 // Discrimination proven by temporarily restoring the 1e-9 floor in
 // CSGObject.cpp, rebuilding, and re-running this test: the money
@@ -1392,7 +1409,7 @@ void TestSubtraction_ExitProbe_TransverseCoordinateDoesNotInflateMargin()
 //
 void TestSubtraction_ExitProbe_TinyGapDecoyDoesNotOverwhelmMarginFloor()
 {
-	std::cout << "CSG_SUBTRACTION: exit-probe margin floor (1e-12) doesn't overshoot a tiny-gap decoy face (review r6, item 2)..." << std::endl;
+	std::cout << "CSG_SUBTRACTION: exit-probe margin floor (1e-12, plus the primitive self-hit band term ~8e-12 since 2026-09-05) doesn't overshoot a tiny-gap decoy face (review r6, item 2)..." << std::endl;
 
 	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );          // half-extent 3, spans z in [-3,3]
 	BoxGeometry* gRealLobe = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent (2,2,2) -- identical to Tests 11/14

@@ -546,6 +546,9 @@ namespace
 				selfHitFloor = Scalar(2) * bandLocal / ( stretch * cosExit );
 			}
 		}
+		// (The r6 paragraph above's "~2.1e-12 acceptance window" figure is
+		// the 1e-12 term's own; with selfHitFloor in the max() the window
+		// is ~1.7e-11 at unit scale -- the figure that now governs.)
 		const Scalar margin = std::max( std::max( Scalar(1e-12), selfHitFloor ), kUlpFactor * dirWeightedAbs );
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
