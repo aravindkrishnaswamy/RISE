@@ -5740,18 +5740,30 @@ yet known (§10.1).
     sides coordinate-free: the box band is per axis,
     `eps = 4 × NEARZERO + 64·DBL_EPSILON × |origin.axis|` (the plane
     distance is an exact subtraction, so only that coordinate's rounding
-    matters); the CSG probe's floor is that band doubled and mapped
-    through the operand's inverse stretch and the exit angle,
-    `2·eps / (|M⁻¹dir| · max(|dir·n|, 1/20))` — 8e-12 at unit scale and
-    normal incidence, acceptance window ~1.7e-11, ~100× under the ~2e-9
-    decoy radius that suite's Test 15 pins. `CsgSurfacePayloadTest` is
-    now in the gate (all 251 green) and pins the CSG side in both
+    matters); the CSG probe's floor is that band doubled and divided by
+    the exact operand-local plane-distance rate of a world-unit standoff,
+    `2·eps / max(|M⁻¹dir · n̂_local|, |M⁻¹dir|/20)` (round 3 replaced the
+    factorised `|M⁻¹dir| · |dir·n|`, which under-estimates the rate by
+    the stretched axis's factor on an anisotropic operand — a 2:1
+    stretch with an oblique rotation already fell back) — 8e-12 at unit
+    scale and normal incidence, acceptance window ~1.7e-11, ~100× under
+    the ~2e-9 decoy radius that suite's Test 15 pins (the window scales
+    with 1/rate: ~3e-10 at the grazing clamp, and with the operand's own
+    scale). `CsgSurfacePayloadTest` is now in the gate (all 251 green,
+    plus the round-3 scaled-operand and oblique-exit cases that make the
+    rate's two ingredients load-bearing) and pins the CSG side in both
     directions; `tests/BoxGeometryTest.cpp::RunStandoffReentryContract`
     pins the box side (a 2·eps/|cos| standoff re-hits its face, a
     0.5·eps one reads as the origin's own face) at unit and 1000× scale.
     The promoted root publishes `range2 = 0`, the `RaySphereIntersection`
     / CSG inside-sentinel convention, instead of carrying the ~1e-12
-    self-root as an exit BEHIND the entry. Two measure-zero limits of the
+    self-root as an exit BEHIND the entry — and so, since round 3, does a
+    STRICTLY interior origin, whose negative entry root `Object` used to
+    turn into a positive "exit behind the entry" that `CSGObject`'s
+    interval ordering read as a phantom interior wall (a `CSG_UNION` of
+    two overlapping boxes seen from inside one showed a wall where two
+    spheres in the same construction do not; pre-existing, the direct
+    sibling of the promoted-root case). Two measure-zero limits of the
     plane test are recorded in the helper's comment (a ray within ~1e-9
     rad of parallel to its own face; an unrelated object's exactly
     coplanar face — e.g. a glass box resting on a box reports the lower

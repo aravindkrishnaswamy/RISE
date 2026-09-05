@@ -432,6 +432,22 @@ static void RunStandoffReentryContract( double scale )
 		assert( IsVectorClose( ri.vNormal, exitNormal ) );
 	}
 
+	// Sibling of the above (review round 3, P2-2): a STRICTLY interior
+	// origin publishes the same sentinel -- range = the exit face ahead,
+	// range2 = 0 -- not the negative entry root behind it (which Object::
+	// IntersectRay turned into a positive "exit behind the entry" that
+	// CSGObject's interval ordering misread as a phantom interior wall).
+	{
+		const Vector3 dir( 0.0, 0.0, -1.0 );
+		const Point3 inside( 0.1 * scale, 0.05 * scale, 0.0 );
+		RayIntersectionGeometric ri = MakeIntersection( inside, dir );
+		pBox->IntersectRay( ri, true, true, true );
+		assert( ri.bHit );
+		assert( IsClose( ri.range, 0.5 * scale, 1e-6 * scale ) );
+		assert( ri.range2 == 0.0 );
+		assert( IsVectorClose( ri.vNormal, exitNormal ) );
+	}
+
 	safe_release( pBox );
 	std::cout << "  ...Passed!" << std::endl;
 }

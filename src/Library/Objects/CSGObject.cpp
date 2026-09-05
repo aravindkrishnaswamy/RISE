@@ -406,7 +406,9 @@ namespace
 		Scalar exitRangeCsgLocal,
 		const Vector3& exitGeomNormalCsgLocal )
 	{
-		if( !operand || exitRangeCsgLocal <= 0 || exitRangeCsgLocal == RISE_INFINITY ) {
+		if( !operand || !std::isfinite( exitRangeCsgLocal ) || exitRangeCsgLocal <= 0 || exitRangeCsgLocal == RISE_INFINITY ) {
+			// (A triangle-mesh operand publishes an IEEE inf range2, which
+			// the RISE_INFINITY (DBL_MAX) compare does not catch.)
 			return false;
 		}
 
@@ -506,10 +508,11 @@ namespace
 		// stretch = |M^-1 dir| (local units per world unit along dir).
 		// So the floor is the band, doubled, mapped back through the
 		// operand's inverse stretch and the exit angle:
-		//   floor = 2 * (4*NEARZERO + kUlp * |localExit . nLocal|) / (stretch * |cos|)
-		// with |cos| clamped at 1/20 (steeper exits miss the probe and
-		// take the graceful entry-payload fallback, the marginal outcome
-		// the paragraph above already accepts).  The ulp term reads ONLY
+		//   floor = 2 * (4*NEARZERO + kUlp * |localExit . nLocal|) / rate,
+		//   rate  = |M^-1 dir . nLocal| (see the "Rate, exactly" note below)
+		// with the rate clamped at 1/20 of |M^-1 dir| (steeper exits miss
+		// the probe and take the graceful entry-payload fallback, the
+		// marginal outcome the paragraph above already accepts).  The ulp term reads ONLY
 		// the exit point's component along the face normal (mapped into
 		// the operand frame with the transpose of the forward matrix, the
 		// way normals go world->local), because that is the one
@@ -522,12 +525,30 @@ namespace
 		// operand there is a NESTED CSG whose local frame is the world
 		// frame.  At unit scale / normal incidence the floor is 8e-12, so
 		// the ~2.1x acceptance window (~1.7e-11) stays ~100x under the
-		// ~2e-9 decoy-face radius the r6 revert rejected (Test 15).  A
-		// scaled operand (stretch 1e-3) gets a 1000x larger world margin,
-		// which is the same local distance.  Only the operand's OWN
+		// ~2e-9 decoy-face radius the r6 revert rejected (Test 15) -- at
+		// THAT scale and incidence: the window grows with 1/rate (20x at
+		// the grazing clamp, so ~3e-10, still under Test 15's 5e-10 gap;
+		// 1000x for an operand scaled up 1000x, where it is the same
+		// 1.7e-11 in the operand's own units and the decoy radius scales
+		// with it).  A scaled operand (stretch 1e-3) gets a 1000x larger
+		// world margin, which is the same local distance.  Only the operand's OWN
 		// transform is visible here: a scaled leaf inside a nested CSG
 		// operand still reads stretch 1 and may miss the probe (graceful
 		// fallback), same as any other marginal case.
+		//
+		// Rate, exactly (review round 3, P2-1): the operand-local plane
+		// distance per world unit of standoff is |M^-1 dir . n_local|,
+		// the local ray direction projected on the local face normal.  The
+		// earlier factorisation stretch * |cos_world| (|M^-1 dir| times
+		// the WORLD cosine) under-estimates it by s_j * |M^-1 dir| on an
+		// anisotropic stretch whose stretched-up axis is the face normal
+		// -- a 2:1 stretch with an oblique rotation already pushed the
+		// probe back inside the band.  Both ingredients were already in
+		// hand; the clamp is 1/20 of the local direction's length, the
+		// same grazing floor as before expressed in the local frame.
+		// With NO usable exit normal (a geometry that leaves vGeomNormal2
+		// unset) the floor degrades to the bare doubled band at rate 1:
+		// no coordinate term at all -- never the max-component formula.
 		Scalar selfHitFloor = Scalar(8) * NEARZERO;
 		{
 			const Matrix4 mxInv = operand->GetFinalInverseTransformMatrix();
@@ -537,13 +558,14 @@ namespace
 			const Matrix4 mxFwdT = Matrix4Ops::Transpose( operand->GetFinalTransformMatrix() );
 			const Vector3 nLocalUnnorm = Vector3Ops::Transform( mxFwdT, exitGeomNormalCsgLocal );
 			const Scalar nLocalMag = Vector3Ops::Magnitude( nLocalUnnorm );
-			const Scalar alongNormalLocal = nLocalMag > NEARZERO
-				? std::fabs( Vector3Ops::Dot( Vector3( exitLocal.x, exitLocal.y, exitLocal.z ), nLocalUnnorm ) ) / nLocalMag
-				: std::max( std::fabs( exitLocal.x ), std::max( std::fabs( exitLocal.y ), std::fabs( exitLocal.z ) ) );
-			const Scalar cosExit = std::max( std::fabs( Vector3Ops::Dot( dir, exitGeomNormalCsgLocal ) ), Scalar(0.05) );
-			const Scalar bandLocal = Scalar(4) * NEARZERO + kUlpFactor * alongNormalLocal;
-			if( stretch > NEARZERO ) {
-				selfHitFloor = Scalar(2) * bandLocal / ( stretch * cosExit );
+			if( nLocalMag > NEARZERO && stretch > NEARZERO ) {
+				const Scalar alongNormalLocal =
+					std::fabs( Vector3Ops::Dot( Vector3( exitLocal.x, exitLocal.y, exitLocal.z ), nLocalUnnorm ) ) / nLocalMag;
+				const Scalar rate = std::max(
+					std::fabs( Vector3Ops::Dot( dirLocal, nLocalUnnorm ) ) / nLocalMag,
+					Scalar(0.05) * stretch );
+				const Scalar bandLocal = Scalar(4) * NEARZERO + kUlpFactor * alongNormalLocal;
+				selfHitFloor = Scalar(2) * bandLocal / rate;
 			}
 		}
 		// (The r6 paragraph above's "~2.1e-12 acceptance window" figure is

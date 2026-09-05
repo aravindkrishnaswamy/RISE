@@ -290,6 +290,19 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 		h.bHit = false;
 	}
 
+	// A strictly interior origin (RayBoxIntersection's tmin < 0 branch)
+	// publishes the same single-root sentinel as an on-face one: range2 = 0
+	// -- what RaySphereIntersection publishes for an origin inside, what
+	// CSGObject reads as "inside this operand", and what Object::
+	// IntersectRay's exit-info block leaves alone.  Carrying the negative
+	// tmin as range2 (which Object then turned into +|tmin|) published an
+	// EXIT BEHIND THE ENTRY, and a CSG_UNION of two overlapping boxes seen
+	// from inside one of them showed a phantom interior wall where two
+	// spheres in the same construction do not (debt-25 review round 3).
+	if( h.bHit && RayBeginsInBox ) {
+		h.dRange2 = Scalar(0);
+	}
+
 	ri.bHit = h.bHit;
 	ri.range = h.dRange;
 	ri.range2 = h.dRange2;
