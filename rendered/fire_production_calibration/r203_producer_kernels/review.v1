@@ -1,0 +1,30 @@
+schema rise.fire.producer_campaign.review.v1
+reviewed_commit 73d6638c
+qualification_source_commit dc215421
+evidence_path rendered/fire_production_calibration/r203_producer_kernels/evidence.v2.json
+evidence_sha256 9c46ab8c9a2f8cd701f1dc153ca9db1478b052a77b9516f7d3c225449ce37d33
+round_1 eos P1=0 P2=0
+round_1 cost_provenance P1=0 P2=0
+round_1 evidence_isolation P1=0 P2=2
+fixed timing_log_outcome_trajectory_and_producer_scope_association
+fixed complete_checkpoint_cell_bound_EOS_witness_required_for_sealing
+repair_commit 6c03556f
+round_2 reviewer r203_final_evidence P1=0 P2=0
+round_2 reviewer r203_final_contract P1=0 P2=0
+round_2 reviewer r203_final_instrument P1=0 P2=0
+round_2_mode independent_fresh_read_only_CPU_review
+counter_RED_count 5
+counter_overlap_union_GREEN true
+witness_RED_count 3
+timing_association_RED_count 2
+qualified full_Metal_fp64_kernel_sweep
+qualified reviewed_r190_owner_gate_and_residency_RED_battery
+qualified EOS_log_lattice_and_midpoint_inputs=49512449
+qualified captured_refusal_candidate_cells=64
+scope EOS_bin_search_repair_and_exploratory_producer_cost_decomposition
+not_claimed affordable_producers
+not_claimed r78_migration
+not_claimed fixed_k_selection
+not_claimed focusing_verdict
+not_claimed full_window
+pending_owner_decision versioned_parallel_payload_digest_with_changed_seal_IDs
