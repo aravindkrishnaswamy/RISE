@@ -86,7 +86,7 @@ file each time.  They never change what a case asserts.
 | Test | Knob | Meaning |
 |---|---|---|
 | `FabricRenderTest` | `argv[1]` — seed base (default 1000) | `std::srand(seedBase + n)` before render *n*; different bases are independent runs **by construction**, which is how the file's tolerance derivations were measured. |
-| `FabricRenderTest` | `FABRIC_TEST_FILTER` (env) | Runs only the cases whose keyword is a substring of the value.  Keywords: `hwss`, `parity`, `curtain`, `arealit`, `touching`, `wrapped`, `gaparea`.  Unset (the CI invocation) runs everything.  A filtered run's `Passed:`/`Failed:` counts are over the selected subset only, so it is a measurement aid, **not** a substitute for the full-suite gate. |
+| `FabricRenderTest` | `FABRIC_TEST_FILTER` (env) | Runs only the cases whose keyword is a substring of the value.  Keywords: `hwss`, `parity`, `curtain`, `arealit`, `touching`, `wrapped`, `gaparea`, `closedbox`, `mediumvertex`.  Unset (the CI invocation) runs everything.  A filtered run's `Passed:`/`Failed:` counts are over the selected subset only, so it is a measurement aid, **not** a substitute for the full-suite gate. |
 | `BDPTStrategyBalanceTest` | — | No knobs; note its PT reference is the legacy `pixelpel_rasterizer`, which is not a valid reference for every material (see the "WHY THERE IS NO AREA-LIGHT TWIN" block in that file). |
 
 Example — re-deriving the backlit-curtain band:

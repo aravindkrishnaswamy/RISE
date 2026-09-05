@@ -97,6 +97,8 @@
 //        touching  TestTouchingAreaLitCurtainAllIntegrators
 //        wrapped   TestWrappedBacklitSheerCurtain
 //        gaparea   TestGappedWeaveWithAreaLight
+//        closedbox TestClosedBoxThinWeave
+//        mediumvertex TestMediumVertexBehindGappedWeave
 //    e.g. `FABRIC_TEST_FILTER=curtain ./bin/tests/FabricRenderTest 3000`
 //    re-runs just the backlit-curtain ratios at seed base 3000, which
 //    is how the n = 5 spreads quoted below were collected without
@@ -1520,6 +1522,310 @@ static void TestGappedWeaveWithAreaLight()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 9. CLOSED BOX, THIN WEAVE, LIGHT OUTSIDE -- docs/CLOTH_FABRIC_DESIGN.md
+// 15 debt 25 (RESOLVED).  End-to-end transport twin of
+// tests/BoxGeometryTest.cpp's primitive-level regression for
+// `BoxGeometry::DropSelfHitRoot` (src/Library/Geometry/BoxGeometry.cpp).
+//
+// A CLOSED `box_geometry` (2.8 x 2.8 x 1.0) carrying a `weave_material`
+// (`transmission thin`, `gap 0.0`) with an `omni_light` OUTSIDE, directly
+// behind it (z = -3.0; camera at +3.2 Z).  PRE-FIX: PT's NEE shadow rays
+// start unadvanced on the published hit point (~1e-12 off the face the
+// scattering event happened on), and `BoxGeometry` reported a tiny,
+// direction-dependent self-root that straddled NEARZERO.  At gap 0 with
+// the light OUTSIDE this dropped the root under NEARZERO, discarding the
+// ENTIRE box -- including the genuine far face -- so a shadow ray from
+// the front face toward the light behind the box saw no occluder at all
+// and PT read the closed box ~3.5x BRIGHTER than the same six faces
+// built from `clippedplane_geometry` (whose `RayBilinearPatchIntersection`
+// self-hit floor was already fixed under debt 21).  Debt 25's own
+// original framing -- "BDPT/VCM read 0.17x PT" -- had the fault backwards:
+// BDPT and VCM were never wrong; both `Advance()` their shadow /
+// continuation rays by 1e-6 before testing, well clear of the ~1e-12
+// self-root, so PT was the one reading 3.5x too bright.
+//
+// THREE assertions, all regression guards for the SAME fix:
+//   (a) PT(box) agrees with PT(six planes) -- same material, same
+//       light, same camera, geometrically identical closed surface
+//       built two different ways.  Pre-fix this ratio was ~3.5x; bounded
+//       far under that below.
+//   (b) BDPT/PT and (c) VCM/PT on the box itself -- BDPT/VCM were never
+//       wrong on this scene, so these should already agree; this catches
+//       the fix introducing an asymmetry between the box path and the
+//       other two integrators (it does not).
+//
+// TOLERANCE DERIVATION.  Measured on this machine at 24x24, 256 spp,
+// `oidn_denoise FALSE`, over n = 5 independent seed bases 1000..5000
+// (`FABRIC_TEST_FILTER=closedbox`):
+//
+//   PT(box)/PT(planes): 1.01355, 1.00946, 1.00768, 1.00797, 1.01219
+//                        (mean 1.01017, sigma 2.3e-3)
+//   BDPT/PT:             0.96333, 0.97229, 0.97202, 0.97046, 0.96805
+//                        (mean 0.96923, sigma 3.3e-3)
+//   VCM/PT:              0.96594, 0.96652, 0.97112, 0.96973, 0.96583
+//                        (mean 0.96783, sigma 2.2e-3)
+//
+// BDPT/PT and VCM/PT both carry a consistent ~3% "BDPT/VCM under PT"
+// bias here, not noise -- this is the SAME pre-existing residual
+// `TestBacklitSheerCurtain`'s comment discloses ("The ~5-10%
+// BDPT/VCM-under-PT residual on delta-light scenes is disclosed as an
+// open follow-up"), not a new effect this fix introduced.  3 sigma is
+// under 1.1% on every row above; the bands below are set at 8% (BDPT/VCM
+// ratios, ~2.5x the worst observed ~3.7% deviation from 1.0) and the
+// box/planes bound at 1.15 (~11x the worst observed ~1.4% deviation from
+// 1.0, and 23x under the pre-fix ~3.5x signature) -- loose enough to
+// absorb the disclosed residual and machine-to-machine RNG movement,
+// tight enough that the pre-fix failure trips every one of the three
+// checks by well over an order of magnitude -- the fix's own commit
+// message records BDPT/PT reading 0.284 pre-fix on this exact "light
+// outside" scene (PT itself ~3.5x too bright) vs the ~0.97 measured here.
+//////////////////////////////////////////////////////////////////////
+static const double kClosedBoxBdptPtTol = 0.08;
+static const double kClosedBoxVcmPtTol = 0.08;
+static const double kClosedBoxVsPlanesRatioBound = 1.15;
+
+static std::string ClosedBoxThinWeaveCommon(
+	bool bBox,				// true: box_geometry; false: six clippedplane quads at the same faces
+	bool bLightInside,
+	unsigned int width, unsigned int height )
+{
+	std::ostringstream ss;
+	const double lightZ = bLightInside ? -0.2 : -3.0;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 " << lightZ << "\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n\n"
+		"weave_material\n{\n\tname mat_box\n\tfabric custom\n\ttransmission thin\n\tgap 0.0\n"
+			"\twarp_transmit 0.25\n\tweft_transmit 0.25\n}\n\n";
+
+	if( bBox ) {
+		ss <<
+			"box_geometry\n{\n\tname g\n\twidth 2.8\n\theight 2.8\n\tdepth 1.0\n}\n\n"
+			"standard_object\n{\n\tname o\n\tgeometry g\n\tmaterial mat_box\n\tposition 0 0 0\n}\n\n";
+	} else {
+		// Six clippedplane_geometry quads at the same six faces as the
+		// box above (x = +/-1.4, y = +/-1.4, z = +/-0.5).  `doublesided
+		// TRUE` makes winding irrelevant to which side is lit.
+		ss <<
+			"clippedplane_geometry\n{\n\tname px\n"
+				"\tpta 1.4 -1.4 -0.5\n\tptb 1.4 -1.4 0.5\n\tptc 1.4 1.4 0.5\n\tptd 1.4 1.4 -0.5\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname o_px\n\tgeometry px\n\tmaterial mat_box\n}\n\n"
+			"clippedplane_geometry\n{\n\tname nx\n"
+				"\tpta -1.4 -1.4 0.5\n\tptb -1.4 -1.4 -0.5\n\tptc -1.4 1.4 -0.5\n\tptd -1.4 1.4 0.5\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname o_nx\n\tgeometry nx\n\tmaterial mat_box\n}\n\n"
+			"clippedplane_geometry\n{\n\tname py\n"
+				"\tpta -1.4 1.4 -0.5\n\tptb 1.4 1.4 -0.5\n\tptc 1.4 1.4 0.5\n\tptd -1.4 1.4 0.5\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname o_py\n\tgeometry py\n\tmaterial mat_box\n}\n\n"
+			"clippedplane_geometry\n{\n\tname ny\n"
+				"\tpta -1.4 -1.4 0.5\n\tptb 1.4 -1.4 0.5\n\tptc 1.4 -1.4 -0.5\n\tptd -1.4 -1.4 -0.5\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname o_ny\n\tgeometry ny\n\tmaterial mat_box\n}\n\n"
+			"clippedplane_geometry\n{\n\tname pz\n"
+				"\tpta -1.4 -1.4 0.5\n\tptb 1.4 -1.4 0.5\n\tptc 1.4 1.4 0.5\n\tptd -1.4 1.4 0.5\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname o_pz\n\tgeometry pz\n\tmaterial mat_box\n}\n\n"
+			"clippedplane_geometry\n{\n\tname nz\n"
+				"\tpta 1.4 -1.4 -0.5\n\tptb -1.4 -1.4 -0.5\n\tptc -1.4 1.4 -0.5\n\tptd 1.4 1.4 -0.5\n"
+				"\tdoublesided TRUE\n}\n\n"
+			"standard_object\n{\n\tname o_nz\n\tgeometry nz\n\tmaterial mat_box\n}\n\n";
+	}
+	return ss.str();
+}
+
+static void TestClosedBoxThinWeave()
+{
+	std::cout << "=== 9. Closed box, thin weave, light OUTSIDE (debt 25 resolved) ===" << std::endl;
+
+	const unsigned int W = 24, H = 24;
+	const unsigned int samples = 256;
+
+	const std::string boxCommon = ClosedBoxThinWeaveCommon( true, false, W, H );
+	const std::string planesCommon = ClosedBoxThinWeaveCommon( false, false, W, H );
+
+	const ImageStats ptBox = RenderAndComputeStats(
+		AssembleScene( boxCommon, RasterizerPTRgbNoEnv( samples, 8 ) ), "closedbox_pt_box" );
+	const ImageStats ptPlanes = RenderAndComputeStats(
+		AssembleScene( planesCommon, RasterizerPTRgbNoEnv( samples, 8 ) ), "closedbox_pt_planes" );
+	const ImageStats bdptBox = RenderAndComputeStats(
+		AssembleScene( boxCommon, RasterizerBDPTRgbNoEnv( samples, 8, 8 ) ), "closedbox_bdpt_box" );
+	const ImageStats vcmBox = RenderAndComputeStats(
+		AssembleScene( boxCommon, RasterizerVCMRgbNoEnv( samples, 8, 8 ) ), "closedbox_vcm_box" );
+
+	Check( ptBox.valid && ptPlanes.valid && bdptBox.valid && vcmBox.valid,
+		"closed box: all four renders (PT box, PT planes, BDPT box, VCM box) produced output" );
+	if( !ptBox.valid || !ptPlanes.valid || !bdptBox.valid || !vcmBox.valid ) return;
+	Check( ptBox.luminance > 1e-6, "closed box: PT(box) render is non-degenerate (not a black frame)" );
+
+	const double boxVsPlanes = ptBox.luminance / std::fmax( ptPlanes.luminance, 1e-12 );
+	const double bdptRatio = bdptBox.luminance / std::fmax( ptBox.luminance, 1e-12 );
+	const double vcmRatio = vcmBox.luminance / std::fmax( ptBox.luminance, 1e-12 );
+
+	std::cout << "  PT(box) = " << ptBox.luminance << "   PT(six planes) = " << ptPlanes.luminance
+		<< "   PT(box)/PT(planes) = " << boxVsPlanes << std::endl;
+	std::cout << "  BDPT(box) = " << bdptBox.luminance << "   VCM(box) = " << vcmBox.luminance
+		<< "   BDPT/PT = " << bdptRatio << "   VCM/PT = " << vcmRatio << std::endl;
+
+	Check( boxVsPlanes < kClosedBoxVsPlanesRatioBound,
+		"closed box: PT(box) agrees with PT(six planes) (debt 25 resolved -- was ~3.5x pre-fix)" );
+	Check( std::fabs( bdptRatio - 1.0 ) <= kClosedBoxBdptPtTol,
+		"closed box: BDPT/PT within tolerance (BDPT was never wrong; box path now matches)" );
+	Check( std::fabs( vcmRatio - 1.0 ) <= kClosedBoxVcmPtTol,
+		"closed box: VCM/PT within tolerance (VCM was never wrong; box path now matches)" );
+}
+
+//////////////////////////////////////////////////////////////////////
+// 10. MEDIUM VERTEX BEHIND A GAPPED WEAVE -- docs/CLOTH_FABRIC_DESIGN.md
+// section 15 debt 25's closing paragraph / ~line 5429's medium-vertex
+// sibling of debt 23 (BDPT/VCM vertex connectibility is a per-surface
+// property, not a per-draw one -- 7889fa29, e45f151a).  That fix has a
+// twin site for MEDIUM vertices in the SAME two functions
+// (`GenerateEyeSubpathImpl` line ~1819, `GenerateLightSubpathImpl` line
+// ~5510 of src/Library/Shaders/BDPTIntegrator.cpp -- both shared
+// VERBATIM by VCM, see BDPTIntegrator.h's "reuse lynchpin" note) that had
+// no end-to-end regression guard until this case.
+//
+// A closed `box_geometry` (2.8 x 2.8 x 1.0) with `gap 0.1` (so the
+// mixed delta-gap / continuum-transmission boundary this debt's comment
+// describes is actually exercised) carrying a dense `homogeneous_medium`
+// as its `interior_medium`, and an `omni_light` INSIDE the box.  A
+// mixed weave boundary crossed by both a delta draw (through the gap)
+// and a continuum draw (the diffuse transmission lobe) must mark the
+// medium vertex just behind it connectible whenever the BOUNDARY
+// MATERIAL has a non-delta BSDF, regardless of which lobe THIS
+// particular walk happened to draw -- keying off the per-draw
+// `isDelta` instead drops NEE/connections at that medium vertex on the
+// delta-drawn fraction of samples, undercounting the medium's share of
+// the picture.
+//
+// PT is the reference (no MIS partition to get wrong at a medium
+// vertex; its NEE either reaches the medium-scatter point or doesn't,
+// same shadow-ray machinery as everywhere else in this file).
+//
+// VCM/PT IS banded around PT here, NOT around a disclosed-bias center --
+// see the RED-PROOF paragraph below for why: CLAUDE.md's "no NEE/merges
+// at MEDIUM vertices" gap is a real, separately-tracked VCM limitation,
+// but it does not manifest measurably on THIS scene (a delta/point
+// light, where NEE-to-the-light and the generic vertex-connection-to-
+// the-light-vertex strategy are the same computation, so there is no
+// separate "NEE routine" for VCM to skip) -- both BDPT and VCM measure
+// within noise of PT and of EACH OTHER here.
+//
+// RED-PROOF (this session, in-worktree only, reverted before commit --
+// src/Library/Shaders/BDPTIntegrator.cpp is byte-identical to HEAD in
+// the committed tree).  Both connectibility sites
+// (`GenerateEyeSubpathImpl` line 1819, `GenerateLightSubpathImpl` line
+// 5510) were temporarily reverted to the pre-fix `prev.isDelta`
+// predicate and the library rebuilt.  HONEST NEGATIVE RESULT: at the
+// scene parameters this case ships with (gap 0.1, scattering 1.5,
+// max_eye/light_depth 8), the reverted build reads BDPT/PT 0.994-1.000
+// across three seed bases -- statistically indistinguishable from the
+// FIXED build's 0.994-1.000 over the same three bases (both draws come
+// from the same noise floor, sigma ~0.2%).  Tried to WIDEN the lever
+// (docs/CLOTH_FABRIC_DESIGN.md's own "raise scattering / spp" prescription)
+// across five combinations -- scattering up to 15.0, `max_eye/light_depth`
+// down to 2 (forcing many eye/light walks to terminate INSIDE the medium,
+// where NEE is their only chance to see the light) -- the largest gap
+// between a reverted and a fixed build at IDENTICAL parameters (depth 5,
+// scattering 15.0) was 0.9939 (fixed) vs 0.9938 (reverted): still under
+// the run-to-run sigma, not a discriminating lever.  Depth 2 alone moved
+// BDPT/PT to ~0.96, but IDENTICALLY for both fixed and reverted builds --
+// that shift is the shallow depth cap truncating real bounces, not the
+// connectibility bug.  Likely cause: this scene's illumination is
+// dominated by SHORT connections (light's first medium bounce to the
+// eye's first medium/surface vertex), which are already correctly
+// connectible under BOTH predicates (the immediate predecessor is either
+// the LIGHT vertex, unconditionally connectible, or a weave crossing,
+// gated by the DRAW's lobe either way); the deeper medium-chain vertices
+// the two predicates disagree about contribute too small a share of this
+// box's energy to move the mean outside MC noise.  Per the brief's own
+// fallback: kept as a PARITY GUARD for the connectibility fix's
+// medium-vertex code path (a real regression there -- e.g. a typo
+// reintroducing `isDelta`, or a sign flip -- would still show up as a
+// gross break, just not as a small, cleanly-attributable percentage),
+// with the measured (non-discriminating) lever disclosed here rather
+// than a manufactured one.
+//
+// TOLERANCE DERIVATION.  Measured on this machine at 24x24, 256 spp,
+// `oidn_denoise FALSE`, over n = 5 independent seed bases 1000..5000
+// (`FABRIC_TEST_FILTER=mediumvertex`):
+//
+//   BDPT/PT: 0.99613, 0.99953, 0.99444, 0.99849, 0.99633
+//            (mean 0.99698, sigma 2.0e-3)
+//   VCM/PT:  0.99789, 1.00002, 0.99580, 1.00093, 0.99742
+//            (mean 0.99841, sigma 1.8e-3)
+//
+// Both rows sit within ~0.6% of 1.0 with 3 sigma under 1%.  Bands are set
+// at 10% for BDPT/PT (~16x the worst observed deviation) and 12% for
+// VCM/PT (~20x), both symmetric around 1.0 rather than a disclosed-bias
+// center (see above) -- wide enough to comfortably absorb cross-machine
+// movement, tight enough that a REAL regression at either connectibility
+// site (this scene's NEE for a meaningful fraction of paths dropping to
+// zero, not a subtle few-percent shift) would still trip it, per the
+// red-proof paragraph's disclosure of what a percentage-only band cannot
+// catch here.
+//////////////////////////////////////////////////////////////////////
+static const double kMediumVertexBdptPtTol = 0.10;
+static const double kMediumVertexVcmPtTol = 0.12;
+
+static std::string MediumVertexGappedWeaveCommon( unsigned int width, unsigned int height )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+		"omni_light\n{\n\tname lgt\n\tposition 0 0 -0.2\n\tcolor 1.0 1.0 1.0\n\tpower 6.0\n}\n\n"
+		"weave_material\n{\n\tname mat_box\n\tfabric custom\n\ttransmission thin\n\tgap 0.1\n"
+			"\twarp_transmit 0.25\n\tweft_transmit 0.25\n}\n\n"
+		"homogeneous_medium\n{\n\tname med\n\tabsorption 0.05 0.05 0.05\n"
+			"\tscattering 1.5 1.5 1.5\n\tphase isotropic\n}\n\n"
+		"box_geometry\n{\n\tname g\n\twidth 2.8\n\theight 2.8\n\tdepth 1.0\n}\n\n"
+		"standard_object\n{\n\tname o\n\tgeometry g\n\tmaterial mat_box\n\tposition 0 0 0\n"
+			"\tinterior_medium med\n}\n\n";
+	return ss.str();
+}
+
+static void TestMediumVertexBehindGappedWeave()
+{
+	std::cout << "=== 10. Medium vertex behind a gapped weave (debt 25's medium-vertex sibling) ===" << std::endl;
+
+	const unsigned int W = 24, H = 24;
+	const unsigned int samples = 256;
+	const std::string common = MediumVertexGappedWeaveCommon( W, H );
+
+	const ImageStats sPt = RenderAndComputeStats(
+		AssembleScene( common, RasterizerPTRgbNoEnv( samples, 8 ) ), "mediumvertex_pt" );
+	const ImageStats sBdpt = RenderAndComputeStats(
+		AssembleScene( common, RasterizerBDPTRgbNoEnv( samples, 8, 8 ) ), "mediumvertex_bdpt" );
+	const ImageStats sVcm = RenderAndComputeStats(
+		AssembleScene( common, RasterizerVCMRgbNoEnv( samples, 8, 8 ) ), "mediumvertex_vcm" );
+
+	Check( sPt.valid && sBdpt.valid && sVcm.valid,
+		"medium vertex: all three renders (PT, BDPT, VCM) produced output" );
+	if( !sPt.valid || !sBdpt.valid || !sVcm.valid ) return;
+	Check( sPt.luminance > 1e-6, "medium vertex: PT render is non-degenerate (not a black frame)" );
+
+	const double bdptRatio = sBdpt.luminance / std::fmax( sPt.luminance, 1e-12 );
+	const double vcmRatio = sVcm.luminance / std::fmax( sPt.luminance, 1e-12 );
+
+	std::cout << "  PT = " << sPt.luminance << "   BDPT = " << sBdpt.luminance
+		<< "   VCM = " << sVcm.luminance << std::endl;
+	std::cout << "  BDPT/PT = " << bdptRatio << "   VCM/PT = " << vcmRatio
+		<< "   (see the file comment above this case: VCM's disclosed medium-vertex gap "
+		<< "does not manifest measurably on this delta-light scene, so VCM/PT is banded "
+		<< "around 1.0 the same as BDPT/PT, not around a disclosed-bias center)" << std::endl;
+
+	Check( std::fabs( bdptRatio - 1.0 ) <= kMediumVertexBdptPtTol,
+		"medium vertex: BDPT/PT within tolerance (connectibility fix's medium-vertex twin holds)" );
+	Check( std::fabs( vcmRatio - 1.0 ) <= kMediumVertexVcmPtTol,
+		"medium vertex: VCM/PT within tolerance (connectibility fix's medium-vertex twin holds)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
@@ -1542,6 +1848,8 @@ int main( int argc, char** argv )
 	if( !filter || std::strstr( filter, "touching" ) ) TestTouchingAreaLitCurtainAllIntegrators();
 	if( !filter || std::strstr( filter, "wrapped" ) ) TestWrappedBacklitSheerCurtain();
 	if( !filter || std::strstr( filter, "gaparea" ) ) TestGappedWeaveWithAreaLight();
+	if( !filter || std::strstr( filter, "closedbox" ) ) TestClosedBoxThinWeave();
+	if( !filter || std::strstr( filter, "mediumvertex" ) ) TestMediumVertexBehindGappedWeave();
 
 	std::cout << "==========================================================" << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

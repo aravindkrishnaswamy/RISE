@@ -1,0 +1,353 @@
+//////////////////////////////////////////////////////////////////////
+//
+//  BoxGeometryTest.cpp - regression guard for debt 25's root-cause fix
+//  (docs/CLOTH_FABRIC_DESIGN.md section 15): `BoxGeometry::IntersectRay`
+//  / `IntersectRay_IntersectionOnly` used to report a self-hit root for
+//  a ray whose origin was PUBLISHED (Object::IntersectRay backs the hit
+//  point off along the ray by SURFACE_INTERSEC_ERROR = 1e-12) on one of
+//  the box's own faces -- a tiny, direction-dependent root that
+//  straddled NEARZERO and either self-occluded the origin's own face or
+//  discarded the box entirely (see `DropSelfHitRoot` in
+//  src/Library/Geometry/BoxGeometry.cpp for the full mechanism).
+//
+//  This file exercises the fixed primitive DIRECTLY (no rasterizer, no
+//  scene parse) at exactly the two publish conventions
+//  `Object::IntersectRay` uses -- `p = ray.PointAtLength(ri.range -
+//  1e-12)` from an entry (outside) hit and from an exit (inside) hit --
+//  across a sweep of continuation-ray angles down to grazing incidence,
+//  the four front/back-face flag combinations the fix's exit/entry
+//  predicate governs, and one coordinate-scale check (~1000) to confirm
+//  the self-hit floor's scale-relative tolerance
+//  (`NEARZERO * (1 + coordinate magnitude)`) tracks genuine faces at any
+//  scale rather than a fixed absolute threshold.
+//
+//  Style follows tests/ClippedPlaneGeometryTest.cpp: plain asserts,
+//  the geometry class constructed directly, `RayIntersectionGeometric(
+//  Ray(origin,dir), nullRasterizerState )` for the full-info entry
+//  point.
+//
+//  Author: Claude Sonnet 5
+//  Tabs: 4
+//
+//  License Information: Please see the attached LICENSE.TXT file
+//
+//////////////////////////////////////////////////////////////////////
+
+#include <iostream>
+#include <cassert>
+#include <cmath>
+#include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Intersection/RayIntersectionGeometric.h"
+#include "../src/Library/Utilities/GeometricUtilities.h"
+
+using namespace RISE;
+using namespace RISE::Implementation;
+
+static bool IsClose( const Scalar a, const Scalar b, const Scalar epsilon = 1e-6 )
+{
+	return std::fabs(a - b) <= epsilon;
+}
+
+static bool IsVectorClose( const Vector3& a, const Vector3& b, const Scalar epsilon = 1e-6 )
+{
+	return IsClose(a.x, b.x, epsilon) &&
+		IsClose(a.y, b.y, epsilon) &&
+		IsClose(a.z, b.z, epsilon);
+}
+
+static RayIntersectionGeometric MakeIntersection( const Point3& origin, const Vector3& dir )
+{
+	return RayIntersectionGeometric( Ray(origin, dir), nullRasterizerState );
+}
+
+//////////////////////////////////////////////////////////////////////
+// 1+2. Origin published from an OUTSIDE (entry) hit on the +Z face:
+// p = ray.PointAtLength(ri.range - 1e-12), ~1e-12 outside the box.
+//
+// A sweep of INGOING continuation-ray angles from p, parameterized by
+// cos(theta) = the angle to the +Z face normal, from normal incidence
+// (1.0) down to grazing (0.02).  Below tan(theta) = halfWidth/depth =
+// 1.4 (scale-invariant: both scale together) the ray's lateral drift
+// while crossing the box's thin depth stays under the half-width and
+// it exits through the OPPOSITE (-Z) face; above that angle the
+// lateral drift exceeds the half-width first and it exits through the
+// +X SIDE face instead.  Both are legitimate "the far root survives"
+// outcomes for the fix (DropSelfHitRoot swaps in whatever the OTHER
+// root is, not specifically the parallel opposite face), so the sweep
+// deliberately covers both regimes with independently hand-derived
+// expected ranges/normals -- not a call back into the code under test.
+//
+// Then: an OUTGOING ray from the same p (continuing through the face
+// away from the box) must report NO HIT -- nothing remains ahead.
+//////////////////////////////////////////////////////////////////////
+static void RunFrontFaceIngoingSweep( double scale )
+{
+	std::cout << "Testing BoxGeometry ingoing/outgoing from a published front-face (outside) origin (scale "
+		<< scale << ")..." << std::endl;
+
+	const double W = 2.8 * scale, H = 2.8 * scale, D = 1.0 * scale;
+	BoxGeometry* pBox = new BoxGeometry( W, H, D );
+
+	// Oblique camera-like ray from far outside, aimed exactly at the +Z
+	// face center so the analytic exit derivation below (which assumes
+	// p == (0,0,0.5*scale) to the ~1e-12*scale backoff) holds.
+	const Point3 camOrigin( 2.1 * scale, -1.7 * scale, 4.0 * scale );
+	const Point3 target( 0.0, 0.0, 0.5 * scale );
+	const Vector3 camDir = Vector3Ops::Normalize(
+		Vector3( target.x - camOrigin.x, target.y - camOrigin.y, target.z - camOrigin.z ) );
+	Ray camRay( camOrigin, camDir );
+
+	RayIntersectionGeometric riCam = MakeIntersection( camOrigin, camDir );
+	pBox->IntersectRay( riCam, true, false, false );
+	assert( riCam.bHit );
+	assert( IsVectorClose( riCam.vNormal, Vector3(0.0, 0.0, 1.0), 1e-9 ) );
+
+	const Point3 p = camRay.PointAtLength( riCam.range - 1e-12 );
+
+	const double halfWidth = 1.4 * scale;
+	const double depth = 1.0 * scale;
+	const double cosVals[] = { 1.0, 0.9, 0.7, 0.5, 0.3, 0.1, 0.02 };
+
+	for( double cosT : cosVals )
+	{
+		const double sinT = std::sqrt( std::fmax( 0.0, 1.0 - cosT * cosT ) );
+
+		bool viaOpposite;
+		double expectedRange;
+		Vector3 expectedNormal;
+		if( sinT < 1e-12 ) {
+			viaOpposite = true;
+			expectedRange = depth / cosT;
+			expectedNormal = Vector3( 0.0, 0.0, -1.0 );
+		} else {
+			const double tZFar  = depth / cosT;
+			const double tXSide = halfWidth / sinT;
+			viaOpposite = ( tZFar <= tXSide );
+			expectedRange = viaOpposite ? tZFar : tXSide;
+			expectedNormal = viaOpposite ? Vector3(0.0, 0.0, -1.0) : Vector3(1.0, 0.0, 0.0);
+		}
+
+		const Vector3 dir( sinT, 0.0, -cosT );
+		const double tol = 1e-6 * expectedRange + 1e-9;
+
+		RayIntersectionGeometric ri = MakeIntersection( p, dir );
+		pBox->IntersectRay( ri, true, true, false );
+		assert( ri.bHit );
+		assert( ri.range >= 1e-6 );	// never the ~1e-12 self-hit root
+		assert( IsClose( ri.range, expectedRange, tol ) );
+		assert( IsVectorClose( ri.vNormal, expectedNormal, 1e-9 ) );
+
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			Ray(p, dir), expectedRange * 2.0, true, true );
+		assert( hitOnly );
+	}
+
+	// OUTGOING: continuing straight away from the box through the same
+	// face p sits on -- nothing remains ahead, so this must be NO HIT
+	// (the pre-fix bug's other failure mode: self-occluding this case).
+	{
+		const Vector3 outDir( 0.0, 0.0, 1.0 );
+		RayIntersectionGeometric ri = MakeIntersection( p, outDir );
+		pBox->IntersectRay( ri, true, true, false );
+		assert( !ri.bHit );
+
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			Ray(p, outDir), 1e6 * scale, true, true );
+		assert( !hitOnly );
+	}
+
+	safe_release( pBox );
+	std::cout << "  ...Passed! (scale " << scale << ")" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// 3. Origin published from an INSIDE (exit) hit on the -Z face:
+// p2 = ray.PointAtLength(ri.range - 1e-12), which now lies ~1e-12
+// INSIDE the box (backing off an exit hit moves toward where the ray
+// came from, i.e. further into the box it is leaving).
+//
+// OUTGOING (continuing the same direction, finishing the exit) must be
+// NO HIT.  INGOING (reversing direction, back into the box) must hit
+// the OPPOSITE (+Z) face, not a self-hit on the face p2 sits on.
+//////////////////////////////////////////////////////////////////////
+static void RunBackFaceIngoingOutgoing( double scale )
+{
+	std::cout << "Testing BoxGeometry ingoing/outgoing from a published back-face (inside) origin (scale "
+		<< scale << ")..." << std::endl;
+
+	const double W = 2.8 * scale, H = 2.8 * scale, D = 1.0 * scale;
+	BoxGeometry* pBox = new BoxGeometry( W, H, D );
+
+	// From the box center toward the -Z face, with a small lateral
+	// component -- small enough that the lateral drift over the box's
+	// depth stays well under its half-width, so this genuinely exits
+	// through the -Z face and not a side.
+	const Point3 insideOrigin( 0.0, 0.0, 0.0 );
+	const Vector3 dir2 = Vector3Ops::Normalize( Vector3( 0.05, 0.03, -1.0 ) );
+	Ray insideRay( insideOrigin, dir2 );
+
+	RayIntersectionGeometric riInside = MakeIntersection( insideOrigin, dir2 );
+	pBox->IntersectRay( riInside, true, true, false );
+	assert( riInside.bHit );
+	assert( IsVectorClose( riInside.vNormal, Vector3(0.0, 0.0, -1.0), 1e-9 ) );
+
+	const Point3 p2 = insideRay.PointAtLength( riInside.range - 1e-12 );
+
+	// OUTGOING: same direction, finishing the exit -- no hit.
+	{
+		RayIntersectionGeometric ri = MakeIntersection( p2, dir2 );
+		pBox->IntersectRay( ri, true, true, false );
+		assert( !ri.bHit );
+
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			Ray(p2, dir2), 1e6 * scale, true, true );
+		assert( !hitOnly );
+	}
+
+	// INGOING: reversed direction, back into the box -- must hit the
+	// OPPOSITE (+Z) face at depth / cos(angle to the Z axis), computed
+	// from the ACTUAL normalized dir2 rather than hard-coded, so the
+	// expectation doesn't depend on this file's own rounding of dir2.
+	{
+		const Vector3 backIn( -dir2.x, -dir2.y, -dir2.z );
+		const double cosZ = std::fabs( dir2.z );
+		const double expectedRange = ( 1.0 * scale ) / cosZ;
+		const double tol = 1e-6 * expectedRange + 1e-9;
+
+		RayIntersectionGeometric ri = MakeIntersection( p2, backIn );
+		pBox->IntersectRay( ri, true, true, false );
+		assert( ri.bHit );
+		assert( ri.range >= 1e-6 );	// never the ~1e-12 self-hit root
+		assert( IsClose( ri.range, expectedRange, tol ) );
+		assert( IsVectorClose( ri.vNormal, Vector3(0.0, 0.0, 1.0), 1e-9 ) );
+
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			Ray(p2, backIn), expectedRange * 2.0, true, true );
+		assert( hitOnly );
+	}
+
+	safe_release( pBox );
+	std::cout << "  ...Passed! (scale " << scale << ")" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// 4. Front/back-face flag rules at an on-face (published, outside)
+// origin going IN (straight-in direction, the cos(theta)=1.0 case from
+// the sweep above):
+//   (front=true,  back=false) -> NO HIT.  An on-face origin going in is
+//     treated as an EXIT hit (its own-face root was dropped), so
+//     front-faces-only correctly rejects it.
+//   (front=false, back=true)  -> the far (-Z) face IS hit.  This is the
+//     strict-inside early-out the fix replaced: pre-fix, an on-face
+//     origin read as "outside" (not strictly `RayBeginsInBox`) and
+//     back-faces-only wrongly rejected the far face.
+// And a genuinely OUTSIDE origin (the far camera origin) with
+// (front=false, back=true) -> NO HIT: nothing to see without first
+// crossing (and reporting) the front face.
+//////////////////////////////////////////////////////////////////////
+static void RunFrontBackFaceFlagRules( double scale )
+{
+	std::cout << "Testing BoxGeometry front/back-face flag rules (scale " << scale << ")..." << std::endl;
+
+	const double W = 2.8 * scale, H = 2.8 * scale, D = 1.0 * scale;
+	BoxGeometry* pBox = new BoxGeometry( W, H, D );
+
+	const Point3 camOrigin( 2.1 * scale, -1.7 * scale, 4.0 * scale );
+	const Point3 target( 0.0, 0.0, 0.5 * scale );
+	const Vector3 camDir = Vector3Ops::Normalize(
+		Vector3( target.x - camOrigin.x, target.y - camOrigin.y, target.z - camOrigin.z ) );
+	Ray camRay( camOrigin, camDir );
+
+	RayIntersectionGeometric riCam = MakeIntersection( camOrigin, camDir );
+	pBox->IntersectRay( riCam, true, false, false );
+	assert( riCam.bHit );
+	const Point3 p = camRay.PointAtLength( riCam.range - 1e-12 );
+
+	const Vector3 straightIn( 0.0, 0.0, -1.0 );
+
+	// (front=true, back=false): on-face origin going in -> NO HIT.
+	{
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			Ray(p, straightIn), 1e6 * scale, true, false );
+		assert( !hitOnly );
+
+		RayIntersectionGeometric ri = MakeIntersection( p, straightIn );
+		pBox->IntersectRay( ri, true, false, false );
+		assert( !ri.bHit );
+	}
+
+	// (front=false, back=true): the far (-Z) face IS hit.
+	{
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			Ray(p, straightIn), 1e6 * scale, false, true );
+		assert( hitOnly );
+
+		RayIntersectionGeometric ri = MakeIntersection( p, straightIn );
+		pBox->IntersectRay( ri, false, true, false );
+		assert( ri.bHit );
+		assert( IsVectorClose( ri.vNormal, Vector3(0.0, 0.0, -1.0), 1e-9 ) );
+	}
+
+	// Genuinely outside origin (the camera origin itself, far from any
+	// face) with (front=false, back=true): NO HIT.
+	{
+		const bool hitOnly = pBox->IntersectRay_IntersectionOnly(
+			camRay, 1e6 * scale, false, true );
+		assert( !hitOnly );
+
+		RayIntersectionGeometric ri = MakeIntersection( camOrigin, camDir );
+		pBox->IntersectRay( ri, false, true, false );
+		assert( !ri.bHit );
+	}
+
+	safe_release( pBox );
+	std::cout << "  ...Passed! (scale " << scale << ")" << std::endl;
+}
+
+//////////////////////////////////////////////////////////////////////
+// 6. Regression guard: an ORDINARY outside-to-outside ray (no self-hit
+// involvement at all) with bComputeExitInfo=TRUE still reports range2 /
+// vNormal2 exactly as before the fix -- the fix only changes behavior
+// for an on-face origin, never for a clean two-face crossing.
+//////////////////////////////////////////////////////////////////////
+static void TestExitInfoRegression()
+{
+	std::cout << "Testing BoxGeometry bComputeExitInfo regression (ordinary outside origin)..." << std::endl;
+
+	BoxGeometry* pBox = new BoxGeometry( 2.8, 2.8, 1.0 );
+	const Point3 origin( 0.0, 0.0, 5.0 );
+	const Vector3 dir( 0.0, 0.0, -1.0 );
+
+	RayIntersectionGeometric ri = MakeIntersection( origin, dir );
+	pBox->IntersectRay( ri, true, true, true );
+
+	assert( ri.bHit );
+	assert( IsClose( ri.range, 4.5, 1e-9 ) );
+	assert( IsClose( ri.range2, 5.5, 1e-9 ) );
+	assert( IsVectorClose( ri.vNormal, Vector3(0.0, 0.0, 1.0), 1e-9 ) );
+	assert( IsVectorClose( ri.vNormal2, Vector3(0.0, 0.0, -1.0), 1e-9 ) );
+
+	safe_release( pBox );
+	std::cout << "  ...Passed!" << std::endl;
+}
+
+int main()
+{
+	RunFrontFaceIngoingSweep( 1.0 );
+	RunBackFaceIngoingOutgoing( 1.0 );
+	RunFrontBackFaceFlagRules( 1.0 );
+
+	// Coordinate-scale check (~1000): the self-hit floor is
+	// NEARZERO * (1 + coordinate magnitude), so re-running the same
+	// suites at 1000x scale confirms it tracks genuine faces rather than
+	// firing on a fixed absolute threshold that would be swamped at this
+	// scale, or failing to fire on a scale that would swamp it.
+	RunFrontFaceIngoingSweep( 1000.0 );
+	RunBackFaceIngoingOutgoing( 1000.0 );
+	RunFrontBackFaceFlagRules( 1000.0 );
+
+	TestExitInfoRegression();
+
+	std::cout << "All BoxGeometryTest cases passed!" << std::endl;
+	return 0;
+}
