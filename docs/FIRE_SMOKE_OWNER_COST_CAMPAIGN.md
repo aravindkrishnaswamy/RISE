@@ -206,9 +206,13 @@ schedules associate each timing tree with its trajectory row. These repairs
 change neither the resident owner's kernels nor its numerical stopping rule.
 
 `exact_827608d5/` records the repaired-build off/on qualification and repeated
-three-step cost diagnostic. `instrumentation_live_binding.v2` binds current
+three-step cost diagnostic. `instrumentation_live_binding.v3` binds current
 sources, the measurement binary, and both generations of evidence without
-rewriting v1. Both three-step probes are diagnostics, not an onset verdict or
+rewriting v1/v2. The second fresh review found no P1 and one further P2: the
+observer checker needed the complete fixture's terminal qualification verdict,
+not only its exported-operand markers. Truncated-log and failed-terminal-verdict
+REDs now refuse; all four exact-generation fixture logs pass this stronger check.
+Both three-step probes are diagnostics, not an onset verdict or
 independent steady-state performance trials. The checkpoint-source request
 harness and candidate-momentum convergence certificate remain unimplemented.
 

@@ -16,6 +16,9 @@ RED_NAMES = {"stale_column_trace", "out_of_order_iteration", "truncated_face_sha
 
 
 def qualify_artifact(log, trace, csv):
+    verdicts = [line for line in log.splitlines() if line.startswith("RESIDENT_TARGET passed=")]
+    if len(verdicts) != 1 or not verdicts[0].startswith("RESIDENT_TARGET passed=1 "):
+        raise ValueError("complete qualification fixture did not pass")
     if FP64_PASS not in log.splitlines() or "OWNER_CONVERGENCE_PROBE passed=1 error=" not in log.splitlines():
         raise ValueError("fp64 owner or convergence qualification did not pass")
     artifacts = [line for line in log.splitlines() if line.startswith("OWNER_CONVERGENCE_ARTIFACT ")]
@@ -131,13 +134,16 @@ def self_test():
     qualify_artifact(log, trace, csv)
     for mutant in ((log, b"", b""), (log, trace, b""),
                    (log.replace(FP64_PASS, ""), trace, csv),
-                   (log.replace("name=mismatched_owner", "name=stale_column_trace"), trace, csv)):
+                   (log.replace("name=mismatched_owner", "name=stale_column_trace"), trace, csv),
+                   (log.split("OWNER_CONVERGENCE_PROBE passed=1 error=")[0] +
+                    "OWNER_CONVERGENCE_PROBE passed=1 error=\n", trace, csv),
+                   (log.replace("RESIDENT_TARGET passed=1", "RESIDENT_TARGET passed=0"), trace, csv)):
         try:
             qualify_artifact(*mutant)
         except ValueError:
             continue
         raise AssertionError("qualified artifact/RED-name binding mutant escaped")
-    print("qualified artifact/fp64/RED-name binding REDs: 4 passed")
+    print("qualified artifact/fp64/RED-name/terminal-verdict binding REDs: 6 passed")
 
 
 def main():

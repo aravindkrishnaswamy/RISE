@@ -4006,9 +4006,9 @@ int main()
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
 		"r201m_owner_iteration_trace_live_binding.v1");
 	const std::string ownerCostLiveBinding=ReadText(
-		"rendered/fire_production_calibration/r202_owner_cost/instrumentation_live_binding.v2");
+		"rendered/fire_production_calibration/r202_owner_cost/instrumentation_live_binding.v3");
 	const std::string ownerCostGate=ReadText(
-		"rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v2");
+		"rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v3");
 	const std::string ownerCostOffRaw=ReadText(
 		"rendered/fire_production_calibration/r202_owner_cost/exact_827608d5/fixture_off.log");
 	const std::string ownerCostOnRaw=ReadText(
@@ -4024,11 +4024,11 @@ int main()
 		++ownerCostEntryCount;
 	}
 	Check(sourceSHA("rendered/fire_production_calibration/r202_owner_cost/"
-		"instrumentation_live_binding.v2")==
-			"c500d19853c5d6ca159bea7d05d59e47807188e0e74dab461352a22257ef69e8"&&
-		sourceSHA("rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v2")==
-			"c6bdd2cbf1d10bcc8e085a9b30d2bc53477389663c7ee4d0e6ff6282f32960aa"&&
-		ownerCostAllEntriesBound&&ownerCostEntryCount==47u&&
+		"instrumentation_live_binding.v3")==
+			"d617d2890e70da14836a03a4762465f4326f10a98c85a8a7df641828dfdf819c"&&
+		sourceSHA("rendered/fire_production_calibration/r202_owner_cost/campaign_gate.v3")==
+			"fe65fc28572ae1ab7ff6bf5561061f7c4de15c067b3067fa8b078d2d7a034c0c"&&
+		ownerCostAllEntriesBound&&ownerCostEntryCount==49u&&
 		ownerCostBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
 		ownerCostBound("tests/FireSequenceTest.cpp")&&
 		ownerCostBound("tests/FireProductionOwnerConvergenceProbe.h")&&
@@ -4040,6 +4040,8 @@ int main()
 		ownerCostOnRaw.find("RISE_FIRE_OWNER_PROFILE_V1 ")!=std::string::npos&&
 		ownerCostOffRaw.find("OWNER_CONVERGENCE_PROBE passed=1 error=\n")!=std::string::npos&&
 		ownerCostOnRaw.find("OWNER_CONVERGENCE_PROBE passed=1 error=\n")!=std::string::npos&&
+		ownerCostOffRaw.find("RESIDENT_TARGET passed=1 ")!=std::string::npos&&
+		ownerCostOnRaw.find("RESIDENT_TARGET passed=1 ")!=std::string::npos&&
 		ownerCostOffRaw.find("PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 "
 			"criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=1\n")!=
 			std::string::npos&&
