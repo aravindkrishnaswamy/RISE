@@ -421,11 +421,24 @@ Two practical considerations:
   `VCMStrategyBalanceTest` topology A moved 1.0082 → 0.9975;
   `EnvLightBalanceTest` stays 116/116 with no band moved.
 
-  **Two OPEN findings surfaced by the same round**, recorded with
-  measurements rather than fixed (§15 debts 25 and 26): a CLOSED solid
-  whose material is a thin-transmissive weave reads BDPT/VCM ≈ **0.17×**
-  PT (free-standing weave planes read 1.000, and an interior medium is
-  not involved — the box reads the same with and without one); and the
+  **Two findings surfaced by the same round** (§15 debts 25 and 26).
+  Debt 25 — a CLOSED solid whose material is a thin-transmissive weave
+  read BDPT/VCM ≈ **0.17×** PT while free-standing weave planes read
+  1.000 — is **CLOSED 2026-09-05**: PT was the broken reference, not
+  BDPT/VCM.  `box_geometry` reported the ray origin's own face as a
+  ~1e-12 self-root to PT's unadvanced NEE shadow rays, which either
+  discarded the whole box (light leaked through the closed box, PT 3.5×
+  too bright) or self-occluded (light inside, PT 0.44×); BDPT/VCM advance
+  their shadow rays 1e-6 and were right all along.  Fixed in
+  `BoxGeometry::DropSelfHitRoot` (commit 40e78b69; BDPT/PT 0.28 → 0.97,
+  the six-face `clippedplane` twin of the same box reads 0.99).  The
+  fix unmasked **debt 27** (OPEN): with `gap > 0` and the light OUTSIDE
+  a two-layer weave, PT reads UNDER BDPT/VCM by 1.28–1.30× at gap 0.1 and
+  1.55× at gap 0.3 on box and free-standing planes alike, because the
+  path light → straight through the far layer's delta gap → near layer's
+  continuum lobe is reachable by light tracing but not by PT's binary
+  NEE — a PT strategy gap the auto-router has no rule for yet.  Debt 26
+  is still OPEN: the
   legacy `pixelpel_rasterizer` loses the delta-gap-to-emitter sighting
   on a gapped weave in front of an area light (**0.0431** vs the modern
   `pathtracing_pel_rasterizer`'s **0.1040** at equal spp, with BDPT and

@@ -5605,8 +5605,12 @@ yet known (§10.1).
     cause was a geometry-primitive self-hit, not an integrator MIS defect.
     (b) Two and three free-standing parallel planes deviate only 1–5 %, so
     "a shadow ray crosses a second transmissive surface" is not it either —
-    those cross the same surfaces. **Confirmed**: a multi-surface
-    transmissive chain was never the trigger. What differs is that
+    those cross the same surfaces. **Confirmed** as far as it goes: a
+    multi-surface transmissive chain was never the trigger of the 83 %
+    deficit. (The "1–5 %" itself is superseded: two free-standing planes
+    at gap 0.1 read BDPT/PT 1.277 once re-measured — debt 27 below, the
+    separate PT gap-lobe blind spot the box leak was masking.) What
+    differs is that
     `box_geometry` is an ANALYTIC SOLID: `BoxGeometry::IntersectRay` takes
     explicit front/back-face flags and tracks `RayBeginsInBox`, unlike an
     assembly of independent double-sided planes.
@@ -5743,8 +5747,11 @@ yet known (§10.1).
     beyond noise (0.994–1.000 either way, also with scattering raised to
     15 and depth lowered to 2–5), because this scene's medium
     illumination is carried by connections that are connectible under
-    both predicates. The +0.28 % lever recorded above stands as the only
-    measured effect of the medium-vertex fix. Alongside it: the closed-box
+    both predicates. The only measured effect of the medium-vertex fix
+    remains the one taken when it landed: +0.28 % on BDPT at gap 0.3 on
+    the pre-fix (leaking) box scene (0.0181892 → 0.0182397), in the
+    predicted direction and above the ±0.1 % run-to-run spread, but far
+    too small a lever to assert on. Alongside it: the closed-box
     parity guard `TestClosedBoxThinWeave` (keyword `closedbox`; PT box vs
     six planes < 1.15, BDPT/PT and VCM/PT within 8 %) and the geometry unit
     test `tests/BoxGeometryTest.cpp` (on-face origins in and out, both
@@ -5767,9 +5774,9 @@ yet known (§10.1).
     check its reference first.
 
 27. **OPEN 2026-09-05 — PT cannot sample the far layer's delta gap: a
-    two-layer gapped weave reads PT UNDER BDPT/VCM by 1.28× at gap 0.1,
-    1.55× at gap 0.3 with the light outside; exact with the light inside or
-    a single layer.**
+    two-layer gapped weave reads PT UNDER BDPT/VCM by 1.28–1.30× at gap
+    0.1 (two planes / box) and 1.55× at gap 0.3 with the light outside;
+    exact with the light inside or a single layer.**
 
     Exposed by debt 25's fix — masked before it by the closed-box leak that
     debt 25 filed. Measured (same setup as debt 25's after-table):

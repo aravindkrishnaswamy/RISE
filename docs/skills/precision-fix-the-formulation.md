@@ -297,8 +297,10 @@ Wrong direction: widen the `dRange < NEARZERO` range-reject threshold
 inside `IntersectRay_IntersectionOnly`, or pick a bigger epsilon.  Both
 fail for the same reasons the torus and bilinear-patch fudges do, plus
 a shape-specific one: the self-hit `t` for a box is
-`t_self = δ / |cos θ_out|`, `δ` the ~1e-12 back-off and `θ_out` the
-angle between the outgoing ray and the face normal.  A grazing
+`t_self = δ · |cos θ_in| / |cos θ_out|`, `δ` the ~1e-12 back-off
+applied along the INCOMING ray (so the plane distance is `δ·|cos θ_in|`)
+and `θ_out` the angle between the outgoing ray and the face normal.  A
+grazing
 continuation ray (`θ_out` near 90°) makes `t_self` arbitrarily LARGE —
 there is no single range threshold, however generous, that rejects
 every self-hit and accepts every genuine near hit, because the two
