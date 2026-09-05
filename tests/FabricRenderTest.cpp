@@ -1566,11 +1566,17 @@ static void TestGappedWeaveWithAreaLight()
 //                        (mean 0.96783, sigma 2.2e-3)
 //
 // BDPT/PT and VCM/PT both carry a consistent ~3% "BDPT/VCM under PT"
-// bias here, not noise -- this is the SAME pre-existing residual
-// `TestBacklitSheerCurtain`'s comment discloses ("The ~5-10%
-// BDPT/VCM-under-PT residual on delta-light scenes is disclosed as an
-// open follow-up"), not a new effect this fix introduced.  3 sigma is
-// under 1.1% on every row above; the bands below are set at 8% (BDPT/VCM
+// offset here, not noise (3 sigma is under 1.1% on every row above).
+// It is NOT explained by BDPT's depth cap: re-rendering the same box
+// with `max_eye_depth` / `max_light_depth` 16 and 32 reads BDPT/PT
+// 0.969 and 0.975 (0.972 at 8), all within one sigma of each other.
+// It is also smaller on the same six faces as free-standing planes
+// (BDPT/PT 0.988 there, and exactly 1.000 on a single plane), while BDPT
+// itself reads the box and the six planes within 0.9% of each other --
+// so the residual is a ~2% PT box-vs-planes swing of unknown origin,
+// recorded as an open note under docs/CLOTH_FABRIC_DESIGN.md section 15
+// debt 25, not a new effect this fix introduced (pre-fix the same ratio
+// was 0.284).  The bands below are set at 8% (BDPT/VCM
 // ratios, ~2.5x the worst observed ~3.7% deviation from 1.0) and the
 // box/planes bound at 1.15 (~11x the worst observed ~1.4% deviation from
 // 1.0, and 23x under the pre-fix ~3.5x signature) -- loose enough to

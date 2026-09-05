@@ -5439,9 +5439,11 @@ yet known (§10.1).
       a property of the boundary *material*, so a mixed boundary (weave gap,
       polished coat, Fresnel composite) turned the same medium vertex connectible
       or not depending on the draw. Now tests `!prev.isConnectible`, the same
-      per-surface predicate. Regression test landed once debt 25 closed:
+      per-surface predicate. Image-level guard landed once debt 25 closed:
       `tests/FabricRenderTest.cpp::TestMediumVertexBehindGappedWeave`
-      (keyword `mediumvertex`) — see §15 debt 25.
+      (keyword `mediumvertex`) — a parity guard only; its red-proof could
+      not make the predicate flip move the ratio beyond noise (see §15
+      debt 25).
     - `MISWeight`'s `vi.isDelta` / `vj.isDelta` skip rules — **confirmed correct
       as-is**, not changed: those walk the *realised* pdf ratios of the sampled
       lobes, and the connection vertices themselves are already overridden by the
@@ -5714,20 +5716,40 @@ yet known (§10.1).
     review handoff's; the RATIOS are what carry the finding.
 
     **What this does NOT close.** The gap > 0 rows do not converge with
-    this fix — filed as **debt 27** below.
+    this fix — filed as **debt 27** below. And a small residual remains at
+    gap 0: over n = 5 seed bases the fixed box reads BDPT/PT 0.969 ± 0.003
+    and VCM/PT 0.968 ± 0.002, where the same six faces as free-standing
+    planes read 0.988 / 0.985 and a single plane reads 1.000. BDPT itself
+    reads the box and the six planes within 0.9 % of each other, so this
+    is a ~2 % PT box-vs-planes swing of unknown origin. It is NOT BDPT's
+    depth cap (`max_eye_depth` / `max_light_depth` 16 and 32 read 0.969
+    and 0.975 against 0.972 at 8). Left open at this level; the closed-box
+    guard's 8 % band is set to hold it while still tripping by an order of
+    magnitude on the pre-fix 0.284.
 
     **Consequence for debt 23's medium sibling.** The per-surface
     medium-vertex predicate was fixed on principle and by symmetry with its
     surface twin, but until this fix it had no image-level regression test
     — every scene that exercises it needs an `interior_medium`, hence a
     closed solid, hence the 5.8× baseline error this debt recorded. With
-    debt 25 closed, the predicate is now unblocked and lands as
+    debt 25 closed, the scene is now buildable and lands as
     `tests/FabricRenderTest.cpp::TestMediumVertexBehindGappedWeave`
-    (keyword `mediumvertex`; light INSIDE the box, gap 0.1, homogeneous
-    `interior_medium`), with the closed-box parity guard
-    `TestClosedBoxThinWeave` (keyword `closedbox`) and a geometry unit test
-    in `tests/BoxGeometryTest.cpp` — bands derived in the tests' own
-    comments.
+    (keyword `mediumvertex`; light INSIDE the box so that debt 27's
+    far-layer gap path cannot enter, gap 0.1, homogeneous
+    `interior_medium`; BDPT/PT 0.997 ± 0.002 and VCM/PT 0.998 ± 0.002 over
+    n = 5). **It is a parity guard, not a discriminating regression:** the
+    red-proof flipped both medium-vertex sites in `BDPTIntegrator.cpp` back
+    to the pre-fix `prev.isDelta` predicate and the ratio did not move
+    beyond noise (0.994–1.000 either way, also with scattering raised to
+    15 and depth lowered to 2–5), because this scene's medium
+    illumination is carried by connections that are connectible under
+    both predicates. The +0.28 % lever recorded above stands as the only
+    measured effect of the medium-vertex fix. Alongside it: the closed-box
+    parity guard `TestClosedBoxThinWeave` (keyword `closedbox`; PT box vs
+    six planes < 1.15, BDPT/PT and VCM/PT within 8 %) and the geometry unit
+    test `tests/BoxGeometryTest.cpp` (on-face origins in and out, both
+    flag rules, 1000× coordinate scale, exit info; red-proved against the
+    pre-fix `BoxGeometry.cpp`) — derivations in the tests' own comments.
 
 26. **OPEN 2026-09-04 — the legacy `pixelpel_rasterizer` loses the
     delta-gap-to-emitter sighting on a gapped weave.**
