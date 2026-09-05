@@ -5996,8 +5996,8 @@ yet known (§10.1).
     inconsistent-missing-override warning) a sweep of all 105 overriding
     virtuals across those seven geometry headers.
 
-    **Review follow-up (2026-09-05, 10f3e6c2 and the three test commits before
-    it) — closing the composite floor's P2s.** (a) `CSGObject::SelfHitRootFloor`'s
+    **Review follow-up (2026-09-05, 10f3e6c2, the three test commits before
+    it, and 384e3752) — closing the composite floor's P2s.** (a) `CSGObject::SelfHitRootFloor`'s
     2δ ownership window could never be met by a child whose own floor
     exceeds it (an SDF sphere of radius 4 needs 2.77e-4 against δ = 5e-6;
     a thin torus R = 1000, r = 0.05 needs 4e-3), so on a face coincident
@@ -6011,7 +6011,7 @@ yet known (§10.1).
     child the ray misses is retried from four origins displaced
     transversely by the same window (±t₁, ±t₂). 10f3e6c2 first used a
     bounding-box SHELL test there instead; **that was withdrawn in the
-    follow-up commit** — a bounding box is not a surface, so a sibling
+    follow-up commit 384e3752** — a bounding box is not a surface, so a sibling
     whose padded AABB PLANE happens to pass through the point was charged
     with its floor while its surface was 1.59 world units away (composite
     floor 6.8e7× the owning slab's, and end to end a decoy face 1e-4 past
@@ -6019,7 +6019,8 @@ yet known (§10.1).
     That commit also gave `SDFGeometry::SelfHitRootFloor` the incidence
     divide it lacked (its band is a perpendicular distance, the interface
     answers in range: claim/gate was 0.707 at 45°, 0.500 at 60°, 0.26 at
-    75°, an unbounded under-statement) and made its Lipschitz ratios read
+    75°, an unbounded under-statement; 1.000 at every incidence from 0 to
+    75° after, 1.003 at 84°) and made its Lipschitz ratios read
     the same 1e-9-floored scale magnitudes `RecomputePartDerived` uses.
     (b) `SDFGeometry`'s shrink ratio was a
     global minimum over parts, so a remote part squashed to 0.02 over-stated
@@ -6045,9 +6046,11 @@ yet known (§10.1).
     332 for the first because their worktrees predate Test 28; 99c0f80a,
     which adds it, says 332 → 348):
     `CsgSurfacePayloadTest` 348, `CsgProbeFloorTest` 49, the new
-    `tests/CsgFloorOwnershipTest.cpp` 27 (coincident SDF + box face,
-    shared box edge, two-lobe SDF at the same 4× bracket, and the
-    1e6-distant mesh lobe that must NOT become an owner).
+    `tests/CsgFloorOwnershipTest.cpp` 50 (27 at 10f3e6c2: coincident SDF +
+    box face, shared box edge, two-lobe SDF at the same 4× bracket, and
+    the 1e6-distant mesh lobe that must NOT become an owner; 384e3752's
+    Tests 5 and 6 above add the AABB-plane sibling and the end-to-end
+    decoy at both gaps).
 
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube
