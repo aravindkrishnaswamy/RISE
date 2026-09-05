@@ -28,11 +28,14 @@ def clean_source(commit):
     # include lookup. Check source-like ignored files in the source-owned roots
     # too; installed third-party SDK trees are toolchain inputs, not this list.
     hidden = subprocess.check_output(["git", "ls-files", "--others", "-z", "--",
-                                      "src", "tests", "extlib/stb", "extlib/cgltf"])
+                                      "src", "tests", "extlib/stb", "extlib/cgltf", "build/make/rise"])
     source_suffixes = {".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".h", ".hh", ".hpp",
                        ".hxx", ".inl", ".inc", ".ipp", ".tpp", ".tcc", ".metal"}
+    # The tracked make recipe forcibly regenerates this exact header before
+    # Job.o. No other local header in the -I$(CURDIR) root has that authority.
+    generated_header = b"build/make/rise/RendererBuildIdentity.generated.h"
     if any(Path(os.fsdecode(path)).suffix.lower() in source_suffixes
-           for path in hidden.split(b"\0") if path):
+           for path in hidden.split(b"\0") if path and path != generated_header):
         raise ValueError("uncommitted ignored compilation input")
     return build_configuration(commit)
 
