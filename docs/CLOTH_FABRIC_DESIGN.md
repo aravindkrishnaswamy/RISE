@@ -5997,7 +5997,7 @@ yet known (§10.1).
     virtuals across those seven geometry headers.
 
     **Review follow-up (2026-09-05, 10f3e6c2, the three test commits before
-    it, 384e3752, and 8d89b888) — closing the composite floor's P2s, then
+    it, 384e3752, and 269a5ad2) — closing the composite floor's P2s, then
     384e3752's own two P1s (the shared VERTEX the transverse jitter still
     grazed, and the unbounded floor a degenerate part scale produced).** (a) `CSGObject::SelfHitRootFloor`'s
     2δ ownership window could never be met by a child whose own floor
@@ -6045,7 +6045,7 @@ yet known (§10.1).
     is within twice the widest floor the function can return (a lower
     bound on true distance, so exclusion is sound), falling back to the
     global minimum at a blend seam: 50.0× → 1.0001×. **A degenerate part
-    scale made that same divisor unbounded** (8d89b888): the shrink is
+    scale made that same divisor unbounded** (269a5ad2): the shrink is
     `min|scale| / max|scale|` over magnitudes FLOORED at 1e-9, so a part
     authored `scale (1,1,0)` — a slip the `part` descriptor already calls
     recurring for the neighbouring `<a b c>` slot — reads 1e-9 and a unit
@@ -6095,7 +6095,7 @@ yet known (§10.1).
     box face, shared box edge, two-lobe SDF at the same 4× bracket, and
     the 1e6-distant mesh lobe that must NOT become an owner; 384e3752's
     Tests 5 and 6 above add the AABB-plane sibling and the end-to-end
-    decoy at both gaps, taking it to 50; 8d89b888's Tests 7–9 — the
+    decoy at both gaps, taking it to 50; 269a5ad2's Tests 7–9 — the
     shared vertex, the SDF's own cap, the composite's window cap — take it
     to 72), `SDFGeometryTest` 655 → 676. Red-proofs, each layer alone:
     axial-only jitters fail Test 7's two money checks (edge control stays
