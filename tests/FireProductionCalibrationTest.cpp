@@ -4014,6 +4014,15 @@ int main()
 	const std::string projectedHeunTraceVerdictNumeric=ReadText(
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
 		"repaired_exact_2189762b/numeric_trace.log");
+	const std::string projectedHeunRejectedCausalEvidence=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"r201m_causal_authority_seal_gate.v1");
+	const std::string projectedHeunRejectedCausalLiveBinding=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"r201m_causal_authority_seal_live_binding.v1");
+	const std::string projectedHeunRejectedCausalDisposition=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"r201m_causal_authority_seal_rejection.v1");
 	const auto liveOwnerBound=[&](const std::string& path,const std::string& sha256) {
 		const std::string current=sourceSHA(path.c_str());
 		const bool bound=projectedHeunLiveBinding.find("owner "+path+" sha256 "+sha256+"\n")!=
@@ -4852,13 +4861,33 @@ int main()
 			" sha256 "+sourceSHA(path)+"\n")!=std::string::npos;
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunRejectedCausalEvidence.begin(),
+			projectedHeunRejectedCausalEvidence.end()))==
+			"c23f30c8b830d9f47a116501467a7a91842fdbabfbec6688eecc96b1b889cf64"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunRejectedCausalLiveBinding.begin(),
+			projectedHeunRejectedCausalLiveBinding.end()))==
+			"13460ae80cba5cde3354bdc457745db923e7536a67ba9bccf7882706b29ca54b"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunRejectedCausalDisposition.begin(),
+			projectedHeunRejectedCausalDisposition.end()))==
+			"87f7abfd426ea5940ef2a69715e303b66c543e3e9bda6e0661a4dfb55a4cf471"&&
+		projectedHeunRejectedCausalDisposition.find(
+			"status rejected_before_replay\n")!=std::string::npos&&
+		projectedHeunRejectedCausalDisposition.find(
+			"disposition rejected_not_repaired\n")!=std::string::npos&&
+		projectedHeunRejectedCausalDisposition.find(
+			"forward_authority exact_payload_bound_r201l_implementation\n")!=
+			std::string::npos,
+		"r201m preserves the rejected causal-only evidence and binds its rejection disposition");
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunTraceVerdictEvidence.begin(),
 			projectedHeunTraceVerdictEvidence.end()))==
 			"ab2665519c04b770653071784cf28ce4b5dfc64fcd68eae1a61e9a859b393ee5"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunTraceVerdictLiveBinding.begin(),
 			projectedHeunTraceVerdictLiveBinding.end()))==
-			"a5b877e5913594a543b8e03e45386817aa39f1ea0f386a81378e1ae918a036d3"&&
+			"b779662fc12c9b8b033798cbce8b85bead13297a658355f4d79a42536a80b611"&&
 		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunTraceVerdictRaw.begin(),projectedHeunTraceVerdictRaw.end()))==
 			"90c82ad6df513f123494896a0ef510611170487cea00582839054f1b1e801727"&&
@@ -4872,7 +4901,7 @@ int main()
 			"fcf6236caf0b0559084a013c93e2d1fd0f3987000449865fb3f58f1e2d52b77c"&&
 		projectedHeunTraceVerdictLiveBinding.find("source_commit "
 			"2189762be4f8322af746e31f8f177d76d1cf8bed\n")!=std::string::npos&&
-		projectedHeunTraceVerdictLiveBinding.find("owner_count 13\n")!=std::string::npos&&
+		projectedHeunTraceVerdictLiveBinding.find("owner_count 16\n")!=std::string::npos&&
 		projectedHeunTraceVerdictLiveBinding.find(
 			"calibration_test_self_binding false\n")!=std::string::npos&&
 		r201mOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
@@ -4889,6 +4918,12 @@ int main()
 			"repaired_exact_2189762b/kernel_sweep.log")&&
 		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
 			"repaired_exact_2189762b/numeric_trace.log")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"r201m_causal_authority_seal_gate.v1")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"r201m_causal_authority_seal_live_binding.v1")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"r201m_causal_authority_seal_rejection.v1")&&
 		r201mOwnerBound("bin/tests/FireSequenceTest")&&
 		projectedHeunTraceVerdictEvidence.find(
 			"observed_first_divergence none\n")!=std::string::npos&&
