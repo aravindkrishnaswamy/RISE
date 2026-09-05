@@ -387,16 +387,38 @@ namespace RISE
 			//! the old claim under-stated the real gate by 6.7x and a probe that
 			//! trusted it was marched straight past the face it was aiming at.
 			//!
-			//! So divide by the smallest such ratio ANY part can apply -- the
-			//! global minimum over the parts list, since the query names a point
-			//! but the fold that produced the field at that point may involve any
-			//! of them.  The ratio is <= 1 by construction (minScale <= maxScale),
-			//! so this only ever widens the claim; a uniformly-scaled part
-			//! contributes exactly 1 and leaves the answer at 2*m_eps.  Note that
-			//! the plain `minScale` (rather than the ratio) would be WRONG in the
-			//! other direction for a part scaled up non-uniformly -- e.g.
-			//! (2, 3, 3) has minScale 2 > 1 yet still shrinks the field by 2/3.
+			//! So divide by that ratio -- but by the ratio of the part(s) that
+			//! actually OWN the queried point, not by the global minimum over
+			//! every part (adversarial review of 7923bf2f, P2-2).  The global
+			//! minimum charges the whole field the worst squash any lobe of it
+			//! applies ANYWHERE: measured on
+			//! `union(sphere R=3 uniform, sphere R=3 scaled (0.02,1,1) at x=8)`,
+			//! the exit face of the UNIFORM lobe claimed 1.39e-2 against a
+			//! bisected gate of 2.79e-4 -- a 50x over-statement (6x past the
+			//! contract's 8x bound), and through the probe's 2x margin plus 10 %
+			//! slack a same-face acceptance window of ~2.9e-2 WORLD UNITS, which
+			//! is the decoy-face trade CsgSurfacePayloadTest Test 15 bounds,
+			//! re-opened at a scale where a whole second lobe fits inside it.
+			//! The ratio is <= 1 by construction (minScale <= maxScale), so it
+			//! only ever widens the claim; a uniformly-scaled owner contributes
+			//! exactly 1 and leaves the answer at 2*m_eps.  Note that the plain
+			//! `minScale` (rather than the ratio) would be WRONG in the other
+			//! direction for a part scaled up non-uniformly -- e.g. (2, 3, 3)
+			//! has minScale 2 > 1 yet still shrinks the field by 2/3.
 			//! Heightfield mode has no parts and keeps the bare band.
+			//!
+			//! OWNER CRITERION (see the definition in SDFGeometry.cpp for the
+			//! band's derivation): a part owns the point when its OWN signed
+			//! distance there, `partEval`, is within a band of zero wide enough
+			//! to cover twice the widest floor this function could return.
+			//! Exclusion is what has to be sound, and it is: `partEval` is a
+			//! CONSERVATIVE under-estimate of the true distance to that part's
+			//! surface, so `|partEval| > band` PROVES the part's surface is more
+			//! than `band` away and therefore cannot become the field's arg-min
+			//! anywhere along a standoff this function would sanction.  With no
+			//! qualifying part (a point on a blend seam, where the fold's value
+			//! belongs to no single part) it falls back to the global minimum,
+			//! i.e. exactly the previous, safely-conservative behaviour.
 			//!
 			//! P2-2 (accepted, documented): this is a RELATIVE window, unlike every
 			//! other geometry's ulp-scale gate.  m_eps is `m_epsFrac` of the bbox
@@ -417,24 +439,10 @@ namespace RISE
 			//! predicts.  A probe on such a seam misses and takes the probe's own
 			//! graceful entry-payload fallback -- quality, never a wrong-face
 			//! adoption -- which is why no blend term is charged here.
-			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override
-			{
-				(void)localOrigin; (void)localDir; (void)localNormal;
-
-				Scalar lipschitz = Scalar(1);		// worst field-growth-per-unit-distance factor
-				for( std::size_t i = 0; i < m_parts.size(); i++ ) {
-					const Vector3& s = m_parts[i].scale;
-					const Scalar maxScale = std::max( std::fabs( s.x ), std::max( std::fabs( s.y ), std::fabs( s.z ) ) );
-					const Scalar minScale = std::min( std::fabs( s.x ), std::min( std::fabs( s.y ), std::fabs( s.z ) ) );
-					if( maxScale > Scalar(0) && minScale > Scalar(0) ) {
-						lipschitz = std::min( lipschitz, minScale / maxScale );
-					}
-				}
-				if( !( lipschitz > Scalar(0) ) ) {
-					lipschitz = Scalar(1);			// degenerate (zero-scale) part: no usable ratio
-				}
-				return Scalar(2) * m_eps / lipschitz;
-			}
+			//! (Defined in SDFGeometry.cpp -- it needs `partEval`, the
+			//! translation-unit-local per-part field evaluator the owner
+			//! criterion is built on.)
+			Scalar SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const override;
 
 			//! Number of authored SDF primitives folded into this geometry's
 			//! field.  Exact and blend-independent (unlike GetArea(), which a

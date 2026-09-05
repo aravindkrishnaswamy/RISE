@@ -943,6 +943,90 @@ void SDFGeometry::ComputeBounds()
 	m_eps = std::max( m_diagonal * m_epsFrac, Scalar(1e-6) );
 }
 
+// IGeometry::SelfHitRootFloor -- see the header for the full derivation of the
+// band and of the Lipschitz divisor.  Defined here because the OWNER criterion
+// needs `partEval`, this translation unit's per-part field evaluator.
+//
+// The shape of the answer is `2 * m_eps / shrink`, where `shrink` is the worst
+// factor by which the field UNDER-reports true distance near the queried point.
+// `shrink` was the global minimum over every part, which charges the whole
+// field the worst squash any lobe applies anywhere -- the 50x over-statement
+// the header quotes.  It is now the minimum over the parts that own the point.
+//
+// THE BAND.  A part is an owner when |partEval| <= band.  The band has to be at
+// least twice the widest floor this function can return, because that is the
+// distance the probe it feeds may stand off: within that reach a part whose
+// surface is nearer than the band can still become the fold's arg-min and drag
+// the field down, so it must be charged.  `2 * globalFloor` is exactly that
+// bound and is itself computed from the global (widest) shrink, so it does not
+// depend on the answer it is helping to compute.
+//
+// WHY EXCLUSION IS SOUND.  `partEval` multiplies a unit-frame primitive
+// distance by the part's conservative `minScale`, so it is a LOWER bound on the
+// true distance to that part's surface (that is the property the sphere-tracer
+// itself rests on).  Hence |partEval| > band PROVES the surface is farther than
+// `band`, and a part that far away cannot be the arg-min anywhere the probe
+// reaches.  The test can only ever admit a part it did not have to -- an
+// over-statement, the safe direction -- never drop one it did.
+//
+// BLENDS.  `sminP` / `smaxP` let a part influence the fold from up to `k` away,
+// so a blended part's band carries its own `k`.  That covers the VALUE, not the
+// GRADIENT: two opposed unit gradients average toward zero across a seam, which
+// flattens the field further than any per-part ratio predicts (the review
+// measured up to 1.8x under-statement at k = 3).  That is the same
+// already-documented blend caveat the header's P2-2 paragraph records, it
+// predates this change, and it is NOT charged here -- a probe on such a seam
+// misses and takes the probe's graceful entry-payload fallback, which is a
+// quality outcome, never a wrong-face adoption.
+Scalar SDFGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
+{
+	(void)localDir; (void)localNormal;
+
+	// Per-part field-growth-per-unit-distance ratio, and the global worst.
+	// (<= 1 by construction; a uniformly-scaled part contributes exactly 1.)
+	Scalar globalShrink = Scalar(1);
+	for( std::size_t i = 0; i < m_parts.size(); i++ ) {
+		const Vector3& s = m_parts[i].scale;
+		const Scalar maxScale = std::max( std::fabs( s.x ), std::max( std::fabs( s.y ), std::fabs( s.z ) ) );
+		const Scalar minScale = std::min( std::fabs( s.x ), std::min( std::fabs( s.y ), std::fabs( s.z ) ) );
+		if( maxScale > Scalar(0) && minScale > Scalar(0) ) {
+			globalShrink = std::min( globalShrink, minScale / maxScale );
+		}
+	}
+	if( !( globalShrink > Scalar(0) ) ) {
+		globalShrink = Scalar(1);			// degenerate (zero-scale) part: no usable ratio
+	}
+
+	// Heightfield mode has no parts: nothing to own, keep the bare band.
+	if( m_parts.empty() ) {
+		return Scalar(2) * m_eps / globalShrink;
+	}
+
+	const Scalar band = Scalar(2) * ( Scalar(2) * m_eps / globalShrink );
+
+	Scalar ownerShrink = Scalar(1);
+	bool anyOwner = false;
+	for( std::size_t i = 0; i < m_parts.size(); i++ ) {
+		const Part& pt = m_parts[i];
+		const Scalar reach = ( pt.op == eOpUnion ) ? band : ( band + std::fabs( pt.k ) );
+		if( !( std::fabs( partEval( pt, localOrigin ) ) <= reach ) ) {
+			continue;						// provably farther than the probe can reach
+		}
+		const Vector3& s = pt.scale;
+		const Scalar maxScale = std::max( std::fabs( s.x ), std::max( std::fabs( s.y ), std::fabs( s.z ) ) );
+		const Scalar minScale = std::min( std::fabs( s.x ), std::min( std::fabs( s.y ), std::fabs( s.z ) ) );
+		if( maxScale > Scalar(0) && minScale > Scalar(0) ) {
+			ownerShrink = std::min( ownerShrink, minScale / maxScale );
+			anyOwner = true;
+		}
+	}
+
+	// No qualifying part -- a blend seam, or a degenerate part list.  Fall back
+	// to the global minimum, i.e. exactly the previous behaviour.
+	const Scalar shrink = anyOwner ? ownerShrink : globalShrink;
+	return Scalar(2) * m_eps / shrink;
+}
+
 Scalar SDFGeometry::Map( const Point3& p ) const
 {
 	if( m_isHeightfield ) {

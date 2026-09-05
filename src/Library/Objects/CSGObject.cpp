@@ -692,6 +692,18 @@ namespace
 		const Scalar slack = margin * Scalar(0.1);
 		const Scalar maxAcceptRange = margin * Scalar(2.0) + slack;
 
+		// Same non-finite guard as `margin` above (adversarial review of
+		// 7923bf2f, P3).  `margin` being finite does not by itself make
+		// `2.1 * margin` finite -- it overflows for a margin within a factor of
+		// 2.1 of DBL_MAX -- and `maxAcceptRange` is what BOTH the trace bound
+		// and the same-face rejection below are expressed in.  A NaN or inf
+		// there makes `range > maxAcceptRange` unreachable (every comparison
+		// against NaN is false), which is exactly the failure the `margin` guard
+		// was added to close, reached one line later.
+		if( !std::isfinite( maxAcceptRange ) ) {
+			return false;
+		}
+
 		operand->IntersectRay( probe, maxAcceptRange, true, true, false );
 
 		if( !probe.geometric.bHit || probe.geometric.range > maxAcceptRange ) {
@@ -1804,6 +1816,48 @@ void CSGObject::ResetRuntimeData() const
 	}
 }
 
+// Does `p` lie within `w` of the SURFACE of `bb` -- inside the box grown by `w`
+// and outside the box shrunk by `w`?  The tangency backstop for the ownership
+// filter below: a shell test has no direction to be coplanar with, so it settles
+// the shared-edge case a ray cannot.  Deliberately the SHELL and not plain
+// containment: containment would charge a large hollow operand for every face of
+// a small operand sitting inside it, which is the sibling inflation the filter
+// exists to stop.
+//
+// A box that is not real -- a default/sentinel `BoundingBox` from an unbuilt
+// collection (corners +-DBL_MAX), an inverted one -- answers `false` rather than
+// swallowing the whole scene: it carries no information about where any surface
+// is, and the ray test above it is the one that then decides.  A box thinner
+// than 2w on some axis has an empty shrunk box, so every point inside it is
+// within `w` of the surface -- which is exactly right.
+static bool PointIsNearBoundingBoxSurface_( const BoundingBox& bb, const Point3& p, const Scalar w )
+{
+	const Scalar ll[3] = { bb.ll.x, bb.ll.y, bb.ll.z };
+	const Scalar ur[3] = { bb.ur.x, bb.ur.y, bb.ur.z };
+	const Scalar pp[3] = { p.x, p.y, p.z };
+
+	for( int a = 0; a < 3; a++ ) {
+		// 1e30 is RISE's own "effectively unbounded" coordinate sentinel
+		// (Ray::RecomputeInvDir), far above any real scene coordinate.
+		if( !std::isfinite( ll[a] ) || !std::isfinite( ur[a] ) ||
+		    ll[a] > ur[a] || std::fabs( ll[a] ) > Scalar(1e30) || std::fabs( ur[a] ) > Scalar(1e30) ) {
+			return false;
+		}
+	}
+
+	bool insideGrown = true;
+	bool insideShrunk = true;
+	for( int a = 0; a < 3; a++ ) {
+		if( pp[a] < ll[a] - w || pp[a] > ur[a] + w ) {
+			insideGrown = false;
+		}
+		if( pp[a] < ll[a] + w || pp[a] > ur[a] - w ) {
+			insideShrunk = false;
+		}
+	}
+	return insideGrown && !insideShrunk;
+}
+
 // IObject::SelfHitRootFloor for a composite -- see the header's note.
 //
 // Frame bookkeeping (the whole content of this function): the arguments are in
@@ -1835,18 +1889,62 @@ void CSGObject::ResetRuntimeData() const
 // straight back into the decoy-payload adoption trade that test bounds.
 //
 // The fix is to charge only operands that could actually own the face at
-// `localOrigin`: stand off `delta` on the INSIDE of the face (along -normal) and
-// fire a `delta`-short ray back out through it.  A child whose surface passes
-// through that window owns (or shares) the face and its gate is a real
-// requirement; a child that does not is 1e4 units away and its gate is not.
-// `delta = 1e-6 * (1 + |localOrigin|_1)` is scale-relative for the same reason
-// every gate here is -- an absolute epsilon is below the representable
-// granularity of a coordinate at 1e12 (Test 14's own scale) and the probe would
-// degenerate to a zero-length ray.  The window straddles the face so a child
-// whose surface sits fractionally either side of the reported point still
-// counts, and both face flags are passed because the owner may present either
-// facing (a SUBTRACTION's carve wall is the subtrahend's OUTWARD face reported
-// inverted).
+// `localOrigin`: stand off on the INSIDE of the face (along -normal) and fire a
+// short ray back out through it.  A child whose surface passes through that
+// window owns (or shares) the face and its gate is a real requirement; a child
+// that does not is 1e4 units away and its gate is not.  The window straddles
+// the face so a child whose surface sits fractionally either side of the
+// reported point still counts, and both face flags are passed because the owner
+// may present either facing (a SUBTRACTION's carve wall is the subtrahend's
+// OUTWARD face reported inverted).
+//
+// THE WINDOW IS PER CHILD (adversarial review of 7923bf2f, P2-1).  A single
+// `delta = 1e-6 * (1 + |localOrigin|_1)` window is smaller than some children's
+// OWN self-hit floor, and such a child can never be hit inside it -- so the one
+// operand whose gate matters most is exactly the one the filter drops.
+// Measured: `CSG_UNION(SDF sphere R=4, box 2x2x8)` queried at their coincident
+// -Z face reported the box's 4.06e-12 and dropped the SDF's 2.77e-4, 68 MILLION
+// times under (delta there is 5e-6, well inside March's 2*m_eps step-off band,
+// so the probe ray is marched straight past the sphere and reports a miss); a
+// thin large torus R=1000 r=0.05 is the same shape of failure at 4e-3 vs 1e-3.
+// The composite then stands its exit probe off less than the SDF needs, the box
+// wins the re-hit inside the window, and the union adopts the WRONG operand's
+// payload on a face the SDF may own -- the very defect 4b141ad3 exists to stop,
+// re-introduced one layer up.
+//
+// So the window is `max(delta, 2 * floorChild)`, using the floor the child has
+// already been asked for.  The 2x is not decoration: a standoff of exactly
+// `floorChild` puts the surface at the SMALLEST ray parameter the child accepts,
+// a knife edge in floating point, and for an SDF the step-off band fires on
+// `|Map| <= 2*m_eps` INCLUSIVELY, so a standoff of exactly the claimed floor is
+// still inside it and still marches past.  It matches the headroom the probe
+// itself uses on the same number.
+//
+// The alternative the review offered -- treat `floorChild >= delta` as an
+// automatic owner -- is REJECTED: it is blanket rather than geometric, and it
+// re-opens the very defect this filter closed.  Test 2's far mesh claims 3.008e-8
+// against a delta of ~2e-6, so it survives today; park the same mesh at 1e6
+// instead of 1e4 and its floor is 3e-6 > delta, and a sibling with nothing to do
+// with the face would be adopted as an owner on the strength of being big and
+// far away.  Widening the window keeps the test geometric -- the child's surface
+// must still actually pass through it.
+//
+// TANGENCY BACKSTOP.  A ray test cannot settle a face two operands share
+// exactly.  Measured on two boxes meeting along an edge (a unit box spanning
+// [-1,1]^3 and a 4e6-long box spanning x >= 1, y >= 1), queried on the shared
+// edge with the long box's +X face normal: at exactly y = 1 the long box's slab
+// test MISSES and the unit box hits, and a hair below (y = 1 - 1e-15) the verdict
+// flips.  The ownership ray runs in the plane of one operand's face, and no
+// choice of direction or length cures that -- firing the reverse orientation and
+// lengthening the ray a millionfold were both measured and both still miss.  So
+// a child that the ray misses is given a second, ORIENTATION-FREE chance: does
+// `localOrigin` lie within the same window of that child's BOUNDING-BOX SURFACE?
+// A shell test cannot be defeated by a coplanar ray, it still rejects the P2-1
+// sibling (whose box is 1e4 units away) and it still rejects a large hull that
+// merely CONTAINS the point (a big hollow operand around a small one: the point
+// is deep inside its box, far from the shell).  It can admit a non-owner whose
+// bbox shell happens to graze the point, which over-states the floor -- the safe
+// direction, and the same direction the no-owner fallback below already takes.
 //
 // The ray is fired in THIS composite's own local frame, NOT a child's:
 // `IObjectPriv::IntersectRay_IntersectionOnly` takes the ray in its CALLER's
@@ -1877,8 +1975,12 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	Scalar worstAny = Scalar(0);		// max over every child -- the fallback
 	bool anyOwner = false;
 
-	// Containment window, in THIS composite's frame (see the note above).
-	// Child-independent, so it is built once and re-fired per child.
+	// Base containment window, in THIS composite's frame (see the note above).
+	// `delta = 1e-6 * (1 + |localOrigin|_1)` is scale-relative for the same
+	// reason every gate here is -- an absolute epsilon is below the
+	// representable granularity of a coordinate at 1e12 (Test 14's own scale)
+	// and the probe would degenerate to a zero-length ray.  Each child widens
+	// it to its own floor below.
 	const Scalar delta = Scalar(1e-6) * ( Scalar(1) +
 		std::fabs( localOrigin.x ) + std::fabs( localOrigin.y ) + std::fabs( localOrigin.z ) );
 	const Scalar nMagLocal = Vector3Ops::Magnitude( localNormal );
@@ -1886,11 +1988,6 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	const Vector3 nUnit = canTestOwnership
 		? Vector3( localNormal.x / nMagLocal, localNormal.y / nMagLocal, localNormal.z / nMagLocal )
 		: Vector3( 0, 0, 1 );
-	const Ray ownRay(
-		Point3( localOrigin.x - nUnit.x * delta,
-		        localOrigin.y - nUnit.y * delta,
-		        localOrigin.z - nUnit.z * delta ),
-		nUnit );
 
 	IObjectPriv* const operands[2] = { pObjectA, pObjectB };
 	for( int i = 0; i < 2; i++ ) {
@@ -1917,7 +2014,32 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 		const Scalar floorChild = child->SelfHitRootFloor( oChild, dChild, nChild ) / s;
 		worstAny = std::max( worstAny, floorChild );
 
-		if( canTestOwnership && child->IntersectRay_IntersectionOnly( ownRay, Scalar(2) * delta, true, true ) ) {
+		// A child that cannot be tested for ownership -- no usable normal, or a
+		// floor that is not a finite number -- is left out of `worst` and kept
+		// in `worstAny`, so it still governs through the no-owner fallback
+		// below.  That is the conservative direction, and the probe has its own
+		// non-finite guard for what comes back either way.
+		if( !canTestOwnership || !std::isfinite( floorChild ) ) {
+			continue;
+		}
+
+		// Per-child window: never narrower than the child's own gate (with the
+		// probe's own 2x headroom), or the child can never be hit inside it.
+		const Scalar window = std::max( delta, Scalar(2) * floorChild );
+		if( !std::isfinite( window ) ) {
+			continue;
+		}
+
+		const Ray ownRay(
+			Point3( localOrigin.x - nUnit.x * window,
+			        localOrigin.y - nUnit.y * window,
+			        localOrigin.z - nUnit.z * window ),
+			nUnit );
+
+		const bool owns = child->IntersectRay_IntersectionOnly( ownRay, Scalar(2) * window, true, true )
+			|| PointIsNearBoundingBoxSurface_( child->getBoundingBox(), localOrigin, window );
+
+		if( owns ) {
 			anyOwner = true;
 			worst = std::max( worst, floorChild );
 		}
