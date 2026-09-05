@@ -874,7 +874,8 @@ self-root, debt 25).
 
 Fourth instance of step 0's "PT may be the broken one" in this file.
 (2026-09-05.)  A closed box (`box_geometry`) carrying a `weave_material`
-with `transmission thin` read BDPT/VCM ≈ **0.17×** PT with the light
+with `transmission thin` read BDPT/VCM ≈ **0.17×** PT (the review handoff's
+512-spp figure; the fix's own 256-spp table below reads 0.284) with the light
 outside the box and ≈ **2.25×** PT with the light inside — while the
 SAME SIX FACES rebuilt as free-standing `clippedplane_geometry` quads
 (`doublesided TRUE`) read 1.00 either way.  The discriminating render was
