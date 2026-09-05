@@ -3110,6 +3110,288 @@ void TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor()
 	RunCavityFarWallProbeContract( 20.0, "sphere R=20, far past the crossover" );
 }
 
+//
+// Test 28: CSGObject::SelfHitRootFloor's OWN per-child recursion (not just
+// AdoptCsgExitFacePayloadViaProbe's single-level stretch/rate division that
+// Tests 24-26 exercise on a LEAF operand) must divide by the CHILD's own
+// local-direction length `s` and remap the normal through the child's own
+// forward-transpose -- the smallest case that puts a NESTED CSGObject on the
+// probed side of an exit-designated boundary, with s != 1 and a non-identity
+// normal remap at the recursion's own per-child step.
+// (adversarial review of 4b141ad3 -- "the smallest case that exercises the
+// child-frame arithmetic".)
+//
+// WHY THE OPERAND ROLES ARE REVERSED FROM A LITERAL "BOX MINUS SPHERE"
+// READING, AND WHY oA IS A BOX (NOT A SPHERE): CSGObject.cpp's
+// CSG_SUBTRACTION "B enters first, exits before A" branch -- the ONLY branch
+// that calls AdoptCsgExitFacePayloadViaProbe -- always forwards OPERAND A's
+// own range2/vGeomNormal2 as the COMPOSITE's own reported range2
+// (`ri.geometric.range2 = riObjA.geometric.range2;`).  So whichever operand
+// of `inner` is "A" is the one whose surface `inner` reports as ITS OWN
+// exit, and that is the ONLY surface a caller one level up (`outer`) can
+// ever recover via a probe of `inner` as a whole -- meaning "A" must be the
+// operand whose OWN SelfHitRootFloor the recursion's `/ s` and normal-remap
+// actually gate.  A literal "big box minus small sphere" reading (matching
+// Test 27) makes the BOX operand "A"; a SPHERE operand "A" would exercise
+// the `/ s` division (sphere's own floor ignores incidence angle entirely,
+// so mutation (a) alone was empirically sufficient there) but NOT the
+// normal-remap mutation, since SphereGeometry::SelfHitRootFloor never reads
+// its `localNormal` argument at all.  BoxGeometry::SelfHitRootFloor is the
+// one primitive whose floor genuinely depends on the normal it is handed
+// (it picks its face axis by the normal's largest component, then divides
+// by the incidence cosine) -- so oA is a BOX, oriented+stretched, standing
+// in for Test 27's carved-FROM shape, and oB is a small PLAIN box standing
+// in for Test 27's carving operand.  Putting the transform on "B" instead
+// (as Tests 24-26 do) only ever exercises AdoptCsgExitFacePayloadViaProbe's
+// own single-level division on a LEAF operand, never
+// CSGObject::SelfHitRootFloor's recursive body at all.
+//
+// GEOMETRY, PARAMETRIZED (not hand-derived to exact numbers -- the two
+// angles below are chosen for the algebraic reasons documented at each, and
+// every WORLD POSITION is then derived by probing the actual objects, so the
+// construction stays correct however those two angles are read):
+//   oA: BoxGeometry, half-extent 4, oriented `angleRad` degrees about Y then
+//       stretched (stretchX,1,1) -- Transformable composes a local point as
+//       Scale/Stretch, then Orientation, then Position (i.e. the
+//       conventional stretch-then-rotate-then-translate order; confirmed
+//       empirically against this exact construction and against Test 26's
+//       own SetStretch+SetPosition usage).
+//   oB: BoxGeometry, half-extent 2, PLAIN (no stretch/rotation) -- the small
+//       carving operand, positioned to straddle wherever the camera ray
+//       actually enters standalone oA.
+//   inner = CSG_SUBTRACTION, AssignObjects(oA, oB).
+//   oBig: BoxGeometry, half-extent 200, at the world origin.
+//   outer = CSG_SUBTRACTION, AssignObjects(oBig, inner) -- oA is positioned
+//       (via a two-pass trial-then-corrected placement, since its actual
+//       depth along an OBLIQUE ray bears no simple relationship to its own
+//       half-extent or stretch) so its measured span straddles oBig's own
+//       front-face crossing, putting `inner` on the exit-designated,
+//       probed-through-a-composite side of outer's own subtraction.  `inner`
+//       itself carries no extra transform, so outer-local == world and
+//       outer's own stretch/rate terms are trivial (1) -- the interesting
+//       arithmetic is entirely INSIDE `inner->SelfHitRootFloor`'s own
+//       per-child recursion over {oA, oB}.
+//
+// `angleRad = 60 degrees` (oA's own rotation): the WRONG (mutation (b),
+// un-remapped) normal fed into BoxGeometry::SelfHitRootFloor is oA's WORLD-
+// frame face normal, (cos(angleRad), 0, -sin(angleRad)); oA's TRUE local
+// face normal there is exactly local +X, (1,0,0).  BoxGeometry::
+// SelfHitRootFloor picks its axis by the LARGEST component of whichever
+// normal it is handed -- at 30 degrees cos > sin, so the wrong normal picks
+// the SAME (X) axis by accident and mutation (b) only perturbs the cosine
+// divisor (verified empirically to move the floor the WRONG way to fail: it
+// grows, since a ray aligned with oA's own axis already gives the BEST
+// possible correct incidence cosine of 1, and any other unit normal's dot
+// product with the direction can only be <= 1, never bigger).  At 60 degrees
+// sin > cos, so the wrong normal's largest component is Z -- a genuinely
+// different, wrong axis, AND (combined with `phi` below) a materially wrong
+// cosine.
+//
+// `phi = 20 degrees` (the camera ray's tilt AWAY from oA's own stretched
+// axis): exact alignment (`phi = 0`) makes the CORRECT incidence cosine
+// exactly 1 -- algebraically the best possible case, so ANY wrong normal
+// (itself a unit vector) can only make the box-band term's cosine divisor
+// <= 1 too, i.e. mutation (b) could only ever INFLATE the floor
+// (conservative, never a failure).  A non-zero `phi` gives the CORRECT
+// incidence real headroom below 1, so the wrong axis+cosine combination
+// mutation (b) substitutes can undershoot it.  `stretchX = 30` keeps `s`
+// (the child's own inverse-transformed unit direction length inside the
+// recursion) small, giving mutation (a)'s `/ s` removal a wide gap too.
+//
+// Money-relevant numbers from one build of this exact construction (all
+// computed at runtime by this function, not hardcoded -- reported here only
+// as a sanity cross-check for a future reader): oA's own measured span
+// straddled oBig's front-face crossing exactly (by construction of the
+// two-pass placement); the reported far wall's local point landed at oA's
+// own +X face CENTER, (4, ~0, ~0); `inner->SelfHitRootFloor` at the
+// outer-level query was ~1.29e-10, entirely from oA's contribution
+// (s ~= 0.343, floorChild ~= 4.44e-11) -- oB's own contribution (s=1,
+// floorChild ~= 4.43e-12) is smaller and does not govern the max().
+//
+// RED-PROOF (verified against the actual build, not asserted here from
+// arithmetic alone -- see the commit message's RED-PROOF table):
+//   (a) drop the recursion's `/ s` (treat s as 1): oA's contribution drops
+//       from ~1.29e-10 to ~4.44e-11 (its OWN un-divided floorChild, exactly
+//       -- s cancels out of the money-relevant ratio) -- money assertions
+//       fail; Test 27 (whose operands are all leaves, s = 1 throughout)
+//       stays green.
+//   (b) drop the forward-transpose normal remap (pass the parent-frame
+//       normal straight through): oA's contribution drops from ~1.29e-10 to
+//       ~1.29e-11 (wrong axis picked, wrong cosine) -- the same four money
+//       assertions fail.
+//   (c) seed CSGObject::SelfHitRootFloor's `worst` at IObject's generic
+//       `NEARZERO * (1 + |localOrigin|_1)` default instead of zero: this
+//       test's own children are both LEAVES (BoxGeometry), which already
+//       report the generic default's own order of magnitude or larger at
+//       these world offsets, so the generic-default seed never changes
+//       which term governs the max() here -- Test 28 stays GREEN under this
+//       mutation, while Test 14 (whose `localOrigin` sits at world X = 1e12,
+//       the documented trap this seed exists to avoid) goes red exactly as
+//       intended.
+//
+void TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor()
+{
+	std::cout << "CSG_SUBTRACTION: outer-level exit probe divides a NESTED CSG operand's SelfHitRootFloor by the child's own s (4b141ad3 review, child-frame arithmetic)..." << std::endl;
+
+	// See the header comment above for why each of these two angles is
+	// picked, and why oA is a box (not a sphere).
+	const Scalar angleRad = 60.0 * 3.14159265358979323846 / 180.0;   // oA's own rotation about Y
+	const Scalar stretchX = 30.0;                                     // oA's own stretch along its (rotated) local +X
+	const Scalar phi = 20.0 * 3.14159265358979323846 / 180.0;         // camera ray's tilt away from oA's stretched axis
+	const Scalar dirAngleRad = angleRad + phi;
+
+	BoxGeometry* gA = new BoxGeometry( 8.0, 8.0, 8.0 );   // half-extent 4
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( std::cos( dirAngleRad ) + 0.0007, 0.0004, -std::sin( dirAngleRad ) + 0.0003 ) );
+
+	BoxGeometry* gBig = new BoxGeometry( 400.0, 400.0, 400.0 );   // half-extent 200
+	Object* oBig = new Object( gBig );
+	safe_release( gBig );
+	oBig->SetPosition( Point3( 0, 0, 0 ) );
+	oBig->FinalizeTransformations();
+
+	// `tBig` is where the camera ray crosses oBig's own front face --
+	// computed DIRECTLY against this exact oBig/ray pair (a fresh probe
+	// from far along -dir, not a hand-derived constant), so this stays
+	// correct however `dir` is parametrized above.  oA needs to straddle
+	// this point (part before it, part after) for the exit-designated
+	// branch to fire at BOTH nesting levels (see the header comment's
+	// geometry section) -- but at this oblique `phi`, oA's own DEPTH
+	// along the ray bears no simple relationship to its stretched semi-
+	// axis (that long axis isn't aligned with the ray any more), so a
+	// fixed standoff can leave oA's whole span short of `tBig` entirely.
+	// Two-pass placement instead: place oA (trial) with its own local
+	// +X-face-CENTER at `tBig`, measure its ACTUAL entry/exit along this
+	// ray, then re-place it shifted so the MIDPOINT of that measured span
+	// lands exactly on `tBig` -- correct however `phi` reshapes oA's
+	// apparent depth.
+	const Point3 farOrigin( dir.x * -1000.0, dir.y * -1000.0, dir.z * -1000.0 );
+	RayIntersection riBigProbe( Ray( farOrigin, dir ), nullRasterizerState );
+	Hit( oBig, Ray( farOrigin, dir ), riBigProbe );
+	Check( riBigProbe.geometric.bHit, "Test28 (4b141ad3 review): (control) setup probe hits oBig" );
+	const Scalar tBig = -1000.0 + riBigProbe.geometric.range;
+
+	oA->SetOrientation( Vector3( 0, angleRad, 0 ) );
+	oA->SetStretch( Vector3( stretchX, 1.0, 1.0 ) );
+
+	auto PlaceOAFaceCenterAt = [&]( const Point3& target ) {
+		oA->SetPosition( Point3( 0, 0, 0 ) );
+		oA->FinalizeTransformations();
+		const Point3 facePoleOffset = Point3Ops::Transform( oA->GetFinalTransformMatrix(), Point3( 4.0, 0.0, 0.0 ) );
+		oA->SetPosition( Point3(
+			target.x - facePoleOffset.x,
+			target.y - facePoleOffset.y,
+			target.z - facePoleOffset.z ) );
+		oA->FinalizeTransformations();
+	};
+
+	// Trial pass, targeting tBig directly.
+	PlaceOAFaceCenterAt( Point3( dir.x * tBig, dir.y * tBig, dir.z * tBig ) );
+	RayIntersection riATrial( Ray( farOrigin, dir ), nullRasterizerState );
+	Hit( oA, Ray( farOrigin, dir ), riATrial );
+	Check( riATrial.geometric.bHit, "Test28 (4b141ad3 review): (control) trial probe hits standalone oA" );
+	const Scalar tAEntryTrial = -1000.0 + riATrial.geometric.range;
+	const Scalar tAExitTrial = -1000.0 + riATrial.geometric.range2;
+	const Scalar tAMidTrial = 0.5 * ( tAEntryTrial + tAExitTrial );
+
+	// Corrected pass: shift so the measured midpoint lands exactly on tBig.
+	const Scalar finalTargetT = tBig + ( tBig - tAMidTrial );
+	PlaceOAFaceCenterAt( Point3( dir.x * finalTargetT, dir.y * finalTargetT, dir.z * finalTargetT ) );
+
+	// Position oB (the small carving box) to straddle wherever the camera
+	// ray ACTUALLY hits standalone oA now (re-probed after the corrected
+	// placement), not any assumed face-center point.
+	RayIntersection riAProbe( Ray( farOrigin, dir ), nullRasterizerState );
+	Hit( oA, Ray( farOrigin, dir ), riAProbe );
+	Check( riAProbe.geometric.bHit, "Test28 (4b141ad3 review): (control) setup probe hits standalone oA" );
+	const Point3 oAEntryWorld(
+		farOrigin.x + dir.x * riAProbe.geometric.range,
+		farOrigin.y + dir.y * riAProbe.geometric.range,
+		farOrigin.z + dir.z * riAProbe.geometric.range );
+
+	oB->SetPosition( oAEntryWorld );
+	oB->FinalizeTransformations();
+
+	CSGObject* inner = new CSGObject( CSG_SUBTRACTION );
+	const bool innerAssigned = inner->AssignObjects( oA, oB );
+	Check( innerAssigned, "Test28 (4b141ad3 review): inner composite takes A(big oriented+stretched box)/B(small plain box) operands" );
+	inner->FinalizeTransformations();
+
+	CSGObject* outer = new CSGObject( CSG_SUBTRACTION );
+	const bool outerAssigned = outer->AssignObjects( oBig, inner );
+	Check( outerAssigned, "Test28 (4b141ad3 review): outer composite takes oBig/inner operands" );
+	outer->FinalizeTransformations();
+
+	const Point3 o( dir.x * -400.0, dir.y * -400.0, dir.z * -400.0 );
+	Ray r( o, dir );
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( outer, r, ri );
+	Check( ri.geometric.bHit, "Test28 (4b141ad3 review): (control) ray hits the outer composite at all" );
+
+	// `inner`'s OWN reported hit -- the payload `outer` would fall back to
+	// on a probe miss, and the "wrong" (entry-designated) face this test
+	// must NOT match.
+	RayIntersection refInnerEntry( r, nullRasterizerState );
+	Hit( inner, r, refInnerEntry );
+	Check( refInnerEntry.geometric.bHit, "Test28 (4b141ad3 review): (control) ray hits standalone inner" );
+
+	// Sanity: outer's reported range matches inner's own range2 (confirms
+	// the exit-designated branch fired, landing on inner's own EXIT --
+	// oA's own far face -- not inner's own reported entry).
+	Check( Close( ri.geometric.range, refInnerEntry.geometric.range2, 1e-3 ),
+		"Test28 (4b141ad3 review): (sanity) outer range == inner's own range2 (exit-designated branch fired)" );
+
+	// Oracle for the far wall: probe `inner` fresh from well clear of the
+	// reported exit point (4 world units past it -- outside any self-hit
+	// band at this scale), exactly like AdoptCsgExitFacePayloadViaProbe's
+	// own technique, but NOT reusing the code under test.
+	const Point3 ptExit = r.PointAtLength( refInnerEntry.geometric.range2 );
+	const Point3 probeOrigin(
+		ptExit.x + dir.x * 4.0,
+		ptExit.y + dir.y * 4.0,
+		ptExit.z + dir.z * 4.0 );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refInnerExit( probeRef, nullRasterizerState );
+	Hit( inner, probeRef, refInnerExit );
+	Check( refInnerExit.geometric.bHit, "Test28 (4b141ad3 review): (control) direct probe hits inner's own far (oA) face" );
+
+	// Sanity: the reported-exit oracle really landed on oA's own +X face
+	// (local x == oA's own half-extent, 4), not oB's (whose local
+	// coordinates would sit within its own half-extent-2 bound instead).
+	Check( Close( refInnerExit.geometric.ptObjIntersec.x, 4.0, 0.1 ),
+		"Test28 (4b141ad3 review): (sanity) oracle's local x == oA's own half-extent (4), confirming it is oA's face" );
+
+	// Sanity: near (inner's own entry-designated, box-carve) and far
+	// (oA) payloads are genuinely distinct.
+	Check( !Point2Close( refInnerExit.geometric.ptCoord, refInnerEntry.geometric.ptCoord ),
+		"Test28 (4b141ad3 review): (sanity) far-wall ptCoord differs from inner's own entry-designated ptCoord" );
+	Check( !PointClose( refInnerExit.geometric.ptObjIntersec, refInnerEntry.geometric.ptObjIntersec ),
+		"Test28 (4b141ad3 review): (sanity) far-wall ptObjIntersec differs from inner's own entry-designated ptObjIntersec" );
+
+	// MONEY: outer's payload is the REAL far (oA) wall, not inner's own
+	// entry-designated (box-carve) payload.
+	Check( Point2Close( ri.geometric.ptCoord, refInnerExit.geometric.ptCoord ),
+		"Test28 (4b141ad3 review): MONEY ASSERTION -- outer ptCoord matches the FAR (oA) wall" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refInnerExit.geometric.ptObjIntersec ),
+		"Test28 (4b141ad3 review): MONEY ASSERTION -- outer ptObjIntersec matches the FAR (oA) wall" );
+	Check( !Point2Close( ri.geometric.ptCoord, refInnerEntry.geometric.ptCoord ),
+		"Test28 (4b141ad3 review): outer ptCoord is NOT inner's own entry-designated payload" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refInnerEntry.geometric.ptObjIntersec ),
+		"Test28 (4b141ad3 review): outer ptObjIntersec is NOT inner's own entry-designated payload" );
+
+	safe_release( outer );
+	safe_release( oBig );
+	safe_release( inner );
+	safe_release( oA );
+	safe_release( oB );
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -3139,6 +3421,7 @@ int main()
 	TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit();
 	TestSubtraction_ExitProbe_AnisotropicStretchObliqueRayUsesExactRate();
 	TestSubtraction_ExitProbe_ClearsOperandPrimitiveRootFloor();
+	TestSubtraction_NestedCsgOperandExitProbeUsesChildFrameRootFloor();
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
