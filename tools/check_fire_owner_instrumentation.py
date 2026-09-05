@@ -9,6 +9,27 @@ from pathlib import Path
 
 
 PREFIX = "RISE_FIRE_OWNER_PROFILE_V1 "
+FP64_PASS = ("PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 "
+             "criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=1")
+RED_NAMES = {"stale_column_trace", "out_of_order_iteration", "truncated_face_shape",
+             "mismatched_stage", "production_scope_forbidden", "mismatched_owner"}
+
+
+def qualify_artifact(log, trace, csv):
+    if FP64_PASS not in log.splitlines() or "OWNER_CONVERGENCE_PROBE passed=1 error=" not in log.splitlines():
+        raise ValueError("fp64 owner or convergence qualification did not pass")
+    artifacts = [line for line in log.splitlines() if line.startswith("OWNER_CONVERGENCE_ARTIFACT ")]
+    expected = " sha256=" + hashlib.sha256(trace).hexdigest() + " scope=qualified_fixture_only passed=1"
+    if len(artifacts) != 1 or not artifacts[0].endswith(expected):
+        raise ValueError("trace does not belong to qualified run")
+    csv_seals = [line for line in trace.decode().splitlines() if line.startswith("OWNER_CONVERGENCE_CSV ")]
+    if csv_seals != ["OWNER_CONVERGENCE_CSV sha256=" + hashlib.sha256(csv).hexdigest()]:
+        raise ValueError("CSV does not belong to qualified trace")
+    reds = [line for line in log.splitlines() if line.startswith("OWNER_CONVERGENCE_RED ")]
+    if (len(reds) != len(RED_NAMES) or
+            {line.split()[1] for line in reds} != {"name=" + name for name in RED_NAMES} or
+            any(not line.endswith(" passed=1") or " atomic_refusal=1 " not in line for line in reds)):
+        raise ValueError("named convergence RED battery did not pass")
 
 
 def trees(text):
@@ -18,6 +39,13 @@ def trees(text):
         if not line.startswith(PREFIX):
             continue
         row = json.loads(line[len(PREFIX):])
+        stage, iteration = row["stage"], row["raw_iteration"]
+        if stage not in (0, 1, 2, 0xffffffff) or not isinstance(iteration, int) or not 0 <= iteration <= 0xffffffff:
+            raise ValueError("invalid stage or iteration tag")
+        kind = ("owner" if stage == 0xffffffff else "bootstrap" if iteration == 0xffffffff
+                else "terminal" if iteration & 0x80000000 else "picard")
+        if row["iteration_kind"] != kind:
+            raise ValueError("inconsistent iteration class")
         index = row["scope"]
         if index in pending or index < 1:
             raise ValueError("duplicate profile scope")
@@ -25,6 +53,8 @@ def trees(text):
                      "exclusive_device_sum_ms", "child_observer_wall_ms"):
             if not math.isfinite(row[name]) or row[name] < -1e-8:
                 raise ValueError("invalid timing: " + name)
+        if not math.isfinite(row["wall_minus_device_ms"]):
+            raise ValueError("nonfinite wall-device gap")
         pending[index] = row
         if row["parent"] == 0:
             if row["phase"] != "OwnerRun" or index != 1:
@@ -63,6 +93,8 @@ def self_test():
     child = dict(scope=2, parent=1, phase="BuildStageProducerGroup", wall_ms=2.0, device_sum_ms=1.0,
                  wall_minus_device_ms=1.0, exclusive_wall_ms=2.0,
                  exclusive_device_sum_ms=1.0, child_observer_wall_ms=0.0)
+    root.update(stage=0xffffffff, raw_iteration=0xffffffff, iteration_kind="owner")
+    child.update(stage=0, raw_iteration=0xffffffff, iteration_kind="bootstrap")
     assert len(trees(raw([child, root]))) == 1
     for field, value in (("exclusive_device_sum_ms", 2.0), ("exclusive_wall_ms", 2.0),
                          ("wall_minus_device_ms", 2.0), ("parent", 7)):
@@ -73,7 +105,39 @@ def self_test():
         except ValueError:
             continue
         raise AssertionError("profile accounting RED escaped: " + field)
-    print("owner profile accounting REDs: 4 passed")
+    for field in ("wall_ms", "device_sum_ms", "exclusive_wall_ms",
+                  "exclusive_device_sum_ms", "child_observer_wall_ms", "wall_minus_device_ms"):
+        for value in (float("nan"), float("inf"), -float("inf")):
+            mutant = dict(root)
+            mutant[field] = value
+            try:
+                trees(raw([child, mutant]))
+            except ValueError:
+                continue
+            raise AssertionError("nonfinite timing RED escaped: " + field)
+    print("owner profile accounting REDs: 4 passed; nonfinite REDs: 18 passed")
+    for field, value in (("stage", 77), ("raw_iteration", -1), ("iteration_kind", "impossible")):
+        mutant = dict(root)
+        mutant[field] = value
+        try:
+            trees(raw([child, mutant]))
+        except ValueError:
+            continue
+        raise AssertionError("iteration tag RED escaped")
+    print("profile stage/iteration tag REDs: 3 passed")
+    fixture = Path(__file__).resolve().parents[1] / "rendered/fire_production_calibration/r202_owner_cost/exact_edb4afb6"
+    log = (fixture / "fixture_off.log").read_text()
+    trace, csv = ((fixture / name).read_bytes() for name in ("fixture_off.v1", "fixture_off.v1.csv"))
+    qualify_artifact(log, trace, csv)
+    for mutant in ((log, b"", b""), (log, trace, b""),
+                   (log.replace(FP64_PASS, ""), trace, csv),
+                   (log.replace("name=mismatched_owner", "name=stale_column_trace"), trace, csv)):
+        try:
+            qualify_artifact(*mutant)
+        except ValueError:
+            continue
+        raise AssertionError("qualified artifact/RED-name binding mutant escaped")
+    print("qualified artifact/fp64/RED-name binding REDs: 4 passed")
 
 
 def main():
@@ -100,12 +164,8 @@ def main():
         second = Path(str(args.on_trace) + suffix).read_bytes()
         if first != second:
             raise ValueError("observer altered diagnostic operands or identity: " + suffix)
-    for text in (off, on):
-        if "OWNER_CONVERGENCE_PROBE passed=1 error=\n" not in text:
-            raise ValueError("convergence exporter gate did not pass")
-        reds = [line for line in text.splitlines() if line.startswith("OWNER_CONVERGENCE_RED ")]
-        if len(reds) != 6 or any("passed=1" not in line for line in reds):
-            raise ValueError("convergence RED battery did not pass")
+    for text, trace in ((off, args.off_trace), (on, args.on_trace)):
+        qualify_artifact(text, trace.read_bytes(), Path(str(trace) + ".csv").read_bytes())
     report = {"schema": "rise.fire.owner.observer_checks.v1", "scope": "qualification_fixture_only",
               "profile_off_silent": True, "column_trace_and_csv_bit_identical": True,
               "timing_tree_accounting_passed": True,

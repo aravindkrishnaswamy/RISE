@@ -2854,6 +2854,7 @@ namespace
 			persistence.sealedLegacyMomentumReplay||persistence.singleStageFCTDiagnostic||
 			persistence.compatibleMomentumDiagnostic||!persistence.checkpointPath.empty()||
 			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
+			!persistence.equivalenceSnapshotDirectory.empty()||!persistence.temporalSnapshotDirectory.empty()||
 			persistence.productionOnsetDiagnosticDirectory.empty()||persistence.forceZeroSourceForTest||
 			persistence.isolatedEquivalenceProbe||resolutionTier!=8.0||caseDurationS!=3.0||
 			caseFramesPerS!=1.0||minimumStepCount!=3u)){
@@ -6828,6 +6829,15 @@ namespace
 		persistence.maximumProductionSourceStepS=representedStep;
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		for(const auto destination:{&RunPersistenceOptions::equivalenceSnapshotDirectory,
+			&RunPersistenceOptions::temporalSnapshotDirectory}){
+			RunPersistenceOptions mutant=persistence;mutant.*destination=outputDirectory/"forbidden_snapshot";
+			const SolverFrameValues refused=RunMethaneFrameProbe(8u,3u,targetTimeS,3.0,1.0,8.0,
+				CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,mutant);
+			if(refused.structuredError!="owner_cost_diagnostic_scope_conflict"||
+				std::filesystem::exists(mutant.*destination))return 95;
+		}
+		std::fprintf(stderr,"OWNER_COST_SNAPSHOT_SCOPE_RED count=2 passed=1\n");
 		std::ofstream preregistration(outputDirectory/"diagnostic_prefix_protocol.v1");
 		preregistration<<std::setprecision(17)<<"schema rise.fire.owner_cost.prefix_protocol.v1\n"
 			<<"scope diagnostic_prefix\nfull_verdict unavailable\nfixed_k unavailable\n"

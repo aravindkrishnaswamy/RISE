@@ -6,6 +6,8 @@ import collections
 import csv
 import hashlib
 import json
+import math
+import copy
 from pathlib import Path
 
 from check_fire_owner_instrumentation import trees
@@ -35,6 +37,34 @@ def compare(reference, probe):
     return sorted(fields)
 
 
+def bind_profile(profile, probe):
+    if len(profile) != 3 or len(probe) != 3:
+        raise ValueError("expected three complete owner timing trees and trajectory rows")
+    for tree, row in zip(profile, probe):
+        root = tree[0]
+        measured = float(row["device_ms"])
+        # The profile prints nine decimal places; the CSV prints 17 significant
+        # digits. This bound covers formatting only, never solver arithmetic.
+        if abs(root["device_sum_ms"] - measured) > 1e-9 + 4 * math.ulp(measured):
+            raise ValueError("profile device interval belongs to another step")
+        if (root["owner_commits"] != int(row["owner_commits"]) or
+                root["projection_invocations"] != int(row["owner_projections"])):
+            raise ValueError("profile counters belong to another step")
+        if [r["stage"] for r in tree if r["phase"] == "SolveStage"] != [0, 1, 2]:
+            raise ValueError("missing or reordered owner stage")
+        for stage in range(3):
+            count = int(row["owner_r%d_iterations" % stage])
+            expected = list(range(count))
+            for phase, iterations in (("PicardIteration", expected),
+                                      ("TerminalVerification", [0x80000000 | (count - 1)]),
+                                      ("BuildStageProducerGroup", [0xffffffff] + expected +
+                                       [0x80000000 | (count - 1)])):
+                actual = [r["raw_iteration"] for r in tree
+                          if r["phase"] == phase and r["stage"] == stage]
+                if actual != iterations:
+                    raise ValueError("profile iteration schedule mismatch: " + phase)
+
+
 def self_test():
     rows = [dict(accepted_step=str(step), owner_identity=str(step + 7), velocity="0.1",
                  device_ms="12", wall_ms="13", owner_projection_device_ms="2",
@@ -49,6 +79,27 @@ def self_test():
             continue
         raise AssertionError("prefix RED escaped: " + field)
     print("cost prefix identity/velocity/schedule REDs: 3 passed")
+    fixture = Path(__file__).resolve().parents[1] / "rendered/fire_production_calibration/r202_owner_cost/exact_edb4afb6"
+    profile = trees((fixture / "tier8_profile.log").read_text())
+    probe = records(fixture / "tier8_prefix/budgets/maximum_velocity_trajectory.csv")
+    bind_profile(profile, probe)
+    mutants = [list(reversed(profile)), [profile[0], profile[0], profile[2]]]
+    for field, value in (("device_sum_ms", 0), ("owner_commits", 0),
+                         ("projection_invocations", 0)):
+        mutant = copy.deepcopy(profile)
+        mutant[0][0][field] = value
+        mutants.append(mutant)
+    mutant = copy.deepcopy(profile)
+    for row in mutant[0]:
+        row["stage"] = 77
+    mutants.append(mutant)
+    for mutant in mutants:
+        try:
+            bind_profile(mutant, probe)
+        except ValueError:
+            continue
+        raise AssertionError("profile/trajectory association RED escaped")
+    print("profile/trajectory association REDs: 6 passed")
 
 
 def main():
@@ -66,19 +117,30 @@ def main():
     if not all((args.reference, args.reference_identity, args.probe, args.profile, args.output)):
         parser.error("reference, identity, probe directory, profile log, and output required")
     trajectory = args.probe / "budgets/maximum_velocity_trajectory.csv"
-    fields = compare(records(args.reference), records(trajectory))
+    probe = records(trajectory)
+    fields = compare(records(args.reference), probe)
     original = metadata(args.reference_identity)
     actual = metadata(args.probe / "diagnostic_from_zero_identity.v1")
     for field in ("seed", "case_record_id", "initial_state_sha256", "resolution_tier"):
-        if actual.get(field) != original.get(field):
+        if not actual.get(field) or actual.get(field) != original.get(field):
             raise ValueError("from-zero identity mismatch: " + field)
     outcome = metadata(args.probe / "diagnostic_prefix_outcome.v1")
     if (outcome.get("prefix_complete") != "true" or outcome.get("full_verdict") != "unavailable"
             or outcome.get("scope") != "diagnostic_prefix"):
         raise ValueError("prefix completion/scope check failed")
-    profile = trees(args.profile.read_text())
-    if len(profile) != 3:
-        raise ValueError("expected three complete owner timing trees")
+    profile_text = args.profile.read_text()
+    for field, path in (("protocol_sha256", args.probe / "diagnostic_prefix_protocol.v1"),
+                        ("from_zero_identity_sha256", args.probe / "diagnostic_from_zero_identity.v1"),
+                        ("trajectory_sha256", trajectory),
+                        ("retry_trajectory_sha256", args.probe / "budgets/retry_attempt_trajectory.csv")):
+        if outcome.get(field) != hashlib.sha256(path.read_bytes()).hexdigest():
+            raise ValueError("stale diagnostic outcome: " + field)
+    digest = hashlib.sha256((args.probe / "diagnostic_prefix_outcome.v1").read_bytes()).hexdigest()
+    terminal = [line for line in profile_text.splitlines() if line.startswith("OWNER_COST_PREFIX ")]
+    if len(terminal) != 1 or "outcome_sha256=" + digest + " " not in terminal[0]:
+        raise ValueError("profile log belongs to another diagnostic outcome")
+    profile = trees(profile_text)
+    bind_profile(profile, probe)
     measured = []
     for step, tree in enumerate(profile, 1):
         grouped = collections.defaultdict(list)
