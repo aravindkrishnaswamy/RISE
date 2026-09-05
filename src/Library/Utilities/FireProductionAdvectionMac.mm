@@ -82,6 +82,140 @@ namespace RISE
 			return utf8?std::string(utf8):std::string();
 		}
 
+		// The payload format is independent of the older accepted-state token
+		// digest versions. All framing integers are big endian; node bytes are
+		// SHA-256 output bytes, not native-endian words.
+		const char* PayloadMerkleSource()
+		{
+			return R"METAL(
+#include <metal_stdlib>
+using namespace metal;
+constant uint merkle_k[64]={
+0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u};
+uint merkle_rotr(uint x,uint n){return (x>>n)|(x<<(32u-n));}
+void merkle_be(thread uchar* h,thread uint& at,ulong v,uint width){
+    for(uint i=width;i!=0u;--i)h[at++]=uchar(v>>((i-1u)*8u));
+}
+void merkle_sha(thread const uchar* header,uint headerSize,device const uchar* data,
+    ulong start,uint dataSize,device uchar* out){
+    uint s[8]={0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,
+        0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u};
+    uint size=headerSize+dataSize, padded=((size+9u+63u)/64u)*64u;
+    for(uint block=0u;block<padded;block+=64u){
+        uint w[64];
+        for(uint j=0u;j<16u;++j){uint word=0u;
+            for(uint b=0u;b<4u;++b){uint p=block+4u*j+b;uchar v=0u;
+                if(p<headerSize)v=header[p];
+                else if(p<size)v=data[start+p-headerSize];
+                else if(p==size)v=0x80u;
+                else if(p>=padded-8u)v=uchar((ulong(size)*8u)>>((padded-1u-p)*8u));
+                word=(word<<8u)|uint(v);
+            }w[j]=word;
+        }
+        for(uint j=16u;j<64u;++j){uint a=w[j-15u],b=w[j-2u];
+            w[j]=w[j-16u]+(merkle_rotr(a,7u)^merkle_rotr(a,18u)^(a>>3u))+
+                w[j-7u]+(merkle_rotr(b,17u)^merkle_rotr(b,19u)^(b>>10u));}
+        uint a=s[0],b=s[1],c=s[2],d=s[3],e=s[4],f=s[5],g=s[6],h=s[7];
+        for(uint j=0u;j<64u;++j){
+            uint t1=h+(merkle_rotr(e,6u)^merkle_rotr(e,11u)^merkle_rotr(e,25u))+
+                ((e&f)^((~e)&g))+merkle_k[j]+w[j];
+            uint t2=(merkle_rotr(a,2u)^merkle_rotr(a,13u)^merkle_rotr(a,22u))+
+                ((a&b)^(a&c)^(b&c));
+            h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;
+        }s[0]+=a;s[1]+=b;s[2]+=c;s[3]+=d;s[4]+=e;s[5]+=f;s[6]+=g;s[7]+=h;
+    }
+    for(uint j=0u;j<8u;++j)for(uint b=0u;b<4u;++b)out[4u*j+b]=uchar(s[j]>>((3u-b)*8u));
+}
+// params: total payload bytes, input node count (or leaf count), level.
+kernel void merkle_leaf(device const uchar* payload [[buffer(0)]],device uchar* nodes [[buffer(1)]],
+    constant ulong* params [[buffer(2)]],uint tid [[thread_position_in_grid]]){
+    ulong index=tid;if(index>=params[1])return;
+    ulong start=index*4096u;uint length=uint(min(ulong(4096u),params[0]-start));
+    uchar header[40];uint at=0u;merkle_be(header,at,0x524953454c454146ul,8u);
+    merkle_be(header,at,2u,4u);merkle_be(header,at,params[0],8u);
+    merkle_be(header,at,index,8u);merkle_be(header,at,length,4u);
+    merkle_sha(header,at,payload,start,length,nodes+index*32u);
+}
+kernel void merkle_node(device const uchar* children [[buffer(0)]],device uchar* nodes [[buffer(1)]],
+    constant ulong* params [[buffer(2)]],uint tid [[thread_position_in_grid]]){
+    ulong index=tid,first=index*16u;if(first>=params[1])return;
+    uint count=uint(min(ulong(16u),params[1]-first));
+    uchar header[40];uint at=0u;merkle_be(header,at,0x524953454e4f4445ul,8u);
+    merkle_be(header,at,2u,4u);merkle_be(header,at,params[0],8u);merkle_be(header,at,params[2],4u);
+    merkle_be(header,at,index,8u);merkle_be(header,at,count,4u);
+    merkle_sha(header,at,children,first*32u,count*32u,nodes+index*32u);
+}
+kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* root [[buffer(1)]],
+    constant ulong* params [[buffer(2)]],uint tid [[thread_position_in_grid]]){
+    if(tid!=0u)return;uchar header[40];uint at=0u;
+    merkle_be(header,at,0x52495345524f4f54ul,8u);merkle_be(header,at,2u,4u);
+    merkle_be(header,at,4096u,4u);merkle_be(header,at,16u,4u);
+    merkle_be(header,at,params[0],8u);merkle_be(header,at,params[1],8u);merkle_be(header,at,params[2],4u);
+    merkle_sha(header,at,child,0u,32u,root);
+}
+)METAL";
+		}
+
+		struct PayloadMerkleContext
+		{
+			id<MTLDevice> device=nil;
+			id<MTLCommandQueue> queue=nil;
+			id<MTLComputePipelineState> leaf=nil,node=nil,root=nil;
+			std::string error;
+			PayloadMerkleContext(){
+				device=DiscoverProductionMetalDevice("payload-merkle-v2",error);if(!device)return;
+				queue=[device newCommandQueue];NSError* failure=nil;
+				MTLCompileOptions* options=[[MTLCompileOptions alloc] init];
+				options.languageVersion=MTLLanguageVersion3_2;
+				id<MTLLibrary> library=[device newLibraryWithSource:
+					[NSString stringWithUTF8String:PayloadMerkleSource()] options:options error:&failure];
+				if(!library){error=MetalString([failure localizedDescription]);return;}
+				auto pipeline=[&](NSString* name){return [device newComputePipelineStateWithFunction:
+					[library newFunctionWithName:name] error:&failure];};
+				leaf=pipeline(@"merkle_leaf");node=pipeline(@"merkle_node");root=pipeline(@"merkle_root");
+				if(!queue||!leaf||!node||!root)error="payload-merkle-v2 pipeline: "+MetalString([failure localizedDescription]);
+			}
+		};
+
+		// Hash a device payload without reading an intermediate tree node on the
+		// host. The command owns every private level until its terminal root copy.
+		bool EncodePayloadMerkle(PayloadMerkleContext& context,id<MTLCommandBuffer> command,
+			id<MTLBuffer> payload,std::size_t bytes,unsigned int width,id<MTLBuffer> root,
+			std::string& error)
+		{
+			if(!context.error.empty()){error=context.error;return false;}
+			if(!command||!payload||bytes>[payload length]||!root||[root length]<32u||
+				width==0u||width>std::min({context.leaf.maxTotalThreadsPerThreadgroup,
+				context.node.maxTotalThreadsPerThreadgroup,context.root.maxTotalThreadsPerThreadgroup})||
+				bytes/4096u+(bytes%4096u!=0u)>UINT32_MAX){error="payload-merkle-v2 invalid device span or dispatch";return false;}
+			std::size_t count=std::max<std::size_t>(1u,bytes/4096u+(bytes%4096u!=0u));
+			const std::size_t leafCount=count;std::uint64_t level=0u;
+			auto encode=[&](id<MTLComputePipelineState> pipeline,id<MTLBuffer> input,
+				id<MTLBuffer> output,std::size_t inputCount,std::size_t outputCount){
+				id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+				if(!encoder||!output)return false;
+				const std::uint64_t params[]={bytes,inputCount,level};
+				[encoder setComputePipelineState:pipeline];[encoder setBuffer:input offset:0 atIndex:0];
+				[encoder setBuffer:output offset:0 atIndex:1];[encoder setBytes:params length:sizeof(params) atIndex:2];
+				[encoder dispatchThreads:MTLSizeMake(outputCount,1,1) threadsPerThreadgroup:MTLSizeMake(width,1,1)];
+				[encoder endEncoding];return true;};
+			id<MTLBuffer> previous=[context.device newBufferWithLength:count*32u options:MTLResourceStorageModePrivate];
+			if(!encode(context.leaf,payload,previous,count,count)){error="payload-merkle-v2 leaf allocation/encoder";return false;}
+			while(count>1u){++level;const std::size_t nextCount=count/16u+(count%16u!=0u);
+				id<MTLBuffer> next=[context.device newBufferWithLength:nextCount*32u options:MTLResourceStorageModePrivate];
+				if(!encode(context.node,previous,next,count,nextCount)){error="payload-merkle-v2 node allocation/encoder";return false;}
+				previous=next;count=nextCount;}
+			if(!encode(context.root,previous,root,leafCount,1u)){error="payload-merkle-v2 root encoder";return false;}
+			return true;
+		}
+
 		std::string ProductionMetalDeviceFamily(id<MTLDevice> device)
 		{
 			if(@available(macOS 10.15,*)){
@@ -12838,6 +12972,43 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			return false;
 		}
 		result=std::move(attempted);return true;
+	}
+
+	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>& bytes,
+		unsigned int dispatchWidth,FireProductionPayloadDigestV2& result,double& deviceMS,
+		std::string* error)
+	{
+		result=FireProductionPayloadDigestV2();deviceMS=0.0;
+		@autoreleasepool {
+			static PayloadMerkleContext context;std::string failure=context.error;
+			auto fail=[&](){if(error)*error=failure;return false;};
+			if(!failure.empty())return fail();
+			id<MTLBuffer> upload=[context.device newBufferWithLength:std::max<std::size_t>(1u,bytes.size())
+				options:MTLResourceStorageModeShared];
+			id<MTLBuffer> payload=[context.device newBufferWithLength:std::max<std::size_t>(1u,bytes.size())
+				options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> root=[context.device newBufferWithLength:32u options:MTLResourceStorageModePrivate];
+			id<MTLBuffer> terminal=[context.device newBufferWithLength:32u options:MTLResourceStorageModeShared];
+			if(!upload||!payload||!root||!terminal){failure="payload-merkle-v2 qualification allocation";return fail();}
+			if(!bytes.empty())std::memcpy([upload contents],bytes.data(),bytes.size());
+			id<MTLCommandBuffer> command=[context.queue commandBuffer];
+			id<MTLBlitCommandEncoder> ingress=[command blitCommandEncoder];
+			if(!ingress){failure="payload-merkle-v2 qualification ingress";return fail();}
+			[ingress copyFromBuffer:upload sourceOffset:0 toBuffer:payload destinationOffset:0 size:[payload length]];
+			[ingress endEncoding];
+			if(!EncodePayloadMerkle(context,command,payload,bytes.size(),dispatchWidth,root,failure))return fail();
+			id<MTLBlitCommandEncoder> egress=[command blitCommandEncoder];
+			if(!egress){failure="payload-merkle-v2 qualification egress";return fail();}
+			[egress copyFromBuffer:root sourceOffset:0 toBuffer:terminal destinationOffset:0 size:32u];
+			[egress endEncoding];[command commit];[command waitUntilCompleted];
+			if(command.status!=MTLCommandBufferStatusCompleted){failure="payload-merkle-v2 device failure: "+
+				MetalString([command.error localizedDescription]);return fail();}
+			const auto* digest=static_cast<const unsigned char*>([terminal contents]);
+			const char* hex="0123456789abcdef";
+			for(unsigned int i=0u;i<32u;++i){result.rootSHA256+=hex[digest[i]>>4u];result.rootSHA256+=hex[digest[i]&15u];}
+			result.payloadBytes=bytes.size();deviceMS=1000.0*(command.GPUEndTime-command.GPUStartTime);
+			if(error)error->clear();return true;
+		}
 	}
 
 	std::uint64_t FireProductionResidentStepMetalCommandCommitCount()

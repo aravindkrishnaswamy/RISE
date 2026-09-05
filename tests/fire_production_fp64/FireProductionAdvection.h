@@ -18,6 +18,25 @@
 
 namespace RISEFireProductionFP64
 {
+	//! r204 byte-payload digest namespace (distinct from historical manifold
+	//! token digest variants). SHA-256 Merkle tree: 4096-byte leaves, fan-in 16.
+	struct FireProductionPayloadDigestV2
+	{
+		std::uint32_t digestVersion=2u;
+		std::uint32_t chunkBytes=4096u;
+		std::uint32_t fanIn=16u;
+		std::uint64_t payloadBytes=0u;
+		std::string rootSHA256;
+	};
+	//! Parallelism is execution metadata, never part of the digest preimage.
+	bool FireProductionPayloadDigestCPU(const unsigned char* bytes,std::size_t count,
+		unsigned int parallelism,FireProductionPayloadDigestV2& result,std::string* error=0);
+	//! Qualification entry; live producers use the same kernels on private
+	//! resident buffers, without a CPU-produced digest authority.
+	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>& bytes,
+		unsigned int dispatchWidth,FireProductionPayloadDigestV2& result,
+		double& deviceMS,std::string* error=0);
+
 	enum FireProductionRemapBoundary
 	{
 		FireProductionRemapPeriodic,

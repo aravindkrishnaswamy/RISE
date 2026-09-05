@@ -7,14 +7,78 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "FireProductionAdvection.h"
+#include "RISECBOR64.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <array>
+#include <future>
 
 namespace RISE
 {
+	bool FireProductionPayloadDigestCPU(const unsigned char* bytes,std::size_t count,
+		unsigned int parallelism,FireProductionPayloadDigestV2& result,std::string* error)
+	{
+		result=FireProductionPayloadDigestV2();
+		if((count!=0u&&!bytes)||parallelism==0u||parallelism>256u){
+			if(error)*error="digest-v2 invalid bytes or execution width";return false;}
+		try {
+			using Node=std::array<unsigned char,32>;
+			auto append=[](RISECBOR64::Bytes& out,std::uint64_t value,unsigned int width){
+				for(unsigned int i=width;i!=0u;--i)out.push_back(static_cast<unsigned char>(value>>((i-1u)*8u)));};
+			auto hash=[](const RISECBOR64::Bytes& input){Node node;
+				const std::string hex=RISECBOR64::SHA256Hex(input);
+				auto digit=[](char c){return c<='9'?c-'0':c-'a'+10;};
+				for(std::size_t i=0u;i<node.size();++i)
+					node[i]=static_cast<unsigned char>((digit(hex[2u*i])<<4u)|digit(hex[2u*i+1u]));
+				return node;};
+			auto each=[&](std::size_t size,const auto& operation){
+				const unsigned int workers=static_cast<unsigned int>(std::min<std::size_t>(parallelism,size));
+				std::vector<std::future<void>> tasks;
+				for(unsigned int worker=0u;worker<workers;++worker)
+					tasks.push_back(std::async(std::launch::async,[&,worker]{
+						for(std::size_t index=worker;index<size;index+=workers)operation(index);}));
+				for(auto& task:tasks)task.get();
+			};
+			const std::size_t leaves=std::max<std::size_t>(1u,count/4096u+(count%4096u!=0u));
+			std::vector<Node> nodes(leaves);
+			each(leaves,[&](std::size_t index){const std::size_t begin=index*4096u,
+				length=std::min<std::size_t>(4096u,count-begin);RISECBOR64::Bytes preimage;
+				preimage.reserve(32u+length);append(preimage,UINT64_C(0x524953454c454146),8u);
+				append(preimage,2u,4u);append(preimage,count,8u);append(preimage,index,8u);
+				append(preimage,length,4u);if(length)preimage.insert(preimage.end(),bytes+begin,bytes+begin+length);
+				nodes[index]=hash(preimage);});
+			std::uint32_t level=0u;
+			while(nodes.size()>1u){++level;const std::size_t parents=nodes.size()/16u+(nodes.size()%16u!=0u);
+				std::vector<Node> next(parents);
+				each(parents,[&](std::size_t index){const std::size_t first=index*16u,
+					children=std::min<std::size_t>(16u,nodes.size()-first);RISECBOR64::Bytes preimage;
+					append(preimage,UINT64_C(0x524953454e4f4445),8u);append(preimage,2u,4u);
+					append(preimage,count,8u);append(preimage,level,4u);append(preimage,index,8u);
+					append(preimage,children,4u);
+					for(std::size_t child=0u;child<children;++child)preimage.insert(preimage.end(),
+						nodes[first+child].begin(),nodes[first+child].end());
+					next[index]=hash(preimage);});nodes.swap(next);}
+			RISECBOR64::Bytes root;append(root,UINT64_C(0x52495345524f4f54),8u);
+			append(root,2u,4u);append(root,4096u,4u);append(root,16u,4u);
+			append(root,count,8u);append(root,leaves,8u);append(root,level,4u);
+			root.insert(root.end(),nodes[0].begin(),nodes[0].end());
+			result.payloadBytes=count;result.rootSHA256=RISECBOR64::SHA256Hex(root);
+			if(error)error->clear();return true;
+		}catch(const std::exception& exception){result=FireProductionPayloadDigestV2();
+			if(error)*error=std::string("digest-v2 failure: ")+exception.what();return false;}
+	}
+
+#if !defined(__APPLE__)
+	bool FireProductionPayloadDigestMetal(const std::vector<unsigned char>&,
+		unsigned int,FireProductionPayloadDigestV2& result,double& deviceMS,std::string* error)
+	{
+		result=FireProductionPayloadDigestV2();deviceMS=0.0;
+		if(error)*error="digest-v2 Metal device unavailable on this platform";return false;
+	}
+#endif
 	namespace
 	{
 		const std::uint64_t MetalAllocationQuantumBytes=UINT64_C(16384);

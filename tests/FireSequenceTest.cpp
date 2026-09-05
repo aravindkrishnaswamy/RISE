@@ -14639,8 +14639,86 @@ int RunProductionMetalFP64KernelSweep()
 }
 #endif
 
+static int RunProductionPayloadMerkleFixture(bool metal)
+{
+	// Independent hashlib implementation: tools/fire_payload_merkle.py.
+	struct Vector {std::size_t bytes;const char* root;};
+	const Vector vectors[]={
+		{0u,"4076629ed7da7cd117943439ff14253b664ccca75ab696ad68f7b687b6427f0e"},
+		{1u,"19045552db13acd56a90b83388de781dd0e3bbbb64db7e118901a204f5abfc3e"},
+		{23u,"3cab120ae78ec3288ee51b62f9f98805fe9dfc230c3a5c2144529ebbde7ce4d7"},
+		{24u,"57a4704c36a9f6fdbc80e742dea3745f87c813503fe1e333413c4e0731f17466"},
+		{31u,"173d0dcd28dc0a6ec5553ed3100e1b4667be33fd173e8e3cdeba512ef0f9ccf1"},
+		{32u,"85ec44624216ea19a66295aad018e1078047afc091f3e4c9b1f09ac7a2c488a4"},
+		{55u,"0f0ee8a9cce5a9db17746d03de8328bc69c92d7ab9e0a0d5d7b98d9d019d37fa"},
+		{56u,"3466922ac329ccc390989cd12720f85d416271971782e9e68f1043ee42007c53"},
+		{63u,"13a0bda1672a738ac215c68e26b366bce3a7aadcec72f3eece0035440adcd8e1"},
+		{64u,"3fd32ec762ed20555128068c40d0f91fd12e05553dd758aec11cb306aa5eebfd"},
+		{4095u,"bca887dd2d75f9ca886f70ab2702a29329b539c472ed9b12d3905254780422a4"},
+		{4096u,"ca7ec1d9e53b28d1351bbcd8036ebd9b139d8d486a59dbf48da040c849b0603e"},
+		{4097u,"2f30502eb2e8f69bf8e02c059350e202f666b565def9a5e3ffed5ccc1e79de44"},
+		{65535u,"14391f9140c31973253836c3cb80b12cf648c51844b3438b97cd9956a3ed2665"},
+		{65536u,"9624b693baf9d1dc70290318194e5f3b69976d6bdd24d3fa32cd3f89eb8e094e"},
+		{65537u,"88ccacde5d48f05fe4f793849180100f12336964281b4789b5d8f3d16e5d462a"},
+		{1048576u,"5009c1e452b57c04a87722e5e9eb356bbf70e578936d27aa5166240faa5b5119"},
+		{1048577u,"0eb760fa3b220714be5f7f704c26caeb6eb4edf810dc5d84503f4090540d9038"}};
+	std::string error;
+	auto digest=[&](const std::vector<unsigned char>& payload,unsigned int width,
+		FireProductionPayloadDigestV2& result,double& ms){
+		return metal?FireProductionPayloadDigestMetal(payload,width,result,ms,&error):
+			FireProductionPayloadDigestCPU(payload.data(),payload.size(),width,result,&error);};
+	for(const auto& vector:vectors){
+		std::vector<unsigned char> payload(vector.bytes);
+		for(std::size_t i=0u;i<payload.size();++i)payload[i]=static_cast<unsigned char>((i*37u+(i>>8u)*19u+11u)&255u);
+		for(unsigned int width:{1u,3u,8u,32u,64u,256u}){
+			FireProductionPayloadDigestV2 result;double ms=0.0;
+			if(!digest(payload,width,result,ms)||result.rootSHA256!=vector.root||
+				result.digestVersion!=2u||result.chunkBytes!=4096u||result.fanIn!=16u||
+				result.payloadBytes!=payload.size()){
+				std::fprintf(stderr,"MERKLE_V2_FAIL bytes=%zu width=%u actual=%s expected=%s error=%s\n",
+					vector.bytes,width,result.rootSHA256.c_str(),vector.root,error.c_str());return 98;}
+			std::fprintf(stdout,"MERKLE_V2_VECTOR device=%u bytes=%zu width=%u root=%s device_ms=%.9g\n",
+				metal?1u:0u,vector.bytes,width,result.rootSHA256.c_str(),ms);
+		}
+		// Last bit, both sides of each chunk edge, and first bit: every leaf's
+		// participation is exercised, including the partial terminal leaf.
+		std::vector<std::size_t> probes;
+		if(!payload.empty()){probes.push_back(0u);probes.push_back(payload.size()-1u);}
+		for(std::size_t i=4096u;i<payload.size();i+=4096u){probes.push_back(i-1u);probes.push_back(i);}
+		for(std::size_t index:probes){payload[index]^=1u;
+			FireProductionPayloadDigestV2 result;double ms=0.0;
+			if(!digest(payload,64u,result,ms)||result.rootSHA256==vector.root)return 98;
+			FireProductionPayloadDigestV2 cpu;
+			if(!FireProductionPayloadDigestCPU(payload.data(),payload.size(),1u,cpu,&error)||
+				cpu.rootSHA256!=result.rootSHA256)return 98;
+			payload[index]^=1u;
+		}
+	}
+	FireProductionPayloadDigestV2 refused;double ms=0.0;
+	if(digest({},0u,refused,ms)||!refused.rootSHA256.empty())return 98;
+	if(digest({},UINT_MAX,refused,ms)||!refused.rootSHA256.empty())return 98;
+	if(FireProductionPayloadDigestCPU(0,1u,1u,refused,&error)||!refused.rootSHA256.empty())return 98;
+	std::fprintf(stdout,"MERKLE_V2_PASS device=%u pin_parallelism=1,3,8,32,64,256 boundary_mutations=pass invalid_input_atomic=pass\n",metal?1u:0u);
+	return 0;
+}
+
 int main(int argc,char** argv)
 {
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-payload-merkle-file")==0){
+		if(!std::filesystem::is_regular_file(argv[2]))return 98;
+		const auto payload=ReadFileBytes(argv[2]);std::string error;
+		if(payload.size()!=std::filesystem::file_size(argv[2]))return 98;
+		FireProductionPayloadDigestV2 cpu,metal;double ms=0.0;
+		if(!FireProductionPayloadDigestCPU(payload.data(),payload.size(),8u,cpu,&error)||
+			!FireProductionPayloadDigestMetal(payload,256u,metal,ms,&error)||
+			cpu.rootSHA256!=metal.rootSHA256){std::fprintf(stderr,"MERKLE_FILE_FAIL %s\n",error.c_str());return 98;}
+		std::fprintf(stdout,"MERKLE_FILE_PASS bytes=%zu sha256_v1=%s merkle_v2=%s device_ms=%.9g\n",
+			payload.size(),RISECBOR64::SHA256Hex(payload).c_str(),metal.rootSHA256.c_str(),ms);return 0;
+	}
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-payload-merkle-cpu")==0)
+		return RunProductionPayloadMerkleFixture(false);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-payload-merkle-metal")==0)
+		return RunProductionPayloadMerkleFixture(true);
 #if defined(__APPLE__)
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-scalar-fct-metal-stages")==0)
 		return RunProductionScalarFCTMetalStageFixture();

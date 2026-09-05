@@ -1,0 +1,12 @@
+{
+  "schema": "rise.fire.payload-digest-bridge-seal.v2",
+  "v1_sha256": "1837238425d15d7f33aca4ce697202e31042a924da8a06065581851e1a6fa54f",
+  "v2": {
+    "chunk_bytes": 4096,
+    "digest_format": "rise-payload-sha256-merkle",
+    "digest_version": 2,
+    "fan_in": 16,
+    "payload_bytes": 176477,
+    "root_sha256": "69f6e2b65e98a41b33c12c7dbde4756abb74edaced10924226c778a88b59ee61"
+  }
+}

@@ -122,6 +122,9 @@ def transform(text: str, name: str, suffix: str) -> str:
             raise RuntimeError("accepted manifold publication seam changed")
         text = text[:token_match_begin] + text[end:]
     text = text.replace("namespace RISE", "namespace RISEFireProductionFP64")
+    text = text.replace('#include "RISECBOR64.h"',
+                        '#include "../../src/Library/Utilities/RISECBOR64.h"')
+    text = re.sub(r"(?<!:)\bRISECBOR64::", "RISE::RISECBOR64::", text)
     text = text.replace(
         '#include "FireSimulationRecords.h"',
         '#include "../../src/Library/Utilities/FireSimulationRecords.h"',
