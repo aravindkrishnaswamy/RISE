@@ -3995,10 +3995,21 @@ int main()
 				"observedReads=MetalHostBufferReadCount-beginningReads")!=std::string::npos&&
 			metal.find("observedCommits!=1u||observedReads!=1u")!=std::string::npos,
 			"resident transport residency certificate is measured, not self-attested" );
-		Check(metal.find("for(uint word=0u;word<7u*32u")!=std::string::npos&&
-			metal.find("for(uint word=0u;word<6u*transport_stride")!=std::string::npos&&
-			metal.find("inflowWords=p.sideOffset[5]+p.nx*p.ny")!=std::string::npos,
-			"resident transport identity binds immutable records and fixed fuel-inlet classes" );
+		Check(metal.find("inline ulong authority_seal_begin(ulong domain)")!=
+				std::string::npos&&
+			metal.find("authority_seal_begin(0x727472616e737031ul)")!=
+				std::string::npos&&
+			metal.find("authority_seal_begin(0x7270687973667831ul)")!=
+				std::string::npos&&
+			metal.find("authority_seal_begin(0x72656f7363616e31ul)")!=
+				std::string::npos&&
+			metal.find("for(uint word=0u;word<7u*32u")==std::string::npos&&
+			metal.find("for(uint word=0u;word<6u*transport_stride")==
+				std::string::npos&&
+			metal.find("for(uint word=0u;word<9u*all")==std::string::npos&&
+			metal.find("for(uint word=0u;word<9u*p.cells")==std::string::npos&&
+			metal.find("for(uint word=0u;word<9u*p.allFaces")==std::string::npos,
+			"resident authority seal issuers are domain-separated and O(1) in payload size" );
 		Check(force.find("transportIncrementBytes")!=std::string::npos&&force.find(
 				"FireProductionResidentTransportLiveIncrementWorkingSetBytes")!=
 				std::string::npos,
