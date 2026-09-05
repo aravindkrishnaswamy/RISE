@@ -5672,7 +5672,7 @@ yet known (§10.1).
     own continuation rays Advance 1e-8 and were fine; only its NEE shadow
     ray was hit. This is the FOURTH instance of
     `docs/skills/bdpt-vcm-mis-balance.md` step 0's "PT may be the broken
-    one" family (after IOR seeding, debt 20's bilinear self-hit, and debt
+    one" family (after IOR seeding, debts 20/21's bilinear self-hit, and debt
     26's legacy rasterizer) — see that skill's new cause 7.
 
     **Fix.** `BoxGeometry::DropSelfHitRoot`
