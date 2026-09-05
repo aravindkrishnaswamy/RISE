@@ -5751,11 +5751,12 @@ yet known (§10.1).
     scale and normal incidence, acceptance window ~1.7e-11, ~100× under
     the ~2e-9 decoy radius that suite's Test 15 pins (the window scales
     with 1/rate: ~3e-10 at the grazing clamp, and with the operand's own
-    scale). `CsgSurfacePayloadTest` is now in the gate (all 299 green,
+    scale). `CsgSurfacePayloadTest` is now in the gate (the binary reports
+    299 checks passed — 298 call sites, one of which runs twice —
     including the round-3 scaled-operand and oblique-exit cases and the
     round-4 stretched-slab + oblique case, Test 26, which is the only one
-    that goes red under the old `|M⁻¹dir| · |dir·n|` factorisation) and pins the CSG side in both
-    directions; `tests/BoxGeometryTest.cpp::RunStandoffReentryContract`
+    that goes red under the old `|M⁻¹dir| · |dir·n|` factorisation) and
+    pins the CSG side in both directions; `tests/BoxGeometryTest.cpp::RunStandoffReentryContract`
     pins the box side (a 2·eps/|cos| standoff re-hits its face, a
     0.5·eps one reads as the origin's own face) at unit and 1000× scale.
     The promoted root publishes `range2 = 0`, the `RaySphereIntersection`
@@ -5771,7 +5772,8 @@ yet known (§10.1).
     test: the probe's new non-finite `range2` guard (a triangle-mesh
     operand publishes IEEE inf, which the `RISE_INFINITY` compare misses)
     — mesh-in-CSG is separately broken (`range2` NaN), so a regression
-    there would only trade one graceful fallback for another. Two measure-zero limits of the
+    there would only trade one graceful fallback for another. Two
+    measure-zero limits of the
     plane test are recorded in the helper's comment (a ray within ~1e-9
     rad of parallel to its own face; an unrelated object's exactly
     coplanar face — e.g. a glass box resting on a box reports the lower
