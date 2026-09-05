@@ -6007,10 +6007,21 @@ yet known (§10.1).
     means owner" shortcut was rejected because it would readmit a sibling
     a million units away. On a shared EDGE the ownership ray runs along
     one child's face plane and misses it (reversing or lengthening the ray
-    does not help), so an orientation-free backstop asks whether the point
-    is within the same window of the child's bounding-box SHELL — the
-    shell, not containment, so a hollow operand is not charged for every
-    face of a small one inside it. (b) `SDFGeometry`'s shrink ratio was a
+    does not help, because the coplanarity is in a TRANSVERSE axis), so a
+    child the ray misses is retried from four origins displaced
+    transversely by the same window (±t₁, ±t₂). 10f3e6c2 first used a
+    bounding-box SHELL test there instead; **that was withdrawn in the
+    follow-up commit** — a bounding box is not a surface, so a sibling
+    whose padded AABB PLANE happens to pass through the point was charged
+    with its floor while its surface was 1.59 world units away (composite
+    floor 6.8e7× the owning slab's, and end to end a decoy face 1e-4 past
+    the real one was adopted). Tests 5 and 6 of `CsgFloorOwnershipTest`.
+    That commit also gave `SDFGeometry::SelfHitRootFloor` the incidence
+    divide it lacked (its band is a perpendicular distance, the interface
+    answers in range: claim/gate was 0.707 at 45°, 0.500 at 60°, 0.26 at
+    75°, an unbounded under-statement) and made its Lipschitz ratios read
+    the same 1e-9-floored scale magnitudes `RecomputePartDerived` uses.
+    (b) `SDFGeometry`'s shrink ratio was a
     global minimum over parts, so a remote part squashed to 0.02 over-stated
     a uniform lobe's floor 50× (a ~2.9e-2 acceptance window); it now takes
     the minimum only over parts whose own `partEval` distance at the point

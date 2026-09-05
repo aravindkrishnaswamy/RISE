@@ -809,6 +809,48 @@ static void RunSelfHitRootFloorContract( double scale )
 		safe_release( g );
 	}
 
+	// --- SDFGeometry at OBLIQUE incidence ---
+	// The step-off band is a PERPENDICULAR distance -- the field's value is
+	// -- while the interface answers in RANGE along the ray, so the override
+	// must divide by the incidence cosine the way BoxGeometry does with its
+	// own plane-distance band.  It did not, and the shortfall is exactly
+	// 1/cos and therefore unbounded: measured claim/gate on this very
+	// geometry was 1.00 at normal incidence, 0.866 at 30 deg, 0.707 at 45,
+	// 0.500 at 60, 0.26 at 75 -- i.e. past 30 deg the claim is BELOW the
+	// standoff the sphere-tracer enforces, and the probe that trusts it is
+	// marched straight past its own face.  The rows use a UNIFORMLY scaled
+	// part so the Lipschitz shrink is exactly 1 and the incidence divisor is
+	// the only thing under test; the anisotropic row above pins the other
+	// factor at normal incidence.  Exit points are placed by lateral offset
+	// on a sphere, where the outward normal is analytic (ptExit / R) rather
+	// than a finite-difference gradient: offset R/sqrt(2) meets the exit
+	// wall at 45 deg, offset R*sqrt(3)/2 at 60 deg.
+	{
+		const Scalar R = 4.0 * scale;
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart(
+			SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3( 0, 0, 0 ), 0, 0, 0, Vector3( 1.0, 1.0, 1.0 ), R, 0, 0, 0 ) );
+		SDFGeometry* g = new SDFGeometry( parts, 512, Scalar(1e-5) );
+
+		const Scalar offsets[2] = { R * Scalar(0.70710678118654752),      // 45 deg
+		                            R * Scalar(0.86602540378443865) };    // 60 deg
+		const char* names[2] = { "SDF sphere, 45 deg incidence", "SDF sphere, 60 deg incidence" };
+		for( int k = 0; k < 2; k++ ) {
+			const Point3 o( offsets[k], 0.0, 12.0 * scale );
+			RayIntersectionGeometric riCam = MakeIntersection( o, dir );
+			g->IntersectRay( riCam, true, true, true );
+			assert( riCam.bHit );
+			assert( riCam.range2 > riCam.range );
+			const Point3 ptExit = Ray( o, dir ).PointAtLength( riCam.range2 );
+			const Scalar m = std::sqrt( ptExit.x*ptExit.x + ptExit.y*ptExit.y + ptExit.z*ptExit.z );
+			assert( m > 0.0 );
+			const Vector3 nExit( ptExit.x / m, ptExit.y / m, ptExit.z / m );
+			CheckFloorBrackets( g, names[k], ptExit, dir, nExit, scale, 1e-1 );
+		}
+		safe_release( g );
+	}
+
 	// --- TriangleMeshGeometryIndexed -> RayTriangleIntersection ---
 	// One big triangle in the z = 0 plane whose FAR corner carries a much
 	// larger coordinate than the first-stored vertex -- the P2-2 shape:

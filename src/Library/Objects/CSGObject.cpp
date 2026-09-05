@@ -1816,46 +1816,22 @@ void CSGObject::ResetRuntimeData() const
 	}
 }
 
-// Does `p` lie within `w` of the SURFACE of `bb` -- inside the box grown by `w`
-// and outside the box shrunk by `w`?  The tangency backstop for the ownership
-// filter below: a shell test has no direction to be coplanar with, so it settles
-// the shared-edge case a ray cannot.  Deliberately the SHELL and not plain
-// containment: containment would charge a large hollow operand for every face of
-// a small operand sitting inside it, which is the sibling inflation the filter
-// exists to stop.
-//
-// A box that is not real -- a default/sentinel `BoundingBox` from an unbuilt
-// collection (corners +-DBL_MAX), an inverted one -- answers `false` rather than
-// swallowing the whole scene: it carries no information about where any surface
-// is, and the ray test above it is the one that then decides.  A box thinner
-// than 2w on some axis has an empty shrunk box, so every point inside it is
-// within `w` of the surface -- which is exactly right.
-static bool PointIsNearBoundingBoxSurface_( const BoundingBox& bb, const Point3& p, const Scalar w )
+// Any unit vector perpendicular to the unit `n`, built from the coordinate axis
+// `n` is least aligned with -- so the cross product's magnitude is never below
+// sqrt(2/3) and the normalization is always well-conditioned.  Used to give the
+// ownership ray below a TRANSVERSE jitter.
+static Vector3 AnyPerpendicularUnit_( const Vector3& n )
 {
-	const Scalar ll[3] = { bb.ll.x, bb.ll.y, bb.ll.z };
-	const Scalar ur[3] = { bb.ur.x, bb.ur.y, bb.ur.z };
-	const Scalar pp[3] = { p.x, p.y, p.z };
-
-	for( int a = 0; a < 3; a++ ) {
-		// 1e30 is RISE's own "effectively unbounded" coordinate sentinel
-		// (Ray::RecomputeInvDir), far above any real scene coordinate.
-		if( !std::isfinite( ll[a] ) || !std::isfinite( ur[a] ) ||
-		    ll[a] > ur[a] || std::fabs( ll[a] ) > Scalar(1e30) || std::fabs( ur[a] ) > Scalar(1e30) ) {
-			return false;
-		}
+	const Scalar ax = std::fabs( n.x ), ay = std::fabs( n.y ), az = std::fabs( n.z );
+	const Vector3 helper = ( ax <= ay && ax <= az ) ? Vector3( 1, 0, 0 )
+	                     : ( ay <= az )             ? Vector3( 0, 1, 0 )
+	                                                : Vector3( 0, 0, 1 );
+	Vector3 t = Vector3Ops::Cross( n, helper );
+	const Scalar m = Vector3Ops::Magnitude( t );
+	if( !( m > NEARZERO ) ) {
+		return Vector3( 0, 0, 1 );			// unreachable for a unit `n`; defensive
 	}
-
-	bool insideGrown = true;
-	bool insideShrunk = true;
-	for( int a = 0; a < 3; a++ ) {
-		if( pp[a] < ll[a] - w || pp[a] > ur[a] + w ) {
-			insideGrown = false;
-		}
-		if( pp[a] < ll[a] + w || pp[a] > ur[a] - w ) {
-			insideShrunk = false;
-		}
-	}
-	return insideGrown && !insideShrunk;
+	return Vector3( t.x / m, t.y / m, t.z / m );
 }
 
 // IObject::SelfHitRootFloor for a composite -- see the header's note.
@@ -1929,22 +1905,39 @@ static bool PointIsNearBoundingBoxSurface_( const BoundingBox& bb, const Point3&
 // far away.  Widening the window keeps the test geometric -- the child's surface
 // must still actually pass through it.
 //
-// TANGENCY BACKSTOP.  A ray test cannot settle a face two operands share
-// exactly.  Measured on two boxes meeting along an edge (a unit box spanning
-// [-1,1]^3 and a 4e6-long box spanning x >= 1, y >= 1), queried on the shared
-// edge with the long box's +X face normal: at exactly y = 1 the long box's slab
-// test MISSES and the unit box hits, and a hair below (y = 1 - 1e-15) the verdict
-// flips.  The ownership ray runs in the plane of one operand's face, and no
-// choice of direction or length cures that -- firing the reverse orientation and
-// lengthening the ray a millionfold were both measured and both still miss.  So
-// a child that the ray misses is given a second, ORIENTATION-FREE chance: does
-// `localOrigin` lie within the same window of that child's BOUNDING-BOX SURFACE?
-// A shell test cannot be defeated by a coplanar ray, it still rejects the P2-1
-// sibling (whose box is 1e4 units away) and it still rejects a large hull that
-// merely CONTAINS the point (a big hollow operand around a small one: the point
-// is deep inside its box, far from the shell).  It can admit a non-owner whose
-// bbox shell happens to graze the point, which over-states the floor -- the safe
-// direction, and the same direction the no-owner fallback below already takes.
+// TANGENCY: THE TRANSVERSE JITTER.  A single ray cannot settle a face two
+// operands share exactly.  Measured on two boxes meeting along an edge (a unit
+// box spanning [-1,1]^3 and a 4e6-long box spanning x >= 1, y >= 1), queried on
+// the shared edge with the long box's +X face normal: at exactly y = 1 the long
+// box's slab test MISSES and the unit box hits, and a hair below (y = 1 - 1e-15)
+// the verdict flips.  Neither reversing the ray's orientation nor lengthening it
+// a millionfold cures that -- both were measured and both still miss -- because
+// the coplanarity is in a TRANSVERSE axis, which nothing done ALONG the ray can
+// touch.
+//
+// So a child the ray misses is given a second chance from four rays whose
+// ORIGIN is displaced TRANSVERSELY -- by `window` along each of +-t1, +-t2, an
+// orthonormal pair perpendicular to the face normal.  Both signs on both axes,
+// because which side of the shared edge lies inside the grazed operand is not
+// known here: at the measured edge only the -Y displacement enters the long box,
+// the +Y one leaves it.  On that geometry every displacement from 1e-15 to 1e-6
+// finds the long box; `window` is used so the jitter carries the same
+// scale-relative size as the test it belongs to, and so the whole probe stays
+// inside a `window`-sized neighbourhood of the queried point.
+//
+// This REPLACES an earlier backstop that asked whether `localOrigin` lay within
+// `window` of the child's axis-aligned BOUNDING-BOX SURFACE.  That test was not
+// geometric: a bounding box is not a surface.  Measured -- `CSG_UNION(SDF sphere
+// R=4 at the origin, box slab x in [2.9,4.9], z in [-4.201,-4.001])` queried at
+// (3.9, 0, -4.001) with the slab's +Z normal.  The slab's own face lies on the
+// SDF's PADDED AABB plane z = -4.001, so the shell test charged the SDF's
+// 2.77e-4 on a face whose nearest SDF surface is 1.587 WORLD UNITS away -- the
+// composite floor came out 6.8e7x the owning slab's 4.06e-12.  End to end that
+// widened the exit probe's same-face window far enough to adopt a decoy face
+// 1e-4 past the real one.  A torus's AABB is a solid cube of +-(R+r) and an SDF's
+// is padded past its own field, so the shell of either can pass arbitrarily far
+// from anything it actually bounds.  The jitter cannot do that: it still has to
+// HIT the child, within `window` of the point.
 //
 // The ray is fired in THIS composite's own local frame, NOT a child's:
 // `IObjectPriv::IntersectRay_IntersectionOnly` takes the ray in its CALLER's
@@ -2030,14 +2023,31 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 			continue;
 		}
 
-		const Ray ownRay(
-			Point3( localOrigin.x - nUnit.x * window,
-			        localOrigin.y - nUnit.y * window,
-			        localOrigin.z - nUnit.z * window ),
-			nUnit );
+		const Point3 base(
+			localOrigin.x - nUnit.x * window,
+			localOrigin.y - nUnit.y * window,
+			localOrigin.z - nUnit.z * window );
 
-		const bool owns = child->IntersectRay_IntersectionOnly( ownRay, Scalar(2) * window, true, true )
-			|| PointIsNearBoundingBoxSurface_( child->getBoundingBox(), localOrigin, window );
+		bool owns = child->IntersectRay_IntersectionOnly( Ray( base, nUnit ), Scalar(2) * window, true, true );
+
+		// Only if the straight shot missed: the four transverse retries (see
+		// the note above).  `owns` short-circuits, so a child the ray finds
+		// costs exactly what it did before.
+		if( !owns ) {
+			const Vector3 t1 = AnyPerpendicularUnit_( nUnit );
+			const Vector3 t2 = Vector3Ops::Cross( nUnit, t1 );		// unit: both are
+			const Vector3 offs[4] = {
+				Vector3(  t1.x,  t1.y,  t1.z ), Vector3( -t1.x, -t1.y, -t1.z ),
+				Vector3(  t2.x,  t2.y,  t2.z ), Vector3( -t2.x, -t2.y, -t2.z ) };
+			for( int j = 0; j < 4 && !owns; j++ ) {
+				const Ray jitRay(
+					Point3( base.x + offs[j].x * window,
+					        base.y + offs[j].y * window,
+					        base.z + offs[j].z * window ),
+					nUnit );
+				owns = child->IntersectRay_IntersectionOnly( jitRay, Scalar(2) * window, true, true );
+			}
+		}
 
 		if( owns ) {
 			anyOwner = true;

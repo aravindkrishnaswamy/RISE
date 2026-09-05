@@ -35,8 +35,17 @@
 //            hair below (y = 1 - 1e-15) the verdict flips.  No choice of
 //            ray direction or length cures it -- the reverse orientation
 //            and a millionfold-longer ray were both measured and both
-//            still miss -- so a child the ray misses gets a second,
-//            orientation-free chance against its bounding-box SHELL.
+//            still miss, because the coplanarity is in a TRANSVERSE axis
+//            and nothing done ALONG the ray touches it -- so a child the
+//            ray misses is retried from four origins displaced
+//            TRANSVERSELY by the same window (+-t1, +-t2).
+//
+//        (c) THE BOUNDING BOX IS NOT A SURFACE.  (b)'s first cure was a
+//            shell test: is the point within `window` of the child's
+//            axis-aligned bounding-box SURFACE?  That charges a sibling
+//            whose bbox PLANE passes near the point even when its own
+//            surface is far away -- a torus's AABB is a solid cube of
+//            +-(R+r), an SDF's is padded past its field.  Tests 5 and 6.
 //
 //    P2-2 (SDFGeometry).  `SDFGeometry::SelfHitRootFloor` divided
 //      March's 2*m_eps step-off band by the smallest Lipschitz shrink
@@ -66,6 +75,14 @@
 //       the base `delta`, and is still excluded.  This is the case that
 //       rejects the alternative fix ("treat floorChild >= delta as an
 //       automatic owner"), which would adopt it.
+//    5. A sibling whose padded AABB PLANE passes exactly through the
+//       queried point, but whose surface is 1.59 world units away, is
+//       NOT an owner (P2-1c, the shell backstop's own defect).
+//    6. The same configuration end to end: with the sibling charged, the
+//       exit probe's same-face window swallows a decoy face 1e-4 and
+//       3e-4 past the real one and the composite adopts the DECOY's
+//       payload.  Oracled against independent direct probes of both
+//       faces, the idiom CsgProbeFloorTest's Test 5/6 use.
 //
 //  Style follows tests/CsgProbeFloorTest.cpp (`Check` probes, plain
 //  counters, no framework).  Separate file from that one because these
@@ -441,6 +458,284 @@ void TestWideSiblingStillExcluded()
 	safe_release( far );
 }
 
+//
+// Test 5 (P2-1c): a sibling whose BOUNDING-BOX PLANE passes through the
+// queried point is NOT an owner when its SURFACE is far away.
+//
+// This is the defect in the shell backstop that Test 2's tangency case
+// first bought.  `CSG_UNION(SDF sphere R=4 at the origin, thin box slab
+// spanning x in [2.9,4.9])`, with the slab's +Z face placed exactly on the
+// SDF's PADDED AABB plane (z = -4.001, read from the geometry rather than
+// hand-written).  The query point (3.9, 0, that plane) is 1.587 world units
+// from the nearest point of the sphere -- the ownership ray, and now the
+// four transverse retries, all correctly miss it -- but it sits ON the
+// sphere's bbox shell, so the shell test charged the SDF's 2.77e-4 against
+// the slab's own 4.06e-12: a 6.8e7x inflation of a floor the slab alone
+// owns.  A torus is the same shape of failure without any padding at all
+// (its AABB is a solid cube of +-(R+r), almost none of which it occupies).
+//
+void TestBboxPlaneSiblingIsNotAnOwner()
+{
+	std::cout << "A sibling on whose AABB PLANE the point sits is NOT an owner (P2-1c)..." << std::endl;
+
+	SDFGeometry* gSdf = MakeSdfSphere( 4.0 );
+	Object* oSdf = new Object( gSdf );
+	safe_release( gSdf );
+	oSdf->SetPosition( Point3( 0, 0, 0 ) );
+	oSdf->FinalizeTransformations();
+
+	// The SDF's padded AABB plane, read from the geometry.  The sphere-tracer
+	// pads its box past the field, so this plane is NOT the sphere's own pole.
+	const BoundingBox sdfBB = oSdf->getBoundingBox();
+	const Scalar zPlane = sdfBB.ll.z;
+
+	// Slab spanning x in [2.9, 4.9], z in [zPlane - 0.2, zPlane]: its +Z face
+	// lies exactly on that plane, and the query point is inside the sphere's
+	// bbox in x and y, so the shell test's grown-box screen passes on all axes.
+	BoxGeometry* gBox = new BoxGeometry( 2.0, 2.0, 0.2 );
+	Object* oBox = new Object( gBox );
+	safe_release( gBox );
+	oBox->SetPosition( Point3( 3.9, 0.0, zPlane - 0.1 ) );
+	oBox->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	Check( csg->AssignObjects( oSdf, oBox ), "Test5: composite takes sdf(A)/slab(B) operands" );
+	csg->FinalizeTransformations();
+
+	const Point3  ptFace( 3.9, 0.0, zPlane );
+	const Vector3 dirOut( 0.0, 0.0, 1.0 );
+	const Vector3 nOut( 0.0, 0.0, 1.0 );
+
+	const Scalar floorSdf = oSdf->SelfHitRootFloor( ptFace, dirOut, nOut );
+	const Scalar floorBox = oBox->SelfHitRootFloor( ptFace, dirOut, nOut );
+	const Scalar floorCsg = csg->SelfHitRootFloor( ptFace, dirOut, nOut );
+	const Scalar distToSdfSurface =
+		std::sqrt( ptFace.x*ptFace.x + ptFace.y*ptFace.y + ptFace.z*ptFace.z ) - 4.0;
+	std::printf( "  sdf %.6g (its surface is %.6g units away)   slab %.6g   composite %.6g\n",
+		floorSdf, distToSdfSurface, floorBox, floorCsg );
+
+	// Sanity: the configuration really is the one the defect needs -- the point
+	// is ON the sibling's bbox shell, its surface is nowhere near, and its gate
+	// is orders above the owner's.
+	Check( std::fabs( ptFace.z - sdfBB.ll.z ) < 1e-12,
+		"Test5: (sanity) the query point lies exactly on the SDF's padded AABB plane" );
+	Check( ptFace.x > sdfBB.ll.x && ptFace.x < sdfBB.ur.x && ptFace.y > sdfBB.ll.y && ptFace.y < sdfBB.ur.y,
+		"Test5: (sanity) it is inside that AABB on the other two axes, so a shell test passes" );
+	Check( distToSdfSurface > 1.0,
+		"Test5: (sanity) the SDF's own SURFACE is more than a world unit away" );
+	Check( floorSdf > floorBox * 1.0e6,
+		"Test5: (sanity) the non-owner's gate is a million times the owner's" );
+
+	// MONEY: the composite reports the SLAB's floor -- the only operand whose
+	// surface passes through the window.
+	Check( floorCsg <= floorBox * 1.000001,
+		"Test5: MONEY ASSERTION -- composite floor is the OWNING slab's, not the AABB-plane sibling's" );
+	Check( floorCsg < 1e-9,
+		"Test5: MONEY ASSERTION -- composite floor is NOT the SDF's 2.77e-4" );
+
+	safe_release( csg );
+	safe_release( oSdf );
+	safe_release( oBox );
+}
+
+namespace
+{
+	// Test 6's scene, built once per `gap`.  Same shape as CsgProbeFloorTest's
+	// `RunTorusDecoyScene`: nested union inside a subtraction, a thin decoy
+	// slab `gap` past the real exit face, and independent direct probes of
+	// both faces as oracles.  What differs is WHY the probe's window opens: a
+	// two-lobe SDF that the camera ray never touches, present only so its
+	// padded AABB plane coincides with the real exit face.
+	struct BboxDecoyResult
+	{
+		RayIntersection* composite;
+		RayIntersection* oracleReal;
+		RayIntersection* oracleDecoy;
+		CSGObject* outer;
+		CSGObject* nested;
+		CSGObject* inner;
+		Object* oA;
+		Object* oReal;
+		Object* oSdf;
+		Object* oDecoy;
+		Scalar floorNested;
+		Scalar floorSdf;
+	};
+
+	// Two sphere lobes parked at x = +-8: the field's AABB spans x in
+	// [-11,11] and y in [-3,3] -- covering the query point on both axes, as
+	// the shell test's grown-box screen requires -- while the surface stays
+	// 2+ units from it and the camera ray at x = 3.9 misses the field
+	// entirely (its closest approach to either centre is 4.1 > R = 3).
+	SDFGeometry* MakeTwoLobeSdf( const Scalar zc )
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3( -8, 0, zc ), 0, 0, 0, Vector3( 1, 1, 1 ), 3.0, 0, 0, 0 ) );
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3(  8, 0, zc ), 0, 0, 0, Vector3( 1, 1, 1 ), 3.0, 0, 0, 0 ) );
+		return new SDFGeometry( parts, 512, Scalar(1e-5) );
+	}
+
+	void Hit( IObject* pObj, const Ray& r, RayIntersection& ri )
+	{
+		ri.geometric.bHit = false;
+		ri.geometric.range = RISE_INFINITY;
+		ri.geometric.range2 = RISE_INFINITY;
+		ri.geometric.ray = r;
+		pObj->IntersectRay( ri, RISE_INFINITY, true, true, true );
+	}
+
+	BboxDecoyResult* RunBboxDecoyScene( const Scalar gap )
+	{
+		const Scalar xq = 3.9;
+
+		SDFGeometry* gSdf = MakeTwoLobeSdf( 8.5 );
+		Object* oSdf = new Object( gSdf );
+		safe_release( gSdf );
+		oSdf->SetPosition( Point3( 0, 0, 0 ) );
+		oSdf->FinalizeTransformations();
+		const Scalar zFace = oSdf->getBoundingBox().ll.z;		// the coincident plane
+
+		// The real owner of the exit face: a box whose -Z face is on that plane.
+		BoxGeometry* gReal = new BoxGeometry( 12.0, 4.0, 1.5 );
+		Object* oReal = new Object( gReal );
+		safe_release( gReal );
+		oReal->SetPosition( Point3( 0.0, 0.0, zFace + 0.75 ) );
+		oReal->FinalizeTransformations();
+
+		// Decoy slab, `gap` past the real face along the camera ray's own -Z.
+		// A different width, so its UV at the query point is distinguishable.
+		const Scalar decoyDepth = Scalar(1e-8);
+		const Scalar decoyNearZ = zFace - gap;
+		BoxGeometry* gDecoy = new BoxGeometry( 30.0, 4.0, decoyDepth );
+		Object* oDecoy = new Object( gDecoy );
+		safe_release( gDecoy );
+		oDecoy->SetPosition( Point3( 0.0, 0.0, decoyNearZ - decoyDepth * Scalar(0.5) ) );
+		oDecoy->FinalizeTransformations();
+
+		CSGObject* inner = new CSGObject( CSG_UNION );
+		inner->AssignObjects( oReal, oSdf );
+		inner->FinalizeTransformations();
+
+		CSGObject* nested = new CSGObject( CSG_UNION );
+		nested->AssignObjects( inner, oDecoy );
+		nested->FinalizeTransformations();
+
+		BoxGeometry* gA = new BoxGeometry( 12.0, 12.0, 12.0 );		// half-extent 6
+		Object* oA = new Object( gA );
+		safe_release( gA );
+		oA->SetPosition( Point3( 0, 0, 0 ) );
+		oA->FinalizeTransformations();
+
+		CSGObject* outer = new CSGObject( CSG_SUBTRACTION );
+		outer->AssignObjects( oA, nested );
+		outer->FinalizeTransformations();
+
+		BboxDecoyResult* res = new BboxDecoyResult();
+		res->outer = outer; res->nested = nested; res->inner = inner;
+		res->oA = oA; res->oReal = oReal; res->oSdf = oSdf; res->oDecoy = oDecoy;
+
+		const Point3  ptFace( xq, 0.0, zFace );
+		const Vector3 dIn( 0, 0, -1 ), nOut( 0, 0, -1 );
+		res->floorNested = nested->SelfHitRootFloor( ptFace, dIn, nOut );
+		res->floorSdf    = oSdf->SelfHitRootFloor( ptFace, dIn, nOut );
+
+		Ray r0( Point3( xq, 0.0, 25.0 ), Vector3( 0, 0, -1 ) );
+		res->composite = new RayIntersection( r0, nullRasterizerState );
+		Hit( outer, r0, *res->composite );
+
+		// Oracle for the real exit face: start just past it, fire back into
+		// the standalone box.
+		Ray refReal( Point3( xq, 0.0, zFace - Scalar(0.05) ), Vector3( 0, 0, 1 ) );
+		res->oracleReal = new RayIntersection( refReal, nullRasterizerState );
+		Hit( oReal, refReal, *res->oracleReal );
+
+		// Oracle for the decoy: approach from the same side and direction the
+		// production probe does, so it lands on the same face.
+		Ray refDecoy( Point3( xq, 0.0, decoyNearZ - decoyDepth - Scalar(10.0) ), Vector3( 0, 0, 1 ) );
+		res->oracleDecoy = new RayIntersection( refDecoy, nullRasterizerState );
+		Hit( oDecoy, refDecoy, *res->oracleDecoy );
+
+		return res;
+	}
+
+	void ReleaseBboxDecoyResult( BboxDecoyResult* res )
+	{
+		safe_release( res->outer );
+		safe_release( res->nested );
+		safe_release( res->inner );
+		safe_release( res->oA );
+		safe_release( res->oReal );
+		safe_release( res->oSdf );
+		safe_release( res->oDecoy );
+		delete res->composite;
+		delete res->oracleReal;
+		delete res->oracleDecoy;
+		delete res;
+	}
+
+	bool Point2Close( const Point2& a, const Point2& b, const Scalar eps = Scalar(1e-6) )
+	{
+		return std::fabs( a.x - b.x ) < eps && std::fabs( a.y - b.y ) < eps;
+	}
+}
+
+//
+// Test 6 (P2-1c, end to end): the inflated floor is not a number on a
+// page -- it is what opens the exit probe's same-face acceptance window,
+// and a decoy face inside that window is adopted.
+//
+// `SUBTRACTION(box half-extent 6, UNION(UNION(realBox, sdf), decoySlab))`,
+// camera ray -Z at x = 3.9.  The composite's surface there is the nested
+// union's exit face, recovered by the exit-face probe, which stands off
+// `2 * nestedFloor` and accepts a hit within `2.1x` of that.  The SDF is
+// positioned so its padded AABB's -Z plane is exactly the real exit face's
+// plane while the camera ray misses the field entirely.  Charged (the shell
+// backstop), the nested floor is the SDF's 4.7e-4, the window opens to
+// ~2e-3, and the decoy 1e-4 / 3e-4 past the real face wins the probe.
+// Uncharged, the nested floor is the real box's 4e-12 and the probe cannot
+// reach the decoy at all.
+//
+void TestBboxPlaneSiblingDoesNotOpenTheDecoyWindow( const Scalar gap )
+{
+	std::printf( "End to end: the AABB-plane sibling must not open the decoy window (gap %.3g)...\n", gap );
+
+	BboxDecoyResult* res = RunBboxDecoyScene( gap );
+	std::printf( "  nested floor %.6g (sdf's own %.6g)   composite uv(%.6g %.6g)  real uv(%.6g %.6g)  decoy uv(%.6g %.6g)\n",
+		res->floorNested, res->floorSdf,
+		res->composite->geometric.ptCoord.x, res->composite->geometric.ptCoord.y,
+		res->oracleReal->geometric.ptCoord.x, res->oracleReal->geometric.ptCoord.y,
+		res->oracleDecoy->geometric.ptCoord.x, res->oracleDecoy->geometric.ptCoord.y );
+
+	// Controls: both oracles land, and they are distinguishable -- without
+	// that the money assertions below would be vacuous.
+	Check( res->oracleReal->geometric.bHit, "Test6: (control) direct probe hits the real exit face" );
+	Check( res->oracleDecoy->geometric.bHit, "Test6: (control) direct probe hits the decoy's face" );
+	Check( !Point2Close( res->oracleReal->geometric.ptCoord, res->oracleDecoy->geometric.ptCoord ),
+		"Test6: (control) the two faces carry DIFFERENT UVs" );
+	Check( res->composite->geometric.bHit, "Test6: (control) the composite ray hits" );
+	Check( res->floorSdf > res->floorNested * 1.0e6,
+		"Test6: (sanity) the AABB-plane sibling's own gate is a million times what the composite reports" );
+
+	// MONEY: the probe recovered the REAL face, not the decoy.
+	Check( Point2Close( res->composite->geometric.ptCoord, res->oracleReal->geometric.ptCoord ),
+		"Test6: MONEY ASSERTION -- composite carries the REAL exit face's UV" );
+	Check( !Point2Close( res->composite->geometric.ptCoord, res->oracleDecoy->geometric.ptCoord ),
+		"Test6: MONEY ASSERTION -- composite does NOT carry the decoy's UV" );
+	// The POSITION is the composite's own exit point either way -- the probe
+	// recovers a payload, it does not move the hit -- which is precisely what
+	// makes this defect invisible without the UV comparison above: the shell
+	// backstop's failure mode is a correct position wearing the wrong face's
+	// texture coordinates.  Kept as a control that the scene is the one
+	// intended, not as a discriminator.
+	Check( std::fabs( res->composite->geometric.ptIntersection.z
+	                  - res->oracleReal->geometric.ptIntersection.z ) < 1e-9,
+		"Test6: (control) the composite landed on the real face's plane" );
+
+	ReleaseBboxDecoyResult( res );
+}
+
 int main()
 {
 	std::cout << "CSG / SDF self-hit-floor OWNERSHIP tests" << std::endl;
@@ -449,6 +744,9 @@ int main()
 	TestSharedEdgeChargesBothOwners();
 	TestSdfShrinkComesFromOwningPart();
 	TestWideSiblingStillExcluded();
+	TestBboxPlaneSiblingIsNotAnOwner();
+	TestBboxPlaneSiblingDoesNotOpenTheDecoyWindow( 3e-4 );
+	TestBboxPlaneSiblingDoesNotOpenTheDecoyWindow( 1e-4 );
 
 	std::cout << "\n" << g_pass << " checks passed, " << g_fail << " failed." << std::endl;
 	return g_fail == 0 ? 0 : 1;

@@ -943,6 +943,20 @@ void SDFGeometry::ComputeBounds()
 	m_eps = std::max( m_diagonal * m_epsFrac, Scalar(1e-6) );
 }
 
+// Smallest and largest of a part's scale MAGNITUDES, floored at 1e-9 -- the
+// same flooring `RecomputePartDerived` applies before deriving `invScale` and
+// `minScale`, and the same one `ComputeBounds` documents at its corner
+// transform.  Both outputs are >= 1e-9, so the ratio is always a usable
+// positive number and a NaN component floors to 1e-9 rather than poisoning it.
+static void FlooredScaleExtremes_( const Vector3& s, Scalar& outMin, Scalar& outMax )
+{
+	const Scalar sx = ( std::fabs( s.x ) > Scalar(1e-9) ) ? std::fabs( s.x ) : Scalar(1e-9);
+	const Scalar sy = ( std::fabs( s.y ) > Scalar(1e-9) ) ? std::fabs( s.y ) : Scalar(1e-9);
+	const Scalar sz = ( std::fabs( s.z ) > Scalar(1e-9) ) ? std::fabs( s.z ) : Scalar(1e-9);
+	outMin = std::min( sx, std::min( sy, sz ) );
+	outMax = std::max( sx, std::max( sy, sz ) );
+}
+
 // IGeometry::SelfHitRootFloor -- see the header for the full derivation of the
 // band and of the Lipschitz divisor.  Defined here because the OWNER criterion
 // needs `partEval`, this translation unit's per-part field evaluator.
@@ -978,31 +992,65 @@ void SDFGeometry::ComputeBounds()
 // predates this change, and it is NOT charged here -- a probe on such a seam
 // misses and takes the probe's graceful entry-payload fallback, which is a
 // quality outcome, never a wrong-face adoption.
+//
+// INCIDENCE.  `2 * m_eps / shrink` is a distance PERPENDICULAR to the surface:
+// the field is a perpendicular distance, and the step-off band is measured in
+// it.  The interface's answer is a RANGE along `localDir`, and a ray leaving at
+// `theta` off the normal covers only `cos(theta)` of perpendicular distance per
+// unit of range -- so the band divides by the incidence cosine, exactly as
+// `BoxGeometry::SelfHitRootFloor` divides its plane-distance band.  Ignoring it
+// under-states by `1/cos(theta)`, which grows without bound: measured on a
+// single uniform SDF sphere R=3, claim/bisected-gate came out 1.00 at normal
+// incidence, 0.866 at 30 deg, 0.707 at 45, 0.500 at 60 and 0.26 at 75 -- i.e.
+// past 30 deg the claim is BELOW the standoff the sphere-tracer actually
+// enforces, and a probe that trusts it is marched straight past its own face.
+// The cosine is clamped at 1/20, the same grazing clamp BoxGeometry and
+// CSGObject's probe use, so a tangential query returns a large but finite
+// number.  A caller that hands in an unusable normal gets no division at all
+// rather than a blanket 20x.
+//
+// The owner BAND divides by the same cosine, because the band is defined as
+// twice the widest floor this call can return and that is what the probe it
+// feeds may travel.  Both inputs to it -- the global shrink and the incidence
+// -- are arguments, so it still does not depend on the answer it helps compute.
 Scalar SDFGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& localDir, const Vector3& localNormal ) const
 {
-	(void)localDir; (void)localNormal;
-
 	// Per-part field-growth-per-unit-distance ratio, and the global worst.
 	// (<= 1 by construction; a uniformly-scaled part contributes exactly 1.)
+	//
+	// THE MAGNITUDES ARE FLOORED AT 1e-9, matching `RecomputePartDerived` (and
+	// the same flooring `ComputeBounds` documents at its own corner transform).
+	// `partEval` multiplies by `pt.minScale`, which came from those FLOORED
+	// magnitudes -- so a part authored with a zero-scale axis really does squash
+	// the field by 1e-9 per unit, and reading `pt.scale` raw here instead made
+	// such a part contribute NOTHING (`minScale > 0` was false and it was
+	// skipped) when it is in fact the most extreme shrink in the field.
 	Scalar globalShrink = Scalar(1);
 	for( std::size_t i = 0; i < m_parts.size(); i++ ) {
-		const Vector3& s = m_parts[i].scale;
-		const Scalar maxScale = std::max( std::fabs( s.x ), std::max( std::fabs( s.y ), std::fabs( s.z ) ) );
-		const Scalar minScale = std::min( std::fabs( s.x ), std::min( std::fabs( s.y ), std::fabs( s.z ) ) );
-		if( maxScale > Scalar(0) && minScale > Scalar(0) ) {
-			globalShrink = std::min( globalShrink, minScale / maxScale );
-		}
+		Scalar mn, mx;
+		FlooredScaleExtremes_( m_parts[i].scale, mn, mx );
+		globalShrink = std::min( globalShrink, mn / mx );
 	}
 	if( !( globalShrink > Scalar(0) ) ) {
-		globalShrink = Scalar(1);			// degenerate (zero-scale) part: no usable ratio
+		globalShrink = Scalar(1);			// defensive: the flooring cannot produce this
 	}
+
+	// Incidence cosine, in RANGE-per-perpendicular-distance (see the note).
+	// A normal that is not usable leaves the answer perpendicular, undivided.
+	const Scalar nMag = std::sqrt( localNormal.x*localNormal.x +
+		localNormal.y*localNormal.y + localNormal.z*localNormal.z );
+	const Scalar cosI = ( nMag > NEARZERO )
+		? std::max( std::fabs( localDir.x * localNormal.x +
+		                       localDir.y * localNormal.y +
+		                       localDir.z * localNormal.z ) / nMag, Scalar(0.05) )
+		: Scalar(1);
 
 	// Heightfield mode has no parts: nothing to own, keep the bare band.
 	if( m_parts.empty() ) {
-		return Scalar(2) * m_eps / globalShrink;
+		return Scalar(2) * m_eps / globalShrink / cosI;
 	}
 
-	const Scalar band = Scalar(2) * ( Scalar(2) * m_eps / globalShrink );
+	const Scalar band = Scalar(2) * ( Scalar(2) * m_eps / globalShrink / cosI );
 
 	Scalar ownerShrink = Scalar(1);
 	bool anyOwner = false;
@@ -1012,19 +1060,16 @@ Scalar SDFGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& 
 		if( !( std::fabs( partEval( pt, localOrigin ) ) <= reach ) ) {
 			continue;						// provably farther than the probe can reach
 		}
-		const Vector3& s = pt.scale;
-		const Scalar maxScale = std::max( std::fabs( s.x ), std::max( std::fabs( s.y ), std::fabs( s.z ) ) );
-		const Scalar minScale = std::min( std::fabs( s.x ), std::min( std::fabs( s.y ), std::fabs( s.z ) ) );
-		if( maxScale > Scalar(0) && minScale > Scalar(0) ) {
-			ownerShrink = std::min( ownerShrink, minScale / maxScale );
-			anyOwner = true;
-		}
+		Scalar mn, mx;
+		FlooredScaleExtremes_( pt.scale, mn, mx );
+		ownerShrink = std::min( ownerShrink, mn / mx );
+		anyOwner = true;
 	}
 
 	// No qualifying part -- a blend seam, or a degenerate part list.  Fall back
 	// to the global minimum, i.e. exactly the previous behaviour.
 	const Scalar shrink = anyOwner ? ownerShrink : globalShrink;
-	return Scalar(2) * m_eps / shrink;
+	return Scalar(2) * m_eps / shrink / cosI;
 }
 
 Scalar SDFGeometry::Map( const Point3& p ) const

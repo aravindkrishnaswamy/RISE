@@ -365,13 +365,22 @@ namespace RISE
 			//! surface and marched forward in 4*m_eps steps until it clears
 			//! that band, which walks straight PAST the face a probe was
 			//! standing off from.  So the smallest standoff that still
-			//! re-hits the intended face is the band itself, 2*m_eps, and the
-			//! distance field's value is a perpendicular distance -- equal to
-			//! the range at normal incidence and less than it otherwise, so
-			//! this is an upper bound along any direction, as the contract
-			//! requires.  Direction-independent.  (m_eps is set at
-			//! construction and refreshed in the realize pass; before that it
-			//! carries its constructed value, never zero.)
+			//! re-hits the intended face is the band itself, 2*m_eps.
+			//! (m_eps is set at construction and refreshed in the realize
+			//! pass; before that it carries its constructed value, never zero.)
+			//!
+			//! That band is a PERPENDICULAR distance -- the field's value is --
+			//! while the interface answers in RANGE along `localDir`, so it is
+			//! divided by the incidence cosine exactly as
+			//! `BoxGeometry::SelfHitRootFloor` divides its own plane-distance
+			//! band, with the same 1/20 grazing clamp.  It used to be returned
+			//! direction-independently on the argument that a perpendicular
+			//! distance is an upper bound on the range, which is BACKWARDS: at
+			//! `theta` off the normal a ray must travel `d / cos(theta)` of
+			//! range to clear `d` of perpendicular distance, so the plain band
+			//! UNDER-states, and without bound.  Measured against the bisected
+			//! gate on a single uniform sphere R=3: claim/gate 1.00 at normal
+			//! incidence, 0.866 at 30 deg, 0.707 at 45, 0.500 at 60, 0.26 at 75.
 			//!
 			//! BUT the band is 2*m_eps in FIELD VALUE, not in DISTANCE, and
 			//! `Map` is only 1-Lipschitz -- it may report LESS than the true
@@ -406,6 +415,11 @@ namespace RISE
 			//! direction for a part scaled up non-uniformly -- e.g. (2, 3, 3)
 			//! has minScale 2 > 1 yet still shrinks the field by 2/3.
 			//! Heightfield mode has no parts and keeps the bare band.
+			//! Both ratios are taken from scale magnitudes FLOORED at 1e-9, the
+			//! flooring `RecomputePartDerived` already applies before deriving
+			//! the `minScale` `partEval` multiplies by -- so a zero-scale axis
+			//! contributes its real 1e-9/maxScale shrink instead of being
+			//! skipped as unusable, which is what reading `pt.scale` raw did.
 			//!
 			//! OWNER CRITERION (see the definition in SDFGeometry.cpp for the
 			//! band's derivation): a part owns the point when its OWN signed
