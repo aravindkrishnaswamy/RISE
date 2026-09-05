@@ -203,7 +203,8 @@ inline Scalar FaceBound( const int side, const Point3& ll, const Point3& ur )
 	case 2: return ll.y;
 	case 3: return ur.y;
 	case 4: return ll.z;
-	default: return ur.z;
+	case 5: return ur.z;
+	default: return ur.z;   // unreachable: RayBoxIntersection writes 0..5 only
 	}
 }
 
@@ -238,6 +239,10 @@ inline bool DropSelfHitRoot( const Ray& ray, BOX_HIT& h, const Point3& ll, const
 	// The primary root is the origin's own face.  The other root is the
 	// hit -- if it is ahead of the origin and not ALSO the origin's own
 	// face (an edge / corner origin leaving the box).
+	// (The 4 * NEARZERO here is the one absolute constant on this side:
+	// it only asks that the OTHER root be ahead of the origin by more
+	// than the back-off, so it binds solely for a box under ~4e-12 thick
+	// along the ray -- sub-picometre geometry -- and needs no ulp term.)
 	if( h.dRange2 <= Scalar(4) * NEARZERO || onFace( h.sideB ) ) {
 		h.bHit = false;
 		h.dRange = RISE_INFINITY;
@@ -288,6 +293,8 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	const bool bExitHit = DropSelfHitRoot( ri.ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
 	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
 		h.bHit = false;
+		h.dRange = RISE_INFINITY;    // publish a consistent miss, as DropSelfHitRoot's own reject does
+		h.dRange2 = RISE_INFINITY;
 	}
 
 	// A strictly interior origin (RayBoxIntersection's tmin < 0 branch)
@@ -406,6 +413,8 @@ bool BoxGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dH
 	const bool bExitHit = DropSelfHitRoot( ray, h, ptLowerLeft, ptUpperRight ) || RayBeginsInBox;
 	if( h.bHit && ( bExitHit ? !bHitBackFaces : !bHitFrontFaces ) ) {
 		h.bHit = false;
+		h.dRange = RISE_INFINITY;
+		h.dRange2 = RISE_INFINITY;
 	}
 
 	if( h.bHit && (h.dRange < NEARZERO || h.dRange > dHowFar) ) {
