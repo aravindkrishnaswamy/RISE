@@ -6427,3 +6427,34 @@ unchanged; compatible momentum remains `1.1175870895385742e-07` against
 `10,223,616/1,245,184` bytes. Evidence is
 `r201_projected_heun_metal_owner/r201k_full_field_residency_gate.v1`. The sealed
 tier-8 replay remains gated on a fresh zero-P1/P2 three-reviewer round.
+
+Fresh review rejected r201k before replay. Although explicit blits were now
+counted correctly, `Upload()` populated Shared buffers directly without a
+blit, and the frozen-source authority used that path for a complete CPU field
+inside every `BuildStage`. The common ledger could still report zero.
+
+### r201l setup-staged frozen-source authority
+
+All owner `Upload()` calls are now phase- and size-aware: constructing a
+full-field host-populated buffer during R0/R1/R2 counts as an interstage
+transfer. More importantly, the sealed frozen-source target is uploaded and
+copied into Private storage once during setup, then reused from that resident
+buffer by every stage. Its target parameters are likewise consumed from the
+setup-staged Private authority. The working-set certificate includes the
+persistent source field.
+
+The direct-upload RED restores the exact removed path for one R1 source
+authority, where the CPU field is consumed by the device source kernel under a
+valid candidate parent. It also feeds a direct CPU limiter field under valid
+transport/physical parents and performs both explicit boundary directions.
+All five crossings reach the common atomic gate; publication refuses with no
+identity, payload, or terminal staging. The normal owner records zero
+interstage full-grid transfers.
+
+At exact source `784a266c60e8db47ae4c08197e6b58192899dcbe`, the live owner and
+independent kernel sweep exit zero. The per-iteration class and enclosure
+results are unchanged. Compatible momentum remains `1.1175870895385742e-07`
+against `3.1200230559651367e-05`; qualification device/wall p95 are
+`922.229667/948.846292 ms`. Evidence is
+`r201_projected_heun_metal_owner/r201l_setup_staged_source_gate.v1`. Replay is
+gated on a fresh zero-P1/P2 three-reviewer round.

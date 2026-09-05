@@ -5738,3 +5738,27 @@ enclosure gate, class sequences, and compatible-flux identity remain green.
 SHA-bound evidence is
 `r201_projected_heun_metal_owner/r201k_full_field_residency_gate.v1`. Replay is
 still blocked until a fresh three-reviewer round returns zero P1/P2.
+
+### r201l — setup owns the frozen-source upload
+
+The r201k review found a second residency escape before replay. The owner's
+`Upload()` helper created host-populated Shared buffers without entering the
+transfer ledger, and the frozen-source producer bypassed even that helper by
+creating its source field directly inside `BuildStage`. Thus a CPU-authored
+field was consumed during every Picard stage while publication still claimed
+zero transfers.
+
+The frozen-source values now cross the host boundary once in setup and remain
+Private thereafter; all R0/R1/R2 source authorities consume that resident
+field and setup-staged parameters. Full-field `Upload()` creation during an
+interstage phase is itself ledger-visible, and the owner certificate includes
+the extra persistent field. The named RED restores the old direct source
+allocation, consumes it with an otherwise valid candidate lineage, injects a
+direct CPU limiter field, and exercises both blit directions. The common gate
+sees all five crossings and refuses atomically. Normal publication has zero
+interstage transfers and one terminal staging.
+
+Exact source `784a266c60e8db47ae4c08197e6b58192899dcbe` passes the live M4
+owner gate and independent kernel sweep without a tolerance change. Evidence
+is `r201_projected_heun_metal_owner/r201l_setup_staged_source_gate.v1`; replay
+remains blocked until a fresh three-reviewer round returns zero P1/P2.
