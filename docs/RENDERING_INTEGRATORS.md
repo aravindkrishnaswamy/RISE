@@ -380,11 +380,58 @@ Two practical considerations:
   this scene's measurement showed. `AutoRasterizer`'s Tier-1 routing
   exclusion for this material class has been LIFTED (it routes like any
   other `CouldLightPassThrough()` material now) and the one-time BDPT/VCM
-  warning has been removed. A smaller, separate ~7-10% BDPT/VCM-under-PT
-  residual remains on the delta-point-light backlit scene specifically
-  (it is <2% on the mesh-arealight stress scene) — not root-caused,
-  flagged as a follow-up, not blocking. Full writeup:
-  [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 20.
+  warning has been removed.  The smaller, separate ~7-10% BDPT/VCM-under-PT residual on the
+  delta-point-light backlit scene specifically was also fully root-caused
+  and resolved (2026-09-04): `BDPTIntegrator.cpp` subpath vertex
+  connectibility classification was checking `scattered[i].isDelta`
+  alone; on mixed delta+continuum materials (`WeaveMaterial` with
+  `transmission thin`, `gap > 0`), stochastically drawing the delta
+  gap lobe marked the vertex non-connectible and dropped NEE ($s=1$)
+  on a `gap` fraction of camera rays, producing a $(1 - \text{gap})$
+  NEE deficit ($(1 - \text{gap})^2$ vs PT's $1 - \text{gap}$). Fixed
+  by checking `ri.pMaterial->GetBSDF()` so surfaces with continuous
+  BSDFs remain connectible regardless of the sampled continuation lobe.
+  BDPT/PT is now 1.0000 across all gap values. Full writeup:
+  [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 23.
+
+  That fix left VCM reading **+3.0 %** over PT on the same scene, which
+  turned out to be a SECOND, independent, and NOT fabric-specific bug
+  (§15 debt 24, also fixed 2026-09-04): `VCMIntegrator::EvaluateNEEImpl`
+  zeroed **both** MIS alternatives at a DELTA light. Zeroing `wLight` is
+  correct — BSDF sampling cannot land on a Dirac position by chance —
+  but `wCamera` carries the *light-side* strategies (the t=1
+  light-tracing splat, interior connections, merges), and those do not
+  land on the light vertex, they **start** there and sample an emission
+  **direction**, whose solid-angle density is perfectly ordinary
+  (`PointLight` 1/4π, `SpotLight` the cone density). NEE therefore took
+  weight 1 while the splat independently contributed its own
+  `1/(1+wLight)` share of the very same path. Instrumented mean MIS
+  weight per strategy on the gap-0.1 curtain: before, NEE 1.00000 + VM
+  0.00815 + splat 0.02963 = **1.0378**; after, 0.96312 + 0.00816 +
+  0.02963 = **1.0009**. A plain Lambertian quad under an omni light
+  showed the identical +2.99 %, and any AREA light showed none, which is
+  what proves it was never about the weave. Fixed by computing
+  `camFactor` as the emission-direction AREA density
+  `emissionDirPdfSA · cosAtEye / dist²` — algebraically identical to the
+  SmallVCM spelling for non-delta lights (the `pdfPosition` and
+  `cosAtLight` factors cancel), but free of the two placeholder
+  quantities (`directPdfW := 1`, `cosAtLight := 1`) that made the old
+  spelling unusable for delta lights. VCM/PT is now 1.000 ± 3e-4 on
+  every delta-lit topology measured, with vertex merging on or off;
+  `VCMStrategyBalanceTest` topology A moved 1.0082 → 0.9975;
+  `EnvLightBalanceTest` stays 116/116 with no band moved.
+
+  **Two OPEN findings surfaced by the same round**, recorded with
+  measurements rather than fixed (§15 debts 25 and 26): a CLOSED solid
+  whose material is a thin-transmissive weave reads BDPT/VCM ≈ **0.17×**
+  PT (free-standing weave planes read 1.000, and an interior medium is
+  not involved — the box reads the same with and without one); and the
+  legacy `pixelpel_rasterizer` loses the delta-gap-to-emitter sighting
+  on a gapped weave in front of an area light (**0.0431** vs the modern
+  `pathtracing_pel_rasterizer`'s **0.1040** at equal spp, with BDPT and
+  VCM both on 0.1040) — relevant because
+  `tests/BDPTStrategyBalanceTest.cpp` uses `pixelpel_rasterizer` as its
+  PT reference.
 
 ## 8. Cross-references
 

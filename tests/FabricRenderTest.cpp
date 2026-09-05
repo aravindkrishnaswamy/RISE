@@ -86,6 +86,25 @@
 //    away exactly the per-wavelength difference the invariant is
 //    looking for, which would make the test pass by construction.
 //
+//  FABRIC_TEST_FILTER (optional environment variable).  When set, only
+//    the cases whose keyword appears as a SUBSTRING of its value run;
+//    unset (the normal invocation, and the only one CI uses) runs all
+//    of them.  Keywords, one per case, in `main`'s order:
+//        hwss      TestHwssInvariant
+//        parity    TestPtVsBdpt
+//        curtain   TestBacklitSheerCurtain
+//        arealit   TestAreaLitSheerWeave
+//        touching  TestTouchingAreaLitCurtainAllIntegrators
+//        wrapped   TestWrappedBacklitSheerCurtain
+//        gaparea   TestGappedWeaveWithAreaLight
+//    e.g. `FABRIC_TEST_FILTER=curtain ./bin/tests/FabricRenderTest 3000`
+//    re-runs just the backlit-curtain ratios at seed base 3000, which
+//    is how the n = 5 spreads quoted below were collected without
+//    paying for the whole file each time.  The filter never changes
+//    what a case asserts, only whether it runs; `Passed:`/`Failed:`
+//    counts are then over the selected subset, so a filtered run is a
+//    measurement aid, NOT a substitute for the full-suite gate.
+//
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
 //
@@ -95,6 +114,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>			// std::strstr — FABRIC_TEST_FILTER matching
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -828,23 +848,75 @@ static void TestPtVsBdpt()
 // the most aggressive repro this session could construct still does not
 // trip the theoretical singularity.
 //
-// A smaller, separate ~7-10% BDPT/VCM-under-PT residual remains on THIS
-// delta-point-light scene specifically (it is <2% on the mesh-arealight
-// stress scene) -- NOT root-caused this round, flagged as a follow-up,
-// and bounded generously below rather than tightened to a number that
-// was not actually derived.
+// The prior ~7-10% BDPT/VCM-under-PT residual was TWO INDEPENDENT BUGS,
+// both resolved 2026-09-04 (docs/CLOTH_FABRIC_DESIGN.md §15 debts 23 and
+// 24).  They are worth keeping distinct because only the first is about
+// fabric at all:
+//
+//   (1) BDPT/VCM SUBPATH CONNECTIBILITY (debt 23) -- subpath generation
+//       derived a surface vertex's `isConnectible` from the ONE
+//       continuation ray it drew: `hasNonDelta` scanned the `scattered`
+//       container, so drawing WeaveSPF's delta gap lobe (probability
+//       `gap`) marked the vertex non-connectible and dropped NEE (s=1)
+//       there.  On the remaining 1-gap draws NEE's `value()` already
+//       carries the (1-gap) yarn fraction, so the realized share was
+//       (1-gap)^2 against PT's (1-gap) -- exactly 0.900 at gap 0.1 and
+//       0.800 at gap 0.2, as measured.  `isDelta` is a property of a
+//       sampled LOBE; `isConnectible` is a property of the SURFACE.
+//       Fixed by deriving it from `ri.pMaterial->GetBSDF() != nullptr`.
+//
+//   (2) VCM DELTA-LIGHT NEE PARTITION (debt 24) -- NOT fabric-specific
+//       and not introduced by (1): `VCMIntegrator::EvaluateNEEImpl`
+//       zeroed BOTH MIS alternatives when the sampled light was a delta
+//       light, leaving NEE at weight 1 while
+//       `SplatLightSubpathToCameraImpl` still contributed its own
+//       1/(1+wLight) share of the SAME path.  Zeroing wLight is right
+//       (BSDF sampling cannot hit a point light); zeroing wCamera is
+//       not (light TRACING starts at the light and samples an emission
+//       DIRECTION, which has an ordinary solid-angle density).  A plain
+//       Lambertian quad under an omni light showed the identical
+//       +2.99%, so this scene only ever inherited it.  Instrumented
+//       partition on THIS scene at gap 0.1, mean MIS weight per
+//       strategy: before  NEE 1.00000 + VM 0.00815 + t=1 splat 0.02963
+//       = 1.0378; after  NEE 0.96312 + VM 0.00816 + splat 0.02963
+//       = 1.0009.  (Sums are over slightly different path populations,
+//       hence the residual 0.0009; the image ratios below are the
+//       exact statement.)
+//
+// MEASURED AFTER BOTH FIXES, five independent seed bases
+// (1000/2000/3000/4000/5000) at 256 spp -- the exact invocation is
+// `for b in 1000 2000 3000 4000 5000; do FABRIC_TEST_FILTER=curtain \
+//  ./bin/tests/FabricRenderTest $b; done`:
+//   BDPT/PT: 0.999938, 1.000039, 1.000032, 1.000011, 1.000014
+//            (mean 1.000007, sigma 4.2e-5)
+//   VCM/PT:  0.999754, 0.999768, 0.999840, 0.999795, 0.999863
+//            (mean 0.999804, sigma 4.5e-5)
+// For reference, the same rows BEFORE fix (2) and after fix (1) alone
+// were BDPT 0.999998 (sigma 5.3e-5) and VCM 1.02964 (sigma 2.9e-5); the
+// VCM band was widened to 0.05 to cover that, which is what these
+// tolerances now un-do.
+//
+// TOLERANCE DERIVATION.  The seed-base spread above is the noise floor
+// for the MEAN on this scene (it is almost entirely NEE against a point
+// light, so it is near-deterministic): 3 sigma is ~1.3e-4 on both rows.
+// The bands are NOT set at 3 sigma, because the spread understates
+// machine-to-machine movement: `RasterizeDispatchers.h`'s worker-side
+// seed race (see this file's header) means the same seed base can land
+// ~0.7 pp apart on a different host -- the reviewer of the debt-23 fix
+// measured VCM/PT 1.0369 where this machine read 1.0296.  1% therefore
+// buys ~75x the within-machine 3 sigma and comfortably more than that
+// cross-machine margin, while still failing hard on either bug above
+// (debt 23 moves BDPT to 0.900, debt 24 moves VCM to 1.030 -- 10x and
+// 3x the band).
 static const double kMinBrightnessAbsolute = 1e-6;
-
-// Empirically measured (five seed bases, 256 and 1024 spp): BDPT/PT
-// stable at 0.899-0.900, VCM/PT stable at 0.932-0.933, on both mean and
-// max-pixel luminance.  20% gives ~2x headroom over the measured
-// residual while still failing hard on any regression toward the old
-// 100-350x singularity.
-static const double kThinCurtainBdptPtTol = 0.20;
-static const double kThinCurtainVcmPtTol = 0.20;
-// The old defect tracked the render's own clamp ceiling at 100-350x of
-// PT on both mean AND max; a firefly-free regime keeps max/mean well
-// under 2x even accounting for a dim, noisy 256-spp image.
+static const double kThinCurtainBdptPtTol = 0.01;
+static const double kThinCurtainVcmPtTol = 0.01;
+// VCM's MAX-pixel ratio is a much noisier statistic than its mean --
+// with VM enabled (the gap lobe trips the auto-radius pre-pass's
+// `foundSpecular`, see VCMRasterizerBase::PreRenderSetup) the brightest
+// pixel carries a photon-merge tail that moved over 1.018..1.043 across
+// the same five seed bases.  3.0 stays the firefly cap; do not tighten
+// it to the mean's band.
 static const double kThinCurtainMaxRatioBound = 3.0;
 
 static void TestBacklitSheerCurtain()
@@ -962,6 +1034,7 @@ static void TestBacklitSheerCurtain()
 	Check( vtMaxRatio <= kThinCurtainMaxRatioBound,
 		"curtain: VCM shows no residual firefly on thin weave (max/max bounded)" );
 }
+
 
 //////////////////////////////////////////////////////////////////////
 // 4. AREA-LIT SHEER WEAVE -- docs/CLOTH_FABRIC_DESIGN.md 15 debt 21
@@ -1319,6 +1392,125 @@ static void TestWrappedBacklitSheerCurtain()
 }
 
 //////////////////////////////////////////////////////////////////////
+// 8. GAPPED WEAVE IN FRONT OF AN AREA LIGHT -- the strategy the
+//    delta-lit curtain above structurally cannot reach.
+//
+// `TestBacklitSheerCurtain` and BDPTStrategyBalanceTest's topology E both
+// backlight the gapped weave with an OMNI light.  A point light has zero
+// solid angle, so the weave's DELTA gap lobe -- a deterministic
+// straight-line continuation -- can never land on it: the s=0 "eye
+// subpath hits the emitter" strategy has zero density and never fires,
+// and the whole image is s=1 NEE against the continuum lobe.  That
+// leaves an entire partition untested: with an AREA emitter the gap lobe
+// DOES reach the light, so s=0 through a chain whose middle vertex was
+// sampled as a delta competes, on the same pixel, with s=1 NEE at that
+// same vertex (which the debt-23 fix made legal again) and with light
+// tracing.  If the s=0 emission strategy carried weight 1 through the
+// delta chain -- the natural-looking rule, and wrong here, because at a
+// MIXED vertex NEE can produce the same path -- this is the scene that
+// would show it.
+//
+// The emitter is a full-width (2.8 x 2.8) quad 1.5 units behind the
+// curtain with a modest `scale 2.0`, deliberately NOT a small bright
+// one: a small emitter makes the through-gap sighting a rare, peaky
+// event whose noise floor (~1% on the mean at 256 spp, measured) swamps
+// the partition error it is meant to detect.  Sizing it to cover the
+// curtain keeps the same strategy structure while making every gap
+// sighting land on the emitter, so the mean converges fast.
+//
+// MEASURED (this machine, 32x32, 1024 spp, standalone twin of this
+// scene): PT (pathtracing_pel_rasterizer) 0.104021, BDPT 0.104006
+// (0.99986), VCM 0.103925 (0.99907).  At the 256 spp this case actually
+// runs, over the five seed bases 1000/2000/3000/4000/5000
+// (`FABRIC_TEST_FILTER=gaparea`):
+//   BDPT/PT: 0.999746, 1.001340, 1.001460, 0.998787, 0.999775
+//            (mean 1.000222, sigma 1.07e-3)
+//   VCM/PT:  1.000590, 0.999206, 0.999757, 0.999857, 0.999593
+//            (mean 0.999801, sigma 5.2e-4)
+//
+// TOLERANCE.  3 sigma is 3.2e-3 on the wider (BDPT) row.  The band is
+// 2%, i.e. ~6x that, which also covers the ~0.7 pp cross-machine
+// movement the delta-lit curtain's derivation documents (the
+// `RasterizeDispatchers.h` worker-seed race).  It is deliberately looser
+// than `kThinCurtainBdptPtTol`: unlike the delta-lit curtain, this scene
+// carries a real s=0 tail, so its noise floor is ~25x higher.  A
+// partition-of-unity error at the mixed vertex would show up as an
+// s=0-sized share -- tens of percent here, since the through-gap
+// sighting is 10% of camera rays onto a full-width emitter -- so 2%
+// still catches it by an order of magnitude.
+//
+// DO NOT port this case to BDPTStrategyBalanceTest: that file's PT
+// reference is the legacy `pixelpel_rasterizer`, which reads 0.0431 on
+// this scene against the progressive PT's 0.1040 at equal spp (and
+// `max_recursion 8` does not help) -- it loses the delta-gap-to-emitter
+// sighting entirely.  See the "WHY THERE IS NO AREA-LIGHT TWIN" block in
+// that file.
+//////////////////////////////////////////////////////////////////////
+static const double kGapAreaLightTol = 0.02;
+
+static std::string GappedWeaveAreaLightCommon( unsigned int width, unsigned int height )
+{
+	std::ostringstream ss;
+	ss <<
+		"standard_shader\n{\n\tname global\n\tshaderop DefaultDirectLighting\n}\n\n"
+		"film\n{\n\twidth " << width << "\n\theight " << height << "\n}\n\n"
+		"pinhole_camera\n{\n\tlocation 0 0 3.2\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 34.0\n}\n\n"
+		"uniformcolor_painter\n{\n\tname pnt_emit_ga\n\tcolor 1.0 1.0 1.0\n}\n\n"
+		"lambertian_luminaire_material\n{\n\tname mat_emit_ga\n\texitance pnt_emit_ga\n"
+			"\tscale 2.0\n\tmaterial none\n}\n\n"
+		// Winding gives the one-sided luminaire normal +Z, i.e. facing
+		// the curtain (and the camera behind it).
+		"clippedplane_geometry\n{\n\tname quad_emit_ga\n"
+			"\tpta -1.4 -1.4 -1.5\n\tptb 1.4 -1.4 -1.5\n"
+			"\tptc 1.4 1.4 -1.5\n\tptd -1.4 1.4 -1.5\n}\n\n"
+		"standard_object\n{\n\tname obj_emit_ga\n\tgeometry quad_emit_ga\n\tmaterial mat_emit_ga\n}\n\n"
+		"weave_material\n{\n\tname mat_curtain\n\tfabric linen\n\ttransmission thin\n\tgap 0.1\n}\n\n"
+		"clippedplane_geometry\n{\n\tname curtain_geo\n"
+			"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+			"\tdoublesided TRUE\n}\n\n"
+		"standard_object\n{\n\tname curtain_obj\n\tgeometry curtain_geo\n\tmaterial mat_curtain\n"
+			"\tposition 0 0 0\n}\n\n";
+	return ss.str();
+}
+
+static void TestGappedWeaveWithAreaLight()
+{
+	std::cout << "=== 8. Gapped weave in front of an AREA light (s=0 through the delta gap) ===" << std::endl;
+
+	const unsigned int W = 32, H = 32;
+	const std::string common = GappedWeaveAreaLightCommon( W, H );
+
+	const ImageStats sPt = RenderAndComputeStats(
+		AssembleScene( common, RasterizerPTRgbNoEnv( 256, 8 ) ), "gaparea_pt" );
+	const ImageStats sBdpt = RenderAndComputeStats(
+		AssembleScene( common, RasterizerBDPTRgbNoEnv( 256, 8, 8 ) ), "gaparea_bdpt" );
+	const ImageStats sVcm = RenderAndComputeStats(
+		AssembleScene( common, RasterizerVCMRgbNoEnv( 256, 8, 8 ) ), "gaparea_vcm" );
+
+	Check( sPt.valid && sBdpt.valid && sVcm.valid,
+		"gap+area: all three renders produced output" );
+	if( !sPt.valid || !sBdpt.valid || !sVcm.valid ) return;
+	Check( sPt.luminance > 0.01, "gap+area: PT render is non-degenerate" );
+
+	const double bRatio = sBdpt.luminance / std::fmax( sPt.luminance, 1e-12 );
+	const double vRatio = sVcm.luminance  / std::fmax( sPt.luminance, 1e-12 );
+	const double bMax   = sBdpt.maxLum    / std::fmax( sPt.maxLum,    1e-12 );
+	const double vMax   = sVcm.maxLum     / std::fmax( sPt.maxLum,    1e-12 );
+
+	std::cout << "  gap+area: PT = " << sPt.luminance << " (max " << sPt.maxLum << ")"
+		<< "   BDPT = " << sBdpt.luminance << "   VCM = " << sVcm.luminance << std::endl;
+	std::cout << "  gap+area: BDPT/PT = " << bRatio << "   VCM/PT = " << vRatio
+		<< "   BDPT_max/PT_max = " << bMax << "   VCM_max/PT_max = " << vMax << std::endl;
+
+	Check( std::fabs( bRatio - 1.0 ) <= kGapAreaLightTol,
+		"gap+area: BDPT/PT within tolerance (s=0-through-gap vs s=1 NEE partition)" );
+	Check( std::fabs( vRatio - 1.0 ) <= kGapAreaLightTol,
+		"gap+area: VCM/PT within tolerance (s=0-through-gap vs s=1 NEE partition)" );
+	Check( bMax <= kThinCurtainMaxRatioBound && vMax <= kThinCurtainMaxRatioBound,
+		"gap+area: no residual firefly on BDPT or VCM (max/max bounded)" );
+}
+
+//////////////////////////////////////////////////////////////////////
 // main
 //////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
@@ -1333,12 +1525,14 @@ int main( int argc, char** argv )
 		<< "  (pass a different one as argv[1] for an independent sample)" << std::endl;
 	std::cout << "==========================================================" << std::endl;
 
-	TestHwssInvariant();
-	TestPtVsBdpt();
-	TestBacklitSheerCurtain();
-	TestAreaLitSheerWeave();
-	TestTouchingAreaLitCurtainAllIntegrators();
-	TestWrappedBacklitSheerCurtain();
+	const char* filter = getenv("FABRIC_TEST_FILTER");
+	if( !filter || std::strstr( filter, "hwss" ) ) TestHwssInvariant();
+	if( !filter || std::strstr( filter, "parity" ) ) TestPtVsBdpt();
+	if( !filter || std::strstr( filter, "curtain" ) ) TestBacklitSheerCurtain();
+	if( !filter || std::strstr( filter, "arealit" ) ) TestAreaLitSheerWeave();
+	if( !filter || std::strstr( filter, "touching" ) ) TestTouchingAreaLitCurtainAllIntegrators();
+	if( !filter || std::strstr( filter, "wrapped" ) ) TestWrappedBacklitSheerCurtain();
+	if( !filter || std::strstr( filter, "gaparea" ) ) TestGappedWeaveWithAreaLight();
 
 	std::cout << "==========================================================" << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;

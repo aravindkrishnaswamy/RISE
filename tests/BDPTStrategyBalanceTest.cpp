@@ -720,6 +720,96 @@ static void TestOrthographicCamera()
 		std::string( kSceneCommonOrtho ) + kLightMesh, kStrictTolerances );
 }
 
+//////////////////////////////////////////////////////////////////////
+// Topology E: backlit thin weave curtain with delta omni light.
+//
+// Regression guard for the mixed delta+continuum connectibility fix:
+// WeaveSPF with transmission thin has a delta gap lobe and a continuous
+// diffuse transmission lobe. When subpath generation stochastically chose
+// the gap lobe, it set hasNonDelta = false which marked the surface vertex
+// non-connectible and dropped NEE on a `gap` fraction of camera rays,
+// deflating BDPT by (1 - gap) vs PT (a ~10% under-contribution on linen).
+// With GetBSDF() checked directly, BDPT and PT agree within Monte Carlo noise.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneBacklitThinCurtain =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.2\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 34.0\n"
+	"}\n\n"
+	"omni_light\n"
+	"{\n"
+	"\tname backlight\n"
+	"\tposition 0 0 -3.0\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"\tpower 6.0\n"
+	"}\n\n"
+	"weave_material\n"
+	"{\n"
+	"\tname mat_curtain\n"
+	"\tfabric linen\n"
+	"\ttransmission thin\n"
+	"\tgap 0.1\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname curtain_geo\n"
+	"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+	"\tdoublesided TRUE\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname curtain_obj\n"
+	"\tgeometry curtain_geo\n"
+	"\tmaterial mat_curtain\n"
+	"\tposition 0 0 0\n"
+	"}\n";
+
+static void TestBacklitThinCurtain()
+{
+	RunTopologyTest( "backlit thin weave curtain (delta omni light)",
+		kSceneBacklitThinCurtain, kStrictTolerances );
+}
+
+//////////////////////////////////////////////////////////////////////
+// WHY THERE IS NO AREA-LIGHT TWIN OF TOPOLOGY E IN THIS FILE.
+//
+// The natural companion to E is the same weave curtain backlit by a MESH
+// AREA emitter, because only then can the weave's DELTA gap lobe actually
+// REACH the light and put the eye subpath's s=0 "hit the emitter"
+// strategy into competition with s=1 NEE through a chain whose middle
+// vertex was sampled as a delta.  That topology was written, measured,
+// and moved OUT of this file to
+// tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight, for a reason
+// worth recording here (2026-09-04):
+//
+// THIS FILE'S PT REFERENCE CANNOT RENDER IT.  `kRasterizerPT` is the
+// legacy `pixelpel_rasterizer`, and on a `weave_material` with
+// `transmission thin, gap 0.1` in front of an area emitter it reads
+// 0.0431 where the modern `pathtracing_pel_rasterizer` reads 0.1040 at
+// the same 1024 spp -- it loses the delta-gap-to-emitter sighting
+// entirely, and raising `max_recursion` from 2 to 8 does not recover it
+// (0.043116 vs 0.043115).  BDPT (0.104006) and VCM (0.103925) both track
+// the progressive PT to within 1.4e-3, so the bidirectional integrators
+// are the ones that are right and the reference is the one that is
+// broken -- the same "PT may be the broken one" trap
+// docs/skills/bdpt-vcm-mis-balance.md's step-0 pre-flight describes,
+// here in its legacy-rasterizer form.  Asserting BDPT == pixelpel on
+// that scene would have banked a 2.41x reference error as expected
+// behaviour.
+//
+// Topology E (delta omni) is unaffected and stays: with a point light
+// the s=0-through-the-gap strategy has zero density and never fires, so
+// pixelpel and the modern PT agree.
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== BDPTStrategyBalanceTest ===" << std::endl;
@@ -728,6 +818,7 @@ int main()
 	TestMeshEmitterOnly();
 	TestMixedLights();
 	TestOrthographicCamera();
+	TestBacklitThinCurtain();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

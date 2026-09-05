@@ -17,7 +17,20 @@ in review round 8 and fixed the same day: **debt 22** — a
 extinguished the weave's transmission, so a sheen layer over a sheer curtain
 rendered it 100 % opaque, **RESOLVED 2026-09-04** by forwarding the two
 full-sphere flags and modulating the substrate's transmission with the same
-Kulla-Conty product law the reflect side uses — see §15 debt 22. Phase 3's
+Kulla-Conty product law the reflect side uses — see §15 debt 22. A follow-up
+round on 2026-09-04 closed the last two integrator debts P2-B left and opened
+two new, unrelated ones it uncovered: **debt 23** — BDPT/VCM dropped NEE on the
+`gap` fraction of hits at a mixed delta+continuum vertex, because vertex
+connectibility was read off the ONE continuation lobe that was drawn instead of
+the material, costing exactly `(1−gap)` (0.900 at linen's default gap),
+**RESOLVED 2026-09-04**; **debt 24** — VCM's NEE zeroed its light-side MIS
+alternative for every DELTA light, so the t=1 light-tracing splat double-counted
+the same path, a fabric-independent **+3.0 %** on any omni/spot-lit scene (a bare
+Lambertian quad shows the identical figure), **RESOLVED 2026-09-04**; and two new
+OPEN findings, **debt 25** — a CLOSED solid carrying a thin-transmissive weave
+reads BDPT/VCM ≈ 0.17× PT while free-standing weave planes read 1.000 — and
+**debt 26** — the legacy `pixelpel_rasterizer` loses the delta-gap-to-emitter
+sighting on a gapped weave (0.0431 vs the modern PT's 0.1040). Phase 3's
 weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
 **declined**, on the same precedent and for the same reasons as before; what
 shipped instead is the bounded `add_fuzz` verb — a sparse fuzz-shell groom
@@ -5016,13 +5029,12 @@ yet known (§10.1).
     `TestTouchingAreaLitCurtainAllIntegrators` regression locks the
     harsher stress scene at 15% around the measured 1.01/1.01.
 
-    **What did NOT get chased down.** A smaller, separate ~7-10%
-    BDPT/VCM-under-PT residual remains on the delta-point-light backlit
-    scene specifically (it is <2% on the mesh-arealight stress scene,
-    stable at both 256 and 1024 spp so it is not simply MC noise) — not
-    root-caused this round. Flagged as a follow-up, not blocking; the
-    regression tolerances above are set with headroom over it rather
-    than tuned to hide it.
+    **What did NOT get chased down (RESOLVED 2026-09-04 — see debt 23 below).**
+    A smaller, separate ~7-10% BDPT/VCM-under-PT residual remained on the
+    delta-point-light backlit scene specifically (it was <2% on the
+    mesh-arealight stress scene, stable at both 256 and 1024 spp).
+    Root-caused and resolved in debt 23 below (stochastically sampled
+    delta gap lobe marking subpath vertex non-connectible in BDPT/VCM).
 
     `docs/RENDERING_INTEGRATORS.md`'s known-limitations section carries
     the same resolution for readers who start from the integrator side
@@ -5325,6 +5337,288 @@ yet known (§10.1).
     treatment. `composite_material` is unaffected (it forwards one
     sub-material's BSDF wholesale rather than gating on hemisphere).
 
+23. **RESOLVED 2026-09-04 — BDPT/VCM ~7–10% under-count residual on delta-light
+    backlit thin weave curtain resolved; root-caused as subpath vertex
+    connectibility misclassification on mixed delta+continuum materials.**
+
+    **Symptom.** On `TestBacklitSheerCurtain` (flat `weave_material` curtain with
+    `fabric linen`, `transmission thin`, `gap 0.1` backlit by an `omni_light` at
+    z = -3.0, camera at z = 3.2 looking at origin), BDPT and VCM yielded a stable,
+    reproducible ~10% deficit vs Path Tracing (BDPT/PT ≈ 0.900, VCM/PT ≈ 0.930 —
+    VCM's own number is the sum of THIS deficit and debt 24's independent
+    +3.0 % over-count, which is why it never sat on 0.900).
+    The deficit scaled directly with the weave gap:
+    - At `gap 0.1` (linen default): BDPT/PT = 0.900 (-10%)
+    - At `gap 0.2`: BDPT/PT = 0.800 (-20%)
+    - At `gap 0.0`: BDPT/PT = 1.000 (0% error)
+
+    **Mechanism.** In `src/Library/Shaders/BDPTIntegrator.cpp` (both in
+    `GenerateEyeSubpathImpl` and `GenerateLightSubpathImpl`), subpath vertex
+    connectibility was determined solely by checking whether the `scattered`
+    container contained a non-delta ray:
+    ```cpp
+    bool hasNonDelta = false;
+    for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+        if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+    }
+    vertices.back().isConnectible = hasNonDelta;
+    ```
+    For mixed delta + continuum materials such as `WeaveMaterial` (`transmission thin`,
+    `gap > 0`), `WeaveSPF::ScatterImpl` has a single-ray budget and stochastically
+    samples either the delta gap lobe (with probability `gap`) or the continuum yarn
+    lobe (with probability `1 - gap`).
+
+    Whenever the delta gap ray was selected, `scattered` only contained a single
+    delta ray (`isDelta = true`), causing `hasNonDelta` to evaluate to `false`.
+    This marked the surface vertex `isConnectible = false`, completely dropping
+    Next Event Estimation (NEE, $s=1$) at that vertex on a `gap` fraction of
+    camera rays.
+
+    On the remaining $1 - \text{gap}$ fraction of camera rays where NEE did fire,
+    `brdf.value()` additionally multiplied by the yarn fraction `p.available = 1 - gap`.
+    Hence, BDPT received $(1 - \text{gap}) \times (1 - \text{gap}) = (1 - \text{gap})^2$,
+    creating an exact systematic deficit of $1 - \text{gap}$ vs PT's $(1 - \text{gap})$.
+    For `gap = 0.1`, $(1 - 0.1)^2 / (1 - 0.1) = 0.900$, exactly matching the
+    measured 10% deficit.
+
+    **Fix.** `isDelta` is a property of a sampled continuation *ray/lobe*, but
+    `isConnectible` is a property of whether the *surface* has continuous scattering
+    capability (`pMaterial->GetBSDF() != nullptr`). In `BDPTIntegrator.cpp`,
+    surface vertices with a valid BSDF are now marked connectible:
+    ```cpp
+    bool hasNonDelta = false;
+    for( unsigned int i = 0; i < scattered.Count(); i++ ) {
+        if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
+    }
+    if( ri.pMaterial->GetBSDF() ) {
+        hasNonDelta = true;
+    }
+    vertices.back().isConnectible = hasNonDelta;
+    ```
+
+    **Results** (immediately after this fix, i.e. before debt 24 — see there for
+    the final numbers).
+    - Original scene (`gap 0.1`) across 5 seed bases: BDPT/PT mean = 0.999998
+      ($\sigma = 0.000053$), max pixel ratio = $1.0000 \pm 0.001$. VCM/PT = 1.0296
+      on this host / 1.0369 on the reviewer's — debt 24, not a residual of this one.
+    - Variant `gap 0.2`: PT = 0.0249685, BDPT = 0.0249691 (BDPT/PT = 1.00003;
+      was 0.800 pre-fix).
+    - Variant light at $z = -0.5$: BDPT/PT = 1.00002.
+    - Variant light at $z = -30.0$: BDPT/PT = 0.999985, VCM/PT = 1.00033.
+    - Variant `gap 0.5`: BDPT/PT = 0.99997.
+    - Variant 0.01-radius emissive sphere read BDPT/PT = 0.990963 and was filed as
+      a −0.9 % residual "at a 5e-5 noise floor, not noise". **That reading was a
+      noise-floor mistake**: 5e-5 is the floor for the DELTA-lit curtain, whose
+      image is near-deterministic NEE; with an AREA light seen through a 10 % gap
+      the floor is ~1 %. Re-measured on the area-light topology over 5 runs:
+      BDPT/PT 1.00133 ± 0.0104 at 256 spp, tightening to 0.99957 ± 0.0023 at
+      2048 spp — the disagreement **shrinks with sample count**, so it is
+      variance, not bias. Guarded now by
+      `FabricRenderTest::TestGappedWeaveWithAreaLight` (§ debt 26 for why it is
+      not in `BDPTStrategyBalanceTest`).
+    - Regression topology E (`TestBacklitThinCurtain`) added to
+      `tests/BDPTStrategyBalanceTest.cpp`; the area-lit companion added as
+      `tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight`.
+
+    **Sibling sites audited (`docs/skills/audit-by-bug-pattern.md`).** The bug
+    pattern is *"a per-DRAW flag (`isDelta`, the lobe this walk sampled) used to
+    answer a per-SURFACE question (can this vertex be connected to?)"*. Three
+    siblings were enumerated and resolved with it:
+    - `GenerateEyeSubpathImpl` and `GenerateLightSubpathImpl` surface vertices —
+      the reported site, fixed above (both twins, RGB and NM share the template).
+    - **MEDIUM vertex connectibility**, one hop downstream, in the same two
+      functions: a medium vertex inside an object was marked non-connectible when
+      `prev.type == SURFACE && prev.isDelta`. "Enclosed by a specular boundary" is
+      a property of the boundary *material*, so a mixed boundary (weave gap,
+      polished coat, Fresnel composite) turned the same medium vertex connectible
+      or not depending on the draw. Now tests `!prev.isConnectible`, the same
+      per-surface predicate. See debt 25 for why this one has no image-level
+      regression test yet.
+    - `MISWeight`'s `vi.isDelta` / `vj.isDelta` skip rules — **confirmed correct
+      as-is**, not changed: those walk the *realised* pdf ratios of the sampled
+      lobes, and the connection vertices themselves are already overridden by the
+      per-surface `isConnectible` in the "temporarily clear isDelta on the two
+      connection vertices" block above them.
+
+    **`CompositeMaterial` side effect (measured).** `CompositeMaterial::GetBSDF()`
+    returns `top.GetBSDF()` if non-null else `bottom.GetBSDF()`, so a
+    Fresnel-blend composite of a *delta* top (dielectric / perfect reflector,
+    whose `GetBSDF()` is null) over a continuum bottom reports the bottom's BSDF —
+    non-null. Under the old predicate such a composite was marked non-connectible
+    on every draw that took the top's delta lobe, i.e. it was under-counted by
+    exactly the same mechanism; the same one-line fix covers it. Same for
+    `polished_material` (specular coat over a substrate BRDF) and
+    `subsurfacescattering_material` (delta reflect/exit rays over a BSDF).
+
+24. **RESOLVED 2026-09-04 — VCM read +3.0 % over PT on EVERY delta-light scene
+    (the residual debt 23's fix exposed, and a partition-of-unity bug in its own
+    right, not fabric-specific).**
+
+    **Symptom.** With debt 23 fixed, BDPT/PT on the backlit gapped curtain landed
+    on 1.0000 but VCM/PT sat at **1.0296** with VM off and **1.0370** with VM on
+    (machine-stable; a reviewer on another host read 1.0369, this host 1.0296 —
+    the ~0.7 pp is the `RasterizeDispatchers.h` worker-seed race, not seed noise).
+    The debt-23 round widened `kThinCurtainVcmPtTol` to 0.05 to cover it.
+
+    **It has nothing to do with fabric, the gap, or debt 23.** Measured on the
+    same harness, 32×32, 256 spp, `oidn_denoise FALSE`, VCM/PT:
+
+    | scene | VCM/PT before | VCM/PT after |
+    |---|---|---|
+    | weave `transmission thin`, gap 0.0, omni behind | 1.02964 | 0.99981 |
+    | weave `transmission thin`, gap 0.1, omni behind | 1.03704 | 0.99990 |
+    | weave `transmission thin`, gap 0.2, omni behind | 1.03693 | 0.99993 |
+    | weave `transmission thin`, gap 0.5, omni behind | 1.03673 | 1.00004 |
+    | **plain Lambertian quad, omni in front** | **1.02988** | **1.00001** |
+    | plain Lambertian quad, mesh area light | 1.00000 | 1.00000 |
+
+    A bare Lambertian quad under an omni light carries the identical +2.99 %; an
+    area light carries none. The gap only ever changed which *sub-*strategies were
+    active, never the sign or the mechanism.
+
+    **Mechanism.** `VCMIntegrator::EvaluateNEEImpl` zeroed **both** MIS
+    alternatives when `ls.isDelta`:
+    ```cpp
+    const Scalar wLight = ls.isDelta ? 0 : bsdfDirPdfW / ( lightPickProb * directPdfW );
+    Scalar wCamera = 0;
+    if( !ls.isDelta && directPdfW > 0 && cosAtLight > 0 ) { /* ... */ }
+    ```
+    Zeroing `wLight` is right: BSDF sampling at the receiver cannot land on a
+    Dirac *position* by chance. Zeroing `wCamera` is **wrong**: `wCamera` is the
+    relative density of the strategies that reach the same path from the *light*
+    side — the t=1 light-tracing splat above all — and those do not have to "land
+    on" the light vertex, they **start** there and sample an emission
+    **direction**, which has an ordinary solid-angle density (`PointLight` returns
+    1/4π, `SpotLight` the cone density) even when the position is a delta. So NEE
+    took weight 1 while `SplatLightSubpathToCameraImpl` independently contributed
+    its own `1/(1+wLight)` share of the very same path.
+
+    Instrumented partition on the gap-0.1 curtain (mean MIS weight per strategy,
+    32×32 × 256 spp; the sums are over slightly different path populations, hence
+    the residual 9e-4 after):
+
+    | strategy | mean weight before | mean weight after |
+    |---|---|---|
+    | s=1 NEE | 1.00000 | 0.96312 |
+    | VM (merge) | 0.00815 | 0.00816 |
+    | t=1 light-tracing splat | 0.02963 | 0.02963 |
+    | **Σ** | **1.03778** | **1.00092** |
+
+    Σ = 1.0378 is the +3.7 % exactly. At gap 0 (VM disabled by the pre-pass) it is
+    1 + 0.02985 = 1.0299 — the +2.99 % exactly.
+
+    **Fix.** Compute `wCamera` for delta lights too, from a `camFactor` written as
+    the emission-direction **area** density rather than in the SmallVCM
+    `emissionPdfW_geom / (directPdfW · cosAtLight)` spelling:
+    ```cpp
+    if( emissionDirPdfSA > 0 && distSq > 0 ) {
+        const Scalar camFactor = ( emissionDirPdfSA * cosAtEye ) / distSq;
+        wCamera = camFactor * ( norm.mMisVmWeightFactor
+                              + eyeMis[i].dVCM
+                              + eyeMis[i].dVC * bsdfRevPdfW );
+    }
+    ```
+    The two forms are the *same number* whenever `directPdfW` is the honest
+    area→solid-angle conversion `pdfPosition · dist² / cosAtLight` (the
+    `pdfPosition` and `cosAtLight` factors cancel), so non-delta lights — env
+    included — are algebraically unchanged. But the old spelling divides by two
+    quantities that are **placeholders** for a delta light (`directPdfW := 1`,
+    `cosAtLight := 1`), which is why it could not simply be un-gated. The new form
+    touches neither and needs no `isDelta` branch.
+
+    That it closes the partition is not just measured, it is exact: with
+    `dVCM_eye = N / p_cam→A(x)` the product `camFactor · dVCM_eye` is the
+    reciprocal of the splat's own `wLight = (p_cam→A / N)·(vmFactor + dVCM_light)`,
+    and the merge's `wLight`/`wCamera` complete the same three-way ratio set, so
+    NEE + splat + merge sum to 1 by construction.
+
+    Lights with no emission-direction sampling at all — `DirectionalLight` and
+    `AmbientLight`, both of which return `pdfDirection() == 0` and from which VCM
+    never emits photons — fall out at `camFactor = 0`, i.e. NEE keeps weight 1,
+    which is correct because no competing light-side strategy exists.
+
+    **Results.** Every delta-lit row above lands on 1.000 ± 3e-4, with VM on or
+    off. `FabricRenderTest` curtain, 5 seed bases: BDPT/PT mean 1.000007
+    (σ 4.2e-5), VCM/PT mean 0.999804 (σ 4.5e-5); `kThinCurtainVcmPtTol` goes
+    0.05 → **0.01** and `kThinCurtainBdptPtTol` 0.02 → 0.01.
+    `VCMStrategyBalanceTest` topology A (delta omni) improves from VCM/PT 1.0082
+    to 0.9975. `EnvLightBalanceTest` 116/116 with **no band moved** — its
+    topology-E VCM mean ratio reads 1.2362 against the recorded 1.2365 centre,
+    because that scene's omni term is only 2.4 % of an image dominated by the
+    +24 % env bias. `scenes/Tests/VCM/pool_caustics_vcm` (two spot lights) drops
+    9.3 % (0.1493/0.1503 → 0.1371/0.1357) — the removed over-count — with its
+    auto-radius decision byte-identical (`segments=39429 median_segment=2.86251
+    effective_radius=0.0286251`).
+
+    **Why the auto-radius pre-pass was NOT changed.** The reviewer who found this
+    residual attributed it to `VCMRasterizerBase::PreRenderSetup`'s `foundSpecular`
+    predicate (`curr.isDelta && curr.type == SURFACE`) turning VM on because of the
+    gap lobe. That is a true observation about the predicate but not the cause of
+    the bias: VM accounts for only 0.7 pp of the 3.7 pp, VM-off still read
+    +2.96 %, and gap-0 (VM disabled) read +2.96 % as well. With `wCamera` fixed,
+    VCM is unbiased with VM **on** (0.99990 at gap 0.1), so whether the weave
+    enables VM is a cost question, not a correctness one. Two candidate
+    replacements were considered:
+    - *"the material is PURELY delta" (`GetBSDF() == 0`)* — **rejected**: it would
+      disable VM for `polished_material`, `subsurfacescattering_material` and
+      dielectric-over-diffuse `composite_material`, all of which have a non-null
+      BSDF **and** make real caustics.
+    - *"the material has ANY delta lobe"* — the right property, and what the
+      existing loop already estimates: it is a Monte-Carlo test over
+      width × height × `lightSubpathsPerPixel` light subpaths, so a lobe of
+      probability p is detected with probability 1 − (1−p)^N, exact for any p a
+      scene uses. Making it exactly per-surface needs a new virtual on every
+      `ISPF`, changes no scene's VM decision, and has no measured benefit —
+      declined, with the reasoning recorded at the site.
+
+25. **OPEN 2026-09-04 — a CLOSED solid whose material is a thin-transmissive
+    weave reads BDPT/VCM ≈ 0.17 × PT. Free-standing weave planes do not.**
+
+    Found while trying to build the medium-vertex regression debt 23's sibling
+    audit calls for (that requires an `interior_medium`, which requires a closed
+    solid). Measured, 24×24, 512 spp, `oidn_denoise FALSE`, omni light behind,
+    `weave_material { transmission thin, gap g }`:
+
+    | scene | PT | BDPT/PT | VCM/PT |
+    |---|---|---|---|
+    | 1 free-standing weave plane | 0.0371877 | 1.00002 | 0.99991 |
+    | 2 parallel weave planes | 0.00648917 | 0.98855 | 0.98817 |
+    | 3 parallel weave planes | 0.00116805 | 1.05328 | 1.04553 |
+    | `box_geometry`, weave material, gap 0.0 | 0.0333635 | **0.17349** | **0.17341** |
+    | `box_geometry`, weave material, gap 0.3 | 0.0223869 | **0.81405** | **0.81845** |
+    | same box + scattering `interior_medium`, gap 0.0 | 0.0333826 | 0.17293 | 0.17330 |
+    | same box + scattering `interior_medium`, gap 0.3 | 0.0223894 | 0.81219 | 0.81430 |
+
+    The interior medium is irrelevant — the box reads the same with and without
+    it — and a multi-surface transmissive *chain* is not the trigger either (three
+    parallel planes are fine). It is specific to a **closed solid** carrying a
+    thin-transmissive non-dielectric material. Not caused by, not fixed by, and
+    not investigated in this round; recorded with the numbers so the next reader
+    starts from a measurement.
+
+    **Consequence for debt 23's medium sibling.** The per-surface medium-vertex
+    predicate was fixed on principle and by symmetry with its surface twin, but it
+    has **no image-level regression test**: every scene that exercises it needs an
+    `interior_medium`, hence a closed solid, hence this 5.8× baseline error, and
+    no honest band can be drawn around that. The fix's own effect on the only
+    scene that can host it is +0.28 % on BDPT at gap 0.3 (0.0181892 → 0.0182397),
+    in the predicted direction and above the ±0.1 % run-to-run spread, but far too
+    small a lever to assert on. Re-attempt once this debt is closed.
+
+26. **OPEN 2026-09-04 — the legacy `pixelpel_rasterizer` loses the
+    delta-gap-to-emitter sighting on a gapped weave.**
+
+    32×32, 1024 spp, gapped weave (`gap 0.1`) in front of a full-width mesh area
+    emitter: `pixelpel_rasterizer` reads **0.0431** where
+    `pathtracing_pel_rasterizer` reads **0.1040**, BDPT 0.104006 and VCM 0.103925.
+    Raising `max_recursion` from 2 to 8 changes nothing (0.043115 → 0.043116), so
+    it is not a depth cap. The three modern integrators agree to 1.4e-3, so the
+    legacy rasterizer is the outlier. Recorded because
+    `tests/BDPTStrategyBalanceTest.cpp` uses `pixelpel_rasterizer` as its PT
+    reference: the area-lit twin of its topology E therefore lives in
+    `tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight` instead, and any
+    future topology there that involves a delta lobe reaching an emitter must
+    check its reference first.
 ---
 
 ## 16. Non-goals

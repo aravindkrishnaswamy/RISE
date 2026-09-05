@@ -171,6 +171,20 @@ At 256 spp the diffuse Cornell box matches BDPT within 1% on both the pre-denois
 The `merge_radius` parameter controls VM merging:
 - **`merge_radius > 0`** — explicit radius in world units, used as the initial `r_0`.
 - **`merge_radius 0` + `vm_enabled true`** — automatic radius.  `VCMRasterizerBase::PreRenderSetup` runs a pre-pass over the generated light subpaths, collects the length of every segment where **at least one endpoint is a storeable vertex** (`isConnectible` surface), takes the **median** and multiplies by `0.01` to derive the initial merge radius `r_0`.  Filtering to storeable segments avoids skewing the median with long specular chains through glass.  The median is robust against outliers from infinite-plane hits at shallow angles.  The chosen value is logged as `auto-radius segments=... median_segment=... effective_radius=...`.
+  The pre-pass also decides **whether VM runs at all**: it sets `foundSpecular` when any
+  light-subpath vertex is a DELTA **surface** (delta-position *lights* deliberately do not
+  count — see [skills/bdpt-vcm-mis-balance.md](skills/bdpt-vcm-mis-balance.md)), and logs
+  `no specular vertices — disabling VM` otherwise.  `curr.isDelta` there records the lobe
+  the walk sampled, not a property of the material, but the loop runs over
+  width × height × `lightSubpathsPerPixel` subpaths, so it is a Monte-Carlo test of the
+  per-surface question "can any surface a light path reaches scatter through a delta lobe?"
+  and is exact for any lobe probability a scene realistically uses.  A **mixed**
+  delta+continuum material therefore enables VM: `polished_material`'s specular coat, a
+  Fresnel `composite_material`, and a `weave_material` with `transmission thin, gap > 0`.
+  For the first two that is what you want; for the weave's undeviated gap it buys nothing,
+  but it is a cost question only — VCM is unbiased with VM on there (VCM/PT 0.99990 at
+  gap 0.1) since the 2026-09-04 delta-light NEE partition fix
+  ([CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 24).
 - **`vm_enabled false`** — VM is disabled regardless of radius; VCM degenerates to VC-only (matching BDPT).
 
 ### Progressive radius shrinkage (SPPM-style)

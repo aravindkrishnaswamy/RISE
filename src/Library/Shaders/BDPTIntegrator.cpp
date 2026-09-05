@@ -1791,6 +1791,22 @@ namespace {
 						// are always connectable — they are not enclosed by any
 						// specular boundary, even if the previous vertex was a
 						// specular surface (e.g., reflected off glass into open fog).
+						//
+						// "Enclosed by a specular boundary" is a property of the
+						// boundary MATERIAL, not of the lobe this particular walk
+						// happened to draw at it, so the test is the previous
+						// vertex's own per-surface `isConnectible` (material has a
+						// non-delta BSDF) — NOT its per-draw `isDelta`.  A mixed
+						// delta+continuum boundary (a weave's gap pass-through, a
+						// polished coat's specular lobe, a Fresnel composite) is
+						// crossed by a delta draw on some samples and a continuum
+						// draw on others; keying off `isDelta` made the SAME medium
+						// vertex connectible or not depending on the draw, dropping
+						// NEE and connections on that fraction of paths.  Same bug
+						// family as the surface-vertex connectibility fix above
+						// (docs/CLOTH_FABRIC_DESIGN.md §15 debt 23), one hop
+						// downstream.  Pure-delta boundaries (mirror, glass) have
+						// isConnectible == false and still gate the medium off.
 						{
 							bool connectible = true;
 							if( pMedObj == 0 ) {
@@ -1798,9 +1814,9 @@ namespace {
 								connectible = true;
 							} else if( !vertices.empty() ) {
 								const BDPTVertex& prev = vertices.back();
-								if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
-									connectible = false;
-								} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+								if( ( prev.type == BDPTVertex::SURFACE ||
+								      prev.type == BDPTVertex::MEDIUM ) &&
+								    !prev.isConnectible ) {
 									connectible = false;
 								}
 							}
@@ -2204,14 +2220,15 @@ namespace {
 				}
 			}
 
-			// Determine connectibility: true if any scattered lobe is non-delta
+			// Determine connectibility: true if the material has a non-delta BSDF,
+			// or if any scattered lobe is non-delta
 			{
 				bool hasNonDelta = false;
 				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 					if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
 				}
-				if( !ri.pMaterial->GetBSDF() ) {
-					hasNonDelta = false;
+				if( ri.pMaterial->GetBSDF() ) {
+					hasNonDelta = true;
 				}
 				vertices.back().isConnectible = hasNonDelta;
 			}
@@ -5473,15 +5490,23 @@ unsigned int GenerateLightSubpathImpl(
 					// Exception: vertices in the GLOBAL medium (pMedObj == NULL)
 					// are always connectable — not enclosed by any specular
 					// boundary.
+					//
+					// Light-subpath twin of the eye-subpath site in
+					// GenerateEyeSubpathImpl — see the long comment there:
+					// "enclosed by a specular boundary" is a property of the
+					// boundary MATERIAL (per-surface `isConnectible`), not of
+					// the lobe this walk happened to draw (`isDelta`), or a
+					// mixed delta+continuum boundary drops NEE/connections on
+					// the delta-drawn fraction of its samples.
 					{
 						bool connectible = true;
 						if( pMedObj == 0 ) {
 							connectible = true;
 						} else if( !vertices.empty() ) {
 							const BDPTVertex& prev = vertices.back();
-							if( prev.type == BDPTVertex::SURFACE && prev.isDelta ) {
-								connectible = false;
-							} else if( prev.type == BDPTVertex::MEDIUM && !prev.isConnectible ) {
+							if( ( prev.type == BDPTVertex::SURFACE ||
+							      prev.type == BDPTVertex::MEDIUM ) &&
+							    !prev.isConnectible ) {
 								connectible = false;
 							}
 						}
@@ -5712,14 +5737,15 @@ unsigned int GenerateLightSubpathImpl(
 			}
 		}
 
-		// Determine connectibility: true if any scattered lobe is non-delta
+		// Determine connectibility: true if the material has a non-delta BSDF,
+		// or if any scattered lobe is non-delta
 		{
 			bool hasNonDelta = false;
 			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
 				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
 			}
-			if( !ri.pMaterial->GetBSDF() ) {
-				hasNonDelta = false;
+			if( ri.pMaterial->GetBSDF() ) {
+				hasNonDelta = true;
 			}
 			vertices.back().isConnectible = hasNonDelta;
 		}

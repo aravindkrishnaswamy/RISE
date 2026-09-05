@@ -471,6 +471,42 @@ void VCMRasterizerBase::PreRenderSetup( const IScene& pScene, const Rect* pRect 
 						// MIS weight on direct-lighting paths, producing
 						// visible photon-density splotches at low spp on
 						// scenes that should converge instantly via NEE.
+						//
+						// NOTE ON `curr.isDelta` BEING A PER-DRAW FLAG
+						// (2026-09-04).  `isDelta` records the lobe THIS
+						// light subpath happened to sample, not a property
+						// of the material.  That is deliberate here: the
+						// loop is a Monte-Carlo estimator of the per-surface
+						// question "can any surface a light path reaches
+						// scatter through a delta lobe?", evaluated over
+						// width x height x lightSubpathsPerPixel subpaths,
+						// so a lobe of selection probability p is detected
+						// with probability 1 - (1-p)^N and the estimate is
+						// exact for any p a scene realistically uses.
+						//
+						// A MIXED delta+continuum material therefore trips
+						// this — `polished_material`'s specular coat, a
+						// Fresnel `composite_material`, and a
+						// `weave_material` with `transmission thin, gap > 0`
+						// all enable VM.  For the first two that is exactly
+						// right (they make real caustics).  For the weave's
+						// undeviated gap pass-through VM buys nothing, so
+						// this is a COST decision, not a correctness one:
+						// with the delta-light NEE partition fixed
+						// (VCMIntegrator::EvaluateNEEImpl's wCamera, same
+						// day), VCM is unbiased on the gap-0.1 backlit
+						// curtain with VM ON — VCM/PT = 0.99990 with VM vs
+						// 0.99985 without, against 1.03704 / 1.02964 before
+						// that fix.  Narrowing the predicate to "the
+						// material is PURELY delta" (`GetBSDF() == 0`) was
+						// considered and REJECTED: it would disable VM for
+						// polished coats and dielectric-over-diffuse
+						// composites, whose GetBSDF() is non-null, losing
+						// their caustics.  An exact per-surface "has any
+						// delta lobe" query would need a new virtual on
+						// every ISPF, changes no scene's VM decision, and
+						// has no measured benefit — see
+						// docs/CLOTH_FABRIC_DESIGN.md §15 debt 24.
 						const bool currIsSpecularSurface =
 							curr.isDelta  && curr.type  == BDPTVertex::SURFACE;
 						const bool prevIsSpecularSurface =

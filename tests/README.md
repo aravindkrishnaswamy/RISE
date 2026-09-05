@@ -76,6 +76,29 @@ under `tools/`; they are not assertion-based `run_all_tests` executables.
 - Prefer exact identities such as periodicity, parameter collapse (`blend=0`, `warpAmplitude=0`, `persistence=0`), symmetry, sign behavior, and simple analytic reference points before adding "different settings produce different outputs" checks.
 - Ignored `*.o` files or `* 2.o` files under `tests/` are local build artifacts, not source-of-truth tests.
 
+## Per-Test Knobs
+
+A few render-comparison tests take arguments or read an environment
+variable.  These exist so a tolerance can be *derived* (re-run the same
+case at several independent seed bases) without paying for the whole
+file each time.  They never change what a case asserts.
+
+| Test | Knob | Meaning |
+|---|---|---|
+| `FabricRenderTest` | `argv[1]` — seed base (default 1000) | `std::srand(seedBase + n)` before render *n*; different bases are independent runs **by construction**, which is how the file's tolerance derivations were measured. |
+| `FabricRenderTest` | `FABRIC_TEST_FILTER` (env) | Runs only the cases whose keyword is a substring of the value.  Keywords: `hwss`, `parity`, `curtain`, `arealit`, `touching`, `wrapped`, `gaparea`.  Unset (the CI invocation) runs everything.  A filtered run's `Passed:`/`Failed:` counts are over the selected subset only, so it is a measurement aid, **not** a substitute for the full-suite gate. |
+| `HairRenderTest` | `argv[1]` — seed base | Same convention as `FabricRenderTest`. |
+| `BDPTStrategyBalanceTest` | — | No knobs; note its PT reference is the legacy `pixelpel_rasterizer`, which is not a valid reference for every material (see the "WHY THERE IS NO AREA-LIGHT TWIN" block in that file). |
+
+Example — re-deriving the backlit-curtain band:
+
+```sh
+export RISE_MEDIA_PATH="$(pwd)/"
+for b in 1000 2000 3000 4000 5000; do
+  FABRIC_TEST_FILTER=curtain ./bin/tests/FabricRenderTest $b
+done
+```
+
 ## Adding A New Test
 
 1. Add a new `tests/<Name>.cpp` file.
