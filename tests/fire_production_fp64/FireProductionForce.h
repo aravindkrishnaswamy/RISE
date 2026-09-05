@@ -290,12 +290,23 @@ namespace RISEFireProductionFP64
 		std::vector<double> conductivityWPerMK;
 		std::vector<double> molecularKinematicViscosityM2PerS;
 		std::vector<double> gasDensityKGPerM3;
+		//! Exact resident low-order and antidiffusive candidates consumed by the
+		//! scalar limiter.  Qualification uses these device-produced bytes to bind
+		//! the accepted-state enclosure to the actual coupled trajectory.
+		std::vector<double> scalarLowFlux;
+		std::vector<double> scalarFluxDelta;
 		std::vector<double> physicalMassFluxKGPerM2S;
 		std::vector<double> physicalEnergyFluxWPerM2;
 		std::vector<double> representedPressureRatio;
 		std::array<std::vector<double>,3> faceDensityKGPerM3;
 		std::array<std::vector<double>,3> projectedMomentumKGPerM2S;
+		//! Separately captured parents of the force-inclusive provisional
+		//! momentum.  They are qualification evidence for the owner DAG: the
+		//! projection input may not author its own comparison radius.
+		std::array<std::vector<double>,3> advectionMomentumRateKGPerM2S2;
+		std::array<std::vector<double>,3> buoyancyMomentumRateKGPerM2S2;
 		std::array<std::vector<double>,3> stressMomentumRateKGPerM2S2;
+		std::array<std::vector<double>,3> phaseSourceMomentumRateKGPerM2S2;
 		double maximumPostProjectionResidualPerS;
 
 		FireProductionProjectedHeunIterationTrace() : iteration(0u),

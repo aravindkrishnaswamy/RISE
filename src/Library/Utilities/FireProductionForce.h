@@ -288,12 +288,23 @@ namespace RISE
 		std::vector<float> conductivityWPerMK;
 		std::vector<float> molecularKinematicViscosityM2PerS;
 		std::vector<float> gasDensityKGPerM3;
+		//! Exact resident low-order and antidiffusive candidates consumed by the
+		//! scalar limiter.  Qualification uses these device-produced bytes to bind
+		//! the accepted-state enclosure to the actual coupled trajectory.
+		std::vector<float> scalarLowFlux;
+		std::vector<float> scalarFluxDelta;
 		std::vector<float> physicalMassFluxKGPerM2S;
 		std::vector<float> physicalEnergyFluxWPerM2;
 		std::vector<float> representedPressureRatio;
 		std::array<std::vector<float>,3> faceDensityKGPerM3;
 		std::array<std::vector<float>,3> projectedMomentumKGPerM2S;
+		//! Separately captured parents of the force-inclusive provisional
+		//! momentum.  They are qualification evidence for the owner DAG: the
+		//! projection input may not author its own comparison radius.
+		std::array<std::vector<float>,3> advectionMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> buoyancyMomentumRateKGPerM2S2;
 		std::array<std::vector<float>,3> stressMomentumRateKGPerM2S2;
+		std::array<std::vector<float>,3> phaseSourceMomentumRateKGPerM2S2;
 		float maximumPostProjectionResidualPerS;
 
 		FireProductionProjectedHeunIterationTrace() : iteration(0u),

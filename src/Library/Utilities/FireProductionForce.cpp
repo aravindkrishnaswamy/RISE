@@ -2645,6 +2645,8 @@ namespace RISE
 				trace.molecularKinematicViscosityM2PerS=
 					coefficients.molecularKinematicViscosityM2PerS;
 				OwnerGasDensity(shape,state,trace.gasDensityKGPerM3);
+				trace.scalarLowFlux=flux.compositeFluxPair.lowFlux;
+				trace.scalarFluxDelta=flux.compositeFluxPair.fluxDelta;
 				trace.physicalMassFluxKGPerM2S=flux.physicalMassFluxKGPerM2S;
 				trace.physicalEnergyFluxWPerM2=flux.physicalEnergyFluxWPerM2;
 				trace.representedPressureRatio.resize(cells);
@@ -2657,7 +2659,15 @@ namespace RISE
 					trace.representedPressureRatio[cell]=static_cast<float>(ratio);}
 				trace.faceDensityKGPerM3=projection.faceDensityKGPerM3;
 				trace.projectedMomentumKGPerM2S=projection.momentumKGPerM2S;
+				FireProductionCompatibleFCTMomentumResult compatible;
+				if(OwnerCompatibleMomentum(flux,scalarAcceptance,projection.velocityMPerS,
+					compatible,0))trace.advectionMomentumRateKGPerM2S2=
+						compatible.advectionRateKGPerM2S2;
+				trace.buoyancyMomentumRateKGPerM2S2=
+					nonpressure.buoyancyMomentumRateKGPerM2S2;
 				trace.stressMomentumRateKGPerM2S2=nonpressure.stressMomentumRateKGPerM2S2;
+				trace.phaseSourceMomentumRateKGPerM2S2=
+					nonpressure.phaseSourceMomentumRateKGPerM2S2;
 				trace.maximumPostProjectionResidualPerS=
 					projection.maximumPostProjectionResidualPerS;
 				result.qualificationIterationTrace.push_back(std::move(trace));
@@ -2679,11 +2689,21 @@ namespace RISE
 				trace.molecularKinematicViscosityM2PerS=
 					firstCoefficients.molecularKinematicViscosityM2PerS;
 				OwnerGasDensity(shape,state,trace.gasDensityKGPerM3);
+				trace.scalarLowFlux=firstFlux.compositeFluxPair.lowFlux;
+				trace.scalarFluxDelta=firstFlux.compositeFluxPair.fluxDelta;
 				trace.physicalMassFluxKGPerM2S=firstFlux.physicalMassFluxKGPerM2S;
 				trace.physicalEnergyFluxWPerM2=firstFlux.physicalEnergyFluxWPerM2;
 				trace.faceDensityKGPerM3=firstProjection.faceDensityKGPerM3;
 				trace.projectedMomentumKGPerM2S=firstProjection.momentumKGPerM2S;
+				FireProductionCompatibleFCTMomentumResult compatible;
+				if(OwnerCompatibleMomentum(firstFlux,FireProductionScalarFCTResult(),
+					firstProjection.velocityMPerS,compatible,0))trace.advectionMomentumRateKGPerM2S2=
+						compatible.advectionRateKGPerM2S2;
+				trace.buoyancyMomentumRateKGPerM2S2=
+					firstNonpressure.buoyancyMomentumRateKGPerM2S2;
 				trace.stressMomentumRateKGPerM2S2=firstNonpressure.stressMomentumRateKGPerM2S2;
+				trace.phaseSourceMomentumRateKGPerM2S2=
+					firstNonpressure.phaseSourceMomentumRateKGPerM2S2;
 				trace.maximumPostProjectionResidualPerS=
 					firstProjection.maximumPostProjectionResidualPerS;
 				result.qualificationIterationTrace.push_back(std::move(trace));

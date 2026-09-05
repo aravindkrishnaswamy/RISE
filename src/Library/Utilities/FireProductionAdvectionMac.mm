@@ -7622,7 +7622,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const Stage& value,std::string* error)
 			{
 				if(!request_.qualificationCaptureIterationTrace)return true;
-				const std::size_t floatCount=26u*cells_+15u*allFaces_+boundaryFaces_;
+				const std::size_t floatCount=26u*cells_+36u*allFaces_+boundaryFaces_;
 				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_+
 					sizeof(std::uint64_t);
 				id<MTLBuffer> staging=[context_.device newBufferWithLength:byteCount
@@ -7652,12 +7652,17 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				copy(state,9u*cells_*sizeof(float));copy(temperature,cells_*sizeof(float));
 				copy(value.transport->coefficients,3u*cells_*sizeof(float));
 				copy(value.gasDensity,cells_*sizeof(float));
+				copy(value.physical->lowComposite,9u*allFaces_*sizeof(float));
+				copy(value.physical->advectiveDelta,9u*allFaces_*sizeof(float));
 				copy(value.physical->physicalMass,8u*allFaces_*sizeof(float));
 				copy(value.physical->physicalEnergy,allFaces_*sizeof(float));
 				copy(value.eos->representedPressureRatio,cells_*sizeof(float));
 				copy(value.packedDensity,allFaces_*sizeof(float));
 				copy(value.packedMomentum,allFaces_*sizeof(float));
+				copy(value.advectionRate,allFaces_*sizeof(float));
+				copy(value.nonpressure.buoyancyMomentumRateKGPerM2S2,allFaces_*sizeof(float));
 				copy(value.nonpressure.stressMomentumRateKGPerM2S2,allFaces_*sizeof(float));
+				copy(value.nonpressure.phaseSourceMomentumRateKGPerM2S2,allFaces_*sizeof(float));
 				copy(value.candidate->conservative,9u*cells_*sizeof(float));
 				copy(value.candidate->publicationIdentity,sizeof(std::uint64_t));
 				[blit endEncoding];if(!Commit(command,error))return false;
@@ -7687,10 +7692,15 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				floats(trace.diffusivityM2PerS,cells_);floats(trace.conductivityWPerMK,cells_);
 				floats(trace.molecularKinematicViscosityM2PerS,cells_);
 				floats(trace.gasDensityKGPerM3,cells_);
+				floats(trace.scalarLowFlux,9u*allFaces_);
+				floats(trace.scalarFluxDelta,9u*allFaces_);
 				floats(trace.physicalMassFluxKGPerM2S,8u*allFaces_);
 				floats(trace.physicalEnergyFluxWPerM2,allFaces_);
 				floats(trace.representedPressureRatio,cells_);faces(trace.faceDensityKGPerM3);
-				faces(trace.projectedMomentumKGPerM2S);faces(trace.stressMomentumRateKGPerM2S2);
+				faces(trace.projectedMomentumKGPerM2S);faces(trace.advectionMomentumRateKGPerM2S2);
+				faces(trace.buoyancyMomentumRateKGPerM2S2);
+				faces(trace.stressMomentumRateKGPerM2S2);
+				faces(trace.phaseSourceMomentumRateKGPerM2S2);
 				floats(trace.acceptedConservativeValues,9u*cells_);
 				std::memcpy(&trace.acceptedCandidateIdentity,bytes+offset,sizeof(std::uint64_t));
 				offset+=sizeof(std::uint64_t);
@@ -7706,7 +7716,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				// deliberately absent surface.
 				if(iteration==std::numeric_limits<std::uint32_t>::max()&&stage<2u)
 					trace.representedPressureRatio.clear();
-				if(stage==2u)for(auto& axis:trace.stressMomentumRateKGPerM2S2)axis.clear();
+				if(stage==2u){for(auto& axis:trace.advectionMomentumRateKGPerM2S2)axis.clear();
+					for(auto& axis:trace.buoyancyMomentumRateKGPerM2S2)axis.clear();
+					for(auto& axis:trace.stressMomentumRateKGPerM2S2)axis.clear();
+					for(auto& axis:trace.phaseSourceMomentumRateKGPerM2S2)axis.clear();}
 				trace.maximumPostProjectionResidualPerS=
 					value.projectionDiagnostics.maximumPostProjectionResidualPerS;
 				qualificationTrace_[stage].push_back(std::move(trace));
@@ -9727,8 +9740,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			bytes+=rounded;return true;};
 		// Two adjacent Picard candidates must coexist for the residual proof; R1
 		// additionally retains the accepted R0 flux/RHS until its Heun publication.
+		// The face term also covers the qualification staging of both exact resident
+		// scalar-flux candidates used by the producer-lineage proof.
 		if(!add(4u*projection)||!add(4u*target)||!add(3u*nonpressure)||
-			!add((54u*shape.CellCount()+48u*(FireProductionProjectionFaceCount(shape,0u)+
+			!add((54u*shape.CellCount()+66u*(FireProductionProjectionFaceCount(shape,0u)+
 				FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float))||
 			!add(3u*sizeof(std::uint64_t)))return false;

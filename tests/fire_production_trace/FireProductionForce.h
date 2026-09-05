@@ -291,12 +291,23 @@ namespace RISEFireProductionTrace
 		std::vector<FireProductionRoundoffTrace::TraceFloat> conductivityWPerMK;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> molecularKinematicViscosityM2PerS;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> gasDensityKGPerM3;
+		//! Exact resident low-order and antidiffusive candidates consumed by the
+		//! scalar limiter.  Qualification uses these device-produced bytes to bind
+		//! the accepted-state enclosure to the actual coupled trajectory.
+		std::vector<FireProductionRoundoffTrace::TraceFloat> scalarLowFlux;
+		std::vector<FireProductionRoundoffTrace::TraceFloat> scalarFluxDelta;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> physicalMassFluxKGPerM2S;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> physicalEnergyFluxWPerM2;
 		std::vector<FireProductionRoundoffTrace::TraceFloat> representedPressureRatio;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> faceDensityKGPerM3;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> projectedMomentumKGPerM2S;
+		//! Separately captured parents of the force-inclusive provisional
+		//! momentum.  They are qualification evidence for the owner DAG: the
+		//! projection input may not author its own comparison radius.
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> advectionMomentumRateKGPerM2S2;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> buoyancyMomentumRateKGPerM2S2;
 		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> stressMomentumRateKGPerM2S2;
+		std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3> phaseSourceMomentumRateKGPerM2S2;
 		FireProductionRoundoffTrace::TraceFloat maximumPostProjectionResidualPerS;
 
 		FireProductionProjectedHeunIterationTrace() : iteration(0u),
