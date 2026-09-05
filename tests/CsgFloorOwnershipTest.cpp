@@ -37,8 +37,9 @@
 //            and a millionfold-longer ray were both measured and both
 //            still miss, because the coplanarity is in a TRANSVERSE axis
 //            and nothing done ALONG the ray touches it -- so a child the
-//            ray misses is retried from four origins displaced
-//            TRANSVERSELY by the same window (+-t1, +-t2).
+//            ray misses is retried from origins displaced TRANSVERSELY
+//            by the same window (+-t1, +-t2 -- and, since the review of
+//            384e3752, the four DIAGONALS as well; see (d)).
 //
 //        (c) THE BOUNDING BOX IS NOT A SURFACE.  (b)'s first cure was a
 //            shell test: is the point within `window` of the child's
@@ -46,6 +47,34 @@
 //            whose bbox PLANE passes near the point even when its own
 //            surface is far away -- a torus's AABB is a solid cube of
 //            +-(R+r), an SDF's is padded past its field.  Tests 5 and 6.
+//
+//        (d) THE AXIAL JITTERS ALL GRAZE AT A VERTEX.  (b)'s four
+//            displacements straddle ONE shared plane, but at a shared
+//            VERTEX two planes meet and every axial displacement lands
+//            exactly on one of them or leaves the operand.  Test 7: the
+//            same two boxes, small one lifted so they share only the
+//            corner (1,1,1) -- the long box's 2.84e-8 was dropped for the
+//            small box's 4.01e-12, 7081x under, while the EDGE control
+//            stayed charged.  Cured by the four DIAGONALS, which land
+//            strictly inside a transverse quadrant.
+//
+//    P1-2 (SDFGeometry + CSGObject), same review.  A DEGENERATE SCALE
+//      makes the floor unbounded.  `SelfHitRootFloor` divides the
+//      sphere-tracer's band by the parts' Lipschitz shrink, whose scale
+//      magnitudes are floored at 1e-9 -- so a part authored `scale
+//      (1,1,0)` claims nine orders more than a healthy twin (4.4e5 against
+//      4.4e-4 on a unit field).  One layer up that number is an
+//      ownership-ray REACH, so the degenerate field charges its floor on a
+//      HEALTHY sibling's face tens of units away: a guaranteed wrong-face
+//      payload.  Three layers of cure, each with its own test:
+//      (a) the authoring surfaces (`ParsePartLines`, the `scale` keyframe
+//      setter) clamp a sub-1e-6 magnitude and reject a non-finite one --
+//      covered in `SDFGeometryTest`, since it is parser behaviour;
+//      (b) `SDFGeometry::SelfHitRootFloor` caps its answer at half its own
+//      bounding-box diagonal (Test 8); (c) `CSGObject::SelfHitRootFloor`
+//      caps every child's ownership window at the COMPOSITE's own diagonal
+//      (Test 9), which bounds any geometry's floor pathology, not only an
+//      SDF's.
 //
 //    P2-2 (SDFGeometry).  `SDFGeometry::SelfHitRootFloor` divided
 //      March's 2*m_eps step-off band by the smallest Lipschitz shrink
@@ -83,6 +112,18 @@
 //       3e-4 past the real one and the composite adopts the DECOY's
 //       payload.  Oracled against independent direct probes of both
 //       faces, the idiom CsgProbeFloorTest's Test 5/6 use.
+//    7. Two boxes sharing only a VERTEX: the four axial jitters all graze
+//       (asserted one by one) and a DIAGONAL is what finds the co-owner
+//       (P1-1).
+//    8. A zero-scale SDF part's floor is capped at half the field's own
+//       bounding-box diagonal, so `CSG_UNION(box, that field 39 units
+//       away)` reports the BOX's floor (P1-2b).  A healthy twin, orders
+//       below the cap, is the control.
+//    9. `SUBTRACTION(box, UNION(box 8 units away, a degenerate SDF of
+//       radius 4000))`: the inner union carries a floor 3266x half the
+//       outer composite's whole diagonal, and its uncapped ownership ray
+//       reaches its own box and charges it on operand A's face; capped at
+//       that diagonal it cannot (P1-2c).
 //
 //  Style follows tests/CsgProbeFloorTest.cpp (`Check` probes, plain
 //  counters, no framework).  Separate file from that one because these
@@ -96,6 +137,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iostream>
@@ -736,6 +778,319 @@ void TestBboxPlaneSiblingDoesNotOpenTheDecoyWindow( const Scalar gap )
 	ReleaseBboxDecoyResult( res );
 }
 
+//
+// Test 7 (P1-1): a shared VERTEX, where all four AXIAL jitters graze.
+//
+// Test 2's edge is ONE shared plane, and the four transverse displacements
+// straddle it -- one of them lands strictly inside the grazed operand.  A
+// shared VERTEX is two planes meeting, and each axial displacement lands
+// EXACTLY ON one of them or steps outside the operand entirely, so every
+// retry grazes and the co-owner is dropped again.
+//
+// Test 2's geometry with the small box LIFTED so the two share only the
+// corner (1,1,1): long box x in [-4e6+1, 1], y and z in [-1,1]; small box
+// [1,3]^3.  Queried at (1,1,1) with the long box's +X normal.  With
+// n = +X the transverse pair is t1 = +Z, t2 = -Y, so the four axial
+// displacements are +-Y and +-Z: -Y lands at z = 1 exactly, -Z lands at
+// y = 1 exactly, and +Y / +Z leave the box.  Measured: composite 4.01e-12
+// (the small box's) against the long box's own 2.84e-8 -- 7081x under --
+// while Test 2's EDGE control at (1,1,0) was charged correctly.
+//
+// The cure is the four DIAGONALS, (+-t1 +- t2)/sqrt(2): each lands strictly
+// inside one transverse QUADRANT, and a vertex of a convex operand always has
+// one quadrant strictly interior to it.  Here (-t1 + t2)/sqrt(2) =
+// (0,-1,-1)/sqrt(2) puts the origin at y < 1 AND z < 1, inside the long box's
+// cross-section, and the ray hits its +X face.
+//
+void TestSharedVertexChargesBothOwners()
+{
+	std::cout << "A shared VERTEX charges BOTH owners -- the axial jitters all graze (P1-1)..." << std::endl;
+
+	BoxGeometry* gLong  = new BoxGeometry( 4.0e6, 2.0, 2.0 );   // half-extent 2e6 in x
+	BoxGeometry* gSmall = new BoxGeometry( 2.0, 2.0, 2.0 );     // half-extent 1
+
+	Object* oLong  = new Object( gLong );
+	Object* oSmall = new Object( gSmall );
+	safe_release( gLong );
+	safe_release( gSmall );
+
+	oLong->SetPosition( Point3( -2.0e6 + 1.0, 0.0, 0.0 ) );     // x in [-4e6+1,1], y,z in [-1,1]
+	oLong->FinalizeTransformations();
+	oSmall->SetPosition( Point3( 2.0, 2.0, 2.0 ) );             // [1,3]^3 -- shares only the corner
+	oSmall->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	Check( csg->AssignObjects( oLong, oSmall ), "Test7: composite takes long(A)/small(B) operands" );
+	csg->FinalizeTransformations();
+
+	const Point3  ptCorner( 1.0, 1.0, 1.0 );    // the shared VERTEX
+	const Vector3 dirIn( 1.0, 0.0, 0.0 );
+	const Vector3 nOut( 1.0, 0.0, 0.0 );        // the LONG box's +X face normal
+
+	const Scalar floorLongOwn  = oLong->SelfHitRootFloor( Point3( 2.0e6, 1.0, 1.0 ), dirIn, nOut );
+	const Scalar floorSmallOwn = oSmall->SelfHitRootFloor( Point3( -1.0, -1.0, -1.0 ), dirIn, nOut );
+	const Scalar floorCsg      = csg->SelfHitRootFloor( ptCorner, dirIn, nOut );
+	std::printf( "  long %.6g   small %.6g   composite %.6g\n", floorLongOwn, floorSmallOwn, floorCsg );
+
+	// The window the production code uses for the long box at this point, so
+	// the mechanism checks below fire the same rays it does.
+	const Scalar deltaBase = 1e-6 * ( 1.0 + 1.0 + 1.0 + 1.0 );
+	const Scalar window = std::max( deltaBase, 2.0 * floorLongOwn );
+	const Point3 base( ptCorner.x - window, ptCorner.y, ptCorner.z );
+
+	// Sanity: the straight shot AND all four axial retries miss the long box --
+	// this is exactly what Test 2's edge does not do, and it is the whole
+	// reason the diagonals exist.
+	Check( !oLong->IntersectRay_IntersectionOnly( Ray( base, Vector3(1,0,0) ), 2.0 * window, true, true ),
+		"Test7: (sanity) the straight ownership ray MISSES the long box" );
+	int axialHits = 0;
+	const Vector3 axial[4] = { Vector3(0,1,0), Vector3(0,-1,0), Vector3(0,0,1), Vector3(0,0,-1) };
+	for( int j = 0; j < 4; j++ ) {
+		const Ray r( Point3( base.x, base.y + axial[j].y * window, base.z + axial[j].z * window ), Vector3(1,0,0) );
+		if( oLong->IntersectRay_IntersectionOnly( r, 2.0 * window, true, true ) ) { ++axialHits; }
+	}
+	std::printf( "  axial jitters that find the long box: %d of 4\n", axialHits );
+	Check( axialHits == 0,
+		"Test7: (sanity) NONE of the four axial jitters finds the long box -- every one grazes or leaves it" );
+
+	// ...and at least one DIAGONAL does.
+	int diagHits = 0;
+	const double h = 1.0 / std::sqrt( 2.0 );
+	const double sgn[4][2] = { { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } };
+	for( int j = 0; j < 4; j++ ) {
+		// t1 = +Z, t2 = -Y for n = +X (AnyPerpendicularUnit_'s own choice).
+		const Ray r( Point3( base.x,
+		                     base.y + ( -sgn[j][1] ) * h * window,
+		                     base.z + (  sgn[j][0] ) * h * window ), Vector3(1,0,0) );
+		if( oLong->IntersectRay_IntersectionOnly( r, 2.0 * window, true, true ) ) { ++diagHits; }
+	}
+	std::printf( "  diagonal jitters that find the long box: %d of 4\n", diagHits );
+	Check( diagHits > 0,
+		"Test7: (sanity) at least one DIAGONAL jitter lands strictly inside the long box" );
+
+	Check( floorLongOwn > floorSmallOwn * 1000.0,
+		"Test7: (sanity) the grazed operand's gate is >1000x the one the axial rays find" );
+
+	// MONEY: the composite covers the grazed co-owner's gate.
+	Check( floorCsg >= floorLongOwn * 0.999999,
+		"Test7: MONEY ASSERTION -- composite floor covers the VERTEX co-owner's own floor" );
+	Check( floorCsg > 1e-9,
+		"Test7: MONEY ASSERTION -- composite floor is NOT the small box's ulp-scale 4e-12" );
+	Check( floorCsg <= floorLongOwn * 1.000001,
+		"Test7: composite floor is exactly the widest owner's, not more" );
+
+	safe_release( csg );
+	safe_release( oLong );
+	safe_release( oSmall );
+}
+
+namespace
+{
+	// An SDF whose ONE part carries a zero-scale axis -- the authoring slip
+	// `scale <sx sy sz>` mistyped as `1 1 0`.  Built through the constructor
+	// on purpose: `ParsePartLines` and the `scale` keyframe setter both clamp
+	// such a component to 1e-6 now (SDFGeometryTest covers that), and this is
+	// the field they would have produced before, i.e. the one the floor's own
+	// bbox-diagonal cap has to survive.
+	SDFGeometry* MakeZeroScaleSdfSphere( const Scalar radius, const Point3& at )
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart(
+			SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			at, 0, 0, 0, Vector3( 1, 1, 0 ), radius, 0, 0, 0 ) );
+		return new SDFGeometry( parts, 512, Scalar(1e-5) );
+	}
+
+	Scalar BBoxDiagonal( const BoundingBox& bb )
+	{
+		const Scalar ex = bb.ur.x - bb.ll.x, ey = bb.ur.y - bb.ll.y, ez = bb.ur.z - bb.ll.z;
+		return std::sqrt( ex*ex + ey*ey + ez*ez );
+	}
+}
+
+//
+// Test 8 (P1-2, layer (b)): a degenerate SDF's own floor is capped at half its
+// bounding-box diagonal.
+//
+// `SelfHitRootFloor` divides the sphere-tracer's step-off band by the parts'
+// Lipschitz shrink, `min|scale| / max|scale|` over FLOORED magnitudes -- so a
+// part authored `scale (1,1,0)` reads 1e-9 and the claim comes out nine orders
+// wide.  Measured on a unit sphere part: 5.66e4 on a field 2.83 units across --
+// TWENTY THOUSAND times its own size, against a healthy twin's 6.9e-5.  A floor
+// that large is not a standoff any probe can use; one layer up it is an
+// ownership-ray REACH, and Test 9 shows what that reaches.
+//
+// Capped at 0.5 * diagonal the number can never leave the field.  The
+// composite's verdict on the box's own face is carried alongside as a control
+// (this particular field is a zero-THICKNESS solid, so the ownership ray passes
+// through it tangentially and reports a miss either way -- the end-to-end
+// consequence of an inflated floor is Test 9's, and it does not depend on the
+// pathological child being an SDF).  A healthy (uniformly scaled) twin is
+// checked in the same breath: the cap is four orders away from it.
+//
+void TestDegenerateSdfFloorIsCappedByItsOwnSize()
+{
+	std::cout << "A zero-scale SDF part cannot claim a floor bigger than its field (P1-2, layer b)..." << std::endl;
+
+	const Scalar zSdf = 39.0;
+	SDFGeometry* gSdf = MakeZeroScaleSdfSphere( 1.0, Point3( 0, 0, zSdf ) );
+	BoxGeometry* gBox = new BoxGeometry( 2.0, 2.0, 2.0 );      // [-1,1]^3
+
+	Object* oSdf = new Object( gSdf );
+	Object* oBox = new Object( gBox );
+	safe_release( gBox );
+
+	oSdf->SetPosition( Point3( 0, 0, 0 ) );
+	oSdf->FinalizeTransformations();
+	oBox->SetPosition( Point3( 0, 0, 0 ) );
+	oBox->FinalizeTransformations();
+
+	CSGObject* csg = new CSGObject( CSG_UNION );
+	Check( csg->AssignObjects( oBox, oSdf ), "Test8: composite takes box(A)/degenerate-sdf(B) operands" );
+	csg->FinalizeTransformations();
+
+	const Point3  ptFace( 0.0, 0.0, -1.0 );     // on the BOX's -Z face
+	const Vector3 dirIn( 0.0, 0.0, -1.0 );
+	const Vector3 nOut( 0.0, 0.0, -1.0 );
+
+	const Scalar sdfDiag  = BBoxDiagonal( gSdf->GenerateBoundingBox() );
+	const Scalar floorSdf = oSdf->SelfHitRootFloor( ptFace, dirIn, nOut );
+	const Scalar floorBox = oBox->SelfHitRootFloor( ptFace, dirIn, nOut );
+	const Scalar floorCsg = csg->SelfHitRootFloor( ptFace, dirIn, nOut );
+	std::printf( "  sdf %.6g (its bbox diagonal %.6g, half %.6g)   box %.6g   composite %.6g\n",
+		floorSdf, sdfDiag, 0.5 * sdfDiag, floorBox, floorCsg );
+
+	// Sanity: this really is the degenerate field, and the cap really is what
+	// is holding the number down -- without it the claim is ~5.7e4.
+	Check( sdfDiag > 1.0 && sdfDiag < 10.0, "Test8: (sanity) the field is a few units across" );
+	Check( floorSdf <= 0.5 * sdfDiag * 1.000001 && floorSdf >= 0.5 * sdfDiag * 0.999999,
+		"Test8: MONEY ASSERTION -- the SDF's own floor is exactly the 0.5 * diagonal cap (uncapped it is 5.66e4)" );
+	Check( 2.0 * floorSdf < zSdf - 1.0,
+		"Test8: MONEY ASSERTION -- the capped window can no longer REACH the box's face from the field" );
+
+	// Control: the composite reports the OWNING box's floor.
+	Check( floorCsg <= floorBox * 1.000001,
+		"Test8: (control) composite floor is the OWNING box's, not the degenerate SDF's" );
+	Check( floorCsg < 1e-9,
+		"Test8: (control) composite floor is NOT the degenerate SDF's inflated claim" );
+
+	// Control: the cap is nowhere near a healthy field, so it changes nothing.
+	SDFGeometry* gHealthy = MakeSdfSphere( 1.0 );
+	const Scalar healthyDiag = BBoxDiagonal( gHealthy->GenerateBoundingBox() );
+	const Scalar floorHealthy = gHealthy->SelfHitRootFloor( Point3( 0, 0, -1 ), dirIn, nOut );
+	std::printf( "  healthy twin: floor %.6g   half-diagonal %.6g   ratio %.3g\n",
+		floorHealthy, 0.5 * healthyDiag, floorHealthy / ( 0.5 * healthyDiag ) );
+	Check( floorHealthy < 0.5 * healthyDiag * 1e-3,
+		"Test8: (control) a uniformly-scaled field's floor is orders BELOW the cap -- it is untouched" );
+	safe_release( gHealthy );
+
+	safe_release( csg );
+	safe_release( oSdf );
+	safe_release( oBox );
+	safe_release( gSdf );
+}
+
+//
+// Test 9 (P1-2, layer (c)): the composite caps every child's ownership window
+// at its OWN bounding-box diagonal.
+//
+// Layer (b) bounds an SDF's floor by the SDF's own size, but a CHILD can still
+// be enormous next to the composite that contains it -- and a subtraction is
+// bounded by operand A alone, so a subtrahend may be thousands of times wider
+// than the composite.  `SUBTRACTION(box [-1,1]^3, UNION(box at z = -9,
+// degenerate SDF of radius 4000))`: the inner union reports the SDF's capped
+// 5657 (no child owns the queried point, so it falls back to the max over both
+// -- exactly the conservative path the filter is documented to take), which is
+// 3266x HALF THE OUTER COMPOSITE'S ENTIRE DIAGONAL of 3.46.
+//
+// Uncapped, that floor is a window of 11315 and an ownership ray 22629 long: it
+// finds the inner union's box 8 units past the queried face and charges 5657 on
+// operand A's own face -- a floor 1.4e15 times A's real requirement, and through
+// the exit probe's 2x margin a same-face acceptance window wider than the scene.
+// Capped at the composite's diagonal the same ray reaches 3.46 and finds
+// nothing, so A's face reports A's floor.
+//
+// Note what carries the pathology here: a nested COMPOSITE, not an SDF.  This
+// layer bounds any child's floor, whatever produced it -- layer (b) is
+// per-geometry, this one is per-composite -- and it is the reason a degenerate
+// part cannot poison a face on the other side of the scene.
+//
+void TestChildWindowIsCappedByTheCompositesOwnSize()
+{
+	std::cout << "A child's ownership window cannot exceed the composite's own size (P1-2, layer c)..." << std::endl;
+
+	// The pathological floor's source: the same degenerate field as Test 8, at
+	// radius 4000 so its half-diagonal is thousands of units.
+	SDFGeometry* gSdf = MakeZeroScaleSdfSphere( 4000.0, Point3( 0, 0, 0 ) );
+	Object* oSdf = new Object( gSdf );
+	safe_release( gSdf );
+	oSdf->SetPosition( Point3( 0, 0, 0 ) );
+	oSdf->FinalizeTransformations();
+
+	// The HITTABLE half of the inner union, parked 8 units past the queried
+	// face: what the uncapped ownership ray finds and the capped one does not.
+	BoxGeometry* gInner = new BoxGeometry( 2.0, 2.0, 2.0 );    // [-1,1]^3 about z = -9
+	Object* oInner = new Object( gInner );
+	safe_release( gInner );
+	oInner->SetPosition( Point3( 0, 0, -9 ) );
+	oInner->FinalizeTransformations();
+
+	CSGObject* nested = new CSGObject( CSG_UNION );
+	Check( nested->AssignObjects( oInner, oSdf ), "Test9: inner union takes box/degenerate-sdf operands" );
+	nested->FinalizeTransformations();
+
+	BoxGeometry* gA = new BoxGeometry( 2.0, 2.0, 2.0 );        // [-1,1]^3 -- the queried operand
+	Object* oA = new Object( gA );
+	safe_release( gA );
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oA->FinalizeTransformations();
+
+	CSGObject* outer = new CSGObject( CSG_SUBTRACTION );       // A MINUS the inner union
+	Check( outer->AssignObjects( oA, nested ), "Test9: outer composite takes A/nested operands" );
+	outer->FinalizeTransformations();
+
+	const Point3  ptFace( 0.0, 0.0, -1.0 );     // on A's -Z face
+	const Vector3 dirIn( 0.0, 0.0, -1.0 );
+	const Vector3 nOut( 0.0, 0.0, -1.0 );
+
+	// A SUBTRACTION is bounded by operand A, so this is the outer composite's
+	// own extent -- the ceiling every child's window is now held to.
+	const Scalar compositeDiag = BBoxDiagonal( oA->getBoundingBox() );
+	const Scalar floorNested = nested->SelfHitRootFloor( ptFace, dirIn, nOut );
+	const Scalar floorA      = oA->SelfHitRootFloor( ptFace, dirIn, nOut );
+	const Scalar floorOuter  = outer->SelfHitRootFloor( ptFace, dirIn, nOut );
+	std::printf( "  nested %.6g   A %.6g   composite-diagonal %.6g   outer %.6g\n",
+		floorNested, floorA, compositeDiag, floorOuter );
+
+	// Sanity: the precondition -- the child's floor dwarfs the composite that
+	// contains it, so its uncapped window would leave the composite entirely.
+	Check( 2.0 * floorNested > compositeDiag * 100.0,
+		"Test9: (sanity) the child's own window would be >100x the whole composite's diagonal" );
+
+	// ...and that window really does find the child, while the capped one does
+	// not: the mechanism, fired directly at the two window sizes.
+	const Scalar wUncapped = 2.0 * floorNested;
+	const Scalar wCapped   = compositeDiag;
+	Check( nested->IntersectRay_IntersectionOnly(
+			Ray( Point3( ptFace.x, ptFace.y, ptFace.z + wUncapped ), nOut ), 2.0 * wUncapped, true, true ),
+		"Test9: (sanity) the UNCAPPED ownership ray reaches the child 8 units past the face" );
+	Check( !nested->IntersectRay_IntersectionOnly(
+			Ray( Point3( ptFace.x, ptFace.y, ptFace.z + wCapped ), nOut ), 2.0 * wCapped, true, true ),
+		"Test9: (sanity) the CAPPED one does not" );
+
+	// MONEY: the composite reports operand A's floor, not the child's.
+	Check( floorOuter <= floorA * 1.000001,
+		"Test9: MONEY ASSERTION -- composite floor is the OWNING operand A's, not the distant child's" );
+	Check( floorOuter < 1e-9,
+		"Test9: MONEY ASSERTION -- composite floor is NOT the child's ~5.7e3" );
+
+	safe_release( outer );
+	safe_release( nested );
+	safe_release( oA );
+	safe_release( oInner );
+	safe_release( oSdf );
+}
+
 int main()
 {
 	std::cout << "CSG / SDF self-hit-floor OWNERSHIP tests" << std::endl;
@@ -747,6 +1102,9 @@ int main()
 	TestBboxPlaneSiblingIsNotAnOwner();
 	TestBboxPlaneSiblingDoesNotOpenTheDecoyWindow( 3e-4 );
 	TestBboxPlaneSiblingDoesNotOpenTheDecoyWindow( 1e-4 );
+	TestSharedVertexChargesBothOwners();
+	TestDegenerateSdfFloorIsCappedByItsOwnSize();
+	TestChildWindowIsCappedByTheCompositesOwnSize();
 
 	std::cout << "\n" << g_pass << " checks passed, " << g_fail << " failed." << std::endl;
 	return g_fail == 0 ? 0 : 1;

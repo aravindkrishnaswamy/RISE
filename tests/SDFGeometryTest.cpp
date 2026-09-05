@@ -88,6 +88,14 @@ private:
 // comment above for why this can't just check ParsePartLines' return value).
 static CapturingLogPrinter* g_degenerateShapeWarn = 0;
 
+// Same idea for the degenerate-SCALE diagnostics (Test 29b).  Two needles
+// because the two outcomes differ in kind: a sub-1e-6 magnitude is CLAMPED with
+// a warning on both authoring surfaces (`ParsePartLines` and the `part<N>.scale`
+// keyframe setter), while a non-finite one is REFUSED -- a parse error in the
+// former, an ignored keyframe in the latter.
+static CapturingLogPrinter* g_scaleClampWarn = 0;
+static CapturingLogPrinter* g_scaleNonFinite = 0;
+
 static bool IsClose( Scalar a, Scalar b, Scalar eps = 2e-3 ) { return std::fabs(a-b) <= eps; }
 static Scalar Len( const Vector3& v ) { return std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z); }
 static bool VClose( const Vector3& a, const Vector3& b, Scalar eps = 6e-3 )
@@ -1432,6 +1440,124 @@ static void TestKeyframeBlendAndScale()
 	RayIntersectionGeometric ri2 = MkRI( Point3(20,-3,0), Vector3(-1,0,0) ); g->IntersectRay(ri2,true,true,false);
 	Check( ri2.bHit && IsClose(ri2.range, 14.0, 0.1), "scaled sphere reaches x=6 (range 20-6)" );
 	safe_release( g );
+}
+
+//////////////////////////////////////////////////////////////////////
+// Test 29b: DEGENERATE PART SCALE.  The other half of Test 20b's
+// authoring slip -- a 0 (or a typo'd extra decimal place) in the
+// <sx sy sz> SCALE slot.  Nothing downstream reads it as an error: the
+// magnitude is floored at 1e-9 so `invScale` stays finite.  But that
+// floor IS the part's Lipschitz shrink, and `SelfHitRootFloor` divides
+// the sphere-tracer's step-off band by it, so a unit sphere part claims
+// 5.66e4 at `scale (1,1,0)` against 6.9e-5 at `scale (1,1,1)` -- nine
+// orders, twenty thousand times the field's own size.  One layer up that
+// number is an ownership-ray REACH (CsgFloorOwnershipTest Tests 8 and 9).
+//
+// Both authoring surfaces refuse to pass it through silently: a magnitude
+// below 1e-6 is clamped to 1e-6 WITH SIGN and warned about, a non-finite
+// component is refused outright (a parse error from `ParsePartLines`, an
+// ignored keyframe in `SetIntermediateValue`).  Clamp-and-warn rather
+// than reject for the finite case, matching the superellipsoid exponent
+// clamp and Test 20b's degenerate-shape advisory: the part still composes,
+// and failing a whole scene load over one authoring slip is worse.
+//////////////////////////////////////////////////////////////////////
+static void TestDegenerateScaleClampsAndWarns()
+{
+	std::cout << "Test 29b: degenerate <sx sy sz> scale is clamped + warned (both authoring surfaces)" << std::endl;
+
+	const Scalar kMin = 1e-6;
+
+	// PARSER, the zero the slip actually produces.
+	{
+		g_scaleClampWarn->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines(
+			"sphere union 0  0 0 0  0 0 0  1 1 0  1 0 0  0\n", "<test>", parts ),
+			"zero-scale part still parses (warn, don't fail)" );
+		Check( parts.size() == 1, "zero-scale part still yields the one part" );
+		Check( g_scaleClampWarn->MatchCount() == 1, "the clamp warning fires exactly once" );
+		if( parts.size() == 1 ) {
+			Check( parts[0].scale.z == kMin, "the zero component is clamped to 1e-6, not left at 0" );
+			Check( parts[0].scale.x == 1.0 && parts[0].scale.y == 1.0, "the healthy components are untouched" );
+		}
+	}
+
+	// PARSER, sign preservation: a negative scale is a legitimate mirror, so
+	// the clamp must not flip it.
+	{
+		g_scaleClampWarn->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines(
+			"sphere union 0  0 0 0  0 0 0  1 1 -0.0000001  1 0 0  0\n", "<test>", parts ),
+			"sub-minimum negative scale still parses" );
+		Check( g_scaleClampWarn->MatchCount() == 1, "the clamp warning fires for a sub-minimum magnitude too" );
+		if( parts.size() == 1 ) {
+			Check( parts[0].scale.z == -kMin, "the clamp preserves the sign (-1e-7 -> -1e-6)" );
+		}
+	}
+
+	// PARSER, control: a healthy scale is silent and byte-exact.
+	{
+		g_scaleClampWarn->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( SDFGeometry::ParsePartLines(
+			"sphere union 0  0 0 0  0 0 0  1 2 0.5  1 0 0  0\n", "<test>", parts ),
+			"healthy-scale part parses" );
+		Check( g_scaleClampWarn->MatchCount() == 0, "no warning for a healthy scale" );
+		if( parts.size() == 1 ) {
+			Check( parts[0].scale.x == 1.0 && parts[0].scale.y == 2.0 && parts[0].scale.z == 0.5,
+				"a healthy scale reaches the part verbatim" );
+		}
+	}
+
+	// PARSER, non-finite: refused, and for THIS reason (the needle proves the
+	// scale guard fired, not the 16-token grammar check).
+	{
+		g_scaleNonFinite->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( !SDFGeometry::ParsePartLines(
+			"sphere union 0  0 0 0  0 0 0  1 1 nan  1 0 0  0\n", "<test>", parts ),
+			"non-finite scale component rejected" );
+		Check( g_scaleNonFinite->MatchCount() == 1,
+			"...by the scale guard specifically, not by the token grammar" );
+		Check( parts.empty(), "the rejected part is not appended" );
+	}
+
+	// KEYFRAME setter: same clamp, on the path that never sees the parser.
+	{
+		std::vector<SDFGeometry::Part> parts;
+		parts.push_back( SDFGeometry::MakePart( SDFGeometry::ePrimSphere, SDFGeometry::eOpUnion, 0,
+			Point3(0,0,0), 0,0,0, Vector3(1,1,1), 2.0, 0, 0, 0 ) );
+		SDFGeometry* g = MakeGeom( parts );
+
+		{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+			g->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && IsClose( ri.range, 18.0, 0.05 ), "(setup) the unscaled sphere is hit at z = 2" ); }
+
+		g_scaleClampWarn->Clear();
+		Check( ApplyKF( g, "part0.scale", "1 1 0" ), "part0.scale `1 1 0` is accepted (clamped, not refused)" );
+		Check( g_scaleClampWarn->MatchCount() == 1, "the keyframe clamp warns exactly once" );
+
+		// The keyframe was APPLIED, not ignored -- which is what separates
+		// clamp-and-warn from reject.  A part squashed to 1e-6 of its Z is a
+		// solid four MILLIONTHS thick, far inside the sphere-tracer's own
+		// surface band, so the ray that used to hit it now passes through: the
+		// clamp keeps the field's Lipschitz arithmetic sane, it does not
+		// pretend a degenerate part is a healthy one.
+		{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+			g->IntersectRay( ri, true, true, false );
+			Check( !ri.bHit, "the flattened part is a zero-thickness solid the trace passes through" ); }
+
+		// A healthy keyframe stays silent, and restores the sphere.
+		g_scaleClampWarn->Clear();
+		Check( ApplyKF( g, "part0.scale", "1 1 1" ), "part0.scale `1 1 1` accepted" );
+		Check( g_scaleClampWarn->MatchCount() == 0, "no warning for a healthy keyframed scale" );
+		{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+			g->IntersectRay( ri, true, true, false );
+			Check( ri.bHit && IsClose( ri.range, 18.0, 0.05 ), "the restored sphere is hit at z = 2 again" ); }
+
+		safe_release( g );
+	}
 }
 
 static void TestKeyframeRejectsBadParams()
@@ -3122,6 +3248,18 @@ int main()
 		g_degenerateShapeWarn = owned;   // AddPrinter addref'd it; keep a raw read handle
 		safe_release( owned );           // drop OUR construction ref (safe_release nulls its arg)
 	}
+	{
+		CapturingLogPrinter* owned = new CapturingLogPrinter( "minimum magnitude" );
+		RISE::GlobalLogPriv()->AddPrinter( owned );
+		g_scaleClampWarn = owned;
+		safe_release( owned );
+	}
+	{
+		CapturingLogPrinter* owned = new CapturingLogPrinter( "non-finite scale component" );
+		RISE::GlobalLogPriv()->AddPrinter( owned );
+		g_scaleNonFinite = owned;
+		safe_release( owned );
+	}
 
 	TestSphereMatchesAnalytic();
 	TestBoxMatchesAnalytic();
@@ -3156,6 +3294,7 @@ int main()
 	TestKeyframePartSizeAndArea();
 	TestKeyframePartRotation();
 	TestKeyframeBlendAndScale();
+	TestDegenerateScaleClampsAndWarns();
 	TestKeyframeRejectsBadParams();
 	TestKeyframeHeightfieldScale();
 	TestRoundConeAABBIdentityForWellFormedCones();

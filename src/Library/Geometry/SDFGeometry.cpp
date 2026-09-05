@@ -957,6 +957,56 @@ static void FlooredScaleExtremes_( const Vector3& s, Scalar& outMin, Scalar& out
 	outMax = std::max( sx, std::max( sy, sz ) );
 }
 
+// Smallest per-axis scale MAGNITUDE a part may be AUTHORED with, and the verdict
+// of checking one against it (adversarial review of 384e3752, P1-2).
+//
+// `<sx sy sz>` is a pre-transform scale on the primitive's own unit frame, and
+// nothing downstream treats a 0 there as an error: `RecomputePartDerived` floors
+// the magnitude at 1e-9 so `invScale` stays finite, and `SelfHitRootFloor` then
+// reads the part's Lipschitz shrink as that floored `min/max` -- 1e-9 -- and
+// divides the sphere-tracer's step-off band by it.  Measured on a unit sphere
+// part (epsFrac 1e-5, field 2.83 units across): `scale (1,1,1)` claims 6.9e-5,
+// `scale (1,1,0)` claims 5.66e4 -- nine orders wider, twenty thousand times the
+// field's own size.  Inside a CSG composite that floor is an ownership-ray
+// REACH, so the degenerate part charges its floor on geometry it has nothing to
+// do with -- a wrong-face payload from one mistyped digit.
+//
+// So the authoring surfaces refuse to pass a 0 through silently.  1e-6 is the
+// clamp because it is `m_eps`'s own absolute floor -- the smallest length this
+// geometry treats as meaningful anywhere -- and it is 1e3 above the 1e-9 poison
+// floor; a part that genuinely wants to be a millionth of its primitive should
+// scale the primitive's `<a b c>` instead, which costs the field no Lipschitz
+// quality at all.  The clamp is a diagnostic, NOT the guard: at 1e-6 the same
+// part still claims 5.66e1 on that field, and what bounds it is
+// `SelfHitRootFloor`'s bbox-diagonal cap below.  That is also why nothing is
+// clamped at the CONSTRUCTOR -- the cap is the load-bearing layer, and the tests
+// need a way to build a degenerate field to prove it works.
+static const Scalar kMinPartScaleMag = Scalar(1e-6);
+
+enum PartScaleVerdict { ePartScaleOk = 0, ePartScaleClamped = 1, ePartScaleNonFinite = 2 };
+
+//! Clamps every sub-1e-6 component of `s` to +-1e-6 (sign preserved -- a
+//! negative scale is a legitimate mirror) and reports what happened.  A
+//! non-finite component is reported WITHOUT touching `s`: there is no sensible
+//! magnitude to clamp a NaN to, so the caller rejects the whole value instead.
+static int SanitizePartScale_( Vector3& s )
+{
+	Scalar* const comp[3] = { &s.x, &s.y, &s.z };
+	for( int i = 0; i < 3; i++ ) {
+		if( !RISE::IsFiniteDouble( static_cast<double>( *comp[i] ) ) ) {
+			return ePartScaleNonFinite;
+		}
+	}
+	int verdict = ePartScaleOk;
+	for( int i = 0; i < 3; i++ ) {
+		if( std::fabs( *comp[i] ) < kMinPartScaleMag ) {
+			*comp[i] = ( *comp[i] < Scalar(0) ) ? -kMinPartScaleMag : kMinPartScaleMag;
+			verdict = ePartScaleClamped;
+		}
+	}
+	return verdict;
+}
+
 // IGeometry::SelfHitRootFloor -- see the header for the full derivation of the
 // band and of the Lipschitz divisor.  Defined here because the OWNER criterion
 // needs `partEval`, this translation unit's per-part field evaluator.
@@ -1045,12 +1095,45 @@ Scalar SDFGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& 
 		                       localDir.z * localNormal.z ) / nMag, Scalar(0.05) )
 		: Scalar(1);
 
+	// THE ANSWER IS CAPPED AT HALF THE FIELD'S OWN BOUNDING-BOX DIAGONAL
+	// (adversarial review of 384e3752, P1-2).  Everything above is a RATIO
+	// argument -- the band divided by a Lipschitz shrink and an incidence
+	// cosine -- and a ratio has no upper bound: a part authored with a zero
+	// scale axis makes `globalShrink` the 1e-9 poison floor and the answer
+	// comes out 5.66e4 on a field 2.83 units across.  A self-hit floor LARGER
+	// THAN THE OBJECT is never useful -- the standoff it sanctions leaves the
+	// field entirely -- and it is actively harmful, because `CSGObject::
+	// SelfHitRootFloor` uses `2 * floorChild` as an ownership-ray REACH and
+	// would charge this field's floor on geometry tens of units away.
+	//
+	// 0.5 * diagonal is far above every non-degenerate configuration: the
+	// uncapped answer is `2 * m_epsFrac * diag / shrink / cosI` (m_eps is
+	// m_epsFrac of the diagonal except on a sub-1e-6/epsFrac field, where the
+	// 1e-6 floor takes over and the padded diagonal is at least 3.4e-3), so at
+	// the 5e-5 scene default with uniform parts it is 1e-4 of the diagonal, and
+	// even at the 1/20 grazing clamp and the 0.02 shrink of BoxGeometryTest's
+	// thinnest row it is 0.1 of it.  Reaching 0.5 would take an `epsFrac` above
+	// 0.25 at normal incidence (0.0125 at the grazing clamp) -- i.e. a surface
+	// epsilon of a quarter of the shape.  When it does bite, it UNDER-states,
+	// which for this contract is the graceful direction: the probe that trusted
+	// it is marched past its face, misses, and falls back to the entry payload;
+	// only OVER-statement adopts a wrong face.
+	//
+	// An unbuilt / non-finite diagonal disables the cap rather than poisoning
+	// the answer (`ComputeBounds` always sets one, so this is defensive).
+	const bool haveDiag = RISE::IsFiniteDouble( static_cast<double>( m_diagonal ) ) && m_diagonal > Scalar(0);
+	const Scalar maxFloor = haveDiag ? Scalar(0.5) * m_diagonal : RISE_INFINITY;
+
 	// Heightfield mode has no parts: nothing to own, keep the bare band.
 	if( m_parts.empty() ) {
-		return Scalar(2) * m_eps / globalShrink / cosI;
+		return std::min( Scalar(2) * m_eps / globalShrink / cosI, maxFloor );
 	}
 
-	const Scalar band = Scalar(2) * ( Scalar(2) * m_eps / globalShrink / cosI );
+	// Twice the widest floor this call can now return -- which is the capped
+	// one, so the cap enters here too and the band stays exactly the bound its
+	// derivation claims (never narrower than 2x any answer below: `ownerShrink`
+	// is >= `globalShrink`, so the owner-side answer is <= this one's argument).
+	const Scalar band = Scalar(2) * std::min( Scalar(2) * m_eps / globalShrink / cosI, maxFloor );
 
 	Scalar ownerShrink = Scalar(1);
 	bool anyOwner = false;
@@ -1069,7 +1152,7 @@ Scalar SDFGeometry::SelfHitRootFloor( const Point3& localOrigin, const Vector3& 
 	// No qualifying part -- a blend seam, or a degenerate part list.  Fall back
 	// to the global minimum, i.e. exactly the previous behaviour.
 	const Scalar shrink = anyOwner ? ownerShrink : globalShrink;
-	return Scalar(2) * m_eps / shrink / cosI;
+	return std::min( Scalar(2) * m_eps / shrink / cosI, maxFloor );
 }
 
 Scalar SDFGeometry::Map( const Point3& p ) const
@@ -2283,7 +2366,34 @@ void SDFGeometry::SetIntermediateValue( const IKeyframeParameter& val )
 	{
 	case eKFPos:   pt.pos   = *(Point3*) val.getValue();                                  break;
 	case eKFRot:   pt.euler = *(Vector3*)val.getValue(); RecomputePartDerived( pt );      break;
-	case eKFScale: pt.scale = *(Vector3*)val.getValue(); RecomputePartDerived( pt );      break;
+	// A keyframed scale reaches the field WITHOUT passing through
+	// `ParsePartLines`, so it carries its own copy of that function's clamp --
+	// an interpolated scale sweeping through 0 is exactly how a degenerate part
+	// appears at runtime in an otherwise well-authored scene.  A non-finite
+	// value is REJECTED (the part keeps the scale it had) rather than clamped:
+	// there is no magnitude to clamp a NaN to.  Both paths warn every frame
+	// they fire, which is the intent -- the field is silently mis-scaled
+	// otherwise, and `SelfHitRootFloor` inflates with it.
+	case eKFScale: {
+		Vector3 sc = *(Vector3*)val.getValue();
+		const int verdict = SanitizePartScale_( sc );
+		if( verdict == ePartScaleNonFinite ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SDFGeometry::SetIntermediateValue:: keyframed scale for part %u is not a finite number "
+				"(%g, %g, %g) -- ignored, the part keeps its previous scale",
+				idx, sc.x, sc.y, sc.z );
+			break;
+		}
+		if( verdict == ePartScaleClamped ) {
+			GlobalLog()->PrintEx( eLog_Warning,
+				"SDFGeometry::SetIntermediateValue:: keyframed scale for part %u has a component below the "
+				"minimum magnitude %g; clamped to (%g, %g, %g).  A zero-scale axis squashes the field's "
+				"Lipschitz ratio to 1e-9 and inflates this geometry's self-hit floor past its own size",
+				idx, kMinPartScaleMag, sc.x, sc.y, sc.z );
+		}
+		pt.scale = sc;
+		RecomputePartDerived( pt );
+	} break;
 	case eKFSize:  { const Vector3 sz = *(Vector3*)val.getValue(); pt.a = sz.x; pt.b = sz.y; pt.c = sz.z; } break;
 	case eKFK:     pt.k     = *(Scalar*) val.getValue();                                  break;
 	case eKFRound: pt.round = *(Scalar*) val.getValue();                                  break;
@@ -2520,6 +2630,40 @@ bool SDFGeometry::ParsePartLines(
 					"scale slot instead of <a b c>?  <sx sy sz> is a pre-transform scale, not the shape's size",
 					(unsigned int)out.size(), ts, lineNo, ctx, degenerateWhy );
 			}
+		}
+
+		// DEGENERATE SCALE (adversarial review of 384e3752, P1-2).  The other
+		// half of the same authoring slip: a 0 (or a typo'd 0.0000001) in the
+		// `<sx sy sz>` slot.  Nothing downstream reads it as an error -- the
+		// magnitude is floored at 1e-9 so `invScale` stays finite -- but that
+		// floor IS the part's Lipschitz shrink, and `SelfHitRootFloor` divides
+		// the sphere-tracer's step-off band by it: a unit sphere part claims
+		// 6.9e-5 at `scale (1,1,1)` and 5.66e4 at `scale (1,1,0)`.  Inside a CSG
+		// composite that number is an ownership-ray reach, so the degenerate
+		// part charges its floor on geometry tens of units away.  Clamp
+		// and warn (the superellipsoid pattern above); a NON-FINITE component
+		// has no magnitude to clamp to, so it is a hard parse error like any
+		// other malformed token.
+		{
+			Vector3 sc( sx, sy, sz );
+			const int verdict = SanitizePartScale_( sc );
+			if( verdict == ePartScaleNonFinite ) {
+				GlobalLog()->PrintEx( eLog_Error,
+					"SDFGeometry::ParsePartLines:: part %u (`%s`) at line %u of %s has a non-finite scale "
+					"component in <sx sy sz> (%g, %g, %g)",
+					(unsigned int)out.size(), ts, lineNo, ctx, sx, sy, sz );
+				return false;
+			}
+			if( verdict == ePartScaleClamped ) {
+				GlobalLog()->PrintEx( eLog_Warning,
+					"SDFGeometry::ParsePartLines:: part %u (`%s`) at line %u of %s has a scale component below "
+					"the minimum magnitude %g in <sx sy sz> (%g, %g, %g); clamped to (%g, %g, %g).  A zero-scale "
+					"axis squashes the field's Lipschitz ratio to 1e-9, which inflates this geometry's self-hit "
+					"floor past its own size; scale the primitive's <a b c> instead",
+					(unsigned int)out.size(), ts, lineNo, ctx, kMinPartScaleMag,
+					sx, sy, sz, sc.x, sc.y, sc.z );
+			}
+			sx = sc.x; sy = sc.y; sz = sc.z;
 		}
 
 		// The running field starts EMPTY (Map's fold begins at +1e30), so a

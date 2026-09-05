@@ -5997,7 +5997,9 @@ yet known (§10.1).
     virtuals across those seven geometry headers.
 
     **Review follow-up (2026-09-05, 10f3e6c2, the three test commits before
-    it, and 384e3752) — closing the composite floor's P2s.** (a) `CSGObject::SelfHitRootFloor`'s
+    it, 384e3752, and this commit) — closing the composite floor's P2s, then
+    384e3752's own two P1s (the shared VERTEX the transverse jitter still
+    grazed, and the unbounded floor a degenerate part scale produced).** (a) `CSGObject::SelfHitRootFloor`'s
     2δ ownership window could never be met by a child whose own floor
     exceeds it (an SDF sphere of radius 4 needs 2.77e-4 against δ = 5e-6;
     a thin torus R = 1000, r = 0.05 needs 4e-3), so on a face coincident
@@ -6008,8 +6010,17 @@ yet known (§10.1).
     a million units away. On a shared EDGE the ownership ray runs along
     one child's face plane and misses it (reversing or lengthening the ray
     does not help, because the coplanarity is in a TRANSVERSE axis), so a
-    child the ray misses is retried from four origins displaced
-    transversely by the same window (±t₁, ±t₂). 10f3e6c2 first used a
+    child the ray misses is retried from eight origins displaced
+    transversely by the same window — ±t₁, ±t₂ and the four diagonals
+    (±t₁ ± t₂)/√2, the diagonals fired only after the four axial ones have
+    missed. The axial four alone settle an EDGE but not a VERTEX, where
+    two boundary planes meet and every axial displacement lands exactly on
+    one of them or leaves the operand: with the same long box and the
+    small one lifted to share only the corner (1,1,1), the long box's
+    2.84e-8 was dropped for the small box's 4.01e-12, **7081× under**,
+    while the edge control at (1,1,0) stayed charged. A diagonal lands
+    strictly inside a transverse quadrant, and a vertex of a convex
+    operand always has one strictly interior. 10f3e6c2 first used a
     bounding-box SHELL test there instead; **that was withdrawn in the
     follow-up commit 384e3752** — a bounding box is not a surface, so a sibling
     whose padded AABB PLANE happens to pass through the point was charged
@@ -6022,13 +6033,47 @@ yet known (§10.1).
     75°, an unbounded under-statement; 1.000 at every incidence from 0 to
     75° after, 1.003 at 84°) and made its Lipschitz ratios read
     the same 1e-9-floored scale magnitudes `RecomputePartDerived` uses.
+    The header's obliquity paragraph now also says where that divide stops
+    following the geometry: the 1/20 grazing clamp **bites past 87.1°**
+    (cos < 0.05), so claim/gate falls back to 0.72 at 88° and 0.39 at 89° —
+    a bounded under-statement at near-tangency, which is the graceful
+    direction (the probe misses and takes its entry-payload fallback).
     (b) `SDFGeometry`'s shrink ratio was a
     global minimum over parts, so a remote part squashed to 0.02 over-stated
     a uniform lobe's floor 50× (a ~2.9e-2 acceptance window); it now takes
     the minimum only over parts whose own `partEval` distance at the point
     is within twice the widest floor the function can return (a lower
     bound on true distance, so exclusion is sound), falling back to the
-    global minimum at a blend seam: 50.0× → 1.0001×. (c) The floor
+    global minimum at a blend seam: 50.0× → 1.0001×. **A degenerate part
+    scale made that same divisor unbounded** (this commit): the shrink is
+    `min|scale| / max|scale|` over magnitudes FLOORED at 1e-9, so a part
+    authored `scale (1,1,0)` — a slip the `part` descriptor already calls
+    recurring for the neighbouring `<a b c>` slot — reads 1e-9 and a unit
+    sphere part claimed **5.66e4 against a healthy twin's 6.9e-5**, twenty
+    thousand times the field's own size; one layer up that number is an
+    ownership-ray REACH, so it charges a healthy sibling's face tens of
+    units away. Three layers, each red-proved on its own test: the
+    authoring surfaces (`ParsePartLines` and the `part<N>.scale` keyframe
+    setter) clamp a sub-1e-6 magnitude to 1e-6 with the sign preserved and
+    a WARNING naming the part, and reject a non-finite component outright
+    (`SDFGeometryTest` Test 29b, 21 checks); `SDFGeometry::SelfHitRootFloor`
+    caps its answer at **half its own bbox diagonal** — a floor larger than
+    the object sanctions a standoff outside the field, and the cap is four
+    orders above a healthy field (`CsgFloorOwnershipTest` Test 8, which
+    also carries the healthy twin as its control); and
+    `CSGObject::SelfHitRootFloor` caps every child's ownership window at
+    **the composite's own local-frame bbox diagonal**, which bounds ANY
+    geometry's floor pathology rather than just an SDF's (Test 9:
+    `SUBTRACTION(box, UNION(box 8 units away, a degenerate SDF of radius
+    4000))` — a subtraction is bounded by operand A, so the inner union's
+    5657 is 3266× half the outer composite's whole 3.46 diagonal; uncapped
+    its ownership ray reaches its own box and charges 5657 on A's face,
+    **1.4e15×** A's real 4.01e-12). An unbuilt or unbounded box disables
+    either cap rather than poisoning it, the same screen
+    `Geometry::BoundingBoxRootFloor` uses. Nothing is clamped at
+    `SDFGeometry`'s constructor — the caps are the load-bearing guard, and
+    the tests need a way to build the degenerate field that proves it.
+    (c) The floor
     contract's upper bracket is 4× (measured maxima: sphere / cylinder /
     plane / disk / SDF ≈ 1.00, box oblique 1.33, indexed triangle 1.91,
     torus oblique 2.02), and a torus operand's decoy window is pinned from
@@ -6046,11 +6091,20 @@ yet known (§10.1).
     332 for the first because their worktrees predate Test 28; 99c0f80a,
     which adds it, says 332 → 348):
     `CsgSurfacePayloadTest` 348, `CsgProbeFloorTest` 49, the new
-    `tests/CsgFloorOwnershipTest.cpp` 50 (27 at 10f3e6c2: coincident SDF +
+    `tests/CsgFloorOwnershipTest.cpp` 72 (27 at 10f3e6c2: coincident SDF +
     box face, shared box edge, two-lobe SDF at the same 4× bracket, and
     the 1e6-distant mesh lobe that must NOT become an owner; 384e3752's
     Tests 5 and 6 above add the AABB-plane sibling and the end-to-end
-    decoy at both gaps).
+    decoy at both gaps, taking it to 50; this commit's Tests 7–9 — the
+    shared vertex, the SDF's own cap, the composite's window cap — take it
+    to 72), `SDFGeometryTest` 655 → 676. Red-proofs, each layer alone:
+    axial-only jitters fail Test 7's two money checks (edge control stays
+    green); the SDF cap removed reports 5.66e4 and fails Test 8's two
+    (Test 9 stays green, its window cap holding even at a floor of
+    2.26e8); the composite window cap removed reports 5657 on operand A's
+    face and fails Test 9's two (Test 8 stays green); the parser clamp
+    removed fails 7 of Test 29b's checks, the keyframe clamp removed
+    exactly 1.
 
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube

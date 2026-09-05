@@ -1915,15 +1915,61 @@ static Vector3 AnyPerpendicularUnit_( const Vector3& n )
 // the coplanarity is in a TRANSVERSE axis, which nothing done ALONG the ray can
 // touch.
 //
-// So a child the ray misses is given a second chance from four rays whose
-// ORIGIN is displaced TRANSVERSELY -- by `window` along each of +-t1, +-t2, an
-// orthonormal pair perpendicular to the face normal.  Both signs on both axes,
-// because which side of the shared edge lies inside the grazed operand is not
-// known here: at the measured edge only the -Y displacement enters the long box,
-// the +Y one leaves it.  On that geometry every displacement from 1e-15 to 1e-6
-// finds the long box; `window` is used so the jitter carries the same
-// scale-relative size as the test it belongs to, and so the whole probe stays
-// inside a `window`-sized neighbourhood of the queried point.
+// So a child the ray misses is given a second chance from rays whose ORIGIN is
+// displaced TRANSVERSELY -- by `window` along each of +-t1, +-t2, an orthonormal
+// pair perpendicular to the face normal.  Both signs on both axes, because which
+// side of the shared edge lies inside the grazed operand is not known here: at
+// the measured edge only the -Y displacement enters the long box, the +Y one
+// leaves it.  On that geometry every displacement from 1e-15 to 1e-6 finds the
+// long box; `window` is used so the jitter carries the same scale-relative size
+// as the test it belongs to, and so the whole probe stays inside a
+// `window`-sized neighbourhood of the queried point.
+//
+// THE FOUR AXIAL DISPLACEMENTS ARE NOT ENOUGH AT A VERTEX (adversarial review of
+// 384e3752, P1-1).  An EDGE is one shared plane and the axial displacements
+// straddle it, but at a shared VERTEX two boundary planes meet, and each axial
+// displacement lands EXACTLY ON one of them or steps outside the operand
+// altogether -- so every retry grazes and the co-owner is dropped again.
+// Measured: the same 4e6-long box (x in [-4e6+1, 1], y and z in [-1,1]) with the
+// small box lifted to [1,3]^3 so the two share only the corner (1,1,1), queried
+// there with the long box's +X normal.  With n = +X the pair is t1 = +Z,
+// t2 = -Y, so the four displacements are +-Y and +-Z: -Y lands at z = 1 exactly,
+// -Z lands at y = 1 exactly, and +Y / +Z leave the box.  The long box's 2.84e-8
+// was dropped for the small box's 4.01e-12 -- 7081x under -- while the EDGE
+// control at (1,1,0) was charged correctly.
+//
+// The cure is the four DIAGONALS, `(+-t1 +- t2) / sqrt(2) * window`: a diagonal
+// lands strictly inside one of the four transverse QUADRANTS, and a vertex of a
+// convex operand always has at least one quadrant strictly interior to it (at
+// the measured corner, `(-t1 + t2) / sqrt(2)` = (0,-1,-1)/sqrt(2) puts the
+// origin at y < 1 AND z < 1, inside the long box's cross-section, and the ray
+// hits its +X face).  Eight directions in all, still all at radius `window`, so
+// the neighbourhood argument above is unchanged.  They are fired only after the
+// four axial retries have missed, so nothing that used to be settled cheaply
+// pays for them.
+//
+// A cap on `window` (adversarial review of 384e3752, P1-2).  `window` is
+// `2 * floorChild`, so a child whose floor is pathological fires an ownership
+// ray long enough to reach an operand that has nothing to do with the face, and
+// charges that floor there.  Measured: an SDF part authored with a zero scale
+// axis has a 1e-9 Lipschitz shrink and claimed 5.66e4 on a field 2.83 units
+// across; inside `UNION(box, that field)` the union reports 5657 (its own
+// SelfHitRootFloor cap), and `SUBTRACTION(box [-1,1]^3, that union)` -- a
+// subtraction is bounded by operand A, so the composite is 3.46 across -- fired
+// an 11315-wide window that found the union's own box 8 units past the queried
+// face and put 5657 on operand A's face, 1.4e15x A's real 4.01e-12.
+//
+// A window wider than the whole composite cannot be discriminating, so it is
+// capped at the composite's own local-frame bounding-box DIAGONAL.  (The
+// pathology is also cured at its source, in `SDFGeometry::SelfHitRootFloor`'s
+// own diagonal cap and in that parser's scale clamp; this is the caller-side
+// backstop, and it bounds ANY geometry's floor pathology, not just an SDF's --
+// above it is a nested COMPOSITE that carries the number.)  An unbuilt or
+// unbounded box -- the +-DBL_MAX default an empty mesh reports, or an infinite
+// plane operand -- disables the cap rather than poisoning it, exactly as
+// `Geometry::BoundingBoxRootFloor` does.  The box costs one `getBoundingBox` per
+// call (which recurses on a nested operand), paid once for both children rather
+// than per retry, on a path that already fires up to nine rays per child.
 //
 // This REPLACES an earlier backstop that asked whether `localOrigin` lay within
 // `window` of the child's axis-aligned BOUNDING-BOX SURFACE.  That test was not
@@ -1982,6 +2028,36 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 		? Vector3( localNormal.x / nMagLocal, localNormal.y / nMagLocal, localNormal.z / nMagLocal )
 		: Vector3( 0, 0, 1 );
 
+	// The ownership window's ceiling: this composite's own extent, in its own
+	// LOCAL frame (the frame the arguments and the ownership ray live in), so
+	// the children's boxes are taken as they are and `m_mxFinalTrans` is NOT
+	// applied -- unlike `getBoundingBox`, which answers in the PARENT's frame.
+	// A subtraction can never extend past operand A, matching that function.
+	// `maxWindow <= 0` means "no usable box" and disables the cap.
+	Scalar maxWindow = Scalar(0);
+	if( pObjectA ) {
+		BoundingBox bbLocal = pObjectA->getBoundingBox();
+		if( op != CSG_SUBTRACTION && pObjectB ) {
+			bbLocal.Include( pObjectB->getBoundingBox() );
+		}
+		const Scalar ex = bbLocal.ur.x - bbLocal.ll.x;
+		const Scalar ey = bbLocal.ur.y - bbLocal.ll.y;
+		const Scalar ez = bbLocal.ur.z - bbLocal.ll.z;
+		// Same "is this a real, built, finite box" screen
+		// `Geometry::BoundingBoxRootFloor` applies, and for the same reason: an
+		// unbuilt mesh and an infinite plane both report +-RISE_INFINITY, whose
+		// extents overflow.  1e30 is RISE's own unbounded-coordinate sentinel.
+		const Scalar kMaxSaneExtent = Scalar(1e30);
+		if( ex >= Scalar(0) && ey >= Scalar(0) && ez >= Scalar(0) &&
+		    std::isfinite( ex ) && std::isfinite( ey ) && std::isfinite( ez ) &&
+		    ex < kMaxSaneExtent && ey < kMaxSaneExtent && ez < kMaxSaneExtent ) {
+			const Scalar diag = std::sqrt( ex*ex + ey*ey + ez*ez );
+			if( std::isfinite( diag ) && diag > Scalar(0) ) {
+				maxWindow = diag;
+			}
+		}
+	}
+
 	IObjectPriv* const operands[2] = { pObjectA, pObjectB };
 	for( int i = 0; i < 2; i++ ) {
 		IObjectPriv* const child = operands[i];
@@ -2018,7 +2094,10 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 
 		// Per-child window: never narrower than the child's own gate (with the
 		// probe's own 2x headroom), or the child can never be hit inside it.
-		const Scalar window = std::max( delta, Scalar(2) * floorChild );
+		Scalar window = std::max( delta, Scalar(2) * floorChild );
+		if( maxWindow > Scalar(0) && window > maxWindow ) {
+			window = maxWindow;			// see the cap's note above
+		}
 		if( !std::isfinite( window ) ) {
 			continue;
 		}
@@ -2030,16 +2109,23 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 
 		bool owns = child->IntersectRay_IntersectionOnly( Ray( base, nUnit ), Scalar(2) * window, true, true );
 
-		// Only if the straight shot missed: the four transverse retries (see
+		// Only if the straight shot missed: the eight transverse retries (see
 		// the note above).  `owns` short-circuits, so a child the ray finds
-		// costs exactly what it did before.
+		// costs exactly what it did before, and the four DIAGONALS -- which
+		// settle a shared vertex, where the four axial ones all graze -- are
+		// only reached once those four have missed.
 		if( !owns ) {
 			const Vector3 t1 = AnyPerpendicularUnit_( nUnit );
 			const Vector3 t2 = Vector3Ops::Cross( nUnit, t1 );		// unit: both are
-			const Vector3 offs[4] = {
+			const Scalar  h  = Scalar(1) / std::sqrt( Scalar(2) );	// keeps the diagonals unit-length
+			const Vector3 offs[8] = {
 				Vector3(  t1.x,  t1.y,  t1.z ), Vector3( -t1.x, -t1.y, -t1.z ),
-				Vector3(  t2.x,  t2.y,  t2.z ), Vector3( -t2.x, -t2.y, -t2.z ) };
-			for( int j = 0; j < 4 && !owns; j++ ) {
+				Vector3(  t2.x,  t2.y,  t2.z ), Vector3( -t2.x, -t2.y, -t2.z ),
+				Vector3( ( t1.x + t2.x ) * h, ( t1.y + t2.y ) * h, ( t1.z + t2.z ) * h ),
+				Vector3( ( t1.x - t2.x ) * h, ( t1.y - t2.y ) * h, ( t1.z - t2.z ) * h ),
+				Vector3( ( -t1.x + t2.x ) * h, ( -t1.y + t2.y ) * h, ( -t1.z + t2.z ) * h ),
+				Vector3( ( -t1.x - t2.x ) * h, ( -t1.y - t2.y ) * h, ( -t1.z - t2.z ) * h ) };
+			for( int j = 0; j < 8 && !owns; j++ ) {
 				const Ray jitRay(
 					Point3( base.x + offs[j].x * window,
 					        base.y + offs[j].y * window,

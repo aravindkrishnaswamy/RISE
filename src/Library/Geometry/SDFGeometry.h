@@ -379,8 +379,15 @@ namespace RISE
 			//! `theta` off the normal a ray must travel `d / cos(theta)` of
 			//! range to clear `d` of perpendicular distance, so the plain band
 			//! UNDER-states, and without bound.  Measured against the bisected
-			//! gate on a single uniform sphere R=3: claim/gate 1.00 at normal
-			//! incidence, 0.866 at 30 deg, 0.707 at 45, 0.500 at 60, 0.26 at 75.
+			//! gate on a single uniform sphere R=3, BEFORE the divide:
+			//! claim/gate 1.00 at normal incidence, 0.866 at 30 deg, 0.707 at
+			//! 45, 0.500 at 60, 0.26 at 75.  After it the claim tracks the gate
+			//! (1.00 through 75 deg, 1.003 at 84) until the 1/20 clamp binds --
+			//! which it does past 87.1 deg, where cos falls below 0.05 and the
+			//! divisor stops following it: claim/gate 0.72 at 88 deg and 0.39 at
+			//! 89.  That residual under-statement at near-tangency is the price
+			//! of a finite answer there, and it is the graceful direction (the
+			//! probe misses and takes its entry-payload fallback).
 			//!
 			//! BUT the band is 2*m_eps in FIELD VALUE, not in DISTANCE, and
 			//! `Map` is only 1-Lipschitz -- it may report LESS than the true
@@ -433,6 +440,24 @@ namespace RISE
 			//! qualifying part (a point on a blend seam, where the fold's value
 			//! belongs to no single part) it falls back to the global minimum,
 			//! i.e. exactly the previous, safely-conservative behaviour.
+			//!
+			//! CAPPED AT HALF THE FIELD'S BOUNDING-BOX DIAGONAL (adversarial
+			//! review of 384e3752, P1-2).  Every widening above is a RATIO --
+			//! the band over a Lipschitz shrink over an incidence cosine -- and
+			//! a ratio is unbounded: a part authored `scale (1,1,0)` floors its
+			//! shrink at 1e-9 and a field 2.83 units across claimed 5.66e4
+			//! (6.9e-5 with a uniform scale).  A floor larger than the object
+			//! sanctions a standoff outside the field, and
+			//! `CSGObject::SelfHitRootFloor` reads `2 * floorChild` as an
+			//! ownership-ray REACH, so such a number charges this field's floor
+			//! on geometry tens of units away.  The cap is orders above every
+			//! non-degenerate configuration (see the derivation in the .cpp);
+			//! where it bites it UNDER-states, which is the graceful direction.
+			//! The authoring surfaces refuse the input as well -- both
+			//! `ParsePartLines` and the `scale` keyframe setter clamp a
+			//! sub-1e-6 magnitude to 1e-6 with a warning, and reject a
+			//! non-finite one -- but the cap is what makes the floor sound for
+			//! a field built through the constructor directly.
 			//!
 			//! P2-2 (accepted, documented): this is a RELATIVE window, unlike every
 			//! other geometry's ulp-scale gate.  m_eps is `m_epsFrac` of the bbox
