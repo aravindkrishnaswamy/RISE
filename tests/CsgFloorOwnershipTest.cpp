@@ -62,8 +62,7 @@
 //      makes the floor unbounded.  `SelfHitRootFloor` divides the
 //      sphere-tracer's band by the parts' Lipschitz shrink, whose scale
 //      magnitudes are floored at 1e-9 -- so a part authored `scale
-//      (1,1,0)` claims nine orders more than a healthy twin (4.4e5 against
-//      4.4e-4 on a unit field).  One layer up that number is an
+//      (1,1,0)` claims nine orders more than a healthy twin (5.66e4 against 6.9e-5 on a field 2.83 units across).  One layer up that number is an
 //      ownership-ray REACH, so the degenerate field charges its floor on a
 //      HEALTHY sibling's face tens of units away: a guaranteed wrong-face
 //      payload.  Three layers of cure, each with its own test:
