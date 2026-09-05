@@ -6106,6 +6106,30 @@ yet known (§10.1).
     removed fails 7 of Test 29b's checks, the keyframe clamp removed
     exactly 1.
 
+    **Accepted residuals from the closing review of 269a5ad2** (all
+    graceful entry-payload fallbacks, i.e. under-statements that can only
+    make the probe miss, never adopt a wrong face; measured with probes,
+    not reachable by any shipped scene — the 437-golden `CstDeriveGoldenTest`
+    corpus shows 0 drift): (i) the eight jitter samples sit 45° apart, so a
+    co-owner whose transverse cross-section spans LESS than 45° of arc at
+    the point (an acute `INTERSECTION` of two slabs; a triangle mesh's
+    acute corner is NOT affected, its exact-apex ray is accepted) is
+    missed — a 43° arc read 4.01e-12 against its 2.84e-8 floor, a 49° arc
+    was found; (ii) a scale component the parser clamps to 1e-6 still
+    yields a floor at the SDF's 0.5·diagonal cap (1.416 on a unit field
+    against a healthy 6.9e-5, 20,410×) — a warning now names the part, and
+    the reach cap keeps it from charging siblings; (iii) an authored
+    `epsilon` of 0.02 or more on a flattened part can push a GENUINE floor
+    above the 0.5·diagonal cap at grazing exits (claim/gate 0.67 at
+    epsilon 0.02, 0.13 at 0.10), which the default 5e-5 never approaches;
+    (iv) a SUBTRACTION caps its subtrahend's ownership window at the
+    minuend's diagonal, so a subtrahend whose own step-off band exceeds the
+    minuend (an SDF blade at `epsilon` 0.02 carving a box under 0.4 units:
+    8e-11 against its own 6.66) is dropped — widening the cap to B's box
+    was tried and re-admits exactly the degenerate-subtrahend reach Test 9
+    pins (its box is 8000 units), so the cap stays A's and the coarse-
+    epsilon subtrahend, the under-stating direction, is accepted.
+
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube
     side-on, circular disk, infinite plane, two-triangle PLY quad; box and

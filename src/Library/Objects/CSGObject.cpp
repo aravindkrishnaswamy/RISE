@@ -1938,13 +1938,19 @@ static Vector3 AnyPerpendicularUnit_( const Vector3& n )
 // was dropped for the small box's 4.01e-12 -- 7081x under -- while the EDGE
 // control at (1,1,0) was charged correctly.
 //
-// The cure is the four DIAGONALS, `(+-t1 +- t2) / sqrt(2) * window`: a diagonal
-// lands strictly inside one of the four transverse QUADRANTS, and a vertex of a
-// convex operand always has at least one quadrant strictly interior to it (at
+// The cure is the four DIAGONALS, `(+-t1 +- t2) / sqrt(2) * window`: the
+// eight samples then sit 45 degrees apart around the point, so any co-owner
+// whose transverse cross-section spans MORE than 45 degrees of arc receives
+// a strictly interior sample -- a 90-degree box corner always does (at
 // the measured corner, `(-t1 + t2) / sqrt(2)` = (0,-1,-1)/sqrt(2) puts the
 // origin at y < 1 AND z < 1, inside the long box's cross-section, and the ray
-// hits its +X face).  Eight directions in all, still all at radius `window`, so
-// the neighbourhood argument above is unchanged.  They are fired only after the
+// hits its +X face).  A co-owner narrower than 45 degrees (an acute
+// INTERSECTION of two slabs meeting at the point, measured: a 43-degree arc
+// is missed by all eight, a 49-degree one is found) is still dropped -- the
+// graceful entry-payload fallback, accepted and recorded in
+// docs/CLOTH_FABRIC_DESIGN.md debt 25.  Eight directions in all, still all
+// at radius `window`, so the neighbourhood argument above is unchanged.
+// They are fired only after the
 // four axial retries have missed, so nothing that used to be settled cheaply
 // pays for them.
 //
@@ -2036,6 +2042,20 @@ Scalar CSGObject::SelfHitRootFloor( const Point3& localOrigin, const Vector3& lo
 	// `maxWindow <= 0` means "no usable box" and disables the cap.
 	Scalar maxWindow = Scalar(0);
 	if( pObjectA ) {
+		// For a SUBTRACTION the cap box is A's alone, matching the visible
+		// extent getBoundingBox reports.  The closing review of 269a5ad2
+		// asked for both operands' boxes here, because a subtrahend whose
+		// own step-off band exceeds the minuend (an SDF blade with an
+		// authored epsilon of 0.02 carving a box smaller than 0.4 units) is
+		// capped below its own floor and dropped -- but widening the cap to
+		// B's box re-admits exactly the reach CsgFloorOwnershipTest Test 9
+		// pins: a degenerate subtrahend (radius 4000, floor 5657) whose box
+		// would let its ownership ray charge that floor on A's face.  The
+		// two cases cannot both hold with a size-only cap; the degenerate
+		// one is the dangerous direction (over-statement), the coarse-
+		// epsilon one only under-states into the graceful entry-payload
+		// fallback, so A's box stays the bound and the other is recorded as
+		// an accepted residual in docs/CLOTH_FABRIC_DESIGN.md debt 25.
 		BoundingBox bbLocal = pObjectA->getBoundingBox();
 		if( op != CSG_SUBTRACTION && pObjectB ) {
 			bbLocal.Include( pObjectB->getBoundingBox() );
