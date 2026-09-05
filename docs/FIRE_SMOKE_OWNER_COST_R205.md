@@ -19,7 +19,9 @@ generated dependency snippets from the forced build. Round six found one P1:
 source admission omitted linked vendored sources and untracked wildcard-selected
 trace sources. The tracked-source check now covers the whole repository, and
 nonignored additions under compilation roots must be committed. Fresh review
-of this source-closure repair remains required.
+of this source-closure repair remains required. The sibling sweep additionally
+covers ignored source-like files in source-owned roots: ignore rules do not
+prevent wildcard compilation or header inclusion.
 No warm-start optimization,
 fixed-k choice, focusing verdict, window, or new movie is claimed here.
 
@@ -145,6 +147,8 @@ The source-closure RED separately changes a tracked vendored header and adds a
 wildcard-selected trace translation unit. The former scoped diff misses both;
 actual qualification now refuses each before writing a build log. Unrelated
 ignored object caches remain allowed, with the standing forced-rebuild gate.
+The same RED also adds an explicitly ignored wildcard translation unit and
+requires refusal; it cannot hide behind exclude-standard discovery.
 
 ## Native diagnostic: remaining host payload walks
 

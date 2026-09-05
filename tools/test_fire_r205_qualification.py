@@ -27,7 +27,7 @@ class QualificationREDs(unittest.TestCase):
             root = Path(temporary)
             for directory in ("build/make/rise", "extlib/stb", "tests/fire_production_trace"):
                 (root / directory).mkdir(parents=True)
-            (root / ".gitignore").write_text("*.o\nbuild/make/rise/Config.specific\n")
+            (root / ".gitignore").write_text("*.o\nextra_ignored.cpp\nbuild/make/rise/Config.specific\n")
             config = root / "build/make/rise/Config.OSX"
             config.write_text("CXXARCHFLAGS =\n")
             (config.parent / "Config.specific").symlink_to(config.name)
@@ -43,8 +43,9 @@ class QualificationREDs(unittest.TestCase):
                 # Unrelated ignored object caches are allowed and forced rebuilt.
                 (root / "tests/unused.o").write_bytes(b"cached object")
                 qualification.clean_source("HEAD")
-                for mutation in ("vendor", "wildcard"):
-                    extra = root / "tests/fire_production_trace/extra.cpp"
+                for mutation in ("vendor", "wildcard", "ignored_wildcard"):
+                    extra = root / "tests/fire_production_trace" / (
+                        "extra_ignored.cpp" if mutation == "ignored_wildcard" else "extra.cpp")
                     if mutation == "vendor":
                         vendor.write_text("// locally changed decoder\n")
                     else:

@@ -24,6 +24,16 @@ def clean_source(commit):
                                         "-z", "--", "src", "tests", "extlib"])
     if untracked:
         raise ValueError("uncommitted compilation input")
+    # Ignore rules do not remove files from make's wildcard inputs or C/C++
+    # include lookup. Check source-like ignored files in the source-owned roots
+    # too; installed third-party SDK trees are toolchain inputs, not this list.
+    hidden = subprocess.check_output(["git", "ls-files", "--others", "-z", "--",
+                                      "src", "tests", "extlib/stb", "extlib/cgltf"])
+    source_suffixes = {".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".h", ".hh", ".hpp",
+                       ".hxx", ".inl", ".inc", ".ipp", ".tpp", ".tcc", ".metal"}
+    if any(Path(os.fsdecode(path)).suffix.lower() in source_suffixes
+           for path in hidden.split(b"\0") if path):
+        raise ValueError("uncommitted ignored compilation input")
     return build_configuration(commit)
 
 
