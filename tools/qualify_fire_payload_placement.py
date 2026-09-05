@@ -17,10 +17,25 @@ def sha(path):
 def clean_source(commit):
     subprocess.run(["git", "diff", "--exit-code", commit, "--", "src", "tests", "build", "tools"],
                    check=True, stdout=subprocess.DEVNULL)
+    return build_configuration(commit)
+
+
+def build_configuration(commit):
+    # This is the macOS/Metal qualifier. Config.specific is intentionally
+    # ignored by git and may be a copy; authenticate its bytes, not its name.
+    canonical = "build/make/rise/Config.OSX"
+    expected = subprocess.check_output(["git", "show", commit + ":" + canonical])
+    selected = Path("build/make/rise/Config.specific")
+    if selected.read_bytes() != expected:
+        raise ValueError("unqualified local build configuration")
+    return {"canonical": canonical, "selected": str(selected),
+            "sha256": hashlib.sha256(expected).hexdigest()}
 
 
 def build_command(directory="build/make/rise", target="build-test/FireSequenceTest"):
-    return ["make", "-B", "-C", str(directory), "-j8", target]
+    # Do not select an ignored GNUmakefile or import generated dependency
+    # snippets as recipes. -B already rebuilds every prerequisite from source.
+    return ["make", "-B", "-C", str(directory), "-f", "Makefile", "ALL_DEPS=", "-j8", target]
 
 
 def build_environment(inherited=None):
@@ -52,14 +67,15 @@ def main():
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    clean_source(commit)
+    configuration = clean_source(commit)
     executable = Path("bin/tests/FireSequenceTest")
     # Rebuild every linked object, not just objects older than their sources:
     # ignored caches and prior flag variants are not source attestations.
     commands = [("build", build_command()),
                 ("publication", [str(executable.resolve()), "--fire-production-payload-publication"]),
                 ("owner", [str(executable.resolve()), "--fire-production-resident-target-metal"])]
-    result = {"schema": "rise.fire.executed-build-and-owner-gate.v1", "source_commit": commit, "runs": {}}
+    result = {"schema": "rise.fire.executed-build-and-owner-gate.v1", "source_commit": commit,
+              "build_configuration": configuration, "runs": {}}
     for name, command in commands:
         clean_source(commit)
         log = Path(str(args.output) + "." + name + ".log")

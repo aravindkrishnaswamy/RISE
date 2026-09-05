@@ -22,6 +22,64 @@ from seal_fire_payload_placement import sidecars
 
 
 class QualificationREDs(unittest.TestCase):
+    def test_disk_recipe_inputs_cannot_preserve_foreign_object(self):
+        with tempfile.TemporaryDirectory(prefix="rise-r205-disk-recipe-red-") as temporary:
+            root = Path(temporary)
+            (root / "source.cpp").write_bytes(b"current source")
+            (root / "GNUmakefile").write_text("all:\n\t@true\n")
+            (root / "cached.d").write_text("MAKEFLAGS = -n\n")
+            (root / "Makefile").write_text("ALL_DEPS = cached.d\n-include $(ALL_DEPS)\n"
+                "all: cached.o\ncached.o: source.cpp\n\tcp source.cpp cached.o\n")
+            for mutant in ("implicit_makefile", "generated_dependency"):
+                (root / "cached.o").write_bytes(b"foreign object")
+                command = build_command(root, "all")
+                if mutant == "implicit_makefile":
+                    index = command.index("-f")
+                    del command[index:index + 2]
+                else:
+                    command.remove("ALL_DEPS=")
+                subprocess.run(command, check=True, capture_output=True, env=build_environment())
+                self.assertEqual((root / "cached.o").read_bytes(), b"foreign object")
+                subprocess.run(build_command(root, "all"), check=True, capture_output=True,
+                               env=build_environment())
+                self.assertEqual((root / "cached.o").read_bytes(), b"current source")
+
+    def test_local_configuration_must_match_versioned_bytes(self):
+        with tempfile.TemporaryDirectory(prefix="rise-r205-local-config-red-") as temporary:
+            root = Path(temporary)
+            config_dir = root / "build/make/rise"
+            config_dir.mkdir(parents=True)
+            (root / ".gitignore").write_text("build/make/rise/Config.specific\n")
+            canonical = config_dir / "Config.OSX"
+            selected = config_dir / "Config.specific"
+            canonical.write_text("CXXARCHFLAGS =\n")
+            for command in (["git", "init", "-q"], ["git", "add", "."],
+                            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                             "commit", "-qm", "qualified recipe"]):
+                subprocess.run(command, cwd=root, check=True, capture_output=True)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                selected.write_bytes(canonical.read_bytes())
+                self.assertEqual(qualification.clean_source("HEAD")["sha256"],
+                                 hashlib.sha256(canonical.read_bytes()).hexdigest())
+                selected.unlink()
+                selected.symlink_to("Config.OSX")
+                qualification.clean_source("HEAD")
+                selected.unlink()
+                selected.write_text("CXXARCHFLAGS = -\\#\\#\\#\n")
+                # The previous tracked-diff-only admission cannot see this.
+                subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "src", "tests", "build", "tools"],
+                               check=True, capture_output=True)
+                output = root / "attestation.json"
+                with mock.patch.object(sys, "argv", ["qualify", str(output)]):
+                    with self.assertRaisesRegex(ValueError, "unqualified local build configuration"):
+                        qualification.main()
+                self.assertFalse(output.exists())
+                self.assertFalse(Path(str(output) + ".build.log").exists())
+            finally:
+                os.chdir(previous)
+
     def test_compiler_diagnostic_mode_cannot_preserve_foreign_object(self):
         with tempfile.TemporaryDirectory(prefix="rise-r205-compiler-mode-red-") as temporary:
             root = Path(temporary)
@@ -64,6 +122,7 @@ class QualificationREDs(unittest.TestCase):
                 with mock.patch.object(sys, "argv", ["qualify", str(output)]), \
                      mock.patch.object(qualification.subprocess, "check_output", return_value="a" * 40), \
                      mock.patch.object(qualification.subprocess, "run", side_effect=mock_run), \
+                     mock.patch.object(qualification, "build_configuration", return_value={}), \
                      mock.patch.object(qualification, "sha", return_value="b" * 64), \
                      contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(ValueError):

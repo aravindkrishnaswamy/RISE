@@ -11,8 +11,12 @@ one P2 (current-framing restoration needed an explicit bridge assertion). Both
 passed the gate at `7dc6bbf5`. Round four found a compiler-level diagnostic flag
 escape (P1) and absent-verdict/zero-exit qualification gap (P2). The build now
 inherits only platform process/SDK variables, and qualification requires the
-explicit publication and complete per-field owner verdicts. Fresh review of
-these final qualification repairs remains required.
+explicit publication and complete per-field owner verdicts. Round five found
+one P1: ignored local make configuration could still supply compiler dry-run
+flags. Qualification now authenticates Config.specific bytes against the
+committed Config.OSX, explicitly selects the tracked Makefile, and excludes
+generated dependency snippets from the forced build. Fresh review of this
+repair remains required.
 No warm-start optimization,
 fixed-k choice, focusing verdict, window, or new movie is claimed here.
 
@@ -128,6 +132,23 @@ proves qualification rebuilds the new behavior. A mock-subprocess RED exercises
 the actual qualifier `main()` with successful exits but absent publication or
 owner verdicts; neither may create an attestation. These findings do not assert
 that any recorded build used those flags or omitted its real owner gate.
+The disk-recipe RED demonstrates both implicit GNUmakefile selection and a
+generated dependency snippet preserving foreign objects; the pinned command
+rebuilds them. A copied local configuration differing from committed Config.OSX
+is refused by the actual qualifier before a build or attestation is written.
+Both an identical copy and the normal symlink are accepted. This qualification
+is specifically the macOS/Metal build, not a general platform-config selector.
+
+## Native diagnostic: remaining host payload walks
+
+The exported Metal System Trace, filtered to the recorded FireSequenceTest PID,
+contains 4,291 running CPU samples with resident-owner frames. HashSourceDoubleValues
+and HashFluxValues account for 3,646 sampled CPU-ms across three prefix steps,
+about 85% of that owner-stack sample population. These are sampled CPU weights,
+not additive wall time or an optimization measurement. Generic encoder labels
+in this capture do not establish the remaining individual GPU kernel identities.
+The exported tables and reproducible analysis are evidence; EOS remains first
+in the optimization order, followed by these residual host payload walks.
 
 ## Ordered next work and acceptance
 
