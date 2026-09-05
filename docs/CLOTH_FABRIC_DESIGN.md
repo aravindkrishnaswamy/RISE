@@ -5574,6 +5574,29 @@ yet known (§10.1).
 25. **OPEN 2026-09-04 — a CLOSED solid whose material is a thin-transmissive
     weave reads BDPT/VCM ≈ 0.17 × PT. Free-standing weave planes do not.**
 
+    *Review handoff (2026-09-05).* Two facts narrow it. (a) The gap-0
+    data point RULES OUT a debt-23-style per-draw mechanism: at gap 0 no
+    delta lobe is ever drawn, so connectibility was unconditional even
+    before the fix, and the number was taken after debts 23 and 24
+    landed. This is a different bug. (b) Two and three free-standing
+    parallel planes deviate only 1–5 %, so "a shadow ray crosses a second
+    transmissive surface" is not it either — those cross the same
+    surfaces. What differs is that `box_geometry` is an ANALYTIC SOLID:
+    `BoxGeometry::IntersectRay` takes explicit front/back-face flags and
+    tracks `RayBeginsInBox`, unlike an assembly of independent
+    double-sided planes. Best hypothesis: BDPT/VCM's subpath continuation
+    after a transmissive bounce on a solid does not track "which solid I
+    am now inside" the way PT's own walk does, so the box's inside-aware
+    exit-face selection is mishandled for a bidirectional walk. A verified
+    contributing asymmetry of the same class: BDPT/VCM visibility uses the
+    binary `RayCaster::CastShadowRay` while PT alone uses
+    `CastShadowRayTransmittance` (RayCaster.cpp ~1980, gated to
+    perfect-specular dielectrics, so probably not engaged here).
+    **Discriminating render:** the same sealed cube hand-built from six
+    `clippedplane_geometry` quads (`doublesided TRUE`) with the same weave
+    — if BDPT/PT is ≈ 1 there, the bug is `box_geometry`'s solid
+    representation, not closed topology in general.
+
     Found while trying to build the medium-vertex regression debt 23's sibling
     audit calls for (that requires an `interior_medium`, which requires a closed
     solid). Measured, 24×24, 512 spp, `oidn_denoise FALSE`, omni light behind,
@@ -5604,6 +5627,16 @@ yet known (§10.1).
     scene that can host it is +0.28 % on BDPT at gap 0.3 (0.0181892 → 0.0182397),
     in the predicted direction and above the ±0.1 % run-to-run spread, but far too
     small a lever to assert on. Re-attempt once this debt is closed.
+
+    *Still open after debt 24 (2026-09-05 review).*
+    `tests/VCMStrategyBalanceTest.cpp` topology C (a MIXED delta + mesh
+    light scene) reads VCM/PT ≈ 0.9635, unchanged by this fix (0.9645 →
+    0.9643) and inside its 8 % band. Debt 24's closure is exact for a
+    pure delta light and a pure non-delta light; a mixed-light scene is
+    where a residual partition wrinkle would show — most likely in the
+    light-SELECTION pmf's interaction with the two light classes'
+    different `dVC`/`dVCM` seeding. Not diagnosed; recorded so it is not
+    rediscovered as a regression.
 
 26. **OPEN 2026-09-04 — the legacy `pixelpel_rasterizer` loses the
     delta-gap-to-emitter sighting on a gapped weave.**

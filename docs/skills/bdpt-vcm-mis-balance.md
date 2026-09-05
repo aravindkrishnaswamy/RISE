@@ -501,7 +501,12 @@ delta direction by chance — the alternative strategy has zero
 density.  Treating `directPdfW = 1` as a real pdf left `wLight =
 bsdfDirPdfW = 1/π ≈ 0.32`, biasing NEE down to `1 / (1 + 0.32) ≈
 0.76` of its true weight under the balance heuristic.  ~24% darker
-direct lighting on omni + Lambertian.
+direct lighting on omni + Lambertian.  (That arithmetic models only
+the `wLight` half; the pre-fix `wCamera` was live too, computed as
+`emissionPdfW·cosAtEye / (1·1)` -- the correct camFactor inflated by
+dist² -- so on a 3-unit scene the original bug was nearer 40 %; the
+24 % was a near-unit-distance measurement.  Reconstructing 0.76 on
+another scene will not work without that term.)
 
 The fix: skip both alternatives when `ls.isDelta`:
 
@@ -716,7 +721,7 @@ Why it closes exactly: with `dVCM_eye = N / p_cam→A(x)`, the product
 to 1 by construction, not by tuning.  Lights with no emission-direction
 sampling at all (`DirectionalLight`, `AmbientLight`: `pdfDirection()`
 returns 0, and VCM emits no photons from them) fall out at
-`camFactor = 0`, i.e. NEE keeps weight 1, which is correct.
+`camFactor = 0`, i.e. NEE keeps weight 1, which is correct -- and vacuous today: VCM does not sample directional or ambient lights at all (a directional-lit quad renders 0 under VCM where PT and BDPT agree), so the branch states the weight the path will take once that sampling exists.
 
 Catches if regressed by `FabricRenderTest::TestBacklitSheerCurtain`
 (`kThinCurtainVcmPtTol` is 1 %, and the bug is 3 %).  Full writeup:

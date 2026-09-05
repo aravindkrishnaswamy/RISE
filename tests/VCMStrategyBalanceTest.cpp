@@ -516,6 +516,16 @@ static void TestMeshEmitterOnly()
 // subpath set (not just one path) when deciding foundSpecular.  Mixed-
 // light scenes are a common configuration and a likely source of
 // future regressions if the gating logic is touched.
+//
+// KNOWN RESIDUAL (2026-09-05, recorded in docs/CLOTH_FABRIC_DESIGN.md
+// 15 debt 24's "still open" note): this topology reads VCM/PT ~0.9635,
+// unchanged by the debt-24 delta-light wCamera fix (0.9645 -> 0.9643)
+// and inside the 8 % band.  Debt 24's closure is exact for a PURE delta
+// light and a PURE non-delta light; a mixed-light scene is where a
+// residual partition wrinkle would show (light-selection pmf vs the two
+// classes' different dVC/dVCM seeding is the first suspect).  Not
+// diagnosed.  Do not tighten this band without root-causing it, and do
+// not treat a move from 0.9635 as noise.
 //////////////////////////////////////////////////////////////////////
 static void TestMixedLights()
 {

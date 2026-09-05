@@ -904,10 +904,12 @@ static void TestPtVsBdpt()
 // seed race (see this file's header) means the same seed base can land
 // ~0.7 pp apart on a different host -- the reviewer of the debt-23 fix
 // measured VCM/PT 1.0369 where this machine read 1.0296.  1% therefore
-// buys ~75x the within-machine 3 sigma and comfortably more than that
-// cross-machine margin, while still failing hard on either bug above
-// (debt 23 moves BDPT to 0.900, debt 24 moves VCM to 1.030 -- 10x and
-// 3x the band).
+// buys ~75x the within-machine 3 sigma but only ~1.4x that ONE observed
+// cross-machine shift (0.73 pp) -- a single data point, so a third host
+// with a larger seed-race skew could read red on correct code; if that
+// happens, widen to 0.02 with the new measurement rather than doubt the
+// fix.  It still fails hard on either bug above (debt 23 moves BDPT to
+// 0.900, debt 24 moves VCM to 1.030 -- 10x and 3x the band).
 static const double kMinBrightnessAbsolute = 1e-6;
 static const double kThinCurtainBdptPtTol = 0.01;
 static const double kThinCurtainVcmPtTol = 0.01;
@@ -1408,7 +1410,14 @@ static void TestWrappedBacklitSheerCurtain()
 // tracing.  If the s=0 emission strategy carried weight 1 through the
 // delta chain -- the natural-looking rule, and wrong here, because at a
 // MIXED vertex NEE can produce the same path -- this is the scene that
-// would show it.
+// would show it.  It is NOT a debt-23 guard: the emitter covers the
+// whole curtain footprint, so the gap-drawn continuation that used to
+// disable NEE also struck the emitter directly, recovering most of
+// what NEE lost; no pre-fix number was taken for THIS scene and its
+// pre-fix deficit is expected to be far under the 10 % of case 3.
+// Case 3 and BDPTStrategyBalanceTest topology E guard debt 23; this
+// case guards the s=0 / s=1 / light-tracing partition with an area
+// emitter behind a mixed vertex.
 //
 // The emitter is a full-width (2.8 x 2.8) quad 1.5 units behind the
 // curtain with a modest `scale 2.0`, deliberately NOT a small bright

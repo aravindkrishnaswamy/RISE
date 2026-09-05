@@ -2220,18 +2220,19 @@ namespace {
 				}
 			}
 
-			// Determine connectibility: true if the material has a non-delta BSDF,
-			// or if any scattered lobe is non-delta
-			{
-				bool hasNonDelta = false;
-				for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-					if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
-				}
-				if( ri.pMaterial->GetBSDF() ) {
-					hasNonDelta = true;
-				}
-				vertices.back().isConnectible = hasNonDelta;
-			}
+			// Connectibility is a property of the SURFACE, not of the one
+			// continuation drawn: connectible iff the material has a BSDF.
+			// RISE's pure-delta materials (PerfectReflector, PerfectRefractor,
+			// Dielectric) return NULL here and mark every lobe delta; a mixed
+			// material (weave_material `transmission thin` with gap > 0, a
+			// coated/polished/composite over a continuum base) has a BSDF even
+			// on the draws that picked its delta lobe.  Deriving this from
+			// `scattered[i].isDelta` dropped NEE on a gap fraction of hits --
+			// (1-gap)^2 vs PT's (1-gap) -- docs/CLOTH_FABRIC_DESIGN.md 15 debt
+			// 23.  Deliberately NOT `|| any non-delta draw`: a null-BSDF vertex
+			// evaluates every connection to 0 (PathVertexEval.h), so marking it
+			// connectible would reserve MIS mass for zero-yield strategies.
+			vertices.back().isConnectible = ( ri.pMaterial->GetBSDF() != 0 );
 
 			// Mark the current vertex as delta
 			vertices.back().isDelta = pScat->isDelta;
@@ -5737,18 +5738,19 @@ unsigned int GenerateLightSubpathImpl(
 			}
 		}
 
-		// Determine connectibility: true if the material has a non-delta BSDF,
-		// or if any scattered lobe is non-delta
-		{
-			bool hasNonDelta = false;
-			for( unsigned int i = 0; i < scattered.Count(); i++ ) {
-				if( !scattered[i].isDelta ) { hasNonDelta = true; break; }
-			}
-			if( ri.pMaterial->GetBSDF() ) {
-				hasNonDelta = true;
-			}
-			vertices.back().isConnectible = hasNonDelta;
-		}
+		// Connectibility is a property of the SURFACE, not of the one
+		// continuation drawn: connectible iff the material has a BSDF.
+		// RISE's pure-delta materials (PerfectReflector, PerfectRefractor,
+		// Dielectric) return NULL here and mark every lobe delta; a mixed
+		// material (weave_material `transmission thin` with gap > 0, a
+		// coated/polished/composite over a continuum base) has a BSDF even
+		// on the draws that picked its delta lobe.  Deriving this from
+		// `scattered[i].isDelta` dropped NEE on a gap fraction of hits --
+		// (1-gap)^2 vs PT's (1-gap) -- docs/CLOTH_FABRIC_DESIGN.md 15 debt
+		// 23.  Deliberately NOT `|| any non-delta draw`: a null-BSDF vertex
+		// evaluates every connection to 0 (PathVertexEval.h), so marking it
+		// connectible would reserve MIS mass for zero-yield strategies.
+		vertices.back().isConnectible = ( ri.pMaterial->GetBSDF() != 0 );
 
 		// Mark the current vertex as delta if the scattered ray is delta
 		vertices.back().isDelta = pScat->isDelta;

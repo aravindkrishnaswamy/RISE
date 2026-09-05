@@ -1443,7 +1443,14 @@ namespace
 			// pdfDirection() == 0, and VCM never emits photons from
 			// them) fall out with camFactor = 0, hence wCamera = 0 and
 			// NEE at full weight, which is correct: there is no
-			// competing light-side strategy to share with.
+			// competing light-side strategy to share with.  Note the
+			// arithmetic is vacuous today -- VCM does not sample
+			// directional or ambient lights AT ALL (a directional-lit
+			// Lambertian quad renders 0 under VCM where PT and BDPT
+			// agree; docs/SUBMERGED_CAMERA_IOR_SEEDING.md records the
+			// gap) -- so this branch documents the weight the path
+			// WILL take once that sampling exists, not a path that
+			// renders now.
 			Scalar wCamera = 0;
 			if( emissionDirPdfSA > 0 && distSq > 0 ) {
 				const Scalar camFactor =
