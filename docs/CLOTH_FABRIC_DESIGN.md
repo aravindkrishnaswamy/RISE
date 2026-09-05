@@ -6097,7 +6097,7 @@ yet known (§10.1).
     Tests 5 and 6 above add the AABB-plane sibling and the end-to-end
     decoy at both gaps, taking it to 50; 269a5ad2's Tests 7–9 — the
     shared vertex, the SDF's own cap, the composite's window cap — take it
-    to 72), `SDFGeometryTest` 655 → 676. Red-proofs, each layer alone:
+    to 72), `SDFGeometryTest` 655 → 676 (685 after 1332df39's keyframe nan/inf and parser inf rows). Red-proofs, each layer alone:
     axial-only jitters fail Test 7's two money checks (edge control stays
     green); the SDF cap removed reports 5.66e4 and fails Test 8's two
     (Test 9 stays green, its window cap holding even at a floor of
