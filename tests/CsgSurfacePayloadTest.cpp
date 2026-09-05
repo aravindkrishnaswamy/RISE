@@ -2514,7 +2514,11 @@ void TestUnion_CsgSingularGuard_HugeAxisAlignedStretch()
 //   alongNormalLocal = |exitLocal.z| = 2.0 (identical to Test 4/14/15's
 //     own figure, since B's local shape is identical to theirs).
 //   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.03e-12.
-//   CORRECT selfHitFloor = 2*bandLocal / (stretch*cosExit)
+//   CORRECT selfHitFloor = 2*bandLocal / rate, rate = |M^-1 dir . n_local|
+//     (== stretch*cosExit for THIS geometry -- uniform scale, so the
+//     factorisation the production code replaced in round 3 coincides
+//     with the exact rate here; it does NOT in general, see CSGObject.cpp's
+//     "Rate, exactly" note)
 //     ~= 8.06e-12 / 1e-3 = 8.06e-9 world units -- this dominates the
 //     margin's max() (the pre-existing dirWeightedAbs term is only
 //     kUlpFactor*2000 ~= 2.84e-11, an order of magnitude smaller).
@@ -2653,7 +2657,11 @@ void TestSubtraction_ExitProbe_ScaledOperandMarginUsesStretch()
 //   point on it.  alongNormalLocal = |exitLocal.z| = 2.0 (identical to
 //   Test 4/14/15/24's own figure, since B's shape is identical).
 //   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.03e-12.
-//   CORRECT selfHitFloor = 2*bandLocal / (stretch*cosExit)
+//   CORRECT selfHitFloor = 2*bandLocal / rate, rate = |M^-1 dir . n_local|
+//     (== stretch*cosExit for THIS geometry -- uniform scale, so the
+//     factorisation the production code replaced in round 3 coincides
+//     with the exact rate here; it does NOT in general, see CSGObject.cpp's
+//     "Rate, exactly" note)
 //     = 8.06e-12 / 0.4 ~= 2.01e-11 world units, and the ACTUAL
 //     clearance this buys along the face normal is
 //     margin*cosExit = 2*bandLocal/stretch = 8.06e-12 -- exactly the

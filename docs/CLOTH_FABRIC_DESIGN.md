@@ -5722,7 +5722,7 @@ yet known (§10.1).
     values use a different box size and weave preset than the original
     review handoff's; the RATIOS are what carry the finding.
 
-    **Review rounds 1–2 follow-ups (2026-09-05).** The self-hit band is
+    **Review rounds 1–3 follow-ups (2026-09-05).** The self-hit band is
     a test on the face PLANE, not on provenance, so a deliberate standoff
     that wants to re-hit the face it stands off from reads as that face's
     own published point: `CSGObject::AdoptCsgExitFacePayloadViaProbe`'s
