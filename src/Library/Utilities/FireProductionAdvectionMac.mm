@@ -7420,8 +7420,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					id<MTLBuffer> delta=Private(9u*allFaces_*sizeof(float));
 					id<MTLBuffer> high=Private(9u*allFaces_*sizeof(float));
 					id<MTLBuffer> identity=Private(sizeof(std::uint64_t));
+					id<MTLBuffer> firstLow=request_.qualificationWrongAveragedFluxParent?
+						output.physical->highComposite:r0->physical->lowComposite;
+					id<MTLBuffer> firstDelta=request_.qualificationWrongAveragedFluxParent?
+						output.physical->advectiveDelta:r0->physical->advectiveDelta;
 					if(!low||!delta||!high||!identity||!Encode(command,context_.ownerAverageFlux,
-						{r0->physical->lowComposite,r0->physical->advectiveDelta,
+						{firstLow,firstDelta,
 						 output.physical->lowComposite,output.physical->advectiveDelta,low,delta,high,
 						 ownerParameters_[stage]},9u*allFaces_)||
 						!Encode(command,context_.ownerBindAveragedFlux,{low,delta,
@@ -7652,8 +7656,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				copy(state,9u*cells_*sizeof(float));copy(temperature,cells_*sizeof(float));
 				copy(value.transport->coefficients,3u*cells_*sizeof(float));
 				copy(value.gasDensity,cells_*sizeof(float));
-				copy(value.physical->lowComposite,9u*allFaces_*sizeof(float));
-				copy(value.physical->advectiveDelta,9u*allFaces_*sizeof(float));
+				const ResidentPhysicalFluxMetalAuthority* candidatePhysical=
+					value.averagedPhysical?value.averagedPhysical.get():value.physical.get();
+				copy(candidatePhysical->lowComposite,9u*allFaces_*sizeof(float));
+				copy(candidatePhysical->advectiveDelta,9u*allFaces_*sizeof(float));
 				copy(value.physical->physicalMass,8u*allFaces_*sizeof(float));
 				copy(value.physical->physicalEnergy,allFaces_*sizeof(float));
 				copy(value.eos->representedPressureRatio,cells_*sizeof(float));
@@ -9790,6 +9796,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			request.qualificationDisableLimiterCertification||
 			request.qualificationThreeQuarterHeunWeighting||
 			request.qualificationReuseR0LimiterAlpha||
+			request.qualificationWrongAveragedFluxParent||
 			request.qualificationR2SealedClassPhysicalFlux||
 			request.qualificationUnverifiedEndpointClassBuffer||
 			request.qualificationCaptureIterationTrace||

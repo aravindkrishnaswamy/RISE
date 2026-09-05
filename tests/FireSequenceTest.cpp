@@ -11324,6 +11324,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	double recordedContinuousDefectBound=0.0,recordedContinuousDefectResidual=0.0;
 	std::array<std::vector<double>,3> ownerTerminalProjectionTargetBounds,
 		ownerTerminalAcceptedTargetBounds;
+	bool wrongAveragedFluxParentRED=false;
+	std::vector<FireProductionRoundoffTrace::TraceFloat> certifiedR1CandidateLowFlux,
+		certifiedR1CandidateFluxDelta;
+	bool certifiedR1CandidateFluxAvailable=false;
 	if(ownerAccepted&&owner64Accepted){
 		auto traceVector=[&](const std::vector<float>& device,const std::vector<double>& mirror){
 			double maximum=0.0;std::size_t worst=0u,mismatches=0u;
@@ -11609,8 +11613,6 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		std::array<::RISEFireProductionTrace::FireProductionScalarFCTFluxPair,2>
 			traceTerminalFluxPair;
 		std::array<bool,2> traceTerminalFluxPairAvailable={{false,false}};
-		std::array<FireProductionScalarFCTFluxPair,2> deviceTerminalFluxPair;
-		std::array<bool,2> deviceTerminalFluxPairAvailable={{false,false}};
 		std::array<std::vector<float>,2> certifiedProducerBytes;
 		std::array<std::vector<double>,2> certifiedProducerBounds;
 		std::array<std::uint64_t,2> certifiedProducerIdentity={{0u,0u}};
@@ -11625,6 +11627,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		std::array<bool,2> terminalVelocityAvailable={{false,false}};
 		std::array<bool,2> terminalRateBoundsAvailable={{false,false}};
 		bool sealedOpenHeadOutflowTraceRED=false;
+		bool nonR60InvalidArithmeticRED=false;
 			auto fctAcceptedCertificates=[&](
 			const ::RISEFireProductionTrace::FireProductionScalarFCTRequest& request,
 			const ::RISEFireProductionTrace::FireProductionScalarFCTFluxPair& tracedFlux,
@@ -11753,7 +11756,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 			const bool authenticatedClassEnvelope,
 			const std::vector<CertifiedBinary32>& tracedAccepted,
 			const std::vector<float>& deviceAccepted,const std::vector<double>& fp64Accepted,
-			const std::uint64_t deviceIdentity,const std::uint64_t expectedIdentity){
+			const std::uint64_t deviceIdentity,const std::uint64_t expectedIdentity,
+			const bool publishCertificate){
 			if(producer>=2u||tracedAccepted.size()!=9u*cells||
 				deviceAccepted.size()!=9u*cells||fp64Accepted.size()!=9u*cells||
 				deviceIdentity==0u||deviceIdentity!=expectedIdentity)return false;
@@ -11769,7 +11773,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					(z*shape.ny+y)*(shape.nx+1u)+x+(upper?1u:0u);}if(axis==1u)return
 					producerFaceOffset[1]+(z*(shape.ny+1u)+y+(upper?1u:0u))*shape.nx+x;
 				return producerFaceOffset[2]+((z+(upper?1u:0u))*shape.ny+y)*shape.nx+x;};
-			std::size_t exactZeroFluxIdentityCount=0u,twoPathEnvelopeCount=0u;
+			std::size_t exactZeroFluxIdentityCount=0u;
 			std::size_t firstRoundedMismatch=9u*cells,firstBoundFailure=9u*cells;
 			for(std::size_t index=0u;index<9u*cells;++index){const double bound=
 				tracedAccepted[index].error+std::fabs(tracedAccepted[index].exact-
@@ -11792,27 +11796,6 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 							producerFlux.fluxDelta[component*producerAllFaces+upper].Rounded()==0.0f;}
 					boundPass=exactZeroIdentity;acceptedBound=0.0;
 					if(boundPass)++exactZeroFluxIdentityCount;
-					if(!boundPass&&authenticatedClassEnvelope){double termwise=0.0;
-						const TraceFloat& beginning=producerRequest.beginning[index];
-						const TraceFloat& source=producerRequest.sourceDelta[index];
-						termwise+=std::fabs(beginning.Center())+beginning.Radius()+
-							std::fabs(source.Center())+source.Radius();
-						const double scaleUpper=(std::fabs(producerRequest.timeStepS.Center())+
-							producerRequest.timeStepS.Radius())/std::max(std::numeric_limits<double>::min(),
-							std::fabs(producerRequest.shape.cellWidthM.Center())-
-							producerRequest.shape.cellWidthM.Radius());
-						for(unsigned int axis=0u;axis<3u;++axis){const std::size_t lower=
-							producerCellFace(cell,axis,false),upper=producerCellFace(cell,axis,true);
-							const TraceFloat* terms[]={&producerFlux.lowFlux[component*producerAllFaces+lower],
-								&producerFlux.lowFlux[component*producerAllFaces+upper],
-								&producerFlux.fluxDelta[component*producerAllFaces+lower],
-								&producerFlux.fluxDelta[component*producerAllFaces+upper]};
-							for(const TraceFloat* term:terms)termwise+=scaleUpper*(std::fabs(
-								term->Center())+term->Radius());}
-						const double twoPathBound=std::nextafter(termwise+
-							std::fabs(fp64Accepted[index]),std::numeric_limits<double>::infinity());
-						boundPass=std::isfinite(twoPathBound)&&residual<=twoPathBound;
-						if(boundPass){acceptedBound=twoPathBound;++twoPathEnvelopeCount;}}
 				}
 				if(!roundedMatch&&firstRoundedMismatch==9u*cells)firstRoundedMismatch=index;
 				if(!boundPass&&firstBoundFailure==9u*cells)firstBoundFailure=index;
@@ -11821,7 +11804,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				// the independently propagated local enclosure, while the exact Metal bytes
 				// below are what the publication seal authenticates for the successor.
 				bounds[index]=acceptedBound;enclosed=enclosed&&boundPass;}
-			if(!enclosed)std::fprintf(stderr,"PROJECTED_HEUN_OWNER_PRODUCER_FAILURE producer=R%u "
+			if(!enclosed&&publishCertificate)std::fprintf(stderr,"PROJECTED_HEUN_OWNER_PRODUCER_FAILURE producer=R%u "
 				"first_rounded_mismatch=%zu first_bound_failure=%zu calculated=%.9g device=%.9g "
 				"center=%.17g radius=%.17g fp64=%.17g\n",producer,firstRoundedMismatch,
 				firstBoundFailure,firstRoundedMismatch<9u*cells?tracedAccepted[firstRoundedMismatch].rounded:0.0f,
@@ -11829,17 +11812,14 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 				firstRoundedMismatch<9u*cells?tracedAccepted[firstRoundedMismatch].exact:0.0,
 				firstRoundedMismatch<9u*cells?tracedAccepted[firstRoundedMismatch].error:0.0,
 				firstRoundedMismatch<9u*cells?fp64Accepted[firstRoundedMismatch]:0.0);
-			const bool nonR60InvalidArithmeticRefused=[](){const CertifiedBinary32 invalid=
-				{0.0f,0.0,0.0,false};const float device=std::numeric_limits<float>::denorm_min();
-				const bool authenticatedClassEnvelope=false;
-				return !invalid.valid&&device!=0.0f&&!authenticatedClassEnvelope;}();
-			std::fprintf(stderr,"PROJECTED_HEUN_OWNER_PRODUCER_CLASS_ENVELOPE stage=R%u "
+			if(publishCertificate)std::fprintf(stderr,"PROJECTED_HEUN_OWNER_PRODUCER_CLASS_ENVELOPE stage=R%u "
 				"exact_zero_flux_identity_values=%zu authenticated_two_path_values=%zu "
-				"class_obligation_authenticated=%d non_r60_invalid_mutant_refused=%d passed=%d\n",
-				producer,exactZeroFluxIdentityCount,twoPathEnvelopeCount,
-				authenticatedClassEnvelope?1:0,nonR60InvalidArithmeticRefused?1:0,
+				"class_obligation_authenticated=%d passed=%d\n",
+				producer,exactZeroFluxIdentityCount,std::size_t(0u),
+				authenticatedClassEnvelope?1:0,
 				enclosed?1:0);
-			if(!enclosed||!nonR60InvalidArithmeticRefused)return false;
+			if(!enclosed)return false;
+			if(!publishCertificate)return true;
 			certifiedProducerBytes[producer]=deviceAccepted;
 			certifiedProducerBounds[producer]=std::move(bounds);
 			certifiedProducerIdentity[producer]=deviceIdentity;
@@ -12006,24 +11986,24 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					gasDensityBounds[cell]=sum.error+std::fabs(sum.exact-mirror.gasDensityKGPerM3[cell]);}
 				std::array<std::vector<double>,3> provisionalBounds,transportVelocityBounds,
 					projectionFaceDensityBounds,projectionMomentumBounds;
-				bool provisionalParentsPassed=stage==0u||
-					(stage==1u&&terminalRateBoundsAvailable[0])||
-					(stage==2u&&terminalRateBoundsAvailable[0]&&terminalRateBoundsAvailable[1]);
+				bool provisionalParentsPassed=true;
 				unsigned int firstProvisionalParent=99u,firstProvisionalTerm=99u;
 				std::size_t firstProvisionalFace=0u;double firstProvisionalResidual=0.0,
 					firstProvisionalBound=0.0,firstProvisionalDevice=0.0,firstProvisionalMirror=0.0;
-				for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
-					device.provisionalMomentumKGPerM2S[axis].size();provisionalBounds[axis].resize(faces);
-					for(std::size_t face=0u;face<faces;++face){CertifiedBinary32 composed{
-						ownerRequest32.beginningMomentumKGPerM2S[axis][face],
-						ownerRequest64.beginningMomentumKGPerM2S[axis][face],
-						std::nextafter(std::fabs(static_cast<double>(ownerRequest32.
-							beginningMomentumKGPerM2S[axis][face])-ownerRequest64.
-							beginningMomentumKGPerM2S[axis][face]),
-							std::numeric_limits<double>::infinity()),true};
+				auto composeProvisional=[&](const unsigned int axis,const std::size_t face,
+					const std::array<bool,2>& parentAvailable,const bool recordFailure,
+					bool& parentsPassed){
+						CertifiedBinary32 composed{
+							ownerRequest32.beginningMomentumKGPerM2S[axis][face],
+							ownerRequest64.beginningMomentumKGPerM2S[axis][face],
+							std::nextafter(std::fabs(static_cast<double>(ownerRequest32.
+								beginningMomentumKGPerM2S[axis][face])-ownerRequest64.
+								beginningMomentumKGPerM2S[axis][face]),
+								std::numeric_limits<double>::infinity()),true};
+						parentsPassed=true;
 						auto addStageRate=[&](const unsigned int parent,const double weight){
-							if(parent>=2u||!terminalRateBoundsAvailable[parent]){
-								provisionalParentsPassed=false;return;}
+							if(parent>=2u||!parentAvailable[parent]){
+								parentsPassed=false;composed.valid=false;return;}
 							const auto& d=ownerObserved.qualificationIterationTrace[parent].back();
 							const auto& m=traceStages64[parent]->qualificationIterationTrace.back();
 							const float values32[4]={d.buoyancyMomentumRateKGPerM2S2[axis][face],
@@ -12038,12 +12018,12 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 							for(unsigned int term=0u;term<4u;++term){const double bound=
 								terminalRateBounds[parent][term][axis][face];
 								const double residual=std::fabs(static_cast<double>(values32[term])-
-									values64[term]);if(residual>bound&&firstProvisionalParent==99u){
-									firstProvisionalParent=parent;firstProvisionalTerm=term;
-									firstProvisionalFace=face;firstProvisionalResidual=residual;
-									firstProvisionalBound=bound;firstProvisionalDevice=values32[term];
-									firstProvisionalMirror=values64[term];}
-								provisionalParentsPassed=provisionalParentsPassed&&residual<=bound;
+									values64[term]);if(recordFailure&&residual>bound&&
+									firstProvisionalParent==99u){firstProvisionalParent=parent;
+									firstProvisionalTerm=term;firstProvisionalFace=face;
+									firstProvisionalResidual=residual;firstProvisionalBound=bound;
+									firstProvisionalDevice=values32[term];firstProvisionalMirror=values64[term];}
+								parentsPassed=parentsPassed&&residual<=bound;
 								const CertifiedBinary32 value={values32[term],values64[term],bound,
 									std::isfinite(bound)&&bound>=0.0};
 								sum=term==3u?CertifiedSubtract(sum,value):CertifiedAdd(sum,value);}
@@ -12056,13 +12036,22 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 							composed=CertifiedAdd(composed,CertifiedMultiply(dtWeight,sum));};
 						if(stage==1u)addStageRate(0u,1.0);
 						else if(stage==2u){addStageRate(0u,0.5);addStageRate(1u,0.5);}
-						provisionalBounds[axis][face]=composed.error+std::fabs(composed.exact-
-							mirror.provisionalMomentumKGPerM2S[axis][face]);}}
-				bool provisionalParentMutationRefused=false;
-				if(!packedProvisional.empty()&&!packedProvisional64.empty()){
-					const double bound=provisionalBounds[0][0];const double mutant=
-						static_cast<double>(packedProvisional[0])+std::max(1.0e-3,2.0*bound);
-					provisionalParentMutationRefused=std::fabs(mutant-packedProvisional64[0])>bound;}
+						composed.valid=composed.valid&&parentsPassed;return composed;};
+					for(unsigned int axis=0u;axis<3u;++axis){const std::size_t faces=
+						device.provisionalMomentumKGPerM2S[axis].size();provisionalBounds[axis].resize(faces);
+						for(std::size_t face=0u;face<faces;++face){bool localParentsPassed=false;
+							const CertifiedBinary32 composed=composeProvisional(axis,face,
+								terminalRateBoundsAvailable,true,localParentsPassed);
+							provisionalParentsPassed=provisionalParentsPassed&&localParentsPassed;
+							provisionalBounds[axis][face]=composed.error+std::fabs(composed.exact-
+								mirror.provisionalMomentumKGPerM2S[axis][face]);}}
+					bool provisionalParentMutationRefused=stage==0u;
+					if(stage>0u&&!packedProvisional.empty()){
+						std::array<bool,2> mutantAvailability=terminalRateBoundsAvailable;
+						mutantAvailability[0]=false;bool mutantParentsPassed=true;
+						const CertifiedBinary32 mutant=composeProvisional(0u,0u,mutantAvailability,
+							false,mutantParentsPassed);
+						provisionalParentMutationRefused=!mutantParentsPassed&&!mutant.valid;}
 				std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
 					"name=provisional_momentum_parent_proof_immutable stage=R%u "
 					"parents_passed=%d mutant_refused=%d first_parent=%u first_term=%u "
@@ -12730,6 +12719,9 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					if(terminalIteration&&fctTraceSolved&&fctFluxPairEnclosed&&fctAcceptedEnclosed){
 						traceTerminalFluxPair[stage]=tracedFluxPair;
 						traceTerminalFluxPairAvailable[stage]=true;
+						if(stage==1u){certifiedR1CandidateLowFlux=tracedFluxPair.lowFlux;
+							certifiedR1CandidateFluxDelta=tracedFluxPair.fluxDelta;
+							certifiedR1CandidateFluxAvailable=true;}
 						FireProductionScalarFCTFluxPair deviceFluxPair;
 						deviceFluxPair.shape=shape;
 						deviceFluxPair.timeStepS=ownerRequest32.scalarContract.timeStepS;
@@ -12740,8 +12732,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 								FireProductionProjectionFaceCount(shape,1u)}};
 						deviceFluxPair.lowFlux=device.scalarLowFlux;
 						deviceFluxPair.fluxDelta=device.scalarFluxDelta;
-						deviceTerminalFluxPair[stage]=deviceFluxPair;
-						deviceTerminalFluxPairAvailable[stage]=deviceFluxPair.lowFlux.size()==
+						const bool deviceFluxPairAvailable=deviceFluxPair.lowFlux.size()==
 							9u*allFaces&&deviceFluxPair.fluxDelta.size()==9u*allFaces;
 						const bool sameClassTrajectory=alphaClassesAgree&&
 							sameClasses(device.activeClass,mirror.activeClass)&&
@@ -12752,7 +12743,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 							mirror.sharedFaceAlpha,
 							acceptedCertificate);
 						if(stage==0u){const bool producerCertified=sameClassTrajectory&&
-							acceptedCertificateBuilt&&deviceTerminalFluxPairAvailable[stage]&&
+							acceptedCertificateBuilt&&deviceFluxPairAvailable&&
 							certifyProducerPublication(0u,tracedRequest,tracedFluxPair,
 								!fctCounters.branchObligations.empty()&&
 								fctCertifiedBranches==fctCounters.branchObligations.size()&&
@@ -12761,20 +12752,36 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 										obligation.predicateCenter-obligation.predicateRadius<=0.0&&
 										obligation.predicateCenter+obligation.predicateRadius>=0.0;}),
 								acceptedCertificate,
-								device.acceptedConservativeValues,
-								ownerObserved64.r0.scalarAcceptance.accepted,
-								device.acceptedCandidateIdentity,
-								ownerObserved.candidatePublicationIdentity[0]);
-							stageStateBoundsValid=stageStateBoundsValid&&producerCertified;
+							device.acceptedConservativeValues,
+							ownerObserved64.r0.scalarAcceptance.accepted,
+							device.acceptedCandidateIdentity,
+							ownerObserved.candidatePublicationIdentity[0],true);
+						bool invalidMutantRefused=false;std::size_t invalidMutantIndex=9u*cells;
+						if(producerCertified){std::vector<CertifiedBinary32> invalid=acceptedCertificate;
+							for(std::size_t index=0u;index<device.acceptedConservativeValues.size();++index)
+								if(device.acceptedConservativeValues[index]!=0.0f){invalidMutantIndex=index;
+									invalid[index].valid=false;break;}
+							invalidMutantRefused=invalidMutantIndex<invalid.size()&&
+								!certifyProducerPublication(0u,tracedRequest,tracedFluxPair,true,invalid,
+									device.acceptedConservativeValues,
+									ownerObserved64.r0.scalarAcceptance.accepted,
+									device.acceptedCandidateIdentity,
+									ownerObserved.candidatePublicationIdentity[0],false);}
+						nonR60InvalidArithmeticRED=producerCertified&&invalidMutantRefused;
+						std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+							"name=non_r60_invalid_arithmetic_publication_refused "
+							"mutated_index=%zu valid_looking_class_metadata=1 refused=%d passed=%d\n",
+							invalidMutantIndex,invalidMutantRefused?1:0,
+							nonR60InvalidArithmeticRED?1:0);
+						stageStateBoundsValid=stageStateBoundsValid&&producerCertified&&
+							nonR60InvalidArithmeticRED;
 							std::fprintf(stderr,"PROJECTED_HEUN_OWNER_PRODUCER_CERTIFICATE stage=R0 "
 								"identity=%llu finite_local_enclosures=%d passed=%d\n",
 								static_cast<unsigned long long>(device.acceptedCandidateIdentity),
 								producerCertified?1:0,producerCertified?1:0);
 							traceR0TerminalVelocity=tracedVelocity;traceR0TerminalClass=device.activeClass;}
-					else if(traceTerminalFluxPairAvailable[0]&&deviceTerminalFluxPairAvailable[0]&&
-						deviceTerminalFluxPairAvailable[1]){
+					else if(traceTerminalFluxPairAvailable[0]&&deviceFluxPairAvailable){
 							::RISEFireProductionTrace::FireProductionScalarFCTFluxPair averaged;
-							FireProductionScalarFCTFluxPair deviceAveraged;
 							::RISEFireProductionTrace::FireProductionScalarFCTResult heunTrace;
 							std::vector<TraceFloat> beginning;std::vector<double> zeroBounds(9u*cells,0.0);
 							const bool beginningTraced=traceInputVector(ownerRequest32.beginningConservativeValues,
@@ -12785,8 +12792,6 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 							{FireProductionRoundoffTrace::Scope heunScope(heunCounters);heunSolved=
 								beginningTraced&&::RISEFireProductionTrace::AverageFireProductionScalarFCTFluxPairsCPU(
 									traceTerminalFluxPair[0],traceTerminalFluxPair[1],averaged,&heunTraceError)&&
-								AverageFireProductionScalarFCTFluxPairsCPU(deviceTerminalFluxPair[0],
-									deviceTerminalFluxPair[1],deviceAveraged,&heunTraceError)&&
 								::RISEFireProductionTrace::SolveFireProductionScalarFCTFluxPairCPU(
 									heunRequest,averaged,heunTrace,&heunTraceError);}
 							std::uint64_t heunOperations=0u;for(const std::uint64_t count:
@@ -12818,7 +12823,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 							// The live gate is the authenticated published endpoint chord above,
 							// not this deliberately over-approximated auxiliary replay.
 							const bool producerCertified=heunSolved&&heunClassesAgree&&
-								fctAcceptedCertificates(heunRequest,averaged,deviceAveraged,heunTrace,
+								fctAcceptedCertificates(heunRequest,averaged,deviceFluxPair,heunTrace,
 									device.sharedFaceAlpha,
 									ownerObserved64.heunSolve.scalar.sharedFaceAlpha,
 									acceptedCertificate)&&
@@ -12830,10 +12835,10 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 												BranchCertificate::None&&obligation.predicateCenter-
 												obligation.predicateRadius<=0.0&&obligation.predicateCenter+
 												obligation.predicateRadius>=0.0;}),acceptedCertificate,
-									device.acceptedConservativeValues,
-									ownerObserved64.heunSolve.scalar.accepted,
-									device.acceptedCandidateIdentity,
-									ownerObserved.candidatePublicationIdentity[1]);
+								device.acceptedConservativeValues,
+								ownerObserved64.heunSolve.scalar.accepted,
+								device.acceptedCandidateIdentity,
+								ownerObserved.candidatePublicationIdentity[1],true);
 							std::vector<CertifiedBinary32> cpuSurrogateCertificate;
 							const bool cpuSurrogateBuilt=fctAcceptedCertificates(heunRequest,averaged,
 								ownerObserved32.averagedFlux.compositeFluxPair,heunTrace,
@@ -14007,6 +14012,42 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 					std::fabs(mirror[cell])+std::fabs(static_cast<double>(device[cell]));
 				return ownerGamma512*termMagnitude;});
 			ownerMirrorBounded=ownerMirrorBounded&&bound.passed;}
+		FireProductionProjectedHeunMetalOwnerRequest wrongAverageRequest=ownerRequest;
+		wrongAverageRequest.qualificationWrongAveragedFluxParent=true;
+		FireProductionProjectedHeunMetalOwnerResult wrongAverageMutant;
+		std::string wrongAverageError;
+		const bool wrongAverageAccepted=AttemptFireProductionProjectedHeunMetalOwner(
+			wrongAverageRequest,wrongAverageMutant,&wrongAverageError);
+		bool wrongAverageOutsideEnvelope=false;
+		const std::size_t candidateFluxValues=certifiedR1CandidateFluxAvailable?
+			certifiedR1CandidateLowFlux.size():0u;
+		std::size_t wrongAverageField=2u,wrongAverageIndex=candidateFluxValues;
+		double wrongAverageResidual=0.0,wrongAverageBound=0.0;
+		if(wrongAverageAccepted&&certifiedR1CandidateFluxAvailable&&
+			wrongAverageMutant.qualificationIterationTrace[1].size()>0u){const auto& mutant=
+				wrongAverageMutant.qualificationIterationTrace[1].back();
+			const std::vector<float>* deviceField[2]={&mutant.scalarLowFlux,&mutant.scalarFluxDelta};
+			const std::vector<FireProductionRoundoffTrace::TraceFloat>* traceField[2]={
+				&certifiedR1CandidateLowFlux,&certifiedR1CandidateFluxDelta};
+			for(std::size_t field=0u;field<2u&&!wrongAverageOutsideEnvelope;++field){
+				if(deviceField[field]->size()!=traceField[field]->size()){
+					wrongAverageOutsideEnvelope=true;wrongAverageField=field;
+					wrongAverageIndex=std::min(deviceField[field]->size(),traceField[field]->size());
+					wrongAverageResidual=std::numeric_limits<double>::infinity();continue;}
+				for(std::size_t index=0u;index<deviceField[field]->size();++index){
+					const double residual=std::fabs(static_cast<double>((*deviceField[field])[index])-
+						(*traceField[field])[index].Center());
+					const double bound=(*traceField[field])[index].Radius();
+					if(residual>bound){wrongAverageOutsideEnvelope=true;wrongAverageField=field;
+						wrongAverageIndex=index;wrongAverageResidual=residual;
+						wrongAverageBound=bound;break;}}}}
+		wrongAveragedFluxParentRED=wrongAverageAccepted&&wrongAverageOutsideEnvelope;
+		std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+			"name=wrong_device_averaged_flux_parent numerical_gate=reviewed_r190_fp64_owner "
+			"mutant_accepted=%d first_field=%zu first_index=%zu residual=%.17g "
+			"local_termwise_enclosure=%.17g error=%s passed=%d\n",wrongAverageAccepted?1:0,
+			wrongAverageField,wrongAverageIndex,wrongAverageResidual,wrongAverageBound,
+			wrongAverageError.c_str(),wrongAveragedFluxParentRED?1:0);
 		for(unsigned int axis=0u;axis<3u;++axis){const std::string momentum="momentum_"+
 			std::to_string(axis),velocity="velocity_"+std::to_string(axis);
 			const double velocityImpulse=3.0*std::fabs(ownerRequest.gravityMPerS2[axis])*
@@ -14116,7 +14157,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerAtomicRefused&&ownerPolicyDivergenceRefused&&
 		ownerStaleTargetPublicationRefused&&ownerUnverifiedPrivateBufferRefused&&
 		ownerActualInterstageTransferRefused&&tier8OwnerWorkingSetScales&&
-		activeCycleREDs&&limiterOutcomeRED;
+		activeCycleREDs&&limiterOutcomeRED&&wrongAveragedFluxParentRED;
 	const bool passed=thresholdCoverage&&exactThresholdNoDrain&&policyOwnersIdentical&&
 		deviceExactPositiveNoDrain&&
 		deviceExactNegativeNoDrain&&independentBoundCanFail&&allBoundsPass&&
@@ -14130,7 +14171,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		preauthoredRefused&&topologyRefused&&dormantThresholdIdentity&&fixtureCertified&&
 		liveCertified&&observed.liveAuthorityAllocationBytes<=liveBytes&&understatedRefused&&
 		transferLedgerRefused&&ownerSmokePassed&&heunWeightingRED&&
-		continuousEnclosureRED&&outOfEnclosureRED&&
+		continuousEnclosureRED&&outOfEnclosureRED&&wrongAveragedFluxParentRED&&
 		heunWeightingMutantAccepted&&sharedAlphaRED&&ownerWorkingSetPreflightRefused&&
 		branches&&observed.commandCommitCount==1u&&observed.terminalStagingCount==1u&&
 		observed.interstageFullGridTransferCount==0u&&openObserved.commandCommitCount==1u&&

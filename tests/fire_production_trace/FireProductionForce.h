@@ -465,6 +465,10 @@ namespace RISEFireProductionTrace
 		//! tableau; the second restores the rejected mixed-alpha R0 cache.
 		bool qualificationThreeQuarterHeunWeighting;
 		bool qualificationReuseR0LimiterAlpha;
+		//! Substitutes R1's high candidate for the sealed R0 donor input to the
+		//! resident Heun average.  The numerical gate must reject the valid-looking
+		//! but semantically wrong parent trajectory.
+		bool qualificationWrongAveragedFluxParent;
 		//! Restores the rejected R2 schedule defect: physical flux consumes the
 		//! sealed projection-input class instead of the force-inclusive
 		//! projection's immediately derived endpoint class.
@@ -493,6 +497,7 @@ namespace RISEFireProductionTrace
 			qualificationDisableLimiterCertification(false),
 			qualificationThreeQuarterHeunWeighting(false),
 			qualificationReuseR0LimiterAlpha(false),
+			qualificationWrongAveragedFluxParent(false),
 			qualificationR2SealedClassPhysicalFlux(false),
 			qualificationUnverifiedEndpointClassBuffer(false),
 			qualificationCaptureIterationTrace(false),

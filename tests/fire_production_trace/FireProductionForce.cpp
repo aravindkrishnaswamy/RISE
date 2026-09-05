@@ -2479,7 +2479,8 @@ namespace RISEFireProductionTrace
 				const OpenClass& nextClass,
 				const FireProductionProjectedHeunTransportCoefficients& coefficients,
 				const FireProductionScalarFCTResult& scalarAcceptance,
-				const FireProductionScalarHeunFluxStage& flux,
+				const FireProductionScalarHeunFluxStage& stageFlux,
+				const FireProductionScalarHeunFluxStage& candidateFlux,
 				const FireProductionNonpressureMomentumRHSResult& nonpressure,
 				const std::array<std::vector<FireProductionRoundoffTrace::TraceFloat>,3>& provisionalMomentum,
 				const std::uint64_t candidateIdentity){
@@ -2500,10 +2501,10 @@ namespace RISEFireProductionTrace
 				trace.molecularKinematicViscosityM2PerS=
 					coefficients.molecularKinematicViscosityM2PerS;
 				OwnerGasDensity(shape,state,trace.gasDensityKGPerM3);
-				trace.scalarLowFlux=flux.compositeFluxPair.lowFlux;
-				trace.scalarFluxDelta=flux.compositeFluxPair.fluxDelta;
-				trace.physicalMassFluxKGPerM2S=flux.physicalMassFluxKGPerM2S;
-				trace.physicalEnergyFluxWPerM2=flux.physicalEnergyFluxWPerM2;
+				trace.scalarLowFlux=candidateFlux.compositeFluxPair.lowFlux;
+				trace.scalarFluxDelta=candidateFlux.compositeFluxPair.fluxDelta;
+				trace.physicalMassFluxKGPerM2S=stageFlux.physicalMassFluxKGPerM2S;
+				trace.physicalEnergyFluxWPerM2=stageFlux.physicalEnergyFluxWPerM2;
 				trace.representedPressureRatio.resize(cells);
 				for(std::size_t cell=0u;cell<cells;++cell){std::array<double,9> tuple={{}};
 					for(std::size_t component=0u;component<9u;++component)tuple[component]=
@@ -2515,7 +2516,7 @@ namespace RISEFireProductionTrace
 				trace.faceDensityKGPerM3=projection.faceDensityKGPerM3;
 				trace.projectedMomentumKGPerM2S=projection.momentumKGPerM2S;
 				FireProductionCompatibleFCTMomentumResult compatible;
-				if(OwnerCompatibleMomentum(flux,scalarAcceptance,projection.velocityMPerS,
+				if(OwnerCompatibleMomentum(stageFlux,scalarAcceptance,projection.velocityMPerS,
 					compatible,0))trace.advectionMomentumRateKGPerM2S2=
 						compatible.advectionRateKGPerM2S2;
 				trace.buoyancyMomentumRateKGPerM2S2=
@@ -2661,7 +2662,7 @@ namespace RISEFireProductionTrace
 					parentCandidateIdentity,fluxIdentity,scalarAcceptance.sharedFaceAlpha,
 					corrected,error))return false;
 				captureIterationTrace(iteration,target,corrected,projected,nextClass,
-					coefficients,scalarAcceptance,flux,nonpressure,provisionalMomentum,
+					coefficients,scalarAcceptance,flux,r0?flux:averaged,nonpressure,provisionalMomentum,
 					candidateIdentity);
 				FireProductionRoundoffTrace::TraceFloat targetResidual=0.0f,momentumResidual=0.0f,coefficientResidual=0.0f;
 				for(std::size_t cell=0u;cell<cells;++cell)targetResidual=std::max(
@@ -2837,7 +2838,8 @@ namespace RISEFireProductionTrace
 						verifiedFluxIdentity,selectedAlpha,certifiedTarget,error))return false;
 					captureIterationTrace(iteration|UINT32_C(0x80000000),corrected,
 						certifiedTarget,verifiedProjection,terminalNextClass,verifiedCoefficients,
-						certifiedScalar,verifiedFlux,verifiedNonpressure,provisionalMomentum,
+						certifiedScalar,verifiedFlux,r0?verifiedFlux:verifiedAverage,
+						verifiedNonpressure,provisionalMomentum,
 						certifiedIdentity);
 					FireProductionRoundoffTrace::TraceFloat verificationResidual=0.0f;
 					for(std::size_t cell=0u;cell<cells;++cell)verificationResidual=std::max(
