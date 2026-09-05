@@ -275,7 +275,7 @@ namespace RISE
 			std::uint32_t cells,allFaces,faceOffset[3],stage;
 			float timeStepS,cellWidthM,endpointVelocityToleranceMPerS;
 			std::uint32_t forceActiveCycle,threeQuarterHeunWeighting;
-			std::uint64_t attemptIdentity,caseIdentity,sourcePacketIdentity;
+			std::uint64_t attemptIdentity;
 		};
 
 		constexpr std::size_t MetalResidentTransportMaximumKnots=128u;
@@ -2028,18 +2028,6 @@ using namespace metal;
 struct TransportParams {uint nx;uint ny;uint nz;uint cells;uint boundary[6];uint sideOffset[6];uint faceOffset[3];
  uint stage;float dx;float Pr;float Sc;float Cv;ulong attempt;ulong parent;ulong projection;
  ulong thermochemistry;ulong transport;};
-// Resident publication identities are causal authority seals, not payload
-// checksums.  The C++ authority object binds the exact Private buffers and the
-// producing command; the seal authenticates that producer's immediate parent
-// seals and all semantics-bearing metadata.  Re-reading an O(N) payload with
-// one device thread neither strengthens that capability relationship nor
-// detects a later buffer substitution, and made each owner iteration O(N) on
-// one GPU lane.  Domain separation prevents equal parent tuples on different
-// surfaces from aliasing.
-inline ulong authority_seal_begin(ulong domain){ulong hash=14695981039346656037ul;
- hash^=domain;return hash*1099511628211ul;}
-inline ulong authority_seal_mix(ulong hash,ulong word){hash^=word;return hash*1099511628211ul;}
-inline ulong authority_seal_finish(ulong hash){return hash==0ul?1ul:hash;}
 constant uint transport_max_knots=128u;
 constant uint transport_stride=1u+5u*transport_max_knots;
 inline uint tr_cell(constant TransportParams& p,uint x,uint y,uint z){return (z*p.ny+y)*p.nx+x;}
@@ -2157,23 +2145,25 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  constant TransportParams& p [[buffer(9)]],
  uint gid [[thread_position_in_grid]]){
  if(gid!=0u)return;if(atomic_load_explicit(failure,memory_order_relaxed)!=0u){identity[0]=0ul;return;}
- // state/temperature/velocity/output/records/inflow are already the exact
- // Private buffers retained by ResidentTransportMetalAuthority.  The issuing
- // command evaluated and validated every output cell before this seal.
- ulong hash=authority_seal_begin(0x727472616e737031ul);
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,p.parent);
- hash=authority_seal_mix(hash,p.projection);hash=authority_seal_mix(hash,ulong(p.stage));
- hash=authority_seal_mix(hash,ulong(p.nx));hash=authority_seal_mix(hash,ulong(p.ny));
- hash=authority_seal_mix(hash,ulong(p.nz));hash=authority_seal_mix(hash,ulong(p.cells));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.dx)));
- for(uint axis=0u;axis<3u;++axis)hash=authority_seal_mix(hash,ulong(p.faceOffset[axis]));
- for(uint side=0u;side<6u;++side){hash=authority_seal_mix(hash,ulong(p.boundary[side]));
-  hash=authority_seal_mix(hash,ulong(p.sideOffset[side]));}
- hash=authority_seal_mix(hash,p.thermochemistry);hash=authority_seal_mix(hash,p.transport);
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Pr)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Sc)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Cv)));
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul;
+ for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<p.cells;++word){hash^=ulong(as_type<uint>(temperature[word]));hash*=1099511628211ul;}
+ uint faceWords=p.faceOffset[2]+p.nx*p.ny*(p.nz+1u);
+ for(uint word=0u;word<faceWords;++word){hash^=ulong(as_type<uint>(velocity[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<3u*p.cells;++word){
+  hash^=ulong(as_type<uint>(output[word]));hash*=1099511628211ul;}hash^=p.attempt;hash*=1099511628211ul;
+ for(uint word=0u;word<7u*32u;++word){hash^=ulong(as_type<uint>(thermo[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<6u*transport_stride;++word){hash^=ulong(as_type<uint>(transport[word]));hash*=1099511628211ul;}
+ uint inflowWords=p.sideOffset[5]+p.nx*p.ny;
+ for(uint word=0u;word<inflowWords;++word){hash^=ulong(inflow[word]);hash*=1099511628211ul;}
+ hash^=p.parent;hash*=1099511628211ul;hash^=p.projection;hash*=1099511628211ul;hash^=ulong(p.stage);
+ hash*=1099511628211ul;hash^=ulong(p.nx);hash*=1099511628211ul;hash^=ulong(p.ny);
+ hash*=1099511628211ul;hash^=ulong(p.nz);hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.dx));
+ for(uint side=0u;side<6u;++side){hash*=1099511628211ul;hash^=ulong(p.boundary[side]);}
+ hash*=1099511628211ul;hash^=p.thermochemistry;hash*=1099511628211ul;hash^=p.transport;
+ hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Pr));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.Sc));hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.Cv));
+ identity[0]=hash==0ul?1ul:hash;}
 struct PhysicalParams {uint advectiveNullity;uint physicalNullity;uint mutateHigh;float ambientT;};
 struct EOSParams {uint cells;uint stage;uint precision;uint affineRowCount;
  float Tmin;float Tmax;float pressure;float feasibility;
@@ -2372,22 +2362,23 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul||
   endpointClassIdentity[0]==0ul){identity[0]=0ul;return;}
- // The authority object retains every listed Private buffer and its producing
- // command.  The shared-f_N validator has already checked all composite words.
- ulong hash=authority_seal_begin(0x7270687973667831ul);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,endpointClassIdentity[0]);
- hash=authority_seal_mix(hash,ulong(p.nx));hash=authority_seal_mix(hash,ulong(p.ny));
- hash=authority_seal_mix(hash,ulong(p.nz));hash=authority_seal_mix(hash,ulong(p.cells));
- hash=authority_seal_mix(hash,ulong(p.stage));hash=authority_seal_mix(hash,p.attempt);
- for(uint axis=0u;axis<3u;++axis)hash=authority_seal_mix(hash,ulong(p.faceOffset[axis]));
- for(uint side=0u;side<6u;++side){hash=authority_seal_mix(hash,ulong(p.boundary[side]));
-  hash=authority_seal_mix(hash,ulong(p.sideOffset[side]));}
- hash=authority_seal_mix(hash,ulong(extra.advectiveNullity));
- hash=authority_seal_mix(hash,ulong(extra.physicalNullity));
- hash=authority_seal_mix(hash,ulong(extra.mutateHigh));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(extra.ambientT)));
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul,all=pf_all_faces(p);hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=endpointClassIdentity[0];hash*=1099511628211ul;
+ for(uint word=0u;word<9u*all;++word){hash^=ulong(as_type<uint>(donor[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(advectiveDelta[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(highAdvective[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(low[word]));hash*=1099511628211ul;hash^=ulong(as_type<uint>(high[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<8u*all;++word){hash^=ulong(as_type<uint>(physicalMass[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<all;++word){hash^=ulong(as_type<uint>(physicalEnergy[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(physicalGas[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(faceLogTemperature[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<7u*all;++word){hash^=ulong(as_type<uint>(faceEnthalpy[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<9u;++word){hash^=ulong(as_type<uint>(ambient[word]));hash*=1099511628211ul;}
+ uint inflowWords=p.sideOffset[5]+p.nx*p.ny;for(uint word=0u;word<inflowWords;++word){hash^=ulong(inflow[word]);hash*=1099511628211ul;}
+ for(uint word=0u;word<8u*extra.physicalNullity;++word){hash^=ulong(as_type<uint>(physicalBasis[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<8u*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(advectiveBasis[word]));hash*=1099511628211ul;}
+ for(uint word=0u;word<extra.advectiveNullity*extra.advectiveNullity;++word){hash^=ulong(as_type<uint>(projector[word]));hash*=1099511628211ul;}
+ hash^=ulong(as_type<uint>(extra.ambientT));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
 kernel void identify_resident_eos_candidate(device const float* candidate [[buffer(0)]],
  device const float* sourceDelta [[buffer(1)]],device const float* alpha [[buffer(2)]],
  device const ulong* physicalIdentity [[buffer(3)]],device const ulong* transportIdentity [[buffer(4)]],
@@ -2401,25 +2392,23 @@ kernel void identify_resident_eos_candidate(device const float* candidate [[buff
   p.cells!=fct.cells||p.attempt!=transport.attempt||
   as_type<uint>(p.timeStepS)!=as_type<uint>(fct.dt)){
   identity[0]=0ul;atomic_fetch_or_explicit(failure,16u,memory_order_relaxed);return;}
- // fct_commit_scalar has already validated every candidate component and the
- // r60 envelope.  The authority retains candidate/source/alpha by exact buffer
- // handle; the seal records the immediate resident parents and stage contract.
- ulong hash=authority_seal_begin(0x72656f7363616e31ul);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,physicalIdentity[0]);
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,p.caseIdentity);
- hash=authority_seal_mix(hash,ulong(p.stage));hash=authority_seal_mix(hash,ulong(p.precision));
- hash=authority_seal_mix(hash,ulong(p.cells));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Tmin)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Tmax)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.pressure)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.feasibility)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.dynamicsBound)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.timeStepS)));
- hash=authority_seal_mix(hash,ulong(fct.nx));hash=authority_seal_mix(hash,ulong(fct.ny));
- hash=authority_seal_mix(hash,ulong(fct.nz));hash=authority_seal_mix(hash,ulong(fct.nullity));
- for(uint side=0u;side<6u;++side)hash=authority_seal_mix(hash,ulong(fct.boundary[side]));
- identity[0]=authority_seal_finish(hash);atomic_fetch_or_explicit(obligations,
+ ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=physicalIdentity[0];hash*=1099511628211ul;
+ for(uint word=0u;word<9u*p.cells;++word){float value=candidate[word];
+  if(!isfinite(value)){identity[0]=0ul;atomic_fetch_or_explicit(failure,32u,memory_order_relaxed);return;}
+  hash^=ulong(as_type<uint>(value));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(sourceDelta[word]));hash*=1099511628211ul;}
+ uint allFaces=pf_all_faces(transport);for(uint word=0u;word<allFaces;++word){
+  hash^=ulong(as_type<uint>(alpha[word]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=p.caseIdentity;hash*=1099511628211ul;
+ hash^=ulong(p.stage);hash*=1099511628211ul;hash^=ulong(p.precision);hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.Tmin));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.Tmax));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.pressure));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.feasibility));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.dynamicsBound));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.timeStepS));hash*=1099511628211ul;
+ identity[0]=hash==0ul?1ul:hash;atomic_fetch_or_explicit(obligations,
   (1u<<0u)|(1u<<1u),memory_order_relaxed);}
 kernel void finalize_resident_eos_candidate(device const ulong* producerIdentity [[buffer(0)]],
  device ulong* acceptedIdentity [[buffer(1)]],device atomic_uint* failure [[buffer(2)]],
@@ -2741,22 +2730,15 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||candidateIdentity[0]==0ul||
   physicalIdentity[0]==0ul||transportIdentity[0]==0ul){identity[0]=0ul;return;}
- // evaluate_resident_eos_candidate validated every retained output cell.  This
- // seal binds that Private tuple to the exact candidate/flux/transport chain.
- ulong hash=authority_seal_begin(0x72656f736f757431ul);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,physicalIdentity[0]);
- hash=authority_seal_mix(hash,candidateIdentity[0]);
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,p.caseIdentity);
- hash=authority_seal_mix(hash,ulong(p.cells));hash=authority_seal_mix(hash,ulong(p.stage));
- hash=authority_seal_mix(hash,ulong(p.precision));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Tmin)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.Tmax)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.pressure)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.feasibility)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.dynamicsBound)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.timeStepS)));
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=physicalIdentity[0];hash*=1099511628211ul;hash^=candidateIdentity[0];hash*=1099511628211ul;
+ for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(temperature[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(pressureRatio[cell]));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(deviation[cell]));hash*=1099511628211ul;}
+ for(uint word=0u;word<870u;++word){hash^=ulong(as_type<uint>(eosThermo[word]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=p.caseIdentity;hash*=1099511628211ul;
+ hash^=ulong(p.stage);hash*=1099511628211ul;hash^=ulong(p.precision);hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.dynamicsBound));hash*=1099511628211ul;identity[0]=hash==0ul?1ul:hash;}
 kernel void produce_resident_frozen_source(device const float* input [[buffer(0)]],
  device float* output [[buffer(1)]],device FrozenSourceParams* sealed [[buffer(2)]],
  device atomic_uint* failure [[buffer(3)]],constant TargetParams& p [[buffer(4)]],
@@ -2774,14 +2756,12 @@ kernel void identify_resident_frozen_source(device const float* source [[buffer(
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||sealed[0].cells==0u||
   sealed[0].attempt==0ul||sealed[0].sourcePacket==0ul||candidateIdentity[0]==0ul){
   identity[0]=0ul;return;}
- // produce_resident_frozen_source checked every value before sealing; the
- // source packet identity is the immutable content authority for this field.
- ulong hash=authority_seal_begin(0x7266726f7a656e31ul);
- hash=authority_seal_mix(hash,ulong(sealed[0].cells));
- hash=authority_seal_mix(hash,sealed[0].attempt);
- hash=authority_seal_mix(hash,sealed[0].sourcePacket);
- hash=authority_seal_mix(hash,candidateIdentity[0]);
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul;hash^=ulong(sealed[0].cells);hash*=1099511628211ul;
+ hash^=sealed[0].attempt;hash*=1099511628211ul;hash^=sealed[0].sourcePacket;
+ hash*=1099511628211ul;hash^=candidateIdentity[0];hash*=1099511628211ul;
+ for(uint cell=0u;cell<sealed[0].cells;++cell){
+  hash^=ulong(as_type<uint>(source[cell]));hash*=1099511628211ul;}
+ identity[0]=hash==0ul?1ul:hash;}
 inline EOSDD target_cp_dd(device const float* thermo,uint species,EOSDD temperature,
  device atomic_uint* obligations,thread bool& valid){uint offset=0u;
  if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid)){
@@ -2967,26 +2947,28 @@ kernel void identify_resident_target(device const float* tangent [[buffer(0)]],
   tangentPhysicalIdentity[0]==0ul||candidatePhysicalIdentity[0]==0ul||
 	 candidateIdentity[0]==0ul||eosIdentity[0]==0ul||
   sourceIdentity[0]==0ul){identity[0]=0ul;return;}
- // Each target term and its enclosure was validated before this point.  The
- // target authority retains all seven Private fields and seals their immediate
- // conjunction of transport/physical/candidate/EOS/source parents.
- ulong hash=authority_seal_begin(0x7274617267657431ul);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,tangentPhysicalIdentity[0]);
-	 hash=authority_seal_mix(hash,candidatePhysicalIdentity[0]);
-	 hash=authority_seal_mix(hash,candidateIdentity[0]);
- hash=authority_seal_mix(hash,eosIdentity[0]);hash=authority_seal_mix(hash,sourceIdentity[0]);
- hash=authority_seal_mix(hash,ulong(p.nx));hash=authority_seal_mix(hash,ulong(p.ny));
- hash=authority_seal_mix(hash,ulong(p.nz));hash=authority_seal_mix(hash,ulong(p.cells));
- for(uint axis=0u;axis<3u;++axis)hash=authority_seal_mix(hash,ulong(p.faceOffset[axis]));
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,p.sourcePacket);
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.dt)));
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.dx)));
-	 hash=authority_seal_mix(hash,ulong(as_type<uint>(p.tailThreshold)));
-	 hash=authority_seal_mix(hash,ulong(p.policyVersion));
-	 hash=authority_seal_mix(hash,ulong(p.pad0));hash=authority_seal_mix(hash,ulong(p.pad1));
- for(uint side=0u;side<6u;++side)hash=authority_seal_mix(hash,ulong(p.boundary[side]));
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
+ hash^=tangentPhysicalIdentity[0];hash*=1099511628211ul;
+	 hash^=candidatePhysicalIdentity[0];hash*=1099511628211ul;
+	 hash^=candidateIdentity[0];hash*=1099511628211ul;
+ hash^=eosIdentity[0];hash*=1099511628211ul;hash^=sourceIdentity[0];hash*=1099511628211ul;
+ for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(tangent[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(source[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(absoluteDiagnostic[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(monitoredAbsolute[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(assembled[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(tangentRadius[cell]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(assembledRadius[cell]));hash*=1099511628211ul;}
+ hash^=ulong(p.nx);hash*=1099511628211ul;hash^=ulong(p.ny);hash*=1099511628211ul;
+ hash^=ulong(p.nz);hash*=1099511628211ul;hash^=ulong(p.cells);hash*=1099511628211ul;
+ for(uint axis=0u;axis<3u;++axis){hash^=ulong(p.faceOffset[axis]);hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.dt));hash*=1099511628211ul;
+ hash^=ulong(as_type<uint>(p.dx));hash*=1099511628211ul;
+	 hash^=ulong(as_type<uint>(p.tailThreshold));hash*=1099511628211ul;
+	 hash^=ulong(p.policyVersion);hash*=1099511628211ul;
+	 hash^=ulong(p.pad0);hash*=1099511628211ul;hash^=ulong(p.pad1);hash*=1099511628211ul;
+ for(uint side=0u;side<6u;++side){
+  hash^=ulong(p.boundary[side]);hash*=1099511628211ul;}identity[0]=hash==0ul?1ul:hash;}
 kernel void issue_resident_projection_consumer(constant ProjectionConsumerParams& p [[buffer(0)]],
  device const ulong* targetIdentity [[buffer(1)]],device ProjectionConsumerParams* sealed [[buffer(2)]],
  device ulong* identity [[buffer(3)]],device atomic_uint* failure [[buffer(4)]],
@@ -3016,16 +2998,10 @@ kernel void consume_resident_target(device const float* target [[buffer(0)]],
  if(p.preauthored!=0u||!metadataMatches||projectionIdentity[0]==0ul||
  targetIdentity[0]==0ul||transportIdentity[0]==0ul||physicalIdentity[0]==0ul||
  candidateIdentity[0]==0ul||eosIdentity[0]==0ul){consumerIdentity[0]=0ul;
- atomic_fetch_or_explicit(failure,8192u,memory_order_relaxed);return;}
- ulong hash=authority_seal_begin(0x7274636f6e737531ul);
- hash=authority_seal_mix(hash,targetIdentity[0]);
- hash=authority_seal_mix(hash,projectionIdentity[0]);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,physicalIdentity[0]);
- hash=authority_seal_mix(hash,candidateIdentity[0]);
- hash=authority_seal_mix(hash,eosIdentity[0]);
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,ulong(p.cells));
- consumerIdentity[0]=authority_seal_finish(hash);}
+ atomic_fetch_or_explicit(failure,8192u,memory_order_relaxed);return;}ulong hash=targetIdentity[0];
+ hash^=projectionIdentity[0];hash*=1099511628211ul;
+ for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
+ consumerIdentity[0]=hash==0ul?1ul:hash;}
 kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
  device float* output [[buffer(1)]],uint gid [[thread_position_in_grid]]){
  EOSDD value=eos_log_dd(eos_dd(input[2u*gid],input[2u*gid+1u]));output[4u*gid]=value.hi;
@@ -3039,23 +3015,19 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 // recomputed here.
 struct OwnerParams {uint cells;uint allFaces;uint faceOffset[3];uint stage;
  float dt;float dx;float endpointTolerance;uint forceActiveCycle;uint threeQuarterHeunWeighting;
- ulong attempt;ulong caseIdentity;ulong sourcePacketIdentity;};
+ ulong attempt;};
 kernel void owner_issue_bootstrap_target(device const float* target [[buffer(0)]],
  device const float* state [[buffer(1)]],device const float* source [[buffer(2)]],
  device ulong* targetIdentity [[buffer(3)]],device ulong* rootCandidateIdentity [[buffer(4)]],
  device ulong* targetConsumerIdentity [[buffer(5)]],constant OwnerParams& p [[buffer(6)]],
- uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
- // attempt authenticates the beginning state/time; case and source-packet
- // identities authenticate the two remaining host-authored setup surfaces.
- ulong hash=authority_seal_begin(0x72626f6f74743131ul);
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,p.caseIdentity);
- hash=authority_seal_mix(hash,p.sourcePacketIdentity);hash=authority_seal_mix(hash,ulong(p.stage));
- hash=authority_seal_mix(hash,ulong(p.cells));hash=authority_seal_mix(hash,ulong(p.allFaces));
- targetIdentity[0]=authority_seal_finish(hash);
- hash=authority_seal_mix(hash,0x726f6f745f71306eul);
- rootCandidateIdentity[0]=authority_seal_finish(hash);
- hash=authority_seal_mix(hash,0x6273745f63617031ul);
- targetConsumerIdentity[0]=authority_seal_finish(hash);}
+ uint gid [[thread_position_in_grid]]){if(gid!=0u)return;ulong hash=14695981039346656037ul;
+ for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
+ for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(source[word]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
+ targetIdentity[0]=hash==0ul?1ul:hash;hash^=0x726f6f745f71306eul;hash*=1099511628211ul;
+ rootCandidateIdentity[0]=hash==0ul?1ul:hash;hash^=0x6273745f63617031ul;
+ hash*=1099511628211ul;targetConsumerIdentity[0]=hash==0ul?1ul:hash;}
 kernel void owner_pack_faces(device const float* x [[buffer(0)]],device const float* y [[buffer(1)]],
  device const float* z [[buffer(2)]],device float* packed [[buffer(3)]],
  constant OwnerParams& p [[buffer(4)]],uint gid [[thread_position_in_grid]]){
@@ -3108,26 +3080,25 @@ kernel void owner_bind_averaged_flux(device const float* low [[buffer(0)]],
  device ulong* identity [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
  constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(r0[0]==0ul||r1[0]==0ul||transport[0]==0ul){identity[0]=0ul;
- atomic_fetch_or_explicit(failure,1u<<23u,memory_order_relaxed);return;}
- ulong hash=authority_seal_begin(0x72617667666c7831ul);
- hash=authority_seal_mix(hash,r0[0]);hash=authority_seal_mix(hash,r1[0]);
- hash=authority_seal_mix(hash,transport[0]);hash=authority_seal_mix(hash,p.attempt);
- hash=authority_seal_mix(hash,ulong(p.stage));hash=authority_seal_mix(hash,ulong(p.allFaces));
- identity[0]=authority_seal_finish(hash);}
+ atomic_fetch_or_explicit(failure,1u<<23u,memory_order_relaxed);return;}ulong hash=14695981039346656037ul;
+ hash^=r0[0];hash*=1099511628211ul;hash^=r1[0];hash*=1099511628211ul;
+ hash^=transport[0];hash*=1099511628211ul;for(uint word=0u;word<9u*p.allFaces;++word){
+  hash^=ulong(as_type<uint>(low[word]));hash*=1099511628211ul;
+  hash^=ulong(as_type<uint>(delta[word]));hash*=1099511628211ul;}
+ identity[0]=hash==0ul?1ul:hash;}
 kernel void owner_bind_candidate(device const float* state [[buffer(0)]],
  device const float* alpha [[buffer(1)]],device const ulong* transport [[buffer(2)]],
  device const ulong* flux [[buffer(3)]],device const ulong* parent [[buffer(4)]],
  device ulong* identity [[buffer(5)]],device atomic_uint* failure [[buffer(6)]],
  constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(transport[0]==0ul||flux[0]==0ul||parent[0]==0ul||p.attempt==0ul){identity[0]=0ul;
- atomic_fetch_or_explicit(failure,1u<<24u,memory_order_relaxed);return;}
- ulong hash=authority_seal_begin(0x726f776e63616e31ul);
- hash=authority_seal_mix(hash,transport[0]);hash=authority_seal_mix(hash,flux[0]);
- hash=authority_seal_mix(hash,parent[0]);hash=authority_seal_mix(hash,p.attempt);
- hash=authority_seal_mix(hash,p.caseIdentity);hash=authority_seal_mix(hash,p.sourcePacketIdentity);
- hash=authority_seal_mix(hash,ulong(p.stage));hash=authority_seal_mix(hash,ulong(p.cells));
- hash=authority_seal_mix(hash,ulong(p.allFaces));
- identity[0]=authority_seal_finish(hash);}
+ atomic_fetch_or_explicit(failure,1u<<24u,memory_order_relaxed);return;}ulong hash=14695981039346656037ul;
+ hash^=transport[0];hash*=1099511628211ul;hash^=flux[0];hash*=1099511628211ul;
+ hash^=parent[0];hash*=1099511628211ul;for(uint word=0u;word<9u*p.cells;++word){
+  hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;}
+ for(uint face=0u;face<p.allFaces;++face){hash^=ulong(as_type<uint>(alpha[face]));hash*=1099511628211ul;}
+ hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
+ identity[0]=hash==0ul?1ul:hash;}
 kernel void owner_compose_target(device const float* base [[buffer(0)]],
  device const float* tail [[buffer(1)]],device const float* parent [[buffer(2)]],
  device float* output [[buffer(3)]],constant OwnerParams& p [[buffer(4)]],
@@ -3146,12 +3117,13 @@ kernel void owner_identify_target(device const float* tangent [[buffer(0)]],
  constant uint& correction [[buffer(13)]],uint gid [[thread_position_in_grid]]){
  if(gid!=0u)return;if(transport[0]==0ul||physical[0]==0ul||candidate[0]==0ul||
   eos[0]==0ul||frozen[0]==0ul||parentTarget[0]==0ul||p.attempt==0ul){output[0]=0ul;return;}
- ulong hash=authority_seal_begin(0x726f776e74677431ul);ulong parents[6]={transport[0],physical[0],candidate[0],
+ ulong hash=14695981039346656037ul;ulong parents[6]={transport[0],physical[0],candidate[0],
   eos[0],frozen[0],parentTarget[0]};for(uint i=0u;i<6u;++i){hash^=parents[i];hash*=1099511628211ul;}
- hash=authority_seal_mix(hash,ulong(correction));hash=authority_seal_mix(hash,ulong(p.stage));
- hash=authority_seal_mix(hash,p.attempt);hash=authority_seal_mix(hash,p.caseIdentity);
- hash=authority_seal_mix(hash,p.sourcePacketIdentity);
- output[0]=authority_seal_finish(hash);}
+ for(uint cell=0u;cell<p.cells;++cell){float values[5]={tangent[cell],source[cell],diagnostic[cell],
+  tail[cell],assembled[cell]};for(uint i=0u;i<5u;++i){hash^=ulong(as_type<uint>(values[i]));
+  hash*=1099511628211ul;}}hash^=ulong(correction);hash*=1099511628211ul;
+ hash^=ulong(p.stage);hash*=1099511628211ul;hash^=p.attempt;hash*=1099511628211ul;
+ output[0]=hash==0ul?1ul:hash;}
 kernel void owner_next_open_class(device const uchar* used [[buffer(0)]],
  device const float* vx [[buffer(1)]],device const float* vy [[buffer(2)]],
  device const float* vz [[buffer(3)]],device uchar* next [[buffer(4)]],
@@ -3175,13 +3147,13 @@ kernel void identify_resident_endpoint_class(device const uchar* classes [[buffe
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(projectionIdentity[0]==0ul||transportIdentity[0]==0ul||t.attempt==0ul){identity[0]=0ul;
   atomic_fetch_or_explicit(failure,1u<<26u,memory_order_relaxed);return;}
- ulong hash=authority_seal_begin(0x72656e6470636c31ul);
- hash=authority_seal_mix(hash,projectionIdentity[0]);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,ulong(t.stage));hash=authority_seal_mix(hash,t.attempt);
- for(uint side=0u;side<6u;++side){hash=authority_seal_mix(hash,ulong(t.boundary[side]));
-  hash=authority_seal_mix(hash,ulong(t.sideOffset[side]));}
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul;hash^=projectionIdentity[0];hash*=1099511628211ul;
+ hash^=transportIdentity[0];hash*=1099511628211ul;uint count=t.sideOffset[5]+t.nx*t.ny;
+ for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
+ hash^=ulong(t.stage);hash*=1099511628211ul;hash^=t.attempt;hash*=1099511628211ul;
+ for(uint side=0u;side<6u;++side){hash^=ulong(t.boundary[side]);hash*=1099511628211ul;
+  hash^=ulong(t.sideOffset[side]);hash*=1099511628211ul;}
+ identity[0]=hash==0ul?1ul:hash;}
 kernel void identify_resident_owner_endpoint_class(device const uchar* classes [[buffer(0)]],
  device const ulong* projectionIdentity [[buffer(1)]],
  device const ulong* transportIdentity [[buffer(2)]],device ulong* identity [[buffer(3)]],
@@ -3189,15 +3161,15 @@ kernel void identify_resident_owner_endpoint_class(device const uchar* classes [
  constant OwnerParams& p [[buffer(6)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(projectionIdentity[0]==0ul||transportIdentity[0]==0ul||t.attempt==0ul||p.attempt!=t.attempt||
   p.stage!=t.stage){identity[0]=0ul;atomic_fetch_or_explicit(failure,1u<<26u,memory_order_relaxed);return;}
- ulong hash=authority_seal_begin(0x72656e646f776e31ul);
- hash=authority_seal_mix(hash,projectionIdentity[0]);
- hash=authority_seal_mix(hash,transportIdentity[0]);
- hash=authority_seal_mix(hash,ulong(t.stage));hash=authority_seal_mix(hash,t.attempt);
- for(uint side=0u;side<6u;++side){hash=authority_seal_mix(hash,ulong(t.boundary[side]));
-  hash=authority_seal_mix(hash,ulong(t.sideOffset[side]));}
- hash=authority_seal_mix(hash,ulong(as_type<uint>(p.endpointTolerance)));
- hash=authority_seal_mix(hash,ulong(p.forceActiveCycle));
- identity[0]=authority_seal_finish(hash);}
+ ulong hash=14695981039346656037ul;hash^=projectionIdentity[0];hash*=1099511628211ul;
+ hash^=transportIdentity[0];hash*=1099511628211ul;uint count=t.sideOffset[5]+t.nx*t.ny;
+ for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
+ hash^=ulong(t.stage);hash*=1099511628211ul;hash^=t.attempt;hash*=1099511628211ul;
+ for(uint side=0u;side<6u;++side){hash^=ulong(t.boundary[side]);hash*=1099511628211ul;
+  hash^=ulong(t.sideOffset[side]);hash*=1099511628211ul;}
+ hash^=ulong(as_type<uint>(p.endpointTolerance));hash*=1099511628211ul;
+ hash^=ulong(p.forceActiveCycle);hash*=1099511628211ul;
+ identity[0]=hash==0ul?1ul:hash;}
 kernel void owner_minimum_field(device const float* a [[buffer(0)]],device const float* b [[buffer(1)]],
  device float* output [[buffer(2)]],constant uint& count [[buffer(3)]],uint gid [[thread_position_in_grid]]){
  if(gid<count)output[gid]=min(a[gid],b[gid]);}
@@ -7914,8 +7886,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				 static_cast<std::uint32_t>(faceOffset_[2])},0u,request_.lineage.eos.candidateTimeStepS,
 				shape_.cellWidthM,request_.endpointVelocityToleranceMPerS,0u,
 				request_.qualificationThreeQuarterHeunWeighting?1u:0u,
-				flux.transport.attemptIdentity,eosMetadata_.caseIdentity,
-				request_.lineage.frozenSource.PacketIdentity()};
+				flux.transport.attemptIdentity};
 			std::vector<float> packedMomentum;packedMomentum.reserve(allFaces_);
 			for(const auto& axis:request_.beginningMomentumKGPerM2S)
 				packedMomentum.insert(packedMomentum.end(),axis.begin(),axis.end());
