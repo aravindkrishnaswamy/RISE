@@ -408,7 +408,9 @@ static void RunStandoffReentryContract( double scale )
 			RayIntersectionGeometric probe = MakeIntersection( probeOrigin, probeDir );
 			pBox->IntersectRay( probe, true, true, false );
 			assert( probe.bHit );
-			assert( probe.range > 0.9 * scale );               // the opposite (+Z) face, ~1.0*scale away
+			// The opposite (+Z) face: the box's full depth along this
+			// direction, 1.0*scale / |cos| (plus the sub-1e-11 standoff).
+			assert( IsClose( probe.range, 1.0 * scale / cosExit, 1e-6 * scale ) );
 			assert( IsVectorClose( probe.vNormal, Vector3( 0.0, 0.0, 1.0 ) ) );
 		}
 	}
