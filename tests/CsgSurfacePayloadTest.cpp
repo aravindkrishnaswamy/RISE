@@ -2825,7 +2825,7 @@ void TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit()
 //   A's z in [-3,3]:  s in [8/0.4, 14/0.4]               = [20, 35]
 //     -> A_entry = max(18.549, 20) = 20 (Z-governed); A_exit = min(25.096, 35) = 25.096
 //   B's y in [-2,2]:  s in [18/0.9165151, 22/0.9165151] = [19.640, 24.005]
-//   B's z in [-18,-2]: s in [7/0.4, 9/0.4]               = [17.5, 22.5]
+//   B's z in [-18,-2]: s in [-7/0.4, 9/0.4]              = [-17.5, 22.5]  (z = -11 at s = 0 is already inside the slab)
 //     -> B_entry = max(19.640, 17.5) = 19.640 (Y-governed, B's y=-2 side face);
 //        B_exit = min(24.005, 22.5) = 22.5 (Z-governed, B's world z=-2 face --
 //        the local +Z face this test targets)
