@@ -5763,7 +5763,7 @@ owner gate and independent kernel sweep without a tolerance change. Evidence
 is `r201_projected_heun_metal_owner/r201l_setup_staged_source_gate.v1`; replay
 remains blocked until a fresh three-reviewer round returns zero P1/P2.
 
-### r201m — the owner trace is continuous; resident identity becomes causal
+### r201m — the owner trace selects the existing strict contract
 
 The ordered per-iteration trace found no Metal/fp64 trajectory defect. Alpha,
 active-set, and next-active class sequences are identical at every R0/R1/R2
@@ -5773,23 +5773,17 @@ r123/r124 two-successor rule is available only after a certified predicate
 interval crosses zero; it was not invoked here. The old `16,383x` pooled ratio
 is recorded as description, never as an acceptance threshold.
 
-The expensive operation was instead the identity publisher: each authority
-hashed its entire resident payload with one device thread on every Picard
-iteration. Authority is a causal capability, not a second numerical checksum.
-The owning C++ object retains the exact Private buffers and producing command;
-the device-issued publication seal now binds the immediate parent seals and
-semantics metadata with a domain unique to each surface. All per-value device
-validation, no-CPU-substitution refusals, parent capability checks, residency,
-and atomic publication remain load-bearing. A named source-hygiene RED rejects
-payload-sized serial loops in the seal issuers.
-
-Exact source `314da244241112e81c53e19853b4296355cb0ae6` passes the M4 owner
+Exact source `2189762be4f8322af746e31f8f177d76d1cf8bed` passes the M4 owner
 gate and independent kernel sweep. Its 485-line numerical trace is byte-equal
-to the pre-change trace (SHA-256 `fcf6236c...b77c`), with unchanged `2/2/4`
-accepted Picard iterations and compatible-flux residuals. The former
-`5.1--6.3 s` identity commands disappear; a short, explicitly non-acceptance
-tier-8 timing prefix measures about `10.43 s` per complete live owner and
-projects the sealed replay at roughly `5.3 h`. Physical case semantics do not
-change, so `case_record_id` does not regenerate; executable authority does.
-Evidence is `r201_projected_heun_metal_owner/r201m_causal_authority_seal_gate.v1`.
+to the reviewed r201l trace (SHA-256 `fcf6236c...b77c`): all 434 stage field
+records pass and all 418 applicable local ratios are at most one.
+
+An intervening causal-only authority optimization was rejected before replay:
+mutable payload content was not part of the seal, and the R1 averaged-flux
+path could pair substituted buffers with nominal parent identities. Its
+lexical O(1) test did not prove either property. The experiment is preserved
+in history but withdrawn completely; the forward source is the exact
+payload-bound r201l implementation already reviewed to zero P1/P2. Physical
+case semantics remain unchanged. Evidence is
+`r201_projected_heun_metal_owner/r201m_owner_iteration_trace_verdict.v1`.
 The ported replay remains behind the fresh zero-P1/P2 review boundary.

@@ -3999,6 +3999,21 @@ int main()
 	const std::string projectedHeunSetupStagedSourceKernelSweep=ReadText(
 		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
 		"repaired_exact_784a266c/kernel_sweep.log");
+	const std::string projectedHeunTraceVerdictEvidence=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"r201m_owner_iteration_trace_verdict.v1");
+	const std::string projectedHeunTraceVerdictLiveBinding=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"r201m_owner_iteration_trace_live_binding.v1");
+	const std::string projectedHeunTraceVerdictRaw=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"repaired_exact_2189762b/owner_gate.log");
+	const std::string projectedHeunTraceVerdictKernelSweep=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"repaired_exact_2189762b/kernel_sweep.log");
+	const std::string projectedHeunTraceVerdictNumeric=ReadText(
+		"rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+		"repaired_exact_2189762b/numeric_trace.log");
 	const auto liveOwnerBound=[&](const std::string& path,const std::string& sha256) {
 		const std::string current=sourceSHA(path.c_str());
 		const bool bound=projectedHeunLiveBinding.find("owner "+path+" sha256 "+sha256+"\n")!=
@@ -4019,6 +4034,8 @@ int main()
 			projectedHeunFullFieldResidencyLiveBinding.find(
 				"owner "+path+" sha256 "+current+"\n")!=std::string::npos||
 			projectedHeunSetupStagedSourceLiveBinding.find(
+				"owner "+path+" sha256 "+current+"\n")!=std::string::npos||
+			projectedHeunTraceVerdictLiveBinding.find(
 				"owner "+path+" sha256 "+current+"\n")!=std::string::npos);
 		if(!bound)std::fprintf(stderr,"UNBOUND_R183_OWNER %s current=%s\n",
 			path.c_str(),current.c_str());
@@ -4162,7 +4179,8 @@ int main()
 			projectedHeunResidentParentLiveBinding.find(binding)!=std::string::npos||
 			projectedHeunActualCandidateLiveBinding.find(binding)!=std::string::npos||
 			projectedHeunFullFieldResidencyLiveBinding.find(binding)!=std::string::npos||
-			projectedHeunSetupStagedSourceLiveBinding.find(binding)!=std::string::npos;
+			projectedHeunSetupStagedSourceLiveBinding.find(binding)!=std::string::npos||
+			projectedHeunTraceVerdictLiveBinding.find(binding)!=std::string::npos;
 		if(!bound)std::fprintf(stderr,"UNBOUND_R199_OWNER %s\n",path);
 		return bound;
 	};
@@ -4298,7 +4316,8 @@ int main()
 			projectedHeunResidentParentLiveBinding.find(binding)!=std::string::npos||
 			projectedHeunActualCandidateLiveBinding.find(binding)!=std::string::npos||
 			projectedHeunFullFieldResidencyLiveBinding.find(binding)!=std::string::npos||
-			projectedHeunSetupStagedSourceLiveBinding.find(binding)!=std::string::npos;
+			projectedHeunSetupStagedSourceLiveBinding.find(binding)!=std::string::npos||
+			projectedHeunTraceVerdictLiveBinding.find(binding)!=std::string::npos;
 		if(!bound)std::fprintf(stderr,"UNBOUND_R200_OWNER %s\n",path);
 		return bound;
 	};
@@ -4440,7 +4459,8 @@ int main()
 			projectedHeunResidentParentLiveBinding.find(record)!=std::string::npos||
 			projectedHeunActualCandidateLiveBinding.find(record)!=std::string::npos||
 			projectedHeunFullFieldResidencyLiveBinding.find(record)!=std::string::npos||
-			projectedHeunSetupStagedSourceLiveBinding.find(record)!=std::string::npos;
+			projectedHeunSetupStagedSourceLiveBinding.find(record)!=std::string::npos||
+			projectedHeunTraceVerdictLiveBinding.find(record)!=std::string::npos;
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunMetalOwnerEvidence.begin(),projectedHeunMetalOwnerEvidence.end()))==
@@ -4497,7 +4517,8 @@ int main()
 			projectedHeunResidentParentLiveBinding.find(record)!=std::string::npos||
 			projectedHeunActualCandidateLiveBinding.find(record)!=std::string::npos||
 			projectedHeunFullFieldResidencyLiveBinding.find(record)!=std::string::npos||
-			projectedHeunSetupStagedSourceLiveBinding.find(record)!=std::string::npos;
+			projectedHeunSetupStagedSourceLiveBinding.find(record)!=std::string::npos||
+			projectedHeunTraceVerdictLiveBinding.find(record)!=std::string::npos;
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunIterationTraceEvidence.begin(),
@@ -4759,8 +4780,9 @@ int main()
 			std::string::npos,
 		"r201k evidence remains immutable and is explicitly rejected by r201l");
 	const auto r201lOwnerBound=[&](const char* path) {
-		return projectedHeunSetupStagedSourceLiveBinding.find(std::string("owner ")+path+
-			" sha256 "+sourceSHA(path)+"\n")!=std::string::npos;
+		const std::string record=std::string("owner ")+path+" sha256 "+sourceSHA(path)+"\n";
+		return projectedHeunSetupStagedSourceLiveBinding.find(record)!=std::string::npos||
+			projectedHeunTraceVerdictLiveBinding.find(record)!=std::string::npos;
 	};
 	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
 			projectedHeunSetupStagedSourceEvidence.begin(),
@@ -4825,6 +4847,70 @@ int main()
 		solverDoc.find("### r201l setup-staged frozen-source authority")!=std::string::npos&&
 		historyDoc.find("### r201l — setup owns the frozen-source upload")!=std::string::npos,
 		"r201l stages the sealed source once and refuses every direct full-field upload at common publication");
+	const auto r201mOwnerBound=[&](const char* path) {
+		return projectedHeunTraceVerdictLiveBinding.find(std::string("owner ")+path+
+			" sha256 "+sourceSHA(path)+"\n")!=std::string::npos;
+	};
+	Check(RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunTraceVerdictEvidence.begin(),
+			projectedHeunTraceVerdictEvidence.end()))==
+			"ab2665519c04b770653071784cf28ce4b5dfc64fcd68eae1a61e9a859b393ee5"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunTraceVerdictLiveBinding.begin(),
+			projectedHeunTraceVerdictLiveBinding.end()))==
+			"a5b877e5913594a543b8e03e45386817aa39f1ea0f386a81378e1ae918a036d3"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunTraceVerdictRaw.begin(),projectedHeunTraceVerdictRaw.end()))==
+			"90c82ad6df513f123494896a0ef510611170487cea00582839054f1b1e801727"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunTraceVerdictKernelSweep.begin(),
+			projectedHeunTraceVerdictKernelSweep.end()))==
+			"9b07e133d59711f91fdc5eee9c3492ec3424f9fe3bfd8fb1670e0116865564ce"&&
+		RISE::RISECBOR64::SHA256Hex(RISE::RISECBOR64::Bytes(
+			projectedHeunTraceVerdictNumeric.begin(),
+			projectedHeunTraceVerdictNumeric.end()))==
+			"fcf6236caf0b0559084a013c93e2d1fd0f3987000449865fb3f58f1e2d52b77c"&&
+		projectedHeunTraceVerdictLiveBinding.find("source_commit "
+			"2189762be4f8322af746e31f8f177d76d1cf8bed\n")!=std::string::npos&&
+		projectedHeunTraceVerdictLiveBinding.find("owner_count 13\n")!=std::string::npos&&
+		projectedHeunTraceVerdictLiveBinding.find(
+			"calibration_test_self_binding false\n")!=std::string::npos&&
+		r201mOwnerBound("src/Library/Utilities/FireProductionAdvectionMac.mm")&&
+		r201mOwnerBound("tests/FireSequenceTest.cpp")&&
+		r201mOwnerBound("tests/FireProductionRoundoffWalker.h")&&
+		r201mOwnerBound("tests/FireProductionRoundoffTraceAdapter.h")&&
+		r201mOwnerBound("docs/FIRE_SMOKE_DESIGN_HISTORY.md")&&
+		r201mOwnerBound("docs/FIRE_SMOKE_PRODUCTION_SOLVER.md")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"r201m_owner_iteration_trace_verdict.v1")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"repaired_exact_2189762b/owner_gate.log")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"repaired_exact_2189762b/kernel_sweep.log")&&
+		r201mOwnerBound("rendered/fire_production_calibration/r201_projected_heun_metal_owner/"
+			"repaired_exact_2189762b/numeric_trace.log")&&
+		r201mOwnerBound("bin/tests/FireSequenceTest")&&
+		projectedHeunTraceVerdictEvidence.find(
+			"observed_first_divergence none\n")!=std::string::npos&&
+		projectedHeunTraceVerdictEvidence.find(
+			"observed_R0_R1_R2_field_records_passed 434_of_434\n")!=std::string::npos&&
+		projectedHeunTraceVerdictEvidence.find(
+			"observed_applicable_local_residual_bound_ratios_le_one 418_of_418\n")!=
+			std::string::npos&&projectedHeunTraceVerdictEvidence.find(
+			"owner_level_branch_obligation_extension_activated false\n")!=std::string::npos&&
+		projectedHeunTraceVerdictEvidence.find(
+			"r201c_16383_ratio descriptive_not_acceptance\n")!=std::string::npos&&
+		projectedHeunTraceVerdictEvidence.find(
+			"rejected_action exact_payload_bound_r201l_authority_restored\n")!=
+			std::string::npos&&projectedHeunTraceVerdictRaw.find(
+			"PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 "
+			"criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=1\n")!=
+			std::string::npos&&projectedHeunTraceVerdictKernelSweep.find(
+			"COMPATIBLE_MOMENTUM_METAL_FP64 passed=1 ")!=std::string::npos&&
+		solverDoc.find("### r201m owner iteration-trace verdict")!=std::string::npos&&
+		historyDoc.find("### r201m — the owner trace selects the existing strict contract")!=
+			std::string::npos,
+		"r201m binds the no-divergence owner trace and rejects the mutable causal-only authority experiment");
 	const std::string authenticatedEOSEvidence=ReadText(
 		"rendered/fire_production_calibration/r184_authenticated_eos_prerequisite/"
 		"authenticated_eos_prerequisite.v1");
@@ -10030,7 +10116,9 @@ int main()
 							std::string("owner ")+path+" sha256 "+current+"\n")!=
 							std::string::npos||projectedHeunSetupStagedSourceLiveBinding.find(
 								std::string("owner ")+path+" sha256 "+current+"\n")!=
-								std::string::npos);
+								std::string::npos||projectedHeunTraceVerdictLiveBinding.find(
+									std::string("owner ")+path+" sha256 "+current+"\n")!=
+									std::string::npos);
 		if(!bound)std::fprintf(stderr,"UNBOUND_R186_OWNER %s current=%s\n",path,
 			current.c_str());
 		return bound;
