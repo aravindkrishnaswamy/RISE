@@ -1,5 +1,6 @@
 #ifndef FIRE_PRODUCTION_DYADIC_CALIBRATION_FIXTURE_H
 #define FIRE_PRODUCTION_DYADIC_CALIBRATION_FIXTURE_H
+#include "FireProductionR136TraceBridge.h"
 
 namespace FireProductionDyadicCalibration
 {
@@ -1485,12 +1486,13 @@ namespace FireProductionDyadicCalibration
 			ppmCertificate.divergenceBound,independentBranch.linearCenter,
 			independentBranch.linearRadius,independentBranch.endpointAbsoluteUpper,
 			independentBranch.endpointRadius);
-		if(!FireProductionRoundoffAdapter::AdvanceResidentStepTrace(request,0.0f,trace,&error)){
+		if(!FireProductionRoundoffAdapter::AdvanceResidentStepTrace(request,0.0f,trace,&error,true)){
 			std::fprintf(stderr,"r120 trace failed: %s\n",error.c_str());return 235;}
 		std::array<unsigned int,6> projectionBoundary={};
+		// The walker now consumes the production enum directly (r201). The
+		// historical adapter's open=2/wall=1 encoding inverted those classes.
 		for(unsigned int side=0u;side<6u;++side)projectionBoundary[side]=
-			request.force.boundary[side]==RISE::FireProductionProjectionPressureOpen?2u:
-			(request.force.boundary[side]==RISE::FireProductionProjectionWall?1u:0u);
+			static_cast<unsigned int>(request.force.boundary[side]);
 		const std::array<std::size_t,3> projectionExtent={{request.force.shape.nx,
 			request.force.shape.ny,request.force.shape.nz}};
 		FireProductionRoundoffWalker::ProjectionAposterioriCertificate physicalCertificate,
@@ -1877,6 +1879,36 @@ namespace FireProductionDyadicCalibration
 				maximumClassEnvelope[site]);
 		std::fprintf(stderr,"\n");
 		const std::string traceDigest=RISECBOR64::SHA256Hex(encoded);
+		// Bridge the unchanged numeric transcript, not the current source names,
+		// into the original framing. Never publish this as a current source seal.
+		RISECBOR64::Bytes historicalPrefix,currentPrefix;
+		for(const char* field:FireProductionR136TraceBridge::HistoricalManifest)
+			AppendText(historicalPrefix,field);
+		for(const char* field:FireProductionRoundoffAdapter::TraceSourceManifestFields())
+			AppendText(currentPrefix,field);
+		if(historicalPrefix.size()!=currentPrefix.size()||encoded.size()<=currentPrefix.size()||
+			!std::equal(currentPrefix.begin(),currentPrefix.end(),encoded.begin()))return 238;
+		std::copy(historicalPrefix.begin(),historicalPrefix.end(),encoded.begin());
+		const std::string historicalTraceDigest=RISECBOR64::SHA256Hex(encoded);
+		// The bridge cannot mask even one changed numeric transcript byte.
+		encoded.back()^=1u;
+		const bool numericMutationRefused=RISECBOR64::SHA256Hex(encoded)!=
+			FireProductionR136TraceBridge::HistoricalTraceSHA256;
+		encoded.back()^=1u;
+		std::copy(currentPrefix.begin(),currentPrefix.end(),encoded.begin());
+		RISE::FireProductionPayloadDigestV2 currentTraceV2;
+		if(!RISE::FireProductionPayloadDigestCPU(encoded.data(),encoded.size(),8u,
+			currentTraceV2,&error))return 238;
+		if(!numericMutationRefused)return 238;
+		std::fprintf(stderr,"R136_BRIDGE_NUMERIC_MUTATION_RED passed=1\n");
+		std::fprintf(stderr,"r205 r136_bridge historical_digest_version=1 historical_sha256=%s "
+			"current_sha256=%s digest_version=%u chunk_bytes=%u fan_in=%u bytes=%llu "
+			"current_root=%s historical_manifest_sha256=%s current_manifest_sha256=%s\n",
+			historicalTraceDigest.c_str(),traceDigest.c_str(),currentTraceV2.digestVersion,
+			currentTraceV2.chunkBytes,currentTraceV2.fanIn,
+			static_cast<unsigned long long>(currentTraceV2.payloadBytes),
+			currentTraceV2.rootSHA256.c_str(),RISECBOR64::SHA256Hex(historicalPrefix).c_str(),
+			RISECBOR64::SHA256Hex(currentPrefix).c_str());
 		std::fprintf(stderr,"r120 trace_digest=%s unresolved_bitmap=0x%06x "
 			"invalid_bitmap=0x%06x trace_generator=%s transport_source=%s\n",
 			traceDigest.c_str(),unresolvedBitmap,invalidBitmap,
@@ -1910,7 +1942,7 @@ namespace FireProductionDyadicCalibration
 				restorationInterpolationObligations),physical.maximumOutputRadius,
 			restoration.maximumOutputRadius);
 		if(trace.force.schedule.substepCount!=1u||
-			traceDigest!="7736ec4adb7fd3b0cb3c1bf7bddd5b1d2a050e7e0fbd56bc31e928b7f9faa22d"||
+			historicalTraceDigest!=FireProductionR136TraceBridge::HistoricalTraceSHA256||
 			unresolvedBitmap!=0u||invalidBitmap!=0u||!finiteGatedOutputs||
 			totalBranchObligationCount!=3972326u||
 			totalDischargedBranchObligationCount!=3972326u||

@@ -6016,13 +6016,19 @@ namespace
 			NegativeInactiveCarbon, NonfiniteInactiveCarbon, NonfiniteVelocity,
 			PositiveInfinityReaction, NegativeInfinityReaction, ZeroTemperature,
 			OutOfDomainTemperature, NegativeActiveTile, HotInactiveTile,
-			NaNInactiveTile, NegativeActiveChem, NaNInactiveChem } kind = Valid;
+			NaNInactiveTile, NegativeActiveChem, NaNInactiveChem,
+			SyntheticColdChemistry } kind = Valid;
 	};
 
 	bool WriteFrame( const std::filesystem::path& path, const FrameMutation mutation,
 		const float carbonValue, const bool includeChem=false,
 		const SolverFrameValues solver=SolverFrameValues(),const float chemScale=1.0f )
 	{
+		// Synthetic light is a unit-render input, never a solver output. Reject
+		// the opt-in on the durable capstone publication path, including mistakes
+		// in a future caller. The solver fields below remain byte-for-byte intact.
+		if(mutation.kind==FrameMutation::SyntheticColdChemistry&&
+			(!includeChem||std::getenv("RISE_FIRE_CAPSTONE_OUTPUT")))return false;
 		openvdb::initialize();
 		const bool solverGrid=solver.dimensions[0]&&solver.dimensions[1]&&solver.dimensions[2];
 		const double voxelSize=solverGrid?solver.cellWidthM:0.5;
@@ -6069,6 +6075,9 @@ namespace
 			reaction->tree().setValueOn(openvdb::Coord(0,0,0),solver.reactionWPerM3);
 		}
 		if( includeChem ) {
+			if(mutation.kind==FrameMutation::SyntheticColdChemistry)
+				for(const auto& grid:{chemCH,chemC2,chemCO2})grid->insertMeta(
+					"RISE_fixture_input_class",openvdb::StringMetadata("synthetic_unit_preview"));
 			float reactionMaximum=0.0f,temperatureMaximum=300.0f;
 			if(solverGrid) for(std::size_t cell=0u;cell<solver.reaction.size();++cell){
 				reactionMaximum=std::max(reactionMaximum,solver.reaction[cell]);
@@ -6083,7 +6092,9 @@ namespace
 						const float thermalWeight=temperatureMaximum>300.0f?
 							std::clamp((solver.temperature[index]-300.0f)/
 								(temperatureMaximum-300.0f),0.0f,1.0f):0.0f;
-						const float previewSourceWeight=std::max(reactionWeight,thermalWeight);
+						const float previewSourceWeight=
+							mutation.kind==FrameMutation::SyntheticColdChemistry?1.0f:
+							std::max(reactionWeight,thermalWeight);
 						const openvdb::Coord fixture(static_cast<int>(x),static_cast<int>(y),
 							static_cast<int>(z));
 						chemCH->tree().setValueOn(fixture,chemScale*120.0f*previewSourceWeight);
@@ -6141,6 +6152,38 @@ namespace
 		Check(durable,
 			"produced sequence frame is durable before the next simulation step");
 		return canonical&&durable;
+	}
+
+	bool VerifySyntheticPreviewIsolation(const std::filesystem::path& syntheticPath,
+		const std::filesystem::path& solverPath,const SolverFrameValues& cold)
+	{
+		openvdb::io::File syntheticFile(syntheticPath.string()),solverFile(solverPath.string());
+		syntheticFile.open();solverFile.open();
+		bool isolated=!cold.temperature.empty();
+		for(const char* name:{"carbon","temperature","reaction","chem_CH","chem_C2","chem_CO2"}){
+			auto synthetic=openvdb::gridPtrCast<openvdb::FloatGrid>(syntheticFile.readGrid(name));
+			auto solver=openvdb::gridPtrCast<openvdb::FloatGrid>(solverFile.readGrid(name));
+			if(!synthetic||!solver){isolated=false;break;}
+			const bool chemistry=std::strncmp(name,"chem_",5u)==0;
+			const float fixtureValue=std::strcmp(name,"chem_CH")==0?120.0f:
+				(std::strcmp(name,"chem_C2")==0?50.0f:8.0f);
+			const auto marker=(*synthetic)["RISE_fixture_input_class"];
+			isolated=isolated&&(!chemistry||(marker&&marker->str()=="synthetic_unit_preview"))&&
+				!(*solver)["RISE_fixture_input_class"];
+			for(std::size_t z=0u;z<cold.dimensions[2];++z)
+				for(std::size_t y=0u;y<cold.dimensions[1];++y)
+					for(std::size_t x=0u;x<cold.dimensions[0];++x){
+						openvdb::Coord cell(static_cast<int>(x),static_cast<int>(y),static_cast<int>(z));
+						const float before=solver->tree().getValue(cell),after=synthetic->tree().getValue(cell);
+						isolated=isolated&&(chemistry?(before==0.0f&&after==fixtureValue):before==after);
+					}
+		}
+		auto syntheticVelocity=openvdb::gridPtrCast<openvdb::Vec3fGrid>(syntheticFile.readGrid("velocity"));
+		auto solverVelocity=openvdb::gridPtrCast<openvdb::Vec3fGrid>(solverFile.readGrid("velocity"));
+		if(!syntheticVelocity||!solverVelocity)isolated=false;
+		else for(auto cell=solverVelocity->cbeginValueOn();cell;++cell)
+			isolated=isolated&&syntheticVelocity->tree().getValue(cell.getCoord())==*cell;
+		syntheticFile.close();solverFile.close();return isolated;
 	}
 
 	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
@@ -16342,7 +16385,9 @@ int main(int argc,char** argv)
 		caseDurationS,caseFramesPerS,reportedResolutionTier,runDiameterM,runHeatReleaseRateKW);
 	if(!methaneFrame.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
 		methaneFrame.structuredError.c_str());return 1;}
-	if(!WriteFrame(frame4,FrameMutation{},0.0f,true,methaneFrame)){
+	const FrameMutation previewFixtureMutation{capstoneArtifactRun?FrameMutation::Valid:
+		FrameMutation::SyntheticColdChemistry};
+	if(!WriteFrame(frame4,previewFixtureMutation,0.0f,true,methaneFrame)){
 		std::fprintf(stderr,"capstone fail-fast: initial frame serialization failed\n");return 1;
 	}
 	std::string durableArtifactError;
@@ -16368,6 +16413,13 @@ int main(int argc,char** argv)
 		std::fprintf(stderr,"capstone fail-fast: deterministic frame serialization failed\n");return 1;
 	}
 	const std::string singleWorkerDigest=DigestFile(deterministicOneFrame);
+	if(!capstoneArtifactRun){
+		Check(VerifySyntheticPreviewIsolation(frame4,deterministicOneFrame,methaneFrame),
+			"r205 synthetic preview changes only explicitly labelled chemistry; solver fields and cold production remain intact");
+		Check(!WriteFrame(root/"forbidden_synthetic.vdb",previewFixtureMutation,0.0f,false,methaneFrame)&&
+			!std::filesystem::exists(root/"forbidden_synthetic.vdb"),
+			"r205 synthetic-input opt-in without chemistry refuses before publication");
+	}
 	const std::string parallelWorkerDigest=DigestFile(deterministicParallelFrame);
 	Check(!singleWorkerDigest.empty()&&singleWorkerDigest==parallelWorkerDigest,
 		"r57 same methane case at one and N workers produces identical frame bytes");
@@ -16397,7 +16449,7 @@ int main(int argc,char** argv)
 		methaneFrameParallel;
 	if(!methaneFrameNext.succeeded){std::fprintf(stderr,"capstone fail-fast: %s\n",
 		methaneFrameNext.structuredError.c_str());return 1;}
-	if(!WriteFrame(frame5,FrameMutation{},0.0f,true,methaneFrameNext,0.8f)){
+	if(!WriteFrame(frame5,previewFixtureMutation,0.0f,true,methaneFrameNext,0.8f)){
 		std::fprintf(stderr,"capstone fail-fast: final frame serialization failed\n");return 1;
 	}
 	methaneFrameNext.streamedFrameCount=2u;
