@@ -279,6 +279,55 @@ and the regression test: [CLOTH_FABRIC_DESIGN.md §15 debt
 21](../CLOTH_FABRIC_DESIGN.md) and
 [`tests/FabricRenderTest.cpp::TestAreaLitSheerWeave`](../../tests/FabricRenderTest.cpp).
 
+### Box self-root: an on-face origin is a plane-distance fact, not a range threshold
+
+Symptom: a closed `box_geometry` carrying a thin-transmissive
+`weave_material` read BDPT/VCM ≈ 0.17× PT with a light behind the box
+and ≈ 2.25× PT with a light inside it, while the same six faces built
+as free-standing `clippedplane_geometry` quads read 1.00 either way
+([CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md)).
+
+The self-intersection is the same shape as the torus and bilinear-patch
+examples above: a ray origin published by `Object::IntersectRay` sits
+~1e-12 (`SURFACE_INTERSEC_ERROR`) off the face it just hit, and the
+box's slab test reports that re-crossing as the PRIMARY root, whose `t`
+straddles `NEARZERO`.
+
+Wrong direction: widen the `dRange < NEARZERO` range-reject threshold
+inside `IntersectRay_IntersectionOnly`, or pick a bigger epsilon.  Both
+fail for the same reasons the torus and bilinear-patch fudges do, plus
+a shape-specific one: the self-hit `t` for a box is
+`t_self = δ / |cos θ_out|`, `δ` the ~1e-12 back-off and `θ_out` the
+angle between the outgoing ray and the face normal.  A grazing
+continuation ray (`θ_out` near 90°) makes `t_self` arbitrarily LARGE —
+there is no single range threshold, however generous, that rejects
+every self-hit and accepts every genuine near hit, because the two
+overlap in `t` for a small enough grazing angle.  A range threshold is
+the wrong KIND of test for a fact that has nothing to do with distance.
+
+Right fix: "the origin is on this face" is a PLANE-DISTANCE fact, not a
+range fact — independent of `θ_out` entirely.
+`BoxGeometry::DropSelfHitRoot` tests, per candidate root's face,
+`|origin.axis − bound| ≤ NEARZERO · (1 + coordinate magnitude)` (the
+same scale-relative floor as the bilinear-patch fix above) and drops
+that root in favour of the OTHER root when it matches — cancellation-free,
+because it never computes a `t` for the self-hit at all; it asks the one
+question that is actually true regardless of ray direction.  The
+survivor is then treated as an EXIT hit, matching what would have
+happened had the origin been published a hair further along the ray.
+
+This is the same idea `RaySphereIntersection` already applies, just
+spelled as a range threshold instead of a plane-distance test: it skips
+any root `<= NEARZERO` at the origin and returns the NEXT one.  That
+works for a sphere because a sphere has no flat faces for `t_self` to
+blow up against at grazing angles — the same simplification would be
+unsound on a box.
+
+Full write-up: [CLOTH_FABRIC_DESIGN.md §15 debt
+25](../CLOTH_FABRIC_DESIGN.md) and
+[`src/Library/Geometry/BoxGeometry.cpp`](../../src/Library/Geometry/BoxGeometry.cpp)'s
+`DropSelfHitRoot` comment block.
+
 ## Anti-Patterns
 
 ### "Add an ε to the comparison"

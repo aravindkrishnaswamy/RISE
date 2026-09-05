@@ -27,10 +27,17 @@ the material, costing exactly `(1−gap)` (0.900 at linen's default gap),
 alternative for every DELTA light, so the t=1 light-tracing splat double-counted
 the same path, a fabric-independent **+3.0 %** on any omni/spot-lit scene (a bare
 Lambertian quad shows the identical figure), **RESOLVED 2026-09-04**; and two new
-OPEN findings, **debt 25** — a CLOSED solid carrying a thin-transmissive weave
-reads BDPT/VCM ≈ 0.17× PT while free-standing weave planes read 1.000 — and
+findings, **debt 25** — a CLOSED solid carrying a thin-transmissive weave
+read BDPT/VCM ≈ 0.17× PT while free-standing weave planes read 1.000,
+**CLOSED 2026-09-05**: root cause was `box_geometry`'s own self-hit root at
+the ray origin's published face (a fourth "PT may be the broken one"
+instance), not a closed-solid effect in general — see §15 debt 25 — and
 **debt 26** — the legacy `pixelpel_rasterizer` loses the delta-gap-to-emitter
-sighting on a gapped weave (0.0431 vs the modern PT's 0.1040). Phase 3's
+sighting on a gapped weave (0.0431 vs the modern PT's 0.1040), still **OPEN**.
+Debt 25's fix exposed **debt 27** — a two-layer gapped weave reads PT UNDER
+BDPT/VCM by 1.28–1.55× because PT's binary NEE cannot reach a path through
+the far layer's delta gap and the near layer's continuum lobe, **OPEN**, not
+a closed-solid effect. Phase 3's
 weave-resolving-geometry scope (yarn-density loop/crossing geometry) stays
 **declined**, on the same precedent and for the same reasons as before; what
 shipped instead is the bounded `add_fuzz` verb — a sparse fuzz-shell groom
@@ -5432,8 +5439,9 @@ yet known (§10.1).
       a property of the boundary *material*, so a mixed boundary (weave gap,
       polished coat, Fresnel composite) turned the same medium vertex connectible
       or not depending on the draw. Now tests `!prev.isConnectible`, the same
-      per-surface predicate. See debt 25 for why this one has no image-level
-      regression test yet.
+      per-surface predicate. Regression test landed once debt 25 closed:
+      `tests/FabricRenderTest.cpp::TestMediumVertexBehindGappedWeave`
+      (keyword `mediumvertex`) — see §15 debt 25.
     - `MISWeight`'s `vi.isDelta` / `vj.isDelta` skip rules — **confirmed correct
       as-is**, not changed: those walk the *realised* pdf ratios of the sampled
       lobes, and the connection vertices themselves are already overridden by the
@@ -5581,36 +5589,51 @@ yet known (§10.1).
     different `dVC`/`dVCM` seeding. Not diagnosed; recorded so it is not
     rediscovered as a regression.
 
-25. **OPEN 2026-09-04 — a CLOSED solid whose material is a thin-transmissive
-    weave reads BDPT/VCM ≈ 0.17 × PT. Free-standing weave planes do not.**
+25. **CLOSED 2026-09-05 — a CLOSED solid whose material is a
+    thin-transmissive weave read BDPT/VCM ≈ 0.17 × PT while free-standing
+    weave planes did not. Root cause: `box_geometry`'s own self-hit root;
+    PT was the broken reference, not BDPT/VCM.**
 
-    *Review handoff (2026-09-05).* Two facts narrow it. (a) The gap-0
-    data point RULES OUT a debt-23-style per-draw mechanism: at gap 0 no
-    delta lobe is ever drawn, so connectibility was unconditional even
-    before the fix, and the number was taken after debts 23 and 24
-    landed. This is a different bug. (b) Two and three free-standing
-    parallel planes deviate only 1–5 %, so "a shadow ray crosses a second
-    transmissive surface" is not it either — those cross the same
-    surfaces. What differs is that `box_geometry` is an ANALYTIC SOLID:
-    `BoxGeometry::IntersectRay` takes explicit front/back-face flags and
-    tracks `RayBeginsInBox`, unlike an assembly of independent
-    double-sided planes. Best hypothesis: BDPT/VCM's subpath continuation
-    after a transmissive bounce on a solid does not track "which solid I
-    am now inside" the way PT's own walk does, so the box's inside-aware
-    exit-face selection is mishandled for a bidirectional walk. A verified
-    contributing asymmetry of the same class: BDPT/VCM visibility uses the
-    binary `RayCaster::CastShadowRay` while PT alone uses
-    `CastShadowRayTransmittance` (RayCaster.cpp ~1980, gated to
-    perfect-specular dielectrics, so probably not engaged here).
-    **Discriminating render:** the same sealed cube hand-built from six
-    `clippedplane_geometry` quads (`doublesided TRUE`) with the same weave
-    — if BDPT/PT is ≈ 1 there, the bug is `box_geometry`'s solid
-    representation, not closed topology in general.
+    *Review handoff (2026-09-05), kept as the historical record — each
+    hypothesis marked against what the fix found.* Two facts narrowed it.
+    (a) The gap-0 data point RULES OUT a debt-23-style per-draw mechanism:
+    at gap 0 no delta lobe is ever drawn, so connectibility was
+    unconditional even before the fix, and the number was taken after
+    debts 23 and 24 landed. This is a different bug. **Confirmed**: the
+    cause was a geometry-primitive self-hit, not an integrator MIS defect.
+    (b) Two and three free-standing parallel planes deviate only 1–5 %, so
+    "a shadow ray crosses a second transmissive surface" is not it either —
+    those cross the same surfaces. **Confirmed**: a multi-surface
+    transmissive chain was never the trigger. What differs is that
+    `box_geometry` is an ANALYTIC SOLID: `BoxGeometry::IntersectRay` takes
+    explicit front/back-face flags and tracks `RayBeginsInBox`, unlike an
+    assembly of independent double-sided planes.
+    - *Hypothesis: BDPT/VCM's subpath continuation after a transmissive
+      bounce on a solid does not track "which solid I am now inside" the
+      way PT's own walk does, so the box's inside-aware exit-face
+      selection is mishandled for a bidirectional walk.* **Refuted.**
+      BDPT/VCM were never the problem: they `Advance()` every shadow and
+      continuation ray by 1e-6 and so never saw the self-root PT's
+      unadvanced NEE shadow ray did.
+    - *Hypothesis: a verified contributing asymmetry of the same class —
+      BDPT/VCM visibility uses the binary `RayCaster::CastShadowRay` while
+      PT alone uses `CastShadowRayTransmittance` (RayCaster.cpp ~1980,
+      gated to perfect-specular dielectrics, so probably not engaged
+      here).* **Refuted** by its own hedge: not engaged, since
+      `weave_material` is not a perfect-specular dielectric. The asymmetry
+      that mattered was NEE's unadvanced shadow ray, not which shadow-ray
+      function was called.
+    - *Discriminating render proposed at the time: the same sealed cube
+      hand-built from six `clippedplane_geometry` quads (`doublesided
+      TRUE`) with the same weave — if BDPT/PT is ≈ 1 there, the bug is
+      `box_geometry`'s solid representation, not closed topology in
+      general.* **This is exactly the render that settled it** — see
+      Results below.
 
     Found while trying to build the medium-vertex regression debt 23's sibling
     audit calls for (that requires an `interior_medium`, which requires a closed
     solid). Measured, 24×24, 512 spp, `oidn_denoise FALSE`, omni light behind,
-    `weave_material { transmission thin, gap g }`:
+    `weave_material { transmission thin, gap g }` (kept as the pre-fix baseline):
 
     | scene | PT | BDPT/PT | VCM/PT |
     |---|---|---|---|
@@ -5622,21 +5645,89 @@ yet known (§10.1).
     | same box + scattering `interior_medium`, gap 0.0 | 0.0333826 | 0.17293 | 0.17330 |
     | same box + scattering `interior_medium`, gap 0.3 | 0.0223894 | 0.81219 | 0.81430 |
 
-    The interior medium is irrelevant — the box reads the same with and without
-    it — and a multi-surface transmissive *chain* is not the trigger either (three
-    parallel planes are fine). It is specific to a **closed solid** carrying a
-    thin-transmissive non-dielectric material. Not caused by, not fixed by, and
-    not investigated in this round; recorded with the numbers so the next reader
-    starts from a measurement.
+    **Root cause.** A shadow / continuation ray whose origin is a hit point
+    `Object::IntersectRay` published from THIS box sits ~1e-12
+    (`SURFACE_INTERSEC_ERROR`, object-local) off the face it just hit, so
+    `RayBoxIntersection` reports a tiny, direction-dependent self-root
+    `t ≈ 1e-12 · |cos θ_in| / |cos θ_out|` as the PRIMARY hit. That root
+    straddles `NEARZERO`, and `IntersectRay_IntersectionOnly`'s "reject the
+    primitive when `dRange < NEARZERO`" then produced both failure modes on
+    the same closed box: under `NEARZERO` the WHOLE box vanished for the
+    shadow ray (light behind the box lit the front face as if the back face
+    were not there, PT 3.5× too bright with the light outside); over it the
+    box occluded its own origin face (a light inside the box self-shadowed
+    every NEE, PT 0.44× too dim with the light inside). Path tracing casts
+    NEE shadow rays unadvanced from the published hit point
+    (`LightSampler.cpp` ~1839, `Ray rayToLight( ri.ptIntersection, vToLight
+    )`) and saw both failure modes; BDPT/VCM `Advance()` theirs by 1e-6
+    (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON`) and saw neither — which is why
+    they agreed with each other, with PT on the same six faces built from
+    `clippedplane_geometry` quads, and not with PT on `box_geometry`. PT's
+    own continuation rays Advance 1e-8 and were fine; only its NEE shadow
+    ray was hit. This is the FOURTH instance of
+    `docs/skills/bdpt-vcm-mis-balance.md` step 0's "PT may be the broken
+    one" family (after IOR seeding, debt 20's bilinear self-hit, and debt
+    26's legacy rasterizer) — see that skill's new cause 7.
 
-    **Consequence for debt 23's medium sibling.** The per-surface medium-vertex
-    predicate was fixed on principle and by symmetry with its surface twin, but it
-    has **no image-level regression test**: every scene that exercises it needs an
-    `interior_medium`, hence a closed solid, hence this 5.8× baseline error, and
-    no honest band can be drawn around that. The fix's own effect on the only
-    scene that can host it is +0.28 % on BDPT at gap 0.3 (0.0181892 → 0.0182397),
-    in the predicted direction and above the ±0.1 % run-to-run spread, but far too
-    small a lever to assert on. Re-attempt once this debt is closed.
+    **Fix.** `BoxGeometry::DropSelfHitRoot`
+    (`src/Library/Geometry/BoxGeometry.cpp`, commit `40e78b69`), called
+    from both `IntersectRay` and `IntersectRay_IntersectionOnly`: a root
+    belonging to a face the origin lies on (`|origin.axis − bound| ≤
+    NEARZERO · (1 + coordinate magnitude)`, the same scale-relative floor
+    `RayBilinearPatchIntersection`'s debt-21 fix uses — see
+    `docs/skills/precision-fix-the-formulation.md`) is dropped in favour of
+    the other root, mirroring `RaySphereIntersection` (which already skips
+    roots at the origin and returns the next one) but as a plane-distance
+    test rather than a range threshold. The survivor is then treated as an
+    EXIT hit for the front/back-face flag rule, which also replaces the
+    strict-inside early-out that rejected the far face for an on-face
+    origin under back-faces-only.
+
+    **Results** (24×24, 256 spp, `oidn_denoise FALSE`, omni light power 6,
+    camera `0 0 3.2` → origin fov 34, `weave_material { fabric custom,
+    transmission thin, gap g, warp_transmit 0.25, weft_transmit 0.25 }`,
+    `box_geometry 2.8 × 2.8 × 1.0` at the origin; "six planes" is the same
+    six faces as `clippedplane_geometry doublesided TRUE` quads; light
+    outside is `0 0 -3`, light inside is `0 0 -0.2`):
+
+    | scene | PT | BDPT/PT | VCM/PT |
+    |---|---|---|---|
+    | box gap 0, light outside, before | 0.04920 | 0.284 | 0.283 |
+    | box gap 0, light outside, after | 0.01435 | 0.967 | 0.967 |
+    | six planes gap 0, light outside | 0.01417 | 0.988 | 0.985 |
+    | single plane gap 0 | 0.04801 | 1.000 | 1.000 |
+    | box gap 0, light inside, before | 0.33986 | 2.245 | 2.248 |
+    | box gap 0, light inside, after | 0.77381 | 0.987 | 0.988 |
+    | six planes gap 0, light inside | 0.77374 | 0.987 | 0.989 |
+    | box gap 0, camera inside (z=0.2, looking −z), after | 0.09107 | 1.003 | 1.004 |
+    | six planes gap 0, camera inside | 0.09113 | 1.004 | 1.004 |
+
+    **The discriminating render the review handoff proposed is what settled
+    it.** The sealed cube built from six free-standing
+    `clippedplane_geometry` quads reads within 1–2 % of the fixed box at
+    every topology above (light outside, light inside, camera inside) — the
+    bug was `box_geometry`'s solid representation, exactly as hypothesised,
+    and not closed topology in general.
+
+    **Note absolute values differ from the table above.** This table's PT
+    values use a different box size and weave preset than the original
+    review handoff's; the RATIOS are what carry the finding.
+
+    **What this does NOT close.** The gap > 0 rows do not converge with
+    this fix — filed as **debt 27** below.
+
+    **Consequence for debt 23's medium sibling.** The per-surface
+    medium-vertex predicate was fixed on principle and by symmetry with its
+    surface twin, but until this fix it had no image-level regression test
+    — every scene that exercises it needs an `interior_medium`, hence a
+    closed solid, hence the 5.8× baseline error this debt recorded. With
+    debt 25 closed, the predicate is now unblocked and lands as
+    `tests/FabricRenderTest.cpp::TestMediumVertexBehindGappedWeave`
+    (keyword `mediumvertex`; light INSIDE the box, gap 0.1, homogeneous
+    `interior_medium`), with the closed-box parity guard
+    `TestClosedBoxThinWeave` (keyword `closedbox`) and a geometry unit test
+    in `tests/BoxGeometryTest.cpp` — bands derived in the tests' own
+    comments.
 
 26. **OPEN 2026-09-04 — the legacy `pixelpel_rasterizer` loses the
     delta-gap-to-emitter sighting on a gapped weave.**
@@ -5652,6 +5743,57 @@ yet known (§10.1).
     `tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight` instead, and any
     future topology there that involves a delta lobe reaching an emitter must
     check its reference first.
+
+27. **OPEN 2026-09-05 — PT cannot sample the far layer's delta gap: a
+    two-layer gapped weave reads PT UNDER BDPT/VCM by 1.28× at gap 0.1,
+    1.55× at gap 0.3 with the light outside; exact with the light inside or
+    a single layer.**
+
+    Exposed by debt 25's fix — masked before it by the closed-box leak that
+    debt 25 filed. Measured (same setup as debt 25's after-table):
+
+    | scene | PT | BDPT/PT | VCM/PT |
+    |---|---|---|---|
+    | box gap 0.3, light outside, before | 0.03188 | 0.991 | 0.994 |
+    | box gap 0.3, light outside, after | 0.02043 | 1.548 | 1.554 |
+    | six planes gap 0.3, light outside | 0.02046 | 1.553 | 1.554 |
+    | box gap 0.1, light outside, after | 0.01725 | 1.296 | 1.291 |
+    | six planes gap 0.1, light outside | 0.01734 | 1.288 | 1.283 |
+    | two planes gap 0.1, light outside | 0.01544 | 1.277 | 1.273 |
+    | single plane gap 0.3 | 0.03361 | 1.000 | 1.000 |
+    | box gap 0.3, light INSIDE, after | 0.69122 | 1.000 | 0.998 |
+
+    **This table's "two planes" row supersedes debt 25's "2 parallel weave
+    planes" row of the same name** (0.98855 there vs 1.277 here, at a
+    different gap and a different `PT` denominator). The two free-standing
+    z = ±0.5 planes measured here at gap 0.1 do not reproduce debt 25's
+    `0.98855`, and its exact geometry cannot be recovered, so treat that
+    earlier row as superseded by this measurement rather than as having
+    been wrong.
+
+    **Mechanism.** The path light → straight through the far layer's delta
+    gap lobe → near layer's continuum lobe → camera is reachable by light
+    tracing (t=1 splat / s=2 connection) but not by PT's binary NEE: the
+    shadow ray cast from the near layer toward the light is blocked by the
+    far layer, and `CastShadowRayTransmittance`
+    (`RayCaster.cpp` ~1980) — the one path that lets a shadow ray see
+    through a delta-transmissive occluder — is opt-in and gated to
+    perfect-specular dielectrics, not weave gaps. A single layer, or a light
+    already inside the box, has no "far layer" left to block the shadow
+    ray, so PT is exact in both of those cases; any two-layer topology with
+    the light outside always has one.
+
+    **Direction of a fix** (not a plan). Extend the transparent-shadow walk
+    to any material with a non-bending delta pass-through lobe (a weave
+    gap: transmittance = `gap`, no Fresnel), which for DELTA lights needs no
+    MIS (no competing strategy) but for AREA lights would double-count
+    against PT's BSDF-sampled delta continuation that hits the emitter
+    (debt 26's "delta-gap-to-emitter sighting") unless one side is
+    suppressed — the same caveat the existing dielectric shortcut carries.
+
+    **Auto-router.** `docs/RENDERING_INTEGRATORS.md` §2 /
+    `docs/AUTO_RASTERIZER_DESIGN.md` currently have no rule for this
+    two-layer-gap regime, and PT is the default.
 ---
 
 ## 16. Non-goals

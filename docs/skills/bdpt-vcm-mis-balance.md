@@ -56,15 +56,16 @@ description: |
 
 ## Procedure
 
-### 0. Rule out the seven known non-MIS causes first
+### 0. Rule out the eight known non-MIS causes first
 
-Seven failure modes produce exactly the "bidirectional render
+Eight failure modes produce exactly the "bidirectional render
 disagrees with PT" symptom (or, in cause 3's case, "PT itself
 disagrees with its own material's proven-linear response"; or, in
 cause 4's case, "BDPT/VCM looks like it's over-counting when PT is
-actually the one under-counting") while the MIS arithmetic is
-perfectly healthy.  All are minutes to check; do them before any
-integrator instrumentation:
+actually the one under-counting"; or, in cause 7's case, "a closed
+solid reads differently than the same faces built as separate
+planes") while the MIS arithmetic is perfectly healthy.  All are
+minutes to check; do them before any integrator instrumentation:
 
 0. **PT may be the broken one — check IOR-stack seeding when the
    camera (or an emitter) sits inside a dielectric.**  (Found
@@ -250,6 +251,68 @@ integrator instrumentation:
    path tracers before believing either.  This is cause 0/4's family
    again, one layer out: the broken reference is the harness's choice of
    integrator rather than a bug inside one.
+
+7. **A closed ANALYTIC solid's self-root straddles NEARZERO for PT's
+   unadvanced NEE shadow ray — check the primitive before the
+   integrators.**  (Found 2026-09-05 on `box_geometry` carrying a
+   `weave_material` with `transmission thin`: a closed box read
+   BDPT/VCM ≈ 0.17× PT with the light outside the box and ≈ 2.25× PT
+   with the light inside, while the SAME SIX FACES built as
+   free-standing `clippedplane_geometry` quads read 1.00 either way.)
+   A ray whose origin is a hit point `Object::IntersectRay` published
+   from THIS primitive sits ~1e-12 (`SURFACE_INTERSEC_ERROR`,
+   object-local) off the face it just hit.  For a two-root closed
+   primitive like a box, the slab test reports that ~1e-12
+   re-crossing of the origin's own face as the PRIMARY root,
+   `t ≈ 1e-12 · |cos θ_in| / |cos θ_out|` — a tiny, DIRECTION-DEPENDENT
+   value that straddles `NEARZERO`.  A downstream `dRange < NEARZERO →
+   reject the whole primitive` rule then produces two failure modes on
+   the SAME box depending on which side of `NEARZERO` a given shadow
+   ray's self-root lands: below it, the entire box (including the
+   genuine far face) is discarded, so a light behind the box shines
+   through the front face as if the back face did not exist; above it,
+   the box occludes its OWN origin face, self-shadowing every NEE
+   toward a light inside it.  Path tracing casts NEE shadow rays
+   unadvanced from the published hit point and sees both failure
+   modes; BDPT/VCM `Advance()` every shadow and continuation ray by
+   1e-6 (`BDPT_RAY_EPSILON` / `VCM_RAY_EPSILON`) first and see neither
+   — which is why they agreed with each other, with PT on the
+   six-plane assembly, and not with PT on the box.
+
+   **Diagnostic takeaway.**
+   (a) The discriminator is rebuilding the SAME faces as separate
+   double-sided planes (`clippedplane_geometry doublesided TRUE`): if
+   that assembly agrees with BDPT/VCM and the closed primitive does
+   not, the bug is the primitive's self-intersection handling, not an
+   integrator MIS defect.
+   (b) The general rule: BDPT/VCM advance their shadow rays and PT
+   does not, so ANY primitive whose intersection routine can return a
+   self-root splits them — check that primitive's
+   `IntersectRay_IntersectionOnly` near-root handling first, not the
+   MIS weights.
+   (c) "Closed solid with a transmissive material" is exactly the
+   regime where the far face matters: an opaque closed solid never
+   exposes the far-face-discarded failure mode, because nothing behind
+   it is ever visible anyway.
+   (d) Before/after, 24×24, 256 spp, `oidn_denoise FALSE`, gap-0 weave:
+
+   | scene | PT | BDPT/PT | VCM/PT |
+   |---|---|---|---|
+   | box, light outside, before | 0.04920 | 0.284 | 0.283 |
+   | box, light outside, after | 0.01435 | 0.967 | 0.967 |
+   | box, light inside, before | 0.33986 | 2.245 | 2.248 |
+   | box, light inside, after | 0.77381 | 0.987 | 0.988 |
+
+   Fix: `BoxGeometry::DropSelfHitRoot` drops the self-face root in
+   favour of the other root — a plane-distance test, not a range
+   threshold (see
+   [precision-fix-the-formulation.md](precision-fix-the-formulation.md)'s
+   "Box self-root" example) — rather than widening the `NEARZERO`
+   gate.  Full mechanism and numbers:
+   [CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md).
+   Fourth instance of this section's "PT may be the broken one" family
+   (after cause 0's IOR seeding, cause 4's bilinear self-hit, and
+   cause 6's legacy rasterizer).
 
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy
@@ -765,7 +828,55 @@ On a gapped weave in front of an area emitter it reads **0.0431** where
 track the modern PT to 1.4e-3.  A topology added there would have banked a
 2.41x reference error as expected behaviour.  Before adding a topology to
 a `*StrategyBalanceTest`, render it through BOTH path tracers and check
-they agree.
+they agree.  A fourth instance follows immediately below (`box_geometry`'s
+self-root, debt 25).
+
+### PT — box_geometry self-root: the closed thin-weave box (debt 25)
+
+Fourth instance of step 0's "PT may be the broken one" in this file.
+(2026-09-05.)  A closed box (`box_geometry`) carrying a `weave_material`
+with `transmission thin` read BDPT/VCM ≈ **0.17×** PT with the light
+outside the box and ≈ **2.25×** PT with the light inside — while the
+SAME SIX FACES rebuilt as free-standing `clippedplane_geometry` quads
+(`doublesided TRUE`) read 1.00 either way.  The discriminating render was
+exactly the one a review handoff had proposed: rebuild the closed solid
+as separate double-sided planes and see whether BDPT/PT recovers to 1.
+
+`Object::IntersectRay` publishes a hit point backed off ~1e-12
+(`SURFACE_INTERSEC_ERROR`, object-local) along the incoming ray, so a
+continuation or NEE shadow ray leaving that point re-crosses the SAME
+face at `t ≈ 1e-12 · |cos θ_in| / |cos θ_out|` — a tiny,
+direction-dependent root straddling `NEARZERO`.
+`IntersectRay_IntersectionOnly`'s "reject the primitive when
+`dRange < NEARZERO`" then produced both failure modes on the same closed
+box: below `NEARZERO` the whole box (including the genuine far face)
+vanished, so a light behind the box shone through the front face
+unoccluded; above it, the box occluded its own origin face, self-
+shadowing every NEE toward a light inside it.  PT's NEE shadow ray is
+cast unadvanced from the published hit point (`LightSampler.cpp` ~1839)
+and saw both; BDPT/VCM `Advance()` theirs by 1e-6 (`BDPT_RAY_EPSILON` /
+`VCM_RAY_EPSILON`) first and saw neither.
+
+| scene | PT | BDPT/PT | VCM/PT |
+|---|---|---|---|
+| box, light outside, before | 0.04920 | 0.284 | 0.283 |
+| box, light outside, after | 0.01435 | 0.967 | 0.967 |
+| six planes, light outside | 0.01417 | 0.988 | 0.985 |
+| box, light inside, before | 0.33986 | 2.245 | 2.248 |
+| box, light inside, after | 0.77381 | 0.987 | 0.988 |
+| six planes, light inside | 0.77374 | 0.987 | 0.989 |
+
+Fix: `BoxGeometry::DropSelfHitRoot` (`src/Library/Geometry/BoxGeometry.cpp`,
+commit `40e78b69`) drops a root on a face the origin lies on
+(`|origin.axis − bound| ≤ NEARZERO · (1 + coordinate magnitude)`, the
+debt-21 scale-relative floor) in favour of the other root, mirroring
+`RaySphereIntersection`'s existing self-hit skip but as a plane-distance
+test rather than a range threshold.  Exposed a residual: a two-layer
+gapped weave still reads PT under BDPT/VCM by 1.28–1.55× because PT's
+NEE cannot reach a path that goes through the far layer's delta gap and
+the near layer's continuum lobe — filed as debt 27, not closed by this
+fix.  Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
+25](../CLOTH_FABRIC_DESIGN.md) (debt 27 immediately after).
 
 ## Mental model for delta lights and MIS
 
