@@ -58,7 +58,25 @@ namespace RISE
 
 		hit.dRange = Vector3Ops::Dot( vEdgeB, qvec ) * oodet;
 
-		if( hit.dRange >= NEARZERO ) {
+		// Scale-relative self-intersection floor -- same mechanism and
+		// same floor as RayBilinearPatchIntersection (debt 21) and
+		// RaySphereIntersection (see its note).  A ray published from a
+		// hit on this triangle (1e-12 back-off along the incoming ray)
+		// that crosses it has its self root at t = 1e-12 * |cos in| /
+		// |cos out|, which the fixed NEARZERO gate let through; and at
+		// coordinates ~1e3 the hit's own round-off puts the published
+		// point on either side.  Measured 2026-09-05 (docs/CLOTH_FABRIC_
+		// DESIGN.md section 15, debt 25 sibling audit): a two-triangle
+		// PLY quad carrying a full-sphere transmissive weave lit from
+		// behind read PT 1/157 of BDPT at unit scale; a Lambertian
+		// tessellated sphere at radius 1000 read PT 3-8 % dark.  The
+		// coordinate scale is the origin's plus the vertex's.
+		const Scalar coordScale =
+			fabs( ray.origin.x ) + fabs( ray.origin.y ) + fabs( ray.origin.z ) +
+			fabs( vPt1.x ) + fabs( vPt1.y ) + fabs( vPt1.z );
+		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
+		if( hit.dRange >= tMin ) {
 			hit.dRange2 = hit.dRange;
 			hit.bHit = true;
 			hit.alpha = a;

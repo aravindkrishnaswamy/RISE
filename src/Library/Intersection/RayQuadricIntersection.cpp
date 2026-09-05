@@ -52,15 +52,24 @@ namespace RISE
 
 		hit.bHit = (discriminant >= 0.0);
 
+		// Scale-relative self-intersection floor -- see the note in
+		// RaySphereIntersection.cpp (same mechanism, same floor: a point
+		// published from this surface at coordinates ~1e3 can sit inside
+		// it by the eye hit's own ~1e-12 round-off, and the exit root then
+		// straddles the fixed NEARZERO; measured on a 1000-unit ellipsoid,
+		// PT 0.69x of BDPT, 1.000 at unit scale).
+		const Scalar coordScale = fabs( ray.origin.x ) + fabs( ray.origin.y ) + fabs( ray.origin.z );
+		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
 		if( hit.bHit ) {
 			discriminant = sqrt( discriminant );
 			const Scalar t0 = (-k1 - discriminant) / (2.0*k2);
 			const Scalar t1 = (-k1 + discriminant) / (2.0*k2);
 
-			if( t0 > NEARZERO ) {
+			if( t0 > tMin ) {
 				hit.dRange = t0;
 				hit.dRange2 = t1;
-			} else if( t1 > NEARZERO ) {
+			} else if( t1 > tMin ) {
 				hit.dRange = t1;
 				hit.dRange2 = 0.0;
 			} else {

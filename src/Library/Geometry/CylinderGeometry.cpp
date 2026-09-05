@@ -206,6 +206,17 @@ bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int&
 	int		candS[4];
 	int		n = 0;
 
+	// Scale-relative self-intersection floor for every candidate root --
+	// same mechanism and same floor as RaySphereIntersection (see its
+	// note) and RayBilinearPatchIntersection (debt 21): a ray published
+	// from a hit on this cylinder that crosses it has a ~1e-12 self root
+	// which the fixed NEARZERO gate let through.  Measured 2026-09-05
+	// (docs/CLOTH_FABRIC_DESIGN.md section 15, debt 25 sibling audit): a
+	// unit cylinder carrying a full-sphere transmissive weave lit from
+	// behind read PT 0.46x (capped) / 0.35x (open tube, side-on) of BDPT.
+	const Scalar coordScale = fabs( axO ) + fabs( raO ) + fabs( rbO ) + fabs( m_dRadius );
+	const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
 	// --- Side wall: infinite cylinder of radius m_dRadius about the axis ---
 	// Reduced quadratic A t^2 + 2 B t + C = 0 (B is the half coefficient),
 	// matching Ray?CylinderIntersection's convention.
@@ -220,7 +231,7 @@ bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int&
 			const Scalar tt[2] = { (-B - sq)*inva, (-B + sq)*inva };
 			for( int i = 0; i < 2; i++ ) {
 				const Scalar t = tt[i];
-				if( t > NEARZERO ) {
+				if( t > tMin ) {
 					const Scalar ax = axO + t*axD;
 					if( ax >= m_dAxisMin && ax <= m_dAxisMax ) {
 						candT[n] = t; candS[n] = SURF_SIDE; n++;
@@ -238,7 +249,7 @@ bool CylinderGeometry::IntersectCappedSolid( const Ray& ray, Scalar& tNear, int&
 		const Scalar r2        = m_dRadius*m_dRadius;
 		for( int i = 0; i < 2; i++ ) {
 			const Scalar t = (planes[i] - axO)*invAxD;
-			if( t > NEARZERO ) {
+			if( t > tMin ) {
 				const Scalar ra = raO + t*raD;
 				const Scalar rb = rbO + t*rbD;
 				if( ra*ra + rb*rb <= r2 ) {
@@ -544,7 +555,7 @@ bool CylinderGeometry::IntersectRay_IntersectionOnly( const Ray& ray, const Scal
 		Scalar	tNear = 0.0, tFar = 0.0;
 		int		surfNear = SURF_SIDE, surfFar = SURF_SIDE;
 		if( IntersectCappedSolid( ray, tNear, surfNear, tFar, surfFar ) ) {
-			// IntersectCappedSolid only returns candidates with t > NEARZERO.
+			// IntersectCappedSolid only returns candidates above its scale-relative self-hit floor.
 			// Honour the front/back-face filter (IGeometry contract, and consistent
 			// with the detailed IntersectRay above): occlude only if a crossing of
 			// the requested facing lies within dHowFar.  Front = outward normal
