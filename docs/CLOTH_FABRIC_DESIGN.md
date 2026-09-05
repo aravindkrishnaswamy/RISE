@@ -5751,9 +5751,10 @@ yet known (§10.1).
     scale and normal incidence, acceptance window ~1.7e-11, ~100× under
     the ~2e-9 decoy radius that suite's Test 15 pins (the window scales
     with 1/rate: ~3e-10 at the grazing clamp, and with the operand's own
-    scale). `CsgSurfacePayloadTest` is now in the gate (all 283 green,
-    plus the round-3 scaled-operand and oblique-exit cases that make the
-    rate's two ingredients load-bearing) and pins the CSG side in both
+    scale). `CsgSurfacePayloadTest` is now in the gate (all 299 green,
+    including the round-3 scaled-operand and oblique-exit cases and the
+    round-4 stretched-slab + oblique case, Test 26, which is the only one
+    that goes red under the old `|M⁻¹dir| · |dir·n|` factorisation) and pins the CSG side in both
     directions; `tests/BoxGeometryTest.cpp::RunStandoffReentryContract`
     pins the box side (a 2·eps/|cos| standoff re-hits its face, a
     0.5·eps one reads as the origin's own face) at unit and 1000× scale.
