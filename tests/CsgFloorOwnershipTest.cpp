@@ -67,7 +67,9 @@
 //      HEALTHY sibling's face tens of units away: a guaranteed wrong-face
 //      payload.  Three layers of cure, each with its own test:
 //      (a) the authoring surfaces (`ParsePartLines`, the `scale` keyframe
-//      setter) clamp a sub-1e-6 magnitude and reject a non-finite one --
+//      setter) clamp a sub-1e-6 magnitude and reject a non-finite one
+//      (the keyframe STRING path is refused by the strict keyframe parser
+//      before the setter; the setter's own check is defence in depth) --
 //      covered in `SDFGeometryTest`, since it is parser behaviour;
 //      (b) `SDFGeometry::SelfHitRootFloor` caps its answer at half its own
 //      bounding-box diagonal (Test 8); (c) `CSGObject::SelfHitRootFloor`

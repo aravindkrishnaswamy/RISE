@@ -95,6 +95,7 @@ static CapturingLogPrinter* g_degenerateShapeWarn = 0;
 // former, an ignored keyframe in the latter.
 static CapturingLogPrinter* g_scaleClampWarn = 0;
 static CapturingLogPrinter* g_scaleNonFinite = 0;
+static CapturingLogPrinter* g_kfScaleNonFinite = 0;   // the keyframe setter's own wording, distinct from the parser's
 
 static bool IsClose( Scalar a, Scalar b, Scalar eps = 2e-3 ) { return std::fabs(a-b) <= eps; }
 static Scalar Len( const Vector3& v ) { return std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z); }
@@ -1522,6 +1523,16 @@ static void TestDegenerateScaleClampsAndWarns()
 			"...by the scale guard specifically, not by the token grammar" );
 		Check( parts.empty(), "the rejected part is not appended" );
 	}
+	{
+		g_scaleNonFinite->Clear();
+		std::vector<SDFGeometry::Part> parts;
+		Check( !SDFGeometry::ParsePartLines(
+			"sphere union 0  0 0 0  0 0 0  1 1 inf  1 0 0  0\n", "<test>", parts ),
+			"infinite scale component rejected" );
+		Check( g_scaleNonFinite->MatchCount() == 1,
+			"...by the scale guard specifically (inf, not only nan)" );
+		Check( parts.empty(), "the rejected part is not appended (inf)" );
+	}
 
 	// KEYFRAME setter: same clamp, on the path that never sees the parser.
 	{
@@ -1555,6 +1566,34 @@ static void TestDegenerateScaleClampsAndWarns()
 		{	RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
 			g->IntersectRay( ri, true, true, false );
 			Check( ri.bHit && IsClose( ri.range, 18.0, 0.05 ), "the restored sphere is hit at z = 2 again" ); }
+
+		// KEYFRAME string path, non-finite: refused BEFORE the setter --
+		// `KeyframeFromParameters` goes through the strict keyframe parser
+		// (src/Library/Animation/KeyframableStrictParse.cpp), which rejects
+		// the spellings `nan` / `inf` textually before strtod, so ApplyKF
+		// returns false, nothing is applied, and neither the clamp warning
+		// nor the setter's own non-finite warning fires.  The setter's
+		// `ePartScaleNonFinite` branch is therefore defence in depth for a
+		// hand-built or interpolated keyframe (a Vector3Keyframe whose value
+		// went non-finite between authored keys); it is not reachable from
+		// scene text, and this test says so rather than pretending to
+		// exercise it.
+		{
+			const char* bad[2] = { "1 1 nan", "1 1 inf" };
+			for( int b = 0; b < 2; b++ )
+			{
+				g_kfScaleNonFinite->Clear();
+				g_scaleClampWarn->Clear();
+				Check( !ApplyKF( g, "part0.scale", bad[b] ),
+					b == 0 ? "keyframed `1 1 nan` refused at the strict keyframe parser" : "keyframed `1 1 inf` refused at the strict keyframe parser" );
+				Check( g_scaleClampWarn->MatchCount() == 0 && g_kfScaleNonFinite->MatchCount() == 0,
+					"...before either scale warning could fire" );
+				RayIntersectionGeometric ri = MkRI( Point3(0,0,20), Vector3(0,0,-1) );
+				g->IntersectRay( ri, true, true, false );
+				Check( ri.bHit && IsClose( ri.range, 18.0, 0.05 ),
+					"the part keeps its previous (healthy) scale after a refused keyframe" );
+			}
+		}
 
 		safe_release( g );
 	}
@@ -3258,6 +3297,12 @@ int main()
 		CapturingLogPrinter* owned = new CapturingLogPrinter( "non-finite scale component" );
 		RISE::GlobalLogPriv()->AddPrinter( owned );
 		g_scaleNonFinite = owned;
+		safe_release( owned );
+	}
+	{
+		CapturingLogPrinter* owned = new CapturingLogPrinter( "is not a finite number" );
+		RISE::GlobalLogPriv()->AddPrinter( owned );
+		g_kfScaleNonFinite = owned;
 		safe_release( owned );
 	}
 

@@ -456,7 +456,10 @@ namespace RISE
 			//! The authoring surfaces refuse the input as well -- both
 			//! `ParsePartLines` and the `scale` keyframe setter clamp a
 			//! sub-1e-6 magnitude to 1e-6 with a warning, and reject a
-			//! non-finite one -- but the cap is what makes the floor sound for
+			//! non-finite one (from scene text the strict keyframe parser
+			//! already refuses `nan` / `inf` before the setter runs, so the
+			//! setter's own check covers only a hand-built or interpolated
+			//! keyframe) -- but the cap is what makes the floor sound for
 			//! a field built through the constructor directly.
 			//!
 			//! P2-2 (accepted, documented): this is a RELATIVE window, unlike every
