@@ -6458,3 +6458,46 @@ against `3.1200230559651367e-05`; qualification device/wall p95 are
 `922.229667/948.846292 ms`. Evidence is
 `r201_projected_heun_metal_owner/r201l_setup_staged_source_gate.v1`. Replay is
 gated on a fresh zero-P1/P2 three-reviewer round.
+
+### r201m causal resident-authority seals and the owner trace verdict
+
+The ruling's per-iteration Metal/fp64 trace found no first divergence. Across
+R0/R1/R2, all alpha, active-set, and next-active class sequences agree, and
+every continuous target, projected-velocity, transport, stress, and flux
+quantity remains inside its own per-cell/per-field termwise enclosure. The
+owner therefore retains the strict same-class gate. The r123/r124 two-path
+envelope remains a qualified response to a certified class-ambiguous
+predicate, but no such predicate was encountered and no owner-level extension
+was activated. The historical `16,383x` pooled figure is descriptive only;
+neither it nor any pooled ratio is an acceptance target.
+
+The trace also exposed an execution defect outside the numerical trajectory:
+every resident authority publication reread its full payload serially on one
+Metal lane to construct a checksum. That O(N) reread did not authenticate the
+actual C++ capability relationship: the authority object already retains the
+exact Private buffers and their producing command, while downstream admission
+requires the immediate parent capabilities. Publication identities are now
+device-issued, domain-separated causal seals over those parent seals and all
+semantics-bearing metadata. Producer/evaluator kernels still validate every
+output value before a seal can issue; no CPU-produced surface is admitted, and
+the exact buffers, commands, residency ledger, and atomic publication rules
+are unchanged. The named hygiene RED forbids restoring payload-sized serial
+seal loops.
+
+At exact source `314da244241112e81c53e19853b4296355cb0ae6`, the full 485-line
+numeric trace is byte-identical before and after the authority change (SHA-256
+`fcf6236c...b77c`). The owner gate and independent kernel sweep exit zero:
+R0/R1/R2 use `2/2/4` accepted Picard iterations, zero interstage transfers,
+one terminal staging, and the compatible-flux identity is
+`1.1920929e-07 <= 8.1519056e-06`. The kernel sweep's compatible-momentum
+residual remains `1.1175870895385742e-07 <= 3.1200230559651367e-05`.
+Qualification p95 is `912.583417 ms` device and `940.433541 ms` wall.
+
+A non-authoritative four-step timing probe shows the former `5.1--6.3 s`
+serial identity commands reduced to a `729.569 ms` maximum command, while the
+steady live owner still costs about `10.43 s` per tier-8 step. The resulting
+rough replay projection is `5.3 h`; it is a budget observation, not replay
+evidence. Authored physics and `case_record_id` semantics are unchanged, while
+the producer executable identity changes. Evidence is
+`r201_projected_heun_metal_owner/r201m_causal_authority_seal_gate.v1`.
+Replay remains gated on a fresh zero-P1/P2 three-reviewer round.

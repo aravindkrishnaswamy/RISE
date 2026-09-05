@@ -5762,3 +5762,34 @@ Exact source `784a266c60e8db47ae4c08197e6b58192899dcbe` passes the live M4
 owner gate and independent kernel sweep without a tolerance change. Evidence
 is `r201_projected_heun_metal_owner/r201l_setup_staged_source_gate.v1`; replay
 remains blocked until a fresh three-reviewer round returns zero P1/P2.
+
+### r201m — the owner trace is continuous; resident identity becomes causal
+
+The ordered per-iteration trace found no Metal/fp64 trajectory defect. Alpha,
+active-set, and next-active class sequences are identical at every R0/R1/R2
+iteration, while every continuous field passes its local termwise enclosure.
+Accordingly, the owner gate remains strict same-class comparison. The
+r123/r124 two-successor rule is available only after a certified predicate
+interval crosses zero; it was not invoked here. The old `16,383x` pooled ratio
+is recorded as description, never as an acceptance threshold.
+
+The expensive operation was instead the identity publisher: each authority
+hashed its entire resident payload with one device thread on every Picard
+iteration. Authority is a causal capability, not a second numerical checksum.
+The owning C++ object retains the exact Private buffers and producing command;
+the device-issued publication seal now binds the immediate parent seals and
+semantics metadata with a domain unique to each surface. All per-value device
+validation, no-CPU-substitution refusals, parent capability checks, residency,
+and atomic publication remain load-bearing. A named source-hygiene RED rejects
+payload-sized serial loops in the seal issuers.
+
+Exact source `314da244241112e81c53e19853b4296355cb0ae6` passes the M4 owner
+gate and independent kernel sweep. Its 485-line numerical trace is byte-equal
+to the pre-change trace (SHA-256 `fcf6236c...b77c`), with unchanged `2/2/4`
+accepted Picard iterations and compatible-flux residuals. The former
+`5.1--6.3 s` identity commands disappear; a short, explicitly non-acceptance
+tier-8 timing prefix measures about `10.43 s` per complete live owner and
+projects the sealed replay at roughly `5.3 h`. Physical case semantics do not
+change, so `case_record_id` does not regenerate; executable authority does.
+Evidence is `r201_projected_heun_metal_owner/r201m_causal_authority_seal_gate.v1`.
+The ported replay remains behind the fresh zero-P1/P2 review boundary.
