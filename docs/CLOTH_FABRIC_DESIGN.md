@@ -5993,6 +5993,42 @@ yet known (§10.1).
     inconsistent-missing-override warning) a sweep of all 105 overriding
     virtuals across those seven geometry headers.
 
+    **Review follow-up (2026-09-05, 10f3e6c2 and the three test commits before
+    it) — closing the composite floor's P2s.** (a) `CSGObject::SelfHitRootFloor`'s
+    2δ ownership window could never be met by a child whose own floor
+    exceeds it (an SDF sphere of radius 4 needs 2.77e-4 against δ = 5e-6;
+    a thin torus R = 1000, r = 0.05 needs 4e-3), so on a face coincident
+    with a box the SDF's floor was dropped 68-million-fold — the window is
+    now `max(δ, 2·floorChild)` per child (a standoff of exactly the floor
+    is a float knife-edge, and the SDF step-off is inclusive); a "floor ≥ δ
+    means owner" shortcut was rejected because it would readmit a sibling
+    a million units away. On a shared EDGE the ownership ray runs along
+    one child's face plane and misses it (reversing or lengthening the ray
+    does not help), so an orientation-free backstop asks whether the point
+    is within the same window of the child's bounding-box SHELL — the
+    shell, not containment, so a hollow operand is not charged for every
+    face of a small one inside it. (b) `SDFGeometry`'s shrink ratio was a
+    global minimum over parts, so a remote part squashed to 0.02 over-stated
+    a uniform lobe's floor 50× (a ~2.9e-2 acceptance window); it now takes
+    the minimum only over parts whose own `partEval` distance at the point
+    is within twice the widest floor the function can return (a lower
+    bound on true distance, so exclusion is sound), falling back to the
+    global minimum at a blend seam: 50.0× → 1.0001×. (c) The floor
+    contract's upper bracket is 4× (measured maxima: sphere / cylinder /
+    plane / disk / SDF ≈ 1.00, box oblique 1.33, indexed triangle 1.91,
+    torus oblique 2.02), and a torus operand's decoy window is pinned from
+    BOTH sides in `tests/CsgProbeFloorTest.cpp`: a decoy 2e-8 past the
+    exit face is rejected, one at 1e-9 is adopted — the documented cost of
+    the deflation band's 2× stacked with the probe's 2× (~1.26e-9 at
+    R + r = 1.4, scale-invariant), asserted rather than hidden. (d)
+    `CsgSurfacePayloadTest` Test 28 finally exercises the composite's OWN
+    child-frame recursion (a 60°-rotated, 30×-stretched inner CSG): dropping
+    the child-frame scale or the normal remap fails its four money checks,
+    while seeding at the generic default trips Test 14, not 28. Suites:
+    `CsgSurfacePayloadTest` 348, `CsgProbeFloorTest` 49, the new
+    `tests/CsgFloorOwnershipTest.cpp` 27 (coincident SDF + box face,
+    shared box edge, two-lobe SDF).
+
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube
     side-on, circular disk, infinite plane, two-triangle PLY quad; box and
