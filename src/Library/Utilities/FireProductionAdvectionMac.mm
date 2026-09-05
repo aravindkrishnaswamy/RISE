@@ -188,10 +188,11 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 		// host. The command owns every private level until its terminal root copy.
 		bool EncodePayloadMerkle(PayloadMerkleContext& context,id<MTLCommandBuffer> command,
 			id<MTLBuffer> payload,std::size_t bytes,unsigned int width,id<MTLBuffer> root,
-			std::string& error,unsigned int qualificationFailTreeAllocation=0u)
+			std::string& error,unsigned int qualificationFailTreeAllocation=0u,
+			std::size_t rootOffset=0u)
 		{
 			if(!context.error.empty()){error=context.error;return false;}
-			if(!command||!payload||bytes>[payload length]||!root||[root length]<32u||
+			if(!command||!payload||bytes>[payload length]||!root||rootOffset>[root length]||[root length]-rootOffset<32u||
 				width==0u||width>std::min({context.leaf.maxTotalThreadsPerThreadgroup,
 				context.node.maxTotalThreadsPerThreadgroup,context.root.maxTotalThreadsPerThreadgroup})||
 				bytes/4096u+(bytes%4096u!=0u)>UINT32_MAX){error="payload-merkle-v2 invalid device span or dispatch";return false;}
@@ -208,7 +209,8 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 				if(!encoder)return false;
 				const std::uint64_t params[]={bytes,inputCount,level};
 				[encoder setComputePipelineState:pipeline];[encoder setBuffer:input offset:0 atIndex:0];
-				[encoder setBuffer:output offset:0 atIndex:1];[encoder setBytes:params length:sizeof(params) atIndex:2];
+				[encoder setBuffer:output offset:pipeline==context.root?rootOffset:0u atIndex:1];
+				[encoder setBytes:params length:sizeof(params) atIndex:2];
 				[encoder dispatchThreads:MTLSizeMake(outputCount,1,1) threadsPerThreadgroup:MTLSizeMake(width,1,1)];
 				[encoder endEncoding];return true;};
 			id<MTLBuffer> previous=allocate(count*32u);
@@ -417,6 +419,7 @@ kernel void merkle_root(device const uchar* child [[buffer(0)]],device uchar* ro
 			std::uint32_t cells,allFaces,faceOffset[3],stage;
 			float timeStepS,cellWidthM,endpointVelocityToleranceMPerS;
 			std::uint32_t forceActiveCycle,threeQuarterHeunWeighting;
+			std::uint32_t identityPadding;
 			std::uint64_t attemptIdentity;
 		};
 
@@ -2271,12 +2274,27 @@ kernel void fct_commuting_identity(device const float* beginning [[buffer(0)]],
 				ownerIssueStageSeal,ownerIssuePublication;
 			FireProductionEOSLogMetalQualificationIdentity eosLogIdentity;
 			std::string error;
+			bool productionStageTokens=false;
+			std::string compiledSource;
 
 			static const char* Source()
 			{
 				static const std::string source=std::string(R"METAL(
 #include <metal_stdlib>
 using namespace metal;
+#ifndef RISE_STAGE_TOKENS
+#define RISE_STAGE_TOKENS 0
+#endif
+constant bool resident_full_payload_seals=RISE_STAGE_TOKENS==0;
+inline ulong resident_stage_token(uint domain,ulong4 a,ulong4 b){
+ ulong hash=0x723230345f746f6bul;hash^=ulong(domain);hash*=1099511628211ul;
+ for(uint i=0u;i<4u;++i){hash^=a[i];hash*=1099511628211ul;}
+ for(uint i=0u;i<4u;++i){hash^=b[i];hash*=1099511628211ul;}
+ return hash==0ul?1ul:hash;
+}
+inline uint resident_record_obligation(device atomic_uint* location,uint mask,memory_order){
+ return resident_full_payload_seals?atomic_fetch_or_explicit(location,mask,memory_order_relaxed):0u;
+}
 struct TransportParams {uint nx;uint ny;uint nz;uint cells;uint boundary[6];uint sideOffset[6];uint faceOffset[3];
  uint stage;float dx;float Pr;float Sc;float Cv;ulong attempt;ulong parent;ulong projection;
  ulong thermochemistry;ulong transport;};
@@ -2397,6 +2415,8 @@ kernel void identify_resident_transport(device const float* state [[buffer(0)]],
  constant TransportParams& p [[buffer(9)]],
  uint gid [[thread_position_in_grid]]){
  if(gid!=0u)return;if(atomic_load_explicit(failure,memory_order_relaxed)!=0u){identity[0]=0ul;return;}
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(1u,
+  ulong4(p.attempt,p.parent,p.projection,p.stage),ulong4(p.thermochemistry,p.transport,p.cells,as_type<uint>(p.dx)));return;}
  ulong hash=14695981039346656037ul;
  for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;}
  for(uint word=0u;word<p.cells;++word){hash^=ulong(as_type<uint>(temperature[word]));hash*=1099511628211ul;}
@@ -2640,6 +2660,9 @@ kernel void identify_resident_physical_flux(device const float* donor [[buffer(0
  uint gid [[thread_position_in_grid]],uint width [[threads_per_simdgroup]]){
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||transportIdentity[0]==0ul||
   endpointClassIdentity[0]==0ul){if(gid==0u)identity[0]=0ul;return;}
+ if(!resident_full_payload_seals){if(gid==0u)identity[0]=resident_stage_token(2u,
+  ulong4(transportIdentity[0],endpointClassIdentity[0],p.attempt,p.stage),
+  ulong4(extra.physicalNullity,extra.advectiveNullity,p.cells,as_type<uint>(extra.ambientT)));return;}
  ulong hash=14695981039346656037ul,all=pf_all_faces(p);hash^=transportIdentity[0];hash*=1099511628211ul;
  hash^=endpointClassIdentity[0];hash*=1099511628211ul;
  hash=payload_fnv_five(hash,donor,advectiveDelta,highAdvective,low,high,9u*all,gid,width);
@@ -2666,6 +2689,11 @@ kernel void identify_resident_eos_candidate(device const float* candidate [[buff
   p.cells!=fct.cells||p.attempt!=transport.attempt||
   as_type<uint>(p.timeStepS)!=as_type<uint>(fct.dt)){
   identity[0]=0ul;atomic_fetch_or_explicit(failure,16u,memory_order_relaxed);return;}
+ // The parallel EOS admissibility kernel checks every candidate component;
+ // only the redundant payload scan/hash is absent in production.
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(3u,
+  ulong4(transportIdentity[0],physicalIdentity[0],p.attempt,p.caseIdentity),
+  ulong4(p.stage,p.precision,as_type<uint>(p.timeStepS),as_type<uint>(p.dynamicsBound)));return;}
  ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
  hash^=physicalIdentity[0];hash*=1099511628211ul;
  for(uint word=0u;word<9u*p.cells;++word){float value=candidate[word];
@@ -3014,6 +3042,9 @@ kernel void identify_resident_eos(device const float* temperature [[buffer(0)]],
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||candidateIdentity[0]==0ul||
   physicalIdentity[0]==0ul||transportIdentity[0]==0ul){identity[0]=0ul;return;}
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(4u,
+  ulong4(candidateIdentity[0],physicalIdentity[0],transportIdentity[0],p.attempt),
+  ulong4(p.caseIdentity,p.stage,p.precision,as_type<uint>(p.dynamicsBound)));return;}
  ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
  hash^=physicalIdentity[0];hash*=1099511628211ul;hash^=candidateIdentity[0];hash*=1099511628211ul;
  for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(temperature[cell]));hash*=1099511628211ul;
@@ -3040,6 +3071,8 @@ kernel void identify_resident_frozen_source(device const float* source [[buffer(
  if(atomic_load_explicit(failure,memory_order_relaxed)!=0u||sealed[0].cells==0u||
   sealed[0].attempt==0ul||sealed[0].sourcePacket==0ul||candidateIdentity[0]==0ul){
   identity[0]=0ul;return;}
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(5u,
+  ulong4(sealed[0].cells,sealed[0].attempt,sealed[0].sourcePacket,candidateIdentity[0]),ulong4(0ul));return;}
  ulong hash=14695981039346656037ul;hash^=ulong(sealed[0].cells);hash*=1099511628211ul;
  hash^=sealed[0].attempt;hash*=1099511628211ul;hash^=sealed[0].sourcePacket;
  hash*=1099511628211ul;hash^=candidateIdentity[0];hash*=1099511628211ul;
@@ -3231,6 +3264,9 @@ kernel void identify_resident_target(device const float* tangent [[buffer(0)]],
   tangentPhysicalIdentity[0]==0ul||candidatePhysicalIdentity[0]==0ul||
 	 candidateIdentity[0]==0ul||eosIdentity[0]==0ul||
   sourceIdentity[0]==0ul){identity[0]=0ul;return;}
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(6u,
+  ulong4(transportIdentity[0],tangentPhysicalIdentity[0],candidatePhysicalIdentity[0],candidateIdentity[0]),
+  ulong4(eosIdentity[0],sourceIdentity[0],p.attempt,p.policyVersion));return;}
  ulong hash=14695981039346656037ul;hash^=transportIdentity[0];hash*=1099511628211ul;
  hash^=tangentPhysicalIdentity[0];hash*=1099511628211ul;
 	 hash^=candidatePhysicalIdentity[0];hash*=1099511628211ul;
@@ -3284,7 +3320,7 @@ kernel void consume_resident_target(device const float* target [[buffer(0)]],
  candidateIdentity[0]==0ul||eosIdentity[0]==0ul){consumerIdentity[0]=0ul;
  atomic_fetch_or_explicit(failure,8192u,memory_order_relaxed);return;}ulong hash=targetIdentity[0];
  hash^=projectionIdentity[0];hash*=1099511628211ul;
- for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
+ if(resident_full_payload_seals)for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
  consumerIdentity[0]=hash==0ul?1ul:hash;}
 kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
  device float* output [[buffer(1)]],uint gid [[thread_position_in_grid]]){
@@ -3299,14 +3335,17 @@ kernel void diagnose_eos_log_enclosure(device const float* input [[buffer(0)]],
 // recomputed here.
 struct OwnerParams {uint cells;uint allFaces;uint faceOffset[3];uint stage;
  float dt;float dx;float endpointTolerance;uint forceActiveCycle;uint threeQuarterHeunWeighting;
+ uint identityPadding;
  ulong attempt;};
 kernel void owner_issue_bootstrap_target(device const float* target [[buffer(0)]],
  device const float* state [[buffer(1)]],device const float* source [[buffer(2)]],
  device ulong* targetIdentity [[buffer(3)]],device ulong* rootCandidateIdentity [[buffer(4)]],
  device ulong* targetConsumerIdentity [[buffer(5)]],constant OwnerParams& p [[buffer(6)]],
+ device const uchar* inputRoot [[buffer(7)]],
  uint gid [[thread_position_in_grid]]){if(gid!=0u)return;ulong hash=14695981039346656037ul;
- for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
- for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;
+ if(!resident_full_payload_seals){for(uint i=0u;i<32u;++i){hash^=ulong(inputRoot[i]);hash*=1099511628211ul;}}
+ if(resident_full_payload_seals)for(uint cell=0u;cell<p.cells;++cell){hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;}
+ if(resident_full_payload_seals)for(uint word=0u;word<9u*p.cells;++word){hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(source[word]));hash*=1099511628211ul;}
  hash^=p.attempt;hash*=1099511628211ul;hash^=ulong(p.stage);hash*=1099511628211ul;
  targetIdentity[0]=hash==0ul?1ul:hash;hash^=0x726f6f745f71306eul;hash*=1099511628211ul;
@@ -3365,6 +3404,8 @@ kernel void owner_bind_averaged_flux(device const float* low [[buffer(0)]],
  constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(r0[0]==0ul||r1[0]==0ul||transport[0]==0ul){identity[0]=0ul;
  atomic_fetch_or_explicit(failure,1u<<23u,memory_order_relaxed);return;}ulong hash=14695981039346656037ul;
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(7u,
+  ulong4(r0[0],r1[0],transport[0],p.attempt),ulong4(p.stage,p.cells,p.allFaces,0ul));return;}
  hash^=r0[0];hash*=1099511628211ul;hash^=r1[0];hash*=1099511628211ul;
  hash^=transport[0];hash*=1099511628211ul;for(uint word=0u;word<9u*p.allFaces;++word){
   hash^=ulong(as_type<uint>(low[word]));hash*=1099511628211ul;
@@ -3377,6 +3418,8 @@ kernel void owner_bind_candidate(device const float* state [[buffer(0)]],
  constant OwnerParams& p [[buffer(7)]],uint gid [[thread_position_in_grid]]){if(gid!=0u)return;
  if(transport[0]==0ul||flux[0]==0ul||parent[0]==0ul||p.attempt==0ul){identity[0]=0ul;
  atomic_fetch_or_explicit(failure,1u<<24u,memory_order_relaxed);return;}ulong hash=14695981039346656037ul;
+ if(!resident_full_payload_seals){identity[0]=resident_stage_token(8u,
+  ulong4(transport[0],flux[0],parent[0],p.attempt),ulong4(p.stage,p.cells,p.allFaces,0ul));return;}
  hash^=transport[0];hash*=1099511628211ul;hash^=flux[0];hash*=1099511628211ul;
  hash^=parent[0];hash*=1099511628211ul;for(uint word=0u;word<9u*p.cells;++word){
   hash^=ulong(as_type<uint>(state[word]));hash*=1099511628211ul;}
@@ -3401,6 +3444,9 @@ kernel void owner_identify_target(device const float* tangent [[buffer(0)]],
  constant uint& correction [[buffer(13)]],uint gid [[thread_position_in_grid]]){
  if(gid!=0u)return;if(transport[0]==0ul||physical[0]==0ul||candidate[0]==0ul||
   eos[0]==0ul||frozen[0]==0ul||parentTarget[0]==0ul||p.attempt==0ul){output[0]=0ul;return;}
+ if(!resident_full_payload_seals){output[0]=resident_stage_token(9u,
+  ulong4(transport[0],physical[0],candidate[0],eos[0]),ulong4(frozen[0],parentTarget[0],p.attempt,
+   (ulong(p.stage)<<32u)|ulong(correction)));return;}
  ulong hash=14695981039346656037ul;ulong parents[6]={transport[0],physical[0],candidate[0],
   eos[0],frozen[0],parentTarget[0]};for(uint i=0u;i<6u;++i){hash^=parents[i];hash*=1099511628211ul;}
  for(uint cell=0u;cell<p.cells;++cell){float values[5]={tangent[cell],source[cell],diagnostic[cell],
@@ -3433,7 +3479,7 @@ kernel void identify_resident_endpoint_class(device const uchar* classes [[buffe
   atomic_fetch_or_explicit(failure,1u<<26u,memory_order_relaxed);return;}
  ulong hash=14695981039346656037ul;hash^=projectionIdentity[0];hash*=1099511628211ul;
  hash^=transportIdentity[0];hash*=1099511628211ul;uint count=t.sideOffset[5]+t.nx*t.ny;
- for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
+		if(resident_full_payload_seals)for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
  hash^=ulong(t.stage);hash*=1099511628211ul;hash^=t.attempt;hash*=1099511628211ul;
  for(uint side=0u;side<6u;++side){hash^=ulong(t.boundary[side]);hash*=1099511628211ul;
   hash^=ulong(t.sideOffset[side]);hash*=1099511628211ul;}
@@ -3447,7 +3493,7 @@ kernel void identify_resident_owner_endpoint_class(device const uchar* classes [
   p.stage!=t.stage){identity[0]=0ul;atomic_fetch_or_explicit(failure,1u<<26u,memory_order_relaxed);return;}
  ulong hash=14695981039346656037ul;hash^=projectionIdentity[0];hash*=1099511628211ul;
  hash^=transportIdentity[0];hash*=1099511628211ul;uint count=t.sideOffset[5]+t.nx*t.ny;
- for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
+		if(resident_full_payload_seals)for(uint word=0u;word<count;++word){hash^=ulong(classes[word]);hash*=1099511628211ul;}
  hash^=ulong(t.stage);hash*=1099511628211ul;hash^=t.attempt;hash*=1099511628211ul;
  for(uint side=0u;side<6u;++side){hash^=ulong(t.boundary[side]);hash*=1099511628211ul;
   hash^=ulong(t.sideOffset[side]);hash*=1099511628211ul;}
@@ -3538,7 +3584,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				return source.c_str();
 			}
 
-			ResidentTransportMetalContext() : device(nil),queue(nil),evaluate(nil),identify(nil),
+			explicit ResidentTransportMetalContext(bool stageTokens=false) : device(nil),queue(nil),evaluate(nil),identify(nil),
 				physicalFlux(nil),advectivePair(nil),finalizeAdvective(nil),composePair(nil),validatePhysical(nil),
 				identifyPhysical(nil),identifyEOSCandidate(nil),
 				evaluateEOSCandidate(nil),finalizeEOSCandidate(nil),identifyEOS(nil),
@@ -3554,6 +3600,15 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				ownerResidual(nil),ownerClassResidual(nil),ownerIntegratedOpenHead(nil),
 				ownerIssueStageSeal(nil),ownerIssuePublication(nil)
 			{
+				productionStageTokens=stageTokens;
+				compiledSource=std::string("#define RISE_STAGE_TOKENS ")+(stageTokens?"1\n":"0\n")+Source();
+				// Qualification and production compile the same arithmetic. Only
+				// diagnostic obligation writes get a constant-folded no-op in the
+				// latter; failure/admissibility atomics are never redirected.
+				const std::string from="atomic_fetch_or_explicit(obligations,",
+					to="resident_record_obligation(obligations,";
+				std::size_t position=0u;while((position=compiledSource.find(from,position))!=std::string::npos){
+					compiledSource.replace(position,from.size(),to);position+=to.size();}
 				@autoreleasepool {
 					device=DiscoverProductionMetalDevice("resident transport",error);
 					if(!device)return;
@@ -3563,7 +3618,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						options.languageVersion=MTLLanguageVersion3_2;
 					}
 					else{error="production resident transport requires Metal safe math mode";return;}
-					NSError* metalError=nil;NSString* source=[NSString stringWithUTF8String:Source()];
+					NSError* metalError=nil;NSString* source=[NSString stringWithUTF8String:compiledSource.c_str()];
 					id<MTLLibrary> library=[device newLibraryWithSource:source options:options error:&metalError];
 					if(!library){error=MetalError("production resident transport library compilation failed",metalError);return;}
 					auto pipeline=[&](const char* name)->id<MTLComputePipelineState>{id<MTLFunction> function=
@@ -3627,7 +3682,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 						!ownerIssuePublication){error=MetalError(
 						"production resident authority pipeline creation failed",metalError);return;}
 					queue=[device newCommandQueue];if(!queue)error="production resident transport queue allocation failed";
-					const char* sourceBytes=Source();eosLogIdentity.deviceRegistryId=
+					const char* sourceBytes=compiledSource.c_str();eosLogIdentity.deviceRegistryId=
 						static_cast<std::uint64_t>([device registryID]);
 					eosLogIdentity.deviceName=MetalString([device name]);
 					eosLogIdentity.deviceFamily=ProductionMetalDeviceFamily(device);
@@ -3685,9 +3740,10 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			return context;
 		}
 
-		ResidentTransportMetalContext& ResidentTransportContext()
+		ResidentTransportMetalContext& ResidentTransportContext(bool productionStageTokens=false)
 		{
 			static ResidentTransportMetalContext context;
+			if(productionStageTokens){static ResidentTransportMetalContext production(true);return production;}
 			return context;
 		}
 
@@ -7323,6 +7379,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 
 			const FireProductionProjectedHeunMetalOwnerRequest& request_;
 			ResidentTransportMetalContext& context_;
+			id<MTLBuffer> inputPayloadDigest_=nil;
 			SingleStageFCTMetalContext& fct_;
 			FireProductionProjectionShape shape_;
 			std::size_t cells_,allFaces_,boundaryFaces_;
@@ -7433,6 +7490,16 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					options:MTLResourceStorageModePrivate];
 				if(value){actualBytes_+=[value allocatedSize];ObserveDeviceAllocation();}
 				return value;
+			}
+			bool HashPayload(id<MTLCommandBuffer> command,id<MTLBuffer> payload,
+				std::size_t bytes,id<MTLBuffer> root,std::size_t rootOffset,std::string* error)
+			{
+				static PayloadMerkleContext merkle;std::string failure;
+				if(!merkle.error.empty()||[merkle.device registryID]!=[context_.device registryID]){
+					if(error)*error="owner payload seal device/kernel mismatch: "+merkle.error;return false;}
+				if(!EncodePayloadMerkle(merkle,command,payload,bytes,256u,root,failure,0u,rootOffset)){
+					if(error)*error=failure;return false;}
+				ObserveDeviceAllocation();return true;
 			}
 			id<MTLBuffer> Upload(const void* bytes,const std::size_t length)
 			{
@@ -7693,6 +7760,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				input.divergenceTargetPerS=targetAuthority.assembled;
 				input.targetPublicationIdentity=targetAuthority.publicationIdentity;
 				input.targetConsumerIdentity=targetAuthority.consumerIdentity;
+				input.qualifiedOwnerStageTokens=context_.productionStageTokens;
 				input.sealedPressureOpenInflow=sealedInflow;
 				input.sealedPressureOpenDynamicPressurePa=sealedHead;
 				const std::uint64_t allocationBeforeProjection=static_cast<std::uint64_t>(
@@ -8256,8 +8324,8 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				std::unique_ptr<Stage>& accepted,std::string* error);
 		public:
 			explicit ResidentProjectedHeunMetalOwner(
-				const FireProductionProjectedHeunMetalOwnerRequest& request) : request_(request),
-				context_(ResidentTransportContext()),fct_(SingleStageFCTContext()),cells_(0u),
+				const FireProductionProjectedHeunMetalOwnerRequest& request,bool productionStageTokens=false) : request_(request),
+				context_(ResidentTransportContext(productionStageTokens)),fct_(SingleStageFCTContext()),cells_(0u),
 				allFaces_(0u),boundaryFaces_(0u),q0_(nil),t0_(nil),m0_(nil),sourceDelta_(nil),
 				frozenSource_(nil),
 				fuel_(nil),initialInflow_(nil),thermo_(nil),eosThermo_(nil),transportData_(nil),
@@ -8362,6 +8430,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				 static_cast<std::uint32_t>(faceOffset_[2])},0u,request_.lineage.eos.candidateTimeStepS,
 				shape_.cellWidthM,request_.endpointVelocityToleranceMPerS,0u,
 				request_.qualificationThreeQuarterHeunWeighting?1u:0u,
+				0u,
 				flux.transport.attemptIdentity};
 			std::vector<float> packedMomentum;packedMomentum.reserve(allFaces_);
 			for(const auto& axis:request_.beginningMomentumKGPerM2S)
@@ -8406,14 +8475,36 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			zeroTargetIdentity_=Private(sizeof(std::uint64_t));
 			zeroTargetConsumerIdentity_=Private(sizeof(std::uint64_t));
 			rootCandidateIdentity_=Private(sizeof(std::uint64_t));
+			inputPayloadDigest_=Private(32u);
 			if(!q0_||!t0_||!m0_||!sourceDelta_||!frozenSource_||!fuel_||!initialInflow_||!thermo_||
 				!eosThermo_||!transportData_||!ambient_||!physicalBasis_||!advectiveBasis_||
 				!projector_||!enthalpy_||!affine_||!failure_||!zeroTarget_||
-				!zeroTargetIdentity_||!zeroTargetConsumerIdentity_||!rootCandidateIdentity_)return false;
+				!zeroTargetIdentity_||!zeroTargetConsumerIdentity_||!rootCandidateIdentity_||!inputPayloadDigest_)return false;
+			// Canonical descriptor fixes input segment order and lengths and binds
+			// the actually compiled producer kernel set. Payload bytes are copied
+			// from the private buffers consumed by the owner, not reserialized Q.
+			std::string descriptor="rise.owner.device-inputs.v2\n"+
+				context_.eosLogIdentity.librarySourceSHA256+"\n"+
+				context_.eosLogIdentity.libraryFunctionSetSHA256+"\n";
+			std::size_t inputBytes=0u;for(const Pair& pair:copies){
+				if(pair.bytes>std::numeric_limits<std::size_t>::max()-inputBytes)return false;
+				inputBytes+=pair.bytes;descriptor+=std::to_string(pair.bytes)+"\n";}
+			descriptor+="end\n";
+			if(descriptor.size()>std::numeric_limits<std::size_t>::max()-inputBytes)return false;
+			inputBytes+=descriptor.size();
+			const std::size_t inputBound=80u*cells_+4u*allFaces_+2u*boundaryFaces_+(std::size_t(1u)<<20u);
+			if(inputBytes>inputBound||descriptor.size()>(std::size_t(1u)<<20u)){
+				if(error)*error="owner input digest exceeds its working-set certificate";return false;}
+			id<MTLBuffer> inputPayload=Private(inputBytes);
+			id<MTLBuffer> inputDescriptor=Upload(descriptor.data(),descriptor.size());
+			if(!inputPayload||!inputDescriptor)return false;
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
 			id<MTLBlitCommandEncoder> blit=command?[command blitCommandEncoder]:nil;if(!blit)return false;
 			for(const Pair& pair:copies)Copy(blit,pair.upload,0u,pair.device,0u,pair.bytes,
 				TransferKind::Upload);
+			Copy(blit,inputDescriptor,0u,inputPayload,0u,descriptor.size(),TransferKind::Upload);
+			std::size_t sealOffset=descriptor.size();for(const Pair& pair:copies){
+				Copy(blit,pair.device,0u,inputPayload,sealOffset,pair.bytes,TransferKind::Internal);sealOffset+=pair.bytes;}
 			[blit fillBuffer:zeroTarget_ range:NSMakeRange(0,fieldBytes) value:0u];
 			const id<MTLBuffer> controls[]={failure_,transportObligations_,physicalObligations_,
 				eosObligations_,targetObligations_};
@@ -8421,9 +8512,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				[blit fillBuffer:value range:NSMakeRange(0,[value length]) value:0u];
 			}
 			[blit endEncoding];
+			if(!HashPayload(command,inputPayload,inputBytes,inputPayloadDigest_,0u,error))return false;
 			if(!Encode(command,context_.ownerIssueBootstrap,{zeroTarget_,q0_,sourceDelta_,
 				zeroTargetIdentity_,rootCandidateIdentity_,zeroTargetConsumerIdentity_,
-				ownerParameters_[0]},1u)||
+				ownerParameters_[0],inputPayloadDigest_},1u)||
 				!Commit(command,error))return false;
 			bootstrapTarget_.reset(new ResidentProjectionTargetMetalAuthority);
 			bootstrapTarget_->assembled=zeroTarget_;
@@ -8835,8 +8927,11 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			id<MTLBuffer> positiveHalfBuffer=Upload(&positiveHalf,sizeof(positiveHalf));
 			id<MTLBuffer> negativeHalfBuffer=Upload(&negativeHalf,sizeof(negativeHalf));
 			const std::size_t stateBytes=9u*cells_*sizeof(float),fieldBytes=cells_*sizeof(float);
-			const std::size_t terminalBytes=stateBytes+13u*allFaces_*sizeof(float)+10u*fieldBytes+
-				2u*sizeof(std::uint32_t)+22u*sizeof(std::uint64_t);
+			// Nine packed face fields are actually published. The legacy terminal
+			// allocation reserved thirteen; unwritten capacity is not payload.
+			const std::size_t publicationBytes=stateBytes+9u*allFaces_*sizeof(float)+10u*fieldBytes+
+				2u*sizeof(std::uint32_t)+22u*sizeof(std::uint64_t)+32u;
+			const std::size_t terminalBytes=publicationBytes+32u;
 			id<MTLBuffer> terminal=[context_.device newBufferWithLength:terminalBytes
 				options:MTLResourceStorageModeShared];
 			id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
@@ -8943,9 +9038,19 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				r2->source->publicationIdentity,r0->target->publicationIdentity,
 				r1->target->publicationIdentity,r2->target->publicationIdentity};
 			for(id<MTLBuffer> identity:identities)publish(identity,sizeof(std::uint64_t));
-			publish(ownerIdentity,sizeof(std::uint64_t));[blit endEncoding];
+			publish(ownerIdentity,sizeof(std::uint64_t));publish(inputPayloadDigest_,32u);[blit endEncoding];
+			if(offset!=publicationBytes){if(error)*error="owner publication payload layout differs from its seal";return false;}
+			if(!HashPayload(command,terminal,publicationBytes,terminal,publicationBytes,error))return false;
 			if(!Commit(command,error))return false;const unsigned char* bytes=
 				static_cast<const unsigned char*>(Read(terminal,TransferKind::Terminal));if(!bytes)return false;
+			auto hexRoot=[](const unsigned char* root){const char* alphabet="0123456789abcdef";std::string text;
+				for(unsigned int i=0u;i<32u;++i){text+=alphabet[root[i]>>4u];text+=alphabet[root[i]&15u];}return text;};
+			result.intermediateSealFormat=context_.productionStageTokens?"qualified-kernel-stage-token":"legacy-resident-fnv64";
+			result.intermediateDigestVersion=context_.productionStageTokens?2u:1u;
+			result.qualifiedKernelSetSHA256=context_.eosLogIdentity.librarySourceSHA256;
+			result.inputPayloadRootSHA256=hexRoot(bytes+publicationBytes-32u);
+			result.publicationPayloadRootSHA256=hexRoot(bytes+publicationBytes);
+			result.publicationPayloadBytes=publicationBytes;
 			offset=0u;auto floats=[&](std::vector<float>& destination,std::size_t count){const float* value=
 				reinterpret_cast<const float*>(bytes+offset);destination.assign(value,value+count);
 				offset+=count*sizeof(float);};floats(result.conservativeValues,9u*cells_);
@@ -8972,8 +9077,11 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::memcpy(&result.maximumCommutingResidualKGPerM3,&commutingBits[0],sizeof(float));
 			std::memcpy(&result.commutingIdentityScaleKGPerM3,&commutingBits[1],sizeof(float));
 			offset+=2u*sizeof(std::uint32_t);
-			const std::uint64_t* ids=
-				reinterpret_cast<const std::uint64_t*>(bytes+offset);
+			// Odd face counts need not place this byte packet on an eight-byte
+			// boundary. memcpy preserves the representation without an unaligned
+			// uint64_t typed load.
+			std::array<std::uint64_t,22> ids;
+			std::memcpy(ids.data(),bytes+offset,sizeof(ids));
 			for(unsigned int index=0u;index<3u;++index)result.projectionPublicationIdentity[index]=ids[index];
 			for(unsigned int index=0u;index<3u;++index)result.transportPublicationIdentity[index]=ids[3u+index];
 			for(unsigned int index=0u;index<3u;++index){
@@ -10308,6 +10416,18 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				FireProductionProjectionFaceCount(shape,1u)+
 				FireProductionProjectionFaceCount(shape,2u)))*sizeof(float))||
 			!add(3u*sizeof(std::uint64_t)))return false;
+		// r204 input binding: 20 cell fields, one face field, both boundary
+		// classifications, plus <1 MiB of fixed tables/parameters/descriptor.
+		// Each 4-KiB leaf produces 32 bytes; all interior levels add <1/15 of
+		// the leaf storage. Reserve 8 allocation quanta per tree for rounding.
+		const std::uint64_t cells=shape.CellCount(),faces=
+			FireProductionProjectionFaceCount(shape,0u)+FireProductionProjectionFaceCount(shape,1u)+
+			FireProductionProjectionFaceCount(shape,2u),boundary=2u*(shape.nx*shape.ny+
+			shape.nx*shape.nz+shape.ny*shape.nz);
+		const std::uint64_t input=80u*cells+4u*faces+2u*boundary+(UINT64_C(1)<<20u);
+		const std::uint64_t publication=76u*cells+52u*faces+256u;
+		if(!add(input)||!add(input/120u+8u*16384u)||
+			!add(publication/120u+8u*16384u)||!add(64u)||!add(UINT64_C(1)<<20u))return false;
 		// The complete owner intentionally retains adjacent Picard candidates.  Its
 		// peak can exceed the historical process-agnostic two-GiB fixture ceiling at
 		// production grids even when it is comfortably inside the active Metal
@@ -10322,7 +10442,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )
 	{
 		try {
-			ResidentProjectedHeunMetalOwner owner(request);
+			ResidentProjectedHeunMetalOwner owner(request,request.qualificationProductionStageTokens);
 			return owner.Run(result,error);
 		} catch(const std::bad_alloc&) {
 			result=FireProductionProjectedHeunMetalOwnerResult();
@@ -10355,6 +10475,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			request.qualificationR2SealedClassPhysicalFlux||
 			request.qualificationUnverifiedEndpointClassBuffer||
 			request.qualificationCaptureIterationTrace||
+			request.qualificationProductionStageTokens||
 			request.qualificationWorkingSetLimitBytes!=0u;
 		if(qualificationSelected){
 			if(diagnostics)*diagnostics=FireProductionProjectedHeunMetalOwnerResult();
@@ -10362,7 +10483,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			return false;
 		}
 		FireProductionProjectedHeunMetalOwnerResult owner;
-		if(!AttemptFireProductionProjectedHeunMetalOwner(request,owner,error))return false;
+		try {ResidentProjectedHeunMetalOwner residentOwner(request,true);
+			if(!residentOwner.Run(owner,error))return false;
+		}catch(const std::bad_alloc&){if(error)*error="production owner allocation failed";return false;}
 		const FireProductionProjectionShape& shape=request.lineage.eos.physicalFlux.transport.shape;
 		const std::size_t cells=shape.CellCount();
 		if(!owner.accepted||owner.ownerPublicationIdentity==0u||
@@ -10448,6 +10571,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			shape,computed.conservativeValues,computed.projection.momentumKGPerM2S,
 			computed.projection.velocityMPerS);
 		computed.acceptedManifoldToken_.acceptedStateDigestVersion_=2u;
+		computed.acceptedManifoldToken_.publicationRoot_=owner.publicationPayloadRootSHA256;
 		computed.acceptedManifoldToken_.generationAuthoritative_=false;
 		computed.acceptedManifoldToken_.plateauEnforced_=false;
 		if(!computed.AcceptedManifoldTokenMatchesCurrentPayload()){

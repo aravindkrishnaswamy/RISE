@@ -476,6 +476,9 @@ namespace RISEFireProductionFP64
 		//! physical-flux authority must refuse it before any publication.
 		bool qualificationUnverifiedEndpointClassBuffer;
 		bool qualificationCaptureIterationTrace;
+		//! Qualification selects the production sealing placement while retaining
+		//! the full owner RED/trace surface. The live entry chooses it internally.
+		bool qualificationProductionStageTokens=false;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
 		std::uint64_t qualificationWorkingSetLimitBytes;
@@ -506,6 +509,15 @@ namespace RISEFireProductionFP64
 
 	struct FireProductionProjectedHeunMetalOwnerResult
 	{
+		//! Explicit namespaces: stage tokens are not standalone payload digests.
+		std::string intermediateSealFormat="legacy-resident-fnv64";
+		std::uint32_t intermediateDigestVersion=1u;
+		std::string payloadDigestFormat="rise-payload-sha256-merkle";
+		std::uint32_t payloadDigestVersion=2u;
+		std::string qualifiedKernelSetSHA256;
+		std::string inputPayloadRootSHA256;
+		std::string publicationPayloadRootSHA256;
+		std::uint64_t publicationPayloadBytes=0u;
 		std::vector<double> conservativeValues;
 		std::array<std::vector<double>,3> momentumKGPerM2S;
 		std::array<std::vector<double>,3> velocityMPerS;

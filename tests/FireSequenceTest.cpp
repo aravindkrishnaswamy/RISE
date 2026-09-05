@@ -2315,6 +2315,49 @@ namespace
 #endif
 	}
 
+	bool PublishPayloadMerkleSidecar(const std::filesystem::path& path,
+		const std::string& caseRecordId,std::string& error)
+	{
+		if(caseRecordId.size()!=64u||!std::all_of(caseRecordId.begin(),caseRecordId.end(),
+			[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})){
+			error="payload publication case identity is invalid";return false;}
+		const auto bytes=ReadFileBytes(path);
+		if(!std::filesystem::is_regular_file(path)||bytes.size()!=std::filesystem::file_size(path)){
+			error="payload publication is incomplete";return false;}
+		FireProductionPayloadDigestV2 digest;
+		if(!FireProductionPayloadDigestCPU(bytes.data(),bytes.size(),8u,digest,&error))return false;
+		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
+		const auto temporary=std::filesystem::path(sidecar.string()+".pending");
+		std::ofstream output(temporary,std::ios::binary|std::ios::trunc);
+		output<<"{\"schema\":\"rise.fire.published-payload.v2\",\"case_record_id\":\""<<caseRecordId
+			<<"\",\"sha256_v1\":\""<<RISECBOR64::SHA256Hex(bytes)<<"\",\"v2\":{"
+			<<"\"digest_format\":\"rise-payload-sha256-merkle\",\"digest_version\":2,"
+			<<"\"chunk_bytes\":4096,\"fan_in\":16,\"payload_bytes\":"<<bytes.size()
+			<<",\"root_sha256\":\""<<digest.rootSHA256<<"\"}}\n";
+		output.close();if(!output){error="payload publication seal write failed";return false;}
+		return DurableSyncFileAndDirectory(temporary,error)&&AtomicReplaceCheckpoint(temporary,sidecar,error);
+	}
+
+	// Finalization boundary for a newly created run directory. Mutable working
+	// logs are not published evidence until this succeeds; sidecars are terminal
+	// certificates, not inputs to an infinitely recursive sidecar tree.
+	bool SealPublishedRunDirectory(const std::filesystem::path& directory,
+		const std::string& caseRecordId,std::string& error)
+	{
+		std::vector<std::filesystem::path> files;
+		for(const auto& entry:std::filesystem::recursive_directory_iterator(directory)){
+			if(entry.is_symlink()){error="run publication refuses symlinks";return false;}
+			if(!entry.is_regular_file())continue;
+			const std::string name=entry.path().filename().string();
+			if(name.size()>=16u&&name.compare(name.size()-16u,16u,".payload-v2.json")==0)continue;
+			if(name.find(".pending")!=std::string::npos){error="run publication has a pending output";return false;}
+			files.push_back(entry.path());
+		}
+		std::sort(files.begin(),files.end());
+		for(const auto& file:files)if(!PublishPayloadMerkleSidecar(file,caseRecordId,error))return false;
+		return true;
+	}
+
 	bool SaveMethaneRunCheckpoint(const std::filesystem::path& path,
 		const MethaneRunCheckpoint& checkpoint,std::string& error,
 		const std::uint64_t version=13u)
@@ -3269,7 +3312,9 @@ namespace
 				"device_ms,wall_ms,owner_identity,owner_commits,owner_projections,"
 				"owner_r0_iterations,owner_r1_iterations,owner_r2_iterations,"
 				"owner_actual_working_set_bytes,owner_certified_working_set_bytes,"
-				"owner_projection_device_ms,owner_nonprojection_device_ms\n";
+				"owner_projection_device_ms,owner_nonprojection_device_ms,"
+				"intermediate_seal_format,intermediate_digest_version,payload_digest_format,payload_digest_version,"
+				"qualified_kernel_set_sha256,input_payload_root_sha256,publication_payload_root_sha256,publication_payload_bytes\n";
 			if(!trajectory){values.structuredError="production_onset_trajectory_failure";
 				return values;}
 			std::ofstream retries(persistence.productionOnsetDiagnosticDirectory/
@@ -4366,6 +4411,9 @@ namespace
 							trialStep=nextTimeStepS;error.clear();continue;
 						}
 						if(disposition==RISE::FireProductionResidentStepAttemptDisposition::Accepted){
+							// Publication consumes the one-use capability below. Preserve its
+							// authenticated root before that move, never from a copied result.
+							const std::string acceptedPayloadRoot=production.AcceptedPublicationPayloadRootSHA256();
 							RISE::FireProductionAcceptedManifoldObservation observation;
 							advancedOK=persistence.singleStageFCTDiagnostic?
 								FireProductionDyadicCalibration::ApplyProductionResultUnchecked(
@@ -4424,7 +4472,15 @@ namespace
 										projectedHeunDiagnostics.actualMetalAllocationBytes<<','<<
 										projectedHeunDiagnostics.certifiedWorkingSetBytes<<','<<
 										projectedHeunDiagnostics.residentProjectionDeviceElapsedMS<<','<<
-										projectedHeunDiagnostics.residentNonprojectionDeviceElapsedMS<<'\n';
+										projectedHeunDiagnostics.residentNonprojectionDeviceElapsedMS<<','<<
+										projectedHeunDiagnostics.intermediateSealFormat<<','<<
+										projectedHeunDiagnostics.intermediateDigestVersion<<','<<
+										projectedHeunDiagnostics.payloadDigestFormat<<','<<
+										projectedHeunDiagnostics.payloadDigestVersion<<','<<
+										projectedHeunDiagnostics.qualifiedKernelSetSHA256<<','<<
+										projectedHeunDiagnostics.inputPayloadRootSHA256<<','<<
+										acceptedPayloadRoot<<','<<
+										projectedHeunDiagnostics.publicationPayloadBytes<<'\n';
 									if(!trajectory){advancedOK=false;
 										error="production onset trajectory publication failed";}
 									if(advancedOK&&persistence.productionOnsetStopVelocityMPerS>0.0&&
@@ -4902,7 +4958,8 @@ namespace
 						(checkpointOutputPrecision!=FireStateProducerPrecision::Binary64||
 							IssueBinary64CheckpointAuthority(checkpoint));
 					const bool checkpointSaved=checkpointAuthorized&&SaveMethaneRunCheckpoint(
-						checkpointOutput,checkpoint,error);
+						checkpointOutput,checkpoint,error)&&(!persistence.UsesProjectedHeunOwner()||
+						PublishPayloadMerkleSidecar(checkpointOutput,caseRecord.caseRecordId,error));
 					bool retainedCheckpointSaved=true;
 					std::filesystem::path retainedCheckpointOutput;
 					if(checkpointSaved&&!persistence.retainedCheckpointDirectory.empty()&&
@@ -4923,6 +4980,9 @@ namespace
 								"retained checkpoint step identity already has different bytes";
 						}else retainedCheckpointSaved=SaveMethaneRunCheckpoint(
 							retainedCheckpointOutput,checkpoint,error);
+						if(retainedCheckpointSaved&&persistence.UsesProjectedHeunOwner())
+							retainedCheckpointSaved=PublishPayloadMerkleSidecar(retainedCheckpointOutput,
+								caseRecord.caseRecordId,error);
 					}
 					if((!checkpointSaved||!retainedCheckpointSaved)&&(reportCapstoneProgress||
 						!persistence.temporalSnapshotDirectory.empty())){
@@ -6030,7 +6090,9 @@ namespace
 	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
 		const SolverFrameValues& values)
 	{
-		return WriteFrame(path,FrameMutation{},0.0f,true,values,0.8f);
+		std::string error;
+		return WriteFrame(path,FrameMutation{},0.0f,true,values,0.8f)&&
+			PublishPayloadMerkleSidecar(path,values.caseRecordId,error);
 	}
 
 	int RunProductionFrameWriteBenchmarkChild(const std::filesystem::path& checkpointPath,
@@ -6929,6 +6991,7 @@ namespace
 			<<"original_first_three_comparison pending_external_evidence_comparison\n"
 			<<"error "<<result.structuredError<<"\n";
 		outcome.close();if(!outcome)return 94;
+		if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,identityError))return 94;
 		std::fprintf(stderr,"OWNER_COST_PREFIX complete=%d steps=%zu time=%.17g wall_s=%.17g "
 			"outcome_sha256=%s full_verdict=unavailable error=%s\n",complete?1:0,
 			result.acceptedTimeStepHistoryS.size(),result.simulatedTimeS,wallS,
@@ -7159,6 +7222,8 @@ namespace
 		std::error_code summaryPublishError;
 		std::filesystem::rename(pendingSummaryPath,summaryPath,summaryPublishError);
 		if(summaryPublishError||DigestFile(summaryPath).empty())return 94;
+		if(sealedProjectedReplay){std::string publicationError;
+			if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,publicationError))return 94;}
 		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN%s tier=%.0f target=%.17g time=%.17g steps=%zu "
 			"wall_s=%.17g operator=%s build=%s trajectory=%s "
 			"summary=%s\n",reachedTarget?"":"_STOP",resolutionTier,targetTimeS,
@@ -11333,9 +11398,78 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	productionOwnerRequest.qualificationCaptureIterationTrace=false;
 	const bool ownerResidentAccepted=AttemptFireProductionProjectedHeunResidentStepMetal(
 		productionOwnerRequest,ownerResidentObserved,&ownerResidentDiagnostics,&ownerResidentError);
+	bool ownerSealingEquivalent=ownerAccepted&&ownerResidentAccepted;
+	auto sealField=[&](const char* field,const std::vector<float>& diagnostic,const std::vector<float>& live){
+		std::size_t mismatches=0u;if(diagnostic.size()!=live.size())mismatches=std::max(diagnostic.size(),live.size());
+		else for(std::size_t i=0u;i<live.size();++i)if(std::memcmp(&diagnostic[i],&live[i],sizeof(float))!=0)++mismatches;
+		std::fprintf(stderr,"OWNER_SEALING_EQUIVALENCE field=%s words=%zu bit_mismatches=%zu\n",field,live.size(),mismatches);
+		ownerSealingEquivalent=ownerSealingEquivalent&&mismatches==0u;};
+	sealField("Q",ownerObserved.conservativeValues,ownerResidentDiagnostics.conservativeValues);
+	sealField("T",ownerObserved.temperatureK,ownerResidentDiagnostics.temperatureK);
+	sealField("pressure_ratio",ownerObserved.representedPressureRatio,ownerResidentDiagnostics.representedPressureRatio);
+	sealField("deviation",ownerObserved.absoluteEOSDeviation,ownerResidentDiagnostics.absoluteEOSDeviation);
+	sealField("alpha",ownerObserved.acceptedFaceAlpha,ownerResidentDiagnostics.acceptedFaceAlpha);
+	sealField("eddy_nu",ownerObserved.heunEddyKinematicViscosityM2PerS,ownerResidentDiagnostics.heunEddyKinematicViscosityM2PerS);
+	for(unsigned int axis=0u;axis<3u;++axis){
+		const std::string suffix="_"+std::to_string(axis);
+		sealField(("M"+suffix).c_str(),ownerObserved.momentumKGPerM2S[axis],ownerResidentDiagnostics.momentumKGPerM2S[axis]);
+		sealField(("u"+suffix).c_str(),ownerObserved.velocityMPerS[axis],ownerResidentDiagnostics.velocityMPerS[axis]);
+		sealField(("provisional_M"+suffix).c_str(),ownerObserved.provisionalMomentumKGPerM2S[axis],ownerResidentDiagnostics.provisionalMomentumKGPerM2S[axis]);
+		sealField(("advection"+suffix).c_str(),ownerObserved.heunAdvectionMomentumRateKGPerM2S2[axis],ownerResidentDiagnostics.heunAdvectionMomentumRateKGPerM2S2[axis]);
+		sealField(("buoyancy"+suffix).c_str(),ownerObserved.heunBuoyancyMomentumRateKGPerM2S2[axis],ownerResidentDiagnostics.heunBuoyancyMomentumRateKGPerM2S2[axis]);
+		sealField(("stress"+suffix).c_str(),ownerObserved.heunStressMomentumRateKGPerM2S2[axis],ownerResidentDiagnostics.heunStressMomentumRateKGPerM2S2[axis]);
+		sealField(("source"+suffix).c_str(),ownerObserved.heunPhaseSourceMomentumRateKGPerM2S2[axis],ownerResidentDiagnostics.heunPhaseSourceMomentumRateKGPerM2S2[axis]);
+		sealField(("projection_target_R"+suffix).c_str(),ownerObserved.projectionTargetPerS[axis],ownerResidentDiagnostics.projectionTargetPerS[axis]);
+		sealField(("accepted_target_R"+suffix).c_str(),ownerObserved.acceptedTargetPerS[axis],ownerResidentDiagnostics.acceptedTargetPerS[axis]);
+		sealField(("picard_residual_R"+suffix).c_str(),ownerObserved.picardResidualPerS[axis],ownerResidentDiagnostics.picardResidualPerS[axis]);
+	}
+	ownerSealingEquivalent=ownerSealingEquivalent&&ownerObserved.acceptedPicardIterations==ownerResidentDiagnostics.acceptedPicardIterations&&
+		ownerResidentDiagnostics.intermediateSealFormat=="qualified-kernel-stage-token"&&
+		ownerResidentDiagnostics.intermediateDigestVersion==2u&&ownerResidentDiagnostics.payloadDigestVersion==2u&&
+		ownerResidentDiagnostics.publicationPayloadRootSHA256.size()==64u&&
+		ownerResidentObserved.AcceptedPublicationPayloadRootSHA256()==ownerResidentDiagnostics.publicationPayloadRootSHA256;
+	if(ownerResidentAccepted){
+		RISECBOR64::Bytes packet;
+		auto append=[&](const void* data,std::size_t size){if(size){const auto* bytes=static_cast<const unsigned char*>(data);
+			packet.insert(packet.end(),bytes,bytes+size);}};
+		auto field=[&](const std::vector<float>& values){append(values.data(),values.size()*sizeof(float));};
+		auto axes=[&](const std::array<std::vector<float>,3>& values){for(const auto& axis:values)field(axis);};
+		const auto& d=ownerResidentDiagnostics;field(d.conservativeValues);axes(d.momentumKGPerM2S);axes(d.velocityMPerS);
+		axes(d.projection.faceDensityKGPerM3);axes(d.provisionalMomentumKGPerM2S);
+		axes(d.heunAdvectionMomentumRateKGPerM2S2);axes(d.heunBuoyancyMomentumRateKGPerM2S2);
+		axes(d.heunStressMomentumRateKGPerM2S2);axes(d.heunPhaseSourceMomentumRateKGPerM2S2);
+		field(d.acceptedFaceAlpha);field(d.temperatureK);field(d.representedPressureRatio);
+		field(d.absoluteEOSDeviation);field(d.heunEddyKinematicViscosityM2PerS);
+		axes(d.projectionTargetPerS);axes(d.acceptedTargetPerS);
+		append(&d.maximumCommutingResidualKGPerM3,sizeof(float));append(&d.commutingIdentityScaleKGPerM3,sizeof(float));
+		for(const auto* ids:{&d.projectionPublicationIdentity,&d.transportPublicationIdentity,&d.physicalFluxPublicationIdentity,
+			&d.candidatePublicationIdentity,&d.EOSPublicationIdentity,&d.frozenSourcePublicationIdentity,&d.targetPublicationIdentity})
+			append(ids->data(),ids->size()*sizeof(std::uint64_t));
+		append(&d.ownerPublicationIdentity,sizeof(d.ownerPublicationIdentity));
+		auto digit=[](char c){return c<='9'?c-'0':c-'a'+10;};
+		if(d.inputPayloadRootSHA256.size()!=64u)ownerSealingEquivalent=false;
+		else for(std::size_t i=0u;i<32u;++i)packet.push_back(static_cast<unsigned char>(
+			(digit(d.inputPayloadRootSHA256[2u*i])<<4u)|digit(d.inputPayloadRootSHA256[2u*i+1u])));
+		FireProductionPayloadDigestV2 mirror;std::string digestError;
+		const bool rootMatch=packet.size()==d.publicationPayloadBytes&&
+			FireProductionPayloadDigestCPU(packet.data(),packet.size(),8u,mirror,&digestError)&&
+			mirror.rootSHA256==d.publicationPayloadRootSHA256;
+		if(!packet.empty())packet[0]^=1u;
+		const bool mutationRefused=FireProductionPayloadDigestCPU(packet.data(),packet.size(),8u,mirror,&digestError)&&
+			mirror.rootSHA256!=d.publicationPayloadRootSHA256;
+		FireProductionResidentStepResult copied=ownerResidentObserved;
+		const bool copyRefused=!copied.HasAcceptedManifoldToken()&&copied.AcceptedPublicationPayloadRootSHA256().empty();
+		std::fprintf(stderr,"OWNER_PUBLICATION_DIGEST_RED full_packet_cpu_match=%d bit_mutation_refused=%d copied_authority_refused=%d\n",
+			rootMatch?1:0,mutationRefused?1:0,copyRefused?1:0);
+		ownerSealingEquivalent=ownerSealingEquivalent&&rootMatch&&mutationRefused&&copyRefused;
+	}
+	std::fprintf(stderr,"OWNER_SEALING_EQUIVALENCE passed=%d input_root=%s output_root=%s kernel_set=%s\n",ownerSealingEquivalent?1:0,
+		ownerResidentDiagnostics.inputPayloadRootSHA256.c_str(),ownerResidentDiagnostics.publicationPayloadRootSHA256.c_str(),
+		ownerResidentDiagnostics.qualifiedKernelSetSHA256.c_str());
 	auto ownerRED=[&](const char* name,
 		const std::function<void(FireProductionProjectedHeunMetalOwnerRequest&)>& mutate){
 		FireProductionProjectedHeunMetalOwnerRequest redRequest=ownerRequest;mutate(redRequest);
+		redRequest.qualificationProductionStageTokens=true;
 		FireProductionProjectedHeunMetalOwnerResult redResult;std::string redError;
 		const bool attempted=AttemptFireProductionProjectedHeunMetalOwner(redRequest,redResult,&redError);
 		const bool refused=!attempted&&!redResult.accepted&&redResult.ownerPublicationIdentity==0u&&
@@ -14479,7 +14613,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_TIMING samples=%zu device_p95_ms=%.9g "
 		"wall_p95_ms=%.9g passed=%d\n",ownerDeviceTimingMS.size(),ownerDeviceP95,ownerWallP95,
 		ownerDeviceTimingMS.size()==5u?1:0);
-	const bool ownerProductionEntryPassed=ownerResidentAccepted&&
+	const bool ownerProductionEntryPassed=ownerSealingEquivalent&&ownerResidentAccepted&&
 		ownerResidentObserved.HasAcceptedManifoldToken()&&
 		ownerResidentObserved.AcceptedManifoldTokenMatchesCurrentPayload()&&
 		ownerResidentObserved.projectedHeunOwnerIdentity==

@@ -474,6 +474,9 @@ namespace RISE
 		//! physical-flux authority must refuse it before any publication.
 		bool qualificationUnverifiedEndpointClassBuffer;
 		bool qualificationCaptureIterationTrace;
+		//! Qualification selects the production sealing placement while retaining
+		//! the full owner RED/trace surface. The live entry chooses it internally.
+		bool qualificationProductionStageTokens=false;
 		//! Zero uses the certified cap.  A nonzero smaller cap proves that the
 		//! complete-owner working set is refused before Metal work begins.
 		std::uint64_t qualificationWorkingSetLimitBytes;
@@ -504,6 +507,15 @@ namespace RISE
 
 	struct FireProductionProjectedHeunMetalOwnerResult
 	{
+		//! Explicit namespaces: stage tokens are not standalone payload digests.
+		std::string intermediateSealFormat="legacy-resident-fnv64";
+		std::uint32_t intermediateDigestVersion=1u;
+		std::string payloadDigestFormat="rise-payload-sha256-merkle";
+		std::uint32_t payloadDigestVersion=2u;
+		std::string qualifiedKernelSetSHA256;
+		std::string inputPayloadRootSHA256;
+		std::string publicationPayloadRootSHA256;
+		std::uint64_t publicationPayloadBytes=0u;
 		std::vector<float> conservativeValues;
 		std::array<std::vector<float>,3> momentumKGPerM2S;
 		std::array<std::vector<float>,3> velocityMPerS;
@@ -944,7 +956,7 @@ namespace RISE
 			payloadDigest_(other.payloadDigest_),acceptedStateDigest_(other.acceptedStateDigest_),
 			acceptedStateDigestVersion_(other.acceptedStateDigestVersion_),
 			generationAuthoritative_(other.generationAuthoritative_),
-			plateauEnforced_(other.plateauEnforced_) {
+			plateauEnforced_(other.plateauEnforced_),publicationRoot_(std::move(other.publicationRoot_)) {
 			other.Clear(); }
 		FireProductionAcceptedManifoldToken& operator=(
 			FireProductionAcceptedManifoldToken&& other) noexcept {
@@ -967,7 +979,7 @@ namespace RISE
 				acceptedStateDigest_=other.acceptedStateDigest_;
 				acceptedStateDigestVersion_=other.acceptedStateDigestVersion_;
 				generationAuthoritative_=other.generationAuthoritative_;
-				plateauEnforced_=other.plateauEnforced_;other.Clear();}
+				plateauEnforced_=other.plateauEnforced_;publicationRoot_=std::move(other.publicationRoot_);other.Clear();}
 			return *this;
 		}
 		bool Available() const { return available_; }
@@ -981,7 +993,7 @@ namespace RISE
 			tailRestorationApplied_=false;tailCellCount_=0u;tailExcessSum_=0.0;
 			tailDrainedVolumeM3_=0.0;dynamicsBoundPassed_=false;
 			payloadDigest_=0u;acceptedStateDigest_=0u;acceptedStateDigestVersion_=0u;
-			generationAuthoritative_=false;plateauEnforced_=false; }
+			generationAuthoritative_=false;plateauEnforced_=false;publicationRoot_.clear(); }
 		bool available_;
 		double representedTimeStepS_;
 		double maximumGeneration_;
@@ -1003,6 +1015,8 @@ namespace RISE
 		unsigned int acceptedStateDigestVersion_;
 		bool generationAuthoritative_;
 		bool plateauEnforced_;
+		//! Move-only device-issued publication root; copying the token clears it.
+		std::string publicationRoot_;
 		friend struct FireProductionResidentStepResult;
 		friend bool AdvanceFireProductionResidentStepMetal(
 			const FireProductionResidentStepRequest&,
@@ -1086,6 +1100,8 @@ namespace RISE
 		FireStateProducerPrecision conservativeProducerPrecision;
 		FireProductionProjectionShape acceptedShape;
 		bool HasAcceptedManifoldToken() const { return acceptedManifoldToken_.Available(); }
+		const std::string& AcceptedPublicationPayloadRootSHA256() const {
+			return acceptedManifoldToken_.publicationRoot_; }
 		//! Revalidates the producer-owned token against every mutable diagnostic and
 		//! payload byte before an owner may classify the attempt as accepted.
 		bool AcceptedManifoldTokenMatchesCurrentPayload() const;

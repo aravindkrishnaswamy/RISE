@@ -83,6 +83,11 @@ def transform(text: str, name: str, suffix: str) -> str:
         if text.count(token_accessor) != 1:
             raise RuntimeError("accepted manifold token accessor seam changed")
         text = text.replace(token_accessor, "")
+        publication_accessor = """\n\t\tconst std::string& AcceptedPublicationPayloadRootSHA256() const {
+\t\t\treturn acceptedManifoldToken_.publicationRoot_; }"""
+        if text.count(publication_accessor) != 1:
+            raise RuntimeError("device publication-root accessor seam changed")
+        text = text.replace(publication_accessor, "")
         token_match = """\n\t\t//! Revalidates the producer-owned token against every mutable diagnostic and
 \t\t//! payload byte before an owner may classify the attempt as accepted.
 \t\tbool AcceptedManifoldTokenMatchesCurrentPayload() const;"""

@@ -214,6 +214,9 @@ namespace RISE
 		//! identity alone is not authority: live owners provide both, and the
 		//! projection publication hashes the conjunction.
 		id<MTLBuffer> targetConsumerIdentity;
+		//! r204 qualified owner placement. This selects lineage-token hashing,
+		//! not projection arithmetic; standalone/legacy callers retain v1.
+		bool qualifiedOwnerStageTokens=false;
 		//! Optional private, device-produced pressure-open authorities. When
 		//! present they replace the request's structural placeholder seals.
 		id<MTLBuffer> sealedPressureOpenInflow;

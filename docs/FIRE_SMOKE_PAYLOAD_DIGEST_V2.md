@@ -1,7 +1,7 @@
 # r204 — payload Merkle digest and sealing placement
 
-Status: digest foundation implemented; production sealing placement and producer
-cost qualification remain pending. This is not an affordable-owner or replay
+Status: digest foundation and production sealing placement implemented; final
+placement review and cost evidence sealing remain pending. This is not an affordable-owner or replay
 verdict. The r203 EOS bin repair stands. Continuation is from zero, not r78 resume.
 
 ## Ruling and identity boundary
@@ -14,9 +14,58 @@ checkpoint cadence and every published frame/evidence/run record. This changes
 what is hashed, never the arithmetic. The r190 owner comparison, class-obligation
 contract, conservation/admissibility, and residency REDs remain gates.
 
-That placement change is **not activated by this digest foundation**. Existing
-production kernels still hash their intermediate payloads. No new replay or
-fixed-k selection is claimed yet.
+The foundation commits `ebf91c2e` and `9666ddee` did not activate placement.
+The placement increment specializes the resident producer library: diagnostic
+mode retains full intermediate payload hashes; production uses constant-size
+device tokens, authenticated private-buffer capabilities and immediate-parent
+checks. The projection adapter likewise retains legacy full hashes outside the
+qualified owner. No new replay or fixed-k selection is claimed yet.
+
+## Production placement and publication
+
+The owner binds an ordered, length-described copy of its actual private ingress
+buffers to a v2 root, together with the compiled producer source SHA and function
+inventory SHA. No CPU-produced physics authority is admitted. Domain-separated
+internal tokens derive from that root and the existing attempt/stage/immediate-
+parent identities. Tokens are protocol identities, **not** payload digests; their
+format is `qualified-kernel-stage-token`, version 2. Internal arithmetic is
+unchanged. Qualification obligation-map atomics are compiled out in production;
+failure/admissibility atomics and numerical interval decisions remain active.
+
+This owner currently publishes a host result every step. Therefore every step
+still computes a full device v2 digest over its terminal packet: conservative
+fields, nine packed face fields, ten cell fields, commuting witnesses, all
+stage identities, and the input root. It is not merely a digest of the final Q.
+The root occupies the final 32 bytes of the existing single terminal staging
+buffer. A private, move-only accepted token carries it through publication;
+copying the result cannot copy its authority. The trajectory captures this root
+before the one-use acceptance token is consumed. Checkpoints and temporal VDB
+frames additionally receive complete-file v2 sidecars. New run directories seal
+all finalized evidence files at finalization; mutable logs are working evidence
+until that boundary succeeds. Historical artifacts are never updated in place.
+
+Working-set accounting charges the ingress concatenation, both private Merkle
+trees, descriptor and roots; actual ingress length is checked against that
+certificate. Tree storage is bounded by payload/120 plus eight allocation quanta
+per tree (4-KiB leaves, 32-byte hashes, geometric interior sum). The retained
+full-owner working set is not claimed to fit the historical two-GiB fixture cap.
+
+The r190 gate remains primary. Diagnostic versus production sealing additionally
+bit-compares 36 numerical fields; all match on the qualified fixture. A separate
+CPU reconstruction of the **complete terminal packet** matches the device root;
+a bit mutation changes it and a copied result loses the root capability. The
+stale/order/forged-parent/callback/atomic-publication/policy/unverified-buffer and
+residency REDs exercise production token mode, not just the diagnostic path.
+
+Exploratory tier-8 profile (three accepted cold-prefix steps, not an onset run):
+42 producer commands. EOS mean 553.579 ms, target terms mean 112.951 ms;
+intermediate identity kernels are now microseconds. The producer command mean
+is 683.504 ms, **not** the tens-of-ms goal. The residual is compensated
+thermochemistry and interval arithmetic, including repeated fixed-endpoint
+enthalpy evaluations, rather than full intermediate payload sealing. No interval
+proof or tolerance was removed to meet a timing target. Exact-commit repetitions
+and their evidence manifest are a separate cost gate; these exploratory numbers
+are not a production-speed or focusing verdict.
 
 ## Pinned byte format
 
@@ -94,8 +143,8 @@ bridge and logs live in `rendered/fire_production_calibration/r204_digest_v2/`.
 The public Metal digest entry is a byte-hash qualification utility; it does not
 mint an EOS/flux/target/owner authority from a CPU-provided value.
 
-Self-audit risks: framing/padding errors (independent vectors); last-child or
+Self-audit risks: framing/padding errors (independent vectors and packet reconstruction); last-child or
 parallel-order omissions (boundary mutations/width sweep); private-tree lifetime
 (one retained command with tracked resources); version confusion (explicit
 format plus strict verification); overstated speed/placement claims (separate
-hash-only observation, placement still pending).
+hash-only observation and explicitly unmet producer-speed target).

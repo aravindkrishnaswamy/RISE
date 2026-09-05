@@ -458,20 +458,23 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
  device const float* vy [[buffer(11)]],device const float* vz [[buffer(12)]],
  device const uchar* inflow [[buffer(13)]],device ulong* identity [[buffer(14)]],
  constant LevelParams& p [[buffer(15)]],
+ constant uint& sealVersion [[buffer(16)]],
  uint gid [[thread_position_in_grid]]){
  if(gid!=0u)return;if(targetIdentity[0]==0ul||targetConsumer[0]==0ul){identity[0]=0ul;return;}
  ulong hash=14695981039346656037ul;hash^=targetIdentity[0];hash*=1099511628211ul;
  hash^=targetConsumer[0];hash*=1099511628211ul;
- uint cells=p.nx*p.ny*p.nz;for(uint cell=0u;cell<cells;++cell){
+ if(sealVersion!=1u&&sealVersion!=2u){identity[0]=0ul;return;}
+ if(sealVersion==2u){hash^=0x723230345f70726aul;hash*=1099511628211ul;}
+ uint cells=p.nx*p.ny*p.nz;if(sealVersion==1u)for(uint cell=0u;cell<cells;++cell){
   hash^=ulong(as_type<uint>(target[cell]));hash*=1099511628211ul;
   hash^=ulong(as_type<uint>(pressure[cell]));hash*=1099511628211ul;}
  device const float* density[3]={dx,dy,dz};device const float* momentum[3]={mx,my,mz};
- device const float* velocity[3]={vx,vy,vz};for(uint axis=0u;axis<3u;++axis){
+ device const float* velocity[3]={vx,vy,vz};if(sealVersion==1u)for(uint axis=0u;axis<3u;++axis){
   uint count=face_count(p,axis);for(uint face=0u;face<count;++face){
    hash^=ulong(as_type<uint>(density[axis][face]));hash*=1099511628211ul;
    hash^=ulong(as_type<uint>(momentum[axis][face]));hash*=1099511628211ul;
    hash^=ulong(as_type<uint>(velocity[axis][face]));hash*=1099511628211ul;}}
- uint boundaryFaces=p.sideOffset[5]+p.nx*p.ny;for(uint face=0u;face<boundaryFaces;++face){
+ uint boundaryFaces=p.sideOffset[5]+p.nx*p.ny;if(sealVersion==1u)for(uint face=0u;face<boundaryFaces;++face){
   hash^=ulong(inflow[face]);hash*=1099511628211ul;}
  hash^=ulong(p.nx);hash*=1099511628211ul;hash^=ulong(p.ny);hash*=1099511628211ul;
  hash^=ulong(p.nz);hash*=1099511628211ul;hash^=ulong(as_type<uint>(p.sx));hash*=1099511628211ul;
@@ -1257,6 +1260,8 @@ kernel void identify_resident_projection(device const float* target [[buffer(0)]
 					[encoder setBuffer:inflow offset:0 atIndex:13];
 					[encoder setBuffer:projectionIdentity offset:0 atIndex:14];
 					[encoder setBuffer:fineLevel.parameters offset:0 atIndex:15];
+					const std::uint32_t sealVersion=residentInput->qualifiedOwnerStageTokens?2u:1u;
+					[encoder setBytes:&sealVersion length:sizeof(sealVersion) atIndex:16];
 					Dispatch(encoder,context.identifyResident,1u);[encoder endEncoding];
 				}
 				id<MTLBuffer> injectedInterstageStage=nil;
