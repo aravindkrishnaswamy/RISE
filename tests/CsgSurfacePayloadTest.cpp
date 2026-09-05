@@ -2488,6 +2488,277 @@ void TestUnion_CsgSingularGuard_HugeAxisAlignedStretch()
 	safe_release( b );
 }
 
+//
+// Test 24 (debt-25 review round 3, mutation M7 -- the `/ stretch`
+// factor in AdoptCsgExitFacePayloadViaProbe's `selfHitFloor`): mirrors
+// Test 4's geometry exactly, but the SUBTRACTED operand B (and the
+// containing operand A, so the exit face stays inside A) is uniformly
+// SCALED UP 1000x via `SetScale` -- baked into the OBJECT TRANSFORM,
+// not the box's own local dimensions, so the operand's local->world
+// matrix genuinely carries a non-1 `stretch = |M^-1 dir|` for the
+// probe's margin to divide by.  No existing decoy-lobe test (4, 11,
+// 14, 15) uses a scaled operand, so none of them can catch a dropped
+// `/ stretch`.
+//
+// Numeric derivation (kUlpFactor = 64*DBL_EPSILON ~= 1.4211e-14,
+// NEARZERO = 1e-12):
+//   B's local geometry is UNCHANGED from Test 4 (half-extent 2); the
+//   world exit point (100, 50, -2000) maps back through B's inverse
+//   transform (translate (0,0,-4000), scale 1000) to local
+//   (0.1, 0.05, 2.0) -- the SAME local +Z-face point Test 4 uses.
+//   stretch = |M^-1 dir| = 1/1000 = 1e-3 (dir=(0,0,1), uniform scale
+//     1000 -- a pure scale+translate doesn't rotate the ray direction,
+//     it only shrinks it by 1/scale).
+//   cosExit = |dir . exit normal| = 1 (axis-aligned, straight-in ray;
+//     uniform scale doesn't rotate the face normal either).
+//   alongNormalLocal = |exitLocal.z| = 2.0 (identical to Test 4/14/15's
+//     own figure, since B's local shape is identical to theirs).
+//   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.03e-12.
+//   CORRECT selfHitFloor = 2*bandLocal / (stretch*cosExit)
+//     ~= 8.06e-12 / 1e-3 = 8.06e-9 world units -- this dominates the
+//     margin's max() (the pre-existing dirWeightedAbs term is only
+//     kUlpFactor*2000 ~= 2.84e-11, an order of magnitude smaller).
+//   WITHOUT the `/ stretch` division (mutation M7), selfHitFloor'
+//     ~= 8.06e-12 world -- now SMALLER than the 2.84e-11
+//     dirWeightedAbs term, so the margin's max() picks 2.84e-11
+//     instead.  Mapped back into B's LOCAL frame (multiply by
+//     stretch=1e-3, since a world displacement along dir becomes a
+//     `stretch`-times-smaller local displacement under this scale),
+//     that is only 2.84e-14 local units of clearance past the exit
+//     plane -- far under B's own self-hit band (~4.03e-12 local).
+//     BoxGeometry::DropSelfHitRoot re-treats the probe origin as
+//     sitting ON the exit face it is trying to re-hit and drops that
+//     root; the probe's surviving hit is then B's FAR (-Z, entry)
+//     face, thousands of world units away -- far outside
+//     maxAcceptRange -- so AdoptCsgExitFacePayloadViaProbe falls back
+//     to B's entry-face payload (the wrong face) instead of the real
+//     exit face.
+//
+void TestSubtraction_ExitProbe_ScaledOperandMarginUsesStretch()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin divides by the operand's own local->world stretch (debt-25 review r3, M7)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );   // half-extent 3 (local)
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2 (local)
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	// The 1000x scale is on the OBJECT TRANSFORM (SetScale), not the
+	// box's own dimensions -- that is what makes
+	// GetFinalInverseTransformMatrix() report a non-trivial stretch for
+	// the probe's margin to divide by.
+	oA->SetPosition( Point3( 0, 0, 0 ) );
+	oA->SetScale( 1000.0 );                    // world span [-3000,3000]
+	oB->SetPosition( Point3( 0, 0, -4000 ) );
+	oB->SetScale( 1000.0 );                    // world span [-6000,-2000]
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	Ray r( Point3( 100, 50, -10000 ), Vector3( 0, 0, 1 ) );
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test24 (debt-25 r3, M7): composite takes A/B operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test24 (debt-25 r3, M7): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test24 (debt-25 r3, M7): (control) ray hits standalone A" );
+
+	// B's ENTRY-face payload (the pre-P2-e "honestly wrong face" answer)
+	// -- used below only as a NEGATIVE reference.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test24 (debt-25 r3, M7): (control) ray hits standalone B" );
+
+	// Sanity: confirm we hit the exit-designated branch, i.e. the
+	// composite range lands on B's EXIT (range2), not B's entry nor A's
+	// entry (same shape as Test 4, just scaled 1000x throughout).
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test24 (debt-25 r3, M7): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test24 (debt-25 r3, M7): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test24 (debt-25 r3, M7): (sanity) composite range != A's entry range" );
+
+	// P2-e reference: probe B's EXIT face DIRECTLY from just past its
+	// world +Z face (z=-2000), same technique as Test 4/14 -- a
+	// hand-built test oracle, not a call into the production probe.
+	Ray probeRef( Point3( 100, 50, -1900 ), Vector3( 0, 0, -1 ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test24 (debt-25 r3, M7): (control) direct probe hits B's exit face" );
+
+	// Sanity: the probe reference lands on a DIFFERENT UV than B's
+	// entry face -- otherwise this test isn't discriminating.
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test24 (debt-25 r3, M7): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): (sanity) exit-face ptObjIntersec differs from entry-face ptObjIntersec" );
+
+	// The composite's payload must be the REAL exit-face data, not B's
+	// entry-face data -- this is the assertion mutation M7 (dropping
+	// the `/ stretch` division) breaks (see derivation above).
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test24 (debt-25 r3, M7): MONEY ASSERTION -- composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test24 (debt-25 r3, M7): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): composite ptObjIntersec is NOT B's entry-face data" );
+
+	// Never A's payload either.
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test24 (debt-25 r3, M7): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test24 (debt-25 r3, M7): composite ptObjIntersec is NOT A's" );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
+//
+// Test 25 (debt-25 review round 3, mutation M8 -- the `/ cosExit`
+// factor in AdoptCsgExitFacePayloadViaProbe's `selfHitFloor`): mirrors
+// Test 4's UNSCALED geometry (A half-extent 3 at the origin, B
+// half-extent 2 at world (0,0,-4)), but fires an OBLIQUE ray that
+// exits B's +Z face at |cos(angle-to-normal)| = 0.4 instead of
+// straight-in, so the probe's margin genuinely needs the `/ cosExit`
+// division.  No existing decoy-lobe test uses an oblique ray (4, 11,
+// 14, 15 all fire straight down the box's own axis), so none of them
+// can catch a dropped `/ cosExit`.
+//
+// Ray direction d = (0, sqrt(0.84), 0.4) -- already unit length, since
+// 0.84 + 0.16 = 1 exactly; cosExit = |d . (0,0,1)| = 0.4.  Tracing the
+// box slab per-axis entry/exit parametric distances by hand from the
+// chosen origin (0.1, -16.8303, -10.0), the ray:
+//   * enters B (y in [-2,2], z in [-6,-2]) through its y=-2 SIDE face
+//     at world length s ~= 16.18 -- z there is ~= -3.53, i.e. BELOW A
+//     (A hasn't been entered yet, since A's own z=-3 face isn't
+//     reached until s = 17.5);
+//   * enters A (x,y,z in [-3,3]) through its z=-3 face at s = 17.5 --
+//     y there is ~= -0.79, still inside B (B's own y=-2/z=-6 exit
+//     bounds aren't reached yet: B's y=2 exit is at s ~= 20.55, its
+//     z=-2 exit is at s = 20.0);
+//   * exits B through its z=-2 face at s = 20.0 -- y there = 1.5,
+//     still well inside A (A's own z=3 exit isn't reached until
+//     s = 32.5).  THIS is the exit-designated boundary the composite
+//     reports, same face Test 4 exercises, just approached obliquely.
+// (These figures describe the ray's path for readers checking the
+// geometry by hand; the test itself reads the true exit point off B's
+// own `range2` along ray `r`, so it is not sensitive to rounding in
+// this by-hand trace.)
+//
+// Numeric derivation of the margin (kUlpFactor = 64*DBL_EPSILON ~=
+// 1.4211e-14, NEARZERO = 1e-12; B is unscaled here, so stretch = 1):
+//   exitLocal (B's own local frame) ~= (0.1, 1.5, 2.0) -- the same
+//   half-extent-2 +Z face Test 4 uses, just a different (x,y) landing
+//   point on it.  alongNormalLocal = |exitLocal.z| = 2.0 (identical to
+//   Test 4/14/15/24's own figure, since B's shape is identical).
+//   bandLocal = 4*NEARZERO + kUlpFactor*2.0 ~= 4.03e-12.
+//   CORRECT selfHitFloor = 2*bandLocal / (stretch*cosExit)
+//     = 8.06e-12 / 0.4 ~= 2.01e-11 world units, and the ACTUAL
+//     clearance this buys along the face normal is
+//     margin*cosExit = 2*bandLocal/stretch = 8.06e-12 -- exactly the
+//     "2x headroom over the band" the selfHitFloor derivation
+//     promises, independent of the oblique angle.
+//   WITHOUT the `/ cosExit` division (mutation M8), margin'
+//     = 8.06e-12 (missing the /0.4), and the clearance it buys along
+//     the normal is only margin'*cosExit = 8.06e-12*0.4 ~= 3.22e-12 --
+//     LESS than B's own band (~4.03e-12), so the perturbed probe
+//     origin is STILL inside the band and BoxGeometry::
+//     DropSelfHitRoot drops the same root a second time.  The probe's
+//     surviving hit is then B's OWN entry face (y=-2), ~3.8 world
+//     units back along the probe -- far outside maxAcceptRange -- so
+//     AdoptCsgExitFacePayloadViaProbe falls back to B's entry-face
+//     payload instead of the real exit face.  (The pre-existing
+//     dirWeightedAbs margin term stays negligible throughout, using
+//     the CSG-local exit point (0.1, 1.5, -2): ~kUlpFactor*2.17 ~=
+//     3.1e-14, so it never masks this.)
+//
+void TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit()
+{
+	std::cout << "CSG_SUBTRACTION: exit-probe margin divides by the oblique exit angle's cosine (debt-25 review r3, M8)..." << std::endl;
+
+	BoxGeometry* gA = new BoxGeometry( 6.0, 6.0, 6.0 );   // half-extent 3
+	BoxGeometry* gB = new BoxGeometry( 4.0, 4.0, 4.0 );   // half-extent 2
+	Object* oA = new Object( gA );
+	Object* oB = new Object( gB );
+	safe_release( gA );
+	safe_release( gB );
+
+	oA->SetPosition( Point3( 0, 0, 0 ) );      // spans z in [-3, 3]
+	oB->SetPosition( Point3( 0, 0, -4 ) );     // spans z in [-6, -2]
+	oA->FinalizeTransformations();
+	oB->FinalizeTransformations();
+
+	// Unit direction with cosExit = 0.4 against B's +Z face normal
+	// (0,0,1): dz = 0.4, dy = sqrt(1 - 0.4^2) = sqrt(0.84).
+	const Vector3 dir = Vector3Ops::Normalize( Vector3( 0.0, std::sqrt( 0.84 ), 0.4 ) );
+	// Origin chosen (by tracing backward from the exit point, see the
+	// derivation above) so the ray starts well outside both operands
+	// and takes the enter-B / enter-A / exit-B path.
+	Ray r( Point3( 0.1, -16.8303, -10.0 ), dir );
+
+	CSGObject* csg = new CSGObject( CSG_SUBTRACTION );
+	const bool assigned = csg->AssignObjects( oA, oB );
+	Check( assigned, "Test25 (debt-25 r3, M8): composite takes A/B operands" );
+	csg->FinalizeTransformations();
+
+	RayIntersection ri( r, nullRasterizerState );
+	Hit( csg, r, ri );
+	Check( ri.geometric.bHit, "Test25 (debt-25 r3, M8): (control) ray hits the composite at all" );
+
+	RayIntersection refA( r, nullRasterizerState );
+	Hit( oA, r, refA );
+	Check( refA.geometric.bHit, "Test25 (debt-25 r3, M8): (control) ray hits standalone A" );
+
+	// B's ENTRY-face payload -- used below only as a NEGATIVE reference.
+	RayIntersection refBEntry( r, nullRasterizerState );
+	Hit( oB, r, refBEntry );
+	Check( refBEntry.geometric.bHit, "Test25 (debt-25 r3, M8): (control) ray hits standalone B" );
+
+	// Sanity: confirm the exit-designated branch fired -- composite
+	// range == B's exit range (range2), not B's entry nor A's entry.
+	Check( Close( ri.geometric.range, refBEntry.geometric.range2, 1e-3 ), "Test25 (debt-25 r3, M8): (sanity) composite range == B's exit range (range2)" );
+	Check( !Close( ri.geometric.range, refBEntry.geometric.range, 1e-3 ), "Test25 (debt-25 r3, M8): (sanity) composite range != B's entry range" );
+	Check( !Close( ri.geometric.range, refA.geometric.range, 1e-3 ), "Test25 (debt-25 r3, M8): (sanity) composite range != A's entry range" );
+
+	// P2-e reference: probe B's EXIT face DIRECTLY, using the exact
+	// technique AdoptCsgExitFacePayloadViaProbe itself uses -- a point
+	// just past the exit point along the ORIGINAL ray direction,
+	// travelling back in the REVERSED direction -- so this hand-built
+	// oracle lands on the SAME (x,y) point on the z=-2 plane the
+	// production probe targets.  The exit point is read from B's own
+	// range2 along the SAME ray `r` (exact, not the by-hand backward-
+	// trace numbers in the derivation above), so this oracle is
+	// insensitive to rounding in that hand trace.
+	const Point3 ptExit = r.PointAtLength( refBEntry.geometric.range2 );
+	const Point3 probeOrigin( ptExit.x + dir.x * 0.1, ptExit.y + dir.y * 0.1, ptExit.z + dir.z * 0.1 );
+	Ray probeRef( probeOrigin, Vector3( -dir.x, -dir.y, -dir.z ) );
+	RayIntersection refBExit( probeRef, nullRasterizerState );
+	Hit( oB, probeRef, refBExit );
+	Check( refBExit.geometric.bHit, "Test25 (debt-25 r3, M8): (control) direct probe hits B's exit face" );
+
+	// Sanity: entry- and exit-face payloads are distinct (otherwise
+	// this test isn't discriminating).
+	Check( !Point2Close( refBExit.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test25 (debt-25 r3, M8): (sanity) exit-face ptCoord differs from entry-face ptCoord" );
+	Check( !PointClose( refBExit.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): (sanity) exit-face ptObjIntersec differs from entry-face ptObjIntersec" );
+
+	// The composite's payload must be the REAL exit-face data, not B's
+	// entry-face data -- this is the assertion mutation M8 (dropping
+	// the `/ cosExit` division) breaks (see derivation above).
+	Check( Point2Close( ri.geometric.ptCoord, refBExit.geometric.ptCoord ), "Test25 (debt-25 r3, M8): MONEY ASSERTION -- composite ptCoord matches the REAL exit-face probe" );
+	Check( PointClose( ri.geometric.ptObjIntersec, refBExit.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): MONEY ASSERTION -- composite ptObjIntersec matches the REAL exit-face probe" );
+	Check( !Point2Close( ri.geometric.ptCoord, refBEntry.geometric.ptCoord ), "Test25 (debt-25 r3, M8): composite ptCoord is NOT B's entry-face data" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refBEntry.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): composite ptObjIntersec is NOT B's entry-face data" );
+
+	// Never A's payload either.
+	Check( !Point2Close( ri.geometric.ptCoord, refA.geometric.ptCoord ), "Test25 (debt-25 r3, M8): composite ptCoord is NOT A's" );
+	Check( !PointClose( ri.geometric.ptObjIntersec, refA.geometric.ptObjIntersec ), "Test25 (debt-25 r3, M8): composite ptObjIntersec is NOT A's" );
+
+	safe_release( csg );
+	safe_release( oA );
+	safe_release( oB );
+}
+
 int main()
 {
 	TestIntersection_AEntersFirst_EntryIsWhollyB();
@@ -2513,6 +2784,8 @@ int main()
 	TestMeshNonIndexed_FrontAndBackFace_DndvSign();
 	TestUnion_CsgQuotientRule_NonUniformStretch_OrthogonalityInvariants();
 	TestUnion_CsgSingularGuard_HugeAxisAlignedStretch();
+	TestSubtraction_ExitProbe_ScaledOperandMarginUsesStretch();
+	TestSubtraction_ExitProbe_ObliqueRayMarginUsesCosExit();
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
