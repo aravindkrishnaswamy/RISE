@@ -2316,7 +2316,7 @@ namespace
 	}
 
 	bool PublishPayloadMerkleSidecar(const std::filesystem::path& path,
-		const std::string& caseRecordId,std::string& error)
+		const std::string& caseRecordId,std::string& error,bool advancingCheckpoint=false)
 	{
 		if(caseRecordId.size()!=64u||!std::all_of(caseRecordId.begin(),caseRecordId.end(),
 			[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');})){
@@ -2328,12 +2328,20 @@ namespace
 		if(!FireProductionPayloadDigestCPU(bytes.data(),bytes.size(),8u,digest,&error))return false;
 		const auto sidecar=std::filesystem::path(path.string()+".payload-v2.json");
 		const auto temporary=std::filesystem::path(sidecar.string()+".pending");
-		std::ofstream output(temporary,std::ios::binary|std::ios::trunc);
-		output<<"{\"schema\":\"rise.fire.published-payload.v2\",\"case_record_id\":\""<<caseRecordId
-			<<"\",\"sha256_v1\":\""<<RISECBOR64::SHA256Hex(bytes)<<"\",\"v2\":{"
+		std::ostringstream certificate;
+		const std::string prefix="{\"schema\":\"rise.fire.published-payload.v2\",\"case_record_id\":\""+caseRecordId+"\"";
+		certificate<<prefix
+			<<",\"sha256_v1\":\""<<RISECBOR64::SHA256Hex(bytes)<<"\",\"v2\":{"
 			<<"\"digest_format\":\"rise-payload-sha256-merkle\",\"digest_version\":2,"
 			<<"\"chunk_bytes\":4096,\"fan_in\":16,\"payload_bytes\":"<<bytes.size()
 			<<",\"root_sha256\":\""<<digest.rootSHA256<<"\"}}\n";
+		if(std::filesystem::exists(sidecar)){
+			const auto priorBytes=ReadFileBytes(sidecar);const std::string prior(priorBytes.begin(),priorBytes.end());
+			if(prior==certificate.str())return true;
+			if(!advancingCheckpoint||prior.compare(0u,prefix.size(),prefix)!=0){
+				error="publication refuses to replace an existing artifact seal";return false;}
+		}
+		std::ofstream output(temporary,std::ios::binary|std::ios::trunc);output<<certificate.str();
 		output.close();if(!output){error="payload publication seal write failed";return false;}
 		return DurableSyncFileAndDirectory(temporary,error)&&AtomicReplaceCheckpoint(temporary,sidecar,error);
 	}
@@ -2361,6 +2369,10 @@ namespace
 	{
 		return legacy||projected||compatible||single;
 	}
+	bool ClosePublishedStream(std::ofstream& stream)
+	{
+		stream.close();return static_cast<bool>(stream);
+	}
 	int RunPayloadPublicationFixture()
 	{
 		const auto root=std::filesystem::temp_directory_path()/("rise-r204-publication-"+
@@ -2375,6 +2387,9 @@ namespace
 			!std::filesystem::is_regular_file(payload.string()+".payload-v2.json")||
 			!SealPublishedRunDirectory(root,identity,error)||
 			std::filesystem::exists(payload.string()+".payload-v2.json.payload-v2.json"))return 98;
+		const auto sealedBytes=ReadFileBytes(payload.string()+".payload-v2.json");
+		if(SealPublishedRunDirectory(root,std::string(64u,'b'),error)||
+			ReadFileBytes(payload.string()+".payload-v2.json")!=sealedBytes)return 98;
 		{std::ofstream pending(root/"not_complete.pending");pending<<"partial";}
 		if(SealPublishedRunDirectory(root,identity,error))return 98;
 		std::filesystem::remove(root/"not_complete.pending");
@@ -2385,6 +2400,8 @@ namespace
 #endif
 		if(!OnsetPublicationModeAccepted(false,true,false,false)||
 			OnsetPublicationModeAccepted(false,false,false,false))return 98;
+		std::ofstream failedWriter(root/"budgets");
+		if(ClosePublishedStream(failedWriter))return 98;
 		std::array<std::string,5> libraries;
 		for(std::size_t i=0u;i<libraries.size();++i)libraries[i]=std::string(64u,char('a'+i));
 		const std::string kernelRoot=FireProductionOwnerKernelSetSHA256(libraries);
@@ -2393,7 +2410,7 @@ namespace
 			if(FireProductionOwnerKernelSetSHA256(mutant)==kernelRoot)return 98;}
 		libraries[0].clear();if(!FireProductionOwnerKernelSetSHA256(libraries).empty())return 98;
 		std::fprintf(stdout,"PUBLICATION_RED projected_mode=pass all_disabled_refused=pass invalid_case=pass "
-			"pending_refused=pass symlink_refused=platform recursive_sidecars=absent kernel_library_mutants=5 root=%s\n",root.string().c_str());
+			"pending_refused=pass foreign_case_unchanged=pass writer_failure_refused=pass symlink_refused=platform recursive_sidecars=absent kernel_library_mutants=5 root=%s\n",root.string().c_str());
 		return 0;
 	}
 
@@ -4998,7 +5015,7 @@ namespace
 							IssueBinary64CheckpointAuthority(checkpoint));
 					const bool checkpointSaved=checkpointAuthorized&&SaveMethaneRunCheckpoint(
 						checkpointOutput,checkpoint,error)&&(!persistence.UsesProjectedHeunOwner()||
-						PublishPayloadMerkleSidecar(checkpointOutput,caseRecord.caseRecordId,error));
+						PublishPayloadMerkleSidecar(checkpointOutput,caseRecord.caseRecordId,error,true));
 					bool retainedCheckpointSaved=true;
 					std::filesystem::path retainedCheckpointOutput;
 					if(checkpointSaved&&!persistence.retainedCheckpointDirectory.empty()&&
@@ -6137,6 +6154,7 @@ namespace
 	int RunProductionFrameWriteBenchmarkChild(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& outputDirectory)
 	{
+		if(std::filesystem::exists(outputDirectory))return 91;
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error))return 90;
 		std::error_code directoryError;
@@ -6749,6 +6767,10 @@ namespace
 		if(!ProductionTemporalCapstoneTierSupported(resolutionTier)||!(frameCadenceS>0.0)||
 			!std::isfinite(frameCadenceS)||
 			static_cast<double>(static_cast<float>(frameCadenceS))!=frameCadenceS)return 91;
+		const char* resumeRequested=std::getenv("RISE_FIRE_TEMPORAL_RESUME");
+		if(std::filesystem::exists(outputDirectory)&&(!resumeRequested||
+			std::strcmp(resumeRequested,"1")!=0||
+			std::filesystem::exists(outputDirectory/"production_capstone_summary.txt")))return 91;
 		std::error_code directoryError;
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"frames",directoryError);
@@ -6772,7 +6794,6 @@ namespace
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
 		persistence.checkpointCadenceWallS=300.0;
-		const char* resumeRequested=std::getenv("RISE_FIRE_TEMPORAL_RESUME");
 		if(resumeRequested&&std::strcmp(resumeRequested,"1")==0){
 			if(!std::filesystem::exists(persistence.checkpointPath))return 92;
 			persistence.resume=true;
@@ -6837,7 +6858,7 @@ namespace
 				frameDigests[frame]<<'\n';
 			manifestFrames.push_back({name.str(),frameDigests[frame]});
 		}
-		frameTimes.close();
+		if(!ClosePublishedStream(frameTimes))return 98;
 		std::string manifestDigest;
 		if(manifestFrames.size()>=2u){
 			const std::array<std::uint64_t,3> dimensions={{result.dimensions[0],
@@ -6874,7 +6895,7 @@ namespace
 			result.monitoredTailCellHistory[sample]<<','<<
 			result.monitoredTailDrainedVolumeHistoryM3[sample]<<','<<
 			result.productionDeviceHistoryMS[sample]<<','<<result.productionWallHistoryMS[sample]<<'\n';
-		diagnostics.close();
+		if(!ClosePublishedStream(diagnostics))return 98;
 		std::ofstream summary(outputDirectory/"production_capstone_summary.txt");
 		summary<<std::setprecision(17)<<"artifact_fidelity=simulation_evidence\n"
 			<<"resolution_tier="<<resolutionTier<<"\n"

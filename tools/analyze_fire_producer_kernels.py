@@ -22,6 +22,11 @@ def summarize(path):
     for line in raw.decode().splitlines():
         if line.startswith("PRODUCER_COMMAND_V1 "):
             command = fields(line)
+            if (not math.isfinite(float(command["device_ms"])) or float(command["device_ms"]) <= 0
+                    or int(command["encoders"]) <= 0
+                    or int(command["cpu_end"]) <= int(command["cpu_begin"])
+                    or int(command["gpu_end"]) <= int(command["gpu_begin"])):
+                raise ValueError("invalid command duration or clock endpoints")
             command["intervals"] = []
             commands.append(command)
         elif line.startswith("PRODUCER_KERNEL_V1 "):
@@ -103,6 +108,10 @@ def self_test():
                    valid.replace("end_tick=700", "end_tick=1100"),
                    valid.rsplit("PRODUCER_KERNEL_V1", 1)[0],
                    valid.replace("stage=0 raw_iteration=0 ordinal=1", "stage=1 raw_iteration=0 ordinal=1")]
+        mutants += [valid.replace("device_ms=0.001 encoders", "device_ms=" + value + " encoders")
+                    for value in ("nan", "inf", "-inf", "0", "-1")]
+        mutants += [valid.replace("encoders=2", "encoders=0"),
+                    valid.replace("gpu_end=1000", "gpu_end=0")]
         for mutant in mutants:
             path.write_text(mutant)
             try:
@@ -110,7 +119,7 @@ def self_test():
             except ValueError:
                 continue
             raise AssertionError("counter mutant escaped")
-    print("PRODUCER_COUNTER_REDS passed=1 count=5 overlap_union=1")
+    print("PRODUCER_COUNTER_REDS passed=1 count=12 overlap_union=1")
 
 
 if __name__ == "__main__":

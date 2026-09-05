@@ -64,6 +64,15 @@ publication siblings, and missing ingress controls/library identities. The
 fixes add all five library hashes, seven scalar controls plus the iteration cap,
 new-directory finalization on the sibling commands, and CPU publication REDs.
 Each library identity and each omitted control has an independent mutation test.
+The second placement review was clean on runtime/authority but found evidence
+gaps: duplicate cost repetitions, unbound/truncated timing logs, nonfinite command
+costs, stale build/gate attribution, and finalizer overwrite/writer failures.
+The fixes require distinct bound runs, finite correlated counters, an executed
+build/qualification attestation, preservation of existing artifact certificates,
+and checked evidence-stream completion. Only the mutable current-checkpoint
+sidecar may advance, explicitly and within the same case; retained checkpoint
+and finalized artifact certificates are not overwritten. Completed temporal
+output directories and existing benchmark directories refuse reuse.
 
 Exploratory tier-8 profile (three accepted cold-prefix steps, not an onset run):
 42 producer commands. EOS mean 553.579 ms, target terms mean 112.951 ms;

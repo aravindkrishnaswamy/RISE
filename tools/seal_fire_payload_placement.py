@@ -15,7 +15,8 @@ import statistics
 import subprocess
 
 from analyze_fire_producer_kernels import summarize
-from check_fire_owner_cost_prefix import metadata
+from check_fire_owner_cost_prefix import metadata, bind_profile
+from check_fire_owner_instrumentation import trees
 from fire_payload_merkle import merkle, verify
 
 PHYSICS = "accepted_step time_s dt_s maximum_velocity_m_per_s axis face x y z manifold_max manifold_p95 manifold_p50 tail_cells tail_drained_m3 owner_commits owner_projections owner_r0_iterations owner_r1_iterations owner_r2_iterations".split()
@@ -82,21 +83,65 @@ def gate(path):
             raise ValueError("missing owner/publication gate: " + required)
 
 
+def bind_counters(path, rows, outcome_path):
+    text = path.read_text()
+    parsed = trees(text)
+    bind_profile(parsed, rows)
+    scopes = [row for tree in parsed for row in tree if row["phase"] == "BuildStageProducerGroup"]
+    commands = [dict(word.split("=", 1) for word in line.split()[1:] if "=" in word)
+                for line in text.splitlines() if line.startswith("PRODUCER_COMMAND_V1 ")]
+    if len(scopes) != len(commands):
+        raise ValueError("missing producer commands")
+    for scope, command in zip(scopes, commands):
+        cost = float(command["device_ms"])
+        if (not math.isfinite(cost) or cost <= 0 or any(scope[key] != int(command[key])
+                for key in ("stage", "raw_iteration"))
+                or abs(scope["device_sum_ms"] - cost) > 1e-9 + 4 * math.ulp(cost)):
+            raise ValueError("producer command/owner scope mismatch")
+    terminal = [dict(word.split("=", 1) for word in line.split()[1:] if "=" in word)
+                for line in text.splitlines() if line.startswith("OWNER_COST_PREFIX ")]
+    if (len(terminal) != 1 or terminal[0].get("complete") != "1" or
+            terminal[0].get("outcome_sha256") != hashlib.sha256(outcome_path.read_bytes()).hexdigest()):
+        raise ValueError("missing log/outcome binding")
+
+
+def distinct_repeats(directory, repeats):
+    paths = [(directory / name).resolve() for name in repeats]
+    if len(paths) < 3 or len(set(paths)) != len(paths):
+        raise ValueError("three distinct process output directories required")
+    logs = [hashlib.sha256((directory / (name + ".log")).read_bytes()).hexdigest() for name in repeats]
+    if len(set(logs)) != len(logs):
+        raise ValueError("duplicate process logs")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("directory", type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--repeats", nargs="+", required=True)
     parser.add_argument("--gate", type=Path, required=True)
+    parser.add_argument("--build-attestation", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if len(args.repeats) < 3:
         raise ValueError("minimum three independent process runs")
+    distinct_repeats(args.directory, args.repeats)
     commit = subprocess.check_output(["git", "rev-parse", args.commit], text=True).strip()
     subprocess.run(["git", "diff", "--exit-code", commit, "--", "src", "tests", "build"], check=True,
                    stdout=subprocess.DEVNULL)
     executable = hashlib.sha256(Path("bin/tests/FireSequenceTest").read_bytes()).hexdigest()
+    attestation = json.loads(args.build_attestation.read_text())
+    if (attestation.get("schema") != "rise.fire.executed-build-and-owner-gate.v1"
+            or attestation.get("source_commit") != commit
+            or attestation.get("producer_executable_sha256") != executable):
+        raise ValueError("unattested source/executable association")
+    for name in ("build", "publication", "owner"):
+        run = attestation["runs"][name]
+        if run["exit_code"] != 0 or run["log_sha256"] != hashlib.sha256(Path(run["log"]).read_bytes()).hexdigest():
+            raise ValueError("stale build/qualification log")
+    if Path(attestation["runs"]["owner"]["log"]).resolve() != args.gate.resolve():
+        raise ValueError("stale passing owner gate")
     gate(args.gate)
     baseline = records(args.baseline)
     samples, profiles, roots, counts = [], [], [], []
@@ -104,6 +149,7 @@ def main():
         directory = args.directory / name
         rows = records(directory / "budgets/maximum_velocity_trajectory.csv")
         check_rows(rows, baseline)
+        bind_counters(args.directory / (name + ".log"), rows, directory / "diagnostic_prefix_outcome.v1")
         protocol = metadata(directory / "diagnostic_prefix_protocol.v1")
         outcome = metadata(directory / "diagnostic_prefix_outcome.v1")
         if (protocol.get("producer_executable_sha256") != executable
@@ -145,14 +191,15 @@ def main():
                 "device_step_ms": stats([float(r["device_ms"]) for run in samples for r in run]),
                 "wall_step_ms": stats([float(r["wall_ms"]) for run in samples for r in run]),
                 "producer_profiles": profiles, "affordable_producer_claim": False, "files": {}}
-    paths = [args.gate, args.baseline]
+    paths = [args.gate, args.baseline, args.build_attestation]
+    paths += [Path(run["log"]) for run in attestation["runs"].values()]
     for name in args.repeats:
         paths += [args.directory / (name + ".log")]
         paths += sorted(p for p in (args.directory / name).rglob("*") if p.is_file())
     for path in paths:
         data = path.read_bytes()
         evidence["files"][str(path)] = {"sha256_v1": hashlib.sha256(data).hexdigest(), "v2": merkle(data)}
-    data = (json.dumps(evidence, indent=2, sort_keys=True) + "\n").encode()
+    data = (json.dumps(evidence, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
     with args.output.open("xb") as output:
         output.write(data)
     with Path(str(args.output) + ".seal-v2.json").open("x") as output:
