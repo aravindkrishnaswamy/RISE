@@ -7086,7 +7086,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(value){actualBytes_+=[value allocatedSize];ObserveDeviceAllocation();}
 				return value;
 			}
-			enum class TransferKind { Upload,Internal,Control,Terminal };
+			enum class TransferKind { Upload,Internal,Control,QualificationTrace,Terminal };
 			void Copy(id<MTLBlitCommandEncoder> encoder,id<MTLBuffer> source,
 				const std::size_t sourceOffset,id<MTLBuffer> destination,
 				const std::size_t destinationOffset,const std::size_t bytes,
@@ -7094,15 +7094,21 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			{
 				[encoder copyFromBuffer:source sourceOffset:sourceOffset toBuffer:destination
 					destinationOffset:destinationOffset size:bytes];
-				(void)kind;
-				const bool privateToHost=source&&destination&&
-					[source storageMode]==MTLStorageModePrivate&&
-					[destination storageMode]!=MTLStorageModePrivate;
-				const std::size_t fullStateBytes=cells_<=
-					std::numeric_limits<std::size_t>::max()/(9u*sizeof(float))?
-					9u*cells_*sizeof(float):std::numeric_limits<std::size_t>::max();
-				if(transferPhase_==OwnerTransferPhase::Interstage&&privateToHost&&
-					bytes>=fullStateBytes)++interstageFullGridTransfers_;
+				const bool sourcePrivate=source&&[source storageMode]==MTLStorageModePrivate;
+				const bool destinationPrivate=destination&&
+					[destination storageMode]==MTLStorageModePrivate;
+				const bool crossesHostBoundary=source&&destination&&
+					sourcePrivate!=destinationPrivate;
+				const std::size_t fullFieldBytes=cells_<=
+					std::numeric_limits<std::size_t>::max()/sizeof(float)?
+					cells_*sizeof(float):std::numeric_limits<std::size_t>::max();
+				// The requested qualification trace has its own explicit staging ledger;
+				// it is not a production-stage authority transfer.  Every other full
+				// field crossing in either direction during R0/R1/R2 is publication-
+				// blocking, including a host-authored substitution into Private memory.
+				if(transferPhase_==OwnerTransferPhase::Interstage&&crossesHostBoundary&&
+					bytes>=fullFieldBytes&&kind!=TransferKind::QualificationTrace)
+					++interstageFullGridTransfers_;
 			}
 			const void* Read(id<MTLBuffer> buffer,const TransferKind kind)
 			{
@@ -7636,10 +7642,11 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				if(!staging||!blit)return false;
 				std::size_t offset=0u;
 				auto copy=[&](id<MTLBuffer> source,const std::size_t bytes){
-					Copy(blit,source,0u,staging,offset,bytes,TransferKind::Terminal);offset+=bytes;};
+					Copy(blit,source,0u,staging,offset,bytes,TransferKind::QualificationTrace);
+					offset+=bytes;};
 				auto copyRange=[&](id<MTLBuffer> source,const std::size_t sourceOffset,
 					const std::size_t bytes){Copy(blit,source,sourceOffset,staging,offset,bytes,
-						TransferKind::Terminal);offset+=bytes;};
+						TransferKind::QualificationTrace);offset+=bytes;};
 				copy(projectionTarget.assembled,cells_*sizeof(float));
 				copy(value.target->assembled,cells_*sizeof(float));
 				copy(value.projection.pressureOpenInflow,boundaryFaces_);
@@ -8204,17 +8211,22 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				return false;
 			}
 			if(request_.qualificationInjectInterstageTransfer){
-				id<MTLBuffer> staged=[context_.device newBufferWithLength:9u*cells_*sizeof(float)
+				id<MTLBuffer> staged=[context_.device newBufferWithLength:cells_*sizeof(float)
 					options:MTLResourceStorageModeShared];
+				id<MTLBuffer> substituted=Private(cells_*sizeof(float));
 				id<MTLCommandBuffer> transferCommand=TrackedMetalCommandBuffer(context_.queue);
 				id<MTLBlitCommandEncoder> transfer=transferCommand?
 					[transferCommand blitCommandEncoder]:nil;
-				if(!staged||!transfer)return false;
-				Copy(transfer,r1->candidate->conservative,0u,staged,0u,9u*cells_*sizeof(float),
+				if(!staged||!substituted||!transfer)return false;
+				Copy(transfer,r1->candidate->conservative,0u,staged,0u,cells_*sizeof(float),
+					TransferKind::Internal);
+				Copy(transfer,staged,0u,substituted,0u,cells_*sizeof(float),
 					TransferKind::Internal);
 				[transfer endEncoding];if(!Commit(transferCommand,error))return false;
-				if(!Read(staged,TransferKind::Control))return false;
-				if(error)*error="projected-Heun resident owner observed interstage full-grid transfer";
+			}
+			if(interstageFullGridTransfers_!=0u){
+				if(error)*error="projected-Heun atomic publication refuses interstage full-grid transfer: count="+
+					std::to_string(interstageFullGridTransfers_);
 				return false;
 			}
 			if(request_.qualificationStaleCandidate)

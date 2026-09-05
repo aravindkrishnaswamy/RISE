@@ -11109,9 +11109,25 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 	const bool ownerUnverifiedPrivateBufferRefused=ownerRED(
 		"unverified_private_buffer_valid_identity",[](auto& value){
 			value.qualificationUnverifiedPrivateLineageBuffer=true;});
-	const bool ownerActualInterstageTransferRefused=ownerRED(
-		"actual_interstage_full_grid_transfer",[](auto& value){
-			value.qualificationInjectInterstageTransfer=true;});
+	FireProductionProjectedHeunMetalOwnerRequest ownerTransferRequest=ownerRequest;
+	ownerTransferRequest.qualificationInjectInterstageTransfer=true;
+	FireProductionProjectedHeunMetalOwnerResult ownerTransferResult;
+	std::string ownerTransferError;
+	const bool ownerTransferAttempted=AttemptFireProductionProjectedHeunMetalOwner(
+		ownerTransferRequest,ownerTransferResult,&ownerTransferError);
+	const bool ownerActualInterstageTransferRefused=!ownerTransferAttempted&&
+		!ownerTransferResult.accepted&&ownerTransferResult.ownerPublicationIdentity==0u&&
+		ownerTransferResult.conservativeValues.empty()&&
+		ownerTransferResult.terminalStagingCount==0u&&
+		ownerTransferError==
+			"projected-Heun atomic publication refuses interstage full-grid transfer: count=2";
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED "
+		"name=single_field_bidirectional_transfer_ledger_common_publication_gate "
+		"layer=device attempted=%d owner_identity=%llu payload_words=%zu staging=%u "
+		"error=%s passed=%d\n",ownerTransferAttempted?1:0,
+		static_cast<unsigned long long>(ownerTransferResult.ownerPublicationIdentity),
+		ownerTransferResult.conservativeValues.size(),ownerTransferResult.terminalStagingCount,
+		ownerTransferError.c_str(),ownerActualInterstageTransferRefused?1:0);
 	std::uint64_t ownerCertifiedPreflightBytes=0u;
 	const bool ownerPreflightSizeKnown=FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
 		shape,ownerCertifiedPreflightBytes);
