@@ -72,6 +72,71 @@ timings, nonconsecutive steps, stale endpoints, unreconciled timing partitions,
 and missing iteration counts. Its report explicitly withholds a window verdict
 and a choice of k. The analysis concerns timing only and changes no solver gate.
 
+### Matched three-step stage profile
+
+The separate `--fire-production-owner-cost-prefix` diagnostic completed three
+steps from zero using the same three-second authored case and source schedule.
+Its initial-state SHA, case identity, all three owner identities, and every
+non-timing CSV column match the sealed replay's first three rows exactly.
+`tools/check_fire_owner_cost_prefix.py` checks this equality before exposing a
+cost comparison. This is a diagnostic prefix, not a shortened focusing verdict.
+
+For its second step (R0/R1/R2 counts 3/3/3), the measured device stage totals are
+26788.497 / 32401.374 / 26711.371 ms. The stage scopes include bootstrap and
+terminal verification. The disjoint phase contributions include:
+
+| Phase, step 2 | Calls | Exclusive wall ms | Exclusive device ms |
+|---|---:|---:|---:|
+| Prepare | 1 | 501.262 | 413.220 |
+| Producer-stage group | 15 | 84309.684 | 83083.529 |
+| Projection adapter | 15 | 2859.954 | 2814.672 |
+| Boundary class reads | 24 | 4.214 | 0.058 |
+| Combined residual reductions | 12 | 30.190 | 1.869 |
+| Alpha residual reductions | 2 | 5.673 | 0.169 |
+| Terminal publication | 1 | 12.913 | 4.204 |
+
+The producer-stage group's wall-minus-device difference is 1226.155 ms across
+15 calls. Its total device time is 83083.529 ms. This directly separates the
+dominant group from projection and control work, but still does not distinguish
+its individual kernels or divide host time into allocations versus encoding.
+The profiler emits a tree: sum exclusive contributions, or compare inclusive
+stage totals, but never add parents to children. Observer output overhead is
+recorded separately. Raw iteration tags distinguish bootstrap, ordinary Picard,
+and terminal verification. All three timing trees reconcile under only the
+rounding bound of the printed timing values.
+
+### Momentum diagnostic scope
+
+`--fire-production-owner-convergence-fixture` exports the already-qualified
+Metal and reviewed fp64 owner operands to text and CSV. The column includes all
+adjacent horizontal faces and vertical faces. It records signed values and
+successive-phase changes for provisional momentum, projected momentum, and
+projected velocity, plus shared alpha. Provisional momentum is fixed within a
+stage by the owner tableau; its zero delta must not be interpreted as candidate
+momentum convergence. The produced `nextMomentum` field is not captured by the
+existing trace and is explicitly unavailable in this exporter.
+
+On the small qualified fixture, R0 and R1's sampled Metal projected velocity
+changes are exactly zero at iteration 2. R2's successive maximum column velocity
+changes at iterations 2, 3, and 4 are approximately 1.82505e-3, 3.92105e-5, and
+6.75209e-7 m/s. These are changes, not certified truncation errors. The exporter
+does not provide an enclosure for convergence and does not select k.
+
+Six REDs refuse a stale trace, out-of-order iteration, truncated face shape,
+swapped stage, production-labelled diagnostic, or mismatched owner before
+publication. Profiling off/on preserves the exported operands and identities
+byte-for-byte. The original per-cell/per-field fp64 owner gate runs in both
+fixture executions. The sealed replay CLI rejects the profiling environment
+before creating output. An invalid profile value or mutation environment is
+also refused by the separate cost-prefix CLI.
+
+The retained-checkpoint request harness is still missing. It must factor the
+existing canonical attempt-preparation path (boundary-source staging, source
+eligibility, pilot/contact masks, mixing times, source packet, represented dt,
+then owner request). Reconstructing only a request from raw checkpoint scalars
+would omit source lineage. The fixture exporter and three-step cost probe do
+not satisfy the crossing-state measurement required to choose k.
+
 ## Convergence measurement and production variant pre-registration
 
 The following is a design with unresolved measured parameters, not an enabled
