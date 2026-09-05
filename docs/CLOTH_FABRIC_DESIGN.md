@@ -5976,17 +5976,20 @@ yet known (§10.1).
     sibling inflate the answer (a triangle-mesh lobe 1e4 units from the
     probed face, whose bounding-box-corner floor is a collection floor,
     had widened the window 7494×) — only operands whose surface CONTAINS
-    the point contribute, tested with a 2δ ray along the normal
-    (δ = 1e-6·(1 + |o|₁), fired in the composite's frame since each
-    operand applies its own inverse transform), falling back to the max
+    the point contribute, tested at this round with a 2δ ray along the
+    normal (δ = 1e-6·(1 + |o|₁), fired in the composite's frame since
+    each operand applies its own inverse transform) — the window and the
+    SDF shrink rule were both refined by the 10f3e6c2 follow-up further
+    down — falling back to the max
     over both if none owns it; and the SDF window (`2·epsFrac / lipschitz`
     of the shape itself: 0.01 % at the 5e-5 scene default with uniform
     parts, ~0.07 % at the 0.15-shrink test case, scale-invariant) is
     accepted and documented — a second SDF lobe within it would be
     adopted as the same face. Pinned by torus and SDF rows in
     `BoxGeometryTest`'s floor contract and by the new
-    `tests/CsgProbeFloorTest.cpp` (35 checks: the empty-mesh guard, the
-    sibling filter, and the combined case whose fields must stay finite).
+    `tests/CsgProbeFloorTest.cpp` (35 checks at this round — 49 after the
+    torus decoy cases below: the empty-mesh guard, the sibling filter,
+    and the combined case whose fields must stay finite).
     Housekeeping from the same review: the interface comments no longer
     claim the virtual is declared last, and adding `override` to the
     six declarations that lacked it obliged (via clang's
@@ -6019,15 +6022,18 @@ yet known (§10.1).
     torus oblique 2.02), and a torus operand's decoy window is pinned from
     BOTH sides in `tests/CsgProbeFloorTest.cpp`: a decoy 2e-8 past the
     exit face is rejected, one at 1e-9 is adopted — the documented cost of
-    the deflation band's 2× stacked with the probe's 2× (~1.26e-9 at
-    R + r = 1.4, scale-invariant), asserted rather than hidden. (d)
+    the deflation band's 2× stacked with the probe's 2× (torus claim
+    ~1.0e-9 at that R = 1, r = 0.4 exit point, probe margin ~2.0e-9,
+    acceptance window ~4.2e-9; scale-invariant), asserted rather than
+    hidden. (d)
     `CsgSurfacePayloadTest` Test 28 finally exercises the composite's OWN
     child-frame recursion (a 60°-rotated, 30×-stretched inner CSG): dropping
     the child-frame scale or the normal remap fails its four money checks,
     while seeding at the generic default trips Test 14, not 28. Suites:
     `CsgSurfacePayloadTest` 348, `CsgProbeFloorTest` 49, the new
     `tests/CsgFloorOwnershipTest.cpp` 27 (coincident SDF + box face,
-    shared box edge, two-lobe SDF).
+    shared box edge, two-lobe SDF at the same 4× bracket, and the
+    1e6-distant mesh lobe that must NOT become an owner).
 
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube

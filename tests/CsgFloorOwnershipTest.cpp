@@ -58,7 +58,7 @@
 //       the grazed operand's much wider gate (P2-1b).
 //    3. SDF two-lobe union: the claim on the uniform lobe's exit face
 //       brackets the BISECTED gate the way BoxGeometryTest's
-//       `CheckFloorBrackets` requires -- never under, never past 8x
+//       `CheckFloorBrackets` requires -- never under, never past 4x
 //       (P2-2).  `MeasureGate` below is that helper's bisection, copied.
 //    4. The widened window did NOT re-admit unrelated siblings: a mesh
 //       lobe parked 1e6 units away has an own floor of ~3e-6, WIDER than
@@ -359,8 +359,8 @@ void TestSdfShrinkComesFromOwningPart()
 	// The SelfHitRootFloor contract, both sides (BoxGeometryTest's own bounds).
 	Check( claim >= gate * 0.999,
 		"Test3: claim never UNDER-states the sphere-tracer's real gate" );
-	Check( claim <= gate * 8.0,
-		"Test3: MONEY ASSERTION -- claim never OVER-states past 8x (was 50x, the thin lobe's 0.02 charged here)" );
+	Check( claim <= gate * 4.0,
+		"Test3: MONEY ASSERTION -- claim never OVER-states past 4x (was 50x, the thin lobe's 0.02 charged here)" );
 	Check( AcceptsStandoff( g, ptExit, dir, 2.0 * claim ),
 		"Test3: standing off 2x the claim re-hits the SAME face" );
 

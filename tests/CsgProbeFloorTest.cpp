@@ -468,9 +468,10 @@ void TestEmptyMeshOperandDoesNotPoisonProbe()
 //   gap = 1.0e-9 (below the ~2.0004e-9 margin): the decoy is within
 //     the probe's own margin, so it is what the probe reaches FIRST --
 //     the composite adopts the DECOY.  This is the documented cost of
-//     the torus deflation band's own width (~1.26e-9 at R+r=1.4,
-//     scale-invariant per the debt-25 note) stacked with CSGObject's
-//     independent 2x, not a target: Test 6 pins it from the other side,
+//     the torus deflation band's own claim (~1.0002e-9 for this R = 1,
+//     r = 0.4 exit point; scale-invariant) stacked with CSGObject's
+//     independent 2x (margin ~2.0004e-9, acceptance window ~4.2e-9), not
+//     a target: Test 6 pins it from the other side,
 //     matching Test 5, so a future WIDENING (bigger claim / bigger
 //     margin) or NARROWING (smaller claim missing the real face
 //     entirely) of that stack shows up as a red test on one side or the
