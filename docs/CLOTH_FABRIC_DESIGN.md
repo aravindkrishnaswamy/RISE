@@ -5763,7 +5763,12 @@ yet known (§10.1).
     interval ordering read as a phantom interior wall (a `CSG_UNION` of
     two overlapping boxes seen from inside one showed a wall where two
     spheres in the same construction do not; pre-existing, the direct
-    sibling of the promoted-root case). Two measure-zero limits of the
+    sibling of the promoted-root case; `vNormal2` keeps naming the entry
+    face behind the origin, pinned in the same test). Not pinned by any
+    test: the probe's new non-finite `range2` guard (a triangle-mesh
+    operand publishes IEEE inf, which the `RISE_INFINITY` compare misses)
+    — mesh-in-CSG is separately broken (`range2` NaN), so a regression
+    there would only trade one graceful fallback for another. Two measure-zero limits of the
     plane test are recorded in the helper's comment (a ray within ~1e-9
     rad of parallel to its own face; an unrelated object's exactly
     coplanar face — e.g. a glass box resting on a box reports the lower

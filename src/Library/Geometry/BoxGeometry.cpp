@@ -299,6 +299,11 @@ void BoxGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHitFro
 	// EXIT BEHIND THE ENTRY, and a CSG_UNION of two overlapping boxes seen
 	// from inside one of them showed a phantom interior wall where two
 	// spheres in the same construction do not (debt-25 review round 3).
+	// sideB is left as RayBoxIntersection set it -- the entry face BEHIND
+	// the origin -- so bComputeExitInfo's vNormal2 names that face, the
+	// box's long-standing interior convention; range2 = 0 is the signal
+	// that there is no second root AHEAD, and every range2 reader keys on
+	// the range, not the normal.
 	if( h.bHit && RayBeginsInBox ) {
 		h.dRange2 = Scalar(0);
 	}

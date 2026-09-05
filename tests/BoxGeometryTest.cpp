@@ -446,6 +446,10 @@ static void RunStandoffReentryContract( double scale )
 		assert( IsClose( ri.range, 0.5 * scale, 1e-6 * scale ) );
 		assert( ri.range2 == 0.0 );
 		assert( IsVectorClose( ri.vNormal, exitNormal ) );
+		// vNormal2 keeps naming the entry face BEHIND the origin (the box's
+		// interior convention, unchanged); range2 = 0 is the "nothing
+		// ahead" signal, so pin the pair rather than leave it implicit.
+		assert( IsVectorClose( ri.vNormal2, Vector3( 0.0, 0.0, 1.0 ) ) );
 	}
 
 	safe_release( pBox );
