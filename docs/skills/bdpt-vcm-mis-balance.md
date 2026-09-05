@@ -916,7 +916,7 @@ gapped weave still reads PT under BDPT/VCM by 1.28–1.55× because PT's
 NEE cannot reach a path that goes through the far layer's delta gap and
 the near layer's continuum lobe — filed as debt 27, not closed by this
 fix.  Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
-25](../CLOTH_FABRIC_DESIGN.md) (debt 27 immediately after).
+25](../CLOTH_FABRIC_DESIGN.md) (debt 27 two items later, after debt 26).
 
 **Sibling audit, closed 2026-09-05:** the same producer-level floor
 (`RaySphereIntersection`, `RayQuadricIntersection`, `RayPlaneIntersection`,
