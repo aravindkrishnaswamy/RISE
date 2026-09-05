@@ -5945,6 +5945,47 @@ yet known (§10.1).
     happens to bound, so tightening the plane floor to its round-off put
     the disk and infinite-plane rows straight back to ~367× dark.
 
+    **Review follow-up (2026-09-05, 7923bf2f) — three overrides were wrong and
+    the probe could go non-finite.** A fresh review of the interface
+    change probed every override against its routine: (a) `TorusGeometry`
+    had kept the generic floor, but its real gate is the quartic's
+    on-surface DEFLATION test (`|C₄| ≤ 1e-10·quartScale` drops the near
+    root outright, so a point inside that relative band reports the far
+    wall) — 133× the default at R = 4, r = 1 in the fix's own bisection
+    (the review's probe points read 1250×; both numbers are recorded in
+    the code); the override now returns the deflation band's own distance
+    along the ray, `2·1e-10·quartScale / max(|∇F·dir|, 0.05·|∇F|)`, and
+    bisects to exactly 2× headroom at unit and 1000× scale, normal and
+    oblique (obliquity via a lateral offset of R/2 — a ray through the
+    axis meets every wall normally, and an offset of exactly R − r is
+    tangent to the inner wall). (b) `SDFGeometry` returned `2·eps`, but a
+    part's scale shrinks the field by `minScale/maxScale` (a part scaled
+    (0.15, 1, 1) read exactly 0.15 of the claim), so the floor is now
+    divided by the minimum of that ratio over the parts (exact to 1e-5).
+    (c) An unbuilt mesh or empty patch inside a nested CSG operand has the
+    default ±DBL_MAX bounding box, so the bbox-corner floor was +inf, the
+    probe margin inf and the probe origin NaN with no gate left to reject
+    it; `Geometry::BoundingBoxRootFloor` now falls back to the generic
+    floor when the box is unbuilt, and the probe returns false (graceful
+    entry-payload fallback) on any non-finite floor or margin. Also from
+    that review: `CSGObject::SelfHitRootFloor` no longer lets an unrelated
+    sibling inflate the answer (a triangle 1e4 units from the probed face
+    had widened the window 7494×) — only operands whose surface CONTAINS
+    the point contribute, tested with a 2δ ray along the normal
+    (δ = 1e-6·(1 + |o|₁), fired in the composite's frame since each
+    operand applies its own inverse transform), falling back to the max
+    over both if none owns it; and the SDF window (~0.15 % of the shape,
+    scale-invariant) is accepted and documented — a second SDF lobe within
+    it would be adopted as the same face. Pinned by torus and SDF rows in
+    `BoxGeometryTest`'s floor contract and by the new
+    `tests/CsgProbeFloorTest.cpp` (35 checks: the empty-mesh guard, the
+    sibling filter, and the combined case whose fields must stay finite).
+    Housekeeping from the same review: the interface comments no longer
+    claim the virtual is declared last, and adding `override` to the
+    six declarations that lacked it obliged (via clang's
+    inconsistent-missing-override warning) a sweep of all 105 overriding
+    virtuals across those seven geometry headers.
+
     **Regression test.** `tests/PrimitiveSelfHitTest.cpp` renders the
     trigger-(i) family (sphere, ellipsoid, capped cylinder, open tube
     side-on, circular disk, infinite plane, two-triangle PLY quad; box and
