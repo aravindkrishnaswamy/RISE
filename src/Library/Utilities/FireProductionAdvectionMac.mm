@@ -24,6 +24,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
@@ -7066,6 +7067,72 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			enum class OwnerTransferPhase { Setup,Interstage,Publication } transferPhase_;
 			std::uint64_t actualBytes_,deviceAllocationBaseline_,deviceAllocationPeak_;
 			double deviceMS_,projectionDeviceMS_;
+			// Observer-only phase accounting. Inclusive rows form a tree; exclusive
+			// rows subtract immediate children. Device time is the existing completed
+			// command sum, including the projection adapter. wall-device is elapsed
+			// residual, not a claim that all of it is CPU computation. Owner commits
+			// exclude the adapter's internal commits, counted separately as invocations.
+			class ProfileScope;
+			bool profileEnabled_;
+			ProfileScope* profileParent_;
+			std::uint64_t profileSequence_;
+			std::uint32_t profileStage_,profileIteration_;
+			class ProfileScope
+			{
+				ResidentProjectedHeunMetalOwner& owner_;
+				ProfileScope* parent_;
+				const char* phase_;
+				std::uint64_t sequence_;
+				std::uint32_t stage_,iteration_,commits_,projections_;
+				double device_,childWall_,childDevice_,childObserverWall_;
+				std::chrono::steady_clock::time_point start_;
+			public:
+				ProfileScope(ResidentProjectedHeunMetalOwner& owner,const char* phase)
+					: owner_(owner),parent_(nullptr),phase_(phase),sequence_(0u),stage_(0u),
+					iteration_(0u),commits_(0u),projections_(0u),device_(0.0),
+					childWall_(0.0),childDevice_(0.0),childObserverWall_(0.0)
+				{
+					if(!owner_.profileEnabled_)return;
+					parent_=owner_.profileParent_;sequence_=++owner_.profileSequence_;
+					stage_=owner_.profileStage_;iteration_=owner_.profileIteration_;
+					commits_=owner_.commits_;projections_=owner_.projectionInvocations_;
+					device_=owner_.deviceMS_;start_=std::chrono::steady_clock::now();
+					owner_.profileParent_=this;
+				}
+				~ProfileScope()
+				{
+					if(!owner_.profileEnabled_)return;
+					const double wall=std::chrono::duration<double,std::milli>(
+						std::chrono::steady_clock::now()-start_).count();
+					const double device=owner_.deviceMS_-device_;
+					owner_.profileParent_=parent_;
+					const char* kind=stage_==UINT32_MAX?"owner":
+						(iteration_==UINT32_MAX?"bootstrap":
+						((iteration_&UINT32_C(0x80000000))?"terminal":"picard"));
+					std::fprintf(stderr,"RISE_FIRE_OWNER_PROFILE_V1 {\"scope\":%llu,"
+						"\"parent\":%llu,\"phase\":\"%s\",\"stage\":%u,"
+						"\"raw_iteration\":%u,\"iteration_kind\":\"%s\","
+						"\"wall_ms\":%.9f,\"device_sum_ms\":%.9f,"
+						"\"wall_minus_device_ms\":%.9f,\"exclusive_wall_ms\":%.9f,"
+						"\"exclusive_device_sum_ms\":%.9f,\"child_observer_wall_ms\":%.9f,"
+						"\"count_scope\":\"inclusive\",\"owner_commits\":%u,"
+						"\"projection_invocations\":%u}\n",
+						static_cast<unsigned long long>(sequence_),
+						static_cast<unsigned long long>(parent_?parent_->sequence_:0u),
+						phase_,stage_,iteration_,kind,wall,device,wall-device,
+						wall-childWall_-childObserverWall_,device-childDevice_,childObserverWall_,
+						owner_.commits_-commits_,
+						owner_.projectionInvocations_-projections_);
+					// Attribute the observer's own output cost to the parent's children,
+					// so it cannot be misreported as exclusive work in the parent phase.
+					if(parent_){parent_->childWall_+=wall;
+						parent_->childObserverWall_+=std::chrono::duration<double,std::milli>(
+							std::chrono::steady_clock::now()-start_).count()-wall;
+						parent_->childDevice_+=device;}
+				}
+				ProfileScope(const ProfileScope&)=delete;
+				ProfileScope& operator=(const ProfileScope&)=delete;
+			};
 
 			void ObserveDeviceAllocation()
 			{
@@ -7132,6 +7199,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			bool ReadOpenClass(id<MTLBuffer> source,std::vector<unsigned char>& bytes,
 				std::string* error)
 			{
+				ProfileScope profile(*this,"ReadOpenClass");
 				id<MTLBuffer> staging=[context_.device newBufferWithLength:boundaryFaces_
 					options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
@@ -7179,6 +7247,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				id<MTLBuffer> sealedInflow,id<MTLBuffer> sealedHead,
 				Stage& output,std::string* error)
 			{
+				ProfileScope profile(*this,"Project");
 				const bool authenticatedBootstrap=targetAuthority.bootstrapAuthority&&
 					bootstrapTarget_.get()==&targetAuthority&&targetAuthority.assembled==zeroTarget_&&
 					targetAuthority.publicationIdentity==zeroTargetIdentity_&&
@@ -7238,8 +7307,13 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const std::uint64_t outerLiveBeforeProjection=
 					allocationBeforeProjection>=deviceAllocationBaseline_?
 					allocationBeforeProjection-deviceAllocationBaseline_:0u;
-				if(!ProjectFireProductionMetalResidentState(projection,input,output.projection,
-					output.projectionDiagnostics,error))return false;
+				{
+					ProfileScope adapterProfile(*this,"ProjectionAdapter");
+					if(!ProjectFireProductionMetalResidentState(projection,input,output.projection,
+						output.projectionDiagnostics,error))return false;
+					++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+					projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
+				}
 				output.projectionTargetCapability=targetAuthority.capability;
 				interstageFullGridTransfers_+=
 					output.projectionDiagnostics.residentInterstageDeviceToHostTransferCount;
@@ -7248,8 +7322,6 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 					deviceAllocationPeak_=std::max(deviceAllocationPeak_,outerLiveBeforeProjection+
 						output.projectionDiagnostics.residentActualMetalAllocationBytes);
 				else deviceAllocationPeak_=std::numeric_limits<std::uint64_t>::max();
-				++projectionInvocations_;deviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
-				projectionDeviceMS_+=output.projectionDiagnostics.deviceElapsedMS;
 				output.nextOpenClass=Private(boundaryFaces_);
 				id<MTLCommandBuffer> classCommand=TrackedMetalCommandBuffer(context_.queue);
 				if(!output.nextOpenClass||!classCommand||!Encode(classCommand,context_.ownerNextOpenClass,
@@ -7379,6 +7451,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const bool applyTailCorrection,id<MTLBuffer> selectedAlpha,
 				Stage& output,const Stage* r0,std::string* error)
 			{
+				ProfileScope profile(*this,"BuildStageProducerGroup");
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
 				if(!command||!ResetControls(command))return false;
 				output.packedVelocity=Private(allFaces_*sizeof(float));
@@ -7671,6 +7744,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				const Stage& value,std::string* error)
 			{
 				if(!request_.qualificationCaptureIterationTrace)return true;
+				ProfileScope profile(*this,"QualificationTraceTransfers");
 				const std::size_t floatCount=26u*cells_+36u*allFaces_+boundaryFaces_;
 				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_+
 					sizeof(std::uint64_t);
@@ -7802,8 +7876,12 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				transferPhase_(OwnerTransferPhase::Setup),actualBytes_(0u),
 				deviceAllocationBaseline_(context_.device?static_cast<std::uint64_t>(
 					[context_.device currentAllocatedSize]):0u),deviceAllocationPeak_(0u),
-				deviceMS_(0.0),projectionDeviceMS_(0.0)
+				deviceMS_(0.0),projectionDeviceMS_(0.0),profileEnabled_(false),
+				profileParent_(nullptr),profileSequence_(0u),profileStage_(UINT32_MAX),
+				profileIteration_(UINT32_MAX)
 			{fctParameters_[0]=fctParameters_[1]=fctParameters_[2]=nil;
+			 const char* profileEnvironment=std::getenv("RISE_FIRE_OWNER_PROFILE");
+			 profileEnabled_=profileEnvironment&&std::strcmp(profileEnvironment,"1")==0;
 			 transportParameters_[0]=transportParameters_[1]=transportParameters_[2]=nil;
 			 eosParameters_[0]=eosParameters_[1]=eosParameters_[2]=nil;
 			 targetParameters_[0]=targetParameters_[1]=targetParameters_[2]=nil;
@@ -7813,6 +7891,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 
 		bool ResidentProjectedHeunMetalOwner::Prepare(std::string* error)
 		{
+			ProfileScope profile(*this,"Prepare");
 			if(!context_.Valid()||!fct_.Valid()||context_.device!=fct_.device){
 				if(error)*error="projected-Heun resident owner Metal context is unavailable";
 				return false;
@@ -7968,12 +8047,15 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			id<MTLBuffer> sealedHead,std::unique_ptr<Stage>& accepted,
 			std::string* error)
 		{
+			profileStage_=stage;profileIteration_=UINT32_MAX;
+			ProfileScope stageProfile(*this,"SolveStage");
 			using OpenClassBytes=std::vector<unsigned char>;
 			auto classBytes=[&](id<MTLBuffer> value,OpenClassBytes& bytes){
 				return ReadOpenClass(value,bytes,error);};
 			auto residual=[&](const Stage& current,const Stage& prior,
 				const bool includeIterationHistory,float& value,
 				std::array<float,3>* components)->bool{
+				ProfileScope profile(*this,"Residual");
 				id<MTLBuffer> cellCount=Upload(&ownerMetadata_.cells,sizeof(std::uint32_t));
 				id<MTLBuffer> faceCount=Upload(&ownerMetadata_.allFaces,sizeof(std::uint32_t));
 				const std::uint32_t coefficientCount=3u*ownerMetadata_.cells;
@@ -8010,6 +8092,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				value=std::max({local[0],local[1],local[2]});if(components)*components=local;return true;
 			};
 			auto alphaResidual=[&](id<MTLBuffer> a,id<MTLBuffer> b,float& value)->bool{
+				ProfileScope profile(*this,"AlphaResidual");
 				id<MTLBuffer> maximum=Private(sizeof(std::uint32_t));
 				id<MTLBuffer> terminal=[context_.device newBufferWithLength:sizeof(std::uint32_t)
 					options:MTLResourceStorageModeShared];
@@ -8092,6 +8175,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				activeClass=cycleBranches[best];return haveBest;
 			};
 			for(std::uint32_t iteration=0u;iteration<request_.maximumPicardIterations;++iteration){
+				profileIteration_=iteration;
+				ProfileScope iterationProfile(*this,"PicardIteration");
 				if(stage==2u&&havePrior&&request_.qualificationStaleTargetPublication)
 					prior->target->parentTargetCapability=bootstrapTarget_->capability;
 				std::unique_ptr<Stage> current(new Stage);
@@ -8123,6 +8208,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				lastResidual=currentResidual;lastClassStable=classStable;
 				residualHistory.push_back(currentResidual);
 				if(havePrior&&classStable&&currentResidual<=request_.projectionTolerancePerS){
+					profileIteration_=iteration|UINT32_C(0x80000000);
+					ProfileScope terminalProfile(*this,"TerminalVerification");
 					std::unique_ptr<Stage> verified(new Stage);
 					if(!Project(stage,state,momentum,*current->target,
 						current->projectionTargetCapability,
@@ -8213,6 +8300,7 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 			FireProductionProjectedHeunMetalOwnerResult& result,std::string* error)
 		{
 			result=FireProductionProjectedHeunMetalOwnerResult();
+			ProfileScope ownerProfile(*this,"OwnerRun");
 			const auto wallStart=std::chrono::steady_clock::now();
 			std::uint64_t preflightBytes=0u;
 			const FireProductionProjectionShape& preflightShape=
@@ -8249,6 +8337,8 @@ kernel void owner_issue_publication(device const ulong* p0 [[buffer(0)]],
 				r1->candidate->publicationIdentity,r1->candidate.get(),r0.get(),
 				r1->projection.pressureOpenInflow,
 				integratedOpenHead_,r2,error))return false;
+			profileStage_=UINT32_MAX;profileIteration_=UINT32_MAX;
+			ProfileScope publicationProfile(*this,"TerminalPublication");
 			if(!r0->terminalReprojectionVerified||!r1->terminalReprojectionVerified||
 				!r2->terminalReprojectionVerified){
 				if(error)*error="projected-Heun publication requires current-target terminal projection";

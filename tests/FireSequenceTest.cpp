@@ -23,6 +23,7 @@
 #include "FireProductionCalibrationMirror.h"
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "FireProductionRoundoffWalker.h"
+#include "FireProductionOwnerConvergenceProbe.h"
 #include "fire_production_fp64/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
 
@@ -1096,6 +1097,11 @@ namespace
 		bool singleStageFCTDiagnostic=false;
 		bool sealedLegacyMomentumReplay=false;
 		bool sealedProjectedHeunReplay=false;
+		bool projectedHeunCostDiagnostic=false;
+		bool UsesProjectedHeunOwner() const
+		{
+			return sealedProjectedHeunReplay||projectedHeunCostDiagnostic;
+		}
 		std::filesystem::path replayProtocolPath;
 		std::string replayProtocolDigest;
 		double productionMomentumObservationTimeS=0.0;
@@ -2843,6 +2849,16 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.projectedHeunCostDiagnostic&&(!persistence.productionMetal||
+			persistence.resume||persistence.sealedProjectedHeunReplay||
+			persistence.sealedLegacyMomentumReplay||persistence.singleStageFCTDiagnostic||
+			persistence.compatibleMomentumDiagnostic||!persistence.checkpointPath.empty()||
+			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
+			persistence.productionOnsetDiagnosticDirectory.empty()||persistence.forceZeroSourceForTest||
+			persistence.isolatedEquivalenceProbe||resolutionTier!=8.0||caseDurationS!=3.0||
+			caseFramesPerS!=1.0||minimumStepCount!=3u)){
+			values.structuredError="owner_cost_diagnostic_scope_conflict";return values;
+		}
 		const FireSimulationMethaneRecord& fuel=FireSimulationMethaneRecord::PhysicalV1();
 		MethaneCellState state; state.temperatureK=300.0;
 		for(std::size_t i=0;i<MethaneSpeciesCount;++i)
@@ -2884,7 +2900,7 @@ namespace
 		RISECBOR64::Bytes currentBuildBytes;
 		std::string currentBuildId,currentExecutableDigest;
 		if((!persistence.checkpointPath.empty()||!persistence.finalCheckpointPath.empty()||
-			!persistence.temporalSnapshotDirectory.empty())&&
+			!persistence.temporalSnapshotDirectory.empty()||persistence.projectedHeunCostDiagnostic)&&
 			(!CurrentRendererBuildIdentity(currentBuildBytes,currentBuildId)||
 			!CurrentExecutableDigest(currentBuildBytes,currentExecutableDigest,error))){
 			values.structuredError="checkpoint_build_identity_failure";return values;
@@ -3044,6 +3060,23 @@ namespace
 		ConservativeAdvance3DResult advanced;
 		if(persistence.productionMetal)for(unsigned int axis=0u;axis<3u;++axis)
 			advanced.velocityMPerS.component[axis].assign(OpenMACFaceCount3D(shape,axis),0.0);
+		if(persistence.projectedHeunCostDiagnostic){
+			const std::string initialStateDigest=ProductionBeginningFieldSHA256(
+				caseRecord.caseRecordId,shape,states,momentum,advanced.velocityMPerS);
+			std::ofstream identity(persistence.productionOnsetDiagnosticDirectory.parent_path()/
+				"diagnostic_from_zero_identity.v1",std::ios::trunc);
+			identity<<std::setprecision(17)<<"schema rise.fire.owner_cost.from_zero_identity.v1\n"
+				<<"scope diagnostic_prefix\nfull_verdict unavailable\n"
+				<<"operator section_3_7_projected_heun_resident_owner\n"
+				<<"resolution_tier "<<resolutionTier<<"\nseed "<<authored.seed<<"\n"
+				<<"case_record_id "<<caseRecord.caseRecordId<<"\ncase_duration_s "<<caseDurationS<<"\n"
+				<<"initial_time_s 0\ninitial_state_sha256 "<<initialStateDigest<<"\n"
+				<<"producer_build_id "<<currentBuildId<<"\n"
+				<<"producer_executable_sha256 "<<currentExecutableDigest<<"\n"
+				<<"resume_forbidden true\ncheckpoint_publication unavailable\n";
+			identity.close();if(initialStateDigest.size()!=64u||!identity){
+				values.structuredError="owner_cost_from_zero_identity_failure";return values;}
+		}
 		if(persistence.sealedLegacyMomentumReplay||persistence.sealedProjectedHeunReplay){
 			if(persistence.resume||persistence.replayProtocolPath.empty()||
 				persistence.replayProtocolDigest.size()!=64u||
@@ -3277,6 +3310,7 @@ namespace
 		if(FireProfileEnabled())FireProfileReportAndReset("preloop");
 		const char* solverPhase="initialization";
 		while(advancedOK&&!productionOnsetStopReached&&
+			(!persistence.projectedHeunCostDiagnostic||acceptedSteps<3u)&&
 			(acceptedSteps<effectiveMinimumStepCount||simulationTimeS<targetTimeS)) {
 			solverPhase="ignition eligibility";
 			const auto profileStepStart=std::chrono::steady_clock::now();
@@ -3648,7 +3682,7 @@ namespace
 							}
 						});
 						RISE::FireProductionFrozenSourcePacketSeal projectedHeunSource;
-						if(persistence.sealedProjectedHeunReplay){
+						if(persistence.UsesProjectedHeunOwner()){
 							RISE::FireProductionFrozenMethaneSourceRequest sourceRequest;
 							sourceRequest.shape=request.force.shape;sourceRequest.timeStepS=request.force.timeStepS;
 							sourceRequest.beginningTimeS=simulationTimeS;
@@ -3739,7 +3773,7 @@ namespace
 										FireStateProducerPrecision::Binary32;
 									production.acceptedShape=request.force.shape;
 								}
-							}else if(persistence.sealedProjectedHeunReplay){
+							}else if(persistence.UsesProjectedHeunOwner()){
 								RISE::FireProductionProjectedHeunMetalOwnerRequest ownerRequest;
 								attemptComputed=packetOK&&BuildProductionProjectedHeunOwnerRequest(request,
 									projectedHeunSource,caseRecord.envelopeBytes,
@@ -4000,11 +4034,11 @@ namespace
 								RISE::AdvanceFireProductionFrozenForceMetalResidentStateComparator(
 									request.force,forceCPU,forceAuditDiagnostics,&physicalOnlyError);
 							const bool forceDiagnosticsIdentity=forceComparatorOK&&
-								(persistence.sealedProjectedHeunReplay||
+								(persistence.UsesProjectedHeunOwner()||
 								 forceAuditDiagnostics.outwardLambdaPerS==
 									production.forceDiagnostics.outwardLambdaPerS);
 							const bool forceScheduleIdentity=forceDiagnosticsIdentity&&
-								(persistence.sealedProjectedHeunReplay||
+								(persistence.UsesProjectedHeunOwner()||
 								 (forceCPU.schedule.substepCount==production.forceSchedule.substepCount&&
 								  forceCPU.schedule.substepTimeS==production.forceSchedule.substepTimeS));
 							const bool forceFieldsOK=forceScheduleIdentity&&
@@ -4092,16 +4126,16 @@ namespace
 									const double beginning=request.force.beginningMomentumKGPerM2S[2][face];
 									const double gravity=forceFieldsCPU.
 										gravityMomentumIncrementKGPerM2S[2][face];
-									const double stress=persistence.sealedProjectedHeunReplay?
+									const double stress=persistence.UsesProjectedHeunOwner()?
 										projectedHeunDiagnostics.heunStressMomentumRateKGPerM2S2[2][face]:
 										(forceCPU.momentumKGPerM2S[2][face]-beginning-gravity)/representedStep;
-									const double buoyancy=persistence.sealedProjectedHeunReplay?
+									const double buoyancy=persistence.UsesProjectedHeunOwner()?
 										projectedHeunDiagnostics.heunBuoyancyMomentumRateKGPerM2S2[2][face]:
 										gravity/representedStep;
-									const double source=persistence.sealedProjectedHeunReplay?
+									const double source=persistence.UsesProjectedHeunOwner()?
 										projectedHeunDiagnostics.heunPhaseSourceMomentumRateKGPerM2S2[2][face]:
 										request.momentumSourceIncrement[2][face]/representedStep;
-									const double advection=persistence.sealedProjectedHeunReplay?
+									const double advection=persistence.UsesProjectedHeunOwner()?
 										projectedHeunDiagnostics.heunAdvectionMomentumRateKGPerM2S2[2][face]:
 										(production.transportedDual.momentum[2][face]-
 										 request.momentumSourceIncrement[2][face]-
@@ -4118,10 +4152,10 @@ namespace
 										request.force.shape.ny*lowerZ);
 									const std::size_t upperCell=columnX+request.force.shape.nx*(columnY+
 										request.force.shape.ny*upperZ);
-									const double lowerVreman=persistence.sealedProjectedHeunReplay?
+									const double lowerVreman=persistence.UsesProjectedHeunOwner()?
 										projectedHeunDiagnostics.heunEddyKinematicViscosityM2PerS[lowerCell]:
 										forceFieldsCPU.eddyKinematicViscosityM2PerS[lowerCell];
-									const double upperVreman=persistence.sealedProjectedHeunReplay?
+									const double upperVreman=persistence.UsesProjectedHeunOwner()?
 										projectedHeunDiagnostics.heunEddyKinematicViscosityM2PerS[upperCell]:
 										forceFieldsCPU.eddyKinematicViscosityM2PerS[upperCell];
 									columnStressMaximum=std::max(columnStressMaximum,std::fabs(stress));
@@ -6755,6 +6789,93 @@ namespace
 #endif
 	}
 
+#if defined(RISE_ENABLE_OPENVDB)
+	bool OwnerCostPrefixEnvironmentAccepted()
+	{
+		// Same mutation surface refused by the sealed replay; only the timing
+		// observer is permitted here, and only with its exact enabling value.
+		for(const char* name:{"RISE_FIRE_ONSET_RESUME_CHECKPOINT","RISE_FIRE_SINGLE_STAGE_FCT_ONSET",
+			"RISE_FIRE_FORCE_TEST_FAILURE","RISE_FIRE_PRODUCTION_RESTORATION_CYCLE_PROBE",
+			"RISE_FIRE_PRODUCTION_RESTORATION_TEST","RISE_FIRE_PRODUCTION_STEP_FAILURE",
+			"RISE_FIRE_PROFILE","RISE_FIRE_PROJECTION_TEST_FAILURE",
+			"RISE_FIRE_RESTORATION_PLATEAU_PROBE","RISE_FIRE_TIMESTEP_VELOCITY_AUDIT",
+			"RISE_FIRE_TIMESTEP_VELOCITY_PACK_MODE","RISE_FIRE_MOMENTUM_AUDIT_PATH",
+			"RISE_FIRE_TARGET_TEMPERATURE_IDENTITY_RED","RISE_FIRE_TARGET_MOLECULAR_IDENTITY_RED",
+			"RISE_FIRE_REQUEST_LAYOUT_IDENTITY_RED","RISE_FIRE_MANIFOLD_TIMESTEP_PROBE",
+			"RISE_FIRE_MANIFOLD_STAGE_BUDGET_PROBE","RISE_FIRE_GOLDEN_LONG_SHADOW",
+			"RISE_FIRE_ADVECTIVE_ANOMALY_CLOSURE_TEST","RISE_FIRE_MANIFOLD_TAIL_THRESHOLD_RED",
+			"RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PROBE","RISE_FIRE_ADVECTIVE_ANOMALY_CONVERGENCE_PASSES",
+			"RISE_FIRE_HOST_RESIDUAL_PROBE","RISE_FIRE_PHYSICAL_PROJECTION_VALIDATION_PROBE",
+			"RISE_FIRE_ONSET_TARGET_S"})if(std::getenv(name))return false;
+		const char* profile=std::getenv("RISE_FIRE_OWNER_PROFILE");
+		return !profile||std::strcmp(profile,"1")==0;
+	}
+
+	int RunProductionOwnerCostPrefixChild(const std::filesystem::path& outputDirectory)
+	{
+		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
+		RISECBOR64::Bytes buildRecord;std::string buildId,executableDigest,identityError;
+		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
+			!CurrentExecutableDigest(buildRecord,executableDigest,identityError)||
+			buildId.size()!=64u||executableDigest.size()!=64u)return 92;
+		std::error_code directoryError;
+		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
+		if(directoryError)return 92;
+		const double representedStep=static_cast<double>(static_cast<float>(0.0016462659696117043));
+		const double targetTimeS=3.0*representedStep;
+		RunPersistenceOptions persistence;persistence.productionMetal=true;
+		persistence.projectedHeunCostDiagnostic=true;
+		persistence.maximumProductionSourceStepS=representedStep;
+		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
+		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		std::ofstream preregistration(outputDirectory/"diagnostic_prefix_protocol.v1");
+		preregistration<<std::setprecision(17)<<"schema rise.fire.owner_cost.prefix_protocol.v1\n"
+			<<"scope diagnostic_prefix\nfull_verdict unavailable\nfixed_k unavailable\n"
+			<<"owner full_picard\nresolution_tier 8\nseed 1234\ncase_duration_s 3\n"
+			<<"case_frames_per_s 1\nfrom_zero true\nresume false\ncheckpoint_writes false\n"
+			<<"accepted_step_cap 3\nrepresented_source_cfl_step_s "<<representedStep<<"\n"
+			<<"target_time_s "<<targetTimeS<<"\nproducer_build_id "<<buildId<<"\n"
+			<<"producer_executable_sha256 "<<executableDigest<<"\n"
+			<<"timing_observer "<<(std::getenv("RISE_FIRE_OWNER_PROFILE")?"enabled":"disabled")<<"\n"
+			<<"comparison_required original_sealed_replay_first_three_owner_ids_and_physics_columns\n";
+		preregistration.close();if(!preregistration)return 92;
+		const char* existingProgress=std::getenv("RISE_FIRE_CAPSTONE_OUTPUT");
+		const bool restoreProgress=existingProgress!=nullptr;
+		const std::string previousProgress=existingProgress?existingProgress:"";
+		if(setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1)!=0)return 92;
+		const auto start=std::chrono::steady_clock::now();
+		// Keep the original three-second authored case and source schedule.  The
+		// diagnostic end time changes only how much of that same case is observed.
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,3u,targetTimeS,3.0,1.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		const double wallS=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+		if(restoreProgress)setenv("RISE_FIRE_CAPSTONE_OUTPUT",previousProgress.c_str(),1);
+		else unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
+		const bool complete=result.succeeded&&result.acceptedTimeStepHistoryS.size()==3u&&
+			result.simulatedTimeS==targetTimeS&&std::all_of(result.acceptedTimeStepHistoryS.begin(),
+				result.acceptedTimeStepHistoryS.end(),[&](const double dt){return dt==representedStep;});
+		std::ofstream outcome(outputDirectory/"diagnostic_prefix_outcome.v1");
+		outcome<<std::setprecision(17)<<"schema rise.fire.owner_cost.prefix_outcome.v1\n"
+			<<"scope diagnostic_prefix\nfull_verdict unavailable\nfixed_k unavailable\n"
+			<<"prefix_complete "<<(complete?"true":"false")<<"\n"
+			<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\n"
+			<<"simulated_time_s "<<result.simulatedTimeS<<"\nwall_s "<<wallS<<"\n"
+			<<"case_record_id "<<result.caseRecordId<<"\n"
+			<<"protocol_sha256 "<<DigestFile(outputDirectory/"diagnostic_prefix_protocol.v1")<<"\n"
+			<<"from_zero_identity_sha256 "<<DigestFile(outputDirectory/"diagnostic_from_zero_identity.v1")<<"\n"
+			<<"trajectory_sha256 "<<DigestFile(outputDirectory/"budgets"/"maximum_velocity_trajectory.csv")<<"\n"
+			<<"retry_trajectory_sha256 "<<DigestFile(outputDirectory/"budgets"/"retry_attempt_trajectory.csv")<<"\n"
+			<<"original_first_three_comparison pending_external_evidence_comparison\n"
+			<<"error "<<result.structuredError<<"\n";
+		outcome.close();if(!outcome)return 94;
+		std::fprintf(stderr,"OWNER_COST_PREFIX complete=%d steps=%zu time=%.17g wall_s=%.17g "
+			"outcome_sha256=%s full_verdict=unavailable error=%s\n",complete?1:0,
+			result.acceptedTimeStepHistoryS.size(),result.simulatedTimeS,wallS,
+			DigestFile(outputDirectory/"diagnostic_prefix_outcome.v1").c_str(),result.structuredError.c_str());
+		return complete?0:93;
+	}
+#endif
+
 	int RunProductionOnsetCampaignChild(const double resolutionTier,
 		const std::filesystem::path& outputDirectory,const bool sealedLegacyReplay=false,
 		const std::filesystem::path& replayProtocolPath=std::filesystem::path(),
@@ -6775,6 +6896,7 @@ namespace
 			std::getenv("RISE_FIRE_PRODUCTION_RESTORATION_TEST")||
 			std::getenv("RISE_FIRE_PRODUCTION_STEP_FAILURE")||
 			std::getenv("RISE_FIRE_PROFILE")||
+			std::getenv("RISE_FIRE_OWNER_PROFILE")||
 			std::getenv("RISE_FIRE_PROJECTION_TEST_FAILURE")||
 			std::getenv("RISE_FIRE_RESTORATION_PLATEAU_PROBE")||
 			std::getenv("RISE_FIRE_TIMESTEP_VELOCITY_AUDIT")||
@@ -10440,8 +10562,11 @@ private:
 	FireProductionResidentPhysicalFluxComparatorRequest fixture_;
 };
 
-int RunProductionResidentTargetLineageMetalFP64Fixture()
+int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOutputPath=nullptr)
 {
+	if(convergenceOutputPath&&(std::filesystem::exists(convergenceOutputPath)||
+		std::filesystem::exists(std::string(convergenceOutputPath)+".csv"))){
+		std::fprintf(stderr,"OWNER_CONVERGENCE_REFUSAL diagnostic output already exists\n");return 220;}
 	static_assert(!std::is_convertible<FireProductionResidentTargetLineageComparatorResult,
 		FireProductionScalarProjectionTargetSeal>::value,
 		"qualification output must not become projection authority");
@@ -14114,6 +14239,78 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerSourceBuilt?1:0,owner64Begin?1:0,owner64R0?1:0,owner64R1?1:0,
 		owner64Accepted?1:0,ownerSourceBuilt?owner64Error.c_str():ownerSourceError.c_str(),
 		ownerMirrorBounded?1:0);
+	bool convergenceProbePassed=true;
+	if(convergenceOutputPath){
+		using namespace FireProductionOwnerConvergenceProbe;
+		const Geometry geometry={shape.nx,shape.ny,shape.nz,shape.nx/2u,shape.ny/2u};
+		Context context;context.caseSHA256=RISECBOR64::SHA256Hex(ownerEOS.caseRecordEnvelope);
+		context.source="r201_qualified_metal_fixture_no_checkpoint";
+		context.ownerIdentity=ownerObserved.ownerPublicationIdentity;
+		context.acceptedIterations=ownerObserved.acceptedPicardIterations;
+		const auto digest=[](const std::string& value){return RISECBOR64::SHA256Hex(
+			RISECBOR64::Bytes(value.begin(),value.end()));};
+		const std::array<const std::vector<FireProductionProjectedHeunIterationTrace>*,3> traces={{
+			&ownerObserved.qualificationIterationTrace[0],&ownerObserved.qualificationIterationTrace[1],
+			&ownerObserved.qualificationIterationTrace[2]}};
+		std::string serialized,binding,probeError,metalCSV;
+		std::ostringstream transcript;
+		convergenceProbePassed=ownerAccepted&&owner64Accepted&&ownerMirrorBounded&&
+			Serialize(traces,geometry,context,digest,serialized,binding,probeError,&metalCSV)&&
+			Write(transcript,traces,geometry,context,digest,binding,probeError);
+		const auto red=[&](const char* name,const auto& mutantTraces,const Geometry& mutantGeometry,
+			const Context& mutantContext){std::ostringstream rejected;std::string refusal;
+			const bool refused=!Write(rejected,mutantTraces,mutantGeometry,mutantContext,digest,
+				binding,refusal)&&rejected.str().empty();
+			std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
+				name,refused?1:0,refusal.c_str(),refused?1:0);return refused;};
+		if(convergenceProbePassed){
+			auto changed=ownerObserved.qualificationIterationTrace[0];
+			auto stale=traces;stale[0]=&changed;
+			const std::size_t face=geometry.columnX+geometry.nx*geometry.columnY;
+			changed[1].projectedVelocityMPerS[2][face]=std::nextafter(
+				changed[1].projectedVelocityMPerS[2][face],std::numeric_limits<float>::infinity());
+			convergenceProbePassed=red("stale_column_trace",stale,geometry,context)&&convergenceProbePassed;
+			changed=ownerObserved.qualificationIterationTrace[0];
+			changed[1].iteration+=1u;
+			convergenceProbePassed=red("out_of_order_iteration",stale,geometry,context)&&convergenceProbePassed;
+			changed=ownerObserved.qualificationIterationTrace[0];
+			changed[1].provisionalMomentumKGPerM2S[0].pop_back();
+			convergenceProbePassed=red("truncated_face_shape",stale,geometry,context)&&convergenceProbePassed;
+			auto swapped=traces;std::swap(swapped[0],swapped[2]);
+			convergenceProbePassed=red("mismatched_stage",swapped,geometry,context)&&convergenceProbePassed;
+			Context production=context;production.diagnosticOnly=false;
+			convergenceProbePassed=red("production_scope_forbidden",traces,geometry,production)&&convergenceProbePassed;
+			Context mismatchedOwner=context;mismatchedOwner.ownerIdentity^=UINT64_C(1);
+			convergenceProbePassed=red("mismatched_owner",traces,geometry,mismatchedOwner)&&convergenceProbePassed;
+		}
+		Context mirrorContext=context;mirrorContext.source="r190_reviewed_fp64_fixture_no_checkpoint";
+		mirrorContext.ownerIdentity=ownerObserved64.OwnerIdentity();
+		mirrorContext.acceptedIterations={{ownerObserved64.r0.acceptedIterationCount,
+			ownerObserved64.r1.acceptedIterationCount,ownerObserved64.r2.acceptedIterationCount}};
+		const std::array<const std::vector<::RISEFireProductionFP64::FireProductionProjectedHeunIterationTrace>*,3>
+			mirrorTraces={{&ownerObserved64.r0.qualificationIterationTrace,
+			&ownerObserved64.r1.qualificationIterationTrace,&ownerObserved64.r2.qualificationIterationTrace}};
+		std::string mirrorText,mirrorBinding,mirrorCSV;
+		convergenceProbePassed=convergenceProbePassed&&Serialize(mirrorTraces,geometry,mirrorContext,digest,
+			mirrorText,mirrorBinding,probeError,&mirrorCSV)&&Write(transcript,mirrorTraces,geometry,mirrorContext,digest,
+			mirrorBinding,probeError);
+		if(convergenceProbePassed){
+			const std::string csv=metalCSV+mirrorCSV.substr(mirrorCSV.find('\n')+1u);
+			const std::string csvPath=std::string(convergenceOutputPath)+".csv";
+			transcript<<"OWNER_CONVERGENCE_LIMITATION retained_checkpoint_reconstruction=not_implemented "
+				"crossing_state=unavailable fixed_k_selection=not_authorized "
+				"inter_iteration_delta_is_not_truncation_error_certificate=1\n"
+				<<"OWNER_CONVERGENCE_CSV sha256="<<digest(csv)<<"\n";
+			std::ofstream csvOutput(csvPath,std::ios::binary);csvOutput<<csv;csvOutput.close();
+			std::ofstream output(convergenceOutputPath,std::ios::binary);
+			output<<transcript.str();output.close();
+			convergenceProbePassed=static_cast<bool>(output)&&static_cast<bool>(csvOutput);
+			if(convergenceProbePassed)std::fprintf(stderr,"OWNER_CONVERGENCE_ARTIFACT path=%s sha256=%s "
+				"scope=qualified_fixture_only passed=1\n",convergenceOutputPath,digest(transcript.str()).c_str());
+		}
+		std::fprintf(stderr,"OWNER_CONVERGENCE_PROBE passed=%d error=%s\n",
+			convergenceProbePassed?1:0,probeError.c_str());
+	}
 	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_SMOKE accepted=%d owner_identity=%llu "
 		"iterations=%u/%u/%u commits=%u projections=%u staging=%u transfers=%u "
 		"actual_ws=%llu certified_ws=%llu commuting_residual=%.9g commuting_scale=%.9g "
@@ -14162,6 +14359,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture()
 		ownerResidentObserved.interstageFullGridTransferCount==0u&&
 		ownerResidentObserved.terminalStagingCount==1u;
 	const bool ownerSmokePassed=ownerAccepted&&ownerMirrorBounded&&ownerArithmeticBoundCanFail&&
+		convergenceProbePassed&&
 		projectionBracketRED&&effectiveAsMolecularRED&&
 		r2ImmediateEndpointClassRED&&endpointClassAuthorityRED&&endpointPredicateIdentityRED&&
 		productionQualificationRefusalRED&&transportInvariantREDs&&
@@ -14320,6 +14518,8 @@ int main(int argc,char** argv)
 		return RunProductionResidentEOSCandidateMetalFP64Fixture();
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-resident-target-metal")==0)
 		return RunProductionResidentTargetLineageMetalFP64Fixture();
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-convergence-fixture")==0)
+		return RunProductionResidentTargetLineageMetalFP64Fixture(argv[2]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-metal-fp64-kernel-sweep")==0)
 		return RunProductionMetalFP64KernelSweep();
 #endif
@@ -14337,6 +14537,8 @@ int main(int argc,char** argv)
 		return passed?0:98;
 	}
 #if defined(RISE_ENABLE_OPENVDB)
+	if(argc==3&&std::strcmp(argv[1],"--fire-production-owner-cost-prefix")==0)
+		return RunProductionOwnerCostPrefixChild(argv[2]);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);
