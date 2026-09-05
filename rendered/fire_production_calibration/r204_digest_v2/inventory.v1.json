@@ -1,0 +1,1207 @@
+{
+  "schema": "rise.fire.r204.evidence-inventory.v1",
+  "source_commit": "fda111259ed22e9bfbf4cf7c32bba5ee8b3b756f",
+  "scope": "Preserved exploration, focused qualification, attested prefixes, and broader failures. Inclusion is not a passing verdict; placement.evidence.v1.json identifies the attested measurements, verification.v1.json records the open gate.",
+  "files": [
+    {
+      "path": "attested_repeat1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "a1d9c16261f77deb5a4d21391d5a961a07d8a69cccc04ed49ba965b5ed47a4fe",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 2164,
+        "root_sha256": "68d08bcb76529f35c3b7c288af676bdc0d89920ffca65e78d7482bbd93ce648b"
+      }
+    },
+    {
+      "path": "attested_repeat1/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "0edefcf61682560596b2838ddbfd7b833d4cb17322a8be758683204f5120d14e",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 411,
+        "root_sha256": "c428c0ed6291e5b79bf1502b10262283402eda879e1c93aaa7550fd12f153b5b"
+      }
+    },
+    {
+      "path": "attested_repeat1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "attested_repeat1/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e758a9658bb55bf7df7662b6630f158a7906536e8ac91acd6cd81ba3e9eb187e"
+      }
+    },
+    {
+      "path": "attested_repeat1/diagnostic_from_zero_identity.v1",
+      "sha256": "5376ce20e1a28c3fca1a73ccb3aac57f709f89bc9fb81bba3f28ec943dfb9f21",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "9fed52498b3b16f575c4e6082f13f4db0c2aa39f613a4f4565c25523fca17cf1"
+      }
+    },
+    {
+      "path": "attested_repeat1/diagnostic_from_zero_identity.v1.payload-v2.json",
+      "sha256": "382e33c53784e3fd30465e0abda38dc1f66c0d13e9e004e3630d1fcf266c8c5c",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e0ca40f08db5a755c47face287abca4120581c07dd1037ddaac5fe4e2553734c"
+      }
+    },
+    {
+      "path": "attested_repeat1/diagnostic_prefix_outcome.v1",
+      "sha256": "7c391d70fa58a3ee2de4594d2fbc5afb427aec49f99e36f2b9b3dd6f41ca09ee",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "b828b7f8a15672c591f4e7e5ddfe52842371aae1a724ba44806f33297bcff648"
+      }
+    },
+    {
+      "path": "attested_repeat1/diagnostic_prefix_outcome.v1.payload-v2.json",
+      "sha256": "f94ad62d2b14f4dfb9f67b0b1d383d12c4908fe497785807dbfae69a3d5df701",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "de6a0ccffd3ef4e8fc9677ff9a961ac80f1df5b1ecba0aaa9f2a671a46e57f2b"
+      }
+    },
+    {
+      "path": "attested_repeat1/diagnostic_prefix_protocol.v1",
+      "sha256": "ffdbb9025e01f14f2b4072355ec7a51c7ff9770b541d8e821036b0215859bae3",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "9f5cdb9e7c294faee74306306fdf98308a0500e93216de3f26e2cfe6e57b903a"
+      }
+    },
+    {
+      "path": "attested_repeat1/diagnostic_prefix_protocol.v1.payload-v2.json",
+      "sha256": "54998f734a1751408384cdd237362a908f442985c6bd89794aed823bc82cb672",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "da4e8d0727e558edc80fa021f263028eb2876f0280cee48386cad858e9a5b9d2"
+      }
+    },
+    {
+      "path": "attested_repeat1.log",
+      "sha256": "e8ac7e9f2e764885a9f5cb970ab14871b7d565242b851a1310d885eacbad4e54",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 478190,
+        "root_sha256": "94671fc38e28d337cfd54dd50a44e21ab95e0d63ff038405f5ed6d4d9174db4e"
+      }
+    },
+    {
+      "path": "attested_repeat2/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "6db2236011b5ff578010edf2aa7f5a1ebcec4c96bd83d52a35234956b56a3c37",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 2165,
+        "root_sha256": "18f20542a2066a1a36eb2abae3cd9edf97133ab503184928d7cf04685bf02e47"
+      }
+    },
+    {
+      "path": "attested_repeat2/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "eb52efc73d41b7d5522a8ad8fb0557f3ebafc5ac8f6d6020ae80d4bd7fa5fc07",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 411,
+        "root_sha256": "42cae484dcd274e3831af1a5e6d8ef7e9b0ab588fd95515f7fa926296e152384"
+      }
+    },
+    {
+      "path": "attested_repeat2/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "attested_repeat2/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e758a9658bb55bf7df7662b6630f158a7906536e8ac91acd6cd81ba3e9eb187e"
+      }
+    },
+    {
+      "path": "attested_repeat2/diagnostic_from_zero_identity.v1",
+      "sha256": "5376ce20e1a28c3fca1a73ccb3aac57f709f89bc9fb81bba3f28ec943dfb9f21",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "9fed52498b3b16f575c4e6082f13f4db0c2aa39f613a4f4565c25523fca17cf1"
+      }
+    },
+    {
+      "path": "attested_repeat2/diagnostic_from_zero_identity.v1.payload-v2.json",
+      "sha256": "382e33c53784e3fd30465e0abda38dc1f66c0d13e9e004e3630d1fcf266c8c5c",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e0ca40f08db5a755c47face287abca4120581c07dd1037ddaac5fe4e2553734c"
+      }
+    },
+    {
+      "path": "attested_repeat2/diagnostic_prefix_outcome.v1",
+      "sha256": "655487308e7a9e0b01c3b9c0e3cf09aabfb4f186b877b62e5d283fb970beea81",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "da4a56ddf0b241ce584f2d17153547309dec4852048ff4aaf9e3fd41f95f46d5"
+      }
+    },
+    {
+      "path": "attested_repeat2/diagnostic_prefix_outcome.v1.payload-v2.json",
+      "sha256": "954d74bd4425fb85eb595717d01435c7a0401cc5cf91ff4732d78411b7bab0c3",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "9f10f41c606138945cb7c57b3110b1ac6438770b88be981eb8b486abdf126bff"
+      }
+    },
+    {
+      "path": "attested_repeat2/diagnostic_prefix_protocol.v1",
+      "sha256": "ffdbb9025e01f14f2b4072355ec7a51c7ff9770b541d8e821036b0215859bae3",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "9f5cdb9e7c294faee74306306fdf98308a0500e93216de3f26e2cfe6e57b903a"
+      }
+    },
+    {
+      "path": "attested_repeat2/diagnostic_prefix_protocol.v1.payload-v2.json",
+      "sha256": "54998f734a1751408384cdd237362a908f442985c6bd89794aed823bc82cb672",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "da4e8d0727e558edc80fa021f263028eb2876f0280cee48386cad858e9a5b9d2"
+      }
+    },
+    {
+      "path": "attested_repeat2.log",
+      "sha256": "6f0b84c18fcd4226bb14c6fba97e573693caa7997de0b5faac5911216c84a118",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 478262,
+        "root_sha256": "bbc725e81970f3f45a2c3cb390e0f8b938299d6ae70b6297ade65d76395011a7"
+      }
+    },
+    {
+      "path": "attested_repeat3/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "5699c28fe0c9f16206e4947fbb38ffd050664a0ab753f2b1a0cf7d9d1caef097",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 2156,
+        "root_sha256": "bd5eaff4f61c687b2ec6736888e2c6e9ccd5be18955a13f84a74a954cb22d8c9"
+      }
+    },
+    {
+      "path": "attested_repeat3/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "408a2365d7c75c6264014caa6f55f481e11178b4f97179526bbaba859765e8bc",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 411,
+        "root_sha256": "fe52d89ce05d27bcbacbf96eba170f3a3456300c174aa5641844671edcab6b6c"
+      }
+    },
+    {
+      "path": "attested_repeat3/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "attested_repeat3/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e758a9658bb55bf7df7662b6630f158a7906536e8ac91acd6cd81ba3e9eb187e"
+      }
+    },
+    {
+      "path": "attested_repeat3/diagnostic_from_zero_identity.v1",
+      "sha256": "5376ce20e1a28c3fca1a73ccb3aac57f709f89bc9fb81bba3f28ec943dfb9f21",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "9fed52498b3b16f575c4e6082f13f4db0c2aa39f613a4f4565c25523fca17cf1"
+      }
+    },
+    {
+      "path": "attested_repeat3/diagnostic_from_zero_identity.v1.payload-v2.json",
+      "sha256": "382e33c53784e3fd30465e0abda38dc1f66c0d13e9e004e3630d1fcf266c8c5c",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e0ca40f08db5a755c47face287abca4120581c07dd1037ddaac5fe4e2553734c"
+      }
+    },
+    {
+      "path": "attested_repeat3/diagnostic_prefix_outcome.v1",
+      "sha256": "c21ea9d401e8eeffdc60b8ea0a1eb515f8e2cc608d4876a02a75d9116c1bb7b6",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "98c8a2a33878de3474f86a0a2efcf46ff86286214a0e4a847b97ac825c43c149"
+      }
+    },
+    {
+      "path": "attested_repeat3/diagnostic_prefix_outcome.v1.payload-v2.json",
+      "sha256": "943e7d5e8e3d3f284163fb847fc7e9336250659efab7789b77144455b5c5118f",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "2c59e3af08029daa38e54b54580e73c54d03caef9fda649371b3b97e5176227d"
+      }
+    },
+    {
+      "path": "attested_repeat3/diagnostic_prefix_protocol.v1",
+      "sha256": "ffdbb9025e01f14f2b4072355ec7a51c7ff9770b541d8e821036b0215859bae3",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "9f5cdb9e7c294faee74306306fdf98308a0500e93216de3f26e2cfe6e57b903a"
+      }
+    },
+    {
+      "path": "attested_repeat3/diagnostic_prefix_protocol.v1.payload-v2.json",
+      "sha256": "54998f734a1751408384cdd237362a908f442985c6bd89794aed823bc82cb672",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "da4e8d0727e558edc80fa021f263028eb2876f0280cee48386cad858e9a5b9d2"
+      }
+    },
+    {
+      "path": "attested_repeat3.log",
+      "sha256": "8b58479c87b2e5b6fe9469e1fe95f3577559b5e6853a2efbdff40fca1235289b",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 478196,
+        "root_sha256": "72e778ce0448ed411246583512065a9cdbb35407a8c2d5e07a1d188e290bed9f"
+      }
+    },
+    {
+      "path": "baseline.full.fixture.log",
+      "sha256": "201ad224ad16cdd983c4d3b4fcdee540ef3acfd283ff00cc10604459a9d220f2",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 28889,
+        "root_sha256": "c2ff1988b0199da412c3c9228a74d340a7ccd1309755c2578851b53cbc09227a"
+      }
+    },
+    {
+      "path": "baseline.r136.log",
+      "sha256": "e194c09244a19f84b1efa90021d01698cec508de6b2b607308a58f1ef4a917b6",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 25005,
+        "root_sha256": "ac21831be870406c6d5cb26d6e6611eb95e29c95e5def0dab8fd6c27781f43ad"
+      }
+    },
+    {
+      "path": "bridge.v2.json",
+      "sha256": "1837238425d15d7f33aca4ce697202e31042a924da8a06065581851e1a6fa54f",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 176477,
+        "root_sha256": "69f6e2b65e98a41b33c12c7dbde4756abb74edaced10924226c778a88b59ee61"
+      }
+    },
+    {
+      "path": "bridge.v2.json.seal.json",
+      "sha256": "b76e1f65ef91af075f6c0b69bcabcff64cf9e8f7c9d18bbbecbcfad51ba18fe7",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 390,
+        "root_sha256": "6e49d80357da647c1f9397f7f969380d14002c6aaaf6119075c529c8312c3b8e"
+      }
+    },
+    {
+      "path": "cpu.log",
+      "sha256": "ea7778d2c056ba39264d120f8d7c5c9432d2e060e936aaed0de7fa7a25ebadca",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 94,
+        "root_sha256": "7bb4a9bef95faf5dc9a2e3cc55f18d2caa61ef63546545ca57c8ece50494c652"
+      }
+    },
+    {
+      "path": "cpu.v1.log",
+      "sha256": "424d97ec361d834280e1d179b4537bdb68605bbeff6c5336138103db96b3f9a0",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 13816,
+        "root_sha256": "6c554bafc91b67eaf7fe9fcc5be40039a2e55de828b52e8a3432715c63cb094d"
+      }
+    },
+    {
+      "path": "full.fixture.log",
+      "sha256": "5127916dd5c83fb5edda254070248b2ca2a4fb2180a8512ed502b3311445f8f4",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 28889,
+        "root_sha256": "def029763c3de093e27db9eb529bf40161761adc9407c43b7793b2499ba1d6c7"
+      }
+    },
+    {
+      "path": "golden.device.v1.log",
+      "sha256": "f5e73aa81a06818e003730d1bb7a580a7baee96c1fad340152bb6160ebb4c6c0",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 204,
+        "root_sha256": "7c23123a222a1165e9db4912b3bd99ceff21357ff38cb6927a522312f8ccab5f"
+      }
+    },
+    {
+      "path": "make.force-rebuild.log",
+      "sha256": "d52c15eaa70de02d9e4afd702a26acfb85870ff4ebae4fe1b40a793577df14e5",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 23405,
+        "root_sha256": "618bc1f8f33d5983ecbbb461441171f2a967b5fe7ed307694b6b50f8ec4ad114"
+      }
+    },
+    {
+      "path": "metal.red.v2.log",
+      "sha256": "e19f40506735018e2eaf35b81214543a8221e3bcccce325136463349ed70e0e2",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 15164,
+        "root_sha256": "2499e85b40a9ab279fe2e3a443ae5793f219cf1ada8b817c21469bdc28bf6943"
+      }
+    },
+    {
+      "path": "metal.v1.log",
+      "sha256": "02c987cbc5e15bf8e9f24688039966a5b7d153468ca358df6966d9068ade8910",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 14891,
+        "root_sha256": "28f6df783e86e85c152480866cf2019040d06c71ebb870acbf2758d6e974fa6a"
+      }
+    },
+    {
+      "path": "owner.placement.v1.log",
+      "sha256": "85509f7903c2ce900631e02ad3984c494af3960cdd966d0fbbf01d64545f5c89",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 208952,
+        "root_sha256": "8562e8090c1b5914d5b9ae3311ac924debf1384465fdd1edc2fe9f2aec579b55"
+      }
+    },
+    {
+      "path": "owner.placement.v2.log",
+      "sha256": "8c083fc9f387552c5663e7d775565359f8220417dc8930fd43318551dbb97c96",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 882409,
+        "root_sha256": "953587a15fced27f6f1a34eef6a3674995d59edb52251f4e9168e121f06cfed7"
+      }
+    },
+    {
+      "path": "owner.placement.v3.log",
+      "sha256": "400e4f5a882713357d41d169e21191536ec10f9126522e9b991cb9a3b140c8d9",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 882512,
+        "root_sha256": "3b8cb0cc7883c25b0fb0b32b0519188791b6c695a23f91a45a982bf272f1030e"
+      }
+    },
+    {
+      "path": "owner.placement.v4.log",
+      "sha256": "7690dcd038e04b2ee9492c70c68e1aafdae8ec49d60c622905df3d9aa6651200",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 883478,
+        "root_sha256": "ec2a1231f3ad38aa83d771fb660a21f73782106b35befa9580718bf3e1df438e"
+      }
+    },
+    {
+      "path": "placement.evidence.v1.json",
+      "sha256": "11fb52c3b110e6584d39acca6296ae9fc1c7205caf593245884ce6096005dbee",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 46796,
+        "root_sha256": "e6ec612de9580bd442d04730bdcf480ba0e59c31d8dfc241612fb957be82ce22"
+      }
+    },
+    {
+      "path": "placement.evidence.v1.json.seal-v2.json",
+      "sha256": "7184b74f5b93daa8d75cfc89a2119918ec9b60ee2111663a2974d621759bb47c",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 333,
+        "root_sha256": "a8753543972a659535c3e05db36ef4f7beaa1dabe38c7760d9c0a0ca0ebd6b19"
+      }
+    },
+    {
+      "path": "placement_final1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "a84fcfe16825c81cd4b3fc3960cd6e80efa76c60c5a5304519ce10d7f97d6e9e",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 2164,
+        "root_sha256": "7f5203356243b3a05652ef1d913d7b41b088c736f090cc7961fdbceef7e30282"
+      }
+    },
+    {
+      "path": "placement_final1/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "3ade203b5a77301491348cc9b11af55dcc3fd504873b5cf59744106f75d228cb",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 411,
+        "root_sha256": "59bb8d842480d7e301a4f3236e2bdc0d8521d5a0badb934da4a320a2ab5139cc"
+      }
+    },
+    {
+      "path": "placement_final1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "placement_final1/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e758a9658bb55bf7df7662b6630f158a7906536e8ac91acd6cd81ba3e9eb187e"
+      }
+    },
+    {
+      "path": "placement_final1/diagnostic_from_zero_identity.v1",
+      "sha256": "2cb67ba01e01560650b8669e85161b00e16db85e89d70013ba7cb09ee08f1bcb",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "1bd98e65cb21809a0e365307d63c5a465c8757f910923593e16927c924e5f021"
+      }
+    },
+    {
+      "path": "placement_final1/diagnostic_from_zero_identity.v1.payload-v2.json",
+      "sha256": "11326753f5ca0934899a14cffc56e81b05efe08c78168b6169281decf64cbdb5",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "6280951337e3a483eb2ca8fdefbf0b4b7b692bc27da7858ed5fc50a8903a2a4b"
+      }
+    },
+    {
+      "path": "placement_final1/diagnostic_prefix_outcome.v1",
+      "sha256": "c463564ac8a6375a25bf9c5ae8f5f3e005585356dba4f5a180940f15c2b585b8",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "9322e54c2785586782efa58c892399c4a03cd18113fc6495b3ae83c8e597cb5d"
+      }
+    },
+    {
+      "path": "placement_final1/diagnostic_prefix_outcome.v1.payload-v2.json",
+      "sha256": "deade1647202ba24319d43848609ea221c55bb8fdd517becb3e075e14d6dd293",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "a8d465d8f072f69c532897c4742279c51157dba5d5ccadb82f0134a89a455709"
+      }
+    },
+    {
+      "path": "placement_final1/diagnostic_prefix_protocol.v1",
+      "sha256": "38cf038c60cb767649eaeb3c80c2b9f82bd6e77710016a572ec311692813e205",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "de5aa192cb8e155f06a5655785dab86a87cd155508cddc3d7c1da9a6c0d0bd38"
+      }
+    },
+    {
+      "path": "placement_final1/diagnostic_prefix_protocol.v1.payload-v2.json",
+      "sha256": "8df3165fd457a759f73bcfc843d234ad060762dd4cb943dd9b22ed596120e3ca",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "930373fec27cc9ba703b6a96e240ce2c3145e537aaea2164e8b4647231efa3be"
+      }
+    },
+    {
+      "path": "placement_final1.log",
+      "sha256": "3942dca1b1540f5f2285cb4fd66a9aeaf0ac12b5f5d994407625d9fba2427828",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 477862,
+        "root_sha256": "e277d3a47f34d457bb83f1b4655c31dfe97bf6b11bb5be8d79ba3b22c386dce0"
+      }
+    },
+    {
+      "path": "placement_final2/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "e5b37a3297e8e781fc437b7dc71e8a52414e32ea108cd0b27c55e3334da815e6",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 2163,
+        "root_sha256": "7888cfe6b73cbf9c5d402895b01dc9cc98797831defe80318c93d231a0008a8e"
+      }
+    },
+    {
+      "path": "placement_final2/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "2b8aa1bc51dd5cf4ffbe20b596c0e7c8c2ef6bb42c60b2fc0e83727118e5c32a",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 411,
+        "root_sha256": "1bfea80c8487309401118a5ad7d749904ef105e6a70a6514223a7e7d778fc04f"
+      }
+    },
+    {
+      "path": "placement_final2/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "placement_final2/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e758a9658bb55bf7df7662b6630f158a7906536e8ac91acd6cd81ba3e9eb187e"
+      }
+    },
+    {
+      "path": "placement_final2/diagnostic_from_zero_identity.v1",
+      "sha256": "2cb67ba01e01560650b8669e85161b00e16db85e89d70013ba7cb09ee08f1bcb",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "1bd98e65cb21809a0e365307d63c5a465c8757f910923593e16927c924e5f021"
+      }
+    },
+    {
+      "path": "placement_final2/diagnostic_from_zero_identity.v1.payload-v2.json",
+      "sha256": "11326753f5ca0934899a14cffc56e81b05efe08c78168b6169281decf64cbdb5",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "6280951337e3a483eb2ca8fdefbf0b4b7b692bc27da7858ed5fc50a8903a2a4b"
+      }
+    },
+    {
+      "path": "placement_final2/diagnostic_prefix_outcome.v1",
+      "sha256": "8504237126aa56bb5bfd0715bddcfaf7950e77887b4b9ff8b87e76e86f12aede",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "333e6209fb6213ae825ddaedeed0574357b70e2189c7600d459f0903b7af0c70"
+      }
+    },
+    {
+      "path": "placement_final2/diagnostic_prefix_outcome.v1.payload-v2.json",
+      "sha256": "dd89d0f4f29ed3890359fbac5de902937537438c949cc174f3065397d173f33e",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "1de8228666da4db950045a84f38d9a8dfb2f3704c055b08ddf20d72e28ee1ff5"
+      }
+    },
+    {
+      "path": "placement_final2/diagnostic_prefix_protocol.v1",
+      "sha256": "38cf038c60cb767649eaeb3c80c2b9f82bd6e77710016a572ec311692813e205",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "de5aa192cb8e155f06a5655785dab86a87cd155508cddc3d7c1da9a6c0d0bd38"
+      }
+    },
+    {
+      "path": "placement_final2/diagnostic_prefix_protocol.v1.payload-v2.json",
+      "sha256": "8df3165fd457a759f73bcfc843d234ad060762dd4cb943dd9b22ed596120e3ca",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "930373fec27cc9ba703b6a96e240ce2c3145e537aaea2164e8b4647231efa3be"
+      }
+    },
+    {
+      "path": "placement_final2.log",
+      "sha256": "3ced8c37e1527c1c89f5e2ed81bc36004ab191ddcd9114efc4df34b1d249cf95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 478087,
+        "root_sha256": "6656276fc71e501dfa1a409214a12cf9fd29e00b37527e3b4a27336dd52cd8bf"
+      }
+    },
+    {
+      "path": "placement_profile_exploratory/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "4e904ed8dc9cf992ad6cd2f20f66138971b7efb83bc9f22fd91b90e520e24edc",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 1975,
+        "root_sha256": "02bc838218def04cd2bd4cafa894795d93e5bb3915c2bab30cfedc0c28d660a3"
+      }
+    },
+    {
+      "path": "placement_profile_exploratory/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "placement_profile_exploratory/diagnostic_from_zero_identity.v1",
+      "sha256": "b27c2edfd5036a4efce50a89e5dba1f2fb9747453e803f2f55b95661fe83c248",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "6d242c9cb5d77c4e21209b37fb513e83cd9ada9f06b1996cc070ce0e41bc6365"
+      }
+    },
+    {
+      "path": "placement_profile_exploratory/diagnostic_prefix_outcome.v1",
+      "sha256": "6d0fc84652cca432289419ae709d3b3def6439a2f3c5a4df36ac88fbc4f864be",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "e485a54c51a5b3cf8303db71f1e487ac9ac333372a2719f543011b65c6360cb3"
+      }
+    },
+    {
+      "path": "placement_profile_exploratory/diagnostic_prefix_protocol.v1",
+      "sha256": "c7b67b45122b33f07182e2cc323293d7e3844637ba5e0d9a49e065a6ebbcb671",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "523dbe2ce4f7bc6cd38c1c8aa3130751517574747f2a569e3e974938a739efad"
+      }
+    },
+    {
+      "path": "placement_profile_exploratory.log",
+      "sha256": "c1ca1c3a05a6510d261854e0654ed0bed987504a899d133afc0696529409aa1c",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 478093,
+        "root_sha256": "a61173b926477bc202635ce9f48a8fd7ee0825defe1febb8b1d826eea04918d8"
+      }
+    },
+    {
+      "path": "placement_repeat1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "194b82ae497ba999d2e79455f80b31d4eeaf9193091b07ff131af2a14ac3ce57",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 2173,
+        "root_sha256": "d692ca6e55c45ac89fc7d18b852e4ac354d0f75b2d8558ac5e2208d9f75b759f"
+      }
+    },
+    {
+      "path": "placement_repeat1/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "2ed3ac6e7d4ee055c2fabef8bf80f89255c9f64bc07cb21b69d4a26a0ddb66d9",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 411,
+        "root_sha256": "c143d42c90f71e3a14cfb8671e04e35a06851729720f366950a507daff204a52"
+      }
+    },
+    {
+      "path": "placement_repeat1/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 193,
+        "root_sha256": "9bb29dc705fafdcf0857edd3487dd592f574e16f669ac2128a76c7d4b6e3c3d9"
+      }
+    },
+    {
+      "path": "placement_repeat1/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "e758a9658bb55bf7df7662b6630f158a7906536e8ac91acd6cd81ba3e9eb187e"
+      }
+    },
+    {
+      "path": "placement_repeat1/diagnostic_from_zero_identity.v1",
+      "sha256": "32e69fc4cbae4626741a688d11ab71785f1f4939437c91026657b24393dda800",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 611,
+        "root_sha256": "597f0c1ceb29cb9c064f728a191592483eab45df730f0d5445c9c3cac9aa1178"
+      }
+    },
+    {
+      "path": "placement_repeat1/diagnostic_from_zero_identity.v1.payload-v2.json",
+      "sha256": "8e9936b594a8a3021e509f4643e7a88c4203d2f9338a2d5197dfe4e84e5eed6b",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "21edfcc86bfa145cf4902b3d7ee651b48705901cb6d11460c634141817d3360a"
+      }
+    },
+    {
+      "path": "placement_repeat1/diagnostic_prefix_outcome.v1",
+      "sha256": "6ff5dd5f39043b70efb32261e4973821dbbdf08f9b7f8e1ceb6289479ee55a6b",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 717,
+        "root_sha256": "499dc1ee795572d30616c3128452dc2bcd62b665fab8b4824c64226368cc5411"
+      }
+    },
+    {
+      "path": "placement_repeat1/diagnostic_prefix_outcome.v1.payload-v2.json",
+      "sha256": "6b169f4608021f06ea6d49235f74c7c5075ec369bdd76d35bc2329848cd1dbd3",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "58c0e0e9163ec595eddfbb0f7a4478a81361ceb3c104774e302cd7ceae8fa5fd"
+      }
+    },
+    {
+      "path": "placement_repeat1/diagnostic_prefix_protocol.v1",
+      "sha256": "21c93df09089417afc909b603ae628fc314bc79169a44b86d702a4f69d6b5661",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 643,
+        "root_sha256": "e5c2989d075a8ceb0c1f3ab27764927dcf1e21838f96be7f39a197724a2b604d"
+      }
+    },
+    {
+      "path": "placement_repeat1/diagnostic_prefix_protocol.v1.payload-v2.json",
+      "sha256": "78961796a40ebdfd08323a5b07e27094ab8aeeffb7488c70af0f52b16beffd0e",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 410,
+        "root_sha256": "a7d3089662f4501993b3bd8633bf586a489e773b7ff9ce0c49c73a39420324f8"
+      }
+    },
+    {
+      "path": "placement_repeat1.log",
+      "sha256": "d02aedcb5660a4601b8473cdb1ccc9624750c22b00b8a284d791e94847cfedc2",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 478483,
+        "root_sha256": "c57160f3e1c6179ef6e67cf83d15930e709a6c29e4d23976dc2d874844d9f267"
+      }
+    },
+    {
+      "path": "publication.red.v1.log",
+      "sha256": "b378544c9123e66305056665d5a95d753048c62febbc73a34425f9b879a4e97b",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 270,
+        "root_sha256": "23c60ae2e32a920d86492faf41f6e9fb721428dfda3b171045171ada801dee7f"
+      }
+    },
+    {
+      "path": "python.red.v2.log",
+      "sha256": "5cf47f52104f2d8a6582be7cd8ef175f4ce43afcc3b5caaa24fa941458982733",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 169,
+        "root_sha256": "ab7e10411315bf02814241cbec92e65c6c3ece6e759da45ab2713c6353c65b90"
+      }
+    },
+    {
+      "path": "qualification.final.v1.json",
+      "sha256": "f610a09af01e27d4bff2c99cf0bc758845600bb5c46c9554811d3bc91886d290",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 1437,
+        "root_sha256": "94eebeb90e07f33c46f50880c149dc0d3a43b92c20e983109367ed3cb7e49fe7"
+      }
+    },
+    {
+      "path": "qualification.final.v1.json.build.log",
+      "sha256": "7ed10c80b28ca104479cb9f2c6cd6b5f4c07a852d2dcfcee4dd7cd241ee29f21",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 156,
+        "root_sha256": "f750e78909d4a65b73bd75050123ccdaff03abc2e404d67995617dc5c1f5ed79"
+      }
+    },
+    {
+      "path": "qualification.final.v1.json.owner.log",
+      "sha256": "7bd9dc63aae8745a972a95b8b0b22f0edc7ccb27424fdd7129b0f98b9714c661",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 883478,
+        "root_sha256": "e91efaa96a583cb7a3d0a41b546e7fcd8b78aaa9a4f29f30209d306c48ac1f26"
+      }
+    },
+    {
+      "path": "qualification.final.v1.json.publication.log",
+      "sha256": "8bad030a209b2597f23e00d6875b199ecfdde318f24ce0b4b208c53f02b49132",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 326,
+        "root_sha256": "930a49b3bfa9f6f4f95352d8c69ee9aaa8e68467c8e6d0ec2e5558c9d0b0b4b4"
+      }
+    },
+    {
+      "path": "sanitizer.final.log",
+      "sha256": "f071b7cdb74d8878feaa27e9d17a04e5c8782f27d31f623f623eb7433782d3ee",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 25,
+        "root_sha256": "942e39f6b74b6136fac2fc0dc950370b4cf6fb1f27de3d5ef8186842edbec028"
+      }
+    },
+    {
+      "path": "sanitizer.v2.log",
+      "sha256": "f071b7cdb74d8878feaa27e9d17a04e5c8782f27d31f623f623eb7433782d3ee",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 25,
+        "root_sha256": "942e39f6b74b6136fac2fc0dc950370b4cf6fb1f27de3d5ef8186842edbec028"
+      }
+    },
+    {
+      "path": "verification.v1.json",
+      "sha256": "4da71099022a866d3a1887d498fd2af71d71ef8a4174a40aba6ebd0ce7664f64",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 4024,
+        "root_sha256": "db8fbf0d4862bc8c87c218f33819ead59d63d4325cbe200a4868c2e056739bbf"
+      }
+    },
+    {
+      "path": "xcode.deployment.log",
+      "sha256": "f8c158678a287094865031c2ec51986b2ed50cb806a5fc762e81a72e0e815b5e",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 1558298,
+        "root_sha256": "0c426b4bd0b608f7e6a453af96779db0736b313eefc24a4f6e12660886db186d"
+      }
+    },
+    {
+      "path": "xcode.opto.log",
+      "sha256": "654addb2a0255d8d7ab743573727d6c411a95c1b8ae5b6d4c8082fb101fd7734",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 1533795,
+        "root_sha256": "72724fb586a1be485876ac0862cba03b4d4865cd8f0275c24da3b96a24fe16c0"
+      }
+    }
+  ]
+}

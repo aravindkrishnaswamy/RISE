@@ -1,0 +1,12 @@
+{
+  "artifact": "inventory.v1.json",
+  "sha256": "294b13cd3c5ba6608526b4f916db07d4ec38c6d046777da9e77eec809ada5a05",
+  "payload_v2": {
+    "digest_format": "rise-payload-sha256-merkle",
+    "digest_version": 2,
+    "chunk_bytes": 4096,
+    "fan_in": 16,
+    "payload_bytes": 45004,
+    "root_sha256": "84b277cfd035f50f2d39b385bea4b9470c2b96c22ea54142b3f970b774e7ab44"
+  }
+}

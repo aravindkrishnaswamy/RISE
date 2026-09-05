@@ -1,8 +1,10 @@
 # r204 — payload Merkle digest and sealing placement
 
-Status: digest foundation and production sealing placement implemented; final
-placement review and cost evidence sealing remain pending. This is not an affordable-owner or replay
+Status: digest foundation and production sealing placement implemented and
+measured. This is not an affordable-owner or replay
 verdict. The r203 EOS bin repair stands. Continuation is from zero, not r78 resume.
+The focused owner gate passes; overall qualification remains open on the wider
+suite failures recorded below. No final fresh-review convergence is claimed.
 
 ## Ruling and identity boundary
 
@@ -83,6 +85,85 @@ enthalpy evaluations, rather than full intermediate payload sealing. No interval
 proof or tolerance was removed to meet a timing target. Exact-commit repetitions
 and their evidence manifest are a separate cost gate; these exploratory numbers
 are not a production-speed or focusing verdict.
+
+### Attested result
+
+The executed build and gate at source commit
+`fda111259ed22e9bfbf4cf7c32bba5ee8b3b756f` are bound by
+`qualification.final.v1.json` (SHA-256
+`f610a09af01e27d4bff2c99cf0bc758845600bb5c46c9554811d3bc91886d290`).
+Three independent from-zero **three-step diagnostic prefixes** use that exact
+executable. Per-step ingress/output roots agree across processes, all historical
+physics/iteration columns agree with the r203 baseline, and the full owner gate
+passes. This is not the eight-step r78 resume-equivalence certificate: the old
+EOS-refusing executable cannot complete that certificate, and no resume authority
+is claimed. The next physics replay must start from zero.
+
+Across 126 producer commands, mean producer cost is **685.576 ms**. EOS contributes
+555.402 ms mean and target terms 113.362 ms mean. Transport and physical-flux
+identity kernels average 0.005508 and 0.004481 ms respectively. Whole-owner device
+and wall p95 (nearest rank over nine steps) are **10466.264 / 11942.331 ms**.
+The first prefix step accepts 2/2/2 Picard iterations; subsequent steps accept
+3/3/3, so pooled step variance is schedule composition, not unstable throughput.
+Across the three independent process means, device cost is 9740.924 ± 7.729 ms
+and wall cost is 11148.367 ± 9.238 ms (sample standard deviations).
+The preserved single-process r203 gather-prefix producer mean was 4668.029 ms:
+the measured reduction is approximately 6.81×. This historical baseline is not
+a three-repetition baseline, and this comparison is not an onset-speed claim.
+
+Evidence: `placement.evidence.v1.json`, SHA-256
+`11fb52c3b110e6584d39acca6296ae9fc1c7205caf593245884ce6096005dbee`.
+Its detached seal also records the full v2 root; every contributing file has a
+v1 and v2 digest. Missing/duplicate repetitions, stale outcomes, unbound producer
+logs, nonfinite command times, missing roots and changed physics fields refuse.
+
+**Result:** sealing placement is effective, but affordable producers are not yet
+qualified. EOS plus target arithmetic accounts for about 97.5% of producer time.
+The next class-A candidate is device-side reuse of identical thermochemistry
+evaluations: fixed Tmin/Tmax enthalpies across cells and shared T-dependent bases
+across species. It must preserve each expansion and its interval, then re-derive
+the owner bit-comparison. Removing those numerical proofs or claiming fixed-k
+from this cold prefix would exceed this result. No onset/window run, convergence
+selection, focusing verdict or new movie is claimed here.
+
+### Wider verification and open acceptance
+
+Forced full make recompilation passes without warnings. Clean Xcode Deployment
+and Opto (full LTO) builds pass; their only warnings are the documented missing
+checkout-local OIDN search path and AppIntents metadata extraction notice.
+ASan/UBSan passes the standalone digest fixture. Logs are retained in the r204
+evidence directory; `verification.v1.json` binds their complete bytes.
+
+The full `FireSequenceTest` exits 1 with four failures, and the preserved r203
+executable reproduces the same four failures:
+
+- r136's exact full-step refusal fixture returns 238 rather than 237. The
+  projection validation predicate has unresolved/invalid bitmap `0xc00000`.
+  The historical exact trace and its expected result have not been changed.
+- The synthetic-chem preview is black (radiance, red, and blue all zero).
+  The normal fixture supplies a zero-step, cold solver state; its chemistry
+  weights are zero. It nevertheless expects a visible bluish preview.
+- The visible-PNG publication assertion and its delayed-PNG assertion then
+  fail on that black preview. These are not additional physics measurements.
+
+The current full-suite log SHA is
+`5127916dd5c83fb5edda254070248b2ca2a4fb2180a8512ed502b3311445f8f4`;
+the preserved r203 full-suite log SHA is
+`201ad224ad16cdd983c4d3b4fcdee540ef3acfd283ff00cc10604459a9d220f2`.
+Reproduction in the old executable establishes attribution, not permission to
+ignore failures. An owner decision on isolated qualification-fixture repairs
+is pending; no expectation, tolerance, production physics, or empirical output
+has been altered to turn them green. The repository review-loop skill therefore
+keeps overall sign-off open rather than claiming that narrow owner tests finish
+the rung. Final placement fixes are committed at `fda11125`; the final fresh
+review round remains pending the wider qualification gate.
+
+The 100-file preservation inventory includes both passing and failing evidence,
+with a separate v1 SHA and v2 root for each file. `inventory.v1.json` has SHA
+`294b13cd3c5ba6608526b4f916db07d4ec38c6d046777da9e77eec809ada5a05`
+and v2 root
+`84b277cfd035f50f2d39b385bea4b9470c2b96c22ea54142b3f970b774e7ab44`.
+Its inclusion of exploratory files does not promote them to attested timings.
 
 ## Pinned byte format
 

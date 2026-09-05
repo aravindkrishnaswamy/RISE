@@ -1,0 +1,11 @@
+{
+  "sha256_v1": "11fb52c3b110e6584d39acca6296ae9fc1c7205caf593245884ce6096005dbee",
+  "v2": {
+    "digest_format": "rise-payload-sha256-merkle",
+    "digest_version": 2,
+    "chunk_bytes": 4096,
+    "fan_in": 16,
+    "payload_bytes": 46796,
+    "root_sha256": "e6ec612de9580bd442d04730bdcf480ba0e59c31d8dfc241612fb957be82ce22"
+  }
+}

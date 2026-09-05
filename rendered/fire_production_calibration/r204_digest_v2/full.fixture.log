@@ -1,0 +1,178 @@
+r120 independent_branch stopped=1 line=1 cell=6 component=3 left=(-7.7486038219110043e-07 +- 1.2337798327030971e-06, -7.15255737e-07) right=(0 +- 0, 0) result=1
+r123 independent_ppm certified=1 ambiguity=2.008640214894198e-06 arithmetic=2.6783670818887366e-06 divergence=3.1805271356122864e-06 linear=(0.011177798112233628 +- 1.233473515834213e-06) endpoint=(0.0055888449137069572, 2.0711548021147123e-07)
+r136 full_step derived=0 proof_gaps=0x00 gas_rms=0 density_relative=0 provisional_velocity=0 physical=0 final_velocity=0 open=0 correction=0.0050658272508546124/0.012757173692842795
+r135 scalar_l1 0 0 0 0 0 0 0 0 0
+r135 scalar_rms 0 0 0 0 0 0 0 0 0
+r135 inventory 0 0 0 0 0 0 0 0 0
+r135 momentum_l2 0 0 0
+r134 physical_aposteriori valid=0 applied=0 rho=[0,0] lambda0=0 lambda=0 inverse=0 residual=0 eval=0 cross=0 fp64_gate=0 fp64_eval=0 fp64_terminal=0 beginning=0 feedback=0 max_velocity=0.077085278928279877 max_target=0.027697939425706863 face_stream=0 gain=0 velocity=0 rounded_residual=8.9943569e-07 tolerance=0.000262468064 tolerance_rounding=0 predicate_margin=0 matches=1/1
+r134 restoration_aposteriori valid=0 applied=0 rho=[0,0] lambda0=0 lambda=0 inverse=0 residual=0 eval=0 cross=0 fp64_gate=0 fp64_eval=0 fp64_terminal=0 beginning=0 feedback=0 max_velocity=0.086094409227371216 max_target=0.093038670718669891 face_stream=0 gain=0 velocity=0 rounded_residual=2.31266022e-05 tolerance=0.000465193356 tolerance_rounding=0 predicate_margin=0 matches=1/1
+r120 diagnostic tier=6 stages=24 schedule=1
+r120 stage=0 operations=7958018 depth=31 comparisons=589843 obligations=0 discharged=0 unresolved=0 invalid=0 output=0.080227790729478193 radius=9.5735224709523139e-09 denominator=0.0044557652520972229 sqrt_domain=1.0082121405116671e-10 branch_margin=0
+r120 stage=0 obligation_census unknown=0/0 ppm=0/0 stationary_low=0/0 stationary_high=0/0 min=0/0 max=0/0 floor=0/0 ceil=0/0 (pending/total)
+r120 stage=0 branch_sites (pending/total)
+r132 stage=0 metric_radius 9=2.4095554537855047e-09/3.322839991072176e-09/9.573519725872844e-09/21600/nonfinite=0 10=2.4095508290925374e-09/3.3228346363875536e-09/9.5735224709523139e-09/21600/nonfinite=0 11=5.8761811220156368e-10/5.990010190637611e-10/8.5792505390635272e-10/21312/nonfinite=0 (mean/rms/count)
+r120 stage=1 operations=15203154 depth=31 comparisons=7757148 obligations=375856 discharged=375856 unresolved=0 invalid=0 output=102802.28653638225 radius=80620.449777960064 denominator=-0.012705212260380835 sqrt_domain=inf branch_margin=-inf
+r120 stage=1 branch_witness left=(-4026.1800006000221 +- 113931.41956745494, -3727.88892) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=1 obligation_census unknown=0/0 ppm=0/92 stationary_low=0/176 stationary_high=0/92 min=0/25852 max=0/32988 floor=0/3888 ceil=0/0 (pending/total)
+r120 stage=1 branch_sites 9=0/114480 10=0/194400 12=0/3888 (pending/total)
+r132 stage=1 metric_radius 0=2.6353114421700362e-05/0.00028927771024353938/0.010825447155772265/20736/nonfinite=0 1=2.1082449998817386e-05/0.00023142072900166083/0.0086602771519088614/20736/nonfinite=0 2=7.2882472625199974e-05/0.0013331832057464387/0.0662354637309647/20736/nonfinite=0 3=0.00021877855192567621/0.0041268938018003583/0.2040962528941902/20736/nonfinite=0 4=1.4028091285367759e-05/0.00015398606401841511/0.0057625175658633059/20736/nonfinite=0 5=1.1837529362408958e-05/0.0001299393890785621/0.0048625946557144268/20736/nonfinite=0 6=1.8404987302810508e-07/2.0203060358100578e-06/7.5604324415695754e-05/20736/nonfinite=0 7=3.8670913683422913e-08/4.2448793382556652e-07/1.588523808619253e-05/20736/nonfinite=0 8=72.721169278949873/1643.2523295573344/80620.449777960064/20736/nonfinite=0 (mean/rms/count)
+r120 stage=2 operations=15095634 depth=31 comparisons=7755558 obligations=373066 discharged=373066 unresolved=0 invalid=0 output=147365.66928929847 radius=128182.83057602502 denominator=-0.042001107625069964 sqrt_domain=inf branch_margin=-inf
+r120 stage=2 branch_witness left=(2169.6992337164606 +- 3759.4439825344443, 1966.35413) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=2 obligation_census unknown=0/0 ppm=0/130 stationary_low=0/287 stationary_high=0/151 min=0/25642 max=0/32918 floor=0/3888 ceil=0/0 (pending/total)
+r120 stage=2 branch_sites 9=0/111762 10=0/194400 12=0/3888 (pending/total)
+r132 stage=2 metric_radius 0=4.1251888391667856e-05/0.00049518158459904769/0.017420947343916669/20736/nonfinite=0 1=3.3001536027266883e-05/0.00039614687479980936/0.013936895896671922/20736/nonfinite=0 2=0.00012998381207455424/0.0025333420777767222/0.10616018911675289/20736/nonfinite=0 3=0.00036353951145198489/0.0077390503416055788/0.32712128908395116/20736/nonfinite=0 4=2.1958916992756785e-05/0.00026359198545170009/0.0092734536316973013/20736/nonfinite=0 5=1.8529897586335297e-05/0.00022242979397074997/0.0078253359350304742/20736/nonfinite=0 6=2.8810273827721935e-07/3.4583366853891553e-06/0.00012166705573609835/20736/nonfinite=0 7=6.0533546112095492e-08/7.2663282834752664e-07/2.5563671332212696e-05/20736/nonfinite=0 8=121.51535841417147/3027.4080270709769/128182.83057602502/20736/nonfinite=0 (mean/rms/count)
+r120 stage=3 operations=14925700 depth=23 comparisons=7637994 obligations=807784 discharged=807784 unresolved=0 invalid=0 output=51894.887734372976 radius=224.79046052897999 denominator=-0.046430720285336916 sqrt_domain=inf branch_margin=-inf
+r120 stage=3 branch_witness left=(3.0919909482785002e-07 +- 3.2023997800249032e-07, 3.57627869e-07) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=3 obligation_census unknown=0/0 ppm=0/210 stationary_low=0/647 stationary_high=0/363 min=0/19436 max=0/19896 floor=0/191808 ceil=0/0 (pending/total)
+r120 stage=3 branch_sites 10=0/191808 11=0/191808 12=0/191808 (pending/total)
+r132 stage=3 metric_radius 0=0.0001992292039679456/0.00019951941869138115/0.00022204470748773763/20736/nonfinite=0 1=0.00015938336518459028/0.00015961553683008689/0.00017763578573773477/20736/nonfinite=0 2=0.0010259690130466311/0.0010260521324447205/0.0010519490540532902/20736/nonfinite=0 3=0.003610721880156125/0.0036110685805377319/0.0037126350752725149/20736/nonfinite=0 4=0.00010605221342509881/0.00010620669833764779/0.00011819720067611474/20736/nonfinite=0 5=8.9491758110592329e-05/8.9622119602844735e-05/9.9740256774590933e-05/20736/nonfinite=0 6=1.3914150082378942e-06/1.3934418652467157e-06/1.5507582621708777e-06/20736/nonfinite=0 7=2.9235224083753423e-07/2.9277810660049418e-07/3.2583209993998453e-07/20736/nonfinite=0 8=178.0869209417049/179.6812442500933/224.79046052897999/20736/nonfinite=0 (mean/rms/count)
+r120 stage=4 operations=15095858 depth=31 comparisons=7755479 obligations=372771 discharged=372771 unresolved=0 invalid=0 output=140241.65029585376 radius=121066.14471283612 denominator=-0.04009417947651249 sqrt_domain=inf branch_margin=-inf
+r120 stage=4 branch_witness left=(-7.3015689827649055e-07 +- 1.2336645426652104e-06, -7.15255737e-07) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=4 obligation_census unknown=0/0 ppm=0/70 stationary_low=0/232 stationary_high=0/130 min=0/25480 max=0/32957 floor=0/3888 ceil=0/0 (pending/total)
+r120 stage=4 branch_sites 9=0/111726 10=0/194400 12=0/3888 (pending/total)
+r132 stage=4 metric_radius 0=4.0223576266500309e-05/0.00047322366587779815/0.016457504944965479/20736/nonfinite=0 1=3.217889888825787e-05/0.00037858127388674175/0.013166141561001538/20736/nonfinite=0 2=0.00012051076630114959/0.0023135924247752295/0.10003614163530153/20736/nonfinite=0 3=0.00033047970236592487/0.007040249316655583/0.30809470742431599/20736/nonfinite=0 4=2.1411562704361773e-05/0.00025190458148214819/0.0087606300842561057/20736/nonfinite=0 5=1.8068026603810592e-05/0.00021256781467741606/0.0073926160022880398/20736/nonfinite=0 6=2.8092123522350048e-07/3.3049920427533734e-06/0.00011493875470713777/20736/nonfinite=0 7=5.9024611053479337e-08/6.9441362482809832e-07/2.4150038940950854e-05/20736/nonfinite=0 8=107.49598343943437/2758.5827985941323/121066.14471283612/20736/nonfinite=0 (mean/rms/count)
+r120 stage=5 operations=15073838 depth=32 comparisons=7757146 obligations=374632 discharged=374632 unresolved=0 invalid=0 output=100294.80662636901 radius=78116.976706627334 denominator=-0.034188496550259836 sqrt_domain=inf branch_margin=-inf
+r120 stage=5 branch_witness left=(1919.9602447139137 +- 2094.5585392329758, 1937.74072) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=5 obligation_census unknown=0/0 ppm=0/82 stationary_low=0/169 stationary_high=0/127 min=0/25031 max=0/32702 floor=0/3888 ceil=0/0 (pending/total)
+r120 stage=5 branch_sites 9=0/114345 10=0/194400 12=0/3888 (pending/total)
+r132 stage=5 metric_radius 0=2.0139262155962708e-05/0.00019355241109646402/0.010478714294114044/20736/nonfinite=0 1=1.6111427185038793e-05/0.00015484254289675376/0.0083830921032657327/20736/nonfinite=0 2=4.7169463569447486e-05/0.00067525472244796367/0.0640340864290527/20736/nonfinite=0 3=0.00013983515240003738/0.0020935091841380806/0.19725825412246645/20736/nonfinite=0 4=1.0720383060846912e-05/0.00010302977270335424/0.0055778154608576548/20736/nonfinite=0 5=9.0463645804920196e-06/8.6941416005454118e-05/0.0047068321539707435/20736/nonfinite=0 6=1.4065242310346805e-07/1.3517566896255663e-06/7.3180577091046703e-05/20736/nonfinite=0 7=2.9552624690292732e-08/2.8401827252958872e-07/1.5375824485121012e-05/20736/nonfinite=0 8=41.994243115856413/845.3989012720275/78116.976706627334/20736/nonfinite=0 (mean/rms/count)
+r120 stage=6 operations=4086002 depth=32 comparisons=1740925 obligations=70932 discharged=70932 unresolved=0 invalid=0 output=10.109798288947642 radius=9.0954444380430015 denominator=-2.1318673288627292e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=6 branch_witness left=(-555.00520826864465 +- 29234.523557588149, -592) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=6 obligation_census unknown=0/0 ppm=0/8 stationary_low=0/84 stationary_high=0/40 min=0/988 max=0/8740 floor=0/864 ceil=0/0 (pending/total)
+r120 stage=6 branch_sites 9=0/17872 10=0/41472 12=0/864 (pending/total)
+r132 stage=6 metric_radius 9=0.00011422882465774659/0.0058322463826245728/0.30308361265334516/21600/nonfinite=0 (mean/rms/count)
+r120 stage=7 operations=3650517 depth=31 comparisons=1824628 obligations=85106 discharged=85106 unresolved=0 invalid=0 output=1.8828971012317104 radius=0.89131521720222928 denominator=-2.6381272301114061e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=7 branch_witness left=(-1.0728836059570312e-06 +- 1.7816697632158366e-06, -1.07288361e-06) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=7 obligation_census unknown=0/0 ppm=0/36 stationary_low=0/118 stationary_high=0/95 min=0/3200 max=0/10129 floor=0/4428 ceil=0/0 (pending/total)
+r120 stage=7 branch_sites 9=0/14072 10=0/45000 11=0/3600 12=0/4428 (pending/total)
+r132 stage=7 metric_radius 9=9.5712008303069137e-05/0.00083741563622301751/0.022827953108868419/21600/nonfinite=0 (mean/rms/count)
+r120 stage=8 operations=3532398 depth=23 comparisons=1800711 obligations=187556 discharged=187556 unresolved=0 invalid=0 output=1.1392845368408846 radius=0.0050149416947054305 denominator=-3.0853112970271683e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=8 branch_witness left=(1.0050194574478328 +- 0.0052346448267804064, 1.00473619) right=(1 +- 0, 1) rounded_result=0 separated=0
+r120 stage=8 obligation_census unknown=0/0 ppm=0/78 stationary_low=0/212 stationary_high=0/151 min=0/2877 max=0/6638 floor=0/44400 ceil=0/0 (pending/total)
+r120 stage=8 branch_sites 10=0/44400 11=0/44400 12=0/44400 (pending/total)
+r132 stage=8 metric_radius 9=0.00014046779650273071/0.00017448657632626756/0.00035011311557698655/21600/nonfinite=0 (mean/rms/count)
+r120 stage=9 operations=3651458 depth=31 comparisons=1824537 obligations=84992 discharged=84992 unresolved=0 invalid=0 output=1.8827600021532782 radius=0.89080844641209933 denominator=-2.7044019913901286e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=9 branch_witness left=(-1059.2808398328498 +- 1780.0417413767675, -1121.09998) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=9 obligation_census unknown=0/0 ppm=0/42 stationary_low=0/126 stationary_high=0/111 min=0/3173 max=0/10060 floor=0/4428 ceil=0/0 (pending/total)
+r120 stage=9 branch_sites 9=0/14024 10=0/45000 11=0/3600 12=0/4428 (pending/total)
+r132 stage=9 metric_radius 9=9.8501064712718309e-05/0.00085722783806274866/0.023275447508192739/21600/nonfinite=0 (mean/rms/count)
+r120 stage=10 operations=3297356 depth=32 comparisons=1676402 obligations=70942 discharged=70942 unresolved=0 invalid=0 output=10.155921330005619 radius=9.1413173752462171 denominator=-3.09537199952247e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=10 branch_witness left=(-367.17845117842609 +- 1086.1686375484965, -432.857147) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=10 obligation_census unknown=0/0 ppm=0/34 stationary_low=0/88 stationary_high=0/46 min=0/968 max=0/8734 floor=0/864 ceil=0/0 (pending/total)
+r120 stage=10 branch_sites 9=0/17872 10=0/41472 12=0/864 (pending/total)
+r132 stage=10 metric_radius 9=0.00010799482254562014/0.0055316663313511134/0.30504408045303155/21600/nonfinite=0 (mean/rms/count)
+r120 stage=11 operations=3643400 depth=32 comparisons=1825219 obligations=86271 discharged=86271 unresolved=0 invalid=0 output=1.3753951916611111 radius=0.33778846188318062 denominator=-1.4175726548069114e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=11 branch_witness left=(-1.0728836059570312e-06 +- 1.7816697632158366e-06, -1.07288361e-06) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=11 obligation_census unknown=0/0 ppm=0/40 stationary_low=0/124 stationary_high=0/152 min=0/3291 max=0/10456 floor=0/4428 ceil=0/0 (pending/total)
+r120 stage=11 branch_sites 9=0/14752 10=0/45000 11=0/3600 12=0/4428 (pending/total)
+r132 stage=11 metric_radius 10=5.5324123070013444e-05/0.00051124734432648664/0.014235268582527508/21600/nonfinite=0 (mean/rms/count)
+r120 stage=12 operations=3304498 depth=31 comparisons=1675056 obligations=69690 discharged=69690 unresolved=0 invalid=0 output=1.135271430015564 radius=0.0011490031009693685 denominator=-2.2509024780809037e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=12 branch_witness left=(-367.17619043703843 +- 7081.7951002951004, -357) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=12 obligation_census unknown=0/0 ppm=0/36 stationary_low=0/80 stationary_high=0/46 min=0/940 max=0/8764 floor=0/864 ceil=0/0 (pending/total)
+r120 stage=12 branch_sites 9=0/16624 10=0/41472 12=0/864 (pending/total)
+r132 stage=12 metric_radius 10=1.9793359645846614e-06/1.3605224411983456e-05/0.00039924944412334434/21600/nonfinite=0 (mean/rms/count)
+r120 stage=13 operations=3532104 depth=23 comparisons=1800513 obligations=187477 discharged=187477 unresolved=0 invalid=0 output=1.140271705189964 radius=0.0050170836842266609 denominator=-3.1448734659822177e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=13 branch_witness left=(1.0048807238830559 +- 0.0050927195603352113, 1.00482452) right=(1 +- 0, 1) rounded_result=0 separated=0
+r120 stage=13 obligation_census unknown=0/0 ppm=0/90 stationary_low=0/192 stationary_high=0/144 min=0/2930 max=0/6521 floor=0/44400 ceil=0/0 (pending/total)
+r120 stage=13 branch_sites 10=0/44400 11=0/44400 12=0/44400 (pending/total)
+r132 stage=13 metric_radius 10=0.00014038485540015123/0.00017442051759808543/0.00035019076198600913/21600/nonfinite=0 (mean/rms/count)
+r120 stage=14 operations=3304490 depth=31 comparisons=1675024 obligations=69682 discharged=69682 unresolved=0 invalid=0 output=1.135271430015564 radius=0.001149003062140346 denominator=-2.2510489600826754e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=14 branch_witness left=(-232.41818178662953 +- 485.74567493449342, -236.740738) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=14 obligation_census unknown=0/0 ppm=0/44 stationary_low=0/72 stationary_high=0/36 min=0/940 max=0/8766 floor=0/864 ceil=0/0 (pending/total)
+r120 stage=14 branch_sites 9=0/16624 10=0/41472 12=0/864 (pending/total)
+r132 stage=14 metric_radius 10=1.9000559036533867e-06/1.1986172108558006e-05/0.00038328838481251374/21600/nonfinite=0 (mean/rms/count)
+r120 stage=15 operations=3645800 depth=31 comparisons=1824869 obligations=85358 discharged=85358 unresolved=0 invalid=0 output=3.1573709229505069 radius=2.1068270673217397 denominator=-3.345882876930681e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=15 branch_witness left=(0 +- 1.7817117172221777e-06, 0) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=15 obligation_census unknown=0/0 ppm=0/58 stationary_low=0/154 stationary_high=0/103 min=0/3198 max=0/9961 floor=0/4428 ceil=0/0 (pending/total)
+r120 stage=15 branch_sites 9=0/14428 10=0/45000 11=0/3600 12=0/4428 (pending/total)
+r132 stage=15 metric_radius 10=5.8674950304135989e-05/0.00053276905449393822/0.014472775390738664/21600/nonfinite=0 (mean/rms/count)
+r120 stage=16 operations=3625168 depth=31 comparisons=1797614 obligations=77228 discharged=77228 unresolved=0 invalid=0 output=1.1352936227977672 radius=0.12460305078148254 denominator=-1.4175726548069114e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=16 branch_witness left=(-1.0728836059570312e-06 +- 1.7816697632158366e-06, -1.07288361e-06) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=16 obligation_census unknown=0/0 ppm=0/32 stationary_low=0/168 stationary_high=0/156 min=0/3823 max=0/8781 floor=0/3240 ceil=0/0 (pending/total)
+r120 stage=16 branch_sites 9=0/10988 10=0/44400 11=0/2400 12=0/3240 (pending/total)
+r132 stage=16 metric_radius 11=1.6246886191532505e-06/4.330516986260382e-05/0.0022593313025214921/21312/nonfinite=0 (mean/rms/count)
+r120 stage=17 operations=3632242 depth=31 comparisons=1797109 obligations=76049 discharged=76049 unresolved=0 invalid=0 output=1.1408928775173945 radius=0.022273464701996124 denominator=-2.9368128963309025e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=17 branch_witness left=(7.450580592482936e-07 +- 1.7817898911602096e-06, 7.15255737e-07) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=17 obligation_census unknown=0/0 ppm=0/44 stationary_low=0/162 stationary_high=0/166 min=0/3673 max=0/8816 floor=0/3240 ceil=0/0 (pending/total)
+r120 stage=17 branch_sites 9=0/9908 10=0/44400 11=0/2400 12=0/3240 (pending/total)
+r132 stage=17 metric_radius 11=1.1012020378015621e-06/1.0577816545364209e-05/0.00040055933996669286/21312/nonfinite=0 (mean/rms/count)
+r120 stage=18 operations=3306016 depth=23 comparisons=1682566 obligations=173214 discharged=173214 unresolved=0 invalid=0 output=1.1347969770431519 radius=0.0046852126416012567 denominator=-3.2136990266001181e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=18 branch_witness left=(-8.9406967163085938e-08 +- 1.6664558366585185e-06, 0) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=18 obligation_census unknown=0/0 ppm=0/92 stationary_low=0/264 stationary_high=0/136 min=0/2672 max=0/4162 floor=0/41472 ceil=0/0 (pending/total)
+r120 stage=18 branch_sites 10=0/41472 11=0/41472 12=0/41472 (pending/total)
+r132 stage=18 metric_radius 11=1.1699160933596389e-05/1.2085300048338391e-05/1.4804153535582816e-05/21312/nonfinite=0 (mean/rms/count)
+r120 stage=19 operations=3632274 depth=31 comparisons=1797055 obligations=75917 discharged=75917 unresolved=0 invalid=0 output=1.1405044856555648 radius=0.022631058701865669 denominator=-3.275059178289458e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=19 branch_witness left=(1068.2745098707853 +- 2165.060734977209, 1324.08337) right=(0 +- 0, 0) rounded_result=1 separated=0
+r120 stage=19 obligation_census unknown=0/0 ppm=0/33 stationary_low=0/178 stationary_high=0/170 min=0/3636 max=0/8722 floor=0/3240 ceil=0/0 (pending/total)
+r120 stage=19 branch_sites 9=0/9898 10=0/44400 11=0/2400 12=0/3240 (pending/total)
+r132 stage=19 metric_radius 11=1.0350670213677912e-06/9.8201641531139085e-06/0.00040544050083639825/21312/nonfinite=0 (mean/rms/count)
+r120 stage=20 operations=3623991 depth=31 comparisons=1797697 obligations=77146 discharged=77146 unresolved=0 invalid=0 output=1.1348772401580365 radius=0.11662548458897143 denominator=-3.26543960084836e-06 sqrt_domain=inf branch_margin=-inf
+r120 stage=20 branch_witness left=(1.7881393432617188e-07 +- 1.7817545185609709e-06, 0) right=(0 +- 0, 0) rounded_result=0 separated=0
+r120 stage=20 obligation_census unknown=0/0 ppm=0/61 stationary_low=0/178 stationary_high=0/161 min=0/3584 max=0/8766 floor=0/3240 ceil=0/0 (pending/total)
+r120 stage=20 branch_sites 9=0/11116 10=0/44400 11=0/2400 12=0/3240 (pending/total)
+r132 stage=20 metric_radius 11=1.5651536214077494e-06/4.1944980851291183e-05/0.0021457903464419249/21312/nonfinite=0 (mean/rms/count)
+r120 stage=21 operations=354816 depth=6 comparisons=0 obligations=0 discharged=0 unresolved=0 invalid=0 output=51671.74526737602 radius=0.0030798760215864206 denominator=inf sqrt_domain=inf branch_margin=inf
+r120 stage=21 obligation_census unknown=0/0 ppm=0/0 stationary_low=0/0 stationary_high=0/0 min=0/0 max=0/0 floor=0/0 ceil=0/0 (pending/total)
+r120 stage=21 branch_sites (pending/total)
+r132 stage=21 metric_radius 0=2.4620204603991226e-09/2.4715989243671192e-09/3.0413906540831742e-09/20736/nonfinite=0 1=1.9696163709375768e-09/1.9772791415562923e-09/2.433112967355776e-09/20736/nonfinite=0 2=1.1821829254132886e-08/1.1827297758001118e-08/1.2569580792680929e-08/20736/nonfinite=0 3=4.533881411534315e-08/4.5350185718071336e-08/4.818995978614769e-08/20736/nonfinite=0 4=1.3105644811803253e-09/1.3156632178604904e-09/1.6189707207268415e-09/20736/nonfinite=0 5=1.105914877946734e-09/1.1102174275893648e-09/1.3661622648100986e-09/20736/nonfinite=0 6=1.7194729331200962e-11/1.7261625234950518e-11/2.1241044912267885e-11/20736/nonfinite=0 7=3.6128096787796371e-12/3.6268652749500747e-12/4.4629875374289323e-12/20736/nonfinite=0 8=0.0019618282710977108/0.0020071663566260554/0.0030798760215864206/20736/nonfinite=0 (mean/rms/count)
+r120 stage=22 operations=129776844 depth=12755 comparisons=2697326 obligations=95248 discharged=95247 unresolved=1 invalid=1 output=inf radius=inf denominator=0.0016638910893797311 sqrt_domain=inf branch_margin=-inf
+r120 stage=22 branch_witness left=(1 +- 3.278255977790034e-07, 1) right=(1 +- 0, 1) rounded_result=1 separated=0
+r120 stage=22 obligation_census unknown=0/0 ppm=0/0 stationary_low=0/0 stationary_high=0/0 min=0/0 max=0/94480 floor=0/765 ceil=0/0 (pending/total)
+r120 stage=22 branch_sites 18=1/1 20=0/2 (pending/total)
+r132 stage=22 metric_radius 9=0/0/0/21600/nonfinite=21600 10=0/0/0/21600/nonfinite=21600 11=0/0/0/21312/nonfinite=21312 (mean/rms/count)
+r133 stage=22 nonfinite_metric channel=9 count=21600 first=0 center=0.020628967447918926 rounded=0.0206289645
+r133 stage=22 nonfinite_metric channel=10 count=21600 first=0 center=-0.018890530116113167 rounded=-0.0188905299
+r133 stage=22 nonfinite_metric channel=11 count=21312 first=0 center=0.0024594346822005998 rounded=0.00245943409
+r120 stage=22 pending ordinal=2632813 site=18 predicate=(-0.00026212309610874028 +- inf) rounded=1 proof=(0 >= 0) paths=(0, 0)
+r120 stage=23 operations=122621714 depth=12005 comparisons=2579047 obligations=95409 discharged=95408 unresolved=1 invalid=1 output=inf radius=inf denominator=0.0016638910893797311 sqrt_domain=inf branch_margin=-inf
+r120 stage=23 branch_witness left=(1 +- 3.278255977790034e-07, 1) right=(1 +- 0, 1) rounded_result=1 separated=0
+r120 stage=23 obligation_census unknown=0/0 ppm=0/0 stationary_low=0/0 stationary_high=0/0 min=0/0 max=0/94687 floor=0/720 ceil=0/0 (pending/total)
+r120 stage=23 branch_sites 18=1/1 20=0/1 (pending/total)
+r132 stage=23 metric_radius 9=0/0/0/21600/nonfinite=21600 10=0/0/0/21600/nonfinite=21600 11=0/0/0/21312/nonfinite=21312 (mean/rms/count)
+r133 stage=23 nonfinite_metric channel=9 count=21600 first=0 center=0.019031353974387526 rounded=0.0190313533
+r133 stage=23 nonfinite_metric channel=10 count=21600 first=0 center=-0.02048814256393653 rounded=-0.0204881411
+r133 stage=23 nonfinite_metric channel=11 count=21312 first=0 center=0.00086182211696193682 rounded=0.000861822045
+r120 stage=23 pending ordinal=2514534 site=18 predicate=(-0.00044292647165101312 +- inf) rounded=1 proof=(0 >= 0) paths=(0, 0)
+r124 class_census 1=0/1312 2=0/3711 3=0/2576 4=0/161334 5=0/468644 6=0/373245 9=0/620491 10=0/1623168 11=0/346080 12=0/371760 18=2/2 20=0/3 (pending/total)
+r127 inflow_width ambiguity=1.7632415612658968e-38 scale=22.033558699237727 unit_factor=1.3426012991064678e-32 power_of_two_factor=1
+branch_class_envelope 6=110.42194352712433 9=128175.45885830303 10=0.49575328199529184 11=1.1830324528164238 12=0.29684226235298722
+r120 trace_digest=ea5623dd74373f25cf050f6860e604d07f41837ad135f7c2a7f4708130576ed5 unresolved_bitmap=0xc00000 invalid_bitmap=0xc00000 trace_generator=5f2bcbf4006f0f0b7fe2c8d47e52a144be034643765273040e933cd3bf095f0a transport_source=fe48fa0474051139d3c0b4e86ecf81c18c44b1be10de6c7817a3834150d3d148
+r132 projection_interpolation topology=1 physical=765 restoration=720 physical_radius=inf restoration_radius=inf
+FAIL: r136 full-step a-priori refusal remains an exact normal-suite gate
+capstone solver diagnostic steps=0 time=0: solver_failure:active_set_thread_identity_mismatch
+capstone solver diagnostic steps=1 time=0.011623578136093925: solver_failure:cannot fsync replaced-run directory
+capstone accepted EOS drift history tail=1.6978159e-06
+capstone solver diagnostic steps=0 time=0: solver_failure:injected_solver_failure
+Job::AddFireMedium:: fire sequence embedded records differ from the case referenced_record_ids: case=0b5c719e47b6a708b79c4a1c583d14fc2e17b0cd119c7fc20f13420622e7cd1a,0cd112fc96d1a22426ae425b93d64277fcc7d1a52fbb49a990f166ec4f8f001a,2cdd00456431fd0c020ee8e28b01bc59e92586beb6ac8f6ea77efa31276ad137,39f25c7d86e9f4c0c4307cad08730472156b8bd78d99607293fff3dc595bbd05,837840ed6c19bbf87096e428c897a9052615d7bbcf4114b460b91d4f9ecddd15,9551dfb736121b848d20001ad615b0efb2943b093c36f7e2643949663ab4dea9,dfb8a9f09556f82e2206bcb02a5ed9e231e92a0acc9c3ba566fff53e8dea575d, embedded=0b5c719e47b6a708b79c4a1c583d14fc2e17b0cd119c7fc20f13420622e7cd1a,0cd112fc96d1a22426ae425b93d64277fcc7d1a52fbb49a990f166ec4f8f001a,39f25c7d86e9f4c0c4307cad08730472156b8bd78d99607293fff3dc595bbd05,837840ed6c19bbf87096e428c897a9052615d7bbcf4114b460b91d4f9ecddd15,9551dfb736121b848d20001ad615b0efb2943b093c36f7e2643949663ab4dea9,dfb8a9f09556f82e2206bcb02a5ed9e231e92a0acc9c3ba566fff53e8dea575d,ec249fa4182cc3b9347727c1f10948bd8023813e2f4a68720b7a4f7e5ddaa2eb,
+FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to canonical FrameStore 960x540 (format=EXR)
+FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to canonical FrameStore 960x540 (format=PNG)
+FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to canonical FrameStore 3x3 (format=EXR)
+FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to canonical FrameStore 3x3 (format=PNG)
+FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to canonical FrameStore 32x32 (format=EXR)
+FileRasterizerOutput::OnRasterizerFrameStoreChanged: bound to canonical FrameStore 32x32 (format=PNG)
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_render.exr'
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_display.png'
+FAIL: capstone spectral path emits a nonzero bluish synthetic-chem preview
+FAIL: capstone publication waits for a complete visible PNG derivative and sidecar pair
+FAIL: a sidecar-first delayed PNG or an all-black derivative cannot satisfy publication
+capstone preview radiance max=0 red=0 blue=0
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_render.exr'
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_display.png'
+mutation_frozen
+mutation_frozen
+mutation_frozen
+mutation_frozen
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_render.exr'
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_display.png'
+interlaced_sequence_frame_mismatch: one artifact cannot bind two base frames
+Rasterizing field 1 of 2
+Rasterizing field 2 of 2
+mutation_frozen
+mutation_frozen
+mutation_frozen
+mutation_frozen
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_render.exr'
+FileEncoderObserver:: Written to '/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-fire-sequence-test-1965686430269083/sequence_display.png'
+time_varying_media_requires_prepared_render
+FireSequenceTest: canonical sequence/loadability/preparation gates passed

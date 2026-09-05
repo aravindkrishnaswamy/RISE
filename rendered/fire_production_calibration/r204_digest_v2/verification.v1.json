@@ -1,0 +1,105 @@
+{
+  "schema": "rise.fire.r204.wider-verification.v1",
+  "source_commit": "fda111259ed22e9bfbf4cf7c32bba5ee8b3b756f",
+  "status": "open-wider-suite-failures",
+  "scope": "Verification record, not replay acceptance or final review convergence.",
+  "executables": {
+    "current_sha256": "3db884d80d2882d32dd7d01ba1d1fdc92e95bf5f4b6e72367394f48c5a9e8a4d",
+    "preserved_r203_sha256": "5d64f4ab299042a57e714fead0eb21ad6aa34c9619bfcf5f9456923a5aebd455"
+  },
+  "observed_exit_codes": {
+    "full.fixture.log": 1,
+    "baseline.full.fixture.log": 1,
+    "baseline.r136.log": 238,
+    "make.force-rebuild.log": 0,
+    "xcode.deployment.log": 0,
+    "xcode.opto.log": 0,
+    "sanitizer.final.log": 0
+  },
+  "failures": [
+    "r136 exact full-step refusal: expected 237, observed 238",
+    "cold zero-step synthetic-chem preview is black",
+    "visible PNG/sidecar publication check",
+    "delayed/all-black publication check"
+  ],
+  "disposition": "Same four suite failures reproduced in preserved r203; not waived. Historical expectations and production physics unchanged. Isolated fixture repair direction requested; final fresh review pending wider gate.",
+  "artifacts": {
+    "full.fixture.log": {
+      "sha256": "5127916dd5c83fb5edda254070248b2ca2a4fb2180a8512ed502b3311445f8f4",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 28889,
+        "root_sha256": "def029763c3de093e27db9eb529bf40161761adc9407c43b7793b2499ba1d6c7"
+      }
+    },
+    "baseline.full.fixture.log": {
+      "sha256": "201ad224ad16cdd983c4d3b4fcdee540ef3acfd283ff00cc10604459a9d220f2",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 28889,
+        "root_sha256": "c2ff1988b0199da412c3c9228a74d340a7ccd1309755c2578851b53cbc09227a"
+      }
+    },
+    "baseline.r136.log": {
+      "sha256": "e194c09244a19f84b1efa90021d01698cec508de6b2b607308a58f1ef4a917b6",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 25005,
+        "root_sha256": "ac21831be870406c6d5cb26d6e6611eb95e29c95e5def0dab8fd6c27781f43ad"
+      }
+    },
+    "make.force-rebuild.log": {
+      "sha256": "d52c15eaa70de02d9e4afd702a26acfb85870ff4ebae4fe1b40a793577df14e5",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 23405,
+        "root_sha256": "618bc1f8f33d5983ecbbb461441171f2a967b5fe7ed307694b6b50f8ec4ad114"
+      }
+    },
+    "xcode.deployment.log": {
+      "sha256": "f8c158678a287094865031c2ec51986b2ed50cb806a5fc762e81a72e0e815b5e",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 1558298,
+        "root_sha256": "0c426b4bd0b608f7e6a453af96779db0736b313eefc24a4f6e12660886db186d"
+      }
+    },
+    "xcode.opto.log": {
+      "sha256": "654addb2a0255d8d7ab743573727d6c411a95c1b8ae5b6d4c8082fb101fd7734",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 1533795,
+        "root_sha256": "72724fb586a1be485876ac0862cba03b4d4865cd8f0275c24da3b96a24fe16c0"
+      }
+    },
+    "sanitizer.final.log": {
+      "sha256": "f071b7cdb74d8878feaa27e9d17a04e5c8782f27d31f623f623eb7433782d3ee",
+      "payload_v2": {
+        "digest_format": "rise-payload-sha256-merkle",
+        "digest_version": 2,
+        "chunk_bytes": 4096,
+        "fan_in": 16,
+        "payload_bytes": 25,
+        "root_sha256": "942e39f6b74b6136fac2fc0dc950370b4cf6fb1f27de3d5ef8186842edbec028"
+      }
+    }
+  }
+}
