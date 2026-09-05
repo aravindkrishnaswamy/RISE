@@ -519,13 +519,23 @@ static void RunStandoffReentryContract( double scale )
 //
 //   floor >= sMin   -- never UNDER-states.  This is the property CSGObject's
 //                      exit-face probe depends on; violating it is the P1.
-//   floor <= 8 sMin -- never wildly OVER-states.  An inflated floor inflates
+//   floor <= 4 sMin -- never wildly OVER-states.  An inflated floor inflates
 //                      the probe's same-face acceptance radius and re-opens
 //                      decoy-payload adoption (CsgSurfacePayloadTest Test 15's
-//                      trade).  8x leaves room for the deliberate slack in a
-//                      conservative bound (the mesh / patch classes bound
-//                      every primitive at once via the bounding box) without
-//                      admitting an order of magnitude.
+//                      trade).  Measured maxima across every row below (both
+//                      scales): sphere/cylinder/plane/disk/SDF ~1.00x, box
+//                      oblique ~1.33x, indexed triangle ~1.91x, torus (the
+//                      widest claim in the suite, R=1 r=0.4 oblique) ~2.02x --
+//                      every shipped geometry sits in [1.00, 2.02].  4x keeps
+//                      the deliberate slack a conservative bound needs (the
+//                      mesh / patch classes bound every primitive at once via
+//                      the bounding box) while closing most of the headroom
+//                      an 8x window left for a second silent doubling on top
+//                      of the torus override's own 2x (see TorusGeometry.h
+//                      SelfHitRootFloor and CSGObject::
+//                      AdoptCsgExitFacePayloadViaProbe's additional 2x --
+//                      together already ~4x the bisected gate before this
+//                      test's bracket is considered).
 //
 // `Accept(s)` is the probe the production caller performs: stand off `s`
 // past the face along the original ray direction, fire back, and require a
@@ -608,11 +618,11 @@ static void CheckFloorBrackets(
 	}
 	assert( floorAt >= sMin * 0.999 );
 
-	if( !( floorAt <= 8.0 * sMin ) ) {
+	if( !( floorAt <= 4.0 * sMin ) ) {
 		std::cout << "    FAILED: claimed floor OVER-states the routine's gate: " << what
 		          << " scale " << scale << " claim " << floorAt << " measured " << sMin << std::endl;
 	}
-	assert( floorAt <= 8.0 * sMin );
+	assert( floorAt <= 4.0 * sMin );
 
 	// And the contract as the caller uses it: standing off by the claim (with
 	// the production probe's own 2x headroom) re-hits the SAME face.

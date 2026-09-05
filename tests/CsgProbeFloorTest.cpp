@@ -71,6 +71,7 @@
 
 #include "../src/Library/Geometry/BilinearPatchGeometry.h"
 #include "../src/Library/Geometry/BoxGeometry.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersection.h"
 #include "../src/Library/Objects/CSGObject.h"
@@ -408,12 +409,259 @@ void TestEmptyMeshOperandDoesNotPoisonProbe()
 	safe_release( emptyMesh );
 }
 
+//
+// Tests 5/6 (debt 25/26 follow-up -- torus operand decoy-gap idiom).
+//
+// TorusGeometry::SelfHitRootFloor (src/Library/Geometry/TorusGeometry.h)
+// reports the quartic deflation band's own width with a 2x headroom baked
+// in (measured against BoxGeometryTest's bisection: ~2.00-2.02x the real
+// gate across every torus row).  CSGObject::AdoptCsgExitFacePayloadViaProbe
+// then takes selfHitFloor = 2 * rootFloorLocal / stretch -- a SECOND,
+// independent 2x on top -- before accepting a probe hit within
+// maxAcceptRange = 2.0 * margin + 0.1 * margin (~2.1x margin).  Stacked,
+// that is ~4x the bisected quartic-deflation gate before any of Test 15's
+// own decoy-gap machinery even applies, on a shape (a torus CSG operand)
+// that BoxGeometryTest's bracket alone cannot exercise end to end (it
+// checks the geometry's claim against its own intersection routine, not
+// the composite's probe-and-adopt decision).  This is that end-to-end
+// check, same nested-CSG-union decoy-lobe idiom as
+// CsgSurfacePayloadTest's Test 15, with the torus standing in as the REAL
+// (subtracted) operand instead of a box.
+//
+// Scene, shared by both cases: CSG_SUBTRACTION( oA, nestedB ), oA a box of
+// half-extent 6 (spans every axis in [-6,6]), nestedB = CSG_UNION( torus,
+// decoy ).  The torus (R=1, r=0.4 -- the widest-margin row in
+// BoxGeometryTest's own torus sweep) is centered at z = 5.5, so along the
+// ray x = R, y = 0, direction -Z (through the torus axis's own ring
+// radius -- the implicit surface (sqrt(x^2+z^2)-R)^2+y^2=r^2 has no
+// solution with sqrt(x^2+z^2) < R at x = R exactly, so this line crosses
+// only the tube's OUTER wall, at local z = +-sqrt((R+r)^2-R^2) ~=
+// +-0.9798): torus ENTRY at world z ~= 6.48 (still outside oA, whose near
+// face is at z=6) and torus EXIT (the tube's far wall) at world z ~= 4.52
+// (inside oA).  Because the torus's entry precedes oA's own entry along
+// the ray and its exit falls after it, the composite's first surface is
+// the torus's EXIT face, recovered via AdoptCsgExitFacePayloadViaProbe --
+// exactly the "exit-designated branch" Tests 3/4 exercise with a box.
+//
+// The decoy is a thin (4e-10 deep) slab unioned into the same carve,
+// positioned so its face closest to the torus exit sits `gap` CLOSER to
+// camera along the original ray's own forward direction (world z =
+// realExitZ - gap; the ray travels -Z, so this is "past" the exit face
+// continuing in the direction the ray was already going when it left the
+// tube) -- the same relative placement Test 15 uses for its box decoy,
+// expressed in this scene's coordinate sense.  Narrower in X/Y (3.6 vs the
+// implicit torus tube) is unnecessary for discrimination here: the box's
+// UV mapping already differs from the torus's own (u,v) parameterization,
+// so the two payloads are trivially distinguishable without shrinking a
+// footprint.
+//
+// Measured (debug instrumentation, removed before commit) at the shipped
+// 2x torus headroom: TorusGeometry's own claim (rootFloorLocal) ~=
+// 1.0002e-9, CSGObject's margin (2x that) ~= 2.0004e-9, maxAcceptRange
+// (2.1x margin) ~= 4.2009e-9.  Decoy adoption is decided by margin vs
+// gap (the probe travels margin toward the real face and margin-gap
+// toward the decoy when the decoy sits closer, so whichever is nearer
+// wins the same first-hit search):
+//   gap = 2.0e-8 (~4.8x the ~4.2e-9 window): margin (2.0004e-9) is far
+//     below gap, so the probe searches short of the decoy and recovers
+//     the TORUS's own exit face.  Test 5.
+//   gap = 1.0e-9 (below the ~2.0004e-9 margin): the decoy is within
+//     the probe's own margin, so it is what the probe reaches FIRST --
+//     the composite adopts the DECOY.  This is the documented cost of
+//     the torus deflation band's own width (~1.26e-9 at R+r=1.4,
+//     scale-invariant per the debt-25 note) stacked with CSGObject's
+//     independent 2x, not a target: Test 6 pins it from the other side,
+//     matching Test 5, so a future WIDENING (bigger claim / bigger
+//     margin) or NARROWING (smaller claim missing the real face
+//     entirely) of that stack shows up as a red test on one side or the
+//     other, exactly as CsgSurfacePayloadTest's Test 15 pins its own
+//     box-decoy window.
+//
+// Red-proof (verified manually, not committed): raising the torus
+// override's headroom factor from 2 to 8 in TorusGeometry.h scales
+// rootFloorLocal (and therefore margin) linearly -- margin(8x) ~=
+// 8.0017e-9, four times margin(2x).  Neither committed gap flips at that
+// factor (2.0e-8 stays ~2.5x above margin(8x); 1.0e-9 was already below
+// margin(2x)), so the regression was confirmed with a THIRD, uncommitted
+// gap chosen to bracket exactly the 2x-vs-8x boundary: gap = 4.0e-9 sits
+// above margin(2x) = 2.0004e-9 (real face recovered, matching shipped
+// behaviour) and below margin(8x) = 8.0017e-9 (decoy wrongly adopted) --
+// the threshold headroom that first reaches this gap is
+// gap / rootFloorLocal(2x) = 4.0e-9 / 1.0002e-9 ~= 4.0x, so 2x passes and
+// 8x (2x past the threshold) fails, exactly the arithmetic this
+// red-proof set out to demonstrate.
+//
+namespace
+{
+	// Shared scene: torus (R, r) centered at z = zc inside a box of
+	// half-extent 6, carved with a thin decoy slab `gap` closer to camera
+	// than the torus's own exit face.  Returns the composite hit, the
+	// independent real-face oracle, and the independent decoy-face oracle
+	// -- all via direct, production-code-independent probes, same idiom
+	// as Tests 3/4 above and CsgSurfacePayloadTest's Test 15.
+	// RayIntersection has no default constructor (it always needs a Ray),
+	// so the per-case hits are heap-allocated rather than plain members.
+	struct TorusDecoyResult
+	{
+		RayIntersection* composite;
+		RayIntersection* oracleReal;
+		RayIntersection* oracleDecoy;
+		CSGObject* outerCsg;
+		CSGObject* nestedB;
+		Object* oA;
+		Object* torusObj;
+		Object* decoyObj;
+	};
+
+	TorusDecoyResult* RunTorusDecoyScene( Scalar gap )
+	{
+		const Scalar R = Scalar(1.0), r = Scalar(0.4);
+		const Scalar zc = Scalar(5.5);
+
+		BoxGeometry* gA = new BoxGeometry( 12.0, 12.0, 12.0 );   // half-extent 6
+		TorusGeometry* gTorus = new TorusGeometry( R, r );
+
+		Object* oA = new Object( gA );
+		Object* torusObj = new Object( gTorus );
+		safe_release( gA );
+		safe_release( gTorus );
+
+		oA->SetPosition( Point3( 0, 0, 0 ) );
+		oA->FinalizeTransformations();
+		torusObj->SetPosition( Point3( 0, 0, zc ) );
+		torusObj->FinalizeTransformations();
+
+		// Real exit z, read from the standalone torus (not hand-derived).
+		Ray probeStandalone( Point3( R, 0.0, zc + 20.0 ), Vector3( 0, 0, -1 ) );
+		RayIntersection refStandalone( probeStandalone, nullRasterizerState );
+		Hit( torusObj, probeStandalone, refStandalone );
+		const Scalar realExitZ = probeStandalone.PointAtLength( refStandalone.geometric.range2 ).z;
+
+		// Decoy: thin slab whose face closest to the torus exit sits `gap`
+		// past it, continuing in the original ray's own -Z direction.
+		const Scalar decoyDepth = Scalar(4e-10);
+		const Scalar decoyNearZ = realExitZ - gap;
+		BoxGeometry* gDecoy = new BoxGeometry( 3.6, 3.6, decoyDepth );
+		Object* decoyObj = new Object( gDecoy );
+		safe_release( gDecoy );
+		decoyObj->SetPosition( Point3( 0, 0, decoyNearZ - decoyDepth * Scalar(0.5) ) );
+		decoyObj->FinalizeTransformations();
+
+		CSGObject* nestedB = new CSGObject( CSG_UNION );
+		nestedB->AssignObjects( torusObj, decoyObj );
+		nestedB->FinalizeTransformations();
+
+		CSGObject* outerCsg = new CSGObject( CSG_SUBTRACTION );
+		outerCsg->AssignObjects( oA, nestedB );
+		outerCsg->FinalizeTransformations();
+
+		TorusDecoyResult* res = new TorusDecoyResult();
+		res->outerCsg = outerCsg;
+		res->nestedB = nestedB;
+		res->oA = oA;
+		res->torusObj = torusObj;
+		res->decoyObj = decoyObj;
+
+		Ray r0( Point3( R, 0.0, zc + 20.0 ), Vector3( 0, 0, -1 ) );
+		res->composite = new RayIntersection( r0, nullRasterizerState );
+		Hit( outerCsg, r0, *res->composite );
+
+		// Independent oracle for the real exit face: start just past it
+		// (continuing -Z) and fire backward (+Z) into the standalone torus.
+		Ray probeRefReal( Point3( R, 0.0, realExitZ - Scalar(0.05) ), Vector3( 0, 0, 1 ) );
+		res->oracleReal = new RayIntersection( probeRefReal, nullRasterizerState );
+		Hit( torusObj, probeRefReal, *res->oracleReal );
+
+		// Independent oracle for the decoy: approach from the SAME side and
+		// direction the production probe does (starting below the slab,
+		// travelling +Z) so it lands on the same face.
+		Ray probeRefDecoy( Point3( R, 0.0, decoyNearZ - decoyDepth - Scalar(10.0) ), Vector3( 0, 0, 1 ) );
+		res->oracleDecoy = new RayIntersection( probeRefDecoy, nullRasterizerState );
+		Hit( decoyObj, probeRefDecoy, *res->oracleDecoy );
+
+		return res;
+	}
+
+	void ReleaseTorusDecoyResult( TorusDecoyResult* res )
+	{
+		safe_release( res->outerCsg );
+		safe_release( res->oA );
+		safe_release( res->nestedB );
+		safe_release( res->torusObj );
+		safe_release( res->decoyObj );
+		delete res->composite;
+		delete res->oracleReal;
+		delete res->oracleDecoy;
+		delete res;
+	}
+}
+
+//
+// Test 5: gap = 2.0e-8, ~10x the shipped ~2.0e-9 margin (~4.8x the ~4.2e-9
+// acceptance window) -- the probe searches well short of the decoy and
+// recovers the TORUS's own exit face.
+//
+void TestTorusOperand_ExitProbe_FarDecoyRecoversRealFace()
+{
+	std::cout << "CSG_SUBTRACTION: torus operand exit probe recovers the REAL face past a far (gap=2.0e-8) decoy..." << std::endl;
+
+	TorusDecoyResult* res = RunTorusDecoyScene( Scalar(2.0e-8) );
+
+	Check( res->composite->geometric.bHit, "Test5: (control) ray hits the composite" );
+	Check( res->oracleReal->geometric.bHit, "Test5: (control) direct probe hits the torus's real exit face" );
+	Check( res->oracleDecoy->geometric.bHit, "Test5: (control) direct probe hits the decoy's face" );
+	Check( !Point2Close( res->oracleReal->geometric.ptCoord, res->oracleDecoy->geometric.ptCoord ),
+		"Test5: (sanity) real-exit/decoy ptCoord are distinct" );
+
+	Check( Point2Close( res->composite->geometric.ptCoord, res->oracleReal->geometric.ptCoord ),
+		"Test5: MONEY ASSERTION -- composite ptCoord matches the REAL torus exit face" );
+	Check( PointClose( res->composite->geometric.ptObjIntersec, res->oracleReal->geometric.ptObjIntersec ),
+		"Test5: MONEY ASSERTION -- composite ptObjIntersec matches the REAL torus exit face" );
+	Check( !Point2Close( res->composite->geometric.ptCoord, res->oracleDecoy->geometric.ptCoord ),
+		"Test5: composite ptCoord did NOT overshoot to the far decoy" );
+
+	ReleaseTorusDecoyResult( res );
+}
+
+//
+// Test 6: gap = 1.0e-9, inside the shipped ~2.0e-9 margin -- the decoy IS
+// inside the probe's own window, so the composite adopts the DECOY.  This
+// is the documented cost of the torus deflation band's width stacked with
+// CSGObject's own 2x, not a target: asserting it HONESTLY pins the window
+// from the other side of Test 5, so either a widening (this gate creeping
+// up further, silently reopening what Test 5 checks) or an unrelated
+// narrowing that breaks decoy adoption here shows up as a red test.
+//
+void TestTorusOperand_ExitProbe_TinyGapDecoyIsAdoptedByDesign()
+{
+	std::cout << "CSG_SUBTRACTION: torus operand exit probe adopts a tiny-gap (gap=1.0e-9) decoy, pinning the window's cost (documented, not a target)..." << std::endl;
+
+	TorusDecoyResult* res = RunTorusDecoyScene( Scalar(1.0e-9) );
+
+	Check( res->composite->geometric.bHit, "Test6: (control) ray hits the composite" );
+	Check( res->oracleReal->geometric.bHit, "Test6: (control) direct probe hits the torus's real exit face" );
+	Check( res->oracleDecoy->geometric.bHit, "Test6: (control) direct probe hits the decoy's face" );
+	Check( !Point2Close( res->oracleReal->geometric.ptCoord, res->oracleDecoy->geometric.ptCoord ),
+		"Test6: (sanity) real-exit/decoy ptCoord are distinct" );
+
+	Check( Point2Close( res->composite->geometric.ptCoord, res->oracleDecoy->geometric.ptCoord ),
+		"Test6: DOCUMENTED-COST ASSERTION -- composite ptCoord matches the DECOY at this tiny gap" );
+	Check( PointClose( res->composite->geometric.ptObjIntersec, res->oracleDecoy->geometric.ptObjIntersec ),
+		"Test6: DOCUMENTED-COST ASSERTION -- composite ptObjIntersec matches the DECOY at this tiny gap" );
+	Check( !Point2Close( res->composite->geometric.ptCoord, res->oracleReal->geometric.ptCoord ),
+		"Test6: composite ptCoord did NOT recover the real face at this tiny gap (expected at shipped margin)" );
+
+	ReleaseTorusDecoyResult( res );
+}
+
 int main()
 {
 	TestEmptyCollectionsReportFiniteFloor();
 	TestSiblingDoesNotInflateCompositeFloor();
 	TestOwnershipFilterKeepsProbeWorking();
 	TestEmptyMeshOperandDoesNotPoisonProbe();
+	TestTorusOperand_ExitProbe_FarDecoyRecoversRealFace();
+	TestTorusOperand_ExitProbe_TinyGapDecoyIsAdoptedByDesign();
 
 	std::printf( "\nCsgProbeFloorTest: %d passed, %d failed\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
