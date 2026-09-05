@@ -2419,6 +2419,7 @@ namespace
 		for(const auto& entry:std::filesystem::recursive_directory_iterator(directory)){
 			if(entry.is_symlink()){error="run publication refuses symlinks";return false;}
 			const std::string name=entry.path().filename().string();
+			if(name.find(".pending")!=std::string::npos){error="run publication has a pending output";return false;}
 			if(name.size()>=16u&&name.compare(name.size()-16u,16u,".payload-v2.json")==0){
 				const auto base=std::filesystem::path(entry.path().string().substr(0u,
 					entry.path().string().size()-16u));
@@ -2427,7 +2428,6 @@ namespace
 				continue;
 			}
 			if(!entry.is_regular_file())continue;
-			if(name.find(".pending")!=std::string::npos){error="run publication has a pending output";return false;}
 			files.push_back(entry.path());
 		}
 		std::sort(files.begin(),files.end());
@@ -2486,8 +2486,10 @@ namespace
 		const auto mutableTarget=root/"current.checkpoint";
 		for(const char* value:{"first accepted state","next accepted state"}){
 			{std::ofstream output(prepared);output<<value;}
+			const auto candidateBytes=ReadFileBytes(prepared);
 			if(!PublishPreparedPayload(prepared,mutableTarget,identity,
 				PayloadPublicationPolicy::MutableCurrentCheckpoint,error)||
+				ReadFileBytes(mutableTarget)!=candidateBytes||
 				!ExistingPayloadCertificateValid(mutableTarget,identity,error))return 98;
 		}
 		const auto mutableBytes=ReadFileBytes(mutableTarget),mutableSeal=
@@ -15623,6 +15625,32 @@ int main(int argc,char** argv)
 	Check(LoadMethaneRunCheckpoint(checkpointPath,oneStepCheckpointMetadata,
 		checkpointFixtureError)&&oneStepCheckpointMetadata.acceptedSteps==1u,
 		"r115 binary32 resume fixture captures the immutable one-step beginning");
+	// Exercise the real admission boundary, not only the certificate helper.
+	const auto sealedAdmissionFixture=checkpointFixture/"sealed_admission.checkpoint";
+	std::filesystem::copy_file(checkpointPath,sealedAdmissionFixture);
+	Check(PublishPayloadMerkleSidecar(sealedAdmissionFixture,oneStepCheckpointMetadata.caseRecordId,
+		checkpointFixtureError),"r205 checkpoint admission fixture receives a full v2 seal");
+	const auto admissionSeal=std::filesystem::path(sealedAdmissionFixture.string()+".payload-v2.json");
+	const auto admissionMarker=std::filesystem::path(sealedAdmissionFixture.string()+
+		".preparation.pending.payload-v2.json");
+	const auto admissionBytes=ReadFileBytes(sealedAdmissionFixture),admissionSealBytes=ReadFileBytes(admissionSeal);
+	MethaneRunCheckpoint admissionOutput;
+	Check(LoadMethaneRunCheckpoint(sealedAdmissionFixture,admissionOutput,checkpointFixtureError),
+		"r205 intact sealed checkpoint passes the actual loader");
+	for(unsigned int mutant=0u;mutant<2u;++mutant){
+		admissionOutput.caseRecordId="unpublished sentinel";admissionOutput.acceptedSteps=UINT64_C(987654321);
+		{std::ofstream output(mutant==0u?admissionMarker:admissionSeal,std::ios::binary|std::ios::trunc);
+			output<<"incomplete or corrupt certificate";}
+		Check(!LoadMethaneRunCheckpoint(sealedAdmissionFixture,admissionOutput,checkpointFixtureError)&&
+			checkpointFixtureError==(mutant==0u?"payload publication pair is incomplete":
+				"payload certificate does not match")&&admissionOutput.caseRecordId=="unpublished sentinel"&&
+			admissionOutput.acceptedSteps==UINT64_C(987654321)&&ReadFileBytes(sealedAdmissionFixture)==admissionBytes,
+			"r205 actual checkpoint loader refuses interrupted/corrupt v2 publication atomically");
+		if(mutant==0u)std::filesystem::remove(admissionMarker);
+		else{std::ofstream output(admissionSeal,std::ios::binary|std::ios::trunc);
+			output.write(reinterpret_cast<const char*>(admissionSealBytes.data()),
+				static_cast<std::streamsize>(admissionSealBytes.size()));}
+	}
 	const int resumedCheckpointExit=RunCheckpointSubprocess(self,"resume",checkpointPath,
 		resumedCheckpointFrame,4u);
 	MethaneRunCheckpoint resumedCheckpointMetadata;

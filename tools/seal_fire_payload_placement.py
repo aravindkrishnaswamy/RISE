@@ -55,6 +55,8 @@ def sidecars(directory, case_id=None):
     for path in sorted(directory.rglob("*")):
         if path.is_symlink():
             raise ValueError("publication refuses symlinks: " + str(path))
+        if ".pending" in path.name:
+            raise ValueError("publication has a pending output: " + str(path))
         if path.name.endswith(".payload-v2.json"):
             base = Path(str(path)[:-len(".payload-v2.json")])
             if not path.is_file() or not base.is_file() or base.is_symlink():
@@ -69,6 +71,9 @@ def sidecars(directory, case_id=None):
                 or len(seal["case_record_id"]) != 64
                 or (case_id is not None and seal["case_record_id"] != case_id)
                 or seal["sha256_v1"] != hashlib.sha256(payload).hexdigest()
+                or not isinstance(seal["v2"], dict)
+                or seal["v2"].get("digest_format") != "rise-payload-sha256-merkle"
+                or seal["v2"].get("digest_version") != 2
                 or not verify(payload, seal["v2"])):
             raise ValueError("invalid published sidecar: " + str(path))
         count += 1

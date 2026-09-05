@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -18,6 +19,15 @@ def clean_source(commit):
 
 def build_command(directory="build/make/rise", target="build-test/FireSequenceTest"):
     return ["make", "-B", "-C", str(directory), "-j8", target]
+
+
+def build_environment(inherited=None):
+    environment = dict(os.environ if inherited is None else inherited)
+    # Parent make invocations may export dry-run/touch/question flags or
+    # command-line overrides. None may turn qualification into a cache check.
+    for name in ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEOVERRIDES"):
+        environment.pop(name, None)
+    return environment
 
 
 def main():
@@ -38,7 +48,8 @@ def main():
         log = Path(str(args.output) + "." + name + ".log")
         print("running " + name, flush=True)
         with log.open("xb") as stream:
-            completed = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT)
+            completed = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT,
+                                       env=build_environment() if name == "build" else None)
         if completed.returncode:
             raise RuntimeError(name + " failed: " + str(completed.returncode))
         if name == "build":
