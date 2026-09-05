@@ -15,8 +15,15 @@ def sha(path):
 
 
 def clean_source(commit):
-    subprocess.run(["git", "diff", "--exit-code", commit, "--", "src", "tests", "build", "tools"],
+    subprocess.run(["git", "diff", "--exit-code", commit, "--"],
                    check=True, stdout=subprocess.DEVNULL)
+    # Vendored decoders are linked too, and the trace/mirror source lists use
+    # wildcards. Ignored build products are not sources; nonignored additions
+    # under compilation roots must be committed before source attestation.
+    untracked = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard",
+                                        "-z", "--", "src", "tests", "extlib"])
+    if untracked:
+        raise ValueError("uncommitted compilation input")
     return build_configuration(commit)
 
 

@@ -22,6 +22,48 @@ from seal_fire_payload_placement import sidecars
 
 
 class QualificationREDs(unittest.TestCase):
+    def test_compilation_source_closure_must_be_committed(self):
+        with tempfile.TemporaryDirectory(prefix="rise-r205-source-closure-red-") as temporary:
+            root = Path(temporary)
+            for directory in ("build/make/rise", "extlib/stb", "tests/fire_production_trace"):
+                (root / directory).mkdir(parents=True)
+            (root / ".gitignore").write_text("*.o\nbuild/make/rise/Config.specific\n")
+            config = root / "build/make/rise/Config.OSX"
+            config.write_text("CXXARCHFLAGS =\n")
+            (config.parent / "Config.specific").symlink_to(config.name)
+            vendor = root / "extlib/stb/stb_image.h"
+            vendor.write_text("// committed decoder\n")
+            for command in (["git", "init", "-q"], ["git", "add", "."],
+                            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                             "commit", "-qm", "source closure"]):
+                subprocess.run(command, cwd=root, check=True, capture_output=True)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                # Unrelated ignored object caches are allowed and forced rebuilt.
+                (root / "tests/unused.o").write_bytes(b"cached object")
+                qualification.clean_source("HEAD")
+                for mutation in ("vendor", "wildcard"):
+                    extra = root / "tests/fire_production_trace/extra.cpp"
+                    if mutation == "vendor":
+                        vendor.write_text("// locally changed decoder\n")
+                    else:
+                        extra.write_text("int extra_trace_input = 1;\n")
+                    # Prior scoped diff passes both realistic source changes.
+                    subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "src", "tests", "build", "tools"],
+                                   check=True, capture_output=True)
+                    output = root / (mutation + ".json")
+                    with mock.patch.object(sys, "argv", ["qualify", str(output)]):
+                        with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                            qualification.main()
+                    self.assertFalse(output.exists())
+                    self.assertFalse(Path(str(output) + ".build.log").exists())
+                    vendor.write_text("// committed decoder\n")
+                    if extra.exists():
+                        extra.unlink()
+            finally:
+                os.chdir(previous)
+
     def test_disk_recipe_inputs_cannot_preserve_foreign_object(self):
         with tempfile.TemporaryDirectory(prefix="rise-r205-disk-recipe-red-") as temporary:
             root = Path(temporary)
@@ -122,7 +164,7 @@ class QualificationREDs(unittest.TestCase):
                 with mock.patch.object(sys, "argv", ["qualify", str(output)]), \
                      mock.patch.object(qualification.subprocess, "check_output", return_value="a" * 40), \
                      mock.patch.object(qualification.subprocess, "run", side_effect=mock_run), \
-                     mock.patch.object(qualification, "build_configuration", return_value={}), \
+                     mock.patch.object(qualification, "clean_source", return_value={}), \
                      mock.patch.object(qualification, "sha", return_value="b" * 64), \
                      contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(ValueError):

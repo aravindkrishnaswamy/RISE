@@ -15,8 +15,11 @@ explicit publication and complete per-field owner verdicts. Round five found
 one P1: ignored local make configuration could still supply compiler dry-run
 flags. Qualification now authenticates Config.specific bytes against the
 committed Config.OSX, explicitly selects the tracked Makefile, and excludes
-generated dependency snippets from the forced build. Fresh review of this
-repair remains required.
+generated dependency snippets from the forced build. Round six found one P1:
+source admission omitted linked vendored sources and untracked wildcard-selected
+trace sources. The tracked-source check now covers the whole repository, and
+nonignored additions under compilation roots must be committed. Fresh review
+of this source-closure repair remains required.
 No warm-start optimization,
 fixed-k choice, focusing verdict, window, or new movie is claimed here.
 
@@ -138,6 +141,10 @@ rebuilds them. A copied local configuration differing from committed Config.OSX
 is refused by the actual qualifier before a build or attestation is written.
 Both an identical copy and the normal symlink are accepted. This qualification
 is specifically the macOS/Metal build, not a general platform-config selector.
+The source-closure RED separately changes a tracked vendored header and adds a
+wildcard-selected trace translation unit. The former scoped diff misses both;
+actual qualification now refuses each before writing a build log. Unrelated
+ignored object caches remain allowed, with the standing forced-rebuild gate.
 
 ## Native diagnostic: remaining host payload walks
 
