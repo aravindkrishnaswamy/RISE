@@ -310,8 +310,13 @@ the wrong KIND of test for a fact that has nothing to do with distance.
 Right fix: "the origin is on this face" is a PLANE-DISTANCE fact, not a
 range fact — independent of `θ_out` entirely.
 `BoxGeometry::DropSelfHitRoot` tests, per candidate root's face,
-`|origin.axis − bound| ≤ NEARZERO · (1 + coordinate magnitude)` (the
-same scale-relative floor as the bilinear-patch fix above) and drops
+`|origin.axis − bound| ≤ 4·NEARZERO + 64·DBL_EPSILON · |origin.axis|`
+(PER AXIS: the plane distance is an exact subtraction of two nearby
+numbers, so only THAT coordinate's rounding can move it — a first cut
+that summed all three coordinates and the box's half-extents, on the
+bilinear-patch pattern above, grew with the box's transverse size and
+swallowed the deliberate 1e-12 standoff CSGObject's exit-face probe
+relies on; review round 2 of debt 25) and drops
 that root in favour of the OTHER root when it matches — cancellation-free,
 because it never computes a `t` for the self-hit at all; it asks the one
 question that is actually true regardless of ray direction.  The

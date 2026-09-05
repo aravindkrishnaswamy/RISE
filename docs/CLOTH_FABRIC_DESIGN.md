@@ -5719,34 +5719,52 @@ yet known (§10.1).
     values use a different box size and weave preset than the original
     review handoff's; the RATIOS are what carry the finding.
 
-    **Review round 1 follow-ups (2026-09-05).** The self-hit band is a
-    test on the face PLANE, not on provenance, so a deliberate standoff
+    **Review rounds 1–2 follow-ups (2026-09-05).** The self-hit band is
+    a test on the face PLANE, not on provenance, so a deliberate standoff
     that wants to re-hit the face it stands off from reads as that face's
     own published point: `CSGObject::AdoptCsgExitFacePayloadViaProbe`'s
     1e-12 probe margin fell inside the band for every `box_geometry`
     operand and silently took its graceful entry-payload fallback on
-    every box exit face (wrong material / UV at CSG exit faces; a P2, not
-    an image-breaking P1). Its margin floor is now
-    `8 × NEARZERO × (1 + |ptExit|)` — outside the band for exit angles
-    down to |cos| ≈ 1/8, with the acceptance window still ~50× below the
-    ~2e-9 decoy-face radius CSG's own review history rejected — and
-    `tests/BoxGeometryTest.cpp::RunCsgExitProbeContract` pins the two
-    constants against each other at normal and oblique exits, at unit
-    and 1000× scale. The promoted root now publishes `range2 = 0`, the
-    `RaySphereIntersection` / CSG inside-sentinel convention, instead of
-    carrying the ~1e-12 self-root as an exit BEHIND the entry. Two
-    measure-zero limits of the plane test are recorded in the helper's
-    comment (a ray within ~1e-9 rad of parallel to its own face; an
-    unrelated object's exactly coplanar face). **Sibling primitives are
-    NOT closed by this.** A probe-level sweep (primitives constructed
-    directly, bypassing `Object`'s transform and the `LightSampler` NEE
-    path) flagged sphere at 1000× coordinates, open-tube cylinder, torus,
-    circular disk and infinite plane for the same self-root class, but
-    the only claim spot-checked by render did not reproduce
-    (`infiniteplane_geometry` floor under a ~4° light: PT/BDPT 0.9986,
-    same as a `clippedplane` control), so those remain unverified
-    suspects; a follow-up to re-audit through the real Object path is
-    filed.
+    every box exit face (round 1, P2; `tests/CsgSurfacePayloadTest.cpp`
+    Tests 4/11/15 were red at the fix commit — a suite the fix's gate
+    list had not included). Round 1's first repair — a CSG floor of
+    `8 × NEARZERO × (1 + |ptExit|)` — was itself a P1 in round 2: the
+    L1-coordinate term is exactly the transverse coupling that suite's
+    Test 14 guards (an assembly at world X = 1e12 turned the margin into
+    eight world units and adopted a decoy face), and the box's own band
+    (which then summed the half-extents) made the floor insufficient for
+    operands wider than ~20 units or scaled up. Final formulation, both
+    sides coordinate-free: the box band is per axis,
+    `eps = 4 × NEARZERO + 64·DBL_EPSILON × |origin.axis|` (the plane
+    distance is an exact subtraction, so only that coordinate's rounding
+    matters); the CSG probe's floor is that band doubled and mapped
+    through the operand's inverse stretch and the exit angle,
+    `2·eps / (|M⁻¹dir| · max(|dir·n|, 1/20))` — 8e-12 at unit scale and
+    normal incidence, acceptance window ~1.7e-11, ~100× under the ~2e-9
+    decoy radius that suite's Test 15 pins. `CsgSurfacePayloadTest` is
+    now in the gate (all 251 green) and pins the CSG side in both
+    directions; `tests/BoxGeometryTest.cpp::RunStandoffReentryContract`
+    pins the box side (a 2·eps/|cos| standoff re-hits its face, a
+    0.5·eps one reads as the origin's own face) at unit and 1000× scale.
+    The promoted root publishes `range2 = 0`, the `RaySphereIntersection`
+    / CSG inside-sentinel convention, instead of carrying the ~1e-12
+    self-root as an exit BEHIND the entry. Two measure-zero limits of the
+    plane test are recorded in the helper's comment (a ray within ~1e-9
+    rad of parallel to its own face; an unrelated object's exactly
+    coplanar face — e.g. a glass box resting on a box reports the lower
+    box's far face for a ray leaving the contact face, a first-hit
+    shading error, never a shadow leak), as is the pre-existing
+    every-primitive limit that a box translated ≳ 1e4 from the world
+    origin round-trips its published point outside any local-frame band.
+    **Sibling primitives are NOT closed by this.** A probe-level sweep
+    (primitives constructed directly, bypassing `Object`'s transform and
+    the `LightSampler` NEE path) flagged sphere at 1000× coordinates,
+    open-tube cylinder, torus, circular disk and infinite plane for the
+    same self-root class, but the only claim spot-checked by render did
+    not reproduce (`infiniteplane_geometry` floor under a ~4° light:
+    PT/BDPT 0.9986, same as a `clippedplane` control), so those remain
+    unverified suspects; a follow-up to re-audit through the real Object
+    path is filed.
 
     **What this does NOT close.** The gap > 0 rows do not converge with
     this fix — filed as **debt 27** below. And a small residual remains at

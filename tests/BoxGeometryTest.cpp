@@ -336,29 +336,35 @@ static void TestExitInfoRegression()
 }
 
 //////////////////////////////////////////////////////////////////////
-// CSG exit-face payload probe contract (debt-25 review round 1, P2-1).
+// Standoff re-entry contract (debt-25 review rounds 1-2, P2-1 / P1).
 //
-// `CSGObject::AdoptCsgExitFacePayloadViaProbe` stands a probe origin
-// `margin` PAST an operand's exit point and fires it straight back at
-// that face, accepting only a hit within ~2.1 x margin.  Its margin
-// floor is 8 * NEARZERO * (1 + |ptExit|) precisely so that the probe
-// origin clears `DropSelfHitRoot`'s own-face band (NEARZERO * (1 +
-// coordinate magnitude)); with the pre-review 1e-12 floor the box
-// treated the probe origin as its own published face, dropped that root
-// and returned the FAR face, and CSG silently fell back to the
-// entry-face payload on every box exit.  This pins the two constants
-// against each other, at normal and at an oblique (|cos| = 0.6) exit,
-// so a future change to either side trips here rather than as a wrong
-// material on a CSG exit face.  Also pins the promoted-root publish
+// `CSGObject::AdoptCsgExitFacePayloadViaProbe` stands a probe origin a
+// small margin PAST an operand's exit face and fires it straight back,
+// accepting only a hit within ~2.1 x margin.  That is, by construction,
+// an origin close to one of the box's own faces -- exactly what
+// `DropSelfHitRoot` exists to suppress -- so the two sides share a
+// contract: the box's own-face band is, per axis and in box-local
+// units,  eps = 4 * NEARZERO + 64 * DBL_EPSILON * |origin.axis|,  and
+// the CSG probe stands off by at least 2 * eps / |cos(exit angle)|
+// (mapped through the operand's transform).  This pins the BOX side of
+// that contract: a re-entry ray from a standoff of 2 * eps / |cos|
+// outside a face must hit THAT face at range ~ standoff, and one from
+// 0.5 * eps must NOT (it is inside the band and reads as the origin's
+// own face).  The CSG side is pinned end-to-end by
+// tests/CsgSurfacePayloadTest.cpp (Tests 4/11/15 go red if its floor
+// shrinks below the band, Test 14 if it grows with a transverse
+// coordinate), which is why a reduced floor or a coordinate-coupled
+// floor cannot land silently.  Also pins the promoted-root publish
 // convention (`range2 == 0`, the RaySphereIntersection / CSG
 // inside-sentinel) at an on-face ingoing origin.
 //////////////////////////////////////////////////////////////////////
-static void RunCsgExitProbeContract( double scale )
+static void RunStandoffReentryContract( double scale )
 {
-	std::cout << "Testing CSG exit-face probe standoff contract (scale " << scale << ")..." << std::endl;
+	std::cout << "Testing standoff re-entry contract (scale " << scale << ")..." << std::endl;
 
 	BoxGeometry* pBox = new BoxGeometry( 2.8 * scale, 2.8 * scale, 1.0 * scale );
 	const Vector3 exitNormal( 0.0, 0.0, -1.0 );   // the -Z face is the exit for a -Z-going ray
+	const double kUlpFactor = 64.0 * 2.2204460492503131e-16;
 
 	const Vector3 dirs[2] = {
 		Vector3( 0.0, 0.0, -1.0 ),
@@ -367,7 +373,6 @@ static void RunCsgExitProbeContract( double scale )
 	for( int k = 0; k < 2; k++ )
 	{
 		const Vector3& dir = dirs[k];
-		// A ray that enters through +Z and exits through -Z near the centre.
 		// Start the ray so it passes through the box centre (the oblique
 		// direction would otherwise miss the box entirely).
 		const Point3 origin( 0.0, -dir.y * ( 3.0 * scale / std::fabs( dir.z ) ), 3.0 * scale );
@@ -377,29 +382,35 @@ static void RunCsgExitProbeContract( double scale )
 		assert( IsVectorClose( riCam.vNormal2, exitNormal ) );
 
 		// Object::IntersectRay publishes the exit point FORWARD-biased
-		// (range2 + SURFACE_INTERSEC_ERROR), then CSG adds its margin.
+		// (range2 + SURFACE_INTERSEC_ERROR); the exit plane is z = -0.5*scale.
 		const Point3 ptExit = Ray( origin, dir ).PointAtLength( riCam.range2 + 1e-12 );
-		const Scalar coordScale = std::fabs( ptExit.x ) + std::fabs( ptExit.y ) + std::fabs( ptExit.z );
-		const Scalar dirWeightedAbs =
-			std::fabs( ptExit.x ) * std::fabs( dir.x ) +
-			std::fabs( ptExit.y ) * std::fabs( dir.y ) +
-			std::fabs( ptExit.z ) * std::fabs( dir.z );
-		const Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16;
-		const Scalar selfHitFloor = 8.0 * NEARZERO * ( 1.0 + coordScale );
-		const Scalar margin = std::max( std::max( Scalar(1e-12), selfHitFloor ), kUlpFactor * dirWeightedAbs );
-		const Scalar maxAcceptRange = margin * 2.0 + margin * 0.1;
-
-		const Point3 probeOrigin( ptExit.x + dir.x * margin, ptExit.y + dir.y * margin, ptExit.z + dir.z * margin );
+		const double eps = 4.0 * NEARZERO + kUlpFactor * std::fabs( ptExit.z );
+		const double cosExit = std::fabs( dir.z );
 		const Vector3 probeDir( -dir.x, -dir.y, -dir.z );
 
-		RayIntersectionGeometric probe = MakeIntersection( probeOrigin, probeDir );
-		pBox->IntersectRay( probe, true, true, false );
-		assert( probe.bHit );
-		assert( probe.range <= maxAcceptRange );          // the SAME face, not the far one
-		assert( IsVectorClose( probe.vNormal, exitNormal ) );
-
-		const bool hitOnly = pBox->IntersectRay_IntersectionOnly( Ray( probeOrigin, probeDir ), maxAcceptRange, true, true );
-		assert( hitOnly );
+		// (a) standoff = 2 * eps / |cos|: OUTSIDE the band -> that face.
+		{
+			const double standoff = 2.0 * eps / cosExit;
+			const Point3 probeOrigin( ptExit.x + dir.x * standoff, ptExit.y + dir.y * standoff, ptExit.z + dir.z * standoff );
+			RayIntersectionGeometric probe = MakeIntersection( probeOrigin, probeDir );
+			pBox->IntersectRay( probe, true, true, false );
+			assert( probe.bHit );
+			assert( probe.range <= 2.1 * standoff );          // the SAME face, not the far one
+			assert( IsVectorClose( probe.vNormal, exitNormal ) );
+			const bool hitOnly = pBox->IntersectRay_IntersectionOnly( Ray( probeOrigin, probeDir ), 2.1 * standoff, true, true );
+			assert( hitOnly );
+		}
+		// (b) standoff = 0.5 * eps / |cos|: INSIDE the band -> reads as the
+		//     origin's own face, so the re-entry lands on the FAR face.
+		{
+			const double standoff = 0.5 * eps / cosExit;
+			const Point3 probeOrigin( ptExit.x + dir.x * standoff, ptExit.y + dir.y * standoff, ptExit.z + dir.z * standoff );
+			RayIntersectionGeometric probe = MakeIntersection( probeOrigin, probeDir );
+			pBox->IntersectRay( probe, true, true, false );
+			assert( probe.bHit );
+			assert( probe.range > 0.9 * scale );               // the opposite (+Z) face, ~1.0*scale away
+			assert( IsVectorClose( probe.vNormal, Vector3( 0.0, 0.0, 1.0 ) ) );
+		}
 	}
 
 	// Promoted-root publish convention: an on-face ingoing origin (the
@@ -420,12 +431,13 @@ static void RunCsgExitProbeContract( double scale )
 	}
 
 	safe_release( pBox );
+	std::cout << "  ...Passed!" << std::endl;
 }
 
 int main()
 {
-	RunCsgExitProbeContract( 1.0 );
-	RunCsgExitProbeContract( 1000.0 );
+	RunStandoffReentryContract( 1.0 );
+	RunStandoffReentryContract( 1000.0 );
 
 	RunFrontFaceIngoingSweep( 1.0 );
 	RunBackFaceIngoingOutgoing( 1.0 );

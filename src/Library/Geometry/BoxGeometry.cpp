@@ -153,12 +153,28 @@ namespace {
 // So each root is tested against the face it belongs to, and a root
 // on the origin's own face is dropped in favour of the other root --
 // exactly what would have happened had the origin been published a
-// hair further along the ray.  Tolerance is the same scale-relative
-// floor RayBilinearPatchIntersection uses for its own self-hit fix
-// (docs/CLOTH_FABRIC_DESIGN.md debt 21, docs/skills/precision-fix-the-
-// formulation.md): NEARZERO * (1 + coordinate magnitude), which the
-// 1e-12 back-off always sits under and genuine faces of any box thicker
-// than ~1e-11 never do.
+// hair further along the ray.  The tolerance is PER AXIS and carries no
+// transverse or half-extent term (debt-25 review round 2, P1): the
+// plane distance |origin.axis - bound| is an exact FP subtraction of
+// two nearby numbers, so its only error is the error in origin.axis
+// itself -- the 1e-12 back-off (always <= 1e-12 in these local units)
+// plus the world<->local transform's rounding, which scales with THAT
+// coordinate, not with the box's other extents or the origin's other
+// components.  Hence
+//   eps(axis) = 4 * NEARZERO + 64 * DBL_EPSILON * |origin.axis|
+// (4x headroom over the back-off; the ulp term is RayCaster::
+// ResolveXrayView_'s representability bound).  A coordinate-summed
+// band (the first cut mirrored RayBilinearPatchIntersection's
+// NEARZERO * (1 + L1 coordinate) floor and added the half-extents)
+// grew with the box's TRANSVERSE size and swallowed the deliberate
+// standoff CSGObject's exit-face probe uses -- see that function's
+// margin derivation for the other half of this contract.
+//
+// Known limit, pre-existing for every primitive: a box translated far
+// from the world origin (|T| >~ 1e4) with non-dyadic face coordinates
+// round-trips its published point to within ~ulp(|T|) of the plane,
+// which can exceed this band; the geometry only ever sees local
+// coordinates and cannot widen for a translation it cannot observe.
 //
 // Returns true when the primary root was replaced by the far root,
 // i.e. the surviving hit is an EXIT face reached from the origin's own
@@ -171,9 +187,12 @@ namespace {
 // the ray is also dropped (|dir.n| < eps / t -- measure-zero in a
 // render), and (b) a hit point published by an UNRELATED object whose
 // face is exactly coplanar with one of ours reads as our own face
-// (enclosed exact-contact regions only).  A deliberate standoff that
-// wants to re-hit the face it stands off from -- CSGObject's exit-face
-// payload probe -- must therefore stand off by MORE than `eps`; it does.
+// (exact-contact stacks: a box resting on another box reports the
+// lower box's far face for a ray leaving the upper box's bottom -- a
+// first-hit shading error, never a shadow leak).  A deliberate standoff
+// that wants to re-hit the face it stands off from -- CSGObject's
+// exit-face payload probe -- must therefore stand off by MORE than
+// `eps` in THIS frame; it derives its margin from the same constants.
 // ================================================================
 inline Scalar FaceBound( const int side, const Point3& ll, const Point3& ur )
 {
@@ -204,23 +223,22 @@ inline bool DropSelfHitRoot( const Ray& ray, BOX_HIT& h, const Point3& ll, const
 	}
 
 	const Point3& o = ray.origin;
-	const Scalar coordScale =
-		std::fabs( o.x ) + std::fabs( o.y ) + std::fabs( o.z ) +
-		std::max( std::fabs( ll.x ), std::fabs( ur.x ) ) +
-		std::max( std::fabs( ll.y ), std::fabs( ur.y ) ) +
-		std::max( std::fabs( ll.z ), std::fabs( ur.z ) );
-	const Scalar eps = NEARZERO * ( Scalar(1) + coordScale );
+	constexpr Scalar kUlpFactor = 64.0 * 2.2204460492503131e-16;   // 64 * DBL_EPSILON
+	auto onFace = [&]( const int side ) -> bool
+	{
+		const Scalar oAxis = OriginAxis( side, o );
+		const Scalar eps = Scalar(4) * NEARZERO + kUlpFactor * std::fabs( oAxis );
+		return std::fabs( oAxis - FaceBound( side, ll, ur ) ) <= eps;
+	};
 
-	const bool selfA = std::fabs( OriginAxis( h.sideA, o ) - FaceBound( h.sideA, ll, ur ) ) <= eps;
-	if( !selfA ) {
+	if( !onFace( h.sideA ) ) {
 		return false;
 	}
 
 	// The primary root is the origin's own face.  The other root is the
 	// hit -- if it is ahead of the origin and not ALSO the origin's own
 	// face (an edge / corner origin leaving the box).
-	const bool selfB = std::fabs( OriginAxis( h.sideB, o ) - FaceBound( h.sideB, ll, ur ) ) <= eps;
-	if( h.dRange2 <= eps || selfB ) {
+	if( h.dRange2 <= Scalar(4) * NEARZERO || onFace( h.sideB ) ) {
 		h.bHit = false;
 		h.dRange = RISE_INFINITY;
 		h.dRange2 = RISE_INFINITY;

@@ -403,7 +403,8 @@ namespace
 	bool AdoptCsgExitFacePayloadViaProbe(
 		RayIntersectionGeometric& dst,
 		IObjectPriv* operand,
-		Scalar exitRangeCsgLocal )
+		Scalar exitRangeCsgLocal,
+		const Vector3& exitGeomNormalCsgLocal )
 	{
 		if( !operand || exitRangeCsgLocal <= 0 || exitRangeCsgLocal == RISE_INFINITY ) {
 			return false;
@@ -491,27 +492,60 @@ namespace
 		// cases miss the probe and take the graceful entry-payload
 		// fallback (quality only, never a decoy-payload correctness bug).
 		//
-		// Second floor (2026-09-05, debt-25 review round 1, P2-1): the
-		// probe must ALSO clear the operand primitive's own self-hit
-		// tolerance, or the primitive will treat the probe origin as a
-		// point ON the face it is trying to re-hit and drop that root.
-		// BoxGeometry::DropSelfHitRoot classifies any origin within
-		// NEARZERO * (1 + coordinate magnitude) of a face PLANE as that
-		// face's own published hit point (there is no provenance to tell a
-		// deliberate 1e-12 standoff from Object::IntersectRay's 1e-12
-		// back-off -- the two carry identical geometric information), so a
-		// 1e-12 margin here landed inside that band for every box operand
-		// and the probe silently took the graceful entry-payload fallback
-		// on EVERY box exit face.  8x that tolerance keeps the probe
-		// outside the band for exit angles down to |cos| ~ 1/8 (~83
-		// degrees off-normal; steeper exits miss the probe and fall back,
-		// the marginal-case outcome the paragraph above already accepts)
-		// while the acceptance window (~2.1 x margin, ~4e-11 at unit
-		// coordinates) stays ~50x below the ~2e-9 decoy-face radius the
-		// r6 revert above rejected.
-		const Scalar coordScale =
-			std::fabs( ptExitLocal.x ) + std::fabs( ptExitLocal.y ) + std::fabs( ptExitLocal.z );
-		const Scalar selfHitFloor = Scalar(8.0) * NEARZERO * ( Scalar(1) + coordScale );
+		// Second floor (2026-09-05, debt-25 review rounds 1-2): the probe
+		// must ALSO clear the operand primitive's own self-hit band, or
+		// the primitive treats the probe origin as the published hit
+		// point of the very face it is trying to re-hit and drops that
+		// root (BoxGeometry::DropSelfHitRoot; there is no provenance to
+		// tell a deliberate standoff from Object::IntersectRay's 1e-12
+		// back-off -- identical geometry).  The band is, per face axis in
+		// OPERAND-LOCAL units,
+		//   eps = 4 * NEARZERO + kUlpFactor * |localOrigin.axis|
+		// and the probe origin's distance to the face plane in that frame
+		// is  margin * |M^-1 dir . n|  ~=  margin * stretch * |dir . n|,
+		// stretch = |M^-1 dir| (local units per world unit along dir).
+		// So the floor is the band, doubled, mapped back through the
+		// operand's inverse stretch and the exit angle:
+		//   floor = 2 * (4*NEARZERO + kUlp * |localExit . nLocal|) / (stretch * |cos|)
+		// with |cos| clamped at 1/20 (steeper exits miss the probe and
+		// take the graceful entry-payload fallback, the marginal outcome
+		// the paragraph above already accepts).  The ulp term reads ONLY
+		// the exit point's component along the face normal (mapped into
+		// the operand frame with the transpose of the forward matrix, the
+		// way normals go world->local), because that is the one
+		// coordinate whose rounding can move the plane distance -- the
+		// same per-axis rule the box applies.  It carries NO other
+		// coordinate-magnitude term: round 2's P1 was an L1-of-ptExit
+		// floor that became EIGHT world units at X = 1e12 (Test 14, the
+		// r4 transverse-coupling guard), and a max-component variant of
+		// this floor failed the same test one level down, because the
+		// operand there is a NESTED CSG whose local frame is the world
+		// frame.  At unit scale / normal incidence the floor is 8e-12, so
+		// the ~2.1x acceptance window (~1.7e-11) stays ~100x under the
+		// ~2e-9 decoy-face radius the r6 revert rejected (Test 15).  A
+		// scaled operand (stretch 1e-3) gets a 1000x larger world margin,
+		// which is the same local distance.  Only the operand's OWN
+		// transform is visible here: a scaled leaf inside a nested CSG
+		// operand still reads stretch 1 and may miss the probe (graceful
+		// fallback), same as any other marginal case.
+		Scalar selfHitFloor = Scalar(8) * NEARZERO;
+		{
+			const Matrix4 mxInv = operand->GetFinalInverseTransformMatrix();
+			const Vector3 dirLocal = Vector3Ops::Transform( mxInv, dir );
+			const Scalar stretch = Vector3Ops::Magnitude( dirLocal );
+			const Point3 exitLocal = Point3Ops::Transform( mxInv, ptExitLocal );
+			const Matrix4 mxFwdT = Matrix4Ops::Transpose( operand->GetFinalTransformMatrix() );
+			const Vector3 nLocalUnnorm = Vector3Ops::Transform( mxFwdT, exitGeomNormalCsgLocal );
+			const Scalar nLocalMag = Vector3Ops::Magnitude( nLocalUnnorm );
+			const Scalar alongNormalLocal = nLocalMag > NEARZERO
+				? std::fabs( Vector3Ops::Dot( Vector3( exitLocal.x, exitLocal.y, exitLocal.z ), nLocalUnnorm ) ) / nLocalMag
+				: std::max( std::fabs( exitLocal.x ), std::max( std::fabs( exitLocal.y ), std::fabs( exitLocal.z ) ) );
+			const Scalar cosExit = std::max( std::fabs( Vector3Ops::Dot( dir, exitGeomNormalCsgLocal ) ), Scalar(0.05) );
+			const Scalar bandLocal = Scalar(4) * NEARZERO + kUlpFactor * alongNormalLocal;
+			if( stretch > NEARZERO ) {
+				selfHitFloor = Scalar(2) * bandLocal / ( stretch * cosExit );
+			}
+		}
 		const Scalar margin = std::max( std::max( Scalar(1e-12), selfHitFloor ), kUlpFactor * dirWeightedAbs );
 		const Point3 probeOrigin(
 			ptExitLocal.x + dir.x * margin,
@@ -762,7 +796,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// via a reverse probe (P2-e); on a probe miss, fall back
 					// to B's entry-hit payload with wire-edge info cleared
 					// (it belongs to the wrong face in that fallback).
-					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2 ) ) {
+					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
 						ri.geometric.bHasWireEdgeInfo = false;
 					}
 				} else {
@@ -785,7 +819,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// via a reverse probe (P2-e); on a probe miss, fall back
 					// to A's entry-hit payload with wire-edge info cleared
 					// (it belongs to the wrong face in that fallback).
-					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectA, riObjA.geometric.range2 ) ) {
+					if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectA, riObjA.geometric.range2, riObjA.geometric.vGeomNormal2 ) ) {
 						ri.geometric.bHasWireEdgeInfo = false;
 					}
 				} else {
@@ -984,7 +1018,9 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 					// Sphere / Ellipsoid / Torus / Cylinder now DO populate
 					// derivatives at intersection time (design doc 5.4), and
 					// they are exactly the geometries that report range2 == 0
-					// for an inside-origin hit -- so this branch is now
+					// for an inside-origin hit (BoxGeometry joined them
+					// 2026-09-05 for an origin ON one of its faces, via
+					// DropSelfHitRoot's promoted root) -- so this branch is now
 					// reachable WITH valid derivatives and the negation below
 					// is LIVE, not defensive.  The SDF family reaches it too,
 					// through the direct `curvature` field rather than
@@ -1207,7 +1243,7 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 						ri.geometric.vGeomNormal = -riObjB.geometric.vGeomNormal2;
 						ri.geometric.vNormal2 = riObjA.geometric.vNormal2;
 						ri.geometric.vGeomNormal2 = riObjA.geometric.vGeomNormal2;
-						if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2 ) ) {
+						if( !AdoptCsgExitFacePayloadViaProbe( ri.geometric, pObjectB, riObjB.geometric.range2, riObjB.geometric.vGeomNormal2 ) ) {
 							ri.geometric.bHasWireEdgeInfo = false;
 						}
 					}

@@ -881,8 +881,9 @@ and saw both; BDPT/VCM `Advance()` theirs by 1e-6 (`BDPT_RAY_EPSILON` /
 
 Fix: `BoxGeometry::DropSelfHitRoot` (`src/Library/Geometry/BoxGeometry.cpp`,
 commit `40e78b69`) drops a root on a face the origin lies on
-(`|origin.axis − bound| ≤ NEARZERO · (1 + coordinate magnitude)`, the
-debt-21 scale-relative floor) in favour of the other root, mirroring
+(`|origin.axis − bound| ≤ 4·NEARZERO + 64·DBL_EPSILON · |origin.axis|`,
+per axis — no transverse or half-extent term, see the precision skill's
+"Box self-root" example for why) in favour of the other root, mirroring
 `RaySphereIntersection`'s existing self-hit skip but as a plane-distance
 test rather than a range threshold.  Exposed a residual: a two-layer
 gapped weave still reads PT under BDPT/VCM by 1.28–1.55× because PT's
