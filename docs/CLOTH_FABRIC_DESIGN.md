@@ -5781,15 +5781,126 @@ yet known (§10.1).
     shading error, never a shadow leak), as is the pre-existing
     every-primitive limit that a box translated ≳ 1e4 from the world
     origin round-trips its published point outside any local-frame band.
-    **Sibling primitives are NOT closed by this.** A probe-level sweep
-    (primitives constructed directly, bypassing `Object`'s transform and
-    the `LightSampler` NEE path) flagged sphere at 1000× coordinates,
-    open-tube cylinder, torus, circular disk and infinite plane for the
-    same self-root class, but the only claim spot-checked by render did
-    not reproduce (`infiniteplane_geometry` floor under a ~4° light:
-    PT/BDPT 0.9986, same as a `clippedplane` control), so those remain
-    unverified suspects; a follow-up to re-audit through the real Object
-    path is filed.
+    **Sibling audit, closed 2026-09-05.** The prior "unverified suspects"
+    state above is superseded: a re-audit through the REAL `Object` /
+    `LightSampler` path (not the direct-construction probe) confirms the
+    self-hit-floor bug class reproduces on every quadric-family sibling at
+    large world coordinates, and on every flat- and quadric-family sibling
+    whose shadow ray can CROSS the surface, and closes both by applying the
+    same scale-relative floor `RayBilinearPatchIntersection`'s debt-21 fix
+    uses (`tMin = NEARZERO × (1 + coordScale)`) at each PRODUCER rather than
+    a caller: `RaySphereIntersection` (both overloads; `coordScale = |origin|₁
+    + radius`), `RayQuadricIntersection` (`|origin|₁`), `RayPlaneIntersection`
+    (`|origin|₁`; serves `infiniteplane_geometry` and `circulardisk_geometry`),
+    `RayTriangleIntersection` (`|origin|₁ + |vertex|₁`; serves both
+    triangle-mesh classes and the displaced-mesh path), and both cylinder
+    paths (`CylinderGeometry::IntersectCappedSolid`, `|origin|₁ + radius`;
+    `RayX/Y/ZCylinderIntersection`, same). `box_geometry` keeps its own
+    per-axis plane-distance band (above) — a plane-distance fact is
+    available there and not for a solved root; the two mechanisms are
+    siblings, not duplicates.
+
+    *Two independent triggers, not one.* (i) A shadow ray that CROSSES the
+    surface — any full-sphere-transmissive material (`weave_material
+    { transmission thin }` and its kin) lit from behind, at ANY coordinate
+    scale, on ANY primitive whose intersection routine can return a root at
+    the origin's own published point. (ii) Coordinates ≳ 1e3 on a
+    QUADRIC-family primitive (sphere, ellipsoid, cylinder), even for an
+    opaque Lambertian material lit from the camera side, where the eye
+    hit's own range carries enough absolute round-off (~1e-12 at this
+    scale) to publish a point on the wrong side of the surface outright —
+    a double-precision emulation of `RaySphereIntersection` on the
+    published point found 16 % of points landing INSIDE the sphere at
+    r = 1000, and 8.8 % of NEE rays self-hitting with roots up to 6.6e-9.
+    Flat-family primitives (plane, disk, box, torus, mesh, bilinear/Bezier
+    patch) do not show trigger (ii) — a flat or already-fixed-topology
+    surface has no curvature for round-off to punch through — so only
+    trigger (i) engages them, and only at whatever coordinate scale the
+    crossing geometry demands (for a full-sphere-transmissive material,
+    every scale, including unit).
+
+    **Trigger (ii) sweep** — Lambertian, omni light, camera oblique,
+    48×48/256 spp, BDPT/PT, unit scale vs 1000× (light power ×1e6):
+
+    | primitive | unit scale | 1000× |
+    |---|---|---|
+    | sphere | 1.000 | 1.609 (grazing) / 1.490 (overhead) |
+    | ellipsoid | 1.000 | 1.447 / 1.328 |
+    | capped / open cylinder | 1.000 | 1.015–1.023 |
+    | torus | 1.000 | 1.000 |
+    | circular disk | 1.000 | 1.000 |
+    | infinite plane | 1.000 | 1.000 |
+    | clipped plane | 1.000 | 1.000 |
+    | box | 1.000 | 1.000 |
+    | PLY quad mesh | 1.000 | 1.005 |
+    | bilinear patch | 1.000 | 1.000 |
+    | Bezier patch | 1.000 | 1.000 |
+    | SDF sphere | 1.000 | 0.995–1.004 |
+    | displaced tessellated sphere (disp 0.02·r) | 1.000 | 1.076 (disp 0 control: 1.029) |
+
+    Mechanism confirmed two ways: advancing PT's NEE shadow ray 1e-6 in a
+    scratch build took the sphere cell from 1.612 to 1.0006 (the same
+    `Advance()` convention BDPT/VCM already use); and the double-precision
+    emulation above independently explains the same figure from the
+    producer side. Angle-independent — grazing and overhead read within
+    10 % of each other — so this is scale/rounding, not trigger (i)'s
+    grazing straddle.
+
+    **Trigger (i) sweep** — the debt-25 scene family (`weave_material
+    { fabric custom transmission thin gap 0.0 warp_transmit 0.25
+    weft_transmit 0.25 }`, omni light behind at `0 0 -3` power 6, camera
+    `0 0 3.2` fov 34, 24×24/256 spp), BDPT/PT before → after the floor:
+
+    | primitive | before | after |
+    |---|---|---|
+    | box (control, debt 25) | 0.966 | 0.967 |
+    | clippedplane (control, debt 21) | 1.000 | 1.000 |
+    | sphere | 3.12 | 0.98 |
+    | ellipsoid | 2.80 | 1.01 |
+    | capped cylinder (axis x) | 2.19 | 0.96 |
+    | open tube (side-on) | 2.82 | 0.96 |
+    | open tube (end-on) | 0.995 | 0.995 (clean both) |
+    | circular disk | 393 | 1.000 |
+    | infinite plane | 354 | 1.000 |
+    | PLY two-triangle quad | 157 | 1.000 |
+    | displaced sphere | 3.21 | 0.98 |
+    | bilinear patch | 1.000 | 1.000 (shares the debt-21 solver) |
+    | flat Bezier patch | 1.000 | 1.000 (flat case only; a curved patch was not tested) |
+    | SDF sphere | — | 0.93 (clean; ray-marched, scale-relative epsilon) |
+    | torus | 0.894 | 0.855 (NOT fixed — see below) |
+
+    *Light INSIDE the closed shells* (unit scale): sphere 0.990, ellipsoid
+    0.990, cylinder 1.095, displaced 0.982, torus 1.007 — clean. *At 1000×,
+    light behind, before → after*: sphere 1.061→0.932, ellipsoid
+    1.225→0.944, cylinder 1.174→0.943, displaced →0.943, disk/plane/mesh
+    →1.000 — a residual ~6 % PT-OVER on the closed round shells at 1000×
+    (vs the box's own ~3 % residual at unit scale, above), left OPEN.
+    Lambertian 1000× after the floor: sphere 1.0003, ellipsoid 1.0014,
+    unit sphere 0.9998.
+
+    **Torus: reverted, left open.** The torus's quartic already deflates
+    an exactly-on-surface root (a relative 1e-10 test on the quartic's
+    leading coefficient `C[4]`); adding the scale-relative floor to its
+    remaining root gate did nothing at unit scale and made the 1000× cell
+    slightly WORSE (0.846 → 0.792), so it was reverted. The torus's mild
+    PT-OVER residual (0.89 unit / 0.85 at 1000×, both light-behind; clean
+    with the light inside) is recorded as open, mechanism unknown —
+    probably the deflated cubic's conditioning, not the same self-hit-floor
+    bug class as its siblings.
+
+    **Consequence for the fabric workstream.** Before this fix, any
+    `weave_material { transmission thin }` (or other full-sphere-
+    transmissive material) on a triangle MESH, a `circulardisk_geometry`,
+    or an `infiniteplane_geometry`, lit from behind, was almost completely
+    self-shadowed under PT (1/157 to 1/393 of the right answer) while a
+    `clippedplane_geometry` twin was fine — every mesh curtain or cloth
+    panel lit from behind was affected, not just the closed-solid case
+    above.
+
+    **Regression test.** `tests/PrimitiveSelfHitTest.cpp` (written
+    alongside this fix by a separate worker) pins the scale-relative floor
+    per producer across the primitives in the tables above; its
+    acceptance bands are derived in its own comment, not reproduced here.
 
     **What this does NOT close.** The gap > 0 rows do not converge with
     this fix — filed as **debt 27** below. And a small residual remains at

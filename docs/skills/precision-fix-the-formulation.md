@@ -279,6 +279,27 @@ and the regression test: [CLOTH_FABRIC_DESIGN.md §15 debt
 21](../CLOTH_FABRIC_DESIGN.md) and
 [`tests/FabricRenderTest.cpp::TestAreaLitSheerWeave`](../../tests/FabricRenderTest.cpp).
 
+**Sibling audit, closed 2026-09-05.** The same scale-relative floor —
+computed once at the producer, `tMin = NEARZERO * (1 + coordScale)` —
+now lives in `RaySphereIntersection` (both overloads), `RayQuadricIntersection`,
+`RayPlaneIntersection`, `RayTriangleIntersection`, and both cylinder
+intersection paths, closing the identical bug class each of those
+producers had: a self-hit root at the origin's own published point,
+sized by the SAME coordinates the fixed absolute `NEARZERO` never scaled
+with. The worst measured case was `RayPlaneIntersection`: an
+`infiniteplane_geometry` (or `circulardisk_geometry`) curtain lit from
+behind by a full-sphere-transmissive `weave_material` read PT at 1/354 of
+BDPT before the floor and 1.000 after, at unit scale — no large
+coordinates needed, because a shadow ray that CROSSES a flat surface hits
+this the same way at any scale. `box_geometry` does not take this fix; it
+keeps the per-axis plane-distance band below, because a box's self-hit
+`t` blows up at grazing exit angles in a way no single scale-relative
+range threshold can bound (see the next example). Full sweep across all
+these producers, plus the torus (reverted — did not close) and a
+1000×-coordinate Lambertian regime the crossing-shadow-ray trigger alone
+doesn't reach: [CLOTH_FABRIC_DESIGN.md §15 debt
+25](../CLOTH_FABRIC_DESIGN.md)'s "Sibling audit" sub-block.
+
 ### Box self-root: an on-face origin is a plane-distance fact, not a range threshold
 
 Symptom: a closed `box_geometry` carrying a thin-transmissive

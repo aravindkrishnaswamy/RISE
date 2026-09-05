@@ -314,18 +314,42 @@ minutes to check; do them before any integrator instrumentation:
    (after cause 0's IOR seeding, cause 4's bilinear self-hit, and
    cause 6's legacy rasterizer).
 
-   **Sibling primitives — audit state (2026-09-05).**  A probe that
-   constructed primitives DIRECTLY (bypassing `Object`'s world↔local
-   transform and the `LightSampler` NEE path) flagged the same
-   self-root class on sphere at 1000× coordinates, open-tube cylinder,
-   torus, circular disk and infinite plane; but the one claim
-   spot-checked by an actual render did NOT reproduce (an
-   `infiniteplane_geometry` floor under a light at ~4° elevation reads
-   PT/BDPT 0.9986, identical to a `clippedplane` control), so those
-   numbers are unverified.  Re-auditing through the real Object path is
-   a filed follow-up; until it lands, treat "PT dark/bright vs BDPT on a
-   closed ANALYTIC solid" as the box-confirmed symptom and the other
-   primitives as suspects, not findings.
+   **Sibling primitives — audit state, CLOSED 2026-09-05.**  A re-audit
+   through the real `Object` / `LightSampler` path (not the
+   direct-construction probe the earlier state relied on) confirms the
+   same self-root class reproduces beyond the box, and generalises to a
+   bug CLASS rather than a per-primitive list: an absolute `dRange >
+   NEARZERO` (or `>= NEARZERO`) root-acceptance gate is unsound at any
+   coordinate scale, because a self-hit root scales with the geometry's
+   own coordinates while `NEARZERO` (1e-12) does not. Two independent
+   triggers surface it: (a) a shadow ray that CROSSES the surface — any
+   full-sphere-transmissive material (`weave_material { transmission
+   thin }` and its kin) lit from behind, at ANY coordinate scale, on
+   ANY primitive whose intersection routine can return a root at the
+   origin's own published point; (b) coordinates ≳ 1e3 on a
+   QUADRIC-family primitive (sphere, ellipsoid, cylinder), where the
+   eye hit's own range carries enough absolute round-off to publish a
+   point on the wrong side of the surface outright, even for an opaque
+   Lambertian material lit from the camera side. The fix is the same
+   scale-relative floor at each PRODUCER (`RaySphereIntersection`,
+   `RayQuadricIntersection`, `RayPlaneIntersection`,
+   `RayTriangleIntersection`, both cylinder paths) that
+   `RayBilinearPatchIntersection`'s debt-21 fix and `box_geometry`'s
+   plane-distance band already use — see the discriminators below and
+   the full sweep in
+   [CLOTH_FABRIC_DESIGN.md §15 debt 25](../CLOTH_FABRIC_DESIGN.md)'s
+   "Sibling audit" sub-block. One sibling did NOT close: the torus's
+   mild PT-over residual (0.89 unit scale / 0.85 at 1000×, light
+   behind; clean with the light inside) survived the same floor and
+   was reverted there — recorded as open, mechanism unknown.
+   **Discriminators, reusable on the next suspect primitive:** treat
+   BDPT (or VCM) as the reference, since both `Advance()` their shadow
+   and continuation rays and so never see the self-root; independently,
+   advancing PT's own NEE shadow ray by a small epsilon in a scratch
+   build should collapse the disagreement if this bug class is at
+   fault; and a `clippedplane_geometry` / `box_geometry` control at the
+   same scene scale tells you whether the primitive under suspicion or
+   the scene itself is the variable.
 
 A useful invariant for separating these from real MIS bugs: when you
 instrument per-strategy totals (step 3), compare the per-strategy
@@ -891,6 +915,14 @@ NEE cannot reach a path that goes through the far layer's delta gap and
 the near layer's continuum lobe — filed as debt 27, not closed by this
 fix.  Full writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
 25](../CLOTH_FABRIC_DESIGN.md) (debt 27 immediately after).
+
+**Sibling audit, closed 2026-09-05:** the same producer-level floor
+(`RaySphereIntersection`, `RayQuadricIntersection`, `RayPlaneIntersection`,
+`RayTriangleIntersection`, both cylinder paths) closes the identical bug
+class on sphere, ellipsoid, cylinder, disk, infinite plane and triangle
+mesh — see step 0 cause 7's "Sibling primitives" paragraph above and
+CLOTH_FABRIC_DESIGN.md §15 debt 25's "Sibling audit" sub-block for the
+full before/after sweep; the torus did not close and stays open.
 
 ## Mental model for delta lights and MIS
 
