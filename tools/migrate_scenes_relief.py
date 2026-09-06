@@ -44,7 +44,7 @@ It is handled the same way at zero and below, but for two DIFFERENT reasons
     divide, silently changing what `scale` meant.
 
 Either way the algebra above cannot be applied, because `relief_modifier`'s
-`step 0` means AUTO (a full footprint/1e-3-floor perturbation) -- the
+`step 0` means AUTO (a half-footprint/1e-3-floor perturbation) -- the
 opposite of inert.  So this script does NOT fold such a chunk; it emits
 `scale 0` instead (which neutralises the perturbation regardless of `step`),
 with a WARN naming the file:line and the reason.  On the zero half that
@@ -455,7 +455,7 @@ def migrate_text(text, stats, path_label=''):
                     #
                     # Neither can be folded: the migrated `step W` with
                     # W <= 0 means AUTO in relief_modifier (§3.3:
-                    # `step_user > 0 ? step_user : ...`), i.e. a full
+                    # `step_user > 0 ? step_user : ...`), i.e. a half-
                     # footprint/1e-3-floor perturbation -- the opposite of
                     # inert.  `scale 0` neutralises the perturbation
                     # regardless of what `step` ends up being, which
