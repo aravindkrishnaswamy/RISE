@@ -677,17 +677,24 @@ seed noise.
   checks, the scale-relative self-hit floor (debt 21) and
   `SolveQuadricWithinRange`'s `a == 0` linear branch — which the
   parallelogram case still takes — are all untouched. Every caller
-  benefits: `ClippedPlaneGeometry` (both entry points),
-  `BilinearPatchGeometry`, and `RayTriangleIntersectionWithDisplacement`.
+  benefits: `ClippedPlaneGeometry` (both entry points) and
+  `BilinearPatchGeometry`. (`RayTriangleIntersectionWithDisplacement` also
+  calls the helper but is **not in the build** — absent from
+  `build/make/rise/Filelist`, an unfinished stub — so it is not a caller in
+  any shipped sense; an earlier draft of this list named it.)
 
   Guarded by `GeometryUVRoundtripTest::TestBilinearEliminationAxis`: 12
   axis-aligned closed-form cases across all three elimination branches and
   both signs (six on the raw patch, six through `clippedplane_geometry`),
   19 rays at curved patches checked against a brute-force grid + 3×3 Newton
   oracle sharing no code with the analytic solver, and 1000 random
-  directions asserting both the on-ray invariant and bit-level agreement
+  directions asserting both the on-ray invariant and agreement **to
+  FP-contraction noise** (tolerance 1e-12; measured max delta 8.9 × 10⁻¹⁶)
   with a verbatim copy of the pre-fix fixed-`z` solver wherever `|q.z|` is
-  dominant. That copy also serves as an in-test oracle asserting the
+  dominant — bit equality is deliberately not asserted, because the test
+  necessarily carries its own copy of the solver and `-ffast-math` + LTO
+  are free to fuse the multiply-subtract pairs differently in each. That
+  copy also serves as an in-test oracle asserting the
   pre-fix solver misses **iff** `q.z == 0`, so the guard is discriminating
   by construction. Red-proof: forcing the axis back to a hard-coded `w = 2`
   turns the suite red with 22 failed assertions (exactly the ±X and ±Y
@@ -707,6 +714,53 @@ seed noise.
   `RayDistanceToPoint` were already largest-`|Dir|`.  The per-axis DDA
   walks (`HeterogeneousMedium`, `MajorantGrid`) treat all three axes
   symmetrically behind their own zero guards.
+
+  **Fix round 1 on the axis-pick landing (2026-09-06).** Two reviewers on
+  `14e0f45d` returned no P1 correctness findings on the axis pick itself
+  and one P1 on this document's prose; the round below closes both, plus
+  two latent bugs the review surfaced in the code the fix newly reaches.
+
+  | Finding | Where | Commit |
+  |---|---|---|
+  | `SolveQuadricWithinRange`'s exact double root returned `-b/a`, not `-b/(2a)` — and, on audit, `SolveQuadric`'s two-root branch multiplied by `0.5 * a` where it wanted `0.5 / a` | `src/Library/Functions/Polynomial.cpp` | `500f9708` |
+  | A root that satisfies neither eliminated row was accepted without anyone checking it lies on the ray — phantom hits for a ray exactly parallel to a planar, **non-parallelogram** patch | `src/Library/Intersection/RayBilinearPatchIntersection.cpp` | `a3db90ce` |
+  | Prose P1: "BIT FOR BIT" / "bit-level agreement" contradicted the test's own 1e-12 tolerance; the "part (c) stays green BY CONSTRUCTION" claim was wrong; `RayTriangleIntersectionWithDisplacement` named as a caller that benefits | this file §10.6, `tests/GeometryUVRoundtripTest.cpp` | (this commit) |
+
+  The reviewers' measurement of the axis-pick landing itself, for the
+  record: the fixed solver finds **3842** true hits on planar patches and
+  **9356** on general ones that the hard-coded-`z` code missed, and loses
+  **0** true hits — the change is strictly additive on the rays it was
+  meant to reach. The phantom class the third row above closes is a
+  *subset* of what the axis pick newly reaches, which is why it appeared
+  only now: the pre-fix code missed those rays by accident, for the same
+  rank-deficiency reason it missed the genuine ones.
+
+  Behavioural note worth stating plainly: with the residual gate in
+  place, a `clipped_plane` / `bilinear_patch` now correctly **occludes**
+  rays travelling in what used to be its blind plane. Before the axis
+  pick those rays passed straight through it; between the axis pick and
+  the gate a non-parallelogram quad could stop them at a point off its
+  own plane; now they are stopped only where the quad actually is.
+
+  The gate is a residual check, not a threshold widening
+  ([precision-fix-the-formulation](skills/precision-fix-the-formulation.md)):
+  it reconstructs `P(u,v)`, differences it against `origin + t*q`, and
+  compares against `NEARZERO * (1 + coordScale + |t|·|q|₁)` — the
+  scale-relative idiom `GeometricUtilities::BilinearInverse` and the debt
+  21 self-hit floor in the same function already use. Guarded by
+  `GeometryUVRoundtripTest` part (d),
+  `TestBilinearOffRayRootRejection`: the reviewer's exact reproduction as
+  both a raw patch and a `clippedplane_geometry`, a companion crossing
+  ray that must still hit at the closed-form `(u, v, t)`, and a seeded
+  200k randomized sweep on dyadic coordinates across three decades of
+  world scale (×1, ×256, ×65536, so an absolute epsilon would fail at one
+  end or the other) — 85156 constructed-to-hit rays found with **0 lost**
+  and 331 brute-force-oracle cross-checks agreeing, and 98779
+  cannot-possibly-hit rays with **0 phantoms**. Red-proof: making
+  `RootLiesOnRay` return true unconditionally turns the suite red with
+  three failures, the reviewer's case reporting the point `(−1, 0.333, 1)`
+  a full unit off the patch's plane and the sweep finding 41 phantoms
+  with a worst off-ray distance of 245760.
 * **The §7 residual list is unchanged and still accurate**: primary rays
   only, shading-vs-geometric normal, no grazing clamp. Test 10 measures the
   grazing case rather than clamping it, per §4 — every hit from the optical
