@@ -1,7 +1,9 @@
 # Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
 
-**Status:** Phases 1–5 landed; Phase 4 reviewed to zero P1 (fix round 1,
-`177bcee4`); Phase 5 review round: see §12. Each phase runs the
+**Status:** Phases 1–5 landed and reviewed to zero P1 (2026-09-06): Phase 1
+four rounds; Phase 2 one round + fix; Phase 3 three lenses + fix + converge;
+Phase 4 two fix rounds (`177bcee4`, `e5d0fa0b`) then a converging round with
+zero P1; Phase 5 reviewed with Phase 4. Record in §12. Each phase ran the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
