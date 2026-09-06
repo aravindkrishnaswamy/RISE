@@ -13,6 +13,7 @@
 
 #include "pch.h"
 #include "NormalMap.h"
+#include "ModifierFrame.h"
 #include "../Interfaces/ILog.h"
 #include "../Utilities/Math3D/Math3D.h"
 
@@ -181,56 +182,28 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 	}
 
 	// World-space perturbed normal = T*nx + B*ny + N*nz, normalized.
-	Vector3 perturbed = Vector3Ops::Normalize(
+	const Vector3 perturbed = Vector3Ops::Normalize(
 		T * nx + B * ny + N * nz );
 
-	ri.vNormal = perturbed;
-
-	// Rebuild the ONB so SPFs (refraction / reflection) sample around
-	// the perturbed normal, not the original geometric one.  When the
-	// hit carries ANY geometry-supplied coherent tangent
-	// (ri.bHasShadingTangent -- HairGeometry's fiber tangent, SDFGeometry
-	// heightfield mode, or (docs/CLOTH_FABRIC_DESIGN.md 9.1) an analytic
-	// primitive's dpdu, a UV-mapped mesh's dpdu, or an imported glTF
-	// TANGENT; see the field's doc in RayIntersectionGeometric.h),
-	// ri.onb.u() at this point already IS that tangent: Object::IntersectRay
-	// / CSGObject::IntersectRay promoted it to world space and built the
-	// ONB from it before this modifier ran.  A plain CreateFromW would
-	// silently discard it for an arbitrary canonical-axis tangent and
-	// break the coherent frame HairBSDF / anisotropic `tangent_rotation`
-	// depend on -- the same failure mode GlintModifier.cpp avoids for its
-	// facet tilt.  Project the CURRENT u onto the new normal's tangent
-	// plane and rebuild with CreateFromWU instead; fall back to
-	// CreateFromW only if that projection degenerates (the perturbed
-	// normal swung onto the old tangent).  When bHasShadingTangent is
-	// false, this is skipped entirely and behaviour is byte-identical to
-	// before.
+	// Rebuild the ONB so SPFs (refraction / reflection) sample around the
+	// perturbed normal, not the original geometric one.  The rebuild body
+	// -- project the CURRENT u into the new normal's tangent plane,
+	// CreateFromWU, restore the incoming handedness with FlipV, fall back
+	// to CreateFromW on a degenerate projection -- lives in
+	// ModifierFrame::RebuildPreservingTangent, which carries the full
+	// rationale for BOTH corrections it encodes (geometry-supplied tangent
+	// preservation; the mirrored-instance FlipV fix).
 	//
-	// Handedness (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round, P1 follow-on):
-	// CreateFromWU ALWAYS emits a right-handed (u,v,w) triple, but a
-	// mirrored-instance hit's incoming `ri.onb` may deliberately be
-	// LEFT-handed here -- Object::IntersectRay's own P1 fix flips `v`
-	// (OrthonormalBasis3D::FlipV) to correct `tangent_rotation`'s sense
-	// under a negative-determinant transform.  Naively rebuilding with
-	// CreateFromWU would silently discard that correction for any
-	// mirrored, tangent-bearing hit that also carries a normal map.
-	// Capture the incoming handedness (sign of u.(v x w)) and restore it
-	// after rebuilding, so this modifier composes with the mirror fix
-	// instead of undoing it.
+	// The GATE stays here, and is deliberately NOT inside the helper: when
+	// the hit carries no geometry-supplied tangent (bHasShadingTangent
+	// false) this modifier rebuilds with a plain CreateFromW, which is
+	// byte-identical to its behaviour before the tangent fix existed.
+	// GlintModifier makes the opposite choice for its own reasons -- see
+	// the helper's header comment.
 	if( ri.bHasShadingTangent ) {
-		const Vector3 oldU = ri.onb.u();
-		const Scalar oldHandedness = Vector3Ops::Dot( oldU,
-			Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
-		const Vector3 uProj = oldU - ri.vNormal * Vector3Ops::Dot( oldU, ri.vNormal );
-		if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
-			ri.onb.CreateFromWU( ri.vNormal, uProj );
-			if( oldHandedness < Scalar(0) ) {
-				ri.onb.FlipV();
-			}
-		} else {
-			ri.onb.CreateFromW( ri.vNormal );
-		}
+		ModifierFrame::RebuildPreservingTangent( ri, perturbed );
 	} else {
+		ri.vNormal = perturbed;
 		ri.onb.CreateFromW( ri.vNormal );
 	}
 }

@@ -973,6 +973,17 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// Tell which modifier
 		ri.pModifier = pModifier;
 
+		// Tell the modifier how to express a WORLD-space step in the frame
+		// `ptObjIntersec` (stamped a few lines below) is written in.  For a
+		// plain object that frame IS this object's own object space, so the
+		// map is exactly m_mxInvFinalTrans -- the inverse of the
+		// m_mxFinalTrans that produces ptIntersection from ptObjIntersec.
+		// A borrowed pointer into a member of the object that is about to
+		// become ri.pObject; the scene is immutable during a render.  See
+		// the field's doc comment in RayIntersectionGeometric.h for the
+		// direction-vs-point rule and for why CSGObject clears it instead.
+		ri.geometric.pmxWorldToObject = &m_mxInvFinalTrans;
+
 		// Tell which material
 		ri.pMaterial = pMaterial;
 

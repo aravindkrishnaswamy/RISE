@@ -1613,6 +1613,24 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			ri.pModifier = pModifier;
 		}
 
+		// WORLD -> OBJECT step map: honestly UNKNOWN for a CSG hit.
+		//
+		// `ptObjIntersec` on a composite hit is the CHILD operand's own
+		// object-space point -- AdoptCsgSurfacePayload copies it
+		// untransformed and its comment names the resulting frame
+		// mismatch as a deliberate, pre-existing gap -- so the map from
+		// world into THAT frame is the child's inverse composed with this
+		// composite's inverse (and with every enclosing composite's, under
+		// nesting).  No stored member holds that product and a `const
+		// Matrix4*` cannot express it.  The child's Object::IntersectRay
+		// stamped its OWN inverse a moment ago, which is wrong by exactly
+		// this level's transform; stamping `m_mxInvFinalTrans` here would
+		// be wrong by exactly the child's.  Clear it, and let the consumer
+		// take its documented degraded path (move the object-space point
+		// by the world step and warn once) rather than silently trusting a
+		// matrix that is wrong by a transform.
+		ri.geometric.pmxWorldToObject = 0;
+
 		if( pShader ) {
 			ri.pShader = pShader;
 		}

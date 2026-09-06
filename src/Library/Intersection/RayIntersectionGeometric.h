@@ -219,6 +219,59 @@ namespace RISE
 		Point3						ptObjIntersec;	// the point of intersection on object space
 		Point3						ptObjExit;		// the point of exit in object space
 
+		//! WORLD -> OBJECT linear map for the frame `ptObjIntersec` is
+		//! expressed in, or `nullptr` when it is not known.
+		//!
+		//! WHY IT EXISTS.  A modifier that wants to evaluate a painter at
+		//! an OFFSET point (ReliefModifier's central difference in the
+		//! tangent plane, docs/RELIEF_MODIFIER_DESIGN.md 3.2/3.4) has to
+		//! move every point domain a painter can read, consistently:
+		//! `ptIntersection` by the world step, `ptCoord` by the UV chain
+		//! rule -- and `ptObjIntersec` by the SAME step expressed in
+		//! object space, or an object-space painter (`mapping_painter
+		//! space object`, `voronoi3d space object`, `Po` in an
+		//! expression) sees a field that is flat along the step.  The hit
+		//! record carried no transform, so this is it.
+		//!
+		//! WHAT IT POINTS AT.  `Object::m_mxInvFinalTrans` -- the object's
+		//! own finalized world->object matrix, which is exactly the
+		//! inverse of the `m_mxFinalTrans` that produced `ptIntersection`
+		//! from `ptObjIntersec` two lines below the stamp.  It is a
+		//! borrowed pointer into the Object that also became `ri.pObject`,
+		//! so it is valid for as long as the hit record is (the scene is
+		//! immutable during a render, docs/ARCHITECTURE.md).
+		//!
+		//! USE THE LINEAR PART ONLY.  A step is a DIRECTION, so transform
+		//! it with `Vector3Ops::Transform` (which drops the translation
+		//! column), never `Point3Ops::Transform`.  Under a non-uniform
+		//! scale the object-space step is not the world step's length --
+		//! that is correct, not a defect: the painter's field lives in
+		//! object space and the finite difference must span the object-
+		//! space distance the world step actually covers.
+		//!
+		//! NULL ON CSG HITS, DELIBERATELY.  `CSGObject::IntersectRay`
+		//! clears it.  A CSG composite reports the CHILD operand's own
+		//! object-space point in `ptObjIntersec` (see
+		//! `AdoptCsgSurfacePayload`, which copies it untransformed, and
+		//! its comment naming the resulting frame mismatch as a
+		//! pre-existing, deliberate gap), so the map from world to THAT
+		//! frame is the product of the child's inverse with every
+		//! enclosing composite's inverse -- a per-hit matrix no member
+		//! holds and a pointer cannot express.  Stamping the composite's
+		//! own inverse would be wrong by exactly the child's transform,
+		//! and leaving the child's stamp would be wrong by exactly the
+		//! composite's; `nullptr` is the honest third answer, and the
+		//! consumer's documented degraded mode (move the object-space
+		//! point by the WORLD step, warn once) is at least correct
+		//! whenever the composite chain is a pure translation.
+		//!
+		//! NULL ALSO on any record a transport path builds without going
+		//! through `Object::IntersectRay` (BDPT/VCM's
+		//! `PopulateRIGFromVertex`, hand-built test hits, the geometry
+		//! unit tests).  This is an OUTPUT field, so `PropagateCastInputs`
+		//! does not carry it.
+		const Matrix4*				pmxWorldToObject;
+
 		OrthonormalBasis3D			onb;			// the orthonormal basis at the point of intersection
 
 		//! Some custom intersection data that an object would
@@ -389,6 +442,7 @@ namespace RISE
 		  range2( RISE_INFINITY ),
 		  bGeomNormalOrientedToRay( false ),
 		  bHasTexCoord1( false ),
+		  pmxWorldToObject( 0 ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
 		  ambientIOR( 1.0 ),
@@ -424,6 +478,7 @@ namespace RISE
 		  ptExit( r.ptExit ),
 		  ptObjIntersec( r.ptObjIntersec ),
 		  ptObjExit( r.ptObjExit ),
+		  pmxWorldToObject( r.pmxWorldToObject ),
 		  onb( r.onb ),
 		  pCustom( r.pCustom ),
 		  glossyFilterWidth( r.glossyFilterWidth ),
@@ -470,6 +525,7 @@ namespace RISE
 			ptExit = r.ptExit;
 			ptObjIntersec = r.ptObjIntersec;
 			ptObjExit = r.ptObjExit;
+			pmxWorldToObject = r.pmxWorldToObject;
 			onb = r.onb;
 			glossyFilterWidth = r.glossyFilterWidth;
 			ambientIOR = r.ambientIOR;
