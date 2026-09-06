@@ -4481,7 +4481,10 @@ namespace RISE
 		//! is a LENGTH, not a colour: it must never pass through JH
 		//! spectral uplift, which is exactly what the scalar pipe
 		//! guarantees.  Positive height rises along +N (Blinn / PBRT-v4),
-		//! the OPPOSITE of `bumpmap_modifier`.  `domain` is `surface`
+		//! the OPPOSITE of `bumpmap_modifier` (REMOVED 2026-09-06 along
+		//! with the `BumpMap` class -- docs/RELIEF_MODIFIER_DESIGN.md 7.5;
+		//! `AddBumpMapModifier` above is its ABI-frozen legacy shim, kept
+		//! only for the Blender bridge and out-of-tree callers).  `domain` is `surface`
 		//! (default; 3D field, world-unit tangent step, no texcoords
 		//! required) or `uv` (legacy sampling geometry).  `step` <= 0
 		//! selects the automatic rule (surface: max(1e-3, pixel

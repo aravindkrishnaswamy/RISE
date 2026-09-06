@@ -20,8 +20,8 @@ legacy modifier's positive `scale` treats `f` as depth).  This script folds
 that sign so a migrated scene renders bit-for-bit the same.
 
 THE ALGEBRA (§7.2).  Legacy tilt magnitude along `T` is
-    normalize_gradient TRUE:   +scale * (f+ - f-)
-    normalize_gradient FALSE:  +scale * (f+ - f-) / (2*windowsize)
+    normalize_gradient FALSE:  +scale * (f+ - f-)
+    normalize_gradient TRUE:   +scale * (f+ - f-) / (2*windowsize)
 relief_modifier's tilt magnitude along `T` (domain uv, step = windowsize) is
     -scale' * (f+ - f-) / (2*windowsize)
 Equating the two and solving for scale':
