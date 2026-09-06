@@ -37,6 +37,20 @@ int Polynomial::SolveQuadric( const Scalar (&coeff)[ 3 ], Scalar (&sol)[ 2 ] )
 	const Scalar& b = coeff[1];
 	const Scalar& c = coeff[2];
 
+	// Degenerate leading coefficient: b*x + c = 0 is LINEAR, not quadratic.
+	// `SolveQuadricWithinRange` below has always had this branch; this one
+	// used to fall through to the 1/(2a) division and hand back a pair of
+	// infinities (or, before the divisor fix below, a pair of exact zeros
+	// that satisfy nothing).  Both siblings now agree.
+	if( a == 0.0 )
+	{
+		if( b == 0.0 ) {
+			return 0;
+		}
+		sol[0] = -c / b;
+		return 1;
+	}
+
 	const Scalar	d = b*b - 4*a*c;
 
 	if( IsZero( d ) )
@@ -50,9 +64,16 @@ int Polynomial::SolveQuadric( const Scalar (&coeff)[ 3 ], Scalar (&sol)[ 2 ] )
 	}
 	else
 	{
-		const Scalar p = 0.5 * a;
+		// (-b +- sqrt(d)) / (2a).  This was written as a multiply by
+		// `0.5 * a`, which is the same number as `0.5 / a` only when
+		// a == +/-1 -- true by accident for every ray-primitive caller
+		// (their leading coefficient is |Dir|^2 on a normalised
+		// direction) and false for the two general-coefficient callers
+		// (`RayBezierPatchIntersection`'s degenerate-v fallback and
+		// `QuadraticFunction::Solve`), which got roots scaled by a^2.
+		const Scalar p = 0.5 / a;
 		const Scalar sq_d = sqrt( d );
-		
+
 		sol[0] = (-b + sq_d) * p;
 		sol[1] = (-b - sq_d) * p;
 		return 2;
@@ -90,7 +111,16 @@ int Polynomial::SolveQuadricWithinRange(
 
 	if(d <= 0.0) {
 		if(d == 0.0) {
-			sol[0] = -b/a;
+			// The double root of a*x^2 + b*x + c is -b/(2a), not -b/a --
+			// the vertex of the parabola, which is where the two roots of
+			// (-b +- sqrt(d))/(2a) coincide when d == 0.  `SolveQuadric`
+			// above has always had the 2 here.  The wrong root is off by
+			// exactly a factor of two, so it satisfied the polynomial only
+			// when the root was 0 (b == 0), which is why the bilinear-patch
+			// caller -- the only in-tree consumer that can reach a genuine
+			// double root -- turned it into a MISS rather than a visibly
+			// misplaced hit for most patches.
+			sol[0] = -b/(2*a);
 			if(sol[0] > min && sol[0] < max) {
 				return 1;
 			} else {

@@ -93,6 +93,52 @@ void TestSolveQuadric() {
         VerifyQuadricRoots(coeff, sol, n);
     }
 
+    // Case 7: leading coefficient NOT +/-1 -- the two-root branch divides
+    // by 2a, it does not multiply by a/2.  2x^2 - 6x + 4 = 0 => x=1, x=2.
+    // RED-PROOF: restoring `const Scalar p = 0.5 * a;` makes this return
+    // 8 and 4 (each root scaled by a^2 = 4) and VerifyQuadricRoots fires.
+    // Cases 1-6 above all have |a| == 1, where 0.5*a and 0.5/a coincide,
+    // which is why the bug survived them.
+    {
+        Scalar coeff[3] = {2, -6, 4};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadric(coeff, sol);
+        assert(n == 2);
+        VerifyQuadricRoots(coeff, sol, n);
+        const Scalar lo = std::fmin(sol[0], sol[1]);
+        const Scalar hi = std::fmax(sol[0], sol[1]);
+        assert(IsClose(lo, 1.0, 1e-9));
+        assert(IsClose(hi, 2.0, 1e-9));
+    }
+
+    // Case 8: large leading coefficient, distinct roots.
+    // 100x^2 - 300x + 200 = 0 => x=1, x=2 (a^2 = 1e4 scaling under the bug).
+    {
+        Scalar coeff[3] = {100, -300, 200};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadric(coeff, sol);
+        assert(n == 2);
+        VerifyQuadricRoots(coeff, sol, n);
+    }
+
+    // Case 9: degenerate leading coefficient -- LINEAR, matching
+    // SolveQuadricWithinRange's long-standing a == 0 branch.  3x - 6 = 0.
+    {
+        Scalar coeff[3] = {0, 3, -6};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadric(coeff, sol);
+        assert(n == 1);
+        assert(IsClose(sol[0], 2.0, 1e-9));
+    }
+
+    // Case 10: a and b both zero -- no root (and no division by zero).
+    {
+        Scalar coeff[3] = {0, 0, 5};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadric(coeff, sol);
+        assert(n == 0);
+    }
+
     std::cout << "SolveQuadric Passed!" << std::endl;
 }
 
@@ -157,6 +203,71 @@ void TestSolveQuadricWithinRange() {
         Scalar sol[2] = {0, 0};
         int n = Polynomial::SolveQuadricWithinRange(coeff, sol, -10, 10);
         assert(n == 0);
+    }
+
+    // ---- Exact double roots (discriminant identically 0) --------------
+    //
+    // The d == 0.0 branch returns the parabola's VERTEX, -b/(2a).  It used
+    // to return -b/a -- twice the root -- which satisfies the polynomial
+    // only when the root itself is 0.  Every coefficient triple below has
+    // b*b - 4*a*c evaluating to EXACTLY 0.0 in binary FP (the constants are
+    // dyadic), so the branch is genuinely taken rather than falling into
+    // the two-root path.
+    //
+    // RED-PROOF: restoring `sol[0] = -b/a;` makes all three report the
+    // doubled root (1.0, 0.5, 2.0), so VerifyQuadricRoots fires on the
+    // first and the closed-form asserts on the rest.
+
+    // x^2 - x + 0.25 = 0 => x = 0.5 (double)
+    {
+        Scalar coeff[3] = {1, -1, 0.25};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadricWithinRange(coeff, sol, 0, 1);
+        assert(n == 1);
+        assert(IsClose(sol[0], 0.5, 1e-12));
+        VerifyQuadricRoots(coeff, sol, n);
+    }
+
+    // x^2 - 0.5x + 0.0625 = 0 => x = 0.25 (double)
+    {
+        Scalar coeff[3] = {1, -0.5, 0.0625};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadricWithinRange(coeff, sol, 0, 1);
+        assert(n == 1);
+        assert(IsClose(sol[0], 0.25, 1e-12));
+        VerifyQuadricRoots(coeff, sol, n);
+    }
+
+    // x^2 - 2x + 1 = 0 => x = 1 (double), inside [0, 2]
+    {
+        Scalar coeff[3] = {1, -2, 1};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadricWithinRange(coeff, sol, 0, 2);
+        assert(n == 1);
+        assert(IsClose(sol[0], 1.0, 1e-12));
+        VerifyQuadricRoots(coeff, sol, n);
+    }
+
+    // Same double root, range chosen so the CORRECT root (1.0) is outside
+    // it but the pre-fix doubled root (2.0) would have been inside.  This
+    // is the direction the bilinear-patch caller cared about: its range is
+    // [-NEARZERO, 1+NEARZERO], so a doubled v silently escaped the clamp.
+    {
+        Scalar coeff[3] = {1, -2, 1};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadricWithinRange(coeff, sol, 1.5, 2.5);
+        assert(n == 0);
+    }
+
+    // Double root at a non-unit leading coefficient: 4x^2 - 4x + 1 = 0
+    // => x = 0.5.  Pins the 2a divisor (not just the 2).
+    {
+        Scalar coeff[3] = {4, -4, 1};
+        Scalar sol[2] = {0, 0};
+        int n = Polynomial::SolveQuadricWithinRange(coeff, sol, 0, 1);
+        assert(n == 1);
+        assert(IsClose(sol[0], 0.5, 1e-12));
+        VerifyQuadricRoots(coeff, sol, n);
     }
 
     std::cout << "SolveQuadricWithinRange Passed!" << std::endl;
