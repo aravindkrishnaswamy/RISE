@@ -7021,6 +7021,7 @@ namespace RISE
 #include "Modifiers/BumpMap.h"
 #include "Modifiers/NormalMap.h"
 #include "Modifiers/GlintModifier.h"
+#include "Modifiers/ReliefModifier.h"
 
 namespace RISE
 {
@@ -7092,6 +7093,23 @@ namespace RISE
 
 		(*ppi) = new GlintModifier( density, coverage, fill, spread, scale, shift, seed );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "glintmodifier" );
+		return true;
+	}
+
+	bool RISE_API_CreateReliefModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd)
+								const Scalar scale,							///< [in] Amplitude
+								const Implementation::ReliefDomain domain,	///< [in] Surface or UV
+								const Scalar step							///< [in] Half-step; <= 0 = auto
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ReliefModifier( height, scale, domain, step );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reliefmodifier" );
 		return true;
 	}
 

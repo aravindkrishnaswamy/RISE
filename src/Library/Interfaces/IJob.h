@@ -4459,6 +4459,32 @@ namespace RISE
 									const char* weft_transmit		///< [in] P2-B: weft's diffuse-transmission share, [0,1] (physical scalar)
 									) = 0;
 
+		//! Adds a relief_modifier: painter-driven shading-normal
+		//! micro-relief.  `height` names ANY registered `scalar_painter`
+		//! (or an inline numeric literal, which is flat and therefore
+		//! pointless) -- resolved through the physical-scalar pipe, so a
+		//! colour painter bound here produces the standing
+		//! `kScalarBoundToIPainterFmt` diagnostic and its one-line fix
+		//! (`scalar_painter { name X_h  painter X  channel R }`).  Height
+		//! is a LENGTH, not a colour: it must never pass through JH
+		//! spectral uplift, which is exactly what the scalar pipe
+		//! guarantees.  Positive height rises along +N (Blinn / PBRT-v4),
+		//! the OPPOSITE of `bumpmap_modifier`.  `domain` is `surface`
+		//! (default; 3D field, world-unit tangent step, no texcoords
+		//! required) or `uv` (legacy sampling geometry).  `step` <= 0
+		//! selects the automatic rule (surface: max(1e-3, pixel
+		//! footprint); uv: 0.01).  Appended after AddWeaveMaterial per the
+		//! append-only IJob tail (preserves every prior vtable slot -- see
+		//! SourceHygieneTest and tests/IJobVtableManifest.txt).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddReliefModifier(
+									const char* name,				///< [in] Name of the modifier
+									const char* height,				///< [in] Height field (scalar_painter name or inline numeric)
+									const double scale,				///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+									const char* domain,				///< [in] "surface" (default) or "uv"
+									const double step				///< [in] Central-difference half-step; <= 0 = auto
+									) = 0;
+
 	};
 
 

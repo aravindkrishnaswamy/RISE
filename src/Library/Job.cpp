@@ -6912,6 +6912,56 @@ bool Job::AddGlintModifier(
 	return ok;
 }
 
+bool Job::AddReliefModifier(
+	const char* name,										///< [in] Name of the modifier
+	const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+	const double scale,										///< [in] Amplitude
+	const char* domain,										///< [in] "surface" (default) or "uv"
+	const double step										///< [in] Central-difference half-step; <= 0 = auto
+	)
+{
+	// `domain` first: a typo here is an authoring mistake with a silent,
+	// plausible-looking wrong answer (a 3D field sampled in UV reads flat
+	// on anything without texcoords), so refuse it LOUDLY and name both
+	// legal values rather than defaulting.
+	Implementation::ReliefDomain eDomain = Implementation::ReliefDomain::Surface;
+	if( !domain || !domain[0] || strcmp( domain, "surface" ) == 0 ) {
+		eDomain = Implementation::ReliefDomain::Surface;
+	} else if( strcmp( domain, "uv" ) == 0 ) {
+		eDomain = Implementation::ReliefDomain::UV;
+	} else {
+		GlobalLog()->PrintEx( eLog_Error,
+			"relief_modifier `%s`: parameter `domain` value `%s` is not recognized -- "
+			"use `surface` (the default: the height is a 3D field, the step is taken in "
+			"the tangent plane in world units, no texcoords required) or `uv` (the height "
+			"is a function of (u,v), the step is taken in texture units -- for legacy "
+			"bumpmap_modifier migration and for image heightfields authored in UV).",
+			name, domain );
+		return false;
+	}
+
+	// Height is a PHYSICAL SCALAR (a length), never a colour: it must not
+	// pass through JH spectral uplift.  ResolveOrDiagnoseScalar is the
+	// standing three-way diagnostic -- per-channel painter in a
+	// single-scalar slot, an IPainter name bound to a scalar slot (with
+	// the `scalar_painter { painter X channel R }` fix), or an unknown
+	// name.  requireSingle: this modifier reads `.v[0]` only.
+	IScalarPainter* pHeight = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager,
+		"relief_modifier", name, "height", height, /*requireSingle*/ true );
+	if( !pHeight ) {
+		return false;
+	}
+
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateReliefModifier( &pModifier, *pHeight, scale, eDomain, step );
+	safe_release( pHeight );
+
+	const bool okRelief = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
+	safe_release( pModifier );
+	return okRelief;
+}
+
 //
 // Adding objects
 //

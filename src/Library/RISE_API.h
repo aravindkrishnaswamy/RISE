@@ -78,6 +78,7 @@
 #include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
 #include "Interfaces/ProceduralDescriptors.h"
 #include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
+#include "Modifiers/ReliefModifier.h"	// Implementation::ReliefDomain (relief_modifier factory)
 #include "Painters/ExpressionParamSpec.h"	// Implementation::ParamSpec (expression_painter / scalar_painter{expression} factories)
 #include "Painters/RampPainter.h"	// Implementation::RampPainter::Stop (ramp_painter factory)
 
@@ -2364,6 +2365,25 @@ namespace RISE
 								const Vector3& scale,			///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
 								const Vector3& shift,			///< [in] cell-space offset
 								const unsigned int seed			///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+								);
+
+	//! Creates a painter-driven micro-relief modifier: the height field is
+	//! ANY `IScalarPainter` (an expression, a voronoi cell field, a ramp, a
+	//! texture, or any colour painter through the
+	//! `scalar_painter { painter X channel R }` bridge), differenced
+	//! centrally in the hit's tangent plane to tilt the shading normal.
+	//! Needs no texcoords in the default `Surface` domain.  Positive height
+	//! RISES ALONG +N (Blinn / PBRT-v4 convention) -- the OPPOSITE sign of
+	//! `bumpmap_modifier`, which treats its field as depth.  A zero or
+	//! non-finite `scale` makes the modifier inert.  See
+	//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateReliefModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd); `.v[0]` is read
+								const Scalar scale,							///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+								const Implementation::ReliefDomain domain,	///< [in] Surface (3D field, no texcoords needed) or UV (legacy sampling geometry)
+								const Scalar step							///< [in] Central-difference half-step; <= 0 selects the automatic rule
 								);
 
 

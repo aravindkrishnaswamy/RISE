@@ -1035,6 +1035,9 @@
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ReliefModifier.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Managers\LightManager.cpp">
       <Filter>Managers</Filter>
     </ClCompile>
@@ -2706,7 +2709,13 @@
     <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ReliefModifier.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Managers\DeletedCallbackDispatcher.h">

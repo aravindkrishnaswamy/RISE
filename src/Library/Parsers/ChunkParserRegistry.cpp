@@ -8627,6 +8627,58 @@ namespace RISE
 				}
 			};
 
+			struct ReliefModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string height = bag.GetString( "height", "none" );
+					double scale       = bag.GetDouble( "scale",  1.0 );
+					std::string domain = bag.GetString( "domain", "surface" );
+					double step        = bag.GetDouble( "step",   0.0 );
+
+					// Domain validation, the height resolution and its
+					// three-way scalar-pipe diagnostic all live in
+					// Job::AddReliefModifier -- one home, so the CLI, the
+					// agent verbs and any future caller get the same
+					// wording.
+					return pJob.AddReliefModifier( name.c_str(), height.c_str(), scale,
+						domain.c_str(), step );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "relief_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Painter-driven micro-relief: perturbs the shading normal "
+							"from the gradient of ANY scalar height field, by central difference in "
+							"the hit's tangent plane.  Works on ANY geometry that has a normal -- "
+							"analytic primitives, SDFs, meshes, displaced meshes -- and in the "
+							"default `surface` domain needs NO TEXCOORDS at all, so the same 3D "
+							"field that drives a colour ramp and a roughness slot can also emboss "
+							"the surface (the fix for authored variation that reads as paint on "
+							"plastic).  `height` is a scalar_painter, not a colour painter: wrap a "
+							"colour painter with `scalar_painter { name X_h  painter X  channel R }` "
+							"and bind that.  POSITIVE HEIGHT RISES ALONG +N (Blinn / PBRT-v4) -- the "
+							"OPPOSITE sign of the deprecated `bumpmap_modifier`, which treats its "
+							"field as depth; negate `scale` to sink instead of raise.  Attach via "
+							"the object's `modifier` parameter.  See "
+							"docs/RELIEF_MODIFIER_DESIGN.md.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter};
+						  p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;
+						  p.description = "Height field -- a `scalar_painter` (expression / voronoi / ramp / texture / function2d), or an inline numeric literal (which is constant, hence flat and pointless).  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees."; }
+						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::Double;    p.description = "Amplitude: field units -> world units in `surface` domain, UV units in `uv`.  Positive raises along +N; NEGATIVE sinks (cracks, pores, engraving).  0 makes the modifier inert."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "domain"; p.kind = ValueKind::Enum;      p.enumValues = {"surface","uv"};
+						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for lossless `bumpmap_modifier` migration and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
+						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  0 (the default) selects the automatic rule: in `surface`, max(1e-3, the hit's pixel footprint) -- differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling; in `uv`, 0.01 (matching bumpmap_modifier's windowsize default).  Set it explicitly when the field's features are finer than the automatic floor."; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct GlintModifierAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -13483,6 +13535,7 @@ namespace RISE
 
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
+		add( "relief_modifier",                       new ReliefModifierAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
 		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
 

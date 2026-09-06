@@ -934,6 +934,12 @@
 		F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
 		F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610001 /* GlintModifier.cpp */; };
 		F2617A0D2F9A000100610006 /* GlintModifier.h in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0D2F9A000100610002 /* GlintModifier.h */; };
+		F2617A0E2F9B000100620004 /* ReliefModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620002 /* ReliefModifier.cpp */; };
+		F2617A0E2F9B000100620005 /* ModifierFrame.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620001 /* ModifierFrame.h */; };
+		F2617A0E2F9B000100620006 /* ReliefModifier.h in Headers */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620003 /* ReliefModifier.h */; };
+		F2617A0E2F9B000100620007 /* ReliefModifier.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620002 /* ReliefModifier.cpp */; };
+		F2617A0E2F9B000100620008 /* ModifierFrame.h in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620001 /* ModifierFrame.h */; };
+		F2617A0E2F9B000100620009 /* ReliefModifier.h in Sources */ = {isa = PBXBuildFile; fileRef = F2617A0E2F9B000100620003 /* ReliefModifier.h */; };
 		F26E7A022F9244920009D9AE /* RenderETAEstimator.h in Headers */ = {isa = PBXBuildFile; fileRef = F26E7A002F9244920009D9AE /* RenderETAEstimator.h */; };
 		F26E7A032F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
 		F26E7A042F9244920009D9AE /* RenderETAEstimator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */; };
@@ -2211,6 +2217,9 @@
 		F2586B1100000000A0000001 /* skills */ = {isa = PBXFileReference; lastKnownFileType = folder; name = skills; path = ../../../skills; sourceTree = SOURCE_ROOT; };
 		F2617A0D2F9A000100610001 /* GlintModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = GlintModifier.cpp; sourceTree = "<group>"; };
 		F2617A0D2F9A000100610002 /* GlintModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = GlintModifier.h; sourceTree = "<group>"; };
+		F2617A0E2F9B000100620001 /* ModifierFrame.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ModifierFrame.h; sourceTree = "<group>"; };
+		F2617A0E2F9B000100620002 /* ReliefModifier.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = ReliefModifier.cpp; sourceTree = "<group>"; };
+		F2617A0E2F9B000100620003 /* ReliefModifier.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ReliefModifier.h; sourceTree = "<group>"; };
 		F26E7A002F9244920009D9AE /* RenderETAEstimator.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RenderETAEstimator.h; sourceTree = "<group>"; };
 		F26E7A012F9244920009D9AE /* RenderETAEstimator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = RenderETAEstimator.cpp; sourceTree = "<group>"; };
 		F277340607ECCB5B00C0B600 /* Primes.cpp */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.cpp.cpp; path = Primes.cpp; sourceTree = "<group>"; };
@@ -3744,6 +3753,9 @@
 				F27F091F069C42900069C9E5 /* BumpMap.h */,
 				F2617A0D2F9A000100610001 /* GlintModifier.cpp */,
 				F2617A0D2F9A000100610002 /* GlintModifier.h */,
+				F2617A0E2F9B000100620001 /* ModifierFrame.h */,
+				F2617A0E2F9B000100620002 /* ReliefModifier.cpp */,
+				F2617A0E2F9B000100620003 /* ReliefModifier.h */,
 				F2C0F001069C42900069C9E5 /* NormalMap.cpp */,
 				F2C0F002069C42900069C9E5 /* NormalMap.h */,
 			);
@@ -4857,6 +4869,8 @@
 				F27F0B84069C42910069C9E5 /* WardIsotropicGaussianSPF.h in Headers */,
 				F27F0B86069C42910069C9E5 /* BumpMap.h in Headers */,
 				F2617A0D2F9A000100610004 /* GlintModifier.h in Headers */,
+				F2617A0E2F9B000100620005 /* ModifierFrame.h in Headers */,
+				F2617A0E2F9B000100620006 /* ReliefModifier.h in Headers */,
 				F2C0F021069C42910069C9E5 /* NormalMap.h in Headers */,
 				F27F0B88069C42910069C9E5 /* InterpolatedNoise.h in Headers */,
 				F27F0B89069C42910069C9E5 /* Noise.h in Headers */,
@@ -5460,6 +5474,7 @@
 				F27F0B83069C42910069C9E5 /* WardIsotropicGaussianSPF.cpp in Sources */,
 				F27F0B85069C42910069C9E5 /* BumpMap.cpp in Sources */,
 				F2617A0D2F9A000100610003 /* GlintModifier.cpp in Sources */,
+				F2617A0E2F9B000100620004 /* ReliefModifier.cpp in Sources */,
 				F2C0F020069C42910069C9E5 /* NormalMap.cpp in Sources */,
 				F27F0B87069C42910069C9E5 /* InterpolatedNoise.cpp in Sources */,
 				F27F0B8C069C42910069C9E5 /* PerlinNoise1D.cpp in Sources */,
@@ -6093,6 +6108,9 @@
 				F24B730F2F52A632008304C4 /* BumpMap.h in Sources */,
 				F2617A0D2F9A000100610005 /* GlintModifier.cpp in Sources */,
 				F2617A0D2F9A000100610006 /* GlintModifier.h in Sources */,
+				F2617A0E2F9B000100620007 /* ReliefModifier.cpp in Sources */,
+				F2617A0E2F9B000100620008 /* ModifierFrame.h in Sources */,
+				F2617A0E2F9B000100620009 /* ReliefModifier.h in Sources */,
 				F2C0F010069C42900069C9E5 /* NormalMap.cpp in Sources */,
 				F2C0F011069C42900069C9E5 /* NormalMap.h in Sources */,
 				F24B73102F52A632008304C4 /* InterpolatedNoise.cpp in Sources */,

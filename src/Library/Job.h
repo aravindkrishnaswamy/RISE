@@ -2030,6 +2030,16 @@ namespace RISE
 			const unsigned int seed									///< [in] hash seed
 			);
 
+		//! Creates a painter-driven micro-relief modifier.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddReliefModifier(
+			const char* name,										///< [in] Name of the modifier
+			const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+			const double scale,										///< [in] Amplitude
+			const char* domain,										///< [in] "surface" (default) or "uv"
+			const double step										///< [in] Central-difference half-step; <= 0 = auto
+			);
+
 		//
 		// Adds functions
 		//
