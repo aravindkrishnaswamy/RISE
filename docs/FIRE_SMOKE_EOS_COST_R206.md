@@ -162,3 +162,28 @@ The final cold-iteration log SHA is
 `04ff728ee827e16a668673a3b1c326277856db3d0e8b1708d7c7508f40b5efd1`.
 The golden checkpoint was re-hashed unchanged as
 `1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.
+
+## First review and evidence-gate repairs
+
+The numerical/lineage reviewer found no P1/P2. The independent evidence
+reviewer reproduced both measurement JSONs and found three P2 parser gaps:
+absent diagnostic verdict counters defaulted to zero; repeated copies of one
+log could be counted as independent processes; and the inherited owner-log
+gate checked 41 distinct labels without requiring the actual field names and
+extents. The saved evidence itself was complete and distinct.
+
+All three are repaired. Diagnostic schemas now require their counters exactly;
+repeats pass the existing distinct-path/distinct-log guard; and the owner gate
+requires its canonical field set, cell/face extents derived from the pinned
+4-cubed fixture, and residual lengths from the recorded owner iteration counts.
+The sibling verdict checks now require exact singleton success records rather
+than success-looking substrings. Named REDs delete required counters, copy
+process evidence, repeat resolved paths, and rename/drop/shorten/zero every
+owner field. `tools/test_fire_r206_eos.py` and all eleven r205 CPU regressions
+pass. Reanalysis still produces the identical measurement SHA above. These
+repairs touch evidence tooling only; numerical source remains `20607aea`.
+
+Clean Xcode Deployment and Opto builds both pass. The only warnings are the
+documented absent `extlib/oidn/install/lib` search path and AppIntents metadata
+extraction; no source compiler warning is discounted. Logs are retained in
+the r206 evidence directory. Fresh post-fix review remains pending.

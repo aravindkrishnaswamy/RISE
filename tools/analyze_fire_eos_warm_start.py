@@ -15,7 +15,7 @@ import statistics
 from unittest.mock import patch
 
 from analyze_fire_producer_kernels import fields, summarize
-from seal_fire_payload_placement import bind_counters, check_rows, gate, records, sidecars
+from seal_fire_payload_placement import bind_counters, check_rows, distinct_repeats, gate, records, sidecars
 from check_fire_owner_cost_prefix import metadata
 
 
@@ -25,8 +25,17 @@ def histogram(path):
     sequences = []
     for tag, size, work_name in (("EOS_ITERATIONS_V1", 33, "bisections"),
                                  ("EOS_WARM_PROBES_V1", 97, "interior_energy_probes")):
-        rows = [fields(line) for line in raw.decode().splitlines()
-                if line.startswith(tag + " ")]
+        required = {"stage", "raw_iteration", "cells", "total", "scope", "histogram", work_name, "bit_mismatch"}
+        required |= ({"refused", "lower_endpoint", "previous_temperature_bit_equal", "Tmin", "Tmax"}
+                     if tag == "EOS_ITERATIONS_V1" else {"cold_fallback", "overflow"})
+        rows = []
+        for line in raw.decode().splitlines():
+            if not line.startswith(tag + " "):
+                continue
+            row = fields(line)
+            if set(row) != required or len(line.split()) != len(required)+1:
+                raise ValueError("incomplete, duplicate, or unknown diagnostic counters: " + tag)
+            rows.append(row)
         if len(rows) != 42:
             raise ValueError("expected all 42 accepted candidate evaluations: " + tag)
         bins = collections.Counter()
@@ -40,7 +49,7 @@ def histogram(path):
                     or int(row["total"]) != count
                     or sum(i*n for i, n in enumerate(values)) != int(row[work_name])
                     or row["scope"] != "diagnostic_extra_dispatch"
-                    or any(int(row.get(k, "0")) != 0 for k in ("refused", "bit_mismatch", "overflow"))):
+                    or any(int(row[k]) != 0 for k in required & {"refused", "bit_mismatch", "overflow"})):
                 raise ValueError("invalid or non-identical iteration histogram: " + tag)
             sequence.append((int(row["stage"]), int(row["raw_iteration"])))
             cells += count
@@ -112,6 +121,7 @@ def analyze(directory, qualification=None):
             executable_sha256=qualified["producer_executable_sha256"],
             artifact_sha256=hashlib.sha256(qualification.read_bytes()).hexdigest())
     for kind in kinds:
+        distinct_repeats(directory, [f"{kind}_profile_{repeat}.v1" for repeat in (1, 2, 3)])
         run_eos, step_eos, device, wall, evidence = [], [], [], [], []
         for repeat in (1, 2, 3):
             prefix = directory / f"{kind}_profile_{repeat}.v1"
@@ -167,6 +177,10 @@ def self_test(directory):
     cold_line = next(line for line in text.splitlines() if line.startswith("EOS_ITERATIONS_V1 "))
     warm_line = next(line for line in text.splitlines() if line.startswith("EOS_WARM_PROBES_V1 "))
     mutations = {
+        "missing_bit_verdict": text.replace(" bit_mismatch=0", ""),
+        "missing_refusal_verdict": text.replace(" refused=0", ""),
+        "missing_overflow_verdict": text.replace(" overflow=0", ""),
+        "duplicate_bit_verdict": text.replace("bit_mismatch=0", "bit_mismatch=1 bit_mismatch=0", 1),
         "temperature_bit_mismatch": text.replace("bit_mismatch=0", "bit_mismatch=1", 1),
         "missing_candidate": text.replace(cold_line + "\n", "", 1),
         "wrong_stage": text.replace(cold_line, cold_line.replace("stage=0", "stage=1"), 1),
@@ -186,7 +200,27 @@ def self_test(directory):
             except ValueError:
                 continue
         raise AssertionError("accepted mutated diagnostic: " + name)
-    return {"schema": "rise.fire.eos-iteration-parser-reds.v1", "refused": list(mutations)}
+    first = directory / "baseline_profile_1.v1.log"
+    def copied_read(candidate):
+        if candidate in {directory / "baseline_profile_2.v1.log", directory / "baseline_profile_3.v1.log"}:
+            return original_read(first)
+        return original_read(candidate)
+    with patch.object(Path, "read_bytes", copied_read):
+        try:
+            analyze(directory)
+        except ValueError as error:
+            if str(error) != "duplicate process logs":
+                raise
+        else:
+            raise AssertionError("copied runs accepted as independent")
+    try:
+        distinct_repeats(directory, ["baseline_profile_1.v1"]*3)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("repeated resolved paths accepted")
+    return {"schema": "rise.fire.eos-iteration-parser-reds.v1",
+            "refused": list(mutations)+["copied_process_logs", "repeated_resolved_paths"]}
 
 
 if __name__ == "__main__":

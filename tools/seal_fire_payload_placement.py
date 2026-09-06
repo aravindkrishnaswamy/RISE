@@ -84,14 +84,45 @@ def sidecars(directory, case_id=None):
 
 def gate(path):
     text = path.read_text()
-    rows = [dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
-            for line in text.splitlines() if line.startswith("OWNER_SEALING_EQUIVALENCE field=")]
-    if len(rows) != 41 or len({r["field"] for r in rows}) != 41 or any(r["bit_mismatches"] != "0" for r in rows):
+    # This CLI fixture is the reviewed 4^3 owner, not an arbitrary-grid reader.
+    # Cell/face lengths derive from its pinned shape. Residual histories derive
+    # from the independently emitted owner iteration counts, not field labels.
+    cells, faces = 4**3, (4+1)*4*4
+    smoke = [dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
+             for line in text.splitlines() if line.startswith("PROJECTED_HEUN_METAL_OWNER_SMOKE ")]
+    if len(smoke) != 1 or smoke[0].get("accepted") != "1":
+        raise ValueError("missing accepted owner schedule")
+    iterations = [int(value) for value in smoke[0].get("iterations", "").split("/")]
+    if len(iterations) != 3 or any(value <= 0 for value in iterations):
+        raise ValueError("invalid owner schedule")
+    expected = {"Q": 9*cells, "T": cells, "pressure_ratio": cells, "deviation": cells,
+                "alpha": 3*faces, "eddy_nu": cells, "commuting_residual": 1, "commuting_scale": 1}
+    for axis in range(3):
+        for field in ("M", "u", "face_density", "provisional_M", "advection", "buoyancy", "stress", "source"):
+            expected[f"{field}_{axis}"] = faces
+        for field in ("projection_target_R", "accepted_target_R"):
+            expected[f"{field}_{axis}"] = cells
+        expected[f"picard_residual_R_{axis}"] = iterations[axis]
+    field_lines = [line for line in text.splitlines() if line.startswith("OWNER_SEALING_EQUIVALENCE field=")]
+    if any(len(line.split()) != 4 for line in field_lines):
+        raise ValueError("malformed or duplicate owner field counters")
+    rows = [dict(item.split("=", 1) for item in line.split()[1:]) for line in field_lines]
+    if (len(rows) != len(expected) or {r.get("field") for r in rows} != set(expected)
+            or any(set(r) != {"field", "words", "bit_mismatches"}
+                   or r["bit_mismatches"] != "0" or int(r["words"]) != expected[r["field"]] for r in rows)):
         raise ValueError("incomplete per-field bit comparison")
+    summaries = [line for line in text.splitlines() if line.startswith("OWNER_SEALING_EQUIVALENCE passed=")]
+    if len(summaries) != 1 or len(summaries[0].split()) != 5:
+        raise ValueError("missing owner sealing verdict")
+    verdict = dict(word.split("=", 1) for word in summaries[0].split()[1:])
+    if (set(verdict) != {"passed", "input_root", "output_root", "kernel_set"}
+            or verdict["passed"] != "1"
+            or any(len(verdict[key]) != 64 or any(c not in "0123456789abcdef" for c in verdict[key])
+                   for key in ("input_root", "output_root", "kernel_set"))):
+        raise ValueError("invalid owner sealing verdict or roots")
     for required in ("OWNER_PUBLICATION_DIGEST_RED full_packet_cpu_match=1 bit_mutation_refused=1 copied_authority_refused=1",
-                     "OWNER_SEALING_EQUIVALENCE passed=1",
                      "PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=1"):
-        if required not in text:
+        if text.splitlines().count(required) != 1:
             raise ValueError("missing owner/publication gate: " + required)
 
 
