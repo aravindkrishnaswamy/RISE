@@ -461,6 +461,61 @@ int main()
 		Check( !clHasMat, "ior-phantom: editing the Function2D does NOT re-derive the ior material" );
 	}
 
+	//----------------------------------------------------------------------
+	// [modifier-stack-repeatable-rename] (Phase 2, docs/RELIEF_MODIFIER_DESIGN.md
+	// section 4) modifier_stack's `modifier` param is a repeatable Reference on
+	// {Modifier}, exactly like standard_shader's `shaderop` on {ShaderOp} -- prove
+	// the SAME generic per-occurrence-NodeId machinery that already renames
+	// shaderop referrers correctly also covers modifier_stack, with NO Cst.cpp
+	// change: ComputeChunkRefs iterates every Param child by (role, occurrence),
+	// so each repeated `modifier` line gets its own edge keyed by its OWN
+	// DocParamId, and DocRename rewrites each referrer edge at its recorded
+	// (chunk, role, occ) independently -- a rename of ONE member therefore
+	// rewrites ONLY that occurrence's line, leaving a sibling occurrence naming a
+	// DIFFERENT modifier untouched.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"relief_modifier\n{\nname r1\nheight 0.1\n}\n"
+			"glint_modifier\n{\nname g1\n}\n"
+			"modifier_stack\n{\nname finish\nmodifier r1\nmodifier g1\n}\n" );
+
+		const NodeId r1Id = DocFindByName( doc, "relief_modifier/r1" );
+		const NodeId g1Id = DocFindByName( doc, "glint_modifier/g1" );
+		const NodeId stackId = DocFindByName( doc, "modifier_stack/finish" );
+		Check( r1Id != 0 && g1Id != 0 && stackId != 0,
+		       "modifier-stack-rename: scene parsed (r1, g1, finish{modifier r1, modifier g1})" );
+
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		const NodeId occ0 = DocParamId( doc, stackId, "modifier", 0 );
+		const NodeId occ1 = DocParamId( doc, stackId, "modifier", 1 );
+		Check( HasEdge( g, occ0, r1Id ) && HasEdge( g, occ1, g1Id ),
+		       "modifier-stack-rename: BOTH repeatable `modifier` occurrences resolve as graph edges (r1 at occ0, g1 at occ1)" );
+
+		Document docN = DocRename( doc, r1Id, "r1x" );
+		ReferenceGraph gN = BuildReferenceGraph( docN );
+		Check( gN.stamp != g.stamp, "modifier-stack-rename: renaming r1 moves the graph stamp" );
+
+		NodeRef stackChunk = DocResolveNodeId( docN, stackId );
+		Check( stackChunk.get() != 0, "modifier-stack-rename: the stack chunk survives the rename (NodeId preserved, D44)" );
+		const std::string v0 = ParamValueAtOccurrence( stackChunk, "modifier", 0 );
+		const std::string v1 = ParamValueAtOccurrence( stackChunk, "modifier", 1 );
+		Check( v0 == "r1x", "modifier-stack-rename: occurrence 0 (`modifier r1`) IS rewritten to `r1x`" );
+		Check( v1 == "g1", "modifier-stack-rename: occurrence 1 (`modifier g1`) is UNCHANGED by renaming r1" );
+
+		// control: renaming g1 instead rewrites ONLY occurrence 1, leaving
+		// occurrence 0 (still naming r1) untouched -- proves the rewrite is
+		// addressed by occurrence, not "first repeated param wins" or
+		// "rewrite every occurrence with this role".
+		Document docG = DocRename( doc, g1Id, "g1x" );
+		NodeRef stackChunkG = DocResolveNodeId( docG, stackId );
+		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 0 ) == "r1",
+		       "modifier-stack-rename: control -- renaming g1 leaves occurrence 0 (`r1`) untouched" );
+		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 1 ) == "g1x",
+		       "modifier-stack-rename: control -- occurrence 1 IS rewritten to `g1x`" );
+	}
+
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
 }
