@@ -1,0 +1,14 @@
+{
+  "consumed_target_blocks": 14,
+  "consumed_target_sha256": "6cf1b57d59e7111bc218dfb01dda93ac0f776715599a1c69f89035bd20c16a10",
+  "crossing_csv_sha256": "afd9eed5e57e82bda9bb41743c861fafbe8a4c23b4dd3e0c31c1927897155400",
+  "crossing_red_count": 8,
+  "crossing_sha256": "cd62a5b78f90c83292dfe7ca108f1e70d957d83d0bdb4e71fb6d85807e8356c3",
+  "execution_authority": "externally_anchored_v3_raw_log_sha256",
+  "log_sha256": "d63b483a24d459ac154cb18c566ec9e47f466d6c0619e03d31fd7bebe6c7edd0",
+  "passed": true,
+  "physics_claim": "unavailable_synthetic_fixture",
+  "schema": "rise.fire.r207.crossing_exporter.qualification.v1",
+  "scope": "qualification_only",
+  "tail_red_count": 2
+}
