@@ -673,16 +673,16 @@ tolls (§7 decision 2, reaffirmed in the "Price the inferior path" row of
   gets the reference row and the hook-line rewrite; everything else gets a
   pointer.
 - **Advisory `DESIGN_FLAT_RELIEF`** (the decal-on-plastic detector): fires
-  when an object's material has a **genuinely** spatially-varying painter
-  on a non-emission colour slot *and* the rendered surface carries **no
-  effective modifier**; names the object, the field, and the two-chunk
-  fix. Advisory-only. Its adoption is expected to be ≈ 0 per C-ADV; it
-  exists to make the census (below) measurable, and its text is the one
-  place the pattern is taught at the moment the agent is looking at the
-  material.
+  when an object's **effective** material has a **genuinely**
+  spatially-varying painter on a non-emission colour slot *and* the
+  rendered surface carries **no effective modifier**; names the object,
+  the field, and the two-chunk fix. Advisory-only. Its adoption is
+  expected to be ≈ 0 per C-ADV; it exists to make the census (below)
+  measurable, and its text is the one place the pattern is taught at the
+  moment the agent is looking at the material.
 
-  Both emphasised words are load-bearing, and the fix round in §12 is why
-  (the first cut of this condition got each of them wrong):
+  All three emphasised words are load-bearing, and the two fix rounds in
+  §12 are why (the first cut of this condition got each of them wrong):
 
   - **Effective modifier**, not "the object chunk spells `modifier`". The
     engine binds one by four routes, and this condition silences on any of
@@ -698,6 +698,23 @@ tolls (§7 decision 2, reaffirmed in the "Price the inferior path" row of
     bearing relief still fires, naming the composite. Any modifier KIND
     counts — a `modifier_stack`, a bumpmap, a normal map — since the claim
     is narrowly "the shading normal is inert here".
+  - **Effective material**, not "the object chunk spells `material`" —
+    the same two engine rules, because both govern the *pair*
+    `pMaterial`/`pModifier` and not the modifier alone
+    (`AdoptCsgSurfaceBindings` copies both, `IsInstanceOwnParam` excludes
+    both, and the composite applies its own through a matched
+    `if( pMaterial ) … if( pModifier ) …` pair). So a `copy { source
+    orig }` that spells no material of its own is judged on the material
+    it **inherits** (and `material none` clears it); and an operand under
+    a composite that spells a `material` is **not** a candidate on its
+    own material — that texture is never shaded, so the composite is the
+    candidate, on the material it spells. Nested: any enclosing composite
+    spelling one silences the operand. Silencing an operand is safe
+    because **a CSG operand never renders standalone** —
+    `CSGObject::AssignObjects` consumes both operands (`IsWorldVisible()`
+    is `bIsWorldVisible && nConsumedBy == 0`) and `Job::AddCSGObject`
+    refuses a `parent`ed operand, so the only surface an operand
+    contributes to is its composite's.
   - **Genuinely varying**, not "the painter kind is not one of the three
     constant ones". A `blend_painter` / `ramp_painter` / `mapping_painter`
     / `channel_painter` whose inputs are all uniform is structurally
@@ -767,7 +784,7 @@ the showcase fixtures at their authored spp.
 | **1** | `ReliefModifier` + `ModifierFrame.h` hoist + `pmxWorldToObject` + API/IJob/parser + 5 build projects + `ReliefModifierTest` 1–8, 10 + `cc_relief_modifier` + `relief_sphere_no_uv` | zero-P1 round; PT/BDPT parity on the sphere |
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope) |
-| **4** | `DESIGN_FLAT_RELIEF` (condition Q) + verb hook-point notes (the recipe example shipped early, as part of Phase 3's teaching surfaces — `materials-and-media-basics.md`'s crackle-glaze — see its own §12 P1-1 fix) | implemented 2026-09-06, reviewed to zero P1 in fix round 1 (`177bcee4`; see §12 — 3 P1s + 3 P2s found and fixed at the root, the scan made linear): `AgentReadValidateTest` 326/0 (extended with `RunFlatReliefScanTest`), `AgentChunkCrudTest` 3809/0, `AgentAddWearTest` 287/0, `AgentAddWetnessTest` 210/0, `SourceHygieneTest` 164/0, `ReliefModifierTest` 106/0 |
+| **4** | `DESIGN_FLAT_RELIEF` (condition Q) + verb hook-point notes (the recipe example shipped early, as part of Phase 3's teaching surfaces — `materials-and-media-basics.md`'s crackle-glaze — see its own §12 P1-1 fix) | implemented 2026-09-06, two review rounds (see §12 — round 1 `177bcee4`: 3 P1s + 3 P2s, the scan made linear; round 2 `e5d0fa0b`: 1 P1 + 2 P2s + a nit, clause (i) taught the same composite-override and `source`-inheritance rules round 1 taught clause (ii), and the `source` hop bound raised to the engine's own 256 across all three walks in the file): `AgentReadValidateTest` 333/0 (extended with `RunFlatReliefScanTest`), `AgentChunkCrudTest` 3809/0, `AgentAddWearTest` 287/0, `AgentAddWetnessTest` 210/0, `SourceHygieneTest` 164/0, `ReliefModifierTest` 106/0 |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | landed 2026-09-06 (see §12): `weathered_workbench` relief committed (scale 0.05, amplitude-swept); `velvet_cushion` migration confirmed better (domain surface reads flat on this SDF, no code change); `relief_crackle_glaze` key light re-raked for near-specular legibility (R13's finding, one commit); renders attached to §12 |
 
 Commits as each phase converges; never push. The stray uncommitted edit to
@@ -2020,7 +2037,10 @@ one" arm has no single modifier to name), off an
 All three walks are depth-bounded at 8, so a `source` cycle or
 mutually-referencing composites in a malformed document resolve to "no
 modifier" — which costs at most one advisory — instead of hanging the
-scan.
+scan. *(Superseded in part: fix round 2 below raised the `source` bound
+to the engine's own 256 — the cycle this 8 was justified by cannot
+happen, and 8 made a legal 8-deep chain fire falsely. The two csg
+walks keep a nesting bound of 8.)*
 
 **P1-3 — the quadratic scan.** `FindDocumentChunkByName_` re-walked the
 whole document per call, and condition Q called it once per candidate
@@ -2166,3 +2186,119 @@ per-line-terminator-preserving migrator (the mixed-ending case) is
 declined above with its reason. No `.RISEscene` in the corpus is CRLF
 today, so the fix is a guard for foreign input rather than a corpus
 repair.
+
+### Phase 4 — fix round 2 (2026-09-06)
+
+A fresh adversarial round on the fix-round-1 tree returned **1 P1 + 2 P2s
++ 1 nit**. All four fixed at the root in one commit, `e5d0fa0b`
+(`src/Library/Agent/AgentDiagnostic.h`,
+`src/Library/Agent/AgentSession.cpp`,
+`tests/AgentReadValidateTest.cpp`).
+
+**P1 — clause (i) ignored the composite's MATERIAL override.** Fix round
+1 read `CSGObject::IntersectRay` correctly for the *modifier* and stopped
+there. The composite applies its own bindings through a **matched pair**
+— `if( pMaterial ) ri.pMaterial = pMaterial;  if( pModifier )
+ri.pModifier = pModifier;` — over an operand hit that
+`AdoptCsgSurfaceBindings` has already copied *both* of. So the two engine
+rules fix round 1 taught clause (ii) are rules about the pair, and clause
+(i) was still resolving the operand's own `material` literal. Failing
+scenario: `op_a` binds a varying material and no modifier, and its
+enclosing `comp` spells `material flat_mat` — Q fired on `op_a`,
+advising relief for a texture that is never shaded.
+
+The fix is symmetric with the enclosing-composite modifier rule and runs
+on the same index edges: `EnclosingCompositeBindsMaterial_`, the material
+twin of `EnclosingCompositeBindsModifier_`. An object whose enclosing
+chain reaches a composite that spells a `material` is not a candidate on
+its own material; the **composite** is the candidate, on the material it
+spells, which the ordinary per-object walk already reaches. Nested: any
+enclosing composite spelling one silences the operand, because the
+outermost spelled material is what survives the inside-out adoption.
+One asymmetry with the modifier rule, stated in the code: `material none`
+on a COMPOSITE overrides nothing (the parser passes 0, `pMaterial` is
+null, the guarded assignment never fires), whereas `modifier none` on a
+`source` copy genuinely clears — so "none" is chain-stopping in the
+`source` walk and simply unbound in the composite rule.
+
+**Why silencing an operand is safe** (now stated in all three places — the
+`DESIGN_FLAT_RELIEF` doc comment, `EffectiveModifierIndex_`'s block
+comment, and §9): **a CSG operand never renders standalone.**
+`CSGObject::AssignObjects` marks both operands consumed
+(`Object::AddConsumer`; `IsWorldVisible()` is `bIsWorldVisible &&
+nConsumedBy == 0`), which takes them out of every world-visible
+enumeration, and `Job::AddCSGObject` refuses an operand that is
+`parent`ed elsewhere ("Parent the csg_object instead"). The only surface
+an operand contributes to is its composite's — which is what makes both
+enclosing-composite rules a narrowing of the candidate set rather than a
+loss of coverage.
+
+**P2-1 — the 8-hop `source` cap.** `for( int hop = 0; hop < 8 …)` reaches
+only 7 hops, and its comment justified the bound by a `source` cycle that
+`Cst.cpp` makes impossible: forward references are refused by the
+declare-earlier rule, and `SourceChainOf` caps at 256 purely as a belt
+against a future apply path. A **legal** 8-deep chain with the modifier
+at its root therefore resolved to "no modifier" at its far end and fired
+falsely (reviewer-measured: 7 hops silent, 8 fires). The bound is now
+`kSourceChainHopBound_ = 256` — matched to `SourceChainOf` rather than
+shared, because that function is file-static in `Cst.cpp`; the point is
+that a chain the *engine* accepts and expands is a chain this scan
+resolves, and one the engine refuses is one no derived scene contains.
+The comment now says what the bound actually does. Per
+audit-by-bug-pattern, the two sibling `source` walks in the same file
+carried the identical shape and are fixed the same way: condition L's
+`geometryKindOfObject` and condition P's `geometryKindOfObjectForWetness`
+(both resolved a 9-deep instancing chain to "no geometry", dropping the
+object from those conditions' evidence). The **csg** walks keep a
+deliberately modest nesting bound of 8 — a different bound for a
+different hazard, since `enclosingCsgByObject` can fan out — and that
+distinction is now written down rather than lumped into "all three walks
+are depth-bounded".
+
+**P2-2 — clause (i) was not `source`-aware.** `objectMaterialByName`
+drops objects that spell no `material`, so `copy { source orig }`
+inheriting a varying material with no modifier was never a candidate —
+an under-report, and one that also left the clause's "and N more objects"
+tally short. The material is now resolved through the **same** chain walk
+the modifier uses (`ResolveInheritedLiteral_`, which both rules share:
+own literal wins, else the inherited one, `none` handed back to the
+caller to interpret), via `ObjectOwnOrInheritedMaterial_`.
+
+**Nit.** The comment above condition Q's resolution pass pointed at
+`objectModifierByName`, a map fix round 1 deleted; it now points at
+`effectiveModifiers` and at `EffectiveModifierIndex_`'s block comment.
+
+**Tests.** Five new cases appended to `RunFlatReliefScanTest`
+(`tests/AgentReadValidateTest.cpp`), (p)–(r): **(p)** an operand under a
+composite that spells its own `material` is silent; **(p')** the
+identical document with that one line dropped fires, naming `op_a` (the
+control that makes (p) a rule about the override, not a blanket "operands
+never fire"); **(p'')** nested composites where the MIDDLE one overrides
+the material and the outer does not — both operands silent, the middle
+composite the only finding; **(q)** `orig` + a bare `copy { source orig }`
+both count, the first named in full and the copy tallied as "1 more
+object"; **(r)** a legal 9-deep `source` chain with the relief at its
+root is silent at every link.
+
+**Red-proof.** Commenting out the new
+`EnclosingCompositeBindsMaterial_` call (temporary patch, reverted) turns
+**(p) and (p'') RED** — `AgentReadValidateTest` 330 passed / 3 failed
+(both (p'') assertions fail: the operands become findings, so the middle
+composite is no longer the only one). (p'), (q) and (r) stay green, which
+is correct — none of them depends on that predicate.
+
+**Gate, on the final tree.** Full library + all four CLI binaries rebuild
+warning-free after touching every changed `.cpp`.
+`./bin/tests/AgentReadValidateTest` — **333 passed, 0 failed** (was 326).
+`./bin/tests/AgentChunkCrudTest` — **3809 passed, 0 failed**.
+`./bin/tests/AgentAddWearTest` — **287 passed, 0 failed**.
+`./bin/tests/AgentAddWetnessTest` — **210 passed, 0 failed**.
+`./bin/tests/SourceHygieneTest` — **164 passed, 0 failed**.
+`./bin/tests/ReliefModifierTest` — **106 passed, 0 failed**.
+
+**Left undone.** Nothing from the four findings. Not attempted: the csg
+nesting bound stays at 8 rather than following the `source` walks to 256
+— the enclosure edges fan out, so a large bound trades one bounded
+false-advisory for an unbounded walk, and no fixture or corpus scene
+nests composites anywhere near that deep. Deliberately out of scope: the
+census remains user-run (C-MEAS), unchanged from fix round 1.
