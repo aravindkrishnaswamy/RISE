@@ -1,0 +1,2 @@
+beginning_time_s,candidate,represented_dt_s,maximum_deviation,p95,tail_cells,tail_drained_m3,dynamics_passed,physical_valid,terminal_valid,token,next_available,suggested_dt_s,disposition,error
+0.6231521824374795,0,0,0,0,0,0,0,0,0,0,0,0,2,projected-Heun canonical source differs from persisted source fields: index=4039499 canonical=-0.048315051943063736 persisted=-0.048315037041902542
