@@ -6916,7 +6916,9 @@ bool Job::AddPiecewiseLinearFunction2D(
 //! registers a `ReliefModifier` in the UV domain instead.  The amplitude fold
 //! and the `window <= 0` inert case live in `RISE_API_CreateBumpMapModifierEx`
 //! -- one place, so the shim and the chunk-level migrator cannot drift.  New
-//! in-tree callers want `Job::AddReliefModifier`.
+//! in-tree callers want `Job::AddReliefModifierEx` (the plain
+//! `Job::AddReliefModifier` is itself only a no-clamp forwarding shim, kept
+//! for ABI -- see its own comment below).
 bool Job::AddBumpMapModifier(
 	const char* name,										///< [in] Name of the modifiers
 	const char* func,										///< [in] The function to use as the bump generator
@@ -6988,6 +6990,22 @@ bool Job::AddReliefModifier(
 	const double step										///< [in] Central-difference half-step; <= 0 = auto
 	)
 {
+	// maxSlope 0 -- no clamp.  This signature predates the clamp and is
+	// kept verbatim because IJob's vtable is append-only; every scene and
+	// caller that never mentions `max_slope` lands here and gets exactly
+	// the behaviour it always had.
+	return AddReliefModifierEx( name, height, scale, domain, step, 0.0 );
+}
+
+bool Job::AddReliefModifierEx(
+	const char* name,										///< [in] Name of the modifier
+	const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+	const double scale,										///< [in] Amplitude
+	const char* domain,										///< [in] "surface" (default) or "uv"
+	const double step,										///< [in] Central-difference half-step; <= 0 = auto
+	const double maxSlope									///< [in] Tilt bound as a slope; 0 = unclamped, negative refused
+	)
+{
 	// `domain` first: a typo here is an authoring mistake with a silent,
 	// plausible-looking wrong answer (a 3D field sampled in UV reads flat
 	// on anything without texcoords), so refuse it LOUDLY and name both
@@ -7009,6 +7027,27 @@ bool Job::AddReliefModifier(
 		return false;
 	}
 
+	// `max_slope` next, before anything is allocated.  A NEGATIVE bound
+	// cannot mean anything -- the clamp compares a MAGNITUDE against it --
+	// and quietly folding it to "off" would turn a typo (a sign slip on
+	// `0.7`) into an invisible loss of the very protection the author was
+	// asking for.  Refuse it by name.  Zero IS meaningful and is the
+	// default: no clamp.  A non-finite value is refused for the same
+	// reason (`> 0` is false for NaN, so it too would silently mean "off").
+	if( !( maxSlope >= 0.0 ) || !std::isfinite( maxSlope ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"relief_modifier `%s`: parameter `max_slope` value %g is not usable -- "
+			"it is an upper bound on the tangent-plane tilt |scale*grad h| expressed "
+			"as a SLOPE (1.0 = 45 degrees, 0.577 = 30), so it must be finite and "
+			"non-negative.  Use 0 for no clamp (the default), or a positive slope "
+			"such as 0.5-1.0 when raising `scale` to make a fine field legible -- that "
+			"band is for a near-face-on surface; on a surface seen at grazing angle phi "
+			"the tilt budget before the shading normal faces away from the ray shrinks "
+			"to roughly tan(phi), e.g. 0.30 on a plane viewed at 10-15 degrees grazing.",
+			name, maxSlope );
+		return false;
+	}
+
 	// Height is a PHYSICAL SCALAR (a length), never a colour: it must not
 	// pass through JH spectral uplift.  ResolveOrDiagnoseScalar is the
 	// standing three-way diagnostic -- per-channel painter in a
@@ -7023,7 +7062,7 @@ bool Job::AddReliefModifier(
 	}
 
 	IRayIntersectionModifier* pModifier = 0;
-	RISE_API_CreateReliefModifier( &pModifier, *pHeight, scale, eDomain, step );
+	RISE_API_CreateReliefModifierEx( &pModifier, *pHeight, scale, eDomain, step, maxSlope );
 	safe_release( pHeight );
 
 	const bool okRelief = RegisterOrDiag( pModManager, pModifier, name, "modifier" );

@@ -7093,7 +7093,10 @@ namespace RISE
 		Function2DScalarPainter* pHeight = new Function2DScalarPainter( &func );
 		GlobalLog()->PrintNew( pHeight, __FILE__, __LINE__, "bumpmap legacy height" );
 
-		(*ppi) = new ReliefModifier( *pHeight, folded, ReliefDomain::UV, window );
+		// maxSlope 0: the shim is ABI-frozen and reproduces the legacy
+		// unbounded tilt exactly.  The clamp is opt-in and reachable only
+		// through `RISE_API_CreateReliefModifierEx`.
+		(*ppi) = new ReliefModifier( *pHeight, folded, ReliefDomain::UV, window, Scalar(0) );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
 
 		// The modifier addref'd it in its ctor; drop OUR construction
@@ -7152,6 +7155,24 @@ namespace RISE
 		return true;
 	}
 
+	bool RISE_API_CreateReliefModifierEx(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd)
+								const Scalar scale,							///< [in] Amplitude
+								const Implementation::ReliefDomain domain,	///< [in] Surface or UV
+								const Scalar step,							///< [in] Half-step; <= 0 = auto
+								const Scalar maxSlope						///< [in] Tilt bound as a slope; <= 0 = unclamped
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ReliefModifier( height, scale, domain, step, maxSlope );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reliefmodifier" );
+		return true;
+	}
+
 	bool RISE_API_CreateReliefModifier(
 								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
 								const IScalarPainter& height,				///< [in] Height field (addref'd)
@@ -7160,13 +7181,11 @@ namespace RISE
 								const Scalar step							///< [in] Half-step; <= 0 = auto
 								)
 	{
-		if( !ppi ) {
-			return false;
-		}
-
-		(*ppi) = new ReliefModifier( height, scale, domain, step );
-		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reliefmodifier" );
-		return true;
+		// Forwards with maxSlope 0 -- no clamp, the behaviour every caller
+		// of this signature has always had.  Kept as its own entry point
+		// rather than given a defaulted parameter because it is a shipped
+		// exported symbol.
+		return RISE_API_CreateReliefModifierEx( ppi, height, scale, domain, step, Scalar(0) );
 	}
 
 	bool RISE_API_CreateModifierStack(

@@ -833,6 +833,7 @@ relief_modifier
 	scale	0.004          # height amplitude, field units -> world units (domain surface)
 	domain	surface        # surface (default, 3D, no texcoords needed) | uv
 	step	0              # 0 = auto: max(1e-3, filter-width) on surface, 0.01 on uv
+	max_slope 0            # 0 = no clamp; set 0.5-1.0 whenever you raise `scale` (below)
 }
 ```
 
@@ -867,6 +868,28 @@ relief_modifier
   stencil span exactly one pixel.  A `step` smaller than that is silently
   raised on a primary hit -- there is deliberately no way to ask for a
   sub-footprint stencil there.)
+- **`max_slope` is what makes a FINE field legible.** Set it around
+  **0.5-1.0 whenever you raise `scale`.** The default `0` is no clamp, and
+  an unclamped fine field has no usable amplitude: too small and the
+  detail sits below the pixel footprint (invisible), large enough to read
+  and the shading normal leans so far that it passes the geometric
+  horizon as seen from the ray or the light, the materials'
+  geometric-horizon gate rejects nearly every sampled direction, and the
+  surface goes **BLACK** in bands and speckle. `max_slope` bounds the
+  tilt (it is a SLOPE: `1.0` = 45 degrees, `0.577` = 30) by rescaling the
+  gradient with its **direction preserved**, so raising `scale` deepens
+  the shallow parts of the field while the clamp holds the peaks --
+  which is the opposite of what dialling `scale` down does. **Go lower
+  than 0.5 on a surface seen at a grazing angle** -- a table top, a
+  floor, a wall seen edge-on -- because a grazing view puts the horizon
+  much closer, so a smaller tilt reaches it; the shipped
+  `weathered_workbench` bench top measured its knee at `0.30`. Also
+  expect `scale` to **approach a ceiling** once the clamp binds -- full
+  saturation needs EVERY gradient in the field past the bound, so a fine
+  field with a spread of slopes (an fbm) still moves a little as `scale`
+  rises (measured -- `scale` 0.15/0.25/0.40 are within ~3% of each other
+  at `max_slope 0.30`, not identical). Details and the full sweep in
+  `docs/RELIEF_MODIFIER_DESIGN.md` 3.2 and 12 (Phase 5 addendum).
 - **Composing more than one modifier on an object** uses `modifier_stack`,
   applied in the order the members are listed:
 

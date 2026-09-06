@@ -2056,6 +2056,19 @@ namespace RISE
 			const double step										///< [in] Central-difference half-step; <= 0 = auto
 			);
 
+		//! Creates a painter-driven micro-relief modifier with the optional
+		//! slope clamp.  `AddReliefModifier` above forwards here with
+		//! `maxSlope` 0.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddReliefModifierEx(
+			const char* name,										///< [in] Name of the modifier
+			const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+			const double scale,										///< [in] Amplitude
+			const char* domain,										///< [in] "surface" (default) or "uv"
+			const double step,										///< [in] Central-difference half-step; <= 0 = auto
+			const double maxSlope									///< [in] Tilt bound as a slope; 0 = unclamped, negative refused
+			);
+
 		//! Creates an ordered composition of previously-registered modifiers.  See IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddModifierStack(

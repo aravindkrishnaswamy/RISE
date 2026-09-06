@@ -187,6 +187,7 @@ relief_modifier
 	scale    0.004                 # height amplitude: field units -> world units (surface) / UV units (uv)
 	domain   surface               # surface (default) | uv
 	step     0                     # 0 = auto (surface: max(1e-3, fw); uv: 0.01)
+	max_slope 0                   # 0 = no clamp; 0.5-1.0 bounds the tilt (a slope; 1.0 = 45 deg)
 }
 ```
 
@@ -214,6 +215,15 @@ relief_modifier
   in UV; the descriptor says so and says `surface` is the recommended mode.
 - `step` — central-difference half-step. `0` selects the automatic rule in
   §3.3.
+- `max_slope` — **opt-in upper bound on the tangent-plane tilt**
+  `|scale·∇h|`, expressed as a *slope* (`1.0` = 45°, `0.577` = 30°). `0`
+  (the default, and what the migrator writes) means no clamp — the legacy
+  behaviour. A negative or non-finite value is a parse-time error naming the
+  parameter: the clamp compares a magnitude against it, so a negative bound
+  cannot mean anything, and quietly folding it to "off" would turn a sign
+  slip on `0.7` into an invisible loss of exactly the protection the author
+  asked for. See §3.2 for what it buys and why amplitude alone cannot
+  substitute.
 
 ### 3.2 The perturbation
 
@@ -286,11 +296,67 @@ it into a header-inline helper `ModifierFrame::RebuildPreservingTangent(ri,
 newN)` and switches the three existing modifiers to it, so the mirrored-
 instance handedness fix has one home.
 
-**No geometric-horizon clamp.** Like BumpMap/NormalMap and PBRT's bump
-mapping, a large `scale` may push `N'` below the geometric plane; the
-materials' geometric-horizon gates handle that (they already expect the two
-normals to disagree post-modifier). GlintModifier's rejection is a *discrete*
-facet decision and does not transfer.
+**Optional slope clamp — `max_slope`** *(added 2026-09-06; supersedes the
+original "No geometric-horizon clamp" paragraph, quoted and corrected
+below).*
+
+```
+g   = scale·( h_T·T + h_B·B )
+if max_slope > 0 and |g| > max_slope:  g ← g · max_slope/|g|      # direction preserved
+N'  = normalize( N − g )
+```
+
+The clamp is **off by default** (`max_slope 0`), so every pre-existing scene,
+the migrator's output and the ABI-frozen `RISE_API_CreateBumpMapModifier` shim
+are bit-identical to before.
+
+*What the original paragraph said, and what was wrong with it.* It read: "Like
+BumpMap/NormalMap and PBRT's bump mapping, a large `scale` may push `N'` below
+the geometric plane; the materials' geometric-horizon gates handle that (they
+already expect the two normals to disagree post-modifier)." Two corrections:
+
+1. **`N'` cannot cross the surface plane.** `g` is perpendicular to `N`, so
+   `N'·N = 1/sqrt(1+|g|²) > 0` for *any* finite gradient — the same
+   orthogonality argument the degenerate-normal gate's own comment makes a few
+   lines later. The original framing pointed at an impossible failure.
+2. **The reachable failure is the geometric horizon as seen from the ray or
+   the light, and the gates do *not* "handle" it gracefully** — they *are* the
+   failure. At `|g| = 10` the shading normal is 84° off the geometric one, the
+   shading and geometric hemispheres barely overlap, and
+   `CookTorranceSPF::Scatter` and its siblings (which orient the geometric
+   normal to the ray and reject every sample below it) throw away nearly every
+   direction. The surface shades **black**.
+
+*Why amplitude alone cannot fix it.* This was measured on
+`scenes/FeatureBased/Textures/weathered_workbench.RISEscene` (§12 Phase 5
+addendum): the wood grain is a 5-octave `fbm` whose tangent-plane slope is
+O(10), so there is **no** `scale` that works. At `0.03` the relief is
+sub-footprint and invisible; at `0.10`–`0.25` it reads as black bands and
+speckle. The two failures are not a narrow band to thread — they overlap.
+Bounding the *tilt* rather than the *amplitude* separates the two knobs:
+`scale` sets what the shallow parts of the field get, and the clamp holds the
+peaks, with the gradient's **direction preserved** so the relief still faces
+the way the field points. Clamping the height or lowering `scale` instead
+flattens the shallow parts along with the steep ones, which is precisely why
+the amplitude sweep had nothing to find.
+
+`atan(max_slope)` is the tilt cap, so the two hemispheres always overlap by at
+least `90° − atan(max_slope)`: `0.5` → 63.4°, `1.0` → 45°.
+
+**This guarantee is PER MODIFIER, not per pixel.** It bounds the tilt *this*
+application adds relative to the `vNormal` it receives, not the total tilt
+against the original geometric normal. Under `modifier_stack` (§4), stacked
+reliefs add their tilts: two `relief_modifier`s each at `max_slope 0.30`
+compose to a total tilt of up to `2·atan(0.30) ≈ 33.4°`, an overlap floor of
+`90° − 33.4° ≈ 56.6°`, not the `73.3°` a single clamp promises. Bounding
+against `vGeomNormal` instead would fix the composed number but break every
+mesh where a Phong-smoothed shading normal legitimately disagrees with the
+geometric one (`N ≠ Ng` by design), so the clamp stays scoped to the tilt
+*this* modifier adds. `ReliefModifierTest`'s test 11g measures the composed
+case in closed form.
+
+GlintModifier's rejection remains a *discrete* facet decision and does not
+transfer to either this clamp or the degenerate-normal gate.
 
 ### 3.3 Step selection — scale-aware and footprint-aware
 
@@ -868,7 +934,22 @@ implicitly; nothing else changed.
 10. **Parse.** `relief_modifier` round-trips; `height` bound to an `IPainter`
     yields `kScalarBoundToIPainterFmt`; unknown name yields
     `kScalarUnknownFmt`; the `bumpmap_modifier` deprecation warning fires
-    once for two chunks.
+    once for two chunks. Since the clamp: `max_slope 0.7` round-trips,
+    `max_slope -1` is refused by name, and omitting it still parses.
+11. **`max_slope` clamp** *(added 2026-09-06)*. Closed form — a slope-10
+    linear field at `scale 1` under `max_slope 1` gives exactly
+    `normalize(N − T)`, and under `0.5` exactly `normalize(N − 0.5·T)`,
+    against an unclamped control that keeps the full slope-10 lean. A
+    gradient *below* the bound is **bit-identical** to unclamped (the clamp
+    fires only when exceeded — a clamp that always renormalised would flatten
+    the shallow field, which is the whole failure mode `scale` alone has).
+    Direction preserved: a `(30, 40)` gradient clamped to `0.6` keeps
+    `h_B/h_T` to 1e-12 and lands on `normalize(N − (0.36, 0.48, 0))`. Swept
+    invariant over 1000 random slopes up to 1e3 under `max_slope 2`:
+    `N'·N ≥ 1/sqrt(1+max_slope²)` — the honest form, since `N'·N > 0` is
+    vacuous by orthogonality (§3.2) and the same sweep breaks the tight bound
+    on most samples when unclamped. Plus: `scale 0` stays inert with a
+    `max_slope` set, and the clamp applies in `domain uv` as well.
 
 Scenes: `scenes/Tests/ChunkCoverage/cc_relief_modifier.RISEscene`,
 `cc_modifier_stack.RISEscene`; `scenes/Tests/Painters/relief_sphere_no_uv.RISEscene`
@@ -2297,6 +2378,123 @@ the scene's own header never called the legs out separately, and
 leaving them flat while the top gained visible relief would have read
 as an inconsistency in the same material.
 
+#### Addendum — 2026-09-06, `max_slope` retune of `weathered_workbench`
+
+Branch `relief-max-slope`. Phase 5's amplitude sweep concluded `0.05` was
+"the smallest artifact-free value" and the review then dialled it to `0.03`.
+**Both readings are superseded**, and for a reason worth recording: that
+sweep predates the footprint arc
+([TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)),
+which moved footprint production to `Object::IntersectRay` and so gave the
+bench's `box_geometry` a real world footprint for the first time. The sweep
+was therefore measuring a **sub-footprint stencil** — an aliasing artefact,
+not the relief. Against the real step rule, `0.03` is *invisible*.
+
+**The problem, restated.** `expr_grain` is a 5-octave `fbm` whose
+tangent-plane slope is O(10). Unclamped, the scene has no usable amplitude at
+all: too small and the detail is below the footprint, large enough to read and
+the shading normal crosses the geometric horizon as seen from the ray, the
+material's geometric-horizon gate rejects nearly every sampled direction, and
+the plank shades black. The two failures **overlap** — there is no band to
+thread, which is why an amplitude-only sweep could not have found one.
+
+**Method.** All renders at the scene's authored settings (`pixelpel`, 12 spp,
+640×480, ~3 s each), measured on the OIDN-denoised PNG over a 200×50 crop of
+pure bench-top plank at `(230, 202)`. `hf-RMS` is the RMS of
+`pixel − 5×5 box blur` — fine-detail contrast, the thing "reads as carved"
+means. `blk` counts pixels below luma 12 out of the crop's 10 000; `far` is
+the upper 25 rows (the plank seen at ~10–15° grazing) and `near` the lower 25.
+
+*The nine-variant grid.*
+
+| scale | max_slope | mean | hf-RMS | blk<12 | far | near | reads as |
+|---|---|---|---|---|---|---|---|
+| 0.03 | — *(master)* | 161.1 | 18.48 | **0** | 0 | 0 | flat; grain is paint |
+| 0.15 | 0 *(control)* | 127.6 | 32.31 | 593 | 453 | 140 | black bands + speckle |
+| 0.25 | 0 *(control)* | 115.0 | 35.02 | 976 | 728 | 248 | black bands + speckle |
+| 0.08 | 0.4 | 156.8 | 21.18 | 34 | 30 | 4 | mild relief, clean |
+| 0.08 | 0.7 | 150.4 | 23.79 | 88 | 73 | 15 | good relief, far-band flecks |
+| 0.08 | 1.0 | 146.8 | 24.84 | 127 | 106 | 21 | good relief, flecks |
+| 0.15 | 0.4 | 153.4 | 23.84 | 73 | 67 | 6 | good relief, few flecks |
+| 0.15 | 0.7 | 142.6 | 28.33 | 256 | 208 | 48 | strong, visible speckle |
+| 0.15 | 1.0 | 135.0 | 30.30 | 398 | 319 | 79 | strong, speckle |
+| 0.25 | 0.4 | 152.0 | 24.76 | 87 | 75 | 12 | good relief, flecks clumping |
+| 0.25 | 0.7 | 139.1 | 30.00 | 353 | 287 | 66 | strong, speckle |
+| 0.25 | 1.0 | 129.4 | 32.19 | 560 | 434 | 126 | approaching the control |
+
+*Two findings the grid forced, and the extension they justified.* (1) The
+clamp works: at the same `scale 0.25`, `max_slope 0.4` cuts near-blacks
+**11×** (976 → 87) while keeping 71% of the unclamped fine-detail gain. (2)
+**`scale` saturates only once EVERY gradient in the field exceeds the
+bound** — at `max_slope 0.30`, scale 0.15/0.25/0.40 measure hf-RMS
+21.51/22.06/22.14 at 22/23/24 blacks: a monotone 2.9% spread (21.51 → 22.14),
+not identical, because at `0.15` part of the fbm slope distribution still
+sits *below* the clamp (only the steepest fraction is bound; the rest still
+scales with `scale` as usual) — full saturation needs the whole distribution
+past the bound. Since every one of the nine still sat well above master's 0
+blacks, the sweep was extended *downward* in `max_slope` at `scale 0.25`
+(chosen because it is within ~3% of the saturated ceiling, not because it is
+identical to it):
+
+| scale | max_slope | hf-RMS | blk<12 | note |
+|---|---|---|---|---|
+| 0.25 | 0.15 | 18.00 | 0 | over-clamped; *below* master's detail |
+| 0.25 | 0.25 | 20.28 | 7 | clean, modest |
+| 0.25 | **0.30** | **22.06** | **23** | **chosen — the knee** |
+| 0.25 | 0.35 | 23.86 | 62 | +8% detail for 2.7× the blacks |
+| 0.25 | 0.40 | 24.76 | 87 | darks begin clumping into patches |
+
+`0.25 / 0.30` dominates every one of the nine: more detail than `0.08/0.4`
+(22.06 vs 21.18) at fewer blacks (23 vs 34). Its 23 near-blacks are 0.23% of
+the crop, **all but 2 of them in the extreme-grazing far band**, and each
+follows the grain rather than appearing as isolated speckle (the 4×
+comparison strip `cmp_far_stack.png` stacks master / 0.25 / 0.30 / 0.40 — the
+first solid clumps appear at 0.40).
+
+**Chosen: `scale 0.25`, `max_slope 0.30`.** Note this is *below* the 0.5–1.0
+band the skill doc recommends generally. That is not a contradiction: the
+bench top is a large horizontal plane seen at a grazing angle over most of its
+area, which puts the horizon far closer than on a surface viewed nearer
+face-on. The general band remains right for the general case; grazing-viewed
+planes want less.
+
+**The key light was tested and left alone.** It sits at 41.9° elevation
+(`direction 0.5 0.7 0.6`). Lowering it to 24.1° (`0.5 0.35 0.6`, same
+`power 3.2`) **does not help**: at `0.25/0.4` fine-detail contrast goes *down*
+(24.76 → 24.30), the plank dims ~7% (mean 152.0 → 141.6), and near-blacks rise
+35% (87 → 118). The reason is the same grazing-budget geometry as the clamp
+itself, applied to the LIGHT instead of the camera: `max_slope 0.4` caps the
+tilt at `atan(0.4) ≈ 21.8°`, so a tilt *away* from the key can point the
+shading normal up to `21.8°` past the light's own direction. At the 42°
+key that overshoot still clears the light's geometric horizon (`42° − 21.8° =
+20.2° > 0`); at the 24° key it does not (`24° − 21.8° = 2.2°`, and plenty of
+the fbm field's sampled tilts exceed the mean), so more away-facing tilts get
+gated BLACK by the same geometric-horizon gate the clamp exists to manage —
+this is a second, LIGHT-side instance of the mechanism §3.2 describes for the
+ray side. (An earlier draft of this paragraph claimed the raking key
+"saturates" the lit tilts at `N·L ≈ 1`; it does not — at `21.8°` of tilt
+budget and a `24°` key the closest approach is `sin(46°) ≈ 0.72`, nowhere
+near saturation. The measured effect and the decision it drives are
+unchanged: it is a horizon-gating loss, not a saturation ceiling.) The 42°
+key is already the better choice, so the scene's lights are unchanged (and
+`CstDeriveGoldenTest` therefore needed no regeneration).
+
+**PNGs** (all under
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/maxslope/rendered/`):
+
+- **before** (master, `scale 0.03`) — `ms_base_denoised.png`
+- **after** (chosen, rendered from the committed scene) — `ms_FINAL_denoised.png`
+- unclamped controls — `ms_ctl_015_denoised.png`, `ms_ctl_025_denoised.png`
+- the nine — `ms_s{1,2,3}_m{1,2,3}_denoised.png`
+- the downward extension — `ms_p_s3_m{015,025,030,035}_denoised.png`
+- raking-key trials — `ms_rake_base_denoised.png`, `ms_rake_s2_m1_denoised.png`, `ms_rake_s3_m1_denoised.png`
+- crops — `*_top2x.png` (bench-top crop), `*_far4x.png` (grazing band), `cmp_far_stack.png`, `cmp_leg_strip.png`
+
+`CstDeriveGoldenTest`: **442 MATCH, 1 DRIFT** (the same pre-existing
+`bdpt_crystal_garden` working-tree entry), 0 UNCOVERED, 0 STALE — unchanged
+before and after the scene edit, confirming the relief parameters do not reach
+the derive digest (`DumpJob` prints modifiers by name).
+
 ---
 
 ### Phase 4 — fix round 1 (2026-09-06)
@@ -3055,3 +3253,31 @@ finite-difference oracle.
 1 DRIFT (`bdpt_crystal_garden`, pre-existing), `migrate_scenes_relief.py
 --selftest` 0 failures, Blender add-on `python3 -m unittest` 60 tests OK.
 No golden regeneration: no scene's chunk content changed, only comments.
+
+### Five-P2 closure on `relief-max-slope` (2026-09-06)
+
+Branch `relief-max-slope` off `84f78bc4`, on top of `c0a973fc` (the
+`max_slope` clamp feature) and `a95ee524` (the `weathered_workbench`
+retune). Six commits, documentation and test corrections only — no
+`src/` behaviour changed.
+
+| # | Finding | Fix | Commit |
+|---|---|---|---|
+| 1 | The overlap guarantee in section 3.2, `IJob.h`, and `ReliefModifier.h` read as a whole-composition promise. Under `modifier_stack`, stacked reliefs add their tilts: two `max_slope 0.30` reliefs compose to `2*atan(0.30) ≈ 33.4°`, an overlap floor of `≈56.6°`, not the `≈73.3°` a single clamp promises. Not fixed in code -- bounding against `vGeomNormal` would fight Phong-smoothed shading normals on meshes, where `N ≠ Ng` by design. | All three sites now say "per modifier; stacked reliefs add their tilts." New `ReliefModifierTest` test 11g measures the composed case in closed form (`2*atan(0.30)` exactly, since the test field's gradient has no B-component and each application is a pure rotation) and red-proofs the naive single-clamp bound (`totalTilt <= atan(0.30)`) -- hand-verified to fail (0.583 vs 0.291 rad) before the correct assertion was restored. | `5ac29d17` |
+| 2 | `weathered_workbench`'s key-light comment and section 12's addendum both claimed a raking key makes tilts toward it "saturate at N·L ≈ 1" -- but at `max_slope 0.4`'s `atan(0.4) ≈ 21.8°` tilt cap and the tested 24° key, the closest approach is `sin(46°) ≈ 0.72`, nowhere near saturation. | Rewritten to the actual mechanism: a raking key brings the LIGHT's geometric horizon closer (margin `elevation − atan(max_slope)`: `20.2°` at the 42° key, `2.2°` at the 24° key), so more away-facing tilts get gated black. The measurement (+35% blacks, −7% mean at the lower key) and the decision to leave the light alone are unchanged. | `f7f6975e` |
+| 3 | The `max_slope` descriptor (`ChunkParserRegistry.cpp`) and `Job.cpp`'s parse-time error message said "0.5-1.0 is the useful band" with no grazing qualification, while `skills/agent/procedural-textures.md` already carried it and the branch's only measurement rejected 0.7/1.0 on the bench (knee at 0.30, viewed at 10-15° grazing). | Both gained the one-clause caveat: the band is for a near-face-on surface; a surface seen at grazing angle φ wants roughly `tan(φ)`. | `b024fdb1` |
+| 4 | `IJob.h`'s and `Job.cpp`'s comments on `AddBumpMapModifier` told new in-tree callers to use `AddReliefModifier` -- itself only a no-`max_slope` forwarding shim (`AddReliefModifierEx(..., 0.0)`), kept for ABI. Nothing exercised the plain shim directly: every `relief_modifier` case in `ReliefModifierTest`'s Test 10 goes through the chunk parser, which calls `AddReliefModifierEx` directly. | Both comments now point at `AddReliefModifierEx`. Test 10 gained case (j): calls `Job::AddReliefModifier` directly in C++ and confirms it registers. | `3bd4b8fa` |
+| 5 | "`scale` saturates once the clamp binds" (section 12, the skill, the scene header) overstated the measurement: hf-RMS 21.51/22.06/22.14 at scale 0.15/0.25/0.40 (`max_slope 0.30`) is a monotone 2.9% spread, not identical -- saturation is exact only once EVERY gradient in the field exceeds the bound, and at 0.15 part of the fbm slope distribution is still below it. | All three sites now say "approaches a ceiling" / "within ~3%" instead of "saturates" / "identically." | `ebcc563c` |
+| — | Test 11d's `controlBelowFloor > 500` sat only ~2.5σ under its ~540 expectation for seed `20260906` -- deterministic, but close enough that a seed or count change could flip the CHECK without the discrimination it exists to prove actually failing. | Lowered the threshold to 400, with a comment explaining the margin. | `4ce90cb8` |
+
+**Gate.** Clean `make -C build/make/rise -j8 all`, zero warnings on a
+rebuild that touched `Job.cpp`, `IJob.h`, `ReliefModifier.h`,
+`ChunkParserRegistry.cpp`. `ReliefModifierTest` **155/155** (was 149;
++6 from test 11g and Test 10 case (j)). `SourceHygieneTest` 164/164.
+`SceneGraphParentTest` 291/291. `CstDeriveGoldenTest` 442 MATCH / 1
+DRIFT (`bdpt_crystal_garden`, the same pre-existing working-tree entry
+predating this arc, left untouched throughout -- confirmed unchanged
+before and after). No golden regeneration: every edit this arc made is
+a comment, a doc paragraph, or a log-message string; no scene's chunk
+content changed. All six commits are documentation/test-only; no
+`src/` runtime behaviour changed.
