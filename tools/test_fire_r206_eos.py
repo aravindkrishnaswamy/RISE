@@ -69,6 +69,10 @@ class EOSGateREDs(unittest.TestCase):
                 token = key+"="+value
                 mutants += [line.replace(token, "", 1), line+" "+key+"=bad",
                             line.replace(token, key+"=bad "+token, 1)]
+            if tag == "OWNER_CONVERGENCE_RED":
+                for separator in (" ", "\t", "\u00a0", "\v", "\f", "  "):
+                    for token in ("atomic_refusal=0", "passed=0", "unknown=0"):
+                        mutants.append(line.replace(" passed=1", separator+token+" passed=1"))
             for mutant in mutants:
                 with self.subTest(tag=tag, mutant=mutant):
                     with self.assertRaises(ValueError):

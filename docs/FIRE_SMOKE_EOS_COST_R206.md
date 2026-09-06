@@ -258,3 +258,15 @@ replacement `review.round5.redproof.v1.log` requires assertion failures with
 zero setup errors against both historical helpers. The original log is retained
 but is superseded for that RED claim. Numerical gates and measurements were
 never dependent on this parser-only fixture; their SHA remains unchanged.
+
+## Sixth review: whitespace consistency
+
+Fresh-agent capacity returned and two new reviewers ran in parallel. Numerical
+and lineage review again found no P1/P2. Evidence review found one P2: the
+unquoted-error parser recognized literal spaces but could swallow a tab before
+a contradictory counter. Counter boundaries now use the same whitespace class
+as the token parsers. Space, tab, nonbreaking-space, vertical-tab, form-feed,
+and repeated-space mutants exercise duplicate and unknown counters inside
+diagnostic prose. The historical parser fails the new assertions with zero
+setup errors (`review.round6.redproof.v1.log`). No numerical result, tolerance,
+or measured timing changed.

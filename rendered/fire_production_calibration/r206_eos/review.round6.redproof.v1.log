@@ -1,0 +1,54 @@
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only\tatomic_refusal=0 passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 79, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only\tpassed=0 passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 79, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only\tunknown=0 passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 79, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only\xa0atomic_refusal=0 passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 79, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only\xa0passed=0 passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 79, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only\xa0unknown=0 passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 79, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+FAILED (failures=6)
+R206_WHITESPACE_RED historical_false_green_caught=1 setup_errors=0

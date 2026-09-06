@@ -49,7 +49,7 @@ def qualify_artifact(log, trace, csv):
         # The diagnostic error is unquoted prose. Parse every key boundary,
         # including repeats inside that prose, before admitting the counters.
         body = line[len("OWNER_CONVERGENCE_RED "):]
-        keys = list(re.finditer(r"(?:^| )([A-Za-z_][A-Za-z_0-9]*)=", body))
+        keys = list(re.finditer(r"(?:^|\s+)([A-Za-z_][A-Za-z_0-9]*)=", body))
         names = [key.group(1) for key in keys]
         if len(keys) != 4 or set(names) != {"name", "atomic_refusal", "error", "passed"} or keys[0].start() != 0:
             raise ValueError("incomplete or duplicate convergence RED counters")
