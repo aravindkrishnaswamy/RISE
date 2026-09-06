@@ -588,6 +588,86 @@ namespace RISE
 			//! carries the same generic self-disarm suffix every sibling in this
 			//! family appends ("if a deliberately dry look was wanted, ignore").
 			static const char* const DESIGN_DRY_RAIN_SCENE = "DESIGN_DRY_RAIN_SCENE";
+			//! docs/RELIEF_MODIFIER_DESIGN.md sec 9 (2026-09-06), condition Q:
+			//! the DECAL-ON-PLASTIC detector -- an object whose material paints
+			//! a spatially-varying colour but whose shading normal never
+			//! responds to it.  Doc 88 sec 2/7's adoption laws (C-ADV/C-VERB)
+			//! are why this ships advisory-only: the record on this exact shape
+			//! (`vary_material`, `add_wear`) is that advice alone moves
+			//! adoption approximately zero, so this note is not expected to
+			//! either -- it exists to make the census (docs/
+			//! RELIEF_MODIFIER_DESIGN.md sec 9's "Census" bullet) measurable,
+			//! and its text is the one place the relief idiom is taught at the
+			//! moment the agent is looking at the material.  Per C-VERB, if
+			//! the census shows advice + recipe do not move adoption, a
+			//! `relief_amplitude` argument on `add_wear` is the named
+			//! escalation (see AgentSession::AddWear's own hook-point note,
+			//! AgentSession.cpp) -- it is not built until then.
+			//!
+			//! FIRES on >= 1 (no volume gate -- condition M/N/O/I's
+			//! convention, not condition D/H/L/P's "systemic flatness" one:
+			//! ONE decal-on-plastic object already IS the described failure)
+			//! `standard_object` or `csg_object` -- EXCLUDING a pure CONTAINER
+			//! (a `standard_object` with neither `geometry` nor `source`: a
+			//! transform node, invisible to the renderer, with no surface for
+			//! a modifier to act on regardless of what its otherwise-inert
+			//! material binds; `csg_object` has no `geometry`/`source` field
+			//! at all -- its shape is always its two operands -- so this
+			//! exclusion never applies to it) -- for which ALL of:
+			//!   (i)   its bound material names at least one colour-pipe slot
+			//!         (`ColorMaterialSlotsByKind_`, condition H's own
+			//!         registry-derived table -- never a hand list) that
+			//!         resolves to a SPATIALLY-VARYING painter kind
+			//!         (`ClassifyColorBinding_`, the SAME Constant/Varying/
+			//!         Opaque classifier condition H and `add_wear`/
+			//!         `add_wetness` already share). An Opaque (unreadable)
+			//!         slot does NOT qualify -- that proves only that the slot
+			//!         is not a plain flat constant, never that it is
+			//!         genuinely textured;
+			//!   (ii)  the object's own `modifier` parameter is absent, empty
+			//!         or "none". A `modifier` naming a `modifier_stack` chunk
+			//!         COUNTS AS BOUND -- the stack is itself a
+			//!         ChunkCategory::Modifier chunk, and this condition asks
+			//!         only "does the object's modifier slot resolve to
+			//!         anything", never whether the specific bound chunk is a
+			//!         `relief_modifier`: a bumpmap/normal-map/glint modifier
+			//!         silences this exactly as a relief one would, since the
+			//!         claim is narrowly "the shading normal is inert", not
+			//!         "the wrong modifier kind was chosen";
+			//!   (iii) the object's geometry is not `hair_geometry` (a
+			//!         strand's own tangent-frame shading has no purchase for
+			//!         this kind of relief); and
+			//!   (iv)  the bound material's kind is not `hair_material`, is
+			//!         not a luminaire (`DescriptorIsEmissiveMaterial_`, the
+			//!         registry "carries `exitance`" rule conditions I/M
+			//!         already share -- a painted glow is sold by emission,
+			//!         and micro-relief on a light source is not this note's
+			//!         business), and the object itself does not classify as
+			//!         a light-object (`ChunkIsLightObject_`, the arc-80
+			//!         rect_light/shape_light fixture classifier -- redundant
+			//!         with the luminaire check in every case audited, kept
+			//!         for the same reason `TargetIsFormBearing_` keeps it: a
+			//!         synthesized light fixture is never this note's
+			//!         business even if some future luminaire kind's
+			//!         descriptor stops carrying `exitance`).
+			//!
+			//! The message NAMES the object, its material, the varying slot,
+			//! and the painter bound there, and states the two-chunk fix
+			//! (`scalar_painter { painter <field> channel R }` bridging the
+			//! SAME field into a `relief_modifier`, attached via `modifier`) --
+			//! read_skill {"name":"procedural-textures"}'s relief section is
+			//! where the worked recipe lives.  NO HERO-MATERIAL PICK: unlike
+			//! conditions D/H/L/P (which choose ONE material a bare verb call
+			//! would rewrite), Phase 4 ships no verb, so there is nothing a
+			//! hero pick would target -- every qualifying OBJECT is a finding,
+			//! the first named in full and the rest counted, the same bounded
+			//! multi-finding convention conditions M/N/O already use for a
+			//! per-instance (rather than per-material) finding.
+			//! Severity::Info, self-disarming (condition H's own kSelfDisarm
+			//! suffix -- the claim IS "flat/simple styling", condition A's
+			//! topic), same shared ComputeDesignNoteConditionsFromDoc_ scan as
+			//! every sibling in this family.
+			static const char* const DESIGN_FLAT_RELIEF = "DESIGN_FLAT_RELIEF";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

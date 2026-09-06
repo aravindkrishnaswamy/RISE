@@ -5565,6 +5565,65 @@ namespace RISE
 				return s;
 			}
 
+			//======================================================================
+			// Condition Q (2026-09-06, docs/RELIEF_MODIFIER_DESIGN.md sec 9):
+			// the DECAL-ON-PLASTIC detector.  See
+			// AgentDiagnosticCode::DESIGN_FLAT_RELIEF's own doc for the whole
+			// condition, its four clauses, and the adoption-law reason it ships
+			// advisory-only; the pieces below are only the finding shape and the
+			// shared clause.  The predicate itself runs in
+			// ComputeDesignNoteConditionsFromDoc_, right after condition P's own
+			// resolution pass -- document-only, so (unlike condition M) it needs
+			// no derived scene and runs unconditionally.
+			//======================================================================
+
+			//! One qualifying object: its bound material, the ONE varying
+			//! colour slot found (the first slot that qualifies; a material
+			//! could have more than one, but naming one is enough to make the
+			//! point), and the painter bound there.
+			struct FlatReliefFinding_
+			{
+				std::string objectName;
+				std::string materialName;
+				std::string materialKind;
+				std::string colorSlot;     //!< e.g. "reflectance" / "base_color"
+				std::string painterName;
+				std::string painterKind;   //!< e.g. "perlin3d_painter" / "expression_painter"
+			};
+
+			//! Condition Q's whole clause, SHARED by the note builder and the
+			//! diagnostic builder -- FormatEnclosedLightClause_'s arrangement
+			//! exactly.  Names the object, its material, the varying slot and
+			//! the painter bound there, then the two-chunk fix: a
+			//! `scalar_painter` bridging the SAME field into a `relief_modifier`
+			//! bound via the object's own `modifier` parameter.  `findings` is
+			//! never empty when this is called (condition Q's own gate -- one
+			//! already is the failure); more than one collapses to the first
+			//! named in full plus a count, matching this file's other
+			//! multi-finding clauses.  There is no hero-MATERIAL pick here the
+			//! way conditions D/H/L/P have one: Phase 4 ships no verb, so there
+			//! is nothing for a hero pick to target -- every qualifying OBJECT
+			//! is a finding.
+			std::string FormatFlatReliefClause_( const std::vector<FlatReliefFinding_>& findings )
+			{
+				const FlatReliefFinding_& f = findings[0];
+				std::string s = "`" + f.objectName + "` (material `" + f.materialName + "`, " + f.materialKind +
+					") binds `" + f.painterName + "`" +
+					( f.painterKind.empty() ? std::string() : ( " (" + f.painterKind + ")" ) ) +
+					" -- a spatially-varying painter -- into `" + f.colorSlot + "`, but has no `modifier`: "
+					"the colour changes across the surface and the shading normal never does -- a decal on "
+					"plastic. `scalar_painter { painter " + f.painterName + " channel R }` bridges the SAME "
+					"field into a `relief_modifier { height <that scalar_painter>  scale <amount> }`, bound "
+					"onto `" + f.objectName + "` via `modifier` -- read_skill "
+					"{\"name\":\"procedural-textures\"}'s relief section has the worked recipe.";
+				if( findings.size() > 1 ) {
+					s += " (" + std::to_string( findings.size() - 1 ) + " more object" +
+					     ( findings.size() > 2 ? std::string( "s" ) : std::string() ) +
+					     " similarly flat-shaded.)";
+				}
+				return s;
+			}
+
 			struct DesignNoteConditions_
 			{
 				bool conditionA = false;   //!< scalar pipe unused (binding-aware as of adoption-polish item 3)
@@ -5583,6 +5642,7 @@ namespace RISE
 				bool conditionN = false;   //!< the dim hero light: authored bright, MEASURED at <2% by light_scene's own solo audit
 				bool conditionO = false;   //!< the re-measure nudge: a QUALIFIED-DIM cached measurement whose light has since been edited (N's own invalidation case) and is no longer enclosed by M
 				bool conditionP = false;   //!< WETNESS_COAT_DESIGN sec 13: the scene's own language implies rain/wet/storm while a qualifying material still reads bone-dry -- `add_wetness`'s note half
+				bool conditionQ = false;   //!< RELIEF_MODIFIER_DESIGN sec 9: a decal-on-plastic object -- a varying colour slot, no modifier -- DESIGN_FLAT_RELIEF
 				int  standardObjectCount = 0;
 				std::map<std::string, int> geometryCensus;   //!< keyword -> count, every OTHER geometry kind seen (condition-B clause only)
 				int         repeatedCopyCount = 0;           //!< condition C: size of the LARGEST hand-repeated group (0 when C is silent)
@@ -5792,6 +5852,13 @@ namespace RISE
 				//! match the live chunk, O requires it not to, so no light can
 				//! ever appear in both vectors from the same computation.
 				std::vector<DimLightRemeasureFinding_> dimLightRemeasureFindings;
+
+				//! Condition Q: every decal-on-plastic finding, in the OBJECT's
+				//! document order.  Read through !empty() -- one qualifying
+				//! object already IS the failure, matching conditions M/N/O's
+				//! own convention.  The clause formatter reads it whole
+				//! (FormatFlatReliefClause_).
+				std::vector<FlatReliefFinding_> flatReliefFindings;
 			};
 
 			//! Condition L's gate: how many wear candidates it takes before the
@@ -6436,6 +6503,17 @@ namespace RISE
 				//! synthesized fixture) is never a shell candidate: this scan will
 				//! not claim "opaque" about a material it cannot name.
 				std::map<std::string, std::string>    objectMaterialByName;
+				//! Condition Q (RELIEF_MODIFIER_DESIGN sec 9): OBJECT name ->
+				//! its `modifier` parameter's value, for EVERY Object-category
+				//! chunk that spells one out -- the SAME join key
+				//! objectMaterialByName is, populated at the SAME two sites
+				//! (the standard_object branch and the generic
+				//! ChunkCategory::Object branch below), for the SAME reason:
+				//! condition Q asks only "does this object's modifier slot
+				//! resolve to anything" (a `modifier_stack` name counts, same
+				//! as any single modifier chunk), never which modifier KIND is
+				//! bound.
+				std::map<std::string, std::string>    objectModifierByName;
 				std::vector<PositionalLightCandidate_> positionalLights;      // omni/spot/rect/shape lights, in DOCUMENT order; positions come from the derived scene
 
 				// -- Condition C accumulators (88) -------------------------
@@ -6519,6 +6597,10 @@ namespace RISE
 								const std::map<std::string, std::string>::const_iterator omat = pm.find( "material" );
 								if( omat != pm.end() && !omat->second.empty() && omat->second != "none" )
 									objectMaterialByName[objName] = omat->second;
+								// (Condition Q) See objectModifierByName's own doc.
+								const std::map<std::string, std::string>::const_iterator omod = pm.find( "modifier" );
+								if( omod != pm.end() && !omod->second.empty() && omod->second != "none" )
+									objectModifierByName[objName] = omod->second;
 							}
 						}
 						{
@@ -6802,6 +6884,10 @@ namespace RISE
 						const std::string omat = ChunkParamString_( item, "material" );
 						if( !onm.empty() && !omat.empty() && omat != "none" )
 							objectMaterialByName[onm] = omat;
+						// (Condition Q) See objectModifierByName's own doc.
+						const std::string omod = ChunkParamString_( item, "modifier" );
+						if( !onm.empty() && !omod.empty() && omod != "none" )
+							objectModifierByName[onm] = omod;
 					}
 					if( d->category == ChunkCategory::Geometry ) {
 						++c.geometryCensus[role];
@@ -7914,6 +8000,120 @@ namespace RISE
 				c.conditionP = c.docTextImpliesRain && c.wetCandidateCount >= kWetCandidateGate &&
 					!c.addWetName.empty();
 
+				// RELIEF_MODIFIER_DESIGN.md sec 9 (2026-09-06): condition Q's
+				// resolution pass -- the DECAL-ON-PLASTIC detector.  Document-
+				// only (unlike condition M just below), so it runs
+				// unconditionally, off the maps the single walk above already
+				// built plus objectModifierByName (see that map's own doc).
+				{
+					// Document order: walk chunk items again rather than
+					// iterate objectMaterialByName (a std::map, alphabetical)
+					// -- the first finding named in full should be the first
+					// one AUTHORED, the same convention conditions C/D/L/P's
+					// own lists already follow.
+					std::vector<std::pair<std::string, std::string> > objectDocOrder;   // (name, role)
+					{
+						std::set<std::string> seen;
+						const int nq = RISE::Cst::DocItemCount( doc );
+						for( int qi = 0; qi < nq; ++qi ) {
+							const RISE::Cst::NodeId qid = RISE::Cst::DocNodeIdAt( doc, qi );
+							if( !qid ) continue;
+							const NodeRef qitem = RISE::Cst::DocResolveNodeId( doc, qid );
+							if( !qitem || qitem->kind != NodeKind::Chunk ) continue;
+							if( qitem->role != "standard_object" && qitem->role != "csg_object" ) continue;
+							const std::string qnm = ChunkParamString_( qitem, "name" );
+							if( qnm.empty() || seen.count( qnm ) ) continue;
+							seen.insert( qnm );
+							objectDocOrder.push_back( std::make_pair( qnm, qitem->role ) );
+						}
+					}
+
+					for( const std::pair<std::string, std::string>& qo : objectDocOrder ) {
+						const std::string& objName = qo.first;
+
+						// A pure CONTAINER -- a `standard_object` with neither
+						// `geometry` nor `source` -- is a transform node, not a
+						// surface (standard_object's own descriptor: "with no
+						// geometry it is a pure CONTAINER... invisible to the
+						// renderer itself").  Nothing for a modifier to act on,
+						// so this is not a candidate regardless of what its
+						// (inert) material binds.  A `csg_object` has no
+						// `geometry`/`source` field at all -- its shape is
+						// ALWAYS its two operands -- so this exclusion never
+						// applies to it.
+						if( qo.second == "standard_object" &&
+						    !objectGeometryByName.count( objName ) && !objectSourceByName.count( objName ) )
+							continue;
+
+						// (ii) ANY modifier binding silences this object --
+						// a `modifier_stack` name counts exactly the same as
+						// a single modifier chunk (objectModifierByName's own
+						// doc): this condition never asks which KIND is bound.
+						if( objectModifierByName.count( objName ) ) continue;
+
+						const std::map<std::string, std::string>::const_iterator matIt =
+							objectMaterialByName.find( objName );
+						if( matIt == objectMaterialByName.end() ) continue;   // no nameable material -- not a candidate
+						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator matDef =
+							materialByName.find( matIt->second );
+						if( matDef == materialByName.end() ) continue;   // unresolved material name
+						const std::string& materialKind = matDef->second.first;
+
+						// (iii) hair_geometry: a strand's own tangent-frame
+						// shading has no purchase for this kind of relief.
+						{
+							const std::map<std::string, std::string>::const_iterator g =
+								objectGeometryByName.find( objName );
+							if( g != objectGeometryByName.end() ) {
+								const std::map<std::string, std::string>::const_iterator k =
+									geometryKindByName.find( g->second );
+								if( k != geometryKindByName.end() && k->second == "hair_geometry" ) continue;
+							}
+						}
+						// (iv) hair_material / luminaire / light-object --
+						// OpaqueReflectionOnlyMaterialKinds_'s own sibling
+						// exclusions (condition I/M), reused verbatim rather
+						// than a private name check.
+						if( materialKind == "hair_material" ) continue;
+						if( DescriptorIsEmissiveMaterial_( DescriptorForKeyword( String( materialKind.c_str() ) ) ) )
+							continue;
+						{
+							const NodeRef objItem = FindDocumentChunkByName_( doc, objName, ChunkCategory::Object );
+							if( objItem && ChunkIsLightObject_( objItem, doc ) ) continue;
+						}
+
+						// (i) a spatially-varying colour-pipe slot -- the SAME
+						// registry table and classifier condition H uses, so
+						// this can never disagree with H about what "varies"
+						// means.
+						const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+							ColorMaterialSlotsByKind_().find( materialKind );
+						if( slotsIt == ColorMaterialSlotsByKind_().end() ) continue;
+						for( const std::string& slotName : slotsIt->second ) {
+							const std::map<std::string, std::string>::const_iterator v =
+								matDef->second.second.find( slotName );
+							if( v == matDef->second.second.end() ) continue;
+							if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Varying )
+								continue;   // flat, or unreadable (Opaque) -- neither proves texturing
+
+							FlatReliefFinding_ f;
+							f.objectName   = objName;
+							f.materialName = matIt->second;
+							f.materialKind = materialKind;
+							f.colorSlot    = slotName;
+							f.painterName  = v->second;
+							{
+								const std::map<std::string, std::string>::const_iterator pk =
+									painterKinds.find( v->second );
+								f.painterKind = ( pk != painterKinds.end() ) ? pk->second : std::string();
+							}
+							c.flatReliefFindings.push_back( f );
+							break;   // one finding per object -- naming the first varying slot is enough
+						}
+					}
+				}
+				c.conditionQ = !c.flatReliefFindings.empty();
+
 				// (2026-08-30) Condition M's resolution pass -- the "emissive-
 				// on-opaque-shell" translucency fake.  GEOMETRY COMES FROM THE
 				// DERIVED SCENE (see the condition's block comment at the top of
@@ -8603,7 +8803,8 @@ namespace RISE
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP ) return std::string();
+				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP &&
+				    !c.conditionQ ) return std::string();
 
 				std::string note = "DESIGN NOTE:";
 				if( c.conditionA ) {
@@ -8699,6 +8900,9 @@ namespace RISE
 					note += " " + FormatDryRainSceneClause_( c.wetCandidateCount, c.wetCandidateNames,
 					                                         c.addWetName, c.addWetKind, c.addWetGeometryKind );
 				}
+				if( c.conditionQ ) {
+					note += " " + FormatFlatReliefClause_( c.flatReliefFindings );
+				}
 				note += " If the user asked for a deliberately simple/stylised scene, this is fine -- "
 					"ignore this note and do not churn.";
 				return note;
@@ -8739,7 +8943,8 @@ namespace RISE
 				if( !c.conditionA && !c.conditionB && !c.conditionC && !c.conditionD &&
 				    !c.conditionE && !c.conditionF && !c.conditionG && !c.conditionH &&
 				    !c.conditionI && !c.conditionJ && !c.conditionK && !c.conditionL &&
-				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP ) return;
+				    !c.conditionM && !c.conditionN && !c.conditionO && !c.conditionP &&
+				    !c.conditionQ ) return;
 
 				static const char* const kSelfDisarm =
 					" If flat/simple styling is intentional, this is fine -- ignore.";
@@ -8956,6 +9161,16 @@ namespace RISE
 					// neither carries two.
 					d.message = FormatDryRainSceneClause_( c.wetCandidateCount, c.wetCandidateNames,
 					                                       c.addWetName, c.addWetKind, c.addWetGeometryKind );
+					out.push_back( d );
+				}
+				if( c.conditionQ ) {
+					AgentDiagnostic d;
+					d.severity = AgentDiagnostic::Severity::Info;
+					d.code     = AgentDiagnosticCode::DESIGN_FLAT_RELIEF;
+					// SHARED formatter -- cannot drift from the note's Q
+					// clause.  kSelfDisarm APPENDED, condition H's reason: the
+					// claim IS "flat/simple styling", condition A's own topic.
+					d.message  = FormatFlatReliefClause_( c.flatReliefFindings ) + kSelfDisarm;
 					out.push_back( d );
 				}
 			}
@@ -37088,6 +37303,23 @@ namespace RISE
 			// chunks that were never written.
 			std::vector<std::string> reboundRoughSlots;
 
+			// RELIEF_MODIFIER_DESIGN.md sec 9's verb hook point (assessed,
+			// NOT shipped, per C-VERB -- doc 88 sec 2/7): the rebind below
+			// mints `colorFieldName`, a `curv`/noise-driven `expression_
+			// painter`, as this material's new colour field.  That SAME
+			// noise term is exactly what a `relief_amplitude` argument would
+			// additionally mint as a `scalar_painter { painter
+			// colorFieldName channel R }` + a `relief_modifier` bound onto
+			// `pick`'s object -- wrapping any modifier the object ALREADY
+			// carries in a `modifier_stack` (DESIGN_FLAT_RELIEF's own
+			// condition Q reads a `modifier_stack` name as already-bound, so
+			// the two mechanisms compose cleanly).  Not built here: per
+			// C-VERB, a verb ships only once the DESIGN_FLAT_RELIEF advisory
+			// plus the recipe example are measured NOT to move adoption --
+			// the census this arc's Phase 4 sets up.  `add_wetness` just
+			// below must NOT grow the same argument: a wet film smooths, it
+			// does not add relief.
+
 			// ---- (4) Rebind the slots, THEN splice the field chunks in ahead of
 			// the material.  That order is load-bearing in both halves, exactly as
 			// it is in VaryMaterial: the param edits are addressed by the material
@@ -37455,6 +37687,19 @@ namespace RISE
 				}
 				minted.push_back( reflectanceFieldName );
 			}
+			// RELIEF_MODIFIER_DESIGN.md sec 9's verb hook point (assessed,
+			// NOT shipped, per C-VERB -- doc 88 sec 2/7, the SAME note
+			// `AddWear` carries above its own rebind site): unlike `add_wear`,
+			// this verb must NOT grow a `relief_amplitude` argument -- a wet
+			// film CONFORMS to the surface underneath it (sec 6.3's own
+			// "thin film conforms to relief" correction, one paragraph below)
+			// rather than adding its own micro-geometry, so minting a
+			// `relief_modifier` here would be physically backwards: it would
+			// emboss the very surface a coat is supposed to smooth.  If a
+			// wet-look arc ever wants relief, the right hook is DAMPING an
+			// EXISTING relief_modifier's `scale` under the `wet` mask, not
+			// adding one.
+			//
 			// The coat half: a NEW `coated_material` chunk wrapping the
 			// UNTOUCHED base (design sec 13 item 8 -- "strictly less
 			// destructive than the polished rewrite": the author's original

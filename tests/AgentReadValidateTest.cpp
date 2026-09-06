@@ -504,8 +504,18 @@ static void RunDesignNoteScanTest()
 		// would fire VACUOUSLY -- see docA3WithScalar's identical note above).
 		"expression_painter\n{\n\tname doc91_field\n\texpr fbm(P*4.0,4,0.5,2.0)\n}\n\n"
 		"lambertian_material\n{\n\tname doc91_procedural_mat\n\treflectance doc91_field\n}\n\n"
+		// RELIEF_MODIFIER_DESIGN sec 9 (2026-09-06), condition Q: `b`'s
+		// varying `reflectance` + real geometry + no `modifier` would
+		// otherwise ALSO be a DESIGN_FLAT_RELIEF candidate, and the whole
+		// point of the docB4WithSdf fixture below is a FULLY empty note --
+		// bind a `relief_modifier` on `b` (built on the SAME `doc91_field`,
+		// so this is not a decoy chunk either) purely to silence Q, exactly
+		// as `rm`/`doc91_procedural_mat` above silence G/H.
+		"scalar_painter\n{\n\tname doc91_field_h\n\tpainter doc91_field\n\tchannel R\n}\n\n"
+		"relief_modifier\n{\n\tname doc91_relief\n\theight doc91_field_h\n\tscale 0.02\n}\n\n"
 		"standard_object\n{\n\tname a\n\tgeometry geo\n\tmaterial rm\n}\n\n"
-		"standard_object\n{\n\tname b\n\tgeometry geo\n\tmaterial doc91_procedural_mat\n}\n\n"
+		"standard_object\n{\n\tname b\n\tgeometry geo\n\tmaterial doc91_procedural_mat\n"
+		"\tmodifier doc91_relief\n}\n\n"
 		"standard_object\n{\n\tname c\n\tgeometry geo\n}\n\n"
 		"standard_object\n{\n\tname d\n\tgeometry geo\n}\n";
 	{
@@ -924,11 +934,23 @@ static void RunDesignRepeatedCopiesScanTest()
 		"expression_painter\n{\n\tname mat_field\n\texpr fbm(P*3.0,3,0.5,2.0)\n}\n\n"
 		"lambertian_material\n{\n\tname mat\n\treflectance mat_field\n}\n\n"
 		"lambertian_material\n{\n\tname mat2\n\treflectance pnt\n}\n\n"
-		"sphere_geometry\n{\n\tname bottle_geo\n\tradius 0.2\n}\n\n";
+		"sphere_geometry\n{\n\tname bottle_geo\n\tradius 0.2\n}\n\n"
+		// RELIEF_MODIFIER_DESIGN sec 9 (2026-09-06), condition Q: every
+		// `bottle` below (and `procedural_anchor` further down) binds `mat`
+		// (a genuinely varying `reflectance`) to real geometry with no
+		// `modifier` -- otherwise a DESIGN_FLAT_RELIEF candidate, which would
+		// break every "note goes fully empty" assertion this whole fixture
+		// family relies on.  ONE relief_modifier, built on the SAME
+		// `mat_field` (not a decoy), bound identically on every bottle
+		// object -- an IDENTICAL extra param on every one leaves condition
+		// C's binding-signature grouping unchanged.
+		"scalar_painter\n{\n\tname mat_field_h\n\tpainter mat_field\n\tchannel R\n}\n\n"
+		"relief_modifier\n{\n\tname mat_relief\n\theight mat_field_h\n\tscale 0.02\n}\n\n";
 
 	// One `standard_object` bound to bottle_geo/mat at x = `x`.
 	auto bottle = []( const std::string& name, const std::string& x ) {
 		return "standard_object\n{\n\tname " + name + "\n\tgeometry bottle_geo\n\tmaterial mat\n"
+		       "\tmodifier mat_relief\n"
 		       "\tposition " + x + " 0 0\n}\n\n";
 	};
 
@@ -952,8 +974,12 @@ static void RunDesignRepeatedCopiesScanTest()
 		// what these fixtures are testing.
 		"expression_painter\n{\n\tname doc91_field\n\texpr fbm(P*4.0,4,0.5,2.0)\n}\n\n"
 		"lambertian_material\n{\n\tname doc91_procedural_mat\n\treflectance doc91_field\n}\n\n"
+		// Condition Q (see the `preamble`'s own comment above): this anchor's
+		// varying `reflectance` on real geometry needs the SAME silencing --
+		// reuses `mat_relief` (bound on an unrelated field is fine; Q only
+		// asks whether the object's `modifier` slot resolves to anything).
 		"standard_object\n{\n\tname procedural_anchor\n\tgeometry bottle_geo\n"
-		"\tmaterial doc91_procedural_mat\n}\n\n";
+		"\tmaterial doc91_procedural_mat\n\tmodifier mat_relief\n}\n\n";
 
 	// -- (1) THE NEW MONEY ASSERTION: SILENT at 6 and 7 copies -- the
 	//    apothecary regime.  This is exactly the shape that used to fire
@@ -1649,6 +1675,192 @@ static void RunUnboundMaterialAndFlatAlbedoScanTest()
 		       "CONDITION H BELOW THRESHOLD (a.k.a. the 3-chrome-spheres case): 3 standard_objects but "
 		       "only 2 DISTINCT flat materials -- below the eligible-material gate of 3 -- stays "
 		       "silent" );
+	}
+}
+
+//----------------------------------------------------------------------
+// RELIEF_MODIFIER_DESIGN.md sec 9 (2026-09-06), condition Q:
+// DESIGN_FLAT_RELIEF -- the decal-on-plastic detector.  Same shared
+// ComputeDesignNoteConditionsFromDoc_ scan as every sibling above; unlike
+// conditions D/H/L/P there is no hero-material pick (Phase 4 ships no
+// verb), so this fires on >= 1 qualifying OBJECT -- an object whose
+// material binds a spatially-varying colour-pipe slot while the object
+// itself binds no `modifier`.
+//
+// Fixture is a still-life vessel (a candlestick / a ceramic pot), matching
+// this family's own non-creature convention -- nothing here is keyed to a
+// subject.
+//----------------------------------------------------------------------
+static void RunFlatReliefScanTest()
+{
+	std::printf( "[design-note] RELIEF_MODIFIER_DESIGN sec 9: DESIGN_FLAT_RELIEF\n" );
+
+	auto hasCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return true;
+		return false;
+	};
+	auto findCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) -> const AgentDiagnostic* {
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) return &d;
+		return nullptr;
+	};
+	auto countCode = []( const std::vector<AgentDiagnostic>& diags, const std::string& code ) {
+		int n = 0;
+		for( const AgentDiagnostic& d : diags ) if( d.code == code ) ++n;
+		return n;
+	};
+
+	const std::string kPreamble =
+		"RISE ASCII SCENE 7\n"
+		"expression_painter\n{\n\tname relief_field\n\texpr fbm(P*3.0,3,0.5,2.0)\n}\n\n"
+		"uniformcolor_painter\n{\n\tname flat_pnt\n\tcolor 0.55 0.5 0.45\n}\n\n"
+		"cylinder_geometry\n{\n\tname vessel_geo\n\tradius 0.3\n\theight 0.6\n}\n\n";
+
+	//--------------------------------------------------------------
+	// (a) RED-PROVE: a varying `reflectance`, no `modifier` -- fires,
+	// naming the object, the material, the slot and the painter.
+	//--------------------------------------------------------------
+	const std::string docVaryingNoModifier = kPreamble +
+		"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+		"standard_object\n{\n\tname vessel_obj\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n";
+	{
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docVaryingNoModifier );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_RELIEF" );
+		Check( d != nullptr,
+		       "(a) RED-PROVE: a varying `reflectance` and no `modifier` fires DESIGN_FLAT_RELIEF" );
+		if( d ) {
+			Check( d->severity == AgentDiagnostic::Severity::Info, "...at Info severity" );
+			Check( d->message.find( "`vessel_obj`" ) != std::string::npos, "...NAMING the object" );
+			Check( d->message.find( "`vessel_mat`" ) != std::string::npos, "...NAMING the material" );
+			Check( d->message.find( "`reflectance`" ) != std::string::npos, "...NAMING the varying slot" );
+			Check( d->message.find( "`relief_field`" ) != std::string::npos,
+			       "...NAMING the painter bound there" );
+			Check( d->message.find( "scalar_painter { painter relief_field channel R }" ) != std::string::npos,
+			       "...stating the scalar_painter bridge, naming the SAME field" );
+			Check( d->message.find( "relief_modifier" ) != std::string::npos,
+			       "...stating the relief_modifier half of the two-chunk fix" );
+			Check( d->message.find( "`modifier`" ) != std::string::npos,
+			       "...naming the attach mechanism (the object's `modifier` parameter)" );
+			Check( d->message.find( "read_skill" ) != std::string::npos &&
+			       d->message.find( "procedural-textures" ) != std::string::npos,
+			       "...pointing at read_skill procedural-textures" );
+			Check( d->message.find( "this is fine -- ignore" ) != std::string::npos,
+			       "...self-disarming, condition A/H's own escape clause" );
+
+			// THE VERBATIM-COPY INVARIANT (condition H's precedent): the
+			// SHARED clause text (not the kSelfDisarm suffix, which only the
+			// diagnostic carries) must appear byte-identically in the
+			// render-result note.
+			const std::string note = AgentSession::ComputeDesignNote( docVaryingNoModifier );
+			const std::string kClaim = "the colour changes across the surface and the shading normal never does";
+			Check( d->message.find( kClaim ) != std::string::npos && note.find( kClaim ) != std::string::npos,
+			       "MONEY (verbatim invariant): the DESIGN_FLAT_RELIEF claim text appears BYTE-IDENTICALLY "
+			       "in both the diagnostic and the render-result note -- one shared FormatFlatReliefClause_, "
+			       "two callers" );
+		}
+	}
+
+	//--------------------------------------------------------------
+	// (b) GREEN-PROVE: the SAME material/object, now with `modifier`
+	// naming a `relief_modifier` directly -- silent.
+	//--------------------------------------------------------------
+	{
+		const std::string docWithReliefModifier = kPreamble +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"scalar_painter\n{\n\tname relief_h\n\tpainter relief_field\n\tchannel R\n}\n\n"
+			"relief_modifier\n{\n\tname vessel_relief\n\theight relief_h\n\tscale 0.02\n}\n\n"
+			"standard_object\n{\n\tname vessel_obj\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n"
+			"\tmodifier vessel_relief\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docWithReliefModifier ), "DESIGN_FLAT_RELIEF" ),
+		       "(b) GREEN-PROVE: the IDENTICAL varying material, now with `modifier vessel_relief` bound "
+		       "directly -- silent" );
+	}
+
+	//--------------------------------------------------------------
+	// (c) GREEN-PROVE: `modifier` names a `modifier_stack` wrapping the
+	// SAME relief_modifier -- a stack counts as bound, silent.
+	//--------------------------------------------------------------
+	{
+		const std::string docWithModifierStack = kPreamble +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"scalar_painter\n{\n\tname relief_h\n\tpainter relief_field\n\tchannel R\n}\n\n"
+			"relief_modifier\n{\n\tname vessel_relief\n\theight relief_h\n\tscale 0.02\n}\n\n"
+			"modifier_stack\n{\n\tname vessel_stack\n\tmodifier vessel_relief\n}\n\n"
+			"standard_object\n{\n\tname vessel_obj\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n"
+			"\tmodifier vessel_stack\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docWithModifierStack ), "DESIGN_FLAT_RELIEF" ),
+		       "(c) GREEN-PROVE: `modifier vessel_stack` (a modifier_stack wrapping the SAME relief_modifier) "
+		       "-- a stack counts as bound -- silent" );
+	}
+
+	//--------------------------------------------------------------
+	// (d) GREEN-PROVE: a flat (uniformcolor_painter) reflectance, no
+	// `modifier` -- nothing varies, silent.
+	//--------------------------------------------------------------
+	{
+		const std::string docFlatAlbedoNoModifier = kPreamble +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance flat_pnt\n}\n\n"
+			"standard_object\n{\n\tname vessel_obj\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docFlatAlbedoNoModifier ), "DESIGN_FLAT_RELIEF" ),
+		       "(d) GREEN-PROVE: a flat uniformcolor_painter reflectance and no modifier -- nothing varies, "
+		       "silent" );
+	}
+
+	//--------------------------------------------------------------
+	// (e) GREEN-PROVE: hair_material, hair_geometry, and a luminaire --
+	// three objects, each excluded by clause (iii)/(iv) for a DIFFERENT
+	// reason, none firing.
+	//   * hairy_obj: bound to `hair_material` (its `color` slot varies) --
+	//     the MATERIAL KIND exclusion, regardless of its (ordinary)
+	//     geometry.
+	//   * furry_obj: geometry is `hair_geometry`, material is the
+	//     ordinary varying `vessel_mat` -- the GEOMETRY KIND exclusion,
+	//     regardless of its material.
+	//   * glow_obj: bound to `lambertian_luminaire_material` (its
+	//     `exitance` slot varies) -- the LUMINAIRE exclusion.
+	//--------------------------------------------------------------
+	{
+		const std::string docExclusions = kPreamble +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"hair_material\n{\n\tname hairy_mat\n\tcolor relief_field\n}\n\n"
+			"standard_object\n{\n\tname hairy_obj\n\tgeometry vessel_geo\n\tmaterial hairy_mat\n}\n\n"
+			"hair_geometry\n{\n\tname fur_geo\n\tbase_geometry vessel_geo\n\tcount 10\n\tlength 0.01\n}\n\n"
+			"standard_object\n{\n\tname furry_obj\n\tgeometry fur_geo\n\tmaterial vessel_mat\n}\n\n"
+			"lambertian_luminaire_material\n{\n\tname glow_mat\n\texitance relief_field\n}\n\n"
+			"standard_object\n{\n\tname glow_obj\n\tgeometry vessel_geo\n\tmaterial glow_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docExclusions ), "DESIGN_FLAT_RELIEF" ),
+		       "(e) GREEN-PROVE: hair_material (material-kind exclusion), hair_geometry (geometry-kind "
+		       "exclusion) and a luminaire (emissive exclusion) -- three DIFFERENT reasons, all silent" );
+	}
+
+	//--------------------------------------------------------------
+	// (f) DEDUPE: two qualifying objects sharing one material -- ONE
+	// diagnostic entry (not two), naming the first in full and counting
+	// the rest; calling ValidateText a second time on the IDENTICAL
+	// document reproduces the SAME single entry (stateless -- no
+	// accumulation across passes).
+	//--------------------------------------------------------------
+	{
+		const std::string docTwoObjects = kPreamble +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"standard_object\n{\n\tname vessel_obj\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n"
+			"standard_object\n{\n\tname second_obj\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n";
+
+		const std::vector<AgentDiagnostic> pass1 = AgentSession::ValidateText( docTwoObjects );
+		Check( countCode( pass1, "DESIGN_FLAT_RELIEF" ) == 1,
+		       "(f) DEDUPE: two qualifying objects still yield exactly ONE DESIGN_FLAT_RELIEF entry per "
+		       "pass (one finding per object, one DIAGNOSTIC per condition -- not one per object)" );
+		{
+			const AgentDiagnostic* d = findCode( pass1, "DESIGN_FLAT_RELIEF" );
+			Check( d != nullptr && d->message.find( "`vessel_obj`" ) != std::string::npos,
+			       "...naming the FIRST object (document order) in full" );
+			Check( d != nullptr && d->message.find( "1 more object" ) != std::string::npos,
+			       "...and counting the second" );
+		}
+
+		const std::vector<AgentDiagnostic> pass2 = AgentSession::ValidateText( docTwoObjects );
+		Check( countCode( pass2, "DESIGN_FLAT_RELIEF" ) == 1,
+		       "(f) DEDUPE: a SECOND ValidateText pass over the IDENTICAL document reproduces the SAME "
+		       "single entry -- stateless, no cross-pass accumulation" );
 	}
 }
 
@@ -2867,6 +3079,7 @@ int main()
 	RunSDFBlendScaleScanTest();
 	RunEnvReflectionScanTest();
 	RunUnboundMaterialAndFlatAlbedoScanTest();
+	RunFlatReliefScanTest();
 
 	std::printf( "=== AgentReadValidateTest: %d passed, %d failed ===\n", g_pass, g_fail );
 	return g_fail == 0 ? 0 : 1;
