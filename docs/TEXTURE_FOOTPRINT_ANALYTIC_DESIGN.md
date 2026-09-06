@@ -679,9 +679,17 @@ seed noise.
   parallelogram case still takes — are all untouched. Every caller
   benefits: `ClippedPlaneGeometry` (both entry points) and
   `BilinearPatchGeometry`. (`RayTriangleIntersectionWithDisplacement` also
-  calls the helper but is **not in the build** — absent from
-  `build/make/rise/Filelist`, an unfinished stub — so it is not a caller in
-  any shipped sense; an earlier draft of this list named it.)
+  calls the helper, and — contrary to an earlier draft of this list, which
+  called it absent from the build — it **is** registered in
+  `build/VS2022/Library/Library.vcxproj` and `.vcxproj.filters`. It still
+  doesn't benefit, but the reason is simpler than a missing build entry:
+  **nothing calls it** — no call site exists anywhere in `src/Library`,
+  only its own declaration in `RayPrimitiveIntersections.h` and its own
+  definition. It is also absent from `build/make/rise/Filelist`,
+  `build/cmake/rise-android/rise_sources.cmake`, and the Xcode project, so
+  the five build projects disagree with each other about whether the file
+  exists at all — an open inconsistency, left unfixed here per the Change
+  Checklist's five-project rule; see `CLAUDE.md` / `AGENTS.md`.)
 
   Guarded by `GeometryUVRoundtripTest::TestBilinearEliminationAxis`: 12
   axis-aligned closed-form cases across all three elimination branches and
@@ -765,6 +773,74 @@ seed noise.
   only, shading-vs-geometric normal, no grazing clamp. Test 10 measures the
   grazing case rather than clamping it, per §4 — every hit from the optical
   axis out to the silhouette reports a finite, non-negative `worldWidth`.
+
+  **P2 closure round (2026-09-06).** Six review P2s against this section
+  and its neighbouring code, none behavioural except one:
+
+  * The `SolveQuadricWithinRange` `d == 0` branch comment's "only in-tree
+    consumer" claim (right above, and in `src/Library/Functions/
+    Polynomial.cpp`) was false: `GeometricUtilities::BilinearInverse`
+    reaches the same branch too — its caller is
+    `ClippedPlaneGeometry::ComputeSurfaceDerivatives`. Comment corrected
+    with the measured split: of 400000 dyadic on-surface inversions, 2311
+    land exactly on the double-root branch, and 1007 of those the pre-fix
+    `-b/a` silently turned into a false reject (the doubled root falling
+    outside `BilinearInverse`'s `[-1e-4, 1+1e-4]` acceptance window). New
+    test `GeometryUVRoundtripTest::TestBilinearInverseExactDoubleRoot`
+    constructs a dyadic patch/point (`c00=(0,0,0) c10=(1,0,0)
+    c11=(-0.5,0,0) c01=(0,1,0)`, `P = BilinearForward(u=0.25, v=0.5)`)
+    whose reduced quadratic hits `d == 0.0` bit-exact — verified against a
+    scratch harness linked against `bin/librise.a` before the test was
+    written. Red-proofed by hand: reverting to `-b/a` and rebuilding turns
+    it red (`u=0 v=0` instead of the true `0.25/0.5`), nothing else in the
+    suite regresses; reverted back before committing. Commit `264c988a`
+    (comment), `bfbcd001` (test).
+  * This section's dead-caller sentence about
+    `RayTriangleIntersectionWithDisplacement` was ALSO wrong: it **is**
+    registered in `build/VS2022/Library/Library.vcxproj` (+ `.filters`),
+    just absent from Filelist / the Android CMake list / Xcode — a
+    genuine five-project inconsistency across the build systems, left
+    open (not fixed here). The real reason it does not benefit from the
+    axis-pick fix is simpler than a missing build entry: **nothing calls
+    it** anywhere in `src/Library` — only its own declaration in
+    `RayPrimitiveIntersections.h` and its own definition. Commit
+    *(this record)*.
+  * `SolveQuadric`'s general-coefficient-callers comment now also names
+    `SolveCubic`'s own `IsReallyZero(coeff[0])` branch, reachable from
+    `SolveQuartic`'s degenerate branch — the route
+    `RayBezierPatchIntersection` takes on every call (`quartCoeff[0]` is
+    always `0.0`, since a bicubic patch's `F1(u,.)` is cubic in v, not
+    quartic). And "Both siblings now agree" is narrowed to the `a == 0`
+    branch it sits beside; the `d == 0` divergence (epsilon-based
+    `IsZero(d)` in `SolveQuadric` vs exact `d == 0.0` in
+    `SolveQuadricWithinRange`) is called out as untouched. Commit
+    `264c988a`.
+  * `RootLiesOnRay`'s "three decades of headroom" claim is corrected to
+    the actually-measured worst case: residual/tolerance ratio 0.024 (a
+    42x margin, ~1.5 decades) over 600k hits, not the ~4500x
+    `DBL_EPSILON` multiple the old text implied from `NEARZERO`'s
+    absolute value alone. Commit `1ab0d7ca`.
+  * `RootLiesOnRay` no longer re-evaluates `EvaluateBilinearPatchAt` —
+    every one of its three call sites had already computed the point
+    (`pos1` / `pos1b` / `pos2`) to derive `dRange` via `computet`; it now
+    takes that `Point3` directly, and compares squared residual against
+    squared tolerance so the per-candidate check no longer calls `sqrt`.
+    Redundant-work removal, not a precision change:
+    `GeometryUVRoundtripTest` still reports 0 lost / 0 phantoms on the
+    85156-hit / 98779-miss sweep, max on-ray residual unchanged at
+    `1.16279e-09`. Commit `1ab0d7ca`.
+  * `tests/GeometryUVRoundtripTest.cpp`'s "textually the legacy one and
+    the results must be identical bits" sentence is reworded to match
+    the block immediately below it, which explicitly does NOT assert bit
+    equality (FP-contraction noise, 0–3 ulp under `-ffast-math` + LTO).
+    Commit `bfbcd001`.
+
+  Gate: zero warnings on a clean `make -C build/make/rise -j8 all`;
+  `PolynomialTest`, `GeometryUVRoundtripTest` (85156 hit / 0 lost, 98779
+  miss / 0 phantoms, plus the new exact-double-root case recovering
+  `u=0.25 v=0.5`), `PrimitiveSelfHitTest` (45/45), `GeometrySurfaceDerivativesTest`,
+  `TextureFootprintTest` (118/118), `ClippedPlaneGeometryTest`,
+  `SourceHygieneTest` (164/164) all pass.
 
 ### 10.7 Self-audit
 
