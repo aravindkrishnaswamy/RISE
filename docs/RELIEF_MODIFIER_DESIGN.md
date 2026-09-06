@@ -608,3 +608,137 @@ and is left alone.
 ## 12. Phase record
 
 *(appended as phases land)*
+
+### Phase 1 — landed 2026-09-05
+
+Branch `relief-modifier`, four commits off `563204b8`:
+
+| Commit | What |
+|---|---|
+| `9b4f29fb` | `ModifierFrame.h` hoist + `pmxWorldToObject` on the hit record |
+| `3deff3e2` | `ReliefModifier.{h,cpp}` + API/IJob/Job/parser + all five build projects |
+| `621b5aae` | `tests/ReliefModifierTest.cpp` (tests 1–8, 10) |
+| `547c417d` | `cc_relief_modifier` + `relief_sphere_no_uv` |
+| `0ea40138` | hygiene opt-out for the two non-finite test fixtures |
+
+**Files.** New: `src/Library/Modifiers/ModifierFrame.h`,
+`src/Library/Modifiers/ReliefModifier.{h,cpp}`,
+`tests/ReliefModifierTest.cpp`,
+`scenes/Tests/ChunkCoverage/cc_relief_modifier.RISEscene`,
+`scenes/Tests/Painters/relief_sphere_no_uv.RISEscene`.  Modified:
+`BumpMap.cpp`, `NormalMap.cpp`, `GlintModifier.cpp`,
+`RayIntersectionGeometric.h`, `Object.cpp`, `CSGObject.cpp`,
+`RISE_API.{h,cpp}`, `IJob.h`, `Job.{h,cpp}`, `ChunkParserRegistry.cpp`,
+`Parsers/README.md`, `tests/IJobVtableManifest.txt`, and the five build
+projects.
+
+**Tests.** `ReliefModifierTest` 59 checks, 0 failures.  Gate suites, all
+run on the final tree: `GlintModifierTest` ALL PASSED,
+`HairTangentPlumbingTest` 123/0, `SurfaceCurvatureTest` 94/0,
+`CstResolverTest` 44/0, `CstRecordDeriveTest` 23/0,
+`CstIncrementalSafetyTest` 38/0, `CstSourceInstanceTest` 455/0,
+`ScalarPainterParserTest` 60/0, `SourceHygieneTest` 164/0,
+`BDPTVertexRIGRebuildTest` 15/0.  `ObjectMirrorTest` is 161 passed / **1
+failed** — `"B: front/back face classification survives the reflection"`
+— and that failure is **PRE-EXISTING**, verified by building the same
+test from a pristine `git archive` of `563204b8` in a scratch directory
+and observing the identical 161/1 with the identical assertion.  It is
+unrelated to this arc (a back-face probe with no modifier in play).
+
+**Red-proofs.** (a) flipping the perturbation sign to `N + …` → 14
+failures including all 4000 of test 2's legacy comparisons; (b) nulling
+`pmxWorldToObject` → asserted live inside test 5; (c) the finiteness
+guards → **measured mutually redundant**: removing either alone leaves
+the suite green, only removing both fails test 8 (6 failures, real
+NaN/Inf normals reaching the frame rebuild — which also proves the
+literals are not folded on this build); (d) dropping the `ptCoord` chain
+rule → test 6 fails, 200/200 mismatches.  Every mutation was reverted.
+
+**PT-vs-BDPT parity (§5.2).**  `relief_sphere_no_uv` at 256×256, 16 spp,
+`oidn_denoise FALSE`, mean linear Rec.709 luminance over all 65 536
+pixels: PT `0.239393`, BDPT `0.239416` — **ratio 1.0001, 0.01 % apart**,
+against the 8 % mean band `BDPTStrategyBalanceTest` uses.  BDPT's
+per-vertex `BDPTVertex` caching is carrying the modified frame.
+
+**Cost — measured, not asserted.**  Four variants of the fixture at
+256×256, **64 spp**, 7 runs each, "Total Rasterization Time":
+
+| Variant | mean | σ | Δ vs A |
+|---|---|---|---|
+| A — no modifier, uniform albedo | 348.9 ms | 5.9 | — |
+| D — relief with a **constant** height | 362.6 ms | 11.1 | +13.7 ms (**+3.9 %**) |
+| B — no modifier, the same `fbm` as the **albedo** | 823.6 ms | 5.8 | +474.7 ms |
+| C — relief with the `fbm` height | 1184.0 ms | 9.8 | +835.1 ms |
+
+Read: the modifier's own machinery — four `RayIntersectionGeometric`
+copies, the point/object/UV offsets, the frame rebuild — is **+3.9 %**
+(A→D) and is not where the money goes.  Whole-render, relief on vs off
+on this fixture is **3.39×** (A→C); that is a near-worst case by
+construction, since the fixture is one sphere whose only expensive work
+IS the height field.  Isolating the field: relief's four evaluations
+cost **1.73×** what the same field costs bound to the albedo slot
+(`(C−D)/(B−A)`).
+
+That last figure **does not confirm §10's "~4× one albedo evaluation"**;
+it is smaller, and the honest reading is that the comparison is not
+apples-to-apples — the albedo slot is evidently queried more than once
+per hit on this Lambertian + NEE path, so `B−A` is not "one evaluation".
+What is directly verifiable is the count: the modifier performs **exactly
+four** height evaluations per hit on an object that binds it, and zero on
+objects that do not.  §10's claim should be read as that count, not as a
+measured 4× wall-clock ratio.
+
+**Deviations from the design, with reasons.**
+
+1. **`ReliefDomain` is an `enum class`**, not the plain `enum` §3.4's
+   sketch writes.  Scoped, matching `OidnQuality`/`OidnDevice`; no
+   implicit int conversion into the API's `Scalar` parameters next to it.
+2. **`CSGObject::IntersectRay` stamps `nullptr`, not "the composite's own
+   inverse"** as §3.4 parenthetically suggested.  §3.4 asked the
+   implementer to verify which matrix maps the world step onto the
+   `ptObjIntersec` the child painters read; the answer is **neither**.
+   `AdoptCsgSurfacePayload` copies `ptObjIntersec` **untransformed** from
+   the child operand (CSGObject.cpp ~325-329, whose own comment names the
+   resulting frame mismatch as a deliberate pre-existing gap), so that
+   point is in the CHILD's object space and the map into it is the
+   child's inverse composed with every enclosing composite's — a per-hit
+   product no member holds and a `const Matrix4*` cannot express.  The
+   composite's inverse is wrong by exactly the child's transform; the
+   child's is wrong by exactly the composite's.  `nullptr` plus the
+   documented degraded mode (move by the world step, warn once) is the
+   honest third answer, and is still exact whenever the chain is a pure
+   translation.  **A CSG object with an object-space relief height is
+   therefore a known gap**, not a silent one.
+3. **`ModifierFrame::RebuildPreservingTangent` is the shared BODY, not
+   the shared policy.**  §3.2 said "verbatim from NormalMap.cpp:220-234";
+   NormalMap and BumpMap gate the projection on `ri.bHasShadingTangent`
+   while GlintModifier runs it unconditionally, and the two are
+   **observably different** — for a hit with `bHasShadingTangent == false`
+   the gated form rebuilds with `CreateFromW` (an arbitrary canonical-axis
+   `u`) and the unconditional form projects the previous `u`, giving
+   different `u`/`v` about the same `w`.  Folding either into the helper
+   would have changed one of the three modifiers' behaviour, so the gate
+   stayed at each call site and all three are byte-identical to before.
+   ReliefModifier follows the BumpMap/NormalMap gate (it is a
+   height-gradient tilt, the same family).  Verified green:
+   `GlintModifierTest` (incl. its test 5 "tangent direction preserved
+   against a NON-canonical base tangent" and test 11 handedness) and
+   `HairTangentPlumbingTest`'s four bump/normal-map cases including
+   "non-hair hit byte-matches legacy CreateFromW rebuild".
+4. **One guard the design did not name**: a `mag2 > 1e-12 && isfinite`
+   bail on the perturbed vector, for a gradient large enough to cancel
+   `N`.  §3.2's "no NaN normal ever reaches a material" implies it;
+   without it `Normalize` would receive a zero vector.  It is a bail, not
+   a clamp — no flat spot, and still no geometric-horizon clamp.
+5. **No `Cst.cpp` change.**  §3.5 anticipated none and that is confirmed:
+   `FunctionSubNamespace` maps `bumpmap_modifier`'s `function` to
+   `kFunc2DSubCat` because the engine binds it through `pFunc2DManager`,
+   but `height` is bound through the **scalar painter** manager, so it
+   correctly resolves coarsely against `{Painter}` where the existing
+   colour/scalar alias handles the two managers.
+
+**Left undone, deliberately.**  `tests/data/cst_derive_golden.txt` is NOT
+regenerated, so `CstDeriveGoldenTest` reports the two new scenes as
+`UNCOVERED`.  §11 puts the regen in Phase 3, after the four migrated
+scenes land, in one reviewed pass — a partial regen here would make that
+diff unreadable.
