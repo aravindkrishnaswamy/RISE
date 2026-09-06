@@ -1,0 +1,152 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#                                      RISE Ascii Scene File                                                #
+#                                                                                                           #
+#   File:           relief_sphere_no_uv.RISEscene                                                           #
+#   Description:    Phase-1 fixture for `relief_modifier` (docs/RELIEF_MODIFIER_DESIGN.md).                  #
+#   Author:         RISE contributors                                                                       #
+#   Birthdate:      2026-09-05                                                                              #
+#                                                                                                           #
+#   WHAT THIS SCENE PROVES, and why it is shaped the way it is:                                             #
+#                                                                                                           #
+#   (1) NO TEXCOORDS.  The subject is an ANALYTIC sphere with a 3D                                          #
+#       `scalar_painter { expression fbm(P*...) }` height in the default                                     #
+#       `surface` domain.  Nothing here binds a UV painter, sets a UV                                        #
+#       generator, or relies on `derivatives`.  A `bumpmap_modifier`                                         #
+#       cannot express this scene at all: its field is a function of                                         #
+#       (u, v) only.  If the relief ever silently needs texcoords, this                                      #
+#       sphere goes flat.                                                                                    #
+#                                                                                                           #
+#   (2) PT-vs-BDPT PARITY (design 5.2).  Every integrator calls the                                          #
+#       modifier hook once per hit before any material call, and caches                                      #
+#       the geometric normal separately, so a new modifier is invisible                                      #
+#       to them BY CONSTRUCTION.  The verification of that claim is not                                      #
+#       new integrator code, it is this scene rendered under                                                 #
+#       `pathtracing_pel_rasterizer` and again under                                                          #
+#       `bdpt_pel_rasterizer` (substitute the chunk below) and compared                                      #
+#       on mean luminance: BDPT caches the perturbed frame into                                              #
+#       BDPTVertex per subpath vertex, so a disagreement means that                                          #
+#       caching stopped carrying the modified frame.                                                         #
+#                                                                                                           #
+#   The lighting is deliberately a single directional key plus a small                                       #
+#   ambient fill: relief is a NORMAL perturbation, and a directional key                                     #
+#   is the light that makes a normal perturbation legible (a dome would                                      #
+#   average the tilt away and the scene would prove nothing by eye).                                          #
+#   Note the SCENE_CONVENTIONS rule: `direction` is the vector FROM the                                      #
+#   surface TO the light, so the +Z component is what lights the face                                        #
+#   the camera at +Z is looking at.                                                                          #
+#                                                                                                           #
+#############################################################################################################
+
+##################################################
+# Renderer
+##################################################
+
+standard_shader
+{
+	name			global
+	shaderop		DefaultDirectLighting
+}
+
+pathtracing_pel_rasterizer
+{
+	samples				16
+	oidn_denoise		FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/relief_sphere_no_uv
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+##################################################
+# Camera
+##################################################
+
+film
+{
+	width			256
+	height			256
+}
+
+pinhole_camera
+{
+	location		0 0 4
+	lookat			0 0 0
+	up				0 1 0
+	fov				30.0
+}
+
+##################################################
+# The height field -- a 3D expression, no (u,v) anywhere
+##################################################
+
+scalar_painter
+{
+	name			relief_height
+	expression		fbm(P*7.0, 5, 0.5, 2.0)
+}
+
+relief_modifier
+{
+	name			relief
+	height			relief_height
+	scale			0.06
+	domain			surface
+}
+
+##################################################
+# Subject
+##################################################
+
+uniformcolor_painter
+{
+	name			clay
+	color			0.68 0.60 0.50
+}
+
+lambertian_material
+{
+	name			mat_clay
+	reflectance		clay
+}
+
+sphere_geometry
+{
+	name			ball_geom
+	radius			1.0
+}
+
+standard_object
+{
+	name			ball
+	geometry		ball_geom
+	material		mat_clay
+	modifier		relief
+	position		0 0 0
+	orientation		0 0 0
+}
+
+##################################################
+# Lighting -- one raking key (makes the tilt legible) + a small fill
+##################################################
+
+directional_light
+{
+	name		key
+	power		2.2
+	color		1.0 1.0 1.0
+	colorspace	Rec709RGB_Linear
+	direction	0.75 0.55 0.60
+}
+
+ambient_light
+{
+	name		fill
+	color		1.0 1.0 1.0
+	colorspace	Rec709RGB_Linear
+	power		0.25
+}

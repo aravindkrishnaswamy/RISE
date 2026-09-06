@@ -1,0 +1,59 @@
+RISE ASCII SCENE 7
+# Coverage: relief_modifier (painter-driven shading-normal micro-relief).
+# Exercises every parameter of the chunk: a scalar_painter `height` in the
+# 3D `surface` domain on a geometry that has NO texcoord requirement at
+# all (an analytic sphere), a negative `scale` (so the field's ridges
+# SINK -- the sign the crackle/pore idiom wants), and an explicit `step`
+# rather than the automatic footprint rule.
+#
+# See docs/RELIEF_MODIFIER_DESIGN.md.  The rendered PT-vs-BDPT parity
+# fixture is scenes/Tests/Painters/relief_sphere_no_uv.RISEscene; this
+# scene exists to cover the chunk's grammar, not to be looked at.
+
+film
+{
+	width		64
+	height		64
+}
+
+scalar_painter
+{
+	name		cc_relief_height
+	expression	fbm(P*9.0, 4, 0.5, 2.0)
+}
+
+relief_modifier
+{
+	name		cc_relief
+	height		cc_relief_height
+	scale		-0.35
+	domain		surface
+	step		0.002
+}
+
+sphere_geometry
+{
+	name		cc_relief_sphere
+	radius		1.0
+}
+
+uniformcolor_painter
+{
+	name		cc_relief_albedo
+	color		0.72 0.66 0.58
+}
+
+lambertian_material
+{
+	name		cc_relief_mat
+	reflectance	cc_relief_albedo
+}
+
+standard_object
+{
+	name		cc_relief_object
+	geometry	cc_relief_sphere
+	material	cc_relief_mat
+	modifier	cc_relief
+	position	0 0 0
+}
