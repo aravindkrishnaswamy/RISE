@@ -2241,12 +2241,22 @@ only 7 hops, and its comment justified the bound by a `source` cycle that
 declare-earlier rule, and `SourceChainOf` caps at 256 purely as a belt
 against a future apply path. A **legal** 8-deep chain with the modifier
 at its root therefore resolved to "no modifier" at its far end and fired
-falsely (reviewer-measured: 7 hops silent, 8 fires). The bound is now
-`kSourceChainHopBound_ = 256` — matched to `SourceChainOf` rather than
-shared, because that function is file-static in `Cst.cpp`; the point is
-that a chain the *engine* accepts and expands is a chain this scan
-resolves, and one the engine refuses is one no derived scene contains.
-The comment now says what the bound actually does. Per
+falsely **when the far link also re-spelled its own material** —
+without that, the far link has no material at all and the object is
+dropped as a candidate rather than fired on (reviewer-measured: 7 hops
+silent, 8 fires). The bound is now `kSourceChainHopBound_ = 256` —
+matched to `SourceChainOf` rather than shared, because that function is
+file-static in `Cst.cpp`. The walk this bound guards actually REACHES
+255 hops (hop 0 resolves the object's own literal, hops 1..255 walk its
+`source` ancestors), and that reach is itself a belt that never binds:
+the engine's real instancing-expansion cap is `ClonePlanBuilder::
+DepthOk` (`Cst.cpp`), which refuses to EXPAND a `source` chain past 64
+levels of instancing — comfortably inside the 255 this scan reaches.
+`SourceChainOf`'s own 256 is a second, looser belt against a future
+apply path that admits a longer chain than `DepthOk` allows today; the
+point is that a chain the *engine* accepts and expands is a chain this
+scan resolves, and one the engine refuses is one no derived scene
+contains. The comment now says what the bound actually does. Per
 audit-by-bug-pattern, the two sibling `source` walks in the same file
 carried the identical shape and are fixed the same way: condition L's
 `geometryKindOfObject` and condition P's `geometryKindOfObjectForWetness`
