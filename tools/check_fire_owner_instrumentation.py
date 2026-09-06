@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from analyze_fire_producer_kernels import fields
 
@@ -34,17 +35,29 @@ def qualify_artifact(log, trace, csv):
     if (tagged("PROJECTED_HEUN_METAL_OWNER_FP64") != [FP64_PASS]
             or tagged("OWNER_CONVERGENCE_PROBE") != ["OWNER_CONVERGENCE_PROBE passed=1 error="]):
         raise ValueError("fp64 owner or convergence qualification did not pass")
-    artifacts = [line for line in log.splitlines() if line.startswith("OWNER_CONVERGENCE_ARTIFACT ")]
-    expected = " sha256=" + hashlib.sha256(trace).hexdigest() + " scope=qualified_fixture_only passed=1"
-    if len(artifacts) != 1 or not artifacts[0].endswith(expected):
+    artifacts = [fields(line) for line in tagged("OWNER_CONVERGENCE_ARTIFACT")]
+    if (len(artifacts) != 1 or set(artifacts[0]) != {"path", "sha256", "scope", "passed"}
+            or not artifacts[0]["path"] or artifacts[0]["passed"] != "1"
+            or artifacts[0]["scope"] != "qualified_fixture_only"
+            or artifacts[0]["sha256"] != hashlib.sha256(trace).hexdigest()):
         raise ValueError("trace does not belong to qualified run")
-    csv_seals = [line for line in trace.decode().splitlines() if line.startswith("OWNER_CONVERGENCE_CSV ")]
+    csv_seals = [line for line in trace.decode().splitlines() if line.split()[:1] == ["OWNER_CONVERGENCE_CSV"]]
     if csv_seals != ["OWNER_CONVERGENCE_CSV sha256=" + hashlib.sha256(csv).hexdigest()]:
         raise ValueError("CSV does not belong to qualified trace")
-    reds = [line for line in log.splitlines() if line.startswith("OWNER_CONVERGENCE_RED ")]
-    if (len(reds) != len(RED_NAMES) or
-            {line.split()[1] for line in reds} != {"name=" + name for name in RED_NAMES} or
-            any(not line.endswith(" passed=1") or " atomic_refusal=1 " not in line for line in reds)):
+    reds = []
+    for line in tagged("OWNER_CONVERGENCE_RED"):
+        # The diagnostic error is unquoted prose. Parse every key boundary,
+        # including repeats inside that prose, before admitting the counters.
+        body = line[len("OWNER_CONVERGENCE_RED "):]
+        keys = list(re.finditer(r"(?:^| )([A-Za-z_][A-Za-z_0-9]*)=", body))
+        names = [key.group(1) for key in keys]
+        if len(keys) != 4 or set(names) != {"name", "atomic_refusal", "error", "passed"} or keys[0].start() != 0:
+            raise ValueError("incomplete or duplicate convergence RED counters")
+        row = {key.group(1): body[key.end():keys[i+1].start() if i+1 < len(keys) else len(body)].strip()
+               for i, key in enumerate(keys)}
+        reds.append(row)
+    if (len(reds) != len(RED_NAMES) or {row["name"] for row in reds} != RED_NAMES or
+            any(row["passed"] != "1" or row["atomic_refusal"] != "1" for row in reds)):
         raise ValueError("named convergence RED battery did not pass")
 
 

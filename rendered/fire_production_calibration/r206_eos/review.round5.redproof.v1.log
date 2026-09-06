@@ -1,0 +1,170 @@
+F
+======================================================================
+FAIL: test_legacy_cost_cli_requires_unambiguous_successful_completion (test_fire_r206_eos.EOSGateREDs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 45, in test_legacy_cost_cli_requires_unambiguous_successful_completion
+    cost_prefix.main()
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.013s
+
+FAILED (failures=1)
+R206_SIBLING_RED ref=2780f93a consumer=check_fire_owner_cost_prefix.py historical_false_green_caught=1 setup_errors=0
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='PROJECTED_HEUN_METAL_OWNER_FP64', extra='PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 64, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log+extra+"\n", trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='PROJECTED_HEUN_METAL_OWNER_FP64', extra='PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=0')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 64, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log+extra+"\n", trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_PROBE', extra='OWNER_CONVERGENCE_PROBE passed=1 error=')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 64, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log+extra+"\n", trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_PROBE', extra='OWNER_CONVERGENCE_PROBE passed=0 error=')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 64, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log+extra+"\n", trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_ARTIFACT', mutant='OWNER_CONVERGENCE_ARTIFACT  sha256=887f2e9a5b6bd8bf9cbbab1940420c8d17e310b6768dfaf97fb06563dc3d8d92 scope=qualified_fixture_only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_ARTIFACT', mutant='OWNER_CONVERGENCE_ARTIFACT path=bad path=synthetic-only sha256=887f2e9a5b6bd8bf9cbbab1940420c8d17e310b6768dfaf97fb06563dc3d8d92 scope=qualified_fixture_only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_ARTIFACT', mutant='OWNER_CONVERGENCE_ARTIFACT path=synthetic-only sha256=bad sha256=887f2e9a5b6bd8bf9cbbab1940420c8d17e310b6768dfaf97fb06563dc3d8d92 scope=qualified_fixture_only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=bad atomic_refusal=1 error=synthetic-only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1  passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=bad error=synthetic-only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only passed=bad passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=11)
+R206_SIBLING_RED ref=2780f93a consumer=check_fire_owner_instrumentation.py historical_false_green_caught=1 setup_errors=0
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_ARTIFACT', mutant='OWNER_CONVERGENCE_ARTIFACT  sha256=887f2e9a5b6bd8bf9cbbab1940420c8d17e310b6768dfaf97fb06563dc3d8d92 scope=qualified_fixture_only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_ARTIFACT', mutant='OWNER_CONVERGENCE_ARTIFACT path=bad path=synthetic-only sha256=887f2e9a5b6bd8bf9cbbab1940420c8d17e310b6768dfaf97fb06563dc3d8d92 scope=qualified_fixture_only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_ARTIFACT', mutant='OWNER_CONVERGENCE_ARTIFACT path=synthetic-only sha256=bad sha256=887f2e9a5b6bd8bf9cbbab1940420c8d17e310b6768dfaf97fb06563dc3d8d92 scope=qualified_fixture_only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=bad atomic_refusal=1 error=synthetic-only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1  passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=bad error=synthetic-only passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_instrumentation_qualification_requires_singleton_verdicts (test_fire_r206_eos.EOSGateREDs) (tag='OWNER_CONVERGENCE_RED', mutant='OWNER_CONVERGENCE_RED name=mismatched_owner atomic_refusal=1 error=synthetic-only passed=bad passed=1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 75, in test_instrumentation_qualification_requires_singleton_verdicts
+    qualify_artifact(log.replace(line, mutant), trace, csv)
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=7)
+R206_SIBLING_RED ref=d4060cd1 consumer=check_fire_owner_instrumentation.py historical_false_green_caught=1 setup_errors=0

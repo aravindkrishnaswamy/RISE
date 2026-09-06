@@ -240,3 +240,21 @@ REDs exercise the actual CLI and the qualification helper against their old
 versions (`review.round4.redproof.v1.log`). Synthetic parser-only inputs in the
 helper test are isolated from production evidence. The saved cost results
 remain byte-identical; numerical source and all tolerances are unchanged.
+
+## Fifth review and proof correction
+
+New-agent creation was unavailable. Two existing reviewers who had not reviewed
+r206 independently examined its numerical/lineage and evidence/cost axes. The
+numerical reviewer found no P1/P2. The evidence reviewer found one P2 in the
+remaining artifact/named-RED records: duplicate counters could still pass the
+old suffix checks. Both families now require unique counters and exact schemas,
+including the unquoted diagnostic error field. Every field is mutated through
+the actual qualification helper.
+
+Self-audit also found that the round-4 historical helper RED log failed during
+synthetic fixture setup, not on the intended mutant: the old parser required a
+space following `passed=1`. The fixture now includes a second field, and the
+replacement `review.round5.redproof.v1.log` requires assertion failures with
+zero setup errors against both historical helpers. The original log is retained
+but is superseded for that RED claim. Numerical gates and measurements were
+never dependent on this parser-only fixture; their SHA remains unchanged.

@@ -49,7 +49,7 @@ class EOSGateREDs(unittest.TestCase):
         # Synthetic parser fixture only: never published as solver evidence.
         csv = b"synthetic-parser-input\n"
         trace = ("OWNER_CONVERGENCE_CSV sha256="+hashlib.sha256(csv).hexdigest()+"\n").encode()
-        log = "\n".join([FP64_PASS, "RESIDENT_TARGET passed=1",
+        log = "\n".join([FP64_PASS, "RESIDENT_TARGET passed=1 source_bit_equal=1",
             "OWNER_CONVERGENCE_PROBE passed=1 error=",
             "OWNER_CONVERGENCE_ARTIFACT path=synthetic-only sha256="+hashlib.sha256(trace).hexdigest()+
             " scope=qualified_fixture_only passed=1",
@@ -62,6 +62,17 @@ class EOSGateREDs(unittest.TestCase):
                 with self.subTest(tag=tag, extra=extra):
                     with self.assertRaises(ValueError):
                         qualify_artifact(log+extra+"\n", trace, csv)
+        for tag in ("OWNER_CONVERGENCE_ARTIFACT", "OWNER_CONVERGENCE_RED"):
+            line = next(line for line in log.splitlines() if line.startswith(tag+" "))
+            mutants = [line+" unknown=0", ""]
+            for key, value in fields(line).items():
+                token = key+"="+value
+                mutants += [line.replace(token, "", 1), line+" "+key+"=bad",
+                            line.replace(token, key+"=bad "+token, 1)]
+            for mutant in mutants:
+                with self.subTest(tag=tag, mutant=mutant):
+                    with self.assertRaises(ValueError):
+                        qualify_artifact(log.replace(line, mutant), trace, csv)
 
     def test_metadata_rejects_duplicate_identity_fields(self):
         path = EVIDENCE / "endpoints_qualified_profile_1.v1/diagnostic_from_zero_identity.v1"
