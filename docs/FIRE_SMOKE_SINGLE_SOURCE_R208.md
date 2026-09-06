@@ -1,7 +1,7 @@
 # r208 — one canonical source publication, exact persistence carry
 
-Status: repair implemented; final executed qualification, retained-state
-localization and fresh review pending. No repaired focusing verdict is claimed.
+Status: repair implemented; final executed qualification and fresh review
+pending after the pilot-ledger fixture repair. No repaired focusing verdict is claimed.
 
 ## Finding and boundary
 
@@ -50,6 +50,10 @@ Existing historical source ledgers are never rewritten with canonical values.
 ## REDs and gates
 
 - Separate per-cell source bits and diagnostic bits must carry unchanged.
+- A separate authenticated active-pilot fixture requires nonzero, distinct
+  pilot energy and expansion fields. Omission of either field and swapping the
+  fields must fail the byte comparator. Review caught that the original
+  no-pilot owner fixture alone could not detect those mutations.
 - An alternate reconstruction callable is not invocable through the carry API;
   it cannot reach the identity gate.
 - Unsealed input refuses before modifying persisted packets.
@@ -70,6 +74,22 @@ resident owner. The r194 protocol additionally forbids resume. Therefore the
 repaired verdict restarts from zero in a new directory under the unchanged r194
 protocol SHA `5578fa19dcd500ff68743f7f1cfeff21d22da43fef48a3ada42df042badf3e3d`.
 Neither the preserved r207 checkpoint nor the golden checkpoint is changed.
+
+The isolated old/repaired eight-step diagnostic from step 388 confirms the
+repair clears the original refusal: the old executable accepts two further
+steps then reproduces the same source mismatch; the repaired executable reports
+`solver_accepted=1 checkpoint_unchanged=1`. The diagnostic's historical exit 93
+on successful continuation means its expected EOS-refusal fixture did not fire;
+it is not a repaired solver refusal. The old diagnostic exits 94 because it
+cannot publish its EOS-specific envelope for a source-identity refusal. Its raw
+log is evidence, not a complete publication certificate. Neither diagnostic
+grants migration authority.
+
+The retained-state localization probe finds zero differing components at step
+388 using that checkpoint's last dt, including the volume-only variant. This
+does not isolate the four-ULP failure's arithmetic cause at step 390. The fix
+removes independent production reconstruction rather than claiming an unmeasured
+FMA or geometry diagnosis.
 
 ## Parallel cost track
 

@@ -11451,6 +11451,45 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=postcarry_mutation_%u passed=%d\n",mutant,refused?1:0);
 		}
 		if(!carriedBits||!unsealedRefused||!defense)return 213;
+		// Qualify pilot ledger carry with an authenticated, active-pilot packet.
+		// The owner fixture above has no pilot; zero fields cannot detect omissions.
+		FireProductionFrozenMethaneSourceRequest pilotRequest=sourceRequest;
+		pilotRequest.pilotCommandMask.assign(cells,1u);
+		pilotRequest.beginningTimeS=0.5*sealedCase.derived.pilotDurationMultiplier*
+			sealedCase.derived.flowThroughTimeS;
+		FireProductionFrozenSourcePacketSeal pilotSource;
+		std::vector<MethaneSourcePacket> pilotCarried;RadiationEscapeFactor pilotEscape;
+		if(!FireSim::FireProductionCanonicalSourceAuthority::Build(pilotRequest,pilotSource,&error)||
+			!CarryCanonicalSourceForPersistence(pilotSource,pilotCarried,pilotEscape,error))return 213;
+		auto pilotBitsMatch=[&](const std::vector<MethaneSourcePacket>& packets){
+			if(packets.size()!=cells)return false;
+			for(std::size_t cell=0u;cell<cells;++cell)
+				if(std::memcmp(&packets[cell].pilotEnergyDeltaJPerM3,
+					&pilotSource.PilotEnergyDeltaJPerM3()[cell],sizeof(double))!=0||
+					std::memcmp(&packets[cell].pilotExpansionIntegral,
+					&pilotSource.PilotExpansionIntegral()[cell],sizeof(double))!=0)return false;
+			return true;};
+		std::size_t activePilotCells=0u;
+		for(std::size_t cell=0u;cell<cells;++cell)
+			if(pilotSource.PilotEnergyDeltaJPerM3()[cell]>0.0&&
+				pilotSource.PilotExpansionIntegral()[cell]>0.0&&
+				pilotSource.PilotEnergyDeltaJPerM3()[cell]!=pilotSource.PilotExpansionIntegral()[cell])
+				++activePilotCells;
+		bool pilotREDs=true;
+		for(unsigned int mutant=0u;mutant<3u;++mutant){
+			auto altered=pilotCarried;
+			for(auto& packet:altered){
+				if(mutant==0u)packet.pilotEnergyDeltaJPerM3=0.0;
+				else if(mutant==1u)packet.pilotExpansionIntegral=0.0;
+				else std::swap(packet.pilotEnergyDeltaJPerM3,packet.pilotExpansionIntegral);}
+			const bool refused=!pilotBitsMatch(altered);pilotREDs=pilotREDs&&refused;
+			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=pilot_ledger_mutation_%u passed=%d\n",
+				mutant,refused?1:0);
+		}
+		const bool pilotPassed=activePilotCells>0u&&pilotBitsMatch(pilotCarried)&&pilotREDs;
+		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_PILOT nonzero_distinct_cells=%zu bits_equal=%d passed=%d\n",
+			activePilotCells,pilotBitsMatch(pilotCarried)?1:0,pilotPassed?1:0);
+		if(!pilotPassed)return 213;
 	}
 	eos.physicalFlux.transport.temperatureK=request.frozenSource.BeginningTemperatureK();
 	eos.sourceDelta=request.frozenSource.SourceDelta();
