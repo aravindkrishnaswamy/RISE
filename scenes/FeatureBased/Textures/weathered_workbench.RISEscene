@@ -152,9 +152,19 @@ scalar_painter
 # the grain still reads as carved surface rather than paint at this scale/
 # lighting (docs/RELIEF_MODIFIER_DESIGN.md §12 Phase 5 record has the full
 # table and the follow-up note).  `domain surface` -- the bench top and
-# legs are `box_geometry` (an analytic primitive, no UVs, and one that never
-# populates `txFootprint`, so there is no distance fade here; §3.3's
-# mesh-only caveat applies as documented, not as a bug).
+# legs are `box_geometry`, an analytic primitive with no UVs, which is
+# exactly why `surface` and not `uv`.
+#
+# This comment used to add "and one that never populates `txFootprint`, so
+# there is no distance fade here".  That stopped being true on
+# 2026-09-06: docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md moved footprint
+# production to the `Object::IntersectRay` layer, so EVERY geometry
+# publishes a world footprint on a primary hit, boxes included, and §3.3's
+# mesh-only caveat is gone.  The bench top therefore DOES fade with
+# distance now, and the auto step here is the footprint rather than the
+# 1e-3 floor.  See §12 "Fix round 2" for the measurement that then halved
+# the footprint fraction, which is what keeps the grain from reading soft
+# at this camera distance.
 scalar_painter
 {
 	name			sp_wood_relief

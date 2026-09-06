@@ -31,13 +31,28 @@ Defaults when a param is absent: scale=1.0, windowsize=0.01,
 normalize_gradient=FALSE (case-insensitive TRUE/FALSE).
 
 NON-POSITIVE WINDOWSIZE IS A SPECIAL CASE, NOT A POINT ON THE ABOVE CURVE.
-`windowsize <= 0` made the legacy modifier INERT (the deleted
-`BumpMap::Modify`'s central difference sampled the same point on both sides
-and its normalisation was gated on `dWindow > 0`), but `relief_modifier`'s `step 0`
-means AUTO (a full footprint/1e-3-floor perturbation) -- the opposite of
-inert. So this script does NOT fold such a chunk through the algebra above;
-it emits `scale 0` instead (which neutralises the perturbation regardless of
-`step`), with a WARN naming the file:line and the reason.
+It is handled the same way at zero and below, but for two DIFFERENT reasons
+(design 7.2, "Precision correction"):
+
+  windowsize == 0 -- the deleted `BumpMap::Modify` really was INERT: both
+    sides of the central difference sampled the same point, so the
+    difference was identically 0.
+
+  windowsize <  0 -- the legacy class was NOT inert.  The difference was
+    the NEGATION of the one at |windowsize| (`f(u-|w|) - f(u+|w|)`), and
+    the `dWindow > 0` gate additionally SKIPPED the normalize_gradient
+    divide, silently changing what `scale` meant.
+
+Either way the algebra above cannot be applied, because `relief_modifier`'s
+`step 0` means AUTO (a full footprint/1e-3-floor perturbation) -- the
+opposite of inert.  So this script does NOT fold such a chunk; it emits
+`scale 0` instead (which neutralises the perturbation regardless of `step`),
+with a WARN naming the file:line and the reason.  On the zero half that
+REPRODUCES the legacy behaviour; on the negative half it is a DELIBERATE
+DIVERGENCE from it -- a negative half-step is nonsense input, the fold is
+undefined on it, and agreeing with `RISE_API_CreateBumpMapModifierEx`
+(which applies the identical rule) matters more than reproducing a deleted
+class's accident.  No in-tree scene ever had a negative `windowsize`.
 
 THE TRANSFORMATION.  For every
     bumpmap_modifier { name N  function F  scale S  windowsize W
@@ -429,27 +444,41 @@ def migrate_text(text, stats, path_label=''):
             try:
                 windowsize = float(tok)
                 if windowsize <= 0:
-                    # Legacy `BumpMap::Modify` is INERT at windowsize <= 0:
-                    # the central difference samples the same point on both
-                    # sides (step 0) and its normalisation is gated on
-                    # `dWindow > 0`, so the net perturbation is identically
-                    # zero.  The migrated `step W` with W <= 0 means AUTO in
-                    # relief_modifier (§3.3: `step_user > 0 ? step_user :
-                    # ...`), i.e. a full footprint/1e-3-floor perturbation --
-                    # the opposite of inert.  `scale 0` is what actually
-                    # reproduces "inert" losslessly: it neutralises the
-                    # perturbation regardless of what `step` ends up being.
+                    # Legacy `BumpMap::Modify` was INERT at windowsize
+                    # EXACTLY zero -- both sides of the central difference
+                    # sampled the same point, so the difference was 0.  At a
+                    # NEGATIVE windowsize it was not inert at all: the
+                    # difference was the negation of the one at |windowsize|,
+                    # and the `dWindow > 0` gate skipped the
+                    # normalize_gradient divide on top of that.  See design
+                    # 7.2 "Precision correction".
+                    #
+                    # Neither can be folded: the migrated `step W` with
+                    # W <= 0 means AUTO in relief_modifier (§3.3:
+                    # `step_user > 0 ? step_user : ...`), i.e. a full
+                    # footprint/1e-3-floor perturbation -- the opposite of
+                    # inert.  `scale 0` neutralises the perturbation
+                    # regardless of what `step` ends up being, which
+                    # REPRODUCES the legacy zero case and DELIBERATELY
+                    # DIVERGES from the legacy negative one (nonsense input;
+                    # agreeing with RISE_API_CreateBumpMapModifierEx, which
+                    # applies the same rule, matters more).
                     windowsize_nonpositive = True
                     stats['nonpositive_windowsize'] += 1
-                    print('  WARN %s:%d: `windowsize %s` is not positive -- '
-                          'the legacy modifier is INERT there (BumpMap.cpp '
-                          'gates its normalisation on dWindow > 0; the '
-                          'central difference samples the same point on '
-                          'both sides), but a migrated `step 0` means AUTO '
-                          '(full perturbation) in relief_modifier, not '
-                          'inert.  Emitting `scale 0` instead of the folded '
-                          'algebra so the migrated chunk stays inert, '
-                          'matching the legacy behaviour.'
+                    print('  WARN %s:%d: `windowsize %s` is not positive '
+                          '-- the fold is undefined there.  At EXACTLY 0 the '
+                          'legacy modifier was inert (both sides of the '
+                          'central difference sampled the same point); '
+                          'BELOW 0 it was NOT inert (the difference was the '
+                          'negation of the one at |windowsize|, and the '
+                          'dWindow > 0 gate skipped the normalize_gradient '
+                          'divide as well).  Either way a migrated `step 0` '
+                          'would mean AUTO (full perturbation) in '
+                          'relief_modifier, so emitting `scale 0` instead of '
+                          'the folded algebra -- which reproduces the legacy '
+                          'behaviour at 0 and deliberately diverges from it '
+                          'below 0, matching '
+                          'RISE_API_CreateBumpMapModifierEx.'
                           % (path_label or '<text>', ln, tok), file=sys.stderr)
             except ValueError:
                 stats['malformed_params'] += 1
@@ -644,9 +673,12 @@ def selftest():
           changed and '\tscale\t-0.005\n}' in new_text,
           repr(new_text))
 
-    # 2b. windowsize <= 0 is a special case (P2-6): the legacy modifier is
-    # INERT there, but a migrated `step 0` means AUTO (full perturbation) --
+    # 2b. windowsize <= 0 is a special case (P2-6): the fold is undefined
+    # there and a migrated `step 0` would mean AUTO (full perturbation) --
     # so the migrator must emit `scale 0`, not the folded algebra, and warn.
+    # At exactly 0 that reproduces the legacy inert behaviour; 2c below is
+    # the negative case, where the legacy class was NOT inert and `scale 0`
+    # is a deliberate divergence (design 7.2 "Precision correction").
     text = _mk_bumpmap(name='inert_bump', function='f', scale='5.0',
                         windowsize='0')
     stats = new_stats()
@@ -657,12 +689,13 @@ def selftest():
           and 'relief_modifier' in new_text,
           repr(new_text))
 
-    # 2c. Same for a negative windowsize.
+    # 2c. Same emission for a NEGATIVE windowsize -- but note this one is
+    # a deliberate divergence, not a match: legacy was not inert below 0.
     text = _mk_bumpmap(name='neg_window', function='f', scale='2.0',
                         windowsize='-0.01')
     stats = new_stats()
     new_text, changed = migrate_text(text, stats, path_label='<t2c>')
-    check('negative windowsize -> scale\' = 0 (inert)',
+    check('negative windowsize -> scale\' = 0 (deliberate divergence: legacy was NOT inert)',
           changed and stats['nonpositive_windowsize'] == 1
           and '\tscale\t0\n}' in new_text,
           repr(new_text))
@@ -918,9 +951,12 @@ def main():
               % stats['comments_carried'], file=sys.stderr)
     if stats['nonpositive_windowsize']:
         print('  %d chunk(s) had a non-positive `windowsize` -- emitted '
-              '`scale 0` (inert) instead of the folded algebra to match the '
-              'legacy INERT behaviour' % stats['nonpositive_windowsize'],
-              file=sys.stderr)
+              '`scale 0` (inert) instead of the folded algebra, which is '
+              'undefined there: it MATCHES the legacy behaviour at exactly '
+              '0 and deliberately DIVERGES from it below 0, where the legacy '
+              'modifier negated the difference and skipped the '
+              'normalize_gradient divide rather than being inert'
+              % stats['nonpositive_windowsize'], file=sys.stderr)
     if stats['unterminated'] or errors:
         print('  %d unterminated chunk(s), %d file error(s) -- the corpus was '
               'NOT fully migrated' % (stats['unterminated'], errors),

@@ -58,8 +58,10 @@ RISE ASCII SCENE 7
 #                   cell under minification is its MEAN -- so each field fades to its own base              #
 #                   angle as `fw` grows past the cell, and the anisotropy fades with it.  A woven           #
 #                   surface seen from far enough away IS isotropic.  `fw` is 0.0 where no footprint         #
-#                   is available (secondary bounces, non-mesh geometry) and `smoothstep(a,b,0)` is          #
-#                   0, so the fade correctly disengages there rather than snapping to the mean.             #
+#                   is available -- SECONDARY BOUNCES, which is the whole of it since 2026-09-06;           #
+#                   this used to say "non-mesh geometry" too, but every geometry publishes a footprint      #
+#                   on a primary hit now (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).  `smoothstep(a,b,0)`  #
+#                   is 0, so the fade correctly disengages there rather than snapping to the mean.          #
 #                                                                                                           #
 #                   LIGHTING is a hard raking key from the left plus a strong back-right rim, over          #
 #                   a dim dome used as LIGHT ONLY (`radiance_background FALSE` keeps the frame              #
@@ -296,8 +298,11 @@ uniformcolor_painter
 # past the drift's finest octave the field relaxes to its constant base angle,
 # which is the correct minification limit.  `fbm` additionally fades its own
 # high octaves against `fw` internally, so the two mechanisms agree.  `fw` is 0.0
-# where no footprint is available (secondary bounces, non-mesh geometry) and
-# `smoothstep(a, b, 0)` is 0, so the fade disengages there rather than snapping.
+# where no footprint is available -- SECONDARY BOUNCES only, since 2026-09-06;
+# the "non-mesh geometry" this used to also name is no longer a case, every
+# geometry publishes a footprint on a primary hit
+# (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md) -- and `smoothstep(a, b, 0)` is 0,
+# so the fade disengages there rather than snapping.
 #############################################################################################################
 
 # DENIM -- the twill WALE runs at 45 degrees.  The 3/1 draft inside the

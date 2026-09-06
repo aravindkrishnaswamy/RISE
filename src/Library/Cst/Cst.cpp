@@ -4190,7 +4190,9 @@ static int FunctionSubNamespace( const std::string& paramName, const ParameterDe
 	// below).  Each is resolved by the engine through pFunc1DManager, a DIMENSION-SPECIFIC
 	// manager, so the resolver must match (the descriptor's coarse {Function}/{Painter,Function}
 	// is spurious for these; resolving coarsely first-wins to a same-named 2D function was the
-	// misbind): function1d + the directvolumerendering RGBA transfer_* channels (Job.cpp ~6248);
+	// misbind): function1d + the directvolumerendering RGBA transfer_* channels
+	// (Job::AddDirectVolumeRenderingShader, whose `transfer_alpha` sibling
+	// Job::AddSpectralDirectVolumeRenderingShader also resolves through pFunc1DManager);
 	// homogeneous_medium's sigma(lambda) curves (Job::AddHomogeneousMediumSpectral).
 	if( paramName == "function1d" ) return kFunc1DSubCat;
 	if( paramName == "transfer_red" || paramName == "transfer_green" ||
