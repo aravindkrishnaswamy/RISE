@@ -2456,12 +2456,22 @@ planes want less.
 (`direction 0.5 0.7 0.6`). Lowering it to 24.1° (`0.5 0.35 0.6`, same
 `power 3.2`) **does not help**: at `0.25/0.4` fine-detail contrast goes *down*
 (24.76 → 24.30), the plank dims ~7% (mean 152.0 → 141.6), and near-blacks rise
-35% (87 → 118). The reason is geometric — on a horizontal surface whose tilt
-axis lies in the plane, a raking key makes tilts *toward* it saturate at
-`N·L ≈ 1` while tilts *away* go dark, so local modulation does not improve
-while everything dims. The 42° key is already the better choice, so the scene's
-lights are unchanged (and `CstDeriveGoldenTest` therefore needed no
-regeneration).
+35% (87 → 118). The reason is the same grazing-budget geometry as the clamp
+itself, applied to the LIGHT instead of the camera: `max_slope 0.4` caps the
+tilt at `atan(0.4) ≈ 21.8°`, so a tilt *away* from the key can point the
+shading normal up to `21.8°` past the light's own direction. At the 42°
+key that overshoot still clears the light's geometric horizon (`42° − 21.8° =
+20.2° > 0`); at the 24° key it does not (`24° − 21.8° = 2.2°`, and plenty of
+the fbm field's sampled tilts exceed the mean), so more away-facing tilts get
+gated BLACK by the same geometric-horizon gate the clamp exists to manage —
+this is a second, LIGHT-side instance of the mechanism §3.2 describes for the
+ray side. (An earlier draft of this paragraph claimed the raking key
+"saturates" the lit tilts at `N·L ≈ 1`; it does not — at `21.8°` of tilt
+budget and a `24°` key the closest approach is `sin(46°) ≈ 0.72`, nowhere
+near saturation. The measured effect and the decision it drives are
+unchanged: it is a horizon-gating loss, not a saturation ceiling.) The 42°
+key is already the better choice, so the scene's lights are unchanged (and
+`CstDeriveGoldenTest` therefore needed no regeneration).
 
 **PNGs** (all under
 `/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/maxslope/rendered/`):

@@ -174,10 +174,21 @@ scalar_painter
 # THE KEY LIGHT WAS LEFT ALONE, having been tested.  Lowering it from 42 to 24
 # degrees elevation (direction 0.5 0.35 0.6, same power) does NOT help the
 # grain read: fine-detail contrast goes slightly DOWN (24.8 -> 24.3 at
-# 0.25/0.4), the plank dims ~7%, and near-black pixels rise 35%.  On a
-# horizontal surface whose tilt axis lies in the plane, a raking key makes
-# tilts TOWARD it saturate at N.L ~ 1 while tilts away go dark, so the local
-# modulation does not improve -- the 42-degree key is already the better
+# 0.25/0.4), the plank dims ~7%, and near-black pixels rise 35%.  The reason
+# is the same grazing-budget geometry as the max_slope clamp itself, applied
+# to the LIGHT instead of the camera: max_slope 0.4 caps the tilt at
+# atan(0.4) ~= 21.8 degrees, so an away-facing tilt can point the shading
+# normal up to 21.8 degrees past the light's own direction before N'.L goes
+# non-positive.  At the 42-degree key that margin is still 42-21.8=20.2
+# degrees; at the 24-degree key it is only 24-21.8=2.2 degrees, so far more
+# of the fbm field's actual tilt distribution crosses that horizon and gets
+# gated BLACK -- a second, light-side instance of the same geometric-horizon
+# mechanism max_slope exists to manage on the ray side.  (An earlier draft of
+# this comment said a raking key "saturates" the toward-light tilts at
+# N.L ~ 1; it does not -- the closest approach at 21.8 degrees of tilt
+# budget and a 24-degree key is sin(46) ~= 0.72, nowhere near saturation.
+# The measurement and the decision are unchanged: it is a horizon-gating
+# loss, not a saturation ceiling.)  The 42-degree key is already the better
 # choice.
 #
 # `domain surface` -- the bench top and
