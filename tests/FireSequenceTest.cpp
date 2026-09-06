@@ -1116,6 +1116,34 @@ namespace
 		double productionOnsetStopVelocityMPerS=0.0;
 	};
 
+	// r208: persistence is a projection of an authenticated publication, never
+	// another source producer. There is deliberately no raw-dose/callback input.
+	bool CarryCanonicalSourceForPersistence(
+		const RISE::FireProductionFrozenSourcePacketSeal& source,
+		std::vector<MethaneSourcePacket>& packets,RadiationEscapeFactor& escape,
+		std::string& error)
+	{
+		if(!RISE::FireProductionFrozenSourcePacketSealMatches(source,&error))return false;
+		const std::size_t cells=source.Shape().CellCount();
+		packets.assign(cells,MethaneSourcePacket());
+		for(std::size_t cell=0u;cell<cells;++cell){
+			MethaneSourcePacket& packet=packets[cell];
+			for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+				packet.constituentDelta[species]=source.SourceDelta()[(1u+species)*cells+cell];
+			packet.sensibleEnergyDeltaJPerM3=source.SourceDelta()[8u*cells+cell];
+			packet.reactedFuelKGPerM3=source.ReactedFuelKGPerM3()[cell];
+			packet.oxidizedCarbonKGPerM3=source.OxidizedCarbonKGPerM3()[cell];
+			packet.grossCarbonFormedKGPerM3=source.GrossCarbonFormedKGPerM3()[cell];
+			packet.gasHeatReleaseWPerM3=source.GasHeatReleaseWPerM3()[cell];
+			packet.sootHeatReleaseWPerM3=source.SootHeatReleaseWPerM3()[cell];
+			packet.pilotEnergyDeltaJPerM3=source.PilotEnergyDeltaJPerM3()[cell];
+			packet.pilotExpansionIntegral=source.PilotExpansionIntegral()[cell];
+			packet.radiativeCoolingWPerM3=source.RadiativeCoolingWPerM3()[cell];
+		}
+		escape.beta=source.RadiationBeta();escape.gamma=source.RadiationGamma();
+		escape.accepted=source.RadiationEscapeFactor();return true;
+	}
+
 	bool BuildProductionProjectedHeunOwnerRequest(
 		const RISE::FireProductionResidentStepRequest& ordinary,
 		const RISE::FireProductionFrozenSourcePacketSeal& source,
@@ -1126,9 +1154,12 @@ namespace
 		owner=RISE::FireProductionProjectedHeunMetalOwnerRequest();
 		if(!source.IsSealed()){error="projected-Heun production source authority is unsealed";
 			return false;}
-		if(source.SourceDelta()!=ordinary.cellSourceIncrement){
+		if(source.SourceDelta().size()!=ordinary.cellSourceIncrement.size()||
+			std::memcmp(source.SourceDelta().data(),ordinary.cellSourceIncrement.data(),
+				source.SourceDelta().size()*sizeof(float))!=0){
 			std::size_t mismatch=0u;while(mismatch<ordinary.cellSourceIncrement.size()&&
-				source.SourceDelta()[mismatch]==ordinary.cellSourceIncrement[mismatch])++mismatch;
+				mismatch<source.SourceDelta().size()&&std::memcmp(&source.SourceDelta()[mismatch],
+					&ordinary.cellSourceIncrement[mismatch],sizeof(float))==0)++mismatch;
 			std::ostringstream message;message<<std::setprecision(17)
 				<<"projected-Heun production source authority dose changed after construction: source_size="
 				<<source.SourceDelta().size()<<" ordinary_size="<<ordinary.cellSourceIncrement.size()
@@ -3923,7 +3954,59 @@ namespace
 					std::chrono::steady_clock::now()-profileStageStart).count();
 				solverPhase="production source packet construction";
 				bool packetOK=true;profileStageStart=std::chrono::steady_clock::now();
-				if(persistence.forceZeroSourceForTest){
+				RISE::FireProductionFrozenSourcePacketSeal projectedHeunSource;
+				if(persistence.UsesProjectedHeunOwner()){
+					// The canonical producer owns the source bytes AND their diagnostics.
+					// Neither the tangent preparation nor persistence calls the legacy
+					// packet producer on this path. Pack the same beginning inputs that
+					// BuildProductionRequest later carries to the resident owner.
+					RISE::FireProductionFrozenMethaneSourceRequest sourceRequest;
+					sourceRequest.shape.nx=shape.nx;sourceRequest.shape.ny=shape.ny;
+					sourceRequest.shape.nz=shape.nz;
+					sourceRequest.shape.cellWidthM=static_cast<float>(shape.cellWidthM);
+					sourceRequest.timeStepS=static_cast<float>(trialStep);
+					sourceRequest.beginningTimeS=simulationTimeS;
+					sourceRequest.caseRecordEnvelope=caseRecord.envelopeBytes;
+					sourceRequest.beginningConservativeValues.resize(9u*shape.CellCount());
+					sourceRequest.sourceEvaluationTemperatureK.resize(shape.CellCount());
+					sourceRequest.eligibilityBeginningConservativeValues.resize(9u*shape.CellCount());
+					sourceRequest.pilotCommandMask.resize(shape.CellCount());
+					sourceRequest.sourceBoundaryContactMask.resize(shape.CellCount());
+					sourceRequest.mixingTimeS.resize(shape.CellCount());
+					for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+						const ConservativeVector tuple=ToConservativeVector(packetBeginning[cell]);
+						for(std::size_t component=0u;component<9u;++component){
+							sourceRequest.beginningConservativeValues[component*shape.CellCount()+cell]=
+								static_cast<float>(tuple[component]);
+							sourceRequest.eligibilityBeginningConservativeValues[component*shape.CellCount()+cell]=
+								static_cast<float>(beginning[cell][component]);
+						}
+						sourceRequest.sourceEvaluationTemperatureK[cell]=packetBeginning[cell].temperatureK;
+						sourceRequest.pilotCommandMask[cell]=ProductionPilotCommandCell(cell,shape.nx,
+							shape.ny,canonicalPilotMask,sourcePattern)?1u:0u;
+						sourceRequest.sourceBoundaryContactMask[cell]=ProductionSourceBoundaryContactCell(
+							cell,shape.nx,shape.ny,canonicalPilotMask,sourcePattern)?1u:0u;
+						sourceRequest.mixingTimeS[cell]=reactions[cell].mixingTimeS;
+					}
+					std::array<std::vector<float>,3> sourceMomentum,sourceVelocity;
+					for(unsigned int axis=0u;axis<3u;++axis){
+						sourceMomentum[axis].assign(productionMomentum.component[axis].begin(),
+							productionMomentum.component[axis].end());
+						sourceVelocity[axis].assign(productionVelocity.component[axis].begin(),
+							productionVelocity.component[axis].end());
+					}
+					sourceRequest.attemptIdentity=RISE::FireProductionAcceptedStatePayloadDigestFast(
+						sourceRequest.shape,sourceRequest.beginningConservativeValues,sourceMomentum,sourceVelocity);
+					std::uint64_t timeBits=0u;std::memcpy(&timeBits,&simulationTimeS,sizeof(timeBits));
+					std::uint32_t dtBits=0u;std::memcpy(&dtBits,&sourceRequest.timeStepS,sizeof(dtBits));
+					sourceRequest.attemptIdentity^=timeBits^(static_cast<std::uint64_t>(dtBits)<<32u);
+					if(sourceRequest.attemptIdentity==0u)sourceRequest.attemptIdentity=1u;
+					sourceRequest.pilotEstablished=simulationTimeS>=pilotEndS;
+					sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=workerCount;
+					packetOK=!persistence.forceZeroSourceForTest&&
+						FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,projectedHeunSource,&error)&&
+						CarryCanonicalSourceForPersistence(projectedHeunSource,packets,escape,error);
+				}else if(persistence.forceZeroSourceForTest){
 					packets.assign(shape.CellCount(),MethaneSourcePacket());escape=RadiationEscapeFactor();
 				}else packetOK=BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
 					std::vector<double>(shape.CellCount(),cellVolume),300.0,
@@ -3931,7 +4014,8 @@ namespace
 					caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
 					FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),packets,escape,&error,
 					workerCount);
-				if(packetOK&&persistence.productionMetal)for(MethaneSourcePacket& packet:packets){
+				if(packetOK&&persistence.productionMetal&&!persistence.UsesProjectedHeunOwner())
+					for(MethaneSourcePacket& packet:packets){
 					RepresentMethaneSourcePacketBinary32(packet);
 					if(!CertifiedBinary32SourcePacket(packet,fuel)){packetOK=false;
 						 error="production source packet failed its Binary32 certificate";break;}
@@ -4025,60 +4109,15 @@ namespace
 					if(packetOK){
 						solverPhase="production resident request construction";
 						request.physicalOpenProjectionVCycleCount=19u;
-						ParallelFireSlices(shape.CellCount(),workerCount,[&](const std::size_t cell){
+						if(persistence.UsesProjectedHeunOwner())
+							request.cellSourceIncrement=projectedHeunSource.SourceDelta();
+						else ParallelFireSlices(shape.CellCount(),workerCount,[&](const std::size_t cell){
 							for(std::size_t component=0u;component<9u;++component){
 								const double value=sourceDelta[cell][component];
 								request.cellSourceIncrement[component*shape.CellCount()+cell]=
 									static_cast<float>(value);
 							}
 						});
-						RISE::FireProductionFrozenSourcePacketSeal projectedHeunSource;
-						if(persistence.UsesProjectedHeunOwner()){
-							RISE::FireProductionFrozenMethaneSourceRequest sourceRequest;
-							sourceRequest.shape=request.force.shape;sourceRequest.timeStepS=request.force.timeStepS;
-							sourceRequest.beginningTimeS=simulationTimeS;
-							sourceRequest.attemptIdentity=RISE::FireProductionAcceptedStatePayloadDigestFast(
-								request.force.shape,request.cellTransport.conservativeValues,
-								request.force.beginningMomentumKGPerM2S,
-								request.cellTransport.frozenVelocityMPerS);
-							std::uint64_t timeBits=0u;std::memcpy(&timeBits,&simulationTimeS,sizeof(timeBits));
-							std::uint32_t dtBits=0u;std::memcpy(&dtBits,&request.force.timeStepS,sizeof(dtBits));
-							sourceRequest.attemptIdentity^=timeBits^(static_cast<std::uint64_t>(dtBits)<<32u);
-							if(sourceRequest.attemptIdentity==0u)sourceRequest.attemptIdentity=1u;
-							sourceRequest.caseRecordEnvelope=caseRecord.envelopeBytes;
-							sourceRequest.beginningConservativeValues=request.cellTransport.conservativeValues;
-							sourceRequest.sourceEvaluationTemperatureK.resize(shape.CellCount());
-							sourceRequest.eligibilityBeginningConservativeValues.resize(9u*shape.CellCount());
-							sourceRequest.pilotCommandMask.resize(shape.CellCount());
-							sourceRequest.sourceBoundaryContactMask.resize(shape.CellCount());
-							sourceRequest.mixingTimeS.resize(shape.CellCount());
-							for(std::size_t cell=0u;cell<shape.CellCount();++cell){
-								sourceRequest.sourceEvaluationTemperatureK[cell]=
-									packetBeginning[cell].temperatureK;
-								for(std::size_t component=0u;component<9u;++component)
-									sourceRequest.eligibilityBeginningConservativeValues[
-										component*shape.CellCount()+cell]=static_cast<float>(beginning[cell][component]);
-								sourceRequest.pilotCommandMask[cell]=ProductionPilotCommandCell(cell,shape.nx,
-									shape.ny,canonicalPilotMask,sourcePattern)?1u:0u;
-								sourceRequest.sourceBoundaryContactMask[cell]=
-									ProductionSourceBoundaryContactCell(cell,shape.nx,shape.ny,
-										canonicalPilotMask,sourcePattern)?1u:0u;
-								sourceRequest.mixingTimeS[cell]=reactions[cell].mixingTimeS;}
-							sourceRequest.pilotEstablished=simulationTimeS>=pilotEndS;
-							sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=workerCount;
-							packetOK=FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
-								projectedHeunSource,&error);
-							if(packetOK&&projectedHeunSource.SourceDelta()!=request.cellSourceIncrement){
-								std::size_t mismatch=0u;while(mismatch<request.cellSourceIncrement.size()&&
-									projectedHeunSource.SourceDelta()[mismatch]==
-										request.cellSourceIncrement[mismatch])++mismatch;
-								std::ostringstream mismatchMessage;mismatchMessage<<std::setprecision(17)
-									<<"projected-Heun canonical source differs from persisted source fields: index="
-									<<mismatch<<" canonical="<<projectedHeunSource.SourceDelta()[mismatch]
-									<<" persisted="<<request.cellSourceIncrement[mismatch];
-								error=mismatchMessage.str();packetOK=false;
-							}
-						}
 						profileLayoutMS=std::chrono::duration<double,std::milli>(
 							std::chrono::steady_clock::now()-profileStageStart).count();
 						profileStageStart=std::chrono::steady_clock::now();
@@ -6916,6 +6955,81 @@ namespace
 			fuelConsumptionKGPerS+=-packet.constituentDelta[MethaneCH4]*cellVolume/step;
 		}
 		const double consumptionHeatReleaseW=fuelConsumptionKGPerS*fuel.LowerHeatingValueJPerKG();
+		// This is a retained-state, last-accepted-dt probe, not a replay of the
+		// next attempted step.  Keep its two-path localization out of production.
+		RISE::FireProductionFrozenMethaneSourceRequest sourceProbe;
+		sourceProbe.shape.nx=shape.nx;sourceProbe.shape.ny=shape.ny;
+		sourceProbe.shape.nz=shape.nz;
+		sourceProbe.shape.cellWidthM=static_cast<float>(shape.cellWidthM);
+		sourceProbe.timeStepS=static_cast<float>(step);
+		sourceProbe.beginningTimeS=checkpoint.simulationTimeS;
+		sourceProbe.attemptIdentity=1u;sourceProbe.workerCount=8u;
+		sourceProbe.caseRecordEnvelope=caseRecord.envelopeBytes;
+		sourceProbe.beginningConservativeValues.resize(9u*shape.CellCount());
+		sourceProbe.eligibilityBeginningConservativeValues.resize(9u*shape.CellCount());
+		sourceProbe.sourceEvaluationTemperatureK.resize(shape.CellCount());
+		sourceProbe.pilotCommandMask.resize(shape.CellCount());
+		sourceProbe.sourceBoundaryContactMask.resize(shape.CellCount());
+		sourceProbe.mixingTimeS.resize(shape.CellCount());
+		sourceProbe.pilotEstablished=checkpoint.simulationTimeS>=pilotEndS;
+		sourceProbe.predictiveRadiation=false;
+		for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+			const ConservativeVector sourceState=ToConservativeVector(packetBeginning[cell]);
+			for(std::size_t component=0u;component<9u;++component){
+				sourceProbe.beginningConservativeValues[component*shape.CellCount()+cell]=
+					static_cast<float>(sourceState[component]);
+				sourceProbe.eligibilityBeginningConservativeValues[component*shape.CellCount()+cell]=
+					static_cast<float>(conservative[cell][component]);
+			}
+			sourceProbe.sourceEvaluationTemperatureK[cell]=packetBeginning[cell].temperatureK;
+			sourceProbe.pilotCommandMask[cell]=ProductionPilotCommandCell(cell,shape.nx,shape.ny,
+				canonicalPilotMask,sourcePattern)?1u:0u;
+			sourceProbe.sourceBoundaryContactMask[cell]=ProductionSourceBoundaryContactCell(cell,
+				shape.nx,shape.ny,canonicalPilotMask,sourcePattern)?1u:0u;
+			sourceProbe.mixingTimeS[cell]=reactions[cell].mixingTimeS;
+		}
+		RISE::FireProductionFrozenSourcePacketSeal canonicalProbe;
+		std::string sourceProbeError;
+		const bool canonicalProbeBuilt=FireSim::FireProductionCanonicalSourceAuthority::Build(
+			sourceProbe,canonicalProbe,&sourceProbeError);
+		const double canonicalCellVolume=std::pow(
+			static_cast<double>(sourceProbe.shape.cellWidthM),3.0);
+		std::vector<MethaneSourcePacket> volumeOnlyPackets;RadiationEscapeFactor volumeOnlyEscape;
+		std::string volumeOnlyError;
+		const bool volumeOnlyBuilt=BuildFrozenMethaneSourcePackets(packetBeginning,reactions,
+			std::vector<double>(shape.CellCount(),canonicalCellVolume),300.0,
+			caseRecord.derived.referenceHeatReleaseRateW,
+			caseRecord.derived.effectiveRadiativeFraction,false,fuel,fuel,
+			FireSimulationGasOpacityRecord::HITEMPPlanckMeanV1(),volumeOnlyPackets,
+			volumeOnlyEscape,&volumeOnlyError,8u);
+		auto compareSourcePackets=[&](const std::vector<MethaneSourcePacket>& compared,
+			const char* label,std::ostream& report){
+			std::size_t mismatches=0u,first=0u;double maximumDifference=0.0;
+			float firstCanonical=0.0f,firstCompared=0.0f;
+			for(std::size_t component=0u;component<9u;++component)
+				for(std::size_t cell=0u;cell<shape.CellCount();++cell){
+					const std::size_t index=component*shape.CellCount()+cell;
+					const float value=component==0u?0.0f:static_cast<float>(component==8u?
+						compared[cell].sensibleEnergyDeltaJPerM3:
+						compared[cell].constituentDelta[component-1u]);
+					const float canonical=canonicalProbe.SourceDelta()[index];
+					if(canonical!=value){
+						if(mismatches==0u){first=index;firstCanonical=canonical;firstCompared=value;}
+						++mismatches;maximumDifference=std::max(maximumDifference,
+							std::fabs(static_cast<double>(canonical)-static_cast<double>(value)));
+					}
+				}
+			report<<"source_probe_"<<label<<"_mismatches "<<mismatches<<"\n"
+				<<"source_probe_"<<label<<"_maximum_absolute_difference "<<maximumDifference<<"\n";
+			if(mismatches!=0u){const std::size_t cell=first%shape.CellCount();
+				report<<"source_probe_"<<label<<"_first_index "<<first<<"\n"
+					<<"source_probe_"<<label<<"_first_component "<<first/shape.CellCount()<<"\n"
+					<<"source_probe_"<<label<<"_first_cell_xyz "<<cell%shape.nx<<' '
+					<<(cell/shape.nx)%shape.ny<<' '<<cell/(shape.nx*shape.ny)<<"\n"
+					<<"source_probe_"<<label<<"_first_canonical "<<firstCanonical<<"\n"
+					<<"source_probe_"<<label<<"_first_compared "<<firstCompared<<"\n";
+			}
+		};
 		const double advectiveStep=maximumSpeed>0.0?0.5*shape.cellWidthM/maximumSpeed:
 			std::numeric_limits<double>::infinity();
 		const double buoyantStep=maximumReducedGravity>0.0?
@@ -7001,7 +7115,25 @@ namespace
 			<<"production_device_p95_ms "<<deviceP95<<"\n"
 			<<"production_device_maximum_ms "<<deviceMaximum<<"\n"
 			<<"format13_retry_counters_persisted false\n";
+		output<<"source_probe_scope retained_state_last_accepted_dt_not_failed_candidate_replay\n"
+			<<"source_probe_migration_authority false\n"
+			<<"source_probe_shared_inputs staged_Q_evaluation_temperature_original_eligibility_Q_masks_mixing_time\n"
+			<<"source_probe_eligibility_policy legacy_checkpoint_temperature_vs_canonical_Q_reinversion\n"
+			<<"source_probe_volume_only_changes cell_volume_only\n"
+			<<"source_probe_diagnostic_case_id "<<caseRecord.caseRecordId<<"\n"
+			<<"source_probe_checkpoint_case_id "<<checkpoint.caseRecordId<<"\n"
+			<<"source_probe_dt_exactly_binary32 "<<(step==static_cast<double>(sourceProbe.timeStepS))<<"\n"
+			<<"source_probe_legacy_cell_volume_m3 "<<cellVolume<<"\n"
+			<<"source_probe_canonical_cell_volume_m3 "<<canonicalCellVolume<<"\n"
+			<<"source_probe_canonical_built "<<canonicalProbeBuilt<<"\n"
+			<<"source_probe_canonical_error "<<sourceProbeError<<"\n"
+			<<"source_probe_volume_only_built "<<volumeOnlyBuilt<<"\n"
+			<<"source_probe_volume_only_error "<<volumeOnlyError<<"\n";
+		if(canonicalProbeBuilt)compareSourcePackets(packets,"legacy",output);
+		if(canonicalProbeBuilt&&volumeOnlyBuilt)
+			compareSourcePackets(volumeOnlyPackets,"volume_only",output);
 		if(!output)return 105;
+		if(!canonicalProbeBuilt||!volumeOnlyBuilt)return 106;
 		std::fprintf(stderr,"PRODUCTION_CHECKPOINT_PHYSICS_DIAGNOSTIC steps=%llu time=%.17g "
 			"velocity=%.17g dt=%.17g gprime=%.17g qmax=%.17g HRR=%.17g "
 			"consumption_LHV=%.17g\n",
@@ -11259,6 +11391,67 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	sourceRequest.predictiveRadiation=false;sourceRequest.workerCount=1u;
 	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
 		request.frozenSource,&error))return 213;
+	{
+		std::vector<MethaneSourcePacket> carried;RadiationEscapeFactor carriedEscape;
+		if(!CarryCanonicalSourceForPersistence(request.frozenSource,carried,carriedEscape,error))return 213;
+		bool carriedBits=carried.size()==cells;
+		for(std::size_t cell=0u;cell<cells;++cell){
+			for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
+				const float value=static_cast<float>(carried[cell].constituentDelta[species]);
+				carriedBits=carriedBits&&std::memcmp(&value,
+					&request.frozenSource.SourceDelta()[(1u+species)*cells+cell],sizeof(float))==0;
+			}
+			const float energy=static_cast<float>(carried[cell].sensibleEnergyDeltaJPerM3);
+			carriedBits=carriedBits&&std::memcmp(&energy,
+				&request.frozenSource.SourceDelta()[8u*cells+cell],sizeof(float))==0;
+			const double diagnostics[]={carried[cell].reactedFuelKGPerM3,carried[cell].oxidizedCarbonKGPerM3,
+				carried[cell].grossCarbonFormedKGPerM3,carried[cell].gasHeatReleaseWPerM3,
+				carried[cell].sootHeatReleaseWPerM3,carried[cell].pilotEnergyDeltaJPerM3,
+				carried[cell].pilotExpansionIntegral,carried[cell].radiativeCoolingWPerM3};
+			const double canonical[]={request.frozenSource.ReactedFuelKGPerM3()[cell],
+				request.frozenSource.OxidizedCarbonKGPerM3()[cell],request.frozenSource.GrossCarbonFormedKGPerM3()[cell],
+				request.frozenSource.GasHeatReleaseWPerM3()[cell],request.frozenSource.SootHeatReleaseWPerM3()[cell],
+				request.frozenSource.PilotEnergyDeltaJPerM3()[cell],request.frozenSource.PilotExpansionIntegral()[cell],
+				request.frozenSource.RadiativeCoolingWPerM3()[cell]};
+			carriedBits=carriedBits&&std::memcmp(diagnostics,canonical,sizeof(canonical))==0;
+		}
+		carriedBits=carriedBits&&carriedEscape.beta==request.frozenSource.RadiationBeta()&&
+			carriedEscape.gamma==request.frozenSource.RadiationGamma()&&
+			carriedEscape.accepted==request.frozenSource.RadiationEscapeFactor();
+		// An alternate producer is not an argument to the carry API: this mutant
+		// is rejected by the type boundary, before any identity-gate invocation.
+		auto divergentReconstruction=[](std::vector<float> value){value[0]=1.0f;return value;};
+		constexpr bool reconstructionCallable=std::is_invocable<decltype(&CarryCanonicalSourceForPersistence),
+			const FireProductionFrozenSourcePacketSeal&,decltype(divergentReconstruction),
+			std::vector<MethaneSourcePacket>&,RadiationEscapeFactor&,std::string&>::value;
+		static_assert(!reconstructionCallable,"persistence must not accept an alternate source producer");
+		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_CARRY cells=%zu source_bits=%d diagnostics_bits=%d passed=%d\n",
+			cells,carriedBits?1:0,carriedBits?1:0,carriedBits?1:0);
+		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=reconstruction_not_invocable identity_gate_calls=0 passed=%d\n",
+			!reconstructionCallable?1:0);
+		FireProductionFrozenSourcePacketSeal unsealed;
+		std::vector<MethaneSourcePacket> unchanged=carried;std::string refusal;
+		const bool unsealedRefused=!CarryCanonicalSourceForPersistence(unsealed,carried,carriedEscape,refusal)&&
+			ProductionSourcePacketFieldBytes(carried)==ProductionSourcePacketFieldBytes(unchanged);
+		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=unsealed_before_carry atomic_refusal=%d passed=%d\n",
+			unsealedRefused?1:0,unsealedRefused?1:0);
+		bool defense=true;
+		for(unsigned int mutant=0u;mutant<4u;++mutant){
+			FireProductionResidentStepRequest ordinary;
+			ordinary.cellSourceIncrement=request.frozenSource.SourceDelta();
+			if(mutant==0u)ordinary.cellSourceIncrement[0]=1.0f;
+			else if(mutant==1u)ordinary.cellSourceIncrement.pop_back();
+			else if(mutant==2u)ordinary.cellSourceIncrement.push_back(0.0f);
+			else ordinary.cellSourceIncrement[0]=-0.0f;
+			FireProductionProjectedHeunMetalOwnerRequest refusedOwner;
+			const bool refused=!BuildProductionProjectedHeunOwnerRequest(ordinary,request.frozenSource,
+				sealedCase.envelopeBytes,0.0f,0.0f,refusedOwner,refusal)&&
+				refusal.find("dose changed after construction")!=std::string::npos;
+			defense=defense&&refused;
+			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=postcarry_mutation_%u passed=%d\n",mutant,refused?1:0);
+		}
+		if(!carriedBits||!unsealedRefused||!defense)return 213;
+	}
 	eos.physicalFlux.transport.temperatureK=request.frozenSource.BeginningTemperatureK();
 	eos.sourceDelta=request.frozenSource.SourceDelta();
 	for(std::size_t component=0u;component<9u;++component)eos.physicalFlux.ambient[component]=
