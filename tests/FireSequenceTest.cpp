@@ -11490,6 +11490,73 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_PILOT nonzero_distinct_cells=%zu bits_equal=%d passed=%d\n",
 			activePilotCells,pilotBitsMatch(pilotCarried)?1:0,pilotPassed?1:0);
 		if(!pilotPassed)return 213;
+		// Seed soot only in qualification, along the record's reverse oxidation
+		// vector: replace 1/16 of existing CO2, preserving the affine species law.
+		// Recompute sensible energy at the original T before authenticating input.
+		FireProductionFrozenMethaneSourceRequest ledgerRequest=pilotRequest;
+		for(std::size_t cell=0u;cell<cells;++cell){
+			ConservativeVector input{};
+			for(std::size_t component=0u;component<9u;++component)
+				input[component]=sourceRequest.beginningConservativeValues[component*cells+cell];
+			MethaneCellState seeded=FromConservativeVector(input,FireStateProducerPrecision::Binary32);
+			const double extent=seeded.constituent[MethaneCO2]/(16.0*fuel.SootCO2KGPerKGCarbon());
+			for(std::size_t species=0u;species<MethaneSpeciesCount;++species)
+				seeded.constituent[species]-=extent*fuel.SootOxidationDelta()[species];
+			if(!fuel.MixtureSensibleEnergyJPerM3(ThermochemicalDensities(seeded),temperatures[cell%8u],
+				seeded.sensibleEnergyJPerM3,&error))return 213;
+			const ConservativeVector seededInput=ToConservativeVector(seeded);
+			for(std::size_t component=0u;component<9u;++component)
+				ledgerRequest.beginningConservativeValues[component*cells+cell]=static_cast<float>(seededInput[component]);
+		}
+		FireProductionFrozenSourcePacketSeal ledgerSource;
+		std::vector<MethaneSourcePacket> ledgerCarried;RadiationEscapeFactor ledgerEscape;
+		if(!FireSim::FireProductionCanonicalSourceAuthority::Build(ledgerRequest,ledgerSource,&error)||
+			!CarryCanonicalSourceForPersistence(ledgerSource,ledgerCarried,ledgerEscape,error))return 213;
+		const std::vector<double>* ledgerValues[]={&ledgerSource.ReactedFuelKGPerM3(),
+			&ledgerSource.OxidizedCarbonKGPerM3(),&ledgerSource.GrossCarbonFormedKGPerM3(),
+			&ledgerSource.GasHeatReleaseWPerM3(),&ledgerSource.SootHeatReleaseWPerM3(),
+			&ledgerSource.PilotEnergyDeltaJPerM3(),&ledgerSource.PilotExpansionIntegral(),
+			&ledgerSource.RadiativeCoolingWPerM3()};
+		double MethaneSourcePacket::* ledgerMembers[]={&MethaneSourcePacket::reactedFuelKGPerM3,
+			&MethaneSourcePacket::oxidizedCarbonKGPerM3,&MethaneSourcePacket::grossCarbonFormedKGPerM3,
+			&MethaneSourcePacket::gasHeatReleaseWPerM3,&MethaneSourcePacket::sootHeatReleaseWPerM3,
+			&MethaneSourcePacket::pilotEnergyDeltaJPerM3,&MethaneSourcePacket::pilotExpansionIntegral,
+			&MethaneSourcePacket::radiativeCoolingWPerM3};
+		auto ledgerBitsMatch=[&](const std::vector<MethaneSourcePacket>& packets){
+			if(packets.size()!=cells)return false;
+			for(std::size_t field=0u;field<8u;++field)
+				for(std::size_t cell=0u;cell<cells;++cell)
+					if(std::memcmp(&(packets[cell].*ledgerMembers[field]),
+						&(*ledgerValues[field])[cell],sizeof(double))!=0)return false;
+			return true;};
+		bool ledgerPassed=ledgerBitsMatch(ledgerCarried);
+		for(std::size_t field=0u;field<8u;++field){
+			std::size_t nonzero=0u;
+			for(const double value:*ledgerValues[field])if(value!=0.0)++nonzero;
+			auto omitted=ledgerCarried;
+			for(auto& packet:omitted)packet.*ledgerMembers[field]=0.0;
+			const bool refused=!ledgerBitsMatch(omitted);
+			// PhysicalV1 pins zero gross soot yield. Omission of that zero is a
+			// true no-op; nonzero injection must still fail, with the record pinned.
+			const bool structuralZero=field==2u&&fuel.SootYieldKGPerKGFuel()==0.0&&nonzero==0u;
+			auto injected=ledgerCarried;
+			for(auto& packet:injected)packet.*ledgerMembers[field]=1.0;
+			const bool injectionRefused=!ledgerBitsMatch(injected);
+			const bool fieldPassed=((nonzero>0u&&refused)||structuralZero)&&injectionRefused;
+			ledgerPassed=ledgerPassed&&fieldPassed;
+			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_LEDGER field=%zu nonzero_cells=%zu omission_refused=%d structural_zero_noop=%d injection_refused=%d passed=%d\n",
+				field,nonzero,refused?1:0,structuralZero?1:0,injectionRefused?1:0,fieldPassed?1:0);
+			for(std::size_t other=field+1u;other<8u;++other){
+				auto swapped=ledgerCarried;
+				for(auto& packet:swapped)std::swap(packet.*ledgerMembers[field],packet.*ledgerMembers[other]);
+				const bool swapRefused=!ledgerBitsMatch(swapped);ledgerPassed=ledgerPassed&&swapRefused;
+				std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=ledger_swap_%zu_%zu passed=%d\n",
+					field,other,swapRefused?1:0);
+			}
+		}
+		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_LEDGER_ALL fields=8 swaps=28 bits_equal=%d passed=%d\n",
+			ledgerBitsMatch(ledgerCarried)?1:0,ledgerPassed?1:0);
+		if(!ledgerPassed)return 213;
 	}
 	eos.physicalFlux.transport.temperatureK=request.frozenSource.BeginningTemperatureK();
 	eos.sourceDelta=request.frozenSource.SourceDelta();

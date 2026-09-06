@@ -55,6 +55,14 @@ Existing historical source ledgers are never rewritten with canonical values.
   pilot energy and expansion fields. Omission of either field and swapping the
   fields must fail the byte comparator. Review caught that the original
   no-pilot owner fixture alone could not detect those mutations.
+- The sibling soot-coverage audit adds qualification-only carbon along the
+  pinned reverse-oxidation vector, preserving the affine species relation, and
+  recomputes sensible energy at the original temperature. Its canonical packet
+  must cover nonzero oxidation and soot heat, as well as the other live ledger
+  fields. All eight fields reject nonzero injection and all 28 pairwise swaps;
+  omissions reject for each nonzero field. Gross formation is the one structural
+  zero: PhysicalV1 has exactly zero soot yield, which the fixture explicitly
+  checks. Omitting that zero is an actual no-op, not a fabricated nonzero case.
 - An alternate reconstruction callable is not invocable through the carry API;
   it cannot reach the identity gate.
 - Unsealed input refuses before modifying persisted packets.
