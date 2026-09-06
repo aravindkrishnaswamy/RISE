@@ -1184,6 +1184,72 @@ namespace
 		owner.maximumPicardIterations=64u;return true;
 	}
 
+	bool WriteProductionCrossingConvergence(const std::filesystem::path& auditPath,
+		const RISE::FireProductionProjectedHeunMetalOwnerRequest& liveRequest,
+		const RISE::FireProductionProjectedHeunMetalOwnerResult& accepted,
+		const double beginningTimeS,const double representedStepS,const std::size_t acceptedStep,
+		const std::size_t columnX,const std::size_t columnY,std::string& error,
+		const bool syntheticFixture=false)
+	{
+		using namespace FireProductionOwnerConvergenceProbe;
+		if(!MatchesAcceptedEvent(liveRequest,beginningTimeS,representedStepS,error))return false;
+		const std::string ledgerSHA=DigestFile(auditPath.string()+".source_ledger.v1");
+		const std::string inputSHA=DigestFile(auditPath.string()+".source_observation_inputs.bin");
+		const std::string eventSHA=DigestFile(auditPath.string()+".event.v1");
+		if(!IsSHA256(ledgerSHA)||!IsSHA256(inputSHA)||!IsSHA256(eventSHA)){
+			error="crossing convergence requires complete persisted source/event bindings";return false;}
+		// Keep the originally accepted output untouched. This second owner has no
+		// resident-step token/publication interface and cannot advance the solver.
+		auto diagnosticRequest=liveRequest;
+		diagnosticRequest.qualificationCaptureIterationTrace=true;
+		diagnosticRequest.qualificationProductionStageTokens=true;
+		RISE::FireProductionProjectedHeunMetalOwnerResult observed;
+		if(!RISE::AttemptFireProductionProjectedHeunMetalOwner(diagnosticRequest,observed,&error)||
+			!SameAcceptedOwner(accepted,observed,error))return false;
+		const auto& shape=liveRequest.lineage.eos.physicalFlux.transport.shape;
+		const Geometry geometry={shape.nx,shape.ny,shape.nz,columnX,columnY};
+		Context context;context.caseSHA256=RISECBOR64::SHA256Hex(liveRequest.lineage.eos.caseRecordEnvelope);
+		context.source=syntheticFixture?"r207_synthetic_fixture_no_physics_claim":
+			"r207_accepted_crossing_observational_rerun";
+		context.ownerIdentity=observed.ownerPublicationIdentity;
+		context.acceptedIterations=observed.acceptedPicardIterations;
+		const auto digest=[](const std::string& value){return RISECBOR64::SHA256Hex(
+			RISECBOR64::Bytes(value.begin(),value.end()));};
+		const std::array<const std::vector<RISE::FireProductionProjectedHeunIterationTrace>*,3> traces={{
+			&observed.qualificationIterationTrace[0],&observed.qualificationIterationTrace[1],
+			&observed.qualificationIterationTrace[2]}};
+		std::string text,binding,csv;
+		if(!Serialize(traces,geometry,context,digest,text,binding,error,&csv))return false;
+		std::ostringstream artifact;artifact<<std::setprecision(17)
+			<<"OWNER_CONVERGENCE_EVENT version=1 accepted_step_beginning="<<acceptedStep
+			<<" beginning_time_s="<<beginningTimeS<<" dt_s="<<representedStepS
+			<<" end_time_s="<<beginningTimeS+representedStepS
+			<<" input_payload_root_sha256="<<accepted.inputPayloadRootSHA256
+			<<" output_payload_root_sha256="<<accepted.publicationPayloadRootSHA256
+			<<" kernel_set_sha256="<<accepted.qualifiedKernelSetSHA256
+			<<" source_packet_identity="<<liveRequest.lineage.frozenSource.PacketIdentity()
+			<<" source_ledger_sha256="<<ledgerSHA
+			<<" source_observation_inputs_sha256="<<inputSHA
+			<<" event_sha256="<<eventSHA
+			<<" terminal_fields_bit_identical=1 stage_identities_identical=1 solver_publications=0"
+			<<" diagnostic_device_ms="<<observed.deviceElapsedMS
+			<<" diagnostic_wall_ms="<<observed.wallElapsedMS
+			<<" qualification_trace_staging_count="<<observed.qualificationTraceStagingCount
+			<<" fixed_k_selection=not_authorized\n";
+		if(!Write(artifact,traces,geometry,context,digest,binding,error))return false;
+		artifact<<"OWNER_CONVERGENCE_CSV sha256="<<digest(csv)<<"\n";
+		const std::filesystem::path transcriptPath=auditPath.string()+".convergence.v1";
+		const std::filesystem::path csvPath=transcriptPath.string()+".csv";
+		std::ofstream csvOutput(csvPath,std::ios::binary);csvOutput<<csv;csvOutput.close();
+		std::ofstream output(transcriptPath,std::ios::binary);output<<artifact.str();output.close();
+		if(!output||!csvOutput||DigestFile(transcriptPath)!=digest(artifact.str())||
+			DigestFile(csvPath)!=digest(csv)){error="crossing convergence artifact write failed";return false;}
+		std::fprintf(stderr,"OWNER_CONVERGENCE_CROSSING path=%s sha256=%s csv_sha256=%s "
+			"terminal_bit_identity=1 diagnostic_wall_ms=%.17g passed=1\n",
+			transcriptPath.string().c_str(),DigestFile(transcriptPath).c_str(),digest(csv).c_str(),
+			observed.wallElapsedMS);return true;
+	}
+
 	void AppendReplayUInt64(RISECBOR64::Bytes& bytes,const std::uint64_t value)
 	{
 		for(unsigned int byte=0u;byte<8u;++byte)
@@ -3989,6 +4055,7 @@ namespace
 						solverPhase="production resident attempt";
 						RISE::FireProductionResidentStepResult production;
 						RISE::FireProductionProjectedHeunMetalOwnerResult projectedHeunDiagnostics;
+						RISE::FireProductionProjectedHeunMetalOwnerRequest projectedHeunRequest;
 						RISE::FireProductionSingleStageFCTDiagnosticResult singleStageFCT;
 						bool attemptComputed=false;double wallMS=0.0,deviceMS=0.0;
 						for(;;){
@@ -4029,13 +4096,12 @@ namespace
 									production.acceptedShape=request.force.shape;
 								}
 							}else if(persistence.UsesProjectedHeunOwner()){
-								RISE::FireProductionProjectedHeunMetalOwnerRequest ownerRequest;
 								attemptComputed=packetOK&&BuildProductionProjectedHeunOwnerRequest(request,
 									projectedHeunSource,caseRecord.envelopeBytes,
 									static_cast<float>(config.projectionTolerancePerS),
 									static_cast<float>(config.openBoundary.velocityToleranceMPerS),
-									ownerRequest,error)&&
-									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(ownerRequest,
+									projectedHeunRequest,error)&&
+									RISE::AttemptFireProductionProjectedHeunResidentStepMetal(projectedHeunRequest,
 										production,&projectedHeunDiagnostics,&error);
 							}else attemptComputed=persistence.compatibleMomentumDiagnostic?
 								RISE::AttemptFireProductionCompatibleMomentumDiagnosticMetal(
@@ -4521,6 +4587,11 @@ namespace
 								event.close();
 								if(!event){lastAdvanceError="production onset event write failed";
 									mandatoryEvidenceFailure=true;advancedOK=false;break;}
+								if(persistence.sealedProjectedHeunReplay&&
+									!WriteProductionCrossingConvergence(effectiveMomentumAuditPath,
+										projectedHeunRequest,projectedHeunDiagnostics,simulationTimeS,
+										representedStep,acceptedSteps,columnX,columnY,lastAdvanceError)){
+									mandatoryEvidenceFailure=true;advancedOK=false;break;}
 								observationEvidencePublished=true;
 								if(exactTimeObservation)productionMomentumObservationCaptured=true;
 								if(onsetThresholdIndex<productionOnsetThresholdCaptured.size()){
@@ -4558,6 +4629,16 @@ namespace
 										if(!completeCopied){lastAdvanceError=
 											"production onset skipped-threshold publication failed";
 											mandatoryEvidenceFailure=true;advancedOK=false;break;}
+										if(persistence.sealedProjectedHeunReplay){
+											bool convergenceCopied=true;
+											for(const char* suffix:{".convergence.v1",".convergence.v1.csv"})
+												convergenceCopied=convergenceCopied&&std::filesystem::copy_file(
+													effectiveMomentumAuditPath.string()+suffix,skippedPath.string()+suffix,
+													std::filesystem::copy_options::overwrite_existing,copyError);
+											if(!convergenceCopied){lastAdvanceError=
+												"production onset convergence alias publication failed";
+												mandatoryEvidenceFailure=true;advancedOK=false;break;}
+										}
 										std::ofstream alias(skippedPath.string()+".event.v1",std::ios::trunc);
 										alias<<std::setprecision(17)
 											<<"schema rise.fire.production.onset_observation_alias.v1\n"
@@ -7431,6 +7512,14 @@ namespace
 				!DigestFile(budget.string()+".source_ledger.v1").empty()&&
 				!DigestFile(budget.string()+".source_observation_inputs.bin").empty()&&
 				!DigestFile(budget.string()+".event.v1").empty();
+			if(sealedProjectedReplay&&std::filesystem::exists(budget)){
+				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
+					!DigestFile(budget.string()+".convergence.v1").empty()&&
+					!DigestFile(budget.string()+".convergence.v1.csv").empty();
+				summary<<"threshold_"<<threshold<<"_convergence_sha256 "<<
+					DigestFile(budget.string()+".convergence.v1")<<"\nthreshold_"<<threshold<<
+					"_convergence_csv_sha256 "<<DigestFile(budget.string()+".convergence.v1.csv")<<"\n";
+			}
 			summary<<"threshold_"<<threshold<<"_captured "<<
 				(std::filesystem::exists(budget)?1:0)<<"\n";
 			if(std::filesystem::exists(budget))summary<<"threshold_"<<threshold<<
@@ -7454,6 +7543,15 @@ namespace
 						("threshold_"+std::to_string(threshold)+".raw.csv"));
 		const std::filesystem::path exactObservation=outputDirectory/"budgets"/
 			"reference_composition_candidate_fixed_column.raw.csv";
+		if(sealedProjectedReplay){
+			capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
+				!DigestFile(exactObservation.string()+".convergence.v1").empty()&&
+				!DigestFile(exactObservation.string()+".convergence.v1.csv").empty();
+			summary<<"reference_composition_candidate_convergence_sha256 "<<
+				DigestFile(exactObservation.string()+".convergence.v1")<<
+				"\nreference_composition_candidate_convergence_csv_sha256 "<<
+				DigestFile(exactObservation.string()+".convergence.v1.csv")<<"\n";
+		}
 		summary<<"observation_not_before_s "<<
 			persistence.productionMomentumObservationTimeS<<"\n"
 			<<"observation_reference_tier "<<
@@ -7500,7 +7598,8 @@ namespace
 			result.acceptedTimeStepHistoryS.size(),wallS,sealedLegacyReplay?
 				"ordinary_independent_dual_momentum_resident_step":
 				(persistence.singleStageFCTDiagnostic?
-				"production_single_stage_fct_diagnostic_v1":"compatible_momentum_diagnostic"),
+				"production_single_stage_fct_diagnostic_v1":(sealedProjectedReplay?
+				"section_3_7_projected_heun_resident_owner":"compatible_momentum_diagnostic")),
 			producerBuildId.c_str(),
 			DigestFile(trajectory).c_str(),DigestFile(summaryPath).c_str());
 		return reachedTarget?0:95;
@@ -14799,6 +14898,87 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	bool convergenceProbePassed=true;
 	if(convergenceOutputPath){
 		using namespace FireProductionOwnerConvergenceProbe;
+		auto crossingRequest=productionOwnerRequest;
+		crossingRequest.qualificationCaptureIterationTrace=true;
+		crossingRequest.qualificationProductionStageTokens=true;
+		FireProductionProjectedHeunMetalOwnerResult crossingObserved;
+		std::string crossingError;
+		const bool crossingEquivalent=AttemptFireProductionProjectedHeunMetalOwner(
+			crossingRequest,crossingObserved,&crossingError)&&
+			SameAcceptedOwner(ownerResidentDiagnostics,crossingObserved,crossingError);
+		bool crossingREDs=crossingEquivalent;
+		if(crossingEquivalent){
+			const double beginning=productionOwnerRequest.lineage.frozenSource.BeginningTimeS();
+			const double dt=productionOwnerRequest.lineage.frozenSource.TimeStepS();
+			std::string clockError;
+			const bool clockGreen=MatchesAcceptedEvent(productionOwnerRequest,beginning,dt,clockError);
+			const bool staleDT=clockGreen&&!MatchesAcceptedEvent(productionOwnerRequest,beginning,
+				std::nextafter(dt,std::numeric_limits<double>::infinity()),clockError);
+			std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=stale_dt atomic_refusal=%d "
+				"error=%s passed=%d\n",staleDT?1:0,clockError.c_str(),staleDT?1:0);
+			crossingREDs=staleDT&&crossingREDs;
+			const std::filesystem::path fixtureBase=std::string(convergenceOutputPath)+".synthetic-crossing";
+			const auto fixtureBindings=[&](const std::filesystem::path& path){
+				for(const char* suffix:{".source_ledger.v1",".source_observation_inputs.bin",".event.v1"}){
+					std::ofstream fixture(path.string()+suffix,std::ios::binary);
+					fixture<<"synthetic r207 exporter fixture; not production evidence\n";
+					fixture.close();if(!fixture)return false;}return true;};
+			std::string exportError;
+			const bool exportGreen=fixtureBindings(fixtureBase)&&WriteProductionCrossingConvergence(
+				fixtureBase,productionOwnerRequest,ownerResidentDiagnostics,beginning,dt,0u,
+				shape.nx/2u,shape.ny/2u,exportError,true);
+			std::fprintf(stderr,"OWNER_CONVERGENCE_EXPORT_FIXTURE synthetic_inputs=1 "
+				"error=%s passed=%d\n",exportError.c_str(),exportGreen?1:0);
+			crossingREDs=exportGreen&&crossingREDs;
+			const auto exportRED=[&](const char* name,const auto& observed,const double observedDT,
+				const bool supplyBindings){
+				const std::filesystem::path path=fixtureBase.string()+"."+name;
+				const bool noPriorOutput=!std::filesystem::exists(path.string()+".convergence.v1")&&
+					!std::filesystem::exists(path.string()+".convergence.v1.csv");
+				const bool setup=noPriorOutput&&(!supplyBindings||fixtureBindings(path));
+				std::string refusal;
+				const bool refused=setup&&!WriteProductionCrossingConvergence(path,productionOwnerRequest,
+					observed,beginning,observedDT,0u,shape.nx/2u,shape.ny/2u,refusal,true)&&
+					!std::filesystem::exists(path.string()+".convergence.v1")&&
+					!std::filesystem::exists(path.string()+".convergence.v1.csv");
+				std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
+					name,refused?1:0,refusal.c_str(),refused?1:0);return refused;};
+			crossingREDs=exportRED("missing_event_binding",ownerResidentDiagnostics,dt,false)&&crossingREDs;
+			crossingREDs=exportRED("export_stale_dt",ownerResidentDiagnostics,
+				std::nextafter(dt,std::numeric_limits<double>::infinity()),true)&&crossingREDs;
+			auto terminalMutant=ownerResidentDiagnostics;
+			terminalMutant.conservativeValues[0]=std::nextafter(terminalMutant.conservativeValues[0],
+				std::numeric_limits<float>::infinity());
+			crossingREDs=exportRED("export_terminal_bit_mutation",terminalMutant,dt,true)&&crossingREDs;
+			const auto terminalRED=[&](const char* name,const auto& mutant){std::string refusal;
+				const bool refused=!SameAcceptedOwner(ownerResidentDiagnostics,mutant,refusal);
+				std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
+					name,refused?1:0,refusal.c_str(),refused?1:0);return refused;};
+			auto mutant=crossingObserved;
+			mutant.conservativeValues[0]=std::nextafter(mutant.conservativeValues[0],
+				std::numeric_limits<float>::infinity());
+			crossingREDs=terminalRED("observed_terminal_bit_mutation",mutant)&&crossingREDs;
+			mutant=crossingObserved;mutant.inputPayloadRootSHA256[0]=
+				mutant.inputPayloadRootSHA256[0]=='0'?'1':'0';
+			crossingREDs=terminalRED("stale_input_payload_root",mutant)&&crossingREDs;
+			mutant=crossingObserved;mutant.targetPublicationIdentity[1]^=UINT64_C(1);
+			crossingREDs=terminalRED("stale_target_parent",mutant)&&crossingREDs;
+			FireProductionResidentStepResult forbiddenPublication;
+			FireProductionProjectedHeunMetalOwnerResult forbiddenDiagnostics;
+			std::string forbiddenError;
+			const bool noPublication=!AttemptFireProductionProjectedHeunResidentStepMetal(
+				crossingRequest,forbiddenPublication,&forbiddenDiagnostics,&forbiddenError)&&
+				!forbiddenPublication.HasAcceptedManifoldToken()&&
+				forbiddenPublication.conservativeValues.empty()&&
+				forbiddenDiagnostics.ownerPublicationIdentity==0u;
+			std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=diagnostic_cannot_publish "
+				"atomic_refusal=%d error=%s passed=%d\n",noPublication?1:0,
+				forbiddenError.c_str(),noPublication?1:0);crossingREDs=noPublication&&crossingREDs;
+		}
+		std::fprintf(stderr,"OWNER_CONVERGENCE_PRODUCTION_RERUN terminal_bit_identity=%d "
+			"stage_identity=%d reds=%d error=%s passed=%d\n",crossingEquivalent?1:0,
+			crossingEquivalent?1:0,crossingREDs?1:0,crossingError.c_str(),
+			crossingEquivalent&&crossingREDs?1:0);
 		const Geometry geometry={shape.nx,shape.ny,shape.nz,shape.nx/2u,shape.ny/2u};
 		Context context;context.caseSHA256=RISECBOR64::SHA256Hex(ownerEOS.caseRecordEnvelope);
 		context.source="r201_qualified_metal_fixture_no_checkpoint";
@@ -14811,7 +14991,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			&ownerObserved.qualificationIterationTrace[2]}};
 		std::string serialized,binding,probeError,metalCSV;
 		std::ostringstream transcript;
-		convergenceProbePassed=ownerAccepted&&owner64Accepted&&ownerMirrorBounded&&
+		convergenceProbePassed=crossingEquivalent&&crossingREDs&&
+			ownerAccepted&&owner64Accepted&&ownerMirrorBounded&&
 			Serialize(traces,geometry,context,digest,serialized,binding,probeError,&metalCSV)&&
 			Write(transcript,traces,geometry,context,digest,binding,probeError);
 		const auto red=[&](const char* name,const auto& mutantTraces,const Geometry& mutantGeometry,

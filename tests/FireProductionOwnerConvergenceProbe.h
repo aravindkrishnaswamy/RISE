@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iomanip>
 #include <limits>
 #include <ostream>
@@ -34,6 +35,81 @@ struct Context
 inline bool IsSHA256(const std::string& value)
 {
 	return value.size()==64u&&value.find_first_not_of("0123456789abcdef")==std::string::npos;
+}
+
+template<class Request>
+bool MatchesAcceptedEvent(const Request& request,const double beginningTimeS,
+	const double representedStepS,std::string& error)
+{
+	if(!request.lineage.frozenSource.IsSealed()||
+		request.lineage.frozenSource.BeginningTimeS()!=beginningTimeS||
+		static_cast<double>(request.lineage.frozenSource.TimeStepS())!=representedStepS||
+		static_cast<double>(request.lineage.eos.candidateTimeStepS)!=representedStepS||
+		request.qualificationCaptureIterationTrace||request.qualificationProductionStageTokens){
+		error="crossing convergence stale input/time or diagnostic production request";return false;}
+	return true;
+}
+
+// Observational reruns may export traces only after every terminal arithmetic
+// field and every stage authority matches the already accepted production
+// owner. Timings/allocation and qualification-transfer counters intentionally
+// differ; this is not permission to publish the diagnostic result.
+template<class Owner>
+bool SameAcceptedOwner(const Owner& accepted,const Owner& diagnostic,std::string& error)
+{
+	const auto scalar=[](const auto& a,const auto& b){return
+		std::memcmp(&a,&b,sizeof(a))==0;};
+	const auto field=[](const auto& a,const auto& b){return a.size()==b.size()&&
+		(a.empty()||std::memcmp(a.data(),b.data(),a.size()*sizeof(a[0]))==0);};
+	const auto axes=[&](const auto& a,const auto& b){
+		for(std::size_t i=0u;i<a.size();++i)if(!field(a[i],b[i]))return false;
+		return true;};
+#define SAME_OWNER_VALUE(name) if(!(accepted.name==diagnostic.name)){error="crossing owner identity mismatch: " #name;return false;}
+#define SAME_OWNER_FIELD(name) if(!field(accepted.name,diagnostic.name)){error="crossing owner field mismatch: " #name;return false;}
+#define SAME_OWNER_AXES(name) if(!axes(accepted.name,diagnostic.name)){error="crossing owner field mismatch: " #name;return false;}
+#define SAME_OWNER_SCALAR(name) if(!scalar(accepted.name,diagnostic.name)){error="crossing owner scalar mismatch: " #name;return false;}
+	if(!accepted.accepted||!diagnostic.accepted||accepted.ownerPublicationIdentity==0u||
+		accepted.intermediateSealFormat!="qualified-kernel-stage-token"||
+		accepted.intermediateDigestVersion!=2u||!IsSHA256(accepted.inputPayloadRootSHA256)||
+		!IsSHA256(accepted.publicationPayloadRootSHA256)||!IsSHA256(accepted.qualifiedKernelSetSHA256)){
+		error="crossing requires an accepted production-stage-token owner";return false;}
+	SAME_OWNER_VALUE(intermediateSealFormat);SAME_OWNER_VALUE(intermediateDigestVersion);
+	SAME_OWNER_VALUE(payloadDigestFormat);SAME_OWNER_VALUE(payloadDigestVersion);
+	SAME_OWNER_VALUE(qualifiedKernelSetSHA256);SAME_OWNER_VALUE(inputPayloadRootSHA256);
+	SAME_OWNER_VALUE(publicationPayloadRootSHA256);SAME_OWNER_VALUE(publicationPayloadBytes);
+	SAME_OWNER_VALUE(ownerPublicationIdentity);SAME_OWNER_VALUE(acceptedPicardIterations);
+	SAME_OWNER_VALUE(projectionTargetCorrectionIteration);SAME_OWNER_VALUE(acceptedTargetCorrectionIteration);
+	SAME_OWNER_VALUE(activeSetCycleLength);SAME_OWNER_VALUE(activeSetCanonicalProjectionCount);
+	SAME_OWNER_VALUE(activeSetDiscontinuousClass);SAME_OWNER_VALUE(limiterDiscontinuousClass);
+	SAME_OWNER_VALUE(projectionPublicationIdentity);SAME_OWNER_VALUE(transportPublicationIdentity);
+	SAME_OWNER_VALUE(physicalFluxPublicationIdentity);SAME_OWNER_VALUE(candidatePublicationIdentity);
+	SAME_OWNER_VALUE(EOSPublicationIdentity);SAME_OWNER_VALUE(frozenSourcePublicationIdentity);
+	SAME_OWNER_VALUE(targetPublicationIdentity);SAME_OWNER_VALUE(commutingIdentityPassed);
+	SAME_OWNER_FIELD(conservativeValues);SAME_OWNER_FIELD(acceptedFaceAlpha);
+	SAME_OWNER_FIELD(temperatureK);SAME_OWNER_FIELD(representedPressureRatio);
+	SAME_OWNER_FIELD(absoluteEOSDeviation);SAME_OWNER_FIELD(heunEddyKinematicViscosityM2PerS);
+	SAME_OWNER_AXES(momentumKGPerM2S);SAME_OWNER_AXES(velocityMPerS);
+	SAME_OWNER_AXES(provisionalMomentumKGPerM2S);SAME_OWNER_AXES(heunAdvectionMomentumRateKGPerM2S2);
+	SAME_OWNER_AXES(heunBuoyancyMomentumRateKGPerM2S2);SAME_OWNER_AXES(heunStressMomentumRateKGPerM2S2);
+	SAME_OWNER_AXES(heunPhaseSourceMomentumRateKGPerM2S2);SAME_OWNER_AXES(projectionTargetPerS);
+	SAME_OWNER_AXES(acceptedTargetPerS);SAME_OWNER_AXES(picardResidualPerS);
+	SAME_OWNER_AXES(projection.faceDensityKGPerM3);SAME_OWNER_AXES(projection.velocityMPerS);
+	SAME_OWNER_AXES(projection.momentumKGPerM2S);SAME_OWNER_AXES(projection.pressureOpenInflow);
+	SAME_OWNER_FIELD(projection.pressurePa);
+	SAME_OWNER_VALUE(projection.validationPassed);SAME_OWNER_VALUE(projection.executedVCycleCount);
+	SAME_OWNER_VALUE(projection.executedJacobiSweepCount);
+	SAME_OWNER_SCALAR(projection.maximumPreProjectionResidualPerS);
+	SAME_OWNER_SCALAR(projection.maximumPostProjectionResidualPerS);
+	SAME_OWNER_SCALAR(projection.validationBandPerS);
+	SAME_OWNER_SCALAR(projection.maximumOpenComplementarityDiscrepancyMPerS);
+	SAME_OWNER_SCALAR(projection.removedFineRightHandSideMean);
+	SAME_OWNER_SCALAR(maximumCommutingResidualKGPerM3);SAME_OWNER_SCALAR(commutingIdentityScaleKGPerM3);
+	SAME_OWNER_SCALAR(commutingIdentityBoundKGPerM3);
+#undef SAME_OWNER_VALUE
+#undef SAME_OWNER_FIELD
+#undef SAME_OWNER_AXES
+#undef SAME_OWNER_SCALAR
+	return true;
 }
 
 // The digest function is supplied by the test's existing SHA-256 implementation.
