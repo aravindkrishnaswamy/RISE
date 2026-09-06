@@ -27,6 +27,15 @@ Equating the two and solving for scale':
 Defaults when a param is absent: scale=1.0, windowsize=0.01,
 normalize_gradient=FALSE (case-insensitive TRUE/FALSE).
 
+NON-POSITIVE WINDOWSIZE IS A SPECIAL CASE, NOT A POINT ON THE ABOVE CURVE.
+`windowsize <= 0` makes the legacy modifier INERT (`BumpMap::Modify`'s
+central difference samples the same point on both sides and its
+normalisation is gated on `dWindow > 0`), but `relief_modifier`'s `step 0`
+means AUTO (a full footprint/1e-3-floor perturbation) -- the opposite of
+inert. So this script does NOT fold such a chunk through the algebra above;
+it emits `scale 0` instead (which neutralises the perturbation regardless of
+`step`), with a WARN naming the file:line and the reason.
+
 THE TRANSFORMATION.  For every
     bumpmap_modifier { name N  function F  scale S  windowsize W
                         normalize_gradient G }
@@ -62,6 +71,12 @@ Idempotent: a file with no `bumpmap_modifier` chunk is untouched (no write,
 no timestamp change); the emitted `scalar_painter` / `relief_modifier` pair
 is not itself a `bumpmap_modifier`, so re-running on migrated output is a
 structural no-op.
+
+A trailing comment on a RECOGNIZED parameter line (`scale 0.0075  # tuned`),
+on the `bumpmap_modifier` keyword line itself (with or without the brace on
+the same line), or on the closing `}` line is carried too, the same
+`# migrated: <raw line>` idiom used for an unrecognized parameter, so a
+hand-annotated chunk loses no authored text either.
 
 Accepts `.RISEscene` and `.RISEscript` under `--root` (default `scenes`), or
 explicit file paths as positional arguments (any extension) so a single
@@ -344,6 +359,29 @@ def migrate_text(text, stats, path_label=''):
             # ParseStateBag::SetSingle overwrite semantics).
             params[matched_key] = (matched_groups.group(3), matched_groups.group(1),
                                     matched_groups.group(2), line_no)
+            # A RECOGNIZED parameter line can still carry a trailing comment
+            # (`scale 0.0075  # hand-tuned`); `cline` has already had it
+            # stripped by strip_comments, so `raw != cline` is exactly the
+            # signal that one was present.  Carried the same way an
+            # unrecognized line is: verbatim, as `# migrated: <raw>`, so
+            # nothing authored is dropped here either.
+            if raw != cline:
+                extra_lines.append('%s# migrated: %s' % (indent, raw.strip()))
+                stats['comments_carried'] += 1
+
+        # The keyword line (`bumpmap_modifier`, or `bumpmap_modifier {` when
+        # the brace shares it) and the closing `}` line are OUTSIDE
+        # raw_interior/code_interior (that slice excludes both by
+        # convention), so a trailing comment on either would otherwise be
+        # silently dropped -- the same `raw != code` signal, carried the
+        # same way, prepended/appended so the two keep their original
+        # position relative to the interior comments.
+        if lines[i] != code[i]:
+            extra_lines.insert(0, '%s# migrated: %s' % (indent, lines[i].strip()))
+            stats['comments_carried'] += 1
+        if lines[end] != code[end]:
+            extra_lines.append('%s# migrated: %s' % (indent, lines[end].strip()))
+            stats['comments_carried'] += 1
 
         name_val = params.get('name')
         func_val = params.get('function')
@@ -382,10 +420,34 @@ def migrate_text(text, stats, path_label=''):
             scale = DEFAULT_SCALE
 
         # windowsize
+        windowsize_nonpositive = False
         if 'windowsize' in params:
             tok, _, _, ln = params['windowsize']
             try:
                 windowsize = float(tok)
+                if windowsize <= 0:
+                    # Legacy `BumpMap::Modify` is INERT at windowsize <= 0:
+                    # the central difference samples the same point on both
+                    # sides (step 0) and its normalisation is gated on
+                    # `dWindow > 0`, so the net perturbation is identically
+                    # zero.  The migrated `step W` with W <= 0 means AUTO in
+                    # relief_modifier (§3.3: `step_user > 0 ? step_user :
+                    # ...`), i.e. a full footprint/1e-3-floor perturbation --
+                    # the opposite of inert.  `scale 0` is what actually
+                    # reproduces "inert" losslessly: it neutralises the
+                    # perturbation regardless of what `step` ends up being.
+                    windowsize_nonpositive = True
+                    stats['nonpositive_windowsize'] += 1
+                    print('  WARN %s:%d: `windowsize %s` is not positive -- '
+                          'the legacy modifier is INERT there (BumpMap.cpp '
+                          'gates its normalisation on dWindow > 0; the '
+                          'central difference samples the same point on '
+                          'both sides), but a migrated `step 0` means AUTO '
+                          '(full perturbation) in relief_modifier, not '
+                          'inert.  Emitting `scale 0` instead of the folded '
+                          'algebra so the migrated chunk stays inert, '
+                          'matching the legacy behaviour.'
+                          % (path_label or '<text>', ln, tok), file=sys.stderr)
             except ValueError:
                 stats['malformed_params'] += 1
                 print('  WARN %s:%d: `windowsize %s` is not a number; using '
@@ -414,8 +476,13 @@ def migrate_text(text, stats, path_label=''):
         else:
             normalize_gradient = DEFAULT_NORMALIZE
 
-        sprime = compute_sprime(scale, windowsize, normalize_gradient)
-        sprime_str = format_float(sprime)
+        if windowsize_nonpositive:
+            sprime_str = '0'          # bare zero, matching the scene
+                                       # language's own convention (`step 0`)
+                                       # rather than `format_float`'s `0.0`
+        else:
+            sprime = compute_sprime(scale, windowsize, normalize_gradient)
+            sprime_str = format_float(sprime)
 
         height_base = '%s__height' % orig_name
         height_name = mint_height_name(height_base, existing_names,
@@ -482,6 +549,8 @@ def new_stats():
         'malformed_params': 0,
         'name_collisions': 0,
         'unterminated': 0,
+        'comments_carried': 0,
+        'nonpositive_windowsize': 0,
         'files_touched_set': set(),
         '_verbose': False,
     }
@@ -538,6 +607,29 @@ def selftest():
     new_text, changed = migrate_text(text, stats, path_label='<t2>')
     check('G FALSE -> scale\' = -S*2*W',
           changed and '\tscale\t-0.005\n}' in new_text,
+          repr(new_text))
+
+    # 2b. windowsize <= 0 is a special case (P2-6): the legacy modifier is
+    # INERT there, but a migrated `step 0` means AUTO (full perturbation) --
+    # so the migrator must emit `scale 0`, not the folded algebra, and warn.
+    text = _mk_bumpmap(name='inert_bump', function='f', scale='5.0',
+                        windowsize='0')
+    stats = new_stats()
+    new_text, changed = migrate_text(text, stats, path_label='<t2b>')
+    check('windowsize 0 -> scale\' = 0 (inert), not the folded algebra',
+          changed and stats['nonpositive_windowsize'] == 1
+          and '\tscale\t0\n}' in new_text
+          and 'relief_modifier' in new_text,
+          repr(new_text))
+
+    # 2c. Same for a negative windowsize.
+    text = _mk_bumpmap(name='neg_window', function='f', scale='2.0',
+                        windowsize='-0.01')
+    stats = new_stats()
+    new_text, changed = migrate_text(text, stats, path_label='<t2c>')
+    check('negative windowsize -> scale\' = 0 (inert)',
+          changed and stats['nonpositive_windowsize'] == 1
+          and '\tscale\t0\n}' in new_text,
           repr(new_text))
 
     # 3. Defaults applied (scale, windowsize, normalize_gradient all absent)
@@ -602,6 +694,49 @@ def selftest():
     check('authored comment inside the chunk is carried into relief_modifier',
           changed and '# hand-tuned for the velvet weave' in new_text
           and new_text.index('# hand-tuned') > new_text.index('relief_modifier'),
+          repr(new_text))
+
+    # 8b. A RECOGNIZED parameter line's trailing comment is carried too, not
+    # silently dropped (P2-5: only the value token used to survive).
+    text = ('bumpmap_modifier\n{\nname creases\nfunction crease_field\n'
+            'scale 0.0075  # hand-tuned for the velvet weave\n'
+            'windowsize 0.004\nnormalize_gradient TRUE\n}\n')
+    stats = new_stats()
+    new_text, changed = migrate_text(text, stats, path_label='<t8b>')
+    check('trailing comment on a recognized parameter line is carried',
+          changed and stats['comments_carried'] == 1
+          and '# migrated: scale 0.0075  # hand-tuned for the velvet weave' in new_text
+          and '\tscale\t-0.0075\n' in new_text,
+          repr(new_text))
+
+    # 8c. A trailing comment on the `bumpmap_modifier` KEYWORD line itself
+    # (brace on the next line) is carried too.
+    text = ('bumpmap_modifier  # the crease bump\n{\nname creases\n'
+            'function crease_field\n}\n')
+    stats = new_stats()
+    new_text, changed = migrate_text(text, stats, path_label='<t8c>')
+    check('trailing comment on the keyword line is carried',
+          changed and stats['comments_carried'] == 1
+          and '# migrated: bumpmap_modifier  # the crease bump' in new_text,
+          repr(new_text))
+
+    # 8c-bis. Same, with the brace on the keyword line itself.
+    text = 'bumpmap_modifier { # the crease bump\nname creases\nfunction crease_field\n}\n'
+    stats = new_stats()
+    new_text, changed = migrate_text(text, stats, path_label='<t8c2>')
+    check('trailing comment on a combined keyword+brace line is carried',
+          changed and stats['comments_carried'] == 1
+          and '# migrated: bumpmap_modifier { # the crease bump' in new_text,
+          repr(new_text))
+
+    # 8d. A trailing comment on the closing `}` line is carried too.
+    text = ('bumpmap_modifier\n{\nname creases\nfunction crease_field\n'
+            '}\t# end of the crease bump\n')
+    stats = new_stats()
+    new_text, changed = migrate_text(text, stats, path_label='<t8d>')
+    check('trailing comment on the closing brace line is carried',
+          changed and stats['comments_carried'] == 1
+          and '# migrated: }\t# end of the crease bump' in new_text,
           repr(new_text))
 
     # 9. A file with no bumpmap chunk is byte-identical after a run
@@ -695,6 +830,15 @@ def main():
     if stats['name_collisions']:
         print('  %d height-painter name(s) suffixed to avoid a collision'
               % stats['name_collisions'], file=sys.stderr)
+    if stats['comments_carried']:
+        print('  %d trailing comment(s) on a recognized parameter/keyword/'
+              'closing-brace line carried as `# migrated: ...`'
+              % stats['comments_carried'], file=sys.stderr)
+    if stats['nonpositive_windowsize']:
+        print('  %d chunk(s) had a non-positive `windowsize` -- emitted '
+              '`scale 0` (inert) instead of the folded algebra to match the '
+              'legacy INERT behaviour' % stats['nonpositive_windowsize'],
+              file=sys.stderr)
     if stats['unterminated'] or errors:
         print('  %d unterminated chunk(s), %d file error(s) -- the corpus was '
               'NOT fully migrated' % (stats['unterminated'], errors),
