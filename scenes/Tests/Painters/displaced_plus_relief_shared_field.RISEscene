@@ -28,9 +28,16 @@ RISE ASCII SCENE 7
 #       SAME field, tilting shading normals at `scale 0.03`, well below                                     #
 #       the tessellation the displacement could ever resolve.                                               #
 #                                                                                                           #
-#   The two READ AS ONE MATERIAL because they are one field: the fine                                       #
-#   grain follows the coarse lumps instead of floating over them, which is                                  #
-#   the whole point of sharing.                                                                             #
+#   The two share the field's STATISTICS -- same look, same scale, same                                     #
+#   seed -- not point-for-point registration.  `displaced_geometry.height`                                  #
+#   samples the field at the PRE-displacement vertex; `relief_modifier`                                     #
+#   samples it at the POST-displacement hit point, so the two samples can                                   #
+#   land up to disp_scale*|h| apart along N -- here that is ~0.6 of a                                       #
+#   coarse feature (period ~1/3) and ~5 fine features (period ~1/26), so                                    #
+#   the fine term is effectively decorrelated from the lumps despite being                                  #
+#   one field.  Exact point-for-point registration would need a rest-                                       #
+#   position channel (`Pref`) RISE does not have -- a possible follow-up,                                   #
+#   not promised here.                                                                                      #
 #                                                                                                           #
 #   The field is written against `Po` (OBJECT space) deliberately.  A                                       #
 #   `displaced_geometry` is baked BEFORE it is bound to an object, so it                                    #

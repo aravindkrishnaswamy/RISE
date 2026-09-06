@@ -575,6 +575,16 @@ namespace RISE
 					//     `fw = 0` and resolves every octave, which is the
 					//     right answer for a bake (the mesh is built once, at
 					//     no particular viewing distance).
+					//   `derivatives.valid = false` ALSO means no signal
+					//     state: `curv`/`curvR` read 0 and the
+					//     `occlusion()`/`thickness()` builtins read their
+					//     neutral fallback (1/1) here, so a field that keys
+					//     on them (e.g. `mix(a, b, clamp(curv,0,1))`)
+					//     displaces FLAT at bake time even where a
+					//     `ReliefModifier::Modify` bound to the SAME field
+					//     sees real curvature/occlusion/thickness at hit
+					//     time and tilts the normal accordingly -- see
+					//     docs/RELIEF_MODIFIER_DESIGN.md section 5.3.
 					// Both `valid` flags are false out of the default
 					// constructors; set explicitly so the contract is
 					// readable at the call site rather than inherited.

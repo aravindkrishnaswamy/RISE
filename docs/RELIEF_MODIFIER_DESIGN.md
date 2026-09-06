@@ -461,8 +461,20 @@ standard_object    { name obj  geometry shape  material m  modifier fine }
 
 The coarse term moves vertices and changes the silhouette; the fine term
 tilts shading normals below anything the tessellation could resolve; and
-because it is *one* field the grain follows the lumps instead of floating
-over them. Fixture:
+because it is *one* field the two halves share its **statistics** — same
+look, same scale, same seed — which is what reads as one material. That is
+not the same claim as point-for-point registration.
+`displaced_geometry.height` (`GeometryUtilities::ApplyScalarHeightToObject`)
+samples the field at the **PRE**-displacement vertex; `ReliefModifier::Modify`
+samples it at the **POST**-displacement hit point. The two samples can
+therefore land up to `disp_scale·|h|` apart along `N`. On the shipped
+fixture (`disp_scale 0.16`, coarse term period ≈ 1/3, fine term period ≈
+1/26) that gap is ≈0.6 of a coarse feature and ≈5 fine-term periods — enough
+that the fine term is effectively decorrelated from the lumps it is meant to
+follow, despite being sampled from the same field. Exact point-for-point
+registration would need a rest-position channel (`Pref`) evaluated once and
+shared by both consumers, which RISE does not have; it is a possible
+follow-up, not something this arc promises. Fixture:
 [displaced_plus_relief_shared_field.RISEscene](../scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene).
 The UV-shared form still works and is still what §9's recipe shows.
 
@@ -485,6 +497,15 @@ way — pinned by `DisplacedGeometryTest`'s route-parity case at both fold
 settings), and there is no pixel footprint at bake time (`fw` = 0), so noise
 octaves all resolve — correct for a mesh built once at no particular viewing
 distance, but it means a footprint-faded field fades only on the relief half.
+The synthetic bake-time hit also carries no derivatives
+(`derivatives.valid = false`) and no signal state: `curv`/`curvR` read `0`
+and the `occlusion()`/`thickness()` builtins read their neutral fallback
+(1/1), so a field like `mix(a, b, clamp(curv, 0, 1))` displaces flat at bake
+time on the `displaced_geometry` half while `relief_modifier`, running at
+real hit time, sees genuine curvature/occlusion/thickness and tilts the
+normal accordingly — another axis on which the two "shared-field" halves are
+not the same evaluation, on top of the pre/post-displacement point offset
+above.
 
 `displaced_geometry`'s baked mesh sets neither `bHasTangent` nor
 `bHasShadingTangent`, so relief on it takes the `CreateFromW` path — fine in
@@ -2397,5 +2418,59 @@ in-session rather than left as chips:
   `EntityTemplates` itself. Review: CLEAN.
 
 - **`displaced_geometry` `height` (IScalarPainter)** (`89ebf2ab`,
-  `36021f57`). *(placeholder — reviewed separately; supervisor fills in
-  this line.)*
+  `36021f57`). Three P2s found on review of the branch tip, closed in this
+  session. **(1) Untested position step.** Test 19
+  (`TestAnalyticalDerivativeParity`) drives
+  `DisplacedGeometry::ComputeAnalyticalDerivatives`'s `IScalarPainter`
+  branch with a pure-`(u,v)` field (`u*v`), so the branch's central
+  difference over the base's `dpdu`/`dpdv` position probes never actually
+  saw a nonzero position offset — deleting that step left the suite green.
+  Added `TestScalarHeightPositionStepClosedForm` (test 20): `height =
+  scalar_painter { expression Po.x }` on an ellipsoid base is exactly
+  linear in position, so the closed form `dpdu_d = dpdu_b +
+  s·(dpdu_b.x·N_b + P_b.x·dndu_b)` (mirror for `v`) can be computed
+  independently from the base geometry's own `ComputeAnalyticalDerivatives`
+  and compared to what the `height`-routed geometry returns, to 1e-9, at
+  the same four probe points as test 19. Red-proofed against
+  `DisplacedGeometry.cpp`: zeroing the position step failed (worst error
+  1.93) and swapping `dpdu_b`/`dpdv_b` between the two probes failed
+  (worst error 2.16) — both with test 19 staying green throughout, which
+  is exactly the untested-step claim; the source was restored byte-for-byte
+  after each (`git diff` empty) before landing. **(2) Overstated
+  correlation claim.** `GeometryUtilities::ApplyScalarHeightToObject`
+  samples the shared field at the PRE-displacement vertex;
+  `ReliefModifier::Modify` samples it at the POST-displacement hit — up to
+  `disp_scale·|h|` apart along `N`. On the shipped fixture
+  (`displaced_plus_relief_shared_field.RISEscene`, `disp_scale 0.16`,
+  coarse term period ≈ 1/3, fine term period ≈ 1/26) that gap is ≈0.6 of a
+  coarse feature and ≈5 fine-term periods, enough to decorrelate the fine
+  relief from the lumps it is meant to follow. The scene's header comment
+  and §5.3's "because it is *one* field the grain follows the lumps"
+  sentence both overclaimed point-for-point registration; both reworded to
+  say the two halves share the field's *statistics* (same look, same
+  scale, same seed), not registration, with exact registration named as a
+  possible follow-up needing an unbuilt rest-position (`Pref`) channel —
+  not promised here. One sentence added to the `height` parameter
+  descriptor (`displaced_geometry`, `ChunkParserRegistry.cpp`) stating the
+  same distinction. **(3) Bake-time signals.** The synthetic bake-time hit
+  in `ApplyScalarHeightToObject` sets `derivatives.valid = false`, which
+  the doc comment already noted made `fw = 0` (documented); it also means
+  `curv`/`curvR` read 0 and `occlusion()`/`thickness()` read their neutral
+  fallback, undocumented until now — a field keying on either (e.g.
+  `mix(a, b, clamp(curv,0,1))`) displaces flat through this route while the
+  same field's `relief_modifier` half sees real values. Added alongside
+  the existing `fw = 0` sentence in the `height` descriptor,
+  `ApplyScalarHeightToObject`'s doc comment (`GeometryUtilities.cpp`), and
+  design §5.3. Also, test 15
+  (`TestFunction2DRouteUnchanged`) gained a comment noting its "hand-rolled"
+  oracle calls the SAME `ApplyDisplacementMapToObject` /
+  `RecomputeVertexNormalsFromTopology` functions as the code under test —
+  it pins the pipeline's *composition*, not an independent byte-for-byte
+  oracle. Reviewed CLEAN (numerics — the closed-form derivation, the
+  red-proof measurements, the 1e-9 tolerance are consistent with the FP
+  error actually measured) and FAITHFUL (wiring/docs — the three caveat
+  sites, the design doc, and the scene fixture now say the same thing, and
+  none overclaims beyond what `ComputeAnalyticalDerivatives` and
+  `ApplyScalarHeightToObject` actually do).
+  `DisplacedGeometryTest` 20/20 (was 19/19), `SourceHygieneTest` 164/0,
+  `ReliefModifierTest` 106/0; both warning gates clean on a full rebuild.

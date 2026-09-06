@@ -904,6 +904,15 @@ static void TestScalarHeightThroughTheChunk()
 // indexed mesh -- and requires EXACT equality with what DisplacedGeometry
 // produces today.  A u-varying function is used so the seam fold is load-
 // bearing; a constant would pass even if the fold were dropped.
+//
+// NOTE: the "hand-rolled" replica below CALLS the same
+// ApplyDisplacementMapToObject / RecomputeVertexNormalsFromTopology
+// functions DisplacedGeometry itself calls (GeometryUtilities.h) -- it is
+// not an independent re-implementation.  So this test pins the COMPOSITION
+// (tessellate -> tent-fold -> apply -> recompute normals -> raw coords,
+// in that order, with no extra step in between), not a byte-for-byte check
+// against an oracle that computes the displaced mesh some other way.  A bug
+// inside either shared function would pass here undetected on both sides.
 //-----------------------------------------------------------------------------
 static void TestFunction2DRouteUnchanged()
 {
@@ -1168,6 +1177,108 @@ static void TestAnalyticalDerivativeParity()
 	safe_release( job );
 }
 
+//-----------------------------------------------------------------------------
+// Case 20: CLOSED-FORM check of the scalar-field branch's POSITION step.
+//
+// Test 19 uses `u*v`, a pure-(u,v) field: EvalHeightField's return value does
+// not depend on the object-space POSITION argument at all, so the
+// `dpdu_b * epsP` / `dpdv_b * epsP` position probes in the `IScalarPainter`
+// branch of DisplacedGeometry::ComputeAnalyticalDerivatives are computed but
+// never exercised -- deleting the position step and passing eps=0 (or any
+// other constant) at both `f_uplus`/`f_uminus` sites leaves test 19 green.
+//
+// This test uses `height = Po.x` instead: a field that is a function of
+// POSITION only and does not read (u,v) at all, so it can only be
+// differentiated correctly by actually stepping the position.  Because
+// `f(P) = P.x` is exactly linear, the central difference the scalar branch
+// takes is exact (not merely FD-accurate): stepping to `P_b +/- eps*dpdu_b`
+// and evaluating `f` there gives `P_b.x +/- eps*dpdu_b.x` with no truncation
+// term, so `df/du = dpdu_b.x` and `df/dv = dpdv_b.x` to round-off.
+// Substituting into DisplacedGeometry's own documented chain rule --
+//   P_d    = P_b + s*f*N_b
+//   dpdu_d = dpdu_b + s*(df/du*N_b + f*dndu_b)     (mirror for dpdv_d)
+// -- gives a closed form this test computes INDEPENDENTLY, by querying the
+// BASE ellipsoid's own ComputeAnalyticalDerivatives directly (not by
+// re-running DisplacedGeometry's FD), and compares against what the
+// `height`-routed DisplacedGeometry actually returns.
+//
+// Red-proofed 2026-09-06 against DisplacedGeometry.cpp's scalar branch
+// (src/Library/Geometry/DisplacedGeometry.cpp): (a) zeroing the position
+// step (evaluating all four probes at `P_b` instead of `P_b +/- eps*dpdu_b`
+// / `P_b +/- eps*dpdv_b`) collapsed `df/du`/`df/dv` to 0 and failed this
+// test's `worst <= 1e-9` assert, while leaving test 19 (`u*v`) green; (b)
+// swapping `dpdu_b`/`dpdv_b` between the u- and v-probes also failed this
+// test (df/du and df/dv traded values) while leaving test 19 green -- `u*v`
+// can't distinguish either mutation because its position argument is
+// ignored.  Both mutations were reverted after confirming the failure; the
+// source is unchanged by this test's existence.
+//-----------------------------------------------------------------------------
+static void TestScalarHeightPositionStepClosedForm()
+{
+	std::cout << "Test 20: ComputeAnalyticalDerivatives' scalar-field position step matches a closed form on `Po.x`...\n";
+
+	IJobPriv* job = 0;
+	RISE_CreateJobPriv( &job );
+	assert( job != 0 );
+
+	std::string log;
+	const bool ok = ParseCapturing( "posstep",
+		"scalar_painter\n{\n\tname h_pox\n\texpression Po.x\n}\n"
+		"ellipsoid_geometry\n{\n\tname base\n\tradii 1.0 1.0 1.0\n}\n"
+		"displaced_geometry\n{\n\tname via_field\n\tbase_geometry base\n\tdetail 24\n"
+		"\theight h_pox\n\tdisp_scale 0.4\n}\n",
+		*job, log );
+	assert( ok );
+
+	IGeometry* gBase  = job->GetGeometries()->GetItem( "base" );
+	IGeometry* gField = job->GetGeometries()->GetItem( "via_field" );
+	assert( gBase != 0 && gField != 0 );
+
+	// Same four probe points as case 19: away from the u=0.5/v=0.5 tent
+	// vertices and away from the poles.
+	const Scalar kUV[][2] = { {0.20,0.30}, {0.35,0.65}, {0.72,0.24}, {0.81,0.77} };
+	const Scalar s = 0.4;
+	Scalar worst = 0.0;
+	unsigned int probed = 0;
+	for( size_t i = 0; i < sizeof(kUV)/sizeof(kUV[0]); ++i ) {
+		const Point2 uv( kUV[i][0], kUV[i][1] );
+
+		Point3  Pb, Pd;
+		Vector3 Nb, Nd, dpdu_b, dpdv_b, dndu_b, dndv_b, dpdu_d, dpdv_d, dndu_d, dndv_d;
+		const bool okBase  = gBase->ComputeAnalyticalDerivatives(  uv, 0.0, Pb, Nb, dpdu_b, dpdv_b, dndu_b, dndv_b );
+		const bool okField = gField->ComputeAnalyticalDerivatives( uv, 0.0, Pd, Nd, dpdu_d, dpdv_d, dndu_d, dndv_d );
+		assert( okBase == okField );
+		if( !okBase ) continue;
+		++probed;
+
+		// f = Po.x = Pb.x exactly; df/du = dpdu_b.x, df/dv = dpdv_b.x
+		// exactly, both to round-off (see comment above).
+		const Scalar f    = Pb.x;
+		const Scalar dfdu = dpdu_b.x;
+		const Scalar dfdv = dpdv_b.x;
+
+		const Point3 expectedP = Point3Ops::mkPoint3( Pb, Nb * (s * f) );
+		const Vector3 expectedDpdu(
+			dpdu_b.x + s * ( dfdu * Nb.x + f * dndu_b.x ),
+			dpdu_b.y + s * ( dfdu * Nb.y + f * dndu_b.y ),
+			dpdu_b.z + s * ( dfdu * Nb.z + f * dndu_b.z ) );
+		const Vector3 expectedDpdv(
+			dpdv_b.x + s * ( dfdv * Nb.x + f * dndv_b.x ),
+			dpdv_b.y + s * ( dfdv * Nb.y + f * dndv_b.y ),
+			dpdv_b.z + s * ( dfdv * Nb.z + f * dndv_b.z ) );
+
+		const Vector3 dP( Pd.x - expectedP.x, Pd.y - expectedP.y, Pd.z - expectedP.z );
+		worst = std::max( worst, Vector3Ops::Magnitude( dP ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( dpdu_d - expectedDpdu ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( dpdv_d - expectedDpdv ) );
+	}
+	std::cout << "    " << probed << " uv probes, worst |actual - closed form| across P/dpdu/dpdv = " << worst << "\n";
+	assert( probed == 4 );
+	assert( worst <= 1e-9 );
+
+	safe_release( job );
+}
+
 int main()
 {
 	TestPureTessellationBBox();
@@ -1189,6 +1300,7 @@ int main()
 	TestColourPainterOnHeightRefused();
 	TestUVParityBetweenRoutes();
 	TestAnalyticalDerivativeParity();
+	TestScalarHeightPositionStepClosedForm();
 
 	std::cout << "All DisplacedGeometry tests passed.\n";
 	return 0;
