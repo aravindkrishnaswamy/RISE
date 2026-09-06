@@ -416,6 +416,11 @@ int main()
 	// is declared {Painter} but the engine binds it via pFunc2DManager (Function2D, which holds
 	// plf2d). It must reach a piecewise_linear_function2d target in closure (the (Painter,name)
 	// key would have missed it -- plf2d is not in the painter managers).
+	//
+	// A THIRD consumer, `bumpmap_modifier.function`, used to be checked here; that chunk was
+	// REMOVED 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and its `function` entry left
+	// Cst.cpp's FunctionSubNamespace with it.  Its coverage moved to [relief-modifier-scalar]
+	// below, which is the same declared-category-vs-resolving-manager shape one manager over.
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
@@ -423,17 +428,14 @@ int main()
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"
 			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n"
-			"bumpmap_modifier\n{\nname bm\nfunction d2\n}\n"
 			"composite_function2d_painter\n{\nname comp\nchild_a d2\nchild_b d2\n}\n" );
 		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
 		const NodeId d2 = DocFindByName( doc, "piecewise_linear_function2d/d2" );
 		const NodeId disp = DocFindByName( doc, "displaced_geometry/disp" );
-		const NodeId bm   = DocFindByName( doc, "bumpmap_modifier/bm" );
 		const NodeId comp = DocFindByName( doc, "composite_function2d_painter/comp" );
-		bool hasDisp = false, hasBm = false, hasComp = false;
-		for( NodeId n : DocEditClosure( d2, g ) ) { if( n == disp ) hasDisp = true; if( n == bm ) hasBm = true; if( n == comp ) hasComp = true; }
+		bool hasDisp = false, hasComp = false;
+		for( NodeId n : DocEditClosure( d2, g ) ) { if( n == disp ) hasDisp = true; if( n == comp ) hasComp = true; }
 		Check( d2 && disp && hasDisp, "painter-decl-func2d: closure(Function2D d2) INCLUDES displaced_geometry.displacement (review #3 table)" );
-		Check( bm && hasBm, "painter-decl-func2d: ...and bumpmap_modifier.function" );
 		Check( comp && hasComp, "painter-decl-func2d: ...and composite_function2d_painter.child_a/child_b" );
 	}
 
@@ -442,9 +444,9 @@ int main()
 	// twin of [painter-decl-func2d] above: `relief_modifier.height` is
 	// declared {Painter} but resolved through the SCALAR painter manager
 	// (ParameterPipe::Scalar) rather than the colour-painter manager --
-	// exactly the same "declared-category vs. resolving-manager" shape as
-	// bumpmap_modifier.function/Function2D, one manager over. Closure of the
-	// scalar_painter must include the relief_modifier naming it.
+	// exactly the same "declared-category vs. resolving-manager" shape the
+	// removed bumpmap_modifier.function/Function2D edge had, one manager over.
+	// Closure of the scalar_painter must include the relief_modifier naming it.
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(

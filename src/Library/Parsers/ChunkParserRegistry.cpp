@@ -38,7 +38,6 @@
 #include <cstdlib>   // strtod for the ar_layer numeric parse
 #include <cstdarg>  // va_list / va_start -- SweepReject's formatted refusal channel
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
-#include <atomic>    // bumpmap_modifier's once-per-process deprecation warning (NormalMap.cpp idiom)
 #include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
@@ -61,7 +60,7 @@
 #include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
-#include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
+#include "../Interfaces/IModifierManager.h"	// modifier chunks that self-register via IJobPriv::GetModifiers
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
 #include "../Painters/ExpressionPainter.h"		// BuildExpressionProgramFromChunkFields (expression_painter, scalar_painter{expression})
@@ -8542,78 +8541,6 @@ namespace RISE
 			// Modifiers
 			//////////////////////////////////////////
 
-			struct BumpmapModifierAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
-				{
-					std::string name     = bag.GetString( "name",       "noname" );
-					std::string function = bag.GetString( "function",   "none" );
-					double scale         = bag.GetDouble( "scale",      1.0 );
-					double window        = bag.GetDouble( "windowsize", 0.01 );
-					bool normalize       = bag.GetBool(   "normalize_gradient", false );
-
-					// Phase A deprecation (docs/RELIEF_MODIFIER_DESIGN.md §7.1): still
-					// parses, but warns ONCE PER PROCESS -- the NormalMap.cpp
-					// `std::atomic<bool>` idiom, so a scene with many bumpmap_modifier
-					// chunks (or a test binary that derives many scenes) does not
-					// log-flood.  ABI-frozen: IJob::AddBumpMapModifier, the RISE_API
-					// entry points, and the BumpMap class are untouched by this warning.
-					static std::atomic<bool> s_warnedDeprecated{ false };
-					if( !s_warnedDeprecated.exchange( true ) ) {
-						GlobalLog()->PrintEx( eLog_Warning,
-							"bumpmap_modifier `%s` is DEPRECATED and will be removed in a "
-							"later release: use relief_modifier (any scalar_painter height "
-							"field, no texcoords required).  Migrate this scene losslessly "
-							"with tools/migrate_scenes_relief.py.", name.c_str() );
-					}
-
-					if( !normalize ) {
-						// Default / legacy path, signature-frozen IJob virtual.
-						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
-					}
-
-					// normalize_gradient TRUE: `scale` becomes the window-independent
-					// gradient multiplier.  The IJob::AddBumpMapModifier virtual is
-					// frozen for ABI (out-of-tree callers + the Blender bridge), so the
-					// flag is carried by RISE_API_CreateBumpMapModifierEx and the
-					// modifier is registered through the privileged IJobPriv channel
-					// (the same pattern expression_function2d uses to self-register).
-					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
-					if( !pPriv ) {
-						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: IJobPriv unavailable", name.c_str() );
-						return false;
-					}
-					IFunction2D* pFunc = pPriv->GetFunction2Ds()->GetItem( function.c_str() );
-					if( !pFunc ) {
-						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: function2d `%s` not found", name.c_str(), function.c_str() );
-						return false;
-					}
-					IRayIntersectionModifier* pMod = 0;
-					if( !RISE_API_CreateBumpMapModifierEx( &pMod, *pFunc, scale, window, true ) ) {
-						return false;
-					}
-					pPriv->GetModifiers()->AddItem( pMod, name.c_str() );
-					pMod->release();
-					return true;
-				}
-
-				const ChunkDescriptor& Describe() const override {
-					static const ChunkDescriptor d = []{
-						ChunkDescriptor cd;
-						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "DEPRECATED -- use relief_modifier (any scalar_painter height field, no texcoords required; migrate with tools/migrate_scenes_relief.py; see docs/RELIEF_MODIFIER_DESIGN.md).  Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
-						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Bump amplitude.  With normalize_gradient FALSE (default) the perturbation is scale*(f(+w)-f(-w)), so its magnitude couples to windowsize (~scale*2*windowsize*slope) -- a fine window needs a proportionally larger scale.  With normalize_gradient TRUE, scale is the window-independent slope multiplier."; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Central-difference half-step in (u,v) texture space; smaller = finer detail captured"; p.defaultValueHint = "0.01"; }
-						{ auto& p = P(); p.name = "normalize_gradient"; p.kind = ValueKind::Bool; p.description = "Divide the central difference by 2*windowsize so `scale` is the true, window-INDEPENDENT gradient amplitude (decouples bump strength from the sampling step).  Default FALSE preserves legacy coupled behaviour byte-for-byte."; p.defaultValueHint = "FALSE"; }
-						return cd;
-					}();
-					return d;
-				}
-			};
-
 			struct NormalMapModifierAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -8686,7 +8613,7 @@ namespace RISE
 							"plastic).  `height` is a scalar_painter, not a colour painter: wrap a "
 							"colour painter with `scalar_painter { name X_h  painter X  channel R }` "
 							"and bind that.  POSITIVE HEIGHT RISES ALONG +N (Blinn / PBRT-v4) -- the "
-							"OPPOSITE sign of the deprecated `bumpmap_modifier`, which treats its "
+							"OPPOSITE sign of the REMOVED `bumpmap_modifier` (removed 2026-09-06), which treated its "
 							"field as depth; negate `scale` to sink instead of raise.  Attach via "
 							"the object's `modifier` parameter.  See "
 							"docs/RELIEF_MODIFIER_DESIGN.md.";
@@ -8697,8 +8624,8 @@ namespace RISE
 						  p.description = "Height field -- a `scalar_painter` (expression / voronoi / ramp / texture / function2d), or an inline numeric literal (which is constant, hence flat and pointless).  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees.  NOT SUPPORTED: a height parameterised on the SECOND UV set (`texcoord1_painter`, TEXCOORD_1).  Neither domain moves `ptCoord1` -- the surface domain's chain rule has only TEXCOORD_0's dpdu/dpdv to work with -- so such a field reads FLAT and produces no relief in either domain.  Author the height against TEXCOORD_0, or use a 3D field in `surface`."; }
 						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::Double;    p.description = "Amplitude: field units -> world units in `surface` domain, UV units in `uv`.  Positive raises along +N; NEGATIVE sinks (cracks, pores, engraving).  0 makes the modifier inert."; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "domain"; p.kind = ValueKind::Enum;      p.enumValues = {"surface","uv"};
-						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for lossless `bumpmap_modifier` migration and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
-						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching bumpmap_modifier's windowsize).  In `surface` it is a FLOOR, not the step: the rule is max(step > 0 ? step : 1e-3, the hit's pixel footprint), so an EXPLICIT step is raised to the footprint whenever the footprint is larger.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  Only TRIANGLE-MESH geometry populates one today (and only on primary hits with ray differentials): on analytic primitives and SDFs the footprint is unknown (0), the max is a no-op, and the explicit step -- or the 1e-3 floor -- is exactly what is used, with NO distance fade.  So: lower it below 1e-3 for fine features on analytic/SDF surfaces, where it takes effect verbatim; on meshes it only ever raises the floor, and a value below the footprint is silently ignored."; p.defaultValueHint = "0"; }
+						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for scenes migrated off the removed `bumpmap_modifier` (tools/migrate_scenes_relief.py) and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
+						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching the removed `bumpmap_modifier`'s windowsize, so a migrated scene that omitted the window lands on the same span).  In `surface` it is a FLOOR, not the step: the rule is max(step > 0 ? step : 1e-3, the hit's pixel footprint), so an EXPLICIT step is raised to the footprint whenever the footprint is larger.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  Only TRIANGLE-MESH geometry populates one today (and only on primary hits with ray differentials): on analytic primitives and SDFs the footprint is unknown (0), the max is a no-op, and the explicit step -- or the 1e-3 floor -- is exactly what is used, with NO distance fade.  So: lower it below 1e-3 for fine features on analytic/SDF surfaces, where it takes effect verbatim; on meshes it only ever raises the floor, and a value below the footprint is silently ignored."; p.defaultValueHint = "0"; }
 						return cd;
 					}();
 					return d;
@@ -13625,7 +13552,6 @@ namespace RISE
 		add( "hair_guides",                           new HairGuidesAsciiChunkParser() );
 
 		// Modifiers
-		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
 		add( "relief_modifier",                       new ReliefModifierAsciiChunkParser() );
 		add( "modifier_stack",                        new ModifierStackAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );

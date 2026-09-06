@@ -1621,7 +1621,19 @@ namespace RISE
 		// Adds modifiers
 		//
 
-		//! Adds a bump map
+		//! Adds a bump map -- a LEGACY SHIM since 2026-09-06.
+		//!
+		//! The `bumpmap_modifier` chunk and the `BumpMap` class were
+		//! REMOVED (docs/RELIEF_MODIFIER_DESIGN.md 7.5); this virtual's
+		//! SIGNATURE is ABI-frozen and stays, because the Blender bridge
+		//! (src/Blender/native/rise_blender_bridge.cpp) and out-of-tree
+		//! IJob impls call it.  It now registers a `relief_modifier` over
+		//! a `Function2DScalarPainter` in the UV domain, with the design
+		//! 7.2 amplitude fold (`S' = -S*2W`; a non-positive `window`,
+		//! which the removed class treated as inert, folds to `scale 0`).
+		//! In-tree callers should use `AddReliefModifier` instead: any
+		//! scalar painter as the height field, no texcoords needed, and
+		//! the Blinn sign convention rather than the legacy depth one.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddBumpMapModifier(
 			const char* name,										///< [in] Name of the modifiers

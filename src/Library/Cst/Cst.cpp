@@ -1556,6 +1556,39 @@ static int LineOfChunkBrace( const Document& doc, std::size_t itemIndex, const N
 	return 1 + (int)std::count( full.begin(), full.begin() + off, '\n' );
 }
 
+//! A chunk keyword a PAST RELEASE of RISE accepted and that has since been REMOVED.
+//!
+//! WHY A TABLE AND NOT THE GENERIC MESSAGE.  Deleting a chunk parser makes its keyword
+//! unknown, and the generic "unknown chunk type 'X'" is a dead end for the one author who
+//! most needs help: the person holding a scene file that USED to load.  It names neither
+//! the replacement nor the migrator that rewrites the chunk, so the author's next move is a
+//! web search or a grep of the source tree.  This is the chunk-level analogue of
+//! `bezierpatch_geometry`'s `kRetired` PARAMETER table (ChunkParserRegistry.cpp), which
+//! exists for exactly the same reason one level down.
+//!
+//! One entry per removal.  `advice` is appended to "chunk type 'X' has been removed -- "
+//! and must name (a) what to use instead and (b) how to convert an existing scene.
+struct RetiredChunkKeyword { const char* keyword; const char* advice; };
+
+static const RetiredChunkKeyword kRetiredChunks[] = {
+	{ "bumpmap_modifier",
+	  "removed 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5).  Use `relief_modifier`, "
+	  "whose height field is any `scalar_painter` and which needs no texcoords in its "
+	  "default `surface` domain.  To convert this scene LOSSLESSLY -- the amplitude fold "
+	  "and the sign flip are not obvious by hand -- run "
+	  "`python3 tools/migrate_scenes_relief.py <this file>`" }
+};
+
+//! The directed advice for a REMOVED chunk keyword, or null when `kw` names no chunk RISE
+//! ever had (in which case the caller's generic "unknown chunk type" is the honest message).
+static const char* RetiredChunkAdvice( const std::string& kw )
+{
+	for( std::size_t i = 0; i < sizeof(kRetiredChunks)/sizeof(kRetiredChunks[0]); ++i ) {
+		if( kw == kRetiredChunks[i].keyword ) return kRetiredChunks[i].advice;
+	}
+	return 0;
+}
+
 static const IAsciiChunkParser* ResolveChunkParams(
 	const NodeRef& c,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
@@ -1568,7 +1601,15 @@ static const IAsciiChunkParser* ResolveChunkParams(
 {
 	const std::string& kw = c->role;
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
-	if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); return nullptr; }
+	if( it == registry.end() ) {
+		// A keyword RISE USED to accept gets a directed message naming its replacement and
+		// the migrator; anything else gets the honest generic one.  See kRetiredChunks.
+		const char* const retired = RetiredChunkAdvice( kw );
+		diags.push_back( retired
+			? ( "chunk type '" + kw + "' has been removed -- " + retired )
+			: ( "unknown chunk type '" + kw + "'" ) );
+		return nullptr;
+	}
 	// Hard-reject BEFORE any param is read: on a violation, the params extracted below cannot be
 	// trusted anyway (see ChunkBraceViolations' header for the swallow mechanism), and we must not
 	// go on to silently apply a chunk missing every param after the one that absorbed its siblings.
@@ -4155,12 +4196,18 @@ static int FunctionSubNamespace( const std::string& paramName )
 	    paramName == "transfer_spectral" ) return kFunc2DSubCat;
 	// {Painter}-DECLARED slots the engine actually binds via pFunc2DManager (Function2D, which
 	// holds plf2d + the dual-registered colour painters -- exactly what kFunc2DSubCat seeds):
-	// displaced_geometry.displacement, bumpmap_modifier.function, composite_function2d_painter
-	// .child_a/.child_b (Job.cpp ~5009/~5182/~994).  Resolving them coarsely via (Painter,name)
-	// MISSED a plf2d target (plf2d is NOT in the painter managers) -- a stale-closure sibling
-	// (review #3, 3rd-pass exhaustive table).  The retired String `displacement` (a different
-	// param kind) never reaches here -- PASS B only resolves Reference/tuple params.
-	if( paramName == "displacement" || paramName == "function" ||
+	// displaced_geometry.displacement and composite_function2d_painter.child_a/.child_b
+	// (Job.cpp ~5009/~994).  Resolving them coarsely via (Painter,name) MISSED a plf2d target
+	// (plf2d is NOT in the painter managers) -- a stale-closure sibling (review #3, 3rd-pass
+	// exhaustive table).  The retired String `displacement` (a different param kind) never
+	// reaches here -- PASS B only resolves Reference/tuple params.
+	//
+	// `function` was the THIRD member of this list, for `bumpmap_modifier.function`; that
+	// chunk was REMOVED 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and no other chunk
+	// declares a parameter by that name, so the entry went with it.  Its replacement,
+	// `relief_modifier.height`, needs no special case at all: it resolves through the SCALAR
+	// painter manager via the standing ParameterPipe::Scalar closure.
+	if( paramName == "displacement" ||
 	    paramName == "child_a" || paramName == "child_b" ) return kFunc2DSubCat;
 	return 0;
 }

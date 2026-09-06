@@ -347,7 +347,6 @@ set(RISE_LIB_SOURCES
     "${RISE_LIB}/Shaders/StandardShader.cpp"
 
     # SRCLIBMODIFIERS
-    "${RISE_LIB}/Modifiers/BumpMap.cpp"
     "${RISE_LIB}/Modifiers/GlintModifier.cpp"
     "${RISE_LIB}/Modifiers/ModifierStack.cpp"
     "${RISE_LIB}/Modifiers/NormalMap.cpp"

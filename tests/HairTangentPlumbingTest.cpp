@@ -94,8 +94,8 @@
 //
 //  Residual wave 2 item A (docs/HAIR_FUR_DESIGN.md section 4.1,
 //  2026-08-27) closed the one remaining gap this slice's own header
-//  used to flag as open: `NormalMap::Modify` and `BumpMap::Modify`
-//  used to rebuild the shading ONB with the unconditional
+//  used to flag as open: `NormalMap::Modify` and (the since-deleted)
+//  `BumpMap::Modify` used to rebuild the shading ONB with the unconditional
 //  `CreateFromW(perturbed normal)` after perturbing it, silently
 //  discarding whatever fiber tangent Object::IntersectRay had just
 //  promoted into `ri.onb.u()`.  Cases 9-12 guard the fix:
@@ -115,11 +115,23 @@
 //       that test's own comment).  Golden value is a fresh,
 //       independent `OrthonormalBasis3D::CreateFromW` call on the same
 //       perturbed normal -- the fix's guard must be a true no-op here.
-//   11. TestBumpMapPreservesHairFiberTangent -- same idea against
-//       `BumpMap`, using a synthetic linear-gradient IFunction2D stub
-//       (LinearGradientFunction2D below) so the finite-difference bump
-//       is an exact, hand-computable constant regardless of `ptCoord`.
-//   12. TestBumpMapNonHairByteMatchesLegacy -- BumpMap's non-hair
+//   11. TestReliefUVPreservesHairFiberTangent -- same idea against the
+//       UV-domain `ReliefModifier`, using a synthetic linear-gradient
+//       IFunction2D stub (LinearGradientFunction2D below) wrapped in a
+//       Function2DScalarPainter, so the central difference is an exact,
+//       hand-computable constant regardless of `ptCoord`.  Cases 11/12
+//       drove `BumpMap` until that class was DELETED on 2026-09-06 with
+//       the `bumpmap_modifier` chunk (docs/RELIEF_MODIFIER_DESIGN.md
+//       7.5, Phase B).  They were repointed rather than dropped: relief
+//       is the same height-gradient family, shares the very
+//       `ModifierFrame::HasCoherentTangent` gate these cases exist to
+//       pin, and is what a migrated scene now runs.  The amplitude is
+//       the design-7.2 FOLD of the values these cases used to pass
+//       (S = 1, W = 0.05, normalize FALSE -> S' = -S*2W = -0.1), which
+//       reproduces the SAME expected (0.04, -0.03) tilt -- so the
+//       goldens below are unchanged, and the fold is pinned a third
+//       time, on real geometry.
+//   12. TestReliefUVNonHairByteMatchesLegacy -- relief's non-hair
 //       byte-match twin of case 10.
 //
 //  Author: Aravind Krishnaswamy
@@ -141,8 +153,9 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
 #include "../src/Library/Intersection/RayIntersection.h"
-#include "../src/Library/Modifiers/BumpMap.h"
 #include "../src/Library/Modifiers/NormalMap.h"
+#include "../src/Library/Modifiers/ReliefModifier.h"
+#include "../src/Library/Painters/Function2DScalarPainter.h"
 #include "../src/Library/Objects/CSGObject.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/UniformColorPainter.h"
@@ -328,10 +341,11 @@ namespace
 		return new HairGeometry( descs );
 	}
 
-	//! Minimal IFunction2D stub for the BumpMap tests (cases 11/12):
-	//! f(x,y) = a*x + b*y.  A linear gradient makes the central-
-	//! difference bump BumpMap::Modify computes a HAND-COMPUTABLE
-	//! constant (2*a*dWindow, 2*b*dWindow) independent of WHERE
+	//! Minimal IFunction2D stub for the relief tests (cases 11/12):
+	//! f(x,y) = a*x + b*y.  A linear gradient makes the central
+	//! difference a HAND-COMPUTABLE constant (2*a*step, 2*b*step)
+	//! -- so, after the modifier's own 1/(2*step), exactly (a, b) --
+	//! independent of WHERE
 	//! ptCoord happens to land -- unlike ConstantFunction2D (already
 	//! included above), whose zero gradient would produce no
 	//! perturbation at all and defeat the point of these tests.
@@ -961,13 +975,13 @@ static void TestNormalMapNonHairByteMatchesLegacy()
 }
 
 // ============================================================
-// Test 11: BumpMap through a real hair hit -- same guard as Test 9,
-//          via BumpMap's finite-difference perturbation instead of
-//          NormalMap's tangent-space decode.
+// Test 11: ReliefModifier (uv domain) through a real hair hit -- same
+//          guard as Test 9, via a height-gradient central difference
+//          instead of NormalMap's tangent-space decode.
 // ============================================================
-static void TestBumpMapPreservesHairFiberTangent()
+static void TestReliefUVPreservesHairFiberTangent()
 {
-	std::cout << "BumpMap: preserves the fiber tangent on a hair hit..." << std::endl;
+	std::cout << "ReliefModifier(uv): preserves the fiber tangent on a hair hit..." << std::endl;
 
 	const Point3 root( 0, 0, -0.05 );
 	const Point3 tip( 0, 0, 0.05 );
@@ -987,13 +1001,20 @@ static void TestBumpMapPreservesHairFiberTangent()
 	const Vector3 oldV = ri.geometric.onb.v();
 	const Vector3 oldN = ri.geometric.vNormal;
 
-	// a=0.4, b=-0.3, dScale=1, dWindow=0.05, no gradient normalization
-	// -> bumpU = 2*a*dWindow = 0.04, bumpV = 2*b*dWindow = -0.03
-	// (the y-term/x-term cancel exactly in each central difference
-	// because the function is linear -- see the class comment).
+	// a=0.4, b=-0.3, step=0.05.  The central difference over the linear
+	// field is 2*a*step in u and 2*b*step in v (the cross terms cancel
+	// exactly -- see the class comment), and the modifier divides by
+	// 2*step, so the gradient it sees is exactly (a, b) = (0.4, -0.3).
+	// The amplitude is the design-7.2 fold of the legacy (S=1, W=0.05,
+	// normalize FALSE) this case used to pass: S' = -S*2W = -0.1.  With
+	// the Blinn sign the tilt is therefore
+	//   N - S'*(T*a + B*b) = N + T*0.04 + B*(-0.03),
+	// i.e. the SAME goldens the deleted BumpMap produced.
 	LinearGradientFunction2D* pFunc = new LinearGradientFunction2D( 0.4, -0.3 );
-	BumpMap* pMod = new BumpMap( *pFunc, 1.0, 0.05, false );
+	Function2DScalarPainter* pHeight = new Function2DScalarPainter( pFunc );
 	safe_release( pFunc );
+	ReliefModifier* pMod = new ReliefModifier( *pHeight, -0.1, ReliefDomain::UV, 0.05 );
+	safe_release( pHeight );
 
 	const Scalar bumpU = 0.04, bumpV = -0.03;
 	const Vector3 expectedNormal = Vector3Ops::Normalize( oldN + oldU * bumpU + oldV * bumpV );
@@ -1016,12 +1037,13 @@ static void TestBumpMapPreservesHairFiberTangent()
 }
 
 // ============================================================
-// Test 12: BumpMap through a non-hair hit -- byte-matches the pre-fix
-//          (unconditional CreateFromW) behaviour.
+// Test 12: ReliefModifier (uv domain) through a non-hair hit --
+//          byte-matches the pre-fix (unconditional CreateFromW)
+//          behaviour.
 // ============================================================
-static void TestBumpMapNonHairByteMatchesLegacy()
+static void TestReliefUVNonHairByteMatchesLegacy()
 {
-	std::cout << "BumpMap: non-hair hit byte-matches legacy CreateFromW rebuild..." << std::endl;
+	std::cout << "ReliefModifier(uv): non-hair hit byte-matches legacy CreateFromW rebuild..." << std::endl;
 
 	// See TestNormalMapNonHairByteMatchesLegacy's comment: BoxGeometry,
 	// not SphereGeometry, is the control docs/CLOTH_FABRIC_DESIGN.md 9.1
@@ -1042,9 +1064,12 @@ static void TestBumpMapNonHairByteMatchesLegacy()
 	const Vector3 oldV = ri.geometric.onb.v();
 	const Vector3 oldN = ri.geometric.vNormal;
 
+	// Same fold as Test 11: S' = -1.0*2*0.05 = -0.1.
 	LinearGradientFunction2D* pFunc = new LinearGradientFunction2D( 0.4, -0.3 );
-	BumpMap* pMod = new BumpMap( *pFunc, 1.0, 0.05, false );
+	Function2DScalarPainter* pHeight = new Function2DScalarPainter( pFunc );
 	safe_release( pFunc );
+	ReliefModifier* pMod = new ReliefModifier( *pHeight, -0.1, ReliefDomain::UV, 0.05 );
+	safe_release( pHeight );
 
 	const Scalar bumpU = 0.04, bumpV = -0.03;
 	const Vector3 expectedNormal = Vector3Ops::Normalize( oldN + oldU * bumpU + oldV * bumpV );
@@ -1079,8 +1104,8 @@ int main()
 	TestObjectSingularTransformClearsSuppliedTangent();
 	TestNormalMapPreservesHairFiberTangent();
 	TestNormalMapNonHairByteMatchesLegacy();
-	TestBumpMapPreservesHairFiberTangent();
-	TestBumpMapNonHairByteMatchesLegacy();
+	TestReliefUVPreservesHairFiberTangent();
+	TestReliefUVNonHairByteMatchesLegacy();
 
 	std::cout << std::endl << g_pass << " passed, " << g_fail << " failed." << std::endl;
 	return g_fail == 0 ? 0 : 1;

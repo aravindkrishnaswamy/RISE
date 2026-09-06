@@ -6910,6 +6910,13 @@ bool Job::AddPiecewiseLinearFunction2D(
 // Adding modifiers
 //
 
+//! LEGACY SHIM (docs/RELIEF_MODIFIER_DESIGN.md 7.5).  The `bumpmap_modifier`
+//! chunk and the `BumpMap` class were removed 2026-09-06; this virtual's
+//! SIGNATURE is ABI-frozen (the Blender bridge calls it), so it stays and
+//! registers a `ReliefModifier` in the UV domain instead.  The amplitude fold
+//! and the `window <= 0` inert case live in `RISE_API_CreateBumpMapModifierEx`
+//! -- one place, so the shim and the chunk-level migrator cannot drift.  New
+//! in-tree callers want `Job::AddReliefModifier`.
 bool Job::AddBumpMapModifier(
 	const char* name,										///< [in] Name of the modifiers
 	const char* func,										///< [in] The function to use as the bump generator
@@ -6995,8 +7002,9 @@ bool Job::AddReliefModifier(
 			"relief_modifier `%s`: parameter `domain` value `%s` is not recognized -- "
 			"use `surface` (the default: the height is a 3D field, the step is taken in "
 			"the tangent plane in world units, no texcoords required) or `uv` (the height "
-			"is a function of (u,v), the step is taken in texture units -- for legacy "
-			"bumpmap_modifier migration and for image heightfields authored in UV).",
+			"is a function of (u,v), the step is taken in texture units -- for scenes "
+			"migrated off the removed `bumpmap_modifier` and for image heightfields "
+			"authored in UV).",
 			name, domain );
 		return false;
 	}

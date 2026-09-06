@@ -6,8 +6,16 @@
 //    (src/Library/Modifiers/ModifierStack.{h,cpp}).  Covers tests 1-10
 //    of docs/RELIEF_MODIFIER_DESIGN.md 8, plus 7b from fix round 1 and
 //    4c from fix round 2.
-//    Two of its cases reach into BumpMap and NormalMap: test 2 (legacy
-//    equivalence) and test 7b(i) (the shared frame-rebuild gate).  4c
+//    Test 7b(i) reaches into NormalMap (the shared frame-rebuild gate).
+//    Test 2 used to reach into `BumpMap` as well; that class was DELETED
+//    with the `bumpmap_modifier` chunk on 2026-09-06 (design 7.5, Phase
+//    B), so test 2 now carries `LegacyBumpReference` -- a from-scratch
+//    transcription of `BumpMap::Modify`'s expression -- as its oracle,
+//    and additionally pins the ABI-frozen
+//    `RISE_API_CreateBumpMapModifier{,Ex}` SHIM against it.  Test 7b's
+//    third sibling block (BumpMap) went with the class; its NormalMap
+//    and ReliefModifier blocks remain, which is what the gate needs.
+//    4c
 //    reaches into Object::IntersectRay: the txFootprint.worldWidth
 //    object-to-world fold it added (fix round 2, P2-A) is not part of
 //    ReliefModifier itself, but ReliefModifier is worldWidth's first
@@ -21,11 +29,17 @@
 //       point -- it proves the Blinn convention (positive height RISES
 //       along +N), which is the OPPOSITE of bumpmap_modifier's.
 //    2. Legacy equivalence.  For a real Perlin2DPainter and both
-//       `normalize_gradient` values, BumpMap(F, S, W, G) and
-//       Relief(Function2DScalarPainter(F), S', uv, W) agree on vNormal
-//       and on all three ONB axes at 1000 random (u,v), with
+//       `normalize_gradient` values, `LegacyBumpReference(F, S, W, G)`
+//       and Relief(Function2DScalarPainter(F), S', uv, W) agree on
+//       vNormal and on all three ONB axes at 1000 random (u,v), with
 //       S' = -S (normalized) / -S*2W (not) -- the migrator's algebra of
-//       design 7.2, which is what makes migration lossless.
+//       design 7.2, which is what makes migration lossless.  2(b) runs
+//       the SAME comparison against the modifier the ABI-frozen
+//       `RISE_API_CreateBumpMapModifierEx` actually builds, so the fold
+//       is pinned where the Blender bridge reaches it and not only where
+//       the migrator writes it; 2(c) is the flipped-sign oracle; 2(d)
+//       pins the `window <= 0` inert special case the fold is NOT
+//       defined at.
 //    3. No texcoords.  With derivatives.valid false and ptCoord
 //       untouched, a 3D field still perturbs; and ptCoord is unchanged
 //       after Modify.
@@ -65,9 +79,10 @@
 //       rebuild.  (i) a constant height leaves vNormal and the whole ONB
 //       bit-identical; (ii) a gradient height leaves onb.u() equal to the
 //       incoming u projected into the new tangent plane; (iii) the
-//       mirrored variant stays left-handed.  (i) is asserted for BumpMap
-//       and NormalMap too: they are the same family and carried the
-//       identical gate bug (audit-by-bug-pattern).
+//       mirrored variant stays left-handed.  (i) is asserted for
+//       NormalMap too: same family, same gate, and it carried the
+//       identical bug (audit-by-bug-pattern).  BumpMap was the third
+//       sibling until the class was deleted on 2026-09-06.
 //    8. Non-finite guard.  A height that returns NaN (and one that
 //       returns +Inf) leaves the hit bit-for-bit untouched.
 //    9. Stack order (design 8, item 9; ModifierStack).  (a) `normal_map`
@@ -134,7 +149,7 @@
 //        strict-decrease assertions (|N'-N| pinned at 1.4000 for every
 //        footprint instead of 1.400 -> 1.268 -> 0.460 -> 0.050).
 //    (f) Test 7b, THE FRAME-REBUILD GATE (fix round 1, P1-A).  Reverting
-//        all three of ReliefModifier / BumpMap / NormalMap from
+//        ReliefModifier / NormalMap (and, when it existed, BumpMap) from
 //        `ModifierFrame::HasCoherentTangent( ri )` back to
 //        `ri.bHasShadingTangent` fails 5 assertions: 7b(i)'s ONB check
 //        for ALL THREE modifiers, 7b(ii), and 7b(iii).  (7b(i)'s vNormal
@@ -210,8 +225,8 @@
 #include "../src/Library/Interfaces/IModifierManager.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
-#include "../src/Library/Modifiers/BumpMap.h"
 #include "../src/Library/Modifiers/GlintModifier.h"
+#include "../src/Library/Modifiers/ModifierFrame.h"
 #include "../src/Library/Modifiers/ModifierStack.h"
 #include "../src/Library/Modifiers/NormalMap.h"
 #include "../src/Library/Modifiers/ReliefModifier.h"
@@ -397,19 +412,108 @@ static void Test1_AnalyticGradient()
 }
 
 // ============================================================
-//  Test 2: legacy equivalence with bumpmap_modifier
+//  Test 2: legacy equivalence with the removed bumpmap_modifier
 // ============================================================
+
+//! A from-scratch transcription of the DELETED `BumpMap::Modify`
+//! (src/Library/Modifiers/BumpMap.cpp, removed 2026-09-06 with the
+//! `bumpmap_modifier` chunk -- design 7.5, Phase B).
+//!
+//! WHY THIS LIVES HERE, AND WHY IT IS WRITTEN OUT RATHER THAN CALLED.
+//! The design-7.2 fold (`S' = -S*2W`, or `-S` normalized) is what makes
+//! every migrated scene and the ABI-frozen `AddBumpMapModifier` shim
+//! lossless, so it needs an ORACLE that is independent of the code under
+//! test.  With the class gone the oracle has to be the legacy FORMULA,
+//! kept verbatim -- including the un-distributed `(f(+w)*S) - (f(-w)*S)`
+//! association, which is what made the old class byte-identical to its
+//! own pre-`normalize_gradient` self and is therefore the exact thing the
+//! 1e-12 bound is measured against.  Transcribed with the original's
+//! comments stripped; its rationale is in the design doc and in the
+//! commit that removed it.
+static void LegacyBumpReference(
+	RayIntersectionGeometric& ri,
+	const IFunction2D& func,
+	const Scalar dScale,
+	const Scalar dWindow,
+	const bool bNormalizeGradient )
+{
+	Scalar bumpU = ( func.Evaluate( ri.ptCoord.x + dWindow, ri.ptCoord.y ) * dScale ) -
+	               ( func.Evaluate( ri.ptCoord.x - dWindow, ri.ptCoord.y ) * dScale );
+
+	Scalar bumpV = ( func.Evaluate( ri.ptCoord.x, ri.ptCoord.y + dWindow ) * dScale ) -
+	               ( func.Evaluate( ri.ptCoord.x, ri.ptCoord.y - dWindow ) * dScale );
+
+	if( bNormalizeGradient && dWindow > 0 ) {
+		const Scalar invSpan = Scalar(1) / ( Scalar(2) * dWindow );
+		bumpU *= invSpan;
+		bumpV *= invSpan;
+	}
+
+	const Vector3 vTangentU = ri.onb.u();
+	const Vector3 vTangentV = ri.onb.v();
+
+	const Vector3 newN = Vector3Ops::Normalize( ri.vNormal + vTangentU * bumpU + vTangentV * bumpV );
+
+	if( ModifierFrame::HasCoherentTangent( ri ) ) {
+		ModifierFrame::RebuildPreservingTangent( ri, newN );
+	} else {
+		ri.vNormal = newN;
+		ri.onb.CreateFromW( ri.vNormal );
+	}
+}
+
+//! Worst |componentwise difference| between two hits' normals and all
+//! three ONB axes, over `probes` (u,v) samples: the shared body of 2(a)
+//! and 2(b), which compare the same legacy reference against two
+//! different relief-side constructions.
+static void CompareAgainstLegacy(
+	const IFunction2D& func, const Scalar S, const Scalar W, const bool normalized,
+	IRayIntersectionModifier& reliefSide,
+	int probes, Scalar& worstN, Scalar& worstFrame, int& normalMismatch, int& frameMismatch )
+{
+	RandomNumberGenerator rng;
+	worstN = 0; worstFrame = 0; normalMismatch = 0; frameMismatch = 0;
+	for( int i = 0; i < probes; i++ ) {
+		const Scalar u = rng.CanonicalRandom() * 4 - 2;
+		const Scalar v = rng.CanonicalRandom() * 4 - 2;
+
+		RayIntersectionGeometric riB = MakeRI( Point3( 0, 0, 0 ) );
+		riB.ptCoord = Point2( u, v );
+		RayIntersectionGeometric riR = riB;
+
+		LegacyBumpReference( riB, func, S, W, normalized );
+		reliefSide.Modify( riR );
+
+		Scalar dN = 0;
+		dN = std::max( dN, std::fabs( riB.vNormal.x - riR.vNormal.x ) );
+		dN = std::max( dN, std::fabs( riB.vNormal.y - riR.vNormal.y ) );
+		dN = std::max( dN, std::fabs( riB.vNormal.z - riR.vNormal.z ) );
+		if( dN > 1e-12 ) normalMismatch++;
+		worstN = std::max( worstN, dN );
+
+		Scalar dF = 0;
+		const Vector3 axB[3] = { riB.onb.u(), riB.onb.v(), riB.onb.w() };
+		const Vector3 axR[3] = { riR.onb.u(), riR.onb.v(), riR.onb.w() };
+		for( int k = 0; k < 3; k++ ) {
+			dF = std::max( dF, std::fabs( axB[k].x - axR[k].x ) );
+			dF = std::max( dF, std::fabs( axB[k].y - axR[k].y ) );
+			dF = std::max( dF, std::fabs( axB[k].z - axR[k].z ) );
+		}
+		if( dF > 1e-12 ) frameMismatch++;
+		worstFrame = std::max( worstFrame, dF );
+	}
+}
 
 static void Test2_LegacyEquivalence()
 {
 	std::cout << "Test 2: legacy bumpmap_modifier equivalence in the uv domain (design 7.2 algebra)" << std::endl;
 
-	// A REAL Perlin2DPainter, dual-registered as the IFunction2D that
-	// bumpmap_modifier samples and wrapped by Function2DScalarPainter for
+	// A REAL Perlin2DPainter, used as the IFunction2D the removed
+	// bumpmap_modifier sampled and wrapped by Function2DScalarPainter for
 	// the relief side.  Function2DScalarPainter evaluates
-	// F.Evaluate(ptCoord.x, ptCoord.y) -- the SAME call BumpMap makes --
-	// so the sampled values are identical and the only difference is FP
-	// reassociation of the `scale` multiply.
+	// F.Evaluate(ptCoord.x, ptCoord.y) -- the SAME call the legacy
+	// expression makes -- so the sampled values are identical and the only
+	// difference is FP reassociation of the `scale` multiply.
 	UniformColorPainter* cA = Own( new UniformColorPainter( RISEPel( 0, 0, 0 ) ) );
 	UniformColorPainter* cB = Own( new UniformColorPainter( RISEPel( 1, 1, 1 ) ) );
 	Perlin2DPainter* perlin = Own( new Perlin2DPainter(
@@ -418,6 +522,7 @@ static void Test2_LegacyEquivalence()
 	const Scalar W = Scalar( 0.01 );
 	const Scalar S = Scalar( 0.7 );
 
+	// ---- (a) The migrator's algebra, applied BY HAND at the call site.
 	for( int gi = 0; gi < 2; gi++ ) {
 		const bool normalized = ( gi == 1 );
 		// The migrator's fold: legacy tilt is +T*S*(f+ - f-) (or /2W when
@@ -425,62 +530,62 @@ static void Test2_LegacyEquivalence()
 		// Equate: S' = -S when normalized, S' = -S*2W when not.
 		const Scalar Sprime = normalized ? ( -S ) : ( -S * Scalar(2) * W );
 
-		BumpMap* bump = Own( new BumpMap( *perlin, S, W, normalized ) );
 		Function2DScalarPainter* h = Own( new Function2DScalarPainter( perlin ) );
 		ReliefModifier* relief = MakeRelief( *h, Sprime, ReliefDomain::UV, W );
 
-		RandomNumberGenerator rng;
 		int normalMismatch = 0, frameMismatch = 0;
 		Scalar worstN = 0, worstFrame = 0;
-		for( int i = 0; i < 1000; i++ ) {
-			const Scalar u = rng.CanonicalRandom() * 4 - 2;
-			const Scalar v = rng.CanonicalRandom() * 4 - 2;
-
-			RayIntersectionGeometric riB = MakeRI( Point3( 0, 0, 0 ) );
-			riB.ptCoord = Point2( u, v );
-			RayIntersectionGeometric riR = riB;
-
-			bump->Modify( riB );
-			relief->Modify( riR );
-
-			Scalar dN = 0;
-			dN = std::max( dN, std::fabs( riB.vNormal.x - riR.vNormal.x ) );
-			dN = std::max( dN, std::fabs( riB.vNormal.y - riR.vNormal.y ) );
-			dN = std::max( dN, std::fabs( riB.vNormal.z - riR.vNormal.z ) );
-			if( dN > 1e-12 ) normalMismatch++;
-			worstN = std::max( worstN, dN );
-
-			Scalar dF = 0;
-			const Vector3 axB[3] = { riB.onb.u(), riB.onb.v(), riB.onb.w() };
-			const Vector3 axR[3] = { riR.onb.u(), riR.onb.v(), riR.onb.w() };
-			for( int k = 0; k < 3; k++ ) {
-				dF = std::max( dF, std::fabs( axB[k].x - axR[k].x ) );
-				dF = std::max( dF, std::fabs( axB[k].y - axR[k].y ) );
-				dF = std::max( dF, std::fabs( axB[k].z - axR[k].z ) );
-			}
-			if( dF > 1e-12 ) frameMismatch++;
-			worstFrame = std::max( worstFrame, dF );
-		}
+		CompareAgainstLegacy( *perlin, S, W, normalized, *relief, 1000,
+			worstN, worstFrame, normalMismatch, frameMismatch );
 
 		std::cout << "    normalize_gradient " << ( normalized ? "TRUE " : "FALSE" )
 		          << "  worst |dN| " << std::scientific << std::setprecision(3) << worstN
 		          << "  worst |donb| " << worstFrame << std::defaultfloat << std::endl;
 
 		CHECK( normalMismatch == 0,
-			"2: vNormal matches BumpMap at all 1000 (u,v) within 1e-12 (normalize_gradient "
+			"2a: vNormal matches the legacy reference at all 1000 (u,v) within 1e-12 (normalize_gradient "
 			<< ( normalized ? "TRUE" : "FALSE" ) << "); mismatches: " << normalMismatch );
 		CHECK( frameMismatch == 0,
-			"2: the whole rebuilt ONB matches BumpMap within 1e-12 (normalize_gradient "
+			"2a: the whole rebuilt ONB matches the legacy reference within 1e-12 (normalize_gradient "
 			<< ( normalized ? "TRUE" : "FALSE" ) << "); mismatches: " << frameMismatch );
 	}
 
-	// Oracle: the comparison above is not vacuous -- the WRONG sign is
-	// detectably different.  (The by-hand red-proof (a) mutates the
-	// modifier itself; this is the in-test version of the same idea,
+	// ---- (b) THE SHIM.  `RISE_API_CreateBumpMapModifier{,Ex}` and the
+	// `IJob::AddBumpMapModifier` virtual above it are ABI-FROZEN: the
+	// Blender bridge calls them and out-of-tree code may too.  Since the
+	// removal they build a ReliefModifier and apply the SAME fold
+	// internally -- so the fold has to be pinned where THEY apply it, not
+	// only where 2(a) applies it by hand.  Flip the sign (or drop the 2W)
+	// in RISE_API.cpp and this block goes red while 2(a) stays green.
+	for( int gi = 0; gi < 2; gi++ ) {
+		const bool normalized = ( gi == 1 );
+		IRayIntersectionModifier* shim = 0;
+		const bool made = normalized
+			? RISE_API_CreateBumpMapModifierEx( &shim, *perlin, S, W, true )
+			: RISE_API_CreateBumpMapModifier( &shim, *perlin, S, W );
+		CHECK( made && shim != 0,
+			"2b: the ABI-frozen bump factory still constructs a modifier (normalize_gradient "
+			<< ( normalized ? "TRUE" : "FALSE" ) << ")" );
+		if( !shim ) continue;
+
+		int normalMismatch = 0, frameMismatch = 0;
+		Scalar worstN = 0, worstFrame = 0;
+		CompareAgainstLegacy( *perlin, S, W, normalized, *shim, 1000,
+			worstN, worstFrame, normalMismatch, frameMismatch );
+
+		CHECK( normalMismatch == 0 && frameMismatch == 0,
+			"2b: the SHIM's own fold reproduces the legacy reference within 1e-12 (normalize_gradient "
+			<< ( normalized ? "TRUE" : "FALSE" ) << "); worst |dN| " << worstN
+			<< ", worst |donb| " << worstFrame );
+		shim->release();
+	}
+
+	// ---- (c) Oracle: the comparison above is not vacuous -- the WRONG
+	// sign is detectably different.  (The by-hand red-proof (a) mutates
+	// the modifier itself; this is the in-test version of the same idea,
 	// proving the 1e-12 agreement is a real constraint and not two
 	// no-ops agreeing.)
 	{
-		BumpMap* bump = Own( new BumpMap( *perlin, S, W, true ) );
 		Function2DScalarPainter* h = Own( new Function2DScalarPainter( perlin ) );
 		ReliefModifier* wrongSign = MakeRelief( *h, +S, ReliefDomain::UV, W );	// should be -S
 
@@ -489,13 +594,90 @@ static void Test2_LegacyEquivalence()
 			RayIntersectionGeometric riB = MakeRI( Point3( 0, 0, 0 ) );
 			riB.ptCoord = Point2( Scalar(i) * Scalar(0.037), Scalar(i) * Scalar(0.061) );
 			RayIntersectionGeometric riR = riB;
-			bump->Modify( riB );
+			LegacyBumpReference( riB, *perlin, S, W, true );
 			wrongSign->Modify( riR );
 			if( !VecClose( riB.vNormal, riR.vNormal, 1e-9 ) ) differed++;
 		}
 		CHECK( differed >= 60,
-			"2: (oracle) the FLIPPED sign disagrees with BumpMap on essentially every probe, "
-			"so the match above is a real constraint; differed on " << differed << "/64" );
+			"2c: (oracle) the FLIPPED sign disagrees with the legacy reference on essentially every "
+			"probe, so the match above is a real constraint; differed on " << differed << "/64" );
+	}
+
+	// ---- (d) `window <= 0` is the fold's SPECIAL CASE, not a point on
+	// its curve, and the shim goes INERT there -- the same rule
+	// `tools/migrate_scenes_relief.py` applies to a scene file (design
+	// 7.2), so a migrated file and a bridge-built modifier cannot disagree.
+	//
+	// WHAT THE LEGACY CLASS ACTUALLY DID, which is finer-grained than
+	// "inert at window <= 0" (measured here, not assumed):
+	//   window == 0  -- genuinely INERT.  Both sides of the central
+	//                   difference sample the same point, so the
+	//                   difference is exactly 0 and the normal is
+	//                   untouched.  The shim MATCHES it.
+	//   window <  0  -- NOT inert.  The difference is the NEGATION of the
+	//                   one at |window| (f(u-|w|) - f(u+|w|)), and the
+	//                   `dWindow > 0` gate additionally skips the
+	//                   normalize_gradient divide, so `scale` silently
+	//                   changes meaning.  The shim DELIBERATELY diverges
+	//                   and goes inert here too: a negative half-step is
+	//                   nonsense input, the fold is undefined on it, and
+	//                   matching the migrator matters more than matching a
+	//                   deleted class's accident.  Asserted as a
+	//                   divergence, not as agreement, so nobody later
+	//                   "fixes" the shim toward the accident.
+	{
+		// window == 0: the shim and the legacy reference AGREE on inert.
+		IRayIntersectionModifier* shim = 0;
+		CHECK( RISE_API_CreateBumpMapModifier( &shim, *perlin, S, Scalar(0) ) && shim != 0,
+			"2d: the shim accepts window 0" );
+		if( shim ) {
+			RayIntersectionGeometric ri0 = MakeRI( Point3( 0, 0, 0 ) );
+			ri0.ptCoord = Point2( 0.3, 0.7 );
+			RayIntersectionGeometric riLegacy = ri0, riShim = ri0;
+			LegacyBumpReference( riLegacy, *perlin, S, Scalar(0), false );
+			shim->Modify( riShim );
+
+			CHECK( VecClose( riLegacy.vNormal, ri0.vNormal, 0 ),
+				"2d: (setup) the legacy reference really is inert at window 0" );
+			CHECK( VecClose( riShim.vNormal, ri0.vNormal, 0 )
+			    && VecClose( riShim.onb.u(), ri0.onb.u(), 0 )
+			    && VecClose( riShim.onb.v(), ri0.onb.v(), 0 ),
+				"2d: ...and so is the shim -- window 0 folds to scale 0, NOT to the automatic step" );
+			shim->release();
+		}
+	}
+	{
+		// window < 0: the legacy reference is NOT inert; the shim is, on
+		// purpose.  Both halves asserted.
+		const Scalar W_NEG = Scalar( -0.01 );
+		RayIntersectionGeometric ri0 = MakeRI( Point3( 0, 0, 0 ) );
+		ri0.ptCoord = Point2( 0.3, 0.7 );
+
+		RayIntersectionGeometric riLegacy = ri0;
+		LegacyBumpReference( riLegacy, *perlin, S, W_NEG, false );
+		CHECK( !VecClose( riLegacy.vNormal, ri0.vNormal, 1e-12 ),
+			"2d: (setup) the legacy reference is NOT inert at a NEGATIVE window -- it is the "
+			"sign-flipped bump of |window|, which is the accident the shim declines to copy" );
+
+		RayIntersectionGeometric riPos = ri0;
+		LegacyBumpReference( riPos, *perlin, S, -W_NEG, false );
+		CHECK( !VecClose( riLegacy.vNormal, riPos.vNormal, 1e-12 ),
+			"2d: (setup) ...and it is a DIFFERENT normal from the +|window| result, so the "
+			"negative case was never a harmless relabelling either" );
+
+		IRayIntersectionModifier* shim = 0;
+		CHECK( RISE_API_CreateBumpMapModifier( &shim, *perlin, S, W_NEG ) && shim != 0,
+			"2d: the shim accepts a negative window" );
+		if( shim ) {
+			RayIntersectionGeometric riShim = ri0;
+			shim->Modify( riShim );
+			CHECK( VecClose( riShim.vNormal, ri0.vNormal, 0 )
+			    && VecClose( riShim.onb.u(), ri0.onb.u(), 0 )
+			    && VecClose( riShim.onb.v(), ri0.onb.v(), 0 ),
+				"2d: ...and goes INERT on it anyway -- the migrator's `windowsize <= 0 -> scale 0` "
+				"rule, so a bridge-built modifier and a migrated scene never disagree" );
+			shim->release();
+		}
 	}
 }
 
@@ -1068,22 +1250,6 @@ static RayIntersectionGeometric MakeSDFHeightfieldRI( const Point3& p, bool mirr
 //! correct modifier is a pure no-op on the frame.
 static Scalar HeightConstant( const RayIntersectionGeometric& ) { return Scalar( 0.375 ); }
 
-//! A trivial constant IFunction2D, BumpMap's zero-gradient input.
-namespace {
-class ConstFunction2D :
-	public virtual IFunction2D,
-	public virtual Reference
-{
-public:
-	explicit ConstFunction2D( Scalar v ) : m_v( v ) {}
-	Scalar Evaluate( const Scalar, const Scalar ) const override { return m_v; }
-protected:
-	virtual ~ConstFunction2D() {}
-private:
-	Scalar m_v;
-};
-} // anonymous namespace
-
 static void Test7b_SDFHeightfieldFrame()
 {
 	std::cout << "Test 7b: an SDF-heightfield hit (bShadingTangentFromGeometry, no bHasShadingTangent) keeps its coherent frame" << std::endl;
@@ -1125,22 +1291,13 @@ static void Test7b_SDFHeightfieldFrame()
 			"7b(i): relief -- a constant height leaves the whole ONB bit-identical" );
 	}
 
-	// ---- (i) SIBLINGS.  BumpMap and NormalMap carried the identical
-	// bug (audit-by-bug-pattern: same gate, same family), so the same
-	// zero-perturbation invariant is pinned for both.
-	{
-		ConstFunction2D* f = Own( new ConstFunction2D( Scalar(0.375) ) );
-		BumpMap* m = Own( new BumpMap( *f, 1.0, 0.05, false ) );
-
-		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, false );
-		const Vector3 n0 = ri.vNormal, u0 = ri.onb.u(), v0 = ri.onb.v(), w0 = ri.onb.w();
-		m->Modify( ri );
-
-		CHECK( VecClose( ri.vNormal, n0, 0 ),
-			"7b(i): bump_map -- a constant height leaves vNormal bit-identical" );
-		CHECK( VecClose( ri.onb.u(), u0, 0 ) && VecClose( ri.onb.v(), v0, 0 ) && VecClose( ri.onb.w(), w0, 0 ),
-			"7b(i): bump_map -- a constant height leaves the whole ONB bit-identical" );
-	}
+	// ---- (i) SIBLING.  NormalMap carried the identical bug
+	// (audit-by-bug-pattern: same gate, same family), so the same
+	// zero-perturbation invariant is pinned for it too.  `BumpMap` was the
+	// THIRD sibling here until 2026-09-06, when the class was deleted with
+	// the `bumpmap_modifier` chunk (design 7.5, Phase B); its block was
+	// removed rather than repointed, because the two remaining modifiers
+	// are the two that still share the gate.
 	{
 		// (0.5, 0.5, 1.0) decodes to the identity tangent-space normal
 		// (0, 0, 1): nx = ny = 0, nz = 1, so the perturbed normal is N.
@@ -1645,48 +1802,59 @@ static void Test10_Parse()
 		}
 	}
 
-	// (f) The Phase-3 deprecation diagnostic (docs/RELIEF_MODIFIER_DESIGN.md
-	//     section 7.1): bumpmap_modifier still parses, but warns.  The
-	//     warning is emitted from a `static std::atomic<bool>` guard inside
-	//     `BumpmapModifierAsciiChunkParser::Finalize` (the NormalMap.cpp
-	//     idiom) -- ONCE PER PROCESS, not once per chunk -- so a scene with
-	//     TWO bumpmap_modifier chunks must show the deprecation text
-	//     EXACTLY ONCE in the captured log, not twice.
-	//
-	//     ORDERING NOTE: the atomic guard is a process-lifetime static, so
-	//     this is only a valid test of "fires once" if no earlier
-	//     bumpmap_modifier chunk was parsed via the ASCII chunk parser
-	//     (LoadAsciiSceneViaCst) anywhere else in this process. Test 2
-	//     above constructs a `BumpMap` object directly in C++ (`new
-	//     BumpMap(...)`) and never goes through the chunk parser, so it
-	//     does not pre-trip the guard -- this is, by construction, the
-	//     first and only ASCII bumpmap_modifier parse in this binary. If a
-	//     future edit to this file adds another ASCII-parsed
-	//     bumpmap_modifier scene anywhere (including in an earlier test),
-	//     this case must move ahead of it, or it will observe the guard
-	//     already tripped and see zero matches instead of one.
+	// (f) THE REMOVAL (docs/RELIEF_MODIFIER_DESIGN.md 7.5, Phase B,
+	//     2026-09-06).  `bumpmap_modifier` no longer parses at all: the
+	//     chunk parser and its registry entry are gone, so the keyword
+	//     falls through to Cst.cpp's unknown-chunk path.  What is asserted
+	//     here is NOT merely that it fails -- a bare "unknown chunk type"
+	//     would satisfy that and would strand the one author who most
+	//     needs help, the person holding a scene that used to load.  The
+	//     `kRetiredChunks` table in Cst.cpp exists so the message NAMES the
+	//     replacement chunk and the migrator, and this case is what keeps
+	//     that table wired to the diagnostic: delete the entry and the
+	//     generic message comes back, failing the last three checks while
+	//     the first two still pass.
 	{
 		IJobPriv* job = 0;
 		RISE_CreateJobPriv( &job );
 		CHECK( job != 0, "10f: job created" );
 		if( job ) {
 			std::string log;
-			const bool ok = ParseCapturing( "deprecated",
+			ParseCapturing( "removed",
 				"piecewise_linear_function2d\n{\n\tname d2a\n}\n"
-				"piecewise_linear_function2d\n{\n\tname d2b\n}\n"
-				"bumpmap_modifier\n{\n\tname bm_a\n\tfunction d2a\n}\n"
-				"bumpmap_modifier\n{\n\tname bm_b\n\tfunction d2b\n}\n",
+				"bumpmap_modifier\n{\n\tname bm_a\n\tfunction d2a\n}\n",
 				*job, log );
-			CHECK( ok, "10f: a scene with two bumpmap_modifier chunks still parses successfully" );
-			CHECK( job->GetModifiers()->GetItem( "bm_a" ) != 0 && job->GetModifiers()->GetItem( "bm_b" ) != 0,
-				"10f: both deprecated modifiers are still registered (Phase A keeps parsing)" );
-			std::size_t count = 0, pos = 0;
-			const std::string needle = "is DEPRECATED and will be removed";
-			while( ( pos = log.find( needle, pos ) ) != std::string::npos ) { ++count; pos += needle.size(); }
-			CHECK( count == 1,
-				"10f: the deprecation warning appears EXACTLY ONCE across two chunks (once-per-process, not once-per-chunk)" );
-			CHECK( Contains( log, "relief_modifier" ) && Contains( log, "tools/migrate_scenes_relief.py" ),
-				"10f: the warning names relief_modifier and the migrator" );
+			CHECK( job->GetModifiers()->GetItem( "bm_a" ) == 0,
+				"10f: a `bumpmap_modifier` chunk registers NOTHING -- the chunk is removed, not deprecated" );
+			CHECK( Contains( log, "bumpmap_modifier" ) && Contains( log, "has been removed" ),
+				"10f: ...and the diagnostic says so, naming the chunk" );
+			CHECK( Contains( log, "relief_modifier" ),
+				"10f: ...names `relief_modifier` as the replacement" );
+			CHECK( Contains( log, "tools/migrate_scenes_relief.py" ),
+				"10f: ...and names the migrator that converts the scene losslessly" );
+			CHECK( !Contains( log, "unknown chunk type" ),
+				"10f: ...instead of the bare generic unknown-chunk message" );
+			safe_release( job );
+		}
+	}
+
+	// (g) The retired-keyword table is SCOPED: a keyword RISE never had
+	//     still gets the honest generic message, not a fabricated
+	//     migration story.  Without this, a table lookup that (say)
+	//     matched on a prefix or returned its first row unconditionally
+	//     would be invisible.
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		if( job ) {
+			std::string log;
+			ParseCapturing( "notachunk",
+				"bumpmap_modifier_xyzzy\n{\n\tname q\n}\n",
+				*job, log );
+			CHECK( Contains( log, "unknown chunk type" ),
+				"10g: a keyword that was never a chunk gets the generic unknown-chunk message" );
+			CHECK( !Contains( log, "migrate_scenes_relief" ),
+				"10g: ...and is NOT handed the bumpmap migration advice" );
 			safe_release( job );
 		}
 	}

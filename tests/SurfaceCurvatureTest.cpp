@@ -22,7 +22,8 @@
 //    (d) `curv` INVARIANCE across two instances of one geometry at
 //        different world scales -- the whole point of the scaleHint
 //        normalization.
-//    (e) `curv` INVARIANCE under an applied bump map -- design doc §14
+//    (e) `curv` INVARIANCE under an applied normal-perturbing
+//        modifier (relief) -- design doc §14
 //        item 6, a REQUIREMENT: a wear mask must follow the form, not
 //        the texture.
 //    (f) DEGENERATE parameterizations return the invalid path, never a
@@ -51,7 +52,8 @@
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Objects/Object.h"
-#include "../src/Library/Modifiers/BumpMap.h"
+#include "../src/Library/Modifiers/ReliefModifier.h"
+#include "../src/Library/Painters/Function2DScalarPainter.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -138,9 +140,9 @@ static TriangleMeshGeometryIndexed* BuildTessellatedSphereMesh( Scalar radius, u
 	return pMesh;
 }
 
-//! A trivial non-constant IFunction2D for the bump-map test.  Non-constant
-//! matters: a constant field has zero gradient, so BumpMap would leave
-//! vNormal untouched and test (e) would pass vacuously.
+//! A trivial non-constant IFunction2D for the relief test.  Non-constant
+//! matters: a constant field has zero gradient, so the modifier would
+//! leave vNormal untouched and test (e) would pass vacuously.
 class RampField : public virtual IFunction2D, public virtual Reference
 {
 protected:
@@ -393,12 +395,13 @@ static void TestCurvInvariantAcrossInstanceScales()
 }
 
 //======================================================================
-// (e) `curv` is invariant under an applied bump map (design doc §14.6)
+// (e) `curv` is invariant under an applied normal-perturbing modifier
+//     (design doc §14.6)
 //======================================================================
 
-static void TestCurvInvariantUnderBumpMap()
+static void TestCurvInvariantUnderNormalPerturbation()
 {
-	std::cout << "(e) curv invariant under an applied bump map" << std::endl;
+	std::cout << "(e) curv invariant under an applied relief modifier" << std::endl;
 
 	const Scalar r = 2.0;
 	SphereGeometry* g = new SphereGeometry( r );
@@ -406,9 +409,16 @@ static void TestCurvInvariantUnderBumpMap()
 	g->release();
 	o->FinalizeTransformations();
 
+	// The UV-domain relief modifier over the ramp -- the shape the removed
+	// `bumpmap_modifier` chunk now lowers to (2026-09-06, design 7.5), with
+	// its amplitude fold applied to the (0.75, 0.01, normalize FALSE) this
+	// case used to pass: S' = -0.75*2*0.01 = -0.015.  What matters to (e) is
+	// only that the shading normal MOVES, which the assertion below pins.
 	RampField* field = new RampField();
-	BumpMap* bump = new BumpMap( *field, 0.75, 0.01, false );
+	Function2DScalarPainter* height = new Function2DScalarPainter( field );
 	field->release();
+	ReliefModifier* bump = new ReliefModifier( *height, -0.015, ReliefDomain::UV, 0.01 );
+	height->release();
 
 	ExpressionProgram prog = ExpressionProgram::Invalid();
 	Check( CompileWithContext( "curv", prog ), "(e) `curv` compiles" );
@@ -428,14 +438,14 @@ static void TestCurvInvariantUnderBumpMap()
 	const Vector3 nAfter = ri.geometric.vNormal;
 	const Scalar after = painter->GetValuesAt( ri.geometric ).v[0];
 
-	// The bump must have actually MOVED the shading normal, or the
+	// The modifier must have actually MOVED the shading normal, or the
 	// invariance below is vacuous.
 	const Scalar normalMove = std::fabs( nBefore.x - nAfter.x )
 		+ std::fabs( nBefore.y - nAfter.y ) + std::fabs( nBefore.z - nAfter.z );
-	Check( normalMove > 1e-6, "(e) the bump map genuinely perturbed vNormal (non-vacuous)" );
+	Check( normalMove > 1e-6, "(e) the relief modifier genuinely perturbed vNormal (non-vacuous)" );
 
-	CheckClose( after, before, 1e-12, "(e) curv UNCHANGED by the bump map" );
-	Check( before > 0, "(e) curv still reads convex after the bump" );
+	CheckClose( after, before, 1e-12, "(e) curv UNCHANGED by the relief modifier" );
+	Check( before > 0, "(e) curv still reads convex after the perturbation" );
 
 	painter->release();
 	bump->release();
@@ -685,7 +695,7 @@ int main()
 	TestFlatSurfacesReadZero();
 	TestScaledSphereTransform();
 	TestCurvInvariantAcrossInstanceScales();
-	TestCurvInvariantUnderBumpMap();
+	TestCurvInvariantUnderNormalPerturbation();
 	TestDegenerateParameterization();
 	TestSdfDirectCurvatureAndGate();
 	TestDemandRegistrationFollowsTheProgram();
