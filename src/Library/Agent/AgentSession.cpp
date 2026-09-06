@@ -5699,11 +5699,24 @@ namespace RISE
 			//
 			// Everything below resolves exactly those rules off maps the single
 			// document walk already builds.  The `source` walks are bounded at
-			// `kSourceChainHopBound_`, the SAME 256 `Cst.cpp`'s `SourceChainOf`
-			// uses -- so no chain the ENGINE will expand can outrun this scan.
+			// `kSourceChainHopBound_ = 256`, the SAME guard value `Cst.cpp`'s
+			// `SourceChainOf` uses.  The walk actually REACHES 255 hops (hop 0
+			// is spent resolving the object's own literal; hops 1..255 walk
+			// its `source` ancestors), and that is itself a belt that never
+			// binds: the engine's real instancing-expansion cap is
+			// `ClonePlanBuilder::DepthOk` (Cst.cpp), which refuses to EXPAND a
+			// `source` chain past 64 levels of instancing -- comfortably
+			// inside this scan's 255-hop reach.  `SourceChainOf`'s own 256 is
+			// a second, looser belt against a future apply path; this scan
+			// matches THAT number rather than the 64 that actually binds, so
+			// it never falls short of whatever the engine one day admits --
+			// no chain the ENGINE will expand can outrun this scan.
 			// (The first cut's bound of 8 justified itself by a `source` cycle
 			// the declare-earlier rule makes impossible, and reached only 7 hops:
-			// a legal 8-deep chain with the modifier at its root fired falsely.)
+			// a legal 8-deep chain with the modifier at its root fired falsely
+			// WHEN the far link also re-spelled its own material -- without
+			// that, the object has no material at all, and it is dropped as a
+			// candidate rather than fired on.)
 			// The two csg walks are bounded on NESTING DEPTH instead, and stay
 			// deliberately modest because `enclosingCsgByObject` can fan out; a
 			// nest deeper than that resolves to "no modifier" / "no enclosing
@@ -7880,8 +7893,13 @@ namespace RISE
 					// Clause (c)'s helper: follow an object's `source` link (an
 					// instancing chunk names a source object rather than a
 					// geometry of its own) to whatever geometry it ultimately
-					// stands on.  Bounded at `kSourceChainHopBound_` -- the same
-					// 256 `Cst.cpp`'s `SourceChainOf` guards with, so no chain the
+					// stands on.  Bounded at `kSourceChainHopBound_ = 256` --
+					// the same guard value `Cst.cpp`'s `SourceChainOf` uses,
+					// and itself a belt that never binds: the engine's real
+					// instancing-expansion cap is `ClonePlanBuilder::DepthOk`
+					// (Cst.cpp), which refuses to EXPAND a `source` chain past
+					// 64 levels, well inside this walk's actual 255-hop reach
+					// (hop 0 resolves the object itself).  So no chain the
 					// ENGINE will expand can outrun this walk (2026-09-06 fix
 					// round 2: the bound was 8, which reached 7 hops and made a
 					// legal 8-deep chain resolve to "no geometry").  Bounded at

@@ -729,13 +729,23 @@ namespace RISE
 			//!              hit it reports, so the operand is never flat.
 			//!         Every walk here is bounded, but not by the same rule
 			//!         (FIX ROUND 2): the `source` walks stop at
-			//!         `kSourceChainHopBound_`, the SAME 256 `Cst.cpp`'s
-			//!         `SourceChainOf` guards with, so no chain the ENGINE
-			//!         will expand can outrun the scan -- the first cut's
+			//!         `kSourceChainHopBound_ = 256`, the SAME guard value
+			//!         `Cst.cpp`'s `SourceChainOf` uses.  The walk actually
+			//!         REACHES 255 hops (hop 0 resolves the object's own
+			//!         literal; hops 1..255 walk its `source` ancestors), and
+			//!         that is itself a belt that never binds: the engine's
+			//!         real instancing-expansion cap is
+			//!         `ClonePlanBuilder::DepthOk` (`Cst.cpp`), which refuses
+			//!         to EXPAND a `source` chain past 64 levels, well inside
+			//!         this scan's 255-hop reach -- so no chain the ENGINE
+			//!         will expand can outrun the scan.  The first cut's
 			//!         bound of 8 reached only 7 hops and justified itself by
 			//!         a `source` cycle the declare-earlier rule makes
 			//!         impossible, which made a LEGAL 8-deep chain with the
-			//!         modifier at its root fire falsely.  The csg walks are
+			//!         modifier at its root fire falsely WHEN the far link
+			//!         also re-spelled its own material -- without that, the
+			//!         object has no material at all, and clause (i) drops
+			//!         it rather than firing.  The csg walks are
 			//!         bounded on NESTING DEPTH instead, deliberately modest
 			//!         because the enclosure edges can fan out; a nest deeper
 			//!         than that resolves to "no modifier" / "no enclosing

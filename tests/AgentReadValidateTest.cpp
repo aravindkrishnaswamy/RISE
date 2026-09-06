@@ -2195,11 +2195,37 @@ static void RunFlatReliefScanTest()
 	//--------------------------------------------------------------
 	// (r) P2-1 fix round 2: the `source` chain bound.  The walk used
 	// to stop after 7 hops on a bound justified by a `source` cycle
-	// that Cst.cpp makes impossible (forward references are refused,
-	// and SourceChainOf caps at 256 purely as a belt).  A LEGAL
-	// 9-deep chain with the relief at its root therefore resolved to
-	// "no modifier" at its far end and fired falsely.  The bound is
-	// now the engine's own 256, so the whole chain is silent.
+	// that Cst.cpp makes impossible (forward references are refused;
+	// SourceChainOf's own 256-guard is a second belt that never binds,
+	// since ClonePlanBuilder::DepthOk already refuses to EXPAND an
+	// instancing chain past 64 levels -- this walk's actual reach, 255
+	// hops (hop 0 is spent on the object itself), comfortably clears
+	// that 64).  A LEGAL 9-deep chain with the relief at its root
+	// therefore resolved to "no modifier" at its far end and fired
+	// falsely -- WHEN the far link also re-spells its own material;
+	// without that, the far link has no material at all, clause (i)
+	// never qualifies, and the object is dropped BEFORE clause (ii)'s
+	// modifier question is ever asked -- which is why the ORIGINAL
+	// version of this fixture (every link o1..o9 silent on both
+	// `material` and `modifier`) could not go red no matter where the
+	// bound was set: a truncated modifier walk and a truncated
+	// material walk fail IDENTICALLY, so the object is dropped, never
+	// fired on, either way.
+	//
+	// DISCRIMINATING FIXTURE: o1..o8 are pure position links, spelling
+	// neither `material` nor `modifier`; o9 -- the deepest link --
+	// re-spells `material vessel_mat` explicitly, so its EFFECTIVE
+	// material resolves at hop 0 while its effective modifier can only
+	// be found by walking all 9 hops back to `o0`.  A hop bound that
+	// truncates before hop 9 finds the varying material immediately
+	// and "no modifier" for the walk it truncates -- firing falsely on
+	// `o9`, not dropping it.
+	//
+	// RED-PROOF (performed against this fixture, not left in the
+	// tree): `kSourceChainHopBound_` set to 8 in AgentSession.cpp,
+	// rebuilt -- (r) failed (332 passed, 1 failed), `o9` fired
+	// DESIGN_FLAT_RELIEF.  Restored to 256, rebuilt --
+	// AgentReadValidateTest 333 passed, 0 failed.
 	//--------------------------------------------------------------
 	{
 		std::string docDeepChain = kPreamble + kRelief +
@@ -2209,11 +2235,13 @@ static void RunFlatReliefScanTest()
 		for( int k = 1; k <= 9; ++k ) {
 			docDeepChain += "standard_object\n{\n\tname o" + std::to_string( k ) +
 				"\n\tsource o" + std::to_string( k - 1 ) +
+				( ( k == 9 ) ? "\n\tmaterial vessel_mat" : "" ) +
 				"\n\tposition " + std::to_string( k ) + " 0 0\n}\n\n";
 		}
 		Check( !hasCode( AgentSession::ValidateText( docDeepChain ), "DESIGN_FLAT_RELIEF" ),
 		       "(r) P2-1 GREEN-PROVE: a LEGAL 9-deep `source` chain with the relief at its root is "
-		       "silent at every link -- the walk reaches the root, as the engine's own expansion does" );
+		       "silent at every link, INCLUDING `o9` which re-spells the varying `material` itself -- "
+		       "the walk reaches the root for the modifier exactly as the engine's own expansion does" );
 	}
 }
 
