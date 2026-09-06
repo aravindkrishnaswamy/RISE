@@ -102,7 +102,8 @@ namespace RISE
 			//! rebuild on `bHasShadingTangent` ALONE therefore misses
 			//! SDFGeometry's heightfield mode, which sets
 			//! `bShadingTangentFromGeometry` WITHOUT `bHasShadingTangent`
-			//! (SDFGeometry.cpp:1599; the field comment at
+			//! (SDFGeometry.cpp, the `m_isHeightfield` branch of
+			//! IntersectRay; the field comment at
 			//! RayIntersectionGeometric.h:391-394 spells the pairing out)
 			//! -- such a hit would fall to `CreateFromW`, which for the
 			//! canonical heightfield case (u = +X, v = +Y, w = +Z) rotates
