@@ -52,6 +52,35 @@ r207 checker now requires the exact new RED family and both positive verdicts,
 and binds the synthetic writer's transcript, CSV and event/source inputs.
 Historical six-RED acceptance remains unchanged.
 
+### Fixed-campaign execution authority
+
+The r207 Python verifier verifies **one already executed synthetic v3
+qualification**. Its externally recorded raw `crossing_gate.v3.log` SHA-256 is
+`d63b483a24d459ac154cb18c566ec9e47f466d6c0619e03d31fd7bebe6c7edd0`.
+That pinned log binds the published crossing transcript hash, which binds its
+CSV, consumed-target payload, identities and event records. The loader hashes
+the exact UTF-8 bytes without normalizing line endings. A caller cannot mint
+new execution authority by editing evidence and recomputing its declared hashes.
+A future run requires a separately recorded, reviewed campaign binding; this
+tool deliberately does not self-qualify arbitrary new executions or authorize
+physical replay evidence. This follows the r206 execution-supplement authority
+pattern, not a general-purpose cryptographic attestation claim.
+
+Second-round CPU mutations demonstrated the former reader accepted jointly
+truncated trace/CSV faces, an equal-volume shape with an invalid column,
+replaced consumed-target identities, and invalid device/staging counters after
+the caller recomputed dependent hashes. All four now have explicit refusal
+tests against the fixed execution root. Independent complete-column topology,
+stage/iteration ordering, event-schema and numeric checks supplement that root;
+semantic validation is not a substitute for execution authority. The historical
+checker remains unchanged and still accepts those rehashed bundles.
+
+The executed v3 device tail payload contains only zero increments. The two
+small synthetic reduction witnesses establish requested-demand versus terminal
+demand semantics, but do not establish nonzero device-to-export capture or a
+realized tail-only physical drain. No new GPU execution or solver change is
+implied by this CPU-only verifier repair.
+
 The inherited owner adapter derives `tail_cells` and `tail_drained_m3` from
 terminal EOS deviation; these are **remaining terminal tail demand**, not proof
 of an earlier executed drain. The port also has no separate restoration

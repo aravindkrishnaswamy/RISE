@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Qualify the synthetic r207 crossing exporter; never admit a physics run."""
+"""Verify the externally anchored, executed r207 v3 synthetic qualification.
+
+This is not an issuer for arbitrary future executions or physics evidence.
+The recorded raw log SHA is the campaign's authority root, not a caller's
+self-declared digest. Rehashing a changed log cannot authorize new evidence.
+"""
 
 import argparse
 import csv
@@ -21,6 +26,7 @@ RED_NAMES = {"stale_dt", "missing_event_binding", "export_stale_dt",
 TAIL_RED_NAMES = {"tail_drained_below_threshold", "terminal_only_excess_not_drained"}
 SOURCE = "r207_synthetic_fixture_no_physics_claim"
 SYNTHETIC = b"synthetic r207 exporter fixture; not production evidence\n"
+EXECUTED_V3_LOG_SHA256 = "d63b483a24d459ac154cb18c566ec9e47f466d6c0619e03d31fd7bebe6c7edd0"
 BINDINGS = {"source_ledger_sha256": ".source_ledger.v1",
             "source_observation_inputs_sha256": ".source_observation_inputs.bin",
             "event_sha256": ".event.v1"}
@@ -65,10 +71,67 @@ def one_prose(text, tag, schema):
     return prose_record(lines[0], tag, schema)
 
 
+def face_topology(probe, faces):
+    """Check geometry and complete ordered blocks independently of CSV agreement."""
+    shape = tuple(int(value) for value in probe["shape"].split(","))
+    column = tuple(int(value) for value in probe["column"].split(","))
+    if (len(shape) != 3 or min(shape) <= 0 or len(column) != 2
+            or not 0 <= column[0] < shape[0] or not 0 <= column[1] < shape[1]):
+        raise ValueError("invalid crossing grid shape or column")
+    nx, ny, nz = shape
+    x, y = column
+    per_block = 5 * nz + 1
+    if not faces or len(faces) % per_block or len(faces) < 9 * per_block:
+        raise ValueError("incomplete crossing face blocks")
+    expected = []
+    for z in range(nz):
+        for side in range(2):
+            expected.extend((("0", str(x + side + (nx + 1) * (y + ny * z)), str(z), str(side)),
+                             ("1", str(x + nx * (y + side + (ny + 1) * z)), str(z), str(side))))
+    expected.extend(("2", str(x + nx * (y + ny * z)), str(z), "0") for z in range(nz + 1))
+    topology = []
+    stage = 0
+    index = 0
+    next_iteration = 0
+    for start in range(0, len(faces), per_block):
+        block = [fields(line) for line in faces[start:start + per_block]]
+        first = block[0]
+        raw = int(first["raw_iteration_tag"])
+        bootstrap = raw == 0xffffffff
+        terminal = not bootstrap and bool(raw & 0x80000000)
+        iteration = raw & 0x7fffffff
+        phase = "bootstrap" if bootstrap else "terminal_reprojection" if terminal else "picard"
+        if (stage > 2 or not 0 <= raw <= 0xffffffff or (index == 0) != bootstrap
+                or (not bootstrap and not terminal and iteration != next_iteration)
+                or (terminal and (not next_iteration or iteration != next_iteration - 1))):
+            raise ValueError("invalid crossing stage or iteration sequence")
+        counters = {"stage": "R" + str(stage), "trace_index": str(index),
+                    "raw_iteration_tag": str(raw), "phase": phase,
+                    "iteration": str(0 if bootstrap else iteration + 1)}
+        for row, location in zip(block, expected):
+            if (any(row.get(key) != value for key, value in counters.items())
+                    or tuple(row.get(key) for key in ("axis", "face", "column_z", "side")) != location):
+                raise ValueError("stale, missing or duplicate crossing face")
+        topology.append((counters["stage"], counters["trace_index"], counters["raw_iteration_tag"]))
+        if terminal:
+            stage += 1
+            index = 0
+            next_iteration = 0
+        else:
+            index += 1
+            if not bootstrap:
+                next_iteration += 1
+    if stage != 3 or index:
+        raise ValueError("missing crossing terminal or stage")
+    return shape, topology
+
+
 def qualify_crossing(log, trace, csv_bytes, crossing, crossing_csv, bindings, tail_payload=b"",
                      scope="qualification_only"):
     if scope != "qualification_only":
         raise ValueError("synthetic exporter inputs cannot qualify production evidence")
+    if sha(log.encode("utf-8")) != EXECUTED_V3_LOG_SHA256:
+        raise ValueError("log is not the externally anchored executed v3 qualification")
     qualify_artifact(log, trace, csv_bytes)
     reds = [prose_record(line, "OWNER_CROSSING_RED", {"name", "atomic_refusal", "error", "passed"})
             for line in tagged(log, "OWNER_CROSSING_RED")]
@@ -100,6 +163,13 @@ def qualify_crossing(log, trace, csv_bytes, crossing, crossing_csv, bindings, ta
         raise ValueError("orphan or failed crossing publication")
     text = crossing.decode()
     event = one(text, "OWNER_CONVERGENCE_EVENT")
+    if set(event) != {"version", "accepted_step_beginning", "beginning_time_s", "dt_s", "cell_width_m",
+                      "end_time_s", "input_payload_root_sha256", "output_payload_root_sha256",
+                      "kernel_set_sha256", "source_packet_identity", *BINDINGS,
+                      "terminal_fields_bit_identical", "stage_identities_identical", "solver_publications",
+                      "diagnostic_device_ms", "diagnostic_wall_ms", "qualification_trace_staging_count",
+                      "fixed_k_selection"}:
+        raise ValueError("incomplete or unknown crossing event schema")
     for key, expected in {"version": "1", "accepted_step_beginning": "0",
                           "terminal_fields_bit_identical": "1", "stage_identities_identical": "1",
                           "solver_publications": "0", "fixed_k_selection": "not_authorized"}.items():
@@ -111,6 +181,11 @@ def qualify_crossing(log, trace, csv_bytes, crossing, crossing_csv, bindings, ta
     wall = float(event["diagnostic_wall_ms"])
     if not math.isfinite(wall) or wall < 0 or wall != float(published["diagnostic_wall_ms"]):
         raise ValueError("diagnostic timing not bound")
+    device = float(event["diagnostic_device_ms"])
+    if (not math.isfinite(device) or device < 0
+            or not re.fullmatch(r"[1-9][0-9]*", event["source_packet_identity"])
+            or int(event["source_packet_identity"]) > 0xffffffffffffffff):
+        raise ValueError("invalid crossing device timing or source identity")
     if set(bindings) != set(BINDINGS):
         raise ValueError("incomplete source/event inputs")
     for key, payload in bindings.items():
@@ -176,21 +251,13 @@ def qualify_crossing(log, trace, csv_bytes, crossing, crossing_csv, bindings, ta
                   "standalone_restoration_projection": "absent", "separated_tail_impulse": "unavailable",
                   "legacy_tail_columns": "terminal_remaining_demand_not_realized_drain"}:
         raise ValueError("projection budget mislabels consumed demand as restoration impulse")
-    shape = tuple(int(value) for value in probe["shape"].split(","))
-    if len(shape) != 3 or min(shape) <= 0:
-        raise ValueError("invalid tail grid shape")
+    shape, topology = face_topology(probe, faces)
     cells = math.prod(shape)
     dx = float(event["cell_width_m"])
     if not math.isfinite(dx) or dx <= 0:
         raise ValueError("invalid tail cell width")
-    topology = []
-    for line in faces:
-        face = fields(line)
-        triple = (face["stage"], face["trace_index"], face["raw_iteration_tag"])
-        if not topology or triple != topology[-1]:
-            topology.append(triple)
-    if len(set(topology)) != len(topology):
-        raise ValueError("duplicate or out-of-order trace block")
+    if event["qualification_trace_staging_count"] != str(len(topology)):
+        raise ValueError("diagnostic staging count does not cover trace blocks")
     tail_rows = [fields(line) for line in tagged(text, "OWNER_CONSUMED_TAIL_TARGET")]
     schema = {"stage", "trace_index", "raw_iteration_tag", "target_identity", "correction_iteration",
               "nonzero_cells", "requested_increment_volume_m3", "payload_offset_bytes", "payload_cells", "semantics"}
@@ -223,6 +290,7 @@ def qualify_crossing(log, trace, csv_bytes, crossing, crossing_csv, bindings, ta
     if offset != len(tail_payload):
         raise ValueError("orphan consumed-target payload suffix")
     return {"schema": "rise.fire.r207.crossing_exporter.qualification.v1", "scope": scope,
+            "execution_authority": "externally_anchored_v3_raw_log_sha256",
             "crossing_red_count": len(reds), "tail_red_count": len(tail_reds), "log_sha256": sha(log.encode()),
             "consumed_target_sha256": sha(tail_payload), "consumed_target_blocks": len(tail_rows),
             "crossing_sha256": sha(crossing), "crossing_csv_sha256": sha(crossing_csv),
@@ -231,7 +299,8 @@ def qualify_crossing(log, trace, csv_bytes, crossing, crossing_csv, bindings, ta
 
 def load_inputs(base):
     cross = Path(str(base) + ".synthetic-crossing")
-    return (Path(str(base) + ".log").read_text(), base.read_bytes(),
+    # Decode exact bytes: read_text() would silently normalize CRLF before hashing.
+    return (Path(str(base) + ".log").read_bytes().decode("utf-8"), base.read_bytes(),
             Path(str(base) + ".csv").read_bytes(), Path(str(cross) + ".convergence.v1").read_bytes(),
             Path(str(cross) + ".convergence.v1.csv").read_bytes(),
             {key: Path(str(cross) + suffix).read_bytes() for key, suffix in BINDINGS.items()},

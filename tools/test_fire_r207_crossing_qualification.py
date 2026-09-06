@@ -2,11 +2,13 @@
 """Mutation REDs against the actual r207 v3 executed crossing fixture."""
 
 import copy
+import re
 import unittest
 from pathlib import Path
 
 from check_fire_owner_instrumentation import qualify_artifact
-from check_fire_r207_crossing_qualification import load_inputs, qualify_crossing, sha, tagged
+from check_fire_r207_crossing_qualification import (EXECUTED_V3_LOG_SHA256, face_topology,
+                                                  load_inputs, one, qualify_crossing, sha, tagged)
 
 
 BASE = Path(__file__).resolve().parents[1] / "rendered/fire_production_calibration/r207_tier8_verdict/crossing_gate.v3"
@@ -24,13 +26,89 @@ class CrossingQualificationTests(unittest.TestCase):
         values[0] = values[0].replace(sha(values[3]), sha(replacement))
         values[3] = replacement
 
+    def rehash_trace_body(self, text):
+        lines = text.splitlines(keepends=True)
+        begin = next(i for i, line in enumerate(lines) if line.startswith("OWNER_CONVERGENCE_PROBE "))
+        end = next(i for i, line in enumerate(lines) if line.startswith("OWNER_CONVERGENCE_BINDING "))
+        lines[end] = "OWNER_CONVERGENCE_BINDING sha256=" + sha("".join(lines[begin:end]).encode()) + "\n"
+        return "".join(lines).encode()
+
+    def refused_rehashed_log(self, mutant):
+        # All caller-controlled declarations agree. Only the externally recorded
+        # execution root can keep this altered bundle from minting authority.
+        published = one(mutant[0], "OWNER_CONVERGENCE_CROSSING")
+        self.assertEqual(published["sha256"], sha(mutant[3]))
+        self.assertEqual(published["csv_sha256"], sha(mutant[4]))
+        self.assertNotEqual(sha(mutant[0].encode()), EXECUTED_V3_LOG_SHA256)
+        qualify_artifact(*mutant[:3])  # Historical qualifier intentionally unchanged.
+        with self.assertRaisesRegex(ValueError, "externally anchored executed v3"):
+            qualify_crossing(*mutant)
+
     def test_actual_executed_fixture_passes_only_as_qualification(self):
         result = qualify_crossing(*self.inputs)
         self.assertEqual(result["crossing_red_count"], 8)
         self.assertEqual(result["tail_red_count"], 2)
         self.assertEqual(result["physics_claim"], "unavailable_synthetic_fixture")
+        self.assertEqual(result["log_sha256"], EXECUTED_V3_LOG_SHA256)
         with self.assertRaises(ValueError):
             qualify_crossing(*self.inputs, scope="production_evidence")
+
+    def test_rehashed_stale_consumed_target_identities_cannot_mint_authority(self):
+        mutant = copy.deepcopy(self.inputs)
+        replacement = re.sub(rb"target_identity=\d+", b"target_identity=1", mutant[3])
+        self.assertNotEqual(mutant[3], replacement)
+        self.rehash_crossing(mutant, replacement)
+        self.refused_rehashed_log(mutant)
+
+    def test_rehashed_equal_volume_invalid_column_cannot_mint_authority(self):
+        mutant = copy.deepcopy(self.inputs)
+        replacement = mutant[3].decode().replace("shape=4,4,4", "shape=16,1,4")
+        self.rehash_crossing(mutant, self.rehash_trace_body(replacement))
+        self.refused_rehashed_log(mutant)
+
+    def test_rehashed_jointly_truncated_face_and_csv_cannot_mint_authority(self):
+        mutant = copy.deepcopy(self.inputs)
+        old_csv_sha = sha(mutant[4])
+        rows = mutant[4].splitlines(keepends=True)
+        del rows[1]
+        mutant[4] = b"".join(rows)
+        mutant[0] = mutant[0].replace(old_csv_sha, sha(mutant[4]))
+        text = mutant[3].decode()
+        face = tagged(text, "OWNER_CONVERGENCE_FACE")[0]
+        text = text.replace(face + "\n", "", 1).replace(old_csv_sha, sha(mutant[4]))
+        self.rehash_crossing(mutant, self.rehash_trace_body(text))
+        self.refused_rehashed_log(mutant)
+
+    def test_rehashed_invalid_cost_record_cannot_mint_authority(self):
+        mutant = copy.deepcopy(self.inputs)
+        replacement = re.sub(rb" diagnostic_device_ms=\S+", b" diagnostic_device_ms=nan", mutant[3])
+        replacement = re.sub(rb" qualification_trace_staging_count=\S+",
+                             b" qualification_trace_staging_count=0", replacement)
+        self.rehash_crossing(mutant, replacement)
+        self.refused_rehashed_log(mutant)
+
+    def test_log_pin_preserves_raw_bytes_and_rejects_unrelated_new_execution(self):
+        for log in (self.inputs[0].replace("\n", "\r\n"), self.inputs[0] + "\n"):
+            mutant = copy.deepcopy(self.inputs)
+            mutant[0] = log
+            self.refused_rehashed_log(mutant)
+
+    def test_geometry_and_block_checks_are_independent_of_log_pin(self):
+        text = self.inputs[3].decode()
+        probe = one(text, "OWNER_CONVERGENCE_PROBE")
+        faces = tagged(text, "OWNER_CONVERGENCE_FACE")
+        shape, blocks = face_topology(probe, faces)
+        self.assertEqual(shape, (4, 4, 4))
+        self.assertEqual(len(blocks), 14)
+        bad_probe = dict(probe, shape="16,1,4")
+        with self.assertRaisesRegex(ValueError, "shape or column"):
+            face_topology(bad_probe, faces)
+        for mutant in (faces[1:], [faces[1]] + faces[1:], faces[21:] + faces[:21],
+                       [line.replace("phase=bootstrap", "phase=picard") for line in faces],
+                       [line.replace("raw_iteration_tag=0 ", "raw_iteration_tag=2 ") for line in faces]):
+            with self.subTest(first=mutant[0]):
+                with self.assertRaises(ValueError):
+                    face_topology(probe, mutant)
 
     def test_each_deleted_new_record_closes_historical_false_green(self):
         for tag in ("OWNER_CROSSING_RED", "OWNER_CONVERGENCE_PRODUCTION_RERUN",
