@@ -3591,6 +3591,9 @@ namespace
 			config.transport.producerPrecision=checkpointPrecision;
 			advanced.velocityMPerS=std::move(checkpoint.velocity);
 			values=std::move(checkpoint.values);
+			// Historical retained checkpoints may have no nested frame case ID.
+			// Reattach this admitted case even when the next step refuses.
+			values.caseRecordId=caseRecord.caseRecordId;
 			if(legacyActiveSetCheckpoint)values.priorActiveSetAlgorithmVersion=
 				LegacyActiveSetAlgorithmVersion();
 			values.activeSetAlgorithmVersion=CurrentActiveSetAlgorithmVersion();
@@ -7468,9 +7471,9 @@ namespace
 		if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error)){
 			std::fprintf(stderr,"%s_SEAL_REFUSED error=%s\n",diagnosticName,error.c_str());return 94;
 		}
-		if(certificateDiagnostic&&unchanged&&result.succeeded)return 0;
-		return unchanged&&!result.succeeded&&result.structuredError.find(certificateDiagnostic?
-			"owner certificate failed: working_set_passed=":"eos_failure_cell=")!=
+		if(certificateDiagnostic)return unchanged&&result.succeeded&&
+			result.acceptedTimeStepHistoryS.size()==checkpoint.acceptedSteps+8u?0:93;
+		return unchanged&&!result.succeeded&&result.structuredError.find("eos_failure_cell=")!=
 			std::string::npos?0:93;
 	}
 
@@ -16627,6 +16630,28 @@ int main(int argc,char** argv)
 		return !attempt.succeeded&&attempt.structuredError.find("checkpoint_resume_failure:")==0;
 	};
 	MethaneRunCheckpoint bindingMutation=resumedCheckpointMetadata;
+	{
+		MethaneRunCheckpoint emptyNestedCase=resumedCheckpointMetadata;
+		emptyNestedCase.values.caseRecordId.clear();
+		const auto input=checkpointFixture/"empty_nested_case.checkpoint";
+		const bool written=IssueBinary64CheckpointAuthority(emptyNestedCase)&&
+			SaveMethaneRunCheckpoint(input,emptyNestedCase,checkpointFixtureError);
+		const auto inputSHA=DigestFile(input);
+		RunPersistenceOptions persistence;persistence.checkpointPath=input;persistence.resume=true;
+		const SolverFrameValues refused=RunMethaneFrameProbe(3u,
+			static_cast<unsigned int>(emptyNestedCase.acceptedSteps)+1u,0.0,1.0,4.0,6.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,true,persistence);
+		const auto evidence=checkpointFixture/"refused_resume_evidence";
+		std::filesystem::create_directories(evidence);
+		{std::ofstream refusal(evidence/"refusal.txt");refusal<<refused.structuredError;}
+		const bool sealed=written&&!refused.succeeded&&
+			refused.structuredError.find("solver_failure:")==0u&&
+			refused.caseRecordId==emptyNestedCase.caseRecordId&&
+			SealPublishedRunDirectory(evidence,refused.caseRecordId,checkpointFixtureError)&&
+			std::filesystem::exists(evidence/"refusal.txt.payload-v2.json")&&
+			DigestFile(input)==inputSHA;
+		Check(sealed,"r210 refused resume seals its derived case despite empty nested identity");
+	}
 	bindingMutation.producerBuildId=std::string(64u,'0');
 	Check(ValidMutatedCheckpointRejects("wrong_build",bindingMutation),
 		"r61 resume rejects a checksummed checkpoint from a different executable build");

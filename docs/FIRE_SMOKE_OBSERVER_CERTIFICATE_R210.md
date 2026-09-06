@@ -62,6 +62,12 @@ The existing per-cell/per-field r190 owner comparison and residency REDs remain
 the numerical/lineage gates. Generated mirror changes are declarations and
 source-manifest identities only, not a new reference algorithm.
 
+Round-one review also requires an actual tier-eight acceptance gate, not the
+small fixture alone: the checkpoint diagnostic now exits zero only for all
+eight accepted steps. A certificate refusal is nonzero. The no-local-pool
+mutant must refuse against the observer certificate; qualification of this
+mutation test is recorded separately, not inferred from the small fixture.
+
 ## Exploratory repaired replay and remaining sequence
 
 The repaired isolated probe accepted eight steps through 2.1211945469258353 s,
@@ -80,4 +86,25 @@ The baseline remains 63.96 m/s at 2.699 s and aligned advection 11,692.
 
 The sibling audit found that failed diagnostic attempts also need the derived
 case identity to seal refusal artifacts. The harness now retains that identity
-as soon as case construction succeeds, without publishing a failed state.
+as soon as case construction succeeds **and restores it after loading historical
+checkpoint values**, without publishing a failed state. The refused-resume RED
+clears the nested identity, reissues only its synthetic checkpoint authority,
+injects a solver failure after admission, and requires sealed refusal sidecars
+and unchanged input checkpoint bytes. The original retained checkpoint is never
+edited.
+
+## First review findings
+
+The allocation reviewer found that Xcode's `rise` CLI lacked ARC even though
+make and the GUI enabled it. This invalidated the proposed one-packet lifetime
+bound in a supported build. All four ARC-dependent fire Metal files now pin
+`-fobjc-arc` in both Xcode target entries and refuse compilation without ARC.
+The build-contract RED mutates every target entry (missing ARC and a later
+non-ARC override) and checks the actual source prefixes with the preprocessor
+in ARC/non-ARC modes. No floating-point flags change.
+
+The evidence reviewer found the resume overwrite of nested case identity and
+the permissive diagnostic exit status; both are addressed above. Review and
+exact-commit qualification must repeat after these fixes. The initial make
+qualification at f8dbc1ec passed but does not sign off the Xcode gap or the
+subsequent fixes.

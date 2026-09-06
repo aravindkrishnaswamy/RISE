@@ -6,6 +6,10 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#if !__has_feature(objc_arc)
+#error "Fire production Metal resource lifetime requires ARC"
+#endif
+
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <TargetConditionals.h>
