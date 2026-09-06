@@ -3,9 +3,8 @@
 **Status:** Phase 1 LANDED (2026-09-06, four review rounds — see
 §12). Phase 2 reviewed (2026-09-06, one adversarial round, 0 correctness
 P1s — R9 CLEAN incl. `leaks --atExit` on nested stacks — 2 citation P1s
-fixed, see §12). Phase 3
-landed (migrator run + corpus migrated + CST twins + deprecation diagnostic
-+ golden regen + teaching surfaces, see §12) awaiting review round; Phases
+fixed, see §12). Phase 3 reviewed (three lenses: code CLEAN after 1 P1
+fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12); Phases
 4–5 pending. Each phase runs the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
@@ -521,8 +520,20 @@ with `S' = −S` when `G` is TRUE and `S' = −S·2W` when FALSE (defaults `S=1`
 `F.Evaluate(ptCoord)` the legacy modifier does, so the sampled values are
 identical (same fake-hit path, same UV clamp, same R channel); the only
 difference is FP reassociation of the `scale` multiply, which the unit test
-bounds at `1e-12`. The object's `modifier N` line needs no edit. A `scale`
-that would print with more than 17 significant digits is written `%.17g`.
+bounds at `1e-12`. The object's `modifier N` line needs no edit. `S'` is
+printed with Python's `repr(float(x))` **unconditionally** (David Gay's
+shortest round-trip decimal — what turns `-(0.5*2*0.005)` into `-0.005`, not
+`-0.0050000000000000001`); it is not conditioned on a digit-count threshold,
+and `%.17g` is not used anywhere in this script.
+
+**`windowsize ≤ 0` is not a point on that curve — it is a special case.**
+Legacy `BumpMap::Modify` is INERT there (the central difference samples the
+same point on both sides and its normalisation is gated on `dWindow > 0`),
+but a migrated `step 0` means AUTO in `relief_modifier` (a full
+footprint/`1e-3`-floor perturbation) — the opposite of inert. The migrator
+detects `windowsize ≤ 0`, skips the algebra above, and emits the bare token
+`scale 0` instead (which neutralises the perturbation regardless of what
+`step` ends up being), with a `WARN <file>:<line>` naming the reason.
 
 Migration is *lossless*, not *improving*: migrated scenes keep the UV
 domain and the legacy orientation behaviour. The migrator prints a per-file
@@ -537,7 +548,7 @@ note naming `domain surface` as the upgrade, and §9's recipe shows it.
 | `scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene` | migrate (`S' = −10·2·0.001 = −0.02`); the SMS results docs that cite this scene's bump are historical records and keep their text |
 | `scenes/Internal/pool.RISEscene` | migrate on disk (gitignored; not in the golden) |
 | `tests/Cst{Resolver,RecordDerive,IncrementalSafety,SourceInstance}Test.cpp` | keep the legacy literals (they test the deprecated path) and add `relief_modifier` twins |
-| `tests/data/cst_derive_golden.txt` | regenerate **after `git add`** of every new scene (the ls-files lesson); expected diff = the migrated entries' digests + additions-only for new scenes; zero drift elsewhere |
+| `tests/data/cst_derive_golden.txt` | regenerate **after `git add`** of every new scene (the ls-files lesson); expected diff is **additions-only** for the new scenes — the migrated entries' own digests do **not** change, because `DumpJob` (`tests/CstRenderEquivalence.h`) records an object's modifier binding by NAME only (`modifier=<name>`), never the bound modifier's concrete type or parameters, and the migrator does not touch the object's `modifier N` line (§7.2); zero drift elsewhere. See §12's Phase 3 record for the actual regen run and why "no digest change on the 3 migrated scenes" is the correct result, not a gap. |
 
 ### 7.4 What else consumes `expression_function2d` afterwards
 
@@ -577,13 +588,16 @@ in §7.3 is total. `sculptors_studio`, `sms_veach_egg_bumpmap` and
 at all, migrated or not — their legacy bump functions were `perlin2d_painter`
 / `checker_painter` / `png_painter`, not `expression_function2d`; only
 `velvet_cushion`'s `crease_field` was. **The "shrinking legacy surface"
-statement is confirmed, not just repeated**: before this arc, FIVE chunk
-kinds could bind an `expression_function2d` name (the four above plus
-`bumpmap_modifier.function`); after Phase 3, exactly FOUR can, all
-vertex-time or explicit-bridge uses — `bumpmap_modifier` still parses (it
-is Phase A, not removed) but zero in-tree instances exercise that fifth
-path any more, and the deprecation diagnostic (§7.1) means a new one is
-unlikely to appear without a warning pointing the author elsewhere.
+statement is confirmed, not just repeated**: before this arc, SIX chunk
+kinds could bind an `expression_function2d` name (the five enumerated
+above — `displaced_geometry.displacement`, `function2d_painter`,
+`scalar_painter { function2d }`, `composite_function2d_painter`,
+`sdf_geometry.heightfield_function` — plus `bumpmap_modifier.function`);
+after Phase 3, exactly FIVE can, all vertex-time or explicit-bridge uses
+— `bumpmap_modifier` still parses (it is Phase A, not removed) but zero
+in-tree instances exercise that sixth path any more, and the deprecation
+diagnostic (§7.1) means a new one is unlikely to appear without a warning
+pointing the author elsewhere.
 
 ### 7.5 Phase B — removal (named, not in this arc)
 
@@ -723,7 +737,7 @@ the showcase fixtures at their authored spp.
 |---|---|---|
 | **1** | `ReliefModifier` + `ModifierFrame.h` hoist + `pmxWorldToObject` + API/IJob/parser + 5 build projects + `ReliefModifierTest` 1–8, 10 + `cc_relief_modifier` + `relief_sphere_no_uv` | zero-P1 round; PT/BDPT parity on the sphere |
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
-| **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | implemented + gate suites green 2026-09-06 (see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope); the implementation-review-loop adversarial round has NOT yet run against this slice |
+| **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope) |
 | **4** | `DESIGN_FLAT_RELIEF` + recipe example + hook-point notes | zero-P1 round; `AgentChunkCrudTest` green |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | renders attached to §12; the user judges "reads as surface" |
 
@@ -1235,16 +1249,16 @@ doc text had cited numerically.  Both are fixed.  Suite unaffected:
 
 ---
 
-### Phase 3 — landed 2026-09-06 (awaiting implementation-review-loop)
+### Phase 3 — implemented 2026-09-06 (review round 1: see fix round 1 below)
 
 Branch `relief-modifier`, four commits off `4f180cc0` (round-4 fix's head):
 `658c6c94` (corpus migration), `e690f4de` (teaching surfaces + §7.4
 recount), `8620d9cf` (CST test twins), `eefc8e1a` (deprecation diagnostic +
-`ReliefModifierTest` test 10f). **This slice has NOT been through the
-implementation-review-loop adversarial round** (no reviewer subagents were
-spawned in this session); the §11 status cell and this record say so
-explicitly — treat it as implemented-and-gate-green, not LANDED, until
-that round runs and converges to zero P1.
+`ReliefModifierTest` test 10f). This slice has since been through one
+implementation-review-loop round: three independent reviewers, spanning
+code correctness, the teaching surfaces (parseability + accuracy), and
+migration losslessness, returned 4 P1s and a set of P2s — see "Phase 3 —
+fix round 1" immediately below for the findings and their fixes.
 
 **Corpus migration** (`tools/migrate_scenes_relief.py --root scenes -v`,
 `--selftest` passing first). All 5 in-tree `bumpmap_modifier` chunks
@@ -1300,9 +1314,9 @@ bare grep for the string): `displaced_geometry.displacement` 5 scenes,
 plus, new this phase, `velvet_cushion`), `composite_function2d_painter` 0
 direct children, `sdf_geometry.heightfield_function` 5. Zero
 `bumpmap_modifier` chunks remain anywhere under `scenes/`. The
-shrinking-legacy-surface claim is confirmed: FIVE chunk kinds could bind
-an `expression_function2d` before this arc (the four above plus
-`bumpmap_modifier.function`); FOUR can after Phase 3.
+shrinking-legacy-surface claim is confirmed: SIX chunk kinds could bind
+an `expression_function2d` before this arc (the five above plus
+`bumpmap_modifier.function`); FIVE can after Phase 3.
 
 **Deprecation diagnostic** (`BumpmapModifierAsciiChunkParser::Finalize`,
 `ChunkParserRegistry.cpp`): a `static std::atomic<bool>` once-per-process
@@ -1424,8 +1438,73 @@ env-MIS arc), not a migration artifact.
    `docs/MATERIALS.md` was grepped and confirmed to have no `bump`
    mention at all, so there was nothing to touch there either.
 
-**Left undone, deliberately.** The implementation-review-loop adversarial
-round has not run against this slice, same caveat as Phase 2's record.
-Phase 4 (`DESIGN_FLAT_RELIEF` advisory + hook-point notes) and Phase 5
-(the `weathered_workbench` before/after pixel verification named in §11)
-are untouched, per the phase boundaries in §11.
+**Left undone, deliberately.** Phase 4 (`DESIGN_FLAT_RELIEF` advisory +
+hook-point notes) and Phase 5 (the `weathered_workbench` before/after pixel
+verification named in §11) are untouched, per the phase boundaries in §11.
+(The implementation-review-loop round this record originally flagged as not
+yet run has since run — see "Phase 3 — fix round 1" below.)
+
+---
+
+### Phase 3 — fix round 1 (2026-09-06)
+
+Three independent reviewers on the Phase 3 tree, one per lens (code
+correctness, the teaching surfaces' parseability/accuracy, migration
+losslessness), returned **4 P1s and 5 P2s**. All nine are fixed.
+
+| Finding | Fix | Commit |
+|---|---|---|
+| **P1-1** — the crackle-glaze recipe in `materials-and-media-basics.md` and the relief section in `procedural-textures.md` each used the inline `keyword { params }` brace form in a fenced scene example, which the CST parser hard-rejects ("chunk braces must be on their own lines"): `uniformcolor_painter { name cg_f0  color 0.04 0.04 0.04 }` and `scalar_painter { name h2  painter some_colour_painter  channel R }`. | Both expanded to the multi-line form. Execution-validated: extracted both fenced blocks into scratch scenes (adding the minimal missing geometry/camera/film/light each block's own prose said it omitted — a sphere, a pinhole camera, a directional light, and a stand-in `uniformcolor_painter` for `some_colour_painter` in the second case), parsed headlessly, zero derive diagnostics in `RISE_Log.txt` for either. The crackle-glaze excerpt was re-diffed against `scenes/Tests/Painters/relief_crackle_glaze.RISEscene` chunk-by-chunk: parameter-for-parameter identical (byte-identical on the fixed `uniformcolor_painter` block). A grep of both files for any other `{ name` on one line found none. | `0a7892b6` |
+| **P1-2** — the "`step` is auto by default … relief fades toward flat at distance" sentence in `procedural-textures.md` stated the footprint fade as universal, but only triangle-mesh geometry populates `txFootprint` today. | Added the mesh-only caveat verbatim from design §3.3: on analytic primitives and SDFs there is no distance fade at all, and the step used is just the `1e-3` floor or the explicit `step`. | `0a7892b6` |
+| **P1-3** — §7.3's `tests/data/cst_derive_golden.txt` row promised "the migrated entries' digests" would change; they don't, because `DumpJob` (`tests/CstRenderEquivalence.h`) records an object's modifier binding by NAME only (`modifier=<name>`), never the bound modifier's type or parameters, and the migrator never touches the object's `modifier N` line. | Row rewritten to state the truth (additions-only for new scenes, zero digest change on migrated ones, and why), cross-referencing §12's Phase 3 record where the actual regen run confirms it. | *(this record)* |
+| **P1-4** — §7.4 and its verbatim copy in §12 both said "FIVE chunk kinds could bind `expression_function2d`… after Phase 3, exactly FOUR", but the enumeration right above lists FIVE non-`bumpmap_modifier` kinds (`displaced_geometry.displacement`, `function2d_painter`, `scalar_painter { function2d }`, `composite_function2d_painter`, `sdf_geometry.heightfield_function`) — six before the arc, five after, off by one in both places. | Both occurrences corrected to SIX before / FIVE after, with the five-kind enumeration spelled out inline at the first site so the count is checkable without cross-referencing the paragraph above it. | *(this record)* |
+| **P2-5** — the migrator's docstring claimed "nothing authored is dropped", but a trailing comment on a RECOGNIZED parameter line (`scale 0.0075  # hand-tuned`) was silently discarded — only the value token survived; unrecognized lines already carried their full text. | Recognized-parameter lines now carry a trailing comment too, via the same `# migrated: <raw line>` idiom (`raw != cline` after comment-stripping is the signal), counted in `stats['comments_carried']`. Extended to the `bumpmap_modifier` keyword line (with or without the brace on the same line) and the closing `}` line, both of which sit outside the interior-comment preservation's scan range. Four new selftest cases. | `cd5ae2be` |
+| **P2-6** — `windowsize <= 0` makes legacy `BumpMap::Modify` INERT (central difference samples the same point on both sides; normalisation gated on `dWindow > 0`), but the migrated `step 0` means AUTO in `relief_modifier` — full perturbation, not inert — so the prior fold was lossy exactly at this boundary. | Detected as a special case: emits the bare `scale 0` (neutralises the perturbation regardless of `step`) instead of the folded algebra, with a `WARN <file>:<line>` naming the reason. Documented in §7.2. Two new selftest cases (zero and negative windowsize). | `cd5ae2be` (code + selftest), *(this record)* (§7.2 doc) |
+| **P2-7** — §7.2 claimed "a `scale` that would print with more than 17 significant digits is written `%.17g`"; the migrator actually calls `repr(float(x))` unconditionally, and `%.17g` does not appear anywhere in the script. | Sentence corrected: `repr(float(x))` (David Gay's shortest round-trip decimal) is used unconditionally, not gated on a digit-count threshold. | *(this record)* |
+| **P2-8** — §12's Phase 3 header said "landed … (awaiting implementation-review-loop)" while its own body said "treat it as … not LANDED"; the top status line and §11's Phase 3 row still said "awaiting review round" after this very round ran. | Header reworded to "implemented 2026-09-06 (review round 1: see fix round 1 below)"; the "NOT been through … not LANDED" paragraph rewritten to name the three reviewer lenses and point at this table; top status line and §11's Phase 3 row both updated to "Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12)". | *(this record)* |
+| **P2-9** — §12's Phase 3 record had no pixel-level render-fidelity evidence beyond the crackle-glaze A/B and the velvet_cushion migration check, and did not record the reviewers' further render/parse findings. | Recorded below (render evidence + pool.RISEscene note). | *(this record)* |
+
+**Render evidence (P2-9), from the reviewers' own render passes.** Mean
+linear Rec.709 luminance ratios (migrated-or-fixture vs. reference,
+`oidn_denoise FALSE` throughout): `velvet_cushion` **1.0000** (block max
+**1.15/255**); `sculptors_studio` **1.00006** at 1024 spp (block max
+**4.08/255**); `sms_veach_egg_bumpmap` **0.9996** (block max **2.69/255**).
+A fourth control render — `relief_crackle_glaze.RISEscene` with
+`relief_modifier.scale` forced to `0` (i.e. the un-perturbed frame) —
+differs from the authored `-0.02` render by **11.7/255** mean absolute
+difference, confirming the other three ratios (all within ~0.06% of 1.0,
+block-max well under a JPEG-comparable perceptual threshold) are measuring
+a real lossless-migration match and not an insensitive metric that would
+have passed regardless. The reviewers additionally observed that the
+crackle recipe's relief legibility is **lighting-angle dependent**: strong
+under raking (near-grazing) light, weak near the specular peak, where the
+GGX lobe's own brightness dominates the frame and the sunken crack lines
+read mostly through their colour (the ramp), not their shading. Recorded
+here as an input to Phase 5's pixel-verification pass, which should include
+at least one raking-light and one near-specular camera/light placement
+rather than only the recipe's authored angle.
+
+Also observed, and deliberately **not** fixed (out of scope — the file is
+the user's untracked scratch scene, gitignored per `.gitignore:53`):
+`scenes/Internal/pool.RISEscene` carries three PRE-EXISTING parse
+diagnostics unrelated to this arc's migration, reproduced by a headless
+parse (`pinhole_camera: invalid parameter(s)` — a stale `width` line from
+before cameras became imaging-only per the film/camera split noted at the
+top of this doc; and two `chunk braces must be on their own lines`
+diagnostics, `perfectrefractor_material` and `polished_material`). None of
+the three are `bumpmap_modifier`/`relief_modifier`-related; they predate
+this arc and are recorded here only so a future viewer of this file's
+parse log is not surprised by them.
+
+**Gate suites, run on the final tree.** No C++ was touched in this round
+(the four fixed files are two skills `.md`, one design `.md`, and
+`tools/migrate_scenes_relief.py`), so no rebuild was needed.
+`python3 tools/migrate_scenes_relief.py --selftest` — **18/18 ok, 0
+failures** (was 12; the four P2-5 comment-carry cases and the two P2-6
+non-positive-windowsize cases are the additions). `python3
+tools/migrate_scenes_relief.py --dry-run -v --root scenes` — **468 files
+scanned, 0 `bumpmap_modifier` chunks seen**, confirming the corpus is still
+fully migrated after this round's changes. `./bin/tests/ReliefModifierTest`
+— **106 passed, 0 failed**, run once per the gate (unaffected — no
+executable relief-modifier C++ was touched, only the migrator script and
+documentation).
