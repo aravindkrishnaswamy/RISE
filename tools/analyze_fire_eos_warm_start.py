@@ -10,6 +10,7 @@ import collections
 import hashlib
 import json
 import math
+import shlex
 from pathlib import Path
 import statistics
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from unittest.mock import patch
 from analyze_fire_producer_kernels import fields, summarize
 from seal_fire_payload_placement import bind_counters, check_rows, completion_record, distinct_repeats, gate, records, sidecars
 from check_fire_owner_cost_prefix import metadata
+from check_fire_owner_instrumentation import unique_object
 
 
 def histogram(path):
@@ -30,7 +32,7 @@ def histogram(path):
                      if tag == "EOS_ITERATIONS_V1" else {"cold_fallback", "overflow"})
         rows = []
         for line in raw.decode().splitlines():
-            if not line.startswith(tag + " "):
+            if line.split()[:1] != [tag]:
                 continue
             row = fields(line)
             if set(row) != required or len(line.split()) != len(required)+1:
@@ -93,6 +95,56 @@ def summary(values):
                 p95=sorted(values)[math.ceil(.95*len(values))-1])
 
 
+def endpoint_eos_gate(directory, qualified, qualification_path):
+    path = directory / "qualification.eos.v2.json"
+    evidence = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    if (evidence["schema"] != "rise.fire.executed-eos-gate.v1"
+            or evidence["source_commit"] != qualified["source_commit"]
+            or evidence["parent_qualification_sha256"] != hashlib.sha256(qualification_path.read_bytes()).hexdigest()
+            or any(evidence[key] != qualified["producer_executable_sha256"]
+                   for key in ("executable_before_sha256", "executable_after_sha256"))
+            or evidence["command"] != [qualified["runs"]["owner"]["command"][0], "--fire-production-resident-eos-metal"]
+            or evidence["exit_code"] != 0):
+        raise ValueError("standalone EOS execution identity failed")
+    raw = (directory / evidence["log"]).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != evidence["log_sha256"]:
+        raise ValueError("standalone EOS log identity failed")
+    def one(tag):
+        lines = [line for line in raw.decode().splitlines() if line.split()[:1] == [tag]]
+        if len(lines) != 1:
+            raise ValueError("missing/duplicate EOS verdict: " + tag)
+        words = shlex.split(lines[0])[1:]
+        result = dict(word.split("=", 1) for word in words)
+        if len(result) != len(words):
+            raise ValueError("duplicate EOS verdict counter")
+        return result
+    verdict = one("RESIDENT_EOS")
+    if verdict.get("passed") != "1" or verdict.get("eos_table_mutation_refused") != "1":
+        raise ValueError("standalone EOS fixture failed")
+    study = one("RESIDENT_EOS_LOG_ENCLOSURE")
+    if (study.get("passed") != "1" or study.get("samples") != "49512449"
+            or study.get("metal_library_source_sha256") != evidence["metal_library_source_sha256"]
+            or not math.isfinite(float(study["max_residual_over_bound"]))
+            or not 0 <= float(study["max_residual_over_bound"]) <= 1):
+        raise ValueError("standalone EOS domain qualification failed")
+    reds = [fields(line) for line in raw.decode().splitlines() if line.split()[:1] == ["RESIDENT_EOS_RED"]]
+    expected_names = set("r170_hard_bound_30_percent pressure_midpoint_rounding_ambiguous "
+        "deviation_midpoint_rounding_ambiguous zero_lower_upper_bin_ambiguous subnormal_lower_upper_bin_ambiguous "
+        "eos_lower_inversion_endpoint eos_upper_inversion_endpoint r170_exact_above_binary32_rounds_to_bound "
+        "endpoint_enclosure_bit_mutation forged_device_stage forged_device_precision forged_device_attempt "
+        "forged_device_cells forged_device_timestep paired_first_eos_failure_witness".split())
+    if (len(reds) != len(expected_names) or {row["name"] for row in reds} != expected_names
+            or any(row.get("passed") != "1" for row in reds)):
+        raise ValueError("incomplete or failed EOS RED battery")
+    mutation = [row for row in reds if row["name"] == "endpoint_enclosure_bit_mutation"]
+    expected = dict(name="endpoint_enclosure_bit_mutation", expected="0x00000080", observed="0x00000080",
+                    attempted="1", read="1", commands="1", staging="1", candidate_identity="0", eos_identity="0", passed="1")
+    if mutation != [expected]:
+        raise ValueError("endpoint mutation was not atomically refused")
+    return dict(artifact_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                log_sha256=evidence["log_sha256"], metal_library_source_sha256=evidence["metal_library_source_sha256"])
+
+
 def analyze(directory, qualification=None):
     owner_gate = directory / "warm.owner_gate.v1.log"
     gate(owner_gate)
@@ -109,7 +161,7 @@ def analyze(directory, qualification=None):
         "baseline": "96fdc911d7d3fd59f4604f320052e3e658199fa7ff45caa605b054d9cfe77f16",
         "warm": "38095fe2a64eaba5e6e671e68cbf6c212f274a09fb4edfcbe3880563d86ef953"}
     if qualification is not None:
-        qualified = json.loads(qualification.read_text())
+        qualified = json.loads(qualification.read_text(), object_pairs_hook=unique_object)
         if qualified["schema"] != "rise.fire.executed-build-and-owner-gate.v1":
             raise ValueError("wrong qualification schema")
         for name, run in qualified["runs"].items():
@@ -119,6 +171,7 @@ def analyze(directory, qualification=None):
         if set(qualified["runs"]) != {"build", "owner", "publication"}:
             raise ValueError("incomplete qualification")
         gate(Path(qualified["runs"]["owner"]["log"]))
+        output["endpoint_eos_qualification"] = endpoint_eos_gate(directory, qualified, qualification)
         kinds.append("endpoints_qualified")
         executable_sha["endpoints_qualified"] = qualified["producer_executable_sha256"]
         output["endpoint_qualification"] = dict(source_commit=qualified["source_commit"],

@@ -65,9 +65,12 @@ def trees(text):
     pending = {}
     result = []
     for line in text.splitlines():
-        if not line.startswith(PREFIX):
+        parts = line.split(maxsplit=1)
+        if parts[:1] != [PREFIX.strip()]:
             continue
-        row = json.loads(line[len(PREFIX):], object_pairs_hook=unique_object)
+        if len(parts) != 2:
+            raise ValueError("missing owner profile payload")
+        row = json.loads(parts[1], object_pairs_hook=unique_object)
         expected = {"scope", "parent", "phase", "stage", "raw_iteration", "iteration_kind",
                     "wall_ms", "device_sum_ms", "wall_minus_device_ms", "exclusive_wall_ms",
                     "exclusive_device_sum_ms", "child_observer_wall_ms", "count_scope",

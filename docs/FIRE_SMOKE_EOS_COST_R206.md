@@ -270,3 +270,40 @@ and repeated-space mutants exercise duplicate and unknown counters inside
 diagnostic prose. The historical parser fails the new assertions with zero
 setup errors (`review.round6.redproof.v1.log`). No numerical result, tolerance,
 or measured timing changed.
+
+## Seventh review and exact-source EOS closure
+
+Two P2 findings, no P1: whitespace-aware field parsing was still preceded by
+raw-prefix dispatch in histogram/producer/profile readers, allowing indented
+duplicate records to be ignored; and the standalone EOS refusal/mutation
+battery had only a preliminary execution with a different full Metal source
+identity. The default suite and owner gate did not replace that EOS fixture.
+
+Known record tags are now recognized consistently before schema checks. REDs
+append whitespace-prefixed duplicates through the actual histogram, producer,
+and owner-cost consumers; their historical versions fail the assertions with
+zero setup errors (`review.round7.redproof.v1.log`).
+
+The standalone EOS battery was executed again, exit zero, using the unchanged
+attested executable `7bbc7e92…`. Its final-source log SHA is
+`8c4588b5d843deb73240853b41eddac3d4e55a9be1900191b37cd8b1ca62ecf9`.
+It reports all 49,512,449 log-domain inputs, worst residual/bound
+0.5192248117002557, and the endpoint mutation's exact 0x80 atomic refusal.
+Metal library source SHA is
+`4a43e205d81b5855b9366353df25b8fa2f511f9d6f31c075c7d77f0fbb283ab1`.
+The execution supplement `qualification.eos.v2.json` binds the command,
+exit code, unchanged before/after executable hashes, parent qualification,
+source commit, and log. Its SHA is
+`b627b6292f8626e0ec1ce974f9a6c38fabc5c140f982a6c57a72bf96f82fb798`.
+
+Qualified analysis now **requires** this supplement, including the named
+15-RED battery, endpoint mutation's exact refusal/publication counters, and
+full domain study. Missing or mismatched execution identity, an omitted/wrong
+mutation, a renamed RED, or a shortened domain fails closed. The mandatory
+dependency is tested through the complete analyzer as well as its helper.
+
+`measurement.qualified.v3.json` supersedes v2 for complete EOS qualification;
+its SHA is `f889b9148415927d9ef7ac1304c819f6d4177d5a0b39da032e9484cd03774569`.
+Only the added qualification binding changes the measurement artifact: all
+timing and histogram values are unchanged. Historical logs/artifacts remain
+unmodified. The 300–500 ms whole-owner target remains unmet.

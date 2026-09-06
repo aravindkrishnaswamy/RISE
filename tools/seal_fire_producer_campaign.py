@@ -35,7 +35,7 @@ def validate_prefix(directory, stem):
     profile = trees(log)
     bind_profile(profile, records(prefix / "budgets/maximum_velocity_trajectory.csv"))
     scopes = [row for tree in profile for row in tree if row["phase"] == "BuildStageProducerGroup"]
-    commands = [tokens(line) for line in log.splitlines() if line.startswith("PRODUCER_COMMAND_V1 ")]
+    commands = [tokens(line) for line in log.splitlines() if line.split()[:1] == ["PRODUCER_COMMAND_V1"]]
     if len(scopes) != len(commands):
         raise ValueError("missing producer command")
     for scope, command in zip(scopes, commands):

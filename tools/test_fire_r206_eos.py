@@ -4,11 +4,12 @@ from pathlib import Path
 import contextlib
 import hashlib
 import io
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from analyze_fire_eos_warm_start import histogram, self_test
+from analyze_fire_eos_warm_start import analyze, endpoint_eos_gate, histogram, self_test
 from analyze_fire_producer_kernels import fields, summarize
 from seal_fire_payload_placement import bind_counters, gate, records
 from check_fire_owner_instrumentation import FP64_PASS, RED_NAMES, qualify_artifact, trees
@@ -20,6 +21,65 @@ EVIDENCE = ROOT / "rendered/fire_production_calibration/r206_eos"
 
 
 class EOSGateREDs(unittest.TestCase):
+    def test_exact_executable_eos_fixture_is_required(self):
+        qualification = EVIDENCE / "qualification.v1.json"
+        qualified = json.loads(qualification.read_text())
+        path = EVIDENCE / "qualification.eos.v2.json"
+        evidence = json.loads(path.read_text())
+        original_text, original_bytes = Path.read_text, Path.read_bytes
+        endpoint_eos_gate(EVIDENCE, qualified, qualification)
+        for key in ("source_commit", "parent_qualification_sha256", "executable_before_sha256",
+                    "executable_after_sha256", "command", "exit_code", "log_sha256", "metal_library_source_sha256"):
+            changed = dict(evidence)
+            changed[key] = 1 if key == "exit_code" else "wrong"
+            with self.subTest(identity=key), patch.object(Path, "read_text", lambda p: json.dumps(changed) if p == path else original_text(p)):
+                with self.assertRaises(ValueError):
+                    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+        with patch.object(Path, "read_text", lambda p: (_ for _ in ()).throw(FileNotFoundError(str(p))) if p == path else original_text(p)):
+            with self.assertRaises(FileNotFoundError):
+                endpoint_eos_gate(EVIDENCE, qualified, qualification)
+            with self.assertRaises(FileNotFoundError):
+                analyze(EVIDENCE, qualification)
+        log = EVIDENCE / evidence["log"]
+        text = log.read_text()
+        line = next(line for line in text.splitlines() if "name=endpoint_enclosure_bit_mutation " in line)
+        mutants = [text.replace(line, ""), text.replace(line, line.replace("observed=0x00000080", "observed=0x00000000")),
+                   text.replace("eos_table_mutation_refused=1", "eos_table_mutation_refused=0"),
+                   text.replace("name=forged_device_stage", "name=unrelated"),
+                   text.replace("samples=49512449", "samples=1")]
+        for mutant in mutants:
+            changed = dict(evidence, log_sha256=hashlib.sha256(mutant.encode()).hexdigest())
+            with self.subTest(log_mutation=hashlib.sha256(mutant.encode()).hexdigest()), \
+                 patch.object(Path, "read_text", lambda p: json.dumps(changed) if p == path else original_text(p)), \
+                 patch.object(Path, "read_bytes", lambda p: mutant.encode() if p == log else original_bytes(p)):
+                with self.assertRaises(ValueError):
+                    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+
+    def test_whitespace_prefixed_duplicate_records_are_not_ignored(self):
+        original_text, original_bytes = Path.read_text, Path.read_bytes
+        for stem, tags in (
+                ("warm_iteration_prefix.v1", ("EOS_ITERATIONS_V1", "EOS_WARM_PROBES_V1")),
+                ("endpoints_qualified_profile_1.v1", ("PRODUCER_COMMAND_V1", "PRODUCER_KERNEL_V1", "RISE_FIRE_OWNER_PROFILE_V1"))):
+            path = EVIDENCE / (stem+".log")
+            prefix = path.with_suffix("")
+            text = path.read_text()
+            for tag in tags:
+                line = next(line for line in text.splitlines() if line.startswith(tag+" "))
+                for separator in (" ", "\t", "\u00a0", "  "):
+                    for extra in (separator+line, line.replace(tag+" ", tag+separator, 1)):
+                        changed = text+"\n"+extra+"\n"
+                        with self.subTest(tag=tag, separator=repr(separator)):
+                            with patch.object(Path, "read_bytes", lambda p: changed.encode() if p == path else original_bytes(p)), \
+                                 patch.object(Path, "read_text", lambda p: changed if p == path else original_text(p)):
+                                with self.assertRaises(ValueError):
+                                    if tag.startswith("EOS_"):
+                                        histogram(path)
+                                    elif tag == "PRODUCER_KERNEL_V1":
+                                        summarize(path)
+                                    else:
+                                        bind_counters(path, records(prefix / "budgets/maximum_velocity_trajectory.csv"),
+                                                      prefix / "diagnostic_prefix_outcome.v1")
+
     def test_legacy_cost_cli_requires_unambiguous_successful_completion(self):
         path = EVIDENCE / "endpoints_qualified_profile_1.v1.log"
         prefix = path.with_suffix("")

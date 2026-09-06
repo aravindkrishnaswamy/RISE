@@ -1,0 +1,15 @@
+{
+  "schema": "rise.fire.executed-eos-gate.v1",
+  "source_commit": "20607aea6da099f0083bcdbcbd6f62b3ac5149a2",
+  "parent_qualification_sha256": "78e4c9f7ee441052d934de30fe6dda058640392da4733565b8db050f88718cb5",
+  "executable_before_sha256": "7bbc7e924b1f35ceff03cc41f610652cb86477133f0bcf5b754c2e36ac5b5eb0",
+  "executable_after_sha256": "7bbc7e924b1f35ceff03cc41f610652cb86477133f0bcf5b754c2e36ac5b5eb0",
+  "command": [
+    "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest",
+    "--fire-production-resident-eos-metal"
+  ],
+  "exit_code": 0,
+  "log": "endpoints_qualified.eos_gate.v2.log",
+  "log_sha256": "8c4588b5d843deb73240853b41eddac3d4e55a9be1900191b37cd8b1ca62ecf9",
+  "metal_library_source_sha256": "4a43e205d81b5855b9366353df25b8fa2f511f9d6f31c075c7d77f0fbb283ab1"
+}

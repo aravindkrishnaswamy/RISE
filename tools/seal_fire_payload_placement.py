@@ -139,7 +139,7 @@ def bind_counters(path, rows, outcome_path):
     bind_profile(parsed, rows)
     scopes = [row for tree in parsed for row in tree if row["phase"] == "BuildStageProducerGroup"]
     commands = [fields(line)
-                for line in text.splitlines() if line.startswith("PRODUCER_COMMAND_V1 ")]
+                for line in text.splitlines() if line.split()[:1] == ["PRODUCER_COMMAND_V1"]]
     if len(scopes) != len(commands):
         raise ValueError("missing producer commands")
     for scope, command in zip(scopes, commands):

@@ -38,7 +38,8 @@ def summarize(path):
     grouped = collections.defaultdict(list)
     command = None
     for line in raw.decode().splitlines():
-        if line.startswith("PRODUCER_COMMAND_V1 "):
+        tag = line.split()[:1]
+        if tag == ["PRODUCER_COMMAND_V1"]:
             command = fields(line)
             if (not math.isfinite(float(command["device_ms"])) or float(command["device_ms"]) <= 0
                     or int(command["encoders"]) <= 0
@@ -47,7 +48,7 @@ def summarize(path):
                 raise ValueError("invalid command duration or clock endpoints")
             command["intervals"] = []
             commands.append(command)
-        elif line.startswith("PRODUCER_KERNEL_V1 "):
+        elif tag == ["PRODUCER_KERNEL_V1"]:
             row = fields(line)
             if command is None or any(row[key] != command[key]
                                       for key in ("stage", "raw_iteration")):
