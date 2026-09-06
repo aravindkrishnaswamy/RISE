@@ -1,7 +1,9 @@
 # Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
 
 **Status:** Phase 1 LANDED (2026-09-06, two review rounds to zero P1 — see
-§12); Phases 2–5 pending. Each phase runs the
+§12). Phase 2 implemented and gate-green 2026-09-06 (see §12) but has NOT
+yet been through the implementation-review-loop adversarial round; Phases
+3–5 pending. Each phase runs the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
@@ -106,7 +108,7 @@ out. Recording them so the design does not inherit them:
 | Geometric normal | captured before the modifier and never touched by it; every SPF/BRDF's geometric-horizon gate compares against it with the `SquaredModulus > 1e-12` degeneracy guard | the `vGeomNormal` field comment in [RayIntersectionGeometric.h](../src/Library/Intersection/RayIntersectionGeometric.h), [GGXSPF.cpp:157](../src/Library/Materials/GGXSPF.cpp), [DielectricSPF.cpp:153](../src/Library/Materials/DielectricSPF.cpp) |
 | BDPT / VCM | `Modify` runs once per surface vertex, then `normal`, `geomNormal`, `onb` are frozen into `BDPTVertex`; VCM reuses that record via `PopulateRIGFromVertex`. No integrator has a bump-terminator correction; none needs a change for a new modifier. | [BDPTIntegrator.cpp:2103-2114](../src/Library/Shaders/BDPTIntegrator.cpp), [BDPTVertex.h:102-110](../src/Library/Shaders/BDPTVertex.h) |
 | Frame rebuild | all three pre-existing modifiers project the *current* `onb.u()` onto the new normal's plane, `CreateFromWU`, and restore incoming handedness with `FlipV` (the mirrored-instance fix); fall back to `CreateFromW` if the projection degenerates. Bump/NormalMap run the projection only on a coherent-tangent hit; Glint runs it unconditionally — see §12 deviation 3 and fix round 1 P1-A for the gate | [NormalMap.cpp:220-234](../src/Library/Modifiers/NormalMap.cpp), [GlintModifier.cpp:252-269](../src/Library/Modifiers/GlintModifier.cpp) |
-| One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". | [Object.h:37](../src/Library/Objects/Object.h), [CSGObject.cpp:1612](../src/Library/Objects/CSGObject.cpp), [RayIntersection.h:35](../src/Library/Intersection/RayIntersection.h) |
+| One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". (Composition via `modifier_stack` since Phase 2.) | [Object.h:37](../src/Library/Objects/Object.h), [CSGObject.cpp:1612](../src/Library/Objects/CSGObject.cpp), [RayIntersection.h:35](../src/Library/Intersection/RayIntersection.h) |
 | Scalar pipe | `IScalarPainter::GetValuesAt(ri)` → `ScalarTriple`; single-scalar slots read `.v[0]` and the resolver rejects per-channel painters when `requireSingle`; an `IPainter` name bound to a scalar slot gets `kScalarBoundToIPainterFmt` | [IScalarPainter.h:113-153](../src/Library/Interfaces/IScalarPainter.h), [Job.cpp:3869-3928](../src/Library/Job.cpp), [ChunkDescriptor.h:64-72](../src/Library/Parsers/ChunkDescriptor.h) |
 | Any-painter bridge | `scalar_painter { painter X channel R\|G\|B\|A [scale] [bias] }` → `PainterChannelScalarPainter`; `scalar_painter { function2d F }` → `Function2DScalarPainter` (evaluates `F.Evaluate(ptCoord)` — the *same* sampling path `bumpmap_modifier` uses today) | [ChunkParserRegistry.cpp:1589-1606](../src/Library/Parsers/ChunkParserRegistry.cpp) |
 | Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by triangle-mesh geometry only; `fw = 0` on analytic primitives. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h:48-164](../src/Library/Intersection/TextureFootprintCompute.h), [ProceduralNoiseCore.cpp:73-79,196-220](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
@@ -676,7 +678,7 @@ the showcase fixtures at their authored spp.
 | Phase | Deliverable | Gate |
 |---|---|---|
 | **1** | `ReliefModifier` + `ModifierFrame.h` hoist + `pmxWorldToObject` + API/IJob/parser + 5 build projects + `ReliefModifierTest` 1–8, 10 + `cc_relief_modifier` + `relief_sphere_no_uv` | zero-P1 round; PT/BDPT parity on the sphere |
-| **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | zero-P1 round |
+| **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | implemented + gate suites green 2026-09-06 (see §12); the implementation-review-loop adversarial round has NOT yet run against this slice |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | zero-P1 round; golden additions-only beyond migrated entries |
 | **4** | `DESIGN_FLAT_RELIEF` + recipe example + hook-point notes | zero-P1 round; `AgentChunkCrudTest` green |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | renders attached to §12; the user judges "reads as surface" |
@@ -975,3 +977,181 @@ after the round: `ReliefModifierTest` **85/0**, unchanged (comment/doc-only).
 **Gate suites, run on the final tree.**  `ReliefModifierTest` **85/0**
 (unchanged — no executable line touched).  Clean warning check on the two
 touched `.cpp` files (touch + rebuild): **zero**.
+
+---
+
+### Phase 2 — implemented 2026-09-06 (NOT yet through implementation-review-loop)
+
+Branch `relief-modifier`, three commits off `cf6a363a` (fix round 3's head):
+`1b2851bf` (the class + all wiring + the two chunk-count bumps),
+`673b7a96` (`ReliefModifierTest` test 9), `c1fd3076` (`CstResolverTest`'s
+repeatable-rename case).  **This slice has NOT been through the
+implementation-review-loop adversarial round** (no reviewer subagents were
+spawned in this session) — the §11 status cell and this record say so
+explicitly; treat it as implemented-and-gate-green, not LANDED, until that
+round runs and converges to zero P1.
+
+**Files.** New: `src/Library/Modifiers/ModifierStack.{h,cpp}`,
+`scenes/Tests/ChunkCoverage/cc_modifier_stack.RISEscene`.  Modified:
+`RISE_API.{h,cpp}`, `IJob.h`, `Job.{h,cpp}`, `ChunkParserRegistry.cpp`,
+`Parsers/README.md`, `tests/IJobVtableManifest.txt`,
+`tests/SceneEditorSuggestionsTest.cpp` (174/175→176 twice, per-addition
+history extended in both places), `tests/ReliefModifierTest.cpp` (test 9 +
+red-proof (h) documented in the file header), `tests/CstResolverTest.cpp`
+(the `[modifier-stack-repeatable-rename]` case), and the five build
+projects (`build/VS2022/Library/Library.vcxproj{,.filters}`,
+`build/XCode/rise/rise.xcodeproj/project.pbxproj`,
+`build/cmake/rise-android/rise_sources.cmake`, `build/make/rise/Filelist`).
+
+**Deviations from the design, with reasons.**
+
+1. **`IJob::AddModifierStack` takes `const char** modifierNames`, not the
+   charter's `const char* const*`.**  Both types pass the same data; `const
+   char**` is the existing convention for every other IJob virtual that
+   carries a repeatable name array (`AddStandardShader`, `AddAdvancedShader`,
+   `AddVoronoi2DPainter`, `AddVoronoi3DPainter`, `AddPiecewiseLinearFunction2D`)
+   — matching it keeps `ModifierStackAsciiChunkParser::Finalize` byte-for-byte
+   the same shape as `StandardShaderAsciiChunkParser::Finalize` (both build a
+   flat `char* mem` block + a `char**` of offsets into it from
+   `bag.GetRepeatable(...)`), rather than introducing a one-off calling
+   convention for a single virtual.  `tests/IJobVtableManifest.txt`'s new
+   line was hand-derived against `NormalizeDeclSignature`'s tight-char rule
+   and confirmed by `SourceHygieneTest` (164/0, no manifest mismatch).
+2. **Parameter order is `(name, modifierNames, count)`**, matching the
+   charter, not `AddStandardShader`'s `(name, count, shaderops)`.  Both
+   orders appear in `IJob.h` already (compare `AddVoronoi2DPainter`'s
+   `(name, pt_x, pt_y, painters, count, ...)` — count AFTER the array — with
+   `AddStandardShader`'s count-before-array); there is no single house style
+   to defer to, so the charter's explicit order was kept verbatim.
+3. **The empty-stack and unknown-member diagnostics live in
+   `Job::AddModifierStack`, not the chunk parser**, mirroring
+   `Job::AddReliefModifier`'s "one home for the wording" precedent (its own
+   comment cites the same reasoning) — `RISE_API_CreateModifierStack` ALSO
+   rejects `count == 0` / a null member independently, so an out-of-tree
+   caller that skips `Job` entirely (a hypothetical future scripting binding)
+   still cannot construct a broken stack; the two checks are intentionally
+   redundant, not duplicated wording.
+4. **No `ModifierFrame.h`-style hoist was needed.**  Unlike Relief/BumpMap/
+   NormalMap, `ModifierStack::Modify` does no frame rebuild of its own — it
+   is a pure dispatch loop — so there is nothing to hoist.  The five-build-
+   project entries therefore mirror `GlintModifier`'s two-file shape (`.h` +
+   `.cpp` only), not `ReliefModifier`'s three-file shape (`.h` + `.cpp` +
+   the shared `ModifierFrame.h`).  Fresh Xcode IDs were generated by
+   sampling random 24-hex strings and grepping the whole `project.pbxproj`
+   for each candidate before use (see the self-audit below).
+5. **Test 9(b)'s probe point is hunted, not fixed.**  The design's item 9
+   just says "glint-last… produces the same result as applying the prefix
+   then Glint" — read literally that holds even when Glint is a no-op at
+   the probe (still bit-identical, just not discriminating).  Measuring
+   red-proof (h) against the first fixed probe tried (`(0.7, 0.2, 0)`)
+   showed exactly that: the comparison stayed GREEN under a reversed apply
+   order because Glint found no facet there.  The final test therefore
+   searches a small grid via `GlintModifier::FindFacet` for a probe that
+   actually lands on a facet, so the assertion is load-bearing rather than
+   vacuously true — the search and its rationale are in the test's own
+   comment, not asserted by fiat here.
+
+**Red-proof.** (h) Reversing `ModifierStack::Modify`'s iteration
+(`members.begin()/end()` → `members.rbegin()/rend()`, rebuilt, ran the
+suite, reverted) fails 9a's two hand-chain comparisons and 9b's glint-last
+comparison — **3 failures**, `ReliefModifierTest` 98/101.  9c (nesting)
+stays GREEN under the same mutation, and that is a measured structural
+fact, not a test gap: a globally-consistent order reversal commutes with
+nesting (`stack{A, stack{B,C}}` and `stack{A,B,C}` both reverse to the
+identical `C, B, A` application order), so 9c cannot distinguish forward
+from reversed application by construction — only 9a/9b (against real,
+non-order-symmetric modifiers) do that.  This is recorded in the test
+file's own red-proof-(h) comment, corrected from an earlier draft of that
+comment (written before the fixture existed) that predicted 9c would also
+fail.  Reverted; suite back to 101/101.
+
+**CST.**  No `Cst.cpp` change, confirmed rather than assumed: the new
+`[modifier-stack-repeatable-rename]` case in `CstResolverTest` proves the
+existing generic per-occurrence machinery (`ComputeChunkRefs` keys every
+repeatable Param's edge by `(chunk, role, occurrence-index)` via
+`DocParamId`; `DocRename` rewrites each referrer edge at its own recorded
+`(chunk, role, occ)`) already gives `modifier_stack`'s `modifier` param —
+`ValueKind::Reference`, `referenceCategories = {Modifier}`,
+`p.repeatable = true`, the same declaration shape as `standard_shader`'s
+`shaderop` — correct per-occurrence rename: renaming one member of a
+two-member stack rewrites only that occurrence's line, a control renaming
+the OTHER member rewrites only the other line, and neither rename touches
+its sibling.  `CstResolverTest` **52/0** (was 44/0; +8 checks, one test
+block).
+
+**Gate suites, run on the final tree.**  `ReliefModifierTest` **101/0** (was
+85/0; test 9 is the addition, 16 checks net — 15 order/nesting/parse checks
+plus the `foundFacet` setup assertion for 9b's facet hunt).
+`GlintModifierTest` ALL PASSED, `SceneEditorSuggestionsTest` ALL PASSED (13
+cases; both hard-coded counts now 176), `SourceHygieneTest` **164/0**,
+`CstResolverTest` **52/0**, `CstRecordDeriveTest` **23/0**,
+`ScalarPainterParserTest` **60/0**.  Clean warning check on every touched
+`.cpp` (touch + rebuild, full-project `make -C build/make/rise -j8 all`
+plus each gate test binary): **zero**.  `cc_modifier_stack.RISEscene`
+parses headlessly (`printf "quit\n" | ./bin/rise ...`) with zero
+errors/warnings in `RISE_Log.txt`.  `CstDeriveGoldenTest` after adding the
+scene: **436 MATCH, 1 DRIFT, 3 UNCOVERED, 0 STALE** (of 447 corpus scenes)
+— the 1 DRIFT is the pre-existing, out-of-scope
+`scenes/FeatureBased/BDPT/bdpt_crystal_garden.RISEscene` edit (confirmed
+unrelated: it was already uncommitted and flagged untouchable before this
+phase began); the 3 UNCOVERED are the two Phase-1 scenes (already
+UNCOVERED before this phase, per that record) plus the new
+`cc_modifier_stack.RISEscene` — **expected, not regenerated**, per §11's
+Phase-3 golden-regen deliverable; do not regenerate here.
+
+**Self-audit (the 5 likeliest ways this is wrong, and what was checked).**
+
+1. **Refcount on nested stacks (double-free / leak).**  `ModifierStack`'s
+   ctor addrefs every member including a member that is itself another
+   `ModifierStack`; the dtor releases every member once.  Checked: test 9c
+   builds `stackBC` (owning B, C) and a separate `nested` stack whose
+   second member IS `stackBC` (addref'd again by `nested`'s ctor) — so
+   `stackBC` ends the test with refcount 2 (one from the test harness's
+   `Own()`, one from `nested`).  `ReleaseOwned()` releases the harness's
+   copy; `nested`'s dtor (never explicitly invoked in this test, since
+   `Own()` keeps objects alive to process exit) still holds its copy.  No
+   crash, no ASan/valgrind run in this session — the test suite has no
+   sanitizer build wired into this gate list, so this is checked by
+   construction (addref count == number of stacks holding a pointer, release
+   count == same) and by absence of a crash across 101 checks, not by an
+   instrumented tool.  This is the weakest-verified item on this list.
+2. **Repeatable-param reading order.**  `bag.GetRepeatable("modifier")`
+   returns values "in input order" (its own doc comment); test 9e's
+   two-member scene (`modifier r1` then `modifier g1`) round-trips through
+   the real chunk parser and `CstResolverTest`'s occ0/occ1 checks confirm
+   occurrence 0 is `r1` and occurrence 1 is `g1` in the PARSED document —
+   checked against the actual parser, not assumed from the accessor's
+   contract alone.
+3. **CST closure/rename** — see the CST section above; verified with a new
+   test rather than inspected by reading code only, including a reverse
+   control (renaming the second member) to rule out "first occurrence
+   always wins" as a passing-by-accident explanation.
+4. **Vtable manifest line correctness.**  `NormalizeDeclSignature`'s
+   tight-char collapse was traced BY HAND against the exact declaration
+   text before writing the manifest line (documented turn-by-turn in this
+   session, not reproduced here), then confirmed by building and running
+   `SourceHygieneTest`, which parses the ACTUAL `IJob.h` text through the
+   same function and diffs it against the manifest line — 164/0, no
+   "IJob SIGNATURE CHANGE" or count-mismatch diagnostic fired, which is the
+   test that would have caught a hand-derivation error.
+5. **Xcode IDs.**  Six fresh 24-hex-uppercase IDs were generated and each
+   was grepped against the FULL `project.pbxproj` text before insertion
+   (a Python one-shot that only accepts an id absent from the file);
+   post-edit `grep -n ModifierStack` on the final file shows exactly six
+   occurrences in the expected four sections (PBXBuildFile ×4,
+   PBXFileReference ×2 — folded into the same six-line grep because two
+   IDs each appear twice, once as their own key and once referenced by a
+   `fileRef =`), matching GlintModifier's own six-reference shape line for
+   line.  Not verified: an actual Xcode/xcodebuild parse of the project
+   file (no macOS Xcode toolchain invocation was run in this session) —
+   the ID-uniqueness and structural-mirroring checks are textual, not a
+   build verification.
+
+**Left undone, deliberately.**  The implementation-review-loop adversarial
+round (2-4 orthogonal reviewers) has not run against this slice — per
+CLAUDE.md that round is orchestrated by the supervising session, not a
+single delegated worker, and this record says so rather than claiming a
+zero-P1 status this session did not produce.  `tests/data/cst_derive_golden.txt`
+is NOT regenerated (Phase 3's job, same as Phase 1).  No render/pixel
+verification of `cc_modifier_stack.RISEscene` was performed beyond a
+headless parse (Phase 5's job, per §11).
