@@ -4178,40 +4178,46 @@ static const int kFunc1DSubCat = 100001;
 static const int kFunc2DSubCat = 100002;
 
 //! The dimension-precise Function sub-namespace a reference PARAM resolves into, or 0 for a
-//! coarse {Function} consumer.  Mirrors the engine's typed lookup by param name.
-static int FunctionSubNamespace( const std::string& paramName )
+//! coarse {Function} consumer.  `pd` is the param's OWN ParameterDescriptor (the caller already
+//! resolved it against the chunk's ChunkDescriptor before calling here) -- may be null for a
+//! synthetic/no-descriptor caller, in which case only the name-keyed Function1D cases below apply.
+static int FunctionSubNamespace( const std::string& paramName, const ParameterDescriptor* pd )
 {
-	// Each is resolved by the engine through a DIMENSION-SPECIFIC manager, so the resolver must
-	// match (their descriptor's extra {Painter}/coarse {Function} is spurious; resolving coarsely
-	// first-wins to a same-named colour painter or wrong-dimension function was the misbind):
-	//   function1d + the directvolumerendering RGBA transfer_* channels -> Function1D
-	//     (pFunc1DManager, Job.cpp ~6248);
-	//   function2d + heightfield_function + the spectral-DVR transfer_spectral -> Function2D
-	//     (pFunc2DManager, Job.cpp ~6317).
+	// Function1D consumers: NAME-keyed, because none of these declare a `ParameterPipe` (they
+	// predate S17's pipe audit and are out of this workstream's scope -- Function1D has no
+	// dual-registration ambiguity to motivate widening past a name list the way Function2D does
+	// below).  Each is resolved by the engine through pFunc1DManager, a DIMENSION-SPECIFIC
+	// manager, so the resolver must match (the descriptor's coarse {Function}/{Painter,Function}
+	// is spurious for these; resolving coarsely first-wins to a same-named 2D function was the
+	// misbind): function1d + the directvolumerendering RGBA transfer_* channels (Job.cpp ~6248);
+	// homogeneous_medium's sigma(lambda) curves (Job::AddHomogeneousMediumSpectral).
 	if( paramName == "function1d" ) return kFunc1DSubCat;
 	if( paramName == "transfer_red" || paramName == "transfer_green" ||
 	    paramName == "transfer_blue" || paramName == "transfer_alpha" ) return kFunc1DSubCat;
-	// homogeneous_medium's sigma(lambda) curves -> Function1D (pFunc1DManager,
-	// Job::AddHomogeneousMediumSpectral): dimension-precise so a same-named 2D
-	// function can never capture the edge.
 	if( paramName == "absorption_spectral" || paramName == "scattering_spectral" ) return kFunc1DSubCat;
+	// Function2D consumers with no declared pipe yet (transfer_spectral) still need the name
+	// check; `function2d` / `heightfield_function` are KEPT here too even though both now also
+	// satisfy the pipe-based rule below (harmless redundancy -- both routes agree) so this list
+	// stays the complete, self-contained record of every NAME-keyed Function2D case.
 	if( paramName == "function2d" || paramName == "heightfield_function" ||
 	    paramName == "transfer_spectral" ) return kFunc2DSubCat;
-	// {Painter}-DECLARED slots the engine actually binds via pFunc2DManager (Function2D, which
-	// holds plf2d + the dual-registered colour painters -- exactly what kFunc2DSubCat seeds):
-	// displaced_geometry.displacement and composite_function2d_painter.child_a/.child_b
-	// (Job.cpp ~5009/~994).  Resolving them coarsely via (Painter,name) MISSED a plf2d target
-	// (plf2d is NOT in the painter managers) -- a stale-closure sibling (review #3, 3rd-pass
-	// exhaustive table).  The retired String `displacement` (a different param kind) never
-	// reaches here -- PASS B only resolves Reference/tuple params.
-	//
-	// `function` was the THIRD member of this list, for `bumpmap_modifier.function`; that
-	// chunk was REMOVED 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and no other chunk
-	// declares a parameter by that name, so the entry went with it.  Its replacement,
-	// `relief_modifier.height`, needs no special case at all: it resolves through the SCALAR
-	// painter manager via the standing ParameterPipe::Scalar closure.
-	if( paramName == "displacement" ||
-	    paramName == "child_a" || paramName == "child_b" ) return kFunc2DSubCat;
+	// EVERY OTHER Function2D-piped parameter (ChunkParserRegistry.cpp's
+	// `p.semantics.pipe = ParameterPipe::Function2D`, audited against the real Job.cpp resolve
+	// code -- see ChunkDescriptor.h's ParameterPipe doc comment) resolves through this SAME
+	// dimension-precise sub-namespace, keyed on the DECLARATION rather than a hand-maintained
+	// name list.  Until 2026-09-06 this was instead a literal `paramName == "displacement" ||
+	// "child_a" || "child_b"` list: those three params were declared {Painter} (or, for
+	// heightfield_function, coarse {Function}) with no `pipe` at all, so resolving them coarsely
+	// via (Painter,name) MISSED a plf2d target (plf2d is not in the painter managers) -- a
+	// stale-closure bug (review #3, 3rd-pass exhaustive table) patched with a name list rather
+	// than fixing the underlying under-declaration.  The proper fix landed the same day: those
+	// parameters (displaced_geometry.displacement, composite_function2d_painter.child_a/.child_b,
+	// sdf_geometry.heightfield_function, scalar_painter.function2d, function2d_painter.function2d)
+	// now all carry `ParameterPipe::Function2D` + `referenceCategories = {Painter, Function}`, so
+	// a BRAND-NEW Function2D-piped parameter is covered here with NO Cst.cpp edit -- proven by
+	// CstResolverTest's registry-wide [func2d-registry-invariant] case, which walks the LIVE
+	// registry (no hardcoded param list) rather than asserting against these five by name.
+	if( pd && pd->semantics.pipe == ParameterPipe::Function2D ) return kFunc2DSubCat;
 	return 0;
 }
 
@@ -4425,7 +4431,7 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 			// workstream #2 dropped their phantom Function category (ResolveOrDiagnoseScalar resolves a
 			// scalar-then-colour painter, then numeric -- NEVER a Function manager), so they are now
 			// {Painter}; their residual painter colour-vs-scalar ambiguity is handled by the alias above.
-			const int fsub = FunctionSubNamespace( role );
+			const int fsub = FunctionSubNamespace( role, pd );
 			if( fsub != 0 ) {
 				std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );
 				if( d != defs.end() ) target = d->second;

@@ -266,6 +266,8 @@ namespace
 		"piecewise_linear_function\n{\nname arch_func1d\ncp 0.0 0.0\ncp 1.0 1.0\n}\n"
 		"piecewise_linear_function2d\n{\nname arch_func2d\n}\n"
 		"expression_painter\n{\nname arch_exprpainter\nexpr 0.5\n}\n"
+		"expression_function2d\n{\nname arch_exprfunc2d\nexpr u*v\n}\n"
+		"perlin2d_painter\n{\nname arch_perlin2d\n}\n"
 		"png_painter\n{\nname arch_png\nfile textures/wood.png\n}\n"
 		"pinhole_camera\n{\nname arch_cam\n}\n"
 		"sphere_geometry\n{\nname arch_base\n}\n"
@@ -806,6 +808,64 @@ int main()
 			Check( objGeomPortOk,
 				"3i: standard_object.geometry declares referenceCategories == {Geometry} -- UNCHANGED; "
 				"it must NOT list HairGuides, or the reverse direction re-opens" );
+		}
+
+		// 3j. displaced_geometry.displacement (2026-09-06, the Function2D-
+		// pipe-honesty workstream): NOT folded into the PART 2 corpus
+		// (kRows) because `displaced_geometry` is ChunkCategory::Geometry,
+		// not Painter/Material, and needs a `base_geometry` companion to
+		// derive at all -- same "own explicit spot check" reasoning as 3h's
+		// `guides`. Was declared `{Painter}` with NO `pipe` at all until this
+		// workstream (docs/RELIEF_MODIFIER_DESIGN.md sect. 1.1's "trap");
+		// now Function2D-piped with `referenceCategories = {Painter,
+		// Function}`, so it follows EXACTLY the same accepted-kind rule as
+		// composite_function2d_painter.child_a/child_b in 3e above: any
+		// dual-registered colour painter (expression_function2d,
+		// perlin2d_painter, ... -- everything except expression_painter),
+		// PLUS a genuine Function-category IFunction2D
+		// (piecewise_linear_function2d), REJECTING scalar_painter outright
+		// (IScalarPainter never registers into IFunction2DManager -- a
+		// different interface, not merely a stricter one).
+		{
+			Check( ConnectionLegality::CheckConnectionByKeyword(
+				"displaced_geometry", "displacement", "expression_function2d", ChunkCategory::Painter ).legal,
+				"3j: displacement accepts expression_function2d (Painter-category, dual-registered)" );
+			Check( ConnectionLegality::CheckConnectionByKeyword(
+				"displaced_geometry", "displacement", "perlin2d_painter", ChunkCategory::Painter ).legal,
+				"3j: displacement accepts perlin2d_painter (any dual-registered colour painter, not just "
+				"the one composite_function2d_painter's own 3e checks happen to use)" );
+			Check( ConnectionLegality::CheckConnectionByKeyword(
+				"displaced_geometry", "displacement", "piecewise_linear_function2d", ChunkCategory::Function ).legal,
+				"3j: displacement accepts piecewise_linear_function2d (Function-category)" );
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"displaced_geometry", "displacement", "expression_painter", ChunkCategory::Painter ).legal,
+				"3j: displacement REJECTS expression_painter (single-registered, the named exception)" );
+			Check( !ConnectionLegality::CheckConnectionByKeyword(
+				"displaced_geometry", "displacement", "scalar_painter", ChunkCategory::Painter ).legal,
+				"3j MONEY: displacement REJECTS scalar_painter (never IFunction2DManager-registered -- "
+				"IScalarPainter is a DIFFERENT interface, not a stricter colour painter)" );
+
+			// Cross-check against the real parser. `base_geometry` (required)
+			// is pinned to `arch_base` on every row -- same "pin the sibling
+			// field" discipline as 3b/3e/3h.
+			std::vector<std::pair<std::string, std::string> > exprParams, perlinParams, scalarParams;
+			exprParams.push_back( std::make_pair( std::string( "base_geometry" ), std::string( "arch_base" ) ) );
+			exprParams.push_back( std::make_pair( std::string( "displacement" ),  std::string( "arch_exprfunc2d" ) ) );
+			Check( DeriveTargetOK( BuildSceneMulti( "displaced_geometry", exprParams ),
+					"displaced_geometry", ChunkCategory::Geometry ),
+				"3j: the real parser accepts expression_function2d in `displacement`" );
+
+			perlinParams.push_back( std::make_pair( std::string( "base_geometry" ), std::string( "arch_base" ) ) );
+			perlinParams.push_back( std::make_pair( std::string( "displacement" ),  std::string( "arch_perlin2d" ) ) );
+			Check( DeriveTargetOK( BuildSceneMulti( "displaced_geometry", perlinParams ),
+					"displaced_geometry", ChunkCategory::Geometry ),
+				"3j: the real parser accepts perlin2d_painter in `displacement`" );
+
+			scalarParams.push_back( std::make_pair( std::string( "base_geometry" ), std::string( "arch_base" ) ) );
+			scalarParams.push_back( std::make_pair( std::string( "displacement" ),  std::string( "arch_scalar" ) ) );
+			Check( !DeriveTargetOK( BuildSceneMulti( "displaced_geometry", scalarParams ),
+					"displaced_geometry", ChunkCategory::Geometry ),
+				"3j: the real parser also rejects a scalar_painter name in `displacement`" );
 		}
 	}
 

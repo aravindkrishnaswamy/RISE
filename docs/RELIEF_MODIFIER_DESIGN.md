@@ -87,7 +87,7 @@ The charter that opened this arc stated three things the tree does not bear
 out. Recording them so the design does not inherit them:
 
 1. **"`displaced_geometry` already accepts any Painter."** It did not, at the
-   time the charter was written. Its `displacement` slot is *declared*
+   time the charter was written. Its `displacement` slot was *declared*
    `{ChunkCategory::Painter}` but resolved
    through `pFunc2DManager` (`Job::AddDisplacedGeometry` in [Job.cpp](../src/Library/Job.cpp)) and
    evaluated as `displacement.Evaluate(u, v)` per vertex
@@ -96,6 +96,30 @@ out. Recording them so the design does not inherit them:
    `Painter::Evaluate` path and is a *constant*. The "same field drives coarse
    displacement + fine relief" pattern therefore worked only for
    UV-domain fields (§5.3).
+
+   **The descriptor trap itself CLOSED 2026-09-06** (a separate follow-up
+   from the `height` slot below): `displacement` now carries
+   `p.semantics.pipe = ParameterPipe::Function2D` with
+   `referenceCategories = {Painter, Function}` — declared Function2D-piped,
+   matching the resolve code above exactly, instead of a bare `{Painter}`
+   with no `pipe` at all. The same fix landed on the other four parameters
+   the resolve code shares a manager with:
+   `composite_function2d_painter.child_a`/`.child_b`,
+   `sdf_geometry.heightfield_function`, `scalar_painter.function2d`, and
+   `function2d_painter.function2d`. Cst.cpp's `FunctionSubNamespace`
+   resolver, which used to special-case `displacement`/`child_a`/`child_b`
+   by a literal name list (because their under-declared category alone
+   would have missed a `piecewise_linear_function2d` target), now keys on
+   this `pipe` declaration instead — see the function's own comment and
+   `CstResolverTest`'s registry-wide `[func2d-registry-invariant]` case,
+   which proves a BRAND-NEW Function2D-piped parameter is covered with no
+   further Cst.cpp edit. `ConnectionLegalityTest`'s `3j` rows pin the
+   resulting accept/reject set (`expression_function2d` / `perlin2d_painter`
+   / `piecewise_linear_function2d` accepted, `expression_painter` /
+   `scalar_painter` rejected) against both the static check and a real
+   derive. Purely a descriptor + resolver change — `ApplyDisplacementMapToObject`
+   and every other resolve-time code path are untouched (CstDeriveGoldenTest
+   shows zero drift).
 
    **CLOSED 2026-09-06 (the chipped follow-up landed).** `displaced_geometry`
    gained a second, mutually exclusive height slot, `height`, declared
