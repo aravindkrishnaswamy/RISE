@@ -5669,12 +5669,65 @@ namespace RISE
 			//          EVERY operand binds one, and an operand is never flat when
 			//          an enclosing composite binds one over it.
 			//
-			// Everything below resolves exactly those two rules off maps the
-			// single document walk already builds.  All three walks are
-			// depth-bounded, so a malformed document's `source` cycle or
-			// mutually-referencing composites resolve to "no modifier" (which
-			// only ever costs an advisory) instead of hanging the scan.
+			// FIX ROUND 2 (2026-09-06, sec 12's "Phase 4 -- fix round 2") found
+			// that BOTH engine rules are about the PAIR `pMaterial`/`pModifier`,
+			// not about the modifier alone: `AdoptCsgSurfaceBindings` copies
+			// both, `IsInstanceOwnParam` excludes both, and the composite applies
+			// its own through the matched pair `if( pMaterial ) ri.pMaterial =
+			// pMaterial; if( pModifier ) ri.pModifier = pModifier;` at the bottom
+			// of `CSGObject::IntersectRay`.  Fix round 1 taught clause (ii) both
+			// halves and left clause (i) resolving the object's own `material`
+			// literal, so this index carries the MATERIAL literal too and clause
+			// (i) now resolves it by the same two rules:
+			//
+			//   (M-a) a `source` copy INHERITS `material` exactly as it inherits
+			//         `modifier`, so a copy spelling no material of its own is
+			//         still bound to its source's -- and IS a candidate when that
+			//         material varies.  `material none` on the copy clears it,
+			//         for the same merge-order reason "none" clears a modifier;
+			//   (M-b) an ENCLOSING composite that spells a `material` OVERRIDES
+			//         the operand's on every hit it reports, so the operand is
+			//         not a candidate on its OWN material -- the composite is the
+			//         candidate, on the material it spells, which the ordinary
+			//         per-object walk already covers.  Nested: any enclosing
+			//         composite spelling one silences the operand, because the
+			//         outermost spelled material is what survives the inside-out
+			//         adoption.  Unlike `modifier none` on a `source` copy,
+			//         `material none` on a COMPOSITE overrides nothing: the
+			//         parser passes 0, `pMaterial` is null, and the guarded
+			//         assignment never fires -- so "none" is unbound here.
+			//
+			// Everything below resolves exactly those rules off maps the single
+			// document walk already builds.  The `source` walks are bounded at
+			// `kSourceChainHopBound_`, the SAME 256 `Cst.cpp`'s `SourceChainOf`
+			// uses -- so no chain the ENGINE will expand can outrun this scan.
+			// (The first cut's bound of 8 justified itself by a `source` cycle
+			// the declare-earlier rule makes impossible, and reached only 7 hops:
+			// a legal 8-deep chain with the modifier at its root fired falsely.)
+			// The two csg walks are bounded on NESTING DEPTH instead, and stay
+			// deliberately modest because `enclosingCsgByObject` can fan out; a
+			// nest deeper than that resolves to "no modifier" / "no enclosing
+			// material", which costs at most one advisory and never a hang.
+			//
+			// Why the enclosing-composite rules are SAFE -- why silencing an
+			// operand cannot silence a surface that renders on its own: a CSG
+			// operand never renders standalone.  `CSGObject::AssignObjects` marks
+			// both operands consumed (`Object::AddConsumer`; `IsWorldVisible()`
+			// is `bIsWorldVisible && nConsumedBy == 0`), which takes them out of
+			// every world-visible enumeration, and `Job::AddCSGObject` refuses an
+			// operand that is `parent`ed elsewhere ("Parent the csg_object
+			// instead").  The only surface an operand contributes to is its
+			// composite's.
 			//======================================================================
+
+			//! The `source`-chain hop bound for every walk in this family --
+			//! `Cst.cpp`'s `SourceChainOf` guard value exactly.  That function
+			//! is file-static in Cst.cpp and cannot be called from here, so the
+			//! bound is matched rather than shared: the point is that a chain
+			//! the ENGINE accepts and expands is a chain this scan resolves,
+			//! and one the engine refuses (deeper than the cap, or a forward
+			//! reference) is one no derived scene ever contains.
+			static const int kSourceChainHopBound_ = 256;
 
 			//! The object-graph facts `ObjectHasEffectiveModifier_` resolves
 			//! against.  Collected in `ComputeDesignNoteConditionsFromDoc_`'s
@@ -5689,6 +5742,14 @@ namespace RISE
 				//! "none" is what CLEARS an inherited modifier and so must stop
 				//! the `source` walk rather than being invisible to it.
 				std::map<std::string, std::string>               modifierLiteralByObject;
+				//! object name -> its `material` param's LITERAL value, whenever
+				//! the chunk spells one non-empty -- **"none" INCLUDED**, for the
+				//! `source` walk's sake exactly as above: on an instancing copy
+				//! `material none` CLEARS the inherited material.  (On a
+				//! composite "none" overrides nothing -- see the block comment's
+				//! (M-b) -- which is why the enclosing-composite rule tests the
+				//! resolved value for non-"none" rather than for presence.)
+				std::map<std::string, std::string>               materialLiteralByObject;
 				//! standard_object name -> its `source` (the instancing link).
 				std::map<std::string, std::string>               sourceByObject;
 				//! csg_object name -> its `obja` / `objb` operand names.
@@ -5697,28 +5758,64 @@ namespace RISE
 				std::map<std::string, std::vector<std::string> > enclosingCsgByObject;
 			};
 
-			//! Walk the `source` chain until a level SPELLS `modifier`; that
-			//! level's value is the answer ("none" -> unbound).  Returns the
-			//! terminal chunk name in `outTerminal` so the CSG rule below can
-			//! ask what KIND the instance ultimately clones (a `source` may
-			//! name a csg_object, which `MergeChunkParams` clones as one).
-			bool ObjectOwnOrInheritedModifierBound_( const EffectiveModifierIndex_& idx,
-			                                         const std::string& objectName,
-			                                         std::string& outTerminal )
+			//! The ONE `source`-chain walk both binding rules use: follow the
+			//! chain until a level SPELLS the parameter recorded in
+			//! `literalByObject`, and hand that level's LITERAL back (which may
+			//! be "none" -- the caller decides what "none" means for its own
+			//! parameter, since the two differ: see the block comment's (M-b)).
+			//! Returns false when no level in the chain spells it at all.
+			//! `outTerminal` is the last chunk the walk reached, so the CSG rule
+			//! below can ask what KIND the instance ultimately clones (a
+			//! `source` may name a csg_object, which `MergeChunkParams` clones
+			//! as one) -- and it is meaningful whether or not a literal was
+			//! found.
+			bool ResolveInheritedLiteral_( const EffectiveModifierIndex_& idx,
+			                               const std::map<std::string, std::string>& literalByObject,
+			                               const std::string& objectName,
+			                               std::string& outLiteral,
+			                               std::string& outTerminal )
 			{
 				std::string cur = objectName;
 				outTerminal = objectName;
-				for( int hop = 0; hop < 8 && !cur.empty(); ++hop ) {
+				outLiteral.clear();
+				for( int hop = 0; hop < kSourceChainHopBound_ && !cur.empty(); ++hop ) {
 					outTerminal = cur;
-					const std::map<std::string, std::string>::const_iterator m =
-						idx.modifierLiteralByObject.find( cur );
-					if( m != idx.modifierLiteralByObject.end() ) return m->second != "none";
+					const std::map<std::string, std::string>::const_iterator m = literalByObject.find( cur );
+					if( m != literalByObject.end() ) { outLiteral = m->second; return true; }
 					const std::map<std::string, std::string>::const_iterator s =
 						idx.sourceByObject.find( cur );
 					if( s == idx.sourceByObject.end() ) break;
 					cur = s->second;
 				}
 				return false;
+			}
+
+			//! Does this object's OWN (or `source`-inherited) `modifier` bind
+			//! one?  "none" is a chain-STOPPING answer meaning unbound, not an
+			//! absent param -- an instancing copy spelling it genuinely clears
+			//! the modifier it would otherwise inherit.
+			bool ObjectOwnOrInheritedModifierBound_( const EffectiveModifierIndex_& idx,
+			                                         const std::string& objectName,
+			                                         std::string& outTerminal )
+			{
+				std::string literal;
+				return ResolveInheritedLiteral_( idx, idx.modifierLiteralByObject, objectName,
+				                                 literal, outTerminal ) && literal != "none";
+			}
+
+			//! (Fix round 2, rule M-a) The material name the ENGINE binds to this
+			//! object: its own `material` when it spells one, else the one it
+			//! inherits down the `source` chain.  Empty means unbound -- an
+			//! object that spells none anywhere in its chain, and one whose own
+			//! chunk spells `material none` (which clears the inherited one).
+			std::string ObjectOwnOrInheritedMaterial_( const EffectiveModifierIndex_& idx,
+			                                            const std::string& objectName )
+			{
+				std::string literal, terminal;
+				if( !ResolveInheritedLiteral_( idx, idx.materialLiteralByObject, objectName,
+				                               literal, terminal ) )
+					return std::string();
+				return ( literal == "none" ) ? std::string() : literal;
 			}
 
 			//! Does the SURFACE this object contributes carry a modifier of its
@@ -5757,6 +5854,29 @@ namespace RISE
 					std::string terminal;
 					if( ObjectOwnOrInheritedModifierBound_( idx, composite, terminal ) ) return true;
 					if( EnclosingCompositeBindsModifier_( idx, composite, depth + 1 ) ) return true;
+				}
+				return false;
+			}
+
+			//! (Fix round 2, rule M-b) Condition Q clause (i)'s own composite
+			//! rule -- the MATERIAL twin of the predicate just above, and on the
+			//! same index edges.  Does any composite ENCLOSING this object
+			//! (transitively) spell a `material`?  If so the operand is not a
+			//! candidate on its OWN material: the composite's binding replaces
+			//! it on every hit the composite reports, and the operand renders
+			//! through nothing else (`AssignObjects` consumes it).  The
+			//! composite is then the candidate, on the material IT spells,
+			//! which the ordinary per-object walk already reaches.
+			bool EnclosingCompositeBindsMaterial_( const EffectiveModifierIndex_& idx,
+			                                        const std::string& objectName, int depth = 0 )
+			{
+				if( depth > 8 || objectName.empty() ) return false;
+				const std::map<std::string, std::vector<std::string> >::const_iterator enc =
+					idx.enclosingCsgByObject.find( objectName );
+				if( enc == idx.enclosingCsgByObject.end() ) return false;
+				for( const std::string& composite : enc->second ) {
+					if( !ObjectOwnOrInheritedMaterial_( idx, composite ).empty() ) return true;
+					if( EnclosingCompositeBindsMaterial_( idx, composite, depth + 1 ) ) return true;
 				}
 				return false;
 			}
@@ -6928,14 +7048,17 @@ namespace RISE
 								// (Condition Q) See effectiveModifiers' own doc.
 								// "none" IS recorded here, unlike every sibling
 								// map above: it is the value that CLEARS a
-								// modifier inherited down a `source` chain, so
-								// dropping it would make the clear invisible.
+								// modifier -- and (fix round 2) a material --
+								// inherited down a `source` chain, so dropping
+								// it would make the clear invisible.
 								effectiveModifiers.roleByObject[objName] = "standard_object";
 								if( src != pm.end() && !src->second.empty() && src->second != "none" )
 									effectiveModifiers.sourceByObject[objName] = src->second;
 								const std::map<std::string, std::string>::const_iterator omod = pm.find( "modifier" );
 								if( omod != pm.end() && !omod->second.empty() )
 									effectiveModifiers.modifierLiteralByObject[objName] = omod->second;
+								if( omat != pm.end() && !omat->second.empty() )
+									effectiveModifiers.materialLiteralByObject[objName] = omat->second;
 							}
 						}
 						{
@@ -7222,12 +7345,16 @@ namespace RISE
 						// (Condition Q) See effectiveModifiers' own doc.  This
 						// is the branch csg_object reaches (the standard_object
 						// branch above `continue`s), so the composite's own
-						// modifier AND its operand edges are recorded here.
+						// modifier, its own material (fix round 2 -- the
+						// override clause (i) now honours) AND its operand
+						// edges are recorded here.
 						if( !onm.empty() ) {
 							effectiveModifiers.roleByObject[onm] = role;
 							const std::string omod = ChunkParamString_( item, "modifier" );
 							if( !omod.empty() )
 								effectiveModifiers.modifierLiteralByObject[onm] = omod;
+							if( !omat.empty() )
+								effectiveModifiers.materialLiteralByObject[onm] = omat;
 							if( role == "csg_object" ) {
 								static const char* const kOperandParams[] = { "obja", "objb" };
 								for( const char* op : kOperandParams ) {
@@ -7753,13 +7880,17 @@ namespace RISE
 					// Clause (c)'s helper: follow an object's `source` link (an
 					// instancing chunk names a source object rather than a
 					// geometry of its own) to whatever geometry it ultimately
-					// stands on.  Bounded, so a `source` cycle in a malformed
-					// document cannot hang the design-note scan -- a cycle simply
-					// resolves to "no geometry", which drops the object out of the
-					// evidence rather than deciding anything.
+					// stands on.  Bounded at `kSourceChainHopBound_` -- the same
+					// 256 `Cst.cpp`'s `SourceChainOf` guards with, so no chain the
+					// ENGINE will expand can outrun this walk (2026-09-06 fix
+					// round 2: the bound was 8, which reached 7 hops and made a
+					// legal 8-deep chain resolve to "no geometry").  Bounded at
+					// all so that a link the engine somehow admitted cannot hang
+					// the design-note scan; an unresolved walk simply drops the
+					// object out of the evidence rather than deciding anything.
 					auto geometryKindOfObject = [&]( const std::string& objectName ) -> std::string {
 						std::string cur = objectName;
-						for( int hop = 0; hop < 8 && !cur.empty(); ++hop ) {
+						for( int hop = 0; hop < kSourceChainHopBound_ && !cur.empty(); ++hop ) {
 							const std::map<std::string, std::string>::const_iterator g =
 								objectGeometryByName.find( cur );
 							if( g != objectGeometryByName.end() ) {
@@ -7996,9 +8127,12 @@ namespace RISE
 				// WetnessMaterial_'s own doc for the four clauses this loop
 				// evaluates.
 				{
+					// Condition L's `geometryKindOfObject` exactly, including its
+					// `kSourceChainHopBound_` rationale -- see that lambda's own
+					// comment one condition up.
 					auto geometryKindOfObjectForWetness = [&]( const std::string& objectName ) -> std::string {
 						std::string cur = objectName;
-						for( int hop = 0; hop < 8 && !cur.empty(); ++hop ) {
+						for( int hop = 0; hop < kSourceChainHopBound_ && !cur.empty(); ++hop ) {
 							const std::map<std::string, std::string>::const_iterator g =
 								objectGeometryByName.find( cur );
 							if( g != objectGeometryByName.end() ) {
@@ -8362,7 +8496,10 @@ namespace RISE
 				// resolution pass -- the DECAL-ON-PLASTIC detector.  Document-
 				// only (unlike condition M just below), so it runs
 				// unconditionally, off the maps the single walk above already
-				// built plus objectModifierByName (see that map's own doc).
+				// built plus `effectiveModifiers` -- the object-graph index
+				// BOTH of this condition's binding clauses resolve against (see
+				// that member's own doc, and `EffectiveModifierIndex_`'s block
+				// comment for the engine rules it encodes).
 				{
 					// Document order: walk chunk items again rather than
 					// iterate objectMaterialByName (a std::map, alphabetical)
@@ -8507,9 +8644,27 @@ namespace RISE
 						// the literal-param test this replaced got wrong.
 						if( ObjectHasEffectiveModifier_( effectiveModifiers, objName ) ) continue;
 
-						const std::map<std::string, std::string>::const_iterator matIt =
-							objectMaterialByName.find( objName );
-						if( matIt == objectMaterialByName.end() ) continue;   // no nameable material -- not a candidate
+						// (i)'s composite half -- FIX ROUND 2's P1.  The
+						// composite's own `material` takes final precedence
+						// over the operand's on every hit it reports, by the
+						// SAME matched-pair assignment clause (ii) already
+						// honours for the modifier.  So an operand under a
+						// composite that spells a material is not a candidate
+						// on its own: the material it advertises is never
+						// shaded.  The composite is the candidate, on the
+						// material IT spells -- this same loop reaches it.
+						if( EnclosingCompositeBindsMaterial_( effectiveModifiers, objName ) ) continue;
+
+						// (i)'s material lookup -- FIX ROUND 2's P2-2, `source`-
+						// aware.  A `copy { source orig }` INHERITS `orig`'s
+						// material (`MergeChunkParams`; `material` is not an
+						// `IsInstanceOwnParam`), and the literal-param lookup
+						// this replaced dropped every such copy out of the scan
+						// -- an UNDER-report, and one that also mis-counted the
+						// clause's "and N more objects" tally.
+						const std::string objMaterial =
+							ObjectOwnOrInheritedMaterial_( effectiveModifiers, objName );
+						if( objMaterial.empty() ) continue;   // no nameable material -- not a candidate
 
 						// (iii) hair_geometry: a strand's own tangent-frame
 						// shading has no purchase for this kind of relief.
@@ -8529,7 +8684,7 @@ namespace RISE
 						// needing a document lookup, and running it first made
 						// every non-candidate object pay for it.
 						FlatReliefFinding_ f;
-						if( !findVaryingColorSlot( matIt->second, 0, f ) ) continue;
+						if( !findVaryingColorSlot( objMaterial, 0, f ) ) continue;
 
 						// (iv) light-object -- the arc-80 rect_light/shape_light
 						// fixture classifier, kept as defense-in-depth beside

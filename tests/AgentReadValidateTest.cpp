@@ -2086,6 +2086,135 @@ static void RunFlatReliefScanTest()
 		       "(o) P2-3 RED-PROVE: the SAME material with a varying `rd` still fires, naming `rd` -- "
 		       "the exclusion is SLOT-scoped, not material-scoped" );
 	}
+
+	//==============================================================
+	// FIX ROUND 2 (2026-09-06) -- clause (i) taught the SAME two
+	// engine rules fix round 1 taught clause (ii), plus the `source`
+	// chain bound.  See RELIEF_MODIFIER_DESIGN.md sec 12's "Phase 4
+	// -- fix round 2".
+	//==============================================================
+
+	//--------------------------------------------------------------
+	// (p) P1 GREEN-PROVE: the composite's MATERIAL override.  A
+	// csg_object's own `material` takes final precedence over the
+	// operand's on every hit it reports -- the matched pair
+	// `if( pMaterial ) ri.pMaterial = pMaterial;  if( pModifier )
+	// ri.pModifier = pModifier;` at the bottom of
+	// CSGObject::IntersectRay.  So `op_a`'s varying material is never
+	// shaded, and advising relief on it advises a texture that does
+	// not exist.  (Fix round 1 taught clause (ii) both halves of that
+	// pair; clause (i) still resolved the operand's own literal.)
+	//--------------------------------------------------------------
+	{
+		const std::string docCsgMaterialOverride = kPreamble +
+			"lambertian_material\n{\n\tname flat_mat\n\treflectance flat_pnt\n}\n\n"
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"standard_object\n{\n\tname op_a\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n\n"
+			"standard_object\n{\n\tname op_b\n\tgeometry vessel_geo\n\tmaterial flat_mat\n}\n\n"
+			"csg_object\n{\n\tname comp\n\tobja op_a\n\tobjb op_b\n\toperation union\n"
+			"\tmaterial flat_mat\n}\n";
+		Check( !hasCode( AgentSession::ValidateText( docCsgMaterialOverride ), "DESIGN_FLAT_RELIEF" ),
+		       "(p) P1 GREEN-PROVE: an operand whose enclosing composite spells its OWN `material` is "
+		       "not a candidate on the operand's material -- that texture is never shaded -- silent" );
+	}
+
+	//--------------------------------------------------------------
+	// (p') P1 RED-PROVE / control: the IDENTICAL document with the
+	// composite's `material` line dropped.  Nothing overrides the
+	// operand now, so its varying material IS what gets shaded and
+	// the object fires -- which is what makes (p) a rule about the
+	// override rather than a blanket "operands never fire".
+	//--------------------------------------------------------------
+	{
+		const std::string docCsgNoOverride = kPreamble +
+			"lambertian_material\n{\n\tname flat_mat\n\treflectance flat_pnt\n}\n\n"
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"standard_object\n{\n\tname op_a\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n\n"
+			"standard_object\n{\n\tname op_b\n\tgeometry vessel_geo\n\tmaterial flat_mat\n}\n\n"
+			"csg_object\n{\n\tname comp\n\tobja op_a\n\tobjb op_b\n\toperation union\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docCsgNoOverride );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_RELIEF" );
+		Check( d != nullptr && d->message.find( "`op_a`" ) != std::string::npos,
+		       "(p') P1 RED-PROVE: drop the composite's `material` and the SAME operand fires, naming "
+		       "`op_a` -- the operand's own material is what gets shaded again" );
+	}
+
+	//--------------------------------------------------------------
+	// (p'') P1 NESTED: an inner composite overrides the material, the
+	// outer one does not.  The outermost SPELLED material is what
+	// survives the inside-out adoption, so the operands are silent
+	// (the middle composite overrode them) while the MIDDLE composite
+	// itself fires on the varying material it spells -- nothing above
+	// it overrides that, and it binds no modifier.
+	//--------------------------------------------------------------
+	{
+		const std::string docNestedCsg = kPreamble +
+			"lambertian_material\n{\n\tname flat_mat\n\treflectance flat_pnt\n}\n\n"
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"lambertian_material\n{\n\tname mid_mat\n\treflectance relief_field\n}\n\n"
+			"standard_object\n{\n\tname op_a\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n\n"
+			"standard_object\n{\n\tname op_b\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n\n"
+			"csg_object\n{\n\tname comp_mid\n\tobja op_a\n\tobjb op_b\n\toperation union\n"
+			"\tmaterial mid_mat\n}\n\n"
+			"standard_object\n{\n\tname spacer\n\tgeometry vessel_geo\n\tmaterial flat_mat\n}\n\n"
+			"csg_object\n{\n\tname comp_outer\n\tobja comp_mid\n\tobjb spacer\n\toperation union\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docNestedCsg );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_RELIEF" );
+		Check( d != nullptr && d->message.find( "`comp_mid`" ) != std::string::npos,
+		       "(p'') P1 NESTED: with the MIDDLE composite overriding the material and the outer one "
+		       "not, the middle composite is the finding" );
+		Check( d != nullptr && d->message.find( "more object" ) == std::string::npos,
+		       "...and it is the ONLY one -- both operands are silenced by the middle composite's "
+		       "override, exactly as a single-level one silences them" );
+	}
+
+	//--------------------------------------------------------------
+	// (q) P2-2 fix round 2: clause (i) is `source`-AWARE.  A copy
+	// inherits `material` exactly as it inherits `modifier`
+	// (MergeChunkParams; neither is an IsInstanceOwnParam), so a
+	// bare `copy { source orig }` renders the SAME varying material
+	// with the same absent relief.  The literal-param lookup this
+	// replaced dropped every such copy -- an under-report that also
+	// mis-counted the clause's "and N more objects" tally.
+	//--------------------------------------------------------------
+	{
+		const std::string docInheritedMaterial = kPreamble +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"standard_object\n{\n\tname orig\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n}\n\n"
+			"standard_object\n{\n\tname copy\n\tsource orig\n\tposition 1 0 0\n}\n";
+		const std::vector<AgentDiagnostic> diags = AgentSession::ValidateText( docInheritedMaterial );
+		const AgentDiagnostic* d = findCode( diags, "DESIGN_FLAT_RELIEF" );
+		Check( d != nullptr && d->message.find( "`orig`" ) != std::string::npos,
+		       "(q) P2-2 RED-PROVE: a copy that spells NO material of its own inherits the source's -- "
+		       "fires, the first-authored object named in full" );
+		Check( d != nullptr && d->message.find( "1 more object" ) != std::string::npos,
+		       "...and the copy is COUNTED as the second finding (the tally was short by one before "
+		       "the material lookup followed `source`)" );
+	}
+
+	//--------------------------------------------------------------
+	// (r) P2-1 fix round 2: the `source` chain bound.  The walk used
+	// to stop after 7 hops on a bound justified by a `source` cycle
+	// that Cst.cpp makes impossible (forward references are refused,
+	// and SourceChainOf caps at 256 purely as a belt).  A LEGAL
+	// 9-deep chain with the relief at its root therefore resolved to
+	// "no modifier" at its far end and fired falsely.  The bound is
+	// now the engine's own 256, so the whole chain is silent.
+	//--------------------------------------------------------------
+	{
+		std::string docDeepChain = kPreamble + kRelief +
+			"lambertian_material\n{\n\tname vessel_mat\n\treflectance relief_field\n}\n\n"
+			"standard_object\n{\n\tname o0\n\tgeometry vessel_geo\n\tmaterial vessel_mat\n"
+			"\tmodifier vessel_relief\n}\n\n";
+		for( int k = 1; k <= 9; ++k ) {
+			docDeepChain += "standard_object\n{\n\tname o" + std::to_string( k ) +
+				"\n\tsource o" + std::to_string( k - 1 ) +
+				"\n\tposition " + std::to_string( k ) + " 0 0\n}\n\n";
+		}
+		Check( !hasCode( AgentSession::ValidateText( docDeepChain ), "DESIGN_FLAT_RELIEF" ),
+		       "(r) P2-1 GREEN-PROVE: a LEGAL 9-deep `source` chain with the relief at its root is "
+		       "silent at every link -- the walk reaches the root, as the engine's own expansion does" );
+	}
 }
 
 //----------------------------------------------------------------------

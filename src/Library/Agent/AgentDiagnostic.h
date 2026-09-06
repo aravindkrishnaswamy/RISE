@@ -614,8 +614,8 @@ namespace RISE
 			//! material binds; `csg_object` has no `geometry`/`source` field
 			//! at all -- its shape is always its two operands -- so this
 			//! exclusion never applies to it) -- for which ALL of:
-			//!   (i)   its bound material names at least one colour-pipe slot
-			//!         (`ColorMaterialSlotsByKind_`, condition H's own
+			//!   (i)   its EFFECTIVE material names at least one colour-pipe
+			//!         slot (`ColorMaterialSlotsByKind_`, condition H's own
 			//!         registry-derived table -- never a hand list) that
 			//!         resolves to a SPATIALLY-VARYING painter kind
 			//!         (`ClassifyColorBinding_`, the SAME Constant/Varying/
@@ -660,7 +660,40 @@ namespace RISE
 			//!         textured, so every `ParameterPipe::Material` slot
 			//!         (`MaterialWrapperSlotsByKind_`, registry-derived) is
 			//!         followed into the wrapped base, with the (iv)
-			//!         material-kind exclusions applied at every level;
+			//!         material-kind exclusions applied at every level.
+			//!
+			//!         "EFFECTIVE material", not "the object chunk's own
+			//!         `material` literal": FIX ROUND 2 (2026-09-06) taught
+			//!         this clause the SAME two engine rules fix round 1
+			//!         taught clause (ii), because both rules govern the PAIR
+			//!         `pMaterial`/`pModifier` rather than the modifier alone
+			//!         -- `AdoptCsgSurfaceBindings` copies both,
+			//!         `IsInstanceOwnParam` excludes both, and a composite
+			//!         applies its own through the matched pair
+			//!         `if( pMaterial ) ri.pMaterial = pMaterial;  if(
+			//!         pModifier ) ri.pModifier = pModifier;` at the bottom of
+			//!         `CSGObject::IntersectRay`.  So:
+			//!          * the material is resolved through the `source` chain
+			//!            (own `material` wins, else the inherited one; own
+			//!            `material none` clears it), so a bare `copy { source
+			//!            orig }` inheriting a varying material with no
+			//!            modifier IS a candidate.  The literal-param lookup
+			//!            this replaced dropped every such copy -- an
+			//!            UNDER-report, and one that also left the clause's
+			//!            "and N more objects" tally short;
+			//!          * an object under an ENCLOSING composite that spells a
+			//!            `material` is NOT a candidate on its own material:
+			//!            the composite's binding replaces it on every hit, so
+			//!            the operand advertises a texture that is never
+			//!            shaded.  The COMPOSITE is the candidate, on the
+			//!            material IT spells, which the ordinary per-object
+			//!            walk already reaches.  Nested: any enclosing
+			//!            composite spelling one silences the operand, because
+			//!            the outermost spelled material is what survives the
+			//!            inside-out adoption.  Unlike `modifier none` on a
+			//!            `source` copy, `material none` on a COMPOSITE
+			//!            overrides nothing -- the parser passes 0, so the
+			//!            guarded assignment never fires;
 			//!   (ii)  the rendered surface carries NO EFFECTIVE MODIFIER.
 			//!         Not "the object chunk spells no `modifier`" -- FIX
 			//!         ROUND 1 (2026-09-06) replaced that literal-param test
@@ -694,15 +727,38 @@ namespace RISE
 			//!              over this object.  The composite's own binding
 			//!              takes final precedence over the operand's on every
 			//!              hit it reports, so the operand is never flat.
-			//!         All three walks are depth-bounded, so a `source` cycle
-			//!         or mutually-referencing composites in a malformed
-			//!         document resolve to "no modifier" rather than hanging.
+			//!         Every walk here is bounded, but not by the same rule
+			//!         (FIX ROUND 2): the `source` walks stop at
+			//!         `kSourceChainHopBound_`, the SAME 256 `Cst.cpp`'s
+			//!         `SourceChainOf` guards with, so no chain the ENGINE
+			//!         will expand can outrun the scan -- the first cut's
+			//!         bound of 8 reached only 7 hops and justified itself by
+			//!         a `source` cycle the declare-earlier rule makes
+			//!         impossible, which made a LEGAL 8-deep chain with the
+			//!         modifier at its root fire falsely.  The csg walks are
+			//!         bounded on NESTING DEPTH instead, deliberately modest
+			//!         because the enclosure edges can fan out; a nest deeper
+			//!         than that resolves to "no modifier" / "no enclosing
+			//!         material", which costs at most one advisory.
 			//!         Which modifier KIND is bound is never asked: a
 			//!         `modifier_stack` name counts exactly as a single
 			//!         modifier chunk does, and a bumpmap/normal-map/glint
 			//!         modifier silences this exactly as a relief one would,
 			//!         since the claim is narrowly "the shading normal is
-			//!         inert", not "the wrong modifier kind was chosen";
+			//!         inert", not "the wrong modifier kind was chosen".
+			//!
+			//!         WHY THE ENCLOSING-COMPOSITE RULES ARE SAFE -- in (ii)
+			//!         above and in (i)'s material twin alike: A CSG OPERAND
+			//!         NEVER RENDERS STANDALONE, so silencing one can never
+			//!         silence a surface that reaches the frame on its own.
+			//!         `CSGObject::AssignObjects` marks both operands consumed
+			//!         (`Object::AddConsumer`; `IsWorldVisible()` is
+			//!         `bIsWorldVisible && nConsumedBy == 0`), which takes
+			//!         them out of every world-visible enumeration, and
+			//!         `Job::AddCSGObject` refuses an operand that is
+			//!         `parent`ed elsewhere ("Parent the csg_object instead").
+			//!         The only surface an operand contributes to is its
+			//!         composite's;
 			//!   (iii) the object's geometry is not `hair_geometry` (a
 			//!         strand's own tangent-frame shading has no purchase for
 			//!         this kind of relief); and
