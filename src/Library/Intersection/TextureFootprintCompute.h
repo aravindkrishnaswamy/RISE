@@ -149,14 +149,24 @@ namespace RISE
 		ri.txFootprint.dudy = (  dpdv_b * dpdy_a - dpdv_a * dpdy_b ) * invDet;
 		ri.txFootprint.dvdy = ( -dpdu_b * dpdy_a + dpdu_a * dpdy_b ) * invDet;
 
-		// World-space filter width (doc 88 S9): dpdx/dpdy above are already
-		// the WORLD-space offsets from P0 to the surface-plane hit of the
-		// +x/+y auxiliary rays -- i.e. exactly the world-space displacement
-		// one pixel step induces at this surface point.  Average their
-		// magnitudes (Apodaca & Gritz-style filterwidth estimate) for a
-		// single isotropic scalar; consumed by ExpressionPainter/
-		// ExpressionScalarPainter::BuildContext to populate ExprEvalContext
-		// ::fw.
+		// Filter width (doc 88 S9): dpdx/dpdy above are the offsets from P0
+		// to the surface-plane hit of the +x/+y auxiliary rays, in the
+		// FRAME OF `ray` -- i.e. exactly the displacement one pixel step
+		// induces at this surface point, in whatever space `ray` is
+		// currently expressed.  At this call site (triangle-mesh geometry,
+		// mid-`Object::IntersectRay`) that frame is OBJECT space: the
+		// caller has already transformed the incoming ray into object
+		// space before invoking the geometry, so `worldWidth` below is an
+		// OBJECT-space length at the point it is stamped, despite the
+		// name -- `Object::IntersectRay` / `CSGObject::IntersectRay` fold
+		// it to true world units afterward (the same `m_worldLinearScale`
+		// length fold `derivatives.scaleHint` gets; relief-modifier fix
+		// round 2, P2-A).  Average the two magnitudes (Apodaca & Gritz-
+		// style filterwidth estimate) for a single isotropic scalar;
+		// consumed by ExpressionPainter/ExpressionScalarPainter::
+		// BuildContext to populate ExprEvalContext::fw, and by
+		// ReliefModifier's footprint-aware step -- both AFTER the Object-
+		// layer fold, so both see true world units.
 		const Scalar lenDpdx = std::sqrt( dpdx.x*dpdx.x + dpdx.y*dpdx.y + dpdx.z*dpdx.z );
 		const Scalar lenDpdy = std::sqrt( dpdy.x*dpdy.x + dpdy.y*dpdy.y + dpdy.z*dpdy.z );
 		ri.txFootprint.worldWidth = Scalar(0.5) * ( lenDpdx + lenDpdy );

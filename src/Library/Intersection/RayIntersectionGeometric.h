@@ -107,12 +107,27 @@ namespace RISE
 	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
 	//! follows by multiplying by texture width / height.
 	//!
-	//! worldWidth is a WORLD-space filter-width estimate (same units
-	//! as ptIntersection / the expression VM's `P`) -- the average
+	//! worldWidth is a filter-width estimate (same units as
+	//! ptIntersection / the expression VM's `P`) -- the average
 	//! magnitude of the auxiliary rays' plane-projected offsets
 	//! (dpdx, dpdy; see TextureFootprintCompute.h), i.e. roughly the
 	//! extent of one pixel's footprint on the surface.  0 when
 	//! !valid, matching dudx/dudy/dvdx/dvdy's convention.
+	//!
+	//! The GEOMETRY stamps this in OBJECT-space units -- at the
+	//! triangle-mesh call site (the only producer today),
+	//! `ComputeTextureFootprint` runs mid-`Object::IntersectRay`, on
+	//! the ray that function has already transformed into object
+	//! space.  `Object::IntersectRay` / `CSGObject::IntersectRay` fold
+	//! it to a true WORLD length afterward, multiplying by
+	//! `m_worldLinearScale` (the same `|det M|^(1/3)` length fold
+	//! `derivatives.scaleHint` gets, exact under uniform scale,
+	//! a geometric-mean approximation otherwise) -- relief-modifier fix
+	//! round 2, P2-A.  By the time any consumer (ExpressionPainter's
+	//! `fw`, ReliefModifier's footprint-aware step) reads this field,
+	//! it IS world-space, matching this comment's original claim; the
+	//! object-to-world fold is what makes that claim true on an object
+	//! with a non-unit world scale.
 	struct TextureFootprint
 	{
 		Scalar  dudx, dudy;

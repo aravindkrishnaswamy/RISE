@@ -952,6 +952,28 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			ri.geometric.derivatives.curvatureValid = false;
 		}
 
+		// WORLD-MEASURE FOLD for txFootprint.worldWidth -- the same LENGTH
+		// fold as scaleHint immediately above, and for the same reason:
+		// TextureFootprintCompute stamps it from ri.ray, which at that call
+		// site (triangle-mesh geometry, mid-IntersectRay) is still the
+		// OBJECT-space ray this function transformed on entry, so
+		// worldWidth is an object-space length until folded here.  Relief-
+		// modifier fix round 2, P2-A: worldWidth is consumed as a WORLD
+		// length by ExpressionPainter/ExpressionScalarPainter (`fw`, whose
+		// footprint-fade thresholds are world units) and by ReliefModifier's
+		// `s = max(step, worldWidth)` step selection -- both silently read
+		// object units on any object with a non-unit world scale until this
+		// fold existed.  `|det M|^(1/3)` is the same geometric-mean
+		// approximation scaleHint uses under a NON-uniform scale (exact for
+		// uniform scale); see m_worldLinearScale's own comment.  A
+		// degenerate transform (m_worldLinearScale == 0) leaves worldWidth
+		// at its object-space value, same policy as scaleHint's degenerate
+		// branch above -- an object-space length is still a better
+		// normalizer than 0.
+		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
+			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
+		}
+
 		// Wireframe view-mode closest-edge point transforms like a
 		// position (forward transform) -- exactly as ptIntersection.
 		if( ri.geometric.bHasWireEdgeInfo ) {

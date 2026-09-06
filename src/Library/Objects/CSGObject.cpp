@@ -1583,6 +1583,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			ri.geometric.derivatives.curvatureValid = false;
 		}
 
+		// WORLD-MEASURE FOLD for txFootprint.worldWidth -- the exact mirror
+		// of Object::IntersectRay's block (relief-modifier fix round 2,
+		// P2-A; see it for the full rationale) and of scaleHint immediately
+		// above: `AdoptCsgSurfacePayload` copies the child operand's
+		// txFootprint verbatim, already folded by THAT child Object's own
+		// world scale, so THIS level composes by applying its OWN factor
+		// once more -- the same "each level applies its own factor once to
+		// whatever the level below already promoted" CSG-nesting invariant
+		// scaleHint/curvature follow.
+		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
+			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
+		}
+
 		// Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
 		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
