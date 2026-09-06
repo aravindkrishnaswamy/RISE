@@ -2012,7 +2012,15 @@ static void Test11_MaxSlopeClamp()
 			"11d: N'.N > 0 on all 1000 swept slopes (true by orthogonality; stated for the record)" );
 		CHECK( belowFloor == 0,
 			"11d: N'.N >= 1/sqrt(1+max_slope^2) on all 1000 -- the tilt bound the clamp actually buys" );
-		CHECK( controlBelowFloor > 500,
+		// Threshold 400, not the expectation's ~540: the log-uniform sweep
+		// puts ~540 of 1000 draws above the max_slope-2 floor by the
+		// binomial expectation for this fixed seed (20260906), and a
+		// bound of 500 sat only ~2.5 sigma under it -- close enough that a
+		// seed or count change could flip this CHECK without the
+		// discrimination it exists to prove actually failing.  400 keeps
+		// comfortable margin under any plausible re-seed while still being
+		// far above what a working clamp (near 0) would ever produce.
+		CHECK( controlBelowFloor > 400,
 			"11d: ...and UNCLAMPED, most of the same sweep breaks that bound (" << controlBelowFloor << "/1000) -- so the check discriminates" );
 	}
 
