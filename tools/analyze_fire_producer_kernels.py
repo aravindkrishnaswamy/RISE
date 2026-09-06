@@ -11,7 +11,25 @@ import tempfile
 
 
 def fields(line):
-    return dict(word.split("=", 1) for word in line.split()[1:])
+    words = line.split()
+    if not words:
+        raise ValueError("empty counter record")
+    result = {}
+    for word in words[1:]:
+        if "=" not in word:
+            raise ValueError("malformed counter: " + words[0])
+        key, value = word.split("=", 1)
+        if not key or key in result:
+            raise ValueError("empty or duplicate counter: " + words[0])
+        result[key] = value
+    schemas = {
+        "OWNER_COST_PREFIX": "complete steps time wall_s outcome_sha256 full_verdict error",
+        "PRODUCER_COMMAND_V1": "stage raw_iteration cpu_begin cpu_end gpu_begin gpu_end device_ms encoders interval_scope",
+        "PRODUCER_KERNEL_V1": "stage raw_iteration ordinal kernel threads begin_tick end_tick ms_per_tick device_ms",
+    }
+    if words[0] in schemas and set(result) != set(schemas[words[0]].split()):
+        raise ValueError("missing or unknown counters: " + words[0])
+    return result
 
 
 def summarize(path):
@@ -93,7 +111,7 @@ def summarize(path):
 def self_test():
     # Overlapping [100,400] and [300,700]: sum is 700 ticks, union is 600.
     valid = ("PRODUCER_COMMAND_V1 stage=0 raw_iteration=0 cpu_begin=0 cpu_end=1000 "
-             "gpu_begin=0 gpu_end=1000 device_ms=0.001 encoders=2\n"
+             "gpu_begin=0 gpu_end=1000 device_ms=0.001 encoders=2 interval_scope=possibly_overlapping\n"
              "PRODUCER_KERNEL_V1 stage=0 raw_iteration=0 ordinal=0 kernel=A threads=1 "
              "begin_tick=100 end_tick=400 ms_per_tick=0.000001 device_ms=0.0003\n"
              "PRODUCER_KERNEL_V1 stage=0 raw_iteration=0 ordinal=1 kernel=B threads=1 "

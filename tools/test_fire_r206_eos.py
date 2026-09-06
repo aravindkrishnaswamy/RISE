@@ -4,8 +4,10 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from analyze_fire_eos_warm_start import self_test
-from seal_fire_payload_placement import gate
+from analyze_fire_eos_warm_start import histogram, self_test
+from analyze_fire_producer_kernels import fields, summarize
+from seal_fire_payload_placement import bind_counters, gate, records
+from check_fire_owner_instrumentation import trees
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +15,59 @@ EVIDENCE = ROOT / "rendered/fire_production_calibration/r206_eos"
 
 
 class EOSGateREDs(unittest.TestCase):
+    def test_counter_family_rejects_duplicates_missing_and_unknown_fields(self):
+        path = EVIDENCE / "endpoints_qualified_profile_1.v1.log"
+        prefix = path.with_suffix("")
+        text = path.read_text()
+        rows = records(prefix / "budgets/maximum_velocity_trajectory.csv")
+        outcome = prefix / "diagnostic_prefix_outcome.v1"
+        original_text, original_bytes = Path.read_text, Path.read_bytes
+        consumers = {
+            "OWNER_COST_PREFIX": lambda: bind_counters(path, rows, outcome),
+            "PRODUCER_COMMAND_V1": lambda: (bind_counters(path, rows, outcome), summarize(path)),
+            "PRODUCER_KERNEL_V1": lambda: summarize(path),
+        }
+        for tag, consume in consumers.items():
+            consume()
+            line = next(line for line in text.splitlines() if line.startswith(tag+" "))
+            mutants = [line+" unknown=0", line+" malformed"]
+            for key, value in fields(line).items():
+                token = key+"="+value
+                mutants += [line.replace(token, "", 1), line+" "+key+"=conflict",
+                            line.replace(token, key+"=conflict "+token, 1)]
+            for mutant in mutants:
+                with self.subTest(tag=tag, mutant=mutant):
+                    changed = text.replace(line, mutant, 1)
+                    with patch.object(Path, "read_text", lambda p: changed if p == path else original_text(p)), \
+                         patch.object(Path, "read_bytes", lambda p: changed.encode() if p == path else original_bytes(p)):
+                        with self.assertRaises(ValueError):
+                            consume()
+        import json
+        profile_tag = "RISE_FIRE_OWNER_PROFILE_V1 "
+        line = next(line for line in text.splitlines() if line.startswith(profile_tag))
+        row = json.loads(line[len(profile_tag):])
+        for key in row:
+            mutants = [line[:-1]+',"'+key+'":0}',
+                       profile_tag+json.dumps({k:v for k,v in row.items() if k != key})]
+            for mutant in mutants:
+                with self.subTest(profile_key=key, mutant=mutant):
+                    with self.assertRaises(ValueError):
+                        trees(text.replace(line, mutant, 1))
+        with self.assertRaises(ValueError):
+            trees(text.replace(line, line[:-1]+',"unknown":0}', 1))
+        path = EVIDENCE / "warm_iteration_prefix.v1.log"
+        text = path.read_text()
+        line = next(line for line in text.splitlines() if line.startswith("OWNER_COST_PREFIX "))
+        for key, value in fields(line).items():
+            token = key+"="+value
+            for mutant in (line.replace(token, "", 1), line+" "+key+"=conflict",
+                           line.replace(token, key+"=conflict "+token, 1)):
+                changed = text.replace(line, mutant, 1)
+                with self.subTest(histogram_terminal=key, mutant=mutant):
+                    with patch.object(Path, "read_bytes", lambda p: changed.encode() if p == path else original_bytes(p)):
+                        with self.assertRaises(ValueError):
+                            histogram(path)
+
     def test_iteration_and_independent_process_evidence(self):
         result = self_test(EVIDENCE)
         self.assertIn("missing_bit_verdict", result["refused"])

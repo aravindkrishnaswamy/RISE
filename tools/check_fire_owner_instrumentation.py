@@ -15,6 +15,15 @@ RED_NAMES = {"stale_column_trace", "out_of_order_iteration", "truncated_face_sha
              "mismatched_stage", "production_scope_forbidden", "mismatched_owner"}
 
 
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate profile counter: " + key)
+        result[key] = value
+    return result
+
+
 def qualify_artifact(log, trace, csv):
     verdicts = [line for line in log.splitlines() if line.startswith("RESIDENT_TARGET passed=")]
     if len(verdicts) != 1 or not verdicts[0].startswith("RESIDENT_TARGET passed=1 "):
@@ -41,7 +50,13 @@ def trees(text):
     for line in text.splitlines():
         if not line.startswith(PREFIX):
             continue
-        row = json.loads(line[len(PREFIX):])
+        row = json.loads(line[len(PREFIX):], object_pairs_hook=unique_object)
+        expected = {"scope", "parent", "phase", "stage", "raw_iteration", "iteration_kind",
+                    "wall_ms", "device_sum_ms", "wall_minus_device_ms", "exclusive_wall_ms",
+                    "exclusive_device_sum_ms", "child_observer_wall_ms", "count_scope",
+                    "owner_commits", "projection_invocations"}
+        if set(row) != expected or row["count_scope"] != "inclusive":
+            raise ValueError("incomplete or unknown profile schema")
         stage, iteration = row["stage"], row["raw_iteration"]
         if stage not in (0, 1, 2, 0xffffffff) or not isinstance(iteration, int) or not 0 <= iteration <= 0xffffffff:
             raise ValueError("invalid stage or iteration tag")
@@ -98,6 +113,8 @@ def self_test():
                  exclusive_device_sum_ms=1.0, child_observer_wall_ms=0.0)
     root.update(stage=0xffffffff, raw_iteration=0xffffffff, iteration_kind="owner")
     child.update(stage=0, raw_iteration=0xffffffff, iteration_kind="bootstrap")
+    for row in (root, child):
+        row.update(count_scope="inclusive", owner_commits=0, projection_invocations=0)
     assert len(trees(raw([child, root]))) == 1
     for field, value in (("exclusive_device_sum_ms", 2.0), ("exclusive_wall_ms", 2.0),
                          ("wall_minus_device_ms", 2.0), ("parent", 7)):

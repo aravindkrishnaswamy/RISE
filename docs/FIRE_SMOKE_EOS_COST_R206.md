@@ -1,7 +1,9 @@
 # r206 — EOS cost: reject the ineffective warm start, reuse exact endpoints
 
-Status: exact-commit qualification, the full suite, and measured repeats pass;
-fresh review is pending. No focusing verdict, fixed-k choice, window,
+Status: exact-commit qualification, the full suite, and measured repeats pass.
+Review findings and closure are recorded in the adjacent r206 review ledger;
+they are separate from the numerical source/executable attestation below.
+No focusing verdict, fixed-k choice, window,
 new animation, or hour-class projection is claimed.
 
 ## Ordered experiment and decision
@@ -205,3 +207,21 @@ wrong-case values. The new tests fail against the previous committed parsers
 (`review.round2.redproof.v1.log`) and pass against the repairs. Existing raw
 logs and measurement values are unchanged; numerical source is still
 `20607aea`. Fresh final review is pending.
+
+## Third evidence review: shared counter parsing
+
+The reviewer found no P1 and one P2: completion records still admitted
+duplicate `complete` or `outcome_sha256` tokens via last-value-wins parsing.
+The repair covers the family: the EOS analyzer, owner-cost binder, and
+historical producer-prefix consumer use the same strict parser for terminal
+and producer records. Missing, unknown, malformed, or repeated counters are
+refused before normalization. JSON owner-profile records likewise reject
+duplicate keys and require the emitted schema. Completion additionally binds
+step count and end time to the trajectory and requires an empty error.
+
+The historical parsers accept the contradictory terminal while both repaired
+paths refuse it (`review.round3.redproof.v1.log`). The CPU battery mutates every
+field in completion, producer-command, kernel, and profile records; all existing
+r205 regressions and profile self-tests pass. Reanalysis still gives the same
+`a270c53c…` measurement SHA. This is an evidence-only repair, not numerical
+code or a changed acceptance tolerance.

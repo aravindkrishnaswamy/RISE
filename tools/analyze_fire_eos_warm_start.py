@@ -15,7 +15,7 @@ import statistics
 from unittest.mock import patch
 
 from analyze_fire_producer_kernels import fields, summarize
-from seal_fire_payload_placement import bind_counters, check_rows, distinct_repeats, gate, records, sidecars
+from seal_fire_payload_placement import bind_counters, check_rows, completion_record, distinct_repeats, gate, records, sidecars
 from check_fire_owner_cost_prefix import metadata
 
 
@@ -76,13 +76,8 @@ def histogram(path):
         raise ValueError("warm/cold candidate sequence differs")
     prefix = path.with_suffix("")
     sidecars(prefix)
-    outcome_sha = hashlib.sha256((prefix / "diagnostic_prefix_outcome.v1").read_bytes()).hexdigest()
-    terminal = [fields(line) for line in raw.decode().splitlines()
-                if line.startswith("OWNER_COST_PREFIX ")]
-    if (len(terminal) != 1 or terminal[0].get("complete") != "1"
-            or terminal[0].get("outcome_sha256") != outcome_sha):
-        raise ValueError("iteration log/outcome binding failed")
     trajectory = records(prefix / "budgets/maximum_velocity_trajectory.csv")
+    completion_record(raw.decode(), trajectory, prefix / "diagnostic_prefix_outcome.v1")
     expected = [(s, i) for row in trajectory for s in range(3)
                 for count in [int(row[f"owner_r{s}_iterations"])]
                 for i in [0xffffffff, *range(count), 0x80000000 | (count-1)]]

@@ -9,12 +9,14 @@ import struct
 import subprocess
 import tempfile
 
-from analyze_fire_producer_kernels import summarize
+from analyze_fire_producer_kernels import fields, summarize
 from check_fire_owner_cost_prefix import bind_profile, compare, metadata, records
 from check_fire_owner_instrumentation import qualify_artifact, trees
 
 
 def tokens(line):
+    if line.split()[:1] in (["OWNER_COST_PREFIX"], ["PRODUCER_COMMAND_V1"], ["PRODUCER_KERNEL_V1"]):
+        return fields(line)
     return dict(word.split("=", 1) for word in line.split()[1:] if "=" in word)
 
 

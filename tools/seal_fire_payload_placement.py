@@ -14,7 +14,7 @@ from pathlib import Path
 import statistics
 import subprocess
 
-from analyze_fire_producer_kernels import summarize
+from analyze_fire_producer_kernels import fields, summarize
 from check_fire_owner_cost_prefix import metadata, bind_profile
 from check_fire_owner_instrumentation import trees
 from fire_payload_merkle import merkle, verify
@@ -92,7 +92,7 @@ def gate(path):
     # from the independently emitted owner iteration counts, not field labels.
     cells, faces = 4**3, (4+1)*4*4
     smoke_lines = tagged("PROJECTED_HEUN_METAL_OWNER_SMOKE")
-    smoke = [dict(item.split("=", 1) for item in line.split()[1:]) for line in smoke_lines]
+    smoke = [fields(line) for line in smoke_lines]
     if len(smoke) != 1 or smoke[0].get("accepted") != "1":
         raise ValueError("missing accepted owner schedule")
     if len(smoke[0]) != len(smoke_lines[0].split())-1:
@@ -111,7 +111,7 @@ def gate(path):
     field_lines = [line for line in text.splitlines() if line.startswith("OWNER_SEALING_EQUIVALENCE field=")]
     if any(len(line.split()) != 4 for line in field_lines):
         raise ValueError("malformed or duplicate owner field counters")
-    rows = [dict(item.split("=", 1) for item in line.split()[1:]) for line in field_lines]
+    rows = [fields(line) for line in field_lines]
     if (len(rows) != len(expected) or {r.get("field") for r in rows} != set(expected)
             or any(set(r) != {"field", "words", "bit_mismatches"}
                    or r["bit_mismatches"] != "0" or int(r["words"]) != expected[r["field"]] for r in rows)):
@@ -121,7 +121,7 @@ def gate(path):
         raise ValueError("unrecognized owner sealing record")
     if len(summaries) != 1 or len(summaries[0].split()) != 5:
         raise ValueError("missing owner sealing verdict")
-    verdict = dict(word.split("=", 1) for word in summaries[0].split()[1:])
+    verdict = fields(summaries[0])
     if (set(verdict) != {"passed", "input_root", "output_root", "kernel_set"}
             or verdict["passed"] != "1"
             or any(len(verdict[key]) != 64 or any(c not in "0123456789abcdef" for c in verdict[key])
@@ -138,7 +138,7 @@ def bind_counters(path, rows, outcome_path):
     parsed = trees(text)
     bind_profile(parsed, rows)
     scopes = [row for tree in parsed for row in tree if row["phase"] == "BuildStageProducerGroup"]
-    commands = [dict(word.split("=", 1) for word in line.split()[1:] if "=" in word)
+    commands = [fields(line)
                 for line in text.splitlines() if line.startswith("PRODUCER_COMMAND_V1 ")]
     if len(scopes) != len(commands):
         raise ValueError("missing producer commands")
@@ -148,10 +148,19 @@ def bind_counters(path, rows, outcome_path):
                 for key in ("stage", "raw_iteration"))
                 or abs(scope["device_sum_ms"] - cost) > 1e-9 + 4 * math.ulp(cost)):
             raise ValueError("producer command/owner scope mismatch")
-    terminal = [dict(word.split("=", 1) for word in line.split()[1:] if "=" in word)
-                for line in text.splitlines() if line.startswith("OWNER_COST_PREFIX ")]
-    if (len(terminal) != 1 or terminal[0].get("complete") != "1" or
-            terminal[0].get("outcome_sha256") != hashlib.sha256(outcome_path.read_bytes()).hexdigest()):
+    completion_record(text, rows, outcome_path)
+
+
+def completion_record(text, rows, outcome_path):
+    terminal = [fields(line) for line in text.splitlines() if line.split()[:1] == ["OWNER_COST_PREFIX"]]
+    if len(terminal) != 1:
+        raise ValueError("missing or duplicate prefix completion record")
+    row = terminal[0]
+    if (row["complete"] != "1" or row["error"] != "" or row["full_verdict"] != "unavailable"
+            or int(row["steps"]) != len(rows) or not rows
+            or not math.isfinite(float(row["wall_s"])) or float(row["wall_s"]) <= 0
+            or float(row["time"]) != float(rows[-1]["time_s"])
+            or row["outcome_sha256"] != hashlib.sha256(outcome_path.read_bytes()).hexdigest()):
         raise ValueError("missing log/outcome binding")
 
 
