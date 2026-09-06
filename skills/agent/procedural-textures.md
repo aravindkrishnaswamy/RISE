@@ -817,7 +817,12 @@ scalar_painter
 }                                             # channel, or a bridged colour painter (next line)
 
 # ...or drive it straight off a colour painter you already have:
-scalar_painter { name h2  painter some_colour_painter  channel R }
+scalar_painter
+{
+	name		h2
+	painter		some_colour_painter
+	channel		R
+}
 
 relief_modifier
 {
@@ -845,8 +850,14 @@ relief_modifier
 - **`step` is auto by default** (`0`) -- it picks the finite-difference
   step from the pixel footprint on `domain surface` the same way the
   expression VM's noise builtins fade octaves, so relief fades toward
-  flat at distance instead of aliasing. Set it explicitly only when you
-  need a specific frequency floor.
+  flat at distance instead of aliasing. **Mesh-only, though**: only
+  triangle-mesh geometry populates that footprint today (primary hits
+  with ray differentials); on analytic primitives and SDFs the footprint
+  is unknown, there is no distance fade at all, and the step used is
+  just the `1e-3` floor or your explicit `step` (`docs/RELIEF_MODIFIER_DESIGN.md`
+  §3.3). Set it explicitly when you need a specific frequency floor, or
+  when the geometry is analytic/SDF and you want a floor other than
+  `1e-3`.
 - **Composing more than one modifier on an object** uses `modifier_stack`,
   applied in the order the members are listed:
 

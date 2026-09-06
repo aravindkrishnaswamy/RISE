@@ -1515,7 +1515,11 @@ relief_modifier
 # `fresnel_mode schlick_f0` treats `rs` as an ordinary dielectric F0 (a
 # ceramic glaze is not a metal) -- 0.04 grey is the standard ~1.5-IOR
 # dielectric reflectance.
-uniformcolor_painter { name cg_f0  color 0.04 0.04 0.04 }
+uniformcolor_painter
+{
+	name	cg_f0
+	color	0.04 0.04 0.04
+}
 
 ggx_material
 {
