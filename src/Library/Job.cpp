@@ -6992,7 +6992,12 @@ bool Job::AddModifierStack(
 	}
 
 	IRayIntersectionModifier* pStack = 0;
-	RISE_API_CreateModifierStack( &pStack, &members[0], count );
+	if( !RISE_API_CreateModifierStack( &pStack, &members[0], count ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"modifier_stack `%s`: RISE_API_CreateModifierStack failed",
+			name );
+		return false;
+	}
 
 	const bool ok = RegisterOrDiag( pModManager, pStack, name, "modifier" );
 	safe_release( pStack );
