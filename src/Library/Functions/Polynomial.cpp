@@ -41,7 +41,11 @@ int Polynomial::SolveQuadric( const Scalar (&coeff)[ 3 ], Scalar (&sol)[ 2 ] )
 	// `SolveQuadricWithinRange` below has always had this branch; this one
 	// used to fall through to the 1/(2a) division and hand back a pair of
 	// infinities (or, before the divisor fix below, a pair of exact zeros
-	// that satisfy nothing).  Both siblings now agree.
+	// that satisfy nothing).  The two siblings now agree on this a == 0
+	// branch; they still diverge on the d == 0 double-root branch below
+	// -- this one guards it with the epsilon-based `IsZero(d)`,
+	// `SolveQuadricWithinRange` with an exact `d == 0.0` -- that
+	// divergence is untouched here.
 	if( a == 0.0 )
 	{
 		if( b == 0.0 ) {
@@ -68,9 +72,14 @@ int Polynomial::SolveQuadric( const Scalar (&coeff)[ 3 ], Scalar (&sol)[ 2 ] )
 		// `0.5 * a`, which is the same number as `0.5 / a` only when
 		// a == +/-1 -- true by accident for every ray-primitive caller
 		// (their leading coefficient is |Dir|^2 on a normalised
-		// direction) and false for the two general-coefficient callers
-		// (`RayBezierPatchIntersection`'s degenerate-v fallback and
-		// `QuadraticFunction::Solve`), which got roots scaled by a^2.
+		// direction) and false for the general-coefficient routes, which
+		// got roots scaled by a^2: `RayBezierPatchIntersection`'s
+		// degenerate-v fallback, `QuadraticFunction::Solve`, and
+		// `SolveCubic`'s own `IsReallyZero(coeff[0])` branch below --
+		// reachable from `SolveQuartic`'s degenerate branch, which is the
+		// route `RayBezierPatchIntersection` takes on every call (it
+		// always passes `quartCoeff[0] = 0`, a bicubic patch's F1(u,.)
+		// being cubic in v, not quartic).
 		const Scalar p = 0.5 / a;
 		const Scalar sq_d = sqrt( d );
 
@@ -117,9 +126,18 @@ int Polynomial::SolveQuadricWithinRange(
 			// above has always had the 2 here.  The wrong root is off by
 			// exactly a factor of two, so it satisfied the polynomial only
 			// when the root was 0 (b == 0), which is why the bilinear-patch
-			// caller -- the only in-tree consumer that can reach a genuine
-			// double root -- turned it into a MISS rather than a visibly
-			// misplaced hit for most patches.
+			// caller (`RayBilinearPatchIntersection`) turned it into a MISS
+			// rather than a visibly misplaced hit for most patches.  An
+			// earlier draft of this comment called that the only in-tree
+			// consumer that can reach a genuine double root; it is not --
+			// `GeometricUtilities::BilinearInverse` calls this function too
+			// and hits the same branch, and there the `-b/a` bug silently
+			// repaired itself almost as often as it broke: of 400000
+			// dyadic on-surface inversions, 2311 land exactly on this
+			// double-root branch, and 1007 of those previously returned
+			// false because the doubled root fell outside the
+			// [-1e-4, 1+1e-4] acceptance window `BilinearInverse` passes
+			// as (min, max).
 			sol[0] = -b/(2*a);
 			if(sol[0] > min && sol[0] < max) {
 				return 1;
