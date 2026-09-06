@@ -81,12 +81,41 @@ namespace RISE
 		Scalar  curvature;
 		bool    curvatureValid;
 
+		//! THE CHART MAP -- the 2x2 Jacobian of the TEXTURE coordinate
+		//! `(s, t)` stamped into `RayIntersectionGeometric::ptCoord`
+		//! with respect to the `(u, v)` parameters `dpdu` / `dpdv`
+		//! differentiate.  Mirrors `SurfaceDerivatives::dsdu`… on the
+		//! `IGeometry` side; see the long comment there and
+		//! docs/GEOMETRY_DERIVATIVES.md "The texcoord chart map".
+		//!
+		//! Why it exists: the analytic primitives parameterise by their
+		//! own natural coordinates (sphere `u` = azimuth in RADIANS,
+		//! cylinder `u` = axial WORLD coordinate, torus/cylinder with
+		//! the two axes SWAPPED relative to their texture coordinate),
+		//! while `ptCoord` is the normalised `[0, 1]^2` chart the
+		//! matching `GeometricUtilities::*TextureCoord` produces.
+		//! `SolveFootprintUV` solves the pixel differentials in the
+		//! DERIVATIVE chart and then applies this map, so the
+		//! `dudx`…`dvdy` it publishes are in the same chart as
+		//! `ptCoord` -- which is the pairing `TexturePainter::
+		//! SampleTextured` and `WeaveBRDF` assume.  Without it a
+		//! textured sphere mips 1.67 levels too blurry, a cylinder
+		//! 1.02 and a torus 2.64.
+		//!
+		//! DEFAULT identity with `texChartValid = false`, which makes
+		//! `SolveFootprintUV` decline to publish a Jacobian at all
+		//! (`valid` stays false, `widthValid` is unaffected) rather
+		//! than publish one in the wrong chart.
+		Scalar  dsdu, dsdv, dtdu, dtdv;
+		bool    texChartValid;
+
 		SurfaceDerivativesInfo() :
 		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
 		valid( false ),
 		scaleHint( 1.0 ),
-		curvature( 0 ), curvatureValid( false )
+		curvature( 0 ), curvatureValid( false ),
+		dsdu( 1 ), dsdv( 0 ), dtdu( 0 ), dtdv( 1 ), texChartValid( false )
 		{
 		}
 	};

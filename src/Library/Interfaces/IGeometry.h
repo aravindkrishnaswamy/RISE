@@ -35,10 +35,44 @@ namespace RISE
 		Point2  uv;			///< Surface parameters at this point
 		bool    valid;		///< True if derivatives were successfully computed
 
+		//! THE CHART MAP: the 2x2 Jacobian of the TEXTURE coordinate
+		//! `(s, t)` this geometry stamps into
+		//! `RayIntersectionGeometric::ptCoord` with respect to the
+		//! parameters `(u, v)` the four vectors above differentiate.
+		//!
+		//! `dpdu` / `dpdv` are free to use the geometry's OWN natural
+		//! parameters (docs/GEOMETRY_DERIVATIVES.md "Magnitudes and
+		//! parameter scaling": the sphere's `u` is an azimuth in
+		//! RADIANS, the cylinder's is an axial WORLD coordinate, the
+		//! torus swaps its two angles for right-handedness), while
+		//! `ptCoord` is whatever normalised, possibly axis-swapped,
+		//! possibly sign-flipped `[0, 1]^2` chart the matching
+		//! `GeometricUtilities::*TextureCoord` produces.  A consumer
+		//! that combines `ptCoord` with a `(u, v)`-chart derivative --
+		//! `SolveFootprintUV`, whose output feeds mip LOD -- needs the
+		//! affine bridge between the two, and cannot guess it.
+		//!
+		//!   ds = dsdu*du + dsdv*dv
+		//!   dt = dtdu*du + dtdv*dv
+		//!
+		//! LOCAL: at a wrap seam or a pole the underlying map is not
+		//! differentiable, and this states the Jacobian of the local
+		//! branch only.
+		//!
+		//! DEFAULT identity with `texChartValid = false` -- the honest
+		//! "this geometry did not say".  A consumer must treat false as
+		//! "no texcoord Jacobian available" rather than assuming the
+		//! identity: an unset flag on a geometry whose two charts differ
+		//! by 2*pi is exactly the wrong-chart bug this field exists to
+		//! prevent.
+		Scalar  dsdu, dsdv, dtdu, dtdv;
+		bool    texChartValid;
+
 		SurfaceDerivatives() :
 		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
-		uv( Point2(0,0) ), valid( false )
+		uv( Point2(0,0) ), valid( false ),
+		dsdu( 1 ), dsdv( 0 ), dtdu( 0 ), dtdv( 1 ), texChartValid( false )
 		{
 		}
 	};

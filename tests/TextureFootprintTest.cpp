@@ -56,6 +56,25 @@
 //       photon, and post-bounce ray in the renderer).
 //   10. Grazing guard.  A near-tangent sphere hit must not produce a
 //       non-finite worldWidth.
+//   11. THE CHART ORACLE.  dudx..dvdy must be the derivatives of
+//       ri.ptCoord -- the coordinate a texture is actually sampled at
+//       -- and not of whatever private parameters the geometry
+//       differentiates.  For each of sphere, ellipsoid, cylinder and
+//       torus (plus the mesh control), the published Jacobian is
+//       compared against a CENTRAL finite difference of ptCoord taken
+//       across the pixel's own ray differentials.  This is the test
+//       that catches a chart mismatch, which no ratio or closed-form
+//       width test can see: before the chart map existed every one of
+//       the four analytic primitives published radians where the
+//       sampler expects [0, 1], mipping 1.02 (cylinder) to 2.64
+//       (torus) LOD levels too blurry while the mesh control was
+//       correct to 6e-4.
+//   12. Chart-map honesty on the paths that have no map.  A mesh whose
+//       UV triangle is degenerate falls back to a barycentric EDGE
+//       frame whose dpdu is unrelated to ptCoord; it must report
+//       `valid` false rather than an edge-chart Jacobian.  Likewise a
+//       sphere pole (singular chart) and the +/-X seam (discontinuous
+//       chart) must decline or stay finite -- never NaN.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -74,8 +93,11 @@
 #include "../src/Library/Geometry/BoxGeometry.h"
 #include "../src/Library/Geometry/CircularDiskGeometry.h"
 #include "../src/Library/Geometry/ClippedPlaneGeometry.h"
+#include "../src/Library/Geometry/CylinderGeometry.h"
+#include "../src/Library/Geometry/EllipsoidGeometry.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
 #include "../src/Library/Geometry/SphereGeometry.h"
+#include "../src/Library/Geometry/TorusGeometry.h"
 #include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Objects/CSGObject.h"
@@ -794,6 +816,427 @@ static void Test10_GrazingGuard()
 }
 
 //////////////////////////////////////////////////////////////////////
+//  Test 11 -- the chart oracle
+//////////////////////////////////////////////////////////////////////
+
+//! One finite-difference estimate of d(ptCoord)/d(pixel).
+struct FdChart
+{
+	bool   ok;			//!< false = the surface was missed, or the chart wrapped
+	Scalar dudx, dvdx, dudy, dvdy;
+};
+
+//! Cast a bare ray (no differentials needed -- we only want ptCoord).
+static bool CastForCoord( const Object& obj, const Point3& org, const Vector3& dir, Point2& outCoord )
+{
+	const Ray r( org, Vector3Ops::Normalize( dir ) );
+	RayIntersection ri( r, nullRasterizerState );
+	obj.IntersectRay( ri, RISE_INFINITY, true, true, false );
+	if( !ri.geometric.bHit ) { return false; }
+	outCoord = ri.geometric.ptCoord;
+	return true;
+}
+
+//! THE ORACLE.  A CENTRAL difference of `ri.ptCoord` across the pixel's
+//! own ray differentials: step half a differential each way, cast both,
+//! and difference.  Central (rather than forward) so the estimate is
+//! second-order accurate -- on a curved primitive a forward difference
+//! carries an O(h * curvature) bias of the same order as the tolerance
+//! we want to assert at.
+//!
+//! Returns ok = false when either probe misses the surface, or when a
+//! component of the difference exceeds half the [0, 1] chart -- which
+//! means the probe straddled a wrap seam and the difference is
+//! meaningless, not that the Jacobian is wrong.
+static FdChart FiniteDifferenceChart( const Object& obj, const Ray& ray )
+{
+	FdChart out;
+	out.ok = false;
+	out.dudx = out.dvdx = out.dudy = out.dvdy = Scalar( 0 );
+
+	if( !ray.hasDifferentials ) { return out; }
+
+	const RayDifferentials& d = ray.diffs;
+	const Point3&  o = ray.origin;
+	const Vector3& v = ray.Dir();
+	const Scalar   h = Scalar( 0.5 );
+
+	Point2 xp, xm, yp, ym;
+	if( !CastForCoord( obj,
+			Point3( o.x + h*d.rxOrigin.x, o.y + h*d.rxOrigin.y, o.z + h*d.rxOrigin.z ),
+			Vector3( v.x + h*d.rxDir.x, v.y + h*d.rxDir.y, v.z + h*d.rxDir.z ), xp ) ) { return out; }
+	if( !CastForCoord( obj,
+			Point3( o.x - h*d.rxOrigin.x, o.y - h*d.rxOrigin.y, o.z - h*d.rxOrigin.z ),
+			Vector3( v.x - h*d.rxDir.x, v.y - h*d.rxDir.y, v.z - h*d.rxDir.z ), xm ) ) { return out; }
+	if( !CastForCoord( obj,
+			Point3( o.x + h*d.ryOrigin.x, o.y + h*d.ryOrigin.y, o.z + h*d.ryOrigin.z ),
+			Vector3( v.x + h*d.ryDir.x, v.y + h*d.ryDir.y, v.z + h*d.ryDir.z ), yp ) ) { return out; }
+	if( !CastForCoord( obj,
+			Point3( o.x - h*d.ryOrigin.x, o.y - h*d.ryOrigin.y, o.z - h*d.ryOrigin.z ),
+			Vector3( v.x - h*d.ryDir.x, v.y - h*d.ryDir.y, v.z - h*d.ryDir.z ), ym ) ) { return out; }
+
+	out.dudx = xp.x - xm.x;
+	out.dvdx = xp.y - xm.y;
+	out.dudy = yp.x - ym.x;
+	out.dvdy = yp.y - ym.y;
+
+	const Scalar half = Scalar( 0.5 );
+	if( std::fabs( out.dudx ) > half || std::fabs( out.dvdx ) > half ||
+	    std::fabs( out.dudy ) > half || std::fabs( out.dvdy ) > half ) {
+		return out;		// wrap seam
+	}
+
+	out.ok = true;
+	return out;
+}
+
+//! max over the two screen axes of the (u, v) row norm -- the quantity
+//! TexturePainter::ComputeLODFromTexelFootprint takes the log2 of.
+static Scalar MaxRowNorm( const Scalar dudx, const Scalar dvdx, const Scalar dudy, const Scalar dvdy )
+{
+	const Scalar lx = std::sqrt( dudx*dudx + dvdx*dvdx );
+	const Scalar ly = std::sqrt( dudy*dudy + dvdy*dvdy );
+	return ( lx > ly ) ? lx : ly;
+}
+
+//! Compare one geometry's published Jacobian against the oracle.
+//!
+//! TOLERANCE.  `tol` is relative to the LARGEST component of the
+//! finite-difference Jacobian, not to each component individually: at a
+//! symmetric hit point one component is legitimately ~0 and a per-
+//! component relative test there measures nothing but round-off.  The
+//! scale-relative form still catches every chart error this test exists
+//! for, because a wrong chart is a multiplicative error (2*pi, pi, the
+//! cylinder height) or a transposition -- both of which move the
+//! largest component.
+static void CheckChart( const char* what, const Object& obj, const Ray& ray, const Scalar tol )
+{
+	const RayIntersection ri = Cast( obj, ray );
+	CHECK( ri.geometric.bHit, "11: (control) " << what << " is hit" );
+	if( !ri.geometric.bHit ) { return; }
+
+	const TextureFootprint& f = ri.geometric.txFootprint;
+	CHECK( f.valid, "11: (oracle) " << what << " publishes a UV Jacobian -- the comparison "
+		"below is vacuous otherwise" );
+	if( !f.valid ) { return; }
+
+	const FdChart fd = FiniteDifferenceChart( obj, ray );
+	CHECK( fd.ok, "11: (oracle) the finite-difference probe landed on " << what
+		<< " away from a wrap seam" );
+	if( !fd.ok ) { return; }
+
+	Scalar scale = std::fabs( fd.dudx );
+	if( std::fabs( fd.dvdx ) > scale ) scale = std::fabs( fd.dvdx );
+	if( std::fabs( fd.dudy ) > scale ) scale = std::fabs( fd.dudy );
+	if( std::fabs( fd.dvdy ) > scale ) scale = std::fabs( fd.dvdy );
+	CHECK( scale > Scalar( 1e-12 ), "11: (oracle) " << what << " has a non-degenerate FD Jacobian" );
+	if( scale <= Scalar( 1e-12 ) ) { return; }
+
+	Scalar worst = std::fabs( f.dudx - fd.dudx );
+	if( std::fabs( f.dvdx - fd.dvdx ) > worst ) worst = std::fabs( f.dvdx - fd.dvdx );
+	if( std::fabs( f.dudy - fd.dudy ) > worst ) worst = std::fabs( f.dudy - fd.dudy );
+	if( std::fabs( f.dvdy - fd.dvdy ) > worst ) worst = std::fabs( f.dvdy - fd.dvdy );
+	const Scalar rel = worst / scale;
+
+	// Report the error the way the CONSUMER feels it.
+	// TexturePainter::ComputeLODFromTexelFootprint takes
+	// log2( max over the two screen axes of the texel-space row norm ),
+	// so on a square texture the LOD error is exactly the log2 of the
+	// ratio of published to true max row norm -- texture dimensions
+	// cancel.  A chart off by a factor k therefore mips log2(k) levels
+	// too blurry.
+	const Scalar aRow = MaxRowNorm( f.dudx, f.dvdx, f.dudy, f.dvdy );
+	const Scalar fRow = MaxRowNorm( fd.dudx, fd.dvdx, fd.dudy, fd.dvdy );
+	const Scalar lodErr = ( aRow > 0 && fRow > 0 )
+		? std::log( aRow / fRow ) / std::log( Scalar( 2 ) ) : Scalar( 0 );
+
+	std::cout << "    " << what
+	          << "   rel " << std::scientific << std::setprecision(3) << rel
+	          << "   LOD error " << std::defaultfloat << std::setprecision(4) << lodErr
+	          << " levels" << std::endl;
+
+	CHECK( rel < tol, "11: " << what << "'s dudx..dvdy are the derivatives of ptCoord "
+		"(scale-relative error " << std::scientific << std::setprecision(3) << rel
+		<< ", tol " << tol << ")" );
+}
+
+static void Test11_ChartOracle()
+{
+	std::cout << "Test 11: dudx..dvdy live in the ptCoord chart (finite-difference oracle)" << std::endl;
+
+	// The mesh CONTROL first: its dpdu already IS d/d(texcoord), so it
+	// was correct before the chart map existed and must stay correct.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		TriangleMeshGeometryIndexed* m = BuildMeshSphere( 1.0, 128, 64 );
+		Object* o = new Object( m );
+		m->release();
+		o->FinalizeTransformations();
+		CheckChart( "mesh sphere (control)", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
+	// Sphere.  The on-axis hit is at (0, 0, R): azimuth pi/2 (a quarter
+	// turn from the -X seam) and polar pi/2 (the equator, far from both
+	// poles), so neither singularity is in play.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		SphereGeometry* g = new SphereGeometry( 1.0 );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		CheckChart( "analytic sphere", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
+	// Ellipsoid, deliberately unequal semi-axes so a sphere-shaped
+	// chart map would not accidentally fit.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		EllipsoidGeometry* g = new EllipsoidGeometry( Vector3( 1.0, 1.6, 0.7 ) );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		CheckChart( "analytic ellipsoid", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
+	// Cylinder, y axis, height 3 -- the height is what makes the axial
+	// half of its chart map a scale OTHER than 2*pi or pi, so a
+	// "normalise everything by 2*pi" mistake would not fit it.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		CylinderGeometry* g = new CylinderGeometry( 'y', 1.0, 3.0, false );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		CheckChart( "analytic cylinder (open tube, y)", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
+	// The x- and z-axis cylinders take the OTHER branch of the
+	// handedness fix-up, so their angular chart runs the opposite way.
+	// A sign-blind map would pass the y case and fail these.
+	{
+		// Off the axis planes on purpose: a straight-down view of an
+		// x-axis cylinder lands on theta = 0, which is that chart's
+		// wrap seam and would make the oracle decline rather than
+		// measure.
+		PinholeCamera* cam = MakeCamera( Point3( 0, 3, 3 ), Point3( 0, 0, 0 ), Vector3( 1, 0, 0 ) );
+		CylinderGeometry* g = new CylinderGeometry( 'x', 1.0, 3.0, false );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		CheckChart( "analytic cylinder (open tube, x)", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 4, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		CylinderGeometry* g = new CylinderGeometry( 'z', 1.0, 3.0, false );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		CheckChart( "analytic cylinder (open tube, z)", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
+	// A CAPPED cylinder seen down its own axis: the hit is on the end
+	// cap, whose chart is the (ra, rb) disk -- a completely different
+	// map from the side wall's, including the possible axis swap the
+	// right-handedness fix-up applies on the -axis cap.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 5, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		CylinderGeometry* g = new CylinderGeometry( 'y', 1.0, 3.0, true );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		// Dead centre of the cap is the disk chart's origin, where both
+		// FD components are fine but the hit is exactly on the axis;
+		// aim a little off so the frame is generic.
+		RandomNumberGenerator rng( 3u );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		Ray r;
+		cam->GenerateRay( rc, r, Point2( Scalar( kRes ) * Scalar( 0.5 ) + Scalar( 60 ),
+		                                 Scalar( kRes ) * Scalar( 0.5 ) + Scalar( 35 ) ) );
+		CheckChart( "analytic cylinder (+y end cap)", *o, r, Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
+	// Torus.  Aim ABOVE the outer equator: the equator itself is the
+	// tube chart's v = 0 seam, where the finite difference wraps.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 8 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		TorusGeometry* g = new TorusGeometry( 2.0, 0.6 );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		RandomNumberGenerator rng( 5u );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		Ray r;
+		cam->GenerateRay( rc, r, Point2( Scalar( kRes ) * Scalar( 0.5 ) + Scalar( 30 ),
+		                                 Scalar( kRes ) * Scalar( 0.5 ) - Scalar( 45 ) ) );
+		CheckChart( "analytic torus", *o, r, Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+//  Test 12 -- the paths that must NOT publish a Jacobian
+//////////////////////////////////////////////////////////////////////
+
+//! A mesh sphere whose per-vertex texture coordinates are all the same
+//! point.  Every UV triangle is degenerate, so both mesh intersectors
+//! take the barycentric-EDGE fallback: dpdu / dpdv are then triangle
+//! edge vectors with no relation whatever to ptCoord, and the honest
+//! answer is to publish no Jacobian.
+static TriangleMeshGeometryIndexed* BuildMeshSphereNoUV( const Scalar radius, const int nu, const int nv )
+{
+	VerticesListType verts;
+	NormalsListType  norms;
+	TexCoordsListType coords;
+
+	for( int j = 0; j <= nv; j++ ) {
+		const Scalar theta = kPi * Scalar( j ) / Scalar( nv );
+		const Scalar st = std::sin( theta ), ct = std::cos( theta );
+		for( int i = 0; i <= nu; i++ ) {
+			const Scalar phi = Scalar( 2 ) * kPi * Scalar( i ) / Scalar( nu );
+			const Vector3 n( st * std::cos( phi ), ct, st * std::sin( phi ) );
+			verts.push_back( Point3( n.x * radius, n.y * radius, n.z * radius ) );
+			norms.push_back( n );
+			coords.push_back( Point2( 0, 0 ) );		// degenerate on purpose
+		}
+	}
+
+	IndexTriangleListType tris;
+	for( int j = 0; j < nv; j++ ) {
+		for( int i = 0; i < nu; i++ ) {
+			const unsigned int a = (unsigned int)( j * ( nu + 1 ) + i );
+			const unsigned int b = a + 1;
+			const unsigned int c = (unsigned int)( ( j + 1 ) * ( nu + 1 ) + i );
+			const unsigned int d = c + 1;
+
+			IndexedTriangle t0;
+			t0.iVertices[0] = a; t0.iVertices[1] = c; t0.iVertices[2] = b;
+			t0.iNormals[0]  = a; t0.iNormals[1]  = c; t0.iNormals[2]  = b;
+			t0.iCoords[0]   = a; t0.iCoords[1]   = c; t0.iCoords[2]   = b;
+			tris.push_back( t0 );
+
+			IndexedTriangle t1;
+			t1.iVertices[0] = b; t1.iVertices[1] = c; t1.iVertices[2] = d;
+			t1.iNormals[0]  = b; t1.iNormals[1]  = c; t1.iNormals[2]  = d;
+			t1.iCoords[0]   = b; t1.iCoords[1]   = c; t1.iCoords[2]   = d;
+			tris.push_back( t1 );
+		}
+	}
+
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( true, false );
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( verts );
+	mesh->AddNormals( norms );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+static void Test12_NoChartNoJacobian()
+{
+	std::cout << "Test 12: no stated chart map => no Jacobian (and never a NaN)" << std::endl;
+
+	PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+	const Ray ray = CentreRay( *cam );
+
+	// (a) The barycentric-edge mesh fallback: derivatives valid, chart
+	// map absent, so `valid` must be FALSE while the width survives.
+	{
+		TriangleMeshGeometryIndexed* m = BuildMeshSphereNoUV( 1.0, 64, 32 );
+		Object* o = new Object( m );
+		m->release();
+		o->FinalizeTransformations();
+		const RayIntersection ri = Cast( *o, ray );
+		const TextureFootprint& f = ri.geometric.txFootprint;
+		CHECK( ri.geometric.bHit, "12: (control) the UV-less mesh sphere is hit" );
+		CHECK( ri.geometric.derivatives.valid,
+			"12: (oracle) the UV-less mesh still publishes derivatives (edge frame) -- "
+			"otherwise this case would be indistinguishable from test 6" );
+		CHECK( !ri.geometric.derivatives.texChartValid,
+			"12: the barycentric-edge fallback states NO chart map" );
+		CHECK( !f.valid,
+			"12: a mesh with a degenerate UV triangle publishes no UV Jacobian" );
+		CHECK( f.widthValid && f.worldWidth > Scalar( 0 ),
+			"12: ... but still reports a width (" << f.worldWidth << ")" );
+		o->release();
+	}
+
+	// (b) UV-free geometry states no chart map either (box: no
+	// ri.derivatives at all).  Test 6 already pins `valid`; this pins
+	// the mechanism underneath it.
+	{
+		BoxGeometry* g = new BoxGeometry( 2, 2, 2 );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		const RayIntersection ri = Cast( *o, ray );
+		CHECK( ri.geometric.bHit, "12: (control) the box is hit" );
+		CHECK( !ri.geometric.derivatives.texChartValid, "12: box_geometry states no chart map" );
+		CHECK( !ri.geometric.txFootprint.valid, "12: box_geometry publishes no UV Jacobian" );
+		o->release();
+	}
+
+	// (c) The sphere's two chart singularities.  At a POLE the
+	// derivative basis collapses (|dpdu| = r*sin(theta) -> 0) and at the
+	// -X SEAM the chart is discontinuous.  Neither may produce a
+	// non-finite number: the solve either declines (det guard) or
+	// returns the finite local-branch answer.
+	{
+		SphereGeometry* g = new SphereGeometry( 1.0 );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+
+		// Pole: look straight down the +Y axis at the north pole.
+		PinholeCamera* poleCam = MakeCamera( Point3( 0, 5, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		const RayIntersection rp = Cast( *o, CentreRay( *poleCam ) );
+		CHECK( rp.geometric.bHit, "12: (control) the north pole is hit" );
+		const TextureFootprint& fp = rp.geometric.txFootprint;
+		CHECK( !fp.valid ||
+			( RISE::IsFiniteDouble( fp.dudx ) && RISE::IsFiniteDouble( fp.dvdx ) &&
+			  RISE::IsFiniteDouble( fp.dudy ) && RISE::IsFiniteDouble( fp.dvdy ) ),
+			"12: the sphere's pole either declines or reports finite derivatives" );
+		CHECK( !fp.widthValid || RISE::IsFiniteDouble( fp.worldWidth ),
+			"12: the sphere's pole reports a finite width" );
+		poleCam->release();
+
+		// Seam: the -X meridian is where SphereTextureCoord wraps
+		// 1 -> 0.  The Jacobian of the LOCAL branch is still finite
+		// there; what must not happen is a NaN reaching the sampler.
+		PinholeCamera* seamCam = MakeCamera( Point3( -5, 0, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		const RayIntersection rs = Cast( *o, CentreRay( *seamCam ) );
+		CHECK( rs.geometric.bHit, "12: (control) the -X seam is hit" );
+		const TextureFootprint& fs = rs.geometric.txFootprint;
+		CHECK( !fs.valid ||
+			( RISE::IsFiniteDouble( fs.dudx ) && RISE::IsFiniteDouble( fs.dvdx ) &&
+			  RISE::IsFiniteDouble( fs.dudy ) && RISE::IsFiniteDouble( fs.dvdy ) ),
+			"12: the sphere's -X seam reports finite derivatives" );
+		CHECK( !fs.widthValid || RISE::IsFiniteDouble( fs.worldWidth ),
+			"12: the sphere's -X seam reports a finite width" );
+		seamCam->release();
+
+		o->release();
+	}
+
+	cam->release();
+}
+
+//////////////////////////////////////////////////////////////////////
 
 int main()
 {
@@ -809,6 +1252,8 @@ int main()
 	Test8_CsgComposes();
 	Test9_NoDifferentials();
 	Test10_GrazingGuard();
+	Test11_ChartOracle();
+	Test12_NoChartNoJacobian();
 
 	std::cout << std::endl;
 	std::cout << g_passes << " passed, " << g_failures << " failed." << std::endl;

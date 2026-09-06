@@ -161,6 +161,17 @@ void SphereGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bHit
 				ri.derivatives.dndu = sd.dndu;
 				ri.derivatives.dndv = sd.dndv;
 				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
@@ -270,6 +281,27 @@ SurfaceDerivatives SphereGeometry::ComputeSurfaceDerivatives( const Point3& objS
 
 	sd.uv = Point2( phi, theta );
 	sd.valid = true;
+
+	// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord chart
+	// map").  `IntersectRay` stamps ptCoord from
+	// GeometricUtilities::SphereTextureCoord( vUp = +Y, vForward = -X ),
+	// whose algebra reduces -- on BOTH sides of its N.z sign branch --
+	// to
+	//     s = (PI - phi) / (2*PI),    t = theta / PI
+	// with the same phi = atan2(z, x) and theta = acos(y/r) recovered
+	// above.  (The branch computes acos(-cos phi) = PI - |phi| and then
+	// mirrors for phi < 0; both cases collapse to the single affine
+	// expression, which is why there is no seam-side case here.)  The
+	// azimuth therefore runs BACKWARDS relative to the derivative
+	// parameter -- s = 0 sits at -X and increases toward +Z -- so dsdu
+	// is negative, and 2*pi / pi are the scale factors that were
+	// missing when the solve published radians as though they were
+	// [0, 1] texture coordinates.
+	sd.dsdu = -1.0 / TWO_PI;
+	sd.dsdv = 0.0;
+	sd.dtdu = 0.0;
+	sd.dtdv = 1.0 / PI;
+	sd.texChartValid = true;
 
 	return sd;
 }

@@ -19,10 +19,14 @@
 //
 //    SolveFootprintUV( ri )
 //      The 2x2 solve.  Additionally needs ri.derivatives.valid (a
-//      non-degenerate dpdu/dpdv basis) and a successful
-//      ComputeFootprintVectors.  Writes dudx..dvdy and sets valid.
-//      A no-op on UV-free geometry, which is exactly the honest
-//      answer there -- see the two-flag contract on TextureFootprint.
+//      non-degenerate dpdu/dpdv basis), ri.derivatives.texChartValid
+//      (the geometry's stated map from its own (u, v) parameters to
+//      the (s, t) it stamps into ri.ptCoord) and a successful
+//      ComputeFootprintVectors.  Writes dudx..dvdy -- in the TEXCOORD
+//      chart -- and sets valid.  A no-op on UV-free geometry, and on
+//      geometry that has derivatives but has not stated a chart map,
+//      which is exactly the honest answer in both cases -- see the
+//      two-flag contract on TextureFootprint.
 //
 //  ComputeTextureFootprint( ri, ray ) remains as the composite of the
 //  two, and is what Object::IntersectRay calls.
@@ -168,16 +172,35 @@ namespace RISE
 	//!   - ri.txFootprint.widthValid == true (i.e.
 	//!     ComputeFootprintVectors already succeeded on this record)
 	//!   - ri.derivatives.valid == true, with dpdu / dpdv populated
-	//! Either failing makes this a no-op, which is what upholds the
+	//!   - ri.derivatives.texChartValid == true, i.e. the geometry
+	//!     stated how its derivative parameters map to the texture
+	//!     coordinate it stamps into ri.ptCoord
+	//! Any failing makes this a no-op, which is what upholds the
 	//! `valid ⇒ widthValid` invariant and what leaves UV-free geometry
 	//! (SDF, box, disk, plane, hair) with an honest width and no
 	//! Jacobian.
+	//!
+	//! TWO CHARTS, AND WHY THE MAP IS LOAD-BEARING.  `dpdu` / `dpdv`
+	//! differentiate the GEOMETRY'S OWN parameters — for the analytic
+	//! primitives, angles in radians and axial world coordinates, with
+	//! the two axes swapped on the cylinder and the torus (see
+	//! docs/GEOMETRY_DERIVATIVES.md "Magnitudes and parameter
+	//! scaling").  `ri.ptCoord`, which is what a texture is actually
+	//! sampled at, is the normalised `[0, 1]^2` chart the matching
+	//! `GeometricUtilities::*TextureCoord` produces.  Solving in the
+	//! derivative chart and publishing the answer as though it were the
+	//! texcoord chart is a pure scale error of 2*pi (sphere azimuth),
+	//! pi (sphere polar), the cylinder height, … — i.e. exactly the
+	//! kind of error mip LOD's log2 turns into whole levels of blur.
+	//! So: solve in the derivative chart, then apply
+	//! `ri.derivatives.dsdu…dtdv` to land in the texcoord chart.
 	//!
 	//! Postcondition: ri.txFootprint.valid == true on success;
 	//! left false on early-out or on a singular UV basis.
 	inline void SolveFootprintUV( RayIntersectionGeometric& ri )
 	{
-		if( !ri.txFootprint.widthValid || !ri.derivatives.valid ) {
+		if( !ri.txFootprint.widthValid || !ri.derivatives.valid ||
+		    !ri.derivatives.texChartValid ) {
 			return;
 		}
 
@@ -224,10 +247,20 @@ namespace RISE
 		}
 		const Scalar invDet = Scalar( 1 ) / det;
 
-		ri.txFootprint.dudx = (  dpdv_b * dpdx_a - dpdv_a * dpdx_b ) * invDet;
-		ri.txFootprint.dvdx = ( -dpdu_b * dpdx_a + dpdu_a * dpdx_b ) * invDet;
-		ri.txFootprint.dudy = (  dpdv_b * dpdy_a - dpdv_a * dpdy_b ) * invDet;
-		ri.txFootprint.dvdy = ( -dpdu_b * dpdy_a + dpdu_a * dpdy_b ) * invDet;
+		// The solve, in the geometry's own (u, v) parameter chart.
+		const Scalar dPdu_dx = (  dpdv_b * dpdx_a - dpdv_a * dpdx_b ) * invDet;
+		const Scalar dPdv_dx = ( -dpdu_b * dpdx_a + dpdu_a * dpdx_b ) * invDet;
+		const Scalar dPdu_dy = (  dpdv_b * dpdy_a - dpdv_a * dpdy_b ) * invDet;
+		const Scalar dPdv_dy = ( -dpdu_b * dpdy_a + dpdu_a * dpdy_b ) * invDet;
+
+		// Change of chart into the TEXCOORD (s, t) axes `ri.ptCoord`
+		// uses, per the geometry's stated map.  Identity for the mesh
+		// path, where dpdu already IS d/d(texcoord u).
+		const SurfaceDerivativesInfo& d = ri.derivatives;
+		ri.txFootprint.dudx = d.dsdu * dPdu_dx + d.dsdv * dPdv_dx;
+		ri.txFootprint.dvdx = d.dtdu * dPdu_dx + d.dtdv * dPdv_dx;
+		ri.txFootprint.dudy = d.dsdu * dPdu_dy + d.dsdv * dPdv_dy;
+		ri.txFootprint.dvdy = d.dtdu * dPdu_dy + d.dtdv * dPdv_dy;
 
 		ri.txFootprint.valid = true;
 	}
