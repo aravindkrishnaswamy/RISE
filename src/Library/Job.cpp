@@ -7038,7 +7038,10 @@ bool Job::AddReliefModifierEx(
 			"it is an upper bound on the tangent-plane tilt |scale*grad h| expressed "
 			"as a SLOPE (1.0 = 45 degrees, 0.577 = 30), so it must be finite and "
 			"non-negative.  Use 0 for no clamp (the default), or a positive slope "
-			"such as 0.5-1.0 when raising `scale` to make a fine field legible.",
+			"such as 0.5-1.0 when raising `scale` to make a fine field legible -- that "
+			"band is for a near-face-on surface; on a surface seen at grazing angle phi "
+			"the tilt budget before the shading normal faces away from the ray shrinks "
+			"to roughly tan(phi), e.g. 0.30 on a plane viewed at 10-15 degrees grazing.",
 			name, maxSlope );
 		return false;
 	}
