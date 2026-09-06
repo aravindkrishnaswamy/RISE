@@ -5,13 +5,14 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
 
 from analyze_fire_eos_warm_start import analyze, endpoint_eos_gate, histogram, self_test
 from analyze_fire_producer_kernels import fields, summarize
-from seal_fire_payload_placement import bind_counters, gate, records
+from seal_fire_payload_placement import bind_counters, distinct_repeats, gate, records
 from check_fire_owner_instrumentation import FP64_PASS, RED_NAMES, qualify_artifact, trees
 import check_fire_owner_cost_prefix as cost_prefix
 import check_fire_owner_instrumentation as instrumentation
@@ -22,6 +23,34 @@ EVIDENCE = ROOT / "rendered/fire_production_calibration/r206_eos"
 
 
 class EOSGateREDs(unittest.TestCase):
+    def test_copied_runs_with_cosmetic_log_changes_are_not_independent(self):
+        # Copies live only in an isolated parser-test directory. No published
+        # artifact is modified or represented as an additional execution.
+        with tempfile.TemporaryDirectory(prefix="rise-r206-copied-execution-red-") as temporary:
+            directory = Path(temporary)
+            for name in ("warm.owner_gate.v1.log", "warm_prototype.v1.patch", "warm_iteration_prefix.v1.log",
+                         "qualification.eos.v2.json", "endpoints_qualified.eos_gate.v2.log"):
+                shutil.copy2(EVIDENCE / name, directory / name)
+            shutil.copytree(EVIDENCE / "warm_iteration_prefix.v1", directory / "warm_iteration_prefix.v1")
+            for kind in ("baseline", "warm", "endpoints_qualified"):
+                for repeat in (1, 2, 3):
+                    name = f"{kind}_profile_{repeat}.v1"
+                    shutil.copytree(EVIDENCE / name, directory / name)
+                    shutil.copy2(EVIDENCE / (name+".log"), directory / (name+".log"))
+            qualification = EVIDENCE / "qualification.v1.json"
+            analyze(directory, qualification)
+            names = [f"endpoints_qualified_profile_{repeat}.v1" for repeat in (1, 2, 3)]
+            for suffix in ("\n", "\n# copied diagnostic commentary\n"):
+                for repeat in (2, 3):
+                    shutil.copytree(directory / names[0], directory / names[repeat-1], dirs_exist_ok=True)
+                    (directory / (names[repeat-1]+".log")).write_bytes(
+                        (directory / (names[0]+".log")).read_bytes() + (suffix*repeat).encode())
+                with self.subTest(suffix=suffix):
+                    with self.assertRaises(ValueError):
+                        distinct_repeats(directory, names)
+                    with self.assertRaises(ValueError):
+                        analyze(directory, qualification)
+
     def test_disabled_observer_cli_rejects_every_profile_separator(self):
         fixture = ROOT / "rendered/fire_production_calibration/r202_owner_cost/exact_edb4afb6"
         off, on = fixture / "fixture_off.log", fixture / "fixture_on.log"

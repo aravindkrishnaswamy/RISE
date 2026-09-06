@@ -332,3 +332,21 @@ disabled-observer RED exercises its actual CLI with whitespace-separated
 profiles in off-mode. Historical implementations fail those assertions with
 zero setup errors (`review.round8.redproof.v1.log`). The actual v3 measurement
 and all numerical code remain unchanged.
+
+## Ninth review: independent executions, not different log bytes
+
+Numerical/fidelity review found no P1/P2. Evidence review found one P2:
+copies of one run, with cosmetic whitespace/comment changes to their logs,
+could count as three executions. Distinct paths and raw SHA inequality alone
+were insufficient. The generic repeat guard now requires distinct recorded
+CPU/GPU command-clock sequences, ignoring cosmetic log content. The fixed r206
+analyzer additionally pins all nine executed timing-log roots; their terminal
+hashes bind the associated outcomes and CSV/sidecar records. A rewritten log
+does not acquire authority as another measured execution.
+
+The full-analyzer RED copies complete directories, including their valid
+sidecars, into an isolated parser-test directory, then changes only trailing
+whitespace or comments. Both the repeat guard and analyzer refuse. Historical
+versions fail the new assertions with zero setup errors
+(`review.round9.redproof.v1.log`). Actual repetitions were already distinct;
+the v3 measurement SHA and numerical values are unchanged.

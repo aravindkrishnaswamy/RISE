@@ -158,6 +158,16 @@ def distinct_repeats(directory, repeats):
     logs = [hashlib.sha256((directory / (name + ".log")).read_bytes()).hexdigest() for name in repeats]
     if len(set(logs)) != len(logs):
         raise ValueError("duplicate process logs")
+    executions = []
+    for name in repeats:
+        commands = [fields(line) for line in (directory / (name + ".log")).read_bytes().decode().splitlines()
+                    if line.split()[:1] == ["PRODUCER_COMMAND_V1"]]
+        if not commands:
+            raise ValueError("missing measured execution clock identity")
+        executions.append(tuple(tuple(int(row[key]) for key in ("cpu_begin", "cpu_end", "gpu_begin", "gpu_end"))
+                                for row in commands))
+    if len(set(executions)) != len(executions):
+        raise ValueError("duplicate measured execution clock identities")
 
 
 def main():

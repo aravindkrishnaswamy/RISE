@@ -20,6 +20,20 @@ from seal_fire_payload_placement import bind_counters, check_rows, completion_re
 from check_fire_owner_cost_prefix import metadata
 from check_fire_owner_instrumentation import unique_object
 
+# Executed timing records for this fixed r206 study, not caller-issued runs.
+# Their terminal hashes bind the corresponding outcomes, CSVs and sidecars.
+TIMING_LOG_ROOTS = {
+    "baseline_profile_1.v1.log": "844e48bdc4fc6c7fb11951126ad9a08382e57a2cc994da5ef150079dbac92b2c",
+    "baseline_profile_2.v1.log": "aa4c347208ec1bdf00abd7990c5a007b1cbc3205df446df93afa2268c893b33b",
+    "baseline_profile_3.v1.log": "6f953e81ce05b5b92880af4464029f08f800d70b8e5bbfa547fc3dd7de0ca1c4",
+    "warm_profile_1.v1.log": "21ea49dc7f09eeb6e10e9eb0d5220a7974b67d726c90400d9d6c16212a87bd3e",
+    "warm_profile_2.v1.log": "cd56c40b4b53f249b2607a58fee359a488e28a0f161003112a81cf0862d74504",
+    "warm_profile_3.v1.log": "9961e3e603d85dc7d44590f20751e3868d0143d0f2caabbb511894abbdc37c68",
+    "endpoints_qualified_profile_1.v1.log": "d6845b42372c6b53273626b3fb1bf3eedb2c209104d9378b84b91e18f95422b5",
+    "endpoints_qualified_profile_2.v1.log": "12a4828c5877dd3a0810034c804d8950162c4597998054334143ebf1c7b19ee9",
+    "endpoints_qualified_profile_3.v1.log": "f2da78968f81599381a93914142d1f41a81ee0233a72d17c6076b05753f50391",
+}
+
 
 def histogram(path):
     raw = path.read_bytes()
@@ -215,6 +229,8 @@ def analyze(directory, qualification=None):
         for repeat in (1, 2, 3):
             prefix = directory / f"{kind}_profile_{repeat}.v1"
             log = directory / f"{kind}_profile_{repeat}.v1.log"
+            if hashlib.sha256(log.read_bytes()).hexdigest() != TIMING_LOG_ROOTS[log.name]:
+                raise ValueError("unrecognized executed r206 timing record: " + log.name)
             rows = records(prefix / "budgets/maximum_velocity_trajectory.csv")
             check_rows(rows, reference)
             outcome = prefix / "diagnostic_prefix_outcome.v1"
