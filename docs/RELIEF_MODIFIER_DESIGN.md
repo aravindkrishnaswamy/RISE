@@ -1,6 +1,20 @@
-# Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
+# Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Removal of `bumpmap_modifier`
 
-**Status:** Phases 1–5 landed and reviewed to zero P1 (2026-09-06): Phase 1
+> **READ THIS FIRST (2026-09-06).  `bumpmap_modifier` NO LONGER EXISTS.**
+> Phase B (§7.5) removed the chunk, the `BumpMap` class, and the
+> `bumpmap_modifier.function` special case in `Cst.cpp`.  A scene that
+> still carries the chunk is REFUSED at derive time with a diagnostic
+> naming `relief_modifier` and `tools/migrate_scenes_relief.py` (the
+> `kRetiredChunks` table in `Cst.cpp`).  The registry is **175** chunk
+> types.  `IJob::AddBumpMapModifier` and
+> `RISE_API_CreateBumpMapModifier{,Ex}` survive with FROZEN SIGNATURES
+> only because the Blender bridge and out-of-tree callers hold them; they
+> build a `ReliefModifier` in the UV domain with the §7.2 fold applied
+> inside the factory.  **Any comment, doc, or skill still describing
+> `bumpmap_modifier` as deprecated-but-parsing is stale.**
+
+**Status:** Phases 1–5 landed and reviewed to zero P1 (2026-09-06), Phase B
+(the removal) landed 2026-09-06: Phase 1
 four rounds; Phase 2 one round + fix; Phase 3 three lenses + fix + converge;
 Phase 4 two fix rounds (`177bcee4`, `e5d0fa0b`) then a converging round with
 zero P1; Phase 5 reviewed with Phase 4. Record in §12. Each phase ran the
@@ -8,8 +22,8 @@ zero P1; Phase 5 reviewed with Phase 4. Record in §12. Each phase ran the
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
 **Branch:** `relief-modifier` off `master` at `2cf923b7`.
-**Inputs (verified in tree, 2026-09-05):** the three existing modifiers
-([BumpMap.cpp](../src/Library/Modifiers/BumpMap.cpp),
+**Inputs (verified in tree, 2026-09-05):** the three modifiers that existed
+then (`BumpMap.cpp` — DELETED by Phase B, 2026-09-06,
 [NormalMap.cpp](../src/Library/Modifiers/NormalMap.cpp),
 [GlintModifier.cpp](../src/Library/Modifiers/GlintModifier.cpp)) and their
 descriptors (`BumpmapModifierAsciiChunkParser`, `NormalMapModifierAsciiChunkParser`,
@@ -542,7 +556,9 @@ above.
 
 ## 7. Deprecating `bumpmap_modifier`
 
-### 7.1 Phase A — now (this arc): deprecate with diagnostic, keep parsing
+### 7.1 Phase A — DONE (2026-09-06): deprecate with diagnostic, keep parsing
+
+*Superseded by Phase B (§7.5), which removed the chunk outright. Kept as the record of how the removal was staged.*
 
 Following precedent (c) plus a parse-time diagnostic:
 
@@ -595,13 +611,27 @@ shortest round-trip decimal — what turns `-(0.5*2*0.005)` into `-0.005`, not
 and `%.17g` is not used anywhere in this script.
 
 **`windowsize ≤ 0` is not a point on that curve — it is a special case.**
-Legacy `BumpMap::Modify` is INERT there (the central difference samples the
-same point on both sides and its normalisation is gated on `dWindow > 0`),
-but a migrated `step 0` means AUTO in `relief_modifier` (a full
-footprint/`1e-3`-floor perturbation) — the opposite of inert. The migrator
-detects `windowsize ≤ 0`, skips the algebra above, and emits the bare token
-`scale 0` instead (which neutralises the perturbation regardless of what
-`step` ends up being), with a `WARN <file>:<line>` naming the reason.
+A migrated `step 0` means AUTO in `relief_modifier` (a full
+footprint/`1e-3`-floor perturbation), so the algebra above cannot be
+applied. The migrator detects `windowsize ≤ 0`, skips it, and emits the
+bare token `scale 0` instead (which neutralises the perturbation
+regardless of what `step` ends up being), with a `WARN <file>:<line>`
+naming the reason. `RISE_API_CreateBumpMapModifierEx` applies the SAME
+rule, so a migrated file and a bridge-built modifier cannot disagree.
+
+*Precision correction (Phase B, measured — `ReliefModifierTest` 2(d)).*
+This section originally justified the rule by saying legacy
+`BumpMap::Modify` was "INERT there". That is true only at **exactly zero**:
+both sides of the central difference sample the same point, so the
+difference is 0. At a **negative** `windowsize` the legacy class was NOT
+inert — the difference was the NEGATION of the one at `|windowsize|`
+(`f(u−|w|) − f(u+|w|)`), and the `dWindow > 0` gate additionally skipped
+the `normalize_gradient` divide, silently changing what `scale` meant. The
+migrator's and the shim's `scale 0` is therefore a *deliberate divergence*
+on the negative half, not a match: a negative half-step is nonsense input,
+the fold is undefined on it, and consistency between the two conversion
+routes matters more than reproducing a deleted class's accident. No
+in-tree scene ever had a negative `windowsize`.
 
 Migration is *lossless*, not *improving*: migrated scenes keep the UV
 domain and the legacy orientation behaviour. The migrator prints a per-file
@@ -667,17 +697,61 @@ in-tree instances exercise that sixth path any more, and the deprecation
 diagnostic (§7.1) means a new one is unlikely to appear without a warning
 pointing the author elsewhere.
 
-### 7.5 Phase B — removal (named, not in this arc)
+### 7.5 Phase B — removal — **DONE 2026-09-06**
 
-Trigger: the user's call after one release cycle (or after the census in
-§9 shows zero `bumpmap_modifier` emissions). Steps: delete the chunk parser
-(unknown-chunk hard fail is the generic path, like `branching_threshold`),
-delete `BumpMap.{h,cpp}` from the five build projects, repoint the frozen
-`IJob::AddBumpMapModifier` virtual at `ReliefModifier` in UV domain with the
-§7.2 scale fold (the Blender bridge keeps working unchanged), drop the
-`kFunc2DSubCat` special case for `bumpmap_modifier.function` in `Cst.cpp`,
-retire the legacy CST literals. Everything Phase A leaves in place is
-enumerated here so Phase B is a checklist, not a rediscovery.
+Triggered by the user's call. Landed in three commits on `relief-followups`
+off `9fe3374e`: **`7186fa25`** (the removal: chunk parser + registration,
+`BumpMap.{h,cpp}` from all five build projects, the `kFunc2DSubCat`
+`function` entry, the shim repoint, the retired-keyword table, and every
+affected test), **`853ce977`** (a pre-existing Blender-exporter bug the
+repoint exposed), **`45c04be8`** (the living-surface doc sweep). Full
+record in §12, "Phase B".
+
+Every step the plan below named was executed, plus one the plan did not
+anticipate — the *diagnostic*. The plan said "unknown-chunk hard fail is
+the generic path, like `branching_threshold`"; that is a dead end for the
+one author who most needs help, the person holding a scene that used to
+load, because it names neither the replacement nor the migrator. `Cst.cpp`
+therefore gained a `kRetiredChunks` table — the chunk-level analogue of
+`bezierpatch_geometry`'s `kRetired` PARAMETER table, which exists for the
+same reason one level down — whose single entry produces:
+
+> `chunk type 'bumpmap_modifier' has been removed -- removed 2026-09-06
+> (docs/RELIEF_MODIFIER_DESIGN.md 7.5).  Use `relief_modifier`, whose
+> height field is any `scalar_painter` and which needs no texcoords in its
+> default `surface` domain.  To convert this scene LOSSLESSLY -- the
+> amplitude fold and the sign flip are not obvious by hand -- run
+> `python3 tools/migrate_scenes_relief.py <this file>``
+
+The steps as planned, and what each became:
+
+| Planned step | Outcome |
+|---|---|
+| delete the chunk parser | `BumpmapModifierAsciiChunkParser` (72 lines) + its `add(...)` line + the now-dead `<atomic>` include. Registry **176 → 175**; `SceneEditorSuggestionsTest`'s two `EXPECT`s follow. |
+| delete `BumpMap.{h,cpp}` from the five build projects | Done; the Xcode project needed 12 lines across `PBXBuildFile` (4), `PBXFileReference` (2), the containing group (2), and per-target build phases (4, both targets). `plutil -lint` clean, no dangling `fileRef`. |
+| repoint the frozen `IJob::AddBumpMapModifier` at `ReliefModifier` | Done, but the fold lives ONE level down, in `RISE_API_CreateBumpMapModifierEx` — `Job::AddBumpMapModifier` is unchanged except for its comment. One place for the fold means the shim and the migrator cannot drift. |
+| drop the `kFunc2DSubCat` special case | Done. `function` was declared by no other chunk, so the entry went with the chunk; `relief_modifier.height` needs no replacement special case (standing `ParameterPipe::Scalar` closure). |
+| retire the legacy CST literals | All four suites. `CstSourceInstanceTest`'s shared `Scene()` fixture drops from 9 chunks to 8, which moved the collision test's asserted ordinals `#13`/`#14` → `#12`/`#13`. |
+
+**The shim, precisely.** `RISE_API_CreateBumpMapModifierEx` builds a
+`Function2DScalarPainter` over the caller's `IFunction2D` and hands it to a
+`ReliefModifier` in `ReliefDomain::UV` with `step = window` and
+
+```
+S' = -S*2W   (normalizeGradient FALSE)
+S' = -S      (normalizeGradient TRUE)
+S' = 0       (window <= 0 — see the §7.2 precision correction)
+```
+
+`Function2DScalarPainter::GetValuesAt` is literally
+`pFunc->Evaluate( ri.ptCoord.x, ri.ptCoord.y )` and `ReliefModifier`'s UV
+branch makes the same four offset evaluations in the same order, so the
+sampled values are identical and only the amplitude multiply reassociates.
+One supporting change: `Function2DScalarPainter`'s ctor parameter widened
+to `const IFunction2D*` (every use of it inside — `Evaluate`, `addref`,
+`release` — is already const), so the shim wraps its `const IFunction2D&`
+without a `const_cast`. Callers holding a mutable pointer convert
+implicitly; nothing else changed.
 
 ---
 
@@ -857,6 +931,7 @@ the showcase fixtures at their authored spp.
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope) |
 | **4** | `DESIGN_FLAT_RELIEF` (condition Q) + verb hook-point notes (the recipe example shipped early, as part of Phase 3's teaching surfaces — `materials-and-media-basics.md`'s crackle-glaze — see its own §12 P1-1 fix) | implemented 2026-09-06, two review rounds (see §12 — round 1 `177bcee4`: 3 P1s + 3 P2s, the scan made linear; round 2 `e5d0fa0b`: 1 P1 + 2 P2s + a nit, clause (i) taught the same composite-override and `source`-inheritance rules round 1 taught clause (ii), and the `source` hop bound raised to the engine's own 256 across all three walks in the file): `AgentReadValidateTest` 333/0 (extended with `RunFlatReliefScanTest`), `AgentChunkCrudTest` 3809/0, `AgentAddWearTest` 287/0, `AgentAddWetnessTest` 210/0, `SourceHygieneTest` 164/0, `ReliefModifierTest` 106/0 |
+| **B** | REMOVAL: chunk parser + registration, `BumpMap.{h,cpp}` from 5 build projects, the `kFunc2DSubCat` `function` entry, the ABI-frozen shim repointed at `ReliefModifier`, the `kRetiredChunks` diagnostic, the four CST suites' literals retired, the living-surface sweep | landed 2026-09-06 (`7186fa25`, `853ce977`, `45c04be8` — see §12 "Phase B"): both warning gates clean on a full clean rebuild; ReliefModifierTest 118/0 (was 106), CstResolverTest 60/0, CstRecordDeriveTest 23/0, CstIncrementalSafetyTest 38/0, CstSourceInstanceTest 455/0, SceneEditorSuggestionsTest all-pass, SourceHygieneTest 164/0, GlintModifierTest all-pass, HairTangentPlumbingTest 123/0, SurfaceCurvatureTest 94/0, CstDeriveGoldenTest 442 MATCH / 1 DRIFT (`bdpt_crystal_garden`, pre-existing and out of scope) |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | landed 2026-09-06 (see §12): `weathered_workbench` relief committed (scale 0.05, amplitude-swept); `velvet_cushion` migration confirmed better (domain surface reads flat on this SDF, no code change); `relief_crackle_glaze` key light re-raked for near-specular legibility (R13's finding, one commit); renders attached to §12 |
 
 Commits as each phase converges; never push. The stray uncommitted edit to
@@ -2400,6 +2475,127 @@ nesting bound stays at 8 rather than following the `source` walks to 256
 false-advisory for an unbounded walk, and no fixture or corpus scene
 nests composites anywhere near that deep. Deliberately out of scope: the
 census remains user-run (C-MEAS), unchanged from fix round 1.
+
+### Phase B — the removal, landed 2026-09-06
+
+Branch `relief-followups` off `9fe3374e`, three commits: **`7186fa25`**
+(the removal), **`853ce977`** (a Blender-exporter bug it exposed),
+**`45c04be8`** (the living-surface doc sweep). §7.5 carries the
+step-by-step outcome table and the shim's exact definition; this record
+carries what was MEASURED and what was found on the way.
+
+**What a scene with the chunk now does.** Verified headlessly on a scratch
+scene (`piecewise_linear_function2d` + `bumpmap_modifier`): derive emits
+`chunk type 'bumpmap_modifier' has been removed -- …` naming
+`relief_modifier` and the exact migrator command, the modifier manager
+registers nothing, and the bare `unknown chunk type` string does not
+appear. The three migrated in-tree scenes (`velvet_cushion`,
+`sculptors_studio`, `sms_veach_egg_bumpmap`) parse with **zero
+diagnostics**.
+
+**Red-proof of the shim's fold.** The claim under test is that
+`RISE_API_CreateBumpMapModifierEx` applies §7.2's algebra, not merely that
+`ReliefModifier` is correct. Flipping the sign in `RISE_API.cpp`
+(`-scale` → `scale`, `-scale*2*window` → `scale*2*window`), rebuilding, and
+re-running: **`ReliefModifierTest` 116 passed / 2 failed** — both failures
+are 2(b), the shim case (worst |dN| **0.0749** normalize FALSE, **1.68**
+normalize TRUE), while 2(a) — the by-hand fold against the same legacy
+reference — stayed **green**. That is the discrimination the split into
+2(a)/2(b) exists for: 2(a) alone would have passed a shim with an inverted
+fold. Reverted; suite back to 118/0.
+
+**The oracle, now that the class is gone.** Test 2's `BumpMap` side was
+replaced by `LegacyBumpReference`, a from-scratch transcription of the
+deleted `Modify` expression — kept verbatim including the un-distributed
+`(f(+w)*S) − (f(−w)*S)` association, since that association is what the
+1e-12 bound is measured against. Agreement at 1000 random (u,v):
+worst |dN| **2.220e-16**, worst |dONB| **2.220e-16** (normalize FALSE) /
+**3.331e-16** (TRUE) — the same order as before the class was deleted.
+
+**FINDING 1 (correctness, in this arc's own prose): the "inert at
+`windowsize ≤ 0`" justification was half wrong.** Writing test 2(d)
+measured it: the legacy class was inert at **exactly zero** only. At a
+NEGATIVE window the central difference was the *negation* of the one at
+`|window|`, and the `dWindow > 0` gate additionally skipped the
+`normalize_gradient` divide. The migrator's `scale 0` rule (unchanged) is
+therefore a deliberate divergence on the negative half rather than a
+match. §7.2 now says so; 2(d) asserts both halves — agreement at 0,
+divergence-on-purpose below it — so nobody later "fixes" the shim toward
+the accident. No in-tree scene ever used a negative `windowsize`, so
+nothing renders differently.
+
+**FINDING 2 (pre-existing, and it is a real bug): the Blender bridge
+exported `window = 1.0`.** `_build_bump_modifier` in
+`src/Blender/addons/rise_renderer/exporter.py` emitted `1.0` as the
+central-difference HALF-STEP, in UV units. `Painter::Evaluate` — the path
+the bridge's height painter is sampled through — CLAMPS `(u, v)` to
+`[0, 1]`, so every difference was `f(1, v) − f(0, v)`: the same two texels
+at every point on the surface. An exported Blender Bump node therefore
+produced a **constant tilt** of the shading normal with no relation to the
+height map's gradient — not a bump at all. Fixed to `0.005` (roughly a
+texel on a 200px map) in `853ce977`, with the reason recorded at the site.
+This DOES change the look of any scene exported from a Blender Bump node,
+necessarily, since the old value could not express a bump; no in-tree
+scene or test carries an exported bump modifier, and `modifier_cache`'s key
+already excluded `window`, so nothing else needed touching. There is no
+exporter-side bump test to adjust (`src/Blender/addons/rise_renderer/`
+carries only `test_hair_export.py`; `tests/BlenderBridgeHairTest.cpp` is
+hair-only).
+
+**Tests repointed rather than deleted.** Two suites outside the four the
+plan named also instantiated `BumpMap`, and both were repointed at the
+UV-domain `ReliefModifier` with the §7.2 fold applied so their goldens are
+unchanged — which pins the fold a third and fourth time, on real geometry:
+
+- `HairTangentPlumbingTest` 11/12 (fiber-tangent preservation, and the
+  non-hair `CreateFromW` byte-match). Legacy `(S=1, W=0.05, normalize
+  FALSE)` folds to `S' = −0.1`, and with the Blinn sign that reproduces
+  exactly the `(0.04, −0.03)` tilt the goldens were written against.
+  123/0.
+- `SurfaceCurvatureTest` (e) (`curv` invariance under a normal-perturbing
+  modifier). Legacy `(0.75, 0.01, FALSE)` folds to `S' = −0.015`. 94/0.
+
+`ReliefModifierTest` test 7b lost its BumpMap sibling block (the class is
+gone; NormalMap and ReliefModifier still share the
+`ModifierFrame::HasCoherentTangent` gate, which is what 7b exists to pin)
+and its now-unused `ConstFunction2D` stub. Test 10(f) inverted from "still
+parses, warns once" to "is refused, and the refusal names the replacement
+and the migrator"; **10(g) is new** and pins that the retired table is
+SCOPED — `bumpmap_modifier_xyzzy` gets the generic `unknown chunk type`
+message and is NOT handed the migration advice, so a lookup that matched
+on a prefix or returned its first row unconditionally cannot hide.
+
+**Gate, on the final tree.** `make -C build/make/rise -j8 all` and
+`tests` — **zero warnings** on a build that recompiled every touched
+file. Xcode `RISE-GUI` `Deployment` **clean** rebuild: `** BUILD
+SUCCEEDED **`, the only line matching `warning:` being the known
+`extlib/oidn/install/lib` search-path note. Suites:
+`ReliefModifierTest` **118/0** (was 106), `CstResolverTest` **60/0**,
+`CstRecordDeriveTest` **23/0**, `CstIncrementalSafetyTest` **38/0**,
+`CstSourceInstanceTest` **455/0**, `SceneEditorSuggestionsTest` all-pass,
+`SourceHygieneTest` **164/0** (the `IJob` vtable manifest is untouched —
+the virtual's signature is frozen, which is the point),
+`GlintModifierTest` all-pass, `HairTangentPlumbingTest` **123/0**,
+`SurfaceCurvatureTest` **94/0**. `CstDeriveGoldenTest` **442 MATCH, 1
+DRIFT** of 443, 0 UNCOVERED, 0 STALE — the single DRIFT is
+`bdpt_crystal_garden`, the pre-existing uncommitted edit §11 excludes, and
+**no regeneration was needed**: this phase's scene edits are comments
+only, and `DumpJob` does not record them.
+`tools/migrate_scenes_relief.py --selftest` **18/18**;
+`--dry-run -v --root scenes` still reports **0 `bumpmap_modifier` chunks
+seen**.
+
+**Left undone / deliberately not touched.** Historical records keep their
+text — `docs/SMS_*`, `GUILLOCHE_*`, `NORMAL_USAGE_AUDIT.md`,
+`GEOMETRY_SHADING_SIGNALS_DESIGN.md`, `HAIR_FUR_DESIGN.md`,
+`ENAMEL_SPARKLE_BRDF.md` are past-tense findings and
+implementation-precedent citations (several cite `BumpMap.cpp` line
+numbers), not living recommendations; only `HairBSDF.h`'s citation was
+touched, because it is source. The census in §9 remains user-run. The
+Windows and Android build-project edits are unverified by compilation here
+(no MSVC/NDK on this machine) — they are line removals mirroring the
+verified Unix and Xcode ones, and `Library.vcxproj{,.filters}` and
+`rise_sources.cmake` each have zero remaining `BumpMap` references.
 
 ### Follow-ups (chips taken in-session)
 
