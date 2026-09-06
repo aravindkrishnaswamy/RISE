@@ -142,7 +142,7 @@ out. Recording them so the design does not inherit them:
 | One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". (Composition via `modifier_stack` since Phase 2.) | the `pModifier` field in `class Object` ([Object.h](../src/Library/Objects/Object.h)), [the `if( pModifier )` override block in `CSGObject::IntersectRay`](../src/Library/Objects/CSGObject.cpp), the `pModifier` field's "this should be a list of somesort... eventually" comment in [RayIntersection.h](../src/Library/Intersection/RayIntersection.h) |
 | Scalar pipe | `IScalarPainter::GetValuesAt(ri)` → `ScalarTriple`; single-scalar slots read `.v[0]` and the resolver rejects per-channel painters when `requireSingle`; an `IPainter` name bound to a scalar slot gets `kScalarBoundToIPainterFmt` | the `GetValuesAt`/`GetValueAtNM` contract comment in [IScalarPainter.h](../src/Library/Interfaces/IScalarPainter.h), `ResolveOrDiagnoseScalar` in [Job.cpp](../src/Library/Job.cpp), `kScalarBoundToIPainterFmt` in [ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h) |
 | Any-painter bridge | `scalar_painter { painter X channel R\|G\|B\|A [scale] [bias] }` → `PainterChannelScalarPainter`; `scalar_painter { function2d F }` → `Function2DScalarPainter` (evaluates `F.Evaluate(ptCoord)` — the *same* sampling path `bumpmap_modifier` uses today) | the `ScalarPainterAsciiChunkParser` `painter`/`function2d` cases in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) |
-| Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by triangle-mesh geometry only; `fw = 0` on analytic primitives. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h), `OctaveFadeWeightImpl` and its `Turbulence3D`/`Ridged3D` consumers in [ProceduralNoiseCore.cpp](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
+| Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by **every** geometry at the `Object::IntersectRay` layer since [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md) (2026-09-06); it was triangle-mesh-only before that, with `fw = 0` on analytic primitives.  Gated on `txFootprint.widthValid`, not `valid` (the latter stays the UV-Jacobian flag).  Still primary-hits-only: no ray carries differentials after a scatter. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h), `OctaveFadeWeightImpl` and its `Turbulence3D`/`Ridged3D` consumers in [ProceduralNoiseCore.cpp](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
 | Evaluate-elsewhere idiom | `RayIntersectionGeometric ri2 = ri; ri2.ptIntersection = ...; source.GetColor(ri2)` — `MappingPainter` does exactly this for world/object/UV remaps and invalidates `txFootprint` only when the UV *domain* is remapped | `MappingPainter::GetColor` in [MappingPainter.cpp](../src/Library/Painters/MappingPainter.cpp) |
 | Space semantics | `Proj_World` reads `ptIntersection`; `Proj_Object` and `voronoi3d space object` read `ptObjIntersec`; UV painters read `ptCoord`; triplanar reads `ptIntersection` + `vNormal` | the `Projection` enum in [MappingPainter.h](../src/Library/Painters/MappingPainter.h), its `Proj_*` cases in `MappingPainter::GetColor` |
 | Deprecation conventions | no `ChunkDescriptor::deprecated` field exists. Three precedents: (a) *removed* → generic `kUndeclaredParameterFmt` / unknown-chunk hard fail (`branching_threshold`, BDPT `sms_*`); (b) *accepted-and-ignored* → declared with `"Legacy — ignored"` (`branch`); (c) *deprecated-with-prose* → description prefixed `"DEPRECATED (...)"` (`lights_intensity_override`). Description text flows verbatim into the agent tool schema (`SchemaGen.cpp`) and the GUI suggestion surfaces. | `lights_intensity_override`'s descriptor; the `branch` `"Legacy — ignored"` param in `PathTracingShaderOpAsciiChunkParser::Describe`; the `optimal_mis*` omission comment in `BDPTPelRasterizerAsciiChunkParser::Describe` (all in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)) |
@@ -271,7 +271,7 @@ facet decision and does not transfer.
 ### 3.3 Step selection — scale-aware and footprint-aware
 
 ```
-surface: s = max( step_user > 0 ? step_user : 1e-3,  txFootprint.valid ? txFootprint.worldWidth : 0 )
+surface: s = max( step_user > 0 ? step_user : 1e-3,  txFootprint.widthValid ? txFootprint.worldWidth : 0 )
 uv:      s = step_user > 0 ? step_user : 0.01
 ```
 
@@ -287,19 +287,34 @@ precision, not a scene-scale guess; on a scene whose features are below
 `1e-3` world units the author sets `step` (the descriptor says so). This is
 the one new constant in the design and it is disclosed as such.
 
-**The explicit `step` is a FLOOR, and the fade is mesh-only.** Note what the
-`max` does to an author-supplied value: it is raised to the footprint too, so
-on geometry that populates one, a `step` below the footprint is silently
-ignored. And only **triangle-mesh** geometry populates `txFootprint` today,
-and then only on primary hits carrying ray differentials — the same
-restriction `fw` in the expression VM already has
+**The explicit `step` is a FLOOR, and the fade is now EVERY-geometry (was
+mesh-only until 2026-09-06).** Note what the `max` does to an
+author-supplied value: it is raised to the footprint too, so on a hit that
+carries one, a `step` below the footprint is silently ignored.
+
+⚠ **This paragraph's original "mesh-only" claim is RETIRED** by
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).
+`txFootprint` used to be populated by `TriangleMeshGeometry{,Indexed}::
+RayElementIntersection` and nothing else, so analytic primitives and SDFs
+had no footprint (0), the `max` was a no-op there, and there was no
+distance fade at all on them. That arc split the helper at the seam its
+math already had — the Igehy plane projection needs only a hit point, a
+normal and the ray's differentials, *not* `dpdu`/`dpdv` — and moved the
+single call site up to `Object::IntersectRay`. **Every geometry now gets a
+`worldWidth`**: spheres, ellipsoids, cylinders, tori, boxes, disks, planes,
+patches, hair, and SDFs (hence sweeps, skeletons, parts and heightfields).
+The step rule keys on the new `txFootprint.widthValid` flag rather than
+`valid`, because `valid` remains the *UV-Jacobian* flag and a UV-free hit
+has a perfectly good footprint width with no Jacobian to go with it.
+
+The remaining restriction is unchanged and is about RAYS, not geometry:
+only primary hits carry differentials at all
 ([ExpressionPainter.cpp](../src/Library/Painters/ExpressionPainter.cpp) says
-so at its `ctx.fw` assignment). On analytic primitives and SDFs the footprint
-is unknown (0), the `max` is a no-op, the explicit `step` (or the `1e-3`
-floor) is exactly what is used, and there is **no distance fade at all**.
-That is the same limitation the whole painter stack carries, not one relief
-introduces; the descriptor discloses both halves rather than promising a fade
-that only some geometry gets.
+so at its `ctx.fw` assignment), because `Ray::Set` clears
+`hasDifferentials` and no propagation helper exists for a scattering
+bounce. So a relief surface seen in a mirror, or through glass, or on a
+secondary bounce still gets `s = step` with no fade — and so do the
+thin-lens, orthographic and fisheye cameras, which never set differentials.
 
 **`txFootprint.worldWidth` is now world-correct under instance scale
 (2026-09-06, fix round 2, P2-A) — it was NOT before this fix.**
@@ -320,14 +335,30 @@ scaled instance faded at the wrong distance.  Fixed by folding
 IntersectRay` / `CSGObject::IntersectRay` fold `scaleHint` (the same
 `|det M|^(1/3)` geometric-mean approximation under non-uniform scale,
 exact under uniform scale).  Regression: `ReliefModifierTest` test 4c.
-On a strongly flattened or elongated instance the geometric-mean fold
-can UNDER-scale `worldWidth` relative to the true in-plane footprint
-(e.g. `scale 4 0.05 4` on a panel: in-plane scale is 4x but
-`|det|^(1/3) = 0.928`, a 4.31x under-count) -- worse than the pre-fold
-object-space value would have been on that axis.  The error only
-under-filters, though: `max(step, worldWidth)` then falls back to
-`step`, the same aliasing as pre-fix and never worse than that floor.
-The uniform-scale case remains exact.
+
+⚠ **The `|det M|^(1/3)` half of the paragraph above is SUPERSEDED
+(2026-09-06, later the same day)** by
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
+§3.4.  The geometric-mean fold was exact only under a uniform scale; on a
+strongly flattened or elongated instance it UNDER-scaled `worldWidth`
+relative to the true in-plane footprint (`scale 4 0.05 4` on a panel:
+in-plane scale is 4x but `|det|^(1/3) = 0.9283`, a **4.31x under-count**)
+— worse than the pre-fold object-space value would have been on that
+axis.  `txFootprint` now carries the plane-projected pixel-step VECTORS
+`dpdx`/`dpdy`, and both object layers promote them with their own
+**forward linear map** `m_mxFinalTrans`, re-deriving `worldWidth` from the
+transformed pair.  That is EXACT for any linear map — non-uniform scale
+and shear included — because an affine map carries the object-space
+auxiliary line onto the world auxiliary line and the object-space tangent
+plane onto the world tangent plane, so the line∩plane point commutes with
+the map.  `m_worldLinearScale` is no longer read for the footprint at all
+(it keeps its `scaleHint` / `curvature` jobs).  Regression:
+`ReliefModifierTest` test **4d**, the non-uniform companion to 4c, plus
+`TextureFootprintTest` test 5; both are red-proofed against the restored
+geometric-mean fold and both report exactly the predicted 4.309x.  The old
+"the error only under-filters, so `max(step, worldWidth)` falls back to
+`step`" consolation no longer applies, because there is no error left to
+under-filter.
 
 ### 3.4 One field on the hit record
 

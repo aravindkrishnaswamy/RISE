@@ -405,3 +405,279 @@ gates clean on a **clean** rebuild, `TextureFootprintTest`,
 `SourceHygieneTest`, `GeometryUVRoundtripTest`, `CsgSurfacePayloadTest` and
 `SDFGeometryTest` green, `receding_pier` pixel-identical, then adversarial
 review to zero P1s.
+
+## 10. Implementation record (2026-09-06)
+
+Implemented on branch `relief-followups` from `913436cd`. All four phases
+landed; the phase boundaries in §8 were preserved as a review structure but
+NOT as commit boundaries, because phases 2 and 3 both edit
+`Object::IntersectRay` and a pathspec commit cannot split hunks within one
+file — splitting them would have produced a non-building intermediate. The
+tree was gated as a whole instead (§10.4).
+
+### 10.1 What landed, against the §9 brief
+
+| Brief item | Where | Note |
+|---|---|---|
+| 1. `dpdx`/`dpdy`/`widthValid` on `TextureFootprint` | `RayIntersectionGeometric.h`, `struct TextureFootprint` | Doc comment rewritten around the two-flag contract and the `valid ⇒ widthValid` invariant; frame paragraph states the forward-map promotion |
+| 2. Split the helper | `TextureFootprintCompute.h`, `ComputeFootprintVectors` / `SolveFootprintUV` / `ComputeTextureFootprint` | The `ri.range`-not-`ptIntersection` warning is kept verbatim; it is still load-bearing at the new call site |
+| 3. Delete both mesh call sites | `TriangleMeshGeometrySpecializations.h`, `TriangleMeshGeometryIndexedSpecializations.h` | Their `#include "../Intersection/TextureFootprintCompute.h"` in `TriangleMeshGeometry.cpp` / `TriangleMeshGeometryIndexed.cpp` was moved to `Object.cpp` rather than left dangling |
+| 4. One call site at the Object layer | `Object::IntersectRay` | First statement inside `if( ri.geometric.bHit )`, before `pUVGenerator` and before `vNormalWorldUnnorm`; commented with the frame argument |
+| 5. Exact fold in `Object.cpp` | `Object::IntersectRay`, the `WORLD-MEASURE PROMOTION` block | `m_worldLinearScale` no longer read there; the `scaleHint`/`curvature` block above untouched |
+| 6. Mirror in `CSGObject.cpp` | `CSGObject::IntersectRay` | Nesting invariant restated as composing forward maps; `AdoptCsgSurfacePayload` unchanged (its whole-struct copy already carries `dpdx`/`dpdy`) |
+| 7. `ExpressionPainter` ×2 → `widthValid` | `ExpressionPainter::BuildContext`, `ExpressionScalarPainter::BuildContext` | The "the only geometry that currently populates txFootprint" sentence is the one this arc invalidated; replaced |
+| 8. `ReliefModifier` → `widthValid` | `ReliefModifier::Modify`, surface-domain branch | Step-rule comment updated |
+| 9. `PainterPreview::MakePreviewRi` → `widthValid` | `PainterPreview.cpp` | `valid` left alone, per the brief |
+| 10. Do not touch `TexturePainter` / `WeaveBRDF` | — | Untouched; both correctly key on `valid` |
+| 11. Tests | `tests/TextureFootprintTest.cpp` (new), `ReliefModifierTest`, `TextureExpressionVMTest` | See §10.2 |
+| 12. Docs | `RayDifferentials.h` header, `RELIEF_MODIFIER_DESIGN.md` §2 table + §3.3, this section | See §10.3 |
+
+Two sites beyond the brief, both contract-clarity rather than behaviour:
+`DisplacedGeometry.cpp`'s `EvalHeightField` and
+`GeometryUtilities.cpp`'s displacement bake both spell out
+`txFootprint.valid = false` explicitly (their comments say the contract is
+written out rather than inherited from the default ctor); each gained the
+matching `widthValid = false`. Both were already false by construction.
+
+**Deliberately NOT changed:** the ~25 `ri2.txFootprint.valid = false`
+invalidations in `MappingPainter`, `TexCoord1Painter`,
+`StochasticTilePainter` and `ScatterPainter`. Those exist because the
+wrapper remaps the UV *domain*, which invalidates the UV Jacobian and
+nothing else. The world-space footprint width is unaffected by a UV remap,
+so leaving `widthValid` set is both correct and strictly better: an `fbm`
+under a `mapping_painter` keeps its octave fade. `TextureExpressionVMTest`
+test 39's `valid`-flag assertions therefore stand unchanged.
+
+### 10.2 Tests, and what they cost
+
+`tests/TextureFootprintTest.cpp` is **auto-discovered** — `build/make/rise/
+Makefile` builds `$(wildcard ../../../tests/*.cpp)` and `run_all_tests.sh`
+enumerates `tests/*.cpp` directly. §9 item 11's "register it in all five
+build projects" is over-cautious: `ReliefModifierTest` appears in none of
+`run_all_tests.sh`, `run_all_tests.ps1`, `build/make/rise/Filelist`,
+`build/cmake/rise-android/rise_sources.cmake`, the two VS2022 files or the
+Xcode project. The five-project rule in CLAUDE.md is about `src/Library/`,
+not `tests/`. Nothing was registered.
+
+10 tests / 54 checks, all green. Counts on the gate suites moved as
+follows: `ReliefModifierTest` 118 → **123** (test 4d, the non-uniform
+companion, adds 5); `TextureExpressionVMTest` 685 (unchanged — the
+hand-stamped fixtures gained `widthValid = true` and one assertion was
+widened to check both flags on a default-constructed record).
+
+Two fixture-level notes worth keeping:
+
+* **Test 3 needed a rotation to stay discriminating.** With the mesh sphere
+  on the tessellation lattice the on-axis ray lands exactly on the
+  `(0, 0, R)` vertex, the interpolated normal is exactly the analytic one,
+  and mesh-vs-analytic agreement came out at rel = 0 — an identity, not a
+  measurement. `RotateObjectYAxis( 1.3° )` puts the hit mid-facet; the
+  agreement is then rel = 2.2 × 10⁻⁴, comfortably inside the 3% tolerance
+  and actually absorbing the mesh's normal-interpolation error.
+* **`ClippedPlaneGeometry` could not carry test 5**, for a reason that is
+  NOT about this arc — see §10.5.
+
+### 10.3 Red-proofs
+
+1. **The exact fold (§3.4).** Restoring `worldWidth *= m_worldLinearScale`
+   in `Object::IntersectRay` (the retired form, gated on `widthValid`),
+   rebuilt and run:
+   * `TextureFootprintTest` 54/0 → **51 passed, 3 failed** — test 5
+     reports `2.42912105383567e-3` against the truth `1.04667653293407e-2`,
+     i.e. **4.309× too small**, matching §3.4's predicted 4.31× exactly;
+     test 8's CSG composition also breaks (2×), because the Object level
+     then applies the geometric mean while the CSG level still applies the
+     exact map.
+   * `ReliefModifierTest` 123/0 → **121 passed, 2 failed** — test 4d
+     reports `0.0464158883361` against `0.2`, the same 4.309×.
+   * Test 4 (uniform `scale 10`) and `ReliefModifierTest` 4c stayed
+     **green** under the mutation. That is the point of 4d: a uniform
+     scale cannot separate the two operators.
+   Reverted; both suites back to 54/0 and 123/0.
+2. **The call-site hoist (§3.3).** Deleting the
+   `ComputeFootprintVectors` / `SolveFootprintUV` block from
+   `Object::IntersectRay`: `TextureFootprintTest` 54/0 → **29 passed, 25
+   failed**, with every analytic, UV-free and CSG assertion red and the
+   mesh-sphere `widthValid` assertion red too (the mesh call sites are
+   gone). Reverted; `git diff --stat` confirmed the file was back to the
+   intended change only.
+
+### 10.4 Gate
+
+Clean-of-warnings `make -C build/make/rise -j8 all` after touching every
+`.cpp` whose translation unit changed (`Object.cpp`, `CSGObject.cpp`,
+`ExpressionPainter.cpp`, `ReliefModifier.cpp`, `PainterPreview.cpp`,
+`DisplacedGeometry.cpp`, `GeometryUtilities.cpp`,
+`TriangleMeshGeometry.cpp`, `TriangleMeshGeometryIndexed.cpp`): **0
+warnings**. Test-binary builds: 0 warnings.
+
+| Suite | Result |
+|---|---|
+| `TextureFootprintTest` | 54 passed, 0 failed |
+| `ReliefModifierTest` | 123 passed, 0 failed |
+| `TextureExpressionVMTest` | 685 passed, 0 failed |
+| `PainterPreviewTest` | 87 passed, 0 failed |
+| `SourceHygieneTest` | 164 passed, 0 failed (291 test files scanned) |
+| `GeometryUVRoundtripTest` | all passed |
+| `CsgSurfacePayloadTest` | 348 passed, 0 failed |
+| `SDFGeometryTest` | 685 passed, 0 failed |
+| `BilinMipLODTest` | 28 passed, 0 failed |
+| `GeometryShadingTangentTest` | 12606 passed, 0 failed |
+
+The Xcode `RISE-GUI` warning gate was **not** run (no Xcode build in this
+session); no Objective-C++ or GUI source was touched, and the only header
+whose layout changed (`TextureFootprint` gains two `Vector3` and one
+`bool`) is consumed identically by both build systems.
+
+### 10.5 Render evidence
+
+Renders are at reduced settings in the session scratchpad
+(`…/scratchpad/tfp/`). Because RISE seeds each render from the wall clock,
+no two renders of the same scene are bit-identical; every comparison below
+is therefore quoted against a same-binary A/A control that bounds the seed
+noise.
+
+**`receding_pier` — unchanged, as required (§6's gate).** 640×360,
+`samples 4`, `oidn_denoise FALSE`, EXR / `Rec709RGB_Linear`. Four renders:
+two on the `913436cd` binary (`pier_A`, `pier_A2`), two after (`pier_B`,
+`pier_C`, `pier_D`).
+
+| Pair | mean-luminance rel Δ | worst 8×8 block |
+|---|---|---|
+| BEFORE vs BEFORE (control) | +0.0001% | 3.79% |
+| AFTER vs AFTER (control) | +0.0055% | 6.14% |
+| AFTER vs AFTER (control) | −0.0015% | 5.05% |
+| **BEFORE vs AFTER** | −0.0016% | 3.50% |
+| **BEFORE vs AFTER** | +0.0037% | 4.33% |
+| **BEFORE vs AFTER** | +0.0022% | 4.62% |
+
+Every cross-binary delta sits strictly inside the same-binary spread, on
+both the mean and the worst-block metric. The pier deck is a
+`displaced_geometry`-tessellated mesh at `scale 1`, so the fold changed
+from geometric-mean to exact with no numeric effect, and the call-site move
+is value-preserving; its `box_geometry` water prop newly gains a footprint
+but carries a `uniformcolor_painter`, so it cannot show one.
+
+**`scenes/Tests/Painters/relief_sphere_no_uv.RISEscene` — the analytic
+demonstrator.** 256×256, scene's own `samples 16`,
+`pathtracing_pel_rasterizer`, `oidn_denoise FALSE` already in the scene. An
+`fbm(P*7.0, 5, 0.5, 2.0)` `scalar_painter` driving a `relief_modifier` on an
+**analytic sphere** (radius 1, camera at `0 0 4`, fov 30) — the §6 table's
+"sphere (relief `max(step, fw)` becomes live)" row. BEFORE was rendered
+with a `913436cd`-built binary preserved in the scratchpad; AFTER with the
+current `bin/rise`. Two renders each.
+
+High-frequency energy (mean |∇²luminance|) by annulus, background and the
+silhouette edge excluded:
+
+| annulus | BEFORE | AFTER | change | A/A control |
+|---|---|---|---|---|
+| centre `r < 0.23` (face-on) | 6.8173 | 4.5688 | **−33.0%** | −0.2% |
+| `r 0.23–0.47` | 7.1239 | 4.8023 | **−32.6%** | +0.1% |
+| `r 0.47–0.70` | 8.6504 | 5.8452 | **−32.4%** | −0.1% |
+| limb `r 0.70–0.93` (grazing) | 5.6499 | 3.2885 | **−41.8%** | −0.3% |
+
+Read by eye: the large-scale relief structure is preserved and the fine
+sparkle is gone, most strongly at the limb. Run-to-run noise also drops
+(18.8% of pixels differ between two BEFORE renders, 10.4% between two
+AFTERs) — the wider stencil is doing antialiasing, which is the point.
+
+One honest qualification of §6's "far side fades, near field unchanged"
+prediction: on THIS scene the near field is not unchanged, and should not
+be. At `d − R = 3` the footprint is `3θ ≈ 6.3 × 10⁻³`, already 6× the
+relief auto-step floor of `1e-3`, so the step rule goes live over the whole
+disc and merely goes *further* live at the limb. The prediction holds in
+its intended form — the fade tracks the footprint monotonically — but "near
+field unchanged" is only true where the footprint is below the floor, i.e.
+much closer than this scene puts the camera.
+
+`scenes/FeatureBased/Textures/oxidized_copper.RISEscene` was also rendered
+before/after and is a **poor** demonstrator, recorded here so the next
+reader does not repeat it: its `fbm` runs at `patina_freq 1.6` on spheres
+~3.4 units away (`fw ≈ 5 × 10⁻³`, far below `OctaveFadeWeightImpl`'s
+`lo = 0.2`), and its receding `infiniteplane_geometry` floor — which is
+exactly the geometry that would show a horizon fade — carries a
+`uniformcolor_painter`. Its before/after difference is not separable from
+seed noise.
+
+### 10.6 Deviations, and one bug found in passing
+
+* **Phase boundaries were not commit boundaries** — see the preamble.
+* **§9 item 11's build-project registration was skipped**, deliberately —
+  see §10.2.
+* **§5's test 5 uses a `circular_disk`, not a `clipped_plane`.** Not a
+  preference: **`ClippedPlaneGeometry` misses any ray travelling exactly
+  along ±Y.** `RayBilinearPatchIntersection` uses the Ramsey–Potter–Hansen
+  elimination hard-coded on the ray direction's *z* component
+  (`A1 = ax*qz − az*qx`, and the same for B/C/D). When `dir.x == 0` **and**
+  `dir.z == 0`, every one of `A1`, `B1`, `C1`, `D1` is identically zero, so
+  all three quadratic coefficients vanish, `SolveQuadricWithinRange`
+  returns no roots, and the patch is missed. Measured: a ray from
+  `(0, 10, 0)` along `(0, −1, 0)` misses a 10×10 quad centred on the origin
+  in `y = 0`; tilting the direction by 0.01 makes it hit at `t = 10`. This
+  affects `clipped_plane` and `bilinear_patch` (and the disk/plane
+  geometries only insofar as they route through the same helper — they do
+  not). It is a **pre-existing bug, not introduced here**, and it is out of
+  scope; the fix is the PBRT-style largest-component axis pick instead of a
+  hard-coded `z`. Test 5 therefore uses a `CircularDiskGeometry` (a plain
+  plane test) so its 1e-9 exactness assertion is not entangled with it, and
+  test 6 covers `clipped_plane`'s footprint on a deliberately tilted ray,
+  with the reason written at the fixture.
+* **The §7 residual list is unchanged and still accurate**: primary rays
+  only, shading-vs-geometric normal, no grazing clamp. Test 10 measures the
+  grazing case rather than clamping it, per §4 — every hit from the optical
+  axis out to the silhouette reports a finite, non-negative `worldWidth`.
+
+### 10.7 Self-audit
+
+The five failure modes this edit was most likely to have, and what rules
+each one out.
+
+1. **Wrong frame for `dpdx` at the Object call site.** The block is the
+   *first* statement inside `if( ri.geometric.bHit )`. `Object::IntersectRay`
+   transformed `ri.geometric.ray` — origin, direction *and* differentials —
+   into object space on entry, the geometry wrote `ri.geometric.range` and
+   `ri.geometric.vNormal` in that same frame, and nothing has run since. One
+   statement later `vNormalWorldUnnorm` moves the normal to world and the
+   three inputs would disagree. Any such mismatch shows up immediately as a
+   non-integer promotion ratio; `TextureFootprintTest` 4 measures exactly
+   10, 5 measures rel 1.7 × 10⁻¹⁶, and 8 measures exactly 3.
+2. **Double-promotion under CSG.** `CSGObject::IntersectRay` is a separate
+   function from `Object::IntersectRay`, so the new call site does not fire
+   for a CSG composite; the footprint is produced once, by the operand's own
+   `Object::IntersectRay`, promoted once into the CSG's local frame there,
+   copied verbatim by `AdoptCsgSurfacePayload`, and promoted once more by the
+   CSG level. `TextureFootprintTest` 8 pins both halves, and it went red
+   under red-proof 1 (2×), which is what makes it discriminating rather than
+   merely green. The exit-probe path
+   (`AdoptCsgSurfacePayloadViaProbe` → `operand->IntersectRay`) follows the
+   identical route and is covered by `CsgSurfacePayloadTest`'s 348 checks.
+   No geometry in `src/Library/Geometry/` calls an `IObject`'s
+   `IntersectRay`, so there is no third nesting layer to double-count.
+3. **`valid` set on a UV-free hit.** `SolveFootprintUV` early-returns unless
+   `ri.derivatives.valid`, and separately unless the det guard passes.
+   `TextureFootprintTest` 6 asserts `valid == false` on `box_geometry`,
+   `sdf_geometry` and `clipped_plane` while asserting `widthValid` and a
+   positive width on each — the assertion pair that would catch a widened
+   flag. `TexturePainter::SampleTextured` and `WeaveBRDF` are untouched.
+4. **The plane-intersection degenerate at grazing incidence.** The
+   `|den| < 1e-20` guard is unchanged; it now leaves `widthValid` false where
+   it used to leave `valid` false, with `worldWidth` still 0 either way, so
+   the fallback behaviour is identical. `TextureFootprintTest` 10 walks the
+   optical axis out to the silhouette one pixel at a time and asserts a
+   finite, non-negative `worldWidth` at every hit (via `RISE::IsFiniteDouble`,
+   not a fast-math-foldable self-comparison). No clamp was added: §4 defers
+   it, because any clamp in the shared helper would move mesh pixels.
+5. **Mesh values changed by moving the call site.** Checked three ways.
+   (a) The winning candidate's `ri.vNormal` / `ri.range` at the Object layer
+   are exactly what the old per-candidate call last saw — the mesh
+   intersectors use a strict closest-hit guard, so the last *accepted*
+   candidate is the final one. (b) `derivatives.valid = true` is set
+   **unconditionally** on the mesh hit path — `useUVJacobian` only selects
+   between the UV and the barycentric (A, B) parameterisation, it does not
+   gate the flag — so there is no mesh hit that used to early-out of
+   `ComputeTextureFootprint` and now gets a width it did not have. (c)
+   Empirically: `ReliefModifierTest` 4c still reads exactly 10,
+   `TextureExpressionVMTest` is unchanged at 685, and `receding_pier`'s
+   before/after difference is strictly inside its same-binary seed noise
+   (§10.5).
