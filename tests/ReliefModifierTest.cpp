@@ -1,17 +1,20 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  ReliefModifierTest.cpp - Validates the painter-driven micro-relief
-//    modifier (src/Library/Modifiers/ReliefModifier.{h,cpp}).  Covers
-//    tests 1-8 and 10 of docs/RELIEF_MODIFIER_DESIGN.md 8 (test 9 is
-//    `modifier_stack`, a Phase-2 deliverable), plus 7b from fix round 1
-//    and 4c from fix round 2.
+//    modifier (src/Library/Modifiers/ReliefModifier.{h,cpp}) AND, since
+//    Phase 2, the modifier_stack composition class
+//    (src/Library/Modifiers/ModifierStack.{h,cpp}).  Covers tests 1-10
+//    of docs/RELIEF_MODIFIER_DESIGN.md 8, plus 7b from fix round 1 and
+//    4c from fix round 2.
 //    Two of its cases reach into BumpMap and NormalMap: test 2 (legacy
 //    equivalence) and test 7b(i) (the shared frame-rebuild gate).  4c
 //    reaches into Object::IntersectRay: the txFootprint.worldWidth
 //    object-to-world fold it added (fix round 2, P2-A) is not part of
 //    ReliefModifier itself, but ReliefModifier is worldWidth's first
 //    geometric consumer and the bug (an uncorrected object-space length
-//    read as world) is otherwise invisible at scale 1.
+//    read as world) is otherwise invisible at scale 1.  Test 9 reaches
+//    into NormalMap and GlintModifier too, to exercise the order-
+//    semantics table on real modifiers rather than stubs.
 //
 //    1. Analytic gradient.  Height `P.x`, N = +Z, T = +X: N' is exactly
 //       normalize( (0,0,1) - scale*(1,0,0) ).  The SIGN is the whole
@@ -67,6 +70,18 @@
 //       identical gate bug (audit-by-bug-pattern).
 //    8. Non-finite guard.  A height that returns NaN (and one that
 //       returns +Inf) leaves the hit bit-for-bit untouched.
+//    9. Stack order (design 8, item 9; ModifierStack).  (a) `normal_map`
+//       then `relief` and `relief` then `normal_map` give DIFFERENT
+//       vNormal, and each equals applying the two members by hand in
+//       that order, bit-identical.  (b) a stack ending in
+//       `glint_modifier` matches applying the prefix then Glint by hand.
+//       (c) nesting: `stack{A, stack{B,C}}` is bit-identical to
+//       `stack{A,B,C}`.  (d) a stack of one member is bit-identical to
+//       the member alone.  (e) parse: a two-member `modifier_stack`
+//       parses and registers; an empty stack is a parse-time error
+//       naming the stack; an unknown member name diagnoses both the
+//       stack and the missing member; a stack referencing another stack
+//       parses.
 //   10. Parse.  `relief_modifier` round-trips through the real CST
 //       loader; `height` bound to an IPainter yields
 //       kScalarBoundToIPainterFmt; an unknown name yields
@@ -132,6 +147,27 @@
 //        test 4c's ratio read 1.0 (object units, unfolded) instead of
 //        10.0 -- performed by hand (commented out the fold, rebuilt,
 //        ran the suite, observed the failure), then reverted.
+//    (h) Test 9, THE STACK APPLICATION ORDER (Phase 2).  Reversing the
+//        iteration in ModifierStack::Modify (last member first, swapping
+//        `members.begin()/end()` for `rbegin()/rend()`) fails 9a's two
+//        hand-chain bit-identical comparisons (the stack now matches the
+//        OPPOSITE hand-chained order) AND 9b's glint-last comparison, on
+//        a probe point hunted (via GlintModifier::FindFacet) to actually
+//        land on a facet -- a probe that misses is a no-op for Glint and
+//        cannot discriminate order at all, which is exactly what the
+//        FIRST attempt at this red-proof measured (9b stayed green under
+//        the reversed build, for that reason, before the probe hunt was
+//        added).  9c (nesting) is MEASURED NOT TO FAIL under this
+//        mutation, and that is correct, not a test gap: reversing
+//        applies to every level of nesting alike, so `stack{A,
+//        stack{B,C}}` and `stack{A,B,C}` both reverse to the same
+//        C-then-B-then-A application order and stay equal to each
+//        other. A globally-consistent order reversal is a genuine
+//        structural symmetry of flat composition; 9a and 9b are what
+//        actually pins the AUTHORED order (against NormalMap and
+//        GlintModifier, which are not order-symmetric the way a plain
+//        reversal of a flat list is). Reverted after observing 9a/9b
+//        fail (3 failures total) and the rest of the suite green.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -175,6 +211,8 @@
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Modifiers/BumpMap.h"
+#include "../src/Library/Modifiers/GlintModifier.h"
+#include "../src/Library/Modifiers/ModifierStack.h"
 #include "../src/Library/Modifiers/NormalMap.h"
 #include "../src/Library/Modifiers/ReliefModifier.h"
 #include "../src/Library/Objects/Object.h"
@@ -1215,7 +1253,10 @@ static void Test8_NonFiniteGuard()
 }
 
 // ============================================================
-//  Test 10: the scene chunk
+//  Test 9 + Test 10: modifier_stack, and the scene chunk
+//  (shared parse-capture helpers -- Test 9's (e) parse cases reuse them,
+//  per design 8's instruction to reuse ReliefModifierTest's
+//  ParseCapturing helper rather than duplicate it in a new file)
 // ============================================================
 
 namespace {
@@ -1275,6 +1316,225 @@ bool Contains( const std::string& hay, const char* needle )
 } // anonymous namespace
 
 namespace RISE { bool RISE_CreateJobPriv( IJobPriv** ppi ); }
+
+// ============================================================
+//  Test 9: modifier_stack -- order, glint-last, nesting, singleton, parse
+// ============================================================
+
+static void Test9_StackOrder()
+{
+	std::cout << "Test 9: modifier_stack applies members in authored order (docs/RELIEF_MODIFIER_DESIGN.md section 4)" << std::endl;
+
+	// ---- (a) ORDER.  `normal_map` then `relief` and `relief` then
+	// `normal_map` give DIFFERENT vNormal, and each is bit-identical to
+	// applying the two members by hand in that order -- ModifierStack
+	// adds no behaviour of its own beyond "call each Modify in order".
+	{
+		// (0.6, 0.5, 0.9) decodes to a non-trivial tangent-space tilt
+		// (2*0.6-1, 2*0.5-1, 2*0.9-1) = (0.2, 0.0, 0.8) -- a real
+		// NormalMap fixture, not a stub, per design 8's instruction.
+		UniformColorPainter* pTilt = Own( new UniformColorPainter( RISEPel( 0.6, 0.5, 0.9 ) ) );
+		NormalMap* nm = Own( new NormalMap( *pTilt, Scalar(1.0) ) );
+		FnScalarPainter* h = Own( new FnScalarPainter( &HeightPx ) );
+		ReliefModifier* rel = MakeRelief( *h, Scalar(0.3), ReliefDomain::Surface, Scalar(1e-3) );
+
+		const IRayIntersectionModifier* nmThenRel[2] = { nm, rel };
+		const IRayIntersectionModifier* relThenNm[2] = { rel, nm };
+		ModifierStack* stackNmRel = Own( new ModifierStack( nmThenRel, 2 ) );
+		ModifierStack* stackRelNm = Own( new ModifierStack( relThenNm, 2 ) );
+
+		RayIntersectionGeometric riNmRel = MakeRI( Point3( 0.4, 0, 0 ) );
+		RayIntersectionGeometric riRelNm = MakeRI( Point3( 0.4, 0, 0 ) );
+		stackNmRel->Modify( riNmRel );
+		stackRelNm->Modify( riRelNm );
+
+		CHECK( !VecClose( riNmRel.vNormal, riRelNm.vNormal, 1e-6 ),
+			"9a: normal_map->relief and relief->normal_map give DIFFERENT vNormal" );
+
+		RayIntersectionGeometric refNmRel = MakeRI( Point3( 0.4, 0, 0 ) );
+		nm->Modify( refNmRel );
+		rel->Modify( refNmRel );
+		CHECK( VecClose( riNmRel.vNormal, refNmRel.vNormal, 0 )
+		    && VecClose( riNmRel.onb.u(), refNmRel.onb.u(), 0 )
+		    && VecClose( riNmRel.onb.v(), refNmRel.onb.v(), 0 )
+		    && VecClose( riNmRel.onb.w(), refNmRel.onb.w(), 0 ),
+			"9a: stack{normal_map, relief} is bit-identical to normal_map.Modify() then relief.Modify() by hand" );
+
+		RayIntersectionGeometric refRelNm = MakeRI( Point3( 0.4, 0, 0 ) );
+		rel->Modify( refRelNm );
+		nm->Modify( refRelNm );
+		CHECK( VecClose( riRelNm.vNormal, refRelNm.vNormal, 0 )
+		    && VecClose( riRelNm.onb.u(), refRelNm.onb.u(), 0 )
+		    && VecClose( riRelNm.onb.v(), refRelNm.onb.v(), 0 )
+		    && VecClose( riRelNm.onb.w(), refRelNm.onb.w(), 0 ),
+			"9a: stack{relief, normal_map} is bit-identical to relief.Modify() then normal_map.Modify() by hand" );
+	}
+
+	// ---- (b) GLINT-LAST.  A stack ending in glint_modifier matches
+	// applying the prefix then Glint by hand.  GlintModifier::Modify is a
+	// deterministic pure function of the object-space hit + its
+	// parameters (design 5.1's "object-space-stability contract"), so
+	// this holds whether or not the probe point happens to land on a
+	// facet.  It is still hunted for a real hit below: a probe that
+	// MISSES every facet leaves Glint a no-op, and a no-op modifier
+	// cannot discriminate ORDER at all (measured in red-proof (h) --
+	// the very first probe tried there happened to miss, and the
+	// "glint-last" comparison stayed green under a REVERSED apply order
+	// for that reason, not because the order was actually honoured).
+	{
+		FnScalarPainter* h = Own( new FnScalarPainter( &HeightPx ) );
+		ReliefModifier* rel = MakeRelief( *h, Scalar(0.25), ReliefDomain::Surface, Scalar(1e-3) );
+		GlintModifier* gl = Own( new GlintModifier(
+			Scalar(5.0), Scalar(0.5), Scalar(0.6), Scalar(5.0),
+			Vector3( 1, 1, 1 ), Vector3( 0, 0, 0 ), 42u ) );
+
+		Point3 probe( 0.7, 0.2, 0 );
+		bool foundFacet = false;
+		for( int ix = 0; ix < 30 && !foundFacet; ix++ ) {
+			for( int iy = 0; iy < 30 && !foundFacet; iy++ ) {
+				const Point3 cand( ix * 0.1, iy * 0.1, 0 );
+				if( gl->FindFacet( cand ).found ) { probe = cand; foundFacet = true; }
+			}
+		}
+		CHECK( foundFacet, "9b: (setup) a probe point exists where glint_modifier actually finds a facet" );
+
+		const IRayIntersectionModifier* relThenGlint[2] = { rel, gl };
+		ModifierStack* stack = Own( new ModifierStack( relThenGlint, 2 ) );
+
+		RayIntersectionGeometric riStack = MakeRI( probe );
+		stack->Modify( riStack );
+
+		RayIntersectionGeometric riRef = MakeRI( probe );
+		rel->Modify( riRef );
+		gl->Modify( riRef );
+
+		CHECK( VecClose( riStack.vNormal, riRef.vNormal, 0 )
+		    && VecClose( riStack.onb.u(), riRef.onb.u(), 0 )
+		    && VecClose( riStack.onb.v(), riRef.onb.v(), 0 )
+		    && VecClose( riStack.onb.w(), riRef.onb.w(), 0 ),
+			"9b: stack{relief, glint} is bit-identical to relief.Modify() then glint.Modify() by hand" );
+	}
+
+	// ---- (c) NESTING.  stack{A, stack{B,C}} is bit-identical to
+	// stack{A,B,C} -- algebraically flat composition, design section 4.
+	{
+		FnScalarPainter* hA = Own( new FnScalarPainter( &HeightPx ) );
+		ReliefModifier* A = MakeRelief( *hA, Scalar(0.2), ReliefDomain::Surface, Scalar(1e-3) );
+		UniformColorPainter* pTiltB = Own( new UniformColorPainter( RISEPel( 0.7, 0.4, 0.85 ) ) );
+		NormalMap* B = Own( new NormalMap( *pTiltB, Scalar(1.0) ) );
+		GlintModifier* C = Own( new GlintModifier(
+			Scalar(5.0), Scalar(0.5), Scalar(0.6), Scalar(5.0),
+			Vector3( 1, 1, 1 ), Vector3( 0, 0, 0 ), 7u ) );
+
+		const IRayIntersectionModifier* membersBC[2] = { B, C };
+		ModifierStack* stackBC = Own( new ModifierStack( membersBC, 2 ) );
+		const IRayIntersectionModifier* membersA_BC[2] = { A, stackBC };
+		ModifierStack* nested = Own( new ModifierStack( membersA_BC, 2 ) );
+
+		const IRayIntersectionModifier* membersABC[3] = { A, B, C };
+		ModifierStack* flat = Own( new ModifierStack( membersABC, 3 ) );
+
+		RayIntersectionGeometric riNested = MakeRI( Point3( 0.3, -0.5, 0 ) );
+		RayIntersectionGeometric riFlat   = MakeRI( Point3( 0.3, -0.5, 0 ) );
+		nested->Modify( riNested );
+		flat->Modify( riFlat );
+
+		CHECK( VecClose( riNested.vNormal, riFlat.vNormal, 0 )
+		    && VecClose( riNested.onb.u(), riFlat.onb.u(), 0 )
+		    && VecClose( riNested.onb.v(), riFlat.onb.v(), 0 )
+		    && VecClose( riNested.onb.w(), riFlat.onb.w(), 0 ),
+			"9c: stack{A, stack{B,C}} is bit-identical to stack{A,B,C}" );
+	}
+
+	// ---- (d) SINGLETON.  A stack of one member is bit-identical to the
+	// member alone -- the wrapper adds no side effects.
+	{
+		FnScalarPainter* h = Own( new FnScalarPainter( &HeightPx ) );
+		ReliefModifier* rel = MakeRelief( *h, Scalar(0.4), ReliefDomain::Surface, Scalar(1e-3) );
+		const IRayIntersectionModifier* one[1] = { rel };
+		ModifierStack* singleton = Own( new ModifierStack( one, 1 ) );
+
+		RayIntersectionGeometric riStack = MakeRI( Point3( -0.2, 0.6, 0 ) );
+		RayIntersectionGeometric riAlone = MakeRI( Point3( -0.2, 0.6, 0 ) );
+		singleton->Modify( riStack );
+		rel->Modify( riAlone );
+
+		CHECK( VecClose( riStack.vNormal, riAlone.vNormal, 0 )
+		    && VecClose( riStack.onb.u(), riAlone.onb.u(), 0 )
+		    && VecClose( riStack.onb.v(), riAlone.onb.v(), 0 )
+		    && VecClose( riStack.onb.w(), riAlone.onb.w(), 0 ),
+			"9d: a one-member stack is bit-identical to that member alone" );
+	}
+
+	// ---- (e) PARSE.  A two-member modifier_stack parses and registers;
+	// an empty stack is a parse-time error naming the stack; an unknown
+	// member name diagnoses both the stack and the missing member; a
+	// stack referencing another stack parses.
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		CHECK( job != 0, "9e: job created" );
+		if( job ) {
+			std::string log;
+			const bool ok = ParseCapturing( "stack_ok",
+				"scalar_painter\n{\n\tname h9\n\texpression 0.1*P.x\n}\n"
+				"relief_modifier\n{\n\tname r9a\n\theight h9\n\tscale 0.2\n}\n"
+				"glint_modifier\n{\n\tname g9b\n}\n"
+				"modifier_stack\n{\n\tname finish9\n\tmodifier r9a\n\tmodifier g9b\n}\n",
+				*job, log );
+			CHECK( ok, "9e: the scene loads" );
+			CHECK( job->GetModifiers()->GetItem( "finish9" ) != 0,
+				"9e: `finish9` (two members) is registered in the modifier manager" );
+		}
+		safe_release( job );
+	}
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		if( job ) {
+			std::string log;
+			ParseCapturing( "stack_empty",
+				"modifier_stack\n{\n\tname empty9\n}\n",
+				*job, log );
+			CHECK( Contains( log, "modifier_stack `empty9`" ) && Contains( log, "empty stack is refused" ),
+				"9e: an empty modifier_stack is a parse-time error naming the stack" );
+			CHECK( job->GetModifiers()->GetItem( "empty9" ) == 0,
+				"9e: the empty stack is NOT registered" );
+		}
+		safe_release( job );
+	}
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		if( job ) {
+			std::string log;
+			ParseCapturing( "stack_unknown",
+				"modifier_stack\n{\n\tname bad9\n\tmodifier nosuchmodifier\n}\n",
+				*job, log );
+			CHECK( Contains( log, "modifier_stack `bad9`" ) && Contains( log, "`nosuchmodifier`" ) && Contains( log, "not found" ),
+				"9e: an unknown member name diagnoses BOTH the stack `bad9` and the missing member `nosuchmodifier`" );
+			CHECK( job->GetModifiers()->GetItem( "bad9" ) == 0,
+				"9e: the stack with an unknown member is NOT registered" );
+		}
+		safe_release( job );
+	}
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		if( job ) {
+			std::string log;
+			const bool ok = ParseCapturing( "stack_of_stack",
+				"glint_modifier\n{\n\tname g9inner\n}\n"
+				"modifier_stack\n{\n\tname inner9\n\tmodifier g9inner\n}\n"
+				"modifier_stack\n{\n\tname outer9\n\tmodifier inner9\n}\n",
+				*job, log );
+			CHECK( ok, "9e: a stack referencing another stack parses" );
+			CHECK( job->GetModifiers()->GetItem( "outer9" ) != 0,
+				"9e: the nested stack `outer9` is registered" );
+		}
+		safe_release( job );
+	}
+}
 
 static void Test10_Parse()
 {
@@ -1389,7 +1649,7 @@ static void Test10_Parse()
 
 int main()
 {
-	std::cout << "=== ReliefModifierTest (docs/RELIEF_MODIFIER_DESIGN.md 8, tests 1-8 + 4c + 7b + 10) ===" << std::endl;
+	std::cout << "=== ReliefModifierTest (docs/RELIEF_MODIFIER_DESIGN.md 8, tests 1-10 + 4c + 7b) ===" << std::endl;
 
 	Test1_AnalyticGradient();
 	Test2_LegacyEquivalence();
@@ -1401,6 +1661,7 @@ int main()
 	Test7_Handedness();
 	Test7b_SDFHeightfieldFrame();
 	Test8_NonFiniteGuard();
+	Test9_StackOrder();
 	Test10_Parse();
 
 	ReleaseOwned();
