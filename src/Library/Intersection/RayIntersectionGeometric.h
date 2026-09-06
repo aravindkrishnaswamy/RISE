@@ -99,8 +99,14 @@ namespace RISE
 		//! `dudx`…`dvdy` it publishes are in the same chart as
 		//! `ptCoord` -- which is the pairing `TexturePainter::
 		//! SampleTextured` and `WeaveBRDF` assume.  Without it a
-		//! textured sphere mips 1.67 levels too blurry, a cylinder
-		//! 1.02 and a torus 2.64.
+		//! textured sphere mips 1.65 levels too blurry, a cylinder
+		//! 1.59 and a torus 2.65 (re-measured in fix round 2 by
+		//! disabling the multiply-through and reading
+		//! `TextureFootprintTest` test 11's per-geometry LOD error:
+		//! 1.651 / 1.585 / 2.651, plus 2.33 for the ellipsoid; the
+		//! 1.67 / 1.02 / 2.64 this comment used to carry disagreed
+		//! with both design docs and, on the cylinder, was not a
+		//! rounding of anything).
 		//!
 		//! DEFAULT identity with `texChartValid = false`, which makes
 		//! `SolveFootprintUV` decline to publish a Jacobian at all

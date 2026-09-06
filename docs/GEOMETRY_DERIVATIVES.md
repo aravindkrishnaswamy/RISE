@@ -122,7 +122,7 @@ Per-geometry maps as shipped:
 | `SphereGeometry` | φ azimuth, θ polar | `((π−φ)/2π, θ/π)` | `dsdu = −1/2π`, `dtdv = 1/π` |
 | `EllipsoidGeometry` | φ azimuth, θ polar | same form, φ measured from `−x` | `dsdu = −1/2π`, `dtdv = 1/π` |
 | `CylinderGeometry` (side) | axial, θ | `(θ/2π, (axial−axisMin)/height)` | SWAPPED: `dtdu = 1/height`, `dsdv = ±1/2π` (sign per the axis's right-handedness fix-up: `+` on y, `−` on x and z) |
-| `CylinderGeometry` (end cap) | disk `(ra, rb)` in `[0,1]` | the same disk coordinate | identity, TRANSPOSED when the `−axis` cap's handedness swap fires |
+| `CylinderGeometry` (end cap) | disk `(ra, rb)` in `[0,1]` | the same disk coordinate | identity, TRANSPOSED on ONE of the two caps — `+y` for a y-axis cylinder, `−x` / `−z` for the other two (see below) |
 | `TorusGeometry` | tube angle, ring angle | `(ring/2π, tube/2π)` | SWAPPED: `dsdv = dtdu = 1/2π` |
 | both mesh classes, `useUVJacobian` | stored per-vertex UV | the same UV | identity, with `dtdv = −1` when the handedness flip negates `dpdv` |
 | both mesh classes, barycentric fallback | triangle edges | unrelated | **`texChartValid = false`** |
@@ -132,6 +132,16 @@ Note the sphere/ellipsoid sign: the texture azimuth runs *backwards*
 from the derivative one (`s = 0` sits at `−X` and `s` increases toward
 `+Z`). Mip LOD squares, so it would not notice — anisotropic filtering
 and the finite-difference oracle do.
+
+And the end-cap row's asymmetry, because it looks like a typo and is
+not: the swap fires on whichever cap's outward normal *opposes*
+`dpdu × dpdv`, and the `(ra, rb)` pairs `CylinderGeometry` picks are not
+consistently cyclic — `x → (y, z)`, `y → (x, z)`, `z → (x, y)`, where the
+cyclic choice for `y` would have been `(z, x)`. So `dpdu × dpdv` is `+X`
+on the x axis, `−Y` on the y axis and `+Z` on the z axis, and the
+transposed cap is `−x`, **`+y`**, `−z` respectively. This table said "the
+`−axis` cap" until fix round 2 of the relief follow-ups, which measured
+all six caps by instrumenting the swap site.
 
 ## Per-geometry conventions
 

@@ -784,7 +784,22 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 			sd.texChartValid = true;
 
 			// Orient (dpdu, dpdv, n) right-handed: swap if the frame is left-handed
-			// (happens on the -axis cap where the outward normal is negated).
+			// WHICH cap this fires on is NOT "the -axis one" (this comment
+			// said that until fix round 2, and so did
+			// docs/GEOMETRY_DERIVATIVES.md and TextureFootprintTest).  It is
+			// whichever cap's outward normal opposes `dpdu x dpdv`, and the
+			// (ra, rb) pairs above are not consistently cyclic:
+			//
+			//     axis 'x'  (ra, rb) = (y, z)  dpdu x dpdv = +X  -> swaps on -x
+			//     axis 'y'  (ra, rb) = (x, z)  dpdu x dpdv = -Y  -> swaps on +y
+			//     axis 'z'  (ra, rb) = (x, y)  dpdu x dpdv = +Z  -> swaps on -z
+			//
+			// 'y' is the odd one out because its pair is (x, z) where the
+			// cyclic choice would be (z, x).  Measured by instrumenting this
+			// branch and driving all six caps through
+			// TextureFootprintTest's chart oracle (fix round 2); the FD
+			// oracle's own cap case is the +y cylinder, so the swapped
+			// branch IS the one under test.
 			if( Vector3Ops::Dot( Vector3Ops::Cross( dpdu, dpdv ), objSpaceNormal ) < 0.0 ) {
 				Vector3 tmp = dpdu; dpdu = dpdv; dpdv = tmp;
 				sd.dsdu = 0.0; sd.dsdv = 1.0;

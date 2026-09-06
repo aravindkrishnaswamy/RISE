@@ -66,9 +66,15 @@
 //       that catches a chart mismatch, which no ratio or closed-form
 //       width test can see: before the chart map existed every one of
 //       the four analytic primitives published radians where the
-//       sampler expects [0, 1], mipping 1.02 (cylinder) to 2.64
+//       sampler expects [0, 1], mipping 1.59 (cylinder) to 2.65
 //       (torus) LOD levels too blurry while the mesh control was
-//       correct to 6e-4.
+//       correct to 6e-4.  (Those two figures read 1.02 / 2.64 until
+//       fix round 2, disagreeing with both design docs.  Re-measured
+//       by replacing the chart multiply-through in
+//       `SolveFootprintUV` with the raw derivative-chart
+//       differentials and reading the LOD error this very test
+//       prints: sphere 1.651, ellipsoid 2.330, cylinder 1.585, torus
+//       2.651, mesh control unmoved at 1.8e-5.)
 //   12. Chart-map honesty on the paths that have no map.  A mesh whose
 //       UV triangle is degenerate falls back to a barycentric EDGE
 //       frame whose dpdu is unrelated to ptCoord; it must report
@@ -185,7 +191,17 @@ static RayIntersection Cast( const Object& obj, const Ray& ray )
 //! on-axis camera hits sits on the well-sampled equator.  UVs are
 //! (phi/2pi, theta/pi), which gives the mesh a non-degenerate UV
 //! Jacobian there -- test 7 needs `valid` to actually come back true.
-static TriangleMeshGeometryIndexed* BuildMeshSphere( const Scalar radius, const int nu, const int nv )
+//! `mirrorU` writes the u texcoord BACKWARDS (`1 - i/nu`) while leaving
+//! the geometry and the triangle winding untouched -- a mirrored-UV
+//! asset, the commonest real one being a symmetric character whose two
+//! halves share one texture island.  It reverses `dpdu` without
+//! reversing the surface, so `cross(dpdu, dpdv) . N` changes sign and
+//! the mesh intersectors' right-handedness fix-up fires: it negates
+//! `dpdv` and records that in the chart map as `dtdv = -1`.  Test 11
+//! uses it to put that branch under the finite-difference oracle;
+//! nothing else in this file mirrors.
+static TriangleMeshGeometryIndexed* BuildMeshSphere( const Scalar radius, const int nu, const int nv,
+                                                     const bool mirrorU = false )
 {
 	VerticesListType verts;
 	NormalsListType  norms;
@@ -199,7 +215,9 @@ static TriangleMeshGeometryIndexed* BuildMeshSphere( const Scalar radius, const 
 			const Vector3 n( st * std::cos( phi ), ct, st * std::sin( phi ) );
 			verts.push_back( Point3( n.x * radius, n.y * radius, n.z * radius ) );
 			norms.push_back( n );
-			coords.push_back( Point2( Scalar( i ) / Scalar( nu ), Scalar( j ) / Scalar( nv ) ) );
+			const Scalar uCoord = mirrorU ? ( Scalar( 1 ) - Scalar( i ) / Scalar( nu ) )
+			                              : ( Scalar( i ) / Scalar( nu ) );
+			coords.push_back( Point2( uCoord, Scalar( j ) / Scalar( nv ) ) );
 		}
 	}
 
@@ -977,6 +995,26 @@ static void Test11_ChartOracle()
 		cam->release();
 	}
 
+	// The MIRRORED-UV mesh: same geometry, same winding, u texcoord
+	// written backwards.  This is the mesh path's `dtdv = -1` branch --
+	// the right-handedness fix-up negates dpdv and the chart map has to
+	// say so.  Without that row the branch was reachable in production
+	// (any mirrored-UV asset) and covered by nothing here: the control
+	// above never fires it, and no analytic primitive can.  Red-proof:
+	// deleting `ri.derivatives.dtdv = -1.0;` from BOTH
+	// TriangleMeshGeometry{,Indexed}Specializations.h leaves the control
+	// and all six analytic rows green and fails this one alone.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		TriangleMeshGeometryIndexed* m = BuildMeshSphere( 1.0, 128, 64, /*mirrorU*/ true );
+		Object* o = new Object( m );
+		m->release();
+		o->FinalizeTransformations();
+		CheckChart( "mesh sphere (mirrored UV, dtdv = -1)", *o, CentreRay( *cam ), Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
 	// Sphere.  The on-axis hit is at (0, 0, R): azimuth pi/2 (a quarter
 	// turn from the -X seam) and polar pi/2 (the equator, far from both
 	// poles), so neither singularity is in play.
@@ -1049,7 +1087,12 @@ static void Test11_ChartOracle()
 	// A CAPPED cylinder seen down its own axis: the hit is on the end
 	// cap, whose chart is the (ra, rb) disk -- a completely different
 	// map from the side wall's, including the possible axis swap the
-	// right-handedness fix-up applies on the -axis cap.
+	// right-handedness fix-up applies.  A y-axis cylinder swaps on its
+	// +y cap (NOT the -y one -- this comment said "the -axis cap" until
+	// fix round 2; see CylinderGeometry.cpp's own note at the swap site
+	// for the per-axis table and why 'y' is the odd one out), so the
+	// camera below, which looks DOWN the +y axis at the +y cap, lands on
+	// the SWAPPED branch -- the one worth an oracle.
 	{
 		PinholeCamera* cam = MakeCamera( Point3( 0, 5, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
 		CylinderGeometry* g = new CylinderGeometry( 'y', 1.0, 3.0, true );
