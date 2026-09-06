@@ -38,6 +38,7 @@
 #include <cstdlib>   // strtod for the ar_layer numeric parse
 #include <cstdarg>  // va_list / va_start -- SweepReject's formatted refusal channel
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include <atomic>    // bumpmap_modifier's once-per-process deprecation warning (NormalMap.cpp idiom)
 #include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
@@ -3441,8 +3442,8 @@ namespace RISE
 						cd.description = "Transparent dielectric film over a restricted substrate, with the film's coverage as a spatially varying slot.  Unlike composite_material and polished_material, its BSDF is the COMBINED layer response, so NEE and BDPT/VCM connections evaluate the coated surface rather than the bare substrate.  This is the wetness / clearcoat / varnish / oil-film material.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";            p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "base";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.semantics.pipe = ParameterPipe::Material;
-						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material` and `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's directional albedo to run its interreflection series, which a luminaire, a BSSRDF or a volumetric random walk cannot supply."; }
+						{ auto& p = P(); p.name = "base";            p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Material}; p.required = true; p.semantics.pipe = ParameterPipe::Material;
+						  p.description = "Substrate material.  RESTRICTED, not any material: accepted are `lambertian_material`, `orennayar_material`, `ggx_material` and `pbr_metallic_roughness_material` (which resolves to a ggx_material at scene-build time), and the substrate must not emit.  Anything else is refused at parse time.  The layered model needs the substrate's directional albedo to run its interreflection series, which a luminaire, a BSSRDF or a volumetric random walk cannot supply.  `required`: unlike `composite_material`'s `top`/`bottom` or the luminaire materials' `material` slot, the built-in `none` null material is not a fallback here -- it fails the substrate allowlist just like any other unsupported material, so there is no valid default and this slot must always be authored."; }
 						{ auto& p = P(); p.name = "coat_weight";     p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.0";
 						  p.description = "Coat COVERAGE fraction in [0,1] (physical SCALAR: a scalar_painter name or a single inline scalar -- a COLOUR painter does not bind here, and neither does a PER-CHANNEL scalar painter: this slot is read as one value, so an `r g b` triple would silently drop g and b).  Clamped to [0,1].  This is the spatially varying slot: paint it to make a surface wet in the joints and dry on the crowns.  Semantically a sub-pixel AREA fraction, not a gloss knob -- at coverage c the response is the statistical mixture c*(coated) + (1-c)*(bare), and the bare branch reaches the substrate through AIR with no Fresnel transmission and no interreflection.  Both branches conserve energy, so partial coverage does not darken an otherwise-white surface."; }
 						{ auto& p = P(); p.name = "coat_ior";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true; p.defaultValueHint = "1.33";
@@ -8160,6 +8161,7 @@ namespace RISE
 					std::string base_geometry = bag.GetString( "base_geometry", "" );
 					unsigned int detail       = bag.GetUInt(   "detail",        32 );
 					std::string displacement  = bag.GetString( "displacement",  "none" );
+					std::string height        = bag.GetString( "height",        "none" );
 					double disp_scale         = bag.GetDouble( "disp_scale",    1.0 );
 					bool double_sided         = bag.GetBool(   "double_sided",  false );
 					bool face_normals         = bag.GetBool(   "face_normals",  false );
@@ -8171,11 +8173,17 @@ namespace RISE
 						return false;
 					}
 
-					return pJob.AddDisplacedGeometry(
+					// The two height routes' mutual exclusion, the scalar-pipe
+					// resolution of `height` and the Function2D resolution of
+					// `displacement` all live in Job::AddDisplacedGeometryWith-
+					// Height -- one home, so the CLI, the agent verbs and any
+					// future caller get the same wording.
+					return pJob.AddDisplacedGeometryWithHeight(
 						name.c_str(),
 						base_geometry.c_str(),
 						detail,
 						displacement == "none" ? 0 : displacement.c_str(),
+						height == "none" ? 0 : height.c_str(),
 						disp_scale,
 						double_sided,
 						face_normals,
@@ -8186,16 +8194,19 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "displaced_geometry"; cd.category = ChunkCategory::Geometry;
-						cd.description = "Tessellated geometry with painter-driven vertex displacement.  `base_geometry` is a plain reference to ANY already-declared geometry -- doc 89 slice D audited every builder output against it: analytic primitives (sphere/box/torus/...), `sdf_geometry` (including a `skeleton_geometry`-expanded creature body and a `superellipsoid` part), `lathe_geometry`, `sweep_geometry` and `skin_geometry` all DERIVE, BAKE and RENDER cleanly with zero diagnostics, and `path_instances_geometry` can itself take a `displaced_geometry` as its template.  Scales/dimples/hammered-metal detail over any of those is one composition away.  Two verified caveats, neither a failure: (1) a `lathe_geometry`/`sweep_geometry`/`skin_geometry` base goes visibly FACETED under any non-zero displacement -- their bake is already a plain mesh, and the generic mesh-to-mesh tessellation path re-emits every triangle corner as its own unshared vertex, so the post-displacement normal recompute has nothing to average across (an `sdf_geometry` base's own dual-contoured topology keeps real shared vertices, so it stays smooth); raise the base's own tessellation density if the facets need to hide under the texture's wavelength.  (2) an INTERIOR-pinch `lathe_geometry` profile (waisted to `r 0` partway along, not just at an end) TEARS at the pinch under displacement -- its two coincident, oppositely-normalled pole vertices get pushed apart by `2 * disp_scale`; this is deliberate (see `LatheDescriptor`'s own comment) rather than a bug, since welding them would put one band's shading normal in the wrong half-space instead.  A `skeleton_geometry`/multi-part `sdf_geometry` base has NO per-limb UV: every part shares one cylindrical wrap around the WHOLE body's own bounding box (`u` = angle about local Y, `v` = normalized height), not a per-part frame, so scale the displacement painter for the whole silhouette rather than one limb.  See object-modeling-recipes Recipe 6.";
+						cd.description = "Tessellated geometry with painter-driven vertex displacement.  TWO HEIGHT ROUTES, spell exactly one (naming both is a parse error): `displacement` samples an `IFunction2D` as `f(u,v)` (the original UV route, unchanged), while `height` evaluates a `scalar_painter` as a 3D FIELD at each vertex's OBJECT-space position -- which is what lets ONE `scalar_painter` drive `displaced_geometry { height F  disp_scale S }` for the coarse shape AND `relief_modifier { height F }` on the same object for the fine shading-normal relief (docs/RELIEF_MODIFIER_DESIGN.md section 5.3).  `disp_scale` applies to either.  `base_geometry` is a plain reference to ANY already-declared geometry -- doc 89 slice D audited every builder output against it: analytic primitives (sphere/box/torus/...), `sdf_geometry` (including a `skeleton_geometry`-expanded creature body and a `superellipsoid` part), `lathe_geometry`, `sweep_geometry` and `skin_geometry` all DERIVE, BAKE and RENDER cleanly with zero diagnostics, and `path_instances_geometry` can itself take a `displaced_geometry` as its template.  Scales/dimples/hammered-metal detail over any of those is one composition away.  Two verified caveats, neither a failure: (1) a `lathe_geometry`/`sweep_geometry`/`skin_geometry` base goes visibly FACETED under any non-zero displacement -- their bake is already a plain mesh, and the generic mesh-to-mesh tessellation path re-emits every triangle corner as its own unshared vertex, so the post-displacement normal recompute has nothing to average across (an `sdf_geometry` base's own dual-contoured topology keeps real shared vertices, so it stays smooth); raise the base's own tessellation density if the facets need to hide under the texture's wavelength.  (2) an INTERIOR-pinch `lathe_geometry` profile (waisted to `r 0` partway along, not just at an end) TEARS at the pinch under displacement -- its two coincident, oppositely-normalled pole vertices get pushed apart by `2 * disp_scale`; this is deliberate (see `LatheDescriptor`'s own comment) rather than a bug, since welding them would put one band's shading normal in the wrong half-space instead.  A `skeleton_geometry`/multi-part `sdf_geometry` base has NO per-limb UV: every part shares one cylindrical wrap around the WHOLE body's own bounding box (`u` = angle about local Y, `v` = normalized height), not a per-part frame, so scale the displacement painter for the whole silhouette rather than one limb.  See object-modeling-recipes Recipe 6.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "base_geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
 						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "32"; }
-						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Displacement painter"; }
-						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "UV ROUTE (one of two, mutually exclusive with `height`).  An `IFunction2D` -- `expression_function2d`, `piecewise_linear_function2d`, `heightfield_function`, a dual-registered colour painter -- sampled as `f(u, v)` once per vertex.  Use it when the field is genuinely a function of texcoords, or for any pre-2026-09-06 scene (this route is unchanged).  Naming BOTH this and `height` is a parse error."; }
+						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter};
+						  p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;
+						  p.description = "FIELD ROUTE (one of two, mutually exclusive with `displacement`).  A `scalar_painter` evaluated as a 3D FIELD at each vertex -- so `expression`, `voronoi3d`, ramps, noise and every other 3D painter can drive displacement, which `displacement`'s UV sampling cannot (a 3D painter bound THERE goes through a fake hit and is a CONSTANT).  THE POINT: bind ONE `scalar_painter` to this AND to a `relief_modifier { height ... }` on the same object, and the same field gives coarse silhouette-changing displacement plus fine shading-normal relief -- docs/RELIEF_MODIFIER_DESIGN.md section 5.3.  That sharing is of the field's STATISTICS (same look, same scale, same seed), NOT point-for-point registration: this route samples the field at the PRE-displacement vertex while `relief_modifier` samples it at the POST-displacement hit, up to `disp_scale` times the field's own range apart along the normal -- see section 5.3 for the measured gap on the shipped fixture.  OBJECT SPACE: the mesh is baked BEFORE the geometry is bound to an object, so the geometry does not know its own transform; the synthetic hit carries the vertex's OBJECT-space position in BOTH `P` and `Po` (they COINCIDE here), and a `P`-authored field therefore does NOT follow the object's placement -- author against `Po`.  `u`/`v` ARE available and get the same `uv_seam_fold` treatment as the UV route, so a UV-domain field reads identically through either.  No pixel footprint exists at bake time (`fw` = 0), so noise octaves all resolve -- correct for a mesh built once at no particular viewing distance.  The synthetic bake-time hit also has no derivatives (`derivatives.valid` = FALSE) and no signal state: `curv`/`curvR` read 0 and the `occlusion()`/`thickness()` builtins read their neutral fallback (1/1), so a field that keys on them (e.g. `mix(a, b, clamp(curv,0,1))`) displaces FLAT through this route even where a `relief_modifier` bound to the same field would see real curvature/occlusion/thickness and tilt the normal.  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees."; }
+						{ auto& p = P(); p.name = "disp_scale";    p.kind = ValueKind::Double;    p.description = "Displacement scale, applied identically to whichever of `displacement` / `height` is bound"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "double_sided";  p.kind = ValueKind::Bool;      p.description = "Render both sides"; p.defaultValueHint = "FALSE"; }
 						{ auto& p = P(); p.name = "face_normals";  p.kind = ValueKind::Bool;      p.description = "Flat per-face normals"; p.defaultValueHint = "FALSE"; }
-						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk)"; p.defaultValueHint = "TRUE"; }
+						{ auto& p = P(); p.name = "uv_seam_fold";  p.kind = ValueKind::Bool;     p.description = "Tent-fold UV before displacement -- keeps a wrapped field continuous across the u=0/u=1 seam of CLOSED surfaces (sphere/torus/cylinder).  FALSE for an OPEN field on a non-wrapping Cartesian UV (e.g. a guilloché expression on a flat disk).  Applies to BOTH height routes: the `height` route's synthetic hit carries the folded (u,v) in `ptCoord`, so a UV-reading field folds identically whichever route it arrives by"; p.defaultValueHint = "TRUE"; }
 						// Retired: accepted for backward compat with pre-A2 scene files; ignored.
 						{ auto& p = P(); p.name = "maxpolygons";   p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
 						{ auto& p = P(); p.name = "maxdepth";      p.kind = ValueKind::UInt;      p.description = "Retired (BVH is sole accelerator)"; }
@@ -8541,6 +8552,21 @@ namespace RISE
 					double window        = bag.GetDouble( "windowsize", 0.01 );
 					bool normalize       = bag.GetBool(   "normalize_gradient", false );
 
+					// Phase A deprecation (docs/RELIEF_MODIFIER_DESIGN.md §7.1): still
+					// parses, but warns ONCE PER PROCESS -- the NormalMap.cpp
+					// `std::atomic<bool>` idiom, so a scene with many bumpmap_modifier
+					// chunks (or a test binary that derives many scenes) does not
+					// log-flood.  ABI-frozen: IJob::AddBumpMapModifier, the RISE_API
+					// entry points, and the BumpMap class are untouched by this warning.
+					static std::atomic<bool> s_warnedDeprecated{ false };
+					if( !s_warnedDeprecated.exchange( true ) ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"bumpmap_modifier `%s` is DEPRECATED and will be removed in a "
+							"later release: use relief_modifier (any scalar_painter height "
+							"field, no texcoords required).  Migrate this scene losslessly "
+							"with tools/migrate_scenes_relief.py.", name.c_str() );
+					}
+
 					if( !normalize ) {
 						// Default / legacy path, signature-frozen IJob virtual.
 						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
@@ -8575,7 +8601,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
+						cd.description = "DEPRECATED -- use relief_modifier (any scalar_painter height field, no texcoords required; migrate with tools/migrate_scenes_relief.py; see docs/RELIEF_MODIFIER_DESIGN.md).  Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
@@ -8621,6 +8647,123 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "normal_map"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Normal-map painter (load with `color_space Rec709RGB_Linear` for verbatim store; see chunk description)"; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "glTF normalTexture.scale (xy multiplier)"; p.defaultValueHint = "1.0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ReliefModifierAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name   = bag.GetString( "name",   "noname" );
+					std::string height = bag.GetString( "height", "none" );
+					double scale       = bag.GetDouble( "scale",  1.0 );
+					std::string domain = bag.GetString( "domain", "surface" );
+					double step        = bag.GetDouble( "step",   0.0 );
+
+					// Domain validation, the height resolution and its
+					// three-way scalar-pipe diagnostic all live in
+					// Job::AddReliefModifier -- one home, so the CLI, the
+					// agent verbs and any future caller get the same
+					// wording.
+					return pJob.AddReliefModifier( name.c_str(), height.c_str(), scale,
+						domain.c_str(), step );
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "relief_modifier"; cd.category = ChunkCategory::Modifier;
+						cd.description = "Painter-driven micro-relief: perturbs the shading normal "
+							"from the gradient of ANY scalar height field, by central difference in "
+							"the hit's tangent plane.  Works on ANY geometry that has a normal -- "
+							"analytic primitives, SDFs, meshes, displaced meshes -- and in the "
+							"default `surface` domain needs NO TEXCOORDS at all, so the same 3D "
+							"field that drives a colour ramp and a roughness slot can also emboss "
+							"the surface (the fix for authored variation that reads as paint on "
+							"plastic).  `height` is a scalar_painter, not a colour painter: wrap a "
+							"colour painter with `scalar_painter { name X_h  painter X  channel R }` "
+							"and bind that.  POSITIVE HEIGHT RISES ALONG +N (Blinn / PBRT-v4) -- the "
+							"OPPOSITE sign of the deprecated `bumpmap_modifier`, which treats its "
+							"field as depth; negate `scale` to sink instead of raise.  Attach via "
+							"the object's `modifier` parameter.  See "
+							"docs/RELIEF_MODIFIER_DESIGN.md.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";   p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "height"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter};
+						  p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;
+						  p.description = "Height field -- a `scalar_painter` (expression / voronoi / ramp / texture / function2d), or an inline numeric literal (which is constant, hence flat and pointless).  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees.  NOT SUPPORTED: a height parameterised on the SECOND UV set (`texcoord1_painter`, TEXCOORD_1).  Neither domain moves `ptCoord1` -- the surface domain's chain rule has only TEXCOORD_0's dpdu/dpdv to work with -- so such a field reads FLAT and produces no relief in either domain.  Author the height against TEXCOORD_0, or use a 3D field in `surface`."; }
+						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::Double;    p.description = "Amplitude: field units -> world units in `surface` domain, UV units in `uv`.  Positive raises along +N; NEGATIVE sinks (cracks, pores, engraving).  0 makes the modifier inert."; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "domain"; p.kind = ValueKind::Enum;      p.enumValues = {"surface","uv"};
+						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for lossless `bumpmap_modifier` migration and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
+						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching bumpmap_modifier's windowsize).  In `surface` it is a FLOOR, not the step: the rule is max(step > 0 ? step : 1e-3, the hit's pixel footprint), so an EXPLICIT step is raised to the footprint whenever the footprint is larger.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  Only TRIANGLE-MESH geometry populates one today (and only on primary hits with ray differentials): on analytic primitives and SDFs the footprint is unknown (0), the max is a no-op, and the explicit step -- or the 1e-3 floor -- is exactly what is used, with NO distance fade.  So: lower it below 1e-3 for fine features on analytic/SDF surfaces, where it takes effect verbatim; on meshes it only ever raises the floor, and a value below the footprint is silently ignored."; p.defaultValueHint = "0"; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
+			struct ModifierStackAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// GetRepeatable's precedent is standard_shader's `shaderop` --
+					// same ValueKind::Reference + repeatable=true pattern, same
+					// "all values, in input order" accessor.  An empty result
+					// (no `modifier` lines authored) is diagnosed by
+					// Job::AddModifierStack, one home for the wording so the
+					// CLI, the agent verbs and any future caller agree.
+					const std::vector<std::string>& mods = bag.GetRepeatable( "modifier" );
+					const unsigned int num = static_cast<unsigned int>( mods.size() );
+
+					char* modmem = new char[num > 0 ? num*256 : 1];
+					if( num > 0 ) { memset( modmem, 0, num*256 ); }
+					char** modptrs = new char*[num > 0 ? num : 1];
+
+					for( unsigned int i = 0; i < num; i++ ) {
+						modptrs[i] = &modmem[i*256];
+						strncpy( modptrs[i], mods[i].c_str(), 255 );
+					}
+
+					bool bRet = pJob.AddModifierStack( name.c_str(), (const char**)modptrs, num );
+
+					delete [] modptrs;
+					delete [] modmem;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "modifier_stack"; cd.category = ChunkCategory::Modifier;
+						cd.description = "ORDERED COMPOSITION of other modifiers: `Object::pModifier` is a single "
+							"pointer, so a single object could bind `normal_map_modifier` OR `relief_modifier` OR "
+							"`glint_modifier` but never a combination -- this chunk is the smallest fix.  Each "
+							"member is applied in AUTHORED ORDER and sees the PREVIOUS member's vNormal/onb, "
+							"exactly as if the object's modifier slot held a hand-written chain of `Modify` calls.  "
+							"ORDER SEMANTICS: `normal_map` then `relief` -- relief perturbs the NORMAL-MAPPED "
+							"frame (fine procedural detail on top of a baked map, the usual case).  `relief` then "
+							"`normal_map` -- the map is decoded in the RELIEF-TILTED frame; rarely wanted.  "
+							"`... then glint` -- glint should always be LAST: it replaces the normal with a facet "
+							"normal drawn about the CURRENT one, so it must see the final smooth frame.  `relief` "
+							"twice with different height fields is legitimate (a coarse+fine two-frequency split).  "
+							"NESTING is allowed -- a stack may name another stack -- and is algebraically flat: "
+							"`stack{A, stack{B,C}}` applies A, B, C in that order, identically to `stack{A,B,C}`.  "
+							"SELF-REFERENCE IS IMPOSSIBLE: member names resolve through the modifier manager at "
+							"PARSE time, before this stack itself is registered, so there is no cycle to detect.  "
+							"An EMPTY stack (no `modifier` lines) is a parse-time ERROR, not a no-op -- matching "
+							"`glint_modifier`'s stance that an authored no-op chunk is a mistake.  Attach via the "
+							"object's `modifier` parameter, exactly like any other modifier.  See "
+							"docs/RELIEF_MODIFIER_DESIGN.md section 4.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "modifier"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.repeatable = true; p.required = true;
+						  p.description = "Modifier to apply, in order (repeatable) -- at least one is required; an empty stack is a parse error."; }
 						return cd;
 					}();
 					return d;
@@ -13483,6 +13626,8 @@ namespace RISE
 
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
+		add( "relief_modifier",                       new ReliefModifierAsciiChunkParser() );
+		add( "modifier_stack",                        new ModifierStackAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
 		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
 

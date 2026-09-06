@@ -7,6 +7,10 @@ RISE ASCII SCENE 7
 #                   iron vise and a de-tiled diamond-plate tool tray.  The wood top's colour AND roughness  #
 #                   are driven from the SAME expression_painter grain field (ramp_painter for colour,       #
 #                   scalar_painter{painter} bridge for roughness -- gloss follows grain).  scatter_painter  #
+#                   Relief tilts the shading normal from the SAME grain field too: scalar_painter           #
+#                   sp_wood_relief bridges expr_grain raw (channel R, no scale/bias), and relief_modifier   #
+#                   relief_wood (scale 0.05) binds the wood top and all four legs -- colour, roughness AND  #
+#                   relief now share one field, so the grain reads as carved surface, not paint.            #
 #                   scatters oil stains that blend_painter{mode multiply} darkens onto the wood.  The vise  #
 #                   is worley-pitted iron whose colour field is reprojected with mapping_painter{projection #
 #                   world}, and its roughness is a standalone scalar_painter{expression} worley field.      #
@@ -111,7 +115,7 @@ ramp_painter
 }
 
 # CONSUMER 2 -- the PHYSICAL SCALAR, off the SAME field: roughness sweeps
-# 0.05 (pale/polished) .. 0.47 (dark grain/weathered) -- gloss follows grain.
+# 0.05 (dark grain/polished) .. 0.47 (pale sapwood/weathered) -- gloss follows grain.
 scalar_painter
 {
 	name			sp_wood_rough
@@ -119,6 +123,46 @@ scalar_painter
 	channel			R
 	scale			0.42
 	bias			0.05
+}
+
+# CONSUMER 3 -- RELIEF (docs/RELIEF_MODIFIER_DESIGN.md Phase 5): the SAME
+# field, bridged raw (no scale/bias -- relief_modifier's own `scale` below is
+# the independent height-amplitude multiplier, exactly the pattern
+# skills/agent/materials-and-media-basics.md's crackle-glaze recipe uses).
+# ramp_wood maps field=0 -> dark heartwood, field=1 -> pale sapwood, so this
+# raw field is monotonically increasing with "paleness".  Dark grain/late-
+# wood should read as SUNK relative to the pale wood between the streaks --
+# relief_modifier's convention is POSITIVE height rises along +N, and the
+# raw field is 0 at the dark end and 1 at the pale end, so binding it with
+# a POSITIVE scale leaves the dark end at the local floor and raises the
+# pale end above it: dark reads sunk, which is the sign this scene wants
+# (a look choice for a weathered bench, not a claim about real wood, where
+# dense late-wood usually stands proud) -- the OPPOSITE of
+# the crackle-glaze recipe's negative scale, because that recipe's dark end
+# is the HIGH end of its own field (see that recipe's own comment).  Tuned by
+# a reduced-render amplitude sweep (0.002/0.004/0.008/0.02/0.04/0.05/0.06/0.10
+# world units): 0.05 is the smallest value where the grain's catch-light
+# and the bench's front-edge silhouette both read as genuine surface relief
+# rather than flat paint, with no sparkle at the tray/vise end and no
+# black-speckle normal-flip artifacts (docs/RELIEF_MODIFIER_DESIGN.md §12
+# Phase 5 record has the full table).  `domain surface` -- the bench top and
+# legs are `box_geometry` (an analytic primitive, no UVs, and one that never
+# populates `txFootprint`, so there is no distance fade here; §3.3's
+# mesh-only caveat applies as documented, not as a bug).
+scalar_painter
+{
+	name			sp_wood_relief
+	painter			expr_grain
+	channel			R
+}
+
+relief_modifier
+{
+	name			relief_wood
+	height			sp_wood_relief
+	domain			surface
+	scale			0.05
+	step			0
 }
 
 ##################################################
@@ -341,6 +385,7 @@ standard_object
 	geometry		geo_bench_top
 	material		mat_wood_top
 	position		0 0.85 0
+	modifier		relief_wood
 }
 
 box_geometry
@@ -357,6 +402,7 @@ standard_object
 	geometry		geo_leg
 	material		mat_wood_top
 	position		-1.35 0.4 -0.45
+	modifier		relief_wood
 }
 
 standard_object
@@ -365,6 +411,7 @@ standard_object
 	geometry		geo_leg
 	material		mat_wood_top
 	position		1.35 0.4 -0.45
+	modifier		relief_wood
 }
 
 standard_object
@@ -373,6 +420,7 @@ standard_object
 	geometry		geo_leg
 	material		mat_wood_top
 	position		-1.35 0.4 0.45
+	modifier		relief_wood
 }
 
 standard_object
@@ -381,6 +429,7 @@ standard_object
 	geometry		geo_leg
 	material		mat_wood_top
 	position		1.35 0.4 0.45
+	modifier		relief_wood
 }
 
 ##################################################

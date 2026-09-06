@@ -1433,6 +1433,113 @@ directional_light
 }
 ```
 
+## One field, three physically distinct uses — crackle-glaze ceramic
+
+The composition pattern from `read_skill {name:"procedural-textures"}`'s
+"Adding relief" section, worked end to end: ONE `expression_painter` cell
+field drives **colour** (through `ramp_painter`), **roughness** (through a
+`scalar_painter { painter ... channel R }` bridge into the physical-scalar
+pipe — see "Colors vs physical scalars" above), and **relief** (a
+`relief_modifier` bound to that SAME `scalar_painter`, so the field that
+roughens the crack lines is the identical field that sinks them). This is
+the "reads as paint on plastic" fix the relief-modifier arc exists for
+(`docs/RELIEF_MODIFIER_DESIGN.md` §1, §9) applied to a concrete recipe: a
+crackle-glaze ceramic bowl/vase, where a Worley `f2-f1` field marks the
+fissures in the glaze.
+
+Execution-validated as `scenes/Tests/Painters/relief_crackle_glaze.RISEscene`
+(rendered, cracks confirmed to read as sunken relief, not flat paint) — keep
+that scene and this excerpt in sync if either changes:
+
+```rise
+# The one field: a Worley f2-f1 crackle pattern, remapped so the crack LINES
+# read as the HIGH end (near 1) and the glaze BODY reads as the LOW end
+# (near 0) -- see the relief_modifier comment below for why that orientation
+# wants a NEGATIVE relief scale.
+expression_painter
+{
+	name	cg_crack_field
+	def		cell		worley_f2f1(P*7.0, 1.0)
+	def		crack		1.0 - smoothstep(0.0, 0.10, cell)
+	expr	crack
+}
+
+# Colour: the ramp reads cg_crack_field directly (it is a colour painter; a
+# scalar expr broadcasts to grey).  crack=0 (glaze body) -> pale celadon
+# green; crack=1 (crack line) -> the dark iron-oxide stain that collects in
+# real crackle-glaze fissures.
+ramp_painter
+{
+	name			cg_glaze_colour
+	input			cg_crack_field
+	channel			R
+	interpolation	smooth
+	stop			0.0  0.62 0.78 0.68
+	stop			1.0  0.08 0.06 0.05
+}
+
+# The SAME field, bridged ONCE into the physical-scalar pipe (the
+# ISCALARPAINTER TRAP: a colour painter cannot bind to alphax/alphay/height
+# directly).  This scalar_painter is bound to BOTH the material's roughness
+# slot AND the relief_modifier's height below.  bias/scale here shape the
+# ROUGHNESS range (0.04 glossy glaze body -> 0.5 unglazed rough crack); the
+# relief_modifier's OWN scale (a separate, independent multiplier, below)
+# shapes the HEIGHT amplitude.
+scalar_painter
+{
+	name	cg_crack_scalar
+	painter	cg_crack_field
+	channel	R
+	scale	0.46
+	bias	0.04
+}
+
+# Relief: crack=1 is the HIGH end of the field, and POSITIVE height rises
+# along +N (relief_modifier's convention) -- so a POSITIVE scale here would
+# make the crack lines stand PROUD of the glaze, backwards for a crackle
+# glaze (the fissures are grooves the glaze receded into).  NEGATIVE scale
+# flips that: the field's high end SINKS, so the cracks read as fissures and
+# the glaze body (crack=0, contributing nothing) stays at the unperturbed
+# surface.  `domain surface` needs no texcoords -- this is a bare sphere.
+relief_modifier
+{
+	name	cg_relief
+	height	cg_crack_scalar
+	scale	-0.02
+	domain	surface
+	step	0
+}
+
+# ggx_material: `rd` (colour pipe) takes the ramp; `alphax`/`alphay`
+# (physical-SCALAR pipe) take the SAME scalar_painter the relief above uses.
+# `fresnel_mode schlick_f0` treats `rs` as an ordinary dielectric F0 (a
+# ceramic glaze is not a metal) -- 0.04 grey is the standard ~1.5-IOR
+# dielectric reflectance.
+uniformcolor_painter
+{
+	name	cg_f0
+	color	0.04 0.04 0.04
+}
+
+ggx_material
+{
+	name			cg_glaze_mat
+	rd				cg_glaze_colour
+	rs				cg_f0
+	alphax			cg_crack_scalar
+	alphay			cg_crack_scalar
+	fresnel_mode	schlick_f0
+}
+
+standard_object
+{
+	name		cg_sphere
+	geometry	cg_sphere_geom   # any sphere_geometry / SDF / mesh works -- no UVs required
+	material	cg_glaze_mat
+	modifier	cg_relief
+}
+```
+
 ## Participating media starter
 
 A `homogeneous_medium` gives volumetric absorption/scattering; bind it

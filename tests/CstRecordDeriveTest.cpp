@@ -145,6 +145,17 @@ int main()
 			"lambertian_material\n{\nname m\nreflectance p\n}\n"
 			"sphere_geometry\n{\nname g\nradius 1\n}\n"
 			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier bm\n}\n",
+			// modifier: relief_modifier twin -- exercises the MODIFIER manager + the
+			// {Painter}-declared-but-SCALAR-resolved `relief_modifier.height` slot
+			// (the relief-modifier analogue of bumpmap_modifier.function above, one
+			// manager over: SCALAR painters instead of Function2D).
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname h\nexpression 0.1*P.x\n}\n"
+			"relief_modifier\n{\nname r\nheight h\n}\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier r\n}\n",
 		};
 		for( const char* s : scenes ) {
 			Pair r = Run( s );

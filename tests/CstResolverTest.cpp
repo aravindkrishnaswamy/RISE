@@ -438,6 +438,104 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [relief-modifier-scalar] (relief-modifier arc, Phase 3) the new-modifier
+	// twin of [painter-decl-func2d] above: `relief_modifier.height` is
+	// declared {Painter} but resolved through the SCALAR painter manager
+	// (ParameterPipe::Scalar) rather than the colour-painter manager --
+	// exactly the same "declared-category vs. resolving-manager" shape as
+	// bumpmap_modifier.function/Function2D, one manager over. Closure of the
+	// scalar_painter must include the relief_modifier naming it.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname h\nexpression 0.1*P.x\n}\n"
+			"relief_modifier\n{\nname r\nheight h\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId h = DocFindByName( doc, "scalar_painter/h" );
+		const NodeId r = DocFindByName( doc, "relief_modifier/r" );
+		bool hasR = false; for( NodeId n : DocEditClosure( h, g ) ) if( n == r ) hasR = true;
+		Check( h && r && hasR, "relief-modifier-scalar: closure(scalar_painter h) INCLUDES relief_modifier.height" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displaced-height-scalar] (2026-09-06) `displaced_geometry` now declares
+	// BOTH height routes, and they resolve through DIFFERENT managers:
+	//   `displacement` -> Function2D, via the kFunc2DSubCat special case in
+	//                     Cst.cpp's FunctionSubNamespace (keyed on the PARAM
+	//                     NAME, which is why `height` is untouched by it);
+	//   `height`       -> the scalar painter manager, via the standing
+	//                     ParameterPipe::Scalar closure -- no new special
+	//                     case, which is the claim under test here.
+	// Both edges must exist SIMULTANEOUSLY from ONE displaced_geometry, and a
+	// RENAME of either target must rewrite its own line and leave the other's
+	// alone -- the sharpest available check that the two slots resolve
+	// independently rather than one capturing the other.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function2d\n{\nname d2\n}\n"
+			"scalar_painter\n{\nname hs\nexpression 0.1*Po.x\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			// Two SEPARATE displaced geometries: the engine refuses both slots
+			// on ONE chunk (mutually exclusive), so the resolver's two edges
+			// are exercised on a scene the derive also accepts.
+			"displaced_geometry\n{\nname viafunc\nbase_geometry base\ndisplacement d2\n}\n"
+			"displaced_geometry\n{\nname viafield\nbase_geometry base\nheight hs\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId d2       = DocFindByName( doc, "piecewise_linear_function2d/d2" );
+		const NodeId hs       = DocFindByName( doc, "scalar_painter/hs" );
+		const NodeId viafunc  = DocFindByName( doc, "displaced_geometry/viafunc" );
+		const NodeId viafield = DocFindByName( doc, "displaced_geometry/viafield" );
+		const NodeId pDisp    = DocParamId( doc, viafunc,  "displacement", 0 );
+		const NodeId pHeight  = DocParamId( doc, viafield, "height",       0 );
+		Check( d2 && hs && viafunc && viafield && pDisp && pHeight,
+			"displaced-height-scalar: scene parsed (plf2d d2, scalar_painter hs, both displaced_geometry forms)" );
+		Check( HasEdge( g, pDisp, d2 ),
+			"displaced-height-scalar: `displacement` still resolves to the Function2D (kFunc2DSubCat case KEPT)" );
+		Check( HasEdge( g, pHeight, hs ),
+			"displaced-height-scalar: `height` resolves to the scalar_painter through the EXISTING scalar closure (no new special case)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displaced-height-rename] the rename half of the case above, on a
+	// document WITHOUT a piecewise_linear_function2d -- whose `cp` entries
+	// embed Function1D names as String tokens and therefore make DocRename
+	// refuse ANY rename in the whole document (review #2).  Here the
+	// Function2D side is an `expression_function2d` (a Painter-category chunk
+	// that dual-registers into the Function2D manager), so both routes are
+	// renameable and each rewrites ONLY its own line.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"expression_function2d\n{\nname fuv\nexpr u*v\n}\n"
+			"scalar_painter\n{\nname hs\nexpression 0.1*Po.x\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname viafunc\nbase_geometry base\ndisplacement fuv\n}\n"
+			"displaced_geometry\n{\nname viafield\nbase_geometry base\nheight hs\n}\n" );
+		const NodeId fuv      = DocFindByName( doc, "expression_function2d/fuv" );
+		const NodeId hs       = DocFindByName( doc, "scalar_painter/hs" );
+		const NodeId viafunc  = DocFindByName( doc, "displaced_geometry/viafunc" );
+		const NodeId viafield = DocFindByName( doc, "displaced_geometry/viafield" );
+		Check( fuv && hs && viafunc && viafield,
+			"displaced-height-rename: scene parsed (expression_function2d fuv, scalar_painter hs, both displaced_geometry forms)" );
+
+		Document docH = DocRename( doc, hs, "hs2" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docH, viafield ), "height", 0 ) == "hs2",
+			"displaced-height-rename: renaming the scalar_painter REWRITES displaced_geometry.height" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docH, viafunc ), "displacement", 0 ) == "fuv",
+			"displaced-height-rename: ...and leaves the sibling `displacement` line untouched" );
+
+		Document docD = DocRename( doc, fuv, "fuvx" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docD, viafunc ), "displacement", 0 ) == "fuvx",
+			"displaced-height-rename: control -- renaming the Function2D rewrites `displacement`" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docD, viafield ), "height", 0 ) == "hs",
+			"displaced-height-rename: control -- ...and leaves `height` untouched" );
+	}
+
+	//----------------------------------------------------------------------
 	// [ior-phantom] (workstream #2) ior/film_ior resolve scalar-painter ->
 	// colour-painter -> numeric, NEVER a Function (Job::ResolveOrDiagnoseScalar
 	// consults no Function manager).  The descriptor over-declared
@@ -459,6 +557,61 @@ int main()
 		Check( !HasEdge( g, mIor, fid ), "ior-phantom: ior naming a Function2D produces NO edge (engine never resolves ior via Function)" );
 		bool clHasMat = false; for( NodeId n : DocEditClosure( fid, g ) ) if( n == mid ) clHasMat = true;
 		Check( !clHasMat, "ior-phantom: editing the Function2D does NOT re-derive the ior material" );
+	}
+
+	//----------------------------------------------------------------------
+	// [modifier-stack-repeatable-rename] (Phase 2, docs/RELIEF_MODIFIER_DESIGN.md
+	// section 4) modifier_stack's `modifier` param is a repeatable Reference on
+	// {Modifier}, exactly like standard_shader's `shaderop` on {ShaderOp} -- prove
+	// the SAME generic per-occurrence-NodeId machinery that already renames
+	// shaderop referrers correctly also covers modifier_stack, with NO Cst.cpp
+	// change: ComputeChunkRefs iterates every Param child by (role, occurrence),
+	// so each repeated `modifier` line gets its own edge keyed by its OWN
+	// DocParamId, and DocRename rewrites each referrer edge at its recorded
+	// (chunk, role, occ) independently -- a rename of ONE member therefore
+	// rewrites ONLY that occurrence's line, leaving a sibling occurrence naming a
+	// DIFFERENT modifier untouched.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"relief_modifier\n{\nname r1\nheight 0.1\n}\n"
+			"glint_modifier\n{\nname g1\n}\n"
+			"modifier_stack\n{\nname finish\nmodifier r1\nmodifier g1\n}\n" );
+
+		const NodeId r1Id = DocFindByName( doc, "relief_modifier/r1" );
+		const NodeId g1Id = DocFindByName( doc, "glint_modifier/g1" );
+		const NodeId stackId = DocFindByName( doc, "modifier_stack/finish" );
+		Check( r1Id != 0 && g1Id != 0 && stackId != 0,
+		       "modifier-stack-rename: scene parsed (r1, g1, finish{modifier r1, modifier g1})" );
+
+		ReferenceGraph g = BuildReferenceGraph( doc );
+		const NodeId occ0 = DocParamId( doc, stackId, "modifier", 0 );
+		const NodeId occ1 = DocParamId( doc, stackId, "modifier", 1 );
+		Check( HasEdge( g, occ0, r1Id ) && HasEdge( g, occ1, g1Id ),
+		       "modifier-stack-rename: BOTH repeatable `modifier` occurrences resolve as graph edges (r1 at occ0, g1 at occ1)" );
+
+		Document docN = DocRename( doc, r1Id, "r1x" );
+		ReferenceGraph gN = BuildReferenceGraph( docN );
+		Check( gN.stamp != g.stamp, "modifier-stack-rename: renaming r1 moves the graph stamp" );
+
+		NodeRef stackChunk = DocResolveNodeId( docN, stackId );
+		Check( stackChunk.get() != 0, "modifier-stack-rename: the stack chunk survives the rename (NodeId preserved, D44)" );
+		const std::string v0 = ParamValueAtOccurrence( stackChunk, "modifier", 0 );
+		const std::string v1 = ParamValueAtOccurrence( stackChunk, "modifier", 1 );
+		Check( v0 == "r1x", "modifier-stack-rename: occurrence 0 (`modifier r1`) IS rewritten to `r1x`" );
+		Check( v1 == "g1", "modifier-stack-rename: occurrence 1 (`modifier g1`) is UNCHANGED by renaming r1" );
+
+		// control: renaming g1 instead rewrites ONLY occurrence 1, leaving
+		// occurrence 0 (still naming r1) untouched -- proves the rewrite is
+		// addressed by occurrence, not "first repeated param wins" or
+		// "rewrite every occurrence with this role".
+		Document docG = DocRename( doc, g1Id, "g1x" );
+		NodeRef stackChunkG = DocResolveNodeId( docG, stackId );
+		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 0 ) == "r1",
+		       "modifier-stack-rename: control -- renaming g1 leaves occurrence 0 (`r1`) untouched" );
+		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 1 ) == "g1x",
+		       "modifier-stack-rename: control -- occurrence 1 IS rewritten to `g1x`" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

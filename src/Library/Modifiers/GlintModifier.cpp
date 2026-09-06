@@ -14,6 +14,7 @@
 
 #include "pch.h"
 #include "GlintModifier.h"
+#include "ModifierFrame.h"
 #include "../Utilities/math_utils.h"
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/FiniteMath.h"
@@ -229,42 +230,24 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 
 	// Replace the shading normal and rebuild the ONB about it,
 	// PRESERVING the tangent direction (project the old u onto the new
-	// tangent plane) rather than CreateFromW's canonical-axis pick —
+	// tangent plane) rather than CreateFromW's canonical-axis pick --
 	// keeps geometry-defined tangents (bShadingTangentFromGeometry,
-	// anisotropic tangent_rotation consumers) coherent across facets.
+	// anisotropic tangent_rotation consumers) coherent across facets --
+	// and restoring the incoming handedness so this modifier composes
+	// with the mirrored-instance FlipV fix instead of undoing it.  Both
+	// corrections, and why the degenerate CreateFromW fallback does NOT
+	// restore handedness, are documented on the shared helper.
 	//
-	// Handedness (audit-by-bug-pattern follow-up, docs/CLOTH_FABRIC_
-	// DESIGN.md 9.9 fix round P1): CreateFromWU ALWAYS emits a right-
-	// handed (u,v,w) triple, but a mirrored-instance hit's incoming
-	// `ri.onb` may deliberately be LEFT-handed here -- Object::
-	// IntersectRay / CSGObject::IntersectRay's P1 fix flips `v`
-	// (OrthonormalBasis3D::FlipV) to correct `tangent_rotation`'s sense
-	// under a negative-determinant transform.  This is the SAME
-	// unconditional-CreateFromWU-rebuild pattern NormalMap::Modify and
-	// BumpMap::Modify had (fixed in that same round): naively rebuilding
-	// here would silently discard the mirror correction for any
-	// mirrored, tangent-bearing hit that also carries a glint modifier.
-	// Capture the incoming handedness (sign of u.(v x w)) and restore it
-	// after rebuilding so this modifier composes with the mirror fix
-	// instead of undoing it.  Not applied to the CreateFromW degenerate
-	// fallback below: that branch discards U entirely for an arbitrary
-	// canonical-axis pick (same as NormalMap/BumpMap's identical
-	// fallback), so there is no supplied handedness left to preserve.
-	const Vector3 oldU = ri.onb.u();
-	const Scalar oldHandedness = Vector3Ops::Dot( oldU,
-		Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
-	ri.vNormal = newN;
-
-	const Vector3 uProj = oldU - newN * Vector3Ops::Dot( oldU, newN );
-	if( Vector3Ops::SquaredModulus( uProj ) > Scalar(1e-12) ) {
-		ri.onb.CreateFromWU( newN, uProj );
-		if( oldHandedness < Scalar(0) ) {
-			ri.onb.FlipV();
-		}
-	} else {
-		// Degenerate only if the tilt swung the normal onto the old
-		// tangent — impossible under the 60-degree ceiling, but guard
-		// the fallback anyway.
-		ri.onb.CreateFromW( newN );
-	}
+	// UNCONDITIONAL here, unlike BumpMap / NormalMap / ReliefModifier
+	// (which gate the projection on ModifierFrame::HasCoherentTangent).
+	// On a hit that HAS a coherent tangent the two policies agree
+	// exactly; they differ only on a tangent-less hit, and there this
+	// modifier's choice is deliberate and long-standing: a glint field
+	// perturbs the normal per-FACET, so letting the rebuild fall back to
+	// CreateFromW's canonical-axis pick on a hit with no supplied
+	// tangent would make the u/v axes jump discontinuously from facet to
+	// facet, which an anisotropic material would render as jitter.
+	// Projecting the previous u -- even an arbitrary one -- keeps the
+	// frame continuous across the field.
+	ModifierFrame::RebuildPreservingTangent( ri, newN );
 }

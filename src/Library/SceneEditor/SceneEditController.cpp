@@ -15962,6 +15962,13 @@ SceneEditController::ChunkNodeRequirements( const String& keyword ) const
 		// (legal, empty category list) would otherwise read back as a
 		// literal.  See EntityTemplates::ChunkNodeRequirement::isReference.
 		o.isReference = r.isReference;
+		// Carry the category set through too -- see this file's own
+		// ChunkNodeRequirement doc comment.  Previously dropped here,
+		// which left every caller of this API (this wrapper is the ONE
+		// production entry point outside EntityTemplates itself) with no
+		// way to tell a Painter-typed required reference from a
+		// Material-typed one.
+		o.referenceCategories = r.referenceCategories;
 		out.push_back( o );
 	}
 	return out;

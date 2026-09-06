@@ -17,6 +17,8 @@
 #include "../Polygon.h"
 #include "../Interfaces/ILog.h"
 #include "../Interfaces/IFunction2D.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Intersection/RayIntersectionGeometric.h"
 
 namespace RISE
 {
@@ -521,6 +523,82 @@ namespace RISE
 					Vertex& v = vVertices[idx];
 
 					const Scalar disp = displacement.Evaluate( vCoords[idx].x, vCoords[idx].y ) * scale;
+					v = Point3Ops::mkPoint3( v, vNormals[idx] * disp );
+
+					done_list[idx] = true;
+				}
+			}
+		}
+	}
+
+	void ApplyScalarHeightToObject(
+		IndexTriangleListType& vFaces,
+		VerticesListType& vVertices,
+		NormalsListType& vNormals,
+		TexCoordsListType& vCoords,
+		const IScalarPainter& height,
+		const Scalar scale
+		)
+	{
+		// Same once-per-vertex guard as the IFunction2D twin above: a vertex
+		// shared by N faces is displaced ONCE, and the read of `v` happens
+		// immediately before its own write, so every evaluation sees the
+		// PRE-displacement position.
+		std::vector<bool> done_list( vVertices.size(), false );
+
+		IndexTriangleListType::iterator i, e;
+		for( i=vFaces.begin(), e=vFaces.end(); i!=e; i++ )
+		{
+			IndexedTriangle& poly = *i;
+			for( int j=0; j<3; j++ )
+			{
+				const unsigned int idx = poly.iVertices[j];
+				if( !done_list[idx] ) {
+					Vertex& v = vVertices[idx];
+
+					// The SYNTHETIC hit -- the same build-time
+					// painter-evaluation idiom HairGenerator::MakeRootRi
+					// uses.  What is set, and what is deliberately not:
+					//   ptObjIntersec / ptIntersection : the vertex, in
+					//     OBJECT space, in BOTH (see the header caveat --
+					//     the geometry has no object transform at bake).
+					//   ptCoord : the vertex UV, exactly as the caller
+					//     supplied it (seam-folded or raw), so a UV field
+					//     reads identically through either route.
+					//   vNormal / vGeomNormal : the PRE-displacement vertex
+					//     normal -- the same direction the offset is applied
+					//     along, so a triplanar/normal-reading field agrees
+					//     with the geometry it is about to move.
+					//   txFootprint.valid / derivatives.valid : FALSE.  There
+					//     is no ray and no pixel here, so a footprint would be
+					//     a fabrication; the noise builtins' octave fade reads
+					//     `fw = 0` and resolves every octave, which is the
+					//     right answer for a bake (the mesh is built once, at
+					//     no particular viewing distance).
+					//   `derivatives.valid = false` ALSO means no signal
+					//     state: `curv`/`curvR` read 0 and the
+					//     `occlusion()`/`thickness()` builtins read their
+					//     neutral fallback (1/1) here, so a field that keys
+					//     on them (e.g. `mix(a, b, clamp(curv,0,1))`)
+					//     displaces FLAT at bake time even where a
+					//     `ReliefModifier::Modify` bound to the SAME field
+					//     sees real curvature/occlusion/thickness at hit
+					//     time and tilts the normal accordingly -- see
+					//     docs/RELIEF_MODIFIER_DESIGN.md section 5.3.
+					// Both `valid` flags are false out of the default
+					// constructors; set explicitly so the contract is
+					// readable at the call site rather than inherited.
+					RayIntersectionGeometric ri( Ray(), nullRasterizerState );
+					ri.bHit               = true;
+					ri.ptObjIntersec      = v;
+					ri.ptIntersection     = v;
+					ri.ptCoord            = vCoords[idx];
+					ri.vNormal            = vNormals[idx];
+					ri.vGeomNormal        = vNormals[idx];
+					ri.txFootprint.valid  = false;
+					ri.derivatives.valid  = false;
+
+					const Scalar disp = height.GetValuesAt( ri ).v[0] * scale;
 					v = Point3Ops::mkPoint3( v, vNormals[idx] * disp );
 
 					done_list[idx] = true;

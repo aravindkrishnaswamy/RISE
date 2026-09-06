@@ -4555,11 +4555,25 @@ namespace RISE
 		//! `isReference` tells the canvas to resolve it from the drag
 		//! context / a candidate picker rather than a text field; use
 		//! ConnectionLegality (S17) for the legal candidate set.
+		//! `referenceCategories` is the descriptor's own legal-category
+		//! set for that reference (empty = unrestricted, per
+		//! ConnectionLegality::CategoryAllowed's convention) -- a caller
+		//! MUST consult this before picking a stand-in / candidate: a
+		//! required reference is not always Painter-typed (`coated_
+		//! material.base` and `fabric_material.base` are `{Material}`),
+		//! and guessing Painter for those fails at derive time with an
+		//! "unresolved reference" the caller cannot self-diagnose from
+		//! `isReference` alone.  Threaded straight from
+		//! `EntityTemplates::ChunkNodeRequirement::referenceCategories`,
+		//! which already carries this per-parameter -- this field used to
+		//! stop at `isReference` here, silently discarding the category on
+		//! the way from EntityTemplates to every real caller of this API.
 		struct ChunkNodeRequirement
 		{
 			String param;
 			String description;
 			bool   isReference = false;
+			std::vector<ChunkCategory> referenceCategories;
 		};
 
 		//! The caller-supplied-argument contract for `keyword`.  Empty for

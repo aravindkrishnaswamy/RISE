@@ -588,6 +588,221 @@ namespace RISE
 			//! carries the same generic self-disarm suffix every sibling in this
 			//! family appends ("if a deliberately dry look was wanted, ignore").
 			static const char* const DESIGN_DRY_RAIN_SCENE = "DESIGN_DRY_RAIN_SCENE";
+			//! docs/RELIEF_MODIFIER_DESIGN.md sec 9 (2026-09-06), condition Q:
+			//! the DECAL-ON-PLASTIC detector -- an object whose material paints
+			//! a spatially-varying colour but whose shading normal never
+			//! responds to it.  Doc 88 sec 2/7's adoption laws (C-ADV/C-VERB)
+			//! are why this ships advisory-only: the record on this exact shape
+			//! (`vary_material`, `add_wear`) is that advice alone moves
+			//! adoption approximately zero, so this note is not expected to
+			//! either -- it exists to make the census (docs/
+			//! RELIEF_MODIFIER_DESIGN.md sec 9's "Census" bullet) measurable,
+			//! and its text is the one place the relief idiom is taught at the
+			//! moment the agent is looking at the material.  Per C-VERB, if
+			//! the census shows advice + recipe do not move adoption, a
+			//! `relief_amplitude` argument on `add_wear` is the named
+			//! escalation (see AgentSession::AddWear's own hook-point note,
+			//! AgentSession.cpp) -- it is not built until then.
+			//!
+			//! FIRES on >= 1 (no volume gate -- condition M/N/O/I's
+			//! convention, not condition D/H/L/P's "systemic flatness" one:
+			//! ONE decal-on-plastic object already IS the described failure)
+			//! `standard_object` or `csg_object` -- EXCLUDING a pure CONTAINER
+			//! (a `standard_object` with neither `geometry` nor `source`: a
+			//! transform node, invisible to the renderer, with no surface for
+			//! a modifier to act on regardless of what its otherwise-inert
+			//! material binds; `csg_object` has no `geometry`/`source` field
+			//! at all -- its shape is always its two operands -- so this
+			//! exclusion never applies to it) -- for which ALL of:
+			//!   (i)   its EFFECTIVE material names at least one colour-pipe
+			//!         slot (`ColorMaterialSlotsByKind_`, condition H's own
+			//!         registry-derived table -- never a hand list) that
+			//!         resolves to a SPATIALLY-VARYING painter kind
+			//!         (`ClassifyColorBinding_`, the SAME Constant/Varying/
+			//!         Opaque classifier condition H and `add_wear`/
+			//!         `add_wetness` already share). An Opaque (unreadable)
+			//!         slot does NOT qualify -- that proves only that the slot
+			//!         is not a plain flat constant, never that it is
+			//!         genuinely textured.
+			//!
+			//!         FIX ROUND 1 (2026-09-06) narrowed "varying" three ways,
+			//!         each because the first cut advised relief where it did
+			//!         not belong:
+			//!          * a PASS-THROUGH painter (`blend_painter`,
+			//!            `ramp_painter`, `mapping_painter`,
+			//!            `channel_painter`) is only as varying as its inputs
+			//!            -- `ClassifyColorBinding_` now recurses, exactly as
+			//!            the scalar twin `ClassifyMicrosurfaceBinding_`
+			//!            already walked its base/multiply chains, so an
+			//!            all-uniform blend is CONSTANT.  Pattern painters
+			//!            (checker / perlin / voronoi / ...) stay Varying by
+			//!            construction: two uniform inputs still give a
+			//!            chequerboard;
+			//!          * an EMISSION slot (`emissive` / `exitance` /
+			//!            `emission`, per `ColorSlotIsEmissionRole_`) is never
+			//!            a candidate -- relief cannot sell a GLOW.  A varying
+			//!            `emissive` over flat rd/rs on `ggx_material` or
+			//!            `pbr_metallic_roughness_material` is a complete look
+			//!            on its own.  SLOT-scoped, not material-scoped: the
+			//!            same material with a varying `rd` still fires;
+			//!          * a slot `add_wetness` rebound to its own WETNESS-
+			//!            PRELUDE expression (condition H's own
+			//!            `WetnessBodyReadsPreludeDefs_` marker: `dryness` AND
+			//!            `film_amount`) is a wet film, not authored texture.
+			//!            Advising relief there is physically backwards -- a
+			//!            film conforms to the relief already present rather
+			//!            than adding new micro-geometry (see
+			//!            `AgentSession::AddWetness`'s own hook-point note).
+			//!         Conversely the search is RECURSIVE THROUGH WRAPPER
+			//!         MATERIALS: `coated_material` / `fabric_material` /
+			//!         `composite_material` have no varying colour slot of
+			//!         their own while the surface under them is fully
+			//!         textured, so every `ParameterPipe::Material` slot
+			//!         (`MaterialWrapperSlotsByKind_`, registry-derived) is
+			//!         followed into the wrapped base, with the (iv)
+			//!         material-kind exclusions applied at every level.
+			//!
+			//!         "EFFECTIVE material", not "the object chunk's own
+			//!         `material` literal": FIX ROUND 2 (2026-09-06) taught
+			//!         this clause the SAME two engine rules fix round 1
+			//!         taught clause (ii), because both rules govern the PAIR
+			//!         `pMaterial`/`pModifier` rather than the modifier alone
+			//!         -- `AdoptCsgSurfaceBindings` copies both,
+			//!         `IsInstanceOwnParam` excludes both, and a composite
+			//!         applies its own through the matched pair
+			//!         `if( pMaterial ) ri.pMaterial = pMaterial;  if(
+			//!         pModifier ) ri.pModifier = pModifier;` at the bottom of
+			//!         `CSGObject::IntersectRay`.  So:
+			//!          * the material is resolved through the `source` chain
+			//!            (own `material` wins, else the inherited one; own
+			//!            `material none` clears it), so a bare `copy { source
+			//!            orig }` inheriting a varying material with no
+			//!            modifier IS a candidate.  The literal-param lookup
+			//!            this replaced dropped every such copy -- an
+			//!            UNDER-report, and one that also left the clause's
+			//!            "and N more objects" tally short;
+			//!          * an object under an ENCLOSING composite that spells a
+			//!            `material` is NOT a candidate on its own material:
+			//!            the composite's binding replaces it on every hit, so
+			//!            the operand advertises a texture that is never
+			//!            shaded.  The COMPOSITE is the candidate, on the
+			//!            material IT spells, which the ordinary per-object
+			//!            walk already reaches.  Nested: any enclosing
+			//!            composite spelling one silences the operand, because
+			//!            the outermost spelled material is what survives the
+			//!            inside-out adoption.  Unlike `modifier none` on a
+			//!            `source` copy, `material none` on a COMPOSITE
+			//!            overrides nothing -- the parser passes 0, so the
+			//!            guarded assignment never fires;
+			//!   (ii)  the rendered surface carries NO EFFECTIVE MODIFIER.
+			//!         Not "the object chunk spells no `modifier`" -- FIX
+			//!         ROUND 1 (2026-09-06) replaced that literal-param test
+			//!         with `ObjectHasEffectiveModifier_`, which resolves the
+			//!         question the ENGINE answers.  A modifier is effective
+			//!         by any of four routes:
+			//!          (a) the object's OWN `modifier` (absent, empty or
+			//!              "none" means unbound);
+			//!          (b) one INHERITED down a `source` chain.  Cst.cpp's
+			//!              `MergeChunkParams` folds the whole chain into the
+			//!              derived instance and `modifier` is NOT in
+			//!              `IsInstanceOwnParam`, so an instancing copy
+			//!              renders WITH its source's modifier.  The copy's
+			//!              own params merge LAST, so a copy spelling
+			//!              `modifier none` genuinely CLEARS the inherited one
+			//!              and IS a candidate -- "none" stops the walk, it is
+			//!              not "absent";
+			//!          (c) EVERY OPERAND of a `csg_object` carrying one
+			//!              (recursively, through nested csg).
+			//!              `CSGObject::IntersectRay` reports the OPERAND's
+			//!              modifier on each hit (`AdoptCsgSurfaceBindings`),
+			//!              so a composite that binds nothing itself still has
+			//!              a fully relief-bearing surface when both operands
+			//!              do.  A composite with no modifier and only SOME
+			//!              operands bearing relief FIRES, naming the
+			//!              composite -- that partly-flat surface is exactly
+			//!              the described failure.  A composite whose operands
+			//!              cannot be resolved is NOT bound: this scan never
+			//!              claims relief it cannot see;
+			//!          (d) an ENCLOSING composite (transitively) binding one
+			//!              over this object.  The composite's own binding
+			//!              takes final precedence over the operand's on every
+			//!              hit it reports, so the operand is never flat.
+			//!         Every walk here is bounded, but not by the same rule
+			//!         (FIX ROUND 2): the `source` walks stop at
+			//!         `kSourceChainHopBound_ = 256`, the SAME guard value
+			//!         `Cst.cpp`'s `SourceChainOf` uses.  The walk actually
+			//!         REACHES 255 hops (hop 0 resolves the object's own
+			//!         literal; hops 1..255 walk its `source` ancestors), and
+			//!         that is itself a belt that never binds: the engine's
+			//!         real instancing-expansion cap is
+			//!         `ClonePlanBuilder::DepthOk` (`Cst.cpp`), which refuses
+			//!         to EXPAND a `source` chain past 64 levels, well inside
+			//!         this scan's 255-hop reach -- so no chain the ENGINE
+			//!         will expand can outrun the scan.  The first cut's
+			//!         bound of 8 reached only 7 hops and justified itself by
+			//!         a `source` cycle the declare-earlier rule makes
+			//!         impossible, which made a LEGAL 8-deep chain with the
+			//!         modifier at its root fire falsely WHEN the far link
+			//!         also re-spelled its own material -- without that, the
+			//!         object has no material at all, and clause (i) drops
+			//!         it rather than firing.  The csg walks are
+			//!         bounded on NESTING DEPTH instead, deliberately modest
+			//!         because the enclosure edges can fan out; a nest deeper
+			//!         than that resolves to "no modifier" / "no enclosing
+			//!         material", which costs at most one advisory.
+			//!         Which modifier KIND is bound is never asked: a
+			//!         `modifier_stack` name counts exactly as a single
+			//!         modifier chunk does, and a bumpmap/normal-map/glint
+			//!         modifier silences this exactly as a relief one would,
+			//!         since the claim is narrowly "the shading normal is
+			//!         inert", not "the wrong modifier kind was chosen".
+			//!
+			//!         WHY THE ENCLOSING-COMPOSITE RULES ARE SAFE -- in (ii)
+			//!         above and in (i)'s material twin alike: A CSG OPERAND
+			//!         NEVER RENDERS STANDALONE, so silencing one can never
+			//!         silence a surface that reaches the frame on its own.
+			//!         `CSGObject::AssignObjects` marks both operands consumed
+			//!         (`Object::AddConsumer`; `IsWorldVisible()` is
+			//!         `bIsWorldVisible && nConsumedBy == 0`), which takes
+			//!         them out of every world-visible enumeration, and
+			//!         `Job::AddCSGObject` refuses an operand that is
+			//!         `parent`ed elsewhere ("Parent the csg_object instead").
+			//!         The only surface an operand contributes to is its
+			//!         composite's;
+			//!   (iii) the object's geometry is not `hair_geometry` (a
+			//!         strand's own tangent-frame shading has no purchase for
+			//!         this kind of relief); and
+			//!   (iv)  the bound material's kind is not `hair_material`, is
+			//!         not a luminaire (`DescriptorIsEmissiveMaterial_`, the
+			//!         registry "carries `exitance`" rule conditions I/M
+			//!         already share -- a painted glow is sold by emission,
+			//!         and micro-relief on a light source is not this note's
+			//!         business), and the object itself does not classify as
+			//!         a light-object (`ChunkIsLightObject_`, the arc-80
+			//!         rect_light/shape_light fixture classifier -- redundant
+			//!         with the luminaire check in every case audited, kept
+			//!         for the same reason `TargetIsFormBearing_` keeps it: a
+			//!         synthesized light fixture is never this note's
+			//!         business even if some future luminaire kind's
+			//!         descriptor stops carrying `exitance`).
+			//!
+			//! The message NAMES the object, its material, the varying slot,
+			//! and the painter bound there, and states the two-chunk fix
+			//! (`scalar_painter { painter <field> channel R }` bridging the
+			//! SAME field into a `relief_modifier`, attached via `modifier`) --
+			//! read_skill {"name":"procedural-textures"}'s relief section is
+			//! where the worked recipe lives.  NO HERO-MATERIAL PICK: unlike
+			//! conditions D/H/L/P (which choose ONE material a bare verb call
+			//! would rewrite), Phase 4 ships no verb, so there is nothing a
+			//! hero pick would target -- every qualifying OBJECT is a finding,
+			//! the first named in full and the rest counted, the same bounded
+			//! multi-finding convention conditions M/N/O already use for a
+			//! per-instance (rather than per-material) finding.
+			//! Severity::Info, self-disarming (condition H's own kSelfDisarm
+			//! suffix -- the claim IS "flat/simple styling", condition A's
+			//! topic), same shared ComputeDesignNoteConditionsFromDoc_ scan as
+			//! every sibling in this family.
+			static const char* const DESIGN_FLAT_RELIEF = "DESIGN_FLAT_RELIEF";
 			//! Crash-fix sibling (see LuminaryManager::AddToLuminaryList,
 			//! src/Library/Rendering/LuminaryManager.cpp): an emissive material
 			//! is bound to an object with no directly-owned geometry (e.g. a

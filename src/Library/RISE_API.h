@@ -78,6 +78,7 @@
 #include "Utilities/ProgressiveConfig.h"      // ProgressiveConfig (auto_rasterizer factory takes it directly)
 #include "Interfaces/ProceduralDescriptors.h"
 #include "Painters/ExpressionEval.h"	// Implementation::ExpressionProgram (expression_function2d factory)
+#include "Modifiers/ReliefModifier.h"	// Implementation::ReliefDomain (relief_modifier factory)
 #include "Painters/ExpressionParamSpec.h"	// Implementation::ParamSpec (expression_painter / scalar_painter{expression} factories)
 #include "Painters/RampPainter.h"	// Implementation::RampPainter::Stop (ramp_painter factory)
 
@@ -468,7 +469,8 @@ namespace RISE
 						const Scalar        disp_scale,			///< [in] Displacement scale factor
 						const bool          double_sided,		///< [in] Are generated polygons double-sided?
 						const bool          face_normals,		///< [in] Use face normals rather than topologically re-averaged vertex normals
-						const bool          seam_fold = true	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
+						const bool          seam_fold = true,	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
+						const IScalarPainter* height = 0		///< [in] Scalar height FIELD evaluated at the vertex (object space); mutually exclusive with `displacement` -- pass at most one
 						);
 
 	//! Creates a signed-distance-field (implicit) geometry: transformed
@@ -2364,6 +2366,41 @@ namespace RISE
 								const Vector3& scale,			///< [in] anisotropic cell stretch (1,1,1 = isotropic; Worley convention pt*scale+shift)
 								const Vector3& shift,			///< [in] cell-space offset
 								const unsigned int seed			///< [in] hash seed (distinct fleck fields on otherwise identical objects)
+								);
+
+	//! Creates a painter-driven micro-relief modifier: the height field is
+	//! ANY `IScalarPainter` (an expression, a voronoi cell field, a ramp, a
+	//! texture, or any colour painter through the
+	//! `scalar_painter { painter X channel R }` bridge), differenced
+	//! centrally in the hit's tangent plane to tilt the shading normal.
+	//! Needs no texcoords in the default `Surface` domain.  Positive height
+	//! RISES ALONG +N (Blinn / PBRT-v4 convention) -- the OPPOSITE sign of
+	//! `bumpmap_modifier`, which treats its field as depth.  A zero or
+	//! non-finite `scale` makes the modifier inert.  See
+	//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateReliefModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd); `.v[0]` is read
+								const Scalar scale,							///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+								const Implementation::ReliefDomain domain,	///< [in] Surface (3D field, no texcoords needed) or UV (legacy sampling geometry)
+								const Scalar step							///< [in] Central-difference half-step; <= 0 selects the automatic rule
+								);
+
+	//! Creates a modifier_stack: an ordered composition of OTHER modifiers,
+	//! applied in authored order -- each member sees the PREVIOUS member's
+	//! vNormal/onb, so a stack behaves exactly like a hand-written chain of
+	//! `Modify` calls.  The smallest fix for `Object::pModifier` being a
+	//! single pointer (docs/RELIEF_MODIFIER_DESIGN.md section 4): "normal
+	//! map, then relief, then glint" needs a list, not a slot.  Rejects
+	//! `count == 0` or any null entry in `mods` -- an empty stack is a
+	//! parse-time mistake, not a legitimate no-op (matching
+	//! glint_modifier's stance).  See Modifiers/ModifierStack.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateModifierStack(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored (application) order; each addref'd
+								const unsigned int count						///< [in] Number of members; 0 is rejected
 								);
 
 

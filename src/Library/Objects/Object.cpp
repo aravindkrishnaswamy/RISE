@@ -952,6 +952,37 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			ri.geometric.derivatives.curvatureValid = false;
 		}
 
+		// WORLD-MEASURE FOLD for txFootprint.worldWidth -- the same LENGTH
+		// fold as scaleHint immediately above, and for the same reason:
+		// TextureFootprintCompute stamps it from ri.ray, which at that call
+		// site (triangle-mesh geometry, mid-IntersectRay) is still the
+		// OBJECT-space ray this function transformed on entry, so
+		// worldWidth is an object-space length until folded here.  Relief-
+		// modifier fix round 2, P2-A: worldWidth is consumed as a WORLD
+		// length by ExpressionPainter/ExpressionScalarPainter (`fw`, whose
+		// footprint-fade thresholds are world units) and by ReliefModifier's
+		// `s = max(step, worldWidth)` step selection -- both silently read
+		// object units on any object with a non-unit world scale until this
+		// fold existed.  `|det M|^(1/3)` is the same geometric-mean
+		// approximation scaleHint uses under a NON-uniform scale (exact for
+		// uniform scale); see m_worldLinearScale's own comment.  A
+		// degenerate transform (m_worldLinearScale == 0) leaves worldWidth
+		// at its object-space value, same policy as scaleHint's degenerate
+		// branch above -- an object-space length is still a better
+		// normalizer than 0.  On a strongly flattened or elongated instance
+		// (e.g. `scale 4 0.05 4` on a panel: in-plane scale is 4x, but
+		// |det|^(1/3) = 0.928) the geometric-mean fold can UNDER-scale
+		// worldWidth relative to the true in-plane footprint (4.31x too
+		// small vs. the 4x it should be) -- worse than leaving worldWidth
+		// object-space would have been.  The error direction only
+		// under-filters, though: ReliefModifier's `max(step, worldWidth)`
+		// then simply falls back to `step`, the same aliasing as
+		// pre-fix, never worse than that floor.  The uniform-scale case
+		// remains exact.
+		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
+			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
+		}
+
 		// Wireframe view-mode closest-edge point transforms like a
 		// position (forward transform) -- exactly as ptIntersection.
 		if( ri.geometric.bHasWireEdgeInfo ) {
@@ -972,6 +1003,17 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 
 		// Tell which modifier
 		ri.pModifier = pModifier;
+
+		// Tell the modifier how to express a WORLD-space step in the frame
+		// `ptObjIntersec` (stamped a few lines below) is written in.  For a
+		// plain object that frame IS this object's own object space, so the
+		// map is exactly m_mxInvFinalTrans -- the inverse of the
+		// m_mxFinalTrans that produces ptIntersection from ptObjIntersec.
+		// A borrowed pointer into a member of the object that is about to
+		// become ri.pObject; the scene is immutable during a render.  See
+		// the field's doc comment in RayIntersectionGeometric.h for the
+		// direction-vs-point rule and for why CSGObject clears it instead.
+		ri.geometric.pmxWorldToObject = &m_mxInvFinalTrans;
 
 		// Tell which material
 		ri.pMaterial = pMaterial;

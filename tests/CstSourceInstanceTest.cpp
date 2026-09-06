@@ -122,6 +122,12 @@ static std::string Scene( const std::string& body )
 		+ "lambertian_material\n{\nname m\nreflectance p\n}\n"
 		+ "lambertian_material\n{\nname m2\nreflectance p2\n}\n"
 		+ "bumpmap_modifier\n{\nname bump\nfunction p\nscale 0.1\n}\n"
+		// relief_modifier twin (relief-modifier arc, Phase 3) -- same shared-fixture
+		// role as `bump` above, so the [inherit] `modifier` test can be proven on the
+		// new slot too.  `height` is a SCALAR-painter reference (a colour painter is
+		// refused there), hence the small dedicated scalar_painter rather than reusing `p`.
+		+ "scalar_painter\n{\nname bumph\nvalue 0.1\n}\n"
+		+ "relief_modifier\n{\nname relief\nheight bumph\nscale 0.1\n}\n"
 		+ body;
 }
 
@@ -456,6 +462,16 @@ int main()
 		const std::string bare = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n" ) );
 		Check( got == want, "inherit: `modifier` comes across with the rest" );
 		Check( got != bare, "inherit: ... and the modifier compare is not vacuous (an instance without it dumps differently)" );
+	}
+
+	// [inherit] relief_modifier twin -- same check, on the new slot (relief-modifier arc, Phase 3).
+	{
+		const std::string src = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nmodifier relief\n}\n";
+		const std::string got  = DumpCst( Scene( src + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
+		const std::string want = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nmodifier relief\nposition 5 0 0\n}\n" ) );
+		const std::string bare = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n" ) );
+		Check( got == want, "inherit: relief_modifier `modifier` comes across with the rest" );
+		Check( got != bare, "inherit: ... and the relief_modifier compare is not vacuous (an instance without it dumps differently)" );
 	}
 
 	// [inherit] the SHADOW FLAGS, asserted on the IObject.  A dump-vs-dump compare cannot pin
@@ -828,8 +844,10 @@ int main()
 		// COMMENTS ON PURPOSE.  The message exists to name BOTH chunks so the author can
 		// reconcile them, which means naming them in terms an author can COUNT TO.  A raw CST
 		// item index is not one: trivia (comments, blank lines) are items too, so in this scene
-		// -- whose colliding chunks are the 11th and 12th the author wrote -- the raw indices are
-		// nowhere near 11 and 12.  Without the comments the two numberings would coincide and
+		// -- whose colliding chunks are the 13th and 14th the author wrote (the shared `Scene()`
+		// fixture carries 9 chunks ahead of `body`, including the relief-modifier arc's
+		// `scalar_painter`/`relief_modifier` pair alongside the legacy `bumpmap_modifier`) -- the
+		// raw indices are nowhere near 13 and 14.  Without the comments the two numberings would coincide and
 		// this test would pass on the broken message.
 		//
 		// TWO DIFFERENT ROLES ON PURPOSE, too.  The message claims to print each chunk's role;
@@ -848,8 +866,8 @@ int main()
 		std::string all;
 		Check( RefusedWith( Scene( body ), "declared by MORE THAN ONE object chunk", &all ),
 		       "refuse: the entry name is also declared by a LATER authored chunk (document-level mis-targeting)" );
-		Check( all.find( "chunk #11" ) != std::string::npos && all.find( "chunk #12" ) != std::string::npos,
-		       "refuse: ... naming both by their position among the file's CHUNKS (#11 and #12 here, comments not counted)" );
+		Check( all.find( "chunk #13" ) != std::string::npos && all.find( "chunk #14" ) != std::string::npos,
+		       "refuse: ... naming both by their position among the file's CHUNKS (#13 and #14 here, comments not counted)" );
 		Check( all.find( "a `standard_object`" ) != std::string::npos && all.find( "a `csg_object`" ) != std::string::npos,
 		       "refuse: ... and by role -- BOTH roles, so the author knows what to look for" );
 		Check( all.find( "item " ) == std::string::npos,

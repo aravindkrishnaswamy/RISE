@@ -6633,8 +6633,49 @@ bool Job::AddDisplacedGeometry(
 	const bool          seam_fold
 	)
 {
+	// The pre-2026-09-06 entry point, kept VERBATIM in signature (IJob's
+	// vtable is append-only) and reduced to a forward: one implementation,
+	// so the IFunction2D route cannot drift between the two doors.
+	return AddDisplacedGeometryWithHeight(
+		name, base_geometry_name, detail, displacement, /*height*/ 0,
+		disp_scale, double_sided, face_normals, seam_fold );
+}
+
+bool Job::AddDisplacedGeometryWithHeight(
+	const char*         name,
+	const char*         base_geometry_name,
+	const unsigned int  detail,
+	const char*         displacement,
+	const char*         height,
+	const Scalar        disp_scale,
+	const bool          double_sided,
+	const bool          face_normals,
+	const bool          seam_fold
+	)
+{
 	if( !name || !base_geometry_name ) {
 		GlobalLog()->Print( eLog_Error, "Job::AddDisplacedGeometry:: name and base_geometry are required" );
+		return false;
+	}
+
+	// "none" is the parser's absent-parameter sentinel on both slots.
+	const bool bHasDisplacement = ( displacement && displacement[0] && strcmp( displacement, "none" ) != 0 );
+	const bool bHasHeight       = ( height       && height[0]       && strcmp( height,       "none" ) != 0 );
+
+	// MUTUAL EXCLUSION, refused by NAME.  Two height sources with one
+	// `disp_scale` has no defensible resolution -- summing them is not what
+	// either author meant, and silently preferring one is the
+	// plausible-looking wrong answer.  The diagnostic names BOTH parameters
+	// and says which is which, because the failure is almost always a
+	// half-finished migration from the UV route to the field route.
+	if( bHasDisplacement && bHasHeight ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"displaced_geometry `%s`: `displacement` (`%s`) and `height` (`%s`) are mutually exclusive -- "
+			"spell exactly one.  `displacement` is the UV route: an IFunction2D sampled as f(u,v).  "
+			"`height` is the FIELD route: an IScalarPainter evaluated at each vertex's object-space "
+			"position, which is what lets ONE scalar_painter drive both this displacement and a "
+			"relief_modifier on the same object.  `disp_scale` applies to whichever you keep.",
+			name, displacement, height );
 		return false;
 	}
 
@@ -6645,7 +6686,7 @@ bool Job::AddDisplacedGeometry(
 	}
 
 	IFunction2D* pFunc = 0;
-	if( displacement && strcmp( displacement, "none" ) != 0 ) {
+	if( bHasDisplacement ) {
 		pFunc = pFunc2DManager->GetItem( displacement );
 		if( !pFunc ) {
 			GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: displacement function `%s` not found", displacement );
@@ -6653,10 +6694,30 @@ bool Job::AddDisplacedGeometry(
 		}
 	}
 
+	// Height is a LENGTH, a physical scalar -- never a colour, so it must
+	// not pass through JH spectral uplift.  ResolveOrDiagnoseScalar is the
+	// standing three-way diagnostic (per-channel painter in a single-scalar
+	// slot / an IPainter name bound to a scalar slot, with the
+	// `scalar_painter { painter X channel R }` fix / an unknown name).
+	// requireSingle: the vertex offset reads `.v[0]` only.
+	IScalarPainter* pHeight = 0;
+	if( bHasHeight ) {
+		pHeight = ResolveOrDiagnoseScalar(
+			pScalarPntManager, pPntManager,
+			"displaced_geometry", name, "height", height, /*requireSingle*/ true );
+		if( !pHeight ) {
+			return false;
+		}
+	}
+
 	IGeometry* pGeometry = 0;
 	const bool bOK = RISE_API_CreateDisplacedGeometry(
 		&pGeometry, pBase, detail, pFunc, disp_scale,
-		double_sided, face_normals, seam_fold );
+		double_sided, face_normals, seam_fold, pHeight );
+
+	// The geometry addref'd the height painter (or refused, in which case
+	// nobody did); either way this local reference is done.
+	safe_release( pHeight );
 
 	if( !bOK || !pGeometry ) {
 		GlobalLog()->PrintEx( eLog_Error, "Job::AddDisplacedGeometry:: failed to create displaced geometry `%s` (base `%s` may not support tessellation)", name, base_geometry_name );
@@ -6909,6 +6970,98 @@ bool Job::AddGlintModifier(
 
 	const bool ok = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
 	safe_release( pModifier );
+	return ok;
+}
+
+bool Job::AddReliefModifier(
+	const char* name,										///< [in] Name of the modifier
+	const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+	const double scale,										///< [in] Amplitude
+	const char* domain,										///< [in] "surface" (default) or "uv"
+	const double step										///< [in] Central-difference half-step; <= 0 = auto
+	)
+{
+	// `domain` first: a typo here is an authoring mistake with a silent,
+	// plausible-looking wrong answer (a 3D field sampled in UV reads flat
+	// on anything without texcoords), so refuse it LOUDLY and name both
+	// legal values rather than defaulting.
+	Implementation::ReliefDomain eDomain = Implementation::ReliefDomain::Surface;
+	if( !domain || !domain[0] || strcmp( domain, "surface" ) == 0 ) {
+		eDomain = Implementation::ReliefDomain::Surface;
+	} else if( strcmp( domain, "uv" ) == 0 ) {
+		eDomain = Implementation::ReliefDomain::UV;
+	} else {
+		GlobalLog()->PrintEx( eLog_Error,
+			"relief_modifier `%s`: parameter `domain` value `%s` is not recognized -- "
+			"use `surface` (the default: the height is a 3D field, the step is taken in "
+			"the tangent plane in world units, no texcoords required) or `uv` (the height "
+			"is a function of (u,v), the step is taken in texture units -- for legacy "
+			"bumpmap_modifier migration and for image heightfields authored in UV).",
+			name, domain );
+		return false;
+	}
+
+	// Height is a PHYSICAL SCALAR (a length), never a colour: it must not
+	// pass through JH spectral uplift.  ResolveOrDiagnoseScalar is the
+	// standing three-way diagnostic -- per-channel painter in a
+	// single-scalar slot, an IPainter name bound to a scalar slot (with
+	// the `scalar_painter { painter X channel R }` fix), or an unknown
+	// name.  requireSingle: this modifier reads `.v[0]` only.
+	IScalarPainter* pHeight = ResolveOrDiagnoseScalar(
+		pScalarPntManager, pPntManager,
+		"relief_modifier", name, "height", height, /*requireSingle*/ true );
+	if( !pHeight ) {
+		return false;
+	}
+
+	IRayIntersectionModifier* pModifier = 0;
+	RISE_API_CreateReliefModifier( &pModifier, *pHeight, scale, eDomain, step );
+	safe_release( pHeight );
+
+	const bool okRelief = RegisterOrDiag( pModManager, pModifier, name, "modifier" );
+	safe_release( pModifier );
+	return okRelief;
+}
+
+bool Job::AddModifierStack(
+	const char* name,										///< [in] Name of the modifier stack
+	const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
+	const unsigned int count								///< [in] Number of members; 0 is rejected
+	)
+{
+	// An empty stack is a parse-time mistake, not a legitimate no-op --
+	// matching glint_modifier's stance that an authored no-op chunk is
+	// worth refusing loudly rather than silently accepting.
+	if( count == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"modifier_stack `%s`: no `modifier` members were given -- an empty stack is refused (author at least one `modifier <name>` line)",
+			name );
+		return false;
+	}
+
+	std::vector<const IRayIntersectionModifier*> members;
+	members.reserve( count );
+	for( unsigned int i = 0; i < count; i++ ) {
+		const IRayIntersectionModifier* pMember = pModManager->GetItem( modifierNames[i] );
+		if( !pMember ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"modifier_stack `%s`: member modifier `%s` not found",
+				name, modifierNames[i] );
+			return false;
+		}
+		members.push_back( pMember );
+	}
+
+	IRayIntersectionModifier* pStack = 0;
+	if( !RISE_API_CreateModifierStack( &pStack, &members[0], count ) ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"modifier_stack `%s`: RISE_API_CreateModifierStack failed",
+			name );
+		return false;
+	}
+
+	const bool ok = RegisterOrDiag( pModManager, pStack, name, "modifier" );
+	safe_release( pStack );
 	return ok;
 }
 

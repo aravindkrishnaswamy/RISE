@@ -349,7 +349,9 @@ set(RISE_LIB_SOURCES
     # SRCLIBMODIFIERS
     "${RISE_LIB}/Modifiers/BumpMap.cpp"
     "${RISE_LIB}/Modifiers/GlintModifier.cpp"
+    "${RISE_LIB}/Modifiers/ModifierStack.cpp"
     "${RISE_LIB}/Modifiers/NormalMap.cpp"
+    "${RISE_LIB}/Modifiers/ReliefModifier.cpp"
 
     # SRCLIBRASTERIMAGES
     "${RISE_LIB}/RasterImages/EXRReader.cpp"

@@ -356,13 +356,19 @@ expression_function2d
 	expr	0.5 + 0.16*pole*(0.55*w1 + 0.30*w2 + 0.40*w3)
 }
 
-bumpmap_modifier
+scalar_painter
 {
-	name				creases
-	function			crease_field
-	scale				0.0075
-	windowsize			0.004
-	normalize_gradient	TRUE
+	name	creases__height
+	function2d	crease_field
+}
+
+relief_modifier
+{
+	name	creases
+	height	creases__height
+	domain	uv
+	step	0.004
+	scale	-0.0075
 }
 
 #############################################################################################################

@@ -1299,8 +1299,8 @@ turbulence3d_painter instead"
 ([:2025](../src/Library/Parsers/ChunkParserRegistry.cpp)).
 
 **Filtering — the caveat that will bite.** `ri.txFootprint` exists
-(`{dudx, dudy, dvdx, dvdy, worldWidth, valid}`,
-[RayIntersectionGeometric.h:116-127](../src/Library/Intersection/RayIntersectionGeometric.h))
+(`{dudx, dudy, dvdx, dvdy, worldWidth, valid}`, the `TextureFootprint`
+struct in [RayIntersectionGeometric.h](../src/Library/Intersection/RayIntersectionGeometric.h))
 and is consumed by `TexturePainter`'s mip path, `MappingPainter`'s domain
 transform, and the expression VM's `fw` variable. But `fw` fades octaves toward
 Nyquist **only inside `fbm`, `turbulence` and `ridged`**. The plain procedural

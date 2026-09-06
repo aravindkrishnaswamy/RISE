@@ -467,8 +467,14 @@ Phase 4 then closed BLEND.)*
 
 Tangent-space normal maps need (a) tangent storage (added in §3) and (b) a new
 `normal_map_modifier` that takes a normal-map painter and perturbs the
-geometric normal at hit time.  RISE has `bumpmap_modifier` already, which
-handles single-channel height maps; the normal-map version is a sibling.
+geometric normal at hit time.  RISE had `bumpmap_modifier` already, which
+handled single-channel height maps through a UV-only `IFunction2D`; the
+normal-map version is a sibling.  (`bumpmap_modifier` is now DEPRECATED --
+`relief_modifier` replaces it as the procedural-relief route for a new
+single-channel height field, taking any `scalar_painter` instead of only an
+`IFunction2D` and needing no texcoords in its default `surface` domain; see
+`docs/RELIEF_MODIFIER_DESIGN.md`.  `normal_map_modifier` is unaffected by
+that deprecation -- it decodes an authored image, a different job.)
 
 **Status:** **delivered in this branch.**  See `Modifiers/NormalMap.{h,cpp}`,
 the `normal_map_modifier` chunk in `AsciiSceneParser.cpp`, and the

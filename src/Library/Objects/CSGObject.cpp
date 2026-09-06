@@ -1583,6 +1583,19 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			ri.geometric.derivatives.curvatureValid = false;
 		}
 
+		// WORLD-MEASURE FOLD for txFootprint.worldWidth -- the exact mirror
+		// of Object::IntersectRay's block (relief-modifier fix round 2,
+		// P2-A; see it for the full rationale) and of scaleHint immediately
+		// above: `AdoptCsgSurfacePayload` copies the child operand's
+		// txFootprint verbatim, already folded by THAT child Object's own
+		// world scale, so THIS level composes by applying its OWN factor
+		// once more -- the same "each level applies its own factor once to
+		// whatever the level below already promoted" CSG-nesting invariant
+		// scaleHint/curvature follow.
+		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
+			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
+		}
+
 		// Compute the intersection in world space
 		ri.geometric.ptIntersection = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range - SURFACE_INTERSEC_ERROR ) );
 		ri.geometric.ptExit = Point3Ops::Transform( m_mxFinalTrans,	ri.geometric.ray.PointAtLength( ri.geometric.range2 + SURFACE_INTERSEC_ERROR ) );
@@ -1612,6 +1625,24 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		if( pModifier ) {
 			ri.pModifier = pModifier;
 		}
+
+		// WORLD -> OBJECT step map: honestly UNKNOWN for a CSG hit.
+		//
+		// `ptObjIntersec` on a composite hit is the CHILD operand's own
+		// object-space point -- AdoptCsgSurfacePayload copies it
+		// untransformed and its comment names the resulting frame
+		// mismatch as a deliberate, pre-existing gap -- so the map from
+		// world into THAT frame is the child's inverse composed with this
+		// composite's inverse (and with every enclosing composite's, under
+		// nesting).  No stored member holds that product and a `const
+		// Matrix4*` cannot express it.  The child's Object::IntersectRay
+		// stamped its OWN inverse a moment ago, which is wrong by exactly
+		// this level's transform; stamping `m_mxInvFinalTrans` here would
+		// be wrong by exactly the child's.  Clear it, and let the consumer
+		// take its documented degraded path (move the object-space point
+		// by the world step and warn once) rather than silently trusting a
+		// matrix that is wrong by a transform.
+		ri.geometric.pmxWorldToObject = 0;
 
 		if( pShader ) {
 			ri.pShader = pShader;

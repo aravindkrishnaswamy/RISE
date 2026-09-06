@@ -702,10 +702,22 @@ namespace RISE
 						const Scalar        disp_scale,
 						const bool          double_sided,
 						const bool          face_normals,
-						const bool          seam_fold
+						const bool          seam_fold,
+						const IScalarPainter* height
 						)
 	{
 		if( !ppi || !pBase ) {
+			return false;
+		}
+
+		// The two height routes are MUTUALLY EXCLUSIVE by construction (see
+		// DisplacedGeometry's class comment).  Job::AddDisplacedGeometryWith-
+		// Height refuses the pair with an authoring diagnostic naming both
+		// parameters; this is the C-API backstop for a direct caller that
+		// bypasses the scene layer, and it refuses rather than silently
+		// picking one.
+		if( displacement && height ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: `displacement` (IFunction2D) and `height` (IScalarPainter) are mutually exclusive — pass at most one; refusing." );
 			return false;
 		}
 
@@ -717,7 +729,7 @@ namespace RISE
 
 		DisplacedGeometry* pGeom = new DisplacedGeometry(
 			pBase, detail, displacement, disp_scale,
-			double_sided, face_normals, seam_fold );
+			double_sided, face_normals, seam_fold, height );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
 
 		if( !pGeom->IsValid() ) {
@@ -7021,6 +7033,8 @@ namespace RISE
 #include "Modifiers/BumpMap.h"
 #include "Modifiers/NormalMap.h"
 #include "Modifiers/GlintModifier.h"
+#include "Modifiers/ReliefModifier.h"
+#include "Modifiers/ModifierStack.h"
 
 namespace RISE
 {
@@ -7092,6 +7106,50 @@ namespace RISE
 
 		(*ppi) = new GlintModifier( density, coverage, fill, spread, scale, shift, seed );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "glintmodifier" );
+		return true;
+	}
+
+	bool RISE_API_CreateReliefModifier(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd)
+								const Scalar scale,							///< [in] Amplitude
+								const Implementation::ReliefDomain domain,	///< [in] Surface or UV
+								const Scalar step							///< [in] Half-step; <= 0 = auto
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		(*ppi) = new ReliefModifier( height, scale, domain, step );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reliefmodifier" );
+		return true;
+	}
+
+	bool RISE_API_CreateModifierStack(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored order; each addref'd
+								const unsigned int count						///< [in] Number of members; 0 is rejected
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// An empty stack is a parse-time mistake, not a legitimate no-op
+		// (glint_modifier's stance).  A null entry would crash the ctor's
+		// addref loop, so it is rejected here rather than trusted.
+		if( count == 0 ) {
+			return false;
+		}
+		for( unsigned int i = 0; i < count; i++ ) {
+			if( !mods[i] ) {
+				return false;
+			}
+		}
+
+		(*ppi) = new ModifierStack( mods, count );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "modifierstack" );
 		return true;
 	}
 

@@ -61,7 +61,8 @@ namespace RISE
 		//! three cavity-wall branches and both double-sided-mesh back-face
 		//! flips negate `dndu`/`dndv` alongside `vNormal`; see
 		//! docs/GEOMETRY_DERIVATIVES.md "World-space transform").  Modifiers
-		//! (bump map, normal map) assign into `ri.vNormal` ONLY and never
+		//! (bump map, normal map, glint, relief -- all four of the
+		//! normal-perturbing family) assign into `ri.vNormal` ONLY and never
 		//! touch the derivatives, so the result is bump-INVARIANT by
 		//! construction -- which is the §14-item-6 requirement, reached
 		//! without an explicit `vGeomNormal` orientation check.  Do NOT

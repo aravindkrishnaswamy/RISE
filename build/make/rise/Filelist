@@ -403,7 +403,9 @@ SRCLIBSCENEMANAGEMENT =\
 SRCLIBMODIFIERS =\
 	$(PATHLIBRARY)Modifiers/BumpMap.cpp							\
 	$(PATHLIBRARY)Modifiers/GlintModifier.cpp					\
-	$(PATHLIBRARY)Modifiers/NormalMap.cpp
+	$(PATHLIBRARY)Modifiers/ModifierStack.cpp					\
+	$(PATHLIBRARY)Modifiers/NormalMap.cpp					\
+	$(PATHLIBRARY)Modifiers/ReliefModifier.cpp
 
 # Raster Images
 SRCLIBRASTERIMAGES =\

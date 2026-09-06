@@ -391,7 +391,10 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
    ExpressionScalarPainter::BuildContext read it (0.0 when the RI carries
    no valid footprint -- secondary bounces, non-mesh geometry, and
    non-pinhole cameras all still read 0.0 today; that is the honest
-   "point sample" answer, not a regression).  `fbm`/`turbulence`/`ridged`
+   "point sample" answer, not a regression).  **Caveat (2026-09-06,
+   relief-modifier arc, docs/RELIEF_MODIFIER_DESIGN.md §3.3):** on a
+   SCALED mesh instance, `fw` was still an OBJECT-space length until
+   this date; it is world-correct since.  `fbm`/`turbulence`/`ridged`
    fade each octave's amplitude by `1 - smoothstep(0.2, 0.6, fw *
    lacunarity^i)` (Apodaca & Gritz, "Advanced RenderMan", 1999, ch.12) --
    bit-identical to the pre-S9 sum at `fw == 0`.  Known limitation, not a

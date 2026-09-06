@@ -1,0 +1,186 @@
+RISE ASCII SCENE 7
+#############################################################################################################
+#   File:           relief_crackle_glaze.RISEscene                                                          #
+#   Description:    Execution-validated recipe example for docs/RELIEF_MODIFIER_DESIGN.md §9's worked        #
+#                   example -- ONE expression_painter "cell field" (a Worley f2-f1 crackle pattern) drives   #
+#                   THREE consumers at once: colour (through ramp_painter), roughness (through a             #
+#                   scalar_painter { painter ... channel R } bridge), and relief (relief_modifier over the   #
+#                   SAME scalar_painter, with a negative scale so the crack lines sink instead of rise).     #
+#                   This is the "one field, several physically distinct uses" composition pattern named in  #
+#                   skills/agent/materials-and-media-basics.md.                                              #
+#                                                                                                             #
+#   The pasted chunks below (expression_painter cg_crack_field through the relief_modifier and material)     #
+#   are reproduced verbatim in that skill file -- keep the two in sync if either changes.                    #
+#############################################################################################################
+
+film
+{
+	width	256
+	height	256
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			32
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+file_rasterizeroutput
+{
+	pattern			rendered/relief_crackle_glaze
+	type			PNG
+	bpp				8
+	color_space		sRGB
+}
+
+pinhole_camera
+{
+	location	0 0 4
+	lookat		0 0 0
+	up			0 1 0
+	fov			40.0
+}
+
+#############################################################################################################
+# The one field: a Worley f2-f1 crackle pattern, remapped so the crack LINES read as the HIGH end (near 1)
+# and the glaze BODY reads as the LOW end (near 0) -- see the comment on `relief_modifier` below for why
+# that particular orientation is the one that wants a NEGATIVE relief scale.
+#############################################################################################################
+
+expression_painter
+{
+	name	cg_crack_field
+	def		cell		worley_f2f1(P*7.0, 1.0)
+	def		crack		1.0 - smoothstep(0.0, 0.10, cell)
+	expr	crack
+}
+
+#############################################################################################################
+# Colour: the ramp reads cg_crack_field directly (it is a colour painter; a scalar expr broadcasts to grey).
+# crack=0 (glaze body) -> pale celadon green; crack=1 (crack line) -> the dark iron-oxide stain that
+# collects in real crackle-glaze fissures.
+#############################################################################################################
+
+ramp_painter
+{
+	name			cg_glaze_colour
+	input			cg_crack_field
+	channel			R
+	interpolation	smooth
+	stop			0.0  0.62 0.78 0.68
+	stop			1.0  0.08 0.06 0.05
+}
+
+#############################################################################################################
+# The SAME field, bridged once into the physical-scalar pipe (the ISCALARPAINTER TRAP: a colour painter
+# cannot bind to alphax/alphay/height directly).  This ONE scalar_painter is bound to BOTH the material's
+# roughness slot AND the relief_modifier's height below -- "the same scalar_painter" the design calls for.
+# bias/scale here shape the ROUGHNESS range (0.04 glossy glaze body -> 0.5 unglazed rough crack); the
+# relief_modifier's OWN scale (a separate, independent multiplier) shapes the HEIGHT amplitude.
+#############################################################################################################
+
+scalar_painter
+{
+	name	cg_crack_scalar
+	painter	cg_crack_field
+	channel	R
+	scale	0.46
+	bias	0.04
+}
+
+#############################################################################################################
+# Relief: crack=1 is the HIGH end of the field, and POSITIVE height rises along +N (relief_modifier's
+# convention) -- so binding cg_crack_scalar with a POSITIVE scale would make the crack lines stand PROUD
+# of the glaze, which is backwards for a crackle glaze (the fissures are grooves the glaze receded into).
+# A NEGATIVE scale flips that: the crack-field's high end now SINKS, so the crack lines read as sunken
+# fissures and the glaze body (crack=0, contributing nothing) stays at the unperturbed surface.
+#############################################################################################################
+
+relief_modifier
+{
+	name	cg_relief
+	height	cg_crack_scalar
+	scale	-0.02
+	domain	surface
+	step	0
+}
+
+#############################################################################################################
+# ggx_material: `rd` (colour pipe) takes the ramp; `alphax`/`alphay` (physical-SCALAR pipe) take the SAME
+# scalar_painter the relief above uses.  `fresnel_mode schlick_f0` treats `rs` as an ordinary dielectric F0
+# (a ceramic glaze is not a metal), so a flat 0.04 grey is the standard ~1.5-IOR dielectric reflectance.
+#############################################################################################################
+
+uniformcolor_painter
+{
+	name	cg_f0
+	color	0.04 0.04 0.04
+}
+
+ggx_material
+{
+	name			cg_glaze_mat
+	rd				cg_glaze_colour
+	rs				cg_f0
+	alphax			cg_crack_scalar
+	alphay			cg_crack_scalar
+	fresnel_mode	schlick_f0
+}
+
+sphere_geometry
+{
+	name	cg_sphere_geom
+	radius	1.0
+}
+
+standard_object
+{
+	name		cg_sphere
+	geometry	cg_sphere_geom
+	material	cg_glaze_mat
+	modifier	cg_relief
+	position	0 0 0
+}
+
+# Camera is at +Z, so the key light needs a positive Z component
+# (SCENE_CONVENTIONS.md: direction is FROM the surface TO the light).
+#
+# docs/RELIEF_MODIFIER_DESIGN.md Phase 5: the Phase 3 reviewers found the
+# crack relief legible under raking light but weak near the specular
+# peak, where the GGX lobe's own brightness dominates the frame and the
+# sunken crack lines read mostly through their colour (the ramp), not
+# their shading -- the original `0.35 0.55 0.85` put the highlight dead
+# centre, right where the camera has the most sphere to look at.  Moved
+# to a more raking angle (larger X, smaller Z) so the highlight lands
+# off-centre, near the upper-right limb, leaving the crack grooves
+# legible by shading (catch-light on one rim, shadow on the other)
+# across the whole visible hemisphere instead of only away from the
+# glare.  A single more-extreme raking angle (`0.90 0.25 0.05`, tried
+# during tuning) pushed the highlight past the limb but also dropped
+# half the sphere into near-black (only the 0.12-power ambient fill
+# reaches the unlit hemisphere) -- worse legibility, just from the
+# opposite direction.  This value is the middle ground: still
+# reasonably front-lit overall, highlight moved off the sphere's
+# camera-facing centre.
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 0.97 0.92
+	direction	0.72 0.42 0.35
+}
+
+# A small fill so the unlit hemisphere is not pure black.
+ambient_light
+{
+	name	fill
+	power	0.12
+	color	1.0 1.0 1.0
+}

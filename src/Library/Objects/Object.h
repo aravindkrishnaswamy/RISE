@@ -87,7 +87,11 @@ namespace RISE
 			//! `derivatives.curvature` (divided: a 1/length) so the
 			//! expression VM's `curv` / `curvR` are per-instance-correct
 			//! across two instances of one shared geometry at different
-			//! world scales.  See docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+			//! world scales.  Also folded into `txFootprint.worldWidth`
+			//! (multiplied: a length) in `Object::IntersectRay` and
+			//! `CSGObject::IntersectRay` since the relief-modifier arc, so
+			//! a scaled instance's texture-filter footprint is
+			//! world-correct too.  See docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 			//! §5.2.
 			Scalar											m_worldLinearScale;
 

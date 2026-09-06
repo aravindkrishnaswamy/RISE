@@ -1832,6 +1832,20 @@ namespace RISE
 							const bool          face_normals,
 					const bool          seam_fold = true );
 
+		//! Creates a displaced geometry from EITHER an IFunction2D `displacement`
+		//! or an IScalarPainter `height` (see IJob.h).  AddDisplacedGeometry
+		//! forwards here with a null `height`.
+		bool AddDisplacedGeometryWithHeight(
+							const char*         name,
+							const char*         base_geometry_name,
+							const unsigned int  detail,
+							const char*         displacement,
+							const char*         height,
+							const Scalar        disp_scale,
+							const bool          double_sided,
+							const bool          face_normals,
+							const bool          seam_fold );
+
 		//
 		// Adds lights
 		//
@@ -2028,6 +2042,24 @@ namespace RISE
 			const double scale[3],									///< [in] anisotropic cell stretch
 			const double shift[3],									///< [in] cell-space offset
 			const unsigned int seed									///< [in] hash seed
+			);
+
+		//! Creates a painter-driven micro-relief modifier.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddReliefModifier(
+			const char* name,										///< [in] Name of the modifier
+			const char* height,										///< [in] Height field (scalar_painter name or inline numeric)
+			const double scale,										///< [in] Amplitude
+			const char* domain,										///< [in] "surface" (default) or "uv"
+			const double step										///< [in] Central-difference half-step; <= 0 = auto
+			);
+
+		//! Creates an ordered composition of previously-registered modifiers.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddModifierStack(
+			const char* name,										///< [in] Name of the modifier stack
+			const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
+			const unsigned int count								///< [in] Number of members; 0 is rejected
 			);
 
 		//

@@ -4,13 +4,14 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           sms_veach_egg_bumpmap.RISEscene                                                          #
-#   Description:    Smooth-ellipsoid Veach egg with a Perlin bump-map modifier — companion test scene to     #
+#   Description:    Smooth-ellipsoid Veach egg with a Perlin relief_modifier (migrated from bumpmap_modifier) #
 #                   exercise the SMS two-stage solver in the regime the paper (Zeltner 2020 §5) actually    #
 #                   targets: a normal field perturbed by high-frequency detail without changing positions.  #
 #                                                                                                           #
-#   The outer egg geometry is a smooth ellipsoid (no `displaced_geometry`).  A `bumpmap_modifier` applied   #
-#   on the outer object perturbs the normal at intersection time via the same 2D Perlin function the        #
-#   displaced scene used for vertex displacement.  Positions are unchanged; only normals are bumpy.  This   #
+#   The outer egg geometry is a smooth ellipsoid (no `displaced_geometry`).  A `relief_modifier` (migrated  #
+#   from `bumpmap_modifier` by tools/migrate_scenes_relief.py; domain uv) applied on the outer object       #
+#   perturbs the normal at intersection time via the same 2D Perlin function the displaced scene used for   #
+#   vertex displacement.  Positions are unchanged; only normals are bumpy.  This                            #
 #   matches Mitsuba's normal-mapped pedestals scenes and tests whether SMS Stage 1 (smoothing=1, smooth     #
 #   ellipsoid) can seed Stage 2 (smoothing=0, bumpy normals) effectively.                                   #
 #                                                                                                           #
@@ -238,7 +239,7 @@ uniformcolor_painter
 }
 
 # Same Perlin function the displaced scene used; here it drives the
-# bump-map modifier instead of vertex displacement.
+# relief_modifier (migrated from bumpmap_modifier) instead of vertex displacement.
 perlin2d_painter
 {
 	name				pnt_egg_bumps
@@ -250,25 +251,35 @@ perlin2d_painter
 	shift				0 0
 }
 
-# Bump-map modifier: perturbs the surface normal using the FD gradient of
-# pnt_egg_bumps.  `scale` controls the bump amplitude; `windowsize` the
-# FD step on the (u, v) parameter (smaller = higher-frequency detail
-# captured but more sensitivity to texture noise).
+# relief_modifier (migrated from bumpmap_modifier by tools/migrate_scenes_relief.py):
+# perturbs the surface normal using the FD gradient of pnt_egg_bumps, bound
+# through the scalar_painter bridge below.  `scale` controls the bump
+# amplitude (sign flipped from the legacy `bumpmap_modifier` convention --
+# see docs/RELIEF_MODIFIER_DESIGN.md §7.2); `step` is the FD step on the
+# (u, v) parameter (smaller = higher-frequency detail captured but more
+# sensitivity to texture noise).
 #
-# Empirically `scale × windowsize × ~16` (perlin gradient magnitude over
-# its period) is the bumpU/bumpV magnitude.  At scale=10, windowsize=0.001
+# Empirically `|scale| × step × ~16` (perlin gradient magnitude over
+# its period) is the bumpU/bumpV magnitude.  At scale=-0.02, step=0.001
 # this gives ≈ 0.16 → arctan(0.16) ≈ 9° max normal perturbation — within
 # the regime where single-chain SMS (one specular path per shading point)
 # can capture most of the suppressed caustic energy.  Crank scale higher
 # and the bumpy normal field scatters light across many caustic chains,
 # which a single-trial SMS can't cover (would need multi-trial / photon-
 # aided seeding to track the diffuse caustic).
-bumpmap_modifier
+scalar_painter
 {
-	name				bump_egg
-	function			pnt_egg_bumps
-	scale				10.0
-	windowsize			0.001
+	name	bump_egg__height
+	function2d	pnt_egg_bumps
+}
+
+relief_modifier
+{
+	name	bump_egg
+	height	bump_egg__height
+	domain	uv
+	step	0.001
+	scale	-0.02
 }
 
 lambertian_material
@@ -397,7 +408,7 @@ standard_object
 
 ##################################################
 # The sealed glass egg — both shells SMOOTH ellipsoids.
-# The OUTER egg gets the bump-map modifier; INNER stays unperturbed.
+# The OUTER egg gets the relief_modifier; INNER stays unperturbed.
 ##################################################
 
 ellipsoid_geometry

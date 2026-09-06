@@ -499,18 +499,263 @@ static void PartB_HandReflectedTwin()
 	// BACK face there, exactly as the twin does.  A winding/handedness defect
 	// that merely swapped the two sides would pass the front-face block above
 	// only by accident; this closes that.
+	//
+	// PROBE PLACEMENT IS LOAD-BEARING, and this block used to get it wrong.  It
+	// fired a SINGLE ray from (-0.55, 0.45), which is BIT-EXACTLY the mirrored
+	// fan APEX -- the one point where all four triangles meet.  A ray through a
+	// shared vertex hits all four faces at the same real-world point, but the
+	// two objects reach that point through DIFFERENT tie mechanisms, verified
+	// by rebuilding each mesh with its four triangles in reversed insertion
+	// order and checking whether the reported face changes:
+	//   - the TWIN's four candidate t's are a bit-identical tie -- reversing
+	//     insertion order changes which face it reports -- so its winner is
+	//     whichever face closest-hit tie-breaking visits FIRST
+	//     (`h.dRange < ri.range` is strict, so an equal-but-later candidate
+	//     never displaces it); the twin's different coordinates (two vertices
+	//     swapped) just mean its BVH happens to visit a different face first.
+	//   - the MIRRORED object's four candidates are NOT bit-identical -- one is
+	//     a genuine, if minute, numeric minimum -- reversing insertion order
+	//     reports the SAME winning face either way, so its answer is a real
+	//     (if tiny) decision, not an arbitrary tie-break.
+	// Both mechanisms produce legitimate normals: at a vertex shared by four
+	// non-coplanar faces the geometric normal is genuinely four-valued, and no
+	// intersector can make two differently-built meshes -- or, for the twin,
+	// two different traversal orders of the SAME mesh -- agree on which face
+	// owns it.  The front-face grid above escapes the same trap only by
+	// rounding luck (its cell `-1.25 + 5*0.14` lands 1.1e-16 short of -0.55).
+	// The probes below are therefore placed strictly INTERIOR to each of the
+	// four fan triangles -- off every vertex and every shared edge -- which
+	// also turns one probe into four and gives every face back-face coverage
+	// instead of just one.
 	{
-		const Ray ray( Point3( -0.55, 0.45, -4.0 ), Vector3( 0, 0, 1 ) );
-		RayIntersection riT( ray, nullRasterizerState );
-		twin->IntersectRay( riT, RISE_INFINITY, /*front*/ false, /*back*/ true, false );
-		RayIntersection riM( ray, nullRasterizerState );
-		mirrored->IntersectRay( riM, RISE_INFINITY, false, true, false );
-		Check( riT.geometric.bHit, "B: (control) the twin presents a back face to a ray from -z" );
-		Check( riM.geometric.bHit == riT.geometric.bHit
-		       && ( !riT.geometric.bHit
-		            || ( PtClose( riM.geometric.ptIntersection, riT.geometric.ptIntersection, 1e-9 )
-		                 && VecClose( riM.geometric.vGeomNormal, riT.geometric.vGeomNormal, 1e-9 ) ) ),
+		// x is already in mirrored space; each row is inside a different face.
+		static const double kBackProbes[4][2] = {
+			{ -0.65, 0.22 },   // interior of fan triangle 0
+			{ -0.95, 0.55 },   // interior of fan triangle 1
+			{ -0.68, 0.87 },   // interior of fan triangle 2
+			{ -0.33, 0.73 }    // interior of fan triangle 3
+		};
+
+		int backControl = 0, backMatched = 0, frontOnlyMissed = 0;
+		for( int k = 0; k < 4; ++k ) {
+			const Ray ray( Point3( kBackProbes[k][0], kBackProbes[k][1], -4.0 ), Vector3( 0, 0, 1 ) );
+
+			RayIntersection riT( ray, nullRasterizerState );
+			twin->IntersectRay( riT, RISE_INFINITY, /*front*/ false, /*back*/ true, false );
+			RayIntersection riM( ray, nullRasterizerState );
+			mirrored->IntersectRay( riM, RISE_INFINITY, false, true, false );
+			if( riT.geometric.bHit ) ++backControl;
+			if( riM.geometric.bHit == riT.geometric.bHit
+			 && ( !riT.geometric.bHit
+			      || ( PtClose( riM.geometric.ptIntersection, riT.geometric.ptIntersection, 1e-9 )
+			           && VecClose( riM.geometric.vGeomNormal, riT.geometric.vGeomNormal, 1e-9 ) ) ) ) {
+				++backMatched;
+			}
+
+			// The other half of "classification survives": with only FRONT faces
+			// accepted, this same ray -- which sees the surface from behind --
+			// must MISS on both.  An implementation that merely swapped the two
+			// sides would pass the back-face compare above and fail here.
+			RayIntersection riTf( ray, nullRasterizerState );
+			twin->IntersectRay( riTf, RISE_INFINITY, /*front*/ true, /*back*/ false, false );
+			RayIntersection riMf( ray, nullRasterizerState );
+			mirrored->IntersectRay( riMf, RISE_INFINITY, true, false, false );
+			if( !riTf.geometric.bHit && !riMf.geometric.bHit ) ++frontOnlyMissed;
+		}
+
+		Check( backControl == 4, "B: (control) the twin presents a back face to a ray from -z, on all four faces" );
+		Check( backMatched == 4,
 		       "B: front/back face classification survives the reflection (same side, same normal, as the twin)" );
+		Check( frontOnlyMissed == 4,
+		       "B: ... and a front-faces-only ray from the BACK side misses on the mirrored object exactly as on the twin" );
+	}
+
+	// The same property in its DEGENERACY-FREE form, which the twin oracle above
+	// cannot express: the mirrored object must reproduce the UN-mirrored original's
+	// hit, exactly reflected -- same hit/miss under each acceptance flag, and
+	// normals equal after negating x.  Both sides run against the SAME mesh and the
+	// SAME BVH, and -- because the mirror here is exactly diag(-1,1,1) and the probe
+	// x is negated to match -- they reduce to the BIT-IDENTICAL object-space ray, so
+	// every tie is broken identically by construction rather than by luck.  The
+	// comparison is therefore exact (1e-12, not the 1e-9 the twin comparison needs)
+	// at every GRID point of the surface -- see the dedicated apex probe below for
+	// the one point the grid itself cannot reach.  What is left to differ is the
+	// transform layer's own work: the acceptance-flag pass-through, and the SIGN
+	// the published normal picks up under this det<0 transform.
+	//
+	// NOTE what this block does NOT pin down.  Object::IntersectRay publishes
+	// normalize(M^-T n_obj) -- the inverse-transpose promotion.  But for a PURE
+	// AXIS MIRROR, M = diag(-1,1,1) IS its own inverse-transpose (diagonal, and
+	// every entry is its own reciprocal: -1 and 1 are both self-inverse), so
+	// normalize(M^-T n_obj) and normalize(M n_obj) are the SAME vector here --
+	// this block cannot tell "the normal was promoted by M^-T" apart from "by M
+	// itself".  All it actually pins down is the published normal's SIGN under
+	// reflection.  The probe that follows this one composes the mirror with a
+	// NON-uniform scale, where M != M^-T, and is the one that actually
+	// discriminates the two formulas.  This block is still the assertion that
+	// catches the failure mode the block above is named for -- an object-space
+	// winding test left uncorrected under a negative-determinant transform would
+	// make the mirrored object miss where the original hits -- and unlike the
+	// twin comparison it cannot be perturbed by a shared-vertex tie-break.
+	{
+		// SIBLING (audit-by-bug-pattern): Object::IntersectRay_IntersectionOnly --
+		// the SHADOW-ray path -- transforms the ray by the same m_mxInvFinalTrans
+		// and hands bHitFrontFaces/bHitBackFaces straight through to the geometry
+		// in exactly the same way, so it carries the same question and is swept
+		// here alongside the full path.  (CSGObject::IntersectRay is NOT a sibling:
+		// it discards both flags and always probes its operands with `true, true`
+		// because interval arithmetic needs both sides -- and a csg_object is
+		// refused a mirror outright, see [F].)
+		const int kN = 25;	// probes per axis
+		int probed = 0, agreed = 0, shadowAgreed = 0, swept = 0;
+		for( int iy = 0; iy < kN; ++iy ) {
+			for( int ix = 0; ix < kN; ++ix ) {
+				const double x = -1.30 + ix * ( 1.30 / ( kN - 1 ) );
+				const double y =  0.00 + iy * ( 1.25 / ( kN - 1 ) );
+				for( int side = 0; side < 2; ++side ) {
+					++swept;
+					const double  z     = side ? -4.0 : 4.0;
+					const Vector3 dir   = side ? Vector3( 0, 0, 1 ) : Vector3( 0, 0, -1 );
+					const bool    front = !side, back = !!side;
+
+					const Ray rayM( Point3(  x, y, z ), dir );
+					RayIntersection riM( rayM, nullRasterizerState );
+					mirrored->IntersectRay( riM, RISE_INFINITY, front, back, false );
+					// The un-mirrored original, probed at the reflected x.
+					const Ray rayP( Point3( -x, y, z ), dir );
+					RayIntersection riP( rayP, nullRasterizerState );
+					plain->IntersectRay( riP, RISE_INFINITY, front, back, false );
+
+					// The shadow-ray sibling, on the same two rays.
+					if( mirrored->IntersectRay_IntersectionOnly( rayM, RISE_INFINITY, front, back )
+					 == plain->IntersectRay_IntersectionOnly( rayP, RISE_INFINITY, front, back ) ) {
+						++shadowAgreed;
+					}
+
+					if( !riM.geometric.bHit && !riP.geometric.bHit ) continue;
+					++probed;
+					if( riM.geometric.bHit != riP.geometric.bHit ) continue;
+
+					const Point3  pRef( -riP.geometric.ptIntersection.x,
+					                     riP.geometric.ptIntersection.y,
+					                     riP.geometric.ptIntersection.z );
+					const Vector3 gRef( -riP.geometric.vGeomNormal.x,
+					                     riP.geometric.vGeomNormal.y,
+					                     riP.geometric.vGeomNormal.z );
+					const Vector3 nRef( -riP.geometric.vNormal.x,
+					                     riP.geometric.vNormal.y,
+					                     riP.geometric.vNormal.z );
+					if( PtClose( riM.geometric.ptIntersection, pRef, 1e-12 )
+					 && VecClose( riM.geometric.vGeomNormal, gRef, 1e-12 )
+					 && VecClose( riM.geometric.vNormal,     nRef, 1e-12 ) ) {
+						++agreed;
+					}
+				}
+			}
+		}
+		Check( probed >= 200, "B: (control) the reflected-original sweep actually reaches the surface" );
+		Check( swept == kN * kN * 2 && shadowAgreed == swept,
+		       "B: the SHADOW-ray path (IntersectRay_IntersectionOnly) accepts/rejects identically on the mirrored "
+		       "object and the reflected original, under both acceptance flags" );
+		Check( agreed == probed,
+		       "B: the mirrored object reproduces the UN-mirrored original exactly reflected -- hit/miss under BOTH "
+		       "acceptance flags, geometric and shading normals -- at every GRID probe" );
+
+		// EXPLICIT APEX PROBE.  "at every GRID probe" above is not "at every point
+		// of the surface" -- the 25x25 grid's steps (1.30/24 and 1.25/24) don't
+		// divide the apex's 0.55 / 0.45 offsets evenly, so no grid cell lands on
+		// it (checked: the nearest cell is a fraction of a step away on both
+		// axes).  That is exactly the point this whole block exists to cover, so
+		// probe it directly, under both flag settings, with the same ray
+		// construction the sweep above uses per side.
+		int apexProbed = 0, apexAgreed = 0;
+		for( int side = 0; side < 2; ++side ) {
+			const double  z     = side ? -4.0 : 4.0;
+			const Vector3 dir   = side ? Vector3( 0, 0, 1 ) : Vector3( 0, 0, -1 );
+			const bool    front = !side, back = !!side;
+
+			const Ray rayM( Point3( -0.55, 0.45, z ), dir );
+			RayIntersection riM( rayM, nullRasterizerState );
+			mirrored->IntersectRay( riM, RISE_INFINITY, front, back, false );
+			const Ray rayP( Point3( 0.55, 0.45, z ), dir );
+			RayIntersection riP( rayP, nullRasterizerState );
+			plain->IntersectRay( riP, RISE_INFINITY, front, back, false );
+
+			if( riM.geometric.bHit && riP.geometric.bHit ) {
+				++apexProbed;
+				const Point3  pRef( -riP.geometric.ptIntersection.x,
+				                     riP.geometric.ptIntersection.y,
+				                     riP.geometric.ptIntersection.z );
+				const Vector3 gRef( -riP.geometric.vGeomNormal.x,
+				                     riP.geometric.vGeomNormal.y,
+				                     riP.geometric.vGeomNormal.z );
+				const Vector3 nRef( -riP.geometric.vNormal.x,
+				                     riP.geometric.vNormal.y,
+				                     riP.geometric.vNormal.z );
+				if( PtClose( riM.geometric.ptIntersection, pRef, 1e-12 )
+				 && VecClose( riM.geometric.vGeomNormal, gRef, 1e-12 )
+				 && VecClose( riM.geometric.vNormal,     nRef, 1e-12 ) ) {
+					++apexAgreed;
+				}
+			}
+		}
+		Check( apexProbed == 2, "B: (control) the explicit apex probe hits on both the front side and the back side" );
+		Check( apexAgreed == 2,
+		       "B: ... and AT THE FAN APEX ITSELF -- the one point the grid above cannot reach -- the mirrored object "
+		       "still reproduces the UN-mirrored original exactly reflected, under both acceptance flags" );
+	}
+
+	// ADJOINT DISCRIMINATOR.  The block above pins the published normal's SIGN
+	// under a pure axis mirror, but cannot separate normalize(M^-T n_obj) from
+	// normalize(M n_obj) because M = diag(-1,1,1) is its own inverse-transpose.
+	// Compose the mirror with a NON-UNIFORM stretch so that stops being true:
+	// M = Stretch(1,2,1) * Mirror(x) = diag(-1,2,1), whose inverse-transpose is
+	// diag(-1,0.5,1) -- a genuinely different matrix.  The published geometric
+	// normal must equal normalize(M^-T n_obj) and must NOT equal normalize(M n_obj).
+	{
+		Implementation::Object* adj = new Implementation::Object( meshA );
+		Check( adj->SetMirrorAxis( 0 ), "B: (adjoint probe) mirror x set" );
+		adj->SetStretch( Vector3( 1, 2, 1 ) );
+		adj->FinalizeTransformations();
+
+		const Matrix4 M     = adj->GetFinalTransformMatrix();
+		const Matrix4 MInvT = Matrix4Ops::Transpose( Matrix4Ops::Inverse( M ) );
+		Check( !MxEq( M, MInvT, 1e-9 ),
+		       "B: (control) mirror + non-uniform stretch really does have M != M^-T, or this probe is vacuous" );
+
+		// An object-space point strictly interior to fan triangle 0 (barycentric
+		// combination of its three vertices, weights summing to 1, all > 0), and
+		// that triangle's own OBJECT-SPACE geometric normal -- both computed
+		// exactly as BuildWedge does for face 0 (apex, outline[0], outline[1]),
+		// independent of the hit-testing machinery above.
+		const Point3  pA( 0.55, 0.45, 0.90 );   // apex
+		const Point3  pB( 0.10, 0.00, 0.00 );   // outline[0]
+		const Point3  pC( 1.30, 0.20, 0.15 );   // outline[1]
+		const Point3  pObj( 0.5 * pA.x + 0.3 * pB.x + 0.2 * pC.x,
+		                     0.5 * pA.y + 0.3 * pB.y + 0.2 * pC.y,
+		                     0.5 * pA.z + 0.3 * pB.z + 0.2 * pC.z );
+		const Vector3 nObj = Vector3Ops::Normalize( Vector3Ops::Cross(
+			Vector3Ops::mkVector3( pB, pA ), Vector3Ops::mkVector3( pC, pA ) ) );
+
+		const Vector3 nExpected = Vector3Ops::Normalize( Vector3Ops::Transform( MInvT, nObj ) );
+		const Vector3 nWrong    = Vector3Ops::Normalize( Vector3Ops::Transform( M,     nObj ) );
+		Check( !VecClose( nExpected, nWrong, 1e-6 ),
+		       "B: (control) the two candidate formulas really do disagree here, or the probe below is vacuous" );
+
+		const Point3 pWorld = Point3Ops::Transform( M, pObj );
+		const Ray ray( Point3( pWorld.x, pWorld.y, 4.0 ), Vector3( 0, 0, -1 ) );
+		RayIntersection ri( ray, nullRasterizerState );
+		adj->IntersectRay( ri, RISE_INFINITY, true, false, false );
+
+		Check( ri.geometric.bHit, "B: (control) the adjoint probe's ray actually hits the mirror+stretch object" );
+		if( ri.geometric.bHit ) {
+			Check( VecClose( ri.geometric.vGeomNormal, nExpected, 1e-12 ),
+			       "B: mirror + non-uniform stretch -- the published geometric normal equals normalize(M^-T n_obj)" );
+			Check( !VecClose( ri.geometric.vGeomNormal, nWrong, 1e-6 ),
+			       "B: ... and does NOT equal normalize(M n_obj) -- the probe that actually discriminates the "
+			       "inverse-transpose promotion from the forward matrix" );
+		}
+		adj->release();
 	}
 
 	mirrored->release();

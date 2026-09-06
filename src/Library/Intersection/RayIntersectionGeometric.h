@@ -107,12 +107,27 @@ namespace RISE
 	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
 	//! follows by multiplying by texture width / height.
 	//!
-	//! worldWidth is a WORLD-space filter-width estimate (same units
-	//! as ptIntersection / the expression VM's `P`) -- the average
+	//! worldWidth is a filter-width estimate (same units as
+	//! ptIntersection / the expression VM's `P`) -- the average
 	//! magnitude of the auxiliary rays' plane-projected offsets
 	//! (dpdx, dpdy; see TextureFootprintCompute.h), i.e. roughly the
 	//! extent of one pixel's footprint on the surface.  0 when
 	//! !valid, matching dudx/dudy/dvdx/dvdy's convention.
+	//!
+	//! The GEOMETRY stamps this in OBJECT-space units -- at the
+	//! triangle-mesh call site (the only producer today),
+	//! `ComputeTextureFootprint` runs mid-`Object::IntersectRay`, on
+	//! the ray that function has already transformed into object
+	//! space.  `Object::IntersectRay` / `CSGObject::IntersectRay` fold
+	//! it to a true WORLD length afterward, multiplying by
+	//! `m_worldLinearScale` (the same `|det M|^(1/3)` length fold
+	//! `derivatives.scaleHint` gets, exact under uniform scale,
+	//! a geometric-mean approximation otherwise) -- relief-modifier fix
+	//! round 2, P2-A.  By the time any consumer (ExpressionPainter's
+	//! `fw`, ReliefModifier's footprint-aware step) reads this field,
+	//! it IS world-space, matching this comment's original claim; the
+	//! object-to-world fold is what makes that claim true on an object
+	//! with a non-unit world scale.
 	struct TextureFootprint
 	{
 		Scalar  dudx, dudy;
@@ -148,16 +163,16 @@ namespace RISE
 		bool						bHit;			// was there an intersection ? 
 		Scalar						range;			// distance to the intersection point
 		Scalar						range2;			// distance to the exit point
-		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by bump/normal-map modifiers)
+		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by the normal-perturbing modifiers: bump map, normal map, glint, relief)
 		Vector3						vNormal2;		// normal at the point of exit
 		//! GEOMETRIC normals at the entry / exit points — the actual
 		//! flat-triangle face normal on triangle meshes (independent of
 		//! Phong interpolation), or identical to `vNormal` / `vNormal2`
 		//! on analytical primitives (sphere, ellipsoid, plane, …) where
 		//! the surface IS smooth and shading == geometric by construction.
-		//! Modifiers (bump map, normal map) perturb `vNormal` only;
-		//! `vGeomNormal` / `vGeomNormal2` always reflect the underlying
-		//! geometry.
+		//! The normal-perturbing modifiers (bump map, normal map, glint,
+		//! relief) perturb `vNormal` only; `vGeomNormal` / `vGeomNormal2`
+		//! always reflect the underlying geometry.
 		//!
 		//! Use these — not `vNormal` / `vNormal2` — for queries that ask
 		//! "which side of the actual surface is this direction on?".
@@ -218,6 +233,59 @@ namespace RISE
 
 		Point3						ptObjIntersec;	// the point of intersection on object space
 		Point3						ptObjExit;		// the point of exit in object space
+
+		//! WORLD -> OBJECT linear map for the frame `ptObjIntersec` is
+		//! expressed in, or `nullptr` when it is not known.
+		//!
+		//! WHY IT EXISTS.  A modifier that wants to evaluate a painter at
+		//! an OFFSET point (ReliefModifier's central difference in the
+		//! tangent plane, docs/RELIEF_MODIFIER_DESIGN.md 3.2/3.4) has to
+		//! move every point domain a painter can read, consistently:
+		//! `ptIntersection` by the world step, `ptCoord` by the UV chain
+		//! rule -- and `ptObjIntersec` by the SAME step expressed in
+		//! object space, or an object-space painter (`mapping_painter
+		//! space object`, `voronoi3d space object`, `Po` in an
+		//! expression) sees a field that is flat along the step.  The hit
+		//! record carried no transform, so this is it.
+		//!
+		//! WHAT IT POINTS AT.  `Object::m_mxInvFinalTrans` -- the object's
+		//! own finalized world->object matrix, which is exactly the
+		//! inverse of the `m_mxFinalTrans` that produced `ptIntersection`
+		//! from `ptObjIntersec` two lines below the stamp.  It is a
+		//! borrowed pointer into the Object that also became `ri.pObject`,
+		//! so it is valid for as long as the hit record is (the scene is
+		//! immutable during a render, docs/ARCHITECTURE.md).
+		//!
+		//! USE THE LINEAR PART ONLY.  A step is a DIRECTION, so transform
+		//! it with `Vector3Ops::Transform` (which drops the translation
+		//! column), never `Point3Ops::Transform`.  Under a non-uniform
+		//! scale the object-space step is not the world step's length --
+		//! that is correct, not a defect: the painter's field lives in
+		//! object space and the finite difference must span the object-
+		//! space distance the world step actually covers.
+		//!
+		//! NULL ON CSG HITS, DELIBERATELY.  `CSGObject::IntersectRay`
+		//! clears it.  A CSG composite reports the CHILD operand's own
+		//! object-space point in `ptObjIntersec` (see
+		//! `AdoptCsgSurfacePayload`, which copies it untransformed, and
+		//! its comment naming the resulting frame mismatch as a
+		//! pre-existing, deliberate gap), so the map from world to THAT
+		//! frame is the product of the child's inverse with every
+		//! enclosing composite's inverse -- a per-hit matrix no member
+		//! holds and a pointer cannot express.  Stamping the composite's
+		//! own inverse would be wrong by exactly the child's transform,
+		//! and leaving the child's stamp would be wrong by exactly the
+		//! composite's; `nullptr` is the honest third answer, and the
+		//! consumer's documented degraded mode (move the object-space
+		//! point by the WORLD step, warn once) is at least correct
+		//! whenever the composite chain is a pure translation.
+		//!
+		//! NULL ALSO on any record a transport path builds without going
+		//! through `Object::IntersectRay` (BDPT/VCM's
+		//! `PopulateRIGFromVertex`, hand-built test hits, the geometry
+		//! unit tests).  This is an OUTPUT field, so `PropagateCastInputs`
+		//! does not carry it.
+		const Matrix4*				pmxWorldToObject;
 
 		OrthonormalBasis3D			onb;			// the orthonormal basis at the point of intersection
 
@@ -389,6 +457,7 @@ namespace RISE
 		  range2( RISE_INFINITY ),
 		  bGeomNormalOrientedToRay( false ),
 		  bHasTexCoord1( false ),
+		  pmxWorldToObject( 0 ),
 		  pCustom( 0 ),
 		  glossyFilterWidth( 0 ),
 		  ambientIOR( 1.0 ),
@@ -424,6 +493,7 @@ namespace RISE
 		  ptExit( r.ptExit ),
 		  ptObjIntersec( r.ptObjIntersec ),
 		  ptObjExit( r.ptObjExit ),
+		  pmxWorldToObject( r.pmxWorldToObject ),
 		  onb( r.onb ),
 		  pCustom( r.pCustom ),
 		  glossyFilterWidth( r.glossyFilterWidth ),
@@ -470,6 +540,7 @@ namespace RISE
 			ptExit = r.ptExit;
 			ptObjIntersec = r.ptObjIntersec;
 			ptObjExit = r.ptObjExit;
+			pmxWorldToObject = r.pmxWorldToObject;
 			onb = r.onb;
 			glossyFilterWidth = r.glossyFilterWidth;
 			ambientIOR = r.ambientIOR;
