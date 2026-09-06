@@ -542,6 +542,38 @@ use. The legacy surface shrinks by one consumer; the remaining ones are all
 vertex-time or explicit-bridge uses, which is the right shape for a frozen
 evaluator.
 
+**Post-migration recount (Phase 3, a scene-parsing script over every
+`scenes/**/*.RISEscene`, matching each `displaced_geometry` /
+`function2d_painter` / `scalar_painter` / `composite_function2d_painter` /
+`sdf_geometry` binding against the `expression_function2d` names actually
+declared in the SAME file — not a bare grep for the string, which
+over-counts chunk declarations that merely mention the keyword):
+`displaced_geometry.displacement` **5** scenes (the pre-migration "10"
+above was never re-verified against source; this count IS, by the same
+script, against the current tree — `dreamscape_coral_queens_hour{,_v2}`,
+`dreamscape_covenant_of_the_vale`, `watch_dial`, `misc_geometry_stress`),
+`function2d_painter` **4** (`denim_and_satin_drape`, `fabric_swatches`,
+`sheer_curtain`, `cc_function2d_painter` — unchanged), `scalar_painter
+{ function2d }` **2** (`watch_dial` plus, new this phase, `velvet_cushion` —
+the migrator's output), `composite_function2d_painter` **0** direct
+`expression_function2d` children in the current corpus,
+`sdf_geometry.heightfield_function` **5** (`enamel_watch`, `watch_dial`,
+`enamel_depth_glints`, `enamel_dial_dimpled`, `enamel_dial_sdf`).
+**Zero** `bumpmap_modifier` chunks remain anywhere under `scenes/`
+(`grep -rl '^bumpmap_modifier' scenes/` — empty), confirming the migration
+in §7.3 is total. `sculptors_studio`, `sms_veach_egg_bumpmap` and
+`Internal/pool` do NOT appear in the `expression_function2d` consumer list
+at all, migrated or not — their legacy bump functions were `perlin2d_painter`
+/ `checker_painter` / `png_painter`, not `expression_function2d`; only
+`velvet_cushion`'s `crease_field` was. **The "shrinking legacy surface"
+statement is confirmed, not just repeated**: before this arc, FIVE chunk
+kinds could bind an `expression_function2d` name (the four above plus
+`bumpmap_modifier.function`); after Phase 3, exactly FOUR can, all
+vertex-time or explicit-bridge uses — `bumpmap_modifier` still parses (it
+is Phase A, not removed) but zero in-tree instances exercise that fifth
+path any more, and the deprecation diagnostic (§7.1) means a new one is
+unlikely to appear without a warning pointing the author elsewhere.
+
 ### 7.5 Phase B — removal (named, not in this arc)
 
 Trigger: the user's call after one release cycle (or after the census in

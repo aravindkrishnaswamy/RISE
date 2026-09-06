@@ -48,9 +48,10 @@ all of them; the decision map below is the shortcut.
 | Incandescent / flame / hot metal colour | `blackbody_painter` | A temperature in Kelvin beats a guessed RGB triple. |
 | Combine, tint, or mask two of the above | `blend_painter`, `channel_painter` | See "Composition" below. |
 | A pattern you can write as maths, in 3D | `expression_painter` (colour) / `scalar_painter { expression ... }` (physical scalar) | The texture-expression VM: one string over `u v P Po N fw time`, with noise builtins.  **The default answer for anything the fixed painters cannot say**, and the only route to spatially-varying roughness that is not an adapter chain -- see "The expression VM" below. |
-| A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  Still the right choice for a `displaced_geometry` `function` slot and the `scalar_painter { function2d ... }` bridge, which take an IFunction2D. |
+| A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  Its remaining niche after the relief-modifier arc is **displacement**: a `displaced_geometry` `function` slot, `function2d_painter`, `composite_function2d_painter`, or the `scalar_painter { function2d ... }` bridge that feeds one of those.  It does **not** drive the shading normal, even though `bumpmap_modifier` (now DEPRECATED -- migrate with `tools/migrate_scenes_relief.py`) used to sample it for exactly that; do not point a new normal-perturbation ask at it. |
 | Turn a grey field into real colour (terrain bands, patina, rust-to-metal) | `ramp_painter` | Multi-stop colour ramp driven by any painter's channel.  The universal scalar -> colour remap; see "The composition boundary" below. |
 | Drive a PHYSICAL SCALAR from any colour painter you already have | `scalar_painter { painter <name> channel <R\|G\|B\|A> scale <s> bias <b> }` | The any-painter -> scalar bridge: binds ANY of the painter kinds above (a worley field, an image, an expression) to roughness / IOR / scattering. |
+| Tilt the SHADING NORMAL from any scalar field (grain, cracks, weave, wear) | `relief_modifier { height <scalar_painter> }` | Not a painter -- a **modifier**, bound on the object via `modifier <name>` (or composed with others via `modifier_stack`), not a material slot.  See "Adding relief" below. |
 | Retile, rotate, or reproject an existing painter without rebuilding it | `mapping_painter { source <name> projection uv\|world\|object\|triplanar scale rotate translate }` | Wraps ANY painter and transforms the DOMAIN it is evaluated at before delegating -- the general-purpose scale/rotate/offset tool.  `triplanar` is also how a UV-only painter (a `png_painter`, `checker_painter`, ...) gets projected onto UV-less geometry (an `sdf_geometry`, a heavily displaced mesh) via three axis-blended samples. |
 | Kill the visible repeat of a small tiling photo/scan (bark, plaster, rust, fabric) | `stochastic_tile_painter { source <name> tile_scale <n> mean <r g b> }` | Hex-tiles `source` with histogram-preserving blending (Heitz & Neyret 2018) -- one small photo covers an unbounded area with no grid repetition.  `mean` is AUTHOR-SUPPLIED (match the source's actual average value); there is no auto-estimation.  UV only -- wrap in `mapping_painter { projection triplanar }` for UV-less geometry. |
 | Scatter discrete elements (rivets, leaves, scratches, stains, decals) that noise cannot produce | `scatter_painter { source <stamp> background <name> cell_scale stamp_scale jitter_position jitter_rotation jitter_scale probability }` | Texture-bombing: stamps `source` on a jittered lattice over `background`, alpha-gated (an RGBA cutout stamp shows background through its transparent pixels).  `stamp_scale * (1 + jitter_scale)` is capped at sqrt(2) -- the parser rejects an oversized stamp. |
@@ -797,6 +798,82 @@ or the material comes out too bright.  On the image painters,
 `color_space Rec709RGB_Linear` is the verbatim-store idiom -- use it for
 anything that is not colour (normal maps, masks, roughness maps), since
 any other setting applies a real conversion and would warp the values.
+
+## Adding relief -- `relief_modifier`
+
+Every painter above can drive albedo (`IPainter`) or a physical scalar
+(`IScalarPainter`).  None of them can tilt the SHADING NORMAL -- that is
+what turns "a decal on plastic" into "a surface you could run a finger
+over".  `relief_modifier` is the fourth modifier (alongside
+`normal_map_modifier` and `glint_modifier`; `bumpmap_modifier` is
+DEPRECATED, see below) and the one that takes a *painter field*, not an
+image, as its height:
+
+```
+scalar_painter
+{
+	name		wood_height
+	expression	fbm(P*20.0, 4, 0.5, 2.0)   # any scalar_painter form -- expression, noise's
+}                                             # channel, or a bridged colour painter (next line)
+
+# ...or drive it straight off a colour painter you already have:
+scalar_painter { name h2  painter some_colour_painter  channel R }
+
+relief_modifier
+{
+	name	wood_relief
+	height	wood_height   # any scalar_painter -- ISCALARPAINTER TRAP applies (below)
+	scale	0.004          # height amplitude, field units -> world units (domain surface)
+	domain	surface        # surface (default, 3D, no texcoords needed) | uv
+	step	0              # 0 = auto: max(1e-3, filter-width) on surface, 0.01 on uv
+}
+```
+
+- **`height` is ANY `IScalarPainter`** -- an `expression` scalar, a noise
+  painter's channel, or an ordinary colour painter bridged with
+  `scalar_painter { painter X channel R }` (the same bridge as every
+  other physical-scalar slot; see the ISCALARPAINTER TRAP above).  It
+  needs no texcoords: `domain surface` (the default) samples the field
+  in world position via central difference in the tangent plane at the
+  hit, so it works on UV-less geometry (`sdf_geometry`, heavily
+  displaced meshes) exactly like the 3D noise painters do.  `domain uv`
+  is the legacy-compatible mode (what the migrator emits, below).
+- **Sign convention**: a POSITIVE height rises along +N (outward, toward
+  the viewer for a convex surface) -- the opposite sign sinks the
+  surface (carves cracks, creases, pores in). `scale` carries that
+  sign; there is no separate "invert" flag.
+- **`step` is auto by default** (`0`) -- it picks the finite-difference
+  step from the pixel footprint on `domain surface` the same way the
+  expression VM's noise builtins fade octaves, so relief fades toward
+  flat at distance instead of aliasing. Set it explicitly only when you
+  need a specific frequency floor.
+- **Composing more than one modifier on an object** uses `modifier_stack`,
+  applied in the order the members are listed:
+
+  ```
+  modifier_stack
+  {
+  	name		hull_finish
+  	modifier	hull_normalmap    # normal_map_modifier -- coarse panel detail
+  	modifier	hull_relief       # relief_modifier -- fine rivets/scratches
+  	modifier	hull_glint        # glint_modifier -- LAST, so its facet search
+  }                                  # sees the already-perturbed normal
+  ```
+
+  Put `glint_modifier` **last** in any stack that includes it -- it
+  searches for a reflective facet against whatever normal field it is
+  handed, so it should see the final, fully-perturbed surface, not an
+  intermediate one.
+
+`bumpmap_modifier` (UV-only, samples an `IFunction2D` at `ptCoord`) is
+**DEPRECATED** -- it still parses (with a one-time warning) but
+`relief_modifier` replaces it for every new material: it takes any
+scalar field instead of only an `IFunction2D`, and it can run in the
+`surface` domain on geometry that has no UVs at all. An in-tree scene
+that still has a `bumpmap_modifier` chunk migrates losslessly with
+`tools/migrate_scenes_relief.py` (dry-run first: `--dry-run -v`); see
+`docs/RELIEF_MODIFIER_DESIGN.md` §7 for the exact scale-sign algebra it
+applies.
 
 ## Discovery
 

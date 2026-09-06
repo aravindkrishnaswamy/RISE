@@ -1870,7 +1870,13 @@ plumbing:
   bark/wrinkle relief on a turned or swept body, raise that base's own
   tessellation (`n_radial`, `n_len`) until the facets are smaller than the
   desired texture wavelength, or accept the faceted look as part of the
-  texture (works for something already angular; not for skin).
+  texture (works for something already angular; not for skin).  **Or skip
+  displacement entirely for fine relief** -- `relief_modifier` (any
+  `scalar_painter` height field, `domain surface`, no texcoords) perturbs
+  only the SHADING NORMAL, never the mesh's own vertices, so it cannot
+  introduce this faceting on a `lathe_geometry`/`sweep_geometry`/
+  `skin_geometry` base at all; see `procedural-textures.md`'s "Adding
+  relief" section and `docs/RELIEF_MODIFIER_DESIGN.md`.
 - **An INTERIOR-pinch `lathe_geometry` profile (an hourglass waisted to
   `r 0` partway along, not just at the two ends) TEARS at the pinch under
   displacement** -- the pinch bakes as two coincident vertices with opposite
