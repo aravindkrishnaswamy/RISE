@@ -346,10 +346,35 @@ RayIntersectionGeometric MakeRI( const Point3& p )
 	return ri;
 }
 
-ReliefModifier* MakeRelief( const IScalarPainter& h, Scalar scale, ReliefDomain dom, Scalar step )
+ReliefModifier* MakeRelief( const IScalarPainter& h, Scalar scale, ReliefDomain dom, Scalar step,
+	Scalar maxSlope = Scalar(0) )
 {
-	return Own( new ReliefModifier( h, scale, dom, step ) );
+	return Own( new ReliefModifier( h, scale, dom, step, maxSlope ) );
 }
+
+//! H = ax*P.x + ay*P.y -- a LINEAR field, so its tangent-plane gradient
+//! on the MakeRI frame (T = +X, B = +Y) is exactly (ax, ay), known in
+//! closed form and reproduced exactly by a central difference.  Test 11
+//! needs the slope to be a parameter, which the function-pointer
+//! FnScalarPainter above cannot carry.
+class LinearFieldScalarPainter :
+	public virtual IScalarPainter,
+	public virtual Reference
+{
+public:
+	LinearFieldScalarPainter( Scalar ax, Scalar ay ) : m_ax( ax ), m_ay( ay ) {}
+
+	ScalarTriple GetValuesAt( const RayIntersectionGeometric& ri ) const override
+	{
+		return ScalarTriple( m_ax * ri.ptIntersection.x + m_ay * ri.ptIntersection.y );
+	}
+
+protected:
+	virtual ~LinearFieldScalarPainter() {}
+
+private:
+	Scalar m_ax, m_ay;
+};
 
 //! Compile an expression program with the full 3D context (P, Po, N, fw)
 //! enabled -- the `scalar_painter { expression ... }` surface's own
@@ -1839,6 +1864,192 @@ static void Test9_StackOrder()
 	}
 }
 
+// ============================================================
+//  Test 11: the max_slope clamp
+// ============================================================
+
+static void Test11_MaxSlopeClamp()
+{
+	std::cout << "Test 11: max_slope bounds the tangent-plane tilt, direction preserved" << std::endl;
+
+	// (a) CLOSED FORM.  H = 10*P.x on the MakeRI frame (T = +X, B = +Y) has
+	//     gradient (10, 0) exactly, so at scale 1 the raw tilt is 10 -- a
+	//     84.3-degree lean, which is the regime that shades black.  With
+	//     max_slope 1 the clamp must rescale it to exactly 1, i.e.
+	//     N' = normalize(N - T) -- 45 degrees on the nose -- and with
+	//     max_slope 0.5 to normalize(N - 0.5*T).
+	{
+		LinearFieldScalarPainter* h = Own( new LinearFieldScalarPainter( Scalar(10), Scalar(0) ) );
+
+		const Scalar bounds[] = { Scalar(1.0), Scalar(0.5) };
+		for( int i = 0; i < 2; i++ ) {
+			const Scalar mx = bounds[i];
+			ReliefModifier* m = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), mx );
+
+			RayIntersectionGeometric ri = MakeRI( Point3( 0.3, -0.7, 0.0 ) );
+			m->Modify( ri );
+
+			const Vector3 want = Vector3Ops::Normalize( Vector3( -mx, 0, 1 ) );
+			CHECK( VecClose( ri.vNormal, want, 1e-12 ),
+				"11a: slope 10 clamped to " << mx << " gives exactly normalize(N - " << mx << "*T)" );
+			CHECK( std::fabs( Vector3Ops::Dot( ri.onb.w(), ri.vNormal ) - 1.0 ) < 1e-12,
+				"11a: ...and the rebuilt ONB's w IS that normal" );
+		}
+
+		// The control: max_slope 0 is NO clamp, and the same field leans the
+		// full 10.  This is the pair that makes 11a discriminating -- without
+		// it, a clamp that fired unconditionally would also pass above.
+		{
+			ReliefModifier* m0 = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), Scalar(0) );
+			RayIntersectionGeometric ri = MakeRI( Point3( 0.3, -0.7, 0.0 ) );
+			m0->Modify( ri );
+			CHECK( VecClose( ri.vNormal, Vector3Ops::Normalize( Vector3( -10, 0, 1 ) ), 1e-12 ),
+				"11a: max_slope 0 is unclamped -- the full slope-10 tilt survives" );
+		}
+
+		// A NEGATIVE max_slope never reaches the modifier (Job refuses it by
+		// name, test 10h), but the class must not misbehave if one does: the
+		// `> 0` test is false for it, so it means "off", same as 0.
+		{
+			ReliefModifier* mNeg = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), Scalar(-1) );
+			RayIntersectionGeometric ri = MakeRI( Point3( 0.3, -0.7, 0.0 ) );
+			mNeg->Modify( ri );
+			CHECK( VecClose( ri.vNormal, Vector3Ops::Normalize( Vector3( -10, 0, 1 ) ), 1e-12 ),
+				"11a: a negative max_slope reaching the class means unclamped, not inverted" );
+		}
+	}
+
+	// (b) BELOW the bound is a NO-OP, bit-identical.  A clamp that always
+	//     renormalised (rather than only when exceeded) would flatten every
+	//     shallow part of the field up to the bound -- exactly the failure
+	//     mode that makes `scale` alone useless -- and this catches it.
+	{
+		LinearFieldScalarPainter* h = Own( new LinearFieldScalarPainter( Scalar(0.3), Scalar(-0.2) ) );
+		ReliefModifier* mOff = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), Scalar(0) );
+		ReliefModifier* mOn  = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), Scalar(1) );
+
+		RayIntersectionGeometric riOff = MakeRI( Point3( 0.11, 0.42, 0.0 ) );
+		RayIntersectionGeometric riOn  = MakeRI( Point3( 0.11, 0.42, 0.0 ) );
+		mOff->Modify( riOff );
+		mOn->Modify( riOn );
+
+		CHECK( riOn.vNormal.x == riOff.vNormal.x
+		    && riOn.vNormal.y == riOff.vNormal.y
+		    && riOn.vNormal.z == riOff.vNormal.z,
+			"11b: a gradient of magnitude 0.36 under max_slope 1 is BIT-IDENTICAL to unclamped" );
+	}
+
+	// (c) DIRECTION PRESERVED.  Gradient (30, 40): magnitude 50, direction
+	//     (0.6, 0.8).  Clamped to 0.6 it must become (0.36, 0.48) -- same
+	//     direction, bounded magnitude.  N = +Z and the perturbation lies in
+	//     the tangent plane, so N' is proportional to (-g.x, -g.y, 1) and the
+	//     ratio N'.y / N'.x reads g.y / g.x straight off the result.
+	{
+		LinearFieldScalarPainter* h = Own( new LinearFieldScalarPainter( Scalar(30), Scalar(40) ) );
+		const Scalar mx = Scalar(0.6);
+		ReliefModifier* m = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), mx );
+
+		RayIntersectionGeometric ri = MakeRI( Point3( -0.25, 0.6, 0.0 ) );
+		m->Modify( ri );
+
+		CHECK( std::fabs( ( ri.vNormal.y / ri.vNormal.x ) - ( Scalar(40) / Scalar(30) ) ) < 1e-12,
+			"11c: the clamped gradient keeps h_B/h_T exactly (ratio preserved to 1e-12)" );
+
+		// tan(tilt) IS |g|, so this pins the magnitude the direction check
+		// deliberately cannot see.
+		const Scalar tanTilt = std::sqrt( ri.vNormal.x * ri.vNormal.x + ri.vNormal.y * ri.vNormal.y )
+			/ ri.vNormal.z;
+		CHECK( std::fabs( tanTilt - mx ) < 1e-12,
+			"11c: ...and its magnitude is exactly max_slope (tan of the tilt)" );
+
+		CHECK( VecClose( ri.vNormal, Vector3Ops::Normalize( Vector3( -0.36, -0.48, 1 ) ), 1e-12 ),
+			"11c: ...which is normalize(N - (0.36, 0.48, 0)) in closed form" );
+	}
+
+	// (d) THE INVARIANT, swept.  1000 random gradients of magnitude up to 1e3
+	//     under max_slope 2 must all leave N' on the near side of the plane.
+	//
+	//     HONEST NOTE, because the obvious phrasing of this invariant is
+	//     vacuous: N'.N > 0 holds for ANY finite gradient, clamp or no clamp
+	//     -- the perturbation is perpendicular to N, so
+	//     N'.N = 1/sqrt(1+|g|^2), which is positive however steep the field
+	//     gets (ReliefModifier.cpp's mag2 comment makes the same argument).
+	//     The assertion with content is therefore the BOUND the clamp buys:
+	//     N'.N >= 1/sqrt(1+max_slope^2).  Both are checked; only the second
+	//     discriminates, and the unclamped control below shows by how much.
+	{
+		const Scalar mx = Scalar(2);
+		const Scalar floorDot = Scalar(1) / std::sqrt( Scalar(1) + mx * mx );
+
+		RandomNumberGenerator rng( 20260906 );
+		int belowZero = 0, belowFloor = 0, controlBelowFloor = 0;
+
+		for( int i = 0; i < 1000; i++ ) {
+			// Log-uniform magnitude over [1e-2, 1e3] so the sweep spends real
+			// samples on both sides of the bound, at a random direction.
+			const Scalar mag = std::pow( Scalar(10), rng.CanonicalRandom() * 5 - 2 );
+			const Scalar ang = rng.CanonicalRandom() * 2 * PI;
+			LinearFieldScalarPainter* h = Own( new LinearFieldScalarPainter(
+				mag * std::cos( ang ), mag * std::sin( ang ) ) );
+
+			ReliefModifier* m = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), mx );
+			RayIntersectionGeometric ri = MakeRI( Point3( 0.05, -0.05, 0.0 ) );
+			m->Modify( ri );
+
+			const Scalar d = Vector3Ops::Dot( ri.vNormal, Vector3( 0, 0, 1 ) );
+			if( !( d > 0 ) )                    belowZero++;
+			if( d < floorDot - Scalar(1e-12) )  belowFloor++;
+
+			ReliefModifier* mc = MakeRelief( *h, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), Scalar(0) );
+			RayIntersectionGeometric ric = MakeRI( Point3( 0.05, -0.05, 0.0 ) );
+			mc->Modify( ric );
+			if( Vector3Ops::Dot( ric.vNormal, Vector3( 0, 0, 1 ) ) < floorDot - Scalar(1e-12) ) {
+				controlBelowFloor++;
+			}
+		}
+
+		CHECK( belowZero == 0,
+			"11d: N'.N > 0 on all 1000 swept slopes (true by orthogonality; stated for the record)" );
+		CHECK( belowFloor == 0,
+			"11d: N'.N >= 1/sqrt(1+max_slope^2) on all 1000 -- the tilt bound the clamp actually buys" );
+		CHECK( controlBelowFloor > 500,
+			"11d: ...and UNCLAMPED, most of the same sweep breaks that bound (" << controlBelowFloor << "/1000) -- so the check discriminates" );
+	}
+
+	// (e) An inert modifier stays inert: `scale` 0 short-circuits before the
+	//     clamp is ever consulted, so a max_slope cannot resurrect it.
+	{
+		LinearFieldScalarPainter* h = Own( new LinearFieldScalarPainter( Scalar(10), Scalar(10) ) );
+		ReliefModifier* m = MakeRelief( *h, Scalar(0), ReliefDomain::Surface, Scalar(1e-3), Scalar(0.7) );
+		RayIntersectionGeometric ri = MakeRI( Point3( 0.2, 0.2, 0.0 ) );
+		const Vector3 before = ri.vNormal;
+		m->Modify( ri );
+		CHECK( ri.vNormal.x == before.x && ri.vNormal.y == before.y && ri.vNormal.z == before.z,
+			"11e: scale 0 is still inert with a max_slope set" );
+	}
+
+	// (f) UV domain gets the clamp too -- it is applied to `g` after the
+	//     domain branch, so both share it, and a migrated scene that adds
+	//     `max_slope` must see it work.
+	{
+		LinearFieldScalarPainter* h = Own( new LinearFieldScalarPainter( Scalar(0), Scalar(0) ) );
+		(void)h;	// the UV field below is a function of ptCoord, not P
+
+		IScalarPainter* hUV = MakeExprScalar( "8*u" );
+		if( hUV ) {
+			ReliefModifier* m = MakeRelief( *hUV, Scalar(1), ReliefDomain::UV, Scalar(0.01), Scalar(0.5) );
+			RayIntersectionGeometric ri = MakeRI( Point3( 0, 0, 0 ) );
+			ri.ptCoord = Point2( 0.5, 0.5 );
+			m->Modify( ri );
+
+			const Scalar tanTilt = std::sqrt( ri.vNormal.x * ri.vNormal.x + ri.vNormal.y * ri.vNormal.y )
+				/ ri.vNormal.z;
+			CHECK( std::fabs( tanTilt - Scalar(0.5) ) < 1e-12,
+				"11f: the clamp applies in `domain uv` as well (tilt held at 0.5 on a slope-8 UV field)" );
+		}
+	}
+}
+
 static void Test10_Parse()
 {
 	std::cout << "Test 10: the relief_modifier chunk parses, and the scalar-pipe diagnostics fire" << std::endl;
@@ -2003,6 +2214,64 @@ static void Test10_Parse()
 			safe_release( job );
 		}
 	}
+
+	// (h) `max_slope` round-trips, and a NEGATIVE one is refused BY NAME
+	//     rather than silently folded to "off" (which is what the `> 0`
+	//     test inside Modify would otherwise do to it -- a sign slip on
+	//     `0.7` would then quietly lose exactly the protection the author
+	//     asked for).
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		CHECK( job != 0, "10h: job created" );
+		if( job ) {
+			std::string log;
+			const bool ok = ParseCapturing( "maxslope",
+				"scalar_painter\n{\n\tname h_ms\n\texpression 0.25*sin(P.x*8)\n}\n"
+				"relief_modifier\n{\n\tname r_ms\n\theight h_ms\n\tscale 0.15\n\tmax_slope 0.7\n}\n",
+				*job, log );
+			CHECK( ok, "10h: a scene with `max_slope 0.7` loads" );
+			CHECK( job->GetModifiers()->GetItem( "r_ms" ) != 0,
+				"10h: ...and `r_ms` is registered" );
+			safe_release( job );
+		}
+	}
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		if( job ) {
+			std::string log;
+			ParseCapturing( "maxslopeneg",
+				"scalar_painter\n{\n\tname h_ms2\n\texpression 0.25*sin(P.x*8)\n}\n"
+				"relief_modifier\n{\n\tname r_ms_neg\n\theight h_ms2\n\tscale 0.15\n\tmax_slope -1\n}\n",
+				*job, log );
+			CHECK( job->GetModifiers()->GetItem( "r_ms_neg" ) == 0,
+				"10h: `max_slope -1` registers NOTHING" );
+			CHECK( Contains( log, "max_slope" ),
+				"10h: ...and the diagnostic names the offending parameter" );
+			CHECK( Contains( log, "r_ms_neg" ),
+				"10h: ...and names the modifier it came from" );
+			safe_release( job );
+		}
+	}
+
+	// (i) OMITTING `max_slope` is the documented default and must keep
+	//     parsing -- the migration/legacy path, and the reason the plain
+	//     IJob virtual still exists.
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		if( job ) {
+			std::string log;
+			const bool ok = ParseCapturing( "nomaxslope",
+				"scalar_painter\n{\n\tname h_ms3\n\texpression 0.25*sin(P.x*8)\n}\n"
+				"relief_modifier\n{\n\tname r_no_ms\n\theight h_ms3\n\tscale 0.02\n}\n",
+				*job, log );
+			CHECK( ok && job->GetModifiers()->GetItem( "r_no_ms" ) != 0,
+				"10i: a relief_modifier with no `max_slope` line still parses (default 0 = unclamped)" );
+			safe_release( job );
+		}
+	}
 }
 
 // ============================================================
@@ -2024,6 +2293,7 @@ int main()
 	Test8_NonFiniteGuard();
 	Test9_StackOrder();
 	Test10_Parse();
+	Test11_MaxSlopeClamp();
 
 	ReleaseOwned();
 

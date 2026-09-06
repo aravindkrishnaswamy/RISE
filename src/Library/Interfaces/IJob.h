@@ -4488,7 +4488,10 @@ namespace RISE
 		//! (default; 3D field, world-unit tangent step, no texcoords
 		//! required) or `uv` (legacy sampling geometry).  `step` <= 0
 		//! selects the automatic rule (surface: max(1e-3, pixel
-		//! footprint); uv: 0.01).  Appended after AddWeaveMaterial per the
+		//! footprint); uv: 0.01).  There is NO slope clamp on this
+		//! signature -- it forwards to `AddReliefModifierEx` (the class
+		//! tail) with `maxSlope` 0, which is the unbounded tilt every
+		//! caller of this entry point has always had.  Appended after AddWeaveMaterial per the
 		//! append-only IJob tail (preserves every prior vtable slot -- see
 		//! SourceHygieneTest and tests/IJobVtableManifest.txt).
 		/// \return TRUE if successful, FALSE otherwise
@@ -4553,6 +4556,49 @@ namespace RISE
 							const bool          face_normals,		///< [in] Use face normals instead of topologically re-averaged vertex normals
 							const bool          seam_fold			///< [in] Tent-fold UV before evaluation (closed wrap-seam surfaces)
 							) = 0;
+
+		//! Adds a painter-driven micro-relief modifier WITH the optional
+		//! slope clamp.  Identical to `AddReliefModifier` above in every
+		//! other respect; `maxSlope` is an upper bound on the tangent-plane
+		//! tilt `|scale * grad h|`, expressed as a SLOPE (1.0 = 45 degrees,
+		//! 0.577 = 30).  When the scaled gradient exceeds it the gradient is
+		//! rescaled to that magnitude with its DIRECTION PRESERVED, so the
+		//! relief keeps facing the way the field points and only stops
+		//! leaning further.  `0` (and any value `<= 0`) means no clamp,
+		//! which is exactly what `AddReliefModifier` forwards -- so every
+		//! pre-existing scene and caller is unchanged.  A NEGATIVE value is
+		//! refused by name: it cannot mean anything, and silently treating
+		//! it as "off" would hide an authoring mistake.
+		//!
+		//! WHY IT EXISTS.  The perturbation is unbounded in the field's
+		//! slope, so a fine `fbm` height at a `scale` large enough to READ
+		//! tilts the shading normal to within a degree or two of the
+		//! surface plane.  It never crosses that plane (the perturbation is
+		//! perpendicular to N), but it does cross the GEOMETRIC HORIZON as
+		//! seen from the ray or the light, and the materials'
+		//! geometric-horizon gates then reject nearly every sampled
+		//! direction: the surface shades BLACK.  Amplitude alone cannot fix
+		//! that -- lowering `scale` until the black goes away puts the
+		//! detail back below the pixel footprint.  See
+		//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md
+		//! section 3.2.
+		//!
+		//! WHY A NEW VIRTUAL rather than a parameter on AddReliefModifier:
+		//! IJob's vtable is APPEND-ONLY (SourceHygieneTest +
+		//! tests/IJobVtableManifest.txt) -- even a trailing defaulted
+		//! parameter on an existing pure virtual moves or changes a vtable
+		//! slot.  AddReliefModifier is kept verbatim and forwards here with
+		//! `maxSlope` 0.  Appended after AddDisplacedGeometryWithHeight per
+		//! the append-only IJob tail.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddReliefModifierEx(
+									const char* name,				///< [in] Name of the modifier
+									const char* height,				///< [in] Height field (scalar_painter name or inline numeric)
+									const double scale,				///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+									const char* domain,				///< [in] "surface" (default) or "uv"
+									const double step,				///< [in] Central-difference half-step; <= 0 = auto
+									const double maxSlope			///< [in] Tilt bound as a slope (1 = 45 deg); 0 = unclamped, negative refused
+									) = 0;
 
 	};
 

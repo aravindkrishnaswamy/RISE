@@ -8589,14 +8589,18 @@ namespace RISE
 					double scale       = bag.GetDouble( "scale",  1.0 );
 					std::string domain = bag.GetString( "domain", "surface" );
 					double step        = bag.GetDouble( "step",   0.0 );
+					double maxSlope    = bag.GetDouble( "max_slope", 0.0 );
 
-					// Domain validation, the height resolution and its
-					// three-way scalar-pipe diagnostic all live in
-					// Job::AddReliefModifier -- one home, so the CLI, the
-					// agent verbs and any future caller get the same
-					// wording.
-					return pJob.AddReliefModifier( name.c_str(), height.c_str(), scale,
-						domain.c_str(), step );
+					// Domain validation, the `max_slope` range check, the
+					// height resolution and its three-way scalar-pipe
+					// diagnostic all live in Job::AddReliefModifierEx --
+					// one home, so the CLI, the agent verbs and any future
+					// caller get the same wording.  The `Ex` entry point,
+					// not the plain one: IJob's vtable is append-only, so
+					// the clamp arrived as a new tail virtual and the plain
+					// `AddReliefModifier` now forwards here with 0.
+					return pJob.AddReliefModifierEx( name.c_str(), height.c_str(), scale,
+						domain.c_str(), step, maxSlope );
 				}
 
 				const ChunkDescriptor& Describe() const override {
@@ -8614,7 +8618,9 @@ namespace RISE
 							"colour painter with `scalar_painter { name X_h  painter X  channel R }` "
 							"and bind that.  POSITIVE HEIGHT RISES ALONG +N (Blinn / PBRT-v4) -- the "
 							"OPPOSITE sign of the REMOVED `bumpmap_modifier` (removed 2026-09-06), which treated its "
-							"field as depth; negate `scale` to sink instead of raise.  Attach via "
+							"field as depth; negate `scale` to sink instead of raise.  On a FINE field, raise "
+							"`scale` for legibility and set `max_slope` (0.5-1.0) to hold the tilt -- an unbounded "
+							"tilt shades BLACK, see that parameter.  Attach via "
 							"the object's `modifier` parameter.  See "
 							"docs/RELIEF_MODIFIER_DESIGN.md.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
@@ -8626,6 +8632,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "domain"; p.kind = ValueKind::Enum;      p.enumValues = {"surface","uv"};
 						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for scenes migrated off the removed `bumpmap_modifier` (tools/migrate_scenes_relief.py) and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
 						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching the removed `bumpmap_modifier`'s windowsize, so a migrated scene that omitted the window lands on the same span).  In `surface` it is a FLOOR, not the step: the rule is max(step > 0 ? step : 1e-3, HALF the hit's pixel footprint), so an EXPLICIT step is raised whenever half the footprint is larger.  Half, because this is the HALF-step and the difference spans twice it: the stencil then spans exactly ONE footprint.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  EVERY geometry populates one -- analytic primitives, SDFs, boxes, disks, planes and meshes alike -- but only on PRIMARY hits, since no ray carries screen-space differentials after a scatter.  So the fade is universal on directly-visible surfaces; on a hit reached through a bounce the footprint is unknown (0), the max is a no-op, and the explicit step -- or the 1e-3 floor -- is exactly what is used, with no distance fade.  So: an explicit step only ever raises the floor where a footprint exists, and a value below the footprint is silently ignored there; it takes effect verbatim on secondary hits."; p.defaultValueHint = "0"; }
+						{ auto& p = P(); p.name = "max_slope"; p.kind = ValueKind::Double; p.description = "Upper bound on the tangent-plane tilt |scale*grad h| (a SLOPE: 1.0 = 45 degrees, 0.577 = 30).  When the scaled gradient exceeds it, the gradient is rescaled to this magnitude with its DIRECTION PRESERVED -- the relief keeps facing the way the field points and only stops leaning further, which is what makes this different from lowering `scale` (that flattens the shallow parts of the field along with the steep ones).  WHAT IT PREVENTS: an unbounded tilt takes the shading normal past the GEOMETRIC HORIZON as seen from the ray or the light -- it never crosses the surface plane itself, the perturbation is perpendicular to N -- and the materials' geometric-horizon gate then rejects nearly every sampled direction, so the surface shades BLACK (bands and speckle on a fine field).  So: RAISE `scale` for legibility and let this hold the tilt, rather than dialling `scale` down until the black goes away, which puts the detail back below the pixel footprint.  0.5-1.0 is the useful band.  0 = no clamp (the legacy/migration behaviour, and the default).  A negative or non-finite value is a parse-time error naming this parameter."; p.defaultValueHint = "0"; }
 						return cd;
 					}();
 					return d;

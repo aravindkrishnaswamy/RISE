@@ -30,6 +30,27 @@
 //  ABI-frozen `RISE_API_CreateBumpMapModifier` shim; it is not a free choice
 //  here, it is the convention every other renderer's authors expect.
 //
+//  SLOPE CLAMP (`maxSlope`, opt-in, default 0 = off).  The perturbation
+//  above is UNBOUNDED in the field's slope: `scale * |grad h|` is a
+//  tangent-plane tilt, and a fine fbm field whose slope is O(10) at a
+//  `scale` large enough to be legible tilts `N'` to within a degree or
+//  two of the surface plane.  `N'` never crosses the plane -- the
+//  perturbation is perpendicular to `N`, so `N'.N = 1/sqrt(1+|g|^2) > 0`
+//  always -- but it does cross the GEOMETRIC HORIZON as seen from the ray
+//  or from the light, and the materials' geometric-horizon gates (see
+//  CookTorranceSPF::Scatter and its siblings) then reject nearly every
+//  sampled direction and the surface shades BLACK.  That was the measured
+//  practical failure on `weathered_workbench`'s grain: invisible at a
+//  `scale` small enough to be safe, black speckle at a `scale` large
+//  enough to read.  With `maxSlope > 0` the scaled gradient is rescaled
+//  to that magnitude when it exceeds it -- DIRECTION PRESERVED, magnitude
+//  bounded -- so the tilt is capped at `atan(maxSlope)` and the shading
+//  and geometric hemispheres always overlap by at least
+//  `90deg - atan(maxSlope)`.  `scale` then sets the amplitude the shallow
+//  parts of the field get and the clamp holds the peaks, which is what
+//  makes a fine field legible at all.  0 keeps the legacy unbounded
+//  behaviour (and is what the migrator writes).
+//
 //  DOMAIN.  `Surface` (the default) makes the field a function of the 3D
 //  hit and takes the step in the tangent plane in WORLD units -- works on
 //  any geometry with a normal, texcoords not required, and the
@@ -86,13 +107,15 @@ namespace RISE
 			Scalar					dScale;		///< Amplitude: field units -> world units (surface) / UV units (uv)
 			ReliefDomain			domain;		///< Which point domain the field and the step live in
 			Scalar					dStep;		///< Central-difference half-step; <= 0 selects the automatic rule (design 3.3)
+			Scalar					dMaxSlope;	///< Upper bound on |scale*grad h|; <= 0 or non-finite = unclamped
 
 		public:
 			ReliefModifier(
 				const IScalarPainter& height_,	///< [in] Height field (addref'd)
 				const Scalar scale_,			///< [in] Amplitude; 0 or non-finite makes the modifier inert
 				const ReliefDomain domain_,		///< [in] Surface (3D field) or UV
-				const Scalar step_				///< [in] Half-step; <= 0 = auto per design 3.3
+				const Scalar step_,				///< [in] Half-step; <= 0 = auto per design 3.3
+				const Scalar maxSlope_			///< [in] Tangent-plane tilt bound (a slope: 1 = 45deg); <= 0 = no clamp
 				);
 
 			void Modify( RayIntersectionGeometric& ri ) const;

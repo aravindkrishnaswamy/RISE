@@ -74,9 +74,11 @@ ReliefModifier::ReliefModifier(
 	const IScalarPainter& height_,
 	const Scalar scale_,
 	const ReliefDomain domain_,
-	const Scalar step_
+	const Scalar step_,
+	const Scalar maxSlope_
 	) :
-  height( height_ ), dScale( scale_ ), domain( domain_ ), dStep( step_ )
+  height( height_ ), dScale( scale_ ), domain( domain_ ), dStep( step_ ),
+  dMaxSlope( maxSlope_ )
 {
 	height.addref();
 }
@@ -305,7 +307,47 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	// holds for EITHER handedness -- the overall sign of t x b flips, the
 	// perturbation relative to n does not -- which is what lets the
 	// mirrored-instance frames pass through unchanged.
-	const Vector3 perturbed = N - ( T * hT + B * hB ) * dScale;
+	Vector3 g = ( T * hT + B * hB ) * dScale;
+
+	// SLOPE CLAMP (opt-in; `dMaxSlope` <= 0 or non-finite leaves `g`
+	// untouched, so a scene that never authored `max_slope` is bit-identical
+	// to the pre-clamp modifier).
+	//
+	// `g` is the tangent-plane tilt as a SLOPE: the perturbed normal makes
+	// an angle atan(|g|) with N, so |g| = 1 is 45 degrees.  Rescaling `g` to
+	// `dMaxSlope` when it exceeds it PRESERVES THE DIRECTION -- the relief
+	// still faces the way the field's gradient points, it just stops leaning
+	// further -- which is what distinguishes this from clamping the height
+	// or the amplitude, both of which flatten the shallow parts of the field
+	// along with the steep ones.
+	//
+	// WHAT IT ACTUALLY PREVENTS, stated precisely because the obvious
+	// reading is wrong: NOT `N'` crossing the surface plane.  It cannot --
+	// `g` is perpendicular to `N`, so N'.N = 1/sqrt(1+|g|^2) > 0 for any
+	// finite gradient (the same orthogonality argument the mag2 gate's
+	// comment below makes).  What an unbounded tilt DOES cross is the
+	// GEOMETRIC HORIZON as seen from the ray or from the light: at |g| = 10
+	// the shading normal is 84 degrees off the geometric one, the shading
+	// and geometric hemispheres barely overlap, and the materials'
+	// geometric-horizon gates (CookTorranceSPF::Scatter and its siblings,
+	// which orient the geometric normal to the ray and reject every sample
+	// below it) throw away nearly every direction -- the surface shades
+	// BLACK.  Bounding |g| bounds that overlap from below at
+	// 90deg - atan(dMaxSlope), which is the whole content of the clamp.
+	//
+	// The `isfinite` test is not redundant with the guard above: `hT`/`hB`
+	// are finite there, but `dScale` may still be large enough to overflow
+	// the product.  On a non-finite `gm2` the clamp is SKIPPED rather than
+	// applied (maxSlope/inf would be 0 and 0*inf a NaN), and the mag2 gate
+	// below then bails the sample out untouched, exactly as it does today.
+	if( dMaxSlope > Scalar(0) ) {
+		const Scalar gm2 = Vector3Ops::SquaredModulus( g );
+		if( std::isfinite( gm2 ) && gm2 > dMaxSlope * dMaxSlope ) {
+			g = g * ( dMaxSlope / std::sqrt( gm2 ) );
+		}
+	}
+
+	const Vector3 perturbed = N - g;
 
 	// DEGENERATE-NORMAL GATE.  Bail rather than hand Normalize an
 	// unusable vector: no clamp, no flat spot, just "this sample had no
@@ -325,11 +367,11 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	// which no upstream guard covers and which this gate alone stops from
 	// reaching Normalize.  Kept for (ii) and as cheap insurance on (i).
 	//
-	// There is deliberately NO geometric-horizon clamp -- like
-	// NormalMap and PBRT's bump mapping, a large `scale` may push
-	// N' below the geometric plane and the materials' own horizon gates
-	// handle that continuously.  GlintModifier's rejection is a DISCRETE
-	// facet decision and does not transfer.
+	// NOT A HORIZON CLAMP.  The optional slope clamp that bounds the tilt
+	// lives ABOVE, on `g`, and is off unless the scene authored
+	// `max_slope`; this gate is unconditional and is about degeneracy, not
+	// about how far the normal leaned.  GlintModifier's rejection is a
+	// DISCRETE facet decision and does not transfer to either.
 	const Scalar mag2 = Vector3Ops::SquaredModulus( perturbed );
 	if( !( mag2 > Scalar(1e-12) ) || !std::isfinite( mag2 ) ) {
 		return;

@@ -348,3 +348,4 @@ virtual bool AddWeaveMaterial(const char*name,const char*weave,const char*fabric
 virtual bool AddReliefModifier(const char*name,const char*height,const double scale,const char*domain,const double step)=0;
 virtual bool AddModifierStack(const char*name,const char**modifierNames,const unsigned int count)=0;
 virtual bool AddDisplacedGeometryWithHeight(const char*name,const char*base_geometry_name,const unsigned int detail,const char*displacement,const char*height,const Scalar disp_scale,const bool double_sided,const bool face_normals,const bool seam_fold)=0;
+virtual bool AddReliefModifierEx(const char*name,const char*height,const double scale,const char*domain,const double step,const double maxSlope)=0;

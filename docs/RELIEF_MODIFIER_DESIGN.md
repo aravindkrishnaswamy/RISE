@@ -187,6 +187,7 @@ relief_modifier
 	scale    0.004                 # height amplitude: field units -> world units (surface) / UV units (uv)
 	domain   surface               # surface (default) | uv
 	step     0                     # 0 = auto (surface: max(1e-3, fw); uv: 0.01)
+	max_slope 0                   # 0 = no clamp; 0.5-1.0 bounds the tilt (a slope; 1.0 = 45 deg)
 }
 ```
 
@@ -214,6 +215,15 @@ relief_modifier
   in UV; the descriptor says so and says `surface` is the recommended mode.
 - `step` — central-difference half-step. `0` selects the automatic rule in
   §3.3.
+- `max_slope` — **opt-in upper bound on the tangent-plane tilt**
+  `|scale·∇h|`, expressed as a *slope* (`1.0` = 45°, `0.577` = 30°). `0`
+  (the default, and what the migrator writes) means no clamp — the legacy
+  behaviour. A negative or non-finite value is a parse-time error naming the
+  parameter: the clamp compares a magnitude against it, so a negative bound
+  cannot mean anything, and quietly folding it to "off" would turn a sign
+  slip on `0.7` into an invisible loss of exactly the protection the author
+  asked for. See §3.2 for what it buys and why amplitude alone cannot
+  substitute.
 
 ### 3.2 The perturbation
 
@@ -286,11 +296,55 @@ it into a header-inline helper `ModifierFrame::RebuildPreservingTangent(ri,
 newN)` and switches the three existing modifiers to it, so the mirrored-
 instance handedness fix has one home.
 
-**No geometric-horizon clamp.** Like BumpMap/NormalMap and PBRT's bump
-mapping, a large `scale` may push `N'` below the geometric plane; the
-materials' geometric-horizon gates handle that (they already expect the two
-normals to disagree post-modifier). GlintModifier's rejection is a *discrete*
-facet decision and does not transfer.
+**Optional slope clamp — `max_slope`** *(added 2026-09-06; supersedes the
+original "No geometric-horizon clamp" paragraph, quoted and corrected
+below).*
+
+```
+g   = scale·( h_T·T + h_B·B )
+if max_slope > 0 and |g| > max_slope:  g ← g · max_slope/|g|      # direction preserved
+N'  = normalize( N − g )
+```
+
+The clamp is **off by default** (`max_slope 0`), so every pre-existing scene,
+the migrator's output and the ABI-frozen `RISE_API_CreateBumpMapModifier` shim
+are bit-identical to before.
+
+*What the original paragraph said, and what was wrong with it.* It read: "Like
+BumpMap/NormalMap and PBRT's bump mapping, a large `scale` may push `N'` below
+the geometric plane; the materials' geometric-horizon gates handle that (they
+already expect the two normals to disagree post-modifier)." Two corrections:
+
+1. **`N'` cannot cross the surface plane.** `g` is perpendicular to `N`, so
+   `N'·N = 1/sqrt(1+|g|²) > 0` for *any* finite gradient — the same
+   orthogonality argument the degenerate-normal gate's own comment makes a few
+   lines later. The original framing pointed at an impossible failure.
+2. **The reachable failure is the geometric horizon as seen from the ray or
+   the light, and the gates do *not* "handle" it gracefully** — they *are* the
+   failure. At `|g| = 10` the shading normal is 84° off the geometric one, the
+   shading and geometric hemispheres barely overlap, and
+   `CookTorranceSPF::Scatter` and its siblings (which orient the geometric
+   normal to the ray and reject every sample below it) throw away nearly every
+   direction. The surface shades **black**.
+
+*Why amplitude alone cannot fix it.* This was measured on
+`scenes/FeatureBased/Textures/weathered_workbench.RISEscene` (§12 Phase 5
+addendum): the wood grain is a 5-octave `fbm` whose tangent-plane slope is
+O(10), so there is **no** `scale` that works. At `0.03` the relief is
+sub-footprint and invisible; at `0.10`–`0.25` it reads as black bands and
+speckle. The two failures are not a narrow band to thread — they overlap.
+Bounding the *tilt* rather than the *amplitude* separates the two knobs:
+`scale` sets what the shallow parts of the field get, and the clamp holds the
+peaks, with the gradient's **direction preserved** so the relief still faces
+the way the field points. Clamping the height or lowering `scale` instead
+flattens the shallow parts along with the steep ones, which is precisely why
+the amplitude sweep had nothing to find.
+
+`atan(max_slope)` is the tilt cap, so the two hemispheres always overlap by at
+least `90° − atan(max_slope)`: `0.5` → 63.4°, `1.0` → 45°.
+
+GlintModifier's rejection remains a *discrete* facet decision and does not
+transfer to either this clamp or the degenerate-normal gate.
 
 ### 3.3 Step selection — scale-aware and footprint-aware
 
@@ -868,7 +922,22 @@ implicitly; nothing else changed.
 10. **Parse.** `relief_modifier` round-trips; `height` bound to an `IPainter`
     yields `kScalarBoundToIPainterFmt`; unknown name yields
     `kScalarUnknownFmt`; the `bumpmap_modifier` deprecation warning fires
-    once for two chunks.
+    once for two chunks. Since the clamp: `max_slope 0.7` round-trips,
+    `max_slope -1` is refused by name, and omitting it still parses.
+11. **`max_slope` clamp** *(added 2026-09-06)*. Closed form — a slope-10
+    linear field at `scale 1` under `max_slope 1` gives exactly
+    `normalize(N − T)`, and under `0.5` exactly `normalize(N − 0.5·T)`,
+    against an unclamped control that keeps the full slope-10 lean. A
+    gradient *below* the bound is **bit-identical** to unclamped (the clamp
+    fires only when exceeded — a clamp that always renormalised would flatten
+    the shallow field, which is the whole failure mode `scale` alone has).
+    Direction preserved: a `(30, 40)` gradient clamped to `0.6` keeps
+    `h_B/h_T` to 1e-12 and lands on `normalize(N − (0.36, 0.48, 0))`. Swept
+    invariant over 1000 random slopes up to 1e3 under `max_slope 2`:
+    `N'·N ≥ 1/sqrt(1+max_slope²)` — the honest form, since `N'·N > 0` is
+    vacuous by orthogonality (§3.2) and the same sweep breaks the tight bound
+    on most samples when unclamped. Plus: `scale 0` stays inert with a
+    `max_slope` set, and the clamp applies in `domain uv` as well.
 
 Scenes: `scenes/Tests/ChunkCoverage/cc_relief_modifier.RISEscene`,
 `cc_modifier_stack.RISEscene`; `scenes/Tests/Painters/relief_sphere_no_uv.RISEscene`

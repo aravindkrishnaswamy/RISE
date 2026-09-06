@@ -2401,6 +2401,31 @@ namespace RISE
 								const Scalar step							///< [in] Central-difference half-step; <= 0 selects the automatic rule
 								);
 
+	//! As `RISE_API_CreateReliefModifier`, plus `maxSlope`: an upper bound
+	//! on the tangent-plane tilt `|scale * grad h|`, expressed as a SLOPE
+	//! (1.0 = 45 degrees, 0.577 = 30).  When the scaled gradient exceeds
+	//! it, the gradient is rescaled to that magnitude with its DIRECTION
+	//! PRESERVED.  `<= 0` (what the plain entry point above passes) means
+	//! no clamp -- the legacy unbounded behaviour.
+	//!
+	//! The clamp exists because an unbounded tilt on a fine field is not a
+	//! cosmetic problem: at a `scale` large enough for the relief to read,
+	//! the shading normal leans far enough that the materials'
+	//! geometric-horizon gates reject nearly every sampled direction and
+	//! the surface shades BLACK.  See Modifiers/ReliefModifier.h for the
+	//! precise statement (it is the horizon as seen from the ray, not the
+	//! surface plane, that gets crossed) and
+	//! docs/RELIEF_MODIFIER_DESIGN.md section 3.2.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateReliefModifierEx(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IScalarPainter& height,				///< [in] Height field (addref'd); `.v[0]` is read
+								const Scalar scale,							///< [in] Amplitude: field units -> world units (surface) / UV units (uv)
+								const Implementation::ReliefDomain domain,	///< [in] Surface (3D field, no texcoords needed) or UV (legacy sampling geometry)
+								const Scalar step,							///< [in] Central-difference half-step; <= 0 selects the automatic rule
+								const Scalar maxSlope						///< [in] Tilt bound as a slope (1 = 45 deg); <= 0 = unclamped
+								);
+
 	//! Creates a modifier_stack: an ordered composition of OTHER modifiers,
 	//! applied in authored order -- each member sees the PREVIOUS member's
 	//! vNormal/onb, so a stack behaves exactly like a hand-written chain of
