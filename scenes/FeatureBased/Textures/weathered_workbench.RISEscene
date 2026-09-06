@@ -131,11 +131,13 @@ scalar_painter
 # skills/agent/materials-and-media-basics.md's crackle-glaze recipe uses).
 # ramp_wood maps field=0 -> dark heartwood, field=1 -> pale sapwood, so this
 # raw field is monotonically increasing with "paleness".  Dark grain/late-
-# wood should read as SUNK (the physical picture: dense dark streaks sit a
-# hair proud, the softer pale wood between them wears/weathers down) --
-# relief_modifier's convention is POSITIVE height rises along +N, so binding
-# this field with a POSITIVE scale makes the low (dark) end sink relative to
-# the high (pale) end, which is the sign this scene wants -- the OPPOSITE of
+# wood should read as SUNK relative to the pale wood between the streaks --
+# relief_modifier's convention is POSITIVE height rises along +N, and the
+# raw field is 0 at the dark end and 1 at the pale end, so binding it with
+# a POSITIVE scale leaves the dark end at the local floor and raises the
+# pale end above it: dark reads sunk, which is the sign this scene wants
+# (a look choice for a weathered bench, not a claim about real wood, where
+# dense late-wood usually stands proud) -- the OPPOSITE of
 # the crackle-glaze recipe's negative scale, because that recipe's dark end
 # is the HIGH end of its own field (see that recipe's own comment).  Tuned by
 # a reduced-render amplitude sweep (0.002/0.004/0.008/0.02/0.04/0.05/0.06/0.10
