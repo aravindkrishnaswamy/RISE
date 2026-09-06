@@ -4178,9 +4178,10 @@ static const int kFunc1DSubCat = 100001;
 static const int kFunc2DSubCat = 100002;
 
 //! The dimension-precise Function sub-namespace a reference PARAM resolves into, or 0 for a
-//! coarse {Function} consumer.  `pd` is the param's OWN ParameterDescriptor (the caller already
-//! resolved it against the chunk's ChunkDescriptor before calling here) -- may be null for a
-//! synthetic/no-descriptor caller, in which case only the name-keyed Function1D cases below apply.
+//! coarse {Function} consumer.  `pd` is the param's OWN ParameterDescriptor -- the caller (the
+//! single one, in ComputeChunkRefs) has already resolved it against the chunk's ChunkDescriptor
+//! and dereferenced it, so in practice it is never null; the `pd &&` guard on the pipe test below
+//! is defensive only, and a hypothetical null caller would get just the name-keyed cases.
 static int FunctionSubNamespace( const std::string& paramName, const ParameterDescriptor* pd )
 {
 	// Function1D consumers: NAME-keyed, because none of these declare a `ParameterPipe` (they

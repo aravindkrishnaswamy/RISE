@@ -93,7 +93,8 @@ int main()
 	// engine never resolves -> not in recorded -> fails).
 	{
 		const char* scenes[] = {
-			// displacement: {Painter}-declared, engine binds Function2D -> the recently-fixed case
+			// displacement: {Painter, Function}-declared and Function2D-PIPED, engine binds
+			// Function2D -> resolved through the dimension-precise sub-namespace
 			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"

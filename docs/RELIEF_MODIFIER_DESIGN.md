@@ -2867,3 +2867,17 @@ in-session rather than left as chips:
   `ApplyScalarHeightToObject` actually do).
   `DisplacedGeometryTest` 20/20 (was 19/19), `SourceHygieneTest` 164/0,
   `ReliefModifierTest` 106/0; both warning gates clean on a full rebuild.
+
+### Follow-ups on `relief-followups` (2026-09-06)
+
+Three separate arcs landed on branch `relief-followups`, off `913436cd`.
+None is a Phase deliverable of this document; they are recorded here so
+the branch's commit range is accounted for and so a reader of §3.3 can
+find why its "mesh-only" caveat is gone.
+
+| Arc | Commits | What |
+|---|---|---|
+| **Texture footprint on every geometry** | `104b165c`, `ff9844e7`, `bebeace3`, then fix round 1 in `5bc02109` + this record's sibling | `txFootprint` is produced at the `Object::IntersectRay` layer for **every** geometry rather than inside the two mesh intersectors, and the object→world fold is the exact forward linear map rather than `\|det M\|^(1/3)`. This is what retired §3.3's mesh-only claim (`bebeace3`) — the surviving restriction is **primary hits only**. Fix round 1 then corrected the analytic primitives' UV Jacobian, which was being published in the geometry's own parameter chart instead of the texcoord chart. Full record: [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md) §10 and §10.6 |
+| **Phase B review round 1** | `43bd64b3`, `92575c5d`, `d91cb374`, `5cea78c3`, plus the census `549c4563` | The Blender bridge's bump-modifier amplitude was coupled to the window rather than the exported scale (P1); retired-chunk advice now reaches SchemaGen and `insert_chunk` (P2-3); doc-comment cleanup (P2-1, P2-4); a dangling commit hash (P2-2). Round record in §12 above |
+| **Displacement pipe** | `904cd326` | `displaced_geometry.displacement`, `composite_function2d_painter.child_a`/`.child_b` and `sdf_geometry.heightfield_function` now declare `ParameterPipe::Function2D` + `referenceCategories = {Painter, Function}`, replacing the hand-maintained name list in `Cst.cpp`'s `FunctionSubNamespace`. Guarded registry-wide by `CstResolverTest`'s `[func2d-registry-invariant]` case, so a brand-new Function2D-piped parameter needs no `Cst.cpp` edit |
+

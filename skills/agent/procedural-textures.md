@@ -114,11 +114,13 @@ it costs ONE chunk instead of a graph of them.
 
 The body sees `u`, `v`, `P` (world position, a `vec3`), `Po` (object
 position), `N` (shading normal), `fw` (world-space filter-width
-estimate; real on primary hits against mesh geometry, 0.0 -- an honest
-"point sample" -- on secondary bounces and non-mesh geometry; on a
-SCALED mesh instance `fw` was object-space, not world-space, until
-2026-09-06 -- relief-modifier arc, docs/RELIEF_MODIFIER_DESIGN.md
-§3.3 -- and is world-correct since), and
+estimate; real on PRIMARY hits against EVERY geometry -- analytic
+primitives, SDFs, boxes, disks, planes and meshes alike, since
+docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md, 2026-09-06; it was
+mesh-only before that -- and 0.0, an honest "point sample", on
+secondary bounces, because no ray carries screen-space differentials
+after a scatter; on a SCALED instance `fw` is world-space, not
+object-space, since the same arc), and
 `time`.  `fbm`/`turbulence`/`ridged` use `fw` automatically to fade out
 octaves the sample footprint can't resolve, cutting shimmer on
 distant/grazing procedural surfaces.  Watch domain scaling: `fw` is
@@ -850,14 +852,17 @@ relief_modifier
 - **`step` is auto by default** (`0`) -- it picks the finite-difference
   step from the pixel footprint on `domain surface` the same way the
   expression VM's noise builtins fade octaves, so relief fades toward
-  flat at distance instead of aliasing. **Mesh-only, though**: only
-  triangle-mesh geometry populates that footprint today (primary hits
-  with ray differentials); on analytic primitives and SDFs the footprint
-  is unknown, there is no distance fade at all, and the step used is
-  just the `1e-3` floor or your explicit `step` (`docs/RELIEF_MODIFIER_DESIGN.md`
-  §3.3). Set it explicitly when you need a specific frequency floor, or
-  when the geometry is analytic/SDF and you want a floor other than
-  `1e-3`.
+  flat at distance instead of aliasing. **Primary-hits-only, though**:
+  every geometry populates that footprint (analytic primitives and SDFs
+  included, since `docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md`,
+  2026-09-06 -- it was mesh-only before that), but no ray carries screen-
+  space differentials after a scatter, so on a surface reached through a
+  bounce the footprint is unknown, there is no distance fade, and the
+  step used is just the `1e-3` floor or your explicit `step`
+  (`docs/RELIEF_MODIFIER_DESIGN.md` §3.3). Set it explicitly when you
+  need a specific frequency floor, or when you want a floor other than
+  `1e-3` -- remembering it is a FLOOR: where a footprint exists and is
+  larger, the footprint wins.
 - **Composing more than one modifier on an object** uses `modifier_stack`,
   applied in the order the members are listed:
 

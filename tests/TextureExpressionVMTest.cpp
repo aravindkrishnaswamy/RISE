@@ -2304,6 +2304,8 @@ static void TestMappingPainterFootprintInvalidation()
 		RISE_API_CreateMappingPainter( &mp, src, 0, Vector3(2,2,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
 		RayIntersectionGeometric ri = MakeRi();
 		ri.ptCoord = Point2( 0.3, 0.4 );
+		ri.txFootprint.widthValid = true;   // valid => widthValid (a real hit never has one without the other)
+		ri.txFootprint.worldWidth = 0.05;
 		ri.txFootprint.valid = true;
 
 		src.lastFootprintValid = true;
@@ -2337,6 +2339,8 @@ static void TestMappingPainterFootprintInvalidation()
 		RayIntersectionGeometric ri = MakeRi();
 		ri.ptIntersection = Point3( 2, 3, 5 );
 		ri.vNormal = Vector3( 1, 0, 0 );
+		ri.txFootprint.widthValid = true;   // valid => widthValid (a real hit never has one without the other)
+		ri.txFootprint.worldWidth = 0.05;
 		ri.txFootprint.valid = true;
 
 		src.lastFootprintValid = true;
@@ -2366,6 +2370,8 @@ static void TestMappingPainterFootprintInvalidation()
 		RISE_API_CreateMappingPainter( &mp, src, 1, Vector3(1,1,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
 		RayIntersectionGeometric ri = MakeRi();
 		ri.ptIntersection = Point3( 2, 3, 5 );
+		ri.txFootprint.widthValid = true;   // valid => widthValid (a real hit never has one without the other)
+		ri.txFootprint.worldWidth = 0.05;
 		ri.txFootprint.valid = true;
 
 		src.lastFootprintValid = false;
@@ -2378,6 +2384,8 @@ static void TestMappingPainterFootprintInvalidation()
 		RISE_API_CreateMappingPainter( &mp, src, 2, Vector3(1,1,1), Vector3(0,0,0), Vector3(0,0,0), 4.0 );
 		RayIntersectionGeometric ri = MakeRi();
 		ri.ptObjIntersec = Point3( 2, 3, 5 );
+		ri.txFootprint.widthValid = true;   // valid => widthValid (a real hit never has one without the other)
+		ri.txFootprint.worldWidth = 0.05;
 		ri.txFootprint.valid = true;
 
 		src.lastFootprintValid = false;
@@ -2874,6 +2882,8 @@ static void TestStochasticTileFootprintInvalidation()
 	RISE_API_CreateStochasticTilePainter( &stp, src, 4.0, 1, RISEPel(0.5,0.5,0.5), 7.0 );
 	RayIntersectionGeometric ri = MakeRi();
 	ri.ptCoord = Point2( 0.3, 0.4 );
+	ri.txFootprint.widthValid = true;   // valid => widthValid (a real hit never has one without the other)
+	ri.txFootprint.worldWidth = 0.05;
 	ri.txFootprint.valid = true;
 
 	src.lastFootprintValid = true; stp->GetColor( ri );      Check( src.lastFootprintValid == false, "stochastic_tile: GetColor invalidates txFootprint" );
@@ -3101,6 +3111,8 @@ static void TestScatterAlphaGatedAndFootprint()
 		RISE_API_CreateScatterPainter( &sp, stampSrc, bg, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0 );
 		RayIntersectionGeometric ri = MakeRi();
 		ri.ptCoord = Point2( 0.5, 0.5 );
+		ri.txFootprint.widthValid = true;   // valid => widthValid (a real hit never has one without the other)
+		ri.txFootprint.worldWidth = 0.05;
 		ri.txFootprint.valid = true;
 
 		stampSrc.lastFootprintValid = true; sp->GetColor( ri );      Check( stampSrc.lastFootprintValid == false, "scatter: GetColor invalidates the stamp's txFootprint" );

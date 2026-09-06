@@ -68,10 +68,10 @@ on the mesh path too.
 | `TriangleMeshGeometry` / `…Indexed` | yes (`useUVJacobian` gated for the tangent, `valid` set regardless) | **yes** | unchanged values, one call site moved |
 | `DisplacedGeometry` | delegates to `m_pMesh` | yes | unchanged |
 | `BezierPatchGeometry`, `BilinearPatchGeometry` | via tessellated mesh in BSP/octree | yes | unchanged |
-| `SphereGeometry` | **yes**, ungated (`ComputeSurfaceDerivatives`) | no | **(a)** full UV + width |
-| `EllipsoidGeometry` | yes, ungated | no | **(a)** full UV + width |
-| `CylinderGeometry` (both hit branches) | yes, ungated | no | **(a)** full UV + width |
-| `TorusGeometry` | yes, ungated | no | **(a)** full UV + width |
+| `SphereGeometry` | **yes**, ungated (`ComputeSurfaceDerivatives`) | no | **(a\*)** full UV + width |
+| `EllipsoidGeometry` | yes, ungated | no | **(a\*)** full UV + width |
+| `CylinderGeometry` (both hit branches) | yes, ungated | no | **(a\*)** full UV + width |
+| `TorusGeometry` | yes, ungated | no | **(a\*)** full UV + width |
 | `ClippedPlaneGeometry` | **no** — sets `vShadingTangent` only; its own comment says it "never populated `ri.derivatives` at all … and still does not" | no | **(b)** width only |
 | `InfinitePlaneGeometry` | no | no | **(b)** width only |
 | `BoxGeometry` | no | no | **(b)** width only |
@@ -84,6 +84,27 @@ Legend: **(a)** `ComputeTextureFootprint` runs to completion — `dudx…dvdy`
 *and* `worldWidth`. **(b)** the UV solve is skipped; `worldWidth` is still
 exact. Note the sweep and skeleton geometries are **not** separate classes —
 they are `sdf_geometry` parts, so the SDF row covers them.
+
+**(a\*) is CONDITIONAL, and the condition was missed in the first
+landing.** `derivatives.valid` is necessary but not sufficient: the four
+analytic primitives differentiate their *own* parameters (radians, axial
+world coordinates, and with the two axes swapped on the cylinder and the
+torus), while `ri.ptCoord` is the normalised `[0, 1]²` chart the matching
+`GeometricUtilities::*TextureCoord` emits. Publishing the derivative-chart
+Jacobian as though it were the texcoord one is a pure scale-and-transpose
+error, and mip LOD's `log2` turns it into whole levels of blur — measured
+at +1.65 (sphere), +2.33 (ellipsoid, unequal semi-axes), +1.59 (cylinder,
+height 3) and +2.65 (torus) levels too blurry, mesh control unmoved.
+
+Since fix round 1 (§10.6) the geometry must also state a **texcoord chart
+map** (`SurfaceDerivatives::dsdu…dtdv` + `texChartValid`, contract in
+[GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md) § "The texcoord chart
+map"); `SolveFootprintUV` solves in the derivative chart, multiplies
+through, and **declines** — leaving `valid` false, `widthValid` untouched —
+when no map is stated. So row **(a\*)** reads: full UV + width *given a
+stated chart map*, which all four primitives and the mesh
+`useUVJacobian` path now provide, and which the mesh barycentric-edge
+fallback deliberately does not.
 
 ## 3. The design
 
@@ -681,3 +702,111 @@ each one out.
    `TextureExpressionVMTest` is unchanged at 685, and `receding_pier`'s
    before/after difference is strictly inside its same-binary seed noise
    (§10.5).
+
+### 10.6 Fix round 1 (2026-09-06)
+
+Reviewers on the landing above found one P1 in the code and three stale
+"mesh-only" claims in prose that this arc had itself invalidated.
+
+#### The P1: the analytic primitives' Jacobian was in the wrong chart
+
+`SolveFootprintUV` began setting `valid` on sphere / ellipsoid / cylinder
+/ torus because they populate `ri.derivatives`. But `derivatives.valid`
+turned out to be **necessary and not sufficient**: those primitives
+differentiate their own natural parameters, while `ri.ptCoord` is the
+normalised chart their `GeometricUtilities::*TextureCoord` emits, and
+`TexturePainter::SampleTextured` / `WeaveBRDF` combine the two as ONE
+chart. See §2.1's `(a*)` note for the statement of the bug and
+[GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md) § "The texcoord chart
+map" for the contract that fixes it.
+
+Fixed at the root — the geometry now **states** the map — rather than by
+special-casing four primitives inside the footprint helper. Rationale:
+the helper cannot derive the map (it sees neither the geometry class nor
+its TextureCoord function), a per-primitive `if` chain in a shared header
+would rot the moment a fifth primitive publishes derivatives, and the
+same knowledge is exactly what a future consumer of `dpdu` + `ptCoord`
+(anisotropic filtering, UV-space differentials for SMS) will need.
+`dpdu`/`dpdv` themselves are untouched, as the brief required — SMS's
+`ManifoldSolver` and the curvature code keep consuming them as-is.
+
+The sibling this surfaced, which the original §10.5 self-audit item 5(b)
+got backwards: it argued that because `derivatives.valid` is set
+**unconditionally** on the mesh hit path, no mesh hit could lose a
+footprint. True for `widthValid`, but it also meant the
+**barycentric-edge fallback** (`useUVJacobian == false`: a degenerate or
+absent UV triangle) was publishing a Jacobian in an *edge* chart as
+though it were a texcoord one — the same class of bug as the analytic
+primitives, pre-existing and unnoticed. That path now states no chart map
+and `SolveFootprintUV` declines. The width half is unaffected on every
+path.
+
+Measured LOD error against the finite-difference oracle, before (chart
+map forced to identity, i.e. the shipped behaviour of §10) and after:
+
+| Geometry | before | after |
+|---|---|---|
+| mesh sphere (control) | −0.000018 | −0.000018 |
+| analytic sphere | **+1.651** | −0.0000011 |
+| analytic ellipsoid (1, 1.6, 0.7) | **+2.330** | +0.00000008 |
+| analytic cylinder, x / y / z (h = 3) | **+1.585** | +0.0000008 |
+| analytic cylinder, +y end cap | 0.000 | +0.000056 |
+| analytic torus (R = 2, r = 0.6) | **+2.651** | −0.00082 |
+
+Positive = too blurry. The end cap is the instructive row: its error is a
+**transposition**, not a mis-scale, so LOD — which takes a max over two
+row norms — is blind to it while the component-wise oracle reads
+`rel = 1.0`. Anisotropic filtering and `Mode_Supersample` are not blind
+to it, which is why the oracle compares components rather than the LOD
+scalar the fix was motivated by.
+
+`TextureFootprintTest` grew from 10 tests / 54 checks to 12 / 108: test
+11 is the oracle (a **central** difference of `ptCoord` across the pixel's
+own ray differentials — central, not forward, because a forward
+difference on a curved primitive carries an O(h·curvature) bias of the
+same order as the 1e-3 tolerance), test 12 pins the paths that must
+publish nothing (degenerate-UV mesh, box) plus the sphere's pole and its
+−X seam (decline or finite, never NaN). Red-proof: forcing the map to the
+identity turns 7 of test 11's checks red, in the magnitudes tabulated
+above, with the mesh control unmoved — which is what proves the change is
+a genuine no-op for meshes.
+
+#### The three stale claims
+
+All three said "mesh-only" about a footprint that §10 had just made
+universal:
+
+| Where | Was | Now |
+|---|---|---|
+| `Object::m_worldLinearScale` doc comment | "Also folded into `txFootprint.worldWidth` … since the relief-modifier arc" | It is **not**; §3.4 replaced that fold with the exact forward map. Clause removed, and the comment now says why the geometric mean was retired (4.31× on a `scale 4 0.05 4` panel) |
+| `relief_modifier`'s `step` descriptor | "Only TRIANGLE-MESH geometry populates one today … with NO distance fade" | Every geometry populates one; the real restriction is **primary hits only**, since no ray carries screen-space differentials after a scatter |
+| `skills/agent/procedural-textures.md`, the `fw` builtin and the relief `step` section | "real on primary hits against mesh geometry, 0.0 … on non-mesh geometry"; "**Mesh-only, though**" | Same correction, twice; the surviving caveat is the secondary-bounce one |
+
+A sweep for the same claim shape across `src`, `skills` and `docs` found
+no other live instance — the remaining hits are historical rows in this
+document and in `RELIEF_MODIFIER_DESIGN.md` §12 (correctly past-tense),
+`observe-modes.md`'s wireframe limitation (a different, real, mesh-only
+thing), and unrelated glTF / BVH / VCM prose.
+
+#### P2/P3 also cleared
+
+* `tests/CstRecordDeriveTest.cpp`'s `displacement:` comment said
+  `{Painter}`-declared; `904cd326` made it `{Painter, Function}` +
+  `ParameterPipe::Function2D`, so the comment now names the pipe.
+* `Cst.cpp`'s `FunctionSubNamespace` doc comment described a null-`pd`
+  caller. There is exactly one caller and it dereferences `pd` before
+  calling, so the wording now says the `pd &&` guard is defensive only.
+* Fixtures that set `txFootprint.valid = true` without `widthValid`
+  violated the record's own invariant in-fixture:
+  `TextureExpressionVMTest` (6 sites — the mapping / triplanar / world /
+  object / stochastic-tile / scatter wrapper cases) and
+  `TexCoord1PainterTest::MakeRi` now set both, the latter tracking its
+  `footprintValid` parameter so the false case stays genuinely
+  footprint-free.
+
+#### Commits
+
+| Commit | What |
+|---|---|
+| `5bc02109` | the chart map: contract on `SurfaceDerivatives` / `SurfaceDerivativesInfo`, per-primitive maps, `SolveFootprintUV` change of chart, tests 11–12 |
+| *(this record)* | the three stale claims, the P2/P3 comment and fixture fixes, `GEOMETRY_DERIVATIVES.md` § "The texcoord chart map", §2.1's `(a*)`, and this section |

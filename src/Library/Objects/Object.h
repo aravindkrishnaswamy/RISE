@@ -87,12 +87,18 @@ namespace RISE
 			//! `derivatives.curvature` (divided: a 1/length) so the
 			//! expression VM's `curv` / `curvR` are per-instance-correct
 			//! across two instances of one shared geometry at different
-			//! world scales.  Also folded into `txFootprint.worldWidth`
-			//! (multiplied: a length) in `Object::IntersectRay` and
-			//! `CSGObject::IntersectRay` since the relief-modifier arc, so
-			//! a scaled instance's texture-filter footprint is
-			//! world-correct too.  See docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+			//! world scales.  See docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 			//! §5.2.
+			//!
+			//! NOT folded into `txFootprint.worldWidth` (it briefly was,
+			//! during the relief-modifier arc).  That promotion now
+			//! applies the FULL forward map to `dpdx`/`dpdy` and
+			//! re-derives the mean magnitude, which is exact for any
+			//! linear map -- non-uniform scale and shear included --
+			//! where this geometric mean under-counted a
+			//! `scale 4 0.05 4` panel by 4.31x.  See the FRAME note on
+			//! `TextureFootprint` and
+			//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.4.
 			Scalar											m_worldLinearScale;
 
 			virtual ~Object( );

@@ -148,6 +148,13 @@ static RayIntersectionGeometric MakeRi( double u0, double v0,
 	ri.txFootprint.dvdx     = 0.001;
 	ri.txFootprint.dvdy     = 0.001;
 	ri.txFootprint.valid    = footprintValid;
+	// `valid => widthValid` is the record's invariant (see the two-flag
+	// contract on TextureFootprint): a real hit never carries a UV
+	// Jacobian without the width half that produced it.  Track the
+	// parameter so the false case stays a genuinely footprint-free
+	// record rather than a half-set one.
+	ri.txFootprint.widthValid  = footprintValid;
+	ri.txFootprint.worldWidth  = footprintValid ? Scalar( 0.05 ) : Scalar( 0 );
 	return ri;
 }
 
