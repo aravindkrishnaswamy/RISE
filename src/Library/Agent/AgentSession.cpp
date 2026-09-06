@@ -1697,41 +1697,64 @@ namespace RISE
 				return false;
 			}
 
-			//! The Document chunk item named `name` ("name" param match) whose
-			//! descriptor category is `requiredCategory`, or null if none
-			//! does.  Same CollectItems + ChunkParamString_ walk as
-			//! CollectCsgObjectsReferencingMaterial_ above -- the Document
-			//! does not index by name for an agent-side reader, so every
-			//! by-name lookup in this file pays this O(chunk count) scan.
+			//! Every Document chunk bucketed by its `name` param, in
+			//! CollectItems order.  The Document does not index by name for an
+			//! agent-side reader, so a by-name lookup is an O(chunk count)
+			//! walk; this pays that walk ONCE for a caller that resolves more
+			//! than one name.
 			//!
-			//! P1-1/P1-2 fix round (2026-08-13): THE TRUTH about RISE chunk
-			//! names, replacing this comment's former (false) claim that a
-			//! duplicate name is a derive-time failure the load path already
-			//! refuses.  Names are unique only PER CATEGORY: each category
-			//! has its OWN `GenericManager`, and the insert-time collision
-			//! check is per-kind+name -- so `uniformcolor_painter { name
-			//! Hero }` and `standard_object { name Hero }` coexist legally.
-			//! A category-BLIND first-match walk (this function's pre-fix
-			//! shape) can therefore silently resolve to the WRONG chunk when
-			//! an earlier-declared chunk of a different category shadows the
-			//! real target.  `requiredCategory` is the fix: every caller of
-			//! this function already knows what category it is resolving
-			//! (`ChunkIsLightObject_`'s two lookups both want Material), so
-			//! the category is a REQUIRED filter, not an optional narrowing
-			//! -- there is no remaining caller that wants "first match, any
-			//! category" (that resolution now goes through
-			//! `RISE::Cst::DocFindByNameAnyRole`, which is kind-aware AND
-			//! ambiguity-aware, in `TargetIsFormBearing_`).
-			NodeRef FindDocumentChunkByName_( const Document& doc, const std::string& name,
-			                                   ChunkCategory requiredCategory )
+			//! P1-3 fix round (2026-09-06, RELIEF_MODIFIER_DESIGN.md sec 12's
+			//! "Phase 4 -- fix round 1"): this pair REPLACES the former
+			//! `FindDocumentChunkByName_`, which re-walked the whole document
+			//! on every call.  Condition Q called it once per candidate object
+			//! -- and `ChunkIsLightObject_` called it twice more inside --
+			//! which turned an otherwise-linear document scan QUADRATIC:
+			//! measured 8.6 s on a 3000-object document that fires nothing at
+			//! all.  Resolution semantics are UNCHANGED (same source, same
+			//! order, first chunk of the required category wins), so no
+			//! migrated caller can resolve a name to a different chunk.
+			typedef std::map<std::string, std::vector<NodeRef> > DocChunksByName_;
+
+			DocChunksByName_ BuildDocChunksByName_( const Document& doc )
 			{
-				if( name.empty() ) return NodeRef();
+				DocChunksByName_ out;
 				std::vector<NodeRef> items;
 				std::vector<std::size_t> starts;
 				CollectItems( doc, items, starts );
 				for( const NodeRef& it : items ) {
 					if( !it || it->kind != NodeKind::Chunk ) continue;
-					if( ChunkParamString_( it, "name" ) != name ) continue;
+					const std::string nm = ChunkParamString_( it, "name" );
+					if( nm.empty() ) continue;
+					out[nm].push_back( it );
+				}
+				return out;
+			}
+
+			//! The indexed chunk named `name` whose descriptor category is
+			//! `requiredCategory`, or null if none is.
+			//!
+			//! P1-1/P1-2 fix round (2026-08-13), inherited verbatim from the
+			//! function this replaced: THE TRUTH about RISE chunk names.
+			//! Names are unique only PER CATEGORY -- each category has its OWN
+			//! `GenericManager`, and the insert-time collision check is
+			//! per-kind+name -- so `uniformcolor_painter { name Hero }` and
+			//! `standard_object { name Hero }` coexist legally.  A
+			//! category-BLIND first-match walk can therefore silently resolve
+			//! to the WRONG chunk when an earlier-declared chunk of a
+			//! different category shadows the real target.  `requiredCategory`
+			//! is the fix, and it is a REQUIRED filter rather than an optional
+			//! narrowing: every caller knows what category it is resolving
+			//! (`ChunkIsLightObject_`'s two lookups both want Material).  A
+			//! caller that genuinely wants "first match, any category" goes
+			//! through `RISE::Cst::DocFindByNameAnyRole`, which is kind-aware
+			//! AND ambiguity-aware, in `TargetIsFormBearing_`.
+			NodeRef FindIndexedChunkByName_( const DocChunksByName_& index, const std::string& name,
+			                                  ChunkCategory requiredCategory )
+			{
+				if( name.empty() ) return NodeRef();
+				const DocChunksByName_::const_iterator at = index.find( name );
+				if( at == index.end() ) return NodeRef();
+				for( const NodeRef& it : at->second ) {
 					const ChunkDescriptor* d = DescriptorForKeyword( String( it->role.c_str() ) );
 					if( d && d->category == requiredCategory ) return it;
 				}
@@ -1746,7 +1769,7 @@ namespace RISE
 			//! EVERY candidate conservatively, since the ambiguity itself is
 			//! proof that per-category uniqueness alone cannot resolve the
 			//! name to one chunk.  Same by-name walk as
-			//! FindDocumentChunkByName_, collecting every hit instead of
+			//! `FindIndexedChunkByName_`, but collecting every hit instead of
 			//! stopping at the first (or the first of a required category).
 			std::vector<NodeRef> FindAllDocumentChunksByName_( const Document& doc, const std::string& name )
 			{
@@ -1844,7 +1867,7 @@ namespace RISE
 			//!      a base) fails this clause and stays form.
 			//!
 			//! P1-2 fix round (2026-08-13): BOTH material lookups below now
-			//! REQUIRE ChunkCategory::Material (FindDocumentChunkByName_'s
+			//! REQUIRE ChunkCategory::Material (the by-name lookup's
 			//! filtered form) rather than resolving the first same-named
 			//! Document chunk of ANY category.  Pre-fix, a non-Material chunk
 			//! declared earlier under the same name would SHADOW the real
@@ -1859,21 +1882,29 @@ namespace RISE
 			//! must stay form).  With the lookup itself category-filtered,
 			//! "resolved" now means "resolved to a Material chunk", so the
 			//! final check collapses to a plain has/has-not.
-			bool ChunkIsLightObject_( const NodeRef& objItem, const Document& doc )
+			//! P1-3 fix round (2026-09-06): the INDEXED form.  Byte-identical
+			//! logic to the Document-taking overload just below -- only the
+			//! two by-name lookups differ (a prebuilt `DocChunksByName_`
+			//! instead of two whole-document walks).  Callers that classify
+			//! more than one object per pass (condition Q,
+			//! ClassifyDocumentChunkForFormBearing_'s referencer loop) use
+			//! this one; the Document overload stays for single-shot callers
+			//! and simply builds the index itself.
+			bool ChunkIsLightObject_( const NodeRef& objItem, const DocChunksByName_& index )
 			{
 				if( !objItem || objItem->kind != NodeKind::Chunk ) return false;
 				if( objItem->role == "csg_object" ) return false;
 
 				const std::string materialName = ChunkParamString_( objItem, "material" );
 				if( materialName.empty() ) return false;
-				const NodeRef matItem = FindDocumentChunkByName_( doc, materialName, ChunkCategory::Material );
+				const NodeRef matItem = FindIndexedChunkByName_( index, materialName, ChunkCategory::Material );
 				if( !matItem ) return false;   // no Material-category chunk of that name -- unresolved, not a light-object
 				const ChunkDescriptor* md = DescriptorForKeyword( String( matItem->role.c_str() ) );
 				if( !DescriptorIsEmissiveMaterial_( md ) ) return false;
 
 				const std::string baseMaterialName = ChunkParamString_( matItem, "material" );
 				if( baseMaterialName.empty() || baseMaterialName == "none" ) return true;
-				const NodeRef baseItem = FindDocumentChunkByName_( doc, baseMaterialName, ChunkCategory::Material );
+				const NodeRef baseItem = FindIndexedChunkByName_( index, baseMaterialName, ChunkCategory::Material );
 				// No Material-category chunk resolves -- unresolved, so the
 				// emissive-only clause HOLDS (keep current unresolved
 				// semantics, just made category-correct); a chunk DOES
@@ -1881,6 +1912,16 @@ namespace RISE
 				// (guaranteed by the filtered lookup), so it always means
 				// "wraps a real base material" -- stays form.
 				return !baseItem;
+			}
+
+			//! Single-shot form: builds the index for its own two lookups.
+			//! Never slower than the two whole-document walks it replaces.
+			bool ChunkIsLightObject_( const NodeRef& objItem, const Document& doc )
+			{
+				if( !objItem || objItem->kind != NodeKind::Chunk ) return false;
+				if( objItem->role == "csg_object" ) return false;
+				if( ChunkParamString_( objItem, "material" ).empty() ) return false;
+				return ChunkIsLightObject_( objItem, BuildDocChunksByName_( doc ) );
 			}
 
 			//! P1-1 fix round (2026-08-13): the arc 80 postscript's Document-
@@ -1937,10 +1978,16 @@ namespace RISE
 				// is a light-object Object chunk, so the "every referencing
 				// chunk" test fails and the geometry stays form.
 				const std::vector<NodeRef> referencers = CollectChunksReferencingName_( doc, target );
+				// P1-3 fix round (2026-09-06, audit-by-bug-pattern sweep off
+				// condition Q's own quadratic scan): ONE shared name index for
+				// the whole loop.  `ChunkIsLightObject_( r, doc )` walks the
+				// entire document twice per referencer, so a geometry with R
+				// referencers cost O(R x N); the index makes it O(N + R log N).
+				const DocChunksByName_ nameIndex = BuildDocChunksByName_( doc );
 				bool allLightObjects = !referencers.empty();
 				for( const NodeRef& r : referencers ) {
 					const ChunkDescriptor* rd = DescriptorForKeyword( String( r->role.c_str() ) );
-					if( !rd || rd->category != ChunkCategory::Object || !ChunkIsLightObject_( r, doc ) ) {
+					if( !rd || rd->category != ChunkCategory::Object || !ChunkIsLightObject_( r, nameIndex ) ) {
 						allLightObjects = false;
 						break;
 					}
@@ -5591,6 +5638,193 @@ namespace RISE
 				std::string painterKind;   //!< e.g. "perlin3d_painter" / "expression_painter"
 			};
 
+			//======================================================================
+			// P1-1 / P1-2 fix round (2026-09-06, RELIEF_MODIFIER_DESIGN.md sec 12's
+			// "Phase 4 -- fix round 1"): THE EFFECTIVE MODIFIER.
+			//
+			// Condition Q's first cut equated "the object chunk's own literal
+			// `modifier` param" with "the modifier the renderer actually applies
+			// to the surface this object contributes".  Those differ in two ways
+			// the ENGINE itself defines, and Q fired falsely on both:
+			//
+			//   (P1-1) `source` INSTANCING INHERITS `modifier`.  Cst.cpp's
+			//          `MergeChunkParams` folds the whole source chain into the
+			//          derived instance, and `modifier` is NOT in
+			//          `IsInstanceOwnParam` (only name / parent / source / the
+			//          five transform params / mirror / count_u / count_v are),
+			//          so `standard_object { name copy  source orig  material
+			//          varying_mat }` renders WITH `orig`'s modifier.  The copy's
+			//          OWN params are put LAST in that merge, so a copy that
+			//          spells `modifier none` genuinely CLEARS the inherited one
+			//          (Cst.cpp's own optional-slot-removal rule: "the parser
+			//          passes 0 for a `none` material/modifier/shader") -- which
+			//          is why "none" has to stay a first-class, chain-STOPPING
+			//          answer here rather than being dropped at collection time.
+			//
+			//   (P1-2) CSG. `CSGObject::IntersectRay` reports a hit carrying the
+			//          OPERAND's own modifier (AdoptCsgSurfaceBindings), and the
+			//          composite's own binding, when it has one, takes final
+			//          precedence over it.  So: a composite that binds no
+			//          modifier still has a fully relief-bearing surface when
+			//          EVERY operand binds one, and an operand is never flat when
+			//          an enclosing composite binds one over it.
+			//
+			// Everything below resolves exactly those two rules off maps the
+			// single document walk already builds.  All three walks are
+			// depth-bounded, so a malformed document's `source` cycle or
+			// mutually-referencing composites resolve to "no modifier" (which
+			// only ever costs an advisory) instead of hanging the scan.
+			//======================================================================
+
+			//! The object-graph facts `ObjectHasEffectiveModifier_` resolves
+			//! against.  Collected in `ComputeDesignNoteConditionsFromDoc_`'s
+			//! own single walk -- this struct only groups them so the three
+			//! mutually-recursive resolvers can take one argument.
+			struct EffectiveModifierIndex_
+			{
+				//! object name -> its chunk role ("standard_object" / "csg_object").
+				std::map<std::string, std::string>               roleByObject;
+				//! object name -> its `modifier` param's LITERAL value, whenever
+				//! the chunk spells one non-empty -- **"none" INCLUDED**, because
+				//! "none" is what CLEARS an inherited modifier and so must stop
+				//! the `source` walk rather than being invisible to it.
+				std::map<std::string, std::string>               modifierLiteralByObject;
+				//! standard_object name -> its `source` (the instancing link).
+				std::map<std::string, std::string>               sourceByObject;
+				//! csg_object name -> its `obja` / `objb` operand names.
+				std::map<std::string, std::vector<std::string> > operandsByCsg;
+				//! operand name -> every csg_object naming it as an operand.
+				std::map<std::string, std::vector<std::string> > enclosingCsgByObject;
+			};
+
+			//! Walk the `source` chain until a level SPELLS `modifier`; that
+			//! level's value is the answer ("none" -> unbound).  Returns the
+			//! terminal chunk name in `outTerminal` so the CSG rule below can
+			//! ask what KIND the instance ultimately clones (a `source` may
+			//! name a csg_object, which `MergeChunkParams` clones as one).
+			bool ObjectOwnOrInheritedModifierBound_( const EffectiveModifierIndex_& idx,
+			                                         const std::string& objectName,
+			                                         std::string& outTerminal )
+			{
+				std::string cur = objectName;
+				outTerminal = objectName;
+				for( int hop = 0; hop < 8 && !cur.empty(); ++hop ) {
+					outTerminal = cur;
+					const std::map<std::string, std::string>::const_iterator m =
+						idx.modifierLiteralByObject.find( cur );
+					if( m != idx.modifierLiteralByObject.end() ) return m->second != "none";
+					const std::map<std::string, std::string>::const_iterator s =
+						idx.sourceByObject.find( cur );
+					if( s == idx.sourceByObject.end() ) break;
+					cur = s->second;
+				}
+				return false;
+			}
+
+			//! Does the SURFACE this object contributes carry a modifier of its
+			//! own?  Its own (or inherited) binding, else -- for a composite --
+			//! "every operand has one", recursively through nested csg.  A
+			//! composite with no operands recorded (a malformed or unresolved
+			//! `obja`/`objb`) is NOT bound: this scan never claims relief it
+			//! cannot see.
+			bool ObjectSurfaceModifierBound_( const EffectiveModifierIndex_& idx,
+			                                   const std::string& objectName, int depth = 0 )
+			{
+				if( depth > 8 || objectName.empty() ) return false;
+				std::string terminal;
+				if( ObjectOwnOrInheritedModifierBound_( idx, objectName, terminal ) ) return true;
+				const std::map<std::string, std::string>::const_iterator r = idx.roleByObject.find( terminal );
+				if( r == idx.roleByObject.end() || r->second != "csg_object" ) return false;
+				const std::map<std::string, std::vector<std::string> >::const_iterator ops =
+					idx.operandsByCsg.find( terminal );
+				if( ops == idx.operandsByCsg.end() || ops->second.empty() ) return false;
+				for( const std::string& operand : ops->second )
+					if( !ObjectSurfaceModifierBound_( idx, operand, depth + 1 ) ) return false;
+				return true;
+			}
+
+			//! Does any composite ENCLOSING this object (transitively) bind a
+			//! modifier of its own?  A composite's binding overrides the
+			//! operand's on every hit it reports, so this silences the operand.
+			bool EnclosingCompositeBindsModifier_( const EffectiveModifierIndex_& idx,
+			                                        const std::string& objectName, int depth = 0 )
+			{
+				if( depth > 8 || objectName.empty() ) return false;
+				const std::map<std::string, std::vector<std::string> >::const_iterator enc =
+					idx.enclosingCsgByObject.find( objectName );
+				if( enc == idx.enclosingCsgByObject.end() ) return false;
+				for( const std::string& composite : enc->second ) {
+					std::string terminal;
+					if( ObjectOwnOrInheritedModifierBound_( idx, composite, terminal ) ) return true;
+					if( EnclosingCompositeBindsModifier_( idx, composite, depth + 1 ) ) return true;
+				}
+				return false;
+			}
+
+			//! Condition Q clause (ii)'s WHOLE test -- the brief's
+			//! `EffectiveModifierOfObject_`, returning a BOOL rather than a
+			//! name because the "every operand binds one" arm has no single
+			//! modifier to name.  TRUE when the rendered surface this object
+			//! contributes has a modifier on it by any of the engine's own
+			//! three routes: its own `modifier`, one inherited down a `source`
+			//! chain, every operand of a composite carrying one, or an
+			//! enclosing composite overriding it.
+			bool ObjectHasEffectiveModifier_( const EffectiveModifierIndex_& idx,
+			                                   const std::string& objectName )
+			{
+				return ObjectSurfaceModifierBound_( idx, objectName ) ||
+				       EnclosingCompositeBindsModifier_( idx, objectName );
+			}
+
+			//! P2-2(a) fix round (2026-09-06): the material kinds that WRAP
+			//! another material, and the param each wraps it through --
+			//! registry-derived (`ParameterPipe::Material` Reference params),
+			//! never a hand list, so a wrapper kind added later is covered
+			//! with no edit here.  Covers `coated_material` / `fabric_material`
+			//! (`base`) and `composite_material` (`top` / `bottom`) today.
+			//! Condition Q needs it because the varying colour slot the relief
+			//! advice is ABOUT belongs to the WRAPPED surface: a
+			//! `coated_material` over a procedurally-textured lambertian base
+			//! has no colour slot of its own that varies, and the first cut
+			//! therefore never saw it.
+			const std::map<std::string, std::vector<std::string> >& MaterialWrapperSlotsByKind_()
+			{
+				static const std::map<std::string, std::vector<std::string> > table = [] {
+					std::map<std::string, std::vector<std::string> > out;
+					for( const String& kw : AllKeywordsForCategory( ChunkCategory::Material ) ) {
+						const ChunkDescriptor* d = DescriptorForKeyword( kw );
+						if( !d ) continue;
+						std::vector<std::string> slots;
+						for( const ParameterDescriptor& p : d->parameters ) {
+							if( p.kind != ValueKind::Reference ) continue;
+							if( p.semantics.pipe != ParameterPipe::Material ) continue;
+							slots.push_back( p.name );
+						}
+						if( !slots.empty() ) out[std::string( kw.c_str() )] = slots;
+					}
+					return out;
+				}();
+				return table;
+			}
+
+			//! P2-3 fix round (2026-09-06): is this colour-pipe slot an
+			//! EMISSION slot?  `ggx_material` and
+			//! `pbr_metallic_roughness_material` both carry an optional
+			//! `emissive` painter, and `ColorMaterialSlotsByKind_` (which is
+			//! registry-derived off `ParameterPipe::Color`) rightly lists it --
+			//! but relief cannot sell a GLOW.  A rune field painted into
+			//! `emissive` over a flat rd/rs is a deliberate, complete look;
+			//! advising micro-relief on it is advice about the wrong slot.
+			//! `exitance` (the luminaire kinds' own emission slot) is listed
+			//! for the same reason and as belt-and-braces -- those kinds are
+			//! already excluded wholesale by `DescriptorIsEmissiveMaterial_`,
+			//! but a luminaire reached as the BASE of a wrapper goes through
+			//! this predicate too.
+			bool ColorSlotIsEmissionRole_( const std::string& slotName )
+			{
+				return slotName == "emissive" || slotName == "exitance" || slotName == "emission";
+			}
+
 			//! Condition Q's whole clause, SHARED by the note builder and the
 			//! diagnostic builder -- FormatEnclosedLightClause_'s arrangement
 			//! exactly.  Names the object, its material, the varying slot and
@@ -6287,15 +6521,100 @@ namespace RISE
 			//! under a second name -- "is this painter kind spatially
 			//! constant" is the same question regardless of which pipe asked
 			//! it.
+			//! P2-1 fix round (2026-09-06, RELIEF_MODIFIER_DESIGN.md sec 12's
+			//! "Phase 4 -- fix round 1"): the PASS-THROUGH colour painters --
+			//! kinds whose own output is spatially constant exactly when
+			//! every input they wrap is.  Returns null for every other kind.
+			//!
+			//! The distinction this table encodes, and the reason it is a
+			//! LIST rather than "recurse into every Painter-kind Reference
+			//! param": a `checker_painter` / `perlin3d_painter` /
+			//! `voronoi3d_painter` also names `colora`/`colorb` painters,
+			//! but generates its OWN spatial pattern between them -- two
+			//! uniform inputs still give a chequerboard.  Only these four
+			//! kinds have no pattern of their own:
+			//!   * `blend_painter`   -- the mask carries every bit of the
+			//!                          variation (colora * mask + colorb *
+			//!                          (1-mask); a uniform mask is a plain
+			//!                          lerp of two colours);
+			//!   * `ramp_painter`    -- remaps ONE channel of `input` through
+			//!                          the stop list, so a constant input
+			//!                          selects one constant output colour;
+			//!   * `mapping_painter` -- transforms the DOMAIN `source` is
+			//!                          evaluated at, which cannot make a
+			//!                          constant vary;
+			//!   * `channel_painter` -- an affine read of one channel of
+			//!                          `source`, broadcast.
+			//! (`composite_function2d_painter` is deliberately ABSENT: its
+			//! `child_a`/`child_b` Function2Ds are the field, and the
+			//! Function2D pipe is not something this colour classifier reads
+			//! -- leaving it out keeps it classified exactly as today.)
+			const std::vector<std::string>* ColorPainterPassThroughInputs_( const std::string& kind )
+			{
+				static const std::map<std::string, std::vector<std::string> > table = [] {
+					std::map<std::string, std::vector<std::string> > out;
+					out["blend_painter"]   = { "colora", "colorb", "mask" };
+					out["ramp_painter"]    = { "input" };
+					out["mapping_painter"] = { "source" };
+					out["channel_painter"] = { "source" };
+					return out;
+				}();
+				const std::map<std::string, std::vector<std::string> >::const_iterator at = table.find( kind );
+				return ( at == table.end() ) ? nullptr : &at->second;
+			}
+
+			//! `painterForms` maps EVERY Painter-category chunk name to its
+			//! whole param map -- the colour-pipe twin of
+			//! `ClassifyMicrosurfaceBinding_`'s `scalarPainterForms`, and the
+			//! input the pass-through recursion below needs.
+			//!
+			//! P2-1 fix round (2026-09-06): the classifier used to be purely
+			//! NAME-LIST based -- a `blend_painter` whose colora, colorb and
+			//! mask are all `uniformcolor_painter` chunks classified Varying
+			//! purely because "blend_painter" is not in
+			//! MicrosurfacePainterKindIsConstant_'s three-kind list, even
+			//! though the surface it paints is a single flat colour.  The
+			//! scalar twin already walked its `base`/`multiply` chains for
+			//! exactly this reason; this brings the colour pipe in line.
+			//! Constant iff EVERY spelled input is Constant; Varying if ANY
+			//! input is Varying; Opaque otherwise (an unresolved input, or a
+			//! pass-through chunk that spells no inputs at all) -- so an
+			//! unreadable input still declines rather than being guessed
+			//! either way.  `depth` bounds a painter-reference cycle in a
+			//! malformed document, the same cap and the same reason as the
+			//! scalar twin's.
 			MicrosurfaceBinding_ ClassifyColorBinding_(
 				const std::string& value,
-				const std::map<std::string, std::string>& painterKinds )
+				const std::map<std::string, std::string>& painterKinds,
+				const std::map<std::string, std::map<std::string, std::string> >& painterForms,
+				int depth = 0 )
 			{
 				if( value.empty() || value == "none" ) return MicrosurfaceBinding_::Absent;
 				const std::map<std::string, std::string>::const_iterator pk = painterKinds.find( value );
 				if( pk == painterKinds.end() ) return MicrosurfaceBinding_::Opaque;
-				return MicrosurfacePainterKindIsConstant_( pk->second )
-					? MicrosurfaceBinding_::Constant : MicrosurfaceBinding_::Varying;
+				if( MicrosurfacePainterKindIsConstant_( pk->second ) ) return MicrosurfaceBinding_::Constant;
+
+				const std::vector<std::string>* inputs = ColorPainterPassThroughInputs_( pk->second );
+				if( !inputs ) return MicrosurfaceBinding_::Varying;   // a pattern painter: varying by construction
+				if( depth > 4 ) return MicrosurfaceBinding_::Opaque;  // pathological pass-through chain / reference cycle
+
+				const std::map<std::string, std::map<std::string, std::string> >::const_iterator pf =
+					painterForms.find( value );
+				if( pf == painterForms.end() ) return MicrosurfaceBinding_::Opaque;   // kind known, params not: unreadable
+
+				bool anySpelled = false, allConstant = true;
+				for( const std::string& slot : *inputs ) {
+					const std::map<std::string, std::string>::const_iterator v = pf->second.find( slot );
+					if( v == pf->second.end() ) continue;   // omitted: the chunk's own default, no variation of its own
+					const MicrosurfaceBinding_ inner =
+						ClassifyColorBinding_( v->second, painterKinds, painterForms, depth + 1 );
+					if( inner == MicrosurfaceBinding_::Varying ) return MicrosurfaceBinding_::Varying;
+					if( inner == MicrosurfaceBinding_::Absent ) continue;   // spelled `none`: same as omitted
+					anySpelled = true;
+					if( inner != MicrosurfaceBinding_::Constant ) allConstant = false;
+				}
+				if( !anySpelled ) return MicrosurfaceBinding_::Opaque;   // nothing readable to judge on
+				return allConstant ? MicrosurfaceBinding_::Constant : MicrosurfaceBinding_::Opaque;
 			}
 
 			//! `inPiecesPhase` (doc 91): true when the caller is mid-build --
@@ -6424,6 +6743,12 @@ namespace RISE
 				// invariant) and on object bindings, which always come later.
 				std::map<std::string, std::map<std::string, std::string> > scalarPainterForms;
 				std::map<std::string, std::string>                          painterKinds;
+				//! P2-1 fix round (2026-09-06): EVERY Painter-category chunk's
+				//! whole param map -- `scalarPainterForms`' colour-pipe twin,
+				//! and the input `ClassifyColorBinding_`'s pass-through
+				//! recursion needs (a `blend_painter` is only as varying as
+				//! its colora / colorb / mask).
+				std::map<std::string, std::map<std::string, std::string> > painterForms;
 				std::map<std::string, int>                                  materialObjectCounts;
 				//! Materials-realism item 4: every (object name, material
 				//! name) binding seen, in document order -- the briefed-vs-
@@ -6503,17 +6828,20 @@ namespace RISE
 				//! synthesized fixture) is never a shell candidate: this scan will
 				//! not claim "opaque" about a material it cannot name.
 				std::map<std::string, std::string>    objectMaterialByName;
-				//! Condition Q (RELIEF_MODIFIER_DESIGN sec 9): OBJECT name ->
-				//! its `modifier` parameter's value, for EVERY Object-category
-				//! chunk that spells one out -- the SAME join key
-				//! objectMaterialByName is, populated at the SAME two sites
-				//! (the standard_object branch and the generic
-				//! ChunkCategory::Object branch below), for the SAME reason:
-				//! condition Q asks only "does this object's modifier slot
-				//! resolve to anything" (a `modifier_stack` name counts, same
-				//! as any single modifier chunk), never which modifier KIND is
-				//! bound.
-				std::map<std::string, std::string>    objectModifierByName;
+				//! Condition Q (RELIEF_MODIFIER_DESIGN sec 9): the object-graph
+				//! facts its clause (ii) resolves the EFFECTIVE modifier from
+				//! -- roles, literal `modifier` values (including "none"),
+				//! `source` links and csg operand/enclosure edges.  Populated
+				//! at the SAME two sites objectMaterialByName is (the
+				//! standard_object branch and the generic ChunkCategory::Object
+				//! branch below), for the same reason.  Condition Q asks only
+				//! "does the rendered surface have a modifier on it" (a
+				//! `modifier_stack` name counts, same as any single modifier
+				//! chunk), never which modifier KIND is bound -- see
+				//! EffectiveModifierIndex_'s own block comment for the two
+				//! engine rules (`source` inheritance, CSG override) the first
+				//! cut of this condition got wrong.
+				EffectiveModifierIndex_               effectiveModifiers;
 				std::vector<PositionalLightCandidate_> positionalLights;      // omni/spot/rect/shape lights, in DOCUMENT order; positions come from the derived scene
 
 				// -- Condition C accumulators (88) -------------------------
@@ -6597,10 +6925,17 @@ namespace RISE
 								const std::map<std::string, std::string>::const_iterator omat = pm.find( "material" );
 								if( omat != pm.end() && !omat->second.empty() && omat->second != "none" )
 									objectMaterialByName[objName] = omat->second;
-								// (Condition Q) See objectModifierByName's own doc.
+								// (Condition Q) See effectiveModifiers' own doc.
+								// "none" IS recorded here, unlike every sibling
+								// map above: it is the value that CLEARS a
+								// modifier inherited down a `source` chain, so
+								// dropping it would make the clear invisible.
+								effectiveModifiers.roleByObject[objName] = "standard_object";
+								if( src != pm.end() && !src->second.empty() && src->second != "none" )
+									effectiveModifiers.sourceByObject[objName] = src->second;
 								const std::map<std::string, std::string>::const_iterator omod = pm.find( "modifier" );
-								if( omod != pm.end() && !omod->second.empty() && omod->second != "none" )
-									objectModifierByName[objName] = omod->second;
+								if( omod != pm.end() && !omod->second.empty() )
+									effectiveModifiers.modifierLiteralByObject[objName] = omod->second;
 							}
 						}
 						{
@@ -6884,10 +7219,25 @@ namespace RISE
 						const std::string omat = ChunkParamString_( item, "material" );
 						if( !onm.empty() && !omat.empty() && omat != "none" )
 							objectMaterialByName[onm] = omat;
-						// (Condition Q) See objectModifierByName's own doc.
-						const std::string omod = ChunkParamString_( item, "modifier" );
-						if( !onm.empty() && !omod.empty() && omod != "none" )
-							objectModifierByName[onm] = omod;
+						// (Condition Q) See effectiveModifiers' own doc.  This
+						// is the branch csg_object reaches (the standard_object
+						// branch above `continue`s), so the composite's own
+						// modifier AND its operand edges are recorded here.
+						if( !onm.empty() ) {
+							effectiveModifiers.roleByObject[onm] = role;
+							const std::string omod = ChunkParamString_( item, "modifier" );
+							if( !omod.empty() )
+								effectiveModifiers.modifierLiteralByObject[onm] = omod;
+							if( role == "csg_object" ) {
+								static const char* const kOperandParams[] = { "obja", "objb" };
+								for( const char* op : kOperandParams ) {
+									const std::string operand = ChunkParamString_( item, op );
+									if( operand.empty() || operand == "none" ) continue;
+									effectiveModifiers.operandsByCsg[onm].push_back( operand );
+									effectiveModifiers.enclosingCsgByObject[operand].push_back( onm );
+								}
+							}
+						}
 					}
 					if( d->category == ChunkCategory::Geometry ) {
 						++c.geometryCensus[role];
@@ -6905,6 +7255,14 @@ namespace RISE
 						const std::string pname = ChunkParamString_( item, "name" );
 						if( !pname.empty() ) {
 							painterKinds[pname] = role;
+							// (P2-1) The whole param map, for
+							// ClassifyColorBinding_'s pass-through recursion --
+							// scalarPainterForms' colour-pipe twin, collected
+							// in this SAME walk for its reason (re-walking the
+							// document later would be a second pass over the
+							// same bytes).
+							if( ColorPainterPassThroughInputs_( role ) != nullptr )
+								painterForms[pname] = ChunkParamMap_( item );
 							// (Adoption polish item 1) expression_painter's
 							// erosion check -- scalar_painter's own twin lives
 							// in the early branch above (it never reaches
@@ -7017,7 +7375,7 @@ namespace RISE
 						const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
 						if( v == pm.params.end() ) continue;
 						anySlotSpelled = true;
-						if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+						if( ClassifyColorBinding_( v->second, painterKinds, painterForms ) != MicrosurfaceBinding_::Constant )
 							isFlat = false;
 					}
 					if( !anySlotSpelled ) continue;   // no colour opinion at all -- not a coverage candidate
@@ -7440,7 +7798,7 @@ namespace RISE
 							const std::map<std::string, std::string>::const_iterator v = pm.params.find( slotName );
 							if( v == pm.params.end() ) continue;
 							anySpelled = true;
-							if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Constant ) {
+							if( ClassifyColorBinding_( v->second, painterKinds, painterForms ) != MicrosurfaceBinding_::Constant ) {
 								allConstant = false;
 								const std::map<std::string, std::string>::const_iterator b =
 									expressionBodies.find( v->second );
@@ -7802,7 +8160,7 @@ namespace RISE
 							}
 							if( !primarySlot.empty() ) {
 								const std::string& value = pm.params.find( primarySlot )->second;
-								if( ClassifyColorBinding_( value, painterKinds ) != MicrosurfaceBinding_::Constant ) {
+								if( ClassifyColorBinding_( value, painterKinds, painterForms ) != MicrosurfaceBinding_::Constant ) {
 									sawUnreadableBase = true;
 								}
 								else {
@@ -8028,6 +8386,99 @@ namespace RISE
 						}
 					}
 
+					// (P2-2a) The varying-colour-slot search, RECURSIVE through
+					// wrapper materials (`coated_material` / `fabric_material`
+					// over a `base`, `composite_material` over `top`/`bottom`):
+					// the relief advice is about the WRAPPED surface, whose
+					// varying slot the first cut never saw.  Also carries the
+					// (P2-3) emission-slot skip and the (P2-2b) wetness-prelude
+					// skip.  Returns true and fills `f`'s material/slot/painter
+					// fields on the first qualifying slot found.
+					std::function<bool( const std::string&, int, FlatReliefFinding_& )> findVaryingColorSlot =
+						[&]( const std::string& materialName, int depth, FlatReliefFinding_& f ) -> bool
+					{
+						if( depth > 4 || materialName.empty() || materialName == "none" ) return false;
+						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator matDef =
+							materialByName.find( materialName );
+						if( matDef == materialByName.end() ) return false;   // unresolved material name
+						const std::string& materialKind = matDef->second.first;
+
+						// (iv) The material-KIND exclusions, applied at EVERY
+						// level -- a coat over a luminaire base is still a
+						// luminaire's emission surface.
+						if( materialKind == "hair_material" ) return false;
+						if( DescriptorIsEmissiveMaterial_( DescriptorForKeyword( String( materialKind.c_str() ) ) ) )
+							return false;
+
+						// (i) a spatially-varying colour-pipe slot -- the SAME
+						// registry table and classifier condition H uses, so
+						// this can never disagree with H about what "varies"
+						// means.
+						const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
+							ColorMaterialSlotsByKind_().find( materialKind );
+						if( slotsIt != ColorMaterialSlotsByKind_().end() ) {
+							for( const std::string& slotName : slotsIt->second ) {
+								// (P2-3) An EMISSION slot is not a surface
+								// colour -- relief cannot sell a glow.
+								if( ColorSlotIsEmissionRole_( slotName ) ) continue;
+								const std::map<std::string, std::string>::const_iterator v =
+									matDef->second.second.find( slotName );
+								if( v == matDef->second.second.end() ) continue;
+								if( ClassifyColorBinding_( v->second, painterKinds, painterForms ) != MicrosurfaceBinding_::Varying )
+									continue;   // flat, or unreadable (Opaque) -- neither proves texturing
+								// (P2-2b) `add_wetness`'s GGX/PBR branch rebinds
+								// the colour slot to a wetness-prelude
+								// expression_painter.  That field is a WET FILM,
+								// not authored texture, and this verb's own
+								// hook-point note calls advising relief on it
+								// physically backwards (a film conforms to the
+								// relief already there).  Condition H's own
+								// `WetnessBodyReadsPreludeDefs_` marker is the
+								// shared test -- no second name check.
+								{
+									const std::map<std::string, std::string>::const_iterator b =
+										expressionBodies.find( v->second );
+									if( b != expressionBodies.end() && WetnessBodyReadsPreludeDefs_( b->second ) )
+										continue;
+								}
+
+								f.materialName = materialName;
+								f.materialKind = materialKind;
+								f.colorSlot    = slotName;
+								f.painterName  = v->second;
+								{
+									const std::map<std::string, std::string>::const_iterator pk =
+										painterKinds.find( v->second );
+									f.painterKind = ( pk != painterKinds.end() ) ? pk->second : std::string();
+								}
+								return true;   // one finding per object -- the first varying slot is enough
+							}
+						}
+
+						// (P2-2a) No varying slot of its own: if this material
+						// WRAPS another, the varying colour may be down there.
+						const std::map<std::string, std::vector<std::string> >::const_iterator wrapIt =
+							MaterialWrapperSlotsByKind_().find( materialKind );
+						if( wrapIt == MaterialWrapperSlotsByKind_().end() ) return false;
+						for( const std::string& baseSlot : wrapIt->second ) {
+							const std::map<std::string, std::string>::const_iterator b =
+								matDef->second.second.find( baseSlot );
+							if( b == matDef->second.second.end() ) continue;
+							if( findVaryingColorSlot( b->second, depth + 1, f ) ) return true;
+						}
+						return false;
+					};
+
+					// (P1-3) ONE name index for the whole pass, built LAZILY --
+					// only the light-object test needs it, and a document with
+					// no candidate ever reaching that clause should not pay for
+					// it at all.  Before this fix, `FindDocumentChunkByName_`
+					// (plus two more inside `ChunkIsLightObject_`) ran a full
+					// document walk PER CANDIDATE, ahead of clause (i), so even
+					// a no-fire scene paid O(N^2): 8.6 s at 3000 objects.
+					DocChunksByName_ nameIndex;
+					bool             nameIndexBuilt = false;
+
 					for( const std::pair<std::string, std::string>& qo : objectDocOrder ) {
 						const std::string& objName = qo.first;
 
@@ -8045,19 +8496,20 @@ namespace RISE
 						    !objectGeometryByName.count( objName ) && !objectSourceByName.count( objName ) )
 							continue;
 
-						// (ii) ANY modifier binding silences this object --
-						// a `modifier_stack` name counts exactly the same as
-						// a single modifier chunk (objectModifierByName's own
-						// doc): this condition never asks which KIND is bound.
-						if( objectModifierByName.count( objName ) ) continue;
+						// (ii) ANY modifier on the RENDERED SURFACE silences
+						// this object -- its own, one inherited down a `source`
+						// chain, every operand of a composite carrying one, or
+						// an enclosing composite overriding it.  A
+						// `modifier_stack` name counts exactly the same as a
+						// single modifier chunk: this condition never asks which
+						// KIND is bound.  See EffectiveModifierIndex_'s own
+						// block comment for the two engine rules (P1-1/P1-2)
+						// the literal-param test this replaced got wrong.
+						if( ObjectHasEffectiveModifier_( effectiveModifiers, objName ) ) continue;
 
 						const std::map<std::string, std::string>::const_iterator matIt =
 							objectMaterialByName.find( objName );
 						if( matIt == objectMaterialByName.end() ) continue;   // no nameable material -- not a candidate
-						const std::map<std::string, std::pair<std::string, std::map<std::string, std::string> > >::const_iterator matDef =
-							materialByName.find( matIt->second );
-						if( matDef == materialByName.end() ) continue;   // unresolved material name
-						const std::string& materialKind = matDef->second.first;
 
 						// (iii) hair_geometry: a strand's own tangent-frame
 						// shading has no purchase for this kind of relief.
@@ -8070,46 +8522,27 @@ namespace RISE
 								if( k != geometryKindByName.end() && k->second == "hair_geometry" ) continue;
 							}
 						}
-						// (iv) hair_material / luminaire / light-object --
-						// OpaqueReflectionOnlyMaterialKinds_'s own sibling
-						// exclusions (condition I/M), reused verbatim rather
-						// than a private name check.
-						if( materialKind == "hair_material" ) continue;
-						if( DescriptorIsEmissiveMaterial_( DescriptorForKeyword( String( materialKind.c_str() ) ) ) )
-							continue;
+
+						// (i) + (iv)'s material-kind half, resolved together by
+						// the recursive slot search above.  Run BEFORE the
+						// light-object test (P1-3): that test is the one clause
+						// needing a document lookup, and running it first made
+						// every non-candidate object pay for it.
+						FlatReliefFinding_ f;
+						if( !findVaryingColorSlot( matIt->second, 0, f ) ) continue;
+
+						// (iv) light-object -- the arc-80 rect_light/shape_light
+						// fixture classifier, kept as defense-in-depth beside
+						// the luminaire-kind exclusion the search already
+						// applied at every level.
+						if( !nameIndexBuilt ) { nameIndex = BuildDocChunksByName_( doc ); nameIndexBuilt = true; }
 						{
-							const NodeRef objItem = FindDocumentChunkByName_( doc, objName, ChunkCategory::Object );
-							if( objItem && ChunkIsLightObject_( objItem, doc ) ) continue;
+							const NodeRef objItem = FindIndexedChunkByName_( nameIndex, objName, ChunkCategory::Object );
+							if( objItem && ChunkIsLightObject_( objItem, nameIndex ) ) continue;
 						}
 
-						// (i) a spatially-varying colour-pipe slot -- the SAME
-						// registry table and classifier condition H uses, so
-						// this can never disagree with H about what "varies"
-						// means.
-						const std::map<std::string, std::vector<std::string> >::const_iterator slotsIt =
-							ColorMaterialSlotsByKind_().find( materialKind );
-						if( slotsIt == ColorMaterialSlotsByKind_().end() ) continue;
-						for( const std::string& slotName : slotsIt->second ) {
-							const std::map<std::string, std::string>::const_iterator v =
-								matDef->second.second.find( slotName );
-							if( v == matDef->second.second.end() ) continue;
-							if( ClassifyColorBinding_( v->second, painterKinds ) != MicrosurfaceBinding_::Varying )
-								continue;   // flat, or unreadable (Opaque) -- neither proves texturing
-
-							FlatReliefFinding_ f;
-							f.objectName   = objName;
-							f.materialName = matIt->second;
-							f.materialKind = materialKind;
-							f.colorSlot    = slotName;
-							f.painterName  = v->second;
-							{
-								const std::map<std::string, std::string>::const_iterator pk =
-									painterKinds.find( v->second );
-								f.painterKind = ( pk != painterKinds.end() ) ? pk->second : std::string();
-							}
-							c.flatReliefFindings.push_back( f );
-							break;   // one finding per object -- naming the first varying slot is enough
-						}
+						f.objectName = objName;
+						c.flatReliefFindings.push_back( f );
 					}
 				}
 				c.conditionQ = !c.flatReliefFindings.empty();
@@ -8227,7 +8660,7 @@ namespace RISE
 							if( mat != materialByName.end() ) {
 								const std::map<std::string, std::string>::const_iterator ev = mat->second.second.find( "emissive" );
 								if( ev != mat->second.second.end() && !ev->second.empty() && ev->second != "none" &&
-								    ClassifyColorBinding_( ev->second, painterKinds ) != MicrosurfaceBinding_::Constant )
+								    ClassifyColorBinding_( ev->second, painterKinds, painterForms ) != MicrosurfaceBinding_::Constant )
 									f.shellHasVaryingEmissive = true;
 							}
 						}
@@ -20331,7 +20764,7 @@ namespace RISE
 			// (a separate GenericManager per category; the insert-time
 			// collision check is per-kind+name), so a `uniformcolor_painter`
 			// and a `standard_object` can legally share a name -- the old
-			// first-match-any-category walk (FindDocumentChunkByName_, pre
+			// first-match-any-category walk (the shared by-name lookup, pre
 			// this fix) could resolve to the WRONG chunk (repro: a painter
 			// `Hero` declared before an object `Hero` made `remove_chunk
 			// ("Hero", kind="object")` sail through this gate reading the

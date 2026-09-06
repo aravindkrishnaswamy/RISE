@@ -522,15 +522,47 @@ def migrate_text(text, stats, path_label=''):
     return '\n'.join(out), changed
 
 
+def read_preserving_newlines(path):
+    """Return (lf_text, is_crlf).
+
+    Phase 3 residual P2 (review round, 2026-09-06): `Path.read_text()` opens
+    in UNIVERSAL-NEWLINE mode, so a CRLF scene file arrives as LF and
+    `write_text()` then writes LF back -- rewriting every line in the file,
+    including the ones this migrator never touched.  Opening with
+    `newline=''` disables that translation, and the CRLF is re-applied on
+    write, so an untouched line round-trips byte-for-byte.
+
+    HONEST BOUND: only a UNIFORM-CRLF file round-trips exactly.  A file with
+    MIXED endings is still normalised to LF -- unchanged from the previous
+    behaviour, and deliberately so: this migrator inserts and removes lines,
+    so "line k's original terminator" has no well-defined answer once the
+    indices shift.  Uniform is what every editor and every in-tree scene
+    writes.
+    """
+    with path.open('r', newline='') as fh:
+        raw = fh.read()
+    # Uniform CRLF: every '\n' in the file is the tail of a '\r\n'.
+    is_crlf = '\r\n' in raw and raw.count('\r\n') == raw.count('\n')
+    return (raw.replace('\r\n', '\n') if is_crlf else raw), is_crlf
+
+
+def write_preserving_newlines(path, lf_text, is_crlf):
+    """Counterpart of `read_preserving_newlines`: write with NO newline
+    translation, re-applying CRLF when that is what the file had (so lines
+    this migrator EMITTED match the file's own convention too)."""
+    with path.open('w', newline='') as fh:
+        fh.write(lf_text.replace('\n', '\r\n') if is_crlf else lf_text)
+
+
 def migrate_file(path, stats, dry_run=False, verbose=False):
-    text = path.read_text()
+    text, is_crlf = read_preserving_newlines(path)
     stats['_verbose'] = verbose and dry_run  # printed emission is meaningful
                                               # in --dry-run -v; a real run's
                                               # emission is just the file.
     new_text, changed = migrate_text(text, stats, path_label=str(path))
     stats['_verbose'] = False
     if changed and not dry_run:
-        path.write_text(new_text)
+        write_preserving_newlines(path, new_text, is_crlf)
     if changed and verbose:
         print('  %s: %s' % ('would migrate' if dry_run else 'migrated', path))
     if changed:
@@ -768,6 +800,53 @@ def selftest():
     migrate_text('bumpmap_modifier\n{\nname a\nfunction f\n', stats,
                  path_label='<t12>')
     check('unterminated chunk is diagnosed', stats['unterminated'] == 1)
+
+    # 13. CRLF ROUND-TRIP (Phase 3 residual P2, review round 2026-09-06).
+    # A CRLF file with NOTHING to migrate must come back BYTE-IDENTICAL --
+    # the pre-fix `read_text()`/`write_text()` pair silently rewrote every
+    # line ending in the file.  And a CRLF file that DOES migrate must keep
+    # CRLF on the lines it never touched (checked here on the whole file,
+    # since the emitted chunk adopts the file's own convention too).
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        # (a) nothing to migrate -> byte-identical.
+        untouched = pathlib.Path(td) / 'untouched.RISEscene'
+        original = ('RISE ASCII SCENE 7\r\n\r\n'
+                    'uniformcolor_painter\r\n{\r\n\tname\tflat\r\n'
+                    '\tcolor\t0.5 0.5 0.5\r\n}\r\n')
+        untouched.write_bytes(original.encode('utf-8'))
+        stats = new_stats()
+        changed = migrate_file(untouched, stats)
+        check('CRLF file with nothing to migrate is left BYTE-IDENTICAL',
+              not changed
+              and untouched.read_bytes() == original.encode('utf-8'),
+              repr(untouched.read_bytes()))
+
+        # (b) a real migration -> untouched lines keep CRLF, no lone LF.
+        touched = pathlib.Path(td) / 'touched.RISEscene'
+        head = 'RISE ASCII SCENE 7\r\n\r\n'
+        body = _mk_bumpmap(scale='0.0075', windowsize='0.004',
+                            normalize_gradient='TRUE').replace('\n', '\r\n')
+        touched.write_bytes((head + body).encode('utf-8'))
+        stats = new_stats()
+        changed = migrate_file(touched, stats)
+        after = touched.read_bytes()
+        check('CRLF file that DOES migrate keeps CRLF (no lone LF anywhere)',
+              changed and stats['chunks_migrated'] == 1
+              and after.startswith(head.encode('utf-8'))
+              and b'relief_modifier' in after
+              and after.count(b'\n') == after.count(b'\r\n'),
+              repr(after))
+
+        # (c) an LF file is still written with LF -- no accidental promotion.
+        lf = pathlib.Path(td) / 'lf.RISEscene'
+        lf.write_bytes(('RISE ASCII SCENE 7\n\n' + _mk_bumpmap(
+            scale='0.0075', windowsize='0.004',
+            normalize_gradient='TRUE')).encode('utf-8'))
+        stats = new_stats()
+        changed = migrate_file(lf, stats)
+        check('LF file stays LF after migrating',
+              changed and b'\r' not in lf.read_bytes())
 
     print('selftest: %d failure(s)' % failures, file=sys.stderr)
     return 1 if failures else 0
