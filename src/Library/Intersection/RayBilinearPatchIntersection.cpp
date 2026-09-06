@@ -61,8 +61,67 @@ namespace RISE
 		}
 	}
 
+	// Does the root the elimination produced actually lie ON the ray?
+	//
+	// The 2x2 system built below solves only TWO of the three component
+	// equations of `P(u,v) = origin + t*q`; `computet` then recovers `t`
+	// from ONE axis.  Nothing in that chain ever evaluates the third
+	// equation, so a root that satisfies the two eliminated rows -- or, in
+	// the degenerate case, satisfies NEITHER because the rows were
+	// inconsistent -- is accepted without anyone checking that
+	// `P(u,v)` and `origin + t*q` are the same point.
+	//
+	// That is not hypothetical.  When the patch is PLANAR in the axis `j`
+	// and `q[j] == 0`, row `j` reduces to `0 = D2` with `D2 != 0`: an
+	// inconsistent equation, which is exactly the statement "the ray
+	// travels inside a plane parallel to the patch's own and never meets
+	// it".  `coeff[0]` vanishes with it, `SolveQuadricWithinRange` takes
+	// its `a == 0` LINEAR branch and returns a `v` that solves nothing,
+	// and BOTH of `getu`'s candidate denominators are round-off residues
+	// of the same cancelling expression -- so the `u` it hands back is a
+	// near-0/0 ratio that lands in [0, 1] often enough to matter.
+	// Measured before this gate: a patch at x = -2 with corners
+	// (-2,0,1) (-2,1,0) (-2,0,0) (-2,-1.5,-0.5), struck from (-1,0,1)
+	// along (0,1.5,0), reported a hit at (-1, 0.333, 1) -- a point one
+	// whole unit off the patch's plane.  It is a NON-parallelogram patch
+	// that trips this: for a parallelogram `a[j] == 0` makes `coeff[1]`
+	// vanish too and the linear branch reports no root at all, which is
+	// how the class stayed invisible.
+	//
+	// The check is the one `GeometricUtilities::BilinearInverse` already
+	// applies to its own two-axis solve: reconstruct the point and compare
+	// the residual against a SCALE-RELATIVE floor, never an absolute
+	// epsilon (docs/skills/precision-fix-the-formulation.md).  The floor
+	// reuses the same `NEARZERO * (1 + scale)` idiom as the debt-21
+	// self-hit floor below -- `NEARZERO` (1e-12) being the round-off in a
+	// difference of world coordinates at unit scale, roughly 4500x
+	// DBL_EPSILON, so it carries three decades of headroom over the
+	// ~1e-15-relative residue a genuine root leaves.  The scale is the
+	// coordinate magnitude of the two points being differenced: the patch
+	// corners and ray origin (`coordScale`, already computed by the
+	// caller) plus the ray-parameter term `|t| * |q|_1`, which is what
+	// `origin + t*q` actually rounds against for a distant hit.
+	static bool RootLiesOnRay(
+		const Ray& ray,
+		const BilinearPatch& patch,
+		const Scalar u,
+		const Scalar v,
+		const Scalar t,
+		const Scalar coordScale,
+		const Scalar qL1
+		)
+	{
+		const Point3 srf = GeometricUtilities::EvaluateBilinearPatchAt( patch, u, v );
+		const Scalar ex = srf.x - ( ray.origin.x + t * ray.Dir().x );
+		const Scalar ey = srf.y - ( ray.origin.y + t * ray.Dir().y );
+		const Scalar ez = srf.z - ( ray.origin.z + t * ray.Dir().z );
+		const Scalar residual = sqrt( ex*ex + ey*ey + ez*ez );
+		const Scalar residualTol = NEARZERO * ( Scalar(1) + coordScale + fabs(t) * qL1 );
+		return residual <= residualTol;
+	}
 
-	void RayBilinearPatchIntersection( 
+
+	void RayBilinearPatchIntersection(
 		const Ray& ray, 
 		BILINEAR_HIT& hit,
 		const BilinearPatch& patch
@@ -98,6 +157,9 @@ namespace RISE
 				fabs(patch.pts[ci].x) + fabs(patch.pts[ci].y) + fabs(patch.pts[ci].z) );
 		}
 		const Scalar tMin = NEARZERO * ( Scalar(1) + coordScale );
+
+		// L1 magnitude of the direction, for `RootLiesOnRay`'s floor.
+		const Scalar qL1 = fabs(ray.Dir().x) + fabs(ray.Dir().y) + fabs(ray.Dir().z);
 
 		//
 		// Equation of the patch
@@ -230,7 +292,8 @@ namespace RISE
 				const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
 				hit.dRange = computet(ray,pos1);
 
-				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin ) {
+				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin &&
+					RootLiesOnRay( ray, patch, hit.u, hit.v, hit.dRange, coordScale, qL1 ) ) {
 					hit.bHit = true;
 				}
 			}
@@ -243,30 +306,34 @@ namespace RISE
 				const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
 				hit.dRange = computet(ray,pos1); 
 
-				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin ) {
+				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin &&
+					RootLiesOnRay( ray, patch, hit.u, hit.v, hit.dRange, coordScale, qL1 ) ) {
 					hit.bHit = true;
 
 					const Scalar u = getu(sol[1],A2,A1,B2,B1,C2,C1,D2,D1);
 					if( u < 1+NEARZERO && u > NEARZERO ) {
 						const Point3 pos2 = GeometricUtilities::EvaluateBilinearPatchAt( patch, u, sol[1] );
 						const Scalar t2 = computet(ray,pos2);
-						if(t2 < tMin || hit.dRange < t2) { // t2 is bad or t1 is better
+						// t2 is bad, off the ray, or t1 is nearer -- keep t1.
+						if(t2 < tMin || hit.dRange < t2 ||
+							!RootLiesOnRay( ray, patch, u, sol[1], t2, coordScale, qL1 )) {
 							return;
 						}
 						// other wise both t2 > 0 and t2 < t1
 						hit.v = sol[1];
 						hit.u = u;
-						hit.dRange = t2;					
+						hit.dRange = t2;
 					}
 				}
-				else // doesn't fit in the root - try other one
+				else // doesn't fit in the root (or doesn't lie on the ray) - try other one
 				{
 					hit.u = getu(sol[1],A2,A1,B2,B1,C2,C1,D2,D1);
 					hit.v = sol[1];
-					const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
-					hit.dRange = computet(ray,pos1);
+					const Point3 pos1b = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
+					hit.dRange = computet(ray,pos1b);
 
-					if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin ) {
+					if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin &&
+						RootLiesOnRay( ray, patch, hit.u, hit.v, hit.dRange, coordScale, qL1 ) ) {
 						hit.bHit = true;
 					}
 				}

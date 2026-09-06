@@ -1390,11 +1390,14 @@ static void TestBilinearPatch()
 // clippedplane_geometry (8), and in part (b) the curved saddle plus all
 // 12 of the twisted patch's +/-X and +/-Y rays miss (14).  Not one of
 // the +/-Z rays fails, which is the point: the bug was never about the
-// patch, only about the direction.  Part (c) stays green under the
-// revert BY CONSTRUCTION -- it only compares the |q.z|-dominant rays,
-// where the two solvers are the same code -- so it is a parity proof,
-// not a second bug detector.  With the fix in place the whole file
-// passes.
+// patch, only about the direction.  Part (c) also stays green under that
+// revert, but NOT by construction: it asserts `bHit` on every ray it does
+// not skip, and the legacy solver loses a ray only when `q.z` is EXACTLY
+// zero, which a uniformly random direction never is.  It is a parity
+// proof (the new axis pick is the identity where the old code was valid),
+// and it happens not to double as a bug detector -- an accident of the
+// sampling, not a property of the test.  With the fix in place the whole
+// file passes.
 
 // Verbatim copy of the PRE-FIX solver body (hard-coded z elimination),
 // kept here so part (c) can prove the new axis pick is the IDENTITY
@@ -1846,8 +1849,11 @@ static void TestBilinearCurvedAxisAlignedRays()
 
 // (c) 1000 random directions: the new solver's root always lies on the
 //     ray, and wherever |q.z| is the dominant component the new axis pick
-//     reproduces the legacy fixed-z result BIT FOR BIT (proving the
-//     permutation is the identity exactly where the old code was valid).
+//     reproduces the legacy fixed-z result to FP-CONTRACTION NOISE (the
+//     assertion tolerance is 1e-12; measured max delta 8.9e-16), proving
+//     the permutation is the identity exactly where the old code was
+//     valid.  Bit equality is deliberately NOT asserted -- see the note at
+//     the comparison below.
 static void TestBilinearRandomDirectionParity()
 {
 	std::cout << "Testing bilinear-patch random-direction parity + on-ray invariant..." << std::endl;
@@ -1943,11 +1949,306 @@ static void TestBilinearRandomDirectionParity()
 		<< " (max |delta| = " << maxDelta << ")\n";
 }
 
+// (d) OFF-RAY ROOT REJECTION.
+//
+// THE BUG, ONE SENTENCE.  The elimination in RayBilinearPatchIntersection
+// solves only TWO of the three component equations of
+// `P(u,v) = origin + t*q` and `computet` recovers `t` from ONE axis, so
+// nothing in the chain ever asked whether the accepted `(u, v, t)` puts
+// `P(u,v)` on the ray at all -- and when the patch is PLANAR in an axis
+// `j` with `q[j] == 0`, row `j` is the INCONSISTENT equation `0 = D2`
+// (`D2 != 0`), `coeff[0]` vanishes with it, `SolveQuadricWithinRange`
+// takes its `a == 0` linear branch and hands back a `v` that solves
+// nothing, and both of `getu`'s denominators are round-off residues of
+// the same cancelling expression -- a near-0/0 ratio that lands in [0, 1]
+// often enough to be accepted.
+//
+// Such a ray travels inside a plane PARALLEL to the patch's own and can
+// never meet it, so the ground truth is analytic and needs no oracle:
+// the answer is always MISS.  Part 2b below builds 100k of them.
+//
+// The fix is the residual gate `RootLiesOnRay` -- reconstruct P(u,v),
+// compare |P(u,v) - (origin + t*q)| against a scale-relative floor, the
+// same check `GeometricUtilities::BilinearInverse` already applies to its
+// own two-axis solve.  It also closes the `SolveQuadricWithinRange`
+// double-root misroot (`-b/a` for `-b/(2a)`, fixed the same round) for
+// this caller, since a doubled `v` lands off the ray too.
+static void TestBilinearOffRayRootRejection()
+{
+	std::cout << "Testing bilinear-patch off-ray root rejection..." << std::endl;
+
+	// ---- Part 1: the reviewer's exact reproduction ---------------------
+	//
+	// A PLANAR, NON-PARALLELOGRAM quad in x = -2 struck from x = -1 by a
+	// ray travelling in +Y, i.e. entirely inside the plane x = -1.  It
+	// cannot touch the quad.  Pre-gate this reported a hit at the point
+	// (-1, 0.333, 1) -- one whole unit off the quad's own plane -- with
+	// (u, v, t) = (1, 0.667, 0.222).  (Non-parallelogram matters: for a
+	// parallelogram `a[j] == 0` kills `coeff[1]` as well, the linear
+	// branch reports no root, and the class stays invisible.)
+	//
+	// Corners are given in ClippedPlaneGeometry's row-major order
+	// (vP[0]->(0,0), vP[1]->(1,0), vP[2]->(1,1), vP[3]->(0,1)); the raw
+	// BilinearPatch below is that order under ToBilinearPatch's remap
+	// pts = { vP[0], vP[3], vP[1], vP[2] }.
+	const Point3 kQuad[4] = {
+		Point3( -2.0,  0.0,  1.0 ),
+		Point3( -2.0,  1.0,  0.0 ),
+		Point3( -2.0,  0.0,  0.0 ),
+		Point3( -2.0, -1.5, -0.5 ) };
+
+	BilinearPatch reviewerPatch;
+	reviewerPatch.pts[0] = kQuad[0];
+	reviewerPatch.pts[1] = kQuad[3];
+	reviewerPatch.pts[2] = kQuad[1];
+	reviewerPatch.pts[3] = kQuad[2];
+
+	{
+		const Ray ray( Point3( -1.0, 0.0, 1.0 ), Vector3( 0.0, 1.5, 0.0 ) );
+
+		BILINEAR_HIT h;
+		RayBilinearPatchIntersection( ray, h, reviewerPatch );
+		REQUIRE( !h.bHit,
+			"off-ray: reviewer's planar non-parallelogram patch, ray in a parallel plane, MISSES" );
+		if( h.bHit ) {
+			std::cout << "    reported (u,v,t) = (" << h.u << ", " << h.v << ", "
+				<< h.dRange << "), residual = "
+				<< HitResidual( ray, reviewerPatch, h ) << "\n";
+		}
+
+		// Same ray, same corners, through the user-visible geometry.
+		ClippedPlaneGeometry* g = new ClippedPlaneGeometry( kQuad, /*bDoubleSided=*/true );
+		RayIntersectionGeometric ri( ray, nullRasterizerState );
+		g->IntersectRay( ri, true, true, false );
+		REQUIRE( !ri.bHit, "off-ray: the same case through clippedplane_geometry MISSES" );
+		g->release();
+	}
+
+	// The same quad struck by a ray that DOES cross its plane must still
+	// hit -- the gate must not have turned into a blanket rejection of
+	// planar patches.  Aim at P(0.25, 0.25), which is inside the patch.
+	{
+		const Point3 P = GeometricUtilities::EvaluateBilinearPatchAt( reviewerPatch, 0.25, 0.25 );
+		const Ray ray( Point3( P.x + 3.0, P.y, P.z ), Vector3( -1.0, 0.0, 0.0 ) );
+
+		BILINEAR_HIT h;
+		RayBilinearPatchIntersection( ray, h, reviewerPatch );
+		REQUIRE( h.bHit, "off-ray: the same patch is still hit by a ray that crosses its plane" );
+		if( h.bHit ) {
+			REQUIRE( IsClose( h.u, 0.25, 1e-9 ), "off-ray: crossing ray u" );
+			REQUIRE( IsClose( h.v, 0.25, 1e-9 ), "off-ray: crossing ray v" );
+			REQUIRE( IsClose( h.dRange, 3.0, 1e-9 ), "off-ray: crossing ray t" );
+		}
+	}
+
+	// ---- Part 2: randomized sweep -------------------------------------
+	//
+	// Coordinates are DYADIC (k/4 for integer k), so the differences and
+	// products the elimination forms are exact in binary FP and the
+	// degenerate branches are reached exactly rather than approximately.
+	// Two halves, both seeded:
+	//
+	//   (a) 100k rays constructed to hit -- ground truth is the
+	//       construction, so a miss is a LOST TRUE HIT.  A subsample is
+	//       additionally checked against the brute-force grid + Newton
+	//       oracle above (which shares no code with the analytic solver).
+	//   (b) 100k rays in a plane parallel to a planar patch's own -- they
+	//       cannot hit, so ANY accepted hit is a PHANTOM.
+	//
+	// RED-PROOF: dropping the four `RootLiesOnRay(...)` conjuncts from
+	// RayBilinearPatchIntersection.cpp turns (b) red (and part 1 above
+	// with it); the counts are printed either way.
+	const int NHalf = 100000;
+	LCG rng( 20260906ULL );
+
+	auto dyadic = [&rng]( int lo, int hi ) -> Scalar {
+		// Uniform over { lo/4, (lo+1)/4, ..., hi/4 }.
+		const int span = hi - lo + 1;
+		int k = lo + int( rng.next01() * Scalar(span) );
+		if( k > hi ) k = hi;
+		return Scalar(k) * 0.25;
+	};
+	auto setAxis = []( Point3& p, int k, Scalar val ) {
+		if( k == 0 ) p.x = val; else if( k == 1 ) p.y = val; else p.z = val;
+	};
+	// World scale of the configuration, cycled over three decades.  The
+	// producer's floor is scale-RELATIVE (`NEARZERO * (1 + coordScale +
+	// |t|*|q|_1)`); an absolute epsilon would start losing true hits at
+	// the top of this range and start admitting phantoms at the bottom.
+	// The factors are powers of two so the dyadic coordinates stay exact.
+	const Scalar kWorldScales[3] = { 1.0, 256.0, 65536.0 };
+
+	// --- (a) constructed-to-hit ---
+	int aHit = 0, aLost = 0, aSkipped = 0, aBadResidual = 0;
+	int aOracleChecked = 0, aOracleDisagreed = 0;
+	Scalar aMaxResidual = 0.0;
+
+	for( int k = 0; k < NHalf; ++k ) {
+		const Scalar ws = kWorldScales[ k % 3 ];
+		BilinearPatch patch;
+		for( int p = 0; p < 4; ++p ) {
+			patch.pts[p] = Point3( ws*dyadic(-8, 8), ws*dyadic(-8, 8), ws*dyadic(-8, 8) );
+		}
+
+		const Scalar uT = 0.05 + 0.90 * rng.next01();
+		const Scalar vT = 0.05 + 0.90 * rng.next01();
+		const Point3 P = GeometricUtilities::EvaluateBilinearPatchAt( patch, uT, vT );
+
+		// Uniform direction on the sphere.
+		const Scalar z = 2.0 * rng.next01() - 1.0;
+		const Scalar phi = 2.0 * 3.14159265358979323846 * rng.next01();
+		const Scalar r = std::sqrt( std::fmax( 0.0, 1.0 - z*z ) );
+		const Vector3 dir( r * std::cos(phi), r * std::sin(phi), z );
+
+		// Surface tangents at the target, for the near-tangent skip: the
+		// root is genuinely ill-conditioned there for ANY elimination
+		// axis, and a degenerate patch has no normal at all.
+		const Vector3 A( patch.pts[3].x - patch.pts[2].x - patch.pts[1].x + patch.pts[0].x,
+		                 patch.pts[3].y - patch.pts[2].y - patch.pts[1].y + patch.pts[0].y,
+		                 patch.pts[3].z - patch.pts[2].z - patch.pts[1].z + patch.pts[0].z );
+		const Vector3 dpdu( (patch.pts[2].x - patch.pts[0].x) + A.x*vT,
+		                    (patch.pts[2].y - patch.pts[0].y) + A.y*vT,
+		                    (patch.pts[2].z - patch.pts[0].z) + A.z*vT );
+		const Vector3 dpdv( (patch.pts[1].x - patch.pts[0].x) + A.x*uT,
+		                    (patch.pts[1].y - patch.pts[0].y) + A.y*uT,
+		                    (patch.pts[1].z - patch.pts[0].z) + A.z*uT );
+		const Vector3 nrmRaw = Vector3Ops::Cross( dpdu, dpdv );
+		if( Vector3Ops::SquaredModulus( nrmRaw ) < 1e-12 ) { aSkipped++; continue; }
+		const Vector3 nrm = Vector3Ops::Normalize( nrmRaw );
+		if( std::fabs( Vector3Ops::Dot( nrm, dir ) ) < 0.15 ) { aSkipped++; continue; }
+
+		const Scalar t0 = 3.0 * ws;
+		const Ray ray( Point3( P.x - t0*dir.x, P.y - t0*dir.y, P.z - t0*dir.z ), dir );
+
+		BILINEAR_HIT h;
+		RayBilinearPatchIntersection( ray, h, patch );
+		if( !h.bHit ) { aLost++; continue; }
+		aHit++;
+
+		// Every accepted root must lie on the ray.  Scale-relative,
+		// matching the producer's own floor derivation.
+		Scalar scale = std::fabs(ray.origin.x) + std::fabs(ray.origin.y) + std::fabs(ray.origin.z);
+		for( int ci = 0; ci < 4; ++ci ) {
+			const Scalar s = std::fabs(patch.pts[ci].x) + std::fabs(patch.pts[ci].y) + std::fabs(patch.pts[ci].z);
+			if( s > scale ) scale = s;
+		}
+		const Scalar res = HitResidual( ray, patch, h );
+		if( res > aMaxResidual ) aMaxResidual = res;
+		if( res > 1e-9 * ( 1.0 + scale ) ) aBadResidual++;
+
+		// Oracle cross-check on a thin subsample (the oracle is a
+		// 130x130 grid plus a 3x3 Newton, far too slow for all 100k).
+		if( (k % 250) == 0 ) {
+			Scalar bu, bv, bt;
+			// The oracle's Newton is unconstrained, so it can converge to a
+			// root of the INFINITE bilinear surface outside the (u, v) unit
+			// square, or behind the origin.  Only a root that is actually on
+			// the patch, in front of the ray, and on the ray is an opinion
+			// worth comparing against.
+			bool oracleValid = BruteForceBilinearRayRoot( ray, patch, bu, bv, bt );
+			if( oracleValid ) {
+				const Point3 bP = GeometricUtilities::EvaluateBilinearPatchAt( patch, bu, bv );
+				const Point3 bR = ray.PointAtLength( bt );
+				const Scalar bRes = std::sqrt( (bP.x-bR.x)*(bP.x-bR.x)
+					+ (bP.y-bR.y)*(bP.y-bR.y) + (bP.z-bR.z)*(bP.z-bR.z) );
+				oracleValid = ( bu >= -1e-9 && bu <= 1.0 + 1e-9
+					&& bv >= -1e-9 && bv <= 1.0 + 1e-9
+					&& bt > 0.0 && bRes < 1e-9 * ( 1.0 + scale ) );
+			}
+			if( oracleValid ) {
+				aOracleChecked++;
+				// The solver may legitimately report a NEARER second root
+				// of the same patch; only demand agreement when the oracle
+				// converged to the same t.
+				const bool sameRoot = std::fabs( bt - h.dRange ) < 1e-6;
+				const bool nearerRoot = ( h.dRange < bt + 1e-6 );
+				const bool agree = sameRoot
+					? ( std::fabs( h.u - bu ) <= 1e-6 && std::fabs( h.v - bv ) <= 1e-6 )
+					: nearerRoot;
+				if( !agree ) {
+					aOracleDisagreed++;
+					if( aOracleDisagreed <= 3 ) {
+						std::cout << "    ORACLE DISAGREE at k=" << k
+							<< ": solver (u,v,t) = (" << h.u << ", " << h.v << ", " << h.dRange
+							<< "), oracle (" << bu << ", " << bv << ", " << bt << ")\n";
+					}
+				}
+			}
+		}
+	}
+
+	// --- (b) rays that cannot possibly hit ---
+	int bPhantom = 0, bTested = 0;
+	Scalar bWorstResidual = 0.0;
+
+	for( int k = 0; k < NHalf; ++k ) {
+		// Planar patch: every corner shares coordinate `kAxis`.
+		const Scalar ws = kWorldScales[ k % 3 ];
+		const int kAxis = int( rng.next01() * 3.0 ) % 3;
+		const Scalar planeAt = ws * dyadic(-8, 8);
+
+		BilinearPatch patch;
+		for( int p = 0; p < 4; ++p ) {
+			patch.pts[p] = Point3( ws*dyadic(-8, 8), ws*dyadic(-8, 8), ws*dyadic(-8, 8) );
+			setAxis( patch.pts[p], kAxis, planeAt );
+		}
+
+		// Ray origin strictly OFF that plane, direction strictly INSIDE a
+		// parallel one (q[kAxis] == 0 exactly).  Such a ray stays in the
+		// plane `kAxis = origin[kAxis] != planeAt` forever.
+		Point3 origin( ws*dyadic(-8, 8), ws*dyadic(-8, 8), ws*dyadic(-8, 8) );
+		Scalar off = ws * dyadic(-8, 8);
+		if( off == planeAt ) off = planeAt + ws;
+		setAxis( origin, kAxis, off );
+
+		Vector3 dir( dyadic(-4, 4), dyadic(-4, 4), dyadic(-4, 4) );
+		if( kAxis == 0 ) dir.x = 0.0; else if( kAxis == 1 ) dir.y = 0.0; else dir.z = 0.0;
+		if( Vector3Ops::SquaredModulus( dir ) == 0.0 ) continue;
+
+		bTested++;
+
+		const Ray ray( origin, dir );
+		BILINEAR_HIT h;
+		RayBilinearPatchIntersection( ray, h, patch );
+		if( h.bHit ) {
+			bPhantom++;
+			const Scalar res = HitResidual( ray, patch, h );
+			if( res > bWorstResidual ) bWorstResidual = res;
+			// The patch plane is `kAxis == planeAt`; the ray never leaves
+			// `kAxis == off`.  |off - planeAt| is the distance the
+			// "intersection" is wrong by.
+			if( bPhantom <= 3 ) {
+				std::cout << "    PHANTOM: axis " << kAxis << ", patch plane " << planeAt
+					<< ", ray plane " << off << ", (u,v,t) = (" << h.u << ", " << h.v
+					<< ", " << h.dRange << "), residual = " << res << "\n";
+			}
+		}
+	}
+
+	REQUIRE( aLost == 0, "off-ray sweep: no constructed true hit was lost" );
+	REQUIRE( aBadResidual == 0, "off-ray sweep: every accepted root lies on the ray" );
+	REQUIRE( aOracleDisagreed == 0, "off-ray sweep: analytic solver agrees with the brute-force oracle" );
+	REQUIRE( aOracleChecked > 100, "off-ray sweep: enough oracle cross-checks to be meaningful" );
+	REQUIRE( aHit > NHalf / 2, "off-ray sweep: the constructed-to-hit half really does hit" );
+	REQUIRE( bPhantom == 0, "off-ray sweep: no phantom hit on a ray parallel to the patch's plane" );
+	REQUIRE( bTested > NHalf / 2, "off-ray sweep: enough parallel-plane rays built" );
+
+	std::cout << "  constructed-to-hit: " << aHit << " hit, " << aLost << " lost, "
+		<< aSkipped << " near-tangent/degenerate skipped, "
+		<< aOracleChecked << " oracle cross-checks (" << aOracleDisagreed << " disagreed)"
+		<< ", max on-ray residual " << aMaxResidual << "\n";
+	std::cout << "  parallel-plane (cannot hit): " << bTested << " rays, "
+		<< bPhantom << " phantoms";
+	if( bPhantom ) std::cout << " (worst off-ray distance " << bWorstResidual << ")";
+	std::cout << "\n";
+}
+
 static void TestBilinearEliminationAxis()
 {
 	TestBilinearAxisAlignedRays();
 	TestBilinearCurvedAxisAlignedRays();
 	TestBilinearRandomDirectionParity();
+	TestBilinearOffRayRootRejection();
 }
 
 static void TestObjectWorldArea()
