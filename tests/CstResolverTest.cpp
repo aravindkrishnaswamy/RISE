@@ -438,6 +438,27 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [relief-modifier-scalar] (relief-modifier arc, Phase 3) the new-modifier
+	// twin of [painter-decl-func2d] above: `relief_modifier.height` is
+	// declared {Painter} but resolved through the SCALAR painter manager
+	// (ParameterPipe::Scalar) rather than the colour-painter manager --
+	// exactly the same "declared-category vs. resolving-manager" shape as
+	// bumpmap_modifier.function/Function2D, one manager over. Closure of the
+	// scalar_painter must include the relief_modifier naming it.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"scalar_painter\n{\nname h\nexpression 0.1*P.x\n}\n"
+			"relief_modifier\n{\nname r\nheight h\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId h = DocFindByName( doc, "scalar_painter/h" );
+		const NodeId r = DocFindByName( doc, "relief_modifier/r" );
+		bool hasR = false; for( NodeId n : DocEditClosure( h, g ) ) if( n == r ) hasR = true;
+		Check( h && r && hasR, "relief-modifier-scalar: closure(scalar_painter h) INCLUDES relief_modifier.height" );
+	}
+
+	//----------------------------------------------------------------------
 	// [ior-phantom] (workstream #2) ior/film_ior resolve scalar-painter ->
 	// colour-painter -> numeric, NEVER a Function (Job::ResolveOrDiagnoseScalar
 	// consults no Function manager).  The descriptor over-declared

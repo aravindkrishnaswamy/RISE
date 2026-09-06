@@ -415,6 +415,32 @@ int main()
 		j->release(); jFull->release();
 	}
 
+	// OPTIONAL-SLOT REMOVAL (relief-modifier arc, Phase 3): the same removal-safety
+	// check as the bumpmap_modifier block above, twinned onto relief_modifier -- its
+	// `height` slot is a SCALAR-painter reference (a colour painter is refused there),
+	// so this uses a real scalar_painter rather than reusing the bumpmap twin's `p`.
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
+			"lambertian_material\n{\nname m\nreflectance p\n}\n"
+			"scalar_painter\n{\nname h\nvalue 0.1\n}\n"
+			"relief_modifier\n{\nname r\nheight h\n}\n"
+			"sphere_geometry\n{\nname g\nradius 1\n}\n"
+			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier r\n}\n" );
+		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
+		const NodeId oId = DocFindByName( doc, "standard_object/o" );
+		Document docE = DocSetParamValue( doc, oId, "modifier", 0, "none" );
+		std::vector<NodeId> closure = DocEditClosure( docE, oId );
+		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
+		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );
+		IObjectPriv* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
+		Check( applied >= 1, "removal relief_modifier: edit applies in place (not refused)" );
+		Check( o && o->GetModifier() == 0, "removal relief_modifier: slot CLEARED" );
+		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal relief_modifier: incremental == full derive of the edited doc" );
+		j->release(); jFull->release();
+	}
+
 	// OPTIONAL-SLOT REMOVAL (workstream #3): removing interior_medium from a stable object CLEARS it in
 	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
 	{
