@@ -72,17 +72,31 @@ lossless migrator; its removal is a named later phase (§7).
 The charter that opened this arc stated three things the tree does not bear
 out. Recording them so the design does not inherit them:
 
-1. **"`displaced_geometry` already accepts any Painter."** It does not. Its
-   `displacement` slot is *declared* `{ChunkCategory::Painter}` but resolved
+1. **"`displaced_geometry` already accepts any Painter."** It did not, at the
+   time the charter was written. Its `displacement` slot is *declared*
+   `{ChunkCategory::Painter}` but resolved
    through `pFunc2DManager` (`Job::AddDisplacedGeometry` in [Job.cpp](../src/Library/Job.cpp)) and
    evaluated as `displacement.Evaluate(u, v)` per vertex
    (`ApplyDisplacementMapToObject` in [GeometryUtilities.cpp](../src/Library/Geometry/GeometryUtilities.cpp)).
    A 3D `expression_painter` bound there evaluates through the fake-hit
    `Painter::Evaluate` path and is a *constant*. The "same field drives coarse
-   displacement + fine relief" pattern therefore works today only for
-   UV-domain fields (§5.3). Extending `displaced_geometry` to evaluate an
-   `IScalarPainter` at the vertex position is a follow-up, chipped, not in
-   this arc.
+   displacement + fine relief" pattern therefore worked only for
+   UV-domain fields (§5.3).
+
+   **CLOSED 2026-09-06 (the chipped follow-up landed).** `displaced_geometry`
+   gained a second, mutually exclusive height slot, `height`, declared
+   `{Painter}` with `ParameterPipe::Scalar` + `requireSingle` and resolved
+   through the standing `ResolveOrDiagnoseScalar` — so a colour painter bound
+   there gets `kScalarBoundToIPainterFmt`, exactly as `relief_modifier.height`
+   does. It is evaluated as a **3D field at each vertex** through a synthetic
+   `RayIntersectionGeometric` (`GeometryUtilities::ApplyScalarHeightToObject`),
+   the same build-time painter-evaluation idiom `HairGenerator::MakeRootRi`
+   uses. `displacement` keeps its IFunction2D semantics byte-for-byte (the
+   CST-derive golden shows zero drift across all 441 pre-existing scenes);
+   naming both is a parse error that names both. `disp_scale` applies to
+   either. §5.3's "UV fields only" limitation is **superseded** — see the
+   dated note there, **including its object-space caveat**, which is the one
+   thing an author must know before sharing a field.
 2. **"Trajectory analyses in `docs/agentic-redesign/` flagged this
    repeatedly."** No file in that directory mentions bump, relief, or
    "reads as paint" (exhaustive case-insensitive grep, 36 files). The
@@ -430,12 +444,47 @@ Displacement moves vertices; relief tilts normals. The recommended split:
 - **Fine relief** (sub-silhouette; pores, grain, crackle) → `relief_modifier`
   on the *displaced object*, height from the fine field.
 
-Sharing one field between them is possible today **only for UV fields**
-(§1.1 item 1): bind the same `expression_function2d` to `displacement` and to
-`scalar_painter { function2d F }` → `relief_modifier { domain uv }`. For 3D
-fields the two stay separate until `displaced_geometry` learns the scalar
-pipe (chipped follow-up). The recipe (§9) shows the UV-shared form and says
-why.
+**SUPERSEDED 2026-09-06.** The paragraph that stood here said sharing one
+field between them was possible *only for UV fields* — bind the same
+`expression_function2d` to `displacement` and to
+`scalar_painter { function2d F }` → `relief_modifier { domain uv }` — and that
+3D fields stayed separate until `displaced_geometry` learned the scalar pipe.
+That follow-up has landed (§1.1 item 1). The **recommended pattern is now one
+`scalar_painter` bound to both slots**:
+
+```
+scalar_painter   { name F   expression fbm(Po*3.0, 2, 0.5, 2.0) + 0.35*fbm(Po*26.0, 4, 0.5, 2.0) }
+displaced_geometry { name shape  base_geometry base  height F  disp_scale 0.16 }
+relief_modifier    { name fine   height F  scale 0.03 }
+standard_object    { name obj  geometry shape  material m  modifier fine }
+```
+
+The coarse term moves vertices and changes the silhouette; the fine term
+tilts shading normals below anything the tessellation could resolve; and
+because it is *one* field the grain follows the lumps instead of floating
+over them. Fixture:
+[displaced_plus_relief_shared_field.RISEscene](../scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene).
+The UV-shared form still works and is still what §9's recipe shows.
+
+**The caveat that decides how you write the field: author against `Po`, not
+`P`.** `displaced_geometry` bakes its mesh *before* the geometry is bound to
+an object, so at bake time it does not know its own object-to-world
+transform: the synthetic hit carries the vertex's OBJECT-space position in
+**both** `ptIntersection` (`P`) and `ptObjIntersec` (`Po`), which therefore
+**coincide**. `relief_modifier`, by contrast, runs at *hit* time, where `P`
+is genuinely world space. So a `P`-authored field means two different things
+to the two consumers — the displacement would not follow the object's
+placement while the relief would, and the two halves would silently disagree
+the moment the object is moved. `Po` means the same thing to both. The
+descriptor and
+[GeometryUtilities.h](../src/Library/Geometry/GeometryUtilities.h)'s
+`ApplyScalarHeightToObject` doc both state this. Two lesser notes: the
+`uv_seam_fold` tent treatment applies to *both* routes (the synthesized
+`ptCoord` is the folded one, so a UV-reading field reads identically either
+way — pinned by `DisplacedGeometryTest`'s route-parity case at both fold
+settings), and there is no pixel footprint at bake time (`fw` = 0), so noise
+octaves all resolve — correct for a mesh built once at no particular viewing
+distance, but it means a footprint-faded field fades only on the relief half.
 
 `displaced_geometry`'s baked mesh sets neither `bHasTangent` nor
 `bHasShadingTangent`, so relief on it takes the `CreateFromW` path — fine in
