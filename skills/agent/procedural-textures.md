@@ -884,10 +884,12 @@ relief_modifier
   floor, a wall seen edge-on -- because a grazing view puts the horizon
   much closer, so a smaller tilt reaches it; the shipped
   `weathered_workbench` bench top measured its knee at `0.30`. Also
-  expect `scale` to **saturate** once the clamp binds: past that point,
-  raising it further changes nothing (measured -- `scale` 0.15/0.25/0.40
-  are indistinguishable at `max_slope 0.30`). Details and the full sweep
-  in `docs/RELIEF_MODIFIER_DESIGN.md` 3.2 and 12 (Phase 5 addendum).
+  expect `scale` to **approach a ceiling** once the clamp binds -- full
+  saturation needs EVERY gradient in the field past the bound, so a fine
+  field with a spread of slopes (an fbm) still moves a little as `scale`
+  rises (measured -- `scale` 0.15/0.25/0.40 are within ~3% of each other
+  at `max_slope 0.30`, not identical). Details and the full sweep in
+  `docs/RELIEF_MODIFIER_DESIGN.md` 3.2 and 12 (Phase 5 addendum).
 - **Composing more than one modifier on an object** uses `modifier_stack`,
   applied in the order the members are listed:
 

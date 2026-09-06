@@ -2425,10 +2425,16 @@ the upper 25 rows (the plank seen at ~10–15° grazing) and `near` the lower 25
 *Two findings the grid forced, and the extension they justified.* (1) The
 clamp works: at the same `scale 0.25`, `max_slope 0.4` cuts near-blacks
 **11×** (976 → 87) while keeping 71% of the unclamped fine-detail gain. (2)
-**`scale` saturates once the clamp binds** — at `max_slope 0.30`, scale
-0.15/0.25/0.40 measure hf-RMS 21.51/22.06/22.14 at 22/23/24 blacks. Since
-every one of the nine still sat well above master's 0 blacks, the sweep was
-extended *downward* in `max_slope` at the saturated `scale 0.25`:
+**`scale` saturates only once EVERY gradient in the field exceeds the
+bound** — at `max_slope 0.30`, scale 0.15/0.25/0.40 measure hf-RMS
+21.51/22.06/22.14 at 22/23/24 blacks: a monotone 2.9% spread (21.51 → 22.14),
+not identical, because at `0.15` part of the fbm slope distribution still
+sits *below* the clamp (only the steepest fraction is bound; the rest still
+scales with `scale` as usual) — full saturation needs the whole distribution
+past the bound. Since every one of the nine still sat well above master's 0
+blacks, the sweep was extended *downward* in `max_slope` at `scale 0.25`
+(chosen because it is within ~3% of the saturated ceiling, not because it is
+identical to it):
 
 | scale | max_slope | hf-RMS | blk<12 | note |
 |---|---|---|---|---|

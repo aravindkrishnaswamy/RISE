@@ -164,9 +164,11 @@ scalar_painter
 # contrast +19% over the old 0.03 (hf-RMS 18.5 -> 22.1) at 23 of 10000
 # near-black pixels, all in the extreme-grazing far band and all following the
 # grain.  0.35 buys +8% more for 2.7x the blacks, 0.40 for 3.8x, and there the
-# darks start clumping into solid patches.  `scale` SATURATES once the clamp
-# binds (0.40/0.30 measures identically to 0.25/0.30), so there is nothing
-# above 0.25 to gain here.  Note 0.30 is BELOW the 0.5-1.0 band the skill doc
+# darks start clumping into solid patches.  `scale` approaches a CEILING once
+# the clamp binds -- full saturation needs EVERY gradient in this fbm field
+# past the bound, so scale 0.15/0.25/0.40 still move a little (hf-RMS
+# 21.51/22.06/22.14, a monotone 2.9% spread, not identical) -- so there is
+# little above 0.25 to gain here.  Note 0.30 is BELOW the 0.5-1.0 band the skill doc
 # recommends generally: this bench top is a large horizontal plane seen at a
 # grazing angle over most of its area, which puts the horizon far closer than
 # on a surface viewed nearer face-on.
