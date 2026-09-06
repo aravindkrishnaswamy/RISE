@@ -921,6 +921,24 @@ tolls (§7 decision 2, reaffirmed in the "Price the inferior path" row of
   `DESIGN_FLAT_RELIEF` firings; N ≥ 3, cross-provider before believing a
   null (C-MEAS).
 
+  **CENSUS RUN (2026-09-06)** — `evals/runconfigs/relief_census_gemini_gpt.json`
+  (the `add_wear` instrument verbatim: `rich_material_closeup` ×3 × {gemini-3.5-flash,
+  gpt-5.6-terra}), run on the Phase-B binary (`913436cd`). Baseline is post-hoc
+  over the archived `addwear_census` + `curv_census` final scenes: **0/12** scenes
+  perturbed a normal in any way (no `bumpmap_modifier`, no `normal_map_modifier`).
+  Post-arc, per trajectory (`relief_modifier` chunks bound via `modifier` /
+  `DESIGN_FLAT_RELIEF` sightings): gemini r1 **2**/0, r2 **2**/1, r3 **2**/0;
+  gpt r1 **1**/3, r2 0/1, r3 0/1. Adoption **4/6 trajectories** (gemini 3/3, gpt
+  1/3) from a 0/12 baseline, with no verb — the recipe + reference alone moved it
+  (the summoned read-set was pulled: `materials-and-media-basics` 9×,
+  `procedural-textures` 6× across the six runs). The advisory fired in 4/6 and was
+  acted on in one (gpt r1: three firings, one relief bound); in gpt r2/r3 it fired
+  once each and was ignored, consistent with C-ADV. By the pre-committed rule the
+  `add_wear` `relief_amplitude` escalation is **not** triggered: adoption is
+  already at the level `vary_material` reached only once it was a verb. N=3 per
+  provider, cross-provider — C-MEAS satisfied for a single-run reading; a second
+  run would tighten the gpt 1/3 before any decision hangs on it.
+
 ---
 
 ## 10. Cost
