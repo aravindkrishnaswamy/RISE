@@ -2363,3 +2363,39 @@ nesting bound stays at 8 rather than following the `source` walks to 256
 false-advisory for an unbounded walk, and no fixture or corpus scene
 nests composites anywhere near that deep. Deliberately out of scope: the
 census remains user-run (C-MEAS), unchanged from fix round 1.
+
+### Follow-ups (chips taken in-session)
+
+Three loose ends flagged during review of the branch tip were closed
+in-session rather than left as chips:
+
+- **`ObjectMirrorTest` section B, three P2s** (`c1219075`). Test-only, no
+  `src/` change. The degeneracy-free block's comment overclaimed that it
+  isolated "the inverse-transpose normal promotion under det<0" — for a
+  pure axis mirror `M = diag(-1,1,1)`, `M` IS its own inverse-transpose, so
+  the block actually pins the normal's SIGN, not the promotion formula;
+  added an adjoint-identity probe (mirror composed with a non-uniform
+  stretch, where `M != M^-T`) that discriminates the two formulas for
+  real. The tie-mechanism prose was reworded to state precisely that the
+  twin's apex tie is bit-identical (broken by BVH visit order) while the
+  mirrored object's is a genuine, order-insensitive numeric minimum
+  (verified by rebuilding each mesh with reversed triangle insertion
+  order). The 25×25 grid sweep's "apex included" claim was not literally
+  true — the grid steps never land on the apex — so an explicit apex probe
+  was added under both acceptance-flag settings. Review: CLEAN.
+
+- **`EntityTemplates` per-category stand-in** (`b1afd223`).
+  `coated_material.base` is now `required = true` (it had no valid
+  default — the null material passes lookup but fails the substrate
+  allowlist); the keyword sweep in `EntityTemplatesTest` picks its
+  required-reference stand-in from `referenceCategories` instead of always
+  reaching for a Painter (`Material` → `mat_diffuse`, `Painter`/unrestricted
+  → `pnt_albedo`, `Function` → `pnt_albedo`); and
+  `SceneEditController::ChunkNodeRequirement` now threads
+  `referenceCategories` through from `EntityTemplates`, which it had been
+  dropping — the one production API surface for this outside
+  `EntityTemplates` itself. Review: CLEAN.
+
+- **`displaced_geometry` `height` (IScalarPainter)** (`89ebf2ab`,
+  `36021f57`). *(placeholder — reviewed separately; supervisor fills in
+  this line.)*
