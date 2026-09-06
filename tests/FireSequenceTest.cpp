@@ -11392,18 +11392,22 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	if(!FireSim::FireProductionCanonicalSourceAuthority::Build(sourceRequest,
 		request.frozenSource,&error))return 213;
 	{
+		auto exactSourceCarryMatches=[](const FireProductionFrozenSourcePacketSeal& source,
+			const std::vector<MethaneSourcePacket>& packets){
+			const std::size_t count=source.SourceDelta().size()/9u;
+			if(source.SourceDelta().size()!=9u*count||packets.size()!=count)return false;
+			for(std::size_t cell=0u;cell<count;++cell){
+				for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
+					const double expected=static_cast<double>(source.SourceDelta()[(1u+species)*count+cell]);
+					if(std::memcmp(&packets[cell].constituentDelta[species],&expected,sizeof(double))!=0)return false;}
+				const double expectedEnergy=static_cast<double>(source.SourceDelta()[8u*count+cell]);
+				if(std::memcmp(&packets[cell].sensibleEnergyDeltaJPerM3,&expectedEnergy,sizeof(double))!=0)return false;
+			}
+			return true;};
 		std::vector<MethaneSourcePacket> carried;RadiationEscapeFactor carriedEscape;
 		if(!CarryCanonicalSourceForPersistence(request.frozenSource,carried,carriedEscape,error))return 213;
-		bool carriedBits=carried.size()==cells;
+		bool carriedBits=exactSourceCarryMatches(request.frozenSource,carried)&&carried.size()==cells;
 		for(std::size_t cell=0u;cell<cells;++cell){
-			for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
-				const float value=static_cast<float>(carried[cell].constituentDelta[species]);
-				carriedBits=carriedBits&&std::memcmp(&value,
-					&request.frozenSource.SourceDelta()[(1u+species)*cells+cell],sizeof(float))==0;
-			}
-			const float energy=static_cast<float>(carried[cell].sensibleEnergyDeltaJPerM3);
-			carriedBits=carriedBits&&std::memcmp(&energy,
-				&request.frozenSource.SourceDelta()[8u*cells+cell],sizeof(float))==0;
 			const double diagnostics[]={carried[cell].reactedFuelKGPerM3,carried[cell].oxidizedCarbonKGPerM3,
 				carried[cell].grossCarbonFormedKGPerM3,carried[cell].gasHeatReleaseWPerM3,
 				carried[cell].sootHeatReleaseWPerM3,carried[cell].pilotEnergyDeltaJPerM3,
@@ -11486,7 +11490,8 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=pilot_ledger_mutation_%u passed=%d\n",
 				mutant,refused?1:0);
 		}
-		const bool pilotPassed=activePilotCells>0u&&pilotBitsMatch(pilotCarried)&&pilotREDs;
+		const bool pilotPassed=activePilotCells>0u&&pilotBitsMatch(pilotCarried)&&pilotREDs&&
+			exactSourceCarryMatches(pilotSource,pilotCarried);
 		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_PILOT nonzero_distinct_cells=%zu bits_equal=%d passed=%d\n",
 			activePilotCells,pilotBitsMatch(pilotCarried)?1:0,pilotPassed?1:0);
 		if(!pilotPassed)return 213;
@@ -11523,15 +11528,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			&MethaneSourcePacket::pilotEnergyDeltaJPerM3,&MethaneSourcePacket::pilotExpansionIntegral,
 			&MethaneSourcePacket::radiativeCoolingWPerM3};
 		auto ledgerBitsMatch=[&](const std::vector<MethaneSourcePacket>& packets){
-			if(packets.size()!=cells)return false;
-			for(std::size_t cell=0u;cell<cells;++cell){
-				for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
-					const float value=static_cast<float>(packets[cell].constituentDelta[species]);
-					if(std::memcmp(&value,&ledgerSource.SourceDelta()[(1u+species)*cells+cell],sizeof(float))!=0)
-						return false;}
-				const float energy=static_cast<float>(packets[cell].sensibleEnergyDeltaJPerM3);
-				if(std::memcmp(&energy,&ledgerSource.SourceDelta()[8u*cells+cell],sizeof(float))!=0)return false;
-			}
+			if(packets.size()!=cells||!exactSourceCarryMatches(ledgerSource,packets))return false;
 			for(std::size_t field=0u;field<8u;++field)
 				for(std::size_t cell=0u;cell<cells;++cell)
 					if(std::memcmp(&(packets[cell].*ledgerMembers[field]),
@@ -11555,6 +11552,18 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			const bool refused=!ledgerBitsMatch(alteredSource);ledgerPassed=ledgerPassed&&refused;
 			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=source_component_injection_%zu passed=%d\n",
 				component,refused?1:0);
+			auto subFloatChange=ledgerCarried;bool sameRoundTrip=true;
+			for(auto& packet:subFloatChange){
+				double& value=component<MethaneSpeciesCount?packet.constituentDelta[component]:packet.sensibleEnergyDeltaJPerM3;
+				const float before=static_cast<float>(value);
+				value=std::nextafter(value,std::signbit(value)?-std::numeric_limits<double>::infinity():
+					std::numeric_limits<double>::infinity());
+				const float after=static_cast<float>(value);
+				sameRoundTrip=sameRoundTrip&&std::memcmp(&before,&after,sizeof(float))==0;}
+			const bool subFloatRefused=sameRoundTrip&&!ledgerBitsMatch(subFloatChange);
+			ledgerPassed=ledgerPassed&&subFloatRefused;
+			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=source_double_ulp_%zu same_binary32_roundtrip=%d passed=%d\n",
+				component,sameRoundTrip?1:0,subFloatRefused?1:0);
 		}
 		for(std::size_t field=0u;field<8u;++field){
 			std::size_t nonzero=0u;

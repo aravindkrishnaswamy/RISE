@@ -66,6 +66,10 @@ Existing historical source ledgers are never rewritten with canonical values.
 - The soot fixture checks all seven species source bytes and energy as well as
   diagnostics. Nonzero carbon consumption is a precondition, and omitting that
   source component is RED; every source component also rejects injected bytes.
+- One shared source comparator checks persisted double bytes against the exact
+  widening of each canonical float in all three fixtures. One-double-ULP changes
+  must refuse even when their binary32 round trip is unchanged; narrowing before
+  comparison is insufficient for the persistence contract.
 - An alternate reconstruction callable is not invocable through the carry API;
   it cannot reach the identity gate.
 - Unsealed input refuses before modifying persisted packets.
