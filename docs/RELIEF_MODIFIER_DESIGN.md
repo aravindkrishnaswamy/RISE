@@ -913,3 +913,33 @@ corrected: the last-ditch warning's text named the C++ symbol
 `ModifierFrame::HasCoherentTangent` — reworded to "a geometry-supplied
 shading tangent", matching the plain-author language the rest of that
 warning already uses for the TANGENT/derivatives checks.)*
+
+---
+
+### Phase 1 — fix round 2 (2026-09-06)
+
+Three independent reviewers on the fix-round-1 tree returned **1 P1 and 5
+P2s**.  All six are fixed.  Suite after the round: `ReliefModifierTest`
+**85/0** (was 80/0; test 4c is the addition, 5 new checks).
+
+| Finding | Fix | Commit |
+|---|---|---|
+| **P1** — the frame-rebuild block's parenthetical (NormalMap.cpp ~210-220) described PRE-fix behaviour: it still said "the T/B selection above still keys on the bare flag" and that an SDF-heightfield hit "falls to the last-ditch branch", both true before `44cf535d` and false after it. | Rewritten to the truth: three tangent-source branches (imported TANGENT / UV derivatives / `ModifierFrame::HasCoherentTangent`) feed a rebuild gated on the same predicate; an SDF-heightfield hit now takes the third branch, and the last-ditch branch (and its warning) fires only on a genuinely tangent-less hit. | `b585d15b` |
+| **P2-A** — `txFootprint.worldWidth` was stamped in OBJECT-space units by `ComputeTextureFootprint` (it runs mid-`Object::IntersectRay`, on the ray that function has already transformed into object space) but never folded to world units, unlike its sibling `derivatives.scaleHint`.  Every consumer (`fw`, ReliefModifier's `max(step, worldWidth)`) silently read object units on any non-unit-scale object. | Folded `worldWidth` by `m_worldLinearScale` at the same point `Object::IntersectRay` / `CSGObject::IntersectRay` fold `scaleHint` (same `\|det M\|^(1/3)` approximation, exact under uniform scale).  Doc comments in `RayIntersectionGeometric.h`, `TextureFootprintCompute.h` and §3.3 corrected to say the geometry stamps object units and the Object layer folds world scale.  New regression: `ReliefModifierTest` test 4c — a real cast through `Object::IntersectRay` (single-triangle mesh, ray differentials) at world scale 1 vs. scale 10 (uniform), same local hit point and local diffs by construction, must give a `worldWidth` ratio of 10.  Red-proof (g): disabling the fold makes the ratio read 1. | `667e6856` (Object.cpp/CSGObject.cpp/headers), `c0bba520` (test 4c), `f34156b6` (§3.3 doc) |
+| **P2-B** — NormalMap.cpp's coherent-tangent-branch comment and this record's "Residual closed in the same round" paragraph both claimed the retired warning "was a false positive on exactly that hit" for the SDF-heightfield case — an overstatement. | Both rewritten: the coherent tangent there is a WORLD-X projection (Object.cpp's no-supplied-tangent fallback) while the heightfield's own UV is parameterised from the OBJECT-space hit point (SDFGeometry.cpp's `m_isHeightfield` branch) — they agree only when the instance's linear part preserves world-X, i.e. no rotation.  Suppressing the warning is a true false positive only on an unrotated instance; on a rotated one the diagnostic gap is real and now disclosed, not hidden.  Also reworded the warning text itself, which named the C++ symbol `ModifierFrame::HasCoherentTangent`, to plain author language. | `b585d15b` (NormalMap.cpp), `f34156b6` (doc) |
+| **P2-C** — `ReliefModifierTest` test 7's fixture set `bHasShadingTangent = true` without `bShadingTangentFromGeometry`, a combination no in-tree geometry produces (every producer sets both). | Both flags set at both fixture sites.  `ReliefModifierTest` confirmed 80/80 before this round's other additions, 85/85 after. | `c0bba520` |
+| **P2-D(i)** — the design doc's status line still said "DESIGN (2026-09-05)" after Phase 1 shipped and went through a full fix round. | Changed to "Phase 1 LANDED (2026-09-06, two review rounds to zero P1 — see §12); Phases 2–5 pending." | `f34156b6` |
+| **P2-D(ii)** — `ModifierFrame.h` and this record's P1-A row cited "SDFGeometry.cpp:1599" for the `bShadingTangentFromGeometry = true` statement; the line is 1600. | Both re-cited by symbol ("SDFGeometry.cpp, the `m_isHeightfield` branch of `IntersectRay`") instead of a line number, so a future edit can't put it out of date the same way; the same stale line number in `ReliefModifierTest.cpp`'s test-7b fixture comment was swept too. | `8c23185e` (ModifierFrame.h), `f34156b6` (doc), `c0bba520` (test) |
+
+**Gate suites, run on the final tree.**  `ReliefModifierTest` **85/0**,
+`GlintModifierTest` ALL PASSED, `HairTangentPlumbingTest` **123/0**,
+`GeometryShadingTangentTest` **12606/0**, `SurfaceCurvatureTest` **94/0**,
+`PainterPreviewTest` **87/0**, `TexCoord1PainterTest` **33/0**.  Clean
+warning check on every changed `.cpp` (touch + rebuild): **zero** —
+`Object.cpp`, `CSGObject.cpp`, `NormalMap.cpp`, `ReliefModifierTest.cpp`.
+
+**Red-proof.** (g) Test 4c, the `worldWidth` object-to-world fold: disabling
+the `ri.geometric.txFootprint.worldWidth *= m_worldLinearScale` line added to
+`Object::IntersectRay` (via a dead `if( false && ... )` guard, rebuilt, run,
+reverted) makes test 4c's ratio read exactly `1` instead of `10`, and the
+suite goes 84/85.  Reverted; suite back to 85/85.
