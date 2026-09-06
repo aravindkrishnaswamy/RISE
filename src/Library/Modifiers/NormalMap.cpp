@@ -140,7 +140,7 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// exists to serve.  For an un-mirrored object the sign is +1 and this is
 		// byte-identical to the previous expression.
 		B = Vector3Ops::Cross( N, T ) * ri.bitangentSign;
-	} else if( ri.bHasShadingTangent ) {
+	} else if( ModifierFrame::HasCoherentTangent( ri ) ) {
 		// P2 fix (docs/CLOTH_FABRIC_DESIGN.md 9.9 fix round): no imported
 		// TANGENT and no `ri.derivatives` (e.g. ClippedPlaneGeometry, which
 		// writes a geometry-supplied shading tangent but by design never
@@ -155,6 +155,15 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// directly, no warning: warning here would be a false positive on
 		// exactly the geometry this feature exists to serve (curtains,
 		// banners, swatches).
+		//
+		// The predicate is ModifierFrame::HasCoherentTangent -- the SAME
+		// flag pair Object::IntersectRay branches on to build that frame
+		// (bShadingTangentFromGeometry, OR the hair-only bHasShadingTangent)
+		// -- not `bHasShadingTangent` alone: an SDF heightfield hit sets only
+		// the former, and gating on the latter sent it to the last-ditch
+		// branch below, whose VALUES are identical (same onb.u()/v()) but
+		// whose once-per-process warning was a false positive on exactly
+		// such a hit (relief-modifier fix round 1 residual, closed here).
 		T = ri.onb.u();
 		B = ri.onb.v();
 	} else {
@@ -169,7 +178,7 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 			GlobalLog()->PrintEasyWarning(
 				"NormalMap modifier: hit has neither imported TANGENT, valid "
 				"surface derivatives (ri.derivatives.valid), nor a geometry-"
-				"supplied shading tangent (ri.bHasShadingTangent).  Falling "
+				"supplied shading tangent (ModifierFrame::HasCoherentTangent).  Falling "
 				"back to ONB-derived tangents, which is correct only when the "
 				"normal map's UV axes happen to align with the arbitrary ONB "
 				"frame -- i.e. essentially never.  Re-export the source asset "

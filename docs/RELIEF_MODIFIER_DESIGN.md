@@ -869,11 +869,13 @@ OR had to preserve), `GeometryShadingTangentTest` **12606/0**,
 `ScalarPainterParserTest` **60/0**.  Clean warning check on every changed
 `.cpp` (touch + rebuild): **zero**.
 
-**Known residual, accepted.**  An SDF-heightfield hit still takes
-`NormalMap`'s last-ditch T/B branch and fires its once-per-process "no tangent
-frame" warning.  The **values are unaffected** — that branch reads the same
-`ri.onb.u()/v()` the `bHasShadingTangent` branch would — so this is a
-cosmetic false positive in a log line, not a shading difference.  Widening
-that branch's condition is a behaviour change to an unrelated diagnostic and
-was left for a round that reviews it on its own merits; noted in
-`NormalMap.cpp` at the site.
+**Residual closed in the same round.**  An SDF-heightfield hit used to take
+`NormalMap`'s last-ditch T/B branch and fire its once-per-process "no tangent
+frame" warning: the **values were unaffected** (that branch reads the same
+`ri.onb.u()/v()` the coherent-tangent branch does) but the warning was a false
+positive on exactly that hit.  The branch now gates on
+`ModifierFrame::HasCoherentTangent` — the same predicate the rebuild uses — so
+the diagnostic and the rebuild agree on what a coherent-tangent hit is; the
+last-ditch warning's text names the predicate.  Suites after the change:
+`ReliefModifierTest` 80/0, `GlintModifierTest` all pass,
+`HairTangentPlumbingTest` 123/0.
