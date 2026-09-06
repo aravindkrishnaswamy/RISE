@@ -271,6 +271,7 @@
     <ClCompile Include="..\..\..\src\Library\Materials\WardIsotropicGaussianSPF.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp" />
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ModifierStack.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp" />
     <ClCompile Include="..\..\..\src\Library\Modifiers\ReliefModifier.cpp" />
     <ClCompile Include="..\..\..\src\Library\Noise\InterpolatedNoise.cpp" />
@@ -801,6 +802,7 @@
     <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h" />
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierStack.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h" />
     <ClInclude Include="..\..\..\src\Library\Modifiers\ReliefModifier.h" />
     <ClInclude Include="..\..\..\src\Library\Noise\InterpolatedNoise.h" />

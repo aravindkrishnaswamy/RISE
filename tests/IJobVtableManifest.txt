@@ -346,3 +346,4 @@ virtual bool AddFabricMaterial(const char*name,const char*fabric,const char*base
 virtual bool AddPainterChannelScalarPainter(const char*name,const char*source,const char channel,const double scale,const double bias)=0;
 virtual bool AddWeaveMaterial(const char*name,const char*weave,const char*fabric,const char*transmission,const char*weave_scale,const char*weave_rotation,const char*weft_skew,const char*coverage,const char*gap,const char*warp_color,const char*weft_color,const char*warp_ior,const char*weft_ior,const char*warp_width,const char*weft_width,const char*warp_azimuth,const char*weft_azimuth,const char*warp_kd,const char*weft_kd,const char*warp_tilt,const char*weft_tilt,const char*warp_transmit,const char*weft_transmit)=0;
 virtual bool AddReliefModifier(const char*name,const char*height,const double scale,const char*domain,const double step)=0;
+virtual bool AddModifierStack(const char*name,const char**modifierNames,const unsigned int count)=0;

@@ -2040,6 +2040,14 @@ namespace RISE
 			const double step										///< [in] Central-difference half-step; <= 0 = auto
 			);
 
+		//! Creates an ordered composition of previously-registered modifiers.  See IJob.h for the doc.
+		/// \return TRUE if successful, FALSE otherwise
+		bool AddModifierStack(
+			const char* name,										///< [in] Name of the modifier stack
+			const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
+			const unsigned int count								///< [in] Number of members; 0 is rejected
+			);
+
 		//
 		// Adds functions
 		//

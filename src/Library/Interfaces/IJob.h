@@ -4485,6 +4485,27 @@ namespace RISE
 									const double step				///< [in] Central-difference half-step; <= 0 = auto
 									) = 0;
 
+		//! Adds a modifier_stack: an ordered composition of PREVIOUSLY
+		//! registered modifiers, applied in authored order -- each member
+		//! sees the previous one's vNormal/onb.  `modifierNames` names
+		//! each member (resolved through the modifier manager); an unknown
+		//! name diagnoses which stack and which member failed to resolve.
+		//! `count == 0` is a parse-time error (an empty stack is a
+		//! mistake, not a no-op, matching glint_modifier's stance).
+		//! Nesting (a stack naming another stack) is allowed; self-
+		//! reference is impossible because names resolve at parse time,
+		//! before this stack itself is registered.  See
+		//! Modifiers/ModifierStack.h and docs/RELIEF_MODIFIER_DESIGN.md
+		//! section 4.  Appended after AddReliefModifier per the
+		//! append-only IJob tail (preserves every prior vtable slot --
+		//! see SourceHygieneTest and tests/IJobVtableManifest.txt).
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddModifierStack(
+									const char* name,				///< [in] Name of the modifier stack
+									const char** modifierNames,		///< [in] Names of the member modifiers, in authored (application) order
+									const unsigned int count			///< [in] Number of members; 0 is rejected
+									) = 0;
+
 	};
 
 

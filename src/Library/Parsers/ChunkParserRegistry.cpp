@@ -8679,6 +8679,71 @@ namespace RISE
 				}
 			};
 
+			struct ModifierStackAsciiChunkParser : public IAsciiChunkParser
+			{
+				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
+				{
+					std::string name = bag.GetString( "name", "noname" );
+
+					// GetRepeatable's precedent is standard_shader's `shaderop` --
+					// same ValueKind::Reference + repeatable=true pattern, same
+					// "all values, in input order" accessor.  An empty result
+					// (no `modifier` lines authored) is diagnosed by
+					// Job::AddModifierStack, one home for the wording so the
+					// CLI, the agent verbs and any future caller agree.
+					const std::vector<std::string>& mods = bag.GetRepeatable( "modifier" );
+					const unsigned int num = static_cast<unsigned int>( mods.size() );
+
+					char* modmem = new char[num > 0 ? num*256 : 1];
+					if( num > 0 ) { memset( modmem, 0, num*256 ); }
+					char** modptrs = new char*[num > 0 ? num : 1];
+
+					for( unsigned int i = 0; i < num; i++ ) {
+						modptrs[i] = &modmem[i*256];
+						strncpy( modptrs[i], mods[i].c_str(), 255 );
+					}
+
+					bool bRet = pJob.AddModifierStack( name.c_str(), (const char**)modptrs, num );
+
+					delete [] modptrs;
+					delete [] modmem;
+
+					return bRet;
+				}
+
+				const ChunkDescriptor& Describe() const override {
+					static const ChunkDescriptor d = []{
+						ChunkDescriptor cd;
+						cd.keyword = "modifier_stack"; cd.category = ChunkCategory::Modifier;
+						cd.description = "ORDERED COMPOSITION of other modifiers: `Object::pModifier` is a single "
+							"pointer, so a single object could bind `normal_map_modifier` OR `relief_modifier` OR "
+							"`glint_modifier` but never a combination -- this chunk is the smallest fix.  Each "
+							"member is applied in AUTHORED ORDER and sees the PREVIOUS member's vNormal/onb, "
+							"exactly as if the object's modifier slot held a hand-written chain of `Modify` calls.  "
+							"ORDER SEMANTICS: `normal_map` then `relief` -- relief perturbs the NORMAL-MAPPED "
+							"frame (fine procedural detail on top of a baked map, the usual case).  `relief` then "
+							"`normal_map` -- the map is decoded in the RELIEF-TILTED frame; rarely wanted.  "
+							"`... then glint` -- glint should always be LAST: it replaces the normal with a facet "
+							"normal drawn about the CURRENT one, so it must see the final smooth frame.  `relief` "
+							"twice with different height fields is legitimate (a coarse+fine two-frequency split).  "
+							"NESTING is allowed -- a stack may name another stack -- and is algebraically flat: "
+							"`stack{A, stack{B,C}}` applies A, B, C in that order, identically to `stack{A,B,C}`.  "
+							"SELF-REFERENCE IS IMPOSSIBLE: member names resolve through the modifier manager at "
+							"PARSE time, before this stack itself is registered, so there is no cycle to detect.  "
+							"An EMPTY stack (no `modifier` lines) is a parse-time ERROR, not a no-op -- matching "
+							"`glint_modifier`'s stance that an authored no-op chunk is a mistake.  Attach via the "
+							"object's `modifier` parameter, exactly like any other modifier.  See "
+							"docs/RELIEF_MODIFIER_DESIGN.md section 4.";
+						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
+						{ auto& p = P(); p.name = "name";     p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
+						{ auto& p = P(); p.name = "modifier"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Modifier}; p.repeatable = true; p.required = true;
+						  p.description = "Modifier to apply, in order (repeatable) -- at least one is required; an empty stack is a parse error."; }
+						return cd;
+					}();
+					return d;
+				}
+			};
+
 			struct GlintModifierAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -13536,6 +13601,7 @@ namespace RISE
 		// Modifiers
 		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
 		add( "relief_modifier",                       new ReliefModifierAsciiChunkParser() );
+		add( "modifier_stack",                        new ModifierStackAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );
 		add( "glint_modifier",                        new GlintModifierAsciiChunkParser() );
 

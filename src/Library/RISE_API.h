@@ -2386,6 +2386,22 @@ namespace RISE
 								const Scalar step							///< [in] Central-difference half-step; <= 0 selects the automatic rule
 								);
 
+	//! Creates a modifier_stack: an ordered composition of OTHER modifiers,
+	//! applied in authored order -- each member sees the PREVIOUS member's
+	//! vNormal/onb, so a stack behaves exactly like a hand-written chain of
+	//! `Modify` calls.  The smallest fix for `Object::pModifier` being a
+	//! single pointer (docs/RELIEF_MODIFIER_DESIGN.md section 4): "normal
+	//! map, then relief, then glint" needs a list, not a slot.  Rejects
+	//! `count == 0` or any null entry in `mods` -- an empty stack is a
+	//! parse-time mistake, not a legitimate no-op (matching
+	//! glint_modifier's stance).  See Modifiers/ModifierStack.h.
+	/// \return TRUE if successful, FALSE otherwise
+	bool RISE_API_CreateModifierStack(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored (application) order; each addref'd
+								const unsigned int count						///< [in] Number of members; 0 is rejected
+								);
+
 
 	//////////////////////////////////////////////////////////
 	// Functions

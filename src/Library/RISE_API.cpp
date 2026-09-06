@@ -7022,6 +7022,7 @@ namespace RISE
 #include "Modifiers/NormalMap.h"
 #include "Modifiers/GlintModifier.h"
 #include "Modifiers/ReliefModifier.h"
+#include "Modifiers/ModifierStack.h"
 
 namespace RISE
 {
@@ -7110,6 +7111,33 @@ namespace RISE
 
 		(*ppi) = new ReliefModifier( height, scale, domain, step );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "reliefmodifier" );
+		return true;
+	}
+
+	bool RISE_API_CreateModifierStack(
+								IRayIntersectionModifier** ppi,				///< [out] Pointer to recieve the modifier
+								const IRayIntersectionModifier* const* mods,	///< [in] Member modifiers, in authored order; each addref'd
+								const unsigned int count						///< [in] Number of members; 0 is rejected
+								)
+	{
+		if( !ppi ) {
+			return false;
+		}
+
+		// An empty stack is a parse-time mistake, not a legitimate no-op
+		// (glint_modifier's stance).  A null entry would crash the ctor's
+		// addref loop, so it is rejected here rather than trusted.
+		if( count == 0 ) {
+			return false;
+		}
+		for( unsigned int i = 0; i < count; i++ ) {
+			if( !mods[i] ) {
+				return false;
+			}
+		}
+
+		(*ppi) = new ModifierStack( mods, count );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "modifierstack" );
 		return true;
 	}
 

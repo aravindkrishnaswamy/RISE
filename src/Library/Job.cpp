@@ -6962,6 +6962,43 @@ bool Job::AddReliefModifier(
 	return okRelief;
 }
 
+bool Job::AddModifierStack(
+	const char* name,										///< [in] Name of the modifier stack
+	const char** modifierNames,								///< [in] Names of the member modifiers, in authored (application) order
+	const unsigned int count								///< [in] Number of members; 0 is rejected
+	)
+{
+	// An empty stack is a parse-time mistake, not a legitimate no-op --
+	// matching glint_modifier's stance that an authored no-op chunk is
+	// worth refusing loudly rather than silently accepting.
+	if( count == 0 ) {
+		GlobalLog()->PrintEx( eLog_Error,
+			"modifier_stack `%s`: no `modifier` members were given -- an empty stack is refused (author at least one `modifier <name>` line)",
+			name );
+		return false;
+	}
+
+	std::vector<const IRayIntersectionModifier*> members;
+	members.reserve( count );
+	for( unsigned int i = 0; i < count; i++ ) {
+		const IRayIntersectionModifier* pMember = pModManager->GetItem( modifierNames[i] );
+		if( !pMember ) {
+			GlobalLog()->PrintEx( eLog_Error,
+				"modifier_stack `%s`: member modifier `%s` not found",
+				name, modifierNames[i] );
+			return false;
+		}
+		members.push_back( pMember );
+	}
+
+	IRayIntersectionModifier* pStack = 0;
+	RISE_API_CreateModifierStack( &pStack, &members[0], count );
+
+	const bool ok = RegisterOrDiag( pModManager, pStack, name, "modifier" );
+	safe_release( pStack );
+	return ok;
+}
+
 //
 // Adding objects
 //

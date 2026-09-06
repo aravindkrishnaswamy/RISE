@@ -1032,6 +1032,9 @@
     <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\Library\Modifiers\ModifierStack.cpp">
+      <Filter>Modifiers</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\NormalMap.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
@@ -2710,6 +2713,9 @@
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierFrame.h">
+      <Filter>Modifiers</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Modifiers\ModifierStack.h">
       <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\NormalMap.h">
