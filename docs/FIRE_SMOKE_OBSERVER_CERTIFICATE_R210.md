@@ -1,7 +1,9 @@
 # r210 — observer working-set certificate, not a commuting defect
 
-Status: repair implemented; exact-commit qualification and independent review
-pending. No resumed focusing verdict or migration authority is claimed here.
+Status: implementation `1d196178e5c3f8d40257412d5f1e513139444dde` qualified;
+second fresh review round has zero P1/P2. No resumed focusing verdict or
+migration authority is claimed here. The validation receipt below records
+the exact executable, limitations and remaining authority boundary.
 
 ## Measured clause, from the retained state
 
@@ -105,6 +107,54 @@ in ARC/non-ARC modes. No floating-point flags change.
 
 The evidence reviewer found the resume overwrite of nested case identity and
 the permissive diagnostic exit status; both are addressed above. Review and
-exact-commit qualification must repeat after these fixes. The initial make
+exact-commit qualification repeated after these fixes. The initial make
 qualification at f8dbc1ec passed but does not sign off the Xcode gap or the
 subsequent fixes.
+
+## Qualified repair and handoff boundary
+
+`rendered/fire_production_calibration/r210_certificate/validation_receipt.v1.json`
+binds the qualified executable, gate logs, strict eight-step run and one-line
+no-drain mutant. The qualified observer measured 3,290,218,496 Metal bytes
+against 5,859,557,376 certified bytes, with terminal bit identity. Removing
+only the local pool restores 8,250,048,512 bytes and refuses at the same
+checkpoint before publication; its commuting clause still passes. Refusal
+sidecars now seal successfully. The complete FireSequence suite and ARC
+build-contract REDs pass. Both arm64 Xcode targets build; the universal CLI
+attempt cannot link x86_64 against this checkout's arm64-only Homebrew libraries.
+No Xcode observer runtime or Opto qualification is claimed.
+
+Both fresh second-round reviewers report zero P1/P2. Review scope is the
+implementation commit above; the evidence receipt records results without
+changing the qualified executable. Diagnostic device timing is not a new
+production performance qualification.
+
+The preserved r208 executable and qualified repair both accepted eight steps
+from step 1300, with identical per-step time/dt, input root, full publication
+root and qualified kernel-set SHA. The historical EOS diagnostic exits 93 on
+successful continuation because no EOS refusal occurred; its log explicitly
+records solver success. That is not a falsely labelled zero exit.
+
+These roots are strong evidence but **not an issued r78 certificate**. The
+existing runner selects the CPU oracle and demands per-step VDB frame hashes;
+the frozen resident executable does not emit that trace format. Owner
+authorization has been requested for a resident certificate variant binding
+the executed binaries/checkpoint and every step's exact time and full payload
+roots, with historical v1 verification retained. No guessed Tmax/EOS/frame
+records or unchecked foreign-build admission have been manufactured. The
+3.5-second/first-crossing continuation remains unstarted pending that decision.
+
+## Lossless evidence retention
+
+All five diagnostic directories (including raw source fields, convergence
+payloads and refusal sidecars) and the unchanged step-1300 checkpoint are
+tracked in `r210_certificate/replay_payloads.v1.tar.gz.part-00` through
+`part-03`, under the calibration root above. These are ordered 64-MiB byte
+chunks of one gzip tar archive, not independent archives. The validation
+receipt pins each chunk SHA and the concatenated archive SHA
+`c53414cc688a06bbd5fffed79ee5432e758be02246f1b5aa0f38c102d8f97286`.
+Concatenate in numeric order, verify that SHA, then extract into a fresh
+directory, never over an existing run. Paths inside are repository-relative.
+The archive has 90 entries including directories; streaming extraction of
+its checkpoint reproduces `2422002e…12bb2`. Logs and qualification/review
+receipts are tracked separately. Original files remain untouched in place.

@@ -1,0 +1,101 @@
+{
+  "schema": "rise.fire.observer-certificate-validation.v1",
+  "implementation_commit": "1d196178e5c3f8d40257412d5f1e513139444dde",
+  "qualified_executable_sha256": "c19108d55d9147fb9902e5041679ce3cc0ecd8eaeb42dba02ba7e2859c61423a",
+  "qualification_receipt_sha256": "c663dcd5838d22802687e67df7dabe1aeb7099d385da5a1649a85a16f40068b6",
+  "checkpoint_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+  "checkpoint_unchanged": true,
+  "golden_sha256": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "production_certificate_bytes": 5584011264,
+  "observer_packet_bytes": 275544340,
+  "observer_packet_rounded_bytes": 275546112,
+  "observer_certificate_bytes": 5859557376,
+  "qualified_observer": {
+    "exit_code": 0,
+    "log_sha256": "48a2940c4cd4f7ad093c99c133296897c08e888fb880dbe39f6a40140efeebfd",
+    "trace_sha256": "02e610401e859ee5717e0b82465ddbfea9afc62b7f927e1d80f29a88f885a0d5",
+    "trace_csv_sha256": "facca1f2af06b3df0c87490e8f3ea2b725fe58da90a4febdb0834c534e5c1eb8",
+    "actual_metal_peak_bytes": 3290218496,
+    "capture_count": 19,
+    "terminal_fields_bit_identical": true,
+    "commuting_residual_kg_m3": 3.5762786865234375e-7,
+    "commuting_bound_kg_m3": 8.9416380433249287e-6,
+    "additional_accepted_steps": 8,
+    "end_time_s": 2.1211945469258353,
+    "end_maximum_velocity_m_s": 7.2320051193237305,
+    "trajectory_sha256": "92110b418e63acd61e87e450b61735d6b1691afdc71274f351414d6247bb7000"
+  },
+  "no_drain_mutant": {
+    "change": "Only replace capture-local @autoreleasepool with a plain block",
+    "executable_sha256": "6134af10716ee7f21b4a6ffa50f252612820f4d60e4230d836a797b50ad7ac44",
+    "exit_code": 93,
+    "log_sha256": "d682ade294f0203155a0bc271c7348cd012d2dc19d975d3f68cb668501219a18",
+    "actual_metal_peak_bytes": 8250048512,
+    "bytes_over_observer_certificate": 2390491136,
+    "commuting_passed": true,
+    "solver_published_steps": 0,
+    "refusal_sidecars_written": 9,
+    "checkpoint_unchanged": true
+  },
+  "full_sequence": {
+    "exit_code": 0,
+    "log_sha256": "67f4e740299e68aaba6869d41a6f405b1c2b8d348902e10ab911a4168eff312c"
+  },
+  "arc_contract": {
+    "test_methods": 3,
+    "entry_mutants": 16,
+    "source_prefix_compiles": 8,
+    "exit_code": 0,
+    "log_sha256": "518b767e4114b6721b6e97d782549ae484bf31dfa1eccab5d0a1bf9cb3afcf1d"
+  },
+  "xcode": {
+    "cli_arm64_deployment": "build_succeeded",
+    "gui_arm64_deployment": "clean_build_succeeded",
+    "cli_log_sha256": "814cce96a8c8d9737b6152a8d2894e1bd55090e6a7be8bf952d27d2c3fc6391e",
+    "gui_log_sha256": "ff0e48ef6f47baeefdee6e2b329698cb522d4b68fbdaf023c68a0b19fb50cf49",
+    "source_compiler_warnings": 0,
+    "remaining_build_messages": [
+      "Missing checkout-local OIDN install search path; Homebrew arm64 used",
+      "CLI existing unsandboxed script-phase scheduling warning",
+      "GUI AppIntents metadata extraction skipped"
+    ],
+    "universal_cli": "x86_64 link unavailable against arm64-only Homebrew OIDN/openpgl; preserved failure log",
+    "opto_tested": false
+  },
+  "old_new_eight_step_comparison": {
+    "old_executable_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+    "old_log_sha256": "6be690e968c32b886198a76a471f5fde7b165e5eb233eb7feb2661495f4f052c",
+    "old_trajectory_sha256": "15ff791052484de83787e27991b9e9e218f1f6e8541dfdb3027c8ac5c005af73",
+    "steps": 8,
+    "first_step": 1301,
+    "last_step": 1308,
+    "exact_time_dt_input_root_publication_root_kernel_set_matches": true,
+    "old_diagnostic_exit_code": 93,
+    "old_solver_succeeded": true,
+    "old_exit_semantics": "Historical EOS diagnostic returns 93 on successful continuation because no EOS refusal occurred",
+    "r78_certificate_issued": false,
+    "resident_certificate_extension": "owner_authorization_requested"
+  },
+  "focusing_verdict": "unavailable",
+  "continuation_to_3_5_s_started": false,
+  "fixed_k_selected": false,
+  "review_status": "fresh_second_round_zero_P1_zero_P2",
+  "reviewed_implementation_commit": "1d196178e5c3f8d40257412d5f1e513139444dde",
+  "review_rounds": 2,
+  "review_axes": ["lifetime_build_API", "tests_provenance_doc_cost_honesty"],
+  "lossless_payload_archive": {
+    "name": "replay_payloads.v1.tar.gz",
+    "sha256": "c53414cc688a06bbd5fffed79ee5432e758be02246f1b5aa0f38c102d8f97286",
+    "tracked_as": "four ordered byte chunks, part-00 through part-03",
+    "chunk_bytes": 67108864,
+    "part_sha256": [
+      "d19cc9ab52249d4397dca90cc111697729a2d67b6571567cb4a65aabfe3c5f49",
+      "03d49f3ae625f7ddc04472089dfd77198e211a755fc35eaeed8f96e8798e6fe6",
+      "87ffe7ce60cfb080e268914e30f3c9477f160870eafbdd8e594b9a4c93a81fc4",
+      "ebe936e452e73c5f1ea3f8c93f88d35ae6c90b2fdec489675f5eadec70176fb8"
+    ],
+    "members_including_directories": 90,
+    "archived_checkpoint_sha256_verified": true,
+    "scope": "All five diagnostic directories plus the untouched original step-1300 checkpoint; executable hashes and logs are tracked separately"
+  }
+}

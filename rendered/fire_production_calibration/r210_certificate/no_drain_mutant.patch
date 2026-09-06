@@ -1,0 +1,13 @@
+diff --git a/src/Library/Utilities/FireProductionAdvectionMac.mm b/src/Library/Utilities/FireProductionAdvectionMac.mm
+index 1282ee4e..d15edc29 100644
+--- a/src/Library/Utilities/FireProductionAdvectionMac.mm
++++ b/src/Library/Utilities/FireProductionAdvectionMac.mm
+@@ -8355,7 +8355,7 @@ bool CaptureIterationTrace(const unsigned int stage,const std::uint32_t iteratio
+ 				// until the outer owner returns and retains one packet per trace.
+ 				// Drain here: observer device storage is exactly one live packet,
+ 				// independent of Picard count; host traces remain qualification-only.
+-				@autoreleasepool {
++				{
+ 				ProfileScope profile(*this,"QualificationTraceTransfers");
+ 				const std::size_t byteCount=ProjectedHeunObserverPacketBytes(shape_);
+ 				id<MTLBuffer> staging=[context_.device newBufferWithLength:byteCount
