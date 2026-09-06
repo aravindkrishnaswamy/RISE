@@ -1022,6 +1022,74 @@ namespace
 		std::remove( tmp.c_str() );
 	}
 
+	// round-2: a required Reference is not always Painter-typed.
+	// `ChunkNodeRequirements` must advertise the descriptor's OWN
+	// `referenceCategories` for a required reference slot (not just
+	// `isReference`), and a Material-typed one -- `coated_material.base`,
+	// `fabric_material.base` -- must actually create with a Material
+	// stand-in.  Guards both halves of the fix: the requirement's
+	// advertised category, and the create actually succeeding and wiring
+	// the base in.
+	void TestCreateChunkNodeMaterialReferenceStandIn()
+	{
+		std::printf( "S18g: a Material-typed required reference advertises {Material} and creates with a Material stand-in...\n" );
+		const std::string tmp = TempPath( "s18_material_standin.RISEscene" );
+		Job* pJob = LoadScene( kBaseScene, tmp );
+		Check( pJob != nullptr, "S18g fixture loads" );
+		if( !pJob ) return;
+		SceneEditController ctrl( *pJob, nullptr );
+
+		struct Case { const char* keyword; const char* param; };
+		const Case cases[] = {
+			{ "coated_material", "base" },
+			{ "fabric_material", "base" },
+		};
+
+		for( const Case& c : cases )
+		{
+			// (a) The requirement is advertised as a reference RESTRICTED
+			//     to {Material}, not {Painter} and not unrestricted -- the
+			//     caller-facing contract this fix threads through
+			//     SceneEditController::ChunkNodeRequirement.
+			bool found = false, isRef = false, hasMaterial = false, hasPainter = false;
+			for( const auto& req : ctrl.ChunkNodeRequirements( String( c.keyword ) ) )
+			{
+				if( std::string( req.param.c_str() ) != c.param ) continue;
+				found = true;
+				isRef = req.isReference;
+				for( ChunkCategory cat : req.referenceCategories )
+				{
+					if( cat == ChunkCategory::Material ) hasMaterial = true;
+					if( cat == ChunkCategory::Painter )  hasPainter = true;
+				}
+			}
+			Check( found, std::string( "`" ) + c.keyword + "` advertises `" + c.param + "` as a requirement" );
+			Check( isRef, std::string( "...as a reference (" ) + c.keyword + ")" );
+			Check( hasMaterial, std::string( "...restricted to {Material} (" ) + c.keyword + ")" );
+			Check( !hasPainter, std::string( "...and NOT {Painter} (" ) + c.keyword + ")" );
+
+			// (b) Creating it with the fixture's Material stand-in
+			//     (`mat_diffuse`, from kBaseScene) succeeds and wires the
+			//     base in -- the red-prove for this test is restoring the
+			//     old Painter-only stand-in (`pnt_albedo`), which must
+			//     make this create FAIL instead.
+			String out;
+			std::vector<NodeArg> args;
+			NodeArg a; a.param = String( c.param ); a.value = String( "mat_diffuse" );
+			args.push_back( a );
+			const auto r = ctrl.CreateChunkNode( String( c.keyword ), String( c.keyword ), args, &out );
+			Check( r.applied, std::string( "`" ) + c.keyword + "` creates with a Material stand-in for `" + c.param + "` (" + r.message.c_str() + ")" );
+			if( r.applied )
+			{
+				Check( DocText( pJob ).find( std::string( c.param ) + " mat_diffuse" ) != std::string::npos,
+					std::string( "...and the Document shows `" ) + c.param + " mat_diffuse` (" + c.keyword + ")" );
+			}
+		}
+
+		pJob->release();
+		std::remove( tmp.c_str() );
+	}
+
 	//------------------------------------------------------------------
 	// S18f: THE COVERAGE GATE.  Every Painter- and Material-category
 	//       keyword the registry knows must either (a) create cleanly once
@@ -1083,19 +1151,71 @@ namespace
 			if( d.keyword.empty() || d.keyword != e.keyword ) continue;   // skip legacy aliases
 			if( d.category != ChunkCategory::Painter && d.category != ChunkCategory::Material ) continue;
 
-			// Satisfy every advertised requirement from the fixture scene.
+			// Satisfy every advertised requirement from the fixture scene,
+			// picking the stand-in PER REFERENCED CATEGORY
+			// (`req.referenceCategories`) rather than assuming every
+			// required reference is Painter-typed.  round-2: the old
+			// version here hardcoded `pnt_albedo` (a Painter) for every
+			// required reference regardless of category, which silently
+			// broke on `coated_material.base` / `fabric_material.base`
+			// (both `{ChunkCategory::Material}`) -- a Painter name is not
+			// a registered material, so the derive failed with "base
+			// material `pnt_albedo` is not a registered material".  The
+			// fixture scene (kBaseScene, top of this file) seeds exactly
+			// one instance of each category this sweep is known to need:
+			// `pnt_albedo` (Painter) and `mat_diffuse` (Material).  A
+			// category this map has no stand-in for marks the keyword
+			// unsatisfiable rather than emitting a guessed value -- see
+			// the enumeration note below.
 			std::vector<NodeArg> args;
 			bool satisfiable = true;
 			for( const auto& req : ctrl.ChunkNodeRequirements( String( d.keyword.c_str() ) ) )
 			{
+				if( !req.isReference ) { satisfiable = false; break; }   // no static default exists
+
+				// Empty referenceCategories is a legal "unrestricted"
+				// reference (ConnectionLegality::CategoryAllowed's own
+				// convention) -- a Painter is always an admissible choice
+				// there.  A non-empty list must contain one of the
+				// categories this sweep knows how to stand in for.
+				std::string standIn;
+				if( req.referenceCategories.empty() )
+				{
+					standIn = "pnt_albedo";
+				}
+				else
+				{
+					for( ChunkCategory c : req.referenceCategories )
+					{
+						if( c == ChunkCategory::Material ) { standIn = "mat_diffuse"; break; }
+						if( c == ChunkCategory::Painter )  { standIn = "pnt_albedo";  break; }
+						// {Function} (e.g. function2d_painter's own
+						// `function2d` slot): Job.cpp's RegisterPainterDual
+						// dual-indexes every successfully-added colour
+						// painter into BOTH the painter manager AND the
+						// Function2D manager (the two documented exceptions,
+						// expression_painter and scalar_painter, are not in
+						// play here), so `pnt_albedo` -- an ordinary
+						// uniformcolor_painter -- resolves as a Function2D
+						// too.  See kNodeExtraRequirements's own comment in
+						// EntityTemplates.cpp for the same fact.
+						if( c == ChunkCategory::Function ) { standIn = "pnt_albedo"; break; }
+					}
+				}
+				// Enumeration note (this task's audit): every `required`
+				// Reference parameter on a Painter/Material-category chunk
+				// in ChunkParserRegistry.cpp today carries either
+				// `{Painter}` or `{Material}` -- confirmed by inspection.
+				// A category neither branch above recognises falls through
+				// with an empty `standIn`, which correctly makes the
+				// keyword unsatisfiable here (a future chunk adding e.g. a
+				// required `{Geometry}` reference needs this map extended,
+				// not a new per-keyword special case).
+				if( standIn.empty() ) { satisfiable = false; break; }
+
 				NodeArg a;
 				a.param = req.param;
-				if( !req.isReference ) { satisfiable = false; break; }   // no static default exists
-				// Both required-reference families in scope today are
-				// Painter-typed (`input` / `source` / `background` /
-				// `base_color` / `sheen_color`); the fixture's own painter
-				// is the natural stand-in.
-				a.value = String( "pnt_albedo" );
+				a.value = String( standIn.c_str() );
 				args.push_back( a );
 			}
 
@@ -1146,6 +1266,7 @@ int main()
 	TestCreateChunkNodeRefusalsByteIdentical();
 	TestCreateChunkNodeUndoRedo();
 	TestCreateChunkNodeControllerDiscipline();
+	TestCreateChunkNodeMaterialReferenceStandIn();
 	TestCreateChunkNodeKeywordSweep();
 
 	std::printf( "\n%d passed, %d failed\n", g_pass, g_fail );
