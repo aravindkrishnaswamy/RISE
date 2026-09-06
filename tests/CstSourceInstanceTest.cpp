@@ -121,11 +121,12 @@ static std::string Scene( const std::string& body )
 		+ "uniformcolor_painter\n{\nname p2\ncolor 0.25 0.25 0.25\n}\n"
 		+ "lambertian_material\n{\nname m\nreflectance p\n}\n"
 		+ "lambertian_material\n{\nname m2\nreflectance p2\n}\n"
-		+ "bumpmap_modifier\n{\nname bump\nfunction p\nscale 0.1\n}\n"
-		// relief_modifier twin (relief-modifier arc, Phase 3) -- same shared-fixture
-		// role as `bump` above, so the [inherit] `modifier` test can be proven on the
-		// new slot too.  `height` is a SCALAR-painter reference (a colour painter is
-		// refused there), hence the small dedicated scalar_painter rather than reusing `p`.
+		// The shared modifier fixture.  A `bumpmap_modifier` named `bump` sat here
+		// until 2026-09-06, when the chunk was REMOVED
+		// (docs/RELIEF_MODIFIER_DESIGN.md 7.5); `relief` below took over its role in
+		// the [inherit] `modifier` test.  `height` is a SCALAR-painter reference (a
+		// colour painter is refused there), hence the dedicated scalar_painter rather
+		// than reusing `p`.
 		+ "scalar_painter\n{\nname bumph\nvalue 0.1\n}\n"
 		+ "relief_modifier\n{\nname relief\nheight bumph\nscale 0.1\n}\n"
 		+ body;
@@ -454,17 +455,9 @@ int main()
 		Check( got != inh,  "override: ... and the result really differs from the inherited binding" );
 	}
 
-	// [inherit] `modifier` comes across -- that one IS in the dump compare.
-	{
-		const std::string src = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nmodifier bump\n}\n";
-		const std::string got  = DumpCst( Scene( src + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
-		const std::string want = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nmodifier bump\nposition 5 0 0\n}\n" ) );
-		const std::string bare = DumpCst( Scene( src + "standard_object\n{\nname I\ngeometry geo\nmaterial m\nposition 5 0 0\n}\n" ) );
-		Check( got == want, "inherit: `modifier` comes across with the rest" );
-		Check( got != bare, "inherit: ... and the modifier compare is not vacuous (an instance without it dumps differently)" );
-	}
-
-	// [inherit] relief_modifier twin -- same check, on the new slot (relief-modifier arc, Phase 3).
+	// [inherit] `modifier` comes across -- that one IS in the dump compare.  Ran over the
+	// legacy `bumpmap_modifier` fixture until that chunk was removed (2026-09-06); the
+	// relief_modifier twin below, added in the relief-modifier arc, is the surviving check.
 	{
 		const std::string src = "standard_object\n{\nname S\ngeometry geo\nmaterial m\nmodifier relief\n}\n";
 		const std::string got  = DumpCst( Scene( src + "standard_object\n{\nname I\nsource S\nposition 5 0 0\n}\n" ) );
@@ -844,9 +837,10 @@ int main()
 		// COMMENTS ON PURPOSE.  The message exists to name BOTH chunks so the author can
 		// reconcile them, which means naming them in terms an author can COUNT TO.  A raw CST
 		// item index is not one: trivia (comments, blank lines) are items too, so in this scene
-		// -- whose colliding chunks are the 13th and 14th the author wrote (the shared `Scene()`
-		// fixture carries 9 chunks ahead of `body`, including the relief-modifier arc's
-		// `scalar_painter`/`relief_modifier` pair alongside the legacy `bumpmap_modifier`) -- the
+		// -- whose colliding chunks are the 12th and 13th the author wrote (the shared `Scene()`
+		// fixture carries 8 chunks ahead of `body`, including the relief-modifier arc's
+		// `scalar_painter`/`relief_modifier` pair; a 9th, the legacy `bumpmap_modifier`, was
+		// removed with the chunk on 2026-09-06, which is why these ordinals moved down one) -- the
 		// raw indices are nowhere near 13 and 14.  Without the comments the two numberings would coincide and
 		// this test would pass on the broken message.
 		//
@@ -866,8 +860,8 @@ int main()
 		std::string all;
 		Check( RefusedWith( Scene( body ), "declared by MORE THAN ONE object chunk", &all ),
 		       "refuse: the entry name is also declared by a LATER authored chunk (document-level mis-targeting)" );
-		Check( all.find( "chunk #13" ) != std::string::npos && all.find( "chunk #14" ) != std::string::npos,
-		       "refuse: ... naming both by their position among the file's CHUNKS (#13 and #14 here, comments not counted)" );
+		Check( all.find( "chunk #12" ) != std::string::npos && all.find( "chunk #13" ) != std::string::npos,
+		       "refuse: ... naming both by their position among the file's CHUNKS (#12 and #13 here, comments not counted)" );
 		Check( all.find( "a `standard_object`" ) != std::string::npos && all.find( "a `csg_object`" ) != std::string::npos,
 		       "refuse: ... and by role -- BOTH roles, so the author knows what to look for" );
 		Check( all.find( "item " ) == std::string::npos,
@@ -3561,7 +3555,9 @@ int main()
 		// `BuildObjectChunkIndex` is a whole-document PRE-PASS: put the light last
 		// and the expansion -- with the light already in the index -- runs first.
 		// Measured both ways: narrow gives `name` is required, wide gives the
-		// collision naming chunk #9 (`standard_object`) and #10 (`rect_light`).
+		// collision naming the instancing `standard_object` and the `rect_light` by their
+		// chunk ordinals (which move with the shared `Scene()` fixture's own chunk count --
+		// this is a recorded measurement, not an assertion, so it names roles not numbers).
 		{
 			std::string all4;
 			RefusedWith( Scene(

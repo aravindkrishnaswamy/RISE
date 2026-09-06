@@ -1026,9 +1026,6 @@
     <ClCompile Include="..\..\..\src\Library\Job.cpp">
       <Filter>Job</Filter>
     </ClCompile>
-    <ClCompile Include="..\..\..\src\Library\Modifiers\BumpMap.cpp">
-      <Filter>Modifiers</Filter>
-    </ClCompile>
     <ClCompile Include="..\..\..\src\Library\Modifiers\GlintModifier.cpp">
       <Filter>Modifiers</Filter>
     </ClCompile>
@@ -2705,9 +2702,6 @@
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Interfaces\IWriteBuffer.h">
       <Filter>Interfaces</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\src\Library\Modifiers\BumpMap.h">
-      <Filter>Modifiers</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Modifiers\GlintModifier.h">
       <Filter>Modifiers</Filter>

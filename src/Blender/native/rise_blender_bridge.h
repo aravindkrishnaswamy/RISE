@@ -10,7 +10,7 @@
 #define RISE_BLENDER_EXPORT
 #endif
 
-#define RISE_BLENDER_API_VERSION 10
+#define RISE_BLENDER_API_VERSION 11
 
 #ifdef __cplusplus
 extern "C" {
@@ -245,6 +245,19 @@ typedef struct rise_blender_modifier {
 	const char* source_painter_name;
 	float scale;
 	float window;
+	// ABI v11.  RISE_BLENDER_MODIFIER_BUMP only: when non-zero, the bridge
+	// builds the bump through `RISE_API_CreateBumpMapModifierEx`'s
+	// normalizeGradient=true form (`scale' = -scale`) instead of
+	// `IJob::AddBumpMapModifier`'s legacy window-coupled fold
+	// (`scale' = -scale*2*window`).  Without this, `scale` is not a
+	// tilt amplitude on its own -- it is one that couples to `window`,
+	// so lowering `window` (as the fix that shrank the exported Bump
+	// node's half-step from 1.0 to 0.005 did, see exporter.py's
+	// `_build_bump_modifier`) silently shrinks the delivered tilt by the
+	// same factor unless this is set.  Ignored by
+	// RISE_BLENDER_MODIFIER_NORMAL_MAP.  Appended at the end so every
+	// field above keeps its v10 offset.
+	int normalize;
 } rise_blender_modifier;
 
 typedef struct rise_blender_material {

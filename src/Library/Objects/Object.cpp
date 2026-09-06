@@ -16,6 +16,7 @@
 #include "SnapshotLeafClone.h"
 #include "../Interfaces/ILog.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
+#include "../Intersection/TextureFootprintCompute.h"
 #include "../Utilities/GeometricUtilities.h"
 #include <atomic>		// P2a: log-once idiom for UniformRandomPoint's null-geometry fallback warning
 
@@ -658,6 +659,38 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 	pGeometry->IntersectRay( ri.geometric, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
 	if( ri.geometric.bHit )
 	{
+		// PIXEL FOOTPRINT, for EVERY geometry
+		// (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.3).  This must be
+		// the FIRST statement in the hit block, and the frame argument is
+		// why: `ComputeFootprintVectors` reads ri.ray, ri.range and
+		// ri.vNormal, and it needs all three in ONE consistent frame.  At
+		// this instant they are all OBJECT-space -- this function
+		// transformed the ray (and its differentials) on entry and has not
+		// yet run pUVGenerator or promoted any normal.  One statement
+		// later, `vNormalWorldUnnorm` moves ri.vNormal to world and the
+		// three would disagree.
+		//
+		// This used to live inside TriangleMeshGeometry{,Indexed}::
+		// RayElementIntersection, which made meshes the only geometry with
+		// a footprint.  Hoisting it here lights up analytic primitives,
+		// SDFs (hence sweeps and skeletons), boxes, disks, planes, patches
+		// and hair -- and is also strictly CHEAPER on meshes, since it now
+		// runs once per ray rather than once per accepted closer candidate.
+		// Mesh values are unchanged: the winning candidate's ri.vNormal /
+		// ri.range are exactly what the old per-candidate call last saw.
+		//
+		// `SolveFootprintUV` self-skips unless ri.derivatives.valid, so a
+		// UV-free geometry gets an honest width and no Jacobian -- see the
+		// two-flag contract on TextureFootprint.  Costs nothing at all when
+		// ray.hasDifferentials is false, which is every shadow ray, every
+		// NEE ray, every photon, every ray after the first scattering
+		// bounce, and every ray from the thin-lens / orthographic / fisheye
+		// cameras.
+		if( ri.geometric.ray.hasDifferentials ) {
+			ComputeFootprintVectors( ri.geometric, ri.geometric.ray );
+			SolveFootprintUV( ri.geometric );
+		}
+
 		// This an overriding UV generator only, it is for geometries that don't know how to compute
 		// their UV co-ordinates so the user has specified a geometry object to help them out.
 		// Box/Cylinder/Sphere UV projections pick the projection axis
@@ -952,35 +985,40 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 			ri.geometric.derivatives.curvatureValid = false;
 		}
 
-		// WORLD-MEASURE FOLD for txFootprint.worldWidth -- the same LENGTH
-		// fold as scaleHint immediately above, and for the same reason:
-		// TextureFootprintCompute stamps it from ri.ray, which at that call
-		// site (triangle-mesh geometry, mid-IntersectRay) is still the
-		// OBJECT-space ray this function transformed on entry, so
-		// worldWidth is an object-space length until folded here.  Relief-
-		// modifier fix round 2, P2-A: worldWidth is consumed as a WORLD
-		// length by ExpressionPainter/ExpressionScalarPainter (`fw`, whose
-		// footprint-fade thresholds are world units) and by ReliefModifier's
-		// `s = max(step, worldWidth)` step selection -- both silently read
-		// object units on any object with a non-unit world scale until this
-		// fold existed.  `|det M|^(1/3)` is the same geometric-mean
-		// approximation scaleHint uses under a NON-uniform scale (exact for
-		// uniform scale); see m_worldLinearScale's own comment.  A
-		// degenerate transform (m_worldLinearScale == 0) leaves worldWidth
-		// at its object-space value, same policy as scaleHint's degenerate
-		// branch above -- an object-space length is still a better
-		// normalizer than 0.  On a strongly flattened or elongated instance
-		// (e.g. `scale 4 0.05 4` on a panel: in-plane scale is 4x, but
-		// |det|^(1/3) = 0.928) the geometric-mean fold can UNDER-scale
-		// worldWidth relative to the true in-plane footprint (4.31x too
-		// small vs. the 4x it should be) -- worse than leaving worldWidth
-		// object-space would have been.  The error direction only
-		// under-filters, though: ReliefModifier's `max(step, worldWidth)`
-		// then simply falls back to `step`, the same aliasing as
-		// pre-fix, never worse than that floor.  The uniform-scale case
-		// remains exact.
-		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
-			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
+		// WORLD-MEASURE PROMOTION for txFootprint -- same job as the
+		// scaleHint LENGTH fold immediately above (the footprint is stamped
+		// from ri.ray, which mid-IntersectRay is still the OBJECT-space ray
+		// this function transformed on entry, so it is an object-space
+		// measure until promoted here), but by a strictly better operator.
+		//
+		// Apply this object's FORWARD linear map to the pixel-step VECTORS
+		// and re-derive the width from the transformed pair.  This is EXACT
+		// for any linear map -- non-uniform scale and shear included --
+		// because the map is affine: it carries the object-space auxiliary
+		// ray's line onto the world auxiliary ray's line and the
+		// object-space tangent plane onto the world tangent plane, so the
+		// line∩plane point commutes with the map and dpdx^world =
+		// M_linear · dpdx^obj identically.  No determinant, no
+		// degenerate-transform special case beyond what Transform already
+		// does: a collapsed axis simply yields a shorter (possibly zero)
+		// world footprint, which is the truth.
+		//
+		// This REPLACED a `worldWidth *= |det M|^(1/3)` geometric-mean fold
+		// (relief-modifier fix round 2, P2-A), which was exact only under a
+		// uniform scale and under-counted a `scale 4 0.05 4` panel viewed
+		// face-on by 4.31x (in-plane scale 4, |det|^(1/3) = 0.9283).  Full
+		// argument and the measurement:
+		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.4.
+		//
+		// `m_worldLinearScale` is deliberately NOT read here any more; it
+		// keeps its other two jobs (scaleHint / curvature, above).
+		if( ri.geometric.txFootprint.widthValid ) {
+			const Vector3 dx = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdx );
+			const Vector3 dy = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdy );
+			ri.geometric.txFootprint.dpdx = dx;
+			ri.geometric.txFootprint.dpdy = dy;
+			ri.geometric.txFootprint.worldWidth =
+				Scalar(0.5) * ( Vector3Ops::Magnitude( dx ) + Vector3Ops::Magnitude( dy ) );
 		}
 
 		// Wireframe view-mode closest-edge point transforms like a

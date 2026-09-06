@@ -21,6 +21,7 @@
 
 #include "../src/Library/Cst/Cst.h"
 #include "CstRenderEquivalence.h"      // Job, IObject/manager interfaces
+#include "../src/Library/Parsers/ChunkParserRegistry.h"   // CreateAllChunkParsers -- [func2d-registry-invariant]
 
 #include <cstdio>
 #include <string>
@@ -413,9 +414,18 @@ int main()
 
 	//----------------------------------------------------------------------
 	// [painter-decl-func2d] (review #3, 3rd-pass exhaustive table) displaced_geometry.displacement
-	// is declared {Painter} but the engine binds it via pFunc2DManager (Function2D, which holds
-	// plf2d). It must reach a piecewise_linear_function2d target in closure (the (Painter,name)
-	// key would have missed it -- plf2d is not in the painter managers).
+	// is declared Function2D-piped with `referenceCategories = {Painter, Function}` (since
+	// 2026-09-06 -- until then it was declared {Painter} ONLY with no `pipe` at all, even though
+	// the engine has always bound it via pFunc2DManager, Function2D, which holds plf2d).  It must
+	// reach a piecewise_linear_function2d target in closure -- the coarse (Painter,name) key a
+	// name-list special case used to paper over would have missed it (plf2d is not in the painter
+	// managers); the fixed descriptor now reaches it through the (Function,name) half of its own
+	// declared categories, via FunctionSubNamespace's pipe-based general rule.
+	//
+	// A THIRD consumer, `bumpmap_modifier.function`, used to be checked here; that chunk was
+	// REMOVED 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and its `function` entry left
+	// Cst.cpp's FunctionSubNamespace with it.  Its coverage moved to [relief-modifier-scalar]
+	// below, which is the same declared-category-vs-resolving-manager shape one manager over.
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
@@ -423,17 +433,14 @@ int main()
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"
 			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement d2\n}\n"
-			"bumpmap_modifier\n{\nname bm\nfunction d2\n}\n"
 			"composite_function2d_painter\n{\nname comp\nchild_a d2\nchild_b d2\n}\n" );
 		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
 		const NodeId d2 = DocFindByName( doc, "piecewise_linear_function2d/d2" );
 		const NodeId disp = DocFindByName( doc, "displaced_geometry/disp" );
-		const NodeId bm   = DocFindByName( doc, "bumpmap_modifier/bm" );
 		const NodeId comp = DocFindByName( doc, "composite_function2d_painter/comp" );
-		bool hasDisp = false, hasBm = false, hasComp = false;
-		for( NodeId n : DocEditClosure( d2, g ) ) { if( n == disp ) hasDisp = true; if( n == bm ) hasBm = true; if( n == comp ) hasComp = true; }
+		bool hasDisp = false, hasComp = false;
+		for( NodeId n : DocEditClosure( d2, g ) ) { if( n == disp ) hasDisp = true; if( n == comp ) hasComp = true; }
 		Check( d2 && disp && hasDisp, "painter-decl-func2d: closure(Function2D d2) INCLUDES displaced_geometry.displacement (review #3 table)" );
-		Check( bm && hasBm, "painter-decl-func2d: ...and bumpmap_modifier.function" );
 		Check( comp && hasComp, "painter-decl-func2d: ...and composite_function2d_painter.child_a/child_b" );
 	}
 
@@ -442,9 +449,9 @@ int main()
 	// twin of [painter-decl-func2d] above: `relief_modifier.height` is
 	// declared {Painter} but resolved through the SCALAR painter manager
 	// (ParameterPipe::Scalar) rather than the colour-painter manager --
-	// exactly the same "declared-category vs. resolving-manager" shape as
-	// bumpmap_modifier.function/Function2D, one manager over. Closure of the
-	// scalar_painter must include the relief_modifier naming it.
+	// exactly the same "declared-category vs. resolving-manager" shape the
+	// removed bumpmap_modifier.function/Function2D edge had, one manager over.
+	// Closure of the scalar_painter must include the relief_modifier naming it.
 	//----------------------------------------------------------------------
 	{
 		Document doc = ParseToCst(
@@ -461,9 +468,11 @@ int main()
 	//----------------------------------------------------------------------
 	// [displaced-height-scalar] (2026-09-06) `displaced_geometry` now declares
 	// BOTH height routes, and they resolve through DIFFERENT managers:
-	//   `displacement` -> Function2D, via the kFunc2DSubCat special case in
-	//                     Cst.cpp's FunctionSubNamespace (keyed on the PARAM
-	//                     NAME, which is why `height` is untouched by it);
+	//   `displacement` -> Function2D, via Cst.cpp's FunctionSubNamespace,
+	//                     keyed on the param's DECLARED `ParameterPipe::
+	//                     Function2D` (since 2026-09-06; formerly a literal
+	//                     `paramName == "displacement"` case) -- `height` is
+	//                     untouched by it because it declares Scalar pipe;
 	//   `height`       -> the scalar painter manager, via the standing
 	//                     ParameterPipe::Scalar closure -- no new special
 	//                     case, which is the claim under test here.
@@ -493,9 +502,54 @@ int main()
 		Check( d2 && hs && viafunc && viafield && pDisp && pHeight,
 			"displaced-height-scalar: scene parsed (plf2d d2, scalar_painter hs, both displaced_geometry forms)" );
 		Check( HasEdge( g, pDisp, d2 ),
-			"displaced-height-scalar: `displacement` still resolves to the Function2D (kFunc2DSubCat case KEPT)" );
+			"displaced-height-scalar: `displacement` still resolves to the Function2D (now via the pipe-based general rule, not a name-list case)" );
 		Check( HasEdge( g, pHeight, hs ),
 			"displaced-height-scalar: `height` resolves to the scalar_painter through the EXISTING scalar closure (no new special case)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displacement-dimension-precise] (2026-09-06) the actual RED-PROOF
+	// case for the pipe-based FunctionSubNamespace rule replacing the old
+	// `paramName == "displacement"` name list: a same-named Function1D +
+	// Function2D pair, exactly [func-precise] above but through
+	// `displaced_geometry.displacement`.  This is the ONE scenario that
+	// distinguishes the pipe-based dimension-precise resolution from the
+	// COARSE `{Painter, Function}` referenceCategories fallback that ALSO
+	// landed this workstream (item 1 above) -- widening referenceCategories
+	// alone is already enough to find a NON-COLLIDING same-name target (as
+	// [displaced-height-scalar] and [painter-decl-func2d] exercise, both
+	// with only a single same-named producer in scene), because
+	// `piecewise_linear_function` ALSO dual-registers into `(Painter,name)`
+	// (review #3a, "plf1d-painter-conflation" above) -- so with NO
+	// pipe-based routing, the coarse fallback (`for (rc : referenceCategories)`,
+	// Painter checked before Function) finds the 1D producer's
+	// Painter-dual-registration FIRST. That is the WRONG target, not "no
+	// edge": deleting FunctionSubNamespace's `pd->semantics.pipe ==
+	// ParameterPipe::Function2D` line does NOT make this test vacuously
+	// pass by finding nothing -- it makes `displacement s` bind the
+	// Function1D `s` instead of the Function2D `s`, which the two Checks
+	// below catch precisely.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function\n{\nname s\ncp 0 0\ncp 1 1\n}\n"
+			"piecewise_linear_function2d\n{\nname s\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname disp\nbase_geometry base\ndisplacement s\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId f1    = DocFindByName( doc, "piecewise_linear_function/s" );
+		const NodeId f2    = DocFindByName( doc, "piecewise_linear_function2d/s" );
+		const NodeId disp  = DocFindByName( doc, "displaced_geometry/disp" );
+		const NodeId pDisp = disp ? DocParamId( doc, disp, "displacement", 0 ) : 0;
+		Check( f1 && f2 && disp && pDisp,
+			"displacement-dimension-precise: scene parsed (plf1d s, plf2d s, displaced_geometry disp)" );
+		Check( HasEdge( g, pDisp, f2 ),
+			"displacement-dimension-precise: `displacement s` resolves to the Function2D `s`" );
+		Check( !HasEdge( g, pDisp, f1 ),
+			"displacement-dimension-precise MONEY: ...and NOT the Function1D `s` -- the red-proof case "
+			"for the pipe-based FunctionSubNamespace rule (a coarse referenceCategories fallback alone "
+			"would bind the wrong one here)" );
 	}
 
 	//----------------------------------------------------------------------
@@ -612,6 +666,65 @@ int main()
 		       "modifier-stack-rename: control -- renaming g1 leaves occurrence 0 (`r1`) untouched" );
 		Check( ParamValueAtOccurrence( stackChunkG, "modifier", 1 ) == "g1x",
 		       "modifier-stack-rename: control -- occurrence 1 IS rewritten to `g1x`" );
+	}
+
+	//----------------------------------------------------------------------
+	// [func2d-registry-invariant] (2026-09-06, the pipe-based-resolver
+	// follow-up to [painter-decl-func2d] / [displaced-height-scalar] above)
+	// proves the CLAIM those two cases only ever demonstrated on FIVE
+	// hardcoded names: that Cst.cpp's FunctionSubNamespace resolves a
+	// Function2D-piped parameter through the DECLARATION
+	// (`ParameterPipe::Function2D`), not a name list, so a brand-new such
+	// parameter needs NO Cst.cpp edit to close correctly. This test walks
+	// the LIVE chunk-parser registry (CreateAllChunkParsers -- no hardcoded
+	// param list of its own) and, for every Reference parameter any
+	// descriptor declares Function2D-piped, builds a minimal one-chunk scene
+	// wiring a piecewise_linear_function2d into it and checks the resolver
+	// graph connects the edge. Today that is exactly the five parameters
+	// this workstream audited (scalar_painter.function2d,
+	// function2d_painter.function2d, sdf_geometry.heightfield_function,
+	// displaced_geometry.displacement, composite_function2d_painter.child_a
+	// and .child_b -- six params, five chunk kinds); the point of walking
+	// the registry rather than asserting on those names is that a SIXTH
+	// chunk kind declaring a NEW Function2D-piped parameter tomorrow is
+	// covered here automatically, with no edit to this test either.
+	// ParseToCst does not enforce a chunk's OTHER `required` fields (that is
+	// a DeriveToJob/Finalize-time check), so a minimal `name X\n<param>
+	// f2dx` block is a fully valid CST chunk for this purpose even when the
+	// real chunk (e.g. displaced_geometry) also needs a `base_geometry`.
+	//----------------------------------------------------------------------
+	{
+		const std::vector<ChunkParserEntry> parsers = CreateAllChunkParsers();
+		int walked = 0;
+		for( size_t e = 0; e < parsers.size(); ++e ) {
+			if( !parsers[e].parser ) continue;
+			const ChunkDescriptor& d = parsers[e].parser->Describe();
+			for( size_t k = 0; k < d.parameters.size(); ++k ) {
+				const ParameterDescriptor& p = d.parameters[k];
+				if( p.semantics.pipe != ParameterPipe::Function2D ) continue;
+				if( p.kind != ValueKind::Reference ) continue;   // no tuple-typed Function2D-pipe param exists today; guard anyway
+				++walked;
+
+				const std::string scene =
+					std::string( "RISE ASCII SCENE 7\n" ) +
+					"piecewise_linear_function2d\n{\nname f2dx\n}\n" +
+					d.keyword + "\n{\nname target\n" + p.name + " f2dx\n}\n";
+				Document doc = ParseToCst( scene );
+				ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+				const NodeId f2dx   = DocFindByName( doc, "piecewise_linear_function2d/f2dx" );
+				const NodeId target = DocFindByName( doc, d.keyword + "/target" );
+				const NodeId pParam = target ? DocParamId( doc, target, p.name, 0 ) : 0;
+				const std::string what = "func2d-registry-invariant: " + d.keyword + "." + p.name +
+					" (declared ParameterPipe::Function2D) resolves to a piecewise_linear_function2d target";
+				Check( f2dx && target && pParam && HasEdge( g, pParam, f2dx ), what.c_str() );
+			}
+		}
+		// Sanity floor: fail loudly if the registry walk itself found nothing (e.g. a future
+		// refactor renamed `semantics.pipe` and silently emptied this loop) rather than passing
+		// vacuously.
+		Check( walked >= 5,
+			"func2d-registry-invariant: the registry walk found at least the 5 known Function2D-piped "
+			"parameters (would be 0 and pass vacuously if the pipe check itself were broken)" );
 	}
 
 	std::printf( "%d passed, %d failed.\n", g_pass, g_fail );

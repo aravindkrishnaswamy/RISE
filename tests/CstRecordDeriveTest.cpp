@@ -93,7 +93,8 @@ int main()
 	// engine never resolves -> not in recorded -> fails).
 	{
 		const char* scenes[] = {
-			// displacement: {Painter}-declared, engine binds Function2D -> the recently-fixed case
+			// displacement: {Painter, Function}-declared and Function2D-PIPED, engine binds
+			// Function2D -> resolved through the dimension-precise sub-namespace
 			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function2d\n{\nname d2\n}\n"
 			"sphere_geometry\n{\nname base\nradius 1\n}\n"
@@ -136,19 +137,12 @@ int main()
 			"RISE ASCII SCENE 7\n"
 			"piecewise_linear_function\n{\nname f1\ncp 0 0\ncp 1 1\n}\n"
 			"scalar_painter\n{\nname sp1\nfunction1d f1\n}\n",
-			// modifier: exercises the MODIFIER manager + the {Painter}-declared-but-Function2D
-			// `bumpmap_modifier.function` slot (the modifier twin of displaced_geometry).
-			"RISE ASCII SCENE 7\n"
-			"piecewise_linear_function2d\n{\nname d2\n}\n"
-			"bumpmap_modifier\n{\nname bm\nfunction d2\n}\n"
-			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
-			"lambertian_material\n{\nname m\nreflectance p\n}\n"
-			"sphere_geometry\n{\nname g\nradius 1\n}\n"
-			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier bm\n}\n",
-			// modifier: relief_modifier twin -- exercises the MODIFIER manager + the
-			// {Painter}-declared-but-SCALAR-resolved `relief_modifier.height` slot
-			// (the relief-modifier analogue of bumpmap_modifier.function above, one
-			// manager over: SCALAR painters instead of Function2D).
+			// modifier: exercises the MODIFIER manager + the
+			// {Painter}-declared-but-SCALAR-resolved `relief_modifier.height` slot.
+			// A `bumpmap_modifier` scene sat ahead of this one, for the
+			// {Painter}-declared-but-Function2D `function` slot; that chunk was
+			// REMOVED 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and the
+			// displaced_geometry scene above still covers the Function2D shape.
 			"RISE ASCII SCENE 7\n"
 			"scalar_painter\n{\nname h\nexpression 0.1*P.x\n}\n"
 			"relief_modifier\n{\nname r\nheight h\n}\n"

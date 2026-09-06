@@ -166,6 +166,17 @@ void TorusGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool /*bHi
 				ri.derivatives.dndu = sd.dndu;
 				ri.derivatives.dndv = sd.dndv;
 				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
@@ -347,6 +358,23 @@ SurfaceDerivatives TorusGeometry::ComputeSurfaceDerivatives( const Point3& objSp
 	sd.dndv = Vector3( -cosV * sinU, 0.0, cosV * cosU );
 
 	sd.uv = Point2( v, u );  // u,v semantics swapped to match derivative swap
+
+	// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord chart
+	// map").  GeometricUtilities::TorusTextureCoord emits
+	//     s = U_ring / (2*PI),   t = V_tube / (2*PI)
+	// from the same atan2 recoveries used above (its wrap-to-[0, 2*PI)
+	// only shifts by a constant, so the local Jacobian is unaffected),
+	// whereas the right-handedness swap above makes the DERIVATIVE
+	// parameters (u, v) = (V_tube, U_ring).  So the map is the axis
+	// SWAP times 1/(2*PI) -- the off-diagonal terms are the non-zero
+	// ones, which is why a mis-charted torus was the worst of the four
+	// (2.64 LOD levels): it was both mis-scaled and transposed.
+	sd.dsdu = 0.0;
+	sd.dsdv = 1.0 / TWO_PI;
+	sd.dtdu = 1.0 / TWO_PI;
+	sd.dtdv = 0.0;
+	sd.texChartValid = true;
+
 	sd.valid = true;
 
 	return sd;

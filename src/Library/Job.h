@@ -2012,7 +2012,9 @@ namespace RISE
 		// Adds modifiers
 		//
 
-		//! Creates a bump map
+		//! Creates a bump map -- LEGACY SHIM (docs/RELIEF_MODIFIER_DESIGN.md 7.5);
+		//! the `bumpmap_modifier` chunk and the `BumpMap` class were REMOVED
+		//! 2026-09-06.  See IJob.h for the doc.
 		/// \return TRUE if successful, FALSE otherwise
 		bool AddBumpMapModifier(
 			const char* name,										///< [in] Name of the modifiers

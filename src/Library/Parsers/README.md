@@ -141,7 +141,7 @@ The registry in `CreateAllChunkParsers()` ([ChunkParserRegistry.cpp](ChunkParser
 | Materials | 29 | `lambertian_material`, `dielectric_material`, `ggx_material`, `pbr_metallic_roughness_material`, `sheen_material`, `composite_material`, `coated_material`, `fabric_material`, `weave_material` |
 | Cameras | 8 | `scene_options`, `camera_defaults`, `film` (scene-level config), `pinhole_camera`, `onb_pinhole_camera`, `thinlens_camera`, `fisheye_camera`, `orthographic_camera` |
 | Geometry | 24 | `sphere_geometry`, `3dsmesh_geometry`, `gltfmesh_geometry`, `gltf_import`, `displaced_geometry`, `bezierpatch_geometry`, `sdf_geometry`, `skeleton_geometry`, `cartesian_disk_geometry`, `sweep_geometry`, `lathe_geometry`, `path_instances_geometry` |
-| Modifiers | 5 | `bumpmap_modifier` (DEPRECATED -- still parses with a one-time warning; migrate with `tools/migrate_scenes_relief.py`, see `docs/RELIEF_MODIFIER_DESIGN.md` §7), `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` |
+| Modifiers | 4 | `relief_modifier`, `modifier_stack`, `normal_map_modifier`, `glint_modifier` (`bumpmap_modifier` was REMOVED 2026-09-06 -- a scene still carrying one is refused with a diagnostic naming `relief_modifier` and `tools/migrate_scenes_relief.py`; see `docs/RELIEF_MODIFIER_DESIGN.md` §7) |
 | Media | 4 | `homogeneous_medium`, `heterogeneous_medium`, `painter_heterogeneous_medium`, `global_medium` |
 | Objects | 3 | `standard_object`, `csg_object`, `override_object` |
 | Shader ops | 13 | `pathtracing_shaderop`, `mis_pathtracing_shaderop` (legacy alias), `finalgather_shaderop`, `directlighting_shaderop`, `arealight_shaderop`, `alpha_test_shaderop` |

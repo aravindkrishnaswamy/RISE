@@ -81,25 +81,76 @@ namespace RISE
 		Scalar  curvature;
 		bool    curvatureValid;
 
+		//! THE CHART MAP -- the 2x2 Jacobian of the TEXTURE coordinate
+		//! `(s, t)` stamped into `RayIntersectionGeometric::ptCoord`
+		//! with respect to the `(u, v)` parameters `dpdu` / `dpdv`
+		//! differentiate.  Mirrors `SurfaceDerivatives::dsdu`… on the
+		//! `IGeometry` side; see the long comment there and
+		//! docs/GEOMETRY_DERIVATIVES.md "The texcoord chart map".
+		//!
+		//! Why it exists: the analytic primitives parameterise by their
+		//! own natural coordinates (sphere `u` = azimuth in RADIANS,
+		//! cylinder `u` = axial WORLD coordinate, torus/cylinder with
+		//! the two axes SWAPPED relative to their texture coordinate),
+		//! while `ptCoord` is the normalised `[0, 1]^2` chart the
+		//! matching `GeometricUtilities::*TextureCoord` produces.
+		//! `SolveFootprintUV` solves the pixel differentials in the
+		//! DERIVATIVE chart and then applies this map, so the
+		//! `dudx`…`dvdy` it publishes are in the same chart as
+		//! `ptCoord` -- which is the pairing `TexturePainter::
+		//! SampleTextured` and `WeaveBRDF` assume.  Without it a
+		//! textured sphere mips 1.65 levels too blurry, a cylinder
+		//! 1.59 and a torus 2.65 (re-measured in fix round 2 by
+		//! disabling the multiply-through and reading
+		//! `TextureFootprintTest` test 11's per-geometry LOD error:
+		//! 1.651 / 1.585 / 2.651, plus 2.33 for the ellipsoid; the
+		//! 1.67 / 1.02 / 2.64 this comment used to carry disagreed
+		//! with both design docs and, on the cylinder, was not a
+		//! rounding of anything).
+		//!
+		//! DEFAULT identity with `texChartValid = false`, which makes
+		//! `SolveFootprintUV` decline to publish a Jacobian at all
+		//! (`valid` stays false, `widthValid` is unaffected) rather
+		//! than publish one in the wrong chart.
+		Scalar  dsdu, dsdv, dtdu, dtdv;
+		bool    texChartValid;
+
 		SurfaceDerivativesInfo() :
 		dpdu( Vector3(0,0,0) ), dpdv( Vector3(0,0,0) ),
 		dndu( Vector3(0,0,0) ), dndv( Vector3(0,0,0) ),
 		valid( false ),
 		scaleHint( 1.0 ),
-		curvature( 0 ), curvatureValid( false )
+		curvature( 0 ), curvatureValid( false ),
+		dsdu( 1 ), dsdv( 0 ), dtdu( 0 ), dtdv( 1 ), texChartValid( false )
 		{
 		}
 	};
 
-	//! Texture-space footprint at the hit point — the projection of
-	//! the incoming ray's screen-space differentials onto the surface
-	//! UV plane.  Populated at intersection time by geometries that
-	//! support it (currently: triangle meshes) when the incoming
-	//! ray has hasDifferentials = true.  Consumed by TexturePainter
-	//! to compute mip LOD per Landing 2 of the PB pipeline plan, and
-	//! by ExpressionPainter/ExpressionScalarPainter (doc 88 S9) to
-	//! populate ExprEvalContext::fw for footprint-aware fbm/turbulence/
-	//! ridged octave fade.
+	//! Pixel footprint at the hit point — the projection of the
+	//! incoming ray's screen-space differentials onto the surface
+	//! tangent plane, plus (where the surface has a UV chart) the
+	//! resulting UV Jacobian.  Populated at intersection time by
+	//! `Object::IntersectRay` for EVERY geometry, whenever the
+	//! incoming ray has hasDifferentials = true (see
+	//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).  Consumed by
+	//! TexturePainter to compute mip LOD per Landing 2 of the PB
+	//! pipeline plan, and by ExpressionPainter/ExpressionScalarPainter
+	//! (doc 88 S9) to populate ExprEvalContext::fw for footprint-aware
+	//! fbm/turbulence/ridged octave fade.
+	//!
+	//! TWO INDEPENDENT VALIDITY FLAGS, with the invariant
+	//! `valid ⇒ widthValid`:
+	//!
+	//!   - `widthValid` — `dpdx`, `dpdy` and `worldWidth` are usable.
+	//!     Requires only ray differentials and a surface normal, so
+	//!     it is set on every geometry, UV chart or not.
+	//!   - `valid` — the UV Jacobian (`dudx`…`dvdy`) is usable.
+	//!     Additionally requires `derivatives.valid` (a non-degenerate
+	//!     dpdu/dpdv basis).  Deliberately NOT widened to mean "some
+	//!     footprint exists": `TexturePainter::SampleTextured` and
+	//!     `WeaveBRDF` key on it, and a zero Jacobian handed to
+	//!     `ComputeLODFromTexelFootprint` would read as LOD 0 (finest)
+	//!     rather than the honest base-level fallback.
 	//!
 	//! Units: dudx / dudy / dvdx / dvdy are the partial derivatives
 	//! of the surface UV coordinates with respect to screen-space
@@ -107,36 +158,41 @@ namespace RISE
 	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
 	//! follows by multiplying by texture width / height.
 	//!
-	//! worldWidth is a filter-width estimate (same units as
-	//! ptIntersection / the expression VM's `P`) -- the average
-	//! magnitude of the auxiliary rays' plane-projected offsets
-	//! (dpdx, dpdy; see TextureFootprintCompute.h), i.e. roughly the
-	//! extent of one pixel's footprint on the surface.  0 when
-	//! !valid, matching dudx/dudy/dvdx/dvdy's convention.
+	//! dpdx / dpdy are the surface-plane displacements a ONE-PIXEL
+	//! step in screen x / y induces at this hit point, and worldWidth
+	//! is the mean of their magnitudes — a filter-WIDTH (diameter-like,
+	//! full pixel step, not a radius) estimate in the same length units
+	//! as ptIntersection / the expression VM's `P`.  All three are 0
+	//! when !widthValid.
 	//!
-	//! The GEOMETRY stamps this in OBJECT-space units -- at the
-	//! triangle-mesh call site (the only producer today),
-	//! `ComputeTextureFootprint` runs mid-`Object::IntersectRay`, on
-	//! the ray that function has already transformed into object
-	//! space.  `Object::IntersectRay` / `CSGObject::IntersectRay` fold
-	//! it to a true WORLD length afterward, multiplying by
-	//! `m_worldLinearScale` (the same `|det M|^(1/3)` length fold
-	//! `derivatives.scaleHint` gets, exact under uniform scale,
-	//! a geometric-mean approximation otherwise) -- relief-modifier fix
-	//! round 2, P2-A.  By the time any consumer (ExpressionPainter's
-	//! `fw`, ReliefModifier's footprint-aware step) reads this field,
-	//! it IS world-space, matching this comment's original claim; the
-	//! object-to-world fold is what makes that claim true on an object
-	//! with a non-unit world scale.
+	//! FRAME: these fields live in whatever frame the record itself
+	//! currently lives in.  The geometry layer stamps them from the
+	//! OBJECT-space ray `Object::IntersectRay` transformed on entry, and
+	//! `Object::IntersectRay` / `CSGObject::IntersectRay` promote them
+	//! to world by applying their own forward map `m_mxFinalTrans` to
+	//! `dpdx`/`dpdy` and re-deriving `worldWidth` from the transformed
+	//! pair.  That promotion is EXACT for any linear map — non-uniform
+	//! scale and shear included — because an affine map carries the
+	//! object-space auxiliary line onto the world auxiliary line and the
+	//! object-space tangent plane onto the world tangent plane, so the
+	//! line∩plane point commutes with the map.  (It superseded a
+	//! `worldWidth *= |det M|^(1/3)` geometric-mean fold, which
+	//! under-counted a `scale 4 0.05 4` panel by 4.31x.)  By the time
+	//! any consumer (ExpressionPainter's `fw`, ReliefModifier's
+	//! footprint-aware step) reads these fields they ARE world-space.
 	struct TextureFootprint
 	{
 		Scalar  dudx, dudy;
 		Scalar  dvdx, dvdy;
+		Vector3 dpdx, dpdy;
 		Scalar  worldWidth;
-		bool    valid;
+		bool    valid;			// the UV Jacobian is usable
+		bool    widthValid;		// dpdx / dpdy / worldWidth are usable
 
 		TextureFootprint() :
-		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ), worldWidth( 0 ), valid( false )
+		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ),
+		dpdx( Vector3(0,0,0) ), dpdy( Vector3(0,0,0) ),
+		worldWidth( 0 ), valid( false ), widthValid( false )
 		{
 		}
 	};
@@ -163,14 +219,14 @@ namespace RISE
 		bool						bHit;			// was there an intersection ? 
 		Scalar						range;			// distance to the intersection point
 		Scalar						range2;			// distance to the exit point
-		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by the normal-perturbing modifiers: bump map, normal map, glint, relief)
+		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by the normal-perturbing modifiers: relief, normal map, glint)
 		Vector3						vNormal2;		// normal at the point of exit
 		//! GEOMETRIC normals at the entry / exit points — the actual
 		//! flat-triangle face normal on triangle meshes (independent of
 		//! Phong interpolation), or identical to `vNormal` / `vNormal2`
 		//! on analytical primitives (sphere, ellipsoid, plane, …) where
 		//! the surface IS smooth and shading == geometric by construction.
-		//! The normal-perturbing modifiers (bump map, normal map, glint,
+		//! The normal-perturbing modifiers (relief, normal map, glint,
 		//! relief) perturb `vNormal` only; `vGeomNormal` / `vGeomNormal2`
 		//! always reflect the underlying geometry.
 		//!

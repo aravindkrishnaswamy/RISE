@@ -1365,7 +1365,7 @@ static void TestHostileCoordinates()
 //  rotates the same sense on a mirrored panel as on its unmirrored
 //  twin.  GlintModifier::Modify has the SAME unconditional
 //  `ri.onb.CreateFromWU( newN, uProj )` rebuild pattern that
-//  NormalMap::Modify and BumpMap::Modify had before that same fix
+//  NormalMap::Modify (and the since-removed BumpMap::Modify) had before that same fix
 //  round -- CreateFromWU always emits a RIGHT-handed triple, so
 //  without a matching correction here, a mirrored + tangent-bearing
 //  hit that also carries a glint modifier would have the P1 fix

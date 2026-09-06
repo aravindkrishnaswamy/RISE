@@ -34,9 +34,26 @@ namespace
 	//! the one new constant in the design and it is disclosed as such.
 	const Scalar RELIEF_AUTO_STEP_SURFACE = Scalar( 1e-3 );
 
+	//! The fraction of the pixel footprint the automatic HALF-step takes
+	//! (design 3.3; docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md 3.5/10).
+	//!
+	//! A central difference spans `2s`, so `s = fw/2` makes the stencil
+	//! span EXACTLY ONE pixel footprint -- which is what "the difference
+	//! spans one footprint" has always meant.  `s = fw` spans TWO, and
+	//! measured (fix round 2) that over-smooths by a visible margin on a
+	//! field whose features are near footprint scale: on
+	//! `relief_crackle_glaze` (crack band ~0.014 world units, fw
+	//! 0.0085-0.011) it cost 20.0% of the scene's high-frequency shading
+	//! energy relative to the pre-footprint look, and halving the step
+	//! recovers all but 1.3% of it.  The far-field fade the rule exists
+	//! for survives the halving -- it is a factor, not a threshold -- at
+	//! 11-17% on `relief_sphere_no_uv`, still monotone in the footprint
+	//! (limb fades hardest).
+	const Scalar RELIEF_AUTO_STEP_FOOTPRINT_FRACTION = Scalar( 0.5 );
+
 	//! The automatic UV-domain half-step (design 3.3).  Matches
-	//! `bumpmap_modifier`'s `windowsize` default, so a migrated scene that
-	//! omitted the window lands on the same span.
+	//! the removed `bumpmap_modifier`'s `windowsize` default, so a migrated
+	//! scene that omitted the window lands on the same span.
 	const Scalar RELIEF_AUTO_STEP_UV = Scalar( 0.01 );
 
 	//! Relative conditioning gate on the UV chain rule's normal equations.
@@ -95,10 +112,12 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 
 	if( domain == ReliefDomain::UV ) {
 		// UV DOMAIN.  Step on ptCoord only, along (u, v).  Sampling
-		// geometry is byte-for-byte `bumpmap_modifier`'s: same four
-		// evaluations at the same coordinates, in the same order.  That is
-		// what makes the migrator's scale fold (design 7.2) exact rather
-		// than approximate.
+		// geometry is byte-for-byte the removed `bumpmap_modifier`'s: same
+		// four evaluations at the same coordinates, in the same order.  That
+		// is what makes the migrator's scale fold (design 7.2) -- and the
+		// identical fold inside the ABI-frozen
+		// `RISE_API_CreateBumpMapModifier` shim -- exact rather than
+		// approximate.
 		const Scalar s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_UV;
 		invSpan = Scalar(1) / ( Scalar(2) * s );
 
@@ -121,7 +140,14 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// SURFACE DOMAIN.  Step in the tangent plane, in world units.
 		//
 		// STEP RULE (design 3.3):
-		//     s = max( user > 0 ? user : 1e-3, footprint.valid ? fw : 0 )
+		//     s = max( user > 0 ? user : 1e-3, widthValid ? fw/2 : 0 )
+		//
+		// `widthValid`, not `valid`: the latter is the UV-Jacobian flag,
+		// and relief's step is a WORLD-space tangent-plane step that never
+		// needed a UV chart.  Since
+		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md this rule is therefore
+		// live on UV-free geometry too (SDF, box, disk, plane, hair), not
+		// just on triangle meshes.
 		//
 		// The max against the pixel footprint is not a safety clamp, it is
 		// the antialiasing: a central difference over a span SMALLER than
@@ -134,9 +160,22 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// from their own fw-driven octave fade -- on which the max is a
 		// no-op at the relevant scales, since they are already
 		// band-limited.
+		//
+		// `fw/2`, not `fw`: `s` is the HALF-step, the difference spans
+		// `2s`, and "a difference over a span OF the footprint" is
+		// therefore `s = fw/2`.  See
+		// RELIEF_AUTO_STEP_FOOTPRINT_FRACTION above for the measurement
+		// that corrected this (fix round 2).
+		//
+		// NOTE FOR AUTHORS, because the shape of this rule surprises: an
+		// explicit `step` SMALLER than `fw/2` is a FLOOR that the
+		// footprint then raises, not an override that defeats it.  There
+		// is deliberately no way to ask for a sub-footprint stencil on a
+		// primary hit -- that is the aliasing the rule exists to stop.
 		Scalar s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_SURFACE;
-		if( ri.txFootprint.valid && ri.txFootprint.worldWidth > s ) {
-			s = ri.txFootprint.worldWidth;
+		const Scalar sFootprint = RELIEF_AUTO_STEP_FOOTPRINT_FRACTION * ri.txFootprint.worldWidth;
+		if( ri.txFootprint.widthValid && sFootprint > s ) {
+			s = sFootprint;
 		}
 		invSpan = Scalar(1) / ( Scalar(2) * s );
 
@@ -287,7 +326,7 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	// reaching Normalize.  Kept for (ii) and as cheap insurance on (i).
 	//
 	// There is deliberately NO geometric-horizon clamp -- like
-	// BumpMap/NormalMap and PBRT's bump mapping, a large `scale` may push
+	// NormalMap and PBRT's bump mapping, a large `scale` may push
 	// N' below the geometric plane and the materials' own horizon gates
 	// handle that continuously.  GlintModifier's rejection is a DISCRETE
 	// facet decision and does not transfer.
@@ -297,8 +336,8 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	}
 
 	// Frame rebuild.  Gated on ModifierFrame::HasCoherentTangent exactly as
-	// BumpMap and NormalMap do -- relief is a height-gradient tilt, the same
-	// family -- so on tangent-less geometry the rebuild is a plain
+	// NormalMap does -- relief is a height-gradient tilt, the same family --
+	// so on tangent-less geometry the rebuild is a plain
 	// CreateFromW.  The predicate, NOT `ri.bHasShadingTangent` alone, is what
 	// mirrors Object::IntersectRay's coherent-frame branch (it also covers
 	// SDFGeometry's heightfield mode, which sets bShadingTangentFromGeometry

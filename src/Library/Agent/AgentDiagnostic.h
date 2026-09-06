@@ -752,7 +752,7 @@ namespace RISE
 			//!         material", which costs at most one advisory.
 			//!         Which modifier KIND is bound is never asked: a
 			//!         `modifier_stack` name counts exactly as a single
-			//!         modifier chunk does, and a bumpmap/normal-map/glint
+			//!         modifier chunk does, and a normal-map or glint
 			//!         modifier silences this exactly as a relief one would,
 			//!         since the claim is narrowly "the shading normal is
 			//!         inert", not "the wrong modifier kind was chosen".

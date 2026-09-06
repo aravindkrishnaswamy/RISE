@@ -183,6 +183,17 @@ void EllipsoidGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool b
 				ri.derivatives.dndu = sd.dndu;
 				ri.derivatives.dndv = sd.dndv;
 				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
@@ -335,6 +346,21 @@ SurfaceDerivatives EllipsoidGeometry::ComputeSurfaceDerivatives( const Point3& o
 
 	sd.uv = Point2( phi, theta );
 	sd.valid = true;
+
+	// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord chart
+	// map").  `EllipsoidUVFromPosition` -- the single source of ptCoord
+	// for both IntersectRay and UniformRandomPoint -- emits
+	//     s = atan2(z/c, -x/a) / (2*PI),   t = acos(y/b) / PI
+	// while the parameters differentiated above are
+	//     u = phi = atan2(z/c, x/a),       v = theta = acos(y/b).
+	// The x-negation is a rotation by PI in the azimuth: the texture s
+	// runs backwards from the derivative phi, s = (PI - phi)/(2*PI)
+	// modulo the [0, 2*PI) wrap, exactly as on the sphere.
+	sd.dsdu = -1.0 / TWO_PI;
+	sd.dsdv = 0.0;
+	sd.dtdu = 0.0;
+	sd.dtdv = 1.0 / PI;
+	sd.texChartValid = true;
 
 	return sd;
 }

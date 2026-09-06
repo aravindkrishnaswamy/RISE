@@ -263,7 +263,8 @@ perlin2d_painter
 }
 
 ##################################################
-# Relief Modifier (migrated from bumpmap_modifier)
+# Relief Modifier (migrated by tools/migrate_scenes_relief.py from the
+# `bumpmap_modifier` chunk, which was removed 2026-09-06)
 ##################################################
 
 scalar_painter

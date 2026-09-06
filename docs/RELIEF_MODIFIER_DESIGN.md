@@ -1,6 +1,20 @@
-# Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
+# Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Removal of `bumpmap_modifier`
 
-**Status:** Phases 1–5 landed and reviewed to zero P1 (2026-09-06): Phase 1
+> **READ THIS FIRST (2026-09-06).  `bumpmap_modifier` NO LONGER EXISTS.**
+> Phase B (§7.5) removed the chunk, the `BumpMap` class, and the
+> `bumpmap_modifier.function` special case in `Cst.cpp`.  A scene that
+> still carries the chunk is REFUSED at derive time with a diagnostic
+> naming `relief_modifier` and `tools/migrate_scenes_relief.py` (the
+> `kRetiredChunks` table in `Cst.cpp`).  The registry is **175** chunk
+> types.  `IJob::AddBumpMapModifier` and
+> `RISE_API_CreateBumpMapModifier{,Ex}` survive with FROZEN SIGNATURES
+> only because the Blender bridge and out-of-tree callers hold them; they
+> build a `ReliefModifier` in the UV domain with the §7.2 fold applied
+> inside the factory.  **Any comment, doc, or skill still describing
+> `bumpmap_modifier` as deprecated-but-parsing is stale.**
+
+**Status:** Phases 1–5 landed and reviewed to zero P1 (2026-09-06), Phase B
+(the removal) landed 2026-09-06: Phase 1
 four rounds; Phase 2 one round + fix; Phase 3 three lenses + fix + converge;
 Phase 4 two fix rounds (`177bcee4`, `e5d0fa0b`) then a converging round with
 zero P1; Phase 5 reviewed with Phase 4. Record in §12. Each phase ran the
@@ -8,8 +22,8 @@ zero P1; Phase 5 reviewed with Phase 4. Record in §12. Each phase ran the
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
 **Branch:** `relief-modifier` off `master` at `2cf923b7`.
-**Inputs (verified in tree, 2026-09-05):** the three existing modifiers
-([BumpMap.cpp](../src/Library/Modifiers/BumpMap.cpp),
+**Inputs (verified in tree, 2026-09-05):** the three modifiers that existed
+then (`BumpMap.cpp` — DELETED by Phase B, 2026-09-06,
 [NormalMap.cpp](../src/Library/Modifiers/NormalMap.cpp),
 [GlintModifier.cpp](../src/Library/Modifiers/GlintModifier.cpp)) and their
 descriptors (`BumpmapModifierAsciiChunkParser`, `NormalMapModifierAsciiChunkParser`,
@@ -73,7 +87,7 @@ The charter that opened this arc stated three things the tree does not bear
 out. Recording them so the design does not inherit them:
 
 1. **"`displaced_geometry` already accepts any Painter."** It did not, at the
-   time the charter was written. Its `displacement` slot is *declared*
+   time the charter was written. Its `displacement` slot was *declared*
    `{ChunkCategory::Painter}` but resolved
    through `pFunc2DManager` (`Job::AddDisplacedGeometry` in [Job.cpp](../src/Library/Job.cpp)) and
    evaluated as `displacement.Evaluate(u, v)` per vertex
@@ -82,6 +96,30 @@ out. Recording them so the design does not inherit them:
    `Painter::Evaluate` path and is a *constant*. The "same field drives coarse
    displacement + fine relief" pattern therefore worked only for
    UV-domain fields (§5.3).
+
+   **The descriptor trap itself CLOSED 2026-09-06** (a separate follow-up
+   from the `height` slot below): `displacement` now carries
+   `p.semantics.pipe = ParameterPipe::Function2D` with
+   `referenceCategories = {Painter, Function}` — declared Function2D-piped,
+   matching the resolve code above exactly, instead of a bare `{Painter}`
+   with no `pipe` at all. The same fix landed on the other four parameters
+   the resolve code shares a manager with:
+   `composite_function2d_painter.child_a`/`.child_b`,
+   `sdf_geometry.heightfield_function`, `scalar_painter.function2d`, and
+   `function2d_painter.function2d`. Cst.cpp's `FunctionSubNamespace`
+   resolver, which used to special-case `displacement`/`child_a`/`child_b`
+   by a literal name list (because their under-declared category alone
+   would have missed a `piecewise_linear_function2d` target), now keys on
+   this `pipe` declaration instead — see the function's own comment and
+   `CstResolverTest`'s registry-wide `[func2d-registry-invariant]` case,
+   which proves a BRAND-NEW Function2D-piped parameter is covered with no
+   further Cst.cpp edit. `ConnectionLegalityTest`'s `3j` rows pin the
+   resulting accept/reject set (`expression_function2d` / `perlin2d_painter`
+   / `piecewise_linear_function2d` accepted, `expression_painter` /
+   `scalar_painter` rejected) against both the static check and a real
+   derive. Purely a descriptor + resolver change — `ApplyDisplacementMapToObject`
+   and every other resolve-time code path are untouched (CstDeriveGoldenTest
+   shows zero drift).
 
    **CLOSED 2026-09-06 (the chipped follow-up landed).** `displaced_geometry`
    gained a second, mutually exclusive height slot, `height`, declared
@@ -128,7 +166,7 @@ out. Recording them so the design does not inherit them:
 | One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". (Composition via `modifier_stack` since Phase 2.) | the `pModifier` field in `class Object` ([Object.h](../src/Library/Objects/Object.h)), [the `if( pModifier )` override block in `CSGObject::IntersectRay`](../src/Library/Objects/CSGObject.cpp), the `pModifier` field's "this should be a list of somesort... eventually" comment in [RayIntersection.h](../src/Library/Intersection/RayIntersection.h) |
 | Scalar pipe | `IScalarPainter::GetValuesAt(ri)` → `ScalarTriple`; single-scalar slots read `.v[0]` and the resolver rejects per-channel painters when `requireSingle`; an `IPainter` name bound to a scalar slot gets `kScalarBoundToIPainterFmt` | the `GetValuesAt`/`GetValueAtNM` contract comment in [IScalarPainter.h](../src/Library/Interfaces/IScalarPainter.h), `ResolveOrDiagnoseScalar` in [Job.cpp](../src/Library/Job.cpp), `kScalarBoundToIPainterFmt` in [ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h) |
 | Any-painter bridge | `scalar_painter { painter X channel R\|G\|B\|A [scale] [bias] }` → `PainterChannelScalarPainter`; `scalar_painter { function2d F }` → `Function2DScalarPainter` (evaluates `F.Evaluate(ptCoord)` — the *same* sampling path `bumpmap_modifier` uses today) | the `ScalarPainterAsciiChunkParser` `painter`/`function2d` cases in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) |
-| Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by triangle-mesh geometry only; `fw = 0` on analytic primitives. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h), `OctaveFadeWeightImpl` and its `Turbulence3D`/`Ridged3D` consumers in [ProceduralNoiseCore.cpp](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
+| Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by **every** geometry at the `Object::IntersectRay` layer since [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md) (2026-09-06); it was triangle-mesh-only before that, with `fw = 0` on analytic primitives.  Gated on `txFootprint.widthValid`, not `valid` (the latter stays the UV-Jacobian flag).  Still primary-hits-only: no ray carries differentials after a scatter. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h), `OctaveFadeWeightImpl` and its `Turbulence3D`/`Ridged3D` consumers in [ProceduralNoiseCore.cpp](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
 | Evaluate-elsewhere idiom | `RayIntersectionGeometric ri2 = ri; ri2.ptIntersection = ...; source.GetColor(ri2)` — `MappingPainter` does exactly this for world/object/UV remaps and invalidates `txFootprint` only when the UV *domain* is remapped | `MappingPainter::GetColor` in [MappingPainter.cpp](../src/Library/Painters/MappingPainter.cpp) |
 | Space semantics | `Proj_World` reads `ptIntersection`; `Proj_Object` and `voronoi3d space object` read `ptObjIntersec`; UV painters read `ptCoord`; triplanar reads `ptIntersection` + `vNormal` | the `Projection` enum in [MappingPainter.h](../src/Library/Painters/MappingPainter.h), its `Proj_*` cases in `MappingPainter::GetColor` |
 | Deprecation conventions | no `ChunkDescriptor::deprecated` field exists. Three precedents: (a) *removed* → generic `kUndeclaredParameterFmt` / unknown-chunk hard fail (`branching_threshold`, BDPT `sms_*`); (b) *accepted-and-ignored* → declared with `"Legacy — ignored"` (`branch`); (c) *deprecated-with-prose* → description prefixed `"DEPRECATED (...)"` (`lights_intensity_override`). Description text flows verbatim into the agent tool schema (`SchemaGen.cpp`) and the GUI suggestion surfaces. | `lights_intensity_override`'s descriptor; the `branch` `"Legacy — ignored"` param in `PathTracingShaderOpAsciiChunkParser::Describe`; the `optimal_mis*` omission comment in `BDPTPelRasterizerAsciiChunkParser::Describe` (all in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)) |
@@ -257,35 +295,78 @@ facet decision and does not transfer.
 ### 3.3 Step selection — scale-aware and footprint-aware
 
 ```
-surface: s = max( step_user > 0 ? step_user : 1e-3,  txFootprint.valid ? txFootprint.worldWidth : 0 )
+surface: s = max( step_user > 0 ? step_user : 1e-3,  txFootprint.widthValid ? txFootprint.worldWidth / 2 : 0 )
 uv:      s = step_user > 0 ? step_user : 0.01
 ```
 
-Why `max(·, fw)`: a central difference over a span smaller than the pixel
+Why `max(·, fw/2)`: a central difference over a span smaller than the pixel
 footprint measures sub-pixel slope and sparkles at distance; over a span of
 the footprint it measures the footprint-averaged slope, whose magnitude is
 bounded by `max|H| / fw` and so *decays* as the footprint grows, which is the
 fade we want on fields that have no octave fade of their own (`checker`,
-`voronoi`, images). Fields that do fade (the noise builtins, mip-mapped
+`voronoi`, images).
+
+**Why `fw/2` and not `fw`** (fix round 2, 2026-09-06 — this line read
+`max(·, fw)` until then): `s` is the HALF-step and the difference spans
+`2s`, so "a span OF the footprint" *is* `s = fw/2`. `s = fw` spans two
+footprints, i.e. filters twice as hard as the sentence above claims —
+which nobody noticed while the rule was mesh-only and `receding_pier`,
+whose `fbm` band-limits itself, was the only scene exercising it. The
+error became visible the moment
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
+made `fw` real on analytic primitives and put a *non*-self-fading field
+(`worley_f2f1`) at footprint scale under it. Measured, on
+`relief_crackle_glaze` (crack band ≈ 0.014 world units, `fw` 0.0085–0.011,
+so `2s` at the old rule exceeded the crack width): the full-footprint rule
+cost **20.0 %** of the scene's high-frequency shading energy against the
+pre-footprint render, and `fw/2` recovers all but **1.3 %**. The fade the
+rule exists for is a factor, not a threshold, so halving it does not
+switch it off: on the design's own demonstrator
+(`relief_sphere_no_uv`) `fw/2` still removes 10.8 % of the face-on and
+16.7 % of the limb high-frequency energy, monotone in the footprint, where
+`fw` removed 32.9 % / 41.8 %. Full record in §12 "Fix round 2". Fields that do fade (the noise builtins, mip-mapped
 textures) are already band-limited and the `max` is a no-op on them at the
 relevant scales. The `1e-3` floor is a derivative-estimator step in double
 precision, not a scene-scale guess; on a scene whose features are below
 `1e-3` world units the author sets `step` (the descriptor says so). This is
 the one new constant in the design and it is disclosed as such.
 
-**The explicit `step` is a FLOOR, and the fade is mesh-only.** Note what the
-`max` does to an author-supplied value: it is raised to the footprint too, so
-on geometry that populates one, a `step` below the footprint is silently
-ignored. And only **triangle-mesh** geometry populates `txFootprint` today,
-and then only on primary hits carrying ray differentials — the same
-restriction `fw` in the expression VM already has
+**The explicit `step` is a FLOOR, and the fade is now EVERY-geometry (was
+mesh-only until 2026-09-06).** Note what the `max` does to an
+author-supplied value: it is raised to half the footprint too, so on a hit
+that carries one, a `step` below `fw/2` is silently ignored. Fix round 2
+verified this the hard way — rendering `relief_crackle_glaze` with an
+explicit `step 0.002` produces an image indistinguishable from `step 0`
+(mean 8-bit channel delta 0.233, inside that scene's own seed noise),
+because `0.002 < fw/2` everywhere on the sphere. **There is deliberately
+no escape hatch here**: asking for a sub-footprint stencil on a primary
+hit is asking for the aliasing the rule exists to stop. It also means
+"just set an explicit `step` on the affected scenes" was never available
+as an alternative to fixing the fraction.
+
+⚠ **This paragraph's original "mesh-only" claim is RETIRED** by
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).
+`txFootprint` used to be populated by `TriangleMeshGeometry{,Indexed}::
+RayElementIntersection` and nothing else, so analytic primitives and SDFs
+had no footprint (0), the `max` was a no-op there, and there was no
+distance fade at all on them. That arc split the helper at the seam its
+math already had — the Igehy plane projection needs only a hit point, a
+normal and the ray's differentials, *not* `dpdu`/`dpdv` — and moved the
+single call site up to `Object::IntersectRay`. **Every geometry now gets a
+`worldWidth`**: spheres, ellipsoids, cylinders, tori, boxes, disks, planes,
+patches, hair, and SDFs (hence sweeps, skeletons, parts and heightfields).
+The step rule keys on the new `txFootprint.widthValid` flag rather than
+`valid`, because `valid` remains the *UV-Jacobian* flag and a UV-free hit
+has a perfectly good footprint width with no Jacobian to go with it.
+
+The remaining restriction is unchanged and is about RAYS, not geometry:
+only primary hits carry differentials at all
 ([ExpressionPainter.cpp](../src/Library/Painters/ExpressionPainter.cpp) says
-so at its `ctx.fw` assignment). On analytic primitives and SDFs the footprint
-is unknown (0), the `max` is a no-op, the explicit `step` (or the `1e-3`
-floor) is exactly what is used, and there is **no distance fade at all**.
-That is the same limitation the whole painter stack carries, not one relief
-introduces; the descriptor discloses both halves rather than promising a fade
-that only some geometry gets.
+so at its `ctx.fw` assignment), because `Ray::Set` clears
+`hasDifferentials` and no propagation helper exists for a scattering
+bounce. So a relief surface seen in a mirror, or through glass, or on a
+secondary bounce still gets `s = step` with no fade — and so do the
+thin-lens, orthographic and fisheye cameras, which never set differentials.
 
 **`txFootprint.worldWidth` is now world-correct under instance scale
 (2026-09-06, fix round 2, P2-A) — it was NOT before this fix.**
@@ -306,14 +387,30 @@ scaled instance faded at the wrong distance.  Fixed by folding
 IntersectRay` / `CSGObject::IntersectRay` fold `scaleHint` (the same
 `|det M|^(1/3)` geometric-mean approximation under non-uniform scale,
 exact under uniform scale).  Regression: `ReliefModifierTest` test 4c.
-On a strongly flattened or elongated instance the geometric-mean fold
-can UNDER-scale `worldWidth` relative to the true in-plane footprint
-(e.g. `scale 4 0.05 4` on a panel: in-plane scale is 4x but
-`|det|^(1/3) = 0.928`, a 4.31x under-count) -- worse than the pre-fold
-object-space value would have been on that axis.  The error only
-under-filters, though: `max(step, worldWidth)` then falls back to
-`step`, the same aliasing as pre-fix and never worse than that floor.
-The uniform-scale case remains exact.
+
+⚠ **The `|det M|^(1/3)` half of the paragraph above is SUPERSEDED
+(2026-09-06, later the same day)** by
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
+§3.4.  The geometric-mean fold was exact only under a uniform scale; on a
+strongly flattened or elongated instance it UNDER-scaled `worldWidth`
+relative to the true in-plane footprint (`scale 4 0.05 4` on a panel:
+in-plane scale is 4x but `|det|^(1/3) = 0.9283`, a **4.31x under-count**)
+— worse than the pre-fold object-space value would have been on that
+axis.  `txFootprint` now carries the plane-projected pixel-step VECTORS
+`dpdx`/`dpdy`, and both object layers promote them with their own
+**forward linear map** `m_mxFinalTrans`, re-deriving `worldWidth` from the
+transformed pair.  That is EXACT for any linear map — non-uniform scale
+and shear included — because an affine map carries the object-space
+auxiliary line onto the world auxiliary line and the object-space tangent
+plane onto the world tangent plane, so the line∩plane point commutes with
+the map.  `m_worldLinearScale` is no longer read for the footprint at all
+(it keeps its `scaleHint` / `curvature` jobs).  Regression:
+`ReliefModifierTest` test **4d**, the non-uniform companion to 4c, plus
+`TextureFootprintTest` test 5; both are red-proofed against the restored
+geometric-mean fold and both report exactly the predicted 4.309x.  The old
+"the error only under-filters, so `max(step, worldWidth)` falls back to
+`step`" consolation no longer applies, because there is no error left to
+under-filter.
 
 ### 3.4 One field on the hit record
 
@@ -542,7 +639,9 @@ above.
 
 ## 7. Deprecating `bumpmap_modifier`
 
-### 7.1 Phase A — now (this arc): deprecate with diagnostic, keep parsing
+### 7.1 Phase A — DONE (2026-09-06): deprecate with diagnostic, keep parsing
+
+*Superseded by Phase B (§7.5), which removed the chunk outright. Kept as the record of how the removal was staged.*
 
 Following precedent (c) plus a parse-time diagnostic:
 
@@ -595,13 +694,27 @@ shortest round-trip decimal — what turns `-(0.5*2*0.005)` into `-0.005`, not
 and `%.17g` is not used anywhere in this script.
 
 **`windowsize ≤ 0` is not a point on that curve — it is a special case.**
-Legacy `BumpMap::Modify` is INERT there (the central difference samples the
-same point on both sides and its normalisation is gated on `dWindow > 0`),
-but a migrated `step 0` means AUTO in `relief_modifier` (a full
-footprint/`1e-3`-floor perturbation) — the opposite of inert. The migrator
-detects `windowsize ≤ 0`, skips the algebra above, and emits the bare token
-`scale 0` instead (which neutralises the perturbation regardless of what
-`step` ends up being), with a `WARN <file>:<line>` naming the reason.
+A migrated `step 0` means AUTO in `relief_modifier` (a full
+footprint/`1e-3`-floor perturbation), so the algebra above cannot be
+applied. The migrator detects `windowsize ≤ 0`, skips it, and emits the
+bare token `scale 0` instead (which neutralises the perturbation
+regardless of what `step` ends up being), with a `WARN <file>:<line>`
+naming the reason. `RISE_API_CreateBumpMapModifierEx` applies the SAME
+rule, so a migrated file and a bridge-built modifier cannot disagree.
+
+*Precision correction (Phase B, measured — `ReliefModifierTest` 2(d)).*
+This section originally justified the rule by saying legacy
+`BumpMap::Modify` was "INERT there". That is true only at **exactly zero**:
+both sides of the central difference sample the same point, so the
+difference is 0. At a **negative** `windowsize` the legacy class was NOT
+inert — the difference was the NEGATION of the one at `|windowsize|`
+(`f(u−|w|) − f(u+|w|)`), and the `dWindow > 0` gate additionally skipped
+the `normalize_gradient` divide, silently changing what `scale` meant. The
+migrator's and the shim's `scale 0` is therefore a *deliberate divergence*
+on the negative half, not a match: a negative half-step is nonsense input,
+the fold is undefined on it, and consistency between the two conversion
+routes matters more than reproducing a deleted class's accident. No
+in-tree scene ever had a negative `windowsize`.
 
 Migration is *lossless*, not *improving*: migrated scenes keep the UV
 domain and the legacy orientation behaviour. The migrator prints a per-file
@@ -667,17 +780,61 @@ in-tree instances exercise that sixth path any more, and the deprecation
 diagnostic (§7.1) means a new one is unlikely to appear without a warning
 pointing the author elsewhere.
 
-### 7.5 Phase B — removal (named, not in this arc)
+### 7.5 Phase B — removal — **DONE 2026-09-06**
 
-Trigger: the user's call after one release cycle (or after the census in
-§9 shows zero `bumpmap_modifier` emissions). Steps: delete the chunk parser
-(unknown-chunk hard fail is the generic path, like `branching_threshold`),
-delete `BumpMap.{h,cpp}` from the five build projects, repoint the frozen
-`IJob::AddBumpMapModifier` virtual at `ReliefModifier` in UV domain with the
-§7.2 scale fold (the Blender bridge keeps working unchanged), drop the
-`kFunc2DSubCat` special case for `bumpmap_modifier.function` in `Cst.cpp`,
-retire the legacy CST literals. Everything Phase A leaves in place is
-enumerated here so Phase B is a checklist, not a rediscovery.
+Triggered by the user's call. Landed in three commits on `relief-followups`
+off `9fe3374e`: **`8cef18c3`** (the removal: chunk parser + registration,
+`BumpMap.{h,cpp}` from all five build projects, the `kFunc2DSubCat`
+`function` entry, the shim repoint, the retired-keyword table, and every
+affected test), **`853ce977`** (a pre-existing Blender-exporter bug the
+repoint exposed), **`45c04be8`** (the living-surface doc sweep). Full
+record in §12, "Phase B".
+
+Every step the plan below named was executed, plus one the plan did not
+anticipate — the *diagnostic*. The plan said "unknown-chunk hard fail is
+the generic path, like `branching_threshold`"; that is a dead end for the
+one author who most needs help, the person holding a scene that used to
+load, because it names neither the replacement nor the migrator. `Cst.cpp`
+therefore gained a `kRetiredChunks` table — the chunk-level analogue of
+`bezierpatch_geometry`'s `kRetired` PARAMETER table, which exists for the
+same reason one level down — whose single entry produces:
+
+> `chunk type 'bumpmap_modifier' has been removed -- removed 2026-09-06
+> (docs/RELIEF_MODIFIER_DESIGN.md 7.5).  Use `relief_modifier`, whose
+> height field is any `scalar_painter` and which needs no texcoords in its
+> default `surface` domain.  To convert this scene LOSSLESSLY -- the
+> amplitude fold and the sign flip are not obvious by hand -- run
+> `python3 tools/migrate_scenes_relief.py <this file>``
+
+The steps as planned, and what each became:
+
+| Planned step | Outcome |
+|---|---|
+| delete the chunk parser | `BumpmapModifierAsciiChunkParser` (72 lines) + its `add(...)` line + the now-dead `<atomic>` include. Registry **176 → 175**; `SceneEditorSuggestionsTest`'s two `EXPECT`s follow. |
+| delete `BumpMap.{h,cpp}` from the five build projects | Done; the Xcode project needed 12 lines across `PBXBuildFile` (4), `PBXFileReference` (2), the containing group (2), and per-target build phases (4, both targets). `plutil -lint` clean, no dangling `fileRef`. |
+| repoint the frozen `IJob::AddBumpMapModifier` at `ReliefModifier` | Done, but the fold lives ONE level down, in `RISE_API_CreateBumpMapModifierEx` — `Job::AddBumpMapModifier` is unchanged except for its comment. One place for the fold means the shim and the migrator cannot drift. |
+| drop the `kFunc2DSubCat` special case | Done. `function` was declared by no other chunk, so the entry went with the chunk; `relief_modifier.height` needs no replacement special case (standing `ParameterPipe::Scalar` closure). |
+| retire the legacy CST literals | All four suites. `CstSourceInstanceTest`'s shared `Scene()` fixture drops from 9 chunks to 8, which moved the collision test's asserted ordinals `#13`/`#14` → `#12`/`#13`. |
+
+**The shim, precisely.** `RISE_API_CreateBumpMapModifierEx` builds a
+`Function2DScalarPainter` over the caller's `IFunction2D` and hands it to a
+`ReliefModifier` in `ReliefDomain::UV` with `step = window` and
+
+```
+S' = -S*2W   (normalizeGradient FALSE)
+S' = -S      (normalizeGradient TRUE)
+S' = 0       (window <= 0 — see the §7.2 precision correction)
+```
+
+`Function2DScalarPainter::GetValuesAt` is literally
+`pFunc->Evaluate( ri.ptCoord.x, ri.ptCoord.y )` and `ReliefModifier`'s UV
+branch makes the same four offset evaluations in the same order, so the
+sampled values are identical and only the amplitude multiply reassociates.
+One supporting change: `Function2DScalarPainter`'s ctor parameter widened
+to `const IFunction2D*` (every use of it inside — `Evaluate`, `addref`,
+`release` — is already const), so the shim wraps its `const IFunction2D&`
+without a `const_cast`. Callers holding a mutable pointer convert
+implicitly; nothing else changed.
 
 ---
 
@@ -816,6 +973,66 @@ tolls (§7 decision 2, reaffirmed in the "Price the inferior path" row of
   `DESIGN_FLAT_RELIEF` firings; N ≥ 3, cross-provider before believing a
   null (C-MEAS).
 
+  **CENSUS RUN (2026-09-06)** — `evals/runconfigs/relief_census_gemini_gpt.json`
+  (the `add_wear` instrument verbatim: `rich_material_closeup` ×3 × {gemini-3.5-flash,
+  gpt-5.6-terra}), run on the Phase-B binary (`913436cd`). Baseline is post-hoc
+  over the archived `addwear_census` + `curv_census` final scenes: **0/12** scenes
+  perturbed a normal in any way (no `bumpmap_modifier`, no `normal_map_modifier`).
+  Post-arc, per trajectory (`relief_modifier` chunks bound via `modifier` /
+  `DESIGN_FLAT_RELIEF` sightings): gemini r1 **2**/0, r2 **2**/1, r3 **2**/0;
+  gpt r1 **1**/3, r2 0/1, r3 0/1. Adoption **4/6 trajectories** (gemini 3/3, gpt
+  1/3) from a 0/12 baseline, with no verb. The advisory fired in 4/6 and was
+  acted on in one (gpt r1: three firings, one relief bound); in gpt r2/r3 it fired
+  once each and was ignored, consistent with C-ADV. By the pre-committed rule the
+  `add_wear` `relief_amplitude` escalation is **not** triggered: adoption is
+  already at the level `vary_material` reached only once it was a verb. N=3 per
+  provider, cross-provider — C-MEAS satisfied for a single-run reading; a second
+  run would tighten the gpt 1/3 before any decision hangs on it.
+
+  **Read-set correction (fix round 2).** This paragraph originally read
+  "the recipe + reference alone moved it (the summoned read-set was pulled:
+  `materials-and-media-basics` 9×, `procedural-textures` 6× across the six
+  runs)". Both counts were wrong and the inference they carried does not
+  survive the correction. They came from grepping the trajectory JSON for
+  each skill's NAME, which also hits the skill listing embedded in every
+  system prompt and every cross-reference inside another skill's markdown.
+  Counting `run_type == "tool"` records whose `name` is `read_skill`
+  instead gives, across the six trajectories:
+
+  | skill | calls | runs |
+  |---|---|---|
+  | `object-modeling-recipes` | 6 | 6/6 |
+  | `lighting-recipes` | 5 | 5/6 |
+  | `scene-skeleton-and-conventions` | 4 | 4/6 |
+  | `modeling-workflow-and-geometry` | 3 | 3/6 |
+  | **`materials-and-media-basics`** (carries the recipe) | **3** | **3/6** |
+  | `observe-modes` | 3 | 3/6 |
+  | **`procedural-textures`** (carries the reference row) | **2** | **2/6** |
+
+  No run read either file twice. And the split is the opposite of what the
+  original sentence claimed: the three runs that read
+  `materials-and-media-basics` are exactly the three **gpt** runs, of which
+  **1/3** adopted relief; the three **gemini** runs, which adopted **3/3**
+  (two `relief_modifier` chunks each), never opened it. Their route to the
+  chunk was `read_schema` (r1 and r3 both asked for it by name) and, in r2,
+  the `DESIGN_FLAT_RELIEF` advisory.
+
+  So the headline stands unchanged — **4/6 from a 0/12 baseline with no
+  verb**, and the `add_wear` `relief_amplitude` escalation stays
+  untriggered — but the attribution does not: on this run the recipe file
+  is not what moved adoption, because the runs that adopted had not read
+  it. What the data supports is that `relief_modifier` is **discoverable
+  from the schema surface alone** once it exists, and that the advisory
+  names it where it is not. Whether the recipe helps is simply **not
+  measured here**. C-READ predicts the summoned read-set is
+  `object-modeling-recipes` + `materials-and-media-basics`; the first half
+  was summoned by all six runs and the second by only the three gpt runs
+  (the three gemini runs, which adopted 3/3, never opened it), so the recipe's
+  PLACEMENT is now the more suspect variable — a second run should record
+  the per-run read-set beside the per-run adoption count rather than an
+  aggregate, since the aggregate is exactly what hid this
+  anti-correlation.
+
 ---
 
 ## 10. Cost
@@ -857,6 +1074,7 @@ the showcase fixtures at their authored spp.
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope) |
 | **4** | `DESIGN_FLAT_RELIEF` (condition Q) + verb hook-point notes (the recipe example shipped early, as part of Phase 3's teaching surfaces — `materials-and-media-basics.md`'s crackle-glaze — see its own §12 P1-1 fix) | implemented 2026-09-06, two review rounds (see §12 — round 1 `177bcee4`: 3 P1s + 3 P2s, the scan made linear; round 2 `e5d0fa0b`: 1 P1 + 2 P2s + a nit, clause (i) taught the same composite-override and `source`-inheritance rules round 1 taught clause (ii), and the `source` hop bound raised to the engine's own 256 across all three walks in the file): `AgentReadValidateTest` 333/0 (extended with `RunFlatReliefScanTest`), `AgentChunkCrudTest` 3809/0, `AgentAddWearTest` 287/0, `AgentAddWetnessTest` 210/0, `SourceHygieneTest` 164/0, `ReliefModifierTest` 106/0 |
+| **B** | REMOVAL: chunk parser + registration, `BumpMap.{h,cpp}` from 5 build projects, the `kFunc2DSubCat` `function` entry, the ABI-frozen shim repointed at `ReliefModifier`, the `kRetiredChunks` diagnostic, the four CST suites' literals retired, the living-surface sweep | landed 2026-09-06 (`8cef18c3`, `853ce977`, `45c04be8` — see §12 "Phase B"): both warning gates clean on a full clean rebuild; ReliefModifierTest 118/0 (was 106), CstResolverTest 60/0, CstRecordDeriveTest 23/0, CstIncrementalSafetyTest 38/0, CstSourceInstanceTest 455/0, SceneEditorSuggestionsTest all-pass, SourceHygieneTest 164/0, GlintModifierTest all-pass, HairTangentPlumbingTest 123/0, SurfaceCurvatureTest 94/0, CstDeriveGoldenTest 442 MATCH / 1 DRIFT (`bdpt_crystal_garden`, pre-existing and out of scope) |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | landed 2026-09-06 (see §12): `weathered_workbench` relief committed (scale 0.05, amplitude-swept); `velvet_cushion` migration confirmed better (domain surface reads flat on this SDF, no code change); `relief_crackle_glaze` key light re-raked for near-specular legibility (R13's finding, one commit); renders attached to §12 |
 
 Commits as each phase converges; never push. The stray uncommitted edit to
@@ -1043,7 +1261,7 @@ P2s**.  All ten are fixed.  Suite after the round: `ReliefModifierTest`
 | **P1-A** — the frame-rebuild gate uses the wrong flag.  `Object::IntersectRay` builds the coherent `CreateFromWU` frame under `bShadingTangentFromGeometry`; `bHasShadingTangent` is only the sub-case inside it.  ReliefModifier, **BumpMap and NormalMap** all gated on the sub-case, so an SDFGeometry-heightfield hit (`bShadingTangentFromGeometry` without `bHasShadingTangent`, SDFGeometry.cpp's `m_isHeightfield` branch of `IntersectRay`) fell to `CreateFromW` — a 180° frame rotation (u:+X→−X, v:+Y→−Y) plus loss of the mirrored-instance `FlipV`. | Root fix, once: `ModifierFrame::HasCoherentTangent( ri )` = `bShadingTangentFromGeometry \|\| bHasShadingTangent`, with a comment citing Object.cpp:699 and justifying the OR (the second disjunct is unreachable in tree; if a future geometry took it, projecting the incoming `u` is harmless — Glint's own continuity argument — so the OR can only ADD preservation).  All three modifiers switched.  Glint stays unconditional, and `ModifierFrame.h` now states that both policies are correct on a coherent-tangent hit and differ only on a tangent-less one.  The header's false claim that "SDFGeometry's heightfield mode" was covered by the `bHasShadingTangent` gate is corrected. | `44cf535d` |
 | **P1-B** — design body contradicted §12.  §3.4 still said CSGObject stamps "the composite's own inverse" (it stamps `nullptr`); §10 still asserted a "measured ~4× one albedo evaluation" (never measured); §12 said "four commits" (eight); §2's hook-timing row named `bHasShadingTangent` as the ONB branch condition — the same error that produced P1-A. | §3.4 rewritten to the shipped behaviour with the original wording marked superseded; §10 rewritten against §12's table (exact count of four evaluations; +3.9 % machinery; 3.39× whole-render near-worst-case; the 1.73× vs-albedo figure explicitly flagged as not apples-to-apples); §12's commit count corrected and `c3600ed0` accounted for as the separately-landed **Phase-3** migrator; §2's two rows corrected.  Also swept the enumeration family: the `vNormal` and `vGeomNormal` field comments in `RayIntersectionGeometric.h`, `SurfaceCurvature.h`, `BDPTVertexRIGRebuildTest.cpp` listed only two of the four normal-perturbing modifiers and now name all four. | *(this record)* |
 | **P1-C** — `SceneEditorSuggestionsTest` hard-codes the registered-chunk count in two EXPECTs; `relief_modifier` made it 175 and the suite was red on exactly those two. | Both bumped 174 → 175, per-addition history extended.  Suite added to the Phase-1 gate list above, and flagged as a **Phase-2 gate** (`modifier_stack` → 176). | `c246ae8f` |
-| **P2-1** — the `step` descriptor promised "set it explicitly when the field's features are finer than the floor", which cannot work: an explicit step is raised to the footprint too. | Descriptor rewritten: the explicit step is a **floor**; the footprint wins when larger, so on meshes relief fades toward flat at distance and a sub-footprint step is silently ignored; on analytic primitives and SDFs no footprint exists, the max is a no-op, there is **no fade**, and the explicit step is used verbatim.  Mirrored in §3.3 with the mesh-only disclosure.  **Code rule unchanged.** | `0bec7038`, doc in *(this record)* |
+| **P2-1** — the `step` descriptor promised "set it explicitly when the field's features are finer than the floor", which cannot work: an explicit step is raised to the footprint too. | Descriptor rewritten: the explicit step is a **floor**; the footprint wins when larger, so on meshes relief fades toward flat at distance and a sub-footprint step is silently ignored; on analytic primitives and SDFs no footprint existed AT THE TIME, the max was a no-op, there was **no fade**, and the explicit step was used verbatim.  Mirrored in §3.3 with the mesh-only disclosure.  **Code rule unchanged.**  *(SUPERSEDED 2026-09-06 by the footprint arc, docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md: every geometry now has a primary-hit footprint and the auto step is half of it.)* | `0bec7038`, doc in *(this record)* |
 | **P2-2** — the `mag2` guard's comment claimed "a gradient large enough to cancel N", which is impossible (`T`,`B` ⟂ `N`, so `\|N − scale·g\|² = 1 + scale²\|g\|² ≥ 1`). | Comment rewritten: the guard catches only a non-finite `mag2` (redundant with the `isfinite` gate for finite inputs — exactly what red-proof (c) measured) and a zero-length `N` from a singular transform.  §12 deviation 4 updated to match. | `bc2b6a9b` |
 | **P2-3** — test 4 did not discriminate `max(·, fw)`: `fbm` fades its own octaves, so the sequence stays monotone with the max deleted. | Added a second sweep on an fw-**blind** step height (`H = P.x > 0 ? 0.1 : 0`, probed at `x = 0`), where `\|N′−N\| ∝ 0.1/(2s)` and must therefore *strictly* decrease as `fw` grows.  Red-proof (e). | `44cf535d` |
 | **P2-4** — the no-object-map warning read as a per-hit accident. | Reworded to lead with the truth (it is a property of the object; every CSG-composite hit lands here) and to name the affected authoring surfaces. | `bc2b6a9b` |
@@ -1573,7 +1791,7 @@ losslessness), returned **4 P1s and 5 P2s**. All nine are fixed.
 | Finding | Fix | Commit |
 |---|---|---|
 | **P1-1** — the crackle-glaze recipe in `materials-and-media-basics.md` and the relief section in `procedural-textures.md` each used the inline `keyword { params }` brace form in a fenced scene example, which the CST parser hard-rejects ("chunk braces must be on their own lines"): `uniformcolor_painter { name cg_f0  color 0.04 0.04 0.04 }` and `scalar_painter { name h2  painter some_colour_painter  channel R }`. | Both expanded to the multi-line form. Execution-validated: extracted both fenced blocks into scratch scenes (adding the minimal missing geometry/camera/film/light each block's own prose said it omitted — a sphere, a pinhole camera, a directional light, and a stand-in `uniformcolor_painter` for `some_colour_painter` in the second case), parsed headlessly, zero derive diagnostics in `RISE_Log.txt` for either. The crackle-glaze excerpt was re-diffed against `scenes/Tests/Painters/relief_crackle_glaze.RISEscene` chunk-by-chunk: parameter-for-parameter identical (byte-identical on the fixed `uniformcolor_painter` block). A grep of both files for any other `{ name` on one line found none. | `0a7892b6` |
-| **P1-2** — the "`step` is auto by default … relief fades toward flat at distance" sentence in `procedural-textures.md` stated the footprint fade as universal, but only triangle-mesh geometry populates `txFootprint` today. | Added the mesh-only caveat verbatim from design §3.3: on analytic primitives and SDFs there is no distance fade at all, and the step used is just the `1e-3` floor or the explicit `step`. | `0a7892b6` |
+| **P1-2** — the "`step` is auto by default … relief fades toward flat at distance" sentence in `procedural-textures.md` stated the footprint fade as universal, but only triangle-mesh geometry populates `txFootprint` today. | Added the mesh-only caveat verbatim from design §3.3: on analytic primitives and SDFs there is no distance fade at all, and the step used is just the `1e-3` floor or the explicit `step`. **This fix is itself SUPERSEDED (2026-09-06):** [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md) made the fade universal on primary hits after all, so the caveat as written became the wrong statement and the skill now names the *primary-hit* restriction instead. The finding was correct against the tree it was raised on; the remedy has been rewritten, not reverted. | `0a7892b6` |
 | **P1-3** — §7.3's `tests/data/cst_derive_golden.txt` row promised "the migrated entries' digests" would change; they don't, because `DumpJob` (`tests/CstRenderEquivalence.h`) records an object's modifier binding by NAME only (`modifier=<name>`), never the bound modifier's type or parameters, and the migrator never touches the object's `modifier N` line. | Row rewritten to state the truth (additions-only for new scenes, zero digest change on migrated ones, and why), cross-referencing §12's Phase 3 record where the actual regen run confirms it. | *(this record)* |
 | **P1-4** — §7.4 and its verbatim copy in §12 both said "FIVE chunk kinds could bind `expression_function2d`… after Phase 3, exactly FOUR", but the enumeration right above lists FIVE non-`bumpmap_modifier` kinds (`displaced_geometry.displacement`, `function2d_painter`, `scalar_painter { function2d }`, `composite_function2d_painter`, `sdf_geometry.heightfield_function`) — six before the arc, five after, off by one in both places. | Both occurrences corrected to SIX before / FIVE after, with the five-kind enumeration spelled out inline at the first site so the count is checkable without cross-referencing the paragraph above it. | *(this record)* |
 | **P2-5** — the migrator's docstring claimed "nothing authored is dropped", but a trailing comment on a RECOGNIZED parameter line (`scale 0.0075  # hand-tuned`) was silently discarded — only the value token survived; unrecognized lines already carried their full text. | Recognized-parameter lines now carry a trailing comment too, via the same `# migrated: <raw line>` idiom (`raw != cline` after comment-stripping is the signal), counted in `stats['comments_carried']`. Extended to the `bumpmap_modifier` keyword line (with or without the brace on the same line) and the closing `}` line, both of which sit outside the interior-comment preservation's scan range. Four new selftest cases. | `cd5ae2be` |
@@ -1905,8 +2123,13 @@ fixed value — mean abs diff between BEFORE and a *zero-effect* AFTER at
 24 spp was ~1.15–1.95/255 just from noise; at 128 spp it dropped to
 0.82–1.10/255 and started tracking `scale` monotonically). The visual
 effect at 0.002–0.008 was too subtle to read as relief at this table's
-scale/lighting (front-lit top face, `box_geometry` — an analytic
-primitive, so no distance fade either way). Extended the sweep to 0.02,
+scale/lighting (front-lit top face, `box_geometry` — **at the time an
+analytic primitive with no footprint, so no distance fade either way;
+SUPERSEDED 2026-09-06** by
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md),
+which produces a footprint at the `Object::IntersectRay` layer for every
+geometry — the bench top fades now, and this sweep's amplitude choice
+was made without that fade in the frame). Extended the sweep to 0.02,
 0.04, 0.05, 0.06, 0.10: 0.04–0.10 all showed a visible rippled front-edge
 silhouette and catch-light along the grain ridges with no sparkle at the
 tray/vise (far) end; a dark-pixel-count check in the bench-top crop
@@ -1929,6 +2152,22 @@ no-artifact band.
 | **0.05** | `wb_after_s005.png` (reduced), **`wb_after_authored.png`** (authored — committed) | **chosen** — reads as surface, no artifacts; NOTE the front edge of the top goes from a straight line to a visibly scalloped silhouette at this amplitude, and the supervising review judged the result a touch heavy for fine grain: the choice trades subtlety for legibility at this table scale and lighting, and `scale` is the one number to dial down (0.02–0.04 were artifact-free and quieter) |
 | 0.06 | `wb_after_s006.png` | stronger, still clean |
 | 0.10 | `wb_after_s010.png` | dark-pixel count roughly doubles vs. baseline — edge of the safe range |
+
+**Follow-up (2026-09-06, branch `relief-followups`):** acting on the 0.05
+row's own caveat, the committed `relief_wood.scale` was dialled down to
+**0.03** — inside the same sweep's already-recorded artifact-free/quieter
+0.02–0.04 band. A/B reduced renders (320×240, 64 spp, `oidn_denoise
+FALSE`) at 0.03 vs. 0.05 confirm the grain still reads as carved surface
+with grain catch-light (not flat paint) at 0.03, and the front-edge
+scallop is visibly softer than at 0.05:
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/relief_dial/wb_s003.png`
+(0.03, new) vs.
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/relief_dial/wb_s005.png`
+(0.05, prior). The CST-derive golden digest for this scene is unchanged
+by the edit — expected, not a gap: per §7.3, `DumpJob` records an
+object's modifier binding by NAME only (`modifier=relief_wood`), never
+the bound modifier's own parameters, so `scale` is invisible to the
+digest.
 
 All PNGs are under
 `/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/phase5/`.
@@ -2385,6 +2624,235 @@ false-advisory for an unbounded walk, and no fixture or corpus scene
 nests composites anywhere near that deep. Deliberately out of scope: the
 census remains user-run (C-MEAS), unchanged from fix round 1.
 
+### Phase B — the removal, landed 2026-09-06
+
+Branch `relief-followups` off `9fe3374e`, three commits: **`8cef18c3`**
+(the removal), **`853ce977`** (a Blender-exporter bug it exposed),
+**`45c04be8`** (the living-surface doc sweep). §7.5 carries the
+step-by-step outcome table and the shim's exact definition; this record
+carries what was MEASURED and what was found on the way.
+
+**What a scene with the chunk now does.** Verified headlessly on a scratch
+scene (`piecewise_linear_function2d` + `bumpmap_modifier`): derive emits
+`chunk type 'bumpmap_modifier' has been removed -- …` naming
+`relief_modifier` and the exact migrator command, the modifier manager
+registers nothing, and the bare `unknown chunk type` string does not
+appear. The three migrated in-tree scenes (`velvet_cushion`,
+`sculptors_studio`, `sms_veach_egg_bumpmap`) parse with **zero
+diagnostics**.
+
+**Red-proof of the shim's fold.** The claim under test is that
+`RISE_API_CreateBumpMapModifierEx` applies §7.2's algebra, not merely that
+`ReliefModifier` is correct. Flipping the sign in `RISE_API.cpp`
+(`-scale` → `scale`, `-scale*2*window` → `scale*2*window`), rebuilding, and
+re-running: **`ReliefModifierTest` 116 passed / 2 failed** — both failures
+are 2(b), the shim case (worst |dN| **0.0749** normalize FALSE, **1.68**
+normalize TRUE), while 2(a) — the by-hand fold against the same legacy
+reference — stayed **green**. That is the discrimination the split into
+2(a)/2(b) exists for: 2(a) alone would have passed a shim with an inverted
+fold. Reverted; suite back to 118/0.
+
+**The oracle, now that the class is gone.** Test 2's `BumpMap` side was
+replaced by `LegacyBumpReference`, a from-scratch transcription of the
+deleted `Modify` expression — kept verbatim including the un-distributed
+`(f(+w)*S) − (f(−w)*S)` association, since that association is what the
+1e-12 bound is measured against. Agreement at 1000 random (u,v):
+worst |dN| **2.220e-16**, worst |dONB| **2.220e-16** (normalize FALSE) /
+**3.331e-16** (TRUE) — the same order as before the class was deleted.
+
+**FINDING 1 (correctness, in this arc's own prose): the "inert at
+`windowsize ≤ 0`" justification was half wrong.** Writing test 2(d)
+measured it: the legacy class was inert at **exactly zero** only. At a
+NEGATIVE window the central difference was the *negation* of the one at
+`|window|`, and the `dWindow > 0` gate additionally skipped the
+`normalize_gradient` divide. The migrator's `scale 0` rule (unchanged) is
+therefore a deliberate divergence on the negative half rather than a
+match. §7.2 now says so; 2(d) asserts both halves — agreement at 0,
+divergence-on-purpose below it — so nobody later "fixes" the shim toward
+the accident. No in-tree scene ever used a negative `windowsize`, so
+nothing renders differently.
+
+**FINDING 2 (pre-existing, and it is a real bug): the Blender bridge
+exported `window = 1.0`.** `_build_bump_modifier` in
+`src/Blender/addons/rise_renderer/exporter.py` emitted `1.0` as the
+central-difference HALF-STEP, in UV units. `Painter::Evaluate` — the path
+the bridge's height painter is sampled through — CLAMPS `(u, v)` to
+`[0, 1]`, so every difference was `f(1, v) − f(0, v)`: the same two texels
+at every point on the surface. An exported Blender Bump node therefore
+produced a **constant tilt** of the shading normal with no relation to the
+height map's gradient — not a bump at all. Fixed to `0.005` (roughly a
+texel on a 200px map) in `853ce977`, with the reason recorded at the site.
+This DOES change the look of any scene exported from a Blender Bump node,
+necessarily, since the old value could not express a bump; no in-tree
+scene or test carries an exported bump modifier, and `modifier_cache`'s key
+already excluded `window`, so nothing else needed touching. There is no
+exporter-side bump test to adjust (`src/Blender/addons/rise_renderer/`
+carries only `test_hair_export.py`; `tests/BlenderBridgeHairTest.cpp` is
+hair-only) — **superseded by the "Phase B — review round 1" record below:
+this fix had an un-costed AMPLITUDE consequence, and `BlenderBridgeHairTest`
+gained a bump case once that was fixed.**
+
+**Tests repointed rather than deleted.** Two suites outside the four the
+plan named also instantiated `BumpMap`, and both were repointed at the
+UV-domain `ReliefModifier` with the §7.2 fold applied so their goldens are
+unchanged — which pins the fold a third and fourth time, on real geometry:
+
+- `HairTangentPlumbingTest` 11/12 (fiber-tangent preservation, and the
+  non-hair `CreateFromW` byte-match). Legacy `(S=1, W=0.05, normalize
+  FALSE)` folds to `S' = −0.1`, and with the Blinn sign that reproduces
+  exactly the `(0.04, −0.03)` tilt the goldens were written against.
+  123/0.
+- `SurfaceCurvatureTest` (e) (`curv` invariance under a normal-perturbing
+  modifier). Legacy `(0.75, 0.01, FALSE)` folds to `S' = −0.015`. 94/0.
+
+`ReliefModifierTest` test 7b lost its BumpMap sibling block (the class is
+gone; NormalMap and ReliefModifier still share the
+`ModifierFrame::HasCoherentTangent` gate, which is what 7b exists to pin)
+and its now-unused `ConstFunction2D` stub. Test 10(f) inverted from "still
+parses, warns once" to "is refused, and the refusal names the replacement
+and the migrator"; **10(g) is new** and pins that the retired table is
+SCOPED — `bumpmap_modifier_xyzzy` gets the generic `unknown chunk type`
+message and is NOT handed the migration advice, so a lookup that matched
+on a prefix or returned its first row unconditionally cannot hide.
+
+**Gate, on the final tree.** `make -C build/make/rise -j8 all` and
+`tests` — **zero warnings** on a build that recompiled every touched
+file. Xcode `RISE-GUI` `Deployment` **clean** rebuild: `** BUILD
+SUCCEEDED **`, the only line matching `warning:` being the known
+`extlib/oidn/install/lib` search-path note. Suites:
+`ReliefModifierTest` **118/0** (was 106), `CstResolverTest` **60/0**,
+`CstRecordDeriveTest` **23/0**, `CstIncrementalSafetyTest` **38/0**,
+`CstSourceInstanceTest` **455/0**, `SceneEditorSuggestionsTest` all-pass,
+`SourceHygieneTest` **164/0** (the `IJob` vtable manifest is untouched —
+the virtual's signature is frozen, which is the point),
+`GlintModifierTest` all-pass, `HairTangentPlumbingTest` **123/0**,
+`SurfaceCurvatureTest` **94/0**. `CstDeriveGoldenTest` **442 MATCH, 1
+DRIFT** of 443, 0 UNCOVERED, 0 STALE — the single DRIFT is
+`bdpt_crystal_garden`, the pre-existing uncommitted edit §11 excludes, and
+**no regeneration was needed**: this phase's scene edits are comments
+only, and `DumpJob` does not record them.
+`tools/migrate_scenes_relief.py --selftest` **18/18**;
+`--dry-run -v --root scenes` still reports **0 `bumpmap_modifier` chunks
+seen**.
+
+**Left undone / deliberately not touched.** Historical records keep their
+text — `docs/SMS_*`, `GUILLOCHE_*`, `NORMAL_USAGE_AUDIT.md`,
+`GEOMETRY_SHADING_SIGNALS_DESIGN.md`, `HAIR_FUR_DESIGN.md`,
+`ENAMEL_SPARKLE_BRDF.md` are past-tense findings and
+implementation-precedent citations (several cite `BumpMap.cpp` line
+numbers), not living recommendations; only `HairBSDF.h`'s citation was
+touched, because it is source. The census in §9 remains user-run. The
+Windows and Android build-project edits are unverified by compilation here
+(no MSVC/NDK on this machine) — they are line removals mirroring the
+verified Unix and Xcode ones, and `Library.vcxproj{,.filters}` and
+`rise_sources.cmake` each have zero remaining `BumpMap` references.
+
+### Phase B — review round 1 (2026-09-06)
+
+**P1: the window fix (`853ce977`) had an un-costed amplitude consequence.**
+FINDING 2 above fixed the exported Bump node's central-difference
+half-step (`window`) from `1.0` (the whole UV range — could not express a
+bump at all) to `0.005` (texel-scale). That fix is correct *on its own
+terms*, but the bridge (`src/Blender/native/rise_blender_bridge.cpp` →
+`IJob::AddBumpMapModifier`, ABI-frozen per §7.5's shim note) reaches only
+`RISE_API_CreateBumpMapModifierEx`'s **normalizeGradient=false** form —
+the legacy fold `scale' = -scale*2*window` — so the delivered tilt COUPLES
+to `window`. Shrinking `window` by 200× (`1.0` → `0.005`) silently shrunk
+every exported bump's amplitude by the same 200× on top of the intended
+fix, because `2*0.005 / 2*1.0 = 0.01`. No in-tree scene or test carries an
+exported bump modifier, so nothing rendered differently in this tree —
+but the very first scene exported from a Blender Bump node after `853ce977`
+would have looked flat rather than merely different.
+
+**The fix: an ABI v11 `normalize` field, threaded to the shim's
+`normalizeGradient=true` form.** `IJob::AddBumpMapModifier`'s signature
+stays ABI-frozen (§7.5) — it cannot grow a parameter — so the bridge
+route is a bypass, not a widening of that virtual: `rise_blender_modifier`
+(`rise_blender_bridge.h`) gained a `normalize` field (appended after
+`window`, every earlier field keeps its offset — the same append-only
+discipline as the v9/v10 hair fields), and `add_modifier`'s
+`RISE_BLENDER_MODIFIER_BUMP` case now resolves the height function via
+`IJobPriv::GetFunction2Ds()->GetItem(...)`, calls
+`RISE_API_CreateBumpMapModifierEx(..., normalizeGradient = modifier.normalize)`
+directly, and registers the result via
+`IJobPriv::GetModifiers()->AddItem(...)` — the same resolve/create-Ex/
+AddItem-then-release shape the old `normalize_gradient TRUE` registry
+parser used, and the same pattern already used a few lines above in this
+file for the hair scalar-painter wrapper. `exporter.py`'s
+`_build_bump_modifier` sets `normalize=True` on every exported bump, so
+the delivered tilt is now `strength*distance*gradient` — matching
+Blender's own Bump node convention (`tilt = Strength*Distance*∇h`) —
+independent of `window`; the `0.005` half-step from `853ce977` is now a
+pure finite-difference step-size refinement, not an amplitude choice.
+`RISE_BLENDER_API_VERSION` 10 → 11; `bridge.py`'s `_Modifier` ctypes
+struct and `_marshal_modifier` mirror the new field (tolerant `getattr`
+default, matching the v9/v10 pattern); `RISE_BLENDER_MODIFIER_NORMAL_MAP`
+ignores it.
+
+**Red-proofed.** `BlenderBridgeHairTest.cpp` gained group 6
+(`TestBumpModifierNormalizeFold`): a linear-ramp `IFunction2D`
+(`height(u,v) = k·u`, gradient exactly `(k, 0)` everywhere, so the central
+difference has no truncation error at any `window`) driven through
+`add_modifier` with `normalize=1` confirms the delivered tilt ratio
+(`vNormal.x / vNormal.z`, exact under normalization since T⊥N) equals
+`k·strength·distance` to `1e-9`; the same scene with `normalize=0` is the
+RED-PROOF — it reproduces the *pre-fix* window-coupled ratio
+(`k·strength·distance·2·window`) exactly, ~100–200× smaller at the
+exporter's `window=0.005`, and would fail the `normalize=1` assertion if
+`add_modifier` were reverted to call `IJob::AddBumpMapModifier`
+unconditionally. `RISE_BLENDER_API_VERSION == 11` and the `normalize`
+field's append-only offset are pinned alongside the existing v9/v10
+layout checks; `test_hair_export.py`'s
+`test_expected_api_version_matches_the_header` and
+`test_all_pointer_target_structs_match` (which walks every struct in
+`_POINTER_TO_C`, `_Modifier` included) cover the Python mirror without a
+new test — drift in `_Modifier`'s `_fields_` now fails loudly there.
+
+**P2s, same review round.**
+(1) `tools/migrate_scenes_relief.py`'s module docstring had the
+`normalize_gradient` TRUE/FALSE labels swapped in "THE ALGEBRA (§7.2)"
+(the legacy modifier divides by `2*windowsize` only when
+`normalize_gradient TRUE`, matching `RISE_API.cpp`'s fold and the
+docstring's OWN opening paragraph and `compute_sprime`'s code, both of
+which were already correct) — text-only fix, no behavior change.
+(2) Three citations of `7186fa25` (§7.5, this section's own predecessor
+table row, and the Phase B record's opening line) named a dangling,
+unreachable commit — `git merge-base --is-ancestor 7186fa25 HEAD` fails —
+while `8cef18c3` (same commit message: "remove bumpmap_modifier — chunk,
+class, and its Cst special case") is the reachable equivalent, evidently
+left behind by a rebase. All three replaced.
+(3) The `kRetiredChunks` table (`Cst.cpp`, consulted only by
+`ResolveChunkParams` for the CST derive's own diagnostic) did not reach
+the two OTHER surfaces that resolve a chunk keyword against the registry:
+`SchemaGen.cpp`'s `describe_chunk`/`read_schema` and `AgentSession.cpp`'s
+`insert_chunk` near-miss analyser both fell through to the generic
+"unknown chunk type" / edit-distance-ranked near-miss for a keyword like
+`bumpmap_modifier` — whose actual replacement, `relief_modifier`, is
+edit-distance-far enough from it to never rank. Exposed via
+`Cst::RetiredChunkAdvice(const std::string&)` (declared in `Cst.h`
+non-static; `AgentSession.cpp` already included `Cst.h`, and `SchemaGen.cpp`
+gained the include — no layering violation, Agent already depends on
+Cst). `SchemaGenForChunk`'s error object and `AttachRejectionIssues`'
+`unknown_chunk_type` clause both consult it before falling back to the
+generic message / near-miss suggestion. `AgentReadValidateTest.cpp`
+gained a case in the `[read_schema]` block asserting `bumpmap_modifier`
+gets the directed replacement/migrator message and `bumpmap_modifier_xyzzy`
+gets the honest generic one (mirrors `ReliefModifierTest`'s 10(f)/10(g) one
+layer up).
+(4) `Job.h`'s `AddBumpMapModifier` doc comment ("Creates a bump map") and
+`IJob.h`'s `AddReliefModifier` comment ("the OPPOSITE of
+`bumpmap_modifier`") were the only two sibling comments across both files
+missing the removal/shim note every other reference to the removed chunk
+carries; both now name the removal date and `docs/RELIEF_MODIFIER_DESIGN.md`
+7.5.
+
+**Gate.** Both warning gates clean on the touched files. Suites:
+`ReliefModifierTest` unchanged, `BlenderBridgeHairTest` (new group 6),
+`AgentReadValidateTest` (new retired-chunk case), `AgentChunkCrudTest`,
+`SourceHygieneTest`, `CstResolverTest` — see the commit history for exact
+counts. `tools/migrate_scenes_relief.py --selftest` unaffected (docstring
+only). Branch `fix-phase-b-review` off `913436cd`.
+
 ### Follow-ups (chips taken in-session)
 
 Three loose ends flagged during review of the branch tip were closed
@@ -2474,3 +2942,116 @@ in-session rather than left as chips:
   `ApplyScalarHeightToObject` actually do).
   `DisplacedGeometryTest` 20/20 (was 19/19), `SourceHygieneTest` 164/0,
   `ReliefModifierTest` 106/0; both warning gates clean on a full rebuild.
+
+### Follow-ups on `relief-followups` (2026-09-06)
+
+Three separate arcs landed on branch `relief-followups`, off `913436cd`.
+None is a Phase deliverable of this document; they are recorded here so
+the branch's commit range is accounted for and so a reader of §3.3 can
+find why its "mesh-only" caveat is gone.
+
+| Arc | Commits | What |
+|---|---|---|
+| **Texture footprint on every geometry** | `104b165c`, `ff9844e7`, `bebeace3`, then fix round 1 in `5bc02109` + this record's sibling | `txFootprint` is produced at the `Object::IntersectRay` layer for **every** geometry rather than inside the two mesh intersectors, and the object→world fold is the exact forward linear map rather than `\|det M\|^(1/3)`. This is what retired §3.3's mesh-only claim (`bebeace3`) — the surviving restriction is **primary hits only**. Fix round 1 then corrected the analytic primitives' UV Jacobian, which was being published in the geometry's own parameter chart instead of the texcoord chart. Full record: [TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md) §10 and §10.8 |
+| **Phase B review round 1** | `43bd64b3`, `92575c5d`, `d91cb374`, `5cea78c3`, plus the census `549c4563` | The Blender bridge's bump-modifier amplitude was coupled to the window rather than the exported scale (P1); retired-chunk advice now reaches SchemaGen and `insert_chunk` (P2-3); doc-comment cleanup (P2-1, P2-4); a dangling commit hash (P2-2). Round record in §12 above |
+| **Displacement pipe** | `904cd326` | `displaced_geometry.displacement`, `composite_function2d_painter.child_a`/`.child_b` and `sdf_geometry.heightfield_function` now declare `ParameterPipe::Function2D` + `referenceCategories = {Painter, Function}`, replacing the hand-maintained name list in `Cst.cpp`'s `FunctionSubNamespace`. Guarded registry-wide by `CstResolverTest`'s `[func2d-registry-invariant]` case, so a brand-new Function2D-piped parameter needs no `Cst.cpp` edit |
+
+
+### Fix round 2 on `relief-followups` (2026-09-06)
+
+Review round 2 on the branch. Two correctness findings, four documentation
+corrections, one new test row.
+
+#### P1 — the Blender Bump node exported with its sign flipped
+
+`_build_bump_modifier` sent `scale = +Strength*Distance`. Follow the chain:
+the bridge's `normalize=True` (added in `43bd64b3`, one round earlier)
+selects `RISE_API_CreateBumpMapModifierEx`'s window-independent fold
+`scale' = −scale`, and `ReliefModifier::Modify` computes
+`N − (T·h_T + B·h_B)·scale'`. One negation, so the delivered normal was
+`N + Strength·Distance·∇h` — leaning **toward** the rise, the removed
+`bumpmap_modifier`'s "the field is depth" convention. Blender's Bump node
+with Invert off gives `N − amp·∇h`, and so do Blinn and PBRT. Every
+bump-mapped Blender material rendered with its dents and bumps swapped.
+
+The fold is not the thing to change — it is what makes the ABI-frozen
+`IJob::AddBumpMapModifier` shim exact for out-of-tree callers, and
+`ReliefModifier`'s own sign is already the Blinn one (`ReliefModifierTest`
+test 1 asserts it independently of the formula). The exporter is where the
+convention is chosen, so the exporter supplies the matching negation:
+a new pure helper `_bump_modifier_scale(strength, distance, invert)`
+returning `−Strength·Distance`, or `+` when the node's `invert` property is
+set — which the exporter had not been reading at all. A negative
+`Strength` (Cycles allows it) flows through and composes with `invert` the
+way two negations should. The modifier cache key now keys on the signed
+scale, so an inverted and a non-inverted bump on the same height painter
+no longer collide.
+
+Tests, at both ends of the chain:
+
+- `tests/BlenderBridgeHairTest.cpp` case **6a** had pinned the wrong sign
+  (`mScale = +strength*distance`); it now marshals the value the exporter
+  actually produces and asserts the tilt ratio is **negative** — stated
+  independently of the formula, so a re-derivation cannot quietly agree
+  with itself. New case **6c** marshals the Invert-ON amplitude and
+  asserts the exact opposite. Red-proof: restoring `+strength*distance`
+  fails 6a's sign assertion alone (133 checks, 1 failure).
+- `src/Blender/addons/rise_renderer/test_hair_export.py` gained
+  `ExporterBumpSignTest`, six behavioural cases on the helper. This is the
+  file's **first** behavioural exporter test — every other one is
+  source-level, because `exporter.py` imports `bpy` at module scope. A
+  sign is exactly the thing a regex pins badly, so it is imported for
+  real: four stub modules (`bpy`, `bpy_extras.node_shader_utils`,
+  `mathutils`) plus a synthetic `rise_renderer` package whose `__path__`
+  points at the directory, which sidesteps the real `__init__.py` (that
+  one does need a live Blender). Nothing in the helper touches bpy. A
+  seventh, source-level case pins that `_build_bump_modifier` actually
+  passes the node's `invert` through rather than a hard-coded `False`.
+  Red-proofs: flipping the helper fails 3 of 6; hard-coding `False` at the
+  call site fails the seventh. `python3 -m unittest` in that directory:
+  60 tests, OK.
+
+#### P2 — the relief auto step spanned two pixel footprints
+
+`s = max(step, fw)` while `s` is the HALF-step and the difference spans
+`2s`. §3.3 now carries the corrected rule, the measurement, and why the
+error was invisible until this branch made `fw` real on analytic
+primitives; the full record — both scenes' high-frequency-energy tables,
+the far-field-fade check on `relief_sphere_no_uv`, and the falsification
+of the "just set an explicit `step`" alternative — is in
+[TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)
+§10.9(A). Adopted `s = max(step, fw/2)`.
+
+`ReliefModifierTest` test 4's fw-blind step-height sweep now checks the
+step in **closed form** per footprint width rather than only monotonically
+— monotonicity cannot distinguish `fw` from `fw/2`, which is why the
+original error slipped through a test written specifically to guard this
+rule. Two red-proofs: restoring `s = fw` leaves every monotonicity
+assertion green and fails three of the four closed-form ones
+(124 passed / 3 failed); deleting the footprint block entirely fails all
+six (121 / 6).
+
+#### Documentation
+
+| Finding | Fix |
+|---|---|
+| §9's census read-set counts (`materials-and-media-basics` 9×, `procedural-textures` 6×) were produced by grepping the trajectory JSON for each skill's NAME, which also hits the skill listing in every system prompt and every cross-reference inside another skill. | Recounted over `run_type == "tool"` / `name == "read_skill"` records: **3** and **2**, in 3/6 and 2/6 runs. The inference the counts carried does not survive: the three runs that read the recipe file are exactly the three **gpt** runs, of which 1/3 adopted relief, while the three **gemini** runs adopted 3/3 having never opened it (they reached the chunk by `read_schema`, and in r2 through the advisory). The headline — 4/6 from a 0/12 baseline with no verb — is unchanged; the attribution to the recipe is withdrawn and replaced with what the data does support. §9 now carries the per-skill table. |
+| §12 Phase 5's "`box_geometry` — an analytic primitive, so no distance fade either way" | Marked **SUPERSEDED** in place, naming the arc that retired it and noting the amplitude sweep was made without the fade in frame. The Phase-3 review's **P1-2** row, whose remedy was to add that same mesh-only caveat to `procedural-textures.md`, is likewise marked superseded — correct against the tree it was raised on, remedy since rewritten |
+| Four stale "footprint is mesh-only" scene comments | `weathered_workbench`'s bench-top box comment, `receding_pier`'s header (the `displaced_geometry` wrapper is **kept**, but its reason is now the finite tessellated deck, not "a box has no footprint"), and two sites in `fabric_swatches` that listed "non-mesh geometry" alongside secondary bounces as an `fw == 0` case. `skills/agent/procedural-textures.md`'s step paragraph also now says *half* the footprint wins |
+| `tools/migrate_scenes_relief.py`'s docstring, inline comment and printed WARN all said `windowsize <= 0` made the legacy modifier "inert … samples the same point on both sides" | True at **exactly** zero only. Below zero the legacy class negated the difference and skipped the `normalize_gradient` divide — §7.2 already recorded this; the three texts had not caught up. All three now state both halves and say plainly that `scale 0` **reproduces** the legacy behaviour at 0 and **deliberately diverges** from it below 0. `--selftest` still 0 failures (its 2b/2c comments say which case is which now) |
+| `Cst.cpp`'s `FunctionSubNamespace` cited "Job.cpp ~6248" for the `transfer_*` channels | Cited by symbol: `Job::AddDirectVolumeRenderingShader`, plus its spectral sibling |
+
+Two further corrections belong to the footprint document and are recorded
+there (§10.9 B/C): the re-measured pre-chart-map LOD blur figures, the
+cylinder cap transposition — which was backwards for exactly one of the
+three axes — and a mirrored-UV mesh row added to `TextureFootprintTest`
+test 11 so the `dtdv = −1` handedness branch is under the
+finite-difference oracle.
+
+**Gate.** Clean `make -C build/make/rise -j8 all`, zero warnings.
+`TextureFootprintTest` 113/113, `ReliefModifierTest` 127/127,
+`BlenderBridgeHairTest` 133 checks / 0 failures, `TextureExpressionVMTest`
+685/685, `SourceHygieneTest` 164/164, `CstDeriveGoldenTest` 442 MATCH /
+1 DRIFT (`bdpt_crystal_garden`, pre-existing), `migrate_scenes_relief.py
+--selftest` 0 failures, Blender add-on `python3 -m unittest` 60 tests OK.
+No golden regeneration: no scene's chunk content changed, only comments.

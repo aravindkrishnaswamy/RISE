@@ -1621,7 +1621,19 @@ namespace RISE
 		// Adds modifiers
 		//
 
-		//! Adds a bump map
+		//! Adds a bump map -- a LEGACY SHIM since 2026-09-06.
+		//!
+		//! The `bumpmap_modifier` chunk and the `BumpMap` class were
+		//! REMOVED (docs/RELIEF_MODIFIER_DESIGN.md 7.5); this virtual's
+		//! SIGNATURE is ABI-frozen and stays, because the Blender bridge
+		//! (src/Blender/native/rise_blender_bridge.cpp) and out-of-tree
+		//! IJob impls call it.  It now registers a `relief_modifier` over
+		//! a `Function2DScalarPainter` in the UV domain, with the design
+		//! 7.2 amplitude fold (`S' = -S*2W`; a non-positive `window`,
+		//! which the removed class treated as inert, folds to `scale 0`).
+		//! In-tree callers should use `AddReliefModifier` instead: any
+		//! scalar painter as the height field, no texcoords needed, and
+		//! the Blinn sign convention rather than the legacy depth one.
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddBumpMapModifier(
 			const char* name,										///< [in] Name of the modifiers
@@ -4469,7 +4481,10 @@ namespace RISE
 		//! is a LENGTH, not a colour: it must never pass through JH
 		//! spectral uplift, which is exactly what the scalar pipe
 		//! guarantees.  Positive height rises along +N (Blinn / PBRT-v4),
-		//! the OPPOSITE of `bumpmap_modifier`.  `domain` is `surface`
+		//! the OPPOSITE of `bumpmap_modifier` (REMOVED 2026-09-06 along
+		//! with the `BumpMap` class -- docs/RELIEF_MODIFIER_DESIGN.md 7.5;
+		//! `AddBumpMapModifier` above is its ABI-frozen legacy shim, kept
+		//! only for the Blender bridge and out-of-tree callers).  `domain` is `surface`
 		//! (default; 3D field, world-unit tangent step, no texcoords
 		//! required) or `uv` (legacy sampling geometry).  `step` <= 0
 		//! selects the automatic rule (surface: max(1e-3, pixel

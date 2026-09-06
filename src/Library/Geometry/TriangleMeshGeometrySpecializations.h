@@ -297,11 +297,31 @@ namespace RISE
 					(dNraw_dv.y - shadingNormal.y * dv_dot_n) * invLen,
 					(dNraw_dv.z - shadingNormal.z * dv_dot_n) * invLen );
 
+				// THE CHART MAP (docs/GEOMETRY_DERIVATIVES.md "The texcoord
+				// chart map").  On the useUVJacobian path dpdu/dpdv ARE the
+				// derivatives with respect to the stored per-vertex texture
+				// coordinate that ri.ptCoord interpolates, so the map is the
+				// identity -- this is the one geometry family for which the
+				// two charts coincide, and why the mesh path was correct
+				// before the map existed.  On the barycentric-edge FALLBACK
+				// (degenerate or absent UV triangle) dpdu/dpdv are edge
+				// vectors with no relation to ptCoord at all, so the map is
+				// left INVALID and SolveFootprintUV declines rather than
+				// publishing an edge-chart Jacobian as a texcoord one.
+				ri.derivatives.dsdu = 1.0; ri.derivatives.dsdv = 0.0;
+				ri.derivatives.dtdu = 0.0; ri.derivatives.dtdv = 1.0;
+				ri.derivatives.texChartValid = useUVJacobian;
+
 				// Enforce right-handedness against shading normal.
 				const Vector3 cross = Vector3Ops::Cross( dpdu, dpdv );
 				if( Vector3Ops::Dot( cross, shadingNormal ) < 0.0 ) {
 					dpdv = Vector3( -dpdv.x, -dpdv.y, -dpdv.z );
 					dndv = Vector3( -dndv.x, -dndv.y, -dndv.z );
+					// dpdv now points down -d/dv, so the chart map must say so:
+					// t decreases as the derivative parameter increases.  Mip
+					// LOD squares and would not notice; the finite-difference
+					// oracle in tests/TextureFootprintTest.cpp does.
+					ri.derivatives.dtdv = -1.0;
 				}
 				ri.derivatives.dpdu = dpdu;
 				ri.derivatives.dpdv = dpdv;
@@ -338,11 +358,6 @@ namespace RISE
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
-
-				// Project ray differentials onto the surface UV plane
-				// and store the texture-space footprint.  No-op when
-				// ray.hasDifferentials = false.
-				ComputeTextureFootprint( ri, ri.ray );
 			}
 		}
 	}

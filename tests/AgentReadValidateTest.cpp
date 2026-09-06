@@ -2856,6 +2856,37 @@ int main()
 		Check( bad.find( "\"error\"" ) != std::string::npos,
 		       "ReadSchema(not_a_chunk) returns an error object, gracefully" );
 	}
+	// P2-3 (Phase B review, docs/RELIEF_MODIFIER_DESIGN.md 7.5): a chunk
+	// keyword that RISE USED to accept and has since REMOVED (here
+	// `bumpmap_modifier` -> `relief_modifier`) must get the SAME directed
+	// replacement/migrator message Cst.cpp's own derive-time diagnostic
+	// gives (`Cst::RetiredChunkAdvice`, consulted by SchemaGenForChunk) --
+	// not the bare generic "unknown chunk type".  A keyword that was NEVER
+	// a chunk (retired-table lookup must be SCOPED, not a prefix/first-row
+	// match) still gets the honest generic message.  Mirrors
+	// ReliefModifierTest.cpp's 10(f)/10(g) CST-derive coverage of the same
+	// table, one layer up at the agent surface.
+	{
+		const std::string retired = session->ReadSchema( "bumpmap_modifier" );
+		Check( retired.find( "\"error\"" ) != std::string::npos,
+		       "ReadSchema(bumpmap_modifier) returns an error object" );
+		Check( retired.find( "has been removed" ) != std::string::npos,
+		       "ReadSchema(bumpmap_modifier) names the removal, not the bare generic message" );
+		Check( retired.find( "relief_modifier" ) != std::string::npos,
+		       "ReadSchema(bumpmap_modifier) names `relief_modifier` as the replacement" );
+		Check( retired.find( "tools/migrate_scenes_relief.py" ) != std::string::npos,
+		       "ReadSchema(bumpmap_modifier) names the migrator that converts a scene losslessly" );
+		Check( retired.find( "unknown chunk type" ) == std::string::npos,
+		       "ReadSchema(bumpmap_modifier) does NOT fall back to the bare generic message" );
+
+		const std::string neverWas = session->ReadSchema( "bumpmap_modifier_xyzzy" );
+		Check( neverWas.find( "\"error\"" ) != std::string::npos,
+		       "ReadSchema(bumpmap_modifier_xyzzy) returns an error object" );
+		Check( neverWas.find( "unknown chunk type" ) != std::string::npos,
+		       "ReadSchema(bumpmap_modifier_xyzzy) (a keyword RISE never had) gets the generic message" );
+		Check( neverWas.find( "relief_modifier" ) == std::string::npos,
+		       "ReadSchema(bumpmap_modifier_xyzzy) is NOT handed the bumpmap migration advice" );
+	}
 	// The whole-grammar schema is non-empty + balanced.
 	{
 		const std::string all = session->ReadSchema();

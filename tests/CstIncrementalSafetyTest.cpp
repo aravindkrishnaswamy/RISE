@@ -392,33 +392,13 @@ int main()
 		j->release(); jFull->release();
 	}
 
-	// OPTIONAL-SLOT REMOVAL (workstream #3): removing a modifier from a stable object CLEARS it in
-	// place and matches a FULL derive of the edited doc (a fresh object has the slot unset).
-	{
-		Document doc = ParseToCst(
-			"RISE ASCII SCENE 7\n"
-			"uniformcolor_painter\n{\nname p\ncolor 0.5 0.5 0.5\n}\n"
-			"lambertian_material\n{\nname m\nreflectance p\n}\n"
-			"bumpmap_modifier\n{\nname bm\nfunction p\n}\n"
-			"sphere_geometry\n{\nname g\nradius 1\n}\n"
-			"standard_object\n{\nname o\ngeometry g\nmaterial m\nmodifier bm\n}\n" );
-		Job* j = new Job(); std::vector<std::string> d0; DeriveToJob( doc, *j, &d0 );
-		const NodeId oId = DocFindByName( doc, "standard_object/o" );
-		Document docE = DocSetParamValue( doc, oId, "modifier", 0, "none" );
-		std::vector<NodeId> closure = DocEditClosure( docE, oId );
-		std::vector<std::string> di; int applied = DeriveToJobIncremental( docE, *j, closure, &di );
-		Job* jFull = new Job(); std::vector<std::string> dF; DeriveToJob( docE, *jFull, &dF );
-		IObjectPriv* o = j->GetObjects() ? j->GetObjects()->GetItem( "o" ) : 0;
-		Check( applied >= 1, "removal modifier: edit applies in place (not refused)" );
-		Check( o && o->GetModifier() == 0, "removal modifier: slot CLEARED" );
-		Check( DumpJob( *j ) == DumpJob( *jFull ), "removal modifier: incremental == full derive of the edited doc" );
-		j->release(); jFull->release();
-	}
-
-	// OPTIONAL-SLOT REMOVAL (relief-modifier arc, Phase 3): the same removal-safety
-	// check as the bumpmap_modifier block above, twinned onto relief_modifier -- its
-	// `height` slot is a SCALAR-painter reference (a colour painter is refused there),
-	// so this uses a real scalar_painter rather than reusing the bumpmap twin's `p`.
+	// OPTIONAL-SLOT REMOVAL (workstream #3): removing a modifier from a stable object CLEARS
+	// it in place and matches a FULL derive of the edited doc (a fresh object has the slot
+	// unset).  This block was added in the relief-modifier arc as the twin of an identical
+	// one over `bumpmap_modifier`; that chunk was REMOVED 2026-09-06
+	// (docs/RELIEF_MODIFIER_DESIGN.md 7.5) and its block went with it, leaving this one as
+	// the modifier-slot removal check.  `height` is a SCALAR-painter reference (a colour
+	// painter is refused there), hence the dedicated scalar_painter.
 	{
 		Document doc = ParseToCst(
 			"RISE ASCII SCENE 7\n"

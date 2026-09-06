@@ -395,6 +395,17 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 						ri.derivatives.dndu = sd.dndu;
 						ri.derivatives.dndv = sd.dndv;
 						ri.derivatives.valid = true;
+						// The texcoord chart map travels with the derivatives: the
+						// footprint solve needs to know how this primitive's own (u, v)
+						// parameters relate to the (s, t) stamped into ptCoord above.
+						// Without it SolveFootprintUV publishes radians where the
+						// texture sampler expects [0, 1] -- see the chart-map comment on
+						// SurfaceDerivativesInfo.
+						ri.derivatives.dsdu = sd.dsdu;
+						ri.derivatives.dsdv = sd.dsdv;
+						ri.derivatives.dtdu = sd.dtdu;
+						ri.derivatives.dtdv = sd.dtdv;
+						ri.derivatives.texChartValid = sd.texChartValid;
 						if( SurfaceCurvatureDemand::Any() ) {
 							ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 						}
@@ -533,6 +544,17 @@ void CylinderGeometry::IntersectRay( RayIntersectionGeometric& ri, const bool bH
 				ri.derivatives.dndu = sd.dndu;
 				ri.derivatives.dndv = sd.dndv;
 				ri.derivatives.valid = true;
+				// The texcoord chart map travels with the derivatives: the
+				// footprint solve needs to know how this primitive's own (u, v)
+				// parameters relate to the (s, t) stamped into ptCoord above.
+				// Without it SolveFootprintUV publishes radians where the
+				// texture sampler expects [0, 1] -- see the chart-map comment on
+				// SurfaceDerivativesInfo.
+				ri.derivatives.dsdu = sd.dsdu;
+				ri.derivatives.dsdv = sd.dsdv;
+				ri.derivatives.dtdu = sd.dtdu;
+				ri.derivatives.dtdv = sd.dtdv;
+				ri.derivatives.texChartValid = sd.texChartValid;
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
@@ -749,10 +771,39 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 					break;
 			}
 
+			// THE CHART MAP for the cap (docs/GEOMETRY_DERIVATIVES.md "The
+			// texcoord chart map").  FillSurfaceNormalUV stamps exactly the
+			// (ra, rb) disk coordinate this branch differentiates --
+			// s = (ra/r + 1)/2, t = (rb/r + 1)/2 -- so before the handedness
+			// swap below the map is the IDENTITY (unlike the side wall and
+			// every other analytic primitive, whose charts are normalised
+			// angles).  The swap exchanges which of the two the derivative
+			// `u` is, and the map has to follow.
+			sd.dsdu = 1.0; sd.dsdv = 0.0;
+			sd.dtdu = 0.0; sd.dtdv = 1.0;
+			sd.texChartValid = true;
+
 			// Orient (dpdu, dpdv, n) right-handed: swap if the frame is left-handed
-			// (happens on the -axis cap where the outward normal is negated).
+			// WHICH cap this fires on is NOT "the -axis one" (this comment
+			// said that until fix round 2, and so did
+			// docs/GEOMETRY_DERIVATIVES.md and TextureFootprintTest).  It is
+			// whichever cap's outward normal opposes `dpdu x dpdv`, and the
+			// (ra, rb) pairs above are not consistently cyclic:
+			//
+			//     axis 'x'  (ra, rb) = (y, z)  dpdu x dpdv = +X  -> swaps on -x
+			//     axis 'y'  (ra, rb) = (x, z)  dpdu x dpdv = -Y  -> swaps on +y
+			//     axis 'z'  (ra, rb) = (x, y)  dpdu x dpdv = +Z  -> swaps on -z
+			//
+			// 'y' is the odd one out because its pair is (x, z) where the
+			// cyclic choice would be (z, x).  Measured by instrumenting this
+			// branch and driving all six caps through
+			// TextureFootprintTest's chart oracle (fix round 2); the FD
+			// oracle's own cap case is the +y cylinder, so the swapped
+			// branch IS the one under test.
 			if( Vector3Ops::Dot( Vector3Ops::Cross( dpdu, dpdv ), objSpaceNormal ) < 0.0 ) {
 				Vector3 tmp = dpdu; dpdu = dpdv; dpdv = tmp;
+				sd.dsdu = 0.0; sd.dsdv = 1.0;
+				sd.dtdu = 1.0; sd.dtdv = 0.0;
 			}
 
 			sd.dpdu = dpdu;
@@ -838,6 +889,34 @@ SurfaceDerivatives CylinderGeometry::ComputeSurfaceDerivatives( const Point3& ob
 
 	sd.uv = Point2( axial, theta );  // matches the u↔axial, v↔theta swap
 	sd.valid = true;
+
+	// THE CHART MAP for the side wall (docs/GEOMETRY_DERIVATIVES.md
+	// "The texcoord chart map").  GeometricUtilities::CylinderTextureCoord
+	// emits, from the SAME (a, b, axial) axis decomposition used above,
+	//     s = atan2(b, a) / (2*PI),   t = (axial - axisMin) / height
+	// while the right-handedness swap makes the DERIVATIVE parameters
+	// (u, v) = (axial, theta).  So the map is transposed -- the axial
+	// parameter drives t and the angular one drives s -- and carries
+	// the two very different scale factors 1/height and 1/(2*PI) that
+	// the un-mapped solve was silently omitting.
+	//
+	// SIGN: the per-axis right-handedness fix-ups above rotate dpdv the
+	// OPPOSITE way from increasing atan2(b, a) on the x- and z-axis
+	// cylinders (compare each case's dpdv against the natural
+	// d/dtheta (-r sin, r cos) in that case's (a, b) pair); only the
+	// y-axis case rotates with it.  Getting this backwards would leave
+	// |dudx| right and its sign wrong -- invisible to mip LOD, which
+	// squares, and visible to the finite-difference oracle in
+	// tests/TextureFootprintTest.cpp.
+	const Scalar height = m_dAxisMax - m_dAxisMin;
+	if( fabs( height ) > NEARZERO ) {
+		const Scalar thetaSign = ( m_chAxis == 'y' ) ? 1.0 : -1.0;
+		sd.dsdu = 0.0;
+		sd.dsdv = thetaSign / TWO_PI;
+		sd.dtdu = 1.0 / height;
+		sd.dtdv = 0.0;
+		sd.texChartValid = true;
+	}
 
 	return sd;
 }

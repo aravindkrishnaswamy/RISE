@@ -12,10 +12,11 @@ RISE ASCII SCENE 7
 #   (1) NO TEXCOORDS.  The subject is an ANALYTIC sphere with a 3D                                          #
 #       `scalar_painter { expression fbm(P*...) }` height in the default                                     #
 #       `surface` domain.  Nothing here binds a UV painter, sets a UV                                        #
-#       generator, or relies on `derivatives`.  A `bumpmap_modifier`                                         #
-#       cannot express this scene at all: its field is a function of                                         #
-#       (u, v) only.  If the relief ever silently needs texcoords, this                                      #
-#       sphere goes flat.                                                                                    #
+#       generator, or relies on `derivatives`.  The `bumpmap_modifier`                                       #
+#       this replaced (REMOVED 2026-09-06, docs/RELIEF_MODIFIER_DESIGN.md                                    #
+#       7.5) could not express this scene at all: its field was a                                            #
+#       function of (u, v) only.  If the relief ever silently needs                                          #
+#       texcoords, this sphere goes flat.                                                                    #
 #                                                                                                           #
 #   (2) PT-vs-BDPT PARITY (design 5.2).  Every integrator calls the                                          #
 #       modifier hook once per hit before any material call, and caches                                      #

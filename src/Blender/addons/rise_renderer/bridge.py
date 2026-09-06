@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, field
 
 
-_EXPECTED_API_VERSION = 10
+_EXPECTED_API_VERSION = 11
 
 # Hair colour tiers -- must match `enum rise_blender_hair_tier` in
 # rise_blender_bridge.h.  The exporter's HairMaterialData.tier is the
@@ -110,6 +110,8 @@ class _Modifier(ctypes.Structure):
         ("source_painter_name", ctypes.c_char_p),
         ("scale", ctypes.c_float),
         ("window", ctypes.c_float),
+        # ABI v11 -- MODIFIER_BUMP only; see bridge .h.
+        ("normalize", ctypes.c_int),
     ]
 
 
@@ -661,6 +663,10 @@ class _SceneHandle:
         payload.source_painter_name = self._cstring(modifier.source_painter_name)
         payload.scale = float(modifier.scale)
         payload.window = float(modifier.window)
+        # ABI v11 -- `getattr` with a False default keeps this tolerant of a
+        # ModifierData built by an older exporter module during a live
+        # add-on reload, matching the v6/v9 field-addition pattern above.
+        payload.normalize = int(bool(getattr(modifier, "normalize", False)))
         return payload
 
     def _marshal_material(self, material):

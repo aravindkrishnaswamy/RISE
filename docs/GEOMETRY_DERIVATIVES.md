@@ -13,6 +13,13 @@ struct SurfaceDerivatives {
     Vector3 dndv;   // normal partial derivative w.r.t. v
     Point2  uv;     // surface parameters at this point
     bool    valid;  // true on success
+
+    // The TEXCOORD CHART MAP (added 2026-09-06) -- d(s,t)/d(u,v),
+    // where (s,t) is what the geometry stamps into
+    // RayIntersectionGeometric::ptCoord.  Default identity with
+    // texChartValid = false, i.e. "this geometry did not say".
+    Scalar  dsdu, dsdv, dtdu, dtdv;
+    bool    texChartValid;
 };
 ```
 
@@ -60,6 +67,81 @@ metric-conversion step. Specifically:
   polar parameter.
 - A flat unit-metric surface (disk, box face, plane) returns unit vectors —
   the parameterization IS world coordinates.
+
+## The texcoord chart map
+
+The freedom granted above has a consequence: **`dpdu`/`dpdv` and
+`ri.ptCoord` are, in general, two different charts of the same surface.**
+`dpdu` differentiates the geometry's own natural parameter — an azimuth
+in radians, an axial world coordinate — while `ptCoord` is the
+normalised `[0, 1]²` coordinate a texture is actually sampled at, which
+the matching `GeometricUtilities::*TextureCoord` produces and which may
+be scaled, axis-swapped, sign-flipped or offset relative to the
+derivative parameter. Only the triangle-mesh path has the two coincide,
+because there `dpdu` is *defined* by inverting the per-vertex UV
+Jacobian.
+
+Any consumer that combines `ptCoord` with a `dpdu`-chart derivative
+therefore needs the bridge between them, and cannot guess it. So every
+implementation that populates `ri.derivatives` **must also state its
+chart map**:
+
+```
+ds = dsdu·du + dsdv·dv
+dt = dtdu·du + dtdv·dv
+```
+
+**`texChartValid = false` is the correct answer** when the geometry has
+no such map — most importantly the mesh intersectors' barycentric-edge
+fallback, whose `dpdu`/`dpdv` are triangle edge vectors with no relation
+to `ptCoord` at all. Consumers must treat false as "no texcoord
+Jacobian available" and decline, **not** as "assume the identity": an
+unset flag on a geometry whose two charts differ by 2π is precisely the
+bug this field exists to prevent.
+
+The map is **local**. At a wrap seam or a pole the underlying map is not
+differentiable, and these four numbers describe the local branch only.
+
+Today's only consumer is `SolveFootprintUV`
+([TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h)):
+it solves the pixel differentials in the derivative chart and then
+multiplies through by this map, so the `dudx…dvdy` it publishes are in
+the same chart as `ptCoord` — the pairing `TexturePainter::
+SampleTextured` and `WeaveBRDF` assume. Before the map existed, each
+analytic primitive published radians where the sampler expects `[0, 1]`,
+mipping 1.59 (cylinder) to 2.65 (torus) LOD levels too blurry; the
+regression guard is `Test11_ChartOracle` in
+[tests/TextureFootprintTest.cpp](../tests/TextureFootprintTest.cpp),
+which finite-differences `ptCoord` across a pixel's own ray
+differentials and compares.
+
+Per-geometry maps as shipped:
+
+| Geometry | derivative `(u, v)` | `ptCoord (s, t)` | map |
+|---|---|---|---|
+| `SphereGeometry` | φ azimuth, θ polar | `((π−φ)/2π, θ/π)` | `dsdu = −1/2π`, `dtdv = 1/π` |
+| `EllipsoidGeometry` | φ azimuth, θ polar | same form, φ measured from `−x` | `dsdu = −1/2π`, `dtdv = 1/π` |
+| `CylinderGeometry` (side) | axial, θ | `(θ/2π, (axial−axisMin)/height)` | SWAPPED: `dtdu = 1/height`, `dsdv = ±1/2π` (sign per the axis's right-handedness fix-up: `+` on y, `−` on x and z) |
+| `CylinderGeometry` (end cap) | disk `(ra, rb)` in `[0,1]` | the same disk coordinate | identity, TRANSPOSED on ONE of the two caps — `+y` for a y-axis cylinder, `−x` / `−z` for the other two (see below) |
+| `TorusGeometry` | tube angle, ring angle | `(ring/2π, tube/2π)` | SWAPPED: `dsdv = dtdu = 1/2π` |
+| both mesh classes, `useUVJacobian` | stored per-vertex UV | the same UV | identity, with `dtdv = −1` when the handedness flip negates `dpdv` |
+| both mesh classes, barycentric fallback | triangle edges | unrelated | **`texChartValid = false`** |
+| every other geometry | — | — | does not populate `ri.derivatives` at all |
+
+Note the sphere/ellipsoid sign: the texture azimuth runs *backwards*
+from the derivative one (`s = 0` sits at `−X` and `s` increases toward
+`+Z`). Mip LOD squares, so it would not notice — anisotropic filtering
+and the finite-difference oracle do.
+
+And the end-cap row's asymmetry, because it looks like a typo and is
+not: the swap fires on whichever cap's outward normal *opposes*
+`dpdu × dpdv`, and the `(ra, rb)` pairs `CylinderGeometry` picks are not
+consistently cyclic — `x → (y, z)`, `y → (x, z)`, `z → (x, y)`, where the
+cyclic choice for `y` would have been `(z, x)`. So `dpdu × dpdv` is `+X`
+on the x axis, `−Y` on the y axis and `+Z` on the z axis, and the
+transposed cap is `−x`, **`+y`**, `−z` respectively. This table said "the
+`−axis` cap" until fix round 2 of the relief follow-ups, which measured
+all six caps by instrumenting the swap site.
 
 ## Per-geometry conventions
 

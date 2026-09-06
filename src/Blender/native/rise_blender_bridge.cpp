@@ -989,9 +989,43 @@ namespace
 		switch( modifier.kind )
 		{
 		case RISE_BLENDER_MODIFIER_BUMP:
-			if( !job.AddBumpMapModifier( modifier.name, modifier.source_painter_name, modifier.scale, modifier.window ) ) {
-				write_error( error_message, error_message_size, "Failed to create a bump modifier" );
-				return false;
+			{
+				// `IJob::AddBumpMapModifier`'s SIGNATURE is ABI-frozen (it has no
+				// `normalize` parameter) and always builds the legacy
+				// window-COUPLED fold (RISE_API_CreateBumpMapModifier ==
+				// ...Ex(..., normalizeGradient=false)) -- see Job.cpp /
+				// RISE_API.cpp.  That fold made the exporter's Bump-node
+				// amplitude ~200x weaker once `_build_bump_modifier` shrank its
+				// half-step `window` from 1.0 (the whole UV range -- a bug) to
+				// 0.005 (a texel-scale finite-difference step), because the
+				// delivered tilt is `scale*2*window*grad`.  Bypass the ABI-frozen
+				// shim here and reach `RISE_API_CreateBumpMapModifierEx` directly
+				// with normalizeGradient=modifier.normalize, resolving/registering
+				// through IJobPriv exactly the way the old registry-parser
+				// `normalize_gradient TRUE` path did -- the same
+				// resolve-via-manager / Ex-create / AddItem-then-release shape
+				// used elsewhere in this file (e.g. the hair scalar-painter
+				// wrapper above).
+				RISE::IFunction2D* pFunc = job.GetFunction2Ds()->GetItem( modifier.source_painter_name );
+				if( !pFunc ) {
+					write_error( error_message, error_message_size, "Failed to create a bump modifier: source painter/function not found" );
+					return false;
+				}
+
+				RISE::IRayIntersectionModifier* pModifier = 0;
+				RISE::RISE_API_CreateBumpMapModifierEx(
+					&pModifier, *pFunc, modifier.scale, modifier.window, modifier.normalize != 0 );
+				if( !pModifier ) {
+					write_error( error_message, error_message_size, "Failed to create a bump modifier" );
+					return false;
+				}
+
+				const bool added = job.GetModifiers()->AddItem( pModifier, modifier.name );
+				pModifier->release();
+				if( !added ) {
+					write_error( error_message, error_message_size, "Failed to create a bump modifier" );
+					return false;
+				}
 			}
 			return true;
 

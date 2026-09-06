@@ -11555,8 +11555,21 @@ namespace RISE
 					for( const AgentChunkIssue& issue : found ) {
 						if( !clauses.empty() ) clauses += "; ";
 						if( issue.reason == "unknown_chunk_type" ) {
-							clauses += "unknown chunk type '" + issue.value + "'";
-							if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+							// A keyword a past RISE release accepted and has since removed
+							// (e.g. `bumpmap_modifier`) gets the SAME directed
+							// replacement/migrator message Cst.cpp's own derive-time
+							// diagnostic gives -- edit-distance near-miss ranking against
+							// the CURRENT registry would never rank a removed keyword's
+							// actual replacement (`relief_modifier` shares no meaningful
+							// substring or small edit distance with `bumpmap_modifier`),
+							// so this must be checked BEFORE falling back to suggestions.
+							const char* const retired = RISE::Cst::RetiredChunkAdvice( issue.value );
+							if( retired ) {
+								clauses += "chunk type '" + issue.value + "' has been removed -- " + retired;
+							} else {
+								clauses += "unknown chunk type '" + issue.value + "'";
+								if( !issue.suggestions.empty() ) clauses += " (did you mean '" + issue.suggestions.front() + "'?)";
+							}
 						} else {
 							clauses += IssueClause( issue, r.kind );
 						}

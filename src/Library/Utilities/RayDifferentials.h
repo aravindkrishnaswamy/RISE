@@ -5,10 +5,12 @@
 //
 //  Each populated ray carries the offsets to the auxiliary rays
 //  one screen-pixel to the +x and +y, expressed as origin and
-//  direction offsets from the central ray.  Triangle intersection
-//  consumes the differentials and projects them to UV-space via
-//  the surface dpdu/dpdv basis, producing a TextureFootprint that
-//  the texture painter uses to pick a mip LOD.
+//  direction offsets from the central ray.  Object::IntersectRay
+//  consumes the differentials, projects them onto the surface
+//  tangent plane and (where the surface has a UV chart) solves that
+//  projection through dpdu/dpdv, producing the TextureFootprint the
+//  texture painter uses to pick a mip LOD and the expression VM
+//  uses as `fw`.
 //
 //  Embedded in Ray (PBRT / Mitsuba / Arnold convention).  The
 //  +96 bytes per Ray is real cache pressure on BVH traversal —
@@ -16,10 +18,26 @@
 //  struct plumbing tech debt.  See
 //  docs/PHYSICALLY_BASED_PIPELINE_PLAN_LANDING_2.md decision #1.
 //
-//  Propagation helpers (PropagateThroughReflection / Refraction)
-//  apply Igehy's closed-form formulas for specular bounces.
-//  Glossy / diffuse bounces invalidate the differentials
-//  (caller sets hasDifferentials = false on the new ray).
+//  SCOPE: PRIMARY VISIBILITY ONLY.  Differentials are NEVER
+//  propagated through a scattering bounce.  There are no
+//  propagation helpers — no PropagateThroughReflection, no
+//  PropagateThroughRefraction, nothing applying Igehy's closed-form
+//  specular formulas anywhere in src/.  (An earlier version of this
+//  header claimed those helpers existed; they were never written.)
+//  Writing them is a separate, larger arc: Igehy §3.2/§3.3 plus a
+//  dndu/dndv requirement at every specular vertex.
+//
+//  Consequences of that scope, all load-bearing when reading a
+//  footprint-driven fade:
+//    - Ray::Set / Ray::SetDir CLEAR hasDifferentials, so any
+//      freshly-Set ray — every scattered ray, shadow ray, NEE ray
+//      and photon — is differential-free by construction, and the
+//      surfaces it hits report fw = 0 and point-sample.
+//    - Only PinholeCamera::GenerateRay ever SETS them.
+//      ThinLensCamera, OrthographicCamera and FisheyeCamera do not.
+//    - The only two transfers in the renderer are straight-line,
+//      not scattering: RayCaster's x-ray continuation and
+//      CSGObject's reversed exit probe.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 3, 2026

@@ -1556,6 +1556,42 @@ static int LineOfChunkBrace( const Document& doc, std::size_t itemIndex, const N
 	return 1 + (int)std::count( full.begin(), full.begin() + off, '\n' );
 }
 
+//! A chunk keyword a PAST RELEASE of RISE accepted and that has since been REMOVED.
+//!
+//! WHY A TABLE AND NOT THE GENERIC MESSAGE.  Deleting a chunk parser makes its keyword
+//! unknown, and the generic "unknown chunk type 'X'" is a dead end for the one author who
+//! most needs help: the person holding a scene file that USED to load.  It names neither
+//! the replacement nor the migrator that rewrites the chunk, so the author's next move is a
+//! web search or a grep of the source tree.  This is the chunk-level analogue of
+//! `bezierpatch_geometry`'s `kRetired` PARAMETER table (ChunkParserRegistry.cpp), which
+//! exists for exactly the same reason one level down.
+//!
+//! One entry per removal.  `advice` is appended to "chunk type 'X' has been removed -- "
+//! and must name (a) what to use instead and (b) how to convert an existing scene.
+struct RetiredChunkKeyword { const char* keyword; const char* advice; };
+
+static const RetiredChunkKeyword kRetiredChunks[] = {
+	{ "bumpmap_modifier",
+	  "removed 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5).  Use `relief_modifier`, "
+	  "whose height field is any `scalar_painter` and which needs no texcoords in its "
+	  "default `surface` domain.  To convert this scene LOSSLESSLY -- the amplitude fold "
+	  "and the sign flip are not obvious by hand -- run "
+	  "`python3 tools/migrate_scenes_relief.py <this file>`" }
+};
+
+//! The directed advice for a REMOVED chunk keyword, or null when `kw` names no chunk RISE
+//! ever had (in which case the caller's generic "unknown chunk type" is the honest message).
+//! Declared in Cst.h (RISE::Cst) -- not static -- so SchemaGen's describe_chunk/read_schema
+//! and AgentSession's insert_chunk near-miss analyser can surface the same directed message
+//! (see the header doc).
+const char* RetiredChunkAdvice( const std::string& kw )
+{
+	for( std::size_t i = 0; i < sizeof(kRetiredChunks)/sizeof(kRetiredChunks[0]); ++i ) {
+		if( kw == kRetiredChunks[i].keyword ) return kRetiredChunks[i].advice;
+	}
+	return 0;
+}
+
 static const IAsciiChunkParser* ResolveChunkParams(
 	const NodeRef& c,
 	const std::map<std::string, const IAsciiChunkParser*>& registry,
@@ -1568,7 +1604,15 @@ static const IAsciiChunkParser* ResolveChunkParams(
 {
 	const std::string& kw = c->role;
 	std::map<std::string, const IAsciiChunkParser*>::const_iterator it = registry.find( kw );
-	if( it == registry.end() ) { diags.push_back( "unknown chunk type '" + kw + "'" ); return nullptr; }
+	if( it == registry.end() ) {
+		// A keyword RISE USED to accept gets a directed message naming its replacement and
+		// the migrator; anything else gets the honest generic one.  See kRetiredChunks.
+		const char* const retired = RetiredChunkAdvice( kw );
+		diags.push_back( retired
+			? ( "chunk type '" + kw + "' has been removed -- " + retired )
+			: ( "unknown chunk type '" + kw + "'" ) );
+		return nullptr;
+	}
 	// Hard-reject BEFORE any param is read: on a violation, the params extracted below cannot be
 	// trusted anyway (see ChunkBraceViolations' header for the swallow mechanism), and we must not
 	// go on to silently apply a chunk missing every param after the one that absorbed its siblings.
@@ -4134,34 +4178,49 @@ static const int kFunc1DSubCat = 100001;
 static const int kFunc2DSubCat = 100002;
 
 //! The dimension-precise Function sub-namespace a reference PARAM resolves into, or 0 for a
-//! coarse {Function} consumer.  Mirrors the engine's typed lookup by param name.
-static int FunctionSubNamespace( const std::string& paramName )
+//! coarse {Function} consumer.  `pd` is the param's OWN ParameterDescriptor -- the caller (the
+//! single one, in ComputeChunkRefs) has already resolved it against the chunk's ChunkDescriptor
+//! and dereferenced it, so in practice it is never null; the `pd &&` guard on the pipe test below
+//! is defensive only, and a hypothetical null caller would get just the name-keyed cases.
+static int FunctionSubNamespace( const std::string& paramName, const ParameterDescriptor* pd )
 {
-	// Each is resolved by the engine through a DIMENSION-SPECIFIC manager, so the resolver must
-	// match (their descriptor's extra {Painter}/coarse {Function} is spurious; resolving coarsely
-	// first-wins to a same-named colour painter or wrong-dimension function was the misbind):
-	//   function1d + the directvolumerendering RGBA transfer_* channels -> Function1D
-	//     (pFunc1DManager, Job.cpp ~6248);
-	//   function2d + heightfield_function + the spectral-DVR transfer_spectral -> Function2D
-	//     (pFunc2DManager, Job.cpp ~6317).
+	// Function1D consumers: NAME-keyed, because none of these declare a `ParameterPipe` (they
+	// predate S17's pipe audit and are out of this workstream's scope -- Function1D has no
+	// dual-registration ambiguity to motivate widening past a name list the way Function2D does
+	// below).  Each is resolved by the engine through pFunc1DManager, a DIMENSION-SPECIFIC
+	// manager, so the resolver must match (the descriptor's coarse {Function}/{Painter,Function}
+	// is spurious for these; resolving coarsely first-wins to a same-named 2D function was the
+	// misbind): function1d + the directvolumerendering RGBA transfer_* channels
+	// (Job::AddDirectVolumeRenderingShader, whose `transfer_alpha` sibling
+	// Job::AddSpectralDirectVolumeRenderingShader also resolves through pFunc1DManager);
+	// homogeneous_medium's sigma(lambda) curves (Job::AddHomogeneousMediumSpectral).
 	if( paramName == "function1d" ) return kFunc1DSubCat;
 	if( paramName == "transfer_red" || paramName == "transfer_green" ||
 	    paramName == "transfer_blue" || paramName == "transfer_alpha" ) return kFunc1DSubCat;
-	// homogeneous_medium's sigma(lambda) curves -> Function1D (pFunc1DManager,
-	// Job::AddHomogeneousMediumSpectral): dimension-precise so a same-named 2D
-	// function can never capture the edge.
 	if( paramName == "absorption_spectral" || paramName == "scattering_spectral" ) return kFunc1DSubCat;
+	// Function2D consumers with no declared pipe yet (transfer_spectral) still need the name
+	// check; `function2d` / `heightfield_function` are KEPT here too even though both now also
+	// satisfy the pipe-based rule below (harmless redundancy -- both routes agree) so this list
+	// stays the complete, self-contained record of every NAME-keyed Function2D case.
 	if( paramName == "function2d" || paramName == "heightfield_function" ||
 	    paramName == "transfer_spectral" ) return kFunc2DSubCat;
-	// {Painter}-DECLARED slots the engine actually binds via pFunc2DManager (Function2D, which
-	// holds plf2d + the dual-registered colour painters -- exactly what kFunc2DSubCat seeds):
-	// displaced_geometry.displacement, bumpmap_modifier.function, composite_function2d_painter
-	// .child_a/.child_b (Job.cpp ~5009/~5182/~994).  Resolving them coarsely via (Painter,name)
-	// MISSED a plf2d target (plf2d is NOT in the painter managers) -- a stale-closure sibling
-	// (review #3, 3rd-pass exhaustive table).  The retired String `displacement` (a different
-	// param kind) never reaches here -- PASS B only resolves Reference/tuple params.
-	if( paramName == "displacement" || paramName == "function" ||
-	    paramName == "child_a" || paramName == "child_b" ) return kFunc2DSubCat;
+	// EVERY OTHER Function2D-piped parameter (ChunkParserRegistry.cpp's
+	// `p.semantics.pipe = ParameterPipe::Function2D`, audited against the real Job.cpp resolve
+	// code -- see ChunkDescriptor.h's ParameterPipe doc comment) resolves through this SAME
+	// dimension-precise sub-namespace, keyed on the DECLARATION rather than a hand-maintained
+	// name list.  Until 2026-09-06 this was instead a literal `paramName == "displacement" ||
+	// "child_a" || "child_b"` list: those three params were declared {Painter} (or, for
+	// heightfield_function, coarse {Function}) with no `pipe` at all, so resolving them coarsely
+	// via (Painter,name) MISSED a plf2d target (plf2d is not in the painter managers) -- a
+	// stale-closure bug (review #3, 3rd-pass exhaustive table) patched with a name list rather
+	// than fixing the underlying under-declaration.  The proper fix landed the same day: those
+	// parameters (displaced_geometry.displacement, composite_function2d_painter.child_a/.child_b,
+	// sdf_geometry.heightfield_function, scalar_painter.function2d, function2d_painter.function2d)
+	// now all carry `ParameterPipe::Function2D` + `referenceCategories = {Painter, Function}`, so
+	// a BRAND-NEW Function2D-piped parameter is covered here with NO Cst.cpp edit -- proven by
+	// CstResolverTest's registry-wide [func2d-registry-invariant] case, which walks the LIVE
+	// registry (no hardcoded param list) rather than asserting against these five by name.
+	if( pd && pd->semantics.pipe == ParameterPipe::Function2D ) return kFunc2DSubCat;
 	return 0;
 }
 
@@ -4375,7 +4434,7 @@ static ChunkRefs ComputeChunkRefs( const Document& doc,
 			// workstream #2 dropped their phantom Function category (ResolveOrDiagnoseScalar resolves a
 			// scalar-then-colour painter, then numeric -- NEVER a Function manager), so they are now
 			// {Painter}; their residual painter colour-vs-scalar ambiguity is handled by the alias above.
-			const int fsub = FunctionSubNamespace( role );
+			const int fsub = FunctionSubNamespace( role, pd );
 			if( fsub != 0 ) {
 				std::map<std::pair<int,std::string>, NodeId>::const_iterator d = defs.find( std::pair<int,std::string>( fsub, val ) );
 				if( d != defs.end() ) target = d->second;

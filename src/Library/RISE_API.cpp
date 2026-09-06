@@ -7030,7 +7030,6 @@ namespace RISE
 // Modifiers
 //////////////////////////////////////////////////////////
 
-#include "Modifiers/BumpMap.h"
 #include "Modifiers/NormalMap.h"
 #include "Modifiers/GlintModifier.h"
 #include "Modifiers/ReliefModifier.h"
@@ -7038,7 +7037,36 @@ namespace RISE
 
 namespace RISE
 {
-	//! Creates a bump map
+	//! Creates a bump map -- LEGACY SHIM over `ReliefModifier`.
+	//!
+	//! The `BumpMap` class and the `bumpmap_modifier` chunk were REMOVED on
+	//! 2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5, Phase B).  These two
+	//! entry points survive because their signatures are ABI-FROZEN: the
+	//! Blender bridge reaches them through `IJob::AddBumpMapModifier`, and
+	//! out-of-tree callers may hold either.  What they BUILD now is a
+	//! `ReliefModifier` over a `Function2DScalarPainter` in the UV domain --
+	//! the same four `IFunction2D::Evaluate(u, v)` calls at the same
+	//! coordinates, in the same order, that the deleted class made, so the
+	//! sampled values are identical and only the FP reassociation of the
+	//! amplitude multiply differs (ReliefModifierTest test 2 bounds that at
+	//! 1e-12 against a from-scratch reference implementation of the legacy
+	//! expression).
+	//!
+	//! THE FOLD (design 7.2), which is why `scale` is not passed through:
+	//!
+	//!     legacy   N + T*S*( f(u+W) - f(u-W) )              (normalizeGradient FALSE)
+	//!     legacy   N + T*S*( f(u+W) - f(u-W) ) / (2W)       (normalizeGradient TRUE)
+	//!     relief   N - T*S'*( f(u+W) - f(u-W) ) / (2W)      (Blinn sign, always)
+	//!  => S' = -S*2W  (FALSE),      S' = -S  (TRUE)
+	//!
+	//! `window <= 0` is NOT a point on that curve, it is a SPECIAL CASE.  The
+	//! legacy class was INERT there -- both sides of the central difference
+	//! sampled the same point, and its normalisation was gated on
+	//! `dWindow > 0` -- whereas a relief `step <= 0` selects the AUTOMATIC
+	//! step, i.e. a full perturbation, the opposite of inert.  So a
+	//! non-positive window folds to `scale 0`, which is exactly what makes
+	//! `ReliefModifier` inert.  This is the same rule
+	//! `tools/migrate_scenes_relief.py` applies to a scene file.
 	/// \return TRUE if successful, FALSE otherwise
 	// NOTE: RISE_API.cpp does not include RISE_API.h (see the signature-match
 	// comment elsewhere in this file), so the Ex implementation must precede
@@ -7055,8 +7083,22 @@ namespace RISE
 			return false;
 		}
 
-		(*ppi) = new BumpMap( func, scale, window, normalizeGradient );
+		const Scalar folded = ( window > Scalar(0) )
+			? ( normalizeGradient ? ( -scale ) : ( -scale * Scalar(2) * window ) )
+			: Scalar(0);
+
+		// The height field: the SAME IFunction2D, read at ri.ptCoord by the
+		// wrapper -- Function2DScalarPainter::GetValuesAt is literally
+		// `pFunc->Evaluate( ri.ptCoord.x, ri.ptCoord.y )`.
+		Function2DScalarPainter* pHeight = new Function2DScalarPainter( &func );
+		GlobalLog()->PrintNew( pHeight, __FILE__, __LINE__, "bumpmap legacy height" );
+
+		(*ppi) = new ReliefModifier( *pHeight, folded, ReliefDomain::UV, window );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "bumpmap" );
+
+		// The modifier addref'd it in its ctor; drop OUR construction
+		// reference so the painter dies with the modifier.
+		pHeight->release();
 		return true;
 	}
 
@@ -7067,8 +7109,9 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								)
 	{
-		// Legacy signature: preserve the original amplitude-couples-to-window
-		// behaviour (normalizeGradient = false) so existing scenes are unchanged.
+		// Legacy signature: the amplitude COUPLES to the window
+		// (normalizeGradient = false), which the fold above turns into
+		// S' = -S*2W.
 		return RISE_API_CreateBumpMapModifierEx( ppi, func, scale, window, false );
 	}
 

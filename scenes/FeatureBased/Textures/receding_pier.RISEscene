@@ -7,13 +7,17 @@ RISE ASCII SCENE 7
 #                   plank deck receding to the horizon under a low, grazing pinhole camera.  The plank      #
 #                   texture is a HIGH-frequency expression_painter fbm field (grain frequency runs along Z, #
 #                   the receding axis).  `fbm` fades its own octaves against the per-sample world-space      #
-#                   filter width `fw` -- real only on a PRIMARY hit against TRIANGLE-MESH geometry (see      #
-#                   TextureFootprintCompute.h / ComputeTextureFootprint, called from                         #
-#                   TriangleMeshGeometry{,Indexed}Specializations.h only).  `box_geometry` alone is an       #
-#                   analytic intersection with no footprint, so the deck is a `box_geometry` wrapped in      #
+#                   filter width `fw` -- real only on a PRIMARY hit (see TextureFootprintCompute.h /        #
+#                   ComputeTextureFootprint, called from Object::IntersectRay for EVERY geometry since       #
+#                   2026-09-06; no ray carries screen-space differentials after a scatter, which is the      #
+#                   restriction that remains).  The deck is a `box_geometry` wrapped in                      #
 #                   `displaced_geometry` (zero displacement -- the chunk is used purely for the tessellation #
-#                   it performs unconditionally, baking to a real ITriangleMeshGeometryIndexed) instead of   #
-#                   an `infiniteplane_geometry`, which is also analytic.  Expect crisp grain within a few    #
+#                   it performs unconditionally, baking to a real ITriangleMeshGeometryIndexed).  The        #
+#                   wrapper is KEPT, but its original reason -- "box_geometry alone is an analytic           #
+#                   intersection with no footprint" -- is obsolete: a bare box now reports one too.  What    #
+#                   the wrapper still buys is a FINITE, TESSELLATED deck of known extent, where an           #
+#                   `infiniteplane_geometry` would run to a horizon the near-grazing camera cannot           #
+#                   resolve at all.  Expect crisp grain within a few                                        #
 #                   metres of the camera and a smooth, shimmer-free fade toward the horizon.                #
 #   Author:         RISE contributors                                                                       #
 #   Birthdate:      2026-08-20                                                                              #

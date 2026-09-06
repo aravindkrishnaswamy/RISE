@@ -2316,7 +2316,20 @@ namespace RISE
 	// Modifiers
 	//////////////////////////////////////////////////////////
 
-	//! Creates a bump map
+	//! LEGACY SHIM.  Creates a bump map -- which since 2026-09-06 is a
+	//! `ReliefModifier` over a `Function2DScalarPainter` in the UV domain,
+	//! with the design-7.2 amplitude fold applied (`S' = -S*2W`, or `-S`
+	//! through the `Ex` form with normalizeGradient TRUE; a non-positive
+	//! `window` folds to an inert `scale 0`).  The `BumpMap` class and the
+	//! `bumpmap_modifier` chunk were REMOVED in that change
+	//! (docs/RELIEF_MODIFIER_DESIGN.md 7.5); these two entry points remain
+	//! ONLY because their signatures are ABI-frozen for out-of-tree callers
+	//! and for the Blender bridge, which reaches them through
+	//! `IJob::AddBumpMapModifier`.  NEW code should call
+	//! `RISE_API_CreateReliefModifier` directly: it takes any
+	//! `IScalarPainter` height field, needs no texcoords in its default
+	//! `Surface` domain, and does not carry the legacy sign inversion.
+	//! See RISE_API.cpp for the fold's derivation.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBumpMapModifier(
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
@@ -2325,10 +2338,11 @@ namespace RISE
 								const Scalar window				///< [in] Size of the window
 								);
 
-	//! Creates a bump map, with control over whether `scale` is the
-	//! window-independent gradient multiplier.  The legacy entry point
-	//! above is a thin wrapper that calls this with normalizeGradient=false
-	//! (preserving its amplitude-couples-to-window behaviour).
+	//! LEGACY SHIM.  Creates a bump map, with control over whether `scale`
+	//! is the window-independent gradient multiplier.  The legacy entry
+	//! point above is a thin wrapper that calls this with
+	//! normalizeGradient=false (preserving its amplitude-couples-to-window
+	//! behaviour).  Same removal note as above.
 	/// \return TRUE if successful, FALSE otherwise
 	bool RISE_API_CreateBumpMapModifierEx(
 								IRayIntersectionModifier** ppi,	///< [out] Pointer to recieve the modifier
@@ -2375,7 +2389,7 @@ namespace RISE
 	//! centrally in the hit's tangent plane to tilt the shading normal.
 	//! Needs no texcoords in the default `Surface` domain.  Positive height
 	//! RISES ALONG +N (Blinn / PBRT-v4 convention) -- the OPPOSITE sign of
-	//! `bumpmap_modifier`, which treats its field as depth.  A zero or
+	//! the removed `bumpmap_modifier`, which treated its field as depth.  A zero or
 	//! non-finite `scale` makes the modifier inert.  See
 	//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md.
 	/// \return TRUE if successful, FALSE otherwise

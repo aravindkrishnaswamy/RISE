@@ -208,6 +208,12 @@ class ModifierData:
     source_painter_name: str
     scale: float
     window: float
+    # ABI v11.  MODIFIER_BUMP only: True selects the bridge's
+    # window-INDEPENDENT amplitude fold (RISE_API_CreateBumpMapModifierEx's
+    # normalizeGradient=true, `scale' = -scale`) instead of the legacy
+    # window-COUPLED one (`scale' = -scale*2*window`) that `IJob::
+    # AddBumpMapModifier` is ABI-frozen to.  Ignored by MODIFIER_NORMAL_MAP.
+    normalize: bool = False
 
 
 @dataclass
@@ -1332,6 +1338,39 @@ def _direct_normal_modifier(material, wrapper: PrincipledBSDFWrapper, state: _Ex
     return None
 
 
+def _bump_modifier_scale(strength: float, distance: float, invert: bool) -> float:
+    """The signed amplitude a Blender Bump node exports to a RISE bump
+    modifier.  Pure: no bpy, so `test_hair_export.py` can pin it.
+
+    SIGN, which is the whole reason this is a named function
+    (docs/RELIEF_MODIFIER_DESIGN.md 12, "Fix round 2"):
+
+    Blender's Bump node with Invert OFF tilts the shading normal AWAY
+    from the up-slope -- `N - Strength*Distance*grad(h)`, the ordinary
+    Blinn/PBRT convention in which the height field is an ELEVATION.
+    RISE agrees at the `ReliefModifier` layer: `Modify` computes
+    `N - (T*h_T + B*h_B)*scale`, so a POSITIVE `scale` is the
+    Invert-OFF look.
+
+    But this exporter does not reach `ReliefModifier` directly.  It
+    goes through the ABI-frozen bump shim, whose `normalize=True` fold
+    is `scale' = -scale` (RISE_API_CreateBumpMapModifierEx), because
+    the removed `bumpmap_modifier` used the OPPOSITE, "the field is
+    depth" convention.  One negation in the chain, so this function
+    supplies the matching one:
+
+        Invert OFF   ->  -Strength*Distance   -> shim -> +S -> N - S*grad
+        Invert ON    ->  +Strength*Distance   -> shim -> -S -> N + S*grad
+
+    A negative `Strength` or `Distance` (Blender allows both) flows
+    through as-is and composes with `invert` exactly as it does in
+    Cycles -- two negations cancel.
+    """
+
+    magnitude = float(strength) * float(distance)
+    return magnitude if invert else -magnitude
+
+
 def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | None:
     nested_normal = _node_input(normal_node, "Normal")
     if nested_normal is not None and nested_normal.is_linked:
@@ -1365,7 +1404,8 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
         state, f"{material.name_full}_bump_height", painter_name, texture_wrapper)
     strength = _socket_default_float(normal_node, "Strength", 1.0)
     distance = _socket_default_float(normal_node, "Distance", 1.0)
-    modifier_key = ("bump", painter_name, round(strength * distance, 6))
+    scale = _bump_modifier_scale(strength, distance, bool(getattr(normal_node, "invert", False)))
+    modifier_key = ("bump", painter_name, round(scale, 6))
     if modifier_key in state.modifier_cache:
         return state.modifier_cache[modifier_key]
 
@@ -1375,8 +1415,36 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
             name=modifier_name,
             kind=MODIFIER_BUMP,
             source_painter_name=painter_name,
-            scale=float(strength * distance),
-            window=1.0,
+            scale=scale,
+            # Texture-space HALF-STEP for the central difference, in UV units.
+            #
+            # This was 1.0, which is not a small step -- it is the whole UV
+            # range.  RISE's bridge samples the height painter through
+            # `Painter::Evaluate`, which CLAMPS (u, v) to [0, 1], so a
+            # half-step of 1.0 made every central difference f(1, v) - f(0, v):
+            # the same two texels everywhere on the surface, i.e. a constant
+            # tilt of the shading normal rather than a bump.  0.005 is roughly a
+            # texel on a 200px map and a fraction of one on anything larger,
+            # which is what a finite-difference derivative estimate wants.
+            # (Fixed 2026-09-06 alongside the `bumpmap_modifier` removal; the
+            # bridge entry point is now a shim over `relief_modifier`, and the
+            # amplitude fold means the perturbation scales with this value --
+            # see docs/RELIEF_MODIFIER_DESIGN.md 7.2/7.5.)
+            window=0.005,
+            # normalize=True: without it, the shim's legacy fold COUPLES the
+            # delivered tilt to `window` (tilt ~ scale*2*window*grad), so
+            # shrinking `window` from 1.0 to 0.005 above -- correct on its own
+            # terms -- would ALSO have silently divided the tilt by ~200
+            # (2*0.005 / 2*1.0). normalize=True selects the bridge's
+            # window-independent fold instead (tilt ~ scale*grad, so the
+            # magnitude matches Blender's Bump node: Strength*Distance*
+            # gradient), so this window shrink is a pure step-size
+            # refinement, not an amplitude change.  See
+            # docs/RELIEF_MODIFIER_DESIGN.md 7.5 "Phase B review" for the
+            # fold, and 12 "Fix round 2" for the SIGN, which
+            # `_bump_modifier_scale` above carries and which the fold
+            # deliberately does not touch.
+            normalize=True,
         )
     )
     state.modifier_cache[modifier_key] = modifier_name

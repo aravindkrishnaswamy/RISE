@@ -38,7 +38,6 @@
 #include <cstdlib>   // strtod for the ar_layer numeric parse
 #include <cstdarg>  // va_list / va_start -- SweepReject's formatted refusal channel
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
-#include <atomic>    // bumpmap_modifier's once-per-process deprecation warning (NormalMap.cpp idiom)
 #include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
@@ -61,7 +60,7 @@
 #include "../Interfaces/IScalarPainterManager.h"
 #include "../Interfaces/IFunction1DManager.h"
 #include "../Interfaces/IFunction2DManager.h"
-#include "../Interfaces/IModifierManager.h"	// bumpmap_modifier normalize_gradient path (via IJobPriv::GetModifiers)
+#include "../Interfaces/IModifierManager.h"	// modifier chunks that self-register via IJobPriv::GetModifiers
 #include "../Painters/RGBScalarPainter.h"		// for ScalarTriple::IsUniform et al
 #include "../Painters/TexturePainter.h"		// for resolving a named image painter -> raster accessor (scalar_painter texture form)
 #include "../Painters/ExpressionPainter.h"		// BuildExpressionProgramFromChunkFields (expression_painter, scalar_painter{expression})
@@ -1593,7 +1592,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "sellmeier";  p.kind = ValueKind::String;     p.description = "Sellmeier coefficients `B1 B2 B3 C1 C2 C3` (form 4: SellmeierScalarPainter)"; }
 						{ auto& p = P(); p.name = "polynomial"; p.kind = ValueKind::String;     p.description = "Polynomial coefficients `c0 c1 c2 ...` (form 5: PolynomialScalarPainter)"; }
 						{ auto& p = P(); p.name = "function1d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction1D to wrap (form 6: Function1DScalarPainter)"; p.semantics.pipe = ParameterPipe::Function1D; }
-						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter)"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Named IFunction2D to wrap (form 7: Function2DScalarPainter) -- resolved via `pPriv->GetFunction2Ds()->GetItem` (this parser's own Finalize), which holds every `function`-category IFunction2D (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter (Job.cpp's RegisterPainterDual), hence the {Painter, Function} pair"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "referenceCategories lists {Painter} (the CATEGORY grouping every painter-family chunk, scalar_painter included -- see ChunkParserRegistry.cpp's Describe()) but the value resolves via GetScalarPainters(), i.e. the Scalar pipe specifically -- referenceCategories is category, not pipe."; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, `function2d`, and `painter`)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "tuple of two scalar_painter names, both resolved via GetScalarPainters()"; }
@@ -2357,8 +2356,8 @@ namespace RISE
 						{ auto& p = P(); p.name = "op";            p.kind = ValueKind::String;    p.description = "Binary operator: sum | product | lerp | max | min | difference"; p.defaultValueHint = "sum"; }
 						{ auto& p = P(); p.name = "colora";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Low-value color painter"; p.semantics.pipe = ParameterPipe::Color; }
 						{ auto& p = P(); p.name = "colorb";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "High-value color painter"; p.semantics.pipe = ParameterPipe::Color; }
-						{ auto& p = P(); p.name = "child_a";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "First operand Function2D (must be a Function2D-implementing painter)"; p.semantics.pipe = ParameterPipe::Function2D; }
-						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Second operand Function2D (must be a Function2D-implementing painter)"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "child_a";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "First operand Function2D -- resolved via pFunc2DManager (Job::AddCompositeFunction2DPainter), which accepts any colour painter EXCEPT expression_painter (single-registered) / scalar_painter (never registered there), PLUS a genuine `function`-category IFunction2D (piecewise_linear_function2d), hence the {Painter, Function} pair"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "child_b";       p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Second operand Function2D -- same accepted-kind rule as `child_a` (resolved via the same pFunc2DManager lookup)"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "weight_a";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to A before the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "weight_b";      p.kind = ValueKind::Double;    p.description = "Scalar multiplier applied to B before the operator"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "uv_scale_a";    p.kind = ValueKind::DoubleVec3;p.description = "(U, V) scale applied to (u,v) before sampling A (only first two components used)"; p.defaultValueHint = "1.0 1.0"; }
@@ -6158,7 +6157,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "maxsteps"; p.kind = ValueKind::UInt;     p.description = "Sphere-trace step cap"; p.defaultValueHint = "256"; }
 						{ auto& p = P(); p.name = "epsilon";  p.kind = ValueKind::Double;   p.description = "Surface hit epsilon as a fraction of the bbox diagonal (0 = auto)"; p.defaultValueHint = "0.0"; }
 						{ auto& p = P(); p.name = "sampling_detail"; p.kind = ValueKind::UInt; p.description = "Tessellation cells along the longest bbox axis for area-light / SSS surface sampling (clamped 8..256)"; p.defaultValueHint = "64"; }
-						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v), clipped to a DISK of radius heightfield_radius centred at the origin in the local XY plane -- not a square -- via u=(x+R)/2R, v=(y+R)/2R (both clamped to [0,1] at the rim); outside the disk the field is bounded by the vertical cylindrical rim wall (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry, which shares this circular domain); `part` / `file` are ignored"; p.defaultValueHint = "none"; }
+						{ auto& p = P(); p.name = "heightfield_function"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "HEIGHTFIELD MODE: a named IFunction2D giving f(u,v) in [0,1].  When set (not `none`), the SDF IS the exact analytic surface z = heightfield_scale*f(u,v), clipped to a DISK of radius heightfield_radius centred at the origin in the local XY plane -- not a square -- via u=(x+R)/2R, v=(y+R)/2R (both clamped to [0,1] at the rim); outside the disk the field is bounded by the vertical cylindrical rim wall (sphere-traced, O(1) memory -- the exact-geometry twin of a displaced_geometry on a cartesian_disk_geometry, which shares this circular domain); `part` / `file` are ignored.  Resolved via pFunc2DManager (Job::AddSDFHeightfieldGeometry), which holds `function`-category IFunction2D chunks (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter -- declared Function2D-piped with {Painter, Function} since 2026-09-06 (was declared {Function} only, missing the colour-painter half of its real accepted set)"; p.defaultValueHint = "none"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "heightfield_radius"; p.kind = ValueKind::Double; p.description = "Heightfield mode: radius of the DISK domain the field is clipped to, centred at the origin in the local XY plane (object units; u=(x+R)/2R, v=(y+R)/2R)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "heightfield_scale"; p.kind = ValueKind::Double; p.description = "Heightfield mode: world amplitude of the field (surface z = heightfield_scale*f(u,v))"; p.defaultValueHint = "0.0"; }
 						return cd;
@@ -7327,7 +7326,7 @@ namespace RISE
 						cd.description = "Wraps a named IFunction2D as a greyscale COLOUR painter (out = bias + scale * f(u,v) on all channels).  The colour analogue of scalar_painter { function2d }: lets any procedural 2D field (Perlin, Worley, polynomial, composite, guilloché) feed a colour slot or a blend_painter mask -- e.g. the guilloché spall mask driving the matte oxide-scale blend.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour"; p.semantics.pipe = ParameterPipe::Function2D; }
+						{ auto& p = P(); p.name = "function2d"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "Named IFunction2D to wrap as greyscale colour -- resolved via pFunc2DManager (Job::AddFunction2DColorPainter), which holds `function`-category IFunction2D chunks (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter, hence the {Painter, Function} pair"; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Output scale"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;    p.description = "Output bias (out = bias + scale * f)"; p.defaultValueHint = "0.0"; }
 						return cd;
@@ -8199,7 +8198,7 @@ namespace RISE
 						{ auto& p = P(); p.name = "name";          p.kind = ValueKind::String;    p.description = "Unique name"; p.required = true; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "base_geometry"; p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Geometry}; p.required = true; p.description = "Geometry to displace"; }
 						{ auto& p = P(); p.name = "detail";        p.kind = ValueKind::UInt;      p.description = "Subdivision detail level"; p.defaultValueHint = "32"; }
-						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "UV ROUTE (one of two, mutually exclusive with `height`).  An `IFunction2D` -- `expression_function2d`, `piecewise_linear_function2d`, `heightfield_function`, a dual-registered colour painter -- sampled as `f(u, v)` once per vertex.  Use it when the field is genuinely a function of texcoords, or for any pre-2026-09-06 scene (this route is unchanged).  Naming BOTH this and `height` is a parse error."; }
+						{ auto& p = P(); p.name = "displacement";  p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter, ChunkCategory::Function}; p.description = "UV ROUTE (one of two, mutually exclusive with `height` -- see `height` below for the FIELD route, a 3D `scalar_painter` alternative).  An `IFunction2D` -- `expression_function2d`, `piecewise_linear_function2d`, `heightfield_function`, a dual-registered colour painter -- sampled as `f(u, v)` once per vertex.  Use it when the field is genuinely a function of texcoords, or for any pre-2026-09-06 scene (this route is unchanged).  Naming BOTH this and `height` is a parse error.  Resolved via pFunc2DManager (Job::AddDisplacedGeometry), which holds `function`-category IFunction2D chunks (piecewise_linear_function2d) PLUS every dual-registered colour painter except expression_painter/scalar_painter -- declared Function2D-piped with {Painter, Function} since 2026-09-06 (was declared {Painter} only, missing the plf2d/Function half of its real accepted set -- ChunkDescriptor.h's ParameterPipe doc comment)."; p.semantics.pipe = ParameterPipe::Function2D; }
 						{ auto& p = P(); p.name = "height";        p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter};
 						  p.semantics.pipe = ParameterPipe::Scalar; p.semantics.requireSingle = true;
 						  p.description = "FIELD ROUTE (one of two, mutually exclusive with `displacement`).  A `scalar_painter` evaluated as a 3D FIELD at each vertex -- so `expression`, `voronoi3d`, ramps, noise and every other 3D painter can drive displacement, which `displacement`'s UV sampling cannot (a 3D painter bound THERE goes through a fake hit and is a CONSTANT).  THE POINT: bind ONE `scalar_painter` to this AND to a `relief_modifier { height ... }` on the same object, and the same field gives coarse silhouette-changing displacement plus fine shading-normal relief -- docs/RELIEF_MODIFIER_DESIGN.md section 5.3.  That sharing is of the field's STATISTICS (same look, same scale, same seed), NOT point-for-point registration: this route samples the field at the PRE-displacement vertex while `relief_modifier` samples it at the POST-displacement hit, up to `disp_scale` times the field's own range apart along the normal -- see section 5.3 for the measured gap on the shipped fixture.  OBJECT SPACE: the mesh is baked BEFORE the geometry is bound to an object, so the geometry does not know its own transform; the synthetic hit carries the vertex's OBJECT-space position in BOTH `P` and `Po` (they COINCIDE here), and a `P`-authored field therefore does NOT follow the object's placement -- author against `Po`.  `u`/`v` ARE available and get the same `uv_seam_fold` treatment as the UV route, so a UV-domain field reads identically through either.  No pixel footprint exists at bake time (`fw` = 0), so noise octaves all resolve -- correct for a mesh built once at no particular viewing distance.  The synthetic bake-time hit also has no derivatives (`derivatives.valid` = FALSE) and no signal state: `curv`/`curvR` read 0 and the `occlusion()`/`thickness()` builtins read their neutral fallback (1/1), so a field that keys on them (e.g. `mix(a, b, clamp(curv,0,1))`) displaces FLAT through this route even where a `relief_modifier` bound to the same field would see real curvature/occlusion/thickness and tilt the normal.  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees."; }
@@ -8542,78 +8541,6 @@ namespace RISE
 			// Modifiers
 			//////////////////////////////////////////
 
-			struct BumpmapModifierAsciiChunkParser : public IAsciiChunkParser
-			{
-				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
-				{
-					std::string name     = bag.GetString( "name",       "noname" );
-					std::string function = bag.GetString( "function",   "none" );
-					double scale         = bag.GetDouble( "scale",      1.0 );
-					double window        = bag.GetDouble( "windowsize", 0.01 );
-					bool normalize       = bag.GetBool(   "normalize_gradient", false );
-
-					// Phase A deprecation (docs/RELIEF_MODIFIER_DESIGN.md §7.1): still
-					// parses, but warns ONCE PER PROCESS -- the NormalMap.cpp
-					// `std::atomic<bool>` idiom, so a scene with many bumpmap_modifier
-					// chunks (or a test binary that derives many scenes) does not
-					// log-flood.  ABI-frozen: IJob::AddBumpMapModifier, the RISE_API
-					// entry points, and the BumpMap class are untouched by this warning.
-					static std::atomic<bool> s_warnedDeprecated{ false };
-					if( !s_warnedDeprecated.exchange( true ) ) {
-						GlobalLog()->PrintEx( eLog_Warning,
-							"bumpmap_modifier `%s` is DEPRECATED and will be removed in a "
-							"later release: use relief_modifier (any scalar_painter height "
-							"field, no texcoords required).  Migrate this scene losslessly "
-							"with tools/migrate_scenes_relief.py.", name.c_str() );
-					}
-
-					if( !normalize ) {
-						// Default / legacy path, signature-frozen IJob virtual.
-						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
-					}
-
-					// normalize_gradient TRUE: `scale` becomes the window-independent
-					// gradient multiplier.  The IJob::AddBumpMapModifier virtual is
-					// frozen for ABI (out-of-tree callers + the Blender bridge), so the
-					// flag is carried by RISE_API_CreateBumpMapModifierEx and the
-					// modifier is registered through the privileged IJobPriv channel
-					// (the same pattern expression_function2d uses to self-register).
-					IJobPriv* pPriv = dynamic_cast<IJobPriv*>( &pJob );
-					if( !pPriv ) {
-						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: IJobPriv unavailable", name.c_str() );
-						return false;
-					}
-					IFunction2D* pFunc = pPriv->GetFunction2Ds()->GetItem( function.c_str() );
-					if( !pFunc ) {
-						GlobalLog()->PrintEx( eLog_Error, "bumpmap_modifier `%s`: function2d `%s` not found", name.c_str(), function.c_str() );
-						return false;
-					}
-					IRayIntersectionModifier* pMod = 0;
-					if( !RISE_API_CreateBumpMapModifierEx( &pMod, *pFunc, scale, window, true ) ) {
-						return false;
-					}
-					pPriv->GetModifiers()->AddItem( pMod, name.c_str() );
-					pMod->release();
-					return true;
-				}
-
-				const ChunkDescriptor& Describe() const override {
-					static const ChunkDescriptor d = []{
-						ChunkDescriptor cd;
-						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "DEPRECATED -- use relief_modifier (any scalar_painter height field, no texcoords required; migrate with tools/migrate_scenes_relief.py; see docs/RELIEF_MODIFIER_DESIGN.md).  Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
-						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
-						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
-						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }
-						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;    p.description = "Bump amplitude.  With normalize_gradient FALSE (default) the perturbation is scale*(f(+w)-f(-w)), so its magnitude couples to windowsize (~scale*2*windowsize*slope) -- a fine window needs a proportionally larger scale.  With normalize_gradient TRUE, scale is the window-independent slope multiplier."; p.defaultValueHint = "1.0"; }
-						{ auto& p = P(); p.name = "windowsize"; p.kind = ValueKind::Double;    p.description = "Central-difference half-step in (u,v) texture space; smaller = finer detail captured"; p.defaultValueHint = "0.01"; }
-						{ auto& p = P(); p.name = "normalize_gradient"; p.kind = ValueKind::Bool; p.description = "Divide the central difference by 2*windowsize so `scale` is the true, window-INDEPENDENT gradient amplitude (decouples bump strength from the sampling step).  Default FALSE preserves legacy coupled behaviour byte-for-byte."; p.defaultValueHint = "FALSE"; }
-						return cd;
-					}();
-					return d;
-				}
-			};
-
 			struct NormalMapModifierAsciiChunkParser : public IAsciiChunkParser
 			{
 				bool Finalize( const ParseStateBag& bag, IJob& pJob ) const override
@@ -8686,7 +8613,7 @@ namespace RISE
 							"plastic).  `height` is a scalar_painter, not a colour painter: wrap a "
 							"colour painter with `scalar_painter { name X_h  painter X  channel R }` "
 							"and bind that.  POSITIVE HEIGHT RISES ALONG +N (Blinn / PBRT-v4) -- the "
-							"OPPOSITE sign of the deprecated `bumpmap_modifier`, which treats its "
+							"OPPOSITE sign of the REMOVED `bumpmap_modifier` (removed 2026-09-06), which treated its "
 							"field as depth; negate `scale` to sink instead of raise.  Attach via "
 							"the object's `modifier` parameter.  See "
 							"docs/RELIEF_MODIFIER_DESIGN.md.";
@@ -8697,8 +8624,8 @@ namespace RISE
 						  p.description = "Height field -- a `scalar_painter` (expression / voronoi / ramp / texture / function2d), or an inline numeric literal (which is constant, hence flat and pointless).  A COLOUR painter bound here is refused with the standing scalar-pipe diagnostic: wrap it as `scalar_painter { name X_h  painter X  channel R }`.  Height is a LENGTH, not a colour, so it must never pass through JH spectral uplift -- which is exactly what the scalar pipe guarantees.  NOT SUPPORTED: a height parameterised on the SECOND UV set (`texcoord1_painter`, TEXCOORD_1).  Neither domain moves `ptCoord1` -- the surface domain's chain rule has only TEXCOORD_0's dpdu/dpdv to work with -- so such a field reads FLAT and produces no relief in either domain.  Author the height against TEXCOORD_0, or use a 3D field in `surface`."; }
 						{ auto& p = P(); p.name = "scale";  p.kind = ValueKind::Double;    p.description = "Amplitude: field units -> world units in `surface` domain, UV units in `uv`.  Positive raises along +N; NEGATIVE sinks (cracks, pores, engraving).  0 makes the modifier inert."; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "domain"; p.kind = ValueKind::Enum;      p.enumValues = {"surface","uv"};
-						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for lossless `bumpmap_modifier` migration and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
-						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching bumpmap_modifier's windowsize).  In `surface` it is a FLOOR, not the step: the rule is max(step > 0 ? step : 1e-3, the hit's pixel footprint), so an EXPLICIT step is raised to the footprint whenever the footprint is larger.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  Only TRIANGLE-MESH geometry populates one today (and only on primary hits with ray differentials): on analytic primitives and SDFs the footprint is unknown (0), the max is a no-op, and the explicit step -- or the 1e-3 floor -- is exactly what is used, with NO distance fade.  So: lower it below 1e-3 for fine features on analytic/SDF surfaces, where it takes effect verbatim; on meshes it only ever raises the floor, and a value below the footprint is silently ignored."; p.defaultValueHint = "0"; }
+						  p.description = "`surface` (RECOMMENDED, and the default): the height is a function of the 3D hit and the step is taken in the tangent plane in world units -- any geometry with a normal, texcoords NOT required, and the result does not depend on which tangent the frame happened to pick.  `uv`: the height is a function of (u,v) and the step is taken in texture units along the ONB tangents -- for scenes migrated off the removed `bumpmap_modifier` (tools/migrate_scenes_relief.py) and for image heightfields authored in UV, and it inherits that path's dependence on the surface's UV parameterisation."; p.defaultValueHint = "surface"; }
+						{ auto& p = P(); p.name = "step";   p.kind = ValueKind::Double;    p.description = "Central-difference HALF-step.  In `uv` it is used as given (default 0.01, matching the removed `bumpmap_modifier`'s windowsize, so a migrated scene that omitted the window lands on the same span).  In `surface` it is a FLOOR, not the step: the rule is max(step > 0 ? step : 1e-3, HALF the hit's pixel footprint), so an EXPLICIT step is raised whenever half the footprint is larger.  Half, because this is the HALF-step and the difference spans twice it: the stencil then spans exactly ONE footprint.  Differencing over at least a footprint measures the footprint-averaged slope, so relief fades toward flat at distance instead of sparkling -- but only where a footprint exists.  EVERY geometry populates one -- analytic primitives, SDFs, boxes, disks, planes and meshes alike -- but only on PRIMARY hits, since no ray carries screen-space differentials after a scatter.  So the fade is universal on directly-visible surfaces; on a hit reached through a bounce the footprint is unknown (0), the max is a no-op, and the explicit step -- or the 1e-3 floor -- is exactly what is used, with no distance fade.  So: an explicit step only ever raises the floor where a footprint exists, and a value below the footprint is silently ignored there; it takes effect verbatim on secondary hits."; p.defaultValueHint = "0"; }
 						return cd;
 					}();
 					return d;
@@ -13625,7 +13552,6 @@ namespace RISE
 		add( "hair_guides",                           new HairGuidesAsciiChunkParser() );
 
 		// Modifiers
-		add( "bumpmap_modifier",                      new BumpmapModifierAsciiChunkParser() );
 		add( "relief_modifier",                       new ReliefModifierAsciiChunkParser() );
 		add( "modifier_stack",                        new ModifierStackAsciiChunkParser() );
 		add( "normal_map_modifier",                   new NormalMapModifierAsciiChunkParser() );

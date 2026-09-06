@@ -48,7 +48,7 @@ all of them; the decision map below is the shortcut.
 | Incandescent / flame / hot metal colour | `blackbody_painter` | A temperature in Kelvin beats a guessed RGB triple. |
 | Combine, tint, or mask two of the above | `blend_painter`, `channel_painter` | See "Composition" below. |
 | A pattern you can write as maths, in 3D | `expression_painter` (colour) / `scalar_painter { expression ... }` (physical scalar) | The texture-expression VM: one string over `u v P Po N fw time`, with noise builtins.  **The default answer for anything the fixed painters cannot say**, and the only route to spatially-varying roughness that is not an adapter chain -- see "The expression VM" below. |
-| A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  It remains valid for **UV-domain displacement** -- `displaced_geometry`'s `displacement` slot, `function2d_painter`, `composite_function2d_painter`, or the `scalar_painter { function2d ... }` bridge that feeds one of those -- and is the right answer when the field genuinely IS a function of texcoords.  It is no longer the ONLY route into displacement: since 2026-09-06 `displaced_geometry` also takes `height <a scalar_painter>`, evaluated as a 3D field (row below).  It does **not** drive the shading normal, even though `bumpmap_modifier` (now DEPRECATED -- migrate with `tools/migrate_scenes_relief.py`) used to sample it for exactly that; do not point a new normal-perturbation ask at it. |
+| A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  It remains valid for **UV-domain displacement** -- `displaced_geometry`'s `displacement` slot, `function2d_painter`, `composite_function2d_painter`, or the `scalar_painter { function2d ... }` bridge that feeds one of those -- and is the right answer when the field genuinely IS a function of texcoords.  It is no longer the ONLY route into displacement: since 2026-09-06 `displaced_geometry` also takes `height <a scalar_painter>`, evaluated as a 3D field (row below).  It does **not** drive the shading normal, even though the removed `bumpmap_modifier` (removed 2026-09-06; migrate an old scene with `tools/migrate_scenes_relief.py`) used to sample it for exactly that; do not point a normal-perturbation ask at it -- `relief_modifier` is the route. |
 | Displace geometry with a **3D** field (and/or share one field between coarse shape and fine relief) | `displaced_geometry { height <scalar_painter> }` | Since 2026-09-06.  `height` takes an `IScalarPainter` evaluated as a FIELD at each vertex, so `expression`, `voronoi3d`, ramps and noise all drive displacement -- a 3D painter bound to `displacement` instead goes through a fake hit and is a **constant**.  Mutually exclusive with `displacement` (spelling both is a parse error).  **The pattern this exists for:** bind ONE `scalar_painter` to `displaced_geometry { height F  disp_scale S }` AND to `relief_modifier { height F }` on the same object -- coarse silhouette + fine normal relief from one field, so the grain follows the lumps.  **Author the field against `Po`, not `P`**: the mesh is baked before the geometry is bound to an object, so `P` and `Po` coincide there and a `P`-authored field will not follow the object's placement (while the relief half, which runs at hit time, would) -- the two would silently disagree once the object moves. |
 | Turn a grey field into real colour (terrain bands, patina, rust-to-metal) | `ramp_painter` | Multi-stop colour ramp driven by any painter's channel.  The universal scalar -> colour remap; see "The composition boundary" below. |
 | Drive a PHYSICAL SCALAR from any colour painter you already have | `scalar_painter { painter <name> channel <R\|G\|B\|A> scale <s> bias <b> }` | The any-painter -> scalar bridge: binds ANY of the painter kinds above (a worley field, an image, an expression) to roughness / IOR / scattering. |
@@ -114,11 +114,13 @@ it costs ONE chunk instead of a graph of them.
 
 The body sees `u`, `v`, `P` (world position, a `vec3`), `Po` (object
 position), `N` (shading normal), `fw` (world-space filter-width
-estimate; real on primary hits against mesh geometry, 0.0 -- an honest
-"point sample" -- on secondary bounces and non-mesh geometry; on a
-SCALED mesh instance `fw` was object-space, not world-space, until
-2026-09-06 -- relief-modifier arc, docs/RELIEF_MODIFIER_DESIGN.md
-§3.3 -- and is world-correct since), and
+estimate; real on PRIMARY hits against EVERY geometry -- analytic
+primitives, SDFs, boxes, disks, planes and meshes alike, since
+docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md, 2026-09-06; it was
+mesh-only before that -- and 0.0, an honest "point sample", on
+secondary bounces, because no ray carries screen-space differentials
+after a scatter; on a SCALED instance `fw` is world-space, not
+object-space, since the same arc), and
 `time`.  `fbm`/`turbulence`/`ridged` use `fw` automatically to fade out
 octaves the sample footprint can't resolve, cutting shimmer on
 distant/grazing procedural surfaces.  Watch domain scaling: `fw` is
@@ -805,10 +807,9 @@ any other setting applies a real conversion and would warp the values.
 Every painter above can drive albedo (`IPainter`) or a physical scalar
 (`IScalarPainter`).  None of them can tilt the SHADING NORMAL -- that is
 what turns "a decal on plastic" into "a surface you could run a finger
-over".  `relief_modifier` is the fourth modifier (alongside
-`normal_map_modifier` and `glint_modifier`; `bumpmap_modifier` is
-DEPRECATED, see below) and the one that takes a *painter field*, not an
-image, as its height:
+over".  `relief_modifier` is one of three normal-perturbing modifiers (alongside
+`normal_map_modifier` and `glint_modifier`) and the one that takes a
+*painter field*, not an image, as its height:
 
 ```
 scalar_painter
@@ -851,14 +852,21 @@ relief_modifier
 - **`step` is auto by default** (`0`) -- it picks the finite-difference
   step from the pixel footprint on `domain surface` the same way the
   expression VM's noise builtins fade octaves, so relief fades toward
-  flat at distance instead of aliasing. **Mesh-only, though**: only
-  triangle-mesh geometry populates that footprint today (primary hits
-  with ray differentials); on analytic primitives and SDFs the footprint
-  is unknown, there is no distance fade at all, and the step used is
-  just the `1e-3` floor or your explicit `step` (`docs/RELIEF_MODIFIER_DESIGN.md`
-  §3.3). Set it explicitly when you need a specific frequency floor, or
-  when the geometry is analytic/SDF and you want a floor other than
-  `1e-3`.
+  flat at distance instead of aliasing. **Primary-hits-only, though**:
+  every geometry populates that footprint (analytic primitives and SDFs
+  included, since `docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md`,
+  2026-09-06 -- it was mesh-only before that), but no ray carries screen-
+  space differentials after a scatter, so on a surface reached through a
+  bounce the footprint is unknown, there is no distance fade, and the
+  step used is just the `1e-3` floor or your explicit `step`
+  (`docs/RELIEF_MODIFIER_DESIGN.md` §3.3). Set it explicitly when you
+  need a specific frequency floor, or when you want a floor other than
+  `1e-3` -- remembering it is a FLOOR: where a footprint exists and HALF
+  of it is larger, half the footprint wins.  (Half, because `step` is the
+  HALF-step and the difference spans twice it, so `step = fw/2` makes the
+  stencil span exactly one pixel.  A `step` smaller than that is silently
+  raised on a primary hit -- there is deliberately no way to ask for a
+  sub-footprint stencil there.)
 - **Composing more than one modifier on an object** uses `modifier_stack`,
   applied in the order the members are listed:
 
@@ -877,22 +885,23 @@ relief_modifier
   handed, so it should see the final, fully-perturbed surface, not an
   intermediate one.
 
-`bumpmap_modifier` (UV-only, samples an `IFunction2D` at `ptCoord`) is
-**DEPRECATED** -- it still parses (with a one-time warning) but
-`relief_modifier` replaces it for every new material: it takes any
-scalar field instead of only an `IFunction2D`, and it can run in the
-`surface` domain on geometry that has no UVs at all. An in-tree scene
-that still has a `bumpmap_modifier` chunk migrates losslessly with
-`tools/migrate_scenes_relief.py` (dry-run first: `--dry-run -v`); see
-`docs/RELIEF_MODIFIER_DESIGN.md` §7 for the exact scale-sign algebra it
-applies.
+`bumpmap_modifier` (UV-only, sampled an `IFunction2D` at `ptCoord`) was
+**REMOVED on 2026-09-06**.  A scene that still carries one no longer
+parses: it is refused with a diagnostic naming the replacement and the
+migrator.  `relief_modifier` is that replacement for every material --
+it takes any scalar field instead of only an `IFunction2D`, and it can
+run in the `surface` domain on geometry that has no UVs at all.  An
+older scene migrates losslessly with `tools/migrate_scenes_relief.py`
+(dry-run first: `--dry-run -v`); see `docs/RELIEF_MODIFIER_DESIGN.md` §7
+for the exact scale-sign algebra it applies.  Do not author a
+`bumpmap_modifier` chunk.
 
 `validate`/render results carry a `DESIGN_FLAT_RELIEF` advisory (a
 "decal on plastic" detector) when an object's material paints a
 spatially-varying colour onto a surface whose shading normal never
 changes. Binding ANY modifier silences it (a `relief_modifier` is the
-fix this note is teaching, but a `bumpmap_modifier`/`normal_map_modifier`/
-`glint_modifier`, or a `modifier_stack` naming any of them, silences it
+fix this note is teaching, but a `normal_map_modifier`/`glint_modifier`,
+or a `modifier_stack` naming either, silences it
 too, since the claim is only "the shading normal is inert here"). It asks
 what the RENDERED surface carries, not what the chunk literally spells, so
 it is also silent when the modifier is **inherited** through `source`

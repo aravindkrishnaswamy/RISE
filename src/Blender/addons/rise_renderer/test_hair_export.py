@@ -621,7 +621,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 10)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 11)
 
     def test_hair_material_struct_matches(self):
         self._assert_matches(bridge._HairMaterial, "rise_blender_hair_material")
@@ -918,6 +918,129 @@ class BridgeWarningDecodeTest(unittest.TestCase):
     def test_undecodable_bytes_do_not_raise(self):
         decoded = bridge._decode_bridge_warnings(self._result(b"bad \xff byte"))
         self.assertEqual(len(decoded), 1)
+
+
+# ---------------------------------------------------------------------------
+# `exporter._bump_modifier_scale` -- the SIGN a Blender Bump node exports.
+#
+# `exporter.py` imports bpy at module scope, so every other exporter test
+# in this file is source-level (see ExporterHairTextureGatingTest's
+# docstring).  This one is BEHAVIOURAL, because a sign is exactly the kind
+# of thing a regex pins badly: the import is made to succeed by installing
+# four stub modules and a synthetic `rise_renderer` package whose
+# `__path__` points at this directory, which sidesteps the real
+# `__init__.py` (that one DOES need a live Blender).  Nothing in the
+# function under test touches bpy -- it is pure arithmetic on three
+# numbers, deliberately factored out of `_build_bump_modifier` so it could
+# be reached from here.
+# ---------------------------------------------------------------------------
+
+def _import_exporter_with_stub_bpy():
+    """Import `exporter` outside Blender, or return None with a reason."""
+
+    import importlib
+    import types
+
+    stubs = {}
+    if "bpy" not in sys.modules:
+        bpy_stub = types.ModuleType("bpy")
+        bpy_stub.path = types.SimpleNamespace(abspath=lambda p, library=None: p)
+        bpy_stub.types = types.SimpleNamespace()
+        stubs["bpy"] = bpy_stub
+
+        extras = types.ModuleType("bpy_extras")
+        node_shader_utils = types.ModuleType("bpy_extras.node_shader_utils")
+
+        class PrincipledBSDFWrapper:  # noqa: D401 - annotation target only
+            pass
+
+        node_shader_utils.PrincipledBSDFWrapper = PrincipledBSDFWrapper
+        extras.node_shader_utils = node_shader_utils
+        stubs["bpy_extras"] = extras
+        stubs["bpy_extras.node_shader_utils"] = node_shader_utils
+
+        mathutils = types.ModuleType("mathutils")
+        mathutils.Vector = tuple
+        stubs["mathutils"] = mathutils
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    if "rise_renderer" not in sys.modules:
+        pkg = types.ModuleType("rise_renderer")
+        pkg.__path__ = [here]
+        stubs["rise_renderer"] = pkg
+
+    sys.modules.update(stubs)
+    try:
+        return importlib.import_module("rise_renderer.exporter")
+    except Exception as exc:  # pragma: no cover - reported, not silently skipped
+        for name in stubs:
+            sys.modules.pop(name, None)
+        raise unittest.SkipTest(f"exporter is not importable outside Blender: {exc!r}")
+
+
+class ExporterBumpSignTest(unittest.TestCase):
+    """`_bump_modifier_scale` composes with the bridge shim's negation to
+    give Blender's / Blinn's / PBRT's `N - amp*grad(h)`.
+
+    The chain, spelled out because no single file holds all of it:
+
+        exporter  scale  = -Strength*Distance          (Invert off)
+        shim      scale' = -scale                      (normalize=True,
+                                                        RISE_API.cpp)
+        relief    N'     = N - (T*h_T + B*h_B)*scale'  (ReliefModifier.cpp)
+        =>        N'     = N - Strength*Distance*grad(h)
+
+    `tests/BlenderBridgeHairTest.cpp` case 6a/6c pins the second and third
+    links against the real C++; this pins the first."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.exporter = _import_exporter_with_stub_bpy()
+
+    def test_invert_off_is_negative(self):
+        # Negative here == "tilt away from the up-slope" after the shim's
+        # own negation.  Positive would render every dent as a bump.
+        self.assertLess(self.exporter._bump_modifier_scale(0.7, 1.5, False), 0.0)
+        self.assertAlmostEqual(
+            self.exporter._bump_modifier_scale(0.7, 1.5, False), -1.05, places=12)
+
+    def test_invert_on_flips_the_sign(self):
+        self.assertAlmostEqual(
+            self.exporter._bump_modifier_scale(0.7, 1.5, True), 1.05, places=12)
+
+    def test_invert_is_exactly_a_negation(self):
+        for strength, distance in ((1.0, 1.0), (0.25, 4.0), (2.0, 0.1)):
+            with self.subTest(strength=strength, distance=distance):
+                off = self.exporter._bump_modifier_scale(strength, distance, False)
+                on = self.exporter._bump_modifier_scale(strength, distance, True)
+                self.assertEqual(off, -on)
+
+    def test_a_negative_strength_composes_rather_than_clamping(self):
+        # Cycles lets Strength go negative; two negations cancel there
+        # too, so the exported sign must follow the product's sign, not
+        # be forced.
+        self.assertGreater(self.exporter._bump_modifier_scale(-0.7, 1.5, False), 0.0)
+        self.assertLess(self.exporter._bump_modifier_scale(-0.7, 1.5, True), 0.0)
+
+    def test_zero_amplitude_stays_zero(self):
+        # `ReliefModifier::Modify` is inert at scale 0; -0.0 and 0.0 both
+        # satisfy its `!(x != 0)` test, so either is fine -- what must NOT
+        # happen is a nonzero amplitude appearing out of a zero one.
+        self.assertEqual(abs(self.exporter._bump_modifier_scale(0.0, 1.5, False)), 0.0)
+        self.assertEqual(abs(self.exporter._bump_modifier_scale(0.7, 0.0, True)), 0.0)
+
+    def test_the_builder_reads_the_nodes_invert_flag(self):
+        # Source-level companion: the behavioural test above cannot reach
+        # `_build_bump_modifier` (it walks a live node graph), so pin that
+        # the builder actually consults `invert` and feeds the helper,
+        # rather than passing a hard-coded False.
+        with open(_EXPORTER_SOURCE, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        start = source.index("def _build_bump_modifier(")
+        end = source.index("\ndef ", start + 1)
+        body = source[start:end]
+        self.assertIn('_bump_modifier_scale(strength, distance, bool(getattr(normal_node, "invert", False)))', body)
+        self.assertNotIn("scale=float(strength * distance)", body)
 
 
 if __name__ == "__main__":
