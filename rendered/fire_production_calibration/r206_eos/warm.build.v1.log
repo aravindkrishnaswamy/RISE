@@ -1,0 +1,7 @@
+Compiling (safe fp32 ObjC++): ../../../src/Library/Utilities/FireProductionAdvectionMac.mm
+Compiling: ../../../src/Library/Job.cpp
+../../../src/Library/Utilities/FireProductionAdvectionMac.mm:2725:10: warning: string literal of length 70860 exceeds maximum length 65536 that C++ compilers are required to support [-Woverlength-strings]
+ 2725 | )METAL")+R"METAL(
+      |          ^~~~~~~~
+1 warning generated.
+Linking ../../../bin/tests/FireSequenceTest

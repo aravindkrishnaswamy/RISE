@@ -1,0 +1,138 @@
+{
+  "baseline": {
+    "eos_per_call_process_means": {
+      "mean": 594.7137330238095,
+      "p95": 613.4070375714285,
+      "samples": 3,
+      "stdev": 29.378174499964572
+    },
+    "eos_per_step_process_means": {
+      "mean": 8325.992262333333,
+      "p95": 8587.698525999996,
+      "samples": 3,
+      "stdev": 411.29444299950234
+    },
+    "evidence": [
+      {
+        "log": "baseline_profile_1.v1.log",
+        "log_sha256": "844e48bdc4fc6c7fb11951126ad9a08382e57a2cc994da5ef150079dbac92b2c",
+        "outcome_sha256": "a6a83b57d1e04b86bb7b4537b6444eea6c6c6441fa4884a7903fe8ee47bfccef",
+        "verified_publication_sidecars": 5
+      },
+      {
+        "log": "baseline_profile_2.v1.log",
+        "log_sha256": "aa4c347208ec1bdf00abd7990c5a007b1cbc3205df446df93afa2268c893b33b",
+        "outcome_sha256": "6e637c4c56dfbbd90516608e67ea3a10573e585e1ef9d16bcae33397a8a1071f",
+        "verified_publication_sidecars": 5
+      },
+      {
+        "log": "baseline_profile_3.v1.log",
+        "log_sha256": "6f953e81ce05b5b92880af4464029f08f800d70b8e5bbfa547fc3dd7de0ca1c4",
+        "outcome_sha256": "d4044f2e5b7691c25b34bfe8cf4daa39be59f2135cfb4f6969317f6e1fe2547c",
+        "verified_publication_sidecars": 5
+      }
+    ],
+    "whole_owner_device": {
+      "mean": 10427.219352270993,
+      "p95": 11535.138376289979,
+      "samples": 9,
+      "stdev": 1194.326198020351
+    },
+    "whole_owner_wall": {
+      "mean": 11862.208990777777,
+      "p95": 13036.723541,
+      "samples": 9,
+      "stdev": 1293.7059749362638
+    }
+  },
+  "cold_prefix_physics_columns_equal": true,
+  "iterations": {
+    "EOS_ITERATIONS_V1": {
+      "bit_mismatches": 0,
+      "calls": 42,
+      "cell_evaluations": 21195972,
+      "cold_fallback": 0,
+      "histogram": {
+        "0": 21191772,
+        "24": 1140,
+        "25": 3060
+      },
+      "lower_endpoint": 21191772,
+      "mean_work_per_cell": 0.0048999876014178545,
+      "work": 103860,
+      "work_name": "bisections"
+    },
+    "EOS_WARM_PROBES_V1": {
+      "bit_mismatches": 0,
+      "calls": 42,
+      "cell_evaluations": 21195972,
+      "cold_fallback": 3466,
+      "histogram": {
+        "0": 21191772,
+        "3": 166,
+        "5": 188,
+        "7": 380,
+        "25": 930,
+        "26": 2536
+      },
+      "lower_endpoint": 0,
+      "mean_work_per_cell": 0.004401024873971338,
+      "work": 93284,
+      "work_name": "interior_energy_probes"
+    },
+    "log_sha256": "13b1665c7110c384979989d34c0aea0605022d987a10cb2bfa12346b525358e7"
+  },
+  "prototype_owner_gate_sha256": "648ca67a25783ceece4bb6d07d5057bd8d12e5bc5319d45e23e28a10467f746c",
+  "prototype_source_patch_sha256": "181ad8eac85d4a86d1089ea5af107a3b3864cda76c5703a8078eaa4b0f910cee",
+  "qualification_status": "exploratory dirty-tree prototype, not a commit-attested production qualification",
+  "schema": "rise.fire.eos-warm-start-experiment.v1",
+  "scope": "three-step cold-prefix diagnostic; no focusing or window verdict",
+  "units": "milliseconds",
+  "warm": {
+    "eos_per_call_process_means": {
+      "mean": 596.2815201984126,
+      "p95": 613.0575238809523,
+      "samples": 3,
+      "stdev": 24.9063251678896
+    },
+    "eos_per_step_process_means": {
+      "mean": 8347.941282777778,
+      "p95": 8582.805334333332,
+      "samples": 3,
+      "stdev": 348.6885523504526
+    },
+    "evidence": [
+      {
+        "log": "warm_profile_1.v1.log",
+        "log_sha256": "21ea49dc7f09eeb6e10e9eb0d5220a7974b67d726c90400d9d6c16212a87bd3e",
+        "outcome_sha256": "c5f33fc6cf15001c55aef0875c5aeddd32de5ad880a2ae2b2f34e97fbdf2e6f0",
+        "verified_publication_sidecars": 5
+      },
+      {
+        "log": "warm_profile_2.v1.log",
+        "log_sha256": "cd56c40b4b53f249b2607a58fee359a488e28a0f161003112a81cf0862d74504",
+        "outcome_sha256": "e53772ac97b7895cd8a814868945dd81efc08fc2a37ad360f17189f0ccce2fae",
+        "verified_publication_sidecars": 5
+      },
+      {
+        "log": "warm_profile_3.v1.log",
+        "log_sha256": "9961e3e603d85dc7d44590f20751e3868d0143d0f2caabbb511894abbdc37c68",
+        "outcome_sha256": "e1290196d51988393f7d9c5fe6a7a211f1a70f3f4ff3a0820b91ad29e0ed4a9a",
+        "verified_publication_sidecars": 5
+      }
+    ],
+    "whole_owner_device": {
+      "mean": 10441.601467060133,
+      "p95": 11540.634332690388,
+      "samples": 9,
+      "stdev": 1117.356103579354
+    },
+    "whole_owner_wall": {
+      "mean": 11876.165180555556,
+      "p95": 13056.108292,
+      "samples": 9,
+      "stdev": 1210.0755780759343
+    }
+  },
+  "warning": "Prefix column equality is not the per-cell owner gate or resume certificate. Kernel intervals are inclusive."
+}

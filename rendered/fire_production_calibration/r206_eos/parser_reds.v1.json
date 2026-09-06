@@ -1,0 +1,12 @@
+{
+  "refused": [
+    "temperature_bit_mismatch",
+    "missing_candidate",
+    "wrong_stage",
+    "negative_bin",
+    "incorrect_work",
+    "warm_overflow",
+    "missing_terminal"
+  ],
+  "schema": "rise.fire.eos-iteration-parser-reds.v1"
+}

@@ -1316,6 +1316,8 @@ namespace RISEFireProductionTrace
 		//! rounding and cell 1 fails deviation rounding.  The returned first witness
 		//! must pair cell 0 with term 1, never the global {1|2} bitmap.
 		bool qualificationTwoCellDistinctEOSFailures;
+		//! Alter one device-produced endpoint enclosure word; direct comparison must refuse.
+		bool qualificationCorruptEndpointTable;
 		std::uint64_t qualificationWorkingSetLimitBytes;
 
 		FireProductionResidentEOSCandidateComparatorRequest() :
@@ -1339,6 +1341,7 @@ namespace RISEFireProductionTrace
 			qualificationAmbiguousZeroDeviationRounding(false),
 			qualificationAmbiguousSubnormalDeviationRounding(false),
 			qualificationTwoCellDistinctEOSFailures(false),
+			qualificationCorruptEndpointTable(false),
 			qualificationWorkingSetLimitBytes(std::numeric_limits<std::uint64_t>::max()) {}
 	};
 

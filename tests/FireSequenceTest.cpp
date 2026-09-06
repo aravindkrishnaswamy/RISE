@@ -10739,6 +10739,10 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 	FireProductionResidentEOSCandidateComparatorRequest eosTableMutation=request;
 	eosTableMutation.qualificationMismatchedEOSThermochemistry=true;
 	const bool eosTableMutationRefused=hostRefused(eosTableMutation);
+	FireProductionResidentEOSCandidateComparatorRequest endpointMutation=request;
+	endpointMutation.qualificationCorruptEndpointTable=true;
+	const bool endpointMutationRefused=deviceRefused(endpointMutation,0x80u,
+		"endpoint_enclosure_bit_mutation");
 	FireProductionResidentEOSCandidateComparatorRequest splitStage=request;
 	splitStage.qualificationMismatchedDeviceStage=true;
 	const bool splitStageRefused=deviceRefused(splitStage,0x50u,"forged_device_stage");
@@ -10817,7 +10821,7 @@ int RunProductionResidentEOSCandidateMetalFP64Fixture()
 				item.temperatureMinK<=sealedCase.derived.maximumAcceptedTemperatureK)
 				requiredBranches|=1u<<(7u+std::min<std::size_t>(segment,2u));}}
 	const bool passed=r60Prepared&&r60Adjacent&&r60Accepted&&r60Refused&&
-		arithmeticBoundarySweep&&endpointReserveRED&&refusalCellRequalified&&logEnclosure&&candidateBitEqual&&
+		arithmeticBoundarySweep&&endpointReserveRED&&endpointMutationRefused&&refusalCellRequalified&&logEnclosure&&candidateBitEqual&&
 		sharedAlphaBitEqual&&temperatureBitEqual&&pressureBitEqual&&deviationBitEqual&&
 		observed.branchObligationBitmap==requiredBranches&&observed.commandCommitCount==1u&&
 		observed.terminalStagingCount==1u&&observed.interstageFullGridTransferCount==0u&&
