@@ -195,12 +195,23 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 	// preservation; the mirrored-instance FlipV fix).
 	//
 	// The GATE stays here, and is deliberately NOT inside the helper: when
-	// the hit carries no geometry-supplied tangent (bHasShadingTangent
-	// false) this modifier rebuilds with a plain CreateFromW, which is
-	// byte-identical to its behaviour before the tangent fix existed.
+	// the hit carries no coherent tangent frame at all
+	// (ModifierFrame::HasCoherentTangent false) this modifier rebuilds with
+	// a plain CreateFromW, which is byte-identical to its behaviour before
+	// the tangent fix existed.  The predicate -- not `ri.bHasShadingTangent`
+	// alone, which is only the sub-case that ALSO supplies a real tangent
+	// vector -- is what mirrors Object::IntersectRay's coherent-frame
+	// branch; see its comment for the SDFGeometry-heightfield case the bare
+	// flag misses.  (The T/B selection above still keys on the bare flag,
+	// and correctly so for the VALUES: an SDF-heightfield hit falls to the
+	// last-ditch branch, which reads the same `ri.onb.u()/v()` the
+	// bHasShadingTangent branch would.  The only difference is that the
+	// last-ditch branch also emits its once-per-process warning, which is a
+	// false positive on that hit -- a cosmetic residual, tracked in
+	// docs/RELIEF_MODIFIER_DESIGN.md 12, not a shading difference.)
 	// GlintModifier makes the opposite choice for its own reasons -- see
 	// the helper's header comment.
-	if( ri.bHasShadingTangent ) {
+	if( ModifierFrame::HasCoherentTangent( ri ) ) {
 		ModifierFrame::RebuildPreservingTangent( ri, perturbed );
 	} else {
 		ri.vNormal = perturbed;

@@ -3,7 +3,9 @@
 //  ReliefModifierTest.cpp - Validates the painter-driven micro-relief
 //    modifier (src/Library/Modifiers/ReliefModifier.{h,cpp}).  Covers
 //    tests 1-8 and 10 of docs/RELIEF_MODIFIER_DESIGN.md 8 (test 9 is
-//    `modifier_stack`, a Phase-2 deliverable).
+//    `modifier_stack`, a Phase-2 deliverable), plus 7b from fix round 1.
+//    Two of its cases reach into BumpMap and NormalMap: test 2 (legacy
+//    equivalence) and test 7b(i) (the shared frame-rebuild gate).
 //
 //    1. Analytic gradient.  Height `P.x`, N = +Z, T = +X: N' is exactly
 //       normalize( (0,0,1) - scale*(1,0,0) ).  The SIGN is the whole
@@ -20,7 +22,10 @@
 //       after Modify.
 //    4. Footprint fade.  With txFootprint.valid, |N'-N| is
 //       non-increasing in worldWidth over a decade sweep on an `fbm`
-//       height (the octave fade plus the max(., fw) step rule).
+//       height (the octave fade plus the max(., fw) step rule), AND
+//       strictly DECREASING over the same sweep on an fw-BLIND step
+//       height -- which is the half that actually discriminates the
+//       max(., fw) rule (see red-proof (e)).
 //    5. Object-space exactness.  A height field reading `Po` on a
 //       ROTATED instance -- and, separately, on a NON-UNIFORMLY SCALED
 //       one -- gives the same N' as the algebraically equivalent
@@ -34,6 +39,18 @@
 //       the identity map.
 //    7. Handedness.  A mirrored (left-handed) incoming frame is still
 //       left-handed after the rebuild -- mirrors NormalMap's guarantee.
+//   7b. SDF-heightfield frame (fix round 1, P1-A).  A hit carrying
+//       `bShadingTangentFromGeometry` WITHOUT `bHasShadingTangent` --
+//       SDFGeometry's heightfield mode, built here exactly as
+//       Object::IntersectRay builds it (world-X projected into the
+//       shading-normal plane, CreateFromWU, optional mirrored FlipV) --
+//       is a COHERENT-tangent hit and must take the tangent-preserving
+//       rebuild.  (i) a constant height leaves vNormal and the whole ONB
+//       bit-identical; (ii) a gradient height leaves onb.u() equal to the
+//       incoming u projected into the new tangent plane; (iii) the
+//       mirrored variant stays left-handed.  (i) is asserted for BumpMap
+//       and NormalMap too: they are the same family and carried the
+//       identical gate bug (audit-by-bug-pattern).
 //    8. Non-finite guard.  A height that returns NaN (and one that
 //       returns +Inf) leaves the hit bit-for-bit untouched.
 //   10. Parse.  `relief_modifier` round-trips through the real CST
@@ -65,8 +82,10 @@
 //        isfinite(mag2)` degenerate-normal gate below it -- and the
 //        red-proof MEASURED them to be mutually redundant for a
 //        non-finite height: removing EITHER one alone leaves test 8
-//        green (59/59), and only removing BOTH fails it (6 failures,
-//        NaN/Inf normals reaching the frame rebuild).  So test 8 pins
+//        green (measured at the 59/59 suite total of the time; the
+//        suite is 80/80 as of fix round 1), and only removing BOTH
+//        fails it (6 failures, NaN/Inf normals reaching the frame
+//        rebuild).  So test 8 pins
 //        the BEHAVIOUR, not either specific line; do not read a green
 //        test 8 as proof that the explicit guard is still present.  The
 //        explicit guard is kept anyway: it is what the design specifies,
@@ -76,6 +95,23 @@
 //        surface branch (leaving ri2.ptCoord at the centre) makes the
 //        UV-painter-in-surface-mode gradient identically zero and fails
 //        test 6.
+//    (e) Test 4, THE max(., fw) STEP RULE.  Deleting the
+//        `if( txFootprint.valid && worldWidth > s ) s = worldWidth`
+//        block in ReliefModifier.cpp's surface branch leaves the fbm
+//        sweep GREEN -- `fbm` fades its own octaves against the
+//        footprint, so its sequence is monotone with or without the max,
+//        and that sweep alone would pass a broken implementation.  The
+//        fw-blind step-height sweep added in fix round 1 fails all three
+//        strict-decrease assertions (|N'-N| pinned at 1.4000 for every
+//        footprint instead of 1.400 -> 1.268 -> 0.460 -> 0.050).
+//    (f) Test 7b, THE FRAME-REBUILD GATE (fix round 1, P1-A).  Reverting
+//        all three of ReliefModifier / BumpMap / NormalMap from
+//        `ModifierFrame::HasCoherentTangent( ri )` back to
+//        `ri.bHasShadingTangent` fails 5 assertions: 7b(i)'s ONB check
+//        for ALL THREE modifiers, 7b(ii), and 7b(iii).  (7b(i)'s vNormal
+//        checks stay green by construction -- the gate decides only how
+//        the ONB is rebuilt, never the normal -- which is exactly why the
+//        bug was invisible to a normal-only assertion.)
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -112,11 +148,13 @@
 	#define RISE_TEST_FILENO fileno
 #endif
 
+#include "../src/Library/Interfaces/IFunction2D.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IModifierManager.h"
 #include "../src/Library/Interfaces/IScalarPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Modifiers/BumpMap.h"
+#include "../src/Library/Modifiers/NormalMap.h"
 #include "../src/Library/Modifiers/ReliefModifier.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionParamSpec.h"
@@ -448,6 +486,16 @@ static void Test3_NoTexcoords()
 //  Test 4: footprint fade
 // ============================================================
 
+//! An fw-BLIND height: a step in world x, with no octave structure of its
+//! own to fade.  Probed at x = 0 the central difference straddles the step
+//! for ANY half-step s, so the measured slope is exactly 0.1 / (2s) -- a
+//! pure readout of the differencing span, which is what test 4's second
+//! sweep needs in order to discriminate the max(., fw) rule.
+static Scalar HeightStepAtX( const RayIntersectionGeometric& ri )
+{
+	return ( ri.ptIntersection.x > 0 ) ? Scalar( 0.1 ) : Scalar( 0 );
+}
+
 static void Test4_FootprintFade()
 {
 	std::cout << "Test 4: |N'-N| is non-increasing in the pixel footprint (fbm height)" << std::endl;
@@ -487,6 +535,47 @@ static void Test4_FootprintFade()
 	CHECK( mean[0] > mean[3] * Scalar(2),
 		"4: (oracle) the fade is real, not a flat line -- the narrowest footprint "
 		"perturbs at least 2x more than the widest (" << mean[0] << " vs " << mean[3] << ")" );
+
+	// ---- SECOND SWEEP: an fw-BLIND height, which is what actually
+	// discriminates the `max(., fw)` step rule.
+	//
+	// The fbm sweep above does NOT: `fbm` fades its own octaves against
+	// ri.txFootprint, so by fw >= 0.6 the field is already flat and the
+	// sequence stays monotone even with the max deleted -- it would pass a
+	// broken implementation.  A step height is blind to the footprint: it
+	// has no octaves to fade, so the ONLY thing that can make its measured
+	// slope shrink is the differencing span itself.
+	//
+	// H(p) = 0.1 for p.x > 0, else 0, probed at x = 0 exactly.  T = +X, so
+	// the stencil straddles the step: dT = H(+s) - H(-s) = 0.1 for every
+	// s > 0, and hT = 0.1 / (2s).  |N'-N| must therefore DECREASE strictly
+	// as fw (hence s) grows.  Delete the max and s is pinned at the 1e-3
+	// auto floor for all four widths, the sequence goes flat, and the
+	// strict-decrease assertions below fail (red-proof (e)).
+	{
+		FnScalarPainter* hs = Own( new FnScalarPainter( &HeightStepAtX ) );
+		ReliefModifier* ms = MakeRelief( *hs, Scalar(1.0), ReliefDomain::Surface, Scalar(0) );	// step 0 = auto
+
+		Scalar dev[4] = { 0, 0, 0, 0 };
+		for( int wi = 0; wi < 4; wi++ ) {
+			RayIntersectionGeometric ri = MakeRI( Point3( 0, 0, 0 ) );
+			ri.txFootprint.valid = true;
+			ri.txFootprint.worldWidth = widths[wi];
+			const Vector3 n0 = ri.vNormal;
+			ms->Modify( ri );
+			dev[wi] = Vector3Ops::Magnitude( ri.vNormal - n0 );
+			std::cout << "    (step height) worldWidth " << std::scientific << std::setprecision(1) << widths[wi]
+			          << "  |N'-N| " << std::setprecision(4) << dev[wi] << std::defaultfloat << std::endl;
+		}
+
+		CHECK( dev[0] > Scalar(1e-3),
+			"4: (oracle) the fw-blind step height actually perturbs at the narrowest footprint (" << dev[0] << ")" );
+		for( int wi = 1; wi < 4; wi++ ) {
+			CHECK( dev[wi] < dev[wi-1],
+				"4: (fw-blind height) |N'-N| STRICTLY decreases from worldWidth " << widths[wi-1]
+				<< " to " << widths[wi] << " (" << dev[wi-1] << " -> " << dev[wi] << ")" );
+		}
+	}
 }
 
 // ============================================================
@@ -739,6 +828,181 @@ static void Test7_Handedness()
 }
 
 // ============================================================
+//  Test 7b: the SDF-heightfield frame (bShadingTangentFromGeometry
+//           WITHOUT bHasShadingTangent)
+// ============================================================
+
+//! Build the hit an SDFGeometry heightfield produces, exactly as
+//! Object::IntersectRay does it (src/Library/Objects/Object.cpp:699-816):
+//! the coherent-frame branch keys on `bShadingTangentFromGeometry`, and
+//! inside it the "no real supplied tangent" sub-case projects WORLD-X
+//! into the shading-normal plane and calls CreateFromWU.  SDFGeometry's
+//! heightfield mode sets `bShadingTangentFromGeometry` and NOT
+//! `bHasShadingTangent` (SDFGeometry.cpp:1599; the pairing is spelled out
+//! at RayIntersectionGeometric.h:391-394), so this is the flag
+//! combination a modifier must not mistake for a tangent-less hit.
+static RayIntersectionGeometric MakeSDFHeightfieldRI( const Point3& p, bool mirrored )
+{
+	RayIntersectionGeometric ri = MakeRI( p );
+
+	const Vector3& n = ri.vNormal;
+	Vector3 t( 1.0 - n.x*n.x, -n.x*n.y, -n.x*n.z );			// (1,0,0) - n*dot(n,(1,0,0))
+	if( Vector3Ops::SquaredModulus( t ) < NEARZERO ) {
+		t = Vector3( -n.y*n.x, 1.0 - n.y*n.y, -n.y*n.z );	// (0,1,0) - n*dot(n,(0,1,0))
+	}
+	ri.onb.CreateFromWU( n, t );
+
+	// The mirrored-instance correction Object::IntersectRay applies when
+	// m_tangentFrameSign < 0 -- it lands on THIS branch too, so a
+	// modifier that drops to CreateFromW here loses it.
+	if( mirrored ) {
+		ri.onb.FlipV();
+	}
+
+	ri.bShadingTangentFromGeometry = true;
+	ri.bHasShadingTangent          = false;		// the discriminating combination
+	return ri;
+}
+
+//! A constant height: gradient identically zero in every direction, so a
+//! correct modifier is a pure no-op on the frame.
+static Scalar HeightConstant( const RayIntersectionGeometric& ) { return Scalar( 0.375 ); }
+
+//! A trivial constant IFunction2D, BumpMap's zero-gradient input.
+namespace {
+class ConstFunction2D :
+	public virtual IFunction2D,
+	public virtual Reference
+{
+public:
+	explicit ConstFunction2D( Scalar v ) : m_v( v ) {}
+	Scalar Evaluate( const Scalar, const Scalar ) const override { return m_v; }
+protected:
+	virtual ~ConstFunction2D() {}
+private:
+	Scalar m_v;
+};
+} // anonymous namespace
+
+static void Test7b_SDFHeightfieldFrame()
+{
+	std::cout << "Test 7b: an SDF-heightfield hit (bShadingTangentFromGeometry, no bHasShadingTangent) keeps its coherent frame" << std::endl;
+
+	const Point3 probe( 0.0, 0.0, 0.0 );
+
+	// ---- Precondition: the fixture really is the coherent-frame case,
+	// and its axes really are the ones CreateFromW would ROTATE BY 180.
+	{
+		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, false );
+		CHECK( ri.bShadingTangentFromGeometry && !ri.bHasShadingTangent,
+			"7b: (setup) the fixture carries bShadingTangentFromGeometry WITHOUT bHasShadingTangent" );
+		CHECK( VecClose( ri.onb.u(), Vector3( 1, 0, 0 ), 1e-15 )
+		    && VecClose( ri.onb.v(), Vector3( 0, 1, 0 ), 1e-15 ),
+			"7b: (setup) Object::IntersectRay's world-X projection gives u = +X, v = +Y" );
+
+		OrthonormalBasis3D legacy;
+		legacy.CreateFromW( ri.vNormal );
+		CHECK( !VecClose( legacy.u(), ri.onb.u(), 1e-9 ),
+			"7b: (oracle) CreateFromW does NOT reproduce this frame -- it is the 180-degree rotation "
+			"the gate exists to avoid (u " << legacy.u().x << "," << legacy.u().y << "," << legacy.u().z << ")" );
+	}
+
+	// ---- (i) CONSTANT height: zero gradient, so vNormal AND the whole
+	// ONB must come back bit-identical.  This is the assertion the old
+	// `bHasShadingTangent` gate fails: it would re-derive the frame with
+	// CreateFromW and hand back u = -X, v = -Y.
+	{
+		FnScalarPainter* h = Own( new FnScalarPainter( &HeightConstant ) );
+		ReliefModifier* m = MakeRelief( *h, Scalar(1.0), ReliefDomain::Surface, Scalar(1e-3) );
+
+		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, false );
+		const Vector3 n0 = ri.vNormal, u0 = ri.onb.u(), v0 = ri.onb.v(), w0 = ri.onb.w();
+		m->Modify( ri );
+
+		CHECK( VecClose( ri.vNormal, n0, 0 ),
+			"7b(i): relief -- a constant height leaves vNormal bit-identical" );
+		CHECK( VecClose( ri.onb.u(), u0, 0 ) && VecClose( ri.onb.v(), v0, 0 ) && VecClose( ri.onb.w(), w0, 0 ),
+			"7b(i): relief -- a constant height leaves the whole ONB bit-identical" );
+	}
+
+	// ---- (i) SIBLINGS.  BumpMap and NormalMap carried the identical
+	// bug (audit-by-bug-pattern: same gate, same family), so the same
+	// zero-perturbation invariant is pinned for both.
+	{
+		ConstFunction2D* f = Own( new ConstFunction2D( Scalar(0.375) ) );
+		BumpMap* m = Own( new BumpMap( *f, 1.0, 0.05, false ) );
+
+		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, false );
+		const Vector3 n0 = ri.vNormal, u0 = ri.onb.u(), v0 = ri.onb.v(), w0 = ri.onb.w();
+		m->Modify( ri );
+
+		CHECK( VecClose( ri.vNormal, n0, 0 ),
+			"7b(i): bump_map -- a constant height leaves vNormal bit-identical" );
+		CHECK( VecClose( ri.onb.u(), u0, 0 ) && VecClose( ri.onb.v(), v0, 0 ) && VecClose( ri.onb.w(), w0, 0 ),
+			"7b(i): bump_map -- a constant height leaves the whole ONB bit-identical" );
+	}
+	{
+		// (0.5, 0.5, 1.0) decodes to the identity tangent-space normal
+		// (0, 0, 1): nx = ny = 0, nz = 1, so the perturbed normal is N.
+		UniformColorPainter* p = Own( new UniformColorPainter( RISEPel( 0.5, 0.5, 1.0 ) ) );
+		NormalMap* m = Own( new NormalMap( *p, 1.0 ) );
+
+		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, false );
+		const Vector3 n0 = ri.vNormal, u0 = ri.onb.u(), v0 = ri.onb.v(), w0 = ri.onb.w();
+		m->Modify( ri );
+
+		CHECK( VecClose( ri.vNormal, n0, 0 ),
+			"7b(i): normal_map -- an identity normal-map texel leaves vNormal bit-identical" );
+		CHECK( VecClose( ri.onb.u(), u0, 0 ) && VecClose( ri.onb.v(), v0, 0 ) && VecClose( ri.onb.w(), w0, 0 ),
+			"7b(i): normal_map -- an identity normal-map texel leaves the whole ONB bit-identical" );
+	}
+
+	// ---- (ii) GRADIENT height: the rebuilt u must be the incoming u
+	// PROJECTED into the new tangent plane and renormalized -- the
+	// defining property of the tangent-preserving rebuild.
+	{
+		FnScalarPainter* h = Own( new FnScalarPainter( &HeightPx ) );
+		ReliefModifier* m = MakeRelief( *h, Scalar(1.0), ReliefDomain::Surface, Scalar(1e-3) );
+
+		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, false );
+		const Vector3 u0 = ri.onb.u();
+		m->Modify( ri );
+
+		const Vector3 nNew = ri.vNormal;
+		const Vector3 want = Vector3Ops::Normalize( u0 - nNew * Vector3Ops::Dot( u0, nNew ) );
+
+		CHECK( !VecClose( nNew, Vector3( 0, 0, 1 ), 1e-6 ),
+			"7b(ii): (oracle) the gradient height actually perturbed the normal" );
+		CHECK( VecClose( ri.onb.u(), want, 1e-12 ),
+			"7b(ii): onb.u() is the incoming u projected into the new tangent plane" );
+		CHECK( std::fabs( Vector3Ops::Dot( ri.onb.w(), nNew ) - 1.0 ) < 1e-12,
+			"7b(ii): onb.w() is the perturbed normal" );
+	}
+
+	// ---- (iii) MIRRORED: the FlipV Object::IntersectRay applied on this
+	// same branch must survive the rebuild, i.e. the frame stays
+	// LEFT-handed.  CreateFromWU always emits a right-handed triple, so a
+	// gate that drops to CreateFromW (or that rebuilds without restoring
+	// handedness) flips it back.
+	{
+		FnScalarPainter* h = Own( new FnScalarPainter( &HeightPx ) );
+		ReliefModifier* m = MakeRelief( *h, Scalar(0.6), ReliefDomain::Surface, Scalar(1e-3) );
+
+		RayIntersectionGeometric ri = MakeSDFHeightfieldRI( probe, true );
+		const Scalar before = Vector3Ops::Dot( ri.onb.u(),
+			Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
+		CHECK( before < 0, "7b(iii): (setup) the mirrored fixture is left-handed" );
+
+		m->Modify( ri );
+
+		const Scalar after = Vector3Ops::Dot( ri.onb.u(),
+			Vector3Ops::Cross( ri.onb.v(), ri.onb.w() ) );
+		CHECK( after < 0,
+			"7b(iii): the mirrored SDF-heightfield frame is still left-handed after the rebuild" );
+	}
+}
+
+// ============================================================
 //  Test 8: the non-finite guard
 // ============================================================
 
@@ -964,7 +1228,7 @@ static void Test10_Parse()
 
 int main()
 {
-	std::cout << "=== ReliefModifierTest (docs/RELIEF_MODIFIER_DESIGN.md 8, tests 1-8 + 10) ===" << std::endl;
+	std::cout << "=== ReliefModifierTest (docs/RELIEF_MODIFIER_DESIGN.md 8, tests 1-8 + 7b + 10) ===" << std::endl;
 
 	Test1_AnalyticGradient();
 	Test2_LegacyEquivalence();
@@ -973,6 +1237,7 @@ int main()
 	Test5_ObjectSpaceExactness();
 	Test6_UVChainRule();
 	Test7_Handedness();
+	Test7b_SDFHeightfieldFrame();
 	Test8_NonFiniteGuard();
 	Test10_Parse();
 

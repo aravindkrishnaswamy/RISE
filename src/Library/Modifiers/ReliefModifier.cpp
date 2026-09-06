@@ -295,13 +295,17 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		return;
 	}
 
-	// Frame rebuild.  Gated on bHasShadingTangent exactly as BumpMap and
-	// NormalMap do -- relief is a height-gradient tilt, the same family --
-	// so on tangent-less geometry the rebuild is a plain CreateFromW.  See
-	// ModifierFrame.h for both corrections the helper encodes and for why
-	// GlintModifier makes the opposite choice.
+	// Frame rebuild.  Gated on ModifierFrame::HasCoherentTangent exactly as
+	// BumpMap and NormalMap do -- relief is a height-gradient tilt, the same
+	// family -- so on tangent-less geometry the rebuild is a plain
+	// CreateFromW.  The predicate, NOT `ri.bHasShadingTangent` alone, is what
+	// mirrors Object::IntersectRay's coherent-frame branch (it also covers
+	// SDFGeometry's heightfield mode, which sets bShadingTangentFromGeometry
+	// without bHasShadingTangent).  See ModifierFrame.h for both corrections
+	// the helper encodes and for why GlintModifier makes the opposite choice
+	// on tangent-less hits.
 	const Vector3 newN = Vector3Ops::Normalize( perturbed );
-	if( ri.bHasShadingTangent ) {
+	if( ModifierFrame::HasCoherentTangent( ri ) ) {
 		ModifierFrame::RebuildPreservingTangent( ri, newN );
 	} else {
 		ri.vNormal = newN;

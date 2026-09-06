@@ -75,12 +75,16 @@ void BumpMap::Modify( RayIntersectionGeometric& ri ) const
 	// tangent preservation; the mirrored-instance FlipV fix).
 	//
 	// The GATE stays here, and is deliberately NOT inside the helper:
-	// when the hit carries no geometry-supplied tangent
-	// (bHasShadingTangent false) this modifier rebuilds with a plain
-	// CreateFromW, which is byte-identical to its behaviour before the
-	// tangent fix existed.  GlintModifier makes the opposite choice for
-	// its own reasons -- see the helper's header comment.
-	if( ri.bHasShadingTangent ) {
+	// when the hit carries no coherent tangent frame at all
+	// (ModifierFrame::HasCoherentTangent false) this modifier rebuilds
+	// with a plain CreateFromW, which is byte-identical to its behaviour
+	// before the tangent fix existed.  The predicate -- not
+	// `ri.bHasShadingTangent` alone -- is what mirrors
+	// Object::IntersectRay's coherent-frame branch; see its comment for
+	// the SDFGeometry-heightfield case that the bare flag misses.
+	// GlintModifier makes the opposite choice for its own reasons -- see
+	// the helper's header comment.
+	if( ModifierFrame::HasCoherentTangent( ri ) ) {
 		ModifierFrame::RebuildPreservingTangent( ri, newN );
 	} else {
 		ri.vNormal = newN;
