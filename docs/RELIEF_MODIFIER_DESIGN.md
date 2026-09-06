@@ -101,10 +101,10 @@ out. Recording them so the design does not inherit them:
 | Surface | Fact | Where |
 |---|---|---|
 | Modifier interface | one method, `Modify(RayIntersectionGeometric&) const` | [IRayIntersectionModifier.h](../src/Library/Interfaces/IRayIntersectionModifier.h) |
-| Hook timing | `Object::IntersectRay` promotes `vNormal` and `vGeomNormal` to world space, builds `onb` (from a geometry-supplied tangent via `CreateFromWU` when `bHasShadingTangent`, else `CreateFromW`), fills `derivatives`, `txFootprint`, `signals`, then assigns `ri.pModifier`. `Modify` fires at every *consumer* (RayCaster, PT, BDPT eye/light walks, photon tracers, SMS, SSS, AOVs — ~25 sites) immediately after the cast, before any material call. | [Object.cpp:658-977](../src/Library/Objects/Object.cpp), [RayCaster.cpp:1271-1277](../src/Library/Rendering/RayCaster.cpp) |
+| Hook timing | `Object::IntersectRay` promotes `vNormal` and `vGeomNormal` to world space, builds `onb` (via `CreateFromWU` when **`bShadingTangentFromGeometry`** — from the geometry's own tangent in the `bHasShadingTangent` sub-case, from a world-X projection otherwise, e.g. SDFGeometry's heightfield mode — else `CreateFromW`; **the original text here named `bHasShadingTangent` as the branch condition, which is the sub-case, not the branch — the error that produced fix round 1's P1-A**), fills `derivatives`, `txFootprint`, `signals`, then assigns `ri.pModifier`. `Modify` fires at every *consumer* (RayCaster, PT, BDPT eye/light walks, photon tracers, SMS, SSS, AOVs — ~25 sites) immediately after the cast, before any material call. | [Object.cpp:658-977](../src/Library/Objects/Object.cpp), [RayCaster.cpp:1271-1277](../src/Library/Rendering/RayCaster.cpp) |
 | Geometric normal | captured before the modifier and never touched by it; every SPF/BRDF's geometric-horizon gate compares against it with the `SquaredModulus > 1e-12` degeneracy guard | [RayIntersectionGeometric.h:153-176](../src/Library/Intersection/RayIntersectionGeometric.h), [GGXSPF.cpp:157](../src/Library/Materials/GGXSPF.cpp), [DielectricSPF.cpp:153](../src/Library/Materials/DielectricSPF.cpp) |
 | BDPT / VCM | `Modify` runs once per surface vertex, then `normal`, `geomNormal`, `onb` are frozen into `BDPTVertex`; VCM reuses that record via `PopulateRIGFromVertex`. No integrator has a bump-terminator correction; none needs a change for a new modifier. | [BDPTIntegrator.cpp:2103-2114](../src/Library/Shaders/BDPTIntegrator.cpp), [BDPTVertex.h:102-110](../src/Library/Shaders/BDPTVertex.h) |
-| Frame rebuild | all three modifiers project the *current* `onb.u()` onto the new normal's plane, `CreateFromWU`, and restore incoming handedness with `FlipV` (the mirrored-instance fix); fall back to `CreateFromW` if the projection degenerates | [NormalMap.cpp:220-234](../src/Library/Modifiers/NormalMap.cpp), [GlintModifier.cpp:252-269](../src/Library/Modifiers/GlintModifier.cpp) |
+| Frame rebuild | all three pre-existing modifiers project the *current* `onb.u()` onto the new normal's plane, `CreateFromWU`, and restore incoming handedness with `FlipV` (the mirrored-instance fix); fall back to `CreateFromW` if the projection degenerates. Bump/NormalMap run the projection only on a coherent-tangent hit; Glint runs it unconditionally — see §12 deviation 3 and fix round 1 P1-A for the gate | [NormalMap.cpp:220-234](../src/Library/Modifiers/NormalMap.cpp), [GlintModifier.cpp:252-269](../src/Library/Modifiers/GlintModifier.cpp) |
 | One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". | [Object.h:37](../src/Library/Objects/Object.h), [CSGObject.cpp:1612](../src/Library/Objects/CSGObject.cpp), [RayIntersection.h:35](../src/Library/Intersection/RayIntersection.h) |
 | Scalar pipe | `IScalarPainter::GetValuesAt(ri)` → `ScalarTriple`; single-scalar slots read `.v[0]` and the resolver rejects per-channel painters when `requireSingle`; an `IPainter` name bound to a scalar slot gets `kScalarBoundToIPainterFmt` | [IScalarPainter.h:113-153](../src/Library/Interfaces/IScalarPainter.h), [Job.cpp:3869-3928](../src/Library/Job.cpp), [ChunkDescriptor.h:64-72](../src/Library/Parsers/ChunkDescriptor.h) |
 | Any-painter bridge | `scalar_painter { painter X channel R\|G\|B\|A [scale] [bias] }` → `PainterChannelScalarPainter`; `scalar_painter { function2d F }` → `Function2DScalarPainter` (evaluates `F.Evaluate(ptCoord)` — the *same* sampling path `bumpmap_modifier` uses today) | [ChunkParserRegistry.cpp:1589-1606](../src/Library/Parsers/ChunkParserRegistry.cpp) |
@@ -194,6 +194,12 @@ flat field:
   right gradient in `surface` mode. When derivatives are absent, `ptCoord` is
   left unchanged and such a painter reads flat — the descriptor names
   `domain uv` as the route for that case.
+- `ptCoord1` (TEXCOORD_1) — **not moved, in either domain.** The surface
+  domain's chain rule has only TEXCOORD_0's `dpdu`/`dpdv` to invert, and the
+  UV domain steps `ptCoord` alone. A height parameterised on the second UV
+  set (`texcoord1_painter`) therefore reads flat and yields no relief
+  anywhere; it is not supported. Author the height against TEXCOORD_0, or use
+  a 3D field in `surface`. The descriptor says so on the `height` parameter.
 - `vNormal`, `signals`, `derivatives`, `txFootprint` — unchanged. Triplanar
   blending weights, `curv`, `occlusion()`, `thickness()` are treated as
   locally constant, so a height expression that *is* `curv` produces zero
@@ -246,6 +252,20 @@ precision, not a scene-scale guess; on a scene whose features are below
 `1e-3` world units the author sets `step` (the descriptor says so). This is
 the one new constant in the design and it is disclosed as such.
 
+**The explicit `step` is a FLOOR, and the fade is mesh-only.** Note what the
+`max` does to an author-supplied value: it is raised to the footprint too, so
+on geometry that populates one, a `step` below the footprint is silently
+ignored. And only **triangle-mesh** geometry populates `txFootprint` today,
+and then only on primary hits carrying ray differentials — the same
+restriction `fw` in the expression VM already has
+([ExpressionPainter.cpp](../src/Library/Painters/ExpressionPainter.cpp) says
+so at its `ctx.fw` assignment). On analytic primitives and SDFs the footprint
+is unknown (0), the `max` is a no-op, the explicit `step` (or the `1e-3`
+floor) is exactly what is used, and there is **no distance fade at all**.
+That is the same limitation the whole painter stack carries, not one relief
+introduces; the descriptor discloses both halves rather than promising a fade
+that only some geometry gets.
+
 ### 3.4 One field on the hit record
 
 `RayIntersectionGeometric` gains
@@ -254,12 +274,25 @@ the one new constant in the design and it is disclosed as such.
 const Matrix4* pmxWorldToObject;   // linear map for tangent steps; nullptr when unknown
 ```
 
-defaulted `nullptr`, stamped by `Object::IntersectRay` beside `ri.pModifier`
-(and by `CSGObject::IntersectRay` with the composite's own inverse when it
-overrides the child's modifier — the implementer verifies which matrix maps
-the world step onto the `ptObjIntersec` the child painters will read, and
-adds a test that a rotated-instance object-space height field gives the same
-`N'` as the equivalent world-space field). When the pointer is null the
+defaulted `nullptr`, stamped by `Object::IntersectRay` beside `ri.pModifier`.
+`CSGObject::IntersectRay` stamps **`nullptr`** when it overrides the child's
+modifier, and every hit on a CSG composite therefore takes the degraded mode
+below — one `Warning` per process, object-space height fields stepped in
+world units on that object. *(Superseded by Phase 1 — the original wording
+here said "with the composite's own inverse", and asked the implementer to
+verify which matrix maps the world step onto the `ptObjIntersec` the child
+painters read. The answer is **neither**: `AdoptCsgSurfacePayload` copies
+`ptObjIntersec` untransformed from the child operand, so the point is in the
+CHILD's object space and the map into it is the child's inverse composed with
+every enclosing composite's — a per-hit product no member holds and a
+`const Matrix4*` cannot express. The composite's inverse is wrong by exactly
+the child's transform; the child's is wrong by exactly the composite's. See
+§12 deviation 2 for the full reasoning. The consequence is a **known gap**:
+an object-space height field on a CSG composite is stepped in world units,
+exact only when the whole chain is a pure translation.)* The design's other
+half still stands and shipped: a test that a rotated-instance — and a
+non-uniformly scaled — object-space height field gives the same `N'` as the
+equivalent world-space field (`ReliefModifierTest` test 5). When the pointer is null the
 modifier moves `ptObjIntersec` by the world step and says so once in the log
 (`Warning`, once per process) — the honest degraded mode for hits produced
 by paths that never route through `Object::IntersectRay`. This is an output
@@ -580,12 +613,32 @@ tolls (§7 decision 2, reaffirmed in [WETNESS_COAT_DESIGN.md:2118](WETNESS_COAT_
 
 ## 10. Cost
 
-Four extra height evaluations per hit on objects that bind relief; nothing
-on objects that do not. For an `fbm`-class expression height that is ~4× the
-cost of one albedo evaluation on the same object, per hit, measured on the
-§8 fixture and recorded in §12 (the standing cost-honesty lens). The dual-
-number VM (§6) is the named refinement if it matters; it does not for the
-showcase fixtures at their authored spp.
+*(rewritten against the Phase-1 measurements; the pre-implementation draft
+asserted "~4× one albedo evaluation" as though measured, which it was not —
+see the §12 cost table for what actually was.)*
+
+**The count is exact and is the honest claim.** Four extra height evaluations
+per hit on objects that bind relief; **zero** on objects that do not.
+
+**Measured, on the §8 fixture at 256×256 / 64 spp, 7 runs per variant:**
+
+- The modifier's own machinery — four `RayIntersectionGeometric` copies, the
+  point / object-space / UV offsets, the frame rebuild — costs **+3.9 %**
+  whole-render (a relief with a *constant* height vs. no modifier at all).
+  That is not where the money goes.
+- Whole-render, relief on vs. off with an `fbm` height is **3.39×**. That is
+  a **near-worst case by construction**: the fixture is one sphere whose only
+  expensive work *is* the height field, so nothing dilutes the four
+  evaluations.
+- Isolating the field: relief's four evaluations cost **1.73×** what the same
+  field costs bound to the albedo slot. This figure **does not confirm a "4×
+  one albedo evaluation" reading and must not be quoted as one** — it is
+  smaller, and the comparison is not apples-to-apples, because the albedo slot
+  is evidently queried more than once per hit on this Lambertian + NEE path,
+  so the albedo delta is not "one evaluation".
+
+The dual-number VM (§6) is the named refinement if it matters; it does not for
+the showcase fixtures at their authored spp.
 
 ---
 
@@ -611,7 +664,14 @@ and is left alone.
 
 ### Phase 1 — landed 2026-09-05
 
-Branch `relief-modifier`, four commits off `563204b8`:
+Branch `relief-modifier`, **eight** commits off `563204b8` (the table below;
+`git rev-list --count 563204b8..27aef6ac` = 8).  A ninth, `c3600ed0`, landed
+separately on the same branch after this record was written: it is
+`tools/migrate_scenes_relief.py`, the **Phase-3** migrator (lossless
+`bumpmap_modifier` → `scalar_painter{function2d}` + `relief_modifier{domain
+uv}`, the §7.2 scale fold, `--dry-run`/`--selftest` with 12 selftest cases).
+It is listed here only so the branch's commit range is accounted for; it is
+NOT a Phase-1 deliverable and its phase gate is Phase 3's.
 
 | Commit | What |
 |---|---|
@@ -640,7 +700,11 @@ run on the final tree: `GlintModifierTest` ALL PASSED,
 `CstResolverTest` 44/0, `CstRecordDeriveTest` 23/0,
 `CstIncrementalSafetyTest` 38/0, `CstSourceInstanceTest` 455/0,
 `ScalarPainterParserTest` 60/0, `SourceHygieneTest` 164/0,
-`BDPTVertexRIGRebuildTest` 15/0.  `ObjectMirrorTest` is 161 passed / **1
+`BDPTVertexRIGRebuildTest` 15/0.  **`SceneEditorSuggestionsTest` belongs on
+this list and was missing from it** — the suite hard-codes the registered-chunk
+count in two EXPECTs, so *any* new chunk turns it red until they are bumped;
+`relief_modifier` did, and fix round 1 (P1-C) bumped 174 → 175.  It is a
+**Phase-2 gate too**: `modifier_stack` will make it 176.  `ObjectMirrorTest` is 161 passed / **1
 failed** — `"B: front/back face classification survives the reflection"`
 — and that failure is **PRE-EXISTING**, verified by building the same
 test from a pristine `git archive` of `563204b8` in a scratch directory
@@ -681,14 +745,16 @@ IS the height field.  Isolating the field: relief's four evaluations
 cost **1.73×** what the same field costs bound to the albedo slot
 (`(C−D)/(B−A)`).
 
-That last figure **does not confirm §10's "~4× one albedo evaluation"**;
+That last figure **does not confirm the pre-implementation §10 draft's
+"~4× one albedo evaluation"** (§10 has since been rewritten against this
+table, fix round 1 P1-B);
 it is smaller, and the honest reading is that the comparison is not
 apples-to-apples — the albedo slot is evidently queried more than once
 per hit on this Lambertian + NEE path, so `B−A` is not "one evaluation".
 What is directly verifiable is the count: the modifier performs **exactly
 four** height evaluations per hit on an object that binds it, and zero on
-objects that do not.  §10's claim should be read as that count, not as a
-measured 4× wall-clock ratio.
+objects that do not.  §10 now states that count, and the three measured
+figures, instead of the unmeasured 4× ratio.
 
 **Deviations from the design, with reasons.**
 
@@ -713,25 +779,37 @@ measured 4× wall-clock ratio.
    therefore a known gap**, not a silent one.
 3. **`ModifierFrame::RebuildPreservingTangent` is the shared BODY, not
    the shared policy.**  §3.2 said "verbatim from NormalMap.cpp:220-234";
-   NormalMap and BumpMap gate the projection on `ri.bHasShadingTangent`
-   while GlintModifier runs it unconditionally, and the two are
-   **observably different** — for a hit with `bHasShadingTangent == false`
-   the gated form rebuilds with `CreateFromW` (an arbitrary canonical-axis
-   `u`) and the unconditional form projects the previous `u`, giving
-   different `u`/`v` about the same `w`.  Folding either into the helper
-   would have changed one of the three modifiers' behaviour, so the gate
-   stayed at each call site and all three are byte-identical to before.
-   ReliefModifier follows the BumpMap/NormalMap gate (it is a
-   height-gradient tilt, the same family).  Verified green:
+   NormalMap and BumpMap gate the projection while GlintModifier runs it
+   unconditionally, and the two are **observably different** — for a hit
+   with no coherent tangent the gated form rebuilds with `CreateFromW`
+   (an arbitrary canonical-axis `u`) and the unconditional form projects
+   the previous `u`, giving different `u`/`v` about the same `w`.  Folding
+   either into the helper would have changed one of the three modifiers'
+   behaviour, so the gate stayed at each call site and all three are
+   byte-identical to before.  ReliefModifier follows the BumpMap/NormalMap
+   gate (it is a height-gradient tilt, the same family).  **⚠ The gate's
+   CONDITION was wrong as shipped in Phase 1 — `ri.bHasShadingTangent`
+   alone, which misses SDFGeometry's heightfield mode; corrected in fix
+   round 1, P1-A below, to `ModifierFrame::HasCoherentTangent`.  The
+   body/policy split described here is unchanged by that fix.**  Verified
+   green:
    `GlintModifierTest` (incl. its test 5 "tangent direction preserved
    against a NON-canonical base tangent" and test 11 handedness) and
    `HairTangentPlumbingTest`'s four bump/normal-map cases including
    "non-hair hit byte-matches legacy CreateFromW rebuild".
 4. **One guard the design did not name**: a `mag2 > 1e-12 && isfinite`
-   bail on the perturbed vector, for a gradient large enough to cancel
-   `N`.  §3.2's "no NaN normal ever reaches a material" implies it;
-   without it `Normalize` would receive a zero vector.  It is a bail, not
-   a clamp — no flat spot, and still no geometric-horizon clamp.
+   bail on the perturbed vector.  §3.2's "no NaN normal ever reaches a
+   material" implies it; without it `Normalize` could receive an unusable
+   vector.  It is a bail, not a clamp — no flat spot, and still no
+   geometric-horizon clamp.  *(Fix round 1, P2-2: this entry originally
+   said the guard was "for a gradient large enough to cancel `N`", which
+   is impossible — `T` and `B` are orthonormal to `N`, so
+   `|N − scale·(T·h_T + B·h_B)|² = 1 + scale²(h_T² + h_B²) ≥ 1` for any
+   finite gradient on a unit `N`.  What it can actually catch is a
+   non-finite `mag2` — redundant with the `isfinite` gate above it, which
+   red-proof (c) measured — and a zero-length incoming `N` from a singular
+   transform, which nothing upstream covers.  The code comment now says
+   that.)*
 5. **No `Cst.cpp` change.**  §3.5 anticipated none and that is confirmed:
    `FunctionSubNamespace` maps `bumpmap_modifier`'s `function` to
    `kFunc2DSubCat` because the engine binds it through `pFunc2DManager`,
@@ -744,3 +822,58 @@ regenerated, so `CstDeriveGoldenTest` reports the two new scenes as
 `UNCOVERED`.  §11 puts the regen in Phase 3, after the four migrated
 scenes land, in one reviewed pass — a partial regen here would make that
 diff unreadable.
+
+---
+
+### Phase 1 — fix round 1 (2026-09-06)
+
+Three independent reviewers on `9b4f29fb..27aef6ac` returned **4 P1s and 6
+P2s**.  All ten are fixed.  Suite after the round: `ReliefModifierTest`
+**80/0** (was 62/0 — test 7b and test 4's second sweep are the additions).
+
+| Finding | Fix | Commit |
+|---|---|---|
+| **P1-A** — the frame-rebuild gate uses the wrong flag.  `Object::IntersectRay` builds the coherent `CreateFromWU` frame under `bShadingTangentFromGeometry`; `bHasShadingTangent` is only the sub-case inside it.  ReliefModifier, **BumpMap and NormalMap** all gated on the sub-case, so an SDFGeometry-heightfield hit (`bShadingTangentFromGeometry` without `bHasShadingTangent`, SDFGeometry.cpp:1599) fell to `CreateFromW` — a 180° frame rotation (u:+X→−X, v:+Y→−Y) plus loss of the mirrored-instance `FlipV`. | Root fix, once: `ModifierFrame::HasCoherentTangent( ri )` = `bShadingTangentFromGeometry \|\| bHasShadingTangent`, with a comment citing Object.cpp:699 and justifying the OR (the second disjunct is unreachable in tree; if a future geometry took it, projecting the incoming `u` is harmless — Glint's own continuity argument — so the OR can only ADD preservation).  All three modifiers switched.  Glint stays unconditional, and `ModifierFrame.h` now states that both policies are correct on a coherent-tangent hit and differ only on a tangent-less one.  The header's false claim that "SDFGeometry's heightfield mode" was covered by the `bHasShadingTangent` gate is corrected. | `44cf535d` |
+| **P1-B** — design body contradicted §12.  §3.4 still said CSGObject stamps "the composite's own inverse" (it stamps `nullptr`); §10 still asserted a "measured ~4× one albedo evaluation" (never measured); §12 said "four commits" (eight); §2's hook-timing row named `bHasShadingTangent` as the ONB branch condition — the same error that produced P1-A. | §3.4 rewritten to the shipped behaviour with the original wording marked superseded; §10 rewritten against §12's table (exact count of four evaluations; +3.9 % machinery; 3.39× whole-render near-worst-case; the 1.73× vs-albedo figure explicitly flagged as not apples-to-apples); §12's commit count corrected and `c3600ed0` accounted for as the separately-landed **Phase-3** migrator; §2's two rows corrected.  Also swept the enumeration family: `RayIntersectionGeometric.h:151`/`:158`, `SurfaceCurvature.h`, `BDPTVertexRIGRebuildTest.cpp` listed only two of the four normal-perturbing modifiers and now name all four. | *(this record)* |
+| **P1-C** — `SceneEditorSuggestionsTest` hard-codes the registered-chunk count in two EXPECTs; `relief_modifier` made it 175 and the suite was red on exactly those two. | Both bumped 174 → 175, per-addition history extended.  Suite added to the Phase-1 gate list above, and flagged as a **Phase-2 gate** (`modifier_stack` → 176). | `c246ae8f` |
+| **P2-1** — the `step` descriptor promised "set it explicitly when the field's features are finer than the floor", which cannot work: an explicit step is raised to the footprint too. | Descriptor rewritten: the explicit step is a **floor**; the footprint wins when larger, so on meshes relief fades toward flat at distance and a sub-footprint step is silently ignored; on analytic primitives and SDFs no footprint exists, the max is a no-op, there is **no fade**, and the explicit step is used verbatim.  Mirrored in §3.3 with the mesh-only disclosure.  **Code rule unchanged.** | `0bec7038`, doc in *(this record)* |
+| **P2-2** — the `mag2` guard's comment claimed "a gradient large enough to cancel N", which is impossible (`T`,`B` ⟂ `N`, so `\|N − scale·g\|² = 1 + scale²\|g\|² ≥ 1`). | Comment rewritten: the guard catches only a non-finite `mag2` (redundant with the `isfinite` gate for finite inputs — exactly what red-proof (c) measured) and a zero-length `N` from a singular transform.  §12 deviation 4 updated to match. | `bc2b6a9b` |
+| **P2-3** — test 4 did not discriminate `max(·, fw)`: `fbm` fades its own octaves, so the sequence stays monotone with the max deleted. | Added a second sweep on an fw-**blind** step height (`H = P.x > 0 ? 0.1 : 0`, probed at `x = 0`), where `\|N′−N\| ∝ 0.1/(2s)` and must therefore *strictly* decrease as `fw` grows.  Red-proof (e). | `44cf535d` |
+| **P2-4** — the no-object-map warning read as a per-hit accident. | Reworded to lead with the truth (it is a property of the object; every CSG-composite hit lands here) and to name the affected authoring surfaces. | `bc2b6a9b` |
+| **P2-5** — `ptCoord1` is not moved by the chain rule (only TEXCOORD_0 has `dpdu`/`dpdv`). | Disclosed in §3.2's point-domain list and on the `height` descriptor: a TEXCOORD_1-parameterised height is **not supported** — it reads flat in *both* domains — author against TEXCOORD_0 or use a 3D field in `surface`. | `0bec7038`, doc in *(this record)* |
+| **P2-6** — the Phase-1 record did not mention the separately-landed migrator. | `c3600ed0` (`tools/migrate_scenes_relief.py`) named in the commit-count paragraph as the **Phase-3** deliverable it is. | *(this record)* |
+
+**New red-proofs** (both mutations applied, observed red, reverted; recorded
+in the test header):
+
+- **(e) the `max(·, fw)` step rule.**  Deleting the
+  `if( txFootprint.valid && worldWidth > s ) s = worldWidth` block leaves the
+  fbm sweep **green** — confirming the reviewer's charge that it could not
+  discriminate — and fails all three of the new step-height assertions
+  (`|N′−N|` pinned at 1.4000 for every footprint instead of
+  1.400 → 1.268 → 0.460 → 0.050).
+- **(f) the frame-rebuild gate.**  Reverting all three modifiers to
+  `ri.bHasShadingTangent` fails **5** assertions: 7b(i)'s ONB check for
+  ReliefModifier, BumpMap *and* NormalMap, plus 7b(ii) and 7b(iii).  7b(i)'s
+  `vNormal` checks stay green by construction — the gate decides only how the
+  ONB is rebuilt, never the normal — which is precisely why a normal-only
+  assertion could not have caught this bug.
+
+**Gate suites, run on the final tree.**  `ReliefModifierTest` **80/0**,
+`GlintModifierTest` ALL PASSED, `HairTangentPlumbingTest` **123/0** (its
+tests 10 and 12 — the BoxGeometry control carrying *neither* flag — still
+byte-match an independent `CreateFromW` golden, which is the invariant P1-A's
+OR had to preserve), `GeometryShadingTangentTest` **12606/0**,
+`SceneEditorSuggestionsTest` ALL PASSED (14 cases),
+`SourceHygieneTest` **164/0**, `CstResolverTest` **44/0**,
+`ScalarPainterParserTest` **60/0**.  Clean warning check on every changed
+`.cpp` (touch + rebuild): **zero**.
+
+**Known residual, accepted.**  An SDF-heightfield hit still takes
+`NormalMap`'s last-ditch T/B branch and fires its once-per-process "no tangent
+frame" warning.  The **values are unaffected** — that branch reads the same
+`ri.onb.u()/v()` the `bHasShadingTangent` branch would — so this is a
+cosmetic false positive in a log line, not a shading difference.  Widening
+that branch's condition is a behaviour change to an unrelated diagnostic and
+was left for a round that reviews it on its own merits; noted in
+`NormalMap.cpp` at the site.

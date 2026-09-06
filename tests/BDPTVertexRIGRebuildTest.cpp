@@ -120,7 +120,8 @@ void TestPopulateRIG_AllFields()
 	// geomNormal -> vGeomNormal — must propagate independently of vNormal
 	// so downstream side-of-surface tests can read the geometric face
 	// normal even when the shading normal has been Phong-interpolated or
-	// perturbed by bump/normal-map modifiers.
+	// perturbed by one of the normal-perturbing modifiers (bump map,
+	// normal map, glint, relief).
 	Check( IsClose( ri.vGeomNormal.x, 0.0 ) &&
 		   IsClose( ri.vGeomNormal.y, 0.0 ) &&
 		   IsClose( ri.vGeomNormal.z, 1.0 ),
