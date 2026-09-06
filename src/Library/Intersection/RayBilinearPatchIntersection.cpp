@@ -111,52 +111,102 @@ namespace RISE
 		// c = pts[1] - pts[0]
 		// d = pts[0]
 
-		// Find a w.r.t. x, y, z
-		const Scalar ax = patch.pts[3].x - patch.pts[2].x - patch.pts[1].x + patch.pts[0].x;
-		const Scalar ay = patch.pts[3].y - patch.pts[2].y - patch.pts[1].y + patch.pts[0].y;
-		const Scalar az = patch.pts[3].z - patch.pts[2].z - patch.pts[1].z + patch.pts[0].z;
+		// Find a, b, c per axis; index 0/1/2 == x/y/z so the elimination
+		// below can address them by a permuted axis index.
+		const Scalar a[3] = {
+			patch.pts[3].x - patch.pts[2].x - patch.pts[1].x + patch.pts[0].x,
+			patch.pts[3].y - patch.pts[2].y - patch.pts[1].y + patch.pts[0].y,
+			patch.pts[3].z - patch.pts[2].z - patch.pts[1].z + patch.pts[0].z
+		};
 
+		const Scalar b[3] = {
+			patch.pts[2].x - patch.pts[0].x,
+			patch.pts[2].y - patch.pts[0].y,
+			patch.pts[2].z - patch.pts[0].z
+		};
 
-		// Find b w.r.t. x, y, z
-		const Scalar bx = patch.pts[2].x - patch.pts[0].x;
-		const Scalar by = patch.pts[2].y - patch.pts[0].y;
-		const Scalar bz = patch.pts[2].z - patch.pts[0].z;
-
-		// Find c w.r.t. x, y, z
-		const Scalar cx = patch.pts[1].x - patch.pts[0].x;
-		const Scalar cy = patch.pts[1].y - patch.pts[0].y;
-		const Scalar cz = patch.pts[1].z - patch.pts[0].z;
-
-
-		const Scalar rx = ray.origin.x;
-		const Scalar ry = ray.origin.y;
-		const Scalar rz = ray.origin.z;
+		const Scalar c[3] = {
+			patch.pts[1].x - patch.pts[0].x,
+			patch.pts[1].y - patch.pts[0].y,
+			patch.pts[1].z - patch.pts[0].z
+		};
 
 		// Retrieve the xyz of the q part of ray
-		const Scalar qx = ray.Dir().x;
-		const Scalar qy = ray.Dir().y;
-		const Scalar qz = ray.Dir().z;
+		const Scalar q[3] = { ray.Dir().x, ray.Dir().y, ray.Dir().z };
 
-		// Find d w.r.t. x, y, z - subtracting r just after  
-		const Scalar dx = patch.pts[0].x - rx;
-		const Scalar dy = patch.pts[0].y - ry;
-		const Scalar dz = patch.pts[0].z - rz;
+		// Find d w.r.t. x, y, z - subtracting the ray origin just after
+		const Scalar d[3] = {
+			patch.pts[0].x - ray.origin.x,
+			patch.pts[0].y - ray.origin.y,
+			patch.pts[0].z - ray.origin.z
+		};
+
+		// ---- Choose the elimination axis -------------------------------
+		//
+		// The three component equations of `P(u,v) = ray.origin + t*q` are
+		//
+		//     a[k]*u*v + b[k]*u + c[k]*v + d[k] = t*q[k]     (k = x, y, z)
+		//
+		// Ramsey-Potter-Hansen removes `t` by scaling the k = i equation by
+		// q[w] and the k = w equation by q[i] and subtracting: the right
+		// sides become t*q[i]*q[w] on both, so they cancel EXACTLY and what
+		// is left is
+		//
+		//     A*u*v + B*u + C*v + D = 0,   A = a[i]*q[w] - a[w]*q[i], ...
+		//
+		// Doing that for both axes i, j other than w yields the 2x2 system
+		// the quadratic in v below is built from.
+		//
+		// `w` is the axis DIVIDED OUT, and it must be one where q[w] is not
+		// small.  When q[w] == 0 the two eliminated equations collapse to
+		//
+		//     -q[i]*( a[w]uv + b[w]u + c[w]v + d[w] ) = 0   and
+		//     -q[j]*( a[w]uv + b[w]u + c[w]v + d[w] ) = 0
+		//
+		// -- the SAME equation twice, up to scale.  The 2x2 system is then
+		// rank-1, every coefficient of the quadratic in v cancels to
+		// identically zero, `SolveQuadricWithinRange` reports no roots and
+		// the patch is missed.  The published reference implementation hard-
+		// codes w = z, so ANY ray travelling in the XY plane was missed:
+		// notably a `clipped_plane` / `bilinear_patch` viewed dead-on from
+		// above by a camera looking along -Y was invisible (measured: a ray
+		// from (0,10,0) along (0,-1,0) missed a 10x10 quad in y = 0, while
+		// tilting the direction by 0.01 hit it at t = 10; recorded in
+		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md section 10.6).
+		//
+		// The degeneracy is in the FORMULATION, not in a threshold: no
+		// epsilon on q[z] can rescue a rank-1 system.  Picking w as the
+		// LARGEST |q| component -- the same choice `computet` already makes
+		// for the t recovery, with the same tie-break order -- makes q[w] as
+		// far from zero as the direction allows (|q[w]| >= |q|/sqrt(3) for
+		// any non-zero q), so the system is never rank-deficient.  With
+		// (i, j, w) taken cyclically, w = z gives (i, j) = (x, y) and the
+		// algebra below is TEXTUALLY the reference one, so nothing changes
+		// for the rays that already worked.
+		int w = 2;
+		if( fabs(q[0]) >= fabs(q[1]) && fabs(q[0]) >= fabs(q[2]) ) {
+			w = 0;
+		} else if( fabs(q[1]) >= fabs(q[2]) ) {
+			w = 1;
+		}
+		const int i = (w + 1) % 3;
+		const int j = (w + 2) % 3;
 
 		// Find A1 and A2
-		const Scalar A1 = ax*qz - az*qx;
-		const Scalar A2 = ay*qz - az*qy;
+		const Scalar A1 = a[i]*q[w] - a[w]*q[i];
+		const Scalar A2 = a[j]*q[w] - a[w]*q[j];
 
 		// Find B1 and B2
-		const Scalar B1 = bx*qz - bz*qx;
-		const Scalar B2 = by*qz - bz*qy;
+		const Scalar B1 = b[i]*q[w] - b[w]*q[i];
+		const Scalar B2 = b[j]*q[w] - b[w]*q[j];
 
 		// Find C1 and C2
-		const Scalar C1 = cx*qz - cz*qx;
-		const Scalar C2 = cy*qz - cz*qy;
+		const Scalar C1 = c[i]*q[w] - c[w]*q[i];
+		const Scalar C2 = c[j]*q[w] - c[w]*q[j];
 
 		// Find D1 and D2
-		const Scalar D1 = dx*qz - dz*qx;
-		const Scalar D2 = dy*qz - dz*qy;
+		const Scalar D1 = d[i]*q[w] - d[w]*q[i];
+		const Scalar D2 = d[j]*q[w] - d[w]*q[j];
 
 		Scalar coeff[3] = {0};
 		coeff[0] = A2*C1 - A1*C2;
