@@ -323,7 +323,7 @@ static const char* kSceneCommon =
 // legacy pixelpel_rasterizer with a DefaultDirectLighting-only chain,
 // valid ONLY while every topology is single-bounce direct lighting on a
 // flat quad (no scattered ray can carry energy); any topology with a
-// transmissive / reflective material or a second surface must switch the
+// transmissive / reflective material or a second SCATTERING surface must switch the
 // reference to pathtracing_pel_rasterizer first -- CLOTH_FABRIC_DESIGN.md
 // 15 debt 26.
 static const char* kRasterizerPT =

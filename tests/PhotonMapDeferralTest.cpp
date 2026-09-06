@@ -124,6 +124,15 @@ static std::string WriteSceneToTempFile( const char* sceneText )
 
 // A caustic photon map (pending shoot) + a pixelpel rasterizer whose
 // advanced_shader consumes it.  The bdpt_pel_rasterizer is lazy-built by name.
+//
+// OIDN-DENOISED-OK: the lazily built bdpt_pel_rasterizer / bdpt_spectral_
+// rasterizer have no scene-chunk text to carry `oidn_denoise FALSE`, so
+// their captures ARE OIDN-denoised (SourceHygieneTest's guard is per-file
+// and would otherwise pass this file by accident of the pixelpel string).
+// Every check against those renders is structural -- photon-shoot counts
+// and `maxLum > 0` -- never a numeric radiance comparison, so the denoise
+// cannot flip a verdict.  Add a numeric assertion on a BDPT render here
+// and this token must go, with the rasterizer given an explicit chunk.
 static const char* kSceneText =
 	"RISE ASCII SCENE 7\n"
 	"\n"

@@ -6310,7 +6310,7 @@ yet known (§10.1).
     still references `pixelpel_rasterizer` with a
     `DefaultDirectLighting`-only chain. Its three topologies (delta omni,
     mesh area, mixed) are single-bounce direct lighting on ONE flat
-    Lambertian quad — no transmissive material, no second surface, so no
+    Lambertian quad — no transmissive material, no second SCATTERING surface (B and C add a purely emissive quad with `material none`, which cannot redistribute energy), so no
     scattered ray carries energy and the legacy chain is complete for
     them (18/18 checks green, unchanged). It is the same latent hazard,
     though: any topology added there that involves a scattered ray

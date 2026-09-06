@@ -757,11 +757,21 @@ int main()
 	// see docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum).
 	// Opt out with an "OIDN-DENOISED-OK" comment documenting why a suite
 	// is allowed to stay denoised.
+	//
+	// GRANULARITY: this is a PER-FILE substring check, not a per-rasterizer-
+	// chunk one -- a file with `oidn_denoise FALSE` on one rasterizer string
+	// passes even if another of its renders still denoises (a rasterizer
+	// lazily built by name has no chunk text to carry the parameter at all:
+	// PhotonMapDeferralTest's bdpt_pel_rasterizer, which therefore carries
+	// the opt-out token with its reason).  It catches the whole-suite
+	// omission the sweep found seven times; a per-chunk audit stays a
+	// review-time step (docs/skills/bdpt-vcm-mis-balance.md step 0).
 	{
 		std::vector<std::string> undenoised;
 		for( const auto& entry : fs::directory_iterator( testsDir ) ) {
 			if( !entry.is_regular_file() || entry.path().extension() != ".cpp" ) { continue; }
 			const fs::path& f = entry.path();
+			if( f.filename() == "SourceHygieneTest.cpp" ) { continue; }   // don't scan ourselves: the needles below are literal text here
 			std::ifstream in( f );
 			std::string src{ std::istreambuf_iterator<char>( in ), std::istreambuf_iterator<char>() };
 			const bool definesCapturingSink =
