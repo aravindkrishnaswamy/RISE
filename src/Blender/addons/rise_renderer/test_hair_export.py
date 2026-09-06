@@ -621,7 +621,7 @@ class BridgeAbiLayoutTest(unittest.TestCase):
         match = re.search(r"#define RISE_BLENDER_API_VERSION\s+(\d+)", self.source)
         self.assertIsNotNone(match)
         self.assertEqual(int(match.group(1)), bridge._EXPECTED_API_VERSION)
-        self.assertEqual(bridge._EXPECTED_API_VERSION, 10)
+        self.assertEqual(bridge._EXPECTED_API_VERSION, 11)
 
     def test_hair_material_struct_matches(self):
         self._assert_matches(bridge._HairMaterial, "rise_blender_hair_material")

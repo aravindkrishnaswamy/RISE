@@ -208,6 +208,12 @@ class ModifierData:
     source_painter_name: str
     scale: float
     window: float
+    # ABI v11.  MODIFIER_BUMP only: True selects the bridge's
+    # window-INDEPENDENT amplitude fold (RISE_API_CreateBumpMapModifierEx's
+    # normalizeGradient=true, `scale' = -scale`) instead of the legacy
+    # window-COUPLED one (`scale' = -scale*2*window`) that `IJob::
+    # AddBumpMapModifier` is ABI-frozen to.  Ignored by MODIFIER_NORMAL_MAP.
+    normalize: bool = False
 
 
 @dataclass
@@ -1391,6 +1397,16 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
             # amplitude fold means the perturbation scales with this value --
             # see docs/RELIEF_MODIFIER_DESIGN.md 7.2/7.5.)
             window=0.005,
+            # normalize=True: without it, the shim's legacy fold COUPLES the
+            # delivered tilt to `window` (tilt ~ scale*2*window*grad), so
+            # shrinking `window` from 1.0 to 0.005 above -- correct on its own
+            # terms -- would ALSO have silently divided the tilt by ~200
+            # (2*0.005 / 2*1.0). normalize=True selects the bridge's
+            # window-independent fold instead (tilt ~ scale*grad, matching
+            # Blender's Bump node: tilt = Strength*Distance*gradient), so this
+            # window shrink is a pure step-size refinement, not an amplitude
+            # change.  See docs/RELIEF_MODIFIER_DESIGN.md 7.5 "Phase B review".
+            normalize=True,
         )
     )
     state.modifier_cache[modifier_key] = modifier_name

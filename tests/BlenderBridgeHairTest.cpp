@@ -40,13 +40,14 @@
 //  with `-std=gnu++17` and no OpenVDB define -- every VDB-gated region
 //  is media-only, so hair is unaffected either way.
 //
-//  The six groups:
+//  The seven groups:
 //
 //    1. THE ABI ITSELF.  The version constant and `rise_blender_api_
-//       version()` agree and read 10; the v9 scene fields and the v10
-//       hair-material fields are APPENDED (every earlier field keeps its
-//       offset), which is what lets a stale add-on fail on the version
-//       check rather than on garbage.
+//       version()` agree and read 11; the v9 scene fields, the v10
+//       hair-material fields and the v11 modifier `normalize` field are
+//       APPENDED (every earlier field keeps its offset), which is what
+//       lets a stale add-on fail on the version check rather than on
+//       garbage.
 //
 //    2. EACH COLOUR TIER REACHES A REAL HairMaterial.  Melanin,
 //       sigma_a and color each register a material whose GetBSDF() is a
@@ -87,6 +88,18 @@
 //       NOTHING, and leave the job usable.  Plus `pack_warnings`'s
 //       joining and its truncation note.
 //
+//    6. THE BUMP MODIFIER'S normalize FOLD (v11, P1 Phase B review,
+//       docs/RELIEF_MODIFIER_DESIGN.md 7.5).  `add_modifier`'s
+//       RISE_BLENDER_MODIFIER_BUMP case reaches
+//       `RISE_API_CreateBumpMapModifierEx` directly (bypassing the
+//       ABI-frozen, always-window-coupled `IJob::AddBumpMapModifier`
+//       shim) with `normalizeGradient = modifier.normalize`.  Checked on
+//       a linear-ramp height field, whose central difference is exact
+//       for any window: normalize=TRUE delivers a tilt of exactly
+//       strength*distance*slope, independent of `window`; normalize=FALSE
+//       (the RED-PROOF) reproduces the pre-fix window-coupled fold
+//       (scale*2*window), ~200x weaker at the exporter's window=0.005.
+//
 //////////////////////////////////////////////////////////////////////
 
 #include <cmath>
@@ -122,10 +135,14 @@
 #include "../src/Library/Interfaces/IGeometryManager.h"
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
+#include "../src/Library/Interfaces/IFunction2D.h"
+#include "../src/Library/Interfaces/IFunction2DManager.h"
+#include "../src/Library/Interfaces/IModifierManager.h"
 #include "../src/Library/Geometry/HairGeometry.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
 #include "../src/Library/Materials/HairBSDF.h"
 #include "../src/Library/Materials/HairMaterial.h"
+#include "../src/Library/Utilities/Reference.h"   // Implementation::Reference -- base for the linear-ramp IFunction2D below (P1 bump-normalize test)
 
 using RISE::Implementation::HairBRDF;
 using RISE::Implementation::HairGeometry;
@@ -368,9 +385,9 @@ private:
 
 void TestAbiVersionAndLayout()
 {
-	std::cout << "Test: ABI version 10 and append-only v9 / v10 struct growth" << std::endl;
+	std::cout << "Test: ABI version 11 and append-only v9 / v10 / v11 struct growth" << std::endl;
 
-	Check( RISE_BLENDER_API_VERSION == 10, "RISE_BLENDER_API_VERSION is 10" );
+	Check( RISE_BLENDER_API_VERSION == 11, "RISE_BLENDER_API_VERSION is 11" );
 	Check( rise_blender_api_version() == RISE_BLENDER_API_VERSION,
 		"rise_blender_api_version() reports the compiled-in constant" );
 
@@ -399,6 +416,12 @@ void TestAbiVersionAndLayout()
 	       offsetof( rise_blender_hair_material, ior_texture_painter_name ) >
 	       offsetof( rise_blender_hair_material, beta_n_texture_painter_name ),
 		"the three v10 texture fields are in the order bridge.py mirrors" );
+
+	// Same discipline for v11's `normalize` field (P1, Phase B review):
+	// appended after `window`, the last v10 field of the modifier struct.
+	Check( offsetof( rise_blender_modifier, normalize ) >
+	       offsetof( rise_blender_modifier, window ),
+		"modifier's v11 `normalize` field is appended after the last v10 field" );
 
 	// The tier tags the add-on maps its `tier` strings onto.
 	Check( RISE_BLENDER_HAIR_TIER_MELANIN == 0 &&
@@ -1044,11 +1067,163 @@ void TestPackWarnings()
 	}
 }
 
+// ============================================================
+//  6. THE BUMP MODIFIER'S normalize FOLD (P1, Phase B review;
+//     docs/RELIEF_MODIFIER_DESIGN.md 7.5)
+// ============================================================
+
+//! height(u, v) = k*u -- a LINEAR RAMP whose gradient is EXACTLY (k, 0)
+//! everywhere, so ReliefModifier's central difference (any window,
+//! including the exporter's 0.005) has no truncation error and the
+//! delivered tilt has a closed form: with `normalize` TRUE the folded
+//! amplitude is exactly `-strength*distance` (RISE_API.cpp's
+//! `RISE_API_CreateBumpMapModifierEx`), so
+//! `perturbed = N - (T*k)*(-strength*distance) = N + T*(k*strength*distance)`
+//! and, since T and N are orthogonal unit vectors, normalizing preserves
+//! the RATIO `perturbed.x / perturbed.z` exactly: it equals
+//! `k*strength*distance` to floating-point precision, independent of the
+//! window. That ratio is what the test below checks.
+class LinearRampFunction2D :
+	public virtual RISE::IFunction2D,
+	public virtual RISE::Implementation::Reference
+{
+public:
+	explicit LinearRampFunction2D( const RISE::Scalar k ) : m_k( k ) {}
+
+	RISE::Scalar Evaluate( const RISE::Scalar x, const RISE::Scalar /*y*/ ) const override
+	{
+		return m_k * x;
+	}
+
+protected:
+	virtual ~LinearRampFunction2D() {}
+
+private:
+	RISE::Scalar m_k;
+};
+
+void TestBumpModifierNormalizeFold()
+{
+	std::cout << "Test: the bridge's bump modifier reaches RISE_API_CreateBumpMapModifierEx "
+	             "with normalize=TRUE (P1, Phase B review)" << std::endl;
+
+	const RISE::Scalar k        = RISE::Scalar( 2.0 );   // height gradient, dH/du
+	const RISE::Scalar strength = RISE::Scalar( 0.7 );
+	const RISE::Scalar distance = RISE::Scalar( 1.5 );
+	const RISE::Scalar window   = RISE::Scalar( 0.005 ); // matches exporter.py's _build_bump_modifier
+
+	// `rise_blender_modifier.scale` / `.window` are `float` (the ABI
+	// struct, not `RISE::Scalar` == double) -- exactly what
+	// `_marshal_modifier` writes.  Round-trip through float BEFORE
+	// deriving the expected ratio, or the ~1e-7 relative rounding this
+	// truncation introduces (strength*distance = 1.05 has no exact
+	// float32 representation) swamps a 1e-9 tolerance on a check that
+	// has nothing to do with that truncation.  Past this point every
+	// step (the fold, the central difference, the normalization) is
+	// double-precision arithmetic on these ALREADY-ROUNDED inputs, so
+	// 1e-9 is exactly the right bound for what the test actually checks.
+	const float mScale  = static_cast<float>( strength * distance );
+	const float mWindow = static_cast<float>( window );
+
+	// A hit with onb.u() == +X, vNormal == +Z (MakeFibreHitAt above), so
+	// T == (1,0,0) and N == (0,0,1) -- perturbed.x / perturbed.z reads
+	// off the tilt directly.
+	const RISE::RayIntersectionGeometric riBase = MakeFibreHitAt( 0.3, -0.4 );
+
+	// --- (a) normalize TRUE: window-INDEPENDENT amplitude -- the fix. ---
+	{
+		JobHolder job;
+		Check( job.Valid(), "6a: job created" );
+		if( job.Valid() ) {
+			LinearRampFunction2D* fn = new LinearRampFunction2D( k );
+			Check( (*job).GetFunction2Ds()->AddItem( fn, "ramp_fn" ),
+				"6a: the linear-ramp height function registers" );
+
+			rise_blender_modifier m;
+			m.name = "bump_a";
+			m.kind = RISE_BLENDER_MODIFIER_BUMP;
+			m.source_painter_name = "ramp_fn";
+			m.scale = mScale;
+			m.window = mWindow;
+			m.normalize = 1;
+
+			char err[256] = { 0 };
+			Check( add_modifier( *job, m, err, sizeof( err ) ),
+				"6a: add_modifier succeeds through the SAME code path the exporter's bump reaches" );
+
+			RISE::IRayIntersectionModifier* mod = (*job).GetModifiers()->GetItem( "bump_a" );
+			Check( mod != 0, "6a: the modifier is registered under its name" );
+			if( mod ) {
+				RISE::RayIntersectionGeometric ri = riBase;
+				mod->Modify( ri );
+
+				const RISE::Scalar wantRatio = k * static_cast<RISE::Scalar>( mScale );
+				const RISE::Scalar gotRatio  = ri.vNormal.x / ri.vNormal.z;
+				Check( std::fabs( gotRatio - wantRatio ) < 1e-9,
+					"6a: tilt == strength*distance*slope (normalize=TRUE is window-independent)" );
+			}
+
+			fn->release();
+		}
+	}
+
+	// --- (b) RED-PROOF: normalize FALSE reproduces the P1 bug -- the
+	//     legacy window-COUPLED fold (`scale' = -scale*2*window`), which
+	//     at window=0.005 delivers a tilt ~200x WEAKER than (a)'s. If this
+	//     assertion is made to pass (or `add_modifier` is reverted to call
+	//     `IJob::AddBumpMapModifier` unconditionally), test (a) above must
+	//     fail -- this block exists to prove the fix is actually reached,
+	//     not merely that the modifier registers. ---
+	{
+		JobHolder job;
+		Check( job.Valid(), "6b: job created" );
+		if( job.Valid() ) {
+			LinearRampFunction2D* fn = new LinearRampFunction2D( k );
+			Check( (*job).GetFunction2Ds()->AddItem( fn, "ramp_fn" ),
+				"6b: the linear-ramp height function registers" );
+
+			rise_blender_modifier m;
+			m.name = "bump_b";
+			m.kind = RISE_BLENDER_MODIFIER_BUMP;
+			m.source_painter_name = "ramp_fn";
+			m.scale = mScale;
+			m.window = mWindow;
+			m.normalize = 0;
+
+			char err[256] = { 0 };
+			Check( add_modifier( *job, m, err, sizeof( err ) ),
+				"6b: add_modifier succeeds with normalize=FALSE too" );
+
+			RISE::IRayIntersectionModifier* mod = (*job).GetModifiers()->GetItem( "bump_b" );
+			Check( mod != 0, "6b: the modifier is registered under its name" );
+			if( mod ) {
+				RISE::RayIntersectionGeometric ri = riBase;
+				mod->Modify( ri );
+
+				const RISE::Scalar wantRatioIfFixed = k * static_cast<RISE::Scalar>( mScale );
+				const RISE::Scalar gotRatio         = ri.vNormal.x / ri.vNormal.z;
+				// The legacy fold's ratio is scaled by 2*window relative to
+				// the fixed one -- at window=0.005 that is a ~100x shrink
+				// (2*0.005 == 0.01), so the two can never be mistaken for
+				// FP noise around each other.
+				Check( std::fabs( gotRatio - wantRatioIfFixed ) > 1e-3,
+					"6b: RED-PROOF -- normalize=FALSE does NOT reach strength*distance*slope "
+					"(reproduces the P1 bug; the window-coupled fold is ~200x weaker at window=0.005)" );
+				const RISE::Scalar wantRatioLegacy = k * static_cast<RISE::Scalar>( mScale ) * RISE::Scalar( 2 ) * static_cast<RISE::Scalar>( mWindow );
+				Check( std::fabs( gotRatio - wantRatioLegacy ) < 1e-9,
+					"6b: ...and IS exactly the legacy window-coupled fold (scale*2*window)" );
+			}
+
+			fn->release();
+		}
+	}
+}
+
 } // namespace
 
 int main()
 {
-	std::cout << "=== Blender bridge hair test (ABI v10) ===" << std::endl;
+	std::cout << "=== Blender bridge hair test (ABI v11) ===" << std::endl;
 
 	TestAbiVersionAndLayout();
 	TestEachTierRegisters();
@@ -1057,6 +1232,7 @@ int main()
 	TestTextureDrivenScalarSlots();
 	TestFailuresAreNonFatalAndNamed();
 	TestPackWarnings();
+	TestBumpModifierNormalizeFold();
 
 	std::cout << "----------------------------------------" << std::endl;
 	std::cout << "checks: " << g_checks << "   failures: " << g_failures << std::endl;
