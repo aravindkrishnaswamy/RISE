@@ -620,6 +620,8 @@ Branch `relief-modifier`, four commits off `563204b8`:
 | `621b5aae` | `tests/ReliefModifierTest.cpp` (tests 1–8, 10) |
 | `547c417d` | `cc_relief_modifier` + `relief_sphere_no_uv` |
 | `0ea40138` | hygiene opt-out for the two non-finite test fixtures |
+| `25db73b6` | test 5 gains the non-uniform-scale case |
+| `d2c7b29f` | this record |
 
 **Files.** New: `src/Library/Modifiers/ModifierFrame.h`,
 `src/Library/Modifiers/ReliefModifier.{h,cpp}`,
@@ -632,7 +634,7 @@ Branch `relief-modifier`, four commits off `563204b8`:
 `Parsers/README.md`, `tests/IJobVtableManifest.txt`, and the five build
 projects.
 
-**Tests.** `ReliefModifierTest` 59 checks, 0 failures.  Gate suites, all
+**Tests.** `ReliefModifierTest` **62 checks, 0 failures** (59 at commit `621b5aae`; `25db73b6` added the non-uniform-scale case to test 5, since a rotation preserves lengths and therefore could not discriminate the pmxWorldToObject doc comment's "the step goes through the LINEAR map" claim from the null-pointer degraded mode).  Gate suites, all
 run on the final tree: `GlintModifierTest` ALL PASSED,
 `HairTangentPlumbingTest` 123/0, `SurfaceCurvatureTest` 94/0,
 `CstResolverTest` 44/0, `CstRecordDeriveTest` 23/0,
