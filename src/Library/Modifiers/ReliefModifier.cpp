@@ -35,8 +35,8 @@ namespace
 	const Scalar RELIEF_AUTO_STEP_SURFACE = Scalar( 1e-3 );
 
 	//! The automatic UV-domain half-step (design 3.3).  Matches
-	//! `bumpmap_modifier`'s `windowsize` default, so a migrated scene that
-	//! omitted the window lands on the same span.
+	//! the removed `bumpmap_modifier`'s `windowsize` default, so a migrated
+	//! scene that omitted the window lands on the same span.
 	const Scalar RELIEF_AUTO_STEP_UV = Scalar( 0.01 );
 
 	//! Relative conditioning gate on the UV chain rule's normal equations.
@@ -95,10 +95,12 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 
 	if( domain == ReliefDomain::UV ) {
 		// UV DOMAIN.  Step on ptCoord only, along (u, v).  Sampling
-		// geometry is byte-for-byte `bumpmap_modifier`'s: same four
-		// evaluations at the same coordinates, in the same order.  That is
-		// what makes the migrator's scale fold (design 7.2) exact rather
-		// than approximate.
+		// geometry is byte-for-byte the removed `bumpmap_modifier`'s: same
+		// four evaluations at the same coordinates, in the same order.  That
+		// is what makes the migrator's scale fold (design 7.2) -- and the
+		// identical fold inside the ABI-frozen
+		// `RISE_API_CreateBumpMapModifier` shim -- exact rather than
+		// approximate.
 		const Scalar s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_UV;
 		invSpan = Scalar(1) / ( Scalar(2) * s );
 
@@ -287,7 +289,7 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	// reaching Normalize.  Kept for (ii) and as cheap insurance on (i).
 	//
 	// There is deliberately NO geometric-horizon clamp -- like
-	// BumpMap/NormalMap and PBRT's bump mapping, a large `scale` may push
+	// NormalMap and PBRT's bump mapping, a large `scale` may push
 	// N' below the geometric plane and the materials' own horizon gates
 	// handle that continuously.  GlintModifier's rejection is a DISCRETE
 	// facet decision and does not transfer.
@@ -297,8 +299,8 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	}
 
 	// Frame rebuild.  Gated on ModifierFrame::HasCoherentTangent exactly as
-	// BumpMap and NormalMap do -- relief is a height-gradient tilt, the same
-	// family -- so on tangent-less geometry the rebuild is a plain
+	// NormalMap does -- relief is a height-gradient tilt, the same family --
+	// so on tangent-less geometry the rebuild is a plain
 	// CreateFromW.  The predicate, NOT `ri.bHasShadingTangent` alone, is what
 	// mirrors Object::IntersectRay's coherent-frame branch (it also covers
 	// SDFGeometry's heightfield mode, which sets bShadingTangentFromGeometry

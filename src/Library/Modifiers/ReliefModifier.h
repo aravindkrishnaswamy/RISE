@@ -11,7 +11,8 @@
 //  geometry with no texcoords, and before this modifier none of them
 //  could tilt the shading normal.  The only two normal-perturbing
 //  modifiers were `bumpmap_modifier` (an IFunction2D at ri.ptCoord, UV
-//  only) and `normal_map_modifier` (a decoded image), so the same grain
+//  only; REMOVED 2026-09-06, this class is its replacement) and
+//  `normal_map_modifier` (a decoded image), so the same grain
 //  field that darkened and roughened a surface could not also emboss it,
 //  and authored variation read as paint on plastic.
 //
@@ -23,9 +24,10 @@
 //
 //      N' = normalize( N - scale * ( h_T * T + h_B * B ) )
 //
-//  This is the OPPOSITE of `bumpmap_modifier`, whose `vNormal + T*df`
-//  tilts the normal TOWARD the rise, i.e. treats its field as DEPTH.
-//  The migrator folds the sign (design 7.2); it is not a free choice
+//  This is the OPPOSITE of the removed `bumpmap_modifier`, whose
+//  `vNormal + T*df` tilted the normal TOWARD the rise, i.e. treated its
+//  field as DEPTH.  The migrator folds the sign (design 7.2), as does the
+//  ABI-frozen `RISE_API_CreateBumpMapModifier` shim; it is not a free choice
 //  here, it is the convention every other renderer's authors expect.
 //
 //  DOMAIN.  `Surface` (the default) makes the field a function of the 3D
@@ -35,8 +37,8 @@
 //  arbitrary CreateFromW tangent on tangent-less geometry is CORRECT,
 //  not a compromise.  `UV` makes it a function of (u,v) with the step in
 //  texture units along onb.u()/onb.v() -- byte-for-byte the legacy
-//  sampling geometry, so migration off `bumpmap_modifier` is lossless
-//  and image heightfields authored in UV keep working.
+//  sampling geometry, so migration off the removed `bumpmap_modifier`
+//  is lossless and image heightfields authored in UV keep working.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: September 5, 2026
@@ -68,8 +70,8 @@ namespace RISE
 			Surface,
 
 			//! The (u,v) texcoord.  Step is taken on ptCoord only, in
-			//! texture units.  For legacy `bumpmap_modifier` migration and
-			//! for image heightfields authored in UV.
+			//! texture units.  For scenes migrated off the removed
+			//! `bumpmap_modifier`, and for image heightfields authored in UV.
 			UV
 		};
 

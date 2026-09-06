@@ -5038,7 +5038,7 @@ ManifoldResult ManifoldSolver::Solve(
 	// SCOPE (verified empirically, see docs/SMS_TWO_STAGE_SOLVER.md):
 	//
 	//  - HELPS on smooth analytic primitives + normal-perturbing maps
-	//    (bumpmap_modifier / future normalmap_modifier on
+	//    (relief_modifier / normal_map_modifier on
 	//    sphere/ellipsoid/etc.).  Normal field is bumpy but POSITION is
 	//    invariant under smoothing — Stage 1's converged uv is at the
 	//    same world position as the bumpy caustic root, Stage 2's seed

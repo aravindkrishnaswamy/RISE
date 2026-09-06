@@ -76,7 +76,7 @@
 //  tangent plumbing above produced -- PROVIDED nothing downstream
 //  rebuilds the ONB from the normal alone afterward.  RESOLVED, residual
 //  wave 2 item A, 2026-08-27: `NormalMap::Modify` (NormalMap.cpp:172) and
-//  `BumpMap::Modify` (BumpMap.cpp:69) used to call the unconditional
+//  `BumpMap::Modify` (in the since-removed BumpMap.cpp) used to call the unconditional
 //  `ri.onb.CreateFromW(ri.vNormal)` after perturbing the normal,
 //  discarding whatever tangent was in `ri.onb.u()` -- including the hair
 //  fibre tangent.  Both now check `ri.bHasShadingTangent` first and, when

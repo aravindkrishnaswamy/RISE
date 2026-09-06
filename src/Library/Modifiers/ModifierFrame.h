@@ -4,7 +4,8 @@
 //    normal-perturbing IRayIntersectionModifier performs after it has
 //    decided on a new shading normal.
 //
-//  WHY THIS EXISTS.  BumpMap, NormalMap and GlintModifier each carried
+//  WHY THIS EXISTS.  BumpMap (removed 2026-09-06), NormalMap and
+//  GlintModifier each carried
 //  a byte-identical copy of the same fifteen-line block, and the block
 //  is not obvious: it encodes two separate, hard-won corrections that a
 //  naive `ri.onb.CreateFromW( newN )` silently undoes.
@@ -41,7 +42,7 @@
 //       there is no supplied handedness left to preserve.
 //
 //  WHAT THIS HELPER DOES *NOT* DECIDE.  Whether to run the projection at
-//  all.  BumpMap, NormalMap and ReliefModifier gate it on
+//  all.  NormalMap and ReliefModifier gate it on
 //  `HasCoherentTangent( ri )` (when that is false they call CreateFromW
 //  directly, which is byte-identical to their pre-tangent-fix
 //  behaviour); GlintModifier runs it unconditionally (preserving even
@@ -54,13 +55,13 @@
 //  false), where the incoming u is itself CreateFromW's arbitrary
 //  canonical-axis pick: Glint keeps projecting it (continuity of an
 //  arbitrary-but-stable frame across sub-pixel facets beats matching a
-//  legacy value), while Bump/Normal/Relief re-run CreateFromW (exact
+//  legacy value), while Normal/Relief re-run CreateFromW (exact
 //  byte-compatibility with their pre-tangent-fix output, pinned by
 //  HairTangentPlumbingTest tests 10 and 12).  For such a hit the two
 //  produce different u/v axes (same w), so the gate stays at each call
 //  site and this helper is the shared BODY, not the shared policy.
-//  ReliefModifier follows BumpMap/NormalMap (it is a height-gradient
-//  tilt, the same family), which is what
+//  ReliefModifier follows NormalMap (it is a height-gradient tilt, the
+//  same family as NormalMap and as the removed BumpMap), which is what
 //  docs/RELIEF_MODIFIER_DESIGN.md 3.2 means by "verbatim from the
 //  ONB-rebuild comment block in NormalMap::Modify".
 //
@@ -145,7 +146,7 @@ namespace RISE
 				)
 			{
 				// Local copy FIRST: callers legitimately pass `ri.vNormal`
-				// (BumpMap computes the perturbed normal in place), and the
+				// (the perturbed normal is computed in place), and the
 				// projection below must read the new normal, not a value the
 				// write-back may have aliased.
 				const Vector3 n = newN;

@@ -4,9 +4,12 @@ migrate_scenes_relief.py — losslessly convert `bumpmap_modifier` chunks to
 the `scalar_painter` + `relief_modifier` pair, per
 docs/RELIEF_MODIFIER_DESIGN.md §7.2.
 
-WHAT CHANGED.  `bumpmap_modifier` is DEPRECATED (§7.1): it samples an
+WHAT CHANGED.  `bumpmap_modifier` was DEPRECATED in §7.1 and REMOVED on
+2026-09-06 (§7.5, Phase B), so this script converts scenes written BEFORE
+that removal -- a scene that still carries the chunk no longer parses at
+all, and the parse diagnostic points here.  The chunk sampled an
 `IFunction2D` at `ri.ptCoord` (UV only, R channel, through the fake-hit
-`Painter::Evaluate` path) and tilts the normal `+T·scale·(f+ - f-)` (or
+`Painter::Evaluate` path) and tilted the normal `+T·scale·(f+ - f-)` (or
 `/2*windowsize` when `normalize_gradient TRUE`).  `relief_modifier` is the
 replacement: its `height` is any `IScalarPainter` (the `scalar_painter {
 function2d F }` bridge samples the identical `F.Evaluate(ptCoord)` path, so
@@ -28,9 +31,9 @@ Defaults when a param is absent: scale=1.0, windowsize=0.01,
 normalize_gradient=FALSE (case-insensitive TRUE/FALSE).
 
 NON-POSITIVE WINDOWSIZE IS A SPECIAL CASE, NOT A POINT ON THE ABOVE CURVE.
-`windowsize <= 0` makes the legacy modifier INERT (`BumpMap::Modify`'s
-central difference samples the same point on both sides and its
-normalisation is gated on `dWindow > 0`), but `relief_modifier`'s `step 0`
+`windowsize <= 0` made the legacy modifier INERT (the deleted
+`BumpMap::Modify`'s central difference sampled the same point on both sides
+and its normalisation was gated on `dWindow > 0`), but `relief_modifier`'s `step 0`
 means AUTO (a full footprint/1e-3-floor perturbation) -- the opposite of
 inert. So this script does NOT fold such a chunk through the algebra above;
 it emits `scale 0` instead (which neutralises the perturbation regardless of

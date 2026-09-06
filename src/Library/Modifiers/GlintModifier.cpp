@@ -238,7 +238,7 @@ void GlintModifier::Modify( RayIntersectionGeometric& ri ) const
 	// corrections, and why the degenerate CreateFromW fallback does NOT
 	// restore handedness, are documented on the shared helper.
 	//
-	// UNCONDITIONAL here, unlike BumpMap / NormalMap / ReliefModifier
+	// UNCONDITIONAL here, unlike NormalMap / ReliefModifier
 	// (which gate the projection on ModifierFrame::HasCoherentTangent).
 	// On a hit that HAS a coherent tangent the two policies agree
 	// exactly; they differ only on a tangent-less hit, and there this

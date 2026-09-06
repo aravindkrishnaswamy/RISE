@@ -8,8 +8,9 @@ RISE ASCII SCENE 7
 #                   exercise the SMS two-stage solver in the regime the paper (Zeltner 2020 §5) actually    #
 #                   targets: a normal field perturbed by high-frequency detail without changing positions.  #
 #                                                                                                           #
-#   The outer egg geometry is a smooth ellipsoid (no `displaced_geometry`).  A `relief_modifier` (migrated  #
-#   from `bumpmap_modifier` by tools/migrate_scenes_relief.py; domain uv) applied on the outer object       #
+#   The outer egg geometry is a smooth ellipsoid (no `displaced_geometry`).  A `relief_modifier` --         #
+#   migrated by tools/migrate_scenes_relief.py from the `bumpmap_modifier` chunk that was REMOVED           #
+#   2026-09-06 (docs/RELIEF_MODIFIER_DESIGN.md 7.5); domain uv -- applied on the outer object               #
 #   perturbs the normal at intersection time via the same 2D Perlin function the displaced scene used for   #
 #   vertex displacement.  Positions are unchanged; only normals are bumpy.  This                            #
 #   matches Mitsuba's normal-mapped pedestals scenes and tests whether SMS Stage 1 (smoothing=1, smooth     #
@@ -239,7 +240,7 @@ uniformcolor_painter
 }
 
 # Same Perlin function the displaced scene used; here it drives the
-# relief_modifier (migrated from bumpmap_modifier) instead of vertex displacement.
+# relief_modifier (migrated from the removed bumpmap_modifier) instead of vertex displacement.
 perlin2d_painter
 {
 	name				pnt_egg_bumps
@@ -251,10 +252,11 @@ perlin2d_painter
 	shift				0 0
 }
 
-# relief_modifier (migrated from bumpmap_modifier by tools/migrate_scenes_relief.py):
+# relief_modifier (migrated by tools/migrate_scenes_relief.py from the
+# `bumpmap_modifier` chunk, removed 2026-09-06):
 # perturbs the surface normal using the FD gradient of pnt_egg_bumps, bound
 # through the scalar_painter bridge below.  `scale` controls the bump
-# amplitude (sign flipped from the legacy `bumpmap_modifier` convention --
+# amplitude (sign flipped from the removed `bumpmap_modifier`'s convention --
 # see docs/RELIEF_MODIFIER_DESIGN.md §7.2); `step` is the FD step on the
 # (u, v) parameter (smaller = higher-frequency detail captured but more
 # sensitivity to texture noise).

@@ -163,14 +163,14 @@ namespace RISE
 		bool						bHit;			// was there an intersection ? 
 		Scalar						range;			// distance to the intersection point
 		Scalar						range2;			// distance to the exit point
-		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by the normal-perturbing modifiers: bump map, normal map, glint, relief)
+		Vector3						vNormal;		// normal at the point of intersection (SHADING normal — Phong-interpolated on triangle meshes, perturbed by the normal-perturbing modifiers: relief, normal map, glint)
 		Vector3						vNormal2;		// normal at the point of exit
 		//! GEOMETRIC normals at the entry / exit points — the actual
 		//! flat-triangle face normal on triangle meshes (independent of
 		//! Phong interpolation), or identical to `vNormal` / `vNormal2`
 		//! on analytical primitives (sphere, ellipsoid, plane, …) where
 		//! the surface IS smooth and shading == geometric by construction.
-		//! The normal-perturbing modifiers (bump map, normal map, glint,
+		//! The normal-perturbing modifiers (relief, normal map, glint,
 		//! relief) perturb `vNormal` only; `vGeomNormal` / `vGeomNormal2`
 		//! always reflect the underlying geometry.
 		//!

@@ -152,7 +152,8 @@ namespace RISE
 			//! Cost note: Modify runs on EVERY hit of the object across
 			//! all transport paths; FindFacet sweeps the 3x3x3 cell
 			//! neighbourhood (27 integer-hash cell draws + one trig tilt
-			//! on the winner) — materially heavier than BumpMap's four
+			//! on the winner) — materially heavier than a height-gradient
+			//! modifier's four
 			//! IFunction2D taps, still trivial versus per-hit shading.
 			GlintModifier(
 				const Scalar density_,			///< [in] cells per object-space unit; <= 0 makes the modifier inert
