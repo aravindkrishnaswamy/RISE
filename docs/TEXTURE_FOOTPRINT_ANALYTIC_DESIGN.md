@@ -96,7 +96,7 @@ error, and mip LOD's `log2` turns it into whole levels of blur — measured
 at +1.65 (sphere), +2.33 (ellipsoid, unequal semi-axes), +1.59 (cylinder,
 height 3) and +2.65 (torus) levels too blurry, mesh control unmoved.
 
-Since fix round 1 (§10.6) the geometry must also state a **texcoord chart
+Since fix round 1 (§10.8) the geometry must also state a **texcoord chart
 map** (`SurfaceDerivatives::dsdu…dtdv` + `texChartValid`, contract in
 [GEOMETRY_DERIVATIVES.md](GEOMETRY_DERIVATIVES.md) § "The texcoord chart
 map"); `SolveFootprintUV` solves in the derivative chart, multiplies
@@ -195,6 +195,21 @@ measure, in the same length units as `ctx.P`. The analytic path shares the
 helper, so it is consistent by construction, and the `0.2 / 0.6` band (F13)
 keeps meaning what it means on meshes. The known `fbm(P*10, …)` mismatch
 (F12) is unchanged and out of scope.
+
+**A DIAMETER, so a consumer that wants a symmetric stencil needs ±half**
+(fix round 2 — this section did not say so, and one consumer got it
+wrong). `relief_modifier`'s auto step is a central-difference HALF-step,
+so "difference over one pixel footprint" is `s = fw/2`, not `s = fw`; the
+rule shipped as `max(step, fw)` and therefore filtered over TWO
+footprints. That is invisible on a self-band-limiting field (which is
+every field the mesh-only era exercised) and visible the moment this arc
+put a `worley` crackle at footprint scale on a sphere. Corrected in
+`ReliefModifier.cpp`'s `RELIEF_AUTO_STEP_FOOTPRINT_FRACTION`; measurements
+in §10.9 and in
+[RELIEF_MODIFIER_DESIGN.md](RELIEF_MODIFIER_DESIGN.md) §3.3. §6's render
+plan below already flagged the risk in its own words — "check the
+half-vs-full-pixel-step convention first" — and no one did until a scene
+showed it.
 
 ## 4. Alternatives considered
 
@@ -296,6 +311,9 @@ and that is the fix, not a regression:
 | `scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene` | sphere half only |
 | `scenes/Tests/Materials/wetness_prelude_validation.RISEscene` | SDF |
 | `scenes/FeatureBased/Textures/receding_pier.RISEscene` | box props only — the pier mesh is unchanged |
+| `scenes/Tests/Painters/relief_crackle_glaze.RISEscene` | sphere (relief step becomes live; **added fix round 2** — this is the scene the half-vs-full-step question below was settled on) |
+| `scenes/Tests/ChunkCoverage/cc_relief_modifier.RISEscene` | sphere (**added fix round 2**; its explicit `step 0.002` is below the footprint, so the footprint now wins — see §10.9) |
+| `scenes/Tests/ChunkCoverage/cc_modifier_stack.RISEscene` | sphere (**added fix round 2**; same explicit `step 0.002`, same consequence) |
 
 Separately, **textured spheres/ellipsoids/cylinders/tori start mip-mapping**
 (class (a) sets `valid`, so `TexturePainter::SampleTextured` leaves
@@ -703,7 +721,7 @@ each one out.
    before/after difference is strictly inside its same-binary seed noise
    (§10.5).
 
-### 10.6 Fix round 1 (2026-09-06)
+### 10.8 Fix round 1 (2026-09-06)
 
 Reviewers on the landing above found one P1 in the code and three stale
 "mesh-only" claims in prose that this arc had itself invalidated.
@@ -730,7 +748,7 @@ same knowledge is exactly what a future consumer of `dpdu` + `ptCoord`
 `dpdu`/`dpdv` themselves are untouched, as the brief required — SMS's
 `ManifoldSolver` and the curvature code keep consuming them as-is.
 
-The sibling this surfaced, which the original §10.5 self-audit item 5(b)
+The sibling this surfaced, which the original §10.7 self-audit item 5(b)
 got backwards: it argued that because `derivatives.valid` is set
 **unconditionally** on the mesh hit path, no mesh hit could lose a
 footprint. True for `widthValid`, but it also meant the
@@ -810,3 +828,103 @@ thing), and unrelated glTF / BVH / VCM prose.
 |---|---|
 | `5bc02109` | the chart map: contract on `SurfaceDerivatives` / `SurfaceDerivativesInfo`, per-primitive maps, `SolveFootprintUV` change of chart, tests 11–12 |
 | *(this record)* | the three stale claims, the P2/P3 comment and fixture fixes, `GEOMETRY_DERIVATIVES.md` § "The texcoord chart map", §2.1's `(a*)`, and this section |
+
+### 10.9 Fix round 2 (2026-09-06)
+
+Review round 2 on branch `relief-followups`. One correctness finding
+(the step fraction), one numbering/citation sweep, one new oracle row.
+
+**(A) The auto step spanned TWO footprints, not one.** `ReliefModifier`'s
+surface-domain rule shipped as `s = max(step, fw)` while `s` is the
+*half*-step and the difference spans `2s`. Nothing in the mesh-only era
+could show it: the only in-tree scene exercising the rule
+(`receding_pier`) drives it with `fbm`, which band-limits itself against
+the same `fw`, so the extra factor of two lands on octaves already faded
+to zero. §3.4 of this document made `fw` real on analytic primitives, and
+`relief_crackle_glaze` — a `worley_f2f1` crackle, no octave structure, on
+a sphere — put a *non*-self-fading field at footprint scale under the
+rule for the first time.
+
+Measured at reduced settings, high-frequency shading energy as
+mean `|∇²luminance|` over the subject, against the pre-footprint renders
+preserved in the session scratchpad. Renders seed from the wall clock, so
+each row is quoted against a same-binary control:
+
+| scene / region | pre-footprint | `s = max(step, fw)` | `s = max(step, fw/2)` | control spread |
+|---|---|---|---|---|
+| `relief_crackle_glaze`, sphere disc (256², 32 spp) | 41.50 | 33.21 (**−20.0 %**) | 40.97 (**−1.3 %**) | 0.1 % |
+| `weathered_workbench`, bench top (320×240, 64 spp) | 26.47 | 22.71 (**−14.2 %**) | 23.67 (**−10.6 %**) | 0.1 % |
+
+And the fade the rule exists for, on the design's own demonstrator
+`relief_sphere_no_uv` (the §10.5 measurement re-run; the full-footprint
+column reproduces §10.5 to three digits, which is the check that the
+harness is the same one):
+
+| annulus | vs pre-footprint, `fw` | vs pre-footprint, `fw/2` | A/A control |
+|---|---|---|---|
+| centre `r < 0.23` | −32.9 % | −10.8 % | −0.1 % |
+| `r 0.23–0.47` | −32.7 % | −10.8 % | −0.0 % |
+| `r 0.47–0.70` | −32.6 % | −10.9 % | +0.2 % |
+| limb `r 0.70–0.93` | −41.8 % | −16.7 % | −0.1 % |
+
+The fade is a factor, not a threshold, so halving the step scales it
+rather than switching it off, and it stays monotone in the footprint
+(the limb still fades hardest). **Adopted `fw/2`**, as
+`RELIEF_AUTO_STEP_FOOTPRINT_FRACTION` in `ReliefModifier.cpp`.
+
+The alternative the review offered — keep `max(step, fw)` and set an
+explicit `step` on the two showcase scenes — was **measured and is not
+available**. `step` is a FLOOR inside a `max`, so a value below the
+footprint is inert: `relief_crackle_glaze` rendered with `step 0.002`
+spelled out is indistinguishable from `step 0` (mean 8-bit channel delta
+0.233 over the frame, versus 2.309 between the two step rules, and the
+scene's own seed noise is the former). That is by design — there is no
+way to ask for a sub-footprint stencil on a primary hit — but it does mean
+the fraction was the only thing that could be fixed.
+
+Honest residual: on `weathered_workbench` the halving recovers about a
+quarter of the lost grain energy, not all of it. The bench top's grain
+features are wider relative to `fw` than the crackle's fissures, so the
+correct answer there genuinely includes *some* footprint averaging; the
+render is legibly crisper than at `fw` and softer than pre-footprint, and
+that is the expected shape of an antialiasing rule that is now doing what
+its own sentence says. Renders:
+`…/scratchpad/r2/{cg_a,cg_b,cg_c_step0002,wb_a,wb_b,sph_a,sph_b}.png`,
+zooms `z_cg_*`, `z2_cg_*`, `z_wb_*`.
+
+**(B) Numbering and citations.**
+
+| Finding | Fix |
+|---|---|
+| §10.6 appeared **twice** — "Deviations" and "Fix round 1" | Fix round 1 renumbered to **§10.8**; the two references to it (§2's chart-map sentence, `RELIEF_MODIFIER_DESIGN.md` §12's arc table) follow |
+| "§10.5 self-audit item 5(b)" — the self-audit is §10.7 | Corrected |
+| `RayIntersectionGeometric.h`'s chart-map comment said a cylinder mipped "1.02 levels" too blurry (and a sphere 1.67, a torus 2.64), disagreeing with this document's 1.59 / 1.65 / 2.65 | **Re-measured** by replacing `SolveFootprintUV`'s chart multiply-through with the raw derivative-chart differentials and reading `TextureFootprintTest` test 11's own per-geometry LOD error: sphere **1.651**, ellipsoid **2.330**, cylinder **1.585**, torus **2.651**, mesh control unmoved at 1.8e-5. This document was right; the header comment and the same figures echoed in `TextureFootprintTest.cpp`'s file header were corrected to match, both with a note saying they were re-measured |
+| "the `−axis` cap" is the cylinder's transposed branch — in `GEOMETRY_DERIVATIVES.md`'s table, `TextureFootprintTest.cpp`'s cap-case comment, and `CylinderGeometry.cpp`'s own comment at the swap site | **Backwards for one axis of three.** The swap fires where the outward normal opposes `dpdu × dpdv`, and the `(ra, rb)` pairs are not consistently cyclic (`x → (y, z)`, `y → (x, z)`, `z → (x, y)`; the cyclic choice for `y` would be `(z, x)`). So `dpdu × dpdv` is `+X`, `−Y`, `+Z` and the transposed cap is `−x`, **`+y`**, `−z`. Measured by instrumenting the swap site and driving all six caps through the chart oracle. All three sites corrected, and `CylinderGeometry.cpp` now carries the per-axis table. Incidentally the oracle's existing cap case is the `+y` cylinder, so the swapped branch was under test all along — the comment was the only thing wrong |
+
+**(C) A mirrored-UV mesh row for test 11.** The mesh path's `dtdv = −1`
+branch (right-handedness fix-up negates `dpdv`, the chart map has to say
+so) was reachable in production by any mirrored-UV asset and covered by
+nothing: the oracle's mesh control never fires it, and no analytic
+primitive can. `BuildMeshSphere` gained a `mirrorU` flag that writes the
+`u` texcoord backwards while leaving geometry and winding alone, and test
+11 gained a row for it. Red-proof: deleting `ri.derivatives.dtdv = −1.0;`
+from **both** `TriangleMeshGeometry{,Indexed}Specializations.h` leaves the
+control and all six analytic rows green and fails the new row alone, at a
+scale-relative error of exactly **2.0**.
+
+**Scenes added to §6's list**, all newly footprint-bearing on a sphere:
+`relief_crackle_glaze` (the scene (A) was settled on) and the two
+chunk-coverage fixtures `cc_relief_modifier` / `cc_modifier_stack`, whose
+explicit `step 0.002` is below the footprint and is therefore now
+overridden by it.
+
+**Gate.** `make -C build/make/rise -j8 all` warning-free from clean;
+`TextureFootprintTest` 113/113, `ReliefModifierTest` 127/127,
+`BlenderBridgeHairTest` 133 checks / 0 failures, `TextureExpressionVMTest`
+685/685, `SourceHygieneTest` 164/164, `CstDeriveGoldenTest` 442 MATCH /
+1 DRIFT (`bdpt_crystal_garden`, pre-existing and out of scope — no golden
+regeneration was needed, since only comments changed in any scene).
+
+| Commit | What |
+|---|---|
+| *(this record)* | the step fraction, the renumbering, the three re-measured/corrected claims, the mirrored-UV oracle row, and this section |
