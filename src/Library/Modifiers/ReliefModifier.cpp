@@ -181,18 +181,19 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		const Matrix4* const pW2O = ri.pmxWorldToObject;
 		if( !pW2O && !g_warnedNoObjectTransform.exchange( true ) ) {
 			GlobalLog()->PrintEasyWarning(
-				"relief_modifier: hit carries no world->object transform "
-				"(ri.pmxWorldToObject) -- this happens on CSG composite hits, "
-				"whose ptObjIntersec is the child operand's own object-space "
-				"point, and on hit records not produced by "
-				"Object::IntersectRay.  The object-space point is being "
-				"offset by the WORLD step instead, which is exact only when "
-				"the object's transform is a pure translation; an "
+				"relief_modifier: this object's hits carry no world->object "
+				"map (ri.pmxWorldToObject is null) -- which is the case for "
+				"EVERY hit on a CSG composite (whose ptObjIntersec is the "
+				"child operand's own object-space point, so no single matrix "
+				"is the right one to stamp), and for hit records not "
+				"produced by Object::IntersectRay.  On such hits an "
 				"OBJECT-SPACE height field (mapping_painter space object, "
-				"voronoi3d space object, `Po` in an expression) on a rotated "
-				"or scaled object will therefore read a slightly wrong "
-				"gradient.  World-space and UV-space height fields are "
-				"unaffected.  This warning fires once per process." );
+				"voronoi3d space object, `Po` in an expression) is stepped "
+				"in WORLD units instead of object units: exact when the "
+				"object's transform is a pure translation, and off by the "
+				"rotation/scale otherwise.  World-space and UV-space height "
+				"fields are unaffected.  This warning fires once per "
+				"process." );
 		}
 
 		// The four offset evaluations.  Copy-then-offset is the
@@ -266,14 +267,29 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	// mirrored-instance frames pass through unchanged.
 	const Vector3 perturbed = N - ( T * hT + B * hB ) * dScale;
 
-	// A gradient large enough to cancel N leaves nothing to normalize.
-	// Bail rather than hand Normalize a zero vector: no clamp, no flat
-	// spot, just "this sample had no usable normal".  (There is
-	// deliberately NO geometric-horizon clamp -- like BumpMap/NormalMap
-	// and PBRT's bump mapping, a large `scale` may push N' below the
-	// geometric plane and the materials' own horizon gates handle that
-	// continuously.  GlintModifier's rejection is a DISCRETE facet
-	// decision and does not transfer.)
+	// DEGENERATE-NORMAL GATE.  Bail rather than hand Normalize an
+	// unusable vector: no clamp, no flat spot, just "this sample had no
+	// usable normal".
+	//
+	// WHAT IT CAN ACTUALLY CATCH.  Not "a gradient large enough to cancel
+	// N" -- that cannot happen.  T and B are orthonormal to N, so
+	// |N - scale*(T*hT + B*hB)|^2 = |N|^2 + scale^2*(hT^2 + hB^2) >= 1 for
+	// any finite gradient on a unit N: the perturbation is perpendicular
+	// to N and can only ever LENGTHEN the result.  The two reachable
+	// failures are (i) a non-finite `mag2` -- an Inf appearing on only one
+	// side of the difference, which the isfinite gate above already
+	// short-circuits, so for FINITE inputs this test is REDUNDANT with it
+	// (ReliefModifierTest red-proof (c) measured exactly that: removing
+	// either gate alone leaves the suite green, only removing both fails
+	// it) -- and (ii) a zero-length incoming N from a singular transform,
+	// which no upstream guard covers and which this gate alone stops from
+	// reaching Normalize.  Kept for (ii) and as cheap insurance on (i).
+	//
+	// There is deliberately NO geometric-horizon clamp -- like
+	// BumpMap/NormalMap and PBRT's bump mapping, a large `scale` may push
+	// N' below the geometric plane and the materials' own horizon gates
+	// handle that continuously.  GlintModifier's rejection is a DISCRETE
+	// facet decision and does not transfer.
 	const Scalar mag2 = Vector3Ops::SquaredModulus( perturbed );
 	if( !( mag2 > Scalar(1e-12) ) || !std::isfinite( mag2 ) ) {
 		return;
