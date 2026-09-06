@@ -152,9 +152,7 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// `ri.onb.u()/v()` here are NOT the arbitrary CreateFromW frame the
 		// last-ditch warning below describes -- they are the surface's own
 		// UV/fiber-aligned frame, already correctly signed.  Use them
-		// directly, no warning: warning here would be a false positive on
-		// exactly the geometry this feature exists to serve (curtains,
-		// banners, swatches).
+		// directly, no warning.
 		//
 		// The predicate is ModifierFrame::HasCoherentTangent -- the SAME
 		// flag pair Object::IntersectRay branches on to build that frame
@@ -162,8 +160,30 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// -- not `bHasShadingTangent` alone: an SDF heightfield hit sets only
 		// the former, and gating on the latter sent it to the last-ditch
 		// branch below, whose VALUES are identical (same onb.u()/v()) but
-		// whose once-per-process warning was a false positive on exactly
-		// such a hit (relief-modifier fix round 1 residual, closed here).
+		// whose once-per-process warning fired on exactly such a hit
+		// (relief-modifier fix round 1 residual, closed there).
+		//
+		// FIX ROUND 2, P2-B -- what "no warning here" actually claims for
+		// the SDF-heightfield case, precisely (round 1's "false positive on
+		// exactly that hit" overstated it): SDFGeometry's heightfield mode
+		// parameterises `ptCoord` from the OBJECT-space hit point
+		// (SDFGeometry.cpp, the `m_isHeightfield` branch of IntersectRay --
+		// `(hp.x+R)/2R, (hp.y+R)/2R`), while the coherent tangent
+		// `ri.onb.u()/v()` traces back to Object::IntersectRay's fallback
+		// sub-case (no real supplied tangent), which projects WORLD-X --
+		// not the object-space +X the UV is actually built from -- into the
+		// world-space shading-normal plane.  Those two agree only when the
+		// instance's linear part maps object +X to world +X, i.e. no
+		// rotation (uniform or non-uniform SCALE and translation are fine).
+		// On an UNROTATED SDF-heightfield instance suppressing the warning
+		// is correct: the values genuinely are the UV-aligned frame. On a
+		// ROTATED one, `onb.u()/v()` is no longer aligned with the
+		// heightfield's own U axis, a normal map applied through this
+		// branch is shaded against the wrong basis, and the diagnostic gap
+		// this branch's silence creates is real, not cosmetic -- nothing
+		// here fixes that misalignment, only ceases to warn about the
+		// unrotated case where there was nothing to warn about.  The VALUES
+		// are unchanged either way; only the disclosure is corrected.
 		T = ri.onb.u();
 		B = ri.onb.v();
 	} else {
@@ -178,7 +198,7 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 			GlobalLog()->PrintEasyWarning(
 				"NormalMap modifier: hit has neither imported TANGENT, valid "
 				"surface derivatives (ri.derivatives.valid), nor a geometry-"
-				"supplied shading tangent (ModifierFrame::HasCoherentTangent).  Falling "
+				"supplied shading tangent.  Falling "
 				"back to ONB-derived tangents, which is correct only when the "
 				"normal map's UV axes happen to align with the arbitrary ONB "
 				"frame -- i.e. essentially never.  Re-export the source asset "
@@ -211,13 +231,17 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 	// alone, which is only the sub-case that ALSO supplies a real tangent
 	// vector -- is what mirrors Object::IntersectRay's coherent-frame
 	// branch; see its comment for the SDFGeometry-heightfield case the bare
-	// flag misses.  (The T/B selection above still keys on the bare flag,
-	// and correctly so for the VALUES: an SDF-heightfield hit falls to the
-	// last-ditch branch, which reads the same `ri.onb.u()/v()` the
-	// bHasShadingTangent branch would.  The only difference is that the
-	// last-ditch branch also emits its once-per-process warning, which is a
-	// false positive on that hit -- a cosmetic residual, tracked in
-	// docs/RELIEF_MODIFIER_DESIGN.md 12, not a shading difference.)
+	// flag misses.  (The T/B selection above now keys on the SAME
+	// predicate, not the bare flag: three tangent-source branches --
+	// imported TANGENT, UV-derived dpdu/dpdv, and
+	// `ModifierFrame::HasCoherentTangent` for a geometry-supplied coherent
+	// tangent with neither of the first two -- feed a rebuild gated on that
+	// identical predicate, so an SDF-heightfield hit takes the third branch
+	// (T = ri.onb.u(), B = ri.onb.v(), the same values the last-ditch
+	// fallback would have used) and the rebuild below.  The last-ditch
+	// branch, and its once-per-process warning, now fires only on a hit
+	// that is genuinely tangent-less by all three tests -- fix round 2,
+	// P1, closing the round-1 residual this paragraph used to describe.)
 	// GlintModifier makes the opposite choice for its own reasons -- see
 	// the helper's header comment.
 	if( ModifierFrame::HasCoherentTangent( ri ) ) {
