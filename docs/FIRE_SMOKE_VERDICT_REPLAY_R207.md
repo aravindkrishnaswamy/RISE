@@ -1,8 +1,33 @@
 # r207 — ask the tier-eight focusing question at r206 cost
 
-Status: launch preparation; no replay outcome or performance improvement is
-claimed. The owner accepted r206 and authorized this full replay before further
-cost reduction. The r194 protocol remains immutable.
+Status: launched, then refused at 390 accepted steps / 0.6231521824374795 s
+on canonical-versus-persisted source identity; no focusing verdict or performance
+improvement is claimed. The owner accepted r206 and authorized this full replay
+before further cost reduction. The r194 protocol remains immutable.
+
+## Terminal refusal — not a focusing verdict
+
+The frozen executable exited 93 before the next resident-owner attempt. At
+component-major source index 4039499, canonical binary32 source was
+`-0.048315051943063736`, persisted source `-0.048315037041902542`: absolute
+difference `1.4901161193847656e-8`, four binary32 ULPs. These are observations,
+not a derivation admitting the difference. Exact source identity still refuses;
+no tolerance is introduced and no root cause is asserted from magnitude alone.
+
+Last accepted max velocity was 4.6702094078063965 m/s. None of the 15/30/60 m/s
+crossings or the equal-time reference candidate was reached. This prefix is
+neither a cure nor a non-curing focusing verdict and cannot select k. The latest
+retained checkpoint is step 388, not the failed candidate; it is preserved for
+diagnosis, not authorization to resume this sealed run. The isolated target
+prototype remains unqualified and was never included in the executable.
+
+`rendered/fire_production_calibration/r207_tier8_verdict/terminal_refusal.v1.json`
+binds the terminal log, both trajectories and retained checkpoint by SHA. Log
+SHA: `0d142d6280e77c14ef45f2aeb4fd27902b9af0283b9a2e5532a62fa0ce0b8cf0`.
+The approved periodic follow-up was unnecessary by the time approval arrived:
+the run had terminated, so no recurring automation was created. Next instrument:
+compare the two source-construction paths at the retained state without changing
+the source identity rule or overwriting/restarting the evidence.
 
 ## Pre-registered experiment
 
