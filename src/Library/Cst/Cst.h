@@ -774,6 +774,21 @@ namespace RISE
 		//! uses the one canonical construction instead of re-deriving it.
 		std::string ChunkNamePath( const NodeRef& item );
 
+		//! The directed advice for a chunk keyword a PAST RELEASE of RISE
+		//! accepted and that has since been REMOVED (the `kRetiredChunks`
+		//! table in Cst.cpp), or null when `kw` names no chunk RISE ever
+		//! had.  ResolveChunkParams (this file) is the CST derive's own
+		//! consumer, appending it to "chunk type 'X' has been removed -- "
+		//! to build the diagnostic; exposed here so the two OTHER surfaces
+		//! that resolve a chunk keyword against the registry -- SchemaGen's
+		//! describe_chunk/read_schema and AgentSession's insert_chunk
+		//! near-miss analyser -- can surface the SAME directed message
+		//! instead of leaving a removed keyword to their generic "unknown
+		//! chunk type" / near-miss-by-edit-distance path (which a keyword
+		//! like `bumpmap_modifier` -> `relief_modifier` is far too different
+		//! from its replacement's name to ever rank).
+		const char* RetiredChunkAdvice( const std::string& kw );
+
 		//! Resolve a name-path (e.g. "sphere_geometry/s") to its NodeId, REQUIRING a
 		//! unique occurrence: returns the id iff exactly one chunk has that name-path,
 		//! else 0. `*occurrences` (if non-null) receives the count (0 = absent,

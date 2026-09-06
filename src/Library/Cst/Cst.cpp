@@ -1581,7 +1581,10 @@ static const RetiredChunkKeyword kRetiredChunks[] = {
 
 //! The directed advice for a REMOVED chunk keyword, or null when `kw` names no chunk RISE
 //! ever had (in which case the caller's generic "unknown chunk type" is the honest message).
-static const char* RetiredChunkAdvice( const std::string& kw )
+//! Declared in Cst.h (RISE::Cst) -- not static -- so SchemaGen's describe_chunk/read_schema
+//! and AgentSession's insert_chunk near-miss analyser can surface the same directed message
+//! (see the header doc).
+const char* RetiredChunkAdvice( const std::string& kw )
 {
 	for( std::size_t i = 0; i < sizeof(kRetiredChunks)/sizeof(kRetiredChunks[0]); ++i ) {
 		if( kw == kRetiredChunks[i].keyword ) return kRetiredChunks[i].advice;

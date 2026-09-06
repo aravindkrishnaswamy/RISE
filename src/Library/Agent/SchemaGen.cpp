@@ -23,6 +23,9 @@
 #include "../SceneEditorSuggestions/SceneGrammar.h"
 #include "../Parsers/ChunkDescriptor.h"
 #include "../Utilities/RString.h"
+#include "../Cst/Cst.h"   // Cst::RetiredChunkAdvice -- a removed keyword (e.g. `bumpmap_modifier`) gets the
+                          // same directed replacement/migrator message the CST derive's own diagnostic does,
+                          // instead of the bare "unknown chunk type" a keyword RISE never had gets
 
 #include <set>
 #include <string>
@@ -245,7 +248,10 @@ namespace RISE
 				out += "{\"keyword\":";
 				AppendJsonString( out, keyword );
 				out += ",\"error\":";
-				AppendJsonString( out, "unknown chunk type '" + keyword + "'" );
+				const char* const retired = RISE::Cst::RetiredChunkAdvice( keyword );
+				AppendJsonString( out, retired
+					? ( "chunk type '" + keyword + "' has been removed -- " + retired )
+					: ( "unknown chunk type '" + keyword + "'" ) );
 				out += '}';
 				return out;
 			}
