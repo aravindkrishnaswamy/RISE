@@ -2,8 +2,10 @@
 
 **Status:** Phase 1 LANDED (2026-09-06, four review rounds — see
 §12). Phase 2 implemented and gate-green 2026-09-06 (see §12) but has NOT
-yet been through the implementation-review-loop adversarial round; Phases
-3–5 pending. Each phase runs the
+yet been through the implementation-review-loop adversarial round. Phase 3
+landed (migrator run + corpus migrated + CST twins + deprecation diagnostic
++ golden regen + teaching surfaces, see §12) awaiting review round; Phases
+4–5 pending. Each phase runs the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
@@ -711,7 +713,7 @@ the showcase fixtures at their authored spp.
 |---|---|---|
 | **1** | `ReliefModifier` + `ModifierFrame.h` hoist + `pmxWorldToObject` + API/IJob/parser + 5 build projects + `ReliefModifierTest` 1–8, 10 + `cc_relief_modifier` + `relief_sphere_no_uv` | zero-P1 round; PT/BDPT parity on the sphere |
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | implemented + gate suites green 2026-09-06 (see §12); the implementation-review-loop adversarial round has NOT yet run against this slice |
-| **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | zero-P1 round; golden additions-only beyond migrated entries |
+| **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | implemented + gate suites green 2026-09-06 (see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope); the implementation-review-loop adversarial round has NOT yet run against this slice |
 | **4** | `DESIGN_FLAT_RELIEF` + recipe example + hook-point notes | zero-P1 round; `AgentChunkCrudTest` green |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | renders attached to §12; the user judges "reads as surface" |
 
@@ -1187,3 +1189,198 @@ zero-P1 status this session did not produce.  `tests/data/cst_derive_golden.txt`
 is NOT regenerated (Phase 3's job, same as Phase 1).  No render/pixel
 verification of `cc_modifier_stack.RISEscene` was performed beyond a
 headless parse (Phase 5's job, per §11).
+
+### Phase 3 — landed 2026-09-06 (awaiting implementation-review-loop)
+
+Branch `relief-modifier`, four commits off `4f180cc0` (round-4 fix's head):
+`658c6c94` (corpus migration), `e690f4de` (teaching surfaces + §7.4
+recount), `8620d9cf` (CST test twins), `eefc8e1a` (deprecation diagnostic +
+`ReliefModifierTest` test 10f). **This slice has NOT been through the
+implementation-review-loop adversarial round** (no reviewer subagents were
+spawned in this session); the §11 status cell and this record say so
+explicitly — treat it as implemented-and-gate-green, not LANDED, until
+that round runs and converges to zero P1.
+
+**Corpus migration** (`tools/migrate_scenes_relief.py --root scenes -v`,
+`--selftest` passing first). All 5 in-tree `bumpmap_modifier` chunks
+migrated in 4 files, matching the design's §7.3 table exactly:
+
+| Scene | `S'` | Tracked? |
+|---|---|---|
+| `scenes/FeatureBased/Materials/velvet_cushion.RISEscene` (`creases`, normalized) | `-0.0075` | yes |
+| `scenes/FeatureBased/Combined/sculptors_studio.RISEscene` (`clay_bump`) | `-0.005` | yes |
+| `scenes/Tests/SMS/sms_veach_egg_bumpmap.RISEscene` (`bump_egg`) | `-0.02` | yes |
+| `scenes/Internal/pool.RISEscene` (`bumpchecker`, `waterbump`) | `-0.001`, `-0.0008` | no (gitignored) |
+
+A second run over the migrated tree is a no-op (idempotency confirmed:
+"0 bumpmap_modifier chunks seen"). Each migrated scene's own header/section
+comments that named `bumpmap_modifier` as the mechanism were updated to
+name `relief_modifier` (migrated, `domain uv`) so the scene's own text is
+not stale; `velvet_cushion`'s "A BUMP map, not a displacement" concept
+comment (quoted in `CLOTH_FABRIC_DESIGN.md`) was deliberately left as-is —
+it describes the technique category, not the deprecated chunk name, and
+remains accurate for `relief_modifier` too. `bdpt_crystal_garden.RISEscene`
+carries a pre-existing, unrelated uncommitted edit and was left untouched
+throughout, per the branch note in §11.
+
+**Teaching surfaces**, per §9's placement law: `procedural-textures.md`
+gets the full reference — a rewritten `expression_function2d` decision-map
+row (names DISPLACEMENT as its sole remaining niche, states the
+deprecation + migrator), a new `relief_modifier` decision-map row, and a
+new "Adding relief" section (height/scale/domain/step, sign convention,
+`modifier_stack` ordering with glint last, the deprecation note).
+`materials-and-media-basics.md` gets the ONE worked, execution-validated
+example — a crackle-glaze ceramic where a single `expression_painter`
+Worley `f2-f1` cell field drives colour (`ramp_painter`), roughness
+(`scalar_painter { painter ... channel R }`) and relief (`relief_modifier`
+over the SAME `scalar_painter`, negative scale so the cracks sink).
+`object-modeling-recipes.md` gets one pointer at Recipe 6's
+lathe/sweep/skin faceting bullet: `relief_modifier` cannot introduce that
+faceting because it never moves a vertex. `src/Library/Parsers/README.md`'s
+Modifiers row and `docs/GLTF_IMPORT.md`'s normal-map section both now name
+the deprecation and the migrator. `docs/MATERIALS.md` has no `bump`
+mention at all (grepped, confirmed, nothing to change).
+`CLOTH_FABRIC_DESIGN.md` and `GEOMETRY_SHADING_SIGNALS_DESIGN.md` were
+deliberately NOT rewritten — both are historical/architecture records
+(a past-tense finding, and a citation of `BumpMap.cpp`/`NormalMap.cpp` as
+implementation precedent), not living recommendations of `bumpmap_modifier`
+as the forward path.
+
+**§7.4 post-migration recount**, by a scene-parsing script (matching each
+`displaced_geometry`/`function2d_painter`/`scalar_painter`/
+`composite_function2d_painter`/`sdf_geometry` binding against the
+`expression_function2d` names actually declared in the SAME file, not a
+bare grep for the string): `displaced_geometry.displacement` 5 scenes,
+`function2d_painter` 4, `scalar_painter { function2d }` 2 (`watch_dial`
+plus, new this phase, `velvet_cushion`), `composite_function2d_painter` 0
+direct children, `sdf_geometry.heightfield_function` 5. Zero
+`bumpmap_modifier` chunks remain anywhere under `scenes/`. The
+shrinking-legacy-surface claim is confirmed: FIVE chunk kinds could bind
+an `expression_function2d` before this arc (the four above plus
+`bumpmap_modifier.function`); FOUR can after Phase 3.
+
+**Deprecation diagnostic** (`BumpmapModifierAsciiChunkParser::Finalize`,
+`ChunkParserRegistry.cpp`): a `static std::atomic<bool>` once-per-process
+guard (the `NormalMap.cpp` idiom) emits `eLog_Warning` naming
+`relief_modifier` and `tools/migrate_scenes_relief.py`; the descriptor's
+`description` is prefixed `"DEPRECATED — use relief_modifier (...)"`.
+ABI freeze holds: `IJob::AddBumpMapModifier`, the `RISE_API_CreateBumpMapModifier{,Ex}`
+entry points, and `BumpMap.{h,cpp}` are untouched. `ReliefModifierTest`
+gains test 10(f): two `bumpmap_modifier` chunks in one scene parse
+successfully and the captured log contains the deprecation text EXACTLY
+ONCE — the ordering note in the test's own comment records why this must
+stay the first ASCII-parsed `bumpmap_modifier` chunk in the process
+(Test 2's legacy-equivalence check constructs a `BumpMap` directly in
+C++, bypassing the chunk parser, so it never trips the guard).
+
+**CST test twins.** All four bumpmap_modifier CST fixtures kept (they test
+the deprecated-but-still-parsing path) and gained a `relief_modifier`
+twin proving the same closure/derive/removal/instance-inheritance logic on
+the new slot: `CstResolverTest`'s `[relief-modifier-scalar]` (closure of a
+`scalar_painter` includes the `relief_modifier` naming it — the
+new-modifier analogue of `[painter-decl-func2d]`'s
+`bumpmap_modifier.function`/Function2D case, one manager over);
+`CstRecordDeriveTest`'s twin scene in the record/derive cross-check array;
+`CstIncrementalSafetyTest`'s twin OPTIONAL-SLOT REMOVAL block; and
+`CstSourceInstanceTest`'s twin `[inherit]` case (its shared `Scene()`
+fixture gained a `scalar_painter`/`relief_modifier` pair alongside the
+legacy `bump` fixture, which shifted one hardcoded chunk-ordinal pair in
+an unrelated `[refuse]` test from `#11`/`#12` to `#13`/`#14` — confirmed
+against the actual diagnostic text via a temporary probe print, not
+guessed, then fixed in the same commit). `relief_modifier.height` binds a
+`scalar_painter`, not the colour painter `bumpmap_modifier.function` uses
+(a colour painter is refused there), so each twin adds a small dedicated
+`scalar_painter` rather than reusing the bumpmap fixture's own painter.
+
+**Gate suites, run on the final tree.** `ReliefModifierTest` **106/0**
+(was 101/0; +5 checks, test 10(f)). `CstResolverTest` **53/0** (was 52/0).
+`CstRecordDeriveTest` **25/0** (was 23/0). `CstIncrementalSafetyTest`
+**41/0**. `CstSourceInstanceTest` **457/0** (was 456/0 before the
+chunk-ordinal fix). `SceneEditorSuggestionsTest` ALL PASSED (both
+hard-coded chunk counts still 176 — Phase 3 adds no chunk).
+`SourceHygieneTest` **164/0**. `ScalarPainterParserTest` **60/0**. Clean
+warning check on every touched `.cpp` (touch + rebuild, full-project
+`make -C build/make/rise -j8 all` plus each gate test binary): **zero**.
+
+**Golden regen** (the ls-files lesson: every new/changed scene `git add`-ed
+first). `CstDeriveGoldenTest --generate` then `git diff
+tests/data/cst_derive_golden.txt`: additions-only for the 4 new scenes
+carried over from Phases 1–2 that had been UNCOVERED
+(`cc_modifier_stack.RISEscene`, `cc_relief_modifier.RISEscene`,
+`relief_sphere_no_uv.RISEscene`) plus this phase's new
+`relief_crackle_glaze.RISEscene`, and the pre-existing, out-of-scope
+`bdpt_crystal_garden.RISEscene` DRIFT line — restored to HEAD's digest
+value (`2e24838a...`, `7406` bytes) after the generate step overwrote it
+with the dirty working tree's digest (`e70506d7...`, `7411` bytes), per
+the branch note. `./bin/tests/CstDeriveGoldenTest` (verify mode): **440
+MATCH, 1 DRIFT** (the restored `bdpt_crystal_garden` line, expected) **(of
+441 golden scenes); coverage: 448 corpus scenes, 0 UNCOVERED, 0 STALE**.
+
+Importantly, the 3 migrated in-tree scenes (`velvet_cushion`,
+`sculptors_studio`, `sms_veach_egg_bumpmap`) show **NO digest change** —
+this is correct, not a gap: `DumpJob` (the golden's hashed canonical form)
+prints an object's modifier binding as `modifier=<name>`
+(`CstRenderEquivalence.h:228`, a reverse-name lookup), never the bound
+modifier's concrete type or parameters, and the migrator does not touch
+the object's `modifier N` line (§7.2) — so a scene whose `bumpmap_modifier
+creases` became a `relief_modifier` of the same name dumps byte-identical
+either way. The digest is a structural (by-name) equivalence check, not a
+behavioral one; this was verified by reading `CstRenderEquivalence.h`
+before treating "no diff" as suspicious.
+
+**Render evidence.**
+`rendered/relief_crackle_glaze.png` (256×256, 32 spp, PT, `oidn_denoise
+FALSE`) — cracks read as sunken relief (confirmed by a same-seed A/B in
+the scratchpad: `relief_modifier.scale 0.0` vs the authored `-0.02`
+produces a measurable, sphere-confined shading difference, mean abs diff
+0.895/255 over the full frame, max 68/255 at crack edges; a 3× zoomed crop
+at each setting shows the `-0.02` version's crack edges catching a thin
+specular bevel the flat version lacks). The crack width (`smoothstep`
+edge 0.06 → 0.10) and relief amplitude (`scale` −0.006 → −0.02) were both
+widened from the first draft after the first render read too subtly at
+256×256 — recorded here so a future viewer of this file's history is not
+confused by the two values appearing in early session output.
+`velvet_cushion` lossless-migration check: master's version (`git show
+4f180cc0:scenes/FeatureBased/Materials/velvet_cushion.RISEscene`) and the
+migrated tree version, both reduced to 256×256/16spp in the scratchpad
+(the authored 1200×900/128spp would not fit the time budget), rendered
+~5s each — mean luminance 77.74 (master) vs 77.72 (migrated), mean abs
+diff 0.26/255, both frames showing the same radial nap-crease gathering
+around the crown; the residual is ordinary MC noise between two
+differently-seeded renders (renders seed from wall clock per the PT
+env-MIS arc), not a migration artifact.
+
+**Self-audit (the 5 likeliest ways this is wrong, and what was checked).**
+
+1. **Migrated look changed.** Checked by the `velvet_cushion` A/B above
+   (mean luminance within 0.03%, same visible crease pattern) rather than
+   assumed from the algebra alone.
+2. **Golden "no diff" on the 3 migrated scenes hides a real gap.** Checked
+   by reading `CstRenderEquivalence.h:228` and confirming `DumpJob` only
+   ever prints a modifier binding by NAME — a structural fact, not an
+   assumption — so the absence of a digest change is the CORRECT result
+   given what the golden actually hashes, not evidence the migration did
+   nothing.
+3. **The once-per-process warning test ordering.** `ReliefModifierTest`'s
+   own file was grepped for every `bumpmap_modifier` occurrence before
+   writing test 10(f); the only other one (Test 2) goes through a direct
+   C++ constructor, confirmed by reading its body rather than assumed
+   from the test name.
+4. **A skill example that does not parse.** The crackle-glaze scene is a
+   real, tracked, headlessly-parsed-and-rendered `.RISEscene`
+   (`scenes/Tests/Painters/relief_crackle_glaze.RISEscene`), not prose —
+   RISE_Log.txt shows zero warnings/errors across three separate renders
+   (the shipped settings plus two scratch A/B variants) and the pasted
+   copy in `materials-and-media-basics.md` was kept byte-identical to the
+   file's own chunks after the crack-width/scale revision.
+5. **A historical doc rewritten that should have stayed.**
+   `CLOTH_FABRIC_DESIGN.md` and `GEOMETRY_SHADING_SIGNALS_DESIGN.md` were
+   read and deliberately left untouched (see "Teaching surfaces" above);
+   `docs/MATERIALS.md` was grepped and confirmed to have no `bump`
+   mention at all, so there was nothing to touch there either.
+
+**Left undone, deliberately.** The implementation-review-loop adversarial
+round has not run against this slice, same caveat as Phase 2's record.
+Phase 4 (`DESIGN_FLAT_RELIEF` advisory + hook-point notes) and Phase 5
+(the `weathered_workbench` before/after pixel verification named in §11)
+are untouched, per the phase boundaries in §11.
