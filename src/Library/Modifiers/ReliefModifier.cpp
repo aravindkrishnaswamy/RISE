@@ -197,7 +197,8 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		}
 
 		// The four offset evaluations.  Copy-then-offset is the
-		// MappingPainter idiom (MappingPainter.cpp:96-125): every point
+		// MappingPainter idiom (the per-`projection`-case `RayIntersectionGeometric`
+		// copy in `MappingPainter::GetColor`): every point
 		// domain a painter can read moves consistently, or a painter in an
 		// un-moved domain sees a flat field and contributes no gradient.
 		//

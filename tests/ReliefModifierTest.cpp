@@ -1030,7 +1030,8 @@ static void Test7_Handedness()
 // ============================================================
 
 //! Build the hit an SDFGeometry heightfield produces, exactly as
-//! Object::IntersectRay does it (src/Library/Objects/Object.cpp:699-816):
+//! Object::IntersectRay does it (the `bShadingTangentFromGeometry` coherent-
+//! frame block in `Object.cpp`):
 //! the coherent-frame branch keys on `bShadingTangentFromGeometry`, and
 //! inside it the "no real supplied tangent" sub-case projects WORLD-X
 //! into the shading-normal plane and calls CreateFromWU.  SDFGeometry's

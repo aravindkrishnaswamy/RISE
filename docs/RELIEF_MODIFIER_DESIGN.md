@@ -1,8 +1,9 @@
 # Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
 
 **Status:** Phase 1 LANDED (2026-09-06, four review rounds — see
-§12). Phase 2 implemented and gate-green 2026-09-06 (see §12) but has NOT
-yet been through the implementation-review-loop adversarial round. Phase 3
+§12). Phase 2 reviewed (2026-09-06, one adversarial round, 0 correctness
+P1s — R9 CLEAN incl. `leaks --atExit` on nested stacks — 2 citation P1s
+fixed, see §12). Phase 3
 landed (migrator run + corpus migrated + CST twins + deprecation diagnostic
 + golden regen + teaching surfaces, see §12) awaiting review round; Phases
 4–5 pending. Each phase runs the
@@ -14,18 +15,19 @@ phases land.
 ([BumpMap.cpp](../src/Library/Modifiers/BumpMap.cpp),
 [NormalMap.cpp](../src/Library/Modifiers/NormalMap.cpp),
 [GlintModifier.cpp](../src/Library/Modifiers/GlintModifier.cpp)) and their
-descriptors ([ChunkParserRegistry.cpp:8534-8690](../src/Library/Parsers/ChunkParserRegistry.cpp));
+descriptors (`BumpmapModifierAsciiChunkParser`, `NormalMapModifierAsciiChunkParser`,
+`GlintModifierAsciiChunkParser`, all in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp));
 the hit record ([RayIntersectionGeometric.h](../src/Library/Intersection/RayIntersectionGeometric.h));
 the modifier hook and world-space promotion in
 [Object::IntersectRay through its `ri.pModifier = pModifier` assignment](../src/Library/Objects/Object.cpp); the physical-scalar pipe
 ([IScalarPainter.h](../src/Library/Interfaces/IScalarPainter.h),
 [ISCALARPAINTER_REFACTOR.md](ISCALARPAINTER_REFACTOR.md)) and its resolver
-`ResolveOrDiagnoseScalar` ([Job.cpp:3869-3928](../src/Library/Job.cpp)); the
-expression VM context ([ExpressionEval.h:681-689](../src/Library/Painters/ExpressionEval.h),
-[ExpressionPainter.cpp:101-119](../src/Library/Painters/ExpressionPainter.cpp));
+`ResolveOrDiagnoseScalar` (a static helper in [Job.cpp](../src/Library/Job.cpp)); the
+expression VM context (`LookupContextVar` in [ExpressionEval.h](../src/Library/Painters/ExpressionEval.h),
+`ExpressionPainter::BuildContext` in [ExpressionPainter.cpp](../src/Library/Painters/ExpressionPainter.cpp));
 the filter-width plumbing ([TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h),
-[ProceduralNoiseCore.cpp:62-220](../src/Library/Utilities/ProceduralNoiseCore.cpp));
-the copy-then-offset precedent in [MappingPainter.cpp:96-125](../src/Library/Painters/MappingPainter.cpp);
+`OctaveFadeWeightImpl` and its `Fbm3D`/`Turbulence3D`/`Ridged3D` consumers in [ProceduralNoiseCore.cpp](../src/Library/Utilities/ProceduralNoiseCore.cpp));
+the copy-then-offset precedent in `MappingPainter::GetColor`'s per-`projection`-case copy ([MappingPainter.cpp](../src/Library/Painters/MappingPainter.cpp));
 the adoption laws in `docs/agentic-redesign/88-procedural-texture-expressiveness-candidates.md`
 §2 and §7; the verb machinery in [AgentSession.cpp](../src/Library/Agent/AgentSession.cpp)
 (`AddWear` ~36946, `AddWetness` ~37340); the migrator precedents
@@ -48,13 +50,14 @@ The only two normal-perturbing modifiers are `bumpmap_modifier`, which
 samples an `IFunction2D` at `ri.ptCoord` (UV only; a colour painter bound
 there is evaluated through `Painter::Evaluate`, which builds a fake hit with
 *only* `ptCoord` set, clamps UV to [0,1], and returns the R channel —
-[Painter.cpp:54-71](../src/Library/Painters/Painter.cpp)), and
+[Painter.cpp](../src/Library/Painters/Painter.cpp)), and
 `normal_map_modifier`, which decodes an image. So the grain field that
 darkens and roughens the workbench top cannot also tilt its normal, and
 authored variation reads as paint on plastic. The flagship in-tree bump user
 says exactly this about itself: *"Under directional lights alone the cushion
 renders as dark glossy plastic — the look this material exists to replace"*
-([CLOTH_FABRIC_DESIGN.md:3673](CLOTH_FABRIC_DESIGN.md)).
+(the gate-9 `velvet_cushion` finding "A velvet needs a DOME, and a LOW rim" in
+[CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md)).
 
 **The answer** is a fourth modifier, `relief_modifier`, whose height is *any*
 `IScalarPainter` (or any colour painter through the existing
@@ -74,9 +77,9 @@ out. Recording them so the design does not inherit them:
 
 1. **"`displaced_geometry` already accepts any Painter."** It does not. Its
    `displacement` slot is *declared* `{ChunkCategory::Painter}` but resolved
-   through `pFunc2DManager` ([Job.cpp:6647](../src/Library/Job.cpp)) and
+   through `pFunc2DManager` (`Job::AddDisplacedGeometry` in [Job.cpp](../src/Library/Job.cpp)) and
    evaluated as `displacement.Evaluate(u, v)` per vertex
-   ([GeometryUtilities.cpp:500-530](../src/Library/Geometry/GeometryUtilities.cpp)).
+   (`ApplyDisplacementMapToObject` in [GeometryUtilities.cpp](../src/Library/Geometry/GeometryUtilities.cpp)).
    A 3D `expression_painter` bound there evaluates through the fake-hit
    `Painter::Evaluate` path and is a *constant*. The "same field drives coarse
    displacement + fine relief" pattern therefore works today only for
@@ -90,8 +93,9 @@ out. Recording them so the design does not inherit them:
    [CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) (§3658-3675, §522-524) and
    the absence of *any* teaching-surface route to normal perturbation
    (`skills/` has zero hits for `bumpmap`/`normal_map_modifier`; the only
-   relief recipe routes agents to `displaced_geometry`,
-   [procedural-textures.md:51](../skills/agent/procedural-textures.md)).
+   relief recipe routes agents to `displaced_geometry`, the
+   `expression_function2d` row of the pattern-selection table in
+   [procedural-textures.md](../skills/agent/procedural-textures.md)).
 3. **"Env domes remain `expression_function2d`'s legitimate niche."** Not
    evidenced: all 18 in-tree `expression_function2d` scenes bind it to
    `displaced_geometry.displacement`, `function2d_painter`, or
@@ -106,18 +110,18 @@ out. Recording them so the design does not inherit them:
 | Surface | Fact | Where |
 |---|---|---|
 | Modifier interface | one method, `Modify(RayIntersectionGeometric&) const` | [IRayIntersectionModifier.h](../src/Library/Interfaces/IRayIntersectionModifier.h) |
-| Hook timing | `Object::IntersectRay` promotes `vNormal` and `vGeomNormal` to world space, builds `onb` (via `CreateFromWU` when **`bShadingTangentFromGeometry`** — from the geometry's own tangent in the `bHasShadingTangent` sub-case, from a world-X projection otherwise, e.g. SDFGeometry's heightfield mode — else `CreateFromW`; **the original text here named `bHasShadingTangent` as the branch condition, which is the sub-case, not the branch — the error that produced fix round 1's P1-A**), fills `derivatives`, `txFootprint`, `signals`, then assigns `ri.pModifier`. `Modify` fires at every *consumer* (RayCaster, PT, BDPT eye/light walks, photon tracers, SMS, SSS, AOVs — ~25 sites) immediately after the cast, before any material call. | [`Object::IntersectRay`, through its `ri.pModifier = pModifier` assignment](../src/Library/Objects/Object.cpp), [RayCaster.cpp:1271-1277](../src/Library/Rendering/RayCaster.cpp) |
-| Geometric normal | captured before the modifier and never touched by it; every SPF/BRDF's geometric-horizon gate compares against it with the `SquaredModulus > 1e-12` degeneracy guard | the `vGeomNormal` field comment in [RayIntersectionGeometric.h](../src/Library/Intersection/RayIntersectionGeometric.h), [GGXSPF.cpp:157](../src/Library/Materials/GGXSPF.cpp), [DielectricSPF.cpp:153](../src/Library/Materials/DielectricSPF.cpp) |
-| BDPT / VCM | `Modify` runs once per surface vertex, then `normal`, `geomNormal`, `onb` are frozen into `BDPTVertex`; VCM reuses that record via `PopulateRIGFromVertex`. No integrator has a bump-terminator correction; none needs a change for a new modifier. | [BDPTIntegrator.cpp:2103-2114](../src/Library/Shaders/BDPTIntegrator.cpp), [BDPTVertex.h:102-110](../src/Library/Shaders/BDPTVertex.h) |
-| Frame rebuild | all three pre-existing modifiers project the *current* `onb.u()` onto the new normal's plane, `CreateFromWU`, and restore incoming handedness with `FlipV` (the mirrored-instance fix); fall back to `CreateFromW` if the projection degenerates. Bump/NormalMap run the projection only on a coherent-tangent hit; Glint runs it unconditionally — see §12 deviation 3 and fix round 1 P1-A for the gate | [NormalMap.cpp:220-234](../src/Library/Modifiers/NormalMap.cpp), [GlintModifier.cpp:252-269](../src/Library/Modifiers/GlintModifier.cpp) |
-| One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". (Composition via `modifier_stack` since Phase 2.) | [Object.h:37](../src/Library/Objects/Object.h), [the `if( pModifier )` override block in `CSGObject::IntersectRay`](../src/Library/Objects/CSGObject.cpp), [RayIntersection.h:35](../src/Library/Intersection/RayIntersection.h) |
-| Scalar pipe | `IScalarPainter::GetValuesAt(ri)` → `ScalarTriple`; single-scalar slots read `.v[0]` and the resolver rejects per-channel painters when `requireSingle`; an `IPainter` name bound to a scalar slot gets `kScalarBoundToIPainterFmt` | [IScalarPainter.h:113-153](../src/Library/Interfaces/IScalarPainter.h), [Job.cpp:3869-3928](../src/Library/Job.cpp), [ChunkDescriptor.h:64-72](../src/Library/Parsers/ChunkDescriptor.h) |
-| Any-painter bridge | `scalar_painter { painter X channel R\|G\|B\|A [scale] [bias] }` → `PainterChannelScalarPainter`; `scalar_painter { function2d F }` → `Function2DScalarPainter` (evaluates `F.Evaluate(ptCoord)` — the *same* sampling path `bumpmap_modifier` uses today) | [ChunkParserRegistry.cpp:1589-1606](../src/Library/Parsers/ChunkParserRegistry.cpp) |
-| Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by triangle-mesh geometry only; `fw = 0` on analytic primitives. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h:48-164](../src/Library/Intersection/TextureFootprintCompute.h), [ProceduralNoiseCore.cpp:73-79,196-220](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
-| Evaluate-elsewhere idiom | `RayIntersectionGeometric ri2 = ri; ri2.ptIntersection = ...; source.GetColor(ri2)` — `MappingPainter` does exactly this for world/object/UV remaps and invalidates `txFootprint` only when the UV *domain* is remapped | [MappingPainter.cpp:96-125](../src/Library/Painters/MappingPainter.cpp) |
-| Space semantics | `Proj_World` reads `ptIntersection`; `Proj_Object` and `voronoi3d space object` read `ptObjIntersec`; UV painters read `ptCoord`; triplanar reads `ptIntersection` + `vNormal` | [MappingPainter.h:92-189](../src/Library/Painters/MappingPainter.h) |
-| Deprecation conventions | no `ChunkDescriptor::deprecated` field exists. Three precedents: (a) *removed* → generic `kUndeclaredParameterFmt` / unknown-chunk hard fail (`branching_threshold`, BDPT `sms_*`); (b) *accepted-and-ignored* → declared with `"Legacy — ignored"` (`branch`); (c) *deprecated-with-prose* → description prefixed `"DEPRECATED (...)"` (`lights_intensity_override`). Description text flows verbatim into the agent tool schema (`SchemaGen.cpp`) and the GUI suggestion surfaces. | [ChunkParserRegistry.cpp:5938,10393-10400,11466-11472](../src/Library/Parsers/ChunkParserRegistry.cpp) |
-| ABI freeze | `IJob::AddBumpMapModifier(name, func, scale, window)` is signature-frozen; the sole out-of-tree caller is [rise_blender_bridge.cpp:992](../src/Blender/native/rise_blender_bridge.cpp) | [IJob.h:1626](../src/Library/Interfaces/IJob.h) |
+| Hook timing | `Object::IntersectRay` promotes `vNormal` and `vGeomNormal` to world space, builds `onb` (via `CreateFromWU` when **`bShadingTangentFromGeometry`** — from the geometry's own tangent in the `bHasShadingTangent` sub-case, from a world-X projection otherwise, e.g. SDFGeometry's heightfield mode — else `CreateFromW`; **the original text here named `bHasShadingTangent` as the branch condition, which is the sub-case, not the branch — the error that produced fix round 1's P1-A**), fills `derivatives`, `txFootprint`, `signals`, then assigns `ri.pModifier`. `Modify` fires at every *consumer* (RayCaster, PT, BDPT eye/light walks, photon tracers, SMS, SSS, AOVs — ~25 sites) immediately after the cast, before any material call. | [`Object::IntersectRay`, through its `ri.pModifier = pModifier` assignment](../src/Library/Objects/Object.cpp), the `ri.pModifier->Modify(...)` call in `RayCaster::CastRay` ([RayCaster.cpp](../src/Library/Rendering/RayCaster.cpp)) |
+| Geometric normal | captured before the modifier and never touched by it; every SPF/BRDF's geometric-horizon gate compares against it with the `SquaredModulus > 1e-12` degeneracy guard | the `vGeomNormal` field comment in [RayIntersectionGeometric.h](../src/Library/Intersection/RayIntersectionGeometric.h), the matching guard in [GGXSPF.cpp](../src/Library/Materials/GGXSPF.cpp) and [DielectricSPF.cpp](../src/Library/Materials/DielectricSPF.cpp) |
+| BDPT / VCM | `Modify` runs once per surface vertex, then `normal`, `geomNormal`, `onb` are frozen into `BDPTVertex`; VCM reuses that record via `PopulateRIGFromVertex`. No integrator has a bump-terminator correction; none needs a change for a new modifier. | the eye/light-vertex population in [BDPTIntegrator.cpp](../src/Library/Shaders/BDPTIntegrator.cpp), the `normal`/`geomNormal`/`onb` fields in [BDPTVertex.h](../src/Library/Shaders/BDPTVertex.h) |
+| Frame rebuild | all three pre-existing modifiers project the *current* `onb.u()` onto the new normal's plane, `CreateFromWU`, and restore incoming handedness with `FlipV` (the mirrored-instance fix); fall back to `CreateFromW` if the projection degenerates. Bump/NormalMap run the projection only on a coherent-tangent hit; Glint runs it unconditionally — see §12 deviation 3 and fix round 1 P1-A for the gate | the gated `ModifierFrame::RebuildPreservingTangent` call in [`NormalMap::Modify`](../src/Library/Modifiers/NormalMap.cpp), the unconditional `ModifierFrame::RebuildPreservingTangent` call at the end of [`GlintModifier::Modify`](../src/Library/Modifiers/GlintModifier.cpp) |
+| One modifier per object | `Object::pModifier` is a single pointer; `AssignModifier` replaces; a CSG composite's own modifier *overrides* the child's. A 2002 comment says "this should be a list of some sort... eventually". (Composition via `modifier_stack` since Phase 2.) | the `pModifier` field in `class Object` ([Object.h](../src/Library/Objects/Object.h)), [the `if( pModifier )` override block in `CSGObject::IntersectRay`](../src/Library/Objects/CSGObject.cpp), the `pModifier` field's "this should be a list of somesort... eventually" comment in [RayIntersection.h](../src/Library/Intersection/RayIntersection.h) |
+| Scalar pipe | `IScalarPainter::GetValuesAt(ri)` → `ScalarTriple`; single-scalar slots read `.v[0]` and the resolver rejects per-channel painters when `requireSingle`; an `IPainter` name bound to a scalar slot gets `kScalarBoundToIPainterFmt` | the `GetValuesAt`/`GetValueAtNM` contract comment in [IScalarPainter.h](../src/Library/Interfaces/IScalarPainter.h), `ResolveOrDiagnoseScalar` in [Job.cpp](../src/Library/Job.cpp), `kScalarBoundToIPainterFmt` in [ChunkDescriptor.h](../src/Library/Parsers/ChunkDescriptor.h) |
+| Any-painter bridge | `scalar_painter { painter X channel R\|G\|B\|A [scale] [bias] }` → `PainterChannelScalarPainter`; `scalar_painter { function2d F }` → `Function2DScalarPainter` (evaluates `F.Evaluate(ptCoord)` — the *same* sampling path `bumpmap_modifier` uses today) | the `ScalarPainterAsciiChunkParser` `painter`/`function2d` cases in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp) |
+| Filter width | `ri.txFootprint.worldWidth` (Igehy ray differentials), populated by triangle-mesh geometry only; `fw = 0` on analytic primitives. The expression VM's `perlin/fbm/turbulence/ridged` fade octaves against it (smoothstep, resolved below 0.2, faded at 0.6; abs-based noises fade to their measured mean) | [TextureFootprintCompute.h](../src/Library/Intersection/TextureFootprintCompute.h), `OctaveFadeWeightImpl` and its `Turbulence3D`/`Ridged3D` consumers in [ProceduralNoiseCore.cpp](../src/Library/Utilities/ProceduralNoiseCore.cpp) |
+| Evaluate-elsewhere idiom | `RayIntersectionGeometric ri2 = ri; ri2.ptIntersection = ...; source.GetColor(ri2)` — `MappingPainter` does exactly this for world/object/UV remaps and invalidates `txFootprint` only when the UV *domain* is remapped | `MappingPainter::GetColor` in [MappingPainter.cpp](../src/Library/Painters/MappingPainter.cpp) |
+| Space semantics | `Proj_World` reads `ptIntersection`; `Proj_Object` and `voronoi3d space object` read `ptObjIntersec`; UV painters read `ptCoord`; triplanar reads `ptIntersection` + `vNormal` | the `Projection` enum in [MappingPainter.h](../src/Library/Painters/MappingPainter.h), its `Proj_*` cases in `MappingPainter::GetColor` |
+| Deprecation conventions | no `ChunkDescriptor::deprecated` field exists. Three precedents: (a) *removed* → generic `kUndeclaredParameterFmt` / unknown-chunk hard fail (`branching_threshold`, BDPT `sms_*`); (b) *accepted-and-ignored* → declared with `"Legacy — ignored"` (`branch`); (c) *deprecated-with-prose* → description prefixed `"DEPRECATED (...)"` (`lights_intensity_override`). Description text flows verbatim into the agent tool schema (`SchemaGen.cpp`) and the GUI suggestion surfaces. | `lights_intensity_override`'s descriptor; the `branch` `"Legacy — ignored"` param in `PathTracingShaderOpAsciiChunkParser::Describe`; the `optimal_mis*` omission comment in `BDPTPelRasterizerAsciiChunkParser::Describe` (all in [ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)) |
+| ABI freeze | `IJob::AddBumpMapModifier(name, func, scale, window)` is signature-frozen; the sole out-of-tree caller is the `job.AddBumpMapModifier(...)` call in [rise_blender_bridge.cpp](../src/Blender/native/rise_blender_bridge.cpp) | the `AddBumpMapModifier` declaration in [IJob.h](../src/Library/Interfaces/IJob.h) |
 | In-tree bump users | 4 scenes: `velvet_cushion` (expression_function2d, normalized), `sculptors_studio` (perlin2d_painter), `sms_veach_egg_bumpmap` (perlin2d_painter), `Internal/pool` (checker + an unreferenced png bump; gitignored). 4 CST tests embed `bumpmap_modifier` literals. No ChunkCoverage scene. | §7.3 |
 
 ---
@@ -225,7 +229,8 @@ the hit untouched (`std::isfinite`; the macOS fast-math pairing keeps it
 honest, [CLAUDE.md](../CLAUDE.md) §High-Value Facts). No NaN normal ever
 reaches a material.
 
-**Frame rebuild** is the shared block verbatim from `NormalMap.cpp:220-234`
+**Frame rebuild** is the shared block verbatim from the ONB-rebuild comment
+block in `NormalMap::Modify`
 (project the current `u`, `CreateFromWU`, restore handedness with `FlipV`,
 `CreateFromW` fallback). It is the fourth copy of that block; Phase 1 hoists
 it into a header-inline helper `ModifierFrame::RebuildPreservingTangent(ri,
@@ -360,9 +365,9 @@ modifier_stack
 }
 ```
 
-`modifier` is a repeatable `Reference` on `{Modifier}` (precedent:
-`standard_shader`'s repeatable `shaderop`,
-[ChunkParserRegistry.cpp:10918](../src/Library/Parsers/ChunkParserRegistry.cpp)).
+`modifier` is a repeatable `Reference` on `{Modifier}` (precedent: the
+`shaderop` parameter in `StandardShaderAsciiChunkParser::Describe`,
+[ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp)).
 `ModifierStack::Modify` applies them in authored order; each sees the
 previous one's `vNormal`/`onb`. Because names resolve at parse time a stack
 can contain a stack but never itself. Empty stacks are a parse error (an
@@ -404,7 +409,9 @@ caches a pre-modifier frame. Specifically:
 - **fabric / weave** — read `onb.w()` only at the SPF layer; weave direction
   comes from `weave_rotation` painters, not the frame. Relief composes.
 - **BSSRDF / SSS** — the front-face gate uses the geometric normal and the
-  Fresnel cosine the shading normal ([PathTracingIntegrator.cpp:2439-2461](../src/Library/Shaders/PathTracingIntegrator.cpp)); unchanged.
+  Fresnel cosine the shading normal (the "Front-face gate uses the GEOMETRIC
+  normal" comment in `PathTracingIntegrator::IntegrateFromHitTemplated`,
+  [PathTracingIntegrator.cpp](../src/Library/Shaders/PathTracingIntegrator.cpp)); unchanged.
 
 ### 5.2 Integrators
 
@@ -537,8 +544,10 @@ note naming `domain surface` as the upgrade, and §9's recipe shows it.
 `displaced_geometry.displacement` (10 scenes), `function2d_painter` (4),
 `scalar_painter { function2d }` (1, `watch_dial`), `composite_function2d_painter`,
 `sdf_geometry.heightfield_function`. The frozen UV-only contract stays
-frozen ([GEOMETRY_SHADING_SIGNALS_DESIGN.md:1668](GEOMETRY_SHADING_SIGNALS_DESIGN.md)).
-Its teaching line in `procedural-textures.md:51` is rewritten to name
+frozen (the "`expression_function2d` stays frozen" item in
+[GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)).
+Its teaching line — the `expression_function2d` row of the pattern-selection
+table in `procedural-textures.md` — is rewritten to name
 **displacement** as its niche and to stop implying any normal-perturbation
 use. The legacy surface shrinks by one consumer; the remaining ones are all
 vertex-time or explicit-bridge uses, which is the right shape for a frozen
@@ -643,7 +652,8 @@ Per doc 88 §2 the measured laws are: advice ≈ 0 (C-ADV), the failure is a
 typing prior (C-TYPE), when advice fails ship a verb (C-VERB), the summoned
 read-set is `object-modeling-recipes.md` + `materials-and-media-basics.md`
 (C-READ), one execution-validated parsing example per mechanism, and no
-tolls (§7 decision 2, reaffirmed in [WETNESS_COAT_DESIGN.md:2118](WETNESS_COAT_DESIGN.md)).
+tolls (§7 decision 2, reaffirmed in the "Price the inferior path" row of
+[WETNESS_COAT_DESIGN.md](WETNESS_COAT_DESIGN.md)'s adoption-wiring table).
 
 - **Recipe.** One worked example in `materials-and-media-basics.md`: a
   crackle-glaze ceramic where **one** `expression_painter` cell field drives
@@ -661,7 +671,7 @@ tolls (§7 decision 2, reaffirmed in [WETNESS_COAT_DESIGN.md:2118](WETNESS_COAT_
   at the moment the agent is looking at the material.
 - **Verb hook points** (assessed, not shipped): `add_wear` already mints a
   `curv`-driven `expression_painter` and rebinds colour and roughness
-  (`AgentSession.cpp:37034-37078`); relief cannot come from `curv` (§3.2 —
+  (`AgentSession::AddWear` in `AgentSession.cpp`); relief cannot come from `curv` (§3.2 —
   signals are locally constant), so the natural hook is an optional
   `relief_amplitude` argument that mints the wear *noise* term as a
   `scalar_painter` and a `relief_modifier` on the target object, wrapping
@@ -712,7 +722,7 @@ the showcase fixtures at their authored spp.
 | Phase | Deliverable | Gate |
 |---|---|---|
 | **1** | `ReliefModifier` + `ModifierFrame.h` hoist + `pmxWorldToObject` + API/IJob/parser + 5 build projects + `ReliefModifierTest` 1–8, 10 + `cc_relief_modifier` + `relief_sphere_no_uv` | zero-P1 round; PT/BDPT parity on the sphere |
-| **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | implemented + gate suites green 2026-09-06 (see §12); the implementation-review-loop adversarial round has NOT yet run against this slice |
+| **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | implemented + gate suites green 2026-09-06 (see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope); the implementation-review-loop adversarial round has NOT yet run against this slice |
 | **4** | `DESIGN_FLAT_RELIEF` + recipe example + hook-point notes | zero-P1 round; `AgentChunkCrudTest` green |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | renders attached to §12; the user judges "reads as surface" |
@@ -1014,16 +1024,33 @@ touched `.cpp` files (touch + rebuild): **zero**.
 
 ---
 
-### Phase 2 — implemented 2026-09-06 (NOT yet through implementation-review-loop)
+### Phase 1 — fix round 4 (2026-09-06)
+
+A converging round: two findings, both citation/wording — no code-behaviour
+change. Suite unaffected: `ReliefModifierTest` **85/0**, unchanged.
+
+| Finding | Fix | Commit |
+|---|---|---|
+| **status-line count** — the doc's top status line said "two review rounds to zero P1" after fix rounds 1–3 had already landed (three rounds by then). | Reworded to "four review rounds" (this round being the fourth). | `4f180cc0` |
+| **CSGObject/Object citations** — the "Inputs" line's hook-timing citation `Object.cpp:658-977`, the §2 hook-timing row's matching citation, and the §2 "one modifier per object" row's `CSGObject.cpp:1612` had all drifted off their described content as earlier rounds' insertions shifted line numbers. | Re-cited by symbol: `Object::IntersectRay through its `ri.pModifier = pModifier` assignment` (both hook-timing sites) and `the `if( pModifier )` override block in `CSGObject::IntersectRay`` (the one-modifier-per-object row). | `4f180cc0` |
+
+**Gate suites, run on the final tree.**  `ReliefModifierTest` **85/0**
+(unchanged — doc-only). Clean warning check: not applicable (no `.cpp`
+touched).
+
+---
+
+### Phase 2 — reviewed 2026-09-06 (one adversarial round, 0 correctness P1s; R9 CLEAN incl. `leaks --atExit` on nested stacks; 2 citation P1s fixed)
 
 Branch `relief-modifier`, three commits off `cf6a363a` (fix round 3's head):
 `1b2851bf` (the class + all wiring + the two chunk-count bumps),
 `673b7a96` (`ReliefModifierTest` test 9), `c1fd3076` (`CstResolverTest`'s
-repeatable-rename case).  **This slice has NOT been through the
-implementation-review-loop adversarial round** (no reviewer subagents were
-spawned in this session) — the §11 status cell and this record say so
-explicitly; treat it as implemented-and-gate-green, not LANDED, until that
-round runs and converges to zero P1.
+repeatable-rename case).  **This slice has now been through one
+implementation-review-loop adversarial round**: 0 correctness P1s (reviewer
+R9 ran `leaks --atExit` against the nested-stack fixture and reported
+CLEAN, closing the self-audit's weakest-verified item below) and 2 citation
+P1s (both from `ChunkParserRegistry.cpp` line ranges that `ModifierStackAsciiChunkParser`'s
+own insertion shifted — see "Phase 2 — fix round 1" immediately below).
 
 **Files.** New: `src/Library/Modifiers/ModifierStack.{h,cpp}`,
 `scenes/Tests/ChunkCoverage/cc_modifier_stack.RISEscene`.  Modified:
@@ -1145,10 +1172,13 @@ Phase-3 golden-regen deliverable; do not regenerate here.
    copy; `nested`'s dtor (never explicitly invoked in this test, since
    `Own()` keeps objects alive to process exit) still holds its copy.  No
    crash, no ASan/valgrind run in this session — the test suite has no
-   sanitizer build wired into this gate list, so this is checked by
+   sanitizer build wired into this gate list, so this was checked by
    construction (addref count == number of stacks holding a pointer, release
    count == same) and by absence of a crash across 101 checks, not by an
-   instrumented tool.  This is the weakest-verified item on this list.
+   instrumented tool, when this record was first written.  **Closed by the
+   Phase 2 review round (R9): an instrumented `leaks --atExit` run against
+   the nested-stack fixture reported CLEAN**, so this item is no longer the
+   weakest-verified on this list.
 2. **Repeatable-param reading order.**  `bag.GetRepeatable("modifier")`
    returns values "in input order" (its own doc comment); test 9e's
    two-member scene (`modifier r1` then `modifier g1`) round-trips through
@@ -1181,14 +1211,29 @@ Phase-3 golden-regen deliverable; do not regenerate here.
    the ID-uniqueness and structural-mirroring checks are textual, not a
    build verification.
 
-**Left undone, deliberately.**  The implementation-review-loop adversarial
-round (2-4 orthogonal reviewers) has not run against this slice — per
-CLAUDE.md that round is orchestrated by the supervising session, not a
-single delegated worker, and this record says so rather than claiming a
-zero-P1 status this session did not produce.  `tests/data/cst_derive_golden.txt`
+**Left undone, deliberately.**  `tests/data/cst_derive_golden.txt`
 is NOT regenerated (Phase 3's job, same as Phase 1).  No render/pixel
 verification of `cc_modifier_stack.RISEscene` was performed beyond a
 headless parse (Phase 5's job, per §11).
+
+---
+
+### Phase 2 — fix round 1
+
+One adversarial round on the Phase 2 tree returned **0 correctness P1s**
+(reviewer R9 additionally ran `leaks --atExit` against the nested-stack
+fixture and reported CLEAN, closing self-audit item 1's residual above)
+and **2 citation P1s**, both a consequence of `ModifierStackAsciiChunkParser`'s
+own insertion shifting `ChunkParserRegistry.cpp` line ranges that earlier
+doc text had cited numerically.  Both are fixed.  Suite unaffected:
+`ReliefModifierTest` **101/0**, unchanged (doc-only).
+
+| Finding | Fix | Commit |
+|---|---|---|
+| **P1 (citation)** — §4's `modifier_stack` composition section cited `ChunkParserRegistry.cpp:10918` as the `standard_shader.shaderop` repeatable-Reference precedent; that line is inside an unrelated area-light shader op, not `StandardShaderAsciiChunkParser`. | Re-cited by symbol: "the `shaderop` parameter in `StandardShaderAsciiChunkParser::Describe`". | *(this record)* |
+| **P1 (citation)** — the top "Inputs" line cited `ChunkParserRegistry.cpp:8534-8690` as spanning the three pre-existing modifiers' descriptors; `ModifierStackAsciiChunkParser` (Phase 2) now sits between `ReliefModifierAsciiChunkParser` and `GlintModifierAsciiChunkParser` in that range, so the cited span no longer covers only the three named parsers. | Re-cited by symbol: `BumpmapModifierAsciiChunkParser`, `NormalMapModifierAsciiChunkParser`, `GlintModifierAsciiChunkParser`, all in `ChunkParserRegistry.cpp`. | *(this record)* |
+
+---
 
 ### Phase 3 — landed 2026-09-06 (awaiting implementation-review-loop)
 
@@ -1320,7 +1365,7 @@ Importantly, the 3 migrated in-tree scenes (`velvet_cushion`,
 `sculptors_studio`, `sms_veach_egg_bumpmap`) show **NO digest change** —
 this is correct, not a gap: `DumpJob` (the golden's hashed canonical form)
 prints an object's modifier binding as `modifier=<name>`
-(`CstRenderEquivalence.h:228`, a reverse-name lookup), never the bound
+(the `modifier=` line in `DumpJob` (`CstRenderEquivalence.h`), a reverse-name lookup), never the bound
 modifier's concrete type or parameters, and the migrator does not touch
 the object's `modifier N` line (§7.2) — so a scene whose `bumpmap_modifier
 creases` became a `relief_modifier` of the same name dumps byte-identical
@@ -1356,7 +1401,7 @@ env-MIS arc), not a migration artifact.
    (mean luminance within 0.03%, same visible crease pattern) rather than
    assumed from the algebra alone.
 2. **Golden "no diff" on the 3 migrated scenes hides a real gap.** Checked
-   by reading `CstRenderEquivalence.h:228` and confirming `DumpJob` only
+   by reading the `modifier=` line in `DumpJob` (`CstRenderEquivalence.h`) and confirming it only
    ever prints a modifier binding by NAME — a structural fact, not an
    assumption — so the absence of a digest change is the CORRECT result
    given what the golden actually hashes, not evidence the migration did

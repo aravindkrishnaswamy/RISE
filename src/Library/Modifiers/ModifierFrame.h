@@ -61,8 +61,8 @@
 //  site and this helper is the shared BODY, not the shared policy.
 //  ReliefModifier follows BumpMap/NormalMap (it is a height-gradient
 //  tilt, the same family), which is what
-//  docs/RELIEF_MODIFIER_DESIGN.md 3.2 means by "verbatim from
-//  NormalMap.cpp:220-234".
+//  docs/RELIEF_MODIFIER_DESIGN.md 3.2 means by "verbatim from the
+//  ONB-rebuild comment block in NormalMap::Modify".
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: September 5, 2026
@@ -90,8 +90,8 @@ namespace RISE
 			//! with `CreateFromW`'s arbitrary canonical-axis pick?
 			//!
 			//! This MIRRORS the branch condition in
-			//! `Object::IntersectRay` (src/Library/Objects/Object.cpp:699,
-			//! `if( ri.geometric.bShadingTangentFromGeometry )`, and the
+			//! `Object::IntersectRay` (the
+			//! `if( ri.geometric.bShadingTangentFromGeometry )` check, and the
 			//! byte-identical block in `CSGObject::IntersectRay`), which
 			//! is the ONLY place the coherent frame is built.  That branch
 			//! keys on `bShadingTangentFromGeometry`; `bHasShadingTangent`
