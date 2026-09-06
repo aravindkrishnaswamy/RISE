@@ -161,6 +161,18 @@ all six caps by instrumenting the swap site.
 | `BezierPatchGeometry` | patch u | patch v | non-trivial | non-trivial | `[0, 1]` | `[0, 1]` | ❌ **STUB** — flat tangent frame only (analytical Bezier intersection supplies tangents via `GeometricUtilities::BezierPatchTangentU/V` but they are not wired into `ComputeSurfaceDerivatives` yet) |
 | `DisplacedGeometry` | forwards to wrapped mesh | forwards | forwards | forwards | forwards | forwards | 🔁 forwarder |
 
+### Intersection note — `ClippedPlaneGeometry` / `BilinearPatchGeometry`
+
+Both route their `IntersectRay` through the shared
+[`RayBilinearPatchIntersection`](../src/Library/Intersection/RayBilinearPatchIntersection.cpp),
+so the `(u, v)` in the table above is whatever that solver reports.  Until
+2026-09-06 (commit `14e0f45d`) it eliminated the ray parameter on a
+hard-coded `z` axis and therefore **missed every ray travelling in the XY
+plane** — a `clipped_plane` viewed dead-on from above was invisible.  The
+solver now picks the elimination axis as the largest `|Dir|` component;
+see docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §10.6 and
+`GeometryUVRoundtripTest::TestBilinearEliminationAxis`.
+
 ### Handedness audit
 
 `(dpdu × dpdv) · n` must be positive at every non-degenerate point.  The torus and cylinder originally returned left-handed frames under their natural `(ring, cross-section)` / `(θ, axial)` parameterisation.  **Resolved**: both implementations swap their natural `u`/`v` ordering so that `(dpdu × dpdv) · n > 0` at every point.  See the code comments in [TorusGeometry::ComputeSurfaceDerivatives](../src/Library/Geometry/TorusGeometry.cpp) and [CylinderGeometry::ComputeSurfaceDerivatives](../src/Library/Geometry/CylinderGeometry.cpp) — the per-axis cylinder permutation is worked out case-by-case so that the swap produces right-handed frames for x-, y-, and z-axis cylinders.

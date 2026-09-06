@@ -662,6 +662,51 @@ seed noise.
   plane test) so its 1e-9 exactness assertion is not entangled with it, and
   test 6 covers `clipped_plane`'s footprint on a deliberately tilted ray,
   with the reason written at the fixture.
+
+  **FIXED 2026-09-06, commit `14e0f45d`.** `RayBilinearPatchIntersection`
+  now picks the elimination axis `w` as the largest `|q|` component — the
+  same choice `computet` in that file already made for the `t` recovery —
+  and forms `A1`/`A2` (and `B`/`C`/`D`) from the other two axes crossed
+  with it, taken cyclically so that `w = z` reproduces the reference
+  algebra textually and nothing changes for the rays that already worked.
+  The degeneracy was rank-deficiency, not round-off, so per
+  [precision-fix-the-formulation](skills/precision-fix-the-formulation.md)
+  no threshold was involved on either side of the fix: with `q.z == 0` the
+  two eliminated equations are literally the same equation up to scale, and
+  no epsilon rescues a rank-1 system. The `t` recovery, the `u`/`v` range
+  checks, the scale-relative self-hit floor (debt 21) and
+  `SolveQuadricWithinRange`'s `a == 0` linear branch — which the
+  parallelogram case still takes — are all untouched. Every caller
+  benefits: `ClippedPlaneGeometry` (both entry points),
+  `BilinearPatchGeometry`, and `RayTriangleIntersectionWithDisplacement`.
+
+  Guarded by `GeometryUVRoundtripTest::TestBilinearEliminationAxis`: 12
+  axis-aligned closed-form cases across all three elimination branches and
+  both signs (six on the raw patch, six through `clippedplane_geometry`),
+  19 rays at curved patches checked against a brute-force grid + 3×3 Newton
+  oracle sharing no code with the analytic solver, and 1000 random
+  directions asserting both the on-ray invariant and bit-level agreement
+  with a verbatim copy of the pre-fix fixed-`z` solver wherever `|q.z|` is
+  dominant. That copy also serves as an in-test oracle asserting the
+  pre-fix solver misses **iff** `q.z == 0`, so the guard is discriminating
+  by construction. Red-proof: forcing the axis back to a hard-coded `w = 2`
+  turns the suite red with 22 failed assertions (exactly the ±X and ±Y
+  rays, not one ±Z ray), and an `orthographic_camera` at `(0, 6, 0)`
+  looking down at a 3×3 `clipped_plane` in `y = 0` renders a **fully black
+  frame** before the fix and the lit quad after — the cleanest rendered
+  demonstration, because an orthographic camera makes *every* primary ray
+  exactly `(0, −1, 0)` where a pinhole only degenerates on the single
+  centre row.
+
+  Sibling audit ([audit-by-bug-pattern](skills/audit-by-bug-pattern.md)):
+  the other two routines that reduce a ray/surface system to 2D were
+  already direction- or normal-adaptive and needed no change —
+  `RayBezierPatchIntersection`'s `MakePlanes` picks its helper axis as the
+  *smallest* `|Dir|` component, and `GeometricUtilities::BilinearInverse`
+  picks its axis pair from the patch normal at the centre.  `computet` and
+  `RayDistanceToPoint` were already largest-`|Dir|`.  The per-axis DDA
+  walks (`HeterogeneousMedium`, `MajorantGrid`) treat all three axes
+  symmetrically behind their own zero guards.
 * **The §7 residual list is unchanged and still accurate**: primary rays
   only, shading-vs-geometric normal, no grazing clamp. Test 10 measures the
   grazing case rather than clamping it, per §4 — every hit from the optical
