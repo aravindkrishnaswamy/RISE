@@ -1479,12 +1479,15 @@ static void Part6_OccurrenceScopingSweep()
 	// FAILS the day it stops being true, which is exactly the day
 	// occurrence addressing becomes reachable and needs a real test.
 	//
-	// The one repeatable pure-Reference param that DOES exist,
-	// `standard_shader.shaderop`, lives on a Shader-category chunk the
-	// controller has no (category, name) addressing scheme for
-	// (RoleKindSuffixForCategory rejects it), so it is not reachable
-	// here.  It is listed by name below so the sweep documents WHICH
-	// exception it is tolerating rather than tolerating any.
+	// There are TWO repeatable pure-Reference params that DO exist:
+	// `standard_shader.shaderop` (Shader category) and, since Phase 2 of
+	// the relief-modifier arc, `modifier_stack.modifier` (Modifier
+	// category, ModifierStackAsciiChunkParser::Describe in
+	// ChunkParserRegistry.cpp).  Both live on categories the controller
+	// has no (category, name) addressing scheme for (RoleKindSuffixFor-
+	// Category rejects both), so neither is reachable here.  They are
+	// listed by name below so the sweep documents WHICH exceptions it is
+	// tolerating rather than tolerating any.
 	const std::vector<ChunkParserEntry> entries = CreateAllChunkParsers();
 
 	int addressableRepeatableRefs = 0;
@@ -1522,9 +1525,11 @@ static void Part6_OccurrenceScopingSweep()
 		"6: NO addressable chunk kind declares a repeatable pure-Reference param -- "
 		"occurrence-addressed rewire has no reachable case, as RewireConnection's header states "
 		"(if this fails, that scoping note is now WRONG and needs an end-to-end occurrence test)" );
-	Check( knownUnaddressable >= 1,
-		"6: ...and the one that exists at all (standard_shader.shaderop) is on an unaddressable "
-		"category, so the claim is a real narrowing, not a vacuous one" );
+	Check( knownUnaddressable == 2,
+		"6: ...and the two that exist at all (standard_shader.shaderop, modifier_stack.modifier) "
+		"are on unaddressable categories, so the claim is a real narrowing, not a vacuous one "
+		"(if this fails, a third repeatable pure-Reference param appeared -- or one of the two "
+		"became addressable -- and this count needs re-deriving, not just bumping)" );
 
 	// ---- mirror assertion (P3, S19 review round 1) ---------------------
 	//
