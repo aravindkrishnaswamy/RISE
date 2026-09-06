@@ -244,6 +244,14 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	// std::isfinite is honest here: the macOS build pairs -ffast-math with
 	// -fno-finite-math-only precisely so these calls work (CLAUDE.md
 	// High-Value Facts, 2026-07-29).
+	//
+	// MEASURED REDUNDANCY (ReliefModifierTest red-proof (c)): this gate
+	// and the `mag2` gate below each catch a non-finite height on their
+	// own -- removing EITHER alone leaves ReliefModifierTest green, and
+	// only removing BOTH fails it.  That is a fact about the two guards,
+	// not a licence to delete one: this one states the intent where the
+	// value is produced, is what the design specifies, and short-circuits
+	// before the perturbation arithmetic.
 	if( !std::isfinite( dT ) || !std::isfinite( dB ) ) {
 		return;
 	}
