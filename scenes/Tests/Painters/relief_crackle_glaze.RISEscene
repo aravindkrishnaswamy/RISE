@@ -151,12 +151,30 @@ standard_object
 
 # Camera is at +Z, so the key light needs a positive Z component
 # (SCENE_CONVENTIONS.md: direction is FROM the surface TO the light).
+#
+# docs/RELIEF_MODIFIER_DESIGN.md Phase 5: the Phase 3 reviewers found the
+# crack relief legible under raking light but weak near the specular
+# peak, where the GGX lobe's own brightness dominates the frame and the
+# sunken crack lines read mostly through their colour (the ramp), not
+# their shading -- the original `0.35 0.55 0.85` put the highlight dead
+# centre, right where the camera has the most sphere to look at.  Moved
+# to a more raking angle (larger X, smaller Z) so the highlight lands
+# off-centre, near the upper-right limb, leaving the crack grooves
+# legible by shading (catch-light on one rim, shadow on the other)
+# across the whole visible hemisphere instead of only away from the
+# glare.  A single more-extreme raking angle (`0.90 0.25 0.05`, tried
+# during tuning) pushed the highlight past the limb but also dropped
+# half the sphere into near-black (only the 0.12-power ambient fill
+# reaches the unlit hemisphere) -- worse legibility, just from the
+# opposite direction.  This value is the middle ground: still
+# reasonably front-lit overall, highlight moved off the sphere's
+# camera-facing centre.
 directional_light
 {
 	name		key
 	power		3.0
 	color		1.0 0.97 0.92
-	direction	0.35 0.55 0.85
+	direction	0.72 0.42 0.35
 }
 
 # A small fill so the unlit hemisphere is not pure black.
