@@ -861,8 +861,12 @@ relief_modifier
   step used is just the `1e-3` floor or your explicit `step`
   (`docs/RELIEF_MODIFIER_DESIGN.md` §3.3). Set it explicitly when you
   need a specific frequency floor, or when you want a floor other than
-  `1e-3` -- remembering it is a FLOOR: where a footprint exists and is
-  larger, the footprint wins.
+  `1e-3` -- remembering it is a FLOOR: where a footprint exists and HALF
+  of it is larger, half the footprint wins.  (Half, because `step` is the
+  HALF-step and the difference spans twice it, so `step = fw/2` makes the
+  stencil span exactly one pixel.  A `step` smaller than that is silently
+  raised on a primary hit -- there is deliberately no way to ask for a
+  sub-footprint stencil there.)
 - **Composing more than one modifier on an object** uses `modifier_stack`,
   applied in the order the members are listed:
 

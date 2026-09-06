@@ -148,15 +148,20 @@
 //        surface branch (leaving ri2.ptCoord at the centre) makes the
 //        UV-painter-in-surface-mode gradient identically zero and fails
 //        test 6.
-//    (e) Test 4, THE max(., fw) STEP RULE.  Deleting the
-//        `if( txFootprint.valid && worldWidth > s ) s = worldWidth`
+//    (e) Test 4, THE max(., fw/2) STEP RULE.  Deleting the
+//        `if( txFootprint.widthValid && sFootprint > s ) s = sFootprint`
 //        block in ReliefModifier.cpp's surface branch leaves the fbm
 //        sweep GREEN -- `fbm` fades its own octaves against the
 //        footprint, so its sequence is monotone with or without the max,
 //        and that sweep alone would pass a broken implementation.  The
-//        fw-blind step-height sweep added in fix round 1 fails all three
+//        fw-blind step-height sweep added in fix round 1 fails the three
 //        strict-decrease assertions (|N'-N| pinned at 1.4000 for every
-//        footprint instead of 1.400 -> 1.268 -> 0.460 -> 0.050).
+//        footprint instead of 1.400 -> 1.342 -> 0.765 -> 0.100) AND the
+//        four closed-form assertions added in fix round 2.  Those four
+//        are what pin the FRACTION rather than merely the presence of the
+//        rule: restoring the fix-round-1 form (`s = worldWidth`, a full
+//        footprint) leaves every monotonicity assertion green and fails
+//        three of the four closed-form ones.
 //    (f) Test 7b, THE FRAME-REBUILD GATE (fix round 1, P1-A).  Reverting
 //        ReliefModifier / NormalMap (and, when it existed, BumpMap) from
 //        `ModifierFrame::HasCoherentTangent( ri )` back to
@@ -203,6 +208,7 @@
 //
 //////////////////////////////////////////////////////////////////////
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -807,6 +813,20 @@ static void Test4_FootprintFade()
 	// as fw (hence s) grows.  Delete the max and s is pinned at the 1e-3
 	// auto floor for all four widths, the sequence goes flat, and the
 	// strict-decrease assertions below fail (red-proof (e)).
+	//
+	// This sweep also pins the step rule's FOOTPRINT FRACTION in closed
+	// form (fix round 2), which the monotonicity assertions alone cannot:
+	// `s` is the HALF-step, so a difference spanning exactly one footprint
+	// is `s = fw/2`, and the rule is
+	//
+	//     s = max( 1e-3, fw/2 )     (no explicit `step` here)
+	//
+	// which for the four widths below gives s = 1e-3, 5e-3, 5e-2, 0.5 --
+	// the first entry on the floor, the rest on the footprint.  With
+	// N = +Z, T = +X and `scale` 1, the perturbed normal is exactly
+	// normalize( (-hT, 0, 1) ), so |N'-N| has a closed form and the
+	// assertion below discriminates fw/2 from fw (which would read
+	// s = 1e-3, 1e-2, 1e-1, 1.0 -- a factor of two off on the last three).
 	{
 		FnScalarPainter* hs = Own( new FnScalarPainter( &HeightStepAtX ) );
 		ReliefModifier* ms = MakeRelief( *hs, Scalar(1.0), ReliefDomain::Surface, Scalar(0) );	// step 0 = auto
@@ -820,8 +840,21 @@ static void Test4_FootprintFade()
 			const Vector3 n0 = ri.vNormal;
 			ms->Modify( ri );
 			dev[wi] = Vector3Ops::Magnitude( ri.vNormal - n0 );
+
+			// Closed form for THIS width, from the rule above.
+			const Scalar sWant  = std::max( Scalar(1e-3), Scalar(0.5) * widths[wi] );
+			const Scalar hTWant = Scalar(0.1) / ( Scalar(2) * sWant );
+			const Scalar devWant = Vector3Ops::Magnitude(
+				Vector3Ops::Normalize( Vector3( -hTWant, 0, 1 ) ) - Vector3( 0, 0, 1 ) );
+
 			std::cout << "    (step height) worldWidth " << std::scientific << std::setprecision(1) << widths[wi]
-			          << "  |N'-N| " << std::setprecision(4) << dev[wi] << std::defaultfloat << std::endl;
+			          << "  |N'-N| " << std::setprecision(4) << dev[wi]
+			          << "  (closed form for s = max(1e-3, fw/2) = " << sWant << ": " << devWant << ")"
+			          << std::defaultfloat << std::endl;
+
+			CHECK( std::fabs( dev[wi] - devWant ) < Scalar(1e-12),
+				"4: (fw-blind height) the auto half-step is max(1e-3, fw/2) -- NOT max(1e-3, fw) -- "
+				"at worldWidth " << widths[wi] << " (" << dev[wi] << " vs " << devWant << ")" );
 		}
 
 		CHECK( dev[0] > Scalar(1e-3),
