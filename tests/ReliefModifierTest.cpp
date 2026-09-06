@@ -3,9 +3,15 @@
 //  ReliefModifierTest.cpp - Validates the painter-driven micro-relief
 //    modifier (src/Library/Modifiers/ReliefModifier.{h,cpp}).  Covers
 //    tests 1-8 and 10 of docs/RELIEF_MODIFIER_DESIGN.md 8 (test 9 is
-//    `modifier_stack`, a Phase-2 deliverable), plus 7b from fix round 1.
+//    `modifier_stack`, a Phase-2 deliverable), plus 7b from fix round 1
+//    and 4c from fix round 2.
 //    Two of its cases reach into BumpMap and NormalMap: test 2 (legacy
-//    equivalence) and test 7b(i) (the shared frame-rebuild gate).
+//    equivalence) and test 7b(i) (the shared frame-rebuild gate).  4c
+//    reaches into Object::IntersectRay: the txFootprint.worldWidth
+//    object-to-world fold it added (fix round 2, P2-A) is not part of
+//    ReliefModifier itself, but ReliefModifier is worldWidth's first
+//    geometric consumer and the bug (an uncorrected object-space length
+//    read as world) is otherwise invisible at scale 1.
 //
 //    1. Analytic gradient.  Height `P.x`, N = +Z, T = +X: N' is exactly
 //       normalize( (0,0,1) - scale*(1,0,0) ).  The SIGN is the whole
@@ -26,6 +32,14 @@
 //       strictly DECREASING over the same sweep on an fw-BLIND step
 //       height -- which is the half that actually discriminates the
 //       max(., fw) rule (see red-proof (e)).
+//   4c. Footprint world-scale fold (fix round 2, P2-A).  A real cast
+//       through Object::IntersectRay -- single-triangle mesh, ray
+//       differentials, primary hit -- at world scale 1 and at world
+//       scale 10 (uniform), same local hit point, same local
+//       differentials: txFootprint.worldWidth's ratio between the two
+//       must be 10, not 1.  Catches the object-to-world fold this field
+//       was missing (derivatives.scaleHint's sibling fold already
+//       existed; worldWidth's did not).
 //    5. Object-space exactness.  A height field reading `Po` on a
 //       ROTATED instance -- and, separately, on a NON-UNIFORMLY SCALED
 //       one -- gives the same N' as the algebraically equivalent
@@ -112,6 +126,12 @@
 //        checks stay green by construction -- the gate decides only how
 //        the ONB is rebuilt, never the normal -- which is exactly why the
 //        bug was invisible to a normal-only assertion.)
+//    (g) Test 4c, THE worldWidth OBJECT-TO-WORLD FOLD (fix round 2,
+//        P2-A).  Removing the `ri.geometric.txFootprint.worldWidth *=
+//        m_worldLinearScale` fold added to Object::IntersectRay makes
+//        test 4c's ratio read 1.0 (object units, unfolded) instead of
+//        10.0 -- performed by hand (commented out the fold, rebuilt,
+//        ran the suite, observed the failure), then reverted.
 //
 //  Author: Aravind Krishnaswamy
 //  Tabs: 4
@@ -148,6 +168,7 @@
 	#define RISE_TEST_FILENO fileno
 #endif
 
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Interfaces/IFunction2D.h"
 #include "../src/Library/Interfaces/IJobPriv.h"
 #include "../src/Library/Interfaces/IModifierManager.h"
@@ -156,6 +177,7 @@
 #include "../src/Library/Modifiers/BumpMap.h"
 #include "../src/Library/Modifiers/NormalMap.h"
 #include "../src/Library/Modifiers/ReliefModifier.h"
+#include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionParamSpec.h"
 #include "../src/Library/Painters/Function2DScalarPainter.h"
@@ -579,6 +601,132 @@ static void Test4_FootprintFade()
 }
 
 // ============================================================
+//  Test 4c: txFootprint.worldWidth's object-to-world fold
+// ============================================================
+
+//! Builds a single, flat, front-facing triangle (v0=(0,0,0), v1=(1,0,0),
+//! v2=(0,1,0), constant normal (0,0,1), identity UV == position.xy) --
+//! the simplest mesh that gives TriangleMeshGeometryIndexedSpecializations
+//! a non-degenerate UV Jacobian, so ri.derivatives.valid and (with ray
+//! differentials) ri.txFootprint.valid both come back true.
+static Implementation::TriangleMeshGeometryIndexed* BuildUnitUVTriangle()
+{
+	VerticesListType verts;
+	verts.push_back( Point3( 0, 0, 0 ) );
+	verts.push_back( Point3( 1, 0, 0 ) );
+	verts.push_back( Point3( 0, 1, 0 ) );
+
+	NormalsListType norms;
+	norms.push_back( Vector3( 0, 0, 1 ) );
+	norms.push_back( Vector3( 0, 0, 1 ) );
+	norms.push_back( Vector3( 0, 0, 1 ) );
+
+	TexCoordsListType coords;
+	coords.push_back( Point2( 0, 0 ) );
+	coords.push_back( Point2( 1, 0 ) );
+	coords.push_back( Point2( 0, 1 ) );
+
+	IndexTriangleListType tris;
+	IndexedTriangle tri;
+	tri.iVertices[0] = 0; tri.iVertices[1] = 1; tri.iVertices[2] = 2;
+	tri.iNormals[0]  = 0; tri.iNormals[1]  = 1; tri.iNormals[2]  = 2;
+	tri.iCoords[0]   = 0; tri.iCoords[1]   = 1; tri.iCoords[2]   = 2;
+	tris.push_back( tri );
+
+	Implementation::TriangleMeshGeometryIndexed* mesh =
+		new Implementation::TriangleMeshGeometryIndexed( true, true );
+	mesh->BeginIndexedTriangles();
+	mesh->AddVertices( verts );
+	mesh->AddNormals( norms );
+	mesh->AddTexCoords( coords );
+	mesh->AddIndexedTriangles( tris );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+static void Test4c_FootprintWorldScaleFold()
+{
+	std::cout << "Test 4c: txFootprint.worldWidth folds by the object's world scale" << std::endl;
+
+	// A well-conditioned interior hit (not on an edge or vertex): local
+	// origin (0.2, 0.2, 10), direction straight down -Z, lands at
+	// (0.2, 0.2, 0), which is inside the triangle (0.2+0.2 = 0.4 < 1).
+	const Point3 localOrigin( 0.2, 0.2, 10.0 );
+	const Vector3 localDir( 0, 0, -1 );
+	// Small, arbitrary pixel-footprint direction offsets -- their exact
+	// magnitude doesn't matter, only that they are IDENTICAL between the
+	// scale-1 and scale-10 casts below (see the comment on why that makes
+	// this an exact, not approximate, ratio check).
+	const Vector3 rxDirOffset( 0.02, 0, 0 );
+	const Vector3 ryDirOffset( 0, 0.02, 0 );
+
+	Scalar worldWidthScale1 = 0, worldWidthScale10 = 0;
+	bool validScale1 = false, validScale10 = false;
+
+	// ---- scale 1 (identity) ----
+	{
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildUnitUVTriangle();
+		Implementation::Object* o = new Implementation::Object( mesh );
+		mesh->release();
+		o->FinalizeTransformations();
+
+		Ray ray( localOrigin, localDir );
+		ray.diffs.rxDir = rxDirOffset;
+		ray.diffs.ryDir = ryDirOffset;
+		ray.hasDifferentials = true;
+
+		RayIntersection ri( ray, nullRasterizerState );
+		o->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		CHECK( ri.geometric.bHit, "4c: scale-1 ray hits the triangle" );
+		validScale1 = ri.geometric.txFootprint.valid;
+		worldWidthScale1 = ri.geometric.txFootprint.worldWidth;
+		o->release();
+	}
+
+	// ---- scale 10 (uniform) ----
+	// SAME local hit point: Object::IntersectRay inverse-transforms the
+	// world ray by (1/10)*I, so a world ray of (10*localOrigin, localDir)
+	// recovers EXACTLY localOrigin/localDir in object space, landing on
+	// the identical triangle point.  The direction-diff reconstruction
+	// (aux = normalize(d + rxDir), then re-normalize through the inverse
+	// transform) is invariant to an overall positive scalar on a UNIFORM
+	// scale with no rotation, so passing the SAME rxDir/ryDir offsets in
+	// world space here reproduces the SAME object-space diffs as the
+	// scale-1 cast above -- i.e. the RAW (pre-fold) worldWidth this
+	// geometry/UV pair produces is expected to be identical at both
+	// scales.  The only thing that should differ is the object-to-world
+	// fold this test exists to check.
+	{
+		const Scalar s = 10.0;
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildUnitUVTriangle();
+		Implementation::Object* o = new Implementation::Object( mesh );
+		mesh->release();
+		o->SetScale( s );
+		o->FinalizeTransformations();
+
+		Ray ray( Point3( localOrigin.x * s, localOrigin.y * s, localOrigin.z * s ), localDir );
+		ray.diffs.rxDir = rxDirOffset;
+		ray.diffs.ryDir = ryDirOffset;
+		ray.hasDifferentials = true;
+
+		RayIntersection ri( ray, nullRasterizerState );
+		o->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		CHECK( ri.geometric.bHit, "4c: scale-10 ray hits the triangle" );
+		validScale10 = ri.geometric.txFootprint.valid;
+		worldWidthScale10 = ri.geometric.txFootprint.worldWidth;
+		o->release();
+	}
+
+	CHECK( validScale1 && validScale10, "4c: both casts populated a valid txFootprint" );
+	CHECK( worldWidthScale1 > Scalar( 1e-6 ), "4c: (oracle) scale-1 worldWidth is non-degenerate (" << worldWidthScale1 << ")" );
+
+	const Scalar ratio = (worldWidthScale1 > 0) ? (worldWidthScale10 / worldWidthScale1) : Scalar(0);
+	CHECK( std::fabs( ratio - Scalar( 10 ) ) < Scalar( 1e-9 ),
+		"4c: worldWidth(scale 10) / worldWidth(scale 1) == 10, the object-to-world fold ("
+		<< std::setprecision(12) << ratio << ")" );
+}
+
+// ============================================================
 //  Test 5: object-space exactness under a rotated instance
 // ============================================================
 
@@ -785,7 +933,15 @@ static void Test7_Handedness()
 
 		// A geometry-supplied tangent (so the projection branch runs) plus
 		// the deliberate FlipV that Object::IntersectRay applies to a
-		// negative-determinant instance.
+		// negative-determinant instance.  Both flags set together (fix
+		// round 2, P2-C): no in-tree geometry sets bHasShadingTangent
+		// without also setting bShadingTangentFromGeometry (HairGeometry,
+		// the analytic primitives, and the mesh UV-tangent producers all
+		// set both -- grep `bShadingTangentFromGeometry\s*=\|
+		// bHasShadingTangent\s*=` across src/Library/Geometry), so
+		// bHasShadingTangent alone modelled an impossible combination; this
+		// matches the real hair/mesh case the test means to probe.
+		ri.bShadingTangentFromGeometry = true;
 		ri.bHasShadingTangent = true;
 		ri.vShadingTangent = ri.onb.u();
 		ri.onb.FlipV();
@@ -812,6 +968,9 @@ static void Test7_Handedness()
 	// And the ONB stays orthonormal through the flip.
 	{
 		RayIntersectionGeometric ri = MakeRI( Point3( 0.11, 0.22, 0 ) );
+		// Both flags set together -- fix round 2, P2-C, same reasoning as
+		// the loop above.
+		ri.bShadingTangentFromGeometry = true;
 		ri.bHasShadingTangent = true;
 		ri.vShadingTangent = ri.onb.u();
 		ri.onb.FlipV();
@@ -838,8 +997,9 @@ static void Test7_Handedness()
 //! inside it the "no real supplied tangent" sub-case projects WORLD-X
 //! into the shading-normal plane and calls CreateFromWU.  SDFGeometry's
 //! heightfield mode sets `bShadingTangentFromGeometry` and NOT
-//! `bHasShadingTangent` (SDFGeometry.cpp:1599; the pairing is spelled out
-//! at RayIntersectionGeometric.h:391-394), so this is the flag
+//! `bHasShadingTangent` (SDFGeometry.cpp, the `m_isHeightfield` branch of
+//! IntersectRay; the pairing is spelled out at
+//! RayIntersectionGeometric.h:391-394), so this is the flag
 //! combination a modifier must not mistake for a tangent-less hit.
 static RayIntersectionGeometric MakeSDFHeightfieldRI( const Point3& p, bool mirrored )
 {
@@ -1228,12 +1388,13 @@ static void Test10_Parse()
 
 int main()
 {
-	std::cout << "=== ReliefModifierTest (docs/RELIEF_MODIFIER_DESIGN.md 8, tests 1-8 + 7b + 10) ===" << std::endl;
+	std::cout << "=== ReliefModifierTest (docs/RELIEF_MODIFIER_DESIGN.md 8, tests 1-8 + 4c + 7b + 10) ===" << std::endl;
 
 	Test1_AnalyticGradient();
 	Test2_LegacyEquivalence();
 	Test3_NoTexcoords();
 	Test4_FootprintFade();
+	Test4c_FootprintWorldScaleFold();
 	Test5_ObjectSpaceExactness();
 	Test6_UVChainRule();
 	Test7_Handedness();
