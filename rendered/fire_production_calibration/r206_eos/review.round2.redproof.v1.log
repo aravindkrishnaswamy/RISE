@@ -1,0 +1,46 @@
+F
+======================================================================
+FAIL: test_owner_requires_each_named_field_and_its_complete_extent (test_fire_r206_eos.EOSGateREDs) (contradictory_verdict='PROJECTED_HEUN_METAL_OWNER_FP64')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 69, in test_owner_requires_each_named_field_and_its_complete_extent
+    gate(path)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_owner_requires_each_named_field_and_its_complete_extent (test_fire_r206_eos.EOSGateREDs) (contradictory_verdict='OWNER_PUBLICATION_DIGEST_RED')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 69, in test_owner_requires_each_named_field_and_its_complete_extent
+    gate(path)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_owner_requires_each_named_field_and_its_complete_extent (test_fire_r206_eos.EOSGateREDs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 76, in test_owner_requires_each_named_field_and_its_complete_extent
+    gate(path)
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.402s
+
+FAILED (failures=3)
+R206_HISTORICAL_RED name=contradictory_verdict old_parser_refused_by_test=1
+F
+======================================================================
+FAIL: test_iteration_and_independent_process_evidence (test_fire_r206_eos.EOSGateREDs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 17, in test_iteration_and_independent_process_evidence
+    result = self_test(EVIDENCE)
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/analyze_fire_eos_warm_start.py", line 220, in self_test
+    raise AssertionError("accepted mutated diagnostic: " + name)
+AssertionError: accepted mutated diagnostic: lower_endpoint_-504566
+
+----------------------------------------------------------------------
+Ran 1 test in 0.008s
+
+FAILED (failures=1)
+R206_HISTORICAL_RED name=invalid_histogram_metadata old_parser_refused_by_test=1

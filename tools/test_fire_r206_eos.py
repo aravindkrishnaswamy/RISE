@@ -58,6 +58,22 @@ class EOSGateREDs(unittest.TestCase):
                 with patch.object(Path, "read_text", return_value=mutant):
                     with self.assertRaises(ValueError):
                         gate(path)
+        for tag, counter in (("PROJECTED_HEUN_METAL_OWNER_FP64", "passed"),
+                             ("OWNER_PUBLICATION_DIGEST_RED", "full_packet_cpu_match"),
+                             ("OWNER_SEALING_EQUIVALENCE passed=", "passed")):
+            row = next(line for line in text.splitlines() if line.startswith(tag))
+            with self.subTest(contradictory_verdict=tag):
+                mutant = text + "\n" + row.replace(counter+"=1", counter+"=0") + "\n"
+                with patch.object(Path, "read_text", return_value=mutant):
+                    with self.assertRaises(ValueError):
+                        gate(path)
+        for replacement in ("accepted=0 accepted=1", "iterations=0/0/0 iterations=2/2/4"):
+            old = "accepted=1" if replacement.startswith("accepted") else "iterations=2/2/4"
+            row = next(line for line in text.splitlines() if line.startswith("PROJECTED_HEUN_METAL_OWNER_SMOKE "))
+            mutant = text.replace(row, row.replace(old, replacement), 1)
+            with patch.object(Path, "read_text", return_value=mutant):
+                with self.assertRaises(ValueError):
+                    gate(path)
 
 
 if __name__ == "__main__":

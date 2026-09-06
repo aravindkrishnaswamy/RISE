@@ -51,6 +51,15 @@ def histogram(path):
                     or row["scope"] != "diagnostic_extra_dispatch"
                     or any(int(row[k]) != 0 for k in required & {"refused", "bit_mismatch", "overflow"})):
                 raise ValueError("invalid or non-identical iteration histogram: " + tag)
+            if tag == "EOS_ITERATIONS_V1":
+                # This experiment is the pinned tier-8 300..2300 K case, not
+                # a general domain-study parser. Zero bisections means Tmin.
+                if (int(row["lower_endpoint"]) != values[0]
+                        or not 0 <= int(row["previous_temperature_bit_equal"]) <= count
+                        or float(row["Tmin"]) != 300.0 or float(row["Tmax"]) != 2300.0):
+                    raise ValueError("invalid cold population or case temperature bounds")
+            elif not 0 <= int(row["cold_fallback"]) <= count-values[0]:
+                raise ValueError("fallback count outside interior population")
             sequence.append((int(row["stage"]), int(row["raw_iteration"])))
             cells += count
             work += int(row[work_name])
@@ -189,6 +198,15 @@ def self_test(directory):
         "warm_overflow": text.replace(warm_line, warm_line.replace("overflow=0", "overflow=1"), 1),
         "missing_terminal": text[:text.index("OWNER_COST_PREFIX ")],
     }
+    for field, line, invalid in (
+            ("lower_endpoint", cold_line, ("-504566", "504667", "504565")),
+            ("previous_temperature_bit_equal", cold_line, ("-1", "504667")),
+            ("cold_fallback", warm_line, ("-40", "101", "504667")),
+            ("Tmin", cold_line, ("nan", "inf", "-1", "301")),
+            ("Tmax", cold_line, ("nan", "inf", "-1", "2299"))):
+        old = fields(line)[field]
+        for value in invalid:
+            mutations[field+"_"+value] = text.replace(line, line.replace(field+"="+old, field+"="+value), 1)
     for name, mutant in mutations.items():
         if mutant == text:
             raise AssertionError("RED failed to mutate: " + name)

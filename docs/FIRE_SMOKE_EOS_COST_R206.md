@@ -187,3 +187,21 @@ Clean Xcode Deployment and Opto builds both pass. The only warnings are the
 documented absent `extlib/oidn/install/lib` search path and AppIntents metadata
 extraction; no source compiler warning is discounted. Logs are retained in
 the r206 evidence directory. Fresh post-fix review remains pending.
+
+## Second evidence review
+
+The fresh reviewer again reproduced both measurements byte-for-byte and found
+no P1, but two further P2 false-green paths: a passing owner verdict could
+coexist with a failed verdict of the same tag, and required histogram metadata
+could carry impossible populations or temperature bounds. Both are repaired:
+each verdict tag has exactly one successful record; histogram counters are
+bounded by their populations, lower-endpoint counts equal the zero-bisection
+bin, and the diagnostic domain is exactly the pinned case's 300..2300 K.
+Duplicate schedule counters and unknown sealing records also fail closed.
+
+Named in-memory REDs append contradictory owner/publication verdicts, corrupt
+population counts, and replace domain endpoints with nonfinite, reversed, or
+wrong-case values. The new tests fail against the previous committed parsers
+(`review.round2.redproof.v1.log`) and pass against the repairs. Existing raw
+logs and measurement values are unchanged; numerical source is still
+`20607aea`. Fresh final review is pending.

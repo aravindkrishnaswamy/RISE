@@ -84,14 +84,19 @@ def sidecars(directory, case_id=None):
 
 def gate(path):
     text = path.read_text()
+    def tagged(tag):
+        return [line for line in text.splitlines() if line.split()[:1] == [tag]]
+
     # This CLI fixture is the reviewed 4^3 owner, not an arbitrary-grid reader.
     # Cell/face lengths derive from its pinned shape. Residual histories derive
     # from the independently emitted owner iteration counts, not field labels.
     cells, faces = 4**3, (4+1)*4*4
-    smoke = [dict(item.split("=", 1) for item in line.split()[1:] if "=" in item)
-             for line in text.splitlines() if line.startswith("PROJECTED_HEUN_METAL_OWNER_SMOKE ")]
+    smoke_lines = tagged("PROJECTED_HEUN_METAL_OWNER_SMOKE")
+    smoke = [dict(item.split("=", 1) for item in line.split()[1:]) for line in smoke_lines]
     if len(smoke) != 1 or smoke[0].get("accepted") != "1":
         raise ValueError("missing accepted owner schedule")
+    if len(smoke[0]) != len(smoke_lines[0].split())-1:
+        raise ValueError("duplicate owner schedule counters")
     iterations = [int(value) for value in smoke[0].get("iterations", "").split("/")]
     if len(iterations) != 3 or any(value <= 0 for value in iterations):
         raise ValueError("invalid owner schedule")
@@ -112,6 +117,8 @@ def gate(path):
                    or r["bit_mismatches"] != "0" or int(r["words"]) != expected[r["field"]] for r in rows)):
         raise ValueError("incomplete per-field bit comparison")
     summaries = [line for line in text.splitlines() if line.startswith("OWNER_SEALING_EQUIVALENCE passed=")]
+    if len(tagged("OWNER_SEALING_EQUIVALENCE")) != len(field_lines)+len(summaries):
+        raise ValueError("unrecognized owner sealing record")
     if len(summaries) != 1 or len(summaries[0].split()) != 5:
         raise ValueError("missing owner sealing verdict")
     verdict = dict(word.split("=", 1) for word in summaries[0].split()[1:])
@@ -122,7 +129,7 @@ def gate(path):
         raise ValueError("invalid owner sealing verdict or roots")
     for required in ("OWNER_PUBLICATION_DIGEST_RED full_packet_cpu_match=1 bit_mutation_refused=1 copied_authority_refused=1",
                      "PROJECTED_HEUN_METAL_OWNER_FP64 source=1 begin=1 r0=1 r1=1 accepted=1 criterion=conjunction_of_per_cell_per_field_same_unit_enclosures error= passed=1"):
-        if text.splitlines().count(required) != 1:
+        if tagged(required.split()[0]) != [required]:
             raise ValueError("missing owner/publication gate: " + required)
 
 
