@@ -1583,17 +1583,26 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 			ri.geometric.derivatives.curvatureValid = false;
 		}
 
-		// WORLD-MEASURE FOLD for txFootprint.worldWidth -- the exact mirror
-		// of Object::IntersectRay's block (relief-modifier fix round 2,
-		// P2-A; see it for the full rationale) and of scaleHint immediately
-		// above: `AdoptCsgSurfacePayload` copies the child operand's
-		// txFootprint verbatim, already folded by THAT child Object's own
-		// world scale, so THIS level composes by applying its OWN factor
-		// once more -- the same "each level applies its own factor once to
-		// whatever the level below already promoted" CSG-nesting invariant
-		// scaleHint/curvature follow.
-		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
-			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
+		// WORLD-MEASURE PROMOTION for txFootprint -- the exact mirror of
+		// Object::IntersectRay's block (see it for the affine line∩plane
+		// commutation argument that makes this promotion EXACT for any
+		// linear map, and docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.4).
+		// The CSG-nesting invariant is UNCHANGED, only the per-level
+		// operator: `AdoptCsgSurfacePayload` copies the winning child
+		// operand's txFootprint verbatim, already promoted by THAT child
+		// Object's own forward map into THIS object's local frame, so THIS
+		// level composes by applying its OWN forward map once more -- the
+		// same "each level applies its own map once to whatever the level
+		// below already promoted" rule scaleHint/curvature follow.  Composing
+		// forward maps is what makes the nesting exact rather than merely
+		// consistent: M_outer · M_inner is the true object-to-world map.
+		if( ri.geometric.txFootprint.widthValid ) {
+			const Vector3 dx = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdx );
+			const Vector3 dy = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdy );
+			ri.geometric.txFootprint.dpdx = dx;
+			ri.geometric.txFootprint.dpdy = dy;
+			ri.geometric.txFootprint.worldWidth =
+				Scalar(0.5) * ( Vector3Ops::Magnitude( dx ) + Vector3Ops::Magnitude( dy ) );
 		}
 
 		// Compute the intersection in world space

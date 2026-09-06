@@ -1,19 +1,38 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  TextureFootprintCompute.h - Compute the texture-space footprint
-//  at a hit point by projecting the incoming ray's screen-space
-//  differentials onto the surface UV plane.  Igehy 1999 §4 + the
-//  PBRT v4 §10.1.1 closed-form 2x2 solve for du/dx, du/dy, dv/dx,
-//  dv/dy.
+//  TextureFootprintCompute.h - Compute the pixel footprint at a hit
+//  point by projecting the incoming ray's screen-space differentials
+//  onto the surface tangent plane, and (where the surface carries a
+//  UV chart) solving that projection for du/dx, du/dy, dv/dx, dv/dy.
+//  Igehy 1999 §4 + the PBRT v4 §10.1.1 closed-form 2x2 solve.
 //
-//  Called by triangle-mesh geometry as the last step of intersection,
-//  AFTER ri.vNormal, ri.ptIntersection, ri.derivatives.dpdu and
-//  ri.derivatives.dpdv have all been populated.
+//  TWO HALVES, SPLIT AT THE SEAM THE MATH ALREADY HAS
+//  (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.2):
 //
-//  Other geometries (sphere, plane, ...) can opt in by populating
-//  derivatives + calling this helper.  Geometries that don't are
-//  silently a no-op (txFootprint stays valid=false; texture
-//  painters fall back to base-level sampling).
+//    ComputeFootprintVectors( ri, ray )
+//      The plane projection.  Needs only the hit point, a normal and
+//      the ray's differentials -- NOT dpdu/dpdv.  Writes dpdx, dpdy,
+//      worldWidth and sets widthValid.  Runs for EVERY geometry,
+//      whether or not it has a UV parameterisation: analytic
+//      primitives, SDFs (hence sweeps and skeletons), boxes, disks,
+//      planes, patches and hair all get a footprint width from it.
+//
+//    SolveFootprintUV( ri )
+//      The 2x2 solve.  Additionally needs ri.derivatives.valid (a
+//      non-degenerate dpdu/dpdv basis) and a successful
+//      ComputeFootprintVectors.  Writes dudx..dvdy and sets valid.
+//      A no-op on UV-free geometry, which is exactly the honest
+//      answer there -- see the two-flag contract on TextureFootprint.
+//
+//  ComputeTextureFootprint( ri, ray ) remains as the composite of the
+//  two, and is what Object::IntersectRay calls.
+//
+//  CALL SITE: Object::IntersectRay, immediately after the geometry
+//  returns a hit and BEFORE the normal/derivative world promotion --
+//  at that instant the ray, the hit range, the normal and
+//  derivatives.dpdu/dpdv are all still OBJECT-space, which is the
+//  frame this helper assumes.  Object::IntersectRay /
+//  CSGObject::IntersectRay promote the result to world afterward.
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: May 3, 2026
@@ -34,20 +53,22 @@
 namespace RISE
 {
 	//! Project the incoming ray's screen-space differentials onto the
-	//! surface UV plane and store the result on ri.txFootprint.
+	//! surface tangent plane and store the resulting one-pixel-step
+	//! displacement vectors on ri.txFootprint.
 	//!
 	//! Preconditions:
 	//!   - ri.bHit == true
-	//!   - ri.vNormal, ri.ptIntersection populated
-	//!   - ri.derivatives.valid == true (caller's responsibility)
+	//!   - ri.vNormal populated, ri.range set
 	//!   - ray.hasDifferentials == true (else this is a no-op)
 	//!
-	//! Postcondition: ri.txFootprint.valid == true on success;
-	//! .valid == false (default) on early-out (no incoming
-	//! differentials, parallel auxiliary, or singular UV basis).
-	inline void ComputeTextureFootprint( RayIntersectionGeometric& ri, const Ray& ray )
+	//! Postcondition: ri.txFootprint.widthValid == true on success,
+	//! with dpdx / dpdy / worldWidth written; left untouched (i.e.
+	//! widthValid stays false, worldWidth stays 0) on early-out (no
+	//! incoming differentials, or an auxiliary ray parallel to the
+	//! tangent plane).
+	inline void ComputeFootprintVectors( RayIntersectionGeometric& ri, const Ray& ray )
 	{
-		if( !ray.hasDifferentials || !ri.derivatives.valid ) {
+		if( !ray.hasDifferentials ) {
 			return;
 		}
 
@@ -70,19 +91,26 @@ namespace RISE
 		// Plane: dot(P - P0, N) = 0; substituting P = origin + t·dir:
 		//   t = dot(P0 - origin, N) / dot(dir, N)
 		//
-		// IMPORTANT: triangle-mesh geometry calls this helper BEFORE
-		// Object::IntersectRay populates ri.ptIntersection /
-		// ri.ptObjIntersec — those are computed by the Object layer
-		// AFTER the geometry returns (Object.cpp:434).  At this point
-		// ri.range IS set (line 174 of the indexed-mesh
-		// specialization), so we recover the object-space hit point
-		// from the ray and range directly.  Reading ri.ptIntersection
-		// here would silently use (0, 0, 0) and produce a wildly
-		// inflated dpdx — the bug that caused all glTF-imported
-		// textured meshes to render at LOD ~10 (single-pixel mip
-		// average) starting with Landing 2 (a78593b, 2026-05-06).
+		// IMPORTANT: this helper runs mid-`Object::IntersectRay`,
+		// BEFORE that function populates ri.ptIntersection /
+		// ri.ptObjIntersec -- those are computed by the Object layer
+		// AFTER the geometry returns.  At this point ri.range IS set
+		// (the geometry sets it on the accepted hit), so we recover the
+		// object-space hit point from the ray and range directly.
+		// Reading ri.ptIntersection here would silently use (0, 0, 0)
+		// and produce a wildly inflated dpdx -- the bug that caused all
+		// glTF-imported textured meshes to render at LOD ~10 (single-
+		// pixel mip average) starting with Landing 2 (a78593b,
+		// 2026-05-06).  Still load-bearing at the Object-layer call
+		// site, for exactly the same reason.
 		const Point3 hitPt = ri.ray.PointAtLength( ri.range );
 		const Vector3 P0( hitPt.x, hitPt.y, hitPt.z );
+
+		// The SHADING normal, not vGeomNormal: that is what the shipped
+		// triangle-mesh path used, and switching would move every mesh
+		// pixel.  The plane math is sign-invariant, so a geometry that
+		// flips its normal for a back-face hit (ClippedPlaneGeometry) is
+		// unaffected.
 		const Vector3 N  = ri.vNormal;
 
 		const Scalar dxNum = ( P0.x - rxO.x ) * N.x + ( P0.y - rxO.y ) * N.y + ( P0.z - rxO.z ) * N.z;
@@ -105,6 +133,57 @@ namespace RISE
 
 		const Vector3 dpdx( Px.x - P0.x, Px.y - P0.y, Px.z - P0.z );
 		const Vector3 dpdy( Py.x - P0.x, Py.y - P0.y, Py.z - P0.z );
+
+		// Filter width (doc 88 S9): dpdx/dpdy are the offsets from P0 to
+		// the surface-plane hit of the +x/+y auxiliary rays, in the
+		// FRAME OF `ray` -- i.e. exactly the displacement one pixel step
+		// induces at this surface point, in whatever space `ray` is
+		// currently expressed.  At the Object-layer call site that frame
+		// is OBJECT space, so `worldWidth` below is an OBJECT-space
+		// length at the point it is stamped, despite the name --
+		// `Object::IntersectRay` / `CSGObject::IntersectRay` promote it
+		// to true world units afterward by transforming dpdx/dpdy
+		// through their own forward map and re-deriving the mean
+		// magnitude (exact for any linear map; see
+		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.4).  Average the
+		// two magnitudes (Apodaca & Gritz-style filterwidth estimate)
+		// for a single isotropic scalar; consumed by ExpressionPainter/
+		// ExpressionScalarPainter::BuildContext to populate
+		// ExprEvalContext::fw, and by ReliefModifier's footprint-aware
+		// step -- both AFTER the object-layer promotion, so both see
+		// true world units.
+		const Scalar lenDpdx = std::sqrt( dpdx.x*dpdx.x + dpdx.y*dpdx.y + dpdx.z*dpdx.z );
+		const Scalar lenDpdy = std::sqrt( dpdy.x*dpdy.x + dpdy.y*dpdy.y + dpdy.z*dpdy.z );
+
+		ri.txFootprint.dpdx = dpdx;
+		ri.txFootprint.dpdy = dpdy;
+		ri.txFootprint.worldWidth = Scalar(0.5) * ( lenDpdx + lenDpdy );
+		ri.txFootprint.widthValid = true;
+	}
+
+	//! Solve the plane-projected pixel steps for the surface's UV
+	//! Jacobian and store it on ri.txFootprint.
+	//!
+	//! Preconditions:
+	//!   - ri.txFootprint.widthValid == true (i.e.
+	//!     ComputeFootprintVectors already succeeded on this record)
+	//!   - ri.derivatives.valid == true, with dpdu / dpdv populated
+	//! Either failing makes this a no-op, which is what upholds the
+	//! `valid ⇒ widthValid` invariant and what leaves UV-free geometry
+	//! (SDF, box, disk, plane, hair) with an honest width and no
+	//! Jacobian.
+	//!
+	//! Postcondition: ri.txFootprint.valid == true on success;
+	//! left false on early-out or on a singular UV basis.
+	inline void SolveFootprintUV( RayIntersectionGeometric& ri )
+	{
+		if( !ri.txFootprint.widthValid || !ri.derivatives.valid ) {
+			return;
+		}
+
+		const Vector3& dpdx = ri.txFootprint.dpdx;
+		const Vector3& dpdy = ri.txFootprint.dpdy;
+		const Vector3 N = ri.vNormal;
 
 		// Solve [dpdu | dpdv] · (du/dx, dv/dx)^T = dpdx for the
 		// per-axis UV derivatives.  3 equations × 2 unknowns is
@@ -139,7 +218,8 @@ namespace RISE
 		const Scalar det = dpdu_a * dpdv_b - dpdv_a * dpdu_b;
 		if( std::fabs( det ) < Scalar( 1e-30 ) ) {
 			// Degenerate UV mapping (zero-area in this projection
-			// direction); leave footprint invalid.
+			// direction); leave the Jacobian invalid.  The width half
+			// stays valid -- it never depended on the UV chart.
 			return;
 		}
 		const Scalar invDet = Scalar( 1 ) / det;
@@ -149,29 +229,16 @@ namespace RISE
 		ri.txFootprint.dudy = (  dpdv_b * dpdy_a - dpdv_a * dpdy_b ) * invDet;
 		ri.txFootprint.dvdy = ( -dpdu_b * dpdy_a + dpdu_a * dpdy_b ) * invDet;
 
-		// Filter width (doc 88 S9): dpdx/dpdy above are the offsets from P0
-		// to the surface-plane hit of the +x/+y auxiliary rays, in the
-		// FRAME OF `ray` -- i.e. exactly the displacement one pixel step
-		// induces at this surface point, in whatever space `ray` is
-		// currently expressed.  At this call site (triangle-mesh geometry,
-		// mid-`Object::IntersectRay`) that frame is OBJECT space: the
-		// caller has already transformed the incoming ray into object
-		// space before invoking the geometry, so `worldWidth` below is an
-		// OBJECT-space length at the point it is stamped, despite the
-		// name -- `Object::IntersectRay` / `CSGObject::IntersectRay` fold
-		// it to true world units afterward (the same `m_worldLinearScale`
-		// length fold `derivatives.scaleHint` gets; relief-modifier fix
-		// round 2, P2-A).  Average the two magnitudes (Apodaca & Gritz-
-		// style filterwidth estimate) for a single isotropic scalar;
-		// consumed by ExpressionPainter/ExpressionScalarPainter::
-		// BuildContext to populate ExprEvalContext::fw, and by
-		// ReliefModifier's footprint-aware step -- both AFTER the Object-
-		// layer fold, so both see true world units.
-		const Scalar lenDpdx = std::sqrt( dpdx.x*dpdx.x + dpdx.y*dpdx.y + dpdx.z*dpdx.z );
-		const Scalar lenDpdy = std::sqrt( dpdy.x*dpdy.x + dpdy.y*dpdy.y + dpdy.z*dpdy.z );
-		ri.txFootprint.worldWidth = Scalar(0.5) * ( lenDpdx + lenDpdy );
-
 		ri.txFootprint.valid = true;
+	}
+
+	//! The composite: plane projection, then the UV solve.  This is
+	//! what Object::IntersectRay calls; the UV half self-skips on a
+	//! geometry with no usable dpdu/dpdv.
+	inline void ComputeTextureFootprint( RayIntersectionGeometric& ri, const Ray& ray )
+	{
+		ComputeFootprintVectors( ri, ray );
+		SolveFootprintUV( ri );
 	}
 }
 

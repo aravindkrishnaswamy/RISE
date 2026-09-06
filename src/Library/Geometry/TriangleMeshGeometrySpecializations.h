@@ -338,11 +338,6 @@ namespace RISE
 				if( SurfaceCurvatureDemand::Any() ) {
 					ri.derivatives.scaleHint = SurfaceCurvature::ScaleHintFromBoundingBox( GenerateBoundingBox() );
 				}
-
-				// Project ray differentials onto the surface UV plane
-				// and store the texture-space footprint.  No-op when
-				// ray.hasDifferentials = false.
-				ComputeTextureFootprint( ri, ri.ray );
 			}
 		}
 	}

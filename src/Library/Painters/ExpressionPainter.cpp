@@ -106,12 +106,17 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	ctx.Po = Vector3( ri.ptObjIntersec.x, ri.ptObjIntersec.y, ri.ptObjIntersec.z );
 	ctx.N  = ri.vNormal;
 	// doc 88 S9: honest world-space filter-width estimate on primary hits
-	// against triangle-mesh geometry (the only geometry that currently
-	// populates txFootprint -- see TextureFootprintCompute.h).  Stays 0 on
-	// every other case (secondary/diffuse bounces spawn a fresh Ray with
-	// hasDifferentials=false, non-mesh geometry, non-pinhole cameras) --
-	// that is the honest "point sample, no filter info" answer, not a bug.
-	ctx.fw = ri.txFootprint.valid ? ri.txFootprint.worldWidth : Scalar(0);
+	// against ANY geometry.  Keyed on `widthValid`, NOT `valid`: `valid` is
+	// the UV-Jacobian flag, and a UV-free hit (SDF, box, disk, plane, hair)
+	// has a perfectly good footprint width with no Jacobian to go with it
+	// (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md -- the arc that retired
+	// this comment's former "triangle-mesh geometry, the only geometry that
+	// currently populates txFootprint" claim).  Stays 0 where there is
+	// genuinely no filter information: secondary/diffuse bounces spawn a
+	// fresh Ray with hasDifferentials=false, and the thin-lens /
+	// orthographic / fisheye cameras never set differentials at all -- that
+	// is the honest "point sample, no filter info" answer, not a bug.
+	ctx.fw = ri.txFootprint.widthValid ? ri.txFootprint.worldWidth : Scalar(0);
 	ctx.time = m_time;
 	PopulateCurvature( ri, ctx );
 	PopulateSignals( ri, ctx );
@@ -248,12 +253,17 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	ctx.Po = Vector3( ri.ptObjIntersec.x, ri.ptObjIntersec.y, ri.ptObjIntersec.z );
 	ctx.N  = ri.vNormal;
 	// doc 88 S9: honest world-space filter-width estimate on primary hits
-	// against triangle-mesh geometry (the only geometry that currently
-	// populates txFootprint -- see TextureFootprintCompute.h).  Stays 0 on
-	// every other case (secondary/diffuse bounces spawn a fresh Ray with
-	// hasDifferentials=false, non-mesh geometry, non-pinhole cameras) --
-	// that is the honest "point sample, no filter info" answer, not a bug.
-	ctx.fw = ri.txFootprint.valid ? ri.txFootprint.worldWidth : Scalar(0);
+	// against ANY geometry.  Keyed on `widthValid`, NOT `valid`: `valid` is
+	// the UV-Jacobian flag, and a UV-free hit (SDF, box, disk, plane, hair)
+	// has a perfectly good footprint width with no Jacobian to go with it
+	// (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md -- the arc that retired
+	// this comment's former "triangle-mesh geometry, the only geometry that
+	// currently populates txFootprint" claim).  Stays 0 where there is
+	// genuinely no filter information: secondary/diffuse bounces spawn a
+	// fresh Ray with hasDifferentials=false, and the thin-lens /
+	// orthographic / fisheye cameras never set differentials at all -- that
+	// is the honest "point sample, no filter info" answer, not a bug.
+	ctx.fw = ri.txFootprint.widthValid ? ri.txFootprint.worldWidth : Scalar(0);
 	ctx.time = Scalar(0);		// not exposed on this pipe -- see class doc comment
 	PopulateCurvature( ri, ctx );
 	PopulateSignals( ri, ctx );

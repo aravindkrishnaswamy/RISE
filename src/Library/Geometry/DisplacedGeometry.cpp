@@ -439,6 +439,7 @@ namespace {
 		ri.vNormal           = objNormal;
 		ri.vGeomNormal       = objNormal;
 		ri.txFootprint.valid = false;
+		ri.txFootprint.widthValid = false;
 		ri.derivatives.valid = false;
 		return height.GetValuesAt( ri ).v[0];
 	}

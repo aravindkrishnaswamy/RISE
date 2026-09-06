@@ -57,6 +57,15 @@
 //       must be 10, not 1.  Catches the object-to-world fold this field
 //       was missing (derivatives.scaleHint's sibling fold already
 //       existed; worldWidth's did not).
+//   4d. Footprint non-uniform-scale EXACTNESS (the
+//       docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md arc).  The companion
+//       to 4c, on the case a uniform scale cannot separate: the same
+//       world ray at the same world plane, once through a
+//       `stretch (4, 4, 0.05)` instance and once unstretched.  Both must
+//       report the identical world footprint (the plane z = 0 is
+//       invariant under that stretch), and it must match the closed form
+//       height*e/sqrt(1+e^2).  The retired `|det M|^(1/3)` fold reports
+//       4.31x too small here.
 //    5. Object-space exactness.  A height field reading `Po` on a
 //       ROTATED instance -- and, separately, on a NON-UNIFORMLY SCALED
 //       one -- gives the same N' as the algebraically equivalent
@@ -156,12 +165,15 @@
 //        checks stay green by construction -- the gate decides only how
 //        the ONB is rebuilt, never the normal -- which is exactly why the
 //        bug was invisible to a normal-only assertion.)
-//    (g) Test 4c, THE worldWidth OBJECT-TO-WORLD FOLD (fix round 2,
-//        P2-A).  Removing the `ri.geometric.txFootprint.worldWidth *=
-//        m_worldLinearScale` fold added to Object::IntersectRay makes
-//        test 4c's ratio read 1.0 (object units, unfolded) instead of
-//        10.0 -- performed by hand (commented out the fold, rebuilt,
-//        ran the suite, observed the failure), then reverted.
+//    (g) Tests 4c/4d, THE worldWidth OBJECT-TO-WORLD PROMOTION.
+//        Deleting Object::IntersectRay's txFootprint promotion block
+//        entirely makes 4c's ratio read 1.0 (object units, unpromoted)
+//        instead of 10.0 -- performed by hand when the fold was first
+//        added (fix round 2, P2-A), then reverted.  Restoring the
+//        RETIRED form of that block (`worldWidth *= m_worldLinearScale`,
+//        i.e. |det M|^(1/3)) leaves 4c green -- a uniform scale cannot
+//        tell the two apart -- and fails 4d, which is why 4d exists
+//        (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).
 //    (h) Test 9, THE STACK APPLICATION ORDER (Phase 2).  Reversing the
 //        iteration in ModifierStack::Modify (last member first, swapping
 //        `members.begin()/end()` for `rbegin()/rend()`) fails 9a's two
@@ -758,6 +770,7 @@ static void Test4_FootprintFade()
 		for( int i = 0; i < N; i++ ) {
 			const Point3 p( rng.CanonicalRandom() * 2 - 1, rng.CanonicalRandom() * 2 - 1, 0 );
 			RayIntersectionGeometric ri = MakeRI( p );
+			ri.txFootprint.widthValid = true;	// the flag the step rule keys on
 			ri.txFootprint.valid = true;
 			ri.txFootprint.worldWidth = widths[wi];
 			const Vector3 n0 = ri.vNormal;
@@ -801,6 +814,7 @@ static void Test4_FootprintFade()
 		Scalar dev[4] = { 0, 0, 0, 0 };
 		for( int wi = 0; wi < 4; wi++ ) {
 			RayIntersectionGeometric ri = MakeRI( Point3( 0, 0, 0 ) );
+			ri.txFootprint.widthValid = true;	// the flag the step rule keys on
 			ri.txFootprint.valid = true;
 			ri.txFootprint.worldWidth = widths[wi];
 			const Vector3 n0 = ri.vNormal;
@@ -944,6 +958,104 @@ static void Test4c_FootprintWorldScaleFold()
 	CHECK( std::fabs( ratio - Scalar( 10 ) ) < Scalar( 1e-9 ),
 		"4c: worldWidth(scale 10) / worldWidth(scale 1) == 10, the object-to-world fold ("
 		<< std::setprecision(12) << ratio << ")" );
+}
+
+// ============================================================
+//  Test 4d: the NON-UNIFORM companion to 4c
+// ============================================================
+
+//! 4c pins the object-to-world promotion under a UNIFORM scale, which
+//! `|det M|^(1/3)` and the exact forward-map promotion agree on exactly.
+//! This is the case that separates them
+//! (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md §3.4).
+//!
+//! `stretch (4, 4, 0.05)` on the XY-plane triangle, viewed face-on down
+//! -Z: the pixel footprint lies entirely in the 4x plane, so the true
+//! world footprint is 4x the object-space one -- while
+//! |det M|^(1/3) = (4*4*0.05)^(1/3) = 0.9283, i.e. 4.31x too small.
+//!
+//! The oracle is not a ratio-to-4 but something stronger and
+//! independent of the promotion code: the SAME world ray fired at the
+//! SAME world surface, once through the stretched instance and once
+//! through an unstretched one.  The plane z = 0 is invariant under
+//! diag(4, 4, 0.05), so both casts describe the identical world
+//! geometry and MUST report the identical world footprint.  Cross-
+//! checked against the closed form |dpdx| = |rxDir| * height, which
+//! neither cast can fake.
+static void Test4d_FootprintNonUniformScaleExactness()
+{
+	std::cout << "Test 4d: txFootprint.worldWidth's object-to-world promotion is EXACT under a non-uniform scale" << std::endl;
+
+	// Height 10 above the plane, hit at world (0.2, 0.2, 0) -- inside the
+	// unit triangle unstretched, and at object (0.05, 0.05, 0) stretched,
+	// also inside.  One-pixel direction offsets of 0.02 along world X / Y.
+	const Scalar height = 10.0;
+	const Scalar e      = 0.02;
+	const Point3  worldOrigin( 0.2, 0.2, height );
+	const Vector3 worldDir( 0, 0, -1 );
+	const Vector3 rxDirOffset( e, 0, 0 );
+	const Vector3 ryDirOffset( 0, e, 0 );
+
+	// Fires the SAME world ray at the same triangle, optionally stretched.
+	auto cast = []( const Vector3* stretch,
+	                const Point3& o, const Vector3& d,
+	                const Vector3& rx, const Vector3& ry,
+	                bool& outWidthValid ) -> Scalar
+	{
+		Implementation::TriangleMeshGeometryIndexed* mesh = BuildUnitUVTriangle();
+		Implementation::Object* obj = new Implementation::Object( mesh );
+		mesh->release();
+		if( stretch ) { obj->SetStretch( *stretch ); }
+		obj->FinalizeTransformations();
+
+		Ray ray( o, d );
+		ray.diffs.rxDir = rx;
+		ray.diffs.ryDir = ry;
+		ray.hasDifferentials = true;
+
+		RayIntersection ri( ray, nullRasterizerState );
+		obj->IntersectRay( ri, RISE_INFINITY, true, true, false );
+		const bool hit = ri.geometric.bHit;
+		outWidthValid = hit && ri.geometric.txFootprint.widthValid;
+		const Scalar w = hit ? ri.geometric.txFootprint.worldWidth : Scalar( 0 );
+		obj->release();
+		return w;
+	};
+
+	bool wvPlain = false, wvStretched = false;
+	const Scalar wPlain = cast( 0, worldOrigin, worldDir, rxDirOffset, ryDirOffset, wvPlain );
+	const Vector3 stretch( 4.0, 4.0, 0.05 );
+	const Scalar wStretched = cast( &stretch, worldOrigin, worldDir, rxDirOffset, ryDirOffset, wvStretched );
+
+	CHECK( wvPlain && wvStretched, "4d: both casts hit and populated widthValid" );
+	CHECK( wPlain > Scalar( 1e-6 ), "4d: (oracle) the unstretched worldWidth is non-degenerate (" << wPlain << ")" );
+
+	// Closed form.  ComputeFootprintVectors builds the auxiliary
+	// direction as `ray.Dir() + diffs.rxDir` WITHOUT re-normalising (the
+	// pinhole camera hands it the difference of two unit vectors; a test
+	// that stamps a raw offset gets a slightly longer auxiliary, which
+	// is the convention, not a bug).  So the auxiliary here is
+	// (e, 0, -1), it crosses z = 0 at t = height, and it lands exactly
+	// `height * e` away -- no 1/sqrt(1+e^2) factor.
+	const Scalar closedForm = height * e;
+	CHECK( std::fabs( wPlain - closedForm ) < Scalar( 1e-12 ),
+		"4d: (oracle) the unstretched worldWidth matches the closed form ("
+		<< std::setprecision(12) << wPlain << " vs " << closedForm << ")" );
+
+	const Scalar rel = std::fabs( wStretched - wPlain ) / wPlain;
+	CHECK( rel < Scalar( 1e-9 ),
+		"4d: stretch (4,4,0.05) reports the SAME world footprint as no stretch -- the "
+		"promotion is exact, not |det|^(1/3) (stretched " << std::setprecision(12) << wStretched
+		<< " vs plain " << wPlain << ", rel " << rel << ")" );
+
+	// Red-proof witness, stated as an assertion so a regression to the
+	// geometric-mean fold is named rather than merely numeric: under
+	// `worldWidth *= |det M|^(1/3)` the stretched cast reports
+	// wPlain / 4 * 0.9283 = wPlain / 4.3089.
+	const Scalar geometricMeanWouldBe = wPlain / Scalar( 4 ) * std::pow( Scalar( 4 * 4 * 0.05 ), Scalar( 1.0 / 3.0 ) );
+	CHECK( std::fabs( wStretched - geometricMeanWouldBe ) > wPlain * Scalar( 0.5 ),
+		"4d: and it is NOT the |det|^(1/3) value " << std::setprecision(12) << geometricMeanWouldBe
+		<< " (4.31x too small)" );
 }
 
 // ============================================================
@@ -1871,6 +1983,7 @@ int main()
 	Test3_NoTexcoords();
 	Test4_FootprintFade();
 	Test4c_FootprintWorldScaleFold();
+	Test4d_FootprintNonUniformScaleExactness();
 	Test5_ObjectSpaceExactness();
 	Test6_UVChainRule();
 	Test7_Handedness();

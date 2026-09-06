@@ -123,7 +123,14 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// SURFACE DOMAIN.  Step in the tangent plane, in world units.
 		//
 		// STEP RULE (design 3.3):
-		//     s = max( user > 0 ? user : 1e-3, footprint.valid ? fw : 0 )
+		//     s = max( user > 0 ? user : 1e-3, footprint.widthValid ? fw : 0 )
+		//
+		// `widthValid`, not `valid`: the latter is the UV-Jacobian flag,
+		// and relief's step is a WORLD-space tangent-plane step that never
+		// needed a UV chart.  Since
+		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md this rule is therefore
+		// live on UV-free geometry too (SDF, box, disk, plane, hair), not
+		// just on triangle meshes.
 		//
 		// The max against the pixel footprint is not a safety clamp, it is
 		// the antialiasing: a central difference over a span SMALLER than
@@ -137,7 +144,7 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// no-op at the relevant scales, since they are already
 		// band-limited.
 		Scalar s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_SURFACE;
-		if( ri.txFootprint.valid && ri.txFootprint.worldWidth > s ) {
+		if( ri.txFootprint.widthValid && ri.txFootprint.worldWidth > s ) {
 			s = ri.txFootprint.worldWidth;
 		}
 		invSpan = Scalar(1) / ( Scalar(2) * s );

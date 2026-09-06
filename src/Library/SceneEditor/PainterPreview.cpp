@@ -43,7 +43,14 @@ namespace
 		ri.ptIntersection = Point3( p.x, p.y, p.z );
 		ri.ptObjIntersec  = Point3( p.x, p.y, p.z );
 		ri.vNormal = Vector3( Scalar( 0 ), Scalar( 0 ), Scalar( 1 ) );
-		ri.txFootprint.valid = true;
+		// `widthValid`, not `valid`: `fw` is a footprint WIDTH, and
+		// `valid` means "the UV Jacobian is usable" -- which the preview has
+		// nothing to offer for.  Setting `valid` alone would stop feeding
+		// `fw` to the expression VM entirely (ExpressionPainter keys `ctx.fw`
+		// on `widthValid`), and setting it in addition would falsely promise
+		// TexturePainter a zero Jacobian.  See
+		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md's two-flag contract.
+		ri.txFootprint.widthValid = true;
 		ri.txFootprint.worldWidth = fw;
 		return ri;
 	}

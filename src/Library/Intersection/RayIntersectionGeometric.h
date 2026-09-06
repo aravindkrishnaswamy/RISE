@@ -91,15 +91,31 @@ namespace RISE
 		}
 	};
 
-	//! Texture-space footprint at the hit point — the projection of
-	//! the incoming ray's screen-space differentials onto the surface
-	//! UV plane.  Populated at intersection time by geometries that
-	//! support it (currently: triangle meshes) when the incoming
-	//! ray has hasDifferentials = true.  Consumed by TexturePainter
-	//! to compute mip LOD per Landing 2 of the PB pipeline plan, and
-	//! by ExpressionPainter/ExpressionScalarPainter (doc 88 S9) to
-	//! populate ExprEvalContext::fw for footprint-aware fbm/turbulence/
-	//! ridged octave fade.
+	//! Pixel footprint at the hit point — the projection of the
+	//! incoming ray's screen-space differentials onto the surface
+	//! tangent plane, plus (where the surface has a UV chart) the
+	//! resulting UV Jacobian.  Populated at intersection time by
+	//! `Object::IntersectRay` for EVERY geometry, whenever the
+	//! incoming ray has hasDifferentials = true (see
+	//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md).  Consumed by
+	//! TexturePainter to compute mip LOD per Landing 2 of the PB
+	//! pipeline plan, and by ExpressionPainter/ExpressionScalarPainter
+	//! (doc 88 S9) to populate ExprEvalContext::fw for footprint-aware
+	//! fbm/turbulence/ridged octave fade.
+	//!
+	//! TWO INDEPENDENT VALIDITY FLAGS, with the invariant
+	//! `valid ⇒ widthValid`:
+	//!
+	//!   - `widthValid` — `dpdx`, `dpdy` and `worldWidth` are usable.
+	//!     Requires only ray differentials and a surface normal, so
+	//!     it is set on every geometry, UV chart or not.
+	//!   - `valid` — the UV Jacobian (`dudx`…`dvdy`) is usable.
+	//!     Additionally requires `derivatives.valid` (a non-degenerate
+	//!     dpdu/dpdv basis).  Deliberately NOT widened to mean "some
+	//!     footprint exists": `TexturePainter::SampleTextured` and
+	//!     `WeaveBRDF` key on it, and a zero Jacobian handed to
+	//!     `ComputeLODFromTexelFootprint` would read as LOD 0 (finest)
+	//!     rather than the honest base-level fallback.
 	//!
 	//! Units: dudx / dudy / dvdx / dvdy are the partial derivatives
 	//! of the surface UV coordinates with respect to screen-space
@@ -107,36 +123,41 @@ namespace RISE
 	//! moves the UV by (dudx, dvdx).  The texture-space Jacobian
 	//! follows by multiplying by texture width / height.
 	//!
-	//! worldWidth is a filter-width estimate (same units as
-	//! ptIntersection / the expression VM's `P`) -- the average
-	//! magnitude of the auxiliary rays' plane-projected offsets
-	//! (dpdx, dpdy; see TextureFootprintCompute.h), i.e. roughly the
-	//! extent of one pixel's footprint on the surface.  0 when
-	//! !valid, matching dudx/dudy/dvdx/dvdy's convention.
+	//! dpdx / dpdy are the surface-plane displacements a ONE-PIXEL
+	//! step in screen x / y induces at this hit point, and worldWidth
+	//! is the mean of their magnitudes — a filter-WIDTH (diameter-like,
+	//! full pixel step, not a radius) estimate in the same length units
+	//! as ptIntersection / the expression VM's `P`.  All three are 0
+	//! when !widthValid.
 	//!
-	//! The GEOMETRY stamps this in OBJECT-space units -- at the
-	//! triangle-mesh call site (the only producer today),
-	//! `ComputeTextureFootprint` runs mid-`Object::IntersectRay`, on
-	//! the ray that function has already transformed into object
-	//! space.  `Object::IntersectRay` / `CSGObject::IntersectRay` fold
-	//! it to a true WORLD length afterward, multiplying by
-	//! `m_worldLinearScale` (the same `|det M|^(1/3)` length fold
-	//! `derivatives.scaleHint` gets, exact under uniform scale,
-	//! a geometric-mean approximation otherwise) -- relief-modifier fix
-	//! round 2, P2-A.  By the time any consumer (ExpressionPainter's
-	//! `fw`, ReliefModifier's footprint-aware step) reads this field,
-	//! it IS world-space, matching this comment's original claim; the
-	//! object-to-world fold is what makes that claim true on an object
-	//! with a non-unit world scale.
+	//! FRAME: these fields live in whatever frame the record itself
+	//! currently lives in.  The geometry layer stamps them from the
+	//! OBJECT-space ray `Object::IntersectRay` transformed on entry, and
+	//! `Object::IntersectRay` / `CSGObject::IntersectRay` promote them
+	//! to world by applying their own forward map `m_mxFinalTrans` to
+	//! `dpdx`/`dpdy` and re-deriving `worldWidth` from the transformed
+	//! pair.  That promotion is EXACT for any linear map — non-uniform
+	//! scale and shear included — because an affine map carries the
+	//! object-space auxiliary line onto the world auxiliary line and the
+	//! object-space tangent plane onto the world tangent plane, so the
+	//! line∩plane point commutes with the map.  (It superseded a
+	//! `worldWidth *= |det M|^(1/3)` geometric-mean fold, which
+	//! under-counted a `scale 4 0.05 4` panel by 4.31x.)  By the time
+	//! any consumer (ExpressionPainter's `fw`, ReliefModifier's
+	//! footprint-aware step) reads these fields they ARE world-space.
 	struct TextureFootprint
 	{
 		Scalar  dudx, dudy;
 		Scalar  dvdx, dvdy;
+		Vector3 dpdx, dpdy;
 		Scalar  worldWidth;
-		bool    valid;
+		bool    valid;			// the UV Jacobian is usable
+		bool    widthValid;		// dpdx / dpdy / worldWidth are usable
 
 		TextureFootprint() :
-		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ), worldWidth( 0 ), valid( false )
+		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ),
+		dpdx( Vector3(0,0,0) ), dpdy( Vector3(0,0,0) ),
+		worldWidth( 0 ), valid( false ), widthValid( false )
 		{
 		}
 	};

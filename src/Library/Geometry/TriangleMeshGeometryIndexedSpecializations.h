@@ -531,12 +531,6 @@ namespace RISE
 				ri.signals.primId    = (int)( elem - &ptr_polygons[0] );
 				ri.signals.baryA     = a;
 				ri.signals.baryB     = b;
-
-				// Landing 2: project ray differentials onto the surface
-				// UV plane and store the texture-space footprint.  Costs
-				// nothing when ray.hasDifferentials = false (early-out
-				// inside the helper).
-				ComputeTextureFootprint( ri, ri.ray );
 			}
 		}
 	}

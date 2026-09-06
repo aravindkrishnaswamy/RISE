@@ -596,6 +596,7 @@ namespace RISE
 					ri.vNormal            = vNormals[idx];
 					ri.vGeomNormal        = vNormals[idx];
 					ri.txFootprint.valid  = false;
+					ri.txFootprint.widthValid = false;
 					ri.derivatives.valid  = false;
 
 					const Scalar disp = height.GetValuesAt( ri ).v[0] * scale;
