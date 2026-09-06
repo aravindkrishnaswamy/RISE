@@ -1930,6 +1930,22 @@ no-artifact band.
 | 0.06 | `wb_after_s006.png` | stronger, still clean |
 | 0.10 | `wb_after_s010.png` | dark-pixel count roughly doubles vs. baseline — edge of the safe range |
 
+**Follow-up (2026-09-06, branch `relief-followups`):** acting on the 0.05
+row's own caveat, the committed `relief_wood.scale` was dialled down to
+**0.03** — inside the same sweep's already-recorded artifact-free/quieter
+0.02–0.04 band. A/B reduced renders (320×240, 64 spp, `oidn_denoise
+FALSE`) at 0.03 vs. 0.05 confirm the grain still reads as carved surface
+with grain catch-light (not flat paint) at 0.03, and the front-edge
+scallop is visibly softer than at 0.05:
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/relief_dial/wb_s003.png`
+(0.03, new) vs.
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/relief_dial/wb_s005.png`
+(0.05, prior). The CST-derive golden digest for this scene is unchanged
+by the edit — expected, not a gap: per §7.3, `DumpJob` records an
+object's modifier binding by NAME only (`modifier=relief_wood`), never
+the bound modifier's own parameters, so `scale` is invisible to the
+digest.
+
 All PNGs are under
 `/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/phase5/`.
 
