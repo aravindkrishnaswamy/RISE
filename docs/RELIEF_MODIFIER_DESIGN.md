@@ -1,8 +1,9 @@
 # Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
 
-**Status:** DESIGN (2026-09-05). Phases 1–5 below are the implementation plan;
-each phase runs the [implementation-review-loop](skills/implementation-review-loop.md)
-to zero P1 before the next starts. The per-phase record is appended to §12 as
+**Status:** Phase 1 LANDED (2026-09-06, two review rounds to zero P1 — see
+§12); Phases 2–5 pending. Each phase runs the
+[implementation-review-loop](skills/implementation-review-loop.md) to zero
+P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
 **Branch:** `relief-modifier` off `master` at `2cf923b7`.
 **Inputs (verified in tree, 2026-09-05):** the three existing modifiers
@@ -265,6 +266,26 @@ floor) is exactly what is used, and there is **no distance fade at all**.
 That is the same limitation the whole painter stack carries, not one relief
 introduces; the descriptor discloses both halves rather than promising a fade
 that only some geometry gets.
+
+**`txFootprint.worldWidth` is now world-correct under instance scale
+(2026-09-06, fix round 2, P2-A) — it was NOT before this fix.**
+`TextureFootprintCompute::ComputeTextureFootprint` runs mid-
+`Object::IntersectRay`, on the ray that function has already transformed
+into object space, so `worldWidth` was stamped an OBJECT-space length
+despite its name and its doc comment's world-space claim
+(RayIntersectionGeometric.h, TextureFootprintCompute.h) — the sibling
+length `derivatives.scaleHint` was folded by `m_worldLinearScale` at the
+Object layer, but `worldWidth` was not.  Every consumer (`fw` in
+ExpressionPainter/ExpressionScalarPainter, and the `max(·, fw)` rule
+above) therefore silently read object units on any object with a
+non-unit world scale: on a `scale 10` mesh instance the footprint fade
+above kicked in ten times later (or never) than the equivalent
+unscaled instance, and `receding_pier`-class scenes authored against a
+scaled instance faded at the wrong distance.  Fixed by folding
+`worldWidth` by `m_worldLinearScale` at the same point `Object::
+IntersectRay` / `CSGObject::IntersectRay` fold `scaleHint` (the same
+`|det M|^(1/3)` geometric-mean approximation under non-uniform scale,
+exact under uniform scale).  Regression: `ReliefModifierTest` test 4c.
 
 ### 3.4 One field on the hit record
 
@@ -833,7 +854,7 @@ P2s**.  All ten are fixed.  Suite after the round: `ReliefModifierTest`
 
 | Finding | Fix | Commit |
 |---|---|---|
-| **P1-A** — the frame-rebuild gate uses the wrong flag.  `Object::IntersectRay` builds the coherent `CreateFromWU` frame under `bShadingTangentFromGeometry`; `bHasShadingTangent` is only the sub-case inside it.  ReliefModifier, **BumpMap and NormalMap** all gated on the sub-case, so an SDFGeometry-heightfield hit (`bShadingTangentFromGeometry` without `bHasShadingTangent`, SDFGeometry.cpp:1599) fell to `CreateFromW` — a 180° frame rotation (u:+X→−X, v:+Y→−Y) plus loss of the mirrored-instance `FlipV`. | Root fix, once: `ModifierFrame::HasCoherentTangent( ri )` = `bShadingTangentFromGeometry \|\| bHasShadingTangent`, with a comment citing Object.cpp:699 and justifying the OR (the second disjunct is unreachable in tree; if a future geometry took it, projecting the incoming `u` is harmless — Glint's own continuity argument — so the OR can only ADD preservation).  All three modifiers switched.  Glint stays unconditional, and `ModifierFrame.h` now states that both policies are correct on a coherent-tangent hit and differ only on a tangent-less one.  The header's false claim that "SDFGeometry's heightfield mode" was covered by the `bHasShadingTangent` gate is corrected. | `44cf535d` |
+| **P1-A** — the frame-rebuild gate uses the wrong flag.  `Object::IntersectRay` builds the coherent `CreateFromWU` frame under `bShadingTangentFromGeometry`; `bHasShadingTangent` is only the sub-case inside it.  ReliefModifier, **BumpMap and NormalMap** all gated on the sub-case, so an SDFGeometry-heightfield hit (`bShadingTangentFromGeometry` without `bHasShadingTangent`, SDFGeometry.cpp's `m_isHeightfield` branch of `IntersectRay`) fell to `CreateFromW` — a 180° frame rotation (u:+X→−X, v:+Y→−Y) plus loss of the mirrored-instance `FlipV`. | Root fix, once: `ModifierFrame::HasCoherentTangent( ri )` = `bShadingTangentFromGeometry \|\| bHasShadingTangent`, with a comment citing Object.cpp:699 and justifying the OR (the second disjunct is unreachable in tree; if a future geometry took it, projecting the incoming `u` is harmless — Glint's own continuity argument — so the OR can only ADD preservation).  All three modifiers switched.  Glint stays unconditional, and `ModifierFrame.h` now states that both policies are correct on a coherent-tangent hit and differ only on a tangent-less one.  The header's false claim that "SDFGeometry's heightfield mode" was covered by the `bHasShadingTangent` gate is corrected. | `44cf535d` |
 | **P1-B** — design body contradicted §12.  §3.4 still said CSGObject stamps "the composite's own inverse" (it stamps `nullptr`); §10 still asserted a "measured ~4× one albedo evaluation" (never measured); §12 said "four commits" (eight); §2's hook-timing row named `bHasShadingTangent` as the ONB branch condition — the same error that produced P1-A. | §3.4 rewritten to the shipped behaviour with the original wording marked superseded; §10 rewritten against §12's table (exact count of four evaluations; +3.9 % machinery; 3.39× whole-render near-worst-case; the 1.73× vs-albedo figure explicitly flagged as not apples-to-apples); §12's commit count corrected and `c3600ed0` accounted for as the separately-landed **Phase-3** migrator; §2's two rows corrected.  Also swept the enumeration family: `RayIntersectionGeometric.h:151`/`:158`, `SurfaceCurvature.h`, `BDPTVertexRIGRebuildTest.cpp` listed only two of the four normal-perturbing modifiers and now name all four. | *(this record)* |
 | **P1-C** — `SceneEditorSuggestionsTest` hard-codes the registered-chunk count in two EXPECTs; `relief_modifier` made it 175 and the suite was red on exactly those two. | Both bumped 174 → 175, per-addition history extended.  Suite added to the Phase-1 gate list above, and flagged as a **Phase-2 gate** (`modifier_stack` → 176). | `c246ae8f` |
 | **P2-1** — the `step` descriptor promised "set it explicitly when the field's features are finer than the floor", which cannot work: an explicit step is raised to the footprint too. | Descriptor rewritten: the explicit step is a **floor**; the footprint wins when larger, so on meshes relief fades toward flat at distance and a sub-footprint step is silently ignored; on analytic primitives and SDFs no footprint exists, the max is a no-op, there is **no fade**, and the explicit step is used verbatim.  Mirrored in §3.3 with the mesh-only disclosure.  **Code rule unchanged.** | `0bec7038`, doc in *(this record)* |
@@ -872,10 +893,23 @@ OR had to preserve), `GeometryShadingTangentTest` **12606/0**,
 **Residual closed in the same round.**  An SDF-heightfield hit used to take
 `NormalMap`'s last-ditch T/B branch and fire its once-per-process "no tangent
 frame" warning: the **values were unaffected** (that branch reads the same
-`ri.onb.u()/v()` the coherent-tangent branch does) but the warning was a false
-positive on exactly that hit.  The branch now gates on
+`ri.onb.u()/v()` the coherent-tangent branch does).  The branch now gates on
 `ModifierFrame::HasCoherentTangent` — the same predicate the rebuild uses — so
-the diagnostic and the rebuild agree on what a coherent-tangent hit is; the
-last-ditch warning's text names the predicate.  Suites after the change:
-`ReliefModifierTest` 80/0, `GlintModifierTest` all pass,
-`HairTangentPlumbingTest` 123/0.
+the diagnostic and the rebuild agree on what a coherent-tangent hit is.
+Suites after the change: `ReliefModifierTest` 80/0, `GlintModifierTest` all
+pass, `HairTangentPlumbingTest` 123/0.
+*(Corrected, fix round 2 P2-B: the sentence originally here claimed the
+retired warning "was a false positive on exactly that hit" — an
+overstatement.  SDFGeometry's heightfield `ptCoord` is parameterised from
+the OBJECT-space hit point, while the coherent tangent this branch reads is
+built from a WORLD-X projection (Object::IntersectRay's no-supplied-tangent
+fallback) — the two agree only when the instance's linear part maps
+object +X to world +X, i.e. no rotation.  Suppressing the warning is a true
+false positive only on an UNROTATED SDF-heightfield instance; on a ROTATED
+one the tangent basis is genuinely misaligned with the heightfield's own
+UV axes, and silence there is a disclosed diagnostic gap, not a corrected
+false positive.  NormalMap.cpp's comment at the branch says so now.  Also
+corrected: the last-ditch warning's text named the C++ symbol
+`ModifierFrame::HasCoherentTangent` — reworded to "a geometry-supplied
+shading tangent", matching the plain-author language the rest of that
+warning already uses for the TANGENT/derivatives checks.)*
