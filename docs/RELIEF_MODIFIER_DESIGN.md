@@ -1,13 +1,6 @@
 # Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
 
-**Status:** Phase 1 LANDED (2026-09-06, four review rounds — see
-§12). Phase 2 reviewed (2026-09-06, one adversarial round, 0 correctness
-P1s — R9 CLEAN incl. `leaks --atExit` on nested stacks — 2 citation P1s
-fixed, see §12). Phase 3 reviewed (three lenses: code CLEAN after 1 P1
-fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12). Phase
-4 implemented 2026-09-06 (`DESIGN_FLAT_RELIEF` + verb hook-point notes,
-see §12) — gate suites green, the implementation-review-loop adversarial
-round has NOT yet run against this slice; Phase 5 pending. Each phase runs the
+**Status:** Phases 1–5 landed; Phase 4/5 review rounds: see §12. Each phase runs the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
@@ -741,7 +734,7 @@ the showcase fixtures at their authored spp.
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope) |
 | **4** | `DESIGN_FLAT_RELIEF` (condition Q) + verb hook-point notes (the recipe example shipped early, as part of Phase 3's teaching surfaces — `materials-and-media-basics.md`'s crackle-glaze — see its own §12 P1-1 fix) | implemented 2026-09-06 (see §12): zero new warnings; `AgentReadValidateTest` 314/0 (extended with `RunFlatReliefScanTest`), `AgentChunkCrudTest` 3809/0, `AgentAddWearTest` 287/0, `AgentAddWetnessTest` 210/0, `SourceHygieneTest` 164/0, `ReliefModifierTest` 106/0; the implementation-review-loop adversarial round has NOT yet run against this slice |
-| **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | renders attached to §12; the user judges "reads as surface" |
+| **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | landed 2026-09-06 (see §12): `weathered_workbench` relief committed (scale 0.05, amplitude-swept); `velvet_cushion` migration confirmed better (domain surface reads flat on this SDF, no code change); `relief_crackle_glaze` key light re-raked for near-specular legibility (R13's finding, one commit); renders attached to §12 |
 
 Commits as each phase converges; never push. The stray uncommitted edit to
 `scenes/FeatureBased/BDPT/bdpt_crystal_garden.RISEscene` predates this arc
@@ -1750,3 +1743,194 @@ is tested — grep tests/ for it)" fallback. `AgentChunkCrudTest` is still
 run and reported above (green) since the brief names it explicitly.
 Nothing else was skipped: all four numbered deliverables plus this
 record are complete.
+
+### Phase 5 — landed 2026-09-06
+
+Branch `relief-modifier`, two commits plus this record: `0f872ac9`
+(weathered_workbench), `7b7b868d` (relief_crackle_glaze + golden
+regen). Pixel verification per
+§9's own thesis extension and §12's Phase 3 R13 finding (crackle
+legibility is lighting-angle dependent). No C++ touched — scenes,
+renders, and this record only, per the phase's own gate in §11.
+
+**1. `weathered_workbench` — relief bound to the grain field.**
+
+A third consumer of `expr_grain` was added: `scalar_painter sp_wood_relief`
+bridges the field raw (channel R, no scale/bias — the amplitude lives
+entirely in `relief_modifier`'s own `scale`), and `relief_modifier
+relief_wood` (`domain surface`, `step 0`) binds `obj_bench_top` and all
+four `obj_leg_*` objects, which all share `mat_wood_top`.
+
+*Sign.* `ramp_wood` maps field=0 → dark heartwood, field=1 → pale
+sapwood — the opposite polarity from the crackle-glaze recipe, whose
+dark end is its field's HIGH end. Binding `sp_wood_relief` (monotonically
+increasing with the raw field, like `ramp_wood`) with a **positive**
+`scale` therefore sinks the dark grain relative to the pale wood, which
+is the picture the scene wants (dense dark streaks read as the harder,
+less-worn wood; the softer pale wood between them reads as
+worn/weathered — this also fixed a pre-existing inverted comment on
+`sp_wood_rough`, which had its own pale/dark ends backwards relative to
+`ramp_wood`'s mapping). This is the opposite sign from the crackle
+recipe's `-0.02`, and is called out in-scene so a future reader doesn't
+assume the two recipes disagree.
+
+*Amplitude sweep.* Reduced copies (320×240, `oidn_denoise FALSE`) at
+`scale` = 0.002, 0.004, 0.008 first at 24 spp, then re-run at 128 spp
+once the 24 spp renders proved too noisy to distinguish signal from
+per-run Monte-Carlo seed variance (renders seed from wall clock, not a
+fixed value — mean abs diff between BEFORE and a *zero-effect* AFTER at
+24 spp was ~1.15–1.95/255 just from noise; at 128 spp it dropped to
+0.82–1.10/255 and started tracking `scale` monotonically). The visual
+effect at 0.002–0.008 was too subtle to read as relief at this table's
+scale/lighting (front-lit top face, `box_geometry` — an analytic
+primitive, so no distance fade either way). Extended the sweep to 0.02,
+0.04, 0.05, 0.06, 0.10: 0.04–0.10 all showed a visible rippled front-edge
+silhouette and catch-light along the grain ridges with no sparkle at the
+tray/vise (far) end; a dark-pixel-count check in the bench-top crop
+(`< 10` luminance, a proxy for normal-flip black-speckle artifacts) held
+near the BEFORE baseline (37) through 0.06 (39) and only started
+climbing at 0.10 (82), so 0.10 was treated as the edge of the safe range,
+not the target. **Chose `scale 0.05`** — smallest value in the sweep
+where the grain reads as carved surface (visible edge undulation +
+catch-light) rather than flat paint, comfortably inside the
+no-artifact band.
+
+| scale | render | note |
+|---|---|---|
+| 0 (before) | `wb_before.png` (reduced), `wb_before_authored.png` (authored) | flat — straight top-edge silhouette, paint-like grain |
+| 0.002 | `wb_after_s0002.png` | no visible difference from before |
+| 0.004 | `wb_after_s0004.png` | no visible difference from before |
+| 0.008 | `wb_after_s0008.png` | barely perceptible |
+| 0.02 | `wb_after_s002.png` | faint edge ripple |
+| 0.04 | `wb_after_s004.png` | visible edge ripple + grain catch-light |
+| **0.05** | `wb_after_s005.png` (reduced), **`wb_after_authored.png`** (authored — committed) | **chosen** — clearly reads as surface, no artifacts |
+| 0.06 | `wb_after_s006.png` | stronger, still clean |
+| 0.10 | `wb_after_s010.png` | dark-pixel count roughly doubles vs. baseline — edge of the safe range |
+
+All PNGs are under
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/phase5/`.
+
+*Mean luminance (authored settings, 640×480, 12 spp, `oidn_denoise` at
+its scene default TRUE, 8-bit sRGB channel-averaged):* whole frame
+before **150.213**, after **148.949** (−0.84%); bench-top-only crop
+(rows 150–300) before **133.808**, after **130.121** (−2.76%) — both
+decreases are consistent with the sunk dark grain reading darker/more
+shadowed, not a variance artifact (the authored render is a single
+sample count, not compared across seeds).
+
+*Authored-settings render time:* 2.57 s wall (12 spp, 640×480) — far
+under the 5-minute budget, so both the reduced-sweep evidence and a
+full authored-settings AFTER render are kept
+(`wb_after_authored.png`; `wb_before_authored.png` is the HEAD-scene
+control at the same settings).
+
+**2. `velvet_cushion` — migrated (`domain uv`) vs. a `domain surface` upgrade.**
+
+The cushion's `cushion` geometry is `sdf_geometry`. Checked
+`SDFGeometry.cpp` directly (the block right above the curvature
+computation, ~line 1618): *"`derivatives.valid` stays FALSE — there is
+no dpdu/dpdv here to be valid"* — stated in the code's own comment, not
+inferred. Per design §3.2, `domain surface`'s chain-rule step for
+`ptCoord` only fires `when ri.derivatives.valid`; when it is false,
+`ptCoord` is left unchanged at all four offset evaluations, so a
+UV-parameterised field (`crease_field`, an `expression_function2d`) reads
+**flat** in `domain surface` mode on this geometry — this is the
+documented mesh/SDF limitation (§3.2), not a bug.
+
+Rendered both at reduced settings (600×450, 48 spp, `oidn_denoise
+FALSE`) to confirm rather than only assert: `velvet_uv.png` (the
+committed scene, unchanged) shows the fine radial nap-crease pattern
+converging on the crown, matching the scene's own description; a
+`domain surface` variant of the identical `relief_modifier` chunk
+(`velvet_surface.png`) shows **no crease texture at all** — smooth
+where the UV version shows fine radial gathers. Mean luminance is
+statistically identical (77.837 vs. 77.849 — under 0.02%, i.e. no
+systematic exposure difference, only the texture is different/absent),
+confirming the difference is the missing relief, not a lighting or
+exposure change from the domain switch.
+
+**Verdict: migrated `domain uv` is clearly better for this scene, and
+the `domain surface` upgrade is lossy (produces zero relief) — the
+committed scene is left unchanged**, exactly per the task's own
+condition ("do NOT change ... unless surface mode is clearly better AND
+lossless in intent" — here it's neither).
+
+**3. `relief_crackle_glaze` — legibility near the specular peak (R13/Phase 3's finding).**
+
+Rendered the scene as authored (`crackle_baseline.png`, 256×256, 32 spp,
+box filter, `oidn_denoise FALSE` — already the scene's own settings, no
+reduction needed) and confirmed the finding by inspection: zoomed crops
+(`crackle_baseline_zoom.png`) show crack lines visibly thinning/losing
+their groove shading right where the GGX highlight sits (upper-left of
+frame under the original `0.35 0.55 0.85` key direction, which is close
+to the camera axis and puts the highlight near the sphere's
+camera-facing centre).
+
+Tried, in order, per the task's "ONE principled adjustment" scope:
+
+- **Scale only** (`-0.02` → `-0.05`, light unchanged): `crackle_scale05.png`
+  / `crackle_scale05_zoom.png`. Marginal improvement in the highlight
+  region, not a clear fix — the highlight itself still dominates.
+- **Light direction, extreme raking** (`0.90 0.25 0.05`):
+  `crackle_raking.png` / `crackle_raking_zoom_center.png` /
+  `crackle_raking_zoom_highlight.png`. Cracks read clearly near the
+  (now off-centre) highlight, but roughly half the sphere fell into
+  near-black under only the 0.12-power ambient fill — worse legibility,
+  just relocated.
+- **Light direction, moderate raking** (`0.72 0.42 0.35`, **chosen**):
+  `crackle_mid.png` / `crackle_mid_zoom_center.png` /
+  `crackle_mid_zoom_highlight.png`. The highlight moves off the
+  sphere's camera-facing centre toward the upper-right limb; crack
+  grooves read by shading (catch-light on one rim, shadow on the other)
+  across the whole visible hemisphere, including near the (now
+  off-centre, less dominant) highlight, while the sphere stays
+  reasonably front-lit overall.
+
+Committed the light-direction change only (`7b7b868d`); scale stays
+`-0.02`. Confirmed with a final render of the actual committed scene at
+its authored settings, matching `crackle_mid.png` (copy kept as
+`crackle_final.png`). Mean luminance (authored settings, 256×256, 32
+spp, `oidn_denoise FALSE`): baseline **66.002**, final **48.233** — the
+frame is dimmer because the highlight (the single brightest region) has
+moved away from the camera-facing centre onto the limb, which is
+expected and is exactly the intended trade (peak brightness for crack
+legibility).
+
+**Skill-excerpt invariant.** Only the scene's `directional_light` chunk
+changed; that chunk was never part of the `materials-and-media-basics.md`
+excerpt (which reproduces only `cg_crack_field`, `cg_glaze_colour`,
+`cg_crack_scalar`, `cg_relief`, `cg_f0`, `cg_glaze_mat`, and the
+`standard_object`). Re-diffed all six painter/material chunks plus the
+object chunk against the excerpt after the edit: all six chunks (the
+object chunk carries a deliberate, pre-existing difference — no
+`position`, a `# any sphere_geometry / SDF / mesh works` comment — that
+predates this phase and is not part of the "must match" set, matching
+what the Phase 3 P1-1 fix already established) remain byte-identical.
+No skill edit was needed or made.
+
+**Golden regen.** `./bin/tests/CstDeriveGoldenTest --generate` picked up
+both Phase 5 scene edits correctly, but also picked up the pre-existing
+*uncommitted* drift on `scenes/FeatureBased/BDPT/bdpt_crystal_garden.RISEscene`
+(the stray edit named in §11 as predating this arc and left alone) —
+generate re-derives whatever is on disk, dirty or not, so its digest
+moved too. That one line was hand-reverted back to its HEAD value in
+`tests/data/cst_derive_golden.txt` before committing, so the golden
+file's only changes are the two Phase 5 scenes'
+(`weathered_workbench.RISEscene`, `relief_crackle_glaze.RISEscene`).
+Verified with `./bin/tests/CstDeriveGoldenTest` (verify mode, not
+generate): **440 MATCH, 1 DRIFT** (that same pre-existing
+`bdpt_crystal_garden` entry — unchanged from before this phase started,
+confirmed by re-checking it reproduces the untouched HEAD digest), **0
+UNCOVERED, 0 STALE**.
+
+**Left undone / observed-need gated.** Nothing from the four deliverables
+was skipped. Not attempted (out of scope for this phase): re-tuning
+`relief_crackle_glaze`'s `scale` in combination with the light change
+(the task asked for ONE principled adjustment; the light-only change
+already closed the finding without also touching the recipe's
+`-0.02`/`0.46`/`0.04` values that the skill excerpt and §9's prose
+describe). The `weathered_workbench` legs share `mat_wood_top`, so they
+were bound to `relief_wood` alongside the top rather than left flat —
+the scene's own header never called the legs out separately, and
+leaving them flat while the top gained visible relief would have read
+as an inconsistency in the same material.
