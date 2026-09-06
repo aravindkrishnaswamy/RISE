@@ -678,18 +678,7 @@ seed noise.
   `SolveQuadricWithinRange`'s `a == 0` linear branch — which the
   parallelogram case still takes — are all untouched. Every caller
   benefits: `ClippedPlaneGeometry` (both entry points) and
-  `BilinearPatchGeometry`. (`RayTriangleIntersectionWithDisplacement` also
-  calls the helper, and — contrary to an earlier draft of this list, which
-  called it absent from the build — it **is** registered in
-  `build/VS2022/Library/Library.vcxproj` and `.vcxproj.filters`. It still
-  doesn't benefit, but the reason is simpler than a missing build entry:
-  **nothing calls it** — no call site exists anywhere in `src/Library`,
-  only its own declaration in `RayPrimitiveIntersections.h` and its own
-  definition. It is also absent from `build/make/rise/Filelist`,
-  `build/cmake/rise-android/rise_sources.cmake`, and the Xcode project, so
-  the five build projects disagree with each other about whether the file
-  exists at all — an open inconsistency, left unfixed here per the Change
-  Checklist's five-project rule; see `CLAUDE.md` / `AGENTS.md`.)
+  `BilinearPatchGeometry`. (`RayTriangleIntersectionWithDisplacement`, a 2004 stub that also called the helper, never compiled and was never invoked; it was deleted 2026-09-06 together with its VS2022 project entries and header declaration.)
 
   Guarded by `GeometryUVRoundtripTest::TestBilinearEliminationAxis`: 12
   axis-aligned closed-form cases across all three elimination branches and
@@ -796,44 +785,11 @@ seed noise.
     suite regresses; reverted back before committing. Commit `264c988a`
     (comment), `bfbcd001` (test).
   * This section's dead-caller sentence about
-    `RayTriangleIntersectionWithDisplacement` was ALSO wrong: it **is**
-    registered in `build/VS2022/Library/Library.vcxproj` (+ `.filters`),
-    just absent from Filelist / the Android CMake list / Xcode — a
-    genuine five-project inconsistency across the build systems, left
-    open (not fixed here). The real reason it does not benefit from the
-    axis-pick fix is simpler than a missing build entry: **nothing calls
-    it** anywhere in `src/Library` — only its own declaration in
-    `RayPrimitiveIntersections.h` and its own definition. Commit
-    *(this record)*.
-  * `SolveQuadric`'s general-coefficient-callers comment now also names
-    `SolveCubic`'s own `IsReallyZero(coeff[0])` branch, reachable from
-    `SolveQuartic`'s degenerate branch — the route
-    `RayBezierPatchIntersection` takes on every call (`quartCoeff[0]` is
-    always `0.0`, since a bicubic patch's `F1(u,.)` is cubic in v, not
-    quartic). And "Both siblings now agree" is narrowed to the `a == 0`
-    branch it sits beside; the `d == 0` divergence (epsilon-based
-    `IsZero(d)` in `SolveQuadric` vs exact `d == 0.0` in
-    `SolveQuadricWithinRange`) is called out as untouched. Commit
-    `264c988a`.
-  * `RootLiesOnRay`'s "three decades of headroom" claim is corrected to
-    the actually-measured worst case: residual/tolerance ratio 0.024 (a
-    42x margin, ~1.5 decades) over 600k hits, not the ~4500x
-    `DBL_EPSILON` multiple the old text implied from `NEARZERO`'s
-    absolute value alone. Commit `1ab0d7ca`.
-  * `RootLiesOnRay` no longer re-evaluates `EvaluateBilinearPatchAt` —
-    every one of its three call sites had already computed the point
-    (`pos1` / `pos1b` / `pos2`) to derive `dRange` via `computet`; it now
-    takes that `Point3` directly, and compares squared residual against
-    squared tolerance so the per-candidate check no longer calls `sqrt`.
-    Redundant-work removal, not a precision change:
-    `GeometryUVRoundtripTest` still reports 0 lost / 0 phantoms on the
-    85156-hit / 98779-miss sweep, max on-ray residual unchanged at
-    `1.16279e-09`. Commit `1ab0d7ca`.
-  * `tests/GeometryUVRoundtripTest.cpp`'s "textually the legacy one and
-    the results must be identical bits" sentence is reworded to match
-    the block immediately below it, which explicitly does NOT assert bit
-    equality (FP-contraction noise, 0–3 ulp under `-ffast-math` + LTO).
-    Commit `bfbcd001`.
+    `RayTriangleIntersectionWithDisplacement` was ALSO wrong: it was
+    registered in `build/VS2022/Library/Library.vcxproj` (+ `.filters`) but
+    absent from Filelist / the Android CMake list / Xcode. Resolved by
+    DELETING the stub (uncompilable, uncalled) and its project entries and
+    extern declaration on 2026-09-06 (branch cleanup-displacement-stub).
 
   Gate: zero warnings on a clean `make -C build/make/rise -j8 all`;
   `PolynomialTest`, `GeometryUVRoundtripTest` (85156 hit / 0 lost, 98779

@@ -5175,8 +5175,8 @@ yet known (§10.1).
     (the shared ray-bilinear-patch solver — used by every
     `ClippedPlaneGeometry` caller AND by `BilinearPatchGeometry`, the
     `bilinearpatch_geometry` chunk area lights use;
-    `RayTriangleIntersectionWithDisplacement` also calls it but is dead,
-    never-invoked code): the self-intersection floor is now
+    the dead `RayTriangleIntersectionWithDisplacement` stub that also called
+    it was deleted 2026-09-06): the self-intersection floor is now
     scale-relative — `tMin = NEARZERO * (1 + coordScale)`, where
     `coordScale` is the largest L1 magnitude among the ray origin and the
     patch's four corners — instead of the bare `NEARZERO`. Fixed ONCE in

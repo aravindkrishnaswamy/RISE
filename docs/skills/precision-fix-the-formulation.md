@@ -266,8 +266,8 @@ producer rather than in the producer itself.
 
 Right fix: in `RayBilinearPatchIntersection` (the shared producer, whose
 other LIVE caller is `BilinearPatchGeometry` — the `bilinearpatch_geometry`
-chunk area lights use; `RayTriangleIntersectionWithDisplacement` also
-calls it but is dead, never-invoked code), compute a scale-relative floor once —
+chunk area lights use; a dead `RayTriangleIntersectionWithDisplacement`
+stub that also called it was deleted 2026-09-06), compute a scale-relative floor once —
 `tMin = NEARZERO * (1 + coordScale)`, `coordScale` the largest L1
 magnitude among the ray origin and the patch's four corners — and use
 `dRange > tMin` (not `dRange > 0` / `dRange > NEARZERO`) at all three
