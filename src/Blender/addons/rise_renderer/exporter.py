@@ -1376,7 +1376,21 @@ def _build_bump_modifier(material, normal_node, state: _ExportState) -> str | No
             kind=MODIFIER_BUMP,
             source_painter_name=painter_name,
             scale=float(strength * distance),
-            window=1.0,
+            # Texture-space HALF-STEP for the central difference, in UV units.
+            #
+            # This was 1.0, which is not a small step -- it is the whole UV
+            # range.  RISE's bridge samples the height painter through
+            # `Painter::Evaluate`, which CLAMPS (u, v) to [0, 1], so a
+            # half-step of 1.0 made every central difference f(1, v) - f(0, v):
+            # the same two texels everywhere on the surface, i.e. a constant
+            # tilt of the shading normal rather than a bump.  0.005 is roughly a
+            # texel on a 200px map and a fraction of one on anything larger,
+            # which is what a finite-difference derivative estimate wants.
+            # (Fixed 2026-09-06 alongside the `bumpmap_modifier` removal; the
+            # bridge entry point is now a shim over `relief_modifier`, and the
+            # amplitude fold means the perturbation scales with this value --
+            # see docs/RELIEF_MODIFIER_DESIGN.md 7.2/7.5.)
+            window=0.005,
         )
     )
     state.modifier_cache[modifier_key] = modifier_name
