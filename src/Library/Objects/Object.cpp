@@ -969,7 +969,16 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// degenerate transform (m_worldLinearScale == 0) leaves worldWidth
 		// at its object-space value, same policy as scaleHint's degenerate
 		// branch above -- an object-space length is still a better
-		// normalizer than 0.
+		// normalizer than 0.  On a strongly flattened or elongated instance
+		// (e.g. `scale 4 0.05 4` on a panel: in-plane scale is 4x, but
+		// |det|^(1/3) = 0.928) the geometric-mean fold can UNDER-scale
+		// worldWidth relative to the true in-plane footprint (4.31x too
+		// small vs. the 4x it should be) -- worse than leaving worldWidth
+		// object-space would have been.  The error direction only
+		// under-filters, though: ReliefModifier's `max(step, worldWidth)`
+		// then simply falls back to `step`, the same aliasing as
+		// pre-fix, never worse than that floor.  The uniform-scale case
+		// remains exact.
 		if( m_worldLinearScale > Scalar( 0 ) && ri.geometric.txFootprint.valid ) {
 			ri.geometric.txFootprint.worldWidth *= m_worldLinearScale;
 		}

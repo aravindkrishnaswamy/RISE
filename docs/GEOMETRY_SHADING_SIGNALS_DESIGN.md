@@ -115,8 +115,9 @@ Two consequences matter here:
    :179-193 enumerates every site that must stay in sync. The `fw` variable is
    the exact precedent, including its honesty convention:
    `ctx.fw = ri.txFootprint.valid ?
-   ri.txFootprint.worldWidth : 0` (`ExpressionPainter.cpp:39`) — a valid-flag
-   gate with a documented zero fallback, not a silent fabrication.
+   ri.txFootprint.worldWidth : 0` (`ExpressionPainter::BuildContext` /
+   `ExpressionScalarPainter::BuildContext` in `ExpressionPainter.cpp`) — a
+   valid-flag gate with a documented zero fallback, not a silent fabrication.
 
 2. **Builtins can reach nothing.** `CallFunc` (:1127-1192) is **static**. It
    receives the popped stack arguments and one hardcoded scalar (`fw`, read

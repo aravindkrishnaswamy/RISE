@@ -174,7 +174,8 @@ void NormalMap::Modify( RayIntersectionGeometric& ri ) const
 		// not the object-space +X the UV is actually built from -- into the
 		// world-space shading-normal plane.  Those two agree only when the
 		// instance's linear part maps object +X to world +X, i.e. no
-		// rotation (uniform or non-uniform SCALE and translation are fine).
+		// rotation, shear, or orientation-reversing (negative) scale; a
+		// positive uniform or non-uniform scale and translation are fine.
 		// On an UNROTATED SDF-heightfield instance suppressing the warning
 		// is correct: the values genuinely are the UV-aligned frame. On a
 		// ROTATED one, `onb.u()/v()` is no longer aligned with the

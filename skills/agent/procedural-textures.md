@@ -113,7 +113,10 @@ it costs ONE chunk instead of a graph of them.
 The body sees `u`, `v`, `P` (world position, a `vec3`), `Po` (object
 position), `N` (shading normal), `fw` (world-space filter-width
 estimate; real on primary hits against mesh geometry, 0.0 -- an honest
-"point sample" -- on secondary bounces and non-mesh geometry), and
+"point sample" -- on secondary bounces and non-mesh geometry; on a
+SCALED mesh instance `fw` was object-space, not world-space, until
+2026-09-06 -- relief-modifier arc, docs/RELIEF_MODIFIER_DESIGN.md
+§3.3 -- and is world-correct since), and
 `time`.  `fbm`/`turbulence`/`ridged` use `fw` automatically to fade out
 octaves the sample footprint can't resolve, cutting shimmer on
 distant/grazing procedural surfaces.  Watch domain scaling: `fw` is

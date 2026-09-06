@@ -998,9 +998,10 @@ static void Test7_Handedness()
 //! into the shading-normal plane and calls CreateFromWU.  SDFGeometry's
 //! heightfield mode sets `bShadingTangentFromGeometry` and NOT
 //! `bHasShadingTangent` (SDFGeometry.cpp, the `m_isHeightfield` branch of
-//! IntersectRay; the pairing is spelled out at
-//! RayIntersectionGeometric.h:391-394), so this is the flag
-//! combination a modifier must not mistake for a tangent-less hit.
+//! IntersectRay; the pairing is spelled out in the `vShadingTangent` /
+//! `bHasShadingTangent` field comment in RayIntersectionGeometric.h),
+//! so this is the flag combination a modifier must not mistake for a
+//! tangent-less hit.
 static RayIntersectionGeometric MakeSDFHeightfieldRI( const Point3& p, bool mirrored )
 {
 	RayIntersectionGeometric ri = MakeRI( p );
