@@ -1220,9 +1220,30 @@ namespace
 			&observed.qualificationIterationTrace[2]}};
 		std::string text,binding,csv;
 		if(!Serialize(traces,geometry,context,digest,text,binding,error,&csv))return false;
+		RISECBOR64::Bytes tailBytes;
+		std::ostringstream tailRecords;tailRecords<<std::setprecision(17);
+		for(unsigned int stage=0u;stage<3u;++stage)
+		for(std::size_t index=0u;index<traces[stage]->size();++index){const auto& trace=(*traces[stage])[index];
+			std::size_t count=0u;double volume=0.0;
+			if(!ConsumedTailDemand(trace.consumedTargetTailIncrementPerS,shape.CellCount(),
+				trace.consumedProjectionTargetIdentity,trace.consumedTargetCorrectionIteration,
+				representedStepS,shape.cellWidthM,count,volume,error))return false;
+			const std::size_t offset=tailBytes.size();
+			for(const float value:trace.consumedTargetTailIncrementPerS){std::uint32_t bits=0u;
+				std::memcpy(&bits,&value,sizeof(bits));for(unsigned int byte=0u;byte<4u;++byte)
+					tailBytes.push_back(static_cast<unsigned char>((bits>>(8u*byte))&255u));}
+			tailRecords<<"OWNER_CONSUMED_TAIL_TARGET stage=R"<<stage<<" trace_index="<<index
+				<<" raw_iteration_tag="<<trace.iteration
+				<<" target_identity="<<trace.consumedProjectionTargetIdentity
+				<<" correction_iteration="<<trace.consumedTargetCorrectionIteration
+				<<" nonzero_cells="<<count<<" requested_increment_volume_m3="<<volume
+				<<" payload_offset_bytes="<<offset<<" payload_cells="<<shape.CellCount()
+				<<" semantics=last_consumed_target_increment_not_realized_drain\n";
+		}
 		std::ostringstream artifact;artifact<<std::setprecision(17)
 			<<"OWNER_CONVERGENCE_EVENT version=1 accepted_step_beginning="<<acceptedStep
 			<<" beginning_time_s="<<beginningTimeS<<" dt_s="<<representedStepS
+			<<" cell_width_m="<<static_cast<double>(shape.cellWidthM)
 			<<" end_time_s="<<beginningTimeS+representedStepS
 			<<" input_payload_root_sha256="<<accepted.inputPayloadRootSHA256
 			<<" output_payload_root_sha256="<<accepted.publicationPayloadRootSHA256
@@ -1238,11 +1259,20 @@ namespace
 			<<" fixed_k_selection=not_authorized\n";
 		if(!Write(artifact,traces,geometry,context,digest,binding,error))return false;
 		artifact<<"OWNER_CONVERGENCE_CSV sha256="<<digest(csv)<<"\n";
+		artifact<<tailRecords.str()<<"OWNER_CONSUMED_TAIL_PAYLOAD encoding=binary32_little_endian sha256="
+			<<RISECBOR64::SHA256Hex(tailBytes)<<" bytes="<<tailBytes.size()<<"\n"
+			<<"OWNER_PROJECTION_BUDGET pressure_impulse=combined_tangent_source_tail_projection "
+			<<"standalone_restoration_projection=absent separated_tail_impulse=unavailable "
+			<<"legacy_tail_columns=terminal_remaining_demand_not_realized_drain\n";
 		const std::filesystem::path transcriptPath=auditPath.string()+".convergence.v1";
 		const std::filesystem::path csvPath=transcriptPath.string()+".csv";
+		const std::filesystem::path tailPath=transcriptPath.string()+".tail_targets.bin";
+		std::ofstream tailOutput(tailPath,std::ios::binary);
+		tailOutput.write(reinterpret_cast<const char*>(tailBytes.data()),tailBytes.size());tailOutput.close();
 		std::ofstream csvOutput(csvPath,std::ios::binary);csvOutput<<csv;csvOutput.close();
 		std::ofstream output(transcriptPath,std::ios::binary);output<<artifact.str();output.close();
-		if(!output||!csvOutput||DigestFile(transcriptPath)!=digest(artifact.str())||
+		if(!tailOutput||DigestFile(tailPath)!=RISECBOR64::SHA256Hex(tailBytes)||
+			!output||!csvOutput||DigestFile(transcriptPath)!=digest(artifact.str())||
 			DigestFile(csvPath)!=digest(csv)){error="crossing convergence artifact write failed";return false;}
 		std::fprintf(stderr,"OWNER_CONVERGENCE_CROSSING path=%s sha256=%s csv_sha256=%s "
 			"terminal_bit_identity=1 diagnostic_wall_ms=%.17g passed=1\n",
@@ -4439,7 +4469,10 @@ namespace
 								std::ofstream columnAudit(columnPath,std::ios::app);
 								if(writeColumnHeader)columnAudit<<"beginning_time_s,candidate,dt_s,x,y,z_face,"
 									"beginning_momentum,stress_rate,buoyancy_rate,advection_rate,source_rate,"
-									"pressure_gradient_rate,restoration_rate,total_rate,closure_residual,"
+									<<(persistence.UsesProjectedHeunOwner()?
+									 "combined_projection_rate,standalone_restoration_rate,":
+									 "pressure_gradient_rate,restoration_rate,")
+									<<"total_rate,closure_residual,"
 									"lower_vreman_m2_per_s,upper_vreman_m2_per_s\n";
 								for(std::size_t z=0u;z<=request.force.shape.nz;++z){
 									const std::size_t face=(z*request.force.shape.ny+columnY)*
@@ -4503,7 +4536,11 @@ namespace
 									!std::filesystem::exists(effectiveMomentumAuditPath)||
 									std::filesystem::file_size(effectiveMomentumAuditPath,sizeError)==0u;
 								std::ofstream audit(effectiveMomentumAuditPath,std::ios::app);
-								if(writeHeader)audit<<"beginning_time_s,candidate,dt_s,tail_cells,tail_drained_m3,"
+								if(writeHeader)audit<<"beginning_time_s,candidate,dt_s,"
+									<<(persistence.UsesProjectedHeunOwner()?
+									 "terminal_tail_demand_cells,terminal_tail_demand_volume_m3,":
+									 "tail_cells,tail_drained_m3,")
+									<<
 									"physical_velocity_max_m_per_s,restoration_delta_velocity_max_m_per_s,"
 									"terminal_velocity_max_m_per_s,physical_impulse_max_kg_per_m2_s,"
 									"restoration_impulse_max_kg_per_m2_s,terminal_axis,terminal_face,"
@@ -4631,7 +4668,8 @@ namespace
 											mandatoryEvidenceFailure=true;advancedOK=false;break;}
 										if(persistence.sealedProjectedHeunReplay){
 											bool convergenceCopied=true;
-											for(const char* suffix:{".convergence.v1",".convergence.v1.csv"})
+											for(const char* suffix:{".convergence.v1",".convergence.v1.csv",
+												".convergence.v1.tail_targets.bin"})
 												convergenceCopied=convergenceCopied&&std::filesystem::copy_file(
 													effectiveMomentumAuditPath.string()+suffix,skippedPath.string()+suffix,
 													std::filesystem::copy_options::overwrite_existing,copyError);
@@ -7515,7 +7553,8 @@ namespace
 			if(sealedProjectedReplay&&std::filesystem::exists(budget)){
 				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 					!DigestFile(budget.string()+".convergence.v1").empty()&&
-					!DigestFile(budget.string()+".convergence.v1.csv").empty();
+					!DigestFile(budget.string()+".convergence.v1.csv").empty()&&
+					!DigestFile(budget.string()+".convergence.v1.tail_targets.bin").empty();
 				summary<<"threshold_"<<threshold<<"_convergence_sha256 "<<
 					DigestFile(budget.string()+".convergence.v1")<<"\nthreshold_"<<threshold<<
 					"_convergence_csv_sha256 "<<DigestFile(budget.string()+".convergence.v1.csv")<<"\n";
@@ -7546,7 +7585,8 @@ namespace
 		if(sealedProjectedReplay){
 			capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 				!DigestFile(exactObservation.string()+".convergence.v1").empty()&&
-				!DigestFile(exactObservation.string()+".convergence.v1.csv").empty();
+				!DigestFile(exactObservation.string()+".convergence.v1.csv").empty()&&
+				!DigestFile(exactObservation.string()+".convergence.v1.tail_targets.bin").empty();
 			summary<<"reference_composition_candidate_convergence_sha256 "<<
 				DigestFile(exactObservation.string()+".convergence.v1")<<
 				"\nreference_composition_candidate_convergence_csv_sha256 "<<
@@ -14907,6 +14947,23 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			crossingRequest,crossingObserved,&crossingError)&&
 			SameAcceptedOwner(ownerResidentDiagnostics,crossingObserved,crossingError);
 		bool crossingREDs=crossingEquivalent;
+		{
+			const double dt=0.25,dx=0.5;std::size_t count=0u;double demand=0.0;std::string tailError;
+			FireProductionManifoldTailTarget terminal;
+			const bool drained=ConsumedTailDemand({-0.5f,0.0f},2u,1u,1u,dt,dx,count,demand,tailError)&&
+				count==1u&&demand==0.015625&&DeriveFireProductionManifoldTailTarget(
+					{0.0,0.0},dt,dx,terminal,&tailError)&&terminal.outlierCellCount==0u;
+			std::fprintf(stderr,"OWNER_TAIL_TARGET_RED name=tail_drained_below_threshold "
+				"consumed_engagement_retained=%d old_terminal_estimator_refuted=%d passed=%d\n",
+				drained?1:0,drained?1:0,drained?1:0);
+			const bool terminalOnly=ConsumedTailDemand({0.0f,0.0f},2u,1u,1u,dt,dx,count,demand,tailError)&&
+				count==0u&&demand==0.0&&DeriveFireProductionManifoldTailTarget(
+					{0.2,0.0},dt,dx,terminal,&tailError)&&terminal.outlierCellCount==1u;
+			std::fprintf(stderr,"OWNER_TAIL_TARGET_RED name=terminal_only_excess_not_drained "
+				"consumed_engagement_retained=%d old_terminal_estimator_refuted=%d passed=%d\n",
+				terminalOnly?1:0,terminalOnly?1:0,terminalOnly?1:0);
+			crossingREDs=crossingREDs&&drained&&terminalOnly;
+		}
 		if(crossingEquivalent){
 			const double beginning=productionOwnerRequest.lineage.frozenSource.BeginningTimeS();
 			const double dt=productionOwnerRequest.lineage.frozenSource.TimeStepS();

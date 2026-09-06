@@ -37,6 +37,27 @@ inline bool IsSHA256(const std::string& value)
 	return value.size()==64u&&value.find_first_not_of("0123456789abcdef")==std::string::npos;
 }
 
+// This reduction observes the device target, never terminal EOS deviation.
+// Volume is the magnitude of the last requested target increment integrated
+// over dt and cell volume; Picard requests must not be summed as realized flow.
+inline bool ConsumedTailDemand(const std::vector<float>& values,const std::size_t cells,
+	const std::uint64_t targetIdentity,const std::uint32_t correction,
+	const double dt,const double dx,std::size_t& count,double& volume,std::string& error)
+{
+	count=0u;volume=0.0;
+	if(cells==0u||values.size()!=cells||targetIdentity==0u||!std::isfinite(dt)||
+		!std::isfinite(dx)||!(dt>0.0)||!(dx>0.0)){
+		error="consumed tail target shape/identity/units mismatch";return false;}
+	for(const float value:values){
+		if(!std::isfinite(value)||(correction==0u&&value!=0.0f)){
+			count=0u;volume=0.0;error="consumed tail target invalid or uncorrected";return false;}
+		if(value!=0.0f)++count;
+		volume+=std::fabs(static_cast<double>(value))*dt*dx*dx*dx;
+	}
+	if(!std::isfinite(volume)){count=0u;volume=0.0;error="tail demand reduction overflow";return false;}
+	return true;
+}
+
 template<class Request>
 bool MatchesAcceptedEvent(const Request& request,const double beginningTimeS,
 	const double representedStepS,std::string& error)

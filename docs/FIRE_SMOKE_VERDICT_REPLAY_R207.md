@@ -44,6 +44,41 @@ The fixed provisional momentum of a stage must not be mistaken for converged
 candidate dynamics; projected momentum and velocity are reported alongside it.
 No fixed-k choice is pre-authorized by a zero provisional-momentum delta.
 
+### First review repairs
+
+Fresh numerical/lineage and evidence reviewers found no P1 and two P2 gaps.
+The generic r202 Python checker ignored the new crossing verdicts. A distinct
+r207 checker now requires the exact new RED family and both positive verdicts,
+and binds the synthetic writer's transcript, CSV and event/source inputs.
+Historical six-RED acceptance remains unchanged.
+
+The inherited owner adapter derives `tail_cells` and `tail_drained_m3` from
+terminal EOS deviation; these are **remaining terminal tail demand**, not proof
+of an earlier executed drain. The port also has no separate restoration
+projection: its pressure impulse includes the tangent, source and accumulated
+tail target. Crossing columns now say `combined_projection_rate` and
+`standalone_restoration_rate`; zero in the latter means no separate pass, not
+no tail effect. The raw owner tail columns are explicitly named terminal demand.
+
+At diagnostic captures only, an added device-to-host blit copies the last tail
+increment of the target actually consumed by that projection, together with
+its sealed target identity and correction iteration. Uncorrected base targets
+consume no tail increment. The complete little-endian binary32 fields are
+persisted and SHA-bound, with per-trace nonzero populations and requested
+increment volume `sum(abs(target))*dt*dx^3`. These requests must not be summed
+over Picard iterations as realized physical exchange. Realized tail-only
+momentum impulse is not separately identified by the combined projection.
+The original per-term total momentum budget remains available without falsely
+assigning its tail contribution to an independently measured zero channel.
+
+Two regression witnesses contrast this consumed-target reduction with the old
+terminal estimator: a consumed tail ending below threshold retains engagement;
+a terminal-only excess does not become a claim of an already consumed drain.
+The extra diagnostic staging is one binary32 cell field plus one uint64 target
+identity per trace. Production's trace-disabled path and private allocations
+are unchanged; CPU reference trace members remain empty rather than being
+represented as device observations. Generated source manifests are regenerated.
+
 ## Three-way decision and engineering isolation
 
 - Non-curing / tier-spanning: the port retains the focusing mechanism through

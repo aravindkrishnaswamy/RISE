@@ -310,10 +310,17 @@ namespace RISE
 		std::array<std::vector<float>,3> stressMomentumRateKGPerM2S2;
 		std::array<std::vector<float>,3> phaseSourceMomentumRateKGPerM2S2;
 		float maximumPostProjectionResidualPerS;
+		//! Metal diagnostic-only observation of the last tail increment in the
+		//! target actually consumed by this projection. Not realized drain, and
+		//! not a sum over Picard iterations. Empty on the CPU reference trace.
+		std::vector<float> consumedTargetTailIncrementPerS;
+		std::uint64_t consumedProjectionTargetIdentity;
+		std::uint32_t consumedTargetCorrectionIteration;
 
 		FireProductionProjectedHeunIterationTrace() : iteration(0u),
 			acceptedCandidateIdentity(0u),
-			maximumPostProjectionResidualPerS(0.0f) {}
+			maximumPostProjectionResidualPerS(0.0f),consumedProjectionTargetIdentity(0u),
+			consumedTargetCorrectionIteration(0u) {}
 	};
 
 	struct FireProductionProjectedHeunCoupledStageResult

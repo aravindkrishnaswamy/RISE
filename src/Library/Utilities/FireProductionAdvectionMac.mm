@@ -8337,9 +8337,9 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			{
 				if(!request_.qualificationCaptureIterationTrace)return true;
 				ProfileScope profile(*this,"QualificationTraceTransfers");
-				const std::size_t floatCount=26u*cells_+36u*allFaces_+boundaryFaces_;
+				const std::size_t floatCount=27u*cells_+36u*allFaces_+boundaryFaces_;
 				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_+
-					sizeof(std::uint64_t);
+					2u*sizeof(std::uint64_t);
 				id<MTLBuffer> staging=[context_.device newBufferWithLength:byteCount
 					options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
@@ -8383,6 +8383,11 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				copy(value.nonpressure.phaseSourceMomentumRateKGPerM2S2,allFaces_*sizeof(float));
 				copy(value.candidate->conservative,9u*cells_*sizeof(float));
 				copy(value.candidate->publicationIdentity,sizeof(std::uint64_t));
+				// owner_compose_target ignores the tail on an uncorrected base;
+				// otherwise this is its last additive increment, not total drain.
+				copy(projectionTarget.correctionIteration==0u?zeroTarget_:
+					projectionTarget.monitoredAbsolute,cells_*sizeof(float));
+				copy(projectionTarget.publicationIdentity,sizeof(std::uint64_t));
 				[blit endEncoding];if(!Commit(command,error))return false;
 				const unsigned char* bytes=static_cast<const unsigned char*>(
 					Read(staging,TransferKind::Terminal));if(!bytes)return false;
@@ -8422,6 +8427,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				floats(trace.acceptedConservativeValues,9u*cells_);
 				std::memcpy(&trace.acceptedCandidateIdentity,bytes+offset,sizeof(std::uint64_t));
 				offset+=sizeof(std::uint64_t);
+				floats(trace.consumedTargetTailIncrementPerS,cells_);
+				std::memcpy(&trace.consumedProjectionTargetIdentity,bytes+offset,sizeof(std::uint64_t));
+				offset+=sizeof(std::uint64_t);
+				trace.consumedTargetCorrectionIteration=projectionTarget.correctionIteration;
 				// R0/R1 bootstrap has no accepted shared limiter yet; R2 projects a
 				// frozen accepted state and owns neither a new alpha nor a force RHS.
 				// Keep those non-applicable surfaces empty in both owners so trace
