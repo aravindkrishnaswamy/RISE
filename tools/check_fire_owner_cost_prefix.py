@@ -11,6 +11,7 @@ import copy
 from pathlib import Path
 
 from check_fire_owner_instrumentation import trees
+from analyze_fire_producer_kernels import fields
 
 
 def records(path):
@@ -19,7 +20,28 @@ def records(path):
 
 
 def metadata(path):
-    return dict(line.split(" ", 1) for line in path.read_text().splitlines() if " " in line)
+    result = {}
+    for line in path.read_text().splitlines():
+        if not line:
+            continue
+        key, separator, value = line.partition(" ")
+        if not separator or not key or key in result:
+            raise ValueError("malformed or duplicate metadata: " + str(path))
+        result[key] = value
+    return result
+
+
+def completion_record(text, rows, outcome_path):
+    terminal = [fields(line) for line in text.splitlines() if line.split()[:1] == ["OWNER_COST_PREFIX"]]
+    if len(terminal) != 1:
+        raise ValueError("missing or duplicate prefix completion record")
+    row = terminal[0]
+    if (row["complete"] != "1" or row["error"] != "" or row["full_verdict"] != "unavailable"
+            or int(row["steps"]) != len(rows) or not rows
+            or not math.isfinite(float(row["wall_s"])) or float(row["wall_s"]) <= 0
+            or float(row["time"]) != float(rows[-1]["time_s"])
+            or row["outcome_sha256"] != hashlib.sha256(outcome_path.read_bytes()).hexdigest()):
+        raise ValueError("missing log/outcome binding")
 
 
 def compare(reference, probe):
@@ -146,10 +168,7 @@ def main():
                         ("retry_trajectory_sha256", args.probe / "budgets/retry_attempt_trajectory.csv")):
         if outcome.get(field) != hashlib.sha256(path.read_bytes()).hexdigest():
             raise ValueError("stale diagnostic outcome: " + field)
-    digest = hashlib.sha256((args.probe / "diagnostic_prefix_outcome.v1").read_bytes()).hexdigest()
-    terminal = [line for line in profile_text.splitlines() if line.startswith("OWNER_COST_PREFIX ")]
-    if len(terminal) != 1 or "outcome_sha256=" + digest + " " not in terminal[0]:
-        raise ValueError("profile log belongs to another diagnostic outcome")
+    completion_record(profile_text, probe, args.probe / "diagnostic_prefix_outcome.v1")
     profile = trees(profile_text)
     bind_profile(profile, probe)
     measured = []

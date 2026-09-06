@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 
 from analyze_fire_producer_kernels import fields, summarize
-from check_fire_owner_cost_prefix import bind_profile, compare, metadata, records
+from check_fire_owner_cost_prefix import bind_profile, compare, completion_record, metadata, records
 from check_fire_owner_instrumentation import qualify_artifact, trees
 
 
@@ -31,10 +31,7 @@ def validate_prefix(directory, stem):
                       ("retry_trajectory_sha256", "budgets/retry_attempt_trajectory.csv")):
         if outcome.get(key) != hashlib.sha256((prefix / name).read_bytes()).hexdigest():
             raise ValueError("stale prefix outcome: " + key)
-    terminal = [tokens(line) for line in log.splitlines() if line.startswith("OWNER_COST_PREFIX ")]
-    if len(terminal) != 1 or terminal[0].get("complete") != "1" or terminal[0].get(
-            "outcome_sha256") != hashlib.sha256(outcome_path.read_bytes()).hexdigest():
-        raise ValueError("log/outcome association mismatch")
+    completion_record(log, records(prefix / "budgets/maximum_velocity_trajectory.csv"), outcome_path)
     profile = trees(log)
     bind_profile(profile, records(prefix / "budgets/maximum_velocity_trajectory.csv"))
     scopes = [row for tree in profile for row in tree if row["phase"] == "BuildStageProducerGroup"]

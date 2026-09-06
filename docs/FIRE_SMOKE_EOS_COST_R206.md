@@ -225,3 +225,18 @@ field in completion, producer-command, kernel, and profile records; all existing
 r205 regressions and profile self-tests pass. Reanalysis still gives the same
 `a270c53c…` measurement SHA. This is an evidence-only repair, not numerical
 code or a changed acceptance tolerance.
+
+## Fourth evidence review: legacy consumers
+
+Two further P2 bypasses, no P1, were found in older consumers: the standalone
+cost-prefix CLI checked hash presence without requiring successful completion,
+and the instrumentation qualifier allowed conflicting FP64/convergence verdict
+records. Completion validation is now centralized in the cost-prefix module
+and used by its CLI, the current binder/EOS analyzer, and the historical
+producer-prefix consumer. Instrumentation qualification requires singleton
+successful verdicts. The shared metadata reader also rejects duplicate keys.
+
+REDs exercise the actual CLI and the qualification helper against their old
+versions (`review.round4.redproof.v1.log`). Synthetic parser-only inputs in the
+helper test are isolated from production evidence. The saved cost results
+remain byte-identical; numerical source and all tolerances are unchanged.

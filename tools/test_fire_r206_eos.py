@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """CPU evidence REDs; mutations never alter the published fixture files."""
 from pathlib import Path
+import contextlib
+import hashlib
+import io
+import tempfile
 import unittest
 from unittest.mock import patch
 
 from analyze_fire_eos_warm_start import histogram, self_test
 from analyze_fire_producer_kernels import fields, summarize
 from seal_fire_payload_placement import bind_counters, gate, records
-from check_fire_owner_instrumentation import trees
+from check_fire_owner_instrumentation import FP64_PASS, RED_NAMES, qualify_artifact, trees
+import check_fire_owner_cost_prefix as cost_prefix
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +20,59 @@ EVIDENCE = ROOT / "rendered/fire_production_calibration/r206_eos"
 
 
 class EOSGateREDs(unittest.TestCase):
+    def test_legacy_cost_cli_requires_unambiguous_successful_completion(self):
+        path = EVIDENCE / "endpoints_qualified_profile_1.v1.log"
+        prefix = path.with_suffix("")
+        text = path.read_text()
+        original = Path.read_text
+        mutants = [text.replace("OWNER_COST_PREFIX complete=1", "OWNER_COST_PREFIX complete=0"),
+                   text.replace("OWNER_COST_PREFIX complete=1", "OWNER_COST_PREFIX complete=0 complete=1")]
+        line = next(line for line in text.splitlines() if line.startswith("OWNER_COST_PREFIX "))
+        mutants += [text.replace(line, line.replace("outcome_sha256=", "outcome_sha256=bad outcome_sha256="))]
+        with tempfile.TemporaryDirectory(prefix="rise-r206-parser-only-") as temporary:
+            for index, data in enumerate([text, *mutants]):
+                output = Path(temporary) / (str(index)+".json")
+                argv = ["check_fire_owner_cost_prefix.py", "--reference", str(prefix / "budgets/maximum_velocity_trajectory.csv"),
+                        "--reference-identity", str(prefix / "diagnostic_from_zero_identity.v1"),
+                        "--probe", str(prefix), "--profile", str(path), "--output", str(output)]
+                with patch("sys.argv", argv), patch.object(Path, "read_text", lambda p: data if p == path else original(p)), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if index == 0:
+                        cost_prefix.main()
+                        self.assertTrue(output.is_file())
+                    else:
+                        with self.assertRaises(ValueError):
+                            cost_prefix.main()
+                        self.assertFalse(output.exists())
+
+    def test_instrumentation_qualification_requires_singleton_verdicts(self):
+        # Synthetic parser fixture only: never published as solver evidence.
+        csv = b"synthetic-parser-input\n"
+        trace = ("OWNER_CONVERGENCE_CSV sha256="+hashlib.sha256(csv).hexdigest()+"\n").encode()
+        log = "\n".join([FP64_PASS, "RESIDENT_TARGET passed=1",
+            "OWNER_CONVERGENCE_PROBE passed=1 error=",
+            "OWNER_CONVERGENCE_ARTIFACT path=synthetic-only sha256="+hashlib.sha256(trace).hexdigest()+
+            " scope=qualified_fixture_only passed=1",
+            *["OWNER_CONVERGENCE_RED name="+name+" atomic_refusal=1 error=synthetic-only passed=1"
+              for name in sorted(RED_NAMES)]])+"\n"
+        qualify_artifact(log, trace, csv)
+        for tag in ("PROJECTED_HEUN_METAL_OWNER_FP64", "OWNER_CONVERGENCE_PROBE", "RESIDENT_TARGET"):
+            line = next(line for line in log.splitlines() if line.startswith(tag+" "))
+            for extra in (line, line.replace("passed=1", "passed=0")):
+                with self.subTest(tag=tag, extra=extra):
+                    with self.assertRaises(ValueError):
+                        qualify_artifact(log+extra+"\n", trace, csv)
+
+    def test_metadata_rejects_duplicate_identity_fields(self):
+        path = EVIDENCE / "endpoints_qualified_profile_1.v1/diagnostic_from_zero_identity.v1"
+        text = path.read_text()
+        cost_prefix.metadata(path)
+        for line in text.splitlines():
+            key = line.split(" ", 1)[0]
+            with self.subTest(key=key), patch.object(Path, "read_text", return_value=text+key+" bad\n"):
+                with self.assertRaises(ValueError):
+                    cost_prefix.metadata(path)
+
     def test_counter_family_rejects_duplicates_missing_and_unknown_fields(self):
         path = EVIDENCE / "endpoints_qualified_profile_1.v1.log"
         prefix = path.with_suffix("")

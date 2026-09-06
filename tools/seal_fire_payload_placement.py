@@ -15,7 +15,7 @@ import statistics
 import subprocess
 
 from analyze_fire_producer_kernels import fields, summarize
-from check_fire_owner_cost_prefix import metadata, bind_profile
+from check_fire_owner_cost_prefix import metadata, bind_profile, completion_record
 from check_fire_owner_instrumentation import trees
 from fire_payload_merkle import merkle, verify
 
@@ -149,19 +149,6 @@ def bind_counters(path, rows, outcome_path):
                 or abs(scope["device_sum_ms"] - cost) > 1e-9 + 4 * math.ulp(cost)):
             raise ValueError("producer command/owner scope mismatch")
     completion_record(text, rows, outcome_path)
-
-
-def completion_record(text, rows, outcome_path):
-    terminal = [fields(line) for line in text.splitlines() if line.split()[:1] == ["OWNER_COST_PREFIX"]]
-    if len(terminal) != 1:
-        raise ValueError("missing or duplicate prefix completion record")
-    row = terminal[0]
-    if (row["complete"] != "1" or row["error"] != "" or row["full_verdict"] != "unavailable"
-            or int(row["steps"]) != len(rows) or not rows
-            or not math.isfinite(float(row["wall_s"])) or float(row["wall_s"]) <= 0
-            or float(row["time"]) != float(rows[-1]["time_s"])
-            or row["outcome_sha256"] != hashlib.sha256(outcome_path.read_bytes()).hexdigest()):
-        raise ValueError("missing log/outcome binding")
 
 
 def distinct_repeats(directory, repeats):

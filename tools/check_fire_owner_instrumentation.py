@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from analyze_fire_producer_kernels import fields
 
 
 PREFIX = "RISE_FIRE_OWNER_PROFILE_V1 "
@@ -25,10 +26,13 @@ def unique_object(pairs):
 
 
 def qualify_artifact(log, trace, csv):
+    def tagged(tag):
+        return [line for line in log.splitlines() if line.split()[:1] == [tag]]
     verdicts = [line for line in log.splitlines() if line.startswith("RESIDENT_TARGET passed=")]
-    if len(verdicts) != 1 or not verdicts[0].startswith("RESIDENT_TARGET passed=1 "):
+    if len(verdicts) != 1 or tagged("RESIDENT_TARGET") != verdicts or fields(verdicts[0]).get("passed") != "1":
         raise ValueError("complete qualification fixture did not pass")
-    if FP64_PASS not in log.splitlines() or "OWNER_CONVERGENCE_PROBE passed=1 error=" not in log.splitlines():
+    if (tagged("PROJECTED_HEUN_METAL_OWNER_FP64") != [FP64_PASS]
+            or tagged("OWNER_CONVERGENCE_PROBE") != ["OWNER_CONVERGENCE_PROBE passed=1 error="]):
         raise ValueError("fp64 owner or convergence qualification did not pass")
     artifacts = [line for line in log.splitlines() if line.startswith("OWNER_CONVERGENCE_ARTIFACT ")]
     expected = " sha256=" + hashlib.sha256(trace).hexdigest() + " scope=qualified_fixture_only passed=1"
