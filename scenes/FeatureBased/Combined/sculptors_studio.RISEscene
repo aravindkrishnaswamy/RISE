@@ -263,15 +263,22 @@ perlin2d_painter
 }
 
 ##################################################
-# Bump Map Modifier
+# Relief Modifier (migrated from bumpmap_modifier)
 ##################################################
 
-bumpmap_modifier
+scalar_painter
 {
-	name				clay_bump
-	function			pnt_clay_bump
-	scale				0.5
-	windowsize			0.005
+	name	clay_bump__height
+	function2d	pnt_clay_bump
+}
+
+relief_modifier
+{
+	name	clay_bump
+	height	clay_bump__height
+	domain	uv
+	step	0.005
+	scale	-0.005
 }
 
 ##################################################
@@ -470,7 +477,7 @@ standard_object
 	material			wood
 }
 
-# Clay teapot sculpture (center of table) with bump map for clay texture
+# Clay teapot sculpture (center of table) with relief_modifier for clay texture
 standard_object
 {
 	name				teapot
