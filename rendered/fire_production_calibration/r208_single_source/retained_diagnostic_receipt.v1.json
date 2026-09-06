@@ -1,0 +1,68 @@
+{
+  "schema": "rise.fire.r208.retained-source-diagnostic.v1",
+  "scope": "isolated diagnostic, not migration or focusing evidence",
+  "checkpoint_sha256": "45d3df29c4a53f340cf4e0041424865528d421a7d9cad5338504d81493d56b29",
+  "old": {
+    "source_commit": "357c93369ff90c451f5c2171a59e18396c557f59",
+    "process_exit_code": 94,
+    "accepted_steps_after_checkpoint": 2,
+    "terminal_accepted_step": 390,
+    "time_s": 0.6231521824374795,
+    "refusal": "canonical source differs from persisted source fields",
+    "component_major_index": 4039499,
+    "canonical": -0.048315051943063736,
+    "persisted": -0.04831503704190254,
+    "publication": "raw log only; historical EOS-specific diagnostic cannot seal this source-refusal result"
+  },
+  "repaired": {
+    "source_commit": "b39785780f9e93df832aebc6f567679f02866b80",
+    "executable_sha256": "bec1400bd785c5a338c72a2c1ebef48d4190dd3c68d315fac829d3d568cb5bdd",
+    "process_exit_code": 93,
+    "solver_accepted": true,
+    "checkpoint_unchanged": true,
+    "accepted_steps_after_checkpoint": 8,
+    "terminal_accepted_step": 396,
+    "time_s": 0.6330297782551497,
+    "maximum_velocity_m_per_s": 4.678804874420166,
+    "exit_note": "historical EOS-refusal fixture returns 93 when its expected refusal does not occur; terminal solver_accepted=1 is successful diagnostic continuation"
+  },
+  "localization": {
+    "retained_step": 388,
+    "both_comparisons_mismatch_count": 0,
+    "arithmetic_cause_at_step390": "not isolated",
+    "canonical_cell_volume_m3": 0.00002863328218389631,
+    "legacy_cell_volume_m3": 0.00002863328283258357
+  },
+  "migration_authority": false,
+  "replay_restart": "from_zero",
+  "artifacts": [
+    {
+      "path": "bin/tests/FireSequenceTest_r207_sealed_v3",
+      "sha256": "aebfd7915a1e8235ce6e921deb66c78b057cafb4188d6c098b7eee813b64580f"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/old_retained388.v1.log",
+      "sha256": "390c7bc0fb3187a799b99268d06cc35fc825f805ca4efd2be8994f95d066e608"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/old_retained388.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "086a9e47b0f9c7989c1fef2746bb031db43318dd93500248f722260191b98e97"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/repaired_retained388.v1.log",
+      "sha256": "cbf3105dd3891aa9c5320e0ddcf2b4aa2228a9f0547ee3c53b7ad6b12d5e20c7"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/repaired_retained388.v1/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "af40de3fe3c882b90516062c4a8019b9d7039a7a905aebd423f0373691b6fe0b"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/retained388_localization.v1",
+      "sha256": "fe790c8859e2432890cf44c4f5663ffb6d0a1589ac8734fa64c90a29cb05e992"
+    },
+    {
+      "path": "rendered/fire_production_calibration/r208_single_source/qualification.v1.json",
+      "sha256": "6eb0d92f2144022335e47e1a48f210c7304b875a9f1e5edf6ab64ec41c04818f"
+    }
+  ]
+}

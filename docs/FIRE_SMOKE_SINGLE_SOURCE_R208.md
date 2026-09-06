@@ -1,7 +1,8 @@
 # r208 — one canonical source publication, exact persistence carry
 
-Status: repair implemented; final executed qualification and fresh review
-pending after the pilot-ledger fixture repair. No repaired focusing verdict is claimed.
+Status: source repair implemented and build/publication/r190 owner qualified.
+Executed evidence lives in `rendered/fire_production_calibration/r208_single_source/`;
+review and replay launch are recorded separately. No repaired focusing verdict is claimed.
 
 ## Finding and boundary
 
@@ -74,6 +75,14 @@ resident owner. The r194 protocol additionally forbids resume. Therefore the
 repaired verdict restarts from zero in a new directory under the unchanged r194
 protocol SHA `5578fa19dcd500ff68743f7f1cfeff21d22da43fef48a3ada42df042badf3e3d`.
 Neither the preserved r207 checkpoint nor the golden checkpoint is changed.
+
+The executed build-and-owner receipt `qualification.v2.json` binds source commit
+`2790a8ddc7bd03c6b967cceb839a871c7fa8c246`, executable
+`57d87bbc4dcfbcc4f48fc96401950365513ec9f50052e9bc409f25c685d55edd`,
+and separate build, publication and independent-r190 gate logs. Receipt SHA:
+`e0905bed362d23db54f3542402c1e7cef3bac601a9b325140df4059adffc4112`.
+No production kernel or fp64 mirror was changed. The later pilot repair affects
+qualification inputs only, not the source carry used by the retained diagnostic.
 
 The isolated old/repaired eight-step diagnostic from step 388 confirms the
 repair clears the original refusal: the old executable accepts two further
