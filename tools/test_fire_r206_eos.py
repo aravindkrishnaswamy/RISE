@@ -14,6 +14,7 @@ from analyze_fire_producer_kernels import fields, summarize
 from seal_fire_payload_placement import bind_counters, gate, records
 from check_fire_owner_instrumentation import FP64_PASS, RED_NAMES, qualify_artifact, trees
 import check_fire_owner_cost_prefix as cost_prefix
+import check_fire_owner_instrumentation as instrumentation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,30 @@ EVIDENCE = ROOT / "rendered/fire_production_calibration/r206_eos"
 
 
 class EOSGateREDs(unittest.TestCase):
+    def test_disabled_observer_cli_rejects_every_profile_separator(self):
+        fixture = ROOT / "rendered/fire_production_calibration/r202_owner_cost/exact_edb4afb6"
+        off, on = fixture / "fixture_off.log", fixture / "fixture_on.log"
+        original = Path.read_text
+        off_text = off.read_text()
+        profiles = "\n".join(line for line in on.read_text().splitlines() if line.startswith(instrumentation.PREFIX))
+        self.assertTrue(profiles)
+        with tempfile.TemporaryDirectory(prefix="rise-r206-observer-parser-") as temporary:
+            for index, separator in enumerate((None, " ", "\t", "\u00a0", "  ")):
+                output = Path(temporary) / (str(index)+".json")
+                changed = off_text if separator is None else off_text+"\n"+profiles.replace(instrumentation.PREFIX, instrumentation.PREFIX.strip()+separator)
+                argv = ["check_fire_owner_instrumentation.py", "--off", str(off), "--on", str(on),
+                        "--off-trace", str(fixture / "fixture_off.v1"), "--on-trace", str(fixture / "fixture_on.v1"),
+                        "--output", str(output)]
+                with patch("sys.argv", argv), patch.object(Path, "read_text", lambda p: changed if p == off else original(p)), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    if separator is None:
+                        instrumentation.main()
+                        self.assertTrue(output.is_file())
+                    else:
+                        with self.assertRaises(ValueError):
+                            instrumentation.main()
+                        self.assertFalse(output.exists())
+
     def test_exact_executable_eos_fixture_is_required(self):
         qualification = EVIDENCE / "qualification.v1.json"
         qualified = json.loads(qualification.read_text())
@@ -32,10 +57,13 @@ class EOSGateREDs(unittest.TestCase):
                     "executable_after_sha256", "command", "exit_code", "log_sha256", "metal_library_source_sha256"):
             changed = dict(evidence)
             changed[key] = 1 if key == "exit_code" else "wrong"
-            with self.subTest(identity=key), patch.object(Path, "read_text", lambda p: json.dumps(changed) if p == path else original_text(p)):
+            with self.subTest(identity=key), \
+                 patch.object(Path, "read_text", lambda p: json.dumps(changed) if p == path else original_text(p)), \
+                 patch.object(Path, "read_bytes", lambda p: json.dumps(changed).encode() if p == path else original_bytes(p)):
                 with self.assertRaises(ValueError):
                     endpoint_eos_gate(EVIDENCE, qualified, qualification)
-        with patch.object(Path, "read_text", lambda p: (_ for _ in ()).throw(FileNotFoundError(str(p))) if p == path else original_text(p)):
+        with patch.object(Path, "read_text", lambda p: (_ for _ in ()).throw(FileNotFoundError(str(p))) if p == path else original_text(p)), \
+             patch.object(Path, "read_bytes", lambda p: (_ for _ in ()).throw(FileNotFoundError(str(p))) if p == path else original_bytes(p)):
             with self.assertRaises(FileNotFoundError):
                 endpoint_eos_gate(EVIDENCE, qualified, qualification)
             with self.assertRaises(FileNotFoundError):
@@ -46,14 +74,27 @@ class EOSGateREDs(unittest.TestCase):
         mutants = [text.replace(line, ""), text.replace(line, line.replace("observed=0x00000080", "observed=0x00000000")),
                    text.replace("eos_table_mutation_refused=1", "eos_table_mutation_refused=0"),
                    text.replace("name=forged_device_stage", "name=unrelated"),
-                   text.replace("samples=49512449", "samples=1")]
+                   text.replace("samples=49512449", "samples=1"),
+                   text.replace("temperature_bit_equal=1", "temperature_bit_equal=0"),
+                   text.replace("lattice=24756225", "lattice=1"),
+                   text.replace("midpoints=24756224", "midpoints=1"),
+                   text.replace("metal_identity_consistent=1", "metal_identity_consistent=0"),
+                   text.replace("lower_K=300", "lower_K=301")]
+        domain = next(row for row in text.splitlines() if row.startswith("RESIDENT_EOS_LOG_DOMAIN "))
+        mutants += [text.replace(domain, ""), text+"\n"+domain]
+        for row in text.splitlines():
+            if row.startswith("RESIDENT_EOS_RED "):
+                for key, value in fields(row).items():
+                    mutants.append(text.replace(row, row.replace(key+"="+value, key+"=wrong", 1), 1))
         for mutant in mutants:
             changed = dict(evidence, log_sha256=hashlib.sha256(mutant.encode()).hexdigest())
             with self.subTest(log_mutation=hashlib.sha256(mutant.encode()).hexdigest()), \
                  patch.object(Path, "read_text", lambda p: json.dumps(changed) if p == path else original_text(p)), \
-                 patch.object(Path, "read_bytes", lambda p: mutant.encode() if p == log else original_bytes(p)):
+                 patch.object(Path, "read_bytes", lambda p: json.dumps(changed).encode() if p == path else mutant.encode() if p == log else original_bytes(p)):
                 with self.assertRaises(ValueError):
                     endpoint_eos_gate(EVIDENCE, qualified, qualification)
+                with self.assertRaises(ValueError):
+                    analyze(EVIDENCE, qualification)
 
     def test_whitespace_prefixed_duplicate_records_are_not_ignored(self):
         original_text, original_bytes = Path.read_text, Path.read_bytes

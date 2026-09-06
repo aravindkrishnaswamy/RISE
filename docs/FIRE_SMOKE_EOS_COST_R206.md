@@ -307,3 +307,28 @@ its SHA is `f889b9148415927d9ef7ac1304c819f6d4177d5a0b39da032e9484cd03774569`.
 Only the added qualification binding changes the measurement artifact: all
 timing and histogram values are unchanged. Historical logs/artifacts remain
 unmodified. The 300–500 ms whole-owner target remains unmet.
+
+## Eighth review: execution authority and disabled-observer admission
+
+No P1; two P2 families. The new EOS reader could admit contradictory detailed
+counters if a caller rewrote both the log and its declared hash; domain record
+and lattice/midpoint split were incomplete checks. The off/on instrumentation
+CLI also still searched for an ASCII-space tag while its reader accepted tabs.
+
+The r206 analyzer now pins the **recorded execution supplement's byte SHA** as
+an authority root, just as it pins the baseline/warm executable identities.
+This is verification of this one executed r206 campaign, not an issuer for
+arbitrary future EOS runs. Rewriting a log and recomputing its own declaration
+cannot create execution authority. A future execution requires a new recorded
+qualification and its own campaign binding, never automatic trust in a
+self-declared hash. Bytes are read once before parsing to preserve exact
+payload binding. Domain endpoints/scope, lattice/midpoint counts, runtime
+consistency, core bit-comparison verdicts, and every named atomic refusal's
+bitmap/execution/publication counters are additionally checked explicitly.
+
+Mutants alter every named refusal field, domain coverage, and detailed verdicts
+with recomputed declarations, through both helper and complete analysis. The
+disabled-observer RED exercises its actual CLI with whitespace-separated
+profiles in off-mode. Historical implementations fail those assertions with
+zero setup errors (`review.round8.redproof.v1.log`). The actual v3 measurement
+and all numerical code remain unchanged.

@@ -1,0 +1,1020 @@
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='8477e64725907b3b05699f4067d4dd0e037cde8942f223a437dae11b3f82667d')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='44209d633cd61d2b9bd0f3a2599d8fd80052d1a2f7af04d30911c6fbef3c2b19')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='f85ce5dcc4ab82a11956fef58aa55bbc61fa70ca6a4b487a3f2f30d61e0f614b')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='e15800120959bbb97ded071b6cf974e48d93bd09e3284e6a1b0e7e9a69db403e')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c4f647b9611ec971af24055c18b30fbe146910ef07ecd0375629ff35c8b4f384')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='0bf4c12dc4d264071260e3dadc87083de86f1c8c761facac632ec51ea8e06538')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='bc9326f3ee68a78bacd512fd8bfddd587f2c6633310cf00751bbe6ada1a223e8')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='dd6f91758ed6a60320a1a87a2069552d179a30022d890d16736c1416c2f4ab66')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3c6c22facde315535e8c69ec90221c96acfab563d6f856f22248a9b31ddf9619')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='45badd18974b4fe87535469334c39c0afcbd08bb71d8f7518703fcf6ad082961')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='19f1c3934c92f983d0f6a6757dfdd5843a0ded2e98940b007720464b1cc32ec9')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='bc5317cfe30ffeac6cbcdf42f5995fa8f9fd65bdedd57441546354831fe6aafe')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='88cb38abae37b1f999917180d1dbc1797fb32904cb58524f85c4766044e66102')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='77a9014ca6b4beaeff87a71e458832a4d0beac26b2454252b5ca642986fcc531')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a26002d60e449d1ecd6938dc635d2bf797fe53c8b693178c7f4fb58dbb8d7ce2')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c1efd5380cee3673a47bf765344192b8e33a1788fb388f551dcdfa21f3e17059')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5fbb894be4bb97bd85b12d8d8f81d0f34d3f391a85933394567578a56c7917ec')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='e3bb8828861e76b538793f35350cbf23e84508648cbf8e28d15ec6123feb31d0')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='d4366be99899cae1d7bb170d1a845ef86e2074ad7c25aae123a906d9ad229f1d')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='ae1697537057409788b6124dc9a820483c7320baa4360bd8986bf08e72ce2a60')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='eb677de42486e434e9604f290af0599f92721245cdd9c5177af1ff37c184880d')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='91d647b31bd79e852ed4c7d01a72b3a9aa12dd4d6706bcdc557f7fe7ed59ec2d')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='593a8de3ce5383961f7181fcb8eee90e5f17b60102338964c11aaa3564753819')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='b29dc5f8f8dcc8beca548f957ae92f45c7ac32e317b6b8eacbde079115e0e5ee')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='8496d8317fada71f21f7d3819b866d4bbe85f9366396d12ba7adb8f0073fad17')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a4a5f5deb640b2d773750a5a3f72a58ce83054ac10d08fec432e2a783e3a07f9')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='9b85aa6a8d581ee85e9100f35301b76d334df308333053959eeacd86e6de0c0c')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='7aa2178fb09e2c6612fcffa659b510afc581e2a4f0e2205e4a7a4ac28b80b712')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='2107c7461499b8be93680fd660742d6c298ae94d72532c51873e1820c375b5a2')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='62e928d75675bf3c6b07fc7b91629ae55d790b5a957b5f67a46d6ddbd8e555df')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='d721ac32f8da0cddf11a6b0ff20f9b64a235d54118ecf2b4d8948b15c17ff670')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='36da32adb3402528ae47978cc31d2acb87fda8a58ca8a567f7c43e35090ac487')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='39e8f11fdc7a0557d361f7e11b91ec25a225dbd6150f96dc3dee33153b9baf7e')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='baa267d28c69d9a5796123056f1c54070f62c1b1bab2f2ccec3a9359fb106654')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='df2834e0f020981777a2e126f4ce8d58008156ad0e5c5cbcede1835e90f90cf8')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c20f6a53e0258c6a14793c8e01836bb74b66b7a8f1be5bf6fd128ea727c4fbc0')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3af91304ffbaaf6bc407e46bd1cd22fc008886beab7745264e095518a305ad71')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='92bbfd2d41ee53292f6b541267f115aed3e2a0f458789e31973bf5cf72fe9dd6')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a874f55b318bf9bcd00b368f97449b3f2fcf075f7599cc9e8a40a1af28c57349')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='95f482790e1679f1f2f1ddfe48ac49a05e531d263bc8f2aa0cd24d33e5711fbc')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c90deba46a0f6df02fd2a46efb3b86025f97f6dd3a69ca0be3219eba2809f4cb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='f8c539df5a532fdfa7796fc1b1e3d4714d95799ced1c2ba4e389491c776a11da')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='afe09f26d8860d0e736b9b30a1e998a90f5a3272f8f264dadc1e7551dd939a27')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='f63186ae64028c929e4851f1ca185ea4ba0d57be9996dfd1156f5192c5a0be54')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='50203e2fc31e014df062677e50b66536be29b323571739fb915a56fbb80f8914')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a1cc5e36389a106ee2c3ac906487d7313f9d65e9144676cb2a05ad8722466fef')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a4a558e1db211b95517e6055ad9f3a60bc761ab04436068995d18cca7ce174af')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='15c45facbeef6f9bfc9f85c611a781b40ef2a667a916a20a7a38fe46df547574')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='60bbe08ccecb81729dd676a68c6cc8a6a100ea2c1a8ad4ac1dbad290e90f56ae')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='0c93c4ca8adaedbebcf2800794008644a837ae85eef89251ec6fe2e065eb8b01')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='57db6a81ab3882656028f253008ec9e62d29ded2561ca0a463e187a0f95f7fdb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='cbd9a34e809a0609116a63359ffa390155d3232a7bf486a0475bd3530832d39d')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='84a5789e67bca0a06b9183aae4840968efb6d45e805c7000b338d26a0a9d52a1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='6a63998b5cbb71dd54efe82a6600fc08ed481ba48fe67d085b9a8338815320cc')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='aeefba7a2511ee17ae2366bf642a217febc13b22af0e30626e072625d6e76b94')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='d4234684031265ca02d1d0b6ddca13d786fb50124574ae82d86fadcac87ca8bf')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='b6a4c19f1abcebc48477d162bbfd37d6e2273f5d01638a476fe78a8eba1ddc56')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='27d6856322ffe10591d1807672488c4bf405d380463149a2e1ff23e8234d33e7')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='6cc3f23264f9994366f5c465f4f3816aa85ffb623efc824e79ba96aad7515ecc')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5ea87131366ba629fb9ebc07c59237ff14af864021a35f6f3eef083330cc71d1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='8d714c6fea4934c15d03fc50940a063521a1281b47ceee28a5438c4fcdbf8a83')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='596cef7309c563e21bbb4b03ee3cb433bc6f9936882a5eb849b387f5fea6611f')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='4ad7958a63c5bf35262ddc5ee3583bed30abc153bdadb4fb17037e29246bc300')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5674ab012dee3c9543e3d49fd38fa085d95e071628670add07b2fd818e0a53cd')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='f36dd033716e193818060ea07d6f631917d1f85469069bce757437393aaea611')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5ac4fdf8639983bc3bb167a65c1acd9616a6697616b92ef8ff3990ac1c1c4a68')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3fabfe77ae54c2b7513a4c1727a4a132983f3a739d9c571316c42f3fa3123b15')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='e3bba5598959864638f5f154769706760a3d2abaf0afa5344fe6321420e16f46')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='260d82c4b72a76f378a66589b3da8aa5582eb495a5a0c3bc94a68c40c52c31d4')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='aa68c44ac599859c0f4321d22031b113d14a2bd462c687992084f4e2265c876f')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='eabd8510639ed0c8ba6cf29477132a97d8d9f7694f4500cbcbe3cd68c5b726b1')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a2aa6582611088bc494af27ce0451b484312e68fb0bfa61d0cb667d264b8e1b4')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='b7e33d988e9fd4a8b06b7721547bed89fb013939f8b93b1f2a34400586ceb0f4')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='92f3429b5cef680bc003862a3f5b03c97c9f4fb51ea0a6385aad8c0181ab708a')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='1c3db356f20bfa4e35820695a1b08c2889cf3f13e9e6a0cff87d46647d1873c4')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5ce8fd79ec6c3dc359a812c5353fc5508a5f546626ba17d37e3128072de8f925')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='236d0ac9c7cf7d479c04f38225504cc7159740a70558811f4df30261bc49f721')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c13644fbe8fbe078bfc0f68f85ed49876332b9dcec0d07d2243a55556cffc640')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3568351bd1de02405e0e084fb0df9cb28dc6f972b8fe2a6db3baac8ad5b59685')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='b3cedd220f39d74a316379f561e2719179c5ae33663c0dcc592d31c9e4e6f0dc')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='9ae6125e94592022dda9c246fadda789375474b224add2af57445f20a98d9481')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='61fcfbe06a8424094b92d8c8bbf0fc4256ecdad2dec4ab6b2e5cde1f6bbfa53c')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3f95361bb906f2e7a625a9b2edc90de4c895c8f3151aef39402a9249c8465d29')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='b57c36234ab2bc37affb59a1d3ba43e19b8761bb7672d9e10f4bfcebc0878140')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='88073ec2c9e99eec84490e303799805ebef9ba182a312c1f405595079972f215')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='146e84eb55ae652b7a923ab613f93e4ec4a09350df57a28895bb6f63e389c5d9')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='77ab4d7eb1548317324b85aba084bef2c23950a8b230030bef4e6853fb5191b7')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='4d177c47dc616ad1f1943f7a6fc88e05a0a17d7a09f31a74144f1ab9dbbe7c33')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='2972c5474714f3337d8da9db0a14447d3623f7a26c39fa8657916d5599b936a2')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='f21160a1b7d56271bcc1e327c1bf1278f84f74d88f401951e9ca4b6c769ff16e')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='4c2fc84d60ce228ab84de0deb7afd4a38cf9d0ff759030f7c82e18153c37f8c8')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c65635f7400bb54cf7cb3ff6abdcc01854982078f9ab0c98f930313a45218cac')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='39dfca8ad771dfd7e4d6e800cbe53fa2d36256e9702bee658f5743d0007657a8')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5d28935370f1208b5a993937beb5d563b24f29e0412909ecc02267a32a8de45f')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3041dd04abb16c729791e15fea002c3c09cff892067206a64b1e2924f9e5b010')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='17f793d783a9dfbd4ca91940845bfd048e10dd5280e9e6c63e2209138de8f753')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='153a89e362f9e8ad8e592038ae63249401bfa24518a61c814b9049cc5cd90e75')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3a1752ac5f6cb7cface6b116a8103ad3fc424f68300a39a7ba8fcfd5c004d3f5')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='ed43dc99a10e080e03f122d4295074838154f7c9c100e60bc32e2757da066d52')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='7b7bc7f8944aaf3619ecd79c7834976edd7ef74af1fb83a6fdd58fb861f52d9b')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3240d7fc9be9160598ad277685eb26a4c74c842cc722a09a75b8cabd610f2f5d')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='b1fa7acd57abdfb41df83d3eb7d3c9fe8d12e19b0af2e3a3c34d92b3fc4bf8fb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='e2ee42f3660a482888a91c12aa304f6825d9a92ba1694ac7817c9d80d28abff0')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='8a9d30c54ed4ad4b22c3371fb8bfaf6377f61a03e1de22f9d8bb845aaf5edac9')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='e2d9e7324d6bd2a547153c6615899acdaa754f42b2751934b55b7746e4b9c446')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='11e47ffd6a0d2f63cd371d982b7bb19e9abeebfa6e955352254d56136185e3ee')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='91c5901902b4f3a0c1527e4646a4c9ccfd7f32c6b485a129fd7726552ab8ad64')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c0a0e2828ba462a63adaeeaabc4647fe073fb6da1d810194330a0ecf5101fea7')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='6ef825f8a60e27fb7c8260a36679a549ca576117a795442450405442d0fb988b')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='fd04b3116765b6574f399778b64516569b53f4b7e6eae3784630acba25ff62c3')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='82d468c95be3333b0fd587e223ecc7d7431fc932d98e4358f5597e5afecaefa8')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='0b7d0e076a0f47568a4eea92215d39231a47e977fc51f8816597cf56595ba700')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a020ed5fa68bf67e32d47d60c60c33096bf428915254a26d0f33876744eeae64')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='3085e5b0ace14768ab8c81183f5e695eaedc038f40c2a4b0eec39c7c1379b706')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='93ee679ffeff6177314967e9d946ae115ebe19dd19082d71d482f17643776ba9')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='4a465299a0a3cb611a0ece53b2b6d9c40819699129c877907a9923eedd4017ca')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='5c37f59590d17564ebb6ff17c192a661c688a4ba22d1dce6fcc9907c28bb3ad4')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='a232af03e5e2e91a70940a9744564623ef3621c5923b66a826a023850aec2f17')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='c8f39be6f9377833260314dee8bcd3ead26012ffe6a01e2f000377b5fb1c8761')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='6619824b77c3cbc0b0a9c7b63ebffc1b7430a24bfa93814da8b096f0e45a94fb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='569f84ff16422e54c382ef716da9a274474fce625fa2e875d96fbe81062993eb')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='87d764371c0066fcaed86cfe599ef2f1e87c8a1c29d3e354a46f7b63ed305bdd')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='e79b48f71668862f261680faa88daf78e4e369230c8270c40d271e4142ee6970')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='0360bf062b91d4c5cb77c1be619be9f1353948b9faec3badfe10534b95fb50c6')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_exact_executable_eos_fixture_is_required (test_fire_r206_eos.EOSGateREDs) (log_mutation='d9cd10b8c01c26f02be7845a44b5cf508cb4edabed6a48e98d3bef4779fa11d8')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 95, in test_exact_executable_eos_fixture_is_required
+    endpoint_eos_gate(EVIDENCE, qualified, qualification)
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.899s
+
+FAILED (failures=125)
+R206_AUTHORITY_OBSERVER_RED consumer=analyze_fire_eos_warm_start.py historical_false_green_caught=1 setup_errors=0
+F
+======================================================================
+FAIL: test_disabled_observer_cli_rejects_every_profile_separator (test_fire_r206_eos.EOSGateREDs)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_r206_eos.py", line 46, in test_disabled_observer_cli_rejects_every_profile_separator
+    instrumentation.main()
+AssertionError: ValueError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.157s
+
+FAILED (failures=1)
+R206_AUTHORITY_OBSERVER_RED consumer=check_fire_owner_instrumentation.py historical_false_green_caught=1 setup_errors=0

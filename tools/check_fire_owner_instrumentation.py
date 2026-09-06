@@ -199,7 +199,7 @@ def main():
         parser.error("all off/on log/trace and output paths are required")
     off = args.off.read_text()
     on = args.on.read_text()
-    if PREFIX in off:
+    if any(line.split()[:1] == [PREFIX.strip()] for line in off.splitlines()):
         raise ValueError("profile observer emits when disabled")
     profile = trees(on)
     for suffix in ("", ".csv"):

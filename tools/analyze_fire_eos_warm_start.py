@@ -97,7 +97,15 @@ def summary(values):
 
 def endpoint_eos_gate(directory, qualified, qualification_path):
     path = directory / "qualification.eos.v2.json"
-    evidence = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    # This is the r206 campaign analyzer, not an issuer for arbitrary future
+    # executions. Pin the trusted execution supplement just as the baseline
+    # and warm executables are pinned below. A rewritten log plus its own
+    # rewritten hash is not new execution authority.
+    execution_sha = "b627b6292f8626e0ec1ce974f9a6c38fabc5c140f982a6c57a72bf96f82fb798"
+    execution_bytes = path.read_bytes()
+    if hashlib.sha256(execution_bytes).hexdigest() != execution_sha:
+        raise ValueError("unrecognized r206 EOS execution authority")
+    evidence = json.loads(execution_bytes, object_pairs_hook=unique_object)
     if (evidence["schema"] != "rise.fire.executed-eos-gate.v1"
             or evidence["source_commit"] != qualified["source_commit"]
             or evidence["parent_qualification_sha256"] != hashlib.sha256(qualification_path.read_bytes()).hexdigest()
@@ -119,10 +127,15 @@ def endpoint_eos_gate(directory, qualified, qualification_path):
             raise ValueError("duplicate EOS verdict counter")
         return result
     verdict = one("RESIDENT_EOS")
-    if verdict.get("passed") != "1" or verdict.get("eos_table_mutation_refused") != "1":
+    if any(verdict.get(key) != "1" for key in ("passed", "candidate_bit_equal", "temperature_bit_equal",
+            "pressure_bit_equal", "deviation_bit_equal", "eos_table_mutation_refused")):
         raise ValueError("standalone EOS fixture failed")
+    if one("RESIDENT_EOS_LOG_DOMAIN") != dict(lower_K="300", upper_K="2300", scope="case_endpoints_and_all_binary32_lattice_midpoints"):
+        raise ValueError("standalone EOS domain identity failed")
     study = one("RESIDENT_EOS_LOG_ENCLOSURE")
     if (study.get("passed") != "1" or study.get("samples") != "49512449"
+            or study.get("lattice") != "24756225" or study.get("midpoints") != "24756224"
+            or study.get("metal_identity_consistent") != "1"
             or study.get("metal_library_source_sha256") != evidence["metal_library_source_sha256"]
             or not math.isfinite(float(study["max_residual_over_bound"]))
             or not 0 <= float(study["max_residual_over_bound"]) <= 1):
@@ -141,7 +154,26 @@ def endpoint_eos_gate(directory, qualified, qualification_path):
                     attempted="1", read="1", commands="1", staging="1", candidate_identity="0", eos_identity="0", passed="1")
     if mutation != [expected]:
         raise ValueError("endpoint mutation was not atomically refused")
-    return dict(artifact_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    bitmaps = dict(r170_hard_bound_30_percent="0x00000400", pressure_midpoint_rounding_ambiguous="0x00000200",
+        deviation_midpoint_rounding_ambiguous="0x00000200", zero_lower_upper_bin_ambiguous="0x00000200",
+        subnormal_lower_upper_bin_ambiguous="0x00000200", eos_lower_inversion_endpoint="0x000000d0",
+        eos_upper_inversion_endpoint="0x00000080", r170_exact_above_binary32_rounds_to_bound="0x00000400",
+        endpoint_enclosure_bit_mutation="0x00000080", forged_device_stage="0x00000050",
+        forged_device_precision="0x00000050", forged_device_attempt="0x00000050",
+        forged_device_cells="0x00000050", forged_device_timestep="0x00000050")
+    for row in reds:
+        if row["name"] in bitmaps:
+            bitmap = bitmaps[row["name"]]
+            wanted = dict(expected, name=row["name"], expected=bitmap, observed=bitmap)
+        else:
+            wanted = dict(name="paired_first_eos_failure_witness", expected_failure="0x00000200",
+                observed_failure="0x00000200", expected_cell="0", observed_cell="0", expected_term="0x00000001",
+                observed_term="0x00000001", expected_second_cell="1", observed_second_cell="1",
+                expected_second_term="0x00000002", observed_second_term="0x00000002",
+                attempted="1", read="1", commands="1", staging="1", passed="1")
+        if row != wanted:
+            raise ValueError("EOS atomic refusal counters differ: " + row["name"])
+    return dict(artifact_sha256=hashlib.sha256(execution_bytes).hexdigest(),
                 log_sha256=evidence["log_sha256"], metal_library_source_sha256=evidence["metal_library_source_sha256"])
 
 
