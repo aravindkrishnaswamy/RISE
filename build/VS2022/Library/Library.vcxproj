@@ -205,7 +205,6 @@
     <ClCompile Include="..\..\..\src\Library\Intersection\RaySphereIntersection.cpp" />
     <ClCompile Include="..\..\..\src\Library\Intersection\RayTorusIntersection.cpp" />
     <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersection.cpp" />
-    <ClCompile Include="..\..\..\src\Library\Intersection\RayTriangleIntersectionWithDisplacement.cpp" />
     <ClCompile Include="..\..\..\src\Library\Job.cpp" />
     <ClCompile Include="..\..\..\src\Library\Lights\DirectionalLight.cpp" />
     <ClCompile Include="..\..\..\src\Library\Lights\LightBVH.cpp" />

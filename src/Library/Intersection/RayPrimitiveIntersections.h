@@ -130,16 +130,10 @@ namespace RISE
 		const Vector3& vEdgeB
 		);
 
-	extern void RayTriangleIntersectionWithDisplacement(
-		const Ray& ray,
-		TRIANGLE_HIT& hit,
-		const Point3 (&coeff)[3],						// Three points of the triangle
-		const Vector3 (&normals)[3],					// Three normals of the triangle
-		const IFunction2D& displace,					// Displacement function
-		const Scalar N,									// Subdivision amount
-		const Scalar m,									// Maximum displacement below
-		const Scalar M									// Maximum displacement above
-		);
+	// RayTriangleIntersectionWithDisplacement (Smits et al. 2000, a 2004 stub that never
+	// compiled and was never called) was removed 2026-09-06; see
+	// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md section 10.6.
+	
 
 	extern void RaySphereIntersection( 
 		const Ray& ray,
