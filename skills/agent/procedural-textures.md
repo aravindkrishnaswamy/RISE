@@ -886,6 +886,14 @@ that still has a `bumpmap_modifier` chunk migrates losslessly with
 `docs/RELIEF_MODIFIER_DESIGN.md` §7 for the exact scale-sign algebra it
 applies.
 
+`validate`/render results carry a `DESIGN_FLAT_RELIEF` advisory (a
+"decal on plastic" detector) when an object's material paints a
+spatially-varying colour but the object binds no `modifier` at all --
+binding ANY modifier silences it (a `relief_modifier` is the fix this
+note is teaching, but a `bumpmap_modifier`/`normal_map_modifier`/
+`glint_modifier`, or a `modifier_stack` naming any of them, silences it
+too, since the claim is only "the shading normal is inert here").
+
 ## Discovery
 
 - `read_schema {category:"painter"}` -- every kind, one line each.

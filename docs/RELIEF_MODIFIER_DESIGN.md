@@ -4,8 +4,10 @@
 §12). Phase 2 reviewed (2026-09-06, one adversarial round, 0 correctness
 P1s — R9 CLEAN incl. `leaks --atExit` on nested stacks — 2 citation P1s
 fixed, see §12). Phase 3 reviewed (three lenses: code CLEAN after 1 P1
-fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12); Phases
-4–5 pending. Each phase runs the
+fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12). Phase
+4 implemented 2026-09-06 (`DESIGN_FLAT_RELIEF` + verb hook-point notes,
+see §12) — gate suites green, the implementation-review-loop adversarial
+round has NOT yet run against this slice; Phase 5 pending. Each phase runs the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
@@ -738,7 +740,7 @@ the showcase fixtures at their authored spp.
 | **1** | `ReliefModifier` + `ModifierFrame.h` hoist + `pmxWorldToObject` + API/IJob/parser + 5 build projects + `ReliefModifierTest` 1–8, 10 + `cc_relief_modifier` + `relief_sphere_no_uv` | zero-P1 round; PT/BDPT parity on the sphere |
 | **2** | `modifier_stack` + test 9 + `cc_modifier_stack` + §4 order doc in the descriptor | reviewed: one adversarial round, 0 correctness P1s (R9 CLEAN incl. `leaks --atExit` on nested stacks), 2 citation P1s fixed here (see §12) |
 | **3** | deprecation diagnostic + migrator + migrate 4 scenes + CST twins + golden regen + teaching surfaces (skills, `Parsers/README.md`, `GLTF_IMPORT.md` living text, `MATERIALS.md`, descriptor text) + §7.4 audit note | Phase 3 reviewed (three lenses: code CLEAN after 1 P1 fix, teaching 3 P1s fixed, migration LOSSLESS by pixels — see §12): golden additions-only beyond migrated entries (the 1 pre-existing DRIFT is `bdpt_crystal_garden`, out of scope) |
-| **4** | `DESIGN_FLAT_RELIEF` + recipe example + hook-point notes | zero-P1 round; `AgentChunkCrudTest` green |
+| **4** | `DESIGN_FLAT_RELIEF` (condition Q) + verb hook-point notes (the recipe example shipped early, as part of Phase 3's teaching surfaces — `materials-and-media-basics.md`'s crackle-glaze — see its own §12 P1-1 fix) | implemented 2026-09-06 (see §12): zero new warnings; `AgentReadValidateTest` 314/0 (extended with `RunFlatReliefScanTest`), `AgentChunkCrudTest` 3809/0, `AgentAddWearTest` 287/0, `AgentAddWetnessTest` 210/0, `SourceHygieneTest` 164/0, `ReliefModifierTest` 106/0; the implementation-review-loop adversarial round has NOT yet run against this slice |
 | **5** | pixel verification: `weathered_workbench` before/after with relief bound to `expr_grain` (kept in the showcase), `velvet_cushion` migrated vs. `domain surface` upgrade; look, and record | renders attached to §12; the user judges "reads as surface" |
 
 Commits as each phase converges; never push. The stray uncommitted edit to
@@ -1508,3 +1510,243 @@ fully migrated after this round's changes. `./bin/tests/ReliefModifierTest`
 — **106 passed, 0 failed**, run once per the gate (unaffected — no
 executable relief-modifier C++ was touched, only the migrator script and
 documentation).
+
+### Phase 4 — implemented 2026-09-06
+
+Branch `relief-modifier`, one commit: `88ae61e7` (`src/Library/Agent/AgentDiagnostic.h`,
+`src/Library/Agent/AgentSession.cpp`, `tests/AgentReadValidateTest.cpp`).
+Not yet run through the implementation-review-loop's adversarial round —
+recorded here as *implemented*, matching Phase 3's own header wording
+before its review landed.
+
+**The detector (condition Q, `DESIGN_FLAT_RELIEF`).** Runs inside the
+SAME shared `ComputeDesignNoteConditionsFromDoc_` scan every sibling
+condition (A–P) shares, as a resolution pass right after condition P's
+own (document-only, so — unlike condition M — it needs no derived scene
+and runs unconditionally). Exact predicate, in the order the code checks
+it: for every `standard_object`/`csg_object` in document order —
+
+1. **Not a pure container.** A `standard_object` with neither `geometry`
+   nor `source` is a transform node the renderer never draws (its own
+   descriptor: "with no geometry it is a pure CONTAINER… invisible to the
+   renderer itself") — nothing for a modifier to act on, so it is
+   excluded regardless of what its (inert) material binds. `csg_object`
+   has no `geometry`/`source` field at all (its shape is always its two
+   operands) so this exclusion never applies to it. *(Added mid-round —
+   see "what broke and why" below; not in the original four-clause list
+   the brief specified, but required for the fixture corpus to stay
+   correct.)*
+2. **(ii) No modifier bound.** The object's own `modifier` parameter is
+   absent, empty or `none`. A `modifier` naming a `modifier_stack` chunk
+   counts as bound — the stack is itself a `ChunkCategory::Modifier`
+   chunk, and this condition only asks "does the slot resolve to
+   anything", never which modifier *kind*: a bumpmap/normal-map/glint
+   modifier silences this exactly as a relief one would, since the claim
+   is narrowly "the shading normal is inert here".
+3. **(iii) Not hair geometry.** The object's geometry (resolved through
+   `objectGeometryByName` → `geometryKindByName`) is not `hair_geometry`
+   — a strand's own tangent-frame shading has no purchase for this kind
+   of relief.
+4. **(iv) Not hair/luminaire/light-object.** The bound material's kind is
+   not `hair_material`; is not classified emissive by
+   `DescriptorIsEmissiveMaterial_` (the registry "carries `exitance`"
+   rule conditions I/M already use — reused verbatim, not re-derived);
+   and the object itself does not classify as a light-object via
+   `ChunkIsLightObject_` (the arc-80 rect_light/shape_light fixture
+   classifier — redundant with the luminaire check on every fixture
+   audited this round, kept as defense-in-depth the same way
+   `TargetIsFormBearing_` keeps it).
+5. **(i) A genuinely varying colour-pipe slot.** At least one slot in
+   `ColorMaterialSlotsByKind_()` (condition H's own registry-derived
+   table — no second slot list was written) is spelled out on the
+   material AND classifies `MicrosurfaceBinding_::Varying` via
+   `ClassifyColorBinding_` (condition H's own classifier). An **Opaque**
+   (unreadable/unresolved) slot does **not** qualify — that proves only
+   that the slot is not a plain flat constant, never that it is
+   genuinely textured, the same "erring toward varying is the safe
+   direction, but Opaque is not varying" reading condition H's own
+   classifier already commits to.
+
+No volume gate — condition M/N/O/I's convention (one decal-on-plastic
+object already *is* the described failure), not condition D/H/L/P's
+"systemic flatness across N materials" one. No hero-material pick either:
+D/H/L/P each choose ONE material a bare verb call would rewrite, but
+Phase 4 ships no verb, so there is nothing for a hero pick to target —
+every qualifying **object** (not material) is a finding, the first named
+in full and the rest counted, the `EnclosedLightFinding_`/
+`DimLightFinding_` "first named, rest counted" convention (`findings[0]`
+plus `"(N more objects similarly flat-shaded.)"`) rather than the
+`FormatBoundedNameList_` plain-name-list convention conditions F/G/I use
+— chosen because naming just the object isn't enough here; the clause
+also needs the material, the slot and the painter, which only a
+per-finding struct (`FlatReliefFinding_`) carries.
+
+**Message shape.** Names the object, its material (and kind), the
+varying slot, and the painter bound there; states the two-chunk fix
+(`scalar_painter { painter <field> channel R }` bridging the SAME field
+into `relief_modifier { height <that scalar_painter>  scale <amount> }`,
+bound via the object's own `modifier`); points at
+`read_skill {"name":"procedural-textures"}`'s relief section. Self-
+disarming with condition H's own `kSelfDisarm` suffix on the diagnostic
+carrier (the claim IS "flat/simple styling", condition A's own topic) —
+the render-result note carries the shared clause without that suffix,
+the same split every sibling condition with this posture (H, K) follows.
+The shared clause text (not the diagnostic-only suffix) is asserted
+byte-identical between `ComputeDesignNote` and the `validate` diagnostic
+in the test (the "verbatim invariant" every prior condition's test
+carries).
+
+**Verb hook-point notes (assessed, not shipped).** Two comment blocks,
+no behaviour change: `AgentSession::AddWear`'s rebind site (just above
+where it splices the mined `expression_painter` colour field in) names
+the `relief_amplitude` escalation the design's §9 describes — the SAME
+noise term the rebind already mints would additionally become a
+`scalar_painter` + `relief_modifier`, wrapping any existing modifier in
+a `modifier_stack` (which condition Q itself already treats as "bound",
+so the two mechanisms compose without a special case). `AgentSession::
+AddWetness`'s coat-wrap site (just above where it mints the
+`coated_material` wrapper) states the opposite: this verb must **not**
+grow the same argument, because a wet film conforms to the relief
+already there (its own §6.3 correction) rather than adding new
+micro-geometry — minting a `relief_modifier` there would emboss the
+very surface a coat is supposed to smooth. Both are pure comments; no
+`add_wear`/`add_wetness` call signature or behaviour changed.
+
+**Tests (`tests/AgentReadValidateTest.cpp`, `RunFlatReliefScanTest`).**
+Six cases against a still-life vessel fixture (a lambertian ceramic
+cylinder), matching this file's own non-creature convention:
+
+- **(a) red-proof.** A varying `reflectance` (an `expression_painter`
+  fbm field) and no `modifier` fires; asserts the message names the
+  object, material, slot and painter, states the `scalar_painter { painter
+  … channel R }` + `relief_modifier` two-chunk fix, names the attach
+  mechanism, points at `read_skill` procedural-textures, and
+  self-disarms. The verbatim-invariant check confirms the shared claim
+  text is byte-identical between the diagnostic and `ComputeDesignNote`.
+- **(b) green-proof.** The identical material/object, now with
+  `modifier` naming a `relief_modifier` directly — silent.
+- **(c) green-proof.** `modifier` naming a `modifier_stack` that wraps
+  the SAME `relief_modifier` — silent (a stack counts as bound).
+- **(d) green-proof.** A flat `uniformcolor_painter` reflectance, no
+  modifier — nothing varies, silent.
+- **(e) green-proof, three objects, three different reasons.** A
+  `hair_material` object (material-kind exclusion, clause iv) on
+  ORDINARY (non-hair) geometry; a `hair_geometry` object (geometry-kind
+  exclusion, clause iii) bound to the ordinary varying material; and a
+  `lambertian_luminaire_material` object with a varying `exitance`
+  (luminaire exclusion, clause iv). All three silent.
+- **(f) dedupe.** Two qualifying objects sharing one material still
+  yield exactly ONE `DESIGN_FLAT_RELIEF` diagnostic entry (not two) —
+  one finding per object internally, one diagnostic per condition
+  externally, `findings[0]` named in full plus `"1 more object"`
+  counted. A second `ValidateText` pass over the byte-identical document
+  reproduces the SAME single entry (this scan is entirely stateless — no
+  session, no cache — so there is nothing to accumulate across passes;
+  "dedupe" here means "one entry per pass", not "suppressed on a second
+  call").
+
+**What broke, and why (the container-object fix).** The first build of
+condition Q, run against the FULL suite, red the pre-existing
+`AgentReadValidateTest` five ways: `docA3WithScalar` (a decoy object `b`
+bound to a genuinely-varying `doc91_procedural_mat` reflectance, with
+**no `geometry` at all** — a container used purely to keep condition H
+from firing vacuously) and the shared `preamble`/`bottle`/`anchors`
+fixture family used across every condition-C test (`docSix`, `docSeven`,
+`docNine`, `docTen`, `docInstanced` — a `mat` material with a genuinely
+varying `reflectance`, bound to real `bottle_geo` geometry across up to
+ten objects, plus one `procedural_anchor` on the same geometry) all
+turned out to be, by the letter of clauses (i)/(ii)/(iv), REAL
+decal-on-plastic objects that simply predate condition Q. Two different
+fixes, for two different reasons: `docA3WithScalar`'s `b` has no
+`geometry` at all, so it is excluded outright by the container clause
+above (added specifically because of this fixture — a geometry-less
+decoy object is not a real surface, and firing on one would be a false
+positive on ANY future document that reuses the same idiom, not just
+this test). The `bottle`/`anchors`/`docB4AllBoxWithScalar` fixtures'
+objects DO own real geometry, so they are genuine (if incidental)
+matches for the predicate as specified — each was given a `relief_modifier`
+built on the SAME field already driving its colour (never a decoy chunk),
+bound via the object's own `modifier`, purely to keep the "note goes
+fully empty" assertions those tests depend on. Comments at each edit site
+explain why. No assertion's PASS/FAIL semantics were changed — only
+enough silencing was added to keep pre-existing "should be silent"
+fixtures silent under the new condition, the same maintenance every prior
+condition (H, L, P) needed on the fixtures that predated it.
+
+**Registry surfaces.** Grepped `DESIGN_DRY_RAIN_SCENE` (the newest prior
+sibling) across `src/`, `tests/`, `skills/`, `docs/`: the only functional
+registry is `AgentDiagnostic.h`'s own constant declaration plus the
+`d.code = AgentDiagnosticCode::DESIGN_*` emission sites in
+`AgentSession.cpp` — no separate DESIGN_* enumeration, JSON schema, or
+`AgentMcpAdapter` listing exists to update. Both are done.
+
+**Gate, run on the final tree.** Full library + all four CLI binaries
+(`rise`, `meshconverter`, `imageconverter`, `biospecbsdfmaker`) rebuild
+warning-free. `./bin/tests/AgentReadValidateTest` — **314 passed, 0
+failed** (was 294 before this phase's six new cases plus the fixture
+fixes above; every existing assertion in the file still passes
+unchanged). `./bin/tests/AgentChunkCrudTest` — **3809 passed, 0 failed**.
+`./bin/tests/SourceHygieneTest` — **164 passed, 0 failed**.
+`./bin/tests/ReliefModifierTest` — **106 passed, 0 failed** (unaffected —
+no `ReliefModifier.{h,cpp}` C++ was touched this phase, only
+`AgentSession.cpp`/`AgentDiagnostic.h`/the one test file). Also run,
+since both verbs' surrounding code (comment-only) changed:
+`./bin/tests/AgentAddWearTest` — **287 passed, 0 failed**;
+`./bin/tests/AgentAddWetnessTest` — **210 passed, 0 failed**.
+
+**Self-audit — five likeliest ways this is wrong, and what was checked.**
+
+1. **False positive on a machine-minted instancing copy.** A `count_u`
+   repetition's per-copy names (`name[i,j]`) are never spelled as their
+   own `standard_object` chunk — condition Q, like every sibling, walks
+   literal document chunks, so it can only ever see the ONE authored
+   `standard_object` that carries `source`/`count_u`, not the copies the
+   derive step mints. Checked: condition C's own `RepeatGroup_`/
+   `docExpressesInstancing` machinery has the identical property and
+   documents it the same way; no different exposure here.
+2. **False positive on a luminaire wrapping a real base material.**
+   `DescriptorIsEmissiveMaterial_` fires on ANY material carrying
+   `exitance`, whether or not it wraps a real base (unlike
+   `ChunkIsLightObject_`, which requires the wrap to be absent). Checked
+   against the descriptor registry: only `lambertian_luminaire_material`/
+   `phong_luminaire_material` carry `exitance`, and BOTH are meant to be
+   excluded regardless of a base wrap — micro-relief on a light's own
+   emission surface is out of scope either way, so the broader exclusion
+   is the intended one here (unlike condition M, which specifically needs
+   the narrower "emissive-ONLY" test to find the shell BEHIND a wrapped
+   luminaire).
+3. **False positive on a CSG composite whose per-vertex hit carries no
+   `pmxWorldToObject`** (the Phase-1 red-proof's own documented
+   degraded mode for object-space fields). Not applicable here: condition
+   Q is a static document scan, not a render-time evaluation — it never
+   touches `RayIntersectionGeometric` or any hit record, so this
+   Phase-1 concern does not transfer.
+4. **Classifier reuse drift.** Checked that `ColorMaterialSlotsByKind_`/
+   `ClassifyColorBinding_` are called with the EXACT same arguments
+   condition H uses (the material's own already-collected param map,
+   the document-wide `painterKinds` map) — no parallel copy was written,
+   so a future change to either function updates both conditions
+   identically by construction.
+5. **Dedupe/rate-limiting beyond "one diagnostic per pass".** The task
+   brief asked for the SAME rate-limiting the siblings use; conditions
+   A–P carry no cooldown or session-state throttle at all (`ValidateText`
+   and `ComputeDesignNote` are both fully stateless, recomputed fresh
+   every call) — condition Q matches that exactly, by construction (same
+   scan, same statelessness), which test (f) checks directly (two
+   `ValidateText` passes over an identical document reproduce the
+   identical single-entry result, proving there is no cross-call state to
+   drift).
+
+**Deviations from the brief.** (1) The container-object exclusion
+(clause 1 above) was not in the brief's four numbered clauses — added
+because the existing fixture corpus needed it and it is independently
+correct (a geometry-less container is never a rendered surface). (2)
+`AgentChunkCrudTest.cpp` does not test any DESIGN_* condition (grepped
+empty for `DESIGN_UNWORN_MATERIALS` and every sibling) — the tests landed
+in `tests/AgentReadValidateTest.cpp`, where `DESIGN_UNWORN_MATERIALS`,
+`DESIGN_DRY_RAIN_SCENE` and every other condition in this family are
+actually tested, per the brief's own "(or wherever DESIGN_UNWORN_MATERIALS
+is tested — grep tests/ for it)" fallback. `AgentChunkCrudTest` is still
+run and reported above (green) since the brief names it explicitly.
+Nothing else was skipped: all four numbered deliverables plus this
+record are complete.
