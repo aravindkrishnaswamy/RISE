@@ -1203,6 +1203,69 @@ static void TestBilinearInverse()
 	std::cout << "  BilinearInverse direct cases: 5 patches x 25 (u, v) samples + 1 rejection\n";
 }
 
+// ------------------------------------------------------------
+// GeometricUtilities::BilinearInverse -- exact double root.
+//
+// `BilinearInverse` reduces to a quadratic `alpha*v^2 + beta*v + gamma
+// = 0` (axes i, j chosen from the patch normal; see the function body)
+// and hands it to `Polynomial::SolveQuadricWithinRange`, whose `d == 0`
+// branch used to return `-b/a` instead of `-b/(2a)` -- a root doubled
+// from the true vertex of the parabola.  `RayBilinearPatchIntersection`
+// was documented as "the only in-tree consumer that can reach a genuine
+// double root"; that was false.  This patch/point pair is constructed
+// so the quadratic's discriminant is EXACTLY 0.0 in IEEE double (not
+// just mathematically zero, verified against a scratch harness linked
+// against bin/librise.a before this test was written) so it lands on
+// that exact branch through THIS caller too:
+//
+//   corners: c00=(0,0,0)  c10=(1,0,0)  c11=(-0.5,0,0)  c01=(0,1,0)
+//   point:   P = BilinearForward(..., u=0.25, v=0.5) = (0.0625, 0.375, 0)
+//
+// All coordinates are dyadic (halves, quarters, eighths) so every
+// intermediate +,-,* is exact -- no rounding accumulates on the way to
+// alpha=-1.5, beta=1.5, gamma=-0.375, d = beta*beta - 4*alpha*gamma
+// = 2.25 - 2.25 = 0.0 bit-exact.  The patch is planar in z=0 so
+// `BilinearInverse` picks axes (i, j) = (x, y) (kSkip=2), matching the
+// derivation above.
+//
+// Red-proof (manual, not automated in this binary -- see
+// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md 10.6): reverting
+// `SolveQuadricWithinRange`'s `d == 0` branch from `-b/(2*a)` back to
+// `-b/a` and rebuilding turns this assertion red -- the recovered root
+// becomes v = 1.0 (double the true 0.5), `getu` then returns a `u`
+// that does not reconstruct `P`, and `BilinearInverse` either returns
+// false (residual check rejects it) or a wrong (u, v).  Confirmed by
+// hand before this test was committed; not left as a standing toggle
+// because there is no existing convention in this file for compiling
+// two variants of `Polynomial.cpp` into one binary.
+static void TestBilinearInverseExactDoubleRoot()
+{
+	std::cout << "Testing GeometricUtilities::BilinearInverse exact double-root branch..." << std::endl;
+
+	const Point3 c00( 0, 0, 0 );
+	const Point3 c10( 1, 0, 0 );
+	const Point3 c11( -0.5, 0, 0 );
+	const Point3 c01( 0, 1, 0 );
+	const Scalar uTrue = 0.25, vTrue = 0.5;
+
+	const Point3 P = GeometricUtilities::BilinearForward( c00, c10, c11, c01, uTrue, vTrue );
+
+	Scalar uRec = -1.0, vRec = -1.0;
+	const bool ok = GeometricUtilities::BilinearInverse(
+		c00, c10, c11, c01, P, uRec, vRec );
+
+	REQUIRE( ok, "BilinearInverse exact-double-root: inverse converged" );
+	if( ok ) {
+		REQUIRE( std::fabs( uRec - uTrue ) < 1e-9,
+			"BilinearInverse exact-double-root: u recovered" );
+		REQUIRE( std::fabs( vRec - vTrue ) < 1e-9,
+			"BilinearInverse exact-double-root: v recovered" );
+	}
+
+	std::cout << "  BilinearInverse exact-double-root case: u=" << uRec
+		<< " v=" << vRec << " (want " << uTrue << ", " << vTrue << ")\n";
+}
+
 // ============================================================
 // Bilinear patch
 // ============================================================
@@ -1908,7 +1971,8 @@ static void TestBilinearRandomDirectionParity()
 
 		// The elimination axis the fix picks is the largest |q|; when that
 		// is z the permutation is (x, y, z) -> identity, so the algebra is
-		// textually the legacy one and the results must be identical bits.
+		// textually the legacy one and the results must agree to
+		// FP-contraction noise (see below -- not bit-for-bit).
 		const Scalar qx = std::fabs(dir.x), qy = std::fabs(dir.y), qz = std::fabs(dir.z);
 		if( qz >= qx && qz >= qy ) {
 			nZDominant++;
@@ -2908,6 +2972,7 @@ int main()
 	TestBilinearPatch();
 	TestBilinearPatchAreaLightContract();
 	TestBilinearInverse();
+	TestBilinearInverseExactDoubleRoot();
 	TestBilinearEliminationAxis();
 
 	if( g_failures > 0 ) {
