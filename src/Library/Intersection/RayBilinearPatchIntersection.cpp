@@ -95,29 +95,35 @@ namespace RISE
 	// reuses the same `NEARZERO * (1 + scale)` idiom as the debt-21
 	// self-hit floor below -- `NEARZERO` (1e-12) being the round-off in a
 	// difference of world coordinates at unit scale, roughly 4500x
-	// DBL_EPSILON, so it carries three decades of headroom over the
-	// ~1e-15-relative residue a genuine root leaves.  The scale is the
+	// DBL_EPSILON, so it carries headroom over the ~1e-15-relative residue
+	// a genuine root leaves -- but not as much as that 4500x figure
+	// suggests: measured worst-case residual/tolerance ratio over 600k
+	// constructed-to-hit rays is 0.024 (a 42x margin, ~1.5 decades worst-
+	// case measured, not the three decades a flat DBL_EPSILON multiple
+	// would imply). The scale is the
 	// coordinate magnitude of the two points being differenced: the patch
 	// corners and ray origin (`coordScale`, already computed by the
 	// caller) plus the ray-parameter term `|t| * |q|_1`, which is what
 	// `origin + t*q` actually rounds against for a distant hit.
+	// Takes the already-evaluated surface point rather than (u, v) --
+	// every call site below has just called `EvaluateBilinearPatchAt` to
+	// get `dRange` via `computet`, so re-evaluating it here would be a
+	// second, redundant call.  Compares squared residual against squared
+	// tolerance so no `sqrt` is needed on this per-candidate check.
 	static bool RootLiesOnRay(
 		const Ray& ray,
-		const BilinearPatch& patch,
-		const Scalar u,
-		const Scalar v,
+		const Point3& srf,
 		const Scalar t,
 		const Scalar coordScale,
 		const Scalar qL1
 		)
 	{
-		const Point3 srf = GeometricUtilities::EvaluateBilinearPatchAt( patch, u, v );
 		const Scalar ex = srf.x - ( ray.origin.x + t * ray.Dir().x );
 		const Scalar ey = srf.y - ( ray.origin.y + t * ray.Dir().y );
 		const Scalar ez = srf.z - ( ray.origin.z + t * ray.Dir().z );
-		const Scalar residual = sqrt( ex*ex + ey*ey + ez*ez );
+		const Scalar residualSq = ex*ex + ey*ey + ez*ez;
 		const Scalar residualTol = NEARZERO * ( Scalar(1) + coordScale + fabs(t) * qL1 );
-		return residual <= residualTol;
+		return residualSq <= residualTol * residualTol;
 	}
 
 
@@ -293,7 +299,7 @@ namespace RISE
 				hit.dRange = computet(ray,pos1);
 
 				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin &&
-					RootLiesOnRay( ray, patch, hit.u, hit.v, hit.dRange, coordScale, qL1 ) ) {
+					RootLiesOnRay( ray, pos1, hit.dRange, coordScale, qL1 ) ) {
 					hit.bHit = true;
 				}
 			}
@@ -304,10 +310,10 @@ namespace RISE
 				hit.u = getu(sol[0],A2,A1,B2,B1,C2,C1,D2,D1);
 				
 				const Point3 pos1 = GeometricUtilities::EvaluateBilinearPatchAt( patch, hit.u, hit.v );
-				hit.dRange = computet(ray,pos1); 
+				hit.dRange = computet(ray,pos1);
 
 				if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin &&
-					RootLiesOnRay( ray, patch, hit.u, hit.v, hit.dRange, coordScale, qL1 ) ) {
+					RootLiesOnRay( ray, pos1, hit.dRange, coordScale, qL1 ) ) {
 					hit.bHit = true;
 
 					const Scalar u = getu(sol[1],A2,A1,B2,B1,C2,C1,D2,D1);
@@ -316,7 +322,7 @@ namespace RISE
 						const Scalar t2 = computet(ray,pos2);
 						// t2 is bad, off the ray, or t1 is nearer -- keep t1.
 						if(t2 < tMin || hit.dRange < t2 ||
-							!RootLiesOnRay( ray, patch, u, sol[1], t2, coordScale, qL1 )) {
+							!RootLiesOnRay( ray, pos2, t2, coordScale, qL1 )) {
 							return;
 						}
 						// other wise both t2 > 0 and t2 < t1
@@ -333,7 +339,7 @@ namespace RISE
 					hit.dRange = computet(ray,pos1b);
 
 					if( hit.u < 1+NEARZERO && hit.u > -NEARZERO && hit.dRange > tMin &&
-						RootLiesOnRay( ray, patch, hit.u, hit.v, hit.dRange, coordScale, qL1 ) ) {
+						RootLiesOnRay( ray, pos1b, hit.dRange, coordScale, qL1 ) ) {
 						hit.bHit = true;
 					}
 				}
