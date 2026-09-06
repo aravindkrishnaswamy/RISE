@@ -888,11 +888,24 @@ applies.
 
 `validate`/render results carry a `DESIGN_FLAT_RELIEF` advisory (a
 "decal on plastic" detector) when an object's material paints a
-spatially-varying colour but the object binds no `modifier` at all --
-binding ANY modifier silences it (a `relief_modifier` is the fix this
-note is teaching, but a `bumpmap_modifier`/`normal_map_modifier`/
+spatially-varying colour onto a surface whose shading normal never
+changes. Binding ANY modifier silences it (a `relief_modifier` is the
+fix this note is teaching, but a `bumpmap_modifier`/`normal_map_modifier`/
 `glint_modifier`, or a `modifier_stack` naming any of them, silences it
-too, since the claim is only "the shading normal is inert here").
+too, since the claim is only "the shading normal is inert here"). It asks
+what the RENDERED surface carries, not what the chunk literally spells, so
+it is also silent when the modifier is **inherited** through `source`
+instancing, when **every operand** of a `csg_object` binds one, or when an
+**enclosing** `csg_object` binds one over an operand. (`modifier none` on
+an instancing copy clears the inherited one, so such a copy does fire.)
+
+It will not fire on a colour that only looks varying: an all-uniform
+`blend_painter`/`ramp_painter`/`mapping_painter`/`channel_painter` chain
+is a flat colour, a slot `add_wetness` rewrote is a wet film (a film
+conforms to relief rather than adding it), and a varying `emissive` is a
+painted glow — none of them is a relief cue. It DOES look through a
+`coated_material`/`fabric_material`/`composite_material` at the base it
+wraps, because that is the surface the relief would go on.
 
 ## Discovery
 

@@ -1,6 +1,7 @@
 # Relief Modifier — Painter-Driven Shading-Normal Micro-Relief, and the Deprecation of `bumpmap_modifier`
 
-**Status:** Phases 1–5 landed; Phase 4/5 review rounds: see §12. Each phase runs the
+**Status:** Phases 1–5 landed; Phase 4 reviewed to zero P1 (fix round 1,
+`177bcee4`); Phase 5 review round: see §12. Each phase runs the
 [implementation-review-loop](skills/implementation-review-loop.md) to zero
 P1 before the next starts. The per-phase record is appended to §12 as
 phases land.
@@ -672,12 +673,45 @@ tolls (§7 decision 2, reaffirmed in the "Price the inferior path" row of
   gets the reference row and the hook-line rewrite; everything else gets a
   pointer.
 - **Advisory `DESIGN_FLAT_RELIEF`** (the decal-on-plastic detector): fires
-  when an object's material has a spatially-varying painter on its colour
-  slot (any non-uniform painter kind) *and* the object binds no modifier;
-  names the object, the field, and the two-chunk fix. Advisory-only. Its
-  adoption is expected to be ≈ 0 per C-ADV; it exists to make the census
-  (below) measurable, and its text is the one place the pattern is taught
-  at the moment the agent is looking at the material.
+  when an object's material has a **genuinely** spatially-varying painter
+  on a non-emission colour slot *and* the rendered surface carries **no
+  effective modifier**; names the object, the field, and the two-chunk
+  fix. Advisory-only. Its adoption is expected to be ≈ 0 per C-ADV; it
+  exists to make the census (below) measurable, and its text is the one
+  place the pattern is taught at the moment the agent is looking at the
+  material.
+
+  Both emphasised words are load-bearing, and the fix round in §12 is why
+  (the first cut of this condition got each of them wrong):
+
+  - **Effective modifier**, not "the object chunk spells `modifier`". The
+    engine binds one by four routes, and this condition silences on any of
+    them: the object's own, one **inherited down a `source` chain**
+    (`MergeChunkParams` folds the chain in and `modifier` is not
+    instance-own, so an instancing copy renders with its source's relief —
+    unless the copy spells `modifier none`, which genuinely clears it),
+    **every operand of a `csg_object`** carrying one (a hit reports the
+    operand's modifier, so a composite binding nothing is still
+    relief-bearing when both operands are), and **an enclosing composite**
+    binding one over an operand (the composite's binding takes final
+    precedence). A composite with no modifier and only *some* operands
+    bearing relief still fires, naming the composite. Any modifier KIND
+    counts — a `modifier_stack`, a bumpmap, a normal map — since the claim
+    is narrowly "the shading normal is inert here".
+  - **Genuinely varying**, not "the painter kind is not one of the three
+    constant ones". A `blend_painter` / `ramp_painter` / `mapping_painter`
+    / `channel_painter` whose inputs are all uniform is structurally
+    constant and does not qualify; a colour slot `add_wetness` rebound to
+    its own wetness-prelude expression is a wet film, not authored
+    texture, and does not qualify either (advising relief there is
+    physically backwards — a film conforms to relief rather than adding
+    it). Conversely, a varying slot on a **wrapped base** — under a
+    `coated_material`, `fabric_material` or `composite_material` — *does*
+    qualify: the advice is about the surface under the wrapper.
+  - **Non-emission slot.** A varying `emissive` over flat `rd`/`rs` is a
+    painted glow, a complete look on its own; relief cannot sell it. The
+    exclusion is slot-scoped, so the same material with a varying `rd`
+    still fires.
 - **Verb hook points** (assessed, not shipped): `add_wear` already mints a
   `curv`-driven `expression_painter` and rebinds colour and roughness
   (`AgentSession::AddWear` in `AgentSession.cpp`); relief cannot come from `curv` (§3.2 —
@@ -1934,3 +1968,201 @@ were bound to `relief_wood` alongside the top rather than left flat —
 the scene's own header never called the legs out separately, and
 leaving them flat while the top gained visible relief would have read
 as an inconsistency in the same material.
+
+---
+
+### Phase 4 — fix round 1 (2026-09-06)
+
+One adversarial review round on the Phase-4 record above returned **3 P1s
++ 3 P2s**. All six fixed at the root in one commit, `177bcee4`
+(`src/Library/Agent/AgentSession.cpp`,
+`tests/AgentReadValidateTest.cpp`, `tools/migrate_scenes_relief.py`).
+
+**The common root of P1-1 and P1-2.** Condition Q's clause (ii) asked
+whether the object's own chunk spells a `modifier` param. That is not the
+same question as *does the rendered surface carry a modifier* — the
+engine answers the second one through two mechanisms the literal-param
+test cannot see. One helper now resolves it:
+`ObjectHasEffectiveModifier_` (the brief's `EffectiveModifierOfObject_`;
+it returns a **bool** rather than a name because the "every operand binds
+one" arm has no single modifier to name), off an
+`EffectiveModifierIndex_` the existing single document walk fills in.
+**The rules it implements**, in the order it applies them:
+
+1. **Own, or inherited down the `source` chain.** Walk `source` until a
+   level SPELLS `modifier`; that level's value is the answer.
+   `MergeChunkParams` ([Cst.cpp](../src/Library/Cst/Cst.cpp)) folds the
+   whole chain into the derived instance and `modifier` is **not** in
+   `IsInstanceOwnParam` (only `name` / `parent` / `source` / the five
+   transform params / `mirror` / `count_u` / `count_v` are), so an
+   instancing copy renders with its source's modifier. **`none` is a
+   first-class, chain-STOPPING answer**: the copy's own params merge
+   LAST and the parser passes 0 for a `"none"` modifier (Cst.cpp's own
+   optional-slot-removal rule), so `modifier none` genuinely CLEARS an
+   inherited binding. This is why the collected map records `"none"`
+   where every sibling map drops it.
+2. **A composite whose EVERY operand is bound.**
+   `CSGObject::IntersectRay` reports the OPERAND's modifier on each hit
+   (`AdoptCsgSurfaceBindings`), so a `csg_object` binding nothing itself
+   still has a fully relief-bearing surface when both operands do —
+   recursively, through nested csg.
+3. **An enclosing composite that binds one.** The composite's own
+   binding takes final precedence over the operand's (the conditional
+   overrides at the bottom of `IntersectRay`), so an operand under a
+   relief-bearing composite is never flat. Walked transitively.
+4. **Otherwise: unbound.** A composite with no operands recorded (an
+   unresolved `obja`/`objb`) is NOT bound — this scan never claims
+   relief it cannot see. **A composite with no modifier and only SOME of
+   its operands bearing relief therefore FIRES, naming the composite**
+   (rule 2 fails; the partly-flat surface is exactly the described
+   failure).
+
+All three walks are depth-bounded at 8, so a `source` cycle or
+mutually-referencing composites in a malformed document resolve to "no
+modifier" — which costs at most one advisory — instead of hanging the
+scan.
+
+**P1-3 — the quadratic scan.** `FindDocumentChunkByName_` re-walked the
+whole document per call, and condition Q called it once per candidate
+**ahead of clause (i)**, with two more walks inside
+`ChunkIsLightObject_`. It is replaced by `DocChunksByName_` — every
+chunk bucketed by `name`, in the same `CollectItems` order, first chunk
+of the required category wins, so **no migrated caller can resolve a name
+to a different chunk**. Built ONCE and LAZILY (only the light-object test
+needs it), with that test moved AFTER clause (i) so a non-candidate never
+pays for it. The old helper had no remaining callers and was deleted;
+its per-category-uniqueness doc moved onto `FindIndexedChunkByName_`.
+
+Measured with a scratch harness against `bin/librise.a`
+(`ValidateText` + `ComputeDesignNote` over a generated document of N
+`sphere_geometry` + `lambertian_material` + `standard_object` triples,
+none binding a modifier; times are seconds, macOS arm64, `-O3`):
+
+| N | before, no-fire | after, no-fire | before, all-fire | after, all-fire |
+|---:|---:|---:|---:|---:|
+| 500  | 0.479 / 0.438 | 0.035 / 0.018 | 0.456 / 0.436 | 0.016 / 0.014 |
+| 1000 | 1.966 / 1.948 | 0.036 / 0.030 | 2.005 / 2.024 | 0.033 / 0.030 |
+| 3000 | 19.079 / 19.073 | 0.108 / 0.102 | 19.434 / 19.360 | 0.108 / 0.099 |
+
+(each cell is `ValidateText / ComputeDesignNote`; "no-fire" binds a
+`uniformcolor_painter` reflectance so no object qualifies, "all-fire"
+binds the fbm field so every object reaches the light-object test.)
+Before: ×4.1 for ×2 objects and ×9.7 for ×3 — clean quadratic. After:
+×3.1 for ×6 objects — linear, and **0.108 s at N=3000**. **Honest note
+on the "before" column:** it was produced by a temporary reconstruction
+of the pre-fix shape (a per-candidate index build ahead of clause (i)),
+not by the deleted code byte-for-byte, so the absolute constant is
+~2× the reviewer's own 8.6 s at N=3000. The *growth exponent* — the
+thing being fixed — is the same measurement either way.
+
+**Audit-by-bug-pattern sweep.** Grepped every `FindDocumentChunkByName_`
+call site for the same "helper inside a per-item loop" shape. Conditions
+H / I / M do **not** have it (they resolve names off the maps the shared
+walk already built, never by document lookup). One sibling did:
+`ClassifyDocumentChunkForFormBearing_`'s referencer loop called
+`ChunkIsLightObject_( r, doc )` — two whole-document walks — once per
+referencing chunk. It now builds and shares one index for the loop.
+
+**P2-1 — structurally constant "varying" painters.**
+`ClassifyColorBinding_` was purely name-list based, so a `blend_painter`
+whose `colora`, `colorb` and `mask` are all `uniformcolor_painter`
+chunks classified **Varying** — and Q advised relief on a single flat
+colour. It now recurses through the **PASS-THROUGH** colour painters,
+exactly as the scalar twin `ClassifyMicrosurfaceBinding_` already walked
+its `base`/`multiply` chains: Constant iff every spelled input is,
+Varying if any input is, Opaque otherwise (an unresolved input still
+declines rather than being guessed). The pass-through set is
+`blend_painter` (colora/colorb/mask), `ramp_painter` (`input` — the
+descriptor's spelling, **not** `source`), `mapping_painter` (`source`)
+and `channel_painter` (`source`). It is a LIST, not "every Painter-kind
+Reference param", because `checker_painter` / `perlin3d_painter` /
+`voronoi3d_painter` also name `colora`/`colorb` but generate their OWN
+spatial pattern between them — two uniform inputs still give a
+chequerboard. `composite_function2d_painter` is deliberately absent (its
+field is the Function2D pipe, which this colour classifier does not
+read), so it classifies exactly as before. Condition H's semantics are
+unchanged in shape — non-Constant still declines — and its own cases all
+still pass.
+
+**P2-2 — wrappers and the wetness collision.** (a) `coated_material` /
+`fabric_material` / `composite_material` wrapping a varying base were
+invisible to Q: the wrapper has no colour slot of its own that varies
+while the surface under it is fully textured. The slot search is now
+recursive (depth-bounded at 4) through every `ParameterPipe::Material`
+Reference param — **registry-derived** via a new
+`MaterialWrapperSlotsByKind_`, never a hand list, so a wrapper kind added
+later is covered with no edit — and it applies the material-KIND
+exclusions (hair, luminaire) at **every** level, so a coat over a
+luminaire base is still excluded. The finding names the wrapped material
+that actually carries the varying slot. (b) `AddWetness`'s GGX/PBR branch
+rebinds the colour slot to a wetness-prelude `expression_painter`; Q then
+fired and advised relief on a wet film, which that verb's own hook-point
+note calls physically backwards ("a wet film CONFORMS to the surface
+underneath it… minting a `relief_modifier` here would emboss the very
+surface a coat is supposed to smooth"). Condition H's own
+`WetnessBodyReadsPreludeDefs_` marker (`dryness` **and** `film_amount`)
+is reused verbatim to disqualify such a binding — no second name check.
+
+**P2-3 — varying `emissive` on a non-luminaire kind.** `ggx_material`
+and `pbr_metallic_roughness_material` both carry an optional `emissive`
+painter, which `ColorMaterialSlotsByKind_` rightly lists (it is
+registry-derived off `ParameterPipe::Color`) — but relief cannot sell a
+GLOW. `ColorSlotIsEmissionRole_` excludes `emissive` / `exitance` /
+`emission` from the search. The `exitance`-descriptor material-kind
+exclusion is unchanged and still applies first; listing `exitance` here
+too is belt-and-braces for a luminaire reached as the BASE of a wrapper.
+The exclusion is **slot-scoped, not material-scoped**: the same material
+with a varying `rd` still fires.
+
+**Phase 3 residual P2 — the migrator's line endings.**
+`tools/migrate_scenes_relief.py` used `Path.read_text()` / `write_text()`,
+which open in universal-newline mode: a CRLF scene came back LF, rewriting
+every line in the file including the ones the migrator never touched. Both
+ends now go through `read_preserving_newlines` /
+`write_preserving_newlines` (`newline=''`, CRLF re-applied on write, so
+emitted chunks match the file's own convention too). **Honest bound,
+stated in the docstring:** only a UNIFORM-CRLF file round-trips exactly;
+a mixed-ending file is still normalised to LF — unchanged from before, and
+deliberately, because this migrator inserts and removes lines, so "line
+k's original terminator" has no well-defined answer once the indices
+shift.
+
+**Tests.** Nine new cases appended to `RunFlatReliefScanTest`
+(`tests/AgentReadValidateTest.cpp`), (g)–(o): (g) a `source` copy
+overriding only `material` is silent; (h) the same copy spelling
+`modifier none` fires, naming `copy`; (i) a composite overriding only
+`material` with both operands bearing relief is silent; (j) a composite
+carrying the relief over varying-material operands is silent on the
+operands; (k) a composite with no modifier and only ONE operand bearing
+relief fires, naming the composite, and is the ONLY finding; (l) an
+all-uniform `blend_painter` is silent and the same blend with one varying
+input fires; (m) a `coated_material` over a varying base fires, naming
+the object and the wrapped material; (n) a wetness-prelude rebind is
+silent; (o) a varying `emissive` over flat rd/rs is silent while a
+varying `rd` on the same material still fires. Three new CRLF cases in
+the migrator's `--selftest`.
+
+**Red-proofs.** Reverting clause (ii) to the literal-param lookup and
+restoring the per-candidate document walk (temporary patch, reverted)
+turns **(g), (i) and (j) RED** — `AgentReadValidateTest` 323 passed / 3
+failed — while (h) and (k) stay green, which is correct: those are the
+cases that fire under both shapes. The P1-3 timing table above is the
+same run's before-column.
+
+**Gate, on the final tree.** Full library + all four CLI binaries rebuild
+warning-free after touching every changed `.cpp`.
+`./bin/tests/AgentReadValidateTest` — **326 passed, 0 failed** (was 314).
+`./bin/tests/AgentChunkCrudTest` — **3809 passed, 0 failed**.
+`./bin/tests/AgentAddWearTest` — **287 passed, 0 failed**.
+`./bin/tests/AgentAddWetnessTest` — **210 passed, 0 failed**.
+`./bin/tests/SourceHygieneTest` — **164 passed, 0 failed**.
+`./bin/tests/ReliefModifierTest` — **106 passed, 0 failed**.
+`python3 tools/migrate_scenes_relief.py --selftest` — 0 failures;
+`--dry-run --root scenes` — 468 files scanned, 0 chunks.
+
+**Left undone.** Nothing from the six findings. Not attempted: the
+`--selftest` CRLF cases cover uniform CRLF and uniform LF only; a
+per-line-terminator-preserving migrator (the mixed-ending case) is
+declined above with its reason. No `.RISEscene` in the corpus is CRLF
+today, so the fix is a guard for foreign input rather than a corpus
+repair.

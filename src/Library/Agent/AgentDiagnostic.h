@@ -623,17 +623,86 @@ namespace RISE
 			//!         `add_wetness` already share). An Opaque (unreadable)
 			//!         slot does NOT qualify -- that proves only that the slot
 			//!         is not a plain flat constant, never that it is
-			//!         genuinely textured;
-			//!   (ii)  the object's own `modifier` parameter is absent, empty
-			//!         or "none". A `modifier` naming a `modifier_stack` chunk
-			//!         COUNTS AS BOUND -- the stack is itself a
-			//!         ChunkCategory::Modifier chunk, and this condition asks
-			//!         only "does the object's modifier slot resolve to
-			//!         anything", never whether the specific bound chunk is a
-			//!         `relief_modifier`: a bumpmap/normal-map/glint modifier
-			//!         silences this exactly as a relief one would, since the
-			//!         claim is narrowly "the shading normal is inert", not
-			//!         "the wrong modifier kind was chosen";
+			//!         genuinely textured.
+			//!
+			//!         FIX ROUND 1 (2026-09-06) narrowed "varying" three ways,
+			//!         each because the first cut advised relief where it did
+			//!         not belong:
+			//!          * a PASS-THROUGH painter (`blend_painter`,
+			//!            `ramp_painter`, `mapping_painter`,
+			//!            `channel_painter`) is only as varying as its inputs
+			//!            -- `ClassifyColorBinding_` now recurses, exactly as
+			//!            the scalar twin `ClassifyMicrosurfaceBinding_`
+			//!            already walked its base/multiply chains, so an
+			//!            all-uniform blend is CONSTANT.  Pattern painters
+			//!            (checker / perlin / voronoi / ...) stay Varying by
+			//!            construction: two uniform inputs still give a
+			//!            chequerboard;
+			//!          * an EMISSION slot (`emissive` / `exitance` /
+			//!            `emission`, per `ColorSlotIsEmissionRole_`) is never
+			//!            a candidate -- relief cannot sell a GLOW.  A varying
+			//!            `emissive` over flat rd/rs on `ggx_material` or
+			//!            `pbr_metallic_roughness_material` is a complete look
+			//!            on its own.  SLOT-scoped, not material-scoped: the
+			//!            same material with a varying `rd` still fires;
+			//!          * a slot `add_wetness` rebound to its own WETNESS-
+			//!            PRELUDE expression (condition H's own
+			//!            `WetnessBodyReadsPreludeDefs_` marker: `dryness` AND
+			//!            `film_amount`) is a wet film, not authored texture.
+			//!            Advising relief there is physically backwards -- a
+			//!            film conforms to the relief already present rather
+			//!            than adding new micro-geometry (see
+			//!            `AgentSession::AddWetness`'s own hook-point note).
+			//!         Conversely the search is RECURSIVE THROUGH WRAPPER
+			//!         MATERIALS: `coated_material` / `fabric_material` /
+			//!         `composite_material` have no varying colour slot of
+			//!         their own while the surface under them is fully
+			//!         textured, so every `ParameterPipe::Material` slot
+			//!         (`MaterialWrapperSlotsByKind_`, registry-derived) is
+			//!         followed into the wrapped base, with the (iv)
+			//!         material-kind exclusions applied at every level;
+			//!   (ii)  the rendered surface carries NO EFFECTIVE MODIFIER.
+			//!         Not "the object chunk spells no `modifier`" -- FIX
+			//!         ROUND 1 (2026-09-06) replaced that literal-param test
+			//!         with `ObjectHasEffectiveModifier_`, which resolves the
+			//!         question the ENGINE answers.  A modifier is effective
+			//!         by any of four routes:
+			//!          (a) the object's OWN `modifier` (absent, empty or
+			//!              "none" means unbound);
+			//!          (b) one INHERITED down a `source` chain.  Cst.cpp's
+			//!              `MergeChunkParams` folds the whole chain into the
+			//!              derived instance and `modifier` is NOT in
+			//!              `IsInstanceOwnParam`, so an instancing copy
+			//!              renders WITH its source's modifier.  The copy's
+			//!              own params merge LAST, so a copy spelling
+			//!              `modifier none` genuinely CLEARS the inherited one
+			//!              and IS a candidate -- "none" stops the walk, it is
+			//!              not "absent";
+			//!          (c) EVERY OPERAND of a `csg_object` carrying one
+			//!              (recursively, through nested csg).
+			//!              `CSGObject::IntersectRay` reports the OPERAND's
+			//!              modifier on each hit (`AdoptCsgSurfaceBindings`),
+			//!              so a composite that binds nothing itself still has
+			//!              a fully relief-bearing surface when both operands
+			//!              do.  A composite with no modifier and only SOME
+			//!              operands bearing relief FIRES, naming the
+			//!              composite -- that partly-flat surface is exactly
+			//!              the described failure.  A composite whose operands
+			//!              cannot be resolved is NOT bound: this scan never
+			//!              claims relief it cannot see;
+			//!          (d) an ENCLOSING composite (transitively) binding one
+			//!              over this object.  The composite's own binding
+			//!              takes final precedence over the operand's on every
+			//!              hit it reports, so the operand is never flat.
+			//!         All three walks are depth-bounded, so a `source` cycle
+			//!         or mutually-referencing composites in a malformed
+			//!         document resolve to "no modifier" rather than hanging.
+			//!         Which modifier KIND is bound is never asked: a
+			//!         `modifier_stack` name counts exactly as a single
+			//!         modifier chunk does, and a bumpmap/normal-map/glint
+			//!         modifier silences this exactly as a relief one would,
+			//!         since the claim is narrowly "the shading normal is
+			//!         inert", not "the wrong modifier kind was chosen";
 			//!   (iii) the object's geometry is not `hair_geometry` (a
 			//!         strand's own tangent-frame shading has no purchase for
 			//!         this kind of relief); and
