@@ -1112,6 +1112,34 @@ static void Test11_ChartOracle()
 		cam->release();
 	}
 
+	// The IDENTITY branch of the same chart map -- the pre-swap
+	// `dsdu=1, dsdv=0, dtdu=0, dtdv=1` assignment, which the +y row above
+	// never reaches.  Per CylinderGeometry.cpp's per-axis table, a
+	// z-axis cylinder swaps on its -z cap, so its +z cap takes the
+	// UNswapped branch; the camera below looks DOWN the +z axis at the
+	// +z cap.  Red-proof (2026-09-06): transposed the pre-`if` identity
+	// assignment (`dsdu=0,dsdv=1,dtdu=1,dtdv=0`) -- this row failed and
+	// the +y row above stayed green, confirming they exercise the two
+	// different branches; reverted.
+	{
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, 5 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		CylinderGeometry* g = new CylinderGeometry( 'z', 1.0, 3.0, true );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		// Dead centre of the cap is the disk chart's origin, where both
+		// FD components are fine but the hit is exactly on the axis;
+		// aim a little off so the frame is generic.
+		RandomNumberGenerator rng( 7u );
+		RuntimeContext rc( rng, RuntimeContext::PASS_NORMAL, false );
+		Ray r;
+		cam->GenerateRay( rc, r, Point2( Scalar( kRes ) * Scalar( 0.5 ) + Scalar( 60 ),
+		                                 Scalar( kRes ) * Scalar( 0.5 ) + Scalar( 35 ) ) );
+		CheckChart( "analytic cylinder (+z end cap)", *o, r, Scalar( 1e-3 ) );
+		o->release();
+		cam->release();
+	}
+
 	// Torus.  Aim ABOVE the outer equator: the equator itself is the
 	// tube chart's v = 0 seam, where the finite difference wraps.
 	{

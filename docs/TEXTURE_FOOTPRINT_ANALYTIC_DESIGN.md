@@ -928,3 +928,15 @@ regeneration was needed, since only comments changed in any scene).
 | Commit | What |
 |---|---|
 | *(this record)* | the step fraction, the renumbering, the three re-measured/corrected claims, the mirrored-UV oracle row, and this section |
+
+**(D) P2 follow-up (2026-09-06): the identity branch was unpinned.** (B)'s
+per-axis table means the cap chart map has two live branches — the
+handedness swap, and the pre-swap identity `dsdu=1, dsdv=0, dtdu=0,
+dtdv=1` assignment — but test 11's only cap row (the `+y` cylinder) takes
+the swapped branch, per (B) above. Test 11 gained a second cap row,
+`"analytic cylinder (+z end cap)"` (a `z`-axis capped cylinder viewed
+straight down its axis, which per the same per-axis table takes the
+un-swapped identity branch), red-proofed by transposing the pre-`if`
+identity assignment (the new row failed at scale-relative error 1.000,
+the existing `+y` row stayed green; reverted). `TextureFootprintTest` is
+now 118/118.
