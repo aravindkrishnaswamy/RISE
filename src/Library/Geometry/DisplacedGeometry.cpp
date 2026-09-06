@@ -41,16 +41,18 @@ void DisplacedGeometry::ResetBuildMeshCount()
 }
 
 DisplacedGeometry::DisplacedGeometry(
-	IGeometry*          pBase,
-	const unsigned int  detail,
-	const IFunction2D*  displacement,
-	const Scalar        disp_scale,
-	const bool          bDoubleSided,
-	const bool          bUseFaceNormals,
-	const bool          bSeamFold
+	IGeometry*            pBase,
+	const unsigned int    detail,
+	const IFunction2D*    displacement,
+	const Scalar          disp_scale,
+	const bool            bDoubleSided,
+	const bool            bUseFaceNormals,
+	const bool            bSeamFold,
+	const IScalarPainter* pHeight
 	) :
   m_pBase( pBase ),
   m_pDisplacement( displacement ),
+  m_pHeight( pHeight ),
   m_dispScale( disp_scale ),
   m_detail( detail ),
   m_bDoubleSided( bDoubleSided ),
@@ -66,6 +68,9 @@ DisplacedGeometry::DisplacedGeometry(
 	if( m_pDisplacement ) {
 		m_pDisplacement->addref();
 	}
+	if( m_pHeight ) {
+		m_pHeight->addref();
+	}
 
 	if( !m_pBase ) {
 		GlobalLog()->Print( eLog_Error, "DisplacedGeometry: base geometry is null" );
@@ -79,13 +84,17 @@ DisplacedGeometry::DisplacedGeometry(
 	// displaced geometry that is never bound to a rendered object is thus
 	// never baked.
 
-	// If the displacement painter exposes the Observable mixin (i.e. it derives
+	// If the height source exposes the Observable mixin (i.e. it derives
 	// from Painter — true for every in-tree painter), subscribe so we rebuild
 	// the mesh whenever the painter's keyframable state changes.  Out-of-tree
-	// IFunction2D implementations that don't derive from Observable simply
-	// don't subscribe; we keep today's bake-once behaviour for them.
-	if( m_pDisplacement ) {
-		const Observable* obs = dynamic_cast<const Observable*>( m_pDisplacement );
+	// IFunction2D / IScalarPainter implementations that don't derive from
+	// Observable simply don't subscribe; we keep today's bake-once behaviour
+	// for them.  The two routes are mutually exclusive, so at most one of the
+	// dynamic_casts below can find a subject.
+	{
+		const Observable* obs = m_pDisplacement
+			? dynamic_cast<const Observable*>( m_pDisplacement )
+			: ( m_pHeight ? dynamic_cast<const Observable*>( m_pHeight ) : 0 );
 		if( obs ) {
 			m_displacementSubscription = Subscription( obs, [this]{
 				// Tier 1 §3 animation refit: instead of destroying and
@@ -126,6 +135,10 @@ DisplacedGeometry::~DisplacedGeometry()
 	if( m_pDisplacement ) {
 		m_pDisplacement->release();
 		m_pDisplacement = 0;
+	}
+	if( m_pHeight ) {
+		m_pHeight->release();
+		m_pHeight = 0;
 	}
 	if( m_pBase ) {
 		m_pBase->release();
@@ -176,6 +189,59 @@ void DisplacedGeometry::Realize() const
 	m_bRealized.store( true, std::memory_order_release );
 }
 
+bool DisplacedGeometry::ApplyHeightField(
+	IndexTriangleListType& tris,
+	VerticesListType&      vertices,
+	NormalsListType&       normals,
+	TexCoordsListType&     coords ) const
+{
+	// Did we actually move any vertex positions?  With disp_scale==0 (or
+	// neither height route bound) the appliers are a no-op and the analytical
+	// per-vertex normals coming out of TessellateToMesh are still correct.
+	// Topology-averaged normals would REPLACE those analytic normals with a
+	// locally-linear approximation — fine for displaced surfaces, but
+	// unnecessarily lossy when nothing was displaced.  This matters a lot for
+	// SMS / Manifold-Solver tests that use disp_scale=0 as a "force tessellation
+	// of an otherwise analytic shape" idiom: with this shortcut the tessellated
+	// sphere's |∂N/∂u|/|∂P/∂u| ratio lands on 1/R (exactly the analytic value)
+	// everywhere except the pole-cap degenerate triangles.
+	const bool bVerticesDisplaced =
+		( ( m_pDisplacement || m_pHeight ) && m_dispScale != 0.0 );
+	if( !bVerticesDisplaced ) {
+		return false;
+	}
+
+	// RemapTextureCoords is a tent-fold (u → 1−2u on [0,0.5]; u → 2u−1 on
+	// [0.5,1]) used ONLY to keep the displacement value consistent across
+	// the u=0 / u=1 wrap seam of closed parametric surfaces (sphere,
+	// torus, cylinder).  It is destructive to the linear (u, v)
+	// parameterisation that the SMS / Manifold-Solver UV-Jacobian path
+	// relies on: every triangle straddling u=0.5 or v=0.5 ends up with
+	// a non-monotonic UV triple (tent vertex in the middle), degenerating
+	// the 2×2 Jacobian.  Keep the original coords for the mesh and feed
+	// a tent-remapped COPY into the displacement evaluator only.
+	//
+	// BOTH routes get the SAME treatment: the scalar route's synthetic hit
+	// carries this same folded `ptCoord`, so a field written against (u,v)
+	// reads identically whether it arrives as an IFunction2D or as an
+	// IScalarPainter.  Diverging here is the seam-parity bug this shared
+	// helper exists to make impossible.
+	TexCoordsListType folded;
+	if( m_bSeamFold ) {
+		folded = coords;
+		RemapTextureCoords( folded );
+	}
+	// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
+	TexCoordsListType& evalCoords = m_bSeamFold ? folded : coords;
+
+	if( m_pDisplacement ) {
+		ApplyDisplacementMapToObject( tris, vertices, normals, evalCoords, *m_pDisplacement, m_dispScale );
+	} else {
+		ApplyScalarHeightToObject( tris, vertices, normals, evalCoords, *m_pHeight, m_dispScale );
+	}
+	return true;
+}
+
 void DisplacedGeometry::BuildMesh() const
 {
 	if( !m_pBase ) {
@@ -203,36 +269,7 @@ void DisplacedGeometry::BuildMesh() const
 		return;
 	}
 
-	// Did we actually move any vertex positions?  With disp_scale==0 (or a null
-	// displacement painter) ApplyDisplacementMapToObject is a no-op and the
-	// analytical per-vertex normals coming out of TessellateToMesh are still
-	// correct.  Topology-averaged normals would REPLACE those analytic normals
-	// with a locally-linear approximation — fine for displaced surfaces, but
-	// unnecessarily lossy when nothing was displaced.  This matters a lot for
-	// SMS / Manifold-Solver tests that use disp_scale=0 as a "force tessellation
-	// of an otherwise analytic shape" idiom: with this shortcut the tessellated
-	// sphere's |∂N/∂u|/|∂P/∂u| ratio lands on 1/R (exactly the analytic value)
-	// everywhere except the pole-cap degenerate triangles.
-	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
-	if( bVerticesDisplaced ) {
-		// RemapTextureCoords is a tent-fold (u → 1−2u on [0,0.5]; u → 2u−1 on
-		// [0.5,1]) used ONLY to keep the displacement value consistent across
-		// the u=0 / u=1 wrap seam of closed parametric surfaces (sphere,
-		// torus, cylinder).  It is destructive to the linear (u, v)
-		// parameterisation that the SMS / Manifold-Solver UV-Jacobian path
-		// relies on: every triangle straddling u=0.5 or v=0.5 ends up with
-		// a non-monotonic UV triple (tent vertex in the middle), degenerating
-		// the 2×2 Jacobian.  Keep the original coords for the mesh and feed
-		// a tent-remapped COPY into the displacement evaluator only.
-		if( m_bSeamFold ) {
-			TexCoordsListType displacementCoords = coords;
-			RemapTextureCoords( displacementCoords );
-			ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
-		} else {
-			// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
-			ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
-		}
-	}
+	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
@@ -269,17 +306,7 @@ void DisplacedGeometry::RefreshMeshVertices()
 		return;
 	}
 
-	const bool bVerticesDisplaced = ( m_pDisplacement && m_dispScale != 0.0 );
-	if( bVerticesDisplaced ) {
-		if( m_bSeamFold ) {
-			TexCoordsListType displacementCoords = coords;
-			RemapTextureCoords( displacementCoords );
-			ApplyDisplacementMapToObject( tris, vertices, normals, displacementCoords, *m_pDisplacement, m_dispScale );
-		} else {
-			// open Cartesian field: raw UV, no tent mirror (see ctor bSeamFold)
-			ApplyDisplacementMapToObject( tris, vertices, normals, coords, *m_pDisplacement, m_dispScale );
-		}
-	}
+	const bool bVerticesDisplaced = ApplyHeightField( tris, vertices, normals, coords );
 
 	if( !m_bUseFaceNormals && bVerticesDisplaced ) {
 		RecomputeVertexNormalsFromTopology( tris, vertices, normals );
@@ -388,8 +415,34 @@ SurfaceDerivatives DisplacedGeometry::ComputeSurfaceDerivatives( const Point3& o
 }
 
 #include "../Interfaces/IFunction2D.h"
+#include "../Interfaces/IScalarPainter.h"
+#include "../Intersection/RayIntersectionGeometric.h"
 
 namespace {
+	// The analytical-query twin of GeometryUtilities::ApplyScalarHeightToObject's
+	// synthetic hit: SAME fields set, SAME object-space `P` == `Po` convention,
+	// SAME invalid footprint / derivatives.  Kept field-for-field in step with
+	// that function -- a field that reads one value on the baked mesh and
+	// another through this query is exactly the inconsistency SMS's two-stage
+	// solver cannot tolerate.
+	inline RISE::Scalar EvalHeightField(
+		const RISE::IScalarPainter& height,
+		const RISE::Point3&         objPos,
+		const RISE::Vector3&        objNormal,
+		const RISE::Point2&         uv )
+	{
+		RISE::RayIntersectionGeometric ri( RISE::Ray(), RISE::nullRasterizerState );
+		ri.bHit              = true;
+		ri.ptObjIntersec     = objPos;
+		ri.ptIntersection    = objPos;
+		ri.ptCoord           = uv;
+		ri.vNormal           = objNormal;
+		ri.vGeomNormal       = objNormal;
+		ri.txFootprint.valid = false;
+		ri.derivatives.valid = false;
+		return height.GetValuesAt( ri ).v[0];
+	}
+
 	// Tent-fold of [0, 1] -> [0, 1] centred on 0.5; matches the
 	// destination-side mapping in GeometryUtilities::RemapTextureCoords
 	// that the tessellator uses when evaluating the displacement painter
@@ -464,6 +517,40 @@ bool DisplacedGeometry::ComputeAnalyticalDerivatives(
 			const Scalar f_uminus = m_pDisplacement->Evaluate( m_bSeamFold ? TentFold( at.x - epsP ) : ( at.x - epsP ), tv );
 			const Scalar f_vplus  = m_pDisplacement->Evaluate( tu, m_bSeamFold ? TentFold( at.y + epsP ) : ( at.y + epsP ) );
 			const Scalar f_vminus = m_pDisplacement->Evaluate( tu, m_bSeamFold ? TentFold( at.y - epsP ) : ( at.y - epsP ) );
+			const Scalar inv2 = 1.0 / (2.0 * epsP);
+			dfdu = ( f_uplus - f_uminus ) * inv2;
+			dfdv = ( f_vplus - f_vminus ) * inv2;
+		}
+		else if( m_pHeight && effDispScale != 0.0 )
+		{
+			// SCALAR-FIELD ROUTE.  The field is a function of the 3D point,
+			// not of (u, v), so the central difference has to step the
+			// POSITION, not just the parameter.  The chain rule via the
+			// base's own analytical tangents gives that for free:
+			//     P(u ± eps) ≈ P_b ± eps · dP_b/du
+			// so df/du = [h(P_b + eps·dpdu) − h(P_b − eps·dpdu)] / 2eps to
+			// first order, with NO extra base ComputeAnalyticalDerivatives
+			// calls (this function already costs ~5 base evaluations).
+			//
+			// The synthetic hit's `ptCoord` is stepped IN LOCKSTEP, with the
+			// same tent fold the mesh path applies, so a field that happens
+			// to read `u`/`v` instead of `Po` differentiates exactly as it
+			// does on the IFunction2D route.  (Same |2| tent chain-rule
+			// cancellation, and the same accepted sign flip exactly at 0.5,
+			// as the branch above.)
+			const Scalar tu = m_bSeamFold ? TentFold( at.x ) : at.x;
+			const Scalar tv = m_bSeamFold ? TentFold( at.y ) : at.y;
+			f = EvalHeightField( *m_pHeight, P_b, N_b, Point2( tu, tv ) );
+
+			const Scalar epsP = 1.0e-3;
+			const Scalar tu_p = m_bSeamFold ? TentFold( at.x + epsP ) : ( at.x + epsP );
+			const Scalar tu_m = m_bSeamFold ? TentFold( at.x - epsP ) : ( at.x - epsP );
+			const Scalar tv_p = m_bSeamFold ? TentFold( at.y + epsP ) : ( at.y + epsP );
+			const Scalar tv_m = m_bSeamFold ? TentFold( at.y - epsP ) : ( at.y - epsP );
+			const Scalar f_uplus  = EvalHeightField( *m_pHeight, Point3Ops::mkPoint3( P_b, dpdu_b *  epsP ), N_b, Point2( tu_p, tv ) );
+			const Scalar f_uminus = EvalHeightField( *m_pHeight, Point3Ops::mkPoint3( P_b, dpdu_b * -epsP ), N_b, Point2( tu_m, tv ) );
+			const Scalar f_vplus  = EvalHeightField( *m_pHeight, Point3Ops::mkPoint3( P_b, dpdv_b *  epsP ), N_b, Point2( tu, tv_p ) );
+			const Scalar f_vminus = EvalHeightField( *m_pHeight, Point3Ops::mkPoint3( P_b, dpdv_b * -epsP ), N_b, Point2( tu, tv_m ) );
 			const Scalar inv2 = 1.0 / (2.0 * epsP);
 			dfdu = ( f_uplus - f_uminus ) * inv2;
 			dfdv = ( f_vplus - f_vminus ) * inv2;

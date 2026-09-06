@@ -1,0 +1,70 @@
+RISE ASCII SCENE 7
+# Coverage: displaced_geometry's `height` route (2026-09-06) -- the
+# IScalarPainter alternative to `displacement`, evaluated as a 3D FIELD at
+# each vertex's OBJECT-space position rather than sampled as f(u,v).
+#
+# Exercises the parameters the field route needs and the UV route cannot
+# reach: a `scalar_painter` whose body reads `Po` (a 3D expression bound to
+# `displacement` would go through Painter::Evaluate's fake hit and be a
+# CONSTANT), a non-unit `disp_scale`, and `uv_seam_fold FALSE` -- which the
+# field route still honours, because the synthesized hit carries `ptCoord`
+# and a field is free to read `u`/`v` too.
+#
+# `displacement` is deliberately ABSENT: the two routes are mutually
+# exclusive and spelling both is a parse error.  The UV route's own coverage
+# is the wider corpus (52 scenes bind `displacement`).
+#
+# See docs/RELIEF_MODIFIER_DESIGN.md section 5.3.  The rendered
+# shared-field fixture is
+# scenes/Tests/Painters/displaced_plus_relief_shared_field.RISEscene; this
+# scene exists to cover the chunk's grammar, not to be looked at.
+
+film
+{
+	width		64
+	height		64
+}
+
+scalar_painter
+{
+	name		cc_height_field
+	expression	0.12*sin(Po.x*9.0)*sin(Po.y*9.0)
+}
+
+sphere_geometry
+{
+	name		cc_height_base
+	radius		1.0
+}
+
+displaced_geometry
+{
+	name		cc_height_disp
+	base_geometry	cc_height_base
+	detail		32
+	height		cc_height_field
+	disp_scale	0.8
+	uv_seam_fold	FALSE
+	double_sided	FALSE
+	face_normals	FALSE
+}
+
+uniformcolor_painter
+{
+	name		cc_height_albedo
+	color		0.70 0.64 0.55
+}
+
+lambertian_material
+{
+	name		cc_height_mat
+	reflectance	cc_height_albedo
+}
+
+standard_object
+{
+	name		cc_height_object
+	geometry	cc_height_disp
+	material	cc_height_mat
+	position	0 0 0
+}

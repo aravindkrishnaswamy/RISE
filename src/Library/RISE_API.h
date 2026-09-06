@@ -469,7 +469,8 @@ namespace RISE
 						const Scalar        disp_scale,			///< [in] Displacement scale factor
 						const bool          double_sided,		///< [in] Are generated polygons double-sided?
 						const bool          face_normals,		///< [in] Use face normals rather than topologically re-averaged vertex normals
-						const bool          seam_fold = true	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
+						const bool          seam_fold = true,	///< [in] Tent-fold UV before displacement (closed wrap-seam surfaces); FALSE for open Cartesian fields
+						const IScalarPainter* height = 0		///< [in] Scalar height FIELD evaluated at the vertex (object space); mutually exclusive with `displacement` -- pass at most one
 						);
 
 	//! Creates a signed-distance-field (implicit) geometry: transformed

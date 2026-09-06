@@ -18,6 +18,7 @@
 
 #include "Geometry.h"
 #include "../Interfaces/IFunction2D.h"
+#include "../Interfaces/IScalarPainter.h"
 #include "../Interfaces/ITriangleMeshGeometry.h"
 #include "../Utilities/Observable.h"
 #include <atomic>
@@ -31,6 +32,25 @@ namespace RISE
 		// base's TessellateToMesh, and displaces every vertex along its normal by
 		// `displacement(u,v) * disp_scale`.  The resulting mesh is built into an internal
 		// TriangleMeshGeometryIndexed and used for all intersection / sampling queries.
+		//
+		// TWO HEIGHT ROUTES, MUTUALLY EXCLUSIVE (2026-09-06).  The offset scalar comes
+		// from EXACTLY ONE of:
+		//   (a) `displacement`, an IFunction2D evaluated as `f(u, v)` -- the original
+		//       route, byte-for-byte unchanged; or
+		//   (b) `height`, an IScalarPainter evaluated as a FIELD at the vertex through a
+		//       synthetic RayIntersectionGeometric (GeometryUtilities::
+		//       ApplyScalarHeightToObject).  This is what lets ONE `scalar_painter`
+		//       drive coarse `displaced_geometry` shape AND fine `relief_modifier`
+		//       normal perturbation -- docs/RELIEF_MODIFIER_DESIGN.md section 5.3.
+		// `disp_scale` multiplies either one identically.  Passing both is refused at
+		// the construction boundary (Job::AddDisplacedGeometryWithHeight).
+		//
+		// OBJECT SPACE, NOT WORLD (route (b)).  The bake happens before the geometry is
+		// bound to an object, so there is no object-to-world transform to apply: the
+		// synthetic hit carries the vertex's OBJECT-space position in BOTH `P`
+		// (ptIntersection) and `Po` (ptObjIntersec), which therefore COINCIDE.  A field
+		// authored against `P` does NOT follow the object's placement.  Author against
+		// `Po`.
 		//
 		// DEFERRED REALIZATION (2026-06-13): the tessellate + displace + mesh-build work
 		// (BuildMesh) is NOT done in the constructor.  It is deferred to Realize(), which the
@@ -50,6 +70,7 @@ namespace RISE
 		protected:
 			IGeometry*                       m_pBase;
 			const IFunction2D*               m_pDisplacement;
+			const IScalarPainter*            m_pHeight;		//!< route (b); mutually exclusive with m_pDisplacement (see the class comment)
 			Scalar                           m_dispScale;
 			unsigned int                     m_detail;
 			bool                             m_bDoubleSided;
@@ -73,9 +94,11 @@ namespace RISE
 			// hot path (IntersectRay) never takes it (reads the post-bake m_pMesh).
 			mutable std::mutex                       m_realizeMutex;
 
-			// Subscription to the displacement painter's Observable.  When the
-			// painter notifies (e.g. a keyframed `time` parameter changed),
-			// the callback rebuilds m_pMesh.
+			// Subscription to the height source's Observable -- the
+			// IFunction2D `displacement` or the IScalarPainter `height`,
+			// whichever this geometry was given (they are mutually exclusive,
+			// so there is only ever one).  When it notifies (e.g. a keyframed
+			// `time` parameter changed), the callback rebuilds m_pMesh.
 			//
 			// Destruction ordering note: the destructor BODY runs before any
 			// member destructors, so the subscription's own destructor would
@@ -97,6 +120,18 @@ namespace RISE
 			void BuildMesh() const;
 			void DestroyMesh() const;
 
+			// The ONE place either height route touches vertex positions --
+			// shared by BuildMesh() and RefreshMeshVertices() so the
+			// `disp_scale == 0` shortcut, the `uv_seam_fold` tent treatment
+			// and the route choice cannot drift between the bake path and
+			// the animation-refit path.  Returns TRUE iff vertices actually
+			// moved (the caller's gate on recomputing topology normals).
+			bool ApplyHeightField(
+				IndexTriangleListType& tris,
+				VerticesListType&      vertices,
+				NormalsListType&       normals,
+				TexCoordsListType&     coords ) const;
+
 			// Tier 1 §3 animation refit path: re-tessellate base + re-apply
 			// displacement, then call m_pMesh->UpdateVertices() to swap
 			// vertex/normal storage in place and refit the BVH instead of
@@ -108,13 +143,14 @@ namespace RISE
 
 		public:
 			DisplacedGeometry(
-				IGeometry*          pBase,
-				const unsigned int  detail,
-				const IFunction2D*  displacement,
-				const Scalar        disp_scale,
-				const bool          bDoubleSided,
-				const bool          bUseFaceNormals,
-				const bool          bSeamFold = true );	//!< FALSE for open Cartesian displacement fields (no UV mirror)
+				IGeometry*            pBase,
+				const unsigned int    detail,
+				const IFunction2D*    displacement,
+				const Scalar          disp_scale,
+				const bool            bDoubleSided,
+				const bool            bUseFaceNormals,
+				const bool            bSeamFold = true,	//!< FALSE for open Cartesian displacement fields (no UV mirror)
+				const IScalarPainter* pHeight = 0 );	//!< route (b); pass at most one of `displacement` / `pHeight`
 
 			DisplacedGeometry( const DisplacedGeometry& ) = delete;
 			DisplacedGeometry& operator=( const DisplacedGeometry& ) = delete;
@@ -178,6 +214,13 @@ namespace RISE
 			//! Smoothing-aware analytical query.  Composes the BASE geometry's
 			//! analytical derivatives with the displacement painter via the
 			//! standard chain rule, scaling `disp_scale` by `(1 - smoothing)`.
+			//! BOTH height routes are handled: the IFunction2D one central-
+			//! differences the function in (u, v); the IScalarPainter one
+			//! central-differences the FIELD along the base's own object-space
+			//! `dpdu`/`dpdv` (first-order `P(u ± eps) ~= P_b ± eps*dpdu`), so no
+			//! additional base evaluations are needed, and steps `ptCoord` in
+			//! lockstep so a UV-reading field differentiates identically on
+			//! either route.
 			//! At smoothing=1 the displacement contribution vanishes and the
 			//! result equals the base's analytical (recursing for nested
 			//! displaceds).  At smoothing=0 the result matches the actual

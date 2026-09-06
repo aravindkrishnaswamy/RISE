@@ -17,6 +17,37 @@
 // stand-in.
 #include "../src/Library/RISE_API.h"
 #include <algorithm>
+// The `height` scalar-field route (2026-09-06, docs/RELIEF_MODIFIER_DESIGN.md
+// section 5.3): the tests below drive it through the REAL scene chunk so the
+// descriptor, the CST resolver's scalar-painter closure and
+// Job::AddDisplacedGeometryWithHeight are all under test, not just the
+// geometry class.
+#include "../src/Library/Geometry/GeometryUtilities.h"
+#include "../src/Library/Interfaces/IJobPriv.h"
+#include "../src/Library/Interfaces/IGeometryManager.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <string>
+
+#ifdef _WIN32
+	#include <io.h>
+	#include <process.h>
+	#define getpid _getpid
+	#define RISE_TEST_DUP    _dup
+	#define RISE_TEST_DUP2   _dup2
+	#define RISE_TEST_CLOSE  _close
+	#define RISE_TEST_FILENO _fileno
+#else
+	#include <unistd.h>
+	#define RISE_TEST_DUP    dup
+	#define RISE_TEST_DUP2   dup2
+	#define RISE_TEST_CLOSE  close
+	#define RISE_TEST_FILENO fileno
+#endif
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -656,6 +687,487 @@ static void TestConcurrentRealize()
 	pSphere->release();
 }
 
+//=============================================================================
+//  The `height` SCALAR-FIELD route (2026-09-06).
+//
+//  `displaced_geometry` now takes EITHER the legacy `displacement`
+//  (IFunction2D, sampled f(u,v)) or `height` (IScalarPainter, evaluated as a
+//  3D FIELD at each vertex's OBJECT-space position).  These cases pin, in
+//  order: the field's exactness and its object-space convention; that the
+//  IFunction2D route is byte-for-byte what it was; the mutual-exclusion parse
+//  error; the scalar-pipe diagnostic; and UV parity between the two routes
+//  (which is what proves the synthesized `ptCoord` -- seam fold included -- is
+//  right).
+//=============================================================================
+
+namespace {
+
+std::string WriteTempScene( const std::string& tag, const std::string& body )
+{
+	const char* tmp = getenv( "TMPDIR" );
+	std::string dir = tmp ? tmp : "/tmp/";
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
+	char pid[32];
+	std::snprintf( pid, sizeof(pid), "%d", static_cast<int>( ::getpid() ) );
+	const std::string path = dir + "rise_dispheight_" + tag + "_" + pid + ".RISEscene";
+	std::ofstream f( path.c_str(), std::ios::binary | std::ios::trunc );
+	f << "RISE ASCII SCENE 7\n" << body;
+	f.close();
+	return path;
+}
+
+//! Load a scene body with stdout captured -- GlobalLog's eLog_Console sink
+//! includes eLog_Error, so Job::AddDisplacedGeometryWithHeight's diagnostics
+//! land there.  Same fd-dup technique as ReliefModifierTest::ParseCapturing.
+bool ParseCapturing( const std::string& tag, const std::string& body,
+                     IJobPriv& job, std::string& captured )
+{
+	const char* tmpEnv = getenv( "TMPDIR" );
+	std::string dir = tmpEnv ? tmpEnv : "/tmp/";
+	if( !dir.empty() && dir[dir.size()-1] != '/' ) dir += "/";
+	char pidbuf[32];
+	std::snprintf( pidbuf, sizeof(pidbuf), "%d", static_cast<int>( ::getpid() ) );
+	const std::string capPath = dir + "rise_dispheight_stdout_" + tag + "_" + pidbuf + ".txt";
+
+	const std::string path = WriteTempScene( tag, body );
+
+	std::fflush( stdout );
+	const int savedFd = RISE_TEST_DUP( RISE_TEST_FILENO( stdout ) );
+	FILE* capFile = std::fopen( capPath.c_str(), "w" );
+	if( capFile ) RISE_TEST_DUP2( RISE_TEST_FILENO( capFile ), RISE_TEST_FILENO( stdout ) );
+
+	const bool ok = job.LoadAsciiSceneViaCst( path.c_str() );
+
+	std::fflush( stdout );
+	if( savedFd >= 0 ) { RISE_TEST_DUP2( savedFd, RISE_TEST_FILENO( stdout ) ); RISE_TEST_CLOSE( savedFd ); }
+	if( capFile ) std::fclose( capFile );
+
+	captured.clear();
+	{
+		std::ifstream in( capPath.c_str(), std::ios::binary );
+		std::string line;
+		while( std::getline( in, line ) ) { captured += line; captured += "\n"; }
+	}
+	std::remove( capPath.c_str() );
+	std::remove( path.c_str() );
+	return ok;
+}
+
+bool Contains( const std::string& hay, const char* needle )
+{
+	return hay.find( needle ) != std::string::npos;
+}
+
+//! Re-emit a realized geometry's baked mesh as a flat vertex list.  Both
+//! routes go through the same TriangleMeshGeometryIndexed re-emit, so two
+//! lists produced this way are directly comparable element-for-element.
+bool EmitVertices( const IGeometry& g, VerticesListType& out )
+{
+	IndexTriangleListType tris;
+	NormalsListType       normals;
+	TexCoordsListType     coords;
+	out.clear();
+	return g.TessellateToMesh( tris, out, normals, coords, 0 );
+}
+
+const unsigned int kDetail = 24;
+
+} // namespace
+
+//-----------------------------------------------------------------------------
+// Case 13: a `height` field is evaluated at the vertex's OBJECT-space
+// position, and the vertex moves along its normal by EXACTLY height*disp_scale.
+//
+// `expression Po.x` is chosen because it is the sharpest possible probe of the
+// two things that could be wrong: if the field went through Painter::Evaluate's
+// fake hit (the pre-2026-09-06 behaviour for a 3D painter in this slot) every
+// vertex would get the SAME value, and if the synthesized hit carried anything
+// but the vertex position, the per-vertex value would not be the vertex's own
+// x.  Exactness is 1e-9: this is one multiply and one add, not an integration.
+//
+// RED-PROOF (2026-09-06): replacing the GetValuesAt(ri) call in
+// GeometryUtilities::ApplyScalarHeightToObject with a constant
+// (`height.GetValuesAt(ri).v[0]` -> `0.5`, i.e. the constant path this route
+// exists to escape) fails this case at the first non-pole vertex.
+//-----------------------------------------------------------------------------
+static void TestScalarHeightIsObjectSpaceAndExact()
+{
+	std::cout << "Test 13: `height` evaluates the field at the vertex's object-space position, exactly...\n";
+
+	IJobPriv* job = 0;
+	RISE_CreateJobPriv( &job );
+	assert( job != 0 );
+
+	std::string log;
+	const bool ok = ParseCapturing( "exact",
+		"scalar_painter\n{\n\tname h_pox\n\texpression Po.x\n}\n",
+		*job, log );
+	assert( ok );
+
+	IScalarPainter* pHeight = job->GetScalarPainters()->GetItem( "h_pox" );
+	assert( pHeight != 0 );
+
+	// Tessellate a plain sphere, snapshot the pre-displacement state, then run
+	// the SAME applier DisplacedGeometry::ApplyHeightField runs.
+	SphereGeometry* pSphere = new SphereGeometry( 1.0 );
+	IndexTriangleListType tris;
+	VerticesListType      verts;
+	NormalsListType       normals;
+	TexCoordsListType     coords;
+	assert( pSphere->TessellateToMesh( tris, verts, normals, coords, kDetail ) );
+
+	const VerticesListType before  = verts;
+	const NormalsListType  nBefore = normals;
+
+	// disp_scale is deliberately NOT 1: a route that applied the scale twice
+	// (the plausible bug when a new parameter is threaded through two layers)
+	// is invisible at 1.0 but gives 0.5625 instead of 0.75 here.
+	const Scalar scale = 0.75;
+	ApplyScalarHeightToObject( tris, verts, normals, coords, *pHeight, scale );
+
+	// Every vertex: moved along its OWN pre-displacement normal by exactly
+	// its OWN object-space x, times disp_scale.  (Vertices not referenced by
+	// any triangle are untouched by both the applier and this expectation.)
+	std::vector<bool> touched( before.size(), false );
+	for( size_t t = 0; t < tris.size(); ++t ) {
+		for( int j = 0; j < 3; ++j ) touched[ tris[t].iVertices[j] ] = true;
+	}
+
+	Scalar maxErr = 0.0, minDisp = 1e30, maxDisp = -1e30;
+	for( size_t i = 0; i < before.size(); ++i ) {
+		if( !touched[i] ) continue;
+		const Scalar expectedDisp = before[i].x * scale;
+		const Point3 expected = Point3Ops::mkPoint3( before[i], nBefore[i] * expectedDisp );
+		maxErr = std::max( maxErr, std::fabs( verts[i].x - expected.x ) );
+		maxErr = std::max( maxErr, std::fabs( verts[i].y - expected.y ) );
+		maxErr = std::max( maxErr, std::fabs( verts[i].z - expected.z ) );
+		minDisp = std::min( minDisp, expectedDisp );
+		maxDisp = std::max( maxDisp, expectedDisp );
+	}
+	std::cout << "    max per-vertex error = " << maxErr
+	          << ", displacement range = [" << minDisp << ", " << maxDisp << "]\n";
+	assert( maxErr <= 1e-9 );
+
+	// The constant-path killer: on a unit sphere `Po.x` genuinely spans
+	// [-1, 1], so at scale 0.75 the displacement spans ~1.5.  A fake-hit /
+	// constant evaluation would collapse this range to zero.
+	assert( maxDisp - minDisp > 1.4 );
+
+	pSphere->release();
+	safe_release( job );
+}
+
+//-----------------------------------------------------------------------------
+// Case 14: the `height` route drives the REAL chunk end to end -- descriptor,
+// CST scalar-painter closure, Job resolution, deferred realize, ray query.
+//
+// With `height = Po.x` and disp_scale 1 on a unit sphere, the +X side inflates
+// to |x| ~ 2 and the -X side collapses toward the origin.  A ray down -X from
+// (10,0,0) therefore hits at ~8, a long way from the undisplaced 9.
+//-----------------------------------------------------------------------------
+static void TestScalarHeightThroughTheChunk()
+{
+	std::cout << "Test 14: `displaced_geometry { height ... }` parses, realizes and displaces...\n";
+
+	IJobPriv* job = 0;
+	RISE_CreateJobPriv( &job );
+	assert( job != 0 );
+
+	std::string log;
+	const bool ok = ParseCapturing( "chunk",
+		"scalar_painter\n{\n\tname h_pox\n\texpression Po.x\n}\n"
+		"sphere_geometry\n{\n\tname base\n\tradius 1.0\n}\n"
+		"displaced_geometry\n{\n\tname bumpy\n\tbase_geometry base\n\tdetail 48\n"
+		"\theight h_pox\n\tdisp_scale 1.0\n}\n",
+		*job, log );
+	assert( ok );
+
+	IGeometry* pDisp = job->GetGeometries()->GetItem( "bumpy" );
+	assert( pDisp != 0 );
+	pDisp->Realize();
+
+	RayIntersectionGeometric ri = MakeRI( Point3( 10.0, 0.0, 0.0 ), Vector3( -1.0, 0.0, 0.0 ) );
+	pDisp->IntersectRay( ri, true, false, false );
+	assert( ri.bHit );
+	std::cout << "    +X hit range = " << ri.range << " (undisplaced would be 9.0)\n";
+	assert( IsClose( ri.range, 8.0, 0.05 ) );
+
+	safe_release( job );
+}
+
+//-----------------------------------------------------------------------------
+// Case 15: the IFunction2D `displacement` route is BYTE-FOR-BYTE unchanged.
+//
+// Rather than pin an opaque vertex dump, this rebuilds the pre-2026-09-06
+// pipeline by hand -- tessellate, tent-fold a COPY of the coords,
+// ApplyDisplacementMapToObject, RecomputeVertexNormalsFromTopology, feed an
+// indexed mesh -- and requires EXACT equality with what DisplacedGeometry
+// produces today.  A u-varying function is used so the seam fold is load-
+// bearing; a constant would pass even if the fold were dropped.
+//-----------------------------------------------------------------------------
+static void TestFunction2DRouteUnchanged()
+{
+	std::cout << "Test 15: the `displacement` (IFunction2D) route is byte-identical to the hand-rolled legacy pipeline...\n";
+
+	const Scalar scale = 0.3;
+
+	// `UVaryingFunction2D` (declared above for the pole-crack case) evaluates
+	// to `u`, so the tent fold is load-bearing here: a constant would pass
+	// even if the fold were dropped.
+	SphereGeometry*     pSphere = new SphereGeometry( 1.0 );
+	UVaryingFunction2D* pFunc   = new UVaryingFunction2D();
+
+	// (a) Through DisplacedGeometry.
+	DisplacedGeometry* pDisp = new DisplacedGeometry(
+		pSphere, kDetail, pFunc, scale, /*bDoubleSided=*/false, /*bUseFaceNormals=*/false );
+	pDisp->Realize();
+	VerticesListType actual;
+	assert( EmitVertices( *pDisp, actual ) );
+
+	// (b) The legacy pipeline, by hand.
+	IndexTriangleListType tris;
+	VerticesListType      verts;
+	NormalsListType       normals;
+	TexCoordsListType     coords;
+	assert( pSphere->TessellateToMesh( tris, verts, normals, coords, kDetail ) );
+	TexCoordsListType folded = coords;
+	RemapTextureCoords( folded );
+	ApplyDisplacementMapToObject( tris, verts, normals, folded, *pFunc, scale );
+	RecomputeVertexNormalsFromTopology( tris, verts, normals );
+
+	TriangleMeshGeometryIndexed* pMesh = new TriangleMeshGeometryIndexed( false, false );
+	pMesh->BeginIndexedTriangles();
+	pMesh->AddVertices( verts );
+	pMesh->AddNormals( normals );
+	pMesh->AddTexCoords( coords );
+	pMesh->AddIndexedTriangles( tris );
+	pMesh->DoneIndexedTriangles();
+	VerticesListType expected;
+	assert( EmitVertices( *pMesh, expected ) );
+
+	assert( actual.size() == expected.size() );
+	assert( !actual.empty() );
+	size_t mismatches = 0;
+	for( size_t i = 0; i < actual.size(); ++i ) {
+		if( actual[i].x != expected[i].x || actual[i].y != expected[i].y || actual[i].z != expected[i].z ) {
+			++mismatches;
+		}
+	}
+	std::cout << "    " << actual.size() << " vertices compared, " << mismatches << " differ (exact equality)\n";
+	assert( mismatches == 0 );
+
+	pMesh->release();
+	pDisp->release();
+	pFunc->release();
+	pSphere->release();
+}
+
+//-----------------------------------------------------------------------------
+// Case 16: spelling BOTH `displacement` and `height` is a parse error that
+// names both -- not a silent preference for one.
+//-----------------------------------------------------------------------------
+static void TestBothHeightRoutesRefused()
+{
+	std::cout << "Test 16: `displacement` + `height` together is refused, naming both...\n";
+
+	IJobPriv* job = 0;
+	RISE_CreateJobPriv( &job );
+	assert( job != 0 );
+
+	std::string log;
+	ParseCapturing( "both",
+		"expression_function2d\n{\n\tname f_uv\n\texpr u*v\n}\n"
+		"scalar_painter\n{\n\tname h_pox\n\texpression Po.x\n}\n"
+		"sphere_geometry\n{\n\tname base\n\tradius 1.0\n}\n"
+		"displaced_geometry\n{\n\tname bad\n\tbase_geometry base\n"
+		"\tdisplacement f_uv\n\theight h_pox\n}\n",
+		*job, log );
+
+	assert( Contains( log, "displaced_geometry `bad`" ) );
+	assert( Contains( log, "`displacement`" ) && Contains( log, "`f_uv`" ) );
+	assert( Contains( log, "`height`" ) && Contains( log, "`h_pox`" ) );
+	assert( Contains( log, "mutually exclusive" ) );
+	assert( job->GetGeometries()->GetItem( "bad" ) == 0 );
+
+	safe_release( job );
+}
+
+//-----------------------------------------------------------------------------
+// Case 17: a COLOUR painter bound to `height` gets the standing scalar-pipe
+// diagnostic (kScalarBoundToIPainterFmt), matched as substrings so a re-word
+// does not silently un-test it.  Height is a LENGTH; routing it through JH
+// spectral uplift is exactly what the scalar pipe exists to prevent.
+//-----------------------------------------------------------------------------
+static void TestColourPainterOnHeightRefused()
+{
+	std::cout << "Test 17: a colour painter on `height` yields the scalar-pipe diagnostic...\n";
+
+	IJobPriv* job = 0;
+	RISE_CreateJobPriv( &job );
+	assert( job != 0 );
+
+	std::string log;
+	ParseCapturing( "colour",
+		"uniformcolor_painter\n{\n\tname cp\n\tcolor 0.5 0.5 0.5\n}\n"
+		"sphere_geometry\n{\n\tname base\n\tradius 1.0\n}\n"
+		"displaced_geometry\n{\n\tname bad2\n\tbase_geometry base\n\theight cp\n}\n",
+		*job, log );
+
+	assert( Contains( log, "displaced_geometry `bad2`" ) );
+	assert( Contains( log, "is bound to `IPainter` chunk `cp`" ) );
+	assert( Contains( log, "`scalar_painter`" ) && Contains( log, "no JH spectral uplift" ) );
+	assert( job->GetGeometries()->GetItem( "bad2" ) == 0 );
+
+	safe_release( job );
+}
+
+//-----------------------------------------------------------------------------
+// Case 18: UV PARITY.  The same body `u*v` bound as an
+// `expression_function2d` through `displacement`, and as a `scalar_painter`
+// through `height`, must produce the SAME mesh -- exactly.
+//
+// This is the test that proves the synthesized hit's `ptCoord` is right,
+// INCLUDING the `uv_seam_fold` tent treatment: the fold is applied in the
+// shared DisplacedGeometry::ApplyHeightField, and if the scalar route saw raw
+// UV while the function route saw folded UV, every vertex off u=v=0.5 would
+// differ.  Both `uv_seam_fold` settings are checked, since only the TRUE case
+// exercises the fold and only the FALSE case proves the fold is not applied
+// unconditionally.
+//-----------------------------------------------------------------------------
+static void TestUVParityBetweenRoutes()
+{
+	std::cout << "Test 18: `u*v` gives the same mesh through `displacement` and through `height`...\n";
+
+	const char* const kFold[] = { "TRUE", "FALSE" };
+	for( int f = 0; f < 2; ++f ) {
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		assert( job != 0 );
+
+		std::string log;
+		std::string body =
+			"expression_function2d\n{\n\tname f_uv\n\texpr u*v\n}\n"
+			"scalar_painter\n{\n\tname h_uv\n\texpression u*v\n}\n"
+			"sphere_geometry\n{\n\tname base\n\tradius 1.0\n}\n"
+			"displaced_geometry\n{\n\tname via_func\n\tbase_geometry base\n\tdetail 24\n"
+			"\tdisplacement f_uv\n\tdisp_scale 0.4\n\tuv_seam_fold ";
+		body += kFold[f];
+		body += "\n}\n"
+			"displaced_geometry\n{\n\tname via_field\n\tbase_geometry base\n\tdetail 24\n"
+			"\theight h_uv\n\tdisp_scale 0.4\n\tuv_seam_fold ";
+		body += kFold[f];
+		body += "\n}\n";
+
+		const bool ok = ParseCapturing( std::string("parity_") + kFold[f], body, *job, log );
+		assert( ok );
+
+		IGeometry* gFunc  = job->GetGeometries()->GetItem( "via_func" );
+		IGeometry* gField = job->GetGeometries()->GetItem( "via_field" );
+		assert( gFunc != 0 && gField != 0 );
+		gFunc->Realize();
+		gField->Realize();
+
+		VerticesListType a, b;
+		assert( EmitVertices( *gFunc,  a ) );
+		assert( EmitVertices( *gField, b ) );
+		assert( a.size() == b.size() && !a.empty() );
+
+		Scalar maxErr = 0.0, maxSpread = 0.0;
+		const Point3 origin( 0.0, 0.0, 0.0 );
+		for( size_t i = 0; i < a.size(); ++i ) {
+			maxErr = std::max( maxErr, std::fabs( a[i].x - b[i].x ) );
+			maxErr = std::max( maxErr, std::fabs( a[i].y - b[i].y ) );
+			maxErr = std::max( maxErr, std::fabs( a[i].z - b[i].z ) );
+			maxSpread = std::max( maxSpread,
+				std::fabs( Vector3Ops::Magnitude( Vector3Ops::mkVector3( a[i], origin ) ) - 1.0 ) );
+		}
+		std::cout << "    uv_seam_fold " << kFold[f] << ": max |func - field| = " << maxErr
+		          << " over " << a.size() << " vertices (displacement spread " << maxSpread << ")\n";
+		assert( maxErr <= 1e-12 );
+		// Guard against a vacuous pass: the field must actually have moved
+		// vertices off the unit sphere, or "identical" would mean nothing.
+		assert( maxSpread > 0.05 );
+
+		safe_release( job );
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Case 19: ANALYTICAL-DERIVATIVE parity between the two routes.
+//
+// `ComputeAnalyticalDerivatives` (the SMS two-stage solver's query) has its
+// own displacement evaluation, separate from the bake: the IFunction2D branch
+// central-differences f in (u,v); the IScalarPainter branch central-
+// differences the FIELD along the base's object-space dpdu/dpdv (first order,
+// `P(u +/- eps) ~= P_b +/- eps*dpdu`) and steps `ptCoord` in lockstep with the
+// same tent fold.  For a field that is a pure function of (u, v) those two
+// must therefore agree -- which is what pins the lockstep stepping and the
+// fold in the ANALYTICAL path, exactly as case 18 pins them in the BAKE path.
+// Without this, the branch would be reachable only through SMS and only on
+// scenes nobody runs in CI.
+//-----------------------------------------------------------------------------
+static void TestAnalyticalDerivativeParity()
+{
+	std::cout << "Test 19: ComputeAnalyticalDerivatives agrees between the two routes on a UV field...\n";
+
+	IJobPriv* job = 0;
+	RISE_CreateJobPriv( &job );
+	assert( job != 0 );
+
+	std::string log;
+	const bool ok = ParseCapturing( "deriv",
+		"expression_function2d\n{\n\tname f_uv\n\texpr u*v\n}\n"
+		"scalar_painter\n{\n\tname h_uv\n\texpression u*v\n}\n"
+		// An ELLIPSOID, not a sphere: `ComputeAnalyticalDerivatives` is
+		// implemented by EllipsoidGeometry (SphereGeometry has no analytical
+		// query, so a sphere base makes both routes return false and the
+		// comparison vacuous -- which is what the `probed == 4` guard below
+		// catches).
+		"ellipsoid_geometry\n{\n\tname base\n\tradii 1.0 1.0 1.0\n}\n"
+		"displaced_geometry\n{\n\tname via_func\n\tbase_geometry base\n\tdetail 24\n"
+		"\tdisplacement f_uv\n\tdisp_scale 0.4\n}\n"
+		"displaced_geometry\n{\n\tname via_field\n\tbase_geometry base\n\tdetail 24\n"
+		"\theight h_uv\n\tdisp_scale 0.4\n}\n",
+		*job, log );
+	assert( ok );
+
+	IGeometry* gFunc  = job->GetGeometries()->GetItem( "via_func" );
+	IGeometry* gField = job->GetGeometries()->GetItem( "via_field" );
+	assert( gFunc != 0 && gField != 0 );
+
+	// Sample away from the u=0.5 / v=0.5 tent vertices (where BOTH branches
+	// document a sign flip) and away from the poles.
+	const Scalar kUV[][2] = { {0.20,0.30}, {0.35,0.65}, {0.72,0.24}, {0.81,0.77} };
+	Scalar worst = 0.0;
+	unsigned int probed = 0;
+	for( size_t i = 0; i < sizeof(kUV)/sizeof(kUV[0]); ++i ) {
+		const Point2 uv( kUV[i][0], kUV[i][1] );
+		Point3  Pa, Pb;
+		Vector3 Na, Nb, dua, dub, dva, dvb, dnua, dnub, dnva, dnvb;
+		const bool oka = gFunc->ComputeAnalyticalDerivatives(  uv, 0.0, Pa, Na, dua, dva, dnua, dnva );
+		const bool okb = gField->ComputeAnalyticalDerivatives( uv, 0.0, Pb, Nb, dub, dvb, dnub, dnvb );
+		assert( oka == okb );
+		if( !oka ) continue;
+		++probed;
+		const Vector3 dP( Pa.x-Pb.x, Pa.y-Pb.y, Pa.z-Pb.z );
+		worst = std::max( worst, Vector3Ops::Magnitude( dP ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( Na - Nb ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( dua - dub ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( dva - dvb ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( dnua - dnub ) );
+		worst = std::max( worst, Vector3Ops::Magnitude( dnva - dnvb ) );
+	}
+	std::cout << "    " << probed << " uv probes, worst |func - field| across P/N/dpdu/dpdv/dndu/dndv = " << worst << "\n";
+	assert( probed == 4 );
+	// Both branches take the SAME eps and the SAME tent fold, so for a
+	// (u,v)-only field the only difference is the scalar route's extra
+	// first-order position step -- which the field ignores.  Agreement is
+	// therefore to round-off, not merely to FD order.
+	assert( worst <= 1e-9 );
+
+	safe_release( job );
+}
+
 int main()
 {
 	TestPureTessellationBBox();
@@ -670,6 +1182,13 @@ int main()
 	TestDisplacedOverLatheAppliesDisplacement();
 	TestDisplacedOverPinchedLatheTears();
 	TestConcurrentRealize();
+	TestScalarHeightIsObjectSpaceAndExact();
+	TestScalarHeightThroughTheChunk();
+	TestFunction2DRouteUnchanged();
+	TestBothHeightRoutesRefused();
+	TestColourPainterOnHeightRefused();
+	TestUVParityBetweenRoutes();
+	TestAnalyticalDerivativeParity();
 
 	std::cout << "All DisplacedGeometry tests passed.\n";
 	return 0;

@@ -702,10 +702,22 @@ namespace RISE
 						const Scalar        disp_scale,
 						const bool          double_sided,
 						const bool          face_normals,
-						const bool          seam_fold
+						const bool          seam_fold,
+						const IScalarPainter* height
 						)
 	{
 		if( !ppi || !pBase ) {
+			return false;
+		}
+
+		// The two height routes are MUTUALLY EXCLUSIVE by construction (see
+		// DisplacedGeometry's class comment).  Job::AddDisplacedGeometryWith-
+		// Height refuses the pair with an authoring diagnostic naming both
+		// parameters; this is the C-API backstop for a direct caller that
+		// bypasses the scene layer, and it refuses rather than silently
+		// picking one.
+		if( displacement && height ) {
+			GlobalLog()->Print( eLog_Error, "RISE_API_CreateDisplacedGeometry: `displacement` (IFunction2D) and `height` (IScalarPainter) are mutually exclusive — pass at most one; refusing." );
 			return false;
 		}
 
@@ -717,7 +729,7 @@ namespace RISE
 
 		DisplacedGeometry* pGeom = new DisplacedGeometry(
 			pBase, detail, displacement, disp_scale,
-			double_sided, face_normals, seam_fold );
+			double_sided, face_normals, seam_fold, height );
 		GlobalLog()->PrintNew( pGeom, __FILE__, __LINE__, "displaced geometry" );
 
 		if( !pGeom->IsValid() ) {

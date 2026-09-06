@@ -1832,6 +1832,20 @@ namespace RISE
 							const bool          face_normals,
 					const bool          seam_fold = true );
 
+		//! Creates a displaced geometry from EITHER an IFunction2D `displacement`
+		//! or an IScalarPainter `height` (see IJob.h).  AddDisplacedGeometry
+		//! forwards here with a null `height`.
+		bool AddDisplacedGeometryWithHeight(
+							const char*         name,
+							const char*         base_geometry_name,
+							const unsigned int  detail,
+							const char*         displacement,
+							const char*         height,
+							const Scalar        disp_scale,
+							const bool          double_sided,
+							const bool          face_normals,
+							const bool          seam_fold );
+
 		//
 		// Adds lights
 		//

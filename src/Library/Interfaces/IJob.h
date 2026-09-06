@@ -4506,6 +4506,39 @@ namespace RISE
 									const unsigned int count			///< [in] Number of members; 0 is rejected
 									) = 0;
 
+		//! Adds a displaced geometry whose height comes from EITHER the
+		//! legacy IFunction2D `displacement` (evaluated as `f(u,v)`) OR the
+		//! IScalarPainter `height` (evaluated as a 3D FIELD at each vertex,
+		//! resolved through the standing scalar pipe so a colour painter
+		//! bound there gets the `kScalarBoundToIPainterFmt` diagnostic).
+		//! Exactly one, or neither (undisplaced); naming BOTH is refused with
+		//! a diagnostic that names both parameters.  `disp_scale` multiplies
+		//! either identically.
+		//!
+		//! OBJECT SPACE.  The bake precedes object binding, so the synthetic
+		//! hit the scalar field is evaluated against carries the vertex's
+		//! OBJECT-space position in both `P` and `Po` -- they coincide, and a
+		//! `P`-authored field does NOT follow the object's placement.
+		//!
+		//! WHY A NEW VIRTUAL rather than a parameter on AddDisplacedGeometry:
+		//! IJob's vtable is APPEND-ONLY (SourceHygieneTest +
+		//! tests/IJobVtableManifest.txt) -- even a trailing defaulted
+		//! parameter on an existing pure virtual is an ABI break.
+		//! AddDisplacedGeometry is kept verbatim and forwards here with a
+		//! null `height`.
+		/// \return TRUE if successful, FALSE otherwise
+		virtual bool AddDisplacedGeometryWithHeight(
+							const char*         name,				///< [in] Name of the geometry to register
+							const char*         base_geometry_name,	///< [in] Name of a previously-registered IGeometry to wrap
+							const unsigned int  detail,				///< [in] Tessellation detail; warning logged if > 256
+							const char*         displacement,		///< [in] Name of a registered IFunction2D, or NULL
+							const char*         height,				///< [in] Name of a registered IScalarPainter (or an inline numeric), or NULL
+							const Scalar        disp_scale,			///< [in] Displacement scale factor, applied to either route
+							const bool          double_sided,		///< [in] Are the displaced triangles double sided?
+							const bool          face_normals,		///< [in] Use face normals instead of topologically re-averaged vertex normals
+							const bool          seam_fold			///< [in] Tent-fold UV before evaluation (closed wrap-seam surfaces)
+							) = 0;
+
 	};
 
 

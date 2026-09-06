@@ -459,6 +459,83 @@ int main()
 	}
 
 	//----------------------------------------------------------------------
+	// [displaced-height-scalar] (2026-09-06) `displaced_geometry` now declares
+	// BOTH height routes, and they resolve through DIFFERENT managers:
+	//   `displacement` -> Function2D, via the kFunc2DSubCat special case in
+	//                     Cst.cpp's FunctionSubNamespace (keyed on the PARAM
+	//                     NAME, which is why `height` is untouched by it);
+	//   `height`       -> the scalar painter manager, via the standing
+	//                     ParameterPipe::Scalar closure -- no new special
+	//                     case, which is the claim under test here.
+	// Both edges must exist SIMULTANEOUSLY from ONE displaced_geometry, and a
+	// RENAME of either target must rewrite its own line and leave the other's
+	// alone -- the sharpest available check that the two slots resolve
+	// independently rather than one capturing the other.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"piecewise_linear_function2d\n{\nname d2\n}\n"
+			"scalar_painter\n{\nname hs\nexpression 0.1*Po.x\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			// Two SEPARATE displaced geometries: the engine refuses both slots
+			// on ONE chunk (mutually exclusive), so the resolver's two edges
+			// are exercised on a scene the derive also accepts.
+			"displaced_geometry\n{\nname viafunc\nbase_geometry base\ndisplacement d2\n}\n"
+			"displaced_geometry\n{\nname viafield\nbase_geometry base\nheight hs\n}\n" );
+		ReferenceGraph g = BuildReferenceGraph( doc, 0 );
+		const NodeId d2       = DocFindByName( doc, "piecewise_linear_function2d/d2" );
+		const NodeId hs       = DocFindByName( doc, "scalar_painter/hs" );
+		const NodeId viafunc  = DocFindByName( doc, "displaced_geometry/viafunc" );
+		const NodeId viafield = DocFindByName( doc, "displaced_geometry/viafield" );
+		const NodeId pDisp    = DocParamId( doc, viafunc,  "displacement", 0 );
+		const NodeId pHeight  = DocParamId( doc, viafield, "height",       0 );
+		Check( d2 && hs && viafunc && viafield && pDisp && pHeight,
+			"displaced-height-scalar: scene parsed (plf2d d2, scalar_painter hs, both displaced_geometry forms)" );
+		Check( HasEdge( g, pDisp, d2 ),
+			"displaced-height-scalar: `displacement` still resolves to the Function2D (kFunc2DSubCat case KEPT)" );
+		Check( HasEdge( g, pHeight, hs ),
+			"displaced-height-scalar: `height` resolves to the scalar_painter through the EXISTING scalar closure (no new special case)" );
+	}
+
+	//----------------------------------------------------------------------
+	// [displaced-height-rename] the rename half of the case above, on a
+	// document WITHOUT a piecewise_linear_function2d -- whose `cp` entries
+	// embed Function1D names as String tokens and therefore make DocRename
+	// refuse ANY rename in the whole document (review #2).  Here the
+	// Function2D side is an `expression_function2d` (a Painter-category chunk
+	// that dual-registers into the Function2D manager), so both routes are
+	// renameable and each rewrites ONLY its own line.
+	//----------------------------------------------------------------------
+	{
+		Document doc = ParseToCst(
+			"RISE ASCII SCENE 7\n"
+			"expression_function2d\n{\nname fuv\nexpr u*v\n}\n"
+			"scalar_painter\n{\nname hs\nexpression 0.1*Po.x\n}\n"
+			"sphere_geometry\n{\nname base\nradius 1\n}\n"
+			"displaced_geometry\n{\nname viafunc\nbase_geometry base\ndisplacement fuv\n}\n"
+			"displaced_geometry\n{\nname viafield\nbase_geometry base\nheight hs\n}\n" );
+		const NodeId fuv      = DocFindByName( doc, "expression_function2d/fuv" );
+		const NodeId hs       = DocFindByName( doc, "scalar_painter/hs" );
+		const NodeId viafunc  = DocFindByName( doc, "displaced_geometry/viafunc" );
+		const NodeId viafield = DocFindByName( doc, "displaced_geometry/viafield" );
+		Check( fuv && hs && viafunc && viafield,
+			"displaced-height-rename: scene parsed (expression_function2d fuv, scalar_painter hs, both displaced_geometry forms)" );
+
+		Document docH = DocRename( doc, hs, "hs2" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docH, viafield ), "height", 0 ) == "hs2",
+			"displaced-height-rename: renaming the scalar_painter REWRITES displaced_geometry.height" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docH, viafunc ), "displacement", 0 ) == "fuv",
+			"displaced-height-rename: ...and leaves the sibling `displacement` line untouched" );
+
+		Document docD = DocRename( doc, fuv, "fuvx" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docD, viafunc ), "displacement", 0 ) == "fuvx",
+			"displaced-height-rename: control -- renaming the Function2D rewrites `displacement`" );
+		Check( ParamValueAtOccurrence( DocResolveNodeId( docD, viafield ), "height", 0 ) == "hs",
+			"displaced-height-rename: control -- ...and leaves `height` untouched" );
+	}
+
+	//----------------------------------------------------------------------
 	// [ior-phantom] (workstream #2) ior/film_ior resolve scalar-painter ->
 	// colour-painter -> numeric, NEVER a Function (Job::ResolveOrDiagnoseScalar
 	// consults no Function manager).  The descriptor over-declared
