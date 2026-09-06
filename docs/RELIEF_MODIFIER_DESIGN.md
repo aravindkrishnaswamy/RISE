@@ -3253,3 +3253,31 @@ finite-difference oracle.
 1 DRIFT (`bdpt_crystal_garden`, pre-existing), `migrate_scenes_relief.py
 --selftest` 0 failures, Blender add-on `python3 -m unittest` 60 tests OK.
 No golden regeneration: no scene's chunk content changed, only comments.
+
+### Five-P2 closure on `relief-max-slope` (2026-09-06)
+
+Branch `relief-max-slope` off `84f78bc4`, on top of `c0a973fc` (the
+`max_slope` clamp feature) and `a95ee524` (the `weathered_workbench`
+retune). Six commits, documentation and test corrections only — no
+`src/` behaviour changed.
+
+| # | Finding | Fix | Commit |
+|---|---|---|---|
+| 1 | The overlap guarantee in section 3.2, `IJob.h`, and `ReliefModifier.h` read as a whole-composition promise. Under `modifier_stack`, stacked reliefs add their tilts: two `max_slope 0.30` reliefs compose to `2*atan(0.30) ≈ 33.4°`, an overlap floor of `≈56.6°`, not the `≈73.3°` a single clamp promises. Not fixed in code -- bounding against `vGeomNormal` would fight Phong-smoothed shading normals on meshes, where `N ≠ Ng` by design. | All three sites now say "per modifier; stacked reliefs add their tilts." New `ReliefModifierTest` test 11g measures the composed case in closed form (`2*atan(0.30)` exactly, since the test field's gradient has no B-component and each application is a pure rotation) and red-proofs the naive single-clamp bound (`totalTilt <= atan(0.30)`) -- hand-verified to fail (0.583 vs 0.291 rad) before the correct assertion was restored. | `5ac29d17` |
+| 2 | `weathered_workbench`'s key-light comment and section 12's addendum both claimed a raking key makes tilts toward it "saturate at N·L ≈ 1" -- but at `max_slope 0.4`'s `atan(0.4) ≈ 21.8°` tilt cap and the tested 24° key, the closest approach is `sin(46°) ≈ 0.72`, nowhere near saturation. | Rewritten to the actual mechanism: a raking key brings the LIGHT's geometric horizon closer (margin `elevation − atan(max_slope)`: `20.2°` at the 42° key, `2.2°` at the 24° key), so more away-facing tilts get gated black. The measurement (+35% blacks, −7% mean at the lower key) and the decision to leave the light alone are unchanged. | `f7f6975e` |
+| 3 | The `max_slope` descriptor (`ChunkParserRegistry.cpp`) and `Job.cpp`'s parse-time error message said "0.5-1.0 is the useful band" with no grazing qualification, while `skills/agent/procedural-textures.md` already carried it and the branch's only measurement rejected 0.7/1.0 on the bench (knee at 0.30, viewed at 10-15° grazing). | Both gained the one-clause caveat: the band is for a near-face-on surface; a surface seen at grazing angle φ wants roughly `tan(φ)`. | `b024fdb1` |
+| 4 | `IJob.h`'s and `Job.cpp`'s comments on `AddBumpMapModifier` told new in-tree callers to use `AddReliefModifier` -- itself only a no-`max_slope` forwarding shim (`AddReliefModifierEx(..., 0.0)`), kept for ABI. Nothing exercised the plain shim directly: every `relief_modifier` case in `ReliefModifierTest`'s Test 10 goes through the chunk parser, which calls `AddReliefModifierEx` directly. | Both comments now point at `AddReliefModifierEx`. Test 10 gained case (j): calls `Job::AddReliefModifier` directly in C++ and confirms it registers. | `3bd4b8fa` |
+| 5 | "`scale` saturates once the clamp binds" (section 12, the skill, the scene header) overstated the measurement: hf-RMS 21.51/22.06/22.14 at scale 0.15/0.25/0.40 (`max_slope 0.30`) is a monotone 2.9% spread, not identical -- saturation is exact only once EVERY gradient in the field exceeds the bound, and at 0.15 part of the fbm slope distribution is still below it. | All three sites now say "approaches a ceiling" / "within ~3%" instead of "saturates" / "identically." | `ebcc563c` |
+| — | Test 11d's `controlBelowFloor > 500` sat only ~2.5σ under its ~540 expectation for seed `20260906` -- deterministic, but close enough that a seed or count change could flip the CHECK without the discrimination it exists to prove actually failing. | Lowered the threshold to 400, with a comment explaining the margin. | `4ce90cb8` |
+
+**Gate.** Clean `make -C build/make/rise -j8 all`, zero warnings on a
+rebuild that touched `Job.cpp`, `IJob.h`, `ReliefModifier.h`,
+`ChunkParserRegistry.cpp`. `ReliefModifierTest` **155/155** (was 149;
++6 from test 11g and Test 10 case (j)). `SourceHygieneTest` 164/164.
+`SceneGraphParentTest` 291/291. `CstDeriveGoldenTest` 442 MATCH / 1
+DRIFT (`bdpt_crystal_garden`, the same pre-existing working-tree entry
+predating this arc, left untouched throughout -- confirmed unchanged
+before and after). No golden regeneration: every edit this arc made is
+a comment, a doc paragraph, or a log-message string; no scene's chunk
+content changed. All six commits are documentation/test-only; no
+`src/` runtime behaviour changed.
