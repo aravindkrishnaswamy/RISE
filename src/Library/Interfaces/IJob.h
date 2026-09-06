@@ -1631,9 +1631,11 @@ namespace RISE
 		//! a `Function2DScalarPainter` in the UV domain, with the design
 		//! 7.2 amplitude fold (`S' = -S*2W`; a non-positive `window`,
 		//! which the removed class treated as inert, folds to `scale 0`).
-		//! In-tree callers should use `AddReliefModifier` instead: any
-		//! scalar painter as the height field, no texcoords needed, and
-		//! the Blinn sign convention rather than the legacy depth one.
+		//! In-tree callers should use `AddReliefModifierEx` instead: any
+		//! scalar painter as the height field, no texcoords needed, the
+		//! Blinn sign convention rather than the legacy depth one, and the
+		//! optional `max_slope` clamp (the plain `AddReliefModifier` below
+		//! is the no-clamp forwarding shim, kept only for ABI).
 		/// \return TRUE if successful, FALSE otherwise
 		virtual bool AddBumpMapModifier(
 			const char* name,										///< [in] Name of the modifiers

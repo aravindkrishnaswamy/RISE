@@ -2317,6 +2317,33 @@ static void Test10_Parse()
 			safe_release( job );
 		}
 	}
+
+	// (j) `Job::AddReliefModifier` itself -- the plain, no-`max_slope`
+	//     IJob virtual (the ABI-frozen forwarding shim the Blender bridge
+	//     and out-of-tree callers hold; IJob.h's own comment on it says
+	//     it forwards to `AddReliefModifierEx` with `maxSlope` 0).  Every
+	//     other case above loads a `relief_modifier` CHUNK, whose parser
+	//     calls `AddReliefModifierEx` directly (ChunkParserRegistry.cpp)
+	//     -- none of them calls this virtual at all, so it is exercised
+	//     here, directly, in C++.
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		CHECK( job != 0, "10j: job created" );
+		if( job ) {
+			std::string log;
+			const bool loaded = ParseCapturing( "shimheight",
+				"scalar_painter\n{\n\tname h_shim\n\texpression 0.25*sin(P.x*8)\n}\n",
+				*job, log );
+			CHECK( loaded, "10j: (setup) the height painter loads" );
+
+			CHECK( job->AddReliefModifier( "r_shim", "h_shim", 0.15, "surface", 0.0 ),
+				"10j: `Job::AddReliefModifier` (the forwarding shim) registers a modifier directly" );
+			CHECK( job->GetModifiers()->GetItem( "r_shim" ) != 0,
+				"10j: ...and `r_shim` is present in the modifier manager" );
+			safe_release( job );
+		}
+	}
 }
 
 // ============================================================

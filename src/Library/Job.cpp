@@ -6916,7 +6916,9 @@ bool Job::AddPiecewiseLinearFunction2D(
 //! registers a `ReliefModifier` in the UV domain instead.  The amplitude fold
 //! and the `window <= 0` inert case live in `RISE_API_CreateBumpMapModifierEx`
 //! -- one place, so the shim and the chunk-level migrator cannot drift.  New
-//! in-tree callers want `Job::AddReliefModifier`.
+//! in-tree callers want `Job::AddReliefModifierEx` (the plain
+//! `Job::AddReliefModifier` is itself only a no-clamp forwarding shim, kept
+//! for ABI -- see its own comment below).
 bool Job::AddBumpMapModifier(
 	const char* name,										///< [in] Name of the modifiers
 	const char* func,										///< [in] The function to use as the bump generator
