@@ -22,8 +22,13 @@
 //       non-increasing in worldWidth over a decade sweep on an `fbm`
 //       height (the octave fade plus the max(., fw) step rule).
 //    5. Object-space exactness.  A height field reading `Po` on a
-//       ROTATED instance gives the same N' as the algebraically
-//       equivalent world-space field -- which needs pmxWorldToObject.
+//       ROTATED instance -- and, separately, on a NON-UNIFORMLY SCALED
+//       one -- gives the same N' as the algebraically equivalent
+//       world-space field, which needs pmxWorldToObject.  The scale case
+//       is what discriminates the field's documented claim that the
+//       object-space step is the world step through the LINEAR map: a
+//       rotation preserves lengths and cannot tell that apart from
+//       moving the object point by the world step.
 //    6. UV chain rule.  A UV-parameterised painter in `surface` mode
 //       with valid dpdu/dpdv matches `domain uv` on a plane whose UV is
 //       the identity map.
@@ -51,7 +56,9 @@
 //        agreement fail.  This one is asserted IN the test as a live
 //        negative control (the `riNull` block at the end of
 //        Test5_ObjectSpaceExactness), not just performed by hand, since
-//        the test can construct it honestly.
+//        the test can construct it honestly, TWICE -- once under the
+//        rotation and once under the non-uniform scale, where the
+//        un-transformed step is wrong per-axis.
 //    (c) Test 8, NON-FINITE GUARD.  ReliefModifier has TWO finiteness
 //        gates -- the explicit `isfinite(dT) || isfinite(dB)` early
 //        return the design calls for, and the `mag2 > 1e-12 &&
@@ -488,7 +495,7 @@ static void Test4_FootprintFade()
 
 static void Test5_ObjectSpaceExactness()
 {
-	std::cout << "Test 5: an object-space height field on a rotated instance matches the world-space equivalent" << std::endl;
+	std::cout << "Test 5: object-space height fields (rotated, then non-uniformly scaled) match their world-space equivalents" << std::endl;
 
 	// A rotation about +Z by 37 degrees, as the object's WORLD->OBJECT map.
 	const Scalar ang = Scalar( 37.0 * 3.14159265358979323846 / 180.0 );
@@ -549,6 +556,53 @@ static void Test5_ObjectSpaceExactness()
 	CHECK( !VecClose( riNull.vNormal, riWorld.vNormal, 1e-6 ),
 		"5: RED-PROOF -- nulling pmxWorldToObject DOES change the answer "
 		"(the object-space step is really being transformed)" );
+
+	// NON-UNIFORM SCALE.  The field's doc comment claims the object-space
+	// step is the world step through the LINEAR map, and that under a
+	// non-uniform scale the object-space step is deliberately not the
+	// world step's length -- because the field lives in object space and
+	// the difference must span the object-space distance the world step
+	// actually covers.  A rotation cannot discriminate that claim (it
+	// preserves lengths), so pin it with an anisotropic scale, where a
+	// naive "move by the world step" would be wrong per-axis.
+	{
+		// Po = (3*Px, 0.5*Py, 2*Pz).
+		Matrix4 S2O = Matrix4Ops::Identity();
+		S2O._00 = 3.0;  S2O._11 = 0.5;  S2O._22 = 2.0;
+
+		IScalarPainter* hObjS = MakeExprScalar( "1.5*Po.x - 0.8*Po.y" );
+		// Substituting Po: H_w(P) = 1.5*3*Px - 0.8*0.5*Py.
+		IScalarPainter* hWorldS = MakeExprScalar( "4.5*P.x - 0.4*P.y" );
+		if( hObjS && hWorldS ) {
+			ReliefModifier* mo = MakeRelief( *hObjS,   Scalar(0.2), ReliefDomain::Surface, Scalar(1e-3) );
+			ReliefModifier* mw = MakeRelief( *hWorldS, Scalar(0.2), ReliefDomain::Surface, Scalar(1e-3) );
+
+			const Point3 Q( 0.2, 0.5, -0.3 );
+			RayIntersectionGeometric riO = MakeRI( Q );
+			riO.ptObjIntersec = Point3Ops::Transform( S2O, Q );
+			riO.pmxWorldToObject = &S2O;
+			mo->Modify( riO );
+
+			RayIntersectionGeometric riW = MakeRI( Q );
+			mw->Modify( riW );
+
+			CHECK( VecClose( riO.vNormal, riW.vNormal, 1e-9 ),
+				"5: an object-space field under NON-UNIFORM scale matches its world-space equivalent" );
+			CHECK( !VecClose( riO.vNormal, Vector3( 0, 0, 1 ), 1e-6 ),
+				"5: (oracle) the non-uniform-scale field actually perturbs" );
+
+			// And the negative: moving the object point by the un-scaled
+			// world step gives a materially different answer, so the
+			// per-axis scaling is load-bearing, not cosmetic.
+			RayIntersectionGeometric riNoS = MakeRI( Q );
+			riNoS.ptObjIntersec = Point3Ops::Transform( S2O, Q );
+			riNoS.pmxWorldToObject = 0;
+			mo->Modify( riNoS );
+			CHECK( !VecClose( riNoS.vNormal, riW.vNormal, 1e-6 ),
+				"5: RED-PROOF -- under non-uniform scale the un-transformed step is "
+				"measurably wrong (the per-axis map is load-bearing)" );
+		}
+	}
 }
 
 // ============================================================
