@@ -51,6 +51,15 @@
 //  makes a fine field legible at all.  0 keeps the legacy unbounded
 //  behaviour (and is what the migrator writes).
 //
+//  THIS BOUND IS PER MODIFIER; STACKED RELIEFS ADD THEIR TILTS.  The
+//  overlap guarantee above bounds the tilt THIS application adds relative
+//  to the vNormal it receives, not the total against the original
+//  geometric normal.  Under ModifierStack (design 4), two relief modifiers
+//  each at maxSlope 0.30 compose to a total tilt of up to 2*atan(0.30),
+//  not the atan(0.30) a single clamp promises -- see
+//  docs/RELIEF_MODIFIER_DESIGN.md 3.2 and ReliefModifierTest's test 11g.
+//
+
 //  DOMAIN.  `Surface` (the default) makes the field a function of the 3D
 //  hit and takes the step in the tangent plane in WORLD units -- works on
 //  any geometry with a normal, texcoords not required, and the

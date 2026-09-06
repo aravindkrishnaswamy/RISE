@@ -4583,6 +4583,14 @@ namespace RISE
 		//! Modifiers/ReliefModifier.h and docs/RELIEF_MODIFIER_DESIGN.md
 		//! section 3.2.
 		//!
+		//! THE BOUND IS PER MODIFIER, NOT PER PIXEL.  `maxSlope` caps the
+		//! tilt THIS modifier adds relative to the vNormal it receives, not
+		//! the total against the original geometric normal -- a `modifier_stack`
+		//! (section 4) of several relief modifiers ADDS their tilts, so two
+		//! at `maxSlope 0.30` compose to up to `2*atan(0.30)`, not the
+		//! single-clamp `atan(0.30)`.  See docs/RELIEF_MODIFIER_DESIGN.md
+		//! section 3.2 and ReliefModifierTest's test 11g.
+		//!
 		//! WHY A NEW VIRTUAL rather than a parameter on AddReliefModifier:
 		//! IJob's vtable is APPEND-ONLY (SourceHygieneTest +
 		//! tests/IJobVtableManifest.txt) -- even a trailing defaulted

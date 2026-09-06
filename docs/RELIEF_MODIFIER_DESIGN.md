@@ -343,6 +343,18 @@ the amplitude sweep had nothing to find.
 `atan(max_slope)` is the tilt cap, so the two hemispheres always overlap by at
 least `90° − atan(max_slope)`: `0.5` → 63.4°, `1.0` → 45°.
 
+**This guarantee is PER MODIFIER, not per pixel.** It bounds the tilt *this*
+application adds relative to the `vNormal` it receives, not the total tilt
+against the original geometric normal. Under `modifier_stack` (§4), stacked
+reliefs add their tilts: two `relief_modifier`s each at `max_slope 0.30`
+compose to a total tilt of up to `2·atan(0.30) ≈ 33.4°`, an overlap floor of
+`90° − 33.4° ≈ 56.6°`, not the `73.3°` a single clamp promises. Bounding
+against `vGeomNormal` instead would fix the composed number but break every
+mesh where a Phong-smoothed shading normal legitimately disagrees with the
+geometric one (`N ≠ Ng` by design), so the clamp stays scoped to the tilt
+*this* modifier adds. `ReliefModifierTest`'s test 11g measures the composed
+case in closed form.
+
 GlintModifier's rejection remains a *discrete* facet decision and does not
 transfer to either this clamp or the degenerate-normal gate.
 

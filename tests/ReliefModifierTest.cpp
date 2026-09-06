@@ -2048,6 +2048,51 @@ static void Test11_MaxSlopeClamp()
 				"11f: the clamp applies in `domain uv` as well (tilt held at 0.5 on a slope-8 UV field)" );
 		}
 	}
+
+	// (g) COMPOSITION.  `max_slope` bounds each modifier's OWN tilt
+	//     increment, not the total against the ORIGINAL geometric normal --
+	//     stacked reliefs add their tilts (docs/RELIEF_MODIFIER_DESIGN.md
+	//     3.2 and 4).  Two `max_slope 0.30` reliefs, each fed a field whose
+	//     raw slope (1e6) is far beyond the clamp, saturate on EVERY
+	//     application; since the field's gradient has no B-component and
+	//     MakeRI's frame keeps B = +Y fixed under a pure X/Z tilt, each
+	//     application is exactly `normalize(N - 0.30*T)` -- a rotation by
+	//     precisely atan(0.30) in the SAME sense as the one before it (the
+	//     identity `normalize(N(theta) - k*T(theta)) == N(theta + atan k)`
+	//     for the orthonormal pair `(N(theta), T(theta))`).  So the composed
+	//     tilt is exactly `2*atan(0.30)`, not the `atan(0.30)` a reader of
+	//     a single modifier's guarantee might assume bounds the whole
+	//     stack.  The second CHECK below IS the red-proof: it is exactly
+	//     the negation of the (wrong) single-clamp bound `totalTilt <=
+	//     atan(0.30)`, and it passes because that bound is false here.
+	{
+		const Scalar mx = Scalar(0.30);
+		LinearFieldScalarPainter* h1 = Own( new LinearFieldScalarPainter( Scalar(1e6), Scalar(0) ) );
+		LinearFieldScalarPainter* h2 = Own( new LinearFieldScalarPainter( Scalar(1e6), Scalar(0) ) );
+		ReliefModifier* r1 = MakeRelief( *h1, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), mx );
+		ReliefModifier* r2 = MakeRelief( *h2, Scalar(1), ReliefDomain::Surface, Scalar(1e-3), mx );
+
+		const IRayIntersectionModifier* members[2] = { r1, r2 };
+		ModifierStack* stack = Own( new ModifierStack( members, 2 ) );
+
+		RayIntersectionGeometric ri = MakeRI( Point3( 0.1, -0.2, 0.0 ) );
+		const Vector3 N0 = ri.vNormal;
+		stack->Modify( ri );
+
+		const Scalar cosTotal = std::max( Scalar(-1), std::min( Scalar(1),
+			Vector3Ops::Dot( ri.vNormal, N0 ) ) );
+		const Scalar totalTilt   = std::acos( cosTotal );
+		const Scalar singleTilt  = std::atan( mx );
+		const Scalar composedCap = Scalar(2) * singleTilt;
+
+		CHECK( totalTilt <= composedCap + Scalar(1e-9),
+			"11g: two `max_slope 0.30` reliefs stacked compose to a total tilt <= 2*atan(0.30) ("
+			<< totalTilt << " rad vs cap " << composedCap << " rad)" );
+		CHECK( totalTilt > singleTilt,
+			"11g: ...and STRICTLY MORE than atan(0.30) (" << totalTilt << " vs " << singleTilt
+			<< ") -- so a single modifier's own clamp bound does NOT bound the stack; "
+			"max_slope bounds each modifier's tilt INCREMENT, stacked reliefs add them" );
+	}
 }
 
 static void Test10_Parse()
