@@ -1099,6 +1099,8 @@ namespace
 		bool sealedProjectedHeunReplay=false;
 		bool projectedHeunCostDiagnostic=false;
 		bool projectedHeunEOSDiagnostic=false;
+		// Isolated checkpoint reporting probe, never a migration/publication authority.
+		bool projectedHeunCertificateDiagnostic=false;
 		bool UsesProjectedHeunOwner() const
 		{
 			return sealedProjectedHeunReplay||projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic;
@@ -1287,6 +1289,11 @@ namespace
 			<<" diagnostic_device_ms="<<observed.deviceElapsedMS
 			<<" diagnostic_wall_ms="<<observed.wallElapsedMS
 			<<" qualification_trace_staging_count="<<observed.qualificationTraceStagingCount
+			<<" certificate_mode=qualification_observer"
+			<<" actual_metal_bytes="<<observed.actualMetalAllocationBytes
+			<<" certified_metal_bytes="<<observed.certifiedWorkingSetBytes
+			<<" commuting_residual_kg_m-3="<<observed.maximumCommutingResidualKGPerM3
+			<<" commuting_bound_kg_m-3="<<observed.commutingIdentityBoundKGPerM3
 			<<" fixed_k_selection=not_authorized\n";
 		if(!Write(artifact,traces,geometry,context,digest,binding,error))return false;
 		artifact<<"OWNER_CONVERGENCE_CSV sha256="<<digest(csv)<<"\n";
@@ -3213,6 +3220,9 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.projectedHeunCertificateDiagnostic&&!persistence.projectedHeunEOSDiagnostic){
+			values.structuredError="owner_certificate_diagnostic_scope_conflict";return values;
+		}
 		if(persistence.projectedHeunEOSDiagnostic&&(!persistence.productionMetal||
 			!persistence.resume||!persistence.isolatedEquivalenceProbe||
 			persistence.isolatedExpectedCheckpointBuildId.size()!=64u||
@@ -3277,6 +3287,9 @@ namespace
 			values.structuredError="case_derivation_failure:"+error;
 			return values;
 		}
+		// Refused diagnostic attempts still publish evidence under the case that
+		// supplied their inputs; successful state publication remains separate.
+		values.caseRecordId=caseRecord.caseRecordId;
 		RISECBOR64::Bytes currentBuildBytes;
 		std::string currentBuildId,currentExecutableDigest;
 		if((!persistence.checkpointPath.empty()||!persistence.finalCheckpointPath.empty()||
@@ -4663,7 +4676,8 @@ namespace
 								event.close();
 								if(!event){lastAdvanceError="production onset event write failed";
 									mandatoryEvidenceFailure=true;advancedOK=false;break;}
-								if(persistence.sealedProjectedHeunReplay&&
+								if((persistence.sealedProjectedHeunReplay||
+									persistence.projectedHeunCertificateDiagnostic)&&
 									!WriteProductionCrossingConvergence(effectiveMomentumAuditPath,
 										projectedHeunRequest,projectedHeunDiagnostics,simulationTimeS,
 										representedStep,acceptedSteps,columnX,columnY,lastAdvanceError)){
@@ -7412,36 +7426,51 @@ namespace
 	}
 
 	int RunProductionOwnerEOSRefusalChild(const std::filesystem::path& checkpointPath,
-		const std::filesystem::path& outputDirectory)
+		const std::filesystem::path& outputDirectory,const bool certificateDiagnostic=false)
 	{
 		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			checkpoint.dimensions!=std::array<std::size_t,3>{{69u,69u,106u}})return 92;
 		const std::string digest=DigestFile(checkpointPath);if(digest.size()!=64u)return 92;
+		if(certificateDiagnostic&&(digest!=
+			"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"||
+			checkpoint.acceptedSteps!=1300u))return 92;
 		std::filesystem::create_directories(outputDirectory/"budgets");
-		std::fprintf(stderr,"OWNER_EOS_DIAGNOSTIC checkpoint_sha256=%s build=%s "
-			"accepted_steps=%llu beginning_s=%.17g migration_authority=false\n",digest.c_str(),
+		const char* diagnosticName=certificateDiagnostic?"OWNER_CERTIFICATE_DIAGNOSTIC":"OWNER_EOS_DIAGNOSTIC";
+		std::fprintf(stderr,"%s checkpoint_sha256=%s build=%s "
+			"accepted_steps=%llu beginning_s=%.17g migration_authority=false\n",diagnosticName,digest.c_str(),
 			checkpoint.producerBuildId.c_str(),static_cast<unsigned long long>(checkpoint.acceptedSteps),
 			checkpoint.simulationTimeS);
 		RunPersistenceOptions persistence;persistence.productionMetal=true;
 		persistence.projectedHeunEOSDiagnostic=true;persistence.resume=true;
+		persistence.projectedHeunCertificateDiagnostic=certificateDiagnostic;
+		if(certificateDiagnostic){
+			persistence.productionMomentumObservationTimeS=2.1079791976176079;
+			persistence.productionMomentumObservationColumnX=38u;
+			persistence.productionMomentumObservationColumnY=42u;
+			persistence.productionMomentumObservationReferenceTier=10.0;
+		}
 		persistence.isolatedEquivalenceProbe=true;persistence.checkpointPath=checkpointPath;
 		persistence.isolatedExpectedCheckpointBuildId=checkpoint.producerBuildId;
 		persistence.isolatedExpectedCheckpointDigest=digest;persistence.stopAfterAdditionalAcceptedSteps=8u;
 		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
-		if(setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
+		if(!certificateDiagnostic&&setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,8.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
-		unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
+		if(!certificateDiagnostic)unsetenv("RISE_FIRE_EOS_REFUSAL_INPUTS");
 		const bool unchanged=DigestFile(checkpointPath)==digest;
-		if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error))return 94;
-		std::fprintf(stderr,"OWNER_EOS_DIAGNOSTIC_END solver_accepted=%d checkpoint_unchanged=%d "
-			"migration_authority=false error=%s\n",result.succeeded?1:0,unchanged?1:0,
+		std::fprintf(stderr,"%s_END solver_accepted=%d checkpoint_unchanged=%d "
+			"migration_authority=false error=%s\n",diagnosticName,result.succeeded?1:0,unchanged?1:0,
 			result.structuredError.c_str());
-		return unchanged&&!result.succeeded&&result.structuredError.find("eos_failure_cell=")!=
+		if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,error)){
+			std::fprintf(stderr,"%s_SEAL_REFUSED error=%s\n",diagnosticName,error.c_str());return 94;
+		}
+		if(certificateDiagnostic&&unchanged&&result.succeeded)return 0;
+		return unchanged&&!result.succeeded&&result.structuredError.find(certificateDiagnostic?
+			"owner certificate failed: working_set_passed=":"eos_failure_cell=")!=
 			std::string::npos?0:93;
 	}
 
@@ -12303,6 +12332,34 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 	const bool ownerWorkingSetPreflightRefused=ownerPreflightSizeKnown&&ownerRED(
 		"combined_owner_working_set_preflight",[&](auto& value){
 			value.qualificationWorkingSetLimitBytes=ownerCertifiedPreflightBytes-1u;});
+	std::uint64_t observerCertifiedBytes=0u,tier8ObserverBytes=0u;
+	const bool observerCertificateDerived=FireProductionProjectedHeunMetalObserverWorkingSetBytes(
+		shape,observerCertifiedBytes)&&FireProductionProjectedHeunMetalObserverWorkingSetBytes(
+		tier8OwnerShape,tier8ObserverBytes)&&observerCertifiedBytes>ownerCertifiedPreflightBytes&&
+		ownerObserved.certifiedWorkingSetBytes==observerCertifiedBytes&&
+		ownerResidentDiagnostics.certifiedWorkingSetBytes==ownerCertifiedPreflightBytes&&
+		tier8OwnerCertifiedBytes==UINT64_C(5584011264)&&
+		tier8ObserverBytes-tier8OwnerCertifiedBytes==
+			(((27u*UINT64_C(504666)+36u*UINT64_C(1533387)+UINT64_C(38778))*4u+
+			2u*UINT64_C(38778)+16u+16383u)&~UINT64_C(16383));
+	// Only the trace selector differs: no other qualification flag may be the
+	// reason this production entry refuses the observer-buffer surface.
+	auto observerInProduction=productionOwnerRequest;
+	observerInProduction.qualificationCaptureIterationTrace=true;
+	FireProductionResidentStepResult observerForbidden;
+	FireProductionProjectedHeunMetalOwnerResult observerForbiddenDiagnostics;
+	std::string observerRefusal;
+	const bool observerInProductionRefused=!AttemptFireProductionProjectedHeunResidentStepMetal(
+		observerInProduction,observerForbidden,&observerForbiddenDiagnostics,&observerRefusal)&&
+		!observerForbidden.HasAcceptedManifoldToken()&&
+		observerForbiddenDiagnostics.ownerPublicationIdentity==0u&&
+		observerForbiddenDiagnostics.qualificationTraceStagingCount==0u&&
+		observerRefusal=="production resident step refuses qualification-only owner controls";
+	std::fprintf(stderr,"PROJECTED_HEUN_METAL_OWNER_RED name=production_refuses_observer_buffers "
+		"production_bytes=%llu observer_bytes=%llu certificate_derived=%d passed=%d\n",
+		static_cast<unsigned long long>(ownerCertifiedPreflightBytes),
+		static_cast<unsigned long long>(observerCertifiedBytes),observerCertificateDerived?1:0,
+		observerInProductionRefused?1:0);
 	std::vector<double> ownerDeviceTimingMS,ownerWallTimingMS;
 	if(ownerAccepted){ownerDeviceTimingMS.push_back(ownerObserved.deviceElapsedMS);
 		ownerWallTimingMS.push_back(ownerObserved.wallElapsedMS);
@@ -15500,6 +15557,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 		ownerAtomicRefused&&ownerPolicyDivergenceRefused&&
 		ownerStaleTargetPublicationRefused&&ownerUnverifiedPrivateBufferRefused&&
 		ownerActualInterstageTransferRefused&&tier8OwnerWorkingSetScales&&
+		observerCertificateDerived&&observerInProductionRefused&&
 		activeCycleREDs&&limiterOutcomeRED&&wrongAveragedFluxParentRED;
 	const bool passed=thresholdCoverage&&exactThresholdNoDrain&&policyOwnersIdentical&&
 		deviceExactPositiveNoDrain&&
@@ -15756,6 +15814,8 @@ int main(int argc,char** argv)
 		return RunProductionOwnerCostPrefixChild(argv[2]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-production-owner-eos-refusal")==0)
 		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3]);
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-owner-certificate-diagnostic")==0)
+		return RunProductionOwnerEOSRefusalChild(argv[2],argv[3],true);
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-puffing-spectrum")==0){
 		double tier=0.0;if(!ParsePositiveDoubleArgument(argv[2],tier))return 91;
 		return RunProductionPuffingSpectrumChild(tier,argv[3],argv[4],argv[5],argv[6]);

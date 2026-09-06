@@ -602,6 +602,10 @@ namespace RISE
 	bool FireProductionProjectedHeunMetalOwnerWorkingSetBytes(
 		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
 
+	//! Qualification observer only: production peak plus one bounded trace staging packet.
+	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes );
+
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest& request,
 		FireProductionProjectedHeunMetalOwnerResult& result,

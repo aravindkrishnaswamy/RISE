@@ -53,6 +53,17 @@ namespace RISE
 
 	namespace
 	{
+		// Called only after the projection shape certificate has bounded every
+		// dimension by 1024. One wire-layout definition serves allocation and cap.
+		std::uint64_t ProjectedHeunObserverPacketBytes(const FireProductionProjectionShape& shape)
+		{
+			const std::uint64_t cells=shape.CellCount(),faces=
+				FireProductionProjectionFaceCount(shape,0u)+FireProductionProjectionFaceCount(shape,1u)+
+				FireProductionProjectionFaceCount(shape,2u),boundary=2u*(shape.nx*shape.ny+
+				shape.nx*shape.nz+shape.ny*shape.nz);
+			return (27u*cells+36u*faces+boundary)*sizeof(float)+
+				2u*boundary+2u*sizeof(std::uint64_t);
+		}
 		id<MTLDevice> DiscoverProductionMetalDevice(const char* operation,
 			std::string& error)
 		{
@@ -8336,10 +8347,13 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				const Stage& value,std::string* error)
 			{
 				if(!request_.qualificationCaptureIterationTrace)return true;
+				// The completed diagnostic command otherwise remains autoreleased
+				// until the outer owner returns and retains one packet per trace.
+				// Drain here: observer device storage is exactly one live packet,
+				// independent of Picard count; host traces remain qualification-only.
+				@autoreleasepool {
 				ProfileScope profile(*this,"QualificationTraceTransfers");
-				const std::size_t floatCount=27u*cells_+36u*allFaces_+boundaryFaces_;
-				const std::size_t byteCount=floatCount*sizeof(float)+2u*boundaryFaces_+
-					2u*sizeof(std::uint64_t);
+				const std::size_t byteCount=ProjectedHeunObserverPacketBytes(shape_);
 				id<MTLBuffer> staging=[context_.device newBufferWithLength:byteCount
 					options:MTLResourceStorageModeShared];
 				id<MTLCommandBuffer> command=TrackedMetalCommandBuffer(context_.queue);
@@ -8451,6 +8465,7 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 					value.projectionDiagnostics.maximumPostProjectionResidualPerS;
 				qualificationTrace_[stage].push_back(std::move(trace));
 				++qualificationTraceStagingCount_;return true;
+				}
 			}
 			bool Prepare(std::string* error);
 			bool SolveStage(unsigned int stage,id<MTLBuffer> state,id<MTLBuffer> temperature,
@@ -8944,7 +8959,10 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 			std::uint64_t preflightBytes=0u;
 			const FireProductionProjectionShape& preflightShape=
 				request_.lineage.eos.physicalFlux.transport.shape;
-			if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes)||
+			const bool certificateKnown=request_.qualificationCaptureIterationTrace?
+				FireProductionProjectedHeunMetalObserverWorkingSetBytes(preflightShape,preflightBytes):
+				FireProductionProjectedHeunMetalOwnerWorkingSetBytes(preflightShape,preflightBytes);
+			if(!certificateKnown||
 				(request_.qualificationWorkingSetLimitBytes!=0u&&
 				 preflightBytes>request_.qualificationWorkingSetLimitBytes)){
 				if(error)*error="projected-Heun complete-owner working-set preflight refused";
@@ -9286,7 +9304,27 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 				result.commutingIdentityBoundKGPerM3;
 			result.accepted=result.actualMetalAllocationBytes<=result.certifiedWorkingSetBytes;
 			result.accepted=result.accepted&&result.commutingIdentityPassed;
-			if(!result.accepted){if(error)*error="projected-Heun resident owner certificate failed";return false;}
+			if(!result.accepted){
+				if(error){
+					std::ostringstream diagnostic;diagnostic<<std::setprecision(17)
+						<<"projected-Heun resident owner certificate failed: working_set_passed="
+						<<(result.actualMetalAllocationBytes<=result.certifiedWorkingSetBytes)
+						<<" actual_bytes="<<result.actualMetalAllocationBytes
+						<<" certified_bytes="<<result.certifiedWorkingSetBytes
+						<<" bytes_over_certificate="<<(result.actualMetalAllocationBytes>
+							result.certifiedWorkingSetBytes?result.actualMetalAllocationBytes-
+							result.certifiedWorkingSetBytes:0u)
+						<<" commuting_identity_passed="<<result.commutingIdentityPassed
+						<<" residual_kg_per_m3="<<result.maximumCommutingResidualKGPerM3
+						<<" bound_kg_per_m3="<<result.commutingIdentityBoundKGPerM3
+						<<" scale_kg_per_m3="<<result.commutingIdentityScaleKGPerM3
+						<<" observer_trace_stagings="<<result.qualificationTraceStagingCount
+						<<" certificate_mode="<<(request_.qualificationCaptureIterationTrace?
+							"qualification_observer":"production");
+					*error=diagnostic.str();
+				}
+				return false;
+			}
 			if(error)error->clear();return true;
 		}
 
@@ -10597,6 +10635,22 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		// device limit before allocating; qualificationWorkingSetLimitBytes remains
 		// the deterministic under-statement RED.
 		return true;
+	}
+
+	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
+		const FireProductionProjectionShape& shape,std::uint64_t& bytes )
+	{
+		if(!FireProductionProjectedHeunMetalOwnerWorkingSetBytes(shape,bytes))return false;
+		// CaptureIterationTrace's wire layout: 27 cell float fields, 36 face
+		// float fields, one boundary float and two boundary class bytes,
+		// plus two uint64 identities. The local autorelease pool bounds its
+		// lifetime to one capture, not (iteration count * capture size).
+		const std::uint64_t packet=ProjectedHeunObserverPacketBytes(shape);
+		const std::uint64_t rounded=(packet+UINT64_C(16383))&~UINT64_C(16383);
+		if(rounded<packet||bytes>std::numeric_limits<std::uint64_t>::max()-rounded){
+			bytes=0u;return false;
+		}
+		bytes+=rounded;return true;
 	}
 
 	bool AttemptFireProductionProjectedHeunMetalOwner(

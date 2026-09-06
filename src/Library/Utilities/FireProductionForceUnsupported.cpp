@@ -45,6 +45,12 @@ namespace RISE
 		bytes=0u;return false;
 	}
 
+	bool FireProductionProjectedHeunMetalObserverWorkingSetBytes(
+		const FireProductionProjectionShape&,std::uint64_t& bytes )
+	{
+		bytes=0u;return false;
+	}
+
 	bool AttemptFireProductionProjectedHeunMetalOwner(
 		const FireProductionProjectedHeunMetalOwnerRequest&,
 		FireProductionProjectedHeunMetalOwnerResult& result,std::string* error )
