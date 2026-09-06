@@ -14914,7 +14914,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			const bool clockGreen=MatchesAcceptedEvent(productionOwnerRequest,beginning,dt,clockError);
 			const bool staleDT=clockGreen&&!MatchesAcceptedEvent(productionOwnerRequest,beginning,
 				std::nextafter(dt,std::numeric_limits<double>::infinity()),clockError);
-			std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=stale_dt atomic_refusal=%d "
+			std::fprintf(stderr,"OWNER_CROSSING_RED name=stale_dt atomic_refusal=%d "
 				"error=%s passed=%d\n",staleDT?1:0,clockError.c_str(),staleDT?1:0);
 			crossingREDs=staleDT&&crossingREDs;
 			const std::filesystem::path fixtureBase=std::string(convergenceOutputPath)+".synthetic-crossing";
@@ -14941,7 +14941,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 					observed,beginning,observedDT,0u,shape.nx/2u,shape.ny/2u,refusal,true)&&
 					!std::filesystem::exists(path.string()+".convergence.v1")&&
 					!std::filesystem::exists(path.string()+".convergence.v1.csv");
-				std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
+				std::fprintf(stderr,"OWNER_CROSSING_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
 					name,refused?1:0,refusal.c_str(),refused?1:0);return refused;};
 			crossingREDs=exportRED("missing_event_binding",ownerResidentDiagnostics,dt,false)&&crossingREDs;
 			crossingREDs=exportRED("export_stale_dt",ownerResidentDiagnostics,
@@ -14952,7 +14952,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			crossingREDs=exportRED("export_terminal_bit_mutation",terminalMutant,dt,true)&&crossingREDs;
 			const auto terminalRED=[&](const char* name,const auto& mutant){std::string refusal;
 				const bool refused=!SameAcceptedOwner(ownerResidentDiagnostics,mutant,refusal);
-				std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
+				std::fprintf(stderr,"OWNER_CROSSING_RED name=%s atomic_refusal=%d error=%s passed=%d\n",
 					name,refused?1:0,refusal.c_str(),refused?1:0);return refused;};
 			auto mutant=crossingObserved;
 			mutant.conservativeValues[0]=std::nextafter(mutant.conservativeValues[0],
@@ -14971,7 +14971,7 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 				!forbiddenPublication.HasAcceptedManifoldToken()&&
 				forbiddenPublication.conservativeValues.empty()&&
 				forbiddenDiagnostics.ownerPublicationIdentity==0u;
-			std::fprintf(stderr,"OWNER_CONVERGENCE_RED name=diagnostic_cannot_publish "
+			std::fprintf(stderr,"OWNER_CROSSING_RED name=diagnostic_cannot_publish "
 				"atomic_refusal=%d error=%s passed=%d\n",noPublication?1:0,
 				forbiddenError.c_str(),noPublication?1:0);crossingREDs=noPublication&&crossingREDs;
 		}
