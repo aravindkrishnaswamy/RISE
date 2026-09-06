@@ -662,10 +662,185 @@ seed noise.
   plane test) so its 1e-9 exactness assertion is not entangled with it, and
   test 6 covers `clipped_plane`'s footprint on a deliberately tilted ray,
   with the reason written at the fixture.
+
+  **FIXED 2026-09-06, commit `14e0f45d`.** `RayBilinearPatchIntersection`
+  now picks the elimination axis `w` as the largest `|q|` component — the
+  same choice `computet` in that file already made for the `t` recovery —
+  and forms `A1`/`A2` (and `B`/`C`/`D`) from the other two axes crossed
+  with it, taken cyclically so that `w = z` reproduces the reference
+  algebra textually and nothing changes for the rays that already worked.
+  The degeneracy was rank-deficiency, not round-off, so per
+  [precision-fix-the-formulation](skills/precision-fix-the-formulation.md)
+  no threshold was involved on either side of the fix: with `q.z == 0` the
+  two eliminated equations are literally the same equation up to scale, and
+  no epsilon rescues a rank-1 system. The `t` recovery, the `u`/`v` range
+  checks, the scale-relative self-hit floor (debt 21) and
+  `SolveQuadricWithinRange`'s `a == 0` linear branch — which the
+  parallelogram case still takes — are all untouched. Every caller
+  benefits: `ClippedPlaneGeometry` (both entry points) and
+  `BilinearPatchGeometry`. (`RayTriangleIntersectionWithDisplacement` also
+  calls the helper, and — contrary to an earlier draft of this list, which
+  called it absent from the build — it **is** registered in
+  `build/VS2022/Library/Library.vcxproj` and `.vcxproj.filters`. It still
+  doesn't benefit, but the reason is simpler than a missing build entry:
+  **nothing calls it** — no call site exists anywhere in `src/Library`,
+  only its own declaration in `RayPrimitiveIntersections.h` and its own
+  definition. It is also absent from `build/make/rise/Filelist`,
+  `build/cmake/rise-android/rise_sources.cmake`, and the Xcode project, so
+  the five build projects disagree with each other about whether the file
+  exists at all — an open inconsistency, left unfixed here per the Change
+  Checklist's five-project rule; see `CLAUDE.md` / `AGENTS.md`.)
+
+  Guarded by `GeometryUVRoundtripTest::TestBilinearEliminationAxis`: 12
+  axis-aligned closed-form cases across all three elimination branches and
+  both signs (six on the raw patch, six through `clippedplane_geometry`),
+  19 rays at curved patches checked against a brute-force grid + 3×3 Newton
+  oracle sharing no code with the analytic solver, and 1000 random
+  directions asserting both the on-ray invariant and agreement **to
+  FP-contraction noise** (tolerance 1e-12; measured max delta 8.9 × 10⁻¹⁶)
+  with a verbatim copy of the pre-fix fixed-`z` solver wherever `|q.z|` is
+  dominant — bit equality is deliberately not asserted, because the test
+  necessarily carries its own copy of the solver and `-ffast-math` + LTO
+  are free to fuse the multiply-subtract pairs differently in each. That
+  copy also serves as an in-test oracle asserting the
+  pre-fix solver misses **iff** `q.z == 0`, so the guard is discriminating
+  by construction. Red-proof: forcing the axis back to a hard-coded `w = 2`
+  turns the suite red with 22 failed assertions (exactly the ±X and ±Y
+  rays, not one ±Z ray), and an `orthographic_camera` at `(0, 6, 0)`
+  looking down at a 3×3 `clipped_plane` in `y = 0` renders a **fully black
+  frame** before the fix and the lit quad after — the cleanest rendered
+  demonstration, because an orthographic camera makes *every* primary ray
+  exactly `(0, −1, 0)` where a pinhole only degenerates on the single
+  centre row.
+
+  Sibling audit ([audit-by-bug-pattern](skills/audit-by-bug-pattern.md)):
+  the other two routines that reduce a ray/surface system to 2D were
+  already direction- or normal-adaptive and needed no change —
+  `RayBezierPatchIntersection`'s `MakePlanes` picks its helper axis as the
+  *smallest* `|Dir|` component, and `GeometricUtilities::BilinearInverse`
+  picks its axis pair from the patch normal at the centre.  `computet` and
+  `RayDistanceToPoint` were already largest-`|Dir|`.  The per-axis DDA
+  walks (`HeterogeneousMedium`, `MajorantGrid`) treat all three axes
+  symmetrically behind their own zero guards.
+
+  **Fix round 1 on the axis-pick landing (2026-09-06).** Two reviewers on
+  `14e0f45d` returned no P1 correctness findings on the axis pick itself
+  and one P1 on this document's prose; the round below closes both, plus
+  two latent bugs the review surfaced in the code the fix newly reaches.
+
+  | Finding | Where | Commit |
+  |---|---|---|
+  | `SolveQuadricWithinRange`'s exact double root returned `-b/a`, not `-b/(2a)` — and, on audit, `SolveQuadric`'s two-root branch multiplied by `0.5 * a` where it wanted `0.5 / a` | `src/Library/Functions/Polynomial.cpp` | `500f9708` |
+  | A root that satisfies neither eliminated row was accepted without anyone checking it lies on the ray — phantom hits for a ray exactly parallel to a planar, **non-parallelogram** patch | `src/Library/Intersection/RayBilinearPatchIntersection.cpp` | `a3db90ce` |
+  | Prose P1: "BIT FOR BIT" / "bit-level agreement" contradicted the test's own 1e-12 tolerance; the "part (c) stays green BY CONSTRUCTION" claim was wrong; `RayTriangleIntersectionWithDisplacement` named as a caller that benefits | this file §10.6, `tests/GeometryUVRoundtripTest.cpp` | (this commit) |
+
+  The reviewers' measurement of the axis-pick landing itself, for the
+  record: the fixed solver finds **3842** true hits on planar patches and
+  **9356** on general ones that the hard-coded-`z` code missed, and loses
+  **0** true hits — the change is strictly additive on the rays it was
+  meant to reach. The phantom class the third row above closes is a
+  *subset* of what the axis pick newly reaches, which is why it appeared
+  only now: the pre-fix code missed those rays by accident, for the same
+  rank-deficiency reason it missed the genuine ones.
+
+  Behavioural note worth stating plainly: with the residual gate in
+  place, a `clipped_plane` / `bilinear_patch` now correctly **occludes**
+  rays travelling in what used to be its blind plane. Before the axis
+  pick those rays passed straight through it; between the axis pick and
+  the gate a non-parallelogram quad could stop them at a point off its
+  own plane; now they are stopped only where the quad actually is.
+
+  The gate is a residual check, not a threshold widening
+  ([precision-fix-the-formulation](skills/precision-fix-the-formulation.md)):
+  it reconstructs `P(u,v)`, differences it against `origin + t*q`, and
+  compares against `NEARZERO * (1 + coordScale + |t|·|q|₁)` — the
+  scale-relative idiom `GeometricUtilities::BilinearInverse` and the debt
+  21 self-hit floor in the same function already use. Guarded by
+  `GeometryUVRoundtripTest` part (d),
+  `TestBilinearOffRayRootRejection`: the reviewer's exact reproduction as
+  both a raw patch and a `clippedplane_geometry`, a companion crossing
+  ray that must still hit at the closed-form `(u, v, t)`, and a seeded
+  200k randomized sweep on dyadic coordinates across three decades of
+  world scale (×1, ×256, ×65536, so an absolute epsilon would fail at one
+  end or the other) — 85156 constructed-to-hit rays found with **0 lost**
+  and 331 brute-force-oracle cross-checks agreeing, and 98779
+  cannot-possibly-hit rays with **0 phantoms**. Red-proof: making
+  `RootLiesOnRay` return true unconditionally turns the suite red with
+  three failures, the reviewer's case reporting the point `(−1, 0.333, 1)`
+  a full unit off the patch's plane and the sweep finding 41 phantoms
+  with a worst off-ray distance of 245760.
 * **The §7 residual list is unchanged and still accurate**: primary rays
   only, shading-vs-geometric normal, no grazing clamp. Test 10 measures the
   grazing case rather than clamping it, per §4 — every hit from the optical
   axis out to the silhouette reports a finite, non-negative `worldWidth`.
+
+  **P2 closure round (2026-09-06).** Six review P2s against this section
+  and its neighbouring code, none behavioural except one:
+
+  * The `SolveQuadricWithinRange` `d == 0` branch comment's "only in-tree
+    consumer" claim (right above, and in `src/Library/Functions/
+    Polynomial.cpp`) was false: `GeometricUtilities::BilinearInverse`
+    reaches the same branch too — its caller is
+    `ClippedPlaneGeometry::ComputeSurfaceDerivatives`. Comment corrected
+    with the measured split: of 400000 dyadic on-surface inversions, 2311
+    land exactly on the double-root branch, and 1007 of those the pre-fix
+    `-b/a` silently turned into a false reject (the doubled root falling
+    outside `BilinearInverse`'s `[-1e-4, 1+1e-4]` acceptance window). New
+    test `GeometryUVRoundtripTest::TestBilinearInverseExactDoubleRoot`
+    constructs a dyadic patch/point (`c00=(0,0,0) c10=(1,0,0)
+    c11=(-0.5,0,0) c01=(0,1,0)`, `P = BilinearForward(u=0.25, v=0.5)`)
+    whose reduced quadratic hits `d == 0.0` bit-exact — verified against a
+    scratch harness linked against `bin/librise.a` before the test was
+    written. Red-proofed by hand: reverting to `-b/a` and rebuilding turns
+    it red (`u=0 v=0` instead of the true `0.25/0.5`), nothing else in the
+    suite regresses; reverted back before committing. Commit `264c988a`
+    (comment), `bfbcd001` (test).
+  * This section's dead-caller sentence about
+    `RayTriangleIntersectionWithDisplacement` was ALSO wrong: it **is**
+    registered in `build/VS2022/Library/Library.vcxproj` (+ `.filters`),
+    just absent from Filelist / the Android CMake list / Xcode — a
+    genuine five-project inconsistency across the build systems, left
+    open (not fixed here). The real reason it does not benefit from the
+    axis-pick fix is simpler than a missing build entry: **nothing calls
+    it** anywhere in `src/Library` — only its own declaration in
+    `RayPrimitiveIntersections.h` and its own definition. Commit
+    *(this record)*.
+  * `SolveQuadric`'s general-coefficient-callers comment now also names
+    `SolveCubic`'s own `IsReallyZero(coeff[0])` branch, reachable from
+    `SolveQuartic`'s degenerate branch — the route
+    `RayBezierPatchIntersection` takes on every call (`quartCoeff[0]` is
+    always `0.0`, since a bicubic patch's `F1(u,.)` is cubic in v, not
+    quartic). And "Both siblings now agree" is narrowed to the `a == 0`
+    branch it sits beside; the `d == 0` divergence (epsilon-based
+    `IsZero(d)` in `SolveQuadric` vs exact `d == 0.0` in
+    `SolveQuadricWithinRange`) is called out as untouched. Commit
+    `264c988a`.
+  * `RootLiesOnRay`'s "three decades of headroom" claim is corrected to
+    the actually-measured worst case: residual/tolerance ratio 0.024 (a
+    42x margin, ~1.5 decades) over 600k hits, not the ~4500x
+    `DBL_EPSILON` multiple the old text implied from `NEARZERO`'s
+    absolute value alone. Commit `1ab0d7ca`.
+  * `RootLiesOnRay` no longer re-evaluates `EvaluateBilinearPatchAt` —
+    every one of its three call sites had already computed the point
+    (`pos1` / `pos1b` / `pos2`) to derive `dRange` via `computet`; it now
+    takes that `Point3` directly, and compares squared residual against
+    squared tolerance so the per-candidate check no longer calls `sqrt`.
+    Redundant-work removal, not a precision change:
+    `GeometryUVRoundtripTest` still reports 0 lost / 0 phantoms on the
+    85156-hit / 98779-miss sweep, max on-ray residual unchanged at
+    `1.16279e-09`. Commit `1ab0d7ca`.
+  * `tests/GeometryUVRoundtripTest.cpp`'s "textually the legacy one and
+    the results must be identical bits" sentence is reworded to match
+    the block immediately below it, which explicitly does NOT assert bit
+    equality (FP-contraction noise, 0–3 ulp under `-ffast-math` + LTO).
+    Commit `bfbcd001`.
+
+  Gate: zero warnings on a clean `make -C build/make/rise -j8 all`;
+  `PolynomialTest`, `GeometryUVRoundtripTest` (85156 hit / 0 lost, 98779
+  miss / 0 phantoms, plus the new exact-double-root case recovering
+  `u=0.25 v=0.5`), `PrimitiveSelfHitTest` (45/45), `GeometrySurfaceDerivativesTest`,
+  `TextureFootprintTest` (118/118), `ClippedPlaneGeometryTest`,
+  `SourceHygieneTest` (164/164) all pass.
 
 ### 10.7 Self-audit
 
