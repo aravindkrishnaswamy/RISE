@@ -319,6 +319,13 @@ static const char* kSceneCommon =
 	"\tmaterial mat_diffuse\n"
 	"}\n";
 
+// CAVEAT (reviewer, debt-26 sibling sweep, 2026-09-05): reference is the
+// legacy pixelpel_rasterizer with a DefaultDirectLighting-only chain,
+// valid ONLY while every topology is single-bounce direct lighting on a
+// flat quad (no scattered ray can carry energy); any topology with a
+// transmissive / reflective material or a second surface must switch the
+// reference to pathtracing_pel_rasterizer first -- CLOTH_FABRIC_DESIGN.md
+// 15 debt 26.
 static const char* kRasterizerPT =
 	"standard_shader\n"
 	"{\n"
@@ -331,6 +338,7 @@ static const char* kRasterizerPT =
 	"\tmax_recursion 2\n"
 	"\tsamples 32\n"
 	"\tlum_samples 1\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
@@ -361,6 +369,7 @@ static const char* kRasterizerVCM =
 	"\tvc_enabled true\n"
 	"\tvm_enabled true\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"

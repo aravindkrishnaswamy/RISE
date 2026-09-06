@@ -60,7 +60,7 @@
 //        connection, so it is the only clean camera-in-medium reference.
 //
 //    THE (S3) REFERENCE IS A CLEAN PER-CHANNEL EQUALITY.  Read from the
-//    denoise-free radiance buffer (CapturingRasterizerOutput::GetPEL, not a
+//    linear radiance buffer (CapturingRasterizerOutput::GetPEL, not a
 //    resolved/denoised PNG), the camera-in-medium luminaire view is exactly
 //    single-count Beer-Lambert:
 //        measured[c]  ==  L0[c] * exp(-sigma_a[c] * d)
@@ -69,10 +69,19 @@
 //    cancels; L0 ~ 1.0 as authored).  So D/E/F assert the same tight
 //    per-channel exp(-sigma_a*d) equality (kRelTol) as A/B/C — no floor, no
 //    band-widening.
-//      (Aside: rendered through the CLI + 8-bit sRGB PNG + OIDN, the same
-//      scenes read ~30-90% brighter than single-count — that spread is an
-//      OIDN/sRGB-quantization MEASUREMENT artifact of that path, NOT an
-//      integrator effect; the in-process linear radiance buffer is clean.)
+//      (CORRECTION, debt-26 sibling sweep 2026-09-05: this buffer was NOT
+//      actually denoise-free until this sweep.  CapturingRasterizerOutput
+//      overrides only OutputImage; IRasterizerOutput::OutputDenoisedImage's
+//      default implementation forwards post-denoise pixels there, and
+//      oidn_denoise defaults TRUE, so every rasterizer string in this file
+//      was silently comparing OIDN-denoised pixels -- the same trap fixed
+//      in BDPTStrategyBalanceTest (debt 26) and EnvLightBalanceTest
+//      (2026-08-27).  Every rasterizer string below now sets
+//      `oidn_denoise FALSE`, so the buffer described above is genuinely
+//      denoise-free as of this fix.  Rendered through the CLI + 8-bit sRGB
+//      PNG + OIDN, the same scenes still read ~30-90% brighter than
+//      single-count — that spread is an OIDN/sRGB-quantization MEASUREMENT
+//      artifact of that separate output path, NOT an integrator effect.)
 //
 //    REVERT-PROOF (in the test harness, in-process, 2026-06-30, d=2):
 //      Temporarily reverting ONLY site (S3) to the buggy `Tr * hitResult`
@@ -353,6 +362,7 @@ static std::string BuildRGBScene(
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n"
 		"\n"
 		"file_rasterizeroutput\n"
@@ -472,6 +482,7 @@ static std::string BuildRGBSceneWithOmni(
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n"
 		"\n"
 		"file_rasterizeroutput\n"
@@ -574,6 +585,7 @@ static std::string BuildSpectralScene( double sa )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n"
 		"\n"
 		"file_rasterizeroutput\n"
@@ -851,6 +863,7 @@ static std::string BDPTPelRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -867,6 +880,7 @@ static std::string VCMPelRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -889,6 +903,7 @@ static std::string BDPTSpectralRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -911,6 +926,7 @@ static std::string VCMSpectralRasterizerChunk( int samples )
 		"\tradiance_map pnt_env\n"
 		"\tradiance_scale 1.0\n"
 		"\tradiance_background TRUE\n"
+		"\toidn_denoise FALSE\n"
 		"}\n";
 	return ss.str();
 }
@@ -1098,6 +1114,7 @@ static std::string BuildGlobalMediumScene(
 			"\tspectral_samples 1\n"
 		 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
 			"\tmax_diffuse_bounce 3\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	} else {
 		ss <<
@@ -1106,6 +1123,7 @@ static std::string BuildGlobalMediumScene(
 			"\tsamples " << samples << "\n"
 			"\tmax_volume_bounce 16\n"
 			"\tpixel_filter box\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	}
 	ss <<
@@ -1221,7 +1239,7 @@ static std::string BuildSpectralCurveScene(
 		"pathtracing_spectral_rasterizer\n{\n"
 		"\tsamples 256\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n\thwss false\n"
-		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n}\n\n"
+		"\tmax_diffuse_bounce 3\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n\n"
 		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_spectral_curve_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		"pinhole_camera\n{\n\tlocation 0 0 -5\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 10.0\n}\n\n"
@@ -1590,7 +1608,7 @@ static std::string BuildGlobalMediumMirrorScene( int samples, double sa, bool hw
 		"\tsamples " << samples << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 		"\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n\tspectral_samples 1\n"
 	 << "\thwss " << ( hwss ? "TRUE" : "false" ) << "\n" <<
-		"\tmax_diffuse_bounce 3\n}\n\n"
+		"\tmax_diffuse_bounce 3\n\toidn_denoise FALSE\n}\n\n"
 		"file_rasterizeroutput\n{\n\tpattern /tmp/volume_gmed_mirror_unused\n\ttype PNG\n\tbpp 8\n\tcolor_space sRGB\n}\n\n"
 		"film\n{\n\twidth 16\n\theight 16\n}\n\n"
 		// Camera at origin looking +Z at the mirror; the emissive wall sits
@@ -1801,7 +1819,7 @@ static void TestPTvsBDPTAgreement()
 	std::ostringstream ptc;
 	ptc << "pathtracing_pel_rasterizer\n{\n\tsamples 1024\n\tmax_volume_bounce 16\n"
 		   "\tpixel_filter box\n\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-		   "\tradiance_background TRUE\n}\n";
+		   "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
 	const PixelRGB pt   = RenderSlab( ptc.str(), sar, sag, sab, "agree_pt" );
 	const PixelRGB bdpt = RenderSlab( BDPTPelRasterizerChunk( 1024 ), sar, sag, sab, "agree_bdpt" );
 	Check( pt.valid && bdpt.valid, "M: both renders produced frames" );
@@ -1883,7 +1901,7 @@ static std::string PTPelHetRasterizerChunk( int samples )
 	ss << "pathtracing_pel_rasterizer\n{\n\tsamples " << samples
 	   << "\n\tmax_volume_bounce 16\n\tpixel_filter box\n"
 	      "\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-	      "\tradiance_background TRUE\n}\n";
+	      "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
 	return ss.str();
 }
 
@@ -1895,7 +1913,7 @@ static std::string PTSpectralHetRasterizerChunk( int samples )
 	      "\tnmbegin 380\n\tnmend 720\n\tnum_wavelengths 8\n"
 	      "\tspectral_samples 1\n\thwss false\n\tmax_diffuse_bounce 3\n"
 	      "\tradiance_map pnt_env\n\tradiance_scale 1.0\n"
-	      "\tradiance_background TRUE\n}\n";
+	      "\tradiance_background TRUE\n\toidn_denoise FALSE\n}\n";
 	return ss.str();
 }
 

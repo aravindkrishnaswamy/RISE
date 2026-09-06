@@ -32,8 +32,15 @@ read BDPT/VCM ≈ 0.17× PT while free-standing weave planes read 1.000,
 **CLOSED 2026-09-05**: root cause was `box_geometry`'s own self-hit root at
 the ray origin's published face (a fourth "PT may be the broken one"
 instance), not a closed-solid effect in general — see §15 debt 25 — and
-**debt 26** — the legacy `pixelpel_rasterizer` loses the delta-gap-to-emitter
-sighting on a gapped weave (0.0431 vs the modern PT's 0.1040), still **OPEN**.
+**debt 26** — the legacy `pixelpel_rasterizer` reads 2.46× under the modern PT
+on a gapped weave in front of an area emitter (0.0416 vs 0.1024),
+**RESOLVED 2026-09-05**: not a rasterizer defect, but the scene's own
+`DefaultDirectLighting`-only shader chain, which casts no continuation ray at
+all (a plain dielectric pane renders 0.000000 under it, and adding
+`DefaultRefraction` brings the legacy number to 0.991 of the modern PT);
+`BDPTStrategyBalanceTest`'s PT reference is now
+`pathtracing_pel_rasterizer` and the area-lit topology is its topology F —
+see §15 debt 26.
 Debt 25's fix exposed **debt 27** — a two-layer gapped weave reads PT UNDER
 BDPT/VCM by 1.28–1.55× because PT's binary NEE cannot reach a path through
 the far layer's delta gap and the near layer's continuum lobe, **OPEN**, not
@@ -6184,20 +6191,169 @@ yet known (§10.1).
     flag rules, 1000× coordinate scale, exit info; red-proved against the
     pre-fix `BoxGeometry.cpp`) — derivations in the tests' own comments.
 
-26. **OPEN 2026-09-04 — the legacy `pixelpel_rasterizer` loses the
-    delta-gap-to-emitter sighting on a gapped weave.**
+26. **RESOLVED 2026-09-05 — not a rasterizer defect: the scene declared a
+    DIRECT-LIGHTING-ONLY shader chain, so no continuation ray was ever
+    cast (or even sampled). `BDPTStrategyBalanceTest`'s PT reference has
+    been switched to `pathtracing_pel_rasterizer` and the area-lit
+    topology added there as topology F.**
 
-    32×32, 1024 spp, gapped weave (`gap 0.1`) in front of a full-width mesh area
-    emitter: `pixelpel_rasterizer` reads **0.0431** where
-    `pathtracing_pel_rasterizer` reads **0.1040**, BDPT 0.104006 and VCM 0.103925.
-    Raising `max_recursion` from 2 to 8 changes nothing (0.043115 → 0.043116), so
-    it is not a depth cap. The three modern integrators agree to 1.4e-3, so the
-    legacy rasterizer is the outlier. Recorded because
-    `tests/BDPTStrategyBalanceTest.cpp` uses `pixelpel_rasterizer` as its PT
-    reference: the area-lit twin of its topology E therefore lives in
-    `tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight` instead, and any
-    future topology there that involves a delta lobe reaching an emitter must
-    check its reference first.
+    *The measurement that opened it (2026-09-04, re-reproduced 2026-09-05
+    on this tree).* 32×32, 256 spp, gapped weave (`gap 0.1`,
+    `transmission thin`) at z = 0 in front of a full-width
+    `lambertian_luminaire` quad (`exitance` white, `scale 2.0`) at
+    z = −1.5, pinhole camera at z = 3.2, `oidn_denoise FALSE`:
+    `pixelpel_rasterizer` (`max_recursion 8`, `lum_samples 1`) reads
+    **0.041586**, `pathtracing_pel_rasterizer` **0.102404** — ratio
+    **2.46×**. BDPT 0.102585 and VCM 0.102416 agree with the modern PT to
+    1.8e-3. Raising `max_recursion` from 2 to 8 changes nothing.
+
+    **Mechanism.** The legacy rasterizer executes the scene's
+    `standard_shader` chain literally, and the scene declared
+    `shaderop DefaultDirectLighting` alone. `Job::AddStandardShader`
+    ([Job.cpp:8549-8555](../src/Library/Job.cpp)) auto-prepends
+    `DefaultEmission` (and only that op — the comment there says why), so
+    the chain that actually runs is
+    `[EmissionShaderOp, DirectLightingShaderOp]`. Neither op casts a
+    continuation ray, and — the load-bearing detail — neither declares
+    `RequireSPF()`
+    ([DirectLightingShaderOp.h:68](../src/Library/Shaders/DirectLightingShaderOp.h),
+    [EmissionShaderOp.h:62](../src/Library/Shaders/EmissionShaderOp.h)),
+    so `StandardShader`'s `bComputeSPF`
+    ([StandardShader.cpp:27-34](../src/Library/Shaders/StandardShader.cpp))
+    is false and `StandardShader::Shade`
+    ([StandardShader.cpp:56-62](../src/Library/Shaders/StandardShader.cpp))
+    never calls `ISPF::Scatter` at all. The weave's delta gap lobe
+    ([WeaveSPF.cpp:243-266](../src/Library/Materials/WeaveSPF.cpp) —
+    `ScatteredRay::eRayRefraction`, `isDelta`, `pdf 1`, `kray 1`,
+    emitted with probability `gap`) is therefore never generated, let
+    alone followed, and the term it carries — the eye ray continuing
+    undeviated through the gap onto the emitter, where `EmissionShaderOp`
+    would credit `emittedRadiance` at full weight because
+    `rs.bsdfPdf == 0` — is absent from the estimator. `max_recursion` is
+    inert for exactly the same reason: with no recursive op the depth
+    budget is never exercised.
+
+    **Numeric proof (add the term back).** Adding ONE op,
+    `DefaultRefraction`
+    ([RefractionShaderOp.cpp:47-69](../src/Library/Shaders/RefractionShaderOp.cpp);
+    `RequireSPF()` true, follows every `eRayRefraction` scattered ray),
+    to the same legacy rasterizer, same scene, same spp:
+
+    | gap | legacy `[Em,DL]` | legacy `[Em,DL,Rf]` | modern PT | legacy/PT | (legacy+Rf)/PT | predicted gap sighting `g·L·cov` | measured `Rf − DL` |
+    |---|---|---|---|---|---|---|---|
+    | 0   | 0.046022 | 0.046018 | 0.046942 | 0.9804 | 0.9803 | 0        | −0.000004 |
+    | 0.1 | 0.041586 | 0.101484 | 0.102404 | 0.4061 | 0.9910 | 0.060429 | 0.059898 |
+    | 0.3 | 0.032550 | 0.212469 | 0.213237 | 0.1526 | 0.9964 | 0.181287 | 0.179919 |
+
+    (32×32, 256 spp, mean of 3 wall-clock seeds; per-cell σ ≤ 1.7e-4.
+    `L = exitance·scale/π = 2/π = 0.636620`;
+    `cov = 0.949254` is the fraction of the film whose straight-through
+    ray lands on the emitter quad, `((1.4·3.2/4.7)/(3.2·tan 17°))²`.)
+
+    The law holds to better than 1 %. The **shape** of the missing term
+    pins it exactly: the difference image `[Em,DL,Rf] − [Em,DL]` is a
+    TOP-HAT over the emitter's silhouette whose interior height is
+    `gap × L` to **0.22 %** (gap 0.1: 0.063524 vs 0.063662; gap 0.3:
+    0.190483 vs 0.190986, 1024 spp) and which is flat zero elsewhere; on
+    a deliberately shrunk emitter (half-extent 0.5 instead of 1.4) it
+    collapses to a crisp central square of the predicted size and the
+    frame mean of the difference drops from 0.05984 to 0.007662 against a
+    prediction of 0.0077087. The residual ~0.8 % on the FULL-frame
+    numbers, versus ~0.2 % on the interior, is the pixel filter softening
+    the emitter's silhouette — which falls in the outermost pixel ring at
+    this framing.
+
+    **It is not weave-specific, and it is not a defect.** The
+    discriminating control is a plain `dielectric_material` pane
+    (`ior 1.5`, `scattering 1000000`) substituted for the weave in the
+    identical scene: legacy `[Em,DL]` renders **0.000000** — the pane is
+    black and the emitter behind it invisible — while legacy
+    `[Em,DL,Rf]` reads 0.611189 against the modern PT's 0.611155
+    (**1.00006**). If this were a bug, every dielectric in RISE would
+    render black under a direct-lighting-only chain. It is the legacy
+    shader-op contract, and the shipped legacy corpus already honours it:
+    `scenes/FeatureBased/Caustics/pool_caustics.RISEscene` pairs
+    `DefaultDirectLighting` with `DefaultRefraction`, `scenes/pr.RISEscene`
+    with `DefaultReflection`. A `DefaultDirectLighting`-only chain is a
+    *direct lighting* render by construction — no reflections, no
+    refractions, no indirect.
+
+    **What was changed, and why the reference was switched rather than
+    patched.** `tests/BDPTStrategyBalanceTest.cpp`'s `kRasterizerPT` is
+    now `pathtracing_pel_rasterizer` (`samples 32`, `rr_min_depth 8`,
+    `pixel_filter box`, `oidn_denoise FALSE`), with the same
+    `DefaultPathTracing` shader as the BDPT string so the two scenes still
+    differ only in the rasterizer chunk. Adding `DefaultRefraction` to the
+    legacy string would have been the smaller edit, but it does not make
+    the legacy chain a transport reference: at gap 0, where no delta lobe
+    exists at all, the legacy chain is still **0.980** of the modern PT
+    purely from the indirect bounces it does not follow (row 1 above), and
+    a strategy-balance test's reference must not have coverage that
+    depends on which ops a scene string happens to list.
+
+    Every pre-existing topology agrees with BDPT MORE tightly after the
+    switch, and no band was loosened (32×32, 32 spp, mean of 3 runs):
+
+    | topology | OLD PT mean RGB | OLD BDPT/PT | NEW PT mean RGB | NEW BDPT/PT | NEW p99 | NEW max |
+    |---|---|---|---|---|---|---|
+    | A delta omni | (0.02463,0.02456,0.02458) | (0.9985,1.0029,1.0003) | (0.02460,0.02460,0.02460) | (1.0000,1.0000,1.0000) | 1.000 | 1.000 |
+    | B mesh area | (0.05790,0.05800,0.05792) | (1.0003,1.0004,1.0004) | (0.05795,0.05795,0.05795) | (1.0000,1.0000,1.0000) | 1.000 | 1.000 |
+    | C mixed | (0.05789,0.05775,0.05788) | (1.0013,1.0050,1.0015) | (0.05785,0.05785,0.05785) | (1.0009,1.0009,1.0009) | 1.031 | 1.035 |
+    | D orthographic | (0.03674,0.03670,0.03672) | (1.0003,1.0030,1.0015) | (0.03675,0.03675,0.03675) | (1.0002,1.0002,1.0002) | 0.999 | 1.000 |
+    | E backlit weave (omni) | (0.03158,0.02888,0.02378) | (0.9977,1.0037,0.9990) | (0.03155,0.02895,0.02377) | (1.0000,1.0000,1.0000) | 0.999 | 1.000 |
+    | **F gapped weave + area light (NEW)** | — | — | (0.10802,0.10411,0.09630) | (0.9948,0.9946,0.9941) | 1.007 | 1.009 |
+
+    Tolerances are unchanged (`kStrictTolerances` 8 % mean / 25 % p99 /
+    2× max) and the suite goes 30 → **36 checks, 0 failures**.
+
+    **Left standing, deliberately:** `tests/VCMStrategyBalanceTest.cpp`
+    still references `pixelpel_rasterizer` with a
+    `DefaultDirectLighting`-only chain. Its three topologies (delta omni,
+    mesh area, mixed) are single-bounce direct lighting on ONE flat
+    Lambertian quad — no transmissive material, no second surface, so no
+    scattered ray carries energy and the legacy chain is complete for
+    them (18/18 checks green, unchanged). It is the same latent hazard,
+    though: any topology added there that involves a scattered ray
+    reaching a light needs the reference switched first. Recorded so it
+    is not rediscovered from scratch.
+
+    One confounder was removed in the same edit, symmetrically on BOTH
+    rasterizer strings: `oidn_denoise FALSE`. `CapturingRasterizerOutput`
+    only overrides `OutputImage`, and the default `OutputDenoisedImage`
+    forwards POST-denoise pixels there, so the suite had been comparing
+    DENOISED images — and OIDN's `auto` quality selection is timing-based,
+    so it flipped between BALANCED and HIGH between otherwise identical
+    invocations and made topology A's PT mean bimodal run to run. This is
+    the same class of finding as the 2026-08-27 `EnvLightBalanceTest`
+    de-OIDN'ing.
+
+    **Relation to debt 27: a different mechanism; one fix does NOT close
+    both.** Debt 27 is a *shadow-ray* blind spot (PT's binary NEE cannot
+    see through a FAR delta layer because `CastShadowRayTransmittance` is
+    gated to perfect-specular dielectrics), and a pass-through-visibility
+    walk keyed on a material predicate would live in `RayCaster` /
+    `LightSampler` — code the legacy chain *already* executes, since
+    `DirectLightingShaderOp::PerformOperation` and
+    `PathTracingIntegrator::PTEvaluateDirectLighting` both call
+    `LightSampler::EvaluateDirectLighting`. Such a walk would change the
+    NEE term identically in both integrators and would restore none of
+    debt 26's missing 0.060: that term is a CAMERA-side sighting, not a
+    shadow-ray term, and the proof is that adding `DefaultRefraction` —
+    which touches no visibility code — closes debt 26 outright.
+    Structurally, debt 26's scene has ONE weave layer, so debt 27's
+    mechanism cannot even be present in it; consistently, PT, BDPT and VCM
+    agree here to ≤ 0.2 % at every gap. Debt 27 therefore stays OPEN,
+    untouched by this round.
+
+    **Sibling sweep, same day:** the OIDN-denoised-capture trap this round
+    fixed in `BDPTStrategyBalanceTest` was not unique to it — six more
+    suites (`VCMStrategyBalanceTest`, `IORStackSeedingRegressionTest`,
+    `RayCasterVolumeAbsorptionTest`, `VolumeAbsorptionAttenuationTest`,
+    `DeferredRealizeTest`, `PhotonMapDeferralTest`) plus one stray
+    rasterizer string in `CSGNullGeometryLuminaireCrashTest` gained
+    `oidn_denoise FALSE`; every suite stayed green across 3 reruns with no
+    band loosened — see [bdpt-vcm-mis-balance.md's "Sibling sweep"
+    addendum](skills/bdpt-vcm-mis-balance.md) for the full accounting.
 
 27. **OPEN 2026-09-05 — PT cannot sample the far layer's delta gap: a
     two-layer gapped weave reads PT UNDER BDPT/VCM by 1.28–1.30× at gap
@@ -6243,8 +6399,27 @@ yet known (§10.1).
     gap: transmittance = `gap`, no Fresnel), which for DELTA lights needs no
     MIS (no competing strategy) but for AREA lights would double-count
     against PT's BSDF-sampled delta continuation that hits the emitter
-    (debt 26's "delta-gap-to-emitter sighting") unless one side is
-    suppressed — the same caveat the existing dielectric shortcut carries.
+    (the "delta-gap-to-emitter sighting" debt 26 is named after) unless one
+    side is suppressed — the same caveat the existing dielectric shortcut
+    carries.
+
+    **Not the same mechanism as debt 26, and one fix does not close both**
+    (assessed 2026-09-05 when debt 26 was resolved; nothing here changed).
+    Debt 26 was a shader-op-composition issue in the legacy chain: the
+    delta lobe was never even SAMPLED, because no op in the chain declared
+    `RequireSPF()`. The pass-through-visibility walk sketched above lives
+    in `RayCaster` / `LightSampler` — code the legacy chain already runs,
+    since `DirectLightingShaderOp::PerformOperation` and
+    `PathTracingIntegrator::PTEvaluateDirectLighting` both call
+    `LightSampler::EvaluateDirectLighting` — so it would move the NEE term
+    identically in both integrators and restore none of debt 26's missing
+    energy, which is a CAMERA-side sighting rather than a shadow-ray term.
+    Debt 26's scene has a SINGLE weave layer, so this debt's mechanism is
+    structurally absent from it (PT, BDPT and VCM agree there to ≤ 0.2 % at
+    every gap). This debt therefore remains independently open and still
+    needs its own material-predicate design (a `HasNonBendingDeltaLobe()`
+    query on the material, not a per-sample flag — the debt-23 lesson) plus
+    the AREA-light double-count suppression above.
 
     **Auto-router.** `docs/RENDERING_INTEGRATORS.md` §2 /
     `docs/AUTO_RASTERIZER_DESIGN.md` currently have no rule for this

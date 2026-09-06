@@ -281,6 +281,7 @@ static std::string BuildScene(
 			"\tnum_wavelengths 8\n"
 			"\tspectral_samples 1\n"
 			"\thwss false\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	} else {
 		ss <<
@@ -289,6 +290,7 @@ static std::string BuildScene(
 			"\tsamples " << samples << "\n"
 			"\tmax_volume_bounce 16\n"
 			"\tpixel_filter box\n"
+			"\toidn_denoise FALSE\n"
 			"}\n";
 	}
 	ss <<

@@ -8553,6 +8553,15 @@ bool Job::AddStandardShader(
 			shops.push_back( pEmission );
 		}
 	}
+	// NOTE: emission is the ONLY op added implicitly.  A chain that lists
+	// just DefaultDirectLighting is direct lighting only -- no op in it
+	// reports RequireSPF(), so StandardShader::Shade never scatters a
+	// continuation and every non-BSDF lobe (dielectric transmission, a
+	// weave's delta gap, a mirror) is silently dropped.  Authors add
+	// DefaultRefraction / DefaultReflection per transport mode, or use
+	// pathtracing_pel_rasterizer.  docs/SCENE_CONVENTIONS.md 8.1;
+	// CLOTH_FABRIC_DESIGN.md 15 debt 26 measured it (0.41x on a gapped
+	// weave, 0 on a dielectric pane).
 
 	for( unsigned int i=0; i<count; i++ ) {
 		IShaderOp* pShaderOp = pShaderOpManager->GetItem( shaderops[i] );

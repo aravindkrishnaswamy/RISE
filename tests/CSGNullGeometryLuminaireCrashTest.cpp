@@ -349,7 +349,7 @@ static const char* kCSGLuminaireSceneText =
 	"film\n{\n\twidth 32\n\theight 32\n}\n\n"
 	"pinhole_camera\n{\n\tlocation 0 0 -6\n\tlookat 0 0 0\n\tup 0 1 0\n\tfov 50.0\n}\n\n"
 	"standard_shader\n{\n\tname global\n\tshaderop DefaultPathTracing\n}\n\n"
-	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n}\n\n"
+	"pathtracing_pel_rasterizer\n{\n\tsamples 1\n\toidn_denoise FALSE\n}\n\n"
 	"uniformcolor_painter\n{\n\tname albedo\n\tcolor 0.8 0.8 0.8\n}\n\n"
 	"lambertian_material\n{\n\tname matte\n\treflectance albedo\n}\n\n"
 	"uniformcolor_painter\n{\n\tname pnt_glow\n\tcolor 3.0 2.5 1.5\n}\n\n"

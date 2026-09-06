@@ -17,8 +17,9 @@ description: |
   `oidn_denoise` is on (compare against `_denoised`),
   light-surface sampler density bugs (deficit tracks the emitter
   shape), and a reference path tracer that is itself broken --
-  including the case where the harness's chosen PT is the legacy
-  `pixelpel_rasterizer`.
+  including the case where the harness's chosen PT is a legacy
+  `pixel*_rasterizer` whose shader-op chain does not cover the
+  transport under test.
 ---
 
 # BDPT / VCM MIS Balance Diagnosis
@@ -238,19 +239,90 @@ minutes to check; do them before any integrator instrumentation:
    unusual; when one integrator lands and its sibling does not, the sibling
    has its own bug, not a residual of yours.
 
-6. **The reference is the LEGACY rasterizer.**  (2026-09-04.)
-   `tests/BDPTStrategyBalanceTest.cpp` compares against
+6. **The reference is a LEGACY rasterizer whose SHADER CHAIN does not
+   cover the transport under test.**  (2026-09-04; mechanism found and
+   the reference switched 2026-09-05, docs/CLOTH_FABRIC_DESIGN.md §15
+   debt 26.)  `tests/BDPTStrategyBalanceTest.cpp` used to compare against
    `pixelpel_rasterizer`, not `pathtracing_pel_rasterizer`.  On a
    `weave_material` with `transmission thin, gap 0.1` in front of an area
-   emitter the legacy path reads **0.0431** where the progressive PT
-   reads **0.1040** at the same 1024 spp (raising `max_recursion` 2 → 8
-   changes nothing), because it does not follow the delta gap lobe onto
-   the emitter — so BDPT and VCM, which both read 0.1040, look like they
-   over-count by 2.41x.  Whenever a `*StrategyBalanceTest` topology
-   involves a delta lobe that can REACH a light, render it through both
-   path tracers before believing either.  This is cause 0/4's family
-   again, one layer out: the broken reference is the harness's choice of
-   integrator rather than a bug inside one.
+   emitter the legacy path reads **0.0416** where the progressive PT
+   reads **0.1024** at the same spp (raising `max_recursion` 2 → 8
+   changes nothing) — so BDPT and VCM, which both read ≈0.1024, look like
+   they over-count by 2.46x.
+
+   **The mechanism is the scene's shader chain, not the rasterizer.**
+   A legacy `pixel*_rasterizer` executes the scene's `standard_shader`
+   op chain literally.  `Job::AddStandardShader`
+   ([Job.cpp](../../src/Library/Job.cpp), ~L8549) auto-prepends
+   `DefaultEmission` and ONLY that op, so `shaderop DefaultDirectLighting`
+   really runs `[EmissionShaderOp, DirectLightingShaderOp]`.  Neither
+   casts a continuation ray, and neither declares `RequireSPF()` — so
+   `StandardShader`'s `bComputeSPF` is false and `StandardShader::Shade`
+   never calls `ISPF::Scatter` at all.  The delta gap lobe is therefore
+   not merely unfollowed, it is **never sampled**; that is also why
+   `max_recursion` is inert (no recursive op ever exercises the budget).
+   Adding one op, `DefaultRefraction`, brings the legacy number to
+   0.10148 — **0.991** of the modern PT — and the recovered term is a
+   TOP-HAT of height exactly `gap × L_emitter` (0.22 % agreement in the
+   interior, 1024 spp) over the emitter's silhouette, zero elsewhere.
+
+   **This is by design, not a defect, and the control that proves it** is
+   a plain `dielectric_material` pane substituted for the weave in the
+   same scene: the direct-lighting-only chain renders it **0.000000**
+   (black pane, emitter behind it invisible) and `[+ DefaultRefraction]`
+   reads 0.61119 against the modern PT's 0.61116.  If it were a bug,
+   every dielectric in RISE would render black under such a chain.  The
+   shipped legacy corpus already honours the contract —
+   `scenes/FeatureBased/Caustics/pool_caustics.RISEscene` pairs
+   `DefaultDirectLighting` with `DefaultRefraction`.
+
+   **What to do.**  Never adopt a legacy `pixel*_rasterizer` as a
+   TRANSPORT reference: even with `DefaultRefraction` added, the chain
+   above is still 0.980 of the modern PT at gap 0 — where no delta lobe
+   exists at all — purely from the indirect bounces it does not follow.
+   Use `pathtracing_pel_rasterizer`.  If you must keep a legacy
+   reference, enumerate the transport modes the scene needs and check the
+   chain lists an op for each (`DefaultRefraction` for transmission /
+   dielectrics, `DefaultReflection` for mirrors, `DefaultPathTracing` for
+   indirect), and render through both path tracers before believing
+   either.  This is cause 0/4's family again, one layer out: the broken
+   reference is the harness's configuration rather than a bug inside any
+   integrator.
+
+   A second trap rides along in the same harness: `oidn_denoise` defaults
+   ON, and a capture output that overrides only `OutputImage` receives
+   POST-denoise pixels through the default `OutputDenoisedImage`.  OIDN's
+   `auto` quality is timing-based, so identical invocations flipped
+   between BALANCED and HIGH and made a topology's PT mean bimodal.  Set
+   `oidn_denoise FALSE` on EVERY rasterizer string in a measurement
+   harness — see also cause 1.
+
+   **Sibling sweep (debt-26 follow-up, 2026-09-05).** Every `tests/*.cpp`
+   defining a `CapturingRasterizerOutput` (or any other `IRasterizerOutput`
+   sink overriding only `OutputImage`) was audited for this trap.  Six
+   suites beyond `BDPTStrategyBalanceTest` were confirmed denoised by
+   execution (an `OIDN auto:` line in their log) and lacked
+   `oidn_denoise FALSE` on at least one rasterizer string:
+   `tests/VCMStrategyBalanceTest.cpp`, `tests/IORStackSeedingRegressionTest.cpp`,
+   `tests/RayCasterVolumeAbsorptionTest.cpp`,
+   `tests/VolumeAbsorptionAttenuationTest.cpp`, `tests/DeferredRealizeTest.cpp`,
+   and one rasterizer string (of eight) in
+   `tests/CSGNullGeometryLuminaireCrashTest.cpp`.  All six gained
+   `oidn_denoise FALSE` on every rasterizer string; rebuilt and run 3x each,
+   every suite stayed green with NO band loosened — the underlying MC noise
+   at each suite's existing sample count was already small enough that OIDN
+   was adding measurement risk (the BALANCED/HIGH bimodality above) without
+   ever being load-bearing for a pass.  `tests/PhotonMapDeferralTest.cpp`
+   was also confirmed denoised (its `pixelpel_rasterizer` and
+   `pixelintegratingspectral_rasterizer` chunks gained `oidn_denoise FALSE`),
+   but one of its three rasterizers — `bdpt_pel_rasterizer` — is lazily
+   built by name with no explicit chunk in the test's scene text, so there
+   is nowhere to attach the parameter; its checks are structural (photon-shoot
+   counts, `maxLum > 0`), not a numeric radiance comparison, so this residual
+   OIDN exposure is harmless and left as-is.  `VolumeAbsorptionAttenuationTest.cpp`
+   additionally had a stale comment claiming its capture buffer was
+   "denoise-free" before this fix — corrected in place.  Full table:
+   [CLOTH_FABRIC_DESIGN.md §15 debt 26](../CLOTH_FABRIC_DESIGN.md).
 
 7. **A closed ANALYTIC solid's self-root straddles NEARZERO for PT's
    unadvanced NEE shadow ray — check the primitive before the
@@ -856,17 +928,39 @@ per-draw flag read inside a loop that runs N times per scene is not the
 same defect as a per-draw flag read once per path; check which one you
 have before rewriting an interface to fix it.
 
-### The reference can be the legacy rasterizer
+### The reference can be the legacy rasterizer (debt 26)
 
 Third instance of step 0's "PT may be the broken one" in this file, and
 the cheapest to fall into because it is the *test harness* that is wrong.
-`BDPTStrategyBalanceTest` uses `pixelpel_rasterizer` as its PT reference.
-On a gapped weave in front of an area emitter it reads **0.0431** where
-`pathtracing_pel_rasterizer` reads **0.1040** at the same 1024 spp —
-`max_recursion 8` does not help — while BDPT (0.104006) and VCM (0.103925)
-track the modern PT to 1.4e-3.  A topology added there would have banked a
-2.41x reference error as expected behaviour.  Before adding a topology to
-a `*StrategyBalanceTest`, render it through BOTH path tracers and check
+`BDPTStrategyBalanceTest` used `pixelpel_rasterizer` as its PT reference.
+On a gapped weave in front of an area emitter it reads **0.0416** where
+`pathtracing_pel_rasterizer` reads **0.1024** at the same spp —
+`max_recursion 8` does not help — while BDPT (0.10259) and VCM (0.10242)
+track the modern PT to 1.8e-3.  A topology added there would have banked a
+2.46x reference error as expected behaviour.
+
+**The mechanism (found 2026-09-05) is the SHADER CHAIN, not the
+rasterizer**, which is what makes this one generalise: a legacy
+`pixel*_rasterizer` runs the scene's `standard_shader` op chain
+literally, and a `DefaultDirectLighting`-only chain (plus the
+`DefaultEmission` that `Job::AddStandardShader` auto-prepends) contains
+no op that declares `RequireSPF()`, so `StandardShader::Shade` never
+calls `ISPF::Scatter` and no continuation ray is sampled at all.  Adding
+one op, `DefaultRefraction`, takes the legacy number to 0.10148 = 0.991
+of the modern PT, and the recovered term is a top-hat of height exactly
+`gap × L_emitter` over the emitter's silhouette (0.22 % agreement in the
+interior).  The same chain renders a plain `dielectric_material` pane
+**0.000000** and 0.61119-with-`DefaultRefraction` (modern PT 0.61116), so
+this is the legacy shader-op contract rather than a defect.
+
+**Resolution:** the reference is now `pathtracing_pel_rasterizer`, the
+area-lit gapped-weave scene is topology F in that file (BDPT/PT 0.9948),
+and both rasterizer strings there gained `oidn_denoise FALSE` (the
+capture output was receiving post-denoise pixels, and OIDN's timing-based
+`auto` quality made a topology's PT mean bimodal run-to-run).  Full
+writeup: [CLOTH_FABRIC_DESIGN.md §15 debt
+26](../CLOTH_FABRIC_DESIGN.md).  Before adding a topology to a
+`*StrategyBalanceTest`, render it through BOTH path tracers and check
 they agree.  A fourth instance follows immediately below (`box_geometry`'s
 self-root, debt 25).
 

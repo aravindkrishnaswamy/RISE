@@ -439,13 +439,38 @@ Two practical considerations:
   path light → straight through the far layer's delta gap → near layer's
   continuum lobe is reachable by light tracing but not by PT's binary
   NEE — a PT strategy gap the auto-router has no rule for yet.  Debt 26
-  is still OPEN: the
-  legacy `pixelpel_rasterizer` loses the delta-gap-to-emitter sighting
-  on a gapped weave in front of an area light (**0.0431** vs the modern
-  `pathtracing_pel_rasterizer`'s **0.1040** at equal spp, with BDPT and
-  VCM both on 0.1040) — relevant because
-  `tests/BDPTStrategyBalanceTest.cpp` uses `pixelpel_rasterizer` as its
-  PT reference.
+  — the legacy `pixelpel_rasterizer` reading **0.0416** on a gapped weave
+  in front of an area light where the modern `pathtracing_pel_rasterizer`
+  reads **0.1024** at equal spp (BDPT 0.1026, VCM 0.1024) — is
+  **RESOLVED 2026-09-05, and it was never a rasterizer defect.**  The
+  legacy rasterizer executes the scene's `standard_shader` chain
+  literally, and that scene declared `DefaultDirectLighting` alone.
+  Neither `DirectLightingShaderOp` nor the `DefaultEmission` op
+  `Job::AddStandardShader` auto-prepends declares `RequireSPF()`, so
+  `StandardShader::Shade` never calls `ISPF::Scatter` and NO continuation
+  ray of any kind is cast — the weave's delta gap lobe is not merely
+  unfollowed, it is never sampled, which is also why `max_recursion` is
+  inert.  Adding one op, `DefaultRefraction`, moves the legacy number to
+  0.10148, i.e. **0.991** of the modern PT; the missing term is a top-hat
+  of height exactly `gap × L_emitter` (0.22 % agreement in the interior)
+  over the emitter's silhouette.  It is not weave-specific: a plain
+  `dielectric_material` pane in the same scene renders **0.000000** under
+  the direct-lighting-only chain and 0.61119 with `DefaultRefraction`
+  added (modern PT 0.61116).  That is the legacy shader-op contract —
+  a `DefaultDirectLighting`-only chain is a *direct lighting* render by
+  construction — and the shipped legacy corpus already honours it
+  (`scenes/FeatureBased/Caustics/pool_caustics.RISEscene` pairs
+  `DefaultDirectLighting` with `DefaultRefraction`).
+  **Consequence for measurement**: never use a legacy `pixelpel_*`
+  rasterizer as a TRANSPORT reference unless the scene's shader chain
+  covers every transport mode under test — even with `DefaultRefraction`
+  added, the chain above is still 0.980 of the modern PT at gap 0, purely
+  from indirect bounces it does not follow.
+  `tests/BDPTStrategyBalanceTest.cpp`, which used `pixelpel_rasterizer`
+  as its PT reference, now uses `pathtracing_pel_rasterizer` and gained
+  the area-lit gapped-weave topology (topology F, BDPT/PT 0.9948) that
+  the old reference could not host; every pre-existing topology agrees
+  more tightly than before and no tolerance was loosened.
 
 ## 8. Cross-references
 

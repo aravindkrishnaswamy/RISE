@@ -913,6 +913,28 @@ differently across rasterizers; some features (notably
 If a scene relies on alpha cutout (foliage, decals) or any
 shader-op-driven effect, render with PT.
 
+### 8.1 Under `pixelpel_rasterizer` the shader chain must list an op per transport mode
+
+`standard_shader { shaderop DefaultDirectLighting }` is **direct lighting
+only**.  `Job::AddStandardShader` prepends `DefaultEmission` and nothing
+else; `EmissionShaderOp` and `DirectLightingShaderOp` both report
+`RequireSPF() == false`, so `StandardShader::Shade` never calls the
+material's SPF, no continuation ray is ever scattered, and
+`max_recursion` is inert.  Anything a material carries *besides* its
+BSDF is silently dropped: a `dielectric_material` pane renders **black**
+(the emitter behind it is invisible), a `weave_material { transmission
+thin }` curtain loses the light seen straight through its gaps (a
+gap-0.1 linen reads 0.41× the modern path tracer in front of an area
+emitter), a mirror reflects nothing.  Nothing warns.  Add the op for
+each transport mode the scene uses — `DefaultRefraction` for
+transmission (it follows every `eRayRefraction` ray, weave gaps
+included, not only dielectrics), `DefaultReflection` for reflection —
+or render with `pathtracing_pel_rasterizer`, whose walk follows every
+lobe the material samples.  `scenes/FeatureBased/Caustics/pool_caustics.RISEscene`
+shows the full chain.  This is also why `tests/BDPTStrategyBalanceTest.cpp`
+switched its PT reference to `pathtracing_pel_rasterizer`
+([CLOTH_FABRIC_DESIGN.md](CLOTH_FABRIC_DESIGN.md) §15 debt 26).
+
 ---
 
 ## 8.5. The `film` chunk — pixel-grid output settings

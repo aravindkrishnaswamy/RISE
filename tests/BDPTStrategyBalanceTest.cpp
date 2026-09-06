@@ -21,12 +21,15 @@
 //        exclude a valid strategy.
 //
 //    APPROACH: render a few minimal scenes, each exercising a
-//    different BDPT topology, with both pixelpel_rasterizer (PT) and
-//    bdpt_pel_rasterizer (BDPT).  Capture the rendered radiance buffer
-//    into memory via a custom IRasterizerOutput (no file I/O), compute
-//    the per-channel mean, and assert BDPT's mean matches PT's mean
-//    within a tolerance generous enough to absorb sampling variance at
-//    low spp but tight enough to catch the canonical bias modes.
+//    different BDPT topology, with both pathtracing_pel_rasterizer (PT)
+//    and bdpt_pel_rasterizer (BDPT).  Capture the rendered radiance
+//    buffer into memory via a custom IRasterizerOutput (no file I/O),
+//    compute the per-channel mean, and assert BDPT's mean matches PT's
+//    mean within a tolerance generous enough to absorb sampling variance
+//    at low spp but tight enough to catch the canonical bias modes.
+//    (The reference was the legacy `pixelpel_rasterizer` until
+//    2026-09-05 -- see the block above `kRasterizerPT` for why it had to
+//    go and what it cost.)
 //
 //    Topologies exercised:
 //      A. Delta-position light (omni) over a Lambertian surface
@@ -37,6 +40,13 @@
 //      C. Mixed (delta + area) light selection
 //         — exercises the unified light-selection MIS plus the
 //         per-strategy partition simultaneously.
+//      D. Orthographic (delta-DIRECTION) camera + mesh area emitter
+//         — the phantom t==1 light-tracing strategy must be skipped.
+//      E. Backlit thin weave curtain, delta omni light
+//         — a MIXED delta+continuum vertex stays connectible for NEE.
+//      F. Gapped thin weave curtain + full-width mesh area emitter
+//         — s=0 through a chain whose middle vertex was sampled as a
+//         delta, competing with s=1 NEE at that same mixed vertex.
 //
 //    Tolerance: 8% relative on the mean RGB.  At 32 spp, 64x64 images
 //    Monte Carlo noise on the mean of a smooth scene is sub-percent;
@@ -435,18 +445,49 @@ static const char* kSceneCommonOrtho =
 	"\tmaterial mat_diffuse\n"
 	"}\n";
 
+//////////////////////////////////////////////////////////////////////
+// THE PT REFERENCE.  `pathtracing_pel_rasterizer` -- the modern
+// progressive path tracer -- NOT the legacy `pixelpel_rasterizer` this
+// file used until 2026-09-05 (docs/CLOTH_FABRIC_DESIGN.md §15 debt 26).
+//
+// The legacy rasterizer executes the scene's `standard_shader` chain
+// literally, and a chain of `DefaultDirectLighting` alone is a
+// DIRECT-LIGHTING-ONLY render by construction: neither
+// `DirectLightingShaderOp` nor the `DefaultEmission` op that
+// `Job::AddStandardShader` auto-prepends declares `RequireSPF()`, so
+// `StandardShader::Shade` never even calls `ISPF::Scatter` and no
+// continuation ray of any kind is cast.  That is correct legacy
+// semantics -- a plain `dielectric_material` pane renders BLACK under
+// the same chain, and the shipped legacy scenes pair
+// `DefaultDirectLighting` with `DefaultRefraction` / `DefaultReflection`
+// exactly because of it (scenes/FeatureBased/Caustics/pool_caustics
+// .RISEscene) -- but it makes the legacy rasterizer unusable as a
+// TRANSPORT reference for any topology whose energy arrives through a
+// scattered ray.  Measured on the topology F scene below (32x32,
+// 256 spp): legacy `[DefaultEmission, DefaultDirectLighting]` 0.04159,
+// the same chain plus `DefaultRefraction` 0.10148, this rasterizer
+// 0.10240 -- a 2.46x reference error that adding one op removes.
+//
+// The two scene strings must still differ ONLY in the rasterizer chunk,
+// so this string carries the same `DefaultPathTracing` shader and the
+// same `pixel_filter box` as `kRasterizerBDPT`; the modern PT rasterizer
+// drives `PathTracingIntegrator` directly and does not consult the
+// shader chain, but leaving the two shaders different would reintroduce
+// a second free variable.
+//////////////////////////////////////////////////////////////////////
 static const char* kRasterizerPT =
 	"standard_shader\n"
 	"{\n"
 	"\tname global\n"
-	"\tshaderop DefaultDirectLighting\n"
+	"\tshaderop DefaultPathTracing\n"
 	"}\n"
 	"\n"
-	"pixelpel_rasterizer\n"
+	"pathtracing_pel_rasterizer\n"
 	"{\n"
-	"\tmax_recursion 2\n"
 	"\tsamples 32\n"
-	"\tlum_samples 1\n"
+	"\trr_min_depth 8\n"
+	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
@@ -457,6 +498,14 @@ static const char* kRasterizerPT =
 	"\tcolor_space sRGB\n"
 	"}\n";
 
+// `oidn_denoise FALSE` on BOTH rasterizer strings (2026-09-05).  The
+// capture output only overrides `OutputImage`, and the default
+// `OutputDenoisedImage` forwards POST-denoise pixels there, so with the
+// denoiser on this test was comparing denoised images -- and OIDN's
+// `auto` quality selection is timing-based, so it flipped between
+// BALANCED and HIGH from run to run and made topology A's PT mean
+// bimodal across otherwise identical invocations.  Off, every topology
+// is a straight integrator-vs-integrator comparison and no band moved.
 static const char* kRasterizerBDPT =
 	"standard_shader\n"
 	"{\n"
@@ -470,6 +519,7 @@ static const char* kRasterizerBDPT =
 	"\tmax_light_depth 3\n"
 	"\tsamples 32\n"
 	"\tpixel_filter box\n"
+	"\toidn_denoise FALSE\n"
 	"}\n"
 	"\n"
 	"file_rasterizeroutput\n"
@@ -779,35 +829,159 @@ static void TestBacklitThinCurtain()
 }
 
 //////////////////////////////////////////////////////////////////////
-// WHY THERE IS NO AREA-LIGHT TWIN OF TOPOLOGY E IN THIS FILE.
+// Topology F: the AREA-LIGHT TWIN of topology E -- gap-0.1 weave
+// curtain in front of a full-width mesh emitter.
 //
-// The natural companion to E is the same weave curtain backlit by a MESH
-// AREA emitter, because only then can the weave's DELTA gap lobe actually
-// REACH the light and put the eye subpath's s=0 "hit the emitter"
-// strategy into competition with s=1 NEE through a chain whose middle
-// vertex was sampled as a delta.  That topology was written, measured,
-// and moved OUT of this file to
-// tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight, for a reason
-// worth recording here (2026-09-04):
+// This file carried no such twin until 2026-09-05, because the PT
+// reference was the legacy `pixelpel_rasterizer` and it reads 0.0416
+// here against the modern path tracer's 0.1024 -- see the block under
+// `kRasterizerPT` and docs/CLOTH_FABRIC_DESIGN.md §15 debt 26.  With the
+// reference switched, the twin belongs here, and it is the ONLY
+// topology in this file that puts the s=0 "eye subpath hits the
+// emitter" strategy into competition with s=1 NEE THROUGH A CHAIN WHOSE
+// MIDDLE VERTEX WAS SAMPLED AS A DELTA:
 //
-// THIS FILE'S PT REFERENCE CANNOT RENDER IT.  `kRasterizerPT` is the
-// legacy `pixelpel_rasterizer`, and on a `weave_material` with
-// `transmission thin, gap 0.1` in front of an area emitter it reads
-// 0.0431 where the modern `pathtracing_pel_rasterizer` reads 0.1040 at
-// the same 1024 spp -- it loses the delta-gap-to-emitter sighting
-// entirely, and raising `max_recursion` from 2 to 8 does not recover it
-// (0.043116 vs 0.043115).  BDPT (0.104006) and VCM (0.103925) both track
-// the progressive PT to within 1.4e-3, so the bidirectional integrators
-// are the ones that are right and the reference is the one that is
-// broken -- the same "PT may be the broken one" trap
-// docs/skills/bdpt-vcm-mis-balance.md's step-0 pre-flight describes,
-// here in its legacy-rasterizer form.  Asserting BDPT == pixelpel on
-// that scene would have banked a 2.41x reference error as expected
-// behaviour.
+//   - Topology E backlights the same curtain with an OMNI light.  A
+//     point light has zero solid angle, so the weave's delta gap lobe
+//     -- a deterministic straight-line continuation -- can never land on
+//     it: s=0 has zero density and never fires, and the whole image is
+//     s=1 NEE against the continuum lobe.
+//   - Here the emitter is an area quad covering the curtain's whole
+//     footprint, so essentially every gap draw (10% of camera rays)
+//     lands on it -- 94.9% of the film's straight-through rays reach the
+//     quad, the shortfall being the outermost pixel ring only.
+//     s=0-through-a-delta-chain, s=1 NEE at that same mixed vertex (which
+//     the debt-23 fix made legal again), and light tracing all compete
+//     on the same pixel.  If the s=0 emission strategy took weight 1
+//     through the delta chain -- the natural-looking rule, and wrong at a
+//     MIXED vertex where NEE can produce the same path -- this is the
+//     topology that shows it, at an s=0-sized share (tens of percent),
+//     an order of magnitude above the 8% mean band.
 //
-// Topology E (delta omni) is unaffected and stays: with a point light
-// the s=0-through-the-gap strategy has zero density and never fires, so
-// pixelpel and the modern PT agree.
+// The emitter is full-width and only `scale 2.0`, deliberately not a
+// small bright one: a small emitter makes the through-gap sighting a
+// rare, peaky event whose noise floor swamps the partition error it is
+// meant to detect.
+//
+// This is the same scene as tests/FabricRenderTest.cpp case 8
+// (`TestGappedWeaveWithAreaLight`), which keeps it at 256 spp with a
+// PT/BDPT/VCM three-way band; here it runs at this file's 32 spp under
+// the shared strict tolerances and adds the topology to BDPT's MIS
+// partition matrix.  MEASURED on this machine after the reference
+// switch (32x32, 32 spp, mean of 3 runs): PT mean
+// (0.10802, 0.10411, 0.09630), BDPT (0.10746, 0.10355, 0.09574) --
+// BDPT/PT (0.9948, 0.9946, 0.9941) with a run-to-run sigma of 4.8e-4,
+// i.e. ~15x inside the 8% mean band; p99 ratio 1.007 (25% band) and
+// max ratio 1.009 (2x band).  The channels differ because the weave's
+// linen preset is not neutral, not because the integrators disagree.
+//////////////////////////////////////////////////////////////////////
+static const char* kSceneGappedCurtainAreaLight =
+	"film\n"
+	"{\n"
+	"\twidth 32\n"
+	"\theight 32\n"
+	"}\n\n"
+	"pinhole_camera\n"
+	"{\n"
+	"\tlocation 0 0 3.2\n"
+	"\tlookat 0 0 0\n"
+	"\tup 0 1 0\n"
+	"\tfov 34.0\n"
+	"}\n\n"
+	"uniformcolor_painter\n"
+	"{\n"
+	"\tname pnt_emit_ga\n"
+	"\tcolor 1.0 1.0 1.0\n"
+	"}\n\n"
+	"lambertian_luminaire_material\n"
+	"{\n"
+	"\tname mat_emit_ga\n"
+	"\texitance pnt_emit_ga\n"
+	"\tscale 2.0\n"
+	"\tmaterial none\n"
+	"}\n\n"
+	// Winding gives the one-sided luminaire normal +Z, i.e. facing the
+	// curtain (and the camera behind it).
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname quad_emit_ga\n"
+	"\tpta -1.4 -1.4 -1.5\n\tptb 1.4 -1.4 -1.5\n"
+	"\tptc 1.4 1.4 -1.5\n\tptd -1.4 1.4 -1.5\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname obj_emit_ga\n"
+	"\tgeometry quad_emit_ga\n"
+	"\tmaterial mat_emit_ga\n"
+	"}\n\n"
+	"weave_material\n"
+	"{\n"
+	"\tname mat_curtain\n"
+	"\tfabric linen\n"
+	"\ttransmission thin\n"
+	"\tgap 0.1\n"
+	"}\n\n"
+	"clippedplane_geometry\n"
+	"{\n"
+	"\tname curtain_geo\n"
+	"\tpta -1.4 -1.4 0\n\tptb 1.4 -1.4 0\n\tptc 1.4 1.4 0\n\tptd -1.4 1.4 0\n"
+	"\tdoublesided TRUE\n"
+	"}\n\n"
+	"standard_object\n"
+	"{\n"
+	"\tname curtain_obj\n"
+	"\tgeometry curtain_geo\n"
+	"\tmaterial mat_curtain\n"
+	"\tposition 0 0 0\n"
+	"}\n";
+
+static void TestGappedCurtainAreaLight()
+{
+	RunTopologyTest( "gapped thin weave curtain + mesh area emitter",
+		kSceneGappedCurtainAreaLight, kStrictTolerances );
+}
+
+//////////////////////////////////////////////////////////////////////
+// HOW THE AREA-LIGHT TWIN GOT HERE (history, 2026-09-04 -> 2026-09-05).
+//
+// Topology F above used to live only in
+// tests/FabricRenderTest.cpp::TestGappedWeaveWithAreaLight, and this
+// block used to say it could never live here, because THIS FILE'S PT
+// REFERENCE COULD NOT RENDER IT: `kRasterizerPT` was the legacy
+// `pixelpel_rasterizer`, which reads 0.0416 on that scene against the
+// modern path tracer's 0.1024 at the same spp, and raising
+// `max_recursion` from 2 to 8 does not recover it.  Asserting
+// BDPT == pixelpel there would have banked a 2.46x reference error as
+// expected behaviour.
+//
+// That reading of the evidence was right about the numbers and wrong
+// about the cause.  The legacy RASTERIZER is not broken; the legacy
+// SHADER CHAIN the scene declared was direct-lighting-only, so no
+// continuation ray -- delta gap lobe, dielectric refraction, or plain
+// indirect -- was ever cast, or even sampled (neither
+// `DirectLightingShaderOp` nor the auto-prepended `DefaultEmission`
+// declares `RequireSPF()`, so `StandardShader::Shade` skips
+// `ISPF::Scatter` outright).  Adding one op, `DefaultRefraction`, brings
+// the legacy rasterizer to 0.10148 against the modern PT's 0.10240 --
+// 0.991, from 0.406.  A plain `dielectric_material` pane in the same
+// scene renders exactly 0.000000 under the direct-lighting-only chain
+// and 0.61119 with `DefaultRefraction` added (modern PT: 0.61116), so
+// this is not weave-specific and not a defect: it is the legacy
+// shader-op contract, which the shipped legacy scenes already honour
+// (scenes/FeatureBased/Caustics/pool_caustics.RISEscene pairs
+// `DefaultDirectLighting` with `DefaultRefraction`).
+//
+// The reference was therefore switched to `pathtracing_pel_rasterizer`
+// rather than patched, because a STRATEGY-BALANCE test wants a
+// full-transport reference, not a shader chain whose coverage depends on
+// which ops the scene string happens to list -- the legacy chain is
+// still 0.980 of the modern PT on the SAME curtain at gap 0, where no
+// delta lobe exists at all, purely from the indirect bounces it does not
+// follow.  Every pre-existing topology agreed with BDPT more tightly
+// after the switch than before, with no band loosened; full old-vs-new
+// table in docs/CLOTH_FABRIC_DESIGN.md §15 debt 26.  The "PT may be the
+// broken one" pre-flight in docs/skills/bdpt-vcm-mis-balance.md keeps
+// this as its legacy-rasterizer instance, now with the mechanism.
 //////////////////////////////////////////////////////////////////////
 
 int main()
@@ -819,6 +993,7 @@ int main()
 	TestMixedLights();
 	TestOrthographicCamera();
 	TestBacklitThinCurtain();
+	TestGappedCurtainAreaLight();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << std::endl;

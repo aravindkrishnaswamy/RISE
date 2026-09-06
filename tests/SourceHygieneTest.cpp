@@ -747,6 +747,48 @@ int main()
 	       "poison or an explicit existence Check; see docs/skills/"
 	       "red-proof-and-test-integrity.md)" );
 
+	// ---- Capturing IRasterizerOutput sinks must disable OIDN denoise ----
+	// A CapturingRasterizerOutput-style sink typically overrides only
+	// OutputImage; IRasterizerOutput::OutputDenoisedImage's default
+	// implementation forwards POST-denoise pixels there, and oidn_denoise
+	// defaults TRUE -- so a suite that never sets `oidn_denoise FALSE` is
+	// silently comparing OIDN-denoised images, and OIDN's timing-based
+	// `auto` quality flips between runs (debt-26 sibling sweep, 2026-09-05;
+	// see docs/skills/bdpt-vcm-mis-balance.md's "Sibling sweep" addendum).
+	// Opt out with an "OIDN-DENOISED-OK" comment documenting why a suite
+	// is allowed to stay denoised.
+	{
+		std::vector<std::string> undenoised;
+		for( const auto& entry : fs::directory_iterator( testsDir ) ) {
+			if( !entry.is_regular_file() || entry.path().extension() != ".cpp" ) { continue; }
+			const fs::path& f = entry.path();
+			std::ifstream in( f );
+			std::string src{ std::istreambuf_iterator<char>( in ), std::istreambuf_iterator<char>() };
+			const bool definesCapturingSink =
+				src.find( "public IRasterizerOutput" ) != std::string::npos
+				|| src.find( "public virtual IRasterizerOutput" ) != std::string::npos;
+			if( !definesCapturingSink ) { continue; }
+			if( src.find( "OIDN-DENOISED-OK" ) != std::string::npos ) { continue; }
+			// Normalize case and the literal "\t" (backslash-t, two source
+			// characters) authors use as the scene-chunk field separator so
+			// "oidn_denoise\tFALSE", "oidn_denoise false" and
+			// "oidn_denoise FALSE" all match the same normalized needle.
+			std::string norm = src;
+			std::transform( norm.begin(), norm.end(), norm.begin(),
+				[]( unsigned char c ){ return std::tolower( c ); } );
+			for( size_t p = 0; ( p = norm.find( "\\t", p ) ) != std::string::npos; ) { norm.replace( p, 2, " " ); }
+			if( norm.find( "oidn_denoise false" ) != std::string::npos ) { continue; }
+			undenoised.push_back( f.filename().string() );
+		}
+		for( const std::string& o : undenoised ) {
+			std::cout << "  capturing IRasterizerOutput sink with no `oidn_denoise FALSE` "
+			          << "anywhere: " << o << std::endl;
+		}
+		Check( undenoised.empty(),
+		       "every tests/*.cpp defining a capturing IRasterizerOutput sink sets "
+		       "`oidn_denoise FALSE` somewhere (or opts out with an OIDN-DENOISED-OK comment)" );
+	}
+
 	// ---- Start-screen starter-template sync (docs/gui/START_SCREEN.md §5.1)
 	// The canonical scenes/Templates/empty_starter.RISEscene is copied into
 	// each GUI build's resources (Mac: build/XCode/rise/RISE-GUI/Resources/).

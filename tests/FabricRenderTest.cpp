@@ -1450,12 +1450,18 @@ static void TestWrappedBacklitSheerCurtain()
 // sighting is 10% of camera rays onto a full-width emitter -- so 2%
 // still catches it by an order of magnitude.
 //
-// DO NOT port this case to BDPTStrategyBalanceTest: that file's PT
-// reference is the legacy `pixelpel_rasterizer`, which reads 0.0431 on
-// this scene against the progressive PT's 0.1040 at equal spp (and
-// `max_recursion 8` does not help) -- it loses the delta-gap-to-emitter
-// sighting entirely.  See the "WHY THERE IS NO AREA-LIGHT TWIN" block in
-// that file.
+// PORTED to BDPTStrategyBalanceTest as topology F (2026-09-05).  This
+// note used to say "DO NOT port", because that file's PT reference was
+// the legacy `pixelpel_rasterizer`, which reads 0.0416 on this scene
+// against the progressive PT's 0.1024 at equal spp (and `max_recursion
+// 8` does not help).  The cause turned out to be the SCENE'S SHADER
+// CHAIN, not the rasterizer: a `DefaultDirectLighting`-only chain casts
+// no continuation ray at all (a plain dielectric pane renders 0.000000
+// under it), so the delta-gap-to-emitter sighting is simply not part of
+// the estimator.  That file's reference is now
+// `pathtracing_pel_rasterizer` and the topology lives there too; this
+// case stays as the 256-spp PT/BDPT/VCM three-way guard.  Mechanism and
+// numbers: docs/CLOTH_FABRIC_DESIGN.md §15 debt 26.
 //////////////////////////////////////////////////////////////////////
 static const double kGapAreaLightTol = 0.02;
 
