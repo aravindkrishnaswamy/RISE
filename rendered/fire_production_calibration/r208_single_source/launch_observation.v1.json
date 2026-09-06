@@ -1,0 +1,40 @@
+{
+  "schema": "rise.fire.r208.observed-replay-launch.v1",
+  "status": "running_no_verdict",
+  "first_observed_running_utc": "2026-09-06 15:16:45 UTC",
+  "execution_context": "unsandboxed_Metal_M4_Max",
+  "source_commit_at_launch": "b4f828b9d3a1dd23472df22623582f3c2f10ad9c",
+  "compiled_source_commit": "84128a500fe1e7ae7b96d68deee61a689fb110d4",
+  "compiled_source_note": "later commit contains evidence only; no executable input changed",
+  "executable": "bin/tests/FireSequenceTest_r208_sealed_v2",
+  "executable_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+  "command": [
+    "/usr/bin/caffeinate",
+    "-i",
+    "./bin/tests/FireSequenceTest_r208_sealed_v2",
+    "--fire-production-r201-ported",
+    "rendered/fire_production_calibration/r208_single_source/ported_from_zero.v1",
+    "rendered/fire_production_calibration/r194_matched_tier8_replay/matched_replay_protocol.v1",
+    "5578fa19dcd500ff68743f7f1cfeff21d22da43fef48a3ada42df042badf3e3d"
+  ],
+  "execution_session": 21835,
+  "case_record_id": "6eb8b1f95bfdb27d06245db94d6e9513c0cdef3662fc055547d35b353094f7e1",
+  "seed": 1234,
+  "initial_state_sha256": "c08cb0658ee6a3474f7c04bcbd0134a79a58665cd661d2fa2ee8a4ee99bdb016",
+  "producer_build_id": "a3ef35639751dbc0c3f21aaca7d2b99f0e18ed477ed7c98ab396e2ab8244e1f5",
+  "from_zero_identity_sha256": "69cc4b70af849880ddfaf5e063c9c676e0447bbcd3539126dc8b645ec275cb8c",
+  "executed_qualification_sha256": "9ff156f8e7450a8f57f6082a4c9b74167d46f33be410ded9371ea85e9c359c07",
+  "review_receipt_sha256": "b4cb4cba207baed1e9c839f4e42d3f38b56e9cd1de894a0a4ac0e865603c81e3",
+  "replay_plan_sha256": "b75a5a52c3601f9f52252557a170405c94777cca7616d8c4dc2f4016a7b69517",
+  "resume": "forbidden",
+  "initial_identity_matches_r194": true,
+  "observed_accepted_steps_at_least": 3,
+  "performance_prototype_included": false,
+  "review_status": "fresh_zero_P1_P2",
+  "monitor": {
+    "automation_id": "rise-sealed-tier-8-replay",
+    "interval_minutes": 10,
+    "policy": "quiet_except_new_crossing_refusal_completion_or_required_action"
+  },
+  "completion_claim": "none"
+}
