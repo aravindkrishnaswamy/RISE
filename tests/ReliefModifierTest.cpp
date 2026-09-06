@@ -49,8 +49,9 @@
 //        object-space hit (so the object-space point moves by the
 //        un-rotated world step) makes test 5's world-vs-object
 //        agreement fail.  This one is asserted IN the test as a live
-//        negative control (NullPointerRedProof below), not just
-//        performed by hand, since the test can construct it honestly.
+//        negative control (the `riNull` block at the end of
+//        Test5_ObjectSpaceExactness), not just performed by hand, since
+//        the test can construct it honestly.
 //    (c) Test 8, NON-FINITE GUARD.  ReliefModifier has TWO finiteness
 //        gates -- the explicit `isfinite(dT) || isfinite(dB)` early
 //        return the design calls for, and the `mag2 > 1e-12 &&
@@ -83,6 +84,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -686,15 +688,26 @@ static void Test7_Handedness()
 //  Test 8: the non-finite guard
 // ============================================================
 
+// The NaN and Inf below are the test's INPUT -- the hostile height field
+// whose handling is the thing under test -- not a not-found sentinel
+// returned in place of a real value, which is the disease
+// SourceHygieneTest's scanner exists to catch.  A "finite poison" cannot
+// substitute here: the modifier's contract is specifically about
+// NON-FINITE differences, and a finite spike would exercise the
+// degenerate-normal gate instead.  That these values really are
+// non-finite at runtime on this build is not assumed either -- red-proof
+// (c) removed both guards and observed actual NaN/Inf normals reach the
+// frame rebuild (6 failures), which they could not have done if the
+// literals had been folded away.
 static Scalar HeightNaN( const RayIntersectionGeometric& ri )
 {
 	// NaN only OFF-centre, so the guard has to catch it in the stencil
 	// rather than at the shading point.
-	return ( ri.ptIntersection.x > 0.5 ) ? std::nan( "" ) : Scalar( 1.0 );
+	return ( ri.ptIntersection.x > 0.5 ) ? std::nan( "" ) : Scalar( 1.0 );  // HYGIENE-OK: hostile INPUT to the modifier's non-finite guard, not a not-found sentinel
 }
 static Scalar HeightInf( const RayIntersectionGeometric& )
 {
-	return std::numeric_limits<Scalar>::infinity();
+	return std::numeric_limits<Scalar>::infinity();  // HYGIENE-OK: hostile INPUT to the modifier's non-finite guard, not a not-found sentinel
 }
 
 static void Test8_NonFiniteGuard()
