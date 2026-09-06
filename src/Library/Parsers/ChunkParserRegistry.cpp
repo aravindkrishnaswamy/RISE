@@ -38,6 +38,7 @@
 #include <cstdlib>   // strtod for the ar_layer numeric parse
 #include <cstdarg>  // va_list / va_start -- SweepReject's formatted refusal channel
 #include <cerrno>    // ERANGE overflow detection for ar_layer values
+#include <atomic>    // bumpmap_modifier's once-per-process deprecation warning (NormalMap.cpp idiom)
 #include <cmath>     // std::isfinite/sqrt/atan2/fabs (AllFiniteD, DirectionToEulerDeg, etc.) --
                      // only transitively available via ChunkDescriptor.h today; include directly
 #include "../Materials/DielectricSPF.h"   // DielectricSPF::kMaxARLayers (ar_layer cap)
@@ -8541,6 +8542,21 @@ namespace RISE
 					double window        = bag.GetDouble( "windowsize", 0.01 );
 					bool normalize       = bag.GetBool(   "normalize_gradient", false );
 
+					// Phase A deprecation (docs/RELIEF_MODIFIER_DESIGN.md §7.1): still
+					// parses, but warns ONCE PER PROCESS -- the NormalMap.cpp
+					// `std::atomic<bool>` idiom, so a scene with many bumpmap_modifier
+					// chunks (or a test binary that derives many scenes) does not
+					// log-flood.  ABI-frozen: IJob::AddBumpMapModifier, the RISE_API
+					// entry points, and the BumpMap class are untouched by this warning.
+					static std::atomic<bool> s_warnedDeprecated{ false };
+					if( !s_warnedDeprecated.exchange( true ) ) {
+						GlobalLog()->PrintEx( eLog_Warning,
+							"bumpmap_modifier `%s` is DEPRECATED and will be removed in a "
+							"later release: use relief_modifier (any scalar_painter height "
+							"field, no texcoords required).  Migrate this scene losslessly "
+							"with tools/migrate_scenes_relief.py.", name.c_str() );
+					}
+
 					if( !normalize ) {
 						// Default / legacy path, signature-frozen IJob virtual.
 						return pJob.AddBumpMapModifier( name.c_str(), function.c_str(), scale, window );
@@ -8575,7 +8591,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "bumpmap_modifier"; cd.category = ChunkCategory::Modifier;
-						cd.description = "Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
+						cd.description = "DEPRECATED -- use relief_modifier (any scalar_painter height field, no texcoords required; migrate with tools/migrate_scenes_relief.py; see docs/RELIEF_MODIFIER_DESIGN.md).  Bump-map modifier perturbing the surface normal from the gradient of a heightfield function2d, sampled at the hit's TEXCOORD_0 (u,v) by central difference.  Works on any geometry that supplies texcoords + a normal (analytic primitives AND triangle meshes such as cartesian_disk_geometry; the ONB tangents are built from the shading normal).";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";       p.kind = ValueKind::String;    p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "function";   p.kind = ValueKind::Reference; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Heightfield painter (an IFunction2D, e.g. expression_function2d / perlin2d_painter)"; }

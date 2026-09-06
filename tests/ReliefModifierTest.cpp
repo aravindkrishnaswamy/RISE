@@ -1643,6 +1643,52 @@ static void Test10_Parse()
 			safe_release( job );
 		}
 	}
+
+	// (f) The Phase-3 deprecation diagnostic (docs/RELIEF_MODIFIER_DESIGN.md
+	//     section 7.1): bumpmap_modifier still parses, but warns.  The
+	//     warning is emitted from a `static std::atomic<bool>` guard inside
+	//     `BumpmapModifierAsciiChunkParser::Finalize` (the NormalMap.cpp
+	//     idiom) -- ONCE PER PROCESS, not once per chunk -- so a scene with
+	//     TWO bumpmap_modifier chunks must show the deprecation text
+	//     EXACTLY ONCE in the captured log, not twice.
+	//
+	//     ORDERING NOTE: the atomic guard is a process-lifetime static, so
+	//     this is only a valid test of "fires once" if no earlier
+	//     bumpmap_modifier chunk was parsed via the ASCII chunk parser
+	//     (LoadAsciiSceneViaCst) anywhere else in this process. Test 2
+	//     above constructs a `BumpMap` object directly in C++ (`new
+	//     BumpMap(...)`) and never goes through the chunk parser, so it
+	//     does not pre-trip the guard -- this is, by construction, the
+	//     first and only ASCII bumpmap_modifier parse in this binary. If a
+	//     future edit to this file adds another ASCII-parsed
+	//     bumpmap_modifier scene anywhere (including in an earlier test),
+	//     this case must move ahead of it, or it will observe the guard
+	//     already tripped and see zero matches instead of one.
+	{
+		IJobPriv* job = 0;
+		RISE_CreateJobPriv( &job );
+		CHECK( job != 0, "10f: job created" );
+		if( job ) {
+			std::string log;
+			const bool ok = ParseCapturing( "deprecated",
+				"piecewise_linear_function2d\n{\n\tname d2a\n}\n"
+				"piecewise_linear_function2d\n{\n\tname d2b\n}\n"
+				"bumpmap_modifier\n{\n\tname bm_a\n\tfunction d2a\n}\n"
+				"bumpmap_modifier\n{\n\tname bm_b\n\tfunction d2b\n}\n",
+				*job, log );
+			CHECK( ok, "10f: a scene with two bumpmap_modifier chunks still parses successfully" );
+			CHECK( job->GetModifiers()->GetItem( "bm_a" ) != 0 && job->GetModifiers()->GetItem( "bm_b" ) != 0,
+				"10f: both deprecated modifiers are still registered (Phase A keeps parsing)" );
+			std::size_t count = 0, pos = 0;
+			const std::string needle = "is DEPRECATED and will be removed";
+			while( ( pos = log.find( needle, pos ) ) != std::string::npos ) { ++count; pos += needle.size(); }
+			CHECK( count == 1,
+				"10f: the deprecation warning appears EXACTLY ONCE across two chunks (once-per-process, not once-per-chunk)" );
+			CHECK( Contains( log, "relief_modifier" ) && Contains( log, "tools/migrate_scenes_relief.py" ),
+				"10f: the warning names relief_modifier and the migrator" );
+			safe_release( job );
+		}
+	}
 }
 
 // ============================================================
