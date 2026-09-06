@@ -9,7 +9,7 @@ RISE ASCII SCENE 7
 #                   scalar_painter{painter} bridge for roughness -- gloss follows grain).  scatter_painter  #
 #                   Relief tilts the shading normal from the SAME grain field too: scalar_painter           #
 #                   sp_wood_relief bridges expr_grain raw (channel R, no scale/bias), and relief_modifier   #
-#                   relief_wood (scale 0.03) binds the wood top and all four legs -- colour, roughness AND  #
+#                   relief_wood (scale 0.25, max_slope 0.30) binds the wood top and all four legs --        #
 #                   relief now share one field, so the grain reads as carved surface, not paint.            #
 #                   scatters oil stains that blend_painter{mode multiply} darkens onto the wood.  The vise  #
 #                   is worley-pitted iron whose colour field is reprojected with mapping_painter{projection #
@@ -139,19 +139,48 @@ scalar_painter
 # (a look choice for a weathered bench, not a claim about real wood, where
 # dense late-wood usually stands proud) -- the OPPOSITE of
 # the crackle-glaze recipe's negative scale, because that recipe's dark end
-# is the HIGH end of its own field (see that recipe's own comment).  Tuned by
-# a reduced-render amplitude sweep (0.002/0.004/0.008/0.02/0.04/0.05/0.06/0.10
-# world units): the Phase 5 sweep picked 0.05 as the smallest value where the
-# grain's catch-light and the bench's front-edge silhouette both read as
-# genuine surface relief rather than flat paint, with no sparkle at the
-# tray/vise end and no black-speckle normal-flip artifacts.  The supervising
-# review judged 0.05 a touch heavy for fine grain (the front-edge scallop
-# reads more like carved trim than wood grain), and the same sweep already
-# recorded 0.02-0.04 as artifact-free and quieter, so this was dialled back
-# to 0.03 (2026-09-06) -- still comfortably inside the no-artifact band, and
-# the grain still reads as carved surface rather than paint at this scale/
-# lighting (docs/RELIEF_MODIFIER_DESIGN.md §12 Phase 5 record has the full
-# table and the follow-up note).  `domain surface` -- the bench top and
+# is the HIGH end of its own field (see that recipe's own comment).
+#
+# AMPLITUDE + CLAMP (retuned 2026-09-06; docs/RELIEF_MODIFIER_DESIGN.md §12
+# Phase 5 addendum has the full sweep table and the PNG paths).  This grain is
+# a 5-octave fbm whose tangent-plane slope is O(10), and an UNCLAMPED relief
+# on it has NO usable amplitude at all -- the two failure modes OVERLAP rather
+# than leaving a band to thread.  The original Phase 5 sweep read 0.05 as
+# "artifact-free" and the review then dialled it to 0.03, but the footprint
+# arc (2026-09-06) makes that reading an ALIASING ARTEFACT: the sweep predates
+# footprint-driven step selection on analytic primitives, so what it measured
+# was a sub-footprint stencil.  Re-swept against the real step rule, 0.03 is
+# INVISIBLE (the field's detail sits below the pixel footprint) and 0.10-0.25
+# unclamped renders as BLACK bands and speckle -- the shading normal leans
+# past the geometric horizon as seen from the ray, and the material's
+# geometric-horizon gate then rejects nearly every sampled direction.  On the
+# bench-top crop, 0.25 unclamped puts 976 of 10000 pixels below luma 12,
+# against 0 at 0.03.
+#
+# `max_slope` (added with this retune) bounds the TILT instead of the
+# amplitude: it rescales the gradient to that slope with its DIRECTION
+# PRESERVED, so `scale` can be raised for legibility while the clamp holds the
+# peaks.  0.25 / 0.30 is the knee of the measured frontier -- fine-detail
+# contrast +19% over the old 0.03 (hf-RMS 18.5 -> 22.1) at 23 of 10000
+# near-black pixels, all in the extreme-grazing far band and all following the
+# grain.  0.35 buys +8% more for 2.7x the blacks, 0.40 for 3.8x, and there the
+# darks start clumping into solid patches.  `scale` SATURATES once the clamp
+# binds (0.40/0.30 measures identically to 0.25/0.30), so there is nothing
+# above 0.25 to gain here.  Note 0.30 is BELOW the 0.5-1.0 band the skill doc
+# recommends generally: this bench top is a large horizontal plane seen at a
+# grazing angle over most of its area, which puts the horizon far closer than
+# on a surface viewed nearer face-on.
+#
+# THE KEY LIGHT WAS LEFT ALONE, having been tested.  Lowering it from 42 to 24
+# degrees elevation (direction 0.5 0.35 0.6, same power) does NOT help the
+# grain read: fine-detail contrast goes slightly DOWN (24.8 -> 24.3 at
+# 0.25/0.4), the plank dims ~7%, and near-black pixels rise 35%.  On a
+# horizontal surface whose tilt axis lies in the plane, a raking key makes
+# tilts TOWARD it saturate at N.L ~ 1 while tilts away go dark, so the local
+# modulation does not improve -- the 42-degree key is already the better
+# choice.
+#
+# `domain surface` -- the bench top and
 # legs are `box_geometry`, an analytic primitive with no UVs, which is
 # exactly why `surface` and not `uv`.
 #
@@ -177,8 +206,9 @@ relief_modifier
 	name			relief_wood
 	height			sp_wood_relief
 	domain			surface
-	scale			0.03
+	scale			0.25
 	step			0
+	max_slope		0.30
 }
 
 ##################################################

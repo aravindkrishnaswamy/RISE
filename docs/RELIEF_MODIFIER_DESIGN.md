@@ -2366,6 +2366,107 @@ the scene's own header never called the legs out separately, and
 leaving them flat while the top gained visible relief would have read
 as an inconsistency in the same material.
 
+#### Addendum — 2026-09-06, `max_slope` retune of `weathered_workbench`
+
+Branch `relief-max-slope`. Phase 5's amplitude sweep concluded `0.05` was
+"the smallest artifact-free value" and the review then dialled it to `0.03`.
+**Both readings are superseded**, and for a reason worth recording: that
+sweep predates the footprint arc
+([TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md](TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md)),
+which moved footprint production to `Object::IntersectRay` and so gave the
+bench's `box_geometry` a real world footprint for the first time. The sweep
+was therefore measuring a **sub-footprint stencil** — an aliasing artefact,
+not the relief. Against the real step rule, `0.03` is *invisible*.
+
+**The problem, restated.** `expr_grain` is a 5-octave `fbm` whose
+tangent-plane slope is O(10). Unclamped, the scene has no usable amplitude at
+all: too small and the detail is below the footprint, large enough to read and
+the shading normal crosses the geometric horizon as seen from the ray, the
+material's geometric-horizon gate rejects nearly every sampled direction, and
+the plank shades black. The two failures **overlap** — there is no band to
+thread, which is why an amplitude-only sweep could not have found one.
+
+**Method.** All renders at the scene's authored settings (`pixelpel`, 12 spp,
+640×480, ~3 s each), measured on the OIDN-denoised PNG over a 200×50 crop of
+pure bench-top plank at `(230, 202)`. `hf-RMS` is the RMS of
+`pixel − 5×5 box blur` — fine-detail contrast, the thing "reads as carved"
+means. `blk` counts pixels below luma 12 out of the crop's 10 000; `far` is
+the upper 25 rows (the plank seen at ~10–15° grazing) and `near` the lower 25.
+
+*The nine-variant grid.*
+
+| scale | max_slope | mean | hf-RMS | blk<12 | far | near | reads as |
+|---|---|---|---|---|---|---|---|
+| 0.03 | — *(master)* | 161.1 | 18.48 | **0** | 0 | 0 | flat; grain is paint |
+| 0.15 | 0 *(control)* | 127.6 | 32.31 | 593 | 453 | 140 | black bands + speckle |
+| 0.25 | 0 *(control)* | 115.0 | 35.02 | 976 | 728 | 248 | black bands + speckle |
+| 0.08 | 0.4 | 156.8 | 21.18 | 34 | 30 | 4 | mild relief, clean |
+| 0.08 | 0.7 | 150.4 | 23.79 | 88 | 73 | 15 | good relief, far-band flecks |
+| 0.08 | 1.0 | 146.8 | 24.84 | 127 | 106 | 21 | good relief, flecks |
+| 0.15 | 0.4 | 153.4 | 23.84 | 73 | 67 | 6 | good relief, few flecks |
+| 0.15 | 0.7 | 142.6 | 28.33 | 256 | 208 | 48 | strong, visible speckle |
+| 0.15 | 1.0 | 135.0 | 30.30 | 398 | 319 | 79 | strong, speckle |
+| 0.25 | 0.4 | 152.0 | 24.76 | 87 | 75 | 12 | good relief, flecks clumping |
+| 0.25 | 0.7 | 139.1 | 30.00 | 353 | 287 | 66 | strong, speckle |
+| 0.25 | 1.0 | 129.4 | 32.19 | 560 | 434 | 126 | approaching the control |
+
+*Two findings the grid forced, and the extension they justified.* (1) The
+clamp works: at the same `scale 0.25`, `max_slope 0.4` cuts near-blacks
+**11×** (976 → 87) while keeping 71% of the unclamped fine-detail gain. (2)
+**`scale` saturates once the clamp binds** — at `max_slope 0.30`, scale
+0.15/0.25/0.40 measure hf-RMS 21.51/22.06/22.14 at 22/23/24 blacks. Since
+every one of the nine still sat well above master's 0 blacks, the sweep was
+extended *downward* in `max_slope` at the saturated `scale 0.25`:
+
+| scale | max_slope | hf-RMS | blk<12 | note |
+|---|---|---|---|---|
+| 0.25 | 0.15 | 18.00 | 0 | over-clamped; *below* master's detail |
+| 0.25 | 0.25 | 20.28 | 7 | clean, modest |
+| 0.25 | **0.30** | **22.06** | **23** | **chosen — the knee** |
+| 0.25 | 0.35 | 23.86 | 62 | +8% detail for 2.7× the blacks |
+| 0.25 | 0.40 | 24.76 | 87 | darks begin clumping into patches |
+
+`0.25 / 0.30` dominates every one of the nine: more detail than `0.08/0.4`
+(22.06 vs 21.18) at fewer blacks (23 vs 34). Its 23 near-blacks are 0.23% of
+the crop, **all but 2 of them in the extreme-grazing far band**, and each
+follows the grain rather than appearing as isolated speckle (the 4×
+comparison strip `cmp_far_stack.png` stacks master / 0.25 / 0.30 / 0.40 — the
+first solid clumps appear at 0.40).
+
+**Chosen: `scale 0.25`, `max_slope 0.30`.** Note this is *below* the 0.5–1.0
+band the skill doc recommends generally. That is not a contradiction: the
+bench top is a large horizontal plane seen at a grazing angle over most of its
+area, which puts the horizon far closer than on a surface viewed nearer
+face-on. The general band remains right for the general case; grazing-viewed
+planes want less.
+
+**The key light was tested and left alone.** It sits at 41.9° elevation
+(`direction 0.5 0.7 0.6`). Lowering it to 24.1° (`0.5 0.35 0.6`, same
+`power 3.2`) **does not help**: at `0.25/0.4` fine-detail contrast goes *down*
+(24.76 → 24.30), the plank dims ~7% (mean 152.0 → 141.6), and near-blacks rise
+35% (87 → 118). The reason is geometric — on a horizontal surface whose tilt
+axis lies in the plane, a raking key makes tilts *toward* it saturate at
+`N·L ≈ 1` while tilts *away* go dark, so local modulation does not improve
+while everything dims. The 42° key is already the better choice, so the scene's
+lights are unchanged (and `CstDeriveGoldenTest` therefore needed no
+regeneration).
+
+**PNGs** (all under
+`/private/tmp/claude-501/-Users-aravind-Working-GitHub-RISE/0c48c261-5924-45c6-a163-b53339ecf707/scratchpad/maxslope/rendered/`):
+
+- **before** (master, `scale 0.03`) — `ms_base_denoised.png`
+- **after** (chosen, rendered from the committed scene) — `ms_FINAL_denoised.png`
+- unclamped controls — `ms_ctl_015_denoised.png`, `ms_ctl_025_denoised.png`
+- the nine — `ms_s{1,2,3}_m{1,2,3}_denoised.png`
+- the downward extension — `ms_p_s3_m{015,025,030,035}_denoised.png`
+- raking-key trials — `ms_rake_base_denoised.png`, `ms_rake_s2_m1_denoised.png`, `ms_rake_s3_m1_denoised.png`
+- crops — `*_top2x.png` (bench-top crop), `*_far4x.png` (grazing band), `cmp_far_stack.png`, `cmp_leg_strip.png`
+
+`CstDeriveGoldenTest`: **442 MATCH, 1 DRIFT** (the same pre-existing
+`bdpt_crystal_garden` working-tree entry), 0 UNCOVERED, 0 STALE — unchanged
+before and after the scene edit, confirming the relief parameters do not reach
+the derive digest (`DumpJob` prints modifiers by name).
+
 ---
 
 ### Phase 4 — fix round 1 (2026-09-06)
