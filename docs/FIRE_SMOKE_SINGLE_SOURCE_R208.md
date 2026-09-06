@@ -63,6 +63,9 @@ Existing historical source ledgers are never rewritten with canonical values.
   omissions reject for each nonzero field. Gross formation is the one structural
   zero: PhysicalV1 has exactly zero soot yield, which the fixture explicitly
   checks. Omitting that zero is an actual no-op, not a fabricated nonzero case.
+- The soot fixture checks all seven species source bytes and energy as well as
+  diagnostics. Nonzero carbon consumption is a precondition, and omitting that
+  source component is RED; every source component also rejects injected bytes.
 - An alternate reconstruction callable is not invocable through the carry API;
   it cannot reach the identity gate.
 - Unsealed input refuses before modifying persisted packets.

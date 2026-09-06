@@ -11524,12 +11524,38 @@ int RunProductionResidentTargetLineageMetalFP64Fixture(const char* convergenceOu
 			&MethaneSourcePacket::radiativeCoolingWPerM3};
 		auto ledgerBitsMatch=[&](const std::vector<MethaneSourcePacket>& packets){
 			if(packets.size()!=cells)return false;
+			for(std::size_t cell=0u;cell<cells;++cell){
+				for(std::size_t species=0u;species<MethaneSpeciesCount;++species){
+					const float value=static_cast<float>(packets[cell].constituentDelta[species]);
+					if(std::memcmp(&value,&ledgerSource.SourceDelta()[(1u+species)*cells+cell],sizeof(float))!=0)
+						return false;}
+				const float energy=static_cast<float>(packets[cell].sensibleEnergyDeltaJPerM3);
+				if(std::memcmp(&energy,&ledgerSource.SourceDelta()[8u*cells+cell],sizeof(float))!=0)return false;
+			}
 			for(std::size_t field=0u;field<8u;++field)
 				for(std::size_t cell=0u;cell<cells;++cell)
 					if(std::memcmp(&(packets[cell].*ledgerMembers[field]),
 						&(*ledgerValues[field])[cell],sizeof(double))!=0)return false;
 			return true;};
 		bool ledgerPassed=ledgerBitsMatch(ledgerCarried);
+		std::size_t consumedCarbonCells=0u;
+		for(std::size_t cell=0u;cell<cells;++cell)
+			if(ledgerSource.SourceDelta()[(1u+MethaneCarbon)*cells+cell]!=0.0f)++consumedCarbonCells;
+		auto missingCarbon=ledgerCarried;
+		for(auto& packet:missingCarbon)packet.constituentDelta[MethaneCarbon]=0.0;
+		const bool carbonRefused=consumedCarbonCells>0u&&!ledgerBitsMatch(missingCarbon);
+		ledgerPassed=ledgerPassed&&carbonRefused;
+		std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=carbon_source_omission nonzero_cells=%zu passed=%d\n",
+			consumedCarbonCells,carbonRefused?1:0);
+		for(std::size_t component=0u;component<8u;++component){
+			auto alteredSource=ledgerCarried;
+			for(auto& packet:alteredSource){
+				if(component<MethaneSpeciesCount)packet.constituentDelta[component]=1.0;
+				else packet.sensibleEnergyDeltaJPerM3=1.0;}
+			const bool refused=!ledgerBitsMatch(alteredSource);ledgerPassed=ledgerPassed&&refused;
+			std::fprintf(stderr,"SOURCE_SINGLE_CANONICAL_RED name=source_component_injection_%zu passed=%d\n",
+				component,refused?1:0);
+		}
 		for(std::size_t field=0u;field<8u;++field){
 			std::size_t nonzero=0u;
 			for(const double value:*ledgerValues[field])if(value!=0.0)++nonzero;
