@@ -1076,13 +1076,23 @@ void TestPackWarnings()
 //! everywhere, so ReliefModifier's central difference (any window,
 //! including the exporter's 0.005) has no truncation error and the
 //! delivered tilt has a closed form: with `normalize` TRUE the folded
-//! amplitude is exactly `-strength*distance` (RISE_API.cpp's
+//! amplitude is exactly `-scale` (RISE_API.cpp's
 //! `RISE_API_CreateBumpMapModifierEx`), so
-//! `perturbed = N - (T*k)*(-strength*distance) = N + T*(k*strength*distance)`
+//! `perturbed = N - (T*k)*(-scale) = N + T*(k*scale)`
 //! and, since T and N are orthogonal unit vectors, normalizing preserves
-//! the RATIO `perturbed.x / perturbed.z` exactly: it equals
-//! `k*strength*distance` to floating-point precision, independent of the
-//! window. That ratio is what the test below checks.
+//! the RATIO `perturbed.x / perturbed.z` exactly: it equals `k*scale` to
+//! floating-point precision, independent of the window. That ratio is
+//! what the test below checks.
+//!
+//! `scale` here is the value the EXPORTER marshals, not `Strength *
+//! Distance`: `exporter._bump_modifier_scale` supplies the sign, and
+//! with Invert OFF it is NEGATIVE (`-Strength*Distance`).  Composed
+//! with the shim's own negation that lands on
+//! `perturbed = N - T*(k*Strength*Distance)` -- the normal tilting AWAY
+//! from the up-slope, which is Blender's Bump node with Invert off, and
+//! Blinn's and PBRT's convention.  Fix round 2 corrected this; before
+//! it, the exporter sent `+Strength*Distance` and every bump-mapped
+//! Blender material rendered with its dents and bumps swapped.
 class LinearRampFunction2D :
 	public virtual RISE::IFunction2D,
 	public virtual RISE::Implementation::Reference
@@ -1112,6 +1122,13 @@ void TestBumpModifierNormalizeFold()
 	const RISE::Scalar distance = RISE::Scalar( 1.5 );
 	const RISE::Scalar window   = RISE::Scalar( 0.005 ); // matches exporter.py's _build_bump_modifier
 
+	// The two values `exporter._bump_modifier_scale( 0.7, 1.5, invert )`
+	// returns.  Kept as literal negation/identity of `strength*distance`
+	// rather than as a magic constant, so a reader can check them against
+	// that function by eye.
+	const RISE::Scalar scaleInvertOff = -( strength * distance );
+	const RISE::Scalar scaleInvertOn  =  ( strength * distance );
+
 	// `rise_blender_modifier.scale` / `.window` are `float` (the ABI
 	// struct, not `RISE::Scalar` == double) -- exactly what
 	// `_marshal_modifier` writes.  Round-trip through float BEFORE
@@ -1122,8 +1139,9 @@ void TestBumpModifierNormalizeFold()
 	// step (the fold, the central difference, the normalization) is
 	// double-precision arithmetic on these ALREADY-ROUNDED inputs, so
 	// 1e-9 is exactly the right bound for what the test actually checks.
-	const float mScale  = static_cast<float>( strength * distance );
-	const float mWindow = static_cast<float>( window );
+	const float mScale     = static_cast<float>( scaleInvertOff );
+	const float mScaleInv   = static_cast<float>( scaleInvertOn );
+	const float mWindow    = static_cast<float>( window );
 
 	// A hit with onb.u() == +X, vNormal == +Z (MakeFibreHitAt above), so
 	// T == (1,0,0) and N == (0,0,1) -- perturbed.x / perturbed.z reads
@@ -1160,7 +1178,13 @@ void TestBumpModifierNormalizeFold()
 				const RISE::Scalar wantRatio = k * static_cast<RISE::Scalar>( mScale );
 				const RISE::Scalar gotRatio  = ri.vNormal.x / ri.vNormal.z;
 				Check( std::fabs( gotRatio - wantRatio ) < 1e-9,
-					"6a: tilt == strength*distance*slope (normalize=TRUE is window-independent)" );
+					"6a: tilt == scale*slope (normalize=TRUE is window-independent)" );
+				// The SIGN, stated independently of the formula so a
+				// re-derivation cannot quietly agree with itself: the ramp
+				// rises toward +u == +T, and Invert-OFF must tilt the
+				// normal AWAY from the up-slope.
+				Check( gotRatio < 0,
+					"6a: Invert OFF leans the normal AWAY from the up-slope (Blender / Blinn / PBRT)" );
 			}
 
 			fn->release();
@@ -1212,6 +1236,50 @@ void TestBumpModifierNormalizeFold()
 				const RISE::Scalar wantRatioLegacy = k * static_cast<RISE::Scalar>( mScale ) * RISE::Scalar( 2 ) * static_cast<RISE::Scalar>( mWindow );
 				Check( std::fabs( gotRatio - wantRatioLegacy ) < 1e-9,
 					"6b: ...and IS exactly the legacy window-coupled fold (scale*2*window)" );
+			}
+
+			fn->release();
+		}
+	}
+
+	// --- (c) Blender's Bump node with INVERT ON.  `exporter.
+	//     _bump_modifier_scale` flips the sign, so the SAME ramp must
+	//     produce the OPPOSITE tilt -- dents where (a) had bumps.  This is
+	//     the case that distinguishes "the exporter honours `invert`" from
+	//     "the exporter hard-codes one sign"; before fix round 2 it
+	//     hard-coded the WRONG one and had no `invert` handling at all. ---
+	{
+		JobHolder job;
+		Check( job.Valid(), "6c: job created" );
+		if( job.Valid() ) {
+			LinearRampFunction2D* fn = new LinearRampFunction2D( k );
+			Check( (*job).GetFunction2Ds()->AddItem( fn, "ramp_fn" ),
+				"6c: the linear-ramp height function registers" );
+
+			rise_blender_modifier m;
+			m.name = "bump_c";
+			m.kind = RISE_BLENDER_MODIFIER_BUMP;
+			m.source_painter_name = "ramp_fn";
+			m.scale = mScaleInv;
+			m.window = mWindow;
+			m.normalize = 1;
+
+			char err[256] = { 0 };
+			Check( add_modifier( *job, m, err, sizeof( err ) ),
+				"6c: add_modifier succeeds for the Invert-ON amplitude" );
+
+			RISE::IRayIntersectionModifier* mod = (*job).GetModifiers()->GetItem( "bump_c" );
+			Check( mod != 0, "6c: the modifier is registered under its name" );
+			if( mod ) {
+				RISE::RayIntersectionGeometric ri = riBase;
+				mod->Modify( ri );
+
+				const RISE::Scalar wantRatio = k * static_cast<RISE::Scalar>( mScaleInv );
+				const RISE::Scalar gotRatio  = ri.vNormal.x / ri.vNormal.z;
+				Check( std::fabs( gotRatio - wantRatio ) < 1e-9,
+					"6c: tilt == scale*slope for the Invert-ON amplitude too" );
+				Check( gotRatio > 0,
+					"6c: Invert ON leans the normal TOWARD the up-slope -- the exact opposite of 6a" );
 			}
 
 			fn->release();
