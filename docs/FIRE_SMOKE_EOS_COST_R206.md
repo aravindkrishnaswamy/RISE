@@ -1,7 +1,7 @@
 # r206 — EOS cost: reject the ineffective warm start, reuse exact endpoints
 
-Status: implementation and exploratory gates pass; exact-commit qualification
-and fresh review are pending. No focusing verdict, fixed-k choice, window,
+Status: exact-commit qualification, the full suite, and measured repeats pass;
+fresh review is pending. No focusing verdict, fixed-k choice, window,
 new animation, or hour-class projection is claimed.
 
 ## Ordered experiment and decision
@@ -129,3 +129,36 @@ replay, convergence exporter, k selection, and tier-10 queue remain pending.
    updated; no new library source files or build registrations.
 5. Cost/provenance overclaim: diagnostic timing excluded, three process repeats,
    explicit cold-prefix scope, source/executable/log bindings, no window claim.
+
+## Exact-commit qualification and measurement
+
+Source `20607aea6da099f0083bcdbcbd6f62b3ac5149a2` was forcibly rebuilt with
+the r205 clean-input qualifier. Its publication and r190 owner gates pass;
+the build is warning-free. Qualification SHA:
+`78e4c9f7ee441052d934de30fe6dda058640392da4733565b8db050f88718cb5`.
+Executable SHA:
+`7bbc7e924b1f35ceff03cc41f610652cb86477133f0bcf5b754c2e36ac5b5eb0`.
+The exact executable also passes the full FireSequenceTest suite. The final
+iteration probe again compares 21,195,972 cell temperatures with zero bit
+mismatches; its extra dispatches are excluded from the timings below.
+
+Three independent, unprobed prefixes (nine accepted cold steps) give:
+
+| Quantity | Result |
+|---|---:|
+| EOS device ms/call, mean of process means ± sample SD | 64.590 ± 0.082 |
+| EOS inclusive device ms/step, mean | 904.253 |
+| Whole-owner device p95, ms | 3,243.812 |
+| Whole-owner wall p95, ms | 4,736.904 |
+
+Thus EOS is 9.21× faster than the measured r205 baseline per call; the
+complete step remains well above 300–500 ms. The diagnostic prefix columns
+agree exactly, but that comparison is not substituted for the per-cell owner
+gate or claimed as an r78 resume certificate. Timing source/executable and
+publication identities are checked by `tools/analyze_fire_eos_warm_start.py`.
+Its `measurement.qualified.v2.json` artifact has SHA
+`a270c53cb5e8188a7507dfbdb84f0fb9ec4864c5d76e548553aaaa3ac6a336c7`.
+The final cold-iteration log SHA is
+`04ff728ee827e16a668673a3b1c326277856db3d0e8b1708d7c7508f40b5efd1`.
+The golden checkpoint was re-hashed unchanged as
+`1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947`.

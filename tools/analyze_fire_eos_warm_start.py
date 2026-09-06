@@ -90,6 +90,7 @@ def analyze(directory, qualification=None):
               "prototype_source_patch_sha256": hashlib.sha256((directory / "warm_prototype.v1.patch").read_bytes()).hexdigest(),
               "qualification_status": "exploratory dirty-tree prototype, not a commit-attested production qualification"}
     reference = records(directory / "baseline_profile_1.v1/budgets/maximum_velocity_trajectory.csv")
+    reference_identity = metadata(directory / "baseline_profile_1.v1/diagnostic_from_zero_identity.v1")
     kinds = ["baseline", "warm"]
     executable_sha = {
         "baseline": "96fdc911d7d3fd59f4604f320052e3e658199fa7ff45caa605b054d9cfe77f16",
@@ -117,19 +118,24 @@ def analyze(directory, qualification=None):
             log = directory / f"{kind}_profile_{repeat}.v1.log"
             rows = records(prefix / "budgets/maximum_velocity_trajectory.csv")
             check_rows(rows, reference)
-            count = sidecars(prefix)
             outcome = prefix / "diagnostic_prefix_outcome.v1"
             identity_path = prefix / "diagnostic_from_zero_identity.v1"
             identity = metadata(identity_path)
+            count = sidecars(prefix, identity["case_record_id"])
             outcome_fields = metadata(outcome)
             if (identity["producer_executable_sha256"] != executable_sha[kind]
                     or outcome_fields["from_zero_identity_sha256"] != hashlib.sha256(identity_path.read_bytes()).hexdigest()
                     or identity["resolution_tier"] != "8" or identity["seed"] != "1234"
                     or identity["initial_time_s"] != "0"
+                    or identity["initial_state_sha256"] != reference_identity["initial_state_sha256"]
                     or identity["case_record_id"] != outcome_fields["case_record_id"]):
                 raise ValueError("prefix producer/input identity failed")
             if outcome_fields["trajectory_sha256"] != hashlib.sha256((prefix / "budgets/maximum_velocity_trajectory.csv").read_bytes()).hexdigest():
                 raise ValueError("outcome/trajectory identity failed")
+            for key, name in (("protocol_sha256", "diagnostic_prefix_protocol.v1"),
+                              ("retry_trajectory_sha256", "budgets/retry_attempt_trajectory.csv")):
+                if outcome_fields[key] != hashlib.sha256((prefix / name).read_bytes()).hexdigest():
+                    raise ValueError("outcome artifact identity failed: " + key)
             bind_counters(log, rows, outcome)
             profile = summarize(log)
             eos = profile["kernels"]["evaluate_resident_eos_candidate"]
