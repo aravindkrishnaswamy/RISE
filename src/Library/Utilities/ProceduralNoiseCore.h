@@ -70,10 +70,15 @@ namespace RISE
 			//! `fw` (doc 88 S9, default 0) is an optional filter-width
 			//! estimate, in the SAME units/domain as x,y,z (i.e. whatever
 			//! scale the caller already applied to its position argument
-			//! -- this function has no way to know that scale, so passing
-			//! a world-space fw only fades octaves correctly when x,y,z
-			//! ARE world-space; see ExpressionEval.h's fbm/turbulence/
-			//! ridged CallFunc cases).  When fw > 0, octave i's amplitude
+			//! -- this function has no way to know that scale, so a
+			//! world-space fw is the right value to pass only when x,y,z
+			//! ARE world-space).  The expression VM meets that contract
+			//! for its callers: its compiler differentiates each noise
+			//! call's position argument with respect to `P` and scales the
+			//! world-space context fw by the Jacobian's largest singular
+			//! value before calling in, so `fbm(P*40, ...)` arrives here
+			//! with 40*fw (see ExpressionEval.h's Builder::NoiseFwScale).
+			//! When fw > 0, octave i's amplitude
 			//! is scaled by OctaveFadeWeight(fw * lacunarity^i) (see
 			//! ProceduralNoiseCore.cpp) -- a smoothstep-based Nyquist
 			//! fade (Apodaca & Gritz, "Advanced RenderMan: Creating CGI

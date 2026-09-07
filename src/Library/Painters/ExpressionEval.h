@@ -33,15 +33,17 @@
 //                                 bump / normal map does not move them and
 //                                 `curv` and `N` legitimately disagree on a
 //                                 bump-mapped surface.
-//              fw              -- scalar filter width, in the SAME units
-//                                 as whatever position argument the body
-//                                 passes into fbm/turbulence/ridged (see
-//                                 those builtins below); 0.0 = point
-//                                 sample, no filter info -- the honest
-//                                 answer on any surface that doesn't
-//                                 populate a footprint (secondary
-//                                 bounces, non-mesh geometry, non-pinhole
-//                                 cameras -- doc 88 S9)
+//              fw              -- scalar filter width, a WORLD-space
+//                                 length in the same units as `P`; 0.0 =
+//                                 point sample, no filter info -- the
+//                                 honest answer on any surface that
+//                                 doesn't populate a footprint (secondary
+//                                 bounces, non-pinhole cameras -- doc 88
+//                                 S9).  fbm/turbulence/ridged rescale it
+//                                 into their OWN domain automatically
+//                                 (see those builtins below), so a body
+//                                 that scales the position argument does
+//                                 NOT have to compensate by hand.
 //              time            -- scalar; 0.0 unless supplied
 //              + any named `params` (constants) and `defs` (named
 //                sub-expressions / let-bindings) registered before
@@ -75,11 +77,27 @@
 //              [1,10], validated at compile time when written as a
 //              literal) -- these three implicitly read the context `fw`
 //              (doc 88 S9) and fade an octave's contribution toward 0 as
-//              fw * lacunarity^octave approaches/exceeds the Nyquist
-//              cutoff, killing shimmer from footprint-unresolvable
-//              detail; fw==0 (the default, and the only value pre-S9)
-//              reproduces the un-faded sum exactly; worley_f1/f2/f2f1/
-//              id(v,jitter)->s; cellhash(s)
+//              the footprint * lacunarity^octave approaches/exceeds the
+//              Nyquist cutoff, killing shimmer from footprint-
+//              unresolvable detail; fw==0 (the default, and the only
+//              value pre-S9) reproduces the un-faded sum exactly.
+//              DOMAIN SCALE IS AUTOMATIC: the compiler differentiates
+//              the position argument with respect to `P` and folds the
+//              largest singular value of that Jacobian into a per-call-
+//              site multiplier on `fw`, so `fbm(P*40, ...)` fades at a
+//              domain footprint of 40*fw and `fbm(P, ...)` at exactly
+//              fw (multiplier 1.0, bit-identical to a hand-passed fw).
+//              The analysis covers everything AFFINE in P -- P, P.x/y/z,
+//              vec3(), literals, `param`/`def` names, unary -, + - * /
+//              by a compile-time constant.  An argument built from
+//              anything else (u/v/Po/N, a noise warp, ^ or %, a call)
+//              contributes no derivative: a SUM keeps the affine part's
+//              scale (so `fbm(P*8 + warp*fbm(...), ...)` still fades at
+//              8*fw) and an argument with no affine part at all falls
+//              back to multiplier 1.0, the pre-2026-09-06 behaviour.
+//              An argument PROVABLY independent of P (a literal vec3)
+//              gets multiplier 0 -- it cannot alias, so it never fades.
+//              worley_f1/f2/f2f1/id(v,jitter)->s; cellhash(s)
 //              GEOMETRY SIGNALS (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 //              Phase 2): occlusion(radius)->s in [0,1], 1 = unoccluded;
 //              thickness(radius)->s in [0,1], 1 = thick.  `radius` is a
@@ -214,6 +232,15 @@ namespace RISE
 				//! or ramp()'s variadic arity).  For kRamp, `idx` holds the
 				//! stop count and `fn` holds the per-stop value width (1 or
 				//! 3) instead of a function id.
+				//!
+				//! `val` is the literal for kConst.  On a kFunc it carries
+				//! that call site's `fw` MULTIPLIER instead (1.0 for every
+				//! builtin but fbm/turbulence/ridged, and for those too
+				//! whenever the domain scale is not provable) -- see
+				//! Builder::NoiseFwScale.  It rides on the INSTRUCTION
+				//! rather than on the program because it is a property of
+				//! one call site: two fbm() calls in the same body can sit
+				//! in differently-scaled domains.
 				struct Instr { Op op; Scalar val; int idx; int fn; int arity; };
 				std::vector<Instr> code;
 				int writeSlot;	//!< env slot this expression writes (a def), or -1 (the final expr)
@@ -307,6 +334,14 @@ namespace RISE
 			//!      is one a builtin reads implicitly
 			//! Adding one WITHOUT touching all of them is exactly the silent
 			//! desynchronization this comment exists to prevent.
+			//!
+			//! kContextSlotP is the first of P's three slots (P.x/P.y/P.z at
+			//! +0/+1/+2).  It got a name once a second site came to depend
+			//! on the literal 2: besides Builder::Finalize's `out.m_PSlot`
+			//! pin, the compile-time domain-scale analysis
+			//! (Builder::SlotLinear) differentiates a noise call's position
+			//! argument with respect to exactly these three slots.
+			static const int kContextSlotP     = 2;
 			static const int kContextSlotFw    = 11;
 			static const int kContextSlotTime  = 12;
 			//! curv / curvR -- the geometry-derived shading signal
@@ -510,6 +545,14 @@ namespace RISE
 					if( RejectIfDuplicate( name, kScalar ) ) return false;
 					const int s = Slot( name, kScalar );
 					m_init[s] = value;
+					// A param IS a compile-time constant, which is what
+					// lets `param k 40` + `fbm(P*k, ...)` resolve its
+					// domain scale exactly like the literal `P*40` does.
+					// Unless a def owns the slot -- see m_slotIsDef.
+					if( m_slotIsDef.find( s ) == m_slotIsDef.end() ) {
+						const LinScalar lin = LinScalar::Const( value );
+						RecordSlotLinear( s, 1, &lin );
+					}
 					return true;
 				}
 
@@ -530,6 +573,19 @@ namespace RISE
 					const int s = Slot( name, t );
 					c.writeSlot = s;
 					c.type = t;
+					// Carry the def's own domain scale forward, so the very
+					// common `def q P*40` / `expr fbm(q, ...)` split resolves
+					// exactly as the inlined `fbm(P*40, ...)` would.  A body
+					// the analysis cannot follow records as unknown, which
+					// leaves every noise call reading it on the
+					// multiplier-1.0 fallback.
+					{
+						const int w = ( t == kVec3 ) ? 3 : 1;
+						LinScalar lin[3];
+						const bool ok = AnalyzeLinear( c.code, 0, c.code.size(), w, lin );
+						RecordSlotLinear( s, w, ok ? lin : 0 );
+						for( int k = 0; k < w; ++k ) m_slotIsDef[ s + k ] = true;
+					}
 					m_defs.push_back( c );
 					return true;
 				}
@@ -561,7 +617,7 @@ namespace RISE
 					c.writeSlot = -1;
 					c.type = t;
 					out.m_uSlot = 0; out.m_vSlot = 1;
-					out.m_PSlot = 2; out.m_PoSlot = 5; out.m_NSlot = 8;
+					out.m_PSlot = kContextSlotP; out.m_PoSlot = 5; out.m_NSlot = 8;
 					out.m_fwSlot = kContextSlotFw; out.m_timeSlot = kContextSlotTime;
 					out.m_curvSlot = kContextSlotCurv; out.m_curvRSlot = kContextSlotCurvR;
 					// Compile-time consumption record (design doc 5.4): which context
@@ -885,15 +941,417 @@ namespace RISE
 				void EmitOp( Compiled::Op o ) { Compiled::Instr in; in.op=o; in.val=0; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
 				void EmitSwizzle( int comp ) { Compiled::Instr in; in.op=Compiled::kSwizzle; in.val=0; in.idx=comp; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
 				void EmitSplat3() { EmitOp( Compiled::kSplat3 ); }
-				void EmitFuncCall( int fn, int arity, bool isVec3 )
+				//! `fwScale` lands on the instruction's `val` and multiplies
+				//! the context `fw` at dispatch (RunAny's kFunc case).  1.0
+				//! -- the default, and what every non-noise builtin keeps
+				//! forever -- is an exact IEEE identity, so leaving it alone
+				//! reproduces the pre-domain-scale engine bit for bit.
+				void EmitFuncCall( int fn, int arity, bool isVec3, Scalar fwScale = Scalar(1) )
 				{
 					Compiled::Instr in; in.op = isVec3 ? Compiled::kFuncV3 : Compiled::kFunc;
-					in.val=0; in.idx=-1; in.fn=fn; in.arity=arity;
+					in.val=fwScale; in.idx=-1; in.fn=fn; in.arity=arity;
 					m_emit->code.push_back(in);
 				}
 
 				// Emits the vec3 var reference at slot `s` (3 consecutive kVar).
 				void EmitVec3Var( int s ) { EmitVarSlot(s); EmitVarSlot(s+1); EmitVarSlot(s+2); }
+
+				//////////////////////////////////////////////////
+				// COMPILE-TIME DOMAIN SCALE (forward-mode Jacobian)
+				//
+				// `fw` is a WORLD-space length, but fbm/turbulence/ridged
+				// fade octaves in the domain of THEIR OWN position
+				// argument -- and virtually every real body scales that
+				// argument (`fbm(P*40, ...)`).  Handing the noise a
+				// world-space fw therefore mis-set the Nyquist threshold
+				// by exactly the domain scale, which for the scales scenes
+				// actually use (7 .. 820) meant the fade never engaged.
+				//
+				// The fix is a forward-mode derivative pass over the
+				// position argument's ALREADY-EMITTED postfix code, run
+				// once at COMPILE time: interpret the instructions over
+				// linear forms instead of numbers, recover the 3x3
+				// Jacobian d(argument)/dP, and fold its largest singular
+				// value -- the worst-case factor by which the argument
+				// stretches a world-space footprint -- into a per-call-
+				// site multiplier on `fw`.
+				//
+				// Why over the emitted CODE rather than the token stream:
+				// the code is the single representation that already has
+				// operator precedence, scalar->vec3 broadcast and `def`
+				// slot references resolved, so the analysis cannot drift
+				// from what the VM will actually evaluate.  A second
+				// parse of the source text could.
+				//////////////////////////////////////////////////
+
+				//! One scalar value's linear form with respect to the world
+				//! position P.  `gradKnown` says d(value)/dP is `g`;
+				//! `gradExact` says nothing was dropped getting there (see
+				//! LinAddSub); `constKnown` says the value itself is the
+				//! compile-time constant `c`.  INVARIANT: constKnown implies
+				//! gradKnown with g == 0, which is what lets LinMul treat a
+				//! constant factor as a scale rather than a variable.
+				struct LinScalar
+				{
+					bool   gradKnown;
+					bool   gradExact;
+					bool   constKnown;
+					Scalar c;
+					Scalar g[3];
+					LinScalar() : gradKnown(false), gradExact(false), constKnown(false), c(0)
+					{ g[0] = g[1] = g[2] = Scalar(0); }
+					static LinScalar Const( Scalar v )
+					{
+						LinScalar r; r.gradKnown = true; r.gradExact = true; r.constKnown = true; r.c = v;
+						return r;
+					}
+				};
+
+				//! d(-a)/dP == -da/dP; a constant negates to a constant.
+				static LinScalar LinNeg( const LinScalar& a )
+				{
+					LinScalar r = a;
+					r.c = -a.c;
+					for( int k = 0; k < 3; ++k ) r.g[k] = -a.g[k];
+					return r;
+				}
+
+				//! a + b (or a - b).  The one APPROXIMATING rule in the
+				//! whole analysis: when exactly one side has a known
+				//! gradient, the sum keeps that side's gradient and drops
+				//! the other, flagging the answer inexact.  That is what
+				//! makes the domain-warp idiom
+				//! `fbm(P*8 + amp*vec3(fbm(...),...), ...)` fade at 8*fw
+				//! instead of falling back to 1*fw: the warp's own slope is
+				//! unknowable at compile time, and UNDER-estimating the
+				//! domain footprint errs toward the pre-existing
+				//! (un-faded, more detail) behaviour rather than toward
+				//! over-blurring.
+				static LinScalar LinAddSub( const LinScalar& a, const LinScalar& b, bool plus )
+				{
+					LinScalar r;
+					if( a.constKnown && b.constKnown ) {
+						r.constKnown = true;
+						r.c = plus ? ( a.c + b.c ) : ( a.c - b.c );
+					}
+					if( a.gradKnown && b.gradKnown ) {
+						r.gradKnown = true;
+						r.gradExact = a.gradExact && b.gradExact;
+						for( int k = 0; k < 3; ++k ) r.g[k] = plus ? ( a.g[k] + b.g[k] ) : ( a.g[k] - b.g[k] );
+					} else if( a.gradKnown ) {
+						r.gradKnown = true; r.gradExact = false;
+						for( int k = 0; k < 3; ++k ) r.g[k] = a.g[k];
+					} else if( b.gradKnown ) {
+						r.gradKnown = true; r.gradExact = false;
+						for( int k = 0; k < 3; ++k ) r.g[k] = plus ? b.g[k] : -b.g[k];
+					}
+					return r;
+				}
+
+				//! a * b.  Affine only when one factor is a compile-time
+				//! constant -- d(f*g) = f*dg + g*df needs RUNTIME values
+				//! otherwise, so a product of two P-varying terms reports
+				//! no gradient at all rather than a guess.
+				static LinScalar LinMul( const LinScalar& a, const LinScalar& b )
+				{
+					LinScalar r;
+					if( a.constKnown && b.constKnown ) return LinScalar::Const( a.c * b.c );
+					if( a.constKnown && b.gradKnown ) {
+						r.gradKnown = true; r.gradExact = b.gradExact;
+						for( int k = 0; k < 3; ++k ) r.g[k] = a.c * b.g[k];
+						return r;
+					}
+					if( b.constKnown && a.gradKnown ) {
+						r.gradKnown = true; r.gradExact = a.gradExact;
+						for( int k = 0; k < 3; ++k ) r.g[k] = b.c * a.g[k];
+						return r;
+					}
+					return r;
+				}
+
+				//! a / b, affine only for a constant divisor.  The
+				//! zero-divisor branch mirrors RunAny's kDiv exactly (it
+				//! yields 0, it does not trap), so the analysis and the VM
+				//! agree about what that expression IS.
+				static LinScalar LinDiv( const LinScalar& a, const LinScalar& b )
+				{
+					LinScalar r;
+					if( !b.constKnown ) return r;
+					if( b.c == Scalar(0) ) return LinScalar::Const( Scalar(0) );
+					if( a.constKnown ) return LinScalar::Const( a.c / b.c );
+					if( a.gradKnown ) {
+						r.gradKnown = true; r.gradExact = a.gradExact;
+						for( int k = 0; k < 3; ++k ) r.g[k] = a.g[k] / b.c;
+					}
+					return r;
+				}
+
+				//! The linear form of whatever lives in env slot `slot`.
+				//! P's own three slots are the differentiation variable;
+				//! params and defs answer from m_slotLin (recorded in
+				//! registration order, so a name always reports the binding
+				//! in force at this point in the program); every other
+				//! context var (u, v, Po, N, fw, time, curv, curvR) is
+				//! honestly unknown -- their relationship to world P is a
+				//! per-hit fact, not a compile-time one.
+				LinScalar SlotLinear( int slot ) const
+				{
+					if( slot >= ExpressionProgram::kContextSlotP && slot < ExpressionProgram::kContextSlotP + 3 ) {
+						LinScalar r;
+						r.gradKnown = true; r.gradExact = true;
+						r.g[ slot - ExpressionProgram::kContextSlotP ] = Scalar(1);
+						return r;
+					}
+					std::map<int,LinScalar>::const_iterator it = m_slotLin.find( slot );
+					if( it != m_slotLin.end() ) return it->second;
+					return LinScalar();
+				}
+
+				//! Abstract-interpret `code[begin,end)` over linear forms,
+				//! mirroring RunAny's stack effects instruction for
+				//! instruction.  Returns false when the range does not
+				//! leave exactly `expectWidth` values (which would mean the
+				//! analysis and the VM disagree about the stack -- never
+				//! observed, but the caller then falls back to multiplier
+				//! 1.0 rather than trusting a desynchronized answer).
+				bool AnalyzeLinear( const std::vector<Compiled::Instr>& code, size_t begin, size_t end,
+					int expectWidth, LinScalar* out ) const
+				{
+					std::vector<LinScalar> st;
+					for( size_t i = begin; i < end; ++i ) {
+						const Compiled::Instr& in = code[i];
+						switch( in.op )
+						{
+						case Compiled::kConst: st.push_back( LinScalar::Const( in.val ) ); break;
+						case Compiled::kVar:   st.push_back( SlotLinear( in.idx ) ); break;
+						case Compiled::kNeg:
+							if( st.empty() ) return false;
+							st.back() = LinNeg( st.back() );
+							break;
+						case Compiled::kAdd: case Compiled::kSub:
+						{
+							if( st.size() < 2 ) return false;
+							const LinScalar rhs = st.back(); st.pop_back();
+							st.back() = LinAddSub( st.back(), rhs, in.op == Compiled::kAdd );
+						} break;
+						case Compiled::kMul:
+						{
+							if( st.size() < 2 ) return false;
+							const LinScalar rhs = st.back(); st.pop_back();
+							st.back() = LinMul( st.back(), rhs );
+						} break;
+						case Compiled::kDiv:
+						{
+							if( st.size() < 2 ) return false;
+							const LinScalar rhs = st.back(); st.pop_back();
+							st.back() = LinDiv( st.back(), rhs );
+						} break;
+						// %, ^ and the comparisons are not affine in P for
+						// any input worth tracking, so their result reports
+						// neither a value nor a gradient.  A position
+						// argument built through one of them lands on the
+						// multiplier-1.0 fallback, exactly as it did before
+						// this analysis existed.
+						case Compiled::kMod: case Compiled::kPow:
+						case Compiled::kLt: case Compiled::kGt: case Compiled::kLe:
+						case Compiled::kGe: case Compiled::kEq: case Compiled::kNe:
+						{
+							if( st.size() < 2 ) return false;
+							st.pop_back();
+							st.back() = LinScalar();
+						} break;
+						case Compiled::kSplat3:
+						{
+							if( st.empty() ) return false;
+							const LinScalar v = st.back();
+							st.push_back( v ); st.push_back( v );
+						} break;
+						case Compiled::kAddV: case Compiled::kSubV:
+						case Compiled::kMulV: case Compiled::kDivV:
+						{
+							if( st.size() < 6 ) return false;
+							const size_t l = st.size() - 6;
+							for( int k = 0; k < 3; ++k ) {
+								const LinScalar& a = st[l+k];
+								const LinScalar& b = st[l+3+k];
+								LinScalar v;
+								if( in.op == Compiled::kAddV )      v = LinAddSub( a, b, true );
+								else if( in.op == Compiled::kSubV ) v = LinAddSub( a, b, false );
+								else if( in.op == Compiled::kMulV ) v = LinMul( a, b );
+								else                                v = LinDiv( a, b );
+								st[l+k] = v;
+							}
+							st.resize( l + 3 );
+						} break;
+						case Compiled::kNegV:
+						{
+							if( st.size() < 3 ) return false;
+							const size_t l = st.size() - 3;
+							for( int k = 0; k < 3; ++k ) st[l+k] = LinNeg( st[l+k] );
+						} break;
+						case Compiled::kSwizzle:
+						{
+							if( st.size() < 3 ) return false;
+							if( in.idx < 0 || in.idx > 2 ) return false;	// EmitSwizzle only ever emits 0/1/2
+							const LinScalar v = st[ st.size() - 3 + (size_t)in.idx ];
+							st.resize( st.size() - 3 );
+							st.push_back( v );
+						} break;
+						case Compiled::kFunc:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							st.push_back( LinScalar() );
+						} break;
+						case Compiled::kFuncV3:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							for( int k = 0; k < 3; ++k ) st.push_back( LinScalar() );
+						} break;
+						case Compiled::kRamp:
+						{
+							if( in.arity < 0 || st.size() < (size_t)in.arity ) return false;
+							st.resize( st.size() - (size_t)in.arity );
+							for( int k = 0; k < in.fn; ++k ) st.push_back( LinScalar() );
+						} break;
+						default:
+							return false;
+						}
+						if( st.size() > (size_t)ExpressionProgram::kStackCap ) return false;
+					}
+					if( st.size() != (size_t)expectWidth ) return false;
+					for( int k = 0; k < expectWidth; ++k ) out[k] = st[(size_t)k];
+					return true;
+				}
+
+				//! Largest singular value of the 3x3 whose ROW i is
+				//! rows[i].g -- the worst-case stretch the argument applies
+				//! to a world-space footprint, and therefore the right
+				//! single number to scale an isotropic `fw` by.
+				static Scalar JacobianSpectralNorm( const LinScalar rows[3] )
+				{
+					Scalar J[3][3];
+					for( int i = 0; i < 3; ++i ) {
+						for( int k = 0; k < 3; ++k ) J[i][k] = rows[i].g[k];
+					}
+					// DIAGONAL fast path, and it is not merely an
+					// optimisation: a diagonal matrix's singular values ARE
+					// |d_i|, computed with no arithmetic at all, so the
+					// identity yields EXACTLY 1.0 and `fw * 1.0 == fw`
+					// keeps an unscaled `fbm(P, ...)` bit-identical to the
+					// pre-change engine.  An iterative eigen-solve would
+					// return 1.0 only to within rounding.  Every ordinary
+					// domain scale lands here: P, P*k, P/s, -P*k,
+					// vec3(P.x*a, P.y*b, P.z*c).
+					if( J[0][1] == Scalar(0) && J[0][2] == Scalar(0) &&
+					    J[1][0] == Scalar(0) && J[1][2] == Scalar(0) &&
+					    J[2][0] == Scalar(0) && J[2][1] == Scalar(0) ) {
+						Scalar m = std::fabs( J[0][0] );
+						const Scalar m1 = std::fabs( J[1][1] );
+						const Scalar m2 = std::fabs( J[2][2] );
+						if( m1 > m ) m = m1;
+						if( m2 > m ) m = m2;
+						return m;
+					}
+					// General case (a rotated / sheared domain): the
+					// largest eigenvalue of the symmetric PSD matrix J^T J,
+					// by cyclic Jacobi rotations.  Deterministic and
+					// start-vector free, unlike power iteration -- and this
+					// runs ONCE per call site at compile time, so the sweep
+					// count is free.
+					Scalar A[3][3];
+					for( int i = 0; i < 3; ++i ) {
+						for( int k = 0; k < 3; ++k ) {
+							A[i][k] = J[0][i]*J[0][k] + J[1][i]*J[1][k] + J[2][i]*J[2][k];
+						}
+					}
+					for( int sweep = 0; sweep < 32; ++sweep ) {
+						const Scalar off = A[0][1]*A[0][1] + A[0][2]*A[0][2] + A[1][2]*A[1][2];
+						const Scalar diag = A[0][0]*A[0][0] + A[1][1]*A[1][1] + A[2][2]*A[2][2];
+						if( !( off > Scalar(1e-30) * ( diag + Scalar(1) ) ) ) break;
+						for( int p = 0; p < 2; ++p ) {
+							for( int q = p+1; q < 3; ++q ) {
+								if( A[p][q] == Scalar(0) ) continue;
+								const Scalar theta = ( A[q][q] - A[p][p] ) / ( Scalar(2) * A[p][q] );
+								const Scalar sgn = ( theta >= Scalar(0) ) ? Scalar(1) : Scalar(-1);
+								const Scalar t = sgn / ( std::fabs( theta ) + std::sqrt( theta*theta + Scalar(1) ) );
+								const Scalar cs = Scalar(1) / std::sqrt( t*t + Scalar(1) );
+								const Scalar sn = t * cs;
+								const Scalar apq = A[p][q];
+								A[p][p] = A[p][p] - t*apq;
+								A[q][q] = A[q][q] + t*apq;
+								A[p][q] = A[q][p] = Scalar(0);
+								const int r = 3 - p - q;	// the index neither rotation axis touches
+								const Scalar arp = A[r][p], arq = A[r][q];
+								A[r][p] = A[p][r] = cs*arp - sn*arq;
+								A[r][q] = A[q][r] = sn*arp + cs*arq;
+							}
+						}
+					}
+					Scalar lam = A[0][0];
+					if( A[1][1] > lam ) lam = A[1][1];
+					if( A[2][2] > lam ) lam = A[2][2];
+					if( !( lam > Scalar(0) ) ) return Scalar(0);
+					return std::sqrt( lam );
+				}
+
+				//! The `fw` multiplier for a noise call whose vec3 position
+				//! argument occupies `[begin, end)` of the code emitted so
+				//! far.  1.0 whenever the domain scale is not provable --
+				//! which is precisely the pre-change behaviour, so an
+				//! un-analysable body is never made worse, only left alone.
+				Scalar NoiseFwScale( size_t begin, size_t end ) const
+				{
+					LinScalar rows[3];
+					if( !AnalyzeLinear( m_emit->code, begin, end, 3, rows ) ) return Scalar(1);
+					for( int i = 0; i < 3; ++i ) {
+						if( !rows[i].gradKnown ) return Scalar(1);
+						for( int k = 0; k < 3; ++k ) {
+							if( !ExpressionProgram::IsFinite( rows[i].g[k] ) ) return Scalar(1);
+						}
+					}
+					const Scalar s = JacobianSpectralNorm( rows );
+					if( !ExpressionProgram::IsFinite( s ) || s < Scalar(0) ) return Scalar(1);
+					if( s == Scalar(0) ) {
+						// A position argument that provably does not move
+						// with P -- `fbm(vec3(0.3,0.7,1.4), ...)` -- is
+						// CONSTANT across the footprint and so has nothing
+						// to alias: the honest fade is none at all.  But
+						// only when the Jacobian is exact; an approximate
+						// zero means the one term that actually varies was
+						// the dropped one, and there the safe answer is the
+						// pre-change 1.0.
+						const bool exact = rows[0].gradExact && rows[1].gradExact && rows[2].gradExact;
+						return exact ? Scalar(0) : Scalar(1);
+					}
+					return s;
+				}
+
+				//! Record what env slot `slot` (width `w`) will hold, for
+				//! later SlotLinear lookups.  Called in registration order
+				//! from AddParam / AddDef so a redefinition simply
+				//! overwrites -- matching BindEnv, which seeds params then
+				//! runs every def in order, last writer winning.
+				void RecordSlotLinear( int slot, int w, const LinScalar* lin )
+				{
+					for( int k = 0; k < w; ++k ) m_slotLin[ slot + k ] = lin ? lin[k] : LinScalar();
+				}
+
+				//! Env slot -> the linear form of what that slot holds.
+				//! Declared HERE, beside the analysis that owns it, rather
+				//! than up with the parser's members: LinScalar has to be a
+				//! complete type at the point of a member DECLARATION (only
+				//! member function BODIES get the complete-class context
+				//! that would let it float).
+				std::map<int,LinScalar> m_slotLin;
+				//! Slots some `def` writes.  BindEnv seeds every param and
+				//! THEN runs every def, so a def unconditionally wins a slot
+				//! it shares with a same-named param -- no matter which was
+				//! registered last.  AddParam consults this so a late
+				//! `param` cannot overwrite the live def's linear form with
+				//! a constant the VM will never actually see.
+				std::map<int,bool> m_slotIsDef;
 
 				// Broadcasts the operand whose code occupies [0, insertPos) -- i.e.
 				// the operand parsed BEFORE this call, typically the LEFT-hand side
@@ -1171,6 +1629,14 @@ namespace RISE
 					bool literalRadiusArg = false;
 					Scalar literalRadiusVal = Scalar(0);
 
+					// DOMAIN SCALE (see the forward-mode Jacobian block
+					// above).  fbm/turbulence/ridged fade octaves in the
+					// domain of argument 0, so remember exactly which
+					// instructions that argument emits and differentiate
+					// them once the call is fully parsed.
+					const bool isNoiseFn = ( sig->id == 43 || sig->id == 44 || sig->id == 45 );
+					size_t posArgStart = 0, posArgEnd = 0;
+
 					int scalarArity = 0;
 					int got = 0;
 					if( Cur().t != Tok::RP ) {
@@ -1200,8 +1666,17 @@ namespace RISE
 							if( isSignalFn && got == 0 ) {
 								literalRadiusArg = PeekLiteralScalarArg( literalRadiusVal );
 							}
+							// Recorded around ParseCmp rather than from a
+							// saved index afterwards, because EmitArith's
+							// left-operand broadcast INSERTS a kSplat3
+							// inside the argument's own range as it parses.
+							const size_t emitStart = m_emit->code.size();
 							VType at;
 							if( !ParseCmp( at ) ) return false;
+							if( isNoiseFn && got == 0 ) {
+								posArgStart = emitStart;
+								posArgEnd   = m_emit->code.size();
+							}
 							if( got < sig->nArgs ) {
 								if( at != sig->argT[got] ) {
 									SetError( std::string(name) + "() argument " + std::to_string(got+1) + " must be " + ( sig->argT[got]==kVec3 ? "vec3" : "scalar" ), (ptrdiff_t)argOff );
@@ -1248,7 +1723,12 @@ namespace RISE
 							? ExpressionProgram::kFnOcclusionDynR
 							: ExpressionProgram::kFnThicknessDynR;
 					}
-					EmitFuncCall( emitId, scalarArity, sig->ret == kVec3 );
+					// Only a noise builtin reads `fw`; every other call site
+					// keeps the exact 1.0 multiplier EmitFuncCall defaults
+					// to.  A noise call whose domain scale is not provable
+					// gets 1.0 from NoiseFwScale for the same reason.
+					const Scalar fwScale = isNoiseFn ? NoiseFwScale( posArgStart, posArgEnd ) : Scalar(1);
+					EmitFuncCall( emitId, scalarArity, sig->ret == kVec3, fwScale );
 					if( isSignalFn ) {
 						// Recorded ONLY here, on the branch that actually
 						// emitted the call -- a body that mentions the name
@@ -1521,13 +2001,15 @@ namespace RISE
 				// env[kContextSlotFw] regardless of program (Builder::Finalize
 				// pins m_fwSlot to kContextSlotFw) -- threaded in from RunAny
 				// below so fbm/turbulence/ridged can fade high octaves
-				// the sample footprint can't resolve.  Passed through
-				// UNSCALED: it is in the SAME
-				// domain as whatever x,y,z the caller computed for `a[0..2]`
-				// (see NoiseCore::Fbm3D's doc comment) -- calling e.g.
-				// fbm(P*10, ...) with a world-space fw makes the fade
-				// threshold off by that x10, a known/documented limitation,
-				// not a miscompute.
+				// the sample footprint can't resolve.
+				//
+				// It arrives ALREADY IN THIS CALL SITE'S DOMAIN: RunAny
+				// multiplies the world-space context fw by the instruction's
+				// compile-time domain scale, so `fbm(P*40, ...)` sees 40*fw
+				// here, which is what NoiseCore::Fbm3D's contract ("fw in the
+				// same units as x,y,z") requires.  Nothing to compensate for
+				// below -- and CallFunc is deliberately kept ignorant of how
+				// that number was arrived at.
 				case 43: return NoiseCore::Fbm3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
 				case 44: return NoiseCore::Turbulence3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
 				case 45: return NoiseCore::Ridged3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
@@ -1640,7 +2122,14 @@ namespace RISE
 					{
 						const int ar = in.arity;
 						sp -= ar;
-						stack[sp] = CallFunc( in.fn, &stack[sp], env[ kContextSlotFw ], pSignals );
+						// `in.val` is this call site's compile-time domain
+						// scale (Builder::NoiseFwScale): it turns the
+						// world-space context fw into a footprint in the
+						// noise's OWN domain.  1.0 -- what every non-noise
+						// builtin and every unprovable noise call carries --
+						// is an exact IEEE identity, so nothing that did not
+						// scale its domain changes by a single bit.
+						stack[sp] = CallFunc( in.fn, &stack[sp], env[ kContextSlotFw ] * in.val, pSignals );
 						++sp;
 					} break;
 					case Compiled::kFuncV3:

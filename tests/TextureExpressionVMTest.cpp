@@ -3682,11 +3682,18 @@ static void TestExpressionVMFwEndToEnd()
 	ExpressionProgram::Builder b;
 	b.EnableContextVars( true );
 	ExpressionProgram prog = ExpressionProgram::Invalid();
-	Check( b.Finalize( "fbm(vec3(0.3,0.7,1.4), 4, 0.5, 2.0)", prog ), "compiles with context vars enabled" );
+	// The position argument is BARE `P` on purpose.  It used to be the
+	// literal `vec3(0.3,0.7,1.4)`, which since the 2026-09-06 domain-scale
+	// change is a provably P-independent argument and therefore never
+	// fades at all -- a fine thing to pin (TestFbmDomainScaleFallbacks
+	// does), but useless for proving fw REACHES CallFunc.  Bare `P` has
+	// Jacobian == identity, so the multiplier is exactly 1.0 and the
+	// direct-call comparison below stays the strict identity it always was.
+	Check( b.Finalize( "fbm(P, 4, 0.5, 2.0)", prog ), "compiles with context vars enabled" );
 
 	if( prog.IsValid() ) {
 		ExprEvalContext ctx;
-		ctx.u = 0; ctx.v = 0; ctx.P = Vector3(0,0,0); ctx.Po = Vector3(0,0,0); ctx.N = Vector3(0,0,0);
+		ctx.u = 0; ctx.v = 0; ctx.P = Vector3(0.3,0.7,1.4); ctx.Po = Vector3(0,0,0); ctx.N = Vector3(0,0,0);
 		ctx.time = 0;
 
 		for( Scalar fw : { 0.0, 0.05, 0.3, 0.6, 2.0 } ) {
@@ -3694,7 +3701,257 @@ static void TestExpressionVMFwEndToEnd()
 			const Scalar viaVM = prog.Eval( ctx );
 			const Scalar viaDirect = NoiseCore::Fbm3D( 0.3,0.7,1.4, 4, 0.5, 2.0, fw );
 			char label[64]; snprintf( label, sizeof(label), "fw=%.3f", (double)fw );
-			CheckClose( viaVM, viaDirect, 1e-12, std::string("VM fbm() with ctx.fw matches direct NoiseCore::Fbm3D at ") + label );
+			Check( viaVM == viaDirect, std::string("VM fbm(P) with ctx.fw is BIT-IDENTICAL to direct NoiseCore::Fbm3D at ") + label );
+		}
+	}
+}
+
+//======================================================================
+// Domain-scale (2026-09-06): fbm/turbulence/ridged rescale the
+// world-space `fw` into their OWN position argument's domain, using a
+// compile-time forward-mode Jacobian of that argument w.r.t. P
+// (ExpressionEval.h, Builder::NoiseFwScale).  Before this, `fw` went in
+// unscaled, so the standard frequency idiom `fbm(P*k, ...)` set the
+// Nyquist threshold k-times too low and the fade effectively never
+// engaged in any real scene (measured k: 7 .. 820).
+//
+//   - Test 65 DOMAIN CONSISTENCY: the same noise field reached two ways
+//     -- scaling the argument, or pre-scaling P and the footprint --
+//     must fade identically.  This is the invariant the whole change
+//     exists to establish, and it FAILS on the pre-change engine.
+//   - Test 66 THE FADE ENGAGES: on a scaled domain a large footprint
+//     leaves strictly fewer octaves with non-zero weight than fw == 0.
+//   - Test 67 BIT-IDENTITY: the values recorded from a run of the
+//     PRE-change engine, asserted with ==, for every case the change
+//     promises not to touch -- fw == 0 (any domain), and a bare `P`
+//     argument (Jacobian == identity, multiplier exactly 1.0).
+//   - Test 68 FALLBACKS: a `def`/`param`-carried scale resolves;
+//     a domain warp keeps its affine part's scale; an argument built
+//     from u/v (no provable relation to world P) falls back to the
+//     pre-change multiplier 1.0; a literal argument never fades.
+//======================================================================
+
+static void TestFbmDomainScaleConsistency()
+{
+	std::cout << "Test 65: fbm(P*k) at footprint w == fbm(P) at k*P and footprint k*w (the fade is domain-consistent)" << std::endl;
+
+	const Vector3 p0( 0.13, -0.41, 0.77 );
+	const Scalar k = 7.0;
+	const char* bodies[3] = { "fbm(%s, 5, 0.5, 2.0)", "turbulence(%s, 5, 0.5, 2.0)", "ridged(%s, 5, 0.5, 2.0)" };
+	const char* names[3]  = { "fbm", "turbulence", "ridged" };
+
+	for( int f = 0; f < 3; ++f ) {
+		char scaledBody[128], plainBody[128];
+		snprintf( scaledBody, sizeof(scaledBody), bodies[f], "P*7.0" );
+		snprintf( plainBody,  sizeof(plainBody),  bodies[f], "P" );
+
+		ExpressionProgram::Builder bs; bs.EnableContextVars( true );
+		ExpressionProgram scaled = ExpressionProgram::Invalid();
+		Check( bs.Finalize( scaledBody, scaled ), std::string(names[f]) + "(P*7.0, ...) compiles" );
+
+		ExpressionProgram::Builder bp; bp.EnableContextVars( true );
+		ExpressionProgram plain = ExpressionProgram::Invalid();
+		Check( bp.Finalize( plainBody, plain ), std::string(names[f]) + "(P, ...) compiles" );
+
+		if( !scaled.IsValid() || !plain.IsValid() ) continue;
+
+		for( Scalar w : { 0.0, 0.004, 0.02, 0.06, 0.2 } ) {
+			ExprEvalContext a;			// scaled argument, world-space footprint
+			a.P = p0; a.fw = w;
+			ExprEvalContext b2;			// pre-scaled position, pre-scaled footprint
+			b2.P = Vector3( p0.x*k, p0.y*k, p0.z*k ); b2.fw = k*w;
+
+			char label[96];
+			snprintf( label, sizeof(label), "%s: fw=%.4f scaled-domain == pre-scaled equivalent", names[f], (double)w );
+			// Exact, not approximate: both routes must hand
+			// NoiseCore the very same (x,y,z,fw), so any difference
+			// would be a real disagreement, not rounding.
+			Check( scaled.Eval( a ) == plain.Eval( b2 ), label );
+		}
+	}
+}
+
+static void TestFbmDomainScaleFadeEngages()
+{
+	std::cout << "Test 66: a scaled-domain fbm at a large footprint keeps strictly fewer octaves than at fw == 0" << std::endl;
+
+	// Counts octaves the fade leaves alive, from the documented weight
+	// (re-derived above, independently of NoiseCore) at the DOMAIN
+	// footprint the VM should now be using.
+	struct Local {
+		static int LiveOctaves( Scalar domainFw, int octaves, Scalar lacunarity )
+		{
+			int live = 0;
+			Scalar fwOct = domainFw;
+			for( int i = 0; i < octaves; ++i ) {
+				if( S9_OctaveFadeWeight( fwOct ) > Scalar(0) ) ++live;
+				fwOct *= lacunarity;
+			}
+			return live;
+		}
+	};
+
+	const int    octaves = 5;
+	const Scalar lac = 2.0, gain = 0.5, k = 7.0, w = 0.06;
+	const Vector3 p0( 0.13, -0.41, 0.77 );
+
+	ExpressionProgram::Builder b; b.EnableContextVars( true );
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( b.Finalize( "fbm(P*7.0, 5, 0.5, 2.0)", prog ), "fbm(P*7.0, 5, 0.5, 2.0) compiles" );
+	if( !prog.IsValid() ) return;
+
+	const int liveAtZero   = Local::LiveOctaves( 0.0,   octaves, lac );
+	const int liveAtScaled = Local::LiveOctaves( k*w,   octaves, lac );
+	const int liveUnscaled = Local::LiveOctaves( w,     octaves, lac );
+	Check( liveAtZero == octaves, "fw == 0 resolves every octave (5 live)" );
+	Check( liveAtScaled < liveAtZero, "the domain footprint 7*0.06 kills octaves the point sample kept" );
+	// The pre-change engine faded at the UNSCALED footprint, which
+	// leaves strictly more octaves alive -- it under-fades by exactly
+	// the domain scale, which is the bug this change fixes.
+	Check( liveUnscaled > liveAtScaled,
+		"the pre-change (unscaled) footprint under-fades: strictly more octaves survive it" );
+	// At a footprint typical of an actual render of this scene class
+	// (a 256px frame of a sphere ~4 units away) the pre-change fade was
+	// not merely weaker, it was completely inert.
+	const Scalar renderFw = 0.008;
+	Check( Local::LiveOctaves( renderFw, octaves, lac ) == octaves,
+		"at a real render footprint the unscaled fade touched NOTHING (all 5 octaves full weight)" );
+	Check( Local::LiveOctaves( k*renderFw, octaves, lac ) < octaves,
+		"the same footprint, correctly scaled into the noise's domain, does fade" );
+
+	ExprEvalContext ctx; ctx.P = p0; ctx.fw = w;
+	const Scalar viaVM = prog.Eval( ctx );
+	const Scalar expectedScaled   = S9_ExpectedFadedFbm( p0.x*k, p0.y*k, p0.z*k, octaves, gain, lac, k*w );
+	const Scalar expectedUnscaled = S9_ExpectedFadedFbm( p0.x*k, p0.y*k, p0.z*k, octaves, gain, lac, w );
+	CheckClose( viaVM, expectedScaled, 1e-12, "VM matches the from-scratch sum faded at the SCALED footprint" );
+	Check( std::fabs( expectedScaled - expectedUnscaled ) > 1e-6,
+		"the scaled and unscaled fades are genuinely different values (the test is not vacuous)" );
+}
+
+static void TestFbmDomainScaleBitIdentity()
+{
+	std::cout << "Test 67: pre-change golden values, unchanged (fw == 0 anywhere; a bare `P` argument at any fw)" << std::endl;
+
+	// RECORDED from a run of the engine as it stood at 174ea668, BEFORE
+	// the domain-scale change, printed at %.17g.  Asserted with == so a
+	// future edit that perturbs an un-scaled body by one ulp is caught:
+	// every scene without a footprint, and every body whose noise
+	// argument is bare `P`, must keep rendering exactly as it did.
+	struct Row { const char* body; double px, py, pz; double u, v; double fw; double expect; };
+	const Row rows[] = {
+		// Bare `P` -- Jacobian is the identity, multiplier exactly 1.0.
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  -0.19859653334474803 },
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.05, -0.20462375812775757 },
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.3,  -0.057247597370529507 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.0,   0.12500609165612192 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.05,  0.12524823843851685 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.3,   0.087567051930949061 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.0,   0.77670332638038786 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.05,  0.77646570533967341 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.3,   0.83612246546057789 },
+		// A SCALED domain at fw == 0: the point-sample path, which the
+		// multiplier cannot disturb because 0 * anything finite is 0.
+		{ "fbm(P*7.0, 5, 0.5, 2.0)",    0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  -0.11547628157415081 },
+		// An argument with no provable relation to world P: falls back
+		// to the pre-change multiplier 1.0 at EVERY fw, not just 0.
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.0,   0.006329461722634845 },
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.05,  0.009510600846260894 },
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.3,  -0.10298160573714994 },
+	};
+
+	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
+		const Row& r = rows[i];
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( r.body, prog ), std::string("compiles: ") + r.body );
+		if( !prog.IsValid() ) continue;
+		ExprEvalContext ctx;
+		ctx.u = r.u; ctx.v = r.v; ctx.P = Vector3( r.px, r.py, r.pz ); ctx.fw = r.fw;
+		char label[192];
+		snprintf( label, sizeof(label), "pre-change golden: %s at fw=%g", r.body, r.fw );
+		Check( prog.Eval( ctx ) == r.expect, label );
+	}
+}
+
+static void TestFbmDomainScaleFallbacks()
+{
+	std::cout << "Test 68: domain scale through def/param, through a warp's affine part, and the unprovable fallbacks" << std::endl;
+
+	const Vector3 p0( 0.3, 0.7, 1.4 );
+	const Scalar w = 0.01;
+
+	// (a) The scale carried by a `param` through a `def` -- the shape
+	// real bodies use -- resolves exactly like the inlined literal.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		Check( b.AddParam( "k", 40.0 ), "param k 40" );
+		Check( b.AddDef( "q", "P*k" ), "def q P*k" );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(q, 4, 0.5, 2.0)", prog ), "fbm(q, ...) compiles" );
+		if( prog.IsValid() ) {
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = w;
+			Check( prog.Eval( ctx ) == NoiseCore::Fbm3D( p0.x*40.0, p0.y*40.0, p0.z*40.0, 4, 0.5, 2.0, 40.0*w ),
+				"a param-through-def scale reaches the noise as 40*fw" );
+		}
+	}
+
+	// (b) Anisotropic per-component scale (the plank_closeup idiom):
+	// the LARGEST stretch is what a footprint has to survive, so the
+	// multiplier is the largest singular value, here 820.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(vec3(P.x*40.0, P.y*820.0, P.z*820.0), 4, 0.5, 2.0)", prog ), "anisotropic vec3 compiles" );
+		if( prog.IsValid() ) {
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = 0.0004;
+			Check( prog.Eval( ctx ) == NoiseCore::Fbm3D( p0.x*40.0, p0.y*820.0, p0.z*820.0, 4, 0.5, 2.0, 820.0*0.0004 ),
+				"an anisotropic domain fades at its LARGEST stretch (820), not its smallest" );
+		}
+	}
+
+	// (c) Domain warp: the warp term's own slope is unknowable at
+	// compile time, so the sum keeps the affine part's scale rather
+	// than giving up on the whole argument.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(P*3.0 + 0.5*vec3(fbm(P,2,0.5,2.0),0.0,0.0), 4, 0.5, 2.0)", prog ), "warped domain compiles" );
+		if( prog.IsValid() ) {
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = w;
+			const Scalar warp = 0.5 * NoiseCore::Fbm3D( p0.x, p0.y, p0.z, 2, 0.5, 2.0, w );
+			Check( prog.Eval( ctx ) == NoiseCore::Fbm3D( p0.x*3.0 + warp, p0.y*3.0, p0.z*3.0, 4, 0.5, 2.0, 3.0*w ),
+				"a warped argument keeps its affine part's scale (3*fw), warp position included" );
+		}
+	}
+
+	// (d) An argument with no affine part at all (u/v have no
+	// compile-time relation to world P): multiplier 1.0, i.e. exactly
+	// what the engine did before -- never made worse, just left alone.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", prog ), "uv-domain compiles" );
+		if( prog.IsValid() ) {
+			ExprEvalContext ctx; ctx.u = 0.37; ctx.v = 0.61; ctx.fw = 0.3;
+			Check( prog.Eval( ctx ) == NoiseCore::Fbm3D( 3.7, 6.1, 0.0, 4, 0.5, 2.0, 0.3 ),
+				"an unprovable domain falls back to the unscaled (pre-change) footprint" );
+		}
+	}
+
+	// (e) A literal argument provably does not move with P, so there is
+	// nothing to alias and the fade must not fire at ANY footprint.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(vec3(0.3,0.7,1.4), 4, 0.5, 2.0)", prog ), "literal vec3 argument compiles" );
+		if( prog.IsValid() ) {
+			const Scalar unfaded = NoiseCore::Fbm3D( 0.3, 0.7, 1.4, 4, 0.5, 2.0, 0.0 );
+			for( Scalar fw : { 0.0, 0.05, 0.3, 2.0 } ) {
+				ExprEvalContext ctx; ctx.P = p0; ctx.fw = fw;
+				char label[96];
+				snprintf( label, sizeof(label), "a P-independent argument never fades (fw=%g)", (double)fw );
+				Check( prog.Eval( ctx ) == unfaded, label );
+			}
 		}
 	}
 }
@@ -3811,6 +4068,10 @@ int main( int, char** )
 	TestExpressionPainterFootprintContext();
 	TestExpressionVMFwEndToEnd();
 	TestExpressionPainterFwSpectralParity();
+	TestFbmDomainScaleConsistency();
+	TestFbmDomainScaleFadeEngages();
+	TestFbmDomainScaleBitIdentity();
+	TestFbmDomainScaleFallbacks();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }
