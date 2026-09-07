@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Mutation REDs for the native hot-snapshot report admission surface."""
 import unittest
+import json
+from pathlib import Path
+from unittest.mock import patch
+import report_fire_r213_snapshots as evidence
 from report_fire_r213_snapshots import admit_native, pairs
 
 
@@ -25,6 +29,32 @@ def fixture():
 
 
 class SnapshotAdmissionTest(unittest.TestCase):
+    def test_executed_report_and_joint_provenance_forgery(self):
+        comparison = evidence.OUT / "numeric_snapshot_comparison.v1"
+        receipt = evidence.OUT / "qualification.v4.json"
+        result = evidence.report(comparison)
+        self.assertTrue(result["canonical_persistent_payload_identical"])
+        self.assertEqual(result["accepted_steps"], 8)
+        original = Path.read_bytes
+        changed_native = comparison.read_bytes().replace(evidence.REPORTER_EXECUTABLE.encode(), b"0"*64)
+        changed_native = changed_native.replace(evidence.REPORTER_BUILD.encode(), b"1"*64)
+        forged_receipt = json.loads(receipt.read_bytes())
+        forged_receipt.update(producer_executable_sha256="0"*64, runs={})
+        altered = {comparison: changed_native, receipt: json.dumps(forged_receipt).encode()}
+        for selected in ({comparison}, {receipt}, {comparison, receipt}):
+            with self.subTest(selected=selected), patch.object(Path, "read_bytes",
+                    lambda p: altered[p] if p in selected else original(p)):
+                with self.assertRaises(ValueError):
+                    evidence.report(comparison)
+        # Matching fabricated comparison roots are not an executed proof.
+        raw = comparison.read_bytes()
+        steps, _ = admit_native(raw.decode())
+        before = steps[1]["old_comparison_sha256"].encode()
+        with patch.object(Path, "read_bytes", lambda p: raw.replace(before, b"a"*64)
+                          if p == comparison else original(p)):
+            with self.assertRaises(ValueError):
+                evidence.report(comparison)
+
     def test_complete_native_admission(self):
         steps, headers = admit_native(fixture())
         self.assertEqual(set(steps), set(range(1, 9)))

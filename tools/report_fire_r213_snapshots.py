@@ -11,6 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / "rendered/fire_production_calibration"
 OUT = BASE / "r213_composition"
+NATIVE_SHA = "7a9709517395144d8c6fb5ff94f6cc3cbf27a9cf6882f5e7611509584dc3698a"
+REPORTER_RECEIPT_SHA = "0f4aae46c703a96c4ee88ccf14a055bcbbb728f3cac672ef985014dc96e48d9c"
+REPORTER_EXECUTABLE = "13f799d3c2fc8b8c6d406c6171f724bd8c321bd51862995e7544d0a1b4e288fb"
+REPORTER_BUILD = "c9a2608719e9d962dd8234fe416391bd2c24331fb78bae60489f08ad7d7c82e4"
 ROWS = ("accepted_step time_s dt_s maximum_velocity_m_per_s axis face x y z "
         "manifold_max manifold_p95 manifold_p50 tail_cells tail_drained_m3 "
         "owner_r0_iterations owner_r1_iterations owner_r2_iterations "
@@ -108,7 +112,7 @@ def report(comparison):
         inputs[str(path.relative_to(ROOT))] = digest
         return raw
 
-    steps, headers = admit_native(read(comparison).decode())
+    steps, headers = admit_native(read(comparison, NATIVE_SHA).decode())
     metal_path = "src/Library/Utilities/FireProductionAdvectionMac.mm"
     source_identity = {}
     for kind, expected in (("baseline", "c19d92c93fbfb488fcd2eb6c4be36f57368cf09a0efdd6705a4e52075ad4adb5"),
@@ -126,14 +130,18 @@ def report(comparison):
                                     EXECUTABLES["baseline"][0]], cwd=ROOT).decode().splitlines()
     if delta != ["tests/FireSequenceTest.cpp"]:
         raise ValueError("baseline addon is not diagnostic-only")
-    reporter = json.loads(read(OUT / "qualification.v4.json"))
-    if (reporter["producer_executable_sha256"] != headers["reporter_executable_sha256"]
+    reporter = json.loads(read(OUT / "qualification.v4.json", REPORTER_RECEIPT_SHA))
+    if (reporter["producer_executable_sha256"] != REPORTER_EXECUTABLE
+            or headers["reporter_executable_sha256"] != REPORTER_EXECUTABLE
+            or headers["reporter_build_id"] != REPORTER_BUILD
             or reporter["source_commit"] != "02456eeb198133e2d8567db4ca443adeb653c575"
+            or set(reporter["runs"]) != {"build", "publication", "owner"}
             or any(run["exit_code"] != 0 for run in reporter["runs"].values())):
         raise ValueError("native comparison is not bound to qualified reporter")
     for kind, (commit, executable, receipt) in EXECUTABLES.items():
         qualified = json.loads(read(OUT / receipt, RECEIPTS[kind]))
         if (qualified["source_commit"] != commit or qualified["producer_executable_sha256"] != executable
+                or set(qualified["runs"]) != {"build", "publication", "owner"}
                 or any(run["exit_code"] != 0 for run in qualified["runs"].values())):
             raise ValueError("qualified snapshot producer identity mismatch")
         directory = OUT / (kind+"_hot_snapshots.v1")
@@ -160,7 +168,7 @@ def report(comparison):
                     or ("build_id="+native[side+"_build"]) not in execution[0]):
                 raise ValueError("exact-time historical payload reproduction failed")
             read(directory / "checkpoints" / f"step_{index:02d}.checkpoint", native[side+"_checkpoint_sha256"])
-    return dict(schema="rise.fire.r213.hot-numerical-qualification.v1", inputs_sha256=inputs,
+    return dict(schema="rise.fire.r213.hot-numerical-qualification.v2", inputs_sha256=inputs,
                 snapshot_producer_source_identity=source_identity,
                 baseline_parent_commit=old_commit, baseline_changed_paths=delta,
                 reporter_source_commit=reporter["source_commit"], reporter_build_id=headers["reporter_build_id"],
@@ -181,6 +189,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     text = json.dumps(report(args.comparison), sort_keys=True, indent=2, allow_nan=False)+"\n"
     if args.output:
-        args.output.write_text(text)
+        with args.output.open("x") as stream:
+            stream.write(text)
     else:
         print(text, end="")

@@ -154,3 +154,49 @@ masked the intended semantic refusal. The repaired tests re-seal every linked
 summary and budget as necessary and assert the exact schedule/endpoint error,
 including an internally consistent eight-step trajectory ending too early.
 Stale-SHA refusal remains separate coverage. No threshold or expectation moved.
+
+## Completed hot numerical qualification and remaining work
+
+Both eight-step diagnostic exports complete through 2.1211945469258353 s.
+The old diagnostic build reproduces the historical full input/publication roots
+at every equal time; the new diagnostic build reproduces the measured frozen
+candidate's roots. Native comparison returns exact equality of every canonical
+persistent payload after excluding only the producing-build label: 10 scalar/
+temperature fields over 504,666 cells and all six momentum/velocity face fields
+have zero bit mismatches at all eight steps. Persisted HRR-ledger and temperature-
+history mutations are RED. This completes the scoped hot class-A numerical
+qualification; it is not a full-window or r78 migration certificate.
+
+Native comparison SHA:
+`7a9709517395144d8c6fb5ff94f6cc3cbf27a9cf6882f5e7611509584dc3698a`.
+Hardened admission report v2 SHA:
+`f60563f0a9e9313ecb9f8a78ecc1ea9d915f33c43fc5881a79f0a99e28257931`.
+The earlier v1 admission report remains historical evidence. Fresh review
+found a P1 in its admission tool: the reporter receipt and native comparison
+were recorded but not pinned, so joint metadata alteration could pretend to
+be a qualified execution. The v2 tool pins both executed SHAs, exact reporter
+build/executable, and the complete build/publication/owner run set. Joint
+receipt/comparison forgery and matching fabricated comparison roots now refuse.
+No measured numerical byte or timing changed in this repair.
+
+The native reporter is source `02456eeb198133e2d8567db4ca443adeb653c575`,
+executable SHA
+`13f799d3c2fc8b8c6d406c6171f724bd8c321bd51862995e7544d0a1b4e288fb`;
+its qualification receipt SHA is
+`0f4aae46c703a96c4ee88ccf14a055bcbbb728f3cac672ef985014dc96e48d9c`.
+The complete FireSequence suite passed, log SHA
+`14ac7d5541d569258a4eac7cef0cf9c1d9c49ef88ed22dab4592061eebd8e573`.
+Clean Xcode Deployment and shipping Opto builds also succeeded. Their only
+warnings are the documented absent local OIDN install search path and the
+irrelevant AppIntents metadata message; no source warning is suppressed.
+This is build coverage, not a new Xcode-runtime numerical qualification.
+
+The exact /32 column artifact SHA is
+`bbd808c4138de12917fadcb4346e33c6a54a1da0c327f7522ca3fe17bcee7459`.
+Its 7.868066536 same-production-face magnitude ratio and the filtered accumulated
+distances must remain visible while the formal additive verdict is pending.
+Next execution work remains: shared-input ported-owner contract terms; actual
+next-candidate momentum convergence capture and qualified fixed-k selection;
+target assembly and remaining EOS/host costs; then the tier-eight full window
+and temporal movie, followed by the tier-ten queue. No new movie, empirical
+row, fixed-k acceptance, or completed three-way fidelity verdict is claimed.
