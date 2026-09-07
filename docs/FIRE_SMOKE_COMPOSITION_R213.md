@@ -105,3 +105,52 @@ both momentum-budget streams must close successfully before their output can
 be reported accepted. Published sidecar schema, case identity and duplicate
 JSON keys are checked too. A synthetic different-face maximum explicitly
 cannot become a formal pass.
+
+The authenticated native same-time beginning comparison reports filtered
+velocity RMS distance 0.37068117162836201 m/s and sensible-energy mean absolute
+distance 3801.9729478659974 J/m³. Its checkpoint SHA pair is the accepted r212
+reference and r208 step 1300; neither is rewritten. These are accumulated
+separate-trajectory distances, not locally derived scheme allowances.
+Artifact `matched_beginning_fields.qualified.v1` SHA:
+`ec176997a2577ee21d61f013c4664dd3f1c1e54f2e262eba5cdf46b45657867e`.
+The two refined field artifacts have SHAs
+`45fadcf050940577ef1a2e16d4d5596d49a59eae4f3383563778042ed78b500a`
+and `94a53e4023000ddaef4cb6acd6ecb483fae2545c1a24fb42c70264710b54a5dc`.
+They bind the reporter executable independently of the checkpoint producers.
+
+## Hot EOS cost observation and byte-qualification boundary
+
+Three isolated processes, eight accepted steps each, measured device
+mean/p95 6.420787532/6.918187667 s and wall mean/p95
+8.318470054/8.938276375 s. Against the matched r212 hot processes, the mean
+speedups are 2.573× device and 2.217× wall. Inclusive EOS work falls from
+13.547402385 to 3.595528156 s/step; target assembly is 2.208697209 s/step.
+The 1.897682522 s average wall-minus-device residual remains unattributed.
+At this measured mean and the audited step, 25 simulated seconds still projects
+to about 35 wall hours, before changing-state costs and frame output. The
+300–500 ms target, fixed-k qualification and complete window remain unmet.
+
+Cost observation SHA:
+`2b2a597b46759b6e2ea2ef8722996c6463ba8ca4e1053c97d72ff4863c14d600`.
+The 49,512,449-input EOS study is the qualified logarithm lattice and midpoint
+domain, not 49.5 million independent mixture states. Its log SHA is
+`2525e547997dfdac9c90bfad3350461bc8fae5e887c25f823843c1cf9bbd4024`.
+The owner and per-cell EOS gates pass, and all eight physics-summary rows
+reproduce across each process; full numerical-byte promotion is separate.
+
+The diagnostic snapshot comparison uses the native checkpoint loader and
+canonical payload writer. Only the explicitly reported `producerBuildId` is
+excluded in an in-memory comparison; no normalized checkpoint is published or
+admitted. All canonical persistent fields, including the source/statistics
+ledger and manifold lifecycle, remain compared byte-for-byte, with separate
+per-component/per-axis bit-mismatch counts. Nonpersistent timing histories are
+not falsely claimed to be present in checkpoints. Kernel-dependent identity
+roots are expected to differ across the optimized kernel set; exact old and
+new roots must instead reproduce their respective frozen producer runs at
+each of eight equal times. This diagnostic cannot issue migration authority.
+
+Second review found zero P1 and one P2 in schedule REDs: a stale summary SHA
+masked the intended semantic refusal. The repaired tests re-seal every linked
+summary and budget as necessary and assert the exact schedule/endpoint error,
+including an internally consistent eight-step trajectory ending too early.
+Stale-SHA refusal remains separate coverage. No threshold or expectation moved.

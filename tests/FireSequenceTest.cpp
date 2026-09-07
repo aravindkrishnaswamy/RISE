@@ -1715,6 +1715,8 @@ namespace
 		explicit CheckpointWriter(const std::filesystem::path& path) :
 			output_(path,std::ios::binary|std::ios::trunc),digestOnly_(false) {}
 		CheckpointWriter() : digestOnly_(true) {}
+		explicit CheckpointWriter(RISECBOR64::Bytes& bytes) : digestOnly_(true),memory_(&bytes)
+			{bytes.clear();}
 		bool Good() const { return digestOnly_||static_cast<bool>(output_); }
 		bool HeaderBytes(const void* data,const std::size_t size)
 		{
@@ -1737,6 +1739,7 @@ namespace
 			if(!digestOnly_&&!output_)return false;
 			if(!digestOnly_)output_.write(static_cast<const char*>(data),static_cast<std::streamsize>(size));
 			const unsigned char* byte=static_cast<const unsigned char*>(data);
+			if(memory_)memory_->insert(memory_->end(),byte,byte+size);
 			for(std::size_t i=0;i<size;++i){checksum_^=byte[i];checksum_*=1099511628211ull;}
 			payloadBytes_+=static_cast<std::uint64_t>(size);
 			return digestOnly_||static_cast<bool>(output_);
@@ -1756,6 +1759,7 @@ namespace
 	private:
 		std::ofstream output_;
 		bool digestOnly_;
+		RISECBOR64::Bytes* memory_=nullptr;
 		std::uint64_t checksum_=1469598103934665603ull,payloadBytes_=0u;
 	};
 
@@ -8384,6 +8388,96 @@ namespace
 			PhysicalFilterGeometry(geometry,0.1,dimensions,lengths))return false;
 		geometry.cellWidthM=std::numeric_limits<double>::quiet_NaN();
 		return !PhysicalFilterGeometry(geometry,1.6,dimensions,lengths);
+	}
+
+	bool R213ComparisonBytes(MethaneRunCheckpoint checkpoint,RISECBOR64::Bytes& bytes)
+	{
+		// Diagnostic only: never publish or admit a normalized checkpoint. The
+		// entire existing payload serializer remains authoritative; only the
+		// explicitly reported producing-build label is excluded from comparison.
+		checkpoint.producerBuildId.clear();CheckpointWriter writer(bytes);
+		return WriteCheckpointPayload(writer,checkpoint,13u)&&writer.Finish();
+	}
+
+	int RunR213SnapshotComparison(const std::filesystem::path& oldDirectory,
+		const std::filesystem::path& newDirectory,const std::filesystem::path& output)
+	{
+		if(std::filesystem::exists(output)||oldDirectory==newDirectory)return 91;
+		std::string error,oldBuild,newBuild,reporterBuild,reporterExecutable;RISECBOR64::Bytes reporterRecord;
+		if(!CurrentRendererBuildIdentity(reporterRecord,reporterBuild)||
+			!CurrentExecutableDigest(reporterRecord,reporterExecutable,error))return 92;
+		std::ofstream stream(output);
+		stream<<"schema rise.fire.r213.numeric-snapshot-comparison.v1\n"
+			<<"scope canonical_persistent_payload_minus_producer_build_not_migration\n"
+			<<"excluded_field producerBuildId\nrequired_steps 8\n"
+			<<"reporter_build_id "<<reporterBuild<<"\nreporter_executable_sha256 "<<reporterExecutable<<'\n';
+		bool passed=true;double previous=2.1080244191689417;
+		for(unsigned int step=1u;step<=8u;++step){
+			std::ostringstream name;name<<"step_"<<std::setw(2)<<std::setfill('0')<<step<<".checkpoint";
+			const auto oldPath=oldDirectory/"checkpoints"/name.str(),newPath=newDirectory/"checkpoints"/name.str();
+			const std::string oldSHA=DigestFile(oldPath),newSHA=DigestFile(newPath);
+			MethaneRunCheckpoint oldState,newState;
+			if(!LoadMethaneRunCheckpoint(oldPath,oldState,error)||
+				!LoadMethaneRunCheckpoint(newPath,newState,error))return 92;
+			if(step==1u){oldBuild=oldState.producerBuildId;newBuild=newState.producerBuildId;}
+			FireStateProducerPrecision oldPrecision,newPrecision;
+			if(oldSHA.size()!=64u||newSHA.size()!=64u||oldBuild.size()!=64u||newBuild.size()!=64u||oldBuild==newBuild||
+				oldState.producerBuildId!=oldBuild||newState.producerBuildId!=newBuild||
+				oldState.checkpointFormatVersion!=13u||newState.checkpointFormatVersion!=13u||
+				oldState.dimensions!=std::array<std::size_t,3>{{69u,69u,106u}}||
+				newState.dimensions!=oldState.dimensions||oldState.states.size()!=newState.states.size()||
+				oldState.caseRecordId!=newState.caseRecordId||
+				oldState.caseRecordId!="6eb8b1f95bfdb27d06245db94d6e9513c0cdef3662fc055547d35b353094f7e1"||
+				oldState.acceptedSteps!=1300u+step||newState.acceptedSteps!=oldState.acceptedSteps||
+				oldState.values.acceptedMaximumTemperatureHistoryK.size()!=oldState.acceptedSteps||
+				newState.values.acceptedMaximumTemperatureHistoryK.size()!=newState.acceptedSteps||
+				!HomogeneousStateProducerPrecision(oldState.states,oldPrecision)||
+				!HomogeneousStateProducerPrecision(newState.states,newPrecision)||
+				oldPrecision!=FireStateProducerPrecision::Binary32||newPrecision!=oldPrecision||
+				oldState.simulationTimeS!=newState.simulationTimeS||
+				previous+oldState.previousStepS!=oldState.simulationTimeS)return 92;
+			RISECBOR64::Bytes oldBytes,newBytes;
+			if(!R213ComparisonBytes(oldState,oldBytes)||!R213ComparisonBytes(newState,newBytes))return 93;
+			const bool same=oldBytes==newBytes;passed=passed&&same;
+			stream<<std::setprecision(17)<<"step "<<step<<" time_s "<<oldState.simulationTimeS
+				<<" old_build "<<oldBuild<<" new_build "<<newBuild<<" old_checkpoint_sha256 "<<oldSHA
+				<<" new_checkpoint_sha256 "<<newSHA<<" old_comparison_sha256 "<<RISECBOR64::SHA256Hex(oldBytes)
+				<<" new_comparison_sha256 "<<RISECBOR64::SHA256Hex(newBytes)<<" bytes "<<oldBytes.size()
+				<<" exact_bytes_equal "<<same<<'\n';
+			for(std::size_t component=0u;component<10u;++component){std::size_t mismatches=0u;
+				for(std::size_t cell=0u;cell<oldState.states.size();++cell){
+					const double a=component==9u?oldState.states[cell].temperatureK:
+						ToConservativeVector(oldState.states[cell])[component];
+					const double b=component==9u?newState.states[cell].temperatureK:
+						ToConservativeVector(newState.states[cell])[component];
+					if(DoubleBits(a)!=DoubleBits(b))++mismatches;}
+				stream<<"scalar step "<<step<<" component "<<component<<" cells "<<oldState.states.size()
+					<<" bit_mismatches "<<mismatches<<'\n';passed=passed&&mismatches==0u;
+			}
+			for(unsigned int field=0u;field<2u;++field)for(unsigned int axis=0u;axis<3u;++axis){
+				const auto& a=(field==0u?oldState.momentum:oldState.velocity).component[axis];
+				const auto& b=(field==0u?newState.momentum:newState.velocity).component[axis];
+				if(a.size()!=b.size())return 93;std::size_t mismatches=0u;
+				for(std::size_t face=0u;face<a.size();++face)if(DoubleBits(a[face])!=DoubleBits(b[face]))++mismatches;
+				stream<<"face step "<<step<<" field "<<(field==0u?"momentum":"velocity")<<" axis "<<axis
+					<<" faces "<<a.size()<<" bit_mismatches "<<mismatches<<'\n';passed=passed&&mismatches==0u;
+			}
+			if(step==1u){
+				auto mutation=oldState;mutation.values.integratedHeatReleaseJ=
+					std::nextafter(mutation.values.integratedHeatReleaseJ,std::numeric_limits<double>::infinity());
+				RISECBOR64::Bytes mutantBytes;
+				if(!R213ComparisonBytes(mutation,mutantBytes)||mutantBytes==oldBytes)return 95;
+				mutation=oldState;mutation.values.acceptedMaximumTemperatureHistoryK.back()=
+					std::nextafter(mutation.values.acceptedMaximumTemperatureHistoryK.back(),0.0);
+				if(!R213ComparisonBytes(mutation,mutantBytes)||mutantBytes==oldBytes)return 95;
+				stream<<"red persisted_source_ledger_and_temperature_history_mutations_refused 1\n";
+			}
+			if(DigestFile(oldPath)!=oldSHA||DigestFile(newPath)!=newSHA)return 94;
+			previous=oldState.simulationTimeS;
+		}
+		stream<<"passed "<<passed<<"\nmigration_authority false\n";
+		if(!ClosePublishedStream(stream))return 94;
+		return passed?0:93;
 	}
 
 	int RunR213FilteredPair(const std::filesystem::path& firstPath,
@@ -16393,6 +16487,8 @@ int main(int argc,char** argv)
 		return RunR213FilteredPair(argv[2],argv[3],argv[4]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-r213-matched-fields")==0)
 		return RunR213FilteredPair(argv[2],argv[3],argv[4],true);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r213-snapshot-compare")==0)
+		return RunR213SnapshotComparison(argv[2],argv[3],argv[4]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-r213-filter-red")==0)
 		return R213PhysicalFilterFixture()?0:95;
 	Check(R213PhysicalFilterFixture(),"physical filter preserves historical domain and refuses geometry mutants");

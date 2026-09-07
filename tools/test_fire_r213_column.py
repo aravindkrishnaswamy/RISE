@@ -108,9 +108,49 @@ class ColumnTest(unittest.TestCase):
                 for mutant in (schedule.replace(repr(column.END), repr(column.END + 0.001)),
                                schedule + schedule.splitlines()[-1] + "\n"):
                     publish(root / "accepted_schedule.csv", mutant)
-                    with self.assertRaises(ValueError):
+                    changed_summary = dict(summary, schedule_sha256=hashlib.sha256(mutant.encode()).hexdigest())
+                    publish(root / "composition_summary.v1", "".join(f"{k} {v}\n" for k, v in changed_summary.items()))
+                    with self.assertRaisesRegex(ValueError, "noncontiguous or wrong exact schedule"):
                         column.report(root, production)
                 publish(root / "accepted_schedule.csv", schedule)
+                publish(root / "composition_summary.v1", summary_raw)
+                for field, value in (("beginning_time_s", repr(column.BEGIN+dt)),
+                                     ("substep", "2"), ("dt_s", "0"),
+                                     ("dt_s", repr(2*dt))):
+                    parsed = column.rows(schedule.encode())
+                    parsed[0][field] = value
+                    names = schedule.splitlines()[0].split(",")
+                    mutant = ",".join(names) + "\n" + "".join(",".join(row[k] for k in names)+"\n" for row in parsed)
+                    publish(root / "accepted_schedule.csv", mutant)
+                    changed_summary = dict(summary, schedule_sha256=hashlib.sha256(mutant.encode()).hexdigest())
+                    publish(root / "composition_summary.v1", "".join(f"{k} {v}\n" for k, v in changed_summary.items()))
+                    with self.assertRaisesRegex(ValueError, "noncontiguous or wrong exact schedule"):
+                        column.report(root, production)
+                publish(root / "accepted_schedule.csv", schedule)
+                publish(root / "composition_summary.v1", summary_raw)
+                # Eight internally consistent substeps ending too early: all
+                # linked metadata and budgets agree, leaving the endpoint gate
+                # as the refusing clause rather than a stale SHA.
+                parsed = column.rows(schedule.encode())
+                saved_budgets = []
+                time = column.BEGIN
+                names = schedule.splitlines()[0].split(",")
+                for index, row in enumerate(parsed, 1):
+                    row.update(beginning_time_s=repr(time), end_time_s=repr(time+dt/2), dt_s=repr(dt/2))
+                    budget = root / f"attempt_{805+index}_0.budget.csv.column.csv"
+                    saved_budgets.append((budget, budget.read_bytes()))
+                    publish(budget, header + "".join(f"{time!r},{dt/2!r},30,33,{z},10\n" for z in range(107)))
+                    time += dt/2
+                mutant = ",".join(names) + "\n" + "".join(",".join(row[k] for k in names)+"\n" for row in parsed)
+                publish(root / "accepted_schedule.csv", mutant)
+                changed_summary = dict(summary, schedule_sha256=hashlib.sha256(mutant.encode()).hexdigest())
+                publish(root / "composition_summary.v1", "".join(f"{k} {v}\n" for k, v in changed_summary.items()))
+                with self.assertRaisesRegex(ValueError, "stale endpoint"):
+                    column.report(root, production)
+                for budget, original in saved_budgets:
+                    publish(budget, original)
+                publish(root / "accepted_schedule.csv", schedule)
+                publish(root / "composition_summary.v1", summary_raw)
                 budget = root / "attempt_806_0.budget.csv.column.csv"
                 original = budget.read_bytes()
                 for mutant in (original.replace(b",30,33,", b",38,42,"),
