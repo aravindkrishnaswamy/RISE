@@ -93,8 +93,8 @@ and the expression surface, delivered in three phased mechanisms —**
 
 **Scene-wide (cross-object) AO is DECLINED for v1** (§8), and **declined again
 on measurement 2026-09-07** (§8.1: the contact-grime case it was re-opened for
-is a proximity quantity AO cannot reach at any radius; 2.4× on the flagship
-scene live; a dense SDF grid cannot resolve the showcases' feature sizes).
+is a proximity quantity that any hemisphere AO sampler reaches only as a
+2–10 px band that does not read as a seam; 2.4× on the flagship scene live; a dense SDF grid cannot resolve the showcases' feature sizes).
 Self-occlusion covers the crevice-grime use case that motivates the work, and
 cross-object occlusion is the one variant that breaks the free-invalidation
 story.
@@ -864,7 +864,8 @@ variant that breaks everything above.
   object only"; Substance's AO baker has self-occlusion Always / By Mesh Name;
   Arnold's `aiCurvature` has `self_only`. Self-occlusion is not a degraded
   mode, it is a first-class one.
-- **Self-occlusion covers the motivating use case.** Grime in crevices, patina
+- **Self-occlusion covers the motivating use case** (the crevice one — not the
+  two contact-grime cases §8.1 re-opens on, and declines again). Grime in crevices, patina
   in a casting's recesses, dirt in a seam — all are self-occlusion.
 
 **Later-phase route, explicitly out of scope now:** either the SSS-style
@@ -928,8 +929,9 @@ is geometric, not a tuning failure.
   the band from 0.5° to 20° above the tangent plane, the contact estimator that
   asks only whether something is nearby at low elevation. Uniform reads 0.61 /
   0.89 / 0.92 and horizon **0.61 / 0.81 / 0.90** at 18.65 mm (N = 64 moves
-  every entry by ≤ 0.04; the far plank stays 1.00 under all three; a 0.5°
-  minimum elevation kept tangent-plane self-hits at 6 of 7.7 M blocked rays).
+  every entry by ≤ 0.045; the far plank stays 1.00 under all three; a 0.5°
+  minimum elevation kept tangent-plane self-hits at 6 of 7.7 M blocked rays
+  under horizon and 52 of 6.8 M under uniform).
   So the objection stands on the *width* — cosine reaches 2–3 px, horizon
   ~10 px, and the first draft's "no radius of AO reaches it" was too strong —
   and falls on everything else. The *depth* does not separate: all three
@@ -937,12 +939,12 @@ is geometric, not a tuning failure.
   at the same `N` (242.4 s against 125.7 s on the shipped frame, one run each —
   about 4.2× the shipped render) because grazing rays walk a long thin BVH
   corridor before they die. And horizon **halves the nail's gain**: the flank
-  facing the plank goes 0.30 (cosine) → 0.37 (uniform) → 0.59 (horizon),
+  facing the plank goes 0.30 (cosine) → 0.37 (uniform) → 0.61 (horizon),
   because the low rays that see the nail from the plank are the same low rays
   that see the plank from the nail. In the beauty crops the horizon variant
   lays a slightly broader, softer smudge on the plank either side of the shank
   and takes rust off the nail; shown unlabelled, neither crop reads as the
-  contact seam the scene wants — at the plank's `dirt 0.62`, a 0.82 signal is a
+  contact seam the scene wants — at the plank's `dirt 0.62`, a 0.81 signal is a
   fifth of the field on a few pixels. **Contact grime is a proximity quantity:
   the sampler that measures it better is the one that stops measuring
   visibility, and no hemisphere sampler is both.**
@@ -950,17 +952,20 @@ is geometric, not a tuning failure.
   contact ring on the bench top hugging the vise flange — 2–3 px wide under
   cosine, 4–5 px under horizon — plus bands where each leg meets the floor:
   exactly what the header names as out of reach. The beauty variant multiplied
-  the wood colour by `1 − 0.28·(1 − xocc)` (the prototype's own coefficient;
+  the wood colour by `1 − 0.28·smoothstep(0.84, 0.50, xocc)` — the bench's own
+  crevice threshold, the one the vise applies to its `occlusion(0.09)` — (the
+  0.28 is the prototype's own coefficient;
   the vise applies a −0.16 offset to its own field, so this is not the gentler
   choice), and then at 2× and 4× that, with both samplers, against a no-grime
   control. At the vise foot the ring is invisible at every magnitude: the
   flange contact is seen at grazing incidence and already sits inside the
   contact shadow the lighting draws, so the grime lands on pixels that are dark
-  anyway. It separates only at the leg feet, and only at 4× — where it is a
-  uniform near-black band 2–3 px tall ending on a hard line parallel to the
-  floor, with none of the wood's grain or the blotchiness of the scene's other
-  weathering: a leg dipped in ink, not grime. Horizon at 2× is the one setting
-  both visible and not obviously painted, and only if one knows where to look.
+  anyway. It shows only at the leg feet: faintly at horizon 2× — the one
+  setting both visible and not obviously painted, and only if one knows where
+  to look — and unmistakably at 4× with either sampler, where it is a uniform
+  near-black band 2–3 px tall ending on a hard line parallel to the floor, with
+  none of the wood's grain or the blotchiness of the scene's other weathering:
+  a leg dipped in ink, not grime.
 - *The bake's own render* (8 spp, `G = 64`) shows the nail duller overall and
   the plank's front and bottom faces broadly darker (the bench plane is 15 mm
   below), no line along the contact, and the growth rings faintly re-modulated
@@ -984,7 +989,7 @@ plank issues **14.28 queries per camera sample** (210.5 M per frame — the same
 relief modifier's four-tap stencil, at every bounce) against the bench's 0.51,
 which is why the same builtin costs 2.38× on one and 1.03× on the other.
 Sponza's shipped render casts 8.32 shadow rays per camera sample (61.3 M); the
-forced query adds 58.5 (7.0× the scene's entire shadow-ray count) for 1.57×
+forced query adds 59.1 (7.1× the scene's entire shadow-ray count) for 1.57×
 wall clock, because 0.1 m rays die in the BVH almost at once. N = 64 costs
 ~2.6× N = 16 on the plank and ~2.2× on Sponza, not 4×.
 
@@ -998,8 +1003,8 @@ cost is 1.47× superlinear from the dragon to Sponza (4.04 → 5.93 µs), the
 BVH depth, not the algorithm. *A dense `G³` grid cannot bake the SDF family at
 the feature sizes the showcases were authored around — and that is the only
 structure that was tried.* The plank's end check is 2.6 mm
-across and the nail's pits ~1 mm; at G = 64 a cell spans **1.09** and **0.84**
-of those features respectively (G = 32: 0.55 and 0.42), and trilinear lookup
+across and the nail's pits ~1 mm; at G = 64 those features span **1.09** and
+**0.84** cells respectively (G = 32: 0.55 and 0.42), and trilinear lookup
 spreads whatever one attenuated sample survives over ±9.4 mm along the plank.
 The near-surface shell heuristic also degenerates on a slab — the 32 mm plank
 is *all* shell at G = 32 (cell diagonal 19.4 mm > the 16 mm half-thickness)
@@ -1007,12 +1012,13 @@ and 72.5 % shell at G = 64. Resolving the check at three cells needs
 `G ≥ 175`: 21.4 MB and ~38.6 M rays for the plank alone, more than the whole
 of Sponza; the nail's pits need `G ≥ 230`, 48.7 MB. A narrow-band or sparse-brick
 structure was not prototyped; it would shrink the memory by the shell fraction
-(measured at 13–72 % of the volume depending on object and `G`) but not the
+(measured at 13–100 % of the volume depending on object and `G` — the plank
+at G = 32 is all shell) but not the
 ray count, since the prototype already traced only shell cells — the 38.6 M
 and ~7 M figures are what *any* structure sampling at that density pays. And a
 grid of either kind is a strict downgrade of the *self* half, which the analytic estimator answers
 resolution-free today. Grids at G = 32 do deliver the broad term ("this face
-looks at the floor") in 60–207 ms per object, which is the one thing they are
+looks at the floor") in 59–207 ms per object, which is the one thing they are
 honest for.
 
 **Invalidation, counted.** The static bound — other finite-bbox objects whose

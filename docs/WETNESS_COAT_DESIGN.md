@@ -1472,7 +1472,8 @@ polished_material
   0.35 pitch).
 - **"Dry under an overhang" is the honest limitation.** `occlusion()` is
   **self-occlusion only**; cross-object AO was DECLINED for v1 on principle
-  ([GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) §8).
+  ([GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md) §8)
+  and declined again on measurement 2026-09-07 (§8.1 there).
   A doorway keeping the pavement dry beneath it is *not* expressible from
   geometry signals. The two available routes are (a) model the overhang and the
   pavement as one geometry so its concavity is self-occlusion, or (b) author the
@@ -2616,7 +2617,8 @@ the observed-need rule.
 - **Not a generic material-mix primitive.** `coat_weight` covers the coverage
   case; a general two-BSDF blend is §4b, rejected for v1 (§8.4).
 - **Not cross-object wetness masking.** `occlusion()` is self-occlusion only, by
-  the signals design's explicit v1 decision. "Dry under the overhang" is an
+  the signals design's explicit v1 decision (re-measured and declined again
+  2026-09-07, its §8.1). "Dry under the overhang" is an
   authored mask or a modelling choice (§6.5).
 - **Not deep snow.** Real snow accumulation is geometry with a scattering volume,
   not a coat (§8.2).
