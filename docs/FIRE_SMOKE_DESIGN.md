@@ -2516,6 +2516,17 @@ following; two conforming tools must derive identical bytes:
       the new producer build ID. The migration event, both build IDs,
       certificate ID, N, and resumed step are producer/run metadata.
 
+   **Resident certificate v2 (r211, owner-authorized):** for the resident
+   projected-Heun owner, item 2 is exact equality of accepted times and full
+   v2 input/publication payload roots at every one of N >= 8 accepted steps,
+   with exact dt and kernel-set identity as additional checks. Both executed
+   traces, executable/build identities and the checkpoint SHA are bound;
+   raw execution logs and CSVs remain verification dependencies. This is the
+   resident evidence adapter, not a tolerance comparison or fabricated
+   oracle/VDB trace. Certificate v1 verification and historical bytes remain
+   unchanged; a versioned bridging record connects the current lineage.
+   See [r211](FIRE_SMOKE_RESIDENT_MIGRATION_R211.md) for derivation and REDs.
+
    Build migration is pin-8 run infrastructure: it changes neither the case
    payload nor `case_record_id`. The certificate proves the continuation
    actually used by the run, not general equivalence between binaries.

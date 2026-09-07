@@ -7464,6 +7464,13 @@ namespace
 		if(certificateDiagnostic&&(digest!=
 			"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"||
 			checkpoint.acceptedSteps!=1300u))return 92;
+		if(certificateDiagnostic){
+			RISECBOR64::Bytes buildRecord;std::string build,executable;
+			if(!CurrentRendererBuildIdentity(buildRecord,build)||
+				!CurrentExecutableDigest(buildRecord,executable,error))return 92;
+			std::fprintf(stderr,"RESIDENT_RESUME_EXECUTION build_id=%s executable_sha256=%s\n",
+				build.c_str(),executable.c_str());
+		}
 		std::filesystem::create_directories(outputDirectory/"budgets");
 		const char* diagnosticName=certificateDiagnostic?"OWNER_CERTIFICATE_DIAGNOSTIC":"OWNER_EOS_DIAGNOSTIC";
 		std::fprintf(stderr,"%s checkpoint_sha256=%s build=%s "

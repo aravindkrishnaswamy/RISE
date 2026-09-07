@@ -15,7 +15,8 @@ struct ResidentResumeTraceV2
 
 bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
 	ResidentResumeTraceV2& trace,const std::uint64_t firstStep,
-	const std::uint64_t beginningTimeBits,std::string& error)
+	const std::uint64_t beginningTimeBits,const std::string& checkpointSHA,
+	const std::string& checkpointBuild,std::string& error)
 {
 	std::uint64_t digestVersion=0u;
 	if(payload.GetType()!=RISECBOR64::Value::Map||payload.GetMap().size()!=13u||
@@ -67,6 +68,34 @@ bool ResidentResumeTraceV2Read(const RISECBOR64::Value& payload,
 		error="resident r78 v2 missing CSV column";return false;}
 	double previous=0.0;std::memcpy(&previous,&beginningTimeBits,sizeof(previous));
 	if(!std::isfinite(previous)||previous<0.0){error="resident r78 v2 beginning time";return false;}
+	const bool legacy=trace.executable==
+		"70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9"&&
+		trace.build=="a3ef35639751dbc0c3f21aaca7d2b99f0e18ed477ed7c98ab396e2ab8244e1f5";
+	const std::string tag=legacy?"OWNER_EOS_DIAGNOSTIC":"OWNER_CERTIFICATE_DIAGNOSTIC";
+	std::ostringstream startRecord;startRecord<<std::setprecision(17)<<tag<<
+		" checkpoint_sha256="<<checkpointSHA<<" build="<<checkpointBuild<<
+		" accepted_steps="<<firstStep<<" beginning_s="<<previous<<" migration_authority=false";
+	const std::string endRecord=tag+
+		"_END solver_accepted=1 checkpoint_unchanged=1 migration_authority=false error=";
+	const std::string executionRecord="RESIDENT_RESUME_EXECUTION build_id="+trace.build+
+		" executable_sha256="+trace.executable;
+	std::ifstream log(trace.logPath);std::size_t starts=0u,ends=0u,executions=0u;
+	while(std::getline(log,line)){
+		if(line.compare(0u,tag.size()+1u,tag+" ")==0){
+			if(line!=startRecord.str()){error="resident r78 v2 checkpoint execution mismatch";return false;}
+			++starts;
+		}
+		if(line.compare(0u,tag.size()+5u,tag+"_END ")==0){
+			if(line!=endRecord){error="resident r78 v2 execution did not succeed";return false;}
+			++ends;
+		}
+		if(line.compare(0u,26u,"RESIDENT_RESUME_EXECUTION ")==0){
+			if(line!=executionRecord){error="resident r78 v2 producer identity mismatch";return false;}
+			++executions;
+		}
+	}
+	if(!log.eof()||starts!=1u||ends!=1u||(!legacy&&executions!=1u)){
+		error="resident r78 v2 missing executed identity/terminal records";return false;}
 	std::size_t index=0u;
 	while(std::getline(csv,line)){
 		const auto fields=Split(line);
@@ -114,9 +143,9 @@ bool ParseResidentResumeCertificateV2(const RISECBOR64::Value& payload,
 		error="resident r78 v2 certificate schema";return false;}
 	ResidentResumeTraceV2 oldTrace,newTrace;
 	if(!ResidentResumeTraceV2Read(*payload.Find("old_trace"),oldTrace,
-		certificate.resumedFromStep,beginningBits,error)||
+		certificate.resumedFromStep,beginningBits,certificate.checkpointDigest,certificate.oldBuildId,error)||
 		!ResidentResumeTraceV2Read(*payload.Find("new_trace"),newTrace,
-		certificate.resumedFromStep,beginningBits,error))return false;
+		certificate.resumedFromStep,beginningBits,certificate.checkpointDigest,certificate.oldBuildId,error))return false;
 	if(oldTrace.build!=certificate.oldBuildId||newTrace.build!=certificate.newBuildId||
 		oldTrace.executable!=certificate.oldExecutableDigest||
 		newTrace.executable!=certificate.newExecutableDigest||oldTrace.build==newTrace.build||

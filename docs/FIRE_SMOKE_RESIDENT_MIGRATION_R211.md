@@ -34,7 +34,11 @@ certificate diagnostic must exit zero.
 
 The certificate retains both traces separately. Its loader checks every row
 against the SHA-bound raw CSV, all exact times, digest version, input/output
-roots and executable files. Top-level build/executable identities must equal
+roots and executable files. The raw log must bind the same checkpoint,
+beginning time and starting step and report successful unchanged-checkpoint
+termination. Modern trace logs also self-report the executing build/binary;
+the sole historical exception is the SHA-pinned r208 adapter above.
+Top-level build/executable identities must equal
 the trace identities; the two traces must agree step for step. Publication is
 through the executed issuer, not a CLI that accepts hand-authored trace arrays.
 As in r78 v1, this is a repository evidence certificate, not a cryptographic

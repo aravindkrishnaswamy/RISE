@@ -30,7 +30,11 @@ class ResidentResumeV2Test(unittest.TestCase):
         for label, build in (("old", "b" * 64), ("new", "c" * 64)):
             binary, log, csv_path = (self.root / (label + suffix) for suffix in (".binary", ".log", ".csv"))
             binary.write_bytes(("synthetic qualification only " + label).encode())
-            log.write_text("synthetic execution fixture, no production authority\n")
+            log.write_text("synthetic execution fixture, no production authority\n"
+                           "RESIDENT_RESUME_EXECUTION build_id=" + build + " executable_sha256=" + sha(binary) + "\n"
+                           "OWNER_CERTIFICATE_DIAGNOSTIC checkpoint_sha256=" + "a" * 64 + " build=" + "b" * 64
+                           + " accepted_steps=1300 beginning_s=2 migration_authority=false\n"
+                           "OWNER_CERTIFICATE_DIAGNOSTIC_END solver_accepted=1 checkpoint_unchanged=1 migration_authority=false error=\n")
             with csv_path.open("w", newline="") as stream:
                 writer = csv.writer(stream, lineterminator="\n")
                 writer.writerow(header)
@@ -91,8 +95,21 @@ class ResidentResumeV2Test(unittest.TestCase):
         mutant["new_trace"]["executable_sha256"] = "0" * 64
         mutant["new_executable_sha256"] = "0" * 64
         self.validate(mutant, False)
+        mutant = copy.deepcopy(self.payload)
+        mutant["new_build_id"] = mutant["new_trace"]["build_id"] = "0" * 64
+        self.validate(mutant, False)
+        mutant = copy.deepcopy(self.payload)
+        mutant["checkpoint_sha256"] = "0" * 64
+        self.validate(mutant, False)
         Path(self.payload["new_trace"]["executable_path"]).write_bytes(b"binary replaced after execution")
         self.validate(self.payload, False)
+
+    def test_resealed_failed_execution_log(self):
+        mutant = copy.deepcopy(self.payload)
+        log = Path(mutant["new_trace"]["log_path"])
+        log.write_text(log.read_text().replace("solver_accepted=1", "solver_accepted=0"))
+        mutant["new_trace"]["log_sha256"] = sha(log)
+        self.validate(mutant, False)
 
     def test_version_and_canonical_envelope(self):
         for version in (0, 1, 3):
