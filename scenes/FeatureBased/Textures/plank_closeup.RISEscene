@@ -22,9 +22,10 @@ RISE ASCII SCENE 7
 #   ------------------------------------------------------------------------------------------------
 #
 #   1. CAMERA FIRST, THEN FEATURE SIZES IN WORLD UNITS.  The camera is authored before any texture and
-#      every feature size is derived from its pixel footprint.  Predicted: 2 * 0.40 m * tan(20 deg) /
-#      640 = 0.45 mm.  MEASURED, by painting `fw` itself onto the plank and reading the pixels back:
-#      0.40 mm (p50) across the whole top face.  Sizes then follow: growth rings 4-7 mm ON THE FACE
+#      every feature size is derived from its pixel footprint.  Predicted: 2 * 0.33 m * tan(20 deg) /
+#      640 = 0.37 mm.  MEASURED, by painting `fw` itself onto the plank and reading the pixels back:
+#      0.40 mm (p50) across the whole top face (the face is oblique to the view, so it is a little
+#      larger than the on-axis prediction).  Sizes then follow: growth rings 4-7 mm ON THE FACE
 #      (10-17 px), the ring-edge warp 2.5 mm across the grain, fine fibre 1.2 mm (3 px) -- and the
 #      sub-millimetre pore texture, at 0.5 mm, goes ONLY into roughness (`sp_pore`), never into colour
 #      and never into relief, because at ~1 px it can carry no shape and would read as exactly the
@@ -72,8 +73,9 @@ RISE ASCII SCENE 7
 #      dark band and dull sheen are the SAME feature seen three ways, which is what a real surface does
 #      and what a graph of independent noises cannot fake.
 #
-#   6. LIGHTING THAT REVEALS RELIEF.  A 0.17 x 0.12 m panel at 26 deg elevation, throwing mostly along
-#      -Z while the grain runs along X, so it rakes ACROSS the rings.  Panel SIZE turned out to matter
+#   6. LIGHTING THAT REVEALS RELIEF.  A 0.17 x 0.12 m panel at 28 deg elevation, throwing mostly along
+#      +Z (it sits behind the plank at z = -0.5 and faces the camera side) while the grain runs along X,
+#      so it rakes ACROSS the rings.  Panel SIZE turned out to matter
 #      as much as angle: the first key was 0.45 x 0.30 m, and a source that broad washes out the
 #      shading of a 0.2 mm ridge -- shrinking it (exitance raised to match) bought as much fine-detail
 #      contrast as the entire relief-amplitude sweep did.  `exitance` is then set so the early-wood
@@ -126,8 +128,8 @@ RISE ASCII SCENE 7
 #
 #   -- 18:1 EARLY-TO-LATE CONTRAST.  Real pine is nearer 2.5:1.  Over-contrasty texture is itself a
 #      "generated" tell, and it drowns relief -- which is the cue that actually reads as carved.  The
-#      shipped ramp is 0.4029 -> 0.1435 in luminance through the wood, about 2.8:1, with the darkest
-#      stops RESERVED for the knot, the dirt and the check.
+#      shipped ramp is 0.403 on the plateau -> 0.15 at the late-wood stop (0.13 at the measured p90) in
+#      luminance, about 2.7-3.1:1, with the darkest stops RESERVED for the knot, the dirt and the check.
 #
 #   -- THE FIELD SPENT THE RAMP'S RESERVED STOPS, AND THE RAMP COMMENT DID NOT NOTICE.  The most
 #      expensive bug on this scene, because both halves of it were individually defensible.  The ramp
@@ -203,10 +205,10 @@ file_rasterizeroutput
 # Camera -- DOCTRINE 1: this chunk is authored FIRST and every
 # feature size in the scene is derived from it.
 #
-#   distance to the subject          ~0.40 m
-#   horizontal field at the subject   2 * 0.40 * tan(20 deg) = 0.291 m
-#   pixel footprint, PREDICTED        0.291 / 640            = 0.45 mm
-#   pixel footprint, MEASURED         0.40 mm (p50 over the top face)
+#   distance to the subject          0.33 m  (|location - lookat|)
+#   horizontal field at the subject   2 * 0.33 * tan(20 deg) = 0.239 m
+#   pixel footprint, PREDICTED        0.239 / 640            = 0.37 mm  (on axis, face-on)
+#   pixel footprint, MEASURED         0.40 mm (p50 over the top face, which is oblique)
 #
 # The measurement is worth making rather than trusting the arithmetic: paint
 # `clamp(fw*2000,0,1)` onto the plank as a lambertian under a flat white
@@ -214,7 +216,7 @@ file_rasterizeroutput
 # geometry on a PRIMARY hit (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md), so it
 # is the same number `relief_modifier`'s automatic step rule sees.
 #
-# The plank's top face is the world plane y = 0; the camera sits 28 deg
+# The plank's top face is the world plane y = 0; the camera sits 30 deg
 # above it (a low three-quarter), which fills the frame with the top face
 # while keeping the +X end-grain face in shot.
 ##################################################
@@ -392,9 +394,10 @@ expression_painter
 # most of the face), the late-wood bands land 0.72-0.86, and 0.86-1.00 is
 # RESERVED for the knot core, the crevice dirt and the check.
 #
-# CONTRAST.  Early-to-late is 0.4029 -> 0.1435 in luminance (the plateau
-# against the colour at the measured p90), about 2.8:1, which is what pine
-# measures.  In the RENDER, luma p10/p90 over the board is 2.76:1 and there
+# CONTRAST.  Early-to-late is 0.403 -> 0.15 in luminance (the plateau
+# against the 0.72 late-wood stop; 0.13 at the measured p90, where the ramp
+# is already interpolating toward the 0.86 stop), about 2.7-3.1:1, which is
+# what pine measures.  In the RENDER, luma p10/p90 over the board is 2.76:1 and there
 # are 28 near-black pixels (< luma 12) per 90 000 in the mid-board crop, of
 # which 25 are already there with relief switched off.
 #
@@ -699,9 +702,9 @@ standard_object
 # Geometry -- the nail.  DOCTRINE 7: the silhouette has to say what the
 # object is before any texture is applied.
 #
-# Part 1  roundcone, 3.4 mm at the head tapering to 0.35 mm over 50 mm,
-#         rotated -84 deg about Z so it lies along +X with a 6 deg nose-down
-#         set (the head is thicker than the shank, so a nail lying on a flat
+# Part 1  roundcone, 4.0 mm radius at the head tapering to 1.0 mm over 68 mm,
+#         rotated -96 deg about Z (-90 lays it along +X, the extra -6 is a
+#         nose-down set) (the head is thicker than the shank, so a nail lying on a flat
 #         surface rests on its head rim and its tip, not along its length).
 # Part 2  an intersecting box that squares the round shank off into a
 #         tapered rectangular section -- the cut-nail cross-section.  It has
@@ -771,9 +774,9 @@ standard_object
 ##################################################
 # Lights -- DOCTRINE 6.
 #
-# One 0.17 x 0.12 m window panel, 0.62 m from the subject at 26 deg elevation.
-# Its horizontal throw is mostly -Z while the grain runs along X, so it rakes
-# ACROSS the rings: a late-wood ridge presents its rising flank to the light
+# One 0.17 x 0.12 m window panel, 0.57 m from the subject at 28 deg elevation.
+# It sits at z = -0.5 facing +Z, so its horizontal throw is mostly +Z while the
+# grain runs along X, and it rakes ACROSS the rings: a late-wood ridge presents its rising flank to the light
 # and its falling flank away from it, which is the only geometry in which a
 # fraction-of-a-millimetre feature reads at all.
 #
