@@ -1,0 +1,61 @@
+schema rise.fire.r214.review-and-launch.v1
+status running_not_an_onset_verdict
+qualified_source_commit 3dc96320527f211aff22e6fbea971c10ff2e0145
+frozen_executable bin/tests/FireSequenceTest_r214_3dc96320
+frozen_executable_sha256 45370ad3bcc7035fb228a1f839efe5059cbcc791a64486bd2a1f0b1c3025dc2c
+producer_build_id 0d7537194b877cdffd248de25eccf52262f824b4f1d4cde5fe035ad1eee52175
+qualification_receipt qualification.v5.json
+qualification_receipt_sha256 d26455f185e98ef0e0338b82b08235be32d46d5822209bdf8f0ab8bc0acbc408
+full_sequence_log full_sequence.v3.log
+full_sequence_exit 0
+full_sequence_sha256 4a3267faacbb4f1719b91c60584fd13322fd50b478ebe3c28cd16e535548977e
+mutation_log evidence_mutants.asan.v2.log
+mutation_log_sha256 5dbc6b815df6789f9508ef63b7b146db4195faa5b203106738cd1bce6fb99c4d
+mutation_tests 6
+mutation_sanitizers address_undefined
+historical_r211_trajectory_check valid_complete_no_15_crossing
+historical_check_sha256 e97f6aaab22cba7009f31fb6f50c04ebbc6d8b22b44972a13eb65ee8bb328d23
+
+Review ledger:
+Round 1: two independent reviewers, two distinct P1s and one P2.
+P1 horizon-crossing false survival: fixed by independent crossing-priority
+outcome and complete accepted-schedule trajectory validation; named mutant RED.
+P1 horizontal-extreme evidence lost: fixed by all-axis staggered-column
+companion, adjacent-cell selection, mandatory companions and alias copies.
+P2 unchecked late stream close: checked close, fatal evidence refusal,
+missing/duplicate/wrong-time trajectory REDs; no ordinary numerical retry.
+Round 2: zero P1, one P2 (high-boundary face coordinates labelled as cells).
+P2 fixed by shared live face decoder, boundary round-trip and clamp-mutant RED.
+Round 3 on 3dc96320: r214_signoff1 and r214_signoff2 independently report
+zero P1/P2. Axes: test/evidence integrity and scientific/design/cost fidelity.
+Reviewers inspected source; executable gates above were run by the main worker.
+Failed qualification.v3 build is preserved: declaration mismatch was fixed,
+not suppressed. Only qualification.v5 certifies the running executable.
+
+Live run:
+worker_pid_at_launch_check 1049
+exec_session_id 23225
+output_directory tier10_from_zero.v1
+log tier10_from_zero.v1.log
+protocol docs/fire_r214_tier10_onset.v1
+protocol_sha256 983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2
+resolution_tier 10
+seed 1234
+case_record_id c0ace3766badb67e6a775d9fe26e9bbe063e72af539944f6f1ba0698d3173651
+initial_state_sha256 d56e507a7c6ac0bf596aa9fd27403502f5650d47bbea3b9887775f6ed24b8c89
+horizon_s 3.5
+first_crossing_stop_m_per_s 15
+Do not start a duplicate worker. This receipt is not completion evidence.
+The live directory is not sealed as complete until its terminal publication.
+No empirical row, window, animation, formal fidelity or onset survival is
+claimed by this launch receipt. Check the terminal native summary and log.
+
+Parallel cost candidate:
+branch codex/r214-target-basis
+commit 3aad1e93c55d1c58289db552fcb28a7fd0b6cafe
+worktree /Users/aravind/Working/RISE/worktrees/r214-target-basis
+scope CPU_only_candidate_not_promoted
+No Metal qualification, eight-step owner-byte qualification or timing claim.
+The sealed onset uses the unchanged qualified production kernels, not this
+candidate. Fixed-k and shared-input filtered additive qualification remain
+pending as recorded in docs/FIRE_SMOKE_FILTERED_ONSET_R214.md.
