@@ -872,12 +872,18 @@ variant that breaks everything above.
 lazy + mutex shader-op route, or bake-time `IObjectManager::IntersectShadowRay`
 (`IObjectManager.h:46-51`) against the whole scene — the cheapest occlusion
 primitive available, boolean-only, far cheaper than a full `IRayCaster::CastRay`.
-**Both routes were prototyped and priced 2026-09-07 (§8.1) and neither is an
-open pointer any more:** the live shadow-ray query costs 2.4× on the flagship
-scene and reaches the contact case only as a band that does not read; the
-attach-time bake is affordable for meshes (Sponza 12 s / 7.8 MB) and cannot
-resolve the SDF family's feature sizes as a dense grid; both inherit an
-O(scene) invalidation the bbox census cannot fully see.
+**Priced 2026-09-07 (§8.1), and neither is an open pointer any more.** What
+was measured on the first route is its *uncached* form — a fresh shadow-ray fan
+on every painter call, without the per-hit memo the SSS precedent implies and
+that §10 of the convexity document names as an unattempted ~10× lever — and
+that form costs 2.4× on the flagship scene; a memoized form would shrink the
+cost toward the ray fan's own share of one evaluation per hit, but it cannot
+change what the signal shows, which is the finding that closes the route: the
+contact case reads only as a band, not a seam, under every hemisphere sampler
+tried. The second route was prototyped as measured: the attach-time bake is
+affordable for meshes (Sponza 12 s / 7.8 MB) and cannot resolve the SDF
+family's feature sizes as a dense grid. Both inherit an O(scene) invalidation
+the bbox census cannot fully see, cached or not.
 
 ### 8.1 Re-measured 2026-09-07 — DECLINED AGAIN, with the numbers
 
@@ -902,9 +908,9 @@ from the hit's world point, lifted `1e-4·r` along the geometric normal,
 `N` cosine-weighted hemisphere shadow rays of length `r` through
 `IObjectManager::IntersectShadowRay` against the whole top-level BVH (self
 included), Hammersley set rotated per hit by a hash of the world position,
-returning the escape fraction (1 = unoccluded); the scene pointer was published
-by `RayCaster::AttachScene` as a process global, which is prototype-grade and
-is not the design. A sibling `xoccs(f)` took a fraction of the scene bbox
+returning the escape fraction (1 = unoccluded), one fresh fan per painter call
+with no per-hit memo; the scene pointer was published by `RayCaster::AttachScene`
+as a process global, which is prototype-grade and is not the design. A sibling `xoccs(f)` took a fraction of the scene bbox
 diagonal. Calibration on a plane-plus-box scene: floor at the wall base 0.494
 (closed form 0.5), open floor 0.998, box top 1.002. *Bake:* at attach, after
 `PrepareForRendering()`, one float per vertex position for every indexed mesh
