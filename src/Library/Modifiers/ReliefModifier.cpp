@@ -197,9 +197,17 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// the rule exists to stop.  The 1e-3 floor only ever applies on a
 		// hit with NO footprint (widthValid false) -- it no longer competes
 		// with a real, smaller footprint.
+		// A footprint can be valid and yet ZERO wide (Object::IntersectRay
+		// documents that a collapsed scale axis yields a possibly-zero
+		// world footprint); a zero step would make the central
+		// difference 0 * (1/0) = NaN and lean on the downstream isfinite
+		// / mag2 gates to discard the hit.  Treat a non-positive footprint
+		// as "no footprint" so the surface floor applies instead.
 		Scalar s;
-		if( ri.txFootprint.widthValid ) {
-			const Scalar sFootprint = RELIEF_AUTO_STEP_FOOTPRINT_FRACTION * ri.txFootprint.worldWidth;
+		const Scalar sFootprint = ri.txFootprint.widthValid
+			? RELIEF_AUTO_STEP_FOOTPRINT_FRACTION * ri.txFootprint.worldWidth
+			: Scalar(0);
+		if( sFootprint > Scalar(0) ) {
 			s = ( dStep > sFootprint ) ? dStep : sFootprint;
 		} else {
 			s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_SURFACE;
