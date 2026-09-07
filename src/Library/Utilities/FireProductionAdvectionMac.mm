@@ -2924,11 +2924,39 @@ inline EOSDD eos_enthalpy_dd(device const float* thermo,uint species,EOSDD tempe
  primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),eos_mul(t5,eos_dd(0.2f))));
  EOSDD gasConstant=eos_load_dd(thermo,7u*96u),weight=eos_load_dd(thermo,96u*species);
  return eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+27u));}
-inline EOSDD eos_energy_dd(device const float* state,device const float* thermo,
+inline EOSDD eos_energy_dd_direct(device const float* state,device const float* thermo,
  constant EOSParams& p,uint cell,EOSDD temperature,device atomic_uint* obligations,thread bool& valid){
  EOSDD energy=eos_dd(0.0f);for(uint species=0u;species<7u;++species)energy=eos_add(energy,
   eos_mul(eos_dd(state[(species+1u)*p.cells+cell]),eos_enthalpy_dd(thermo,species,
    temperature,obligations,valid)));return energy;}
+inline EOSDD eos_energy_dd(device const float* state,device const float* thermo,
+ constant EOSParams& p,uint cell,EOSDD temperature,device atomic_uint* obligations,thread bool& valid){
+ // Every species consumes the same represented temperature. Reuse its exact
+ // compensated primitives in this thread, without changing the species term
+ // order, segment predicates, or any word of the propagated enclosure.
+ EOSDD inverse=eos_div(eos_dd(1.0f),temperature),logT=eos_log_dd(temperature);
+ EOSDD t2=eos_mul(temperature,temperature),t3=eos_mul(t2,temperature),t4=eos_mul(t3,temperature),
+  t5=eos_mul(t4,temperature),energy=eos_dd(0.0f);
+ for(uint species=0u;species<7u;++species){uint offset=0u;EOSDD enthalpy=eos_dd(0.0f);
+  if(!eos_select_dd_segment(thermo,species,temperature,offset,obligations,valid))valid=false;
+  else{EOSDD primitive=eos_neg(eos_mul(eos_load_dd(thermo,offset+6u),inverse));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+9u),logT));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+12u),temperature));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+15u),eos_mul(t2,eos_dd(0.5f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+18u),eos_div(t3,eos_dd(3.0f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+21u),eos_mul(t4,eos_dd(0.25f))));
+   primitive=eos_add(primitive,eos_mul(eos_load_dd(thermo,offset+24u),eos_mul(t5,eos_dd(0.2f))));
+   EOSDD gasConstant=eos_load_dd(thermo,7u*96u),weight=eos_load_dd(thermo,96u*species);
+   enthalpy=eos_add(eos_mul(eos_div(gasConstant,weight),primitive),eos_load_dd(thermo,offset+27u));}
+  energy=eos_add(energy,eos_mul(eos_dd(state[(species+1u)*p.cells+cell]),enthalpy));}
+ // The unshared arithmetic stays independent and qualification-only. This
+ // function constant eliminates the comparator from production pipelines.
+ if(resident_full_payload_seals){bool directValid=true;
+  EOSDD direct=eos_energy_dd_direct(state,thermo,p,cell,temperature,obligations,directValid);
+  if(valid!=directValid||as_type<uint>(energy.hi)!=as_type<uint>(direct.hi)||
+   as_type<uint>(energy.lo)!=as_type<uint>(direct.lo)||as_type<uint>(energy.tail)!=as_type<uint>(direct.tail)||
+   as_type<uint>(energy.bound)!=as_type<uint>(direct.bound))valid=false;}
+ return energy;}
 inline bool eos_within_positive_envelope(EOSDD residual,EOSDD scale,float feasibility){
  int scaleOrder=eos_order(scale,eos_dd(1.0f));if(scaleOrder==-1||scaleOrder==2)scale=eos_dd(1.0f);
  EOSDD threshold=eos_mul(eos_dd(feasibility),scale);return eos_proved_leq(residual,threshold);}
