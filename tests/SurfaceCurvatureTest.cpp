@@ -417,7 +417,7 @@ static void TestCurvInvariantUnderNormalPerturbation()
 	RampField* field = new RampField();
 	Function2DScalarPainter* height = new Function2DScalarPainter( field );
 	field->release();
-	ReliefModifier* bump = new ReliefModifier( *height, -0.015, ReliefDomain::UV, 0.01 );
+	ReliefModifier* bump = new ReliefModifier( *height, -0.015, ReliefDomain::UV, 0.01, 0.0 );
 	height->release();
 
 	ExpressionProgram prog = ExpressionProgram::Invalid();

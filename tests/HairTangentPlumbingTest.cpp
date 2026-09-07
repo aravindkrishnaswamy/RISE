@@ -1013,7 +1013,7 @@ static void TestReliefUVPreservesHairFiberTangent()
 	LinearGradientFunction2D* pFunc = new LinearGradientFunction2D( 0.4, -0.3 );
 	Function2DScalarPainter* pHeight = new Function2DScalarPainter( pFunc );
 	safe_release( pFunc );
-	ReliefModifier* pMod = new ReliefModifier( *pHeight, -0.1, ReliefDomain::UV, 0.05 );
+	ReliefModifier* pMod = new ReliefModifier( *pHeight, -0.1, ReliefDomain::UV, 0.05, 0.0 );
 	safe_release( pHeight );
 
 	const Scalar bumpU = 0.04, bumpV = -0.03;
@@ -1068,7 +1068,7 @@ static void TestReliefUVNonHairByteMatchesLegacy()
 	LinearGradientFunction2D* pFunc = new LinearGradientFunction2D( 0.4, -0.3 );
 	Function2DScalarPainter* pHeight = new Function2DScalarPainter( pFunc );
 	safe_release( pFunc );
-	ReliefModifier* pMod = new ReliefModifier( *pHeight, -0.1, ReliefDomain::UV, 0.05 );
+	ReliefModifier* pMod = new ReliefModifier( *pHeight, -0.1, ReliefDomain::UV, 0.05, 0.0 );
 	safe_release( pHeight );
 
 	const Scalar bumpU = 0.04, bumpV = -0.03;
