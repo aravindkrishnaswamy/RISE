@@ -3702,6 +3702,22 @@ static void TestExpressionVMFwEndToEnd()
 			const Scalar viaDirect = NoiseCore::Fbm3D( 0.3,0.7,1.4, 4, 0.5, 2.0, fw );
 			char label[64]; snprintf( label, sizeof(label), "fw=%.3f", (double)fw );
 			Check( viaVM == viaDirect, std::string("VM fbm(P) with ctx.fw is BIT-IDENTICAL to direct NoiseCore::Fbm3D at ") + label );
+
+			// SECOND FOOTPRINT, SAME ANSWER (2026-09-06).  The hit now
+			// also carries `fwo`, the object-space width, and RunAny
+			// evaluates `fw*val + fwo*valo` at every noise call site.  A
+			// body whose argument does not mention `Po` compiles to
+			// valo == exactly 0, so an arbitrarily large fwo must not
+			// move the result by one ulp -- this is the runtime half of
+			// the bit-identity promise test 67 makes at compile time.
+			for( Scalar fwo : { 0.05, 7.0, 1000.0 } ) {
+				ctx.fwo = fwo;
+				char l2[128];
+				snprintf( l2, sizeof(l2),
+					"a P-only body is untouched by ctx.fwo (fw=%.3f, fwo=%g)", (double)fw, (double)fwo );
+				Check( prog.Eval( ctx ) == viaDirect, l2 );
+			}
+			ctx.fwo = 0;
 		}
 	}
 }
@@ -3710,7 +3726,7 @@ static void TestExpressionVMFwEndToEnd()
 // Domain-scale (2026-09-06): fbm/turbulence/ridged rescale the
 // world-space `fw` into their OWN position argument's domain, using a
 // compile-time forward-mode Jacobian of that argument w.r.t. P
-// (ExpressionEval.h, Builder::NoiseFwScale).  Before this, `fw` went in
+// (ExpressionEval.h, Builder::NoiseFwScales).  Before this, `fw` went in
 // unscaled, so the standard frequency idiom `fbm(P*k, ...)` set the
 // Nyquist threshold k-times too low and the fade effectively never
 // engaged in any real scene (measured k: 7 .. 820).
@@ -3845,26 +3861,42 @@ static void TestFbmDomainScaleBitIdentity()
 	// future edit that perturbs an un-scaled body by one ulp is caught:
 	// every scene without a footprint, and every body whose noise
 	// argument is bare `P`, must keep rendering exactly as it did.
-	struct Row { const char* body; double px, py, pz; double u, v; double fw; double expect; };
+	// `fwo` (2026-09-06) is carried on every row: a body that does not
+	// mention `Po` must produce the recorded pre-change value no matter
+	// what object-space footprint the hit reports.  (The mirror claim --
+	// a Po-only body at fwo == 0 reproduces the un-faded sum -- is
+	// pinned in test 71, against a from-scratch reference rather than a
+	// recorded literal.)
+	struct Row { const char* body; double px, py, pz; double u, v; double fw; double fwo; double expect; };
 	const Row rows[] = {
 		// Bare `P` -- Jacobian is the identity, multiplier exactly 1.0.
-		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  -0.19859653334474803 },
-		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.05, -0.20462375812775757 },
-		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.3,  -0.057247597370529507 },
-		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.0,   0.12500609165612192 },
-		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.05,  0.12524823843851685 },
-		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.3,   0.087567051930949061 },
-		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.0,   0.77670332638038786 },
-		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.05,  0.77646570533967341 },
-		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.3,   0.83612246546057789 },
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  0.0, -0.19859653334474803 },
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.05, 0.0, -0.20462375812775757 },
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.3,  0.0, -0.057247597370529507 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  0.0,  0.12500609165612192 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.05, 0.0,  0.12524823843851685 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.3,  0.0,  0.087567051930949061 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  0.0,  0.77670332638038786 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.05, 0.0,  0.77646570533967341 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.3,  0.0,  0.83612246546057789 },
 		// A SCALED domain at fw == 0: the point-sample path, which the
 		// multiplier cannot disturb because 0 * anything finite is 0.
-		{ "fbm(P*7.0, 5, 0.5, 2.0)",    0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  -0.11547628157415081 },
-		// An argument with no provable relation to world P: falls back
-		// to the pre-change multiplier 1.0 at EVERY fw, not just 0.
-		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.0,   0.006329461722634845 },
-		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.05,  0.009510600846260894 },
-		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.3,  -0.10298160573714994 },
+		{ "fbm(P*7.0, 5, 0.5, 2.0)",    0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  0.0, -0.11547628157415081 },
+		// An argument with no provable relation to EITHER position:
+		// falls back to the pre-change multipliers (1.0, 0.0) at EVERY
+		// footprint, not just 0.
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.0,  0.0,   0.006329461722634845 },
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.05, 0.0,   0.009510600846260894 },
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.3,  0.0,  -0.10298160573714994 },
+		// THE SAME P-ONLY GOLDENS WITH A LARGE OBJECT-SPACE FOOTPRINT
+		// PRESENT (2026-09-06).  These are the rows the Po change could
+		// plausibly have broken: `valo` must be an exact 0 on a body
+		// that never names Po, so `fw*val + fwo*0` is `fw*val`.
+		{ "fbm(P, 4, 0.5, 2.0)",        0.3, 0.7, 1.4, 0.37, 0.61, 0.05, 900.0, -0.20462375812775757 },
+		{ "turbulence(P, 4, 0.5, 2.0)", 0.3, 0.7, 1.4, 0.37, 0.61, 0.3,  900.0,  0.087567051930949061 },
+		{ "ridged(P, 4, 0.5, 2.0)",     0.3, 0.7, 1.4, 0.37, 0.61, 0.05, 900.0,  0.77646570533967341 },
+		{ "fbm(P*7.0, 5, 0.5, 2.0)",    0.3, 0.7, 1.4, 0.37, 0.61, 0.0,  900.0, -0.11547628157415081 },
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 4, 0.5, 2.0)", 0,0,0, 0.37, 0.61, 0.3, 900.0, -0.10298160573714994 },
 	};
 
 	for( size_t i = 0; i < sizeof(rows)/sizeof(rows[0]); ++i ) {
@@ -3874,9 +3906,10 @@ static void TestFbmDomainScaleBitIdentity()
 		Check( b.Finalize( r.body, prog ), std::string("compiles: ") + r.body );
 		if( !prog.IsValid() ) continue;
 		ExprEvalContext ctx;
-		ctx.u = r.u; ctx.v = r.v; ctx.P = Vector3( r.px, r.py, r.pz ); ctx.fw = r.fw;
+		ctx.u = r.u; ctx.v = r.v; ctx.P = Vector3( r.px, r.py, r.pz );
+		ctx.fw = r.fw; ctx.fwo = r.fwo;
 		char label[192];
-		snprintf( label, sizeof(label), "pre-change golden: %s at fw=%g", r.body, r.fw );
+		snprintf( label, sizeof(label), "pre-change golden: %s at fw=%g fwo=%g", r.body, r.fw, r.fwo );
 		Check( prog.Eval( ctx ) == r.expect, label );
 	}
 }
@@ -4141,6 +4174,277 @@ static void TestExpressionPainterFwSpectralParity()
 	job->release();
 }
 
+//======================================================================
+// Po DOMAINS (2026-09-06, docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md 11)
+//
+// The domain-scale analysis now differentiates a noise call's position
+// argument with respect to `Po` as well as `P`, and the hit carries the
+// matching object-space width `fwo` alongside the world-space `fw`.  A
+// call site is filtered at `scale_P * fw + scale_Po * fwo`.
+//
+//   - Test 71 DOMAIN CONSISTENCY ACROSS THE OBJECT TRANSFORM: on an
+//     object with uniform `scale s`, `fbm(Po*k)` must fade at exactly
+//     the octave `fbm(P*k/s)` fades at -- the two describe the SAME
+//     field on the SAME surface, so the only way they can disagree is a
+//     footprint bug.  Also pins the short-circuit: fwo == 0 leaves a
+//     Po-only body un-faded.
+//   - Test 72 MIXED FRAMES take the documented CONSERVATIVE SUM.
+//   - Test 73 NON-UNIFORM SCALE lands on the documented side.
+//   - Test 74 THE COMPILE-TIME SPLIT: a Po-only body puts NO weight on
+//     `fw`, a P-only body NO weight on `fwo`, and an unprovable
+//     argument still falls back to (1.0, 0.0).
+//======================================================================
+
+//! What the object-space footprint IS, for an object under uniform
+//! `scale s`: the world footprint divided by s.  This mirrors
+//! TextureFootprintTest test 13a, which proves Object::IntersectRay
+//! actually reports it (`worldWidth / objectWidth == s`); here it is
+//! the arithmetic the VM is handed.
+static Scalar S11_ObjectWidthForUniformScale( Scalar worldWidth, Scalar s )
+{
+	return worldWidth / s;
+}
+
+static void TestPoDomainConsistencyAcrossTransform()
+{
+	std::cout << "Test 71: fbm(Po*k) on a `scale s` object fades at the same octave as fbm(P*k/s) -- the domain is consistent ACROSS the object transform" << std::endl;
+
+	// The surface point, in both frames, for an object under uniform
+	// `scale s`: P = s * Po.  Both bodies below therefore evaluate the
+	// noise at the SAME lattice coordinate, and the only question the
+	// test asks is whether they FILTER it the same way.
+	const Scalar s  = 8.0;					// the instance scale
+	const Scalar k  = 62.0;					// the shipped Hair/variety_gallery domain scale
+	const Vector3 po( 0.13, -0.41, 0.77 );	// object-space hit
+	const Vector3 pw( po.x*s, po.y*s, po.z*s );
+
+	const char* bodies[3] = { "fbm(%s, 5, 0.5, 2.0)", "turbulence(%s, 5, 0.5, 2.0)", "ridged(%s, 5, 0.5, 2.0)" };
+	const char* names[3]  = { "fbm", "turbulence", "ridged" };
+
+	for( int f = 0; f < 3; ++f ) {
+		char objBody[160], worldBody[160];
+		// `Po * 62.0` -- the object-space idiom.
+		snprintf( objBody, sizeof(objBody), bodies[f], "Po*62.0" );
+		// `P * (62/8)` -- the SAME field written in world space.
+		snprintf( worldBody, sizeof(worldBody), bodies[f], "P*7.75" );
+
+		ExpressionProgram::Builder bo; bo.EnableContextVars( true );
+		ExpressionProgram objProg = ExpressionProgram::Invalid();
+		Check( bo.Finalize( objBody, objProg ), std::string(names[f]) + "(Po*62.0, ...) compiles" );
+
+		ExpressionProgram::Builder bw; bw.EnableContextVars( true );
+		ExpressionProgram worldProg = ExpressionProgram::Invalid();
+		Check( bw.Finalize( worldBody, worldProg ), std::string(names[f]) + "(P*7.75, ...) compiles" );
+
+		if( !objProg.IsValid() || !worldProg.IsValid() ) continue;
+
+		for( Scalar worldFw : { 0.0, 0.0008, 0.004, 0.02, 0.06 } ) {
+			ExprEvalContext ctx;
+			ctx.P = pw; ctx.Po = po;
+			ctx.fw = worldFw;
+			ctx.fwo = S11_ObjectWidthForUniformScale( worldFw, s );
+
+			char label[160];
+			snprintf( label, sizeof(label),
+				"%s: fw=%.4f -- Po*62 and P*7.75 agree BIT-for-BIT on a scale-8 object",
+				names[f], (double)worldFw );
+			// Exact, not approximate: 62 * (fw/8) and 7.75 * fw are the
+			// same IEEE product (62/8 == 7.75 exactly, both powers-of-two
+			// denominators), so both routes must hand NoiseCore the very
+			// same (x,y,z,fw).  Any difference is a real disagreement.
+			Check( objProg.Eval( ctx ) == worldProg.Eval( ctx ), label );
+		}
+	}
+
+	// THE FADE ACTUALLY ENGAGES on the Po body -- without this the test
+	// above would pass just as well on the pre-change engine, where BOTH
+	// bodies could have been inert.  At a render-scale world footprint
+	// the object-domain footprint 62*fw/8 is well past the cutoff.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(Po*62.0, 5, 0.5, 2.0)", prog ), "fbm(Po*62.0, 5, 0.5, 2.0) compiles (fade probe)" );
+		if( prog.IsValid() ) {
+			// 0.01 world units on a scale-8 object is an object-space
+			// width of 0.00125, i.e. a DOMAIN footprint of 62*0.00125 =
+			// 0.0775 -- whose 4th and 5th octaves (0.62, 1.24) are past
+			// the fade band's hi = 0.6 and are therefore dropped
+			// outright.  Chosen over a smaller width so the
+			// "genuinely different" assertions below cannot be
+			// satisfied by rounding.
+			const Scalar worldFw = 0.01;
+			const Scalar objFw   = S11_ObjectWidthForUniformScale( worldFw, s );
+
+			ExprEvalContext point;  point.P = pw; point.Po = po; point.fw = 0;       point.fwo = 0;
+			ExprEvalContext filt;   filt.P  = pw; filt.Po  = po; filt.fw  = worldFw; filt.fwo  = objFw;
+
+			const Scalar unfaded = prog.Eval( point );
+			const Scalar faded   = prog.Eval( filt );
+
+			// Independent reference: the from-scratch faded sum at the
+			// domain footprint k*fwo, computed without the VM.
+			const Scalar expected = S9_ExpectedFadedFbm( po.x*k, po.y*k, po.z*k, 5, 0.5, 2.0, k*objFw );
+			CheckClose( faded, expected, 1e-12,
+				"a Po domain is filtered at k*fwo (matches the from-scratch faded sum)" );
+			Check( std::fabs( faded - unfaded ) > 1e-6,
+				"...and that is genuinely DIFFERENT from the point sample -- the fade engages, "
+				"which it did NOT before Po was a differentiation variable" );
+
+			// THE PRE-CHANGE ANSWER, named so a regression is diagnosed:
+			// the fallback multiplier 1.0 on the world fw.
+			const Scalar preChange = S9_ExpectedFadedFbm( po.x*k, po.y*k, po.z*k, 5, 0.5, 2.0, worldFw );
+			Check( std::fabs( faded - preChange ) > 1e-6,
+				"...and it is NOT the pre-change value (fw at multiplier 1.0), which under-fades by "
+				"the whole domain scale" );
+
+			// SHORT-CIRCUIT: no object-space footprint (a CSG hit whose
+			// winning child stamped none, or any hit with no
+			// differentials) leaves the Po body un-faded, exactly as
+			// fw == 0 leaves a P body un-faded.
+			ExprEvalContext noObj; noObj.P = pw; noObj.Po = po; noObj.fw = worldFw; noObj.fwo = 0;
+			Check( prog.Eval( noObj ) == unfaded,
+				"fwo == 0 short-circuits: a Po-only body reproduces the un-faded sum BIT-for-BIT, "
+				"however large the WORLD footprint is" );
+		}
+	}
+}
+
+static void TestPoDomainMixedFrameIsConservativeSum()
+{
+	std::cout << "Test 72: an argument that reads BOTH frames is filtered at the conservative sum scale_P*fw + scale_Po*fwo" << std::endl;
+
+	const Vector3 po( 0.21, 0.35, -0.62 );
+	const Vector3 pw( 1.10, -0.40, 0.30 );
+	const Scalar  fw = 0.003, fwo = 0.011;
+	const Scalar  a = 9.0, b = 4.0;			// the two domain scales
+
+	ExpressionProgram::Builder bl; bl.EnableContextVars( true );
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( bl.Finalize( "fbm(P*9.0 + Po*4.0, 5, 0.5, 2.0)", prog ), "fbm(P*9 + Po*4, ...) compiles" );
+	if( !prog.IsValid() ) return;
+
+	ExprEvalContext ctx; ctx.P = pw; ctx.Po = po; ctx.fw = fw; ctx.fwo = fwo;
+
+	const Vector3 arg( pw.x*a + po.x*b, pw.y*a + po.y*b, pw.z*a + po.z*b );
+	const Scalar  expectedSum = S9_ExpectedFadedFbm( arg.x, arg.y, arg.z, 5, 0.5, 2.0, a*fw + b*fwo );
+	CheckClose( prog.Eval( ctx ), expectedSum, 1e-12,
+		"the mixed-frame call is filtered at 9*fw + 4*fwo (the triangle-inequality bound)" );
+
+	// The two counterfactuals this rule was chosen OVER, named so a
+	// future 'simplification' to either is caught.  Both are strictly
+	// less filtering, i.e. the aliasing direction.
+	const Scalar worldOnly = S9_ExpectedFadedFbm( arg.x, arg.y, arg.z, 5, 0.5, 2.0, a*fw );
+	const Scalar maxRule   = S9_ExpectedFadedFbm( arg.x, arg.y, arg.z, 5, 0.5, 2.0,
+		( a*fw > b*fwo ) ? a*fw : b*fwo );
+	Check( std::fabs( expectedSum - worldOnly ) > 1e-9,
+		"...NOT the P term alone (which is what dropping the Po half would give)" );
+	Check( std::fabs( expectedSum - maxRule ) > 1e-9,
+		"...NOT max(scale_P*fw, scale_Po*fwo) either -- the sum is deliberately the more "
+		"conservative of the two (over-filter, never alias)" );
+	Check( a*fw + b*fwo > ( ( a*fw > b*fwo ) ? a*fw : b*fwo ),
+		"(oracle) the sum really is the larger footprint of the two candidate rules" );
+}
+
+static void TestPoDomainNonUniformScaleSide()
+{
+	std::cout << "Test 73: under NON-uniform object scale a Po domain lands on the documented side (the object-space footprint is the geometry's own measure)" << std::endl;
+
+	// The doc's worked case: `stretch (4, 0.05, 4)` viewed face-on down
+	// the flattened axis, so the world footprint is 4x the object one
+	// (TextureFootprintTest test 13b proves Object::IntersectRay reports
+	// exactly that pair).  The VM's job is only to USE the pair it is
+	// handed -- and the point of this test is that a Po body is then
+	// filtered at the geometry's OWN measure, NOT at the |det|^(1/3)
+	// geometric mean a derive-by-scale implementation would have used.
+	const Scalar objFw   = 0.0025;
+	const Scalar worldFw = objFw * Scalar( 4 );					// exact in-plane factor
+	const Scalar detCubeRoot = std::pow( 4.0 * 0.05 * 4.0, 1.0 / 3.0 );	// 0.9283
+	const Scalar k = 40.0;
+	const Vector3 po( 0.31, 0.0, -0.44 );
+
+	ExpressionProgram::Builder b; b.EnableContextVars( true );
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( b.Finalize( "fbm(Po*40.0, 5, 0.5, 2.0)", prog ), "fbm(Po*40.0, ...) compiles" );
+	if( !prog.IsValid() ) return;
+
+	ExprEvalContext ctx; ctx.Po = po; ctx.P = Vector3( po.x*4, po.y*0.05, po.z*4 );
+	ctx.fw = worldFw; ctx.fwo = objFw;
+
+	const Scalar expected = S9_ExpectedFadedFbm( po.x*k, po.y*k, po.z*k, 5, 0.5, 2.0, k*objFw );
+	CheckClose( prog.Eval( ctx ), expected, 1e-12,
+		"a Po domain under an anisotropic stretch filters at k * the OBJECT-space width" );
+
+	// The counterfactual: had objectWidth been derived as
+	// worldWidth / |det M|^(1/3), the VM would have been handed
+	// worldFw / 0.9283 -- 4.31x too large a footprint, over-blurring the
+	// field by two octaves.
+	const Scalar derivedWouldBe = worldFw / Scalar( detCubeRoot );
+	const Scalar wrong = S9_ExpectedFadedFbm( po.x*k, po.y*k, po.z*k, 5, 0.5, 2.0, k*derivedWouldBe );
+	{
+		char oracle[224];
+		snprintf( oracle, sizeof(oracle),
+			"(oracle) the retired |det|^(1/3) derivation really is the more-blurred side (%.4gx "
+			"the true object width, vs the exact 4x)", (double)( derivedWouldBe / objFw ) );
+		Check( derivedWouldBe > objFw * Scalar( 4 ), oracle );
+	}
+	Check( std::fabs( expected - wrong ) > 1e-9,
+		"...and it would give a MEASURABLY different value, so this test is not vacuous" );
+}
+
+static void TestPoDomainCompileTimeSplit()
+{
+	std::cout << "Test 74: the two multipliers are independent -- a Po-only body puts no weight on fw, a P-only body none on fwo, and an unprovable argument still falls back to (1.0, 0.0)" << std::endl;
+
+	const Vector3 pw( 0.3, 0.7, 1.4 ), po( -0.9, 0.25, 0.6 );
+
+	struct Case {
+		const char* body;
+		bool readsP;		//!< a change in fw must move the result
+		bool readsPo;		//!< a change in fwo must move the result
+	};
+	const Case cases[] = {
+		{ "fbm(P*40.0, 5, 0.5, 2.0)",            true,  false },
+		{ "fbm(Po*40.0, 5, 0.5, 2.0)",           false, true  },
+		{ "fbm(P*20.0 + Po*20.0, 5, 0.5, 2.0)",  true,  true  },
+		// A `def`-carried object-space scale -- the shape real bodies
+		// use -- resolves exactly like the inlined literal.
+		{ "fbm(qo, 5, 0.5, 2.0)",                false, true  },
+		// No provable relation to either position: the pre-change
+		// fallback, which reads `fw` at multiplier 1.0 and ignores fwo.
+		{ "fbm(vec3(u*10.0, v*10.0, 0.0), 5, 0.5, 2.0)", true, false },
+	};
+
+	for( size_t i = 0; i < sizeof(cases)/sizeof(cases[0]); ++i ) {
+		const Case& c = cases[i];
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		if( std::string( c.body ) == "fbm(qo, 5, 0.5, 2.0)" ) {
+			Check( b.AddParam( "ko", 40.0 ), "param ko 40" );
+			Check( b.AddDef( "qo", "Po*ko" ), "def qo Po*ko" );
+		}
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( c.body, prog ), std::string("compiles: ") + c.body );
+		if( !prog.IsValid() ) continue;
+
+		ExprEvalContext base;  base.u = 0.37; base.v = 0.61; base.P = pw; base.Po = po;
+		base.fw = 0; base.fwo = 0;
+		ExprEvalContext bumpW = base; bumpW.fw  = 0.02;
+		ExprEvalContext bumpO = base; bumpO.fwo = 0.02;
+
+		const Scalar v0 = prog.Eval( base );
+		const Scalar vW = prog.Eval( bumpW );
+		const Scalar vO = prog.Eval( bumpO );
+
+		char label[224];
+		snprintf( label, sizeof(label), "%s: %s by fw", c.body, c.readsP ? "IS moved" : "is NOT moved" );
+		if( c.readsP ) Check( std::fabs( vW - v0 ) > 1e-9, label );
+		else           Check( vW == v0, label );
+
+		snprintf( label, sizeof(label), "%s: %s by fwo", c.body, c.readsPo ? "IS moved" : "is NOT moved" );
+		if( c.readsPo ) Check( std::fabs( vO - v0 ) > 1e-9, label );
+		else            Check( vO == v0, label );
+	}
+}
+
 int main( int, char** )
 {
 	std::cout << "TextureExpressionVMTest -- ExpressionEval VM S1 (vec3, context vars, noise builtins, ramp, offsets, param-spec)" << std::endl << std::endl;
@@ -4214,6 +4518,10 @@ int main( int, char** )
 	TestFbmDomainScaleFallbacks();
 	TestFbmDomainScaleSubtractionIsConservative();
 	TestFbmDomainScaleRotatedShearedDomain();
+	TestPoDomainConsistencyAcrossTransform();
+	TestPoDomainMixedFrameIsConservativeSum();
+	TestPoDomainNonUniformScaleSide();
+	TestPoDomainCompileTimeSplit();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

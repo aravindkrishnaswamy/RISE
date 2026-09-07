@@ -141,9 +141,10 @@ namespace RISE
 	//! TWO INDEPENDENT VALIDITY FLAGS, with the invariant
 	//! `valid ⇒ widthValid`:
 	//!
-	//!   - `widthValid` — `dpdx`, `dpdy` and `worldWidth` are usable.
-	//!     Requires only ray differentials and a surface normal, so
-	//!     it is set on every geometry, UV chart or not.
+	//!   - `widthValid` — `dpdx`, `dpdy`, `worldWidth` and
+	//!     `objectWidth` are usable.  Requires only ray differentials
+	//!     and a surface normal, so it is set on every geometry, UV
+	//!     chart or not.
 	//!   - `valid` — the UV Jacobian (`dudx`…`dvdy`) is usable.
 	//!     Additionally requires `derivatives.valid` (a non-degenerate
 	//!     dpdu/dpdv basis).  Deliberately NOT widened to mean "some
@@ -163,6 +164,35 @@ namespace RISE
 	//! is the mean of their magnitudes — a filter-WIDTH (diameter-like,
 	//! full pixel step, not a radius) estimate in the same length units
 	//! as ptIntersection / the expression VM's `P`.  All three are 0
+	//! when !widthValid.
+	//!
+	//! `objectWidth` is that SAME width measured in the frame
+	//! `ptObjIntersec` (the expression VM's `Po`) is written in — an
+	//! OBJECT-space length (2026-09-06).  It exists because the
+	//! expression VM can filter an object-space noise domain
+	//! (`fbm(Po*62, …)`) only if the hit reports the footprint in that
+	//! frame: no compile-time constant converts between the two, since
+	//! the object→world map is a per-INSTANCE fact.
+	//!
+	//! It is not a derived scalar — it is the pre-promotion value of
+	//! `worldWidth`, captured by `Object::IntersectRay` in the SAME
+	//! block, at the SAME nesting level, that computes
+	//! `ptObjIntersec`.  That is what keeps the two co-framed at every
+	//! level (a placed object; a CSG composite, where
+	//! `AdoptCsgSurfacePayload` copies this whole struct and
+	//! `ptObjIntersec` together from the winning CHILD, so both stay
+	//! in that child's own frame and the CSG level promotes only
+	//! `worldWidth`).  Deriving it instead as `worldWidth / |det
+	//! M|^(1/3)` would be exact only under a uniform scale — the same
+	//! geometric-mean approximation §3.4 of
+	//! docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md retired for
+	//! `worldWidth` because it under-counted a `scale 4 0.05 4` panel
+	//! by 4.31×.
+	//!
+	//! Under NON-UNIFORM object scale it carries the same anisotropy
+	//! caveat `worldWidth` does: one isotropic width stands in for an
+	//! elliptical footprint, so it reports the MEAN of the two
+	//! object-space step magnitudes rather than a per-axis pair.  0
 	//! when !widthValid.
 	//!
 	//! FRAME: these fields live in whatever frame the record itself
@@ -186,13 +216,14 @@ namespace RISE
 		Scalar  dvdx, dvdy;
 		Vector3 dpdx, dpdy;
 		Scalar  worldWidth;
+		Scalar  objectWidth;	// the same width in ptObjIntersec's frame
 		bool    valid;			// the UV Jacobian is usable
-		bool    widthValid;		// dpdx / dpdy / worldWidth are usable
+		bool    widthValid;		// dpdx / dpdy / worldWidth / objectWidth are usable
 
 		TextureFootprint() :
 		dudx( 0 ), dudy( 0 ), dvdx( 0 ), dvdy( 0 ),
 		dpdx( Vector3(0,0,0) ), dpdy( Vector3(0,0,0) ),
-		worldWidth( 0 ), valid( false ), widthValid( false )
+		worldWidth( 0 ), objectWidth( 0 ), valid( false ), widthValid( false )
 		{
 		}
 	};

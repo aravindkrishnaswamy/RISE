@@ -3935,7 +3935,7 @@ namespace RISE
 
 		//! Adds an expression_painter (doc 88 P1, S2): the COLOUR-pipe
 		//! texture-expression VM surface.  The body sees the FULL 3D
-		//! context (u, v, P, Po, N, fw, time), unlike expression_function2d.
+		//! context (u, v, P, Po, N, fw, fwo, time), unlike expression_function2d.
 		//! `params` are raw `<name> <value> [min][max][step][label]` lines
 		//! (ExpressionParamSpec grammar); `defs` are raw `<name> <expr>`
 		//! lines.  `seed` is auto-registered as a named scalar constant

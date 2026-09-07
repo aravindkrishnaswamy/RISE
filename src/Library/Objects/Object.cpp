@@ -1013,6 +1013,21 @@ void Object::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const bool
 		// `m_worldLinearScale` is deliberately NOT read here any more; it
 		// keeps its other two jobs (scaleHint / curvature, above).
 		if( ri.geometric.txFootprint.widthValid ) {
+			// OBJECT-SPACE WIDTH, captured before the promotion
+			// overwrites it (2026-09-06).  `worldWidth` at THIS instant
+			// is the footprint measured in this object's own object
+			// space -- the very frame `ptObjIntersec` (stamped a few
+			// lines below, from the same object-space ray) is written
+			// in, and therefore the frame the expression VM's `Po`
+			// lives in.  Capturing it here rather than deriving it from
+			// a scale factor is what makes `fbm(Po*k, ...)` filter
+			// correctly under ANY linear map, non-uniform scale and
+			// shear included: it is the same exact-for-affine-maps
+			// argument the promotion below rests on, read one step
+			// earlier.  See TextureFootprint::objectWidth's own doc
+			// comment for why this is a capture and not a division.
+			ri.geometric.txFootprint.objectWidth = ri.geometric.txFootprint.worldWidth;
+
 			const Vector3 dx = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdx );
 			const Vector3 dy = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdy );
 			ri.geometric.txFootprint.dpdx = dx;

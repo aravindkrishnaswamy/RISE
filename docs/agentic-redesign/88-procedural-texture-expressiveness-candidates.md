@@ -409,24 +409,34 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
    `plank_closeup`), and at a real render footprint the unscaled
    threshold left all five octaves at full weight.  The VM now DOES have
    the autodiff this entry said it lacked: `ExpressionEval.h`'s
-   `Builder::NoiseFwScale` runs a forward-mode derivative pass over the
+   `Builder::NoiseFwScales` runs a forward-mode derivative pass over the
    position argument's already-emitted postfix code, recovers the 3x3
-   Jacobian `d(argument)/dP`, and folds its largest singular value into a
-   per-call-site multiplier stored on the `kFunc` instruction (`Instr::
-   val`), which `RunAny` applies to `env[kContextSlotFw]` at dispatch.
-   The analysis covers everything affine in `P` -- `P`, `P.x/y/z`,
+   Jacobians `d(argument)/dP` **and `d(argument)/dPo`**, and folds each
+   one's largest singular value into a per-call-site multiplier stored on
+   the `kFunc` instruction (`Instr::val` / `Instr::valo`), which `RunAny`
+   applies as `env[kContextSlotFw]*val + env[kContextSlotFwo]*valo` at
+   dispatch.  The analysis covers everything affine in `P` and/or `Po` --
+   the positions themselves, their components,
    literals, `vec3()`, `param`/`def` names, unary `-`, and `+ - * /` by a
    compile-time constant -- so a scale carried through a `def` resolves
    like the inlined literal.  A sum with one non-affine term keeps the
    affine part's scale (the domain-warp idiom fades at its base
-   frequency); an argument with no affine part falls back to multiplier
-   1.0, i.e. the pre-2026-09-06 behaviour; and an argument provably
-   independent of `P` gets multiplier 0, since a constant cannot alias.
+   frequency); an argument with no affine part falls back to multipliers
+   `(1.0, 0.0)`, i.e. the pre-2026-09-06 behaviour; and an argument
+   provably independent of both gets `(0, 0)`, since a constant cannot
+   alias.
    Bit-identity is preserved where it matters: `fw == 0` (any domain) and
    a bare `P` argument (Jacobian == identity, multiplier exactly 1.0 via
-   `JacobianSpectralNorm`'s exact diagonal path).  Guarded by
-   `TextureExpressionVMTest` tests 65-68, test 67 asserting recorded
-   pre-change values with `==`.
+   `JacobianSpectralNorm`'s exact diagonal path, and an exact `0` on the
+   `fwo` side).  Guarded by
+   `TextureExpressionVMTest` tests 65-68 and 71-74, test 67 asserting
+   recorded pre-change values with `==`.
+   **The `Po` half landed later the same day** -- the first landing
+   listed `Po` among the *unprovable* inputs because the object->world
+   scale is per instance.  The scale still is; the FOOTPRINT in object
+   units is not, and `Object::IntersectRay` now publishes it as
+   `TextureFootprint::objectWidth` -> `ExprEvalContext::fwo`.  Full
+   record: `docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md` 11.
 4. **`time` is in**: exposed as a keyframable chunk param (Gerstner
    precedent), available as a variable in bodies from day 1.
 5. **Name is `expression_painter`.**  `expression_function2d` stays as-is for

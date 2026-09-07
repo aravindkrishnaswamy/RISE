@@ -1596,6 +1596,20 @@ void CSGObject::IntersectRay( RayIntersection& ri, const Scalar dHowFar, const b
 		// below already promoted" rule scaleHint/curvature follow.  Composing
 		// forward maps is what makes the nesting exact rather than merely
 		// consistent: M_outer · M_inner is the true object-to-world map.
+		//
+		// `objectWidth` is deliberately NOT touched here, and that is
+		// the CORRECT answer rather than an omission (2026-09-06).  A
+		// CSG hit's `ptObjIntersec` is the winning CHILD operand's own
+		// object-space point -- `AdoptCsgSurfacePayload` copies it, and
+		// this whole txFootprint struct, untransformed -- so `Po` is in
+		// the child's frame at every nesting depth.  The child's
+		// `Object::IntersectRay` captured `objectWidth` in exactly that
+		// frame.  Promoting it here would break the pairing that makes
+		// `fbm(Po*k, ...)` filter correctly; leaving it alone preserves
+		// it.  This is the one field of the record where the CSG frame
+		// mismatch documented on `pmxWorldToObject` below works OUT,
+		// because the field it must agree with is mismatched the same
+		// way.
 		if( ri.geometric.txFootprint.widthValid ) {
 			const Vector3 dx = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdx );
 			const Vector3 dy = Vector3Ops::Transform( m_mxFinalTrans, ri.geometric.txFootprint.dpdy );

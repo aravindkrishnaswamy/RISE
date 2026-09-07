@@ -44,6 +44,17 @@
 //                                 (see those builtins below), so a body
 //                                 that scales the position argument does
 //                                 NOT have to compensate by hand.
+//              fwo             -- scalar filter width, the SAME footprint
+//                                 measured in the frame `Po` is written
+//                                 in (an OBJECT-space length); 0.0 = no
+//                                 object-space filter info, the same
+//                                 honest-absence convention `fw` uses.
+//                                 It is what lets an OBJECT-space domain
+//                                 (`fbm(Po*62, ...)`) fade: the
+//                                 object->world scale is a per-instance
+//                                 runtime fact, so the compiler cannot
+//                                 convert `fw` into it -- the hit carries
+//                                 both widths instead (2026-09-06).
 //              time            -- scalar; 0.0 unless supplied
 //              + any named `params` (constants) and `defs` (named
 //                sub-expressions / let-bindings) registered before
@@ -82,21 +93,24 @@
 //              unresolvable detail; fw==0 (the default, and the only
 //              value pre-S9) reproduces the un-faded sum exactly.
 //              DOMAIN SCALE IS AUTOMATIC: the compiler differentiates
-//              the position argument with respect to `P` and folds the
-//              largest singular value of that Jacobian into a per-call-
-//              site multiplier on `fw`, so `fbm(P*40, ...)` fades at a
-//              domain footprint of 40*fw and `fbm(P, ...)` at exactly
-//              fw (multiplier 1.0, bit-identical to a hand-passed fw).
-//              The analysis covers everything AFFINE in P -- P, P.x/y/z,
-//              vec3(), literals, `param`/`def` names, unary -, + - * /
-//              by a compile-time constant.  An argument built from
-//              anything else (u/v/Po/N, a noise warp, ^ or %, a call)
-//              contributes no derivative: a SUM keeps the affine part's
-//              scale (so `fbm(P*8 + warp*fbm(...), ...)` still fades at
-//              8*fw) and an argument with no affine part at all falls
-//              back to multiplier 1.0, the pre-2026-09-06 behaviour.
-//              An argument PROVABLY independent of P (a literal vec3)
-//              gets multiplier 0 -- it cannot alias, so it never fades.
+//              the position argument with respect to BOTH `P` and `Po`
+//              and folds the largest singular value of each Jacobian
+//              into a per-call-site multiplier -- one on `fw`, one on
+//              `fwo` -- whose SUM is the domain footprint the noise
+//              filters at.  So `fbm(P*40, ...)` fades at 40*fw,
+//              `fbm(Po*62, ...)` at 62*fwo, and `fbm(P, ...)` at
+//              exactly fw (multipliers 1.0 / 0.0, bit-identical to a
+//              hand-passed fw).  The analysis covers everything AFFINE
+//              in P and/or Po -- P, Po, their components, vec3(),
+//              literals, `param`/`def` names, unary -, + - * / by a
+//              compile-time constant.  An argument built from anything
+//              else (u/v/N, a noise warp, ^ or %, a call) contributes
+//              no derivative: a SUM keeps the affine part's scale (so
+//              `fbm(P*8 + warp*fbm(...), ...)` still fades at 8*fw) and
+//              an argument with no affine part at all falls back to
+//              multipliers (1.0, 0.0), the pre-2026-09-06 behaviour.
+//              An argument PROVABLY independent of both (a literal
+//              vec3) gets (0, 0) -- it cannot alias, so it never fades.
 //              worley_f1/f2/f2f1/id(v,jitter)->s; cellhash(s)
 //              GEOMETRY SIGNALS (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 //              Phase 2): occlusion(radius)->s in [0,1], 1 = unoccluded;
@@ -156,6 +170,20 @@ namespace RISE
 			Vector3	Po;
 			Vector3	N;
 			Scalar	fw;
+			//! The SAME pixel footprint as `fw`, measured in the frame
+			//! `Po` is written in -- an OBJECT-space length (2026-09-06).
+			//! It exists because the compile-time domain-scale analysis
+			//! can differentiate a noise position argument w.r.t. `Po`
+			//! just as well as w.r.t. `P`, but cannot convert between
+			//! the two: the object->world scale is a per-INSTANCE
+			//! runtime fact.  So the hit carries both widths and the VM
+			//! combines them (see Builder::NoiseFwScales).
+			//!
+			//! 0.0 is the honest "no object-space filter info", exactly
+			//! like fw's 0.0 -- and it is what a caller that never sets
+			//! this field gets, which keeps every pre-existing caller's
+			//! behaviour unchanged.
+			Scalar	fwo;
 			Scalar	time;
 			//! Signed MEAN curvature at the hit (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
 			//! 5.1-5.2).  POSITIVE = convex, negative = concave, 0 = flat -- and 0 is
@@ -190,10 +218,10 @@ namespace RISE
 			SurfaceSignalInfo	signals;
 
 			ExprEvalContext() :
-				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0), curv(0), curvR(0)
+				u(0), v(0), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0)
 			{}
 			ExprEvalContext( const Scalar u_, const Scalar v_ ) :
-				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), time(0), curv(0), curvR(0)
+				u(u_), v(v_), P(0,0,0), Po(0,0,0), N(0,0,0), fw(0), fwo(0), time(0), curv(0), curvR(0)
 			{}
 		};
 
@@ -237,11 +265,21 @@ namespace RISE
 				//! that call site's `fw` MULTIPLIER instead (1.0 for every
 				//! builtin but fbm/turbulence/ridged, and for those too
 				//! whenever the domain scale is not provable) -- see
-				//! Builder::NoiseFwScale.  It rides on the INSTRUCTION
+				//! Builder::NoiseFwScales.  It rides on the INSTRUCTION
 				//! rather than on the program because it is a property of
 				//! one call site: two fbm() calls in the same body can sit
 				//! in differently-scaled domains.
-				struct Instr { Op op; Scalar val; int idx; int fn; int arity; };
+				//!
+				//! `valo` is its OBJECT-space twin (2026-09-06): the same
+				//! call site's multiplier on `fwo`.  Two numbers rather
+				//! than one because a position argument can depend on `P`
+				//! and on `Po` at once, and the two footprints are
+				//! independent per-hit facts -- no compile-time constant
+				//! converts between them.  RunAny sums the two products.
+				//! 0.0 on every non-noise builtin and on every noise call
+				//! whose Po-dependence is absent or unprovable, which is
+				//! what keeps a P-only body bit-identical (`x + 0*fwo`).
+				struct Instr { Op op; Scalar val; Scalar valo; int idx; int fn; int arity; };
 				std::vector<Instr> code;
 				int writeSlot;	//!< env slot this expression writes (a def), or -1 (the final expr)
 				VType type;		//!< result type of this compiled expression
@@ -313,9 +351,14 @@ namespace RISE
 			static const int kFnOcclusionDynR = 53;
 			static const int kFnThicknessDynR = 54;
 			//! Reserved context-variable slot layout (env[0..kContextSlotCount-1]):
-			//!   u=0, v=1, P=2..4, Po=5..7, N=8..10, fw=kContextSlotFw(11),
-			//!   time=kContextSlotTime(12), curv=kContextSlotCurv(13),
-			//!   curvR=kContextSlotCurvR(14).
+			//!   u=0, v=1, P=kContextSlotP(2..4), Po=kContextSlotPo(5..7),
+			//!   N=8..10, fw=kContextSlotFw(11), time=kContextSlotTime(12),
+			//!   curv=kContextSlotCurv(13), curvR=kContextSlotCurvR(14),
+			//!   fwo=kContextSlotFwo(15).
+			//! fwo is APPENDED rather than slotted next to fw on purpose:
+			//! the indices are baked into recorded golden programs and into
+			//! the UsesContextVar mask, so renumbering an existing var would
+			//! silently invalidate both.
 			//! P2-a (S9 review round 1): this block is the SOLE place the slot
 			//! indices and the reserved-slot count are spelled out.  EVERY site
 			//! below references these constants instead of carrying its own copy
@@ -340,8 +383,15 @@ namespace RISE
 			//! on the literal 2: besides Builder::Finalize's `out.m_PSlot`
 			//! pin, the compile-time domain-scale analysis
 			//! (Builder::SlotLinear) differentiates a noise call's position
-			//! argument with respect to exactly these three slots.
+			//! argument with respect to exactly these three slots -- and,
+			//! since 2026-09-06, with respect to Po's three as well.
 			static const int kContextSlotP     = 2;
+			//! kContextSlotPo is the first of Po's three slots, and the
+			//! SECOND differentiation variable of the compile-time
+			//! domain-scale analysis (Builder::SlotLinear) since
+			//! 2026-09-06 -- it got a name for exactly the reason
+			//! kContextSlotP did, one line above.
+			static const int kContextSlotPo    = 5;
 			static const int kContextSlotFw    = 11;
 			static const int kContextSlotTime  = 12;
 			//! curv / curvR -- the geometry-derived shading signal
@@ -350,8 +400,11 @@ namespace RISE
 			//! expression_function2d's frozen UV-only surface never sees them.
 			static const int kContextSlotCurv  = 13;
 			static const int kContextSlotCurvR = 14;
-			//! Total reserved context-var slots (u,v,P,Po,N,fw,time,curv,curvR).
-			static const int kContextSlotCount = kContextSlotCurvR + 1;
+			//! fwo -- the OBJECT-space twin of fw (2026-09-06).  Gated
+			//! behind EnableContextVars(true) exactly like P/Po/N/fw.
+			static const int kContextSlotFwo   = 15;
+			//! Total reserved context-var slots (u,v,P,Po,N,fw,time,curv,curvR,fwo).
+			static const int kContextSlotCount = kContextSlotFwo + 1;
 			//! Bit position of a context var within the `UsesContextVar` mask --
 			//! its first env slot.  kContextSlotCount stays well under 32, which
 			//! is what lets the mask be a plain unsigned int.
@@ -372,7 +425,7 @@ namespace RISE
 			Scalar Eval( const Scalar u, const Scalar v ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0 );
+				BindEnv( env, u, v, Vector3(0,0,0), Vector3(0,0,0), Vector3(0,0,0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), Scalar(0), 0 );
 				Scalar out[3];
 				// No hit record here, so no signal provider: occlusion() /
 				// thickness() fall back to their neutral values, exactly as
@@ -381,12 +434,12 @@ namespace RISE
 				return out[0];
 			}
 
-			//! Full-context evaluation (u, v, P, Po, N, fw, time).  Returns
+			//! Full-context evaluation (u, v, P, Po, N, fw, fwo, time).  Returns
 			//! the first component when the final expression is vec3-typed.
 			Scalar Eval( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
 				Scalar out[3];
 				RunAny( m_final, env, out, &ctx.signals );
 				return out[0];
@@ -399,7 +452,7 @@ namespace RISE
 			Vector3 EvalVec3( const ExprEvalContext& ctx ) const
 			{
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals );
 				Scalar out[3];
 				RunAny( m_final, env, out, &ctx.signals );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
@@ -486,7 +539,7 @@ namespace RISE
 			{
 				if( defIdx < 0 || (size_t)defIdx >= m_defs.size() ) return false;
 				Scalar env[ kMaxSlots ];
-				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, defIdx );
+				BindEnv( env, ctx.u, ctx.v, ctx.P, ctx.Po, ctx.N, ctx.fw, ctx.fwo, ctx.time, ctx.curv, ctx.curvR, &ctx.signals, defIdx );
 				const Compiled& d = m_defs[ (size_t)defIdx ];
 				if( d.type == kVec3 ) {
 					outVal = Vector3( env[ d.writeSlot+0 ], env[ d.writeSlot+1 ], env[ d.writeSlot+2 ] );
@@ -516,7 +569,7 @@ namespace RISE
 				{
 					// Reserve the fixed context-variable slots (u=0, v=1,
 					// P=2..4, Po=5..7, N=8..10, fw=11, time=12, curv=13,
-					// curvR=14 -- see the kContextSlot* block) WITHOUT
+					// curvR=14, fwo=15 -- see the kContextSlot* block) WITHOUT
 					// registering their names in m_index.  A param/def is
 					// free to reuse any of these names -- ParseAtom checks
 					// m_index (user params/defs) first and falls back to
@@ -610,15 +663,16 @@ namespace RISE
 					if( (int)m_names.size() > kMaxSlots ) {
 						SetError( "too many variables (context + param + def); user-declared names may use "
 							"at most " + std::to_string( kMaxSlots - kContextSlotCount ) + " of the " + std::to_string( kMaxSlots ) +
-							" total variable slots (" + std::to_string( kContextSlotCount ) + " are reserved for u,v,P,Po,N,fw,time,curv,curvR)", -1 );
+							" total variable slots (" + std::to_string( kContextSlotCount ) + " are reserved for u,v,P,Po,N,fw,fwo,time,curv,curvR)", -1 );
 						out.m_valid = false; out.m_error = m_error; out.m_errorOffset = m_errorOffset;
 						return false;
 					}
 					c.writeSlot = -1;
 					c.type = t;
 					out.m_uSlot = 0; out.m_vSlot = 1;
-					out.m_PSlot = kContextSlotP; out.m_PoSlot = 5; out.m_NSlot = 8;
-					out.m_fwSlot = kContextSlotFw; out.m_timeSlot = kContextSlotTime;
+					out.m_PSlot = kContextSlotP; out.m_PoSlot = kContextSlotPo; out.m_NSlot = 8;
+					out.m_fwSlot = kContextSlotFw; out.m_fwoSlot = kContextSlotFwo;
+					out.m_timeSlot = kContextSlotTime;
 					out.m_curvSlot = kContextSlotCurv; out.m_curvRSlot = kContextSlotCurvR;
 					// Compile-time consumption record (design doc 5.4): which context
 					// vars did any def body or the final expression actually resolve?
@@ -641,8 +695,8 @@ namespace RISE
 				const std::string& Error() const { return m_error; }
 				ptrdiff_t ErrorOffset() const { return m_errorOffset; }
 
-				//! Context vars (P, Po, N, fw, time, curv, curvR) are OFF by default -- ParseAtom
-				//! treats those seven names as ordinary unknown identifiers unless this
+				//! Context vars (P, Po, N, fw, fwo, time, curv, curvR) are OFF by default -- ParseAtom
+				//! treats those eight names as ordinary unknown identifiers unless this
 				//! is turned on (u and v are never gated; they are the query
 				//! coordinates every surface has always had).  This keeps the
 				//! document-level `expr(...)` / `let` sublanguage (Cst.cpp's
@@ -653,7 +707,7 @@ namespace RISE
 				//! m_index regardless of this flag (see the Builder() ctor comment).
 				//! The texture-authoring surface (expression_painter,
 				//! Job.cpp / scalar_painter{expression}, ChunkParserRegistry.cpp)
-				//! turns this ON -- that surface is what P/Po/N/fw/time were
+				//! turns this ON -- that surface is what P/Po/N/fw/fwo/time were
 				//! added FOR (doc 88).  expression_function2d (also
 				//! ChunkParserRegistry.cpp) is the OLDER, UV-only surface and
 				//! must stay OFF -- see ExpressionPainter.h's
@@ -728,18 +782,19 @@ namespace RISE
 				// Fixed context-variable name -> (slot, type).  Checked only
 				// when `name` isn't a user param/def (see the Builder()
 				// constructor comment on why user names shadow these).  ALL
-				// NINE names resolve here regardless of m_contextVarsEnabled
+				// TEN names resolve here regardless of m_contextVarsEnabled
 				// -- the caller (ParseAtom) is what gates
-				// P/Po/N/fw/time/curv/curvR on that flag; u/v are never
+				// P/Po/N/fw/fwo/time/curv/curvR on that flag; u/v are never
 				// gated.  See EnableContextVars().
 				static bool LookupContextVar( const std::string& name, int& slot, VType& vt )
 				{
 					if( name == "u" )    { slot = 0;  vt = kScalar; return true; }
 					if( name == "v" )    { slot = 1;  vt = kScalar; return true; }
-					if( name == "P" )    { slot = 2;  vt = kVec3;   return true; }
-					if( name == "Po" )   { slot = 5;  vt = kVec3;   return true; }
+					if( name == "P" )    { slot = kContextSlotP;  vt = kVec3;   return true; }
+					if( name == "Po" )   { slot = kContextSlotPo; vt = kVec3;   return true; }
 					if( name == "N" )    { slot = 8;  vt = kVec3;   return true; }
 					if( name == "fw" )    { slot = kContextSlotFw;    vt = kScalar; return true; }
+					if( name == "fwo" )   { slot = kContextSlotFwo;   vt = kScalar; return true; }
 					if( name == "time" )  { slot = kContextSlotTime;  vt = kScalar; return true; }
 					if( name == "curv" )  { slot = kContextSlotCurv;  vt = kScalar; return true; }
 					if( name == "curvR" ) { slot = kContextSlotCurvR; vt = kScalar; return true; }
@@ -936,10 +991,10 @@ namespace RISE
 					return ok;
 				}
 
-				void EmitConst( Scalar v ) { Compiled::Instr in; in.op=Compiled::kConst; in.val=v; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
-				void EmitVarSlot( int idx ) { Compiled::Instr in; in.op=Compiled::kVar; in.val=0; in.idx=idx; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
-				void EmitOp( Compiled::Op o ) { Compiled::Instr in; in.op=o; in.val=0; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
-				void EmitSwizzle( int comp ) { Compiled::Instr in; in.op=Compiled::kSwizzle; in.val=0; in.idx=comp; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitConst( Scalar v ) { Compiled::Instr in; in.op=Compiled::kConst; in.val=v; in.valo=0; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitVarSlot( int idx ) { Compiled::Instr in; in.op=Compiled::kVar; in.val=0; in.valo=0; in.idx=idx; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitOp( Compiled::Op o ) { Compiled::Instr in; in.op=o; in.val=0; in.valo=0; in.idx=-1; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
+				void EmitSwizzle( int comp ) { Compiled::Instr in; in.op=Compiled::kSwizzle; in.val=0; in.valo=0; in.idx=comp; in.fn=-1; in.arity=0; m_emit->code.push_back(in); }
 				void EmitSplat3() { EmitOp( Compiled::kSplat3 ); }
 				//! `fwScale` lands on the instruction's `val` and multiplies
 				//! the context `fw` at dispatch (RunAny's kFunc case).  1.0
@@ -958,10 +1013,10 @@ namespace RISE
 				//! kFunc), but a future vec3 noise builtin must plumb `fw`
 				//! into CallFuncVec3 and read `in.val` in the kFuncV3 case
 				//! BEFORE it can pass a scale through here.
-				void EmitFuncCall( int fn, int arity, bool isVec3, Scalar fwScale = Scalar(1) )
+				void EmitFuncCall( int fn, int arity, bool isVec3, Scalar fwScale = Scalar(1), Scalar fwoScale = Scalar(0) )
 				{
 					Compiled::Instr in; in.op = isVec3 ? Compiled::kFuncV3 : Compiled::kFunc;
-					in.val=fwScale; in.idx=-1; in.fn=fn; in.arity=arity;
+					in.val=fwScale; in.valo=fwoScale; in.idx=-1; in.fn=fn; in.arity=arity;
 					m_emit->code.push_back(in);
 				}
 
@@ -988,6 +1043,29 @@ namespace RISE
 				// stretches a world-space footprint -- into a per-call-
 				// site multiplier on `fw`.
 				//
+				// TWO differentiation variables, not one (2026-09-06).
+				// `Po` (object position) is just as common a domain as
+				// `P` -- `fbm(Po*62, ...)` is the shipped hair/relic
+				// idiom -- and used to fall back to multiplier 1.0
+				// because the object->world scale is a per-INSTANCE
+				// runtime fact no compiler can see.  It still cannot be
+				// seen, so it is not guessed: the analysis carries a
+				// SIX-component gradient (d/dP in [0..2], d/dPo in
+				// [3..5]), reduces each half to its own spectral norm,
+				// and the HIT supplies the matching per-frame footprint
+				// (`fw` world, `fwo` object).  The runtime combination is
+				//
+				//     domain fw = sP * fw + sPo * fwo
+				//
+				// -- the triangle inequality on d(arg) = J_P dP + J_Po
+				// dPo, since ||J_P dP + J_Po dPo|| <= ||J_P|| ||dP|| +
+				// ||J_Po|| ||dPo||.  It is CONSERVATIVE: when a body
+				// reads both frames the two terms describe the SAME
+				// physical displacement, so the sum can over-count by up
+				// to 2x if they would have cancelled.  That direction is
+				// the safe one (over-filter, never alias) and matches the
+				// rest of this analysis's bias.
+				//
 				// Why over the emitted CODE rather than the token stream:
 				// the code is the single representation that already has
 				// operator precedence, scalar->vec3 broadcast and `def`
@@ -996,8 +1074,22 @@ namespace RISE
 				// parse of the source text could.
 				//////////////////////////////////////////////////
 
+				//! Number of differentiation variables the analysis
+				//! carries: the three components of world P followed by
+				//! the three of object Po.  Every rule below loops over
+				//! all six identically -- they are linear operations, so
+				//! nothing about them distinguishes the two halves; only
+				//! SlotLinear (which seeds them) and the spectral-norm
+				//! reduction (which reads one half at a time) know the
+				//! split.
+				static const int kLinVars = 6;
+				//! First gradient component of the Po half.  Named
+				//! because three sites index by it.
+				static const int kLinPoBase = 3;
+
 				//! One scalar value's linear form with respect to the world
-				//! position P.  `gradKnown` says d(value)/dP is `g`;
+				//! position P AND the object position Po.  `gradKnown` says
+				//! d(value)/d(P,Po) is `g` (g[0..2] = d/dP, g[3..5] = d/dPo);
 				//! `gradExact` says nothing was dropped getting there (see
 				//! LinAddSub); `constKnown` says the value itself is the
 				//! compile-time constant `c`.  INVARIANT: constKnown implies
@@ -1009,9 +1101,9 @@ namespace RISE
 					bool   gradExact;
 					bool   constKnown;
 					Scalar c;
-					Scalar g[3];
+					Scalar g[kLinVars];
 					LinScalar() : gradKnown(false), gradExact(false), constKnown(false), c(0)
-					{ g[0] = g[1] = g[2] = Scalar(0); }
+					{ for( int k = 0; k < kLinVars; ++k ) g[k] = Scalar(0); }
 					static LinScalar Const( Scalar v )
 					{
 						LinScalar r; r.gradKnown = true; r.gradExact = true; r.constKnown = true; r.c = v;
@@ -1024,7 +1116,7 @@ namespace RISE
 				{
 					LinScalar r = a;
 					r.c = -a.c;
-					for( int k = 0; k < 3; ++k ) r.g[k] = -a.g[k];
+					for( int k = 0; k < kLinVars; ++k ) r.g[k] = -a.g[k];
 					return r;
 				}
 
@@ -1078,13 +1170,13 @@ namespace RISE
 					if( a.gradKnown && b.gradKnown ) {
 						r.gradKnown = true;
 						r.gradExact = a.gradExact && b.gradExact;
-						for( int k = 0; k < 3; ++k ) r.g[k] = plus ? ( a.g[k] + b.g[k] ) : ( a.g[k] - b.g[k] );
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = plus ? ( a.g[k] + b.g[k] ) : ( a.g[k] - b.g[k] );
 					} else if( plus && a.gradKnown ) {
 						r.gradKnown = true; r.gradExact = false;
-						for( int k = 0; k < 3; ++k ) r.g[k] = a.g[k];
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = a.g[k];
 					} else if( plus && b.gradKnown ) {
 						r.gradKnown = true; r.gradExact = false;
-						for( int k = 0; k < 3; ++k ) r.g[k] = b.g[k];
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = b.g[k];
 					}
 					// else: a subtraction missing either operand's gradient
 					// -- deliberately left unknown (see above).
@@ -1101,12 +1193,12 @@ namespace RISE
 					if( a.constKnown && b.constKnown ) return LinScalar::Const( a.c * b.c );
 					if( a.constKnown && b.gradKnown ) {
 						r.gradKnown = true; r.gradExact = b.gradExact;
-						for( int k = 0; k < 3; ++k ) r.g[k] = a.c * b.g[k];
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = a.c * b.g[k];
 						return r;
 					}
 					if( b.constKnown && a.gradKnown ) {
 						r.gradKnown = true; r.gradExact = a.gradExact;
-						for( int k = 0; k < 3; ++k ) r.g[k] = b.c * a.g[k];
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = b.c * a.g[k];
 						return r;
 					}
 					return r;
@@ -1124,25 +1216,33 @@ namespace RISE
 					if( a.constKnown ) return LinScalar::Const( a.c / b.c );
 					if( a.gradKnown ) {
 						r.gradKnown = true; r.gradExact = a.gradExact;
-						for( int k = 0; k < 3; ++k ) r.g[k] = a.g[k] / b.c;
+						for( int k = 0; k < kLinVars; ++k ) r.g[k] = a.g[k] / b.c;
 					}
 					return r;
 				}
 
 				//! The linear form of whatever lives in env slot `slot`.
-				//! P's own three slots are the differentiation variable;
-				//! params and defs answer from m_slotLin (recorded in
-				//! registration order, so a name always reports the binding
-				//! in force at this point in the program); every other
-				//! context var (u, v, Po, N, fw, time, curv, curvR) is
-				//! honestly unknown -- their relationship to world P is a
-				//! per-hit fact, not a compile-time one.
+				//! P's three slots and Po's three slots are the TWO
+				//! differentiation variables (seeded into g[0..2] and
+				//! g[3..5] respectively); params and defs answer from
+				//! m_slotLin (recorded in registration order, so a name
+				//! always reports the binding in force at this point in
+				//! the program); every other context var (u, v, N, fw,
+				//! fwo, time, curv, curvR) is honestly unknown -- their
+				//! relationship to either position is a per-hit fact, not
+				//! a compile-time one.
 				LinScalar SlotLinear( int slot ) const
 				{
 					if( slot >= ExpressionProgram::kContextSlotP && slot < ExpressionProgram::kContextSlotP + 3 ) {
 						LinScalar r;
 						r.gradKnown = true; r.gradExact = true;
 						r.g[ slot - ExpressionProgram::kContextSlotP ] = Scalar(1);
+						return r;
+					}
+					if( slot >= ExpressionProgram::kContextSlotPo && slot < ExpressionProgram::kContextSlotPo + 3 ) {
+						LinScalar r;
+						r.gradKnown = true; r.gradExact = true;
+						r.g[ kLinPoBase + slot - ExpressionProgram::kContextSlotPo ] = Scalar(1);
 						return r;
 					}
 					std::map<int,LinScalar>::const_iterator it = m_slotLin.find( slot );
@@ -1268,15 +1368,20 @@ namespace RISE
 					return true;
 				}
 
-				//! Largest singular value of the 3x3 whose ROW i is
-				//! rows[i].g -- the worst-case stretch the argument applies
-				//! to a world-space footprint, and therefore the right
-				//! single number to scale an isotropic `fw` by.
-				static Scalar JacobianSpectralNorm( const LinScalar rows[3] )
+				//! Largest singular value of the 3x3 whose ROW i is the
+				//! `gBase`-based half of rows[i].g -- the worst-case
+				//! stretch the argument applies to a footprint in THAT
+				//! frame, and therefore the right single number to scale
+				//! that frame's isotropic width by.  `gBase` is 0 for the
+				//! world-P half and kLinPoBase for the object-Po half;
+				//! the two halves are reduced independently because the
+				//! two footprints they scale are independent per-hit
+				//! quantities (see the block comment above LinScalar).
+				static Scalar JacobianSpectralNorm( const LinScalar rows[3], const int gBase )
 				{
 					Scalar J[3][3];
 					for( int i = 0; i < 3; ++i ) {
-						for( int k = 0; k < 3; ++k ) J[i][k] = rows[i].g[k];
+						for( int k = 0; k < 3; ++k ) J[i][k] = rows[i].g[gBase+k];
 					}
 					// DIAGONAL fast path, and it is not merely an
 					// optimisation: a diagonal matrix's singular values ARE
@@ -1357,36 +1462,48 @@ namespace RISE
 					return std::sqrt( lam );
 				}
 
-				//! The `fw` multiplier for a noise call whose vec3 position
-				//! argument occupies `[begin, end)` of the code emitted so
-				//! far.  1.0 whenever the domain scale is not provable --
-				//! which is precisely the pre-change behaviour, so an
-				//! un-analysable body is never made worse, only left alone.
-				Scalar NoiseFwScale( size_t begin, size_t end ) const
+				//! The `fw` and `fwo` multipliers for a noise call whose
+				//! vec3 position argument occupies `[begin, end)` of the
+				//! code emitted so far.  (1.0, 0.0) -- i.e. the unscaled
+				//! world footprint and no object-space term -- whenever
+				//! the domain scale is not provable, which is precisely
+				//! the pre-2026-09-06 behaviour, so an un-analysable body
+				//! is never made worse, only left alone.
+				void NoiseFwScales( size_t begin, size_t end, Scalar& outP, Scalar& outPo ) const
 				{
+					// The one fallback answer, spelled once.
+					outP = Scalar(1); outPo = Scalar(0);
+
 					LinScalar rows[3];
-					if( !AnalyzeLinear( m_emit->code, begin, end, 3, rows ) ) return Scalar(1);
+					if( !AnalyzeLinear( m_emit->code, begin, end, 3, rows ) ) return;
 					for( int i = 0; i < 3; ++i ) {
-						if( !rows[i].gradKnown ) return Scalar(1);
-						for( int k = 0; k < 3; ++k ) {
-							if( !ExpressionProgram::IsFinite( rows[i].g[k] ) ) return Scalar(1);
+						if( !rows[i].gradKnown ) return;
+						for( int k = 0; k < kLinVars; ++k ) {
+							if( !ExpressionProgram::IsFinite( rows[i].g[k] ) ) return;
 						}
 					}
-					const Scalar s = JacobianSpectralNorm( rows );
-					if( !ExpressionProgram::IsFinite( s ) || s < Scalar(0) ) return Scalar(1);
-					if( s == Scalar(0) ) {
+					const Scalar sP  = JacobianSpectralNorm( rows, 0 );
+					const Scalar sPo = JacobianSpectralNorm( rows, kLinPoBase );
+					if( !ExpressionProgram::IsFinite( sP )  || sP  < Scalar(0) ) return;
+					if( !ExpressionProgram::IsFinite( sPo ) || sPo < Scalar(0) ) return;
+					if( sP == Scalar(0) && sPo == Scalar(0) ) {
 						// A position argument that provably does not move
-						// with P -- `fbm(vec3(0.3,0.7,1.4), ...)` -- is
-						// CONSTANT across the footprint and so has nothing
-						// to alias: the honest fade is none at all.  But
-						// only when the Jacobian is exact; an approximate
-						// zero means the one term that actually varies was
-						// the dropped one, and there the safe answer is the
-						// pre-change 1.0.
+						// with EITHER position -- `fbm(vec3(0.3,0.7,1.4),
+						// ...)` -- is CONSTANT across the footprint and so
+						// has nothing to alias: the honest fade is none at
+						// all.  But only when the Jacobian is exact; an
+						// approximate zero means the one term that actually
+						// varies was the dropped one, and there the safe
+						// answer is the pre-change (1.0, 0.0).
 						const bool exact = rows[0].gradExact && rows[1].gradExact && rows[2].gradExact;
-						return exact ? Scalar(0) : Scalar(1);
+						if( exact ) { outP = Scalar(0); outPo = Scalar(0); }
+						return;
 					}
-					return s;
+					// A one-sided body reports the OTHER side as an exact
+					// 0, which is what keeps a P-only body bit-identical
+					// (RunAny's `sP*fw + 0*fwo`) and a Po-only body free of
+					// any world-frame term.
+					outP = sP; outPo = sPo;
 				}
 
 				//! Record what env slot `slot` (width `w`) will hold, for
@@ -1426,7 +1543,7 @@ namespace RISE
 				// in +,-,*,/ where the LEFT side is the scalar (see EmitArith).
 				void BroadcastAt( size_t insertPos )
 				{
-					Compiled::Instr in; in.op=Compiled::kSplat3; in.val=0; in.idx=-1; in.fn=-1; in.arity=0;
+					Compiled::Instr in; in.op=Compiled::kSplat3; in.val=0; in.valo=0; in.idx=-1; in.fn=-1; in.arity=0;
 					m_emit->code.insert( m_emit->code.begin() + insertPos, in );
 				}
 
@@ -1610,7 +1727,7 @@ namespace RISE
 							return true;
 						}
 						// context reference: u, v always available; P, Po, N, fw,
-						// time only when this Builder opted in via
+						// fwo, time only when this Builder opted in via
 						// EnableContextVars (P2-A) -- see its doc comment.
 						{
 							int ctxSlot; VType ctxType;
@@ -1631,7 +1748,7 @@ namespace RISE
 									if( type == kVec3 ) EmitVec3Var( ctxSlot ); else EmitVarSlot( ctxSlot );
 									return true;
 								}
-								// P/Po/N/fw/time/curv/curvR on a surface that didn't opt
+								// P/Po/N/fw/fwo/time/curv/curvR on a surface that didn't opt
 								// in: fall
 								// through and treat exactly like any other unknown
 								// identifier below.
@@ -1784,12 +1901,14 @@ namespace RISE
 							? ExpressionProgram::kFnOcclusionDynR
 							: ExpressionProgram::kFnThicknessDynR;
 					}
-					// Only a noise builtin reads `fw`; every other call site
-					// keeps the exact 1.0 multiplier EmitFuncCall defaults
-					// to.  A noise call whose domain scale is not provable
-					// gets 1.0 from NoiseFwScale for the same reason.
-					const Scalar fwScale = isNoiseFn ? NoiseFwScale( posArgStart, posArgEnd ) : Scalar(1);
-					EmitFuncCall( emitId, scalarArity, sig->ret == kVec3, fwScale );
+					// Only a noise builtin reads `fw`/`fwo`; every other
+					// call site keeps the exact (1.0, 0.0) multipliers
+					// EmitFuncCall defaults to.  A noise call whose domain
+					// scale is not provable gets (1.0, 0.0) from
+					// NoiseFwScales for the same reason.
+					Scalar fwScale = Scalar(1), fwoScale = Scalar(0);
+					if( isNoiseFn ) NoiseFwScales( posArgStart, posArgEnd, fwScale, fwoScale );
+					EmitFuncCall( emitId, scalarArity, sig->ret == kVec3, fwScale, fwoScale );
 					if( isSignalFn ) {
 						// Recorded ONLY here, on the branch that actually
 						// emitted the call -- a body that mentions the name
@@ -1937,6 +2056,7 @@ namespace RISE
 
 					Compiled::Instr in;
 					in.op = Compiled::kRamp; in.val = 0;
+					in.valo = 0;
 					in.idx = numStops; in.fn = ( valueType==kVec3 ) ? 3 : 1; in.arity = totalArity;
 					m_emit->code.push_back( in );
 					outType = valueType;
@@ -1946,7 +2066,7 @@ namespace RISE
 
 		private:
 			int m_uSlot, m_vSlot, m_PSlot, m_PoSlot, m_NSlot, m_fwSlot, m_timeSlot;
-			int m_curvSlot, m_curvRSlot;
+			int m_curvSlot, m_curvRSlot, m_fwoSlot;
 			//! Compile-time record of which context vars this program reads --
 			//! bit i set == the var whose first env slot is i.  See
 			//! UsesContextVar().
@@ -1963,8 +2083,10 @@ namespace RISE
 			ptrdiff_t m_errorOffset;
 
 			ExpressionProgram() :
-				m_uSlot(0), m_vSlot(1), m_PSlot(2), m_PoSlot(5), m_NSlot(8), m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
-				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_ctxUsedMask(0),
+				m_uSlot(0), m_vSlot(1), m_PSlot(kContextSlotP), m_PoSlot(kContextSlotPo), m_NSlot(8),
+				m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
+				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_fwoSlot(kContextSlotFwo),
+				m_ctxUsedMask(0),
 				m_valid(false), m_errorOffset(-1)
 			{}
 			friend class Builder;
@@ -1976,7 +2098,7 @@ namespace RISE
 			//! treated as "run all", matching Eval's normal full-program
 			//! behaviour (EvalDefStage itself never passes such a value; this
 			//! is a defensive fallback, not a documented caller contract).
-			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar time, const Scalar curv, const Scalar curvR, const SurfaceSignalInfo* pSignals, int stopAfterDef = -1 ) const
+			void BindEnv( Scalar* env, const Scalar u, const Scalar v, const Vector3& P, const Vector3& Po, const Vector3& N, const Scalar fw, const Scalar fwo, const Scalar time, const Scalar curv, const Scalar curvR, const SurfaceSignalInfo* pSignals, int stopAfterDef = -1 ) const
 			{
 				const size_t n = m_initEnv.size();
 				for( size_t i = 0; i < n; ++i ) env[i] = m_initEnv[i];
@@ -1985,6 +2107,7 @@ namespace RISE
 				env[ m_PoSlot+0 ] = Po.x; env[ m_PoSlot+1 ] = Po.y; env[ m_PoSlot+2 ] = Po.z;
 				env[ m_NSlot+0 ] = N.x;  env[ m_NSlot+1 ] = N.y;  env[ m_NSlot+2 ] = N.z;
 				env[ m_fwSlot ] = fw;
+				env[ m_fwoSlot ] = fwo;
 				env[ m_timeSlot ] = time;
 				env[ m_curvSlot ] = curv;
 				env[ m_curvRSlot ] = curvR;
@@ -2065,12 +2188,14 @@ namespace RISE
 				// the sample footprint can't resolve.
 				//
 				// It arrives ALREADY IN THIS CALL SITE'S DOMAIN: RunAny
-				// multiplies the world-space context fw by the instruction's
-				// compile-time domain scale, so `fbm(P*40, ...)` sees 40*fw
-				// here, which is what NoiseCore::Fbm3D's contract ("fw in the
-				// same units as x,y,z") requires.  Nothing to compensate for
-				// below -- and CallFunc is deliberately kept ignorant of how
-				// that number was arrived at.
+				// combines the two context footprints (world `fw`, object
+				// `fwo`) with the instruction's two compile-time domain
+				// scales, so `fbm(P*40, ...)` sees 40*fw here and
+				// `fbm(Po*62, ...)` sees 62*fwo -- which is what
+				// NoiseCore::Fbm3D's contract ("fw in the same units as
+				// x,y,z") requires.  Nothing to compensate for below --
+				// and CallFunc is deliberately kept ignorant of how that
+				// number was arrived at.
 				case 43: return NoiseCore::Fbm3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
 				case 44: return NoiseCore::Turbulence3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
 				case 45: return NoiseCore::Ridged3D( a[0],a[1],a[2], OctavesFromScalar(a[3]), a[4], a[5], fw );
@@ -2183,14 +2308,20 @@ namespace RISE
 					{
 						const int ar = in.arity;
 						sp -= ar;
-						// `in.val` is this call site's compile-time domain
-						// scale (Builder::NoiseFwScale): it turns the
-						// world-space context fw into a footprint in the
-						// noise's OWN domain.  1.0 -- what every non-noise
-						// builtin and every unprovable noise call carries --
-						// is an exact IEEE identity, so nothing that did not
-						// scale its domain changes by a single bit.
-						stack[sp] = CallFunc( in.fn, &stack[sp], env[ kContextSlotFw ] * in.val, pSignals );
+						// `in.val` / `in.valo` are this call site's
+						// compile-time domain scales
+						// (Builder::NoiseFwScales): together they turn the
+						// two per-hit footprints -- world `fw` and object
+						// `fwo` -- into ONE footprint in the noise's OWN
+						// domain.  (1.0, 0.0) -- what every non-noise
+						// builtin and every unprovable noise call carries
+						// -- reduces to `fw * 1 + fwo * 0`, and `x*1` and
+						// `y*0 + z == z` are exact IEEE identities for the
+						// finite, non-negative widths a hit can supply, so
+						// nothing that did not scale its domain (or that
+						// scaled it only in P) changes by a single bit.
+						stack[sp] = CallFunc( in.fn, &stack[sp],
+							env[ kContextSlotFw ] * in.val + env[ kContextSlotFwo ] * in.valo, pSignals );
 						++sp;
 					} break;
 					case Compiled::kFuncV3:
@@ -2198,15 +2329,17 @@ namespace RISE
 						const int ar = in.arity;
 						sp -= ar;
 						Scalar out3[3];
-						// NOTE: `in.val` (the kFunc case's domain-scale
-						// multiplier) is deliberately NOT read here --
-						// CallFuncVec3 takes no `fw`, because no vec3-
-						// returning builtin consumes one.  Adding such a
-						// builtin means threading `fw` through
-						// CallFuncVec3 AND reading `env[kContextSlotFw] *
-						// in.val` here; until then EmitFuncCall's contract
-						// (see its comment) is that a vec3 call site
-						// carries the identity 1.0.
+						// NOTE: `in.val` / `in.valo` (the kFunc case's
+						// domain-scale multipliers) are deliberately NOT
+						// read here -- CallFuncVec3 takes no `fw`, because
+						// no vec3-returning builtin consumes one.  Adding
+						// such a builtin means threading `fw` through
+						// CallFuncVec3 AND reading
+						// `env[kContextSlotFw]*in.val +
+						// env[kContextSlotFwo]*in.valo` here; until then
+						// EmitFuncCall's contract (see its comment) is
+						// that a vec3 call site carries the identity
+						// (1.0, 0.0).
 						CallFuncVec3( in.fn, &stack[sp], out3, pSignals );
 						stack[sp] = out3[0]; stack[sp+1] = out3[1]; stack[sp+2] = out3[2];
 						sp += 3;

@@ -54,7 +54,7 @@ on the mesh path too.
 | F9 | Two call sites, both inside per-candidate mesh element intersection — so it runs once per accepted closer hit, not once per ray | `TriangleMeshGeometry::RayElementIntersection`, `TriangleMeshGeometryIndexed::RayElementIntersection` |
 | F10 | The object→world fold is `worldWidth *= m_worldLinearScale`, `m_worldLinearScale = \|det\|^(1/3)`; its own comment concedes the `scale 4 0.05 4` panel is 4.31× too small | `Object::IntersectRay`, `CSGObject::IntersectRay`, `Object::m_worldLinearScale` |
 | F11 | CSG composes by applying its own factor once to the child's already-folded value | `CSGObject::IntersectRay`, `AdoptCsgSurfacePayload` |
-| F12 | **(updated 2026-09-06)** `fw` reaches `fbm`/`turbulence`/`ridged` **rescaled into that call site's own position-argument domain**: the compiler differentiates the position argument w.r.t. `P` (forward-mode, over the already-emitted postfix code) and folds the Jacobian's largest singular value into a per-call-site multiplier on `fw`, so `fbm(P*40, …)` is filtered at `40·fw`. **Superseded reading:** `fw` used to be consumed *unscaled*, in the same units as the position argument — which made the fade inert for every real body (measured domain scales 7 … 820). The multiplier is exactly `1.0`, an IEEE identity, whenever the domain scale is not provable (an argument built from `u`/`v`/`Po`, or through `%`/`^`/a comparison/any `kFunc`), so an un-analysable body still behaves exactly as it did | `Builder::NoiseFwScale`, `Builder::LinAddSub`, `Builder::JacobianSpectralNorm`; consumed at `ExprProgram::RunAny`'s `kFunc` case → `CallFunc` cases 43–45 |
+| F12 | **(updated 2026-09-06, twice — see the §11 addendum)** `fw` **and `fwo`** reach `fbm`/`turbulence`/`ridged` **rescaled into that call site's own position-argument domain**: the compiler differentiates the position argument w.r.t. **both `P` and `Po`** (forward-mode, over the already-emitted postfix code) and folds each Jacobian's largest singular value into a per-call-site multiplier, filtering at `scale_P·fw + scale_Po·fwo` — so `fbm(P*40, …)` is filtered at `40·fw` and `fbm(Po*62, …)` at `62·fwo`. **Superseded reading:** `fw` used to be consumed *unscaled*, in the same units as the position argument — which made the fade inert for every real body (measured domain scales 7 … 820); and the first fix still fell back for `Po`. The multipliers are exactly `(1.0, 0.0)`, an IEEE identity, whenever the domain scale is not provable (an argument built from `u`/`v`, or through `%`/`^`/a comparison/any `kFunc`), so an un-analysable body still behaves exactly as it did | `Builder::NoiseFwScales`, `Builder::LinAddSub`, `Builder::JacobianSpectralNorm`; `TextureFootprint::objectWidth` (stamped in `Object::IntersectRay`) → `ExprEvalContext::fwo`; consumed at `ExprProgram::RunAny`'s `kFunc` case → `CallFunc` cases 43–45 |
 | F13 | The fade band is `lo = 0.2`, `hi = 0.6`, smoothstep, weight 1 below `lo`, 0 at/above `hi`; empirically chosen, deliberately earlier than classic Nyquist | `OctaveFadeWeightImpl` |
 | F14 | `worldWidth` consumers: `ExpressionPainter::BuildContext` (×2, colour and scalar pipes), `ReliefModifier::Modify`, `PainterPreview`'s `MakePreviewRi` | as named |
 | F15 | `dudx…dvdy` consumers: `TexturePainter::SampleTextured` (mip LOD / supersample), `WeaveBRDF` (`fpUV`) — both gate on `txFootprint.valid` | as named |
@@ -200,7 +200,7 @@ since been closed separately (2026-09-06).** As shipped here, `fw` went into
 the noise unscaled, so the `0.2 / 0.6` band was tested against a world length
 while the octaves it gates live in the *argument's* domain — a body scaling by
 10 set its Nyquist threshold 10× too low, and the fade never engaged on any
-real scene. `Builder::NoiseFwScale` now recovers that domain scale at compile
+real scene. `Builder::NoiseFwScales` now recovers that domain scale at compile
 time and multiplies `fw` by it per call site, so the band means the same thing
 in both domains. Nothing in the plan above changes: `worldWidth` is still the
 same world-space quantity produced by the same helper, and the rescale happens
@@ -1081,3 +1081,89 @@ un-swapped identity branch), red-proofed by transposing the pre-`if`
 identity assignment (the new row failed at scale-relative error 1.000,
 the existing `+y` row stayed green; reverted). `TextureFootprintTest` is
 now 118/118.
+
+## 11. Addendum (2026-09-06): `Po` domains fade, via an object-space width on the hit
+
+F12's first landing that day closed the domain-scale mismatch for `P` only.
+`Po` was listed there as one of the *unprovable* inputs, "unknowable at compile
+time because the object→world scale is per instance" — so the shipped
+object-space idiom (`fbm(Po * 62, …)` in `Hair/variety_gallery`,
+`Hair/dandelion_clock`, `Hair/cottontail_dusk`,
+`GeometrySignals/weathered_reliquary`) took multiplier `1.0` and never faded.
+
+**That premise was half right.** The *scale* is indeed unknowable at compile
+time. The *footprint in object units* is not unknowable at all — the hit
+already computes it, one statement before it throws it away.
+
+### 11.1 What the compile-time half became
+
+`Builder::LinScalar` now carries a **six-component** gradient: `g[0..2] =
+d/dP`, `g[3..5] = d/dPo`. Every rule (`LinNeg`, `LinAddSub`, `LinMul`,
+`LinDiv`) is linear and loops over all six unchanged; only `SlotLinear` (which
+seeds `Po`'s three slots as the second variable) and `JacobianSpectralNorm`
+(which now takes a `gBase` and reduces one half at a time) know the split.
+`NoiseFwScales` returns the pair.
+
+**Combination rule.** `d(arg) = J_P·dP + J_Po·dPo`, so by the triangle
+inequality `‖d(arg)‖ ≤ ‖J_P‖·‖dP‖ + ‖J_Po‖·‖dPo‖`, i.e.
+
+```
+domain fw  =  scale_P · fw  +  scale_Po · fwo
+```
+
+It is **conservative, and knowingly so**: when one argument reads both frames
+the two terms describe the *same* physical displacement in two coordinate
+systems, so a body written to cancel them (`P*k - Po*k*s`, on a uniformly
+scaled instance) is filtered at up to `2×` the true stretch. That is the
+over-filter direction — the same side every other approximation in this
+analysis errs to (§F12's `LinAddSub` note), and the one that cannot alias.
+Single-frame bodies, which is every shipped one, pay nothing: the other term's
+multiplier is an exact `0`.
+
+**Bit-identity** for `P`-only bodies is preserved by construction and pinned by
+test 67: `scale_Po` is exactly `0`, and `x·1 + y·0` is an IEEE identity for the
+finite non-negative widths a hit can supply.
+
+### 11.2 What the runtime half is — and why it is a CAPTURE, not a division
+
+`TextureFootprint` gained `objectWidth`: the same width as `worldWidth`, in the
+frame `ptObjIntersec` (the VM's `Po`) is written in. `ExpressionPainter`'s two
+`BuildContext` twins publish it as `ExprEvalContext::fwo`, on the same
+`widthValid` gate `fw` uses.
+
+Four candidate sources were on the table; the chosen one is the first:
+
+| Source | Verdict |
+|---|---|
+| **The pre-promotion `worldWidth` in `Object::IntersectRay`** | **Chosen.** At that instant the footprint *is* an object-space measure (the geometry stamped it from the object-space ray), and `ptObjIntersec` is computed from the same ray at the same nesting level a few statements later — so the two are co-framed by construction, at every level, for free. |
+| `worldWidth / m_worldLinearScale` (`|det M|^(1/3)`) | Rejected: exact only under uniform scale. This is the very geometric-mean fold §3.4 retired for `worldWidth` because it under-counted a `scale 4 0.05 4` panel by **4.31×**. |
+| `SurfaceDerivativesInfo::scaleHint` | Rejected: it is a characteristic *object size*, not a footprint, and it is itself promoted by the same `|det|^(1/3)` fold. |
+| Inverse-transforming `dpdx`/`dpdy` through `pmxWorldToObject` | Rejected: identical answer to the capture (the map is affine), but it costs two matrix transforms per hit and is **unavailable on a CSG hit**, where the pointer is deliberately null. |
+
+**CSG.** `AdoptCsgSurfacePayload` copies `ptObjIntersec` *and* the whole
+`txFootprint` from the winning child operand, untransformed — so both remain in
+that child's own object space at every nesting depth, and `CSGObject::
+IntersectRay` promotes only `worldWidth`/`dpdx`/`dpdy`, deliberately leaving
+`objectWidth` alone. This is the one field where the CSG frame mismatch
+documented on `pmxWorldToObject` *works out*: the field `objectWidth` must
+agree with is mismatched in exactly the same way. A CSG hit therefore reports a
+**real** `fwo`, not a neutral 0 — and where the winning child never stamped one
+(`widthValid` false), `fwo` is 0, the same honest absence `fw` states.
+
+**Non-uniform scale.** `objectWidth` inherits `worldWidth`'s isotropy
+approximation and nothing worse: one scalar stands in for an elliptical
+footprint (the mean of the two object-space step magnitudes). Under `scale 4
+0.05 4` the object-space *width* is exact — it is the width the geometry itself
+measured — and it is the *world* side that is the mean of an anisotropic pair.
+So the conservative direction under non-uniform scale is: a `Po` domain is
+filtered at the honest object-space footprint, and a mixed `P`+`Po` domain adds
+a possibly-anisotropy-averaged world term on top of it.
+
+### 11.3 Coverage
+
+`TextureExpressionVMTest` tests 71–74: domain consistency across the object
+transform (`fbm(Po*k)` on a `scale s` object fades at the same octave as
+`fbm(P*k/s)` at the world footprint), the mixed-frame conservative sum, the
+non-uniform-scale side, and `fwo == 0` short-circuit. Tests 63/67's `==`
+goldens are extended rather than rewritten — a `P`-only body must still
+evaluate bit-for-bit as it did.
