@@ -8,6 +8,10 @@ This is not readmission, an empirical row, a completed statistics window, or
 a new movie. Historical remap and rejected hybrid configurations remain
 explicit diagnostic/baseline paths; the temporal production entry now selects
 the ported full-Picard owner. No fixed-k variant is enabled by this entry.
+This entry currently admits from-zero runs only: temporal resume refuses before
+opening a checkpoint until operator-bound checkpoint admission is implemented.
+Same build/case/precision alone cannot authenticate a transport trajectory.
+The separately sealed r78 continuation retains its existing admission contract.
 
 ## Engineering evidence
 
@@ -68,10 +72,15 @@ EOS mean was 0.904 s/step. Hot inversion work and increased iteration count,
 not the retired observer, dominate. Even eliminating all target assembly cannot
 meet 300–500 ms while hot EOS alone costs thirteen seconds.
 
-`tools/report_fire_r212_cost.py` reproduces the cost report from SHA-indexed
-executed inputs. Report SHA:
-`9b8bb7f74733d3d16283dd1ed3362d04579cefc806055b128d71bcb7eabd18a6`.
-Output: `rendered/fire_production_calibration/r212_transport_adoption/cost_reconciliation.v1.json`.
+`tools/report_fire_r212_cost.py` reproduces the cost report from executed inputs
+authenticated against the committed `tools/fire_r212_cost_inputs.v1.json`.
+Changed wall/count fields, substituted duplicate repeats and unrecorded inputs
+refuse. The observer record is parsed from the authenticated continuation log.
+Report v2 SHA:
+`43444ef7ab6753c6e9673de9a81e4e139113132f6afe03390a64cedf65a2e6c1`.
+Output: `rendered/fire_production_calibration/r212_transport_adoption/cost_reconciliation.v2.json`.
+The historical v1 report is retained; its values were correct, but its input
+authentication was incomplete. The review repair changes no timing value.
 The 300–500 ms goal remains unmet. Extrapolating 18.317 s/step at the audited
 1.646 ms step to 25 simulated seconds is about 77 wall hours, not an overnight
 forecast or an under-hour claim. Future state costs and frame I/O remain extra

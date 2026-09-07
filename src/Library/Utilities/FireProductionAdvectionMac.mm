@@ -10765,7 +10765,23 @@ kernel void refusal_ratio_witness(device const float* candidate [[buffer(0)]],
 		computed.conservativeProducerPrecision=FireStateProducerPrecision::Binary32;
 		computed.acceptedShape=shape;
 		if(!FireProductionResidentStepEligibleForAcceptedManifoldToken(computed)){
-			if(error)*error="projected-Heun resident owner acceptance contract failed";return false;}
+			if(error){std::ostringstream diagnostic;diagnostic<<std::setprecision(17)
+				<<"projected-Heun resident owner acceptance contract failed"
+				<<" projection_valid="<<computed.projection.validationPassed
+				<<" projection_pre_per_s="<<computed.projection.maximumPreProjectionResidualPerS
+				<<" projection_post_per_s="<<computed.projection.maximumPostProjectionResidualPerS
+				<<" projection_band_per_s="<<computed.projection.validationBandPerS
+				<<" dynamics_valid="<<computed.manifoldDynamicsBoundPassed
+				<<" max_deviation="<<computed.maximumAcceptedManifoldDeviation
+				<<" p95_deviation="<<computed.acceptedManifoldDeviationP95
+				<<" p50_deviation="<<computed.acceptedManifoldDeviationP50
+				<<" tail_cells="<<computed.manifoldTailCellCount
+				<<" tail_excess="<<computed.manifoldTailExcessSum
+				<<" tail_drained_m3="<<computed.manifoldTailDrainedVolumeM3
+				<<" projections="<<computed.residentProjectionInvocationCount
+				<<" interstage_transfers="<<computed.interstageFullGridTransferCount
+				<<" terminal_stagings="<<computed.terminalStagingCount;
+				*error=diagnostic.str();}return false;}
 		computed.acceptedManifoldToken_.available_=true;
 		computed.acceptedManifoldToken_.representedTimeStepS_=computed.representedTimeStepS;
 		computed.acceptedManifoldToken_.maximumGeneration_=computed.maximumManifoldGeneration;

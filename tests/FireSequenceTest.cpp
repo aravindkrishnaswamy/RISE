@@ -3276,6 +3276,12 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		// This production entry is from-zero until an operator-bound checkpoint
+		// authority exists. Same build/case/precision is not transport lineage.
+		// The separately sealed r78 continuation retains its own admission path.
+		if(persistence.portedProductionTransport&&persistence.resume){
+			values.structuredError="production_transport_resume_requires_operator_lineage";return values;
+		}
 		if(persistence.portedProductionTransport&&(!persistence.productionMetal||
 			persistence.compatibleMomentumDiagnostic||persistence.singleStageFCTDiagnostic||
 			persistence.sealedLegacyMomentumReplay||persistence.sealedProjectedHeunReplay||
@@ -16073,6 +16079,11 @@ int main(int argc,char** argv)
 		Check(!productionSelection.UsesProjectedHeunOwner(),"historical unselected path stays explicit");
 		productionSelection.productionMetal=true;productionSelection.portedProductionTransport=true;
 		Check(productionSelection.UsesProjectedHeunOwner(),"adopted temporal transport selects resident owner");
+		RunPersistenceOptions resumeMutant=productionSelection;resumeMutant.resume=true;
+		Check(RunMethaneFrameProbe(1u,0u,0.0,3.0,1.0,8.0,CapstonePoolDiameterM,
+			CapstoneHeatReleaseRateKW,false,resumeMutant).structuredError==
+			"production_transport_resume_requires_operator_lineage",
+			"production resume refuses every unbound checkpoint before opening or importing state");
 		for(const auto conflict:{&RunPersistenceOptions::compatibleMomentumDiagnostic,
 			&RunPersistenceOptions::singleStageFCTDiagnostic,&RunPersistenceOptions::sealedLegacyMomentumReplay,
 			&RunPersistenceOptions::sealedProjectedHeunReplay,&RunPersistenceOptions::sealedProjectedHeunContinuation,

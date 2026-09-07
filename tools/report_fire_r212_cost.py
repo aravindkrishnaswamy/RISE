@@ -5,11 +5,32 @@ import csv
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import statistics
 
 from analyze_fire_producer_kernels import summarize
 from check_fire_owner_instrumentation import trees
+
+
+INPUT_MANIFEST = Path(__file__).with_name("fire_r212_cost_inputs.v1.json")
+
+
+def authenticated_input(path, raw, expected):
+    digest = hashlib.sha256(raw).hexdigest()
+    if expected.get(path) != digest:
+        raise ValueError("cost input differs from the recorded execution: " + path)
+    return digest
+
+
+def observer_record(log):
+    records = re.findall(r"^OWNER_CONVERGENCE_CROSSING .* terminal_bit_identity=1 "
+                         r"diagnostic_wall_ms=([0-9.eE+-]+) passed=1$", log, re.M)
+    if len(records) != 1:
+        raise ValueError("missing or repeated successful observer execution")
+    value = float(records[0])
+    stats([value])
+    return dict(calls=1, wall_ms=value, included_in_production_rows=False)
 
 
 def stats(values):
@@ -22,10 +43,12 @@ def stats(values):
 
 def report(base=Path("rendered/fire_production_calibration")):
     inputs = {}
+    expected = json.loads(INPUT_MANIFEST.read_text())["inputs_sha256"]
 
     def read(path):
         raw = path.read_bytes()
-        inputs[str(path)] = hashlib.sha256(raw).hexdigest()
+        relative = str(path.relative_to(base))
+        inputs[str(path)] = authenticated_input(relative, raw, expected)
         return raw.decode()
 
     def rows(path):
@@ -33,6 +56,7 @@ def report(base=Path("rendered/fire_production_calibration")):
 
     trajectory = base / "r211_resident_migration/continuation.v2/budgets/maximum_velocity_trajectory.csv"
     live = rows(trajectory)
+    observer = observer_record(read(base / "r211_resident_migration/continuation.v2.log"))
     if inputs[str(trajectory)] != "cb10278dc49f33c9a9718496804bf81fe5493faf4af0eb27cd1a3b7db3d1a057":
         raise ValueError("not the accepted r211 trajectory")
     cold = []
@@ -80,7 +104,7 @@ def report(base=Path("rendered/fire_production_calibration")):
                 hot_repeats=repeats,
                 exclusive_phases_mean_ms={k: dict(device=v[0]/len(hot), wall=v[1]/len(hot)) for k,v in phases.items()},
                 inclusive_kernels={k: dict(calls=v[0], ms_per_call=v[1]/v[0], ms_per_step=v[1]/len(hot)) for k,v in kernels.items()},
-                observer=dict(calls=1, wall_ms=19593.469709000001, included_in_production_rows=False),
+                observer=observer,
                 scope="846 production continuation steps; three independent eight-step hot profiles; nine historical cold steps. Inclusive kernel intervals are not an additive decomposition. Wall-device residual is not measured hashing cost. No fixed-k or full-window cost claim.")
 
 
