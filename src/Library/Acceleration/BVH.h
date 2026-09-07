@@ -1281,7 +1281,7 @@ namespace RISE
 		// the end of this comment).  MEASURED 2026-09-07 on sponza_new
 		// 640x360x32 (8.3 shadow rays per camera sample, 61 M per frame),
 		// interleaved base/branch, two sessions of 3 and 4 pairs: 21.19 +-
-		// 0.35 s vs 21.49 +- 0.33 s, then 21.49 +- 0.41 s vs 21.36 +- 0.66 s
+		// 0.35 s vs 21.48 +- 0.33 s, then 21.49 +- 0.41 s vs 21.36 +- 0.66 s
 		// -- ratios 1.014 and 0.994, both inside the +-2-3 % run-to-run
 		// spread, i.e. no measurable shadow-ray cost.  A non-null override
 		// lets a caller traverse this SAME already-built tree under a
