@@ -45,10 +45,14 @@
 //       after Modify.
 //    4. Footprint fade.  With txFootprint.valid, |N'-N| is
 //       non-increasing in worldWidth over a decade sweep on an `fbm`
-//       height (the octave fade plus the max(., fw) step rule), AND
+//       height (the octave fade plus the fw/2 step rule), AND
 //       strictly DECREASING over the same sweep on an fw-BLIND step
 //       height -- which is the half that actually discriminates the
-//       max(., fw) rule (see red-proof (e)).
+//       fw/2 rule (see red-proof (e)).  A third sweep (footprint-
+//       deferral fix, 2026-09-06) pins that the 1e-3 floor no longer
+//       competes with a real footprint: fw = 4e-4 with `step 0` resolves
+//       to fw/2 = 2e-4, not 1e-3, and an explicit `step 5e-4` above fw/2
+//       still wins as a floor.
 //   4c. Footprint world-scale fold (fix round 2, P2-A).  A real cast
 //       through Object::IntersectRay -- single-triangle mesh, ray
 //       differentials, primary hit -- at world scale 1 and at world
@@ -148,20 +152,32 @@
 //        surface branch (leaving ri2.ptCoord at the centre) makes the
 //        UV-painter-in-surface-mode gradient identically zero and fails
 //        test 6.
-//    (e) Test 4, THE max(., fw/2) STEP RULE.  Deleting the
-//        `if( txFootprint.widthValid && sFootprint > s ) s = sFootprint`
-//        block in ReliefModifier.cpp's surface branch leaves the fbm
-//        sweep GREEN -- `fbm` fades its own octaves against the
-//        footprint, so its sequence is monotone with or without the max,
-//        and that sweep alone would pass a broken implementation.  The
-//        fw-blind step-height sweep added in fix round 1 fails the three
-//        strict-decrease assertions (|N'-N| pinned at 1.4000 for every
-//        footprint instead of 1.400 -> 1.342 -> 0.765 -> 0.100) AND the
-//        four closed-form assertions added in fix round 2.  Those four
-//        are what pin the FRACTION rather than merely the presence of the
-//        rule: restoring the fix-round-1 form (`s = worldWidth`, a full
-//        footprint) leaves every monotonicity assertion green and fails
-//        three of the four closed-form ones.
+//    (e) Test 4, THE fw/2 STEP RULE.  Deleting the
+//        `if( ri.txFootprint.widthValid ) { ... s = sFootprint or the
+//        floor ... }` branch in ReliefModifier.cpp's surface domain
+//        leaves the fbm sweep GREEN -- `fbm` fades its own octaves
+//        against the footprint, so its sequence is monotone with or
+//        without the deferral, and that sweep alone would pass a broken
+//        implementation.  The fw-blind step-height sweep added in fix
+//        round 1 fails the three strict-decrease assertions (|N'-N|
+//        pinned at 1.4000 for every footprint instead of 1.400 -> 1.342
+//        -> 0.765 -> 0.100) AND the four closed-form assertions added in
+//        fix round 2.  Those four are what pin the FRACTION rather than
+//        merely the presence of the rule: restoring the fix-round-1 form
+//        (`s = worldWidth`, a full footprint) leaves every monotonicity
+//        assertion green and fails three of the four closed-form ones.
+//        The third sweep, added with the 2026-09-06 footprint-deferral
+//        fix, pins the NARROWER claim that this branch's floor comparison
+//        was retired for a hit that HAS a footprint: reverting the
+//        surface-domain rule to `s = max( step_user > 0 ? step_user :
+//        1e-3, widthValid ? fw/2 : 0 )` (the unconditional-max form) fails
+//        the third sweep's (a) closed-form assertion at fw = 4e-4
+//        (measured s = 1e-3 instead of the wanted 2e-4) -- and, since the
+//        second sweep's own closed form was updated to `s = fw/2` by the
+//        same fix, that reversion also fails the second sweep's narrowest
+//        width (widths[0] = 1e-3, where fw/2 = 5e-4 < 1e-3); the third
+//        sweep exists to isolate the deferral claim in its own right, at
+//        a footprint deeper into the regime the fix targets.
 //    (f) Test 7b, THE FRAME-REBUILD GATE (fix round 1, P1-A).  Reverting
 //        ReliefModifier / NormalMap (and, when it existed, BumpMap) from
 //        `ModifierFrame::HasCoherentTangent( ri )` back to
@@ -835,23 +851,29 @@ static void Test4_FootprintFade()
 	// H(p) = 0.1 for p.x > 0, else 0, probed at x = 0 exactly.  T = +X, so
 	// the stencil straddles the step: dT = H(+s) - H(-s) = 0.1 for every
 	// s > 0, and hT = 0.1 / (2s).  |N'-N| must therefore DECREASE strictly
-	// as fw (hence s) grows.  Delete the max and s is pinned at the 1e-3
-	// auto floor for all four widths, the sequence goes flat, and the
-	// strict-decrease assertions below fail (red-proof (e)).
+	// as fw (hence s) grows.  Delete the footprint deferral and s is pinned
+	// at the 1e-3 auto floor for all four widths, the sequence goes flat,
+	// and the strict-decrease assertions below fail (red-proof (e)).
 	//
 	// This sweep also pins the step rule's FOOTPRINT FRACTION in closed
 	// form (fix round 2), which the monotonicity assertions alone cannot:
 	// `s` is the HALF-step, so a difference spanning exactly one footprint
-	// is `s = fw/2`, and the rule is
+	// is `s = fw/2`, and -- since every width here sets `widthValid` -- the
+	// rule (footprint-deferral fix, 2026-09-06: docs/RELIEF_MODIFIER_DESIGN.md
+	// 3.3 addendum) is
 	//
-	//     s = max( 1e-3, fw/2 )     (no explicit `step` here)
+	//     s = max( step_user, fw/2 ) = fw/2     (no explicit `step` here)
 	//
-	// which for the four widths below gives s = 1e-3, 5e-3, 5e-2, 0.5 --
-	// the first entry on the floor, the rest on the footprint.  With
-	// N = +Z, T = +X and `scale` 1, the perturbed normal is exactly
-	// normalize( (-hT, 0, 1) ), so |N'-N| has a closed form and the
-	// assertion below discriminates fw/2 from fw (which would read
-	// s = 1e-3, 1e-2, 1e-1, 1.0 -- a factor of two off on the last three).
+	// with NO 1e-3 term at all when a footprint exists -- unlike the
+	// original (superseded) rule, which maxed fw/2 against the 1e-3 floor
+	// unconditionally and would have read s = 1e-3, 5e-3, 5e-2, 0.5 for the
+	// four widths below (the first entry floored).  Post-fix all four are
+	// pure fw/2: s = 5e-4, 5e-3, 5e-2, 0.5.  With N = +Z, T = +X and
+	// `scale` 1, the perturbed normal is exactly normalize( (-hT, 0, 1) ),
+	// so |N'-N| has a closed form and the assertion below discriminates
+	// fw/2 from fw (which would read s = 1e-3, 1e-2, 1e-1, 1.0 -- a factor
+	// of two off on the last three) AND from the superseded floored rule
+	// (which would read s = 1e-3 instead of 5e-4 on the narrowest width).
 	{
 		FnScalarPainter* hs = Own( new FnScalarPainter( &HeightStepAtX ) );
 		ReliefModifier* ms = MakeRelief( *hs, Scalar(1.0), ReliefDomain::Surface, Scalar(0) );	// step 0 = auto
@@ -866,20 +888,22 @@ static void Test4_FootprintFade()
 			ms->Modify( ri );
 			dev[wi] = Vector3Ops::Magnitude( ri.vNormal - n0 );
 
-			// Closed form for THIS width, from the rule above.
-			const Scalar sWant  = std::max( Scalar(1e-3), Scalar(0.5) * widths[wi] );
+			// Closed form for THIS width: widthValid is set, so the rule is
+			// pure fw/2, with no 1e-3 floor competing against it (fix
+			// 2026-09-06).
+			const Scalar sWant  = Scalar(0.5) * widths[wi];
 			const Scalar hTWant = Scalar(0.1) / ( Scalar(2) * sWant );
 			const Scalar devWant = Vector3Ops::Magnitude(
 				Vector3Ops::Normalize( Vector3( -hTWant, 0, 1 ) ) - Vector3( 0, 0, 1 ) );
 
 			std::cout << "    (step height) worldWidth " << std::scientific << std::setprecision(1) << widths[wi]
 			          << "  |N'-N| " << std::setprecision(4) << dev[wi]
-			          << "  (closed form for s = max(1e-3, fw/2) = " << sWant << ": " << devWant << ")"
+			          << "  (closed form for s = fw/2 = " << sWant << ": " << devWant << ")"
 			          << std::defaultfloat << std::endl;
 
 			CHECK( std::fabs( dev[wi] - devWant ) < Scalar(1e-12),
-				"4: (fw-blind height) the auto half-step is max(1e-3, fw/2) -- NOT max(1e-3, fw) -- "
-				"at worldWidth " << widths[wi] << " (" << dev[wi] << " vs " << devWant << ")" );
+				"4: (fw-blind height) with a footprint the auto half-step is fw/2 -- NOT fw, and NOT "
+				"maxed against the 1e-3 floor -- at worldWidth " << widths[wi] << " (" << dev[wi] << " vs " << devWant << ")" );
 		}
 
 		CHECK( dev[0] > Scalar(1e-3),
@@ -888,6 +912,86 @@ static void Test4_FootprintFade()
 			CHECK( dev[wi] < dev[wi-1],
 				"4: (fw-blind height) |N'-N| STRICTLY decreases from worldWidth " << widths[wi-1]
 				<< " to " << widths[wi] << " (" << dev[wi-1] << " -> " << dev[wi] << ")" );
+		}
+	}
+
+	// ---- THIRD SWEEP: the footprint-deferral fix itself (2026-09-06,
+	// docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum).  Before this fix the
+	// surface-domain rule was `s = max( step_user > 0 ? step_user : 1e-3,
+	// widthValid ? fw/2 : 0 )` -- the 1e-3 floor was maxed against fw/2
+	// UNCONDITIONALLY, so any footprint below 2e-3 world units (any
+	// sufficiently close-up primary hit) got the 1e-3 half-step (a 2mm
+	// stencil) instead of its own, smaller one.
+	// `scenes/FeatureBased/Textures/plank_closeup.RISEscene` (measured
+	// fw ~= 4e-4) needed an explicit `step 0.00022` to work around exactly
+	// this.  fw = 4e-4 here reproduces that regime directly: fw/2 = 2e-4,
+	// four times smaller than the old floor.
+	{
+		FnScalarPainter* hs2 = Own( new FnScalarPainter( &HeightStepAtX ) );
+		const Scalar fw = Scalar(4e-4);
+
+		// (a) step 0 (auto): the effective half-step must be fw/2 = 2e-4,
+		// NOT the 1e-3 floor -- this is the case the fix exists for.
+		{
+			ReliefModifier* ms2 = MakeRelief( *hs2, Scalar(1.0), ReliefDomain::Surface, Scalar(0) );
+			RayIntersectionGeometric ri = MakeRI( Point3( 0, 0, 0 ) );
+			ri.txFootprint.widthValid = true;
+			ri.txFootprint.valid = true;
+			ri.txFootprint.worldWidth = fw;
+			const Vector3 n0 = ri.vNormal;
+			ms2->Modify( ri );
+			const Scalar dev = Vector3Ops::Magnitude( ri.vNormal - n0 );
+
+			const Scalar sWant  = Scalar(0.5) * fw;			// 2e-4
+			const Scalar hTWant = Scalar(0.1) / ( Scalar(2) * sWant );
+			const Scalar devWant = Vector3Ops::Magnitude(
+				Vector3Ops::Normalize( Vector3( -hTWant, 0, 1 ) ) - Vector3( 0, 0, 1 ) );
+
+			std::cout << "    (footprint-deferral) fw " << std::scientific << fw << " step 0 -> s = "
+			          << sWant << "  |N'-N| " << std::defaultfloat << dev << " (want " << devWant << ")"
+			          << std::endl;
+
+			CHECK( std::fabs( dev - devWant ) < Scalar(1e-12),
+				"4: (footprint-deferral) fw = 4e-4, step 0 resolves to s = fw/2 = 2e-4, not the "
+				"1e-3 floor (" << dev << " vs " << devWant << ")" );
+
+			// Oracle against the superseded rule (max against 1e-3), so a
+			// regression back to the unconditional max is caught even if
+			// the tight closed-form tolerance above were loosened later.
+			const Scalar sOldRule = std::max( Scalar(1e-3), sWant );
+			const Scalar hTOld = Scalar(0.1) / ( Scalar(2) * sOldRule );
+			const Scalar devOld = Vector3Ops::Magnitude(
+				Vector3Ops::Normalize( Vector3( -hTOld, 0, 1 ) ) - Vector3( 0, 0, 1 ) );
+			CHECK( std::fabs( devWant - devOld ) > Scalar(1e-6),
+				"4: (footprint-deferral, oracle) fw/2 = 2e-4 and the superseded floored value 1e-3 "
+				"give measurably different deviations, so this case actually discriminates the two "
+				"rules (" << devWant << " vs " << devOld << ")" );
+		}
+
+		// (b) explicit `step 5e-4`, above fw/2 = 2e-4: the explicit step
+		// remains a FLOOR and must win over the footprint-derived value.
+		{
+			ReliefModifier* ms3 = MakeRelief( *hs2, Scalar(1.0), ReliefDomain::Surface, Scalar(5e-4) );
+			RayIntersectionGeometric ri = MakeRI( Point3( 0, 0, 0 ) );
+			ri.txFootprint.widthValid = true;
+			ri.txFootprint.valid = true;
+			ri.txFootprint.worldWidth = fw;
+			const Vector3 n0 = ri.vNormal;
+			ms3->Modify( ri );
+			const Scalar dev = Vector3Ops::Magnitude( ri.vNormal - n0 );
+
+			const Scalar sWant  = Scalar(5e-4);		// explicit step exceeds fw/2 = 2e-4
+			const Scalar hTWant = Scalar(0.1) / ( Scalar(2) * sWant );
+			const Scalar devWant = Vector3Ops::Magnitude(
+				Vector3Ops::Normalize( Vector3( -hTWant, 0, 1 ) ) - Vector3( 0, 0, 1 ) );
+
+			std::cout << "    (footprint-deferral) fw " << std::scientific << fw << " step 5e-4 -> s = "
+			          << sWant << "  |N'-N| " << std::defaultfloat << dev << " (want " << devWant << ")"
+			          << std::endl;
+
+			CHECK( std::fabs( dev - devWant ) < Scalar(1e-12),
+				"4: (footprint-deferral) an explicit step (5e-4) above fw/2 (2e-4) is still a FLOOR "
+				"and wins (" << dev << " vs " << devWant << ")" );
 		}
 	}
 }

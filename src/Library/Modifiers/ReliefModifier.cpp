@@ -27,11 +27,18 @@ using namespace RISE::Implementation;
 
 namespace
 {
-	//! The automatic surface-domain half-step floor (design 3.3).  A
+	//! The automatic surface-domain half-step floor for a hit with NO pixel
+	//! footprint (design 3.3, footprint-deferral fix 2026-09-06).  A
 	//! derivative-estimator step in double precision, NOT a scene-scale
-	//! guess: on a scene whose features are below 1e-3 world units the
-	//! author sets `step` explicitly, and the descriptor says so.  This is
-	//! the one new constant in the design and it is disclosed as such.
+	//! guess.  This value is used only when `ri.txFootprint.widthValid` is
+	//! false -- when a footprint IS available the step defers to it
+	//! (`s = max(user, fw/2)`, see the STEP RULE comment below) rather than
+	//! being maxed against this floor, so a close-up hit with a footprint
+	//! below 2e-3 world units gets a step derived from that footprint, not
+	//! this constant.  On a scene whose features are below 1e-3 world units
+	//! AND whose hits carry no footprint, the author still sets `step`
+	//! explicitly, and the descriptor says so.  This is the one new
+	//! constant in the design and it is disclosed as such.
 	const Scalar RELIEF_AUTO_STEP_SURFACE = Scalar( 1e-3 );
 
 	//! The fraction of the pixel footprint the automatic HALF-step takes
@@ -141,8 +148,9 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 	} else {
 		// SURFACE DOMAIN.  Step in the tangent plane, in world units.
 		//
-		// STEP RULE (design 3.3):
-		//     s = max( user > 0 ? user : 1e-3, widthValid ? fw/2 : 0 )
+		// STEP RULE (design 3.3, footprint-deferral fix 2026-09-06):
+		//     widthValid:  s = max( user, fw/2 )
+		//     !widthValid: s = user > 0 ? user : 1e-3
 		//
 		// `widthValid`, not `valid`: the latter is the UV-Jacobian flag,
 		// and relief's step is a WORLD-space tangent-plane step that never
@@ -150,6 +158,18 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md this rule is therefore
 		// live on UV-free geometry too (SDF, box, disk, plane, hair), not
 		// just on triangle meshes.
+		//
+		// The 1e-3 floor (RELIEF_AUTO_STEP_SURFACE) is a fallback for the
+		// NO-FOOTPRINT case only -- it is not compared against `fw/2` when
+		// a footprint exists.  Before this fix the two were maxed
+		// unconditionally, so a close-up hit with a footprint well below
+		// 2e-3 world units (fw/2 < 1e-3) got the floor's 1e-3 half-step
+		// instead of the footprint's smaller one: a 2mm-wide central
+		// difference smearing sub-millimetre relief detail regardless of
+		// how tight the footprint actually was.  `scenes/FeatureBased/
+		// Textures/plank_closeup.RISEscene` (fw ~= 4e-4) needed an explicit
+		// `step 0.00022` to work around it; with this fix `step 0` now
+		// resolves to the same ~2e-4 half-step on its own.
 		//
 		// The max against the pixel footprint is not a safety clamp, it is
 		// the antialiasing: a central difference over a span SMALLER than
@@ -169,15 +189,20 @@ void ReliefModifier::Modify( RayIntersectionGeometric& ri ) const
 		// RELIEF_AUTO_STEP_FOOTPRINT_FRACTION above for the measurement
 		// that corrected this (fix round 2).
 		//
-		// NOTE FOR AUTHORS, because the shape of this rule surprises: an
-		// explicit `step` SMALLER than `fw/2` is a FLOOR that the
-		// footprint then raises, not an override that defeats it.  There
-		// is deliberately no way to ask for a sub-footprint stencil on a
-		// primary hit -- that is the aliasing the rule exists to stop.
-		Scalar s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_SURFACE;
-		const Scalar sFootprint = RELIEF_AUTO_STEP_FOOTPRINT_FRACTION * ri.txFootprint.worldWidth;
-		if( ri.txFootprint.widthValid && sFootprint > s ) {
-			s = sFootprint;
+		// NOTE FOR AUTHORS, because the shape of this rule surprises: when
+		// a footprint exists, an explicit `step` SMALLER than `fw/2` is a
+		// FLOOR that the footprint then raises, not an override that
+		// defeats it.  There is deliberately no way to ask for a
+		// sub-footprint stencil on a primary hit -- that is the aliasing
+		// the rule exists to stop.  The 1e-3 floor only ever applies on a
+		// hit with NO footprint (widthValid false) -- it no longer competes
+		// with a real, smaller footprint.
+		Scalar s;
+		if( ri.txFootprint.widthValid ) {
+			const Scalar sFootprint = RELIEF_AUTO_STEP_FOOTPRINT_FRACTION * ri.txFootprint.worldWidth;
+			s = ( dStep > sFootprint ) ? dStep : sFootprint;
+		} else {
+			s = ( dStep > Scalar(0) ) ? dStep : RELIEF_AUTO_STEP_SURFACE;
 		}
 		invSpan = Scalar(1) / ( Scalar(2) * s );
 
