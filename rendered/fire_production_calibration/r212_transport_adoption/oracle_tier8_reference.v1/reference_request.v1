@@ -1,0 +1,10 @@
+schema rise.fire.r212.oracle-tier8-reference.v1
+resolution_tier 8
+seed 1234
+case_duration_s 3
+frames_per_s 1
+target_time_s 2.1080244191689417
+producer_build_id 35c4f59e4d603eebcad2c37d67860a018b0e13266b6ff7f4807f0c3667d30feb
+producer_executable_sha256 3ba1070ce70f39c081896f884d4ebb61147a39e3afde2db916cc527e0742332e
+operator oracle_fp64
+formal_contract_verdict pending_equal_time_composition

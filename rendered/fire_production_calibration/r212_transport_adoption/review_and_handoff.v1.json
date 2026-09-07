@@ -1,0 +1,52 @@
+{
+  "schema": "rise.fire.r212.review-and-handoff.v1",
+  "reviewed_source_commit": "15b5d244",
+  "qualified_cpp_source_commit": "e4c9aa792cbf8c5d2f43968b5c73a6aaf3d9537a",
+  "qualified_executable_sha256": "8e67cdcb66503fddfae5e54ca8cbbbda5a9731613f264027b66c70c7f45a9391",
+  "qualification_receipt_sha256": "f8a7792ca0bb8613dff9b7029a479a766cec573db64cb5656d8778d3e79a22fe",
+  "standalone_full_suite": {"exit_code": 0, "log_sha256": "4da897e5135c043b631b516980d98e0feb65004cd3727b442c355e08e378a088", "executable_sha256": "8e67cdcb66503fddfae5e54ca8cbbbda5a9731613f264027b66c70c7f45a9391"},
+  "cost_report_sha256": "43444ef7ab6753c6e9673de9a81e4e139113132f6afe03390a64cedf65a2e6c1",
+  "cost_tests": {"tests": 7, "failed": 0, "log_sha256": "32530a01f9c08a4a138d32af43b2a75edeec9c857d7e2a4e3ab966155a4634a0"},
+  "review_rounds": [
+    {"round": 1, "findings": ["P1: incomplete cost-input authentication", "P2: unindexed observer timing", "P2: mixed-operator temporal resume"], "disposition": "fixed"},
+    {"round": 2, "findings": ["P2: kernel summarizer consumed a second unauthenticated read"], "disposition": "fixed"},
+    {"round": 3, "findings": ["P1: qualification receipt hash mislabeled as executable hash"], "disposition": "fixed"},
+    {"round": 4, "reviewers": ["r212_signoff_provenance", "r212_signoff_scope"], "P1": 0, "P2": 0}
+  ],
+  "red_battery": [
+    "changed timing/count input refuses",
+    "substituted duplicate repeat refuses",
+    "missing/repeated/failed observer record refuses",
+    "second-read log replacement refuses",
+    "receipt hash substituted for executable claim fails",
+    "temporal production resume refuses before checkpoint import",
+    "mixed diagnostic/production modes and CPU substitution refuse",
+    "oracle metadata wrong tier, one-bit time difference and foreign build refuse"
+  ],
+  "engineering_transport_adoption": "full resident section-3.7 owner selected for from-zero temporal production; sealed historical paths retained",
+  "formal_contract_verdict": "pending same-tier exact-time oracle composition",
+  "fixed_k": "not implemented or qualified; column nomination (5,3,5) lacks acceptance enclosures",
+  "hot_eos_observation_sha256": "fba49ed3049260bf378a08e0c9e4c5a85a51186cfc6e4f792de4ec6d421df05a",
+  "hot_eos_observation_scope": "Existing read-only diagnostic, eight equal-time root-matched steps; no timing, migration, fixed-k or warm-start acceptance claim",
+  "background_reference": {
+    "source_commit": "fdd296e2dd88a399576ac328d6173b3b74955799",
+    "executable_sha256": "3ba1070ce70f39c081896f884d4ebb61147a39e3afde2db916cc527e0742332e",
+    "request_sha256": "2de3ea74d2a30c12d6499ce2db0c05d4ac47b7d9a7fcc2d965a34ab24397eeb5",
+    "target_time_s": 2.1080244191689417,
+    "tier": 8,
+    "status_at_handoff": "running; no final result inferred"
+  },
+  "retention": {
+    "survival_archive_sha256": "cae62372f4ef60657c94d14810f176a7ffbee034df82ba15ad31e269302227db",
+    "survival_archive_parts": 63,
+    "solver_payload_members_verified": 288,
+    "survival_verification_sha256": "1ac6a0603a972ecab756a6d1ec1032ac94ff0f33114af1ebbf58e8342572162f",
+    "qualification_archive_sha256": "63987353bd9cdfe64a098e522164537d9bbe1a33591fefbc5ab72b9aeaa14bf8",
+    "qualification_verification_sha256": "aa0ac110a9e3d3aa5d8a5dd4ed83e4c63ba308993c926a5c0a817164d08af38d",
+    "restore_rule": "Verify hashes and concatenate survival parts in numeric order; extract archives into a fresh directory only. AppleDouble transport metadata is not solver evidence."
+  },
+  "golden_checkpoint_sha256_unchanged": "1b944176a1dad4937872b0b63057854659cb37672ff833635c3d1827cbcb4947",
+  "branch": "codex/r211-resident-migration",
+  "main_checkout": "fire-smoke-design and its dirty Xcode project remain untouched; explicit integration remains pending",
+  "pending": ["hot EOS exact warm/bin or frozen-state reuse experiment, qualified before adoption", "fixed-k variant and full-owner contract gate", "target assembly and wall-critical host work", "tier-eight full window, spectrum and delivered movie", "tier-ten onset/window/rows/movie", "formal composition report, final reviewers and revision digest"]
+}

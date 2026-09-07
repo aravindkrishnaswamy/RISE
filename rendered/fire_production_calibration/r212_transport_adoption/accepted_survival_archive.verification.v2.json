@@ -1,0 +1,3513 @@
+{
+  "archive_sha256": "cae62372f4ef60657c94d14810f176a7ffbee034df82ba15ad31e269302227db",
+  "members": [
+    {
+      "bytes": 65469538,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/final.checkpoint",
+      "sha256": "c46aa2dbfaa55396175f23153ad3f2d5802affc6c49167cf30f1133f3e235ffd"
+    },
+    {
+      "bytes": 869,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/continuation_identity.v2",
+      "sha256": "830de3b4e50f55d485a7ea8a82f2a64f9677ac900843a19f45134b1a5ebed5a1"
+    },
+    {
+      "bytes": 65469362,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/latest.checkpoint",
+      "sha256": "bc5fef6b3c4ae6556e959d260e62a3dde264668d9f0cfa92c7fdeed47632f9ce"
+    },
+    {
+      "bytes": 411,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/onset_campaign_summary.v2.payload-v2.json",
+      "sha256": "61a401127c1f0b1d64101e5da4c058c2d1fb4e440c4b53578911e495631a001e"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/continuation_identity.v2.payload-v2.json",
+      "sha256": "a71853788257ff24ba608890b7aaf92981ab1f851a04eb3d55f50b9178648f91"
+    },
+    {
+      "bytes": 2318,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/onset_campaign_summary.v2",
+      "sha256": "0593230f7bc977d543f45d0b8627c88a3066631e8c171c32a0df1dca2e06d66a"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/final.checkpoint.payload-v2.json",
+      "sha256": "7ce1b1241e62384fc39a3d630dce0af1a2286d82d239313fdb0139d23d53a843"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/latest.checkpoint.payload-v2.json",
+      "sha256": "d671bc9281357c87dbcd24828328777652ccae7ce23fcb65d459dc990f834fa8"
+    },
+    {
+      "bytes": 411,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_context.csv.payload-v2.json",
+      "sha256": "030262ffec40b5029da26dd6d0ace7605b6895ffa8f7bdb2b33d2f753eb33d48"
+    },
+    {
+      "bytes": 401,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.event.v1",
+      "sha256": "11621332fca1da86278ec5fd16d3e3861fdf5374f9b6bad42808d69c52a00123"
+    },
+    {
+      "bytes": 416,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_observation_inputs.bin.payload-v2.json",
+      "sha256": "31efbe12ba865fedef22a60671e953d1326a3dad0fdb49a87cf43cdbe464cf7d"
+    },
+    {
+      "bytes": 38354616,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.tail_targets.bin",
+      "sha256": "47438a73eaa23e65fb699ff7f436f54f0d36174d631b3ceea2636c01db4d534f"
+    },
+    {
+      "bytes": 1600,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv",
+      "sha256": "9d1da34cbeba82b5279dec4830d9f97c1f4901b1f5af89fa8f4c79e431e8efcb"
+    },
+    {
+      "bytes": 412,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.column.csv.payload-v2.json",
+      "sha256": "3065fb801efac451b554eb0d14481c35cc1f944666a99542b73f48fe55e9da86"
+    },
+    {
+      "bytes": 414,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.payload-v2.json",
+      "sha256": "55a627e073cd1dd962444a2686ecfb3b70c997c9c127422c5673f767cbcd3fea"
+    },
+    {
+      "bytes": 4499,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_context.csv",
+      "sha256": "530469178de640f679c380ab90dd8daa90ef69366b5a2fa9d606fb88480728cc"
+    },
+    {
+      "bytes": 414,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.csv.payload-v2.json",
+      "sha256": "a0c91a1957f4118872c7c02ade50a9ca370434a74fbe3f8e0c3815de81d3b8bb"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/retry_attempt_trajectory.csv.payload-v2.json",
+      "sha256": "d2f09d519fa11b63830e9ecaba97c0cf9b6ab77087955b12e8d0639e74f51dcd"
+    },
+    {
+      "bytes": 64597300,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_packets.bin",
+      "sha256": "a0c9d80af2810eba79e3ddc9e4fc4c68ea65f25c614f6205643aee203d2f1681"
+    },
+    {
+      "bytes": 855,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_ledger.v1",
+      "sha256": "b99747bd92d3129f3daf61fd0e5bfbea31e964daeda9cd0387e19afa326daa6b"
+    },
+    {
+      "bytes": 5116598,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1",
+      "sha256": "a9e8108d5d53535c6369cbf98ffd69cfa0ee4e950f02e9c2c59070c1045bcc4f"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_packets.bin.payload-v2.json",
+      "sha256": "70086103f3310e411005dc4f8803aeb79688193684d1b4fa2b53a0041fc64987"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_ledger.v1.payload-v2.json",
+      "sha256": "a86c8c93d3f778c13b740e1256bf0c421c8be6cbe6c849b2e9f40286fe63663c"
+    },
+    {
+      "bytes": 2945911,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.csv",
+      "sha256": "facca1f2af06b3df0c87490e8f3ea2b725fe58da90a4febdb0834c534e5c1eb8"
+    },
+    {
+      "bytes": 193,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/retry_attempt_trajectory.csv",
+      "sha256": "6c20e101ec8a056730d4c3b282742af7a8398bc9d316eb619d397cd948e1ed95"
+    },
+    {
+      "bytes": 192238630,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.source_observation_inputs.bin",
+      "sha256": "2abce27527509d6f423c936d656f479344582dbb3273bebe3efb6e76b4ca1faf"
+    },
+    {
+      "bytes": 411,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.payload-v2.json",
+      "sha256": "5683c8a9a44675a313eb519b848e2a98253d0af10698b3e605657d0ea96ab273"
+    },
+    {
+      "bytes": 413,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/maximum_velocity_trajectory.csv.payload-v2.json",
+      "sha256": "c749abe9f312d9022f2f2970184592fdc6aab66bf25627377f2b910bb07b4ec4"
+    },
+    {
+      "bytes": 410,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.event.v1.payload-v2.json",
+      "sha256": "9a78781ba54a831bb8636a68f114eb7b2102ad704d4d71d8fdfd52ffcce9aff1"
+    },
+    {
+      "bytes": 445299,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/maximum_velocity_trajectory.csv",
+      "sha256": "cb10278dc49f33c9a9718496804bf81fe5493faf4af0eb27cd1a3b7db3d1a057"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1.tail_targets.bin.payload-v2.json",
+      "sha256": "57cc64e2baf98769a7343d4b636d7ac5ba2c6fdd1b5455450a7fb2201798aaac"
+    },
+    {
+      "bytes": 26047,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/reference_composition_candidate_fixed_column.raw.csv.column.csv",
+      "sha256": "f26f66da5842ca7e38d21e5ef92d867e646905bd8a12b3777cf61d09f18938fd"
+    },
+    {
+      "bytes": 65463210,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001894.checkpoint",
+      "sha256": "d93021cb72673c168957dc7f2d032517fc8fc9916e797a2613ddcc844f98387c"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001957.checkpoint.payload-v2.json",
+      "sha256": "9f55842f120fcc6a3d8722296a8027e07be2b3b04e866d7b22e6c98162384d19"
+    },
+    {
+      "bytes": 65454274,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001539.checkpoint",
+      "sha256": "d8adb43373809d164bc1a09771459c2d91b9aad8a7472d5e41652125bf2e3764"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001473.checkpoint.payload-v2.json",
+      "sha256": "e38a9b693f35c75e01f5fb006c01d857444c7dcb575164fc07e59dfc08061f91"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001818.checkpoint.payload-v2.json",
+      "sha256": "63e6859dd04036782d38cb6810909a3bdf269f9da9ec14d62b79d38548b4d3a6"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001509.checkpoint.payload-v2.json",
+      "sha256": "9d3254b2f97f7f48ece97e628690968633d62e19507c638116edc0b0e2833ac3"
+    },
+    {
+      "bytes": 65466450,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002023.checkpoint",
+      "sha256": "d60a2d28a193f54c3d2d025e293f489279fc29f2d01cd04da5bdf80947e14ef2"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001783.checkpoint.payload-v2.json",
+      "sha256": "7b29056b2a1eb7de6ce4e8d2df2f0eb67276e73ecc7f70f215d483ae84e147a0"
+    },
+    {
+      "bytes": 65463058,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001888.checkpoint",
+      "sha256": "969cf5878343aaaa22e2dcc706c8aaea6f4235bc31bf71b204bf7b81bd12555b"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001637.checkpoint.payload-v2.json",
+      "sha256": "ef3f16fe3ec2cdf831541127ea93f2d719791f8804804ef5d050db741d67a8bd"
+    },
+    {
+      "bytes": 65455058,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001570.checkpoint",
+      "sha256": "bb2084ad1c612ff6ed91068619efde8ab2c0065032c347c2ff21b245a32c28d2"
+    },
+    {
+      "bytes": 65468258,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002095.checkpoint",
+      "sha256": "3a44317ada2d977de6cd8bc05f966d9c3322ade2611810bfcb04fd4175531647"
+    },
+    {
+      "bytes": 65463386,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001901.checkpoint",
+      "sha256": "8d1e2e0e9f8f512d3b0ffabba802af3f39a547b6c5468ef75421abecc2801abb"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001978.checkpoint.payload-v2.json",
+      "sha256": "94eefa6e2af79e4f719ad11ada37ce74324e17acce0afbd3b394015990a308e6"
+    },
+    {
+      "bytes": 65464266,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001936.checkpoint",
+      "sha256": "3de528e36bbf181c2c632e453b6802c266fc5a9d8eac01dc3a7a8d443b07a3ad"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001602.checkpoint.payload-v2.json",
+      "sha256": "09ffc7b3fc4c947e06d045c805c7f8cf0c3dab2129dce4a5dd50b4c9e44b7aea"
+    },
+    {
+      "bytes": 65460594,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001790.checkpoint",
+      "sha256": "22fff88a0b8c75c845932538a6e05f7285c8a1110af833058c8cccc98a6a9e17"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001644.checkpoint.payload-v2.json",
+      "sha256": "72a81e6e24bf48c969c5705446eef7d719be576d4efb5c25afdc6623c4e1e3fa"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001686.checkpoint.payload-v2.json",
+      "sha256": "7475b1ad130066ae027befb7c32de07bf6dfd608b462a872cbbb0aa2925d0b23"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001380.checkpoint.payload-v2.json",
+      "sha256": "2a2dc2db048795031a909ec212f50bb1d3305e064a4d88d33ddc554eddbd710b"
+    },
+    {
+      "bytes": 65460946,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001804.checkpoint",
+      "sha256": "75fc8e960fbeb6173a61aa8aff69a20e7755c3c79abe2370e884a33d088686a6"
+    },
+    {
+      "bytes": 65448642,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001317.checkpoint",
+      "sha256": "e727d996e00c26ae6c030206365eceb298c7738915ad8a3743fdc090d8b314e1"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001416.checkpoint.payload-v2.json",
+      "sha256": "86ccefafbd36cd411199fedf280acab97a7b81a7977cdf934e1c70eae58876fa"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001707.checkpoint.payload-v2.json",
+      "sha256": "b84bd582d8935517d49c6c7ffe86b8a86878d34c6a58ebae4481802fdee25b01"
+    },
+    {
+      "bytes": 65453362,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001503.checkpoint",
+      "sha256": "c44476d9c0cc59d7b67f94cef47a353936eeee1f317144001ddd9435607f387a"
+    },
+    {
+      "bytes": 65459562,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001749.checkpoint",
+      "sha256": "9e1790488a4c03ef6235a9b23b08de836603dd23db82f5179f7166891b5641f0"
+    },
+    {
+      "bytes": 65461298,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001818.checkpoint",
+      "sha256": "0a38567c13b9dbbf3c504969f27145564abe87e3ade536742d0649892ec36ff8"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001728.checkpoint.payload-v2.json",
+      "sha256": "f3d21facf3d2d3472bde29318f00dff5ead56330a06c82503e60dbf9394cf763"
+    },
+    {
+      "bytes": 65455362,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001582.checkpoint",
+      "sha256": "7f977daf10b3a4ab94a80971a81e69829df3bfc01e767e8b03cf67a2fe68e4e5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001576.checkpoint.payload-v2.json",
+      "sha256": "260c4cc4162f6d9722c2f1a732d226e930d075af6f3703b18a591fcb0e8a5eb3"
+    },
+    {
+      "bytes": 65458330,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001700.checkpoint",
+      "sha256": "09f3a19ea45416b439c2a5f7f23ccac0deb0281cfa52f2f7440dfe73e8b4e261"
+    },
+    {
+      "bytes": 65456394,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001623.checkpoint",
+      "sha256": "dffe8c7c70e1d3b4c85485c444619cbcb30fbd461fe1c151c6a6b8624ed7804b"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001867.checkpoint.payload-v2.json",
+      "sha256": "6d9b3e456ffb653fca13d21d534cadeb1844428740f6ea40c50032a0550e16aa"
+    },
+    {
+      "bytes": 65454906,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001564.checkpoint",
+      "sha256": "9eaf17c1ac7e1555cbe47a258dcad3c6d353f953b7a196f59996e3bcf9d146cd"
+    },
+    {
+      "bytes": 65467906,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002081.checkpoint",
+      "sha256": "4e896bb66277dd3e2f046db531f5338f9283a790b5227b6d09207e7473e10276"
+    },
+    {
+      "bytes": 65457274,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001658.checkpoint",
+      "sha256": "a8fc8b4fa05bb86fdc68d5c641d869ca2a0f1f04986ebd13f4086f6ea5bc8e11"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001860.checkpoint.payload-v2.json",
+      "sha256": "9b65697e2c4a745c14d3338c679998dbcc39fcf53cfdcdec01c913ccc81e3e46"
+    },
+    {
+      "bytes": 65463738,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001915.checkpoint",
+      "sha256": "d50089f19d6463f7d71811e64a70b5c38fc68618a63c232f5c7ada76b5d2cd8b"
+    },
+    {
+      "bytes": 65463914,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001922.checkpoint",
+      "sha256": "1ad533f77692f1336f82fb5d0e54a5bd12c63801a388520ac524b17f3a0061b7"
+    },
+    {
+      "bytes": 65449202,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001339.checkpoint",
+      "sha256": "881e2ecd4810e66ec4737979e323b1c69f1a741dd45b6da54c375b9e52eb45af"
+    },
+    {
+      "bytes": 65456922,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001644.checkpoint",
+      "sha256": "c770ad416a4556bec99cbd511975e7ae18f19210a246afc29375b18bf5db75ff"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001700.checkpoint.payload-v2.json",
+      "sha256": "85e0520decc7eeb487260957349cf18912c9974c9d68eb76ebd6fc8339071160"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001428.checkpoint.payload-v2.json",
+      "sha256": "cb2db110a98a2fd7b728e87e781e38c3aac8fe6e6b25fdb07fd86c6ac9974095"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001735.checkpoint.payload-v2.json",
+      "sha256": "18dfdf965054d2970bab7ed46c38bf84bce15507ea1a7f901ff82effc7fd8278"
+    },
+    {
+      "bytes": 65465874,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002000.checkpoint",
+      "sha256": "d24b7325877cb66f0d7dd3e99af59676e24b09936023c8ec408954bb276c5ce2"
+    },
+    {
+      "bytes": 65466802,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002037.checkpoint",
+      "sha256": "4a2d13c67d317f9e96e7a12705eeff9f3a5d7e5b8f43cb0fa603baaa4adfad98"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001881.checkpoint.payload-v2.json",
+      "sha256": "daa205169a9fd0e1e2f6b2b315857f95d318ca8420aef249ac22b64fc88a98e7"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001552.checkpoint.payload-v2.json",
+      "sha256": "a24e74d227f9c756e6165b4f1334e95f94dde6229abb6bc00ab063983007fcb0"
+    },
+    {
+      "bytes": 65466978,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002044.checkpoint",
+      "sha256": "6572b1511df96faddd933a9d78995a6456961cac3d1c442ac103b2895e607062"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001609.checkpoint.payload-v2.json",
+      "sha256": "dc25bc334ca5c6c457848bbc8e722a4074715e47dbadfb472281797fb01ebc07"
+    },
+    {
+      "bytes": 65469186,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002132.checkpoint",
+      "sha256": "ae8aa18e79fc2832ecfaf72f045e30b552a23e90ae6c937f9af71704ae07015e"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001630.checkpoint.payload-v2.json",
+      "sha256": "ed73b35e7893d633dc412c55814bf9631192a42c003bc4447212c84b152208e1"
+    },
+    {
+      "bytes": 65465498,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001985.checkpoint",
+      "sha256": "31b6d07a48de0b64da7a4c12a830166512cb57ff67ffe06d90cfd6a881fac7f8"
+    },
+    {
+      "bytes": 65460242,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001776.checkpoint",
+      "sha256": "4a6510d94cd476861f1d1c18e2971ede0fced92b303710469ed226761acba45a"
+    },
+    {
+      "bytes": 65451458,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001428.checkpoint",
+      "sha256": "5dd18c2895d0396effb085edf812e3358ff9c8dda91f75cc542139411bd150c1"
+    },
+    {
+      "bytes": 65458682,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001714.checkpoint",
+      "sha256": "820aab1636ee10833936a7478005e1a07c549b8294ed3ae53aed54dc3bf57136"
+    },
+    {
+      "bytes": 65448922,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001328.checkpoint",
+      "sha256": "4f1164038cfd001e8160944b2e1554d1018ce44ee0a931e40873eeb518e5a2b4"
+    },
+    {
+      "bytes": 65456746,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001637.checkpoint",
+      "sha256": "91db252805ff2747ba3cae5c6509464378a69032e480e66360cb29d06090fc78"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001521.checkpoint.payload-v2.json",
+      "sha256": "707e1d5360f041d1e20eb72ed1fe63fdfeca9c6966df58e563e9df25a63be5ef"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001950.checkpoint.payload-v2.json",
+      "sha256": "75095ddb97f4d5678a45de1ef3b311544fa6a89579ecf46efb964f7699a112b6"
+    },
+    {
+      "bytes": 65449634,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001356.checkpoint",
+      "sha256": "10e7473e8f054985b5919183658ca3fac06990178f5e37ac447b7a69f0e009bb"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001992.checkpoint.payload-v2.json",
+      "sha256": "3f471f7ceab93ea397b64128c5d2faac0c7a86f810d9ef777b765aa0a8ba9554"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002051.checkpoint.payload-v2.json",
+      "sha256": "1c80f0c71cc886d762eb851734a458934939500f035e15a43356dc5682870fcf"
+    },
+    {
+      "bytes": 65452298,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001461.checkpoint",
+      "sha256": "5bfe93e23667d04af0363a78b7edcab378adf06724cdf1e716565efdcf54eb3f"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002023.checkpoint.payload-v2.json",
+      "sha256": "98e4cfd570a1a7f0edc5586c250ce07fcfbb1795211d9cce437357fbe74887a3"
+    },
+    {
+      "bytes": 65453970,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001527.checkpoint",
+      "sha256": "db88a7c0c30e07bd202b329740d178f3c8641b543d47165c3cbe029fdf53ddfa"
+    },
+    {
+      "bytes": 65450850,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001404.checkpoint",
+      "sha256": "ce681c5402d523f1d2890d60adc6cdb32b1dba8d44c694d67a50efdf24dd19e2"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001922.checkpoint.payload-v2.json",
+      "sha256": "d1f816fd0500cf05c6586a17878779862a850d58d82cc7c515890f5b591fcf04"
+    },
+    {
+      "bytes": 65457802,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001679.checkpoint",
+      "sha256": "9c33950db143b557a19bf38c56320183c231df77ba7a12819c86d2cb37b6fe9d"
+    },
+    {
+      "bytes": 65451586,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001433.checkpoint",
+      "sha256": "f21facd453f0d435a1be859b2c978584cc2b49d1ec6c29ee825ebb35b97a0292"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001658.checkpoint.payload-v2.json",
+      "sha256": "859dc4bb8ed853df5dd8d0eca8667cf688924f72de972709d16b050d4e47cbad"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001433.checkpoint.payload-v2.json",
+      "sha256": "de91ca474a15492dc6ef8ebf4c35d1f31c409d8cdd3e80cae3e0311675228200"
+    },
+    {
+      "bytes": 65449050,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001333.checkpoint",
+      "sha256": "c49cfdb8a77987e543b5978c08ad5b5c38b6f94ea0914e0046ddef13464fc8ee"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001570.checkpoint.payload-v2.json",
+      "sha256": "5432b37e6a5153c14a19ef49f93bb75f3b6aec5b75e11fc89506edea932b9182"
+    },
+    {
+      "bytes": 65457978,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001686.checkpoint",
+      "sha256": "e9f190668377b4788bc63e9c32b9173b2dbf0601790cc9f1eafb0bf23e614efa"
+    },
+    {
+      "bytes": 65457450,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001665.checkpoint",
+      "sha256": "f98f247b074a97cc16d072a78c9d79df1d1aba33896411d112c033ed339766ae"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001386.checkpoint.payload-v2.json",
+      "sha256": "bbcaaee5e385c3809f29c7ab6b6e647bcd5390e51b39c4656084cbaa15280749"
+    },
+    {
+      "bytes": 65456570,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001630.checkpoint",
+      "sha256": "b6fe5f1d4984a15eafb414f83caee44ea095d0f060eec0356a6f01f54a884a3d"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001344.checkpoint.payload-v2.json",
+      "sha256": "86fbce2845261248e98d91168447b4d605364432c998bef5a9694aef62eafc08"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001410.checkpoint.payload-v2.json",
+      "sha256": "49492fd9b0086ff246df3f1862a8ec218097d2a6c2e77e5bec7059d178ed6afb"
+    },
+    {
+      "bytes": 65452906,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001485.checkpoint",
+      "sha256": "c4a85a603c42b7ca22f6ee0f434c8115052a750fb8dafb1fa50f5724a21d4ca4"
+    },
+    {
+      "bytes": 65467730,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002074.checkpoint",
+      "sha256": "edbbc4147dc3ae530d4b4fe9047f94a6a14e8794784c7ec7cbc6f06ad26547bc"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001901.checkpoint.payload-v2.json",
+      "sha256": "974a07957a045c82113cd4856e9ee04901a60b22016664c6b78b591e57a27790"
+    },
+    {
+      "bytes": 65468434,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002102.checkpoint",
+      "sha256": "fee1c501fab97bfa1309121b8a525e438d3603105cf407a8f208841a2c5de8ca"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002000.checkpoint.payload-v2.json",
+      "sha256": "54911d6b1a4c8a9eda429893ed220606887a77532cc2203a49ee53b99b3cfdba"
+    },
+    {
+      "bytes": 65466050,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002007.checkpoint",
+      "sha256": "8188a4502ef70196ea186a91e5f49fc2acc72e605adf0ae8c7aebe872e6a18bf"
+    },
+    {
+      "bytes": 65466626,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002030.checkpoint",
+      "sha256": "63c407f9cb16506168d43892672d4561cd7927d54777f330fdf98f50043dfe01"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001985.checkpoint.payload-v2.json",
+      "sha256": "b20e139362c07b63400624d36703ef19e912e6a368143cdadfb11464bd440670"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002088.checkpoint.payload-v2.json",
+      "sha256": "2a8d1e511a76fa733ed9f2dc634e9ea459fca169162e97ffeac09457c8d2b2e1"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001515.checkpoint.payload-v2.json",
+      "sha256": "351336656488302c6ee731254d99abbdbd4432f79b5c941906a7f1648beceae5"
+    },
+    {
+      "bytes": 65459210,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001735.checkpoint",
+      "sha256": "ca659b1bb154b1d7727d7d3b326d61fb6c2f71ba85da8c8c4d2cc583aeefdc4a"
+    },
+    {
+      "bytes": 65456218,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001616.checkpoint",
+      "sha256": "f34bcb5a4aba531cae9eedc1f29fbcb64015082f19fa050ba4ae0c6f676788fd"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001804.checkpoint.payload-v2.json",
+      "sha256": "da9092d95f32b8f9b8c331aced1211a51001e98af580730dace9cad623847d1c"
+    },
+    {
+      "bytes": 65460418,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001783.checkpoint",
+      "sha256": "0f5c45c164aa0a9b3d6e8f558727fc8aa40de3626f4e6ddf79173d640f954cea"
+    },
+    {
+      "bytes": 65462178,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001853.checkpoint",
+      "sha256": "ea7440eb5150109ad644f4ca0aa3a88b5fca4cdc207c4c46fcc627212ea6eca5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001503.checkpoint.payload-v2.json",
+      "sha256": "2d3ab0a1a7a1e707d14d56458f66b00fb12ebf775be8e5a018c91cdc19c7502d"
+    },
+    {
+      "bytes": 65451306,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001422.checkpoint",
+      "sha256": "f41bf9d520d07639720997d6ac9244a26c4a78ab3d0bb5593ca38fce51549090"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001479.checkpoint.payload-v2.json",
+      "sha256": "65bababad5f4b5edd16f89300d3b7335156fd0be6da128b91755b5b30b2f03c5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001964.checkpoint.payload-v2.json",
+      "sha256": "f852b5de2e18ad2594d8f4cc156ed51020b4970b8aab2f8b07007bb08d51c956"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002118.checkpoint.payload-v2.json",
+      "sha256": "a4649206fbd3dd04de50c57484056c7bda5b559059bb8416be0b096bb1b2400a"
+    },
+    {
+      "bytes": 65458506,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001707.checkpoint",
+      "sha256": "a2c442c03b406e752020f8b6a3ca7bdfa5bce7e962c62ffd739574db6a81a896"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001763.checkpoint.payload-v2.json",
+      "sha256": "c8b7394ecd4c37069142c5520657c2a718aa9586c849d02c1f0f5568a82a6628"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001756.checkpoint.payload-v2.json",
+      "sha256": "b3afeaed4adecf5c867057cb3821ed7f79590e4d4af84097840dcbf83f5414d1"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002095.checkpoint.payload-v2.json",
+      "sha256": "3aef5327954c565f342e8da975177dbe48f7610ef8d9c517e3eefbec674dbef2"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001485.checkpoint.payload-v2.json",
+      "sha256": "867b0f7c9561c4a8932e0cc2d7b3f05664331180f17e6532409f937250c9bf79"
+    },
+    {
+      "bytes": 65453058,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001491.checkpoint",
+      "sha256": "f9cbe8ca63abcb367a4fc89df309c750ccb9341bec627e1bc921cbbefc4077a8"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001305.checkpoint.payload-v2.json",
+      "sha256": "cf8dfea5d3ffc41b81ce4d17d5994da08e5701732634043bd8b84d5899ca023e"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002102.checkpoint.payload-v2.json",
+      "sha256": "fca86b12387737bd2a54617c171fa6d1abe753b4b85660213bd74511cb964336"
+    },
+    {
+      "bytes": 65454122,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001533.checkpoint",
+      "sha256": "12c9cfaa3c0d51a1c353b1b1644cc7d7e642d2833de1ebd0824ad80b8ea7c54d"
+    },
+    {
+      "bytes": 65451002,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001410.checkpoint",
+      "sha256": "cdacc6894941d8a004d1d9168a02b52af37ee86b6f532fdb3337f0705eb30c74"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002074.checkpoint.payload-v2.json",
+      "sha256": "4cf822bea029d9f3ee99e9abadcbb32cdc94a8b0c7750656a5bb992aa8f91eab"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001527.checkpoint.payload-v2.json",
+      "sha256": "96600ed651e075f65b208be8abab96e244ac25005aaa5f8e5b633136d7bfba82"
+    },
+    {
+      "bytes": 65455514,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001588.checkpoint",
+      "sha256": "059f61d282697d48fcfd23f15780a1d705603395fd8cd2f978ac8982f51170e3"
+    },
+    {
+      "bytes": 65461474,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001825.checkpoint",
+      "sha256": "c82f2f3b4341f6c68a7e702887f1153bdacf67b0d97a31d0ff82bdf4ee3b6cb6"
+    },
+    {
+      "bytes": 65460770,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001797.checkpoint",
+      "sha256": "7ad1b5f1bfac193ecac6b68c001d73b5f2a83867a5a2883a3c66426c84381ebd"
+    },
+    {
+      "bytes": 65464970,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001964.checkpoint",
+      "sha256": "109d88b0886e8961deda51ac720db0f09a6e2f6236fbf4d90e21dd8161ae0f39"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002007.checkpoint.payload-v2.json",
+      "sha256": "05fb8dac5cd03e31dcca76b5b353090f5f589623c28634a87dc61d808d2a0ac5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001558.checkpoint.payload-v2.json",
+      "sha256": "5fb3d94cadd023b7495937eba88ffcc59a20b330512b0367b760630e186e276d"
+    },
+    {
+      "bytes": 65453666,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001515.checkpoint",
+      "sha256": "d195988321a35a962971e8066d3fccc559ba49940986fe3612f2a36395213a77"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001422.checkpoint.payload-v2.json",
+      "sha256": "7533ee22cf404bba19821391a7d044b344cb2ad084741161a111698609a9cf79"
+    },
+    {
+      "bytes": 65461826,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001839.checkpoint",
+      "sha256": "e3c7db9df25ca7a0f2248082b94f313362b4eb55a187435194d7c822b8c31979"
+    },
+    {
+      "bytes": 65450242,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001380.checkpoint",
+      "sha256": "6dea85f981ea9bd96dd0655dcb69ef2dcb9d21ecb3ce3263b1240e43602e1930"
+    },
+    {
+      "bytes": 65465322,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001978.checkpoint",
+      "sha256": "86720c87a48e9d835d109c1246908f269661423ec9f4f09ef973684998670072"
+    },
+    {
+      "bytes": 65453514,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001509.checkpoint",
+      "sha256": "ec65562e2a4a7d56c52942ebc4c4c0e51116c1313281ad750364a7044ca11936"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001853.checkpoint.payload-v2.json",
+      "sha256": "65f0de8a9f3399c3505e050576a07e8eb8357e562b8aed4a8831029f3fcfad29"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001438.checkpoint.payload-v2.json",
+      "sha256": "da9e7204e019c1bc8a82eb35bf976a0153534a7e377e80c2e5a57ebeab7b7c9e"
+    },
+    {
+      "bytes": 65458858,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001721.checkpoint",
+      "sha256": "cc91e4522967f83be0d6ca77f1e3eda5a8d0a2bdcaaf5daf9c016650f0acad5e"
+    },
+    {
+      "bytes": 65455866,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001602.checkpoint",
+      "sha256": "467f4f7c059ee29973f16711ed462db5dbd61533c90238e945815c1ffc8737f5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001929.checkpoint.payload-v2.json",
+      "sha256": "aa385b6895171ba4652a99b8c3452598012f01623d10ea11e88a80a01d3106f1"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002037.checkpoint.payload-v2.json",
+      "sha256": "9e7873dc175afdddca5ef9bab2f4a0a89e1522922beefcbba2f7ce7d52dee486"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001936.checkpoint.payload-v2.json",
+      "sha256": "a31e199f8ded725cd23b73e334b87f7cc837c298a15f2eba6f573ffa0df36ed5"
+    },
+    {
+      "bytes": 65454602,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001552.checkpoint",
+      "sha256": "28b45f739f052971811aceb92cf693def46f5f4cd4ed559390f0be8fbadf3779"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001564.checkpoint.payload-v2.json",
+      "sha256": "b3db32872450ad554e3f4b252497c710daecb40d239b88904f984c8940ef1436"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001679.checkpoint.payload-v2.json",
+      "sha256": "3d9ba50a2796768eb33a4844da0029a3fa0c12f1afb8635ca56b7afa5462a526"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001894.checkpoint.payload-v2.json",
+      "sha256": "5462b2b5f3d7fb4fcc4162097813b4dc7c8592bc298a50a566f6a7c6c34e735c"
+    },
+    {
+      "bytes": 65450546,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001392.checkpoint",
+      "sha256": "6f36a6ea4105847293c48ad6981d5d24d1bff178679265e3639855b8a2ce321f"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001392.checkpoint.payload-v2.json",
+      "sha256": "0052e4b0c9caa40044f76f51dbb4041da54cb1a8ad85d7cebd1da31429c515c8"
+    },
+    {
+      "bytes": 65463562,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001908.checkpoint",
+      "sha256": "3b1244c6bb75646af94794908c6485ad84fcca2ade48987261785651431db02e"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001350.checkpoint.payload-v2.json",
+      "sha256": "fcf62169b86a992f75b11c21fb6fe21376c4e6b057d2dda863be029e0d30efd7"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001404.checkpoint.payload-v2.json",
+      "sha256": "11f10438bcd8016155c02a7aea408c8651f4353a8cd3138d92a7922ccf6a156a"
+    },
+    {
+      "bytes": 65462882,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001881.checkpoint",
+      "sha256": "b64cdf5f41f5a6514773c8cf7ec8565d44bbeef3d69edd2c916ef19ca8abbfbb"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001915.checkpoint.payload-v2.json",
+      "sha256": "4db2020c6c64032c59741646b558b582d4d473af620eb8b62c98b9473c6b7e64"
+    },
+    {
+      "bytes": 65457626,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001672.checkpoint",
+      "sha256": "5c429141581fed4e5a5f4bd4c41e5ae1fe0b8c4c0796569ac234ca1cbe42ae3f"
+    },
+    {
+      "bytes": 65451714,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001438.checkpoint",
+      "sha256": "c5d86f2113b2a62ee1ceab25d8823c8c0b3c729ea0f150c1a1215099bf7716a9"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001825.checkpoint.payload-v2.json",
+      "sha256": "df60c8ab9dfd05498ec1b87a247f9f40642bf89375a80e8e8066482885c59ea4"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001323.checkpoint.payload-v2.json",
+      "sha256": "9f736de437fb4c05d1f92542fe473686588c5cd1194b65f3e12846bd33fcd440"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002132.checkpoint.payload-v2.json",
+      "sha256": "8a6c4419ac78f1a629bb1579a21489a8e41b9e1e3eaa04747ae22538f2485a5e"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001339.checkpoint.payload-v2.json",
+      "sha256": "d6c0f24af6e589be9039f390e5f8af1ec41367bc7ad837aef227a75de7503ec6"
+    },
+    {
+      "bytes": 65453818,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001521.checkpoint",
+      "sha256": "c0dfed9434310a34cc254b2f695613905d22b2632927329c276c405f9deed271"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002044.checkpoint.payload-v2.json",
+      "sha256": "c10fd56382179847421e760eea0f81f2719b59c3e803995640a62751dfc3655f"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001749.checkpoint.payload-v2.json",
+      "sha256": "514e3164dfcd2dcad0f5cfbe41a56d42969fe85e1e1a5d9a81c0c79e2634bdcd"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001461.checkpoint.payload-v2.json",
+      "sha256": "d600ef27c6a7be4de3b45375af0e42125231f537d334a9e924c45039878dc41b"
+    },
+    {
+      "bytes": 65467354,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002059.checkpoint",
+      "sha256": "fa35a8ee44af3b0b2376916858a58c891f39c74e0add10893b43d4457c7b2b5a"
+    },
+    {
+      "bytes": 65461122,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001811.checkpoint",
+      "sha256": "e065a6fabb8e88eb0258f56bb6fdac96257d6e91c4194d517fbd681d1ca28153"
+    },
+    {
+      "bytes": 65464618,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001950.checkpoint",
+      "sha256": "f786a05ab439723e9fc7add7d41752c7925c74d1a2d63f690fb7acb4cdf593ac"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001770.checkpoint.payload-v2.json",
+      "sha256": "fcb03640013b05d030a0da74836e810416f160002a13b7b1545f0d6363bc1860"
+    },
+    {
+      "bytes": 65468834,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002118.checkpoint",
+      "sha256": "e3380d68804ec18a672fae7a27232235cc3d3fccae4b74056442fcd3793c6df5"
+    },
+    {
+      "bytes": 65466250,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002015.checkpoint",
+      "sha256": "d995a603f501c0bd386cdca4974fc096a610d70b0850eafb839caef599ce5bd6"
+    },
+    {
+      "bytes": 65450394,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001386.checkpoint",
+      "sha256": "50a8b2e47eb1a74de4a9e9d9ee3b71f2b5d3f7c2caaf5b8d5746010a7c672ab1"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001742.checkpoint.payload-v2.json",
+      "sha256": "574d63b5f0812fd6998c2417495ac96d7c5efff069bf5e112572d1bd2cc83375"
+    },
+    {
+      "bytes": 65457098,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001651.checkpoint",
+      "sha256": "8ab3b11902d5a3cd5e01615d66161a3546e985828b9c22b9ab133efb5f934c20"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002081.checkpoint.payload-v2.json",
+      "sha256": "81069437367f2f5d7d21e643cd3114c99b90a7a98bd2a0906e78d2adf8b57d6a"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001491.checkpoint.payload-v2.json",
+      "sha256": "03fd96d5dc43f2033fab23627063b79ecd1eeb70d2da2d3de12df3a35fdf7f7a"
+    },
+    {
+      "bytes": 65452754,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001479.checkpoint",
+      "sha256": "22db828787a7b36e35f68230f0af09dbd64641b60e4db6b4253391d98c3d771d"
+    },
+    {
+      "bytes": 65468082,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002088.checkpoint",
+      "sha256": "72c8af3fbb9a9f703d797b088d112c1b6d49bdb028808bfdaada67cc9cda0040"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002139.checkpoint.payload-v2.json",
+      "sha256": "d671bc9281357c87dbcd24828328777652ccae7ce23fcb65d459dc990f834fa8"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001311.checkpoint.payload-v2.json",
+      "sha256": "22a14c42017d1795adb0764268bcd60997a0bfb98d87cd73e4c93cbb3736bff5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001328.checkpoint.payload-v2.json",
+      "sha256": "26f41b83dcd6dd7c5a1cb5cdb26b0c432682164928e11701482f8b5d50f7b60c"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001449.checkpoint.payload-v2.json",
+      "sha256": "e14f33f6fd654d87dd788c9ab85a73d9599dfee19e5cbf6acb75e7879f1190b1"
+    },
+    {
+      "bytes": 65454450,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001546.checkpoint",
+      "sha256": "70aeb10cf0ef2a2792feb10f3be4c51b28d5f6d7564b8f845de3a06d6e2e9ffd"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001533.checkpoint.payload-v2.json",
+      "sha256": "ff26e1145058877915afdd04c51455d57cad118cf50e309744a871a726807aef"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002059.checkpoint.payload-v2.json",
+      "sha256": "8ed725709dcd98ec336987d44c99486624dbf8fe7e65a0dc9242f0716f37b5c0"
+    },
+    {
+      "bytes": 65456042,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001609.checkpoint",
+      "sha256": "e998347573b87f310b024440a9b7f0523ff4937613cef05e9bebd969ae7e11db"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001362.checkpoint.payload-v2.json",
+      "sha256": "7f09d5368a142c703dc326aa342b857097dc53ff76a05e7da237c3b469193cc8"
+    },
+    {
+      "bytes": 65451154,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001416.checkpoint",
+      "sha256": "97be91d39f39e82c1016d6020703074ed13bf8c196288c65b80357a08596924e"
+    },
+    {
+      "bytes": 65450090,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001374.checkpoint",
+      "sha256": "cad8b11772dff80bc68790cb683b07b44e3677a23159df203596a9227af8335f"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001651.checkpoint.payload-v2.json",
+      "sha256": "7315cfe4c047385e1b2bdad7d49503be33f21b21855a9d88719b179a037d6aa1"
+    },
+    {
+      "bytes": 65462530,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001867.checkpoint",
+      "sha256": "c664abe1230520af90f4cca019a0ba1eff5835c5a8e03a1702df463f1cc77eca"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001693.checkpoint.payload-v2.json",
+      "sha256": "cac2296d62fa246f37e1098f8cbca201e0719397fa22c3e67c1181ac185d1970"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001582.checkpoint.payload-v2.json",
+      "sha256": "2e58bc7c99baf3a1d3503298dfe78ad087c37a16beaa95df87f00b7dd81856da"
+    },
+    {
+      "bytes": 65461650,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001832.checkpoint",
+      "sha256": "23f5aa60a9238065a69058310db3ace10a39820ef96b77e692210ac8227470cf"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001908.checkpoint.payload-v2.json",
+      "sha256": "e158a08945f569d09d24c99132de15b0925f91294b5b969dce151431b0f045f0"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001374.checkpoint.payload-v2.json",
+      "sha256": "f9072c2d86fd082fc5171154c8dce80a6cfdaaaf02e890ebe2ea1992cc2a91d4"
+    },
+    {
+      "bytes": 65459914,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001763.checkpoint",
+      "sha256": "0e3acadb15ba20f6e10e269f9efc62e8389a31ce6c969d231d93c6f714990f40"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001672.checkpoint.payload-v2.json",
+      "sha256": "70cb72c573cdc404e4d9e0c1e5f03542a7a65bf89b6d31bc6a52547acf83c67c"
+    },
+    {
+      "bytes": 65449938,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001368.checkpoint",
+      "sha256": "972eb267b0250d1119391d39a02246512a63c1a2fd34bb81a26bd71f2b84e88f"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002030.checkpoint.payload-v2.json",
+      "sha256": "ccc05392d716764f829ee9120b7036daad31cfa8f31eb1a23e2591299f7984e8"
+    },
+    {
+      "bytes": 65468634,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002110.checkpoint",
+      "sha256": "0cb0f69660d7d8d0e1e3dd34461ab34c3e5a08bc07d832ae1340fcc3fe33aed3"
+    },
+    {
+      "bytes": 65453210,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001497.checkpoint",
+      "sha256": "b7417e1e30fbc66b4ef5eaf182d8c373e2102696209d7641119599412e0e7585"
+    },
+    {
+      "bytes": 65467154,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002051.checkpoint",
+      "sha256": "03193c637d516a252e87ba0ae5660bf9273f7014b6d2f6be469326257d4b29b8"
+    },
+    {
+      "bytes": 65467530,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002066.checkpoint",
+      "sha256": "24f51d55620a8263f6b6f002f0db0d0fa4858c93de3505f5d80b2170d8b8f257"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001943.checkpoint.payload-v2.json",
+      "sha256": "39d354fdd407cd40a961d5ea2674a015385b18ef067645b57a537d62cde1a978"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001333.checkpoint.payload-v2.json",
+      "sha256": "a8ffd7c37bc163ebf4f382be071c82e5633353cd0e27c44210f2e480fd12f1ec"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001839.checkpoint.payload-v2.json",
+      "sha256": "33943ee41018257d8e451f538d5ee9680465b05543c9003eb6339a74d5f783b4"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001467.checkpoint.payload-v2.json",
+      "sha256": "025fb90c92c76aebeefae281ab68f3ab9fd865ae735c97f8d74c51e789f26922"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001776.checkpoint.payload-v2.json",
+      "sha256": "b91d343ba0015a8e0cd617c53af840abf421b4450ba7ee980148c5d0044af213"
+    },
+    {
+      "bytes": 65458154,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001693.checkpoint",
+      "sha256": "94997224299d9d10f7a2f7548adf8611376852f8d7dd97eeeb714ed0d9f3ec8b"
+    },
+    {
+      "bytes": 65462354,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001860.checkpoint",
+      "sha256": "2927e06d5e9e49199fd408d69b38ab7fd483b15685c202b2c88032fff67f45ea"
+    },
+    {
+      "bytes": 65464442,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001943.checkpoint",
+      "sha256": "369249ae304c66605683b4700691cf9f1ca12951cb7d0ece896dab192f6d9b82"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001797.checkpoint.payload-v2.json",
+      "sha256": "1fa4761dc19110bc1128476d087bada796982292614e468a97fae1d1e25e3fd2"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001623.checkpoint.payload-v2.json",
+      "sha256": "51a272eabc67468ccd26c66244671aabfc4496ffc89e0a626cf0fa4bb4066a27"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001444.checkpoint.payload-v2.json",
+      "sha256": "d0b78e1b19da623d59d4f8aac407ebc43753b8e05c4d441e97074a93e91be718"
+    },
+    {
+      "bytes": 65452602,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001473.checkpoint",
+      "sha256": "5fb612e12b1a250ebca3c2ed58629d58ee344d7645010a990c795ef499f61824"
+    },
+    {
+      "bytes": 65448490,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001311.checkpoint",
+      "sha256": "fbe383ef7991f536ab606aa7386327e21173ebc1bdf3a40e299c4ab606ffde7a"
+    },
+    {
+      "bytes": 65451866,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001444.checkpoint",
+      "sha256": "d8b09fd779b9db80f450a416d4182b04c77875405e6e1b220561aee3cc6ede08"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001616.checkpoint.payload-v2.json",
+      "sha256": "bcf455331fb56f696eeb2273e3a850e0796ce0a39a2fcc4af1a915360008fd83"
+    },
+    {
+      "bytes": 65449330,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001344.checkpoint",
+      "sha256": "be09e929337f6b164c90dd120c39a5281eace5171bddd48fbd28f23d1a5c1c71"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001398.checkpoint.payload-v2.json",
+      "sha256": "c4277fa1d2d17b46953ff7c4c69bea46f73a466a93e25ea28384c3671dd87dd5"
+    },
+    {
+      "bytes": 65449786,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001362.checkpoint",
+      "sha256": "e5b067cd1f926359cd1af6b977337687f74b2dd526954ed29542a4accaee2479"
+    },
+    {
+      "bytes": 65452146,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001455.checkpoint",
+      "sha256": "088b84d31c50dd03aa5beb2d6bd1b4c5f329a9a104f78cdc439757f590f311e6"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001356.checkpoint.payload-v2.json",
+      "sha256": "326a36b3577f56741c59155ea24d5687995df8b1ceea65cce5eaf4d08afd154d"
+    },
+    {
+      "bytes": 65455210,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001576.checkpoint",
+      "sha256": "db3129ff9431278f24b01ae1a36d05cc2680e3062abb1190d8d1a175e9338926"
+    },
+    {
+      "bytes": 65462002,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001846.checkpoint",
+      "sha256": "4e340e547d4b2a74ee0a6cfad56e259ce92bc1338b4ff07b915cf07f0f2debc6"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001665.checkpoint.payload-v2.json",
+      "sha256": "39ccda88e9da29cd7c732ed5662ce72b706b6f6a2303779daa30a015c9c726ce"
+    },
+    {
+      "bytes": 65459386,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001742.checkpoint",
+      "sha256": "8f18b14d4b38e3afcb261e41751242030e5257a4248491d01e541be91dd16788"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001846.checkpoint.payload-v2.json",
+      "sha256": "ee7835be137ddc11acd5e2c7e0c7f52817efd0165e3574e8082080f7362aa5fd"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001595.checkpoint.payload-v2.json",
+      "sha256": "c8ede0afeb7ec82db8164a1e5e9130274283dbaebe2a62d92b7bc21dbe4c3793"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001888.checkpoint.payload-v2.json",
+      "sha256": "d86d7f03871232af087d61e8f9a6b39bf94954e5d9e22dddab7aba5b05a4468c"
+    },
+    {
+      "bytes": 65451994,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001449.checkpoint",
+      "sha256": "fe1b2f9d7b16548d9f098427cbf4284edadd965fbea08b0f8b88c38bf88adab0"
+    },
+    {
+      "bytes": 65455690,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001595.checkpoint",
+      "sha256": "1285881aa4af2049dba3082a5b3bdcfb204a43787d6024226a34cb83a339e554"
+    },
+    {
+      "bytes": 65450698,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001398.checkpoint",
+      "sha256": "41b0b622eab146fa5d030d75ce351f0e275897d8373ab5d9e2de5223ee3dcf1c"
+    },
+    {
+      "bytes": 65462706,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001874.checkpoint",
+      "sha256": "55bf2db6e9476e388bfe7a8c9f90be39ed92a10a4756a8bf4be0bf1094e07741"
+    },
+    {
+      "bytes": 65464794,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001957.checkpoint",
+      "sha256": "6b1d46647df0521ca561f84bd0643ff70010b90df05ab8ca22a2d39777021fba"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001874.checkpoint.payload-v2.json",
+      "sha256": "d97ebaff1550ebafbc0160e1cb45c34e51f4e6285e2302e8db4ebf4e25ebd99a"
+    },
+    {
+      "bytes": 65449482,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001350.checkpoint",
+      "sha256": "268f9a0d7464c13fd6ad31961a959c29e8c8c247a47a0ae06d540518765a3593"
+    },
+    {
+      "bytes": 65452450,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001467.checkpoint",
+      "sha256": "38a03074dbe13ecd2cc605bc4762b2341a25070192d99ffa191945d147806a97"
+    },
+    {
+      "bytes": 65448338,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001305.checkpoint",
+      "sha256": "c8c1dde8adf4afbdafe8168717ac0ad8b36664f7165b581a7fb44f1eff31ff48"
+    },
+    {
+      "bytes": 65464090,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001929.checkpoint",
+      "sha256": "7eedc850ac9195193d7da81d672ddc5da06022ba647a3b8395c4a388a14efb94"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001714.checkpoint.payload-v2.json",
+      "sha256": "ca3b22296a80d0a3747e7ad1e00eda6354296ea45be276ec20c16d980b191a42"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002015.checkpoint.payload-v2.json",
+      "sha256": "26d6b9fa861194c6f06600185c235166b07c78915a6d77b45b1a487882bf4c38"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001368.checkpoint.payload-v2.json",
+      "sha256": "8562776d6987e40096e429f03d8b442a656ee63cbdfbae61effff77147168df5"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001588.checkpoint.payload-v2.json",
+      "sha256": "36d8f6540a1e8267c7605d03bd531ccd5781fc2b5e7b6a6c410941760607acbf"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001721.checkpoint.payload-v2.json",
+      "sha256": "027ae6a46f0eca53700aef5b85c6b1bb6b9d633465ed96ce82d8760b9e0c0cef"
+    },
+    {
+      "bytes": 65460090,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001770.checkpoint",
+      "sha256": "328163549eca1856592a66e5141a0caf6d417feee9302cea0a96e0a32cedb5e4"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001546.checkpoint.payload-v2.json",
+      "sha256": "a8986d61f67240a9775ade1e3f1625c5b385635264b32bebe1ee293df61f8c1c"
+    },
+    {
+      "bytes": 65454754,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001558.checkpoint",
+      "sha256": "1d5b0f23eb21901d559d770c182fc10bd996fbcdb8e048207769e1aaead7ea7b"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001317.checkpoint.payload-v2.json",
+      "sha256": "6f032ef2f6ac449e32a11f623fce83e01415a5a4e4771b3598478e5b1f5e80e8"
+    },
+    {
+      "bytes": 65465674,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001992.checkpoint",
+      "sha256": "049b1f38592789c4edd7b6225cf37baf25411d50f07f2f24dc4ad6f1c6dea8da"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001811.checkpoint.payload-v2.json",
+      "sha256": "618983f0270651147e933bd6c1bf8ed0e226083c7fef024876fd4a92e401933b"
+    },
+    {
+      "bytes": 65459738,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001756.checkpoint",
+      "sha256": "1db184176ab812ffd154ed49a4a0e4c38f7bca3da36376663406ce769f951d5a"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002066.checkpoint.payload-v2.json",
+      "sha256": "7f84346ae19cd6e5d9225cbd169aa95322af8b2e44f947af86ab2ddea2ded83c"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002110.checkpoint.payload-v2.json",
+      "sha256": "4602eb7c83cd0fab1c67450e4058fc7dcc4d0c1e050231b377d3144c8fc531aa"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001539.checkpoint.payload-v2.json",
+      "sha256": "e18da2088ec9477ef16fb6d0d77d4f67ff0cd835b31659a3add89942cb94c5ec"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002125.checkpoint.payload-v2.json",
+      "sha256": "31d8eb26bfd4d80ecd92d588a58a84cca4817f05c842339541ec26a889df6103"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001790.checkpoint.payload-v2.json",
+      "sha256": "4630f17331936eb7fab50c4303e0a8f5a4fae30dc9f0d81f750cbd318f56bc1f"
+    },
+    {
+      "bytes": 65469010,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002125.checkpoint",
+      "sha256": "b99d415ec0f1f34596cc9d927770a8552bf1393dad52ec70f3febf894b00f28a"
+    },
+    {
+      "bytes": 65448794,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001323.checkpoint",
+      "sha256": "537fd2274c36ea00298ec95980d113fe636cf2a4df5024d33cad84c60c7777e8"
+    },
+    {
+      "bytes": 65459034,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001728.checkpoint",
+      "sha256": "88c567c6a5957faa3436997270979f9c99ffb47190199ffd523f0c62c160b9d6"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001971.checkpoint.payload-v2.json",
+      "sha256": "645a1b8fd0c118f93f901010daf38868d55e159a5bf29318a7eae245c7d6456d"
+    },
+    {
+      "bytes": 65465146,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001971.checkpoint",
+      "sha256": "e558400e8a881bd9bd662e76ad488f0c126a20758e2f96e12d4a04dbe4b5808a"
+    },
+    {
+      "bytes": 65469362,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000002139.checkpoint",
+      "sha256": "bc5fef6b3c4ae6556e959d260e62a3dde264668d9f0cfa92c7fdeed47632f9ce"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001832.checkpoint.payload-v2.json",
+      "sha256": "9153acb2047dc7ea30908d81c563ec9cc6ceccb655e1a099f4f89e0712692fea"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001455.checkpoint.payload-v2.json",
+      "sha256": "007e5d14003785ab722c5b4659daff619ea614ef903ebddffa7156b8a9c6d57d"
+    },
+    {
+      "bytes": 415,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/step_0000001497.checkpoint.payload-v2.json",
+      "sha256": "12688def4c882c47c88b2993230fee349374ff106afb87de3e6369e2c52458e5"
+    },
+    {
+      "bytes": 70496,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2.log",
+      "sha256": "9476d4d3053e59ddd5c325b51acc9df17787b6e446f5dcf7350fbbff6d3e2782"
+    },
+    {
+      "bytes": 23168480,
+      "path": "bin/tests/FireSequenceTest_r211a_qualified_v3",
+      "sha256": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e"
+    }
+  ],
+  "parts": [
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-000",
+      "sha256": "09724dc9d16887ae2b0905bf49955605df21ff4fb64ac5dcb98e2d5eb34580ba"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-001",
+      "sha256": "0606a2825e6a286694bbd0c07a20a2581b789bf724a597782e819ea11662911a"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-002",
+      "sha256": "094324d632bb06159c97704f0e6c78f53df1ac0567f847ef195844becbdcb056"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-003",
+      "sha256": "87ae1c2abd590d603380362f7fa6db02d3540410d020c5d3a4914027f7e287f6"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-004",
+      "sha256": "bf75d17e74c55e5a1fe8ae57f7851c988a87fa939cbe6822f4a568771e8be909"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-005",
+      "sha256": "3f3849a3ba8aaf456808663486b4252985aee1daf5663150916cc358aae43646"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-006",
+      "sha256": "b71183c92e8f93f2cd79e0c4637594c2aa1557faf08bee4ec0b2a2bd18a8267e"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-007",
+      "sha256": "e49cc84300b8b99c04e09e063c5d8e6c65aa7d2d0f02970a1e94e7070bedcae3"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-008",
+      "sha256": "aa1d480af8a9fdce0aea8c71021867d4d3141e3bb42a5b7ca1edb98dd9165ebf"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-009",
+      "sha256": "3c3ed31f09f5b6bb20d13fe8154bac407a9acced5d3f858385ad3105d434c91f"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-010",
+      "sha256": "0de192b8d4333806879ff76955bafe3f47beeb9728fdf30d2fb95411bf958dd3"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-011",
+      "sha256": "ecb499ece052bbbbc04ee5c2ca5809ba4e6021830a32a9715bf2caf5c54d3b8b"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-012",
+      "sha256": "6079ac8d365ff335077da9c816948470a1cadf0a8126a588ecb4bcaef17d8d04"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-013",
+      "sha256": "1bf60212d6c8d4eeb999cc56c83719a70bc34d86ba8c7cbf928d913441e05af0"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-014",
+      "sha256": "bf611df496d2f181edb1be1e69667198fb37b699463f3b31adba8bd9cf4509a6"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-015",
+      "sha256": "8b03a929ad8faef62b41b9e234428fc4f6d8e88bc95703832f7a0f4e6f094064"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-016",
+      "sha256": "ded48fde93e84d7ca4b696a6f59f32080c5c18dfbf9677d561d3231da918b03f"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-017",
+      "sha256": "607e3bcc2dd43235cfdc66578f4b2d959ee49ad54d84615dda4ab10b233bb656"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-018",
+      "sha256": "0000a66c2d81723d9a2a35c24c9dc592f5c11f671ae128d4de71594ab3e5e522"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-019",
+      "sha256": "ef4e9c3c2f3a00f0a13c53527001a41f6193f4acb03272c2565d2c7491c13572"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-020",
+      "sha256": "5126708a785f4eec39c96ef2372246a99f0a07edf57139218efd268178e21f69"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-021",
+      "sha256": "88968775e35ad30880e0e5b6ccddb0a47ea7826397603a6dca98e9fee7294c1e"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-022",
+      "sha256": "c766e71f0387845f1afb7efabe98b252e79781953229241b733ccb9e378bf981"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-023",
+      "sha256": "ef93911b3ead71a3fa632042092b9098cd8500aa27920a18e4ad5fe9196afff4"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-024",
+      "sha256": "d494ca3556201fea77376b55bbec95c56075154df8920eed6629af0129a51003"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-025",
+      "sha256": "e7f35631edeabff433356bab10de9c864e080a9c4a801477cb9fbce3d1d169ef"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-026",
+      "sha256": "a488489203246afa9bef00fb08266cde19dcfc3f63d74c1fdda3d32ed68cd4ba"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-027",
+      "sha256": "9854b17d76c9106172af3af2112350c9aed07d1d6f4d59b16f8453b03e86c72e"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-028",
+      "sha256": "073cbb1651264238457c66b9a3189d2e605ca19167617ecbb9dc378fb679fe3e"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-029",
+      "sha256": "5fd8207c24531cd38d3f12dc8197fd4b91041609aeb957dcb895238db6cf0970"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-030",
+      "sha256": "0317f4527db780c56f63bb3997136c2570bc52761f68f355cd59489c604a4ae2"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-031",
+      "sha256": "51b710d70641d4f5d8ecc9be7f60bcf91631a2172b066371646d3dd0b7d996aa"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-032",
+      "sha256": "3d58e47b630c87098e93c42dfa5ab4cfaa76aa6701ce1229f33b193fe694e1b5"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-033",
+      "sha256": "0381231c004daedcab73694c2b3c0321b60c77c2ea703a698a5d1fd85f262b26"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-034",
+      "sha256": "40789ca8071437aabaf60cda1f6a9f456a4becb15c648370ee77396270fa5f5d"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-035",
+      "sha256": "0e05715edda9ea8565ad6a27eead51f74c16de6eefa0c64d4caa6cdfef6aafae"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-036",
+      "sha256": "0dc10ce08febd17f1c468feaab35ee933b9033738e42b32afc22dcacaaae5a6c"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-037",
+      "sha256": "ea9d8d3fc74edd18693de618b3a0e426f3604331f99f7b118f71d8d2b87f28bd"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-038",
+      "sha256": "37da75cf224227e6c51e019be705b35ab571dc255ff998c0a1483983854cfe2c"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-039",
+      "sha256": "9adcdd6c62421f76565cb13a53ebcc5ef3347bb488f551067696c1a3726a81a0"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-040",
+      "sha256": "dcc4f5dcfe5fa7a8a62f14ad7ac4826abc2eb86c94e3f80cba1256ae9a696080"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-041",
+      "sha256": "372097c4f5463362a5f671157bf7af5f288567cd689dd00268adc66fd9aed949"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-042",
+      "sha256": "1c5ecc69135b221f75df9365a7b8cea6dd6a1d18fc3da1729459971971374c28"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-043",
+      "sha256": "ce834c579b4c1f5c39dcb937ff3626844fe0dd68d418593410d24e33fa3b29fd"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-044",
+      "sha256": "52f9acb3fc7d8e3f4ed39cad0c60849e60a9653687c17a51ce70f7ab48e04ca4"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-045",
+      "sha256": "93fca54ff76d9e3638d96e5e0abead27e1046542d7d479d4e97f5c0fa8244339"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-046",
+      "sha256": "6dee949e5e0873bcbc3fcfc81bbb45209102b1e554ea0955d1832c9518d448f3"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-047",
+      "sha256": "2cd9a7b01f699de57ac78d4f1fa0d75860f9947ed5dfa4e1569e9e0ce2d9a8fd"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-048",
+      "sha256": "f7a7b253e81aee0c4160a97a6ca3d5f06dbb46d42d9049693f8135718c9698ef"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-049",
+      "sha256": "a6532ee68f7ff591f1e4adae5529d29f54fa9d57b99684eb4346c33fbf413e4e"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-050",
+      "sha256": "8b7568ffa4dc26f995e637f377adbebb3fe4e4aee4e1b3750173aa893c6d3a4d"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-051",
+      "sha256": "00709c63af092dca3ee671a6db5316e2c5c655ece5d7a96158e04f51b757b2a0"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-052",
+      "sha256": "833ff905de7591876eae2aac7457ea8a358895513a1880d3e0992cbd8347b839"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-053",
+      "sha256": "bd51cfbbc7220903957400b4e875435c90c7a15fe13acfa9eeab5c760fec5a17"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-054",
+      "sha256": "f59a94f3d9e69fb93ca86412d8e3569829d0705f1f818454efe7994f94af4d7b"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-055",
+      "sha256": "43911b26bc47096b890718988e4c5a5b235d70e4d1e9e5b057fdf4eb0d923558"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-056",
+      "sha256": "50de2fcc0ed0b9a725b03ce10d0cd8be16f71ba17f663b69745f830b7cebfb47"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-057",
+      "sha256": "6f032581f1551f90d6dc1f115b6231ec9ef3c7596ade6c0517667337c74fac80"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-058",
+      "sha256": "0e5105fb63b152e7f8363621c76effe4becf6acb08252da49ca2b77bd957bb63"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-059",
+      "sha256": "5214d37ad6dd585e00f22e0d3dc81e257fc300e752b8c4e34983e2ebdffa2a7f"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-060",
+      "sha256": "186d0705be8c398ab624a607363efec1bae9ff830de047e78291ee00ee4dbe5c"
+    },
+    {
+      "bytes": 67108864,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-061",
+      "sha256": "4c5dc488404f879db3312ccc032ee9a6b073d2bb4fec5ee72ef4080d6b6e4dd0"
+    },
+    {
+      "bytes": 61978451,
+      "path": "rendered/fire_production_calibration/r212_transport_adoption/accepted_survival_payloads.v1.tar.gz.part-062",
+      "sha256": "e40010e0087c303d042f6e07878afdb12f34a71ef6cab368c691824c59a10155"
+    }
+  ],
+  "restore": "Concatenate parts in order, verify SHA, extract only into a fresh directory. Never overwrite original/golden/live checkpoints.",
+  "schema": "rise.fire.r212.accepted-survival-archive.v2",
+  "transport_metadata": [
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/._continuation.v2",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._final.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._checkpoints",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._continuation_identity.v2",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._latest.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._onset_campaign_summary.v2.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._continuation_identity.v2.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._onset_campaign_summary.v2",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._final.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._budgets",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/._latest.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_context.csv.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.event.v1",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_observation_inputs.bin.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.convergence.v1.tail_targets.bin",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.column.csv.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.convergence.v1.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_context.csv",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.convergence.v1.csv.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._retry_attempt_trajectory.csv.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_packets.bin",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_ledger.v1",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.convergence.v1",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_packets.bin.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_ledger.v1.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.convergence.v1.csv",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._retry_attempt_trajectory.csv",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.source_observation_inputs.bin",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._maximum_velocity_trajectory.csv.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.event.v1.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._maximum_velocity_trajectory.csv",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.convergence.v1.tail_targets.bin.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/budgets/._reference_composition_candidate_fixed_column.raw.csv.column.csv",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001894.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001957.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001539.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001473.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001818.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001509.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002023.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001783.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001888.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001637.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001570.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002095.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001901.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001978.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001936.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001602.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001790.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001644.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001686.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001380.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001804.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001317.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001416.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001707.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001503.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001749.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001818.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001728.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001582.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001576.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001700.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001623.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001867.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001564.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002081.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001658.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001860.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001915.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001922.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001339.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001644.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001700.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001428.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001735.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002000.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002037.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001881.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001552.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002044.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001609.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002132.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001630.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001985.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001776.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001428.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001714.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001328.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001637.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001521.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001950.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001356.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001992.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002051.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001461.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002023.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001527.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001404.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001922.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001679.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001433.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001658.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001433.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001333.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001570.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001686.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001665.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001386.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001630.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001344.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001410.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001485.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002074.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001901.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002102.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002000.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002007.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002030.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001985.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002088.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001515.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001735.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001616.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001804.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001783.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001853.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001503.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001422.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001479.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001964.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002118.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001707.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001763.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001756.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002095.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001485.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001491.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001305.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002102.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001533.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001410.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002074.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001527.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001588.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001825.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001797.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001964.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002007.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001558.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001515.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001422.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001839.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001380.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001978.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001509.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001853.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001438.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001721.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001602.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001929.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002037.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001936.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001552.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001564.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001679.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001894.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001392.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001392.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001908.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001350.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001404.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001881.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001915.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001672.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001438.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001825.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001323.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002132.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001339.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001521.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002044.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001749.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001461.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002059.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001811.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001950.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001770.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002118.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002015.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001386.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001742.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001651.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002081.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001491.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001479.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002088.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002139.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001311.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001328.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001449.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001546.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001533.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002059.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001609.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001362.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001416.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001374.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001651.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001867.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001693.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001582.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001832.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001908.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001374.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001763.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001672.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001368.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002030.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002110.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001497.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002051.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002066.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001943.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001333.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001839.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001467.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001776.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001693.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001860.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001943.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001797.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001623.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001444.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001473.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001311.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001444.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001616.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001344.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001398.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001362.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001455.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001356.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001576.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001846.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001665.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001742.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001846.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001595.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001888.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001449.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001595.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001398.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001874.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001957.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001874.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001350.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001467.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001305.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001929.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001714.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002015.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001368.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001588.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001721.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001770.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001546.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001558.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001317.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001992.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001811.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001756.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002066.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002110.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001539.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002125.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001790.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002125.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001323.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001728.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001971.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001971.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000002139.checkpoint",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001832.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001455.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/continuation.v2/checkpoints/._step_0000001497.checkpoint.payload-v2.json",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "rendered/fire_production_calibration/r211_resident_migration/._continuation.v2.log",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    },
+    {
+      "bytes": 163,
+      "path": "bin/tests/._FireSequenceTest_r211a_qualified_v3",
+      "scope": "tar-generated AppleDouble metadata; not solver evidence",
+      "sha256": "2a1977fea0159f9fa1cfd5985fa00c9044fa5d311303d09ea2b8d4e5983772d0"
+    }
+  ],
+  "verification": "Every solver payload member matches original bytes; ordered parts match archive SHA. AppleDouble transport metadata is separately inventoried, not solver evidence."
+}
