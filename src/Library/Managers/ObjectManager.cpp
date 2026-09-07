@@ -56,6 +56,85 @@ unsigned long long NextSpatialGeneration()
 	return sCounter.fetch_add( 1, std::memory_order_relaxed ) + 1;
 }
 
+//! GEOMETRY-PRESENCE sibling of ObjectManager's own TreeElementProcessor
+//! implementation.  Forwards every method to the real ObjectManager
+//! UNCHANGED except RayElementIntersection_IntersectionOnly, which drops
+//! the DoesCastShadows() gate that ObjectManager::RayElementIntersection_
+//! IntersectionOnly applies -- see IObjectManager::IntersectOcclusionRay's
+//! contract comment (Interfaces/IObjectManager.h) for why.
+//!
+//! This lets ObjectManager::IntersectOcclusionRay traverse the SAME
+//! already-built top-level BVH/octree the shadow-ray path uses, via the
+//! `epOverride` parameter added to BVH<>::IntersectRay_IntersectionOnly /
+//! Octree<>::IntersectRay_IntersectionOnly, rather than building a second
+//! tree or duplicating either traversal -- the shadow-ray hot loop (NEE)
+//! is untouched.
+//!
+//! Constructed on the stack per call and handed to the tree by reference,
+//! never addref'd/stored: BVH<>'s `ep` / Octree<>'s `ep` are plain C++
+//! references, not Reference<T>, and the traversal never calls
+//! addref/release/refcount on them (confirmed by inspection of BVH<>'s
+//! and Octree<>'s constructors).  Those three IReference methods below
+//! are therefore unreachable no-op stubs, present only because
+//! TreeElementProcessor<T> inherits IReference.
+class OcclusionElementProcessor : public RISE::TreeElementProcessor<const IObjectPriv*>
+{
+public:
+	explicit OcclusionElementProcessor( const ObjectManager& mgr_ ) : mgr( mgr_ ) {}
+
+	void RayElementIntersection( RayIntersectionGeometric& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces );
+	}
+
+	void RayElementIntersection( RayIntersection& ri, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override
+	{
+		mgr.RayElementIntersection( ri, elem, bHitFrontFaces, bHitBackFaces, bComputeExitInfo );
+	}
+
+	//! The ONE line that differs from ObjectManager::RayElementIntersection_
+	//! IntersectionOnly: IsWorldVisible() only, no DoesCastShadows() gate.
+	bool RayElementIntersection_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const IObjectPriv* elem, const bool bHitFrontFaces, const bool bHitBackFaces ) const override
+	{
+		if( elem->IsWorldVisible() ) {
+			return elem->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces );
+		}
+		return false;
+	}
+
+	BoundingBox GetElementBoundingBox( const IObjectPriv* elem ) const override
+	{
+		return mgr.GetElementBoundingBox( elem );
+	}
+
+	bool ElementBoxIntersection( const IObjectPriv* elem, const BoundingBox& bbox ) const override
+	{
+		return mgr.ElementBoxIntersection( elem, bbox );
+	}
+
+	char WhichSideofPlaneIsElement( const IObjectPriv* elem, const Plane& plane ) const override
+	{
+		return mgr.WhichSideofPlaneIsElement( elem, plane );
+	}
+
+	void SerializeElement( IWriteBuffer& buffer, const IObjectPriv* elem ) const override
+	{
+		mgr.SerializeElement( buffer, elem );
+	}
+
+	void DeserializeElement( IReadBuffer& buffer, const IObjectPriv*& elem ) const override
+	{
+		mgr.DeserializeElement( buffer, elem );
+	}
+
+	void addref() const override {}
+	bool release() const override { return false; }
+	unsigned int refcount() const override { return 1; }
+
+private:
+	const ObjectManager& mgr;
+};
+
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -385,6 +464,47 @@ bool ObjectManager::IntersectShadowRay( const Ray& ray, const Scalar dHowFar, co
 			}
 		}
 
+		return false;
+	}
+}
+
+//! See IObjectManager::IntersectOcclusionRay's contract comment
+//! (Interfaces/IObjectManager.h): geometry-presence any-hit, filtered on
+//! IsWorldVisible() only -- no DoesCastShadows() gate, unlike
+//! IntersectShadowRay above.
+//!
+//! Same three-path traversal as IntersectShadowRay (BVH / octree /
+//! linear), sharing the SAME already-built tree via `OcclusionElement-
+//! Processor` + the `epOverride` parameter on BVH<>:: / Octree<>::
+//! IntersectRay_IntersectionOnly, so this does not build a second tree.
+//! The linear-loop fallback path deliberately has NO shadow cache: AO-
+//! style occlusion queries are lower call volume than NEE shadow rays and
+//! a second cache (with its own staleness-on-flag-flip bookkeeping) is
+//! not worth it for that traffic.
+bool ObjectManager::IntersectOcclusionRay( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const
+{
+	if( bUseBSPtree && (items.size() > nMaxObjectsPerNode) ) {
+		if( !pBVH ) {
+			CreateBVH();
+		}
+		const OcclusionElementProcessor occlusionEp( *this );
+		return pBVH->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &occlusionEp );
+	} else if( bUseOctree && (items.size() > nMaxObjectsPerNode) ) {
+		if( !pOctree ) {
+			CreateOctree();
+		}
+		const OcclusionElementProcessor occlusionEp( *this );
+		return pOctree->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces, &occlusionEp );
+	} else {
+		GenericManager<IObjectPriv>::ItemListType::const_iterator		i, e;
+		for( i=items.begin(), e=items.end(); i!=e; i++ ) {
+			const IObjectPriv* obj = i->second.first;
+			if( obj->IsWorldVisible() ) {
+				if( obj->IntersectRay_IntersectionOnly( ray, dHowFar, bHitFrontFaces, bHitBackFaces ) ) {
+					return true;
+				}
+			}
+		}
 		return false;
 	}
 }

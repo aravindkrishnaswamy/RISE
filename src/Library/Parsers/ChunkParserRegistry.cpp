@@ -10661,7 +10661,7 @@ namespace RISE
 					static const ChunkDescriptor d = []{
 						ChunkDescriptor cd;
 						cd.keyword = "ambientocclusion_shaderop"; cd.category = ChunkCategory::ShaderOp;
-						cd.description = "Screen-space / hemisphere ambient occlusion.";
+						cd.description = "Screen-space / hemisphere ambient occlusion. A geometry-presence query -- an occluder's `casts_shadows FALSE` does NOT exempt it from occluding here.";
 						auto P = [&cd]() -> ParameterDescriptor& { cd.parameters.emplace_back(); return cd.parameters.back(); };
 						{ auto& p = P(); p.name = "name";             p.kind = ValueKind::String; p.description = "Unique name"; p.defaultValueHint = "noname"; }
 						{ auto& p = P(); p.name = "numtheta";         p.kind = ValueKind::UInt;   p.description = "Elevation samples"; p.defaultValueHint = "5"; }

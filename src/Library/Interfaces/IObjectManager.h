@@ -42,8 +42,19 @@ namespace RISE
 			const bool bComputeExitInfo					///< [in] Should exit information be computed (the ray continues until exiting the object) in addition of initial intersection information?
 			) const = 0;
 
-		//! Intersects, but performs intersection test only with object
-		virtual bool IntersectShadowRay( 
+		//! LIGHT-VISIBILITY query: any-hit test against every object that is
+		//! both IsWorldVisible() AND DoesCastShadows().  An object authored
+		//! with `casts_shadows FALSE` is INVISIBLE to this query by design --
+		//! it does not block light, so NEE / light-sampling visibility tests
+		//! (the intended callers) must not see it as an occluder.
+		//!
+		//! Do NOT reuse this for a geometry-presence / occlusion query (e.g.
+		//! ambient occlusion): such a query wants to know whether there is
+		//! GEOMETRY in the way, independent of whether that geometry casts
+		//! shadows.  Use IntersectOcclusionRay for that -- see its contract
+		//! below.  (2026-09-07: this exact confusion was a real bug --
+		//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 8.1.)
+		virtual bool IntersectShadowRay(
 			const Ray& ray,								///< [in] The ray to process the intersection from
 			const Scalar dHowFar,						///< [in] Maximum distance to travel along that ray (optimization parameter)
 			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
@@ -198,6 +209,40 @@ namespace RISE
 			const char* entry,							///< [in] Name of the entry to trace
 			const char** outInstancingChunk,			///< [out] Chunk name; may be null if not wanted
 			const char** outSourceNode					///< [out] Source object name ("" if none); may be null
+			) const = 0;
+
+		//! GEOMETRY-PRESENCE query: any-hit test against every object that
+		//! IsWorldVisible(), IGNORING DoesCastShadows() entirely.  This is
+		//! the occlusion contract an ambient-occlusion-style estimator
+		//! wants -- "is there geometry in the way", not "does light reach
+		//! past this object" -- so an object authored with `casts_shadows
+		//! FALSE` still occludes here (it has not stopped existing; it has
+		//! only stopped blocking light for NEE purposes).
+		//!
+		//! Sibling of IntersectShadowRay above, which answers the OPPOSITE
+		//! question (light visibility, `casts_shadows`-gated) for NEE /
+		//! light-sampling callers.  Added 2026-09-07 after
+		//! AmbientOcclusionShaderOp was found reusing IntersectShadowRay
+		//! for a query it is not -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+		//! section 8.1 and IntersectShadowRay's comment above.
+		//!
+		//! Appended at the interface TAIL, matching this file's own
+		//! append-only convention for prior additions (SetObjectParent,
+		//! ComposeWorldTransforms, GetSpatialStructureGeneration,
+		//! SetObjectProvenance, GetObjectProvenance above) -- ObjectManager
+		//! is this interface's sole in-tree implementer, always obtained
+		//! through RISE's own factories (RISE_API_CreateObjectManager) and
+		//! never constructed by out-of-tree callers, so a new pure virtual
+		//! here is source-breaking (a hypothetical external IObjectManager
+		//! subclass fails to compile until it implements this too) but not
+		//! a silent binary-vtable hazard the way the same addition would be
+		//! on IScene/IMaterial, which ARE meant to be reached through
+		//! caller-supplied instances.
+		virtual bool IntersectOcclusionRay(
+			const Ray& ray,								///< [in] The ray to process the intersection from
+			const Scalar dHowFar,						///< [in] Maximum distance to travel along that ray (optimization parameter)
+			const bool bHitFrontFaces,					///< [in] Should we process the intersection if the element is front facing?
+			const bool bHitBackFaces					///< [in] Should we process the intersection if the element is back facing?
 			) const = 0;
 	};
 }

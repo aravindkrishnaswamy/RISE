@@ -164,10 +164,17 @@ namespace RISE
 			return anyHit;
 		}
 
-		//! This function casts a ray into the scene and only checks to see if it intersects something.
-		//! Very useful for shadow checks
+		//! LIGHT-VISIBILITY query: is this ray blocked from reaching a light?
+		//! Delegates to IObjectManager::IntersectShadowRay, which honours
+		//! `casts_shadows` -- an object authored `casts_shadows FALSE` is
+		//! invisible to this query BY DESIGN.  Very useful for shadow /
+		//! NEE checks; NOT for a geometry-presence occlusion estimator
+		//! (ambient occlusion and similar) -- use CastOcclusionRay for
+		//! that (added 2026-09-07 after AmbientOcclusionShaderOp was found
+		//! reusing this one; see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+		//! section 8.1).
 		/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
-		virtual bool CastShadowRay( 
+		virtual bool CastShadowRay(
 			const Ray& ray,										///< [in] Ray to cast
 			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 			) const = 0;
@@ -217,6 +224,44 @@ namespace RISE
 		/// `isBackground = false` configuration leaves camera rays
 		/// black while indirect bounces still pick up the IBL.
 		virtual bool IsRadianceMapVisibleAsBackground() const = 0;
+
+		//! GEOMETRY-PRESENCE query: is there ANY geometry in the way,
+		//! independent of whether it casts shadows?  Delegates to
+		//! IObjectManager::IntersectOcclusionRay, which does NOT honour
+		//! `casts_shadows` -- an object authored `casts_shadows FALSE`
+		//! still occludes here, because it has not stopped existing, only
+		//! stopped blocking light for NEE purposes.
+		//!
+		//! Sibling of CastShadowRay above, which answers the OPPOSITE
+		//! question (light visibility, `casts_shadows`-gated).  Use this
+		//! one for ambient-occlusion-style estimators (AmbientOcclusion-
+		//! ShaderOp, InteractivePelRasterizer's preview AO) and anything
+		//! else asking "is this point cavity-like", never for NEE / light
+		//! sampling.  Added 2026-09-07; see
+		//! docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 8.1.
+		//!
+		//! Appended at the interface TAIL, matching CastShadowRay's own
+		//! evolution on this interface (SetRISCandidates, SetLightSample-
+		//! RRThreshold, SetUseLightBVH, IsRadianceMapVisibleAsBackground
+		//! above were all added the same way) -- RayCaster is this
+		//! interface's sole in-tree implementer, always obtained through
+		//! RISE_API_CreateRayCaster, never constructed by an out-of-tree
+		//! caller, so a new pure virtual here is source- but not silently
+		//! binary-vtable-breaking (contrast IScene/IMaterial, which ARE
+		//! reached through caller-supplied instances and therefore do NOT
+		//! get new virtuals -- see Scene.h's GetLightTopologyGeneration
+		//! comment).  A dynamic_cast-to-concrete-RayCaster alternative
+		//! (the pattern used for e.g. CastShadowRayTransmittance) was
+		//! rejected here because AmbientOcclusionShaderOp only ever holds
+		//! an `const IRayCaster&` and calls this once per AO sample --
+		//! adding a dynamic_cast to that hot loop is both slower and
+		//! uglier than the one appended virtual CastShadowRay already
+		//! established the precedent for.
+		/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
+		virtual bool CastOcclusionRay(
+			const Ray& ray,										///< [in] Ray to cast
+			const Scalar dHowFar								///< [in] How far to follow the ray, optimization
+			) const = 0;
 	};
 }
 

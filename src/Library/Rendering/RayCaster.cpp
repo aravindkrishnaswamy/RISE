@@ -1976,6 +1976,16 @@ bool RayCaster::CastShadowRay( const Ray& ray, const Scalar dHowFar ) const
 	return pScene->GetObjects()->IntersectShadowRay( ray, dHowFar, true, true );
 }
 
+bool RayCaster::CastOcclusionRay( const Ray& ray, const Scalar dHowFar ) const
+{
+	if( !pScene ) {
+		GlobalLog()->PrintSourceError( "RayCaster::CastOcclusionRay:: No scene", __FILE__, __LINE__ );
+		return false;
+	}
+
+	return pScene->GetObjects()->IntersectOcclusionRay( ray, dHowFar, true, true );
+}
+
 // ================================================================
 // CastShadowRayTransmittance — TRANSPARENT (Fresnel-attenuated)
 // shadow ray.

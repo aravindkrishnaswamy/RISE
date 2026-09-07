@@ -214,6 +214,15 @@ private:
 		return dir;
 	}
 
+	// GEOMETRY-PRESENCE occlusion estimator for the interactive preview.
+	// Uses IRayCaster::CastOcclusionRay (not CastShadowRay): this is an
+	// AO cavity-darkening term, not a light-visibility test, so an
+	// occluder authored with `casts_shadows FALSE` must still occlude
+	// here -- exactly the bug AmbientOcclusionShaderOp had (see its
+	// header comment and docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+	// section 8.1); this was a second, independent occurrence of the
+	// same defect, found by auditing every CastShadowRay call site
+	// (2026-09-07).
 	Scalar AmbientOcclusion(
 		const RayIntersection& ri,
 		const IRayCaster& caster,
@@ -242,7 +251,7 @@ private:
 		unsigned int hits = 0;
 		for( unsigned int i = 0; i < samples; ++i ) {
 			const Vector3 dir = HemisphereDirection( n, tangent, bitangent, ri, i, samples, salt );
-			if( caster.CastShadowRay( Ray( origin, dir ), radius ) ) {
+			if( caster.CastOcclusionRay( Ray( origin, dir ), radius ) ) {
 				++hits;
 			}
 		}

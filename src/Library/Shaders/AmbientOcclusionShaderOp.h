@@ -1,8 +1,12 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  AmbientOcclusionShaderOp.h - The ambient occlusion shader op 
+//  AmbientOcclusionShaderOp.h - The ambient occlusion shader op
 //    performs ambient occlusion, which is basically spraying
-//    a distribution of shadow rays.
+//    a distribution of GEOMETRY-PRESENCE occlusion rays (IRayCaster::
+//    CastOcclusionRay) -- not shadow rays.  An occluder authored with
+//    `casts_shadows FALSE` still occludes here; see IRayCaster::
+//    CastOcclusionRay's contract comment and
+//    docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md section 8.1 (2026-09-07).
 //
 //  Author: Aravind Krishnaswamy
 //  Date of Birth: January 30, 2005

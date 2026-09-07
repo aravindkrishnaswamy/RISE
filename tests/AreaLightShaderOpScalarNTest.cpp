@@ -113,6 +113,13 @@ namespace
 			return false;
 		}
 
+		bool CastOcclusionRay( const Ray&, const Scalar ) const override
+		{
+			// Not exercised by this test (AreaLightShaderOp only calls
+			// CastShadowRay); stub to satisfy the pure-virtual interface.
+			return false;
+		}
+
 		void AttachScene( const IScene* ) override {}
 		const IScene* GetAttachedScene() const override { return nullptr; }
 		void SetLuminaireSampling( ISampling2D* ) override {}

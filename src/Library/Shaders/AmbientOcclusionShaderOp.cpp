@@ -145,7 +145,11 @@ void AmbientOcclusionShaderOp::PerformOperation(
 							hits++;
 						}
 					} else {
-						if( !caster.CastShadowRay( ray, RISE_INFINITY ) ) {
+						// Geometry-presence query, not light-visibility: an
+						// occluder with `casts_shadows FALSE` must still
+						// occlude here (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md
+						// section 8.1) -- CastOcclusionRay, not CastShadowRay.
+						if( !caster.CastOcclusionRay( ray, RISE_INFINITY ) ) {
 							// Accumulate
 							if( pBRDF && bMultiplyBRDF ) {
 								accum = accum + pBRDF->value( dir, ri.geometric ) * (pRadianceMap?pRadianceMap->GetRadiance(ray,ri.geometric.rast) : RISEPel(1,1,1));
@@ -239,7 +243,9 @@ Scalar AmbientOcclusionShaderOp::PerformOperationNM(
 					);
 
 				Ray const ray(ri.geometric.ptIntersection, dir);
-				if( !caster.CastShadowRay( ray, RISE_INFINITY ) ) {
+				// Geometry-presence query, not light-visibility -- see the
+				// RGB path's comment above.
+				if( !caster.CastOcclusionRay( ray, RISE_INFINITY ) ) {
 					// Accumulate
 					if( pBRDF && bMultiplyBRDF ) {
 						accum += pBRDF->valueNM( dir, ri.geometric, nm ) * (pRadianceMap?pRadianceMap->GetRadianceNM(ray,ri.geometric.rast,nm) : 1.0);

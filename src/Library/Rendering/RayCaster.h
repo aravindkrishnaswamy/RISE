@@ -282,6 +282,15 @@ namespace RISE
 				const Scalar dHowFar								///< [in] How far to follow the ray, optimization
 				) const;
 
+			//! See IRayCaster::CastOcclusionRay's contract comment: geometry-
+			//! presence any-hit, independent of `casts_shadows`.  For AO-style
+			//! estimators, not NEE.
+			/// \return TRUE if the cast ray results in an intersection, FALSE otherwise
+			bool CastOcclusionRay(
+				const Ray& ray,										///< [in] Ray to cast
+				const Scalar dHowFar								///< [in] How far to follow the ray, optimization
+				) const;
+
 			//! TRANSPARENT (Fresnel-attenuated) shadow ray.  Walks the
 			//! shadow segment hit-by-hit (closest-hit IntersectRay); at
 			//! each interface that is a PERFECT-SPECULAR TRANSMISSIVE

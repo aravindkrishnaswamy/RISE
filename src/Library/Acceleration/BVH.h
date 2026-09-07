@@ -1275,12 +1275,25 @@ namespace RISE
 			}
 		}
 
+		// `epOverride`: nullptr (the default at every existing call site)
+		// uses the BVH's own bound `ep` — byte-identical behaviour and
+		// cost to before this parameter existed.  A non-null override
+		// lets a caller traverse this SAME already-built tree under a
+		// DIFFERENT TreeElementProcessor for one call, without building
+		// a second tree or duplicating this traversal — see
+		// ObjectManager::IntersectOcclusionRay, which reuses the shadow
+		// ray's BVH with a processor that drops the `DoesCastShadows()`
+		// filter.  Resolved once per leaf (outside the per-primitive
+		// loop), so the shadow-ray hot path pays one extra pointer
+		// compare per leaf, not per primitive.
 		inline bool Bvh4Leaf_IntersectionOnly(
 			const Ray& ray, Scalar dHowFar,
 			uint32_t firstPrim, uint32_t primCnt,
 			const float origin[3], const float dir[3],
-			bool bHitFrontFaces, bool bHitBackFaces ) const
+			bool bHitFrontFaces, bool bHitBackFaces,
+			const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
+			const TreeElementProcessor<Element>& useEp = epOverride ? *epOverride : ep;
 			const uint32_t end = firstPrim + primCnt;
 			const float currentBest = (float)dHowFar;
 			for( uint32_t i = firstPrim; i < end; ++i ) {
@@ -1291,7 +1304,7 @@ namespace RISE
 						continue;
 					}
 				}
-				if( ep.RayElementIntersection_IntersectionOnly(
+				if( useEp.RayElementIntersection_IntersectionOnly(
 				        ray, dHowFar, prims[i],
 				        bHitFrontFaces, bHitBackFaces ) ) {
 					return true;
@@ -1424,9 +1437,11 @@ namespace RISE
 		}
 
 		// BVH4 traversal — any-hit (returns on first hit within dHowFar).
+		// `epOverride`: see Bvh4Leaf_IntersectionOnly above.
 		bool IntersectRay4_IntersectionOnly(
 			const Ray& ray, Scalar dHowFar,
-			bool bHitFrontFaces, bool bHitBackFaces ) const
+			bool bHitFrontFaces, bool bHitBackFaces,
+			const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
 			float origin[3], dir[3], invDir[3];
 			PrepRayFloat( ray, origin, dir, invDir );
@@ -1459,7 +1474,8 @@ namespace RISE
 								ray, dHowFar,
 								(uint32_t)n.children[i], (uint32_t)n.primCount[i],
 								origin, dir,
-								bHitFrontFaces, bHitBackFaces ) ) {
+								bHitFrontFaces, bHitBackFaces,
+								epOverride ) ) {
 							return true;
 						}
 					} else {
@@ -1636,17 +1652,29 @@ namespace RISE
 
 		// Boolean any-hit traversal.  Returns true on first leaf hit
 		// within dHowFar.  Used by shadow-ray paths.
+		//
+		// `epOverride`: nullptr (every existing call site) uses the
+		// bound `ep` -- identical behaviour/cost to before this
+		// parameter existed.  A non-null override traverses this SAME
+		// tree under a different TreeElementProcessor for one call --
+		// see ObjectManager::IntersectOcclusionRay (geometry-presence
+		// query that must NOT honour DoesCastShadows(), unlike the
+		// shadow-ray query this method otherwise serves).
 		bool IntersectRay_IntersectionOnly(
 			const Ray& ray,
 			Scalar     dHowFar,
 			bool       bHitFrontFaces,
-			bool       bHitBackFaces ) const
+			bool       bHitBackFaces,
+			const TreeElementProcessor<Element>* epOverride = nullptr ) const
 		{
 			if( useBVH4 && !nodes4.empty() ) {
 				return IntersectRay4_IntersectionOnly( ray, dHowFar,
-				                                       bHitFrontFaces, bHitBackFaces );
+				                                       bHitFrontFaces, bHitBackFaces,
+				                                       epOverride );
 			}
 			if( nodes.empty() ) return false;
+
+			const TreeElementProcessor<Element>& useEp = epOverride ? *epOverride : ep;
 
 			const float origin[3] = {
 				(float)ray.origin.x,
@@ -1694,7 +1722,7 @@ namespace RISE
 								continue;
 							}
 						}
-						if( ep.RayElementIntersection_IntersectionOnly(
+						if( useEp.RayElementIntersection_IntersectionOnly(
 						        ray, dHowFar, prims[i],
 						        bHitFrontFaces, bHitBackFaces ) ) {
 							return true;

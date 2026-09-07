@@ -190,6 +190,18 @@ namespace RISE
 				const bool bHitBackFaces
 				) const;
 
+			//! See IObjectManager::IntersectOcclusionRay's contract comment.
+			//! Same three-path traversal (BVH / octree / linear) as
+			//! IntersectShadowRay, but filtered on IsWorldVisible() only --
+			//! no DoesCastShadows() gate, and no shadow cache (a separate,
+			//! smaller-volume query; not worth a second cache).
+			bool IntersectOcclusionRay(
+				const Ray& ray,
+				const Scalar dHowFar,
+				const bool bHitFrontFaces,
+				const bool bHitBackFaces
+				) const;
+
 			void EnumerateObjects( IEnumCallback<IObject>& pFunc ) const;
 			void EnumerateObjects( IEnumCallback<IObjectPriv>& pFunc ) const;
 

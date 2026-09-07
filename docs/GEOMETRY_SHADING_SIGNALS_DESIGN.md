@@ -1070,7 +1070,12 @@ and it necessarily diverges from the per-object fraction the shipped signals
 use (the plank's `occlusion(0.03)` is 18.65 mm and the nail's `occlusion(0.10)`
 is 8.10 mm; a scene-relative 5 % would be 76 mm on both). Also on the record: `IntersectShadowRay`
 filters on `DoesCastShadows()`, so an object with `casts_shadows FALSE` is
-invisible to any AO query that reuses the shadow-ray path; `vGeomNormal` was
+invisible to any AO query that reuses the shadow-ray path (the engine's own
+`AmbientOcclusionShaderOp` had exactly that defect -- so did
+`InteractivePelRasterizer`'s preview AO estimator -- and both now route
+through the new `IRayCaster::CastOcclusionRay` / `IObjectManager::
+IntersectOcclusionRay`, which drop the `DoesCastShadows()` filter; 2026-09-07);
+`vGeomNormal` was
 populated on every family rendered (zero fallbacks over 32.8 M queries); and
 the shadow-ray path never evaluates a painter (no modifier, no alpha), so a
 live query is not reentrant into shading — the objection in §3(b) reduces, for
