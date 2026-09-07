@@ -73,3 +73,27 @@ increment. The targets remain ≤1 s/step for the overnight tier-eight window
 and 300–500 ms/step for the design budget; neither is met.
 
 Gate/review/run receipts follow in immutable evidence after execution.
+
+## Pre-run review corrections
+
+The first fresh review found a horizon/crossing precedence bug shared by the
+onset wrappers: reaching the horizon on the first crossing step could return
+success. Survival now explicitly requires both reaching the horizon and no
+stop-threshold crossing. The trajectory must contain every expected accepted
+step, at its exact schedule time, before summary publication; partial final
+writes cannot be sealed as a complete run. Accepted/retry stream closes are
+checked and an I/O failure cannot enter ordinary timestep retry.
+
+The same review found that horizontal extrema were rejected before budget
+publication. A new staggered-column companion records each momentum term on
+all orientations surrounding the observed vertical cell column, including
+the actual horizontal extreme. The historical vertical `.column.csv` remains
+unchanged in schema. The convergence observer already records all three face
+orientations; boundary extrema select the adjacent interior cell. The new
+companion and simultaneous-crossing aliases are mandatory published evidence.
+These are instrumentation corrections, not changes to production arithmetic.
+
+Named REDs cover a crossing on the horizon-reaching step, missing or duplicate
+trajectory rows, a wrong exact time, a failed close, and horizontal/boundary
+face indexing and term selection. A fresh review of the corrected state is
+required before launch.

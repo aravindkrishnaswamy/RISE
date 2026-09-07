@@ -24,6 +24,8 @@
 #include "FireProductionRoundoffTraceAdapter.h"
 #include "FireProductionRoundoffWalker.h"
 #include "FireProductionOwnerConvergenceProbe.h"
+#include "FireProductionStaggeredColumnBudget.h"
+#include "FireProductionOnsetEvidence.h"
 #include "fire_production_fp64/FireProductionTransport.h"
 #include "fire_production_trace/SourceManifest.h"
 
@@ -2626,7 +2628,7 @@ namespace
 	{
 		return legacy||projected||compatible||single;
 	}
-	bool ClosePublishedStream(std::ofstream& stream)
+	template<class Stream> bool ClosePublishedStream(Stream& stream)
 	{
 		stream.close();return static_cast<bool>(stream);
 	}
@@ -3783,22 +3785,15 @@ namespace
 				return values;}
 			std::ofstream trajectory(persistence.productionOnsetDiagnosticDirectory/
 				"maximum_velocity_trajectory.csv",std::ios::trunc);
-			trajectory<<"accepted_step,time_s,dt_s,maximum_velocity_m_per_s,axis,face,x,y,z,"
-				"manifold_max,manifold_p95,manifold_p50,tail_cells,tail_drained_m3,"
-				"device_ms,wall_ms,owner_identity,owner_commits,owner_projections,"
-				"owner_r0_iterations,owner_r1_iterations,owner_r2_iterations,"
-				"owner_actual_working_set_bytes,owner_certified_working_set_bytes,"
-				"owner_projection_device_ms,owner_nonprojection_device_ms,"
-				"intermediate_seal_format,intermediate_digest_version,payload_digest_format,payload_digest_version,"
-				"qualified_kernel_set_sha256,input_payload_root_sha256,publication_payload_root_sha256,publication_payload_bytes\n";
-			if(!trajectory){values.structuredError="production_onset_trajectory_failure";
+			trajectory<<FireProductionOnsetEvidence::TrajectoryHeader()<<'\n';
+			if(!ClosePublishedStream(trajectory)){values.structuredError="production_onset_trajectory_failure";
 				return values;}
 			std::ofstream retries(persistence.productionOnsetDiagnosticDirectory/
 				"retry_attempt_trajectory.csv",std::ios::trunc);
 			retries<<"beginning_time_s,candidate,represented_dt_s,maximum_deviation,p95,tail_cells,"
 				"tail_drained_m3,dynamics_passed,physical_valid,terminal_valid,token,next_available,"
 				"suggested_dt_s,disposition,error\n";
-			if(!retries){values.structuredError="production_onset_retry_trajectory_failure";
+			if(!ClosePublishedStream(retries)){values.structuredError="production_onset_retry_trajectory_failure";
 				return values;}
 		}
 		std::uint64_t temporalSnapshotIndex=values.streamedFrameCount;
@@ -4387,7 +4382,8 @@ namespace
 								(production.manifoldNextTimeStepAvailable?1:0)<<','<<
 								production.suggestedManifoldTimeStepS<<','<<
 								static_cast<unsigned int>(disposition)<<','<<error<<'\n';
-							if(!retryTrajectory){lastAdvanceError=
+							if(!ClosePublishedStream(retryTrajectory)){mandatoryEvidenceFailure=true;
+								advancedOK=false;lastAdvanceError=
 								"production onset retry trajectory publication failed";break;}
 						}
 						double attemptMaximumVelocity=0.0;unsigned int attemptMaximumAxis=0u;
@@ -4432,11 +4428,13 @@ namespace
 							for(std::size_t threshold=0u;threshold<productionOnsetVelocityThresholds.size();
 								++threshold)if(!productionOnsetThresholdCaptured[threshold]&&
 								attemptMaximumVelocity>=productionOnsetVelocityThresholds[threshold]){
-								if(attemptMaximumAxis!=2u){lastAdvanceError=
-									"production onset maximum is not vertical; column budget refused";
+								if(!FireProductionStaggeredColumn::AdjacentColumn(
+									{{request.force.shape.nx,request.force.shape.ny,request.force.shape.nz}},
+									attemptMaximumAxis,attemptMaximumX,attemptMaximumY,attemptMaximumZ,
+									auditColumnX,auditColumnY)){lastAdvanceError=
+									"production onset extreme has invalid staggered coordinates";
 									fatalOnsetAuditFailure=true;advancedOK=false;break;}
-								onsetThresholdIndex=threshold;auditColumnX=attemptMaximumX;
-								auditColumnY=attemptMaximumY;std::ostringstream name;
+								onsetThresholdIndex=threshold;std::ostringstream name;
 								name<<"threshold_"<<static_cast<unsigned int>(
 									productionOnsetVelocityThresholds[threshold])<<".raw.csv";
 								effectiveMomentumAuditPath=
@@ -4728,6 +4726,56 @@ namespace
 								columnAudit.close();
 								if(!columnAudit){lastAdvanceError="production momentum column audit write failed";
 									mandatoryEvidenceFailure=true;advancedOK=false;break;}
+								// Keep the historical vertical file unchanged. This companion includes
+								// both horizontal sides of each column cell and every vertical face.
+								// The resident owner's coupled projection is not a separately measured
+								// restoration impulse; report only the actual projected-minus-provisional rate.
+								FireProductionStaggeredColumn::FaceRates64 legacyStress,legacyBuoyancy,
+									legacyAdvection,legacySource;
+								if(!persistence.UsesProjectedHeunOwner())for(unsigned int axis=0u;axis<3u;++axis){
+									const std::size_t faces=request.force.beginningMomentumKGPerM2S[axis].size();
+									legacyStress[axis].resize(faces);legacyBuoyancy[axis].resize(faces);
+									legacyAdvection[axis].resize(faces);legacySource[axis].resize(faces);
+									for(std::size_t face=0u;face<faces;++face){
+										const double beginning=request.force.beginningMomentumKGPerM2S[axis][face];
+										const double gravity=forceFieldsCPU.gravityMomentumIncrementKGPerM2S[axis][face];
+										legacyStress[axis][face]=(forceCPU.momentumKGPerM2S[axis][face]-
+											beginning-gravity)/representedStep;
+										legacyBuoyancy[axis][face]=gravity/representedStep;
+										legacySource[axis][face]=request.momentumSourceIncrement[axis][face]/representedStep;
+										legacyAdvection[axis][face]=(production.transportedDual.momentum[axis][face]-
+											request.momentumSourceIncrement[axis][face]-forceCPU.momentumKGPerM2S[axis][face])/representedStep;
+									}
+								}
+								const FireProductionStaggeredColumn::Inputs staggeredInput={
+									request.force.beginningMomentumKGPerM2S,
+									persistence.UsesProjectedHeunOwner()?projectedHeunDiagnostics.provisionalMomentumKGPerM2S:
+										production.transportedDual.momentum,
+									production.projection.momentumKGPerM2S,
+									persistence.UsesProjectedHeunOwner()?FireProductionStaggeredColumn::RateView(projectedHeunDiagnostics.heunStressMomentumRateKGPerM2S2):FireProductionStaggeredColumn::RateView(legacyStress),
+									persistence.UsesProjectedHeunOwner()?FireProductionStaggeredColumn::RateView(projectedHeunDiagnostics.heunBuoyancyMomentumRateKGPerM2S2):FireProductionStaggeredColumn::RateView(legacyBuoyancy),
+									persistence.UsesProjectedHeunOwner()?FireProductionStaggeredColumn::RateView(projectedHeunDiagnostics.heunAdvectionMomentumRateKGPerM2S2):FireProductionStaggeredColumn::RateView(legacyAdvection),
+									persistence.UsesProjectedHeunOwner()?FireProductionStaggeredColumn::RateView(projectedHeunDiagnostics.heunPhaseSourceMomentumRateKGPerM2S2):FireProductionStaggeredColumn::RateView(legacySource),
+									persistence.UsesProjectedHeunOwner()?projectedHeunDiagnostics.heunEddyKinematicViscosityM2PerS:
+										forceFieldsCPU.eddyKinematicViscosityM2PerS};
+								std::vector<FireProductionStaggeredColumn::Row> staggeredRows;
+								if(!FireProductionStaggeredColumn::Build(
+									{{request.force.shape.nx,request.force.shape.ny,request.force.shape.nz}},
+									columnX,columnY,representedStep,staggeredInput,staggeredRows)){
+									lastAdvanceError="production staggered column authority or geometry invalid";
+									mandatoryEvidenceFailure=true;advancedOK=false;break;}
+								const std::filesystem::path staggeredColumnPath=
+									effectiveMomentumAuditPath.string()+".staggered_column.csv";
+								std::error_code staggeredSizeError;const bool staggeredHeader=
+									!std::filesystem::exists(staggeredColumnPath)||
+									std::filesystem::file_size(staggeredColumnPath,staggeredSizeError)==0u;
+								std::ofstream staggeredOutput(staggeredColumnPath,std::ios::app);
+								const bool staggeredWritten=FireProductionStaggeredColumn::Write(staggeredOutput,
+									staggeredHeader,simulationTimeS,reduction,representedStep,staggeredRows);
+								staggeredOutput.close();
+								if(!staggeredWritten||!staggeredOutput){
+									lastAdvanceError="production staggered column audit write failed";
+									mandatoryEvidenceFailure=true;advancedOK=false;break;}
 								std::error_code sizeError;const bool writeHeader=
 									!std::filesystem::exists(effectiveMomentumAuditPath)||
 									std::filesystem::file_size(effectiveMomentumAuditPath,sizeError)==0u;
@@ -4782,12 +4830,12 @@ namespace
 								const std::filesystem::path sourceContextPath=
 									effectiveMomentumAuditPath.string()+".source_context.csv";
 								const std::size_t sourceContextX=exactTimeObservation?
-									columnX:attemptMaximumX;
+									columnX:std::min(attemptMaximumX,request.force.shape.nx-1u);
 								const std::size_t sourceContextY=exactTimeObservation?
-									columnY:attemptMaximumY;
+									columnY:std::min(attemptMaximumY,request.force.shape.ny-1u);
 								const std::size_t sourceContextZ=exactTimeObservation?
 									std::min(columnAdvectionMaximumZ,request.force.shape.nz-1u):
-									attemptMaximumZ;
+									std::min(attemptMaximumZ,request.force.shape.nz-1u);
 								if(!WriteProductionSourceAndAdjacentStateContext(sourceContextPath,
 									request.force.shape,sourceContextX,sourceContextY,
 									sourceContextZ,packetBeginning,packets,
@@ -4845,7 +4893,10 @@ namespace
 										const bool columnCopied=summaryCopied&&std::filesystem::copy_file(
 											columnPath,skippedPath.string()+".column.csv",
 											std::filesystem::copy_options::overwrite_existing,copyError);
-										const bool contextCopied=columnCopied&&std::filesystem::copy_file(
+										const bool staggeredCopied=columnCopied&&std::filesystem::copy_file(
+											staggeredColumnPath,skippedPath.string()+".staggered_column.csv",
+											std::filesystem::copy_options::overwrite_existing,copyError);
+										const bool contextCopied=staggeredCopied&&std::filesystem::copy_file(
 											sourceContextPath,skippedPath.string()+".source_context.csv",
 											std::filesystem::copy_options::overwrite_existing,copyError);
 										const bool payloadCopied=contextCopied&&std::filesystem::copy_file(
@@ -4990,7 +5041,7 @@ namespace
 										projectedHeunDiagnostics.inputPayloadRootSHA256<<','<<
 										acceptedPayloadRoot<<','<<
 										projectedHeunDiagnostics.publicationPayloadBytes<<'\n';
-									if(!trajectory){advancedOK=false;
+									if(!ClosePublishedStream(trajectory)){advancedOK=false;mandatoryEvidenceFailure=true;
 										error="production onset trajectory publication failed";}
 									if(advancedOK&&persistence.productionOnsetStopVelocityMPerS>0.0&&
 										attemptMaximumVelocity>=persistence.productionOnsetStopVelocityMPerS)
@@ -7753,6 +7804,34 @@ namespace
 		return tier==10.0&&!legacy&&projected&&!continuation&&protocolSHA==
 			"983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2";
 	}
+	bool OnsetEvidenceREDFixture()
+	{
+		using namespace FireProductionOnsetEvidence;
+		const std::vector<double> schedule={0.25,0.25};
+		const std::string header=std::string(TrajectoryHeader())+'\n';
+		std::string suffix="0";for(unsigned int field=1u;field<30u;++field)suffix+=",0";
+		const std::string first="1,0.25,0.25,7,"+suffix+'\n';
+		const std::string last="2,0.5,0.25,15,"+suffix+'\n';
+		auto validate=[&](const std::string& text,const bool expectedCrossing){
+			bool crossed=false;std::istringstream input(text);
+			return ValidateTrajectory(input,schedule,1u,15.0,crossed)&&crossed==expectedCrossing;};
+		const bool crossingAtHorizon=validate(header+first+last,true)&&!Survived(true,true);
+		const bool truncation=!validate(header+first,false)&&!validate(header+last,true);
+		const bool wrongTime=!validate(header+first+"2,0.499,0.25,15,"+suffix+'\n',true);
+		const bool duplicate=!validate(header+first+first+last,true);
+		const bool healthy=validate(header+first+"2,0.5,0.25,7,"+suffix+'\n',false)&&
+			Survived(true,false)&&!Survived(false,false);
+		struct LateCloseFailure {
+			bool closed=false;
+			void close(){closed=true;}
+			explicit operator bool() const{return !closed;}
+		} stream;
+		const bool closeFailure=!ClosePublishedStream(stream)&&stream.closed;
+		std::fprintf(stderr,"R214_ONSET_EVIDENCE synthetic=1 horizon_crossing_red=%d "
+			"missing_rows_red=%d wrong_time_red=%d duplicate_red=%d close_failure_red=%d healthy=%d\n",
+			crossingAtHorizon?1:0,truncation?1:0,wrongTime?1:0,duplicate?1:0,closeFailure?1:0,healthy?1:0);
+		return crossingAtHorizon&&truncation&&wrongTime&&duplicate&&closeFailure&&healthy;
+	}
 
 	int RunProductionOnsetCampaignChild(const double resolutionTier,
 		const std::filesystem::path& outputDirectory,const bool sealedLegacyReplay=false,
@@ -7898,6 +7977,11 @@ namespace
 		const std::filesystem::path retryTrajectory=outputDirectory/"budgets"/
 			"retry_attempt_trajectory.csv";
 		const bool reachedTarget=result.simulatedTimeS>=targetTimeS;
+		bool crossedStopThreshold=false;std::ifstream trajectoryInput(trajectory);
+		if(!FireProductionOnsetEvidence::ValidateTrajectory(trajectoryInput,
+			result.acceptedTimeStepHistoryS,result.resumedFromStep+1u,
+			persistence.productionOnsetStopVelocityMPerS,crossedStopThreshold))return 94;
+		const bool survived=FireProductionOnsetEvidence::Survived(reachedTarget,crossedStopThreshold);
 		const std::filesystem::path summaryPath=outputDirectory/"onset_campaign_summary.v2";
 		const std::filesystem::path pendingSummaryPath=
 			outputDirectory/"onset_campaign_summary.pending.v2";
@@ -7926,14 +8010,17 @@ namespace
 			<<"face_rate_scope diagnostic_not_filtered_contract_gate\n"
 			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
 			<<"completed_target "<<(reachedTarget?1:0)<<"\n"
+			<<"crossed_stop_threshold "<<(crossedStopThreshold?1:0)<<"\n"
+			<<"onset_survival_passed "<<(survived?1:0)<<"\n"
+			<<"trajectory_complete_against_accepted_schedule true\n"
 			<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\n"
 			<<"wall_s "<<wallS<<"\n"
 			<<"trajectory_sha256 "<<DigestFile(trajectory)<<"\n"
 			<<"retry_trajectory_sha256 "<<DigestFile(retryTrajectory)<<"\n"
 			<<"stop_velocity_threshold_m_per_s "<<
 				persistence.productionOnsetStopVelocityMPerS<<"\n"
-			<<"stop_reason "<<(reachedTarget?"target_time_reached":
-				"velocity_threshold_crossing")<<"\n"
+			<<"stop_reason "<<(crossedStopThreshold?"velocity_threshold_crossing":
+				(reachedTarget?"target_time_reached":"incomplete_horizon"))<<"\n"
 			<<"checkpoint_authority "<<(persistence.singleStageFCTDiagnostic?
 				"tokenless_diagnostic_unavailable":"ordinary_accepted_state")<<"\n"
 			<<"final_checkpoint_sha256 "<<
@@ -7945,6 +8032,7 @@ namespace
 			if(std::filesystem::exists(budget))capturedThresholdBundlesComplete=
 				capturedThresholdBundlesComplete&&
 				!DigestFile(budget.string()+".column.csv").empty()&&
+				!DigestFile(budget.string()+".staggered_column.csv").empty()&&
 				!DigestFile(budget.string()+".source_context.csv").empty()&&
 				!DigestFile(budget.string()+".source_packets.bin").empty()&&
 				!DigestFile(budget.string()+".source_ledger.v1").empty()&&
@@ -7964,6 +8052,8 @@ namespace
 			if(std::filesystem::exists(budget))summary<<"threshold_"<<threshold<<
 				"_summary_sha256 "<<DigestFile(budget)<<"\n"<<"threshold_"<<threshold<<
 				"_column_sha256 "<<DigestFile(budget.string()+".column.csv")<<"\n"<<
+				"threshold_"<<threshold<<"_staggered_column_sha256 "<<
+				DigestFile(budget.string()+".staggered_column.csv")<<"\n"<<
 				"threshold_"<<threshold<<"_source_context_sha256 "<<
 				DigestFile(budget.string()+".source_context.csv")<<"\n"<<
 				"threshold_"<<threshold<<"_source_packets_sha256 "<<
@@ -7975,19 +8065,19 @@ namespace
 				"threshold_"<<threshold<<"_event_sha256 "<<
 				DigestFile(budget.string()+".event.v1")<<"\n";
 		}
-		if((sealedLegacyReplay||sealedProjectedReplay)&&!reachedTarget&&!continuation&&!tier10Onset)
+		if((sealedLegacyReplay||sealedProjectedReplay)&&crossedStopThreshold&&!continuation&&!tier10Onset)
 			for(const unsigned int threshold:{15u,30u,60u})
 				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 					std::filesystem::exists(outputDirectory/"budgets"/
 						("threshold_"+std::to_string(threshold)+".raw.csv"));
-		if((continuation||tier10Onset)&&!reachedTarget)capturedThresholdBundlesComplete=
+		if((continuation||tier10Onset)&&crossedStopThreshold)capturedThresholdBundlesComplete=
 			capturedThresholdBundlesComplete&&
 			std::filesystem::exists(outputDirectory/"budgets"/"threshold_15.raw.csv");
 		const std::filesystem::path exactObservation=outputDirectory/"budgets"/
 			"reference_composition_candidate_fixed_column.raw.csv";
 		// An onset before the nominated reference time is a measured crossing,
 		// not an obligation to continue a known runaway until that later time.
-		const bool exactObservationRequired=!tier10Onset||reachedTarget||
+		const bool exactObservationRequired=!tier10Onset||survived||
 			std::filesystem::exists(exactObservation);
 		if(sealedProjectedReplay&&exactObservationRequired){
 			capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
@@ -8008,6 +8098,8 @@ namespace
 				DigestFile(exactObservation)<<"\n"
 			<<"reference_composition_candidate_column_sha256 "<<
 				DigestFile(exactObservation.string()+".column.csv")<<"\n"
+			<<"reference_composition_candidate_staggered_column_sha256 "<<
+				DigestFile(exactObservation.string()+".staggered_column.csv")<<"\n"
 			<<"reference_composition_candidate_source_context_sha256 "<<
 				DigestFile(exactObservation.string()+".source_context.csv")<<"\n"
 			<<"reference_composition_candidate_source_packets_sha256 "<<
@@ -8027,6 +8119,7 @@ namespace
 				(continuation?"continuation_identity.v2":"from_zero_identity.v1")).empty()||
 				(exactObservationRequired&&(DigestFile(exactObservation).empty()||
 				DigestFile(exactObservation.string()+".column.csv").empty()||
+				DigestFile(exactObservation.string()+".staggered_column.csv").empty()||
 				DigestFile(exactObservation.string()+".source_context.csv").empty()||
 				DigestFile(exactObservation.string()+".source_packets.bin").empty()||
 				DigestFile(exactObservation.string()+".source_ledger.v1").empty()||
@@ -8041,7 +8134,7 @@ namespace
 			if(!SealPublishedRunDirectory(outputDirectory,result.caseRecordId,publicationError))return 94;}
 		std::fprintf(stderr,"PRODUCTION_ONSET_CAMPAIGN%s tier=%.0f target=%.17g time=%.17g steps=%zu "
 			"wall_s=%.17g operator=%s build=%s trajectory=%s "
-			"summary=%s\n",reachedTarget?"":"_STOP",resolutionTier,targetTimeS,
+			"summary=%s\n",survived?"":"_STOP",resolutionTier,targetTimeS,
 			result.simulatedTimeS,
 			result.acceptedTimeStepHistoryS.size(),wallS,sealedLegacyReplay?
 				"ordinary_independent_dual_momentum_resident_step":
@@ -8050,7 +8143,7 @@ namespace
 				"section_3_7_projected_heun_resident_owner":"compatible_momentum_diagnostic")),
 			producerBuildId.c_str(),
 			DigestFile(trajectory).c_str(),DigestFile(summaryPath).c_str());
-		return reachedTarget?0:95;
+		return survived?0:95;
 #endif
 	}
 
@@ -16498,8 +16591,18 @@ int main(int argc,char** argv)
 			!Tier10OnsetScopeAccepted(10.0,false,true,false,std::string(64u,'0'));
 		std::fprintf(stderr,"R214_ONSET_SCOPE green=%d wrong_tier_old_operator_resume_protocol_red=%d\n",
 			green?1:0,red?1:0);
-		return green&&red?0:96;
+		return green&&red&&OnsetEvidenceREDFixture()?0:96;
 	}
+	if(argc==4&&std::strcmp(argv[1],"--fire-production-onset-trajectory-check")==0){
+		MethaneRunCheckpoint checkpoint;std::string error;bool crossed=false;
+		std::ifstream trajectory(argv[3]);
+		const bool valid=LoadMethaneRunCheckpoint(argv[2],checkpoint,error)&&
+			FireProductionOnsetEvidence::ValidateTrajectory(trajectory,checkpoint.values.acceptedTimeStepHistoryS,
+				checkpoint.values.resumedFromStep+1u,15.0,crossed);
+		std::fprintf(stderr,"ONSET_TRAJECTORY_CHECK diagnostic_only=1 valid=%d crossed_15=%d\n",
+			valid?1:0,crossed?1:0);return valid?0:96;
+	}
+	Check(OnsetEvidenceREDFixture(),"onset publication requires a complete trajectory and crossing-priority verdict");
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-r211-continue")==0)
 		return RunProductionOnsetCampaignChild(8.0,argv[4],false,argv[5],argv[6],true,argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
@@ -16525,6 +16628,10 @@ int main(int argc,char** argv)
 		return RunR213SnapshotComparison(argv[2],argv[3],argv[4]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-r213-filter-red")==0)
 		return R213PhysicalFilterFixture()?0:95;
+	if(argc==2&&std::strcmp(argv[1],"--fire-r214-staggered-column-red")==0)
+		return FireProductionStaggeredColumn::Fixture()?0:95;
+	Check(FireProductionStaggeredColumn::Fixture(),
+		"all-axis staggered column includes horizontal extrema, exact term sentinels and boundary neighbors");
 	Check(R213PhysicalFilterFixture(),"physical filter preserves historical domain and refuses geometry mutants");
 	if(argc==2&&std::strcmp(argv[1],"--fire-oracle-tier8-reference-fixture")==0)
 		return RunOracleTier8ReferenceContractFixture();
