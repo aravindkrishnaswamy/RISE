@@ -1,0 +1,17 @@
+{
+  "schema": "rise.fire.r211.executed-bridge-archive.v1",
+  "archive": "executed_bridge_payloads.v1.tar.gz",
+  "sha256": "48e99a0d13c63d855da0b0e0eee13ad0e683ecd5765c0626f8cb1fb684d65890",
+  "chunk_bytes": 67108864,
+  "ordered_part_sha256": [
+    "a10d478b877f8727b1fd112965dd7b1b9bb22c45dbf962ea8f1bc352170486f4",
+    "8bdc6e09ee4af7fb47e1e550cbcad5dad185588e89d220e09803ded0506ea337",
+    "70233273bcdd9fcb7f5403cf83ec0b5da0fbdbfd6b339cec2abe8600b2b0b59f"
+  ],
+  "members_including_directories": 41,
+  "scope": "Executed old/new N=8 bridge directories including checkpoint copies, raw source/observer payloads, certificate, bridge record, and both exact executed binaries",
+  "restore": "Concatenate part-00, part-01, part-02 in that order, verify archive SHA, extract into a fresh directory. Member paths are repository-relative. Never extract over an existing run. Certificate verification requires byte-identical dependencies at recorded absolute paths.",
+  "new_executable_stream_extraction_sha256_verified": "e40015c4b06d00dffeca07f9b2f443b1d4b53ab68ee0a60bd309478ffda46230",
+  "live_continuation_included": false,
+  "live_continuation_reason": "Still running; not snapshotted or represented as terminal evidence"
+}

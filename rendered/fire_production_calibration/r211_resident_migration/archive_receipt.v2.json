@@ -1,0 +1,20 @@
+{
+  "schema": "rise.fire.r211.executed-bridge-archive.v2",
+  "archive": "executed_bridge_payloads.v2.tar.gz",
+  "sha256": "fa6ba9559f607dc8393e7672cdc6bc6564b58e208ff8805bb04d9af926d5c813",
+  "chunk_bytes": 67108864,
+  "ordered_part_sha256": [
+    "0a34d99e910d1bd5377a26c6c6f69dbeb9aa11a23be0a77f20976db32f9e1c44",
+    "9428bce828df11c3207394ef4f56471a4088870fe2a46e7122752f70137bf335",
+    "7adcca99dbf2d6d2208fed6ccf6273797aa64b038fec30aa8954ca054919feae",
+    "e06c1fe35691ed5eb5dd1a4938369cc1e4a3323ccb298273415f03bcbbfce10e"
+  ],
+  "members_including_directories": 59,
+  "scope": "Fresh executed old/new N=8 bridge v2, failed historical continuation.v1, exact repaired executable, original step-1300 checkpoint and its v2 publication sidecar",
+  "certificate_sha256": "ee8ba3e174e41a1159c0b821798c25cb3cefa78d87214f75ee3d620125354956",
+  "bridge_sha256": "9d569f3ff6969924c8dde504d81391de1412bf405fc678e5159a3833854a482f",
+  "restore": "Concatenate part-00 through part-03 in numeric order; verify archive SHA; extract into a fresh directory, never over an existing run. Paths are repository-relative. Certificate verification requires byte-identical dependencies at recorded absolute paths. Historical r208 executable is in the v1 archive.",
+  "new_executable_stream_extraction_sha256_verified": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e",
+  "active_continuation_v2_included": false,
+  "active_continuation_reason": "Still running; no terminal trajectory or physics verdict claimed"
+}

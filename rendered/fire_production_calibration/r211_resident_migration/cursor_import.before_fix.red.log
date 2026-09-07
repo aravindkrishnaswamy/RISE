@@ -1,0 +1,13 @@
+...F..
+======================================================================
+FAIL: test_resident_cursor_first_publication (__main__.ResidentResumeV2Test)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/aravind/Working/RISE/worktrees/r203-producers/tools/test_fire_resident_resume_v2.py", line 127, in test_resident_cursor_first_publication
+    self.assertIn("RESIDENT_CURSOR_IMPORT_RED paired_copy_identical=1 first_replacement=1 "
+AssertionError: 'RESIDENT_CURSOR_IMPORT_RED paired_copy_identical=1 first_replacement=1 raw_copy_mutant_refused=1 unsealed_source_refused=1 foreign_case_refused=1 source_untouched=1' not found in 'PUBLICATION_RED mutable_advance=pass interrupted_pair_refused=pass immutable_bytes_preserved=pass final_equivalence_not_mutable=pass orphan_refused=pass empty_refused=pass projected_mode=pass all_disabled_refused=pass invalid_case=pass pending_refused=pass foreign_case_unchanged=pass writer_failure_refused=pass symlink_refused=platform recursive_sidecars=absent kernel_library_mutants=5 root=/var/folders/5v/syjxsf117mx_p89tyw_9267h0000gn/T/rise-r204-publication-2068707602811291\n'
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.629s
+
+FAILED (failures=1)

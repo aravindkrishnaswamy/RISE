@@ -1,0 +1,283 @@
+{
+  "certificate_sha256": "ee8ba3e174e41a1159c0b821798c25cb3cefa78d87214f75ee3d620125354956",
+  "checkpoint_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+  "equivalence": "N=8 exact accepted-time, input-root and publication-root equality",
+  "executions": [
+    {
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest_r208_sealed_v2",
+        "--fire-production-owner-eos-refusal",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/old.checkpoint",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/old"
+      ],
+      "executable_after_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+      "executable_before_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+      "exit_code": 93,
+      "trace": {
+        "accepted_time_s_bits": [
+          4611932974855749632,
+          4611936681917153280,
+          4611940388978556928,
+          4611944096039960576,
+          4611947803101364224,
+          4611951510162767872,
+          4611955217224171520,
+          4611958924285575168
+        ],
+        "build_id": "a3ef35639751dbc0c3f21aaca7d2b99f0e18ed477ed7c98ab396e2ab8244e1f5",
+        "csv_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/old/budgets/maximum_velocity_trajectory.csv",
+        "csv_sha256": "a4a844341d96fa6acfcbf6cedae043f9cca813d03aaaa1335c28e24b3ad82bd5",
+        "digest_version": 2,
+        "dt_s_bits": [
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056
+        ],
+        "executable_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest_r208_sealed_v2",
+        "executable_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+        "input_payload_roots": [
+          "3627db7b0e166329d097b3ef7a396aec0a0dfcf841b18c0e759f97c7127d3b3e",
+          "d9821fab5c74d533ae3a5c936827c6677848c5e37ea0cb80595f76f42457e689",
+          "70d3fb10f966930c8b3229b6721124c800fe21292c5f73c1578176105c14c452",
+          "59daf27b8957da1c68444462b7c19eed21b33792fcfcd923b0d72da08150306c",
+          "18d193972d28e01a7e3fc34dadab350560403ef90a80b4c29a27ff6945e74fdc",
+          "2d5cf646eb8279bb13a73365d5a25cc49b58fe2197c13267fe8c698b3d1dd4a4",
+          "ce835e9409ade48d774fdbe3836915a1e034dfce39dffc91ea9423a424425bcd",
+          "815bc5e0dd399ecb8ddb6dade20af3e563ff293f7f874d0690199bd6febfffe4"
+        ],
+        "kernel_set_sha256": [
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341"
+        ],
+        "log_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/old.log",
+        "log_sha256": "6be690e968c32b886198a76a471f5fde7b165e5eb233eb7feb2661495f4f052c",
+        "publication_payload_roots": [
+          "a610e8005d2df26436014e2292d02edb9b36c1c1c63688de9df21863bb75c684",
+          "c6a30f7a7d3610167852c80cb0278b2243f6501547daa2af4ef1de9415eef9c5",
+          "9bad20e828da84c0449f67d51a9eb867a2436acc91b356d2df24ffd37f59dbfb",
+          "5148e3d8e34c6a089047fa84d5c4120881adcd996eec1191e7f85424b5867b14",
+          "a5e839fe93eced2e19a732d5dc0693e72e1f197a66684cb3399195751932b403",
+          "711c4c57602d0d2d2112ddaa43d3f4890f0bcd93d32c3e1f0ef6e483bb4021bf",
+          "423c6ad5cc5657e7313d69a1aae071beabe0e17a7a421ffe6ca64b010a609fba",
+          "18b88ac4b227acd83d42f4688b0e78001ffac8aefb9250e7b1a2fa7aea3ca8fa"
+        ]
+      }
+    },
+    {
+      "command": [
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest_r211a_qualified_v3",
+        "--fire-production-owner-certificate-diagnostic",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/new.checkpoint",
+        "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/new"
+      ],
+      "executable_after_sha256": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e",
+      "executable_before_sha256": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e",
+      "exit_code": 0,
+      "trace": {
+        "accepted_time_s_bits": [
+          4611932974855749632,
+          4611936681917153280,
+          4611940388978556928,
+          4611944096039960576,
+          4611947803101364224,
+          4611951510162767872,
+          4611955217224171520,
+          4611958924285575168
+        ],
+        "build_id": "5f2502e69768c636321181869576d9fb9dd60bf5c4f13ab43eec327d7382de8c",
+        "csv_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/new/budgets/maximum_velocity_trajectory.csv",
+        "csv_sha256": "0f8e56859c4aa125dd63fbf348223f52773eb3d38a771e789b71388e8e934088",
+        "digest_version": 2,
+        "dt_s_bits": [
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056,
+          4565234884653613056
+        ],
+        "executable_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest_r211a_qualified_v3",
+        "executable_sha256": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e",
+        "input_payload_roots": [
+          "3627db7b0e166329d097b3ef7a396aec0a0dfcf841b18c0e759f97c7127d3b3e",
+          "d9821fab5c74d533ae3a5c936827c6677848c5e37ea0cb80595f76f42457e689",
+          "70d3fb10f966930c8b3229b6721124c800fe21292c5f73c1578176105c14c452",
+          "59daf27b8957da1c68444462b7c19eed21b33792fcfcd923b0d72da08150306c",
+          "18d193972d28e01a7e3fc34dadab350560403ef90a80b4c29a27ff6945e74fdc",
+          "2d5cf646eb8279bb13a73365d5a25cc49b58fe2197c13267fe8c698b3d1dd4a4",
+          "ce835e9409ade48d774fdbe3836915a1e034dfce39dffc91ea9423a424425bcd",
+          "815bc5e0dd399ecb8ddb6dade20af3e563ff293f7f874d0690199bd6febfffe4"
+        ],
+        "kernel_set_sha256": [
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+          "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341"
+        ],
+        "log_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/new.log",
+        "log_sha256": "52fbe71eede0016ba5f5d0112a81a9652817d0e55363c6449445fa2c98214f8f",
+        "publication_payload_roots": [
+          "a610e8005d2df26436014e2292d02edb9b36c1c1c63688de9df21863bb75c684",
+          "c6a30f7a7d3610167852c80cb0278b2243f6501547daa2af4ef1de9415eef9c5",
+          "9bad20e828da84c0449f67d51a9eb867a2436acc91b356d2df24ffd37f59dbfb",
+          "5148e3d8e34c6a089047fa84d5c4120881adcd996eec1191e7f85424b5867b14",
+          "a5e839fe93eced2e19a732d5dc0693e72e1f197a66684cb3399195751932b403",
+          "711c4c57602d0d2d2112ddaa43d3f4890f0bcd93d32c3e1f0ef6e483bb4021bf",
+          "423c6ad5cc5657e7313d69a1aae071beabe0e17a7a421ffe6ca64b010a609fba",
+          "18b88ac4b227acd83d42f4688b0e78001ffac8aefb9250e7b1a2fa7aea3ca8fa"
+        ]
+      }
+    }
+  ],
+  "historical_v1": "unchanged_verifier_retained",
+  "legacy_adapter": "SHA-pinned r208 binary; historical successful EOS diagnostic exits 93",
+  "payload": {
+    "beginning_time_s_bits": 4611929267794345984,
+    "checkpoint_sha256": "2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2",
+    "new_build_id": "5f2502e69768c636321181869576d9fb9dd60bf5c4f13ab43eec327d7382de8c",
+    "new_executable_sha256": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e",
+    "new_trace": {
+      "accepted_time_s_bits": [
+        4611932974855749632,
+        4611936681917153280,
+        4611940388978556928,
+        4611944096039960576,
+        4611947803101364224,
+        4611951510162767872,
+        4611955217224171520,
+        4611958924285575168
+      ],
+      "build_id": "5f2502e69768c636321181869576d9fb9dd60bf5c4f13ab43eec327d7382de8c",
+      "csv_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/new/budgets/maximum_velocity_trajectory.csv",
+      "csv_sha256": "0f8e56859c4aa125dd63fbf348223f52773eb3d38a771e789b71388e8e934088",
+      "digest_version": 2,
+      "dt_s_bits": [
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056
+      ],
+      "executable_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest_r211a_qualified_v3",
+      "executable_sha256": "c5d59651f58389c3b1cc325abafc94cc50add6c4d412270e03655a547142799e",
+      "input_payload_roots": [
+        "3627db7b0e166329d097b3ef7a396aec0a0dfcf841b18c0e759f97c7127d3b3e",
+        "d9821fab5c74d533ae3a5c936827c6677848c5e37ea0cb80595f76f42457e689",
+        "70d3fb10f966930c8b3229b6721124c800fe21292c5f73c1578176105c14c452",
+        "59daf27b8957da1c68444462b7c19eed21b33792fcfcd923b0d72da08150306c",
+        "18d193972d28e01a7e3fc34dadab350560403ef90a80b4c29a27ff6945e74fdc",
+        "2d5cf646eb8279bb13a73365d5a25cc49b58fe2197c13267fe8c698b3d1dd4a4",
+        "ce835e9409ade48d774fdbe3836915a1e034dfce39dffc91ea9423a424425bcd",
+        "815bc5e0dd399ecb8ddb6dade20af3e563ff293f7f874d0690199bd6febfffe4"
+      ],
+      "kernel_set_sha256": [
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341"
+      ],
+      "log_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/new.log",
+      "log_sha256": "52fbe71eede0016ba5f5d0112a81a9652817d0e55363c6449445fa2c98214f8f",
+      "publication_payload_roots": [
+        "a610e8005d2df26436014e2292d02edb9b36c1c1c63688de9df21863bb75c684",
+        "c6a30f7a7d3610167852c80cb0278b2243f6501547daa2af4ef1de9415eef9c5",
+        "9bad20e828da84c0449f67d51a9eb867a2436acc91b356d2df24ffd37f59dbfb",
+        "5148e3d8e34c6a089047fa84d5c4120881adcd996eec1191e7f85424b5867b14",
+        "a5e839fe93eced2e19a732d5dc0693e72e1f197a66684cb3399195751932b403",
+        "711c4c57602d0d2d2112ddaa43d3f4890f0bcd93d32c3e1f0ef6e483bb4021bf",
+        "423c6ad5cc5657e7313d69a1aae071beabe0e17a7a421ffe6ca64b010a609fba",
+        "18b88ac4b227acd83d42f4688b0e78001ffac8aefb9250e7b1a2fa7aea3ca8fa"
+      ]
+    },
+    "old_build_id": "a3ef35639751dbc0c3f21aaca7d2b99f0e18ed477ed7c98ab396e2ab8244e1f5",
+    "old_executable_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+    "old_trace": {
+      "accepted_time_s_bits": [
+        4611932974855749632,
+        4611936681917153280,
+        4611940388978556928,
+        4611944096039960576,
+        4611947803101364224,
+        4611951510162767872,
+        4611955217224171520,
+        4611958924285575168
+      ],
+      "build_id": "a3ef35639751dbc0c3f21aaca7d2b99f0e18ed477ed7c98ab396e2ab8244e1f5",
+      "csv_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/old/budgets/maximum_velocity_trajectory.csv",
+      "csv_sha256": "a4a844341d96fa6acfcbf6cedae043f9cca813d03aaaa1335c28e24b3ad82bd5",
+      "digest_version": 2,
+      "dt_s_bits": [
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056,
+        4565234884653613056
+      ],
+      "executable_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/bin/tests/FireSequenceTest_r208_sealed_v2",
+      "executable_sha256": "70eca63d46873ab13cee9d97f189d9fbc013e0b1d1831b0b100a3985294b7db9",
+      "input_payload_roots": [
+        "3627db7b0e166329d097b3ef7a396aec0a0dfcf841b18c0e759f97c7127d3b3e",
+        "d9821fab5c74d533ae3a5c936827c6677848c5e37ea0cb80595f76f42457e689",
+        "70d3fb10f966930c8b3229b6721124c800fe21292c5f73c1578176105c14c452",
+        "59daf27b8957da1c68444462b7c19eed21b33792fcfcd923b0d72da08150306c",
+        "18d193972d28e01a7e3fc34dadab350560403ef90a80b4c29a27ff6945e74fdc",
+        "2d5cf646eb8279bb13a73365d5a25cc49b58fe2197c13267fe8c698b3d1dd4a4",
+        "ce835e9409ade48d774fdbe3836915a1e034dfce39dffc91ea9423a424425bcd",
+        "815bc5e0dd399ecb8ddb6dade20af3e563ff293f7f874d0690199bd6febfffe4"
+      ],
+      "kernel_set_sha256": [
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341",
+        "fed58566caf6a669e9a47f042123c206dce427d4d402cf8f82dcb1f48844f341"
+      ],
+      "log_path": "/Users/aravind/Working/RISE/worktrees/r203-producers/rendered/fire_production_calibration/r211_resident_migration/executed_bridge.v2/old.log",
+      "log_sha256": "6be690e968c32b886198a76a471f5fde7b165e5eb233eb7feb2661495f4f052c",
+      "publication_payload_roots": [
+        "a610e8005d2df26436014e2292d02edb9b36c1c1c63688de9df21863bb75c684",
+        "c6a30f7a7d3610167852c80cb0278b2243f6501547daa2af4ef1de9415eef9c5",
+        "9bad20e828da84c0449f67d51a9eb867a2436acc91b356d2df24ffd37f59dbfb",
+        "5148e3d8e34c6a089047fa84d5c4120881adcd996eec1191e7f85424b5867b14",
+        "a5e839fe93eced2e19a732d5dc0693e72e1f197a66684cb3399195751932b403",
+        "711c4c57602d0d2d2112ddaa43d3f4890f0bcd93d32c3e1f0ef6e483bb4021bf",
+        "423c6ad5cc5657e7313d69a1aae071beabe0e17a7a421ffe6ca64b010a609fba",
+        "18b88ac4b227acd83d42f4688b0e78001ffac8aefb9250e7b1a2fa7aea3ca8fa"
+      ]
+    },
+    "record_kind": "fire-resume-equivalence-certificate-v2",
+    "resumed_from_step": 1300,
+    "schema_version": 2
+  },
+  "schema": "rise.fire.r78.resident-bridge.v2"
+}

@@ -1,0 +1,7 @@
+capstone probe workers=8 target=3.5 grid=69x69x106 dx=0.0305931161 t_ft=2.09320803
+capstone resumed checkpoint step=1300 time=2.1080244191689417 path=rendered/fire_production_calibration/r211_resident_migration/continuation.v1/latest.checkpoint
+OWNER_CONVERGENCE_CROSSING path=rendered/fire_production_calibration/r211_resident_migration/continuation.v1/budgets/reference_composition_candidate_fixed_column.raw.csv.convergence.v1 sha256=7b02a775715e71d83666c14589326efeca96ca39ba482eecc1874dc9d8e9f091 csv_sha256=facca1f2af06b3df0c87490e8f3ea2b725fe58da90a4febdb0834c534e5c1eb8 terminal_bit_identity=1 diagnostic_wall_ms=19455.193208000001 passed=1
+checkpoint refusal authorized=1 timeline=1 observation=1 state_matches=1 state_digest=116903258776538698 error=publication refuses incomplete or aliased prior output
+capstone solver diagnostic steps=1305 time=2.1162557490170002: solver_failure:publication refuses incomplete or aliased prior output
+capstone accepted EOS drift history tail=0.00811570687,0.00839915615,0.00950106605,0.0102400643,0.0108302941,0.0110620965,0.0108811191,0.0106461254
+production onset campaign failed: solver_failure:publication refuses incomplete or aliased prior output

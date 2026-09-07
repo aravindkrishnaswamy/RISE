@@ -115,3 +115,30 @@ VDB frames or a sequence manifest. None initializes a mutable resident
 checkpoint cursor or later passes the copied path through mutable payload
 replacement. The generic helper is now labelled with that limitation; the
 downstream pair-validation and replacement gate remain unchanged.
+
+## Executed qualification and launch
+
+Repaired source `a16de036` passed the full FireSequence suite, the r190 owner
+gate, six resident certificate/publication RED methods, and a fresh two-reviewer
+round with zero P1/P2. `review_receipt.v2.md` and `qualification.v3.json` in
+`rendered/fire_production_calibration/r211_resident_migration/` bind the logs.
+
+The fresh old/new execution matched all eight accepted time bit patterns and
+full input/publication roots. The actual loader accepted certificate v2 SHA
+`ee8ba3e174e41a1159c0b821798c25cb3cefa78d87214f75ee3d620125354956`;
+bridge SHA `9d569f3ff6969924c8dde504d81391de1412bf405fc678e5159a3833854a482f`.
+Historical v1 evidence and the first v2 bridge remain unchanged.
+
+`continuation.v2` resumed the original step 1300 and successfully published its
+first periodic and retained checkpoint at step 1305, 2.1162557490170002 s.
+Checkpoint SHA `c8c1dde8adf4afbdafe8168717ac0ad8b36664f7165b581a7fb44f1eff31ff48`;
+v2 root `efa89c8cb787eaa2c9909e65bfb11efed0938a1081473228ee355956fdc25791`.
+`launch_receipt.v2.json` records this observation, not a terminal claim.
+The continuation remains in progress toward its registered horizon; the
+three-way physics verdict is pending, including the exact-time comparison.
+
+SHA-indexed, split archives retain the executed bridges, exact binaries,
+original checkpoint pair, and failed historical continuation. Restore into a
+fresh directory only, following `archive_receipt.v1.json` and
+`archive_receipt.v2.json`; never overwrite a live run. Active continuation
+payloads are not represented as completed archive evidence.
