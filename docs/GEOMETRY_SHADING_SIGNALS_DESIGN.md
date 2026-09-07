@@ -891,12 +891,13 @@ the bbox census cannot fully see, cached or not.
 The question was re-opened by two showcase scenes the self-occlusion signal
 cannot serve: `plank_closeup` cannot collect dirt on the plank under the nail
 lying on it, and `weathered_workbench` cannot grime the bench top around the
-vise's feet (its own header says so). Before designing, the user set a
-measurement gate — prototype the cheapest honest scene-level query on a
+vise's feet (its own header says so). Before designing, the user set two
+gates in order: **Gate 1**, a measurement gate — prototype the cheapest honest scene-level query on a
 throwaway branch, render both scenes, take wall-clock ratios at matched spp on
 both plus a Sponza-class scene, and price the obvious mitigation (a
 `Prepare`-time bake) — with "marginal gain or unbounded cost → decline again"
-as a sanctioned outcome. That is the outcome. Two prototypes were built, on
+as a sanctioned outcome; and **Gate 2**, an engine-principles design document,
+entered only if Gate 1 passed. Gate 1 did not pass; that is the outcome. Two prototypes were built, on
 branches that will never be merged: `proto/xobj-ao-live` (`f1b6bff7`; the
 sampler-weighting and bench-magnitude follow-up is `proto/xobj-ao-live-v2`,
 `ba3cfe05`, stacked on it) and `proto/xobj-ao-bake` (`78c71b07`), both off
@@ -952,8 +953,9 @@ is geometric, not a tuning failure.
   saturate at 0.57–0.67 in the silhouette band. Horizon costs **1.93×** cosine
   at the same `N` (242.4 s against 125.7 s on the shipped frame, one run each —
   about 4.2× the shipped render) because grazing rays walk a long thin BVH
-  corridor before they die. And horizon **halves the nail's gain**: the flank
-  facing the plank goes 0.30 (cosine) → 0.37 (uniform) → 0.61 (horizon),
+  corridor before they die. And horizon **cuts the nail's gain by roughly
+  44 %** (1 − 0.61 against 1 − 0.30): the flank facing the plank goes 0.30
+  (cosine) → 0.37 (uniform) → 0.61 (horizon),
   because the low rays that see the nail from the plank are the same low rays
   that see the plank from the nail. In the beauty crops the horizon variant
   lays a slightly broader, softer smudge on the plank either side of the shank
@@ -965,7 +967,8 @@ is geometric, not a tuning failure.
 - *The bench top gains a mask, not a picture.* The raw signal draws a crisp
   contact ring on the bench top hugging the vise flange — 2–3 px wide under
   cosine, 4–5 px under horizon — plus bands where each leg meets the floor:
-  exactly what the header names as out of reach. The beauty variant multiplied
+  the flange ring is exactly what the header names as out of reach, and the leg
+  bands are out of reach for the same reason. The beauty variant multiplied
   the wood colour by `1 − 0.28·smoothstep(0.84, 0.50, xocc)` — the bench's own
   crevice threshold, the one the vise applies to its `occlusion(0.09)` — (the
   0.28 is the prototype's own coefficient;
