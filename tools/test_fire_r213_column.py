@@ -22,6 +22,8 @@ class ColumnTest(unittest.TestCase):
                     raw = raw.encode()
                 path.write_bytes(raw)
                 path.with_name(path.name + ".payload-v2.json").write_text(json.dumps({
+                    "schema": "rise.fire.published-payload.v2",
+                    "case_record_id": column.REQUEST_FIXED["case_record_id"],
                     "sha256_v1": hashlib.sha256(raw).hexdigest(), "v2": merkle(raw)}))
 
             dt = (column.END - column.BEGIN) / 8
@@ -40,13 +42,67 @@ class ColumnTest(unittest.TestCase):
                 publish(root / f"attempt_{805+step}_0.source_packets.bin", b"synthetic source")
                 time += dt
             publish(root / "accepted_schedule.csv", schedule)
-            publish(root / "composition_request.v1", "synthetic parser request; no solver authority\n")
-            publish(root / "composition_summary.v1", "solver_accepted 1\nexact_endpoint_and_schedule_valid 1\n")
+            request = dict(column.REQUEST_FIXED, beginning_time_s=repr(column.BEGIN),
+                           end_time_s=repr(column.END), subdivision_nomination="8", maximum_substep_s=repr(dt))
+            request_raw = "".join(f"{k} {v}\n" for k, v in request.items())
+            summary = {"schema": "rise.fire.r213.oracle-composition-summary.v1", "solver_accepted": "1",
+                       "exact_endpoint_and_schedule_valid": "1", "end_time_s": repr(column.END), "wall_s": "1",
+                       "schedule_sha256": hashlib.sha256(schedule.encode()).hexdigest(),
+                       "formal_contract_verdict": column.REQUEST_FIXED["formal_contract_verdict"], "error": ""}
+            summary_raw = "".join(f"{k} {v}\n" for k, v in summary.items())
+            publish(root / "composition_request.v1", request_raw)
+            publish(root / "composition_summary.v1", summary_raw)
             with patch.object(column, "PRODUCTION_COLUMN_SHA", hashlib.sha256(production_raw.encode()).hexdigest()):
                 result = column.report(root, production)
                 self.assertEqual(result["oracle_column_max_abs"], 10)
                 self.assertEqual(result["production_over_oracle_max_abs"], 2)
                 self.assertTrue(result["formal_three_way_verdict"].startswith("pending"))
+                self.assertEqual(result["same_production_face_magnitude_ratio"], 2)
+                # An unrelated high oracle face can shrink a maximum ratio;
+                # it must not hide the discrepancy at production's own face.
+                altered_budgets = []
+                for step in range(1, 9):
+                    budget = root / f"attempt_{805+step}_0.budget.csv.column.csv"
+                    original = budget.read_bytes()
+                    altered_budgets.append((budget, original))
+                    publish(budget, original.replace(b",106,10\n", b",106,100\n"))
+                separated = column.report(root, production)
+                self.assertEqual(separated["production_over_oracle_max_abs"], 0.2)
+                self.assertEqual(separated["same_production_face_magnitude_ratio"], 2)
+                self.assertEqual(separated["oracle_maximum_face_z"], 106)
+                self.assertEqual(separated["production_maximum_face_z"], 0)
+                self.assertTrue(separated["formal_three_way_verdict"].startswith("pending"))
+                for budget, original in altered_budgets:
+                    publish(budget, original)
+                seal_path = root / "composition_request.v1.payload-v2.json"
+                seal_raw = seal_path.read_bytes()
+                seal = json.loads(seal_raw)
+                for key in ("schema", "case_record_id", "sha256_v1"):
+                    seal_path.write_text(json.dumps(dict(seal, **{key: "wrong"})))
+                    with self.assertRaises(ValueError):
+                        column.report(root, production)
+                seal_path.write_bytes(b'{"schema":"duplicate",' + seal_raw[1:])
+                with self.assertRaises(ValueError):
+                    column.report(root, production)
+                seal_path.write_bytes(seal_raw)
+                for key in request:
+                    mutated = dict(request, **{key: "wrong"})
+                    publish(root / "composition_request.v1", "".join(f"{k} {v}\n" for k, v in mutated.items()))
+                    with self.assertRaises(ValueError):
+                        column.report(root, production)
+                publish(root / "composition_request.v1", request_raw + "resolution_tier 8\n")
+                with self.assertRaises(ValueError):
+                    column.report(root, production)
+                publish(root / "composition_request.v1", request_raw)
+                for key in summary:
+                    mutated = dict(summary, **{key: "wrong"})
+                    publish(root / "composition_summary.v1", "".join(f"{k} {v}\n" for k, v in mutated.items()))
+                    with self.assertRaises(ValueError):
+                        column.report(root, production)
+                publish(root / "composition_summary.v1", summary_raw + "solver_accepted 0\n")
+                with self.assertRaises(ValueError):
+                    column.report(root, production)
+                publish(root / "composition_summary.v1", summary_raw)
                 # Re-seal each mutant: metadata consistency alone cannot waive
                 # the exact-time, spatial, and unique-budget contracts.
                 for mutant in (schedule.replace(repr(column.END), repr(column.END + 0.001)),

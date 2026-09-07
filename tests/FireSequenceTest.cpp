@@ -973,6 +973,7 @@ namespace
 		double externalFuelMassKG=0.0;
 	};
 
+	bool ClosePublishedStream(std::ofstream& stream);
 	bool AppendOracleMomentumBudget(const std::filesystem::path& path,
 		const PeriodicMACShape& shape,const PeriodicMACField& beginningMomentum,
 		const ConservativeAdvance3DConfig& config,const ConservativeAdvance3DResult& advanced,
@@ -1058,7 +1059,8 @@ namespace
 			if(std::fabs(advanced.velocityMPerS.component[2][face])>
 				std::fabs(advanced.velocityMPerS.component[2][maximumFace]))maximumFace=face;
 		}
-		column.close();
+		if(!ClosePublishedStream(column)){
+			error="oracle momentum column diagnostic close failed";return false;}
 		std::ofstream summary(path,std::ios::app);
 		const bool writeSummaryHeader=summary.tellp()==std::streampos(0);
 		if(writeSummaryHeader)summary<<"beginning_time_s,dt_s,column_x,column_y,maximum_face,"
@@ -1074,7 +1076,9 @@ namespace
 			maximumPressure<<','<<maximumTotal<<','<<maximumClosure<<','<<
 			maximumNonpressureSplitResidual<<','<<minimumAcceptedAlpha<<','<<
 			maximumAcceptedAlpha<<','<<advanced.faceAlpha[2][maximumFace]<<'\n';
-		return static_cast<bool>(summary);
+		if(!ClosePublishedStream(summary)){
+			error="oracle momentum summary diagnostic close failed";return false;}
+		return true;
 	}
 
 	struct RunPersistenceOptions
@@ -3278,6 +3282,16 @@ namespace
 	bool WriteProductionTemporalFrame(const std::filesystem::path& path,
 		const SolverFrameValues& values);
 #endif
+	bool OwnerEOSDiagnosticSnapshotDirectoryAccepted(const RunPersistenceOptions& persistence)
+	{
+		if(persistence.equivalenceSnapshotDirectory.empty())return true;
+		return persistence.projectedHeunEOSDiagnostic&&!persistence.projectedHeunCertificateDiagnostic&&
+			persistence.productionMetal&&persistence.isolatedEquivalenceProbe&&
+			!persistence.portedProductionTransport&&
+			persistence.productionOnsetDiagnosticDirectory.filename()=="budgets"&&
+			persistence.equivalenceSnapshotDirectory==
+				persistence.productionOnsetDiagnosticDirectory.parent_path()/"checkpoints";
+	}
 	SolverFrameValues RunMethaneFrameProbe( const unsigned int workerCount=1u,
 		const unsigned int minimumStepCount=1u,const double targetTimeS=0.0,
 		const double caseDurationS=1.0,const double caseFramesPerS=4.0,
@@ -3343,7 +3357,7 @@ namespace
 			persistence.checkpointCadenceWallS!=std::numeric_limits<double>::max()||
 			persistence.killAfterFirstCheckpoint||
 			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
-			!persistence.equivalenceSnapshotDirectory.empty()||!persistence.temporalSnapshotDirectory.empty()||
+			!OwnerEOSDiagnosticSnapshotDirectoryAccepted(persistence)||!persistence.temporalSnapshotDirectory.empty()||
 			persistence.sealedProjectedHeunReplay||persistence.sealedLegacyMomentumReplay||
 			persistence.projectedHeunCostDiagnostic||persistence.singleStageFCTDiagnostic||
 			persistence.compatibleMomentumDiagnostic||persistence.forceZeroSourceForTest||
@@ -7576,6 +7590,8 @@ namespace
 		const std::filesystem::path& outputDirectory,const bool certificateDiagnostic=false)
 	{
 		if(!OwnerCostPrefixEnvironmentAccepted()||std::filesystem::exists(outputDirectory))return 91;
+		const char* snapshotOption=std::getenv("RISE_FIRE_EOS_DIAGNOSTIC_SNAPSHOTS");
+		if(snapshotOption&&(std::strcmp(snapshotOption,"1")!=0||certificateDiagnostic))return 91;
 		MethaneRunCheckpoint checkpoint;std::string error;
 		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			checkpoint.dimensions!=std::array<std::size_t,3>{{69u,69u,106u}})return 92;
@@ -7611,6 +7627,30 @@ namespace
 		persistence.maximumProductionSourceStepS=static_cast<double>(static_cast<float>(0.0016462659696117043));
 		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
+		// Observation-only snapshots use the existing immutable publication path.
+		// They never overwrite the input checkpoint or issue migration authority.
+		RunPersistenceOptions snapshotProbe=persistence;
+		snapshotProbe.projectedHeunCertificateDiagnostic=false;
+		snapshotProbe.equivalenceSnapshotDirectory=outputDirectory/"checkpoints";
+		if(!OwnerEOSDiagnosticSnapshotDirectoryAccepted(snapshotProbe))return 95;
+		auto foreign=snapshotProbe;foreign.equivalenceSnapshotDirectory=outputDirectory/"foreign";
+		auto production=snapshotProbe;production.projectedHeunEOSDiagnostic=false;
+		auto certificate=snapshotProbe;certificate.projectedHeunCertificateDiagnostic=true;
+		if(OwnerEOSDiagnosticSnapshotDirectoryAccepted(foreign)||
+			OwnerEOSDiagnosticSnapshotDirectoryAccepted(production)||
+			OwnerEOSDiagnosticSnapshotDirectoryAccepted(certificate))return 95;
+		std::fprintf(stderr,"OWNER_EOS_SNAPSHOT_SCOPE_RED foreign_directory_refused=1 "
+			"production_refused=1 certificate_refused=1 passed=1\n");
+		if(snapshotOption){
+			persistence.equivalenceSnapshotDirectory=snapshotProbe.equivalenceSnapshotDirectory;
+			std::filesystem::create_directories(persistence.equivalenceSnapshotDirectory);
+			RISECBOR64::Bytes buildRecord;std::string build,executable;
+			if(!CurrentRendererBuildIdentity(buildRecord,build)||
+				!CurrentExecutableDigest(buildRecord,executable,error))return 92;
+			std::fprintf(stderr,"OWNER_EOS_SNAPSHOT_EXECUTION build_id=%s executable_sha256=%s "
+				"checkpoint_sha256=%s requested_steps=8 migration_authority=false\n",
+				build.c_str(),executable.c_str(),digest.c_str());
+		}
 		if(!certificateDiagnostic&&setenv("RISE_FIRE_EOS_REFUSAL_INPUTS","1",1)!=0)return 92;
 		const SolverFrameValues result=RunMethaneFrameProbe(8u,8u,0.0,3.0,1.0,8.0,
 			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
@@ -8318,6 +8358,104 @@ namespace
 #include "FireProductionSubdominanceFixture.h"
 #include "FireProductionGoldenProjectionFixture.h"
 #include "FireProductionGoldenCompositionFixture.h"
+
+	bool R213PhysicalFilterFixture()
+	{
+		using namespace FireProductionDyadicCalibration;
+		MethaneRunCheckpoint geometry;geometry.dimensions={{20u,20u,30u}};
+		geometry.cellWidthM=1.0;geometry.states.resize(20u*20u*30u);
+		std::vector<ConservativeVector> source(geometry.states.size());
+		for(std::size_t cell=0u;cell<source.size();++cell)for(std::size_t c=0u;c<9u;++c)
+			source[cell][c]=static_cast<double>((cell*17u+c*11u)%251u)/256.0;
+		FilteredField historical,physical;
+		if(!FilterConservative(geometry,source,5.0,historical)||
+			!FilterConservative(geometry,source,5.0,physical,true)||
+			historical.dimensions!=physical.dimensions||historical.value.size()!=physical.value.size())return false;
+		for(std::size_t cell=0u;cell<physical.value.size();++cell)
+			for(std::size_t c=0u;c<9u;++c)
+				if(DoubleBits(historical.value[cell][c])!=DoubleBits(physical.value[cell][c]))return false;
+		std::array<std::size_t,3> dimensions;std::array<double,3> lengths;
+		geometry.dimensions={{69u,69u,106u}};geometry.cellWidthM=1.0;
+		if(!PhysicalFilterGeometry(geometry,1.6,dimensions,lengths)||
+			dimensions!=std::array<std::size_t,3>{{39u,39u,62u}}||
+			lengths!=std::array<double,3>{{69.0,69.0,106.0}})return false;
+		// A fixture-domain rescaling must not silently stand in for this domain.
+		if(dimensions==historical.dimensions||PhysicalFilterGeometry(geometry,0.0,dimensions,lengths)||
+			PhysicalFilterGeometry(geometry,0.1,dimensions,lengths))return false;
+		geometry.cellWidthM=std::numeric_limits<double>::quiet_NaN();
+		return !PhysicalFilterGeometry(geometry,1.6,dimensions,lengths);
+	}
+
+	int RunR213FilteredPair(const std::filesystem::path& firstPath,
+		const std::filesystem::path& secondPath,const std::filesystem::path& output,
+		const bool matchedBeginning=false)
+	{
+		using namespace FireProductionDyadicCalibration;
+		if(std::filesystem::exists(output)||!R213PhysicalFilterFixture())return 91;
+		std::array<MethaneRunCheckpoint,2> states;std::string error,reporterBuild,reporterExecutable;
+		RISECBOR64::Bytes reporterRecord;
+		if(!CurrentRendererBuildIdentity(reporterRecord,reporterBuild)||
+			!CurrentExecutableDigest(reporterRecord,reporterExecutable,error))return 92;
+		const std::array<std::filesystem::path,2> paths={{firstPath,secondPath}};
+		const std::string build="5b8590a4dd9e6d862ae19861793f1f9b6890bb18e25cb22b34fc2563474135c6";
+		const double time=matchedBeginning?2.1080244191689417:2.1096706851385534;
+		std::array<std::string,2> digests;
+		std::array<FilteredField,2> scalar;
+		std::array<FilteredVelocityField,2> velocity;
+		std::array<std::array<double,9>,2> inventory;
+		for(std::size_t level=0u;level<2u;++level){
+			digests[level]=DigestFile(paths[level]);
+			if(digests[level].size()!=64u||!LoadMethaneRunCheckpoint(paths[level],states[level],error)||
+				states[level].caseRecordId!="6eb8b1f95bfdb27d06245db94d6e9513c0cdef3662fc055547d35b353094f7e1")return 92;
+			if(matchedBeginning){
+				const std::array<std::string,2> expected={{
+					"ab91898e0279a347e85983853e8fe4167113a2364cdcffb6bad78e327d4e03bf",
+					"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"}};
+				FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+				if(digests[level]!=expected[level]||states[level].simulationTimeS!=time||
+					states[level].dimensions!=std::array<std::size_t,3>{{69u,69u,106u}}||
+					!HomogeneousStateProducerPrecision(states[level].states,precision)||
+					precision!=(level==0u?FireStateProducerPrecision::Binary64:
+						FireStateProducerPrecision::Binary32))return 92;
+			}else if(!OracleTier8CompositionEndpointMatches(states[level],build,time))return 92;
+			if(level!=0u&&(states[0].cellWidthM!=states[level].cellWidthM||
+				states[0].values.characteristicDiameterM!=states[level].values.characteristicDiameterM))return 92;
+			std::vector<ConservativeVector> conservative(states[level].states.size());
+			for(std::size_t cell=0u;cell<conservative.size();++cell)
+				conservative[cell]=ToConservativeVector(states[level].states[cell]);
+			const double diameter=states[level].values.characteristicDiameterM;
+			if(!FilterConservative(states[level],conservative,diameter,scalar[level],true)||
+				!FilterVelocity(states[level],states[level].velocity,diameter,velocity[level],true))return 93;
+			inventory[level]=ComponentInventoryDensity(conservative);
+		}
+		const auto distance=FieldDistance(scalar[0],scalar[1]);
+		const double velocityDistance=VelocityDistance(velocity[0],velocity[1]);
+		if(!std::isfinite(velocityDistance))return 93;
+		std::ofstream stream(output);
+		stream<<std::setprecision(17)<<"schema rise.fire.r213.filtered-pair-diagnostic.v1\n"
+			<<"scope "<<(matchedBeginning?"same_time_separate_trajectory_distance_not_local_scheme_term":
+				"oracle_own_trajectory_refinement_not_additive_contract")<<'\n'
+			<<"first_checkpoint_sha256 "<<digests[0]<<"\nsecond_checkpoint_sha256 "<<digests[1]
+			<<"\nreporter_build_id "<<reporterBuild<<"\nreporter_executable_sha256 "<<reporterExecutable
+			<<"\nfirst_producer_build_id "<<states[0].producerBuildId
+			<<"\nsecond_producer_build_id "<<states[1].producerBuildId<<"\nend_time_s "<<time
+			<<"\nfilter tensor_cubic_cardinal_bspline_exact_cell_integral_v1\n"
+			<<"physical_width_m "<<states[0].values.characteristicDiameterM/5.0
+			<<"\nphysical_domain_from_checkpoint true\nfilter_samples "<<scalar[0].dimensions[0]
+			<<' '<<scalar[0].dimensions[1]<<' '<<scalar[0].dimensions[2]<<'\n';
+		for(std::size_t c=0u;c<9u;++c){
+			if(!std::isfinite(distance[c]))return 93;
+			const char* units=c==8u?"J_per_m3":"kg_per_m3";
+			stream<<"filtered_mean_abs_component_"<<c<<' '<<distance[c]<<' '<<units<<'\n'
+				<<"inventory_density_abs_component_"<<c<<' '<<std::fabs(inventory[0][c]-inventory[1][c])
+				<<' '<<units<<'\n';
+		}
+		stream<<"filtered_vector_rms_velocity "<<velocityDistance<<" m_per_s\n"
+			<<"formal_contract_verdict pending_shared_state_and_production_terms\n";
+		if(!ClosePublishedStream(stream)||DigestFile(firstPath)!=digests[0]||
+			DigestFile(secondPath)!=digests[1])return 94;
+		return 0;
+	}
 
 	int RunR80GoldenContinuationFixture(const std::filesystem::path& checkpointPath,
 		const std::filesystem::path& tracePath,const std::filesystem::path& framePath)
@@ -16251,6 +16389,13 @@ int main(int argc,char** argv)
 	}
 	if(argc==3&&std::strcmp(argv[1],"--fire-oracle-tier8-composition-red")==0)
 		return RunOracleTier8CompositionREDFixture(argv[2]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r213-filtered-pair")==0)
+		return RunR213FilteredPair(argv[2],argv[3],argv[4]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-r213-matched-fields")==0)
+		return RunR213FilteredPair(argv[2],argv[3],argv[4],true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-r213-filter-red")==0)
+		return R213PhysicalFilterFixture()?0:95;
+	Check(R213PhysicalFilterFixture(),"physical filter preserves historical domain and refuses geometry mutants");
 	if(argc==2&&std::strcmp(argv[1],"--fire-oracle-tier8-reference-fixture")==0)
 		return RunOracleTier8ReferenceContractFixture();
 	Check(RunOracleTier8ReferenceContractFixture()==0,

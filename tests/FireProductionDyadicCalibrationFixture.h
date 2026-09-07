@@ -302,6 +302,25 @@ namespace FireProductionDyadicCalibration
 		return true;
 	}
 
+	// r213's burning domain is not the analytic fixture's 4x4x6 D*. Preserve
+	// the r112 kernel/physical width; derive only the number of interior samples
+	// from the actual extent. Four widths are the cubic kernel's two-sided
+	// support, not a fitted cutoff. This diagnostic admits downsampling only.
+	bool PhysicalFilterGeometry(const MethaneRunCheckpoint& geometry,const double width,
+		std::array<std::size_t,3>& dimensions,std::array<double,3>& lengths)
+	{
+		if(!(width>0.0)||!std::isfinite(width)||!(geometry.cellWidthM>0.0)||
+			!std::isfinite(geometry.cellWidthM))return false;
+		for(unsigned int axis=0u;axis<3u;++axis){
+			lengths[axis]=static_cast<double>(geometry.dimensions[axis])*geometry.cellWidthM;
+			const double samples=std::floor(lengths[axis]/width)-4.0;
+			if(!std::isfinite(samples)||samples<1.0||
+				samples>static_cast<double>(geometry.dimensions[axis]))return false;
+			dimensions[axis]=static_cast<std::size_t>(samples);
+		}
+		return true;
+	}
+
 	struct FilteredField
 	{
 		std::array<std::size_t,3> dimensions={{0u,0u,0u}};
@@ -309,12 +328,14 @@ namespace FireProductionDyadicCalibration
 	};
 
 	bool FilterConservative(const MethaneRunCheckpoint& geometry,
-		const std::vector<ConservativeVector>& source,const double dStar,FilteredField& result)
+		const std::vector<ConservativeVector>& source,const double dStar,FilteredField& result,
+		const bool actualPhysicalExtent=false)
 	{
 		result=FilteredField();result.dimensions={{16u,16u,26u}};
 		if(source.size()!=geometry.states.size())return false;
-		const std::array<double,3> lengths={{4.0*dStar,4.0*dStar,6.0*dStar}};
+		std::array<double,3> lengths={{4.0*dStar,4.0*dStar,6.0*dStar}};
 		const double width=dStar/5.0;
+		if(actualPhysicalExtent&&!PhysicalFilterGeometry(geometry,width,result.dimensions,lengths))return false;
 		std::array<std::vector<std::vector<std::pair<std::size_t,double> > >,3> weights;
 		for(unsigned int axis=0u;axis<3u;++axis)if(!AxisWeights(result.dimensions[axis],
 			geometry.dimensions[axis],lengths[axis],width,weights[axis]))return false;
@@ -356,7 +377,7 @@ namespace FireProductionDyadicCalibration
 	};
 
 	bool FilterVelocity(const MethaneRunCheckpoint& geometry,const PeriodicMACField& source,
-		const double dStar,FilteredVelocityField& result)
+		const double dStar,FilteredVelocityField& result,const bool actualPhysicalExtent=false)
 	{
 		result=FilteredVelocityField();result.dimensions={{16u,16u,26u}};
 		const std::size_t nx=geometry.dimensions[0],ny=geometry.dimensions[1],
@@ -371,8 +392,9 @@ namespace FireProductionDyadicCalibration
 					centered[(z*ny+y)*nx+x][axis]=
 						0.5*source.component[axis][low]+0.5*source.component[axis][high];}
 		}
-		const std::array<double,3> lengths={{4.0*dStar,4.0*dStar,6.0*dStar}};
+		std::array<double,3> lengths={{4.0*dStar,4.0*dStar,6.0*dStar}};
 		const double width=dStar/5.0;
+		if(actualPhysicalExtent&&!PhysicalFilterGeometry(geometry,width,result.dimensions,lengths))return false;
 		std::array<std::vector<std::vector<std::pair<std::size_t,double> > >,3> weights;
 		for(unsigned int axis=0u;axis<3u;++axis)if(!AxisWeights(result.dimensions[axis],
 			geometry.dimensions[axis],lengths[axis],width,weights[axis]))return false;
