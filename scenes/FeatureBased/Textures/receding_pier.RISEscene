@@ -3,7 +3,7 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           receding_pier.RISEscene                                                                #
-#   Description:    Textures showcase 3/3 (doc 88 Phase 1+2 arc, S9 ray-differential footprint) -- a long   #
+#   Description:    Textures showcase 3/4 (doc 88 Phase 1+2 arc, S9 ray-differential footprint) -- a long   #
 #                   plank deck receding to the horizon under a low, grazing pinhole camera.  The plank      #
 #                   texture is a HIGH-frequency expression_painter fbm field (grain frequency runs along Z, #
 #                   the receding axis).  `fbm` fades its own octaves against the per-sample world-space      #

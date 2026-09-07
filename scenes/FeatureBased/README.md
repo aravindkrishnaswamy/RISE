@@ -333,7 +333,7 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
 - `PathTracing/`: path-traced showpieces and guided showcase pairs
 - `SDF/`: visually rich signed-distance-field stress scenes
 - `Shaders/`: integrated shader, volume, and SSS showcase scenes
-- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- three scenes,
+- `Textures/`: the doc-88 procedural-texture arc (Phases 1+2) showcase suite -- four scenes,
   each earning its keep on different mechanisms.
 
   `weathered_workbench.RISEscene` is the composition hero: a wooden workbench whose top
@@ -371,6 +371,17 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   fades its own octaves against the per-sample world-space filter width `fw`, which
   grows with distance, so the render shows crisp wood grain within a few metres of the
   camera and a smooth, shimmer-free fade toward the horizon with no extra code.
+
+  `plank_closeup.RISEscene` is the answer to "these painters look generated, not organic":
+  a 0.35 m close-up of the corner of a rough-sawn softwood plank with a hand-forged cut
+  nail, authored under a seven-rule doctrine written into its header (camera-first
+  feature sizes, structure before noise, anisotropy, geometry signals, rare events, one
+  field driving colour + roughness + relief, raking light) and distilled into
+  `skills/agent/procedural-textures.md`. Growth rings are built from the distance to a
+  tilted off-board pith axis with an asymmetric early/late sawtooth and a per-ring
+  `cellhash` season, noise only warps them, a single hand-placed knot deflects them,
+  and `relief_modifier` carves the same field the `ramp_painter` colours. The plank is
+  an `sdf_geometry` so `occlusion()` finds real dirt in a subtracted end check.
 - `VCM/`: vertex-connection-and-merging showpieces.
   `vcm_sdf_luminaire_jellyfish.RISEscene` is held as a transport torture test rather
   than a picture: emissive SDF geometry inside a dielectric bell inside a scattering

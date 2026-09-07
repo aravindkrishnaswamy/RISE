@@ -3,7 +3,7 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           oxidized_copper.RISEscene                                                              #
-#   Description:    Textures showcase 2/3 (doc 88 Phase 1+2 arc) -- per-channel scalars, blend modes, and   #
+#   Description:    Textures showcase 2/4 (doc 88 Phase 1+2 arc) -- per-channel scalars, blend modes, and   #
 #                   the voronoi3d_painter `space` param.  Two copper spheres share ONE ggx_material:         #
 #                   * sp_copper_extinction is a vec3-typed scalar_painter{expression} (HasPerChannelVariation)#
 #                     driving the material's `extinction` slot directly -- a genuine per-channel triple      #

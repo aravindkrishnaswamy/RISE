@@ -3,7 +3,7 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           weathered_workbench.RISEscene                                                          #
-#   Description:    Textures showcase 1/3 (doc 88 Phase 1+2 arc) -- a wooden workbench with a clamped-on   #
+#   Description:    Textures showcase 1/4 (doc 88 Phase 1+2 arc) -- a wooden workbench with a clamped-on   #
 #                   iron vise and a de-tiled diamond-plate tool tray.  The wood top's colour AND roughness  #
 #                   are driven from the SAME expression_painter grain field (ramp_painter for colour,       #
 #                   scalar_painter{painter} bridge for roughness -- gloss follows grain).  scatter_painter  #
