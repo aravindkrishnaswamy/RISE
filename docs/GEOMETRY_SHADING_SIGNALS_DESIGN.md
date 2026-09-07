@@ -1078,8 +1078,8 @@ this query, to cost and purity rather than control flow.
 
 **Decision: declined again.** The motivating plank case is reachable by a
 hemisphere sampler only as a band — 2–3 px cosine, ~10 px horizon — that does
-not read as a seam, and the sampler that widens it doubles the cost and halves
-the one gain the prototype had; the bench case is marginal beside the contact
+not read as a seam, and the sampler that widens it costs 1.93× as much and
+cuts the one gain the prototype had by roughly 44 %; the bench case is marginal beside the contact
 shadow and, pushed until it shows, looks painted on; the live query costs 2.4× on the flagship scene and scales
 with the painter-graph multiplicity that §10 of the convexity document already
 names as the open lever, a dense-grid bake cannot serve the SDF family the
