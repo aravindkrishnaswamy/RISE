@@ -3,7 +3,7 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           plank_closeup.RISEscene                                                                 #
-#   Description:    Textures showcase 4/4 -- a 0.35 m close-up of the corner of a rough-sawn softwood       #
+#   Description:    Textures showcase 4/4 -- a 0.33 m close-up of the corner of a rough-sawn softwood       #
 #                   plank with a hand-forged nail resting on it.                                            #
 #   Author:         RISE contributors                                                                       #
 #   Birthdate:      2026-09-06                                                                              #
@@ -107,9 +107,10 @@ RISE ASCII SCENE 7
 #      environment and read the percentiles back) showed p25 = 0.000 across a quarter of the top face.
 #      `floor` is the fix, and the ramp stops are then set AGAINST THE MEASURED PERCENTILES rather than
 #      against the [0,1] the expression nominally spans.  The same bug pinned the whole nail: `curv` on
-#      a 3 mm shank measures ~14, so `clamp(curv*1.4,0,1)` saturated everywhere and drove the iron
-#      field to 0 over the entire shank.  `curv` is normalised by the object's bbox diagonal, so its
-#      useful thresholds are per-object -- on the nail the ridges start near 25, not near 1.
+#      a 3 mm shank measures ~27 (the nail's bbox diagonal is 82 mm), so `clamp(curv*1.4,0,1)`
+#      saturated everywhere and drove the iron field to 0 over the entire shank.  `curv` is
+#      normalised by the object's bbox diagonal, so its useful thresholds are per-object -- on the
+#      nail the plain shank already sits near 25 and the struck ridges run up toward 70, not near 1.
 #
 #   -- `step 0` WAS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE -- until the 2026-09-06 footprint-
 #      deferral fix (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum).  `relief_modifier`'s automatic step
@@ -563,7 +564,7 @@ expression_painter
 	seed			11.0
 
 	# 3.1 mm undulation -- the low-frequency waviness a forged or sand-cast
-	# surface has, sized to be 7 px across and therefore visible as SHAPE.
+	# surface has, sized to be 6 px across and therefore visible as SHAPE.
 	def				und fbm(P*forge_freq + vec3(seed, seed*2.0, seed*3.0), 3, 0.5, 2.0)
 
 	# 1 mm pits, thresholded hard so they cover a few per cent -- SPARSE, not a
@@ -682,8 +683,8 @@ ggx_material
 # Part 2  the end check: a real drying split, subtracted rather than painted,
 #         which is what lets `occlusion(0.03)` find it and fill it with dirt.
 #         Rotated -9 deg about Z so its inner end lifts clear of the board --
-#         the crack is ~21 mm deep where it opens at the end grain and closes
-#         to nothing about 95 mm in (the box is 110 mm long but ~6 mm of it
+#         the crack is ~5 mm deep where it opens at the end grain and closes
+#         to nothing about 95 mm in (the box is 110 mm long but ~18 mm of it
 #         hangs past the end face in air), which is how a check actually tapers.
 #         3 deg about Y so it does not run exactly with the grain.
 #
@@ -724,8 +725,9 @@ standard_object
 #         to come before the head, since `intersect` applies to everything
 #         accumulated so far.
 # Part 3  the hammered head, unioned with a small smin so it swells into the
-#         shank instead of sitting on it, and tilted 4 deg out of the shank
-#         axis because a struck head is never square to it.
+#         shank instead of sitting on it, and tilted 6 deg out of the shank
+#         axis (its Euler triple differs from the shank's by 5 deg about X
+#         and 4 deg about Z) because a struck head is never square to it.
 ##################################################
 
 sdf_geometry
