@@ -107,10 +107,11 @@ RISE ASCII SCENE 7
 #      environment and read the percentiles back) showed p25 = 0.000 across a quarter of the top face.
 #      `floor` is the fix, and the ramp stops are then set AGAINST THE MEASURED PERCENTILES rather than
 #      against the [0,1] the expression nominally spans.  The same bug pinned the whole nail: `curv` on
-#      a 3 mm shank measures ~27 (the nail's bbox diagonal is 82 mm), so `clamp(curv*1.4,0,1)`
-#      saturated everywhere and drove the iron field to 0 over the entire shank.  `curv` is
-#      normalised by the object's bbox diagonal, so its useful thresholds are per-object -- on the
-#      nail the plain shank already sits near 25 and the struck ridges run up toward 70, not near 1.
+#      a 3 mm shank measures ~14 (mean curvature 1/(2r) times the nail's 82 mm bbox diagonal), so
+#      `clamp(curv*1.4,0,1)` saturated everywhere and drove the iron field to 0 over the entire
+#      shank.  `curv` is normalised by the object's bbox diagonal, so its useful thresholds are
+#      per-object -- on the nail the plain shank sits near 14 and the struck ridges start near 25
+#      and run toward 70, not near 1.
 #
 #   -- `step 0` WAS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE -- until the 2026-09-06 footprint-
 #      deferral fix (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum).  `relief_modifier`'s automatic step
@@ -683,9 +684,11 @@ ggx_material
 # Part 2  the end check: a real drying split, subtracted rather than painted,
 #         which is what lets `occlusion(0.03)` find it and fill it with dirt.
 #         Rotated -9 deg about Z so its inner end lifts clear of the board --
-#         the crack is ~5 mm deep where it opens at the end grain and closes
-#         to nothing about 95 mm in (the box is 110 mm long but ~18 mm of it
-#         hangs past the end face in air), which is how a check actually tapers.
+#         the crack is ~19 mm deep where it opens at the end grain (the box
+#         reaches to 4 mm above the board's underside there) and closes to
+#         ~5 mm deep about 95 mm in, where its inner end lifts out of the wood
+#         (the box is 110 mm long but ~18 mm of it hangs past the end face in
+#         air) -- which is how a check actually tapers.
 #         3 deg about Y so it does not run exactly with the grain.
 #
 #         It is also the reason `crev` is a smoothstep(0.62, 0.18, occ) and not
