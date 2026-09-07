@@ -1001,17 +1001,25 @@ plank issues **14.28 queries per camera sample** (210.5 M per frame — the same
 14.3× multiplicity §6.2 measured, since `occ` feeds colour, roughness and the
 relief modifier's four-tap stencil, at every bounce) against the bench's 0.51,
 which is why the same builtin costs 2.38× on one and 1.03× on the other.
-Sponza's shipped render casts 8.32 shadow rays per camera sample (61.3 M); the
-forced query adds 59.1 (7.1× the scene's entire shadow-ray count) for 1.57×
+Sponza's shipped render casts 8.32 shadow rays per camera sample (61.3 M, one
+instrumented `DEF_PROFILING` run, excluded from the timings); the forced query
+adds 59.1 (7.1× the scene's entire shadow-ray count) for 1.57×
 wall clock, because 0.1 m rays die in the BVH almost at once. N = 64 costs
 ~2.6× N = 16 on the plank and ~2.2× on Sponza, not 4×.
 
 **(c) The bake.** *Meshes are affordable.* Sponza's 405 objects / 2,049,137
 vertices bake in **12.14 s** single-threaded at N = 16 (runs 12.14 / 15.21 /
-15.40 / 15.75 / 17.01), 45.25 s at N = 64, **2.34 s with 16 threads** on the 18-core
-machine (one run; 5.2×: per-object jobs with a median of 796 and a maximum of 43,309 vertices
-leave a one-object tail), for 7.82 MB — 64 % / 238 % / 12.3 % of the 18.98 s
-shipped render it feeds. A 22,998-vertex dragon bakes in 93 ms; per vertex the
+15.40 / 15.75 / 17.01), **45.25 s** at N = 64 (runs 45.25 / 50.98 / 60.79),
+**2.34 s with 16 threads** on the 18-core machine (one run; 5.2×: per-object
+jobs with a median of 796 and a maximum of 43,309 vertices leave a one-object
+tail), for 7.82 MB. Every figure here is the *minimum* of its runs, and the
+spreads are large (34 % on the N = 64 bake, 61 % on the render below) because
+the live-query worker was rendering on the same machine throughout; the
+minimum is the least-contaminated estimate, and a 17-thread render suffers
+more under that load than a single-threaded bake, so a mean-based comparison
+would flatter the bake. Against the shipped 640×360×32 render's own minimum,
+**18.98 s** (runs 18.98 / 28.54 / 30.57), the three bakes are **64 % / 238 % /
+12.3 %** of the render they feed. A 22,998-vertex dragon bakes in 93 ms; per vertex the
 cost is 1.47× superlinear from the dragon to Sponza (4.04 → 5.93 µs), the
 BVH depth, not the algorithm. *A dense `G³` grid cannot bake the SDF family at
 the feature sizes the showcases were authored around — and that is the only
