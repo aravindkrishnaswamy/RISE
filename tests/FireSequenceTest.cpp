@@ -1095,6 +1095,9 @@ namespace
 		bool injectActiveSetIdentityMismatchForTest=false;
 		bool forceZeroSourceForTest=false;
 		bool productionMetal=false;
+		// r212 engineering adoption. Historical baseline/replay flags remain
+		// explicit; the temporal production entry selects this full owner.
+		bool portedProductionTransport=false;
 		bool compatibleMomentumDiagnostic=false;
 		bool singleStageFCTDiagnostic=false;
 		bool sealedLegacyMomentumReplay=false;
@@ -1106,7 +1109,7 @@ namespace
 		bool projectedHeunCertificateDiagnostic=false;
 		bool UsesProjectedHeunOwner() const
 		{
-			return sealedProjectedHeunReplay||sealedProjectedHeunContinuation||
+			return portedProductionTransport||sealedProjectedHeunReplay||sealedProjectedHeunContinuation||
 				projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic;
 		}
 		std::filesystem::path replayProtocolPath;
@@ -3273,6 +3276,13 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.portedProductionTransport&&(!persistence.productionMetal||
+			persistence.compatibleMomentumDiagnostic||persistence.singleStageFCTDiagnostic||
+			persistence.sealedLegacyMomentumReplay||persistence.sealedProjectedHeunReplay||
+			persistence.sealedProjectedHeunContinuation||persistence.projectedHeunCostDiagnostic||
+			persistence.projectedHeunEOSDiagnostic||persistence.isolatedEquivalenceProbe)){
+			values.structuredError="production_transport_owner_scope_conflict";return values;
+		}
 		if(persistence.sealedProjectedHeunContinuation&&(!persistence.productionMetal||
 			!persistence.sealedProjectedHeunReplay||!persistence.resume||
 			persistence.isolatedEquivalenceProbe||persistence.resumeEquivalenceCertificatePath.empty()||
@@ -7340,6 +7350,7 @@ namespace
 		}
 		RunPersistenceOptions persistence;
 		persistence.productionMetal=true;
+		persistence.portedProductionTransport=true;
 		persistence.checkpointPath=outputDirectory/"production_run.checkpoint";
 		persistence.finalCheckpointPath=outputDirectory/"production_final.checkpoint";
 		persistence.retainedCheckpointDirectory=outputDirectory/"checkpoint_history";
@@ -7448,6 +7459,8 @@ namespace
 		if(!ClosePublishedStream(diagnostics))return 98;
 		std::ofstream summary(outputDirectory/"production_capstone_summary.txt");
 		summary<<std::setprecision(17)<<"artifact_fidelity=simulation_evidence\n"
+			<<"operator_mode=section_3_7_projected_heun_resident_owner\n"
+			<<"formal_contract_verdict=pending_equal_time_composition\n"
 			<<"resolution_tier="<<resolutionTier<<"\n"
 			<<"maximum_source_step_s="<<persistence.maximumProductionSourceStepS<<"\n"
 			<<"target_time_s="<<targetTimeS<<"\n"
@@ -7924,12 +7937,15 @@ namespace
 	}
 
 	int RunOracleRetainedTrajectoryChild(const double targetTimeS,
-		const std::filesystem::path& outputDirectory)
+		const std::filesystem::path& outputDirectory,const double resolutionTier=10.0,
+		const double authoredDurationS=0.0)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
-		(void)targetTimeS;(void)outputDirectory;return 90;
+		(void)targetTimeS;(void)outputDirectory;(void)resolutionTier;(void)authoredDurationS;return 90;
 #else
-		if(!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
+		if(!std::isfinite(targetTimeS)||!(targetTimeS>0.0)||
+			(resolutionTier!=8.0&&resolutionTier!=10.0)||!std::isfinite(authoredDurationS)||
+			authoredDurationS<0.0)return 91;
 		std::error_code directoryError;
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		if(directoryError)return 92;
@@ -7940,8 +7956,9 @@ namespace
 		persistence.checkpointCadenceWallS=900.0;
 		const auto wallStart=std::chrono::steady_clock::now();
 		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
-		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,targetTimeS,1.0,
-			10.0,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,
+			authoredDurationS>0.0?authoredDurationS:targetTimeS,1.0,
+			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
 		const double wallS=std::chrono::duration<double>(
 			std::chrono::steady_clock::now()-wallStart).count();
@@ -7959,6 +7976,71 @@ namespace
 		std::fprintf(stderr,"ORACLE_RETAINED_TRAJECTORY time=%.17g steps=%zu wall_s=%.17g "
 			"checkpoint=%s\n",result.simulatedTimeS,result.acceptedTimeStepHistoryS.size(),wallS,
 			DigestFile(outputDirectory/"final.checkpoint").c_str());
+		return 0;
+#endif
+	}
+
+	bool OracleTier8ReferenceCheckpointMatches(const MethaneRunCheckpoint& checkpoint,
+		const std::string& expectedBuild)
+	{
+		return expectedBuild.size()==64u&&checkpoint.producerBuildId==expectedBuild&&
+			checkpoint.dimensions==std::array<std::size_t,3>{{69u,69u,106u}}&&
+			checkpoint.simulationTimeS==2.1080244191689417;
+	}
+
+	int RunOracleTier8ReferenceContractFixture()
+	{
+		MethaneRunCheckpoint checkpoint;const std::string build(64u,'a');
+		checkpoint.producerBuildId=build;checkpoint.dimensions={{69u,69u,106u}};
+		checkpoint.simulationTimeS=2.1080244191689417;
+		bool passed=OracleTier8ReferenceCheckpointMatches(checkpoint,build);
+		MethaneRunCheckpoint mutant=checkpoint;mutant.dimensions={{86u,86u,132u}};
+		passed=passed&&!OracleTier8ReferenceCheckpointMatches(mutant,build);
+		mutant=checkpoint;mutant.simulationTimeS=std::nextafter(checkpoint.simulationTimeS,3.0);
+		passed=passed&&!OracleTier8ReferenceCheckpointMatches(mutant,build);
+		mutant=checkpoint;mutant.producerBuildId=std::string(64u,'b');
+		passed=passed&&!OracleTier8ReferenceCheckpointMatches(mutant,build)&&
+			!OracleTier8ReferenceCheckpointMatches(checkpoint,"");
+		std::fprintf(stderr,"ORACLE_TIER8_REFERENCE_RED synthetic_metadata_only=1 "
+			"wrong_tier_refused=1 one_bit_time_refused=1 foreign_build_refused=1 passed=%d\n",
+			passed?1:0);
+		return passed?0:95;
+	}
+
+	int RunOracleTier8ReferenceChild(const std::filesystem::path& outputDirectory)
+	{
+#if !defined(RISE_ENABLE_OPENVDB)
+		(void)outputDirectory;return 90;
+#else
+		// r212: regenerate the reference at the SAME tier and exact beginning
+		// time as the sealed production observation. This constructs a reference
+		// checkpoint, not an equal-time operator verdict or a migration authority.
+		const double matchedTimeS=2.1080244191689417;
+		if(!OwnerCostPrefixEnvironmentAccepted()||std::getenv("RISE_FIRE_OWNER_PROFILE")||
+			std::getenv("RISE_FIRE_PRODUCER_KERNEL_PROFILE")||
+			std::filesystem::exists(outputDirectory))return 91;
+		RISECBOR64::Bytes buildRecord;std::string buildId,executableDigest,error;
+		if(!CurrentRendererBuildIdentity(buildRecord,buildId)||
+			!CurrentExecutableDigest(buildRecord,executableDigest,error))return 92;
+		std::error_code directoryError;std::filesystem::create_directories(outputDirectory,directoryError);
+		if(directoryError)return 92;
+		std::ofstream identity(outputDirectory/"reference_request.v1");
+		identity<<std::setprecision(17)<<"schema rise.fire.r212.oracle-tier8-reference.v1\n"
+			<<"resolution_tier 8\nseed 1234\ncase_duration_s 3\nframes_per_s 1\n"
+			<<"target_time_s "<<matchedTimeS<<"\nproducer_build_id "<<buildId
+			<<"\nproducer_executable_sha256 "<<executableDigest
+			<<"\noperator oracle_fp64\nformal_contract_verdict pending_equal_time_composition\n";
+		if(!ClosePublishedStream(identity))return 92;
+		const int status=RunOracleRetainedTrajectoryChild(matchedTimeS,outputDirectory,8.0,3.0);
+		if(status!=0)return status;
+		MethaneRunCheckpoint checkpoint;
+		if(!LoadMethaneRunCheckpoint(outputDirectory/"final.checkpoint",checkpoint,error)||
+			!OracleTier8ReferenceCheckpointMatches(checkpoint,buildId)||
+			!SealPublishedRunDirectory(outputDirectory,checkpoint.caseRecordId,error))return 94;
+		std::fprintf(stderr,"ORACLE_TIER8_REFERENCE time=%.17g checkpoint=%s request=%s "
+			"formal_contract_verdict=pending_equal_time_composition\n",matchedTimeS,
+			DigestFile(outputDirectory/"final.checkpoint").c_str(),
+			DigestFile(outputDirectory/"reference_request.v1").c_str());
 		return 0;
 #endif
 	}
@@ -15979,6 +16061,32 @@ int main(int argc,char** argv)
 	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
 		double target=0.0;if(!ParsePositiveDoubleArgument(argv[2],target))return 91;
 		return RunOracleRetainedTrajectoryChild(target,argv[3]);
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-oracle-tier8-reference")==0)
+		return RunOracleTier8ReferenceChild(argv[2]);
+	if(argc==2&&std::strcmp(argv[1],"--fire-oracle-tier8-reference-fixture")==0)
+		return RunOracleTier8ReferenceContractFixture();
+	Check(RunOracleTier8ReferenceContractFixture()==0,
+		"tier-eight oracle reference requires exact tier, time and producing build");
+	{
+		RunPersistenceOptions productionSelection;
+		Check(!productionSelection.UsesProjectedHeunOwner(),"historical unselected path stays explicit");
+		productionSelection.productionMetal=true;productionSelection.portedProductionTransport=true;
+		Check(productionSelection.UsesProjectedHeunOwner(),"adopted temporal transport selects resident owner");
+		for(const auto conflict:{&RunPersistenceOptions::compatibleMomentumDiagnostic,
+			&RunPersistenceOptions::singleStageFCTDiagnostic,&RunPersistenceOptions::sealedLegacyMomentumReplay,
+			&RunPersistenceOptions::sealedProjectedHeunReplay,&RunPersistenceOptions::sealedProjectedHeunContinuation,
+			&RunPersistenceOptions::projectedHeunCostDiagnostic,&RunPersistenceOptions::projectedHeunEOSDiagnostic,
+			&RunPersistenceOptions::isolatedEquivalenceProbe}){
+			RunPersistenceOptions mutant=productionSelection;mutant.*conflict=true;
+			Check(RunMethaneFrameProbe(1u,0u,0.0,3.0,1.0,8.0,CapstonePoolDiameterM,
+				CapstoneHeatReleaseRateKW,false,mutant).structuredError==
+				"production_transport_owner_scope_conflict","production transport refuses mixed authority modes");
+		}
+		productionSelection.productionMetal=false;
+		Check(RunMethaneFrameProbe(1u,0u,0.0,3.0,1.0,8.0,CapstonePoolDiameterM,
+			CapstoneHeatReleaseRateKW,false,productionSelection).structuredError==
+			"production_transport_owner_scope_conflict","production transport refuses CPU substitution");
 	}
 	if(argc==6&&std::strcmp(argv[1],"--fire-production-momentum-replay")==0)
 		return RunProductionMomentumReplayChild(argv[2],argv[3],argv[4],argv[5]);
