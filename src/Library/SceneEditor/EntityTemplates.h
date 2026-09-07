@@ -106,7 +106,7 @@ namespace RISE
 		//! descriptor has no vocabulary for at all:
 		//!   * a REPEATABLE MINIMUM (`ramp_painter` needs >= 2 `stop`
 		//!     lines; `stop` is merely `repeatable`, never `required`);
-		//!   * a ONE-OF FORM SELECTION (`scalar_painter` has twelve
+		//!   * a ONE-OF FORM SELECTION (`scalar_painter` has thirteen
 		//!     mutually-exclusive forms, none of them `required`, and a
 		//!     body with no form at all is not a usable painter).
 		//! Those live in the seed table.  Everything else is derived.

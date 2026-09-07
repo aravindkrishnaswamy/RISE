@@ -1232,6 +1232,10 @@ namespace RISE
 			//   function2d <name>                      → Function2DScalarPainter wrapping a named IFunction2D
 			//   base <name> [scale <s>]                → ScaledScalarPainter (default scale = 1.0)
 			//   multiply <a> <b>                       → MultiplyScalarPainter
+			//   add <a> <b> [weight_a <w>] [weight_b <w>]
+			//                                          → AddScalarPainter (multiply's
+			//                                            additive sibling; out = weight_a*a
+			//                                            + weight_b*b, weights default 1.0)
 			//   texture <name> [channel R|G|B] [scale <s>] [bias <b>]
 			//                                          → TextureScalarPainter (image map
 			//                                            sampled at surface UV; out = bias +
@@ -1244,9 +1248,9 @@ namespace RISE
 			//                                            channel A reads GetAlpha)
 			//
 			// At most one of {value, values, file, sellmeier, polynomial,
-			// function1d, function2d, base, multiply, texture, expression,
-			// painter} may be present.  Mutually exclusive — the parser
-			// raises an error otherwise.
+			// function1d, function2d, base, multiply, add, texture,
+			// expression, painter} may be present.  Mutually exclusive —
+			// the parser raises an error otherwise.
 			//////////////////////////////////////////
 			struct ScalarPainterAsciiChunkParser : public IAsciiChunkParser
 			{
@@ -1264,17 +1268,18 @@ namespace RISE
 					const bool hasFunction2d  = bag.Has( "function2d" );
 					const bool hasBase        = bag.Has( "base" );
 					const bool hasMultiply    = bag.Has( "multiply" );
+					const bool hasAdd         = bag.Has( "add" );
 					const bool hasTexture     = bag.Has( "texture" );
 					const bool hasExpression  = bag.Has( "expression" );
 					const bool hasPainter     = bag.Has( "painter" );
 
 					const int formCount = (int)hasValue + (int)hasValues + (int)hasFile +
 						(int)hasSellmeier + (int)hasPolynomial + (int)hasFunction1d +
-						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasTexture +
+						(int)hasFunction2d + (int)hasBase + (int)hasMultiply + (int)hasAdd + (int)hasTexture +
 						(int)hasExpression + (int)hasPainter;
 					if( formCount == 0 ) {
 						GlobalLog()->PrintEx( eLog_Error,
-							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, texture, expression, painter)",
+							"scalar_painter `%s`: missing form (one of value, values, file, sellmeier, polynomial, function1d, function2d, base, multiply, add, texture, expression, painter)",
 							name.c_str() );
 						return false;
 					}
@@ -1437,6 +1442,27 @@ namespace RISE
 						}
 						RISE_API_CreateMultiplyScalarPainter( &painter, a, b );
 					}
+					else if( hasAdd ) {
+						const std::string s = bag.GetString( "add" );
+						char aname[256] = {0}, bname[256] = {0};
+						if( sscanf( s.c_str(), "%255s %255s", aname, bname ) != 2 ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: add needs two scalar_painter names",
+								name.c_str() );
+							return false;
+						}
+						IScalarPainter* a = pPriv->GetScalarPainters()->GetItem( aname );
+						IScalarPainter* b = pPriv->GetScalarPainters()->GetItem( bname );
+						if( !a || !b ) {
+							GlobalLog()->PrintEx( eLog_Error,
+								"scalar_painter `%s`: add operands `%s` / `%s` not found",
+								name.c_str(), aname, bname );
+							return false;
+						}
+						const double weightA = bag.GetDouble( "weight_a", 1.0 );
+						const double weightB = bag.GetDouble( "weight_b", 1.0 );
+						RISE_API_CreateAddScalarPainter( &painter, a, b, Scalar( weightA ), Scalar( weightB ) );
+					}
 					else if( hasTexture ) {
 						// Spatially-varying physical scalar driven by a 2D image
 						// map sampled at the surface UV.  We resolve a previously
@@ -1596,6 +1622,9 @@ namespace RISE
 						{ auto& p = P(); p.name = "base";       p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Base scalar_painter for ScaledScalarPainter (form 8)"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "referenceCategories lists {Painter} (the CATEGORY grouping every painter-family chunk, scalar_painter included -- see ChunkParserRegistry.cpp's Describe()) but the value resolves via GetScalarPainters(), i.e. the Scalar pipe specifically -- referenceCategories is category, not pipe."; }
 						{ auto& p = P(); p.name = "scale";      p.kind = ValueKind::Double;     p.description = "Scale factor (companion to `base`, `texture`, `function2d`, and `painter`)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "multiply";   p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 9: MultiplyScalarPainter)"; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "tuple of two scalar_painter names, both resolved via GetScalarPainters()"; }
+						{ auto& p = P(); p.name = "add";        p.kind = ValueKind::String;     p.tupleKinds = {ValueKind::Reference, ValueKind::Reference}; p.referenceCategories = {ChunkCategory::Painter}; p.description = "Two scalar_painter names `a b` (form 13: AddScalarPainter).  `multiply`'s additive sibling -- out = weight_a*a + weight_b*b, so a detail field layered on `add` never zeroes out where the OTHER operand is zero the way a product would.  See `weight_a` / `weight_b` below."; p.semantics.pipe = ParameterPipe::Scalar; p.semantics.note = "tuple of two scalar_painter names, both resolved via GetScalarPainters()"; }
+						{ auto& p = P(); p.name = "weight_a";   p.kind = ValueKind::Double;     p.description = "Multiplier on `add`'s first operand (companion to `add`)"; p.defaultValueHint = "1.0"; }
+						{ auto& p = P(); p.name = "weight_b";   p.kind = ValueKind::Double;     p.description = "Multiplier on `add`'s second operand (companion to `add`)"; p.defaultValueHint = "1.0"; }
 						{ auto& p = P(); p.name = "texture";    p.kind = ValueKind::Reference;  p.referenceCategories = {ChunkCategory::Painter}; p.description = "Named raster image painter (png_painter / jpg_painter / hdr_painter / exr_painter / tiff_painter) to sample spatially at the surface UV (form 10: TextureScalarPainter; no JH-uplift / colourspace conversion; channel A not supported here -- use `painter` instead)"; p.semantics.pipe = ParameterPipe::Color; p.semantics.keywordAllowlist = {"png_painter", "jpg_painter", "hdr_painter", "exr_painter", "tiff_painter"}; p.semantics.note = "Special case (the \"texture-form channel A redirect\"): resolves via GetPainters() then dynamic_cast<TexturePainter*> -- only raster-image painter chunks pass, not every Color-pipe chunk (a checker_painter or blend_painter is Color-pipe but NOT a TexturePainter and is rejected). channel \"A\" is additionally refused at the value layer with a message redirecting to the `painter` form (ChunkParserRegistry.cpp: \"does not support channel A ... use `painter %s channel A` instead\") -- a value-level constraint CheckConnection does not model (it answers candidate-identity legality, not per-channel value legality), documented here so the special case is not silently lost."; }
 						{ auto& p = P(); p.name = "channel";    p.kind = ValueKind::Enum;       p.enumValues = {"R","G","B","A"}; p.description = "Which channel sources the scalar (companion to `texture` [R/G/B only] and `painter` [R/G/B/A])"; p.defaultValueHint = "R"; }
 						{ auto& p = P(); p.name = "bias";       p.kind = ValueKind::Double;     p.description = "Additive offset for the `texture` / `function2d` / `painter` forms: out = bias + scale * raw (raw in [0,1] for texture/painter)"; p.defaultValueHint = "0.0"; }

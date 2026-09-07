@@ -92,7 +92,7 @@ Nodes are 1:1 with RISE's existing chunk vocabulary so the graph round-trips to 
 | **Surface / uber** (the default node) | a `*_material` chunk | **OpenPBR-shaped uber node** (§3.2) → resolves to GGX + dielectric + thin-film; plus first-class `lambertian`, `dielectric`, `ggx`, `sheen`, SSS nodes | Material |
 | **Layer / composite** | `composite_material` | Top/Bottom + thickness + extinction (varnished wood, metal-flake-under-clearcoat) | Material |
 | **Color painter** | `IPainter` chunks | `uniformcolor`, `spectral` (→ [SPECTRAL_DIFFERENTIATORS.md](SPECTRAL_DIFFERENTIATORS.md) D1), `blackbody`, `texture`, `checker`, `blend`, procedural noise, `expression_function2d` | **Color (yellow)** |
-| **Scalar painter** | `IScalarPainter` chunks | `uniform`, `rgb`, `piecewise_linear` (measured n/k drop-in), `sellmeier` (named-glass IOR), `polynomial`, `texture_scalar`, `scaled`, `multiply` | **Scalar (grey)** |
+| **Scalar painter** | `IScalarPainter` chunks | `uniform`, `rgb`, `piecewise_linear` (measured n/k drop-in), `sellmeier` (named-glass IOR), `polynomial`, `texture_scalar`, `scaled`, `multiply`, `add` | **Scalar (grey)** |
 | **Texture / input** | image + UV | `texture` / `texture_scalar`, `uv_transform`, `tex_coord` | Color or Scalar by slot |
 | **Bridge** | `PainterToScalarAdapter` | grey-input from a color graph (PBR-MR anisotropy chains); explicit, see §3.5 | Scalar (grey) |
 

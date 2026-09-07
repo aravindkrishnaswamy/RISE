@@ -1791,6 +1791,9 @@
     <ClInclude Include="..\..\..\src\Library\Painters\MultiplyScalarPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\src\Library\Painters\AddScalarPainter.h">
+      <Filter>Painters</Filter>
+    </ClInclude>
     <ClInclude Include="..\..\..\src\Library\Painters\VertexColorPainter.h">
       <Filter>Painters</Filter>
     </ClInclude>

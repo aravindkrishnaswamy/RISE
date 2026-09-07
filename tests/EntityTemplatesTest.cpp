@@ -689,7 +689,7 @@ namespace
 			Check( NameInCategory( ctrl, Category::Material, "metal" ), "...and enumerates as a live Material" );
 		}
 
-		// (4) scalar_painter -- the FORM case: twelve mutually-exclusive
+		// (4) scalar_painter -- the FORM case: thirteen mutually-exclusive
 		//     forms, none of them descriptor-`required`, so only the seed
 		//     table makes a bare create derivable.  Assert the form landed.
 		{

@@ -34,6 +34,7 @@
 #include "../src/Library/Painters/PolynomialScalarPainter.h"
 #include "../src/Library/Painters/ScaledScalarPainter.h"
 #include "../src/Library/Painters/MultiplyScalarPainter.h"
+#include "../src/Library/Painters/AddScalarPainter.h"
 #include "../src/Library/Painters/Function1DScalarPainter.h"
 #include "../src/Library/Painters/Function2DScalarPainter.h"
 #include "../src/Library/Intersection/RayIntersectionGeometric.h"
@@ -347,6 +348,80 @@ static void TestMultiplyScalarPainter()
 	m->release();
 }
 
+static void TestAddScalarPainter()
+{
+	std::cout << "TestAddScalarPainter" << std::endl;
+
+	const RayIntersectionGeometric ri = MakeDummyRig();
+
+	// Default weights (1.0, 1.0): plain sum.
+	UniformScalarPainter* a = new UniformScalarPainter( Scalar( 3.0 ) );
+	UniformScalarPainter* b = new UniformScalarPainter( Scalar( 4.0 ) );
+	AddScalarPainter* add = new AddScalarPainter( a, b );
+	a->release();
+	b->release();
+
+	const ScalarTriple t = add->GetValuesAt( ri );
+	Check( ApproxEq( t.v[0], Scalar( 7.0 ) ), "add: 3 + 4 = 7 (v[0], default weights)" );
+	Check( ApproxEq( add->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 7.0 ) ),
+	       "add: 3 + 4 = 7 (nm, default weights)" );
+	add->release();
+
+	// Explicit weights: weightA*a + weightB*b.
+	UniformScalarPainter* wa = new UniformScalarPainter( Scalar( 2.0 ) );
+	UniformScalarPainter* wb = new UniformScalarPainter( Scalar( 10.0 ) );
+	AddScalarPainter* weighted = new AddScalarPainter( wa, wb, Scalar( 0.5 ), Scalar( 0.1 ) );
+	wa->release();
+	wb->release();
+	// 0.5 * 2.0 + 0.1 * 10.0 = 1.0 + 1.0 = 2.0
+	Check( ApproxEq( weighted->GetValueAtNM( ri, Scalar( 555 ) ), Scalar( 2.0 ) ),
+	       "add: weighted sum 0.5*2 + 0.1*10 = 2.0" );
+	weighted->release();
+
+	// Channel-variation propagation: add uniform + RGB -> variation.
+	UniformScalarPainter* u = new UniformScalarPainter( Scalar( 1.0 ) );
+	RGBScalarPainter*     r = new RGBScalarPainter( Scalar( 1.3 ), Scalar( 1.5 ), Scalar( 2.0 ) );
+	AddScalarPainter* add2 = new AddScalarPainter( u, r );
+	u->release();
+	r->release();
+	Check( add2->HasPerChannelVariation(),
+	       "add: variation propagates from child" );
+	const ScalarTriple t2 = add2->GetValuesAt( ri );
+	Check( ApproxEq( t2.v[0], 2.3 ) && ApproxEq( t2.v[1], 2.5 ) && ApproxEq( t2.v[2], 3.0 ),
+	       "add: per-channel sum (2.3, 2.5, 3.0)" );
+	add2->release();
+
+	// Wavelength composition: Sellmeier + Uniform -> varies with lambda.
+	SellmeierScalarPainter* bk7 = new SellmeierScalarPainter(
+		Scalar( 1.03961212 ), Scalar( 0.231792344 ), Scalar( 1.01046945 ),
+		Scalar( 0.00600069867 ), Scalar( 0.0200179144 ), Scalar( 103.560653 )
+		);
+	UniformScalarPainter* half = new UniformScalarPainter( Scalar( 0.5 ) );
+	AddScalarPainter* add3 = new AddScalarPainter( bk7, half );
+	bk7->release();
+	half->release();
+	// At lambda = 587.6: 1.5168 + 0.5 = 2.0168.
+	Check( ApproxEq( add3->GetValueAtNM( ri, Scalar( 587.6 ) ),
+	                  Scalar( 0.5 ) + Scalar( 1.5168 ), Scalar( 1e-3 ) ),
+	       "add (sellmeier + uniform): per-wavelength sum" );
+	add3->release();
+
+	// Null-operand defensive behavior: a missing operand contributes 0
+	// (addition's neutral element) rather than zeroing the whole result
+	// the way MultiplyScalarPainter's null-guard does.
+	UniformScalarPainter* solo = new UniformScalarPainter( Scalar( 5.0 ) );
+	AddScalarPainter* nullB = new AddScalarPainter( solo, nullptr );
+	solo->release();
+	Check( ApproxEq( nullB->GetValueAtNM( ri, 555 ), 5.0 ),
+	       "add-null-b: GetValueAtNM = 5.0 (missing operand contributes 0)" );
+	nullB->release();
+
+	AddScalarPainter* bothNull = new AddScalarPainter( nullptr, nullptr );
+	Check( ApproxEq( bothNull->GetValueAtNM( ri, 555 ), 0.0 ),
+	       "add-both-null: GetValueAtNM = 0 (defensive)" );
+	bothNull->release();
+}
+
 // Minimal IFunction1D for the Function1D wrapper test.  Returns
 // `lambda * 2`, lets the test verify (a) the wrapper queries the
 // function at the right argument and (b) the function's value
@@ -431,6 +506,7 @@ int main()
 	TestPolynomialScalarPainter();
 	TestScaledScalarPainter();
 	TestMultiplyScalarPainter();
+	TestAddScalarPainter();
 	TestFunction1DScalarPainter();
 	TestFunction2DScalarPainter();
 

@@ -6561,6 +6561,7 @@ namespace RISE
 #include "Painters/RampPainter.h"
 #include "Painters/ScaledScalarPainter.h"
 #include "Painters/MultiplyScalarPainter.h"
+#include "Painters/AddScalarPainter.h"
 #include "Managers/MaterialManager.h"
 #include "Managers/ShaderManager.h"
 #include "Managers/ShaderOpManager.h"
@@ -6893,6 +6894,20 @@ namespace RISE
 		if( !ppi ) return false;
 		*ppi = new MultiplyScalarPainter( pA, pB );
 		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "multiply scalar painter" );
+		return true;
+	}
+
+	bool RISE_API_CreateAddScalarPainter(
+		IScalarPainter** ppi,
+		IScalarPainter* pA,
+		IScalarPainter* pB,
+		Scalar weightA,
+		Scalar weightB
+		)
+	{
+		if( !ppi ) return false;
+		*ppi = new AddScalarPainter( pA, pB, weightA, weightB );
+		GlobalLog()->PrintNew( *ppi, __FILE__, __LINE__, "add scalar painter" );
 		return true;
 	}
 
