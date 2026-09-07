@@ -132,7 +132,13 @@ byte-identical to v2, SHA `43444ef7ab6753c6e9673de9a81e4e139113132f6afe03390a64c
 The reporting/admission implementation at `e4c9aa79` passed a clean make build,
 publication gate, r190 owner gate and the complete FireSequence suite. Its
 qualified executable SHA is
-`f8a7792ca0bb8613dff9b7029a479a766cec573db64cb5656d8778d3e79a22fe`.
+`8e67cdcb66503fddfae5e54ca8cbbbda5a9731613f264027b66c70c7f45a9391`.
+The qualification receipt SHA is
+`f8a7792ca0bb8613dff9b7029a479a766cec573db64cb5656d8778d3e79a22fe`;
+the third review caught the earlier receipt/executable label substitution.
+A document-to-receipt RED now reads `producer_executable_sha256` explicitly;
+substituting the receipt hash fails it. The sibling background executable claim
+was checked against its separate request and was already correct.
 Later cost-report changes do not alter that executable; they are not a new
 numerical qualification or speed measurement.
 

@@ -2,12 +2,28 @@
 """Exact quantile/invalid-input checks; these do not qualify a solver."""
 import unittest
 import hashlib
+import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 from report_fire_r212_cost import stats, authenticated_input, observer_record, report
 
 
 class CostStatistics(unittest.TestCase):
+    def test_qualification_document_uses_executable_not_receipt_digest(self):
+        raw = Path("rendered/fire_production_calibration/r212_transport_adoption/qualification.v2.json").read_bytes()
+        receipt = json.loads(raw)
+        document = Path("docs/FIRE_SMOKE_TRANSPORT_ADOPTION_R212.md").read_text()
+        expected = receipt["producer_executable_sha256"]
+        claim = re.search(r"qualified executable SHA is\s+`([0-9a-f]{64})`", document)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.group(1), expected)
+        receipt_digest = hashlib.sha256(raw).hexdigest()
+        self.assertNotEqual(expected, receipt_digest)
+        mutant = document.replace(expected, receipt_digest)
+        self.assertNotEqual(re.search(r"qualified executable SHA is\s+`([0-9a-f]{64})`",
+                                      mutant).group(1), expected)
+
     def test_nearest_rank_and_scope(self):
         result = stats(list(range(1, 21)))
         self.assertEqual(result["p95"], 19)
