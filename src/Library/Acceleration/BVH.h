@@ -1276,8 +1276,10 @@ namespace RISE
 		}
 
 		// `epOverride`: nullptr (the default at every existing call site)
-		// uses the BVH's own bound `ep` — byte-identical behaviour and
-		// cost to before this parameter existed.  A non-null override
+		// uses the BVH's own bound `ep` — the same behaviour as before this
+		// parameter existed, for one extra pointer compare per leaf (see
+		// the end of this comment; NOT cost-identical, and not yet measured
+		// against the shadow-ray path).  A non-null override
 		// lets a caller traverse this SAME already-built tree under a
 		// DIFFERENT TreeElementProcessor for one call, without building
 		// a second tree or duplicating this traversal — see
@@ -1654,8 +1656,9 @@ namespace RISE
 		// within dHowFar.  Used by shadow-ray paths.
 		//
 		// `epOverride`: nullptr (every existing call site) uses the
-		// bound `ep` -- identical behaviour/cost to before this
-		// parameter existed.  A non-null override traverses this SAME
+		// bound `ep` -- the same behaviour as before this parameter
+		// existed, for one pointer compare per CALL (resolved once, above
+		// the traversal).  A non-null override traverses this SAME
 		// tree under a different TreeElementProcessor for one call --
 		// see ObjectManager::IntersectOcclusionRay (geometry-presence
 		// query that must NOT honour DoesCastShadows(), unlike the
