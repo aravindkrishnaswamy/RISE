@@ -26,6 +26,13 @@ owner's request. It preserves the existing `CalibrationImport` boundary for
 the already-authenticated source; it never accepts a caller-authored raw dose
 as a source seal. All nested qualification mutations refuse.
 
+Capture is currently restricted to the capstone's wall/open boundary topology;
+periodic requests refuse rather than silently acquiring unqualified seam
+semantics. The resident-only velocity and boundary-class surfaces, which the
+fp64 `Begin` cannot inspect, receive explicit extent, finite-value and
+classification checks before capture. Physical-flux basis/ambient input shapes
+and finiteness are checked too. This does not replace a complete owner solve.
+
 The payload has a versioned binary schema, fixed little-endian words and
 length-delimited fields. It includes staged source Q, pre-injection eligibility
 Q, every source control, source packet fields and seal identities, owner Q/M,
@@ -94,6 +101,17 @@ It records 64 source-active cells, 64 nonzero source entries, a 19,894-byte
 capture, a passing native fp64 `Begin`, and four compiled mutants failing with
 the required exit status. Every compiled fixture executable and the adapter,
 fixture, driver and generated source manifest are SHA-bound in that log.
+
+Fresh review of `50f1b491` found no P1 and one P2: `Begin` did not validate
+resident-only masks/velocities. That gap is repaired with the explicit input
+checks above and nine independent malformed-surface REDs (invalid/short inlet
+and pressure masks, short/nonfinite velocity, unsupported periodic boundary,
+short basis and nonfinite ambient). A compiled mutation removes the surface
+check itself. The original log is retained as history. The corrected gate is
+`r214_shared_owner_input/cpu_asan_ubsan.v2.log`, SHA256
+`09b4235b12e1a3d68556b9c829bca7d8117142365d9b7a6d382bd5adb4f71359`:
+all nine surface REDs refuse, the healthy capture passes, and all five
+compiled mutants fail as required. Fresh review covers this correction.
 
 Self-audit and fresh-review axes: omitted source-control identity despite
 unchanged packet bytes; stale/forged immediate parent; incorrect promotion or

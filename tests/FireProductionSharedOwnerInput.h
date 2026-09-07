@@ -31,6 +31,44 @@ inline void Shape(Bytes& bytes,const RISE::FireProductionProjectionShape& value)
 inline bool Fail(std::string& error,const char* message)
 { error=message;return false; }
 
+// The current shared-state campaign is the capstone's wall/open domain. Do
+// not silently admit periodic seams until the native capture endpoint has a
+// seam-qualified path. These are the resident-only fields absent from CPU Begin.
+inline bool CapstoneResidentInputSurfaces(const RISE::FireProductionResidentPhysicalFluxComparatorRequest& flux,
+    std::string& error)
+{
+    const auto& transport=flux.transport;const auto& shape=transport.shape;
+    for(unsigned int axis=0u;axis<3u;++axis){
+        if(transport.projectedVelocityMPerS[axis].size()!=RISE::FireProductionProjectionFaceCount(shape,axis))
+            return Fail(error,"shared owner projected velocity extent differs");
+        for(const auto value:transport.projectedVelocityMPerS[axis])if(!std::isfinite(value))
+            return Fail(error,"shared owner projected velocity is nonfinite");
+    }
+    for(unsigned int side=0u;side<6u;++side){
+        const auto boundary=transport.boundary[side];
+        if(boundary!=RISE::FireProductionProjectionWall&&boundary!=RISE::FireProductionProjectionPressureOpen)
+            return Fail(error,"shared owner capture supports only qualified capstone wall/open boundaries");
+        const std::size_t faces=side<2u?shape.ny*shape.nz:(side<4u?shape.nx*shape.nz:shape.nx*shape.ny);
+        if(transport.fuelInletBoundaryFace[side].size()!=faces||flux.pressureOpenInflow[side].size()!=faces)
+            return Fail(error,"shared owner resident boundary classification extent differs");
+        for(const auto value:transport.fuelInletBoundaryFace[side])if(value>1u||
+            (value!=0u&&(side!=4u||boundary!=RISE::FireProductionProjectionWall)))
+            return Fail(error,"shared owner resident inlet classification is invalid");
+        for(const auto value:flux.pressureOpenInflow[side])if(value>1u||
+            (value!=0u&&boundary!=RISE::FireProductionProjectionPressureOpen))
+            return Fail(error,"shared owner resident pressure classification is invalid");
+    }
+    const auto& fuel=RISE::FireSimulationMethaneRecord::PhysicalV1();
+    if(flux.nullity==0u||flux.nullity>8u||flux.nullspaceBasis.size()!=8u*flux.nullity||
+        flux.coordinateProjector.size()!=flux.nullity*flux.nullity||!std::isfinite(flux.ambientTemperatureK)||
+        flux.ambientTemperatureK<fuel.TemperatureMinK()||flux.ambientTemperatureK>fuel.TemperatureMaxK())
+        return Fail(error,"shared owner physical-flux input contract is invalid");
+    for(const auto value:flux.ambient)if(!std::isfinite(value))return Fail(error,"shared owner ambient is nonfinite");
+    for(const auto value:flux.nullspaceBasis)if(!std::isfinite(value))return Fail(error,"shared owner basis is nonfinite");
+    for(const auto value:flux.coordinateProjector)if(!std::isfinite(value))return Fail(error,"shared owner projector is nonfinite");
+    return true;
+}
+
 // Every source input is included, notably the pre-injection eligibility state.
 // The source packet can remain numerically unchanged when an inactive control
 // changes; the capture identity must still change in that case.
@@ -130,6 +168,7 @@ public:
             return Fail(error,"shared owner nested authority contains a qualification mutation");
         if(!RISE::FireProductionFrozenSourcePacketSealMatchesBeginningState(source,
             transport.shape,transport.conservativeValues,transport.temperatureK,&error))return false;
+        if(!CapstoneResidentInputSurfaces(flux,error))return false;
         if(transport.stage!=RISE::FireProductionProjectedHeunStage::R0||
             transport.attemptIdentity!=source.AttemptIdentity()||
             transport.parentCandidateIdentity!=source.BeginningStateIdentity()||

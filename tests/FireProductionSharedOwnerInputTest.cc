@@ -119,6 +119,21 @@ int main()
     OwnerCapture nestedRED;passed=passed&&!nestedRED.Capture(source,input,mutant,error);
     CanonicalSourceCapture unsealed;OwnerCapture unsealedRED;
     passed=passed&&!unsealedRED.Capture(unsealed,input,live,error);
+    for(unsigned int surface=0u;surface<9u;++surface){auto invalid=live;
+        auto& invalidFlux=invalid.lineage.eos.physicalFlux;auto& invalidTransport=invalidFlux.transport;
+        if(surface==0u)invalidTransport.fuelInletBoundaryFace[0][0]=2u;
+        if(surface==1u)invalidTransport.fuelInletBoundaryFace[0].clear();
+        if(surface==2u)invalidFlux.pressureOpenInflow[0][0]=2u;
+        if(surface==3u)invalidFlux.pressureOpenInflow[0].clear();
+        if(surface==4u)invalidTransport.projectedVelocityMPerS[0].clear();
+        if(surface==5u)invalidTransport.projectedVelocityMPerS[0][0]=std::numeric_limits<float>::infinity();
+        if(surface==6u)invalidTransport.boundary[0]=FireProductionProjectionPeriodic;
+        if(surface==7u)invalidFlux.nullspaceBasis.clear();
+        if(surface==8u)invalidFlux.ambient[0]=std::numeric_limits<float>::infinity();
+        OwnerCapture surfaceRED;const bool refused=!surfaceRED.Capture(source,input,invalid,error)&&
+            !surfaceRED.IsCaptured()&&surfaceRED.Payload().empty();
+        passed=passed&&refused;std::printf("SHARED_OWNER_SURFACE_RED field=%u refused=%d\n",surface,refused?1:0);
+    }
     passed=passed&&!source.Build(input,error)&&!captured.Capture(source,input,live,error);
     auto changedMomentum=live;changedMomentum.beginningMomentumKGPerM2S[0][7]=0.25f;
     OwnerCapture momentum;passed=passed&&momentum.Capture(source,input,changedMomentum,error)&&
