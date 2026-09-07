@@ -1924,6 +1924,7 @@
 		FA1ABHD1000000000000002A /* TextureScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000028 /* TextureScalarPainter.h */; };
 		FA1ABHD1000000000000002E /* ScaledScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
 		FA1ABHD10000000000000032 /* MultiplyScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
+		FA1ABHD1000000000000003A /* AddScalarPainter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000038 /* AddScalarPainter.h */; };
 		FA1ABHD10000000000000036 /* PainterToScalarAdapter.h in Headers */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
 		FA1ABSC10000000000000001 /* IScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000000 /* IScalarPainter.h */; };
 		F5C0DEEF0000000000000003 /* ISurfaceSignalProvider.h in Sources */ = {isa = PBXBuildFile; fileRef = F5C0DEEF0000000000000001 /* ISurfaceSignalProvider.h */; };
@@ -1939,6 +1940,7 @@
 		FA1ABSC10000000000000029 /* TextureScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000028 /* TextureScalarPainter.h */; };
 		FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR1000000000000002C /* ScaledScalarPainter.h */; };
 		FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */; };
+		FA1ABSC10000000000000039 /* AddScalarPainter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000038 /* AddScalarPainter.h */; };
 		FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */ = {isa = PBXBuildFile; fileRef = FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */; };
 		FA9D00010000000000000001 /* FiniteMath.h in Sources */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
 		FA9D00020000000000000001 /* FiniteMath.h in Headers */ = {isa = PBXBuildFile; fileRef = FA9D00030000000000000001 /* FiniteMath.h */; };
@@ -3062,6 +3064,7 @@
 		FA1ABFR10000000000000028 /* TextureScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = TextureScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR1000000000000002C /* ScaledScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ScaledScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = MultiplyScalarPainter.h; sourceTree = "<group>"; };
+		FA1ABFR10000000000000038 /* AddScalarPainter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = AddScalarPainter.h; sourceTree = "<group>"; };
 		FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = PainterToScalarAdapter.h; sourceTree = "<group>"; };
 		FA9D00030000000000000001 /* FiniteMath.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FiniteMath.h; sourceTree = "<group>"; };
 		FCA01000000000000000A003 /* ICameraManager.h */ = {isa = PBXFileReference; fileEncoding = 30; lastKnownFileType = sourcecode.c.h; path = ICameraManager.h; sourceTree = "<group>"; };
@@ -3883,6 +3886,7 @@
 				F27F0949069C42900069C9E5 /* TexturePainter.h */,
 				F27F094A069C42900069C9E5 /* UniformColorPainter.h */,
 				FA1ABFR10000000000000034 /* PainterToScalarAdapter.h */,
+				FA1ABFR10000000000000038 /* AddScalarPainter.h */,
 				FA1ABFR10000000000000030 /* MultiplyScalarPainter.h */,
 				FA1ABFR1000000000000002C /* ScaledScalarPainter.h */,
 				FA1ABFR10000000000000028 /* TextureScalarPainter.h */,
@@ -4910,6 +4914,7 @@
 				F27F0BAD069C42910069C9E5 /* TexturePainter.h in Headers */,
 				F27F0BAE069C42910069C9E5 /* UniformColorPainter.h in Headers */,
 				FA1ABHD10000000000000036 /* PainterToScalarAdapter.h in Headers */,
+				FA1ABHD1000000000000003A /* AddScalarPainter.h in Headers */,
 				FA1ABHD10000000000000032 /* MultiplyScalarPainter.h in Headers */,
 				FA1ABHD1000000000000002E /* ScaledScalarPainter.h in Headers */,
 				FA1ABHD1000000000000002A /* TextureScalarPainter.h in Headers */,
@@ -6173,6 +6178,7 @@
 				F24C544A2F7CAB4F009AF16D /* HenyeyGreensteinPhaseFunction.cpp in Sources */,
 				F24B73372F52A632008304C4 /* UniformColorPainter.h in Sources */,
 				FA1ABSC10000000000000035 /* PainterToScalarAdapter.h in Sources */,
+				FA1ABSC10000000000000039 /* AddScalarPainter.h in Sources */,
 				FA1ABSC10000000000000031 /* MultiplyScalarPainter.h in Sources */,
 				FA1ABSC1000000000000002D /* ScaledScalarPainter.h in Sources */,
 				FA1ABSC10000000000000029 /* TextureScalarPainter.h in Sources */,

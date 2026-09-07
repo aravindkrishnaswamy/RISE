@@ -365,9 +365,9 @@ uplift).  See docs/ISCALARPAINTER_REFACTOR.md.
 ```
 
 **So how do you get spatially-varying ROUGHNESS?**  FOUR of
-`scalar_painter`'s twelve forms vary across a surface; the other eight
+`scalar_painter`'s thirteen forms vary across a surface; the other nine
 (`value`, `values`, `file`, `sellmeier`, `polynomial`, `function1d`,
-`base`, `multiply`) are spatially constant:
+`base`, `multiply`, `add`) are spatially constant:
 
 1. `scalar_painter { expression <body> }` -- the texture-expression VM on
    the scalar pipe, over the full 3D context (`u v P Po N fw`), with the
@@ -402,6 +402,13 @@ uplift).  See docs/ISCALARPAINTER_REFACTOR.md.
    `hdr_painter` / `exr_painter` / `tiff_painter` at the surface UV, with
    no colourspace conversion.  Use it when you actually have a
    roughness map on disk.
+
+Once you have a varying field, `scalar_painter { add <field_a> <field_b>
+weight_a <wa> weight_b <wb> }` layers a second field's detail ON TOP of
+the first (`out = wa*a + wb*b`) without a zero in one operand zeroing
+the whole result the way `multiply` would -- the idiom for "one field
+drives the base value, a second small-amplitude field adds fine detail"
+(e.g. a bridged roughness field plus a sub-pixel pore/kerf-mark field).
 
 **If you would rather not hand-author it at all, call
 `vary_material`** -- zero required arguments; it finds the material whose

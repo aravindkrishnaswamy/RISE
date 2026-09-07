@@ -285,6 +285,58 @@ static void TestMultiplyComposition()
 	safe_release( pJob );
 }
 
+static void TestAddComposition()
+{
+	std::cout << "TestAddComposition" << std::endl;
+	const char* scene =
+		"scalar_painter\n"
+		"{\n"
+		"\tname a\n"
+		"\tvalue 3.0\n"
+		"}\n"
+		"\n"
+		"scalar_painter\n"
+		"{\n"
+		"\tname b\n"
+		"\tvalue 4.0\n"
+		"}\n"
+		"\n"
+		"scalar_painter\n"
+		"{\n"
+		"\tname sum_default\n"
+		"\tadd a b\n"
+		"}\n"
+		"\n"
+		"scalar_painter\n"
+		"{\n"
+		"\tname sum_weighted\n"
+		"\tadd a b\n"
+		"\tweight_a 0.5\n"
+		"\tweight_b 0.1\n"
+		"}\n";
+	IJobPriv* pJob = LoadScene( scene, "add" );
+	Check( pJob != nullptr, "add: scene loads" );
+	if( !pJob ) return;
+
+	IScalarPainter* pDefault = pJob->GetScalarPainters()->GetItem( "sum_default" );
+	Check( pDefault != nullptr, "add: default-weight painter registered" );
+	if( pDefault ) {
+		const auto ri = MakeDummyRig();
+		Check( ApproxEq( pDefault->GetValueAtNM( ri, 555 ), 7.0 ),
+			"add: default weights 3 + 4 = 7" );
+	}
+
+	IScalarPainter* pWeighted = pJob->GetScalarPainters()->GetItem( "sum_weighted" );
+	Check( pWeighted != nullptr, "add: weighted painter registered" );
+	if( pWeighted ) {
+		const auto ri = MakeDummyRig();
+		// 0.5*3.0 + 0.1*4.0 = 1.5 + 0.4 = 1.9
+		Check( ApproxEq( pWeighted->GetValueAtNM( ri, 555 ), 1.9 ),
+			"add: weight_a 0.5 * 3 + weight_b 0.1 * 4 = 1.9" );
+	}
+	safe_release( pJob );
+}
+
 static void TestRejectMissingForm()
 {
 	std::cout << "TestRejectMissingForm" << std::endl;
@@ -618,6 +670,7 @@ int main()
 	TestPiecewiseLinearFile();
 	TestScaledComposition();
 	TestMultiplyComposition();
+	TestAddComposition();
 	TestRejectMissingForm();
 	TestRejectMultipleForms();
 	TestRejectUnderspecifiedValues();

@@ -30,7 +30,7 @@
 //      - Spatial:    TextureScalarPainter, Function2DScalarPainter,
 //                    PerlinScalarPainter, WorleyScalarPainter.
 //      - Channel:    RGBScalarPainter (per-channel triple).
-//    Composition: ScaledScalarPainter, MultiplyScalarPainter.
+//    Composition: ScaledScalarPainter, MultiplyScalarPainter, AddScalarPainter.
 //
 //  Conventions
 //

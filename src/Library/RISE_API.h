@@ -2244,6 +2244,19 @@ namespace RISE
 								IScalarPainter* pB				///< [in] Painter B (addref'd)
 								);
 
+	//! Composition: element-wise WEIGHTED SUM of two scalar painters
+	//! (`ScalarTriple` and per-wavelength) -- `weightA*a + weightB*b`.
+	//! Multiply's additive sibling: layers one field's detail on top of
+	//! another's without a missing/zero region in one operand zeroing
+	//! the whole result the way a product would.
+	bool RISE_API_CreateAddScalarPainter(
+								IScalarPainter** ppi,
+								IScalarPainter* pA,				///< [in] Painter A (addref'd)
+								IScalarPainter* pB,				///< [in] Painter B (addref'd)
+								Scalar weightA = Scalar( 1.0 ),	///< [in] Multiplier on A's contribution
+								Scalar weightB = Scalar( 1.0 )	///< [in] Multiplier on B's contribution
+								);
+
 	//! Creates the scalar_painter { expression ... } PHYSICAL-SCALAR-pipe
 	//! surface (doc 88 P1, S2): no colorspace, no JH uplift, by
 	//! construction.  A scalar-typed program yields a uniform

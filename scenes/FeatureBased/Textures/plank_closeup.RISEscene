@@ -68,10 +68,10 @@ RISE ASCII SCENE 7
 #      everywhere else.  Uniform busy-ness is the other half of "obviously generated".
 #
 #   5. ONE FIELD DRIVES COLOUR, ROUGHNESS AND RELIEF.  `expr_plank` is the only wood field.
-#      `ramp_plank` colours it, `sp_plank_rough` bridges it to GGX roughness (times `sp_pore` through
-#      `scalar_painter { multiply }`), `sp_plank_relief` bridges it raw into `relief_modifier`.  Ridge,
-#      dark band and dull sheen are the SAME feature seen three ways, which is what a real surface does
-#      and what a graph of independent noises cannot fake.
+#      `ramp_plank` colours it, `sp_plank_rough` bridges it to GGX roughness (plus `sp_pore`'s
+#      zero-mean detail through `scalar_painter { add }`), `sp_plank_relief` bridges it raw into
+#      `relief_modifier`.  Ridge, dark band and dull sheen are the SAME feature seen three ways,
+#      which is what a real surface does and what a graph of independent noises cannot fake.
 #
 #   6. LIGHTING THAT REVEALS RELIEF.  A 0.17 x 0.12 m panel at 28 deg elevation, throwing mostly along
 #      +Z (it sits behind the plank at z = -0.5 and faces the camera side) while the grain runs along X,
@@ -449,11 +449,14 @@ scalar_painter
 	bias			0.52
 }
 
-# ...modulated by the only sub-millimetre feature in the scene.  DOCTRINE 1:
-# tracheid pores are 0.5 mm across, barely one pixel, so they can carry no
-# shape -- they go into ROUGHNESS ONLY, where a sub-pixel field legitimately
-# reads as a broadening of the specular lobe rather than as noise.  5:1
-# anisotropic, because pores run along the grain.
+# ...layered onto it by the only sub-millimetre feature in the scene.
+# DOCTRINE 1: tracheid pores are 0.5 mm across, barely one pixel, so they can
+# carry no shape -- they go into ROUGHNESS ONLY, where a sub-pixel field
+# legitimately reads as a broadening of the specular lobe rather than as
+# noise.  5:1 anisotropic, because pores run along the grain.  ZERO-MEAN
+# by construction (`- 0.5`): this field is a pure ADDITIVE detail term, not
+# a multiplicative modulator, so it plugs directly into `sp_plank_rough`'s
+# `add` below without dragging the base roughness's own range through it.
 scalar_painter
 {
 	name			sp_pore
@@ -461,13 +464,26 @@ scalar_painter
 	param			pore_along 400.0 min 100 max 1500 step 25 label "Pore frequency (along grain)"
 	param			pore_depth 0.30 min 0.0 max 0.8 step 0.02 label "Pore roughness modulation"
 	def				f1 worley_f1(vec3(P.x*pore_along, P.y*pore_across, P.z*pore_across), 1.0)
-	expression		1.0 - pore_depth*0.5 + pore_depth*clamp(f1, 0, 1)
+	expression		pore_depth*(clamp(f1, 0, 1) - 0.5)
 }
 
+# sp_plank_rough = sp_ring_rough + weight_b*sp_pore (scalar_painter's `add`
+# form, multiply's additive sibling).  sp_pore ranges +-pore_depth/2 =
+# +-0.15 at the default pore_depth; weight_b 0.5 halves that to +-0.075,
+# which is what keeps the COMBINED range close to what the old multiplicative
+# modulation gave (+-15% of a 0.33-0.52 base is +-0.05 to +-0.08 in absolute
+# roughness) -- so the final range is still ~0.26-0.60, same porous-early/
+# smooth-late read as before, but now the pore contribution is a flat +-0.075
+# swing rather than a fraction of the local ring roughness.  Doctrine 1's
+# "goes ONLY into roughness, never colour, never relief" is unchanged --
+# `add` is a different way to COMBINE fields, not a different place to put
+# one.
 scalar_painter
 {
 	name			sp_plank_rough
-	multiply		sp_ring_rough sp_pore
+	add				sp_ring_rough sp_pore
+	weight_a		1.0
+	weight_b		0.5
 }
 
 # CONSUMER 3 -- relief, the same field bridged RAW (the amplitude lives in

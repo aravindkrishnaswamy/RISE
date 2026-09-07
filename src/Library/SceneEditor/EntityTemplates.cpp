@@ -705,7 +705,7 @@ namespace
 	// if a future chunk grows a minimal-validity rule its descriptor
 	// cannot express, that sweep fails and points here.
 	const NodeSeed kNodeSeeds[] = {
-		// scalar_painter: twelve mutually-exclusive forms, none marked
+		// scalar_painter: thirteen mutually-exclusive forms, none marked
 		// `required`.  Form 1 (UniformScalarPainter) is the only one with
 		// no dependency on another chunk or a file on disk.
 		{ "scalar_painter",        "value", "0.5" },
@@ -777,7 +777,7 @@ namespace
 		{ "generic_human_tissue_material", "g",  "0.0" },
 
 		// hair_material: a ONE-OF FORM SELECTION the descriptor cannot
-		// express, same shape as scalar_painter's twelve forms above --
+		// express, same shape as scalar_painter's thirteen forms above --
 		// `color` / `sigma_a` / `eumelanin` / `pheomelanin` all default to
 		// the `none` sentinel (tier not bound), and Job::AddHairMaterial
 		// requires EXACTLY ONE of the three tiers (color / sigma_a /
@@ -803,7 +803,7 @@ namespace
 	//! Two reasons this is a keyword table and not "every
 	//! ValueKind::Filename parameter".  (1) Several Filename params in
 	//! scope are genuinely OPTIONAL -- `scalar_painter`'s `file` is one
-	//! of twelve mutually-exclusive forms (we seed a different one), and
+	//! of thirteen mutually-exclusive forms (we seed a different one), and
 	//! `voronoi2d_painter` / `voronoi3d_painter` take an optional
 	//! generator list -- so promoting them would make creatable nodes
 	//! uncreatable.  (2) The failure mode without this is not a tidy

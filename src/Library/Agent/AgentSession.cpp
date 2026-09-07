@@ -6560,9 +6560,9 @@ namespace RISE
 			//! Classify ONE microsurface slot value against the document's painter
 			//! chunks.  `scalarPainterForms` maps a `scalar_painter` chunk name to
 			//! its whole param map; `painterKinds` maps EVERY chunk name to its
-			//! keyword.  `depth` bounds the `base` / `multiply` walk (those two
-			//! forms wrap other scalar_painters, so a chain of them is only as
-			//! constant as its operands).
+			//! keyword.  `depth` bounds the `base` / `multiply` / `add` walk (those
+			//! three forms wrap other scalar_painters, so a chain of them is only
+			//! as constant as its operands).
 			MicrosurfaceBinding_ ClassifyMicrosurfaceBinding_(
 				const std::string& value,
 				const std::map<std::string, std::map<std::string, std::string> >& scalarPainterForms,
@@ -6573,7 +6573,7 @@ namespace RISE
 				if( value.empty() ) return MicrosurfaceBinding_::Absent;
 				if( MicrosurfaceParseUniformNumber_( value, outConstant ) ) return MicrosurfaceBinding_::Constant;
 				if( value == "none" ) return MicrosurfaceBinding_::Absent;
-				if( depth > 4 ) return MicrosurfaceBinding_::Opaque;   // pathological base/multiply chain
+				if( depth > 4 ) return MicrosurfaceBinding_::Opaque;   // pathological base/multiply/add chain
 
 				const std::map<std::string, std::map<std::string, std::string> >::const_iterator sp =
 					scalarPainterForms.find( value );
@@ -6593,13 +6593,17 @@ namespace RISE
 						if( vs != pmap.end() && MicrosurfaceParseUniformNumber_( vs->second, outConstant ) )
 							return MicrosurfaceBinding_::Constant;
 					}
-					// `base` (scaled) and `multiply` wrap OTHER scalar_painters --
-					// only as constant as what they wrap, so walk one hop.  A
-					// `base` chain's arithmetic is not reproduced here (the
-					// wrapper's own `scale`/`bias` would have to be folded in),
-					// so a constant operand still reports Opaque rather than a
-					// wrong number: this verb never varies around a value it did
-					// not read directly.
+					// `base` (scaled), `multiply`, and `add` wrap OTHER
+					// scalar_painters -- only as constant as what they wrap, so
+					// walk one hop.  A `base` chain's arithmetic is not
+					// reproduced here (the wrapper's own `scale`/`bias` would
+					// have to be folded in), so a constant operand still
+					// reports Opaque rather than a wrong number: this verb
+					// never varies around a value it did not read directly.
+					// `add`'s `weight_a`/`weight_b` are the same story -- they
+					// scale an operand's contribution but never turn a
+					// constant operand into a genuine number this walk can
+					// reproduce, so Opaque is correct there too.
 					{
 						const std::map<std::string, std::string>::const_iterator b = pmap.find( "base" );
 						if( b != pmap.end() ) {
@@ -6612,6 +6616,17 @@ namespace RISE
 						const std::map<std::string, std::string>::const_iterator m = pmap.find( "multiply" );
 						if( m != pmap.end() ) {
 							const std::vector<std::string> ops = CollapseSplitWs_( m->second );
+							for( const std::string& op : ops ) {
+								double ignored = 0.0;
+								if( ClassifyMicrosurfaceBinding_( op, scalarPainterForms, painterKinds,
+								                                  ignored, depth + 1 ) == MicrosurfaceBinding_::Varying )
+									return MicrosurfaceBinding_::Varying;
+							}
+							return MicrosurfaceBinding_::Opaque;
+						}
+						const std::map<std::string, std::string>::const_iterator a = pmap.find( "add" );
+						if( a != pmap.end() ) {
+							const std::vector<std::string> ops = CollapseSplitWs_( a->second );
 							for( const std::string& op : ops ) {
 								double ignored = 0.0;
 								if( ClassifyMicrosurfaceBinding_( op, scalarPainterForms, painterKinds,
@@ -7154,8 +7169,8 @@ namespace RISE
 							scalarPainterForms[nm->second] = pm;
 							// (Adoption polish item 1) Only the "expression"
 							// form has a def/expr body to erode -- value /
-							// function2d / texture / base / multiply carry no
-							// literals at all in this sense.
+							// function2d / texture / base / multiply / add
+							// carry no literals at all in this sense.
 							if( pm.count( "expression" ) && ParamErosionFires_( item, "expression" ) )
 								c.paramErodedChunkNames.push_back( nm->second );
 							// (Condition L clause (d)) The body text, for the
