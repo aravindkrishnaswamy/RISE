@@ -975,7 +975,7 @@ namespace
 		double externalFuelMassKG=0.0;
 	};
 
-	bool ClosePublishedStream(std::ofstream& stream);
+	template<class Stream> bool ClosePublishedStream(Stream& stream);
 	bool AppendOracleMomentumBudget(const std::filesystem::path& path,
 		const PeriodicMACShape& shape,const PeriodicMACField& beginningMomentum,
 		const ConservativeAdvance3DConfig& config,const ConservativeAdvance3DResult& advanced,
