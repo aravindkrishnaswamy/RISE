@@ -875,11 +875,13 @@ lazy + mutex shader-op route, or bake-time `IObjectManager::IntersectShadowRay`
 primitive available, boolean-only, far cheaper than a full `IRayCaster::CastRay`.
 **Priced 2026-09-07 (§8.1), and neither is an open pointer any more.** What
 was measured on the first route is its *uncached* form — a fresh shadow-ray fan
-on every painter call, without the per-hit memo the SSS precedent implies and
-that §10 of the convexity document names as an unattempted ~10× lever — and
-that form costs 2.4× on the flagship scene; a memoized form would shrink the
-cost toward the ray fan's own share of one evaluation per hit, but it cannot
-change what the signal shows, which is the finding that closes the route: the
+on every painter call, without the per-hit memo the SSS precedent implies — and
+that form costs 2.4× on the flagship scene. That memo has since **shipped**
+(`src/Library/Utilities/ExpressionMemo.h`, 3.32× on `plank_closeup`;
+OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §6.5), so the cached form's cost would
+now fall toward the ray fan's own share of one evaluation per hit — but it
+cannot change what the signal shows, which is the finding that closes the
+route: the
 contact case reads only as a band, not a seam, under every hemisphere sampler
 tried. The second route was prototyped as measured: the attach-time bake is
 affordable for meshes (Sponza 12 s / 8.2 MB) and cannot resolve the SDF
@@ -1080,10 +1082,14 @@ this query, to cost and purity rather than control flow.
 hemisphere sampler only as a band — 2–3 px cosine, ~10 px horizon — that does
 not read as a seam, and the sampler that widens it costs 1.93× as much and
 cuts the one gain the prototype had by roughly 44 %; the bench case is marginal beside the contact
-shadow and, pushed until it shows, looks painted on; the live query costs 2.4× on the flagship scene and scales
-with the painter-graph multiplicity that §10 of the convexity document already
-names as the open lever, a dense-grid bake cannot serve the SDF family the
-showcases are built on at their feature sizes, and invalidation is O(scene) with a hole the census cannot see.
+shadow and, pushed until it shows, looks painted on; the live query costs 2.4× on the flagship scene
+(measured *without* the per-hit memo, which has since shipped and would take
+most of that multiplicity back —
+OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §6.5), a dense-grid bake cannot serve the
+SDF family the showcases are built on at their feature sizes, and invalidation
+is O(scene) with a hole the census cannot see. **The decline stands on the
+band-not-seam finding and the O(scene) invalidation, neither of which a memo
+touches.**
 Gate 2 (the engine-principles design) was therefore not entered and no design
 document was written. **What would actually serve the motivation** is a
 cross-object *proximity* signal — the distance to the nearest *other* surface
