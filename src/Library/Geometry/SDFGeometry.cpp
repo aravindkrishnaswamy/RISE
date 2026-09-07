@@ -27,6 +27,7 @@
 #include "../Utilities/RenderParallelScope.h"	// g_renderParallelDepth -- single-thread-mutation tripwire
 #include "../Utilities/FiniteMath.h"		// RISE::IsFiniteDouble -- the superellipsoid's non-finite guards
 #include "../Utilities/SurfaceCurvature.h"
+#include "../Utilities/OrthonormalBasis3D.h"	// occlusion's cosine-weighted march directions
 
 using namespace RISE;
 using namespace RISE::Implementation;
@@ -1239,36 +1240,237 @@ Scalar SDFGeometry::DivergenceOfUnitNormal( const Point3& y, const Vector3& n, c
 }
 
 //////////////////////////////////////////////////////////////////////
-// ISurfaceSignalProvider -- PHASE-2 geometry-derived shading signals
-// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2).
+// ISurfaceSignalProvider -- geometry-derived shading signals
+// (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2 for the channel;
+//  docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for the estimator).
 //
-// Both are pure const functions of the field: no rays, no scene access,
-// no locks, no mutable state.  Every render thread calls them
+// All three are pure const functions of the field: no rays, no scene
+// access, no locks, no mutable state.  Every render thread calls them
 // concurrently on one shared geometry.
 //
-// Both are LAZY by construction -- they run only when an expression
-// actually calls `occlusion()` / `thickness()`, which is why neither
-// needs the up-front consumption gate `curv` requires.
+// All three are LAZY by construction -- they run only when an expression
+// actually calls `occlusion()` / `thickness()` / `convexity()`, which is
+// why none needs the up-front consumption gate `curv` requires.
+//
+// THE TWO ESTIMATORS, AND WHY THEY ARE NOT THE SAME ONE.
+//
+// `occlusion(r)` is DIRECTIONAL VISIBILITY over the outward hemisphere --
+// the classic ambient-occlusion question, and bit-for-bit the same
+// question the mesh family's bake asks with rays: of N directions, how
+// many escape a distance R without entering the solid?  A plane and every
+// convex feature read EXACTLY 1 (every outward ray escapes); a wedge of
+// empty opening alpha reads alpha/pi; a slot, a fold or a pocket goes
+// dark.  It marches the field, one sphere trace per direction.
+//
+// `convexity(r)` is the BALL-VOLUME EXCESS -- the fraction A of the ball
+// of radius R about the hit that lies outside the solid, which is exactly
+// 1/2 on a plane, more on a convex feature and less in a cavity, read as
+// `clamp(2A - 1, 0, 1)`.  It needs no marching at all: 80 point samples,
+// no rays, no tangent frame.
+//
+// WHY NOT ONE MEASURE FOR BOTH, which an earlier draft of this work did
+// try.  `clamp(2A, 0, 1)` off the same ball is a beautiful occlusion on
+// paper -- one measurement, two clamps -- and it is WRONG on the feature
+// occlusion exists for.  VOLUME IS NOT VISIBILITY: on the wall of the
+// 2.6 mm end check in plank_closeup, queried at 18.6 mm, the ball reaches
+// up out of the slot into open air and the slot itself removes only ~5 %
+// of a ball that much bigger than it, so A came out at ~0.55 and the crack
+// read UNOCCLUDED.  Rendered, its dirt simply vanished.  Half-ball
+// variants (empty-in-front over solid-behind) move the number to ~0.81 and
+// do not fix it, for the same reason: the open sky above a shallow crack
+// is genuinely most of the volume in front of its wall, and only a
+// DIRECTIONAL test knows that none of that sky is actually reachable.
+//
+// The converse also holds, which is why convexity keeps the ball: solid
+// ANGLE cannot see the convexity of a smooth body at all.  From a point on
+// a sphere of ANY radius the solid subtends exactly a hemisphere, so a
+// directional convexity reads 0 on every sphere; the ball's volume reads
+// 3R/(8*rho), which is the "this bead is proud of its surroundings at
+// scale R" an edge-wear mask wants.  On WEDGES -- edges, creases, corners,
+// the features both are mostly used on -- the two agree exactly.
+//
+// WHY NOT THE EVANS NORMAL-LINE ESTIMATOR occlusion REPLACED.  That one
+// read the SHORTFALL of |Map| along the normal,
+// `1 - avg((h - Map(p+h*n))/h)`, which is correct only where Map is the
+// EXACT Euclidean distance.  RISE's composed field is a conservative LOWER
+// bound (hard `max` for intersect/subtract, the smin/smax blends,
+// partEval's minScale fold), and a lower bound is one-sided: it can only
+// ever darken.  At a convex edge whose two faces' normals are 2*gamma
+// apart the hard `max` gives Map(p + h*n) = h*cos(gamma) exactly, so it
+// returned `ao = cos(gamma)` -- 0.7071 at a plain 90-degree arris, for ANY
+// query radius and ANY fillet radius, on surface with no cavity at all.
+// Worse, a CONCAVE 90-degree valley returned the same 0.7071, so the two
+// were indistinguishable.  Both estimators here read only the SIGN of the
+// field, which IS exact for the surface the sphere trace actually renders
+// (the zero set of the composed field is the blended surface), and both
+// take their planar reference from the geometry of their own sample set
+// rather than from the field's magnitude.
 //////////////////////////////////////////////////////////////////////
 
 namespace
 {
-	//! Number of cavity taps.  Five is the Evans/IQ figure and is not
-	//! arbitrary: with the geometric tap spacing below it covers three
-	//! octaves of scale around the query radius, which is the range over
-	//! which a contact-shadow term reads as one continuous signal rather
-	//! than as banding.
-	const int kOcclusionTaps = 5;
+	//! Half-count of the ball point set: `kBallPairs` lattice points, each
+	//! used with BOTH signs, so 2*kBallPairs = 80 field evaluations per
+	//! query.  Picked by sweep against closed forms (design doc §3d): the
+	//! first count whose orientation spread on a 90-degree wedge is
+	//! <= 0.021 and whose error against the sphere's closed form
+	//! `convexity = 3R/(8*rho)` is under 0.01.  Going to 64 pairs buys
+	//! 0.008 of spread for 60 % more field evaluations.
+	const int kBallPairs = 40;
+
+	//! Directions the OCCLUSION march spends, and the one knob that decides
+	//! what this feature costs: each is a sphere trace, where a convexity
+	//! sample is a single field evaluation.  Fewer than the convexity
+	//! lattice's 40 on purpose -- occlusion's answer is a fraction of a
+	//! count, so its quantum is 1/kOcclusionDirs, and 24 puts that at ~4 %,
+	//! under the contrast any mask built on it survives.  Raising it buys
+	//! smoothness at a directly proportional price.
+	const int kOcclusionDirs = 24;
+
+	//! Width of the smoothed indicator's transition band, as a fraction of
+	//! the query radius.  A HARD `Map > 0` test makes A jump by 1/(2*pairs)
+	//! every time a sample crosses the surface -- deterministic in
+	//! position, so it appears as spatial BANDING rather than as noise,
+	//! which is worse.  Smoothing spreads each crossing over this band.
+	const Scalar kBallBandFraction = Scalar( 0.1875 );	// 3/16
+
+	//! van der Corput radical inverse, base 2 -- the lattice's azimuth.
+	inline Scalar BallRadicalInverse2( unsigned int i )
+	{
+		i = ( i << 16 ) | ( i >> 16 );
+		i = ( ( i & 0x55555555u ) << 1 ) | ( ( i & 0xAAAAAAAAu ) >> 1 );
+		i = ( ( i & 0x33333333u ) << 2 ) | ( ( i & 0xCCCCCCCCu ) >> 2 );
+		i = ( ( i & 0x0F0F0F0Fu ) << 4 ) | ( ( i & 0xF0F0F0F0u ) >> 4 );
+		i = ( ( i & 0x00FF00FFu ) << 8 ) | ( ( i & 0xFF00FF00u ) >> 8 );
+		return Scalar( i ) * Scalar( 2.3283064365386963e-10 );	// / 2^32
+	}
+
+	//! Radical inverse, base 3 -- the lattice's radius.  A DIFFERENT base
+	//! from the azimuth's on purpose: sharing one would correlate radius
+	//! with azimuth and collapse the point set onto a spiral shell.
+	inline Scalar BallRadicalInverse3( unsigned int i )
+	{
+		Scalar f = Scalar(1) / Scalar(3), r = Scalar(0);
+		while( i ) { r += f * Scalar( i % 3u ); i /= 3u; f /= Scalar(3); }
+		return r;
+	}
+
+	//! The point set, in the UNIT ball, built once per process.
+	//!
+	//! CENTRAL SYMMETRY IS THE LOAD-BEARING PROPERTY, and it is why these
+	//! are object-space offsets with no tangent frame anywhere in sight.
+	//! Each point is used with both signs, and central symmetry through the
+	//! query point maps the half-space {d < 0} onto {d > 0} for ANY plane
+	//! through that point -- so a planar surface reads A = 1/2 EXACTLY, at
+	//! every orientation and every sample count.  (An earlier draft aligned
+	//! the set to the hit normal and mirrored about the tangent plane,
+	//! which is also exact on a plane but needs an orthonormal basis, and
+	//! every branchless ONB has a discontinuity somewhere on the sphere:
+	//! measured frame-rotation spread of A at a 90-degree wedge was 0.028,
+	//! i.e. a 5.5 % step in the mask wherever the basis branch flipped.)
+	//!
+	//! Uniform BY VOLUME (`rho = u^(1/3)`), which is what makes A a volume
+	//! fraction rather than a weighted one.  Deterministic: a fixed
+	//! Hammersley-style triple, no RNG, no per-hit state, identical on
+	//! every thread and every run.
+	struct BallLattice
+	{
+		Point3  pt[kBallPairs];		//!< volume-uniform ball offsets (convexity)
+		//! COSINE-WEIGHTED hemisphere directions about +Z, rotated into the
+		//! hit's frame per query (occlusion).  Cosine rather than uniform,
+		//! and for two reasons that agree: it is what the mesh family's
+		//! occlusion bake samples, so the two answer the same integral; and
+		//! near-tangent directions -- the ones that cost a sphere trace its
+		//! whole step budget -- are exactly the ones a cosine weight makes
+		//! rare.
+		Vector3 cosDir[kOcclusionDirs];
+		BallLattice()
+		{
+			for( int i = 0; i < kBallPairs; ++i ) {
+				// cos(theta) stratified over the UPPER hemisphere; the
+				// lower half comes from the sign flip at use.
+				const Scalar cz = ( Scalar(i) + Scalar(0.5) ) / Scalar(kBallPairs);
+				const Scalar sz = std::sqrt( ( cz < Scalar(1) ) ? ( Scalar(1) - cz*cz ) : Scalar(0) );
+				const Scalar phi = Scalar(TWO_PI) * BallRadicalInverse2( (unsigned int)( i + 1 ) );
+				Scalar u = BallRadicalInverse3( (unsigned int)( i + 1 ) );
+				// i+1 is never 0, so RadicalInverse3 is never 0 for the
+				// counts we use; guard anyway so a future kBallPairs cannot
+				// silently place a sample at the query point itself.
+				if( !( u > Scalar(0) ) ) u = Scalar(0.5) / Scalar(kBallPairs);
+				const Scalar rho = std::pow( u, Scalar(1)/Scalar(3) );
+				pt[i] = Point3( rho*sz*std::cos(phi), rho*sz*std::sin(phi), rho*cz );
+			}
+			// Cosine-weighted about +Z: cos(theta) = sqrt(u1) with u1
+			// stratified, azimuth from the same radical inverse.  Built ONCE,
+			// in a canonical frame, so a query costs one rotation per
+			// direction and no trigonometry at all.  Its own loop because it
+			// has its own count -- see kOcclusionDirs.
+			for( int i = 0; i < kOcclusionDirs; ++i ) {
+				const Scalar ct  = std::sqrt( ( Scalar(i) + Scalar(0.5) ) / Scalar(kOcclusionDirs) );
+				const Scalar st  = std::sqrt( ( ct < Scalar(1) ) ? ( Scalar(1) - ct*ct ) : Scalar(0) );
+				const Scalar phi = Scalar(TWO_PI) * BallRadicalInverse2( (unsigned int)( i + 1 ) );
+				cosDir[i] = Vector3( st*std::cos(phi), st*std::sin(phi), ct );
+			}
+		}
+	};
+	//! Marching constants for the DIRECTIONAL occlusion estimator.
+	//!
+	//! `kMarchStart` lifts the first sample off the surface: a sphere trace
+	//! begun exactly ON the zero set steps by 0 forever.  As a fraction of
+	//! the query radius, so it is scale-relative like everything else here.
+	//!
+	//! `kMarchMinStep` keeps a near-tangent ray from stalling in the sliver
+	//! of tiny field values just above a surface.  It is the one place this
+	//! estimator can overstep a thin occluder; the step cap below bounds the
+	//! damage, and the direction it errs in is toward ESCAPED, i.e. toward
+	//! the neutral 1.
+	//!
+	//! `kMarchMaxSteps` bounds the per-direction cost.  Running out is
+	//! reported as ESCAPED, and that is the correct answer far more often
+	//! than not: the rays that exhaust the budget are the near-tangent ones
+	//! over open surface, which genuinely do escape.  In a cavity it
+	//! under-darkens slightly, again toward neutral.
+	const Scalar kMarchStart    = Scalar( 1.0 / 64.0 );
+	const Scalar kMarchMinStep  = Scalar( 1.0 / 64.0 );
+	const int    kMarchMaxSteps = 24;
+
+	//! Lift of the march ORIGIN along the hit normal, as a fraction of the
+	//! query radius.  A ray begun exactly on the zero set in a direction
+	//! near the tangent plane sits at height ~0 and reads as INSIDE, so a
+	//! flat surface would report a couple of its 40 directions blocked and
+	//! occlusion would come out at 0.95 instead of 1 -- measured, before
+	//! this existed.  The same lift is what the mesh family's bake applies
+	//! for the same reason (MeshSignalBake::kOriginEpsilonFraction), and it
+	//! errs the same way: toward ESCAPED, i.e. toward the neutral.
+	const Scalar kMarchLift = Scalar( 1.0 / 64.0 );
+
+	const BallLattice& TheBallLattice()
+	{
+		// Function-local static: one instance across the process,
+		// thread-safe initialization guaranteed since C++11, and read-only
+		// from then on.
+		static const BallLattice lattice;
+		return lattice;
+	}
+
+	//! Odd-symmetric smoothed Heaviside: Hs(u) + Hs(-u) == 1 EXACTLY, which
+	//! is what lets the smoothing coexist with the central-symmetry
+	//! guarantee above (for a plane the paired samples sum to exactly 1, so
+	//! A stays exactly 1/2 however wide the band).
+	inline Scalar BallSmoothStep( const Scalar u, const Scalar w )
+	{
+		Scalar t = u / w;
+		if( t < Scalar(-1) ) t = Scalar(-1); else if( t > Scalar(1) ) t = Scalar(1);
+		return Scalar(0.5) + Scalar(0.5) * ( Scalar(1.5)*t - Scalar(0.5)*t*t*t );
+	}
 }
 
-bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
-	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
+bool SDFGeometry::PrepareSignalQuery( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, Scalar& outR, Scalar& outD0 ) const
 {
 	// A LIVE field answers any radius, constant or computed -- see the
 	// header's note on why this provider ignores the constant-radius flag
 	// the baked mesh family requires.
-	const Point3&  ptObject = hit.ptObject;
-	const Vector3& nObject  = hit.nObject;
 
 	// REFUSE rather than fabricate.  The caller (SurfaceSignalInfo) already
 	// screens a non-finite / non-positive radius; this is the field-side
@@ -1279,25 +1481,21 @@ bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
 	}
 
 	// Heightfield mode divides Map() by a single GLOBAL Lipschitz bound
-	// (m_hfLip, see ComputeHeightfieldLipschitz) so the whole field is a
-	// conservative lower bound everywhere, sized to the field's STEEPEST
-	// slope.  The Evans estimator's identity map(p + h*n_hat) == h (used
-	// above to say "a plane or convex body reads occ = 0") only holds where
-	// the LOCAL slope matches the bound used to derive it -- on a heightfield
-	// that is true only at the single steepest point.  Everywhere flatter,
-	// Map() under-reports the true distance by a factor of m_hfLip, and the
-	// estimator misreads that shortfall as occlusion: a perfectly flat,
-	// unoccluded point next to one steep bump reads ao ~= 1/m_hfLip (e.g.
-	// ~0.15 for a bump steep enough to need m_hfLip ~= 6.5), not 1.  A
-	// locally-normalized estimator (dividing by the LOCAL slope instead of
-	// the global bound) could fix this properly; until one exists, refuse
-	// honestly rather than report a systematically wrong number.
+	// (m_hfLip, see ComputeHeightfieldLipschitz), sized to the field's
+	// STEEPEST slope, so its MAGNITUDE is wrong everywhere the local slope
+	// is below that maximum.  The SIGN is correct there, which is all the
+	// convexity estimator reads -- but the occlusion march steps by the
+	// field VALUE, so on a heightfield it would crawl by a factor of
+	// m_hfLip and exhaust its step budget (reporting everything escaped)
+	// wherever the local slope is gentle.  Neither signal is worth
+	// publishing under a systematically wrong step length, so both refuse,
+	// as thickness already does for the same underlying reason.
 	if( m_isHeightfield ) {
 		return false;
 	}
 
-	// Query radius in this geometry's own object-space units.  The tap
-	// distances are a fraction OF it, so the whole estimator is
+	// Query radius in this geometry's own object-space units.  Every sample
+	// offset and march length is a fraction OF it, so the whole estimator is
 	// scale-relative and the result is transform-invariant.
 	const Scalar R = radiusFraction * m_diagonal;
 	if( !RISE::IsFiniteDouble( static_cast<double>( R ) ) || !( R > Scalar(0) ) ) {
@@ -1306,55 +1504,125 @@ bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
 
 	// The reported hit sits INSIDE the +-m_eps sphere-trace band rather than
 	// exactly on the zero set, so Map(p) is a small residual, not 0.
-	// Subtracting it below removes that bias from every tap -- without this,
-	// a tiny query radius on a large object would read the band residual as
-	// occlusion and darken a perfectly convex surface.
-	const Scalar d0 = Map( ptObject );
+	// Subtracting it re-centres both estimators on the actual surface: for a
+	// plane, Map(p + y) - Map(p) == y . n_hat exactly.
+	outR  = R;
+	outD0 = Map( hit.ptObject );
+	return true;
+}
 
-	// occ = SUM w_i * (h_i - d_i) / SUM w_i * h_i, with
-	//   h_i = R * 2^(i-N)   (geometrically increasing: R/16 .. R)
-	//   w_i = 2^(1-i)       (near taps weighted most -- contact occlusion)
-	// The chosen pair makes every w_i*h_i equal (R/16 each here), so each
-	// octave contributes the same share of the normalizer and the estimator
-	// has no preferred scale within [R/16, R].
-	//
-	// Both ends are exact and meaningful:
-	//   * a plane or a convex body has d_i == h_i for every tap (an SDF's
-	//     value at p + h*n is exactly h there) -> occ = 0 -> ao = 1;
-	//   * a point whose every tap lands ON the surface (d_i == 0), i.e. a
-	//     fully enclosed pocket, gives occ = 1 -> ao = 0.
-	Scalar num = Scalar(0);
-	Scalar den = Scalar(0);
-	Scalar h   = R;
-	Scalar w   = Scalar(1);
-	for( int i = 0; i < kOcclusionTaps; ++i ) {
-		h *= Scalar(0.5);
-	}
-	// h is now R * 2^-N; walk outward, halving the weight each step.
-	for( int i = 0; i < kOcclusionTaps; ++i ) {
-		h *= Scalar(2);
-		const Point3 tap( ptObject.x + nObject.x*h, ptObject.y + nObject.y*h, ptObject.z + nObject.z*h );
-		const Scalar d = Map( tap ) - d0;
-		num += w * ( h - d );
-		den += w * h;
-		w *= Scalar(0.5);
-	}
-
-	if( !( den > Scalar(0) ) ) {
+bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
+{
+	Scalar R = 0, d0 = 0;
+	if( !PrepareSignalQuery( hit, radiusFraction, R, d0 ) ) {
 		return false;
 	}
 
-	Scalar ao = Scalar(1) - ( num / den );
+	// Only the OUTWARD hemisphere is traced: the inward half is inside the
+	// solid by definition, so it would answer "blocked" at its first sample
+	// and contribute nothing but cost.  That asymmetry is also what makes
+	// the planar reference free -- over a plane EVERY outward direction
+	// escapes, so the answer is exactly 1 with no normalisation, at any
+	// orientation and any direction count.
+	const Vector3& n = hit.nObject;
+	const Scalar nLen2 = n.x*n.x + n.y*n.y + n.z*n.z;
+	if( !( nLen2 > NEARZERO ) ) {
+		return false;
+	}
+	const Scalar invLen = Scalar(1) / std::sqrt( nLen2 );
+	const Vector3 nHat( n.x*invLen, n.y*invLen, n.z*invLen );
+	OrthonormalBasis3D onb;
+	onb.CreateFromW( nHat );
+
+	// A CSG_SUBTRACTION that credited this surface to the SUBTRAHEND has
+	// inverted the sense of "solid": the empty region is this field's
+	// INTERIOR.  `nObject` is flipped at the same four CSG sites, so the
+	// outward side is already right; only the sense needs this.
+	const Scalar sense = hit.bComplementedField ? Scalar(-1) : Scalar(1);
+
+	// Lift the march origin off the zero set (see kMarchLift).
+	const Point3 origin(
+		hit.ptObject.x + nHat.x * R * kMarchLift,
+		hit.ptObject.y + nHat.y * R * kMarchLift,
+		hit.ptObject.z + nHat.z * R * kMarchLift );
+
+	const BallLattice& L = TheBallLattice();
+	int escaped = 0;
+	for( int i = 0; i < kOcclusionDirs; ++i ) {
+		const Vector3& c = L.cosDir[i];
+		const Vector3 w(
+			onb.u().x*c.x + onb.v().x*c.y + onb.w().x*c.z,
+			onb.u().y*c.x + onb.v().y*c.y + onb.w().y*c.z,
+			onb.u().z*c.x + onb.v().z*c.y + onb.w().z*c.z );
+
+		// Sphere-trace this direction, up to R.
+		Scalar t = R * kMarchStart;
+		bool   blocked = false;
+		for( int step = 0; step < kMarchMaxSteps; ++step ) {
+			const Scalar d = sense * ( Map( Point3( origin.x + w.x*t, origin.y + w.y*t, origin.z + w.z*t ) ) - d0 );
+			if( !( d > Scalar(0) ) ) { blocked = true; break; }
+			// Nothing within the remaining reach can be nearer than `d`, so
+			// once `d` covers it the ray provably escapes -- the early-out
+			// that keeps an open hemisphere from marching all the way out.
+			if( d >= R - t ) break;
+			t += ( d > R*kMarchMinStep ) ? d : R*kMarchMinStep;
+			if( t >= R ) break;
+		}
+		if( !blocked ) ++escaped;
+	}
+
+	Scalar ao = Scalar( escaped ) / Scalar( kOcclusionDirs );
 	if( !RISE::IsFiniteDouble( static_cast<double>( ao ) ) ) {
 		return false;
 	}
-	// A conservative (Lipschitz-scaled) part distance can under-report the
-	// true distance, and a concave pocket can drive the sum past 1, so clamp
-	// -- the interface promises [0,1] and the consumer's own clamp must never
-	// be the only one.
 	if( ao < Scalar(0) ) ao = Scalar(0);
 	if( ao > Scalar(1) ) ao = Scalar(1);
 	outValue = ao;
+	return true;
+}
+
+bool SDFGeometry::ComputeConvexity( const SurfaceSignalInfo& hit,
+	const Scalar radiusFraction, const bool /*bRadiusIsConstant*/, Scalar& outValue ) const
+{
+	Scalar R = 0, d0 = 0;
+	if( !PrepareSignalQuery( hit, radiusFraction, R, d0 ) ) {
+		return false;
+	}
+
+	// BALL-VOLUME ACCESSIBILITY, and NO TANGENT FRAME.  Each lattice point
+	// is used with both signs, and central symmetry through the query point
+	// maps the half-space {d < 0} onto {d > 0} for ANY plane through it --
+	// so a planar surface gives A = 1/2 EXACTLY, at every orientation and
+	// every sample count.  (An earlier draft aligned the set to the hit
+	// normal and mirrored about the tangent plane, which is also exact on a
+	// plane but needs an orthonormal basis, and every branchless ONB has a
+	// discontinuity somewhere on the sphere: measured frame-rotation spread
+	// of A at a 90-degree wedge was 0.028, a 5.5 % step in the mask wherever
+	// the branch flipped.)
+	const Scalar w = R * kBallBandFraction;
+	const Scalar sense = hit.bComplementedField ? Scalar(-1) : Scalar(1);
+	const BallLattice& L = TheBallLattice();
+	const Point3& p = hit.ptObject;
+	Scalar acc = Scalar(0);
+	for( int i = 0; i < kBallPairs; ++i ) {
+		const Scalar ox = R * L.pt[i].x, oy = R * L.pt[i].y, oz = R * L.pt[i].z;
+		acc += BallSmoothStep( sense * ( Map( Point3( p.x + ox, p.y + oy, p.z + oz ) ) - d0 ), w );
+		acc += BallSmoothStep( sense * ( Map( Point3( p.x - ox, p.y - oy, p.z - oz ) ) - d0 ), w );
+	}
+	const Scalar A = acc / Scalar( 2 * kBallPairs );
+	if( !RISE::IsFiniteDouble( static_cast<double>( A ) ) ) {
+		return false;
+	}
+
+	// The EXCESS above the planar half.  0 on a plane and in every cavity
+	// (occlusion owns that side); 0.5 at a 90-degree arris, 0.75 at a
+	// three-face corner, -> 1 at a knife edge; 3R/(8*rho) on a convex sphere
+	// of radius rho.
+	Scalar cvx = Scalar(2) * A - Scalar(1);
+	if( cvx < Scalar(0) ) cvx = Scalar(0);
+	if( cvx > Scalar(1) ) cvx = Scalar(1);
+	outValue = cvx;
 	return true;
 }
 

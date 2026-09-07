@@ -283,20 +283,44 @@ namespace RISE
 			void IntersectRay( RayIntersectionGeometric& ri, const bool bHitFrontFaces, const bool bHitBackFaces, const bool bComputeExitInfo ) const override;
 			bool IntersectRay_IntersectionOnly( const Ray& ray, const Scalar dHowFar, const bool bHitFrontFaces, const bool bHitBackFaces ) const override;
 
+			//! Shared preamble for both signal estimators: validates the
+			//! query and resolves the two quantities they both need -- the
+			//! query radius in this geometry's own object-space units, and
+			//! the sphere-trace band residual `Map(hit)` that every sample
+			//! and every march is measured against.
+			//!
+			//! \return FALSE (outputs untouched) on a degenerate box, a
+			//!         non-positive radius, or heightfield mode -- whose
+			//!         globally-scaled field would make the occlusion march
+			//!         step by the wrong length everywhere the local slope is
+			//!         gentle.
+			bool PrepareSignalQuery( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, Scalar& outR, Scalar& outD0 ) const;
+
 			//! ISurfaceSignalProvider -- the `occlusion(radius)` builtin
-			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2).
+			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2 for the channel,
+			//! docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for the estimator).
 			//!
-			//! Evans-style 5-tap cavity estimator: step OUT along the normal
-			//! at geometrically increasing distances and compare each step
-			//! length against what the field says the distance to the surface
-			//! actually is there.  On a convex body (or a plane) the two agree
-			//! and the result is 1; inside a crevice the field reports LESS
-			//! than the step, and the shortfall -- weighted so each octave
-			//! contributes equally, near taps dominating -- is the occlusion.
+			//! DIRECTIONAL VISIBILITY over the outward hemisphere -- of 40
+			//! uniformly-spread directions, the fraction that escape a
+			//! distance `radiusFraction * m_diagonal` without entering the
+			//! solid.  Bit for bit the question the mesh family's bake asks
+			//! with rays, which is what makes "the same builtin on meshes and
+			//! SDFs" a portability claim rather than a naming coincidence.
 			//!
-			//! ~6 Map() evaluations, each O(#parts).  No rays, no locks, no
-			//! scene access: this sees THIS field only, which is exactly the
-			//! object-local self-signal v1 scopes (§8).
+			//! A plane reads EXACTLY 1 and so does every CONVEX feature (all
+			//! outward directions escape, so no normalisation is needed at
+			//! all) -- the property the retired Evans normal-line estimator
+			//! could not deliver: it returned `cos(gamma)` at a convex CSG
+			//! edge of half-angle `gamma`, i.e. 0.707 at a plain 90-degree
+			//! arris, and returned that SAME 0.707 at a concave 90-degree
+			//! valley.  A wedge of empty opening `alpha <= pi` reads exactly
+			//! `alpha/pi`; slots, folds and pockets go dark.
+			//!
+			//! Costs one sphere trace per outward direction (~40), each
+			//! bounded to 24 steps -- the expensive one of the two signals,
+			//! and the reason the .cpp explains at length why the cheap
+			//! ball-volume measure cannot stand in for it.
 			//!
 			//! `radiusFraction` is a fraction of m_diagonal (this geometry's
 			//! bounding-box diagonal), so the answer is invariant across
@@ -308,6 +332,32 @@ namespace RISE
 			//! the SDF family and a refusal on the baked mesh family
 			//! (design doc §7.1's closing paragraph).
 			bool ComputeOcclusion( const SurfaceSignalInfo& hit,
+				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
+
+			//! ISurfaceSignalProvider -- the `convexity(radius)` builtin.
+			//!
+			//! `clamp(2A - 1, 0, 1)` for the BALL-VOLUME accessibility A --
+			//! the fraction of the ball of radius `radiusFraction *
+			//! m_diagonal` about the hit lying outside the solid, which a
+			//! centrally-symmetric point set puts at EXACTLY 1/2 on a plane
+			//! at any orientation.  80 point samples, no marching, no rays,
+			//! no tangent frame: an order cheaper than occlusion.
+			//!
+			//! Deliberately a DIFFERENT measure from occlusion's, and the
+			//! .cpp argues both halves of why: volume cannot see a slot
+			//! (which is why occlusion marches), and solid angle cannot see
+			//! the convexity of a smooth body at all (from a point on a
+			//! sphere of ANY radius the solid subtends exactly a hemisphere),
+			//! which is why convexity does not.  On WEDGES -- edges, creases,
+			//! corners -- the two agree exactly.  0 on a plane
+			//! and in every cavity, **0.5 at a 90-degree arris**, **0.75 at a
+			//! three-face corner**, approaching 1 at a knife edge; on a convex
+			//! sphere of radius rho it is exactly `3R/(8*rho)`.  Those values
+			//! mean the same thing on every object at every scene scale, which
+			//! is what `curv` -- an unbounded differential quantity whose
+			//! useful thresholds are per-object -- structurally cannot offer.
+			//! `bRadiusIsConstant` is ignored, as for ComputeOcclusion.
+			bool ComputeConvexity( const SurfaceSignalInfo& hit,
 				const Scalar radiusFraction, const bool bRadiusIsConstant, Scalar& outValue ) const override;
 
 			//! ISurfaceSignalProvider -- the `thickness(radius)` builtin.

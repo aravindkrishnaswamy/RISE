@@ -1,9 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
 //  MeshSignalBake.cpp - Implementation of the per-vertex occlusion /
-//  thickness bakes and their lazy find-or-build cache.
+//  thickness / convexity bakes and their lazy find-or-build cache.
 //
-//  docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7 (Phase 3).
+//  docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7 (Phase 3);
+//  docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §4 for the convexity bake
+//  (and for why the occlusion bake needed no change: its cosine-weighted
+//  hemisphere already equals the accessibility-based definition on every
+//  wedge feature).
 //
 //  Tabs: 4
 //
@@ -71,6 +75,31 @@ namespace
 			onb.u().y * local.x + onb.v().y * local.y + onb.w().y * local.z,
 			onb.u().z * local.x + onb.v().z * local.y + onb.w().z * local.z );
 	}
+
+	//! UNIFORM-in-solid-angle direction in the hemisphere around +W.  The
+	//! convexity bake needs this rather than the cosine-weighted form above
+	//! because it estimates a SOLID-ANGLE fraction (`A`, the accessibility),
+	//! not an irradiance-like quantity: a cosine weight would tilt the
+	//! estimate toward the pole and stop it agreeing with the SDF family's
+	//! ball-volume `A` on the wedge features both are meant to find.
+	//!
+	//! Emitted for the UPPER hemisphere only; the convexity bake uses each
+	//! direction with both signs, so the full sphere is covered by antipodal
+	//! PAIRS.  That pairing is what resolves the half of the sphere pointing
+	//! INTO the solid as well as the open half -- and half of the sphere
+	//! pointing into the solid is precisely what makes `A = 1/2` on a plane.
+	inline Vector3 UniformHemisphereDirection(
+		const OrthonormalBasis3D& onb, const Scalar u1, const Scalar u2 )
+	{
+		const Scalar cosTheta = u1;
+		const Scalar sinTheta = std::sqrt( ( cosTheta < Scalar(1) ) ? ( Scalar(1) - cosTheta*cosTheta ) : Scalar(0) );
+		const Scalar phi      = Scalar( TWO_PI ) * u2;
+		const Vector3 local( sinTheta * std::cos( phi ), sinTheta * std::sin( phi ), cosTheta );
+		return Vector3(
+			onb.u().x * local.x + onb.v().x * local.y + onb.w().x * local.z,
+			onb.u().y * local.x + onb.v().y * local.y + onb.w().y * local.z,
+			onb.u().z * local.x + onb.v().z * local.y + onb.w().z * local.z );
+	}
 }
 
 std::atomic<unsigned int>& MeshSignalBake::BuildCounter()
@@ -104,11 +133,18 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 	// Cone geometry.  Occlusion samples the full outward hemisphere (that
 	// IS the exposure measure); thickness samples a narrow INWARD cone --
 	// see kThicknessConeHalfAngle for why narrow and not hemispherical.
-	const Scalar maxTheta = ( kind == eOcclusion )
-		? Scalar( PI_OV_TWO )
-		: kThicknessConeHalfAngle;
+	// Convexity samples the full SPHERE and does not use this cone at all
+	// (see the eConvexity branch below).
+	const Scalar maxTheta = ( kind == eThickness )
+		? kThicknessConeHalfAngle
+		: Scalar( PI_OV_TWO );
 	const Scalar sinMax   = std::sin( maxTheta );
 	const Scalar sin2Max  = sinMax * sinMax;
+
+	// Convexity spends its ray budget as antipodal PAIRS, so it emits half
+	// as many directions and traces both signs of each -- same kRayCount
+	// rays cast, same cost class as the other two bakes.
+	const int nDirections = ( kind == eConvexity ) ? ( kRayCount / 2 ) : kRayCount;
 
 	out.assign( verts.size(), 0.0f );
 
@@ -127,34 +163,46 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 			// Write the signal's NEUTRAL value -- an unoriented vertex is an
 			// ABSENCE of measurement, and the whole design answers absence
 			// with the do-nothing end of the range, never with a plausible
-			// invention.  Both neutrals are 1 (unoccluded / thick), so one
-			// literal serves both kinds here; see
-			// SurfaceSignalInfo::NeutralOcclusion / ::NeutralThickness for
-			// why they agree.
-			out[vi] = 1.0f;
+			// invention.  Occlusion's and thickness's neutrals are both 1
+			// (unoccluded / thick) but CONVEXITY's is 0 (flat) -- the
+			// do-nothing end of an edge-wear mask is "no edge here", not
+			// "knife edge everywhere"; see
+			// SurfaceSignalInfo::NeutralOcclusion / ::NeutralThickness /
+			// ::NeutralConvexity for each argument.
+			out[vi] = ( kind == eConvexity ) ? 0.0f : 1.0f;
 			continue;
 		}
 		const Scalar invLen = Scalar(1) / std::sqrt( nLen2 );
 		const Vector3 n( nRaw.x*invLen, nRaw.y*invLen, nRaw.z*invLen );
 
-		// Trace direction frame: outward for occlusion, inward for
-		// thickness.  Substance's thickness baker casts INTO the solid and
-		// measures how far it gets; that is the only way a surface signal
+		// Trace direction frame: outward for occlusion and convexity, inward
+		// for thickness.  Substance's thickness baker casts INTO the solid
+		// and measures how far it gets; that is the only way a surface signal
 		// can say anything about what is behind it.
-		const Vector3 w = ( kind == eOcclusion ) ? n : Vector3( -n.x, -n.y, -n.z );
+		const Vector3 w = ( kind == eThickness ) ? Vector3( -n.x, -n.y, -n.z ) : n;
 		OrthonormalBasis3D onb;
 		onb.CreateFromW( w );
 
 		// The origin is lifted along the TRACE axis, not always outward, and
-		// the difference is not cosmetic.  Both bakes must clear the
+		// the difference is not cosmetic.  Every bake must clear the
 		// triangles incident on this vertex, which all pass exactly through
-		// it.  For occlusion that means stepping OUT.  For thickness it must
-		// mean stepping IN: a thickness ray lifted OUTWARD would re-enter
-		// through the very face it started on and report a thickness of
-		// ~epsilon everywhere -- a mesh-wide flat zero that would look like
-		// a plausible "thin" mask.  Starting just inside the solid, the
-		// first thing an inward ray can hit is the far wall, which is the
-		// quantity being measured.
+		// it.  For occlusion and convexity that means stepping OUT.  For
+		// thickness it must mean stepping IN: a thickness ray lifted OUTWARD
+		// would re-enter through the very face it started on and report a
+		// thickness of ~epsilon everywhere -- a mesh-wide flat zero that
+		// would look like a plausible "thin" mask.  Starting just inside the
+		// solid, the first thing an inward ray can hit is the far wall, which
+		// is the quantity being measured.
+		//
+		// CONVEXITY'S KNOWN BIAS, stated where it is created.  Its rays also
+		// start `originEpsilon` OUTWARD, so on a flat surface a ray aimed
+		// just below the horizon escapes instead of hitting whenever
+		// |cos theta| < originEpsilon/maxDistance.  A flat mesh therefore
+		// reads A ~= 1/2 + originEpsilon/maxDistance, i.e. convexity ~= 0.004
+		// at the default 1e-4 diagonal fraction and a 5 %-of-diagonal radius.
+		// Bounded, one-sided (never negative, so a mask lights nothing), and
+		// an order of magnitude under any threshold an author would set --
+		// but it is a bias, not noise, and it does not average away.
 		const Point3 origin(
 			verts[vi].x + w.x * in.originEpsilon,
 			verts[vi].y + w.y * in.originEpsilon,
@@ -163,10 +211,26 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 		const Scalar rot = GoldenRotation( vi );
 		Scalar accum = Scalar(0);
 
-		for( int s = 0; s < kRayCount; ++s ) {
-			const Scalar u1 = ( Scalar(s) + Scalar(0.5) ) / Scalar( kRayCount );
+		for( int s = 0; s < nDirections; ++s ) {
+			const Scalar u1 = ( Scalar(s) + Scalar(0.5) ) / Scalar( nDirections );
 			Scalar u2 = RadicalInverse2( static_cast<unsigned int>( s ) ) + rot;
 			if( u2 >= Scalar(1) ) u2 -= Scalar(1);
+
+			if( kind == eConvexity ) {
+				// ACCESSIBILITY over the FULL sphere, as antipodal pairs:
+				// the fraction of all directions that escape within the query
+				// radius.  On a wedge of solid dihedral angle theta this is
+				// exactly 1 - theta/2pi, which is the same `A` the SDF family
+				// measures by ball volume -- so the two families agree on
+				// every edge, crease and corner (they differ only at second
+				// order on smoothly curved geometry, where one measures solid
+				// angle and the other volume).
+				const Vector3 d = UniformHemisphereDirection( onb, u1, u2 );
+				const Vector3 dNeg( -d.x, -d.y, -d.z );
+				if( !in.pOccluder->AnyHitWithin( origin, d,    in.maxDistance ) ) accum += Scalar(1);
+				if( !in.pOccluder->AnyHitWithin( origin, dNeg, in.maxDistance ) ) accum += Scalar(1);
+				continue;
+			}
 
 			const Vector3 dir = CosineConeDirection( onb, u1, u2, sin2Max );
 
@@ -193,9 +257,21 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 			}
 		}
 
-		Scalar v = accum / Scalar( kRayCount );
+		// Convexity traced two rays per direction, so its denominator is the
+		// pair count doubled -- which is kRayCount again, but spelled from
+		// what was actually accumulated rather than from a constant that
+		// happens to match.
+		const int nTraced = ( kind == eConvexity ) ? ( 2 * nDirections ) : nDirections;
+		Scalar v = accum / Scalar( nTraced );
 		if( !RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
-			v = Scalar(1);
+			v = ( kind == eConvexity ) ? Scalar(0) : Scalar(1);
+		} else if( kind == eConvexity ) {
+			// `accum/nTraced` is the accessibility A; the stored signal is
+			// its EXCESS above the planar half.  A plane gives A = 1/2 and
+			// therefore 0, every cavity gives A < 1/2 and is clamped to 0
+			// (occlusion owns that half of the range), and a knife edge
+			// approaches 1.
+			v = Scalar(2) * v - Scalar(1);
 		}
 		if( v < Scalar(0) ) v = Scalar(0);
 		if( v > Scalar(1) ) v = Scalar(1);
@@ -209,10 +285,12 @@ bool MeshSignalBake::Build( const Kind kind, const Input& in, std::vector<float>
 	// writing `occlusion(0.05)` in a material.  A cost nobody asked for by
 	// name should say so, and the number is what makes the trade
 	// (bake once vs. read per sample) checkable rather than assumed.
+	const char* kindName = ( kind == eOcclusion ) ? "OCCLUSION"
+	                     : ( kind == eThickness ) ? "THICKNESS"
+	                                              : "CONVEXITY";
 	GlobalLog()->PrintEx( eLog_Event,
 		"MeshSignalBake:: baked per-vertex %s over %u vertices x %d rays in %u ms",
-		( kind == eOcclusion ) ? "OCCLUSION" : "THICKNESS",
-		(unsigned)verts.size(), kRayCount, timer.getInterval() );
+		kindName, (unsigned)verts.size(), kRayCount, timer.getInterval() );
 
 	return true;
 }
@@ -274,7 +352,12 @@ MeshSignalBakeCache::TableRef MeshSignalBakeCache::FindOrBuild(
 	const Scalar radiusFraction,
 	const MeshSignalBake::IInputSource& src ) const
 {
-	if( kind != MeshSignalBake::eOcclusion && kind != MeshSignalBake::eThickness ) {
+	// Range-checked against the enumeration rather than listed kind by kind:
+	// `m_entries` / `m_warnedCap` are sized by eKindCount, so THAT is the
+	// real precondition, and spelling it as a whitelist of the kinds that
+	// existed when this was written is how eConvexity silently read its
+	// neutral fallback for a whole review round instead of baking.
+	if( kind < 0 || kind >= MeshSignalBake::eKindCount ) {
 		return TableRef();
 	}
 	if( !RISE::IsFiniteDouble( static_cast<double>( radiusFraction ) ) || !( radiusFraction > Scalar(0) ) ) {
@@ -301,7 +384,7 @@ MeshSignalBakeCache::TableRef MeshSignalBakeCache::FindOrBuild(
 		if( !m_warnedCap[kind] ) {
 			m_warnedCap[kind] = true;
 			GlobalLog()->PrintEasyWarning(
-				"MeshSignalBakeCache:: more than 8 distinct occlusion()/thickness() radii on one mesh; "
+				"MeshSignalBakeCache:: more than 8 distinct occlusion()/thickness()/convexity() radii on one mesh; "
 				"further radii read the neutral fallback -- see docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md 7.1" );
 		}
 		return TableRef();

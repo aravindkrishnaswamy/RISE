@@ -1,12 +1,13 @@
 //////////////////////////////////////////////////////////////////////
 //
-//  MeshSignalBake.h - PER-VERTEX self-occlusion and thickness bakes for
-//  triangle meshes: the mesh half of the geometry-derived shading
-//  signals (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7, Phase 3).
+//  MeshSignalBake.h - PER-VERTEX self-occlusion, thickness and convexity
+//  bakes for triangle meshes: the mesh half of the geometry-derived
+//  shading signals (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §7, Phase 3;
+//  docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §4 for convexity).
 //
 //  Two things live here:
 //
-//    MeshSignalBake::Build    the two bake ALGORITHMS, expressed against
+//    MeshSignalBake::Build    the three bake ALGORITHMS, expressed against
 //                             a plain vertex/normal array plus an
 //                             any-hit callback, so they know nothing
 //                             about mesh classes and can be tested on
@@ -51,7 +52,17 @@ namespace RISE
 		{
 			eOcclusion	= 0,
 			eThickness	= 1,
-			eKindCount	= 2
+			//! The `convexity(radius)` builtin
+			//! (docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md §4.2).  A
+			//! SEPARATE bake rather than a post-process of eOcclusion, and
+			//! that is forced, not stylistic: the occlusion bake samples a
+			//! cosine-weighted OUTWARD HEMISPHERE, which saturates at 1 for
+			//! a plane and for every convex feature alike and so carries no
+			//! convexity information at all.  This one samples the FULL
+			//! sphere uniformly, which is the mesh's form of the same
+			//! accessibility `A` the SDF family measures by ball volume.
+			eConvexity	= 2,
+			eKindCount	= 3
 		};
 
 		//! Rays cast per vertex, per signal.  A COMPILE-TIME CONSTANT, not a
@@ -75,12 +86,22 @@ namespace RISE
 		//! direction.
 		const Scalar kThicknessConeHalfAngle = Scalar( 0.34906585039886590 );
 
-		//! Ray-origin offset along the TRACE axis (outward for occlusion,
-		//! inward for thickness), as a fraction of the mesh's bounding-box
-		//! diagonal.  A bake ray starts ON the surface, at a vertex shared by
-		//! every incident triangle, so it must be lifted off it or those
-		//! triangles answer "hit" for free.  Scale-relative for the same
-		//! reason every other length in this feature is.
+		//! Ray-origin offset along the TRACE axis (outward for occlusion and
+		//! convexity, inward for thickness), as a fraction of the mesh's
+		//! bounding-box diagonal.  A bake ray starts ON the surface, at a
+		//! vertex shared by every incident triangle, so it must be lifted off
+		//! it or those triangles answer "hit" for free.  Scale-relative for
+		//! the same reason every other length in this feature is.
+		//!
+		//! IT IS ALSO THE SOURCE OF CONVEXITY'S ONE BIAS: on a flat surface a
+		//! ray aimed just below the horizon escapes rather than hitting
+		//! whenever |cos theta| < this / maxDistance, so a flat mesh reads
+		//! convexity ~= 2 * (this / maxDistance) instead of exactly 0.
+		//! Bounded, one-sided (never negative, so a mask lights nothing) and
+		//! ~0.004 at the default fraction with a 5 %-of-diagonal radius, but
+		//! a bias rather than noise -- MeshSignalBakeTest (p) pins it at that
+		//! bound.  Lowering this trades the bias against self-hits at the
+		//! originating vertex; it is not free in either direction.
 		const Scalar kOriginEpsilonFraction = Scalar( 1e-4 );
 
 		//! Answers "does the OWNING mesh's own surface block this ray within

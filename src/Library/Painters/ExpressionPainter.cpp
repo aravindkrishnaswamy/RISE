@@ -86,10 +86,10 @@ namespace
 	//! is.
 	//!
 	//! A straight copy, and deliberately so: NOTHING is computed here.
-	//! `occlusion()` / `thickness()` are arg-taking builtins evaluated only
+	//! `occlusion()` / `convexity()` / `thickness()` are arg-taking builtins evaluated only
 	//! if the body calls them, so the expensive part (the SDF estimators)
 	//! stays behind the call, not in front of the painter -- which is the
-	//! whole reason these two need no consumption gate while `curv` does
+	//! whole reason these three need no consumption gate while `curv` does
 	//! (design doc §6.2).  On geometry that publishes no provider the copied
 	//! channel is empty, and the builtins return their neutral values.
 	inline void PopulateSignals( const RayIntersectionGeometric& ri, ExprEvalContext& ctx )
