@@ -940,6 +940,91 @@ painted glow — none of them is a relief cue. It DOES look through a
 `coated_material`/`fabric_material`/`composite_material` at the base it
 wraps, because that is the surface the relief would go on.
 
+## Organic, not generated: authoring surfaces that read as real
+
+A surface reads as generated when it has everything a real one lacks:
+ISOTROPIC noise (no grain, no direction), UNIFORM density across the
+whole surface instead of a few spots where something actually happened,
+no link between the pattern and the object's own geometry (an edge that
+never wears, a crevice that never collects dirt), CONTRAST past what the
+material really has, and every feature at the same scale.  That is not a
+shortage of noise types -- it is a shortage of AUTHORING ORDER: structure
+first, tied to the object, sized to what the camera resolves, noise
+added last and anisotropically.  The rules below are that order.
+
+- **Camera-first feature sizes.**  Author the camera first, then size
+  features from its PIXEL FOOTPRINT -- paint `fw` onto the surface and
+  read percentiles back, since on-screen spacing can run several times
+  the world-unit number typed.  Anything near one pixel carries no
+  shape; send it to roughness only, never colour or relief.
+- **Structure before noise.**  Build the real form first (rings around a
+  pith, an ASYMMETRIC sawtooth for banding -- flat plateau, narrow dark
+  band, an abrupt snap back -- `cellhash` giving each ring/cell its own
+  character instead of a carbon copy).  Noise WARPS that structure; it
+  never generates it.
+- **Anisotropy.**  Every noise term gets a direction and an along/across
+  ratio; isotropic noise is the most reliable "generated" tell.  Keep a
+  fine warp under roughly a quarter of the smallest structural spacing so
+  it raggeds edges without dissolving them; reserve coarser, larger warps
+  for wavelengths coarser than that spacing, where they move neighbouring
+  features together instead of scrambling them.
+- **Geometry signals.**  Drive variation from the object's own shape --
+  `occlusion()` for dirt in a crevice, `curv` for hand-worn polish on an
+  edge, a component of `N` for a gravity- or sun-driven effect.  These
+  only answer on the SDF family and indexed meshes: `curv` is 0 and
+  `occlusion()` returns its neutral 1 on every analytic primitive.
+- **Rare events, hand-placed, not uniform texture.**  One knot, one
+  check, a few resin lines -- thresholded off a low-frequency field or
+  placed directly, quiet everywhere else.  Uniform busy-ness is the
+  other half of "obviously generated".
+- **One field drives colour, roughness, and relief.**  Author a single
+  scalar field and bridge it three ways: `ramp_painter` for colour, a
+  `scalar_painter` bridge into roughness, the same field raw into
+  `relief_modifier`.  Ridge, dark band and dull sheen become one feature
+  seen three ways -- what independent per-channel noises can't fake.
+- **Lighting that reveals relief.**  A small, low key light raking
+  ACROSS the grain (not along it), plus a soft fill so the shadow side
+  doesn't go dead.  Panel SIZE matters as much as angle: a broad source
+  washes out fine shading; shrinking it (raising exitance to compensate)
+  can buy as much detail as an entire relief-amplitude sweep.
+- **The iron rule.**  Silhouette says what the object is; a noise cloud
+  on the wrong shape says nothing.  Two boxes under an isotropic Worley
+  field is not a vise -- cut the silhouette to match first, then apply
+  the rest of this doctrine to its surface.
+
+Traps the toolbox itself sets:
+
+- **The clamp eats the detail.**  `clamp(expr, 0, 1)` on a field summing
+  near zero pins a region at exactly 0, and every finer term added there
+  is INVISIBLE, not attenuated.  Use `floor` instead; probe the field
+  (paint it on a lambertian under a flat white environment, read
+  percentiles) and set ramp stops against those measured values, not the
+  nominal `[0,1]`.
+- **`step 0` in `relief_modifier` floors at 1 mm** (`## Adding relief --
+  relief_modifier` above) -- wider than most millimetre-scale relief.
+  Set `step` explicitly once features sit below that floor.
+- **A smooth colour gradient across a ring reads as a row of rods.**
+  Hold one flat plateau across the field range a plateau occupies; check
+  by rendering the relief-OFF control -- if it still looks fluted, the
+  fluting is colour, not shape.
+- **Over-contrast is itself a generated tell.**  Real pine is nearer
+  2.5-3:1 early:late; 15-20:1 both announces the render and drowns the
+  relief that would read as carved.  Reserve the darkest stops for rare
+  events, not the bulk material.
+- **A structural axis parallel to the surface gives stripes, not
+  arches** -- tilt it.  A symmetric profile at a boundary (a sine) reads
+  as corduroy; use an asymmetric one.
+- **`curv` thresholds are per-object** (normalised by bbox diagonal): a
+  threshold near 1 on one object can want to be near 25 on another --
+  probe the field's range before thresholding.
+
+Worked example: the header comment of
+`scenes/FeatureBased/Textures/plank_closeup.RISEscene` carries the full
+doctrine and a "what was tried and was wrong" log this section distils;
+its specific numbers (ramp stops, ring spacing, contrast ratio) are
+scene tuning, not transferable constants.  For `step`/`max_slope`
+mechanics see `## Adding relief -- relief_modifier` above.
+
 ## Discovery
 
 - `read_schema {category:"painter"}` -- every kind, one line each.
