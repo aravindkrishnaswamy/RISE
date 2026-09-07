@@ -85,3 +85,33 @@ The approximately 846 remaining CFL steps to 3.5 s would cost roughly 4.5–5
 wall hours at that rate, excluding crossing observations and future iteration
 growth. The run stops earlier if a crossing occurs. No production-speed or
 window claim is made by this migration work.
+
+## r211a — executed first-checkpoint handoff repair
+
+The first certified continuation admitted step 1300 and accepted five steps
+through 2.1162557490170002 s, then refused its first periodic checkpoint.
+The log reports checkpoint authorization, timeline, observation and state
+matching all true; publication refused an incomplete prior payload/seal pair.
+The initial cursor had been copied with the generic raw-file helper, which
+omits the v2 sidecar. The failure was not a physics or commuting refusal.
+
+The resident import now validates the original published pair and stages its
+exact raw checkpoint bytes through `PublishPreparedPayload`, creating a complete
+pair at the fresh mutable cursor. The source bytes/sidecar are not edited and
+no state is reserialized. First replacement uses the unchanged publication
+gate. The named `RESIDENT_CURSOR_IMPORT_RED` proves bit-identical import,
+successful subsequent replacement, original bytes/seal unchanged, and refusal
+of unsealed/foreign-case inputs. The old bare-copy mutant reproduces the exact
+executed refusal on first replacement. A test requiring this marker is RED
+against the prior executable, not merely inferred from code inspection.
+
+The first failed directory, certificate and launch receipt remain historical
+evidence. The repaired executable requires a fresh executed N=8 v2 certificate;
+the next run starts from the original step-1300 checkpoint in a fresh directory,
+not the five-step in-memory prefix that was never checkpoint-published.
+
+Sibling audit: the remaining generic durable-copy callers export immutable
+VDB frames or a sequence manifest. None initializes a mutable resident
+checkpoint cursor or later passes the copied path through mutable payload
+replacement. The generic helper is now labelled with that limitation; the
+downstream pair-validation and replacement gate remain unchanged.

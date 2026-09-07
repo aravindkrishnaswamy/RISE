@@ -2547,6 +2547,33 @@ namespace
 			AtomicReplaceCheckpoint(preparedSeal,sidecar,error);
 	}
 
+	// A resident continuation needs a complete published pair at its mutable
+	// cursor before the first replacement. Copy raw accepted bytes, never
+	// reserialize them, and use the same two-file publication boundary as steps.
+	bool InitializePublishedCheckpointCopy(const std::filesystem::path& source,
+		const std::filesystem::path& target,const std::string& caseRecordId,std::string& error)
+	{
+		const std::filesystem::path sourceSeal=source.string()+".payload-v2.json";
+		const std::filesystem::path prepared=target.string()+".preparation.pending";
+		if(source==target||std::filesystem::is_symlink(source)||
+			!std::filesystem::is_regular_file(sourceSeal)||std::filesystem::is_symlink(sourceSeal)||
+			std::filesystem::exists(target)||std::filesystem::is_symlink(target)||
+			std::filesystem::exists(prepared)||std::filesystem::is_symlink(prepared)||
+			std::filesystem::exists(prepared.string()+".payload-v2.json")||
+			std::filesystem::is_symlink(prepared.string()+".payload-v2.json")||
+			!ExistingPayloadCertificateValid(source,caseRecordId,error)){
+			error="continuation requires a sealed source and fresh publication cursor";return false;}
+		std::error_code copyError;
+		if(!std::filesystem::copy_file(source,prepared,std::filesystem::copy_options::none,copyError)){
+			error="cannot stage accepted checkpoint bytes";return false;}
+		const bool identical=DigestFile(prepared)==DigestFile(source);
+		const bool published=identical&&DurableSyncFileAndDirectory(prepared,error)&&
+			PublishPreparedPayload(prepared,target,caseRecordId,PayloadPublicationPolicy::Immutable,error);
+		CleanupPreparedPayload(prepared,published);
+		if(!identical)error="continuation checkpoint byte copy mismatch";
+		return published;
+	}
+
 	// Finalization boundary for a newly created run directory. Mutable working
 	// logs are not published evidence until this succeeds; sidecars are terminal
 	// certificates, not inputs to an infinitely recursive sidecar tree.
@@ -2663,6 +2690,28 @@ namespace
 		for(std::size_t i=0u;i<libraries.size();++i){auto mutant=libraries;mutant[i][0]='0';
 			if(FireProductionOwnerKernelSetSHA256(mutant)==kernelRoot)return 98;}
 		libraries[0].clear();if(!FireProductionOwnerKernelSetSHA256(libraries).empty())return 98;
+		const auto imported=root/"imported.checkpoint",bare=root/"bare.checkpoint";
+		const auto sourceBytes=ReadFileBytes(payload),sourceSeal=ReadFileBytes(payload.string()+".payload-v2.json");
+		if(!InitializePublishedCheckpointCopy(payload,imported,identity,error)||
+			ReadFileBytes(imported)!=sourceBytes||ReadFileBytes(imported.string()+".payload-v2.json")!=sourceSeal)
+			return 98;
+		// Actual first-replacement boundary: the old raw-copy mutant must refuse,
+		// while the authenticated pair must advance without touching the source.
+		std::filesystem::copy_file(payload,bare);
+		{std::ofstream next(prepared);next<<"post-migration accepted bytes";}
+		if(PublishPreparedPayload(prepared,bare,identity,PayloadPublicationPolicy::MutableCurrentCheckpoint,error)||
+			error!="publication refuses incomplete or aliased prior output"||
+			ReadFileBytes(bare)!=sourceBytes||
+			!PublishPreparedPayload(prepared,imported,identity,PayloadPublicationPolicy::MutableCurrentCheckpoint,error)||
+			!ExistingPayloadCertificateValid(imported,identity,error)||
+			ReadFileBytes(imported)==sourceBytes||ReadFileBytes(payload)!=sourceBytes||
+			ReadFileBytes(payload.string()+".payload-v2.json")!=sourceSeal)return 98;
+		if(InitializePublishedCheckpointCopy(bare,root/"unsealed-import.checkpoint",identity,error)||
+			std::filesystem::exists(root/"unsealed-import.checkpoint")||
+			InitializePublishedCheckpointCopy(payload,root/"foreign-import.checkpoint",std::string(64u,'b'),error)||
+			std::filesystem::exists(root/"foreign-import.checkpoint"))return 98;
+		std::fprintf(stdout,"RESIDENT_CURSOR_IMPORT_RED paired_copy_identical=1 first_replacement=1 "
+			"raw_copy_mutant_refused=1 unsealed_source_refused=1 foreign_case_refused=1 source_untouched=1\n");
 		std::fprintf(stdout,"PUBLICATION_RED mutable_advance=pass interrupted_pair_refused=pass immutable_bytes_preserved=pass final_equivalence_not_mutable=pass orphan_refused=pass empty_refused=pass projected_mode=pass all_disabled_refused=pass invalid_case=pass "
 			"pending_refused=pass foreign_case_unchanged=pass writer_failure_refused=pass symlink_refused=platform recursive_sidecars=absent kernel_library_mutants=5 root=%s\n",root.string().c_str());
 		return 0;
@@ -6106,6 +6155,8 @@ namespace
 		return std::vector<T>(values.end()-static_cast<std::ptrdiff_t>(count),values.end());
 	}
 
+	// Generic durable bytes for immutable frame/manifest exports. This does not
+	// import a v2 publication pair; resident mutable cursors use the helper above.
 	bool DurableCopyPublishedFile(const std::filesystem::path& source,
 		const std::filesystem::path& target,std::string& error)
 	{
@@ -7677,7 +7728,10 @@ namespace
 		persistence.productionOnsetStopVelocityMPerS=60.0;
 		if(continuation){
 			std::string copyError;
-			if(!DurableCopyPublishedFile(continuationCheckpoint,persistence.checkpointPath,copyError))return 92;
+			MethaneRunCheckpoint source;
+			if(!LoadMethaneRunCheckpoint(continuationCheckpoint,source,copyError)||
+				!InitializePublishedCheckpointCopy(continuationCheckpoint,persistence.checkpointPath,
+					source.caseRecordId,copyError))return 92;
 			persistence.resume=true;
 			persistence.resumeEquivalenceCertificatePath=continuationCertificate;
 			persistence.productionOnsetStopVelocityMPerS=15.0;

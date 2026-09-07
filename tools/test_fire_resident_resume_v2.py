@@ -120,6 +120,14 @@ class ResidentResumeV2Test(unittest.TestCase):
         mutant["new_trace"]["digest_version"] = 1
         self.validate(mutant, False)
 
+    def test_resident_cursor_first_publication(self):
+        result = subprocess.run([str(EXE), "--fire-production-payload-publication"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("RESIDENT_CURSOR_IMPORT_RED paired_copy_identical=1 first_replacement=1 "
+                      "raw_copy_mutant_refused=1 unsealed_source_refused=1 foreign_case_refused=1 source_untouched=1",
+                      result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
