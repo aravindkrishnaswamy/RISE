@@ -976,10 +976,11 @@ namespace
 	bool AppendOracleMomentumBudget(const std::filesystem::path& path,
 		const PeriodicMACShape& shape,const PeriodicMACField& beginningMomentum,
 		const ConservativeAdvance3DConfig& config,const ConservativeAdvance3DResult& advanced,
-		const double beginningTimeS,std::string& error)
+		const double beginningTimeS,std::string& error,
+		const std::size_t columnX=38u,const std::size_t columnY=42u)
 	{
 		if(path.empty()||config.periodicBoundaries||!(config.transport.deltaTimeS>0.0)||
-			shape.nx<=38u||shape.ny<=42u||
+			shape.nx<=columnX||shape.ny<=columnY||
 			advanced.r0.openFlux.low[0].empty()||advanced.r1.openFlux.low[0].empty()||
 			advanced.r0.openProjection.velocityMPerS.component[0].empty()||
 			advanced.r1.openProjection.velocityMPerS.component[0].empty()||
@@ -1019,9 +1020,9 @@ namespace
 			maximumSource=0.0,maximumPressure=0.0,maximumTotal=0.0,maximumClosure=0.0,
 			maximumNonpressureSplitResidual=0.0;
 		double minimumAcceptedAlpha=1.0,maximumAcceptedAlpha=0.0;
-		std::size_t maximumFace=OpenMACFaceIndex3D(shape,2u,38u,42u,0u);
+		std::size_t maximumFace=OpenMACFaceIndex3D(shape,2u,columnX,columnY,0u);
 		for(std::size_t z=0u;z<=shape.nz;++z){
-			const std::size_t face=OpenMACFaceIndex3D(shape,2u,38u,42u,z);
+			const std::size_t face=OpenMACFaceIndex3D(shape,2u,columnX,columnY,z);
 			const double stress=0.5*(advanced.r0.openStressMomentumRHS.component[2][face]+
 				advanced.r1.openStressMomentumRHS.component[2][face]);
 			const double buoyancy=0.5*(advanced.r0.openBuoyancyMomentumRHS.component[2][face]+
@@ -1043,7 +1044,7 @@ namespace
 			if(!std::isfinite(acceptedAlpha)||acceptedAlpha<0.0||acceptedAlpha>1.0){
 				error="oracle momentum diagnostic alpha is invalid";return false;}
 			column<<std::setprecision(17)<<beginningTimeS<<','<<config.transport.deltaTimeS<<
-				",38,42,"<<z<<','<<beginningMomentum.component[2][face]<<','<<stress<<','<<
+				','<<columnX<<','<<columnY<<','<<z<<','<<beginningMomentum.component[2][face]<<','<<stress<<','<<
 				buoyancy<<','<<advection<<','<<source<<','<<pressure<<','<<total<<','<<closure<<','<<
 				nonpressureSplitResidual<<','<<acceptedAlpha<<'\n';
 			minimumAcceptedAlpha=std::min(minimumAcceptedAlpha,acceptedAlpha);
@@ -1068,7 +1069,7 @@ namespace
 			"accepted_scalar_face_alpha_max,accepted_scalar_face_alpha_at_velocity_max\n";
 		if(!summary){error="oracle momentum summary diagnostic cannot be opened";return false;}
 		summary<<std::setprecision(17)<<beginningTimeS<<','<<config.transport.deltaTimeS<<
-			",38,42,"<<maximumFace<<','<<advanced.velocityMPerS.component[2][maximumFace]<<','<<
+			','<<columnX<<','<<columnY<<','<<maximumFace<<','<<advanced.velocityMPerS.component[2][maximumFace]<<','<<
 			maximumStress<<','<<maximumBuoyancy<<','<<maximumAdvection<<','<<maximumSource<<','<<
 			maximumPressure<<','<<maximumTotal<<','<<maximumClosure<<','<<
 			maximumNonpressureSplitResidual<<','<<minimumAcceptedAlpha<<','<<
@@ -1121,6 +1122,10 @@ namespace
 		std::filesystem::path temporalSnapshotDirectory;
 		double temporalSnapshotCadenceS=0.0;
 		double maximumProductionSourceStepS=0.0;
+		// r213 diagnostic composition only; never a production timestep policy
+		// or checkpoint migration authorization.
+		std::filesystem::path oracleCompositionDirectory;
+		double maximumOracleCompositionStepS=0.0;
 		std::filesystem::path productionOnsetDiagnosticDirectory;
 		double productionOnsetStopVelocityMPerS=0.0;
 	};
@@ -3276,6 +3281,28 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		const bool oracleComposition=!persistence.oracleCompositionDirectory.empty();
+		if(oracleComposition&&(persistence.productionMetal||persistence.UsesProjectedHeunOwner()||
+			!persistence.resume||!persistence.isolatedEquivalenceProbe||
+			persistence.stopAfterAdditionalAcceptedSteps!=8u||
+			persistence.isolatedExpectedCheckpointDigest!=
+				"ab91898e0279a347e85983853e8fe4167113a2364cdcffb6bad78e327d4e03bf"||
+			persistence.isolatedExpectedCheckpointBuildId!=
+				"35c4f59e4d603eebcad2c37d67860a018b0e13266b6ff7f4807f0c3667d30feb"||
+			persistence.checkpointCadenceWallS!=std::numeric_limits<double>::max()||
+			persistence.equivalenceSnapshotDirectory!=persistence.oracleCompositionDirectory/"checkpoints"||
+			!persistence.finalCheckpointPath.empty()||!persistence.retainedCheckpointDirectory.empty()||
+			!persistence.temporalSnapshotDirectory.empty()||persistence.forceZeroSourceForTest||
+			persistence.killAfterFirstCheckpoint||resolutionTier!=8.0||caseDurationS!=3.0||
+			caseFramesPerS!=1.0||targetTimeS!=2.1096706851385534||
+			!(persistence.maximumOracleCompositionStepS>0.0)||
+			persistence.maximumOracleCompositionStepS>
+				(2.1096706851385534-2.1080244191689417)/8.0)){
+			values.structuredError="oracle_composition_diagnostic_scope_conflict";return values;
+		}
+		if(!oracleComposition&&persistence.maximumOracleCompositionStepS!=0.0){
+			values.structuredError="oracle_composition_step_without_scope";return values;
+		}
 		// This production entry is from-zero until an operator-bound checkpoint
 		// authority exists. Same build/case/precision is not transport lineage.
 		// The separately sealed r78 continuation retains its own admission path.
@@ -3603,6 +3630,9 @@ namespace
 				persistence.stopAfterAdditionalAcceptedSteps>=8u;
 			const std::string loadedCheckpointDigest=persistence.isolatedEquivalenceProbe?
 				DigestFile(persistence.checkpointPath):std::string();
+			if(oracleComposition&&loadedCheckpointDigest!=persistence.isolatedExpectedCheckpointDigest){
+				values.structuredError="oracle_composition_checkpoint_identity_mismatch";return values;
+			}
 			const bool exactDiagnosticCaseReplay=persistence.isolatedEquivalenceProbe&&
 				persistence.stopAfterAdditionalAcceptedSteps==8u&&
 				persistence.isolatedExpectedCheckpointBuildId==checkpoint.producerBuildId&&
@@ -3900,6 +3930,7 @@ namespace
 			double eventStep=chosenStep;
 			if(persistence.productionMetal&&persistence.maximumProductionSourceStepS>0.0)
 				eventStep=std::min(eventStep,persistence.maximumProductionSourceStepS);
+			if(oracleComposition)eventStep=std::min(eventStep,persistence.maximumOracleCompositionStepS);
 			if(simulationTimeS<pilotRampEndS){
 				eventStep=std::min(eventStep,pilotCommandMaximumStepS);
 				if(persistence.productionMetal)
@@ -5011,6 +5042,18 @@ namespace
 					}else{
 						advancedOK=packetOK&&AdvanceConservative3D(shape,beginning,momentum,packets,
 							config,fuel,fuel,FireSimulationTransportRecord::OpenV1(),advanced,&error);
+						if(advancedOK&&oracleComposition){
+							std::ostringstream name;name<<"attempt_"<<acceptedSteps+1u<<'_'<<reduction;
+							const auto base=persistence.oracleCompositionDirectory/name.str();
+							const auto packetBytes=ProductionSourcePacketFieldBytes(packets);
+							std::ofstream packetFile(base.string()+".source_packets.bin",std::ios::binary);
+							packetFile.write(reinterpret_cast<const char*>(packetBytes.data()),packetBytes.size());
+							packetFile.close();
+							advancedOK=static_cast<bool>(packetFile)&&AppendOracleMomentumBudget(
+								base.string()+".budget.csv",shape,momentum,config,advanced,simulationTimeS,error,30u,33u);
+							if(!advancedOK){mandatoryEvidenceFailure=true;
+								if(error.empty())error="oracle composition source/budget evidence failure";}
+						}
 						if(advancedOK)if(const char* oracleAuditPath=
 							std::getenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH"))
 							advancedOK=AppendOracleMomentumBudget(oracleAuditPath,shape,momentum,
@@ -8049,6 +8092,125 @@ namespace
 			DigestFile(outputDirectory/"reference_request.v1").c_str());
 		return 0;
 #endif
+	}
+
+	bool OracleTier8CompositionEndpointMatches(const MethaneRunCheckpoint& checkpoint,
+		const std::string& build,const double expectedEnd)
+	{
+		FireStateProducerPrecision precision=FireStateProducerPrecision::Unknown;
+		return build.size()==64u&&checkpoint.producerBuildId==build&&
+			checkpoint.dimensions==std::array<std::size_t,3>{{69u,69u,106u}}&&
+			checkpoint.simulationTimeS==expectedEnd&&std::isfinite(expectedEnd)&&
+			HomogeneousStateProducerPrecision(checkpoint.states,precision)&&
+			precision==FireStateProducerPrecision::Binary64;
+	}
+
+	int RunOracleTier8CompositionChild(const std::filesystem::path& checkpointPath,
+		const std::filesystem::path& outputDirectory,const unsigned int subdivisions)
+	{
+#if !defined(RISE_ENABLE_OPENVDB)
+		(void)checkpointPath;(void)outputDirectory;(void)subdivisions;return 90;
+#else
+		const std::string checkpointSHA="ab91898e0279a347e85983853e8fe4167113a2364cdcffb6bad78e327d4e03bf";
+		const std::string checkpointBuild="35c4f59e4d603eebcad2c37d67860a018b0e13266b6ff7f4807f0c3667d30feb";
+		const double begin=2.1080244191689417,end=2.1096706851385534;
+		if((subdivisions!=8u&&subdivisions!=16u&&subdivisions!=32u)||
+			!OwnerCostPrefixEnvironmentAccepted()||std::getenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH")||
+			std::filesystem::exists(outputDirectory)||DigestFile(checkpointPath)!=checkpointSHA)return 91;
+		MethaneRunCheckpoint checkpoint;std::string error,build,executable;RISECBOR64::Bytes buildRecord;
+		if(!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			!OracleTier8CompositionEndpointMatches(checkpoint,checkpointBuild,begin)||
+			!CurrentRendererBuildIdentity(buildRecord,build)||
+			!CurrentExecutableDigest(buildRecord,executable,error))return 92;
+		const std::string caseId=checkpoint.caseRecordId;
+		const std::uint64_t beginningStep=checkpoint.acceptedSteps;
+		checkpoint=MethaneRunCheckpoint();
+		std::error_code filesystemError;
+		std::filesystem::create_directories(outputDirectory/"checkpoints",filesystemError);
+		if(filesystemError)return 92;
+		const double ceiling=(end-begin)/static_cast<double>(subdivisions);
+		std::ofstream request(outputDirectory/"composition_request.v1");
+		request<<std::setprecision(17)<<"schema rise.fire.r213.oracle-tier8-composition.v1\n"
+			<<"scope separate_oracle_trajectory_reference_not_shared_input_gate\n"
+			<<"formal_contract_verdict pending_additive_terms_and_shared_input_gate\n"
+			<<"resolution_tier 8\ncolumn_x 30\ncolumn_y 33\nseed 1234\ncase_duration_s 3\n"
+			<<"case_record_id "<<caseId<<"\nbeginning_time_s "<<begin<<"\nend_time_s "<<end
+			<<"\nsubdivision_nomination "<<subdivisions<<"\nmaximum_substep_s "<<ceiling
+			<<"\nsubstep_policy CFL_and_ordinary_rejection_below_nominated_ceiling\n"
+			<<"source_policy canonical_fp64_recomputed_at_each_substep_full_bytes_retained\n"
+			<<"checkpoint_sha256 "<<checkpointSHA<<"\ncheckpoint_producer_build_id "<<checkpointBuild
+			<<"\nproducer_build_id "<<build<<"\nproducer_executable_sha256 "<<executable
+			<<"\nmigration_authority false\n";
+		if(!ClosePublishedStream(request))return 92;
+		RunPersistenceOptions persistence;persistence.resume=true;persistence.isolatedEquivalenceProbe=true;
+		persistence.checkpointPath=checkpointPath;persistence.isolatedExpectedCheckpointBuildId=checkpointBuild;
+		persistence.isolatedExpectedCheckpointDigest=checkpointSHA;persistence.stopAfterAdditionalAcceptedSteps=8u;
+		persistence.checkpointCadenceWallS=std::numeric_limits<double>::max();
+		persistence.oracleCompositionDirectory=outputDirectory;persistence.maximumOracleCompositionStepS=ceiling;
+		persistence.equivalenceSnapshotDirectory=outputDirectory/"checkpoints";
+		const auto wallStart=std::chrono::steady_clock::now();
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,end,3.0,1.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
+		std::ofstream schedule(outputDirectory/"accepted_schedule.csv");
+		schedule<<"substep,beginning_time_s,end_time_s,dt_s,checkpoint_sha256\n";
+		double time=begin;bool valid=result.succeeded&&result.simulatedTimeS==end&&
+			result.acceptedTimeStepHistoryS.size()>=beginningStep+8u;
+		for(std::size_t index=beginningStep;index<result.acceptedTimeStepHistoryS.size();++index){
+			const double dt=result.acceptedTimeStepHistoryS[index],next=time+dt;
+			std::ostringstream name;name<<"step_"<<std::setw(2)<<std::setfill('0')<<index-beginningStep+1u<<".checkpoint";
+			const auto path=outputDirectory/"checkpoints"/name.str();
+			MethaneRunCheckpoint accepted;
+			const bool matched=LoadMethaneRunCheckpoint(path,accepted,error)&&
+				OracleTier8CompositionEndpointMatches(accepted,build,next)&&accepted.caseRecordId==caseId;
+			valid=valid&&matched&&std::isfinite(dt)&&dt>0.0&&dt<=ceiling&&next<=end;
+			schedule<<std::setprecision(17)<<index-beginningStep+1u<<','<<time<<','<<next<<','<<dt<<','<<DigestFile(path)<<'\n';
+			time=next;
+		}
+		valid=valid&&time==end&&DigestFile(checkpointPath)==checkpointSHA;
+		if(!ClosePublishedStream(schedule))return 94;
+		std::ofstream summary(outputDirectory/"composition_summary.v1");
+		summary<<std::setprecision(17)<<"schema rise.fire.r213.oracle-composition-summary.v1\n"
+			<<"solver_accepted "<<result.succeeded<<"\nexact_endpoint_and_schedule_valid "<<valid
+			<<"\nend_time_s "<<time<<"\nwall_s "<<std::chrono::duration<double>(
+				std::chrono::steady_clock::now()-wallStart).count()
+			<<"\nschedule_sha256 "<<DigestFile(outputDirectory/"accepted_schedule.csv")
+			<<"\nformal_contract_verdict pending_additive_terms_and_shared_input_gate\n"
+			<<"error "<<result.structuredError<<"\n";
+		if(!ClosePublishedStream(summary)||!SealPublishedRunDirectory(outputDirectory,caseId,error))return 94;
+		std::fprintf(stderr,"ORACLE_TIER8_COMPOSITION accepted=%d exact_schedule=%d end=%.17g error=%s\n",
+			result.succeeded?1:0,valid?1:0,time,result.structuredError.c_str());
+		return valid?0:93;
+#endif
+	}
+
+	int RunOracleTier8CompositionREDFixture(const std::filesystem::path& checkpointPath)
+	{
+		const std::string build="35c4f59e4d603eebcad2c37d67860a018b0e13266b6ff7f4807f0c3667d30feb";
+		const double beginning=2.1080244191689417;
+		MethaneRunCheckpoint checkpoint;std::string error;
+		if(DigestFile(checkpointPath)!="ab91898e0279a347e85983853e8fe4167113a2364cdcffb6bad78e327d4e03bf"||
+			!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
+			!OracleTier8CompositionEndpointMatches(checkpoint,build,beginning))return 95;
+		bool passed=!OracleTier8CompositionEndpointMatches(checkpoint,build,std::nextafter(beginning,3.0));
+		passed=passed&&!OracleTier8CompositionEndpointMatches(checkpoint,std::string(64u,'a'),beginning);
+		checkpoint.dimensions[0]=86u;
+		passed=passed&&!OracleTier8CompositionEndpointMatches(checkpoint,build,beginning);
+		checkpoint.dimensions[0]=69u;
+		checkpoint.states.front().producerPrecision=FireStateProducerPrecision::Binary32;
+		passed=passed&&!OracleTier8CompositionEndpointMatches(checkpoint,build,beginning);
+		RunPersistenceOptions mutant;mutant.oracleCompositionDirectory="forbidden_composition_fixture";
+		mutant.productionMetal=true;
+		passed=passed&&RunMethaneFrameProbe(1u,0u,0.0,3.0,1.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,mutant).structuredError==
+				"oracle_composition_diagnostic_scope_conflict";
+		mutant=RunPersistenceOptions();mutant.maximumOracleCompositionStepS=0.001;
+		passed=passed&&RunMethaneFrameProbe(1u,0u,0.0,3.0,1.0,8.0,
+			CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,mutant).structuredError==
+				"oracle_composition_step_without_scope";
+		std::fprintf(stderr,"ORACLE_COMPOSITION_RED wrong_end=refused wrong_build=refused "
+			"wrong_tier=refused mixed_precision=refused production_scope=refused "
+			"unscoped_step=refused passed=%d\n",passed?1:0);
+		return passed?0:95;
 	}
 
 	int RunProductionMomentumReplayChild(const std::filesystem::path& checkpointPath,
@@ -16070,6 +16232,15 @@ int main(int argc,char** argv)
 	}
 	if(argc==3&&std::strcmp(argv[1],"--fire-oracle-tier8-reference")==0)
 		return RunOracleTier8ReferenceChild(argv[2]);
+	if(argc==5&&std::strcmp(argv[1],"--fire-oracle-tier8-composition")==0){
+		unsigned int subdivisions=0u;
+		if(std::strcmp(argv[4],"8")==0)subdivisions=8u;
+		else if(std::strcmp(argv[4],"16")==0)subdivisions=16u;
+		else if(std::strcmp(argv[4],"32")==0)subdivisions=32u;
+		return RunOracleTier8CompositionChild(argv[2],argv[3],subdivisions);
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-oracle-tier8-composition-red")==0)
+		return RunOracleTier8CompositionREDFixture(argv[2]);
 	if(argc==2&&std::strcmp(argv[1],"--fire-oracle-tier8-reference-fixture")==0)
 		return RunOracleTier8ReferenceContractFixture();
 	Check(RunOracleTier8ReferenceContractFixture()==0,
