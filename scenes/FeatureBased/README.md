@@ -340,9 +340,14 @@ printf "render\nquit\n" | ./bin/rise scenes/FeatureBased/Geometry/teapot.RISEsce
   is driven by ONE `expression_painter` grain field consumed twice -- a `ramp_painter`
   for wood colour and a `scalar_painter{painter}` bridge for GGX roughness, so gloss
   follows grain. `scatter_painter` scatters oil-stain stamps that a `blend_painter{mode
-  multiply}` darkens onto the wood. A clamped-on iron vise is worley-pitted, with its
-  colour field reprojected via `mapping_painter{projection world}` and its roughness a
-  standalone `scalar_painter{expression}` worley field. A tool tray demonstrates
+  multiply}` darkens onto the wood. A bolted-on cast-iron bench vise -- a fifteen-part
+  `sdf_geometry` whose silhouette (base flange, fixed and sliding jaws, proud machined jaw
+  pads, lead screw, T-handle) says what it is before any painter touches it -- carries ONE
+  weathering field consumed four ways: `ramp_painter` for the paint-to-rust colour, a
+  `scalar_painter` bridge to GGX roughness, the same field raw into `relief_modifier`, and
+  two more bridges into `ior`/`extinction`, so the field that says "this point is paint"
+  also stops it being a conductor; `occlusion()`, `-N.y`, `curv` and an object-space part
+  mask decide where the grime, rust, chips and machined faces go. A tool tray demonstrates
   `stochastic_tile_painter` de-tiling a `checker_painter` source -- no tileable photo/scan
   asset exists in-repo, so the scene substitutes a procedural checker source to exercise
   the de-tiling mechanism; `stochastic_tile_painter`'s intended use is a small tiling
