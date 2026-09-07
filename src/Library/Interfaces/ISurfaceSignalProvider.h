@@ -378,8 +378,13 @@ namespace RISE
 
 		//! THE L1 MEMO KEY for this hit -- every field of this struct, so a
 		//! new field added above and NOT added here is a silent wrong
-		//! render.  Kept next to the fields it copies for exactly that
-		//! reason.
+		//! render.  Kept next to the fields it copies so the omission is
+		//! at least visible; the part that is CHECKED rather than merely
+		//! visible is ExpressionMemoTest's "(i) real-mesh key fields",
+		//! which drives a live TriangleMeshGeometryIndexed bake -- the
+		//! provider that reads ONLY (primId, baryA, baryB) -- and fails if
+		//! any of the three leaves this function.  Add a field, add a
+		//! separation check there too.
 		ExpressionMemo::SignalHitKey MemoHitKey() const
 		{
 			ExpressionMemo::SignalHitKey k;

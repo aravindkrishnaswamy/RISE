@@ -496,9 +496,9 @@ namespace RISE
 			unsigned long long ProgramId() const { return m_id; }
 
 			//! Is this program worth an L2 memo entry?  Decided ONCE, at
-			//! compile time, because the memo's own key comparison is ~26
-			//! double compares and a body like `u*v` is cheaper to re-run
-			//! than to look up.
+			//! compile time, because the memo's own key comparison is 28
+			//! exact compares (ExpressionMemo::ProgramKey::kFields) and a
+			//! body like `u*v` is cheaper to re-run than to look up.
 			//!
 			//! The predicate is "does this body contain anything whose cost
 			//! dwarfs a key compare" -- a geometry-signal call (hundreds of
@@ -790,10 +790,13 @@ namespace RISE
 				//!     ridged / worley), each of which is a lattice hash per
 				//!     octave and dwarfs a key compare on its own;
 				//!   * it is simply LONG -- more instructions than the key
-				//!     comparison has fields to compare.  26 is that
-				//!     comparison's field count, so at or above it the
-				//!     lookup cannot be the more expensive half even for a
-				//!     body of pure arithmetic.
+				//!     comparison has fields to compare.  That count is
+				//!     ExpressionMemo::ProgramKey::kFields (28: 17 context
+				//!     fields plus the hit channel's 11), taken from the
+				//!     comparison itself rather than restated here so the
+				//!     two cannot drift.  At or above it the lookup cannot
+				//!     be the more expensive half even for a body of pure
+				//!     arithmetic.
 				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
 				{
 					if( !p.m_signalCalls.empty() ) return true;
@@ -814,7 +817,7 @@ namespace RISE
 						}
 					}
 
-					return instrs >= 26;
+					return instrs >= (std::size_t)ExpressionMemo::ProgramKey::kFields;
 				}
 
 				const std::string& Error() const { return m_error; }

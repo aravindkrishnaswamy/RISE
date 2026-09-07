@@ -33,6 +33,27 @@
 //    event.  L1 CANNOT catch those: it only ever saves the signal
 //    builtin, not the noise / ramp / arithmetic around it.
 //
+//  THE FP CONTRACT THE TWO LEVELS SIT EITHER SIDE OF, and the test that
+//  guards it.  L2 is DELIBERATELY not inside ExpressionProgram::Eval /
+//  EvalVec3: this is a `-ffast-math` build, and wrapping those bodies
+//  changed which one the optimiser inlined into ExpressionPainter, which
+//  changed the FMA contraction inside RunAny, which moved the last ulp of
+//  a domain-warped fbm (ExpressionProgram::MakeMemoKey's comment tells
+//  the story).  L1 has no such freedom -- it sits in SignalQuery, which
+//  is a CALLEE of the VM's own `CallFunc`, i.e. INSIDE the arithmetic
+//  path the contract covers.  It is safe there because it returns a
+//  stored `double` bit for bit and does no arithmetic of its own, and
+//  that is a property any change to it must keep.
+//
+//  THE GUARD IS TextureExpressionVMTest -- 846 checks, which bit-compare
+//  RunAny's results with `==` against references computed in that test's
+//  own translation unit.  It is the ONLY suite that would notice a
+//  one-ulp shift: SurfaceSignalsTest and friends band their signal checks
+//  at 1e-12 and would pass straight through one.  So: after ANY change to
+//  L1, to SignalQuery, or to what either of them is inlined into,
+//  TextureExpressionVMTest staying green at its full count is the check
+//  that matters, not the memo suite's own differentials.
+//
 //  WHAT MAKES IT SOUND.  A compiled ExpressionProgram is a PURE function
 //  of (program, ExprEvalContext): the VM holds no mutable state, every
 //  builtin is deterministic, and the SDF signal estimators are const
@@ -77,6 +98,7 @@
 #include "../Interfaces/IOptions.h"
 #include <atomic>
 #include <cstddef>
+#include <type_traits>
 
 namespace RISE
 {
@@ -161,10 +183,72 @@ namespace RISE
 		//!
 		//! THE COMPLETENESS ARGUMENT rests on that last site plus the
 		//! scene-immutability rule: any mutation must happen BETWEEN
-		//! passes, and every pass begins by bumping.  The three specific
-		//! sites above it are defence in depth, and they are what makes a
-		//! non-render consumer (the GUI's painter preview, a picking
-		//! query) safe as well.
+		//! passes, and every pass begins by bumping.  The four specific
+		//! sites above it are defence in depth, for a non-render consumer
+		//! (a picking query, an agent tool, an editor derive) that mutates
+		//! and then reads WITHOUT starting a render pass.
+		//!
+		//! EVERY ONE OF THOSE FOUR BUMPS AFTER ITS MUTATION, and three of
+		//! them BEFORE it as well; each site says which and why.  The
+		//! ordering is not cosmetic.
+		//!
+		//!   * AFTER is the half that cannot be dropped.  A bump that
+		//!     lands only BEFORE the mutation is a hazard: a concurrent
+		//!     reader adopts the new generation, misses (its tables were
+		//!     just dropped), asks a provider still holding the OLD
+		//!     state, and inserts that stale answer stamped NEW -- where
+		//!     nothing will ever drop it.  Bumping last leaves every
+		//!     table filled from old state on the old generation.
+		//!   * BEFORE is needed wherever the seam DOES WORK OF ITS OWN
+		//!     THAT EVALUATES PAINTERS, because the mutation the seam
+		//!     reacts to has usually already happened when it is called:
+		//!     Scene::SetSceneTime regenerates photon maps (the animator
+		//!     moved the keyframes before it was called), and
+		//!     ObjectManager::PrepareForRendering / RayCaster::AttachScene
+		//!     run the realize pass (a displacement painter can be an
+		//!     expression).  Without an entry bump that work could read
+		//!     the PREVIOUS frame's tables.
+		//!
+		//! TriangleMeshGeometryIndexed::InvalidateSignalBakes is the one
+		//! that needs only the trailing bump: it evaluates nothing.
+		//! Reaching the window either bump closes needs another thread
+		//! running during the mutation, which is the documented mid-pass
+		//! `EvaluateAtTime` motion-blur path below; a bump is one relaxed
+		//! atomic increment at a seam that is rebuilding photon maps or a
+		//! TLAS, so the pair is free and the argument does not rest on how
+		//! narrow the window is.
+		//!
+		//! THE IN-FLIGHT WINDOW THAT ORDERING CANNOT CLOSE.  A lookup is
+		//! not atomic with its insert: L1Find/L2Find, then the provider or
+		//! VM call, then L1Insert/L2Insert.  A bump landing anywhere in
+		//! that gap leaves the insert stamping a PRE-bump value with the
+		//! POST-bump generation, and it survives until the next bump.  It
+		//! is the same off-thread reachability as the paragraph above --
+		//! within a pass nothing bumps, and between passes the mutating
+		//! thread is alone -- and closing it would cost a re-read of the
+		//! generation and a compare on every insert, on the hot path, to
+		//! buy nothing for any caller that respects scene immutability.
+		//! Note it, do not pay for it; a caller that DOES mutate under
+		//! live readers has already broken a bigger rule.
+		//!
+		//! THE GUI'S PAINTER PREVIEW is safe, but NOT because of any of the
+		//! bumps above -- none of them fires on a preview, which neither
+		//! sets a scene time nor prepares an object manager nor attaches a
+		//! ray caster.  It is safe for two reasons of its own.  (1)
+		//! `SceneEditor/PainterPreview.cpp`'s `MakePreviewRi` leaves
+		//! `ri.signals` DEFAULT-constructed -- null provider, primId -1 --
+		//! so a preview never keys an L1 entry against a provider at all;
+		//! what it memoises is the null-provider NEUTRAL, which is a
+		//! constant.  (2) Re-authoring a painter RECOMPILES it, and every
+		//! Finalize mints a new program id (NewProgramId below), so a
+		//! preview of the edited painter cannot read the old one's L2
+		//! entries -- the id, not the address, is what the key carries.
+		//!
+		//! SO: stamping a REAL provider into `MakePreviewRi` -- previewing
+		//! against the selected object's geometry, say -- would put the
+		//! preview inside the memo's provider-keyed half, and it would
+		//! then need a bump of its own wherever that geometry can move
+		//! between previews.  Do not add one without adding the other.
 		//!
 		//! THE ONE KNOWN HOLE, and it is pre-existing: motion blur's
 		//! per-sample `EvaluateAtTime` moves keyframed values DURING a
@@ -254,6 +338,14 @@ namespace RISE
 			int			primId;
 			bool		bComplementedField;
 
+			//! FIELDS THIS COMPARES: 11.  Counted here, next to the body,
+			//! and summed into kProgramKeyFields below -- which is what
+			//! ExpressionProgram::Builder::ComputeMemoWorthiness uses as
+			//! its instruction-count threshold, so the two cannot drift.
+			//! ADDING A FIELD ABOVE MEANS ADDING IT TO Equals AND
+			//! INCREMENTING THIS.
+			static const int kFields = 11;
+
 			bool Equals( const SignalHitKey& o ) const
 			{
 				return pProvider == o.pProvider
@@ -272,6 +364,9 @@ namespace RISE
 			double			radius;
 			int				fn;				//!< 0 = occlusion, 1 = thickness, 2 = convexity
 			bool			bRadiusIsConstant;
+
+			//! FIELDS THIS COMPARES: 3 of its own plus the hit's 11.
+			static const int kFields = 3 + SignalHitKey::kFields;
 
 			bool Equals( const SignalKey& o ) const
 			{
@@ -301,6 +396,16 @@ namespace RISE
 			double				Nx, Ny, Nz;
 			double				fw, fwo, time, curv, curvR;
 			SignalHitKey		signals;
+
+			//! FIELDS THIS COMPARES: 17 of its own (progId, u, v, P.xyz,
+			//! Po.xyz, N.xyz, fw, fwo, time, curv, curvR) plus the hit
+			//! channel's 11 = 28.  THE NUMBER IS LOAD-BEARING, not
+			//! decoration: ExpressionProgram::Builder::ComputeMemoWorthiness
+			//! uses it as the instruction count at or above which a body
+			//! cannot be cheaper to re-run than to look up.  Adding a
+			//! context variable means a field here, a compare in the body
+			//! below, and a bump of the 17.
+			static const int kFields = 17 + SignalHitKey::kFields;
 
 			bool Equals( const ProgramKey& o ) const
 			{
@@ -347,6 +452,23 @@ namespace RISE
 			ProgramKey			l2Key[ kL2Ways ];
 			double				l2Val[ kL2Ways ][ 3 ];
 		};
+
+		//! THE TWO PROPERTIES THE PARAGRAPH ABOVE CLAIMS, ASSERTED so they
+		//! cannot be lost to a well-meaning member initialiser or a
+		//! non-trivial member type.  Trivially default-constructible is
+		//! what makes the `thread_local` below plain zero-initialised TLS
+		//! with NO guard variable on the hot path; trivially destructible
+		//! is what keeps it from registering a per-thread destructor
+		//! (__cxa_thread_atexit) at first touch.  Neither is a
+		//! micro-optimisation to taste: they are why Local() compiles to
+		//! an address, and the reason the comment above is allowed to say
+		//! there is no guard.
+		static_assert( std::is_trivially_default_constructible<Tables>::value,
+			"ExpressionMemo::Tables must stay trivially default-constructible -- a member "
+			"initialiser or a non-trivial member would put a TLS guard variable on every lookup" );
+		static_assert( std::is_trivially_destructible<Tables>::value,
+			"ExpressionMemo::Tables must stay trivially destructible -- otherwise every thread "
+			"registers a TLS destructor at first touch" );
 
 		//! THE per-thread instance.
 		inline Tables& Local()
