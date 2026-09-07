@@ -1130,6 +1130,12 @@ namespace
 		double productionOnsetStopVelocityMPerS=0.0;
 	};
 
+	bool RetainOracleMomentumOperands(const bool productionMetal,
+		const bool composition,const bool legacyMomentumAudit)
+	{
+		return !productionMetal&&(composition||legacyMomentumAudit);
+	}
+
 	// r208: persistence is a projection of an authenticated publication, never
 	// another source producer. There is deliberately no raw-dose/callback input.
 	bool CarryCanonicalSourceForPersistence(
@@ -3482,8 +3488,8 @@ namespace
 			projectionReferenceLengthM;
 		config.dns=false; config.workerCount=workerCount;
 		config.periodicBoundaries=false;
-		config.retainStageDiagnostics=!persistence.productionMetal&&
-			std::getenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH")!=nullptr;
+		config.retainStageDiagnostics=RetainOracleMomentumOperands(persistence.productionMetal,
+			oracleComposition,std::getenv("RISE_FIRE_ORACLE_MOMENTUM_AUDIT_PATH")!=nullptr);
 		config.injectedTemperatureK=300.0;
 		MethaneCellState ambient; ambient.temperatureK=300.0;
 		for(std::size_t i=0;i<MethaneSpeciesCount;++i)
@@ -5078,7 +5084,7 @@ namespace
 				}
 				if(!advancedOK) {
 					if(fatalOnsetAuditFailure||mandatoryEvidenceFailure||
-						observationEvidencePublished)break;
+						observationEvidencePublished){lastAdvanceError=error;break;}
 					if(error.empty())error=std::string("production owner failed during ")+
 						solverPhase;
 					lastAdvanceError=error;
@@ -8191,7 +8197,11 @@ namespace
 		if(DigestFile(checkpointPath)!="ab91898e0279a347e85983853e8fe4167113a2364cdcffb6bad78e327d4e03bf"||
 			!LoadMethaneRunCheckpoint(checkpointPath,checkpoint,error)||
 			!OracleTier8CompositionEndpointMatches(checkpoint,build,beginning))return 95;
-		bool passed=!OracleTier8CompositionEndpointMatches(checkpoint,build,std::nextafter(beginning,3.0));
+		bool passed=RetainOracleMomentumOperands(false,true,false)&&
+			RetainOracleMomentumOperands(false,false,true)&&
+			!RetainOracleMomentumOperands(false,false,false)&&
+			!RetainOracleMomentumOperands(true,true,true)&&
+			!OracleTier8CompositionEndpointMatches(checkpoint,build,std::nextafter(beginning,3.0));
 		passed=passed&&!OracleTier8CompositionEndpointMatches(checkpoint,std::string(64u,'a'),beginning);
 		checkpoint.dimensions[0]=86u;
 		passed=passed&&!OracleTier8CompositionEndpointMatches(checkpoint,build,beginning);
@@ -8209,7 +8219,7 @@ namespace
 				"oracle_composition_step_without_scope";
 		std::fprintf(stderr,"ORACLE_COMPOSITION_RED wrong_end=refused wrong_build=refused "
 			"wrong_tier=refused mixed_precision=refused production_scope=refused "
-			"unscoped_step=refused passed=%d\n",passed?1:0);
+			"unscoped_step=refused diagnostic_operands_retained=1 passed=%d\n",passed?1:0);
 		return passed?0:95;
 	}
 
