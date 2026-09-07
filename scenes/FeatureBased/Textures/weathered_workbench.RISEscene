@@ -395,8 +395,8 @@ expression_painter
 	# on this object, not guessed: a probe render of each signal, divided
 	# by a flat-albedo control, gave curv p25/p50/p75/p90 = 0 / 10.4 /
 	# 27.7 / 32.9 and occlusion(0.09) p2/p10/p25/p50 = 0.43 / 0.70 / 0.87
-	# / 0.97.  `curv` is normalised by the object's bbox diagonal (0.76 m
-	# here), so a flat cast face reads 0, the screw and handle barrels
+	# / 0.97.  `curv` is normalised by the object's bbox diagonal (0.835 m
+	# here: the geometry's bbox is 0.4415 x 0.3637 x 0.6087 m), so a flat cast face reads 0, the screw and handle barrels
 	# read ~17, and only the drawn arrises of the castings reach 30+ --
 	# which is why `arris` starts at 18 and not anywhere near 1.
 	def				occ occlusion(0.09)

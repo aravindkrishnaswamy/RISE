@@ -774,7 +774,10 @@ bake deterministic, counted once under thread racing, and skipped in draft.
 * The dispatch channel, the lazy-bake architecture, invalidation, the
   literal-radius contract, or the neutral-fallback philosophy.
 * Scene-wide (inter-object) AO, which remains declined for v1 — every signal
-  here is still strictly **object-local self-occlusion**.
+  here is still strictly **object-local self-occlusion** (re-measured and
+  declined again 2026-09-07: [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
+  §8.1, which also prices the 14.3× multiplicity from §6.2 as the reason a
+  live scene query costs 2.4× on this scene).
 
 ## 10. Known residuals
 

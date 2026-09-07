@@ -13,7 +13,8 @@ BDPT/VCM/MLT neutral-signal transport gap (§14 item 11 — contained by a
 startup diagnostic + honest descriptor text; the real fix is the
 `PathVertexEval.h:94-106` widening contract, plus the `LightSampler`
 NEE/photon-emission records). **Phase 4 remains observed-need gated and
-untouched.**
+untouched** — its scene-wide-AO item was re-measured on two throwaway
+prototypes 2026-09-07 and declined again with numbers (§8.1).
 **Date:** 2026-08-29.
 **Inputs:** a six-pass source-grounded survey of the RISE tree — the expression
 VM ([ExpressionEval.h](../src/Library/Painters/ExpressionEval.h),
@@ -90,9 +91,13 @@ and the expression surface, delivered in three phased mechanisms —**
   same builtin names** so an expression is portable across geometry families.
   Phase 3.
 
-**Scene-wide (cross-object) AO is DECLINED for v1** (§8). Self-occlusion covers
-the crevice-grime use case that motivates the work, and cross-object occlusion
-is the one variant that breaks the free-invalidation story.
+**Scene-wide (cross-object) AO is DECLINED for v1** (§8), and **declined again
+on measurement 2026-09-07** (§8.1: the contact-grime case it was re-opened for
+is a proximity quantity AO cannot reach at any radius; 2.4× on the flagship
+scene live; the SDF family cannot be baked at the showcases' feature sizes).
+Self-occlusion covers the crevice-grime use case that motivates the work, and
+cross-object occlusion is the one variant that breaks the free-invalidation
+story.
 
 ---
 
@@ -867,6 +872,158 @@ lazy + mutex shader-op route, or bake-time `IObjectManager::IntersectShadowRay`
 (`IObjectManager.h:46-51`) against the whole scene — the cheapest occlusion
 primitive available, boolean-only, far cheaper than a full `IRayCaster::CastRay`.
 
+### 8.1 Re-measured 2026-09-07 — DECLINED AGAIN, with the numbers
+
+The question was re-opened by two showcase scenes the self-occlusion signal
+cannot serve: `plank_closeup` cannot collect dirt on the plank under the nail
+lying on it, and `weathered_workbench` cannot grime the bench top around the
+vise's feet (its own header says so). Before designing, the user set a
+measurement gate — prototype the cheapest honest scene-level query on a
+throwaway branch, render both scenes, take wall-clock ratios at matched spp on
+both plus a Sponza-class scene, and price the obvious mitigation (a
+`Prepare`-time bake) — with "marginal gain or unbounded cost → decline again"
+as a sanctioned outcome. That is the outcome. Two prototypes were built, on
+branches that will never be merged: `proto/xobj-ao-live` (`f1b6bff7`) and
+`proto/xobj-ao-bake` (`78c71b07`), both off `4ebb082d`. Renders and raw logs
+live in the session scratchpad, not the tree; every number below is copied
+from the workers' per-run logs and the render crops were judged by eye.
+
+**What was prototyped.** *Live:* a builtin `xocc(r)` (`r` a world length) —
+from the hit's world point, lifted `1e-4·r` along the geometric normal,
+`N` cosine-weighted hemisphere shadow rays of length `r` through
+`IObjectManager::IntersectShadowRay` against the whole top-level BVH (self
+included), Hammersley set rotated per hit by a hash of the world position,
+returning the escape fraction (1 = unoccluded); the scene pointer was published
+by `RayCaster::AttachScene` as a process global, which is prototype-grade and
+is not the design. A sibling `xoccs(f)` took a fraction of the scene bbox
+diagonal. Calibration on a plane-plus-box scene: floor at the wall base 0.494
+(closed form 0.5), open floor 0.998, box top 1.002. *Bake:* at attach, after
+`PrepareForRendering()`, one float per vertex position for every indexed mesh
+(world-space, the same deterministic Hammersley rays, `R = 0.05 ×` scene
+diagonal), and for every SDF a `G³` grid over its bbox with the near-surface
+shell (`|d| ≤` one cell diagonal) traced and everything else neutral; a
+`xoccb()` lookup interpolated either table at shading time.
+
+**(a) Does the gain read as real contact grime?** Asymmetric, and the asymmetry
+is geometric, not a tuning failure.
+
+- *The nail gains.* Its underside develops a real rust band where the plank
+  occludes it — the dominant feature of the difference image, and something
+  self-occlusion cannot produce. It is the one genuine gain.
+- *The plank under the nail does not.* Probed directly (albedo = raw signal,
+  divided by a white control), `xocc(18.65 mm)` — the world length the shipped
+  `occlusion(0.03)` comes to on the plank — reads **0.93–0.97** on the top face
+  beside the shank, dipping to **0.66** only in a 2–3 px band at the
+  silhouette and back to ~0.95 within 4 px. Shrinking to `xocc(4 mm)` does not
+  help (0.79/0.84 in the same band). With the scene's `dirt 0.62` that is at
+  most a fifth of the field on a couple of pixels; `min(occlusion(0.03),
+  xocc(R))` is visually indistinguishable from the shipped render. The reason
+  is the estimator's definition: a cosine-weighted hemisphere sees a thin
+  object lying on a plane only at grazing angles, where the cosine weight goes
+  to zero. **Contact grime is a proximity quantity, not a visibility one, and
+  no radius of AO reaches it.** This is the motivating case, and it is not
+  reachable by cross-object AO at any cost.
+- *The bench top gains a mask, not a picture.* The raw signal draws a crisp
+  contact ring on the bench top hugging the vise flange, plus bands where each
+  leg meets the floor — exactly what the header names as out of reach. In the
+  beauty render, composed at the vise's own grime magnitude (`grime_crev 0.16`,
+  about a ×0.72 colour multiply at full strength) rather than a flattering one,
+  the darkening is genuine but subtle: side by side at 640×480 it does not
+  separate from the contact shadow the lighting already draws.
+- *The bake's own render* (8 spp, `G = 64`) shows the nail duller overall and
+  the plank's front and bottom faces broadly darker (the bench plane is 15 mm
+  below), no line along the contact, and the growth rings faintly re-modulated
+  by the grid's cell structure.
+
+**(b) Live cost at matched spp** — 18 logical cores, default thread reserve,
+interleaved base/candidate after two warm-ups, every run listed:
+
+| scene | shipped | `xocc` N = 16 | N = 64 |
+|---|---:|---:|---:|
+| plank_closeup 640×480×48 | 59.03 / 55.70 / 58.63 = **57.79 ± 1.82 s** | 136.07 / 150.90 / 125.12 = **137.4 ± 12.9 s, 2.38×** (2.12–2.71× at the extremes) | 355.5 / 354.4 / 356.5 = **355.5 ± 1.1 s, 6.15×** |
+| weathered_workbench 640×480×12 | 5.450 / 5.511 / 5.575 = 5.512 ± 0.063 s | 5.617 / 5.682 / 5.748 = 5.682 ± 0.066 s, **1.03×** | — |
+| sponza_new 640×360×32, query forced at EVERY hit | 22.10 / 20.97 / 21.70 = 21.59 ± 0.57 s | 33.50 / 34.51 / 33.60 = 33.87 ± 0.56 s, **1.57×** | 73.89 / 74.26 / 74.68 = 74.28 ± 0.39 s, **3.44×** |
+
+The plank's warm baseline sits 5.7 % above §6.2 of
+[OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md](OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md)'s
+54.68 ± 0.06 s (the bake worker was running concurrently); the ratios are the
+trustworthy numbers. The cost tracks the *painter graph*, not the scene: the
+plank issues **14.28 queries per camera sample** (210.5 M per frame — the same
+14.3× multiplicity §6.2 measured, since `occ` feeds colour, roughness and the
+relief modifier's four-tap stencil, at every bounce) against the bench's 0.51,
+which is why the same builtin costs 2.38× on one and 1.03× on the other.
+Sponza's shipped render casts 8.32 shadow rays per camera sample (61.3 M); the
+forced query adds 58.5 (7.0× the scene's entire shadow-ray count) for 1.57×
+wall clock, because 0.1 m rays die in the BVH almost at once. N = 64 costs
+~2.6× N = 16 on the plank and ~2.2× on Sponza, not 4×.
+
+**(c) The bake.** *Meshes are affordable.* Sponza's 405 objects / 2,049,137
+vertices bake in **12.14 s** single-threaded at N = 16 (runs 12.14 / 15.21 /
+15.40 / 15.75 / 17.01), 45.25 s at N = 64, **2.34 s on 16 threads** (5.2× on 18
+cores: per-object jobs with a median of 796 and a maximum of 43,309 vertices
+leave a one-object tail), for 7.82 MB — 64 % / 238 % / 12.3 % of the 18.98 s
+shipped render it feeds. A 22,998-vertex dragon bakes in 93 ms; per vertex the
+cost is 1.47× superlinear from the dragon to Sponza (4.04 → 5.93 µs), the
+BVH depth, not the algorithm. *The SDF family cannot be baked at the feature
+sizes the showcases were authored around.* The plank's end check is 2.6 mm
+across and the nail's pits ~1 mm; at G = 64 a cell spans **1.09** and **0.84**
+of those features respectively (G = 32: 0.55 and 0.42), and trilinear lookup
+spreads whatever one attenuated sample survives over ±9.4 mm along the plank.
+The near-surface shell heuristic also degenerates on a slab — the 32 mm plank
+is *all* shell at G = 32 (cell diagonal 19.4 mm > the 16 mm half-thickness)
+and 72.5 % shell at G = 64. Resolving the check at three cells needs
+`G ≥ 175`: 21.4 MB and ~38.6 M rays for the plank alone, more than the whole
+of Sponza; the nail's pits need `G ≥ 230`, 48.7 MB. And a grid is a strict
+downgrade of the *self* half, which the analytic estimator answers
+resolution-free today. Grids at G = 32 do deliver the broad term ("this face
+looks at the floor") in 60–130 ms per object, which is the one thing they are
+honest for.
+
+**Invalidation, counted.** The static bound — other finite-bbox objects whose
+bbox expanded by `R` overlaps this one's — says a move of the bench top
+invalidates **6 of 6** neighbours; in Sponza the median object drags **33**,
+the mean 40.7 and the worst **376 of 404**, i.e. a full re-bake. Worse than the
+census can say: the infinite plane, the largest occluder in *both* Textures
+scenes, has no finite bbox and is invisible to any proximity test. The engine's
+own seam is no help either — the incremental apply (`Cst.cpp`,
+`DeriveToJobIncremental`'s closure pass) drops the top-level BVH only when a
+re-pointed object's *world bbox* changes, which is exactly right for the TLAS
+and exactly wrong for a neighbour's occlusion, since a geometry edit inside an
+unchanged bbox moves the surface the neighbour's rays hit.
+
+**Two findings about the radius unit, kept for whoever re-opens this.** A
+fraction of the scene bounding box is not an authoring unit: lights are
+objects, so `plank_closeup`'s 0.62 m subject sits in a 1.53 m scene box that
+the two `rect_light` panels define, and moving a light would silently rescale
+every material's query radius. Infinite planes must be skipped (their bboxes
+are the ±1e30 / `DBL_MAX` sentinels) and still leave the box lighting-rig-
+shaped. **A world length is the only stable unit for a cross-object radius**,
+and it necessarily diverges from the per-object fraction the shipped signals
+use (`occlusion(0.03)` is 18.65 mm on the plank and 8.10 mm on the nail; a
+scene-relative 5 % would be 76 mm on both). Also on the record: `IntersectShadowRay`
+filters on `DoesCastShadows()`, so an object with `casts_shadows FALSE` is
+invisible to any AO query that reuses the shadow-ray path; `vGeomNormal` was
+populated on every family rendered (zero fallbacks over 32.8 M queries); and
+the shadow-ray path never evaluates a painter (no modifier, no alpha), so a
+live query is not reentrant into shading — the objection in §3(b) reduces, for
+this query, to cost and purity rather than control flow.
+
+**Decision: declined again.** The motivating plank case is unreachable by
+cross-object AO on geometric grounds, the bench case is marginal beside the
+contact shadow, the live query costs 2.4× on the flagship scene and scales
+with the painter-graph multiplicity that §10 of the convexity document already
+names as the open lever, the bake cannot serve the SDF family the showcases
+are built on, and invalidation is O(scene) with a hole the census cannot see.
+Gate 2 (the engine-principles design) was therefore not entered and no design
+document was written. **What would actually serve the motivation** is a
+cross-object *proximity* signal — the distance to the nearest *other* surface
+within `r`, the shape of the thickness estimator pointed outward — which
+measures the right quantity, is a field evaluation rather than a ray fan
+against an SDF neighbour, and carries the same scene-access, radius-unit and
+invalidation questions this section has now priced. It stays observed-need
+gated like the rest of Phase 4; a scene that needs it should cite this
+section's numbers rather than re-measure AO.
+
 ---
 
 ## 9. Parameter surface and conventions
@@ -1559,7 +1716,9 @@ real scene or user need appears.
 - **Gaussian curvature `curvK`** and an Arnold-style convex/concave split
   output mode.
 - **Bent normals** — the natural companion output of an AO bake.
-- **Scene-wide (cross-object) AO** — §8.
+- **Scene-wide (cross-object) AO** — §8; **re-measured and declined again
+  2026-09-07, §8.1** (numbers there; the honest successor is a cross-object
+  *proximity* signal, also observed-need gated).
 - **An `add_wear`-class verb** — the C-VERB escalation if the Phase-1/2 census
   misses. **BUILT 2026-08-30**, census-driven: the §11 CENSUS RUN block is the
   evidence that earned it (delivery 6/6, adoption 1/6, position proxies shipped
