@@ -3725,6 +3725,14 @@ static void TestExpressionVMFwEndToEnd()
 //     PRE-change engine, asserted with ==, for every case the change
 //     promises not to touch -- fw == 0 (any domain), and a bare `P`
 //     argument (Jacobian == identity, multiplier exactly 1.0).
+//   - Test 69 CONSERVATIVE SUBTRACTION: a subtraction whose other
+//     operand is opaque can CANCEL the affine part, so it reports no
+//     scale at all rather than the surviving term's; addition keeps
+//     its affine part (the domain-warp idiom) unchanged.
+//   - Test 70 ROTATED / SHEARED: the non-diagonal (cyclic Jacobi)
+//     branch of JacobianSpectralNorm, reachable only with literal
+//     off-diagonal coefficients, fades at the true largest singular
+//     value -- not at the naive largest row norm.
 //   - Test 68 FALLBACKS: a `def`/`param`-carried scale resolves;
 //     a domain warp keeps its affine part's scale; an argument built
 //     from u/v (no provable relation to world P) falls back to the
@@ -3956,6 +3964,138 @@ static void TestFbmDomainScaleFallbacks()
 	}
 }
 
+static void TestFbmDomainScaleSubtractionIsConservative()
+{
+	std::cout << "Test 69: a SUBTRACTION with an unknown operand reports no domain scale (it can CANCEL the affine part), while an addition still keeps it" << std::endl;
+
+	const Vector3 p0( 0.3, 0.7, 1.4 );
+
+	// (a) THE PROBE.  `q` is an opaque copy of `P*40` -- clamp() is a
+	// kFunc, so AnalyzeLinear cannot see through it -- and the argument
+	// `P*40 - q + (0.5,0.5,0.5)` is therefore a CONSTANT position: the
+	// true stretch is 0 and nothing can alias.  The old "one side known
+	// wins" rule reported 40 for it and over-blurred a field that has no
+	// high frequencies at all.  The contract now is that a subtraction
+	// missing an operand's gradient yields no gradient, so the call site
+	// falls back to the pre-change multiplier; 0 would be equally
+	// correct (the position IS constant), 40 is the wrong answer this
+	// pins against.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		Check( b.AddDef( "q", "vec3(clamp(P.x*40.0,-1000000.0,1000000.0), "
+			"clamp(P.y*40.0,-1000000.0,1000000.0), clamp(P.z*40.0,-1000000.0,1000000.0))" ), "def q (opaque copy of P*40)" );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(P*40.0 - q + vec3(0.5,0.5,0.5), 4, 0.5, 2.0)", prog ), "cancelling-subtraction body compiles" );
+		if( prog.IsValid() ) {
+			const Scalar fw = 0.3;
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = fw;
+			// clamp() is the identity on these inputs, so the position
+			// argument is exactly (0.5, 0.5, 0.5) at runtime.
+			const Scalar got   = prog.Eval( ctx );
+			const Scalar mult1 = NoiseCore::Fbm3D( 0.5, 0.5, 0.5, 4, 0.5, 2.0, fw );
+			const Scalar mult0 = NoiseCore::Fbm3D( 0.5, 0.5, 0.5, 4, 0.5, 2.0, 0.0 );
+			const Scalar mult40= NoiseCore::Fbm3D( 0.5, 0.5, 0.5, 4, 0.5, 2.0, 40.0*fw );
+			Check( got == mult1 || got == mult0,
+				"a cancelling subtraction falls back to the unscaled footprint (multiplier 1.0, or 0 -- never the dropped term's 40)" );
+			Check( got != mult40, "the over-blurring 40x answer the old rule gave is NOT what comes out" );
+			// Not vacuous: the three candidate answers are genuinely
+			// different numbers at this footprint.
+			Check( std::fabs( mult1 - mult40 ) > 1e-6 && std::fabs( mult1 - mult0 ) > 1e-6,
+				"multiplier 1 / 0 / 40 are three distinct values here (the check above can actually fail)" );
+		}
+	}
+
+	// (b) ADDITION is deliberately unchanged -- the domain-warp idiom
+	// this whole analysis exists to resolve is an ADD, and it must keep
+	// reporting its affine part's scale.
+	{
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(P*8.0 + vec3(fbm(P*2.0,2,0.5,2.0),0.0,0.0), 4, 0.5, 2.0)", prog ), "warp-by-addition body compiles" );
+		if( prog.IsValid() ) {
+			const Scalar fw = 0.01;
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = fw;
+			// The inner fbm carries its OWN domain scale (2), so its
+			// footprint is 2*fw -- the analysis is per call site.
+			const Scalar warp  = NoiseCore::Fbm3D( p0.x*2.0, p0.y*2.0, p0.z*2.0, 2, 0.5, 2.0, 2.0*fw );
+			const Scalar got   = prog.Eval( ctx );
+			const Scalar want8 = NoiseCore::Fbm3D( p0.x*8.0 + warp, p0.y*8.0, p0.z*8.0, 4, 0.5, 2.0, 8.0*fw );
+			const Scalar want1 = NoiseCore::Fbm3D( p0.x*8.0 + warp, p0.y*8.0, p0.z*8.0, 4, 0.5, 2.0, fw );
+			// CheckClose, not ==, ONLY because the warped x coordinate
+			// is a mul-then-add here and the compiler may contract it to
+			// an FMA (macOS builds are -ffast-math), which the VM's own
+			// two-opcode evaluation cannot be: a last-bit difference in
+			// the POSITION, not in the multiplier under test.  The
+			// multiplier itself is pinned to a part in 1e12, and the
+			// second check rules out the 1.0 fallback outright.
+			CheckClose( got, want8, 1e-12,
+				"an additive warp still resolves to its affine part's scale (8*fw), warp position included" );
+			Check( std::fabs( got - want1 ) > 1e-6,
+				"and NOT the unscaled 1.0 fallback -- the two answers are far apart at this footprint" );
+		}
+	}
+}
+
+static void TestFbmDomainScaleRotatedShearedDomain()
+{
+	std::cout << "Test 70: a rotated / sheared domain reaches JacobianSpectralNorm's cyclic-Jacobi branch and fades at the true largest singular value" << std::endl;
+
+	const Vector3 p0( 0.3, 0.7, 1.4 );
+
+	// Reaching the non-diagonal branch at all takes LITERAL off-diagonal
+	// coefficients: cos()/sin() are kFunc calls, which the analysis
+	// reports as unknown, so a rotation written with them lands on the
+	// 1.0 fallback instead and never exercises this code.
+	//
+	// (a) 45-degree rotation about z, times 40.  J is dense but J^T J is
+	// exactly 1600*I, so the sweep converges on entry -- this pins the
+	// branch's ENTRY and its J^T J construction.  Accurate, not exact
+	// (see the branch's own comment): 40 to within ~1e-13, hence
+	// CheckClose rather than ==.
+	{
+		const double c = 0.7071067811865476;   // cos(45 deg) = sin(45 deg)
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(vec3((P.x*0.7071067811865476 - P.y*0.7071067811865476)*40.0, "
+			"(P.x*0.7071067811865476 + P.y*0.7071067811865476)*40.0, P.z*40.0), 4, 0.5, 2.0)", prog ),
+			"rot45 x 40 domain compiles" );
+		if( prog.IsValid() ) {
+			const Scalar fw = 0.01;
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = fw;
+			const double qx = ( p0.x*c - p0.y*c ) * 40.0;
+			const double qy = ( p0.x*c + p0.y*c ) * 40.0;
+			const double qz = p0.z * 40.0;
+			CheckClose( prog.Eval( ctx ), NoiseCore::Fbm3D( qx, qy, qz, 4, 0.5, 2.0, 40.0*fw ), 1e-12,
+				"a rotated domain fades at 40*fw (the rotation contributes no stretch of its own)" );
+			Check( std::fabs( NoiseCore::Fbm3D( qx, qy, qz, 4, 0.5, 2.0, 40.0*fw )
+			                - NoiseCore::Fbm3D( qx, qy, qz, 4, 0.5, 2.0, fw ) ) > 1e-6,
+				"the 40x and 1x answers differ here (the check above is not vacuous)" );
+		}
+	}
+
+	// (b) Shear [[1,10,0],[0,1,0],[0,0,1]] -- a genuine Jacobi sweep (the
+	// off-diagonal mass is 100).  Its largest singular value is
+	// (10 + sqrt(104))/2 = 10.099019513592784, NOT 10: a naive
+	// largest-row-norm reading would give 10, and the last check below
+	// distinguishes the two.
+	{
+		const double sigma = 10.099019513592784;
+		ExpressionProgram::Builder b; b.EnableContextVars( true );
+		ExpressionProgram prog = ExpressionProgram::Invalid();
+		Check( b.Finalize( "fbm(vec3(P.x + P.y*10.0, P.y, P.z), 4, 0.5, 2.0)", prog ), "sheared domain compiles" );
+		if( prog.IsValid() ) {
+			const Scalar fw = 0.04;
+			ExprEvalContext ctx; ctx.P = p0; ctx.fw = fw;
+			const double qx = p0.x + p0.y*10.0, qy = p0.y, qz = p0.z;
+			const Scalar got = prog.Eval( ctx );
+			CheckClose( got, NoiseCore::Fbm3D( qx, qy, qz, 4, 0.5, 2.0, sigma*fw ), 1e-12,
+				"a sheared domain fades at its true largest singular value (10.099019513592784)" );
+			Check( std::fabs( got - NoiseCore::Fbm3D( qx, qy, qz, 4, 0.5, 2.0, 10.0*fw ) ) > 1e-9,
+				"and NOT at the naive largest-row-norm 10 -- the two are distinguishable at this footprint" );
+		}
+	}
+}
+
 static void TestExpressionPainterFwSpectralParity()
 {
 	std::cout << "Test 64: GetColorNM stays consistent with EvalRGB when the body reads fw on a footprint-carrying RI (NM/RGB parity)" << std::endl;
@@ -4072,6 +4212,8 @@ int main( int, char** )
 	TestFbmDomainScaleFadeEngages();
 	TestFbmDomainScaleBitIdentity();
 	TestFbmDomainScaleFallbacks();
+	TestFbmDomainScaleSubtractionIsConservative();
+	TestFbmDomainScaleRotatedShearedDomain();
 	std::cout << std::endl << "Results: " << passCount << " passed, " << failCount << " failed" << std::endl;
 	return failCount > 0 ? 1 : 0;
 }

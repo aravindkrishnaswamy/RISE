@@ -946,6 +946,18 @@ namespace RISE
 				//! -- the default, and what every non-noise builtin keeps
 				//! forever -- is an exact IEEE identity, so leaving it alone
 				//! reproduces the pre-domain-scale engine bit for bit.
+				//!
+				//! ONLY THE SCALAR FORM CONSUMES IT.  `isVec3` emits
+				//! kFuncV3, whose RunAny case dispatches through
+				//! CallFuncVec3 -- which takes no `fw` at all and never
+				//! reads `in.val`.  Passing a scale here for a vec3-
+				//! returning builtin would therefore be silently dropped,
+				//! un-fading it.  Harmless today (every fw-consuming
+				//! builtin -- fbm/turbulence/ridged -- is scalar-returning,
+				//! so the only caller that passes anything but 1.0 emits
+				//! kFunc), but a future vec3 noise builtin must plumb `fw`
+				//! into CallFuncVec3 and read `in.val` in the kFuncV3 case
+				//! BEFORE it can pass a scale through here.
 				void EmitFuncCall( int fn, int arity, bool isVec3, Scalar fwScale = Scalar(1) )
 				{
 					Compiled::Instr in; in.op = isVec3 ? Compiled::kFuncV3 : Compiled::kFunc;
@@ -1017,16 +1029,45 @@ namespace RISE
 				}
 
 				//! a + b (or a - b).  The one APPROXIMATING rule in the
-				//! whole analysis: when exactly one side has a known
-				//! gradient, the sum keeps that side's gradient and drops
-				//! the other, flagging the answer inexact.  That is what
-				//! makes the domain-warp idiom
+				//! whole analysis, and it applies to ADDITION ONLY: when
+				//! exactly one side of a SUM has a known gradient, the
+				//! result keeps that side's gradient and drops the other,
+				//! flagging the answer inexact.  That is what makes the
+				//! domain-warp idiom
 				//! `fbm(P*8 + amp*vec3(fbm(...),...), ...)` fade at 8*fw
 				//! instead of falling back to 1*fw: the warp's own slope is
-				//! unknowable at compile time, and UNDER-estimating the
-				//! domain footprint errs toward the pre-existing
-				//! (un-faded, more detail) behaviour rather than toward
-				//! over-blurring.
+				//! unknowable at compile time, and the idiom's whole point
+				//! is that the affine part is the term that sets the
+				//! frequency.
+				//!
+				//! WHAT THE APPROXIMATION IS AND IS NOT (fix round, review
+				//! of the domain-scale change).  Dropping a term is NOT
+				//! provably an UNDER-estimate -- an earlier draft of this
+				//! comment claimed it "errs toward the pre-existing
+				//! (un-faded) behaviour", which is false: the dropped
+				//! term's slope has an unknown SIGN, so it can cancel the
+				//! kept one.  Under SUBTRACTION that is not a corner case
+				//! but the natural reading of the construct, and it is
+				//! unbounded: `fbm(P*40 - q + vec3(0.5,0.5,0.5), ...)`
+				//! with `q` an opaque (kFunc-built) copy of `P*40` is a
+				//! CONSTANT position -- true stretch 0 -- yet the old rule
+				//! reported 40, over-blurring a field that cannot alias at
+				//! all.  So a subtraction with an unknown operand now
+				//! reports NO gradient, which lands the call site on the
+				//! multiplier-1.0 fallback: the pre-change behaviour, the
+				//! one answer that is never worse than doing nothing.
+				//!
+				//! The residual, stated exactly rather than papered over:
+				//! for `plus`, a dropped term whose true slope opposes the
+				//! kept one still yields an OVER-estimate (the same
+				//! cancellation, spelled `a + (-b)` or `a + (-1)*b`, where
+				//! the negation is buried inside the unknown and cannot be
+				//! seen here).  That is accepted, not overlooked -- it is
+				//! the price of resolving the shipped domain-warp idiom at
+				//! all, the warp amplitudes real bodies use are small
+				//! against the affine scale, and the failure mode is a
+				//! preview/render that is over-filtered, never one that
+				//! aliases.
 				static LinScalar LinAddSub( const LinScalar& a, const LinScalar& b, bool plus )
 				{
 					LinScalar r;
@@ -1038,13 +1079,15 @@ namespace RISE
 						r.gradKnown = true;
 						r.gradExact = a.gradExact && b.gradExact;
 						for( int k = 0; k < 3; ++k ) r.g[k] = plus ? ( a.g[k] + b.g[k] ) : ( a.g[k] - b.g[k] );
-					} else if( a.gradKnown ) {
+					} else if( plus && a.gradKnown ) {
 						r.gradKnown = true; r.gradExact = false;
 						for( int k = 0; k < 3; ++k ) r.g[k] = a.g[k];
-					} else if( b.gradKnown ) {
+					} else if( plus && b.gradKnown ) {
 						r.gradKnown = true; r.gradExact = false;
-						for( int k = 0; k < 3; ++k ) r.g[k] = plus ? b.g[k] : -b.g[k];
+						for( int k = 0; k < 3; ++k ) r.g[k] = b.g[k];
 					}
+					// else: a subtraction missing either operand's gradient
+					// -- deliberately left unknown (see above).
 					return r;
 				}
 
@@ -1260,6 +1303,24 @@ namespace RISE
 					// start-vector free, unlike power iteration -- and this
 					// runs ONCE per call site at compile time, so the sweep
 					// count is free.
+					//
+					// This branch is ACCURATE, not exact: the sweep
+					// converges to ~1 ulp, so `fw * s` here is a rounded
+					// product even when the true singular value is a
+					// round number (a 45-degree rotation times 40 comes
+					// back as 40 to within ~1e-13, not bit-exactly 40).
+					// That is why the diagonal case above is a separate
+					// closed form rather than "the Jacobi path also
+					// handles it": bit-identity for the un-scaled and
+					// axis-scaled bodies -- which is every shipped body --
+					// is a promise only the closed form can keep.  A test
+					// pinning THIS branch must therefore compare with a
+					// tolerance (TextureExpressionVMTest test 69).
+					// Reaching it at all takes a domain argument with
+					// LITERAL off-diagonal coefficients: `cos`/`sin` are
+					// kFunc calls, which AnalyzeLinear reports as unknown,
+					// so a rotation written with them falls back to 1.0
+					// instead.
 					Scalar A[3][3];
 					for( int i = 0; i < 3; ++i ) {
 						for( int k = 0; k < 3; ++k ) {
@@ -2137,6 +2198,15 @@ namespace RISE
 						const int ar = in.arity;
 						sp -= ar;
 						Scalar out3[3];
+						// NOTE: `in.val` (the kFunc case's domain-scale
+						// multiplier) is deliberately NOT read here --
+						// CallFuncVec3 takes no `fw`, because no vec3-
+						// returning builtin consumes one.  Adding such a
+						// builtin means threading `fw` through
+						// CallFuncVec3 AND reading `env[kContextSlotFw] *
+						// in.val` here; until then EmitFuncCall's contract
+						// (see its comment) is that a vec3 call site
+						// carries the identity 1.0.
 						CallFuncVec3( in.fn, &stack[sp], out3, pSignals );
 						stack[sp] = out3[0]; stack[sp+1] = out3[1]; stack[sp+2] = out3[2];
 						sp += 3;
