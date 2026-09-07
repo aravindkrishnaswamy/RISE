@@ -41,15 +41,34 @@
 //      header comment on that trap).  P == Po deliberately: there is
 //      no separate object transform for a bare painter preview.
 //    - `N` (shading normal) = (0, 0, 1) -- the patch faces +Z.
-//    - `fw` (expression VM filter width, doc 88 S9) = 1 / max(w, h):
-//      one pixel's footprint in the SAME unit-patch domain P sweeps,
-//      so an fbm/turbulence/ridged def sees a plausible (not zero,
-//      not wildly wrong-scale) footprint and fades otherwise-aliased
-//      high octaves the way a real filtered lookup would, instead of
-//      the "always 0, always full detail" answer a naive stub would
-//      give.  Callers that need to compare a preview against a real
-//      render's footprint should not expect numeric agreement --
-//      this is a preview-quality estimate, not the render's own
+//    - `fw` (expression VM filter width, doc 88 S9) = 0, a POINT
+//      SAMPLE, carried on a `widthValid`-true footprint (i.e. the
+//      positive claim "the width is known and it is zero", not the
+//      absence of a claim).  This module used to synthesize
+//      1 / max(w, h) -- the patch's own pixel pitch -- on the theory
+//      that a plausible footprint beats a stub 0.  It does not, for
+//      two reasons.  (i) The unit patch is a SYNTHETIC domain: it is
+//      one world unit across because this module chose that, with no
+//      relation to the extent the painter is actually evaluated over
+//      in a scene (a body authored for a 0.1 m plank sweeps the same
+//      [-0.5, 0.5] here), so a length measured in the patch is not an
+//      estimate of the render's footprint -- it is a length in a
+//      different space.  (ii) Since 2026-09-06 that distinction has
+//      teeth: fbm/turbulence/ridged rescale `fw` by their position
+//      argument's compile-time domain scale (ExpressionEval.h's
+//      Builder::NoiseFwScale), so the synthetic width got multiplied
+//      by the body's own scale k and crossed OctaveFadeWeight's
+//      hi = 0.6 at k ~= 58 -- every high-frequency body previewed as
+//      one uniform square (measured: `fbm(P*k,3,0.5,2)` preview range
+//      0.318 at k = 40, 0.0116 at k = 55, EXACTLY 0 at k >= 58), while
+//      the real render of the same body at its own footprint is full
+//      of detail.  0 is the honest value, not a fallback: this module
+//      evaluates the painter at pixel CENTRES with no filtering and no
+//      supersampling, which is exactly what a zero footprint declares
+//      (the same statement a secondary bounce makes -- no ray carries
+//      differentials after a scatter).  Callers that want a
+//      footprint-faded preview must render the scene; there is no
+//      preview-space value that could stand in for the render's own
 //      per-hit `txFootprint`.
 //    - `time` = 0.  A time-varying preview is out of scope for a
 //      static thumbnail (S10); animate by advancing the scene's

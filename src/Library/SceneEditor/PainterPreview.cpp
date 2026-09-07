@@ -32,9 +32,35 @@ namespace
 		return Vector3( Scalar( u - 0.5 ), Scalar( v - 0.5 ), Scalar( 0 ) );
 	}
 
+	//! The preview's filter width: a POINT SAMPLE, and it must stay one
+	//! -- see PainterPreview.h's domain-conventions note on `fw` for the
+	//! full argument.  In short: the unit patch is a SYNTHETIC domain
+	//! with no relation to the world extent the painter is evaluated
+	//! over in a real scene, so the patch's own pixel pitch
+	//! (1 / max(gw, gh), the value this module used to synthesize) is
+	//! not an estimate of the render's footprint at all -- it is a
+	//! length in a different space.  Since 2026-09-06 that mattered:
+	//! fbm/turbulence/ridged rescale `fw` by their position argument's
+	//! domain scale (ExpressionEval.h's Builder::NoiseFwScale), so the
+	//! synthetic width was multiplied by the body's own scale k and
+	//! crossed OctaveFadeWeight's hi = 0.6 at k ~= 58 -- every
+	//! high-frequency body (plank_closeup's stages run 130 .. 820)
+	//! previewed as ONE UNIFORM SQUARE, destroying exactly the
+	//! structure a Tier-2 thumbnail exists to show, while the real
+	//! render of the same body is full of detail.
+	//!
+	//! 0 is not a cop-out, it is the true answer: this module evaluates
+	//! the painter at pixel CENTRES with no filtering and no
+	//! supersampling, which is precisely what a zero footprint declares
+	//! -- the same statement a secondary bounce makes (no ray carries
+	//! differentials after a scatter).  It also restores the pre-
+	//! 2026-09-06 preview look exactly, since a multiplier applied to 0
+	//! is still 0.
+	const Scalar kPreviewFootprintWidth = Scalar( 0 );
+
 	//! Builds the synthetic-but-honest RayIntersectionGeometric for grid
 	//! coordinate (u,v) -- see PainterPreview.h's domain-conventions note.
-	RayIntersectionGeometric MakePreviewRi( double u, double v, Scalar fw )
+	RayIntersectionGeometric MakePreviewRi( double u, double v )
 	{
 		RayIntersectionGeometric ri( Ray(), nullRasterizerState );
 		ri.bHit = true;
@@ -45,13 +71,17 @@ namespace
 		ri.vNormal = Vector3( Scalar( 0 ), Scalar( 0 ), Scalar( 1 ) );
 		// `widthValid`, not `valid`: `fw` is a footprint WIDTH, and
 		// `valid` means "the UV Jacobian is usable" -- which the preview has
-		// nothing to offer for.  Setting `valid` alone would stop feeding
-		// `fw` to the expression VM entirely (ExpressionPainter keys `ctx.fw`
-		// on `widthValid`), and setting it in addition would falsely promise
-		// TexturePainter a zero Jacobian.  See
+		// nothing to offer for.  Setting `valid` in addition would falsely
+		// promise TexturePainter a zero Jacobian.  See
 		// docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md's two-flag contract.
+		// `widthValid` stays TRUE with a zero width: that pair is the
+		// positive claim "the footprint is known, and it is a point
+		// sample", not the absence of a claim (ExpressionPainter would
+		// read `ctx.fw` as 0 either way, but a valid-and-zero width is
+		// the state the rest of the tree already models -- see
+		// ReliefModifier's zero-width fallback).
 		ri.txFootprint.widthValid = true;
-		ri.txFootprint.worldWidth = fw;
+		ri.txFootprint.worldWidth = kPreviewFootprintWidth;
 		return ri;
 	}
 
@@ -243,7 +273,6 @@ PainterPreview::Result PainterPreview::RenderPainterPreview(
 	// copy) for any default-sized request.
 	unsigned int gw, gh;
 	ComputeDecimatedGrid( w, h, kMaxSampleBudget, gw, gh );
-	const Scalar fw = Scalar( 1.0 / (double)std::max( gw, gh ) );
 	out.width = w; out.height = h;
 
 	if( colourP ) {
@@ -252,7 +281,7 @@ PainterPreview::Result PainterPreview::RenderPainterPreview(
 			const double v = ( (double)y + 0.5 ) / (double)gh;
 			for( unsigned int x = 0; x < gw; ++x ) {
 				const double u = ( (double)x + 0.5 ) / (double)gw;
-				const RayIntersectionGeometric ri = MakePreviewRi( u, v, fw );
+				const RayIntersectionGeometric ri = MakePreviewRi( u, v );
 				const RISEPel c = colourP->GetColor( ri );
 				WriteRGBA( grid, ( (std::size_t)y * gw + x ) * 4, c.r, c.g, c.b );
 			}
@@ -273,7 +302,7 @@ PainterPreview::Result PainterPreview::RenderPainterPreview(
 			const double v = ( (double)y + 0.5 ) / (double)gh;
 			for( unsigned int x = 0; x < gw; ++x ) {
 				const double u = ( (double)x + 0.5 ) / (double)gw;
-				const RayIntersectionGeometric ri = MakePreviewRi( u, v, fw );
+				const RayIntersectionGeometric ri = MakePreviewRi( u, v );
 				const ScalarTriple t = scalarP->GetValuesAt( ri );
 				const std::size_t ridx = ( (std::size_t)y * gw + x ) * 3;
 				for( int c = 0; c < 3; ++c ) {
@@ -298,7 +327,7 @@ PainterPreview::Result PainterPreview::RenderPainterPreview(
 		const double v = ( (double)y + 0.5 ) / (double)gh;
 		for( unsigned int x = 0; x < gw; ++x ) {
 			const double u = ( (double)x + 0.5 ) / (double)gw;
-			const RayIntersectionGeometric ri = MakePreviewRi( u, v, fw );
+			const RayIntersectionGeometric ri = MakePreviewRi( u, v );
 			const ScalarTriple t = scalarP->GetValuesAt( ri );
 			double val = (double)t.v[0];
 			if( !std::isfinite( val ) ) val = 0.0;
@@ -352,7 +381,6 @@ PainterPreview::Result PainterPreview::RenderDefStagePreview(
 	// see the header's EVALUATION BUDGET note.
 	unsigned int gw, gh;
 	ComputeDecimatedGrid( w, h, kMaxSampleBudget, gw, gh );
-	const Scalar fw = Scalar( 1.0 / (double)std::max( gw, gh ) );
 	out.width = w; out.height = h;
 
 	std::vector<Vector3> vals( (std::size_t)gw * gh );
@@ -366,7 +394,9 @@ PainterPreview::Result PainterPreview::RenderDefStagePreview(
 			const Vector3 p = UnitPatchPos( u, v );
 			ctx.P = p; ctx.Po = p;
 			ctx.N = Vector3( 0, 0, 1 );
-			ctx.fw = fw; ctx.time = 0;
+			// Same point-sample footprint the painter-pipe previews use
+			// -- see kPreviewFootprintWidth.
+			ctx.fw = kPreviewFootprintWidth; ctx.time = 0;
 			Vector3 outVal; Implementation::ExpressionProgram::VType t = Implementation::ExpressionProgram::kScalar;
 			// defIndex was already bounds-checked against DefCount() above,
 			// so this call cannot fail; the return is still checked rather

@@ -34,6 +34,11 @@
 //       the scene, and SUCCEED again once it completes.
 //    7  C-ABI smoke: RISE_API_SceneEditController_PainterPreview
 //       fills a caller-owned buffer for a real painter.
+//    8  A high-frequency expression body (fbm at domain scale 820,
+//       the shape every real procedural material uses) previews with
+//       genuine structure through BOTH entry points -- the regression
+//       guard for the synthesized-footprint flat-preview bug; see the
+//       test's own comment.
 //
 //  Self-contained: no RISE_MEDIA_PATH; inline native-v7 scenes.
 //
@@ -119,6 +124,15 @@ static const char* kHeadlessScene =
 	"scalar_painter\n{\nname scalarVec3\n"
 		"def rgbdef vec3(u*3, v, 0.1)\n"
 		"expression rgbdef\n"
+	"}\n"
+	// Test 8: a HIGH-FREQUENCY noise body -- the shape every real
+	// procedural material uses (plank_closeup's def stages run
+	// 130 .. 820).  Its preview must show structure; see
+	// PainterPreview.cpp's kPreviewFootprintWidth for why a synthesized
+	// footprint made exactly this body preview as a uniform square.
+	"expression_painter\n{\nname exprHiFreq\n"
+		"def hf fbm(P*820.0, 3, 0.5, 2.0)\n"
+		"expr vec3(0.5+0.5*hf, 0.5+0.5*hf, 0.5+0.5*hf)\n"
 	"}\n"
 	"ramp_painter\n{\nname strip1\ninput solid\nchannel R\ninterpolation linear\n"
 		"stop 0.0 1 0 0\nstop 1.0 0 0 1\n}\n"
@@ -548,6 +562,78 @@ static void TestPerChannelScalarPreviewIsJointlyRangedRGB()
 // observe the ACTUAL number of distinct evaluations PainterPreview
 // performs, independent of timing (which would make the test flaky
 // under CI load).  Minimal Painter subclass, same shape as
+//////////////////////////////////////////////////////////////////////
+// Test 8: a high-frequency noise body previews with structure
+//
+// REGRESSION GUARD.  This module used to synthesize a filter width of
+// 1 / max(gw, gh) for its `ri`.  Once fbm/turbulence/ridged began
+// rescaling `fw` by their position argument's compile-time domain
+// scale (2026-09-06, ExpressionEval.h's Builder::NoiseFwScale), that
+// synthetic width was multiplied by the body's own scale k and crossed
+// the octave fade's hi = 0.6 at k ~= 58 -- so EVERY high-frequency
+// body (the shipped plank_closeup stages run 130 .. 820) previewed as
+// one uniform square, auto-range 0, while the real render of the same
+// body was full of detail.  Both preview entry points are covered: the
+// painter pipe (`RenderPainterPreview`, colour) and the def-stage pipe
+// (`RenderDefStagePreview`, scalar + auto-range).
+//
+// Test 2 does not cover this: perlin3d_painter is a native painter and
+// never runs through the expression VM, so no `fw` of any value can
+// flatten it.
+//////////////////////////////////////////////////////////////////////
+static void TestHighFrequencyNoiseBodyIsNotFlat()
+{
+	std::cout << "Test 8: a high-frequency fbm(P*820) body previews with real structure, not a uniform square..." << std::endl;
+	const char* tmp = "painterpreview_hifreq.RISEscene";
+	Job* j = LoadScene( kHeadlessScene, tmp );
+	Check( j != nullptr, "headless fixture scene loads" );
+	if( !j ) return;
+
+	const unsigned int W = 64, H = 64;
+
+	// (a) The def stage -- scalar, so the AUTO-RANGE it reports is a
+	// direct, encode-independent measurement of the field's spread.
+	// 0.2 is a deliberately loose floor: the flat-preview bug reported
+	// EXACTLY 0 here, and the measured spread of this body point-
+	// sampled on a 64x64 patch is several times the threshold.
+	const PainterPreview::Result stage = PainterPreview::RenderDefStagePreview( *j, String( "exprHiFreq" ), 0, W, H );
+	Check( stage.status == PainterPreview::Status::Ok, "def[0] (`hf`, an fbm at domain scale 820) preview succeeds" );
+	if( stage.status == PainterPreview::Status::Ok ) {
+		Check( stage.wasScalar, "the fbm def stage is scalar-typed" );
+		const double range = stage.scalarRangeMax - stage.scalarRangeMin;
+		Check( range > 0.2, "the def stage's auto-range spread is > 0.2 -- the field is NOT constant across the patch" );
+
+		// The reported range could in principle come from a couple of
+		// outlier pixels, so also require the RASTER to carry real
+		// variety: many distinct grey levels, not two.
+		bool seen[256] = { false };
+		int distinct = 0;
+		for( std::size_t p = 0; p < stage.rgba.size(); p += 4 ) {
+			if( !seen[ stage.rgba[p] ] ) { seen[ stage.rgba[p] ] = true; ++distinct; }
+		}
+		Check( distinct > 32, "the def-stage raster shows > 32 distinct grey levels (structure, not a two-tone artifact)" );
+	}
+
+	// (b) The final colour expression through the painter pipe -- the
+	// path a panel swatch actually takes.  No auto-range here (colour
+	// previews use the fixed [0,1] encode), so the measurement is the
+	// raster's own spread.
+	const PainterPreview::Result full = PainterPreview::RenderPainterPreview( *j, String( "exprHiFreq" ), W, H );
+	Check( full.status == PainterPreview::Status::Ok, "the full expression_painter preview succeeds" );
+	if( full.status == PainterPreview::Status::Ok ) {
+		unsigned char lo = 255, hi = 0;
+		for( std::size_t p = 0; p < full.rgba.size(); p += 4 ) {
+			if( full.rgba[p] < lo ) lo = full.rgba[p];
+			if( full.rgba[p] > hi ) hi = full.rgba[p];
+		}
+		Check( hi > lo, "the colour preview is NOT flat" );
+		Check( (int)hi - (int)lo > 24, "the colour preview's 8-bit spread is > 24 levels (visible structure, not dithering)" );
+	}
+
+	j->release();
+	std::remove( tmp );
+}
+
 // UniformColorPainter but with no state beyond the counter.
 class CountingProbePainter : public Implementation::Painter
 {
@@ -770,6 +856,7 @@ int main()
 	TestFlatScalarDefStageIsUniformGray();
 	TestVec3DefStageShowsTrueTriple();
 	TestPerChannelScalarPreviewIsJointlyRangedRGB();
+	TestHighFrequencyNoiseBodyIsNotFlat();
 	TestEvaluationBudgetDecimatesLargeRequests();
 	TestConcurrencyRefusal();
 	TestCAbiSmoke();
