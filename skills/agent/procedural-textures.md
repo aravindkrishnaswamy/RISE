@@ -131,7 +131,11 @@ never divide `fw` by hand.  It resolves anything affine in `P`
 (including a scale carried through a `param` or `def`); a domain warp
 keeps its affine part's scale, and an argument with no provable
 relation to `P` at all (one built from `u`/`v`) simply gets the
-unscaled `fw`.  Builtins: `perlin`, `fbm(p, octaves, gain,
+unscaled `fw`.  `Po` (object space) falls back the same way -- the
+object->world scale is a per-instance fact the compiler cannot see --
+so the widely-used `fbm(Po*k, ...)` idiom (Hair/variety_gallery,
+Hair/dandelion_clock, GeometrySignals/weathered_reliquary) fades at
+`fw`, not `k*fw`; write the domain in `P` if you want the rescale.  Builtins: `perlin`, `fbm(p, octaves, gain,
 lacunarity)`, `turbulence`, `ridged`, `worley_f1/f2/f2f1/id(p, jitter)`,
 `cellhash`, `ramp(t, pos0,val0, ...)`, plus `mix/clamp/smoothstep/step/
 select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops

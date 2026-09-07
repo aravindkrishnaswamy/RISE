@@ -54,7 +54,7 @@ on the mesh path too.
 | F9 | Two call sites, both inside per-candidate mesh element intersection — so it runs once per accepted closer hit, not once per ray | `TriangleMeshGeometry::RayElementIntersection`, `TriangleMeshGeometryIndexed::RayElementIntersection` |
 | F10 | The object→world fold is `worldWidth *= m_worldLinearScale`, `m_worldLinearScale = \|det\|^(1/3)`; its own comment concedes the `scale 4 0.05 4` panel is 4.31× too small | `Object::IntersectRay`, `CSGObject::IntersectRay`, `Object::m_worldLinearScale` |
 | F11 | CSG composes by applying its own factor once to the child's already-folded value | `CSGObject::IntersectRay`, `AdoptCsgSurfacePayload` |
-| F12 | `fw` is consumed **unscaled**, in the same units as the position argument the expression passes to `fbm` | `ExprProgram::CallFunc` cases 43–45 |
+| F12 | **(updated 2026-09-06)** `fw` reaches `fbm`/`turbulence`/`ridged` **rescaled into that call site's own position-argument domain**: the compiler differentiates the position argument w.r.t. `P` (forward-mode, over the already-emitted postfix code) and folds the Jacobian's largest singular value into a per-call-site multiplier on `fw`, so `fbm(P*40, …)` is filtered at `40·fw`. **Superseded reading:** `fw` used to be consumed *unscaled*, in the same units as the position argument — which made the fade inert for every real body (measured domain scales 7 … 820). The multiplier is exactly `1.0`, an IEEE identity, whenever the domain scale is not provable (an argument built from `u`/`v`/`Po`, or through `%`/`^`/a comparison/any `kFunc`), so an un-analysable body still behaves exactly as it did | `Builder::NoiseFwScale`, `Builder::LinAddSub`, `Builder::JacobianSpectralNorm`; consumed at `ExprProgram::RunAny`'s `kFunc` case → `CallFunc` cases 43–45 |
 | F13 | The fade band is `lo = 0.2`, `hi = 0.6`, smoothstep, weight 1 below `lo`, 0 at/above `hi`; empirically chosen, deliberately earlier than classic Nyquist | `OctaveFadeWeightImpl` |
 | F14 | `worldWidth` consumers: `ExpressionPainter::BuildContext` (×2, colour and scalar pipes), `ReliefModifier::Modify`, `PainterPreview`'s `MakePreviewRi` | as named |
 | F15 | `dudx…dvdy` consumers: `TexturePainter::SampleTextured` (mip LOD / supersample), `WeaveBRDF` (`fpUV`) — both gate on `txFootprint.valid` | as named |
@@ -193,8 +193,18 @@ this design does not touch them.
 the two one-pixel-step, plane-projected displacements — a *diameter*-like
 measure, in the same length units as `ctx.P`. The analytic path shares the
 helper, so it is consistent by construction, and the `0.2 / 0.6` band (F13)
-keeps meaning what it means on meshes. The known `fbm(P*10, …)` mismatch
-(F12) is unchanged and out of scope.
+keeps meaning what it means on meshes.
+
+**The `fbm(P*10, …)` mismatch (F12) was out of scope for this arc and has
+since been closed separately (2026-09-06).** As shipped here, `fw` went into
+the noise unscaled, so the `0.2 / 0.6` band was tested against a world length
+while the octaves it gates live in the *argument's* domain — a body scaling by
+10 set its Nyquist threshold 10× too low, and the fade never engaged on any
+real scene. `Builder::NoiseFwScale` now recovers that domain scale at compile
+time and multiplies `fw` by it per call site, so the band means the same thing
+in both domains. Nothing in the plan above changes: `worldWidth` is still the
+same world-space quantity produced by the same helper, and the rescale happens
+strictly downstream of it, inside the expression VM.
 
 **A DIAMETER, so a consumer that wants a symmetric stencil needs ±half**
 (fix round 2 — this section did not say so, and one consumer got it
