@@ -22,10 +22,10 @@ RISE ASCII SCENE 7
 #   ------------------------------------------------------------------------------------------------
 #
 #   1. CAMERA FIRST, THEN FEATURE SIZES IN WORLD UNITS.  The camera is authored before any texture and
-#      every feature size is derived from its pixel footprint.  Predicted: 2 * 0.33 m * tan(20 deg) /
-#      640 = 0.37 mm.  MEASURED, by painting `fw` itself onto the plank and reading the pixels back:
-#      0.40 mm (p50) across the whole top face (the face is oblique to the view, so it is a little
-#      larger than the on-axis prediction).  Sizes then follow: growth rings 4-7 mm ON THE FACE
+#      every feature size is derived from its pixel footprint.  Predicted: `fov` is VERTICAL, so
+#      2 * 0.33 m * tan(20 deg) / 480 = 0.50 mm face-on.  MEASURED, by painting `fw` itself onto the
+#      plank and reading the pixels back: 0.40 mm (p50) across the whole top face (the near half of
+#      the board is closer than the lookat, and the footprint follows the local distance).  Sizes then follow: growth rings 4-7 mm ON THE FACE
 #      (10-17 px), the ring-edge warp 2.5 mm across the grain, fine fibre 1.2 mm (3 px) -- and the
 #      sub-millimetre pore texture, at 0.5 mm, goes ONLY into roughness (`sp_pore`), never into colour
 #      and never into relief, because at ~1 px it can carry no shape and would read as exactly the
@@ -206,9 +206,11 @@ file_rasterizeroutput
 # feature size in the scene is derived from it.
 #
 #   distance to the subject          0.33 m  (|location - lookat|)
-#   horizontal field at the subject   2 * 0.33 * tan(20 deg) = 0.239 m
-#   pixel footprint, PREDICTED        0.239 / 640            = 0.37 mm  (on axis, face-on)
-#   pixel footprint, MEASURED         0.40 mm (p50 over the top face, which is oblique)
+#   vertical field at the subject     2 * 0.33 * tan(20 deg) = 0.239 m  (`fov` is vertical)
+#   horizontal field at the subject   0.239 * 640 / 480       = 0.319 m
+#   pixel footprint, PREDICTED        0.239 / 480             = 0.50 mm  (face-on, at the lookat)
+#   pixel footprint, MEASURED         0.40 mm (p50 over the top face; most of it is nearer
+#                                     than the lookat, and the footprint follows distance)
 #
 # The measurement is worth making rather than trusting the arithmetic: paint
 # `clamp(fw*2000,0,1)` onto the plank as a lambertian under a flat white
@@ -294,7 +296,7 @@ expression_painter
 	def				rw r0 + warp_m*2.5*wf + wander_m*2.5*wander
 
 	# --- DOCTRINE 4: the knot.  Hand-placed, and the rings SWEEP around it:
-	# the radial coordinate is pulled by up to `knot_pull` (1.5 rings) inside
+	# the radial coordinate is pulled by up to `knot_pull` (~3 rings) inside
 	# a Gaussian two knot-radii wide.  Deflected rings are what makes a knot
 	# read as grown rather than stamped on.
 	def				kd length(vec3(P.x - knot_x, 0.0, P.z - knot_z))
@@ -302,7 +304,7 @@ expression_painter
 	def				rk rw - knot_pull*kg
 
 	# --- step 3: ring phase, with year-to-year spacing variation.  A slow
-	# 1-D noise IN THE RADIAL COORDINATE (period ~18 mm, i.e. every 7 rings)
+	# 1-D noise IN THE RADIAL COORDINATE (period ~18 mm, i.e. every 7-8 rings)
 	# distorts the phase, so radial spacing breathes about +/-15% around
 	# `ring_m` -- 4-7 mm once projected onto the FACE, i.e. 10-17 px at the
 	# measured 0.40 mm footprint, which is doctrine 1's resolvable band.
@@ -428,8 +430,9 @@ ramp_painter
 }
 
 # CONSUMER 2a -- roughness from the SAME field: dense late wood is smoother
-# (0.33), porous early wood rougher (0.52) -- rough-sawn softwood, doctrine 6's
-# ggx band.  Note the NEGATIVE scale: the field's high end is the dark late
+# (0.36-0.39 over the late-wood band, 0.33 only at the field ceiling the knot
+# and dirt occupy), porous early wood rougher (0.52 at the plateau) --
+# rough-sawn softwood, doctrine 6's ggx band.  Note the NEGATIVE scale: the field's high end is the dark late
 # wood, which is the smooth end.
 scalar_painter
 {
@@ -618,8 +621,8 @@ scalar_painter
 # symmetric noise and does not care about the sign; the pits do.  `step` is set
 # explicitly here for the same reason as on the plank, and smaller (0.12 mm),
 # because the nail's features are finer than the board's -- the 1e-3 default
-# floor is 1 mm, which is the whole width of a pit and most of the width of a
-# forge ripple.
+# floor is 1 mm, which is the whole width of a pit and a third of a forge
+# ripple's 3.1 mm wavelength.
 scalar_painter
 {
 	name			sp_iron_relief
@@ -671,7 +674,8 @@ ggx_material
 #         which is what lets `occlusion(0.03)` find it and fill it with dirt.
 #         Rotated -9 deg about Z so its inner end lifts clear of the board --
 #         the crack is ~21 mm deep where it opens at the end grain and closes
-#         to nothing about 110 mm in, which is how a check actually tapers.
+#         to nothing about 95 mm in (the box is 110 mm long but ~6 mm of it
+#         hangs past the end face in air), which is how a check actually tapers.
 #         3 deg about Y so it does not run exactly with the grain.
 #
 #         It is also the reason `crev` is a smoothstep(0.62, 0.18, occ) and not
