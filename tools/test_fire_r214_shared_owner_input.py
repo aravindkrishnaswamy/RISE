@@ -36,7 +36,7 @@ def main():
         ("omit_mixing_control", "Numbers(bytes,source.mixingTimeS);", ""),
         ("wrong_gravity", "mirror.forceContract.gravityMPerS2[axis]=live.gravityMPerS2[axis];",
          "mirror.forceContract.gravityMPerS2[axis]=0.0;"),
-        ("omit_resident_surface_check", "if(!CapstoneResidentInputSurfaces(flux,error))return false;", ""),
+        ("omit_resident_surface_check", "if(!CapstoneResidentInputSurfaces(live,error))return false;", ""),
     ]
     # Temporary tree symlinks keep real headers/generation intact. Only the
     # adapter is copied/mutated; CPU implementations retain their exact source.

@@ -34,10 +34,16 @@ inline bool Fail(std::string& error,const char* message)
 // The current shared-state campaign is the capstone's wall/open domain. Do
 // not silently admit periodic seams until the native capture endpoint has a
 // seam-qualified path. These are the resident-only fields absent from CPU Begin.
-inline bool CapstoneResidentInputSurfaces(const RISE::FireProductionResidentPhysicalFluxComparatorRequest& flux,
+inline bool CapstoneResidentInputSurfaces(const RISE::FireProductionProjectedHeunMetalOwnerRequest& owner,
     std::string& error)
 {
+    const auto& flux=owner.lineage.eos.physicalFlux;
     const auto& transport=flux.transport;const auto& shape=transport.shape;
+    if(!(owner.ambientDensityKGPerM3>0.0f)||!std::isfinite(owner.ambientDensityKGPerM3)||
+        !(owner.vremanCoefficient>=0.0f)||!std::isfinite(owner.vremanCoefficient))
+        return Fail(error,"shared owner force coefficient is invalid");
+    for(const auto gravity:owner.gravityMPerS2)if(!std::isfinite(gravity))
+        return Fail(error,"shared owner gravity is nonfinite");
     for(unsigned int axis=0u;axis<3u;++axis){
         if(transport.projectedVelocityMPerS[axis].size()!=RISE::FireProductionProjectionFaceCount(shape,axis))
             return Fail(error,"shared owner projected velocity extent differs");
@@ -168,7 +174,7 @@ public:
             return Fail(error,"shared owner nested authority contains a qualification mutation");
         if(!RISE::FireProductionFrozenSourcePacketSealMatchesBeginningState(source,
             transport.shape,transport.conservativeValues,transport.temperatureK,&error))return false;
-        if(!CapstoneResidentInputSurfaces(flux,error))return false;
+        if(!CapstoneResidentInputSurfaces(live,error))return false;
         if(transport.stage!=RISE::FireProductionProjectedHeunStage::R0||
             transport.attemptIdentity!=source.AttemptIdentity()||
             transport.parentCandidateIdentity!=source.BeginningStateIdentity()||

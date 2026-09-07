@@ -113,6 +113,26 @@ check itself. The original log is retained as history. The corrected gate is
 all nine surface REDs refuse, the healthy capture passes, and all five
 compiled mutants fail as required. Fresh review covers this correction.
 
+The next fresh review found a second P2 in the same pattern: force coefficients
+were copied, but not checked by `Begin`. The adapter now checks the existing
+force contract (positive finite ambient density, nonnegative finite Vreman
+coefficient, finite gravity) before mapping. Fourteen force/control REDs cover
+all three gravity components, density, Vreman, both tolerance scalars and both
+iteration-count boundaries. The latter six verify the existing `Begin`
+preflight rather than adding another validation implementation.
+The passing corrected gate `r214_shared_owner_input/cpu_asan_ubsan.v3.log`
+has SHA256 `7018e49baf17a13441d17efd010b3e37e97df09a0be76d9a40ec9c6f2905a152`;
+it retains nine surface REDs, fourteen force/control REDs and five compiled
+mutants. Earlier logs are immutable historical gate records.
+
+The sibling audit partitions every consumed request input: the canonical source
+issuer and immediate-parent match cover source shape/Q/T/dose/time/case;
+explicit qualification checks cover nested mutation fields and resident-only
+velocity/classes/basis/ambient/force inputs; `Begin` covers momentum extent and
+finiteness, invariant contract shapes, tolerances and iteration count. Future
+R0/R1/R2 numerical admissibility remains the owner's responsibility, not a
+claim of this capture preflight.
+
 Self-audit and fresh-review axes: omitted source-control identity despite
 unchanged packet bytes; stale/forged immediate parent; incorrect promotion or
 lost per-field operand; accidental production budget/arithmetical change;

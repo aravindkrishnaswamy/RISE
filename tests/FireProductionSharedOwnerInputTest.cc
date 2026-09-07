@@ -134,6 +134,24 @@ int main()
             !surfaceRED.IsCaptured()&&surfaceRED.Payload().empty();
         passed=passed&&refused;std::printf("SHARED_OWNER_SURFACE_RED field=%u refused=%d\n",surface,refused?1:0);
     }
+    for(unsigned int field=0u;field<14u;++field){auto invalid=live;
+        const float nonfinite=std::numeric_limits<float>::infinity();
+        if(field<3u)invalid.gravityMPerS2[field]=nonfinite;
+        if(field==3u)invalid.ambientDensityKGPerM3=0.0f;
+        if(field==4u)invalid.ambientDensityKGPerM3=-1.0f;
+        if(field==5u)invalid.ambientDensityKGPerM3=nonfinite;
+        if(field==6u)invalid.vremanCoefficient=-1.0f;
+        if(field==7u)invalid.vremanCoefficient=nonfinite;
+        if(field==8u)invalid.projectionTolerancePerS=-1.0f;
+        if(field==9u)invalid.projectionTolerancePerS=nonfinite;
+        if(field==10u)invalid.endpointVelocityToleranceMPerS=-1.0f;
+        if(field==11u)invalid.endpointVelocityToleranceMPerS=nonfinite;
+        if(field==12u)invalid.maximumPicardIterations=1u;
+        if(field==13u)invalid.maximumPicardIterations=65u;
+        OwnerCapture coefficientRED;const bool refused=!coefficientRED.Capture(source,input,invalid,error)&&
+            !coefficientRED.IsCaptured()&&coefficientRED.Payload().empty();
+        passed=passed&&refused;std::printf("SHARED_OWNER_FORCE_CONTROL_RED field=%u refused=%d\n",field,refused?1:0);
+    }
     passed=passed&&!source.Build(input,error)&&!captured.Capture(source,input,live,error);
     auto changedMomentum=live;changedMomentum.beginningMomentumKGPerM2S[0][7]=0.25f;
     OwnerCapture momentum;passed=passed&&momentum.Capture(source,input,changedMomentum,error)&&
