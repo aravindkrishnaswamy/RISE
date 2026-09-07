@@ -868,7 +868,8 @@ variant that breaks everything above.
   two contact-grime cases §8.1 re-opens on, and declines again). Grime in crevices, patina
   in a casting's recesses, dirt in a seam — all are self-occlusion.
 
-**Later-phase route, explicitly out of scope now:** either the SSS-style
+**The two later-phase routes as listed at v1 (both priced since — next
+paragraph):** either the SSS-style
 lazy + mutex shader-op route, or bake-time `IObjectManager::IntersectShadowRay`
 (`IObjectManager.h:46-51`) against the whole scene — the cheapest occlusion
 primitive available, boolean-only, far cheaper than a full `IRayCaster::CastRay`.
@@ -881,7 +882,7 @@ cost toward the ray fan's own share of one evaluation per hit, but it cannot
 change what the signal shows, which is the finding that closes the route: the
 contact case reads only as a band, not a seam, under every hemisphere sampler
 tried. The second route was prototyped as measured: the attach-time bake is
-affordable for meshes (Sponza 12 s / 7.8 MB) and cannot resolve the SDF
+affordable for meshes (Sponza 12 s / 8.2 MB) and cannot resolve the SDF
 family's feature sizes as a dense grid. Both inherit an O(scene) invalidation
 the bbox census cannot fully see, cached or not.
 
@@ -943,8 +944,8 @@ is geometric, not a tuning failure.
   asks only whether something is nearby at low elevation. Uniform reads 0.61 /
   0.89 / 0.92 and horizon **0.61 / 0.81 / 0.90** at 18.65 mm (N = 64 moves
   every entry by ≤ 0.045; the far plank stays 1.00 under all three; a 0.5°
-  minimum elevation kept tangent-plane self-hits at 6 of 7.7 M blocked rays
-  under horizon and 52 of 6.8 M under uniform).
+  minimum elevation kept tangent-plane self-hits, at N = 16, to 6 of 7.7 M
+  blocked rays under horizon and 52 of 6.8 M under uniform).
   So the objection stands on the *width* — cosine reaches 2–3 px, horizon
   ~10 px, and the first draft's "no radius of AO reaches it" was too strong —
   and falls on everything else. The *depth* does not separate: all three
@@ -957,8 +958,8 @@ is geometric, not a tuning failure.
   that see the plank from the nail. In the beauty crops the horizon variant
   lays a slightly broader, softer smudge on the plank either side of the shank
   and takes rust off the nail; shown unlabelled, neither crop reads as the
-  contact seam the scene wants — at the plank's `dirt 0.62`, a 0.81 signal is a
-  fifth of the field on a few pixels. **Contact grime is a proximity quantity:
+  contact seam the scene wants — at the plank's `dirt 0.62`, a 0.81 signal
+  (N = 16; 0.82 at N = 64) is a fifth of the field on a few pixels. **Contact grime is a proximity quantity:
   the sampler that measures it better is the one that stops measuring
   visibility, and no hemisphere sampler is both.**
 - *The bench top gains a mask, not a picture.* The raw signal draws a crisp
@@ -1012,7 +1013,7 @@ vertices bake in **12.14 s** single-threaded at N = 16 (runs 12.14 / 15.21 /
 15.40 / 15.75 / 17.01), **45.25 s** at N = 64 (runs 45.25 / 50.98 / 60.79),
 **2.34 s with 16 threads** on the 18-core machine (one run; 5.2×: per-object
 jobs with a median of 796 and a maximum of 43,309 vertices leave a one-object
-tail), for 7.82 MB. Every figure here is the *minimum* of its runs, and the
+tail), for 8,196,548 bytes (8.2 MB, one float per vertex). Every figure here is the *minimum* of its runs, and the
 spreads are large (34 % on the N = 64 bake, 61 % on the render below) because
 the live-query worker was rendering on the same machine throughout; the
 minimum is the least-contaminated estimate, and a 17-thread render suffers
@@ -1059,8 +1060,9 @@ fraction of the scene bounding box is not an authoring unit: lights are
 objects, so `plank_closeup`'s 0.62 m subject sits in a 1.53 m scene box that
 the two `rect_light` panels define, and moving a light would silently rescale
 every material's query radius. Infinite planes must be skipped (their bboxes
-are the ±1e30 / `DBL_MAX` sentinels) and still leave the box lighting-rig-
-shaped. **A world length is the only stable unit for a cross-object radius**,
+are the `DBL_MAX` = `RISE_INFINITY` sentinel; a 1e29 threshold also catches the
+engine's other finite-infinity conventions, ±1e30 and ±`FLT_MAX`) and still
+leave the box lighting-rig-shaped. **A world length is the only stable unit for a cross-object radius**,
 and it necessarily diverges from the per-object fraction the shipped signals
 use (the plank's `occlusion(0.03)` is 18.65 mm and the nail's `occlusion(0.10)`
 is 8.10 mm; a scene-relative 5 % would be 76 mm on both). Also on the record: `IntersectShadowRay`
