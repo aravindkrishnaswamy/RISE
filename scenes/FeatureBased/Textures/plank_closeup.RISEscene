@@ -76,8 +76,11 @@ RISE ASCII SCENE 7
 #      -Z while the grain runs along X, so it rakes ACROSS the rings.  Panel SIZE turned out to matter
 #      as much as angle: the first key was 0.45 x 0.30 m, and a source that broad washes out the
 #      shading of a 0.2 mm ridge -- shrinking it (exitance raised to match) bought as much fine-detail
-#      contrast as the entire relief-amplitude sweep did.  A sky fill keeps the shadow side off the
-#      floor of the range.
+#      contrast as the entire relief-amplitude sweep did.  `exitance` is then set so the early-wood
+#      PLATEAU lands at 0.75-0.85 display (it measures 0.77): a plateau at display white has no room
+#      left for the fibre texture, and the fix for that is the light, never a darker ramp.  A sky fill
+#      keeps the shadow side off the floor of the range -- but see the ramp's comment, because that
+#      fill is COOL and the wood albedo has to be pre-corrected for it.
 #
 #   7. THE IRON ANSWERS THE SAME DOCTRINE.  The nail is not a box wearing a noise cloud (which is what
 #      weathered_workbench's "iron vise" is -- two `box_geometry` under an isotropic Worley field, a
@@ -88,8 +91,11 @@ RISE ASCII SCENE 7
 #      head-to-shank crevice and by `-N.y` underneath, black oxide held on the struck ridges by `curv`.
 #
 #   ------------------------------------------------------------------------------------------------
-#   WHAT WAS TRIED AND WAS WRONG.  Four of these are traps the toolbox sets; they cost most of the
-#   iterations on this scene and none of them announces itself as an error.
+#   WHAT WAS TRIED AND WAS WRONG.  Most of these are traps the toolbox sets; they cost most of the
+#   iterations on this scene and none of them announces itself as an error.  Two of them -- the clamp
+#   eating the detail, and the field spending the ramp's reserved stops -- are the SAME failure seen
+#   from the two ends of a clamped sum, and both were found only by probing the field and reading the
+#   percentiles back.  Probe the field.
 #   ------------------------------------------------------------------------------------------------
 #
 #   -- THE CLAMP EATS THE DETAIL.  `clamp(expr, 0, 1)` on a field whose terms sum near zero pins a
@@ -104,7 +110,7 @@ RISE ASCII SCENE 7
 #      useful thresholds are per-object -- on the nail the ridges start near 25, not near 1.
 #
 #   -- `step 0` IS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE.  `relief_modifier`'s automatic step is
-#      `max(1e-3, fw/2)`, and the 1e-3 FLOOR is 1 mm -- wider than this scene's 0.85 mm late-wood ramp.
+#      `max(1e-3, fw/2)`, and the 1e-3 FLOOR is 1 mm -- wider than this scene's ~0.8 mm late-wood ramp.
 #      The relief was being differenced across a 2 mm stencil and came back as a soft smear.  Setting
 #      `step 0.00022` (just above the measured `fw`/2 = 0.20 mm, so the footprint rule still governs)
 #      is what made the ring boundaries crisp.  The design doc says an author must set `step` when the
@@ -120,8 +126,33 @@ RISE ASCII SCENE 7
 #
 #   -- 18:1 EARLY-TO-LATE CONTRAST.  Real pine is nearer 2.5:1.  Over-contrasty texture is itself a
 #      "generated" tell, and it drowns relief -- which is the cue that actually reads as carved.  The
-#      shipped ramp is 0.370 -> 0.130 through the wood, with the darkest stops RESERVED for the knot,
-#      the dirt and the check, so those rare events are the only near-black on the board.
+#      shipped ramp is 0.4029 -> 0.1435 in luminance through the wood, about 2.8:1, with the darkest
+#      stops RESERVED for the knot, the dirt and the check.
+#
+#   -- THE FIELD SPENT THE RAMP'S RESERVED STOPS, AND THE RAMP COMMENT DID NOT NOTICE.  The most
+#      expensive bug on this scene, because both halves of it were individually defensible.  The ramp
+#      reserved its two darkest stops for the knot / dirt / check and SAID SO in its comment.  But the
+#      field wrote `ring = early + (1 - early_max)*late*rstr` with `rstr` running to 1.17, so a
+#      maximum-`rstr` late-wood band reached ~1.15 on its own, before `floor`, the streak term and the
+#      fibre term were added -- ordinary late wood therefore landed in the stops reserved for the rare
+#      events and CLAMPED there.  Re-probed: 27 % of the top face sat above field 0.82 and 4.8 % was
+#      pinned at exactly 1.0.  The board rendered CHARRED -- black-brown bands on chalk-white early
+#      wood, an effective 9.2:1 in the render against the 2.8:1 the comment claimed.
+#
+#      The lesson is not "the ramp was wrong".  It is that A RAMP CANNOT RESERVE A RANGE THE FIELD IS
+#      FREE TO WRITE INTO: a reservation is a claim about the FIELD, so it has to be enforced where the
+#      field is summed and then MEASURED, not asserted in the ramp's comment.  `late_reach` is that
+#      enforcement, and the probe percentiles below are the measurement.  The same trap is waiting in
+#      any expression that adds a normalised term to a clamped sum -- which is every field in this file.
+#
+#   -- OVER-WIDE LATE WOOD.  `late_frac` was 0.36, so the dark band was better than a third of the ring.
+#      In softwood the late band is the THIN part -- the tree spends most of the season laying down
+#      early wood.  0.26 puts it at 2.7-4.5 px against the 10-17 px ring, which is thin enough to read
+#      as a band and wide enough to survive the pixel footprint.
+#
+#   -- AUTHORING THE ALBEDO AT THE COLOUR YOU WANT TO SEE.  Under this scene's cool fill that renders
+#      chalk-grey; the ramp has to be pre-corrected against the measured irradiance ratio.  The full
+#      measurement is in the ramp's own comment.
 #
 #   -- `box_geometry` for the plank.  Rejected: `curv` is 0 on a planar primitive and `occlusion()`
 #      returns its neutral 1 on EVERY analytic primitive, so doctrine 3 is simply unavailable there.
@@ -221,7 +252,8 @@ expression_painter
 	param			tilt_z 0.030 min -0.20 max 0.20 step 0.005 label "Pith tilt (lateral)"
 	param			ring_m 0.0024 min 0.001 max 0.012 step 0.0002 label "Ring spacing (m)"
 	param			ring_var 0.55 min 0.0 max 2.0 step 0.05 label "Year-to-year spacing variation"
-	param			late_frac 0.36 min 0.05 max 0.6 step 0.01 label "Late-wood fraction of ring"
+	param			late_frac 0.26 min 0.05 max 0.6 step 0.01 label "Late-wood fraction of ring"
+	param			late_reach 0.40 min 0.05 max 1.0 step 0.02 label "Late-wood field reach (tops of the ramp stay reserved)"
 	param			early_max 0.13 min 0.0 max 0.8 step 0.02 label "Early-wood darkening"
 	param			warp_m 0.0005 min 0.0 max 0.004 step 0.0001 label "Ring-edge warp, fine (m)"
 	param			wander_m 0.0035 min 0.0 max 0.02 step 0.0005 label "Grain wander, coarse (m)"
@@ -280,10 +312,22 @@ expression_painter
 	# flat pale plateau (`early_max` is small on purpose -- see the rejected
 	# list: a steady ramp across the ring gives every ring the tonal signature
 	# of a shaded cylinder and the board turns into corrugated sheet); late
-	# wood then climbs to full dark over the narrow band `rlw` and SNAPS back
-	# at the ring boundary.  That snap is the crisp ring line of real timber
-	# and is deliberately left as a step; `relief_plank`'s `max_slope` is what
-	# keeps its unbounded difference quotient in hand.
+	# wood then climbs over the narrow band `rlw` and SNAPS back at the ring
+	# boundary.  That snap is the crisp ring line of real timber and is
+	# deliberately left as a step; `relief_plank`'s `max_slope` is what keeps
+	# its unbounded difference quotient in hand.
+	#
+	# `late_reach` IS A BUDGET, NOT A GAIN, and it is the fix for the worst
+	# bug this scene had (see the rejected list, "the field spent the ramp's
+	# reserved stops").  The ring term is only one of six things summed into
+	# `expr`, so late wood cannot be allowed to climb to 1 on its own: at
+	# `late_reach 0.40` a maximum-`rstr` ring adds at most 0.40*1.17 = 0.47,
+	# which lands the darkest late wood near field 0.83 (measured p95) and
+	# leaves the top of the range for the knot, the crevice dirt and the
+	# check.  MEASURED against the probe: with the ring term switched off
+	# entirely, 0.36 % of the top face is above field 0.95; with it on, 0.48 %
+	# -- i.e. the near-black end of the ramp is still essentially all
+	# doctrine-4 rare events, which is the whole point of reserving it.
 	#
 	# PER-RING variation.  `cellhash` floors its argument internally, so
 	# cellhash(phase) is one pseudo-random number PER RING and is constant
@@ -297,7 +341,7 @@ expression_painter
 	def				rlw late_frac*(0.62 + 0.80*cellhash(phase + 37.0))
 	def				early smoothstep(0.0, 1.0 - rlw, t)*early_max
 	def				late smoothstep(1.0 - rlw, 1.0 - rlw*0.45, t)
-	def				ring early + (1.0 - early_max)*late*rstr
+	def				ring early + late_reach*late*rstr
 
 	# --- along-grain structure at three scales, all strongly anisotropic:
 	#   sf  broad tonal streak   111 mm along x 7.7 mm across   14:1
@@ -332,25 +376,51 @@ expression_painter
 # stops and nowhere else (the composition boundary): the field is a pure
 # scalar and the ramp is the only thing that knows what colour wood is.
 #
-# The stop POSITIONS are set against the field's MEASURED percentiles (probe
-# render: p10 0.118 / p25 0.180 / p50 0.435 / p90 0.792), not against the
-# nominal [0,1] -- that is what makes 0.00-0.22 a flat pale plateau where the
-# early wood actually lives.  Early-to-late contrast is 0.370 -> 0.130, about
-# 2.8:1, which is what pine measures; the near-black stops at 0.82 and 1.00
-# are RESERVED for the knot, the crevice dirt and the check, so the only very
-# dark pixels on the board belong to doctrine 4's rare events.
+# THE STOP POSITIONS ARE SET AGAINST THE FIELD'S MEASURED PERCENTILES, not
+# against the nominal [0,1].  The probe: bind `expr_plank` straight to a
+# `lambertian_material`, light it with a flat white environment and nothing
+# else, write Rec709RGB_Linear, and read the pixels back -- then DIVIDE by a
+# second probe rendered identically with `clamp(N.y,0,1)` as the reflectance,
+# which both masks to the top face and cancels the ambient-occlusion factor
+# the environment leaves behind (without that division every percentile reads
+# ~10 % low).  Over 114 171 top-face pixels:
+#
+#      p10 0.111   p25 0.262   p50 0.432   p75 0.613   p90 0.772   p95 0.834
+#
+# So 0.00-0.32 is the flat pale plateau where the early wood actually lives,
+# the descent runs 0.32-0.72 (which is where the fibre and streak terms put
+# most of the face), the late-wood bands land 0.72-0.86, and 0.86-1.00 is
+# RESERVED for the knot core, the crevice dirt and the check.
+#
+# CONTRAST.  Early-to-late is 0.4029 -> 0.1435 in luminance (the plateau
+# against the colour at the measured p90), about 2.8:1, which is what pine
+# measures.  In the RENDER, luma p10/p90 over the board is 2.76:1 and there
+# are 28 near-black pixels (< luma 12) per 90 000 in the mid-board crop, of
+# which 25 are already there with relief switched off.
+#
+# HUE, AND WHY THE ALBEDO IS WARMER THAN THE WOOD LOOKS.  The fill here is
+# deliberately cool -- a 0.34/0.38/0.45 sky plus a 0.72/0.80/1.00 bounce card
+# -- and the GGX `rs` adds a near-neutral grazing sheen on top, so an albedo
+# authored at the colour you want to SEE renders CHALKY.  Measured on this
+# scene, at the same exposure: a plateau albedo of 1:0.80:0.55 came back at
+# 1:0.90:0.72 on the top face, and 1:0.64:0.32 comes back at 1:0.80:0.48.
+# The B/R ratio is lifted by roughly 1.3-1.5x and G/R by 1.12-1.24x (it is not
+# a clean multiplier because the sheen is additive, so it desaturates the
+# darks more than the plateau).  These stops are pre-corrected against that
+# measurement, which is why they look too orange read as numbers.  Judge the
+# RENDERED colour, never the ramp.
 ramp_painter
 {
 	name			ramp_plank
 	input			expr_plank
 	channel			R
 	interpolation	smooth
-	stop			0.00  0.370 0.312 0.240
-	stop			0.22  0.360 0.300 0.228
-	stop			0.42  0.290 0.222 0.155
-	stop			0.62  0.205 0.145 0.092
-	stop			0.82  0.130 0.082 0.048
-	stop			1.00  0.045 0.026 0.014
+	stop			0.00  0.580 0.372 0.187
+	stop			0.32  0.545 0.343 0.166
+	stop			0.52  0.435 0.245 0.106
+	stop			0.72  0.272 0.126 0.047
+	stop			0.86  0.150 0.064 0.022
+	stop			1.00  0.048 0.021 0.009
 	color_space		Rec709RGB_Linear
 }
 
@@ -400,7 +470,7 @@ scalar_painter
 #
 # STEP.  `step 0.00022`, NOT the `step 0` default, and this is the single
 # change that made relief legible here.  The automatic rule is
-# max(1e-3, fw/2); the 1e-3 FLOOR is 1 mm, wider than this scene's ~0.85 mm
+# max(1e-3, fw/2); the 1e-3 FLOOR is 1 mm, wider than this scene's ~0.8 mm
 # late-wood ramp, so the default differenced the field across a 2 mm stencil
 # and returned a soft smear.  0.00022 sits just above the measured fw/2 =
 # 0.20 mm, so the footprint rule still governs (an explicit step BELOW fw/2 is
@@ -420,8 +490,10 @@ scalar_painter
 # pixel, so it had no usable amplitude at all and had to be clamped to 0.30 to
 # stop it shading black -- 976 near-black pixels per 10 000 at scale 0.25
 # unclamped.  Here the field is resolvable by construction (doctrine 1), and
-# relief adds about 140 near-black pixels per 86 400 over its own control:
-# 0.16%.  A field sized to the camera does not need rescuing.
+# relief adds 3 near-black pixels per 90 000 over its own control (28 against
+# 25 at `scale 0`), and lifts high-frequency RMS on that crop from 8.91 to
+# 12.14 -- a 36 % gain in detail contrast for essentially no shading floor:
+# A field sized to the camera does not need rescuing.
 scalar_painter
 {
 	name			sp_plank_relief
@@ -725,7 +797,7 @@ rect_light
 	size			0.17 0.12
 	facing			-0.10 -0.27 0.50
 	color			1.00 0.955 0.880
-	exitance		250
+	exitance		195
 }
 
 # A dim, cool bounce card on the camera side so the near flanks of the ridges,
