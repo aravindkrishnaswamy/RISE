@@ -3,21 +3,105 @@ RISE ASCII SCENE 7
 #                                      RISE Ascii Scene File                                                #
 #                                                                                                           #
 #   File:           weathered_workbench.RISEscene                                                          #
-#   Description:    Textures showcase 1/4 (doc 88 Phase 1+2 arc) -- a wooden workbench with a clamped-on   #
-#                   iron vise and a de-tiled diamond-plate tool tray.  The wood top's colour AND roughness  #
-#                   are driven from the SAME expression_painter grain field (ramp_painter for colour,       #
-#                   scalar_painter{painter} bridge for roughness -- gloss follows grain).  scatter_painter  #
-#                   Relief tilts the shading normal from the SAME grain field too: scalar_painter           #
-#                   sp_wood_relief bridges expr_grain raw (channel R, no scale/bias), and relief_modifier   #
-#                   relief_wood (scale 0.25, max_slope 0.30) binds the wood top and all four legs --        #
-#                   relief now share one field, so the grain reads as carved surface, not paint.            #
-#                   scatters oil stains that blend_painter{mode multiply} darkens onto the wood.  The vise  #
-#                   is worley-pitted iron whose colour field is reprojected with mapping_painter{projection #
-#                   world}, and its roughness is a standalone scalar_painter{expression} worley field.      #
-#                   The tool tray is a checker_painter hex-tiled via stochastic_tile_painter to break its   #
-#                   grid repeat.  No tileable photo/scan asset exists in-repo, so this demo substitutes a   #
-#                   procedural checker source to exercise the de-tiling MECHANISM; the intended use of      #
-#                   stochastic_tile_painter is a small tiling photo/scan, per the skill.                    #
+#   Description:    Textures showcase 1/4 (doc 88 Phase 1+2 arc) -- a wooden workbench with a bolted-on   #
+#                   cast-iron bench vise and a de-tiled diamond-plate tool tray.  The wood top's colour     #
+#                   AND roughness are driven from the SAME expression_painter grain field (ramp_painter     #
+#                   for colour, scalar_painter{painter} bridge for roughness -- gloss follows grain), and   #
+#                   relief_modifier relief_wood (scale 0.25, max_slope 0.30) binds the same field raw to    #
+#                   the top and all four legs, so the grain reads as carved surface, not paint.             #
+#                   scatter_painter scatters oil stains that blend_painter{mode multiply} darkens onto      #
+#                   the wood.  The tool tray is a checker_painter hex-tiled via stochastic_tile_painter to  #
+#                   break its grid repeat -- no tileable photo/scan asset exists in-repo, so this demo      #
+#                   substitutes a procedural checker source to exercise the de-tiling MECHANISM; the        #
+#                   intended use of stochastic_tile_painter is a small tiling photo/scan, per the skill.    #
+#                                                                                                           #
+#   THE VISE.  Until 2026-09-06 the "iron vise" here was two box_geometry under an isotropic worley3d       #
+#   field reprojected by mapping_painter{projection world} -- and the standing criticism of it was exactly   #
+#   right: it said nothing about what it was, and it looked like a generated texture rather than an         #
+#   object.  It is now built against the seven-rule doctrine in the header of                                #
+#   plank_closeup.RISEscene, whose rule 7 (silhouette first) named this vise as its counter-example.        #
+#   The worley chunks and the mapping_painter are gone, not re-skinned.                                     #
+#                                                                                                           #
+#   1. THE FOOTPRINT WAS MEASURED FIRST, AND EVERY SIZE FOLLOWS FROM IT.  Painting clamp(fw*50,0,1) on      #
+#      the vise as a lambertian and dividing by a flat-albedo control gives fw p50 = 7.95 mm over the       #
+#      object (the geometric pixel spacing at its 3.38 m axial depth is 5.4 mm, so fw runs about 1.5 px     #
+#      here).  That single number decides the whole surface: a feature needs ~3 px to carry shape, so the   #
+#      casting undulation is 33 mm (6 px) and the paint chips 20-40 mm, and a real casting's 1-3 mm         #
+#      pitting -- a fifth of a pixel -- is BANNED from colour and relief and sent to roughness alone.       #
+#      This is why the vise carries no pits at all where the nail in plank_closeup carries plenty: the      #
+#      two scenes are 20x apart in footprint, and the sizes are not transferable.                           #
+#                                                                                                           #
+#   2. THE SILHOUETTE SAYS "BENCH VISE" BEFORE ANY TEXTURE.  Fifteen sdf_geometry parts: a bolted base      #
+#      flange with four proud bolt heads, a cast body carrying the fixed rear jaw with a flat anvil pad     #
+#      behind it, a machined slide bar, a movable front jaw on it, two hardened jaw pads standing proud     #
+#      of both castings, a lead screw, a thrust collar and a T-handle hanging off-centre in its hole.       #
+#      The castings are smin-joined (k 0.014-0.030) so they carry the fillets a drawn casting has; the      #
+#      bar, the pads and the bolt heads are HARD unions, because a machined part meets a casting at an      #
+#      edge.  The object is yawed 48 degrees -- a swivel base is what a vise has one FOR -- which is the    #
+#      only orientation that shows the jaw gap, the jaw faces and the full length of the handle at once.    #
+#                                                                                                           #
+#   3. ONE FIELD, FOUR CONSUMERS.  expr_vise runs a WEATHERING axis (machined steel -> paint -> the cast    #
+#      iron a chip exposes -> rust); ramp_vise colours it, sp_vise_rough bridges it to GGX roughness,       #
+#      sp_vise_relief bridges it raw into relief_vise, and sp_vise_ior / sp_vise_extinction bridge it into  #
+#      the FRESNEL, so the same field that says "this is paint" also stops that point being a conductor.    #
+#      Variation is tied to the geometry throughout: occlusion() puts grime and rust in the fillets and     #
+#      under the flange lip, -N.y rusts the undersides, curv chips the paint off the drawn arrises, and a   #
+#      Po-space part mask -- not a noise -- decides which faces are machined.                               #
+#                                                                                                           #
+#   ------------------------------------------------------------------------------------------------      #
+#   WHAT WAS TRIED AND WAS WRONG                                                                            #
+#   ------------------------------------------------------------------------------------------------      #
+#                                                                                                           #
+#   -- THE FIRST VISE WAS BUILT AT TRUE SCALE AND WAS ILLEGIBLE.  A 200 mm-tall vise is 37 px here and      #
+#      read as a grey lump.  The shipped one is 300 mm above the bench -- deliberately a big shop vise,     #
+#      and deliberately the same envelope the two boxes it replaced occupied, so the composition, the       #
+#      bench top's relief tuning and the camera did not have to move.                                       #
+#                                                                                                           #
+#   -- THE HANDLE POINTED AT THE CAMERA.  With the screw axis along +Z the T-handle is 28 degrees off       #
+#      the view axis and foreshortens to 47% -- a stub.  Solving for a bar PERPENDICULAR to the view        #
+#      (0.898*sin(t) + 0.19*cos(t) = 0 at the 48-degree yaw) gives a near-vertical hang, which then runs    #
+#      the bar's lower end into the bench top; -35 degrees is the compromise that keeps 93% of the length   #
+#      on screen with the end still 49 mm clear.  Foreshortening is a composition variable, not a detail.   #
+#                                                                                                           #
+#   -- EVERY fbm HAD OCTAVES BELOW THE PIXEL FOOTPRINT, AND THEY READ AS DIRT.  fbm(P*30, 3, ...) puts      #
+#      its third octave at 8 mm, and fbm(P*32, 4, ...) its last two at 7 and 3 mm -- all under two          #
+#      pixels.  The field probe looked correctly mottled at a distance and turned to fine speckle up        #
+#      close, which is precisely the "generated" tell.  OCTAVE COUNT IS A FEATURE-SIZE DECISION, not a      #
+#      quality dial: both fields are 2 octaves now, and the sub-pixel structure that was cut from them      #
+#      lives in sp_vise_grain, which reaches roughness ONLY.                                                #
+#                                                                                                           #
+#   -- THE RAMP GAVE PAINT AND BARE IRON THE SAME LUMINANCE.  Being careful about the doctrine's            #
+#      over-contrast warning, the first ramp put intact paint at 0.090 and the iron a chip exposes at       #
+#      0.070 -- a 1.3:1 step that is invisible under any lighting.  The field was healthy the whole time    #
+#      (a probe showed a 0.062 within-band standard deviation); the RAMP was eating it.  Over-contrast is   #
+#      a tell, but so is a ramp that refuses to spend the range the field actually occupies -- the shipped  #
+#      step is 2.3:1, which is the same band the plank's early-to-late wood uses.                           #
+#                                                                                                           #
+#   -- THE PART MASK FADED OUT ACROSS THE OUTER HALF OF EACH JAW PAD.  padband's z transition was set at    #
+#      the pad's own boundary rather than just outside it, so the pad's outer half sat at mask ~0.5, took   #
+#      half the CAST branch, and grew a rust fringe along the top of every pad.  A part mask has to         #
+#      OVERSHOOT the part; the transition then lands on the neighbouring casting, where it is hidden by     #
+#      the crease that is already there.  Every mask edge in expr_vise is placed on a real geometric edge   #
+#      for that reason, and it matters twice over because relief_vise reads the same field, so a mask       #
+#      transition is also a height step.                                                                    #
+#                                                                                                           #
+#   -- CHIPS KEYED MOSTLY ON `curv` DREW AN OUTLINE.  At 0.55*arris the paint failed in a neat band         #
+#      around every jaw and flange edge, which reads as a rendered outline effect rather than as wear.      #
+#      The arris still has to be the FIRST place paint goes, but at 0.18 against a 1.4x chip field and a    #
+#      0.35 gravity-run term, so the chips are patches that happen to reach the edges.                      #
+#                                                                                                           #
+#   -- RUST WITH NO DIRECTION.  Rust is the one process here that gravity writes, so `runs` is an 8:1       #
+#      vertical fbm (11 mm across, 88 mm down) that both elongates the chips downward and concentrates      #
+#      the rust in the lower part of each. The casting undulation is left ISOTROPIC on purpose -- a sand    #
+#      mould has no grain direction -- which is the one place this scene departs from the doctrine's        #
+#      "every noise term gets a direction", and it departs because the physics says so.                     #
+#                                                                                                           #
+#   -- A RUST STAIN RUNNING OVER INTACT PAINT IS NOT REACHABLE FROM A SINGLE 1-D RAMP, and was dropped      #
+#      rather than faked: a point cannot be both "paint" and "rust" on one axis.  Rust here only grows      #
+#      where the paint is already gone, which is what the physics says anyway.  Grime under the flange      #
+#      ON THE BENCH is out of reach for the opposite reason -- occlusion() is self-occlusion only -- and    #
+#      is deliberately NOT painted on as a decal.                                                           #
+#                                                                                                           #
 #   Author:         RISE contributors                                                                       #
 #   Birthdate:      2026-08-20                                                                              #
 #                                                                                                           #
@@ -277,55 +361,217 @@ uniformcolor_painter
 }
 
 ##################################################
-# Painters -- iron vise: worley pitting, reprojected with mapping_painter
+# Painters -- the vise: ONE cast-iron field, four consumers
 ##################################################
 
-uniformcolor_painter
+# THE FIELD.  Sizes come from the MEASURED footprint over the vise
+# (`fw` p50 = 7.95 mm; see the geometry comment below), so the ordering
+# is: casting undulation at 6 px, chips at 4-7 px, and NOTHING finer in
+# colour or relief -- a real casting's 1-3 mm pitting is a fifth of a
+# pixel here and can only read as dirt, so it goes to roughness alone
+# (`sp_vise_grain`).
+#
+# The axis the field runs along is a WEATHERING axis, not a brightness
+# one: 0 = bare machined steel, ~0.30 = intact paint, ~0.62 = the cast
+# iron a chip exposes, 1.0 = rust bloom.  Everything that moves a point
+# along it is either a sized surface process or a question the geometry
+# answers about itself.
+expression_painter
 {
-	name			pnt_iron_dark
-	color			0.05 0.05 0.06
+	name			expr_vise
+	param			cast_freq 30.0 min 6 max 90 step 1 label "Casting undulation frequency"
+	param			patch_freq 15.0 min 4 max 50 step 1 label "Casting-scale patch frequency"
+	param			chip_freq 32.0 min 8 max 90 step 1 label "Paint-chip field frequency"
+	param			chip_cov 0.16 min -0.3 max 0.6 step 0.02 label "Paint-chip threshold (lower = more bare iron)"
+	param			paint_w 0.42 min 0.0 max 0.8 step 0.02 label "Field value of intact paint"
+	param			iron_w 0.66 min 0.3 max 0.9 step 0.02 label "Field value of bare cast iron"
+	param			steel_w 0.06 min 0.0 max 0.3 step 0.01 label "Field value of machined steel"
+	param			rust_crev 0.55 min 0.0 max 1.5 step 0.05 label "Rust in crevices"
+	param			grime_crev 0.16 min 0.0 max 0.6 step 0.02 label "Grime darkening the paint in crevices"
+	param			rust_down 0.40 min 0.0 max 1.5 step 0.05 label "Rust on the underside"
+	seed			19.0
+
+	# -- geometry signals (doctrine 3).  Every threshold here was MEASURED
+	# on this object, not guessed: a probe render of each signal, divided
+	# by a flat-albedo control, gave curv p25/p50/p75/p90 = 0 / 10.4 /
+	# 27.7 / 32.9 and occlusion(0.09) p2/p10/p25/p50 = 0.43 / 0.70 / 0.87
+	# / 0.97.  `curv` is normalised by the object's bbox diagonal (0.76 m
+	# here), so a flat cast face reads 0, the screw and handle barrels
+	# read ~17, and only the drawn arrises of the castings reach 30+ --
+	# which is why `arris` starts at 18 and not anywhere near 1.
+	def				occ occlusion(0.09)
+	def				crev smoothstep(0.84, 0.50, occ)
+	def				down clamp(-N.y, 0, 1)
+	def				arris smoothstep(18.0, 34.0, curv)
+
+	# -- the machined-part mask, in OBJECT space (`Po`), because "is this
+	# face machined or as-cast" is a fact about the PART, not about a
+	# noise field, and a vise's whole visual argument is the contrast
+	# between the two.  Three bands: the two jaw pads and the slot
+	# between them; the slide bar where it shows between the castings;
+	# and everything forward of the movable jaw (screw, collar, handle).
+	#
+	# Every transition below is placed ON a real geometric edge -- the
+	# pad's own boundary at |Po.z - 0.0295| = 0.0445, its lower face at
+	# Po.y = 0.171, the bar's flank at |Po.x| = 0.054, the jaw casting's
+	# front at Po.z = 0.173.  That is not decoration: `relief_vise` reads
+	# the same field, so a mask edge is a height step, and a height step
+	# is only invisible when it lands where the silhouette already has a
+	# crease.
+	def				padband smoothstep(0.055, 0.047, abs(Po.z - 0.0295)) * smoothstep(0.163, 0.170, Po.y) * smoothstep(0.124, 0.117, abs(Po.x))
+	def				barband smoothstep(0.060, 0.050, abs(Po.x)) * smoothstep(0.106, 0.114, Po.y) * smoothstep(0.194, 0.186, Po.y) * smoothstep(0.170, 0.158, Po.z)
+	def				frontband smoothstep(0.174, 0.182, Po.z)
+	def				mach clamp(padband + barband + frontband, 0, 1)
+
+	# -- surface processes, sized to the footprint.
+	# 33 mm sand-casting undulation: 6 px, so it carries SHAPE and is the
+	# only term `relief_vise` really renders.
+	def				und fbm(P*cast_freq + vec3(seed, seed*1.7, seed*2.3), 2, 0.5, 2.0)
+	# 67 mm casting-scale drift: 12 px, coarser than the undulation, so it
+	# moves neighbouring ripples together instead of scrambling them.
+	def				patch smoothstep(-0.12, 0.24, fbm(P*patch_freq + vec3(3.0, 8.0, 1.0), 3, 0.5, 2.0))
+
+	# -- the paint layer.  Paint does not chip at random: it comes off the
+	# ARRISES first, off the casting's high spots next, and it survives in
+	# the broad flat panels.  So the chip field is `arris` and `und` added
+	# to a 31 mm noise and thresholded HARD (0.05 wide) -- a chip edge is
+	# crisp, and a soft one reads as a stain.
+	def				chipf fbm(P*chip_freq + vec3(11.0, 2.0, 5.0), 2, 0.55, 2.1)
+	def				runs fbm(vec3(P.x*88.0, P.y*11.0, P.z*88.0) + vec3(6.0, 1.0, 3.0), 2, 0.5, 2.0)
+	def				bare smoothstep(chip_cov, chip_cov + 0.05, 1.4*chipf + 0.18*arris + 0.30*und + 0.35*runs)
+
+	# -- rust.  Concentrated where water sits and cannot dry: the crevices
+	# `occlusion()` finds (jaw-to-body fillet, under the flange lip,
+	# around the bolt heads) and the downward faces `-N.y` finds.  It only
+	# exists where the paint is already gone, which is what `* bare` says.
+	def				rust clamp(0.15 + rust_crev*crev + rust_down*down + 0.45*patch + 0.55*runs, 0, 1)
+
+	# -- the two surfaces, mixed by the part mask.  `iron_w` and the rust
+	# reach are held so the CAST branch tops out just under 1.0 before the
+	# undulation is added: a ramp cannot reserve a range the field is free
+	# to write into.
+	def				grime grime_crev*crev*(1.0 - bare)
+	def				cast paint_w - grime + (iron_w - paint_w)*bare + (0.94 - iron_w)*bare*rust + 0.26*und
+	def				steel steel_w + 0.09*rust + 0.05*und
+	expr			clamp(mix(cast, steel, mach), 0, 1)
 }
 
-uniformcolor_painter
+# CONSUMER 1 -- colour.  Machined steel -> dulled steel -> a flat plateau
+# of intact paint -> the cast iron a chip exposes -> rust.  The paint
+# occupies 0.26..0.55 as a near-constant colour on purpose (doctrine: a
+# smooth gradient across a plateau reads as a row of rods), and the
+# paint-to-iron step at 0.55 -> 0.62 is deliberately tight because a
+# chip boundary is an edge, not a fade.
+ramp_painter
 {
-	name			pnt_iron_bright
-	color			0.55 0.55 0.58
+	name			ramp_vise
+	input			expr_vise
+	channel			R
+	interpolation	smooth
+	stop			0.00  0.185 0.195 0.210
+	stop			0.11  0.118 0.124 0.134
+	stop			0.20  0.032 0.039 0.050
+	stop			0.32  0.046 0.058 0.081
+	stop			0.46  0.078 0.099 0.136
+	stop			0.60  0.112 0.140 0.186
+	stop			0.66  0.042 0.040 0.036
+	stop			0.76  0.082 0.070 0.056
+	stop			0.87  0.250 0.118 0.050
+	stop			1.00  0.365 0.185 0.088
+	color_space		Rec709RGB_Linear
 }
 
-worley3d_painter
-{
-	name			worley_pits_raw
-	colora			pnt_iron_dark
-	colorb			pnt_iron_bright
-	jitter			1.0
-	output			f1
-	scale			14 14 14
-}
-
-# Reproject the pit colour field 30 degrees about Y, independent of the
-# worley painter's own scale/shift -- the vise jaw's pitting reads as if
-# struck at an angle to the bench, not axis-aligned with the world grid.
-mapping_painter
-{
-	name			pit_color_mapped
-	source			worley_pits_raw
-	projection		world
-	scale			1.0 1.0 1.0
-	rotate			0 30 0
-	translate		0 0 0
-}
-
-# A standalone worley roughness field (same idea as the wood's grain
-# roughness, driven directly through the expression VM this time --
-# polished where the metal is unmarred, rough at the pit boundaries).
+# CONSUMER 2 -- roughness, linear off the same field: machined steel 0.10,
+# paint 0.26, bare iron 0.47, rust 0.72.
 scalar_painter
 {
-	name			sp_pit_rough
-	param			pit_freq 12.0 min 2 max 30 step 0.5 label "Pit frequency"
-	param			rough_polished 0.06 min 0 max 1 step 0.01 label "Polished roughness"
-	param			rough_pitted 0.5 min 0 max 1 step 0.01 label "Pitted roughness"
-	def				f1 worley_f1(P*pit_freq, 1.0)
-	expression		mix(rough_polished, rough_pitted, clamp(f1, 0, 1))
+	name			sp_vise_rough_base
+	painter			expr_vise
+	channel			R
+	scale			0.66
+	bias			0.06
+}
+
+# ... plus the ONE term that is deliberately NOT in the field: sand-casting
+# grain at 4.5 mm.  That is 0.8 of a pixel here, so by doctrine 1 it can
+# carry neither colour nor shape -- but a microfacet distribution is
+# exactly where sub-pixel structure belongs, and breaking the specular up
+# per-pixel is most of what stops a GGX surface reading as moulded plastic.
+scalar_painter
+{
+	name			sp_vise_grain
+	param			grain_freq 220.0 min 60 max 600 step 10 label "Sand-cast grain frequency"
+	def				g fbm(P*grain_freq + vec3(4.0, 7.0, 1.0), 2, 0.5, 2.0)
+	expression		0.075*g
+}
+
+scalar_painter
+{
+	name			sp_vise_rough
+	add				sp_vise_rough_base sp_vise_grain
+	weight_a		1.0
+	weight_b		1.0
+}
+
+# CONSUMER 3 -- relief.  NEGATIVE scale: the field's high end is rust and
+# the hollows it eats, and a hollow sinks.  `scale` is set from the
+# undulation's own geometry rather than swept blind -- a 33 mm ripple with
+# about 0.8 mm of amplitude wants a slope near 0.16, and the undulation
+# term moves the field by about +-0.045, so 0.16/(0.045/0.033) = 0.05.
+# `max_slope` then bounds what the chip edges do with the same scale (the
+# field steps ~0.3 across ~10 mm there, which is a slope of 30 before the
+# clamp); 0.30 is the same knee the bench top's own sweep found, and for
+# the same reason -- most of this scene is seen at a grazing angle, which
+# brings the geometric horizon in close.  `step 0` resolves to fw/2 ~ 4 mm,
+# an eighth of the undulation's wavelength, so the ripple is differenced
+# well inside its own feature.
+scalar_painter
+{
+	name			sp_vise_relief
+	painter			expr_vise
+	channel			R
+}
+
+relief_modifier
+{
+	name			relief_vise
+	height			sp_vise_relief
+	domain			surface
+	scale			-0.16
+	step			0
+	max_slope		0.45
+}
+
+# CONSUMER 4 -- the FRESNEL.  The same field decides whether a point is
+# metal or not, which no amount of colour can fake: bare machined steel is
+# a conductor (ior 2.9, k 3.3, F0 ~ 0.7), while paint and rust are
+# dielectrics (ior ~1.6, k ~0, F0 ~ 0.05).  Both slots are physical
+# scalars, so both are `scalar_painter` bridges and neither goes anywhere
+# near a colourspace conversion.  A chip is left on the dielectric side on
+# purpose: exposed iron on a bench vise is oxide within days, not mirror.
+scalar_painter
+{
+	name			sp_vise_ior
+	painter			expr_vise
+	channel			R
+	scale			-1.30
+	bias			2.90
+}
+
+scalar_painter
+{
+	name			sp_vise_extinction
+	painter			expr_vise
+	channel			R
+	scale			-3.30
+	bias			3.45
+}
+
+uniformcolor_painter
+{
+	name			pnt_vise_spec
+	color			0.56 0.57 0.60
+	colorspace		Rec709RGB_Linear
 }
 
 ##################################################
@@ -401,12 +647,12 @@ ggx_material
 ggx_material
 {
 	name			mat_vise
-	rd				pnt_iron_dark
-	rs				pit_color_mapped
-	alphax			sp_pit_rough
-	alphay			sp_pit_rough
-	ior				2.9
-	extinction		3.4
+	rd				ramp_vise
+	rs				pnt_vise_spec
+	alphax			sp_vise_rough
+	alphay			sp_vise_rough
+	ior				sp_vise_ior
+	extinction		sp_vise_extinction
 }
 
 ggx_material
@@ -492,39 +738,68 @@ standard_object
 }
 
 ##################################################
-# Objects -- vise (clamped on the right end of the bench)
+# Objects -- the bench vise (bolted to the right end of the bench).
+#
+# DOCTRINE 7 (plank_closeup.RISEscene's header): the silhouette has to say
+# what the object is before a single painter is bound to it.  Local frame:
+# +Y up, +Z out along the screw axis, origin on the flange's underside, so
+# the object below simply drops local y = 0 onto the bench top at y = 0.91.
+#
+#  1  base flange              roundbox, 390 x 28 x 344 mm, 12 mm arris
+#  2  cast body                roundbox, smin k 30 mm to the flange -- the
+#                              fillet a casting is drawn with, and the flat
+#                              top behind the jaw is the anvil pad
+#  3  fixed rear jaw           roundbox, smin k 24 mm, rising out of 2
+#  4  slide bar                box, HARD union: a machined member meets a
+#                              casting at an edge, never at a fillet
+#  5  movable jaw body         roundbox, smin k 21 mm, wrapping 4
+#  6  movable front jaw        roundbox, smin k 24 mm
+#  7  rear jaw pad             box, hard union, standing 17 mm PROUD of the
+#  8  front jaw pad            casting -- see the mask note below
+#  9  lead screw               cylinder on Z, emerging from 5
+# 10  thrust collar            cylinder
+# 11  T-handle                 capsule, hung -35 deg and slid 45 mm off
+#                              centre in its hole
+# 12-15  bolt heads            cylinders standing 18 mm proud of the flange
+#
+# The jaws stand 56 mm apart (10 px) and the pads 24 mm (4 px): the gap is
+# the second thing after the handle that says "vise", so it is sized to be
+# seen, not to be right.
+#
+# `orientation 0 48 0` -- a vise has a swivel base precisely so it can sit
+# at an angle to the bench, and 48 degrees is the yaw that puts the jaw
+# gap, the jaw faces and the whole length of the handle in shot at once.
 ##################################################
 
-box_geometry
+sdf_geometry
 {
-	name			geo_vise_base
-	width			0.40
-	height			0.16
-	depth			0.30
+	name			geo_vise
+	part			roundbox  union     0        0       0.021  -0.030     0 0 0     1 1 1    0.195  0.021  0.172    0.018
+	part			roundbox  smin      0.030    0       0.114  -0.078     0 0 0     1 1 1    0.120  0.093  0.093    0.027
+	part			roundbox  smin      0.024    0       0.219  -0.054     0 0 0     1 1 1    0.135  0.081  0.039    0.015
+	part			box       union     0        0       0.150   0.030     0 0 0     1 1 1    0.054  0.039  0.128    0
+	part			roundbox  smin      0.021    0       0.156   0.128     0 0 0     1 1 1    0.093  0.054  0.045    0.018
+	part			roundbox  smin      0.024    0       0.219   0.113     0 0 0     1 1 1    0.135  0.081  0.039    0.015
+	part			box       union     0        0       0.244  -0.0068    0 0 0     1 1 1    0.114  0.073  0.0082   0
+	part			box       union     0        0       0.244   0.0658    0 0 0     1 1 1    0.114  0.073  0.0082   0
+	part			cylinder  union     0        0       0.150   0.242     90 0 0    1 1 1    0.0225 0.105  0        0
+	part			cylinder  union     0        0       0.150   0.320     90 0 0    1 1 1    0.042  0.015  0        0
+	part			capsule   union     0        0.0528  0.1889  0.359     0 0 -35   1 1 1    0.021  0.145  0        0
+	part			cylinder  union     0       -0.150   0.048  -0.150     0 0 0     1 1 1    0.0255 0.012  0        0
+	part			cylinder  union     0        0.150   0.048  -0.150     0 0 0     1 1 1    0.0255 0.012  0        0
+	part			cylinder  union     0       -0.150   0.048   0.090     0 0 0     1 1 1    0.0255 0.012  0        0
+	part			cylinder  union     0        0.150   0.048   0.090     0 0 0     1 1 1    0.0255 0.012  0        0
+	maxsteps		192
 }
 
 standard_object
 {
-	name			obj_vise_base
-	geometry		geo_vise_base
+	name			obj_vise
+	geometry		geo_vise
 	material		mat_vise
-	position		1.15 0.99 0
-}
-
-box_geometry
-{
-	name			geo_vise_jaw
-	width			0.42
-	height			0.30
-	depth			0.09
-}
-
-standard_object
-{
-	name			obj_vise_jaw
-	geometry		geo_vise_jaw
-	material		mat_vise
-	position		1.15 1.22 0.11
+	position		1.15 0.91 -0.02
+	orientation		0 48 0
+	modifier		relief_vise
 }
 
 ##################################################
