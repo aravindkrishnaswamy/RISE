@@ -39,6 +39,18 @@
 //        their documented neutral through the memo, and a memoised
 //        neutral never leaks across signal kinds (whose neutrals differ:
 //        occlusion 1, thickness 1, convexity 0).
+//    (i) THE MESH FAMILY'S KEY FIELDS.  A live TriangleMeshGeometryIndexed
+//        bake -- the one provider whose answer is a function of
+//        (primId, baryA, baryB) and of nothing else -- read through the
+//        memo, and two records differing ONLY in those three fields kept
+//        apart.  Every OTHER check in this file carries primId == -1, so
+//        without this one the three fields could leave
+//        SurfaceSignalInfo::MemoHitKey() unnoticed.
+//    (j) THE SHIPPED DEFAULT.  Everything above runs under an explicit
+//        MemoSwitch, which never consults the option at all; this one
+//        reads the real thing -- ON by default, OFF from an options file
+//        -- across two processes, because both the option read and
+//        EnabledSlow()'s cache are once-per-process.
 //
 //  Tabs: 4
 //
@@ -47,7 +59,10 @@
 //////////////////////////////////////////////////////////////////////
 
 #include <iostream>
+#include <fstream>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <string>
@@ -56,6 +71,7 @@
 
 #include "../src/Library/Interfaces/ISurfaceSignalProvider.h"
 #include "../src/Library/Geometry/SDFGeometry.h"
+#include "../src/Library/Geometry/TriangleMeshGeometryIndexed.h"
 #include "../src/Library/Objects/Object.h"
 #include "../src/Library/Painters/ExpressionEval.h"
 #include "../src/Library/Painters/ExpressionPainter.h"
@@ -322,12 +338,20 @@ static void TestDifferentialEquality()
 			if( scalar->GetValuesAt( ri ).v[0] != refScalar[i] ) ++scalarBad;
 
 			// THE STRONGER FORM of the same claim: the memoised painter
-			// must equal the VM evaluated DIRECTLY, which never consults
-			// the memo at all (the memo lives in the painters -- see
-			// ExpressionProgram::MakeMemoKey's comment for why).  This is
-			// the check that would catch a memo returning a plausible but
-			// wrong stored value, which comparing two memo-on runs could
-			// not.
+			// must equal the VM evaluated DIRECTLY, which bypasses L2 --
+			// and ONLY L2.  L2 lives in the painters (see
+			// ExpressionProgram::MakeMemoKey's comment for why), so this
+			// call cannot be served a stored program result; it is the
+			// check that would catch L2 returning a plausible but wrong
+			// value, which comparing two memo-on runs could not.
+			//
+			// It does NOT bypass L1: `occlusion()` / `convexity()` inside
+			// this program reach SurfaceSignalInfo::SignalQuery through
+			// the VM's CallFunc, and that is exactly where L1 sits.  So
+			// this oracle would agree with the painter even if L1 served a
+			// wrong signal to both.  What pins L1 is pass 1 above, taken
+			// under `MemoSwitch off(0)` with no memo of either level in
+			// play, and the red-proofs in (b)/(e)/(f)/(i).
 			const Vector3 direct = prog.EvalVec3( d.ctx );
 			if( c[0] != direct.x || c[1] != direct.y || c[2] != direct.z ) ++progBad;
 		}
@@ -677,8 +701,302 @@ static void TestMemoWorthinessGate()
 	ctx.u = Scalar( 0.25 ); ctx.v = Scalar( 0.5 );
 	CheckExact( cheap.EvalVec3( ctx ).x, Scalar( 0.125 ), "(g) a gated-out program still evaluates correctly" );
 
-	std::cout << "    bytes of thread-local memo per render worker: "
-		<< ExpressionMemo::BytesPerThread() << std::endl;
+	// THE MEMORY CLAIM, ASSERTED rather than printed.  The commit that
+	// introduced the memo priced it at 1408 bytes per worker (24.7 kB
+	// across 18), and that number is quoted in ExpressionMemo.h and in
+	// docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md.  A ceiling rather than
+	// an equality: adding a key field or a way is allowed to move it, but
+	// it must stay a rounding error against a render worker's stack, and
+	// a change that blows past this has almost certainly widened a table
+	// or put something non-trivial in `Tables` by accident.
+	const std::size_t bytes = ExpressionMemo::BytesPerThread();
+	std::cout << "    bytes of thread-local memo per render worker: " << bytes
+		<< "  (1408 when the memo shipped, ceiling 2048)" << std::endl;
+	Check( bytes <= 2048, "(g) the per-thread memo stays under the 2048-byte ceiling" );
+}
+
+//======================================================================
+// (i) real-mesh hits: (primId, baryA, baryB) are L1 key fields
+//======================================================================
+
+//! Emits an axis-aligned quad, tessellated `cells` x `cells`, with a
+//! constant normal -- the same builder MeshSignalBakeTest uses, and for
+//! the same reason: every face carries its own vertices, so a corner
+//! normal is not an average of several faces.
+static void AddGrid( TriangleMeshGeometryIndexed* mesh, unsigned int& nextIndex,
+	const Point3& o, const Vector3& du, const Vector3& dv, const Vector3& n, const int cells )
+{
+	const int side = cells + 1;
+	const unsigned int base = nextIndex;
+	for( int j = 0; j < side; ++j ) {
+		for( int i = 0; i < side; ++i ) {
+			const Scalar fu = Scalar(i) / Scalar(cells);
+			const Scalar fv = Scalar(j) / Scalar(cells);
+			mesh->AddVertex( Point3( o.x + du.x*fu + dv.x*fv,
+			                         o.y + du.y*fu + dv.y*fv,
+			                         o.z + du.z*fu + dv.z*fv ) );
+			mesh->AddNormal( n );
+			mesh->AddTexCoord( Point2( fu, fv ) );
+			++nextIndex;
+		}
+	}
+	for( int j = 0; j < cells; ++j ) {
+		for( int i = 0; i < cells; ++i ) {
+			const unsigned int a = base + (unsigned int)( j*side + i );
+			const unsigned int b = a + 1;
+			const unsigned int c = a + (unsigned int)side;
+			const unsigned int d = c + 1;
+			IndexedTriangle t1, t2;
+			t1.iVertices[0] = a; t1.iVertices[1] = b; t1.iVertices[2] = d;
+			t2.iVertices[0] = a; t2.iVertices[1] = d; t2.iVertices[2] = c;
+			for( int k = 0; k < 3; ++k ) {
+				t1.iNormals[k] = t1.iVertices[k]; t1.iCoords[k] = t1.iVertices[k];
+				t2.iNormals[k] = t2.iVertices[k]; t2.iCoords[k] = t2.iVertices[k];
+			}
+			mesh->AddIndexedTriangle( t1 );
+			mesh->AddIndexedTriangle( t2 );
+		}
+	}
+}
+
+//! MeshSignalBakeTest's trench: a floor in z = 0 spanning y in [-0.9, 1]
+//! plus a wall in y = -1 rising to z = 2.  One mesh carrying both an
+//! occluded region (the floor rows near the wall) and a clear one.
+static TriangleMeshGeometryIndexed* BuildTrench()
+{
+	TriangleMeshGeometryIndexed* mesh = new TriangleMeshGeometryIndexed( false, false );
+	mesh->BeginIndexedTriangles();
+	unsigned int next = 0;
+	AddGrid( mesh, next, Point3( -1, -0.9, 0 ), Vector3( 2, 0, 0 ), Vector3( 0, 1.9, 0 ), Vector3( 0, 0, 1 ), 8 );
+	AddGrid( mesh, next, Point3( -1, -1, 0 ),   Vector3( 2, 0, 0 ), Vector3( 0, 0, 2 ),   Vector3( 0, 1, 0 ), 8 );
+	mesh->DoneIndexedTriangles();
+	return mesh;
+}
+
+//! THE MESH FAMILY'S KEY FIELDS, which no other check in this file
+//! touches: every SurfaceSignalInfo the rest of the suite builds carries
+//! `primId == -1` (the SDF family answers from position and normal and
+//! stamps no triangle), so `primId` / `baryA` / `baryB` could fall out of
+//! SurfaceSignalInfo::MemoHitKey() and the suite would stay green.
+//!
+//! HOW MUCH THIS CAN HONESTLY CLAIM.  A mesh provider
+//! (TriangleMeshGeometryIndexed::LookupBakedSignal) reads ONLY (primId,
+//! baryA, baryB) -- position and normal never enter its answer -- so the
+//! three fields are load-bearing by construction.  But on a hit that a
+//! real intersection produced, `ptObject` is DERIVED from them, so two
+//! natural hits differing ONLY in (primId, bary) essentially do not occur
+//! (it would take coincident, separately-indexed geometry with matching
+//! normals).  The separation check below therefore SPLICES: it takes hit
+//! A's record and writes hit B's (primId, bary) into it, so the two
+//! records differ in exactly the fields under test.  What is real is the
+//! PROVIDER -- a live bake on a real mesh, not a stub -- and the value it
+//! returns for the spliced record, which the check first proves is B's
+//! answer and not A's.
+static void TestRealMeshKeyFields()
+{
+	std::cout << "(i) real-mesh key fields: primId / baryA / baryB" << std::endl;
+
+	TriangleMeshGeometryIndexed* mesh = BuildTrench();
+	Object* o = new Object( mesh );
+	mesh->release();
+	o->FinalizeTransformations();
+
+	// Fire straight down onto the floor at a spread of y, from jammed
+	// against the wall to well clear of it.
+	const int kHits = 12;
+	std::vector<RayIntersection> hits;
+	int distinctPrims = 0;
+	{
+		std::vector<int> seenPrims;
+		for( int i = 0; i < kHits; ++i ) {
+			const Scalar y = Scalar( -0.85 ) + Scalar( i ) * Scalar( 0.15 );
+			RayIntersection ri = MkRI( Point3( Scalar( 0.13 ), y, 5 ), Vector3( 0, 0, -1 ) );
+			if( !HitObject( o, ri ) ) continue;
+			if( ri.geometric.signals.pProvider == 0 || ri.geometric.signals.primId < 0 ) continue;
+			bool seen = false;
+			for( size_t s = 0; s < seenPrims.size(); ++s ) if( seenPrims[s] == ri.geometric.signals.primId ) seen = true;
+			if( !seen ) { seenPrims.push_back( ri.geometric.signals.primId ); ++distinctPrims; }
+			hits.push_back( ri );
+		}
+	}
+	Check( hits.size() >= 8, "(i) the sweep produced real mesh hits" );
+	Check( distinctPrims >= 4, "(i) ...spread over several triangles (so primId really varies)" );
+
+	// ---- Differential over the REAL provider, memo off vs memo on.
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	Check( CompileWithContext( "occlusion(0.1) + fbm(P,2,0.5,2.0)*0.0", prog ), "(i) body compiles" );
+	std::vector<ParamSpec> specs;
+	ExpressionScalarPainter* painter = new ExpressionScalarPainter( prog, specs );
+
+	std::vector<Scalar> ref( hits.size() );
+	{
+		MemoSwitch off( 0 );
+		for( size_t i = 0; i < hits.size(); ++i ) ref[i] = painter->GetValuesAt( hits[i].geometric ).v[0];
+	}
+	int bad = 0, distinctVals = 0;
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		for( size_t i = 0; i < hits.size(); ++i ) {
+			if( painter->GetValuesAt( hits[i].geometric ).v[0] != ref[i] ) ++bad;
+		}
+	}
+	for( size_t i = 0; i < ref.size(); ++i ) {
+		bool seen = false;
+		for( size_t j = 0; j < i; ++j ) if( ref[j] == ref[i] ) seen = true;
+		if( !seen ) ++distinctVals;
+	}
+	Check( bad == 0, "(i) a live mesh bake reads bit-identically through the memo" );
+	Check( distinctVals >= 3, "(i) ...and the sweep really varies (the differential has teeth)" );
+
+	// ---- Separation: two records differing ONLY in (primId, baryA, baryB).
+	// Pick the two hits whose baked occlusion is furthest apart, so the
+	// check cannot pass on two values that happen to agree.
+	size_t iA = 0, iB = 0;
+	Scalar spread = Scalar( 0 );
+	for( size_t i = 0; i < ref.size(); ++i ) {
+		for( size_t j = 0; j < ref.size(); ++j ) {
+			const Scalar d = std::fabs( ref[i] - ref[j] );
+			if( d > spread ) { spread = d; iA = i; iB = j; }
+		}
+	}
+	Check( spread > Scalar( 0.02 ), "(i) two hits with genuinely different baked occlusion exist" );
+
+	const SurfaceSignalInfo& sa = hits[iA].geometric.signals;
+	const SurfaceSignalInfo& sb = hits[iB].geometric.signals;
+
+	// A's hit record with B's triangle and barycentrics spliced in.
+	SurfaceSignalInfo spliced = sa;
+	spliced.primId = sb.primId;
+	spliced.baryA  = sb.baryA;
+	spliced.baryB  = sb.baryB;
+	Check( spliced.primId != sa.primId, "(i) the spliced record really names a different triangle" );
+
+	Scalar wantA = 0, wantB = 0, wantSpliced = 0;
+	{
+		MemoSwitch off( 0 );
+		wantA       = sa.Occlusion( 0.1, true );
+		wantB       = sb.Occlusion( 0.1, true );
+		wantSpliced = spliced.Occlusion( 0.1, true );
+	}
+	Check( wantA != wantB, "(i) the two hits' baked occlusion differs" );
+	// The provider reads ONLY (primId, bary), so A's position with B's
+	// triangle answers exactly B -- which is precisely why the memo may
+	// not key on position alone.
+	CheckExact( wantSpliced, wantB, "(i) the provider's answer is a function of (primId, bary) alone" );
+
+	{
+		MemoSwitch on( 1 );
+		ExpressionMemo::Invalidate();
+		CheckExact( sa.Occlusion( 0.1, true ), wantA, "(i) A memoises its own answer" );
+		CheckExact( spliced.Occlusion( 0.1, true ), wantSpliced,
+			"(i) a record differing ONLY in (primId, bary) is NOT served A's entry" );
+		// ...and A is still A afterwards: both keys coexist rather than
+		// one having overwritten the other.
+		CheckExact( sa.Occlusion( 0.1, true ), wantA, "(i) both keys coexist" );
+	}
+
+	painter->release();
+	o->release();
+}
+
+//======================================================================
+// (j) the SHIPPED DEFAULT path: no override, `expression_memo` in the
+//     options file
+//======================================================================
+
+//! Every other check in this file runs under an explicit MemoSwitch,
+//! which short-circuits EnabledSlow() before it ever looks at the
+//! options.  So a typo in the option NAME, or a flipped default, would
+//! leave the whole suite green while shipping a memo that is off (or a
+//! kill switch that cannot be thrown).  This is the check for that, and
+//! it needs TWO processes: EnabledSlow() caches the options read in a
+//! function-local static, and GlobalOptions() itself is a read-once
+//! singleton, so one process can only ever observe one answer.
+//!
+//! The PARENT observes the default: an options file that does not mention
+//! the key at all must leave the memo ON.  The CHILD -- this same binary,
+//! re-executed with RISE_OPTIONS_FILE pointing at a file that says
+//! `expression_memo false` -- must read it OFF, and reports that as its
+//! exit status.
+static const char* kOptionChildFlag = "--expression-memo-option-child";
+
+static const char* kNoKeyOptionsFile = "expr_memo_opts_default.txt";
+static const char* kOffOptionsFile   = "expr_memo_opts_off.txt";
+
+static void WriteOptionsFile( const char* path, const char* body )
+{
+	std::ofstream ofs( path );
+	ofs << body;
+	ofs.close();
+}
+
+static void SetOptionsEnv( const char* path )
+{
+#ifdef _WIN32
+	_putenv_s( "RISE_OPTIONS_FILE", path );
+#else
+	setenv( "RISE_OPTIONS_FILE", path, 1 );
+#endif
+}
+
+//! The child half.  Runs before anything else touches the memo, so the
+//! options read it forces is the one under test.
+static int RunOptionChild()
+{
+	const bool enabled = ExpressionMemo::EnabledSlow();
+	if( enabled ) {
+		std::cout << "  FAIL: child: `expression_memo false` in the options file "
+			"did not turn the memo off" << std::endl;
+		return 1;
+	}
+	// And the memo really is inert, not merely reported off: the stale
+	// provider trick from (b) must return FRESH values.
+	MutableTestProvider provider;
+	SurfaceSignalInfo hit;
+	hit.pProvider = &provider;
+	hit.ptObject  = Point3( 0.5, 0.25, 0.125 );
+	provider.value = Scalar( 0.25 );
+	if( hit.Occlusion( 0.1, true ) != Scalar( 0.25 ) ) return 1;
+	provider.value = Scalar( 0.75 );
+	if( hit.Occlusion( 0.1, true ) != Scalar( 0.75 ) ) {
+		std::cout << "  FAIL: child: the memo answered from a table with the option off" << std::endl;
+		return 1;
+	}
+	return 0;
+}
+
+static void TestOptionDefaultAndKey( const char* argv0 )
+{
+	std::cout << "(j) the shipped default, and the `expression_memo` options key" << std::endl;
+
+	// --- The DEFAULT.  A real options file with a real key in it, but no
+	//     `expression_memo` line: EnabledSlow() must fall through to its
+	//     `true` default.  This must be the FIRST thing in the run that
+	//     asks -- both GlobalOptions() and EnabledSlow()'s own static read
+	//     once per process.
+	WriteOptionsFile( kNoKeyOptionsFile, "render_thread_reserve_count 1\n" );
+	SetOptionsEnv( kNoKeyOptionsFile );
+	Check( ExpressionMemo::EnabledSlow(),
+		"(j) with no override and no `expression_memo` key, the memo ships ON" );
+
+	// --- The KEY, in a child process.
+	WriteOptionsFile( kOffOptionsFile, "expression_memo false\n" );
+
+	std::string cmd;
+#ifdef _WIN32
+	cmd = std::string( "set \"RISE_OPTIONS_FILE=" ) + kOffOptionsFile + "\" && \"" + argv0 + "\" " + kOptionChildFlag;
+#else
+	cmd = std::string( "RISE_OPTIONS_FILE='" ) + kOffOptionsFile + "' '" + argv0 + "' " + kOptionChildFlag;
+#endif
+	const int rc = std::system( cmd.c_str() );
+	Check( rc == 0, "(j) a child process reading `expression_memo false` has the memo OFF" );
+	if( rc != 0 ) {
+		std::cout << "    (child command was: " << cmd << ", raw status " << rc << ")" << std::endl;
+	}
+
+	std::remove( kNoKeyOptionsFile );
+	std::remove( kOffOptionsFile );
 }
 
 //======================================================================
@@ -731,9 +1049,21 @@ static void TestKeyedOnPainterTime()
 	early->release();
 }
 
-int main()
+int main( int argc, char** argv )
 {
+	// The child half of (j), before anything else can warm a table or
+	// pin EnabledSlow()'s options read.  It reports through its exit
+	// status; the parent turns that into one check.
+	if( argc > 1 && std::string( argv[1] ) == kOptionChildFlag ) {
+		return RunOptionChild();
+	}
+
 	std::cout << "=== ExpressionMemoTest (two-level per-hit expression memo) ===" << std::endl;
+
+	// FIRST, for the reason its own comment gives: it is the only check
+	// that runs with no MemoSwitch in force, so it must ask before any
+	// other check has pinned the options read.
+	TestOptionDefaultAndKey( argv[0] );
 
 	TestDifferentialEquality();
 	TestGenerationAndKillSwitchRedProof();
@@ -742,6 +1072,7 @@ int main()
 	TestNeutralsAndKindSeparation();
 	TestMemoWorthinessGate();
 	TestKeyedOnPainterTime();
+	TestRealMeshKeyFields();
 
 	std::cout << std::endl;
 	std::cout << "Passed: " << passCount << "   Failed: " << failCount << std::endl;
