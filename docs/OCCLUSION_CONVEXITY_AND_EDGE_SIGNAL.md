@@ -1,6 +1,10 @@
 # Occlusion, Convexity, and the Planar Reference
 
-**Status:** design + implementation record, 2026-09-06.
+**Status:** design + implementation record, 2026-09-06; **cost revision
+2026-09-07** (§6) — lockstep marching plus a per-hit rotation of both sample
+sets took `plank_closeup` from 120.0 s to 54.7 s with the closed forms held and
+the image inside the renderer's own noise. §3.1, §3.2, §6, §8 and §10 carry the
+2026-09-07 numbers; everything else is the 2026-09-06 record.
 **Supersedes:** [GEOMETRY_SHADING_SIGNALS_DESIGN.md](GEOMETRY_SHADING_SIGNALS_DESIGN.md)
 §6.2's description of the SDF occlusion estimator, and its Phase-2 claim that
 "a plane or convex body has `map(p + h·n̂) = h` at every tap and reads **1**".
@@ -195,7 +199,9 @@ sphere-trace band residual `d₀ = Map(hit)`); the estimators then diverge.
 ### 3.1 `occlusion` — directional visibility, marched
 
 ```
-occlusion = (of kOcclusionDirs = 24 cosine-weighted outward directions,
+occlusion = (of kOcclusionDirs = 12 cosine-weighted outward directions,
+             the set spun about the normal by one of kSignalRotations = 32
+             pre-built azimuths chosen by a hash of the hit position,
              the fraction whose sphere trace reaches R without entering the solid)
 ```
 
@@ -242,8 +248,43 @@ Implementation details that are load-bearing rather than incidental:
   AO integral, and the mesh's) and the cheap one — near-tangent directions, the
   ones that burn the whole step budget, are exactly the ones a cosine weight
   makes rare.
-* **24 directions** puts occlusion's quantum at 1/24 ≈ 4 %. It is the one knob
-  that decides what this feature costs (§6).
+* **12 directions, spun per hit** (2026-09-07; was 24 fixed). A *fixed* set
+  answers `escaped/N`, so its quantum is `1/N` and every closed form has to
+  land on a multiple of it — and *which* multiple is decided by where the
+  branchless ONB happened to put `u`. Swept over the frame azimuth on the 90°
+  wedge fixture, the 12-direction fixed set lands anywhere in **[0.417,
+  0.583]**; that the 24-direction set hit 0.500 exactly was accuracy bought
+  with directions to out-vote an accident. Spinning the set about the normal
+  makes the azimuth a *sampled* variable instead: the azimuth-averaged reading
+  is **0.5000 at N = 8, 12, 16 and 24 alike**, and 0.7486 / 0.7492 / 0.7495 /
+  0.7497 against the 120° closed form 0.7500. The elevations are **not**
+  jittered — they stay stratified at the midpoints `cos θᵢ = √((i+½)/N)`,
+  whose own midpoint-rule error is the 0.001 in that row, because jittering
+  within a stratum would let a direction land arbitrarily close to the tangent
+  plane and a near-tangent ray is precisely the one that burns the whole
+  24-step budget. Rotating what is free and stratifying what is expensive is
+  the trade. It also retires the branchless-ONB discontinuity as a source of
+  spread, since the set is uniformly spun about the normal either way.
+  Direction count remains the one knob that decides what this feature costs
+  (§6).
+* **The rotation is keyed on the hit position, in the provider's own object
+  space.** Object space so two instances of one geometry at different world
+  scales still agree (the radius convention's own guarantee, and
+  `SurfaceSignalsTest` case (i)); position rather than a sample index because
+  a position is all the estimator is handed, and it is the right key anyway —
+  every camera sample in a pixel lands at a different sub-pixel position, so a
+  pixel averages many rotations, while a shading point queried repeatedly
+  *within* one hit gets one rotation and stays self-consistent. The
+  `relief_modifier`'s four-tap stencil holds `signals` fixed across the
+  stencil by construction, so a spun signal contributes exactly zero relief
+  gradient, as it did before.
+* **The traces run in LOCKSTEP across the directions** — one step of every
+  still-live ray before the next step of any of them — rather than one ray to
+  completion before the next is begun. Same points, same step rule, same exit
+  tests, same evaluation count, bit-identical answer; what changes is that the
+  hardware sees `nActive` *independent* `Map()` calls at a time instead of one
+  serial chain in which step k+1's sample point cannot be formed until step k's
+  `Map` has returned. Worth **1.8×** on the whole frame on its own (§6).
 
 ### 3.2 `convexity` — ball-volume excess, not marched
 
@@ -253,7 +294,9 @@ convexity = clamp(2A − 1, 0, 1)
 Hs(u)     = ½ + ½(1.5t − 0.5t³),  t = clamp(u/w, −1, 1),  w = (3/16)·R
 ```
 
-with `M = kBallPairs = 40` (so 80 field evaluations, no rays, no marching).
+with `M = kBallPairs = 16` (so 32 field evaluations, no rays, no marching),
+the set rotated per hit by one of `kSignalRotations = 32` pre-built **full 3-D**
+rotations chosen by the same position hash occlusion uses.
 
 * **The point set is CENTRALLY SYMMETRIC and lives in OBJECT SPACE — there is no
   tangent frame.** Central symmetry through the query point maps `{d<0}` onto
@@ -279,9 +322,28 @@ with `M = kBallPairs = 40` (so 80 field evaluations, no rays, no marching).
   | 48  | 3/16 | 0.0211 | 0.7454 | 0.0155 | 0.0143 |
   | 64  | 3/16 | 0.0135 | 0.7474 | 0.0252 | 0.0139 |
 
-  (truth for the wedge is 0.750). 40 is the knee: first row with orientation
-  spread ≤ 0.021 *and* sphere error under 0.01; 64 buys 0.008 of spread for 60 %
-  more evaluations.
+  (truth for the wedge is 0.750). 40 was the knee **for a fixed set**: first row
+  with orientation spread ≤ 0.021 *and* sphere error under 0.01; 64 bought 0.008
+  of spread for 60 % more evaluations.
+* **`M = 16` since 2026-09-07, because the set is now ROTATED per hit and the
+  orientation stopped being a variable to out-vote.** Read the table above
+  again: every column in it is an *orientation* statistic. A fixed set has to
+  carry each closed form pointwise at whatever orientation the feature happens
+  to present, and that is what the extra pairs were buying — at 32 fixed pairs
+  the sphere identity read **0.159** against 0.1875 on the shipped fixture, and
+  at 20 the 90° arris read **0.416** against 0.5, both purely on orientation
+  luck. The rotation-averaged reading is flat in the count instead: modelled
+  over 64 rotations, **0.185 / 0.178 / 0.183 / 0.181** at 8 / 16 / 24 / 40 pairs
+  against 0.1875 (the residual −0.004 is the smoothing band, not the count). 16
+  is taken with that margin at 40 % of the evaluations.
+* **The rotations are full 3-D and uniform, not a spin about one axis.** This
+  set has no frame to spin about — that is the point of it — and a spin about a
+  fixed *world* axis would leave any feature whose edge runs parallel to that
+  axis sampled identically by all 32 entries, which is exactly the orientation
+  accident the table exists to remove. Shoemake's uniform-quaternion map of a
+  Halton triple gives the uniform measure on SO(3). **Central symmetry survives
+  every rotation** (`−(Qy) = Q(−y)`), which is what keeps the planar `A = ½`
+  identity exact — at every orientation, every rotation *and* every count.
 * The lattice is a Hammersley-style triple — `cos θ` stratified over the upper
   hemisphere, azimuth from the base-2 radical inverse, radius from the base-3
   radical inverse through `ρ = u^{1/3}` so the points are **uniform by volume**,
@@ -477,41 +539,119 @@ owns that half of the range. The descriptor text says so in its first clause.
 
 ## 6. Cost
 
+### 6.1 As shipped 2026-09-06, and why it was not acceptable
+
 | query | field evaluations per call | note |
 |-------|---------------------------:|------|
 | old `occlusion` (retired) | 6 | 5 taps + `d₀` |
-| `occlusion` (new) | ~24 sphere traces, ≤ 24 steps each | typically ~200–300 `Map()`; the expensive one |
-| `convexity` | **81** | 80 ball samples + `d₀`; no rays, no marching |
+| `occlusion` (2026-09-06) | 24 sphere traces × 7.57 steps = **182** | the expensive one |
+| `convexity` (2026-09-06) | **81** | 80 ball samples + `d₀` |
 | `curv` (for scale) | ~18 | 3 `GradientNormal` calls, gated |
 | `thickness` | O(march) | unchanged |
+
+`plank_closeup` (640×480, 48 spp) went from **36 s to 120 s**. The user's
+standing rule is that a performance hit has to be worth it, and a 3.3× frame
+for two texture terms is not.
+
+### 6.2 The measurement, 2026-09-07
+
+**Protocol.** Renders are *interleaved* — base, candidate, base, candidate — in
+one warmed session, because this workstation's clock state moves far more than
+the effect being measured: the first two or three renders after a build come in
+up to 35 % fast and then settle, which is how §6.1's own "identical
+configurations came in 20 % apart" was produced. Interleaved, run-to-run spread
+is **± 0.2 s on a 120 s frame**. Call and evaluation counts come from a
+temporary thread-local counter (removed before commit).
+
+**Where the time was.** 640×480×48 = 14.7 M camera samples, but each signal is
+evaluated **210,762,743** times — **14.3× per camera sample**, because
+`expr_plank` feeds `ramp_plank` (rd), `sp_plank_rough` (alphax *and* alphay) and
+`sp_plank_relief` (the relief modifier's four-tap stencil), and every one of
+them re-runs the whole program at the same hit. Per frame that is **5.52 × 10¹⁰
+field evaluations**: 3.83 × 10¹⁰ in occlusion, 1.69 × 10¹⁰ in convexity.
+`Map()` *is* the inner loop — the marching body is one `EvaluateParts` plus
+three multiply-adds and two compares — so `EvaluateParts` is 100 % of the term,
+at `O(#parts)` (2 for the plank, 3 for the nail).
+
+**Where the marching time goes.** Of 5.06 × 10⁹ direction traces, **99.3 %**
+exit through the `d ≥ R − t` escape certificate, 0.68 % are blocked, 0.04 %
+exhaust the 24-step budget and 0.0002 % walk to `t ≥ R`. The mean is **7.57
+steps of a 24 cap** — i.e. the budget is almost never the binding constraint,
+and the cost is the ramp-up from the `R/64` lift to a clearance that covers the
+remaining reach. That ramp is geometric at rate `1 + cos θ`, so it is the
+near-tangent directions that are expensive, which is exactly what the cosine
+weight already makes rare.
+
+### 6.3 What each change bought, measured alone
+
+| configuration | frame (3 interleaved runs) | vs base | occlusion | convexity | rest of frame |
+|---|---:|---:|---:|---:|---:|
+| base (24 dirs, 40 pairs, ray-at-a-time) | **120.00 ± 0.15 s** | 1.00× | 69.8 s | 15.7 s | 34.5 s |
+| + lockstep marching (bit-identical) | **77.16 ± 0.15 s** | 1.56× | 27.7 s | 15.7 s | 34.5 s |
+| + 12 dirs / 16 pairs, rotated per hit | **54.68 ± 0.06 s** | **2.20×** | 13.9 s | 6.3 s | 34.5 s |
+
+The three frame figures are one interleaved session (120.04/119.84/120.13,
+77.33/77.03/77.12, 54.61/54.72/54.71). The per-signal columns come from a
+separate same-binary sweep in which each estimator's sample count could be set
+to zero at runtime, interleaved the same way: 24 dirs + 40 pairs 77.9 s, 24
+dirs alone 62.2 s, 40 pairs alone 50.2 s, hence convexity 15.7 s, occlusion
+27.7 s, everything else 34.5 s. Both estimators are linear in their count, so
+the model predicts 34.5 + 12·1.154 + 16·0.393 = **54.7 s** for the shipped
+configuration against **54.68 s** measured.
+
+Per field evaluation, which is where the lockstep result is legible:
+
+| | evaluations / call | ns / evaluation |
+|---|---:|---:|
+| occlusion, ray-at-a-time | 181.7 | **1.82** |
+| occlusion, lockstep | 181.7 | **0.71** |
+| convexity (no chain between samples, either way) | 80 | **0.93** |
+
+Ray-at-a-time marching is one long serial dependency — step k+1's sample point
+cannot be formed until step k's `Map` has returned — so the core stalls on
+`Map`'s latency once per step. Lockstep hands it `nActive` independent `Map`
+calls at a time and the per-evaluation cost falls *below* convexity's, which
+never had a chain to begin with. Same points, same step rule, same evaluation
+count, bit-identical answer.
+
+The counts then come down 2× and 2.5× **because the per-hit rotation removed
+the orientation as a variable** (§3.1, §3.2) — not because the accuracy
+requirement was relaxed. Options measured and rejected on the way:
+
+* **Cutting the counts without rotating** (the obvious first move): at 12 dirs /
+  20 pairs the *render* is indistinguishable from base (mean |Δ| 1.048 against a
+  same-binary noise floor of 1.032, on 0–255), but `SurfaceSignalsTest` goes red
+  in three places — the 90° wedge reads 0.583 against 0.500, the arris 0.416
+  against 0.500, the corner 0.638 against 0.750. The contract is the closed
+  forms, not the one scene.
+* **Over-relaxed sphere tracing** (Keinert 2014, with the sphere-overlap
+  validity check): modelled at **7.62 → 5.0 steps** at ω = 1.8, i.e. ~34 % off
+  occlusion, or ~5 s of the final frame. Not taken: it needs three more
+  per-ray state values, a retreat branch, and a special case where the relaxed
+  step would carry `t` past `R` with the interval `[t+d, R]` unverified — real
+  complexity in a numerically delicate estimator for a fifth of what lockstep
+  gave for free. It remains the next lever if one is wanted.
+* **A per-hit or per-position memo.** Not attempted — see §10. It is the
+  largest remaining lever by a wide margin (~10× on the redundant calls) and
+  the one with the largest blast radius.
+
+### 6.4 The result
+
+`plank_closeup`: **120.00 ± 0.15 s → 54.68 ± 0.06 s**, a **2.20×** speedup,
+against a target of ≤ 55 s. Field evaluations per frame fall 5.52 × 10¹⁰ →
+2.58 × 10¹⁰ (occlusion 3.83 → 1.91 × 10¹⁰, convexity 1.69 → 0.67 × 10¹⁰).
+
+The image is inside the renderer's own noise. Two renders of the *same* binary
+differ by mean |Δ| **1.034–1.036** / RMS 2.78 / p99 13 (0–255, the render seeds
+from the wall clock); new against base differ by mean |Δ| **1.037–1.038** /
+RMS 2.77–2.79 / p99 13, with a signed mean of −0.002 to −0.017. Read side by
+side, the end check still collects dirt along its length and fades as it
+closes, and the nail's head-to-shank fold still rusts.
 
 Each `Map()` is `O(#parts)`. All of it is paid **only when an expression
 actually calls the builtin** — the lazy-by-construction property from Phase 2 is
 unchanged, and a scene whose materials never mention the builtins pays nothing.
-
-Measured on `plank_closeup` (640×480, 48 spp, both signals live on both objects,
-one of them inside a relief-differenced field so the whole program re-runs
-several times per hit):
-
-* baseline, before any change: **51.0 s**
-* shipped: **155 s / 206 s / 219 s** across three runs → **≈ 3–4×**
-
-Two decompositions, both measured back to back on one binary so machine state
-cancels:
-
-* **Adding the second signal is nearly free**: the scene's *original* expression
-  text (one `occlusion` call, `curv` for the edge) took 411 s against the same
-  binary where the shipped text (two `occlusion` calls plus two `convexity`
-  calls) took 420 s — **+2 %**. The cost is the estimator, not the extra term.
-* **Direction count is the whole knob**: at `kOcclusionDirs = 40` the shipped
-  scene took 420 s; at 24 it takes ~210 s, and the two renders are visually
-  indistinguishable (the crack, the arris band and the nail all read the same).
-  24 is what ships.
-
-Absolute wall-clock on this workstation is noisy -- identical configurations
-came in 20 % apart depending on what else had just finished -- so treat "3-4x"
-as the honest figure and the evaluation counts as the structural one. An author who wants the old cost
-profile has `curv`, unchanged and ~4× cheaper than `convexity`.
+An author who wants a cheaper profile still has `curv`, unchanged.
 
 ---
 
@@ -540,10 +680,39 @@ wears nothing, rather than wearing every edge in the frame.
 
 ## 8. Test plan, and what shipped
 
-`tests/SurfaceSignalsTest.cpp` (SDF + VM surface, 287 assertions) and
+`tests/SurfaceSignalsTest.cpp` (SDF + VM surface, **318** assertions) and
 `tests/MeshSignalBakeTest.cpp` (mesh bake, 110 assertions). Closed-form wherever
 one exists — the point of defining the signals this way is that one usually
 does.
+
+**POINTWISE versus EXPECTATION, since 2026-09-07.** A hit now draws one of 32
+rotations of its sample set (§3.1), so the assertions split in two and the
+split is the load-bearing part:
+
+* **Pointwise, unchanged tolerances, and now checked across rotations.** Every
+  identity that holds for *each* rotation individually — a plane and every
+  convex feature read `occlusion` exactly 1, a plane reads `convexity` exactly 0
+  — keeps its 1e-9/1e-12 band, and (m), (o) and (p) additionally require the
+  max-minus-min across 128 slid probes to be **exactly zero**. That is a
+  *stronger* statement than the old single-probe form: it says no rotation moved
+  the answer at all, rather than that one particular rotation gave the right
+  one.
+* **Expectation, same tolerances, over 128 hits slid along the feature.** The
+  quadrature-dependent readings — (o)'s arris and corner, (p)'s sphere series,
+  (q)'s wedge sweep — are checked as means via `EvalAtHitMean`, which slides the
+  probe 1e-5 along the arris / the crease / a tangent of the sphere, where the
+  closed form is constant and only the rotation varies. Tolerances did **not**
+  need loosening (0.08 / 0.10 / 0.02 / 0.06 as before); measured means are
+  0.449 arris, 0.086 / 0.176 / 0.363 sphere, 1.000 / 0.951 / 0.763 / 0.527
+  wedge.
+* **Red-proofs that the means still discriminate.** Each expectation is
+  additionally required to be *outside* the neighbouring feature's band — the
+  arris must not also satisfy the corner's closed form, each sphere radius must
+  not satisfy the previous radius', each wedge opening must not satisfy the
+  previous opening's (from the 120° step on, where the forms are 0.183 and 0.250
+  apart against a 0.06 band; 180 → 150 is only 0.067 apart and the test does not
+  pretend to a claim there). Verified red by hand: perturbing the three closed
+  forms by 0.10 / 0.03 / ×0.85 turns 8 assertions red.
 
 **Red-proof of the old estimator (n).** A convex 90° edge built as an SDF
 `intersect` of two boxes — the hard-`max` case, since a single `roundbox` would
@@ -579,8 +748,18 @@ requires them to differ by at least 0.4 — under the old estimator both read
    `scalar_painter`, VM concurrency, radius-fraction scale invariance,
    heightfield refusal.
 
-**Mesh:** `occlusion` values unchanged on the existing fixtures (the bake was
-already the right quantity); `convexity` on a baked box mesh ≈ 0 on a face,
+**Mesh: the bake is UNCHANGED, and that is the consistent choice, not an
+oversight.** The mesh family already applies exactly the policy the SDF family
+just adopted — `MeshSignalBake`'s `GoldenRotation` spins its cosine-weighted set
+per VERTEX for the same reason, "so 64 samples do not land on the same 64
+directions at every vertex". What differs is the count, and it should: the bake
+runs **once per vertex at build time**, not once per hit, so there is nothing to
+buy by trading its 64 rays down, and its result is barycentrically interpolated
+rather than averaged over samples — interpolation smears per-vertex noise
+across a triangle instead of cancelling it, which is the opposite of what 48 spp
+does to the SDF family's per-hit draw. Same integral, same direction policy,
+counts sized to their own cost model. `occlusion` values unchanged on the
+existing fixtures (the bake was already the right quantity); `convexity` on a baked box mesh ≈ 0 on a face,
 0.5 ± 0.15 on an arris, 0.75 ± 0.20 at a corner, with the ordering pinned; the
 origin-epsilon bias held under its `originEpsilon/R` bound at three radii; the
 bake deterministic, counted once under thread racing, and skipped in draft.
@@ -616,7 +795,32 @@ bake deterministic, counted once under thread racing, and skipped in draft.
 * **Heightfield-mode `sdf_geometry` still publishes no signals at all** (§3.4).
   The sign of its field is usable; only the band width and the march step length
   are not. A locally-normalised field would fix both and is not attempted here.
-* **`kOcclusionDirs = 24` quantises occlusion to ~4 %.** Invisible in the
-  shipped scene at 48 spp (sub-pixel jitter averages it), but a scene that
-  ramped a mask very steeply over a large flat gradient could see it. The knob
-  is one constant.
+* **`kOcclusionDirs = 12` makes a single occlusion reading a DRAW, not a
+  value** (2026-09-07). A hit gets one of 32 rotations, so its answer is one
+  sample of a random variable whose expectation is the closed form. In a render
+  this is strictly better than the fixed set it replaces — the sub-pixel jitter
+  puts every camera sample on a different position and therefore a different
+  rotation, so 48 spp averages ~32 rotations and the ~4 % *quantisation* the
+  24-direction set had is gone too — but it does mean a single-sample consumer
+  of the raw signal sees noise where it used to see a staircase. The two places
+  that matters are both already handled: the `relief_modifier` holds `signals`
+  fixed across its stencil, so a spun signal contributes zero gradient exactly
+  as before; and the closed-form unit tests are expectation checks over 128
+  slid hits (`EvalAtHitMean`). A future consumer that reads the signal ONCE per
+  pixel with no averaging — a hypothetical non-stochastic preview path — would
+  want `kSignalRotations = 1` and the old counts back. Every POINTWISE identity
+  (plane and convex → occlusion exactly 1, plane → convexity exactly 0) holds
+  under every rotation and is pinned with zero-spread assertions.
+* **The estimators are called far more often than they are needed.** On
+  `plank_closeup` the two signals are evaluated **210.8 million** times for
+  14.7 million camera samples — 14.3× — because the field feeds three material
+  slots plus a relief modifier and each re-runs the whole expression at the
+  same hit. **27 % of those calls (57 M) are the relief stencil's, and they
+  cannot affect the image at all**: `ReliefModifier` deliberately holds
+  `signals` constant across its four taps, so the signal term cancels out of
+  `dT`/`dB` exactly. Nothing in this arc addresses that; the estimator was made
+  ~2.2× cheaper per call instead. A per-hit memo would be worth another ~10×
+  on scenes shaped like this one, and is a separate piece of work with a real
+  blast radius (`SurfaceSignalInfo` is copied by value into every painter's
+  evaluation context, so the memo would have to live in
+  `RayIntersectionGeometric` and survive the CSG sense-flip sites).

@@ -1310,22 +1310,67 @@ Scalar SDFGeometry::DivergenceOfUnitNormal( const Point3& y, const Vector3& n, c
 namespace
 {
 	//! Half-count of the ball point set: `kBallPairs` lattice points, each
-	//! used with BOTH signs, so 2*kBallPairs = 80 field evaluations per
-	//! query.  Picked by sweep against closed forms (design doc §3d): the
-	//! first count whose orientation spread on a 90-degree wedge is
-	//! <= 0.021 and whose error against the sphere's closed form
-	//! `convexity = 3R/(8*rho)` is under 0.01.  Going to 64 pairs buys
-	//! 0.008 of spread for 60 % more field evaluations.
-	const int kBallPairs = 40;
+	//! used with BOTH signs, so 2*kBallPairs = 32 field evaluations per
+	//! query.
+	//!
+	//! WAS 40 PAIRS, AND CAME DOWN ONLY BECAUSE THE SET IS NOW ROTATED PER
+	//! HIT (kSignalRotations below).  A FIXED point set has to carry the
+	//! closed forms POINTWISE, at whatever orientation the feature happens
+	//! to present, and that is what 40 was buying: at 32 fixed pairs the
+	//! sphere identity `convexity = 3R/(8*rho)` read 0.159 against 0.1875
+	//! (tolerance 0.02) purely on orientation luck, and at 20 the
+	//! 90-degree arris read 0.416 against 0.5.  Rotating the set removes
+	//! the orientation as a variable instead of out-voting it, and the
+	//! ROTATION-AVERAGED reading is flat in the count: 0.185 / 0.178 /
+	//! 0.183 / 0.181 at 8 / 16 / 24 / 40 pairs against the same 0.1875
+	//! (modelled over 64 rotations; the residual -0.004 is the smoothing
+	//! band, not the count).  16 is taken with that margin, at 40 % of the
+	//! field evaluations.
+	const int kBallPairs = 16;
 
 	//! Directions the OCCLUSION march spends, and the one knob that decides
 	//! what this feature costs: each is a sphere trace, where a convexity
-	//! sample is a single field evaluation.  Fewer than the convexity
-	//! lattice's 40 on purpose -- occlusion's answer is a fraction of a
-	//! count, so its quantum is 1/kOcclusionDirs, and 24 puts that at ~4 %,
-	//! under the contrast any mask built on it survives.  Raising it buys
-	//! smoothness at a directly proportional price.
-	const int kOcclusionDirs = 24;
+	//! sample is a single field evaluation.
+	//!
+	//! WAS 24, AND CAME DOWN FOR THE SAME REASON.  A fixed set answers
+	//! `escaped/N`, so its quantum is 1/N and a closed form has to land on
+	//! a multiple of it: at 24 fixed directions the 90-degree wedge hits
+	//! `sin^2(alpha/2) = 0.5` exactly, at 12 fixed directions the SAME
+	//! fixture reads 0.583 -- and a sweep of the frame azimuth shows the
+	//! fixed set landing anywhere in [0.417, 0.583], i.e. the value is
+	//! decided by where the branchless ONB happens to put `u`.  Rotating
+	//! the set about the normal per hit makes the azimuth a sampled
+	//! variable rather than an accident: the azimuth-AVERAGED reading is
+	//! 0.5000 at N = 8, 12, 16 and 24 alike, and 0.7486 / 0.7492 / 0.7495 /
+	//! 0.7497 against the 120-degree closed form 0.7500.  The elevation
+	//! stratification is NOT rotated (see BallLattice) -- it is a midpoint
+	//! rule in cos^2(theta) whose own error is the 0.001 in that row.
+	//! 12 is taken with that margin, at half the sphere traces.
+	const int kOcclusionDirs = 12;
+
+	//! How many pre-built ROTATIONS of the two point sets exist, one picked
+	//! per hit by a hash of the hit position.
+	//!
+	//! WHY A TABLE AND NOT A LIVE ANGLE.  These estimators are called far
+	//! more often than "once per visible pixel": on plank_closeup, 210.8
+	//! MILLION times for 14.7 million camera samples, because the field
+	//! feeds three material slots plus a relief modifier and every one of
+	//! them re-runs the whole expression.  At that call rate a single
+	//! `sin`/`cos` pair per query is not free (~1 s of a ~55 s frame) and
+	//! per-DIRECTION trigonometry would cost more than the marching it is
+	//! meant to make cheaper.  So the rotations are baked once, at process
+	//! start, and a query pays one hash and one indexed read.
+	//!
+	//! 32 is enough to stop the choice reading as a repeat: the value a
+	//! hit gets is one of 32, the sub-pixel jitter puts every camera sample
+	//! at a different position, and 48 spp averages ~32 distinct rotations
+	//! per pixel.  Both point sets keep their exact identities under EVERY
+	//! rotation in the table -- see the two notes in BallLattice.
+	const int kSignalRotations = 32;
+	//! SignalRotationIndex masks rather than divides, so this must stay a
+	//! power of two.
+	static_assert( ( kSignalRotations & ( kSignalRotations - 1 ) ) == 0,
+		"kSignalRotations must be a power of two -- SignalRotationIndex masks with (kSignalRotations - 1)" );
 
 	//! Width of the smoothed indicator's transition band, as a fraction of
 	//! the query radius.  A HARD `Map > 0` test makes A jump by 1/(2*pairs)
@@ -1355,6 +1400,54 @@ namespace
 		return r;
 	}
 
+	//! Radical inverse in an arbitrary small base -- the rotation table's
+	//! third coordinate (base 5), so the (base 2, base 3, base 5) triple
+	//! that drives a rotation is a Halton point and the 32 rotations are
+	//! spread rather than clumped.
+	inline Scalar BallRadicalInverseB( unsigned int i, const unsigned int b )
+	{
+		Scalar f = Scalar(1) / Scalar(b), r = Scalar(0);
+		while( i ) { r += f * Scalar( i % b ); i /= b; f /= Scalar(b); }
+		return r;
+	}
+
+	//! WHICH ROTATION THIS HIT GETS: a hash of the hit position, in the
+	//! provider's OWN OBJECT SPACE.
+	//!
+	//! Object space, not world, for the reason the whole radius convention
+	//! is object-relative: two instances of one geometry at different world
+	//! scales must read the same signal at the same place on the surface,
+	//! and they see the same `ptObject`.  (SurfaceSignalsTest case (i) is
+	//! the guard.)
+	//!
+	//! POSITION, not a sample index, because a position is all the estimator
+	//! is given -- and it is the right key anyway.  Every camera sample in a
+	//! pixel lands at a different sub-pixel position, so a pixel averages
+	//! many rotations; a shading point queried repeatedly WITHIN one hit
+	//! (three material slots, plus the relief modifier's four-tap stencil,
+	//! which holds `signals` fixed across the stencil by construction) is
+	//! one position and gets ONE rotation, so the answer stays consistent
+	//! where consistency is what matters.
+	//!
+	//! FNV-1a over the raw bit patterns, then a 64-bit avalanche, so
+	//! neighbouring positions -- which differ only in the low mantissa
+	//! bits -- land on unrelated rotations.
+	inline int SignalRotationIndex( const Point3& p )
+	{
+		const double c[3] = { (double)p.x, (double)p.y, (double)p.z };
+		unsigned long long h = 14695981039346656037ULL;
+		for( int i = 0; i < 3; ++i ) {
+			unsigned long long b = 0;
+			std::memcpy( &b, &c[i], sizeof(b) );
+			h ^= b;
+			h *= 1099511628211ULL;
+		}
+		h ^= h >> 33;  h *= 0xff51afd7ed558ccdULL;
+		h ^= h >> 33;  h *= 0xc4ceb9fe1a85ec53ULL;
+		h ^= h >> 33;
+		return (int)( h & (unsigned long long)( kSignalRotations - 1 ) );
+	}
+
 	//! The point set, in the UNIT ball, built once per process.
 	//!
 	//! CENTRAL SYMMETRY IS THE LOAD-BEARING PROPERTY, and it is why these
@@ -1375,7 +1468,24 @@ namespace
 	//! every thread and every run.
 	struct BallLattice
 	{
-		Point3  pt[kBallPairs];		//!< volume-uniform ball offsets (convexity)
+		//! Volume-uniform ball offsets (convexity), in `kSignalRotations`
+		//! independently ROTATED copies.
+		//!
+		//! THE ROTATIONS ARE FULL 3-D AND UNIFORM, not a spin about one
+		//! axis, because this set has no frame to spin about -- that is the
+		//! point of it (see the central-symmetry note below).  A rotation
+		//! about a fixed WORLD axis would leave any feature whose edge runs
+		//! parallel to that axis sampled identically by all 32 entries,
+		//! which is exactly the orientation accident the table exists to
+		//! remove.  Shoemake's uniform-quaternion map of a Halton triple
+		//! gives the uniform measure on SO(3) with 32 well-spread members.
+		//!
+		//! CENTRAL SYMMETRY SURVIVES EVERY ROTATION, which is what lets the
+		//! count come down at all: each point is still used with BOTH
+		//! signs, and `-(Q y) == Q(-y)`, so the rotated set is centrally
+		//! symmetric too and a planar surface still reads A = 1/2 EXACTLY,
+		//! at every orientation, every rotation and every count.
+		Point3  pt[kSignalRotations][kBallPairs];
 		//! COSINE-WEIGHTED hemisphere directions about +Z, rotated into the
 		//! hit's frame per query (occlusion).  Cosine rather than uniform,
 		//! and for two reasons that agree: it is what the mesh family's
@@ -1384,8 +1494,29 @@ namespace
 		//! whole step budget -- are exactly the ones a cosine weight makes
 		//! rare.
 		Vector3 cosDir[kOcclusionDirs];
+		//! The per-hit AZIMUTHAL rotation, as a cos/sin pair, applied to the
+		//! hit's tangent frame rather than to the directions -- so a query
+		//! pays two extra multiply-adds ONCE, not per direction, and
+		//! `cosDir` stays a single canonical set.
+		//!
+		//! ONLY THE AZIMUTH IS ROTATED, and deliberately.  The elevations
+		//! stay stratified at the midpoints `cos(theta)_i = sqrt((i+1/2)/N)`
+		//! because that is a midpoint rule in cos^2(theta) whose error is
+		//! already below a thousandth on the wedge family (0.7492 vs 0.7500
+		//! at N = 12), while jittering them within their strata would let a
+		//! direction land arbitrarily close to the tangent plane -- and a
+		//! near-tangent ray is precisely the one that burns the entire
+		//! 24-step budget.  Rotating what is free and stratifying what is
+		//! expensive is the whole trade.
+		//!
+		//! It also retires the branchless-ONB discontinuity as a source of
+		//! spread: the set is uniformly spun about the normal, so which
+		//! branch `CreateFromW` took stops being observable.
+		Scalar  azCos[kSignalRotations];
+		Scalar  azSin[kSignalRotations];
 		BallLattice()
 		{
+			Point3 base[kBallPairs];
 			for( int i = 0; i < kBallPairs; ++i ) {
 				// cos(theta) stratified over the UPPER hemisphere; the
 				// lower half comes from the sign flip at use.
@@ -1398,7 +1529,34 @@ namespace
 				// silently place a sample at the query point itself.
 				if( !( u > Scalar(0) ) ) u = Scalar(0.5) / Scalar(kBallPairs);
 				const Scalar rho = std::pow( u, Scalar(1)/Scalar(3) );
-				pt[i] = Point3( rho*sz*std::cos(phi), rho*sz*std::sin(phi), rho*cz );
+				base[i] = Point3( rho*sz*std::cos(phi), rho*sz*std::sin(phi), rho*cz );
+			}
+			for( int v = 0; v < kSignalRotations; ++v ) {
+				// Shoemake 1992: a uniform rotation from three uniforms,
+				// via the unit quaternion (x,y,z,w).
+				const Scalar u1 = BallRadicalInverseB( (unsigned int)( v + 1 ), 2u );
+				const Scalar u2 = BallRadicalInverseB( (unsigned int)( v + 1 ), 3u );
+				const Scalar u3 = BallRadicalInverseB( (unsigned int)( v + 1 ), 5u );
+				const Scalar s1 = std::sqrt( Scalar(1) - u1 ), s2 = std::sqrt( u1 );
+				const Scalar qx = s1 * std::sin( Scalar(TWO_PI) * u2 );
+				const Scalar qy = s1 * std::cos( Scalar(TWO_PI) * u2 );
+				const Scalar qz = s2 * std::sin( Scalar(TWO_PI) * u3 );
+				const Scalar qw = s2 * std::cos( Scalar(TWO_PI) * u3 );
+				const Scalar m00 = 1-2*(qy*qy+qz*qz), m01 = 2*(qx*qy-qz*qw), m02 = 2*(qx*qz+qy*qw);
+				const Scalar m10 = 2*(qx*qy+qz*qw), m11 = 1-2*(qx*qx+qz*qz), m12 = 2*(qy*qz-qx*qw);
+				const Scalar m20 = 2*(qx*qz-qy*qw), m21 = 2*(qy*qz+qx*qw), m22 = 1-2*(qx*qx+qy*qy);
+				for( int i = 0; i < kBallPairs; ++i ) {
+					const Point3& b = base[i];
+					pt[v][i] = Point3( m00*b.x + m01*b.y + m02*b.z,
+					                   m10*b.x + m11*b.y + m12*b.z,
+					                   m20*b.x + m21*b.y + m22*b.z );
+				}
+				// The occlusion set's azimuth, from the SAME low-discrepancy
+				// sequence the quaternion's first coordinate uses, so the 32
+				// spins are spread over the circle rather than clumped.
+				const Scalar az = Scalar(TWO_PI) * u1;
+				azCos[v] = std::cos( az );
+				azSin[v] = std::sin( az );
 			}
 			// Cosine-weighted about +Z: cos(theta) = sqrt(u1) with u1
 			// stratified, azimuth from the same radical inverse.  Built ONCE,
@@ -1548,29 +1706,76 @@ bool SDFGeometry::ComputeOcclusion( const SurfaceSignalInfo& hit,
 		hit.ptObject.z + nHat.z * R * kMarchLift );
 
 	const BallLattice& L = TheBallLattice();
-	int escaped = 0;
+
+	// SPIN THE FRAME, NOT THE DIRECTIONS.  `cosDir` is one canonical set;
+	// rotating the hit's tangent axes by this hit's azimuth (kSignalRotations)
+	// rotates all of them at once, for two multiply-adds per query rather
+	// than per direction, and leaves `w()` -- the normal -- untouched, so
+	// the set stays a cosine-weighted OUTWARD hemisphere and the planar
+	// identity below is unaffected.
+	const int    rot = SignalRotationIndex( hit.ptObject );
+	const Scalar ca = L.azCos[rot], sa = L.azSin[rot];
+	const Vector3 su(  ca*onb.u().x + sa*onb.v().x,  ca*onb.u().y + sa*onb.v().y,  ca*onb.u().z + sa*onb.v().z );
+	const Vector3 sv( -sa*onb.u().x + ca*onb.v().x, -sa*onb.u().y + ca*onb.v().y, -sa*onb.u().z + ca*onb.v().z );
+
+	// THE MARCH IS RUN IN LOCKSTEP ACROSS THE DIRECTIONS, one step of every
+	// still-live ray before the next step of any of them, rather than one
+	// ray to completion before the next is begun.  The two orders visit
+	// EXACTLY the same points and apply exactly the same per-ray step rule
+	// and exit tests -- Map is a pure function, so the answer is bit
+	// identical and the field-evaluation COUNT is unchanged.  What changes
+	// is the dependency structure the hardware sees.  Ray-at-a-time is one
+	// long serial chain: step k+1's sample point cannot be formed until
+	// step k's Map has returned, so the core stalls on Map's latency
+	// (square roots, the CSG min/max fold) once per step and its issue
+	// width sits idle.  Lockstep hands it `nActive` INDEPENDENT Map
+	// evaluations at a time, which pipeline against each other.  Measured
+	// on plank_closeup, where this is 99.3 % of the occlusion cost: 71.1 s
+	// -> 38.9 s of a 120 s frame, i.e. the same 181.7 evaluations per query
+	// at 1.86 ns each become 1.02 ns each.  (The comparison that names the
+	// cause: convexity's 80 samples have no chain between them at all and
+	// already cost 0.94 ns each.)
+	Vector3 dir[kOcclusionDirs];
+	Scalar  tRay[kOcclusionDirs];
+	int     live[kOcclusionDirs];
+	Scalar  dVal[kOcclusionDirs];
 	for( int i = 0; i < kOcclusionDirs; ++i ) {
 		const Vector3& c = L.cosDir[i];
-		const Vector3 w(
-			onb.u().x*c.x + onb.v().x*c.y + onb.w().x*c.z,
-			onb.u().y*c.x + onb.v().y*c.y + onb.w().y*c.z,
-			onb.u().z*c.x + onb.v().z*c.y + onb.w().z*c.z );
-
-		// Sphere-trace this direction, up to R.
-		Scalar t = R * kMarchStart;
-		bool   blocked = false;
-		for( int step = 0; step < kMarchMaxSteps; ++step ) {
-			const Scalar d = sense * ( Map( Point3( origin.x + w.x*t, origin.y + w.y*t, origin.z + w.z*t ) ) - d0 );
-			if( !( d > Scalar(0) ) ) { blocked = true; break; }
+		dir[i] = Vector3(
+			su.x*c.x + sv.x*c.y + onb.w().x*c.z,
+			su.y*c.x + sv.y*c.y + onb.w().y*c.z,
+			su.z*c.x + sv.z*c.y + onb.w().z*c.z );
+		tRay[i] = R * kMarchStart;
+		live[i] = i;
+	}
+	int nLive = kOcclusionDirs;
+	int escaped = 0;
+	for( int step = 0; step < kMarchMaxSteps && nLive > 0; ++step ) {
+		for( int j = 0; j < nLive; ++j ) {
+			const int k = live[j];
+			const Vector3& w = dir[k];
+			const Scalar   t = tRay[k];
+			dVal[j] = sense * ( Map( Point3( origin.x + w.x*t, origin.y + w.y*t, origin.z + w.z*t ) ) - d0 );
+		}
+		int m = 0;
+		for( int j = 0; j < nLive; ++j ) {
+			const int    k = live[j];
+			const Scalar d = dVal[j];
+			// Inside the solid: this direction is BLOCKED, and drops out
+			// without being counted.
+			if( !( d > Scalar(0) ) ) continue;
 			// Nothing within the remaining reach can be nearer than `d`, so
 			// once `d` covers it the ray provably escapes -- the early-out
 			// that keeps an open hemisphere from marching all the way out.
-			if( d >= R - t ) break;
-			t += ( d > R*kMarchMinStep ) ? d : R*kMarchMinStep;
-			if( t >= R ) break;
+			if( d >= R - tRay[k] ) { ++escaped; continue; }
+			tRay[k] += ( d > R*kMarchMinStep ) ? d : R*kMarchMinStep;
+			if( tRay[k] >= R ) { ++escaped; continue; }
+			live[m++] = k;
 		}
-		if( !blocked ) ++escaped;
+		nLive = m;
 	}
+	// Ran out of steps -- reported ESCAPED, as the step-cap note above says.
+	escaped += nLive;
 
 	Scalar ao = Scalar( escaped ) / Scalar( kOcclusionDirs );
 	if( !RISE::IsFiniteDouble( static_cast<double>( ao ) ) ) {
@@ -1604,9 +1809,13 @@ bool SDFGeometry::ComputeConvexity( const SurfaceSignalInfo& hit,
 	const Scalar sense = hit.bComplementedField ? Scalar(-1) : Scalar(1);
 	const BallLattice& L = TheBallLattice();
 	const Point3& p = hit.ptObject;
+	// This hit's rotation of the ball set (kSignalRotations).  Central
+	// symmetry is preserved by every entry in the table, so the planar
+	// A = 1/2 identity the paragraph above turns on is untouched.
+	const Point3* pts = L.pt[ SignalRotationIndex( hit.ptObject ) ];
 	Scalar acc = Scalar(0);
 	for( int i = 0; i < kBallPairs; ++i ) {
-		const Scalar ox = R * L.pt[i].x, oy = R * L.pt[i].y, oz = R * L.pt[i].z;
+		const Scalar ox = R * pts[i].x, oy = R * pts[i].y, oz = R * pts[i].z;
 		acc += BallSmoothStep( sense * ( Map( Point3( p.x + ox, p.y + oy, p.z + oz ) ) - d0 ), w );
 		acc += BallSmoothStep( sense * ( Map( Point3( p.x - ox, p.y - oy, p.z - oz ) ) - d0 ), w );
 	}

@@ -216,6 +216,71 @@ static bool EvalAtHit( const Object* obj, const Point3& origin, const Vector3& d
 	return hit;
 }
 
+//! Average of a signal over MANY hits SLID ALONG a feature -- the form the
+//! quadrature-dependent closed forms below take since 2026-09-07.
+//!
+//! WHY THE CLOSED FORMS ARE NO LONGER POINTWISE.  Both SDF estimators pick
+//! one of 32 pre-built ROTATIONS of their sample set per hit, keyed on a
+//! hash of the hit position (SDFGeometry.cpp, `kSignalRotations`).  That is
+//! what let the sample counts come down 2x-2.5x without losing accuracy --
+//! a FIXED set has to carry each closed form at whatever orientation the
+//! feature happens to present, and it was the orientation, not the count,
+//! that the old counts were paying for.  The consequence for a test is
+//! precise: a value that depends on the QUADRATURE is now a random variable
+//! whose EXPECTATION is the closed form, so it must be checked as an
+//! expectation, over hits that differ in position and therefore in rotation.
+//!
+//! WHAT IS **NOT** WEAKENED.  Every POINTWISE identity still holds at every
+//! hit and keeps its 1e-9 / 1e-12 tolerance, because it holds for every
+//! rotation individually rather than on average: a plane and every convex
+//! feature read occlusion EXACTLY 1 (every outward direction escapes, at
+//! any count and any spin), and a plane reads convexity EXACTLY 0 (the
+//! rotated point set is still centrally symmetric, so A is still exactly
+//! 1/2).  Cases (a), (m), (n) and the `1e-9` lines in (o) and (p) are
+//! untouched, and are the reason this change cannot hide a real regression
+//! behind an average.
+//!
+//! `slide` is a SMALL step along the feature -- the arris' own direction,
+//! the crease's own direction, a tangent of the sphere -- chosen so the
+//! closed form is CONSTANT across the probes and only the rotation varies.
+//! It has to be small relative to the query radius (these use 1e-3 against
+//! radii of 0.5 and up) and large relative to nothing at all: any change in
+//! the low mantissa bits re-rolls the hash.
+static bool EvalAtHitMean( const Object* obj, const Point3& origin, const Vector3& dir,
+	const Vector3& slide, const int nSamples, const std::string& body,
+	Scalar& outMean, Scalar* outSpread = 0 )
+{
+	ExpressionProgram prog = ExpressionProgram::Invalid();
+	if( !CompileWithContext( body, prog ) ) return false;
+
+	std::vector<ParamSpec> specs;
+	ExpressionScalarPainter* painter = new ExpressionScalarPainter( prog, specs );
+
+	Scalar sum = 0, lo = Scalar( 1e30 ), hi = Scalar( -1e30 );
+	int n = 0;
+	for( int i = 0; i < nSamples; ++i ) {
+		// Centred on the nominal probe, so the mean is not biased to one
+		// side of the feature by the slide itself.
+		const Scalar f = Scalar( i ) - Scalar( nSamples - 1 ) * Scalar( 0.5 );
+		const Point3 o( origin.x + slide.x*f, origin.y + slide.y*f, origin.z + slide.z*f );
+		RayIntersection ri = MkRI( o, dir );
+		if( !HitObject( obj, ri ) ) continue;
+		const Scalar v = painter->GetValuesAt( ri.geometric ).v[0];
+		sum += v;
+		if( v < lo ) lo = v;
+		if( v > hi ) hi = v;
+		++n;
+	}
+	painter->release();
+
+	// EVERY probe must land, or the mean is over a different set of hits
+	// than the one the caller reasoned about.
+	if( n != nSamples ) return false;
+	outMean = sum / Scalar( n );
+	if( outSpread ) *outSpread = hi - lo;
+	return true;
+}
+
 //======================================================================
 // (a) An isolated convex SDF sphere is unoccluded everywhere
 //======================================================================
@@ -1141,26 +1206,42 @@ static void TestPlanarReferenceIsExact()
 	g->release();
 	o->FinalizeTransformations();
 
-	struct Face { Point3 from; Vector3 dir; const char* name; };
+	struct Face { Point3 from; Vector3 dir; Vector3 slide; const char* name; };
 	const Face faces[3] = {
-		{ Point3( 0.7, 40, -1.3 ), Vector3( 0, -1, 0 ), "+Y" },
-		{ Point3( 40, 0.4, 1.1 ),  Vector3( -1, 0, 0 ), "+X" },
-		{ Point3( -2.1, 0.9, 40 ), Vector3( 0, 0, -1 ), "+Z" }
+		{ Point3( 0.7, 40, -1.3 ), Vector3( 0, -1, 0 ), Vector3( 1e-5, 0, 0 ), "+Y" },
+		{ Point3( 40, 0.4, 1.1 ),  Vector3( -1, 0, 0 ), Vector3( 0, 1e-5, 0 ), "+X" },
+		{ Point3( -2.1, 0.9, 40 ), Vector3( 0, 0, -1 ), Vector3( 1e-5, 0, 0 ), "+Z" }
 	};
 	// Several radii: the identity must not depend on how much of the box the
 	// ball covers, only on the face being locally planar.
 	const char* radii[3] = { "0.005", "0.02", "0.05" };
 
+	// SWEPT ACROSS ROTATIONS, and the ZERO SPREAD is the real assertion.
+	// Since 2026-09-07 each hit draws one of 32 pre-built rotations of the
+	// sample set by a hash of its position, so a single probe would pin the
+	// identity for ONE rotation and say nothing about the other 31.  128
+	// probes slid along the face by 1e-5 -- geometrically nothing, but every
+	// one a fresh hash -- cover the table many times over, and requiring the
+	// max-minus-min to be EXACTLY zero is a stronger statement than the mean
+	// being 1: it says no rotation moved the answer at all, which is what
+	// "every outward direction escapes over a plane" and "the rotated point
+	// set is still centrally symmetric" actually claim.
 	for( int f = 0; f < 3; ++f ) {
 		for( int r = 0; r < 3; ++r ) {
-			Scalar ao = -1, cx = -1;
+			Scalar ao = -1, cx = -1, aoSpread = -1, cxSpread = -1;
 			const std::string face( faces[f].name ), rad( radii[r] );
-			Check( EvalAtHit( o, faces[f].from, faces[f].dir, "occlusion(" + rad + ")", ao ),
+			Check( EvalAtHitMean( o, faces[f].from, faces[f].dir, faces[f].slide, 128,
+				"occlusion(" + rad + ")", ao, &aoSpread ),
 				"(m) occlusion evaluates on face " + face + " at r=" + rad );
-			Check( EvalAtHit( o, faces[f].from, faces[f].dir, "convexity(" + rad + ")", cx ),
+			Check( EvalAtHitMean( o, faces[f].from, faces[f].dir, faces[f].slide, 128,
+				"convexity(" + rad + ")", cx, &cxSpread ),
 				"(m) convexity evaluates on face " + face + " at r=" + rad );
 			CheckClose( ao, 1.0, 1e-12, "(m) EXACT: occlusion == 1 on face " + face + " at r=" + rad );
 			CheckClose( cx, 0.0, 1e-12, "(m) EXACT: convexity == 0 on face " + face + " at r=" + rad );
+			CheckClose( aoSpread, 0.0, 0.0,
+				"(m) POINTWISE, NOT ON AVERAGE: occlusion identical across 128 rotations on face " + face + " at r=" + rad );
+			CheckClose( cxSpread, 0.0, 0.0,
+				"(m) POINTWISE, NOT ON AVERAGE: convexity identical across 128 rotations on face " + face + " at r=" + rad );
 		}
 	}
 
@@ -1301,19 +1382,28 @@ static void TestConvexityCanonicalValues()
 	// diagonal = 4*sqrt(3) = 6.9282; 0.5 / 6.9282 = 0.0721688
 	const std::string rf = "0.0721688";
 
+	// EXPECTATIONS, over 128 hits slid along each feature -- see
+	// EvalAtHitMean's own doc for why the quadrature-dependent readings can
+	// no longer be checked at a single point.  The slides are 1e-5, six
+	// orders below the 0.5 query radius and four below the 0.05 fillet, so
+	// the closed form is constant across the probes and only the rotation
+	// moves.  The arris slides ALONG the arris (it runs in x); the corner is
+	// a point, so its probes crawl a fraction of a fillet-width around it.
+	const Vector3 slideX( 1e-5, 0, 0 );
 	Scalar cxFace = -1, cxArris = -1, cxCorner = -1;
 	Scalar aoFace = -1, aoArris = -1, aoCorner = -1;
-	Check( EvalAtHit( o, Point3( 0.3, 30, -0.2 ), Vector3( 0, -1, 0 ), "convexity(" + rf + ")", cxFace ),
+	Scalar aoFaceSpread = -1, aoArrisSpread = -1, aoCornerSpread = -1;
+	Check( EvalAtHitMean( o, Point3( 0.3, 30, -0.2 ), Vector3( 0, -1, 0 ), slideX, 128, "convexity(" + rf + ")", cxFace ),
 		"(o) rounded-box face" );
-	Check( EvalAtHit( o, Point3( 0.3, 30, 30 ), Vector3( 0, -1, -1 ), "convexity(" + rf + ")", cxArris ),
+	Check( EvalAtHitMean( o, Point3( 0.3, 30, 30 ), Vector3( 0, -1, -1 ), slideX, 128, "convexity(" + rf + ")", cxArris ),
 		"(o) rounded-box arris" );
-	Check( EvalAtHit( o, Point3( 30, 30, 30 ), Vector3( -1, -1, -1 ), "convexity(" + rf + ")", cxCorner ),
+	Check( EvalAtHitMean( o, Point3( 30, 30, 30 ), Vector3( -1, -1, -1 ), slideX, 128, "convexity(" + rf + ")", cxCorner ),
 		"(o) rounded-box corner" );
-	Check( EvalAtHit( o, Point3( 0.3, 30, -0.2 ), Vector3( 0, -1, 0 ), "occlusion(" + rf + ")", aoFace ),
+	Check( EvalAtHitMean( o, Point3( 0.3, 30, -0.2 ), Vector3( 0, -1, 0 ), slideX, 128, "occlusion(" + rf + ")", aoFace, &aoFaceSpread ),
 		"(o) rounded-box face occlusion" );
-	Check( EvalAtHit( o, Point3( 0.3, 30, 30 ), Vector3( 0, -1, -1 ), "occlusion(" + rf + ")", aoArris ),
+	Check( EvalAtHitMean( o, Point3( 0.3, 30, 30 ), Vector3( 0, -1, -1 ), slideX, 128, "occlusion(" + rf + ")", aoArris, &aoArrisSpread ),
 		"(o) rounded-box arris occlusion" );
-	Check( EvalAtHit( o, Point3( 30, 30, 30 ), Vector3( -1, -1, -1 ), "occlusion(" + rf + ")", aoCorner ),
+	Check( EvalAtHitMean( o, Point3( 30, 30, 30 ), Vector3( -1, -1, -1 ), slideX, 128, "occlusion(" + rf + ")", aoCorner, &aoCornerSpread ),
 		"(o) rounded-box corner occlusion" );
 
 	CheckClose( cxFace, 0.0, 1e-9, "(o) face convexity is 0" );
@@ -1322,18 +1412,32 @@ static void TestConvexityCanonicalValues()
 	// ideal sharp corner along the bisector by round*(sqrt(2)-1), which puts
 	// marginally more solid inside the ball than a sharp wedge would and
 	// pulls the reading a few percent below the sharp-wedge closed form.
-	CheckClose( cxArris, 0.5, 0.08, "(o) 90-degree arris convexity ~= 0.5 (closed form)" );
-	CheckClose( cxCorner, 0.75, 0.10, "(o) three-face corner convexity ~= 0.75 (closed form)" );
+	CheckClose( cxArris, 0.5, 0.08, "(o) 90-degree arris convexity ~= 0.5 (closed form, expectation over 128 rotations)" );
+	CheckClose( cxCorner, 0.75, 0.10, "(o) three-face corner convexity ~= 0.75 (closed form, expectation over 128 rotations)" );
 	Check( cxCorner > cxArris + Scalar( 0.1 ),
 		"(o) ORDERING -- a corner is more convex than an arris, by a clear margin" );
+
+	// RED-PROOF for the two expectations above: an estimator that had drifted
+	// onto the WRONG closed form would still sit inside its own band, so pin
+	// that each reading is FAR from the other feature's answer.  Without this
+	// a corner reading the arris' 0.5 (or the reverse) passes both lines.
+	Check( std::fabs( cxArris - Scalar( 0.75 ) ) > Scalar( 0.10 ),
+		"(o) RED-PROOF: the arris expectation does NOT also satisfy the corner's closed form" );
+	Check( std::fabs( cxCorner - Scalar( 0.5 ) ) > Scalar( 0.08 ),
+		"(o) RED-PROOF: the corner expectation does NOT also satisfy the arris' closed form" );
 
 	// Every one of these is convex, so NONE of them may darken occlusion.
 	// This is (n)'s claim restated on an EXACT-field primitive, which matters
 	// because that is the shape the old estimator got right -- so it pins
-	// that the rewrite did not break the case that already worked.
+	// that the rewrite did not break the case that already worked.  POINTWISE
+	// still, not on average: the spread across the 128 rotations must be
+	// exactly zero (see (m)).
 	CheckClose( aoFace, 1.0, 1e-9, "(o) face occlusion is 1" );
 	CheckClose( aoArris, 1.0, 1e-9, "(o) arris occlusion is 1" );
 	CheckClose( aoCorner, 1.0, 1e-9, "(o) corner occlusion is 1" );
+	CheckClose( aoFaceSpread, 0.0, 0.0, "(o) face occlusion is 1 under EVERY rotation" );
+	CheckClose( aoArrisSpread, 0.0, 0.0, "(o) arris occlusion is 1 under EVERY rotation" );
+	CheckClose( aoCornerSpread, 0.0, 0.0, "(o) corner occlusion is 1 under EVERY rotation" );
 
 	o->release();
 }
@@ -1364,15 +1468,33 @@ static void TestConvexityOnSphereClosedForm()
 	const Scalar diag = Scalar( 2 ) * std::sqrt( Scalar( 3 ) );
 	const Scalar Rs[3] = { Scalar( 0.25 ), Scalar( 0.5 ), Scalar( 1.0 ) };
 
+	// EXPECTATIONS again (EvalAtHitMean's doc): 128 probes slid 1e-5 along a
+	// tangent of the sphere, where the closed form is constant by symmetry
+	// and only the rotation moves.  The tolerance stays 0.02 -- rotation
+	// averaging does not need a looser band, it needs a mean: modelled over
+	// 64 rotations the reading is 0.185 / 0.178 / 0.183 / 0.181 at 8 / 16 /
+	// 24 / 40 pairs against 0.1875, i.e. flat in the count to well inside
+	// this band, where the FIXED 32-pair set read 0.159 on this fixture.
+	const Vector3 slideX( 1e-5, 0, 0 );
 	Scalar got[3] = { -1, -1, -1 };
 	for( int i = 0; i < 3; ++i ) {
 		const std::string rf = std::to_string( Rs[i] / diag );
-		Check( EvalAtHit( o, Point3( 0.0, 30, 0.0 ), Vector3( 0, -1, 0 ),
+		Check( EvalAtHitMean( o, Point3( 0.0, 30, 0.0 ), Vector3( 0, -1, 0 ), slideX, 128,
 			"convexity(" + rf + ")", got[i] ),
 			"(p) sphere convexity evaluates at R/rho=" + std::to_string( Rs[i] ) );
 		const Scalar want = Scalar( 3 ) * Rs[i] / ( Scalar( 8 ) * rho );
 		CheckClose( got[i], want, 0.02,
 			"(p) convexity == 3R/(8 rho) at R/rho=" + std::to_string( Rs[i] ) );
+		// RED-PROOF: the band is 0.02 and the three closed forms are 0.094,
+		// 0.188, 0.375 apart, so a reading that had collapsed onto a
+		// NEIGHBOURING radius' answer -- the failure a slope or offset error
+		// in the radius mapping actually produces -- must be rejected.
+		if( i > 0 ) {
+			const Scalar wrong = Scalar( 3 ) * Rs[i-1] / ( Scalar( 8 ) * rho );
+			Check( std::fabs( got[i] - wrong ) > Scalar( 0.02 ),
+				"(p) RED-PROOF: R/rho=" + std::to_string( Rs[i] )
+				+ " does NOT also satisfy the previous radius' closed form" );
+		}
 	}
 
 	// Strict monotonicity: a bigger query ball sees more of the sphere fall
@@ -1384,12 +1506,15 @@ static void TestConvexityOnSphereClosedForm()
 	// the whole series -- the pairing (o) makes on wedges, made here on a
 	// smoothly curved surface.
 	for( int i = 0; i < 3; ++i ) {
-		Scalar ao = -1;
+		Scalar ao = -1, spread = -1;
 		const std::string rf = std::to_string( Rs[i] / diag );
-		Check( EvalAtHit( o, Point3( 0.0, 30, 0.0 ), Vector3( 0, -1, 0 ), "occlusion(" + rf + ")", ao ),
+		Check( EvalAtHitMean( o, Point3( 0.0, 30, 0.0 ), Vector3( 0, -1, 0 ), slideX, 128,
+			"occlusion(" + rf + ")", ao, &spread ),
 			"(p) sphere occlusion evaluates at R/rho=" + std::to_string( Rs[i] ) );
 		CheckClose( ao, 1.0, 1e-9,
 			"(p) a convex sphere reads occlusion 1 at R/rho=" + std::to_string( Rs[i] ) );
+		CheckClose( spread, 0.0, 0.0,
+			"(p) ...under EVERY rotation, at R/rho=" + std::to_string( Rs[i] ) );
 	}
 
 	o->release();
@@ -1492,14 +1617,44 @@ static void TestOcclusionMonotoneAcrossWedgeAngles()
 		const Scalar bl = std::sqrt( bis.y*bis.y + bis.z*bis.z );
 		bis = Vector3( 0, bis.y/bl, bis.z/bl );
 		const Point3 target( 1.3, 0, 0.02 );
-		Check( EvalAtHit( o, Point3( target.x + 40*bis.x, target.y + 40*bis.y, target.z + 40*bis.z ),
-			Vector3( -bis.x, -bis.y, -bis.z ), "occlusion(0.06)", occ[i] ),
+		// AN EXPECTATION over 128 hits slid 1e-5 ALONG THE CREASE (it runs in
+		// x, and the fixture is translation-invariant along it, so the closed
+		// form is identical at every probe and only the sample set's rotation
+		// varies).  See EvalAtHitMean.  The number this replaces was a
+		// single hit, and at 12 directions a single hit is a draw from
+		// [0.417, 0.583] for this very fixture -- the 24-direction set landed
+		// on 0.5 exactly, but by where the branchless ONB happened to put
+		// `u`, not by accuracy.  Azimuth-averaged the reading is 0.5000 at
+		// 8, 12, 16 and 24 directions alike.
+		Scalar spread = -1;
+		Check( EvalAtHitMean( o, Point3( target.x + 40*bis.x, target.y + 40*bis.y, target.z + 40*bis.z ),
+			Vector3( -bis.x, -bis.y, -bis.z ), Vector3( 1e-5, 0, 0 ), 128, "occlusion(0.06)", occ[i], &spread ),
 			"(q) crease hit at opening " + std::to_string( (int)openings[i] ) );
 
 		const Scalar a = openings[i] * Scalar( PI ) / Scalar( 180 );
 		const Scalar want = std::sin( a * Scalar(0.5) ) * std::sin( a * Scalar(0.5) );
 		CheckClose( occ[i], want, 0.06,
 			"(q) occlusion == sin^2(alpha/2) at " + std::to_string( (int)openings[i] ) + " degrees" );
+		// RED-PROOF: an estimator that had drifted onto the NEIGHBOURING
+		// opening's answer -- exactly what a mis-scaled cosine weight or a
+		// lost sign produces -- must be rejected.  From the 120-degree step
+		// on, where consecutive closed forms are 0.183 and 0.250 apart
+		// against the 0.06 band; the 180 -> 150 step is only 0.067 apart and
+		// the two bands genuinely overlap, so there is no claim to make there
+		// and the test does not pretend to one.
+		if( i > 1 ) {
+			const Scalar aPrev = openings[i-1] * Scalar( PI ) / Scalar( 180 );
+			const Scalar wrong = std::sin( aPrev * Scalar(0.5) ) * std::sin( aPrev * Scalar(0.5) );
+			Check( std::fabs( occ[i] - wrong ) > Scalar( 0.06 ),
+				"(q) RED-PROOF: " + std::to_string( (int)openings[i] )
+				+ " degrees does NOT also satisfy the previous opening's closed form" );
+		}
+		// The 180-degree case is a bare PLANE, so it is pointwise, not an
+		// average: no rotation may move it off 1 (see (m)).
+		if( i == 0 ) {
+			CheckClose( spread, 0.0, 0.0,
+				"(q) the 180-degree 'wedge' reads 1 under EVERY rotation, not on average" );
+		}
 		o->release();
 	}
 

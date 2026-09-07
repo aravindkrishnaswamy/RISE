@@ -301,12 +301,15 @@ namespace RISE
 			//! (docs/GEOMETRY_SHADING_SIGNALS_DESIGN.md §6.2 for the channel,
 			//! docs/OCCLUSION_CONVEXITY_AND_EDGE_SIGNAL.md for the estimator).
 			//!
-			//! DIRECTIONAL VISIBILITY over the outward hemisphere -- of 40
-			//! uniformly-spread directions, the fraction that escape a
+			//! DIRECTIONAL VISIBILITY over the outward hemisphere -- of 12
+			//! cosine-weighted directions, spun about the normal by one of 32
+			//! pre-built rotations picked per hit, the fraction that escape a
 			//! distance `radiusFraction * m_diagonal` without entering the
 			//! solid.  Bit for bit the question the mesh family's bake asks
-			//! with rays, which is what makes "the same builtin on meshes and
-			//! SDFs" a portability claim rather than a naming coincidence.
+			//! with rays -- including the per-hit spin, which the mesh bake
+			//! has always applied per VERTEX (`GoldenRotation`) -- which is
+			//! what makes "the same builtin on meshes and SDFs" a portability
+			//! claim rather than a naming coincidence.
 			//!
 			//! A plane reads EXACTLY 1 and so does every CONVEX feature (all
 			//! outward directions escape, so no normalisation is needed at
@@ -317,10 +320,13 @@ namespace RISE
 			//! valley.  A wedge of empty opening `alpha <= pi` reads exactly
 			//! `alpha/pi`; slots, folds and pockets go dark.
 			//!
-			//! Costs one sphere trace per outward direction (~40), each
-			//! bounded to 24 steps -- the expensive one of the two signals,
-			//! and the reason the .cpp explains at length why the cheap
-			//! ball-volume measure cannot stand in for it.
+			//! Costs one sphere trace per outward direction (12), each
+			//! bounded to 24 steps and averaging ~7.6 of them -- so ~91 field
+			//! evaluations, the expensive one of the two signals, and the
+			//! reason the .cpp explains at length why the cheap ball-volume
+			//! measure cannot stand in for it.  The traces run in LOCKSTEP
+			//! across the directions rather than one ray to completion, which
+			//! is worth ~1.8x on its own (see the note at the loop).
 			//!
 			//! `radiusFraction` is a fraction of m_diagonal (this geometry's
 			//! bounding-box diagonal), so the answer is invariant across
@@ -340,8 +346,9 @@ namespace RISE
 			//! the fraction of the ball of radius `radiusFraction *
 			//! m_diagonal` about the hit lying outside the solid, which a
 			//! centrally-symmetric point set puts at EXACTLY 1/2 on a plane
-			//! at any orientation.  80 point samples, no marching, no rays,
-			//! no tangent frame: an order cheaper than occlusion.
+			//! at any orientation.  32 point samples (16 mirrored pairs, the
+			//! set rotated per hit like occlusion's), no marching, no rays,
+			//! no tangent frame: roughly a third of occlusion's cost.
 			//!
 			//! Deliberately a DIFFERENT measure from occlusion's, and the
 			//! .cpp argues both halves of why: volume cannot see a slot
