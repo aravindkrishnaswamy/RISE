@@ -832,7 +832,7 @@ relief_modifier
 	height	wood_height   # any scalar_painter -- ISCALARPAINTER TRAP applies (below)
 	scale	0.004          # height amplitude, field units -> world units (domain surface)
 	domain	surface        # surface (default, 3D, no texcoords needed) | uv
-	step	0              # 0 = auto: max(1e-3, filter-width) on surface, 0.01 on uv
+	step	0              # 0 = auto: half the pixel footprint on surface (falls back to 1e-3 only with no footprint), 0.01 on uv
 	max_slope 0            # 0 = no clamp; set 0.5-1.0 whenever you raise `scale` (below)
 }
 ```
@@ -1000,9 +1000,16 @@ Traps the toolbox itself sets:
   (paint it on a lambertian under a flat white environment, read
   percentiles) and set ramp stops against those measured values, not the
   nominal `[0,1]`.
-- **`step 0` in `relief_modifier` floors at 1 mm** (`## Adding relief --
-  relief_modifier` above) -- wider than most millimetre-scale relief.
-  Set `step` explicitly once features sit below that floor.
+- **`step 0` in `relief_modifier` only floors at 1 mm when the hit has NO
+  pixel footprint** (`## Adding relief -- relief_modifier` above,
+  2026-09-06 footprint-deferral fix) -- on a primary hit with a footprint,
+  `step 0` now resolves to half that footprint instead, however small it
+  is, so a close-up shot with millimetre-scale relief no longer needs a
+  hand-picked `step` just to beat the floor.  The 1 mm floor still applies
+  verbatim on hits with no footprint (secondary/bounce hits, or any camera
+  that doesn't set ray differentials).  Set `step` explicitly when you want
+  a floor other than 1 mm in THAT case, or to raise the effective step
+  above what the footprint alone would give.
 - **A smooth colour gradient across a ring reads as a row of rods.**
   Hold one flat plateau across the field range a plateau occupies; check
   by rendering the relief-OFF control -- if it still looks fluted, the

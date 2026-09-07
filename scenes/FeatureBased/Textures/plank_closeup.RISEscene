@@ -109,13 +109,17 @@ RISE ASCII SCENE 7
 #      field to 0 over the entire shank.  `curv` is normalised by the object's bbox diagonal, so its
 #      useful thresholds are per-object -- on the nail the ridges start near 25, not near 1.
 #
-#   -- `step 0` IS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE.  `relief_modifier`'s automatic step is
-#      `max(1e-3, fw/2)`, and the 1e-3 FLOOR is 1 mm -- wider than this scene's ~0.8 mm late-wood ramp.
-#      The relief was being differenced across a 2 mm stencil and came back as a soft smear.  Setting
-#      `step 0.00022` (just above the measured `fw`/2 = 0.20 mm, so the footprint rule still governs)
-#      is what made the ring boundaries crisp.  The design doc says an author must set `step` when the
-#      scene's features are below 1e-3; this scene is that case, and it is not a rare one -- any
-#      close-up of a real object is.
+#   -- `step 0` WAS NOT THE RIGHT DEFAULT AT MILLIMETRE SCALE -- until the 2026-09-06 footprint-
+#      deferral fix (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum).  `relief_modifier`'s automatic step
+#      used to be `max(1e-3, fw/2)` UNCONDITIONALLY, and the 1e-3 FLOOR is 1 mm -- wider than this
+#      scene's ~0.8 mm late-wood ramp, so the 1e-3 floor always won here (`fw`/2 measures ~0.20 mm, far
+#      below it) and the relief was differenced across a 2 mm stencil, coming back as a soft smear.
+#      Setting `step 0.00022` (just above the measured `fw`/2) is what made the ring boundaries crisp.
+#      Post-fix, the 1e-3 floor applies only on a hit with NO pixel footprint -- this scene's primary
+#      hits all have one, so `step 0` now resolves to `fw`/2 on its own and would render the same
+#      crisp ring boundaries without the explicit value.  The explicit `step 0.00022` is KEPT here
+#      regardless, as documentation of the measured footprint at this camera distance, and because it
+#      is a legitimate floor above whatever `fw`/2 happens to be if the camera moves closer still.
 #
 #   -- A SMOOTH COLOUR GRADIENT ACROSS EACH RING READS AS A ROW OF RODS.  Ramping the early wood
 #      steadily from pale to mid across the ring gives every ring the tonal signature of a shaded
@@ -468,13 +472,18 @@ scalar_painter
 # same kind of field with the opposite intent and says so in its own
 # comment; the two scenes do not disagree, they depict different surfaces.)
 #
-# STEP.  `step 0.00022`, NOT the `step 0` default, and this is the single
-# change that made relief legible here.  The automatic rule is
-# max(1e-3, fw/2); the 1e-3 FLOOR is 1 mm, wider than this scene's ~0.8 mm
-# late-wood ramp, so the default differenced the field across a 2 mm stencil
-# and returned a soft smear.  0.00022 sits just above the measured fw/2 =
-# 0.20 mm, so the footprint rule still governs (an explicit step BELOW fw/2 is
-# silently raised) and the stencil spans exactly one pixel.
+# STEP.  `step 0.00022`, kept explicit even though it is now redundant.  At
+# the time this scene was authored the automatic rule maxed the 1e-3 FLOOR
+# (1 mm, wider than this scene's ~0.8 mm late-wood ramp) against fw/2
+# UNCONDITIONALLY, so `step 0` differenced the field across a 2 mm stencil
+# and returned a soft smear; 0.00022 (just above the measured fw/2 = 0.20 mm)
+# was the fix.  Since the 2026-09-06 footprint-deferral fix
+# (docs/RELIEF_MODIFIER_DESIGN.md 3.3 addendum) the 1e-3 floor applies only
+# when a hit has NO pixel footprint, so `step 0` now resolves to fw/2 = 0.20
+# mm on its own here and would render the same result.  0.00022 is left in
+# place as documentation of the measured footprint at this camera distance
+# (an explicit step below fw/2 is still silently raised to fw/2, so it
+# remains a harmless floor, not an override).
 #
 # AMPLITUDE + CLAMP, chosen by sweep (scale x max_slope, 3x3 plus controls,
 # measured on a 94%-wood crop of the top face against a `scale 0` control):

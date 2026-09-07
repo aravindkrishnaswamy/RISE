@@ -186,7 +186,7 @@ relief_modifier
 	height   sp_wood_height        # scalar_painter (or inline numeric -> flat, pointless)
 	scale    0.004                 # height amplitude: field units -> world units (surface) / UV units (uv)
 	domain   surface               # surface (default) | uv
-	step     0                     # 0 = auto (surface: max(1e-3, fw); uv: 0.01)
+	step     0                     # 0 = auto (surface: fw/2 if the hit has a footprint, else 1e-3; uv: 0.01)
 	max_slope 0                   # 0 = no clamp; 0.5-1.0 bounds the tilt (a slope; 1.0 = 45 deg)
 }
 ```
@@ -477,6 +477,38 @@ geometric-mean fold and both report exactly the predicted 4.309x.  The old
 "the error only under-filters, so `max(step, worldWidth)` falls back to
 `step`" consolation no longer applies, because there is no error left to
 under-filter.
+
+⚠ **Addendum (2026-09-06, footprint-deferral fix): the `max(·, 1e-3)` half
+of the §3.3 rule box above is SUPERSEDED for any hit that has a footprint.**
+The rule as originally landed always maxed the `1e-3` floor against
+`fw/2` *unconditionally* — `s = max(step_user > 0 ? step_user : 1e-3,
+widthValid ? fw/2 : 0)` — so on a hit whose footprint was smaller than
+`2e-3` world units (any sufficiently close-up primary hit), the `1e-3`
+floor won and the central difference spanned a full `2mm`, smearing
+sub-millimetre relief regardless of how tight the actual footprint was.
+`scenes/FeatureBased/Textures/plank_closeup.RISEscene` (measured
+`fw ≈ 4e-4`) needed an explicit `step 0.00022` to work around exactly this
+— the floor, not the footprint term, was governing the step at that
+distance. The rule is now:
+
+```
+widthValid:  s = max( step_user, fw/2 )      # user step is a floor, not a competitor to the 1e-3 constant
+!widthValid: s = step_user > 0 ? step_user : 1e-3
+```
+
+The `1e-3` floor applies **only** when the hit carries no footprint at
+all — it no longer competes with a real, smaller footprint. A footprint
+below `2e-3` world units now resolves to its own `fw/2` half-step, not to
+`1e-3`. `plank_closeup.RISEscene`'s explicit `step 0.00022` is unaffected
+(it already exceeded the old floor comparison) but is now also redundant
+against `step 0`, which resolves to the same order of magnitude on its
+own; the scene keeps the explicit value as documentation of the measured
+footprint. `RELIEF_AUTO_STEP_SURFACE` ([ReliefModifier.cpp](../src/Library/Modifiers/ReliefModifier.cpp))
+and the `relief_modifier` descriptor's `step` parameter
+([ChunkParserRegistry.cpp](../src/Library/Parsers/ChunkParserRegistry.cpp))
+were both updated to state the no-footprint-only scope. The `uv`-domain
+rule (`s = step_user > 0 ? step_user : 0.01`) has no footprint term and is
+unaffected — this fix is surface-domain only.
 
 ### 3.4 One field on the hit record
 
