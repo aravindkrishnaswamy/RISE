@@ -323,12 +323,31 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 //! and both must be wired or a scene whose field feeds roughness rather
 //! than colour would get none of it.
 //!
-//! BOTH result types go through EvalVec3 for the memo's benefit, which is
-//! not a behaviour change: EvalVec3 broadcasts a scalar-typed program to
-//! (s,s,s) and this function then reads `.x`, which is exactly what
-//! `Eval(ctx)` returns.  Sharing one entry shape also means the colour
-//! pipe and this pipe hit each other's entries when a scene binds one
-//! `expression_painter` to both, which `plank_closeup` does.
+//! EACH RESULT TYPE KEEPS THE ENTRY POINT IT HAD BEFORE THE MEMO: a
+//! vec3-typed program calls `EvalVec3`, a scalar-typed one calls
+//! `Eval`, and the memo only wraps the call.  That is deliberate and it
+//! is the one contract this file is not allowed to move -- the VM's
+//! arithmetic is bit-compared by TextureExpressionVMTest, and under
+//! `-ffast-math` merely changing WHICH entry point this hot consumer
+//! inlines has already been observed to move an ulp (see
+//! ExpressionProgram::MakeMemoKey's comment).  The scalar branch stores
+//! the broadcast `(s,s,s)` so both branches share ONE entry shape, and
+//! reads `.x` back out of it.
+//!
+//! THE TWO PIPES DO NOT SHARE ENTRIES, and nothing here depends on their
+//! doing so: an L2 key carries the program's id, every `Finalize` mints a
+//! fresh one, and `expression_painter` and `scalar_painter { expression
+//! ... }` each compile their own program, so a colour painter and a
+//! scalar painter authored from the same source text still key apart.
+//! (Two painters DO share entries when they are built from ONE compiled
+//! program -- the copied-program case ExpressionMemoTest (c) pins -- but
+//! that is a property of program identity, not of the pipes.)  In
+//! `plank_closeup`, for instance, the roughness slots that read the
+//! plank's own field are `scalar_painter { painter expr_plank }` -- a
+//! PainterToScalarAdapter over the COLOUR painter, so those hits land on
+//! EvalRGB's entry above and never reach this function -- while
+//! `sp_pore` is a genuine `scalar_painter { expression ... }` over its
+//! OWN program, memoised here under its own id.
 ScalarTriple ExpressionScalarPainter::GetValuesAt( const RayIntersectionGeometric& ri ) const
 {
 	const ExprEvalContext ctx = BuildContext( ri );
@@ -345,7 +364,13 @@ ScalarTriple ExpressionScalarPainter::GetValuesAt( const RayIntersectionGeometri
 		}
 	}
 
-	const Vector3 v = m_prog.EvalVec3( ctx );
+	Vector3 v;
+	if( isVec3 ) {
+		v = m_prog.EvalVec3( ctx );
+	} else {
+		const Scalar s = m_prog.Eval( ctx );	// the pre-memo entry point, unchanged
+		v = Vector3( s, s, s );
+	}
 	if( memoable ) ExpressionMemo::L2Insert( key, v );
 	if( isVec3 ) {
 		// x->R, y->G, z->B -- the same triple ordering RGBScalarPainter's
