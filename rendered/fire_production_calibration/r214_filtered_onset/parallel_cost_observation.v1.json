@@ -1,0 +1,57 @@
+{
+  "schema": "rise.fire.r214.parallel-cost-observation.v1",
+  "scope": "diagnostic_and_isolated_candidate_only",
+  "production_change_promoted": false,
+  "tier10_worker_source_commit": "3dc96320527f211aff22e6fbea971c10ff2e0145",
+  "tier10_worker_sha256": "45370ad3bcc7035fb228a1f839efe5059cbcc791a64486bd2a1f0b1c3025dc2c",
+  "host_sample": {
+    "path": "tier10_host_sample.prefix.v1.txt",
+    "sha256": "954a68cac50f1c706f3ad2b42dfd626e8b4f834fbe05a5e5941ff7a1589dab51",
+    "pid": 1049,
+    "start_local": "2026-09-07T14:56:09.561-07:00",
+    "requested_duration_seconds": 5,
+    "sampling_interval_milliseconds": 2,
+    "collapsed_leaf_samples": {
+      "HashSourceDoubleValues": 317,
+      "HashFluxValues": 283,
+      "FireProductionAcceptedManifoldPayloadDigest": 118
+    },
+    "finding": "EncodeResidentFrozenSourceAuthority calls FireProductionFrozenSourcePacketSeal::Matches in BuildStage; Matches scans and hashes frozen source arrays repeatedly during Picard iteration.",
+    "limitation": "Short cold-prefix stack sample, not exclusive wall timing or an uncontended hot-step benchmark. No conversion of sample counts to per-step seconds or percentage of the wall-minus-device residual is claimed. The onset step timings during sampling and concurrent CPU preparation are not performance-qualification measurements."
+  },
+  "target_basis_candidate": {
+    "commit": "3aad1e93c55d1c58289db552fcb28a7fd0b6cafe",
+    "source_sha256": "74b156d124a44353e679cd7a3dd9e0ec435bb0f708f60f423ca5affadca009f6",
+    "cpu_test_sha256": "c2368f4b5956dcd0111cd785e8945c76cc49c45be17ee1ebac7cb193556808ae",
+    "cpu_test_log": "target_basis_cpu.v1.log",
+    "reference_commit": "6f444137733ac01c3236d83a665aeef961550fe6",
+    "synthetic_per_mode": {
+      "separate_enthalpy_cp_helper_pairs": 1792,
+      "target_cells": 512,
+      "accepted": 492,
+      "refused": 20,
+      "bit_mismatches": 0,
+      "class_mismatches": 0
+    },
+    "offline_metal_compile": {
+      "compiler": "xcrun metal",
+      "flags": ["-std=metal3.2", "-fno-fast-math", "-x", "metal", "-c"],
+      "stage_token_modes": [0, 1],
+      "exit_codes": [0, 0],
+      "warnings": 0,
+      "extraction": "Concatenate the three R-METAL raw strings in ResidentTransportMetalContext::Source, apply the constructor's obligation-call replacement, and compile each RISE_STAGE_TOKENS define. Exactly three fragments required.",
+      "context_note": "Initial compiler invocation could not write the sandbox-external default module cache. Both successful invocations used an explicit task-local module cache; no source or compiler-warning suppression was used.",
+      "air_archive": "target_basis_offline_air.v1.tar.gz",
+      "air_archive_sha256": "aa14ac350c4b79f7c6e636c8972d422bfc1e78c15a75bbc3b2674a5cfff42c36",
+      "mode_0_air_sha256": "0871f9e2bada0bf649c6e17118ad1c493056c111a6bb124e8bc5f8b9a01ea0a6",
+      "mode_1_air_sha256": "dcd04e55148068cda512041e6d3040a67f42a2999d0bcc9e208e5af336fdd67a"
+    },
+    "remaining_gates": [
+      "Fresh independent review and full native build",
+      "Live Metal separate-term and reviewed-r190 owner qualification",
+      "Eight matched hot-step payload-equivalence proof",
+      "Three uncontended hot profiles; register pressure and actual working set"
+    ],
+    "speedup_claim": null
+  }
+}
