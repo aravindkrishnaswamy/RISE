@@ -7747,19 +7747,31 @@ namespace
 	}
 #endif
 
+	bool Tier10OnsetScopeAccepted(const double tier,const bool legacy,const bool projected,
+		const bool continuation,const std::string& protocolSHA)
+	{
+		return tier==10.0&&!legacy&&projected&&!continuation&&protocolSHA==
+			"983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2";
+	}
+
 	int RunProductionOnsetCampaignChild(const double resolutionTier,
 		const std::filesystem::path& outputDirectory,const bool sealedLegacyReplay=false,
 		const std::filesystem::path& replayProtocolPath=std::filesystem::path(),
 		const std::string& replayProtocolDigest=std::string(),
 		const bool sealedProjectedReplay=false,
 		const std::filesystem::path& continuationCheckpoint=std::filesystem::path(),
-		const std::filesystem::path& continuationCertificate=std::filesystem::path())
+		const std::filesystem::path& continuationCertificate=std::filesystem::path(),
+		const bool tier10Onset=false)
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)outputDirectory;return 90;
 #else
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return 91;
 		const bool continuation=!continuationCheckpoint.empty();
+		if(tier10Onset&&(!Tier10OnsetScopeAccepted(resolutionTier,sealedLegacyReplay,
+			sealedProjectedReplay,continuation,replayProtocolDigest)||
+			!continuationCertificate.empty()||!OwnerCostPrefixEnvironmentAccepted()||
+			std::getenv("RISE_FIRE_EOS_DIAGNOSTIC_SNAPSHOTS")))return 91;
 		if(continuation){
 			ResumeEquivalenceCertificate certificate;std::string certificateError;
 			if(!sealedProjectedReplay||sealedLegacyReplay||
@@ -7770,7 +7782,7 @@ namespace
 				certificate.checkpointDigest!=DigestFile(continuationCheckpoint)){
 				std::fprintf(stderr,"RESIDENT_CONTINUATION_REFUSED %s\n",certificateError.c_str());return 91;}
 		}
-		if((sealedLegacyReplay||sealedProjectedReplay)&&(resolutionTier!=8.0||
+		if((sealedLegacyReplay||sealedProjectedReplay)&&((resolutionTier!=8.0&&!tier10Onset)||
 			sealedLegacyReplay==sealedProjectedReplay||std::filesystem::exists(outputDirectory)||
 			replayProtocolDigest.size()!=64u||DigestFile(replayProtocolPath)!=replayProtocolDigest||
 			std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")||
@@ -7804,7 +7816,7 @@ namespace
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
-		double targetTimeS=continuation?3.5:(sealedLegacyReplay||sealedProjectedReplay)?3.0:2.2;
+		double targetTimeS=(continuation||tier10Onset)?3.5:(sealedLegacyReplay||sealedProjectedReplay)?3.0:2.2;
 		if(!sealedLegacyReplay&&!sealedProjectedReplay)if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
 			char* end=nullptr;targetTimeS=std::strtod(target,&end);
 			if(!end||*end!='\0'||!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
@@ -7838,6 +7850,7 @@ namespace
 		}
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.productionOnsetStopVelocityMPerS=60.0;
+		if(tier10Onset)persistence.productionOnsetStopVelocityMPerS=15.0;
 		if(continuation){
 			std::string copyError;
 			MethaneRunCheckpoint source;
@@ -7873,7 +7886,7 @@ namespace
 			producerExecutableDigest.size()!=64u)return 92;
 		const auto wallStart=std::chrono::steady_clock::now();
 		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
-		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,continuation?3.0:targetTimeS,1.0,
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,(continuation||tier10Onset)?3.0:targetTimeS,1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
 		const double wallS=std::chrono::duration<double>(
@@ -7909,6 +7922,8 @@ namespace
 			<<"continuation_identity_sha256 "<<(continuation?
 				DigestFile(outputDirectory/"continuation_identity.v2"):std::string("not_applicable"))<<"\n"
 			<<"target_time_s "<<targetTimeS<<"\n"
+			<<"tier10_onset_protocol "<<(tier10Onset?1:0)<<"\n"
+			<<"face_rate_scope diagnostic_not_filtered_contract_gate\n"
 			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
 			<<"completed_target "<<(reachedTarget?1:0)<<"\n"
 			<<"accepted_steps "<<result.acceptedTimeStepHistoryS.size()<<"\n"
@@ -7960,17 +7975,21 @@ namespace
 				"threshold_"<<threshold<<"_event_sha256 "<<
 				DigestFile(budget.string()+".event.v1")<<"\n";
 		}
-		if((sealedLegacyReplay||sealedProjectedReplay)&&!reachedTarget&&!continuation)
+		if((sealedLegacyReplay||sealedProjectedReplay)&&!reachedTarget&&!continuation&&!tier10Onset)
 			for(const unsigned int threshold:{15u,30u,60u})
 				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 					std::filesystem::exists(outputDirectory/"budgets"/
 						("threshold_"+std::to_string(threshold)+".raw.csv"));
-		if(continuation&&!reachedTarget)capturedThresholdBundlesComplete=
+		if((continuation||tier10Onset)&&!reachedTarget)capturedThresholdBundlesComplete=
 			capturedThresholdBundlesComplete&&
 			std::filesystem::exists(outputDirectory/"budgets"/"threshold_15.raw.csv");
 		const std::filesystem::path exactObservation=outputDirectory/"budgets"/
 			"reference_composition_candidate_fixed_column.raw.csv";
-		if(sealedProjectedReplay){
+		// An onset before the nominated reference time is a measured crossing,
+		// not an obligation to continue a known runaway until that later time.
+		const bool exactObservationRequired=!tier10Onset||
+			result.simulatedTimeS>persistence.productionMomentumObservationTimeS;
+		if(sealedProjectedReplay&&exactObservationRequired){
 			capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 				!DigestFile(exactObservation.string()+".convergence.v1").empty()&&
 				!DigestFile(exactObservation.string()+".convergence.v1.csv").empty()&&
@@ -8006,13 +8025,13 @@ namespace
 			!capturedThresholdBundlesComplete||
 			((sealedLegacyReplay||sealedProjectedReplay)&&(DigestFile(outputDirectory/
 				(continuation?"continuation_identity.v2":"from_zero_identity.v1")).empty()||
-				DigestFile(exactObservation).empty()||
+				(exactObservationRequired&&(DigestFile(exactObservation).empty()||
 				DigestFile(exactObservation.string()+".column.csv").empty()||
 				DigestFile(exactObservation.string()+".source_context.csv").empty()||
 				DigestFile(exactObservation.string()+".source_packets.bin").empty()||
 				DigestFile(exactObservation.string()+".source_ledger.v1").empty()||
 				DigestFile(exactObservation.string()+".source_observation_inputs.bin").empty()||
-				DigestFile(exactObservation.string()+".event.v1").empty()))||
+				DigestFile(exactObservation.string()+".event.v1").empty()))))||
 			(!persistence.singleStageFCTDiagnostic&&
 			 DigestFile(outputDirectory/"final.checkpoint").empty()))return 94;
 		std::error_code summaryPublishError;
@@ -16466,6 +16485,21 @@ int main(int argc,char** argv)
 		return RunProductionOnsetCampaignChild(8.0,argv[2],true,argv[3],argv[4]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-r201-ported")==0)
 		return RunProductionOnsetCampaignChild(8.0,argv[2],false,argv[3],argv[4],true);
+	if(argc==5&&std::strcmp(argv[1],"--fire-production-r214-tier10")==0)
+		return RunProductionOnsetCampaignChild(10.0,argv[2],false,argv[3],argv[4],true,
+			std::filesystem::path(),std::filesystem::path(),true);
+	if(argc==2&&std::strcmp(argv[1],"--fire-production-r214-scope-red")==0){
+		const std::string protocol="983cfb4975a614a7bee2593c6d0f4536679925911afd0b22a5b2e897d6b04dc2";
+		const bool green=Tier10OnsetScopeAccepted(10.0,false,true,false,protocol);
+		const bool red=!Tier10OnsetScopeAccepted(8.0,false,true,false,protocol)&&
+			!Tier10OnsetScopeAccepted(10.0,true,true,false,protocol)&&
+			!Tier10OnsetScopeAccepted(10.0,false,false,false,protocol)&&
+			!Tier10OnsetScopeAccepted(10.0,false,true,true,protocol)&&
+			!Tier10OnsetScopeAccepted(10.0,false,true,false,std::string(64u,'0'));
+		std::fprintf(stderr,"R214_ONSET_SCOPE green=%d wrong_tier_old_operator_resume_protocol_red=%d\n",
+			green?1:0,red?1:0);
+		return green&&red?0:96;
+	}
 	if(argc==7&&std::strcmp(argv[1],"--fire-production-r211-continue")==0)
 		return RunProductionOnsetCampaignChild(8.0,argv[4],false,argv[5],argv[6],true,argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
