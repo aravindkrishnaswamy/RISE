@@ -85,8 +85,9 @@ RISE ASCII SCENE 7
 #      fill is COOL and the wood albedo has to be pre-corrected for it.
 #
 #   7. THE IRON ANSWERS THE SAME DOCTRINE.  The nail is not a box wearing a noise cloud (which is what
-#      weathered_workbench's "iron vise" is -- two `box_geometry` under an isotropic Worley field, a
-#      shape that says nothing about what it is).  Its SILHOUETTE says hand-forged nail: a round cone
+#      weathered_workbench's "iron vise" WAS until 2026-09-06 -- two `box_geometry` under an isotropic
+#      Worley field, a shape that said nothing about what it was; it is now a fifteen-part cast bench
+#      vise built to this rule).  Its SILHOUETTE says hand-forged nail: a round cone
 #      squared off by an INTERSECTING box into a tapered rectangular shank, plus an off-axis hammered
 #      head.  Its surface is a 3 mm forge undulation, pits at 1 mm thresholded to a few per cent
 #      coverage, forge scale as smoother lighter patches, rust concentrated by `occlusion()` in the

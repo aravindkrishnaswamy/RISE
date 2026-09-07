@@ -1003,8 +1003,10 @@ added last and anisotropically.  The rules below are that order.
   can buy as much detail as an entire relief-amplitude sweep.
 - **The iron rule.**  Silhouette says what the object is; a noise cloud
   on the wrong shape says nothing.  Two boxes under an isotropic Worley
-  field is not a vise -- cut the silhouette to match first, then apply
-  the rest of this doctrine to its surface.
+  field is not a vise (that is what `weathered_workbench`'s vise was
+  before it became a fifteen-part `sdf_geometry` bench vise) -- cut the
+  silhouette to match first, then apply the rest of this doctrine to its
+  surface.
 
 Traps the toolbox itself sets:
 
