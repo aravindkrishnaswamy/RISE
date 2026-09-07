@@ -64,6 +64,9 @@ namespace RISE
 				: coeffs( std::move( c ) )
 			{}
 
+			//! Structural introspection: the coefficient list.
+			const std::vector<Scalar>& GetCoeffs() const { return coeffs; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& /*ri*/
 				) const override

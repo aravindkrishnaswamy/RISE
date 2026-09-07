@@ -74,6 +74,14 @@ namespace RISE
 				C1( C1_ ), C2( C2_ ), C3( C3_ )
 			{}
 
+			//! Structural introspection: the six Sellmeier coefficients.
+			Scalar GetB1() const { return B1; }
+			Scalar GetB2() const { return B2; }
+			Scalar GetB3() const { return B3; }
+			Scalar GetC1() const { return C1; }
+			Scalar GetC2() const { return C2; }
+			Scalar GetC3() const { return C3; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& /*ri*/
 				) const override

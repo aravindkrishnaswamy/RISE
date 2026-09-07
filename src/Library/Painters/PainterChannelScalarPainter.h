@@ -81,6 +81,12 @@ namespace RISE
 				source.addref();
 			}
 
+			//! Structural introspection: source painter + channel/scale/bias.
+			const IPainter& GetSource() const { return source; }
+			Channel GetChannel() const { return channel; }
+			Scalar GetScale() const { return scale; }
+			Scalar GetBias() const { return bias; }
+
 			// A single selected channel is replicated to all three slots --
 			// this painter reads ONE channel of `source`, not three, so the
 			// result is a genuinely uniform triple (matches TextureScalarPainter's

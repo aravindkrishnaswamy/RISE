@@ -47,6 +47,10 @@ namespace RISE
 				if( pB ) pB->addref();
 			}
 
+			//! Structural introspection: operands.
+			const IScalarPainter* GetA() const { return pA; }
+			const IScalarPainter* GetB() const { return pB; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& ri
 				) const override

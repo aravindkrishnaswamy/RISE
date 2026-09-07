@@ -56,6 +56,11 @@ namespace RISE
 				: r( r_ ), g( g_ ), b( b_ )
 			{}
 
+			//! Structural introspection: the three channel values.
+			Scalar GetR() const { return r; }
+			Scalar GetG() const { return g; }
+			Scalar GetB() const { return b; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& /*ri*/
 				) const override

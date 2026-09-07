@@ -81,6 +81,11 @@ namespace RISE
 				);
 
 			void Modify( RayIntersectionGeometric& ri ) const;
+
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): the ordered member list.
+			unsigned int MemberCount() const { return (unsigned int)members.size(); }
+			const IRayIntersectionModifier* Member( unsigned int i ) const { return members[i]; }
 		};
 	}
 }
