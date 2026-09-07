@@ -872,6 +872,12 @@ variant that breaks everything above.
 lazy + mutex shader-op route, or bake-time `IObjectManager::IntersectShadowRay`
 (`IObjectManager.h:46-51`) against the whole scene — the cheapest occlusion
 primitive available, boolean-only, far cheaper than a full `IRayCaster::CastRay`.
+**Both routes were prototyped and priced 2026-09-07 (§8.1) and neither is an
+open pointer any more:** the live shadow-ray query costs 2.4× on the flagship
+scene and reaches the contact case only as a band that does not read; the
+attach-time bake is affordable for meshes (Sponza 12 s / 7.8 MB) and cannot
+resolve the SDF family's feature sizes as a dense grid; both inherit an
+O(scene) invalidation the bbox census cannot fully see.
 
 ### 8.1 Re-measured 2026-09-07 — DECLINED AGAIN, with the numbers
 
@@ -886,7 +892,8 @@ both plus a Sponza-class scene, and price the obvious mitigation (a
 as a sanctioned outcome. That is the outcome. Two prototypes were built, on
 branches that will never be merged: `proto/xobj-ao-live` (`f1b6bff7`; the
 sampler-weighting and bench-magnitude follow-up is `proto/xobj-ao-live-v2`,
-`ba3cfe05`) and `proto/xobj-ao-bake` (`78c71b07`), all off `4ebb082d`. Renders and raw logs
+`ba3cfe05`, stacked on it) and `proto/xobj-ao-bake` (`78c71b07`), both off
+`4ebb082d`. Renders and raw logs
 live in the session scratchpad, not the tree; every number below is copied
 from the workers' per-run logs and the render crops were judged by eye.
 
@@ -996,7 +1003,7 @@ wall clock, because 0.1 m rays die in the BVH almost at once. N = 64 costs
 **(c) The bake.** *Meshes are affordable.* Sponza's 405 objects / 2,049,137
 vertices bake in **12.14 s** single-threaded at N = 16 (runs 12.14 / 15.21 /
 15.40 / 15.75 / 17.01), 45.25 s at N = 64, **2.34 s with 16 threads** on the 18-core
-machine (5.2×: per-object jobs with a median of 796 and a maximum of 43,309 vertices
+machine (one run; 5.2×: per-object jobs with a median of 796 and a maximum of 43,309 vertices
 leave a one-object tail), for 7.82 MB — 64 % / 238 % / 12.3 % of the 18.98 s
 shipped render it feeds. A 22,998-vertex dragon bakes in 93 ms; per vertex the
 cost is 1.47× superlinear from the dragon to Sponza (4.04 → 5.93 µs), the
@@ -1018,13 +1025,13 @@ ray count, since the prototype already traced only shell cells — the 38.6 M
 and ~7 M figures are what *any* structure sampling at that density pays. And a
 grid of either kind is a strict downgrade of the *self* half, which the analytic estimator answers
 resolution-free today. Grids at G = 32 do deliver the broad term ("this face
-looks at the floor") in 59–207 ms per object, which is the one thing they are
+looks at the floor") in 60–207 ms per object, which is the one thing they are
 honest for.
 
 **Invalidation, counted.** The static bound — other finite-bbox objects whose
 bbox expanded by `R` overlaps this one's — says a move of the bench top
 invalidates **6 of 6** neighbours; in Sponza the median object drags **33**,
-the mean 40.7 and the worst **376 of 404**, i.e. a full re-bake. Worse than the
+the mean 40.7 and the worst **376 of 404**, i.e. 93 % of the scene. Worse than the
 census can say: the infinite plane, the largest occluder in *both* Textures
 scenes, has no finite bbox and is invisible to any proximity test. The engine's
 own seam is no help either — the incremental apply (`Cst.cpp`,
