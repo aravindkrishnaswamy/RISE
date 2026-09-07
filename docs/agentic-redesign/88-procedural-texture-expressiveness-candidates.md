@@ -397,12 +397,36 @@ all three → the mechanism is wrong, stop and re-diagnose before adding chunks.
    this date; it is world-correct since.  `fbm`/`turbulence`/`ridged`
    fade each octave's amplitude by `1 - smoothstep(0.2, 0.6, fw *
    lacunarity^i)` (Apodaca & Gritz, "Advanced RenderMan", 1999, ch.12) --
-   bit-identical to the pre-S9 sum at `fw == 0`.  Known limitation, not a
+   bit-identical to the pre-S9 sum at `fw == 0`.  ~~Known limitation, not a
    canyon: `fw` is passed into the noise builtins in whatever domain the
    body's own position argument is already in (e.g. `fbm(P*10, ...)`
    makes the fade threshold off by that 10x) since the VM has no
    autodiff to track a caller's own scale multiply -- documented at the
-   call site, not solved.
+   call site, not solved.~~  **RESOLVED 2026-09-06:** the unscaled-`fw`
+   convention was not a bounded caveat but a fade that never fired --
+   every shipped scene scales its noise domain (`P*7` in
+   `relief_crackle_glaze` / `relief_sphere_no_uv`, `P*40`..`P*820` in
+   `plank_closeup`), and at a real render footprint the unscaled
+   threshold left all five octaves at full weight.  The VM now DOES have
+   the autodiff this entry said it lacked: `ExpressionEval.h`'s
+   `Builder::NoiseFwScale` runs a forward-mode derivative pass over the
+   position argument's already-emitted postfix code, recovers the 3x3
+   Jacobian `d(argument)/dP`, and folds its largest singular value into a
+   per-call-site multiplier stored on the `kFunc` instruction (`Instr::
+   val`), which `RunAny` applies to `env[kContextSlotFw]` at dispatch.
+   The analysis covers everything affine in `P` -- `P`, `P.x/y/z`,
+   literals, `vec3()`, `param`/`def` names, unary `-`, and `+ - * /` by a
+   compile-time constant -- so a scale carried through a `def` resolves
+   like the inlined literal.  A sum with one non-affine term keeps the
+   affine part's scale (the domain-warp idiom fades at its base
+   frequency); an argument with no affine part falls back to multiplier
+   1.0, i.e. the pre-2026-09-06 behaviour; and an argument provably
+   independent of `P` gets multiplier 0, since a constant cannot alias.
+   Bit-identity is preserved where it matters: `fw == 0` (any domain) and
+   a bare `P` argument (Jacobian == identity, multiplier exactly 1.0 via
+   `JacobianSpectralNorm`'s exact diagonal path).  Guarded by
+   `TextureExpressionVMTest` tests 65-68, test 67 asserting recorded
+   pre-change values with `==`.
 4. **`time` is in**: exposed as a keyframable chunk param (Gerstner
    precedent), available as a variable in bodies from day 1.
 5. **Name is `expression_painter`.**  `expression_function2d` stays as-is for

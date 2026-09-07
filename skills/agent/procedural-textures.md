@@ -123,12 +123,15 @@ after a scatter; on a SCALED instance `fw` is world-space, not
 object-space, since the same arc), and
 `time`.  `fbm`/`turbulence`/`ridged` use `fw` automatically to fade out
 octaves the sample footprint can't resolve, cutting shimmer on
-distant/grazing procedural surfaces.  Watch domain scaling: `fw` is
-passed through UNSCALED, so scaling the position argument (e.g.
-`fbm(P*10, ...)`) scales the effective filter width the fade sees by
-that same factor -- the standard frequency idiom silently shifts the
-fade threshold, so retune the fade expectations (or divide `fw`
-accordingly) whenever you scale `P`.  Builtins: `perlin`, `fbm(p, octaves, gain,
+distant/grazing procedural surfaces.  Domain scaling is handled for
+you (2026-09-06): the compiler differentiates each noise call's
+position argument with respect to `P` and rescales `fw` into that
+argument's own domain, so `fbm(P*40, ...)` fades at `40*fw` and you
+never divide `fw` by hand.  It resolves anything affine in `P`
+(including a scale carried through a `param` or `def`); a domain warp
+keeps its affine part's scale, and an argument with no provable
+relation to `P` at all (one built from `u`/`v`) simply gets the
+unscaled `fw`.  Builtins: `perlin`, `fbm(p, octaves, gain,
 lacunarity)`, `turbulence`, `ridged`, `worley_f1/f2/f2f1/id(p, jitter)`,
 `cellhash`, `ramp(t, pos0,val0, ...)`, plus `mix/clamp/smoothstep/step/
 select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
