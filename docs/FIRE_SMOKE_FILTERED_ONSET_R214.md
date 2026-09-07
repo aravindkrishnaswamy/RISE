@@ -97,3 +97,8 @@ Named REDs cover a crossing on the horizon-reaching step, missing or duplicate
 trajectory rows, a wrong exact time, a failed close, and horizontal/boundary
 face indexing and term selection. A fresh review of the corrected state is
 required before launch.
+
+The next review caught an existing decoder that labelled a high boundary
+face with the adjacent cell coordinate. The live path now uses the same
+staggered face decoder as the boundary round-trip RED; clamping occurs only
+when selecting cells, never when recording the actual face location.

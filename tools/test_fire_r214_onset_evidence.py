@@ -45,6 +45,11 @@ class OnsetEvidenceMutants(unittest.TestCase):
             "upper[axis]=std::min(upper[axis],dimensions[axis]-1u);",
             "upper[axis]=lower[axis];"), 1)
 
+    def test_live_decoder_high_face_clamp_mutant_red(self):
+        self.assertEqual(self.staggered(
+            "x=face%nx;y=(face/nx)%ny;z=face/(nx*ny);return true;",
+            "x=std::min(face%nx,dimensions[0]-1u);y=(face/nx)%ny;z=face/(nx*ny);return true;"), 1)
+
     def test_horizon_crossing_mutant_red(self):
         text = (ROOT / "tests/FireProductionOnsetEvidence.h").read_text()
         main = "int main(){return FireProductionOnsetEvidence::Survived(true,true)?1:0;}"

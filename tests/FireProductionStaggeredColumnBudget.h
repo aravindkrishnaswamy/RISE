@@ -54,6 +54,16 @@ namespace FireProductionStaggeredColumn
 		return true;
 	}
 
+	inline bool DecodeFace(const std::array<std::size_t,3>& dimensions,const unsigned int axis,
+		const std::size_t face,std::size_t& x,std::size_t& y,std::size_t& z)
+	{
+		if(axis>=3u||!DimensionsValid(dimensions))return false;
+		const std::size_t nx=dimensions[0]+(axis==0u?1u:0u),
+			ny=dimensions[1]+(axis==1u?1u:0u),nz=dimensions[2]+(axis==2u?1u:0u);
+		if(face>=nx*ny*nz)return false;
+		x=face%nx;y=(face/nx)%ny;z=face/(nx*ny);return true;
+	}
+
 	// x/y are the face coordinates of the extreme. At a high open face the
 	// adjacent column is the last interior cell, not an out-of-domain column.
 	inline bool AdjacentColumn(const std::array<std::size_t,3>& dimensions,
@@ -158,8 +168,13 @@ namespace FireProductionStaggeredColumn
 			{{1u,1u,0u,1u}},{{1u,1u,2u,1u}},{{1u,1u,4u,1u}},
 			{{2u,1u,2u,0u}},{{2u,1u,2u,2u}}}){
 			const unsigned int axis=static_cast<unsigned int>(extreme[0]);
+			const std::size_t encodedFace=extreme[1]+(3u+(axis==0u?1u:0u))*
+				(extreme[2]+(4u+(axis==1u?1u:0u))*extreme[3]);
+			std::size_t decodedX=0u,decodedY=0u,decodedZ=0u;
+			if(!DecodeFace(dimensions,axis,encodedFace,decodedX,decodedY,decodedZ)||
+				decodedX!=extreme[1]||decodedY!=extreme[2]||decodedZ!=extreme[3])return false;
 			std::size_t columnX=0u,columnY=0u;
-			if(!AdjacentColumn(dimensions,axis,extreme[1],extreme[2],extreme[3],columnX,columnY))return false;
+			if(!AdjacentColumn(dimensions,axis,decodedX,decodedY,decodedZ,columnX,columnY))return false;
 			std::vector<Row> rows;if(!Build(dimensions,columnX,columnY,0.5,input,rows)||rows.size()!=11u)return false;
 			bool found=false;std::array<std::size_t,3> counts={{0u,0u,0u}};
 			for(const Row& row:rows){

@@ -4396,26 +4396,11 @@ namespace
 								if(magnitude>attemptMaximumVelocity){attemptMaximumVelocity=magnitude;
 									attemptMaximumAxis=axis;attemptMaximumFace=face;}
 							}
-						if(attemptMaximumAxis==0u){
-							const std::size_t xExtent=request.force.shape.nx+1u;
-							attemptMaximumX=std::min(attemptMaximumFace%xExtent,
-								request.force.shape.nx-1u);
-							const std::size_t yz=attemptMaximumFace/xExtent;
-							attemptMaximumY=yz%request.force.shape.ny;
-							attemptMaximumZ=yz/request.force.shape.ny;
-						}else if(attemptMaximumAxis==1u){
-							attemptMaximumX=attemptMaximumFace%request.force.shape.nx;
-							const std::size_t yz=attemptMaximumFace/request.force.shape.nx;
-							attemptMaximumY=std::min(yz%(request.force.shape.ny+1u),
-								request.force.shape.ny-1u);
-							attemptMaximumZ=yz/(request.force.shape.ny+1u);
-						}else{
-							attemptMaximumX=attemptMaximumFace%request.force.shape.nx;
-							const std::size_t yz=attemptMaximumFace/request.force.shape.nx;
-							attemptMaximumY=yz%request.force.shape.ny;
-							attemptMaximumZ=std::min(yz/request.force.shape.ny,
-								request.force.shape.nz-1u);
-								}
+						if(!FireProductionStaggeredColumn::DecodeFace(
+							{{request.force.shape.nx,request.force.shape.ny,request.force.shape.nz}},
+							attemptMaximumAxis,attemptMaximumFace,attemptMaximumX,attemptMaximumY,attemptMaximumZ)){
+							mandatoryEvidenceFailure=true;advancedOK=false;
+							error=lastAdvanceError="production onset extreme face index invalid";break;}
 						advancedOK=attemptComputed;
 						std::filesystem::path effectiveMomentumAuditPath;
 						std::size_t onsetThresholdIndex=productionOnsetVelocityThresholds.size();
