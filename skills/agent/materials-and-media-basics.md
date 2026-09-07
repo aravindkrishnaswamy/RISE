@@ -1448,10 +1448,41 @@ crackle-glaze ceramic bowl/vase, where a Worley `f2-f1` field marks the
 fissures in the glaze.
 
 Execution-validated as `scenes/Tests/Painters/relief_crackle_glaze.RISEscene`
-(rendered, cracks confirmed to read as sunken relief, not flat paint) — keep
-that scene and this excerpt in sync if either changes:
+(rendered, cracks confirmed to read as sunken relief, not flat paint) — the
+painter, modifier, material and object chunks below are that scene's, so keep
+the two in sync if either changes.  Like every fence in this file it is a
+complete scene: paste it whole and it renders.
 
 ```rise
+RISE ASCII SCENE 7
+
+film
+{
+	width	128
+	height	128
+}
+
+standard_shader
+{
+	name		global
+	shaderop	DefaultPathTracing
+}
+
+pathtracing_pel_rasterizer
+{
+	samples			16
+	pixel_filter	box
+	oidn_denoise	FALSE
+}
+
+pinhole_camera
+{
+	location	0 0 4
+	lookat		0 0 0
+	up			0 1 0
+	fov			40.0
+}
+
 # The one field: a Worley f2-f1 crackle pattern, remapped so the crack LINES
 # read as the HIGH end (near 1) and the glaze BODY reads as the LOW end
 # (near 0) -- see the relief_modifier comment below for why that orientation
@@ -1531,12 +1562,39 @@ ggx_material
 	fresnel_mode	schlick_f0
 }
 
+# Any sphere_geometry / SDF / mesh works here -- `domain surface` needs no UVs.
+sphere_geometry
+{
+	name	cg_sphere_geom
+	radius	1.0
+}
+
 standard_object
 {
 	name		cg_sphere
-	geometry	cg_sphere_geom   # any sphere_geometry / SDF / mesh works -- no UVs required
+	geometry	cg_sphere_geom
 	material	cg_glaze_mat
 	modifier	cg_relief
+	position	0 0 0
+}
+
+# Camera is at +Z, so the key needs a positive Z component (direction is
+# FROM the surface TO the light); raking enough that the sunken crack
+# lines read by shading, not only by the ramp's colour.
+directional_light
+{
+	name		key
+	power		3.0
+	color		1.0 0.97 0.92
+	direction	0.72 0.42 0.35
+}
+
+# A small fill so the unlit hemisphere is not pure black.
+ambient_light
+{
+	name	fill
+	power	0.12
+	color	1.0 1.0 1.0
 }
 ```
 

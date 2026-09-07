@@ -741,7 +741,21 @@ static void TestSnippetContract( AgentRpcDispatcher& rpc )
 	// heightfield-mode trap) is prose only, per the design doc's own
 	// "documentation, not code" framing for that item -- no new fence
 	// there.
-	Check( totalSnippets == 30, "the seed skills carry the expected 30 ```rise snippets in total (got " +
+	//
+	// The relief-modifier arc (2026-09-06, docs/RELIEF_MODIFIER_DESIGN.md
+	// section 9 worked example) took the count 30 -> 31:
+	// materials-and-media-basics gains "One field, three consumers" --
+	// the crackle-glaze recipe where a single Worley f2-f1
+	// expression_painter drives colour (ramp_painter), roughness (a
+	// scalar_painter bridge into ggx alphax/alphay) and relief
+	// (relief_modifier over the SAME scalar_painter, negative scale so
+	// the fissures sink).  It shipped as a bare chunk fragment (no
+	// header, no camera, an undeclared sphere geometry) and this suite
+	// caught it on the next run: every fence here is a complete scene
+	// that derives with zero diagnostics and renders, so the fence now
+	// mirrors scenes/Tests/Painters/relief_crackle_glaze.RISEscene whole
+	// (128x128, 16 spp, box filter, no denoise, like its neighbours).
+	Check( totalSnippets == 31, "the seed skills carry the expected 31 ```rise snippets in total (got " +
 	       std::to_string( totalSnippets ) + ")" );
 }
 
