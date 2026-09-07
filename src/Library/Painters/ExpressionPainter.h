@@ -7,7 +7,7 @@
 //  Both classes wrap a compiled ExpressionProgram built with
 //  EnableContextVars(true) (see ExpressionEval.h's doc comment on why
 //  expression_function2d, the S1 (u,v)-only surface, does NOT do this):
-//  the body sees the full 3D context (u, v, P, Po, N, fw, time), not
+//  the body sees the full 3D context (u, v, P, Po, N, fw, fwo, time), not
 //  just UV.  ExpressionPainter is deliberately registered ONLY in the
 //  colour-painter manager, never in the IFunction2D manager -- doing
 //  so would resurrect the "silently zero" trap other 3D-context

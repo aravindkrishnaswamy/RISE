@@ -77,7 +77,7 @@ namespace RISE
 			//! call's position argument with respect to `P` and scales the
 			//! world-space context fw by the Jacobian's largest singular
 			//! value before calling in, so `fbm(P*40, ...)` arrives here
-			//! with 40*fw (see ExpressionEval.h's Builder::NoiseFwScale).
+			//! with 40*fw (see ExpressionEval.h's Builder::NoiseFwScales).
 			//! When fw > 0, octave i's amplitude
 			//! is scaled by OctaveFadeWeight(fw * lacunarity^i) (see
 			//! ProceduralNoiseCore.cpp) -- a smoothstep-based Nyquist

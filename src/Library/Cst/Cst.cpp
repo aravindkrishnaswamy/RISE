@@ -1186,10 +1186,10 @@ static bool EvalExprBody( const std::string& body, const LetBindings& lets, doub
 //! + PI/E (the reserved uppercase built-ins).  Rejecting them keeps every math constant + coordinate
 //! un-shadowable and avoids the u/v clobber.
 //!
-//! P2-A NOTE (review round 1, S1 texture-expressions VM): P, Po, N, fw, time
-//! are deliberately NOT in this list, even though the VM added them as
+//! P2-A NOTE (review round 1, S1 texture-expressions VM): P, Po, N, fw, fwo,
+//! time are deliberately NOT in this list, even though the VM added them as
 //! context-var names.  EvalExprBody's Builder keeps EnableContextVars OFF on
-//! this surface (see its call site), so those five names are not otherwise
+//! this surface (see its call site), so those six names are not otherwise
 //! bound to anything here -- there is nothing for a `let` to shadow, so
 //! `let { time 1.5 }` is a perfectly ordinary user param like any other, and
 //! a later `expr(time*2+1)` resolves it via the normal m_index lookup

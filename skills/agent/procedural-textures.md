@@ -47,7 +47,7 @@ all of them; the decision map below is the shortcut.
 | Art-directed cells (mosaic, tile, terrazzo) | `voronoi2d_painter` / `voronoi3d_painter` | Each `gen` line seeds ONE cell with its OWN painter -- placed, not random. |
 | Incandescent / flame / hot metal colour | `blackbody_painter` | A temperature in Kelvin beats a guessed RGB triple. |
 | Combine, tint, or mask two of the above | `blend_painter`, `channel_painter` | See "Composition" below. |
-| A pattern you can write as maths, in 3D | `expression_painter` (colour) / `scalar_painter { expression ... }` (physical scalar) | The texture-expression VM: one string over `u v P Po N fw time`, with noise builtins.  **The default answer for anything the fixed painters cannot say**, and the only route to spatially-varying roughness that is not an adapter chain -- see "The expression VM" below. |
+| A pattern you can write as maths, in 3D | `expression_painter` (colour) / `scalar_painter { expression ... }` (physical scalar) | The texture-expression VM: one string over `u v P Po N fw fwo time`, with noise builtins.  **The default answer for anything the fixed painters cannot say**, and the only route to spatially-varying roughness that is not an adapter chain -- see "The expression VM" below. |
 | A pattern over UV only, as maths | `expression_function2d` | The older UV-only evaluator (`u`, `v`, no noise builtins).  It remains valid for **UV-domain displacement** -- `displaced_geometry`'s `displacement` slot, `function2d_painter`, `composite_function2d_painter`, or the `scalar_painter { function2d ... }` bridge that feeds one of those -- and is the right answer when the field genuinely IS a function of texcoords.  It is no longer the ONLY route into displacement: since 2026-09-06 `displaced_geometry` also takes `height <a scalar_painter>`, evaluated as a 3D field (row below).  It does **not** drive the shading normal, even though the removed `bumpmap_modifier` (removed 2026-09-06; migrate an old scene with `tools/migrate_scenes_relief.py`) used to sample it for exactly that; do not point a normal-perturbation ask at it -- `relief_modifier` is the route. |
 | Displace geometry with a **3D** field (and/or share one field between coarse shape and fine relief) | `displaced_geometry { height <scalar_painter> }` | Since 2026-09-06.  `height` takes an `IScalarPainter` evaluated as a FIELD at each vertex, so `expression`, `voronoi3d`, ramps and noise all drive displacement -- a 3D painter bound to `displacement` instead goes through a fake hit and is a **constant**.  Mutually exclusive with `displacement` (spelling both is a parse error).  **The pattern this exists for:** bind ONE `scalar_painter` to `displaced_geometry { height F  disp_scale S }` AND to `relief_modifier { height F }` on the same object -- coarse silhouette + fine normal relief from one field, so the grain follows the lumps.  **Author the field against `Po`, not `P`**: the mesh is baked before the geometry is bound to an object, so `P` and `Po` coincide there and a `P`-authored field will not follow the object's placement (while the relief half, which runs at hit time, would) -- the two would silently disagree once the object moves. |
 | Turn a grey field into real colour (terrain bands, patina, rust-to-metal) | `ramp_painter` | Multi-stop colour ramp driven by any painter's channel.  The universal scalar -> colour remap; see "The composition boundary" below. |
@@ -120,22 +120,33 @@ docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md, 2026-09-06; it was
 mesh-only before that -- and 0.0, an honest "point sample", on
 secondary bounces, because no ray carries screen-space differentials
 after a scatter; on a SCALED instance `fw` is world-space, not
-object-space, since the same arc), and
+object-space, since the same arc), `fwo` (that SAME footprint measured
+in `Po`'s object space, 2026-09-06 -- the hit carries both widths
+because the object->world scale is a per-instance runtime fact), and
 `time`.  `fbm`/`turbulence`/`ridged` use `fw` automatically to fade out
 octaves the sample footprint can't resolve, cutting shimmer on
 distant/grazing procedural surfaces.  Domain scaling is handled for
 you (2026-09-06): the compiler differentiates each noise call's
 position argument with respect to `P` and rescales `fw` into that
 argument's own domain, so `fbm(P*40, ...)` fades at `40*fw` and you
-never divide `fw` by hand.  It resolves anything affine in `P`
+never divide `fw` by hand.  **`Po` domains fade too** (2026-09-06): the same pass differentiates
+the argument with respect to `Po` as well, and the call is filtered at
+`scale_P*fw + scale_Po*fwo`, so the widely-used `fbm(Po*k, ...)` idiom
+(Hair/variety_gallery, Hair/dandelion_clock,
+GeometrySignals/weathered_reliquary) fades at `k*fwo` -- the same
+octave `fbm(P*k/s, ...)` reaches on an object with `scale s`.  Write
+the domain in whichever frame you mean; neither needs a hand-divided
+width.  It resolves anything affine in `P` and/or `Po`
 (including a scale carried through a `param` or `def`); a domain warp
 keeps its affine part's scale, and an argument with no provable
-relation to `P` at all (one built from `u`/`v`) simply gets the
-unscaled `fw`.  `Po` (object space) falls back the same way -- the
-object->world scale is a per-instance fact the compiler cannot see --
-so the widely-used `fbm(Po*k, ...)` idiom (Hair/variety_gallery,
-Hair/dandelion_clock, GeometrySignals/weathered_reliquary) fades at
-`fw`, not `k*fw`; write the domain in `P` if you want the rescale.  Builtins: `perlin`, `fbm(p, octaves, gain,
+relation to either position (one built from `u`/`v`) simply gets the
+unscaled `fw`.  A body that mixes the two frames in one argument is
+filtered at the CONSERVATIVE sum of the two terms (the triangle
+inequality -- it can over-filter by up to 2x where they would have
+cancelled, never under-filter).  `fwo` is non-zero on exactly the hits
+`fw` is (they are stamped from the same footprint, a CSG composite
+included), so a `Po` body loses its fade only where a `P` body would
+lose its own.  Builtins: `perlin`, `fbm(p, octaves, gain,
 lacunarity)`, `turbulence`, `ridged`, `worley_f1/f2/f2f1/id(p, jitter)`,
 `cellhash`, `ramp(t, pos0,val0, ...)`, plus `mix/clamp/smoothstep/step/
 select/pow/abs/floor/frac/min/max/sin/cos/...` and the vec3 ops
@@ -374,7 +385,7 @@ uplift).  See docs/ISCALARPAINTER_REFACTOR.md.
 `base`, `multiply`, `add`) are spatially constant:
 
 1. `scalar_painter { expression <body> }` -- the texture-expression VM on
-   the scalar pipe, over the full 3D context (`u v P Po N fw`), with the
+   the scalar pipe, over the full 3D context (`u v P Po N fw fwo`), with the
    noise builtins.  No colourspace, no uplift, by construction.  **This is
    the route to take**, and it is ONE chunk:
 

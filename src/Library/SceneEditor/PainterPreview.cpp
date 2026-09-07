@@ -41,7 +41,7 @@ namespace
 	//! not an estimate of the render's footprint at all -- it is a
 	//! length in a different space.  Since 2026-09-06 that mattered:
 	//! fbm/turbulence/ridged rescale `fw` by their position argument's
-	//! domain scale (ExpressionEval.h's Builder::NoiseFwScale), so the
+	//! domain scale (ExpressionEval.h's Builder::NoiseFwScales), so the
 	//! synthetic width was multiplied by the body's own scale k and
 	//! crossed OctaveFadeWeight's hi = 0.6 at k ~= 58 -- every
 	//! high-frequency body (plank_closeup's stages run 130 .. 820)
@@ -82,6 +82,11 @@ namespace
 		// ReliefModifier's zero-width fallback).
 		ri.txFootprint.widthValid = true;
 		ri.txFootprint.worldWidth = kPreviewFootprintWidth;
+		// The preview patch has no object transform (ptIntersection ==
+		// ptObjIntersec above), so the object-space width is the same
+		// point sample -- spelled out rather than left to the struct's
+		// default so the two stay together if the width ever changes.
+		ri.txFootprint.objectWidth = kPreviewFootprintWidth;
 		return ri;
 	}
 

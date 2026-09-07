@@ -568,7 +568,7 @@ static void TestPerChannelScalarPreviewIsJointlyRangedRGB()
 // REGRESSION GUARD.  This module used to synthesize a filter width of
 // 1 / max(gw, gh) for its `ri`.  Once fbm/turbulence/ridged began
 // rescaling `fw` by their position argument's compile-time domain
-// scale (2026-09-06, ExpressionEval.h's Builder::NoiseFwScale), that
+// scale (2026-09-06, ExpressionEval.h's Builder::NoiseFwScales), that
 // synthetic width was multiplied by the body's own scale k and crossed
 // the octave fade's hi = 0.6 at k ~= 58 -- so EVERY high-frequency
 // body (the shipped plank_closeup stages run 130 .. 820) previewed as

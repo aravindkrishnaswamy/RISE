@@ -1309,6 +1309,192 @@ static void Test12_NoChartNoJacobian()
 
 //////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////
+//  Test 13 -- the OBJECT-space width (2026-09-06, doc 11)
+//
+//  `txFootprint.objectWidth` is the same footprint measured in the
+//  frame `ptObjIntersec` (the expression VM's `Po`) is written in.  It
+//  is what lets `fbm(Po*k, ...)` fade; before it existed the VM could
+//  not know the object->world scale and fell back to no fade at all.
+//
+//  Three claims, each with an oracle that does not read the promotion
+//  code being tested:
+//
+//   (a) UNIFORM SCALE.  A unit sphere under `scale s`, viewed from `d*s`,
+//       presents the IDENTICAL object-space ray as the same sphere at
+//       scale 1 viewed from `d` -- so its objectWidth must equal the
+//       scale-1 cast's width exactly, while its worldWidth is s times
+//       that.  The ratio worldWidth/objectWidth recovers s, which is the
+//       number the VM would otherwise have had to guess.
+//
+//   (b) NON-UNIFORM SCALE.  The `stretch (4, 0.05, 4)` disk of test 5:
+//       objectWidth must be the world width divided by the IN-PLANE 4,
+//       not by |det M|^(1/3) = 0.9283.  This is the same counterfactual
+//       test 5 pins for worldWidth, read from the other side -- and it
+//       is why objectWidth is CAPTURED before the promotion rather than
+//       derived from m_worldLinearScale afterwards.
+//
+//   (c) CSG.  A CSG hit's `ptObjIntersec` is the winning CHILD's own
+//       object-space point (AdoptCsgSurfacePayload copies it
+//       untransformed), so objectWidth must stay in that same child
+//       frame -- i.e. a scale on the CSG LEVEL must move worldWidth (test
+//       8) and leave objectWidth alone.  Pairing the two fields is the
+//       whole contract; a CSG level that "helpfully" promoted
+//       objectWidth too would break `fbm(Po*k)` on every csg_object.
+//////////////////////////////////////////////////////////////////////
+
+static void Test13_ObjectSpaceWidth()
+{
+	std::cout << "Test 13: txFootprint.objectWidth is the footprint in ptObjIntersec's frame" << std::endl;
+
+	// ---------------- (a) uniform scale ----------------
+	const Scalar d = 5.0, s = 10.0;
+	Scalar w1 = 0, o1 = 0, w10 = 0, o10 = 0;
+	{
+		SphereGeometry* g = new SphereGeometry( 1.0 );
+		Object* o = new Object( g );
+		g->release();
+		o->FinalizeTransformations();
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, d ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		const RayIntersection ri = Cast( *o, CentreRay( *cam ) );
+		CHECK( ri.geometric.bHit, "13a: (control) the scale-1 cast hits" );
+		w1 = ri.geometric.txFootprint.worldWidth;
+		o1 = ri.geometric.txFootprint.objectWidth;
+		cam->release();
+		o->release();
+	}
+	{
+		SphereGeometry* g = new SphereGeometry( 1.0 );
+		Object* o = new Object( g );
+		g->release();
+		o->SetScale( s );
+		o->FinalizeTransformations();
+		PinholeCamera* cam = MakeCamera( Point3( 0, 0, d * s ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		const RayIntersection ri = Cast( *o, CentreRay( *cam ) );
+		CHECK( ri.geometric.bHit, "13a: (control) the scale-10 cast hits" );
+		w10 = ri.geometric.txFootprint.worldWidth;
+		o10 = ri.geometric.txFootprint.objectWidth;
+		cam->release();
+		o->release();
+	}
+
+	CHECK( w1 > Scalar( 1e-9 ), "13a: (oracle) the scale-1 footprint is non-degenerate (" << w1 << ")" );
+	CHECK( w1 == o1,
+		"13a: with NO transform the object and world widths are the same number, bit for bit ("
+		<< std::setprecision(17) << w1 << " vs " << o1 << ")" );
+	CHECK( o1 > 0 && std::fabs( o10 - o1 ) / o1 < Scalar( 1e-9 ),
+		"13a: the scale-10 instance reports the SAME object-space width as the scale-1 one -- the "
+		"object-space ray is identical, so the object-space footprint must be too ("
+		<< std::setprecision(15) << o10 << " vs " << o1 << ")" );
+	const Scalar recovered = ( o10 > 0 ) ? ( w10 / o10 ) : Scalar( 0 );
+	CHECK( std::fabs( recovered - s ) < Scalar( 1e-9 ),
+		"13a: worldWidth / objectWidth recovers the instance scale " << s << " ("
+		<< std::setprecision(15) << recovered << ") -- the per-instance number no compiler can see" );
+
+	// ---------------- (b) non-uniform scale ----------------
+	{
+		const Scalar h = 10.0;
+		PinholeCamera* cam = MakeCamera( Point3( 0, h, 0 ), Point3( 0, 0, 0 ), Vector3( 0, 0, 1 ) );
+		const Ray ray = CentreRay( *cam );
+
+		CircularDiskGeometry* g = new CircularDiskGeometry( 50.0, 'y' );
+		Object* obj = new Object( g );
+		g->release();
+		obj->SetStretch( Vector3( 4.0, 0.05, 4.0 ) );
+		obj->FinalizeTransformations();
+		const RayIntersection ri = Cast( *obj, ray );
+		CHECK( ri.geometric.bHit, "13b: (control) the stretched disk is hit" );
+		const Scalar wS = ri.geometric.txFootprint.worldWidth;
+		const Scalar oS = ri.geometric.txFootprint.objectWidth;
+		obj->release();
+		cam->release();
+
+		CHECK( oS > Scalar( 1e-12 ), "13b: (oracle) the stretched disk's object width is non-degenerate ("
+			<< oS << ")" );
+		const Scalar inPlane = ( oS > 0 ) ? ( wS / oS ) : Scalar( 0 );
+		CHECK( std::fabs( inPlane - Scalar( 4 ) ) < Scalar( 1e-9 ),
+			"13b: worldWidth / objectWidth is the IN-PLANE 4x the footprint actually undergoes ("
+			<< std::setprecision(15) << inPlane << ")" );
+		// The counterfactual: had objectWidth been DERIVED as
+		// worldWidth / |det M|^(1/3) rather than captured before the
+		// promotion, this ratio would read 0.9283 instead of 4.
+		const Scalar detCubeRoot = std::pow( Scalar( 4.0 * 0.05 * 4.0 ), Scalar( 1.0 ) / Scalar( 3.0 ) );
+		CHECK( std::fabs( inPlane - detCubeRoot ) > Scalar( 1 ),
+			"13b: and it is NOT the |det|^(1/3) value " << std::setprecision(6) << detCubeRoot
+			<< " a derive-by-scale implementation would give (" << Scalar( 4 ) / detCubeRoot << "x off)" );
+	}
+
+	// ---------------- (c) CSG keeps the child frame ----------------
+	{
+		const Scalar dd = 20.0, opScale = 2.0;
+		auto castCsg = []( const Scalar operandScale, const Scalar csgScale, const Ray& r,
+			bool& outHit, Scalar& outObj ) -> Scalar
+		{
+			SphereGeometry* gA = new SphereGeometry( 1.0 );
+			Object* a = new Object( gA );
+			gA->release();
+			a->SetScale( operandScale );
+			a->FinalizeTransformations();
+
+			SphereGeometry* gB = new SphereGeometry( 1.0 );
+			Object* b = new Object( gB );
+			gB->release();
+			b->SetPosition( Point3( 1000, 1000, 1000 ) );
+			b->FinalizeTransformations();
+
+			CSGObject* csg = new CSGObject( CSG_UNION );
+			csg->AssignObjects( a, b );
+			if( csgScale != Scalar( 1 ) ) { csg->SetScale( csgScale ); }
+			csg->FinalizeTransformations();
+
+			RayIntersection ri( r, nullRasterizerState );
+			csg->IntersectRay( ri, RISE_INFINITY, true, true, false );
+			outHit = ri.geometric.bHit;
+			outObj = outHit ? ri.geometric.txFootprint.objectWidth : Scalar( 0 );
+			const Scalar w = outHit ? ri.geometric.txFootprint.worldWidth : Scalar( 0 );
+			csg->release();
+			return w;
+		};
+
+		PinholeCamera* cam    = MakeCamera( Point3( 0, 0, dd ),     Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		PinholeCamera* camFar = MakeCamera( Point3( 0, 0, dd * 3 ), Point3( 0, 0, 0 ), Vector3( 0, 1, 0 ) );
+		const Ray ray    = CentreRay( *cam );
+		const Ray rayFar = CentreRay( *camFar );
+
+		bool hitBase = false, hitNested = false;
+		Scalar oBase = 0, oNested = 0;
+		const Scalar wBase   = castCsg( opScale, Scalar( 1 ), ray,    hitBase,   oBase );
+		const Scalar wNested = castCsg( opScale, Scalar( 3 ), rayFar, hitNested, oNested );
+		cam->release();
+		camFar->release();
+
+		CHECK( hitBase && hitNested, "13c: (control) both CSG casts hit" );
+		CHECK( oBase > Scalar( 1e-12 ), "13c: (oracle) the CSG hit carries a real object width ("
+			<< oBase << ") -- not the neutral 0 an un-stamped field would give" );
+		// The world side moves by the CSG level's own scale (test 8's claim,
+		// re-asserted here so this test fails loudly if the pairing is broken
+		// from the OTHER side).
+		const Scalar worldRatio = ( wBase > 0 ) ? ( wNested / wBase ) : Scalar( 0 );
+		CHECK( std::fabs( worldRatio - Scalar( 3 ) ) < Scalar( 1e-9 ),
+			"13c: (control) worldWidth still composes the CSG level's scale ("
+			<< std::setprecision(15) << worldRatio << ")" );
+		// The object side does NOT: it belongs to the winning child, and so
+		// does the ptObjIntersec it has to agree with.
+		const Scalar objRatio = ( oBase > 0 ) ? ( oNested / oBase ) : Scalar( 0 );
+		CHECK( std::fabs( objRatio - Scalar( 1 ) ) < Scalar( 1e-9 ),
+			"13c: objectWidth is UNCHANGED by a scale on the CSG level -- it stays in the winning "
+			"child's frame, the same frame ptObjIntersec (the VM's Po) is in ("
+			<< std::setprecision(15) << objRatio << ")" );
+		// And it agrees with the operand's own scale, not the composite's.
+		const Scalar childScaleRecovered = ( oBase > 0 ) ? ( wBase / oBase ) : Scalar( 0 );
+		CHECK( std::fabs( childScaleRecovered - opScale ) < Scalar( 1e-9 ),
+			"13c: worldWidth / objectWidth on the un-scaled composite recovers the OPERAND's scale "
+			<< opScale << " (" << std::setprecision(15) << childScaleRecovered << ")" );
+	}
+}
+
+//////////////////////////////////////////////////////////////////////
+
 int main()
 {
 	std::cout << "=== TextureFootprintTest (docs/TEXTURE_FOOTPRINT_ANALYTIC_DESIGN.md 5) ===" << std::endl;
@@ -1325,6 +1511,7 @@ int main()
 	Test10_GrazingGuard();
 	Test11_ChartOracle();
 	Test12_NoChartNoJacobian();
+	Test13_ObjectSpaceWidth();
 
 	std::cout << std::endl;
 	std::cout << g_passes << " passed, " << g_failures << " failed." << std::endl;

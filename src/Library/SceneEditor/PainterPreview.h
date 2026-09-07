@@ -56,7 +56,7 @@
 //      different space.  (ii) Since 2026-09-06 that distinction has
 //      teeth: fbm/turbulence/ridged rescale `fw` by their position
 //      argument's compile-time domain scale (ExpressionEval.h's
-//      Builder::NoiseFwScale), so the synthetic width got multiplied
+//      Builder::NoiseFwScales), so the synthetic width got multiplied
 //      by the body's own scale k and crossed OctaveFadeWeight's
 //      hi = 0.6 at k ~= 58 -- every high-frequency body previewed as
 //      one uniform square (measured: `fbm(P*k,3,0.5,2)` preview range

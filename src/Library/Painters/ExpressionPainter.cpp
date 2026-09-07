@@ -117,6 +117,16 @@ ExprEvalContext ExpressionPainter::BuildContext( const RayIntersectionGeometric&
 	// orthographic / fisheye cameras never set differentials at all -- that
 	// is the honest "point sample, no filter info" answer, not a bug.
 	ctx.fw = ri.txFootprint.widthValid ? ri.txFootprint.worldWidth : Scalar(0);
+	// 2026-09-06: the SAME footprint in the frame `Po` is written in, so an
+	// object-space noise domain (`fbm(Po*62, ...)`) can be filtered too.
+	// It rides the same `widthValid` gate for the same reason, and it is
+	// non-zero on exactly the hits `fw` is: `Object::IntersectRay` stamps
+	// the two from the same footprint inside the same `widthValid` block
+	// (a CSG composite included -- it inherits the winning child's, which
+	// is the frame `ptObjIntersec` is in).  So a Po-domain body loses its
+	// fade only where a P-domain body would lose its own, never on its
+	// own.
+	ctx.fwo = ri.txFootprint.widthValid ? ri.txFootprint.objectWidth : Scalar(0);
 	ctx.time = m_time;
 	PopulateCurvature( ri, ctx );
 	PopulateSignals( ri, ctx );
@@ -264,6 +274,16 @@ ExprEvalContext ExpressionScalarPainter::BuildContext( const RayIntersectionGeom
 	// orthographic / fisheye cameras never set differentials at all -- that
 	// is the honest "point sample, no filter info" answer, not a bug.
 	ctx.fw = ri.txFootprint.widthValid ? ri.txFootprint.worldWidth : Scalar(0);
+	// 2026-09-06: the SAME footprint in the frame `Po` is written in, so an
+	// object-space noise domain (`fbm(Po*62, ...)`) can be filtered too.
+	// It rides the same `widthValid` gate for the same reason, and it is
+	// non-zero on exactly the hits `fw` is: `Object::IntersectRay` stamps
+	// the two from the same footprint inside the same `widthValid` block
+	// (a CSG composite included -- it inherits the winning child's, which
+	// is the frame `ptObjIntersec` is in).  So a Po-domain body loses its
+	// fade only where a P-domain body would lose its own, never on its
+	// own.
+	ctx.fwo = ri.txFootprint.widthValid ? ri.txFootprint.objectWidth : Scalar(0);
 	ctx.time = Scalar(0);		// not exposed on this pipe -- see class doc comment
 	PopulateCurvature( ri, ctx );
 	PopulateSignals( ri, ctx );
