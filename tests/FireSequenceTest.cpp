@@ -846,6 +846,8 @@ namespace
 
 	struct ResumeEquivalenceCertificate
 	{
+		std::uint64_t schemaVersion=1u;
+		std::uint64_t beginningTimeBits=0u;
 		std::string certificateId;
 		std::string checkpointDigest;
 		std::string oldBuildId,newBuildId;
@@ -1097,13 +1099,15 @@ namespace
 		bool singleStageFCTDiagnostic=false;
 		bool sealedLegacyMomentumReplay=false;
 		bool sealedProjectedHeunReplay=false;
+		bool sealedProjectedHeunContinuation=false;
 		bool projectedHeunCostDiagnostic=false;
 		bool projectedHeunEOSDiagnostic=false;
 		// Isolated checkpoint reporting probe, never a migration/publication authority.
 		bool projectedHeunCertificateDiagnostic=false;
 		bool UsesProjectedHeunOwner() const
 		{
-			return sealedProjectedHeunReplay||projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic;
+			return sealedProjectedHeunReplay||sealedProjectedHeunContinuation||
+				projectedHeunCostDiagnostic||projectedHeunEOSDiagnostic;
 		}
 		std::filesystem::path replayProtocolPath;
 		std::string replayProtocolDigest;
@@ -3220,6 +3224,16 @@ namespace
 		const RunPersistenceOptions& persistence=RunPersistenceOptions() )
 	{
 		SolverFrameValues values;
+		if(persistence.sealedProjectedHeunContinuation&&(!persistence.productionMetal||
+			!persistence.sealedProjectedHeunReplay||!persistence.resume||
+			persistence.isolatedEquivalenceProbe||persistence.resumeEquivalenceCertificatePath.empty()||
+			persistence.sealedLegacyMomentumReplay||persistence.projectedHeunEOSDiagnostic||
+			persistence.projectedHeunCostDiagnostic||persistence.compatibleMomentumDiagnostic||
+			persistence.singleStageFCTDiagnostic||persistence.stopAfterAdditionalAcceptedSteps!=0u||
+			targetTimeS!=3.5||caseDurationS!=3.0||resolutionTier!=8.0||
+			persistence.productionOnsetStopVelocityMPerS!=15.0)){
+			values.structuredError="resident_r78_continuation_scope_conflict";return values;
+		}
 		if(persistence.projectedHeunCertificateDiagnostic&&!persistence.projectedHeunEOSDiagnostic){
 			values.structuredError="owner_certificate_diagnostic_scope_conflict";return values;
 		}
@@ -3471,7 +3485,7 @@ namespace
 				values.structuredError="owner_cost_from_zero_identity_failure";return values;}
 		}
 		if(persistence.sealedLegacyMomentumReplay||persistence.sealedProjectedHeunReplay){
-			if(persistence.resume||persistence.replayProtocolPath.empty()||
+			if((persistence.resume&&!persistence.sealedProjectedHeunContinuation)||persistence.replayProtocolPath.empty()||
 				persistence.replayProtocolDigest.size()!=64u||
 				DigestFile(persistence.replayProtocolPath)!=persistence.replayProtocolDigest||
 				persistence.productionOnsetDiagnosticDirectory.empty()){
@@ -3480,20 +3494,24 @@ namespace
 			const std::string initialStateDigest=ProductionBeginningFieldSHA256(
 				caseRecord.caseRecordId,shape,states,momentum,advanced.velocityMPerS);
 			std::ofstream identity(persistence.productionOnsetDiagnosticDirectory.parent_path()/
-				"from_zero_identity.v1",std::ios::trunc);
+				(persistence.sealedProjectedHeunContinuation?"continuation_identity.v2":"from_zero_identity.v1"),std::ios::trunc);
 			identity<<std::setprecision(17)
-				<<"schema rise.fire.production.r193_from_zero_identity.v1\n"
+				<<"schema "<<(persistence.sealedProjectedHeunContinuation?
+					"rise.fire.production.r211_continuation_identity.v2":"rise.fire.production.r193_from_zero_identity.v1")<<"\n"
 				<<"operator "<<(persistence.sealedProjectedHeunReplay?
 					"section_3_7_projected_heun_resident_owner":
 					"ordinary_independent_dual_momentum_resident_step")<<"\n"
 				<<"resolution_tier "<<resolutionTier<<"\nseed "<<authored.seed<<"\n"
 				<<"case_record_id "<<caseRecord.caseRecordId<<"\n"
-				<<"initial_state_sha256 "<<initialStateDigest<<"\n"
+				<<(persistence.sealedProjectedHeunContinuation?"construction_seed_state_sha256 ":"initial_state_sha256 ")<<initialStateDigest<<"\n"
 				<<"producer_build_id "<<currentBuildId<<"\n"
 				<<"producer_executable_sha256 "<<currentExecutableDigest<<"\n"
 				<<"protocol_path "<<persistence.replayProtocolPath.string()<<"\n"
 				<<"protocol_sha256 "<<persistence.replayProtocolDigest<<"\n"
-				<<"resume_forbidden true\n";
+				<<"resume_forbidden "<<(persistence.sealedProjectedHeunContinuation?"false":"true")<<"\n";
+			if(persistence.sealedProjectedHeunContinuation)identity<<
+				"checkpoint_sha256 "<<DigestFile(persistence.checkpointPath)<<"\n"<<
+				"migration_certificate_sha256 "<<DigestFile(persistence.resumeEquivalenceCertificatePath)<<"\n";
 			identity.close();
 			if(initialStateDigest.size()!=64u||!identity){
 				values.structuredError="sealed_legacy_replay_identity_publication_failure";
@@ -3532,6 +3550,9 @@ namespace
 					migration,error)){
 				const std::string checkpointDigest=DigestFile(persistence.checkpointPath);
 				certifiedMigration=!checkpointDigest.empty()&&
+					(migration.schemaVersion!=2u||(persistence.productionMetal&&persistence.UsesProjectedHeunOwner()))&&
+					(migration.schemaVersion!=2u||migration.beginningTimeBits==DoubleBits(checkpoint.simulationTimeS))&&
+					(!persistence.sealedProjectedHeunContinuation||migration.schemaVersion==2u)&&
 					migration.checkpointDigest==checkpointDigest&&
 					migration.oldBuildId==checkpoint.producerBuildId&&
 					migration.newBuildId==currentBuildId&&
@@ -5890,6 +5911,8 @@ namespace
 		return true;
 	}
 
+#include "fire_resident_resume_v2.h"
+
 	RISECBOR64::Value ResumeTracePayload(const ResumeEquivalenceTrace& trace)
 	{
 		using RISECBOR64::Value;
@@ -5997,6 +6020,7 @@ namespace
 	bool LoadResumeEquivalenceCertificate(const std::filesystem::path& path,
 		ResumeEquivalenceCertificate& certificate,std::string& error)
 	{
+		certificate=ResumeEquivalenceCertificate();
 		const RISECBOR64::Bytes bytes=ReadFileBytes(path);RISECBOR64::Value envelope;
 		if(bytes.empty()||!RISECBOR64::DecodeCanonical(bytes,envelope,&error)||
 			envelope.GetType()!=RISECBOR64::Value::Map||envelope.GetMap().size()!=2u){
@@ -6007,15 +6031,16 @@ namespace
 		if(!payload||!id||id->GetType()!=RISECBOR64::Value::Text||
 			!RISECBOR64::Encode(*payload,payloadBytes,&error)||
 			id->GetText()!=RISECBOR64::SHA256Hex(payloadBytes)||
-			!ParseResumeCertificatePayload(*payload,certificate)){
+			!(ParseResumeCertificatePayload(*payload,certificate)||
+				ParseResidentResumeCertificateV2(*payload,certificate,error))){
 			error="resume-equivalence certificate is not canonical or self-consistent";return false;
 		}
 		certificate.certificateId=id->GetText();
-		const bool valid=certificate.acceptedStepCount>=8u&&
+		const bool valid=certificate.schemaVersion==2u||(certificate.acceptedStepCount>=8u&&
 			certificate.timeStepBits.size()==certificate.acceptedStepCount&&
 			certificate.maximumTemperatureBits.size()==certificate.acceptedStepCount&&
 			certificate.maximumEOSResidualBits.size()==certificate.acceptedStepCount&&
-			certificate.frameDigests.size()==certificate.acceptedStepCount;
+			certificate.frameDigests.size()==certificate.acceptedStepCount);
 		if(!valid)error="resume-equivalence certificate evidence is incomplete";
 		return valid;
 	}
@@ -7556,12 +7581,25 @@ namespace
 		const std::filesystem::path& outputDirectory,const bool sealedLegacyReplay=false,
 		const std::filesystem::path& replayProtocolPath=std::filesystem::path(),
 		const std::string& replayProtocolDigest=std::string(),
-		const bool sealedProjectedReplay=false)
+		const bool sealedProjectedReplay=false,
+		const std::filesystem::path& continuationCheckpoint=std::filesystem::path(),
+		const std::filesystem::path& continuationCertificate=std::filesystem::path())
 	{
 #if !defined(RISE_ENABLE_OPENVDB)
 		(void)resolutionTier;(void)outputDirectory;return 90;
 #else
 		if(resolutionTier!=6.0&&resolutionTier!=8.0&&resolutionTier!=10.0)return 91;
+		const bool continuation=!continuationCheckpoint.empty();
+		if(continuation){
+			ResumeEquivalenceCertificate certificate;std::string certificateError;
+			if(!sealedProjectedReplay||sealedLegacyReplay||
+				DigestFile(continuationCheckpoint)!=
+				"2422002e0d45746989b1fa3676f1f4027c785e91bec6b99c3d88b9b01ef12bb2"||
+				!LoadResumeEquivalenceCertificate(continuationCertificate,certificate,certificateError)||
+				certificate.schemaVersion!=2u||certificate.resumedFromStep!=1300u||
+				certificate.checkpointDigest!=DigestFile(continuationCheckpoint)){
+				std::fprintf(stderr,"RESIDENT_CONTINUATION_REFUSED %s\n",certificateError.c_str());return 91;}
+		}
 		if((sealedLegacyReplay||sealedProjectedReplay)&&(resolutionTier!=8.0||
 			sealedLegacyReplay==sealedProjectedReplay||std::filesystem::exists(outputDirectory)||
 			replayProtocolDigest.size()!=64u||DigestFile(replayProtocolPath)!=replayProtocolDigest||
@@ -7596,7 +7634,7 @@ namespace
 		std::filesystem::create_directories(outputDirectory/"checkpoints",directoryError);
 		std::filesystem::create_directories(outputDirectory/"budgets",directoryError);
 		if(directoryError)return 92;
-		double targetTimeS=(sealedLegacyReplay||sealedProjectedReplay)?3.0:2.2;
+		double targetTimeS=continuation?3.5:(sealedLegacyReplay||sealedProjectedReplay)?3.0:2.2;
 		if(!sealedLegacyReplay&&!sealedProjectedReplay)if(const char* target=std::getenv("RISE_FIRE_ONSET_TARGET_S")){
 			char* end=nullptr;targetTimeS=std::strtod(target,&end);
 			if(!end||*end!='\0'||!std::isfinite(targetTimeS)||!(targetTimeS>0.0))return 91;
@@ -7605,6 +7643,7 @@ namespace
 		persistence.productionMetal=true;
 		persistence.sealedLegacyMomentumReplay=sealedLegacyReplay;
 		persistence.sealedProjectedHeunReplay=sealedProjectedReplay;
+		persistence.sealedProjectedHeunContinuation=continuation;
 		persistence.replayProtocolPath=replayProtocolPath;
 		persistence.replayProtocolDigest=replayProtocolDigest;
 		persistence.singleStageFCTDiagnostic=!sealedLegacyReplay&&!sealedProjectedReplay&&
@@ -7629,6 +7668,13 @@ namespace
 		}
 		persistence.productionOnsetDiagnosticDirectory=outputDirectory/"budgets";
 		persistence.productionOnsetStopVelocityMPerS=60.0;
+		if(continuation){
+			std::string copyError;
+			if(!DurableCopyPublishedFile(continuationCheckpoint,persistence.checkpointPath,copyError))return 92;
+			persistence.resume=true;
+			persistence.resumeEquivalenceCertificatePath=continuationCertificate;
+			persistence.productionOnsetStopVelocityMPerS=15.0;
+		}
 		if(!sealedLegacyReplay)if(const char* resumeCheckpoint=
 			std::getenv("RISE_FIRE_ONSET_RESUME_CHECKPOINT")){
 			const char* expectedBuild=std::getenv("RISE_FIRE_ONSET_EXPECTED_BUILD_ID");
@@ -7654,7 +7700,7 @@ namespace
 			producerExecutableDigest.size()!=64u)return 92;
 		const auto wallStart=std::chrono::steady_clock::now();
 		setenv("RISE_FIRE_CAPSTONE_OUTPUT","1",1);
-		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,targetTimeS,1.0,
+		const SolverFrameValues result=RunMethaneFrameProbe(8u,1u,targetTimeS,continuation?3.0:targetTimeS,1.0,
 			resolutionTier,CapstonePoolDiameterM,CapstoneHeatReleaseRateKW,false,persistence);
 		unsetenv("RISE_FIRE_CAPSTONE_OUTPUT");
 		const double wallS=std::chrono::duration<double>(
@@ -7686,7 +7732,9 @@ namespace
 			<<"seed 1234\n"
 			<<"protocol_sha256 "<<replayProtocolDigest<<"\n"
 			<<"from_zero_identity_sha256 "<<
-				DigestFile(outputDirectory/"from_zero_identity.v1")<<"\n"
+				(continuation?std::string("not_reissued_continuation"):DigestFile(outputDirectory/"from_zero_identity.v1"))<<"\n"
+			<<"continuation_identity_sha256 "<<(continuation?
+				DigestFile(outputDirectory/"continuation_identity.v2"):std::string("not_applicable"))<<"\n"
 			<<"target_time_s "<<targetTimeS<<"\n"
 			<<"simulated_time_s "<<result.simulatedTimeS<<"\n"
 			<<"completed_target "<<(reachedTarget?1:0)<<"\n"
@@ -7739,11 +7787,14 @@ namespace
 				"threshold_"<<threshold<<"_event_sha256 "<<
 				DigestFile(budget.string()+".event.v1")<<"\n";
 		}
-		if((sealedLegacyReplay||sealedProjectedReplay)&&!reachedTarget)
+		if((sealedLegacyReplay||sealedProjectedReplay)&&!reachedTarget&&!continuation)
 			for(const unsigned int threshold:{15u,30u,60u})
 				capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 					std::filesystem::exists(outputDirectory/"budgets"/
 						("threshold_"+std::to_string(threshold)+".raw.csv"));
+		if(continuation&&!reachedTarget)capturedThresholdBundlesComplete=
+			capturedThresholdBundlesComplete&&
+			std::filesystem::exists(outputDirectory/"budgets"/"threshold_15.raw.csv");
 		const std::filesystem::path exactObservation=outputDirectory/"budgets"/
 			"reference_composition_candidate_fixed_column.raw.csv";
 		if(sealedProjectedReplay){
@@ -7780,7 +7831,8 @@ namespace
 			persistence.compatibleMomentumDiagnostic,persistence.singleStageFCTDiagnostic)||DigestFile(trajectory).empty()||
 			DigestFile(retryTrajectory).empty()||
 			!capturedThresholdBundlesComplete||
-			((sealedLegacyReplay||sealedProjectedReplay)&&(DigestFile(outputDirectory/"from_zero_identity.v1").empty()||
+			((sealedLegacyReplay||sealedProjectedReplay)&&(DigestFile(outputDirectory/
+				(continuation?"continuation_identity.v2":"from_zero_identity.v1")).empty()||
 				DigestFile(exactObservation).empty()||
 				DigestFile(exactObservation.string()+".column.csv").empty()||
 				DigestFile(exactObservation.string()+".source_context.csv").empty()||
@@ -15807,6 +15859,26 @@ int main(int argc,char** argv)
 			static_cast<unsigned long long>(checkpoint.acceptedSteps));
 		return 0;
 	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-resident-resume-inspect")==0){
+		MethaneRunCheckpoint checkpoint;std::string error,build,executable;
+		RISECBOR64::Bytes record;
+		if(!LoadMethaneRunCheckpoint(argv[2],checkpoint,error)||
+			!CurrentRendererBuildIdentity(record,build)||
+			!CurrentExecutableDigest(record,executable,error))return 98;
+		std::fprintf(stdout,"{\"build_id\":\"%s\",\"executable_sha256\":\"%s\","
+			"\"checkpoint_build_id\":\"%s\",\"checkpoint_sha256\":\"%s\","
+			"\"resumed_from_step\":%llu,\"beginning_time_s_bits\":%llu}\n",build.c_str(),
+			executable.c_str(),checkpoint.producerBuildId.c_str(),DigestFile(argv[2]).c_str(),
+			static_cast<unsigned long long>(checkpoint.acceptedSteps),
+			static_cast<unsigned long long>(DoubleBits(checkpoint.simulationTimeS)));return 0;
+	}
+	if(argc==3&&std::strcmp(argv[1],"--fire-resident-resume-validate")==0){
+		ResumeEquivalenceCertificate certificate;std::string error;
+		const bool passed=LoadResumeEquivalenceCertificate(argv[2],certificate,error);
+		std::fprintf(stdout,"RESIDENT_RESUME_VALIDATE passed=%d version=%llu steps=%llu error=%s\n",
+			passed?1:0,static_cast<unsigned long long>(certificate.schemaVersion),
+			static_cast<unsigned long long>(certificate.acceptedStepCount),error.c_str());return passed?0:98;
+	}
 	if(argc==2&&std::strcmp(argv[1],"--fire-production-flame-holder-red")==0){
 		const bool passed=ProductionEstablishedFlameHolderREDPasses();
 		std::fprintf(stdout,"PRODUCTION_FLAME_HOLDER_RED passed=%d\n",passed?1:0);
@@ -15841,6 +15913,8 @@ int main(int argc,char** argv)
 		return RunProductionOnsetCampaignChild(8.0,argv[2],true,argv[3],argv[4]);
 	if(argc==5&&std::strcmp(argv[1],"--fire-production-r201-ported")==0)
 		return RunProductionOnsetCampaignChild(8.0,argv[2],false,argv[3],argv[4],true);
+	if(argc==7&&std::strcmp(argv[1],"--fire-production-r211-continue")==0)
+		return RunProductionOnsetCampaignChild(8.0,argv[4],false,argv[5],argv[6],true,argv[2],argv[3]);
 	if(argc==4&&std::strcmp(argv[1],"--fire-oracle-retained-trajectory")==0){
 		double target=0.0;if(!ParsePositiveDoubleArgument(argv[2],target))return 91;
 		return RunOracleRetainedTrajectoryChild(target,argv[3]);
