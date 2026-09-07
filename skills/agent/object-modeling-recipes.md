@@ -1912,6 +1912,17 @@ one -- see `materials-and-media-basics.md`'s patina section for the
 concave twin (`clamp(-curv, 0, 1)`) and the full sign convention, and for
 `occlusion(radius)`, the crevice-dirt companion signal that deepens grime
 in a genuinely enclosed pocket a fine-scale curvature read underrates.
+
+For the CONVEX half specifically, prefer `convexity(radius)` to
+`clamp(curv*k, 0, 1)` whenever the wear has a scale you can name.  `curv`
+is a differential quantity normalised by the object's bbox diagonal, so
+its useful `k` is per-object and has to be probe-measured -- a 3 mm shank
+on an 82 mm nail reads `curv` ~14, a flat face 0.  `convexity(r)` is a
+radius-sampled [0,1] whose values are fixed geometric facts on every
+object at every scale: **0.5 is a 90-degree arris, 0.75 a three-face
+corner**, so `smoothstep(0.35, 0.65, convexity(0.02))` picks "the
+2 %-of-the-object edges" without a probe render.  Keep `curv` for when
+you genuinely want the signed bending at no particular scale.
 For a thin rim, ear, fin, or shell that should glow or tint differently
 where the form is thinnest, reach for `thickness(radius)` instead of
 either -- see `materials-and-media-basics.md`'s "Glow that dies in thick
@@ -2055,10 +2066,10 @@ not; a scene whose hero effect is light focused through the pool wants
 VCM, per the integrator map (PT/BDPT miss most caustic energy).
 
 > **Trap, flag it loudly: heightfield-mode `sdf_geometry` cannot drive
-> ANY occlusion-based pooling mask.**  `occlusion()` and `thickness()`
-> return their neutral fallback in heightfield mode (a heightfield's
-> global Lipschitz bound would make a local answer systematically
-> wrong).  So the natural instinct -- build a terrain as an SDF
+> ANY occlusion-based pooling mask.**  `occlusion()`, `convexity()` and
+> `thickness()` all return their neutral fallback in heightfield mode (a
+> heightfield's global Lipschitz bound would make a local answer
+> systematically wrong).  So the natural instinct -- build a terrain as an SDF
 > heightfield, then pool water in its hollows with `occlusion()` --
 > silently produces a uniformly DRY terrain: neutral occlusion is 1
 > (unoccluded) everywhere, there is no error and no warning, the mask
