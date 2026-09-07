@@ -438,8 +438,8 @@ ramp_painter
 # CONSUMER 2a -- roughness from the SAME field: dense late wood is smoother
 # (0.36-0.39 over the late-wood band, 0.33 only at the field ceiling the knot
 # and dirt occupy), porous early wood rougher (0.52 at the plateau) --
-# rough-sawn softwood, doctrine 6's ggx band.  Note the NEGATIVE scale: the field's high end is the dark late
-# wood, which is the smooth end.
+# rough-sawn softwood, doctrine 6's ggx band.  Note the NEGATIVE scale: the
+# field's high end is the dark late wood, which is the smooth end.
 scalar_painter
 {
 	name			sp_ring_rough
@@ -701,10 +701,10 @@ ggx_material
 #         which is what lets `occlusion(0.03)` find it and fill it with dirt.
 #         Rotated -9 deg about Z so its inner end lifts clear of the board --
 #         the crack is ~19 mm deep where it opens at the end grain (the box
-#         reaches to 4 mm above the board's underside there) and closes to
-#         ~5 mm deep about 95 mm in, where its inner end lifts out of the wood
-#         (the box is 110 mm long but ~18 mm of it hangs past the end face in
-#         air) -- which is how a check actually tapers.
+#         bottoms out ~11 mm above the board's underside there) and closes to
+#         ~5 mm deep about 90 mm in, lifting clear of the wood at ~94 mm (the
+#         box is 110 mm long but ~18 mm of it hangs past the end face in air)
+#         -- which is how a check actually tapers.
 #         3 deg about Y so it does not run exactly with the grain.
 #
 #         It is also the reason `crev` is a smoothstep(0.62, 0.18, occ) and not
