@@ -30,6 +30,7 @@
 #include "../Utilities/Math3D/Math3D.h"
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/SurfaceCurvature.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "ILog.h"
 #include <atomic>
 
@@ -369,6 +370,72 @@ namespace RISE
 				&& radiusFraction > Scalar( 0 );
 		}
 
+		//! WHICH signal is being asked for -- the discriminator the three
+		//! wrappers below hand to their shared implementation, and part of
+		//! the L1 memo key (the three have DIFFERENT neutrals, so sharing
+		//! an entry between them would be a wrong answer, not a stale one).
+		enum SignalKind { eOcclusion = 0, eThickness = 1, eConvexity = 2 };
+
+		//! THE L1 MEMO KEY for this hit -- every field of this struct, so a
+		//! new field added above and NOT added here is a silent wrong
+		//! render.  Kept next to the fields it copies for exactly that
+		//! reason.
+		ExpressionMemo::SignalHitKey MemoHitKey() const
+		{
+			ExpressionMemo::SignalHitKey k;
+			k.pProvider = (const void*)pProvider;
+			k.ptx = (double)ptObject.x; k.pty = (double)ptObject.y; k.ptz = (double)ptObject.z;
+			k.nx  = (double)nObject.x;  k.ny  = (double)nObject.y;  k.nz  = (double)nObject.z;
+			k.baryA = (double)baryA;    k.baryB = (double)baryB;
+			k.primId = primId;
+			k.bComplementedField = bComplementedField;
+			return k;
+		}
+
+		//! THE ONE PLACE the three wrappers' shared policy lives -- the
+		//! null-provider / unusable-radius / refusal fallbacks, the
+		//! finiteness test and the [0,1] clamp -- and therefore the one
+		//! place the L1 memo can sit without splitting that policy in
+		//! three.  What is memoised is the FINAL, already-clamped,
+		//! already-fallen-back answer, so a memo hit and a memo miss are
+		//! indistinguishable by construction.
+		//!
+		//! SOUNDNESS.  The providers are pure const functions of their
+		//! geometry's immutable state and these arguments -- the SDF
+		//! family analytically (its per-hit sample-set rotation is a hash
+		//! of `ptObject`, not an RNG draw), the mesh family through a
+		//! build-once table.  So the answer is a function of (provider,
+		//! every field of this record, fn, radius, constant-radius proof),
+		//! which is exactly the key -- plus the provider's own state,
+		//! which the generation counter covers (ExpressionMemo.h).
+		Scalar SignalQuery( const SignalKind fn, const Scalar radiusFraction, const bool bRadiusIsConstant ) const
+		{
+			ExpressionMemo::SignalKey key;
+			key.hit = MemoHitKey();
+			key.radius = (double)radiusFraction;
+			key.fn = (int)fn;
+			key.bRadiusIsConstant = bRadiusIsConstant;
+
+			Scalar memo = Scalar( 0 );
+			if( ExpressionMemo::L1Find( key, memo ) ) return memo;
+
+			const Scalar neutral = ( fn == eOcclusion ) ? NeutralOcclusion()
+			                     : ( fn == eThickness ) ? NeutralThickness()
+			                                            : NeutralConvexity();
+			Scalar out = neutral;
+			Scalar v = Scalar( 0 );
+			if( pProvider && RadiusUsable( radiusFraction ) ) {
+				const bool answered = ( fn == eOcclusion ) ? pProvider->ComputeOcclusion( *this, radiusFraction, bRadiusIsConstant, v )
+				                    : ( fn == eThickness ) ? pProvider->ComputeThickness( *this, radiusFraction, bRadiusIsConstant, v )
+				                                           : pProvider->ComputeConvexity( *this, radiusFraction, bRadiusIsConstant, v );
+				if( answered && RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
+					out = ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
+				}
+			}
+			ExpressionMemo::L1Insert( key, out );
+			return out;
+		}
+
 		//! Occlusion at this hit, or NeutralOcclusion() when there is no
 		//! provider, the radius is unusable, or the provider refuses.
 		//! Always finite, always in [0,1].
@@ -380,13 +447,7 @@ namespace RISE
 		//! the baked families, rather than inherit a silently optimistic one.
 		Scalar Occlusion( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
-			Scalar v = Scalar( 0 );
-			if( pProvider && RadiusUsable( radiusFraction ) &&
-			    pProvider->ComputeOcclusion( *this, radiusFraction, bRadiusIsConstant, v ) &&
-			    RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
-				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
-			}
-			return NeutralOcclusion();
+			return SignalQuery( eOcclusion, radiusFraction, bRadiusIsConstant );
 		}
 
 		//! Thickness at this hit, or NeutralThickness() when there is no
@@ -394,13 +455,7 @@ namespace RISE
 		//! Always finite, always in [0,1].
 		Scalar Thickness( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
-			Scalar v = Scalar( 0 );
-			if( pProvider && RadiusUsable( radiusFraction ) &&
-			    pProvider->ComputeThickness( *this, radiusFraction, bRadiusIsConstant, v ) &&
-			    RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
-				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
-			}
-			return NeutralThickness();
+			return SignalQuery( eThickness, radiusFraction, bRadiusIsConstant );
 		}
 
 		//! Convexity at this hit, or NeutralConvexity() when there is no
@@ -408,13 +463,7 @@ namespace RISE
 		//! Always finite, always in [0,1].
 		Scalar Convexity( const Scalar radiusFraction, const bool bRadiusIsConstant ) const
 		{
-			Scalar v = Scalar( 0 );
-			if( pProvider && RadiusUsable( radiusFraction ) &&
-			    pProvider->ComputeConvexity( *this, radiusFraction, bRadiusIsConstant, v ) &&
-			    RISE::IsFiniteDouble( static_cast<double>( v ) ) ) {
-				return ( v < Scalar( 0 ) ) ? Scalar( 0 ) : ( ( v > Scalar( 1 ) ) ? Scalar( 1 ) : v );
-			}
-			return NeutralConvexity();
+			return SignalQuery( eConvexity, radiusFraction, bRadiusIsConstant );
 		}
 	};
 

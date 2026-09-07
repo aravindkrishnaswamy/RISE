@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "PixelBasedRasterizerHelper.h"
 #include "../Utilities/RTime.h"
 #include "../Utilities/Profiling.h"
@@ -991,6 +992,15 @@ void PixelBasedRasterizerHelper::RasterizeScene(
 	// caster (so IScenePriv/Scene downcasts — photon build, light-sampler regen —
 	// keep working).  nullptr = render through the scene camera (the default and
 	// the only path production / animation ever take).
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h).  THE BELT-AND-BRACES
+	// BUMP: a render pass is starting, so whatever moved since the last
+	// one -- an editor edit, an agent tool call, a geometry swap -- is
+	// covered here even if it travelled through a seam the enumerated
+	// mutation sites do not name.  Within the pass the scene is
+	// immutable (docs/ARCHITECTURE.md), so nothing bumps again and the
+	// tables stay warm for the whole frame.
+	ExpressionMemo::Invalidate();
+
 	const ICamera* pCam = m_pViewportCameraOverride ? m_pViewportCameraOverride : pScene.GetCamera();
 	if( !pCam ) {
 		GlobalLog()->PrintSourceError( "PixelBasedRasterizerHelper::RasterizeScene:: Scene contains no camera!", __FILE__, __LINE__ );
@@ -1554,6 +1564,15 @@ void PixelBasedRasterizerHelper::RenderFrameOfAnimation(
 	const bool resetAOVs
 	) const
 {
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h).  THE BELT-AND-BRACES
+	// BUMP: a render pass is starting, so whatever moved since the last
+	// one -- an editor edit, an agent tool call, a geometry swap -- is
+	// covered here even if it travelled through a seam the enumerated
+	// mutation sites do not name.  Within the pass the scene is
+	// immutable (docs/ARCHITECTURE.md), so nothing bumps again and the
+	// tables stay warm for the whole frame.
+	ExpressionMemo::Invalidate();
+
 #ifdef RISE_ENABLE_OIDN
 	// Per-frame timer reset so OidnQuality::Auto's render-seconds-per-
 	// megapixel heuristic decides each frame independently rather than
@@ -1914,6 +1933,15 @@ void PixelBasedRasterizerHelper::RasterizeSceneAnimation(
 	IRasterizeSequence* pRasterSequence
 	) const
 {
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h).  THE BELT-AND-BRACES
+	// BUMP: a render pass is starting, so whatever moved since the last
+	// one -- an editor edit, an agent tool call, a geometry swap -- is
+	// covered here even if it travelled through a seam the enumerated
+	// mutation sites do not name.  Within the pass the scene is
+	// immutable (docs/ARCHITECTURE.md), so nothing bumps again and the
+	// tables stay warm for the whole frame.
+	ExpressionMemo::Invalidate();
+
 	// Snapshot once at entry — see PredictTimeToRasterizeScene.
 	const ICamera* pCam = pScene.GetCamera();
 	if( !pCam ) {

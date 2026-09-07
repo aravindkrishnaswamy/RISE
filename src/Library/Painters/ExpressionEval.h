@@ -172,6 +172,7 @@
 #include "../Utilities/FiniteMath.h"
 #include "../Utilities/ProceduralNoiseCore.h"
 #include "../Interfaces/ISurfaceSignalProvider.h"	// occlusion()/thickness()/convexity() dispatch channel
+#include "../Utilities/ExpressionMemo.h"	// the two-level per-hit memo (this file supplies its L2 key; see MakeMemoKey)
 
 namespace RISE
 {
@@ -402,6 +403,10 @@ namespace RISE
 			//!   6. ExprEvalContext             (field + both ctors)
 			//!   7. RunAny/CallFunc's static (no `this`) fw read, if the new var
 			//!      is one a builtin reads implicitly
+			//!   8. MakeMemoKey                  -- the L2 memo's key is the
+			//!      WHOLE context, so a var added here and not there would
+			//!      make two genuinely different contexts share one memo
+			//!      entry: a silent wrong render, not a slow one
 			//! Adding one WITHOUT touching all of them is exactly the silent
 			//! desynchronization this comment exists to prevent.
 			//!
@@ -484,6 +489,54 @@ namespace RISE
 				RunAny( m_final, env, out, &ctx.signals );
 				if( m_final.type == kVec3 ) return Vector3( out[0], out[1], out[2] );
 				return Vector3( out[0], out[0], out[0] );
+			}
+
+			//! Process-unique compile-time identity (0 == never compiled).
+			//! See ExpressionMemo::NewProgramId for why this is not `this`.
+			unsigned long long ProgramId() const { return m_id; }
+
+			//! Is this program worth an L2 memo entry?  Decided ONCE, at
+			//! compile time, because the memo's own key comparison is ~26
+			//! double compares and a body like `u*v` is cheaper to re-run
+			//! than to look up.
+			//!
+			//! The predicate is "does this body contain anything whose cost
+			//! dwarfs a key compare" -- a geometry-signal call (hundreds of
+			//! SDF field evaluations), a noise call (a lattice hash per
+			//! octave), or simply a lot of instructions.
+			bool MemoWorthy() const { return m_memoWorthy; }
+
+			//! Compose this program's L2 memo key from a context.  EVERY
+			//! ExprEvalContext field must appear here (see
+			//! ExpressionMemo::ProgramKey's own comment) -- the
+			//! kContextSlot* checklist above names this function.
+			//!
+			//! WHY THE MEMO LIVES IN THE PAINTERS AND NOT IN Eval/EvalVec3.
+			//! It was written there first, and it moved: this is a
+			//! `-ffast-math` build, and wrapping those two bodies in a
+			//! lookup changed which of them the optimiser inlined into
+			//! ExpressionPainter, which changed the FMA contraction inside
+			//! RunAny, which moved the last ulp of a domain-warped fbm --
+			//! red-proved by TextureExpressionVMTest's "a warped argument
+			//! keeps its affine part's scale" check, which compares against
+			//! a reference computed in its own translation unit with `==`.
+			//! The VM's arithmetic is a published, bit-compared contract;
+			//! a cache is not allowed to move it.  So the program exposes
+			//! its identity and its key, and ExpressionPainter /
+			//! ExpressionScalarPainter -- the only hot consumers, and the
+			//! layer where "the same painter is asked twice at one hit"
+			//! actually happens -- do the lookup around a CALL to an
+			//! untouched EvalVec3.
+			void MakeMemoKey( const ExprEvalContext& ctx, ExpressionMemo::ProgramKey& k ) const
+			{
+				k.progId = m_id;
+				k.u = (double)ctx.u;   k.v = (double)ctx.v;
+				k.Px = (double)ctx.P.x;   k.Py = (double)ctx.P.y;   k.Pz = (double)ctx.P.z;
+				k.Pox = (double)ctx.Po.x; k.Poy = (double)ctx.Po.y; k.Poz = (double)ctx.Po.z;
+				k.Nx = (double)ctx.N.x;   k.Ny = (double)ctx.N.y;   k.Nz = (double)ctx.N.z;
+				k.fw = (double)ctx.fw;    k.fwo = (double)ctx.fwo;  k.time = (double)ctx.time;
+				k.curv = (double)ctx.curv; k.curvR = (double)ctx.curvR;
+				k.signals = ctx.signals.MemoHitKey();
 			}
 
 			VType ResultType() const { return m_final.type; }
@@ -715,8 +768,53 @@ namespace RISE
 					}
 					out.m_defs = m_defs;
 					out.m_final = c;
+					// PROCESS-UNIQUE IDENTITY, handed out exactly here: one
+					// id per successful compile.  Assigned AFTER every
+					// failure return above, so an invalid program keeps id 0
+					// and is never memoised.
+					out.m_id = ExpressionMemo::NewProgramId();
+					out.m_memoWorthy = ComputeMemoWorthiness( out );
 					out.m_valid = true;
 					return true;
+				}
+
+				//! "Is this body expensive enough that a memo lookup is
+				//! cheaper than re-running it?"  Decided once, at compile
+				//! time -- see ExpressionProgram::MemoWorthy.
+				//!
+				//! THREE WAYS TO QUALIFY, any one of which suffices:
+				//!   * it calls a geometry signal (hundreds of SDF field
+				//!     evaluations per call -- the case this whole memo
+				//!     exists for);
+				//!   * it calls a NOISE builtin (perlin / fbm / turbulence /
+				//!     ridged / worley), each of which is a lattice hash per
+				//!     octave and dwarfs a key compare on its own;
+				//!   * it is simply LONG -- more instructions than the key
+				//!     comparison has fields to compare.  26 is that
+				//!     comparison's field count, so at or above it the
+				//!     lookup cannot be the more expensive half even for a
+				//!     body of pure arithmetic.
+				static bool ComputeMemoWorthiness( const ExpressionProgram& p )
+				{
+					if( !p.m_signalCalls.empty() ) return true;
+
+					std::size_t instrs = p.m_final.code.size();
+					for( std::size_t d = 0; d < p.m_defs.size(); ++d ) instrs += p.m_defs[d].code.size();
+
+					// Noise-call scan, over the final expression and every def.
+					for( std::size_t pass = 0; pass <= p.m_defs.size(); ++pass ) {
+						const Compiled& body = ( pass == 0 ) ? p.m_final : p.m_defs[ pass - 1 ];
+						for( std::size_t i = 0; i < body.code.size(); ++i ) {
+							const Compiled::Instr& in = body.code[i];
+							if( in.op != Compiled::kFunc ) continue;
+							// 42..49: perlin, fbm, turbulence, ridged, the
+							// four worley forms.  (50 = cellhash is a single
+							// integer hash and does NOT qualify on its own.)
+							if( in.fn >= 42 && in.fn <= 49 ) return true;
+						}
+					}
+
+					return instrs >= 26;
 				}
 
 				const std::string& Error() const { return m_error; }
@@ -2110,15 +2208,22 @@ namespace RISE
 			bool m_valid;
 			std::string m_error;
 			ptrdiff_t m_errorOffset;
+			//! Process-unique compile-time identity, 0 until a Builder
+			//! finalizes this program.  A COPY keeps it -- see
+			//! ExpressionMemo::NewProgramId.
+			unsigned long long m_id;
+			//! Compile-time L2-memo worthiness.  See MemoWorthy().
+			bool m_memoWorthy;
 
 			ExpressionProgram() :
 				m_uSlot(0), m_vSlot(1), m_PSlot(kContextSlotP), m_PoSlot(kContextSlotPo), m_NSlot(8),
 				m_fwSlot(kContextSlotFw), m_timeSlot(kContextSlotTime),
 				m_curvSlot(kContextSlotCurv), m_curvRSlot(kContextSlotCurvR), m_fwoSlot(kContextSlotFwo),
 				m_ctxUsedMask(0),
-				m_valid(false), m_errorOffset(-1)
+				m_valid(false), m_errorOffset(-1), m_id(0), m_memoWorthy(false)
 			{}
 			friend class Builder;
+
 
 			//! `stopAfterDef` -1 (default, via the two callers below) runs
 			//! every def; a non-negative value runs only defs [0, stopAfterDef]

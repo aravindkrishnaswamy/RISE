@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "Utilities/ExpressionMemo.h"
 #include "Scene.h"
 #include "Animation/Animator.h"
 #include "RISE_API.h"
@@ -575,6 +576,14 @@ void Scene::SetGlobalMedium( const IMedium* pMedium )
 
 void Scene::SetSceneTime( const Scalar time ) const
 {
+	// EXPRESSION MEMO (Utilities/ExpressionMemo.h): a new scene time is the
+	// single seam through which every keyframed mutation reaches the
+	// scene -- object transforms, SDF part fields, a painter's own `time`.
+	// Any of those can change what an expression or a geometry signal
+	// answers at a key the memo would otherwise call unchanged, so drop
+	// every thread's tables here, BEFORE anything re-derives.
+	ExpressionMemo::Invalidate();
+
 	pObjectManager->ResetRuntimeData();
 
 	// A new time is being set, so we should tell the photon maps to re-generate themselves

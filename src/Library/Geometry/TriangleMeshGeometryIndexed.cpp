@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "TriangleMeshGeometryIndexed.h"
 #include "../Intersection/RayPrimitiveIntersections.h"
 #include "../Utilities/GeometricUtilities.h"
@@ -1353,6 +1354,12 @@ SurfaceDerivatives TriangleMeshGeometryIndexed::ComputeSurfaceDerivatives( const
 
 void TriangleMeshGeometryIndexed::InvalidateSignalBakes()
 {
+	// EXPRESSION MEMO: the L1 memo caches this provider's ANSWERS keyed
+	// on (provider, hit, radius).  Dropping the bakes changes those
+	// answers behind an unchanged key, so the memo must go with them
+	// (Utilities/ExpressionMemo.h).
+	ExpressionMemo::Invalidate();
+
 	// EVERYTHING derived from the vertex data -- the tables and the
 	// per-position orientations they were traced along -- is dropped inside
 	// the cache's ONE lock acquisition.  There is deliberately no tail after

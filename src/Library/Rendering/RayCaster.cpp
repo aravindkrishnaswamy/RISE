@@ -29,6 +29,7 @@
 #include "../Utilities/OptimalMISAccumulator.h"
 #include "../Utilities/MISWeights.h"
 #include "../Utilities/Optics.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "../Interfaces/IObject.h"
 #include "../Interfaces/IGeometry.h"
 #include "../Scene.h"					// concrete Scene for the light-generation read (#2b(a))
@@ -207,6 +208,12 @@ namespace {
 
 void RayCaster::AttachScene( const IScene* pScene_ )
 {
+	// EXPRESSION MEMO: a (re-)attach means the scene the memo's cached
+	// provider pointers refer to may be a different one entirely, or the
+	// same one with freshly realized geometry.  Drop every thread's
+	// tables (Utilities/ExpressionMemo.h).
+	ExpressionMemo::Invalidate();
+
 	// ----------------------------------------------------------------
 	// REALIZE PASS (Phase 1, 2026-06-13).  Single-threaded materialize of
 	// every render-reachable geometry's deferred build work BEFORE the

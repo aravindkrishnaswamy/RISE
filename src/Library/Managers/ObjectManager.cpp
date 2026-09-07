@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "pch.h"
+#include "../Utilities/ExpressionMemo.h"
 #include "ObjectManager.h"
 #include "../Utilities/GeometricUtilities.h"
 #include "../Utilities/Log/Log.h"
@@ -888,6 +889,11 @@ bool ObjectManager::ComposeWorldTransforms() const
 void ObjectManager::PrepareForRendering() const
 {
 	RISE_PROFILE_PHASE(AccelBuild);
+
+	// EXPRESSION MEMO: objects are being realized and the hierarchy
+	// re-baked, so any geometry a memo entry was keyed against may have
+	// moved or been rebuilt (Utilities/ExpressionMemo.h).
+	ExpressionMemo::Invalidate();
 
 	// Realize deferred geometry BEFORE building the TLAS from object bounding
 	// boxes (an unrealized DisplacedGeometry reports a ZERO bbox, and the BVH
