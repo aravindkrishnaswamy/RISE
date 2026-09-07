@@ -177,6 +177,16 @@ namespace RISE
 			//! never clip at cell boundaries (radius <= half-cell); when
 			//! discs from adjacent cells overlap, the nearest centre wins.
 			GlintFacet FindFacet( const Point3& objPt ) const;
+
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): the authored fleck-field parameters.
+			Scalar GetDensity() const { return density; }
+			Scalar GetCoverage() const { return coverage; }
+			Scalar GetFill() const { return fill; }
+			Scalar GetSpreadRad() const { return spreadRad; }
+			const Vector3& GetVScale() const { return vScale; }
+			const Vector3& GetVShift() const { return vShift; }
+			unsigned int GetSeed() const { return seed; }
 		};
 	}
 }

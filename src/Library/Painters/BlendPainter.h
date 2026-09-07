@@ -121,6 +121,13 @@ namespace RISE
 				mask.addref();
 			};
 
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): operands, mask, and blend mode.
+			const IPainter& GetA() const { return a; }
+			const IPainter& GetB() const { return b; }
+			const IPainter& GetMask() const { return mask; }
+			Mode GetMode() const { return mode; }
+
 			RISEPel			GetColor( const RayIntersectionGeometric& ri ) const
 			{
 				const RISEPel ca = a.GetColor( ri );

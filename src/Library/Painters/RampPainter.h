@@ -128,6 +128,12 @@ namespace RISE
 			RISEPel StopColor( std::size_t i ) const { return stops[i].color; }
 			Interpolation GetInterpolation() const { return interp; }
 
+			//! CstDeriveGoldenTest's DumpJob composition digest additionally
+			//! wants the driving painter + channel (not needed by the S10
+			//! preview above, which deliberately sidesteps `input`).
+			const IPainter& GetInput() const { return input; }
+			Channel GetChannel() const { return channel; }
+
 			//! Evaluate the ramp's own colour interpolation at `t` (clamped
 			//! to [StopPos(0), StopPos(StopCount()-1)]), reusing the SAME
 			//! `Locate()` bracket/weight computation `GetColor` uses -- so

@@ -128,6 +128,14 @@ namespace RISE
 				);
 
 			void Modify( RayIntersectionGeometric& ri ) const;
+
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): height field + amplitude/domain/step/clamp.
+			const IScalarPainter& GetHeight() const { return height; }
+			Scalar GetScale() const { return dScale; }
+			ReliefDomain GetDomain() const { return domain; }
+			Scalar GetStep() const { return dStep; }
+			Scalar GetMaxSlope() const { return dMaxSlope; }
 		};
 	}
 }

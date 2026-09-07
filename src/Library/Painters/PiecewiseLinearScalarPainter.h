@@ -86,6 +86,9 @@ namespace RISE
 					} );
 			}
 
+			//! Structural introspection: the parsed (nm, value) samples.
+			const std::vector<Sample>& GetSamples() const { return samples; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& /*ri*/
 				) const override

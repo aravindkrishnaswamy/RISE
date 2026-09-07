@@ -42,6 +42,10 @@ namespace RISE
 				if( pChild ) pChild->addref();
 			}
 
+			//! Structural introspection: child + scale.
+			const IScalarPainter* GetChild() const { return pChild; }
+			Scalar GetScale() const { return scale; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& ri
 				) const override

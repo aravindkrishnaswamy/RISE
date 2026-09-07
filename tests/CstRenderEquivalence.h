@@ -32,6 +32,7 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include <set>
 
 #include "../src/Library/Job.h"
 #include "../src/Library/RISE_API.h"
@@ -41,6 +42,10 @@
 #include "../src/Library/Interfaces/IMaterialManager.h"
 #include "../src/Library/Interfaces/IEmitter.h"
 #include "../src/Library/Interfaces/IPainterManager.h"
+#include "../src/Library/Interfaces/IScalarPainter.h"
+#include "../src/Library/Interfaces/IScalarPainterManager.h"
+#include "../src/Library/Interfaces/IRayIntersectionModifier.h"
+#include "../src/Library/Interfaces/IModifierManager.h"
 #include "../src/Library/Interfaces/IObject.h"
 #include "../src/Library/Interfaces/IObjectManager.h"
 #include "../src/Library/Interfaces/ICamera.h"
@@ -54,6 +59,30 @@
 #include "../src/Library/Interfaces/IFilm.h"
 #include "../src/Library/Interfaces/IEnumCallback.h"
 #include "../src/Library/Utilities/BoundingBox.h"
+
+// Concrete painter / scalar-painter / modifier classes -- needed for the
+// composition-digest dynamic_cast chain below (DumpScalarPainterComposition,
+// DumpPainterComposition, DumpModifierComposition).  Test-only dependency on
+// concrete Implementation:: classes (not just interfaces) is deliberate here:
+// the whole point of the digest is to tell two DIFFERENT concrete classes
+// bound to the same painter NAME apart (see the file-header comment below).
+#include "../src/Library/Painters/UniformScalarPainter.h"
+#include "../src/Library/Painters/AddScalarPainter.h"
+#include "../src/Library/Painters/MultiplyScalarPainter.h"
+#include "../src/Library/Painters/ScaledScalarPainter.h"
+#include "../src/Library/Painters/PainterChannelScalarPainter.h"
+#include "../src/Library/Painters/TextureScalarPainter.h"
+#include "../src/Library/Painters/PiecewiseLinearScalarPainter.h"
+#include "../src/Library/Painters/PolynomialScalarPainter.h"
+#include "../src/Library/Painters/RGBScalarPainter.h"
+#include "../src/Library/Painters/SellmeierScalarPainter.h"
+#include "../src/Library/Painters/ExpressionPainter.h"		// ExpressionPainter + ExpressionScalarPainter
+#include "../src/Library/Painters/BlendPainter.h"
+#include "../src/Library/Painters/RampPainter.h"
+#include "../src/Library/Modifiers/ModifierStack.h"
+#include "../src/Library/Modifiers/NormalMap.h"
+#include "../src/Library/Modifiers/GlintModifier.h"
+#include "../src/Library/Modifiers/ReliefModifier.h"
 
 namespace risequiv {
 
@@ -146,6 +175,254 @@ inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
 		(double)t._20,(double)t._21,(double)t._22,(double)t._23, (double)t._30,(double)t._31,(double)t._32,(double)t._33 ); o << b;
 }
 
+// ---------------------------------------------------------------------
+// COMPOSITION DIGEST (2026-09-06).  A painter/scalar-painter/modifier NAME
+// used to be the ENTIRE discriminator DumpJob recorded for that slot --
+// swapping the CONCRETE OBJECT bound to a name (e.g. `scalar_painter {
+// multiply a b }` -> `scalar_painter { add a b weight_a 1 weight_b 0.5 }`,
+// same name, different composition and different weights) changed nothing
+// in the dump.  Verified: scenes/FeatureBased/Textures/plank_closeup.RISEscene
+// commit 85a6da5f, 0 DRIFT despite `sp_plank_rough`'s definition changing
+// from `multiply` to `add ... weight_b 0.5`.  Worse: `IScalarPainter`s were
+// not enumerated AT ALL (no `scalar_painters:` section existed), so a named
+// scalar painter reachable only through a material slot -- `sp_plank_rough`
+// bound to a GGX material's `alphax`/`alphay` -- had NO representation in
+// the dump whatsoever, name or otherwise.
+//
+// Fix: every IScalarPainter / IPainter / IRayIntersectionModifier reachable
+// from a material/modifier slot (or simply registered by name -- the new
+// `scalar_painters:` / `modifiers:` top-level sections below enumerate the
+// full named registry, independent of which material/object currently
+// binds a given name) is digested by its CONCRETE COMPOSITION, recursively,
+// in two complementary parts:
+//
+//   1. A KIND LABEL for the composition operators this pass knows about
+//      (scalar side: uniform, rgb, sellmeier, polynomial, piecewise,
+//      add + weights, multiply, scaled, painter-channel, texture,
+//      expression + params; colour side: blend + mode, ramp + stops +
+//      interpolation, expression + params), found via a dynamic_cast
+//      chain, with operand(s) recursively digested the same way.  These
+//      are HAND-PICKED LABEL STRINGS, not typeid/RTTI names: the golden is
+//      a COMMITTED, CROSS-PLATFORM file (see the %.9g precision comment
+//      below for the same cross-platform concern) and typeid(*p).name()
+//      is Itanium-mangled on clang/gcc but MSVC-decorated on Windows --
+//      using it here would make every painter's digest drift across
+//      platforms independent of any real derive difference.
+//
+//   2. A PROBE FINGERPRINT: the composed VALUE at one fixed, deliberately
+//      ASYMMETRIC point (same rationale as DumpMedium's probe point above
+//      -- avoids landing on a procedural field's symmetric lattice tie,
+//      see that comment for the concrete failure mode).  Printed for
+//      EVERY painter/scalar-painter regardless of whether part 1 above
+//      recognizes its concrete type, so a kind this dynamic_cast chain
+//      does not (yet) special-case -- Function1D/Function2DScalarPainter's
+//      wrapped IFunction1D/IFunction2D, and every IPainter kind besides
+//      Blend/Ramp/Expression -- still gets a REAL discriminator instead of
+//      silently staying name-only.  The red-proof this change ships with
+//      (plank_closeup's `weight_b` 0.5 -> 0.6) is caught by THIS half even
+//      in isolation, since it changes AddScalarPainter's composed output
+//      at the probe point; part 1 additionally makes the digest READABLE
+//      (a reviewer can see "add(weight_a=1 weight_b=0.6 ...)" rather than
+//      inferring a composition change from a changed float).
+//
+// CYCLE PROTECTION is defensive-only.  Modifier/painter names resolve
+// through their manager at PARSE time (Job::AddModifierStack, the
+// scalar_painter/painter chunk parsers), so a name cannot reference itself
+// or a not-yet-registered later name -- ModifierStack.h's file header
+// spells this out for modifiers ("SELF-REFERENCE IS IMPOSSIBLE ... there
+// is no cycle to detect at runtime") and the same construction-order
+// argument holds for painters.  The visited-pointer set below is kept
+// anyway, matching this codebase's belt-and-suspenders convention
+// elsewhere (e.g. the NaN-sentinel ban outliving the -ffast-math fix that
+// made it currently unreachable): it makes a future authoring path that
+// DOES allow forward references fail safely (prints "(cycle)") instead of
+// stack-overflowing the test.
+// ---------------------------------------------------------------------
+
+// A stable, fixed, deliberately ASYMMETRIC probe point -- the SAME
+// fractions DumpMedium uses for its bbox-interior probe (0.4703 / 0.5279 /
+// 0.4391), reused here as raw UV / world / object-space coordinates
+// (painters have no bbox to take a fraction of).  The probe ray arrives
+// along -Z at that point with a +Z normal, a plausible "front-facing hit"
+// a painter's GetColor/GetColorNM/GetAlpha (or a scalar painter's
+// GetValuesAt/GetValueAtNM) can be evaluated at with no null/NaN traps:
+// every RayIntersectionGeometric field a painter might read (ptCoord,
+// ptIntersection, ptObjIntersec, vNormal, vGeomNormal, onb, signals) is
+// either explicitly set here or safely default-constructed (onb defaults
+// to the world-axis identity basis; signals defaults to its documented
+// neutral values).
+inline RayIntersectionGeometric MakePainterProbeRi()
+{
+	const Point3 pt( 0.4703, 0.5279, 0.4391 );
+	RayIntersectionGeometric ri( Ray( pt, Vector3( 0, 0, -1 ) ), nullRasterizerState );
+	ri.ptCoord        = Point2( 0.4703, 0.5279 );
+	ri.ptIntersection = pt;
+	ri.ptObjIntersec  = pt;
+	ri.vNormal        = Vector3( 0, 0, 1 );
+	ri.vGeomNormal    = ri.vNormal;
+	return ri;
+}
+
+// Mutually-recursive forward declarations: PainterChannelScalarPainter
+// wraps an IPainter (scalar -> needs to call the painter dumper);
+// nothing currently makes an IPainter wrap an IScalarPainter, but the
+// forward declaration costs nothing and keeps the pair callable either
+// way if that ever changes.
+inline void DumpScalarPainterComposition( std::ostream& o, const IScalarPainter* p, std::set<const void*>& visited, const RayIntersectionGeometric& probe );
+inline void DumpPainterComposition( std::ostream& o, const IPainter* p, std::set<const void*>& visited, const RayIntersectionGeometric& probe );
+
+inline void DumpScalarPainterComposition( std::ostream& o, const IScalarPainter* p, std::set<const void*>& visited, const RayIntersectionGeometric& probe )
+{
+	if( !p ) { o << "(none)"; return; }
+	if( !visited.insert( p ).second ) { o << "(cycle)"; return; }
+
+	// Part 2: probe fingerprint, unconditional (see file comment above).
+	const ScalarTriple t = p->GetValuesAt( probe );
+	char b[256];
+	std::snprintf( b, sizeof(b), "probe=[%.9g %.9g %.9g @450=%.9g @550=%.9g @650=%.9g]",
+		(double)t.v[0], (double)t.v[1], (double)t.v[2],
+		(double)p->GetValueAtNM( probe, 450 ), (double)p->GetValueAtNM( probe, 550 ), (double)p->GetValueAtNM( probe, 650 ) );
+	o << b;
+
+	// Part 1: kind label + structural fields, for the composition
+	// operators this pass knows about.
+	using namespace RISE::Implementation;
+	if( const UniformScalarPainter* u = dynamic_cast<const UniformScalarPainter*>( p ) ) {
+		char v[64]; std::snprintf( v, sizeof(v), " uniform(value=%.9g)", (double)u->GetValue() ); o << v;
+	} else if( const RGBScalarPainter* rgb = dynamic_cast<const RGBScalarPainter*>( p ) ) {
+		char v[96]; std::snprintf( v, sizeof(v), " rgb(r=%.9g g=%.9g b=%.9g)", (double)rgb->GetR(), (double)rgb->GetG(), (double)rgb->GetB() ); o << v;
+	} else if( const SellmeierScalarPainter* s = dynamic_cast<const SellmeierScalarPainter*>( p ) ) {
+		char v[192]; std::snprintf( v, sizeof(v), " sellmeier(B1=%.9g B2=%.9g B3=%.9g C1=%.9g C2=%.9g C3=%.9g)",
+			(double)s->GetB1(), (double)s->GetB2(), (double)s->GetB3(), (double)s->GetC1(), (double)s->GetC2(), (double)s->GetC3() ); o << v;
+	} else if( const PolynomialScalarPainter* poly = dynamic_cast<const PolynomialScalarPainter*>( p ) ) {
+		o << " polynomial(coeffs=[";
+		const std::vector<Scalar>& c = poly->GetCoeffs();
+		for( size_t i = 0; i < c.size(); ++i ) { char v[32]; std::snprintf( v, sizeof(v), "%s%.9g", i?" ":"", (double)c[i] ); o << v; }
+		o << "])";
+	} else if( const PiecewiseLinearScalarPainter* pw = dynamic_cast<const PiecewiseLinearScalarPainter*>( p ) ) {
+		o << " piecewise(samples=[";
+		const std::vector<PiecewiseLinearScalarPainter::Sample>& s = pw->GetSamples();
+		for( size_t i = 0; i < s.size(); ++i ) { char v[48]; std::snprintf( v, sizeof(v), "%s(%.9g,%.9g)", i?" ":"", (double)s[i].nm, (double)s[i].value ); o << v; }
+		o << "])";
+	} else if( const AddScalarPainter* add = dynamic_cast<const AddScalarPainter*>( p ) ) {
+		char v[64]; std::snprintf( v, sizeof(v), " add(weight_a=%.9g weight_b=%.9g a=", (double)add->GetWeightA(), (double)add->GetWeightB() ); o << v;
+		DumpScalarPainterComposition( o, add->GetA(), visited, probe );
+		o << " b="; DumpScalarPainterComposition( o, add->GetB(), visited, probe ); o << ")";
+	} else if( const MultiplyScalarPainter* mul = dynamic_cast<const MultiplyScalarPainter*>( p ) ) {
+		o << " multiply(a="; DumpScalarPainterComposition( o, mul->GetA(), visited, probe );
+		o << " b="; DumpScalarPainterComposition( o, mul->GetB(), visited, probe ); o << ")";
+	} else if( const ScaledScalarPainter* sc = dynamic_cast<const ScaledScalarPainter*>( p ) ) {
+		char v[32]; std::snprintf( v, sizeof(v), " scaled(scale=%.9g child=", (double)sc->GetScale() ); o << v;
+		DumpScalarPainterComposition( o, sc->GetChild(), visited, probe ); o << ")";
+	} else if( const PainterChannelScalarPainter* pc = dynamic_cast<const PainterChannelScalarPainter*>( p ) ) {
+		char v[96]; std::snprintf( v, sizeof(v), " painterchannel(channel=%d scale=%.9g bias=%.9g source=",
+			(int)pc->GetChannel(), (double)pc->GetScale(), (double)pc->GetBias() ); o << v;
+		DumpPainterComposition( o, &pc->GetSource(), visited, probe ); o << ")";
+	} else if( const TextureScalarPainter* tex = dynamic_cast<const TextureScalarPainter*>( p ) ) {
+		IRasterImageAccessor* ria = tex->GetAccessor();
+		char v[128]; std::snprintf( v, sizeof(v), " texture(channel=%d scale=%.9g bias=%.9g dims=%ux%u)",
+			(int)tex->GetChannel(), (double)tex->GetScale(), (double)tex->GetBias(),
+			ria ? ria->GetWidth() : 0u, ria ? ria->GetHeight() : 0u ); o << v;
+	} else if( const ExpressionScalarPainter* ex = dynamic_cast<const ExpressionScalarPainter*>( p ) ) {
+		o << " expression(params=[";
+		const std::vector<ParamSpec>& specs = ex->GetParamSpecs();
+		for( size_t i = 0; i < specs.size(); ++i ) {
+			char v[160]; std::snprintf( v, sizeof(v), "%s%s=%.9g", i?" ":"", specs[i].name.c_str(), (double)specs[i].value ); o << v;
+		}
+		o << "])";
+	} else {
+		// Function1D/Function2DScalarPainter (opaque IFunction1D/IFunction2D
+		// wrapper -- no concrete-type audit here, see file comment) and any
+		// future kind this chain hasn't been extended for yet: the probe
+		// fingerprint above is still a real, non-name-only discriminator.
+		o << " opaque";
+	}
+}
+
+inline void DumpPainterComposition( std::ostream& o, const IPainter* p, std::set<const void*>& visited, const RayIntersectionGeometric& probe )
+{
+	if( !p ) { o << "(none)"; return; }
+	if( !visited.insert( p ).second ) { o << "(cycle)"; return; }
+
+	// Part 2: probe fingerprint, unconditional (see file comment above).
+	const RISEPel c = p->GetColor( probe );
+	char b[256];
+	std::snprintf( b, sizeof(b), "probe=[%.9g %.9g %.9g @450=%.9g @550=%.9g @650=%.9g alpha=%.9g]",
+		(double)c.r, (double)c.g, (double)c.b,
+		(double)p->GetColorNM( probe, 450 ), (double)p->GetColorNM( probe, 550 ), (double)p->GetColorNM( probe, 650 ),
+		(double)p->GetAlpha( probe ) );
+	o << b;
+
+	// Part 1: kind label + structural fields -- "ramp stops" and "blend
+	// painters" are the two IPainter forms the review named explicitly;
+	// expression_painter mirrors the scalar side's expression coverage.
+	using namespace RISE::Implementation;
+	if( const BlendPainter* bl = dynamic_cast<const BlendPainter*>( p ) ) {
+		char v[32]; std::snprintf( v, sizeof(v), " blend(mode=%d a=", (int)bl->GetMode() ); o << v;
+		DumpPainterComposition( o, &bl->GetA(), visited, probe );
+		o << " b="; DumpPainterComposition( o, &bl->GetB(), visited, probe );
+		o << " mask="; DumpPainterComposition( o, &bl->GetMask(), visited, probe );
+		o << ")";
+	} else if( const RampPainter* rp = dynamic_cast<const RampPainter*>( p ) ) {
+		char v[64]; std::snprintf( v, sizeof(v), " ramp(channel=%d interp=%d stops=[", (int)rp->GetChannel(), (int)rp->GetInterpolation() ); o << v;
+		for( std::size_t i = 0; i < rp->StopCount(); ++i ) {
+			const RISEPel sc = rp->StopColor(i);
+			char sv[96]; std::snprintf( sv, sizeof(sv), "%s(%.9g:%.9g,%.9g,%.9g)", i?" ":"", (double)rp->StopPos(i), (double)sc.r, (double)sc.g, (double)sc.b ); o << sv;
+		}
+		o << "] input="; DumpPainterComposition( o, &rp->GetInput(), visited, probe ); o << ")";
+	} else if( const ExpressionPainter* ex = dynamic_cast<const ExpressionPainter*>( p ) ) {
+		o << " expression(params=[";
+		const std::vector<ParamSpec>& specs = ex->GetParamSpecs();
+		for( size_t i = 0; i < specs.size(); ++i ) {
+			char v[160]; std::snprintf( v, sizeof(v), "%s%s=%.9g", i?" ":"", specs[i].name.c_str(), (double)specs[i].value ); o << v;
+		}
+		o << "])";
+	} else {
+		// Every other IPainter kind (procedural noise fields, checker/
+		// mapping/texture/uniform-color and the rest of the ~30-strong
+		// family): no concrete-type audit here yet, see file comment --
+		// the probe fingerprint above is still a real discriminator.
+		o << " opaque";
+	}
+}
+
+// Dump a modifier's (IRayIntersectionModifier) composition: kind label +
+// structural fields, recursing into a ModifierStack's members and into
+// any painter/scalar-painter field the same way the painter dumpers above
+// do.  Covers the review's explicit "modifiers on objects, modifier_stack
+// members" call-out.
+inline void DumpModifierComposition( std::ostream& o, const IRayIntersectionModifier* m, std::set<const void*>& visited, const RayIntersectionGeometric& probe )
+{
+	if( !m ) { o << "(none)"; return; }
+	if( !visited.insert( m ).second ) { o << "(cycle)"; return; }
+
+	using namespace RISE::Implementation;
+	if( const ModifierStack* st = dynamic_cast<const ModifierStack*>( m ) ) {
+		char v[32]; std::snprintf( v, sizeof(v), "stack(count=%u members=[", st->MemberCount() ); o << v;
+		for( unsigned int i = 0; i < st->MemberCount(); ++i ) {
+			if( i ) o << " ";
+			DumpModifierComposition( o, st->Member(i), visited, probe );
+		}
+		o << "])";
+	} else if( const NormalMap* nm = dynamic_cast<const NormalMap*>( m ) ) {
+		char v[32]; std::snprintf( v, sizeof(v), "normalmap(scale=%.9g painter=", (double)nm->GetScale() ); o << v;
+		DumpPainterComposition( o, &nm->GetPainter(), visited, probe ); o << ")";
+	} else if( const GlintModifier* gm = dynamic_cast<const GlintModifier*>( m ) ) {
+		char v[320]; std::snprintf( v, sizeof(v),
+			"glint(density=%.9g coverage=%.9g fill=%.9g spread=%.9g vscale=[%.9g %.9g %.9g] vshift=[%.9g %.9g %.9g] seed=%u)",
+			(double)gm->GetDensity(), (double)gm->GetCoverage(), (double)gm->GetFill(), (double)gm->GetSpreadRad(),
+			(double)gm->GetVScale().x, (double)gm->GetVScale().y, (double)gm->GetVScale().z,
+			(double)gm->GetVShift().x, (double)gm->GetVShift().y, (double)gm->GetVShift().z,
+			gm->GetSeed() ); o << v;
+	} else if( const ReliefModifier* rm = dynamic_cast<const ReliefModifier*>( m ) ) {
+		char v[160]; std::snprintf( v, sizeof(v), "relief(scale=%.9g domain=%d step=%.9g maxslope=%.9g height=",
+			(double)rm->GetScale(), (int)rm->GetDomain(), (double)rm->GetStep(), (double)rm->GetMaxSlope() ); o << v;
+		DumpScalarPainterComposition( o, &rm->GetHeight(), visited, probe ); o << ")";
+	} else {
+		o << "opaque";
+	}
+}
+
 // Canonical structural dump of a Job -- the equivalence metric. Two parse paths
 // that yield the same dump produce the same scene (hence the same render). Sorted
 // per manager for stability. Numeric fields use %.9g -- 9 significant digits,
@@ -191,16 +468,32 @@ inline void DumpRadianceMap( std::ostream& o, const IRadianceMap* rm, Job& job )
 // bbox-centre sample. A Hosek/procedural SKY global-rmap is a partial case: its
 // painter/scale/transform ARE dumped, but the painter is an internal unregistered adapter (reverse-names to
 // (unknown)) and its dome params (solar elevation/azimuth, turbidity, ground albedo) need an eval context, so only those
-// dome params stay by-construction. Painter colour and
-// material scalar state are identical BY CONSTRUCTION (same Finalize) once the
-// param values match -- and the multi-token value path that feeds them is
-// covered END-TO-END here: an object's `position`/`scale` are multi-token
-// DoubleVec3 values, so a multi-token mis-capture moves the world bbox and fails
-// the CST-vs-legacy comparison (CstDescriptorBindTest [equiv]); its [multitoken]
-// ParamValue assertions additionally pin the CST-side capture. Colour shares
-// that one capture mechanism, so dumping a painter's colour (which would require
-// constructing a RayIntersectionGeometric for GetColor) buys nothing over the
-// position/bbox check. Materials/painters therefore stay names-only here.
+// dome params stay by-construction. The multi-token value path that feeds
+// painter colour / material scalar state is covered END-TO-END here too:
+// an object's `position`/`scale` are multi-token DoubleVec3 values, so a
+// multi-token mis-capture moves the world bbox and fails the CST-vs-legacy
+// comparison (CstDescriptorBindTest [equiv]); its [multitoken] ParamValue
+// assertions additionally pin the CST-side capture.
+//
+// UPDATED 2026-09-06: painters and scalar painters no longer stay
+// names-only.  The prior paragraph's "buys nothing over the position/bbox
+// check" argument assumed the only failure mode was a mis-CAPTURED param
+// value reaching an otherwise-identical Finalize call -- it did not cover
+// a scene author (or an agent) swapping WHICH COMPOSITION a name is bound
+// to (`scalar_painter { multiply a b }` -> `{ add a b weight_a 1 weight_b
+// 0.5 }`), which is a real derive-affecting difference no CST param-capture
+// test catches, since both forms are validly-parsed, differently-shaped
+// chunks.  See the composition-digest block above DumpJob
+// (DumpScalarPainterComposition / DumpPainterComposition /
+// DumpModifierComposition) and the new `scalar_painters:` / `modifiers:`
+// sections below -- `painters:` now also dumps each painter's composition,
+// not just its name.  Material slots that hold an IScalarPainter (GGX
+// alphax/alphay, IOR, etc.) are still not dumped AT the material entry
+// (each material family exposes different fields with no generic
+// interface to read them from) but the scalar painter itself, by NAME, now
+// is -- fully covering the reported blind spot (plank_closeup's
+// `sp_plank_rough`) since a material always binds a scalar slot to a
+// NAMED scalar_painter, never an anonymous one.
 inline std::string DumpJob( Job& job )
 {
 	std::ostringstream o;
@@ -217,7 +510,44 @@ inline std::string DumpJob( Job& job )
 		if( mat && mat->GetEmitter() ) { const RISEPel e = mat->GetEmitter()->averageRadiantExitance(); char eb[96]; std::snprintf( eb, sizeof(eb), " emitter=[%.9g %.9g %.9g]", (double)e.r,(double)e.g,(double)e.b ); o << eb; }
 		o << "\n";
 	}
-	o << "painters:\n";  for( const auto& n : SortedNames( job.GetPainters()  ) ) o << "  " << n << "\n";
+	// Composition digest probe point, shared by every painter/scalar-painter/
+	// modifier dump below (see the file comment above DumpScalarPainterComposition).
+	const RayIntersectionGeometric probeRi = MakePainterProbeRi();
+	o << "painters:\n";
+	for( const auto& n : SortedNames( job.GetPainters() ) ) {
+		o << "  " << n << " ";
+		IPainter* pt = job.GetPainters() ? job.GetPainters()->GetItem( n.c_str() ) : 0;
+		std::set<const void*> visited;
+		DumpPainterComposition( o, pt, visited, probeRi );
+		o << "\n";
+	}
+	// Scalar painters (IScalarPainter) -- their OWN named registry, separate
+	// from IPainter's (see IScalarPainterManager.h).  Previously not
+	// enumerated by DumpJob at all: a scalar painter reachable only through
+	// a material slot (e.g. GGX `alphax`/`alphay`) had zero representation
+	// in the dump.  See the composition-digest file comment above.
+	o << "scalar_painters:\n";
+	for( const auto& n : SortedNames( job.GetScalarPainters() ) ) {
+		o << "  " << n << " ";
+		IScalarPainter* sp = job.GetScalarPainters() ? job.GetScalarPainters()->GetItem( n.c_str() ) : 0;
+		std::set<const void*> visited;
+		DumpScalarPainterComposition( o, sp, visited, probeRi );
+		o << "\n";
+	}
+	// Modifiers (IRayIntersectionModifier) -- named registry, mirrors
+	// painters/scalar_painters above.  Covers modifier_stack members too:
+	// each stack member is ALSO enumerated here by its own name (a member
+	// must be a previously-registered name -- see ModifierStack.h's
+	// "SELF-REFERENCE IS IMPOSSIBLE" comment), and the stack's own dump
+	// recurses into every member's composition inline as well.
+	o << "modifiers:\n";
+	for( const auto& n : SortedNames( job.GetModifiers() ) ) {
+		o << "  " << n << " ";
+		IRayIntersectionModifier* md = job.GetModifiers() ? job.GetModifiers()->GetItem( n.c_str() ) : 0;
+		std::set<const void*> visited;
+		DumpModifierComposition( o, md, visited, probeRi );
+		o << "\n";
+	}
 	o << "objects:\n";
 	for( const auto& n : SortedNames( job.GetObjects() ) ) {
 		o << "  " << n;
@@ -225,7 +555,7 @@ inline std::string DumpJob( Job& job )
 		if( ob ) {
 			o << " geometry=" << ReverseName( job.GetGeometries(), ob->GetGeometry() );
 			o << " material=" << ReverseName( job.GetMaterials(),  ob->GetMaterial() );
-			o << " modifier=" << ReverseName( job.GetModifiers(), ob->GetModifier() );
+			o << " modifier="; { std::set<const void*> visited; DumpModifierComposition( o, ob->GetModifier(), visited, probeRi ); }
 			o << " shader=" << ReverseName( job.GetShaders(), ob->GetShader() );
 			o << " radiance_map="; if( ob->GetRadianceMap() ) DumpRadianceMap( o, ob->GetRadianceMap(), job ); else o << "(none)";
 			o << " interior_medium=" << ReverseMediumName( job, ob->GetInteriorMedium() );

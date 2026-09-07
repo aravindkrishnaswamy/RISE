@@ -53,6 +53,12 @@ namespace RISE
 
 		public:
 			NormalMap( const IPainter& painter, const Scalar scale );
+
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): the normal-map painter + xy scale.
+			const IPainter& GetPainter() const { return pNormalMap; }
+			Scalar GetScale() const { return dScale; }
+
 			void Modify( RayIntersectionGeometric& ri ) const;
 		};
 	}

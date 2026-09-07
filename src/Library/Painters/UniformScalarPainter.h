@@ -35,6 +35,10 @@ namespace RISE
 		public:
 			explicit UniformScalarPainter( Scalar v ) : value( v ) {}
 
+			//! Structural introspection (CstDeriveGoldenTest's DumpJob
+			//! composition digest): the one authored value.
+			Scalar GetValue() const { return value; }
+
 			ScalarTriple GetValuesAt(
 				const RayIntersectionGeometric& /*ri*/
 				) const override
