@@ -117,3 +117,39 @@ Then: qualify fixed-k; continue EOS/target/host work one change at a time;
 tier-eight full statistics window, spectrum and preview movie delivery;
 tier-ten onset then window/rows/movie; report, fresh reviews, revision digest.
 No numerical or performance qualification is inferred from this schedule.
+
+## Review repairs and bounded qualification claim
+
+Round one found incomplete timing-input authentication (P1), unindexed observer
+timing (P2), and mixed-operator resume admission (P2). The fixed-input manifest,
+parsed observer record and early from-zero-only admission close those findings.
+Round two found a second-read gap (P2): the kernel summarizer reread a log after
+authentication. Its consumed-byte digest now must match the first authenticated
+read. The end-to-end RED replaces only that second read and must refuse; six
+cost tests pass with the archived inputs restored. The resulting v3 report is
+byte-identical to v2, SHA `43444ef7ab6753c6e9673de9a81e4e139113132f6afe03390a64cedf65a2e6c1`.
+
+The reporting/admission implementation at `e4c9aa79` passed a clean make build,
+publication gate, r190 owner gate and the complete FireSequence suite. Its
+qualified executable SHA is
+`f8a7792ca0bb8613dff9b7029a479a766cec573db64cb5656d8778d3e79a22fe`.
+Later cost-report changes do not alter that executable; they are not a new
+numerical qualification or speed measurement.
+
+The actual temporal entry accepted one normal CFL-sized step of
+0.0016462659696117043 s. This diagnostic prefix emitted no cadence frame and
+returned the existing no-frames status 97; it is not a window or movie.
+A separate 1 microsecond startup probe refused atomically with projection
+residual 0.0007640402764081955 s^-1 versus band 0.00021795298380311579 s^-1.
+Its dynamics bound passed (maximum EOS deviation 5.3048133850097656e-6), with
+zero tail cells and zero interstage transfers. Reporting now exposes these
+clauses. The refusal is retained, not waived: no timestep-uniform projection
+qualification, tolerance change or numerical repair is claimed by this rung.
+Detailed refusal log SHA:
+`672b15d018a49cc9dd7d5a16567b8fa128da23e2443de2620dbb1ae889ea70ae`.
+
+The background reference uses the earlier qualified `fdd296e2` executable
+frozen before these report/admission repairs, SHA
+`3ba1070ce70f39c081896f884d4ebb61147a39e3afde2db916cc527e0742332e`.
+Its original launch record and binary remain unchanged. That CPU oracle path
+is unaffected by the production-resume refusal and Metal error reporting.

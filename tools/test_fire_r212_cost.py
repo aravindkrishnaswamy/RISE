@@ -2,7 +2,9 @@
 """Exact quantile/invalid-input checks; these do not qualify a solver."""
 import unittest
 import hashlib
-from report_fire_r212_cost import stats, authenticated_input, observer_record
+from pathlib import Path
+from unittest.mock import patch
+from report_fire_r212_cost import stats, authenticated_input, observer_record, report
 
 
 class CostStatistics(unittest.TestCase):
@@ -39,6 +41,28 @@ class CostStatistics(unittest.TestCase):
         for text in ("", line + line, line.replace("passed=1", "passed=0")):
             with self.assertRaises(ValueError):
                 observer_record(text)
+
+    def test_report_refuses_log_replaced_between_reads(self):
+        # Like report(), this evidence-level RED requires the archived r206,
+        # r211 and r212 executed inputs restored at their recorded paths.
+        original_read = Path.read_bytes
+        target = Path("rendered/fire_production_calibration/r212_transport_adoption/hot_profile_1.v1.log")
+        reads = 0
+
+        def replaced_read(path):
+            nonlocal reads
+            raw = original_read(path)
+            if path == target:
+                reads += 1
+                if reads == 2:
+                    self.assertIn(b" kernel=", raw)
+                    return raw.replace(b" kernel=", b" kernel=unauthenticated_", 1)
+            return raw
+
+        with patch.object(Path, "read_bytes", replaced_read):
+            with self.assertRaisesRegex(ValueError, "producer log changed during cost analysis"):
+                report()
+        self.assertEqual(reads, 2)
 
 
 if __name__ == "__main__":

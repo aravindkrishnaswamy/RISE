@@ -94,7 +94,10 @@ def report(base=Path("rendered/fire_production_calibration")):
             for item in tree:
                 phases[item["phase"]][0] += item["exclusive_device_sum_ms"]
                 phases[item["phase"]][1] += item["exclusive_wall_ms"]
-        for name, item in summarize(log_path)["kernels"].items():
+        kernel_report = summarize(log_path)
+        if kernel_report["input_sha256"] != inputs[str(log_path)]:
+            raise ValueError("producer log changed during cost analysis")
+        for name, item in kernel_report["kernels"].items():
             kernels[name][0] += item["calls"]
             kernels[name][1] += item["inclusive_total_ms"]
         hot.extend(data)
