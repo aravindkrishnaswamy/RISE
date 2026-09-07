@@ -2196,9 +2196,9 @@ namespace RISEFireProductionFP64
 			if(!FireProductionProjectedHeunCPUOwnerWorkingSetBytes(shape,ownerWorkingSetBytes))
 				return Fail(error,"projected-Heun owner working-set query failed");
 			if(OwnerTestFailure("working-set-preflight"))
-				ownerWorkingSetBytes=(UINT64_C(2)<<30u)+1u;
-			if(ownerWorkingSetBytes>(UINT64_C(2)<<30u))return Fail(error,
-				"projected-Heun owner working set exceeds two GiB");
+				ownerWorkingSetBytes=FireProductionFP64QualificationOwnerCapacityBytes+1u;
+			if(!FireProductionFP64QualificationOwnerWorkingSetFits(ownerWorkingSetBytes))return Fail(error,
+				"projected-Heun fp64 qualification owner exceeds its scalar-slot capacity");
 			if(!RISE::FireCase::ValidateMethaneEnvelopeV1(request.caseRecordEnvelope,
 					methane,sealedCase,caseError)||
 				sealedCase.caseRecordId!=request.source.CaseRecordId()||

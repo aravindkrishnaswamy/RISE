@@ -143,6 +143,44 @@ def transform(text: str, name: str, suffix: str) -> str:
     # Decimal and hexadecimal floating literals use the same expression tree;
     # only their storage suffix changes.
     text = re.sub(r"(?<=[0-9])f\b", "", text)
+    # r214: the charter's two-GiB budget is the binary32 production owner's
+    # scalar-slot capacity, not a byte budget for its binary64 qualification
+    # mirror. Keep the same slots and charge their actual promoted width.
+    # This changes only resource admission, never arithmetic or production.
+    if name == "FireProductionForce" and suffix == ".h":
+        anchor = "\nnamespace RISEFireProductionFP64\n{"
+        if text.count(anchor) != 1:
+            raise RuntimeError("fp64 qualification capacity namespace seam changed")
+        declaration = """
+namespace RISEFireProductionFP64
+{
+    // Qualification-only resource capacity. Production remains two GiB.
+    // Same scalar-slot capacity; non-scalar metadata is not made smaller.
+    inline constexpr std::uint64_t FireProductionFP64QualificationOwnerCapacityBytes =
+        ((UINT64_C(2)<<30u)/sizeof(float))*sizeof(double);
+    static_assert(sizeof(float)==4u&&sizeof(double)==8u,
+        "qualification capacity requires IEEE binary32/binary64 storage");
+    static_assert((UINT64_C(2)<<30u)%sizeof(float)==0u,
+        "production capacity must contain an integral number of scalar slots");
+    static_assert(((UINT64_C(2)<<30u)/sizeof(float))<=
+        UINT64_MAX/sizeof(double),"qualification capacity overflow");
+    inline bool FireProductionFP64QualificationOwnerWorkingSetFits(
+        const std::uint64_t bytes)
+    { return bytes<=FireProductionFP64QualificationOwnerCapacityBytes; }
+"""
+        text = text.replace(anchor, declaration)
+    if name == "FireProductionForce" and suffix == ".cpp":
+        original = """\t\t\tif(OwnerTestFailure("working-set-preflight"))
+\t\t\t\townerWorkingSetBytes=(UINT64_C(2)<<30u)+1u;
+\t\t\tif(ownerWorkingSetBytes>(UINT64_C(2)<<30u))return Fail(error,
+\t\t\t\t"projected-Heun owner working set exceeds two GiB");"""
+        replacement = """\t\t\tif(OwnerTestFailure("working-set-preflight"))
+\t\t\t\townerWorkingSetBytes=FireProductionFP64QualificationOwnerCapacityBytes+1u;
+\t\t\tif(!FireProductionFP64QualificationOwnerWorkingSetFits(ownerWorkingSetBytes))return Fail(error,
+\t\t\t\t"projected-Heun fp64 qualification owner exceeds its scalar-slot capacity");"""
+        if text.count(original) != 1:
+            raise RuntimeError("fp64 qualification owner capacity admission seam changed")
+        text = text.replace(original, replacement)
     if name == "FireProductionTransport" and suffix == ".cpp":
         # The R1 accepted-state temperature remains a binary32 authority even
         # inside the arithmetic mirror.  Mechanical scalar promotion must not

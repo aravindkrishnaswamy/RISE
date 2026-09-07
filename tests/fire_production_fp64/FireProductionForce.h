@@ -24,6 +24,20 @@
 
 namespace RISEFireProductionFP64
 {
+    // Qualification-only resource capacity. Production remains two GiB.
+    // Same scalar-slot capacity; non-scalar metadata is not made smaller.
+    inline constexpr std::uint64_t FireProductionFP64QualificationOwnerCapacityBytes =
+        ((UINT64_C(2)<<30u)/sizeof(float))*sizeof(double);
+    static_assert(sizeof(float)==4u&&sizeof(double)==8u,
+        "qualification capacity requires IEEE binary32/binary64 storage");
+    static_assert((UINT64_C(2)<<30u)%sizeof(float)==0u,
+        "production capacity must contain an integral number of scalar slots");
+    static_assert(((UINT64_C(2)<<30u)/sizeof(float))<=
+        UINT64_MAX/sizeof(double),"qualification capacity overflow");
+    inline bool FireProductionFP64QualificationOwnerWorkingSetFits(
+        const std::uint64_t bytes)
+    { return bytes<=FireProductionFP64QualificationOwnerCapacityBytes; }
+
 #if defined(__APPLE__)
 	//! Identity of the exact source compiled by the resident force library.
 	std::string FireProductionForceMetalKernelSourceSHA256();
