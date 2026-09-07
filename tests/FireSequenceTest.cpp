@@ -7987,8 +7987,8 @@ namespace
 			"reference_composition_candidate_fixed_column.raw.csv";
 		// An onset before the nominated reference time is a measured crossing,
 		// not an obligation to continue a known runaway until that later time.
-		const bool exactObservationRequired=!tier10Onset||
-			result.simulatedTimeS>persistence.productionMomentumObservationTimeS;
+		const bool exactObservationRequired=!tier10Onset||reachedTarget||
+			std::filesystem::exists(exactObservation);
 		if(sealedProjectedReplay&&exactObservationRequired){
 			capturedThresholdBundlesComplete=capturedThresholdBundlesComplete&&
 				!DigestFile(exactObservation.string()+".convergence.v1").empty()&&
